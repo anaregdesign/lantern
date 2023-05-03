@@ -1,4 +1,4 @@
-module github.com/anaregdesign/lantern-server
+module github.com/anaregdesign/lantern
 
 go 1.20
 
