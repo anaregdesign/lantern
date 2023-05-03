@@ -11,19 +11,14 @@ import (
 	"time"
 )
 
-type GrpcGraphCache = graph.GraphCache[string, *Vertex]
-
-func NewGraphCache() *GrpcGraphCache {
-	return graph.NewGraphCache[string, *Vertex](1 * time.Minute)
-
-}
+// Avoiding bug of `wire`. Generic type is not supported.
 
 type LanternService struct {
 	UnimplementedLanternServiceServer
-	cache *GrpcGraphCache
+	cache *graph.GraphCache[string, *Vertex]
 }
 
-func NewLanternService(cache *GrpcGraphCache) *LanternService {
+func NewLanternService(cache *graph.GraphCache[string, *Vertex]) *LanternService {
 	return &LanternService{
 		cache: cache,
 	}

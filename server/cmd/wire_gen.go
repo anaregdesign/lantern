@@ -7,44 +7,22 @@
 package main
 
 import (
+	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
-	"google.golang.org/grpc"
-	"net"
 )
 
 // Injectors from wire.go:
 
 func initializeLanternServer() (*service.LanternServer, error) {
-	graphCache := service.NewGraphCache()
-	lanternService := newLanternService(graphCache)
-	v := newGrpcServerOptions()
-	server := newGrpcServer(v)
-	listener, err := newListener()
+	config := provider.NewConfig()
+	graphCache := provider.NewGraphCache(config)
+	lanternService := service.NewLanternService(graphCache)
+	v := provider.NewGrpcServerOptions()
+	server := provider.NewGrpcServer(v)
+	listener, err := provider.NewListener()
 	if err != nil {
 		return nil, err
 	}
-	lanternServer := newLanternServer(lanternService, server, listener)
+	lanternServer := service.NewLanternServer(lanternService, server, listener)
 	return lanternServer, nil
-}
-
-// wire.go:
-
-func newListener() (net.Listener, error) {
-	return net.Listen("tcp", ":8080")
-}
-
-func newGrpcServerOptions() []grpc.ServerOption {
-	return []grpc.ServerOption{}
-}
-
-func newGrpcServer(options []grpc.ServerOption) *grpc.Server {
-	return grpc.NewServer(options...)
-}
-
-func newLanternService(cache *service.GrpcGraphCache) *service.LanternService {
-	return service.NewLanternService(cache)
-}
-
-func newLanternServer(svc *service.LanternService, s *grpc.Server, listener net.Listener) *service.LanternServer {
-	return service.NewLanternServer(svc, s, listener)
 }
