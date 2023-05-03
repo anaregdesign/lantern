@@ -56,18 +56,24 @@ func (s *LanternService) GetVertex(ctx context.Context, request *GetVertexReques
 
 func (s *LanternService) PutVertex(ctx context.Context, request *PutVertexRequest) (*PutVertexResponse, error) {
 	for _, v := range request.Vertices {
-		s.cache.AddVertex(v.Key, v)
+		s.cache.AddVertexWithExpiration(v.Key, v, v.Expiration.AsTime())
 	}
 	return &PutVertexResponse{}, nil
 }
 
 func (s *LanternService) GetEdge(ctx context.Context, request *GetEdgeRequest) (*GetEdgeResponse, error) {
-	return nil, status.Error(404, "Edge not found")
+	return &GetEdgeResponse{
+		Edge: &Edge{
+			Tail:   request.Tail,
+			Head:   request.Head,
+			Weight: s.cache.GetWeight(request.Tail, request.Head),
+		},
+	}, nil
 }
 
 func (s *LanternService) PutEdge(ctx context.Context, request *PutEdgeRequest) (*PutEdgeResponse, error) {
 	for _, e := range request.Edges {
-		s.cache.AddEdge(e.Tail, e.Head, float64(e.Weight))
+		s.cache.AddEdgeWithExpiration(e.Tail, e.Head, e.Weight, e.Expiration.AsTime())
 	}
 	return &PutEdgeResponse{}, nil
 }
