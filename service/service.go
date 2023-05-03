@@ -4,7 +4,10 @@ import (
 	"context"
 	. "github.com/anaregdesign/lantern-proto/go/graph/v1"
 	"github.com/anaregdesign/papaya/cache/graph"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/status"
+	"log"
+	"net"
 )
 
 type LanternService struct {
@@ -76,4 +79,28 @@ func (s *LanternService) PutEdge(ctx context.Context, request *PutEdgeRequest) (
 		s.cache.AddEdgeWithExpiration(e.Tail, e.Head, e.Weight, e.Expiration.AsTime())
 	}
 	return &PutEdgeResponse{}, nil
+}
+
+type LanternServer struct {
+	service  *LanternService
+	server   *grpc.Server
+	listener net.Listener
+}
+
+func NewLanternServer(service *LanternService, server *grpc.Server, listener net.Listener) *LanternServer {
+	return &LanternServer{
+		service:  service,
+		server:   server,
+		listener: listener,
+	}
+}
+
+func (s *LanternServer) Run(ctx context.Context) error {
+	go func() {
+		<-ctx.Done()
+		log.Println("Shutting down server")
+		s.server.GracefulStop()
+	}()
+	RegisterLanternServiceServer(s.server, s.service)
+	return s.server.Serve(s.listener)
 }
