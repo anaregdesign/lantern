@@ -8,14 +8,22 @@ import (
 	"google.golang.org/grpc/status"
 	"log"
 	"net"
+	"time"
 )
+
+type GrpcGraphCache = graph.GraphCache[string, *Vertex]
+
+func NewGraphCache() *GrpcGraphCache {
+	return graph.NewGraphCache[string, *Vertex](1 * time.Minute)
+
+}
 
 type LanternService struct {
 	UnimplementedLanternServiceServer
-	cache *graph.GraphCache[string, *Vertex]
+	cache *GrpcGraphCache
 }
 
-func NewLanternService(cache *graph.GraphCache[string, *Vertex]) *LanternService {
+func NewLanternService(cache *GrpcGraphCache) *LanternService {
 	return &LanternService{
 		cache: cache,
 	}
@@ -35,7 +43,7 @@ func (s *LanternService) Illuminate(ctx context.Context, request *IlluminateRequ
 			edges = append(edges, &Edge{
 				Tail:   tail,
 				Head:   head,
-				Weight: float32(weight),
+				Weight: weight,
 			})
 		}
 	}
@@ -101,6 +109,9 @@ func (s *LanternServer) Run(ctx context.Context) error {
 		log.Println("Shutting down server")
 		s.server.GracefulStop()
 	}()
+
+	go s.service.cache.Watch(ctx, 1*time.Minute)
+
 	RegisterLanternServiceServer(s.server, s.service)
 	return s.server.Serve(s.listener)
 }
