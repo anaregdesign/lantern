@@ -58,7 +58,6 @@ func (l *Lantern) GetVertex(ctx context.Context, key string) (*Vertex, error) {
 	}
 	p := &Vertex{}
 	p.Key = result.Vertex.Key
-	p.Expiration = result.Vertex.Expiration
 	p.Value = result.Vertex.Value
 	return p, nil
 }
