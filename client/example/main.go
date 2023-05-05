@@ -56,8 +56,7 @@ func main() {
 	}
 
 	/*
-			GetVertex:
-		    Value
+		GetVertex:
 	*/
 	// string value
 	if vertex, err := cli.GetVertex(ctx, "string"); err == nil {
