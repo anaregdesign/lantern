@@ -119,8 +119,6 @@ func (l *Lantern) Illuminate(ctx context.Context, seed string, step int, k int, 
 	g := graph.NewGraph[string, *Vertex]()
 	for _, v := range result.Graph.Vertices {
 		var vv Vertex
-		vv.Key = v.Key
-		vv.Expiration = v.Expiration
 		vv.Value = v.Value
 		g.Vertices[v.Key] = &vv
 	}

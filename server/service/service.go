@@ -79,7 +79,13 @@ func (s *LanternService) PutVertex(ctx context.Context, request *PutVertexReques
 func (s *LanternService) GetEdge(ctx context.Context, request *GetEdgeRequest) (*GetEdgeResponse, error) {
 	w, ok := s.cache.GetWeight(request.Tail, request.Head)
 	if !ok {
-		return nil, status.Error(404, "Edge not found")
+		return &GetEdgeResponse{
+			Edge: &Edge{
+				Tail:   request.Tail,
+				Head:   request.Head,
+				Weight: 0,
+			},
+		}, nil
 	}
 	return &GetEdgeResponse{
 		Edge: &Edge{

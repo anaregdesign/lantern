@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"github.com/anaregdesign/lantern/client"
 	"log"
 	"time"
@@ -16,7 +17,8 @@ func main() {
 	}
 
 	/*
-		Put vertex
+		PutVertex:
+		    Value can be string, int, float, bool, time.Time, []byte or nil
 	*/
 	// string value
 	if err := cli.PutVertex(ctx, "string", "A", 1*time.Minute); err != nil {
@@ -43,46 +45,69 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// []byte value
+	if err := cli.PutVertex(ctx, "[]byte", []byte("A"), 1*time.Minute); err != nil {
+		log.Fatal(err)
+	}
+
+	// nil value
+	if err := cli.PutVertex(ctx, "nil", nil, 1*time.Minute); err != nil {
+		log.Fatal(err)
+	}
+
 	/*
-		Get vertices
+			GetVertex:
+		    Value
 	*/
 	// string value
-	if value, err := cli.GetVertex(ctx, "string"); err != nil {
-		if v, err := value.StringValue(); err != nil {
-			log.Printf("string: %s\n", v)
+	if vertex, err := cli.GetVertex(ctx, "string"); err == nil {
+		if v, err := vertex.StringValue(); err == nil {
+			log.Printf("%s: %s\n", vertex.Key, v)
 		}
 	}
 
 	// int value
-	if value, err := cli.GetVertex(ctx, "int"); err != nil {
-		if v, err := value.IntValue(); err != nil {
-			log.Printf("int: %d\n", v)
+	if vertex, err := cli.GetVertex(ctx, "int"); err == nil {
+		if v, err := vertex.IntValue(); err == nil {
+			log.Printf("%s: %d\n", vertex.Key, v)
 		}
 	}
 
 	// float value
-	if value, err := cli.GetVertex(ctx, "float"); err != nil {
-		if v, err := value.FloatValue(); err != nil {
-			log.Printf("float: %f\n", v)
+	if vertex, err := cli.GetVertex(ctx, "float"); err == nil {
+		if v, err := vertex.FloatValue(); err == nil {
+			log.Printf("%s: %f\n", vertex.Key, v)
 		}
 	}
 
 	// bool value
-	if value, err := cli.GetVertex(ctx, "bool"); err != nil {
-		if v, err := value.BoolValue(); err != nil {
-			log.Printf("bool: %t\n", v)
+	if vertex, err := cli.GetVertex(ctx, "bool"); err == nil {
+		if v, err := vertex.BoolValue(); err == nil {
+			log.Printf("%s: %t\n", vertex.Key, v)
 		}
 	}
 
 	// time.Time value
-	if value, err := cli.GetVertex(ctx, "time"); err != nil {
-		if v, err := value.TimeValue(); err != nil {
-			log.Printf("time: %s\n", v)
+	if value, err := cli.GetVertex(ctx, "time"); err == nil {
+		if v, err := value.TimeValue(); err == nil {
+			log.Printf("%s: %s\n", value.Key, v)
 		}
 	}
 
+	// []byte value
+	if vertex, err := cli.GetVertex(ctx, "[]byte"); err == nil {
+		if v, err := vertex.BytesValue(); err == nil {
+			log.Printf("%s: %s\n", vertex.Key, v)
+		}
+	}
+
+	// nil value
+	if vertex, err := cli.GetVertex(ctx, "nil"); err == nil {
+		log.Printf("%s: %t\n", vertex.Key, vertex.IsNil())
+	}
+
 	/*
-		Add edge:
+		AddEdge:
 			In Lantern, all edges are additive.
 			For example, if you add an edge with a weight of 1 between A and B twice,
 			the weight of the edge will be 2.
@@ -113,30 +138,116 @@ func main() {
 	}
 
 	// weight of edge a->b is 2
-	if weight, err := cli.GetEdge(ctx, "a", "b"); err != nil {
-		log.Printf("weight at t=1: %d\n", weight)
-	} else {
-		log.Fatal(err)
+	if weight, err := cli.GetEdge(ctx, "a", "b"); err == nil {
+		log.Printf("weight at t=1: %f\n", weight)
 	}
 
 	// 2 seconds later, first edge is expired
 	time.Sleep(2 * time.Second)
 
 	// weight of edge a->b is 1
-	if weight, err := cli.GetEdge(ctx, "a", "b"); err != nil {
-		log.Printf("weight at t=3: %d\n", weight)
-	} else {
-		log.Fatal(err)
+	if weight, err := cli.GetEdge(ctx, "a", "b"); err == nil {
+		log.Printf("weight at t=3: %f\n", weight)
 	}
 
 	// 3 seconds later, second edge is expired
 	time.Sleep(3 * time.Second)
 
 	// weight of edge a->b is 0
-	if weight, err := cli.GetEdge(ctx, "a", "b"); err != nil {
-		log.Printf("weight at t=6: %d\n", weight)
-	} else {
+	if weight, err := cli.GetEdge(ctx, "a", "b"); err == nil {
+		log.Printf("weight at t=6: %f\n", weight)
+	}
+
+	/*
+		Illuminate:
+			Illuminate is a function that returns neighbor graph of a vertex.
+			seed is a vertex to start illuminate.
+			step is a number of step from seed.
+			k is a number of edges from each vertex.
+			tfidf is a flag to use tfidf or not. If tfidf is true, weight of edge is calculated by tfidf.
+			Else, weight of edge is calculated by weights of edges.
+
+			ex)
+			a -> b -> c -> d
+			|    +--> e
+			+--> f -> g
+			+--> h
+			+--> i
+
+	*/
+	// Add edges
+	if err := cli.AddEdge(ctx, "a", "b", 1, 1*time.Minute); err != nil {
+		log.Fatal(err)
+	}
+	if err := cli.AddEdge(ctx, "b", "c", 1, 1*time.Minute); err != nil {
+		log.Fatal(err)
+	}
+	if err := cli.AddEdge(ctx, "c", "d", 1, 1*time.Minute); err != nil {
+		log.Fatal(err)
+	}
+	if err := cli.AddEdge(ctx, "b", "e", 1, 1*time.Minute); err != nil {
+		log.Fatal(err)
+	}
+	if err := cli.AddEdge(ctx, "a", "f", 1, 1*time.Minute); err != nil {
+		log.Fatal(err)
+	}
+	if err := cli.AddEdge(ctx, "f", "g", 1, 1*time.Minute); err != nil {
 		log.Fatal(err)
 	}
 
+	// illuminate from a with step 2 and k 2
+	if graph, err := cli.Illuminate(ctx, "a", 2, 2, false); err == nil {
+		if jsonString, err := json.MarshalIndent(graph, "", "\t"); err == nil {
+			log.Printf("%s\n", jsonString)
+			/*
+				 {
+				        "vertices": {
+				                "a": {
+				                        "Value": {
+				                                "Nil": true
+				                        }
+				                },
+				                "b": {
+				                        "Value": {
+				                                "Nil": true
+				                        }
+				                },
+				                "c": {
+				                        "Value": {
+				                                "Nil": true
+				                        }
+				                },
+				                "e": {
+				                        "Value": {
+				                                "Nil": true
+				                        }
+				                },
+				                "f": {
+				                        "Value": {
+				                                "Nil": true
+				                        }
+				                },
+				                "g": {
+				                        "Value": {
+				                                "Nil": true
+				                        }
+				                }
+				        },
+				        "edges": {
+				                "a": {
+				                        "b": 1,
+				                        "f": 1
+				                },
+				                "b": {
+				                        "c": 1,
+				                        "e": 1
+				                },
+				                "f": {
+				                        "g": 1
+				                }
+				        }
+				}
+			*/
+		}
+	}
 }
