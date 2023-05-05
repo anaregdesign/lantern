@@ -28,8 +28,17 @@ func (s *LanternService) Illuminate(ctx context.Context, request *IlluminateRequ
 	g := s.cache.Neighbor(request.Seed, int(request.Step), int(request.Step), request.Tfidf)
 
 	var vertices []*Vertex
-	for _, v := range g.Vertices {
-		vertices = append(vertices, v)
+	for k, v := range g.Vertices {
+		if v == nil {
+			vertices = append(vertices, &Vertex{
+				Key: k,
+				Value: &Vertex_Nil{
+					Nil: true,
+				},
+			})
+		} else {
+			vertices = append(vertices, v)
+		}
 	}
 
 	var edges []*Edge
@@ -68,20 +77,24 @@ func (s *LanternService) PutVertex(ctx context.Context, request *PutVertexReques
 }
 
 func (s *LanternService) GetEdge(ctx context.Context, request *GetEdgeRequest) (*GetEdgeResponse, error) {
+	w, ok := s.cache.GetWeight(request.Tail, request.Head)
+	if !ok {
+		return nil, status.Error(404, "Edge not found")
+	}
 	return &GetEdgeResponse{
 		Edge: &Edge{
 			Tail:   request.Tail,
 			Head:   request.Head,
-			Weight: s.cache.GetWeight(request.Tail, request.Head),
+			Weight: w,
 		},
 	}, nil
 }
 
-func (s *LanternService) PutEdge(ctx context.Context, request *PutEdgeRequest) (*PutEdgeResponse, error) {
+func (s *LanternService) PutEdge(ctx context.Context, request *AddEdgeRequest) (*AddEdgeResponse, error) {
 	for _, e := range request.Edges {
 		s.cache.AddEdgeWithExpiration(e.Tail, e.Head, e.Weight, e.Expiration.AsTime())
 	}
-	return &PutEdgeResponse{}, nil
+	return &AddEdgeResponse{}, nil
 }
 
 type LanternServer struct {

@@ -6,6 +6,7 @@ import (
 	pb "github.com/anaregdesign/lantern-proto/go/graph/v1"
 	"github.com/anaregdesign/papaya/cache/graph"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	"strconv"
 	"time"
 )
@@ -15,7 +16,7 @@ type Lantern struct {
 	client pb.LanternServiceClient
 }
 
-func NewLantern[T any](hostname string, port int) (*Lantern, error) {
+func NewLantern(hostname string, port int) (*Lantern, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -55,18 +56,18 @@ func (l *Lantern) GetVertex(ctx context.Context, key string) (*Vertex, error) {
 	if err != nil {
 		return nil, err
 	}
-	var p *Vertex
+	p := &Vertex{}
 	p.Key = result.Vertex.Key
 	p.Expiration = result.Vertex.Expiration
 	p.Value = result.Vertex.Value
 	return p, nil
 }
 
-func (l *Lantern) PutVertex(ctx context.Context, key string, value interface{}, expiration time.Time) error {
+func (l *Lantern) PutVertex(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
 	v, err := nativeVertex{
 		key:        key,
 		value:      value,
-		expiration: expiration,
+		expiration: time.Now().Add(ttl),
 	}.asVertex()
 	if err != nil {
 		return err
@@ -89,13 +90,14 @@ func (l *Lantern) GetEdge(ctx context.Context, tail string, head string) (float3
 	return result.Edge.Weight, nil
 }
 
-func (l *Lantern) PutEdge(ctx context.Context, tail string, head string, weight float32) error {
-	request := &pb.PutEdgeRequest{
+func (l *Lantern) AddEdge(ctx context.Context, tail string, head string, weight float32, ttl time.Duration) error {
+	request := &pb.AddEdgeRequest{
 		Edges: []*pb.Edge{
 			{
-				Tail:   tail,
-				Head:   head,
-				Weight: weight,
+				Tail:       tail,
+				Head:       head,
+				Weight:     weight,
+				Expiration: timestamppb.New(time.Now().Add(ttl)),
 			},
 		},
 	}
@@ -105,8 +107,13 @@ func (l *Lantern) PutEdge(ctx context.Context, tail string, head string, weight 
 	return nil
 }
 
-func (l *Lantern) Illuminate(ctx context.Context, step int, k int, tfidf bool) (*graph.Graph[string, *Vertex], error) {
-	result, err := l.client.Illuminate(ctx, &pb.IlluminateRequest{Step: uint32(step), K: uint32(k), Tfidf: tfidf})
+func (l *Lantern) Illuminate(ctx context.Context, seed string, step int, k int, tfidf bool) (*graph.Graph[string, *Vertex], error) {
+	result, err := l.client.Illuminate(ctx, &pb.IlluminateRequest{
+		Seed:  seed,
+		Step:  uint32(step),
+		K:     uint32(k),
+		Tfidf: tfidf,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -118,8 +125,9 @@ func (l *Lantern) Illuminate(ctx context.Context, step int, k int, tfidf bool) (
 		vv.Value = v.Value
 		g.Vertices[v.Key] = &vv
 	}
+
 	for _, e := range result.Graph.Edges {
-		if _, ok := g.Vertices[e.Tail]; !ok {
+		if _, ok := g.Edges[e.Tail]; !ok {
 			g.Edges[e.Tail] = make(map[string]float32)
 		}
 		g.Edges[e.Tail][e.Head] = e.Weight
