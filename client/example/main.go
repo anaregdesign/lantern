@@ -119,7 +119,7 @@ func main() {
 			* weight of edge a->b is 2
 			* 2 seconds later, first edge is expired
 			* weight of edge a->b is 1
-			* 3 seconds later, second edge is expired
+			* 1 seconds later, second edge is expired
 			* weight of edge a->b is 0
 	*/
 
@@ -149,8 +149,8 @@ func main() {
 		log.Printf("weight at t=3: %f\n", weight)
 	}
 
-	// 3 seconds later, second edge is expired
-	time.Sleep(3 * time.Second)
+	// 1 seconds later, second edge is expired
+	time.Sleep(1 * time.Second)
 
 	// weight of edge a->b is 0
 	if weight, err := cli.GetEdge(ctx, "a", "b"); err == nil {
