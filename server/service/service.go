@@ -25,6 +25,7 @@ func NewLanternService(cache *graph.GraphCache[string, *Vertex]) *LanternService
 }
 
 func (s *LanternService) Illuminate(ctx context.Context, request *IlluminateRequest) (*IlluminateResponse, error) {
+	log.Printf("Illuminate: %v", request)
 	g := s.cache.Neighbor(request.Seed, int(request.Step), int(request.Step), request.Tfidf)
 
 	switch request.Optimization {
@@ -77,6 +78,7 @@ func (s *LanternService) Illuminate(ctx context.Context, request *IlluminateRequ
 }
 
 func (s *LanternService) GetVertex(ctx context.Context, request *GetVertexRequest) (*GetVertexResponse, error) {
+	log.Printf("GetVertex: %v", request)
 	if v, ok := s.cache.GetVertex(request.GetKey()); ok {
 		return &GetVertexResponse{
 			Vertex: v,
@@ -86,6 +88,7 @@ func (s *LanternService) GetVertex(ctx context.Context, request *GetVertexReques
 }
 
 func (s *LanternService) PutVertex(ctx context.Context, request *PutVertexRequest) (*PutVertexResponse, error) {
+	log.Printf("PutVertex: %v", request)
 	for _, v := range request.Vertices {
 		s.cache.AddVertexWithExpiration(v.Key, v, v.Expiration.AsTime())
 	}
@@ -93,6 +96,7 @@ func (s *LanternService) PutVertex(ctx context.Context, request *PutVertexReques
 }
 
 func (s *LanternService) GetEdge(ctx context.Context, request *GetEdgeRequest) (*GetEdgeResponse, error) {
+	log.Printf("GetEdge: %v", request)
 	w, ok := s.cache.GetWeight(request.Tail, request.Head)
 	if !ok {
 		return &GetEdgeResponse{
@@ -113,6 +117,7 @@ func (s *LanternService) GetEdge(ctx context.Context, request *GetEdgeRequest) (
 }
 
 func (s *LanternService) PutEdge(ctx context.Context, request *AddEdgeRequest) (*AddEdgeResponse, error) {
+	log.Printf("PutEdge: %v", request)
 	for _, e := range request.Edges {
 		s.cache.AddEdgeWithExpiration(e.Tail, e.Head, e.Weight, e.Expiration.AsTime())
 	}
