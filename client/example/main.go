@@ -154,7 +154,7 @@ func main() {
 
 	// weight of edge a->b is 0
 	if weight, err := cli.GetEdge(ctx, "a", "b"); err == nil {
-		log.Printf("weight at t=6: %f\n", weight)
+		log.Printf("weight at t=4: %f\n", weight)
 	}
 
 	/*
