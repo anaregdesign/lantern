@@ -16,12 +16,12 @@ type Config struct {
 }
 
 func NewConfig() *Config {
-	ttl, err := strconv.Atoi(os.Getenv("DEFAULT_TTL_SECONDS"))
+	ttl, err := strconv.Atoi(os.Getenv("LANTERN_DEFAULT_TTL_SECONDS"))
 	if err != nil {
 		ttl = 60
 	}
 
-	port, err := strconv.Atoi(os.Getenv("PORT"))
+	port, err := strconv.Atoi(os.Getenv("LANTERN_PORT"))
 	if err != nil {
 		port = 6380
 	}
