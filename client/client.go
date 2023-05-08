@@ -107,6 +107,7 @@ func (l *Lantern) AddEdge(ctx context.Context, tail string, head string, weight 
 }
 
 func (l *Lantern) Illuminate(ctx context.Context, seed string, step int, k int, tfidf bool) (*model.Graph[string, *Vertex], error) {
+	// In go-client, optimization is not implemented, but there is native implementation in papaya.
 	result, err := l.client.Illuminate(ctx, &pb.IlluminateRequest{
 		Seed:  seed,
 		Step:  uint32(step),
