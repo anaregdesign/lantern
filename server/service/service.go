@@ -27,6 +27,22 @@ func NewLanternService(cache *graph.GraphCache[string, *Vertex]) *LanternService
 func (s *LanternService) Illuminate(ctx context.Context, request *IlluminateRequest) (*IlluminateResponse, error) {
 	g := s.cache.Neighbor(request.Seed, int(request.Step), int(request.Step), request.Tfidf)
 
+	switch request.Optimization {
+	case Optimization_OPTIMIZATION_UNSPECIFIED:
+		// do nothing
+	case Optimization_OPTIMIZATION_MINIMUM_SPANNING_TREE:
+		g = g.MinimumSpanningTree(request.Seed, false)
+
+	case Optimization_OPTIMIZATION_MAXIMUM_SPANNING_TREE:
+		g = g.MinimumSpanningTree(request.Seed, true)
+
+	case Optimization_OPTIMIZATION_SHORTEST_PATH_TREE:
+		g = g.ShortestPathTree(request.Seed, func(weight float32) float32 { return weight })
+
+	case Optimization_OPTIMIZATION_SHORTEST_PATH_TREE_INVERSE:
+		g = g.ShortestPathTree(request.Seed, func(weight float32) float32 { return 1 / weight })
+	}
+
 	var vertices []*Vertex
 	for k, v := range g.Vertices {
 		if v == nil {

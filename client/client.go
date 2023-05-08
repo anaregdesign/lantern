@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	pb "github.com/anaregdesign/lantern-proto/go/graph/v1"
-	"github.com/anaregdesign/papaya/cache/graph"
+	model "github.com/anaregdesign/papaya/graph"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"strconv"
@@ -106,7 +106,7 @@ func (l *Lantern) AddEdge(ctx context.Context, tail string, head string, weight 
 	return nil
 }
 
-func (l *Lantern) Illuminate(ctx context.Context, seed string, step int, k int, tfidf bool) (*graph.Graph[string, *Vertex], error) {
+func (l *Lantern) Illuminate(ctx context.Context, seed string, step int, k int, tfidf bool) (*model.Graph[string, *Vertex], error) {
 	result, err := l.client.Illuminate(ctx, &pb.IlluminateRequest{
 		Seed:  seed,
 		Step:  uint32(step),
@@ -116,7 +116,7 @@ func (l *Lantern) Illuminate(ctx context.Context, seed string, step int, k int, 
 	if err != nil {
 		return nil, err
 	}
-	g := graph.NewGraph[string, *Vertex]()
+	g := model.NewGraph[string, *Vertex]()
 	for _, v := range result.Graph.Vertices {
 		var vv Vertex
 		vv.Value = v.Value
