@@ -94,6 +94,11 @@ func (s *LanternService) PutVertex(ctx context.Context, request *PutVertexReques
 	}
 	return &PutVertexResponse{}, nil
 }
+func (s *LanternService) DeleteVertex(ctx context.Context, in *DeleteVertexRequest) (*DeleteVertexResponse, error) {
+	log.Printf("DeleteVertex: %v", in)
+	s.cache.DeleteVertex(in.GetKey())
+	return &DeleteVertexResponse{}, nil
+}
 
 func (s *LanternService) GetEdge(ctx context.Context, request *GetEdgeRequest) (*GetEdgeResponse, error) {
 	log.Printf("GetEdge: %v", request)
@@ -116,7 +121,7 @@ func (s *LanternService) GetEdge(ctx context.Context, request *GetEdgeRequest) (
 	}, nil
 }
 
-func (s *LanternService) PutEdge(ctx context.Context, request *AddEdgeRequest) (*AddEdgeResponse, error) {
+func (s *LanternService) AddEdge(ctx context.Context, request *AddEdgeRequest) (*AddEdgeResponse, error) {
 	log.Printf("PutEdge: %v", request)
 	for _, e := range request.Edges {
 		s.cache.AddEdgeWithExpiration(e.Tail, e.Head, e.Weight, e.Expiration.AsTime())
@@ -128,6 +133,12 @@ type LanternServer struct {
 	service  *LanternService
 	server   *grpc.Server
 	listener net.Listener
+}
+
+func (s *LanternService) DeleteEdge(ctx context.Context, in *DeleteEdgeRequest) (*DeleteEdgeResponse, error) {
+	log.Printf("DeleteEdge: %v", in)
+	s.cache.DeleteEdge(in.Tail, in.Head)
+	return &DeleteEdgeResponse{}, nil
 }
 
 func NewLanternServer(service *LanternService, server *grpc.Server, listener net.Listener) *LanternServer {

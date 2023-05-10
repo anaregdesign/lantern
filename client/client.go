@@ -100,7 +100,7 @@ func (l *Lantern) AddEdge(ctx context.Context, tail string, head string, weight 
 			},
 		},
 	}
-	if _, err := l.client.PutEdge(ctx, request); err != nil {
+	if _, err := l.client.AddEdge(ctx, request); err != nil {
 		return err
 	}
 	return nil
