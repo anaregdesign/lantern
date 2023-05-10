@@ -106,6 +106,18 @@ func main() {
 	}
 
 	/*
+		DeleteVertex:
+	*/
+
+	if err := cli.DeleteVertex(ctx, "string"); err != nil {
+		log.Fatal(err)
+	}
+
+	if _, err := cli.GetVertex(ctx, "string"); err != nil {
+		log.Printf("string vertex is deleted: %s\n", err)
+	}
+
+	/*
 		AddEdge:
 			In Lantern, all edges are additive.
 			For example, if you add an edge with a weight of 1 between A and B twice,
@@ -155,6 +167,30 @@ func main() {
 	// weight of edge a->b is 0
 	if weight, err := cli.GetEdge(ctx, "a", "b"); err == nil {
 		log.Printf("weight at t=4: %f\n", weight)
+	}
+
+	/*
+		DeleteEdge:
+			DeleteEdge deletes an edge between two head and tail.
+	*/
+
+	if err := cli.AddEdge(ctx, "a", "b", 1, 1*time.Minute); err != nil {
+		log.Fatal(err)
+	}
+
+	if w, err := cli.GetEdge(ctx, "a", "b"); err == nil {
+		log.Printf("weight of a->b: %f\n", w)
+	}
+
+	if err := cli.DeleteEdge(ctx, "a", "b"); err != nil {
+		log.Fatal(err)
+	}
+
+	// If edge is deleted, weight of edge is 0
+	if w, err := cli.GetEdge(ctx, "a", "b"); err != nil {
+		log.Printf("Error: %s\n", err)
+	} else {
+		log.Printf("weight of a->b: %f\n", w)
 	}
 
 	/*

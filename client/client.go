@@ -81,6 +81,16 @@ func (l *Lantern) PutVertex(ctx context.Context, key string, value interface{}, 
 	return nil
 }
 
+func (l *Lantern) DeleteVertex(ctx context.Context, key string) error {
+	request := &pb.DeleteVertexRequest{
+		Key: key,
+	}
+	if _, err := l.client.DeleteVertex(ctx, request); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (l *Lantern) GetEdge(ctx context.Context, tail string, head string) (float32, error) {
 	result, err := l.client.GetEdge(ctx, &pb.GetEdgeRequest{Tail: tail, Head: head})
 	if err != nil {
@@ -100,7 +110,25 @@ func (l *Lantern) AddEdge(ctx context.Context, tail string, head string, weight 
 			},
 		},
 	}
-	if _, err := l.client.PutEdge(ctx, request); err != nil {
+	if _, err := l.client.AddEdge(ctx, request); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (l *Lantern) PutEdge(ctx context.Context, tail string, head string, weight float32, ttl time.Duration) error {
+	if err := l.DeleteEdge(ctx, tail, head); err != nil {
+		return err
+	}
+	return l.AddEdge(ctx, tail, head, weight, ttl)
+}
+
+func (l *Lantern) DeleteEdge(ctx context.Context, tail string, head string) error {
+	request := &pb.DeleteEdgeRequest{
+		Tail: tail,
+		Head: head,
+	}
+	if _, err := l.client.DeleteEdge(ctx, request); err != nil {
 		return err
 	}
 	return nil
