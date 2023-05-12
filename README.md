@@ -9,7 +9,7 @@ There are so many graph-based database, but almost all of them is not suitable f
 We've just needed a simple graph structure, but not highly theorized algorithms such as ontology, global shortest path, etc.
 Lantern is a in-memory `key-vertex-store` for real-time graph applications. It behaves like a key-value store, but it can explore neighbor vertices(values) based on graph structure.
 
-Lantern is a streaming database. All vertices or edges will be expired as time passes, just like a relationship in the real world.
+Lantern is a online-transactional data store. All vertices or edges will be expired as time passes, just like a relationship in the real world.
 
 ## Related Projects
 - [lantern](https://github.com/anaregdesign/lantern): this repository
@@ -120,6 +120,10 @@ illuminate spt_cost a 2 2 false
 
 
 If you set a target as `spt_relevance`, lantern will calculate shortest-path tree with inverse of weight `1 / weight`.
+
+```shell
+illuminate spt_relevance a 2 2 false
+```
 
 ![Asset 4](https://github.com/anaregdesign/lantern/assets/6128022/6ea9c9a0-0a11-4d72-809c-0ef30f3f0d57)
 
