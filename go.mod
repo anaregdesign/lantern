@@ -3,7 +3,7 @@ module github.com/anaregdesign/lantern
 go 1.20
 
 require (
-	github.com/anaregdesign/lantern-proto v0.4.0
+	github.com/anaregdesign/lantern-proto v0.4.1
 	github.com/anaregdesign/papaya v0.4.0
 	github.com/google/wire v0.5.0
 	google.golang.org/grpc v1.53.0

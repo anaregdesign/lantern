@@ -117,10 +117,20 @@ func (l *Lantern) AddEdge(ctx context.Context, tail string, head string, weight 
 }
 
 func (l *Lantern) PutEdge(ctx context.Context, tail string, head string, weight float32, ttl time.Duration) error {
-	if err := l.DeleteEdge(ctx, tail, head); err != nil {
+	request := &pb.PutEdgeRequest{
+		Edges: []*pb.Edge{
+			{
+				Tail:       tail,
+				Head:       head,
+				Weight:     weight,
+				Expiration: timestamppb.New(time.Now().Add(ttl)),
+			},
+		},
+	}
+	if _, err := l.client.PutEdge(ctx, request); err != nil {
 		return err
 	}
-	return l.AddEdge(ctx, tail, head, weight, ttl)
+	return nil
 }
 
 func (l *Lantern) DeleteEdge(ctx context.Context, tail string, head string) error {

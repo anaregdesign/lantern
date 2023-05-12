@@ -1,5 +1,5 @@
-github.com/anaregdesign/lantern-proto v0.4.0 h1:SVmCZBMiGtLphgGa675T5QqK1IlgE216uLt33TM+oAc=
-github.com/anaregdesign/lantern-proto v0.4.0/go.mod h1:jHLbAbH9lafitiL2MTnOiGQaNhd9ZdqzjCfWtyZsxTg=
+github.com/anaregdesign/lantern-proto v0.4.1 h1:KeZhYeXhudg6j6N0q0XpXGCyCTGubNB7Uxft3TpPte4=
+github.com/anaregdesign/lantern-proto v0.4.1/go.mod h1:jHLbAbH9lafitiL2MTnOiGQaNhd9ZdqzjCfWtyZsxTg=
 github.com/anaregdesign/papaya v0.4.0 h1:X7l40L6wGjZO6f9IEWJK/VrI9IsX3Ufa354NkCmp0rI=
 github.com/anaregdesign/papaya v0.4.0/go.mod h1:vmu1ypaKEUAM5COG6TBrJs5NXBOEkhfKcXckhc7VOA4=
 github.com/golang/glog v1.0.0 h1:nfP3RFugxnNRyKgeWd4oI1nYvXpxrx8ck8ZrcizshdQ=
