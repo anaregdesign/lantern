@@ -18,6 +18,13 @@ Lantern is a streaming database. All vertices or edges will be expired as time p
 - [papaya](https://github.com/anaregdesign/papaya): Core algorithm and utilities for lantern
 
 ## Features
+
+![Asset 1](https://github.com/anaregdesign/lantern/assets/6128022/3c685f41-e503-4e07-81aa-2c2a0ea94ba6)
+![Asset 2](https://github.com/anaregdesign/lantern/assets/6128022/32391225-d8f9-4fd8-98f4-57e1fc1d86be)
+![Asset 3](https://github.com/anaregdesign/lantern/assets/6128022/30c614d1-d4ac-4136-982f-8464bda8797a)
+![Asset 4](https://github.com/anaregdesign/lantern/assets/6128022/6ea9c9a0-0a11-4d72-809c-0ef30f3f0d57)
+
+
 ### As a key-value store
 - [x] Get a vertex by key
 - [x] Put a vertex by key with TTL
