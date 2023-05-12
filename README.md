@@ -3,7 +3,7 @@
 
 
 In recent years, many applications, recommender, fraud detection, SNS ... are based on a graph structure. 
-And these applications have got more real-time requirements.
+And these applications have to be real-time, because they are used by users in real-time.
 There are so many graph-based database, but almost all of them is not suitable for real-time applications or backend for web apps.
 
 We've just needed a simple graph structure, but not highly theorized algorithms such as ontology, global shortest path, etc.
