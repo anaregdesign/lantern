@@ -11,12 +11,6 @@ Lantern is a in-memory `key-vertex-store` for real-time graph applications. It b
 
 Lantern is a streaming database. All vertices or edges will be expired as time passes, just like a relationship in the real world.
 
-## Getting Started
-### Run lantern-server on local
-```shell
-docker run -p 6380:6380 ghcr.io/anaregdesign/lantern:v0.4.2
-```
-
 ## Features
 ### As a key-value store
 - [x] Get a vertex by key
@@ -98,6 +92,12 @@ $ lantern-cli --host localhost --port 6380
 ...
 > illuminate mst_cost a 3 1 false
 ...
+```
+
+## Getting Started
+### Run lantern-server on local
+```shell
+docker run -p 6380:6380 ghcr.io/anaregdesign/lantern:v0.4.2
 ```
 
 ### Install lantern-cli
