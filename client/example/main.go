@@ -119,7 +119,7 @@ func main() {
 
 	/*
 		AddEdge:
-			In Lantern, all edges are additive.
+			In Lantern, all edges are additive. So this method is not idempotent.
 			For example, if you add an edge with a weight of 1 between A and B twice,
 			the weight of the edge will be 2.
 		    But each weight will expire with TTL independently.
@@ -192,6 +192,25 @@ func main() {
 	} else {
 		log.Printf("weight of a->b: %f\n", w)
 	}
+
+	/*
+		PutEdge:
+			PutEdge is idempotent version of AddEdge.
+	*/
+	// put edge a->b with a weight 1 and TTL 1 second twice
+	if err := cli.PutEdge(ctx, "a", "b", 1, 1*time.Second); err != nil {
+		log.Fatal(err)
+	}
+	if err := cli.PutEdge(ctx, "a", "b", 1, 1*time.Second); err != nil {
+		log.Fatal(err)
+	}
+
+	// weight of edge a->b is 1
+	if weight, err := cli.GetEdge(ctx, "a", "b"); err == nil {
+		log.Printf("weight at t=1: %f\n", weight)
+	}
+
+	time.Sleep(1 * time.Second)
 
 	/*
 		Illuminate:

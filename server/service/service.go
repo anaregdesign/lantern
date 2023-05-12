@@ -74,6 +74,7 @@ func (s *LanternService) Illuminate(ctx context.Context, request *IlluminateRequ
 			Vertices: vertices,
 			Edges:    edges,
 		},
+		Status: Status_STATUS_OK,
 	}, nil
 }
 
@@ -82,6 +83,7 @@ func (s *LanternService) GetVertex(ctx context.Context, request *GetVertexReques
 	if v, ok := s.cache.GetVertex(request.GetKey()); ok {
 		return &GetVertexResponse{
 			Vertex: v,
+			Status: Status_STATUS_OK,
 		}, nil
 	}
 	return nil, status.Error(404, "Vertex not found")
@@ -92,12 +94,12 @@ func (s *LanternService) PutVertex(ctx context.Context, request *PutVertexReques
 	for _, v := range request.Vertices {
 		s.cache.AddVertexWithExpiration(v.Key, v, v.Expiration.AsTime())
 	}
-	return &PutVertexResponse{}, nil
+	return &PutVertexResponse{Status: Status_STATUS_OK}, nil
 }
 func (s *LanternService) DeleteVertex(ctx context.Context, in *DeleteVertexRequest) (*DeleteVertexResponse, error) {
 	log.Printf("DeleteVertex: %v", in)
 	s.cache.DeleteVertex(in.GetKey())
-	return &DeleteVertexResponse{}, nil
+	return &DeleteVertexResponse{Status: Status_STATUS_OK}, nil
 }
 
 func (s *LanternService) GetEdge(ctx context.Context, request *GetEdgeRequest) (*GetEdgeResponse, error) {
@@ -126,7 +128,16 @@ func (s *LanternService) AddEdge(ctx context.Context, request *AddEdgeRequest) (
 	for _, e := range request.Edges {
 		s.cache.AddEdgeWithExpiration(e.Tail, e.Head, e.Weight, e.Expiration.AsTime())
 	}
-	return &AddEdgeResponse{}, nil
+	return &AddEdgeResponse{Status: Status_STATUS_OK}, nil
+}
+
+func (s *LanternService) PutEdge(ctx context.Context, request *PutEdgeRequest) (*PutEdgeResponse, error) {
+	log.Printf("PutEdge: %v", request)
+	for _, e := range request.Edges {
+		s.cache.DeleteEdge(e.Tail, e.Head)
+		s.cache.AddEdgeWithExpiration(e.Tail, e.Head, e.Weight, e.Expiration.AsTime())
+	}
+	return &PutEdgeResponse{Status: Status_STATUS_OK}, nil
 }
 
 type LanternServer struct {
