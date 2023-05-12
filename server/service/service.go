@@ -81,6 +81,17 @@ func (s *LanternService) Illuminate(ctx context.Context, request *IlluminateRequ
 func (s *LanternService) GetVertex(ctx context.Context, request *GetVertexRequest) (*GetVertexResponse, error) {
 	log.Printf("GetVertex: %v", request)
 	if v, ok := s.cache.GetVertex(request.GetKey()); ok {
+		if v == nil {
+			return &GetVertexResponse{
+				Vertex: &Vertex{
+					Key: request.GetKey(),
+					Value: &Vertex_Nil{
+						Nil: true,
+					},
+				},
+				Status: Status_STATUS_OK,
+			}, nil
+		}
 		return &GetVertexResponse{
 			Vertex: v,
 			Status: Status_STATUS_OK,
