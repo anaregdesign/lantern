@@ -11,6 +11,12 @@ Lantern is a in-memory `key-vertex-store` for real-time graph applications. It b
 
 Lantern is a streaming database. All vertices or edges will be expired as time passes, just like a relationship in the real world.
 
+## Related Projects
+- [lantern](https://github.com/anaregdesign/lantern): this repository
+- [lantern-proto](https://github.com/anaregdesign/lantern-proto): protobuf definitions for lantern
+- [lantern-cli](https://github.com/anaregdesign/lantern-cli): CLI for lantern
+- [papaya](https://github.com/anaregdesign/papaya): Core algorithm and utilities for lantern
+
 ## Features
 ### As a key-value store
 - [x] Get a vertex by key
