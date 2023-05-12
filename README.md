@@ -2,7 +2,7 @@
 ![lantern](https://github.com/anaregdesign/lantern/assets/6128022/d0484704-707d-4dcb-b780-4bbd318c444c)
 
 
-In recent years, many applications, recommender, fraud detection, are based on a graph structure. 
+In recent years, many applications, recommender, fraud detection, SNS ... are based on a graph structure. 
 And these applications have got more real-time requirements.
 There are so many graph-based database, but almost all of them is not suitable for real-time applications or backend for web apps.
 
@@ -15,21 +15,6 @@ Lantern is a streaming database. All vertices or edges will be expired as time p
 ### Run lantern-server on local
 ```shell
 docker run -p 6380:6380 ghcr.io/anaregdesign/lantern:v0.4.2
-```
-
-### Install lantern-cli
-Binaries are available on [releases](https://github.com/anaregdesign/lantern-cli/releases) page.
-
-### Build lantern-cli manually
-```shell
-git clone https://github.com/anaregdesign/lantern-cli.git
-cd lantern-cli
-go build
-```
-
-### Connect to server with CLI
-```shell
-$ lantern-cli --host localhost --port 6380
 ```
 
 ## Features
@@ -113,6 +98,21 @@ $ lantern-cli --host localhost --port 6380
 ...
 > illuminate mst_cost a 3 1 false
 ...
+```
+
+### Install lantern-cli
+Binaries are available on [releases](https://github.com/anaregdesign/lantern-cli/releases) page.
+
+### Build lantern-cli manually
+```shell
+git clone https://github.com/anaregdesign/lantern-cli.git
+cd lantern-cli
+go build
+```
+
+### Connect to server with CLI
+```shell
+$ lantern-cli --host localhost --port 6380
 ```
 
 ## SDK
