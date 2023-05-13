@@ -1,4 +1,4 @@
-# lantern: key-vertex-store
+# lantern: An graph based key-vertex-store
 ![lantern](https://github.com/anaregdesign/lantern/assets/6128022/d0484704-707d-4dcb-b780-4bbd318c444c)
 
 
