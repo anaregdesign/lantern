@@ -61,8 +61,6 @@ put vertex <key:string> <value:string> [<ttl:int>]
 put edge <tail:string> <head:string> <weight:float> [<ttl:int>]
 ```
 
-```shell
-
 And we can get vertices and edges with `get` command.
 
 ```shell
