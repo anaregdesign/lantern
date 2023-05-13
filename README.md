@@ -112,7 +112,7 @@ You can explore shortest-path tree from a seed vertex with `illuminate spt_cost`
 If you set a target as `spt_cost`, lantern will calculate shortest-path tree with a weight of edges.
 
 ```shell
-illuminate spt_cost a 2 2 false
+> illuminate spt_cost a 2 2 false
 {
 	"vertices": {
 		...
@@ -137,7 +137,7 @@ illuminate spt_cost a 2 2 false
 If you set a target as `spt_relevance`, lantern will calculate shortest-path tree with inverse of weight `1 / weight`.
 
 ```shell
-illuminate spt_relevance a 2 2 false
+> illuminate spt_relevance a 2 2 false
 
 {
 	"vertices": {
