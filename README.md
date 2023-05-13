@@ -102,11 +102,15 @@ e.g.
 Then we got seed vertex `a`, its adjacent vertex `b` and weight of the edge `a -> b` 1.0.
 
 
-### Exploring graph structure: Shortest-path tree
+### Exploring graph structure: Extract subgraph
 Let's put more vertices and edges like this.
 
 ![Asset 6](https://github.com/anaregdesign/lantern/assets/6128022/c1a35db5-a230-4b66-a24f-372ded1f814c)
 
+![Asset 9](https://github.com/anaregdesign/lantern/assets/6128022/486e892e-a3c3-4cf3-bcb7-501db6cfed13)
+
+
+### Exploring graph structure: Shortest-path tree
 You can explore shortest-path tree from a seed vertex with `illuminate spt_cost` or `illuminate spt_relevance` command.
 
 If you set a target as `spt_cost`, lantern will calculate shortest-path tree with a weight of edges.
