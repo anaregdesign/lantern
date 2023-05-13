@@ -113,6 +113,23 @@ If you set a target as `spt_cost`, lantern will calculate shortest-path tree wit
 
 ```shell
 illuminate spt_cost a 2 2 false
+{
+	"vertices": {
+		...
+	},
+	"edges": {
+		"a": {
+			"b": 1
+		},
+		"b": {
+			"c": 1
+		},
+		"c": {
+			"d": 1
+		}
+	}
+}
+
 ```
 
 ![Asset 7](https://github.com/anaregdesign/lantern/assets/6128022/14843e9f-53b3-4bb9-9dd6-51c60f020aff)
@@ -121,6 +138,21 @@ If you set a target as `spt_relevance`, lantern will calculate shortest-path tre
 
 ```shell
 illuminate spt_relevance a 2 2 false
+
+{
+	"vertices": {
+		...
+	},
+	"edges": {
+		"a": {
+			"b": 1,
+			"c": 3
+		},
+		"b": {
+			"d": 4
+		}
+	}
+}
 ```
 
 ![Asset 8](https://github.com/anaregdesign/lantern/assets/6128022/4c5d6606-5266-4df9-8a8d-7a617e3a672a)
