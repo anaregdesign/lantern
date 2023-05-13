@@ -38,8 +38,7 @@ go build
 ### Put vertices and edges
 So, let's put simple graph like this into lantern. 
 
-
-![Asset 1](https://github.com/anaregdesign/lantern/assets/6128022/3c685f41-e503-4e07-81aa-2c2a0ea94ba6)
+![Asset 5](https://github.com/anaregdesign/lantern/assets/6128022/bdac71a9-d860-4a27-8bb7-3c5442d8d5f4)
 
 We can put vertices and edges with `put` command.
 
@@ -106,7 +105,7 @@ Then we got seed vertex `a`, its adjacent vertex `b` and weight of the edge `a -
 ### Exploring graph structure: Shortest-path tree
 Let's put more vertices and edges like this.
 
-![Asset 2](https://github.com/anaregdesign/lantern/assets/6128022/32391225-d8f9-4fd8-98f4-57e1fc1d86be)
+![Asset 6](https://github.com/anaregdesign/lantern/assets/6128022/c1a35db5-a230-4b66-a24f-372ded1f814c)
 
 You can explore shortest-path tree from a seed vertex with `illuminate spt_cost` or `illuminate spt_relevance` command.
 
@@ -116,8 +115,7 @@ If you set a target as `spt_cost`, lantern will calculate shortest-path tree wit
 illuminate spt_cost a 2 2 false
 ```
 
-![Asset 3](https://github.com/anaregdesign/lantern/assets/6128022/30c614d1-d4ac-4136-982f-8464bda8797a)
-
+![Asset 7](https://github.com/anaregdesign/lantern/assets/6128022/14843e9f-53b3-4bb9-9dd6-51c60f020aff)
 
 If you set a target as `spt_relevance`, lantern will calculate shortest-path tree with inverse of weight `1 / weight`.
 
@@ -125,8 +123,7 @@ If you set a target as `spt_relevance`, lantern will calculate shortest-path tre
 illuminate spt_relevance a 2 2 false
 ```
 
-![Asset 4](https://github.com/anaregdesign/lantern/assets/6128022/6ea9c9a0-0a11-4d72-809c-0ef30f3f0d57)
-
+![Asset 8](https://github.com/anaregdesign/lantern/assets/6128022/4c5d6606-5266-4df9-8a8d-7a617e3a672a)
 
 ## SDK
 ### Golang
