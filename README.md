@@ -4,12 +4,14 @@
 
 In recent years, many applications, recommender, fraud detection, SNS ... are based on a graph structure. 
 And these applications have got to be more and more real-time and dynamic.
-There are so many graph-based database, but almost all of them is not suitable for real-time applications or backend for web apps.
-
+There are so many graph-based database, but almost all of them are not optimized for online applications or backend for web apps.
 We've just needed a simple graph structure, but not highly theorized algorithms such as ontology, global shortest path, etc.
-Lantern is a in-memory `key-vertex-store` for real-time graph applications. It behaves like a key-value store, but it can explore neighbor vertices(values) based on graph structure.
+
+Lantern is a in-memory `key-vertex-store` which is optimized for online applications. It behaves like a key-value store, but it can explore neighbor vertices(values) based on graph structure.
 
 Lantern is a online-transactional data store. All vertices or edges will be expired as time passes, just like a relationship in the real world.
+
+Lantern is a grpc-based application. We can access lantern from any languages which supports grpc.
 
 ## Related Projects
 - [lantern](https://github.com/anaregdesign/lantern): this repository
@@ -51,6 +53,15 @@ OK (768.012µs)
 > put edge a b 1
 OK (642.748µs)
 ```
+You know, `put vertex` command takes 3 arguments, `key`, `value` and `ttl`. `ttl` is optional. If you don't set `ttl`, lantern-cli will set `ttl` to 1 year.
+And `put edge` command takes 4 arguments, `tail`, `head`, `weight` and `ttl`. `ttl` is optional, too.
+
+```shell
+put vertex <key:string> <value:string> [<ttl:int>]
+put edge <tail:string> <head:string> <weight:float> [<ttl:int>]
+```
+
+```shell
 
 And we can get vertices and edges with `get` command.
 
@@ -61,6 +72,12 @@ OK (768.012µs)
 > get edge a b
 1.000000
 OK (591.764µs)
+```
+`get vertex` command takes 1 argument, `key`. And `get edge` command takes 2 arguments, `tail` and `head`.
+
+```shell
+get vertex <key:string>
+get edge <tail:string> <head:string>
 ```
 
 If you want to explore neighbor vertices, use `illuminate neighbor` command. 
@@ -77,7 +94,7 @@ illuminate neighbor <seed:string> <step:int> <k:int> <tfidf:bool>
 
 e.g.
 ```shell
-> illuminate neighbor a 3 1 false
+> illuminate neighbor a 1 1 false
 {
     "vertices": {
         "a": {
@@ -107,11 +124,31 @@ Let's put more vertices and edges like this.
 
 ![Asset 6](https://github.com/anaregdesign/lantern/assets/6128022/c1a35db5-a230-4b66-a24f-372ded1f814c)
 
+`illuminate` command extracts subgraph from whole graph.
+
+Once you set `step` to 1, you can explore subgraph, seed vertex and its adjacent vertices and its edges.
+
+```shell
+> illuminate neighbor a 1 2 false
+{
+	"vertices": {
+		...
+	},
+	"edges": {
+		"a": {
+			"b": 1,
+			"c": 1
+		}
+	}
+}
+```
 ![Asset 9](https://github.com/anaregdesign/lantern/assets/6128022/486e892e-a3c3-4cf3-bcb7-501db6cfed13)
 
 
-### Exploring graph structure: Shortest-path tree
-You can explore shortest-path tree from a seed vertex with `illuminate spt_cost` or `illuminate spt_relevance` command.
+### Exploring graph structure: shortest path tree
+First parameter of `illuminate` can be `neighbor`, `spt_cost`, `spt_relevance`, `mst_cost` or `mst_relevance`. And `spt` means shortest path tree, mst means minimum spanning tree.
+
+So, you can explore shortest-path tree from a seed vertex with `illuminate spt_cost` or `illuminate spt_relevance` command.
 
 If you set a target as `spt_cost`, lantern will calculate shortest-path tree with a weight of edges.
 
