@@ -20,7 +20,7 @@ Lantern is a grpc-based application. We can access lantern from any languages wh
 - [papaya](https://github.com/anaregdesign/papaya): Core algorithm and utilities for lantern
 
 ## Example
-### Running lantern-server
+### Run lantern-server
 We can run lantern-server with docker. Kick the following command and lantern-server will be running on `localhost:6380`.
 ```shell
 docker run -p 6380:6380 ghcr.io/anaregdesign/lantern:v0.4.2
