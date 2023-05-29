@@ -2,12 +2,12 @@
 ![lantern](https://github.com/anaregdesign/lantern/assets/6128022/d0484704-707d-4dcb-b780-4bbd318c444c)
 
 
-In recent years, many applications, recommender, fraud detection, SNS ... are based on a graph structure. 
+In recent years, many applications, recommender, fraud detection, social media ... are based on a graph structure. 
 And these applications have got to be more and more real-time and dynamic.
-There are so many graph-based database, but almost all of them are not optimized for online applications or backend for web apps.
+There are so many graph-based database, and most of them are not optimized for online applications or backend for web apps.
 We've just needed a simple graph structure, but not highly theorized algorithms such as ontology, global shortest path, etc.
 
-Lantern is a in-memory `key-vertex-store` which is optimized for online applications. It behaves like a key-value store, but it can explore neighbor vertices(values) based on graph structure.
+Lantern is a in-memory `key-vertex-store` which is optimized for online applications. It behaves like a key-value store, and it can explore neighbor vertices(values) based on graph structure.
 
 Lantern is a online-transactional data store. All vertices or edges will be expired as time passes, just like a relationship in the real world.
 
