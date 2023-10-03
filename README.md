@@ -13,6 +13,7 @@ Lantern is a online-transactional data store. All vertices or edges will be expi
 
 Lantern is a grpc-based application. We can access lantern from any languages which supports grpc.
 
+
 ## Related Projects
 - [lantern](https://github.com/anaregdesign/lantern): this repository
 - [lantern-proto](https://github.com/anaregdesign/lantern-proto): protobuf definitions for lantern
