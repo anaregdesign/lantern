@@ -70,6 +70,15 @@ func (v *ValidationInterceptor) validate(req any) error {
 	switch r := req.(type) {
 	case *pb.GetVertexRequest:
 		return v.checkKey("key", r.GetKey())
+	case *pb.GetVerticesRequest:
+		if err := v.checkBatch(len(r.GetKeys())); err != nil {
+			return err
+		}
+		for i, k := range r.GetKeys() {
+			if err := v.checkKey(fmt.Sprintf("keys[%d]", i), k); err != nil {
+				return err
+			}
+		}
 	case *pb.DeleteVertexRequest:
 		return v.checkKey("key", r.GetKey())
 	case *pb.DeleteVerticesRequest:
@@ -98,6 +107,21 @@ func (v *ValidationInterceptor) validate(req any) error {
 			return err
 		}
 		return v.checkKey("head", r.GetHead())
+	case *pb.GetEdgesRequest:
+		if err := v.checkBatch(len(r.GetEdges())); err != nil {
+			return err
+		}
+		for i, e := range r.GetEdges() {
+			if e == nil {
+				return status.Errorf(codes.InvalidArgument, "edges[%d] is nil", i)
+			}
+			if err := v.checkKey(fmt.Sprintf("edges[%d].tail", i), e.GetTail()); err != nil {
+				return err
+			}
+			if err := v.checkKey(fmt.Sprintf("edges[%d].head", i), e.GetHead()); err != nil {
+				return err
+			}
+		}
 	case *pb.DeleteEdgeRequest:
 		if err := v.checkKey("tail", r.GetTail()); err != nil {
 			return err

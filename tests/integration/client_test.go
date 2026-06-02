@@ -152,3 +152,55 @@ func TestLantern_Illuminate(t *testing.T) {
 		t.Errorf("Illuminate missing edge a->b (got %v)", g.Edges)
 	}
 }
+
+func TestLantern_GetVertices_BatchPartialMiss(t *testing.T) {
+	l, cleanup := newInProcessClient(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := l.PutVertex(ctx, "a", int64(1), time.Minute); err != nil {
+		t.Fatalf("PutVertex a: %v", err)
+	}
+	if err := l.PutVertex(ctx, "b", "two", time.Minute); err != nil {
+		t.Fatalf("PutVertex b: %v", err)
+	}
+
+	found, missing, err := l.GetVertices(ctx, []string{"a", "b", "missing"})
+	if err != nil {
+		t.Fatalf("GetVertices: %v", err)
+	}
+	if len(found) != 2 {
+		t.Fatalf("found = %d, want 2", len(found))
+	}
+	if len(missing) != 1 || missing[0] != "missing" {
+		t.Errorf("missing = %v, want [missing]", missing)
+	}
+}
+
+func TestLantern_GetEdges_BatchPartialMiss(t *testing.T) {
+	l, cleanup := newInProcessClient(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := l.AddEdge(ctx, "a", "b", 1.5, time.Minute); err != nil {
+		t.Fatalf("AddEdge: %v", err)
+	}
+
+	found, missing, err := l.GetEdges(ctx, []client.EdgeRef{
+		{Tail: "a", Head: "b"},
+		{Tail: "x", Head: "y"},
+	})
+	if err != nil {
+		t.Fatalf("GetEdges: %v", err)
+	}
+	if len(found) != 1 || found[0].Tail != "a" || found[0].Head != "b" {
+		t.Fatalf("found = %v, want one a->b", found)
+	}
+	if len(missing) != 1 || missing[0] != (client.EdgeRef{Tail: "x", Head: "y"}) {
+		t.Errorf("missing = %v, want [{x y}]", missing)
+	}
+}

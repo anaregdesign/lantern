@@ -127,6 +127,33 @@ func local_request_LanternService_GetVertex_0(ctx context.Context, marshaler run
 	return msg, metadata, err
 }
 
+func request_LanternService_GetVertices_0(ctx context.Context, marshaler runtime.Marshaler, client LanternServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq GetVerticesRequest
+		metadata runtime.ServerMetadata
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if req.Body != nil {
+		_, _ = io.Copy(io.Discard, req.Body)
+	}
+	msg, err := client.GetVertices(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+}
+
+func local_request_LanternService_GetVertices_0(ctx context.Context, marshaler runtime.Marshaler, server LanternServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq GetVerticesRequest
+		metadata runtime.ServerMetadata
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	msg, err := server.GetVertices(ctx, &protoReq)
+	return msg, metadata, err
+}
+
 func request_LanternService_PutVertex_0(ctx context.Context, marshaler runtime.Marshaler, client LanternServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
 		protoReq PutVertexRequest
@@ -272,6 +299,33 @@ func local_request_LanternService_GetEdge_0(ctx context.Context, marshaler runti
 		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "head", err)
 	}
 	msg, err := server.GetEdge(ctx, &protoReq)
+	return msg, metadata, err
+}
+
+func request_LanternService_GetEdges_0(ctx context.Context, marshaler runtime.Marshaler, client LanternServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq GetEdgesRequest
+		metadata runtime.ServerMetadata
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if req.Body != nil {
+		_, _ = io.Copy(io.Discard, req.Body)
+	}
+	msg, err := client.GetEdges(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+}
+
+func local_request_LanternService_GetEdges_0(ctx context.Context, marshaler runtime.Marshaler, server LanternServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq GetEdgesRequest
+		metadata runtime.ServerMetadata
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	msg, err := server.GetEdges(ctx, &protoReq)
 	return msg, metadata, err
 }
 
@@ -457,6 +511,26 @@ func RegisterLanternServiceHandlerServer(ctx context.Context, mux *runtime.Serve
 		}
 		forward_LanternService_GetVertex_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodPost, pattern_LanternService_GetVertices_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/graph.v1.LanternService/GetVertices", runtime.WithHTTPPathPattern("/v1/vertices/get"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_LanternService_GetVertices_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_LanternService_GetVertices_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 	mux.Handle(http.MethodPut, pattern_LanternService_PutVertex_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -536,6 +610,26 @@ func RegisterLanternServiceHandlerServer(ctx context.Context, mux *runtime.Serve
 			return
 		}
 		forward_LanternService_GetEdge_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
+	mux.Handle(http.MethodPost, pattern_LanternService_GetEdges_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/graph.v1.LanternService/GetEdges", runtime.WithHTTPPathPattern("/v1/edges/get"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_LanternService_GetEdges_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_LanternService_GetEdges_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
 	mux.Handle(http.MethodPost, pattern_LanternService_AddEdge_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
@@ -691,6 +785,23 @@ func RegisterLanternServiceHandlerClient(ctx context.Context, mux *runtime.Serve
 		}
 		forward_LanternService_GetVertex_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodPost, pattern_LanternService_GetVertices_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/graph.v1.LanternService/GetVertices", runtime.WithHTTPPathPattern("/v1/vertices/get"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_LanternService_GetVertices_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_LanternService_GetVertices_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 	mux.Handle(http.MethodPut, pattern_LanternService_PutVertex_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -758,6 +869,23 @@ func RegisterLanternServiceHandlerClient(ctx context.Context, mux *runtime.Serve
 			return
 		}
 		forward_LanternService_GetEdge_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
+	mux.Handle(http.MethodPost, pattern_LanternService_GetEdges_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/graph.v1.LanternService/GetEdges", runtime.WithHTTPPathPattern("/v1/edges/get"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_LanternService_GetEdges_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_LanternService_GetEdges_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
 	mux.Handle(http.MethodPost, pattern_LanternService_AddEdge_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
@@ -833,10 +961,12 @@ func RegisterLanternServiceHandlerClient(ctx context.Context, mux *runtime.Serve
 var (
 	pattern_LanternService_Illuminate_0     = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "illuminate", "seed"}, ""))
 	pattern_LanternService_GetVertex_0      = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "vertices", "key"}, ""))
+	pattern_LanternService_GetVertices_0    = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "vertices", "get"}, ""))
 	pattern_LanternService_PutVertex_0      = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "vertices"}, ""))
 	pattern_LanternService_DeleteVertex_0   = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "vertices", "key"}, ""))
 	pattern_LanternService_DeleteVertices_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "vertices", "delete"}, ""))
 	pattern_LanternService_GetEdge_0        = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 1, 0, 4, 1, 5, 3}, []string{"v1", "edges", "tail", "head"}, ""))
+	pattern_LanternService_GetEdges_0       = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "edges", "get"}, ""))
 	pattern_LanternService_AddEdge_0        = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "edges", "add"}, ""))
 	pattern_LanternService_PutEdge_0        = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "edges", "put"}, ""))
 	pattern_LanternService_DeleteEdge_0     = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 1, 0, 4, 1, 5, 3}, []string{"v1", "edges", "tail", "head"}, ""))
@@ -846,10 +976,12 @@ var (
 var (
 	forward_LanternService_Illuminate_0     = runtime.ForwardResponseMessage
 	forward_LanternService_GetVertex_0      = runtime.ForwardResponseMessage
+	forward_LanternService_GetVertices_0    = runtime.ForwardResponseMessage
 	forward_LanternService_PutVertex_0      = runtime.ForwardResponseMessage
 	forward_LanternService_DeleteVertex_0   = runtime.ForwardResponseMessage
 	forward_LanternService_DeleteVertices_0 = runtime.ForwardResponseMessage
 	forward_LanternService_GetEdge_0        = runtime.ForwardResponseMessage
+	forward_LanternService_GetEdges_0       = runtime.ForwardResponseMessage
 	forward_LanternService_AddEdge_0        = runtime.ForwardResponseMessage
 	forward_LanternService_PutEdge_0        = runtime.ForwardResponseMessage
 	forward_LanternService_DeleteEdge_0     = runtime.ForwardResponseMessage

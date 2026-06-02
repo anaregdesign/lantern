@@ -222,6 +222,30 @@ func (l *Lantern) DeleteVertices(ctx context.Context, keys []string) error {
 	return nil
 }
 
+// GetVertices reads a batch of vertices in one (or a few chunked) round
+// trips. Vertices present at call time are returned in found; keys that did
+// not exist (or had expired) are returned in missing. Order is unspecified;
+// callers should match by Vertex.Key. Automatically chunked to respect the
+// server's MaxBatchSize cap.
+func (l *Lantern) GetVertices(ctx context.Context, keys []string) (found []*Vertex, missing []string, err error) {
+	if len(keys) == 0 {
+		return nil, nil, nil
+	}
+	for _, chunk := range chunkSlice(keys, l.opts.batchChunkSize) {
+		cctx, cancel := l.applyTimeout(ctx)
+		resp, rerr := l.client.GetVertices(cctx, &pb.GetVerticesRequest{Keys: chunk})
+		cancel()
+		if rerr != nil {
+			return nil, nil, rerr
+		}
+		for _, v := range resp.GetVertices() {
+			found = append(found, (*Vertex)(v))
+		}
+		missing = append(missing, resp.GetMissing()...)
+	}
+	return found, missing, nil
+}
+
 // GetEdge fetches the edge weight (and any expiration) between tail and head.
 func (l *Lantern) GetEdge(ctx context.Context, tail string, head string) (*Edge, error) {
 	ctx, cancel := l.applyTimeout(ctx)
@@ -335,6 +359,36 @@ func (l *Lantern) DeleteEdges(ctx context.Context, refs []EdgeRef) error {
 		}
 	}
 	return nil
+}
+
+// GetEdges reads a batch of edges in one (or a few chunked) round trips.
+// Pairs present at call time are returned in found; pairs that did not exist
+// (or had expired) are returned in missing. Order is unspecified; callers
+// should match by (Edge.Tail, Edge.Head). Automatically chunked to respect
+// the server's MaxBatchSize cap.
+func (l *Lantern) GetEdges(ctx context.Context, refs []EdgeRef) (found []*Edge, missing []EdgeRef, err error) {
+	if len(refs) == 0 {
+		return nil, nil, nil
+	}
+	keys := make([]*pb.EdgeKey, 0, len(refs))
+	for _, r := range refs {
+		keys = append(keys, &pb.EdgeKey{Tail: r.Tail, Head: r.Head})
+	}
+	for _, chunk := range chunkSlice(keys, l.opts.batchChunkSize) {
+		cctx, cancel := l.applyTimeout(ctx)
+		resp, rerr := l.client.GetEdges(cctx, &pb.GetEdgesRequest{Edges: chunk})
+		cancel()
+		if rerr != nil {
+			return nil, nil, rerr
+		}
+		for _, e := range resp.GetEdges() {
+			found = append(found, (*Edge)(e))
+		}
+		for _, m := range resp.GetMissing() {
+			missing = append(missing, EdgeRef{Tail: m.GetTail(), Head: m.GetHead()})
+		}
+	}
+	return found, missing, nil
 }
 
 // Graph is the SDK-native representation of an Illuminate response. It mirrors

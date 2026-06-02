@@ -69,6 +69,20 @@ message GetVertexResponse {
   Vertex vertex = 1;
 }
 
+// GetVerticesRequest reads several vertices in one round trip. Subject to
+// the same MaxBatchSize / MaxKeyLen guard rails as the write RPCs.
+message GetVerticesRequest {
+  repeated string keys = 1;
+}
+
+message GetVerticesResponse {
+  // vertices contains every key that was present at the time of the call.
+  // Order is unspecified; clients should match by Vertex.key.
+  repeated Vertex vertices = 1;
+  // missing lists the requested keys that did not exist (or had expired).
+  repeated string missing = 2;
+}
+
 // PutVertexRequest writes vertices with upsert semantics: each Vertex.key
 // replaces any existing value at that key. Use the Vertex.expiration field
 // (absolute time) to control TTL.
@@ -115,6 +129,22 @@ message GetEdgeRequest {
 
 message GetEdgeResponse {
   Edge edge = 1;
+}
+
+// GetEdgesRequest reads several edges in one round trip. Subject to the
+// same MaxBatchSize / MaxKeyLen guard rails as the write RPCs.
+message GetEdgesRequest {
+  repeated EdgeKey edges = 1;
+}
+
+message GetEdgesResponse {
+  // edges contains every (tail, head) pair that was present at the time of
+  // the call. Order is unspecified; clients should match by (Edge.tail,
+  // Edge.head).
+  repeated Edge edges = 1;
+  // missing lists the requested (tail, head) pairs that did not exist (or
+  // had expired).
+  repeated EdgeKey missing = 2;
 }
 
 message DeleteEdgeRequest {
@@ -176,6 +206,14 @@ service LanternService {
     option (google.api.http) = {get: "/v1/vertices/{key}"};
   }
 
+  // GetVertices reads several vertices in one round trip.
+  rpc GetVertices(GetVerticesRequest) returns (GetVerticesResponse) {
+    option (google.api.http) = {
+      post: "/v1/vertices/get"
+      body: "*"
+    };
+  }
+
   rpc PutVertex(PutVertexRequest) returns (PutVertexResponse) {
     option (google.api.http) = {
       put: "/v1/vertices"
@@ -197,6 +235,14 @@ service LanternService {
 
   rpc GetEdge(GetEdgeRequest) returns (GetEdgeResponse) {
     option (google.api.http) = {get: "/v1/edges/{tail}/{head}"};
+  }
+
+  // GetEdges reads several edges in one round trip.
+  rpc GetEdges(GetEdgesRequest) returns (GetEdgesResponse) {
+    option (google.api.http) = {
+      post: "/v1/edges/get"
+      body: "*"
+    };
   }
 
   // AddEdge is non-idempotent (accumulates weight). POST per REST conventions.
