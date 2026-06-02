@@ -22,7 +22,8 @@ func TestCache_Clear(t *testing.T) {
 			},
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			tt.c.Clear()
 			if len(tt.c.cache) != 0 {
@@ -48,7 +49,8 @@ func TestCache_Count(t *testing.T) {
 			want: 1,
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.c.Count(); got != tt.want {
 				t.Errorf("Count() = %v, want %v", got, tt.want)
@@ -76,7 +78,8 @@ func TestCache_Delete(t *testing.T) {
 			args: args[string]{key: "a"},
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			tt.c.Delete(tt.args.key)
 		})
@@ -97,7 +100,8 @@ func TestCache_Flush(t *testing.T) {
 			},
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			tt.c.Flush()
 		})
@@ -137,7 +141,8 @@ func TestCache_Get(t *testing.T) {
 			want1: false,
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			got, got1 := tt.c.Get(tt.args.key)
 			if !reflect.DeepEqual(got, tt.want) {
@@ -170,7 +175,8 @@ func TestCache_Set(t *testing.T) {
 			args: args[string, int]{key: "a", value: 1},
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			tt.c.Put(tt.args.key, tt.args.value)
 		})
@@ -198,7 +204,8 @@ func TestCache_SetWithTTL(t *testing.T) {
 			args: args[string, int]{key: "a", value: 1, ttl: time.Second},
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			tt.c.PutWithTTL(tt.args.key, tt.args.value, tt.args.ttl)
 		})
@@ -229,7 +236,8 @@ func Test_volatile_IsExpired(t *testing.T) {
 			want: false,
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.v.IsExpired(); got != tt.want {
 				t.Errorf("IsExpired() = %v, want %v", got, tt.want)
@@ -259,7 +267,8 @@ func TestCache_Has(t *testing.T) {
 			want: true,
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.c.Has(tt.args.key); got != tt.want {
 				t.Errorf("Has() = %v, want %v", got, tt.want)

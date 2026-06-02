@@ -27,7 +27,8 @@ func TestNewTopic(t *testing.T) {
 			},
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			if got := NewTopic[int](tt.args.name); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("NewTopic() = %v, want %v", got, tt.want)
@@ -49,7 +50,8 @@ func TestTopic_Name(t1 *testing.T) {
 			want: "test",
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t1.Run(tt.name, func(t1 *testing.T) {
 			if got := tt.t.Name(); got != tt.want {
 				t1.Errorf("Name() = %v, want %v", got, tt.want)
@@ -68,14 +70,14 @@ func TestTopic_NewSubscription(t1 *testing.T) {
 	}
 	type testCase[T any] struct {
 		name string
-		t    Topic[T]
+		t    *Topic[T]
 		args args
 		want *Subscription[T]
 	}
 	tests := []testCase[int]{
 		{
 			name: "TestTopic_NewSubscription",
-			t:    *topic,
+			t:    topic,
 			args: args{
 				name:        "test",
 				concurrency: 8,
@@ -93,7 +95,8 @@ func TestTopic_NewSubscription(t1 *testing.T) {
 			},
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t1.Run(tt.name, func(t1 *testing.T) {
 			if got := tt.t.NewSubscription(tt.args.name, tt.args.concurrency, tt.args.interval, tt.args.ttl); got.name != tt.want.name {
 				t1.Errorf("NewSubscription() = %v, want %v", got, tt.want)
@@ -120,7 +123,8 @@ func TestTopic_Publish(t1 *testing.T) {
 			},
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t1.Run(tt.name, func(t1 *testing.T) {
 			tt.t.Publish(tt.args.body)
 		})
@@ -140,7 +144,8 @@ func TestTopic_Subscriptions(t1 *testing.T) {
 			want: map[string]*Subscription[int]{},
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t1.Run(tt.name, func(t1 *testing.T) {
 			if got := tt.t.Subscriptions(); !reflect.DeepEqual(got, tt.want) {
 				t1.Errorf("Subscriptions() = %v, want %v", got, tt.want)
@@ -173,7 +178,8 @@ func TestTopic_register(t1 *testing.T) {
 			},
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t1.Run(tt.name, func(t1 *testing.T) {
 			tt.t.register(tt.args.subscription)
 		})
@@ -204,7 +210,8 @@ func TestTopic_unregister(t1 *testing.T) {
 			},
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t1.Run(tt.name, func(t1 *testing.T) {
 			tt.t.unregister(tt.args.subscription)
 		})
