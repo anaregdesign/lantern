@@ -3,9 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"github.com/anaregdesign/lantern/sdks/go"
 	"log"
 	"time"
+
+	client "github.com/anaregdesign/lantern/sdks/go"
 )
 
 func main() {

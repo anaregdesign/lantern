@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anaregdesign/lantern/sdks/go"
+	client "github.com/anaregdesign/lantern/sdks/go"
 	"github.com/spf13/cobra"
 )
 
