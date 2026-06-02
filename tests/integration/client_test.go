@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"context"
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 	cachegraph "github.com/anaregdesign/lantern/core/cache/graph"
 	client "github.com/anaregdesign/lantern/sdks/go"
 	pb "github.com/anaregdesign/lantern/sdks/go/gen/graph/v1"
+	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -21,7 +23,13 @@ func newInProcessClient(t *testing.T) (*client.Lantern, func()) {
 	t.Helper()
 
 	lis := bufconn.Listen(1 << 16)
-	srv := grpc.NewServer()
+	vi := provider.NewValidationInterceptor(provider.ValidationLimits{
+		MaxKeyLen:         256,
+		MaxBatchSize:      1024,
+		IlluminateMaxStep: 32,
+		IlluminateMaxK:    256,
+	})
+	srv := grpc.NewServer(grpc.UnaryInterceptor(vi.UnaryServerInterceptor()))
 	svc := service.NewLanternService(cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute))
 	pb.RegisterLanternServiceServer(srv, svc)
 
@@ -202,5 +210,29 @@ func TestLantern_GetEdges_BatchPartialMiss(t *testing.T) {
 	}
 	if len(missing) != 1 || missing[0] != (client.EdgeRef{Tail: "x", Head: "y"}) {
 		t.Errorf("missing = %v, want [{x y}]", missing)
+	}
+}
+
+func TestLantern_ErrorSentinels(t *testing.T) {
+	l, cleanup := newInProcessClient(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// NotFound: GetVertex on missing key.
+	if _, err := l.GetVertex(ctx, "absent"); err == nil {
+		t.Fatal("expected error for missing key")
+	} else if !errors.Is(err, client.ErrNotFound) {
+		t.Errorf("want errors.Is(err, ErrNotFound); got %v", err)
+	}
+
+	// InvalidArgument: empty key trips ValidationInterceptor (checkKey).
+	err := l.PutVertex(ctx, "", "v", time.Minute)
+	if err == nil {
+		t.Fatal("expected error for empty key")
+	}
+	if !errors.Is(err, client.ErrInvalidArgument) {
+		t.Errorf("want errors.Is(err, ErrInvalidArgument); got %v", err)
 	}
 }

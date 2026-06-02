@@ -18,6 +18,17 @@ import (
 // (with codes.NotFound) is wrapped for callers that need the full detail.
 var ErrNotFound = errors.New("not found")
 
+// ErrInvalidArgument wraps gRPC codes.InvalidArgument responses from the
+// server (typically raised by the ValidationInterceptor for empty/oversized
+// keys or batch entries above MaxBatchSize). Use errors.Is to branch on
+// caller-fixable input errors vs. transient failures.
+var ErrInvalidArgument = errors.New("invalid argument")
+
+// ErrResourceExhausted wraps gRPC codes.ResourceExhausted responses (rate
+// limiter, server-side back-pressure). Callers that see this should back off
+// before retrying.
+var ErrResourceExhausted = errors.New("resource exhausted")
+
 // Edge is a thin type alias over the generated protobuf Edge that lets the
 // client return the full record (including Expiration) instead of just the
 // weight.
@@ -127,14 +138,21 @@ func (l *Lantern) applyTimeout(ctx context.Context) (context.Context, context.Ca
 	return context.WithTimeout(ctx, l.opts.defaultTimeout)
 }
 
-// wrapNotFound converts a codes.NotFound gRPC error into one that satisfies
-// errors.Is(err, ErrNotFound) while preserving the original detail.
-func wrapNotFound(err error) error {
+// wrapStatus converts a gRPC status error into one that satisfies
+// errors.Is against the matching SDK sentinel (ErrNotFound /
+// ErrInvalidArgument / ErrResourceExhausted) while preserving the original
+// gRPC error for callers that want full status detail.
+func wrapStatus(err error) error {
 	if err == nil {
 		return nil
 	}
-	if status.Code(err) == codes.NotFound {
+	switch status.Code(err) {
+	case codes.NotFound:
 		return errors.Join(ErrNotFound, err)
+	case codes.InvalidArgument:
+		return errors.Join(ErrInvalidArgument, err)
+	case codes.ResourceExhausted:
+		return errors.Join(ErrResourceExhausted, err)
 	}
 	return err
 }
@@ -146,7 +164,7 @@ func (l *Lantern) GetVertex(ctx context.Context, key string) (*Vertex, error) {
 	defer cancel()
 	result, err := l.client.GetVertex(ctx, &pb.GetVertexRequest{Key: key})
 	if err != nil {
-		return nil, wrapNotFound(err)
+		return nil, wrapStatus(err)
 	}
 	return (*Vertex)(result.Vertex), nil
 }
@@ -165,7 +183,7 @@ func (l *Lantern) PutVertexAt(ctx context.Context, key string, value any, expira
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
 	_, err = l.client.PutVertex(ctx, &pb.PutVertexRequest{Vertices: []*pb.Vertex{v}})
-	return err
+	return wrapStatus(err)
 }
 
 // PutVertices upserts a batch of vertices. Large batches are automatically
@@ -187,7 +205,7 @@ func (l *Lantern) PutVertices(ctx context.Context, inputs []VertexInput) error {
 		_, err := l.client.PutVertex(ctx, &pb.PutVertexRequest{Vertices: chunk})
 		cancel()
 		if err != nil {
-			return err
+			return wrapStatus(err)
 		}
 	}
 	return nil
@@ -201,7 +219,7 @@ func (l *Lantern) DeleteVertex(ctx context.Context, key string) (bool, error) {
 	defer cancel()
 	resp, err := l.client.DeleteVertex(ctx, &pb.DeleteVertexRequest{Key: key})
 	if err != nil {
-		return false, err
+		return false, wrapStatus(err)
 	}
 	return resp.GetExisted(), nil
 }
@@ -218,7 +236,7 @@ func (l *Lantern) DeleteVertices(ctx context.Context, keys []string) error {
 		_, err := l.client.DeleteVertices(ctx, &pb.DeleteVerticesRequest{Keys: chunk})
 		cancel()
 		if err != nil {
-			return err
+			return wrapStatus(err)
 		}
 	}
 	return nil
@@ -238,7 +256,7 @@ func (l *Lantern) GetVertices(ctx context.Context, keys []string) (found []*Vert
 		resp, rerr := l.client.GetVertices(cctx, &pb.GetVerticesRequest{Keys: chunk})
 		cancel()
 		if rerr != nil {
-			return nil, nil, rerr
+			return nil, nil, wrapStatus(rerr)
 		}
 		for _, v := range resp.GetVertices() {
 			found = append(found, (*Vertex)(v))
@@ -254,7 +272,7 @@ func (l *Lantern) GetEdge(ctx context.Context, tail string, head string) (*Edge,
 	defer cancel()
 	result, err := l.client.GetEdge(ctx, &pb.GetEdgeRequest{Tail: tail, Head: head})
 	if err != nil {
-		return nil, wrapNotFound(err)
+		return nil, wrapStatus(err)
 	}
 	return (*Edge)(result.Edge), nil
 }
@@ -272,7 +290,7 @@ func (l *Lantern) AddEdgeAt(ctx context.Context, tail string, head string, weigh
 	_, err := l.client.AddEdge(ctx, &pb.AddEdgeRequest{
 		Edges: []*pb.Edge{{Tail: tail, Head: head, Weight: weight, Expiration: timestamppb.New(expiration)}},
 	})
-	return err
+	return wrapStatus(err)
 }
 
 // AddEdges accumulates weight onto a batch of edges. Automatically chunked.
@@ -286,7 +304,7 @@ func (l *Lantern) AddEdges(ctx context.Context, inputs []EdgeInput) error {
 		_, err := l.client.AddEdge(ctx, &pb.AddEdgeRequest{Edges: chunk})
 		cancel()
 		if err != nil {
-			return err
+			return wrapStatus(err)
 		}
 	}
 	return nil
@@ -304,7 +322,7 @@ func (l *Lantern) PutEdgeAt(ctx context.Context, tail string, head string, weigh
 	_, err := l.client.PutEdge(ctx, &pb.PutEdgeRequest{
 		Edges: []*pb.Edge{{Tail: tail, Head: head, Weight: weight, Expiration: timestamppb.New(expiration)}},
 	})
-	return err
+	return wrapStatus(err)
 }
 
 // PutEdges overwrites a batch of edges. Automatically chunked.
@@ -318,7 +336,7 @@ func (l *Lantern) PutEdges(ctx context.Context, inputs []EdgeInput) error {
 		_, err := l.client.PutEdge(ctx, &pb.PutEdgeRequest{Edges: chunk})
 		cancel()
 		if err != nil {
-			return err
+			return wrapStatus(err)
 		}
 	}
 	return nil
@@ -331,7 +349,7 @@ func (l *Lantern) DeleteEdge(ctx context.Context, tail string, head string) (boo
 	defer cancel()
 	resp, err := l.client.DeleteEdge(ctx, &pb.DeleteEdgeRequest{Tail: tail, Head: head})
 	if err != nil {
-		return false, err
+		return false, wrapStatus(err)
 	}
 	return resp.GetExisted(), nil
 }
@@ -357,7 +375,7 @@ func (l *Lantern) DeleteEdges(ctx context.Context, refs []EdgeRef) error {
 		_, err := l.client.DeleteEdges(ctx, &pb.DeleteEdgesRequest{Edges: chunk})
 		cancel()
 		if err != nil {
-			return err
+			return wrapStatus(err)
 		}
 	}
 	return nil
@@ -381,7 +399,7 @@ func (l *Lantern) GetEdges(ctx context.Context, refs []EdgeRef) (found []*Edge, 
 		resp, rerr := l.client.GetEdges(cctx, &pb.GetEdgesRequest{Edges: chunk})
 		cancel()
 		if rerr != nil {
-			return nil, nil, rerr
+			return nil, nil, wrapStatus(rerr)
 		}
 		for _, e := range resp.GetEdges() {
 			found = append(found, (*Edge)(e))
@@ -428,7 +446,7 @@ func (l *Lantern) IlluminateWithOptimization(ctx context.Context, seed string, s
 		Optimization: opt,
 	})
 	if err != nil {
-		return nil, err
+		return nil, wrapStatus(err)
 	}
 	g := NewGraph()
 	for _, v := range result.Graph.Vertices {
