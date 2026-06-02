@@ -207,7 +207,13 @@ When more than one pair is given the batch RPC (DeleteEdges) is used,
 chunked at --chunk-size (default 1000).
 
 OUTPUT
-  Prints "OK <n>" on success, where <n> is the number of pairs submitted.
+  Single-pair form: prints "OK existed=true" if the edge was present
+  (and therefore removed) or "OK existed=false" if it was already
+  absent. Either way the exit code is 0 — delete is idempotent.
+
+  Batch form: prints "OK <n>" where <n> is the number of pairs that
+  actually existed and were removed (as reported by the server),
+  which may be smaller than the number of pairs submitted.
 
 EXAMPLES
   lantern edge delete alice:bob
@@ -236,15 +242,18 @@ EXAMPLES
 		defer func() { _ = cli.Close() }()
 
 		if len(refs) == 1 {
-			if _, err := cli.DeleteEdge(cmd.Context(), refs[0].Tail, refs[0].Head); err != nil {
+			existed, err := cli.DeleteEdge(cmd.Context(), refs[0].Tail, refs[0].Head)
+			if err != nil {
 				return err
 			}
-		} else {
-			if err := cli.DeleteEdges(cmd.Context(), refs); err != nil {
-				return err
-			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "OK existed=%t\n", existed)
+			return nil
 		}
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "OK %d\n", len(refs))
+		deleted, err := cli.DeleteEdges(cmd.Context(), refs)
+		if err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "OK %d\n", deleted)
 		return nil
 	},
 }
