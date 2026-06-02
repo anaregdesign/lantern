@@ -7,7 +7,7 @@ import (
 	"time"
 
 	cachegraph "github.com/anaregdesign/lantern/core/cache/graph"
-	"github.com/anaregdesign/lantern/sdks/go"
+	client "github.com/anaregdesign/lantern/sdks/go"
 	pb "github.com/anaregdesign/lantern/sdks/go/gen/graph/v1"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
