@@ -5,6 +5,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	_ "google.golang.org/grpc/encoding/gzip" // register gzip so WithCompression("gzip") works
 )
 
 // defaultServiceConfig enables transparent gRPC retries on idempotent RPCs.
@@ -20,6 +21,8 @@ const defaultServiceConfig = `{
         {"service": "graph.v1.LanternService", "method": "PutEdge"},
         {"service": "graph.v1.LanternService", "method": "DeleteVertex"},
         {"service": "graph.v1.LanternService", "method": "DeleteEdge"},
+        {"service": "graph.v1.LanternService", "method": "DeleteVertices"},
+        {"service": "graph.v1.LanternService", "method": "DeleteEdges"},
         {"service": "graph.v1.LanternService", "method": "Illuminate"}
       ],
       "retryPolicy": {
@@ -84,6 +87,18 @@ func WithBatchChunkSize(n int) Option {
 	return func(o *options) {
 		if n > 0 {
 			o.batchChunkSize = n
+		}
+	}
+}
+
+// WithCompression enables a per-call default compressor (e.g. "gzip"). The
+// named compressor must be registered (gzip is registered automatically by
+// this package). Pass "" to disable.
+func WithCompression(name string) Option {
+	return func(o *options) {
+		if name != "" {
+			o.dialOptions = append(o.dialOptions,
+				grpc.WithDefaultCallOptions(grpc.UseCompressor(name)))
 		}
 	}
 }
