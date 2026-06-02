@@ -1,0 +1,46 @@
+# Test bed: run lantern alongside Prometheus so CLI/SDK exercises can be
+# observed end-to-end (metrics scraped from :9090, logs via `docker logs`).
+#
+# Usage:
+#   cd testbed
+#   docker compose up -d              # bring up lantern + prometheus
+#   ../scripts ...                    # exercise CLI / SDK
+#   ./query-metrics.sh                # snapshot lantern_* gauges/counters
+#   docker compose logs lantern       # JSON server logs
+#   docker compose down -v
+#
+# The lantern service uses the locally-built `lantern:local` tag (built via
+# `docker build -t lantern:local .` from the repo root). Override LANTERN_IMAGE
+# to pin a released image, e.g. LANTERN_IMAGE=ghcr.io/anaregdesign/lantern:v0.7.1.
+services:
+  lantern:
+    image: ${LANTERN_IMAGE:-lantern:local}
+    container_name: lantern-testbed
+    ports:
+      - "6380:6380"   # gRPC
+      - "9090:9090"   # /metrics, /healthz, /readyz
+    environment:
+      LANTERN_PORT: "6380"
+      LANTERN_METRICS_ADDR: ":9090"
+      LANTERN_DEFAULT_TTL_SECONDS: "3600"
+      LANTERN_LOG_FORMAT: "json"
+      LANTERN_LOG_LEVEL: "info"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/readyz"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    container_name: lantern-prom
+    ports:
+      - "9091:9090"   # Prometheus UI (host :9091 to avoid clash with lantern /metrics)
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=1h"
+    depends_on:
+      lantern:
+        condition: service_healthy
