@@ -1,7 +1,7 @@
 package provider
 
 import (
-	v1 "github.com/anaregdesign/lantern-proto/go/graph/v1"
+	v1 "github.com/anaregdesign/lantern/gen/go/graph/v1"
 	"github.com/anaregdesign/lantern/pkg/papaya/cache/graph"
 	"google.golang.org/grpc"
 	"net"

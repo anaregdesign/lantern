@@ -1,0 +1,180 @@
+syntax = "proto3";
+
+package graph.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/api/annotations.proto";
+
+option go_package = "github.com/anaregdesign/lantern/gen/go/graph/v1";
+
+
+message Vertex {
+    string key = 1;
+    google.protobuf.Timestamp expiration = 2;
+    oneof value {
+        double float64 = 10;
+        float float32 = 11;
+        int32 int32 = 12;
+        int64 int64 = 13;
+        uint32 uint32 = 14;
+        uint64 uint64 = 15;
+        bool bool = 16;
+        string string = 17;
+        bytes bytes = 18;
+        google.protobuf.Timestamp timestamp = 19;
+
+        bool nil = 30;
+    }
+}
+
+message Edge {
+    string tail = 1;
+    string head = 2;
+    float weight = 3;
+    google.protobuf.Timestamp expiration = 4;
+}
+
+message Graph {
+    repeated Vertex vertices = 1;
+    repeated Edge edges = 2;
+}
+
+enum Optimization {
+    OPTIMIZATION_UNSPECIFIED = 0;
+    OPTIMIZATION_MINIMUM_SPANNING_TREE = 1;
+    OPTIMIZATION_MAXIMUM_SPANNING_TREE = 2;
+    OPTIMIZATION_SHORTEST_PATH_TREE = 3;
+    OPTIMIZATION_SHORTEST_PATH_TREE_INVERSE = 4;
+}
+
+enum Status {
+    STATUS_UNSPECIFIED = 0;
+    STATUS_OK = 1;
+    STATUS_INTERNAL_SERVER_ERROR = 2;
+    STATUS_INVALID_REQUEST = 3;
+}
+
+message IlluminateRequest {
+    string seed = 1;
+    uint32 step = 2;
+    uint32 k = 3;
+    bool tfidf = 4;
+    Optimization optimization = 5;
+}
+
+message IlluminateResponse {
+    Graph graph = 1;
+    Status status = 2;
+}
+
+message GetVertexRequest {
+    string key = 1;
+}
+
+message GetVertexResponse {
+    Vertex vertex = 1;
+    Status status = 2;
+}
+
+message PutVertexRequest {
+    repeated Vertex vertices = 1;
+}
+
+message PutVertexResponse {
+    Status status = 1;
+}
+
+message DeleteVertexRequest {
+    string key = 1;
+}
+
+message DeleteVertexResponse {
+    Status status = 1;
+}
+
+message GetEdgeRequest {
+    string tail = 1;
+    string head = 2;
+}
+
+message GetEdgeResponse {
+    Edge edge = 1;
+}
+
+message DeleteEdgeRequest {
+    string tail = 1;
+    string head = 2;
+}
+
+message DeleteEdgeResponse {
+    Status status = 1;
+}
+
+message AddEdgeRequest {
+    repeated Edge edges = 1;
+}
+
+message AddEdgeResponse {
+    Status status = 1;
+}
+
+message PutEdgeRequest {
+    repeated Edge edges = 1;
+}
+
+message PutEdgeResponse {
+    Status status = 1;
+}
+
+service LanternService {
+    rpc Illuminate (IlluminateRequest) returns (IlluminateResponse) {
+        option (google.api.http) = {
+            get: "/v1/illuminate/{seed}"
+        };
+    }
+
+    rpc GetVertex (GetVertexRequest) returns (GetVertexResponse) {
+        option (google.api.http) = {
+            get: "/v1/vertices/{key}"
+        };
+    }
+
+    rpc PutVertex (PutVertexRequest) returns (PutVertexResponse) {
+        option (google.api.http) = {
+            put: "/v1/vertices"
+            body: "*"
+        };
+    }
+
+    rpc DeleteVertex(DeleteVertexRequest) returns (DeleteVertexResponse) {
+        option (google.api.http) = {
+            delete: "/v1/vertices/{key}"
+        };
+    }
+
+    rpc GetEdge (GetEdgeRequest) returns (GetEdgeResponse) {
+        option (google.api.http) = {
+            get: "/v1/edges/{tail}/{head}"
+        };
+    }
+
+    rpc AddEdge (AddEdgeRequest) returns (AddEdgeResponse) {
+        option (google.api.http) = {
+            put: "/v1/edges/add"
+            body: "*"
+        };
+    }
+
+    rpc PutEdge (PutEdgeRequest) returns (PutEdgeResponse) {
+        option (google.api.http) = {
+            put: "/v1/edges/put"
+            body: "*"
+        };
+    }
+
+    rpc DeleteEdge(DeleteEdgeRequest) returns (DeleteEdgeResponse) {
+        option (google.api.http) = {
+            delete: "/v1/edges/{tail}/{head}"
+        };
+    }
+}
