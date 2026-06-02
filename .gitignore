@@ -1,2 +1,17 @@
-.idea
-lantern.iml
+# IDE / editor
+.idea/
+*.iml
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.DS_Store
+
+# Build artifacts
+bin/
+dist/
+
+# Test / coverage
+*.test
+*.out
+coverage.out
+coverage.html

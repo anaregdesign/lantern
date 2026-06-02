@@ -2,7 +2,7 @@ package client
 
 import (
 	"errors"
-	pb "github.com/anaregdesign/lantern-proto/go/graph/v1"
+	pb "github.com/anaregdesign/lantern/gen/go/graph/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"time"
 )

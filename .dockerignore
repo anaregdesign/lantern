@@ -1,0 +1,16 @@
+.git
+.github
+.vscode
+.idea
+*.iml
+bin/
+dist/
+coverage.out
+*.test
+*.out
+**/.DS_Store
+Dockerfile
+.dockerignore
+README.md
+AGENTS.md
+LICENSE
