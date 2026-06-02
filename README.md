@@ -193,7 +193,8 @@ defer cli.Close()
 
 ctx := context.Background()
 
-// Vertices accept string, int, float, bool, time.Time, []byte, or nil.
+// Vertices accept string, int (signed/unsigned), float, bool, time.Time,
+// time.Duration, []byte, or nil.
 _ = cli.PutVertex(ctx, "user:42", "alice", 1*time.Hour)
 _ = cli.PutVertex(ctx, "item:7",  "lamp",  1*time.Hour)
 
@@ -222,7 +223,7 @@ Defined in [proto/graph/v1/graph.proto](proto/graph/v1/graph.proto), served by
 
 | RPC | Purpose | Notes |
 |---|---|---|
-| `PutVertex` | Upsert one or more vertices with TTL | Last write wins |
+| `PutVertex` | Upsert a vertex with TTL | Last write wins |
 | `GetVertex` | Fetch a vertex by key | `NotFound` if expired/missing |
 | `DeleteVertex` | Remove a vertex | Edges to/from it are GC'd on next `Watch` tick |
 | `DeleteVertices` | Batch remove vertices in one round-trip | SDK auto-chunks at `WithBatchChunkSize`; idempotent (retried automatically) |
@@ -442,8 +443,10 @@ After loading a richer graph:
 - **Single-process, in-memory only.** Multi-node sharding and replication are
   not built in. Production deployments typically replay events from a durable
   log (Kafka, etc.) into Lantern on boot.
-- **No auth / TLS in the default build.** Front it with a service mesh or
-  envoy-style sidecar for production exposure.
+- **No authn / authz built in.** TLS and mTLS *are* supported out of the
+  box via the `LANTERN_TLS_*` env vars (and the matching `--tls*` client
+  flags), but per-RPC authentication is not — front it with a service mesh
+  or envoy-style sidecar if you need identity-based access control.
 - **Single global `sync.RWMutex` on the graph cache** plus per-edge mutexes on
   weight aggregation. Read-heavy workloads scale well; write-very-hot keys
   serialize.

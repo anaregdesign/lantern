@@ -19,10 +19,10 @@ The module path in `go.mod` is still `github.com/anaregdesign/lantern`. All exte
 
 ## Architecture notes
 
-- **gRPC service**: [server/service/service.go](server/service/service.go) implements `LanternService` (`Illuminate`, `GetVertex`, `PutVertex`, `AddEdge`, `PutEdge`, `DeleteVertex`, `DeleteEdge`).
+- **gRPC service**: [server/service/service.go](server/service/service.go) implements `LanternService` (`Illuminate`, `GetVertex`, `PutVertex`, `DeleteVertex`, `DeleteVertices`, `GetEdge`, `AddEdge`, `PutEdge`, `DeleteEdge`, `DeleteEdges`).
 - **DI**: [google/wire](https://github.com/google/wire). [server/cmd/wire.go](server/cmd/wire.go) holds the definitions; [server/cmd/wire_gen.go](server/cmd/wire_gen.go) is generated — **never edit it by hand**. After changing providers, regenerate with `go generate ./...` (or `make wire` for just the wire step). Wire itself is pulled in via the `tool` directive in `go.mod`, so no install is required.
 - **Providers**: [server/provider/provider.go](server/provider/provider.go) assembles `Config` (env vars `LANTERN_PORT`, `LANTERN_DEFAULT_TTL_SECONDS`), `net.Listener`, `grpc.Server`, and `core/cache/graph.GraphCache`. `NewListener` now receives the wire-injected `*Config`.
-- **Client SDK**: [client/client.go](client/client.go) is a thin gRPC wrapper. [client/value.go](client/value.go) handles Go-native ↔ `pb.Vertex` conversion via `nativeVertex.asVertex()` and `Vertex.*Value()`. **When adding a new value type, update both directions** (`asVertex` and each `*Value()` method).
+- **Client SDK**: [client/client.go](client/client.go) is a thin gRPC wrapper. [client/value.go](client/value.go) handles Go-native ↔ `pb.Vertex` conversion via `nativeVertex.asVertex()` and `Vertex.*Value()`, and renders Go-friendly JSON via `Vertex.MarshalJSON` (shape: `{key,type,value,expiration}`). **When adding a new value type, update all three:** `asVertex` (Go → proto), the matching `*Value()` accessor plus `Kind()` / `VertexKind*` constant (proto → Go), and the `MarshalJSON` switch.
 - **Decay model**: edges are **additive** and carry their own TTL. Be mindful of the difference between `AddEdge` and `PutEdge` (idempotency) — see the discussion in [client/example/main.go](client/example/main.go).
 
 ## Build / Run / Test / Generate
