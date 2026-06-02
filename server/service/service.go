@@ -46,7 +46,7 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 		return nil, status.FromContextError(err).Err()
 	}
 
-	g, err := s.cache.NeighborContext(ctx, request.GetSeed(), int(request.GetStep()), int(request.GetK()), request.GetTfidf())
+	g, expirations, err := s.cache.NeighborWithExpirationsContext(ctx, request.GetSeed(), int(request.GetStep()), int(request.GetK()), request.GetTfidf())
 	if err != nil {
 		return nil, status.FromContextError(err).Err()
 	}
@@ -87,10 +87,10 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 
 	var edges []*pb.Edge
 	for tail, heads := range g.Edges {
+		expRow := expirations[tail]
 		for head, weight := range heads {
-			_, exp, ok := s.cache.GetEdgeDetail(tail, head)
 			edge := &pb.Edge{Tail: tail, Head: head, Weight: weight}
-			if ok && !exp.IsZero() {
+			if exp, ok := expRow[head]; ok && !exp.IsZero() {
 				edge.Expiration = timestamppb.New(exp)
 			}
 			edges = append(edges, edge)
