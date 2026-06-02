@@ -1,6 +1,7 @@
 package client
 
 import (
+	"encoding/json"
 	"errors"
 	"math"
 	"time"
@@ -237,4 +238,60 @@ func (v *Vertex) IsNil() bool {
 		return x.Nil
 	}
 	return false
+}
+
+// MarshalJSON renders a Vertex as a stable, human-readable JSON object so
+// callers don't have to peek at protobuf-generated oneof field names (e.g.
+// "String_", "Int64", "Nil"). The shape is:
+//
+//	{
+//	  "key":        "<key>",                // omitted when empty
+//	  "type":       "string"|"int32"|...,   // VertexKind in lowercase
+//	  "value":      <typed JSON value>,     // null for nil/unset
+//	  "expiration": "<RFC3339Nano>"         // omitted when zero
+//	}
+//
+// Bytes are base64-encoded (Go's default for []byte); timestamps are RFC3339Nano.
+func (v *Vertex) MarshalJSON() ([]byte, error) {
+	out := struct {
+		Key        string `json:"key,omitempty"`
+		Type       string `json:"type"`
+		Value      any    `json:"value"`
+		Expiration string `json:"expiration,omitempty"`
+	}{}
+	if v == nil {
+		out.Type = "unset"
+		return json.Marshal(out)
+	}
+	out.Key = v.Key
+	if t := v.ExpirationTime(); !t.IsZero() {
+		out.Expiration = t.Format(time.RFC3339Nano)
+	}
+	switch x := v.Value.(type) {
+	case *pb.Vertex_Float32:
+		out.Type, out.Value = "float32", x.Float32
+	case *pb.Vertex_Float64:
+		out.Type, out.Value = "float64", x.Float64
+	case *pb.Vertex_Int32:
+		out.Type, out.Value = "int32", x.Int32
+	case *pb.Vertex_Int64:
+		out.Type, out.Value = "int64", x.Int64
+	case *pb.Vertex_Uint32:
+		out.Type, out.Value = "uint32", x.Uint32
+	case *pb.Vertex_Uint64:
+		out.Type, out.Value = "uint64", x.Uint64
+	case *pb.Vertex_Bool:
+		out.Type, out.Value = "bool", x.Bool
+	case *pb.Vertex_String_:
+		out.Type, out.Value = "string", x.String_
+	case *pb.Vertex_Bytes:
+		out.Type, out.Value = "bytes", x.Bytes
+	case *pb.Vertex_Timestamp:
+		out.Type, out.Value = "timestamp", x.Timestamp.AsTime().Format(time.RFC3339Nano)
+	case *pb.Vertex_Nil:
+		out.Type, out.Value = "nil", nil
+	default:
+		out.Type, out.Value = "unset", nil
+	}
+	return json.Marshal(out)
 }

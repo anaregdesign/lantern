@@ -315,3 +315,65 @@ func Test_nativeVertex_asVertex(t *testing.T) {
 		})
 	}
 }
+
+func TestVertex_MarshalJSON(t *testing.T) {
+	exp := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	ts := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name string
+		v    *Vertex
+		want string
+	}{
+		{
+			name: "string with key and expiration",
+			v: &Vertex{
+				Key:        "a",
+				Expiration: timestamppb.New(exp),
+				Value:      &pb.Vertex_String_{String_: "A"},
+			},
+			want: `{"key":"a","type":"string","value":"A","expiration":"2026-01-02T03:04:05Z"}`,
+		},
+		{
+			name: "int64 without expiration",
+			v:    &Vertex{Value: &pb.Vertex_Int64{Int64: 42}},
+			want: `{"type":"int64","value":42}`,
+		},
+		{
+			name: "bool true",
+			v:    &Vertex{Value: &pb.Vertex_Bool{Bool: true}},
+			want: `{"type":"bool","value":true}`,
+		},
+		{
+			name: "bytes base64",
+			v:    &Vertex{Value: &pb.Vertex_Bytes{Bytes: []byte("hi")}},
+			want: `{"type":"bytes","value":"aGk="}`,
+		},
+		{
+			name: "timestamp RFC3339Nano",
+			v:    &Vertex{Value: &pb.Vertex_Timestamp{Timestamp: timestamppb.New(ts)}},
+			want: `{"type":"timestamp","value":"2026-06-01T00:00:00Z"}`,
+		},
+		{
+			name: "nil sentinel",
+			v:    &Vertex{Value: &pb.Vertex_Nil{Nil: true}},
+			want: `{"type":"nil","value":null}`,
+		},
+		{
+			name: "nil vertex",
+			v:    nil,
+			want: `{"type":"unset","value":null}`,
+		},
+	}
+	for i := range tests {
+		tt := &tests[i]
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := tt.v.MarshalJSON()
+			if err != nil {
+				t.Fatalf("MarshalJSON() error = %v", err)
+			}
+			if string(got) != tt.want {
+				t.Errorf("MarshalJSON() got = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
