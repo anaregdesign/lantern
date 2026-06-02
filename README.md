@@ -231,22 +231,34 @@ Defined in [proto/graph/v1/graph.proto](proto/graph/v1/graph.proto), served by
 Every read, write, and delete operation has both a **singular** and a **plural**
 form. The plural is the canonical implementation; the singular is a thin facade
 that forwards a one-element batch to the plural handler. Pick whichever reads
-better at the call site.
+better at the call site. `Illuminate` is the lone exception — it returns a
+whole subgraph, so there is no plural form.
 
 | RPC | Purpose | Notes |
 |---|---|---|
-| `GetVertex` / `GetVertices` | Fetch one or many vertices by key | Singular returns `NotFound` if expired/missing; plural reports missing keys in `Missing` |
-| `PutVertex` / `PutVertices` | Upsert vertices with TTL | Last write wins; singular is a one-element facade |
-| `DeleteVertex` / `DeleteVertices` | Remove vertices | Edges to/from them are GC'd on next `Watch` tick; SDK auto-chunks plural at `WithBatchChunkSize`; idempotent (retried automatically) |
-| `GetEdge` / `GetEdges` | Read current live weight(s) | Sum of unexpired contributions; plural takes `[]EdgeRef{Tail, Head}` |
-| `AddEdge` / `AddEdges` | **Append** weighted contributions | Not idempotent — see §1.2 above |
-| `PutEdge` / `PutEdges` | Idempotent replace (delete + add) | Use when you want one-and-only-one weight |
+| `GetVertex` / `GetVertices` | Fetch one or many vertices by key | Singular returns `NotFound` if expired/missing; plural reports missing keys in `Missing` and never errors on partial misses |
+| `PutVertex` / `PutVertices` | Upsert vertices with TTL | Last write wins; plural is the canonical handler, singular forwards a one-element batch; SDK auto-chunks at `WithBatchChunkSize`, server enforces `LANTERN_MAX_BATCH_SIZE` |
+| `DeleteVertex` / `DeleteVertices` | Remove vertices | Edges to/from them are pruned on the next GC tick (`LANTERN_GC_INTERVAL_SECONDS`, default 60s); SDK auto-chunks; idempotent (safe to retry) |
+| `GetEdge` / `GetEdges` | Read current live weight(s) | Sum of unexpired contributions; plural takes `[]EdgeRef{Tail, Head}` and reports gaps in `Missing` |
+| `AddEdge` / `AddEdges` | **Append** weighted contributions | Not idempotent — see *Additive edge weights* above; SDK auto-chunks; server enforces `LANTERN_MAX_BATCH_SIZE` |
+| `PutEdge` / `PutEdges` | Idempotent replace (delete + add under one write lock) | Use when you want one-and-only-one weight; SDK auto-chunks; server enforces `LANTERN_MAX_BATCH_SIZE` |
 | `DeleteEdge` / `DeleteEdges` | Remove edges outright | Plural takes `[]EdgeRef{Tail, Head}`; SDK auto-chunks; idempotent |
-| `Illuminate` | Walk the graph from a seed | `step`, `k`, `tfidf`, and `Optimization` (none / MST / max-ST / SPT / inverse-SPT); honours `ctx` cancellation |
+| `Illuminate` | Walk the graph from a seed | `step`, `k`, `tfidf`, and `Optimization` (none / MST / max-ST / SPT / inverse-SPT); honours `ctx` cancellation; `step`/`k` are clamped at `LANTERN_ILLUMINATE_MAX_STEP` / `LANTERN_ILLUMINATE_MAX_K` |
 
 Vertices auto-materialize on `AddEdge`/`PutEdge` if the endpoint key does not
 yet exist (they get the edge's expiration as their TTL). This keeps event-stream
 ingestion simple — you only need to issue edge writes.
+
+All requests pass through a server-side validation interceptor that enforces
+`LANTERN_MAX_KEY_LEN`, `LANTERN_MAX_BATCH_SIZE`, and rejects NaN/Inf weights —
+oversize or malformed requests fail fast with `InvalidArgument` before touching
+the cache.
+
+In addition to the gRPC surface, every RPC carries `google.api.http` annotations
+in [proto/graph/v1/graph.proto](proto/graph/v1/graph.proto) (for example
+`PUT /v1/vertices/{vertex.key}`, `POST /v1/edges/{tail}/{head}/add`). These
+bindings are shipped so downstream consumers can stand up a grpc-gateway in
+front of Lantern; the server itself only speaks gRPC today.
 
 ---
 
