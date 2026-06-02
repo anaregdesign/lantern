@@ -1,0 +1,75 @@
+# GoReleaser config for the Lantern CLI.
+#
+# Produces cross-platform `lantern-cli` archives + checksums in ./dist for the
+# release workflow to attach to the GitHub Release. The GitHub Release itself
+# is owned by .github/workflows/docker-publish.yml so the container image and
+# CLI binaries land on a single release with consistent notes.
+#
+# Run locally with:
+#   go tool github.com/goreleaser/goreleaser/v2 release --snapshot --clean
+# (or `goreleaser release --snapshot --clean` if you have the CLI installed).
+
+version: 2
+project_name: lantern
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: lantern-cli
+    main: ./cli
+    binary: lantern-cli
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      # The CLI reads this at runtime; see cli/cmd/version.go.
+      - -X github.com/anaregdesign/lantern/cli/cmd.version={{ .Tag }}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: lantern-cli
+    ids:
+      - lantern-cli
+    name_template: >-
+      lantern-cli_{{ .Version }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  # Static template so local snapshot builds don't choke when the most recent
+  # git tag is a prefixed monorepo tag (e.g. sdks/go/vX.Y.Z) that GoReleaser
+  # can't parse as semver. Real releases are driven by v*.*.* tags.
+  version_template: "0.0.0-snapshot-{{ .ShortCommit }}"
+
+# The GitHub Release is created/edited by the release job in
+# .github/workflows/docker-publish.yml. GoReleaser just produces the artifacts
+# under ./dist which that job uploads.
+release:
+  disable: true
+
+changelog:
+  disable: true
