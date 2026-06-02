@@ -192,27 +192,35 @@ EXAMPLES
 // -- edge delete ------------------------------------------------------------
 
 var edgeDeleteCmd = &cobra.Command{
-	Use:   "delete <tail>:<head> [<tail>:<head>...]",
-	Short: "Delete one or more edges by tail:head pair",
-	Long: `Delete edges identified by "tail:head" pairs.
+	Use:   "delete <tail> <head> | <tail>:<head> [<tail>:<head>...]",
+	Short: "Delete one or more edges (positional pair or tail:head batch)",
+	Long: `Delete edges. Two input shapes are accepted:
 
-Each positional argument is a single "tail:head" pair separated by a literal
-colon — this avoids the ambiguity of positional pairs of two strings and
-makes shell scripting (xargs, jq -r '"\(.tail):\(.head)"') straightforward.
+  1. POSITIONAL PAIR — matches "edge get/add/put" ergonomics:
 
-If both endpoints contain colons, use the alternate "tail|head" syntax
-by passing --separator '|'.
+       lantern edge delete alice bob
 
-When more than one pair is given the batch RPC (DeleteEdges) is used,
-chunked at --chunk-size (default 1000).
+     Used automatically when exactly two args are given and neither
+     contains the separator. Single-pair deletes only.
+
+  2. SEPARATED PAIRS — for batch deletes and shell pipelines:
+
+       lantern edge delete alice:bob
+       lantern edge delete alice:bob bob:carol carol:dave
+       jq -r '"\(.tail):\(.head)"' edges.json | xargs lantern edge delete
+
+     Used whenever any arg contains the separator. The batch RPC
+     (DeleteEdges) handles more than one pair, chunked at --chunk-size
+     (default 1000). If both endpoints can contain colons, override with
+     --separator '|'.
 
 OUTPUT
   Prints "OK <n>" on success, where <n> is the number of pairs submitted.
 
 EXAMPLES
-  lantern edge delete alice:bob
-  lantern edge delete alice:bob bob:carol carol:dave
-  jq -r '"\(.tail):\(.head)"' edges.json | xargs lantern edge delete
+  lantern edge delete alice bob                    # positional
+  lantern edge delete alice:bob bob:carol          # batch (colon form)
+  lantern edge delete -s '|' a:b:c|d:e:f           # custom separator
 `,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -220,11 +228,18 @@ EXAMPLES
 		if sep == "" {
 			sep = ":"
 		}
+
+		// Positional shape: exactly two args, neither containing the separator.
+		// Treat them as <tail> <head>, matching edge get/add/put ergonomics.
+		if len(args) == 2 && !strings.Contains(args[0], sep) && !strings.Contains(args[1], sep) {
+			args = []string{args[0] + sep + args[1]}
+		}
+
 		refs := make([]client.EdgeRef, 0, len(args))
 		for _, a := range args {
 			t, h, ok := strings.Cut(a, sep)
 			if !ok || t == "" || h == "" {
-				return fmt.Errorf("invalid pair %q (want %q-separated tail and head)", a, sep)
+				return fmt.Errorf("invalid pair %q (want %q-separated tail and head, or two positional args)", a, sep)
 			}
 			refs = append(refs, client.EdgeRef{Tail: t, Head: h})
 		}
