@@ -89,6 +89,12 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Plumb release metadata into lantern_build_info{version,commit}.
+          # The container reads these via LANTERN_VERSION / LANTERN_COMMIT
+          # env vars baked in by the Dockerfile. See #98.
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: true

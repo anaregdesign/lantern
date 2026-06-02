@@ -63,6 +63,10 @@ import (
 //   - LANTERN_TLS_CERT_FILE              PEM cert path (enables TLS)
 //   - LANTERN_TLS_KEY_FILE               PEM key  path
 //   - LANTERN_TLS_CLIENT_CA_FILE         PEM client CA path (enables mTLS)
+//   - LANTERN_VERSION                    overrides lantern_build_info{version}
+//     (default: debug.BuildInfo)
+//   - LANTERN_COMMIT                     overrides lantern_build_info{commit}
+//     (default: vcs.revision from BuildInfo)
 type Config struct {
 	Port             int
 	TTL              time.Duration
@@ -87,6 +91,9 @@ type Config struct {
 	TLSCertFile     string
 	TLSKeyFile      string
 	TLSClientCAFile string
+
+	Version string
+	Commit  string
 }
 
 func NewConfig() *Config {
@@ -119,6 +126,9 @@ func NewConfig() *Config {
 		TLSCertFile:     os.Getenv("LANTERN_TLS_CERT_FILE"),
 		TLSKeyFile:      os.Getenv("LANTERN_TLS_KEY_FILE"),
 		TLSClientCAFile: os.Getenv("LANTERN_TLS_CLIENT_CA_FILE"),
+
+		Version: os.Getenv("LANTERN_VERSION"),
+		Commit:  os.Getenv("LANTERN_COMMIT"),
 	}
 }
 
@@ -197,9 +207,13 @@ func NewGraphCache(c *Config) *graph.GraphCache[string, *v1.Vertex] {
 // goroutines.
 func NewDomainMetrics(
 	reg *prometheus.Registry,
+	c *Config,
 	cache *graph.GraphCache[string, *v1.Vertex],
 ) *domainmetrics.DomainMetrics {
-	m := domainmetrics.New(reg, domainmetrics.Options{})
+	m := domainmetrics.New(reg, domainmetrics.Options{
+		Version: c.Version,
+		Commit:  c.Commit,
+	})
 	m.BindSampler(func() (int, int) {
 		return cache.VertexCount(), cache.EdgeCount()
 	})
