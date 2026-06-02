@@ -90,8 +90,13 @@ EXAMPLES
 		}
 		defer func() { _ = cli.Close() }()
 
-		g, err := cli.IlluminateWithOptimization(
-			cmd.Context(), args[0], illuminateStep, illuminateK, illuminateTfidf, opt)
+		g, err := cli.Illuminate(
+			cmd.Context(), args[0],
+			client.WithStep(illuminateStep),
+			client.WithK(illuminateK),
+			client.WithTFIDF(illuminateTfidf),
+			client.WithOptimization(opt),
+		)
 		if err != nil {
 			return err
 		}

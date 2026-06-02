@@ -473,22 +473,58 @@ func NewGraph() *Graph {
 	}
 }
 
-// Illuminate runs a k-bounded BFS from seed, returning the resulting subgraph.
-func (l *Lantern) Illuminate(ctx context.Context, seed string, step uint32, k uint32, tfidf bool) (*Graph, error) {
-	return l.IlluminateWithOptimization(ctx, seed, step, k, tfidf, OptimizationUnspecified)
+// IlluminateOption configures a single Illuminate call. Pass any combination
+// of WithStep, WithK, WithTFIDF, and WithOptimization to Illuminate.
+type IlluminateOption func(*illuminateConfig)
+
+type illuminateConfig struct {
+	step         uint32
+	k            uint32
+	tfidf        bool
+	optimization Optimization
 }
 
-// IlluminateWithOptimization is Illuminate with an explicit server-side
-// post-processing strategy. Pass OptimizationUnspecified to disable it.
-func (l *Lantern) IlluminateWithOptimization(ctx context.Context, seed string, step uint32, k uint32, tfidf bool, opt Optimization) (*Graph, error) {
+// WithStep sets the BFS depth for an Illuminate call.
+func WithStep(step uint32) IlluminateOption {
+	return func(c *illuminateConfig) { c.step = step }
+}
+
+// WithK sets the per-hop fan-out (top-k neighbours) for an Illuminate call.
+func WithK(k uint32) IlluminateOption {
+	return func(c *illuminateConfig) { c.k = k }
+}
+
+// WithTFIDF toggles server-side TF-IDF re-weighting of edges before
+// optimization runs.
+func WithTFIDF(tfidf bool) IlluminateOption {
+	return func(c *illuminateConfig) { c.tfidf = tfidf }
+}
+
+// WithOptimization selects the server-side post-processing strategy applied
+// to the illuminated subgraph (e.g. MST, SPT). Pass OptimizationUnspecified
+// to disable it.
+func WithOptimization(opt Optimization) IlluminateOption {
+	return func(c *illuminateConfig) { c.optimization = opt }
+}
+
+// Illuminate runs a k-bounded BFS from seed, returning the resulting subgraph.
+// Configure step, k, TF-IDF, and optimization via IlluminateOption values; any
+// option omitted defaults to its zero value (step=0, k=0, tfidf=false,
+// optimization=OptimizationUnspecified), which the server treats as "no
+// expansion / no optimization".
+func (l *Lantern) Illuminate(ctx context.Context, seed string, opts ...IlluminateOption) (*Graph, error) {
+	cfg := illuminateConfig{optimization: OptimizationUnspecified}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
 	result, err := l.client.Illuminate(ctx, &pb.IlluminateRequest{
 		Seed:         seed,
-		Step:         step,
-		K:            k,
-		Tfidf:        tfidf,
-		Optimization: opt,
+		Step:         cfg.step,
+		K:            cfg.k,
+		Tfidf:        cfg.tfidf,
+		Optimization: cfg.optimization,
 	})
 	if err != nil {
 		return nil, wrapStatus(err)

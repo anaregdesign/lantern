@@ -185,7 +185,11 @@ func (c *CLIService) Run(ctx context.Context, str string) error {
 			fmt.Printf("Error: %s\n", err)
 			return ErrIlluminate
 		}
-		g, err := c.client.Illuminate(ctx, p.Seed, uint32(p.Step), uint32(p.K), p.Tfidf)
+		g, err := c.client.Illuminate(ctx, p.Seed,
+			client.WithStep(uint32(p.Step)),
+			client.WithK(uint32(p.K)),
+			client.WithTFIDF(p.Tfidf),
+		)
 		if err != nil {
 			fmt.Printf("Error: %s\n", err)
 			return ErrConnection

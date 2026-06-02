@@ -110,7 +110,7 @@ func TestIntegration_FullMiddlewareChain(t *testing.T) {
 	})
 
 	t.Run("illuminate caps enforced", func(t *testing.T) {
-		_, err := c.Illuminate(ctx, "k", 99, 1, false)
+		_, err := c.Illuminate(ctx, "k", client.WithStep(99), client.WithK(1))
 		if status.Code(err) != codes.InvalidArgument {
 			t.Errorf("Illuminate step=99 code = %v, want InvalidArgument", status.Code(err))
 		}
