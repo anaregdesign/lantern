@@ -180,21 +180,23 @@ func (c *edgeCache[S]) add(tail, head S, w float32) {
 	c.addWithTTL(tail, head, w, c.defaultTTL)
 }
 
-func (c *edgeCache[S]) delete(tail, head S) {
+// delete removes the (tail, head) edge. It returns true if the edge
+// was present (and therefore removed by this call), false otherwise.
+func (c *edgeCache[S]) delete(tail, head S) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.deleteLocked(tail, head)
+	return c.deleteLocked(tail, head)
 }
 
 // deleteLocked performs the same work as delete but assumes the caller already
 // holds c.mu in write mode.
-func (c *edgeCache[S]) deleteLocked(tail, head S) {
+func (c *edgeCache[S]) deleteLocked(tail, head S) bool {
 	heads, ok := c.tf[tail]
 	if !ok {
-		return
+		return false
 	}
 	if _, ok := heads[head]; !ok {
-		return
+		return false
 	}
 
 	delete(heads, head)
@@ -205,6 +207,7 @@ func (c *edgeCache[S]) deleteLocked(tail, head S) {
 	if len(heads) == 0 {
 		delete(c.tf, tail)
 	}
+	return true
 }
 
 func (c *edgeCache[S]) flush() {

@@ -431,7 +431,13 @@
       }
     },
     "v1DeleteEdgeResponse": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "existed": {
+          "type": "boolean",
+          "description": "existed is true if the edge was present and removed by this call."
+        }
+      }
     },
     "v1DeleteEdgesRequest": {
       "type": "object",
@@ -457,7 +463,13 @@
       }
     },
     "v1DeleteVertexResponse": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "existed": {
+          "type": "boolean",
+          "description": "existed is true if the vertex was present and removed by this call."
+        }
+      }
     },
     "v1DeleteVerticesRequest": {
       "type": "object",

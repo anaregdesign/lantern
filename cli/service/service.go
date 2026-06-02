@@ -153,7 +153,7 @@ func (c *CLIService) Run(ctx context.Context, str string) error {
 				fmt.Printf("Error: %s\n", err)
 				return ErrDeleteVertex
 			}
-			if err := c.client.DeleteVertex(ctx, p.Key); err != nil {
+			if _, err := c.client.DeleteVertex(ctx, p.Key); err != nil {
 				fmt.Printf("Error: %s\n", err)
 				return ErrConnection
 			}
@@ -165,7 +165,7 @@ func (c *CLIService) Run(ctx context.Context, str string) error {
 				fmt.Printf("Error: %s\n", err)
 				return ErrDeleteEdge
 			}
-			if err := c.client.DeleteEdge(ctx, p.Tail, p.Head); err != nil {
+			if _, err := c.client.DeleteEdge(ctx, p.Tail, p.Head); err != nil {
 				fmt.Printf("Error: %s\n", err)
 				return ErrConnection
 			}

@@ -74,7 +74,7 @@ func TestLantern_PutGetDeleteVertex(t *testing.T) {
 		t.Errorf("StringValue = %q, want \"v\"", got)
 	}
 
-	if err := l.DeleteVertex(ctx, "k"); err != nil {
+	if _, err := l.DeleteVertex(ctx, "k"); err != nil {
 		t.Fatalf("DeleteVertex: %v", err)
 	}
 	if _, err := l.GetVertex(ctx, "k"); err == nil {
@@ -112,7 +112,7 @@ func TestLantern_AddPutDeleteEdge(t *testing.T) {
 		t.Errorf("weight after PutEdge = %v, want 9", e.Weight)
 	}
 
-	if err := l.DeleteEdge(ctx, "a", "b"); err != nil {
+	if _, err := l.DeleteEdge(ctx, "a", "b"); err != nil {
 		t.Fatalf("DeleteEdge: %v", err)
 	}
 	if _, err := l.GetEdge(ctx, "a", "b"); err == nil {

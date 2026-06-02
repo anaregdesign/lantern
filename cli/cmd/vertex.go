@@ -165,7 +165,7 @@ EXAMPLES
 		defer func() { _ = cli.Close() }()
 
 		if len(args) == 1 {
-			if err := cli.DeleteVertex(cmd.Context(), args[0]); err != nil {
+			if _, err := cli.DeleteVertex(cmd.Context(), args[0]); err != nil {
 				return err
 			}
 		} else {

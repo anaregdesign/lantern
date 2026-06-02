@@ -114,18 +114,20 @@ func (c *GraphCache[S, T]) PutEdgeWithExpiration(tail, head S, w float32, expira
 	c.edges.addWithExpiration(tail, head, w, expiration)
 }
 
-func (c *GraphCache[S, T]) DeleteVertex(key S) {
+// DeleteVertex removes the vertex (by key) and returns whether it was present.
+func (c *GraphCache[S, T]) DeleteVertex(key S) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.vertices.Delete(key)
+	return c.vertices.Delete(key)
 }
 
-func (c *GraphCache[S, T]) DeleteEdge(tail, head S) {
+// DeleteEdge removes the (tail, head) edge and returns whether it was present.
+func (c *GraphCache[S, T]) DeleteEdge(tail, head S) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.edges.delete(tail, head)
+	return c.edges.delete(tail, head)
 }
 func (c *GraphCache[S, T]) flush() {
 	c.mu.Lock()

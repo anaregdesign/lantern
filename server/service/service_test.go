@@ -61,11 +61,23 @@ func TestLanternService_DeleteVertex(t *testing.T) {
 	if _, err := s.PutVertex(ctx, &pb.PutVertexRequest{Vertices: []*pb.Vertex{v}}); err != nil {
 		t.Fatalf("PutVertex: %v", err)
 	}
-	if _, err := s.DeleteVertex(ctx, &pb.DeleteVertexRequest{Key: "x"}); err != nil {
+	dResp, err := s.DeleteVertex(ctx, &pb.DeleteVertexRequest{Key: "x"})
+	if err != nil {
 		t.Fatalf("DeleteVertex: %v", err)
+	}
+	if !dResp.GetExisted() {
+		t.Errorf("DeleteVertex.Existed = false, want true (vertex was present)")
 	}
 	if _, err := s.GetVertex(ctx, &pb.GetVertexRequest{Key: "x"}); err == nil {
 		t.Error("expected NotFound after delete, got nil error")
+	}
+	// Second delete of the same key must report existed=false.
+	dResp2, err := s.DeleteVertex(ctx, &pb.DeleteVertexRequest{Key: "x"})
+	if err != nil {
+		t.Fatalf("DeleteVertex(repeat): %v", err)
+	}
+	if dResp2.GetExisted() {
+		t.Errorf("DeleteVertex.Existed = true on second call, want false")
 	}
 }
 
@@ -143,11 +155,23 @@ func TestLanternService_DeleteEdge(t *testing.T) {
 	if _, err := s.AddEdge(ctx, &pb.AddEdgeRequest{Edges: []*pb.Edge{e}}); err != nil {
 		t.Fatalf("AddEdge: %v", err)
 	}
-	if _, err := s.DeleteEdge(ctx, &pb.DeleteEdgeRequest{Tail: "a", Head: "b"}); err != nil {
+	dResp, err := s.DeleteEdge(ctx, &pb.DeleteEdgeRequest{Tail: "a", Head: "b"})
+	if err != nil {
 		t.Fatalf("DeleteEdge: %v", err)
+	}
+	if !dResp.GetExisted() {
+		t.Errorf("DeleteEdge.Existed = false, want true (edge was present)")
 	}
 	if _, err := s.GetEdge(ctx, &pb.GetEdgeRequest{Tail: "a", Head: "b"}); err == nil {
 		t.Error("expected NotFound after delete")
+	}
+	// Second delete reports existed=false.
+	dResp2, err := s.DeleteEdge(ctx, &pb.DeleteEdgeRequest{Tail: "a", Head: "b"})
+	if err != nil {
+		t.Fatalf("DeleteEdge(repeat): %v", err)
+	}
+	if dResp2.GetExisted() {
+		t.Errorf("DeleteEdge.Existed = true on second call, want false")
 	}
 }
 
