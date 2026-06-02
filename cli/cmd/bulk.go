@@ -87,13 +87,13 @@ Lines are accumulated into batches of --chunk-size and sent via PutVertices.
 		if err != nil {
 			return err
 		}
-		defer r.Close()
+		defer func() { _ = r.Close() }()
 
 		cli, err := dial()
 		if err != nil {
 			return err
 		}
-		defer cli.Close()
+		defer func() { _ = cli.Close() }()
 
 		sc := bufio.NewScanner(r)
 		sc.Buffer(make([]byte, 64*1024), 8*1024*1024)
@@ -108,7 +108,7 @@ Lines are accumulated into batches of --chunk-size and sent via PutVertices.
 				return err
 			}
 			total += len(batch)
-			fmt.Fprintf(cmd.ErrOrStderr(), "... %d\n", total)
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "... %d\n", total)
 			batch = batch[:0]
 			return nil
 		}
@@ -142,7 +142,7 @@ Lines are accumulated into batches of --chunk-size and sent via PutVertices.
 		if err := flush(); err != nil {
 			return err
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "OK %d\n", total)
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "OK %d\n", total)
 		return nil
 	},
 }
@@ -168,13 +168,13 @@ Recall the semantic difference: ` + "`add`" + ` SUMS weight onto existing edges
 			if err != nil {
 				return err
 			}
-			defer r.Close()
+			defer func() { _ = r.Close() }()
 
 			cli, err := dial()
 			if err != nil {
 				return err
 			}
-			defer cli.Close()
+			defer func() { _ = cli.Close() }()
 
 			sc := bufio.NewScanner(r)
 			sc.Buffer(make([]byte, 64*1024), 8*1024*1024)
@@ -195,7 +195,7 @@ Recall the semantic difference: ` + "`add`" + ` SUMS weight onto existing edges
 					return err
 				}
 				total += len(batch)
-				fmt.Fprintf(cmd.ErrOrStderr(), "... %d\n", total)
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "... %d\n", total)
 				batch = batch[:0]
 				return nil
 			}

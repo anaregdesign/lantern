@@ -31,7 +31,7 @@ tagged commit is the tag string and for plain ` + "`go build`" + ` is "(devel)".
 		if v == "" {
 			v = "(unknown)"
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), v)
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), v)
 		return nil
 	},
 }

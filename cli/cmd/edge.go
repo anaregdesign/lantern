@@ -69,7 +69,7 @@ EXAMPLES
 		if err != nil {
 			return err
 		}
-		defer cli.Close()
+		defer func() { _ = cli.Close() }()
 
 		e, err := cli.GetEdge(cmd.Context(), args[0], args[1])
 		if err != nil {
@@ -138,7 +138,7 @@ EXAMPLES
 		if err := cli.AddEdge(cmd.Context(), args[0], args[1], float32(w), edgeAddTTL); err != nil {
 			return err
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), "OK")
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "OK")
 		return nil
 	},
 }
@@ -184,7 +184,7 @@ EXAMPLES
 		if err := cli.PutEdge(cmd.Context(), args[0], args[1], float32(w), edgePutTTL); err != nil {
 			return err
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), "OK")
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "OK")
 		return nil
 	},
 }
