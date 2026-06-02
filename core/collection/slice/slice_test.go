@@ -45,7 +45,6 @@ func TestMap(t *testing.T) {
 func TestReduce(t *testing.T) {
 	add := func(a, b int) int { return a + b }
 	type args[T any] struct {
-		ctx      context.Context
 		slice    []T
 		operator function.Operator[T]
 	}
@@ -58,7 +57,6 @@ func TestReduce(t *testing.T) {
 		{
 			name: "valid case",
 			args: args[int]{
-				ctx:      ctx,
 				slice:    []int{1, 2, 3, 4, 5},
 				operator: add,
 			},
@@ -67,7 +65,7 @@ func TestReduce(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := Reduce(tt.args.ctx, tt.args.slice, tt.args.operator); !reflect.DeepEqual(got, tt.want) {
+			if got := Reduce(tt.args.slice, tt.args.operator); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("Reduce() = %v, want %v", got, tt.want)
 			}
 		})
@@ -76,7 +74,6 @@ func TestReduce(t *testing.T) {
 
 func TestFilter(t *testing.T) {
 	type args[T any] struct {
-		ctx       context.Context
 		slice     []T
 		predicate function.Predicate[T]
 	}
@@ -89,7 +86,6 @@ func TestFilter(t *testing.T) {
 		{
 			name: "valid case",
 			args: args[int]{
-				ctx:   ctx,
 				slice: []int{1, 2, 3, 4, 5},
 				predicate: func(i int) bool {
 					return i%2 == 0
@@ -100,7 +96,7 @@ func TestFilter(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := Filter(tt.args.ctx, tt.args.slice, tt.args.predicate); !reflect.DeepEqual(got, tt.want) {
+			if got := Filter(tt.args.slice, tt.args.predicate); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("Filter() = %v, want %v", got, tt.want)
 			}
 		})

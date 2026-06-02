@@ -84,10 +84,12 @@ func (s *Subscription[T]) message(id string) *Message[T] {
 
 func (s *Subscription[T]) publish(message *Message[T]) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.ch <- message.id
 	s.messages[message.id] = message
+	s.mu.Unlock()
+
+	// Send outside the lock: a full channel would otherwise block while the
+	// lock is held, deadlocking any concurrent ack/message lookup.
+	s.ch <- message.id
 }
 
 func (s *Subscription[T]) ack(message *Message[T]) {
@@ -105,12 +107,21 @@ func (s *Subscription[T]) remind(message *Message[T]) {
 }
 
 func (s *Subscription[T]) salvage(interval time.Duration, ttl time.Duration) {
-	for _, message := range s.messages {
-		if time.Now().Sub(message.createdAt) > ttl {
-			s.ack(message)
-		}
+	// Snapshot under the lock so we can iterate without racing publish/ack.
+	s.mu.RLock()
+	snapshot := make([]*Message[T], 0, len(s.messages))
+	for _, m := range s.messages {
+		snapshot = append(snapshot, m)
+	}
+	s.mu.RUnlock()
 
-		if time.Now().Sub(message.lastViewedAt) > interval {
+	now := time.Now()
+	for _, message := range snapshot {
+		if now.Sub(message.createdAt) > ttl {
+			s.ack(message)
+			continue
+		}
+		if now.Sub(message.lastViewedAt) > interval {
 			s.remind(message)
 		}
 	}
@@ -118,6 +129,7 @@ func (s *Subscription[T]) salvage(interval time.Duration, ttl time.Duration) {
 
 func (s *Subscription[T]) watch(ctx context.Context, interval time.Duration, ttl time.Duration) {
 	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:

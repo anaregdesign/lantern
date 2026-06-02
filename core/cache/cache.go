@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"maps"
 	"sync"
 	"time"
 )
@@ -66,9 +67,7 @@ func (c *Cache[S, T]) Delete(key S) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if _, ok := c.cache[key]; ok {
-		delete(c.cache, key)
-	}
+	delete(c.cache, key)
 }
 
 func (c *Cache[S, T]) Has(key S) bool {
@@ -94,11 +93,9 @@ func (c *Cache[S, T]) Flush() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for k, v := range c.cache {
-		if v.IsExpired() {
-			delete(c.cache, k)
-		}
-	}
+	maps.DeleteFunc(c.cache, func(_ S, v volatile[T]) bool {
+		return v.IsExpired()
+	})
 }
 
 func (c *Cache[S, T]) Watch(ctx context.Context, interval time.Duration) {

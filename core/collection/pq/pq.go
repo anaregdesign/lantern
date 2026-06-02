@@ -2,15 +2,18 @@ package pq
 
 import (
 	"container/heap"
-	"golang.org/x/exp/constraints"
 )
 
 /*
  * This code is from https://golang.org/pkg/container/heap/
  */
 
+// Number is any ordered numeric type usable as a priority. Defined locally so
+// core/collection/pq does not pull in golang.org/x/exp/constraints.
 type Number interface {
-	constraints.Integer | constraints.Float
+	~int | ~int8 | ~int16 | ~int32 | ~int64 |
+		~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64 | ~uintptr |
+		~float32 | ~float64
 }
 
 type Item[S any, T Number] struct {

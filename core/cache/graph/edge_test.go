@@ -13,9 +13,7 @@ func Test_newWeight(t *testing.T) {
 	}{
 		{
 			name: "newWeight",
-			want: &weight{
-				values: make([]weightValue, 0),
-			},
+			want: &weight{},
 		},
 	}
 	for _, tt := range tests {

@@ -58,13 +58,16 @@ func (c *GraphCache[S, T]) PutVertex(key S, value T) {
 func (c *GraphCache[S, T]) AddEdgeWithExpiration(tail, head S, w float32, expiration time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// Auto-create endpoint vertices synchronously so that a subsequent flush
+	// cannot race ahead and drop the edge we are about to add. The inner
+	// vertex cache has its own mutex, so calling it while holding c.mu is safe.
 	if !c.vertices.Has(tail) {
 		var noop T
-		go c.AddVertexWithExpiration(tail, noop, expiration)
+		c.vertices.PutWithExpiration(tail, noop, expiration)
 	}
 	if !c.vertices.Has(head) {
 		var noop T
-		go c.AddVertexWithExpiration(head, noop, expiration)
+		c.vertices.PutWithExpiration(head, noop, expiration)
 	}
 	c.edges.addWithExpiration(tail, head, w, expiration)
 }
@@ -94,7 +97,7 @@ func (c *GraphCache[S, T]) flush() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for tail, heads := range c.edges.getTF() {
+	for tail, heads := range c.edges.snapshotTF() {
 		for head := range heads {
 			if !c.vertices.Has(tail) || !c.vertices.Has(head) {
 				c.edges.delete(tail, head)
@@ -119,7 +122,11 @@ func (c *GraphCache[S, T]) Neighbor(seed S, step int, k int, tfidf bool) *graph.
 	targets := set.NewSet[S]()
 	targets.Add(seed)
 	seen := set.NewSet[S]()
-	for i := 0; i < step; i++ {
+	// Snapshot edge maps once per Neighbor call. The TF clone is shallow so the
+	// per-edge *weight values remain shared and internally thread-safe.
+	tf := c.edges.snapshotTF()
+	df := c.edges.snapshotDF()
+	for range step {
 
 		for _, tail := range targets.Values() {
 			// Skip if already seen
@@ -132,23 +139,25 @@ func (c *GraphCache[S, T]) Neighbor(seed S, step int, k int, tfidf bool) *graph.
 			go func(t S) {
 				defer wg.Done()
 				// Add edges to the graph
-				edges := pq.SortableMap[S, float32]{}
-				for head, w := range c.edges.getTF()[t] {
+				heads := tf[t]
+				if len(heads) == 0 {
+					seen.Add(t)
+					return
+				}
+				edges := make(pq.SortableMap[S, float32], len(heads))
+				for head, w := range heads {
 					if tfidf {
-						df := c.edges.getDF()[head]
-						edges[head] = w.value() / float32(math.Log2(float64(1+df)))
+						edges[head] = w.value() / float32(math.Log2(float64(1+df[head])))
 					} else {
 						edges[head] = w.value()
 					}
 				}
 
 				// Filter light edges
-				if len(edges) > 0 {
-					edges = edges.Top(k)
-					mu.Lock()
-					g.Edges[t] = edges
-					mu.Unlock()
-				}
+				edges = edges.Top(k)
+				mu.Lock()
+				g.Edges[t] = edges
+				mu.Unlock()
 				// Mark as seen
 				seen.Add(t)
 			}(tail)

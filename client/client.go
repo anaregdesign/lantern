@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"time"
 
-	pb "github.com/anaregdesign/lantern/gen/go/graph/v1"
 	model "github.com/anaregdesign/lantern/core/graph"
+	pb "github.com/anaregdesign/lantern/gen/go/graph/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )

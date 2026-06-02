@@ -1,6 +1,7 @@
 package pubsub
 
 import (
+	"maps"
 	"sync"
 	"time"
 )
@@ -22,12 +23,23 @@ func (t *Topic[T]) Name() string {
 	return t.name
 }
 
+// Subscriptions returns a snapshot of the topic's subscriptions. The returned
+// map is a clone, safe for callers to iterate without holding the topic lock.
 func (t *Topic[T]) Subscriptions() map[string]*Subscription[T] {
-	return t.subscriptions
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return maps.Clone(t.subscriptions)
 }
 
 func (t *Topic[T]) Publish(body T) {
+	t.mu.RLock()
+	subs := make([]*Subscription[T], 0, len(t.subscriptions))
 	for _, s := range t.subscriptions {
+		subs = append(subs, s)
+	}
+	t.mu.RUnlock()
+
+	for _, s := range subs {
 		message := s.newMessage(body)
 		s.publish(message)
 	}
