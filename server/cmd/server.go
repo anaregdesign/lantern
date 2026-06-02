@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
@@ -22,6 +23,7 @@ type App struct {
 	logger  *slog.Logger
 	grpc    *service.LanternServer
 	metrics *provider.MetricsServer
+	tracing *provider.Tracing
 	health  *health.Server
 }
 
@@ -30,6 +32,7 @@ func newApp(
 	logger *slog.Logger,
 	grpcServer *service.LanternServer,
 	metricsServer *provider.MetricsServer,
+	tracing *provider.Tracing,
 	hs *health.Server,
 	_ registeredHealth,
 ) *App {
@@ -38,6 +41,7 @@ func newApp(
 		logger:  logger,
 		grpc:    grpcServer,
 		metrics: metricsServer,
+		tracing: tracing,
 		health:  hs,
 	}
 }
@@ -63,6 +67,11 @@ func (a *App) Run(ctx context.Context) error {
 		<-gctx.Done()
 		a.health.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
 		a.health.Shutdown()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := a.tracing.Shutdown(shutdownCtx); err != nil {
+			a.logger.Warn("otel tracer shutdown returned error", slog.Any("err", err))
+		}
 		return nil
 	})
 	return g.Wait()

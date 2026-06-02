@@ -33,7 +33,11 @@ func initializeApp() (*App, error) {
 	healthServer := provider.NewHealthServer()
 	lanternServer := service.NewLanternServer(lanternService, server, listener, logger, lifecycleConfig, healthServer)
 	metricsServer := provider.NewMetricsServer(config, registry, logger)
+	tracing, err := provider.NewTracing(logger)
+	if err != nil {
+		return nil, err
+	}
 	mainRegisteredHealth := registerHealthAndReflection(config, server, healthServer)
-	app := newApp(config, logger, lanternServer, metricsServer, healthServer, mainRegisteredHealth)
+	app := newApp(config, logger, lanternServer, metricsServer, tracing, healthServer, mainRegisteredHealth)
 	return app, nil
 }

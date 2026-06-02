@@ -14,6 +14,7 @@ func initializeApp() (*App, error) {
 	wire.Build(
 		provider.NewConfig,
 		provider.NewLogger,
+		provider.NewTracing,
 		provider.NewGraphCache,
 		provider.NewListener,
 		provider.NewPrometheusRegistry,
