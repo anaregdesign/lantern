@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	pb "github.com/anaregdesign/lantern/gen/go/graph/v1"
+	pb "github.com/anaregdesign/lantern/sdks/go/gen/graph/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -331,7 +331,7 @@ func (l *Lantern) DeleteEdges(ctx context.Context, refs []EdgeRef) error {
 // callers that need richer graph algorithms can adapt it trivially, but the
 // SDK itself stays free of any non-proto dependency.
 type Graph struct {
-	Vertices map[string]*Vertex             `json:"vertices,omitempty"`
+	Vertices map[string]*Vertex            `json:"vertices,omitempty"`
 	Edges    map[string]map[string]float32 `json:"edges,omitempty"`
 }
 

@@ -40,13 +40,20 @@ jobs:
           fi
 
       - name: Vet
-        run: go vet ./...
+        run: |
+          go vet ./...
+          (cd sdks/go && go vet ./...)
 
       - name: Build
-        run: go build -v ./...
+        run: |
+          go build -v ./...
+          (cd sdks/go && go build -v ./...)
 
       - name: Test (race + coverage)
         run: go test -race -shuffle=on -covermode=atomic -coverprofile=coverage.out ./...
+
+      - name: Test SDK module (race)
+        run: cd sdks/go && go test -race -shuffle=on ./...
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4

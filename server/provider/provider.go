@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/anaregdesign/lantern/core/cache/graph"
-	v1 "github.com/anaregdesign/lantern/gen/go/graph/v1"
+	v1 "github.com/anaregdesign/lantern/sdks/go/gen/graph/v1"
 	grpcprom "github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus"
 	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/logging"
 	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/recovery"

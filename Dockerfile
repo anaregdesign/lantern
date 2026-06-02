@@ -6,7 +6,9 @@ FROM golang:1.26-alpine AS builder
 WORKDIR /src
 
 # Cache module downloads independently of source changes.
-COPY go.mod go.sum ./
+# go.work pulls in the sdks/go module from this monorepo.
+COPY go.mod go.sum go.work go.work.sum* ./
+COPY sdks/go/go.mod sdks/go/go.sum ./sdks/go/
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 

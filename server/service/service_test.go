@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/anaregdesign/lantern/core/cache/graph"
-	pb "github.com/anaregdesign/lantern/gen/go/graph/v1"
+	pb "github.com/anaregdesign/lantern/sdks/go/gen/graph/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"

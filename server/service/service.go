@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/anaregdesign/lantern/core/cache/graph"
-	pb "github.com/anaregdesign/lantern/gen/go/graph/v1"
+	pb "github.com/anaregdesign/lantern/sdks/go/gen/graph/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
