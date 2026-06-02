@@ -1,6 +1,6 @@
 module github.com/anaregdesign/lantern
 
-go 1.20
+go 1.26
 
 require (
 	github.com/anaregdesign/lantern-proto v0.4.1
