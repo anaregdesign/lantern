@@ -46,24 +46,30 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 		return nil, status.FromContextError(err).Err()
 	}
 
-	g := s.cache.Neighbor(request.GetSeed(), int(request.GetStep()), int(request.GetK()), request.GetTfidf())
+	g, err := s.cache.NeighborContext(ctx, request.GetSeed(), int(request.GetStep()), int(request.GetK()), request.GetTfidf())
+	if err != nil {
+		return nil, status.FromContextError(err).Err()
+	}
 
 	switch request.GetOptimization() {
 	case pb.Optimization_OPTIMIZATION_UNSPECIFIED:
 		// do nothing
 	case pb.Optimization_OPTIMIZATION_MINIMUM_SPANNING_TREE:
-		g = g.MinimumSpanningTree(request.GetSeed(), false)
+		g, err = g.MinimumSpanningTreeContext(ctx, request.GetSeed(), false)
 	case pb.Optimization_OPTIMIZATION_MAXIMUM_SPANNING_TREE:
-		g = g.MinimumSpanningTree(request.GetSeed(), true)
+		g, err = g.MinimumSpanningTreeContext(ctx, request.GetSeed(), true)
 	case pb.Optimization_OPTIMIZATION_SHORTEST_PATH_TREE:
-		g = g.ShortestPathTree(request.GetSeed(), func(weight float32) float32 { return weight })
+		g, err = g.ShortestPathTreeContext(ctx, request.GetSeed(), func(weight float32) float32 { return weight })
 	case pb.Optimization_OPTIMIZATION_SHORTEST_PATH_TREE_INVERSE:
-		g = g.ShortestPathTree(request.GetSeed(), func(weight float32) float32 {
+		g, err = g.ShortestPathTreeContext(ctx, request.GetSeed(), func(weight float32) float32 {
 			if weight == 0 {
 				return math.MaxFloat32
 			}
 			return 1 / weight
 		})
+	}
+	if err != nil {
+		return nil, status.FromContextError(err).Err()
 	}
 
 	if err := ctx.Err(); err != nil {

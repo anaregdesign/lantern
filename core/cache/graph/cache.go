@@ -141,12 +141,25 @@ func (c *GraphCache[S, T]) flush() {
 }
 
 func (c *GraphCache[S, T]) Neighbor(seed S, step int, k int, tfidf bool) *graph.Graph[S, T] {
+	g, _ := c.NeighborContext(context.Background(), seed, step, k, tfidf)
+	return g
+}
+
+// NeighborContext is the context-aware variant of Neighbor. It returns
+// ctx.Err() as soon as the context is cancelled or its deadline has expired
+// — checked between BFS expansion steps — so handlers can short-circuit
+// large traversals when the caller has given up.
+func (c *GraphCache[S, T]) NeighborContext(ctx context.Context, seed S, step int, k int, tfidf bool) (*graph.Graph[S, T], error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	g := graph.NewGraph[S, T]()
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	if v, ok := c.vertices.Get(seed); !ok {
-		return g
+		return g, nil
 	} else {
 		g.Vertices[seed] = v
 	}
@@ -161,6 +174,9 @@ func (c *GraphCache[S, T]) Neighbor(seed S, step int, k int, tfidf bool) *graph.
 	tf := c.edges.snapshotTF()
 	df := c.edges.snapshotDF()
 	for range step {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 
 		for _, tail := range targets.Values() {
 			// Skip if already seen
@@ -218,7 +234,7 @@ func (c *GraphCache[S, T]) Neighbor(seed S, step int, k int, tfidf bool) *graph.
 		}
 	}
 
-	return g
+	return g, nil
 }
 
 func (c *GraphCache[S, T]) Watch(ctx context.Context, interval time.Duration) {
