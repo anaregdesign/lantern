@@ -38,6 +38,10 @@ func (s *Subscription[T]) Subscribe(ctx context.Context, consumer function.Consu
 		select {
 		case id := <-s.ch:
 			message := s.message(id)
+			if message == nil {
+				// Already acked (e.g. salvaged past TTL) between publish and lookup.
+				continue
+			}
 
 			s.wg.Add(1)
 			if err := sem.Acquire(ctx, 1); err != nil {
@@ -47,7 +51,7 @@ func (s *Subscription[T]) Subscribe(ctx context.Context, consumer function.Consu
 			go func(m *Message[T]) {
 				defer sem.Release(1)
 				defer s.wg.Done()
-				consumer(message)
+				consumer(m)
 			}(message)
 
 		case <-ctx.Done():

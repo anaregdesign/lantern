@@ -33,16 +33,14 @@ func (c *Cache[S, T]) Get(key S) (T, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	if v, ok := c.cache[key]; ok {
-		if v.IsExpired() {
-			go c.Delete(key)
-			var noop T
-			return noop, false
-		}
-		return v.value, true
-	}
 	var noop T
-	return noop, false
+	v, ok := c.cache[key]
+	if !ok || v.IsExpired() {
+		// Expired entries are cleaned up by the periodic Flush in Watch;
+		// avoid spawning a goroutine per lookup.
+		return noop, false
+	}
+	return v.value, true
 }
 
 func (c *Cache[S, T]) PutWithExpiration(key S, value T, expiration time.Time) {
