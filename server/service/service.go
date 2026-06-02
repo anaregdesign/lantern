@@ -300,5 +300,14 @@ func (s *LanternServer) Run(ctx context.Context) error {
 		slog.Duration("gc_interval", s.gcInterval),
 		slog.Duration("shutdown_timeout", s.shutdownTimeout),
 	)
-	return s.server.Serve(s.listener)
+	// Serve blocks until the server stops. Whatever the reason — graceful
+	// shutdown, listener error, or fatal panic recovered by grpc — flip the
+	// health gauge to NOT_SERVING so probes don't keep reporting healthy
+	// against a dead server. The shutdown goroutine above also sets this,
+	// but only on ctx cancellation; this covers every other exit path.
+	err := s.server.Serve(s.listener)
+	if s.health != nil {
+		s.health.SetServingStatus(ServiceName, healthpb.HealthCheckResponse_NOT_SERVING)
+	}
+	return err
 }
