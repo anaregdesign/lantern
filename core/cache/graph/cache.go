@@ -150,16 +150,33 @@ func (c *GraphCache[S, T]) Neighbor(seed S, step int, k int, tfidf bool) *graph.
 // — checked between BFS expansion steps — so handlers can short-circuit
 // large traversals when the caller has given up.
 func (c *GraphCache[S, T]) NeighborContext(ctx context.Context, seed S, step int, k int, tfidf bool) (*graph.Graph[S, T], error) {
+	g, _, err := c.neighborContext(ctx, seed, step, k, tfidf, false)
+	return g, err
+}
+
+// NeighborWithExpirationsContext returns the same subgraph as
+// NeighborContext together with a parallel expirations map keyed by
+// (tail, head). Both are computed under a single RLock so handlers can
+// compose responses without re-acquiring the cache lock per edge.
+//
+// The expirations map only contains entries for edges that ended up in
+// the returned graph; a missing or zero value means the edge has no
+// known expiration.
+func (c *GraphCache[S, T]) NeighborWithExpirationsContext(ctx context.Context, seed S, step int, k int, tfidf bool) (*graph.Graph[S, T], map[S]map[S]time.Time, error) {
+	return c.neighborContext(ctx, seed, step, k, tfidf, true)
+}
+
+func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int, k int, tfidf bool, collectExpirations bool) (*graph.Graph[S, T], map[S]map[S]time.Time, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	g := graph.NewGraph[S, T]()
 
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if v, ok := c.vertices.Get(seed); !ok {
-		return g, nil
+		return g, nil, nil
 	} else {
 		g.Vertices[seed] = v
 	}
@@ -175,7 +192,7 @@ func (c *GraphCache[S, T]) NeighborContext(ctx context.Context, seed S, step int
 	df := c.edges.snapshotDF()
 	for range step {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		for _, tail := range targets.Values() {
@@ -234,7 +251,28 @@ func (c *GraphCache[S, T]) NeighborContext(ctx context.Context, seed S, step int
 		}
 	}
 
-	return g, nil
+	// Collect expirations under the same RLock so the handler can compose
+	// edges without re-locking the cache O(E) times. Only edges that
+	// survived the Top-k filter are queried.
+	var expirations map[S]map[S]time.Time
+	if collectExpirations {
+		expirations = make(map[S]map[S]time.Time, len(g.Edges))
+		for tail, heads := range g.Edges {
+			if len(heads) == 0 {
+				continue
+			}
+			row := make(map[S]time.Time, len(heads))
+			tfRow := tf[tail]
+			for head := range heads {
+				if w, ok := tfRow[head]; ok {
+					row[head] = w.latestExpiration()
+				}
+			}
+			expirations[tail] = row
+		}
+	}
+
+	return g, expirations, nil
 }
 
 func (c *GraphCache[S, T]) Watch(ctx context.Context, interval time.Duration) {
