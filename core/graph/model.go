@@ -2,6 +2,8 @@ package graph
 
 import (
 	"container/heap"
+	"context"
+
 	"github.com/anaregdesign/lantern/core/collection/pq"
 	"github.com/anaregdesign/lantern/core/collection/set"
 )
@@ -40,6 +42,14 @@ func (g *Graph[S, T]) PutEdge(tail, head S, weight float32) {
 }
 
 func (g *Graph[S, T]) ConnectedGraph(seed S) *Graph[S, T] {
+	connected, _ := g.ConnectedGraphContext(context.Background(), seed)
+	return connected
+}
+
+// ConnectedGraphContext is the context-aware variant of ConnectedGraph.
+// It returns ctx.Err() as soon as the context is cancelled or its deadline
+// has expired, so callers can short-circuit large traversals.
+func (g *Graph[S, T]) ConnectedGraphContext(ctx context.Context, seed S) (*Graph[S, T], error) {
 	targets := set.NewSet[S]()
 	seen := set.NewSet[S]()
 	connected := NewGraph[S, T]()
@@ -47,6 +57,9 @@ func (g *Graph[S, T]) ConnectedGraph(seed S) *Graph[S, T] {
 
 	targets.Add(seed)
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		for _, tail := range targets.Values() {
 			if seen.Has(tail) {
 				continue
@@ -69,7 +82,7 @@ func (g *Graph[S, T]) ConnectedGraph(seed S) *Graph[S, T] {
 		}
 	}
 
-	return connected
+	return connected, nil
 }
 
 // MinimumSpanningTree
@@ -79,7 +92,17 @@ func (g *Graph[S, T]) ConnectedGraph(seed S) *Graph[S, T] {
  * If negate is true, the maximum spanning tree is returned.
  */
 func (g *Graph[S, T]) MinimumSpanningTree(seed S, negate bool) *Graph[S, T] {
-	connected := g.ConnectedGraph(seed)
+	mst, _ := g.MinimumSpanningTreeContext(context.Background(), seed, negate)
+	return mst
+}
+
+// MinimumSpanningTreeContext is the context-aware variant of
+// MinimumSpanningTree.
+func (g *Graph[S, T]) MinimumSpanningTreeContext(ctx context.Context, seed S, negate bool) (*Graph[S, T], error) {
+	connected, err := g.ConnectedGraphContext(ctx, seed)
+	if err != nil {
+		return nil, err
+	}
 
 	type edge struct {
 		tail   S
@@ -94,6 +117,9 @@ func (g *Graph[S, T]) MinimumSpanningTree(seed S, negate bool) *Graph[S, T] {
 
 	mst.PutVertex(seed, connected.Vertices[seed])
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if len(mst.Vertices) == len(connected.Vertices) {
 			break
 		}
@@ -141,7 +167,7 @@ func (g *Graph[S, T]) MinimumSpanningTree(seed S, negate bool) *Graph[S, T] {
 		mst.PutEdge(pickedUp.tail, pickedUp.head, pickedUp.weight)
 
 	}
-	return mst
+	return mst, nil
 }
 
 // ShortestPathTree
@@ -152,7 +178,16 @@ func (g *Graph[S, T]) MinimumSpanningTree(seed S, negate bool) *Graph[S, T] {
  * It is calculated by Dijkstra's algorithm, so the costFunc must return a positive value.
  */
 func (g *Graph[S, T]) ShortestPathTree(seed S, costFunc func(x float32) float32) *Graph[S, T] {
-	connected := g.ConnectedGraph(seed)
+	spt, _ := g.ShortestPathTreeContext(context.Background(), seed, costFunc)
+	return spt
+}
+
+// ShortestPathTreeContext is the context-aware variant of ShortestPathTree.
+func (g *Graph[S, T]) ShortestPathTreeContext(ctx context.Context, seed S, costFunc func(x float32) float32) (*Graph[S, T], error) {
+	connected, err := g.ConnectedGraphContext(ctx, seed)
+	if err != nil {
+		return nil, err
+	}
 	spt := NewGraph[S, T]()
 	spt.PutVertex(seed, connected.Vertices[seed])
 
@@ -168,6 +203,9 @@ func (g *Graph[S, T]) ShortestPathTree(seed S, costFunc func(x float32) float32)
 	pivot := seed
 	position := float32(0.0)
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if len(spt.Vertices) == len(connected.Vertices) {
 			break
 		}
@@ -209,7 +247,7 @@ func (g *Graph[S, T]) ShortestPathTree(seed S, costFunc func(x float32) float32)
 		position = pickedUp.Priority
 	}
 
-	return spt
+	return spt, nil
 }
 
 func (g *Graph[S, T]) Render(key2int func(k S) int, value2string func(v T) string) GraphView {
