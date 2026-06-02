@@ -209,17 +209,43 @@ ingestion simple — you only need to issue edge writes.
 
 ## Configuration
 
-The server reads two environment variables at startup
-([server/provider/provider.go](server/provider/provider.go)):
+The server is configured via environment variables, parsed in
+[server/provider/provider.go](server/provider/provider.go):
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `LANTERN_PORT` | `6380` | gRPC listen port |
 | `LANTERN_DEFAULT_TTL_SECONDS` | `60` | Default TTL when a request omits one |
+| `LANTERN_GC_INTERVAL_SECONDS` | `60` | Cache GC tick interval |
+| `LANTERN_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
+| `LANTERN_LOG_FORMAT` | `json` | `json` or `text` (slog handler) |
+| `LANTERN_METRICS_ADDR` | `:9090` | Address for Prometheus + health HTTP; empty disables |
+| `LANTERN_REFLECTION` | `true` | Register gRPC server reflection (useful for `grpcurl`) |
 
-The background GC runs every 1 minute (`Watch` interval in
-[server/service/service.go](server/service/service.go)); change this if you
-have very short TTLs and want tighter cleanup.
+## Observability
+
+Lantern ships production-grade observability out of the box:
+
+- **Structured logging** via `log/slog` — JSON by default, with per-RPC
+  start/finish events emitted by the
+  [`grpc-ecosystem/go-grpc-middleware/v2`](https://github.com/grpc-ecosystem/go-grpc-middleware)
+  logging interceptor.
+- **Prometheus metrics** — gRPC server metrics (including a handling-time
+  histogram) plus Go runtime and process collectors, exposed on
+  `LANTERN_METRICS_ADDR` at `/metrics`.
+- **Health checks** — gRPC standard health service (`grpc.health.v1.Health`)
+  *and* HTTP `/healthz` + `/readyz` on the metrics listener, so both
+  Kubernetes probes and `grpc_health_probe` work.
+- **Distributed tracing** — OpenTelemetry server instrumentation via
+  `otelgrpc.NewServerHandler()` (modern stats-handler API; the deprecated
+  unary/stream interceptors are not used). Wire up an exporter via the standard
+  `OTEL_EXPORTER_OTLP_*` env vars to ship traces.
+- **gRPC reflection** — registered by default; turn off with
+  `LANTERN_REFLECTION=false` for hardened deployments.
+- **Keepalive + panic recovery** — sensible `keepalive.ServerParameters` and
+  an enforcement policy are applied, and a recovery interceptor turns panics
+  into `Internal` status responses with a logged stack trace instead of
+  crashing the process.
 
 ---
 

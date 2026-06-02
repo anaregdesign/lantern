@@ -2,30 +2,98 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
+
+	"github.com/anaregdesign/lantern/server/provider"
+	"github.com/anaregdesign/lantern/server/service"
+	"golang.org/x/sync/errgroup"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
-func main() {
-	log.Println("Environment Variables:")
-	for _, pair := range os.Environ() {
-		log.Println(pair)
-	}
+// App is the composition root produced by wire. It owns every long-running
+// goroutine (gRPC server, metrics HTTP server) so main only has to call Run.
+type App struct {
+	cfg     *provider.Config
+	logger  *slog.Logger
+	grpc    *service.LanternServer
+	metrics *provider.MetricsServer
+	health  *health.Server
+}
 
-	// NotifyContext cancels ctx on SIGINT/SIGTERM and avoids the
-	// close-while-Notify-may-send race of an explicit signal channel.
+func newApp(
+	cfg *provider.Config,
+	logger *slog.Logger,
+	grpcServer *service.LanternServer,
+	metricsServer *provider.MetricsServer,
+	hs *health.Server,
+	_ registeredHealth,
+) *App {
+	return &App{
+		cfg:     cfg,
+		logger:  logger,
+		grpc:    grpcServer,
+		metrics: metricsServer,
+		health:  hs,
+	}
+}
+
+// newGCInterval extracts the cache GC tick from Config so wire can inject a
+// plain time.Duration into the LanternServer constructor without coupling
+// service to provider.Config.
+func newGCInterval(c *provider.Config) time.Duration { return c.GCInterval }
+
+// registeredHealth is a marker emitted after the health and reflection
+// services have been registered on the gRPC server. wire injects it into
+// newApp purely to enforce ordering.
+type registeredHealth struct{}
+
+func registerHealthAndReflection(c *provider.Config, s *grpc.Server, hs *health.Server) registeredHealth {
+	provider.RegisterHealth(s, hs)
+	provider.RegisterReflection(c, s)
+	return registeredHealth{}
+}
+
+func (a *App) Run(ctx context.Context) error {
+	a.health.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error { return a.grpc.Run(gctx) })
+	g.Go(func() error { return a.metrics.Run(gctx) })
+	g.Go(func() error {
+		<-gctx.Done()
+		a.health.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+		a.health.Shutdown()
+		return nil
+	})
+	return g.Wait()
+}
+
+func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	svr, err := initializeLanternServer()
+	app, err := initializeApp()
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("failed to initialize app", slog.Any("err", err))
+		os.Exit(1)
 	}
 
-	log.Println("Starting Lantern Server")
-	if err := svr.Run(ctx); err != nil {
-		log.Fatal(err)
+	app.logger.Info("lantern starting",
+		slog.Int("port", app.cfg.Port),
+		slog.Duration("default_ttl", app.cfg.TTL),
+		slog.String("metrics_addr", app.cfg.MetricsAddr),
+		slog.Bool("reflection", app.cfg.EnableReflection),
+	)
+
+	if err := app.Run(ctx); err != nil {
+		app.logger.Error("server exited with error", slog.Any("err", err))
+		os.Exit(1)
 	}
+	app.logger.Info("server stopped cleanly")
 }

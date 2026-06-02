@@ -13,16 +13,24 @@ import (
 
 // Injectors from wire.go:
 
-func initializeLanternServer() (*service.LanternServer, error) {
+func initializeApp() (*App, error) {
 	config := provider.NewConfig()
+	logger := provider.NewLogger(config)
 	graphCache := provider.NewGraphCache(config)
 	lanternService := service.NewLanternService(graphCache)
-	v := provider.NewGrpcServerOptions()
+	registry := provider.NewPrometheusRegistry()
+	serverMetrics := provider.NewGrpcServerMetrics(registry)
+	v := provider.NewGrpcServerOptions(logger, serverMetrics)
 	server := provider.NewGrpcServer(v)
 	listener, err := provider.NewListener(config)
 	if err != nil {
 		return nil, err
 	}
-	lanternServer := service.NewLanternServer(lanternService, server, listener)
-	return lanternServer, nil
+	duration := newGCInterval(config)
+	lanternServer := service.NewLanternServer(lanternService, server, listener, logger, duration)
+	metricsServer := provider.NewMetricsServer(config, registry, logger)
+	healthServer := provider.NewHealthServer()
+	mainRegisteredHealth := registerHealthAndReflection(config, server, healthServer)
+	app := newApp(config, logger, lanternServer, metricsServer, healthServer, mainRegisteredHealth)
+	return app, nil
 }
