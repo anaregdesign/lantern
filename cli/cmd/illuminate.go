@@ -88,7 +88,7 @@ EXAMPLES
 		if err != nil {
 			return err
 		}
-		defer cli.Close()
+		defer func() { _ = cli.Close() }()
 
 		g, err := cli.IlluminateWithOptimization(
 			cmd.Context(), args[0], illuminateStep, illuminateK, illuminateTfidf, opt)

@@ -56,7 +56,7 @@ EXAMPLES
 		if err != nil {
 			return err
 		}
-		defer cli.Close()
+		defer func() { _ = cli.Close() }()
 
 		v, err := cli.GetVertex(cmd.Context(), args[0])
 		if err != nil {
@@ -125,7 +125,7 @@ EXAMPLES
 		if err != nil {
 			return err
 		}
-		defer cli.Close()
+		defer func() { _ = cli.Close() }()
 		if err := cli.PutVertex(cmd.Context(), args[0], val, vertexPutTTL); err != nil {
 			return err
 		}
@@ -165,7 +165,7 @@ EXAMPLES
 		if err != nil {
 			return err
 		}
-		defer cli.Close()
+		defer func() { _ = cli.Close() }()
 
 		if len(args) == 1 {
 			if err := cli.DeleteVertex(cmd.Context(), args[0]); err != nil {
