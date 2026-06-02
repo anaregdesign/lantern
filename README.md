@@ -147,6 +147,23 @@ go run ./server/cmd          # listens on :6380
 
 ### Use the CLI
 
+Pre-built binaries for Linux, macOS, and Windows (amd64 + arm64) are
+attached to every [GitHub Release](https://github.com/anaregdesign/lantern/releases).
+
+```shell
+# macOS (Apple Silicon) — replace VERSION with the release tag, e.g. v0.6.0
+VERSION=v0.6.0
+curl -L -o lantern-cli.tar.gz \
+  "https://github.com/anaregdesign/lantern/releases/download/${VERSION}/lantern-cli_${VERSION#v}_Darwin_arm64.tar.gz"
+tar -xzf lantern-cli.tar.gz lantern-cli
+./lantern-cli version
+```
+
+Archive naming: `lantern-cli_<version>_<Linux|Darwin|Windows>_<x86_64|arm64>.tar.gz`
+(`.zip` on Windows). A `checksums.txt` is published alongside the archives.
+
+Or build from source:
+
 ```shell
 go build -o lantern ./cli
 ./lantern --help
