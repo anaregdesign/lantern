@@ -36,8 +36,8 @@ func NewGraphCache(c *Config) *graph.GraphCache[string, *v1.Vertex] {
 	return graph.NewGraphCache[string, *v1.Vertex](c.ttl)
 }
 
-func NewListener() (net.Listener, error) {
-	return net.Listen("tcp", ":"+strconv.Itoa(NewConfig().port))
+func NewListener(c *Config) (net.Listener, error) {
+	return net.Listen("tcp", ":"+strconv.Itoa(c.port))
 }
 
 func NewGrpcServerOptions() []grpc.ServerOption {
