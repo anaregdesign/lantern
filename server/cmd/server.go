@@ -10,6 +10,7 @@ import (
 
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
+	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
@@ -24,6 +25,7 @@ type App struct {
 	grpc    *service.LanternServer
 	metrics *provider.MetricsServer
 	tracing *provider.Tracing
+	domain  *domainmetrics.DomainMetrics
 	health  *health.Server
 }
 
@@ -33,6 +35,7 @@ func newApp(
 	grpcServer *service.LanternServer,
 	metricsServer *provider.MetricsServer,
 	tracing *provider.Tracing,
+	domain *domainmetrics.DomainMetrics,
 	hs *health.Server,
 	_ registeredHealth,
 ) *App {
@@ -42,6 +45,7 @@ func newApp(
 		grpc:    grpcServer,
 		metrics: metricsServer,
 		tracing: tracing,
+		domain:  domain,
 		health:  hs,
 	}
 }
@@ -63,6 +67,7 @@ func (a *App) Run(ctx context.Context) error {
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return a.grpc.Run(gctx) })
 	g.Go(func() error { return a.metrics.Run(gctx) })
+	g.Go(func() error { a.domain.Run(gctx); return nil })
 	g.Go(func() error {
 		<-gctx.Done()
 		a.health.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)

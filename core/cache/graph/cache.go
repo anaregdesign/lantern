@@ -17,6 +17,18 @@ type GraphCache[S comparable, T any] struct {
 	defaultTTL time.Duration
 	vertices   *cache.Cache[S, T]
 	edges      *edgeCache[S]
+
+	// GC observability hooks. Both are optional; the cache stays metrics-free
+	// by default. The server wires Prometheus collectors via SetGCHooks so
+	// reporting lives outside core.
+	//
+	// onExpire is invoked once per Watch tick per kind ("vertex" | "edge" |
+	// "dangling_edge") with the number of entries the tick removed.
+	// onGCDuration is invoked once per Watch tick with the wall-clock time
+	// spent inside the tick.
+	hookMu       sync.RWMutex
+	onExpire     func(kind string, n int)
+	onGCDuration func(d time.Duration)
 }
 
 func NewGraphCache[S comparable, T any](defaultTTL time.Duration) *GraphCache[S, T] {
@@ -129,17 +141,53 @@ func (c *GraphCache[S, T]) DeleteEdge(tail, head S) bool {
 
 	return c.edges.delete(tail, head)
 }
-func (c *GraphCache[S, T]) flush() {
+func (c *GraphCache[S, T]) flush() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	removed := 0
 	for tail, heads := range c.edges.snapshotTF() {
 		for head := range heads {
 			if !c.vertices.Has(tail) || !c.vertices.Has(head) {
-				c.edges.delete(tail, head)
+				if c.edges.delete(tail, head) {
+					removed++
+				}
 			}
 		}
 	}
+	return removed
+}
+
+// VertexCount returns the live vertex count under an RLock. Intended for
+// Prometheus gauges that sample the cache periodically.
+func (c *GraphCache[S, T]) VertexCount() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.vertices.Count()
+}
+
+// EdgeCount returns the live (tail, head) edge count under an RLock. Like
+// VertexCount it is intended for periodic gauge sampling, not hot paths.
+func (c *GraphCache[S, T]) EdgeCount() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.edges.count()
+}
+
+// SetGCHooks installs optional observability callbacks invoked from Watch
+// after every GC tick. Either argument may be nil. Hooks must not call back
+// into the cache (re-entrant locking would deadlock). Safe for concurrent use.
+func (c *GraphCache[S, T]) SetGCHooks(onExpire func(kind string, n int), onGCDuration func(d time.Duration)) {
+	c.hookMu.Lock()
+	defer c.hookMu.Unlock()
+	c.onExpire = onExpire
+	c.onGCDuration = onGCDuration
+}
+
+func (c *GraphCache[S, T]) snapshotHooks() (func(string, int), func(time.Duration)) {
+	c.hookMu.RLock()
+	defer c.hookMu.RUnlock()
+	return c.onExpire, c.onGCDuration
 }
 
 func (c *GraphCache[S, T]) Neighbor(seed S, step int, k int, tfidf bool) *graph.Graph[S, T] {
@@ -284,9 +332,26 @@ func (c *GraphCache[S, T]) Watch(ctx context.Context, interval time.Duration) {
 	for {
 		select {
 		case <-ticker.C:
-			c.vertices.Flush()
-			c.edges.flush()
-			c.flush()
+			start := time.Now()
+			vExpired := c.vertices.Flush()
+			eExpired := c.edges.flush()
+			dRemoved := c.flush()
+			d := time.Since(start)
+			onExpire, onGC := c.snapshotHooks()
+			if onExpire != nil {
+				if vExpired > 0 {
+					onExpire("vertex", vExpired)
+				}
+				if eExpired > 0 {
+					onExpire("edge", eExpired)
+				}
+				if dRemoved > 0 {
+					onExpire("dangling_edge", dRemoved)
+				}
+			}
+			if onGC != nil {
+				onGC(d)
+			}
 
 		case <-ctx.Done():
 			return

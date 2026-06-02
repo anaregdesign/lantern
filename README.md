@@ -325,7 +325,16 @@ Lantern ships production-grade observability out of the box:
   logging interceptor.
 - **Prometheus metrics** — gRPC server metrics (including a handling-time
   histogram) plus Go runtime and process collectors, exposed on
-  `LANTERN_METRICS_ADDR` at `/metrics`.
+  `LANTERN_METRICS_ADDR` at `/metrics`. Lantern also publishes its own
+  domain collectors so you can chart cache load and GC pressure directly:
+
+  | Metric | Type | Labels | Description |
+  |---|---|---|---|
+  | `lantern_vertices` | gauge | — | Live vertex count in the in-memory cache. |
+  | `lantern_edges` | gauge | — | Live edge count in the in-memory cache. |
+  | `lantern_ttl_expirations_total` | counter | `kind` (`vertex`, `edge`, `dangling_edge`) | Entries reaped per GC tick, partitioned by kind. |
+  | `lantern_gc_duration_seconds` | histogram | — | Wall-clock duration of a single GC tick (buckets `0.1ms..~1.6s`). |
+  | `lantern_build_info` | gauge (=1) | `version`, `commit`, `go_version` | Build metadata for the running server. |
 - **Health checks** — gRPC standard health service (`grpc.health.v1.Health`)
   *and* HTTP `/healthz` + `/readyz` on the metrics listener, so both
   Kubernetes probes and `grpc_health_probe` work.

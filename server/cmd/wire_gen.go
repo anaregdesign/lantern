@@ -37,7 +37,8 @@ func initializeApp() (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	domainMetrics := provider.NewDomainMetrics(registry, graphCache)
 	mainRegisteredHealth := registerHealthAndReflection(config, server, healthServer)
-	app := newApp(config, logger, lanternServer, metricsServer, tracing, healthServer, mainRegisteredHealth)
+	app := newApp(config, logger, lanternServer, metricsServer, tracing, domainMetrics, healthServer, mainRegisteredHealth)
 	return app, nil
 }

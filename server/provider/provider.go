@@ -14,6 +14,7 @@ import (
 
 	"github.com/anaregdesign/lantern/core/cache/graph"
 	v1 "github.com/anaregdesign/lantern/pb/graph/v1"
+	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 	grpcprom "github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus"
 	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/logging"
 	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/recovery"
@@ -187,6 +188,23 @@ func NewLogger(c *Config) *slog.Logger {
 
 func NewGraphCache(c *Config) *graph.GraphCache[string, *v1.Vertex] {
 	return graph.NewGraphCache[string, *v1.Vertex](c.TTL)
+}
+
+// NewDomainMetrics registers the Lantern-specific `lantern_*` collectors on
+// the shared Prometheus registry and wires the GraphCache GC hooks so each
+// Watch tick updates the eviction counters and histogram. The gauge sampler
+// runs from DomainMetrics.Run, started by App alongside the other long-lived
+// goroutines.
+func NewDomainMetrics(
+	reg *prometheus.Registry,
+	cache *graph.GraphCache[string, *v1.Vertex],
+) *domainmetrics.DomainMetrics {
+	m := domainmetrics.New(reg, domainmetrics.Options{})
+	m.BindSampler(func() (int, int) {
+		return cache.VertexCount(), cache.EdgeCount()
+	})
+	cache.SetGCHooks(m.OnExpire, m.OnGCDuration)
+	return m
 }
 
 func NewListener(c *Config) (net.Listener, error) {

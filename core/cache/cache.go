@@ -93,13 +93,18 @@ func (c *Cache[S, T]) Count() int {
 	return len(c.cache)
 }
 
-func (c *Cache[S, T]) Flush() {
+// Flush evicts every entry whose TTL has passed. It returns the number of
+// entries removed so callers (e.g. server-side TTL metrics) can record
+// expiration counts without scanning the cache again.
+func (c *Cache[S, T]) Flush() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	before := len(c.cache)
 	maps.DeleteFunc(c.cache, func(_ S, v volatile[T]) bool {
 		return v.IsExpired()
 	})
+	return before - len(c.cache)
 }
 
 func (c *Cache[S, T]) Watch(ctx context.Context, interval time.Duration) {

@@ -210,15 +210,30 @@ func (c *edgeCache[S]) deleteLocked(tail, head S) bool {
 	return true
 }
 
-func (c *edgeCache[S]) flush() {
+func (c *edgeCache[S]) flush() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	removed := 0
 	for tail, heads := range c.tf {
 		for head, w := range heads {
 			if w.isZero() {
 				c.deleteLocked(tail, head)
+				removed++
 			}
 		}
 	}
+	return removed
+}
+
+// count returns the current number of (tail, head) edges held in tf.
+// It acquires only an RLock so it is safe to call from metric collectors.
+func (c *edgeCache[S]) count() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	n := 0
+	for _, heads := range c.tf {
+		n += len(heads)
+	}
+	return n
 }
