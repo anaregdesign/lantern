@@ -2,13 +2,16 @@ package service
 
 import (
 	"context"
+	"log"
+	"math"
+	"net"
+	"time"
+
 	"github.com/anaregdesign/lantern/core/cache/graph"
 	. "github.com/anaregdesign/lantern/gen/go/graph/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"log"
-	"net"
-	"time"
 )
 
 // Avoiding bug of `wire`. Generic type is not supported.
@@ -26,7 +29,7 @@ func NewLanternService(cache *graph.GraphCache[string, *Vertex]) *LanternService
 
 func (s *LanternService) Illuminate(ctx context.Context, request *IlluminateRequest) (*IlluminateResponse, error) {
 	log.Printf("Illuminate: %v", request)
-	g := s.cache.Neighbor(request.Seed, int(request.Step), int(request.Step), request.Tfidf)
+	g := s.cache.Neighbor(request.Seed, int(request.Step), int(request.K), request.Tfidf)
 
 	switch request.Optimization {
 	case Optimization_OPTIMIZATION_UNSPECIFIED:
@@ -41,7 +44,12 @@ func (s *LanternService) Illuminate(ctx context.Context, request *IlluminateRequ
 		g = g.ShortestPathTree(request.Seed, func(weight float32) float32 { return weight })
 
 	case Optimization_OPTIMIZATION_SHORTEST_PATH_TREE_INVERSE:
-		g = g.ShortestPathTree(request.Seed, func(weight float32) float32 { return 1 / weight })
+		g = g.ShortestPathTree(request.Seed, func(weight float32) float32 {
+			if weight == 0 {
+				return math.MaxFloat32
+			}
+			return 1 / weight
+		})
 	}
 
 	var vertices []*Vertex
@@ -97,7 +105,7 @@ func (s *LanternService) GetVertex(ctx context.Context, request *GetVertexReques
 			Status: Status_STATUS_OK,
 		}, nil
 	}
-	return nil, status.Error(404, "Vertex not found")
+	return nil, status.Error(codes.NotFound, "Vertex not found")
 }
 
 func (s *LanternService) PutVertex(ctx context.Context, request *PutVertexRequest) (*PutVertexResponse, error) {
@@ -117,13 +125,7 @@ func (s *LanternService) GetEdge(ctx context.Context, request *GetEdgeRequest) (
 	log.Printf("GetEdge: %v", request)
 	w, ok := s.cache.GetWeight(request.Tail, request.Head)
 	if !ok {
-		return &GetEdgeResponse{
-			Edge: &Edge{
-				Tail:   request.Tail,
-				Head:   request.Head,
-				Weight: 0,
-			},
-		}, nil
+		return nil, status.Error(codes.NotFound, "Edge not found")
 	}
 	return &GetEdgeResponse{
 		Edge: &Edge{
@@ -135,7 +137,7 @@ func (s *LanternService) GetEdge(ctx context.Context, request *GetEdgeRequest) (
 }
 
 func (s *LanternService) AddEdge(ctx context.Context, request *AddEdgeRequest) (*AddEdgeResponse, error) {
-	log.Printf("PutEdge: %v", request)
+	log.Printf("AddEdge: %v", request)
 	for _, e := range request.Edges {
 		s.cache.AddEdgeWithExpiration(e.Tail, e.Head, e.Weight, e.Expiration.AsTime())
 	}
@@ -160,7 +162,7 @@ type LanternServer struct {
 func (s *LanternService) DeleteEdge(ctx context.Context, in *DeleteEdgeRequest) (*DeleteEdgeResponse, error) {
 	log.Printf("DeleteEdge: %v", in)
 	s.cache.DeleteEdge(in.Tail, in.Head)
-	return &DeleteEdgeResponse{}, nil
+	return &DeleteEdgeResponse{Status: Status_STATUS_OK}, nil
 }
 
 func NewLanternServer(service *LanternService, server *grpc.Server, listener net.Listener) *LanternServer {

@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"strings"
+
 	"github.com/anaregdesign/lantern/cli/parser"
 	"github.com/anaregdesign/lantern/client"
-	"strings"
 )
 
 var (
@@ -206,7 +208,12 @@ func (c *CLIService) Run(ctx context.Context, str string) error {
 			}
 
 		case "spt_relevance":
-			g = g.ShortestPathTree(p.Seed, func(x float32) float32 { return 1 / x })
+			g = g.ShortestPathTree(p.Seed, func(x float32) float32 {
+				if x == 0 {
+					return math.MaxFloat32
+				}
+				return 1 / x
+			})
 			if jsonString, err := json.MarshalIndent(g, "", "\t"); err != nil {
 				return err
 			} else {
