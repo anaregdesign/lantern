@@ -195,10 +195,12 @@ Defined in [proto/graph/v1/graph.proto](proto/graph/v1/graph.proto), served by
 | `PutVertex` | Upsert one or more vertices with TTL | Last write wins |
 | `GetVertex` | Fetch a vertex by key | `NotFound` if expired/missing |
 | `DeleteVertex` | Remove a vertex | Edges to/from it are GC'd on next `Watch` tick |
+| `DeleteVertices` | Batch remove vertices in one round-trip | SDK auto-chunks at `WithBatchChunkSize`; idempotent (retried automatically) |
 | `AddEdge` | **Append** a weighted contribution | Not idempotent — see §1.2 above |
 | `PutEdge` | Idempotent replace (delete + add) | Use when you want one-and-only-one weight |
 | `GetEdge` | Read current live weight | Sum of unexpired contributions |
 | `DeleteEdge` | Remove an edge outright | |
+| `DeleteEdges` | Batch remove edges in one round-trip | Takes `[]EdgeRef{Tail, Head}`; SDK auto-chunks; idempotent |
 | `Illuminate` | Walk the graph from a seed | `step`, `k`, `tfidf`, and `Optimization` (none / MST / max-ST / SPT / inverse-SPT) |
 
 Vertices auto-materialize on `AddEdge`/`PutEdge` if the endpoint key does not

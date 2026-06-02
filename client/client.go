@@ -199,6 +199,24 @@ func (l *Lantern) DeleteVertex(ctx context.Context, key string) error {
 	return err
 }
 
+// DeleteVertices removes a batch of vertices. Automatically chunked to
+// respect the server's MaxBatchSize cap. Edges incident to removed vertices
+// are reaped lazily by the server's GC loop.
+func (l *Lantern) DeleteVertices(ctx context.Context, keys []string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	for _, chunk := range chunkSlice(keys, l.opts.batchChunkSize) {
+		ctx, cancel := l.applyTimeout(ctx)
+		_, err := l.client.DeleteVertices(ctx, &pb.DeleteVerticesRequest{Keys: chunk})
+		cancel()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // GetEdge fetches the edge weight (and any expiration) between tail and head.
 func (l *Lantern) GetEdge(ctx context.Context, tail string, head string) (*Edge, error) {
 	ctx, cancel := l.applyTimeout(ctx)
@@ -280,6 +298,33 @@ func (l *Lantern) DeleteEdge(ctx context.Context, tail string, head string) erro
 	defer cancel()
 	_, err := l.client.DeleteEdge(ctx, &pb.DeleteEdgeRequest{Tail: tail, Head: head})
 	return err
+}
+
+// EdgeRef identifies an edge by its (tail, head) pair without weight.
+// Used by DeleteEdges.
+type EdgeRef struct {
+	Tail string
+	Head string
+}
+
+// DeleteEdges removes a batch of edges. Automatically chunked.
+func (l *Lantern) DeleteEdges(ctx context.Context, refs []EdgeRef) error {
+	if len(refs) == 0 {
+		return nil
+	}
+	keys := make([]*pb.EdgeKey, 0, len(refs))
+	for _, r := range refs {
+		keys = append(keys, &pb.EdgeKey{Tail: r.Tail, Head: r.Head})
+	}
+	for _, chunk := range chunkSlice(keys, l.opts.batchChunkSize) {
+		ctx, cancel := l.applyTimeout(ctx)
+		_, err := l.client.DeleteEdges(ctx, &pb.DeleteEdgesRequest{Edges: chunk})
+		cancel()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Illuminate runs a k-bounded BFS from seed, returning the resulting subgraph.

@@ -19,14 +19,16 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	LanternService_Illuminate_FullMethodName   = "/graph.v1.LanternService/Illuminate"
-	LanternService_GetVertex_FullMethodName    = "/graph.v1.LanternService/GetVertex"
-	LanternService_PutVertex_FullMethodName    = "/graph.v1.LanternService/PutVertex"
-	LanternService_DeleteVertex_FullMethodName = "/graph.v1.LanternService/DeleteVertex"
-	LanternService_GetEdge_FullMethodName      = "/graph.v1.LanternService/GetEdge"
-	LanternService_AddEdge_FullMethodName      = "/graph.v1.LanternService/AddEdge"
-	LanternService_PutEdge_FullMethodName      = "/graph.v1.LanternService/PutEdge"
-	LanternService_DeleteEdge_FullMethodName   = "/graph.v1.LanternService/DeleteEdge"
+	LanternService_Illuminate_FullMethodName     = "/graph.v1.LanternService/Illuminate"
+	LanternService_GetVertex_FullMethodName      = "/graph.v1.LanternService/GetVertex"
+	LanternService_PutVertex_FullMethodName      = "/graph.v1.LanternService/PutVertex"
+	LanternService_DeleteVertex_FullMethodName   = "/graph.v1.LanternService/DeleteVertex"
+	LanternService_DeleteVertices_FullMethodName = "/graph.v1.LanternService/DeleteVertices"
+	LanternService_GetEdge_FullMethodName        = "/graph.v1.LanternService/GetEdge"
+	LanternService_AddEdge_FullMethodName        = "/graph.v1.LanternService/AddEdge"
+	LanternService_PutEdge_FullMethodName        = "/graph.v1.LanternService/PutEdge"
+	LanternService_DeleteEdge_FullMethodName     = "/graph.v1.LanternService/DeleteEdge"
+	LanternService_DeleteEdges_FullMethodName    = "/graph.v1.LanternService/DeleteEdges"
 )
 
 // LanternServiceClient is the client API for LanternService service.
@@ -37,12 +39,16 @@ type LanternServiceClient interface {
 	GetVertex(ctx context.Context, in *GetVertexRequest, opts ...grpc.CallOption) (*GetVertexResponse, error)
 	PutVertex(ctx context.Context, in *PutVertexRequest, opts ...grpc.CallOption) (*PutVertexResponse, error)
 	DeleteVertex(ctx context.Context, in *DeleteVertexRequest, opts ...grpc.CallOption) (*DeleteVertexResponse, error)
+	// DeleteVertices removes several vertices in one round trip.
+	DeleteVertices(ctx context.Context, in *DeleteVerticesRequest, opts ...grpc.CallOption) (*DeleteVerticesResponse, error)
 	GetEdge(ctx context.Context, in *GetEdgeRequest, opts ...grpc.CallOption) (*GetEdgeResponse, error)
 	// AddEdge is non-idempotent (accumulates weight). POST per REST conventions.
 	AddEdge(ctx context.Context, in *AddEdgeRequest, opts ...grpc.CallOption) (*AddEdgeResponse, error)
 	// PutEdge is idempotent (replaces weight). PUT per REST conventions.
 	PutEdge(ctx context.Context, in *PutEdgeRequest, opts ...grpc.CallOption) (*PutEdgeResponse, error)
 	DeleteEdge(ctx context.Context, in *DeleteEdgeRequest, opts ...grpc.CallOption) (*DeleteEdgeResponse, error)
+	// DeleteEdges removes several edges in one round trip.
+	DeleteEdges(ctx context.Context, in *DeleteEdgesRequest, opts ...grpc.CallOption) (*DeleteEdgesResponse, error)
 }
 
 type lanternServiceClient struct {
@@ -93,6 +99,16 @@ func (c *lanternServiceClient) DeleteVertex(ctx context.Context, in *DeleteVerte
 	return out, nil
 }
 
+func (c *lanternServiceClient) DeleteVertices(ctx context.Context, in *DeleteVerticesRequest, opts ...grpc.CallOption) (*DeleteVerticesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteVerticesResponse)
+	err := c.cc.Invoke(ctx, LanternService_DeleteVertices_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *lanternServiceClient) GetEdge(ctx context.Context, in *GetEdgeRequest, opts ...grpc.CallOption) (*GetEdgeResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetEdgeResponse)
@@ -133,6 +149,16 @@ func (c *lanternServiceClient) DeleteEdge(ctx context.Context, in *DeleteEdgeReq
 	return out, nil
 }
 
+func (c *lanternServiceClient) DeleteEdges(ctx context.Context, in *DeleteEdgesRequest, opts ...grpc.CallOption) (*DeleteEdgesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteEdgesResponse)
+	err := c.cc.Invoke(ctx, LanternService_DeleteEdges_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // LanternServiceServer is the server API for LanternService service.
 // All implementations should embed UnimplementedLanternServiceServer
 // for forward compatibility.
@@ -141,12 +167,16 @@ type LanternServiceServer interface {
 	GetVertex(context.Context, *GetVertexRequest) (*GetVertexResponse, error)
 	PutVertex(context.Context, *PutVertexRequest) (*PutVertexResponse, error)
 	DeleteVertex(context.Context, *DeleteVertexRequest) (*DeleteVertexResponse, error)
+	// DeleteVertices removes several vertices in one round trip.
+	DeleteVertices(context.Context, *DeleteVerticesRequest) (*DeleteVerticesResponse, error)
 	GetEdge(context.Context, *GetEdgeRequest) (*GetEdgeResponse, error)
 	// AddEdge is non-idempotent (accumulates weight). POST per REST conventions.
 	AddEdge(context.Context, *AddEdgeRequest) (*AddEdgeResponse, error)
 	// PutEdge is idempotent (replaces weight). PUT per REST conventions.
 	PutEdge(context.Context, *PutEdgeRequest) (*PutEdgeResponse, error)
 	DeleteEdge(context.Context, *DeleteEdgeRequest) (*DeleteEdgeResponse, error)
+	// DeleteEdges removes several edges in one round trip.
+	DeleteEdges(context.Context, *DeleteEdgesRequest) (*DeleteEdgesResponse, error)
 }
 
 // UnimplementedLanternServiceServer should be embedded to have
@@ -168,6 +198,9 @@ func (UnimplementedLanternServiceServer) PutVertex(context.Context, *PutVertexRe
 func (UnimplementedLanternServiceServer) DeleteVertex(context.Context, *DeleteVertexRequest) (*DeleteVertexResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteVertex not implemented")
 }
+func (UnimplementedLanternServiceServer) DeleteVertices(context.Context, *DeleteVerticesRequest) (*DeleteVerticesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteVertices not implemented")
+}
 func (UnimplementedLanternServiceServer) GetEdge(context.Context, *GetEdgeRequest) (*GetEdgeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetEdge not implemented")
 }
@@ -179,6 +212,9 @@ func (UnimplementedLanternServiceServer) PutEdge(context.Context, *PutEdgeReques
 }
 func (UnimplementedLanternServiceServer) DeleteEdge(context.Context, *DeleteEdgeRequest) (*DeleteEdgeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteEdge not implemented")
+}
+func (UnimplementedLanternServiceServer) DeleteEdges(context.Context, *DeleteEdgesRequest) (*DeleteEdgesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteEdges not implemented")
 }
 func (UnimplementedLanternServiceServer) testEmbeddedByValue() {}
 
@@ -272,6 +308,24 @@ func _LanternService_DeleteVertex_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LanternService_DeleteVertices_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteVerticesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LanternServiceServer).DeleteVertices(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LanternService_DeleteVertices_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LanternServiceServer).DeleteVertices(ctx, req.(*DeleteVerticesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _LanternService_GetEdge_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetEdgeRequest)
 	if err := dec(in); err != nil {
@@ -344,6 +398,24 @@ func _LanternService_DeleteEdge_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LanternService_DeleteEdges_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteEdgesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LanternServiceServer).DeleteEdges(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LanternService_DeleteEdges_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LanternServiceServer).DeleteEdges(ctx, req.(*DeleteEdgesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // LanternService_ServiceDesc is the grpc.ServiceDesc for LanternService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -368,6 +440,10 @@ var LanternService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _LanternService_DeleteVertex_Handler,
 		},
 		{
+			MethodName: "DeleteVertices",
+			Handler:    _LanternService_DeleteVertices_Handler,
+		},
+		{
 			MethodName: "GetEdge",
 			Handler:    _LanternService_GetEdge_Handler,
 		},
@@ -382,6 +458,10 @@ var LanternService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteEdge",
 			Handler:    _LanternService_DeleteEdge_Handler,
+		},
+		{
+			MethodName: "DeleteEdges",
+			Handler:    _LanternService_DeleteEdges_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

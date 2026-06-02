@@ -38,4 +38,8 @@ USER lantern
 # 6380 = gRPC, 9090 = Prometheus /metrics + /healthz + /readyz
 EXPOSE 6380 9090
 
+# Be explicit: the server installs SIGTERM/SIGINT handlers; make sure the
+# container runtime forwards SIGTERM (not the alpine default SIGQUIT) to PID 1.
+STOPSIGNAL SIGTERM
+
 ENTRYPOINT ["/app/lantern"]
