@@ -263,11 +263,12 @@ func NewGrpcServerOptions(
 
 	if c.RateLimitRPS > 0 {
 		rl := NewRateLimitInterceptor(c.RateLimitRPS, c.RateLimitBurst)
-		unary = append(unary, rl.UnaryServerInterceptor())
-		stream = append(stream, rl.StreamServerInterceptor())
+		unary = append(unary, validator.UnaryServerInterceptor(), rl.UnaryServerInterceptor())
+		stream = append(stream, validator.StreamServerInterceptor(), rl.StreamServerInterceptor())
+	} else {
+		unary = append(unary, validator.UnaryServerInterceptor())
+		stream = append(stream, validator.StreamServerInterceptor())
 	}
-	unary = append(unary, validator.UnaryServerInterceptor())
-	stream = append(stream, validator.StreamServerInterceptor())
 
 	opts := []grpc.ServerOption{
 		grpc.StatsHandler(otelgrpc.NewServerHandler()),
