@@ -7,6 +7,7 @@ import (
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
 	"github.com/google/wire"
+	"google.golang.org/grpc/health"
 )
 
 func initializeApp() (*App, error) {
@@ -21,9 +22,10 @@ func initializeApp() (*App, error) {
 		provider.NewGrpcServer,
 		provider.NewHealthServer,
 		provider.NewMetricsServer,
+		provider.NewLifecycleConfig,
 		service.NewLanternService,
 		service.NewLanternServer,
-		newGCInterval,
+		wire.Bind(new(service.HealthSetter), new(*health.Server)),
 		registerHealthAndReflection,
 		newApp,
 	)

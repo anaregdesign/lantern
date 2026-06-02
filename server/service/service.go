@@ -8,43 +8,57 @@ import (
 	"time"
 
 	"github.com/anaregdesign/lantern/core/cache/graph"
-	. "github.com/anaregdesign/lantern/gen/go/graph/v1"
+	pb "github.com/anaregdesign/lantern/gen/go/graph/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// LanternService implements the LanternServiceServer.
-//
-// Per-call logging is handled by the slog logging interceptor configured in
-// server/provider, so handlers stay focused on business logic.
-//
-// NOTE: we keep the concrete generic type in the constructor because wire
-// cannot synthesize type arguments for generic providers.
+// ServiceName is the fully-qualified gRPC service name used for per-service
+// health reporting (grpc.health.v1) and as a logical metric label.
+const ServiceName = "graph.v1.LanternService"
 
+// LanternService implements pb.LanternServiceServer.
+//
+// Per-call logging, metrics, recovery, tracing and validation are wired up
+// via interceptors in server/provider so handlers stay focused on business
+// logic. Handlers honor the incoming context — short paths rely on gRPC to
+// propagate cancellation; the early ctx.Err() checks let us return a clean
+// Canceled / DeadlineExceeded status when a client already gave up.
+//
+// NOTE: the constructor keeps the concrete generic type because wire cannot
+// synthesize type arguments for generic providers.
 type LanternService struct {
-	UnimplementedLanternServiceServer
-	cache *graph.GraphCache[string, *Vertex]
+	pb.UnimplementedLanternServiceServer
+	cache *graph.GraphCache[string, *pb.Vertex]
 }
 
-func NewLanternService(cache *graph.GraphCache[string, *Vertex]) *LanternService {
+func NewLanternService(cache *graph.GraphCache[string, *pb.Vertex]) *LanternService {
 	return &LanternService{cache: cache}
 }
 
-func (s *LanternService) Illuminate(_ context.Context, request *IlluminateRequest) (*IlluminateResponse, error) {
-	g := s.cache.Neighbor(request.Seed, int(request.Step), int(request.K), request.Tfidf)
+// Illuminate returns a subgraph rooted at the seed, optionally optimized into
+// a spanning or shortest-path tree.
+func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateRequest) (*pb.IlluminateResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, status.FromContextError(err).Err()
+	}
 
-	switch request.Optimization {
-	case Optimization_OPTIMIZATION_UNSPECIFIED:
+	g := s.cache.Neighbor(request.GetSeed(), int(request.GetStep()), int(request.GetK()), request.GetTfidf())
+
+	switch request.GetOptimization() {
+	case pb.Optimization_OPTIMIZATION_UNSPECIFIED:
 		// do nothing
-	case Optimization_OPTIMIZATION_MINIMUM_SPANNING_TREE:
-		g = g.MinimumSpanningTree(request.Seed, false)
-	case Optimization_OPTIMIZATION_MAXIMUM_SPANNING_TREE:
-		g = g.MinimumSpanningTree(request.Seed, true)
-	case Optimization_OPTIMIZATION_SHORTEST_PATH_TREE:
-		g = g.ShortestPathTree(request.Seed, func(weight float32) float32 { return weight })
-	case Optimization_OPTIMIZATION_SHORTEST_PATH_TREE_INVERSE:
-		g = g.ShortestPathTree(request.Seed, func(weight float32) float32 {
+	case pb.Optimization_OPTIMIZATION_MINIMUM_SPANNING_TREE:
+		g = g.MinimumSpanningTree(request.GetSeed(), false)
+	case pb.Optimization_OPTIMIZATION_MAXIMUM_SPANNING_TREE:
+		g = g.MinimumSpanningTree(request.GetSeed(), true)
+	case pb.Optimization_OPTIMIZATION_SHORTEST_PATH_TREE:
+		g = g.ShortestPathTree(request.GetSeed(), func(weight float32) float32 { return weight })
+	case pb.Optimization_OPTIMIZATION_SHORTEST_PATH_TREE_INVERSE:
+		g = g.ShortestPathTree(request.GetSeed(), func(weight float32) float32 {
 			if weight == 0 {
 				return math.MaxFloat32
 			}
@@ -52,91 +66,147 @@ func (s *LanternService) Illuminate(_ context.Context, request *IlluminateReques
 		})
 	}
 
-	vertices := make([]*Vertex, 0, len(g.Vertices))
+	if err := ctx.Err(); err != nil {
+		return nil, status.FromContextError(err).Err()
+	}
+
+	vertices := make([]*pb.Vertex, 0, len(g.Vertices))
 	for k, v := range g.Vertices {
 		if v == nil {
-			vertices = append(vertices, &Vertex{Key: k, Value: &Vertex_Nil{Nil: true}})
+			vertices = append(vertices, &pb.Vertex{Key: k, Value: &pb.Vertex_Nil{Nil: true}})
 		} else {
 			vertices = append(vertices, v)
 		}
 	}
 
-	var edges []*Edge
+	var edges []*pb.Edge
 	for tail, heads := range g.Edges {
 		for head, weight := range heads {
-			edges = append(edges, &Edge{Tail: tail, Head: head, Weight: weight})
+			_, exp, ok := s.cache.GetEdgeDetail(tail, head)
+			edge := &pb.Edge{Tail: tail, Head: head, Weight: weight}
+			if ok && !exp.IsZero() {
+				edge.Expiration = timestamppb.New(exp)
+			}
+			edges = append(edges, edge)
 		}
 	}
 
-	return &IlluminateResponse{
-		Graph: &Graph{Vertices: vertices, Edges: edges},
+	return &pb.IlluminateResponse{
+		Graph: &pb.Graph{Vertices: vertices, Edges: edges},
 	}, nil
 }
 
-func (s *LanternService) GetVertex(_ context.Context, request *GetVertexRequest) (*GetVertexResponse, error) {
+func (s *LanternService) GetVertex(ctx context.Context, request *pb.GetVertexRequest) (*pb.GetVertexResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, status.FromContextError(err).Err()
+	}
 	v, ok := s.cache.GetVertex(request.GetKey())
 	if !ok {
-		return nil, status.Error(codes.NotFound, "Vertex not found")
+		return nil, status.Errorf(codes.NotFound, "vertex %q not found", request.GetKey())
 	}
 	if v == nil {
-		return &GetVertexResponse{
-			Vertex: &Vertex{Key: request.GetKey(), Value: &Vertex_Nil{Nil: true}},
+		return &pb.GetVertexResponse{
+			Vertex: &pb.Vertex{Key: request.GetKey(), Value: &pb.Vertex_Nil{Nil: true}},
 		}, nil
 	}
-	return &GetVertexResponse{Vertex: v}, nil
+	return &pb.GetVertexResponse{Vertex: v}, nil
 }
 
-func (s *LanternService) PutVertex(_ context.Context, request *PutVertexRequest) (*PutVertexResponse, error) {
-	for _, v := range request.Vertices {
-		s.cache.AddVertexWithExpiration(v.Key, v, v.Expiration.AsTime())
+func (s *LanternService) PutVertex(ctx context.Context, request *pb.PutVertexRequest) (*pb.PutVertexResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, status.FromContextError(err).Err()
 	}
-	return &PutVertexResponse{}, nil
+	var written int32
+	for _, v := range request.GetVertices() {
+		s.cache.AddVertexWithExpiration(v.GetKey(), v, v.GetExpiration().AsTime())
+		written++
+	}
+	return &pb.PutVertexResponse{Written: written}, nil
 }
 
-func (s *LanternService) DeleteVertex(_ context.Context, in *DeleteVertexRequest) (*DeleteVertexResponse, error) {
+func (s *LanternService) DeleteVertex(ctx context.Context, in *pb.DeleteVertexRequest) (*pb.DeleteVertexResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, status.FromContextError(err).Err()
+	}
+	// Per the proto contract, deleting a vertex leaves its edges orphaned;
+	// the periodic GC loop reaps any tf/df rows whose endpoints disappear.
 	s.cache.DeleteVertex(in.GetKey())
-	return &DeleteVertexResponse{}, nil
+	return &pb.DeleteVertexResponse{}, nil
 }
 
-func (s *LanternService) GetEdge(_ context.Context, request *GetEdgeRequest) (*GetEdgeResponse, error) {
-	w, ok := s.cache.GetWeight(request.Tail, request.Head)
+func (s *LanternService) GetEdge(ctx context.Context, request *pb.GetEdgeRequest) (*pb.GetEdgeResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, status.FromContextError(err).Err()
+	}
+	w, exp, ok := s.cache.GetEdgeDetail(request.GetTail(), request.GetHead())
 	if !ok {
-		return nil, status.Error(codes.NotFound, "Edge not found")
+		return nil, status.Errorf(codes.NotFound, "edge %q -> %q not found", request.GetTail(), request.GetHead())
 	}
-	return &GetEdgeResponse{
-		Edge: &Edge{Tail: request.Tail, Head: request.Head, Weight: w},
-	}, nil
-}
-
-func (s *LanternService) AddEdge(_ context.Context, request *AddEdgeRequest) (*AddEdgeResponse, error) {
-	for _, e := range request.Edges {
-		s.cache.AddEdgeWithExpiration(e.Tail, e.Head, e.Weight, e.Expiration.AsTime())
+	edge := &pb.Edge{Tail: request.GetTail(), Head: request.GetHead(), Weight: w}
+	if !exp.IsZero() {
+		edge.Expiration = timestamppb.New(exp)
 	}
-	return &AddEdgeResponse{}, nil
+	return &pb.GetEdgeResponse{Edge: edge}, nil
 }
 
-func (s *LanternService) PutEdge(_ context.Context, request *PutEdgeRequest) (*PutEdgeResponse, error) {
-	for _, e := range request.Edges {
-		s.cache.DeleteEdge(e.Tail, e.Head)
-		s.cache.AddEdgeWithExpiration(e.Tail, e.Head, e.Weight, e.Expiration.AsTime())
+func (s *LanternService) AddEdge(ctx context.Context, request *pb.AddEdgeRequest) (*pb.AddEdgeResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, status.FromContextError(err).Err()
 	}
-	return &PutEdgeResponse{}, nil
+	var written int32
+	for _, e := range request.GetEdges() {
+		s.cache.AddEdgeWithExpiration(e.GetTail(), e.GetHead(), e.GetWeight(), e.GetExpiration().AsTime())
+		written++
+	}
+	return &pb.AddEdgeResponse{Written: written}, nil
 }
 
-func (s *LanternService) DeleteEdge(_ context.Context, in *DeleteEdgeRequest) (*DeleteEdgeResponse, error) {
-	s.cache.DeleteEdge(in.Tail, in.Head)
-	return &DeleteEdgeResponse{}, nil
+func (s *LanternService) PutEdge(ctx context.Context, request *pb.PutEdgeRequest) (*pb.PutEdgeResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, status.FromContextError(err).Err()
+	}
+	var written int32
+	for _, e := range request.GetEdges() {
+		s.cache.DeleteEdge(e.GetTail(), e.GetHead())
+		s.cache.AddEdgeWithExpiration(e.GetTail(), e.GetHead(), e.GetWeight(), e.GetExpiration().AsTime())
+		written++
+	}
+	return &pb.PutEdgeResponse{Written: written}, nil
 }
 
-// LanternServer ties the gRPC server, its listener, and the cache GC loop
-// into a single lifecycle.
+func (s *LanternService) DeleteEdge(ctx context.Context, in *pb.DeleteEdgeRequest) (*pb.DeleteEdgeResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, status.FromContextError(err).Err()
+	}
+	s.cache.DeleteEdge(in.GetTail(), in.GetHead())
+	return &pb.DeleteEdgeResponse{}, nil
+}
 
+// LanternServer ties the gRPC server, its listener, the cache GC loop, and
+// the per-service health gauge into a single lifecycle owned by the App
+// composition root.
 type LanternServer struct {
-	service    *LanternService
-	server     *grpc.Server
-	listener   net.Listener
-	logger     *slog.Logger
-	gcInterval time.Duration
+	service         *LanternService
+	server          *grpc.Server
+	listener        net.Listener
+	logger          *slog.Logger
+	gcInterval      time.Duration
+	shutdownTimeout time.Duration
+	health          HealthSetter
+}
+
+// HealthSetter is the narrow surface of *health.Server that LanternServer
+// needs to publish SERVING / NOT_SERVING per service. Defined here so
+// callers can stub it in tests.
+type HealthSetter interface {
+	SetServingStatus(service string, status healthpb.HealthCheckResponse_ServingStatus)
+}
+
+// LifecycleConfig groups the tunables wire injects into LanternServer so the
+// constructor signature stays stable as new options are added.
+type LifecycleConfig struct {
+	GCInterval      time.Duration
+	ShutdownTimeout time.Duration
 }
 
 func NewLanternServer(
@@ -144,26 +214,51 @@ func NewLanternServer(
 	server *grpc.Server,
 	listener net.Listener,
 	logger *slog.Logger,
-	gcInterval time.Duration,
+	cfg LifecycleConfig,
+	hs HealthSetter,
 ) *LanternServer {
 	return &LanternServer{
-		service:    service,
-		server:     server,
-		listener:   listener,
-		logger:     logger,
-		gcInterval: gcInterval,
+		service:         service,
+		server:          server,
+		listener:        listener,
+		logger:          logger,
+		gcInterval:      cfg.GCInterval,
+		shutdownTimeout: cfg.ShutdownTimeout,
+		health:          hs,
 	}
 }
 
-// Run registers the gRPC service, starts the cache GC loop, and serves until
-// ctx is canceled (then GracefulStop drains in-flight RPCs).
+// Run registers the gRPC service, marks it healthy, starts the cache GC
+// loop, and serves until ctx is canceled. On shutdown GracefulStop drains
+// in-flight RPCs but is bounded by ShutdownTimeout — past that, Stop forces
+// a hard close so the process can exit.
 func (s *LanternServer) Run(ctx context.Context) error {
-	RegisterLanternServiceServer(s.server, s.service)
+	pb.RegisterLanternServiceServer(s.server, s.service)
+	if s.health != nil {
+		s.health.SetServingStatus(ServiceName, healthpb.HealthCheckResponse_SERVING)
+	}
 
 	go func() {
 		<-ctx.Done()
-		s.logger.Info("shutting down grpc server")
-		s.server.GracefulStop()
+		s.logger.Info("shutting down grpc server", slog.Duration("timeout", s.shutdownTimeout))
+		if s.health != nil {
+			s.health.SetServingStatus(ServiceName, healthpb.HealthCheckResponse_NOT_SERVING)
+		}
+		done := make(chan struct{})
+		go func() {
+			s.server.GracefulStop()
+			close(done)
+		}()
+		if s.shutdownTimeout <= 0 {
+			<-done
+			return
+		}
+		select {
+		case <-done:
+		case <-time.After(s.shutdownTimeout):
+			s.logger.Warn("graceful shutdown deadline exceeded; forcing stop")
+			s.server.Stop()
+		}
 	}()
 
 	go s.service.cache.Watch(ctx, s.gcInterval)
@@ -171,6 +266,7 @@ func (s *LanternServer) Run(ctx context.Context) error {
 	s.logger.Info("grpc server starting",
 		slog.String("addr", s.listener.Addr().String()),
 		slog.Duration("gc_interval", s.gcInterval),
+		slog.Duration("shutdown_timeout", s.shutdownTimeout),
 	)
 	return s.server.Serve(s.listener)
 }

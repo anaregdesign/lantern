@@ -20,16 +20,19 @@ func initializeApp() (*App, error) {
 	lanternService := service.NewLanternService(graphCache)
 	registry := provider.NewPrometheusRegistry()
 	serverMetrics := provider.NewGrpcServerMetrics(registry)
-	v := provider.NewGrpcServerOptions(logger, serverMetrics)
+	v, err := provider.NewGrpcServerOptions(config, logger, serverMetrics)
+	if err != nil {
+		return nil, err
+	}
 	server := provider.NewGrpcServer(v)
 	listener, err := provider.NewListener(config)
 	if err != nil {
 		return nil, err
 	}
-	duration := newGCInterval(config)
-	lanternServer := service.NewLanternServer(lanternService, server, listener, logger, duration)
-	metricsServer := provider.NewMetricsServer(config, registry, logger)
+	lifecycleConfig := provider.NewLifecycleConfig(config)
 	healthServer := provider.NewHealthServer()
+	lanternServer := service.NewLanternServer(lanternService, server, listener, logger, lifecycleConfig, healthServer)
+	metricsServer := provider.NewMetricsServer(config, registry, logger)
 	mainRegisteredHealth := registerHealthAndReflection(config, server, healthServer)
 	app := newApp(config, logger, lanternServer, metricsServer, healthServer, mainRegisteredHealth)
 	return app, nil

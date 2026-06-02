@@ -295,6 +295,9 @@ type Vertex_Timestamp struct {
 }
 
 type Vertex_Nil struct {
+	// nil signals that the vertex carries no value (an "existence-only"
+	// marker). The bool itself is always true when present; the variant
+	// exists so the oneof can distinguish "explicitly nil" from "unset".
 	Nil bool `protobuf:"varint,30,opt,name=nil,proto3,oneof"`
 }
 
@@ -696,7 +699,11 @@ func (x *PutVertexRequest) GetVertices() []*Vertex {
 }
 
 type PutVertexResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Number of vertices accepted by the server. Currently always equals the
+	// request size on success; reserved for future per-item validation that may
+	// report partial writes.
+	Written       int32 `protobuf:"varint,1,opt,name=written,proto3" json:"written,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -731,6 +738,17 @@ func (*PutVertexResponse) Descriptor() ([]byte, []int) {
 	return file_graph_v1_graph_proto_rawDescGZIP(), []int{8}
 }
 
+func (x *PutVertexResponse) GetWritten() int32 {
+	if x != nil {
+		return x.Written
+	}
+	return 0
+}
+
+// DeleteVertexRequest removes the vertex at `key`. Edges incident to the
+// removed vertex are NOT eagerly cascaded: the periodic GC loop reaps
+// orphaned (tail, head) rows on its next tick, and reads against missing
+// endpoints return NotFound in the meantime.
 type DeleteVertexRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
@@ -1043,7 +1061,9 @@ func (x *AddEdgeRequest) GetEdges() []*Edge {
 }
 
 type AddEdgeResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Number of edges whose weight contributions were accepted.
+	Written       int32 `protobuf:"varint,1,opt,name=written,proto3" json:"written,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1076,6 +1096,13 @@ func (x *AddEdgeResponse) ProtoReflect() protoreflect.Message {
 // Deprecated: Use AddEdgeResponse.ProtoReflect.Descriptor instead.
 func (*AddEdgeResponse) Descriptor() ([]byte, []int) {
 	return file_graph_v1_graph_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *AddEdgeResponse) GetWritten() int32 {
+	if x != nil {
+		return x.Written
+	}
+	return 0
 }
 
 // PutEdgeRequest overwrites each (tail, head) pair, replacing any existing
@@ -1125,7 +1152,9 @@ func (x *PutEdgeRequest) GetEdges() []*Edge {
 }
 
 type PutEdgeResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Number of edges accepted (overwritten or created).
+	Written       int32 `protobuf:"varint,1,opt,name=written,proto3" json:"written,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1158,6 +1187,13 @@ func (x *PutEdgeResponse) ProtoReflect() protoreflect.Message {
 // Deprecated: Use PutEdgeResponse.ProtoReflect.Descriptor instead.
 func (*PutEdgeResponse) Descriptor() ([]byte, []int) {
 	return file_graph_v1_graph_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *PutEdgeResponse) GetWritten() int32 {
+	if x != nil {
+		return x.Written
+	}
+	return 0
 }
 
 var File_graph_v1_graph_proto protoreflect.FileDescriptor
@@ -1206,8 +1242,9 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x11GetVertexResponse\x12(\n" +
 	"\x06vertex\x18\x01 \x01(\v2\x10.graph.v1.VertexR\x06vertex\"@\n" +
 	"\x10PutVertexRequest\x12,\n" +
-	"\bvertices\x18\x01 \x03(\v2\x10.graph.v1.VertexR\bvertices\"\x13\n" +
-	"\x11PutVertexResponse\"'\n" +
+	"\bvertices\x18\x01 \x03(\v2\x10.graph.v1.VertexR\bvertices\"-\n" +
+	"\x11PutVertexResponse\x12\x18\n" +
+	"\awritten\x18\x01 \x01(\x05R\awritten\"'\n" +
 	"\x13DeleteVertexRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\"\x16\n" +
 	"\x14DeleteVertexResponse\"8\n" +
@@ -1221,11 +1258,13 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x04head\x18\x02 \x01(\tR\x04head\"\x14\n" +
 	"\x12DeleteEdgeResponse\"6\n" +
 	"\x0eAddEdgeRequest\x12$\n" +
-	"\x05edges\x18\x01 \x03(\v2\x0e.graph.v1.EdgeR\x05edges\"\x11\n" +
-	"\x0fAddEdgeResponse\"6\n" +
+	"\x05edges\x18\x01 \x03(\v2\x0e.graph.v1.EdgeR\x05edges\"+\n" +
+	"\x0fAddEdgeResponse\x12\x18\n" +
+	"\awritten\x18\x01 \x01(\x05R\awritten\"6\n" +
 	"\x0ePutEdgeRequest\x12$\n" +
-	"\x05edges\x18\x01 \x03(\v2\x0e.graph.v1.EdgeR\x05edges\"\x11\n" +
-	"\x0fPutEdgeResponse*\xce\x01\n" +
+	"\x05edges\x18\x01 \x03(\v2\x0e.graph.v1.EdgeR\x05edges\"+\n" +
+	"\x0fPutEdgeResponse\x12\x18\n" +
+	"\awritten\x18\x01 \x01(\x05R\awritten*\xce\x01\n" +
 	"\fOptimization\x12\x1c\n" +
 	"\x18OPTIMIZATION_UNSPECIFIED\x10\x00\x12&\n" +
 	"\"OPTIMIZATION_MINIMUM_SPANNING_TREE\x10\x01\x12&\n" +

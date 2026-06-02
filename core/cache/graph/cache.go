@@ -41,6 +41,16 @@ func (c *GraphCache[S, T]) GetWeight(tail, head S) (float32, bool) {
 	return c.edges.get(tail, head)
 }
 
+// GetEdgeDetail returns the current edge weight together with the latest
+// contribution expiration. The expiration is the moment after which the edge
+// is guaranteed to have decayed to zero. When no edge exists, ok is false.
+func (c *GraphCache[S, T]) GetEdgeDetail(tail, head S) (float32, time.Time, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return c.edges.getDetail(tail, head)
+}
+
 func (c *GraphCache[S, T]) AddVertexWithExpiration(key S, value T, expiration time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

@@ -353,7 +353,14 @@
       "description": "AddEdgeRequest accumulates weight onto each (tail, head) pair: repeated\ncalls with the same endpoints sum their weights. This operation is\nnon-idempotent."
     },
     "v1AddEdgeResponse": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "written": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Number of edges whose weight contributions were accepted."
+        }
+      }
     },
     "v1DeleteEdgeResponse": {
       "type": "object"
@@ -448,7 +455,14 @@
       "description": "PutEdgeRequest overwrites each (tail, head) pair, replacing any existing\nweight and expiration. This operation is idempotent."
     },
     "v1PutEdgeResponse": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "written": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Number of edges accepted (overwritten or created)."
+        }
+      }
     },
     "v1PutVertexRequest": {
       "type": "object",
@@ -464,7 +478,14 @@
       "description": "PutVertexRequest writes vertices with upsert semantics: each Vertex.key\nreplaces any existing value at that key. Use the Vertex.expiration field\n(absolute time) to control TTL."
     },
     "v1PutVertexResponse": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "written": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Number of vertices accepted by the server. Currently always equals the\nrequest size on success; reserved for future per-item validation that may\nreport partial writes."
+        }
+      }
     },
     "v1Vertex": {
       "type": "object",
@@ -515,7 +536,8 @@
           "format": "date-time"
         },
         "nil": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "nil signals that the vertex carries no value (an \"existence-only\"\nmarker). The bool itself is always true when present; the variant\nexists so the oneof can distinguish \"explicitly nil\" from \"unset\"."
         }
       }
     }

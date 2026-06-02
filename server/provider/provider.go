@@ -31,40 +31,104 @@ import (
 // Config captures runtime configuration sourced from the environment.
 //
 // Backwards-compatible vars:
-//   - LANTERN_PORT                  (default 6380)
-//   - LANTERN_DEFAULT_TTL_SECONDS   (default 60)
+//   - LANTERN_PORT                       (default 6380)
+//   - LANTERN_DEFAULT_TTL_SECONDS        (default 60)
 //
 // Observability / lifecycle additions:
-//   - LANTERN_GC_INTERVAL_SECONDS   (default 60) — GraphCache.Watch tick
-//   - LANTERN_LOG_LEVEL             debug|info|warn|error (default info)
-//   - LANTERN_LOG_FORMAT            json|text             (default json)
-//   - LANTERN_METRICS_ADDR          host:port for /metrics + /healthz
+//   - LANTERN_GC_INTERVAL_SECONDS        (default 60) — GraphCache.Watch tick
+//   - LANTERN_SHUTDOWN_TIMEOUT_SECONDS   (default 30) — GracefulStop deadline
+//   - LANTERN_LOG_LEVEL                  debug|info|warn|error (default info)
+//   - LANTERN_LOG_FORMAT                 json|text             (default json)
+//   - LANTERN_METRICS_ADDR               host:port for /metrics + /healthz
 //     (default :9090; set empty to disable)
-//   - LANTERN_REFLECTION            true|false            (default true)
+//   - LANTERN_REFLECTION                 true|false            (default true)
+//
+// Resource & limits:
+//   - LANTERN_MAX_RECV_MSG_BYTES         (default 16 MiB)
+//   - LANTERN_MAX_SEND_MSG_BYTES         (default 16 MiB)
+//   - LANTERN_MAX_CONCURRENT_STREAMS     (default 1024; 0 = unlimited)
+//   - LANTERN_RATE_LIMIT_RPS             per-process token bucket replenish rate;
+//     0 disables rate limiting (default 0)
+//   - LANTERN_RATE_LIMIT_BURST           token bucket burst (default 2x RPS)
+//
+// Validation guard rails (codes.InvalidArgument):
+//   - LANTERN_MAX_KEY_LEN                (default 1024)
+//   - LANTERN_MAX_BATCH_SIZE             (default 10000)
+//   - LANTERN_ILLUMINATE_MAX_STEP        (default 16)
+//   - LANTERN_ILLUMINATE_MAX_K           (default 1024)
+//
+// TLS (all-or-nothing; mTLS engaged when client CA is set):
+//   - LANTERN_TLS_CERT_FILE              PEM cert path (enables TLS)
+//   - LANTERN_TLS_KEY_FILE               PEM key  path
+//   - LANTERN_TLS_CLIENT_CA_FILE         PEM client CA path (enables mTLS)
 type Config struct {
 	Port             int
 	TTL              time.Duration
 	GCInterval       time.Duration
+	ShutdownTimeout  time.Duration
 	LogLevel         slog.Level
 	LogFormat        string
 	MetricsAddr      string
 	EnableReflection bool
+
+	MaxRecvMsgBytes       int
+	MaxSendMsgBytes       int
+	MaxConcurrentStreams  uint32
+	RateLimitRPS          float64
+	RateLimitBurst        int
+
+	MaxKeyLen          int
+	MaxBatchSize       int
+	IlluminateMaxStep  int
+	IlluminateMaxK     int
+
+	TLSCertFile     string
+	TLSKeyFile      string
+	TLSClientCAFile string
 }
 
 func NewConfig() *Config {
+	rps := envFloat("LANTERN_RATE_LIMIT_RPS", 0)
+	burst := envInt("LANTERN_RATE_LIMIT_BURST", int(2*rps))
+	if burst <= 0 && rps > 0 {
+		burst = int(2 * rps)
+	}
 	return &Config{
 		Port:             envInt("LANTERN_PORT", 6380),
 		TTL:              time.Duration(envInt("LANTERN_DEFAULT_TTL_SECONDS", 60)) * time.Second,
 		GCInterval:       time.Duration(envInt("LANTERN_GC_INTERVAL_SECONDS", 60)) * time.Second,
+		ShutdownTimeout:  time.Duration(envInt("LANTERN_SHUTDOWN_TIMEOUT_SECONDS", 30)) * time.Second,
 		LogLevel:         parseLogLevel(os.Getenv("LANTERN_LOG_LEVEL")),
 		LogFormat:        envStr("LANTERN_LOG_FORMAT", "json"),
 		MetricsAddr:      envStr("LANTERN_METRICS_ADDR", ":9090"),
 		EnableReflection: envBool("LANTERN_REFLECTION", true),
+
+		MaxRecvMsgBytes:      envInt("LANTERN_MAX_RECV_MSG_BYTES", 16*1024*1024),
+		MaxSendMsgBytes:      envInt("LANTERN_MAX_SEND_MSG_BYTES", 16*1024*1024),
+		MaxConcurrentStreams: uint32(envInt("LANTERN_MAX_CONCURRENT_STREAMS", 1024)),
+		RateLimitRPS:         rps,
+		RateLimitBurst:       burst,
+
+		MaxKeyLen:         envInt("LANTERN_MAX_KEY_LEN", 1024),
+		MaxBatchSize:      envInt("LANTERN_MAX_BATCH_SIZE", 10000),
+		IlluminateMaxStep: envInt("LANTERN_ILLUMINATE_MAX_STEP", 16),
+		IlluminateMaxK:    envInt("LANTERN_ILLUMINATE_MAX_K", 1024),
+
+		TLSCertFile:     os.Getenv("LANTERN_TLS_CERT_FILE"),
+		TLSKeyFile:      os.Getenv("LANTERN_TLS_KEY_FILE"),
+		TLSClientCAFile: os.Getenv("LANTERN_TLS_CLIENT_CA_FILE"),
 	}
 }
 
 func envInt(key string, def int) int {
 	if v, err := strconv.Atoi(os.Getenv(key)); err == nil {
+		return v
+	}
+	return def
+}
+
+func envFloat(key string, def float64) float64 {
+	if v, err := strconv.ParseFloat(os.Getenv(key), 64); err == nil {
 		return v
 	}
 	return def
@@ -159,11 +223,16 @@ func NewGrpcServerMetrics(reg *prometheus.Registry) *grpcprom.ServerMetrics {
 //   - recovery interceptor (panic -> Internal status)
 //   - slog logging interceptor
 //   - Prometheus server metrics interceptor
+//   - request validation interceptor (codes.InvalidArgument guard rails)
+//   - optional token-bucket rate limiter (codes.ResourceExhausted)
 //   - keepalive policy that pings idle clients and rejects abusive ones
+//   - message size + concurrent stream caps
+//   - optional TLS / mTLS credentials
 func NewGrpcServerOptions(
+	c *Config,
 	logger *slog.Logger,
 	metrics *grpcprom.ServerMetrics,
-) []grpc.ServerOption {
+) ([]grpc.ServerOption, error) {
 	logOpts := []logging.Option{
 		logging.WithLogOnEvents(logging.StartCall, logging.FinishCall),
 	}
@@ -173,18 +242,37 @@ func NewGrpcServerOptions(
 			return fmt.Errorf("internal server error")
 		}),
 	}
-	return []grpc.ServerOption{
+
+	validator := NewValidationInterceptor(ValidationLimits{
+		MaxKeyLen:         c.MaxKeyLen,
+		MaxBatchSize:      c.MaxBatchSize,
+		IlluminateMaxStep: c.IlluminateMaxStep,
+		IlluminateMaxK:    c.IlluminateMaxK,
+	})
+
+	unary := []grpc.UnaryServerInterceptor{
+		recovery.UnaryServerInterceptor(recoveryOpts...),
+		logging.UnaryServerInterceptor(slogInterceptorLogger(logger), logOpts...),
+		metrics.UnaryServerInterceptor(),
+	}
+	stream := []grpc.StreamServerInterceptor{
+		recovery.StreamServerInterceptor(recoveryOpts...),
+		logging.StreamServerInterceptor(slogInterceptorLogger(logger), logOpts...),
+		metrics.StreamServerInterceptor(),
+	}
+
+	if c.RateLimitRPS > 0 {
+		rl := NewRateLimitInterceptor(c.RateLimitRPS, c.RateLimitBurst)
+		unary = append(unary, rl.UnaryServerInterceptor())
+		stream = append(stream, rl.StreamServerInterceptor())
+	}
+	unary = append(unary, validator.UnaryServerInterceptor())
+	stream = append(stream, validator.StreamServerInterceptor())
+
+	opts := []grpc.ServerOption{
 		grpc.StatsHandler(otelgrpc.NewServerHandler()),
-		grpc.ChainUnaryInterceptor(
-			recovery.UnaryServerInterceptor(recoveryOpts...),
-			logging.UnaryServerInterceptor(slogInterceptorLogger(logger), logOpts...),
-			metrics.UnaryServerInterceptor(),
-		),
-		grpc.ChainStreamInterceptor(
-			recovery.StreamServerInterceptor(recoveryOpts...),
-			logging.StreamServerInterceptor(slogInterceptorLogger(logger), logOpts...),
-			metrics.StreamServerInterceptor(),
-		),
+		grpc.ChainUnaryInterceptor(unary...),
+		grpc.ChainStreamInterceptor(stream...),
 		grpc.KeepaliveParams(keepalive.ServerParameters{
 			MaxConnectionIdle: 15 * time.Minute,
 			Time:              30 * time.Second,
@@ -195,6 +283,28 @@ func NewGrpcServerOptions(
 			PermitWithoutStream: true,
 		}),
 	}
+	if c.MaxRecvMsgBytes > 0 {
+		opts = append(opts, grpc.MaxRecvMsgSize(c.MaxRecvMsgBytes))
+	}
+	if c.MaxSendMsgBytes > 0 {
+		opts = append(opts, grpc.MaxSendMsgSize(c.MaxSendMsgBytes))
+	}
+	if c.MaxConcurrentStreams > 0 {
+		opts = append(opts, grpc.MaxConcurrentStreams(c.MaxConcurrentStreams))
+	}
+
+	creds, err := loadServerTLS(c)
+	if err != nil {
+		return nil, fmt.Errorf("load tls: %w", err)
+	}
+	if creds != nil {
+		opts = append(opts, grpc.Creds(creds))
+		logger.Info("tls enabled",
+			slog.String("cert", c.TLSCertFile),
+			slog.Bool("mtls", c.TLSClientCAFile != ""),
+		)
+	}
+	return opts, nil
 }
 
 // slogInterceptorLogger bridges grpc-middleware's logging.Logger to slog.
