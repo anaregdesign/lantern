@@ -7,7 +7,9 @@ import (
 	"github.com/anaregdesign/lantern/cli/service"
 	"github.com/manifoldco/promptui"
 	"log"
+	"net"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/anaregdesign/lantern/client"
@@ -27,7 +29,7 @@ var rootCmd = &cobra.Command{
 
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := context.Background()
-		cli, err := client.NewLantern(host, port)
+		cli, err := client.NewLantern(net.JoinHostPort(host, strconv.Itoa(port)))
 		srv := service.NewCLIService(cli)
 		if err != nil {
 			return err

@@ -157,7 +157,7 @@ go build -o lantern-cli ./cli
 ```go
 import "github.com/anaregdesign/lantern/client"
 
-cli, err := client.NewLantern("localhost", 6380)
+cli, err := client.NewLantern("localhost:6380")
 if err != nil { log.Fatal(err) }
 defer cli.Close()
 

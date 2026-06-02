@@ -11,7 +11,7 @@ import (
 func main() {
 	ctx := context.Background()
 
-	cli, err := client.NewLantern("localhost", 6380)
+	cli, err := client.NewLantern("localhost:6380")
 	if err != nil {
 		panic(err)
 	}
