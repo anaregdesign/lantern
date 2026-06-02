@@ -11,7 +11,7 @@ var ErrInvalidType = errors.New("invalid type")
 
 type nativeVertex struct {
 	key        string
-	value      interface{}
+	value      any
 	expiration time.Time
 }
 

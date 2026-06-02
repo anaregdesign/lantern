@@ -101,7 +101,7 @@ func Datetime(s *Source) (time.Time, error) {
 	return v, nil
 }
 
-func Value(s *Source) (interface{}, error) {
+func Value(s *Source) (any, error) {
 	defer s.Next()
 	str, err := s.Peek()
 	if err != nil {

@@ -9,15 +9,23 @@ import (
 	"github.com/google/wire"
 )
 
-func initializeLanternServer() (*service.LanternServer, error) {
+func initializeApp() (*App, error) {
 	wire.Build(
 		provider.NewConfig,
+		provider.NewLogger,
 		provider.NewGraphCache,
 		provider.NewListener,
+		provider.NewPrometheusRegistry,
+		provider.NewGrpcServerMetrics,
 		provider.NewGrpcServerOptions,
 		provider.NewGrpcServer,
+		provider.NewHealthServer,
+		provider.NewMetricsServer,
 		service.NewLanternService,
 		service.NewLanternServer,
+		newGCInterval,
+		registerHealthAndReflection,
+		newApp,
 	)
 	return nil, nil
 }

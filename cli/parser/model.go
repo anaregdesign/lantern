@@ -13,7 +13,7 @@ type GetEdge struct {
 
 type PutVertex struct {
 	Key   string
-	Value interface{}
+	Value any
 	TTL   time.Duration
 }
 

@@ -1,22 +1,43 @@
 .DEFAULT_GOAL := all
 SHELL := /bin/bash
 
-.PHONY: all generate wire proto build test test-race fmt vet lint tidy vuln clean
+# Pinned buf version used by the `go run` fallback. Keep in sync with the
+# directive in generate.go so local and CI behaviour match.
+BUF_VERSION := v1.70.0
+BUF        ?= $(shell command -v buf 2>/dev/null)
+ifeq ($(BUF),)
+BUF := go run github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
+endif
 
+.PHONY: all generate wire proto proto-lint proto-format proto-breaking proto-deps \
+        build test test-race fmt vet lint tidy vuln clean
+
+# `go generate ./...` is the single source of truth: it runs `go tool wire`
+# (registered via the tool directive in go.mod) and `buf generate`. No
+# pre-installation required — all tools resolve through the Go toolchain.
 all: generate
 
-generate: wire proto
+generate:
+	go generate ./...
 
-wire: ./server/cmd/wire_gen.go
-
-./server/cmd/wire_gen.go: ./server/cmd/wire.go
-	@echo "Generating wire_gen.go"
-	wire ./server/cmd
+# Backwards-compatible aliases for muscle memory.
+wire:
+	go tool wire ./server/cmd
 
 proto:
-	@echo "Generating protobuf code"
-	rm -rf ./gen/go ./gen/openapiv2
-	buf generate proto
+	$(BUF) generate --clean
+
+proto-lint:
+	$(BUF) lint
+
+proto-format:
+	$(BUF) format -d --exit-code
+
+proto-breaking:
+	$(BUF) breaking --against '.git#branch=main'
+
+proto-deps:
+	$(BUF) dep update
 
 build:
 	go build -v ./...

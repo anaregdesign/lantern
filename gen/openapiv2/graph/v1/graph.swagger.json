@@ -1,0 +1,556 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "graph/v1/graph.proto",
+    "version": "version not set"
+  },
+  "tags": [
+    {
+      "name": "LanternService"
+    }
+  ],
+  "consumes": [
+    "application/json"
+  ],
+  "produces": [
+    "application/json"
+  ],
+  "paths": {
+    "/v1/edges/add": {
+      "put": {
+        "operationId": "LanternService_AddEdge",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1AddEdgeResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/googleRpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1AddEdgeRequest"
+            }
+          }
+        ],
+        "tags": [
+          "LanternService"
+        ]
+      }
+    },
+    "/v1/edges/put": {
+      "put": {
+        "operationId": "LanternService_PutEdge",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1PutEdgeResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/googleRpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1PutEdgeRequest"
+            }
+          }
+        ],
+        "tags": [
+          "LanternService"
+        ]
+      }
+    },
+    "/v1/edges/{tail}/{head}": {
+      "get": {
+        "operationId": "LanternService_GetEdge",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetEdgeResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/googleRpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "tail",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "head",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "LanternService"
+        ]
+      },
+      "delete": {
+        "operationId": "LanternService_DeleteEdge",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1DeleteEdgeResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/googleRpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "tail",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "head",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "LanternService"
+        ]
+      }
+    },
+    "/v1/illuminate/{seed}": {
+      "get": {
+        "operationId": "LanternService_Illuminate",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1IlluminateResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/googleRpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "seed",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "step",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int64"
+          },
+          {
+            "name": "k",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int64"
+          },
+          {
+            "name": "tfidf",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "optimization",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "enum": [
+              "OPTIMIZATION_UNSPECIFIED",
+              "OPTIMIZATION_MINIMUM_SPANNING_TREE",
+              "OPTIMIZATION_MAXIMUM_SPANNING_TREE",
+              "OPTIMIZATION_SHORTEST_PATH_TREE",
+              "OPTIMIZATION_SHORTEST_PATH_TREE_INVERSE"
+            ],
+            "default": "OPTIMIZATION_UNSPECIFIED"
+          }
+        ],
+        "tags": [
+          "LanternService"
+        ]
+      }
+    },
+    "/v1/vertices": {
+      "put": {
+        "operationId": "LanternService_PutVertex",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1PutVertexResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/googleRpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1PutVertexRequest"
+            }
+          }
+        ],
+        "tags": [
+          "LanternService"
+        ]
+      }
+    },
+    "/v1/vertices/{key}": {
+      "get": {
+        "operationId": "LanternService_GetVertex",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetVertexResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/googleRpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "LanternService"
+        ]
+      },
+      "delete": {
+        "operationId": "LanternService_DeleteVertex",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1DeleteVertexResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/googleRpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "LanternService"
+        ]
+      }
+    }
+  },
+  "definitions": {
+    "googleRpcStatus": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/protobufAny"
+          }
+        }
+      }
+    },
+    "graphV1Status": {
+      "type": "string",
+      "enum": [
+        "STATUS_UNSPECIFIED",
+        "STATUS_OK",
+        "STATUS_INTERNAL_SERVER_ERROR",
+        "STATUS_INVALID_REQUEST"
+      ],
+      "default": "STATUS_UNSPECIFIED"
+    },
+    "protobufAny": {
+      "type": "object",
+      "properties": {
+        "@type": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": {}
+    },
+    "v1AddEdgeRequest": {
+      "type": "object",
+      "properties": {
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Edge"
+          }
+        }
+      }
+    },
+    "v1AddEdgeResponse": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/definitions/graphV1Status"
+        }
+      }
+    },
+    "v1DeleteEdgeResponse": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/definitions/graphV1Status"
+        }
+      }
+    },
+    "v1DeleteVertexResponse": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/definitions/graphV1Status"
+        }
+      }
+    },
+    "v1Edge": {
+      "type": "object",
+      "properties": {
+        "tail": {
+          "type": "string"
+        },
+        "head": {
+          "type": "string"
+        },
+        "weight": {
+          "type": "number",
+          "format": "float"
+        },
+        "expiration": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "v1GetEdgeResponse": {
+      "type": "object",
+      "properties": {
+        "edge": {
+          "$ref": "#/definitions/v1Edge"
+        }
+      }
+    },
+    "v1GetVertexResponse": {
+      "type": "object",
+      "properties": {
+        "vertex": {
+          "$ref": "#/definitions/v1Vertex"
+        },
+        "status": {
+          "$ref": "#/definitions/graphV1Status"
+        }
+      }
+    },
+    "v1Graph": {
+      "type": "object",
+      "properties": {
+        "vertices": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Vertex"
+          }
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Edge"
+          }
+        }
+      }
+    },
+    "v1IlluminateResponse": {
+      "type": "object",
+      "properties": {
+        "graph": {
+          "$ref": "#/definitions/v1Graph"
+        },
+        "status": {
+          "$ref": "#/definitions/graphV1Status"
+        }
+      }
+    },
+    "v1Optimization": {
+      "type": "string",
+      "enum": [
+        "OPTIMIZATION_UNSPECIFIED",
+        "OPTIMIZATION_MINIMUM_SPANNING_TREE",
+        "OPTIMIZATION_MAXIMUM_SPANNING_TREE",
+        "OPTIMIZATION_SHORTEST_PATH_TREE",
+        "OPTIMIZATION_SHORTEST_PATH_TREE_INVERSE"
+      ],
+      "default": "OPTIMIZATION_UNSPECIFIED"
+    },
+    "v1PutEdgeRequest": {
+      "type": "object",
+      "properties": {
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Edge"
+          }
+        }
+      }
+    },
+    "v1PutEdgeResponse": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/definitions/graphV1Status"
+        }
+      }
+    },
+    "v1PutVertexRequest": {
+      "type": "object",
+      "properties": {
+        "vertices": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Vertex"
+          }
+        }
+      }
+    },
+    "v1PutVertexResponse": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/definitions/graphV1Status"
+        }
+      }
+    },
+    "v1Vertex": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "expiration": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "float64": {
+          "type": "number",
+          "format": "double"
+        },
+        "float32": {
+          "type": "number",
+          "format": "float"
+        },
+        "int32": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "int64": {
+          "type": "string",
+          "format": "int64"
+        },
+        "uint32": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "uint64": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "bool": {
+          "type": "boolean"
+        },
+        "string": {
+          "type": "string"
+        },
+        "bytes": {
+          "type": "string",
+          "format": "byte"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "nil": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

@@ -26,12 +26,16 @@ FROM alpine:3.20
 RUN addgroup -S lantern && adduser -S -G lantern lantern
 
 ENV LANTERN_DEFAULT_TTL_SECONDS=3600 \
-    LANTERN_PORT=6380
+    LANTERN_PORT=6380 \
+    LANTERN_METRICS_ADDR=:9090 \
+    LANTERN_LOG_FORMAT=json \
+    LANTERN_LOG_LEVEL=info
 
 WORKDIR /app
 COPY --from=builder /out/lantern /app/lantern
 
 USER lantern
-EXPOSE 6380
+# 6380 = gRPC, 9090 = Prometheus /metrics + /healthz + /readyz
+EXPOSE 6380 9090
 
 ENTRYPOINT ["/app/lantern"]
