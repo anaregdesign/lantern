@@ -25,3 +25,12 @@ func TestWithKeepaliveParamsOverrides(t *testing.T) {
 		t.Errorf("keepalive = %+v, want %+v", o.keepalive, custom)
 	}
 }
+
+func TestWithOpenTelemetryAppendsDialOption(t *testing.T) {
+	var o options
+	before := len(o.dialOptions)
+	WithOpenTelemetry()(&o)
+	if len(o.dialOptions) != before+1 {
+		t.Errorf("WithOpenTelemetry should append exactly one dial option; got %d → %d", before, len(o.dialOptions))
+	}
+}

@@ -3,6 +3,7 @@ package client
 import (
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	_ "google.golang.org/grpc/encoding/gzip" // register gzip so WithCompression("gzip") works
@@ -122,5 +123,20 @@ func WithCompression(name string) Option {
 			o.dialOptions = append(o.dialOptions,
 				grpc.WithDefaultCallOptions(grpc.UseCompressor(name)))
 		}
+	}
+}
+
+// WithOpenTelemetry installs the OpenTelemetry gRPC stats handler so client
+// → server calls produce spans and metrics under whatever global
+// TracerProvider / MeterProvider the caller has configured. The server already
+// installs otelgrpc.NewServerHandler() by default, so enabling this option on
+// the client gives end-to-end distributed traces with no further wiring.
+//
+// Additional otelgrpc.Option values can be passed to customise tracer/meter
+// providers, propagators, span filters, etc.
+func WithOpenTelemetry(opts ...otelgrpc.Option) Option {
+	return func(o *options) {
+		o.dialOptions = append(o.dialOptions,
+			grpc.WithStatsHandler(otelgrpc.NewClientHandler(opts...)))
 	}
 }
