@@ -68,7 +68,13 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Publish BOTH v-prefixed and bare tag families so consumers can
+          # use the canonical git-style "vX.Y.Z" form (which matches `git tag`
+          # and `gh release`) AND the SemVer-pure form. See #89.
           tags: |
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
+            type=semver,pattern=v{{major}}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
