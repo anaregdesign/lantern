@@ -139,6 +139,14 @@ flowchart LR
 docker run --rm -p 6380:6380 ghcr.io/anaregdesign/lantern:latest
 ```
 
+Released images are published to `ghcr.io/anaregdesign/lantern` on every
+`vX.Y.Z` git tag. **Both** tag families are available from `v0.8.0` onward:
+
+- `vX.Y.Z` / `vX.Y` / `vX` — matches the git tag and `gh release` URL.
+- `X.Y.Z` / `X.Y` / `X` — bare SemVer (the only form for `v0.5.0`–`v0.7.0`).
+
+Plus `latest` (most recent release) and `sha-<short>` for each build.
+
 Or build from source:
 
 ```shell
