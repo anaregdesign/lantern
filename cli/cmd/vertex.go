@@ -38,8 +38,9 @@ OUTPUT
   JSON object on stdout with the fields:
     {
       "key":        "<key>",
-      "value":      <typed value: string|number|bool|object|array|null>,
-      "expiration": "<RFC3339 timestamp>"
+      "type":       "string"|"int64"|"float64"|"bool"|"bytes"|"timestamp"|"nil"|...,
+      "value":      <typed value: string|number|bool|base64|null>,
+      "expiration": "<RFC3339Nano timestamp>"
     }
 
 ERRORS
@@ -65,12 +66,7 @@ EXAMPLES
 			}
 			return err
 		}
-		out := map[string]any{
-			"key":        args[0],
-			"value":      v.Value,
-			"expiration": v.Expiration.AsTime().Format(time.RFC3339),
-		}
-		return json.NewEncoder(cmd.OutOrStdout()).Encode(out)
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(v)
 	},
 }
 
