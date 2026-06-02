@@ -149,7 +149,13 @@ EDGE CLEANUP
   immediately after DeleteVertex may still return the edge briefly.
 
 OUTPUT
-  Prints "OK <n>" on success, where <n> is the number of keys submitted.
+  Single-key form: prints "OK existed=true" if the key was present (and
+  therefore removed) or "OK existed=false" if it was already absent.
+  Either way the exit code is 0 — delete is idempotent.
+
+  Batch form: prints "OK <n>" where <n> is the number of keys that
+  actually existed and were removed (as reported by the server),
+  which may be smaller than the number of keys submitted.
 
 EXAMPLES
   lantern vertex delete alice                       # single
@@ -165,15 +171,18 @@ EXAMPLES
 		defer func() { _ = cli.Close() }()
 
 		if len(args) == 1 {
-			if _, err := cli.DeleteVertex(cmd.Context(), args[0]); err != nil {
+			existed, err := cli.DeleteVertex(cmd.Context(), args[0])
+			if err != nil {
 				return err
 			}
-		} else {
-			if err := cli.DeleteVertices(cmd.Context(), args); err != nil {
-				return err
-			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "OK existed=%t\n", existed)
+			return nil
 		}
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "OK %d\n", len(args))
+		deleted, err := cli.DeleteVertices(cmd.Context(), args)
+		if err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "OK %d\n", deleted)
 		return nil
 	},
 }

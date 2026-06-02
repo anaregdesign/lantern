@@ -183,8 +183,10 @@ func TestIntegration_BatchDeletes(t *testing.T) {
 				t.Fatalf("PutVertex(%s): %v", k, err)
 			}
 		}
-		if err := c.DeleteVertices(ctx, keys); err != nil {
+		if n, err := c.DeleteVertices(ctx, keys); err != nil {
 			t.Fatalf("DeleteVertices: %v", err)
+		} else if n != len(keys) {
+			t.Errorf("DeleteVertices n = %d, want %d", n, len(keys))
 		}
 		for _, k := range keys {
 			if _, err := c.GetVertex(ctx, k); status.Code(err) != codes.NotFound {
@@ -206,8 +208,10 @@ func TestIntegration_BatchDeletes(t *testing.T) {
 			t.Fatalf("PutEdge: %v", err)
 		}
 		refs := []client.EdgeRef{{Tail: "ea", Head: "eb"}, {Tail: "ea", Head: "ex"}}
-		if err := c.DeleteEdges(ctx, refs); err != nil {
+		if n, err := c.DeleteEdges(ctx, refs); err != nil {
 			t.Fatalf("DeleteEdges: %v", err)
+		} else if n != len(refs) {
+			t.Errorf("DeleteEdges n = %d, want %d", n, len(refs))
 		}
 		for _, r := range refs {
 			if _, err := c.GetEdge(ctx, r.Tail, r.Head); status.Code(err) != codes.NotFound {
@@ -217,14 +221,18 @@ func TestIntegration_BatchDeletes(t *testing.T) {
 	})
 
 	t.Run("delete vertices empty is no-op", func(t *testing.T) {
-		if err := c.DeleteVertices(ctx, nil); err != nil {
+		if n, err := c.DeleteVertices(ctx, nil); err != nil {
 			t.Errorf("DeleteVertices(nil): %v", err)
+		} else if n != 0 {
+			t.Errorf("DeleteVertices(nil) n = %d, want 0", n)
 		}
 	})
 
 	t.Run("delete edges empty is no-op", func(t *testing.T) {
-		if err := c.DeleteEdges(ctx, nil); err != nil {
+		if n, err := c.DeleteEdges(ctx, nil); err != nil {
 			t.Errorf("DeleteEdges(nil): %v", err)
+		} else if n != 0 {
+			t.Errorf("DeleteEdges(nil) n = %d, want 0", n)
 		}
 	})
 
@@ -245,7 +253,7 @@ func TestIntegration_BatchDeletes(t *testing.T) {
 		for i := range keys {
 			keys[i] = string(rune('a' + i))
 		}
-		if err := bigClient.DeleteVertices(ctx, keys); status.Code(err) != codes.InvalidArgument {
+		if _, err := bigClient.DeleteVertices(ctx, keys); status.Code(err) != codes.InvalidArgument {
 			t.Errorf("DeleteVertices(6) code = %v, want InvalidArgument", status.Code(err))
 		}
 	})
@@ -265,7 +273,7 @@ func TestIntegration_BatchDeletes(t *testing.T) {
 		for i := range refs {
 			refs[i] = client.EdgeRef{Tail: string(rune('a' + i)), Head: "z"}
 		}
-		if err := bigClient.DeleteEdges(ctx, refs); status.Code(err) != codes.InvalidArgument {
+		if _, err := bigClient.DeleteEdges(ctx, refs); status.Code(err) != codes.InvalidArgument {
 			t.Errorf("DeleteEdges(6) code = %v, want InvalidArgument", status.Code(err))
 		}
 	})

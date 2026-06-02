@@ -245,24 +245,30 @@ func (l *Lantern) DeleteVertex(ctx context.Context, key string) (bool, error) {
 // respect the server's MaxBatchSize cap. Edges incident to removed vertices
 // are reaped lazily by the server's GC loop.
 //
+// Returns the number of keys that actually existed and were therefore
+// removed (summed across chunks). Keys absent at call time are silently
+// skipped — they do not appear in the count and do not produce errors.
+//
 // Partial-write semantics: chunks are sent sequentially. On failure the
 // returned error is a *BatchError whose Written field records the number of
 // keys already deleted, so callers can resume with keys[err.Written:].
-func (l *Lantern) DeleteVertices(ctx context.Context, keys []string) error {
+func (l *Lantern) DeleteVertices(ctx context.Context, keys []string) (int, error) {
 	if len(keys) == 0 {
-		return nil
+		return 0, nil
 	}
 	written := 0
+	deleted := 0
 	for _, chunk := range chunkSlice(keys, l.opts.batchChunkSize) {
 		ctx, cancel := l.applyTimeout(ctx)
-		_, err := l.client.DeleteVertices(ctx, &pb.DeleteVerticesRequest{Keys: chunk})
+		resp, err := l.client.DeleteVertices(ctx, &pb.DeleteVerticesRequest{Keys: chunk})
 		cancel()
 		if err != nil {
-			return &BatchError{Written: written, Err: wrapStatus(err)}
+			return deleted, &BatchError{Written: written, Err: wrapStatus(err)}
 		}
 		written += len(chunk)
+		deleted += int(resp.GetDeleted())
 	}
-	return nil
+	return deleted, nil
 }
 
 // GetVertices reads a batch of vertices in one (or a few chunked) round
@@ -402,28 +408,34 @@ type EdgeRef struct {
 
 // DeleteEdges removes a batch of edges. Automatically chunked.
 //
+// Returns the number of edges that actually existed and were therefore
+// removed (summed across chunks). Edges absent at call time are silently
+// skipped — they do not appear in the count and do not produce errors.
+//
 // Partial-write semantics: chunks are sent sequentially. On failure the
 // returned error is a *BatchError whose Written field records the number of
 // edges already deleted, so callers can resume with refs[err.Written:].
-func (l *Lantern) DeleteEdges(ctx context.Context, refs []EdgeRef) error {
+func (l *Lantern) DeleteEdges(ctx context.Context, refs []EdgeRef) (int, error) {
 	if len(refs) == 0 {
-		return nil
+		return 0, nil
 	}
 	keys := make([]*pb.EdgeKey, 0, len(refs))
 	for _, r := range refs {
 		keys = append(keys, &pb.EdgeKey{Tail: r.Tail, Head: r.Head})
 	}
 	written := 0
+	deleted := 0
 	for _, chunk := range chunkSlice(keys, l.opts.batchChunkSize) {
 		ctx, cancel := l.applyTimeout(ctx)
-		_, err := l.client.DeleteEdges(ctx, &pb.DeleteEdgesRequest{Edges: chunk})
+		resp, err := l.client.DeleteEdges(ctx, &pb.DeleteEdgesRequest{Edges: chunk})
 		cancel()
 		if err != nil {
-			return &BatchError{Written: written, Err: wrapStatus(err)}
+			return deleted, &BatchError{Written: written, Err: wrapStatus(err)}
 		}
 		written += len(chunk)
+		deleted += int(resp.GetDeleted())
 	}
-	return nil
+	return deleted, nil
 }
 
 // GetEdges reads a batch of edges in one (or a few chunked) round trips.
