@@ -104,7 +104,7 @@ the shape you asked for.
 ```mermaid
 flowchart LR
     subgraph Client
-        SDK["Go client SDK<br/>(client/)"]
+        SDK["Go client SDK<br/>(sdks/go/)"]
         CLI["lantern-cli<br/>(cli/)"]
         Other["any gRPC client<br/>(proto/graph/v1)"]
     end
@@ -185,7 +185,7 @@ Global flags include `--host/--port` (or `--address`), `--timeout`, `--tls*`,
 ### Use it from Go
 
 ```go
-import "github.com/anaregdesign/lantern/client"
+import "github.com/anaregdesign/lantern/sdks/go"
 
 cli, err := client.NewLantern("localhost:6380")
 if err != nil { log.Fatal(err) }
@@ -206,7 +206,7 @@ g, _ := cli.Illuminate(ctx, "user:42", 2, 3, true)
 ```
 
 The full multi-type, additive-edge, and `Illuminate` example lives in
-[client/example/main.go](client/example/main.go).
+[sdks/go/example/main.go](sdks/go/example/main.go).
 
 ### Use it from another language
 
@@ -302,7 +302,7 @@ This is a monorepo consolidating four formerly separate repositories.
 | Path | Role |
 |---|---|
 | `server/` | gRPC server (DI via google/wire) |
-| `client/` | Go client SDK |
+| `sdks/go/` | Go client SDK (formerly `client/`) |
 | `cli/` | Interactive CLI (`cobra` + `promptui`) — formerly `lantern-cli` |
 | `proto/` | `.proto` sources — formerly `lantern-proto` |
 | `gen/go/` | Generated Go bindings (regenerate with `go generate ./...`) |
@@ -356,7 +356,7 @@ Required toolchain:
   provider returns the concrete `*graph.GraphCache[string, *Vertex]`. Re-check
   this constraint before introducing generics there.
 - **Adding a new vertex value type** in the Go SDK requires updating *both*
-  directions in [client/value.go](client/value.go): `nativeVertex.asVertex()`
+  directions in [sdks/go/value.go](sdks/go/value.go): `nativeVertex.asVertex()`
   (Go → proto) and the matching `*Value()` accessor (proto → Go).
 - **Proto `go_package`** is `github.com/anaregdesign/lantern/gen/go/graph/v1`.
   `make proto` rewrites everything under `gen/go`.

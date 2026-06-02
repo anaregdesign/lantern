@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anaregdesign/lantern/client"
+	"github.com/anaregdesign/lantern/sdks/go"
 	cachegraph "github.com/anaregdesign/lantern/core/cache/graph"
 	pb "github.com/anaregdesign/lantern/gen/go/graph/v1"
 	"github.com/anaregdesign/lantern/server/provider"

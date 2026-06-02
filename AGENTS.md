@@ -9,7 +9,7 @@ This project used to be split across four separate repositories (`lantern` / `la
 | Path | Origin | Role |
 |---|---|---|
 | `server/` | lantern (this repo) | gRPC server (DI via google/wire) |
-| `client/` | lantern (this repo) | Go client SDK |
+| `sdks/go/` | lantern (this repo, formerly `client/`) | Go client SDK |
 | `cli/` | former [`lantern-cli`](https://github.com/anaregdesign/lantern-cli) | Interactive CLI (cobra + promptui) |
 | `proto/` | former [`lantern-proto`](https://github.com/anaregdesign/lantern-proto) | `.proto` sources (regenerated with buf) |
 | `gen/go/` | former `lantern-proto/go` | Generated Go bindings |
@@ -22,8 +22,8 @@ The module path in `go.mod` is still `github.com/anaregdesign/lantern`. All exte
 - **gRPC service**: [server/service/service.go](server/service/service.go) implements `LanternService` (`Illuminate`, `GetVertex`, `PutVertex`, `DeleteVertex`, `DeleteVertices`, `GetEdge`, `AddEdge`, `PutEdge`, `DeleteEdge`, `DeleteEdges`).
 - **DI**: [google/wire](https://github.com/google/wire). [server/cmd/wire.go](server/cmd/wire.go) holds the definitions; [server/cmd/wire_gen.go](server/cmd/wire_gen.go) is generated — **never edit it by hand**. After changing providers, regenerate with `go generate ./...` (or `make wire` for just the wire step). Wire itself is pulled in via the `tool` directive in `go.mod`, so no install is required.
 - **Providers**: [server/provider/provider.go](server/provider/provider.go) assembles `Config` (env vars `LANTERN_PORT`, `LANTERN_DEFAULT_TTL_SECONDS`), `net.Listener`, `grpc.Server`, and `core/cache/graph.GraphCache`. `NewListener` now receives the wire-injected `*Config`.
-- **Client SDK**: [client/client.go](client/client.go) is a thin gRPC wrapper. [client/value.go](client/value.go) handles Go-native ↔ `pb.Vertex` conversion via `nativeVertex.asVertex()` and `Vertex.*Value()`, and renders Go-friendly JSON via `Vertex.MarshalJSON` (shape: `{key,type,value,expiration}`). **When adding a new value type, update all three:** `asVertex` (Go → proto), the matching `*Value()` accessor plus `Kind()` / `VertexKind*` constant (proto → Go), and the `MarshalJSON` switch.
-- **Decay model**: edges are **additive** and carry their own TTL. Be mindful of the difference between `AddEdge` and `PutEdge` (idempotency) — see the discussion in [client/example/main.go](client/example/main.go).
+- **Client SDK**: [sdks/go/client.go](sdks/go/client.go) is a thin gRPC wrapper. [sdks/go/value.go](sdks/go/value.go) handles Go-native ↔ `pb.Vertex` conversion via `nativeVertex.asVertex()` and `Vertex.*Value()`, and renders Go-friendly JSON via `Vertex.MarshalJSON` (shape: `{key,type,value,expiration}`). **When adding a new value type, update all three:** `asVertex` (Go → proto), the matching `*Value()` accessor plus `Kind()` / `VertexKind*` constant (proto → Go), and the `MarshalJSON` switch. The import path is `github.com/anaregdesign/lantern/sdks/go` and the package name remains `client`.
+- **Decay model**: edges are **additive** and carry their own TTL. Be mindful of the difference between `AddEdge` and `PutEdge` (idempotency) — see the discussion in [sdks/go/example/main.go](sdks/go/example/main.go).
 
 ## Build / Run / Test / Generate
 
@@ -50,4 +50,4 @@ CI: [.github/workflows/go.yml](.github/workflows/go.yml) runs `go build` + `go t
 ## Docs / Links
 
 - End-to-end usage: [README.md](README.md)
-- Comprehensive client SDK example: [client/example/main.go](client/example/main.go)
+- Comprehensive client SDK example: [sdks/go/example/main.go](sdks/go/example/main.go)

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/anaregdesign/lantern/client"
+	"github.com/anaregdesign/lantern/sdks/go"
 	"github.com/spf13/cobra"
 )
 

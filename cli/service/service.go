@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/anaregdesign/lantern/cli/parser"
-	"github.com/anaregdesign/lantern/client"
+	"github.com/anaregdesign/lantern/sdks/go"
 )
 
 var (
