@@ -5,7 +5,6 @@ import (
 	"errors"
 	"time"
 
-	model "github.com/anaregdesign/lantern/core/graph"
 	pb "github.com/anaregdesign/lantern/gen/go/graph/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -327,14 +326,31 @@ func (l *Lantern) DeleteEdges(ctx context.Context, refs []EdgeRef) error {
 	return nil
 }
 
+// Graph is the SDK-native representation of an Illuminate response. It mirrors
+// the field layout (and JSON shape) of core/graph.Graph[string, *Vertex] so
+// callers that need richer graph algorithms can adapt it trivially, but the
+// SDK itself stays free of any non-proto dependency.
+type Graph struct {
+	Vertices map[string]*Vertex             `json:"vertices,omitempty"`
+	Edges    map[string]map[string]float32 `json:"edges,omitempty"`
+}
+
+// NewGraph returns an empty Graph with both maps initialized.
+func NewGraph() *Graph {
+	return &Graph{
+		Vertices: make(map[string]*Vertex),
+		Edges:    make(map[string]map[string]float32),
+	}
+}
+
 // Illuminate runs a k-bounded BFS from seed, returning the resulting subgraph.
-func (l *Lantern) Illuminate(ctx context.Context, seed string, step uint32, k uint32, tfidf bool) (*model.Graph[string, *Vertex], error) {
+func (l *Lantern) Illuminate(ctx context.Context, seed string, step uint32, k uint32, tfidf bool) (*Graph, error) {
 	return l.IlluminateWithOptimization(ctx, seed, step, k, tfidf, OptimizationUnspecified)
 }
 
 // IlluminateWithOptimization is Illuminate with an explicit server-side
 // post-processing strategy. Pass OptimizationUnspecified to disable it.
-func (l *Lantern) IlluminateWithOptimization(ctx context.Context, seed string, step uint32, k uint32, tfidf bool, opt Optimization) (*model.Graph[string, *Vertex], error) {
+func (l *Lantern) IlluminateWithOptimization(ctx context.Context, seed string, step uint32, k uint32, tfidf bool, opt Optimization) (*Graph, error) {
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
 	result, err := l.client.Illuminate(ctx, &pb.IlluminateRequest{
@@ -347,7 +363,7 @@ func (l *Lantern) IlluminateWithOptimization(ctx context.Context, seed string, s
 	if err != nil {
 		return nil, err
 	}
-	g := model.NewGraph[string, *Vertex]()
+	g := NewGraph()
 	for _, v := range result.Graph.Vertices {
 		g.Vertices[v.Key] = (*Vertex)(v)
 	}
