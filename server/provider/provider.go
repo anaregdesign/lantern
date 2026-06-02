@@ -64,9 +64,9 @@ import (
 //   - LANTERN_TLS_KEY_FILE               PEM key  path
 //   - LANTERN_TLS_CLIENT_CA_FILE         PEM client CA path (enables mTLS)
 //   - LANTERN_VERSION                    overrides lantern_build_info{version}
-//                                         (default: debug.BuildInfo)
+//     (default: debug.BuildInfo)
 //   - LANTERN_COMMIT                     overrides lantern_build_info{commit}
-//                                         (default: vcs.revision from BuildInfo)
+//     (default: vcs.revision from BuildInfo)
 type Config struct {
 	Port             int
 	TTL              time.Duration
