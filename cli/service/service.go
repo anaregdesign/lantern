@@ -231,7 +231,7 @@ func (c *CLIService) Run(ctx context.Context, str string) error {
 				return nil
 			}
 		case "mst_cost":
-			mg = mg.MinimumSpanningTree(p.Seed, false)
+			mg = mg.MinimumSpanningTree(p.Seed)
 			if jsonString, err := json.MarshalIndent(mg, "", "\t"); err != nil {
 				return err
 			} else {
@@ -239,7 +239,7 @@ func (c *CLIService) Run(ctx context.Context, str string) error {
 				return nil
 			}
 		case "mst_relevance":
-				mg = mg.MaximumSpanningTree(p.Seed)
+			mg = mg.MaximumSpanningTree(p.Seed)
 			if jsonString, err := json.MarshalIndent(mg, "", "\t"); err != nil {
 				return err
 			} else {

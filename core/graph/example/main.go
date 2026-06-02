@@ -83,7 +83,7 @@ func main() {
 	*/
 
 	log.Println("Minimum Spanning Tree from vertex 'a'")
-	mst := g.MinimumSpanningTree("a", false)
+	mst := g.MinimumSpanningTree("a")
 	if jsonText, err := json.MarshalIndent(mst, "", "\t"); err == nil {
 		log.Println(string(jsonText))
 	}
