@@ -157,8 +157,16 @@ func wrapStatus(err error) error {
 	return err
 }
 
-// GetVertex fetches the vertex at key. Returns an error wrapping ErrNotFound
-// when the key is absent.
+// GetVertex fetches the vertex at key.
+//
+// Presence vs. nil-value semantics:
+//   - Absent key  → returns (nil, err) where errors.Is(err, ErrNotFound) is true.
+//   - Present key holding an explicit nil value (the proto Vertex_Nil tombstone,
+//     written by passing a Go nil to PutVertex/PutVertexAt) → returns a
+//     non-nil *Vertex whose Kind() reports VertexKindNil and a nil error.
+//
+// Callers that need to distinguish "missing" from "present-but-nil" must
+// check errors.Is(err, ErrNotFound) rather than only the returned pointer.
 func (l *Lantern) GetVertex(ctx context.Context, key string) (*Vertex, error) {
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()

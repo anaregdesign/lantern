@@ -81,6 +81,11 @@ func (v nativeVertex) asVertex() (*pb.Vertex, error) {
 
 // Vertex is a thin type alias over the generated protobuf Vertex that adds
 // Go-friendly value accessors. Convert a *pb.Vertex with (*Vertex)(p).
+//
+// A Vertex whose Kind() reports VertexKindNil is a present tombstone, not a
+// missing entry: GetVertex returns it with a nil error. "Key absent" is
+// signalled separately by an error wrapping ErrNotFound. See GetVertex for
+// the full presence vs. nil-value contract.
 type Vertex pb.Vertex
 
 // VertexKind identifies which oneof variant is set on a Vertex. Use
@@ -99,6 +104,10 @@ const (
 	VertexKindString
 	VertexKindBytes
 	VertexKindTimestamp
+	// VertexKindNil indicates a present vertex whose value is the proto
+	// Vertex_Nil tombstone (created by passing a Go nil to PutVertex /
+	// PutVertexAt). This is distinct from a missing key, which is reported
+	// by GetVertex as an error wrapping ErrNotFound.
 	VertexKindNil
 	VertexKindDuration
 )
