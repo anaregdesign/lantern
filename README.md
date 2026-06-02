@@ -14,11 +14,19 @@ Lantern is a online-transactional data store. All vertices or edges will be expi
 Lantern is a grpc-based application. We can access lantern from any languages which supports grpc.
 
 
-## Related Projects
-- [lantern](https://github.com/anaregdesign/lantern): this repository
-- [lantern-proto](https://github.com/anaregdesign/lantern-proto): protobuf definitions for lantern
-- [lantern-cli](https://github.com/anaregdesign/lantern-cli): CLI for lantern
-- [papaya](https://github.com/anaregdesign/papaya): Core algorithm and utilities for lantern
+## Repository Layout
+
+This repository is a monorepo that consolidates what used to live in four
+separate repositories (`lantern`, `lantern-proto`, `lantern-cli`, `papaya`).
+
+| Path | Description |
+| --- | --- |
+| `server/` | gRPC server (DI wired with [google/wire](https://github.com/google/wire)). |
+| `client/` | Go client SDK. |
+| `cli/` | Interactive CLI (`cobra` + `promptui`) — formerly `lantern-cli`. |
+| `proto/` | `.proto` sources (formerly `lantern-proto`). Generate with `make proto` (requires [`buf`](https://buf.build)). |
+| `gen/go/` | Generated Go bindings for `proto/`. |
+| `pkg/papaya/` | Core graph/cache/NLP algorithms (formerly the `papaya` module). |
 
 ## Example
 ### Run lantern-server
@@ -28,13 +36,9 @@ docker run -p 6380:6380 ghcr.io/anaregdesign/lantern:v0.4.2
 ```
 
 ### Install lantern-cli
-Binaries are available on [releases](https://github.com/anaregdesign/lantern-cli/releases) page.
-
-If you want to build lantern-cli manually, run the following commands.
+The CLI now lives in this repo under `cli/`. Build it locally with:
 ```shell
-git clone https://github.com/anaregdesign/lantern-cli.git
-cd lantern-cli
-go build
+go build -o lantern-cli ./cli
 ./lantern-cli --host localhost --port 6380
 ```
 
