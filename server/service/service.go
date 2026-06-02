@@ -144,12 +144,17 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()
 	}
-	var written int32
-	for _, v := range request.GetVertices() {
-		s.cache.AddVertexWithExpiration(v.GetKey(), v, v.GetExpiration().AsTime())
-		written++
+	in := request.GetVertices()
+	items := make([]graph.VertexItem[string, *pb.Vertex], 0, len(in))
+	for _, v := range in {
+		items = append(items, graph.VertexItem[string, *pb.Vertex]{
+			Key:        v.GetKey(),
+			Value:      v,
+			Expiration: v.GetExpiration().AsTime(),
+		})
 	}
-	return &pb.PutVerticesResponse{Written: written}, nil
+	s.cache.AddVerticesWithExpiration(items)
+	return &pb.PutVerticesResponse{Written: int32(len(items))}, nil
 }
 
 func (s *LanternService) DeleteVertex(ctx context.Context, in *pb.DeleteVertexRequest) (*pb.DeleteVertexResponse, error) {
@@ -166,13 +171,8 @@ func (s *LanternService) DeleteVertices(ctx context.Context, in *pb.DeleteVertic
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()
 	}
-	var n int32
-	for _, k := range in.GetKeys() {
-		if s.cache.DeleteVertex(k) {
-			n++
-		}
-	}
-	return &pb.DeleteVerticesResponse{Deleted: n}, nil
+	n := s.cache.DeleteVertices(in.GetKeys())
+	return &pb.DeleteVerticesResponse{Deleted: int32(n)}, nil
 }
 
 func (s *LanternService) GetEdge(ctx context.Context, request *pb.GetEdgeRequest) (*pb.GetEdgeResponse, error) {
@@ -218,27 +218,39 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()
 	}
-	var written int32
-	for _, e := range request.GetEdges() {
-		s.cache.AddEdgeWithExpiration(e.GetTail(), e.GetHead(), e.GetWeight(), e.GetExpiration().AsTime())
-		written++
+	in := request.GetEdges()
+	items := make([]graph.EdgeItem[string], 0, len(in))
+	for _, e := range in {
+		items = append(items, graph.EdgeItem[string]{
+			Tail:       e.GetTail(),
+			Head:       e.GetHead(),
+			Weight:     e.GetWeight(),
+			Expiration: e.GetExpiration().AsTime(),
+		})
 	}
-	return &pb.AddEdgesResponse{Written: written}, nil
+	s.cache.AddEdgesWithExpiration(items)
+	return &pb.AddEdgesResponse{Written: int32(len(items))}, nil
 }
 
 func (s *LanternService) PutEdges(ctx context.Context, request *pb.PutEdgesRequest) (*pb.PutEdgesResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()
 	}
-	var written int32
-	for _, e := range request.GetEdges() {
-		// PutEdgeWithExpiration locks the cache once and performs the
-		// delete + add atomically, so concurrent GetEdge readers never
-		// observe a transient NotFound between the two operations.
-		s.cache.PutEdgeWithExpiration(e.GetTail(), e.GetHead(), e.GetWeight(), e.GetExpiration().AsTime())
-		written++
+	in := request.GetEdges()
+	items := make([]graph.EdgeItem[string], 0, len(in))
+	for _, e := range in {
+		items = append(items, graph.EdgeItem[string]{
+			Tail:       e.GetTail(),
+			Head:       e.GetHead(),
+			Weight:     e.GetWeight(),
+			Expiration: e.GetExpiration().AsTime(),
+		})
 	}
-	return &pb.PutEdgesResponse{Written: written}, nil
+	// PutEdgesWithExpiration takes the cache write lock once for the whole
+	// batch, so concurrent GetEdge readers never observe a transient
+	// NotFound between the per-edge delete and add.
+	s.cache.PutEdgesWithExpiration(items)
+	return &pb.PutEdgesResponse{Written: int32(len(items))}, nil
 }
 
 func (s *LanternService) DeleteEdge(ctx context.Context, in *pb.DeleteEdgeRequest) (*pb.DeleteEdgeResponse, error) {
@@ -255,13 +267,13 @@ func (s *LanternService) DeleteEdges(ctx context.Context, in *pb.DeleteEdgesRequ
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()
 	}
-	var n int32
-	for _, e := range in.GetEdges() {
-		if s.cache.DeleteEdge(e.GetTail(), e.GetHead()) {
-			n++
-		}
+	inEdges := in.GetEdges()
+	keys := make([]graph.EdgeKey[string], 0, len(inEdges))
+	for _, e := range inEdges {
+		keys = append(keys, graph.EdgeKey[string]{Tail: e.GetTail(), Head: e.GetHead()})
 	}
-	return &pb.DeleteEdgesResponse{Deleted: n}, nil
+	n := s.cache.DeleteEdges(keys)
+	return &pb.DeleteEdgesResponse{Deleted: int32(n)}, nil
 }
 
 // LanternServer ties the gRPC server, its listener, the cache GC loop, and
