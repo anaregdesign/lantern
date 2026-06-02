@@ -81,12 +81,14 @@ func NewLantern(target string, opts ...Option) (*Lantern, error) {
 	o := options{
 		batchChunkSize:    defaultBatchChunkSize,
 		serviceConfigJSON: defaultServiceConfig,
+		keepalive:         defaultKeepalive,
 	}
 	for _, apply := range opts {
 		apply(&o)
 	}
 
-	dialOpts := make([]grpc.DialOption, 0, len(o.dialOptions)+2)
+	dialOpts := make([]grpc.DialOption, 0, len(o.dialOptions)+3)
+	dialOpts = append(dialOpts, grpc.WithKeepaliveParams(o.keepalive))
 	if o.transportCreds != nil {
 		dialOpts = append(dialOpts, grpc.WithTransportCredentials(o.transportCreds))
 	} else {
