@@ -57,7 +57,7 @@ func (s *Set[T]) Values() []T {
 	defer s.mu.RUnlock()
 
 	values := make([]T, 0, len(s.set))
-	for k, _ := range s.set {
+	for k := range s.set {
 		values = append(values, k)
 	}
 	return values
@@ -76,7 +76,7 @@ func (s *Set[T]) Filter(predicate function.Predicate[T]) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for k, _ := range s.set {
+	for k := range s.set {
 		if !predicate(k) {
 			delete(s.set, k)
 		}
