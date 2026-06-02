@@ -86,7 +86,7 @@ func TestGraph_MaximumSpanningTree(t *testing.T) {
 	g.PutEdge("a", "c", 10)
 	g.PutEdge("c", "a", 10)
 
-	mst := g.MinimumSpanningTree("a", true)
+	mst := g.MaximumSpanningTree("a")
 
 	total := float32(0)
 	for _, heads := range mst.Edges {
