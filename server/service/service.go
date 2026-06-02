@@ -134,6 +134,18 @@ func (s *LanternService) DeleteVertex(ctx context.Context, in *pb.DeleteVertexRe
 	return &pb.DeleteVertexResponse{}, nil
 }
 
+func (s *LanternService) DeleteVertices(ctx context.Context, in *pb.DeleteVerticesRequest) (*pb.DeleteVerticesResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, status.FromContextError(err).Err()
+	}
+	var n int32
+	for _, k := range in.GetKeys() {
+		s.cache.DeleteVertex(k)
+		n++
+	}
+	return &pb.DeleteVerticesResponse{Deleted: n}, nil
+}
+
 func (s *LanternService) GetEdge(ctx context.Context, request *pb.GetEdgeRequest) (*pb.GetEdgeResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()
@@ -180,6 +192,18 @@ func (s *LanternService) DeleteEdge(ctx context.Context, in *pb.DeleteEdgeReques
 	}
 	s.cache.DeleteEdge(in.GetTail(), in.GetHead())
 	return &pb.DeleteEdgeResponse{}, nil
+}
+
+func (s *LanternService) DeleteEdges(ctx context.Context, in *pb.DeleteEdgesRequest) (*pb.DeleteEdgesResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, status.FromContextError(err).Err()
+	}
+	var n int32
+	for _, e := range in.GetEdges() {
+		s.cache.DeleteEdge(e.GetTail(), e.GetHead())
+		n++
+	}
+	return &pb.DeleteEdgesResponse{Deleted: n}, nil
 }
 
 // LanternServer ties the gRPC server, its listener, the cache GC loop, and
