@@ -92,24 +92,24 @@ func TestLantern_AddPutDeleteEdge(t *testing.T) {
 	if err := l.AddEdge(ctx, "a", "b", 1.5, time.Minute); err != nil {
 		t.Fatalf("AddEdge: %v", err)
 	}
-	w, err := l.GetEdge(ctx, "a", "b")
+	e, err := l.GetEdge(ctx, "a", "b")
 	if err != nil {
 		t.Fatalf("GetEdge: %v", err)
 	}
-	if w != 1.5 {
-		t.Errorf("weight = %v, want 1.5", w)
+	if e.Weight != 1.5 {
+		t.Errorf("weight = %v, want 1.5", e.Weight)
 	}
 
 	// PutEdge replaces.
 	if err := l.PutEdge(ctx, "a", "b", 9, time.Minute); err != nil {
 		t.Fatalf("PutEdge: %v", err)
 	}
-	w, err = l.GetEdge(ctx, "a", "b")
+	e, err = l.GetEdge(ctx, "a", "b")
 	if err != nil {
 		t.Fatalf("GetEdge: %v", err)
 	}
-	if w != 9 {
-		t.Errorf("weight after PutEdge = %v, want 9", w)
+	if e.Weight != 9 {
+		t.Errorf("weight after PutEdge = %v, want 9", e.Weight)
 	}
 
 	if err := l.DeleteEdge(ctx, "a", "b"); err != nil {

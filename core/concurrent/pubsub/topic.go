@@ -76,7 +76,5 @@ func (t *Topic[T]) unregister(subscription *Subscription[T]) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if _, ok := t.subscriptions[subscription.name]; ok {
-		delete(t.subscriptions, subscription.name)
-	}
+	delete(t.subscriptions, subscription.name)
 }

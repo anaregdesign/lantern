@@ -69,8 +69,7 @@ func (s *LanternService) Illuminate(_ context.Context, request *IlluminateReques
 	}
 
 	return &IlluminateResponse{
-		Graph:  &Graph{Vertices: vertices, Edges: edges},
-		Status: Status_STATUS_OK,
+		Graph: &Graph{Vertices: vertices, Edges: edges},
 	}, nil
 }
 
@@ -82,22 +81,21 @@ func (s *LanternService) GetVertex(_ context.Context, request *GetVertexRequest)
 	if v == nil {
 		return &GetVertexResponse{
 			Vertex: &Vertex{Key: request.GetKey(), Value: &Vertex_Nil{Nil: true}},
-			Status: Status_STATUS_OK,
 		}, nil
 	}
-	return &GetVertexResponse{Vertex: v, Status: Status_STATUS_OK}, nil
+	return &GetVertexResponse{Vertex: v}, nil
 }
 
 func (s *LanternService) PutVertex(_ context.Context, request *PutVertexRequest) (*PutVertexResponse, error) {
 	for _, v := range request.Vertices {
 		s.cache.AddVertexWithExpiration(v.Key, v, v.Expiration.AsTime())
 	}
-	return &PutVertexResponse{Status: Status_STATUS_OK}, nil
+	return &PutVertexResponse{}, nil
 }
 
 func (s *LanternService) DeleteVertex(_ context.Context, in *DeleteVertexRequest) (*DeleteVertexResponse, error) {
 	s.cache.DeleteVertex(in.GetKey())
-	return &DeleteVertexResponse{Status: Status_STATUS_OK}, nil
+	return &DeleteVertexResponse{}, nil
 }
 
 func (s *LanternService) GetEdge(_ context.Context, request *GetEdgeRequest) (*GetEdgeResponse, error) {
@@ -114,7 +112,7 @@ func (s *LanternService) AddEdge(_ context.Context, request *AddEdgeRequest) (*A
 	for _, e := range request.Edges {
 		s.cache.AddEdgeWithExpiration(e.Tail, e.Head, e.Weight, e.Expiration.AsTime())
 	}
-	return &AddEdgeResponse{Status: Status_STATUS_OK}, nil
+	return &AddEdgeResponse{}, nil
 }
 
 func (s *LanternService) PutEdge(_ context.Context, request *PutEdgeRequest) (*PutEdgeResponse, error) {
@@ -122,12 +120,12 @@ func (s *LanternService) PutEdge(_ context.Context, request *PutEdgeRequest) (*P
 		s.cache.DeleteEdge(e.Tail, e.Head)
 		s.cache.AddEdgeWithExpiration(e.Tail, e.Head, e.Weight, e.Expiration.AsTime())
 	}
-	return &PutEdgeResponse{Status: Status_STATUS_OK}, nil
+	return &PutEdgeResponse{}, nil
 }
 
 func (s *LanternService) DeleteEdge(_ context.Context, in *DeleteEdgeRequest) (*DeleteEdgeResponse, error) {
 	s.cache.DeleteEdge(in.Tail, in.Head)
-	return &DeleteEdgeResponse{Status: Status_STATUS_OK}, nil
+	return &DeleteEdgeResponse{}, nil
 }
 
 // LanternServer ties the gRPC server, its listener, and the cache GC loop

@@ -35,7 +35,3 @@ func (m *Message[T]) Ack() {
 func (m *Message[T]) Nack() {
 	m.subscription.nack(m)
 }
-
-func (m *Message[T]) touch() {
-	m.lastViewedAt = time.Now()
-}

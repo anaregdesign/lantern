@@ -43,7 +43,7 @@ func (d *Dictionary) Words2CBOW(words []string, window int) CBOW {
 	d.AddWords(words)
 
 	bows := make([]BOW, len(words))
-	for i, _ := range words {
+	for i := range words {
 		bows[i] = NewBOW()
 		for j := i - window; j <= i+window; j++ {
 			if j < 0 || j >= len(words) || j == i {

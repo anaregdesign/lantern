@@ -1,7 +1,6 @@
 package graph
 
 import (
-	"context"
 	"maps"
 	"sync"
 	"time"
@@ -55,12 +54,6 @@ func (w *weight) isZero() bool {
 	defer w.mu.Unlock()
 	w.flushLocked()
 	return w.sum == 0
-}
-
-func (w *weight) flush() {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.flushLocked()
 }
 
 // flushLocked compacts expired entries in place and recomputes the cached sum.
@@ -200,19 +193,6 @@ func (c *edgeCache[S]) flush() {
 			if w.isZero() {
 				c.deleteLocked(tail, head)
 			}
-		}
-	}
-}
-
-func (c *edgeCache[S]) watch(ctx context.Context, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			c.flush()
-		case <-ctx.Done():
-			return
 		}
 	}
 }

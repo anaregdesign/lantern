@@ -1,0 +1,17 @@
+version: "2"
+
+linters:
+  default: standard
+  settings:
+    staticcheck:
+      checks:
+        - all
+        # Suggestions for stylistic loop-condition lifting are noisy and
+        # not bug-finding.
+        - "-QF1006"
+        # Stylistic checks (package comments, naming, doc-comment format,
+        # dot imports) are intentionally relaxed for this repo.
+        - "-ST1000"
+        - "-ST1001"
+        - "-ST1003"
+        - "-ST1020"
