@@ -428,7 +428,7 @@ func run() error {
 		return err
 	})
 
-	fmt.Fprintf(w, "\nSDK report written to %s\n", reportPath)
+	_, _ = fmt.Fprintf(w, "\nSDK report written to %s\n", reportPath)
 	return nil
 }
 
