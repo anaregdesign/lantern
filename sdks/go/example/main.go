@@ -254,7 +254,7 @@ func main() {
 	}
 
 	// illuminate from a with step 2 and k 2
-	if graph, err := cli.Illuminate(ctx, "a", 2, 2, false); err == nil {
+	if graph, err := cli.Illuminate(ctx, "a", client.WithStep(2), client.WithK(2)); err == nil {
 		if jsonString, err := json.MarshalIndent(graph, "", "\t"); err == nil {
 			log.Printf("%s\n", jsonString)
 			/*
