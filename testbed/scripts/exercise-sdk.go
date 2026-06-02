@@ -38,16 +38,16 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	w := io.MultiWriter(os.Stdout, f)
 
 	step := func(name string, body func() error) {
-		fmt.Fprintf(w, "==> %s\n", name)
+		_, _ = fmt.Fprintf(w, "==> %s\n", name)
 		if err := body(); err != nil {
-			fmt.Fprintf(w, "    ERR: %v\n", err)
+			_, _ = fmt.Fprintf(w, "    ERR: %v\n", err)
 			return
 		}
-		fmt.Fprintf(w, "    ok\n")
+		_, _ = fmt.Fprintf(w, "    ok\n")
 	}
 
 	// ---- client construction with every option ---------------------
@@ -60,7 +60,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("NewLantern: %w", err)
 	}
-	defer lc.Close()
+	defer func() { _ = lc.Close() }()
 
 	ctx := context.Background()
 
