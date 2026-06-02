@@ -65,7 +65,7 @@ func TestIntegration_FullMiddlewareChain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLantern: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -102,7 +102,7 @@ func TestIntegration_FullMiddlewareChain(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewLantern: %v", err)
 		}
-		defer bigClient.Close()
+		defer func() { _ = bigClient.Close() }()
 		err = bigClient.PutVertices(ctx, inputs)
 		if status.Code(err) != codes.InvalidArgument {
 			t.Fatalf("PutVertices(6) code = %v, want InvalidArgument", status.Code(err))

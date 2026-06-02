@@ -71,16 +71,16 @@ type Config struct {
 	MetricsAddr      string
 	EnableReflection bool
 
-	MaxRecvMsgBytes       int
-	MaxSendMsgBytes       int
-	MaxConcurrentStreams  uint32
-	RateLimitRPS          float64
-	RateLimitBurst        int
+	MaxRecvMsgBytes      int
+	MaxSendMsgBytes      int
+	MaxConcurrentStreams uint32
+	RateLimitRPS         float64
+	RateLimitBurst       int
 
-	MaxKeyLen          int
-	MaxBatchSize       int
-	IlluminateMaxStep  int
-	IlluminateMaxK     int
+	MaxKeyLen         int
+	MaxBatchSize      int
+	IlluminateMaxStep int
+	IlluminateMaxK    int
 
 	TLSCertFile     string
 	TLSKeyFile      string
