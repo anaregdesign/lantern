@@ -27,7 +27,7 @@ graph/cache/NLP toolkit).
 | `cli/` | Interactive CLI (`cobra` + `promptui`) — formerly `lantern-cli`. |
 | `proto/` | `.proto` sources (formerly `lantern-proto`). Generate with `make proto` (requires [`buf`](https://buf.build)). |
 | `gen/go/` | Generated Go bindings for `proto/`. |
-| `pkg/core/` | Shared core building blocks (graph, cache, collections, concurrency, NLP) reused by `server/` and `client/`. |
+| `core/` | Shared core building blocks (graph, cache, collections, concurrency, NLP) reused by `server/` and `client/`. |
 
 ## Example
 ### Run lantern-server

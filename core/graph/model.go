@@ -2,8 +2,8 @@ package graph
 
 import (
 	"container/heap"
-	"github.com/anaregdesign/lantern/pkg/core/collection/pq"
-	"github.com/anaregdesign/lantern/pkg/core/collection/set"
+	"github.com/anaregdesign/lantern/core/collection/pq"
+	"github.com/anaregdesign/lantern/core/collection/set"
 )
 
 type Graph[S comparable, T any] struct {

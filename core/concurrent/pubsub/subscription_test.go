@@ -2,7 +2,7 @@ package pubsub
 
 import (
 	"context"
-	"github.com/anaregdesign/lantern/pkg/core/model/function"
+	"github.com/anaregdesign/lantern/core/model/function"
 	"reflect"
 	"testing"
 	"time"

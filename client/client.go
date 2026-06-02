@@ -3,12 +3,13 @@ package client
 import (
 	"context"
 	"errors"
-	pb "github.com/anaregdesign/lantern/gen/go/graph/v1"
-	model "github.com/anaregdesign/lantern/pkg/core/graph"
-	"google.golang.org/grpc"
-	"google.golang.org/protobuf/types/known/timestamppb"
 	"strconv"
 	"time"
+
+	pb "github.com/anaregdesign/lantern/gen/go/graph/v1"
+	model "github.com/anaregdesign/lantern/core/graph"
+	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type Lantern struct {
@@ -145,7 +146,7 @@ func (l *Lantern) DeleteEdge(ctx context.Context, tail string, head string) erro
 }
 
 func (l *Lantern) Illuminate(ctx context.Context, seed string, step int, k int, tfidf bool) (*model.Graph[string, *Vertex], error) {
-	// In go-client, optimization is not implemented, but there is a native implementation in pkg/core.
+	// In go-client, optimization is not implemented, but there is a native implementation in core.
 	result, err := l.client.Illuminate(ctx, &pb.IlluminateRequest{
 		Seed:  seed,
 		Step:  uint32(step),

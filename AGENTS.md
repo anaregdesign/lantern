@@ -13,7 +13,7 @@ This project used to be split across four separate repositories (`lantern` / `la
 | `cli/` | former [`lantern-cli`](https://github.com/anaregdesign/lantern-cli) | Interactive CLI (cobra + promptui) |
 | `proto/` | former [`lantern-proto`](https://github.com/anaregdesign/lantern-proto) | `.proto` sources (regenerated with buf) |
 | `gen/go/` | former `lantern-proto/go` | Generated Go bindings |
-| `pkg/core/` | shared toolkit (was a separate repo) | Common building blocks reused by server & client: graph, cache, collections, concurrency, NLP |
+| `core/` | shared toolkit (was a separate repo) | Common building blocks reused by server & client: graph, cache, collections, concurrency, NLP |
 
 The module path in `go.mod` is still `github.com/anaregdesign/lantern`. All external dependencies on the old repos have been removed.
 
@@ -21,7 +21,7 @@ The module path in `go.mod` is still `github.com/anaregdesign/lantern`. All exte
 
 - **gRPC service**: [server/service/service.go](server/service/service.go) implements `LanternService` (`Illuminate`, `GetVertex`, `PutVertex`, `AddEdge`, `PutEdge`, `DeleteVertex`, `DeleteEdge`).
 - **DI**: [google/wire](https://github.com/google/wire). [server/cmd/wire.go](server/cmd/wire.go) holds the definitions; [server/cmd/wire_gen.go](server/cmd/wire_gen.go) is generated — **never edit it by hand**. After changing providers, regenerate with `make wire` (or `wire ./server/cmd`).
-- **Providers**: [server/provider/provider.go](server/provider/provider.go) assembles `Config` (env vars `LANTERN_PORT`, `LANTERN_DEFAULT_TTL_SECONDS`), `net.Listener`, `grpc.Server`, and `pkg/core/cache/graph.GraphCache`. `NewListener` now receives the wire-injected `*Config`.
+- **Providers**: [server/provider/provider.go](server/provider/provider.go) assembles `Config` (env vars `LANTERN_PORT`, `LANTERN_DEFAULT_TTL_SECONDS`), `net.Listener`, `grpc.Server`, and `core/cache/graph.GraphCache`. `NewListener` now receives the wire-injected `*Config`.
 - **Client SDK**: [client/client.go](client/client.go) is a thin gRPC wrapper. [client/value.go](client/value.go) handles Go-native ↔ `pb.Vertex` conversion via `nativeVertex.asVertex()` and `Vertex.*Value()`. **When adding a new value type, update both directions** (`asVertex` and each `*Value()` method).
 - **Decay model**: edges are **additive** and carry their own TTL. Be mindful of the difference between `AddEdge` and `PutEdge` (idempotency) — see the discussion in [client/example/main.go](client/example/main.go).
 

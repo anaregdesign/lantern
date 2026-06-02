@@ -1,13 +1,14 @@
 package provider
 
 import (
-	v1 "github.com/anaregdesign/lantern/gen/go/graph/v1"
-	"github.com/anaregdesign/lantern/pkg/core/cache/graph"
-	"google.golang.org/grpc"
 	"net"
 	"os"
 	"strconv"
 	"time"
+
+	v1 "github.com/anaregdesign/lantern/gen/go/graph/v1"
+	"github.com/anaregdesign/lantern/core/cache/graph"
+	"google.golang.org/grpc"
 )
 
 type Config struct {

@@ -2,8 +2,8 @@ package set
 
 import (
 	"fmt"
-	"github.com/anaregdesign/lantern/pkg/core/collection/slice"
-	"github.com/anaregdesign/lantern/pkg/core/model/function"
+	"github.com/anaregdesign/lantern/core/collection/slice"
+	"github.com/anaregdesign/lantern/core/model/function"
 	"reflect"
 	"testing"
 )

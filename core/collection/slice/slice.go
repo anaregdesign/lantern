@@ -2,7 +2,7 @@ package slice
 
 import (
 	"context"
-	"github.com/anaregdesign/lantern/pkg/core/model/function"
+	"github.com/anaregdesign/lantern/core/model/function"
 	"golang.org/x/sync/semaphore"
 	"runtime"
 	"sync"

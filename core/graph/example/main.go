@@ -2,7 +2,7 @@ package main
 
 import (
 	"encoding/json"
-	"github.com/anaregdesign/lantern/pkg/core/graph"
+	"github.com/anaregdesign/lantern/core/graph"
 	"log"
 )
 

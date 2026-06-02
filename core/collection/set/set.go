@@ -1,7 +1,7 @@
 package set
 
 import (
-	"github.com/anaregdesign/lantern/pkg/core/model/function"
+	"github.com/anaregdesign/lantern/core/model/function"
 	"sync"
 )
 

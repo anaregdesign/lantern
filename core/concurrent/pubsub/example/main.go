@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"github.com/anaregdesign/lantern/pkg/core/concurrent/pubsub"
+	"github.com/anaregdesign/lantern/core/concurrent/pubsub"
 	"log"
 	"runtime"
 	"time"
