@@ -91,6 +91,18 @@ message DeleteVertexRequest {
 
 message DeleteVertexResponse {}
 
+// DeleteVerticesRequest removes several vertices in one round trip. Same
+// cascade semantics as DeleteVertex (edges reaped lazily by the GC loop).
+// Subject to the same MaxBatchSize / MaxKeyLen guard rails as the put RPCs.
+message DeleteVerticesRequest {
+  repeated string keys = 1;
+}
+
+message DeleteVerticesResponse {
+  // Number of keys the server attempted to delete (equals len(keys) on success).
+  int32 deleted = 1;
+}
+
 message GetEdgeRequest {
   string tail = 1;
   string head = 2;
@@ -106,6 +118,23 @@ message DeleteEdgeRequest {
 }
 
 message DeleteEdgeResponse {}
+
+// EdgeKey identifies an edge by its (tail, head) pair without weight.
+message EdgeKey {
+  string tail = 1;
+  string head = 2;
+}
+
+// DeleteEdgesRequest removes several edges in one round trip. Subject to the
+// MaxBatchSize / MaxKeyLen guard rails.
+message DeleteEdgesRequest {
+  repeated EdgeKey edges = 1;
+}
+
+message DeleteEdgesResponse {
+  // Number of edges the server attempted to delete (equals len(edges) on success).
+  int32 deleted = 1;
+}
 
 // AddEdgeRequest accumulates weight onto each (tail, head) pair: repeated
 // calls with the same endpoints sum their weights. This operation is
@@ -150,6 +179,14 @@ service LanternService {
     option (google.api.http) = {delete: "/v1/vertices/{key}"};
   }
 
+  // DeleteVertices removes several vertices in one round trip.
+  rpc DeleteVertices(DeleteVerticesRequest) returns (DeleteVerticesResponse) {
+    option (google.api.http) = {
+      post: "/v1/vertices/delete"
+      body: "*"
+    };
+  }
+
   rpc GetEdge(GetEdgeRequest) returns (GetEdgeResponse) {
     option (google.api.http) = {get: "/v1/edges/{tail}/{head}"};
   }
@@ -172,5 +209,13 @@ service LanternService {
 
   rpc DeleteEdge(DeleteEdgeRequest) returns (DeleteEdgeResponse) {
     option (google.api.http) = {delete: "/v1/edges/{tail}/{head}"};
+  }
+
+  // DeleteEdges removes several edges in one round trip.
+  rpc DeleteEdges(DeleteEdgesRequest) returns (DeleteEdgesResponse) {
+    option (google.api.http) = {
+      post: "/v1/edges/delete"
+      body: "*"
+    };
   }
 }

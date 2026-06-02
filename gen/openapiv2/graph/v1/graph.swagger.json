@@ -50,6 +50,40 @@
         ]
       }
     },
+    "/v1/edges/delete": {
+      "post": {
+        "summary": "DeleteEdges removes several edges in one round trip.",
+        "operationId": "LanternService_DeleteEdges",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1DeleteEdgesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "DeleteEdgesRequest removes several edges in one round trip. Subject to the\nMaxBatchSize / MaxKeyLen guard rails.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1DeleteEdgesRequest"
+            }
+          }
+        ],
+        "tags": [
+          "LanternService"
+        ]
+      }
+    },
     "/v1/edges/put": {
       "put": {
         "summary": "PutEdge is idempotent (replaces weight). PUT per REST conventions.",
@@ -251,6 +285,40 @@
         ]
       }
     },
+    "/v1/vertices/delete": {
+      "post": {
+        "summary": "DeleteVertices removes several vertices in one round trip.",
+        "operationId": "LanternService_DeleteVertices",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1DeleteVerticesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "DeleteVerticesRequest removes several vertices in one round trip. Same\ncascade semantics as DeleteVertex (edges reaped lazily by the GC loop).\nSubject to the same MaxBatchSize / MaxKeyLen guard rails as the put RPCs.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1DeleteVerticesRequest"
+            }
+          }
+        ],
+        "tags": [
+          "LanternService"
+        ]
+      }
+    },
     "/v1/vertices/{key}": {
       "get": {
         "operationId": "LanternService_GetVertex",
@@ -365,8 +433,53 @@
     "v1DeleteEdgeResponse": {
       "type": "object"
     },
+    "v1DeleteEdgesRequest": {
+      "type": "object",
+      "properties": {
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1EdgeKey"
+          }
+        }
+      },
+      "description": "DeleteEdgesRequest removes several edges in one round trip. Subject to the\nMaxBatchSize / MaxKeyLen guard rails."
+    },
+    "v1DeleteEdgesResponse": {
+      "type": "object",
+      "properties": {
+        "deleted": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Number of edges the server attempted to delete (equals len(edges) on success)."
+        }
+      }
+    },
     "v1DeleteVertexResponse": {
       "type": "object"
+    },
+    "v1DeleteVerticesRequest": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "description": "DeleteVerticesRequest removes several vertices in one round trip. Same\ncascade semantics as DeleteVertex (edges reaped lazily by the GC loop).\nSubject to the same MaxBatchSize / MaxKeyLen guard rails as the put RPCs."
+    },
+    "v1DeleteVerticesResponse": {
+      "type": "object",
+      "properties": {
+        "deleted": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Number of keys the server attempted to delete (equals len(keys) on success)."
+        }
+      }
     },
     "v1Edge": {
       "type": "object",
@@ -386,6 +499,18 @@
           "format": "date-time"
         }
       }
+    },
+    "v1EdgeKey": {
+      "type": "object",
+      "properties": {
+        "tail": {
+          "type": "string"
+        },
+        "head": {
+          "type": "string"
+        }
+      },
+      "description": "EdgeKey identifies an edge by its (tail, head) pair without weight."
     },
     "v1GetEdgeResponse": {
       "type": "object",
