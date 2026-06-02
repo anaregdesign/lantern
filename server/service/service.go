@@ -140,6 +140,13 @@ func (s *LanternService) GetVertices(ctx context.Context, request *pb.GetVertice
 	return resp, nil
 }
 
+func (s *LanternService) PutVertex(ctx context.Context, request *pb.PutVertexRequest) (*pb.PutVertexResponse, error) {
+	if _, err := s.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{request.GetVertex()}}); err != nil {
+		return nil, err
+	}
+	return &pb.PutVertexResponse{}, nil
+}
+
 func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVerticesRequest) (*pb.PutVerticesResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()
@@ -214,6 +221,13 @@ func (s *LanternService) GetEdges(ctx context.Context, request *pb.GetEdgesReque
 	return resp, nil
 }
 
+func (s *LanternService) AddEdge(ctx context.Context, request *pb.AddEdgeRequest) (*pb.AddEdgeResponse, error) {
+	if _, err := s.AddEdges(ctx, &pb.AddEdgesRequest{Edges: []*pb.Edge{request.GetEdge()}}); err != nil {
+		return nil, err
+	}
+	return &pb.AddEdgeResponse{}, nil
+}
+
 func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesRequest) (*pb.AddEdgesResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()
@@ -230,6 +244,13 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 	}
 	s.cache.AddEdgesWithExpiration(items)
 	return &pb.AddEdgesResponse{Written: int32(len(items))}, nil
+}
+
+func (s *LanternService) PutEdge(ctx context.Context, request *pb.PutEdgeRequest) (*pb.PutEdgeResponse, error) {
+	if _, err := s.PutEdges(ctx, &pb.PutEdgesRequest{Edges: []*pb.Edge{request.GetEdge()}}); err != nil {
+		return nil, err
+	}
+	return &pb.PutEdgeResponse{}, nil
 }
 
 func (s *LanternService) PutEdges(ctx context.Context, request *pb.PutEdgesRequest) (*pb.PutEdgesResponse, error) {
