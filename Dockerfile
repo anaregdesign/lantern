@@ -20,6 +20,10 @@ COPY . .
 # Static binary; suitable for distroless/scratch and for alpine.
 ARG TARGETOS
 ARG TARGETARCH
+# VERSION/COMMIT are surfaced as lantern_build_info{version,commit} via the
+# LANTERN_VERSION / LANTERN_COMMIT env vars below. CI sets them at build time.
+ARG VERSION=
+ARG COMMIT=
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
@@ -30,11 +34,15 @@ FROM alpine:3.23
 
 RUN addgroup -S lantern && adduser -S -G lantern lantern
 
+ARG VERSION=
+ARG COMMIT=
 ENV LANTERN_DEFAULT_TTL_SECONDS=3600 \
     LANTERN_PORT=6380 \
     LANTERN_METRICS_ADDR=:9090 \
     LANTERN_LOG_FORMAT=json \
-    LANTERN_LOG_LEVEL=info
+    LANTERN_LOG_LEVEL=info \
+    LANTERN_VERSION=${VERSION} \
+    LANTERN_COMMIT=${COMMIT}
 
 WORKDIR /app
 COPY --from=builder /out/lantern /app/lantern
