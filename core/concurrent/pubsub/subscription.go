@@ -2,11 +2,12 @@ package pubsub
 
 import (
 	"context"
+	"sync"
+	"time"
+
 	"github.com/anaregdesign/lantern/core/model/function"
 	"github.com/google/uuid"
 	"golang.org/x/sync/semaphore"
-	"sync"
-	"time"
 )
 
 type Subscription[T any] struct {

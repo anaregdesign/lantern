@@ -2,13 +2,14 @@ package graph
 
 import (
 	"context"
+	"math"
+	"sync"
+	"time"
+
 	"github.com/anaregdesign/lantern/core/cache"
 	"github.com/anaregdesign/lantern/core/collection/pq"
 	"github.com/anaregdesign/lantern/core/collection/set"
 	"github.com/anaregdesign/lantern/core/graph"
-	"math"
-	"sync"
-	"time"
 )
 
 type GraphCache[S comparable, T any] struct {

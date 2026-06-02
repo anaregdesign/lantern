@@ -2,9 +2,10 @@ package slice
 
 import (
 	"context"
-	"github.com/anaregdesign/lantern/core/model/function"
 	"reflect"
 	"testing"
+
+	"github.com/anaregdesign/lantern/core/model/function"
 )
 
 var ctx = context.Background()
