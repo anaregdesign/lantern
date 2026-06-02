@@ -220,3 +220,63 @@ func TestBufconn_DeleteEdges_HappyPath(t *testing.T) {
 		}
 	}
 }
+
+func TestBufconn_GetVertices_PartialMiss(t *testing.T) {
+	c, ctx, cleanup := newBufconnClient(t)
+	defer cleanup()
+
+	vs := []*pb.Vertex{
+		{Key: "a", Value: &pb.Vertex_Int64{Int64: 1}, Expiration: bufconnExp(time.Minute)},
+		{Key: "b", Value: &pb.Vertex_Nil{Nil: true}, Expiration: bufconnExp(time.Minute)},
+	}
+	if _, err := c.PutVertex(ctx, &pb.PutVertexRequest{Vertices: vs}); err != nil {
+		t.Fatalf("PutVertex: %v", err)
+	}
+
+	resp, err := c.GetVertices(ctx, &pb.GetVerticesRequest{Keys: []string{"a", "b", "missing"}})
+	if err != nil {
+		t.Fatalf("GetVertices: %v", err)
+	}
+	if got, want := len(resp.GetVertices()), 2; got != want {
+		t.Fatalf("len(Vertices) = %d, want %d", got, want)
+	}
+	gotKeys := map[string]bool{}
+	for _, v := range resp.GetVertices() {
+		gotKeys[v.GetKey()] = true
+	}
+	if !gotKeys["a"] || !gotKeys["b"] {
+		t.Errorf("Vertices keys = %v, want a+b", gotKeys)
+	}
+	if len(resp.GetMissing()) != 1 || resp.GetMissing()[0] != "missing" {
+		t.Errorf("Missing = %v, want [missing]", resp.GetMissing())
+	}
+}
+
+func TestBufconn_GetEdges_PartialMiss(t *testing.T) {
+	c, ctx, cleanup := newBufconnClient(t)
+	defer cleanup()
+
+	edges := []*pb.Edge{
+		{Tail: "a", Head: "b", Weight: 1.5, Expiration: bufconnExp(time.Minute)},
+		{Tail: "b", Head: "c", Weight: 2, Expiration: bufconnExp(time.Minute)},
+	}
+	if _, err := c.AddEdge(ctx, &pb.AddEdgeRequest{Edges: edges}); err != nil {
+		t.Fatalf("AddEdge: %v", err)
+	}
+
+	resp, err := c.GetEdges(ctx, &pb.GetEdgesRequest{Edges: []*pb.EdgeKey{
+		{Tail: "a", Head: "b"},
+		{Tail: "b", Head: "c"},
+		{Tail: "x", Head: "y"},
+	}})
+	if err != nil {
+		t.Fatalf("GetEdges: %v", err)
+	}
+	if got, want := len(resp.GetEdges()), 2; got != want {
+		t.Fatalf("len(Edges) = %d, want %d", got, want)
+	}
+	if len(resp.GetMissing()) != 1 ||
+		resp.GetMissing()[0].GetTail() != "x" || resp.GetMissing()[0].GetHead() != "y" {
+		t.Errorf("Missing = %v, want [{x y}]", resp.GetMissing())
+	}
+}

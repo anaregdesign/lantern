@@ -84,6 +84,40 @@
         ]
       }
     },
+    "/v1/edges/get": {
+      "post": {
+        "summary": "GetEdges reads several edges in one round trip.",
+        "operationId": "LanternService_GetEdges",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetEdgesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "GetEdgesRequest reads several edges in one round trip. Subject to the\nsame MaxBatchSize / MaxKeyLen guard rails as the write RPCs.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1GetEdgesRequest"
+            }
+          }
+        ],
+        "tags": [
+          "LanternService"
+        ]
+      }
+    },
     "/v1/edges/put": {
       "put": {
         "summary": "PutEdge is idempotent (replaces weight). PUT per REST conventions.",
@@ -319,6 +353,40 @@
         ]
       }
     },
+    "/v1/vertices/get": {
+      "post": {
+        "summary": "GetVertices reads several vertices in one round trip.",
+        "operationId": "LanternService_GetVertices",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetVerticesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "GetVerticesRequest reads several vertices in one round trip. Subject to\nthe same MaxBatchSize / MaxKeyLen guard rails as the write RPCs.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1GetVerticesRequest"
+            }
+          }
+        ],
+        "tags": [
+          "LanternService"
+        ]
+      }
+    },
     "/v1/vertices/{key}": {
       "get": {
         "operationId": "LanternService_GetVertex",
@@ -532,11 +600,77 @@
         }
       }
     },
+    "v1GetEdgesRequest": {
+      "type": "object",
+      "properties": {
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1EdgeKey"
+          }
+        }
+      },
+      "description": "GetEdgesRequest reads several edges in one round trip. Subject to the\nsame MaxBatchSize / MaxKeyLen guard rails as the write RPCs."
+    },
+    "v1GetEdgesResponse": {
+      "type": "object",
+      "properties": {
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Edge"
+          },
+          "description": "edges contains every (tail, head) pair that was present at the time of\nthe call. Order is unspecified; clients should match by (Edge.tail,\nEdge.head)."
+        },
+        "missing": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1EdgeKey"
+          },
+          "description": "missing lists the requested (tail, head) pairs that did not exist (or\nhad expired)."
+        }
+      }
+    },
     "v1GetVertexResponse": {
       "type": "object",
       "properties": {
         "vertex": {
           "$ref": "#/definitions/v1Vertex"
+        }
+      }
+    },
+    "v1GetVerticesRequest": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "description": "GetVerticesRequest reads several vertices in one round trip. Subject to\nthe same MaxBatchSize / MaxKeyLen guard rails as the write RPCs."
+    },
+    "v1GetVerticesResponse": {
+      "type": "object",
+      "properties": {
+        "vertices": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Vertex"
+          },
+          "description": "vertices contains every key that was present at the time of the call.\nOrder is unspecified; clients should match by Vertex.key."
+        },
+        "missing": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "missing lists the requested keys that did not exist (or had expired)."
         }
       }
     },

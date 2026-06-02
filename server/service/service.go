@@ -118,6 +118,33 @@ func (s *LanternService) GetVertex(ctx context.Context, request *pb.GetVertexReq
 	return &pb.GetVertexResponse{Vertex: v}, nil
 }
 
+// GetVertices reads several vertices in one round trip. Keys present at call
+// time are returned in Vertices; missing (or expired) keys are reported in
+// Missing. Order within either slice is not guaranteed to follow request
+// order — clients should match by Vertex.key.
+func (s *LanternService) GetVertices(ctx context.Context, request *pb.GetVerticesRequest) (*pb.GetVerticesResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, status.FromContextError(err).Err()
+	}
+	keys := request.GetKeys()
+	resp := &pb.GetVerticesResponse{
+		Vertices: make([]*pb.Vertex, 0, len(keys)),
+	}
+	for _, k := range keys {
+		v, ok := s.cache.GetVertex(k)
+		if !ok {
+			resp.Missing = append(resp.Missing, k)
+			continue
+		}
+		if v == nil {
+			resp.Vertices = append(resp.Vertices, &pb.Vertex{Key: k, Value: &pb.Vertex_Nil{Nil: true}})
+		} else {
+			resp.Vertices = append(resp.Vertices, v)
+		}
+	}
+	return resp, nil
+}
+
 func (s *LanternService) PutVertex(ctx context.Context, request *pb.PutVertexRequest) (*pb.PutVertexResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()
@@ -165,6 +192,32 @@ func (s *LanternService) GetEdge(ctx context.Context, request *pb.GetEdgeRequest
 		edge.Expiration = timestamppb.New(exp)
 	}
 	return &pb.GetEdgeResponse{Edge: edge}, nil
+}
+
+// GetEdges reads several edges in one round trip. Pairs present at call time
+// are returned in Edges; missing (or expired) pairs are reported in Missing.
+// Order within either slice is not guaranteed to follow request order.
+func (s *LanternService) GetEdges(ctx context.Context, request *pb.GetEdgesRequest) (*pb.GetEdgesResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, status.FromContextError(err).Err()
+	}
+	in := request.GetEdges()
+	resp := &pb.GetEdgesResponse{
+		Edges: make([]*pb.Edge, 0, len(in)),
+	}
+	for _, k := range in {
+		w, exp, ok := s.cache.GetEdgeDetail(k.GetTail(), k.GetHead())
+		if !ok {
+			resp.Missing = append(resp.Missing, &pb.EdgeKey{Tail: k.GetTail(), Head: k.GetHead()})
+			continue
+		}
+		edge := &pb.Edge{Tail: k.GetTail(), Head: k.GetHead(), Weight: w}
+		if !exp.IsZero() {
+			edge.Expiration = timestamppb.New(exp)
+		}
+		resp.Edges = append(resp.Edges, edge)
+	}
+	return resp, nil
 }
 
 func (s *LanternService) AddEdge(ctx context.Context, request *pb.AddEdgeRequest) (*pb.AddEdgeResponse, error) {
