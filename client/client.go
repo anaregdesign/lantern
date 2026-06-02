@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	pb "github.com/anaregdesign/lantern-proto/go/graph/v1"
-	model "github.com/anaregdesign/papaya/graph"
+	model "github.com/anaregdesign/lantern/pkg/papaya/graph"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"strconv"
