@@ -16,6 +16,7 @@ func initializeApp() (*App, error) {
 		provider.NewLogger,
 		provider.NewTracing,
 		provider.NewGraphCache,
+		provider.NewDomainMetrics,
 		provider.NewListener,
 		provider.NewPrometheusRegistry,
 		provider.NewGrpcServerMetrics,
