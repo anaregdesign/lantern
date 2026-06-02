@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	pb "github.com/anaregdesign/lantern/gen/go/graph/v1"
-	model "github.com/anaregdesign/lantern/pkg/papaya/graph"
+	model "github.com/anaregdesign/lantern/pkg/core/graph"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"strconv"
@@ -145,7 +145,7 @@ func (l *Lantern) DeleteEdge(ctx context.Context, tail string, head string) erro
 }
 
 func (l *Lantern) Illuminate(ctx context.Context, seed string, step int, k int, tfidf bool) (*model.Graph[string, *Vertex], error) {
-	// In go-client, optimization is not implemented, but there is native implementation in papaya.
+	// In go-client, optimization is not implemented, but there is a native implementation in pkg/core.
 	result, err := l.client.Illuminate(ctx, &pb.IlluminateRequest{
 		Seed:  seed,
 		Step:  uint32(step),

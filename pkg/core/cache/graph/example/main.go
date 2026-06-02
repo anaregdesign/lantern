@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"github.com/anaregdesign/lantern/pkg/papaya/cache/graph"
+	"github.com/anaregdesign/lantern/pkg/core/cache/graph"
 	"time"
 )
 

@@ -2,7 +2,7 @@ package main
 
 import (
 	"encoding/json"
-	"github.com/anaregdesign/lantern/pkg/papaya/graph"
+	"github.com/anaregdesign/lantern/pkg/core/graph"
 	"log"
 )
 

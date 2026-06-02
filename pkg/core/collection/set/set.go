@@ -1,7 +1,7 @@
 package set
 
 import (
-	"github.com/anaregdesign/lantern/pkg/papaya/model/function"
+	"github.com/anaregdesign/lantern/pkg/core/model/function"
 	"sync"
 )
 

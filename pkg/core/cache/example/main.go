@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"github.com/anaregdesign/lantern/pkg/papaya/cache"
+	"github.com/anaregdesign/lantern/pkg/core/cache"
 	"log"
 	"time"
 )

@@ -2,10 +2,10 @@ package graph
 
 import (
 	"context"
-	"github.com/anaregdesign/lantern/pkg/papaya/cache"
-	"github.com/anaregdesign/lantern/pkg/papaya/collection/pq"
-	"github.com/anaregdesign/lantern/pkg/papaya/collection/set"
-	"github.com/anaregdesign/lantern/pkg/papaya/graph"
+	"github.com/anaregdesign/lantern/pkg/core/cache"
+	"github.com/anaregdesign/lantern/pkg/core/collection/pq"
+	"github.com/anaregdesign/lantern/pkg/core/collection/set"
+	"github.com/anaregdesign/lantern/pkg/core/graph"
 	"math"
 	"sync"
 	"time"

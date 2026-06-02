@@ -17,7 +17,8 @@ Lantern is a grpc-based application. We can access lantern from any languages wh
 ## Repository Layout
 
 This repository is a monorepo that consolidates what used to live in four
-separate repositories (`lantern`, `lantern-proto`, `lantern-cli`, `papaya`).
+separate repositories (`lantern`, `lantern-proto`, `lantern-cli`, and a shared
+graph/cache/NLP toolkit).
 
 | Path | Description |
 | --- | --- |
@@ -26,7 +27,7 @@ separate repositories (`lantern`, `lantern-proto`, `lantern-cli`, `papaya`).
 | `cli/` | Interactive CLI (`cobra` + `promptui`) — formerly `lantern-cli`. |
 | `proto/` | `.proto` sources (formerly `lantern-proto`). Generate with `make proto` (requires [`buf`](https://buf.build)). |
 | `gen/go/` | Generated Go bindings for `proto/`. |
-| `pkg/papaya/` | Core graph/cache/NLP algorithms (formerly the `papaya` module). |
+| `pkg/core/` | Shared core building blocks (graph, cache, collections, concurrency, NLP) reused by `server/` and `client/`. |
 
 ## Example
 ### Run lantern-server

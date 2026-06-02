@@ -2,7 +2,7 @@ package slice
 
 import (
 	"context"
-	"github.com/anaregdesign/lantern/pkg/papaya/model/function"
+	"github.com/anaregdesign/lantern/pkg/core/model/function"
 	"reflect"
 	"testing"
 )

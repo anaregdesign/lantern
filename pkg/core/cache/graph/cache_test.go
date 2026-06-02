@@ -2,8 +2,8 @@ package graph
 
 import (
 	"context"
-	"github.com/anaregdesign/lantern/pkg/papaya/cache"
-	"github.com/anaregdesign/lantern/pkg/papaya/graph"
+	"github.com/anaregdesign/lantern/pkg/core/cache"
+	"github.com/anaregdesign/lantern/pkg/core/graph"
 	"reflect"
 	"testing"
 	"time"

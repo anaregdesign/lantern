@@ -3,7 +3,7 @@ package service
 import (
 	"context"
 	. "github.com/anaregdesign/lantern/gen/go/graph/v1"
-	"github.com/anaregdesign/lantern/pkg/papaya/cache/graph"
+	"github.com/anaregdesign/lantern/pkg/core/cache/graph"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/status"
 	"log"

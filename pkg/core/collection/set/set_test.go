@@ -2,8 +2,8 @@ package set
 
 import (
 	"fmt"
-	"github.com/anaregdesign/lantern/pkg/papaya/collection/slice"
-	"github.com/anaregdesign/lantern/pkg/papaya/model/function"
+	"github.com/anaregdesign/lantern/pkg/core/collection/slice"
+	"github.com/anaregdesign/lantern/pkg/core/model/function"
 	"reflect"
 	"testing"
 )
