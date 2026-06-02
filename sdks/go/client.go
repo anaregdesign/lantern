@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	pb "github.com/anaregdesign/lantern/sdks/go/gen/graph/v1"
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"

@@ -2046,9 +2046,9 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\bPutEdges\x12\x19.graph.v1.PutEdgesRequest\x1a\x1a.graph.v1.PutEdgesResponse\"\x18\x82\xd3\xe4\x93\x02\x12:\x01*\x1a\r/v1/edges/put\x12h\n" +
 	"\n" +
 	"DeleteEdge\x12\x1b.graph.v1.DeleteEdgeRequest\x1a\x1c.graph.v1.DeleteEdgeResponse\"\x1f\x82\xd3\xe4\x93\x02\x19*\x17/v1/edges/{tail}/{head}\x12g\n" +
-	"\vDeleteEdges\x12\x1c.graph.v1.DeleteEdgesRequest\x1a\x1d.graph.v1.DeleteEdgesResponse\"\x1b\x82\xd3\xe4\x93\x02\x15:\x01*\"\x10/v1/edges/deleteB\x99\x01\n" +
+	"\vDeleteEdges\x12\x1c.graph.v1.DeleteEdgesRequest\x1a\x1d.graph.v1.DeleteEdgesResponse\"\x1b\x82\xd3\xe4\x93\x02\x15:\x01*\"\x10/v1/edges/deleteB\x90\x01\n" +
 	"\fcom.graph.v1B\n" +
-	"GraphProtoP\x01Z<github.com/anaregdesign/lantern/sdks/go/gen/graph/v1;graphv1\xa2\x02\x03GXX\xaa\x02\bGraph.V1\xca\x02\bGraph\\V1\xe2\x02\x14Graph\\V1\\GPBMetadata\xea\x02\tGraph::V1b\x06proto3"
+	"GraphProtoP\x01Z3github.com/anaregdesign/lantern/pb/graph/v1;graphv1\xa2\x02\x03GXX\xaa\x02\bGraph.V1\xca\x02\bGraph\\V1\xe2\x02\x14Graph\\V1\\GPBMetadata\xea\x02\tGraph::V1b\x06proto3"
 
 var (
 	file_graph_v1_graph_proto_rawDescOnce sync.Once

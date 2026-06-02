@@ -6,23 +6,25 @@ managed:
     # from the upstream google.golang.org/genproto module instead.
     - module: buf.build/googleapis/googleapis
   override:
+    # Generated stubs live in their own `pb/` module so both the server and the
+    # Go SDK can depend on the proto contract without depending on each other.
     - file_option: go_package_prefix
-      value: github.com/anaregdesign/lantern/sdks/go/gen
+      value: github.com/anaregdesign/lantern/pb
 plugins:
   - remote: buf.build/protocolbuffers/go
-    out: sdks/go/gen
+    out: pb
     opt:
       - paths=source_relative
   - remote: buf.build/grpc/go
-    out: sdks/go/gen
+    out: pb
     opt:
       - paths=source_relative
       - require_unimplemented_servers=false
   - remote: buf.build/grpc-ecosystem/gateway
-    out: sdks/go/gen
+    out: pb
     opt:
       - paths=source_relative
   - remote: buf.build/grpc-ecosystem/openapiv2
-    out: sdks/go/gen/openapiv2
+    out: pb/openapiv2
 inputs:
   - directory: proto
