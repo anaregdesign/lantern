@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/anaregdesign/lantern/sdks/go/gen/graph/v1"
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
 func TestNativeVertex_AsVertex_IntegerWidths(t *testing.T) {

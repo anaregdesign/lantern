@@ -336,18 +336,19 @@ Lantern ships production-grade observability out of the box:
 
 ## Repository layout
 
-This is a monorepo consolidating four formerly separate repositories.
+This is a monorepo consolidating four formerly separate repositories, now stitched together as a 5-module Go workspace so each piece can be consumed independently.
 
-| Path | Role |
-|---|---|
-| `server/` | gRPC server (DI via google/wire) |
-| `sdks/go/` | Go client SDK — its own Go module (`github.com/anaregdesign/lantern/sdks/go`) so external projects can depend on the client alone |
-| `cli/` | Interactive CLI (`cobra` + `promptui`) — formerly `lantern-cli` |
-| `proto/` | `.proto` sources — formerly `lantern-proto` |
-| `sdks/go/gen/` | Generated Go bindings (regenerate with `go generate ./...`) |
-| `core/` | Shared building blocks reused by server & client: graph algorithms, TTL caches, collections, concurrency, NLP |
-| `tests/integration/` | Cross-module integration tests (root module wires SDK + server via bufconn) |
-| `go.work` | Multi-module workspace (root + `./sdks/go`) for local dev |
+| Path | Module | Role |
+|---|---|---|
+| `pb/` | `github.com/anaregdesign/lantern/pb` | Generated protobuf / gRPC / grpc-gateway stubs. Shared contract — both `server/` and `sdks/go/` depend on it. |
+| `core/` | `github.com/anaregdesign/lantern/core` | Shared building blocks: graph algorithms, TTL caches, collections, concurrency, NLP. |
+| `sdks/go/` | `github.com/anaregdesign/lantern/sdks/go` | Go client SDK — depends on `pb/` only. |
+| `server/` | `github.com/anaregdesign/lantern/server` | gRPC server (DI via google/wire) — depends on `pb/` + `core/`, **not** on the client SDK. |
+| `.` (root) | `github.com/anaregdesign/lantern` | Umbrella module hosting `cli/` (cobra + promptui) and `tests/integration/` (cross-module bufconn tests). |
+| `proto/` | (no Go module) | `.proto` sources — formerly `lantern-proto`. |
+| `go.work` | — | Pins all 5 modules for local dev. |
+
+Dependency direction is a strict DAG: `pb` and `core` are leaves; `sdks/go` → `pb`; `server` → `pb`, `core`; root → all four.
 
 ---
 
@@ -372,7 +373,7 @@ Codegen is one command:
 go generate ./...
 ```
 
-This regenerates both `server/cmd/wire_gen.go` and everything under `sdks/go/gen/`.
+This regenerates both `server/cmd/wire_gen.go` and everything under `pb/`.
 No CLIs need to be installed up front:
 
 - **wire** is wired in via the `tool` directive in `go.mod` — `go tool wire`
@@ -401,10 +402,10 @@ Required toolchain:
   (Go → proto), the matching `*Value()` accessor plus its `Kind()` /
   `VertexKind*` constant (proto → Go), and the `Vertex.MarshalJSON` switch
   (proto → JSON).
-- **Proto `go_package`** is `github.com/anaregdesign/lantern/sdks/go/gen/graph/v1`.
-  `make proto` rewrites everything under `sdks/go/gen`.
+- **Proto `go_package`** is `github.com/anaregdesign/lantern/pb/graph/v1`.
+  `make proto` rewrites everything under `pb/`.
 - **Not every `*Response` message has a `Status` field** — check
-  [`sdks/go/gen/graph/v1/graph.pb.go`](sdks/go/gen/graph/v1/graph.pb.go) before patching
+  [`pb/graph/v1/graph.pb.go`](pb/graph/v1/graph.pb.go) before patching
   response types.
 - **Test coverage** — `server/service/service_test.go` exercises the gRPC
   surface (vertex/edge CRUD, singular-write facades, `Illuminate`

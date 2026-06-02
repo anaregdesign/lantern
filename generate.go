@@ -1,18 +1,15 @@
-// Package lantern roots a few repository-wide `go generate` directives so that
-// `go generate ./...` regenerates everything codegen-related without anyone
-// having to install extra CLIs first.
+// Package lantern roots repository-wide `go generate` directives that don't
+// belong to a single module. Buf lives here because the generated protobuf
+// stubs land inside the sdks/go module while the .proto sources sit at the
+// repo root — neither is an obvious home for the codegen, so a workspace-root
+// directive keeps it discoverable.
 //
-//   - wire is pulled in via the `tool` directive in go.mod, so `go tool wire`
-//     just works after `go mod download`.
-//   - buf is invoked through `go run` against a pinned version so contributors
-//     don't need a system-wide `buf` binary either. CI uses
-//     bufbuild/buf-setup-action which is faster, but the `go run` fallback
-//     keeps local dev one-command.
+// The wire directive lives in server/generate.go, alongside the module that
+// owns the `tool github.com/google/wire/cmd/wire` declaration.
 //
 // Run everything with:
 //
 //	go generate ./...
 package lantern
 
-//go:generate go tool wire ./server/cmd
-//go:generate go run github.com/bufbuild/buf/cmd/buf@v1.70.0 generate --clean
+//go:generate go run github.com/bufbuild/buf/cmd/buf@v1.70.0 generate

@@ -2,5 +2,8 @@ go 1.26
 
 use (
 	.
+	./core
+	./pb
 	./sdks/go
+	./server
 )

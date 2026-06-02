@@ -22,10 +22,10 @@ generate:
 
 # Backwards-compatible aliases for muscle memory.
 wire:
-	go tool wire ./server/cmd
+	cd server && go tool wire ./cmd
 
 proto:
-	$(BUF) generate --clean
+	$(BUF) generate
 
 proto-lint:
 	$(BUF) lint

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	cachegraph "github.com/anaregdesign/lantern/core/cache/graph"
-	pb "github.com/anaregdesign/lantern/sdks/go/gen/graph/v1"
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/service"
 	"google.golang.org/grpc"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
