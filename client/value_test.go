@@ -26,7 +26,8 @@ func TestVertex_BoolValue(t *testing.T) {
 			wantErr: false,
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := tt.v.BoolValue()
 			if (err != nil) != tt.wantErr {
@@ -58,7 +59,8 @@ func TestVertex_BytesValue(t *testing.T) {
 			wantErr: false,
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := tt.v.BytesValue()
 			if (err != nil) != tt.wantErr {
@@ -90,7 +92,8 @@ func TestVertex_FloatValue(t *testing.T) {
 			wantErr: false,
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := tt.v.FloatValue()
 			if (err != nil) != tt.wantErr {
@@ -122,7 +125,8 @@ func TestVertex_IntValue(t *testing.T) {
 			wantErr: false,
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := tt.v.IntValue()
 			if (err != nil) != tt.wantErr {
@@ -152,7 +156,8 @@ func TestVertex_IsNil(t *testing.T) {
 			want: true,
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.v.IsNil(); got != tt.want {
 				t.Errorf("IsNil() = %v, want %v", got, tt.want)
@@ -179,7 +184,8 @@ func TestVertex_StringValue(t *testing.T) {
 			wantErr: false,
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := tt.v.StringValue()
 			if (err != nil) != tt.wantErr {
@@ -212,7 +218,8 @@ func TestVertex_TimeValue(t *testing.T) {
 			wantErr: false,
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := tt.v.TimeValue()
 			if (err != nil) != tt.wantErr {
@@ -244,7 +251,8 @@ func TestVertex_UIntValue(t *testing.T) {
 			wantErr: false,
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := tt.v.UIntValue()
 			if (err != nil) != tt.wantErr {
@@ -288,7 +296,8 @@ func Test_nativeVertex_asVertex(t *testing.T) {
 			wantErr: false,
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			v := nativeVertex{
 				key:        tt.fields.key,

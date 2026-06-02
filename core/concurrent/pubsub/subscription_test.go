@@ -23,7 +23,8 @@ func TestSubscription_Name(t *testing.T) {
 			want: "test",
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.s.Name(); got != tt.want {
 				t.Errorf("Name() = %v, want %v", got, tt.want)
@@ -33,7 +34,8 @@ func TestSubscription_Name(t *testing.T) {
 }
 
 func TestSubscription_Subscribe(t *testing.T) {
-	ctx, _ := context.WithTimeout(context.Background(), 1*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
 	topic := NewTopic[int]("test")
 	sub := topic.NewSubscription("test", 1, time.Minute, time.Minute)
 	type args[T any] struct {
@@ -42,20 +44,21 @@ func TestSubscription_Subscribe(t *testing.T) {
 	}
 	type testCase[T any] struct {
 		name string
-		s    Subscription[T]
+		s    *Subscription[T]
 		args args[T]
 	}
 	tests := []testCase[int]{
 		{
 			name: "TestSubscription_Subscribe",
-			s:    *sub,
+			s:    sub,
 			args: args[int]{
 				ctx:      ctx,
 				consumer: func(x *Message[int]) { t.Log(x) },
 			},
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			go tt.s.Subscribe(tt.args.ctx, tt.args.consumer)
 		})
@@ -78,7 +81,8 @@ func TestSubscription_Topic(t *testing.T) {
 			want: &Topic[int]{name: "test"},
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.s.Topic(); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("Topic() = %v, want %v", got, tt.want)
@@ -108,7 +112,8 @@ func TestSubscription_ack(t *testing.T) {
 			args: args[int]{message: &Message[int]{id: "uuid", body: 1}},
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			tt.s.ack(tt.args.message)
 		})
@@ -136,7 +141,8 @@ func TestSubscription_nack(t *testing.T) {
 			args: args[int]{message: &Message[int]{id: "uuid", body: 1}},
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			tt.s.nack(tt.args.message)
 		})
@@ -163,7 +169,8 @@ func TestSubscription_newMessage(t *testing.T) {
 			want: &Message[int]{body: 1},
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.s.newMessage(tt.args.body); got.body != tt.want.body {
 				t.Errorf("newMessage() = %v, want %v", got, tt.want)
@@ -192,7 +199,8 @@ func TestSubscription_publish(t *testing.T) {
 			args: args[int]{message: &Message[int]{id: "uuid", body: 1}},
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			tt.s.publish(tt.args.message)
 		})
@@ -216,7 +224,8 @@ func TestSubscription_register(t *testing.T) {
 			},
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			tt.s.register()
 		})
@@ -245,7 +254,8 @@ func TestSubscription_remind(t *testing.T) {
 			args: args[int]{message: &Message[int]{id: "uuid", body: 1}},
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			tt.s.remind(tt.args.message)
 		})
@@ -275,7 +285,8 @@ func TestSubscription_salvage(t *testing.T) {
 			args: args{interval: time.Second, ttl: time.Second},
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			tt.s.salvage(tt.args.interval, tt.args.ttl)
 		})
@@ -288,15 +299,16 @@ func TestSubscription_unregister(t *testing.T) {
 
 	type testCase[T any] struct {
 		name string
-		s    Subscription[T]
+		s    *Subscription[T]
 	}
 	tests := []testCase[int]{
 		{
 			name: "TestSubscription_unregister",
-			s:    *sub,
+			s:    sub,
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			tt.s.unregister()
 		})
@@ -304,7 +316,8 @@ func TestSubscription_unregister(t *testing.T) {
 }
 
 func TestSubscription_watch(t *testing.T) {
-	ctx, _ := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
 	topic := NewTopic[int]("test_topic")
 	sub := topic.NewSubscription("test_sub", 8, time.Minute, time.Minute)
 
@@ -315,13 +328,13 @@ func TestSubscription_watch(t *testing.T) {
 	}
 	type testCase[T any] struct {
 		name string
-		s    Subscription[T]
+		s    *Subscription[T]
 		args args
 	}
 	tests := []testCase[int]{
 		{
 			name: "TestSubscription_watch",
-			s:    *sub,
+			s:    sub,
 			args: args{
 				ctx:      ctx,
 				interval: time.Second,
@@ -329,7 +342,8 @@ func TestSubscription_watch(t *testing.T) {
 			},
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			go tt.s.watch(tt.args.ctx, tt.args.interval, tt.args.ttl)
 		})

@@ -21,7 +21,8 @@ func TestNewSet(t *testing.T) {
 			},
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			if got := NewSet[int](); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("NewSet() = %v, want %v", got, tt.want)
@@ -48,7 +49,8 @@ func TestSet_Add(t *testing.T) {
 			args: args[int]{value: 1},
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			tt.s.Add(tt.args.value)
 		})
@@ -81,7 +83,8 @@ func TestSet_AllMatch(t *testing.T) {
 			want: false,
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.s.AllMatch(tt.args.predicate); got != tt.want {
 				t.Errorf("AllMatch() = %v, want %v", got, tt.want)
@@ -116,7 +119,8 @@ func TestSet_AnyMatch(t *testing.T) {
 			want: true,
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.s.AnyMatch(tt.args.predicate); got != tt.want {
 				t.Errorf("AnyMatch() = %v, want %v", got, tt.want)
@@ -144,7 +148,8 @@ func TestSet_Clear(t *testing.T) {
 			},
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			tt.s.Clear()
 		})
@@ -177,7 +182,8 @@ func TestSet_Contains(t *testing.T) {
 			want: true,
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.s.Has(tt.args.value); got != tt.want {
 				t.Errorf("Has() = %v, want %v", got, tt.want)
@@ -210,7 +216,8 @@ func TestSet_Filter(t *testing.T) {
 			args: args[int]{predicate: func(i int) bool { return i%2 == 0 }},
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			tt.s.Filter(tt.args.predicate)
 		})
@@ -241,7 +248,8 @@ func TestSet_ForEach(t *testing.T) {
 			args: args[int]{consumer: func(i int) { fmt.Println(i) }},
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			tt.s.ForEach(tt.args.consumer)
 		})
@@ -274,7 +282,8 @@ func TestSet_NoneMatch(t *testing.T) {
 			want: false,
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.s.NoneMatch(tt.args.predicate); got != tt.want {
 				t.Errorf("NoneMatch() = %v, want %v", got, tt.want)
@@ -309,7 +318,8 @@ func TestSet_Reduce(t *testing.T) {
 			want: 15,
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.s.Reduce(tt.args.operator); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("Reduce() = %v, want %v", got, tt.want)
@@ -342,7 +352,8 @@ func TestSet_Remove(t *testing.T) {
 			args: args[int]{value: 1},
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			tt.s.Remove(tt.args.value)
 		})
@@ -370,7 +381,8 @@ func TestSet_Size(t *testing.T) {
 			want: 5,
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.s.Size(); got != tt.want {
 				t.Errorf("Size() = %v, want %v", got, tt.want)
@@ -400,7 +412,8 @@ func TestSet_Values(t *testing.T) {
 			want: []int{1, 2, 3, 4, 5},
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			got := tt.s.Values()
 			for _, v := range tt.want {

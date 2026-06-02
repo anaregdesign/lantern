@@ -8,7 +8,8 @@ import (
 )
 
 func main() {
-	ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	c := cache.NewCache[string, string](1 * time.Second)
 
 	// Watch the cache, this will remove expired items
