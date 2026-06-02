@@ -8,7 +8,10 @@ WORKDIR /src
 # Cache module downloads independently of source changes.
 # go.work pulls in the sdks/go module from this monorepo.
 COPY go.mod go.sum go.work go.work.sum* ./
+COPY core/go.mod core/go.sum ./core/
+COPY pb/go.mod pb/go.sum ./pb/
 COPY sdks/go/go.mod sdks/go/go.sum ./sdks/go/
+COPY server/go.mod server/go.sum ./server/
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 
