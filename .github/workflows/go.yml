@@ -9,9 +9,17 @@ on:
   pull_request:
     branches: [ "main" ]
 
-jobs:
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
+permissions:
+  contents: read
+
+jobs:
   build:
+    name: Build & Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,9 +28,44 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.26'
+          check-latest: true
+
+      - name: Verify formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::These files are not gofmt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
 
       - name: Build
         run: go build -v ./...
 
-      - name: Test
-        run: go test -v ./...
+      - name: Test (race + coverage)
+        run: go test -race -shuffle=on -covermode=atomic -coverprofile=coverage.out ./...
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
+          if-no-files-found: warn
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          check-latest: true
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m

@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"time"
 
-	v1 "github.com/anaregdesign/lantern/gen/go/graph/v1"
 	"github.com/anaregdesign/lantern/core/cache/graph"
+	v1 "github.com/anaregdesign/lantern/gen/go/graph/v1"
 	"google.golang.org/grpc"
 )
 
