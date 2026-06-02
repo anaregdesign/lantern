@@ -76,12 +76,12 @@ func (c *CLIService) Run(ctx context.Context, str string) error {
 				fmt.Printf("Error: %s\n", err)
 				return ErrGetEdge
 			}
-			weight, err := c.client.GetEdge(ctx, p.Tail, p.Head)
+			edge, err := c.client.GetEdge(ctx, p.Tail, p.Head)
 			if err != nil {
 				fmt.Printf("Error: %s\n", err)
 				return ErrConnection
 			}
-			fmt.Printf("%f\n", weight)
+			fmt.Printf("%f\n", edge.Weight)
 			return nil
 
 		default:
@@ -184,7 +184,7 @@ func (c *CLIService) Run(ctx context.Context, str string) error {
 			fmt.Printf("Error: %s\n", err)
 			return ErrIlluminate
 		}
-		g, err := c.client.Illuminate(ctx, p.Seed, p.Step, p.K, p.Tfidf)
+		g, err := c.client.Illuminate(ctx, p.Seed, uint32(p.Step), uint32(p.K), p.Tfidf)
 		if err != nil {
 			fmt.Printf("Error: %s\n", err)
 			return ErrConnection

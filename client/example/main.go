@@ -150,7 +150,7 @@ func main() {
 
 	// weight of edge a->b is 2
 	if weight, err := cli.GetEdge(ctx, "a", "b"); err == nil {
-		log.Printf("weight at t=1: %f\n", weight)
+		log.Printf("weight at t=1: %f\n", weight.Weight)
 	}
 
 	// 2 seconds later, first edge is expired
@@ -158,7 +158,7 @@ func main() {
 
 	// weight of edge a->b is 1
 	if weight, err := cli.GetEdge(ctx, "a", "b"); err == nil {
-		log.Printf("weight at t=3: %f\n", weight)
+		log.Printf("weight at t=3: %f\n", weight.Weight)
 	}
 
 	// 1 seconds later, second edge is expired
@@ -166,7 +166,7 @@ func main() {
 
 	// weight of edge a->b is 0
 	if weight, err := cli.GetEdge(ctx, "a", "b"); err == nil {
-		log.Printf("weight at t=4: %f\n", weight)
+		log.Printf("weight at t=4: %f\n", weight.Weight)
 	}
 
 	/*
@@ -179,7 +179,7 @@ func main() {
 	}
 
 	if w, err := cli.GetEdge(ctx, "a", "b"); err == nil {
-		log.Printf("weight of a->b: %f\n", w)
+		log.Printf("weight of a->b: %f\n", w.Weight)
 	}
 
 	if err := cli.DeleteEdge(ctx, "a", "b"); err != nil {
@@ -190,7 +190,7 @@ func main() {
 	if w, err := cli.GetEdge(ctx, "a", "b"); err != nil {
 		log.Printf("Error: %s\n", err)
 	} else {
-		log.Printf("weight of a->b: %f\n", w)
+		log.Printf("weight of a->b: %f\n", w.Weight)
 	}
 
 	/*
@@ -207,7 +207,7 @@ func main() {
 
 	// weight of edge a->b is 1
 	if weight, err := cli.GetEdge(ctx, "a", "b"); err == nil {
-		log.Printf("weight at t=1: %f\n", weight)
+		log.Printf("weight at t=1: %f\n", weight.Weight)
 	}
 
 	time.Sleep(1 * time.Second)
