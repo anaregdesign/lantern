@@ -157,7 +157,7 @@ go build -o lantern-cli ./cli
 ```go
 import "github.com/anaregdesign/lantern/client"
 
-cli, err := client.NewLantern("localhost", 6380)
+cli, err := client.NewLantern("localhost:6380")
 if err != nil { log.Fatal(err) }
 defer cli.Close()
 
@@ -221,6 +221,19 @@ The server is configured via environment variables, parsed in
 | `LANTERN_LOG_FORMAT` | `json` | `json` or `text` (slog handler) |
 | `LANTERN_METRICS_ADDR` | `:9090` | Address for Prometheus + health HTTP; empty disables |
 | `LANTERN_REFLECTION` | `true` | Register gRPC server reflection (useful for `grpcurl`) |
+| `LANTERN_SHUTDOWN_TIMEOUT_SECONDS` | `30` | Upper bound on graceful shutdown before forcing `Stop()` |
+| `LANTERN_MAX_RECV_MSG_BYTES` | `16777216` | Per-RPC inbound message limit (16 MiB default) |
+| `LANTERN_MAX_SEND_MSG_BYTES` | `16777216` | Per-RPC outbound message limit |
+| `LANTERN_MAX_CONCURRENT_STREAMS` | `1024` | Upper bound on concurrent streams per HTTP/2 connection |
+| `LANTERN_RATE_LIMIT_RPS` | `0` | Global token-bucket rate limit; `0` disables |
+| `LANTERN_RATE_LIMIT_BURST` | `max(1, rps)` | Burst capacity for the rate limiter |
+| `LANTERN_MAX_KEY_LEN` | `1024` | Reject vertex/edge keys longer than this (validation interceptor) |
+| `LANTERN_MAX_BATCH_SIZE` | `10000` | Reject batch Put/Add requests over this size |
+| `LANTERN_ILLUMINATE_MAX_STEP` | `16` | Cap on BFS depth accepted by `Illuminate` |
+| `LANTERN_ILLUMINATE_MAX_K` | `1024` | Cap on neighbours-per-step accepted by `Illuminate` |
+| `LANTERN_TLS_CERT_FILE` | _(unset)_ | Server certificate; enables TLS when set with key |
+| `LANTERN_TLS_KEY_FILE` | _(unset)_ | Server private key |
+| `LANTERN_TLS_CLIENT_CA_FILE` | _(unset)_ | Client CA bundle; enables mTLS (`RequireAndVerifyClientCert`) when set |
 
 ## Observability
 

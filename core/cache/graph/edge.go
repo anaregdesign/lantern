@@ -35,6 +35,22 @@ func (w *weight) value() float32 {
 	return w.sum
 }
 
+// latestExpiration returns the furthest-future expiration among the live
+// contributions, or the zero time when none remain. This is the moment after
+// which the edge weight is guaranteed to be zero.
+func (w *weight) latestExpiration() time.Time {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.flushLocked()
+	var latest time.Time
+	for _, v := range w.values {
+		if v.expiration.After(latest) {
+			latest = v.expiration
+		}
+	}
+	return latest
+}
+
 func (w *weight) addWithExpiration(value float32, expiration time.Time) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -89,23 +105,30 @@ func newEdgeCache[S comparable](defaultTTL time.Duration) *edgeCache[S] {
 }
 
 func (c *edgeCache[S]) get(tail, head S) (float32, bool) {
+	v, _, ok := c.getDetail(tail, head)
+	return v, ok
+}
+
+// getDetail returns the current weight and the latest contribution
+// expiration, so callers can surface the edge's effective deadline.
+func (c *edgeCache[S]) getDetail(tail, head S) (float32, time.Time, bool) {
 	c.mu.RLock()
 	heads, ok := c.tf[tail]
 	if !ok {
 		c.mu.RUnlock()
-		return 0, false
+		return 0, time.Time{}, false
 	}
 	w, ok := heads[head]
 	c.mu.RUnlock()
 	if !ok {
-		return 0, false
+		return 0, time.Time{}, false
 	}
 
 	if w.isZero() {
 		go c.delete(tail, head)
-		return 0, false
+		return 0, time.Time{}, false
 	}
-	return w.value(), true
+	return w.value(), w.latestExpiration(), true
 }
 
 // snapshotTF returns a shallow copy of the tail->heads map so callers can

@@ -220,3 +220,73 @@ func TestLanternService_Illuminate_AllOptimizations(t *testing.T) {
 		})
 	}
 }
+
+func TestLanternService_GetEdge_ReturnsExpiration(t *testing.T) {
+	s := newTestService(t)
+	ctx := context.Background()
+	exp := futureTs(2 * time.Minute)
+	e := &pb.Edge{Tail: "a", Head: "b", Weight: 1, Expiration: exp}
+	if _, err := s.AddEdge(ctx, &pb.AddEdgeRequest{Edges: []*pb.Edge{e}}); err != nil {
+		t.Fatalf("AddEdge: %v", err)
+	}
+	resp, err := s.GetEdge(ctx, &pb.GetEdgeRequest{Tail: "a", Head: "b"})
+	if err != nil {
+		t.Fatalf("GetEdge: %v", err)
+	}
+	if resp.Edge.Expiration == nil {
+		t.Fatal("Expiration is nil; expected propagated TTL")
+	}
+	got := resp.Edge.Expiration.AsTime()
+	want := exp.AsTime()
+	if delta := got.Sub(want); delta > time.Second || delta < -time.Second {
+		t.Errorf("Expiration = %v, want ~%v (delta=%v)", got, want, delta)
+	}
+}
+
+func TestLanternService_WriteResponses_ReportCounts(t *testing.T) {
+	s := newTestService(t)
+	ctx := context.Background()
+	exp := futureTs(time.Minute)
+
+	vresp, err := s.PutVertex(ctx, &pb.PutVertexRequest{Vertices: []*pb.Vertex{
+		{Key: "a", Value: &pb.Vertex_Int64{Int64: 1}, Expiration: exp},
+		{Key: "b", Value: &pb.Vertex_Int64{Int64: 2}, Expiration: exp},
+	}})
+	if err != nil {
+		t.Fatalf("PutVertex: %v", err)
+	}
+	if vresp.Written != 2 {
+		t.Errorf("PutVertex Written = %d, want 2", vresp.Written)
+	}
+
+	aresp, err := s.AddEdge(ctx, &pb.AddEdgeRequest{Edges: []*pb.Edge{
+		{Tail: "a", Head: "b", Weight: 1, Expiration: exp},
+	}})
+	if err != nil {
+		t.Fatalf("AddEdge: %v", err)
+	}
+	if aresp.Written != 1 {
+		t.Errorf("AddEdge Written = %d, want 1", aresp.Written)
+	}
+
+	presp, err := s.PutEdge(ctx, &pb.PutEdgeRequest{Edges: []*pb.Edge{
+		{Tail: "a", Head: "b", Weight: 3, Expiration: exp},
+	}})
+	if err != nil {
+		t.Fatalf("PutEdge: %v", err)
+	}
+	if presp.Written != 1 {
+		t.Errorf("PutEdge Written = %d, want 1", presp.Written)
+	}
+}
+
+func TestLanternService_RespectsContextCancel(t *testing.T) {
+	s := newTestService(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := s.GetVertex(ctx, &pb.GetVertexRequest{Key: "x"}); err == nil {
+		t.Fatal("expected ctx cancel error, got nil")
+	} else if st, _ := status.FromError(err); st.Code() != codes.Canceled {
+		t.Errorf("code = %v, want Canceled", st.Code())
+	}
+}

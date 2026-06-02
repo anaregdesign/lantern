@@ -20,6 +20,9 @@ message Vertex {
     bytes bytes = 18;
     google.protobuf.Timestamp timestamp = 19;
 
+    // nil signals that the vertex carries no value (an "existence-only"
+    // marker). The bool itself is always true when present; the variant
+    // exists so the oneof can distinguish "explicitly nil" from "unset".
     bool nil = 30;
   }
 }
@@ -71,8 +74,17 @@ message PutVertexRequest {
   repeated Vertex vertices = 1;
 }
 
-message PutVertexResponse {}
+message PutVertexResponse {
+  // Number of vertices accepted by the server. Currently always equals the
+  // request size on success; reserved for future per-item validation that may
+  // report partial writes.
+  int32 written = 1;
+}
 
+// DeleteVertexRequest removes the vertex at `key`. Edges incident to the
+// removed vertex are NOT eagerly cascaded: the periodic GC loop reaps
+// orphaned (tail, head) rows on its next tick, and reads against missing
+// endpoints return NotFound in the meantime.
 message DeleteVertexRequest {
   string key = 1;
 }
@@ -102,7 +114,10 @@ message AddEdgeRequest {
   repeated Edge edges = 1;
 }
 
-message AddEdgeResponse {}
+message AddEdgeResponse {
+  // Number of edges whose weight contributions were accepted.
+  int32 written = 1;
+}
 
 // PutEdgeRequest overwrites each (tail, head) pair, replacing any existing
 // weight and expiration. This operation is idempotent.
@@ -110,7 +125,10 @@ message PutEdgeRequest {
   repeated Edge edges = 1;
 }
 
-message PutEdgeResponse {}
+message PutEdgeResponse {
+  // Number of edges accepted (overwritten or created).
+  int32 written = 1;
+}
 
 service LanternService {
   rpc Illuminate(IlluminateRequest) returns (IlluminateResponse) {

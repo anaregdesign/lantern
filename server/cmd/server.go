@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
@@ -42,11 +41,6 @@ func newApp(
 		health:  hs,
 	}
 }
-
-// newGCInterval extracts the cache GC tick from Config so wire can inject a
-// plain time.Duration into the LanternServer constructor without coupling
-// service to provider.Config.
-func newGCInterval(c *provider.Config) time.Duration { return c.GCInterval }
 
 // registeredHealth is a marker emitted after the health and reflection
 // services have been registered on the gRPC server. wire injects it into

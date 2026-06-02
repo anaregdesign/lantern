@@ -3,8 +3,6 @@ package client
 import (
 	"context"
 	"errors"
-	"net"
-	"strconv"
 	"time"
 
 	model "github.com/anaregdesign/lantern/core/graph"
@@ -47,9 +45,7 @@ const (
 	OptimizationShortestPathTreeInverse = pb.Optimization_OPTIMIZATION_SHORTEST_PATH_TREE_INVERSE
 )
 
-// VertexInput describes one vertex for the batch PutVertices API. Use
-// Expiration to set an absolute deadline; for relative TTLs, prefer the
-// single-shot PutVertex helper or convert via time.Now().Add(ttl).
+// VertexInput describes one vertex for the batch PutVertices API.
 type VertexInput struct {
 	Key        string
 	Value      any
@@ -67,29 +63,67 @@ type EdgeInput struct {
 type Lantern struct {
 	conn   *grpc.ClientConn
 	client pb.LanternServiceClient
+	opts   options
 }
 
-// NewLantern creates a client. The underlying gRPC connection is established
-// lazily on the first RPC (grpc.NewClient semantics), so no dial timeout is
-// applied here — callers should pass a context with a deadline to the first
-// call if they need bounded connect time.
-func NewLantern(hostname string, port int) (*Lantern, error) {
-	target := net.JoinHostPort(hostname, strconv.Itoa(port))
-	conn, err := grpc.NewClient(
-		target,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
+// NewLantern dials target (host:port) and returns a connected Lantern client.
+//
+// The connection is established lazily on the first RPC (grpc.NewClient
+// semantics); pass a context with a deadline to your first call if you need
+// bounded connect time.
+//
+// Defaults:
+//   - insecure credentials (override with WithTransportCredentials)
+//   - retry policy on every idempotent RPC (override with
+//     WithDefaultServiceConfig)
+//   - batch helpers auto-chunk at 1000 entries (override with
+//     WithBatchChunkSize)
+func NewLantern(target string, opts ...Option) (*Lantern, error) {
+	o := options{
+		batchChunkSize:    defaultBatchChunkSize,
+		serviceConfigJSON: defaultServiceConfig,
+	}
+	for _, apply := range opts {
+		apply(&o)
+	}
+
+	dialOpts := make([]grpc.DialOption, 0, len(o.dialOptions)+2)
+	if o.transportCreds != nil {
+		dialOpts = append(dialOpts, grpc.WithTransportCredentials(o.transportCreds))
+	} else {
+		dialOpts = append(dialOpts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	}
+	if o.serviceConfigJSON != "" {
+		dialOpts = append(dialOpts, grpc.WithDefaultServiceConfig(o.serviceConfigJSON))
+	}
+	dialOpts = append(dialOpts, o.dialOptions...)
+
+	conn, err := grpc.NewClient(target, dialOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return &Lantern{
 		conn:   conn,
 		client: pb.NewLanternServiceClient(conn),
+		opts:   o,
 	}, nil
 }
 
 func (l *Lantern) Close() error {
 	return l.conn.Close()
+}
+
+// applyTimeout returns ctx with the default timeout applied when the caller
+// did not already set a deadline. The returned cancel is always safe to call
+// (no-op when no timeout was applied).
+func (l *Lantern) applyTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if l.opts.defaultTimeout <= 0 {
+		return ctx, func() {}
+	}
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, l.opts.defaultTimeout)
 }
 
 // wrapNotFound converts a codes.NotFound gRPC error into one that satisfies
@@ -107,6 +141,8 @@ func wrapNotFound(err error) error {
 // GetVertex fetches the vertex at key. Returns an error wrapping ErrNotFound
 // when the key is absent.
 func (l *Lantern) GetVertex(ctx context.Context, key string) (*Vertex, error) {
+	ctx, cancel := l.applyTimeout(ctx)
+	defer cancel()
 	result, err := l.client.GetVertex(ctx, &pb.GetVertexRequest{Key: key})
 	if err != nil {
 		return nil, wrapNotFound(err)
@@ -114,9 +150,7 @@ func (l *Lantern) GetVertex(ctx context.Context, key string) (*Vertex, error) {
 	return (*Vertex)(result.Vertex), nil
 }
 
-// PutVertex upserts a single vertex with a relative TTL. The vertex is
-// overwritten if key already exists; see PutVertices for batched writes and
-// PutVertexAt for absolute expirations.
+// PutVertex upserts a single vertex with a relative TTL.
 func (l *Lantern) PutVertex(ctx context.Context, key string, value any, ttl time.Duration) error {
 	return l.PutVertexAt(ctx, key, value, time.Now().Add(ttl))
 }
@@ -127,11 +161,14 @@ func (l *Lantern) PutVertexAt(ctx context.Context, key string, value any, expira
 	if err != nil {
 		return err
 	}
+	ctx, cancel := l.applyTimeout(ctx)
+	defer cancel()
 	_, err = l.client.PutVertex(ctx, &pb.PutVertexRequest{Vertices: []*pb.Vertex{v}})
 	return err
 }
 
-// PutVertices upserts a batch of vertices in a single RPC.
+// PutVertices upserts a batch of vertices. Large batches are automatically
+// chunked according to WithBatchChunkSize (default 1000).
 func (l *Lantern) PutVertices(ctx context.Context, inputs []VertexInput) error {
 	if len(inputs) == 0 {
 		return nil
@@ -144,18 +181,28 @@ func (l *Lantern) PutVertices(ctx context.Context, inputs []VertexInput) error {
 		}
 		vs = append(vs, v)
 	}
-	_, err := l.client.PutVertex(ctx, &pb.PutVertexRequest{Vertices: vs})
-	return err
+	for _, chunk := range chunkSlice(vs, l.opts.batchChunkSize) {
+		ctx, cancel := l.applyTimeout(ctx)
+		_, err := l.client.PutVertex(ctx, &pb.PutVertexRequest{Vertices: chunk})
+		cancel()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (l *Lantern) DeleteVertex(ctx context.Context, key string) error {
+	ctx, cancel := l.applyTimeout(ctx)
+	defer cancel()
 	_, err := l.client.DeleteVertex(ctx, &pb.DeleteVertexRequest{Key: key})
 	return err
 }
 
 // GetEdge fetches the edge weight (and any expiration) between tail and head.
-// Returns an error wrapping ErrNotFound when the edge does not exist.
 func (l *Lantern) GetEdge(ctx context.Context, tail string, head string) (*Edge, error) {
+	ctx, cancel := l.applyTimeout(ctx)
+	defer cancel()
 	result, err := l.client.GetEdge(ctx, &pb.GetEdgeRequest{Tail: tail, Head: head})
 	if err != nil {
 		return nil, wrapNotFound(err)
@@ -164,67 +211,78 @@ func (l *Lantern) GetEdge(ctx context.Context, tail string, head string) (*Edge,
 }
 
 // AddEdge accumulates weight onto the (tail, head) pair: repeated calls with
-// the same endpoints sum their weights. Use PutEdge for replace semantics.
+// the same endpoints sum their weights.
 func (l *Lantern) AddEdge(ctx context.Context, tail string, head string, weight float32, ttl time.Duration) error {
 	return l.AddEdgeAt(ctx, tail, head, weight, time.Now().Add(ttl))
 }
 
 // AddEdgeAt is AddEdge with an absolute expiration.
 func (l *Lantern) AddEdgeAt(ctx context.Context, tail string, head string, weight float32, expiration time.Time) error {
+	ctx, cancel := l.applyTimeout(ctx)
+	defer cancel()
 	_, err := l.client.AddEdge(ctx, &pb.AddEdgeRequest{
 		Edges: []*pb.Edge{{Tail: tail, Head: head, Weight: weight, Expiration: timestamppb.New(expiration)}},
 	})
 	return err
 }
 
-// AddEdges accumulates weight onto a batch of edges in a single RPC.
+// AddEdges accumulates weight onto a batch of edges. Automatically chunked.
 func (l *Lantern) AddEdges(ctx context.Context, inputs []EdgeInput) error {
 	if len(inputs) == 0 {
 		return nil
 	}
-	edges := make([]*pb.Edge, 0, len(inputs))
-	for _, in := range inputs {
-		edges = append(edges, &pb.Edge{Tail: in.Tail, Head: in.Head, Weight: in.Weight, Expiration: timestamppb.New(in.Expiration)})
+	edges := edgesFrom(inputs)
+	for _, chunk := range chunkSlice(edges, l.opts.batchChunkSize) {
+		ctx, cancel := l.applyTimeout(ctx)
+		_, err := l.client.AddEdge(ctx, &pb.AddEdgeRequest{Edges: chunk})
+		cancel()
+		if err != nil {
+			return err
+		}
 	}
-	_, err := l.client.AddEdge(ctx, &pb.AddEdgeRequest{Edges: edges})
-	return err
+	return nil
 }
 
-// PutEdge overwrites the (tail, head) pair, replacing any existing weight and
-// expiration. Use AddEdge to accumulate instead.
+// PutEdge overwrites the (tail, head) pair.
 func (l *Lantern) PutEdge(ctx context.Context, tail string, head string, weight float32, ttl time.Duration) error {
 	return l.PutEdgeAt(ctx, tail, head, weight, time.Now().Add(ttl))
 }
 
 // PutEdgeAt is PutEdge with an absolute expiration.
 func (l *Lantern) PutEdgeAt(ctx context.Context, tail string, head string, weight float32, expiration time.Time) error {
+	ctx, cancel := l.applyTimeout(ctx)
+	defer cancel()
 	_, err := l.client.PutEdge(ctx, &pb.PutEdgeRequest{
 		Edges: []*pb.Edge{{Tail: tail, Head: head, Weight: weight, Expiration: timestamppb.New(expiration)}},
 	})
 	return err
 }
 
-// PutEdges overwrites a batch of edges in a single RPC.
+// PutEdges overwrites a batch of edges. Automatically chunked.
 func (l *Lantern) PutEdges(ctx context.Context, inputs []EdgeInput) error {
 	if len(inputs) == 0 {
 		return nil
 	}
-	edges := make([]*pb.Edge, 0, len(inputs))
-	for _, in := range inputs {
-		edges = append(edges, &pb.Edge{Tail: in.Tail, Head: in.Head, Weight: in.Weight, Expiration: timestamppb.New(in.Expiration)})
+	edges := edgesFrom(inputs)
+	for _, chunk := range chunkSlice(edges, l.opts.batchChunkSize) {
+		ctx, cancel := l.applyTimeout(ctx)
+		_, err := l.client.PutEdge(ctx, &pb.PutEdgeRequest{Edges: chunk})
+		cancel()
+		if err != nil {
+			return err
+		}
 	}
-	_, err := l.client.PutEdge(ctx, &pb.PutEdgeRequest{Edges: edges})
-	return err
+	return nil
 }
 
 func (l *Lantern) DeleteEdge(ctx context.Context, tail string, head string) error {
+	ctx, cancel := l.applyTimeout(ctx)
+	defer cancel()
 	_, err := l.client.DeleteEdge(ctx, &pb.DeleteEdgeRequest{Tail: tail, Head: head})
 	return err
 }
 
 // Illuminate runs a k-bounded BFS from seed, returning the resulting subgraph.
-// Use IlluminateWithOptimization to request a server-side spanning tree or
-// shortest-path-tree transform on the response.
 func (l *Lantern) Illuminate(ctx context.Context, seed string, step uint32, k uint32, tfidf bool) (*model.Graph[string, *Vertex], error) {
 	return l.IlluminateWithOptimization(ctx, seed, step, k, tfidf, OptimizationUnspecified)
 }
@@ -232,6 +290,8 @@ func (l *Lantern) Illuminate(ctx context.Context, seed string, step uint32, k ui
 // IlluminateWithOptimization is Illuminate with an explicit server-side
 // post-processing strategy. Pass OptimizationUnspecified to disable it.
 func (l *Lantern) IlluminateWithOptimization(ctx context.Context, seed string, step uint32, k uint32, tfidf bool, opt Optimization) (*model.Graph[string, *Vertex], error) {
+	ctx, cancel := l.applyTimeout(ctx)
+	defer cancel()
 	result, err := l.client.Illuminate(ctx, &pb.IlluminateRequest{
 		Seed:         seed,
 		Step:         step,
@@ -253,4 +313,32 @@ func (l *Lantern) IlluminateWithOptimization(ctx context.Context, seed string, s
 		g.Edges[e.Tail][e.Head] = e.Weight
 	}
 	return g, nil
+}
+
+func edgesFrom(inputs []EdgeInput) []*pb.Edge {
+	edges := make([]*pb.Edge, 0, len(inputs))
+	for _, in := range inputs {
+		edges = append(edges, &pb.Edge{
+			Tail:       in.Tail,
+			Head:       in.Head,
+			Weight:     in.Weight,
+			Expiration: timestamppb.New(in.Expiration),
+		})
+	}
+	return edges
+}
+
+func chunkSlice[T any](s []T, size int) [][]T {
+	if size <= 0 || len(s) <= size {
+		return [][]T{s}
+	}
+	out := make([][]T, 0, (len(s)+size-1)/size)
+	for i := 0; i < len(s); i += size {
+		end := i + size
+		if end > len(s) {
+			end = len(s)
+		}
+		out = append(out, s[i:end])
+	}
+	return out
 }
