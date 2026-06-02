@@ -22,13 +22,13 @@ const (
 	LanternService_Illuminate_FullMethodName     = "/graph.v1.LanternService/Illuminate"
 	LanternService_GetVertex_FullMethodName      = "/graph.v1.LanternService/GetVertex"
 	LanternService_GetVertices_FullMethodName    = "/graph.v1.LanternService/GetVertices"
-	LanternService_PutVertex_FullMethodName      = "/graph.v1.LanternService/PutVertex"
+	LanternService_PutVertices_FullMethodName    = "/graph.v1.LanternService/PutVertices"
 	LanternService_DeleteVertex_FullMethodName   = "/graph.v1.LanternService/DeleteVertex"
 	LanternService_DeleteVertices_FullMethodName = "/graph.v1.LanternService/DeleteVertices"
 	LanternService_GetEdge_FullMethodName        = "/graph.v1.LanternService/GetEdge"
 	LanternService_GetEdges_FullMethodName       = "/graph.v1.LanternService/GetEdges"
-	LanternService_AddEdge_FullMethodName        = "/graph.v1.LanternService/AddEdge"
-	LanternService_PutEdge_FullMethodName        = "/graph.v1.LanternService/PutEdge"
+	LanternService_AddEdges_FullMethodName       = "/graph.v1.LanternService/AddEdges"
+	LanternService_PutEdges_FullMethodName       = "/graph.v1.LanternService/PutEdges"
 	LanternService_DeleteEdge_FullMethodName     = "/graph.v1.LanternService/DeleteEdge"
 	LanternService_DeleteEdges_FullMethodName    = "/graph.v1.LanternService/DeleteEdges"
 )
@@ -41,17 +41,17 @@ type LanternServiceClient interface {
 	GetVertex(ctx context.Context, in *GetVertexRequest, opts ...grpc.CallOption) (*GetVertexResponse, error)
 	// GetVertices reads several vertices in one round trip.
 	GetVertices(ctx context.Context, in *GetVerticesRequest, opts ...grpc.CallOption) (*GetVerticesResponse, error)
-	PutVertex(ctx context.Context, in *PutVertexRequest, opts ...grpc.CallOption) (*PutVertexResponse, error)
+	PutVertices(ctx context.Context, in *PutVerticesRequest, opts ...grpc.CallOption) (*PutVerticesResponse, error)
 	DeleteVertex(ctx context.Context, in *DeleteVertexRequest, opts ...grpc.CallOption) (*DeleteVertexResponse, error)
 	// DeleteVertices removes several vertices in one round trip.
 	DeleteVertices(ctx context.Context, in *DeleteVerticesRequest, opts ...grpc.CallOption) (*DeleteVerticesResponse, error)
 	GetEdge(ctx context.Context, in *GetEdgeRequest, opts ...grpc.CallOption) (*GetEdgeResponse, error)
 	// GetEdges reads several edges in one round trip.
 	GetEdges(ctx context.Context, in *GetEdgesRequest, opts ...grpc.CallOption) (*GetEdgesResponse, error)
-	// AddEdge is non-idempotent (accumulates weight). POST per REST conventions.
-	AddEdge(ctx context.Context, in *AddEdgeRequest, opts ...grpc.CallOption) (*AddEdgeResponse, error)
-	// PutEdge is idempotent (replaces weight). PUT per REST conventions.
-	PutEdge(ctx context.Context, in *PutEdgeRequest, opts ...grpc.CallOption) (*PutEdgeResponse, error)
+	// AddEdges is non-idempotent (accumulates weight). POST per REST conventions.
+	AddEdges(ctx context.Context, in *AddEdgesRequest, opts ...grpc.CallOption) (*AddEdgesResponse, error)
+	// PutEdges is idempotent (replaces weight). PUT per REST conventions.
+	PutEdges(ctx context.Context, in *PutEdgesRequest, opts ...grpc.CallOption) (*PutEdgesResponse, error)
 	DeleteEdge(ctx context.Context, in *DeleteEdgeRequest, opts ...grpc.CallOption) (*DeleteEdgeResponse, error)
 	// DeleteEdges removes several edges in one round trip.
 	DeleteEdges(ctx context.Context, in *DeleteEdgesRequest, opts ...grpc.CallOption) (*DeleteEdgesResponse, error)
@@ -95,10 +95,10 @@ func (c *lanternServiceClient) GetVertices(ctx context.Context, in *GetVerticesR
 	return out, nil
 }
 
-func (c *lanternServiceClient) PutVertex(ctx context.Context, in *PutVertexRequest, opts ...grpc.CallOption) (*PutVertexResponse, error) {
+func (c *lanternServiceClient) PutVertices(ctx context.Context, in *PutVerticesRequest, opts ...grpc.CallOption) (*PutVerticesResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(PutVertexResponse)
-	err := c.cc.Invoke(ctx, LanternService_PutVertex_FullMethodName, in, out, cOpts...)
+	out := new(PutVerticesResponse)
+	err := c.cc.Invoke(ctx, LanternService_PutVertices_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -145,20 +145,20 @@ func (c *lanternServiceClient) GetEdges(ctx context.Context, in *GetEdgesRequest
 	return out, nil
 }
 
-func (c *lanternServiceClient) AddEdge(ctx context.Context, in *AddEdgeRequest, opts ...grpc.CallOption) (*AddEdgeResponse, error) {
+func (c *lanternServiceClient) AddEdges(ctx context.Context, in *AddEdgesRequest, opts ...grpc.CallOption) (*AddEdgesResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(AddEdgeResponse)
-	err := c.cc.Invoke(ctx, LanternService_AddEdge_FullMethodName, in, out, cOpts...)
+	out := new(AddEdgesResponse)
+	err := c.cc.Invoke(ctx, LanternService_AddEdges_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *lanternServiceClient) PutEdge(ctx context.Context, in *PutEdgeRequest, opts ...grpc.CallOption) (*PutEdgeResponse, error) {
+func (c *lanternServiceClient) PutEdges(ctx context.Context, in *PutEdgesRequest, opts ...grpc.CallOption) (*PutEdgesResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(PutEdgeResponse)
-	err := c.cc.Invoke(ctx, LanternService_PutEdge_FullMethodName, in, out, cOpts...)
+	out := new(PutEdgesResponse)
+	err := c.cc.Invoke(ctx, LanternService_PutEdges_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -193,17 +193,17 @@ type LanternServiceServer interface {
 	GetVertex(context.Context, *GetVertexRequest) (*GetVertexResponse, error)
 	// GetVertices reads several vertices in one round trip.
 	GetVertices(context.Context, *GetVerticesRequest) (*GetVerticesResponse, error)
-	PutVertex(context.Context, *PutVertexRequest) (*PutVertexResponse, error)
+	PutVertices(context.Context, *PutVerticesRequest) (*PutVerticesResponse, error)
 	DeleteVertex(context.Context, *DeleteVertexRequest) (*DeleteVertexResponse, error)
 	// DeleteVertices removes several vertices in one round trip.
 	DeleteVertices(context.Context, *DeleteVerticesRequest) (*DeleteVerticesResponse, error)
 	GetEdge(context.Context, *GetEdgeRequest) (*GetEdgeResponse, error)
 	// GetEdges reads several edges in one round trip.
 	GetEdges(context.Context, *GetEdgesRequest) (*GetEdgesResponse, error)
-	// AddEdge is non-idempotent (accumulates weight). POST per REST conventions.
-	AddEdge(context.Context, *AddEdgeRequest) (*AddEdgeResponse, error)
-	// PutEdge is idempotent (replaces weight). PUT per REST conventions.
-	PutEdge(context.Context, *PutEdgeRequest) (*PutEdgeResponse, error)
+	// AddEdges is non-idempotent (accumulates weight). POST per REST conventions.
+	AddEdges(context.Context, *AddEdgesRequest) (*AddEdgesResponse, error)
+	// PutEdges is idempotent (replaces weight). PUT per REST conventions.
+	PutEdges(context.Context, *PutEdgesRequest) (*PutEdgesResponse, error)
 	DeleteEdge(context.Context, *DeleteEdgeRequest) (*DeleteEdgeResponse, error)
 	// DeleteEdges removes several edges in one round trip.
 	DeleteEdges(context.Context, *DeleteEdgesRequest) (*DeleteEdgesResponse, error)
@@ -225,8 +225,8 @@ func (UnimplementedLanternServiceServer) GetVertex(context.Context, *GetVertexRe
 func (UnimplementedLanternServiceServer) GetVertices(context.Context, *GetVerticesRequest) (*GetVerticesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetVertices not implemented")
 }
-func (UnimplementedLanternServiceServer) PutVertex(context.Context, *PutVertexRequest) (*PutVertexResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method PutVertex not implemented")
+func (UnimplementedLanternServiceServer) PutVertices(context.Context, *PutVerticesRequest) (*PutVerticesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PutVertices not implemented")
 }
 func (UnimplementedLanternServiceServer) DeleteVertex(context.Context, *DeleteVertexRequest) (*DeleteVertexResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteVertex not implemented")
@@ -240,11 +240,11 @@ func (UnimplementedLanternServiceServer) GetEdge(context.Context, *GetEdgeReques
 func (UnimplementedLanternServiceServer) GetEdges(context.Context, *GetEdgesRequest) (*GetEdgesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetEdges not implemented")
 }
-func (UnimplementedLanternServiceServer) AddEdge(context.Context, *AddEdgeRequest) (*AddEdgeResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method AddEdge not implemented")
+func (UnimplementedLanternServiceServer) AddEdges(context.Context, *AddEdgesRequest) (*AddEdgesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AddEdges not implemented")
 }
-func (UnimplementedLanternServiceServer) PutEdge(context.Context, *PutEdgeRequest) (*PutEdgeResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method PutEdge not implemented")
+func (UnimplementedLanternServiceServer) PutEdges(context.Context, *PutEdgesRequest) (*PutEdgesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PutEdges not implemented")
 }
 func (UnimplementedLanternServiceServer) DeleteEdge(context.Context, *DeleteEdgeRequest) (*DeleteEdgeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteEdge not implemented")
@@ -326,20 +326,20 @@ func _LanternService_GetVertices_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
-func _LanternService_PutVertex_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(PutVertexRequest)
+func _LanternService_PutVertices_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PutVerticesRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(LanternServiceServer).PutVertex(ctx, in)
+		return srv.(LanternServiceServer).PutVertices(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: LanternService_PutVertex_FullMethodName,
+		FullMethod: LanternService_PutVertices_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(LanternServiceServer).PutVertex(ctx, req.(*PutVertexRequest))
+		return srv.(LanternServiceServer).PutVertices(ctx, req.(*PutVerticesRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -416,38 +416,38 @@ func _LanternService_GetEdges_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
-func _LanternService_AddEdge_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(AddEdgeRequest)
+func _LanternService_AddEdges_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AddEdgesRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(LanternServiceServer).AddEdge(ctx, in)
+		return srv.(LanternServiceServer).AddEdges(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: LanternService_AddEdge_FullMethodName,
+		FullMethod: LanternService_AddEdges_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(LanternServiceServer).AddEdge(ctx, req.(*AddEdgeRequest))
+		return srv.(LanternServiceServer).AddEdges(ctx, req.(*AddEdgesRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _LanternService_PutEdge_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(PutEdgeRequest)
+func _LanternService_PutEdges_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PutEdgesRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(LanternServiceServer).PutEdge(ctx, in)
+		return srv.(LanternServiceServer).PutEdges(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: LanternService_PutEdge_FullMethodName,
+		FullMethod: LanternService_PutEdges_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(LanternServiceServer).PutEdge(ctx, req.(*PutEdgeRequest))
+		return srv.(LanternServiceServer).PutEdges(ctx, req.(*PutEdgesRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -508,8 +508,8 @@ var LanternService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _LanternService_GetVertices_Handler,
 		},
 		{
-			MethodName: "PutVertex",
-			Handler:    _LanternService_PutVertex_Handler,
+			MethodName: "PutVertices",
+			Handler:    _LanternService_PutVertices_Handler,
 		},
 		{
 			MethodName: "DeleteVertex",
@@ -528,12 +528,12 @@ var LanternService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _LanternService_GetEdges_Handler,
 		},
 		{
-			MethodName: "AddEdge",
-			Handler:    _LanternService_AddEdge_Handler,
+			MethodName: "AddEdges",
+			Handler:    _LanternService_AddEdges_Handler,
 		},
 		{
-			MethodName: "PutEdge",
-			Handler:    _LanternService_PutEdge_Handler,
+			MethodName: "PutEdges",
+			Handler:    _LanternService_PutEdges_Handler,
 		},
 		{
 			MethodName: "DeleteEdge",

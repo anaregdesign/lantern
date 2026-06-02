@@ -30,7 +30,7 @@ func TestLanternService_PutAndGetVertex(t *testing.T) {
 		Value:      &pb.Vertex_String_{String_: "hello"},
 		Expiration: futureTs(time.Minute),
 	}
-	if _, err := s.PutVertex(ctx, &pb.PutVertexRequest{Vertices: []*pb.Vertex{v}}); err != nil {
+	if _, err := s.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{v}}); err != nil {
 		t.Fatalf("PutVertex: %v", err)
 	}
 
@@ -58,7 +58,7 @@ func TestLanternService_DeleteVertex(t *testing.T) {
 	s := newTestService(t)
 	ctx := context.Background()
 	v := &pb.Vertex{Key: "x", Value: &pb.Vertex_Int64{Int64: 1}, Expiration: futureTs(time.Minute)}
-	if _, err := s.PutVertex(ctx, &pb.PutVertexRequest{Vertices: []*pb.Vertex{v}}); err != nil {
+	if _, err := s.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{v}}); err != nil {
 		t.Fatalf("PutVertex: %v", err)
 	}
 	dResp, err := s.DeleteVertex(ctx, &pb.DeleteVertexRequest{Key: "x"})
@@ -85,7 +85,7 @@ func TestLanternService_AddAndGetEdge(t *testing.T) {
 	s := newTestService(t)
 	ctx := context.Background()
 	edge := &pb.Edge{Tail: "a", Head: "b", Weight: 1.25, Expiration: futureTs(time.Minute)}
-	if _, err := s.AddEdge(ctx, &pb.AddEdgeRequest{Edges: []*pb.Edge{edge}}); err != nil {
+	if _, err := s.AddEdges(ctx, &pb.AddEdgesRequest{Edges: []*pb.Edge{edge}}); err != nil {
 		t.Fatalf("AddEdge: %v", err)
 	}
 	resp, err := s.GetEdge(ctx, &pb.GetEdgeRequest{Tail: "a", Head: "b"})
@@ -113,10 +113,10 @@ func TestLanternService_AddEdge_Additive(t *testing.T) {
 	s := newTestService(t)
 	ctx := context.Background()
 	e := &pb.Edge{Tail: "a", Head: "b", Weight: 2, Expiration: futureTs(time.Minute)}
-	if _, err := s.AddEdge(ctx, &pb.AddEdgeRequest{Edges: []*pb.Edge{e}}); err != nil {
+	if _, err := s.AddEdges(ctx, &pb.AddEdgesRequest{Edges: []*pb.Edge{e}}); err != nil {
 		t.Fatalf("AddEdge: %v", err)
 	}
-	if _, err := s.AddEdge(ctx, &pb.AddEdgeRequest{Edges: []*pb.Edge{e}}); err != nil {
+	if _, err := s.AddEdges(ctx, &pb.AddEdgesRequest{Edges: []*pb.Edge{e}}); err != nil {
 		t.Fatalf("AddEdge2: %v", err)
 	}
 	resp, err := s.GetEdge(ctx, &pb.GetEdgeRequest{Tail: "a", Head: "b"})
@@ -133,10 +133,10 @@ func TestLanternService_PutEdge_Replaces(t *testing.T) {
 	s := newTestService(t)
 	ctx := context.Background()
 	e := &pb.Edge{Tail: "a", Head: "b", Weight: 7, Expiration: futureTs(time.Minute)}
-	if _, err := s.PutEdge(ctx, &pb.PutEdgeRequest{Edges: []*pb.Edge{e}}); err != nil {
+	if _, err := s.PutEdges(ctx, &pb.PutEdgesRequest{Edges: []*pb.Edge{e}}); err != nil {
 		t.Fatalf("PutEdge: %v", err)
 	}
-	if _, err := s.PutEdge(ctx, &pb.PutEdgeRequest{Edges: []*pb.Edge{e}}); err != nil {
+	if _, err := s.PutEdges(ctx, &pb.PutEdgesRequest{Edges: []*pb.Edge{e}}); err != nil {
 		t.Fatalf("PutEdge2: %v", err)
 	}
 	resp, err := s.GetEdge(ctx, &pb.GetEdgeRequest{Tail: "a", Head: "b"})
@@ -152,7 +152,7 @@ func TestLanternService_DeleteEdge(t *testing.T) {
 	s := newTestService(t)
 	ctx := context.Background()
 	e := &pb.Edge{Tail: "a", Head: "b", Weight: 1, Expiration: futureTs(time.Minute)}
-	if _, err := s.AddEdge(ctx, &pb.AddEdgeRequest{Edges: []*pb.Edge{e}}); err != nil {
+	if _, err := s.AddEdges(ctx, &pb.AddEdgesRequest{Edges: []*pb.Edge{e}}); err != nil {
 		t.Fatalf("AddEdge: %v", err)
 	}
 	dResp, err := s.DeleteEdge(ctx, &pb.DeleteEdgeRequest{Tail: "a", Head: "b"})
@@ -184,7 +184,7 @@ func seedTriangle(t *testing.T, s *LanternService) {
 		{Key: "b", Value: &pb.Vertex_String_{String_: "B"}, Expiration: exp},
 		{Key: "c", Value: &pb.Vertex_String_{String_: "C"}, Expiration: exp},
 	}
-	if _, err := s.PutVertex(ctx, &pb.PutVertexRequest{Vertices: verts}); err != nil {
+	if _, err := s.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: verts}); err != nil {
 		t.Fatalf("PutVertex: %v", err)
 	}
 	edges := []*pb.Edge{
@@ -195,7 +195,7 @@ func seedTriangle(t *testing.T, s *LanternService) {
 		{Tail: "a", Head: "c", Weight: 10, Expiration: exp},
 		{Tail: "c", Head: "a", Weight: 10, Expiration: exp},
 	}
-	if _, err := s.PutEdge(ctx, &pb.PutEdgeRequest{Edges: edges}); err != nil {
+	if _, err := s.PutEdges(ctx, &pb.PutEdgesRequest{Edges: edges}); err != nil {
 		t.Fatalf("PutEdge: %v", err)
 	}
 }
@@ -250,7 +250,7 @@ func TestLanternService_GetEdge_ReturnsExpiration(t *testing.T) {
 	ctx := context.Background()
 	exp := futureTs(2 * time.Minute)
 	e := &pb.Edge{Tail: "a", Head: "b", Weight: 1, Expiration: exp}
-	if _, err := s.AddEdge(ctx, &pb.AddEdgeRequest{Edges: []*pb.Edge{e}}); err != nil {
+	if _, err := s.AddEdges(ctx, &pb.AddEdgesRequest{Edges: []*pb.Edge{e}}); err != nil {
 		t.Fatalf("AddEdge: %v", err)
 	}
 	resp, err := s.GetEdge(ctx, &pb.GetEdgeRequest{Tail: "a", Head: "b"})
@@ -272,7 +272,7 @@ func TestLanternService_WriteResponses_ReportCounts(t *testing.T) {
 	ctx := context.Background()
 	exp := futureTs(time.Minute)
 
-	vresp, err := s.PutVertex(ctx, &pb.PutVertexRequest{Vertices: []*pb.Vertex{
+	vresp, err := s.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{
 		{Key: "a", Value: &pb.Vertex_Int64{Int64: 1}, Expiration: exp},
 		{Key: "b", Value: &pb.Vertex_Int64{Int64: 2}, Expiration: exp},
 	}})
@@ -283,7 +283,7 @@ func TestLanternService_WriteResponses_ReportCounts(t *testing.T) {
 		t.Errorf("PutVertex Written = %d, want 2", vresp.Written)
 	}
 
-	aresp, err := s.AddEdge(ctx, &pb.AddEdgeRequest{Edges: []*pb.Edge{
+	aresp, err := s.AddEdges(ctx, &pb.AddEdgesRequest{Edges: []*pb.Edge{
 		{Tail: "a", Head: "b", Weight: 1, Expiration: exp},
 	}})
 	if err != nil {
@@ -293,7 +293,7 @@ func TestLanternService_WriteResponses_ReportCounts(t *testing.T) {
 		t.Errorf("AddEdge Written = %d, want 1", aresp.Written)
 	}
 
-	presp, err := s.PutEdge(ctx, &pb.PutEdgeRequest{Edges: []*pb.Edge{
+	presp, err := s.PutEdges(ctx, &pb.PutEdgesRequest{Edges: []*pb.Edge{
 		{Tail: "a", Head: "b", Weight: 3, Expiration: exp},
 	}})
 	if err != nil {

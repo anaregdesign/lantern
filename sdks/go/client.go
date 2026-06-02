@@ -190,7 +190,7 @@ func (l *Lantern) PutVertexAt(ctx context.Context, key string, value any, expira
 	}
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	_, err = l.client.PutVertex(ctx, &pb.PutVertexRequest{Vertices: []*pb.Vertex{v}})
+	_, err = l.client.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{v}})
 	return wrapStatus(err)
 }
 
@@ -218,7 +218,7 @@ func (l *Lantern) PutVertices(ctx context.Context, inputs []VertexInput) error {
 	written := 0
 	for _, chunk := range chunkSlice(vs, l.opts.batchChunkSize) {
 		ctx, cancel := l.applyTimeout(ctx)
-		_, err := l.client.PutVertex(ctx, &pb.PutVertexRequest{Vertices: chunk})
+		_, err := l.client.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: chunk})
 		cancel()
 		if err != nil {
 			return &BatchError{Written: written, Err: wrapStatus(err)}
@@ -310,7 +310,7 @@ func (l *Lantern) AddEdge(ctx context.Context, tail string, head string, weight 
 func (l *Lantern) AddEdgeAt(ctx context.Context, tail string, head string, weight float32, expiration time.Time) error {
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	_, err := l.client.AddEdge(ctx, &pb.AddEdgeRequest{
+	_, err := l.client.AddEdges(ctx, &pb.AddEdgesRequest{
 		Edges: []*pb.Edge{{Tail: tail, Head: head, Weight: weight, Expiration: timestamppb.New(expiration)}},
 	})
 	return wrapStatus(err)
@@ -331,7 +331,7 @@ func (l *Lantern) AddEdges(ctx context.Context, inputs []EdgeInput) error {
 	written := 0
 	for _, chunk := range chunkSlice(edges, l.opts.batchChunkSize) {
 		ctx, cancel := l.applyTimeout(ctx)
-		_, err := l.client.AddEdge(ctx, &pb.AddEdgeRequest{Edges: chunk})
+		_, err := l.client.AddEdges(ctx, &pb.AddEdgesRequest{Edges: chunk})
 		cancel()
 		if err != nil {
 			return &BatchError{Written: written, Err: wrapStatus(err)}
@@ -350,7 +350,7 @@ func (l *Lantern) PutEdge(ctx context.Context, tail string, head string, weight 
 func (l *Lantern) PutEdgeAt(ctx context.Context, tail string, head string, weight float32, expiration time.Time) error {
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	_, err := l.client.PutEdge(ctx, &pb.PutEdgeRequest{
+	_, err := l.client.PutEdges(ctx, &pb.PutEdgesRequest{
 		Edges: []*pb.Edge{{Tail: tail, Head: head, Weight: weight, Expiration: timestamppb.New(expiration)}},
 	})
 	return wrapStatus(err)
@@ -371,7 +371,7 @@ func (l *Lantern) PutEdges(ctx context.Context, inputs []EdgeInput) error {
 	written := 0
 	for _, chunk := range chunkSlice(edges, l.opts.batchChunkSize) {
 		ctx, cancel := l.applyTimeout(ctx)
-		_, err := l.client.PutEdge(ctx, &pb.PutEdgeRequest{Edges: chunk})
+		_, err := l.client.PutEdges(ctx, &pb.PutEdgesRequest{Edges: chunk})
 		cancel()
 		if err != nil {
 			return &BatchError{Written: written, Err: wrapStatus(err)}
