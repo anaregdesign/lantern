@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/anaregdesign/lantern/gen/go/graph/v1"
+	pb "github.com/anaregdesign/lantern/sdks/go/gen/graph/v1"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )

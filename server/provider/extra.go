@@ -9,7 +9,7 @@ import (
 	"math"
 	"os"
 
-	pb "github.com/anaregdesign/lantern/gen/go/graph/v1"
+	pb "github.com/anaregdesign/lantern/sdks/go/gen/graph/v1"
 	"github.com/anaregdesign/lantern/server/service"
 	"golang.org/x/time/rate"
 	"google.golang.org/grpc"

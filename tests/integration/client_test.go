@@ -1,4 +1,4 @@
-package client
+package integration_test
 
 import (
 	"context"
@@ -7,7 +7,8 @@ import (
 	"time"
 
 	cachegraph "github.com/anaregdesign/lantern/core/cache/graph"
-	pb "github.com/anaregdesign/lantern/gen/go/graph/v1"
+	client "github.com/anaregdesign/lantern/sdks/go"
+	pb "github.com/anaregdesign/lantern/sdks/go/gen/graph/v1"
 	"github.com/anaregdesign/lantern/server/service"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -16,7 +17,7 @@ import (
 
 // newInProcessClient wires a Lantern client to an in-process gRPC server
 // backed by a real LanternService, so we exercise the actual wire format.
-func newInProcessClient(t *testing.T) (*Lantern, func()) {
+func newInProcessClient(t *testing.T) (*client.Lantern, func()) {
 	t.Helper()
 
 	lis := bufconn.Listen(1 << 16)
@@ -33,16 +34,15 @@ func newInProcessClient(t *testing.T) (*Lantern, func()) {
 	dialer := func(context.Context, string) (net.Conn, error) {
 		return lis.Dial()
 	}
-	conn, err := grpc.NewClient(
+	l, err := client.NewLantern(
 		"passthrough://bufconn",
-		grpc.WithContextDialer(dialer),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		client.WithTransportCredentials(insecure.NewCredentials()),
+		client.WithDialOption(grpc.WithContextDialer(dialer)),
 	)
 	if err != nil {
-		t.Fatalf("dial: %v", err)
+		t.Fatalf("NewLantern: %v", err)
 	}
 
-	l := &Lantern{conn: conn, client: pb.NewLanternServiceClient(conn)}
 	cleanup := func() {
 		_ = l.Close()
 		srv.Stop()

@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"github.com/anaregdesign/lantern/client"
+	"github.com/anaregdesign/lantern/sdks/go"
 	"log"
 	"time"
 )

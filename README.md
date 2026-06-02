@@ -104,7 +104,7 @@ the shape you asked for.
 ```mermaid
 flowchart LR
     subgraph Client
-        SDK["Go client SDK<br/>(client/)"]
+        SDK["Go client SDK<br/>(sdks/go/)"]
         CLI["lantern-cli<br/>(cli/)"]
         Other["any gRPC client<br/>(proto/graph/v1)"]
     end
@@ -184,8 +184,15 @@ Global flags include `--host/--port` (or `--address`), `--timeout`, `--tls*`,
 
 ### Use it from Go
 
+The Go client SDK is its own module, so external projects pull only gRPC and
+protobuf — nothing from `server/`, `cli/`, or `core/`:
+
+```shell
+go get github.com/anaregdesign/lantern/sdks/go
+```
+
 ```go
-import "github.com/anaregdesign/lantern/client"
+import "github.com/anaregdesign/lantern/sdks/go"
 
 cli, err := client.NewLantern("localhost:6380")
 if err != nil { log.Fatal(err) }
@@ -206,7 +213,7 @@ g, _ := cli.Illuminate(ctx, "user:42", 2, 3, true)
 ```
 
 The full multi-type, additive-edge, and `Illuminate` example lives in
-[client/example/main.go](client/example/main.go).
+[sdks/go/example/main.go](sdks/go/example/main.go).
 
 ### Use it from another language
 
@@ -302,11 +309,13 @@ This is a monorepo consolidating four formerly separate repositories.
 | Path | Role |
 |---|---|
 | `server/` | gRPC server (DI via google/wire) |
-| `client/` | Go client SDK |
+| `sdks/go/` | Go client SDK — its own Go module (`github.com/anaregdesign/lantern/sdks/go`) so external projects can depend on the client alone |
 | `cli/` | Interactive CLI (`cobra` + `promptui`) — formerly `lantern-cli` |
 | `proto/` | `.proto` sources — formerly `lantern-proto` |
-| `gen/go/` | Generated Go bindings (regenerate with `go generate ./...`) |
+| `sdks/go/gen/` | Generated Go bindings (regenerate with `go generate ./...`) |
 | `core/` | Shared building blocks reused by server & client: graph algorithms, TTL caches, collections, concurrency, NLP |
+| `tests/integration/` | Cross-module integration tests (root module wires SDK + server via bufconn) |
+| `go.work` | Multi-module workspace (root + `./sdks/go`) for local dev |
 
 ---
 
@@ -331,7 +340,7 @@ Codegen is one command:
 go generate ./...
 ```
 
-This regenerates both `server/cmd/wire_gen.go` and everything under `gen/go/`.
+This regenerates both `server/cmd/wire_gen.go` and everything under `sdks/go/gen/`.
 No CLIs need to be installed up front:
 
 - **wire** is wired in via the `tool` directive in `go.mod` — `go tool wire`
@@ -356,12 +365,12 @@ Required toolchain:
   provider returns the concrete `*graph.GraphCache[string, *Vertex]`. Re-check
   this constraint before introducing generics there.
 - **Adding a new vertex value type** in the Go SDK requires updating *both*
-  directions in [client/value.go](client/value.go): `nativeVertex.asVertex()`
+  directions in [sdks/go/value.go](sdks/go/value.go): `nativeVertex.asVertex()`
   (Go → proto) and the matching `*Value()` accessor (proto → Go).
-- **Proto `go_package`** is `github.com/anaregdesign/lantern/gen/go/graph/v1`.
-  `make proto` rewrites everything under `gen/go`.
+- **Proto `go_package`** is `github.com/anaregdesign/lantern/sdks/go/gen/graph/v1`.
+  `make proto` rewrites everything under `sdks/go/gen`.
 - **Not every `*Response` message has a `Status` field** — check
-  [`gen/go/graph/v1/graph.pb.go`](gen/go/graph/v1/graph.pb.go) before patching
+  [`sdks/go/gen/graph/v1/graph.pb.go`](sdks/go/gen/graph/v1/graph.pb.go) before patching
   response types.
 - **Test gaps** — there are currently no tests for the server/service layer,
   wire wiring, or client transport paths. Add at least minimal table tests in

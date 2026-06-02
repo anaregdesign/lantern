@@ -9,7 +9,8 @@ import (
 	"strings"
 
 	"github.com/anaregdesign/lantern/cli/parser"
-	"github.com/anaregdesign/lantern/client"
+	model "github.com/anaregdesign/lantern/core/graph"
+	client "github.com/anaregdesign/lantern/sdks/go"
 )
 
 var (
@@ -190,6 +191,11 @@ func (c *CLIService) Run(ctx context.Context, str string) error {
 			return ErrConnection
 		}
 
+		// Convert the SDK-native Graph into a core/graph.Graph so the CLI can
+		// keep using local graph algorithms (SPT/MST). The SDK itself only
+		// depends on the proto layer; richer algorithms are a CLI concern.
+		mg := toModelGraph(g)
+
 		switch obj {
 		case "neighbor":
 			if jsonString, err := json.MarshalIndent(g, "", "\t"); err != nil {
@@ -199,8 +205,8 @@ func (c *CLIService) Run(ctx context.Context, str string) error {
 				return nil
 			}
 		case "spt_cost":
-			g = g.ShortestPathTree(p.Seed, func(x float32) float32 { return x })
-			if jsonString, err := json.MarshalIndent(g, "", "\t"); err != nil {
+			mg = mg.ShortestPathTree(p.Seed, func(x float32) float32 { return x })
+			if jsonString, err := json.MarshalIndent(mg, "", "\t"); err != nil {
 				return err
 			} else {
 				fmt.Println(string(jsonString))
@@ -208,29 +214,29 @@ func (c *CLIService) Run(ctx context.Context, str string) error {
 			}
 
 		case "spt_relevance":
-			g = g.ShortestPathTree(p.Seed, func(x float32) float32 {
+			mg = mg.ShortestPathTree(p.Seed, func(x float32) float32 {
 				if x == 0 {
 					return math.MaxFloat32
 				}
 				return 1 / x
 			})
-			if jsonString, err := json.MarshalIndent(g, "", "\t"); err != nil {
+			if jsonString, err := json.MarshalIndent(mg, "", "\t"); err != nil {
 				return err
 			} else {
 				fmt.Println(string(jsonString))
 				return nil
 			}
 		case "mst_cost":
-			g = g.MinimumSpanningTree(p.Seed, false)
-			if jsonString, err := json.MarshalIndent(g, "", "\t"); err != nil {
+			mg = mg.MinimumSpanningTree(p.Seed, false)
+			if jsonString, err := json.MarshalIndent(mg, "", "\t"); err != nil {
 				return err
 			} else {
 				fmt.Println(string(jsonString))
 				return nil
 			}
 		case "mst_relevance":
-			g = g.MinimumSpanningTree(p.Seed, true)
-			if jsonString, err := json.MarshalIndent(g, "", "\t"); err != nil {
+			mg = mg.MinimumSpanningTree(p.Seed, true)
+			if jsonString, err := json.MarshalIndent(mg, "", "\t"); err != nil {
 				return err
 			} else {
 				fmt.Println(string(jsonString))
@@ -241,4 +247,22 @@ func (c *CLIService) Run(ctx context.Context, str string) error {
 		return ErrInvalidVerb
 	}
 	return nil
+}
+
+// toModelGraph adapts the SDK's proto-only Graph into a core/graph.Graph so
+// the CLI can keep using the local SPT/MST algorithms. The vertex map is
+// shared by reference; only the structural maps are copied.
+func toModelGraph(g *client.Graph) *model.Graph[string, *client.Vertex] {
+	mg := model.NewGraph[string, *client.Vertex]()
+	for k, v := range g.Vertices {
+		mg.Vertices[k] = v
+	}
+	for tail, heads := range g.Edges {
+		cp := make(map[string]float32, len(heads))
+		for head, w := range heads {
+			cp[head] = w
+		}
+		mg.Edges[tail] = cp
+	}
+	return mg
 }

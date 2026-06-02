@@ -22,7 +22,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/anaregdesign/lantern/client"
+	"github.com/anaregdesign/lantern/sdks/go"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/credentials"
 	credinsecure "google.golang.org/grpc/credentials/insecure"
