@@ -148,9 +148,39 @@ go run ./server/cmd          # listens on :6380
 ### Use the CLI
 
 ```shell
-go build -o lantern-cli ./cli
-./lantern-cli --host localhost --port 6380
+go build -o lantern ./cli
+./lantern --help
 ```
+
+The CLI exposes every RPC as a scriptable subcommand with verbose,
+LLM-friendly help text (`lantern <cmd> --help`). All read commands emit JSON
+on stdout; all write commands print a single `OK` line.
+
+```shell
+# writes
+./lantern vertex put alice '{"name":"Alice"}' --value-type json --ttl 1h
+./lantern edge   add alice bob 1.5            # additive (sums weight)
+./lantern edge   put alice bob 0.7            # idempotent (replaces)
+
+# reads
+./lantern vertex get alice                    # JSON: {key,value,expiration}
+./lantern edge   get alice bob                # JSON: {tail,head,weight,expiration}
+./lantern illuminate alice --step 2 --k 5 --optimize mst
+
+# batches & streaming
+./lantern vertex delete alice bob carol       # batch DeleteVertices
+cat edges.ndjson | ./lantern bulk edges add - # streamed AddEdges
+
+# TLS / mTLS
+./lantern --tls --tls-ca ./ca.pem -H lantern.example.com -p 443 vertex get alice
+
+# legacy interactive prompt
+./lantern repl
+```
+
+Global flags include `--host/--port` (or `--address`), `--timeout`, `--tls*`,
+`--compression {none|gzip}`, and `--chunk-size`. Exit code `0` is success,
+`1` is a local / parse error, `2` is a gRPC error from the server.
 
 ### Use it from Go
 
