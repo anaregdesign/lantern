@@ -128,10 +128,21 @@ func testResourceWatchStops(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go c.Watch(ctx, 5*time.Millisecond)
 
-	// Give Watch a chance to start and tick a few times.
-	time.Sleep(50 * time.Millisecond)
-	if g := runtime.NumGoroutine(); g <= baseline {
-		t.Fatalf("R1 setup: expected Watch goroutine to be running (baseline=%d, now=%d)", baseline, g)
+	// Wait for Watch to actually be scheduled. runtime.NumGoroutine() is
+	// inherently racy against the Go scheduler (especially under -shuffle=on),
+	// so poll with a bounded retry instead of a single instantaneous read.
+	startupDeadline := time.Now().Add(2 * time.Second)
+	started := false
+	for time.Now().Before(startupDeadline) {
+		if runtime.NumGoroutine() > baseline {
+			started = true
+			break
+		}
+		runtime.Gosched()
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !started {
+		t.Fatalf("R1 setup: expected Watch goroutine to be running within 2s (baseline=%d, now=%d)", baseline, runtime.NumGoroutine())
 	}
 
 	cancel()
