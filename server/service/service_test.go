@@ -314,3 +314,54 @@ func TestLanternService_RespectsContextCancel(t *testing.T) {
 		t.Errorf("code = %v, want Canceled", st.Code())
 	}
 }
+
+// TestLanternService_SingularWriteFacades verifies that PutVertex / AddEdge /
+// PutEdge behave like single-element calls to their plural counterparts.
+func TestLanternService_SingularWriteFacades(t *testing.T) {
+	s := newTestService(t)
+	ctx := context.Background()
+	exp := futureTs(time.Minute)
+
+	// PutVertex writes a single vertex visible via GetVertex.
+	if _, err := s.PutVertex(ctx, &pb.PutVertexRequest{
+		Vertex: &pb.Vertex{Key: "k", Value: &pb.Vertex_String_{String_: "v"}, Expiration: exp},
+	}); err != nil {
+		t.Fatalf("PutVertex: %v", err)
+	}
+	if gv, err := s.GetVertex(ctx, &pb.GetVertexRequest{Key: "k"}); err != nil {
+		t.Fatalf("GetVertex: %v", err)
+	} else if got := gv.GetVertex().GetString_(); got != "v" {
+		t.Errorf("vertex value = %q, want %q", got, "v")
+	}
+
+	// AddEdge accumulates weight just like AddEdges.
+	for range 2 {
+		if _, err := s.AddEdge(ctx, &pb.AddEdgeRequest{
+			Edge: &pb.Edge{Tail: "a", Head: "b", Weight: 1.5, Expiration: exp},
+		}); err != nil {
+			t.Fatalf("AddEdge: %v", err)
+		}
+	}
+	if ge, err := s.GetEdge(ctx, &pb.GetEdgeRequest{Tail: "a", Head: "b"}); err != nil {
+		t.Fatalf("GetEdge: %v", err)
+	} else if ge.GetEdge().GetWeight() != 3 {
+		t.Errorf("weight = %v, want 3 (additive)", ge.GetEdge().GetWeight())
+	}
+
+	// PutEdge replaces weight (idempotent) instead of accumulating.
+	if _, err := s.PutEdge(ctx, &pb.PutEdgeRequest{
+		Edge: &pb.Edge{Tail: "a", Head: "b", Weight: 9, Expiration: exp},
+	}); err != nil {
+		t.Fatalf("PutEdge: %v", err)
+	}
+	if _, err := s.PutEdge(ctx, &pb.PutEdgeRequest{
+		Edge: &pb.Edge{Tail: "a", Head: "b", Weight: 9, Expiration: exp},
+	}); err != nil {
+		t.Fatalf("PutEdge(repeat): %v", err)
+	}
+	if ge, err := s.GetEdge(ctx, &pb.GetEdgeRequest{Tail: "a", Head: "b"}); err != nil {
+		t.Fatalf("GetEdge: %v", err)
+	} else if ge.GetEdge().GetWeight() != 9 {
+		t.Errorf("weight = %v, want 9 (replaced)", ge.GetEdge().GetWeight())
+	}
+}
