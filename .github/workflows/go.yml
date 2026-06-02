@@ -94,6 +94,8 @@ jobs:
       - name: buf lint
         run: buf lint
       - name: Generated code is up to date (wire + buf)
+        env:
+          GOWORK: 'off'
         run: |
           go generate ./...
           if ! git diff --exit-code; then
