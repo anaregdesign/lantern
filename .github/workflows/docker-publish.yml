@@ -13,12 +13,33 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Re-run the canonical CI gates on the tagged commit. Tag pushes do not
+  # trigger the `Go` workflow (which is gated on branch pushes / PRs), so
+  # without this we could ship a broken image from a bad tag.
+  verify:
+    name: Verify (build + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          check-latest: true
+      - name: Vet
+        run: go vet ./...
+      - name: Build
+        run: go build -v ./...
+      - name: Test
+        run: go test -race -shuffle=on ./...
+
   build:
+    needs: verify
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
       id-token: write
+      attestations: write
 
     steps:
       - name: Checkout repository
@@ -73,3 +94,53 @@ jobs:
           DIGEST: ${{ steps.build-and-push.outputs.digest }}
         run: |
           echo "$TAGS" | xargs -I {} cosign sign --yes {}@${DIGEST}
+
+  release:
+    name: GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Ask GitHub to produce the standard auto-generated changelog
+          # (same content as the "Generate release notes" button in the UI).
+          auto=$(gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${REPO}/releases/generate-notes" \
+            -f tag_name="${TAG}" \
+            --jq .body)
+
+          notes_file=$(mktemp)
+          {
+            echo "## Container image"
+            echo
+            echo "Multi-arch (\`linux/amd64\`, \`linux/arm64\`), signed with cosign keyless."
+            echo
+            echo '```sh'
+            echo "docker pull ${IMAGE}:${TAG#v}"
+            echo '```'
+            echo
+            echo "$auto"
+          } > "$notes_file"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --notes-file "$notes_file" --verify-tag
+          else
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --notes-file "$notes_file" \
+              --verify-tag
+          fi
