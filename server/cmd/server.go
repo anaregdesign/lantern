@@ -8,9 +8,9 @@ import (
 	"syscall"
 	"time"
 
+	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
-	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
