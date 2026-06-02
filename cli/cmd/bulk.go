@@ -230,7 +230,7 @@ Recall the semantic difference: ` + "`add`" + ` SUMS weight onto existing edges
 			if err := flush(); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "OK %d\n", total)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "OK %d\n", total)
 			return nil
 		},
 	}

@@ -129,7 +129,7 @@ EXAMPLES
 		if err := cli.PutVertex(cmd.Context(), args[0], val, vertexPutTTL); err != nil {
 			return err
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), "OK")
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "OK")
 		return nil
 	},
 }
@@ -176,7 +176,7 @@ EXAMPLES
 				return err
 			}
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "OK %d\n", len(args))
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "OK %d\n", len(args))
 		return nil
 	},
 }

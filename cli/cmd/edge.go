@@ -134,7 +134,7 @@ EXAMPLES
 		if err != nil {
 			return err
 		}
-		defer cli.Close()
+		defer func() { _ = cli.Close() }()
 		if err := cli.AddEdge(cmd.Context(), args[0], args[1], float32(w), edgeAddTTL); err != nil {
 			return err
 		}
@@ -180,7 +180,7 @@ EXAMPLES
 		if err != nil {
 			return err
 		}
-		defer cli.Close()
+		defer func() { _ = cli.Close() }()
 		if err := cli.PutEdge(cmd.Context(), args[0], args[1], float32(w), edgePutTTL); err != nil {
 			return err
 		}
@@ -233,7 +233,7 @@ EXAMPLES
 		if err != nil {
 			return err
 		}
-		defer cli.Close()
+		defer func() { _ = cli.Close() }()
 
 		if len(refs) == 1 {
 			if err := cli.DeleteEdge(cmd.Context(), refs[0].Tail, refs[0].Head); err != nil {
@@ -244,7 +244,7 @@ EXAMPLES
 				return err
 			}
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "OK %d\n", len(refs))
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "OK %d\n", len(refs))
 		return nil
 	},
 }
