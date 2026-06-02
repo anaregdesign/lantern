@@ -38,7 +38,9 @@ type LanternServiceClient interface {
 	PutVertex(ctx context.Context, in *PutVertexRequest, opts ...grpc.CallOption) (*PutVertexResponse, error)
 	DeleteVertex(ctx context.Context, in *DeleteVertexRequest, opts ...grpc.CallOption) (*DeleteVertexResponse, error)
 	GetEdge(ctx context.Context, in *GetEdgeRequest, opts ...grpc.CallOption) (*GetEdgeResponse, error)
+	// AddEdge is non-idempotent (accumulates weight). POST per REST conventions.
 	AddEdge(ctx context.Context, in *AddEdgeRequest, opts ...grpc.CallOption) (*AddEdgeResponse, error)
+	// PutEdge is idempotent (replaces weight). PUT per REST conventions.
 	PutEdge(ctx context.Context, in *PutEdgeRequest, opts ...grpc.CallOption) (*PutEdgeResponse, error)
 	DeleteEdge(ctx context.Context, in *DeleteEdgeRequest, opts ...grpc.CallOption) (*DeleteEdgeResponse, error)
 }
@@ -140,7 +142,9 @@ type LanternServiceServer interface {
 	PutVertex(context.Context, *PutVertexRequest) (*PutVertexResponse, error)
 	DeleteVertex(context.Context, *DeleteVertexRequest) (*DeleteVertexResponse, error)
 	GetEdge(context.Context, *GetEdgeRequest) (*GetEdgeResponse, error)
+	// AddEdge is non-idempotent (accumulates weight). POST per REST conventions.
 	AddEdge(context.Context, *AddEdgeRequest) (*AddEdgeResponse, error)
+	// PutEdge is idempotent (replaces weight). PUT per REST conventions.
 	PutEdge(context.Context, *PutEdgeRequest) (*PutEdgeResponse, error)
 	DeleteEdge(context.Context, *DeleteEdgeRequest) (*DeleteEdgeResponse, error)
 }

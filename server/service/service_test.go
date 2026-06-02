@@ -41,9 +41,6 @@ func TestLanternService_PutAndGetVertex(t *testing.T) {
 	if got := resp.Vertex.GetString_(); got != "hello" {
 		t.Errorf("GetVertex value = %q, want \"hello\"", got)
 	}
-	if resp.Status != pb.Status_STATUS_OK {
-		t.Errorf("status = %v, want OK", resp.Status)
-	}
 }
 
 func TestLanternService_GetVertex_NotFound(t *testing.T) {

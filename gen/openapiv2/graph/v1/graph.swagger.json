@@ -17,7 +17,8 @@
   ],
   "paths": {
     "/v1/edges/add": {
-      "put": {
+      "post": {
+        "summary": "AddEdge is non-idempotent (accumulates weight). POST per REST conventions.",
         "operationId": "LanternService_AddEdge",
         "responses": {
           "200": {
@@ -29,13 +30,14 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googleRpcStatus"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
         "parameters": [
           {
             "name": "body",
+            "description": "AddEdgeRequest accumulates weight onto each (tail, head) pair: repeated\ncalls with the same endpoints sum their weights. This operation is\nnon-idempotent.",
             "in": "body",
             "required": true,
             "schema": {
@@ -50,6 +52,7 @@
     },
     "/v1/edges/put": {
       "put": {
+        "summary": "PutEdge is idempotent (replaces weight). PUT per REST conventions.",
         "operationId": "LanternService_PutEdge",
         "responses": {
           "200": {
@@ -61,13 +64,14 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googleRpcStatus"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
         "parameters": [
           {
             "name": "body",
+            "description": "PutEdgeRequest overwrites each (tail, head) pair, replacing any existing\nweight and expiration. This operation is idempotent.",
             "in": "body",
             "required": true,
             "schema": {
@@ -93,7 +97,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googleRpcStatus"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -127,7 +131,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googleRpcStatus"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -163,7 +167,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googleRpcStatus"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -227,13 +231,14 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googleRpcStatus"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
         "parameters": [
           {
             "name": "body",
+            "description": "PutVertexRequest writes vertices with upsert semantics: each Vertex.key\nreplaces any existing value at that key. Use the Vertex.expiration field\n(absolute time) to control TTL.",
             "in": "body",
             "required": true,
             "schema": {
@@ -259,7 +264,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googleRpcStatus"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -287,7 +292,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googleRpcStatus"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -306,7 +311,16 @@
     }
   },
   "definitions": {
-    "googleRpcStatus": {
+    "protobufAny": {
+      "type": "object",
+      "properties": {
+        "@type": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": {}
+    },
+    "rpcStatus": {
       "type": "object",
       "properties": {
         "code": {
@@ -325,25 +339,6 @@
         }
       }
     },
-    "graphV1Status": {
-      "type": "string",
-      "enum": [
-        "STATUS_UNSPECIFIED",
-        "STATUS_OK",
-        "STATUS_INTERNAL_SERVER_ERROR",
-        "STATUS_INVALID_REQUEST"
-      ],
-      "default": "STATUS_UNSPECIFIED"
-    },
-    "protobufAny": {
-      "type": "object",
-      "properties": {
-        "@type": {
-          "type": "string"
-        }
-      },
-      "additionalProperties": {}
-    },
     "v1AddEdgeRequest": {
       "type": "object",
       "properties": {
@@ -354,31 +349,17 @@
             "$ref": "#/definitions/v1Edge"
           }
         }
-      }
+      },
+      "description": "AddEdgeRequest accumulates weight onto each (tail, head) pair: repeated\ncalls with the same endpoints sum their weights. This operation is\nnon-idempotent."
     },
     "v1AddEdgeResponse": {
-      "type": "object",
-      "properties": {
-        "status": {
-          "$ref": "#/definitions/graphV1Status"
-        }
-      }
+      "type": "object"
     },
     "v1DeleteEdgeResponse": {
-      "type": "object",
-      "properties": {
-        "status": {
-          "$ref": "#/definitions/graphV1Status"
-        }
-      }
+      "type": "object"
     },
     "v1DeleteVertexResponse": {
-      "type": "object",
-      "properties": {
-        "status": {
-          "$ref": "#/definitions/graphV1Status"
-        }
-      }
+      "type": "object"
     },
     "v1Edge": {
       "type": "object",
@@ -412,9 +393,6 @@
       "properties": {
         "vertex": {
           "$ref": "#/definitions/v1Vertex"
-        },
-        "status": {
-          "$ref": "#/definitions/graphV1Status"
         }
       }
     },
@@ -442,9 +420,6 @@
       "properties": {
         "graph": {
           "$ref": "#/definitions/v1Graph"
-        },
-        "status": {
-          "$ref": "#/definitions/graphV1Status"
         }
       }
     },
@@ -469,15 +444,11 @@
             "$ref": "#/definitions/v1Edge"
           }
         }
-      }
+      },
+      "description": "PutEdgeRequest overwrites each (tail, head) pair, replacing any existing\nweight and expiration. This operation is idempotent."
     },
     "v1PutEdgeResponse": {
-      "type": "object",
-      "properties": {
-        "status": {
-          "$ref": "#/definitions/graphV1Status"
-        }
-      }
+      "type": "object"
     },
     "v1PutVertexRequest": {
       "type": "object",
@@ -489,15 +460,11 @@
             "$ref": "#/definitions/v1Vertex"
           }
         }
-      }
+      },
+      "description": "PutVertexRequest writes vertices with upsert semantics: each Vertex.key\nreplaces any existing value at that key. Use the Vertex.expiration field\n(absolute time) to control TTL."
     },
     "v1PutVertexResponse": {
-      "type": "object",
-      "properties": {
-        "status": {
-          "$ref": "#/definitions/graphV1Status"
-        }
-      }
+      "type": "object"
     },
     "v1Vertex": {
       "type": "object",
