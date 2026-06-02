@@ -103,19 +103,14 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 }
 
 func (s *LanternService) GetVertex(ctx context.Context, request *pb.GetVertexRequest) (*pb.GetVertexResponse, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, status.FromContextError(err).Err()
+	resp, err := s.GetVertices(ctx, &pb.GetVerticesRequest{Keys: []string{request.GetKey()}})
+	if err != nil {
+		return nil, err
 	}
-	v, ok := s.cache.GetVertex(request.GetKey())
-	if !ok {
+	if len(resp.GetMissing()) == 1 {
 		return nil, status.Errorf(codes.NotFound, "vertex %q not found", request.GetKey())
 	}
-	if v == nil {
-		return &pb.GetVertexResponse{
-			Vertex: &pb.Vertex{Key: request.GetKey(), Value: &pb.Vertex_Nil{Nil: true}},
-		}, nil
-	}
-	return &pb.GetVertexResponse{Vertex: v}, nil
+	return &pb.GetVertexResponse{Vertex: resp.GetVertices()[0]}, nil
 }
 
 // GetVertices reads several vertices in one round trip. Keys present at call
@@ -158,13 +153,13 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 }
 
 func (s *LanternService) DeleteVertex(ctx context.Context, in *pb.DeleteVertexRequest) (*pb.DeleteVertexResponse, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, status.FromContextError(err).Err()
-	}
 	// Per the proto contract, deleting a vertex leaves its edges orphaned;
 	// the periodic GC loop reaps any tf/df rows whose endpoints disappear.
-	existed := s.cache.DeleteVertex(in.GetKey())
-	return &pb.DeleteVertexResponse{Existed: existed}, nil
+	resp, err := s.DeleteVertices(ctx, &pb.DeleteVerticesRequest{Keys: []string{in.GetKey()}})
+	if err != nil {
+		return nil, err
+	}
+	return &pb.DeleteVertexResponse{Existed: resp.GetDeleted() == 1}, nil
 }
 
 func (s *LanternService) DeleteVertices(ctx context.Context, in *pb.DeleteVerticesRequest) (*pb.DeleteVerticesResponse, error) {
@@ -173,25 +168,24 @@ func (s *LanternService) DeleteVertices(ctx context.Context, in *pb.DeleteVertic
 	}
 	var n int32
 	for _, k := range in.GetKeys() {
-		s.cache.DeleteVertex(k)
-		n++
+		if s.cache.DeleteVertex(k) {
+			n++
+		}
 	}
 	return &pb.DeleteVerticesResponse{Deleted: n}, nil
 }
 
 func (s *LanternService) GetEdge(ctx context.Context, request *pb.GetEdgeRequest) (*pb.GetEdgeResponse, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, status.FromContextError(err).Err()
+	resp, err := s.GetEdges(ctx, &pb.GetEdgesRequest{
+		Edges: []*pb.EdgeKey{{Tail: request.GetTail(), Head: request.GetHead()}},
+	})
+	if err != nil {
+		return nil, err
 	}
-	w, exp, ok := s.cache.GetEdgeDetail(request.GetTail(), request.GetHead())
-	if !ok {
+	if len(resp.GetMissing()) == 1 {
 		return nil, status.Errorf(codes.NotFound, "edge %q -> %q not found", request.GetTail(), request.GetHead())
 	}
-	edge := &pb.Edge{Tail: request.GetTail(), Head: request.GetHead(), Weight: w}
-	if !exp.IsZero() {
-		edge.Expiration = timestamppb.New(exp)
-	}
-	return &pb.GetEdgeResponse{Edge: edge}, nil
+	return &pb.GetEdgeResponse{Edge: resp.GetEdges()[0]}, nil
 }
 
 // GetEdges reads several edges in one round trip. Pairs present at call time
@@ -248,11 +242,13 @@ func (s *LanternService) PutEdges(ctx context.Context, request *pb.PutEdgesReque
 }
 
 func (s *LanternService) DeleteEdge(ctx context.Context, in *pb.DeleteEdgeRequest) (*pb.DeleteEdgeResponse, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, status.FromContextError(err).Err()
+	resp, err := s.DeleteEdges(ctx, &pb.DeleteEdgesRequest{
+		Edges: []*pb.EdgeKey{{Tail: in.GetTail(), Head: in.GetHead()}},
+	})
+	if err != nil {
+		return nil, err
 	}
-	existed := s.cache.DeleteEdge(in.GetTail(), in.GetHead())
-	return &pb.DeleteEdgeResponse{Existed: existed}, nil
+	return &pb.DeleteEdgeResponse{Existed: resp.GetDeleted() == 1}, nil
 }
 
 func (s *LanternService) DeleteEdges(ctx context.Context, in *pb.DeleteEdgesRequest) (*pb.DeleteEdgesResponse, error) {
@@ -261,8 +257,9 @@ func (s *LanternService) DeleteEdges(ctx context.Context, in *pb.DeleteEdgesRequ
 	}
 	var n int32
 	for _, e := range in.GetEdges() {
-		s.cache.DeleteEdge(e.GetTail(), e.GetHead())
-		n++
+		if s.cache.DeleteEdge(e.GetTail(), e.GetHead()) {
+			n++
+		}
 	}
 	return &pb.DeleteEdgesResponse{Deleted: n}, nil
 }
