@@ -7,6 +7,7 @@ import (
 	"time"
 
 	pb "github.com/anaregdesign/lantern/gen/go/graph/v1"
+	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -68,6 +69,8 @@ func (v nativeVertex) asVertex() (*pb.Vertex, error) {
 		return &pb.Vertex{Key: v.key, Expiration: exp, Value: &pb.Vertex_Bytes{Bytes: x}}, nil
 	case time.Time:
 		return &pb.Vertex{Key: v.key, Expiration: exp, Value: &pb.Vertex_Timestamp{Timestamp: timestamppb.New(x)}}, nil
+	case time.Duration:
+		return &pb.Vertex{Key: v.key, Expiration: exp, Value: &pb.Vertex_Duration{Duration: durationpb.New(x)}}, nil
 	case nil:
 		return &pb.Vertex{Key: v.key, Expiration: exp, Value: &pb.Vertex_Nil{Nil: true}}, nil
 
@@ -97,6 +100,7 @@ const (
 	VertexKindBytes
 	VertexKindTimestamp
 	VertexKindNil
+	VertexKindDuration
 )
 
 // Kind reports which oneof variant is set on v.
@@ -125,6 +129,8 @@ func (v *Vertex) Kind() VertexKind {
 		return VertexKindBytes
 	case *pb.Vertex_Timestamp:
 		return VertexKindTimestamp
+	case *pb.Vertex_Duration:
+		return VertexKindDuration
 	case *pb.Vertex_Nil:
 		return VertexKindNil
 	default:
@@ -233,6 +239,13 @@ func (v *Vertex) TimeValue() (time.Time, error) {
 	return time.Time{}, ErrInvalidType
 }
 
+func (v *Vertex) DurationValue() (time.Duration, error) {
+	if x, ok := v.Value.(*pb.Vertex_Duration); ok {
+		return x.Duration.AsDuration(), nil
+	}
+	return 0, ErrInvalidType
+}
+
 func (v *Vertex) IsNil() bool {
 	if x, ok := v.Value.(*pb.Vertex_Nil); ok {
 		return x.Nil
@@ -288,6 +301,8 @@ func (v *Vertex) MarshalJSON() ([]byte, error) {
 		out.Type, out.Value = "bytes", x.Bytes
 	case *pb.Vertex_Timestamp:
 		out.Type, out.Value = "timestamp", x.Timestamp.AsTime().Format(time.RFC3339Nano)
+	case *pb.Vertex_Duration:
+		out.Type, out.Value = "duration", x.Duration.AsDuration().String()
 	case *pb.Vertex_Nil:
 		out.Type, out.Value = "nil", nil
 	default:

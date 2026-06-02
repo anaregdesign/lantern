@@ -63,6 +63,12 @@ func parseValue(raw, valueType string) (any, error) {
 			return nil, fmt.Errorf("--value-type=datetime (RFC3339): %w", err)
 		}
 		return v, nil
+	case "duration":
+		v, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("--value-type=duration: %w", err)
+		}
+		return v, nil
 	case "json":
 		var v any
 		if err := json.Unmarshal([]byte(raw), &v); err != nil {
@@ -70,6 +76,6 @@ func parseValue(raw, valueType string) (any, error) {
 		}
 		return v, nil
 	default:
-		return nil, fmt.Errorf("unknown --value-type %q (want auto|string|int|float|bool|datetime|json)", valueType)
+		return nil, fmt.Errorf("unknown --value-type %q (want auto|string|int|float|bool|datetime|duration|json)", valueType)
 	}
 }
