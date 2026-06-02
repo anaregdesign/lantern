@@ -475,7 +475,10 @@ func edgesFrom(inputs []EdgeInput) []*pb.Edge {
 }
 
 func chunkSlice[T any](s []T, size int) [][]T {
-	if size <= 0 || len(s) <= size {
+	if size <= 0 {
+		size = defaultBatchChunkSize
+	}
+	if len(s) <= size {
 		return [][]T{s}
 	}
 	out := make([][]T, 0, (len(s)+size-1)/size)
