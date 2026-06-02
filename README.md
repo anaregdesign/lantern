@@ -228,18 +228,21 @@ plain unary gRPC, no streaming required.
 Defined in [proto/graph/v1/graph.proto](proto/graph/v1/graph.proto), served by
 [server/service/service.go](server/service/service.go).
 
+Every read, write, and delete operation has both a **singular** and a **plural**
+form. The plural is the canonical implementation; the singular is a thin facade
+that forwards a one-element batch to the plural handler. Pick whichever reads
+better at the call site.
+
 | RPC | Purpose | Notes |
 |---|---|---|
-| `PutVertex` | Upsert a vertex with TTL | Last write wins |
-| `GetVertex` | Fetch a vertex by key | `NotFound` if expired/missing |
-| `DeleteVertex` | Remove a vertex | Edges to/from it are GC'd on next `Watch` tick |
-| `DeleteVertices` | Batch remove vertices in one round-trip | SDK auto-chunks at `WithBatchChunkSize`; idempotent (retried automatically) |
-| `AddEdge` | **Append** a weighted contribution | Not idempotent — see §1.2 above |
-| `PutEdge` | Idempotent replace (delete + add) | Use when you want one-and-only-one weight |
-| `GetEdge` | Read current live weight | Sum of unexpired contributions |
-| `DeleteEdge` | Remove an edge outright | |
-| `DeleteEdges` | Batch remove edges in one round-trip | Takes `[]EdgeRef{Tail, Head}`; SDK auto-chunks; idempotent |
-| `Illuminate` | Walk the graph from a seed | `step`, `k`, `tfidf`, and `Optimization` (none / MST / max-ST / SPT / inverse-SPT) |
+| `GetVertex` / `GetVertices` | Fetch one or many vertices by key | Singular returns `NotFound` if expired/missing; plural reports missing keys in `Missing` |
+| `PutVertex` / `PutVertices` | Upsert vertices with TTL | Last write wins; singular is a one-element facade |
+| `DeleteVertex` / `DeleteVertices` | Remove vertices | Edges to/from them are GC'd on next `Watch` tick; SDK auto-chunks plural at `WithBatchChunkSize`; idempotent (retried automatically) |
+| `GetEdge` / `GetEdges` | Read current live weight(s) | Sum of unexpired contributions; plural takes `[]EdgeRef{Tail, Head}` |
+| `AddEdge` / `AddEdges` | **Append** weighted contributions | Not idempotent — see §1.2 above |
+| `PutEdge` / `PutEdges` | Idempotent replace (delete + add) | Use when you want one-and-only-one weight |
+| `DeleteEdge` / `DeleteEdges` | Remove edges outright | Plural takes `[]EdgeRef{Tail, Head}`; SDK auto-chunks; idempotent |
+| `Illuminate` | Walk the graph from a seed | `step`, `k`, `tfidf`, and `Optimization` (none / MST / max-ST / SPT / inverse-SPT); honours `ctx` cancellation |
 
 Vertices auto-materialize on `AddEdge`/`PutEdge` if the endpoint key does not
 yet exist (they get the edge's expiration as their TTL). This keeps event-stream
@@ -364,17 +367,23 @@ Required toolchain:
 - **wire + generics** — wire cannot synthesize generic type arguments, so the
   provider returns the concrete `*graph.GraphCache[string, *Vertex]`. Re-check
   this constraint before introducing generics there.
-- **Adding a new vertex value type** in the Go SDK requires updating *both*
-  directions in [sdks/go/value.go](sdks/go/value.go): `nativeVertex.asVertex()`
-  (Go → proto) and the matching `*Value()` accessor (proto → Go).
+- **Adding a new vertex value type** in the Go SDK requires updating *three*
+  call sites in [sdks/go/value.go](sdks/go/value.go): `nativeVertex.asVertex()`
+  (Go → proto), the matching `*Value()` accessor plus its `Kind()` /
+  `VertexKind*` constant (proto → Go), and the `Vertex.MarshalJSON` switch
+  (proto → JSON).
 - **Proto `go_package`** is `github.com/anaregdesign/lantern/sdks/go/gen/graph/v1`.
   `make proto` rewrites everything under `sdks/go/gen`.
 - **Not every `*Response` message has a `Status` field** — check
   [`sdks/go/gen/graph/v1/graph.pb.go`](sdks/go/gen/graph/v1/graph.pb.go) before patching
   response types.
-- **Test gaps** — there are currently no tests for the server/service layer,
-  wire wiring, or client transport paths. Add at least minimal table tests in
-  the same PR for non-trivial changes there.
+- **Test coverage** — `server/service/service_test.go` exercises the gRPC
+  surface (vertex/edge CRUD, singular-write facades, `Illuminate`
+  optimizations, context cancellation); `sdks/go/` has unit tests for value
+  conversion and the client wrapper; `tests/integration/` wires the real
+  server over bufconn to cover SDK-as-consumer paths. The remaining gap is
+  end-to-end wire wiring (`server/cmd`). Add at least a minimal table test in
+  the same PR for non-trivial changes.
 
 ### CI / release
 
@@ -388,17 +397,23 @@ Required toolchain:
 
 ## CLI cheatsheet
 
+These commands are accepted by the interactive REPL (`./lantern repl`). The
+cobra subcommands (`./lantern vertex put …`, `./lantern edge add …`, etc.)
+shown earlier accept the same arguments.
+
 ```shell
 put vertex <key:string> <value:string> [<ttl:int>]
 put edge   <tail:string> <head:string> <weight:float> [<ttl:int>]
+add edge   <tail:string> <head:string> <weight:float> [<ttl:int>]
 get vertex <key:string>
 get edge   <tail:string> <head:string>
+delete vertex <key:string>
+delete edge   <tail:string> <head:string>
 illuminate <neighbor|spt_cost|spt_relevance|mst_cost|mst_relevance> \
            <seed:string> <step:int> <k:int> <tfidf:bool>
 ```
 
-Worked examples (with diagrams) live in [docs/cli-examples.md](#cli-walkthrough)
-below.
+Worked examples (with diagrams) live in the walkthrough below.
 
 ### CLI walkthrough
 
