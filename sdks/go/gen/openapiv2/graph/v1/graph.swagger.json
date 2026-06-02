@@ -18,13 +18,13 @@
   "paths": {
     "/v1/edges/add": {
       "post": {
-        "summary": "AddEdge is non-idempotent (accumulates weight). POST per REST conventions.",
-        "operationId": "LanternService_AddEdge",
+        "summary": "AddEdges is non-idempotent (accumulates weight). POST per REST conventions.",
+        "operationId": "LanternService_AddEdges",
         "responses": {
           "200": {
             "description": "A successful response.",
             "schema": {
-              "$ref": "#/definitions/v1AddEdgeResponse"
+              "$ref": "#/definitions/v1AddEdgesResponse"
             }
           },
           "default": {
@@ -37,11 +37,11 @@
         "parameters": [
           {
             "name": "body",
-            "description": "AddEdgeRequest accumulates weight onto each (tail, head) pair: repeated\ncalls with the same endpoints sum their weights. This operation is\nnon-idempotent.",
+            "description": "AddEdgesRequest accumulates weight onto each (tail, head) pair: repeated\ncalls with the same endpoints sum their weights. This operation is\nnon-idempotent.",
             "in": "body",
             "required": true,
             "schema": {
-              "$ref": "#/definitions/v1AddEdgeRequest"
+              "$ref": "#/definitions/v1AddEdgesRequest"
             }
           }
         ],
@@ -120,13 +120,13 @@
     },
     "/v1/edges/put": {
       "put": {
-        "summary": "PutEdge is idempotent (replaces weight). PUT per REST conventions.",
-        "operationId": "LanternService_PutEdge",
+        "summary": "PutEdges is idempotent (replaces weight). PUT per REST conventions.",
+        "operationId": "LanternService_PutEdges",
         "responses": {
           "200": {
             "description": "A successful response.",
             "schema": {
-              "$ref": "#/definitions/v1PutEdgeResponse"
+              "$ref": "#/definitions/v1PutEdgesResponse"
             }
           },
           "default": {
@@ -139,11 +139,11 @@
         "parameters": [
           {
             "name": "body",
-            "description": "PutEdgeRequest overwrites each (tail, head) pair, replacing any existing\nweight and expiration. This operation is idempotent.",
+            "description": "PutEdgesRequest overwrites each (tail, head) pair, replacing any existing\nweight and expiration. This operation is idempotent.",
             "in": "body",
             "required": true,
             "schema": {
-              "$ref": "#/definitions/v1PutEdgeRequest"
+              "$ref": "#/definitions/v1PutEdgesRequest"
             }
           }
         ],
@@ -288,12 +288,12 @@
     },
     "/v1/vertices": {
       "put": {
-        "operationId": "LanternService_PutVertex",
+        "operationId": "LanternService_PutVertices",
         "responses": {
           "200": {
             "description": "A successful response.",
             "schema": {
-              "$ref": "#/definitions/v1PutVertexResponse"
+              "$ref": "#/definitions/v1PutVerticesResponse"
             }
           },
           "default": {
@@ -306,11 +306,11 @@
         "parameters": [
           {
             "name": "body",
-            "description": "PutVertexRequest writes vertices with upsert semantics: each Vertex.key\nreplaces any existing value at that key. Use the Vertex.expiration field\n(absolute time) to control TTL.",
+            "description": "PutVerticesRequest writes vertices with upsert semantics: each Vertex.key\nreplaces any existing value at that key. Use the Vertex.expiration field\n(absolute time) to control TTL.",
             "in": "body",
             "required": true,
             "schema": {
-              "$ref": "#/definitions/v1PutVertexRequest"
+              "$ref": "#/definitions/v1PutVerticesRequest"
             }
           }
         ],
@@ -475,7 +475,7 @@
         }
       }
     },
-    "v1AddEdgeRequest": {
+    "v1AddEdgesRequest": {
       "type": "object",
       "properties": {
         "edges": {
@@ -486,9 +486,9 @@
           }
         }
       },
-      "description": "AddEdgeRequest accumulates weight onto each (tail, head) pair: repeated\ncalls with the same endpoints sum their weights. This operation is\nnon-idempotent."
+      "description": "AddEdgesRequest accumulates weight onto each (tail, head) pair: repeated\ncalls with the same endpoints sum their weights. This operation is\nnon-idempotent."
     },
-    "v1AddEdgeResponse": {
+    "v1AddEdgesResponse": {
       "type": "object",
       "properties": {
         "written": {
@@ -712,7 +712,7 @@
       ],
       "default": "OPTIMIZATION_UNSPECIFIED"
     },
-    "v1PutEdgeRequest": {
+    "v1PutEdgesRequest": {
       "type": "object",
       "properties": {
         "edges": {
@@ -723,9 +723,9 @@
           }
         }
       },
-      "description": "PutEdgeRequest overwrites each (tail, head) pair, replacing any existing\nweight and expiration. This operation is idempotent."
+      "description": "PutEdgesRequest overwrites each (tail, head) pair, replacing any existing\nweight and expiration. This operation is idempotent."
     },
-    "v1PutEdgeResponse": {
+    "v1PutEdgesResponse": {
       "type": "object",
       "properties": {
         "written": {
@@ -735,7 +735,7 @@
         }
       }
     },
-    "v1PutVertexRequest": {
+    "v1PutVerticesRequest": {
       "type": "object",
       "properties": {
         "vertices": {
@@ -746,9 +746,9 @@
           }
         }
       },
-      "description": "PutVertexRequest writes vertices with upsert semantics: each Vertex.key\nreplaces any existing value at that key. Use the Vertex.expiration field\n(absolute time) to control TTL."
+      "description": "PutVerticesRequest writes vertices with upsert semantics: each Vertex.key\nreplaces any existing value at that key. Use the Vertex.expiration field\n(absolute time) to control TTL."
     },
-    "v1PutVertexResponse": {
+    "v1PutVerticesResponse": {
       "type": "object",
       "properties": {
         "written": {

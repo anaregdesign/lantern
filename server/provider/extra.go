@@ -90,7 +90,7 @@ func (v *ValidationInterceptor) validate(req any) error {
 				return err
 			}
 		}
-	case *pb.PutVertexRequest:
+	case *pb.PutVerticesRequest:
 		if err := v.checkBatch(len(r.GetVertices())); err != nil {
 			return err
 		}
@@ -142,9 +142,9 @@ func (v *ValidationInterceptor) validate(req any) error {
 				return err
 			}
 		}
-	case *pb.AddEdgeRequest:
+	case *pb.AddEdgesRequest:
 		return v.validateEdges(r.GetEdges())
-	case *pb.PutEdgeRequest:
+	case *pb.PutEdgesRequest:
 		return v.validateEdges(r.GetEdges())
 	case *pb.IlluminateRequest:
 		if err := v.checkKey("seed", r.GetSeed()); err != nil {

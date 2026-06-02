@@ -145,7 +145,7 @@ func (s *LanternService) GetVertices(ctx context.Context, request *pb.GetVertice
 	return resp, nil
 }
 
-func (s *LanternService) PutVertex(ctx context.Context, request *pb.PutVertexRequest) (*pb.PutVertexResponse, error) {
+func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVerticesRequest) (*pb.PutVerticesResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()
 	}
@@ -154,7 +154,7 @@ func (s *LanternService) PutVertex(ctx context.Context, request *pb.PutVertexReq
 		s.cache.AddVertexWithExpiration(v.GetKey(), v, v.GetExpiration().AsTime())
 		written++
 	}
-	return &pb.PutVertexResponse{Written: written}, nil
+	return &pb.PutVerticesResponse{Written: written}, nil
 }
 
 func (s *LanternService) DeleteVertex(ctx context.Context, in *pb.DeleteVertexRequest) (*pb.DeleteVertexResponse, error) {
@@ -220,7 +220,7 @@ func (s *LanternService) GetEdges(ctx context.Context, request *pb.GetEdgesReque
 	return resp, nil
 }
 
-func (s *LanternService) AddEdge(ctx context.Context, request *pb.AddEdgeRequest) (*pb.AddEdgeResponse, error) {
+func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesRequest) (*pb.AddEdgesResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()
 	}
@@ -229,10 +229,10 @@ func (s *LanternService) AddEdge(ctx context.Context, request *pb.AddEdgeRequest
 		s.cache.AddEdgeWithExpiration(e.GetTail(), e.GetHead(), e.GetWeight(), e.GetExpiration().AsTime())
 		written++
 	}
-	return &pb.AddEdgeResponse{Written: written}, nil
+	return &pb.AddEdgesResponse{Written: written}, nil
 }
 
-func (s *LanternService) PutEdge(ctx context.Context, request *pb.PutEdgeRequest) (*pb.PutEdgeResponse, error) {
+func (s *LanternService) PutEdges(ctx context.Context, request *pb.PutEdgesRequest) (*pb.PutEdgesResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()
 	}
@@ -244,7 +244,7 @@ func (s *LanternService) PutEdge(ctx context.Context, request *pb.PutEdgeRequest
 		s.cache.PutEdgeWithExpiration(e.GetTail(), e.GetHead(), e.GetWeight(), e.GetExpiration().AsTime())
 		written++
 	}
-	return &pb.PutEdgeResponse{Written: written}, nil
+	return &pb.PutEdgesResponse{Written: written}, nil
 }
 
 func (s *LanternService) DeleteEdge(ctx context.Context, in *pb.DeleteEdgeRequest) (*pb.DeleteEdgeResponse, error) {

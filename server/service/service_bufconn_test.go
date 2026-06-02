@@ -62,7 +62,7 @@ func TestBufconn_PutGetVertex_NilValueRoundTrip(t *testing.T) {
 	defer cleanup()
 
 	v := &pb.Vertex{Key: "n", Value: &pb.Vertex_Nil{Nil: true}, Expiration: bufconnExp(time.Minute)}
-	if _, err := c.PutVertex(ctx, &pb.PutVertexRequest{Vertices: []*pb.Vertex{v}}); err != nil {
+	if _, err := c.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{v}}); err != nil {
 		t.Fatalf("PutVertex: %v", err)
 	}
 
@@ -91,7 +91,7 @@ func TestBufconn_AddEdge_IsAdditive(t *testing.T) {
 
 	edge := &pb.Edge{Tail: "a", Head: "b", Weight: 1.5, Expiration: bufconnExp(time.Minute)}
 	for i := 0; i < 2; i++ {
-		if _, err := c.AddEdge(ctx, &pb.AddEdgeRequest{Edges: []*pb.Edge{edge}}); err != nil {
+		if _, err := c.AddEdges(ctx, &pb.AddEdgesRequest{Edges: []*pb.Edge{edge}}); err != nil {
 			t.Fatalf("AddEdge %d: %v", i, err)
 		}
 	}
@@ -111,10 +111,10 @@ func TestBufconn_PutEdge_IsIdempotent(t *testing.T) {
 
 	first := &pb.Edge{Tail: "a", Head: "b", Weight: 1.5, Expiration: bufconnExp(time.Minute)}
 	second := &pb.Edge{Tail: "a", Head: "b", Weight: 9.0, Expiration: bufconnExp(time.Minute)}
-	if _, err := c.PutEdge(ctx, &pb.PutEdgeRequest{Edges: []*pb.Edge{first}}); err != nil {
+	if _, err := c.PutEdges(ctx, &pb.PutEdgesRequest{Edges: []*pb.Edge{first}}); err != nil {
 		t.Fatalf("PutEdge 1: %v", err)
 	}
-	if _, err := c.PutEdge(ctx, &pb.PutEdgeRequest{Edges: []*pb.Edge{second}}); err != nil {
+	if _, err := c.PutEdges(ctx, &pb.PutEdgesRequest{Edges: []*pb.Edge{second}}); err != nil {
 		t.Fatalf("PutEdge 2: %v", err)
 	}
 
@@ -136,7 +136,7 @@ func TestBufconn_Illuminate_AllOptimizations(t *testing.T) {
 		{Tail: "b", Head: "c", Weight: 1, Expiration: bufconnExp(time.Minute)},
 		{Tail: "a", Head: "c", Weight: 3, Expiration: bufconnExp(time.Minute)},
 	}
-	if _, err := c.PutEdge(ctx, &pb.PutEdgeRequest{Edges: edges}); err != nil {
+	if _, err := c.PutEdges(ctx, &pb.PutEdgesRequest{Edges: edges}); err != nil {
 		t.Fatalf("PutEdge seed: %v", err)
 	}
 
@@ -176,7 +176,7 @@ func TestBufconn_DeleteVertices_HappyPath(t *testing.T) {
 		{Key: "a", Value: &pb.Vertex_Int64{Int64: 1}, Expiration: bufconnExp(time.Minute)},
 		{Key: "b", Value: &pb.Vertex_Int64{Int64: 2}, Expiration: bufconnExp(time.Minute)},
 	}
-	if _, err := c.PutVertex(ctx, &pb.PutVertexRequest{Vertices: vs}); err != nil {
+	if _, err := c.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: vs}); err != nil {
 		t.Fatalf("PutVertex: %v", err)
 	}
 	resp, err := c.DeleteVertices(ctx, &pb.DeleteVerticesRequest{Keys: []string{"a", "b"}})
@@ -201,7 +201,7 @@ func TestBufconn_DeleteEdges_HappyPath(t *testing.T) {
 		{Tail: "a", Head: "b", Weight: 1, Expiration: bufconnExp(time.Minute)},
 		{Tail: "b", Head: "c", Weight: 1, Expiration: bufconnExp(time.Minute)},
 	}
-	if _, err := c.AddEdge(ctx, &pb.AddEdgeRequest{Edges: edges}); err != nil {
+	if _, err := c.AddEdges(ctx, &pb.AddEdgesRequest{Edges: edges}); err != nil {
 		t.Fatalf("AddEdge: %v", err)
 	}
 	resp, err := c.DeleteEdges(ctx, &pb.DeleteEdgesRequest{Edges: []*pb.EdgeKey{
@@ -229,7 +229,7 @@ func TestBufconn_GetVertices_PartialMiss(t *testing.T) {
 		{Key: "a", Value: &pb.Vertex_Int64{Int64: 1}, Expiration: bufconnExp(time.Minute)},
 		{Key: "b", Value: &pb.Vertex_Nil{Nil: true}, Expiration: bufconnExp(time.Minute)},
 	}
-	if _, err := c.PutVertex(ctx, &pb.PutVertexRequest{Vertices: vs}); err != nil {
+	if _, err := c.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: vs}); err != nil {
 		t.Fatalf("PutVertex: %v", err)
 	}
 
@@ -260,7 +260,7 @@ func TestBufconn_GetEdges_PartialMiss(t *testing.T) {
 		{Tail: "a", Head: "b", Weight: 1.5, Expiration: bufconnExp(time.Minute)},
 		{Tail: "b", Head: "c", Weight: 2, Expiration: bufconnExp(time.Minute)},
 	}
-	if _, err := c.AddEdge(ctx, &pb.AddEdgeRequest{Edges: edges}); err != nil {
+	if _, err := c.AddEdges(ctx, &pb.AddEdgesRequest{Edges: edges}); err != nil {
 		t.Fatalf("AddEdge: %v", err)
 	}
 

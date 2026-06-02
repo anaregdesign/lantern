@@ -83,14 +83,14 @@ message GetVerticesResponse {
   repeated string missing = 2;
 }
 
-// PutVertexRequest writes vertices with upsert semantics: each Vertex.key
+// PutVerticesRequest writes vertices with upsert semantics: each Vertex.key
 // replaces any existing value at that key. Use the Vertex.expiration field
 // (absolute time) to control TTL.
-message PutVertexRequest {
+message PutVerticesRequest {
   repeated Vertex vertices = 1;
 }
 
-message PutVertexResponse {
+message PutVerticesResponse {
   // Number of vertices accepted by the server. Currently always equals the
   // request size on success; reserved for future per-item validation that may
   // report partial writes.
@@ -174,25 +174,25 @@ message DeleteEdgesResponse {
   int32 deleted = 1;
 }
 
-// AddEdgeRequest accumulates weight onto each (tail, head) pair: repeated
+// AddEdgesRequest accumulates weight onto each (tail, head) pair: repeated
 // calls with the same endpoints sum their weights. This operation is
 // non-idempotent.
-message AddEdgeRequest {
+message AddEdgesRequest {
   repeated Edge edges = 1;
 }
 
-message AddEdgeResponse {
+message AddEdgesResponse {
   // Number of edges whose weight contributions were accepted.
   int32 written = 1;
 }
 
-// PutEdgeRequest overwrites each (tail, head) pair, replacing any existing
+// PutEdgesRequest overwrites each (tail, head) pair, replacing any existing
 // weight and expiration. This operation is idempotent.
-message PutEdgeRequest {
+message PutEdgesRequest {
   repeated Edge edges = 1;
 }
 
-message PutEdgeResponse {
+message PutEdgesResponse {
   // Number of edges accepted (overwritten or created).
   int32 written = 1;
 }
@@ -214,7 +214,7 @@ service LanternService {
     };
   }
 
-  rpc PutVertex(PutVertexRequest) returns (PutVertexResponse) {
+  rpc PutVertices(PutVerticesRequest) returns (PutVerticesResponse) {
     option (google.api.http) = {
       put: "/v1/vertices"
       body: "*"
@@ -245,16 +245,16 @@ service LanternService {
     };
   }
 
-  // AddEdge is non-idempotent (accumulates weight). POST per REST conventions.
-  rpc AddEdge(AddEdgeRequest) returns (AddEdgeResponse) {
+  // AddEdges is non-idempotent (accumulates weight). POST per REST conventions.
+  rpc AddEdges(AddEdgesRequest) returns (AddEdgesResponse) {
     option (google.api.http) = {
       post: "/v1/edges/add"
       body: "*"
     };
   }
 
-  // PutEdge is idempotent (replaces weight). PUT per REST conventions.
-  rpc PutEdge(PutEdgeRequest) returns (PutEdgeResponse) {
+  // PutEdges is idempotent (replaces weight). PUT per REST conventions.
+  rpc PutEdges(PutEdgesRequest) returns (PutEdgesResponse) {
     option (google.api.http) = {
       put: "/v1/edges/put"
       body: "*"
