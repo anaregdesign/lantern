@@ -61,11 +61,17 @@ func (c *Cache[S, T]) Put(key S, value T) {
 	c.PutWithTTL(key, value, c.defaultTTL)
 }
 
-func (c *Cache[S, T]) Delete(key S) {
+// Delete removes the entry for key. It returns true if the key was
+// present (and therefore removed by this call), false otherwise.
+func (c *Cache[S, T]) Delete(key S) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if _, ok := c.cache[key]; !ok {
+		return false
+	}
 	delete(c.cache, key)
+	return true
 }
 
 func (c *Cache[S, T]) Has(key S) bool {

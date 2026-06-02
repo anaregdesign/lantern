@@ -136,8 +136,8 @@ func (s *LanternService) DeleteVertex(ctx context.Context, in *pb.DeleteVertexRe
 	}
 	// Per the proto contract, deleting a vertex leaves its edges orphaned;
 	// the periodic GC loop reaps any tf/df rows whose endpoints disappear.
-	s.cache.DeleteVertex(in.GetKey())
-	return &pb.DeleteVertexResponse{}, nil
+	existed := s.cache.DeleteVertex(in.GetKey())
+	return &pb.DeleteVertexResponse{Existed: existed}, nil
 }
 
 func (s *LanternService) DeleteVertices(ctx context.Context, in *pb.DeleteVerticesRequest) (*pb.DeleteVerticesResponse, error) {
@@ -198,8 +198,8 @@ func (s *LanternService) DeleteEdge(ctx context.Context, in *pb.DeleteEdgeReques
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()
 	}
-	s.cache.DeleteEdge(in.GetTail(), in.GetHead())
-	return &pb.DeleteEdgeResponse{}, nil
+	existed := s.cache.DeleteEdge(in.GetTail(), in.GetHead())
+	return &pb.DeleteEdgeResponse{Existed: existed}, nil
 }
 
 func (s *LanternService) DeleteEdges(ctx context.Context, in *pb.DeleteEdgesRequest) (*pb.DeleteEdgesResponse, error) {

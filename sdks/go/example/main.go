@@ -109,8 +109,10 @@ func main() {
 		DeleteVertex:
 	*/
 
-	if err := cli.DeleteVertex(ctx, "string"); err != nil {
+	if existed, err := cli.DeleteVertex(ctx, "string"); err != nil {
 		log.Fatal(err)
+	} else {
+		log.Printf("DeleteVertex(\"string\"): existed=%v\n", existed)
 	}
 
 	if _, err := cli.GetVertex(ctx, "string"); err != nil {
@@ -182,8 +184,10 @@ func main() {
 		log.Printf("weight of a->b: %f\n", w.Weight)
 	}
 
-	if err := cli.DeleteEdge(ctx, "a", "b"); err != nil {
+	if existed, err := cli.DeleteEdge(ctx, "a", "b"); err != nil {
 		log.Fatal(err)
+	} else {
+		log.Printf("DeleteEdge(\"a\", \"b\"): existed=%v\n", existed)
 	}
 
 	// If edge is deleted, weight of edge is 0

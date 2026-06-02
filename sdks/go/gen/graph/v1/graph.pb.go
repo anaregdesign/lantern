@@ -811,7 +811,9 @@ func (x *DeleteVertexRequest) GetKey() string {
 }
 
 type DeleteVertexResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// existed is true if the vertex was present and removed by this call.
+	Existed       bool `protobuf:"varint,1,opt,name=existed,proto3" json:"existed,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -844,6 +846,13 @@ func (x *DeleteVertexResponse) ProtoReflect() protoreflect.Message {
 // Deprecated: Use DeleteVertexResponse.ProtoReflect.Descriptor instead.
 func (*DeleteVertexResponse) Descriptor() ([]byte, []int) {
 	return file_graph_v1_graph_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *DeleteVertexResponse) GetExisted() bool {
+	if x != nil {
+		return x.Existed
+	}
+	return false
 }
 
 // DeleteVerticesRequest removes several vertices in one round trip. Same
@@ -1087,7 +1096,9 @@ func (x *DeleteEdgeRequest) GetHead() string {
 }
 
 type DeleteEdgeResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// existed is true if the edge was present and removed by this call.
+	Existed       bool `protobuf:"varint,1,opt,name=existed,proto3" json:"existed,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1120,6 +1131,13 @@ func (x *DeleteEdgeResponse) ProtoReflect() protoreflect.Message {
 // Deprecated: Use DeleteEdgeResponse.ProtoReflect.Descriptor instead.
 func (*DeleteEdgeResponse) Descriptor() ([]byte, []int) {
 	return file_graph_v1_graph_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *DeleteEdgeResponse) GetExisted() bool {
+	if x != nil {
+		return x.Existed
+	}
+	return false
 }
 
 // EdgeKey identifies an edge by its (tail, head) pair without weight.
@@ -1500,8 +1518,9 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x11PutVertexResponse\x12\x18\n" +
 	"\awritten\x18\x01 \x01(\x05R\awritten\"'\n" +
 	"\x13DeleteVertexRequest\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\"\x16\n" +
-	"\x14DeleteVertexResponse\"+\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\"0\n" +
+	"\x14DeleteVertexResponse\x12\x18\n" +
+	"\aexisted\x18\x01 \x01(\bR\aexisted\"+\n" +
 	"\x15DeleteVerticesRequest\x12\x12\n" +
 	"\x04keys\x18\x01 \x03(\tR\x04keys\"2\n" +
 	"\x16DeleteVerticesResponse\x12\x18\n" +
@@ -1513,8 +1532,9 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x04edge\x18\x01 \x01(\v2\x0e.graph.v1.EdgeR\x04edge\";\n" +
 	"\x11DeleteEdgeRequest\x12\x12\n" +
 	"\x04tail\x18\x01 \x01(\tR\x04tail\x12\x12\n" +
-	"\x04head\x18\x02 \x01(\tR\x04head\"\x14\n" +
-	"\x12DeleteEdgeResponse\"1\n" +
+	"\x04head\x18\x02 \x01(\tR\x04head\".\n" +
+	"\x12DeleteEdgeResponse\x12\x18\n" +
+	"\aexisted\x18\x01 \x01(\bR\aexisted\"1\n" +
 	"\aEdgeKey\x12\x12\n" +
 	"\x04tail\x18\x01 \x01(\tR\x04tail\x12\x12\n" +
 	"\x04head\x18\x02 \x01(\tR\x04head\"=\n" +

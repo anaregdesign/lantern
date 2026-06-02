@@ -236,7 +236,7 @@ EXAMPLES
 		defer func() { _ = cli.Close() }()
 
 		if len(refs) == 1 {
-			if err := cli.DeleteEdge(cmd.Context(), refs[0].Tail, refs[0].Head); err != nil {
+			if _, err := cli.DeleteEdge(cmd.Context(), refs[0].Tail, refs[0].Head); err != nil {
 				return err
 			}
 		} else {

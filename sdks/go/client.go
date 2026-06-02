@@ -191,11 +191,17 @@ func (l *Lantern) PutVertices(ctx context.Context, inputs []VertexInput) error {
 	return nil
 }
 
-func (l *Lantern) DeleteVertex(ctx context.Context, key string) error {
+// DeleteVertex removes the vertex identified by key. The returned
+// bool reports whether the vertex existed (and was therefore removed
+// by this call).
+func (l *Lantern) DeleteVertex(ctx context.Context, key string) (bool, error) {
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	_, err := l.client.DeleteVertex(ctx, &pb.DeleteVertexRequest{Key: key})
-	return err
+	resp, err := l.client.DeleteVertex(ctx, &pb.DeleteVertexRequest{Key: key})
+	if err != nil {
+		return false, err
+	}
+	return resp.GetExisted(), nil
 }
 
 // DeleteVertices removes a batch of vertices. Automatically chunked to
@@ -292,11 +298,16 @@ func (l *Lantern) PutEdges(ctx context.Context, inputs []EdgeInput) error {
 	return nil
 }
 
-func (l *Lantern) DeleteEdge(ctx context.Context, tail string, head string) error {
+// DeleteEdge removes the (tail, head) edge. The returned bool reports
+// whether the edge existed (and was therefore removed by this call).
+func (l *Lantern) DeleteEdge(ctx context.Context, tail string, head string) (bool, error) {
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	_, err := l.client.DeleteEdge(ctx, &pb.DeleteEdgeRequest{Tail: tail, Head: head})
-	return err
+	resp, err := l.client.DeleteEdge(ctx, &pb.DeleteEdgeRequest{Tail: tail, Head: head})
+	if err != nil {
+		return false, err
+	}
+	return resp.GetExisted(), nil
 }
 
 // EdgeRef identifies an edge by its (tail, head) pair without weight.

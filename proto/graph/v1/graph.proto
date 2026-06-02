@@ -91,7 +91,10 @@ message DeleteVertexRequest {
   string key = 1;
 }
 
-message DeleteVertexResponse {}
+message DeleteVertexResponse {
+  // existed is true if the vertex was present and removed by this call.
+  bool existed = 1;
+}
 
 // DeleteVerticesRequest removes several vertices in one round trip. Same
 // cascade semantics as DeleteVertex (edges reaped lazily by the GC loop).
@@ -119,7 +122,10 @@ message DeleteEdgeRequest {
   string head = 2;
 }
 
-message DeleteEdgeResponse {}
+message DeleteEdgeResponse {
+  // existed is true if the edge was present and removed by this call.
+  bool existed = 1;
+}
 
 // EdgeKey identifies an edge by its (tail, head) pair without weight.
 message EdgeKey {
