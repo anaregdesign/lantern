@@ -1,42 +1,43 @@
 .DEFAULT_GOAL := all
 SHELL := /bin/bash
 
-.PHONY: all generate wire proto proto-lint proto-format proto-breaking proto-deps build test test-race fmt vet lint tidy vuln clean
+# Pinned buf version used by the `go run` fallback. Keep in sync with the
+# directive in generate.go so local and CI behaviour match.
+BUF_VERSION := v1.70.0
+BUF        ?= $(shell command -v buf 2>/dev/null)
+ifeq ($(BUF),)
+BUF := go run github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
+endif
 
+.PHONY: all generate wire proto proto-lint proto-format proto-breaking proto-deps \
+        build test test-race fmt vet lint tidy vuln clean
+
+# `go generate ./...` is the single source of truth: it runs `go tool wire`
+# (registered via the tool directive in go.mod) and `buf generate`. No
+# pre-installation required — all tools resolve through the Go toolchain.
 all: generate
 
-generate: wire proto
+generate:
+	go generate ./...
 
-wire: ./server/cmd/wire_gen.go
+# Backwards-compatible aliases for muscle memory.
+wire:
+	go tool wire ./server/cmd
 
-./server/cmd/wire_gen.go: ./server/cmd/wire.go
-	@echo "Generating wire_gen.go"
-	wire ./server/cmd
-
-# Proto codegen: buf v2 with managed mode + remote BSR plugins.
-# Config lives in ./buf.yaml (v2 workspace) and ./buf.gen.yaml (v2 plugins).
-# The output target depends on every .proto file so make skips work when
-# nothing changed; --clean wipes orphaned generated files inside the outputs.
-PROTO_SRCS := $(shell find proto -name '*.proto')
-PROTO_OUT  := gen/go/graph/v1/graph.pb.go
-
-proto: $(PROTO_OUT)
-
-$(PROTO_OUT): $(PROTO_SRCS) buf.yaml buf.gen.yaml buf.lock
-	@echo "Generating protobuf code"
-	buf generate --clean
+proto:
+	$(BUF) generate --clean
 
 proto-lint:
-	buf lint
+	$(BUF) lint
 
 proto-format:
-	buf format -d --exit-code
+	$(BUF) format -d --exit-code
 
 proto-breaking:
-	buf breaking --against '.git#branch=main'
+	$(BUF) breaking --against '.git#branch=main'
 
 proto-deps:
-	buf dep update
+	$(BUF) dep update
 
 build:
 	go build -v ./...

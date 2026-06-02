@@ -125,7 +125,7 @@ flowchart LR
 
 - DI: [google/wire](https://github.com/google/wire) — see
   [server/cmd/wire.go](server/cmd/wire.go). Never edit `wire_gen.go` by hand;
-  run `make wire` after changing providers.
+  run `go generate ./...` after changing providers.
 - Generic `GraphCache[S, T]` is instantiated as `GraphCache[string, *Vertex]`
   at the wire boundary (wire cannot synthesize generic type arguments).
 
@@ -259,7 +259,7 @@ This is a monorepo consolidating four formerly separate repositories.
 | `client/` | Go client SDK |
 | `cli/` | Interactive CLI (`cobra` + `promptui`) — formerly `lantern-cli` |
 | `proto/` | `.proto` sources — formerly `lantern-proto` |
-| `gen/go/` | Generated Go bindings (regenerate with `make proto`) |
+| `gen/go/` | Generated Go bindings (regenerate with `go generate ./...`) |
 | `core/` | Shared building blocks reused by server & client: graph algorithms, TTL caches, collections, concurrency, NLP |
 
 ---
@@ -272,25 +272,40 @@ make test        # go test -v ./...
 make test-race   # go test -race -shuffle=on -covermode=atomic ./...
 make fmt         # gofmt -s -w .
 make vet         # go vet ./...
-make wire        # regenerate server/cmd/wire_gen.go (requires `wire` CLI)
-make proto       # regenerate gen/go from proto/ (requires `buf`)
+make generate    # go generate ./...  (runs wire + buf — no install required)
+make wire        # alias: go tool wire ./server/cmd
+make proto       # alias: buf generate --clean (uses system `buf` if present, else `go run`)
 make vuln        # govulncheck ./...
 make tidy        # go mod tidy
 ```
+
+Codegen is one command:
+
+```shell
+go generate ./...
+```
+
+This regenerates both `server/cmd/wire_gen.go` and everything under `gen/go/`.
+No CLIs need to be installed up front:
+
+- **wire** is wired in via the `tool` directive in `go.mod` — `go tool wire`
+  just works after `go mod download`.
+- **buf** is invoked via `go run github.com/bufbuild/buf/cmd/buf@v1.70.0` when
+  no system `buf` is on `PATH`. Installing `buf` locally only makes the first
+  invocation faster; correctness is identical.
 
 Required toolchain:
 
 - **Go 1.26** — kept in lockstep across `go.mod`, the Dockerfile
   (`golang:1.26-alpine`), and `.github/workflows/go.yml`. Bumping the version
   means bumping all three.
-- [`wire`](https://github.com/google/wire) — `go install github.com/google/wire/cmd/wire@latest`
-- [`buf`](https://buf.build) — only needed when regenerating proto bindings.
 
 ### Conventions and gotchas
 
 - **Never hand-edit `server/cmd/wire_gen.go`** — it is generated. Edit providers
   in [server/provider/provider.go](server/provider/provider.go) or definitions
-  in [server/cmd/wire.go](server/cmd/wire.go), then re-run `make wire`.
+  in [server/cmd/wire.go](server/cmd/wire.go), then re-run `go generate ./...`
+  (or `make wire` for just the wire step).
 - **wire + generics** — wire cannot synthesize generic type arguments, so the
   provider returns the concrete `*graph.GraphCache[string, *Vertex]`. Re-check
   this constraint before introducing generics there.

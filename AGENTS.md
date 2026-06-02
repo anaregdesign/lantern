@@ -20,7 +20,7 @@ The module path in `go.mod` is still `github.com/anaregdesign/lantern`. All exte
 ## Architecture notes
 
 - **gRPC service**: [server/service/service.go](server/service/service.go) implements `LanternService` (`Illuminate`, `GetVertex`, `PutVertex`, `AddEdge`, `PutEdge`, `DeleteVertex`, `DeleteEdge`).
-- **DI**: [google/wire](https://github.com/google/wire). [server/cmd/wire.go](server/cmd/wire.go) holds the definitions; [server/cmd/wire_gen.go](server/cmd/wire_gen.go) is generated — **never edit it by hand**. After changing providers, regenerate with `make wire` (or `wire ./server/cmd`).
+- **DI**: [google/wire](https://github.com/google/wire). [server/cmd/wire.go](server/cmd/wire.go) holds the definitions; [server/cmd/wire_gen.go](server/cmd/wire_gen.go) is generated — **never edit it by hand**. After changing providers, regenerate with `go generate ./...` (or `make wire` for just the wire step). Wire itself is pulled in via the `tool` directive in `go.mod`, so no install is required.
 - **Providers**: [server/provider/provider.go](server/provider/provider.go) assembles `Config` (env vars `LANTERN_PORT`, `LANTERN_DEFAULT_TTL_SECONDS`), `net.Listener`, `grpc.Server`, and `core/cache/graph.GraphCache`. `NewListener` now receives the wire-injected `*Config`.
 - **Client SDK**: [client/client.go](client/client.go) is a thin gRPC wrapper. [client/value.go](client/value.go) handles Go-native ↔ `pb.Vertex` conversion via `nativeVertex.asVertex()` and `Vertex.*Value()`. **When adding a new value type, update both directions** (`asVertex` and each `*Value()` method).
 - **Decay model**: edges are **additive** and carry their own TTL. Be mindful of the difference between `AddEdge` and `PutEdge` (idempotency) — see the discussion in [client/example/main.go](client/example/main.go).
@@ -30,8 +30,9 @@ The module path in `go.mod` is still `github.com/anaregdesign/lantern`. All exte
 ```bash
 go build -v ./...                # build (same as CI)
 go test -v ./...                 # tests
-make wire                        # regenerate wire code (requires: go install github.com/google/wire/cmd/wire@latest)
-make proto                       # regenerate Go code from proto (requires buf)
+go generate ./...                # regenerate wire_gen.go AND gen/go (zero-install)
+make wire                        # alias: go tool wire ./server/cmd
+make proto                       # alias: buf generate --clean (system `buf` if present, else `go run`)
 go run ./server/cmd              # start the server (:6380)
 go run ./cli                     # start the CLI
 docker build -t lantern .        # container build (Go 1.26-alpine)
@@ -43,7 +44,7 @@ CI: [.github/workflows/go.yml](.github/workflows/go.yml) runs `go build` + `go t
 
 - **Go version**: `go.mod` is on `1.26` and the Dockerfile uses `golang:1.26-alpine`. Bumping it requires updating all three places at once: `go.mod`, Dockerfile, and the `go-version` in `.github/workflows/go.yml`.
 - **wire and generics**: as the `// Avoiding bug of 'wire'. Generic type is not supported.` comment in `service.go` notes, wire cannot handle generic type arguments, so the provider returns the concrete `GraphCache[string, *Vertex]`. Re-check this constraint before trying to introduce generics there.
-- **Regenerating proto**: `option go_package` in `proto/graph/v1/graph.proto` is `github.com/anaregdesign/lantern/gen/go/graph/v1`. `make proto` invokes `buf generate proto` and rebuilds everything under `gen/go`. `buf.work.yaml` and `buf.gen.yaml` live at the repo root.
+- **Regenerating proto**: `option go_package` in `proto/graph/v1/graph.proto` is `github.com/anaregdesign/lantern/gen/go/graph/v1`. `go generate ./...` (or `make proto`) runs `buf generate --clean` and rebuilds everything under `gen/go`. `buf.yaml` (v2 workspace) and `buf.gen.yaml` live at the repo root. `buf` does not need to be installed locally — the directive in [generate.go](generate.go) falls back to `go run github.com/bufbuild/buf/cmd/buf@v1.70.0`.
 - **Test gaps**: there are no tests for the server/service layer, wire wiring, or client transport paths. For non-trivial changes, **add at least a minimal table test in the same PR**.
 
 ## Docs / Links
