@@ -188,6 +188,13 @@ func (l *Lantern) PutVertexAt(ctx context.Context, key string, value any, expira
 
 // PutVertices upserts a batch of vertices. Large batches are automatically
 // chunked according to WithBatchChunkSize (default 1000).
+//
+// Partial-write semantics: chunks are sent sequentially. If chunk N fails,
+// the entries from chunks 0..N-1 are already committed server-side. The
+// returned error is a *BatchError whose Written field records the number of
+// successfully committed inputs, so callers can resume with
+// inputs[err.Written:]. errors.Is / errors.As continue to work against the
+// wrapped gRPC sentinel.
 func (l *Lantern) PutVertices(ctx context.Context, inputs []VertexInput) error {
 	if len(inputs) == 0 {
 		return nil
@@ -200,13 +207,15 @@ func (l *Lantern) PutVertices(ctx context.Context, inputs []VertexInput) error {
 		}
 		vs = append(vs, v)
 	}
+	written := 0
 	for _, chunk := range chunkSlice(vs, l.opts.batchChunkSize) {
 		ctx, cancel := l.applyTimeout(ctx)
 		_, err := l.client.PutVertex(ctx, &pb.PutVertexRequest{Vertices: chunk})
 		cancel()
 		if err != nil {
-			return wrapStatus(err)
+			return &BatchError{Written: written, Err: wrapStatus(err)}
 		}
+		written += len(chunk)
 	}
 	return nil
 }
@@ -227,17 +236,23 @@ func (l *Lantern) DeleteVertex(ctx context.Context, key string) (bool, error) {
 // DeleteVertices removes a batch of vertices. Automatically chunked to
 // respect the server's MaxBatchSize cap. Edges incident to removed vertices
 // are reaped lazily by the server's GC loop.
+//
+// Partial-write semantics: chunks are sent sequentially. On failure the
+// returned error is a *BatchError whose Written field records the number of
+// keys already deleted, so callers can resume with keys[err.Written:].
 func (l *Lantern) DeleteVertices(ctx context.Context, keys []string) error {
 	if len(keys) == 0 {
 		return nil
 	}
+	written := 0
 	for _, chunk := range chunkSlice(keys, l.opts.batchChunkSize) {
 		ctx, cancel := l.applyTimeout(ctx)
 		_, err := l.client.DeleteVertices(ctx, &pb.DeleteVerticesRequest{Keys: chunk})
 		cancel()
 		if err != nil {
-			return wrapStatus(err)
+			return &BatchError{Written: written, Err: wrapStatus(err)}
 		}
+		written += len(chunk)
 	}
 	return nil
 }
@@ -294,18 +309,26 @@ func (l *Lantern) AddEdgeAt(ctx context.Context, tail string, head string, weigh
 }
 
 // AddEdges accumulates weight onto a batch of edges. Automatically chunked.
+//
+// Partial-write semantics: chunks are sent sequentially. On failure the
+// returned error is a *BatchError whose Written field records the number of
+// edges already committed, so callers can resume with inputs[err.Written:].
+// Note that because AddEdge is additive (not idempotent), naively retrying
+// from index 0 will double-count weight for the already-committed prefix.
 func (l *Lantern) AddEdges(ctx context.Context, inputs []EdgeInput) error {
 	if len(inputs) == 0 {
 		return nil
 	}
 	edges := edgesFrom(inputs)
+	written := 0
 	for _, chunk := range chunkSlice(edges, l.opts.batchChunkSize) {
 		ctx, cancel := l.applyTimeout(ctx)
 		_, err := l.client.AddEdge(ctx, &pb.AddEdgeRequest{Edges: chunk})
 		cancel()
 		if err != nil {
-			return wrapStatus(err)
+			return &BatchError{Written: written, Err: wrapStatus(err)}
 		}
+		written += len(chunk)
 	}
 	return nil
 }
@@ -326,18 +349,26 @@ func (l *Lantern) PutEdgeAt(ctx context.Context, tail string, head string, weigh
 }
 
 // PutEdges overwrites a batch of edges. Automatically chunked.
+//
+// Partial-write semantics: chunks are sent sequentially. On failure the
+// returned error is a *BatchError whose Written field records the number of
+// edges already overwritten, so callers can resume with inputs[err.Written:].
+// Unlike AddEdges, PutEdges is idempotent, so a full retry from index 0 is
+// also safe (it will overwrite the already-committed prefix).
 func (l *Lantern) PutEdges(ctx context.Context, inputs []EdgeInput) error {
 	if len(inputs) == 0 {
 		return nil
 	}
 	edges := edgesFrom(inputs)
+	written := 0
 	for _, chunk := range chunkSlice(edges, l.opts.batchChunkSize) {
 		ctx, cancel := l.applyTimeout(ctx)
 		_, err := l.client.PutEdge(ctx, &pb.PutEdgeRequest{Edges: chunk})
 		cancel()
 		if err != nil {
-			return wrapStatus(err)
+			return &BatchError{Written: written, Err: wrapStatus(err)}
 		}
+		written += len(chunk)
 	}
 	return nil
 }
@@ -362,6 +393,10 @@ type EdgeRef struct {
 }
 
 // DeleteEdges removes a batch of edges. Automatically chunked.
+//
+// Partial-write semantics: chunks are sent sequentially. On failure the
+// returned error is a *BatchError whose Written field records the number of
+// edges already deleted, so callers can resume with refs[err.Written:].
 func (l *Lantern) DeleteEdges(ctx context.Context, refs []EdgeRef) error {
 	if len(refs) == 0 {
 		return nil
@@ -370,13 +405,15 @@ func (l *Lantern) DeleteEdges(ctx context.Context, refs []EdgeRef) error {
 	for _, r := range refs {
 		keys = append(keys, &pb.EdgeKey{Tail: r.Tail, Head: r.Head})
 	}
+	written := 0
 	for _, chunk := range chunkSlice(keys, l.opts.batchChunkSize) {
 		ctx, cancel := l.applyTimeout(ctx)
 		_, err := l.client.DeleteEdges(ctx, &pb.DeleteEdgesRequest{Edges: chunk})
 		cancel()
 		if err != nil {
-			return wrapStatus(err)
+			return &BatchError{Written: written, Err: wrapStatus(err)}
 		}
+		written += len(chunk)
 	}
 	return nil
 }
