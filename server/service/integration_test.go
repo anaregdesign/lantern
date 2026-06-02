@@ -132,3 +132,141 @@ func TestIntegration_FullMiddlewareChain(t *testing.T) {
 		}
 	})
 }
+
+// TestIntegration_BatchDeletes exercises the DeleteVertices and DeleteEdges
+// RPCs end-to-end through bufconn. It uses its own server with no rate
+// limiter so the assertions aren't sensitive to token bucket state from
+// other tests in this file.
+func TestIntegration_BatchDeletes(t *testing.T) {
+	lis := bufconn.Listen(1 << 20)
+	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
+	svc := service.NewLanternService(cache)
+	val := provider.NewValidationInterceptor(provider.ValidationLimits{
+		MaxKeyLen:         32,
+		MaxBatchSize:      5,
+		IlluminateMaxStep: 4,
+		IlluminateMaxK:    8,
+	})
+
+	srv := grpc.NewServer(grpc.ChainUnaryInterceptor(val.UnaryServerInterceptor()))
+	pb.RegisterLanternServiceServer(srv, svc)
+	go func() {
+		if err := srv.Serve(lis); err != nil {
+			t.Logf("bufconn serve: %v", err)
+		}
+	}()
+	t.Cleanup(func() {
+		srv.Stop()
+		_ = lis.Close()
+	})
+
+	dialer := func(ctx context.Context, _ string) (net.Conn, error) {
+		return lis.DialContext(ctx)
+	}
+	c, err := client.NewLantern("passthrough://bufnet",
+		client.WithTransportCredentials(insecure.NewCredentials()),
+		client.WithDialOption(grpc.WithContextDialer(dialer)),
+		client.WithDefaultServiceConfig(""),
+	)
+	if err != nil {
+		t.Fatalf("NewLantern: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	t.Run("delete vertices round-trip", func(t *testing.T) {
+		keys := []string{"d1", "d2", "d3"}
+		for _, k := range keys {
+			if err := c.PutVertex(ctx, k, int64(1), time.Minute); err != nil {
+				t.Fatalf("PutVertex(%s): %v", k, err)
+			}
+		}
+		if err := c.DeleteVertices(ctx, keys); err != nil {
+			t.Fatalf("DeleteVertices: %v", err)
+		}
+		for _, k := range keys {
+			if _, err := c.GetVertex(ctx, k); status.Code(err) != codes.NotFound {
+				t.Errorf("GetVertex(%s) after delete: code = %v, want NotFound", k, status.Code(err))
+			}
+		}
+	})
+
+	t.Run("delete edges round-trip", func(t *testing.T) {
+		for _, k := range []string{"ea", "eb", "ex"} {
+			if err := c.PutVertex(ctx, k, int64(0), time.Minute); err != nil {
+				t.Fatalf("PutVertex(%s): %v", k, err)
+			}
+		}
+		if err := c.PutEdge(ctx, "ea", "eb", 1.0, time.Minute); err != nil {
+			t.Fatalf("PutEdge: %v", err)
+		}
+		if err := c.PutEdge(ctx, "ea", "ex", 1.0, time.Minute); err != nil {
+			t.Fatalf("PutEdge: %v", err)
+		}
+		refs := []client.EdgeRef{{Tail: "ea", Head: "eb"}, {Tail: "ea", Head: "ex"}}
+		if err := c.DeleteEdges(ctx, refs); err != nil {
+			t.Fatalf("DeleteEdges: %v", err)
+		}
+		for _, r := range refs {
+			if _, err := c.GetEdge(ctx, r.Tail, r.Head); status.Code(err) != codes.NotFound {
+				t.Errorf("GetEdge(%s,%s) after delete: code = %v, want NotFound", r.Tail, r.Head, status.Code(err))
+			}
+		}
+	})
+
+	t.Run("delete vertices empty is no-op", func(t *testing.T) {
+		if err := c.DeleteVertices(ctx, nil); err != nil {
+			t.Errorf("DeleteVertices(nil): %v", err)
+		}
+	})
+
+	t.Run("delete edges empty is no-op", func(t *testing.T) {
+		if err := c.DeleteEdges(ctx, nil); err != nil {
+			t.Errorf("DeleteEdges(nil): %v", err)
+		}
+	})
+
+	t.Run("validation rejects oversize delete vertices", func(t *testing.T) {
+		// Bypass SDK auto-chunking by raising chunk size, so the server
+		// sees a single >MaxBatchSize request.
+		bigClient, err := client.NewLantern("passthrough://bufnet",
+			client.WithTransportCredentials(insecure.NewCredentials()),
+			client.WithDialOption(grpc.WithContextDialer(dialer)),
+			client.WithDefaultServiceConfig(""),
+			client.WithBatchChunkSize(100),
+		)
+		if err != nil {
+			t.Fatalf("NewLantern: %v", err)
+		}
+		defer func() { _ = bigClient.Close() }()
+		keys := make([]string, 6)
+		for i := range keys {
+			keys[i] = string(rune('a' + i))
+		}
+		if err := bigClient.DeleteVertices(ctx, keys); status.Code(err) != codes.InvalidArgument {
+			t.Errorf("DeleteVertices(6) code = %v, want InvalidArgument", status.Code(err))
+		}
+	})
+
+	t.Run("validation rejects oversize delete edges", func(t *testing.T) {
+		bigClient, err := client.NewLantern("passthrough://bufnet",
+			client.WithTransportCredentials(insecure.NewCredentials()),
+			client.WithDialOption(grpc.WithContextDialer(dialer)),
+			client.WithDefaultServiceConfig(""),
+			client.WithBatchChunkSize(100),
+		)
+		if err != nil {
+			t.Fatalf("NewLantern: %v", err)
+		}
+		defer func() { _ = bigClient.Close() }()
+		refs := make([]client.EdgeRef, 6)
+		for i := range refs {
+			refs[i] = client.EdgeRef{Tail: string(rune('a' + i)), Head: "z"}
+		}
+		if err := bigClient.DeleteEdges(ctx, refs); status.Code(err) != codes.InvalidArgument {
+			t.Errorf("DeleteEdges(6) code = %v, want InvalidArgument", status.Code(err))
+		}
+	})
+}
