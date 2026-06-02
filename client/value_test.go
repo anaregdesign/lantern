@@ -262,7 +262,7 @@ func Test_nativeVertex_asVertex(t *testing.T) {
 	now := timestamppb.Now()
 	type fields struct {
 		key        string
-		value      interface{}
+		value      any
 		expiration time.Time
 	}
 	tests := []struct {

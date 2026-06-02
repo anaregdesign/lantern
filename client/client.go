@@ -18,16 +18,15 @@ type Lantern struct {
 	client pb.LanternServiceClient
 }
 
+// NewLantern creates a client. The underlying gRPC connection is established
+// lazily on the first RPC (grpc.NewClient semantics), so no dial timeout is
+// applied here — callers should pass a context with a deadline to the first
+// call if they need bounded connect time.
 func NewLantern(hostname string, port int) (*Lantern, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
 	target := net.JoinHostPort(hostname, strconv.Itoa(port))
-	conn, err := grpc.DialContext(
-		ctx,
+	conn, err := grpc.NewClient(
 		target,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
 	)
 	if err != nil {
 		return nil, err
@@ -53,7 +52,7 @@ func (l *Lantern) GetVertex(ctx context.Context, key string) (*Vertex, error) {
 	return p, nil
 }
 
-func (l *Lantern) PutVertex(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
+func (l *Lantern) PutVertex(ctx context.Context, key string, value any, ttl time.Duration) error {
 	v, err := nativeVertex{
 		key:        key,
 		value:      value,
