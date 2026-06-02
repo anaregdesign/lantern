@@ -57,7 +57,7 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 	case pb.Optimization_OPTIMIZATION_MINIMUM_SPANNING_TREE:
 		g, err = g.MinimumSpanningTreeContext(ctx, request.GetSeed(), false)
 	case pb.Optimization_OPTIMIZATION_MAXIMUM_SPANNING_TREE:
-		g, err = g.MinimumSpanningTreeContext(ctx, request.GetSeed(), true)
+		g, err = g.MaximumSpanningTreeContext(ctx, request.GetSeed())
 	case pb.Optimization_OPTIMIZATION_SHORTEST_PATH_TREE:
 		g, err = g.ShortestPathTreeContext(ctx, request.GetSeed(), func(weight float32) float32 { return weight })
 	case pb.Optimization_OPTIMIZATION_SHORTEST_PATH_TREE_INVERSE:

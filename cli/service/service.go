@@ -235,7 +235,7 @@ func (c *CLIService) Run(ctx context.Context, str string) error {
 				return nil
 			}
 		case "mst_relevance":
-			mg = mg.MinimumSpanningTree(p.Seed, true)
+				mg = mg.MaximumSpanningTree(p.Seed)
 			if jsonString, err := json.MarshalIndent(mg, "", "\t"); err != nil {
 				return err
 			} else {

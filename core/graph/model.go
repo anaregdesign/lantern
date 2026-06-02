@@ -85,19 +85,32 @@ func (g *Graph[S, T]) ConnectedGraphContext(ctx context.Context, seed S) (*Graph
 	return connected, nil
 }
 
-// MinimumSpanningTree
-/*
- * MinimumSpanningTree returns a minimum spanning tree of the graph.
- * The seed is the starting point of the tree.
- * If negate is true, the maximum spanning tree is returned.
- */
+// MinimumSpanningTree returns a minimum spanning tree of the graph rooted at seed.
+//
+// Deprecated: the `negate` flag is semantically confusing — for the maximum
+// spanning tree, call [Graph.MaximumSpanningTree] instead. This method is
+// retained for backward compatibility and will continue to work, but new code
+// should not pass `negate=true`.
 func (g *Graph[S, T]) MinimumSpanningTree(seed S, negate bool) *Graph[S, T] {
 	mst, _ := g.MinimumSpanningTreeContext(context.Background(), seed, negate)
 	return mst
 }
 
-// MinimumSpanningTreeContext is the context-aware variant of
-// MinimumSpanningTree.
+// MaximumSpanningTree returns a maximum spanning tree of the graph rooted at seed.
+func (g *Graph[S, T]) MaximumSpanningTree(seed S) *Graph[S, T] {
+	mst, _ := g.MinimumSpanningTreeContext(context.Background(), seed, true)
+	return mst
+}
+
+// MaximumSpanningTreeContext is the context-aware variant of [Graph.MaximumSpanningTree].
+func (g *Graph[S, T]) MaximumSpanningTreeContext(ctx context.Context, seed S) (*Graph[S, T], error) {
+	return g.MinimumSpanningTreeContext(ctx, seed, true)
+}
+
+// MinimumSpanningTreeContext is the context-aware variant of [Graph.MinimumSpanningTree].
+//
+// Deprecated: the `negate` flag is semantically confusing — for the maximum
+// spanning tree, call [Graph.MaximumSpanningTreeContext] instead.
 func (g *Graph[S, T]) MinimumSpanningTreeContext(ctx context.Context, seed S, negate bool) (*Graph[S, T], error) {
 	connected, err := g.ConnectedGraphContext(ctx, seed)
 	if err != nil {
