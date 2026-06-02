@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := all
 SHELL := /bin/bash
 
-.PHONY: all generate wire proto build test test-race fmt vet lint tidy vuln clean
+.PHONY: all generate wire proto proto-lint proto-format proto-breaking proto-deps build test test-race fmt vet lint tidy vuln clean
 
 all: generate
 
@@ -13,10 +13,30 @@ wire: ./server/cmd/wire_gen.go
 	@echo "Generating wire_gen.go"
 	wire ./server/cmd
 
-proto:
+# Proto codegen: buf v2 with managed mode + remote BSR plugins.
+# Config lives in ./buf.yaml (v2 workspace) and ./buf.gen.yaml (v2 plugins).
+# The output target depends on every .proto file so make skips work when
+# nothing changed; --clean wipes orphaned generated files inside the outputs.
+PROTO_SRCS := $(shell find proto -name '*.proto')
+PROTO_OUT  := gen/go/graph/v1/graph.pb.go
+
+proto: $(PROTO_OUT)
+
+$(PROTO_OUT): $(PROTO_SRCS) buf.yaml buf.gen.yaml buf.lock
 	@echo "Generating protobuf code"
-	rm -rf ./gen/go ./gen/openapiv2
-	buf generate proto
+	buf generate --clean
+
+proto-lint:
+	buf lint
+
+proto-format:
+	buf format -d --exit-code
+
+proto-breaking:
+	buf breaking --against '.git#branch=main'
+
+proto-deps:
+	buf dep update
 
 build:
 	go build -v ./...

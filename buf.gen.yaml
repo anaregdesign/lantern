@@ -1,16 +1,28 @@
-version: v1
+version: v2
+managed:
+  enabled: true
+  disable:
+    # Don't regenerate googleapis types under our module path — consume them
+    # from the upstream google.golang.org/genproto module instead.
+    - module: buf.build/googleapis/googleapis
+  override:
+    - file_option: go_package_prefix
+      value: github.com/anaregdesign/lantern/gen/go
 plugins:
-  - name: go
+  - remote: buf.build/protocolbuffers/go
     out: gen/go
     opt:
       - paths=source_relative
-  - name: go-grpc
+  - remote: buf.build/grpc/go
     out: gen/go
     opt:
       - paths=source_relative
-  - name: grpc-gateway
+      - require_unimplemented_servers=false
+  - remote: buf.build/grpc-ecosystem/gateway
     out: gen/go
     opt:
       - paths=source_relative
-  - name: openapiv2
+  - remote: buf.build/grpc-ecosystem/openapiv2
     out: gen/openapiv2
+inputs:
+  - directory: proto

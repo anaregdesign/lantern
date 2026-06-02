@@ -5,9 +5,6 @@ package graph.v1;
 import "google/protobuf/timestamp.proto";
 import "google/api/annotations.proto";
 
-option go_package = "github.com/anaregdesign/lantern/gen/go/graph/v1";
-
-
 message Vertex {
     string key = 1;
     google.protobuf.Timestamp expiration = 2;
