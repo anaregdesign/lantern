@@ -2,13 +2,14 @@ package client
 
 import (
 	"context"
-	"errors"
+	"net"
 	"strconv"
 	"time"
 
 	model "github.com/anaregdesign/lantern/core/graph"
 	pb "github.com/anaregdesign/lantern/gen/go/graph/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -18,34 +19,23 @@ type Lantern struct {
 }
 
 func NewLantern(hostname string, port int) (*Lantern, error) {
-
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	chConn := make(chan *grpc.ClientConn)
-	chErr := make(chan error)
-
-	go func() {
-		conn, err := grpc.DialContext(ctx, hostname+":"+strconv.Itoa(port), grpc.WithInsecure())
-		if err != nil {
-			chErr <- err
-			return
-		}
-		chConn <- conn
-	}()
-	select {
-	case <-ctx.Done():
-		return nil, errors.New("grpc connection timeout")
-
-	case err := <-chErr:
+	target := net.JoinHostPort(hostname, strconv.Itoa(port))
+	conn, err := grpc.DialContext(
+		ctx,
+		target,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithBlock(),
+	)
+	if err != nil {
 		return nil, err
-
-	case conn := <-chConn:
-		return &Lantern{
-			conn:   conn,
-			client: pb.NewLanternServiceClient(conn),
-		}, nil
 	}
+	return &Lantern{
+		conn:   conn,
+		client: pb.NewLanternServiceClient(conn),
+	}, nil
 }
 
 func (l *Lantern) Close() error {
@@ -158,9 +148,10 @@ func (l *Lantern) Illuminate(ctx context.Context, seed string, step int, k int, 
 	}
 	g := model.NewGraph[string, *Vertex]()
 	for _, v := range result.Graph.Vertices {
-		var vv Vertex
-		vv.Value = v.Value
-		g.Vertices[v.Key] = &vv
+		g.Vertices[v.Key] = &Vertex{
+			Key:   v.Key,
+			Value: v.Value,
+		}
 	}
 
 	for _, e := range result.Graph.Edges {
