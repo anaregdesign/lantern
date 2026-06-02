@@ -1,4 +1,7 @@
-.PHONY: all generate wire proto build test
+.DEFAULT_GOAL := all
+SHELL := /bin/bash
+
+.PHONY: all generate wire proto build test test-race fmt vet lint tidy vuln clean
 
 all: generate
 
@@ -20,3 +23,24 @@ build:
 
 test:
 	go test -v ./...
+
+test-race:
+	go test -race -shuffle=on -covermode=atomic -coverprofile=coverage.out ./...
+
+fmt:
+	gofmt -s -w .
+
+vet:
+	go vet ./...
+
+lint:
+	golangci-lint run ./...
+
+tidy:
+	go mod tidy
+
+vuln:
+	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+clean:
+	rm -rf bin dist coverage.out
