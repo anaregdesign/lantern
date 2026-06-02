@@ -16,7 +16,10 @@ import (
 //	float     strconv.ParseFloat (float64)
 //	bool      strconv.ParseBool
 //	datetime  time.Parse(time.RFC3339, ...)
-//	json      json.Unmarshal — supports objects, arrays, scalars
+//	json      json.Unmarshal — supports objects, arrays, scalars. Objects
+//	          and arrays are re-encoded as a compact JSON string before
+//	          being sent (the Lantern wire format has no nested value
+//	          variant); scalars pass through as their natural Go type.
 //
 // auto is the default. It is unambiguous for most string keys/values, but if
 // you need to insist on a string that *looks* like a number, pass
@@ -74,7 +77,20 @@ func parseValue(raw, valueType string) (any, error) {
 		if err := json.Unmarshal([]byte(raw), &v); err != nil {
 			return nil, fmt.Errorf("--value-type=json: %w", err)
 		}
-		return v, nil
+		// Lantern's wire format has no nested value variant. Re-encode
+		// objects and arrays as a compact JSON string so they round-trip
+		// cleanly through PutVertex/GetVertex. Scalars (bool, float64,
+		// string, nil) are forwarded as-is.
+		switch v.(type) {
+		case map[string]any, []any:
+			b, err := json.Marshal(v)
+			if err != nil {
+				return nil, fmt.Errorf("--value-type=json re-encode: %w", err)
+			}
+			return string(b), nil
+		default:
+			return v, nil
+		}
 	default:
 		return nil, fmt.Errorf("unknown --value-type %q (want auto|string|int|float|bool|datetime|duration|json)", valueType)
 	}

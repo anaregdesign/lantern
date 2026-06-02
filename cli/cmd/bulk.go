@@ -127,8 +127,21 @@ Lines are accumulated into batches of --chunk-size and sent via PutVertices.
 			if err != nil {
 				return fmt.Errorf("line %d: ttl: %w", lineNo, err)
 			}
+			// Lantern's wire format has no nested value variant. Re-encode
+			// object/array values as compact JSON strings so the batch RPC
+			// does not reject the whole batch with ErrInvalidType. Scalars
+			// pass through.
+			value := v.Value
+			switch value.(type) {
+			case map[string]any, []any:
+				b, err := json.Marshal(value)
+				if err != nil {
+					return fmt.Errorf("line %d: re-encode value: %w", lineNo, err)
+				}
+				value = string(b)
+			}
 			batch = append(batch, client.VertexInput{
-				Key: v.Key, Value: v.Value, Expiration: time.Now().Add(ttl),
+				Key: v.Key, Value: value, Expiration: time.Now().Add(ttl),
 			})
 			if len(batch) >= flagChunkSize {
 				if err := flush(); err != nil {
