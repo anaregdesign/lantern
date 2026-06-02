@@ -10,6 +10,7 @@ import (
 	_ "google.golang.org/genproto/googleapis/api/annotations"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	durationpb "google.golang.org/protobuf/types/known/durationpb"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
@@ -94,6 +95,7 @@ type Vertex struct {
 	//	*Vertex_String_
 	//	*Vertex_Bytes
 	//	*Vertex_Timestamp
+	//	*Vertex_Duration
 	//	*Vertex_Nil
 	Value         isVertex_Value `protobuf_oneof:"value"`
 	unknownFields protoimpl.UnknownFields
@@ -241,6 +243,15 @@ func (x *Vertex) GetTimestamp() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *Vertex) GetDuration() *durationpb.Duration {
+	if x != nil {
+		if x, ok := x.Value.(*Vertex_Duration); ok {
+			return x.Duration
+		}
+	}
+	return nil
+}
+
 func (x *Vertex) GetNil() bool {
 	if x != nil {
 		if x, ok := x.Value.(*Vertex_Nil); ok {
@@ -294,6 +305,10 @@ type Vertex_Timestamp struct {
 	Timestamp *timestamppb.Timestamp `protobuf:"bytes,19,opt,name=timestamp,proto3,oneof"`
 }
 
+type Vertex_Duration struct {
+	Duration *durationpb.Duration `protobuf:"bytes,20,opt,name=duration,proto3,oneof"`
+}
+
 type Vertex_Nil struct {
 	// nil signals that the vertex carries no value (an "existence-only"
 	// marker). The bool itself is always true when present; the variant
@@ -320,6 +335,8 @@ func (*Vertex_String_) isVertex_Value() {}
 func (*Vertex_Bytes) isVertex_Value() {}
 
 func (*Vertex_Timestamp) isVertex_Value() {}
+
+func (*Vertex_Duration) isVertex_Value() {}
 
 func (*Vertex_Nil) isVertex_Value() {}
 
@@ -1436,7 +1453,7 @@ var File_graph_v1_graph_proto protoreflect.FileDescriptor
 
 const file_graph_v1_graph_proto_rawDesc = "" +
 	"\n" +
-	"\x14graph/v1/graph.proto\x12\bgraph.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x93\x03\n" +
+	"\x14graph/v1/graph.proto\x12\bgraph.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xcc\x03\n" +
 	"\x06Vertex\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12:\n" +
 	"\n" +
@@ -1452,7 +1469,8 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x04bool\x18\x10 \x01(\bH\x00R\x04bool\x12\x18\n" +
 	"\x06string\x18\x11 \x01(\tH\x00R\x06string\x12\x16\n" +
 	"\x05bytes\x18\x12 \x01(\fH\x00R\x05bytes\x12:\n" +
-	"\ttimestamp\x18\x13 \x01(\v2\x1a.google.protobuf.TimestampH\x00R\ttimestamp\x12\x12\n" +
+	"\ttimestamp\x18\x13 \x01(\v2\x1a.google.protobuf.TimestampH\x00R\ttimestamp\x127\n" +
+	"\bduration\x18\x14 \x01(\v2\x19.google.protobuf.DurationH\x00R\bduration\x12\x12\n" +
 	"\x03nil\x18\x1e \x01(\bH\x00R\x03nilB\a\n" +
 	"\x05value\"\x82\x01\n" +
 	"\x04Edge\x12\x12\n" +
@@ -1575,46 +1593,48 @@ var file_graph_v1_graph_proto_goTypes = []any{
 	(*PutEdgeRequest)(nil),         // 23: graph.v1.PutEdgeRequest
 	(*PutEdgeResponse)(nil),        // 24: graph.v1.PutEdgeResponse
 	(*timestamppb.Timestamp)(nil),  // 25: google.protobuf.Timestamp
+	(*durationpb.Duration)(nil),    // 26: google.protobuf.Duration
 }
 var file_graph_v1_graph_proto_depIdxs = []int32{
 	25, // 0: graph.v1.Vertex.expiration:type_name -> google.protobuf.Timestamp
 	25, // 1: graph.v1.Vertex.timestamp:type_name -> google.protobuf.Timestamp
-	25, // 2: graph.v1.Edge.expiration:type_name -> google.protobuf.Timestamp
-	1,  // 3: graph.v1.Graph.vertices:type_name -> graph.v1.Vertex
-	2,  // 4: graph.v1.Graph.edges:type_name -> graph.v1.Edge
-	0,  // 5: graph.v1.IlluminateRequest.optimization:type_name -> graph.v1.Optimization
-	3,  // 6: graph.v1.IlluminateResponse.graph:type_name -> graph.v1.Graph
-	1,  // 7: graph.v1.GetVertexResponse.vertex:type_name -> graph.v1.Vertex
-	1,  // 8: graph.v1.PutVertexRequest.vertices:type_name -> graph.v1.Vertex
-	2,  // 9: graph.v1.GetEdgeResponse.edge:type_name -> graph.v1.Edge
-	18, // 10: graph.v1.DeleteEdgesRequest.edges:type_name -> graph.v1.EdgeKey
-	2,  // 11: graph.v1.AddEdgeRequest.edges:type_name -> graph.v1.Edge
-	2,  // 12: graph.v1.PutEdgeRequest.edges:type_name -> graph.v1.Edge
-	4,  // 13: graph.v1.LanternService.Illuminate:input_type -> graph.v1.IlluminateRequest
-	6,  // 14: graph.v1.LanternService.GetVertex:input_type -> graph.v1.GetVertexRequest
-	8,  // 15: graph.v1.LanternService.PutVertex:input_type -> graph.v1.PutVertexRequest
-	10, // 16: graph.v1.LanternService.DeleteVertex:input_type -> graph.v1.DeleteVertexRequest
-	12, // 17: graph.v1.LanternService.DeleteVertices:input_type -> graph.v1.DeleteVerticesRequest
-	14, // 18: graph.v1.LanternService.GetEdge:input_type -> graph.v1.GetEdgeRequest
-	21, // 19: graph.v1.LanternService.AddEdge:input_type -> graph.v1.AddEdgeRequest
-	23, // 20: graph.v1.LanternService.PutEdge:input_type -> graph.v1.PutEdgeRequest
-	16, // 21: graph.v1.LanternService.DeleteEdge:input_type -> graph.v1.DeleteEdgeRequest
-	19, // 22: graph.v1.LanternService.DeleteEdges:input_type -> graph.v1.DeleteEdgesRequest
-	5,  // 23: graph.v1.LanternService.Illuminate:output_type -> graph.v1.IlluminateResponse
-	7,  // 24: graph.v1.LanternService.GetVertex:output_type -> graph.v1.GetVertexResponse
-	9,  // 25: graph.v1.LanternService.PutVertex:output_type -> graph.v1.PutVertexResponse
-	11, // 26: graph.v1.LanternService.DeleteVertex:output_type -> graph.v1.DeleteVertexResponse
-	13, // 27: graph.v1.LanternService.DeleteVertices:output_type -> graph.v1.DeleteVerticesResponse
-	15, // 28: graph.v1.LanternService.GetEdge:output_type -> graph.v1.GetEdgeResponse
-	22, // 29: graph.v1.LanternService.AddEdge:output_type -> graph.v1.AddEdgeResponse
-	24, // 30: graph.v1.LanternService.PutEdge:output_type -> graph.v1.PutEdgeResponse
-	17, // 31: graph.v1.LanternService.DeleteEdge:output_type -> graph.v1.DeleteEdgeResponse
-	20, // 32: graph.v1.LanternService.DeleteEdges:output_type -> graph.v1.DeleteEdgesResponse
-	23, // [23:33] is the sub-list for method output_type
-	13, // [13:23] is the sub-list for method input_type
-	13, // [13:13] is the sub-list for extension type_name
-	13, // [13:13] is the sub-list for extension extendee
-	0,  // [0:13] is the sub-list for field type_name
+	26, // 2: graph.v1.Vertex.duration:type_name -> google.protobuf.Duration
+	25, // 3: graph.v1.Edge.expiration:type_name -> google.protobuf.Timestamp
+	1,  // 4: graph.v1.Graph.vertices:type_name -> graph.v1.Vertex
+	2,  // 5: graph.v1.Graph.edges:type_name -> graph.v1.Edge
+	0,  // 6: graph.v1.IlluminateRequest.optimization:type_name -> graph.v1.Optimization
+	3,  // 7: graph.v1.IlluminateResponse.graph:type_name -> graph.v1.Graph
+	1,  // 8: graph.v1.GetVertexResponse.vertex:type_name -> graph.v1.Vertex
+	1,  // 9: graph.v1.PutVertexRequest.vertices:type_name -> graph.v1.Vertex
+	2,  // 10: graph.v1.GetEdgeResponse.edge:type_name -> graph.v1.Edge
+	18, // 11: graph.v1.DeleteEdgesRequest.edges:type_name -> graph.v1.EdgeKey
+	2,  // 12: graph.v1.AddEdgeRequest.edges:type_name -> graph.v1.Edge
+	2,  // 13: graph.v1.PutEdgeRequest.edges:type_name -> graph.v1.Edge
+	4,  // 14: graph.v1.LanternService.Illuminate:input_type -> graph.v1.IlluminateRequest
+	6,  // 15: graph.v1.LanternService.GetVertex:input_type -> graph.v1.GetVertexRequest
+	8,  // 16: graph.v1.LanternService.PutVertex:input_type -> graph.v1.PutVertexRequest
+	10, // 17: graph.v1.LanternService.DeleteVertex:input_type -> graph.v1.DeleteVertexRequest
+	12, // 18: graph.v1.LanternService.DeleteVertices:input_type -> graph.v1.DeleteVerticesRequest
+	14, // 19: graph.v1.LanternService.GetEdge:input_type -> graph.v1.GetEdgeRequest
+	21, // 20: graph.v1.LanternService.AddEdge:input_type -> graph.v1.AddEdgeRequest
+	23, // 21: graph.v1.LanternService.PutEdge:input_type -> graph.v1.PutEdgeRequest
+	16, // 22: graph.v1.LanternService.DeleteEdge:input_type -> graph.v1.DeleteEdgeRequest
+	19, // 23: graph.v1.LanternService.DeleteEdges:input_type -> graph.v1.DeleteEdgesRequest
+	5,  // 24: graph.v1.LanternService.Illuminate:output_type -> graph.v1.IlluminateResponse
+	7,  // 25: graph.v1.LanternService.GetVertex:output_type -> graph.v1.GetVertexResponse
+	9,  // 26: graph.v1.LanternService.PutVertex:output_type -> graph.v1.PutVertexResponse
+	11, // 27: graph.v1.LanternService.DeleteVertex:output_type -> graph.v1.DeleteVertexResponse
+	13, // 28: graph.v1.LanternService.DeleteVertices:output_type -> graph.v1.DeleteVerticesResponse
+	15, // 29: graph.v1.LanternService.GetEdge:output_type -> graph.v1.GetEdgeResponse
+	22, // 30: graph.v1.LanternService.AddEdge:output_type -> graph.v1.AddEdgeResponse
+	24, // 31: graph.v1.LanternService.PutEdge:output_type -> graph.v1.PutEdgeResponse
+	17, // 32: graph.v1.LanternService.DeleteEdge:output_type -> graph.v1.DeleteEdgeResponse
+	20, // 33: graph.v1.LanternService.DeleteEdges:output_type -> graph.v1.DeleteEdgesResponse
+	24, // [24:34] is the sub-list for method output_type
+	14, // [14:24] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_graph_v1_graph_proto_init() }
@@ -1633,6 +1653,7 @@ func file_graph_v1_graph_proto_init() {
 		(*Vertex_String_)(nil),
 		(*Vertex_Bytes)(nil),
 		(*Vertex_Timestamp)(nil),
+		(*Vertex_Duration)(nil),
 		(*Vertex_Nil)(nil),
 	}
 	type x struct{}

@@ -38,7 +38,7 @@ OUTPUT
   JSON object on stdout with the fields:
     {
       "key":        "<key>",
-      "type":       "string"|"int64"|"float64"|"bool"|"bytes"|"timestamp"|"nil"|...,
+      "type":       "string"|"int64"|"float64"|"bool"|"bytes"|"timestamp"|"duration"|"nil"|...,
       "value":      <typed value: string|number|bool|base64|null>,
       "expiration": "<RFC3339Nano timestamp>"
     }
@@ -92,6 +92,7 @@ VALUE TYPING
     --value-type=float    IEEE 754 double
     --value-type=bool     true / false / 1 / 0
     --value-type=datetime RFC3339, e.g. 2025-01-01T00:00:00Z
+    --value-type=duration Go duration, e.g. 30s, 5m, 1h30m
     --value-type=json     parse <value> as JSON (object, array, scalar)
 
 TTL SEMANTICS
@@ -179,7 +180,7 @@ EXAMPLES
 
 func init() {
 	vertexPutCmd.Flags().DurationVar(&vertexPutTTL, "ttl", 24*time.Hour, "TTL relative to now (e.g. 30s, 5m, 24h)")
-	vertexPutCmd.Flags().StringVar(&vertexPutValueType, "value-type", "auto", "type of <value>: auto|string|int|float|bool|datetime|json")
+	vertexPutCmd.Flags().StringVar(&vertexPutValueType, "value-type", "auto", "type of <value>: auto|string|int|float|bool|datetime|duration|json")
 
 	vertexCmd.AddCommand(vertexGetCmd, vertexPutCmd, vertexDeleteCmd)
 	rootCmd.AddCommand(vertexCmd)

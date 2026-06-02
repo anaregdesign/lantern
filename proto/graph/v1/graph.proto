@@ -3,6 +3,7 @@ syntax = "proto3";
 package graph.v1;
 
 import "google/api/annotations.proto";
+import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 
 message Vertex {
@@ -19,6 +20,7 @@ message Vertex {
     string string = 17;
     bytes bytes = 18;
     google.protobuf.Timestamp timestamp = 19;
+    google.protobuf.Duration duration = 20;
 
     // nil signals that the vertex carries no value (an "existence-only"
     // marker). The bool itself is always true when present; the variant

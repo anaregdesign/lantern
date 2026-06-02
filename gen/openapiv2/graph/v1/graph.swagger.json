@@ -660,6 +660,9 @@
           "type": "string",
           "format": "date-time"
         },
+        "duration": {
+          "type": "string"
+        },
         "nil": {
           "type": "boolean",
           "description": "nil signals that the vertex carries no value (an \"existence-only\"\nmarker). The bool itself is always true when present; the variant\nexists so the oneof can distinguish \"explicitly nil\" from \"unset\"."

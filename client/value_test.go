@@ -2,6 +2,7 @@ package client
 
 import (
 	pb "github.com/anaregdesign/lantern/gen/go/graph/v1"
+	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"reflect"
 	"testing"
@@ -233,6 +234,46 @@ func TestVertex_TimeValue(t *testing.T) {
 	}
 }
 
+func TestVertex_DurationValue(t *testing.T) {
+	d := 90 * time.Minute
+	tests := []struct {
+		name    string
+		v       Vertex
+		want    time.Duration
+		wantErr bool
+	}{
+		{
+			name: "DurationValue",
+			v: Vertex{
+				Value: &pb.Vertex_Duration{
+					Duration: durationpb.New(d),
+				},
+			},
+			want:    d,
+			wantErr: false,
+		},
+		{
+			name:    "wrong type",
+			v:       Vertex{Value: &pb.Vertex_Int64{Int64: 1}},
+			want:    0,
+			wantErr: true,
+		},
+	}
+	for i := range tests {
+		tt := &tests[i]
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := tt.v.DurationValue()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("DurationValue() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("DurationValue() got = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestVertex_UIntValue(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -357,6 +398,11 @@ func TestVertex_MarshalJSON(t *testing.T) {
 			name: "nil sentinel",
 			v:    &Vertex{Value: &pb.Vertex_Nil{Nil: true}},
 			want: `{"type":"nil","value":null}`,
+		},
+		{
+			name: "duration",
+			v:    &Vertex{Value: &pb.Vertex_Duration{Duration: durationpb.New(90 * time.Minute)}},
+			want: `{"type":"duration","value":"1h30m0s"}`,
 		},
 		{
 			name: "nil vertex",
