@@ -323,8 +323,14 @@ Lantern ships production-grade observability out of the box:
   Kubernetes probes and `grpc_health_probe` work.
 - **Distributed tracing** — OpenTelemetry server instrumentation via
   `otelgrpc.NewServerHandler()` (modern stats-handler API; the deprecated
-  unary/stream interceptors are not used). Wire up an exporter via the standard
-  `OTEL_EXPORTER_OTLP_*` env vars to ship traces.
+  unary/stream interceptors are not used). Set `OTEL_EXPORTER_OTLP_ENDPOINT`
+  (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) to install an OTLP exporter and
+  start shipping spans; without it the global tracer provider stays at noop
+  so there is zero export overhead. `OTEL_EXPORTER_OTLP_PROTOCOL` selects
+  `grpc` (default) or `http/protobuf`, and all standard OTel SDK env vars
+  (`OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_EXPORTER_OTLP_INSECURE`,
+  `OTEL_EXPORTER_OTLP_TIMEOUT`, …) are honoured. The tracer provider is
+  flushed on graceful shutdown.
 - **gRPC reflection** — registered by default; turn off with
   `LANTERN_REFLECTION=false` for hardened deployments.
 - **Keepalive + panic recovery** — sensible `keepalive.ServerParameters` and
