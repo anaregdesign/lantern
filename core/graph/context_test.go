@@ -23,7 +23,7 @@ func TestGraph_ContextCancelled(t *testing.T) {
 			return err
 		}},
 		{"MinimumSpanningTreeContext", func() error {
-			_, err := g.MinimumSpanningTreeContext(ctx, "a", false)
+			_, err := g.MinimumSpanningTreeContext(ctx, "a")
 			return err
 		}},
 		{"ShortestPathTreeContext", func() error {
