@@ -1,12 +1,13 @@
 package client
 
 import (
-	pb "github.com/anaregdesign/lantern/gen/go/graph/v1"
-	"google.golang.org/protobuf/types/known/durationpb"
-	"google.golang.org/protobuf/types/known/timestamppb"
 	"reflect"
 	"testing"
 	"time"
+
+	pb "github.com/anaregdesign/lantern/gen/go/graph/v1"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestVertex_BoolValue(t *testing.T) {

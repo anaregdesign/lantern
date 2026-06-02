@@ -91,6 +91,29 @@ func (c *GraphCache[S, T]) AddEdge(tail, head S, w float32) {
 	c.AddEdgeWithTTL(tail, head, w, c.defaultTTL)
 }
 
+// PutEdgeWithExpiration atomically replaces the (tail, head) edge weight.
+// AddEdgeWithExpiration is additive (Add semantics) so a naive
+// "DeleteEdge + AddEdgeWithExpiration" sequence performed by callers
+// exposes a window in which concurrent GetEdge readers observe a spurious
+// NotFound. PutEdgeWithExpiration takes the write lock once and performs
+// the delete + add under the same lock, restoring atomicity for the
+// idempotent Put semantics.
+func (c *GraphCache[S, T]) PutEdgeWithExpiration(tail, head S, w float32, expiration time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// Same endpoint auto-creation invariant as AddEdgeWithExpiration.
+	if !c.vertices.Has(tail) {
+		var noop T
+		c.vertices.PutWithExpiration(tail, noop, expiration)
+	}
+	if !c.vertices.Has(head) {
+		var noop T
+		c.vertices.PutWithExpiration(head, noop, expiration)
+	}
+	c.edges.delete(tail, head)
+	c.edges.addWithExpiration(tail, head, w, expiration)
+}
+
 func (c *GraphCache[S, T]) DeleteVertex(key S) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

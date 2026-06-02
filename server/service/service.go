@@ -179,8 +179,10 @@ func (s *LanternService) PutEdge(ctx context.Context, request *pb.PutEdgeRequest
 	}
 	var written int32
 	for _, e := range request.GetEdges() {
-		s.cache.DeleteEdge(e.GetTail(), e.GetHead())
-		s.cache.AddEdgeWithExpiration(e.GetTail(), e.GetHead(), e.GetWeight(), e.GetExpiration().AsTime())
+		// PutEdgeWithExpiration locks the cache once and performs the
+		// delete + add atomically, so concurrent GetEdge readers never
+		// observe a transient NotFound between the two operations.
+		s.cache.PutEdgeWithExpiration(e.GetTail(), e.GetHead(), e.GetWeight(), e.GetExpiration().AsTime())
 		written++
 	}
 	return &pb.PutEdgeResponse{Written: written}, nil

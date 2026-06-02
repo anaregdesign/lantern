@@ -39,10 +39,16 @@ func TestParseValue(t *testing.T) {
 		// datetime
 		{"datetime/ok", rfc, "datetime", parsedTime, false},
 		{"datetime/err", "yesterday", "datetime", nil, true},
-		// json
-		{"json/object", `{"a":1}`, "json", map[string]any{"a": float64(1)}, false},
-		{"json/array", `[1,2]`, "json", []any{float64(1), float64(2)}, false},
-		{"json/scalar", `"hi"`, "json", "hi", false},
+		// json — objects and arrays are re-encoded as compact JSON strings
+		// because the wire format has no nested value variant; scalars
+		// pass through as their natural Go type.
+		{"json/object", `{"a":1}`, "json", `{"a":1}`, false},
+		{"json/object-spaces", `{ "a" : 1 }`, "json", `{"a":1}`, false},
+		{"json/array", `[1,2]`, "json", `[1,2]`, false},
+		{"json/scalar-string", `"hi"`, "json", "hi", false},
+		{"json/scalar-number", `1.5`, "json", float64(1.5), false},
+		{"json/scalar-bool", `true`, "json", true, false},
+		{"json/scalar-null", `null`, "json", nil, false},
 		{"json/err", `{`, "json", nil, true},
 		// unknown
 		{"unknown-type", "x", "weird", nil, true},
