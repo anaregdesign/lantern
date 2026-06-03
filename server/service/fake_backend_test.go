@@ -122,6 +122,58 @@ func (f *fakeBackend) Watch(ctx context.Context, interval time.Duration) {
 	<-ctx.Done()
 }
 
+// Prefix-scan stubs. Tests that exercise the prefix RPCs use the real
+// GraphCache via the bufconn harness; the fake just walks its in-memory
+// map in lexicographic order so unit tests can still hit the wrappers
+// without standing up the cache.
+func (f *fakeBackend) ScanByPrefix(_ context.Context, prefix string, fn func(string, string, *pb.Vertex) bool) bool {
+	keys := make([]string, 0, len(f.vertices))
+	for k := range f.vertices {
+		if prefix == "" || (len(k) >= len(prefix) && k[:len(prefix)] == prefix) {
+			keys = append(keys, k)
+		}
+	}
+	// Sort to match the radix index's lexicographic walk order.
+	for i := 1; i < len(keys); i++ {
+		for j := i; j > 0 && keys[j-1] > keys[j]; j-- {
+			keys[j-1], keys[j] = keys[j], keys[j-1]
+		}
+	}
+	for _, k := range keys {
+		if !fn(k, k, f.vertices[k]) {
+			return false
+		}
+	}
+	return true
+}
+
+func (f *fakeBackend) CountByPrefix(prefix string) int {
+	n := 0
+	for k := range f.vertices {
+		if prefix == "" || (len(k) >= len(prefix) && k[:len(prefix)] == prefix) {
+			n++
+		}
+	}
+	return n
+}
+
+func (f *fakeBackend) DeleteByPrefix(_ context.Context, prefix string, limit int) int {
+	victims := []string{}
+	for k := range f.vertices {
+		if prefix == "" || (len(k) >= len(prefix) && k[:len(prefix)] == prefix) {
+			victims = append(victims, k)
+			if limit > 0 && len(victims) >= limit {
+				break
+			}
+		}
+	}
+	for _, k := range victims {
+		delete(f.vertices, k)
+	}
+	f.deleteVertices += len(victims)
+	return len(victims)
+}
+
 // Compile-time check that fakeBackend really satisfies Backend.
 var _ Backend = (*fakeBackend)(nil)
 

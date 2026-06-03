@@ -33,10 +33,39 @@ const ServiceName = "graph.v1.LanternService"
 type LanternService struct {
 	pb.UnimplementedLanternServiceServer
 	cache Backend
+	scan  ScanLimits
+}
+
+// ScanLimits caps the per-call pagination knobs for the prefix RPCs. It is
+// a value struct rather than a pointer-to-provider type so the service
+// stays test-instantiable without the wire graph; production callers get
+// it from provider.ScanConfig via the adapter constructor below.
+type ScanLimits struct {
+	ScanDefaultLimit           uint32
+	ScanMaxLimit               uint32
+	DeleteByPrefixDefaultLimit uint32
+	DeleteByPrefixMaxLimit     uint32
+}
+
+func defaultScanLimits() ScanLimits {
+	return ScanLimits{
+		ScanDefaultLimit:           1000,
+		ScanMaxLimit:               10000,
+		DeleteByPrefixDefaultLimit: 10000,
+		DeleteByPrefixMaxLimit:     100000,
+	}
 }
 
 func NewLanternService(cache Backend) *LanternService {
-	return &LanternService{cache: cache}
+	return &LanternService{cache: cache, scan: defaultScanLimits()}
+}
+
+// WithScanLimits returns s with its prefix-RPC limits replaced. Intended
+// for the wire provider in package main to thread provider.ScanConfig into
+// the service without forcing every test caller to construct the struct.
+func (s *LanternService) WithScanLimits(l ScanLimits) *LanternService {
+	s.scan = l
+	return s
 }
 
 // Illuminate returns a subgraph rooted at the seed, optionally optimized into
