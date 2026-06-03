@@ -348,28 +348,7 @@ func (s *LanternServer) Run(ctx context.Context) error {
 		s.health.SetServingStatus(ServiceName, healthpb.HealthCheckResponse_SERVING)
 	}
 
-	go func() {
-		<-ctx.Done()
-		s.logger.Info("shutting down grpc server", slog.Duration("timeout", s.shutdownTimeout))
-		if s.health != nil {
-			s.health.SetServingStatus(ServiceName, healthpb.HealthCheckResponse_NOT_SERVING)
-		}
-		done := make(chan struct{})
-		go func() {
-			s.server.GracefulStop()
-			close(done)
-		}()
-		if s.shutdownTimeout <= 0 {
-			<-done
-			return
-		}
-		select {
-		case <-done:
-		case <-time.After(s.shutdownTimeout):
-			s.logger.Warn("graceful shutdown deadline exceeded; forcing stop")
-			s.server.Stop()
-		}
-	}()
+	go s.gracefulShutdown(ctx)
 
 	go s.watcher.Watch(ctx, s.gcInterval)
 
@@ -388,4 +367,32 @@ func (s *LanternServer) Run(ctx context.Context) error {
 		s.health.SetServingStatus(ServiceName, healthpb.HealthCheckResponse_NOT_SERVING)
 	}
 	return err
+}
+
+// gracefulShutdown waits for ctx to be canceled, then drains in-flight RPCs
+// via GracefulStop. If ShutdownTimeout > 0 and graceful drain does not
+// complete within that bound, it escalates to Stop so the process can exit.
+// A non-positive ShutdownTimeout disables the deadline and waits unboundedly
+// for GracefulStop.
+func (s *LanternServer) gracefulShutdown(ctx context.Context) {
+	<-ctx.Done()
+	s.logger.Info("shutting down grpc server", slog.Duration("timeout", s.shutdownTimeout))
+	if s.health != nil {
+		s.health.SetServingStatus(ServiceName, healthpb.HealthCheckResponse_NOT_SERVING)
+	}
+	done := make(chan struct{})
+	go func() {
+		s.server.GracefulStop()
+		close(done)
+	}()
+	if s.shutdownTimeout <= 0 {
+		<-done
+		return
+	}
+	select {
+	case <-done:
+	case <-time.After(s.shutdownTimeout):
+		s.logger.Warn("graceful shutdown deadline exceeded; forcing stop")
+		s.server.Stop()
+	}
 }
