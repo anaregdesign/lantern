@@ -10,10 +10,16 @@ import (
 	"google.golang.org/grpc/keepalive"
 )
 
-// defaultServiceConfig enables transparent gRPC retries on idempotent RPCs.
-// AddEdge is deliberately excluded because it is additive (retrying would
-// double-count weight).
+// defaultServiceConfig enables transparent gRPC retries on idempotent RPCs
+// and round_robin client-side load balancing. round_robin is a no-op for
+// single-address targets (pick_first semantics fall out naturally) but
+// becomes meaningful as soon as the target is a `dns:///host:port` URI that
+// resolves to more than one A record — e.g. a k8s headless Service, a
+// Compose service name with multiple replicas, or any other multi-record
+// DNS source. AddEdge stays out of the retry list because it is additive
+// and retrying would double-count weight.
 const defaultServiceConfig = `{
+  "loadBalancingConfig": [{"round_robin": {}}],
   "methodConfig": [
     {
       "name": [
