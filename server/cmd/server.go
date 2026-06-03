@@ -91,6 +91,7 @@ func newLanternService(
 			DeleteByPrefixMaxLimit:     sc.DeleteByPrefixMaxLimit,
 		}).
 		WithReplication(log, clock, dm.OnMutationLogAppend).
+		WithAppliedHook(dm.OnReplicationApplied).
 		WithTombstoneTTL(rc.TombstoneTTL).
 		WithLogger(logger)
 }

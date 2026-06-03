@@ -7,6 +7,7 @@ import (
 	cachegraph "github.com/anaregdesign/lantern/core/cache/graph"
 	v1 "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
+	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 	"github.com/anaregdesign/lantern/server/replication"
 	"github.com/anaregdesign/lantern/server/service"
 )
@@ -51,6 +52,7 @@ func NewAntiEntropyDriver(
 	svc *service.LanternService,
 	cache *cachegraph.GraphCache[string, *v1.Vertex],
 	pump *replication.Pump,
+	m *domainmetrics.DomainMetrics,
 	logger *slog.Logger,
 ) *replication.AntiEntropy {
 	_ = pump // forces wire to construct the pump before the driver
@@ -60,5 +62,6 @@ func NewAntiEntropyDriver(
 		Interval:         ac.Interval,
 		SubscribeTimeout: ac.SubscribeTimeout,
 		Logger:           logger,
+		Metrics:          m,
 	}, svc, svc, cache)
 }

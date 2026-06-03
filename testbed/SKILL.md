@@ -88,6 +88,14 @@ curl -s http://localhost:9090/metrics \
   | grep -E '^(lantern_(vertices|edges|ttl_expirations_total|gc_duration_seconds_count)|process_resident_memory_bytes)'
 ```
 
+Replication health (#187 — empty on single-instance, populated under
+`testbed/docker-compose.yml` HA mode):
+
+```bash
+curl -s http://localhost:9090/metrics \
+  | grep -E '^lantern_(replication_(applied|dropped)_total|replication_lag_seq|anti_entropy_(cycles|gaps_found)_total)'
+```
+
 Log triage (JSON logs by default — `LANTERN_LOG_FORMAT=json`):
 
 ```bash

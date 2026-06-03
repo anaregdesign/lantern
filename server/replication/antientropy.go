@@ -29,6 +29,7 @@ package replication
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"io"
 	"log/slog"
@@ -54,19 +55,25 @@ type LocalStateProvider interface {
 // AntiEntropyMetrics is the narrow surface the driver uses to publish
 // per-tick counters. Wired by provider/metrics so the driver stays
 // independent of prometheus.
+//
+// origin is the lowercase-hex encoding of the peer's self HLC NodeID
+// (i.e. the origin row the driver is comparing against). peer is the
+// peer's RPC address as configured in LANTERN_PEERS.
 type AntiEntropyMetrics interface {
+	OnAntiEntropyCycle()
 	OnAntiEntropyTick(peer string)
-	OnAntiEntropyBehind(peer string, gap uint64)
-	OnAntiEntropyCaughtUp(peer string, applied uint64)
-	OnAntiEntropyError(peer string, reason string)
+	OnAntiEntropyBehind(peer, origin string, gap uint64)
+	OnAntiEntropyCaughtUp(peer, origin string, applied uint64)
+	OnAntiEntropyError(peer, reason string)
 }
 
 type nopAntiEntropyMetrics struct{}
 
-func (nopAntiEntropyMetrics) OnAntiEntropyTick(string)             {}
-func (nopAntiEntropyMetrics) OnAntiEntropyBehind(string, uint64)   {}
-func (nopAntiEntropyMetrics) OnAntiEntropyCaughtUp(string, uint64) {}
-func (nopAntiEntropyMetrics) OnAntiEntropyError(string, string)    {}
+func (nopAntiEntropyMetrics) OnAntiEntropyCycle()                          {}
+func (nopAntiEntropyMetrics) OnAntiEntropyTick(string)                     {}
+func (nopAntiEntropyMetrics) OnAntiEntropyBehind(string, string, uint64)   {}
+func (nopAntiEntropyMetrics) OnAntiEntropyCaughtUp(string, string, uint64) {}
+func (nopAntiEntropyMetrics) OnAntiEntropyError(string, string)            {}
 
 // AntiEntropyConfig groups the driver's inputs. All fields except
 // Peers / Interval are optional; NewAntiEntropy fills defaults.
@@ -169,6 +176,7 @@ func (a *AntiEntropy) Run(ctx context.Context) error {
 // Per-peer errors are logged and metric'd but never propagated —
 // anti-entropy is best-effort.
 func (a *AntiEntropy) tickAll(ctx context.Context) {
+	a.cfg.Metrics.OnAntiEntropyCycle()
 	var wg sync.WaitGroup
 	for _, addr := range a.cfg.Peers {
 		wg.Add(1)
@@ -250,7 +258,8 @@ func (a *AntiEntropy) tickPeer(ctx context.Context, addr string) {
 		return
 	}
 	gap := target - localSeq
-	a.cfg.Metrics.OnAntiEntropyBehind(addr, gap)
+	originHex := hex.EncodeToString(peerNID[:])
+	a.cfg.Metrics.OnAntiEntropyBehind(addr, originHex, gap)
 	log.Info("anti-entropy: peer ahead, catching up",
 		slog.Uint64("local_seq", localSeq),
 		slog.Uint64("peer_seq", target),
@@ -263,7 +272,7 @@ func (a *AntiEntropy) tickPeer(ctx context.Context, addr string) {
 		a.cfg.Metrics.OnAntiEntropyError(addr, "catchup_failed")
 		return
 	}
-	a.cfg.Metrics.OnAntiEntropyCaughtUp(addr, applied)
+	a.cfg.Metrics.OnAntiEntropyCaughtUp(addr, originHex, applied)
 	log.Info("anti-entropy: caught up",
 		slog.Uint64("applied", applied),
 		slog.Uint64("target_seq", target))
