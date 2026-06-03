@@ -2,6 +2,7 @@ package graph
 
 import (
 	"reflect"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -454,4 +455,29 @@ func Test_weight_snapshot(t *testing.T) {
 			t.Fatalf("snapshot all expired = (%v, %v, %v), want (0, zero, false)", sum, latest, nonZero)
 		}
 	})
+}
+
+func Test_edgeCache_getDetail_noGoroutineForExpired(t *testing.T) {
+	c := newEdgeCache[string](time.Minute, newDictionary[string]())
+	c.addWithExpiration("a", "b", 1, time.Now().Add(-time.Second))
+
+	before := runtime.NumGoroutine()
+	for i := 0; i < 100; i++ {
+		if _, _, ok := c.getDetail("a", "b"); ok {
+			t.Fatalf("expected expired edge to report ok=false on iteration %d", i)
+		}
+	}
+	// Goroutine count must not drift upward: previously each call spawned
+	// `go c.delete(...)`. Allow a small slack for runtime housekeeping.
+	after := runtime.NumGoroutine()
+	if after > before+2 {
+		t.Fatalf("goroutine count grew: before=%d after=%d", before, after)
+	}
+
+	// The edge bucket may still be present until the next flush — that is the
+	// intended trade.
+	c.flush()
+	if got := c.count(); got != 0 {
+		t.Fatalf("flush should reclaim expired edge, count=%d", got)
+	}
 }
