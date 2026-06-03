@@ -61,6 +61,43 @@ CI: [.github/workflows/go.yml](.github/workflows/go.yml) runs `go build` + `go t
 
 ## Conventions and gotchas
 
+- **File layout & naming (Go)** — within every Go package in this repo:
+  1. **1:1 source ↔ test pairing.** Each `xxx.go` has at most one
+     `xxx_test.go` in the same package, and every `xxx_test.go` exists to
+     test the code in `xxx.go`. Mirrors the Go standard library
+     (`net/http/server.go` ↔ `server_test.go`, `transport.go` ↔
+     `transport_test.go`, …).
+  2. **No suffix-qualified test files for the same source.** Splits like
+     `edge_test.go` + `edge_contrib_test.go` + `put_edge_atomic_test.go`
+     are forbidden. Use sub-test grouping (`t.Run("Contrib", …)`,
+     `t.Run("Atomic", …)`) inside the single `xxx_test.go`.
+  3. **Type-driven source splits.** A type's methods may live in multiple
+     `*.go` files when the file would otherwise exceed ~600 LOC, but each
+     split file must (a) own a coherent sub-feature
+     (`tombstone.go`, `snapshot.go`, `prefix.go`), and (b) have a matching
+     `<file>_test.go` for any tests it warrants.
+  4. **Cross-cutting integration / quality-gate suites** that intentionally
+     exercise ≥3 source files use the suffix `_gate_test.go` (current
+     examples: `acid_gate_test.go`, `production_gate_test.go`). Reserved
+     for genuinely cross-cutting work — do NOT use it as a workaround for
+     rule 2.
+  5. **Shared test helpers** (fakes, fixtures, table generators) used by
+     ≥2 `_test.go` files in the same package live in `helpers_test.go`,
+     or in a feature-scoped file like `fake_backend_test.go` when the
+     helper is itself a coherent unit.
+  6. **Benchmarks** live in the matching `xxx_test.go` alongside the code
+     they benchmark. A separate `bench_test.go` is allowed only for
+     cross-cutting suites (≥3 source files), parallel to rule 4.
+  7. **Two unrelated public types in one file is a smell.** When a single
+     `xxx.go` defines two top-level types with distinct responsibilities
+     (e.g. an RPC handler struct and a server-lifecycle struct), split them
+     into per-type files in the same refactor PR.
+  8. Cross-package integration tests live under `tests/integration/`, not
+     in the producing package's `_test.go` files (already enforced by the
+     "Dependency boundaries" invariant).
+  9. When adding a new test, **append to the existing `xxx_test.go`**
+     instead of creating a new file. Reviewers must reject PRs that
+     introduce a new `<existing-source>_<concern>_test.go` sibling.
 - **Go version**: every `go.mod` is on `1.26` and the Dockerfile uses `golang:1.26-alpine`; CI pins `1.26.4`. Bumping the toolchain requires updating **every** site in lockstep — see the [Maintenance checklist](#maintenance-checklist) for the full list.
 - **wire and generics**: as the `// Avoiding bug of 'wire'. Generic type is not supported.` comment in `service.go` notes, wire cannot handle generic type arguments, so the provider returns the concrete `GraphCache[string, *Vertex]`. Re-check this constraint before trying to introduce generics there.
 - **Regenerating proto**: `go_package_prefix` in `buf.gen.yaml` is `github.com/anaregdesign/lantern/pb`, so the generated files land **inside the standalone `pb/` module** at `pb/graph/v1`. `go generate ./...` (or `make proto`) runs `buf generate` and rebuilds everything under `pb/`. **Do NOT pass `--clean`** — `buf`'s output root is `pb/`, and `--clean` would delete `pb/go.mod` and `pb/doc.go` along with the stubs. `buf.yaml` (v2 workspace) and `buf.gen.yaml` live at the repo root. `buf` does not need to be installed locally — the directive in [generate.go](generate.go) falls back to `go run github.com/bufbuild/buf/cmd/buf@v1.70.0` (the pin is mirrored as `BUF_VERSION` in the Makefile — bump both together). Treat `pb/` as generated-only — never hand-edit, never add domain code there.
