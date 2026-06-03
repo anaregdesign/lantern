@@ -196,6 +196,14 @@ on stdout; all write commands print a single `OK` line.
 ./lantern vertex delete alice bob carol       # batch DeleteVertices
 cat edges.ndjson | ./lantern bulk edges add - # streamed AddEdges
 
+# prefix scan (key-space enumeration)
+./lantern vertex count  users/                       # radix count for users/*
+./lantern vertex scan   users/ --limit 100           # one page; next-cursor on stderr
+./lantern vertex scan   users/ --all > snap.ndjson   # stream every match as NDJSON
+./lantern vertex delete-prefix tmp/                  # REFUSED (safety gate)
+./lantern vertex delete-prefix tmp/ --dry-run        # preview count
+./lantern vertex delete-prefix tmp/ --yes            # actually delete
+
 # TLS / mTLS
 ./lantern --tls --tls-ca ./ca.pem -H lantern.example.com -p 443 vertex get alice
 
