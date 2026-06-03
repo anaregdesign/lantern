@@ -36,6 +36,16 @@ type Backend interface {
 		tfidf bool,
 	) (*coregraph.Graph[string, *pb.Vertex], map[string]map[string]time.Time, error)
 
+	// prefix scan / count / delete. ScanByPrefix invokes fn for each live
+	// vertex whose key starts with prefix, in lexicographic order; fn
+	// returns false to stop early. CountByPrefix is an index-side count
+	// (may include not-yet-flushed expired entries; bounded by the GC
+	// tick). DeleteByPrefix removes matching vertices up to limit (limit
+	// <= 0 means unlimited) and returns how many were deleted.
+	ScanByPrefix(ctx context.Context, prefix string, fn func(projected string, key string, value *pb.Vertex) bool) bool
+	CountByPrefix(prefix string) int
+	DeleteByPrefix(ctx context.Context, prefix string, limit int) int
+
 	// background GC loop driven by LanternServer.
 	Watch(ctx context.Context, interval time.Duration)
 }

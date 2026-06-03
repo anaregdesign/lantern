@@ -99,6 +99,23 @@ type ShutdownConfig struct {
 	Timeout time.Duration
 }
 
+// ScanConfig caps the per-call pagination knobs for the prefix RPCs.
+// Defaults aim at "safe to leave unconfigured": small enough that a buggy
+// client cannot trivially exhaust the server, large enough to make a
+// reasonable single page useful. Operators can lift the ceilings via env
+// when the workload warrants it.
+//
+//   - LANTERN_SCAN_DEFAULT_LIMIT                    (default 1000)
+//   - LANTERN_SCAN_MAX_LIMIT                        (default 10000)
+//   - LANTERN_DELETE_BY_PREFIX_DEFAULT_LIMIT        (default 10000)
+//   - LANTERN_DELETE_BY_PREFIX_MAX_LIMIT            (default 100000)
+type ScanConfig struct {
+	ScanDefaultLimit           uint32
+	ScanMaxLimit               uint32
+	DeleteByPrefixDefaultLimit uint32
+	DeleteByPrefixMaxLimit     uint32
+}
+
 // Config aggregates every focused sub-config. It is constructed once at
 // startup by NewConfig and then projected into sub-configs that each provider
 // consumes — providers MUST NOT take *Config when they only need one slice of
@@ -112,6 +129,7 @@ type Config struct {
 	Cache         CacheConfig
 	Shutdown      ShutdownConfig
 	Validation    ValidationLimits
+	Scan          ScanConfig
 }
 
 func NewConfig() *Config {
@@ -157,6 +175,12 @@ func NewConfig() *Config {
 			IlluminateMaxStep: envconfig.Int("LANTERN_ILLUMINATE_MAX_STEP", 16),
 			IlluminateMaxK:    envconfig.Int("LANTERN_ILLUMINATE_MAX_K", 1024),
 		},
+		Scan: ScanConfig{
+			ScanDefaultLimit:           uint32(envconfig.Int("LANTERN_SCAN_DEFAULT_LIMIT", 1000)),
+			ScanMaxLimit:               uint32(envconfig.Int("LANTERN_SCAN_MAX_LIMIT", 10000)),
+			DeleteByPrefixDefaultLimit: uint32(envconfig.Int("LANTERN_DELETE_BY_PREFIX_DEFAULT_LIMIT", 10000)),
+			DeleteByPrefixMaxLimit:     uint32(envconfig.Int("LANTERN_DELETE_BY_PREFIX_MAX_LIMIT", 100000)),
+		},
 	}
 }
 
@@ -171,6 +195,7 @@ func NewObservabilityConfig(c *Config) ObservabilityConfig { return c.Observabil
 func NewCacheConfig(c *Config) CacheConfig                 { return c.Cache }
 func NewShutdownConfig(c *Config) ShutdownConfig           { return c.Shutdown }
 func NewValidationLimits(c *Config) ValidationLimits       { return c.Validation }
+func NewScanConfig(c *Config) ScanConfig                   { return c.Scan }
 
 // NewLogger builds the process-wide structured logger and installs it as the
 // slog default so any package-level slog.* call inherits the same handler.
@@ -188,7 +213,13 @@ func NewLogger(o ObservabilityConfig) *slog.Logger {
 }
 
 func NewGraphCache(c CacheConfig) *graph.GraphCache[string, *v1.Vertex] {
-	return graph.NewGraphCache[string, *v1.Vertex](c.TTL)
+	gc := graph.NewGraphCache[string, *v1.Vertex](c.TTL)
+	// Identity projection: vertex keys are themselves the indexed string.
+	// Enabling the prefix index up-front (before any insert) is required
+	// by the cache contract — EnablePrefixIndex panics on a non-empty
+	// cache. Doing it here in the constructor guarantees that invariant.
+	gc.EnablePrefixIndex(func(s string) string { return s })
+	return gc
 }
 
 // NewDomainMetrics registers the Lantern-specific `lantern_*` collectors on

@@ -61,6 +61,19 @@ func registerHealthAndReflection(o provider.ObservabilityConfig, s *grpc.Server,
 	return registeredHealth{}
 }
 
+// newLanternService is the wire seam between provider.ScanConfig and the
+// service-layer ScanLimits value. Keeping the conversion here (rather than
+// in package service) preserves the rule that service/ has zero imports
+// from provider/.
+func newLanternService(backend service.Backend, sc provider.ScanConfig) *service.LanternService {
+	return service.NewLanternService(backend).WithScanLimits(service.ScanLimits{
+		ScanDefaultLimit:           sc.ScanDefaultLimit,
+		ScanMaxLimit:               sc.ScanMaxLimit,
+		DeleteByPrefixDefaultLimit: sc.DeleteByPrefixDefaultLimit,
+		DeleteByPrefixMaxLimit:     sc.DeleteByPrefixMaxLimit,
+	})
+}
+
 func (a *App) Run(ctx context.Context) error {
 	a.health.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 
