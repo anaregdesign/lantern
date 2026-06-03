@@ -176,7 +176,9 @@ func (c *edgeCache[S]) getDetail(tail, head S) (float32, time.Time, bool) {
 
 	sum, latest, nonZero := w.snapshot()
 	if !nonZero {
-		go c.delete(tail, head)
+		// The edge has fully decayed. Leave physical reclamation to the
+		// next GC tick (edges.flush) so the read path stays allocation
+		// free and avoids spawning a goroutine per hot-path read.
 		return 0, time.Time{}, false
 	}
 	return sum, latest, true
