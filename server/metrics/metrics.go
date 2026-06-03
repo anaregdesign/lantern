@@ -32,6 +32,12 @@ type DomainMetrics struct {
 	subscribeActive     prometheus.Gauge
 	subscribeDropped    *prometheus.CounterVec
 
+	replicationApplied   *prometheus.CounterVec
+	replicationDropped   *prometheus.CounterVec
+	replicationLag       *prometheus.GaugeVec
+	antiEntropyCycles    prometheus.Counter
+	antiEntropyGapsFound *prometheus.CounterVec
+
 	sampleInterval time.Duration
 	sample         Sampler
 }
@@ -91,11 +97,33 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 			Name: "lantern_subscribe_dropped_total",
 			Help: "Total Subscribe streams terminated abnormally, partitioned by reason (gapped, send_failed).",
 		}, []string{"reason"}),
+		replicationApplied: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "lantern_replication_applied_total",
+			Help: "Total remote mutations applied locally via the replication apply path, partitioned by origin (HLC NodeID, lowercase hex).",
+		}, []string{"origin"}),
+		replicationDropped: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "lantern_replication_dropped_total",
+			Help: "Total replication frames or peer interactions dropped, partitioned by peer address and reason (self_echo, subscribe_failed, snapshot_failed, dial_failed, peerstatus_failed, catchup_failed, clean, ctx_cancel).",
+		}, []string{"peer", "reason"}),
+		replicationLag: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "lantern_replication_lag_seq",
+			Help: "Per-(peer, origin) replication lag in mutation seq units (peer last_seq minus local last_applied_seq). 0 means caught up; only set when the peer reports its own origin row.",
+		}, []string{"peer", "origin"}),
+		antiEntropyCycles: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "lantern_anti_entropy_cycles_total",
+			Help: "Total anti-entropy convergence ticks executed since process start (one per Interval).",
+		}),
+		antiEntropyGapsFound: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "lantern_anti_entropy_gaps_found_total",
+			Help: "Total anti-entropy ticks that observed a non-zero gap, partitioned by peer address and origin (HLC NodeID, lowercase hex).",
+		}, []string{"peer", "origin"}),
 		sampleInterval: opts.SampleInterval,
 	}
 
 	reg.MustRegister(m.vertices, m.edges, m.expirations, m.gcDuration, m.buildInfo,
-		m.mutationLogEntries, m.mutationLogCapacity, m.subscribeActive, m.subscribeDropped)
+		m.mutationLogEntries, m.mutationLogCapacity, m.subscribeActive, m.subscribeDropped,
+		m.replicationApplied, m.replicationDropped, m.replicationLag,
+		m.antiEntropyCycles, m.antiEntropyGapsFound)
 
 	// Pre-create label rows so empty counters scrape as 0.
 	for _, r := range []string{"gapped", "send_failed"} {
@@ -164,6 +192,89 @@ func (m *DomainMetrics) OnSubscribeEnded() {
 func (m *DomainMetrics) OnSubscribeDropped(reason string) {
 	m.subscribeDropped.WithLabelValues(reason).Inc()
 }
+
+// OnReplicationApplied increments lantern_replication_applied_total for
+// a mutation accepted by the apply path. origin is the HLC NodeID of the
+// originating node, lowercase-hex encoded.
+func (m *DomainMetrics) OnReplicationApplied(origin string) {
+	m.replicationApplied.WithLabelValues(origin).Inc()
+}
+
+// OnReplicationDropped increments lantern_replication_dropped_total for a
+// dropped frame or failed peer interaction. peer is the peer's RPC
+// address; reason is a short identifier (see metric Help text).
+func (m *DomainMetrics) OnReplicationDropped(peer, reason string) {
+	m.replicationDropped.WithLabelValues(peer, reason).Inc()
+}
+
+// SetReplicationLag sets the per-(peer, origin) replication lag gauge in
+// mutation-seq units. Called from the anti-entropy driver after each
+// PeerStatus probe; 0 means caught up.
+func (m *DomainMetrics) SetReplicationLag(peer, origin string, lag uint64) {
+	m.replicationLag.WithLabelValues(peer, origin).Set(float64(lag))
+}
+
+// OnAntiEntropyCycle increments lantern_anti_entropy_cycles_total. Called
+// once per tick of the anti-entropy driver (i.e. per fan-out across all
+// peers).
+func (m *DomainMetrics) OnAntiEntropyCycle() {
+	m.antiEntropyCycles.Inc()
+}
+
+// OnAntiEntropyGapFound increments
+// lantern_anti_entropy_gaps_found_total{peer,origin} when a tick observes
+// a non-zero gap against a peer's own origin row.
+func (m *DomainMetrics) OnAntiEntropyGapFound(peer, origin string) {
+	m.antiEntropyGapsFound.WithLabelValues(peer, origin).Inc()
+}
+
+// --- replication.AntiEntropyMetrics adapter ---
+//
+// The anti-entropy driver's narrow surface (server/replication.AntiEntropyMetrics)
+// is satisfied by these methods so the driver can take *DomainMetrics
+// directly without a wrapper type. Per-cycle and per-peer events map onto
+// the collectors registered above; the per-peer "Tick" event is currently
+// a no-op as the issue spec only requires per-cycle counts.
+
+func (m *DomainMetrics) OnAntiEntropyTick(string) {}
+
+func (m *DomainMetrics) OnAntiEntropyBehind(peer, origin string, gap uint64) {
+	m.SetReplicationLag(peer, origin, gap)
+	m.OnAntiEntropyGapFound(peer, origin)
+}
+
+func (m *DomainMetrics) OnAntiEntropyCaughtUp(peer, origin string, _ uint64) {
+	// Reset the gauge to 0 — the peer is now caught up on the row we
+	// were repairing. Dashboards see a clear edge transition.
+	m.SetReplicationLag(peer, origin, 0)
+}
+
+func (m *DomainMetrics) OnAntiEntropyError(peer, reason string) {
+	m.OnReplicationDropped(peer, reason)
+}
+
+// --- replication.Metrics (pump) adapter ---
+//
+// The pump's narrow Metrics surface is satisfied by these methods so
+// provider/replication.go can pass *DomainMetrics directly. Only the two
+// events that map onto the dropped_total counter spec'd in #187 emit
+// metric updates; the connect/apply/snapshot hooks are reserved for
+// future expansion (per-peer connect gauges, snapshot counters) and
+// currently no-op so the pump compiles against the same handle.
+
+func (m *DomainMetrics) OnPumpConnect(string) {}
+
+func (m *DomainMetrics) OnPumpDisconnect(peer, reason string) {
+	m.OnReplicationDropped(peer, reason)
+}
+
+func (m *DomainMetrics) OnPumpApply(string) {}
+
+func (m *DomainMetrics) OnPumpDropSelfEcho(peer string) {
+	m.OnReplicationDropped(peer, "self_echo")
+}
+
+func (m *DomainMetrics) OnPumpSnapshotReplayed(string, uint64, uint64) {}
 
 // BindSampler stores the gauge-population callback. Must be called before
 // Run; safe to call exactly once during wiring.

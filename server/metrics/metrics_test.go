@@ -77,3 +77,60 @@ func TestDomainMetrics_Run_NoSampler_StopsOnContextCancel(t *testing.T) {
 		t.Fatal("Run did not return after context cancel")
 	}
 }
+
+// TestDomainMetrics_ReplicationFamilies asserts the #187 replication and
+// anti-entropy collectors register with the expected names and that the
+// adapter methods used by the pump (Metrics) and anti-entropy driver
+// (AntiEntropyMetrics) interfaces emit on the right counters/gauges.
+func TestDomainMetrics_ReplicationFamilies(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := New(reg, Options{Version: "v", Commit: "c", SampleInterval: time.Hour})
+
+	// Drive each emission path once.
+	m.OnReplicationApplied("aabbccdd")
+	m.OnReplicationDropped("peer-a:7000", "ctx_cancel")
+	m.OnPumpDropSelfEcho("peer-b:7000") // → dropped{peer,self_echo}
+	m.OnAntiEntropyCycle()
+	m.OnAntiEntropyBehind("peer-a:7000", "aabbccdd", 42)   // gauge=42, gaps=1
+	m.OnAntiEntropyCaughtUp("peer-a:7000", "aabbccdd", 42) // gauge→0
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	names := map[string]bool{}
+	for _, mf := range mfs {
+		names[mf.GetName()] = true
+	}
+	for _, want := range []string{
+		"lantern_replication_applied_total",
+		"lantern_replication_dropped_total",
+		"lantern_replication_lag_seq",
+		"lantern_anti_entropy_cycles_total",
+		"lantern_anti_entropy_gaps_found_total",
+	} {
+		if !names[want] {
+			t.Errorf("metric family %q not registered", want)
+		}
+	}
+
+	if got := testutil.ToFloat64(m.replicationApplied.WithLabelValues("aabbccdd")); got != 1 {
+		t.Errorf("replication_applied_total{origin=aabbccdd} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.replicationDropped.WithLabelValues("peer-a:7000", "ctx_cancel")); got != 1 {
+		t.Errorf("replication_dropped_total{peer-a,ctx_cancel} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.replicationDropped.WithLabelValues("peer-b:7000", "self_echo")); got != 1 {
+		t.Errorf("replication_dropped_total{peer-b,self_echo} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.antiEntropyCycles); got != 1 {
+		t.Errorf("anti_entropy_cycles_total = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.antiEntropyGapsFound.WithLabelValues("peer-a:7000", "aabbccdd")); got != 1 {
+		t.Errorf("anti_entropy_gaps_found_total = %v, want 1", got)
+	}
+	// CaughtUp reset the lag back to 0 after the Behind tick set it to 42.
+	if got := testutil.ToFloat64(m.replicationLag.WithLabelValues("peer-a:7000", "aabbccdd")); got != 0 {
+		t.Errorf("replication_lag_seq after CaughtUp = %v, want 0", got)
+	}
+}
