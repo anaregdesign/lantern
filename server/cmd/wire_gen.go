@@ -52,9 +52,9 @@ func initializeApp() (*App, error) {
 		return nil, err
 	}
 	peerConfig := provider.NewPeerConfig(config)
-	pump := provider.NewReplicationPump(peerConfig, replicationConfig, lanternService, graphCache, logger)
+	pump := provider.NewReplicationPump(peerConfig, replicationConfig, lanternService, graphCache, domainMetrics, logger)
 	antiEntropyConfig := provider.NewAntiEntropyConfig(config)
-	antiEntropy := provider.NewAntiEntropyDriver(peerConfig, replicationConfig, antiEntropyConfig, lanternService, graphCache, pump, logger)
+	antiEntropy := provider.NewAntiEntropyDriver(peerConfig, replicationConfig, antiEntropyConfig, lanternService, graphCache, pump, domainMetrics, logger)
 	mainRegisteredHealth := registerHealthAndReflection(observabilityConfig, server, healthServer)
 	app := newApp(config, logger, lanternServer, metricsServer, tracing, domainMetrics, healthServer, pump, antiEntropy, mainRegisteredHealth)
 	return app, nil

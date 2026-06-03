@@ -8,6 +8,7 @@ import (
 	cachegraph "github.com/anaregdesign/lantern/core/cache/graph"
 	v1 "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
+	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 	"github.com/anaregdesign/lantern/server/replication"
 	"github.com/anaregdesign/lantern/server/service"
 )
@@ -65,6 +66,7 @@ func NewReplicationPump(
 	rc ReplicationConfig,
 	svc *service.LanternService,
 	cache *cachegraph.GraphCache[string, *v1.Vertex],
+	m *domainmetrics.DomainMetrics,
 	logger *slog.Logger,
 ) *replication.Pump {
 	return replication.NewPump(replication.Config{
@@ -73,5 +75,6 @@ func NewReplicationPump(
 		BackoffMin: pc.BackoffMin,
 		BackoffMax: pc.BackoffMax,
 		Logger:     logger,
+		Metrics:    m,
 	}, svc, cache)
 }
