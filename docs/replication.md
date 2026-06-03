@@ -85,47 +85,63 @@ flush latency target (§9).
 
 ## 5. Hybrid Logical Clock
 
-HLC = `(wallMillis uint64, logical uint32)`.
+`Timestamp = (wallNs int64, logical uint32, nodeID [16]byte)`. Wall is in
+**nanoseconds since the Unix epoch** to match `time.Time.UnixNano()` and keep
+the proto encoding (#178) loss-free. `nodeID` is folded into every timestamp
+so two distinct origins can never produce a colliding stamp; the origin
+tiebreak from §4 is therefore intrinsic to ordering rather than bolted on.
+
+Reference implementation: [`core/hlc`](../core/hlc/hlc.go).
 
 ### 5.1 Local tick (called on every locally-originated mutation)
 
 ```
-now    := time.Now().UnixMilli()
-last   := lastHLC
-if now > last.wallMillis:
-    lastHLC = HLC{wallMillis: now, logical: 0}
+now := time.Now().UnixNano()
+if now > last.wallNs:
+    last = Timestamp{wallNs: now, logical: 0, nodeID: self}
 else:
-    lastHLC = HLC{wallMillis: last.wallMillis, logical: last.logical + 1}
-return lastHLC
+    last = Timestamp{wallNs: last.wallNs, logical: last.logical + 1, nodeID: self}
+return last
 ```
 
-### 5.2 Update on receive (`recv` carries a remote HLC `r`)
+### 5.2 Update on receive (`recv` carries a remote Timestamp `r`)
 
 ```
-now := time.Now().UnixMilli()
-max := max(now, last.wallMillis, r.wallMillis)
+now := time.Now().UnixNano()
+rWall := r.wallNs
+if rWall > now + MaxSkew:        // §5.3
+    rWall = now + MaxSkew
+max := max(now, last.wallNs, rWall)
 switch max:
-case last.wallMillis where last.wallMillis == r.wallMillis:
-    lastHLC = HLC{wallMillis: max, logical: max(last.logical, r.logical) + 1}
-case last.wallMillis:
-    lastHLC = HLC{wallMillis: max, logical: last.logical + 1}
-case r.wallMillis:
-    lastHLC = HLC{wallMillis: max, logical: r.logical + 1}
-default: // now is strictly greater
-    lastHLC = HLC{wallMillis: max, logical: 0}
+case last.wallNs where last.wallNs == rWall:
+    last = Timestamp{wallNs: max, logical: max(last.logical, r.logical) + 1, nodeID: self}
+case last.wallNs:
+    last = Timestamp{wallNs: max, logical: last.logical + 1, nodeID: self}
+case rWall:
+    last = Timestamp{wallNs: max, logical: r.logical + 1, nodeID: self}
+default: // now strictly greater
+    last = Timestamp{wallNs: max, logical: 0, nodeID: self}
 ```
+
+Note that the returned timestamp always carries the local `nodeID`; the
+remote `nodeID` is only used by the comparator in §5.4.
 
 ### 5.3 Skew clamp
 
-If `|r.wallMillis - now| > 500ms` (D3), the receive is **rejected** with
-`OutOfRange`. The operator sees `lantern_hlc_skew_rejected_total` increment
-and is expected to fix NTP.
+If `r.wallNs > now + MaxSkew` (default `MaxSkew = 500ms`, per D3), the wall
+component is **clamped** to `now + MaxSkew` and an `OnSkewExceeded` callback
+fires (default wiring: increment `lantern_hlc_skew_clamped_total`). The
+remote timestamp is never rejected — replication keeps making progress even
+when peers drift, and operators observe the drift through the counter and
+are expected to fix NTP. (Earlier drafts of this RFC rejected with
+`OutOfRange`; that was changed during #176 implementation because rejecting
+risks a cascading replication stall while the clock heals.)
 
 ### 5.4 Comparison
 
-`a < b` iff `(a.wallMillis, a.logical) < (b.wallMillis, b.logical)`
-lexicographically. Strict total order across the cluster when combined with
-the origin tiebreak in §4.
+`a < b` iff `(a.wallNs, a.logical, a.nodeID) < (b.wallNs, b.logical, b.nodeID)`
+lexicographically. `nodeID` is compared bytewise. Two distinct origins thus
+yield a strict total order without any extra tiebreak machinery.
 
 ## 6. Contribution IDs
 
@@ -277,7 +293,7 @@ Lantern is **AP** in CAP terms. During a partition:
 | Pod falls behind > buffer | `Subscribe` returns `OutOfRange` | Pump auto re-snapshots and resumes. |
 | All peers unreachable on boot | `Snapshot` fails on every peer | Pod stays `NOT_SERVING`; operator alert on readiness. |
 | Total-cluster loss | every replica down | **Accepted data loss** (D1). Bring the cluster back empty. |
-| NTP skew > 500ms | `lantern_hlc_skew_rejected_total > 0` | Fix NTP; rejected writes must be retried client-side. |
+| NTP skew > 500ms | `lantern_hlc_skew_clamped_total > 0` | Fix NTP. Mutations from the drifted peer keep applying (their HLC wall is clamped, §5.3); convergence is preserved but the drifted peer's stamps land behind real wall time until it heals. |
 | Network partition < tombstone TTL | `lantern_replication_lag_seq` spike | Auto-converges via anti-entropy (#186) when partition heals. |
 | Network partition > tombstone TTL | same | Resurrection possible (§10). Manual reconciliation or operator-driven re-snapshot of the winning side. |
 
