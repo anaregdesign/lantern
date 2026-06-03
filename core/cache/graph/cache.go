@@ -8,7 +8,6 @@ import (
 
 	"github.com/anaregdesign/lantern/core/cache"
 	"github.com/anaregdesign/lantern/core/collection/pq"
-	"github.com/anaregdesign/lantern/core/collection/set"
 	"github.com/anaregdesign/lantern/core/graph"
 )
 
@@ -263,10 +262,12 @@ func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int
 	}
 
 	var wg sync.WaitGroup
-	var mu sync.RWMutex
-	targets := set.NewSet[S]()
-	targets.Add(seed)
-	seen := set.NewSet[S]()
+	var mu sync.Mutex
+	// targets / seen are accessed only from the main goroutine (between
+	// wg.Wait barriers), so plain maps suffice — no need for the locked
+	// set.Set wrapper. mu still protects concurrent writes to g.Edges.
+	targets := map[S]struct{}{seed: {}}
+	seen := make(map[S]struct{})
 	// Snapshot edge maps once per Neighbor call. The TF clone is shallow so the
 	// per-edge *weight values remain shared and internally thread-safe.
 	tf := c.edges.snapshotTF()
@@ -276,20 +277,22 @@ func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int
 			return nil, nil, err
 		}
 
-		for _, tail := range targets.Values() {
-			// Skip if already seen
-			if seen.Has(tail) {
+		// Collect this step's frontier (targets not yet processed). Marking
+		// happens after wg.Wait so the goroutines need not touch `seen`.
+		frontier := make([]S, 0, len(targets))
+		for t := range targets {
+			if _, ok := seen[t]; ok {
 				continue
 			}
+			frontier = append(frontier, t)
+		}
 
-			// Add to wait group
+		for _, tail := range frontier {
 			wg.Add(1)
 			go func(t S) {
 				defer wg.Done()
-				// Add edges to the graph
 				heads := tf[t]
 				if len(heads) == 0 {
-					seen.Add(t)
 					return
 				}
 				edges := make(pq.SortableMap[S, float32], len(heads))
@@ -306,19 +309,22 @@ func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int
 				mu.Lock()
 				g.Edges[t] = edges
 				mu.Unlock()
-				// Mark as seen
-				seen.Add(t)
 			}(tail)
 		}
 
 		// Wait for all goroutines to finish
 		wg.Wait()
 
+		// Mark this step's frontier as processed.
+		for _, t := range frontier {
+			seen[t] = struct{}{}
+		}
+
 		// Find all next targets
 		for _, heads := range g.Edges {
 			for head := range heads {
-				if !seen.Has(head) {
-					targets.Add(head)
+				if _, ok := seen[head]; !ok {
+					targets[head] = struct{}{}
 				}
 			}
 		}
