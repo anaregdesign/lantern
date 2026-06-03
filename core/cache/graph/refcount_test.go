@@ -182,3 +182,38 @@ func TestDictRefcount_FullExpiryFreesAll(t *testing.T) {
 			got, maxID)
 	}
 }
+
+// TestDictRefcount_HotEdgeFastPathStability verifies that the existing-edge
+// fast path in addWithExpiration does not touch dict refcounts. After 100k
+// writes to the same edge, both endpoints must still have refcount = 2
+// (vertex slot + 1 edge endpoint), the dict size must still be 2, and the
+// edge's accumulated sum must be exactly 100k.
+func TestDictRefcount_HotEdgeFastPathStability(t *testing.T) {
+	c := NewGraphCache[string, int](time.Minute)
+	// First write goes through the slow path and interns both endpoints.
+	exp := time.Now().Add(time.Minute)
+	c.AddEdgeWithExpiration("hot-tail", "hot-head", 1, exp)
+	tailID, _ := c.dict.lookup("hot-tail")
+	headID, _ := c.dict.lookup("hot-head")
+	wantTail := c.dict.refcount[tailID]
+	wantHead := c.dict.refcount[headID]
+	wantLen := c.dict.len()
+
+	const n = 100_000
+	for i := 0; i < n; i++ {
+		c.AddEdgeWithExpiration("hot-tail", "hot-head", 1, exp)
+	}
+
+	if got := c.dict.refcount[tailID]; got != wantTail {
+		t.Fatalf("tail refcount drifted: got %d, want %d (fast path must not touch dict)", got, wantTail)
+	}
+	if got := c.dict.refcount[headID]; got != wantHead {
+		t.Fatalf("head refcount drifted: got %d, want %d (fast path must not touch dict)", got, wantHead)
+	}
+	if got := c.dict.len(); got != wantLen {
+		t.Fatalf("dict.len drifted: got %d, want %d", got, wantLen)
+	}
+	if got, ok := c.GetWeight("hot-tail", "hot-head"); !ok || got != float32(n+1) {
+		t.Fatalf("edge sum after %d adds: got %v ok=%v, want %d", n+1, got, ok, n+1)
+	}
+}
