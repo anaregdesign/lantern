@@ -241,3 +241,19 @@ func BenchmarkWeight_AddOnly(b *testing.B) {
 		w.addWithExpiration(1, past)
 	}
 }
+
+// BenchmarkAddEdge_Existing measures the existing-edge fast path in
+// edgeCache.addWithExpiration. After warming up a single edge, every
+// iteration must hit the fast path: one dict RLock to resolve both ids,
+// one edgeCache RLock to find the *weight, then the leaf weight.mu
+// append. No dict writes, no edgeCache writes.
+func BenchmarkAddEdge_Existing(b *testing.B) {
+	c := NewGraphCache[string, int](time.Minute)
+	exp := time.Now().Add(time.Hour)
+	c.AddEdgeWithExpiration("hot-tail", "hot-head", 1, exp)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		c.AddEdgeWithExpiration("hot-tail", "hot-head", 1, exp)
+	}
+}

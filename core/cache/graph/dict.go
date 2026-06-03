@@ -95,6 +95,25 @@ func (d *dictionary[S]) lookup(key S) (vertexID, bool) {
 	return id, ok
 }
 
+// lookupBoth resolves both keys to vertexIDs under a single RLock cycle.
+// Returns each id independently with its own found-bit so the caller can
+// distinguish "tail missing" from "head missing" without a second lookup.
+// Refcounts are unchanged; the returned ids are valid only as long as no
+// concurrent release frees them, which is the same contract as lookup.
+//
+// Edge writers use this on the hot path: if both ids already exist and
+// the (tail, head) bucket is present, the write can append to the per-edge
+// weight without touching the dict's write lock or the edgeCache write
+// lock at all.
+func (d *dictionary[S]) lookupBoth(a, b S) (idA, idB vertexID, okA, okB bool) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	idA, okA = d.forward[a]
+	idB, okB = d.forward[b]
+	return
+}
+
 // resolve returns the key for id. It returns the zero value of S and
 // false if id is not currently allocated (either never minted or already
 // freed).

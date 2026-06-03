@@ -298,6 +298,39 @@ func (c *edgeCache[S]) resolve(id vertexID) (S, bool) {
 }
 
 func (c *edgeCache[S]) addWithExpiration(tail, head S, w float32, expiration time.Time) {
+	// Fast path: existing edge. A hot counter-style edge gets updated every
+	// few ms; the slow path below would acquire the dict write lock twice
+	// (intern tail, intern head) and the dict release lock twice (revert
+	// the bumps) plus the edgeCache write lock — five global serialization
+	// points to append a float to a slice. If both endpoints are already
+	// interned AND the (tail, head) bucket already exists, we can skip
+	// every dict mutation and the edgeCache write lock entirely: a single
+	// dict RLock to resolve both ids, a single edgeCache RLock to fetch the
+	// *weight pointer, then the leaf weight.mu append. Refcounts are
+	// untouched because we neither add nor remove an edge.
+	//
+	// Race note: a concurrent delete between RUnlock and the weight append
+	// can leave us appending to a *weight that has just been detached from
+	// the map. That is harmless — the weight pointer stays valid, but the
+	// orphan is no longer reachable through tf, so the write effectively
+	// vanishes. The user-visible semantics of "concurrent add+delete on the
+	// same edge" are already racy under the slow path; the fast path
+	// preserves that contract without introducing new visibility issues.
+	if c.dict != nil {
+		if tailID, headID, okT, okH := c.dict.lookupBoth(tail, head); okT && okH {
+			c.mu.RLock()
+			if heads, ok := c.tf[tailID]; ok {
+				if edge, ok := heads[headID]; ok {
+					c.mu.RUnlock()
+					edge.addWithExpiration(w, expiration)
+					return
+				}
+			}
+			c.mu.RUnlock()
+		}
+	}
+
+	// Slow path: new edge (or first writer when dict is nil in tests).
 	// Intern both endpoints OUTSIDE the edgeCache lock so the dict can serve
 	// readers in parallel. The intern call is the +1 we either keep (new
 	// edge) or undo (existing edge) under the edgeCache lock below.
@@ -319,7 +352,10 @@ func (c *edgeCache[S]) addWithExpiration(tail, head S, w float32, expiration tim
 		c.df[headID]++
 	} else if c.dict != nil {
 		// Edge already present: revert the intern bumps to keep the
-		// "one ref per endpoint per edge" invariant.
+		// "one ref per endpoint per edge" invariant. This branch is
+		// now rare — the fast path above handles the common case —
+		// but it remains correct for the lookupBoth-missed window
+		// (e.g. tail interned between lookupBoth and intern).
 		c.dict.release(tailID)
 		c.dict.release(headID)
 	}
