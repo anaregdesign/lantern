@@ -6,6 +6,7 @@ import (
 
 	"github.com/anaregdesign/lantern/core/cache/graph"
 	coregraph "github.com/anaregdesign/lantern/core/graph"
+	"github.com/anaregdesign/lantern/core/hlc"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
@@ -27,6 +28,21 @@ type Backend interface {
 	AddEdgesWithExpiration(items []graph.EdgeItem[string])
 	PutEdgesWithExpiration(items []graph.EdgeItem[string])
 	DeleteEdges(keys []graph.EdgeKey[string]) int
+
+	// replicated-write entry points used by ApplyMutation (#182).
+	//
+	// AddEdgeWithExpirationContrib records an additive edge contribution
+	// stamped with contribID; re-applying a mutation with the same id is
+	// a no-op (returns false). Local non-replicated writes keep using
+	// AddEdgesWithExpiration with a zero contribID.
+	//
+	// PutVertexWithExpirationHLC / PutEdgeWithExpirationHLC compare ts
+	// against the stored last-write HLC and silently drop strictly-older
+	// writes (LWW). Equal-ts writes apply (idempotent for value-equal
+	// payloads).
+	AddEdgeWithExpirationContrib(tail, head string, w float32, expiration time.Time, contribID graph.ContribID) bool
+	PutVertexWithExpirationHLC(key string, value *pb.Vertex, expiration time.Time, ts hlc.Timestamp) bool
+	PutEdgeWithExpirationHLC(tail, head string, w float32, expiration time.Time, ts hlc.Timestamp) bool
 
 	// neighborhood traversal
 	NeighborWithExpirationsContext(
