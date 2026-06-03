@@ -3,6 +3,7 @@ package graph
 import (
 	"context"
 	"math"
+	"runtime"
 	"sync"
 	"time"
 
@@ -10,6 +11,12 @@ import (
 	"github.com/anaregdesign/lantern/core/collection/pq"
 	"github.com/anaregdesign/lantern/core/graph"
 )
+
+// neighborParallelThreshold is the minimum frontier size that triggers
+// goroutine fan-out in neighborContext. Smaller frontiers are processed
+// sequentially since goroutine startup + mu.Lock round-trips dominate
+// the actual sort work for typical degrees.
+const neighborParallelThreshold = 8
 
 type GraphCache[S comparable, T any] struct {
 	mu         sync.RWMutex
@@ -261,7 +268,6 @@ func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int
 		g.Vertices[seed] = v
 	}
 
-	var wg sync.WaitGroup
 	var mu sync.Mutex
 	// targets / seen are accessed only from the main goroutine (between
 	// wg.Wait barriers), so plain maps suffice — no need for the locked
@@ -280,6 +286,59 @@ func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int
 	// edgeCache.headsOf / docFreq accessors are safe to call directly.
 	// This turns the per-call cost from O(V+E) (snapshotTF + snapshotDF)
 	// into O(sum of degrees of visited tails).
+
+	// processTail computes one tail's top-k neighbor edges and publishes
+	// them to g.Edges (and expirations, if requested) under mu. It is the
+	// shared body used by both the sequential and worker-pool paths.
+	processTail := func(t S) {
+		heads, ok := c.edges.headsOf(t)
+		if !ok || len(heads) == 0 {
+			return
+		}
+		edges := make(pq.SortableMap[S, float32], len(heads))
+		var expRow map[S]time.Time
+		if collectExpirations {
+			expRow = make(map[S]time.Time, len(heads))
+		}
+		for headID, w := range heads {
+			head, ok := c.edges.resolveID(headID)
+			if !ok {
+				continue
+			}
+			sum, latest, nonZero := w.snapshot()
+			if !nonZero {
+				continue
+			}
+			if tfidf {
+				edges[head] = sum / float32(math.Log2(float64(1+c.edges.docFreq(headID))))
+			} else {
+				edges[head] = sum
+			}
+			if expRow != nil {
+				expRow[head] = latest
+			}
+		}
+
+		// Filter light edges; trim expirations to the survivors.
+		edges = edges.Top(k)
+		if expRow != nil {
+			filtered := make(map[S]time.Time, len(edges))
+			for head := range edges {
+				if exp, has := expRow[head]; has {
+					filtered[head] = exp
+				}
+			}
+			expRow = filtered
+		}
+
+		mu.Lock()
+		g.Edges[t] = edges
+		if expRow != nil {
+			expirations[t] = expRow
+		}
+		mu.Unlock()
+	}
+
 	for range step {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
@@ -295,61 +354,37 @@ func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int
 			frontier = append(frontier, t)
 		}
 
-		for _, tail := range frontier {
-			wg.Add(1)
-			go func(t S) {
-				defer wg.Done()
-				heads, ok := c.edges.headsOf(t)
-				if !ok || len(heads) == 0 {
-					return
-				}
-				edges := make(pq.SortableMap[S, float32], len(heads))
-				var expRow map[S]time.Time
-				if collectExpirations {
-					expRow = make(map[S]time.Time, len(heads))
-				}
-				for headID, w := range heads {
-					head, ok := c.edges.resolveID(headID)
-					if !ok {
-						continue
+		// Small frontiers run sequentially: goroutine startup and the
+		// shared mu.Lock round-trip dominate per-tail sort work below the
+		// threshold. Larger frontiers fan out across a bounded worker pool
+		// (capped at GOMAXPROCS) so we keep parallelism without unbounded
+		// goroutine spawning.
+		if len(frontier) < neighborParallelThreshold {
+			for _, tail := range frontier {
+				processTail(tail)
+			}
+		} else {
+			workers := runtime.GOMAXPROCS(0)
+			if workers > len(frontier) {
+				workers = len(frontier)
+			}
+			tailCh := make(chan S, len(frontier))
+			for _, tail := range frontier {
+				tailCh <- tail
+			}
+			close(tailCh)
+			var wg sync.WaitGroup
+			wg.Add(workers)
+			for i := 0; i < workers; i++ {
+				go func() {
+					defer wg.Done()
+					for t := range tailCh {
+						processTail(t)
 					}
-					sum, latest, nonZero := w.snapshot()
-					if !nonZero {
-						continue
-					}
-					if tfidf {
-						edges[head] = sum / float32(math.Log2(float64(1+c.edges.docFreq(headID))))
-					} else {
-						edges[head] = sum
-					}
-					if expRow != nil {
-						expRow[head] = latest
-					}
-				}
-
-				// Filter light edges; trim expirations to the survivors.
-				edges = edges.Top(k)
-				if expRow != nil {
-					filtered := make(map[S]time.Time, len(edges))
-					for head := range edges {
-						if exp, has := expRow[head]; has {
-							filtered[head] = exp
-						}
-					}
-					expRow = filtered
-				}
-
-				mu.Lock()
-				g.Edges[t] = edges
-				if expRow != nil {
-					expirations[t] = expRow
-				}
-				mu.Unlock()
-			}(tail)
+				}()
+			}
+			wg.Wait()
 		}
-
-		// Wait for all goroutines to finish
-		wg.Wait()
 
 		// Mark this step's frontier as processed.
 		for _, t := range frontier {
