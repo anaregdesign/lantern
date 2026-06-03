@@ -27,39 +27,6 @@ func Test_newWeight(t *testing.T) {
 	}
 }
 
-func Test_weightValue_expired(t *testing.T) {
-	type fields struct {
-		value float32
-		ttl   time.Time
-	}
-	tests := []struct {
-		name   string
-		fields fields
-		want   bool
-	}{
-		{
-			name: "weightValue_expired",
-			fields: fields{
-				value: 1,
-				ttl:   time.Now().Add(-time.Minute),
-			},
-			want: true,
-		},
-	}
-	for i := range tests {
-		tt := &tests[i]
-		t.Run(tt.name, func(t *testing.T) {
-			w := weightValue{
-				value:      tt.fields.value,
-				expiration: tt.fields.ttl,
-			}
-			if got := w.expired(); got != tt.want {
-				t.Errorf("expired() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func Test_weight_add(t *testing.T) {
 	type fields struct {
 		values []weightValue

@@ -10,10 +10,6 @@ type weightValue struct {
 	expiration time.Time
 }
 
-func (w weightValue) expired() bool {
-	return time.Now().After(w.expiration)
-}
-
 // weight aggregates additive contributions to an edge, each with its own
 // expiration. It is safe for concurrent use; the cached sum lets readers avoid
 // re-scanning the slice on every call.
