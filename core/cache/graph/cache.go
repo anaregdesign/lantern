@@ -10,6 +10,7 @@ import (
 	"github.com/anaregdesign/lantern/core/cache"
 	"github.com/anaregdesign/lantern/core/collection/pq"
 	"github.com/anaregdesign/lantern/core/graph"
+	"github.com/anaregdesign/lantern/core/hlc"
 )
 
 // neighborParallelThreshold is the minimum frontier size that triggers
@@ -62,6 +63,15 @@ type GraphCache[S comparable, T any] struct {
 	// onto the v1 materialise-and-sort fallback for regression tests and
 	// before/after benchmarks. Production code never disables it.
 	headByTail map[vertexID]*headIndex
+
+	// vertexHLC tracks the last HLC accepted by PutVertexWithExpirationHLC
+	// (the LWW replication apply path; #182). It is only populated when
+	// a replicated write touches a vertex; the local non-replicated path
+	// never reads or writes this map, so the steady-state cost is one
+	// nil check per Put. The map is bounded by the set of vertices the
+	// replication apply path has ever touched — entries are deleted in
+	// lockstep with vertex eviction via the SetOnEvict hook.
+	vertexHLC map[S]hlc.Timestamp
 }
 
 func NewGraphCache[S comparable, T any](defaultTTL time.Duration) *GraphCache[S, T] {
@@ -231,6 +241,70 @@ func (c *GraphCache[S, T]) PutEdgeWithExpiration(tail, head S, w float32, expira
 	c.edges.delete(tail, head)
 	created, tailID, headID := c.edges.addWithExpiration(tail, head, w, expiration)
 	c.onEdgeAddedLocked(created, tailID, headID, head)
+}
+
+// AddEdgeWithExpirationContrib is the dedup-aware additive write used by
+// the replication apply path (#182). A non-zero contribID makes the call
+// idempotent: re-applying the same mutation (e.g. on peer reconnect or
+// duplicate stream delivery) leaves the stored weight unchanged. A zero
+// contribID falls through to ordinary additive semantics, which is the
+// local non-replicated path. Returns applied=true when the contribution
+// was recorded; false means dedup suppressed an already-stored
+// contribution with the same ID.
+func (c *GraphCache[S, T]) AddEdgeWithExpirationContrib(tail, head S, w float32, expiration time.Time, contribID ContribID) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ensureVertexLocked(tail, expiration)
+	c.ensureVertexLocked(head, expiration)
+	created, tailID, headID, applied := c.edges.addWithExpirationContrib(tail, head, w, expiration, contribID)
+	if applied {
+		c.onEdgeAddedLocked(created, tailID, headID, head)
+	} else if created {
+		// Defensive: addWithExpirationContrib cannot create a fresh
+		// bucket and dedup-skip in the same call (the new bucket has
+		// no prior contributions), but if a future refactor breaks
+		// that invariant we still keep side indexes consistent.
+		c.onEdgeAddedLocked(created, tailID, headID, head)
+	}
+	return applied
+}
+
+// PutVertexWithExpirationHLC is the LWW-aware sibling of PutVertexWithExpiration
+// used by the replication apply path. When the stored HLC for key is strictly
+// newer than ts the call is a no-op and returns applied=false. A zero ts
+// always applies (no causality recorded). Local writers continue to use
+// PutVertexWithExpiration; this helper is intentionally narrow to the
+// replicated path so non-replicated workloads pay nothing.
+func (c *GraphCache[S, T]) PutVertexWithExpirationHLC(key S, value T, expiration time.Time, ts hlc.Timestamp) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if existing, ok := c.vertexHLC[key]; ok && ts.Less(existing) {
+		return false
+	}
+	c.putVertexLocked(key, value, expiration)
+	if c.vertexHLC == nil {
+		c.vertexHLC = make(map[S]hlc.Timestamp)
+	}
+	c.vertexHLC[key] = ts
+	return true
+}
+
+// PutEdgeWithExpirationHLC is the LWW-aware sibling of PutEdgeWithExpiration
+// used by the replication apply path. Returns applied=false when the stored
+// edge's last accepted HLC is strictly newer than ts. Endpoint vertices are
+// auto-created (matching PutEdgeWithExpiration) regardless of the LWW
+// outcome — the endpoints exist independently of any individual edge
+// write's causality and must be present for downstream traversal.
+func (c *GraphCache[S, T]) PutEdgeWithExpirationHLC(tail, head S, w float32, expiration time.Time, ts hlc.Timestamp) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ensureVertexLocked(tail, expiration)
+	c.ensureVertexLocked(head, expiration)
+	created, tailID, headID, applied := c.edges.putWithExpirationHLC(tail, head, w, expiration, ts)
+	if created {
+		c.onEdgeAddedLocked(created, tailID, headID, head)
+	}
+	return applied
 }
 
 // DeleteVertex removes the vertex (by key) and returns whether it was present.

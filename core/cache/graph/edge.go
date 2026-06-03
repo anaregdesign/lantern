@@ -3,11 +3,18 @@ package graph
 import (
 	"sync"
 	"time"
+
+	"github.com/anaregdesign/lantern/core/hlc"
 )
 
 type weightValue struct {
 	value      float32
 	expiration time.Time
+	// contribID identifies the originating contribution for replicated
+	// (idempotent) writes. The zero value means "no identity" and disables
+	// dedup; local non-replicated writes always use the zero value so two
+	// distinct local Add calls remain distinct.
+	contribID ContribID
 }
 
 // weight aggregates additive contributions to an edge, each with its own
@@ -24,6 +31,11 @@ type weight struct {
 	// ~2× the working set even on write-only hot edges that no reader
 	// touches between GC ticks, while keeping the amortized add cost O(1).
 	lastFlushLen int
+	// lastHLC is the most recent HLC timestamp accepted by a Put-style
+	// (LWW) write. Zero value means "no LWW write has happened yet" — in
+	// that case the next Put-with-HLC always wins. Used only by the
+	// replication apply path; local writers do not touch it.
+	lastHLC hlc.Timestamp
 }
 
 // weightCompactMin is the floor under the 2× growth trigger. Below this we
@@ -59,11 +71,31 @@ func (w *weight) latestExpiration() time.Time {
 }
 
 func (w *weight) addWithExpiration(value float32, expiration time.Time) {
+	w.addWithExpirationContrib(value, expiration, ContribID{})
+}
+
+// addWithExpirationContrib is the dedup-aware sibling of addWithExpiration.
+// When contribID is non-zero and a live (unexpired) entry with the same
+// contribID is already present, the call is a no-op and returns false —
+// this is the idempotency guarantee the replication apply path (#182)
+// needs when a peer re-delivers a mutation. A zero contribID disables
+// dedup and behaves exactly like addWithExpiration; this is the local
+// (non-replicated) write path.
+func (w *weight) addWithExpirationContrib(value float32, expiration time.Time, contribID ContribID) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if !contribID.IsZero() {
+		now := time.Now()
+		for _, v := range w.values {
+			if v.contribID == contribID && v.expiration.After(now) {
+				return false
+			}
+		}
+	}
 	w.values = append(w.values, weightValue{
 		value:      value,
 		expiration: expiration,
+		contribID:  contribID,
 	})
 	w.sum += value
 
@@ -76,10 +108,35 @@ func (w *weight) addWithExpiration(value float32, expiration time.Time) {
 	if n := len(w.values); n > weightCompactMin && n > 2*w.lastFlushLen {
 		w.flushLocked()
 	}
+	return true
 }
 
 func (w *weight) addWithTTL(value float32, ttl time.Duration) {
 	w.addWithExpiration(value, time.Now().Add(ttl))
+}
+
+// putWithExpirationHLC atomically replaces the contributions with a single
+// (value, expiration) contribution if ts is at or after the most recent
+// HLC accepted by this method. Returns applied=true when the write went
+// through. Used by the replication apply path (#182) to enforce Put-style
+// last-writer-wins semantics across origins; the cached sum and lastHLC
+// move together so subsequent comparisons are consistent.
+//
+// A zero ts is treated as "no causality" and is always applied (the local
+// PutEdge path goes through addWithExpiration / direct mutation instead;
+// this helper is intentionally narrow to the replicated-Put case).
+func (w *weight) putWithExpirationHLC(value float32, expiration time.Time, ts hlc.Timestamp) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if ts.Less(w.lastHLC) {
+		return false
+	}
+	w.values = w.values[:0]
+	w.values = append(w.values, weightValue{value: value, expiration: expiration})
+	w.sum = value
+	w.lastFlushLen = 1
+	w.lastHLC = ts
+	return true
 }
 
 func (w *weight) isZero() bool {
@@ -319,14 +376,30 @@ func (c *edgeCache[S]) resolve(id vertexID) (S, bool) {
 // same edge" are already racy under the slow path; the fast path
 // preserves that contract without introducing new visibility issues.
 func (c *edgeCache[S]) addWithExpiration(tail, head S, w float32, expiration time.Time) (created bool, tailID, headID vertexID) {
+	created, tailID, headID, _ = c.addWithExpirationContrib(tail, head, w, expiration, ContribID{})
+	return
+}
+
+// addWithExpirationContrib is the dedup-aware sibling used by the
+// replication apply path. When contribID is non-zero and the same
+// contribution has already been recorded on the (tail, head) edge, the
+// call is an exact no-op (no intern, no append, no bucket creation) and
+// returns applied=false. A zero contribID falls through to the legacy
+// additive semantics.
+//
+// The dict-refcount and bucket-creation accounting mirror addWithExpiration
+// so callers can drive both helpers through onEdgeAddedLocked without
+// branching on the dedup outcome — applied=false simply means "skip
+// downstream side indexes too".
+func (c *edgeCache[S]) addWithExpirationContrib(tail, head S, w float32, expiration time.Time, contribID ContribID) (created bool, tailID, headID vertexID, applied bool) {
 	if c.dict != nil {
 		if tID, hID, okT, okH := c.dict.lookupBoth(tail, head); okT && okH {
 			c.mu.RLock()
 			if heads, ok := c.tf[tID]; ok {
 				if edge, ok := heads[hID]; ok {
 					c.mu.RUnlock()
-					edge.addWithExpiration(w, expiration)
-					return false, tID, hID
+					applied = edge.addWithExpirationContrib(w, expiration, contribID)
+					return false, tID, hID, applied
 				}
 			}
 			c.mu.RUnlock()
@@ -364,8 +437,8 @@ func (c *edgeCache[S]) addWithExpiration(tail, head S, w float32, expiration tim
 		c.dict.release(headID)
 	}
 
-	edge.addWithExpiration(w, expiration)
-	return created, tailID, headID
+	applied = edge.addWithExpirationContrib(w, expiration, contribID)
+	return created, tailID, headID, applied
 }
 
 func (c *edgeCache[S]) internEndpoints(tail, head S) (vertexID, vertexID) {
@@ -373,6 +446,53 @@ func (c *edgeCache[S]) internEndpoints(tail, head S) (vertexID, vertexID) {
 		return 0, 0
 	}
 	return c.dict.intern(tail), c.dict.intern(head)
+}
+
+// putWithExpirationHLC is the LWW-aware sibling of addWithExpiration used
+// by the replication apply path (#182) for replicated Put-style writes.
+// It creates the (tail, head) bucket if absent (returning created=true)
+// and then asks the underlying weight to apply the contribution under
+// last-writer-wins semantics. applied=false means the stored last HLC was
+// strictly newer than ts and the write was skipped — callers must still
+// honour the bucket-creation return so dict refcounts and side indexes
+// stay consistent.
+func (c *edgeCache[S]) putWithExpirationHLC(tail, head S, w float32, expiration time.Time, ts hlc.Timestamp) (created bool, tailID, headID vertexID, applied bool) {
+	if c.dict != nil {
+		if tID, hID, okT, okH := c.dict.lookupBoth(tail, head); okT && okH {
+			c.mu.RLock()
+			if heads, ok := c.tf[tID]; ok {
+				if edge, ok := heads[hID]; ok {
+					c.mu.RUnlock()
+					applied = edge.putWithExpirationHLC(w, expiration, ts)
+					return false, tID, hID, applied
+				}
+			}
+			c.mu.RUnlock()
+		}
+	}
+
+	tailID, headID = c.internEndpoints(tail, head)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	heads, ok := c.tf[tailID]
+	if !ok {
+		heads = make(map[vertexID]*weight)
+		c.tf[tailID] = heads
+	}
+	edge, existed := heads[headID]
+	if !existed {
+		edge = newWeight()
+		heads[headID] = edge
+		c.df[headID]++
+		created = true
+	} else if c.dict != nil {
+		c.dict.release(tailID)
+		c.dict.release(headID)
+	}
+	applied = edge.putWithExpirationHLC(w, expiration, ts)
+	return created, tailID, headID, applied
 }
 
 func (c *edgeCache[S]) addWithTTL(tail, head S, w float32, ttl time.Duration) {
