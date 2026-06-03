@@ -3,7 +3,7 @@ package graph
 import "time"
 
 // VertexItem is a single (key, value, expiration) tuple supplied to
-// AddVerticesWithExpiration.
+// PutVerticesWithExpiration.
 type VertexItem[S comparable, T any] struct {
 	Key        S
 	Value      T
@@ -25,11 +25,11 @@ type EdgeKey[S comparable] struct {
 	Head S
 }
 
-// AddVerticesWithExpiration writes every supplied vertex under a single
+// PutVerticesWithExpiration writes every supplied vertex under a single
 // write lock. Concurrent readers observe either the pre-batch or the
 // post-batch state — never an intermediate snapshot where some keys are
 // present and others are not.
-func (c *GraphCache[S, T]) AddVerticesWithExpiration(items []VertexItem[S, T]) {
+func (c *GraphCache[S, T]) PutVerticesWithExpiration(items []VertexItem[S, T]) {
 	if len(items) == 0 {
 		return
 	}

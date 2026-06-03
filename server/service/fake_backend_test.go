@@ -21,7 +21,7 @@ type fakeBackend struct {
 	edges       map[string]map[string]float32
 	neighborErr error
 
-	addVerticesCalls int
+	putVerticesCalls int
 	deleteVertices   int
 	addEdgesCalls    int
 	putEdgesCalls    int
@@ -40,8 +40,8 @@ func (f *fakeBackend) GetVertex(key string) (*pb.Vertex, bool) {
 	return v, ok
 }
 
-func (f *fakeBackend) AddVerticesWithExpiration(items []graph.VertexItem[string, *pb.Vertex]) {
-	f.addVerticesCalls++
+func (f *fakeBackend) PutVerticesWithExpiration(items []graph.VertexItem[string, *pb.Vertex]) {
+	f.putVerticesCalls++
 	for _, it := range items {
 		f.vertices[it.Key] = it.Value
 	}
@@ -134,8 +134,8 @@ func TestLanternService_FakeBackend_PutGetDelete(t *testing.T) {
 	if _, err := svc.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{v}}); err != nil {
 		t.Fatalf("PutVertices: %v", err)
 	}
-	if fb.addVerticesCalls != 1 {
-		t.Errorf("addVerticesCalls = %d, want 1", fb.addVerticesCalls)
+	if fb.putVerticesCalls != 1 {
+		t.Errorf("putVerticesCalls = %d, want 1", fb.putVerticesCalls)
 	}
 
 	resp, err := svc.GetVertex(ctx, &pb.GetVertexRequest{Key: "a"})

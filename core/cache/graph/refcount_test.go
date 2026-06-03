@@ -13,7 +13,7 @@ import (
 func TestDictRefcount_VertexPutIsIdempotent(t *testing.T) {
 	c := NewGraphCache[string, int](time.Minute)
 	for i := 0; i < 50; i++ {
-		c.AddVertexWithExpiration("k", i, time.Now().Add(time.Minute))
+		c.PutVertexWithExpiration("k", i, time.Now().Add(time.Minute))
 	}
 	if got := c.dict.len(); got != 1 {
 		t.Fatalf("dict.len after 50 puts of same key = %d, want 1", got)
@@ -69,7 +69,7 @@ func TestDictRefcount_AddEdgeAdditiveBumps(t *testing.T) {
 // references.
 func TestDictRefcount_DeleteReleases(t *testing.T) {
 	c := NewGraphCache[string, int](time.Minute)
-	c.AddVertexWithExpiration("v", 1, time.Now().Add(time.Minute))
+	c.PutVertexWithExpiration("v", 1, time.Now().Add(time.Minute))
 	if got := c.dict.len(); got != 1 {
 		t.Fatalf("dict.len after add = %d, want 1", got)
 	}
@@ -106,7 +106,7 @@ func TestDictRefcount_InsertDeleteInvariant(t *testing.T) {
 		k2 := keys[r.Intn(len(keys))]
 		switch r.Intn(5) {
 		case 0:
-			c.AddVertexWithExpiration(k1, step, time.Now().Add(time.Minute))
+			c.PutVertexWithExpiration(k1, step, time.Now().Add(time.Minute))
 		case 1:
 			c.AddEdgeWithExpiration(k1, k2, 1, time.Now().Add(time.Minute))
 		case 2:
@@ -151,7 +151,7 @@ func TestDictRefcount_FullExpiryFreesAll(t *testing.T) {
 
 	for i := 0; i < N; i++ {
 		k := fmt.Sprintf("v%d", i)
-		c.AddVertexWithExpiration(k, i, deadline)
+		c.PutVertexWithExpiration(k, i, deadline)
 	}
 	for i := 0; i < N; i++ {
 		for j := 0; j < 3; j++ {

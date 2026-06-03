@@ -146,7 +146,7 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 			Expiration: v.GetExpiration().AsTime(),
 		})
 	}
-	s.cache.AddVerticesWithExpiration(items)
+	s.cache.PutVerticesWithExpiration(items)
 	return &pb.PutVerticesResponse{Written: int32(len(items))}, nil
 }
 

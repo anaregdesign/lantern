@@ -19,7 +19,7 @@ import (
 type Backend interface {
 	// vertex reads/writes
 	GetVertex(key string) (*pb.Vertex, bool)
-	AddVerticesWithExpiration(items []graph.VertexItem[string, *pb.Vertex])
+	PutVerticesWithExpiration(items []graph.VertexItem[string, *pb.Vertex])
 	DeleteVertices(keys []string) int
 
 	// edge reads/writes

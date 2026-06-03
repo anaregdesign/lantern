@@ -63,7 +63,7 @@ func populate(b *testing.B, c *GraphCache[string, string], s benchScale) []strin
 	for i, k := range keys {
 		vs[i] = VertexItem[string, string]{Key: k, Value: "", Expiration: expiration}
 	}
-	c.AddVerticesWithExpiration(vs)
+	c.PutVerticesWithExpiration(vs)
 
 	es := make([]EdgeItem[string], 0, s.vertices*s.degree)
 	for i := 0; i < s.vertices; i++ {
