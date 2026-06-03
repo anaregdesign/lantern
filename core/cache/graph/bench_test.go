@@ -204,3 +204,26 @@ func BenchmarkNeighbor_Large(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkGCFlush exercises the fused GC sweep (zero-weight + dangling) in a
+// single walk over the edge map. Populates the graph, deletes a quarter of
+// the vertices to create dangling edges, then runs c.flush(). Should show
+// no O(E) snapshot allocation per tick.
+func BenchmarkGCFlush(b *testing.B) {
+	for _, s := range smallScales(testing.Short()) {
+		s := s
+		b.Run(s.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				b.StopTimer()
+				c := NewGraphCache[string, string](time.Hour)
+				keys := populate(b, c, s)
+				for j := 0; j < s.vertices; j += 4 {
+					c.DeleteVertex(keys[j])
+				}
+				b.StartTimer()
+				_, _ = c.flush()
+			}
+		})
+	}
+}
