@@ -31,7 +31,7 @@ func initializeApp() (*App, error) {
 	}
 	lifecycleConfig := provider.NewLifecycleConfig(config)
 	healthServer := provider.NewHealthServer()
-	lanternServer := service.NewLanternServer(lanternService, server, listener, logger, lifecycleConfig, healthServer)
+	lanternServer := service.NewLanternServer(lanternService, server, listener, logger, lifecycleConfig, healthServer, graphCache)
 	metricsServer := provider.NewMetricsServer(config, registry, logger)
 	tracing, err := provider.NewTracing(logger)
 	if err != nil {
