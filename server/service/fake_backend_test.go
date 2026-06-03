@@ -240,6 +240,37 @@ func (f *fakeBackend) PutEdgeWithExpirationHLC(tail, head string, w float32, _ t
 	return true
 }
 
+// Tombstone-aware entry points (#183). The fake intentionally collapses
+// the tombstone bookkeeping into the underlying delete; service-level
+// tests that exercise tombstone semantics use the real backend.
+func (f *fakeBackend) AddEdgeWithExpirationContribHLC(tail, head string, w float32, exp time.Time, c graph.ContribID, _ hlc.Timestamp) bool {
+	return f.AddEdgeWithExpirationContrib(tail, head, w, exp, c)
+}
+
+func (f *fakeBackend) DeleteVertexHLC(key string, _ hlc.Timestamp, _ time.Time) bool {
+	return f.DeleteVertices([]string{key}) > 0
+}
+
+func (f *fakeBackend) DeleteVerticesHLC(keys []string, _ hlc.Timestamp, _ time.Time) int {
+	return f.DeleteVertices(keys)
+}
+
+func (f *fakeBackend) DeleteEdgeHLC(tail, head string, _ hlc.Timestamp, _ time.Time) bool {
+	return f.DeleteEdges([]graph.EdgeKey[string]{{Tail: tail, Head: head}}) > 0
+}
+
+func (f *fakeBackend) DeleteEdgesHLC(keys []graph.EdgeKey[string], _ hlc.Timestamp, _ time.Time) int {
+	return f.DeleteEdges(keys)
+}
+
+func (f *fakeBackend) DeleteByPrefixHLC(ctx context.Context, prefix string, limit uint32, _ hlc.Timestamp, _ time.Time) (int, error) {
+	lim := 0
+	if limit > 0 {
+		lim = int(limit)
+	}
+	return f.DeleteByPrefix(ctx, prefix, lim), nil
+}
+
 func TestLanternService_FakeBackend_PutGetDelete(t *testing.T) {
 	fb := newFakeBackend()
 	svc := NewLanternService(fb)

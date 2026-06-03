@@ -44,6 +44,21 @@ type Backend interface {
 	PutVertexWithExpirationHLC(key string, value *pb.Vertex, expiration time.Time, ts hlc.Timestamp) bool
 	PutEdgeWithExpirationHLC(tail, head string, w float32, expiration time.Time, ts hlc.Timestamp) bool
 
+	// tombstone-aware Delete*/Add* entry points used by ApplyMutation
+	// when LANTERN_TOMBSTONE_TTL is configured (#183). DeleteVertexHLC,
+	// DeleteVerticesHLC, DeleteEdgeHLC, DeleteEdgesHLC and
+	// DeleteByPrefixHLC stamp a tombstone keyed on the deleted entry so
+	// late-arriving Put*/Add* with strictly-older HLC are rejected for
+	// the tombstone window. AddEdgeWithExpirationContribHLC is the HLC
+	// sibling of AddEdgeWithExpirationContrib that consults the edge
+	// tombstone store before applying.
+	AddEdgeWithExpirationContribHLC(tail, head string, w float32, expiration time.Time, contribID graph.ContribID, ts hlc.Timestamp) bool
+	DeleteVertexHLC(key string, ts hlc.Timestamp, expiration time.Time) bool
+	DeleteVerticesHLC(keys []string, ts hlc.Timestamp, expiration time.Time) int
+	DeleteEdgeHLC(tail, head string, ts hlc.Timestamp, expiration time.Time) bool
+	DeleteEdgesHLC(keys []graph.EdgeKey[string], ts hlc.Timestamp, expiration time.Time) int
+	DeleteByPrefixHLC(ctx context.Context, prefix string, limit uint32, ts hlc.Timestamp, expiration time.Time) (int, error)
+
 	// neighborhood traversal
 	NeighborWithExpirationsContext(
 		ctx context.Context,
