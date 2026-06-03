@@ -4,6 +4,8 @@
 package main
 
 import (
+	"github.com/anaregdesign/lantern/core/cache/graph"
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
 	"github.com/google/wire"
@@ -28,6 +30,8 @@ func initializeApp() (*App, error) {
 		service.NewLanternService,
 		service.NewLanternServer,
 		wire.Bind(new(service.HealthSetter), new(*health.Server)),
+		wire.Bind(new(service.Backend), new(*graph.GraphCache[string, *pb.Vertex])),
+		wire.Bind(new(service.Watcher), new(*graph.GraphCache[string, *pb.Vertex])),
 		registerHealthAndReflection,
 		newApp,
 	)

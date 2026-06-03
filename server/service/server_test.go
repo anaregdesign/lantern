@@ -65,6 +65,7 @@ func TestLanternServer_Run_FlipsHealthOnServeReturn(t *testing.T) {
 		slog.New(slog.NewTextHandler(discardWriter{}, nil)),
 		service.LifecycleConfig{GCInterval: time.Hour, ShutdownTimeout: time.Second},
 		hs,
+		cache,
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

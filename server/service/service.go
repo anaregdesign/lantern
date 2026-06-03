@@ -28,14 +28,15 @@ const ServiceName = "graph.v1.LanternService"
 // propagate cancellation; the early ctx.Err() checks let us return a clean
 // Canceled / DeadlineExceeded status when a client already gave up.
 //
-// NOTE: the constructor keeps the concrete generic type because wire cannot
-// synthesize type arguments for generic providers.
+// The service depends on the narrow Backend interface (see backend.go); a
+// wire binding maps it to *graph.GraphCache in production. Tests can supply
+// a fake without standing up the real cache.
 type LanternService struct {
 	pb.UnimplementedLanternServiceServer
-	cache *graph.GraphCache[string, *pb.Vertex]
+	cache Backend
 }
 
-func NewLanternService(cache *graph.GraphCache[string, *pb.Vertex]) *LanternService {
+func NewLanternService(cache Backend) *LanternService {
 	return &LanternService{cache: cache}
 }
 
@@ -308,6 +309,13 @@ type LanternServer struct {
 	gcInterval      time.Duration
 	shutdownTimeout time.Duration
 	health          HealthSetter
+	watcher         Watcher
+}
+
+// Watcher is the lifecycle hook LanternServer uses to drive the cache GC
+// loop. *graph.GraphCache satisfies it; tests can stub it.
+type Watcher interface {
+	Watch(ctx context.Context, interval time.Duration)
 }
 
 // HealthSetter is the narrow surface of *health.Server that LanternServer
@@ -331,6 +339,7 @@ func NewLanternServer(
 	logger *slog.Logger,
 	cfg LifecycleConfig,
 	hs HealthSetter,
+	watcher Watcher,
 ) *LanternServer {
 	return &LanternServer{
 		service:         service,
@@ -340,6 +349,7 @@ func NewLanternServer(
 		gcInterval:      cfg.GCInterval,
 		shutdownTimeout: cfg.ShutdownTimeout,
 		health:          hs,
+		watcher:         watcher,
 	}
 }
 
@@ -376,7 +386,7 @@ func (s *LanternServer) Run(ctx context.Context) error {
 		}
 	}()
 
-	go s.service.cache.Watch(ctx, s.gcInterval)
+	go s.watcher.Watch(ctx, s.gcInterval)
 
 	s.logger.Info("grpc server starting",
 		slog.String("addr", s.listener.Addr().String()),
