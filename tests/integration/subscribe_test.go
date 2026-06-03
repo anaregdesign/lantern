@@ -58,7 +58,7 @@ func TestSubscribe_E2E_100Writes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient(sub): %v", err)
 	}
-	defer subConn.Close()
+	defer func() { _ = subConn.Close() }()
 	subCli := pb.NewLanternReplicationServiceClient(subConn)
 
 	// Writer (SDK).
@@ -70,7 +70,7 @@ func TestSubscribe_E2E_100Writes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLantern: %v", err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
