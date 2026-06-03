@@ -115,7 +115,10 @@ func newLanternReplicationService(
 }
 
 func (a *App) Run(ctx context.Context) error {
-	a.health.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	// The overall ("") gRPC health entry is owned by the readiness Gate
+	// (#188): in single-instance mode it is already SERVING; in
+	// multi-peer mode it stays NOT_SERVING until bootstrap completes
+	// and replication lag is within LANTERN_MAX_REPLICATION_LAG.
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return a.grpc.Run(gctx) })
