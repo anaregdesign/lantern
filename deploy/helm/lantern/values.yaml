@@ -1,0 +1,133 @@
+# Default values for lantern.
+# Tier-A HA topology: 3-replica StatefulSet + headless Service + PDB.
+# Per RFC #175 D7. Set replicaCount=1 to fall back to single-instance
+# mode (no peer pump, no readiness gating).
+
+image:
+  repository: ghcr.io/anaregdesign/lantern
+  tag: ""        # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# Number of lantern pods. 3 is the recommended Tier-A default.
+# Use 1 for single-instance / dev (peer pump becomes a no-op when only
+# the local pod resolves).
+replicaCount: 3
+
+# StatefulSet update strategy. RollingUpdate is required for the PDB
+# minAvailable guarantee to hold during upgrades.
+updateStrategy:
+  type: RollingUpdate
+
+# PodDisruptionBudget for voluntary disruption (node drains, upgrades).
+# minAvailable: 2 keeps quorum-style availability with 3 replicas.
+# Set enabled: false for single-instance deployments.
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+service:
+  # ClusterIP service exposes the gRPC port to clients.
+  port: 6380
+  # Headless service drives DNS-based peer discovery (#190).
+  # No ClusterIP — DNS returns one A per ready pod.
+  headlessName: ""   # default: <fullname>-headless
+  type: ClusterIP
+  annotations: {}
+
+# Metrics endpoint (Prometheus /metrics + /healthz + /readyz).
+metrics:
+  port: 9090
+  serviceMonitor:
+    enabled: false
+    namespace: ""
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+
+# Replication / peer discovery. See docs/replication.md §9.1.
+replication:
+  discovery:
+    mode: dns                   # static | dns
+    # DNS hostname the pump resolves to peer IPs. Empty => template
+    # auto-fills with the headless Service FQDN.
+    dnsName: ""
+    defaultPort: "6380"         # appended to each resolved IP
+    intervalMs: 10000           # 0 = resolve once at startup
+  # Static fallback list, used when discovery.mode == "static".
+  peers: []
+  # Cap per-(peer,origin) replication lag before readiness flips false.
+  maxLag: 10000
+
+# Anti-entropy settings (background reconciliation). See #186.
+antiEntropy:
+  intervalMs: 30000
+  subscribeTimeoutMs: 30000
+
+# Graph cache TTL defaults (seconds).
+cache:
+  defaultTtlSeconds: 3600
+
+# Liveness/readiness probes.
+probes:
+  liveness:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 6
+  readiness:
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+    successThreshold: 1
+
+# Resource requests/limits.
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: "2"
+    memory: 2Gi
+
+# Extra environment variables (raw env list, appended after the
+# templated ones). Useful for TLS_* / RATE_LIMIT_* / LOG_* tweaks.
+extraEnv: []
+
+# Pod scheduling.
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Soft anti-affinity by default — schedule pods on different nodes
+# when possible. Set to {} to disable.
+defaultPodAntiAffinity: true
+
+# Pod security.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  fsGroup: 65532
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+  readOnlyRootFilesystem: true
+
+# Logging.
+log:
+  level: info
+  format: json
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+podLabels: {}

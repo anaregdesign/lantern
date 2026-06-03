@@ -1,0 +1,131 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "lantern.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lantern.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "lantern.headlessName" . }}
+  replicas: {{ .Values.replicaCount }}
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: {{ .Values.updateStrategy.type }}
+  selector:
+    matchLabels:
+      {{- include "lantern.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "lantern.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "lantern.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: 30
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      affinity:
+        {{- if .Values.affinity }}
+        {{- toYaml .Values.affinity | nindent 8 }}
+        {{- else if .Values.defaultPodAntiAffinity }}
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "lantern.selectorLabels" . | nindent 20 }}
+        {{- end }}
+      containers:
+        - name: lantern
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: grpc
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+          env:
+            - name: LANTERN_PORT
+              value: {{ .Values.service.port | quote }}
+            - name: LANTERN_METRICS_ADDR
+              value: {{ printf ":%v" .Values.metrics.port | quote }}
+            - name: LANTERN_LOG_LEVEL
+              value: {{ .Values.log.level | quote }}
+            - name: LANTERN_LOG_FORMAT
+              value: {{ .Values.log.format | quote }}
+            - name: LANTERN_DEFAULT_TTL_SECONDS
+              value: {{ .Values.cache.defaultTtlSeconds | quote }}
+            - name: LANTERN_PEER_DISCOVERY
+              value: {{ .Values.replication.discovery.mode | quote }}
+            {{- if eq .Values.replication.discovery.mode "dns" }}
+            - name: LANTERN_PEER_DNS_NAME
+              value: {{ include "lantern.discoveryDNSName" . | quote }}
+            - name: LANTERN_PEER_DEFAULT_PORT
+              value: {{ .Values.replication.discovery.defaultPort | quote }}
+            - name: LANTERN_PEER_DISCOVERY_INTERVAL_MS
+              value: {{ .Values.replication.discovery.intervalMs | quote }}
+            {{- end }}
+            {{- if and (eq .Values.replication.discovery.mode "static") .Values.replication.peers }}
+            - name: LANTERN_PEERS
+              value: {{ join "," .Values.replication.peers | quote }}
+            {{- end }}
+            - name: LANTERN_MAX_REPLICATION_LAG
+              value: {{ .Values.replication.maxLag | quote }}
+            - name: LANTERN_ANTI_ENTROPY_INTERVAL_MS
+              value: {{ .Values.antiEntropy.intervalMs | quote }}
+            - name: LANTERN_ANTI_ENTROPY_SUBSCRIBE_TIMEOUT_MS
+              value: {{ .Values.antiEntropy.subscribeTimeoutMs | quote }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+            successThreshold: {{ .Values.probes.readiness.successThreshold }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
