@@ -86,6 +86,20 @@ func newLanternService(
 		WithLogger(logger)
 }
 
+// newLanternReplicationService wires the streaming replication surface so it
+// shares the same *mutationlog.Log as the write path. Metrics are attached
+// here (rather than inside the service) to keep service/ free of
+// provider/metrics imports.
+func newLanternReplicationService(
+	log *mutationlog.Log,
+	logger *slog.Logger,
+	dm *domainmetrics.DomainMetrics,
+) *service.LanternReplicationService {
+	return service.NewLanternReplicationService(log).
+		WithMetrics(dm).
+		WithLogger(logger)
+}
+
 func (a *App) Run(ctx context.Context) error {
 	a.health.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 

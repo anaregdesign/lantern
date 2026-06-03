@@ -40,6 +40,7 @@ func initializeApp() (*App, error) {
 		provider.NewMetricsServer,
 		provider.NewLifecycleConfig,
 		newLanternService,
+		newLanternReplicationService,
 		service.NewLanternServer,
 		wire.Bind(new(service.HealthSetter), new(*health.Server)),
 		wire.Bind(new(service.Backend), new(*graph.GraphCache[string, *pb.Vertex])),

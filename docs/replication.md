@@ -276,6 +276,28 @@ seq, or (b) the consumer's send buffer overflows. In both cases the pump
 (§9) must re-bootstrap via `Snapshot` and resume `Subscribe` from the
 snapshot's cutoff seq.
 
+Handler implementation notes (issue #180):
+
+- The handler is `service.LanternReplicationService` in
+  `server/service/replication.go`; it is wired in `server/cmd/wire.go`
+  alongside `LanternService` and shares the same `*mutationlog.Log` as
+  the write path.
+- The handler maps `mutationlog.ErrGapped` to `codes.FailedPrecondition`
+  with the reason `"gapped"`, both at subscribe time (initial check) and
+  when the in-flight channel is closed by the log's slow-subscriber
+  eviction. This matches the wire contract above.
+- The handler shallow-copies the buffered `*pb.Mutation` into the
+  outbound `SubscribeResponse.Mutation` while overwriting `Seq` with
+  `entry.Seq`. The write path stores `Seq=0` on the buffered Mutation;
+  only Subscribe stamps it. Peer-pump apply (`#182`) must therefore
+  read `Seq` from the streamed envelope.
+- Health: a separate service name `graph.v1.LanternReplicationService`
+  is registered with the grpc health server and flipped to
+  `NOT_SERVING` on shutdown alongside `LanternService`.
+- Metrics: `lantern_subscribe_active_streams` (gauge) and
+  `lantern_subscribe_dropped_total{reason}` (counter; `reason ∈ {gapped,
+  send_failed}`) are pre-rendered in `server/metrics/metrics.go`.
+
 ### 8.3 Snapshot (server streaming)
 
 ```proto
