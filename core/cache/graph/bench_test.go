@@ -227,3 +227,17 @@ func BenchmarkGCFlush(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkWeight_AddOnly exercises the amortized-compaction path: every add
+// targets a single weight with already-expired entries, forcing flushLocked
+// to fire at the trigger boundary. Cost must stay roughly O(1) per op rather
+// than blowing up as the slice grows.
+func BenchmarkWeight_AddOnly(b *testing.B) {
+	w := newWeight()
+	past := time.Now().Add(-time.Hour)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		w.addWithExpiration(1, past)
+	}
+}
