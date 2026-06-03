@@ -43,6 +43,7 @@ type LanternService struct {
 	logger       *slog.Logger
 	tombstoneTTL time.Duration
 	origins      *originStateTracker
+	onApplied    func(origin string)
 }
 
 // ScanLimits caps the per-call pagination knobs for the prefix RPCs. It is
@@ -104,12 +105,26 @@ func (s *LanternService) WithLogger(l *slog.Logger) *LanternService {
 }
 
 // WithTombstoneTTL configures the maximum retention window for delete
+
+// WithTombstoneTTL configures the maximum retention window for delete
 // tombstones AND the upper bound on caller-supplied Expiration on the
 // Add*/Put* RPCs (#183). When d <= 0 the clamp is disabled (legacy
 // behaviour) and Delete handlers fall back to the non-HLC backend path.
 // Wired from LANTERN_TOMBSTONE_TTL via provider.ReplicationConfig.
 func (s *LanternService) WithTombstoneTTL(d time.Duration) *LanternService {
 	s.tombstoneTTL = d
+	return s
+}
+
+// WithAppliedHook registers a callback invoked after every successful
+// remote-mutation apply (ApplyMutation path). The hook receives the
+// lowercase-hex encoding of the originating HLC NodeID and is used by
+// provider/metrics to bump lantern_replication_applied_total{origin}.
+// A nil hook (the default) disables the callback. The hook MUST be
+// non-blocking; the apply path holds no locks but synchronously waits
+// for the callback to return.
+func (s *LanternService) WithAppliedHook(f func(origin string)) *LanternService {
+	s.onApplied = f
 	return s
 }
 

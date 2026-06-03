@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"time"
 
 	"github.com/anaregdesign/lantern/core/cache/graph"
@@ -180,6 +181,9 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		var nid hlc.NodeID
 		copy(nid[:], origin)
 		s.origins.Record(nid, seq, ts)
+		if s.onApplied != nil {
+			s.onApplied(hex.EncodeToString(nid[:]))
+		}
 	}
 	return nil
 }
