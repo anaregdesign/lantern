@@ -254,6 +254,57 @@ func main() {
 		log.Fatal(err)
 	}
 
+	/*
+		Prefix scan: enumerate, count, and bulk-delete vertices whose key
+		starts with a common prefix. Requires the server to have the prefix
+		index enabled (production wiring does this automatically).
+
+		IMPORTANT: when seeding vertices for a scan, ALWAYS pass a non-zero
+		Expiration (or use the helper Lantern.PutVertex with a positive TTL).
+		Without it, the proto Expiration defaults to the zero timestamp
+		(1970-01-01) and the cache treats every vertex as born-expired —
+		CountVerticesByPrefix will return a non-zero count (radix only) while
+		ScanVertices silently yields nothing.
+	*/
+	exp := time.Now().Add(1 * time.Hour)
+	prefixSeed := []client.VertexInput{
+		{Key: "users/alice", Value: "alice", Expiration: exp},
+		{Key: "users/bob", Value: "bob", Expiration: exp},
+		{Key: "users/carol", Value: "carol", Expiration: exp},
+		{Key: "orders/1", Value: 1, Expiration: exp},
+		{Key: "orders/2", Value: 2, Expiration: exp},
+	}
+	if err := cli.PutVertices(ctx, prefixSeed); err != nil {
+		log.Fatal(err)
+	}
+
+	if n, err := cli.CountVerticesByPrefix(ctx, "users/"); err == nil {
+		log.Printf("count users/ = %d\n", n) // 3
+	}
+
+	// Single page scan with explicit cursor.
+	if vs, next, err := cli.ScanVertices(ctx, "users/", client.WithScanLimit(2)); err == nil {
+		log.Printf("first page returned %d vertices; more=%v", len(vs), len(next) > 0)
+	}
+
+	// Iterator covering every page.
+	total := 0
+	for batch, err := range cli.ScanVerticesAll(ctx, "users/", 2) {
+		if err != nil {
+			log.Fatal(err)
+		}
+		total += len(batch)
+	}
+	log.Printf("iterator total = %d\n", total) // 3
+
+	// Dry-run delete first, then real delete.
+	if matched, err := cli.DeleteVerticesByPrefix(ctx, "orders/", client.WithDryRun()); err == nil {
+		log.Printf("would delete %d orders/ vertices\n", matched)
+	}
+	if deleted, err := cli.DeleteVerticesByPrefix(ctx, "orders/"); err == nil {
+		log.Printf("deleted %d orders/ vertices\n", deleted)
+	}
+
 	// illuminate from a with step 2 and k 2
 	if graph, err := cli.Illuminate(ctx, "a", client.WithStep(2), client.WithK(2)); err == nil {
 		if jsonString, err := json.MarshalIndent(graph, "", "\t"); err == nil {
