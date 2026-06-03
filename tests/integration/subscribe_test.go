@@ -39,10 +39,12 @@ func TestSubscribe_E2E_100Writes(t *testing.T) {
 	t.Cleanup(func() { _ = log.Close() })
 	clock := hlc.New(hlc.NodeID{0xAA, 0xBB}, hlc.Options{})
 
-	svc := service.NewLanternService(cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)).
+	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
+
+	svc := service.NewLanternService(cache).
 		WithReplication(log, clock, nil)
 	pb.RegisterLanternServiceServer(srv, svc)
-	pb.RegisterLanternReplicationServiceServer(srv, service.NewLanternReplicationService(log))
+	pb.RegisterLanternReplicationServiceServer(srv, service.NewLanternReplicationService(log, cache, clock))
 
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(srv.Stop)

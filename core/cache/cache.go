@@ -145,6 +145,28 @@ func (c *Cache[S, T]) Count() int {
 	return len(c.cache)
 }
 
+// Range invokes fn for every live (non-expired) entry. fn returns false to
+// stop iteration early; the boolean return mirrors the iter.Seq2 contract
+// callers may already be wired against. Range takes c.mu.RLock for the
+// duration of the walk, so fn MUST NOT call back into the same Cache
+// (which would acquire c.mu.Lock and deadlock with the reader-priority
+// blockage described in #202). The intended consumer is the replication
+// snapshot path (#184), which iterates under the GraphCache write lock
+// where this constraint is trivially satisfied.
+func (c *Cache[S, T]) Range(fn func(key S, value T, expiration time.Time) bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	now := time.Now()
+	for k, v := range c.cache {
+		if v.expiration.Before(now) {
+			continue
+		}
+		if !fn(k, v.value, v.expiration) {
+			return
+		}
+	}
+}
+
 // Flush evicts every entry whose TTL has passed. It returns the number of
 // entries removed so callers (e.g. server-side TTL metrics) can record
 // expiration counts without scanning the cache again. When an OnEvict

@@ -163,6 +163,34 @@ func (w *weight) snapshot() (sum float32, latest time.Time, nonZero bool) {
 	return w.sum, latest, w.sum != 0
 }
 
+// snapshotEntry returns a copy of the bucket's live contributions, the
+// recorded lastHLC, and whether any live contributions remain — all under
+// a single lock. Used by the replication snapshot path (#184) to preserve
+// per-contribution decomposition (so the receiver's ContribID dedup stays
+// effective when the live tail re-delivers the same writes).
+//
+// `now` is passed in so an entire snapshot pass observes a single
+// reference time and edges decide expiration consistently.
+func (w *weight) snapshotEntry(now time.Time) ([]SnapshotContribution, hlc.Timestamp, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := make([]SnapshotContribution, 0, len(w.values))
+	for _, v := range w.values {
+		if !v.expiration.After(now) {
+			continue
+		}
+		out = append(out, SnapshotContribution{
+			Weight:     v.value,
+			Expiration: v.expiration,
+			ContribID:  v.contribID,
+		})
+	}
+	if len(out) == 0 {
+		return nil, w.lastHLC, false
+	}
+	return out, w.lastHLC, true
+}
+
 // flushLocked compacts expired entries in place and recomputes the cached sum.
 // Caller must hold w.mu.
 func (w *weight) flushLocked() {
@@ -322,6 +350,33 @@ func (c *edgeCache[S]) snapshotTF() map[S]map[S]*weight {
 		out[tail] = row
 	}
 	return out
+}
+
+// rangeBuckets invokes fn for every (tail, head, *weight) live in the
+// cache, resolving both endpoints back to S under the edgeCache RLock.
+// fn returns false to stop iteration early. Used by the replication
+// snapshot path (#184); the per-bucket *weight pointer is safe to read
+// after the iteration returns because GraphCache.SnapshotEdges holds
+// c.GraphCache.mu for the whole snapshot pass and no concurrent mutator
+// can drop the bucket out from under it.
+func (c *edgeCache[S]) rangeBuckets(fn func(tail, head S, w *weight) bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for tailID, heads := range c.tf {
+		tail, ok := c.resolve(tailID)
+		if !ok {
+			continue
+		}
+		for headID, w := range heads {
+			head, ok := c.resolve(headID)
+			if !ok {
+				continue
+			}
+			if !fn(tail, head, w) {
+				return
+			}
+		}
+	}
 }
 
 func (c *edgeCache[S]) snapshotDF() map[S]int {

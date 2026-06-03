@@ -27,7 +27,7 @@ func initializeApp() (*App, error) {
 	log := provider.NewMutationLog(mutationLogConfig, domainMetrics)
 	clock := provider.NewHLCClock(replicationConfig)
 	lanternService := newLanternService(graphCache, scanConfig, replicationConfig, logger, log, clock, domainMetrics)
-	lanternReplicationService := newLanternReplicationService(log, logger, domainMetrics)
+	lanternReplicationService := newLanternReplicationService(log, graphCache, clock, logger, domainMetrics)
 	netConfig := provider.NewNetConfig(config)
 	tlsConfig := provider.NewTLSConfig(config)
 	rateLimitConfig := provider.NewRateLimitConfig(config)

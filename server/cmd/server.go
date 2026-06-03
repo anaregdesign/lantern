@@ -94,10 +94,12 @@ func newLanternService(
 // provider/metrics imports.
 func newLanternReplicationService(
 	log *mutationlog.Log,
+	backend service.Backend,
+	clock *hlc.Clock,
 	logger *slog.Logger,
 	dm *domainmetrics.DomainMetrics,
 ) *service.LanternReplicationService {
-	return service.NewLanternReplicationService(log).
+	return service.NewLanternReplicationService(log, backend, clock).
 		WithMetrics(dm).
 		WithLogger(logger)
 }
