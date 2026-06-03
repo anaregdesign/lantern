@@ -76,6 +76,10 @@ CI: [.github/workflows/go.yml](.github/workflows/go.yml) runs `go build` + `go t
   Subscribe/Snapshot wire shapes, deployment-topology matrix). Every issue
   labeled `ha` implements against it; deviations require amending the RFC in
   the same PR.
+- **HA runbook**: [docs/ha-runbook.md](docs/ha-runbook.md) — operator-facing
+  playbook (per-platform deploy, signals to watch, partition recovery,
+  rolling upgrades, common gotchas). Pair with the RFC; the runbook
+  defers to the RFC on any disagreement.
 
 ## Maintenance checklist
 
