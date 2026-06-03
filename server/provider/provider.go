@@ -16,6 +16,7 @@ import (
 	v1 "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
+	"github.com/anaregdesign/lantern/server/readiness"
 	grpcprom "github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus"
 	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/logging"
 	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/recovery"
@@ -134,6 +135,7 @@ type Config struct {
 	Replication   ReplicationConfig
 	Peer          PeerConfig
 	AntiEntropy   AntiEntropyConfig
+	Readiness     ReadinessConfig
 }
 
 func NewConfig() *Config {
@@ -187,6 +189,7 @@ func NewConfig() *Config {
 		},
 		MutationLog: loadMutationLogConfig(),
 		Replication: loadReplicationConfig(),
+		Readiness:   loadReadinessConfig(),
 		Peer:        loadPeerConfig(),
 		AntiEntropy: loadAntiEntropyConfig(),
 	}
@@ -409,28 +412,47 @@ type httpMetricsServer struct {
 	logger *slog.Logger
 }
 
-func NewMetricsServer(o ObservabilityConfig, reg *prometheus.Registry, logger *slog.Logger) MetricsServer {
+func NewMetricsServer(o ObservabilityConfig, reg *prometheus.Registry, gate *readiness.Gate, logger *slog.Logger) MetricsServer {
 	if o.MetricsAddr == "" {
 		return NoopMetricsServer{}
 	}
+	return &httpMetricsServer{
+		srv: &http.Server{
+			Addr:              o.MetricsAddr,
+			Handler:           newMetricsMux(reg, gate),
+			ReadHeaderTimeout: 5 * time.Second,
+		},
+		logger: logger,
+	}
+}
+
+// newMetricsMux builds the /metrics + /healthz + /readyz + /healthz/ready
+// handler tree. Extracted so tests can exercise the readiness-aware HTTP
+// shim with httptest without binding a real port.
+func newMetricsMux(reg *prometheus.Registry, gate *readiness.Gate) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg}))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ready"))
-	})
-	return &httpMetricsServer{
-		srv: &http.Server{
-			Addr:              o.MetricsAddr,
-			Handler:           mux,
-			ReadHeaderTimeout: 5 * time.Second,
-		},
-		logger: logger,
+	// /readyz and /healthz/ready both consult the readiness Gate so HTTP
+	// probes (k8s httpGet, Cloud Run / ACA startup probes, plain LB
+	// health probes) see the same drain signal as the gRPC overall ("")
+	// health entry. Single-instance mode returns 200 immediately —
+	// PaaS startup behaviour is unchanged.
+	readyHandler := func(w http.ResponseWriter, _ *http.Request) {
+		if gate == nil || gate.Ready() {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ready"))
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("not ready"))
 	}
+	mux.HandleFunc("/readyz", readyHandler)
+	mux.HandleFunc("/healthz/ready", readyHandler)
+	return mux
 }
 
 // Run blocks until ctx is canceled or ListenAndServe returns an error other

@@ -46,15 +46,19 @@ func initializeApp() (*App, error) {
 	lifecycleConfig := provider.NewLifecycleConfig(cacheConfig, shutdownConfig)
 	healthServer := provider.NewHealthServer()
 	lanternServer := service.NewLanternServer(lanternService, lanternReplicationService, server, listener, logger, lifecycleConfig, healthServer, graphCache)
-	metricsServer := provider.NewMetricsServer(observabilityConfig, registry, logger)
+	readinessConfig := provider.NewReadinessConfig(config)
+	peerConfig := provider.NewPeerConfig(config)
+	gate := provider.NewReadinessGate(readinessConfig, peerConfig, healthServer)
+	metricsServer := provider.NewMetricsServer(observabilityConfig, registry, gate, logger)
 	tracing, err := provider.NewTracing(logger)
 	if err != nil {
 		return nil, err
 	}
-	peerConfig := provider.NewPeerConfig(config)
-	pump := provider.NewReplicationPump(peerConfig, replicationConfig, lanternService, graphCache, domainMetrics, logger)
+	metrics := provider.NewPumpMetrics(domainMetrics, gate)
+	pump := provider.NewReplicationPump(peerConfig, replicationConfig, lanternService, graphCache, metrics, logger)
 	antiEntropyConfig := provider.NewAntiEntropyConfig(config)
-	antiEntropy := provider.NewAntiEntropyDriver(peerConfig, replicationConfig, antiEntropyConfig, lanternService, graphCache, pump, domainMetrics, logger)
+	antiEntropyMetrics := provider.NewAntiEntropyMetrics(domainMetrics, gate)
+	antiEntropy := provider.NewAntiEntropyDriver(peerConfig, replicationConfig, antiEntropyConfig, lanternService, graphCache, pump, antiEntropyMetrics, logger)
 	mainRegisteredHealth := registerHealthAndReflection(observabilityConfig, server, healthServer)
 	app := newApp(config, logger, lanternServer, metricsServer, tracing, domainMetrics, healthServer, pump, antiEntropy, mainRegisteredHealth)
 	return app, nil

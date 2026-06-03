@@ -121,7 +121,12 @@ docker compose logs lantern --no-color \
    `out/cli/*.log` and/or `out/sdk/report.txt`).
 2. Capture the build label so we know what we hit:
    `curl -s http://localhost:9090/metrics | grep lantern_build_info`.
-3. File the issue with **Repro** (compose-up + the failing scenario) +
+3. Check readiness state — `curl -s -o /dev/null -w '%{http_code}\n'
+   http://localhost:9090/healthz/ready`. 200 means the node is serving;
+   503 means it is bootstrapping or behind on replication
+   (`LANTERN_MAX_REPLICATION_LAG`, default 10000). `/readyz` mirrors the
+   same signal.
+4. File the issue with **Repro** (compose-up + the failing scenario) +
    **Observed metric/log evidence** + **Proposed fix**. The [#98][i98] body is
    a usable template.
 
