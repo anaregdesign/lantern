@@ -71,6 +71,23 @@ func (w *weight) isZero() bool {
 	return w.sum == 0
 }
 
+// snapshot returns the cached sum, the furthest-future expiration among the
+// live contributions, and whether any live contributions remain — all under
+// a single lock acquisition and a single flush pass. Read-hot callers
+// (getDetail) should prefer this over chaining isZero / value /
+// latestExpiration, which triple-lock and triple-scan.
+func (w *weight) snapshot() (sum float32, latest time.Time, nonZero bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.flushLocked()
+	for _, v := range w.values {
+		if v.expiration.After(latest) {
+			latest = v.expiration
+		}
+	}
+	return w.sum, latest, w.sum != 0
+}
+
 // flushLocked compacts expired entries in place and recomputes the cached sum.
 // Caller must hold w.mu.
 func (w *weight) flushLocked() {
@@ -157,11 +174,12 @@ func (c *edgeCache[S]) getDetail(tail, head S) (float32, time.Time, bool) {
 		return 0, time.Time{}, false
 	}
 
-	if w.isZero() {
+	sum, latest, nonZero := w.snapshot()
+	if !nonZero {
 		go c.delete(tail, head)
 		return 0, time.Time{}, false
 	}
-	return w.value(), w.latestExpiration(), true
+	return sum, latest, true
 }
 
 // snapshotTF returns a shallow copy of the tail->heads map keyed by S so
