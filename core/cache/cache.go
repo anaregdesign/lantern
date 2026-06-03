@@ -20,6 +20,15 @@ type Cache[S comparable, T any] struct {
 	defaultTTL time.Duration
 	cache      map[S]volatile[T]
 	mu         sync.RWMutex
+
+	// onEvict, if set, is invoked once per key removed by Delete, Clear, or
+	// Flush (TTL expiry). Set via SetOnEvict; protected by hookMu so it can
+	// be installed concurrently with cache operations. Callbacks fire AFTER
+	// the lock on c.mu has been released, so the callback may safely call
+	// back into the same Cache without deadlocking — but it must not block
+	// indefinitely (it runs inline on the caller's goroutine).
+	hookMu  sync.RWMutex
+	onEvict func(S)
 }
 
 func NewCache[S comparable, T any](defaultTTL time.Duration) *Cache[S, T] {
@@ -27,6 +36,26 @@ func NewCache[S comparable, T any](defaultTTL time.Duration) *Cache[S, T] {
 		defaultTTL: defaultTTL,
 		cache:      make(map[S]volatile[T]),
 	}
+}
+
+// SetOnEvict installs (or clears, when nil) a callback invoked once per key
+// removed by Delete, Clear, or Flush. The callback fires after c.mu has been
+// released, so it may re-enter the same Cache without deadlocking. It is
+// invoked inline on the caller's goroutine, so it must not block.
+//
+// Eviction notifications enable layered caches (e.g. GraphCache wiring a
+// shared vertex-id dictionary) to release per-entry resources without
+// scanning the cache each tick.
+func (c *Cache[S, T]) SetOnEvict(fn func(S)) {
+	c.hookMu.Lock()
+	defer c.hookMu.Unlock()
+	c.onEvict = fn
+}
+
+func (c *Cache[S, T]) snapshotOnEvict() func(S) {
+	c.hookMu.RLock()
+	defer c.hookMu.RUnlock()
+	return c.onEvict
 }
 
 func (c *Cache[S, T]) Get(key S) (T, bool) {
@@ -62,15 +91,21 @@ func (c *Cache[S, T]) Put(key S, value T) {
 }
 
 // Delete removes the entry for key. It returns true if the key was
-// present (and therefore removed by this call), false otherwise.
+// present (and therefore removed by this call), false otherwise. When the
+// key was present and an OnEvict callback is installed, the callback fires
+// once after c.mu is released.
 func (c *Cache[S, T]) Delete(key S) bool {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	if _, ok := c.cache[key]; !ok {
+		c.mu.Unlock()
 		return false
 	}
 	delete(c.cache, key)
+	c.mu.Unlock()
+
+	if cb := c.snapshotOnEvict(); cb != nil {
+		cb(key)
+	}
 	return true
 }
 
@@ -79,11 +114,28 @@ func (c *Cache[S, T]) Has(key S) bool {
 	_, ok := c.Get(key)
 	return ok
 }
+
+// Clear removes every entry. When an OnEvict callback is installed it is
+// invoked once per removed key after c.mu has been released. Keys are
+// reported in unspecified order.
 func (c *Cache[S, T]) Clear() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
+	cb := c.snapshotOnEvict()
+	var evicted []S
+	if cb != nil {
+		evicted = make([]S, 0, len(c.cache))
+		for k := range c.cache {
+			evicted = append(evicted, k)
+		}
+	}
 	c.cache = make(map[S]volatile[T])
+	c.mu.Unlock()
+
+	if cb != nil {
+		for _, k := range evicted {
+			cb(k)
+		}
+	}
 }
 
 func (c *Cache[S, T]) Count() int {
@@ -95,16 +147,38 @@ func (c *Cache[S, T]) Count() int {
 
 // Flush evicts every entry whose TTL has passed. It returns the number of
 // entries removed so callers (e.g. server-side TTL metrics) can record
-// expiration counts without scanning the cache again.
+// expiration counts without scanning the cache again. When an OnEvict
+// callback is installed it is invoked once per removed key after c.mu has
+// been released.
 func (c *Cache[S, T]) Flush() int {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
+	cb := c.snapshotOnEvict()
+	var evicted []S
+	if cb != nil {
+		// Two-phase: collect keys under the lock, fire callbacks after release.
+		// maps.DeleteFunc cannot collect because the predicate's S is the live
+		// key but we need to defer the callback past Unlock.
+		for k, v := range c.cache {
+			if v.IsExpired() {
+				evicted = append(evicted, k)
+			}
+		}
+		for _, k := range evicted {
+			delete(c.cache, k)
+		}
+		c.mu.Unlock()
+		for _, k := range evicted {
+			cb(k)
+		}
+		return len(evicted)
+	}
 	before := len(c.cache)
 	maps.DeleteFunc(c.cache, func(_ S, v volatile[T]) bool {
 		return v.IsExpired()
 	})
-	return before - len(c.cache)
+	removed := before - len(c.cache)
+	c.mu.Unlock()
+	return removed
 }
 
 func (c *Cache[S, T]) Watch(ctx context.Context, interval time.Duration) {
