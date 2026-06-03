@@ -49,6 +49,19 @@ type GraphCache[S comparable, T any] struct {
 	// pay no extra cost beyond a single nil check.
 	prefixIndex   *radix
 	prefixExtract func(S) string
+
+	// headByTail is the per-tail head-side prefix index that backs the
+	// head dimension of ScanEdgesByPrefix (Issue #167). It is allocated
+	// alongside prefixIndex by EnablePrefixIndex and maintained in
+	// lockstep with edge mutations under c.mu.Lock — every AddEdge /
+	// PutEdge / DeleteEdge code path (single and batch) that touches the
+	// edge map also touches the matching headIndex entry, so the two
+	// structures never disagree from a reader's perspective.
+	//
+	// Set to nil by disableHeadIndexForTesting to force ScanEdgesByPrefix
+	// onto the v1 materialise-and-sort fallback for regression tests and
+	// before/after benchmarks. Production code never disables it.
+	headByTail map[vertexID]*headIndex
 }
 
 func NewGraphCache[S comparable, T any](defaultTTL time.Duration) *GraphCache[S, T] {
@@ -106,6 +119,7 @@ func (c *GraphCache[S, T]) EnablePrefixIndex(extract func(S) string) {
 	}
 	c.prefixExtract = extract
 	c.prefixIndex = newRadix()
+	c.headByTail = make(map[vertexID]*headIndex)
 }
 
 // putVertexLocked inserts (or refreshes) a vertex entry, interning the key
@@ -185,7 +199,8 @@ func (c *GraphCache[S, T]) AddEdgeWithExpiration(tail, head S, w float32, expira
 	// vertex cache has its own mutex, so calling it while holding c.mu is safe.
 	c.ensureVertexLocked(tail, expiration)
 	c.ensureVertexLocked(head, expiration)
-	c.edges.addWithExpiration(tail, head, w, expiration)
+	created, tailID, headID := c.edges.addWithExpiration(tail, head, w, expiration)
+	c.onEdgeAddedLocked(created, tailID, headID, head)
 }
 
 func (c *GraphCache[S, T]) AddEdgeWithTTL(tail, head S, w float32, ttl time.Duration) {
@@ -209,8 +224,13 @@ func (c *GraphCache[S, T]) PutEdgeWithExpiration(tail, head S, w float32, expira
 	// Same endpoint auto-creation invariant as AddEdgeWithExpiration.
 	c.ensureVertexLocked(tail, expiration)
 	c.ensureVertexLocked(head, expiration)
+	// PutEdge replaces the edge atomically. The head projected string is
+	// unchanged across delete+add (same head key), so the head index needs
+	// no maintenance when the edge already existed — it only changes when
+	// add creates a fresh bucket.
 	c.edges.delete(tail, head)
-	c.edges.addWithExpiration(tail, head, w, expiration)
+	created, tailID, headID := c.edges.addWithExpiration(tail, head, w, expiration)
+	c.onEdgeAddedLocked(created, tailID, headID, head)
 }
 
 // DeleteVertex removes the vertex (by key) and returns whether it was present.
@@ -226,7 +246,11 @@ func (c *GraphCache[S, T]) DeleteEdge(tail, head S) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return c.edges.delete(tail, head)
+	deleted, tailID, headID := c.edges.delete(tail, head)
+	if deleted {
+		c.onEdgeDeletedLocked(tailID, headID, head)
+	}
+	return deleted
 }
 
 // flush performs the fused GC sweep over the edge map in a single walk.
@@ -251,7 +275,7 @@ func (c *GraphCache[S, T]) flush() (zero, dangling int) {
 			return false
 		}
 		return c.vertices.Has(tail) && c.vertices.Has(head)
-	})
+	}, c.headIndexOnFlushDeleteLocked())
 }
 
 // VertexCount returns the live vertex count under an RLock. Intended for

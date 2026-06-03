@@ -293,33 +293,40 @@ func (c *edgeCache[S]) resolve(id vertexID) (S, bool) {
 	return c.dict.resolve(id)
 }
 
-func (c *edgeCache[S]) addWithExpiration(tail, head S, w float32, expiration time.Time) {
-	// Fast path: existing edge. A hot counter-style edge gets updated every
-	// few ms; the slow path below would acquire the dict write lock twice
-	// (intern tail, intern head) and the dict release lock twice (revert
-	// the bumps) plus the edgeCache write lock — five global serialization
-	// points to append a float to a slice. If both endpoints are already
-	// interned AND the (tail, head) bucket already exists, we can skip
-	// every dict mutation and the edgeCache write lock entirely: a single
-	// dict RLock to resolve both ids, a single edgeCache RLock to fetch the
-	// *weight pointer, then the leaf weight.mu append. Refcounts are
-	// untouched because we neither add nor remove an edge.
-	//
-	// Race note: a concurrent delete between RUnlock and the weight append
-	// can leave us appending to a *weight that has just been detached from
-	// the map. That is harmless — the weight pointer stays valid, but the
-	// orphan is no longer reachable through tf, so the write effectively
-	// vanishes. The user-visible semantics of "concurrent add+delete on the
-	// same edge" are already racy under the slow path; the fast path
-	// preserves that contract without introducing new visibility issues.
+// addWithExpiration appends a (value, expiration) contribution to the
+// (tail, head) edge. It returns:
+//
+//   - created: true if this call created a new (tail, head) bucket (i.e.
+//     this is the first contribution for the edge), false when the bucket
+//     already existed and this call merely appended to its weight.
+//   - tailID, headID: the dict-resolved endpoint IDs, valid whenever a
+//     dict is configured. Callers use these IDs to maintain side indexes
+//     (e.g. the per-tail head radix) without re-entering the dict.
+//
+// Fast path: existing edge. A hot counter-style edge gets updated every
+// few ms; the slow path below would acquire the dict write lock twice
+// (intern tail, intern head) and the dict release lock twice (revert
+// the bumps) plus the edgeCache write lock — five global serialization
+// points to append a float to a slice. If both endpoints are already
+// interned AND the (tail, head) bucket already exists, we can skip
+// every dict mutation and the edgeCache write lock entirely.
+//
+// Race note: a concurrent delete between RUnlock and the weight append
+// can leave us appending to a *weight that has just been detached from
+// the map. That is harmless — the weight pointer stays valid, but the
+// orphan is no longer reachable through tf, so the write effectively
+// vanishes. The user-visible semantics of "concurrent add+delete on the
+// same edge" are already racy under the slow path; the fast path
+// preserves that contract without introducing new visibility issues.
+func (c *edgeCache[S]) addWithExpiration(tail, head S, w float32, expiration time.Time) (created bool, tailID, headID vertexID) {
 	if c.dict != nil {
-		if tailID, headID, okT, okH := c.dict.lookupBoth(tail, head); okT && okH {
+		if tID, hID, okT, okH := c.dict.lookupBoth(tail, head); okT && okH {
 			c.mu.RLock()
-			if heads, ok := c.tf[tailID]; ok {
-				if edge, ok := heads[headID]; ok {
+			if heads, ok := c.tf[tID]; ok {
+				if edge, ok := heads[hID]; ok {
 					c.mu.RUnlock()
 					edge.addWithExpiration(w, expiration)
-					return
+					return false, tID, hID
 				}
 			}
 			c.mu.RUnlock()
@@ -330,7 +337,7 @@ func (c *edgeCache[S]) addWithExpiration(tail, head S, w float32, expiration tim
 	// Intern both endpoints OUTSIDE the edgeCache lock so the dict can serve
 	// readers in parallel. The intern call is the +1 we either keep (new
 	// edge) or undo (existing edge) under the edgeCache lock below.
-	tailID, headID := c.internEndpoints(tail, head)
+	tailID, headID = c.internEndpoints(tail, head)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -346,6 +353,7 @@ func (c *edgeCache[S]) addWithExpiration(tail, head S, w float32, expiration tim
 		edge = newWeight()
 		heads[headID] = edge
 		c.df[headID]++
+		created = true
 	} else if c.dict != nil {
 		// Edge already present: revert the intern bumps to keep the
 		// "one ref per endpoint per edge" invariant. This branch is
@@ -357,6 +365,7 @@ func (c *edgeCache[S]) addWithExpiration(tail, head S, w float32, expiration tim
 	}
 
 	edge.addWithExpiration(w, expiration)
+	return created, tailID, headID
 }
 
 func (c *edgeCache[S]) internEndpoints(tail, head S) (vertexID, vertexID) {
@@ -374,17 +383,22 @@ func (c *edgeCache[S]) add(tail, head S, w float32) {
 	c.addWithTTL(tail, head, w, c.defaultTTL)
 }
 
-// delete removes the (tail, head) edge. It returns true if the edge
-// was present (and therefore removed by this call), false otherwise.
-// Releases one dict reference per endpoint on a successful removal.
-func (c *edgeCache[S]) delete(tail, head S) bool {
-	tailID, headID, ok := c.lookupIDs(tail, head)
+// delete removes the (tail, head) edge. It returns deleted=true together
+// with the resolved tail/head vertexIDs whenever the edge was present (so
+// callers can maintain side indexes keyed by ID without re-entering the
+// dict). On a successful removal it releases one dict reference per
+// endpoint.
+func (c *edgeCache[S]) delete(tail, head S) (deleted bool, tailID, headID vertexID) {
+	tID, hID, ok := c.lookupIDs(tail, head)
 	if !ok {
-		return false
+		return false, 0, 0
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.deleteLocked(tailID, headID)
+	if c.deleteLocked(tID, hID) {
+		return true, tID, hID
+	}
+	return false, tID, hID
 }
 
 // deleteLocked performs the same work as delete but assumes the caller already
@@ -435,12 +449,19 @@ func (c *edgeCache[S]) flush() int {
 // the supplied keep predicate returns false (counted in `dangling`). A nil
 // keep skips the second check and behaves like flush.
 //
+// onDelete, if non-nil, fires once per successful removal with the
+// (tailID, headID) of the edge just deleted. It runs while c.mu is held
+// write-locked alongside the keep predicate, so it must not take c.mu
+// itself. It exists so callers can maintain side indexes (e.g. the
+// per-tail head radix) under the same critical section as the underlying
+// delete, preserving the atomicity contract observed by ScanEdgesByPrefix.
+//
 // Caller is responsible for any cross-structure consistency: the predicate
 // runs while c.mu is held write-locked, so it must not take c.mu itself.
 // The typical caller (GraphCache.Watch) wraps the call in the surrounding
 // GraphCache.mu.Lock() so the predicate can read sibling state (e.g. the
 // vertex cache) without further locking.
-func (c *edgeCache[S]) flushFunc(keep func(tail, head vertexID) bool) (zero, dangling int) {
+func (c *edgeCache[S]) flushFunc(keep func(tail, head vertexID) bool, onDelete func(tail, head vertexID)) (zero, dangling int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -448,10 +469,16 @@ func (c *edgeCache[S]) flushFunc(keep func(tail, head vertexID) bool) (zero, dan
 		for headID, w := range heads {
 			switch {
 			case w.isZero():
+				if onDelete != nil {
+					onDelete(tailID, headID)
+				}
 				if c.deleteLocked(tailID, headID) {
 					zero++
 				}
 			case keep != nil && !keep(tailID, headID):
+				if onDelete != nil {
+					onDelete(tailID, headID)
+				}
 				if c.deleteLocked(tailID, headID) {
 					dangling++
 				}
