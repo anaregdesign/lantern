@@ -8,13 +8,21 @@ import "context"
 // cancelled. The boolean return is fn's last verdict (true means the
 // caller exhausted the result set without asking to stop).
 //
-// Consistency: the whole walk holds c.mu.RLock, so the snapshot is
-// point-in-time consistent with concurrent point reads. Callers MUST NOT
-// invoke any GraphCache write method from inside fn \u2014 doing so would
-// deadlock (RLock held by the same goroutine cannot be upgraded). Long-
-// running fn bodies starve writers; callers that need to do non-trivial
-// per-vertex work should accumulate keys into a slice and process them
-// after ScanByPrefix returns.
+// Consistency: ScanByPrefix takes a point-in-time snapshot of the
+// matching (projected, key, value) triples under c.mu.RLock and then
+// releases the lock BEFORE invoking fn. As a result fn is free to call
+// back into any GraphCache method (including writers) without deadlock,
+// at the cost of possibly observing keys whose live state has since
+// changed \u2014 the snapshot itself is consistent, but the cache may have
+// moved on by the time fn runs. Callers that need to react to the live
+// state should re-fetch via GetVertex inside fn.
+//
+// Releasing the lock before fn runs also avoids the
+// sync.RWMutex-reentrancy hazard: a concurrent writer queued on c.mu
+// would otherwise block any nested RLock from the visitor's goroutine
+// (Go's RWMutex forbids recursive read-locking when a writer is
+// waiting), which previously deadlocked callers whose fn touched the
+// cache. See #202.
 //
 // If the prefix index has not been enabled (see EnablePrefixIndex),
 // ScanByPrefix returns false immediately and invokes fn zero times. The
@@ -22,51 +30,71 @@ import "context"
 // without fn requesting a stop.
 //
 // Vertices whose TTL has already expired but which have not yet been
-// flushed are skipped \u2014 ScanByPrefix returns the same set of vertices a
-// matching sequence of GetVertex calls would have returned.\n//
+// flushed are skipped at snapshot time \u2014 ScanByPrefix returns the same
+// set of vertices a matching sequence of GetVertex calls under the
+// snapshot lock would have returned.
+//
 // fn receives both the projected string key (the prefix-index view) and
 // the original S key (the cache view). For S = string they coincide; for
 // other S the projection is intentionally lossy and the original key is
 // the one suitable for downstream GraphCache calls.
 func (c *GraphCache[S, T]) ScanByPrefix(ctx context.Context, prefix string, fn func(projected string, key S, value T) bool) bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.prefixIndex == nil {
+	type entry struct {
+		projected string
+		key       S
+		value     T
+	}
+	var snapshot []entry
+	enabled := func() bool {
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+		if c.prefixIndex == nil {
+			return false
+		}
+		// Collect (projected, key, value) under the read lock. We
+		// cannot mutate the cache here \u2014 the visitor runs AFTER the
+		// lock is released to avoid sync.RWMutex reentrancy deadlocks
+		// (see method doc and #202).
+		c.prefixIndex.walkPrefix(prefix, func(projected string) bool {
+			if err := ctx.Err(); err != nil {
+				return false
+			}
+			key, ok := c.resolveProjected(projected)
+			if !ok {
+				// Index says the key exists but the dict does not \u2014
+				// a developer bug (radix and dict drifted). Skip
+				// rather than crash.
+				return true
+			}
+			value, ok := c.vertices.Get(key)
+			if !ok {
+				// TTL expired between radix insert and snapshot but
+				// the async Flush has not run yet; consistent with
+				// point-read semantics, treat as absent.
+				return true
+			}
+			snapshot = append(snapshot, entry{projected: projected, key: key, value: value})
+			return true
+		})
+		return true
+	}()
+	if !enabled {
 		return false
 	}
-	completed := true
-	// We cannot re-resolve "projected -> S" from the radix alone for the
-	// general S case, so we look up each key through the dictionary's
-	// inverse map. For S = string the projection is identity and the
-	// lookup is a no-op overhead. The walk callback must not call back
-	// into a writer; radix.walkPrefix documents the same constraint, and
-	// we are holding c.mu.RLock which would deadlock a writer anyway.
-	c.prefixIndex.walkPrefix(prefix, func(projected string) bool {
+	// If snapshot collection was interrupted by ctx cancellation, report
+	// the walk as incomplete even when the visitor never ran.
+	if err := ctx.Err(); err != nil {
+		return false
+	}
+	for _, e := range snapshot {
 		if err := ctx.Err(); err != nil {
-			completed = false
 			return false
 		}
-		key, ok := c.resolveProjected(projected)
-		if !ok {
-			// Index says the key exists but the dict does not \u2014 this
-			// can only happen during a developer bug (radix and dict
-			// drifted). Skip rather than crash.
-			return true
-		}
-		value, ok := c.vertices.Get(key)
-		if !ok {
-			// TTL expired between radix insert and this point but the
-			// async Flush has not run yet; consistent with point-read
-			// semantics, treat as absent.
-			return true
-		}
-		if !fn(projected, key, value) {
-			completed = false
+		if !fn(e.projected, e.key, e.value) {
 			return false
 		}
-		return true
-	})
-	return completed
+	}
+	return true
 }
 
 // CountByPrefix returns the number of indexed keys whose projection
