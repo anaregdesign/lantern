@@ -15,30 +15,37 @@ import (
 
 func initializeApp() (*App, error) {
 	config := provider.NewConfig()
-	logger := provider.NewLogger(config)
-	graphCache := provider.NewGraphCache(config)
+	observabilityConfig := provider.NewObservabilityConfig(config)
+	logger := provider.NewLogger(observabilityConfig)
+	cacheConfig := provider.NewCacheConfig(config)
+	graphCache := provider.NewGraphCache(cacheConfig)
 	lanternService := service.NewLanternService(graphCache)
+	netConfig := provider.NewNetConfig(config)
+	tlsConfig := provider.NewTLSConfig(config)
+	rateLimitConfig := provider.NewRateLimitConfig(config)
+	validationLimits := provider.NewValidationLimits(config)
 	registry := provider.NewPrometheusRegistry()
 	serverMetrics := provider.NewGrpcServerMetrics(registry)
-	v, err := provider.NewGrpcServerOptions(config, logger, serverMetrics)
+	v, err := provider.NewGrpcServerOptions(netConfig, tlsConfig, rateLimitConfig, validationLimits, logger, serverMetrics)
 	if err != nil {
 		return nil, err
 	}
 	server := provider.NewGrpcServer(v)
-	listener, err := provider.NewListener(config)
+	listener, err := provider.NewListener(netConfig)
 	if err != nil {
 		return nil, err
 	}
-	lifecycleConfig := provider.NewLifecycleConfig(config)
+	shutdownConfig := provider.NewShutdownConfig(config)
+	lifecycleConfig := provider.NewLifecycleConfig(cacheConfig, shutdownConfig)
 	healthServer := provider.NewHealthServer()
 	lanternServer := service.NewLanternServer(lanternService, server, listener, logger, lifecycleConfig, healthServer, graphCache)
-	metricsServer := provider.NewMetricsServer(config, registry, logger)
+	metricsServer := provider.NewMetricsServer(observabilityConfig, registry, logger)
 	tracing, err := provider.NewTracing(logger)
 	if err != nil {
 		return nil, err
 	}
-	domainMetrics := provider.NewDomainMetrics(registry, config, graphCache)
-	mainRegisteredHealth := registerHealthAndReflection(config, server, healthServer)
+	domainMetrics := provider.NewDomainMetrics(registry, observabilityConfig, graphCache)
+	mainRegisteredHealth := registerHealthAndReflection(observabilityConfig, server, healthServer)
 	app := newApp(config, logger, lanternServer, metricsServer, tracing, domainMetrics, healthServer, mainRegisteredHealth)
 	return app, nil
 }

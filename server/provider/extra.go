@@ -20,10 +20,10 @@ import (
 
 // NewLifecycleConfig forwards Config knobs into the service-layer lifecycle
 // struct. Kept narrow so service.go doesn't need to import provider.
-func NewLifecycleConfig(c *Config) service.LifecycleConfig {
+func NewLifecycleConfig(cache CacheConfig, shutdown ShutdownConfig) service.LifecycleConfig {
 	return service.LifecycleConfig{
-		GCInterval:      c.GCInterval,
-		ShutdownTimeout: c.ShutdownTimeout,
+		GCInterval:      cache.GCInterval,
+		ShutdownTimeout: shutdown.Timeout,
 	}
 }
 
@@ -248,17 +248,17 @@ func (r *RateLimitInterceptor) StreamServerInterceptor() grpc.StreamServerInterc
 // loadServerTLS returns nil credentials (insecure) when cert/key are empty,
 // TLS server credentials when both are set, or mTLS credentials when a client
 // CA file is also provided.
-func loadServerTLS(c *Config) (credentials.TransportCredentials, error) {
-	if c.TLSCertFile == "" && c.TLSKeyFile == "" {
-		if c.TLSClientCAFile != "" {
+func loadServerTLS(c TLSConfig) (credentials.TransportCredentials, error) {
+	if c.CertFile == "" && c.KeyFile == "" {
+		if c.ClientCAFile != "" {
 			return nil, errors.New("LANTERN_TLS_CLIENT_CA_FILE set without LANTERN_TLS_CERT_FILE / LANTERN_TLS_KEY_FILE")
 		}
 		return nil, nil
 	}
-	if c.TLSCertFile == "" || c.TLSKeyFile == "" {
+	if c.CertFile == "" || c.KeyFile == "" {
 		return nil, errors.New("LANTERN_TLS_CERT_FILE and LANTERN_TLS_KEY_FILE must both be set")
 	}
-	cert, err := tls.LoadX509KeyPair(c.TLSCertFile, c.TLSKeyFile)
+	cert, err := tls.LoadX509KeyPair(c.CertFile, c.KeyFile)
 	if err != nil {
 		return nil, fmt.Errorf("load cert/key: %w", err)
 	}
@@ -266,8 +266,8 @@ func loadServerTLS(c *Config) (credentials.TransportCredentials, error) {
 		MinVersion:   tls.VersionTLS12,
 		Certificates: []tls.Certificate{cert},
 	}
-	if c.TLSClientCAFile != "" {
-		caPEM, err := os.ReadFile(c.TLSClientCAFile)
+	if c.ClientCAFile != "" {
+		caPEM, err := os.ReadFile(c.ClientCAFile)
 		if err != nil {
 			return nil, fmt.Errorf("read client CA: %w", err)
 		}

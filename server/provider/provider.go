@@ -31,70 +31,87 @@ import (
 	"google.golang.org/grpc/reflection"
 )
 
-// Config captures runtime configuration sourced from the environment.
+// NetConfig groups the gRPC listener and message-size / concurrency caps.
 //
-// Backwards-compatible vars:
 //   - LANTERN_PORT                       (default 6380)
-//   - LANTERN_DEFAULT_TTL_SECONDS        (default 60)
+//   - LANTERN_MAX_RECV_MSG_BYTES         (default 16 MiB)
+//   - LANTERN_MAX_SEND_MSG_BYTES         (default 16 MiB)
+//   - LANTERN_MAX_CONCURRENT_STREAMS     (default 1024; 0 = unlimited)
+type NetConfig struct {
+	Port                 int
+	MaxRecvMsgBytes      int
+	MaxSendMsgBytes      int
+	MaxConcurrentStreams uint32
+}
+
+// TLSConfig groups the all-or-nothing TLS / mTLS material.
 //
-// Observability / lifecycle additions:
-//   - LANTERN_GC_INTERVAL_SECONDS        (default 60) — GraphCache.Watch tick
-//   - LANTERN_SHUTDOWN_TIMEOUT_SECONDS   (default 30) — GracefulStop deadline
+//   - LANTERN_TLS_CERT_FILE              PEM cert path (enables TLS)
+//   - LANTERN_TLS_KEY_FILE               PEM key  path
+//   - LANTERN_TLS_CLIENT_CA_FILE         PEM client CA path (enables mTLS)
+type TLSConfig struct {
+	CertFile     string
+	KeyFile      string
+	ClientCAFile string
+}
+
+// RateLimitConfig is the process-wide token bucket policy.
+//
+//   - LANTERN_RATE_LIMIT_RPS             0 disables rate limiting (default 0)
+//   - LANTERN_RATE_LIMIT_BURST           token bucket burst (default 2x RPS)
+type RateLimitConfig struct {
+	RPS   float64
+	Burst int
+}
+
+// ObservabilityConfig groups logging, metrics endpoint, gRPC reflection and
+// build-info knobs.
+//
 //   - LANTERN_LOG_LEVEL                  debug|info|warn|error (default info)
 //   - LANTERN_LOG_FORMAT                 json|text             (default json)
 //   - LANTERN_METRICS_ADDR               host:port for /metrics + /healthz
 //     (default :9090; set empty to disable)
 //   - LANTERN_REFLECTION                 true|false            (default true)
-//
-// Resource & limits:
-//   - LANTERN_MAX_RECV_MSG_BYTES         (default 16 MiB)
-//   - LANTERN_MAX_SEND_MSG_BYTES         (default 16 MiB)
-//   - LANTERN_MAX_CONCURRENT_STREAMS     (default 1024; 0 = unlimited)
-//   - LANTERN_RATE_LIMIT_RPS             per-process token bucket replenish rate;
-//     0 disables rate limiting (default 0)
-//   - LANTERN_RATE_LIMIT_BURST           token bucket burst (default 2x RPS)
-//
-// Validation guard rails (codes.InvalidArgument):
-//   - LANTERN_MAX_KEY_LEN                (default 1024)
-//   - LANTERN_MAX_BATCH_SIZE             (default 10000)
-//   - LANTERN_ILLUMINATE_MAX_STEP        (default 16)
-//   - LANTERN_ILLUMINATE_MAX_K           (default 1024)
-//
-// TLS (all-or-nothing; mTLS engaged when client CA is set):
-//   - LANTERN_TLS_CERT_FILE              PEM cert path (enables TLS)
-//   - LANTERN_TLS_KEY_FILE               PEM key  path
-//   - LANTERN_TLS_CLIENT_CA_FILE         PEM client CA path (enables mTLS)
 //   - LANTERN_VERSION                    overrides lantern_build_info{version}
-//     (default: debug.BuildInfo)
 //   - LANTERN_COMMIT                     overrides lantern_build_info{commit}
-//     (default: vcs.revision from BuildInfo)
-type Config struct {
-	Port             int
-	TTL              time.Duration
-	GCInterval       time.Duration
-	ShutdownTimeout  time.Duration
+type ObservabilityConfig struct {
 	LogLevel         slog.Level
 	LogFormat        string
 	MetricsAddr      string
 	EnableReflection bool
+	Version          string
+	Commit           string
+}
 
-	MaxRecvMsgBytes      int
-	MaxSendMsgBytes      int
-	MaxConcurrentStreams uint32
-	RateLimitRPS         float64
-	RateLimitBurst       int
+// CacheConfig sizes the GraphCache TTL and its GC tick.
+//
+//   - LANTERN_DEFAULT_TTL_SECONDS        (default 60)
+//   - LANTERN_GC_INTERVAL_SECONDS        (default 60) — GraphCache.Watch tick
+type CacheConfig struct {
+	TTL        time.Duration
+	GCInterval time.Duration
+}
 
-	MaxKeyLen         int
-	MaxBatchSize      int
-	IlluminateMaxStep int
-	IlluminateMaxK    int
+// ShutdownConfig is the GracefulStop deadline.
+//
+//   - LANTERN_SHUTDOWN_TIMEOUT_SECONDS   (default 30)
+type ShutdownConfig struct {
+	Timeout time.Duration
+}
 
-	TLSCertFile     string
-	TLSKeyFile      string
-	TLSClientCAFile string
-
-	Version string
-	Commit  string
+// Config aggregates every focused sub-config. It is constructed once at
+// startup by NewConfig and then projected into sub-configs that each provider
+// consumes — providers MUST NOT take *Config when they only need one slice of
+// it (SRP). main / App may keep *Config because they observe several aspects
+// for startup logging.
+type Config struct {
+	Net           NetConfig
+	TLS           TLSConfig
+	RateLimit     RateLimitConfig
+	Observability ObservabilityConfig
+	Cache         CacheConfig
+	Shutdown      ShutdownConfig
+	Validation    ValidationLimits
 }
 
 func NewConfig() *Config {
@@ -104,41 +121,63 @@ func NewConfig() *Config {
 		burst = int(2 * rps)
 	}
 	return &Config{
-		Port:             envconfig.Int("LANTERN_PORT", 6380),
-		TTL:              time.Duration(envconfig.Int("LANTERN_DEFAULT_TTL_SECONDS", 60)) * time.Second,
-		GCInterval:       time.Duration(envconfig.Int("LANTERN_GC_INTERVAL_SECONDS", 60)) * time.Second,
-		ShutdownTimeout:  time.Duration(envconfig.Int("LANTERN_SHUTDOWN_TIMEOUT_SECONDS", 30)) * time.Second,
-		LogLevel:         envconfig.LogLevel(os.Getenv("LANTERN_LOG_LEVEL")),
-		LogFormat:        envconfig.String("LANTERN_LOG_FORMAT", "json"),
-		MetricsAddr:      envconfig.String("LANTERN_METRICS_ADDR", ":9090"),
-		EnableReflection: envconfig.Bool("LANTERN_REFLECTION", true),
-
-		MaxRecvMsgBytes:      envconfig.Int("LANTERN_MAX_RECV_MSG_BYTES", 16*1024*1024),
-		MaxSendMsgBytes:      envconfig.Int("LANTERN_MAX_SEND_MSG_BYTES", 16*1024*1024),
-		MaxConcurrentStreams: uint32(envconfig.Int("LANTERN_MAX_CONCURRENT_STREAMS", 1024)),
-		RateLimitRPS:         rps,
-		RateLimitBurst:       burst,
-
-		MaxKeyLen:         envconfig.Int("LANTERN_MAX_KEY_LEN", 1024),
-		MaxBatchSize:      envconfig.Int("LANTERN_MAX_BATCH_SIZE", 10000),
-		IlluminateMaxStep: envconfig.Int("LANTERN_ILLUMINATE_MAX_STEP", 16),
-		IlluminateMaxK:    envconfig.Int("LANTERN_ILLUMINATE_MAX_K", 1024),
-
-		TLSCertFile:     os.Getenv("LANTERN_TLS_CERT_FILE"),
-		TLSKeyFile:      os.Getenv("LANTERN_TLS_KEY_FILE"),
-		TLSClientCAFile: os.Getenv("LANTERN_TLS_CLIENT_CA_FILE"),
-
-		Version: os.Getenv("LANTERN_VERSION"),
-		Commit:  os.Getenv("LANTERN_COMMIT"),
+		Net: NetConfig{
+			Port:                 envconfig.Int("LANTERN_PORT", 6380),
+			MaxRecvMsgBytes:      envconfig.Int("LANTERN_MAX_RECV_MSG_BYTES", 16*1024*1024),
+			MaxSendMsgBytes:      envconfig.Int("LANTERN_MAX_SEND_MSG_BYTES", 16*1024*1024),
+			MaxConcurrentStreams: uint32(envconfig.Int("LANTERN_MAX_CONCURRENT_STREAMS", 1024)),
+		},
+		TLS: TLSConfig{
+			CertFile:     os.Getenv("LANTERN_TLS_CERT_FILE"),
+			KeyFile:      os.Getenv("LANTERN_TLS_KEY_FILE"),
+			ClientCAFile: os.Getenv("LANTERN_TLS_CLIENT_CA_FILE"),
+		},
+		RateLimit: RateLimitConfig{
+			RPS:   rps,
+			Burst: burst,
+		},
+		Observability: ObservabilityConfig{
+			LogLevel:         envconfig.LogLevel(os.Getenv("LANTERN_LOG_LEVEL")),
+			LogFormat:        envconfig.String("LANTERN_LOG_FORMAT", "json"),
+			MetricsAddr:      envconfig.String("LANTERN_METRICS_ADDR", ":9090"),
+			EnableReflection: envconfig.Bool("LANTERN_REFLECTION", true),
+			Version:          os.Getenv("LANTERN_VERSION"),
+			Commit:           os.Getenv("LANTERN_COMMIT"),
+		},
+		Cache: CacheConfig{
+			TTL:        time.Duration(envconfig.Int("LANTERN_DEFAULT_TTL_SECONDS", 60)) * time.Second,
+			GCInterval: time.Duration(envconfig.Int("LANTERN_GC_INTERVAL_SECONDS", 60)) * time.Second,
+		},
+		Shutdown: ShutdownConfig{
+			Timeout: time.Duration(envconfig.Int("LANTERN_SHUTDOWN_TIMEOUT_SECONDS", 30)) * time.Second,
+		},
+		Validation: ValidationLimits{
+			MaxKeyLen:         envconfig.Int("LANTERN_MAX_KEY_LEN", 1024),
+			MaxBatchSize:      envconfig.Int("LANTERN_MAX_BATCH_SIZE", 10000),
+			IlluminateMaxStep: envconfig.Int("LANTERN_ILLUMINATE_MAX_STEP", 16),
+			IlluminateMaxK:    envconfig.Int("LANTERN_ILLUMINATE_MAX_K", 1024),
+		},
 	}
 }
 
+// Sub-config selectors. Wire uses these to inject each focused struct into
+// the providers that need it, so no provider has to depend on the full
+// *Config aggregate.
+
+func NewNetConfig(c *Config) NetConfig                     { return c.Net }
+func NewTLSConfig(c *Config) TLSConfig                     { return c.TLS }
+func NewRateLimitConfig(c *Config) RateLimitConfig         { return c.RateLimit }
+func NewObservabilityConfig(c *Config) ObservabilityConfig { return c.Observability }
+func NewCacheConfig(c *Config) CacheConfig                 { return c.Cache }
+func NewShutdownConfig(c *Config) ShutdownConfig           { return c.Shutdown }
+func NewValidationLimits(c *Config) ValidationLimits       { return c.Validation }
+
 // NewLogger builds the process-wide structured logger and installs it as the
 // slog default so any package-level slog.* call inherits the same handler.
-func NewLogger(c *Config) *slog.Logger {
-	opts := &slog.HandlerOptions{Level: c.LogLevel}
+func NewLogger(o ObservabilityConfig) *slog.Logger {
+	opts := &slog.HandlerOptions{Level: o.LogLevel}
 	var h slog.Handler
-	if strings.EqualFold(c.LogFormat, "text") {
+	if strings.EqualFold(o.LogFormat, "text") {
 		h = slog.NewTextHandler(os.Stderr, opts)
 	} else {
 		h = slog.NewJSONHandler(os.Stderr, opts)
@@ -148,7 +187,7 @@ func NewLogger(c *Config) *slog.Logger {
 	return l
 }
 
-func NewGraphCache(c *Config) *graph.GraphCache[string, *v1.Vertex] {
+func NewGraphCache(c CacheConfig) *graph.GraphCache[string, *v1.Vertex] {
 	return graph.NewGraphCache[string, *v1.Vertex](c.TTL)
 }
 
@@ -159,12 +198,12 @@ func NewGraphCache(c *Config) *graph.GraphCache[string, *v1.Vertex] {
 // goroutines.
 func NewDomainMetrics(
 	reg *prometheus.Registry,
-	c *Config,
+	o ObservabilityConfig,
 	cache *graph.GraphCache[string, *v1.Vertex],
 ) *domainmetrics.DomainMetrics {
 	m := domainmetrics.New(reg, domainmetrics.Options{
-		Version: c.Version,
-		Commit:  c.Commit,
+		Version: o.Version,
+		Commit:  o.Commit,
 	})
 	m.BindSampler(func() (int, int) {
 		return cache.VertexCount(), cache.EdgeCount()
@@ -173,8 +212,8 @@ func NewDomainMetrics(
 	return m
 }
 
-func NewListener(c *Config) (net.Listener, error) {
-	return net.Listen("tcp", ":"+strconv.Itoa(c.Port))
+func NewListener(n NetConfig) (net.Listener, error) {
+	return net.Listen("tcp", ":"+strconv.Itoa(n.Port))
 }
 
 // NewHealthServer is the gRPC health-checking implementation.
@@ -214,7 +253,10 @@ func NewGrpcServerMetrics(reg *prometheus.Registry) *grpcprom.ServerMetrics {
 //   - message size + concurrent stream caps
 //   - optional TLS / mTLS credentials
 func NewGrpcServerOptions(
-	c *Config,
+	net NetConfig,
+	tlsCfg TLSConfig,
+	rl RateLimitConfig,
+	limits ValidationLimits,
 	logger *slog.Logger,
 	metrics *grpcprom.ServerMetrics,
 ) ([]grpc.ServerOption, error) {
@@ -228,12 +270,7 @@ func NewGrpcServerOptions(
 		}),
 	}
 
-	validator := NewValidationInterceptor(ValidationLimits{
-		MaxKeyLen:         c.MaxKeyLen,
-		MaxBatchSize:      c.MaxBatchSize,
-		IlluminateMaxStep: c.IlluminateMaxStep,
-		IlluminateMaxK:    c.IlluminateMaxK,
-	})
+	validator := NewValidationInterceptor(limits)
 
 	unary := []grpc.UnaryServerInterceptor{
 		recovery.UnaryServerInterceptor(recoveryOpts...),
@@ -246,10 +283,10 @@ func NewGrpcServerOptions(
 		metrics.StreamServerInterceptor(),
 	}
 
-	if c.RateLimitRPS > 0 {
-		rl := NewRateLimitInterceptor(c.RateLimitRPS, c.RateLimitBurst)
-		unary = append(unary, validator.UnaryServerInterceptor(), rl.UnaryServerInterceptor())
-		stream = append(stream, validator.StreamServerInterceptor(), rl.StreamServerInterceptor())
+	if rl.RPS > 0 {
+		rli := NewRateLimitInterceptor(rl.RPS, rl.Burst)
+		unary = append(unary, validator.UnaryServerInterceptor(), rli.UnaryServerInterceptor())
+		stream = append(stream, validator.StreamServerInterceptor(), rli.StreamServerInterceptor())
 	} else {
 		unary = append(unary, validator.UnaryServerInterceptor())
 		stream = append(stream, validator.StreamServerInterceptor())
@@ -269,25 +306,25 @@ func NewGrpcServerOptions(
 			PermitWithoutStream: true,
 		}),
 	}
-	if c.MaxRecvMsgBytes > 0 {
-		opts = append(opts, grpc.MaxRecvMsgSize(c.MaxRecvMsgBytes))
+	if net.MaxRecvMsgBytes > 0 {
+		opts = append(opts, grpc.MaxRecvMsgSize(net.MaxRecvMsgBytes))
 	}
-	if c.MaxSendMsgBytes > 0 {
-		opts = append(opts, grpc.MaxSendMsgSize(c.MaxSendMsgBytes))
+	if net.MaxSendMsgBytes > 0 {
+		opts = append(opts, grpc.MaxSendMsgSize(net.MaxSendMsgBytes))
 	}
-	if c.MaxConcurrentStreams > 0 {
-		opts = append(opts, grpc.MaxConcurrentStreams(c.MaxConcurrentStreams))
+	if net.MaxConcurrentStreams > 0 {
+		opts = append(opts, grpc.MaxConcurrentStreams(net.MaxConcurrentStreams))
 	}
 
-	creds, err := loadServerTLS(c)
+	creds, err := loadServerTLS(tlsCfg)
 	if err != nil {
 		return nil, fmt.Errorf("load tls: %w", err)
 	}
 	if creds != nil {
 		opts = append(opts, grpc.Creds(creds))
 		logger.Info("tls enabled",
-			slog.String("cert", c.TLSCertFile),
-			slog.Bool("mtls", c.TLSClientCAFile != ""),
+			slog.String("cert", tlsCfg.CertFile),
+			slog.Bool("mtls", tlsCfg.ClientCAFile != ""),
 		)
 	}
 	return opts, nil
@@ -313,8 +350,8 @@ type MetricsServer struct {
 	logger *slog.Logger
 }
 
-func NewMetricsServer(c *Config, reg *prometheus.Registry, logger *slog.Logger) *MetricsServer {
-	if c.MetricsAddr == "" {
+func NewMetricsServer(o ObservabilityConfig, reg *prometheus.Registry, logger *slog.Logger) *MetricsServer {
+	if o.MetricsAddr == "" {
 		return nil
 	}
 	mux := http.NewServeMux()
@@ -329,7 +366,7 @@ func NewMetricsServer(c *Config, reg *prometheus.Registry, logger *slog.Logger) 
 	})
 	return &MetricsServer{
 		srv: &http.Server{
-			Addr:              c.MetricsAddr,
+			Addr:              o.MetricsAddr,
 			Handler:           mux,
 			ReadHeaderTimeout: 5 * time.Second,
 		},
@@ -365,8 +402,8 @@ func RegisterHealth(s *grpc.Server, hs *health.Server) {
 
 // RegisterReflection enables grpcurl-style descriptor reflection when allowed
 // by the LANTERN_REFLECTION env var.
-func RegisterReflection(c *Config, s *grpc.Server) {
-	if c.EnableReflection {
+func RegisterReflection(o ObservabilityConfig, s *grpc.Server) {
+	if o.EnableReflection {
 		reflection.Register(s)
 	}
 }

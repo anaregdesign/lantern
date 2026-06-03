@@ -55,9 +55,9 @@ func newApp(
 // newApp purely to enforce ordering.
 type registeredHealth struct{}
 
-func registerHealthAndReflection(c *provider.Config, s *grpc.Server, hs *health.Server) registeredHealth {
+func registerHealthAndReflection(o provider.ObservabilityConfig, s *grpc.Server, hs *health.Server) registeredHealth {
 	provider.RegisterHealth(s, hs)
-	provider.RegisterReflection(c, s)
+	provider.RegisterReflection(o, s)
 	return registeredHealth{}
 }
 
@@ -93,10 +93,10 @@ func main() {
 	}
 
 	app.logger.Info("lantern starting",
-		slog.Int("port", app.cfg.Port),
-		slog.Duration("default_ttl", app.cfg.TTL),
-		slog.String("metrics_addr", app.cfg.MetricsAddr),
-		slog.Bool("reflection", app.cfg.EnableReflection),
+		slog.Int("port", app.cfg.Net.Port),
+		slog.Duration("default_ttl", app.cfg.Cache.TTL),
+		slog.String("metrics_addr", app.cfg.Observability.MetricsAddr),
+		slog.Bool("reflection", app.cfg.Observability.EnableReflection),
 	)
 
 	if err := app.Run(ctx); err != nil {

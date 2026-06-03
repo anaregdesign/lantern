@@ -15,6 +15,13 @@ import (
 func initializeApp() (*App, error) {
 	wire.Build(
 		provider.NewConfig,
+		provider.NewNetConfig,
+		provider.NewTLSConfig,
+		provider.NewRateLimitConfig,
+		provider.NewObservabilityConfig,
+		provider.NewCacheConfig,
+		provider.NewShutdownConfig,
+		provider.NewValidationLimits,
 		provider.NewLogger,
 		provider.NewTracing,
 		provider.NewGraphCache,
