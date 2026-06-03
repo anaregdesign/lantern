@@ -420,3 +420,38 @@ func Test_weight_addWithTTL(t *testing.T) {
 		})
 	}
 }
+
+func Test_weight_snapshot(t *testing.T) {
+	now := time.Now()
+	t.Run("empty", func(t *testing.T) {
+		w := newWeight()
+		sum, latest, nonZero := w.snapshot()
+		if sum != 0 || !latest.IsZero() || nonZero {
+			t.Fatalf("snapshot empty = (%v, %v, %v), want (0, zero, false)", sum, latest, nonZero)
+		}
+	})
+	t.Run("agrees with value/latestExpiration/isZero on live contributions", func(t *testing.T) {
+		w := newWeight()
+		w.addWithExpiration(1.5, now.Add(time.Minute))
+		w.addWithExpiration(2.5, now.Add(2*time.Minute))
+		w.addWithExpiration(7, now.Add(-time.Minute)) // already expired
+		sum, latest, nonZero := w.snapshot()
+		if got, want := sum, w.value(); got != want {
+			t.Errorf("snapshot.sum = %v, want %v", got, want)
+		}
+		if !latest.Equal(w.latestExpiration()) {
+			t.Errorf("snapshot.latest = %v, want %v", latest, w.latestExpiration())
+		}
+		if nonZero == w.isZero() {
+			t.Errorf("snapshot.nonZero = %v, isZero = %v (should be opposite)", nonZero, w.isZero())
+		}
+	})
+	t.Run("all expired collapses to zero", func(t *testing.T) {
+		w := newWeight()
+		w.addWithExpiration(3, now.Add(-time.Minute))
+		sum, latest, nonZero := w.snapshot()
+		if sum != 0 || !latest.IsZero() || nonZero {
+			t.Fatalf("snapshot all expired = (%v, %v, %v), want (0, zero, false)", sum, latest, nonZero)
+		}
+	})
+}
