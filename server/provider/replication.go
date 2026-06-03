@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
@@ -28,8 +29,14 @@ type MutationLogConfig struct {
 //     a cryptographically random NodeID is generated at process start so
 //     two unrelated nodes never collide. Operators that want a stable
 //     identity across restarts must set this explicitly.
+//   - LANTERN_TOMBSTONE_TTL              max retention window for delete
+//     tombstones and the upper bound on caller-supplied Expiration on
+//     Add*/Put* RPCs. Default 24h. Set to a value larger than the longest
+//     plausible cross-cluster delivery delay to avoid late writes
+//     resurrecting deleted entries.
 type ReplicationConfig struct {
-	NodeID hlc.NodeID
+	NodeID       hlc.NodeID
+	TombstoneTTL time.Duration
 }
 
 // NewMutationLogConfig returns the MutationLogConfig slice of Config.
@@ -49,13 +56,14 @@ func loadMutationLogConfig() MutationLogConfig {
 // loadReplicationConfig reads ReplicationConfig from the environment. Called
 // from NewConfig so all env reads remain colocated.
 func loadReplicationConfig() ReplicationConfig {
+	ttl := envconfig.Duration("LANTERN_TOMBSTONE_TTL", 24*time.Hour)
 	var id hlc.NodeID
 	raw := strings.TrimSpace(os.Getenv("LANTERN_NODE_ID"))
 	raw = strings.TrimPrefix(raw, "0x")
 	if raw != "" {
 		if b, err := hex.DecodeString(raw); err == nil && len(b) == len(id) {
 			copy(id[:], b)
-			return ReplicationConfig{NodeID: id}
+			return ReplicationConfig{NodeID: id, TombstoneTTL: ttl}
 		}
 		// Fall through to random on malformed input. Logged here so the
 		// operator sees the fallback without crashing startup.
@@ -68,7 +76,7 @@ func loadReplicationConfig() ReplicationConfig {
 		slog.Error("failed to read crypto/rand for NodeID; using zero NodeID",
 			slog.Any("err", err))
 	}
-	return ReplicationConfig{NodeID: id}
+	return ReplicationConfig{NodeID: id, TombstoneTTL: ttl}
 }
 
 // NewHLCClock constructs the process-wide hybrid logical clock. The clock's
