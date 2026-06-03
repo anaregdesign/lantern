@@ -53,7 +53,8 @@ func (c *GraphCache[S, T]) AddEdgesWithExpiration(items []EdgeItem[S]) {
 	for _, it := range items {
 		c.ensureVertexLocked(it.Tail, it.Expiration)
 		c.ensureVertexLocked(it.Head, it.Expiration)
-		c.edges.addWithExpiration(it.Tail, it.Head, it.Weight, it.Expiration)
+		created, tailID, headID := c.edges.addWithExpiration(it.Tail, it.Head, it.Weight, it.Expiration)
+		c.onEdgeAddedLocked(created, tailID, headID, it.Head)
 	}
 }
 
@@ -71,7 +72,8 @@ func (c *GraphCache[S, T]) PutEdgesWithExpiration(items []EdgeItem[S]) {
 		c.ensureVertexLocked(it.Tail, it.Expiration)
 		c.ensureVertexLocked(it.Head, it.Expiration)
 		c.edges.delete(it.Tail, it.Head)
-		c.edges.addWithExpiration(it.Tail, it.Head, it.Weight, it.Expiration)
+		created, tailID, headID := c.edges.addWithExpiration(it.Tail, it.Head, it.Weight, it.Expiration)
+		c.onEdgeAddedLocked(created, tailID, headID, it.Head)
 	}
 }
 
@@ -105,7 +107,9 @@ func (c *GraphCache[S, T]) DeleteEdges(keys []EdgeKey[S]) int {
 	defer c.mu.Unlock()
 	var n int
 	for _, k := range keys {
-		if c.edges.delete(k.Tail, k.Head) {
+		deleted, tailID, headID := c.edges.delete(k.Tail, k.Head)
+		if deleted {
+			c.onEdgeDeletedLocked(tailID, headID, k.Head)
 			n++
 		}
 	}
