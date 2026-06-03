@@ -24,15 +24,14 @@ import (
 // reach it by host:port. bufconn would work for a single peer but
 // not for many-to-many wiring across a Pump.
 type pumpNode struct {
-	addr    string
-	cache   *cachegraph.GraphCache[string, *pb.Vertex]
-	clock   *hlc.Clock
-	log     *mutationlog.Log
-	svc     *service.LanternService
-	sdk     *client.Lantern
-	pump    *replication.Pump
-	nodeID  hlc.NodeID
-	stopGrp func()
+	addr   string
+	cache  *cachegraph.GraphCache[string, *pb.Vertex]
+	clock  *hlc.Clock
+	log    *mutationlog.Log
+	svc    *service.LanternService
+	sdk    *client.Lantern
+	pump   *replication.Pump
+	nodeID hlc.NodeID
 }
 
 func newPumpNode(t *testing.T, nodeID hlc.NodeID) *pumpNode {
