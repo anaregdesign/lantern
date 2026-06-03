@@ -190,18 +190,53 @@ re-bootstrap via `Snapshot`.
 
 ### 8.1 Mutation message
 
-See [proto/graph/v1/graph.proto](../proto/graph/v1/graph.proto) for the
-generated form. Conceptual shape:
+The realised wire types live in
+[proto/graph/v1/replication.proto](../proto/graph/v1/replication.proto) and
+their generated Go form in `pb/graph/v1/replication.pb.go`. The shipped
+shapes are:
 
 ```proto
-message Mutation {
-  uint64 seq = 1;
-  uint64 origin = 2;
-  uint64 contrib_seq = 3;
-  HLC hlc = 4;
-  MutationOp op = 5;
-  bytes payload = 6;
+message HLCTimestamp {
+  int64  wall_ns = 1;   // nanoseconds since Unix epoch
+  uint32 logical = 2;
+  bytes  node_id = 3;   // 16 bytes, matches core/hlc.NodeID
 }
+
+message MutationOp {
+  oneof op {
+    PutVertexRequest               put_vertex                = 1;
+    PutVerticesRequest             put_vertices              = 2;
+    DeleteVertexRequest            delete_vertex             = 3;
+    DeleteVerticesRequest          delete_vertices           = 4;
+    DeleteVerticesByPrefixRequest  delete_vertices_by_prefix = 5;
+    AddEdgeRequest                 add_edge                  = 6;
+    AddEdgesRequest                add_edges                 = 7;
+    PutEdgeRequest                 put_edge                  = 8;
+    PutEdgesRequest                put_edges                 = 9;
+    DeleteEdgeRequest              delete_edge               = 10;
+    DeleteEdgesRequest             delete_edges              = 11;
+  }
+}
+
+message Mutation {
+  uint64       seq    = 1;
+  HLCTimestamp hlc    = 2;
+  bytes        origin = 3;
+  MutationOp   op     = 4;
+}
+```
+
+Deviations from the §7 conceptual sketch (recorded as part of #178):
+
+- HLC is **nanoseconds**, not milliseconds (matches `core/hlc.Timestamp`).
+- `origin` is a 16-byte `NodeID` (mirrors `HLCTimestamp.node_id`), not a
+  packed `uint64`. The split between `contrib_seq` and `payload` does not
+  appear on the wire — per-origin `(origin, seq)` already plays the
+  contribution-ID role and the request payload is carried directly by the
+  `MutationOp` oneof.
+- `MutationOp` reuses the existing write-RPC request messages so the
+  server handlers can be invoked verbatim when applying replicated
+  mutations.
 
 message HLC {
   uint64 wall_millis = 1;
@@ -209,21 +244,34 @@ message HLC {
 }
 ```
 
+> The shipped HLC type is `HLCTimestamp` with `int64 wall_ns` (not millis)
+> and an explicit `bytes node_id`; the §7/§8.1 sketch above is retained
+> as historical context. See §8.1 for the wire shape that ships.
+
 ### 8.2 Subscribe (server streaming)
 
 ```proto
-rpc Subscribe(SubscribeRequest) returns (stream Mutation);
-
-message SubscribeRequest {
-  uint64 from_seq = 1;     // 0 = "from the live tail"; non-zero = resume
-  uint64 origin = 2;       // caller's origin, so the server can skip self-echo
+service LanternReplicationService {
+  rpc Subscribe(SubscribeRequest) returns (stream SubscribeResponse);
 }
+
+message SubscribeRequest  { uint64 from_seq = 1; }
+message SubscribeResponse { Mutation mutation = 1; }
 ```
 
-Back-pressure: server drops the stream with `ResourceExhausted` if its send
-buffer fills. The pump (§9) reconnects with exponential backoff and may
-re-bootstrap via `Snapshot` if the requested `from_seq` is no longer in the
-ring buffer (`OutOfRange`).
+Realised on a dedicated `LanternReplicationService` (split from
+`LanternService`) so that replication can be authorised, throttled, or
+disabled independently of the public read/write API; the split also avoids
+a cyclic proto import between `graph.proto` and `replication.proto`. The
+caller's origin is **not** carried in the request — instead, peers filter
+self-echo by inspecting `Mutation.origin` (which equals `HLCTimestamp.node_id`),
+so any per-origin tracking is symmetric with the rest of the design.
+
+Back-pressure: server terminates the stream with `FAILED_PRECONDITION`
+(`gapped`) if either (a) `from_seq` is below the server's first available
+seq, or (b) the consumer's send buffer overflows. In both cases the pump
+(§9) must re-bootstrap via `Snapshot` and resume `Subscribe` from the
+snapshot's cutoff seq.
 
 ### 8.3 Snapshot (server streaming)
 

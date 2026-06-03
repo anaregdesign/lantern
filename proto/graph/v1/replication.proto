@@ -1,0 +1,104 @@
+syntax = "proto3";
+
+package graph.v1;
+
+import "graph/v1/graph.proto";
+
+// HLCTimestamp is the wire form of core/hlc.Timestamp. All replicated
+// mutations carry one of these as their causal coordinate.
+//
+//   wall_ns: physical wall-clock component, nanoseconds since Unix epoch.
+//   logical: per-tick logical counter, incremented on collision.
+//   node_id: 16-byte origin node identifier (matches core/hlc.NodeID).
+//
+// The triple (wall_ns, logical, node_id) gives a strict total order; see
+// docs/replication.md §5 and core/hlc/hlc.go.
+message HLCTimestamp {
+  int64 wall_ns = 1;
+  uint32 logical = 2;
+  bytes node_id = 3;
+}
+
+// MutationOp is the discriminated payload of a single mutation. Each
+// variant mirrors the request message of the corresponding write RPC so the
+// existing server handlers can be reused verbatim when applying replicated
+// mutations.
+//
+// Singular variants (PutVertex, AddEdge, ...) are retained as distinct
+// arms — they are the wire form chosen by the client and round-tripping
+// them faithfully simplifies CDC consumers that mirror RPC semantics.
+message MutationOp {
+  oneof op {
+    PutVertexRequest put_vertex = 1;
+    PutVerticesRequest put_vertices = 2;
+    DeleteVertexRequest delete_vertex = 3;
+    DeleteVerticesRequest delete_vertices = 4;
+    DeleteVerticesByPrefixRequest delete_vertices_by_prefix = 5;
+    AddEdgeRequest add_edge = 6;
+    AddEdgesRequest add_edges = 7;
+    PutEdgeRequest put_edge = 8;
+    PutEdgesRequest put_edges = 9;
+    DeleteEdgeRequest delete_edge = 10;
+    DeleteEdgesRequest delete_edges = 11;
+  }
+}
+
+// Mutation is the unit of replication: a sequenced, HLC-stamped,
+// origin-tagged graph write. `seq` is assigned by the originating node's
+// mutation log (see core/mutationlog) and is strictly monotone within a
+// single origin.
+//
+//   seq:    per-origin monotone sequence number, assigned at append time.
+//   hlc:    causal timestamp stamped at append time.
+//   origin: 16-byte node identifier of the node that first accepted the
+//           write; mirrors hlc.node_id but is kept as an explicit field so
+//           anti-entropy can index by origin without inspecting the HLC.
+//   op:     the actual write payload (see MutationOp).
+message Mutation {
+  uint64 seq = 1;
+  HLCTimestamp hlc = 2;
+  bytes origin = 3;
+  MutationOp op = 4;
+}
+
+// SubscribeRequest opens a stream of replicated mutations starting at
+// `from_seq` (inclusive). The server replays any in-buffer entries with
+// seq >= from_seq, then streams live mutations as they are appended.
+//
+// If `from_seq` is below the server's first available seq the call fails
+// with FAILED_PRECONDITION and the caller must snapshot + resubscribe.
+message SubscribeRequest {
+  uint64 from_seq = 1;
+}
+
+// SubscribeResponse carries one replicated mutation per message.
+message SubscribeResponse {
+  Mutation mutation = 1;
+}
+
+// LanternReplicationService carries the peer-to-peer (and CDC) replication
+// surface. It is intentionally a separate service from LanternService so
+// that operators can route, throttle, secure, or even disable replication
+// independently of the public read/write API.
+//
+// NOTE — deviation from the original RFC: the Subscribe RPC was originally
+// specified to live on LanternService. The realised proto split introduces
+// a cyclic file import between graph.proto and replication.proto when both
+// the request/response messages and the RPC live on opposite sides of the
+// boundary. Hosting Subscribe on a dedicated service keeps the import
+// graph one-way (replication.proto → graph.proto) and is documented as
+// part of #178's implementation in docs/replication.md.
+service LanternReplicationService {
+  // Subscribe streams replicated mutations to a peer (or CDC consumer)
+  // starting at `from_seq` (inclusive). The server replays any in-buffer
+  // entries first, then streams live mutations as they are appended.
+  //
+  // If `from_seq` is below the server's first available seq the call
+  // fails with FAILED_PRECONDITION ("gapped") and the caller must
+  // snapshot + resubscribe. Slow consumers whose channel backs up may
+  // also have the stream terminated with FAILED_PRECONDITION — the
+  // remedy is the same.
+  //
+  // No HTTP gateway annotation: replication is intentionally gRPC-only.
+  rpc Subscribe(SubscribeRequest) returns (stream SubscribeResponse);
+}
