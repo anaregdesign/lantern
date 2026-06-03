@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"log/slog"
-	"math"
 	"net"
 	"time"
 
@@ -52,25 +51,11 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 		return nil, status.FromContextError(err).Err()
 	}
 
-	switch request.GetOptimization() {
-	case pb.Optimization_OPTIMIZATION_UNSPECIFIED:
-		// do nothing
-	case pb.Optimization_OPTIMIZATION_MINIMUM_SPANNING_TREE:
-		g, err = g.MinimumSpanningTreeContext(ctx, request.GetSeed())
-	case pb.Optimization_OPTIMIZATION_MAXIMUM_SPANNING_TREE:
-		g, err = g.MaximumSpanningTreeContext(ctx, request.GetSeed())
-	case pb.Optimization_OPTIMIZATION_SHORTEST_PATH_TREE:
-		g, err = g.ShortestPathTreeContext(ctx, request.GetSeed(), func(weight float32) float32 { return weight })
-	case pb.Optimization_OPTIMIZATION_SHORTEST_PATH_TREE_INVERSE:
-		g, err = g.ShortestPathTreeContext(ctx, request.GetSeed(), func(weight float32) float32 {
-			if weight == 0 {
-				return math.MaxFloat32
-			}
-			return 1 / weight
-		})
-	}
-	if err != nil {
-		return nil, status.FromContextError(err).Err()
+	if opt := optimizers[request.GetOptimization()]; opt != nil {
+		g, err = opt(ctx, g, request.GetSeed())
+		if err != nil {
+			return nil, status.FromContextError(err).Err()
+		}
 	}
 
 	if err := ctx.Err(); err != nil {
