@@ -72,6 +72,16 @@ type GraphCache[S comparable, T any] struct {
 	// replication apply path has ever touched — entries are deleted in
 	// lockstep with vertex eviction via the SetOnEvict hook.
 	vertexHLC map[S]hlc.Timestamp
+
+	// vertexTombstones / edgeTombstones are the per-key deletion records
+	// produced by Delete*HLC (#183). They live outside the live cache so
+	// reads never accidentally surface a deleted key, and they fence
+	// late replication Add*/Put* with strictly-older HLC from
+	// resurrecting freshly-deleted data. Tombstones are reaped on the
+	// regular GC tick (sweepExpiredTombstonesLocked); steady-state cost
+	// for non-replicated workloads is one nil check per write.
+	vertexTombstones map[S]tombstoneEntry
+	edgeTombstones   map[EdgeKey[S]]tombstoneEntry
 }
 
 func NewGraphCache[S comparable, T any](defaultTTL time.Duration) *GraphCache[S, T] {
@@ -269,6 +279,34 @@ func (c *GraphCache[S, T]) AddEdgeWithExpirationContrib(tail, head S, w float32,
 	return applied
 }
 
+// AddEdgeWithExpirationContribHLC is the tombstone-aware sibling of
+// AddEdgeWithExpirationContrib used by the replication apply path (#183).
+// When a live edge tombstone exists for (tail, head) whose HLC is strictly
+// newer than ts the contribution is dropped and false is returned —
+// preventing a late Add* from resurrecting a freshly-deleted edge.
+// Otherwise behaviour matches AddEdgeWithExpirationContrib, including
+// ContribID-based dedup. A successful apply clears any existing
+// tombstone for the edge (the new write supersedes the deletion).
+func (c *GraphCache[S, T]) AddEdgeWithExpirationContribHLC(tail, head S, w float32, expiration time.Time, contribID ContribID, ts hlc.Timestamp) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if tombTs, ok := c.edgeTombstoneLocked(tail, head); ok && ts.Less(tombTs) {
+		return false
+	}
+	c.ensureVertexLocked(tail, expiration)
+	c.ensureVertexLocked(head, expiration)
+	created, tailID, headID, applied := c.edges.addWithExpirationContrib(tail, head, w, expiration, contribID)
+	if applied {
+		c.onEdgeAddedLocked(created, tailID, headID, head)
+		if c.edgeTombstones != nil {
+			delete(c.edgeTombstones, EdgeKey[S]{Tail: tail, Head: head})
+		}
+	} else if created {
+		c.onEdgeAddedLocked(created, tailID, headID, head)
+	}
+	return applied
+}
+
 // PutVertexWithExpirationHLC is the LWW-aware sibling of PutVertexWithExpiration
 // used by the replication apply path. When the stored HLC for key is strictly
 // newer than ts the call is a no-op and returns applied=false. A zero ts
@@ -278,6 +316,9 @@ func (c *GraphCache[S, T]) AddEdgeWithExpirationContrib(tail, head S, w float32,
 func (c *GraphCache[S, T]) PutVertexWithExpirationHLC(key S, value T, expiration time.Time, ts hlc.Timestamp) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if tombTs, ok := c.vertexTombstoneLocked(key); ok && ts.Less(tombTs) {
+		return false
+	}
 	if existing, ok := c.vertexHLC[key]; ok && ts.Less(existing) {
 		return false
 	}
@@ -286,6 +327,9 @@ func (c *GraphCache[S, T]) PutVertexWithExpirationHLC(key S, value T, expiration
 		c.vertexHLC = make(map[S]hlc.Timestamp)
 	}
 	c.vertexHLC[key] = ts
+	if c.vertexTombstones != nil {
+		delete(c.vertexTombstones, key)
+	}
 	return true
 }
 
@@ -298,11 +342,17 @@ func (c *GraphCache[S, T]) PutVertexWithExpirationHLC(key S, value T, expiration
 func (c *GraphCache[S, T]) PutEdgeWithExpirationHLC(tail, head S, w float32, expiration time.Time, ts hlc.Timestamp) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if tombTs, ok := c.edgeTombstoneLocked(tail, head); ok && ts.Less(tombTs) {
+		return false
+	}
 	c.ensureVertexLocked(tail, expiration)
 	c.ensureVertexLocked(head, expiration)
 	created, tailID, headID, applied := c.edges.putWithExpirationHLC(tail, head, w, expiration, ts)
 	if created {
 		c.onEdgeAddedLocked(created, tailID, headID, head)
+	}
+	if applied && c.edgeTombstones != nil {
+		delete(c.edgeTombstones, EdgeKey[S]{Tail: tail, Head: head})
 	}
 	return applied
 }
@@ -338,6 +388,8 @@ func (c *GraphCache[S, T]) DeleteEdge(tail, head S) bool {
 func (c *GraphCache[S, T]) flush() (zero, dangling int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	c.sweepExpiredTombstonesLocked(time.Now())
 
 	return c.edges.flushFunc(func(tailID, headID vertexID) bool {
 		tail, ok := c.edges.resolveID(tailID)
