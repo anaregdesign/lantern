@@ -1,0 +1,24 @@
+Lantern has been deployed in namespace {{ .Release.Namespace }} as
+StatefulSet {{ include "lantern.fullname" . }} with {{ .Values.replicaCount }} replica(s).
+
+Peer discovery mode: {{ .Values.replication.discovery.mode }}
+{{- if eq .Values.replication.discovery.mode "dns" }}
+Peer DNS name:       {{ include "lantern.discoveryDNSName" . }}
+{{- end }}
+
+Client-facing service (gRPC):
+  {{ include "lantern.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}
+
+Headless service (peer discovery):
+  {{ include "lantern.headlessFQDN" . }}
+
+Quick checks:
+  kubectl -n {{ .Release.Namespace }} get statefulset {{ include "lantern.fullname" . }}
+  kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/name={{ include "lantern.name" . }}
+  kubectl -n {{ .Release.Namespace }} get endpoints {{ include "lantern.headlessName" . }}
+
+Port-forward gRPC to localhost:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "lantern.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+
+See deploy/helm/lantern/README.md for tuning notes and
+docs/replication.md §9.1 for the peer-discovery semantics.

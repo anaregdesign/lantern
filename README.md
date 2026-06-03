@@ -153,6 +153,50 @@ Or build from source:
 go run ./server/cmd          # listens on :6380
 ```
 
+### Run on Kubernetes (HA mode)
+
+For Tier-A HA (3 replicas with DNS-based peer discovery, anti-entropy
+reconciliation, and a `PodDisruptionBudget`) install the bundled Helm
+chart:
+
+```shell
+helm install lantern deploy/helm/lantern
+# Or render without installing:
+helm template lantern deploy/helm/lantern | less
+```
+
+The chart creates a `StatefulSet`, a headless `Service` for peer
+discovery (`replication.discovery.mode=dns`), a `ClusterIP` `Service`
+for clients (gRPC `:6380`), and an optional `ServiceMonitor`. See
+[`deploy/helm/lantern/README.md`](deploy/helm/lantern/README.md) for
+the full values reference and
+[`docs/replication.md` §9.1](docs/replication.md#91-peer-discovery-190)
+for the discovery semantics.
+
+### Run with Docker Compose (HA mode)
+
+A 3-replica HA topology for local experiments lives in
+[`deploy/compose/`](deploy/compose/):
+
+```shell
+cd deploy/compose
+docker compose up -d
+docker compose up -d --scale lantern=5    # reconciles in ≤1 discovery tick
+```
+
+Each replica is published on its own host port (`6380`, `6381`, …) so
+the Go SDK's round-robin LB (`NewLanternWithEndpoints`) can fan reads
+across them, while Prometheus on `:9091` scrapes every pod via DNS SD.
+
+### Run on serverless container PaaS
+
+For Cloud Run / Azure Container Apps / AWS App Runner / Fly Machines /
+any platform without stable pod identities, deploy a **single
+instance** (or independent shards) without setting any `LANTERN_PEER_*`
+env. Peer discovery requires a stable in-cluster DNS that resolves to
+per-pod IPs, which these platforms do not provide. See the HA runbook
+(issue #192) for the trade-off matrix and Tier-B / Tier-C topologies.
+
 ### Use the CLI
 
 Pre-built binaries for Linux, macOS, and Windows (amd64 + arm64) are

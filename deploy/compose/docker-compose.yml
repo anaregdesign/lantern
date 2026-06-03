@@ -1,0 +1,67 @@
+# Docker Compose: HA topology (3-replica peer-discovery cluster).
+#
+# Mirrors the Helm chart's Tier-A topology for local development and
+# single-host HA experiments. Uses Compose's embedded DNS: the service
+# name `lantern` resolves to one A per replica, and the lantern peer
+# pump (#190) filters its own IP.
+#
+# Clients use the Go SDK's round-robin LB (#189):
+#   c, _ := lantern.NewLanternWithEndpoints(
+#       []string{"localhost:6380", "localhost:6381", "localhost:6382"})
+# There is intentionally no client-side LB sidecar in this example —
+# picking one would push opinions that don't belong in a quickstart.
+#
+# Usage:
+#   cd deploy/compose
+#   docker compose up -d
+#   docker compose up -d --scale lantern=5     # each pod reconciles in ≤1 tick
+#   docker compose down -v
+#
+# Override the image:
+#   LANTERN_IMAGE=ghcr.io/anaregdesign/lantern:v0.7.1 docker compose up -d
+
+services:
+  lantern:
+    image: ${LANTERN_IMAGE:-lantern:local}
+    deploy:
+      replicas: 3
+    # Publish a port range so each replica is reachable on its own host
+    # port (6380, 6381, 6382, ...) — clients can enumerate them all for
+    # SDK round-robin. Compose assigns the next free port to each replica.
+    ports:
+      - target: 6380
+        published: "6380-6389"
+        protocol: tcp
+        mode: host
+    environment:
+      LANTERN_PORT: "6380"
+      LANTERN_METRICS_ADDR: ":9090"
+      LANTERN_DEFAULT_TTL_SECONDS: "3600"
+      LANTERN_LOG_FORMAT: "json"
+      LANTERN_LOG_LEVEL: "info"
+      # Peer discovery (#190): resolve the service name via Compose DNS.
+      LANTERN_PEER_DISCOVERY: "dns"
+      LANTERN_PEER_DNS_NAME: "lantern"
+      LANTERN_PEER_DEFAULT_PORT: "6380"
+      LANTERN_PEER_DISCOVERY_INTERVAL_MS: "10000"
+      # Readiness gating (#188).
+      LANTERN_MAX_REPLICATION_LAG: "10000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/readyz"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+      start_period: 10s
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=1h"
+    depends_on:
+      lantern:
+        condition: service_healthy

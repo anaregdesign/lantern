@@ -1,0 +1,23 @@
+apiVersion: v2
+name: lantern
+description: |
+  Lantern — time-decaying graph cache with eventually-consistent peer
+  replication. This chart deploys lantern as a StatefulSet behind a
+  headless Service for DNS-based peer discovery (see #190) plus a
+  ClusterIP Service for client traffic, with a PodDisruptionBudget
+  guarding rolling updates.
+type: application
+version: 0.1.0
+appVersion: "latest"
+home: https://github.com/anaregdesign/lantern
+sources:
+  - https://github.com/anaregdesign/lantern
+maintainers:
+  - name: anaregdesign
+    url: https://github.com/anaregdesign
+keywords:
+  - graph
+  - cache
+  - kvs
+  - replication
+  - ha

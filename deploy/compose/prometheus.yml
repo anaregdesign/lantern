@@ -1,0 +1,13 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  # Use Compose's embedded DNS A records so we scrape every replica.
+  - job_name: lantern
+    metrics_path: /metrics
+    dns_sd_configs:
+      - names: ["lantern"]
+        type: A
+        port: 9090
+        refresh_interval: 10s
