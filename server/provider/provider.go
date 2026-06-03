@@ -14,6 +14,7 @@ import (
 
 	"github.com/anaregdesign/lantern/core/cache/graph"
 	v1 "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 	grpcprom "github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus"
 	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/logging"
@@ -97,31 +98,31 @@ type Config struct {
 }
 
 func NewConfig() *Config {
-	rps := envFloat("LANTERN_RATE_LIMIT_RPS", 0)
-	burst := envInt("LANTERN_RATE_LIMIT_BURST", int(2*rps))
+	rps := envconfig.Float("LANTERN_RATE_LIMIT_RPS", 0)
+	burst := envconfig.Int("LANTERN_RATE_LIMIT_BURST", int(2*rps))
 	if burst <= 0 && rps > 0 {
 		burst = int(2 * rps)
 	}
 	return &Config{
-		Port:             envInt("LANTERN_PORT", 6380),
-		TTL:              time.Duration(envInt("LANTERN_DEFAULT_TTL_SECONDS", 60)) * time.Second,
-		GCInterval:       time.Duration(envInt("LANTERN_GC_INTERVAL_SECONDS", 60)) * time.Second,
-		ShutdownTimeout:  time.Duration(envInt("LANTERN_SHUTDOWN_TIMEOUT_SECONDS", 30)) * time.Second,
-		LogLevel:         parseLogLevel(os.Getenv("LANTERN_LOG_LEVEL")),
-		LogFormat:        envStr("LANTERN_LOG_FORMAT", "json"),
-		MetricsAddr:      envStr("LANTERN_METRICS_ADDR", ":9090"),
-		EnableReflection: envBool("LANTERN_REFLECTION", true),
+		Port:             envconfig.Int("LANTERN_PORT", 6380),
+		TTL:              time.Duration(envconfig.Int("LANTERN_DEFAULT_TTL_SECONDS", 60)) * time.Second,
+		GCInterval:       time.Duration(envconfig.Int("LANTERN_GC_INTERVAL_SECONDS", 60)) * time.Second,
+		ShutdownTimeout:  time.Duration(envconfig.Int("LANTERN_SHUTDOWN_TIMEOUT_SECONDS", 30)) * time.Second,
+		LogLevel:         envconfig.LogLevel(os.Getenv("LANTERN_LOG_LEVEL")),
+		LogFormat:        envconfig.String("LANTERN_LOG_FORMAT", "json"),
+		MetricsAddr:      envconfig.String("LANTERN_METRICS_ADDR", ":9090"),
+		EnableReflection: envconfig.Bool("LANTERN_REFLECTION", true),
 
-		MaxRecvMsgBytes:      envInt("LANTERN_MAX_RECV_MSG_BYTES", 16*1024*1024),
-		MaxSendMsgBytes:      envInt("LANTERN_MAX_SEND_MSG_BYTES", 16*1024*1024),
-		MaxConcurrentStreams: uint32(envInt("LANTERN_MAX_CONCURRENT_STREAMS", 1024)),
+		MaxRecvMsgBytes:      envconfig.Int("LANTERN_MAX_RECV_MSG_BYTES", 16*1024*1024),
+		MaxSendMsgBytes:      envconfig.Int("LANTERN_MAX_SEND_MSG_BYTES", 16*1024*1024),
+		MaxConcurrentStreams: uint32(envconfig.Int("LANTERN_MAX_CONCURRENT_STREAMS", 1024)),
 		RateLimitRPS:         rps,
 		RateLimitBurst:       burst,
 
-		MaxKeyLen:         envInt("LANTERN_MAX_KEY_LEN", 1024),
-		MaxBatchSize:      envInt("LANTERN_MAX_BATCH_SIZE", 10000),
-		IlluminateMaxStep: envInt("LANTERN_ILLUMINATE_MAX_STEP", 16),
-		IlluminateMaxK:    envInt("LANTERN_ILLUMINATE_MAX_K", 1024),
+		MaxKeyLen:         envconfig.Int("LANTERN_MAX_KEY_LEN", 1024),
+		MaxBatchSize:      envconfig.Int("LANTERN_MAX_BATCH_SIZE", 10000),
+		IlluminateMaxStep: envconfig.Int("LANTERN_ILLUMINATE_MAX_STEP", 16),
+		IlluminateMaxK:    envconfig.Int("LANTERN_ILLUMINATE_MAX_K", 1024),
 
 		TLSCertFile:     os.Getenv("LANTERN_TLS_CERT_FILE"),
 		TLSKeyFile:      os.Getenv("LANTERN_TLS_KEY_FILE"),
@@ -129,55 +130,6 @@ func NewConfig() *Config {
 
 		Version: os.Getenv("LANTERN_VERSION"),
 		Commit:  os.Getenv("LANTERN_COMMIT"),
-	}
-}
-
-func envInt(key string, def int) int {
-	if v, err := strconv.Atoi(os.Getenv(key)); err == nil {
-		return v
-	}
-	return def
-}
-
-func envFloat(key string, def float64) float64 {
-	if v, err := strconv.ParseFloat(os.Getenv(key), 64); err == nil {
-		return v
-	}
-	return def
-}
-
-func envStr(key, def string) string {
-	if v, ok := os.LookupEnv(key); ok {
-		return v
-	}
-	return def
-}
-
-func envBool(key string, def bool) bool {
-	v, ok := os.LookupEnv(key)
-	if !ok {
-		return def
-	}
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
-		return false
-	default:
-		return def
-	}
-}
-
-func parseLogLevel(s string) slog.Level {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "debug":
-		return slog.LevelDebug
-	case "warn", "warning":
-		return slog.LevelWarn
-	case "error":
-		return slog.LevelError
-	default:
-		return slog.LevelInfo
 	}
 }
 
