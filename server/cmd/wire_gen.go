@@ -20,12 +20,17 @@ func initializeApp() (*App, error) {
 	cacheConfig := provider.NewCacheConfig(config)
 	graphCache := provider.NewGraphCache(cacheConfig)
 	scanConfig := provider.NewScanConfig(config)
-	lanternService := newLanternService(graphCache, scanConfig)
+	mutationLogConfig := provider.NewMutationLogConfig(config)
+	registry := provider.NewPrometheusRegistry()
+	domainMetrics := provider.NewDomainMetrics(registry, observabilityConfig, graphCache)
+	log := provider.NewMutationLog(mutationLogConfig, domainMetrics)
+	replicationConfig := provider.NewReplicationConfig(config)
+	clock := provider.NewHLCClock(replicationConfig)
+	lanternService := newLanternService(graphCache, scanConfig, logger, log, clock, domainMetrics)
 	netConfig := provider.NewNetConfig(config)
 	tlsConfig := provider.NewTLSConfig(config)
 	rateLimitConfig := provider.NewRateLimitConfig(config)
 	validationLimits := provider.NewValidationLimits(config)
-	registry := provider.NewPrometheusRegistry()
 	serverMetrics := provider.NewGrpcServerMetrics(registry)
 	v, err := provider.NewGrpcServerOptions(netConfig, tlsConfig, rateLimitConfig, validationLimits, logger, serverMetrics)
 	if err != nil {
@@ -45,7 +50,6 @@ func initializeApp() (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	domainMetrics := provider.NewDomainMetrics(registry, observabilityConfig, graphCache)
 	mainRegisteredHealth := registerHealthAndReflection(observabilityConfig, server, healthServer)
 	app := newApp(config, logger, lanternServer, metricsServer, tracing, domainMetrics, healthServer, mainRegisteredHealth)
 	return app, nil

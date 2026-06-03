@@ -104,6 +104,7 @@ func (s *LanternService) DeleteVerticesByPrefix(ctx context.Context, in *pb.Dele
 		return &pb.DeleteVerticesByPrefixResponse{Deleted: n}, nil
 	}
 	deleted := s.cache.DeleteByPrefix(ctx, in.GetPrefix(), int(limit))
+	s.logMutation(&pb.MutationOp{Op: &pb.MutationOp_DeleteVerticesByPrefix{DeleteVerticesByPrefix: in}})
 	return &pb.DeleteVerticesByPrefixResponse{Deleted: uint64(deleted)}, nil
 }
 

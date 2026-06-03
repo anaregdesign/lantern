@@ -22,11 +22,13 @@ type Sampler func() (vertices int, edges int)
 // pass the returned callbacks to GraphCache.SetGCHooks plus Start to begin
 // gauge sampling.
 type DomainMetrics struct {
-	vertices    prometheus.Gauge
-	edges       prometheus.Gauge
-	expirations *prometheus.CounterVec
-	gcDuration  prometheus.Histogram
-	buildInfo   *prometheus.GaugeVec
+	vertices            prometheus.Gauge
+	edges               prometheus.Gauge
+	expirations         *prometheus.CounterVec
+	gcDuration          prometheus.Histogram
+	buildInfo           *prometheus.GaugeVec
+	mutationLogEntries  prometheus.Counter
+	mutationLogCapacity prometheus.Gauge
 
 	sampleInterval time.Duration
 	sample         Sampler
@@ -71,10 +73,19 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 			Name: "lantern_build_info",
 			Help: "Build metadata for the running Lantern server. Always 1; inspect labels for version/commit/go_version.",
 		}, []string{"version", "commit", "go_version"}),
+		mutationLogEntries: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "lantern_mutation_log_entries_total",
+			Help: "Total mutations appended to the in-memory mutation log since process start.",
+		}),
+		mutationLogCapacity: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "lantern_mutation_log_capacity",
+			Help: "Configured capacity (ring buffer slots) of the in-memory mutation log.",
+		}),
 		sampleInterval: opts.SampleInterval,
 	}
 
-	reg.MustRegister(m.vertices, m.edges, m.expirations, m.gcDuration, m.buildInfo)
+	reg.MustRegister(m.vertices, m.edges, m.expirations, m.gcDuration, m.buildInfo,
+		m.mutationLogEntries, m.mutationLogCapacity)
 
 	// Pre-create label rows so empty counters are still scraped as 0.
 	for _, k := range []string{"vertex", "edge", "dangling_edge"} {
@@ -107,6 +118,18 @@ func (m *DomainMetrics) OnExpire(kind string, n int) {
 // OnGCDuration records the wall-clock duration of a single GC tick.
 func (m *DomainMetrics) OnGCDuration(d time.Duration) {
 	m.gcDuration.Observe(d.Seconds())
+}
+
+// OnMutationLogAppend increments the counter of successful mutation-log
+// appends. Intended to be wired as a callback into the service layer.
+func (m *DomainMetrics) OnMutationLogAppend() {
+	m.mutationLogEntries.Inc()
+}
+
+// SetMutationLogCapacity reports the configured capacity (ring buffer
+// slots) of the mutation log. Called once at startup.
+func (m *DomainMetrics) SetMutationLogCapacity(n int) {
+	m.mutationLogCapacity.Set(float64(n))
 }
 
 // BindSampler stores the gauge-population callback. Must be called before
