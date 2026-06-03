@@ -19,7 +19,7 @@ func TestAddEdgesWithExpiration_AtomicNeighborSnapshot(t *testing.T) {
 	c := graph.NewGraphCache[string, int](time.Minute)
 
 	exp := time.Now().Add(time.Minute)
-	c.AddVertexWithExpiration("s", 0, exp)
+	c.PutVertexWithExpiration("s", 0, exp)
 
 	addBatch := make([]graph.EdgeItem[string], fanOut)
 	delBatch := make([]graph.EdgeKey[string], fanOut)
@@ -80,7 +80,7 @@ func TestDeleteEdges_AtomicNeighborSnapshot(t *testing.T) {
 	c := graph.NewGraphCache[string, int](time.Minute)
 
 	exp := time.Now().Add(time.Minute)
-	c.AddVertexWithExpiration("s", 0, exp)
+	c.PutVertexWithExpiration("s", 0, exp)
 
 	addBatch := make([]graph.EdgeItem[string], fanOut)
 	delBatch := make([]graph.EdgeKey[string], fanOut)
@@ -189,7 +189,7 @@ func TestBatchAPIs_ReturnCounts(t *testing.T) {
 	c := graph.NewGraphCache[string, int](time.Minute)
 	exp := time.Now().Add(time.Minute)
 
-	c.AddVerticesWithExpiration([]graph.VertexItem[string, int]{
+	c.PutVerticesWithExpiration([]graph.VertexItem[string, int]{
 		{Key: "a", Value: 1, Expiration: exp},
 		{Key: "b", Value: 2, Expiration: exp},
 		{Key: "c", Value: 3, Expiration: exp},

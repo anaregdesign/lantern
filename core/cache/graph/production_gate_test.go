@@ -82,7 +82,7 @@ func testLivenessHeavyMix(t *testing.T) {
 				defer wg.Done()
 				for i := 0; i < iterations; i++ {
 					k := keyFromInt((w*iterations + i) % 64)
-					c.AddVertexWithExpiration(k, i, exp)
+					c.PutVertexWithExpiration(k, i, exp)
 					c.GetVertex(k)
 					tail := keyFromInt(i % 16)
 					head := keyFromInt((i + 1) % 16)
@@ -173,12 +173,12 @@ func testResourceVertexReaped(t *testing.T) {
 	exp := time.Now().Add(short)
 
 	for i := 0; i < N; i++ {
-		c.AddVertexWithExpiration(keyFromInt(i), i, exp)
+		c.PutVertexWithExpiration(keyFromInt(i), i, exp)
 	}
 	// At least one edge so we can verify cascade.
 	c.AddEdgeWithExpiration("a", "b", 1, exp)
-	c.AddVertexWithExpiration("a", 0, exp)
-	c.AddVertexWithExpiration("b", 0, exp)
+	c.PutVertexWithExpiration("a", 0, exp)
+	c.PutVertexWithExpiration("b", 0, exp)
 
 	// Wait past TTL and trigger reaping the same way Watch does.
 	time.Sleep(short + 80*time.Millisecond)
@@ -245,19 +245,19 @@ func testInputBoundary(t *testing.T) {
 		name string
 		fn   func()
 	}{
-		{"empty-key", func() { c.AddVertexWithExpiration("", 0, now.Add(time.Minute)) }},
+		{"empty-key", func() { c.PutVertexWithExpiration("", 0, now.Add(time.Minute)) }},
 		{"long-key", func() {
 			big := make([]byte, 1<<14)
 			for i := range big {
 				big[i] = 'x'
 			}
-			c.AddVertexWithExpiration(string(big), 0, now.Add(time.Minute))
+			c.PutVertexWithExpiration(string(big), 0, now.Add(time.Minute))
 		}},
 		{"zero-weight-edge", func() { c.AddEdgeWithExpiration("a", "b", 0, now.Add(time.Minute)) }},
 		{"negative-weight-edge", func() { c.AddEdgeWithExpiration("a", "b", -3.14, now.Add(time.Minute)) }},
 		{"self-loop", func() { c.AddEdgeWithExpiration("x", "x", 1, now.Add(time.Minute)) }},
-		{"far-past-expiration", func() { c.AddVertexWithExpiration("past", 0, now.Add(-time.Hour)) }},
-		{"far-future-expiration", func() { c.AddVertexWithExpiration("future", 0, now.Add(100*365*24*time.Hour)) }},
+		{"far-past-expiration", func() { c.PutVertexWithExpiration("past", 0, now.Add(-time.Hour)) }},
+		{"far-future-expiration", func() { c.PutVertexWithExpiration("future", 0, now.Add(100*365*24*time.Hour)) }},
 		{"put-edge-on-missing-endpoints", func() { c.PutEdgeWithExpiration("p", "q", 1, now.Add(time.Minute)) }},
 	}
 	for _, tc := range cases {
@@ -266,7 +266,7 @@ func testInputBoundary(t *testing.T) {
 
 	// The cache must still answer queries.
 	if _, ok := c.GetVertex(""); !ok {
-		t.Fatalf("I1: empty-key vertex unexpectedly missing after AddVertex")
+		t.Fatalf("I1: empty-key vertex unexpectedly missing after PutVertex")
 	}
 	if _, _, ok := c.GetEdgeDetail("x", "x"); !ok {
 		t.Fatalf("I1: self-loop edge unexpectedly missing after AddEdge")
@@ -316,7 +316,7 @@ func testInputDeleteMissing(t *testing.T) {
 	c.DeleteEdge("nope", "nada")
 
 	// State remains coherent: a fresh insert still works.
-	c.AddVertexWithExpiration("real", 1, time.Now().Add(time.Minute))
+	c.PutVertexWithExpiration("real", 1, time.Now().Add(time.Minute))
 	if _, ok := c.GetVertex("real"); !ok {
 		t.Fatalf("I3: cache stopped accepting writes after delete-missing")
 	}
@@ -335,8 +335,8 @@ func testReadConsistencyAfterExpiry(t *testing.T) {
 	short := 30 * time.Millisecond
 	exp := time.Now().Add(short)
 
-	c.AddVertexWithExpiration("a", 1, exp)
-	c.AddVertexWithExpiration("b", 2, exp)
+	c.PutVertexWithExpiration("a", 1, exp)
+	c.PutVertexWithExpiration("b", 2, exp)
 	c.AddEdgeWithExpiration("a", "b", 1, exp)
 
 	time.Sleep(short + 80*time.Millisecond)
@@ -428,7 +428,7 @@ func testIdempotenceConverge(t *testing.T) {
 	exp := time.Now().Add(time.Minute)
 
 	for i := 0; i < 100; i++ {
-		c.AddVertexWithExpiration("k", i, exp) // PutVertex semantics on the inner cache
+		c.PutVertexWithExpiration("k", i, exp) // PutVertex semantics on the inner cache
 	}
 	if v, ok := c.GetVertex("k"); !ok || v != 99 {
 		t.Fatalf("D1: PutVertex did not converge to last write (got %d, ok=%v)", v, ok)

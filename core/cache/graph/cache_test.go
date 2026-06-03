@@ -80,7 +80,7 @@ func TestGraph_AddEdgeWithTTL(t *testing.T) {
 	}
 }
 
-func TestGraph_AddVertex(t *testing.T) {
+func TestGraph_PutVertex(t *testing.T) {
 	type args[S comparable, T any] struct {
 		key   S
 		value T
@@ -92,7 +92,7 @@ func TestGraph_AddVertex(t *testing.T) {
 	}
 	tests := []testCase[string, string]{
 		{
-			name: "TestGraph_AddVertex",
+			name: "TestGraph_PutVertex",
 			g: GraphCache[string, string]{
 				vertices: cache.NewCache[string, string](time.Minute),
 			},
@@ -107,7 +107,7 @@ func TestGraph_AddVertex(t *testing.T) {
 	}
 }
 
-func TestGraph_AddVertexWithTTL(t *testing.T) {
+func TestGraph_PutVertexWithTTL(t *testing.T) {
 	type args[S comparable, T any] struct {
 		key   S
 		value T
@@ -120,7 +120,7 @@ func TestGraph_AddVertexWithTTL(t *testing.T) {
 	}
 	tests := []testCase[string, string]{
 		{
-			name: "TestGraph_AddVertexWithTTL",
+			name: "TestGraph_PutVertexWithTTL",
 			g: GraphCache[string, string]{
 				vertices: cache.NewCache[string, string](time.Minute),
 			},
@@ -130,7 +130,7 @@ func TestGraph_AddVertexWithTTL(t *testing.T) {
 	for i := range tests {
 		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
-			tt.g.AddVertexWithTTL(tt.args.key, tt.args.value, tt.args.ttl)
+			tt.g.PutVertexWithTTL(tt.args.key, tt.args.value, tt.args.ttl)
 		})
 	}
 }
@@ -302,7 +302,7 @@ func TestGraphCache_AddEdgeWithTTL(t *testing.T) {
 	}
 }
 
-func TestGraphCache_AddVertex(t *testing.T) {
+func TestGraphCache_PutVertex(t *testing.T) {
 	type args[S comparable, T any] struct {
 		key   S
 		value T
@@ -314,7 +314,7 @@ func TestGraphCache_AddVertex(t *testing.T) {
 	}
 	tests := []testCase[string, string]{
 		{
-			name: "TestGraphCache_AddVertex",
+			name: "TestGraphCache_PutVertex",
 			c: GraphCache[string, string]{
 				vertices: cache.NewCache[string, string](time.Minute),
 			},
@@ -329,7 +329,7 @@ func TestGraphCache_AddVertex(t *testing.T) {
 	}
 }
 
-func TestGraphCache_AddVertexWithExpiration(t *testing.T) {
+func TestGraphCache_PutVertexWithExpiration(t *testing.T) {
 	type args[S comparable, T any] struct {
 		key        S
 		value      T
@@ -342,7 +342,7 @@ func TestGraphCache_AddVertexWithExpiration(t *testing.T) {
 	}
 	tests := []testCase[string, string]{
 		{
-			name: "TestGraphCache_AddVertexWithExpiration",
+			name: "TestGraphCache_PutVertexWithExpiration",
 			c: GraphCache[string, string]{
 				vertices: cache.NewCache[string, string](time.Minute),
 			},
@@ -352,12 +352,12 @@ func TestGraphCache_AddVertexWithExpiration(t *testing.T) {
 	for i := range tests {
 		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
-			tt.c.AddVertexWithExpiration(tt.args.key, tt.args.value, tt.args.expiration)
+			tt.c.PutVertexWithExpiration(tt.args.key, tt.args.value, tt.args.expiration)
 		})
 	}
 }
 
-func TestGraphCache_AddVertexWithTTL(t *testing.T) {
+func TestGraphCache_PutVertexWithTTL(t *testing.T) {
 	type args[S comparable, T any] struct {
 		key   S
 		value T
@@ -370,7 +370,7 @@ func TestGraphCache_AddVertexWithTTL(t *testing.T) {
 	}
 	tests := []testCase[string, string]{
 		{
-			name: "TestGraphCache_AddVertexWithTTL",
+			name: "TestGraphCache_PutVertexWithTTL",
 			c: GraphCache[string, string]{
 				vertices: cache.NewCache[string, string](time.Minute),
 			},
@@ -380,7 +380,7 @@ func TestGraphCache_AddVertexWithTTL(t *testing.T) {
 	for i := range tests {
 		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
-			tt.c.AddVertexWithTTL(tt.args.key, tt.args.value, tt.args.ttl)
+			tt.c.PutVertexWithTTL(tt.args.key, tt.args.value, tt.args.ttl)
 		})
 	}
 }
@@ -546,7 +546,7 @@ func TestNewGraphCache(t *testing.T) {
 
 func TestGraphCache_DeleteVertex(t *testing.T) {
 	g := NewGraphCache[string, string](time.Minute)
-	g.AddVertexWithTTL("a", "A", 60*time.Second)
+	g.PutVertexWithTTL("a", "A", 60*time.Second)
 
 	type args[S comparable] struct {
 		key S
