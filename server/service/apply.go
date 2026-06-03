@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/binary"
+	"time"
 
 	"github.com/anaregdesign/lantern/core/cache/graph"
 	"github.com/anaregdesign/lantern/core/hlc"
@@ -50,6 +51,17 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 	origin := m.GetOrigin()
 	seq := m.GetSeq()
 
+	// Tombstone expiration is computed once per apply so a batch of
+	// per-edge contributions inside a single MutationOp_AddEdges shares
+	// the same wall-clock expiration. When the clamp is disabled
+	// (s.tombstoneTTL == 0) tombExp is the zero time and the underlying
+	// non-HLC backend variants are dispatched instead.
+	useTomb := s.tombstoneTTL > 0
+	tombExp := time.Time{}
+	if useTomb {
+		tombExp = time.Now().Add(s.tombstoneTTL)
+	}
+
 	switch op := m.GetOp().GetOp().(type) {
 	case *pb.MutationOp_PutVertex:
 		v := op.PutVertex.GetVertex()
@@ -67,17 +79,31 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		}
 
 	case *pb.MutationOp_DeleteVertex:
-		s.cache.DeleteVertices([]string{op.DeleteVertex.GetKey()})
+		if useTomb {
+			s.cache.DeleteVertexHLC(op.DeleteVertex.GetKey(), ts, tombExp)
+		} else {
+			s.cache.DeleteVertices([]string{op.DeleteVertex.GetKey()})
+		}
 
 	case *pb.MutationOp_DeleteVertices:
-		s.cache.DeleteVertices(op.DeleteVertices.GetKeys())
+		if useTomb {
+			s.cache.DeleteVerticesHLC(op.DeleteVertices.GetKeys(), ts, tombExp)
+		} else {
+			s.cache.DeleteVertices(op.DeleteVertices.GetKeys())
+		}
 
 	case *pb.MutationOp_DeleteVerticesByPrefix:
-		// DeleteByPrefix returns the deleted count; the apply path does
-		// not need it. Use limit=0 (unlimited) to match the originating
-		// non-DryRun RPC's semantics; #183 will revisit this for
-		// snapshot-clamp interactions.
-		s.cache.DeleteByPrefix(ctx, op.DeleteVerticesByPrefix.GetPrefix(), 0)
+		if useTomb {
+			// Errors from DeleteByPrefixHLC only surface ctx
+			// cancellation; the outer ctx.Err() check at the top of
+			// ApplyMutation already handled the entry-point case, so
+			// propagate any new cancellation that occurred mid-scan.
+			if _, err := s.cache.DeleteByPrefixHLC(ctx, op.DeleteVerticesByPrefix.GetPrefix(), 0, ts, tombExp); err != nil {
+				return status.FromContextError(err).Err()
+			}
+		} else {
+			s.cache.DeleteByPrefix(ctx, op.DeleteVerticesByPrefix.GetPrefix(), 0)
+		}
 
 	case *pb.MutationOp_AddEdge:
 		e := op.AddEdge.GetEdge()
@@ -85,8 +111,13 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 			return nil
 		}
 		cID := contribIDFor(origin, seq, 0)
-		s.cache.AddEdgeWithExpirationContrib(e.GetTail(), e.GetHead(), e.GetWeight(),
-			e.GetExpiration().AsTime(), cID)
+		if useTomb {
+			s.cache.AddEdgeWithExpirationContribHLC(e.GetTail(), e.GetHead(), e.GetWeight(),
+				e.GetExpiration().AsTime(), cID, ts)
+		} else {
+			s.cache.AddEdgeWithExpirationContrib(e.GetTail(), e.GetHead(), e.GetWeight(),
+				e.GetExpiration().AsTime(), cID)
+		}
 
 	case *pb.MutationOp_AddEdges:
 		edges := op.AddEdges.GetEdges()
@@ -95,8 +126,13 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 				continue
 			}
 			cID := contribIDFor(origin, seq, uint16(i))
-			s.cache.AddEdgeWithExpirationContrib(e.GetTail(), e.GetHead(), e.GetWeight(),
-				e.GetExpiration().AsTime(), cID)
+			if useTomb {
+				s.cache.AddEdgeWithExpirationContribHLC(e.GetTail(), e.GetHead(), e.GetWeight(),
+					e.GetExpiration().AsTime(), cID, ts)
+			} else {
+				s.cache.AddEdgeWithExpirationContrib(e.GetTail(), e.GetHead(), e.GetWeight(),
+					e.GetExpiration().AsTime(), cID)
+			}
 		}
 
 	case *pb.MutationOp_PutEdge:
@@ -118,7 +154,11 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 
 	case *pb.MutationOp_DeleteEdge:
 		k := op.DeleteEdge
-		s.cache.DeleteEdges([]graph.EdgeKey[string]{{Tail: k.GetTail(), Head: k.GetHead()}})
+		if useTomb {
+			s.cache.DeleteEdgeHLC(k.GetTail(), k.GetHead(), ts, tombExp)
+		} else {
+			s.cache.DeleteEdges([]graph.EdgeKey[string]{{Tail: k.GetTail(), Head: k.GetHead()}})
+		}
 
 	case *pb.MutationOp_DeleteEdges:
 		in := op.DeleteEdges.GetEdges()
@@ -126,7 +166,11 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		for _, e := range in {
 			keys = append(keys, graph.EdgeKey[string]{Tail: e.GetTail(), Head: e.GetHead()})
 		}
-		s.cache.DeleteEdges(keys)
+		if useTomb {
+			s.cache.DeleteEdgesHLC(keys, ts, tombExp)
+		} else {
+			s.cache.DeleteEdges(keys)
+		}
 	}
 	return nil
 }

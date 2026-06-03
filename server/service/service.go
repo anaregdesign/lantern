@@ -34,13 +34,14 @@ const ServiceName = "graph.v1.LanternService"
 // a fake without standing up the real cache.
 type LanternService struct {
 	pb.UnimplementedLanternServiceServer
-	cache    Backend
-	scan     ScanLimits
-	log      *mutationlog.Log
-	clock    *hlc.Clock
-	origin   []byte
-	onAppend func()
-	logger   *slog.Logger
+	cache        Backend
+	scan         ScanLimits
+	log          *mutationlog.Log
+	clock        *hlc.Clock
+	origin       []byte
+	onAppend     func()
+	logger       *slog.Logger
+	tombstoneTTL time.Duration
 }
 
 // ScanLimits caps the per-call pagination knobs for the prefix RPCs. It is
@@ -99,6 +100,43 @@ func (s *LanternService) WithReplication(log *mutationlog.Log, clock *hlc.Clock,
 func (s *LanternService) WithLogger(l *slog.Logger) *LanternService {
 	s.logger = l
 	return s
+}
+
+// WithTombstoneTTL configures the maximum retention window for delete
+// tombstones AND the upper bound on caller-supplied Expiration on the
+// Add*/Put* RPCs (#183). When d <= 0 the clamp is disabled (legacy
+// behaviour) and Delete handlers fall back to the non-HLC backend path.
+// Wired from LANTERN_TOMBSTONE_TTL via provider.ReplicationConfig.
+func (s *LanternService) WithTombstoneTTL(d time.Duration) *LanternService {
+	s.tombstoneTTL = d
+	return s
+}
+
+// validateExpiration enforces the LANTERN_TOMBSTONE_TTL clamp on
+// caller-supplied per-entry expirations. A zero expiration (the proto
+// default — "no expiration") is always accepted; otherwise the
+// expiration must not exceed now + tombstoneTTL, which is the longest
+// window any tombstone could shadow a late replay. The error message
+// names the env var so operators see the knob they need to adjust.
+func (s *LanternService) validateExpiration(exp time.Time) error {
+	if s.tombstoneTTL <= 0 || exp.IsZero() {
+		return nil
+	}
+	if exp.After(time.Now().Add(s.tombstoneTTL)) {
+		return status.Errorf(codes.InvalidArgument,
+			"expiration %s exceeds LANTERN_TOMBSTONE_TTL=%s",
+			exp.UTC().Format(time.RFC3339Nano), s.tombstoneTTL)
+	}
+	return nil
+}
+
+// tombstoneExpiration returns the wall-clock instant a tombstone stamped
+// now would expire, or the zero time when the clamp is disabled.
+func (s *LanternService) tombstoneExpiration() time.Time {
+	if s.tombstoneTTL <= 0 {
+		return time.Time{}
+	}
+	return time.Now().Add(s.tombstoneTTL)
 }
 
 // logMutation appends op to the mutation log after a local commit. The HLC
@@ -237,6 +275,9 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 	in := request.GetVertices()
 	items := make([]graph.VertexItem[string, *pb.Vertex], 0, len(in))
 	for _, v := range in {
+		if err := s.validateExpiration(v.GetExpiration().AsTime()); err != nil {
+			return nil, err
+		}
 		items = append(items, graph.VertexItem[string, *pb.Vertex]{
 			Key:        v.GetKey(),
 			Value:      v,
@@ -262,7 +303,14 @@ func (s *LanternService) DeleteVertices(ctx context.Context, in *pb.DeleteVertic
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()
 	}
-	n := s.cache.DeleteVertices(in.GetKeys())
+	var n int
+	if s.clock != nil && s.tombstoneTTL > 0 {
+		// Replicated path: stamp tombstones at clock.Now() so peers
+		// resolve LWW deterministically; local expiration is best-effort.
+		n = s.cache.DeleteVerticesHLC(in.GetKeys(), s.clock.Now(), s.tombstoneExpiration())
+	} else {
+		n = s.cache.DeleteVertices(in.GetKeys())
+	}
 	s.logMutation(&pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{DeleteVertices: in}})
 	return &pb.DeleteVerticesResponse{Deleted: int32(n)}, nil
 }
@@ -320,6 +368,9 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 	in := request.GetEdges()
 	items := make([]graph.EdgeItem[string], 0, len(in))
 	for _, e := range in {
+		if err := s.validateExpiration(e.GetExpiration().AsTime()); err != nil {
+			return nil, err
+		}
 		items = append(items, graph.EdgeItem[string]{
 			Tail:       e.GetTail(),
 			Head:       e.GetHead(),
@@ -346,6 +397,9 @@ func (s *LanternService) PutEdges(ctx context.Context, request *pb.PutEdgesReque
 	in := request.GetEdges()
 	items := make([]graph.EdgeItem[string], 0, len(in))
 	for _, e := range in {
+		if err := s.validateExpiration(e.GetExpiration().AsTime()); err != nil {
+			return nil, err
+		}
 		items = append(items, graph.EdgeItem[string]{
 			Tail:       e.GetTail(),
 			Head:       e.GetHead(),
@@ -380,7 +434,12 @@ func (s *LanternService) DeleteEdges(ctx context.Context, in *pb.DeleteEdgesRequ
 	for _, e := range inEdges {
 		keys = append(keys, graph.EdgeKey[string]{Tail: e.GetTail(), Head: e.GetHead()})
 	}
-	n := s.cache.DeleteEdges(keys)
+	var n int
+	if s.clock != nil && s.tombstoneTTL > 0 {
+		n = s.cache.DeleteEdgesHLC(keys, s.clock.Now(), s.tombstoneExpiration())
+	} else {
+		n = s.cache.DeleteEdges(keys)
+	}
 	s.logMutation(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: in}})
 	return &pb.DeleteEdgesResponse{Deleted: int32(n)}, nil
 }
