@@ -167,3 +167,40 @@ func BenchmarkGraphCacheGetWeight(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkNeighbor_Small exercises the sequential path in neighborContext:
+// step=1 keeps the frontier at exactly 1 (the seed), well below
+// neighborParallelThreshold, so goroutine fan-out is skipped entirely.
+// This is the case the threshold gate is meant to protect.
+func BenchmarkNeighbor_Small(b *testing.B) {
+	for _, s := range smallScales(testing.Short()) {
+		s := s
+		b.Run(s.name, func(b *testing.B) {
+			c := NewGraphCache[string, string](time.Hour)
+			keys := populate(b, c, s)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_ = c.Neighbor(keys[i%s.vertices], 1, 10, false)
+			}
+		})
+	}
+}
+
+// BenchmarkNeighbor_Large exercises the worker-pool path: step=3 lets the
+// frontier grow past the threshold so fan-out kicks in. Should show no
+// regression vs the prior per-tail-goroutine implementation.
+func BenchmarkNeighbor_Large(b *testing.B) {
+	for _, s := range smallScales(testing.Short()) {
+		s := s
+		b.Run(s.name, func(b *testing.B) {
+			c := NewGraphCache[string, string](time.Hour)
+			keys := populate(b, c, s)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_ = c.Neighbor(keys[i%s.vertices], 3, 10, false)
+			}
+		})
+	}
+}
