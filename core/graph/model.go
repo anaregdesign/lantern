@@ -109,6 +109,13 @@ func (g *Graph[S, T]) MaximumSpanningTreeContext(ctx context.Context, seed S) (*
 // spanningTreeContext computes either the minimum (negate=false) or maximum
 // (negate=true) spanning tree rooted at seed. It is the shared implementation
 // behind the exported MinimumSpanningTree / MaximumSpanningTree variants.
+//
+// Implementation: classic Prim. When a vertex enters the MST, only its
+// outgoing edges are pushed onto the priority queue, and stale entries
+// pointing at already-included vertices are skipped at pop time. Each edge
+// is therefore pushed and popped at most once, giving O((V+E) log V).
+// The previous version re-scanned mst.Vertices on every iteration of the
+// outer loop, paying an extra O(V) per added vertex.
 func (g *Graph[S, T]) spanningTreeContext(ctx context.Context, seed S, negate bool) (*Graph[S, T], error) {
 	connected, err := g.ConnectedGraphContext(ctx, seed)
 	if err != nil {
@@ -122,61 +129,42 @@ func (g *Graph[S, T]) spanningTreeContext(ctx context.Context, seed S, negate bo
 	}
 
 	mst := NewGraph[S, T]()
+	mst.PutVertex(seed, connected.Vertices[seed])
+
 	q := make(pq.PriorityQueue[*edge, float32], 0)
 	heap.Init(&q)
-	seen := set.NewSet[S]()
 
-	mst.PutVertex(seed, connected.Vertices[seed])
-	for {
+	// pq is a max-heap; flip sign for the minimum-tree case so that the
+	// smallest original weight surfaces at the top.
+	pushOutgoing := func(tail S) {
+		for head, weight := range connected.Edges[tail] {
+			if _, ok := mst.Vertices[head]; ok {
+				continue
+			}
+			w := weight
+			if !negate {
+				w = -weight
+			}
+			heap.Push(&q, &pq.Item[*edge, float32]{
+				Value:    &edge{tail: tail, head: head, weight: weight},
+				Priority: w,
+			})
+		}
+	}
+	pushOutgoing(seed)
+
+	for q.Len() > 0 && len(mst.Vertices) < len(connected.Vertices) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if len(mst.Vertices) == len(connected.Vertices) {
-			break
+		picked := heap.Pop(&q).(*pq.Item[*edge, float32]).Value
+		if _, ok := mst.Vertices[picked.head]; ok {
+			// stale: head already absorbed via a better edge
+			continue
 		}
-
-		for tail := range mst.Vertices {
-			if seen.Has(tail) {
-				continue
-			}
-
-			for head, weight := range connected.Edges[tail] {
-				var w float32
-				if negate {
-					w = weight
-				} else {
-					w = -weight
-				}
-
-				item := &pq.Item[*edge, float32]{
-					Value: &edge{
-						tail:   tail,
-						head:   head,
-						weight: weight,
-					},
-					Priority: w,
-				}
-				heap.Push(&q, item)
-			}
-			seen.Add(tail)
-		}
-
-		var pickedUp *edge
-		for {
-			if q.Len() == 0 {
-				break
-			}
-			pickedUp = heap.Pop(&q).(*pq.Item[*edge, float32]).Value
-			if _, ok := mst.Vertices[pickedUp.head]; !ok {
-				break
-			}
-		}
-		if pickedUp == nil {
-			break
-		}
-		mst.PutVertex(pickedUp.head, connected.Vertices[pickedUp.head])
-		mst.PutEdge(pickedUp.tail, pickedUp.head, pickedUp.weight)
-
+		mst.PutVertex(picked.head, connected.Vertices[picked.head])
+		mst.PutEdge(picked.tail, picked.head, picked.weight)
+		pushOutgoing(picked.head)
 	}
 	return mst, nil
 }

@@ -129,6 +129,57 @@ func TestGraph_MinimumSpanningTree(t *testing.T) {
 	}
 }
 
+// TestGraph_MinimumSpanningTree_Larger exercises Prim on a 5-vertex graph
+// with a clear optimum, to guard against the incremental-push refactor.
+//
+//	a -1- b
+//	|  \  |
+//	5   2 3
+//	|    \|
+//	d -1- c
+//	      |
+//	      4
+//	      e
+//
+// MST edges: a-b(1), a-c(2), c-d (... wait, encode explicitly)
+func TestGraph_MinimumSpanningTree_Larger(t *testing.T) {
+	g := NewGraph[string, int]()
+	add := func(u, v string, w float32) {
+		g.PutEdge(u, v, w)
+		g.PutEdge(v, u, w)
+	}
+	add("a", "b", 1)
+	add("a", "c", 2)
+	add("a", "d", 5)
+	add("b", "c", 3)
+	add("c", "d", 1)
+	add("c", "e", 4)
+	add("d", "e", 6)
+
+	mst := g.MinimumSpanningTree("a")
+
+	// Count undirected edges (each appears twice in mst.Edges if both
+	// directions present, but Prim only adds one direction).
+	total := float32(0)
+	edges := 0
+	for _, heads := range mst.Edges {
+		for _, w := range heads {
+			total += w
+			edges++
+		}
+	}
+	// Optimal MST: a-b(1) + a-c(2) + c-d(1) + c-e(4) = 8
+	if total != 8 {
+		t.Errorf("MST total = %v, want 8 (edges=%v)", total, mst.Edges)
+	}
+	if len(mst.Vertices) != 5 {
+		t.Errorf("MST vertices = %d, want 5", len(mst.Vertices))
+	}
+	if edges != 4 {
+		t.Errorf("MST directed-edge count = %d, want 4", edges)
+	}
+}
+
 func TestGraph_MaximumSpanningTree(t *testing.T) {
 	// Same triangle; max spanning tree picks (a-c)=10 + (b-c)=2 = 12 (avoids a-b=1).
 	g := NewGraph[string, int]()
