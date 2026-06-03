@@ -447,6 +447,10 @@ Required toolchain:
 
 ### Conventions and gotchas
 
+- **High availability / replication** — Lantern's leaderless full-replica
+  design (HLC, mutation log, Subscribe/Snapshot, tombstones, deployment
+  topology matrix) is specified in [docs/replication.md](docs/replication.md).
+  All HA-tagged issues implement against that RFC.
 - **Never hand-edit `server/cmd/wire_gen.go`** — it is generated. Edit providers
   in [server/provider/provider.go](server/provider/provider.go) or definitions
   in [server/cmd/wire.go](server/cmd/wire.go), then re-run `go generate ./...`
