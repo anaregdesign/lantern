@@ -100,7 +100,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		got, err := v.StringValue()
+		got, err := client.StringValue(v)
 		if err != nil {
 			return err
 		}
@@ -114,7 +114,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		got, err := v.IntValue()
+		got, err := client.IntValue(v)
 		if err != nil {
 			return err
 		}
@@ -128,7 +128,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		b, err := v.BytesValue()
+		b, err := client.BytesValue(v)
 		if err != nil {
 			return err
 		}
@@ -142,7 +142,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		t, err := v.TimeValue()
+		t, err := client.TimeValue(v)
 		if err != nil {
 			return err
 		}
@@ -156,7 +156,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		if !v.IsNil() {
+		if !client.IsNil(v) {
 			return fmt.Errorf("expected IsNil true")
 		}
 		return nil

@@ -33,8 +33,7 @@ func TestNativeVertex_AsVertex_IntegerWidths(t *testing.T) {
 			if err != nil {
 				t.Fatalf("asVertex: %v", err)
 			}
-			wrapped := (*Vertex)(v)
-			if got := wrapped.Kind(); got != tc.kind {
+			if got := Kind(v); got != tc.kind {
 				t.Errorf("Kind = %v, want %v", got, tc.kind)
 			}
 		})
@@ -43,21 +42,21 @@ func TestNativeVertex_AsVertex_IntegerWidths(t *testing.T) {
 
 func TestVertex_IntValue_Overflow(t *testing.T) {
 	v := &Vertex{Value: &pb.Vertex_Uint64{Uint64: math.MaxUint64}}
-	if _, err := v.IntValue(); !errors.Is(err, ErrOverflow) {
+	if _, err := IntValue(v); !errors.Is(err, ErrOverflow) {
 		t.Errorf("err = %v, want ErrOverflow", err)
 	}
 }
 
 func TestVertex_UIntValue_Overflow(t *testing.T) {
 	v := &Vertex{Value: &pb.Vertex_Int64{Int64: -1}}
-	if _, err := v.UIntValue(); !errors.Is(err, ErrOverflow) {
+	if _, err := UIntValue(v); !errors.Is(err, ErrOverflow) {
 		t.Errorf("err = %v, want ErrOverflow", err)
 	}
 }
 
 func TestVertex_IntValue_CrossWidth(t *testing.T) {
 	v := &Vertex{Value: &pb.Vertex_Uint32{Uint32: 42}}
-	got, err := v.IntValue()
+	got, err := IntValue(v)
 	if err != nil {
 		t.Fatalf("IntValue: %v", err)
 	}
@@ -81,18 +80,18 @@ func TestVertex_Kind(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.v.Kind(); got != tc.want {
+			if got := Kind(tc.v); got != tc.want {
 				t.Errorf("Kind = %v, want %v", got, tc.want)
 			}
 		})
 	}
 }
 
-func TestVertex_ExpirationTime(t *testing.T) {
-	if got := (*Vertex)(nil).ExpirationTime(); !got.IsZero() {
+func TestVertexExpiration(t *testing.T) {
+	if got := VertexExpiration(nil); !got.IsZero() {
 		t.Errorf("nil vertex expiration = %v, want zero", got)
 	}
-	if got := (&Vertex{}).ExpirationTime(); !got.IsZero() {
+	if got := VertexExpiration(&Vertex{}); !got.IsZero() {
 		t.Errorf("empty expiration = %v, want zero", got)
 	}
 }

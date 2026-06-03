@@ -31,7 +31,7 @@ func TestVertex_BoolValue(t *testing.T) {
 	for i := range tests {
 		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := tt.v.BoolValue()
+			got, err := BoolValue(&tt.v)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("BoolValue() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -64,7 +64,7 @@ func TestVertex_BytesValue(t *testing.T) {
 	for i := range tests {
 		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := tt.v.BytesValue()
+			got, err := BytesValue(&tt.v)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("BytesValue() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -97,7 +97,7 @@ func TestVertex_FloatValue(t *testing.T) {
 	for i := range tests {
 		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := tt.v.FloatValue()
+			got, err := FloatValue(&tt.v)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("FloatValue() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -130,7 +130,7 @@ func TestVertex_IntValue(t *testing.T) {
 	for i := range tests {
 		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := tt.v.IntValue()
+			got, err := IntValue(&tt.v)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("IntValue() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -161,7 +161,7 @@ func TestVertex_IsNil(t *testing.T) {
 	for i := range tests {
 		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.v.IsNil(); got != tt.want {
+			if got := IsNil(&tt.v); got != tt.want {
 				t.Errorf("IsNil() = %v, want %v", got, tt.want)
 			}
 		})
@@ -189,7 +189,7 @@ func TestVertex_StringValue(t *testing.T) {
 	for i := range tests {
 		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := tt.v.StringValue()
+			got, err := StringValue(&tt.v)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("StringValue() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -223,7 +223,7 @@ func TestVertex_TimeValue(t *testing.T) {
 	for i := range tests {
 		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := tt.v.TimeValue()
+			got, err := TimeValue(&tt.v)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("TimeValue() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -263,7 +263,7 @@ func TestVertex_DurationValue(t *testing.T) {
 	for i := range tests {
 		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := tt.v.DurationValue()
+			got, err := DurationValue(&tt.v)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("DurationValue() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -296,7 +296,7 @@ func TestVertex_UIntValue(t *testing.T) {
 	for i := range tests {
 		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := tt.v.UIntValue()
+			got, err := UIntValue(&tt.v)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("UIntValue() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -358,7 +358,7 @@ func Test_nativeVertex_asVertex(t *testing.T) {
 	}
 }
 
-func TestVertex_MarshalJSON(t *testing.T) {
+func TestMarshalVertexJSON(t *testing.T) {
 	exp := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	ts := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	tests := []struct {
@@ -414,12 +414,12 @@ func TestVertex_MarshalJSON(t *testing.T) {
 	for i := range tests {
 		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := tt.v.MarshalJSON()
+			got, err := MarshalVertexJSON(tt.v)
 			if err != nil {
-				t.Fatalf("MarshalJSON() error = %v", err)
+				t.Fatalf("MarshalVertexJSON() error = %v", err)
 			}
 			if string(got) != tt.want {
-				t.Errorf("MarshalJSON() got = %s, want %s", got, tt.want)
+				t.Errorf("MarshalVertexJSON() got = %s, want %s", got, tt.want)
 			}
 		})
 	}

@@ -29,14 +29,17 @@ var ErrInvalidArgument = errors.New("invalid argument")
 // before retrying.
 var ErrResourceExhausted = errors.New("resource exhausted")
 
-// Edge is a thin type alias over the generated protobuf Edge that lets the
-// client return the full record (including Expiration) instead of just the
-// weight.
-type Edge pb.Edge
+// Edge re-exports the generated protobuf Edge type so SDK callers do not
+// need to import the pb package directly. It is a true Go type alias, not a
+// parallel struct: client.Edge and pb.Edge are the same type, freely
+// interchangeable without conversion.
+//
+// Use EdgeExpiration to read the Expiration field as a Go time.Time.
+type Edge = pb.Edge
 
-// ExpirationTime returns the absolute expiration carried by e, or the zero
+// EdgeExpiration returns the absolute expiration carried by e, or the zero
 // time if no expiration was set on the server response.
-func (e *Edge) ExpirationTime() time.Time {
+func EdgeExpiration(e *Edge) time.Time {
 	if e == nil || e.Expiration == nil {
 		return time.Time{}
 	}
@@ -174,7 +177,7 @@ func (l *Lantern) GetVertex(ctx context.Context, key string) (*Vertex, error) {
 	if err != nil {
 		return nil, wrapStatus(err)
 	}
-	return (*Vertex)(result.Vertex), nil
+	return result.Vertex, nil
 }
 
 // PutVertex upserts a single vertex with a relative TTL.
@@ -267,9 +270,7 @@ func (l *Lantern) GetVertices(ctx context.Context, keys []string) (found []*Vert
 		if rerr != nil {
 			return rerr
 		}
-		for _, v := range resp.GetVertices() {
-			found = append(found, (*Vertex)(v))
-		}
+		found = append(found, resp.GetVertices()...)
 		missing = append(missing, resp.GetMissing()...)
 		return nil
 	})
@@ -287,7 +288,7 @@ func (l *Lantern) GetEdge(ctx context.Context, tail string, head string) (*Edge,
 	if err != nil {
 		return nil, wrapStatus(err)
 	}
-	return (*Edge)(result.Edge), nil
+	return result.Edge, nil
 }
 
 // AddEdge accumulates weight onto the (tail, head) pair: repeated calls with
@@ -420,9 +421,7 @@ func (l *Lantern) GetEdges(ctx context.Context, refs []EdgeRef) (found []*Edge, 
 		if rerr != nil {
 			return rerr
 		}
-		for _, e := range resp.GetEdges() {
-			found = append(found, (*Edge)(e))
-		}
+		found = append(found, resp.GetEdges()...)
 		for _, m := range resp.GetMissing() {
 			missing = append(missing, EdgeRef{Tail: m.GetTail(), Head: m.GetHead()})
 		}
@@ -509,7 +508,7 @@ func (l *Lantern) Illuminate(ctx context.Context, seed string, opts ...Illuminat
 	}
 	g := NewGraph()
 	for _, v := range result.Graph.Vertices {
-		g.Vertices[v.Key] = (*Vertex)(v)
+		g.Vertices[v.Key] = v
 	}
 	for _, e := range result.Graph.Edges {
 		if _, ok := g.Edges[e.Tail]; !ok {

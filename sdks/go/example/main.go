@@ -61,49 +61,49 @@ func main() {
 	*/
 	// string value
 	if vertex, err := cli.GetVertex(ctx, "string"); err == nil {
-		if v, err := vertex.StringValue(); err == nil {
+		if v, err := client.StringValue(vertex); err == nil {
 			log.Printf("%s: %s\n", vertex.Key, v)
 		}
 	}
 
 	// int value
 	if vertex, err := cli.GetVertex(ctx, "int"); err == nil {
-		if v, err := vertex.IntValue(); err == nil {
+		if v, err := client.IntValue(vertex); err == nil {
 			log.Printf("%s: %d\n", vertex.Key, v)
 		}
 	}
 
 	// float value
 	if vertex, err := cli.GetVertex(ctx, "float"); err == nil {
-		if v, err := vertex.FloatValue(); err == nil {
+		if v, err := client.FloatValue(vertex); err == nil {
 			log.Printf("%s: %f\n", vertex.Key, v)
 		}
 	}
 
 	// bool value
 	if vertex, err := cli.GetVertex(ctx, "bool"); err == nil {
-		if v, err := vertex.BoolValue(); err == nil {
+		if v, err := client.BoolValue(vertex); err == nil {
 			log.Printf("%s: %t\n", vertex.Key, v)
 		}
 	}
 
 	// time.Time value
 	if value, err := cli.GetVertex(ctx, "time"); err == nil {
-		if v, err := value.TimeValue(); err == nil {
+		if v, err := client.TimeValue(value); err == nil {
 			log.Printf("%s: %s\n", value.Key, v)
 		}
 	}
 
 	// []byte value
 	if vertex, err := cli.GetVertex(ctx, "[]byte"); err == nil {
-		if v, err := vertex.BytesValue(); err == nil {
+		if v, err := client.BytesValue(vertex); err == nil {
 			log.Printf("%s: %s\n", vertex.Key, v)
 		}
 	}
 
 	// nil value
 	if vertex, err := cli.GetVertex(ctx, "nil"); err == nil {
-		log.Printf("%s: %t\n", vertex.Key, vertex.IsNil())
+		log.Printf("%s: %t\n", vertex.Key, client.IsNil(vertex))
 	}
 
 	/*

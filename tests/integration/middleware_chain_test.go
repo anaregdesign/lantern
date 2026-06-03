@@ -78,7 +78,7 @@ func TestIntegration_FullMiddlewareChain(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetVertex: %v", err)
 		}
-		if got, _ := v.StringValue(); got != "hello" {
+		if got, _ := client.StringValue(v); got != "hello" {
 			t.Errorf("StringValue = %q, want %q", got, "hello")
 		}
 	})
