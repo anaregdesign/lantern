@@ -1,6 +1,8 @@
 package graph
 
 import (
+	"context"
+	"errors"
 	"sort"
 	"strconv"
 	"testing"
@@ -292,5 +294,39 @@ func TestGraph_Render(t *testing.T) {
 	e := view.Edges[0]
 	if e.From != int('a') || e.To != int('b') || e.Value != 0.5 {
 		t.Errorf("Render edge = %+v, want From=%d To=%d Value=0.5", e, int('a'), int('b'))
+	}
+}
+
+func TestGraph_ContextCancelled(t *testing.T) {
+	g := NewGraph[string, int]()
+	g.PutEdge("a", "b", 1.0)
+	g.PutEdge("b", "c", 1.0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	cases := []struct {
+		name string
+		run  func() error
+	}{
+		{"ConnectedGraphContext", func() error {
+			_, err := g.ConnectedGraphContext(ctx, "a")
+			return err
+		}},
+		{"MinimumSpanningTreeContext", func() error {
+			_, err := g.MinimumSpanningTreeContext(ctx, "a")
+			return err
+		}},
+		{"ShortestPathTreeContext", func() error {
+			_, err := g.ShortestPathTreeContext(ctx, "a", func(w float32) float32 { return w })
+			return err
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.run(); !errors.Is(err, context.Canceled) {
+				t.Fatalf("want context.Canceled, got %v", err)
+			}
+		})
 	}
 }
