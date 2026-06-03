@@ -246,7 +246,25 @@ _ = cli.PutVertex(ctx, "item:7",  "lamp",  1*time.Hour)
 _ = cli.AddEdge(ctx, "user:42", "item:7", 1.0, 30*time.Minute)
 
 // Walk: 2 hops, top-3 per hop, TF-IDF weighted.
-g, _ := cli.Illuminate(ctx, "user:42", 2, 3, true)
+g, _ := cli.Illuminate(ctx, "user:42",
+    client.WithStep(2), client.WithK(3), client.WithTFIDF(true))
+
+// Prefix scan: enumerate every vertex under a namespace, auto-paginated.
+for batch, err := range cli.ScanVerticesAll(ctx, "user:", 100) {
+    if err != nil { log.Fatal(err) }
+    for _, v := range batch { fmt.Println(client.StringValue(v)) }
+}
+
+// Count or bulk-delete by prefix (DeleteVerticesByPrefix supports WithDryRun).
+n, _ := cli.CountVerticesByPrefix(ctx, "session:abc:")
+_, _ = cli.DeleteVerticesByPrefix(ctx, "session:abc:")
+
+// Edge prefix scan: filter on tail and/or head namespace.
+edges, _, _ := cli.ScanEdges(ctx,
+    client.WithEdgeScanTailPrefix("user:"),
+    client.WithEdgeScanHeadPrefix("post:"),
+    client.WithEdgeScanLimit(100))
+_ = edges
 ```
 
 The full multi-type, additive-edge, and `Illuminate` example lives in
@@ -280,7 +298,11 @@ whole subgraph, so there is no plural form.
 | `AddEdge` / `AddEdges` | **Append** weighted contributions | Not idempotent — see *Additive edge weights* above; SDK auto-chunks; server enforces `LANTERN_MAX_BATCH_SIZE` |
 | `PutEdge` / `PutEdges` | Idempotent replace (delete + add under one write lock) | Use when you want one-and-only-one weight; SDK auto-chunks; server enforces `LANTERN_MAX_BATCH_SIZE` |
 | `DeleteEdge` / `DeleteEdges` | Remove edges outright | Plural takes `[]EdgeRef{Tail, Head}`; SDK auto-chunks; idempotent |
-| `Illuminate` | Walk the graph from a seed | `step`, `k`, `tfidf`, and `Optimization` (none / MST / max-ST / SPT / inverse-SPT); honours `ctx` cancellation; `step`/`k` are clamped at `LANTERN_ILLUMINATE_MAX_STEP` / `LANTERN_ILLUMINATE_MAX_K` |
+| `ScanVertices` | Enumerate vertices by key prefix, page-by-page | Opaque cursor; server enforces a default and hard cap on `limit` (see `LANTERN_SCAN_*`); cross-feeding a cursor from a different `Scan*` RPC is rejected with `InvalidArgument`; SDK helper `ScanVerticesAll` returns an `iter.Seq2` that auto-paginates |
+| `CountVerticesByPrefix` | Count live vertices under a prefix | Radix-only (cheap); not subject to `limit` |
+| `DeleteVerticesByPrefix` | Bulk-delete a namespace | Capped by server-configured `limit`; `dry_run` returns the count that *would* be deleted without mutating; edges incident to removed vertices are reaped on the next GC tick |
+| `ScanEdges` | Enumerate edges by `tail_prefix` AND `head_prefix` | Either prefix may be empty; head dimension is served by a per-tail head radix (not a post-filter); head-only scans still iterate every tail, so combining both prefixes is the most efficient shape; same opaque-cursor / cross-RPC rejection rules as `ScanVertices`; SDK helper `ScanEdgesAll` auto-paginates |
+| `Illuminate` | Walk the graph from a seed | `WithStep`, `WithK`, `WithTFIDF`, and `WithOptimization` (none / MST / max-ST / SPT / inverse-SPT); honours `ctx` cancellation; `step`/`k` are clamped at `LANTERN_ILLUMINATE_MAX_STEP` / `LANTERN_ILLUMINATE_MAX_K` |
 
 Vertices auto-materialize on `AddEdge`/`PutEdge` if the endpoint key does not
 yet exist (they get the edge's expiration as their TTL). This keeps event-stream
