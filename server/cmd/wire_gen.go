@@ -27,6 +27,7 @@ func initializeApp() (*App, error) {
 	replicationConfig := provider.NewReplicationConfig(config)
 	clock := provider.NewHLCClock(replicationConfig)
 	lanternService := newLanternService(graphCache, scanConfig, logger, log, clock, domainMetrics)
+	lanternReplicationService := newLanternReplicationService(log, logger, domainMetrics)
 	netConfig := provider.NewNetConfig(config)
 	tlsConfig := provider.NewTLSConfig(config)
 	rateLimitConfig := provider.NewRateLimitConfig(config)
@@ -44,7 +45,7 @@ func initializeApp() (*App, error) {
 	shutdownConfig := provider.NewShutdownConfig(config)
 	lifecycleConfig := provider.NewLifecycleConfig(cacheConfig, shutdownConfig)
 	healthServer := provider.NewHealthServer()
-	lanternServer := service.NewLanternServer(lanternService, server, listener, logger, lifecycleConfig, healthServer, graphCache)
+	lanternServer := service.NewLanternServer(lanternService, lanternReplicationService, server, listener, logger, lifecycleConfig, healthServer, graphCache)
 	metricsServer := provider.NewMetricsServer(observabilityConfig, registry, logger)
 	tracing, err := provider.NewTracing(logger)
 	if err != nil {

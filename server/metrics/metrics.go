@@ -29,6 +29,8 @@ type DomainMetrics struct {
 	buildInfo           *prometheus.GaugeVec
 	mutationLogEntries  prometheus.Counter
 	mutationLogCapacity prometheus.Gauge
+	subscribeActive     prometheus.Gauge
+	subscribeDropped    *prometheus.CounterVec
 
 	sampleInterval time.Duration
 	sample         Sampler
@@ -81,11 +83,24 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 			Name: "lantern_mutation_log_capacity",
 			Help: "Configured capacity (ring buffer slots) of the in-memory mutation log.",
 		}),
+		subscribeActive: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "lantern_subscribe_active_streams",
+			Help: "Number of currently active LanternReplicationService.Subscribe streams.",
+		}),
+		subscribeDropped: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "lantern_subscribe_dropped_total",
+			Help: "Total Subscribe streams terminated abnormally, partitioned by reason (gapped, send_failed).",
+		}, []string{"reason"}),
 		sampleInterval: opts.SampleInterval,
 	}
 
 	reg.MustRegister(m.vertices, m.edges, m.expirations, m.gcDuration, m.buildInfo,
-		m.mutationLogEntries, m.mutationLogCapacity)
+		m.mutationLogEntries, m.mutationLogCapacity, m.subscribeActive, m.subscribeDropped)
+
+	// Pre-create label rows so empty counters scrape as 0.
+	for _, r := range []string{"gapped", "send_failed"} {
+		m.subscribeDropped.WithLabelValues(r)
+	}
 
 	// Pre-create label rows so empty counters are still scraped as 0.
 	for _, k := range []string{"vertex", "edge", "dangling_edge"} {
@@ -130,6 +145,24 @@ func (m *DomainMetrics) OnMutationLogAppend() {
 // slots) of the mutation log. Called once at startup.
 func (m *DomainMetrics) SetMutationLogCapacity(n int) {
 	m.mutationLogCapacity.Set(float64(n))
+}
+
+// OnSubscribeStarted increments the active-streams gauge. Pair with
+// OnSubscribeEnded via defer.
+func (m *DomainMetrics) OnSubscribeStarted() {
+	m.subscribeActive.Inc()
+}
+
+// OnSubscribeEnded decrements the active-streams gauge.
+func (m *DomainMetrics) OnSubscribeEnded() {
+	m.subscribeActive.Dec()
+}
+
+// OnSubscribeDropped increments the dropped-streams counter for the given
+// reason ("gapped" or "send_failed"). Other reasons are accepted but
+// dashboards may not pre-render them.
+func (m *DomainMetrics) OnSubscribeDropped(reason string) {
+	m.subscribeDropped.WithLabelValues(reason).Inc()
 }
 
 // BindSampler stores the gauge-population callback. Must be called before

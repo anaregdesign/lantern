@@ -390,6 +390,7 @@ func (s *LanternService) DeleteEdges(ctx context.Context, in *pb.DeleteEdgesRequ
 // composition root.
 type LanternServer struct {
 	service         *LanternService
+	replication     *LanternReplicationService
 	server          *grpc.Server
 	listener        net.Listener
 	logger          *slog.Logger
@@ -421,6 +422,7 @@ type LifecycleConfig struct {
 
 func NewLanternServer(
 	service *LanternService,
+	replication *LanternReplicationService,
 	server *grpc.Server,
 	listener net.Listener,
 	logger *slog.Logger,
@@ -430,6 +432,7 @@ func NewLanternServer(
 ) *LanternServer {
 	return &LanternServer{
 		service:         service,
+		replication:     replication,
 		server:          server,
 		listener:        listener,
 		logger:          logger,
@@ -446,8 +449,14 @@ func NewLanternServer(
 // a hard close so the process can exit.
 func (s *LanternServer) Run(ctx context.Context) error {
 	pb.RegisterLanternServiceServer(s.server, s.service)
+	if s.replication != nil {
+		pb.RegisterLanternReplicationServiceServer(s.server, s.replication)
+	}
 	if s.health != nil {
 		s.health.SetServingStatus(ServiceName, healthpb.HealthCheckResponse_SERVING)
+		if s.replication != nil {
+			s.health.SetServingStatus(ReplicationServiceName, healthpb.HealthCheckResponse_SERVING)
+		}
 	}
 
 	go s.gracefulShutdown(ctx)
@@ -467,6 +476,9 @@ func (s *LanternServer) Run(ctx context.Context) error {
 	err := s.server.Serve(s.listener)
 	if s.health != nil {
 		s.health.SetServingStatus(ServiceName, healthpb.HealthCheckResponse_NOT_SERVING)
+		if s.replication != nil {
+			s.health.SetServingStatus(ReplicationServiceName, healthpb.HealthCheckResponse_NOT_SERVING)
+		}
 	}
 	return err
 }
@@ -481,6 +493,9 @@ func (s *LanternServer) gracefulShutdown(ctx context.Context) {
 	s.logger.Info("shutting down grpc server", slog.Duration("timeout", s.shutdownTimeout))
 	if s.health != nil {
 		s.health.SetServingStatus(ServiceName, healthpb.HealthCheckResponse_NOT_SERVING)
+		if s.replication != nil {
+			s.health.SetServingStatus(ReplicationServiceName, healthpb.HealthCheckResponse_NOT_SERVING)
+		}
 	}
 	done := make(chan struct{})
 	go func() {

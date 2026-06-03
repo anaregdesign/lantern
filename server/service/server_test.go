@@ -61,7 +61,7 @@ func TestLanternServer_Run_FlipsHealthOnServeReturn(t *testing.T) {
 	hs := &recordingHealth{}
 
 	srv := service.NewLanternServer(
-		svc, grpcSrv, lis,
+		svc, nil, grpcSrv, lis,
 		slog.New(slog.NewTextHandler(discardWriter{}, nil)),
 		service.LifecycleConfig{GCInterval: time.Hour, ShutdownTimeout: time.Second},
 		hs,
