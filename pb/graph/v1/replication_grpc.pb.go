@@ -64,7 +64,7 @@ type LanternReplicationServiceClient interface {
 	// live stream cannot be glued together without gap or overlap.
 	//
 	// No HTTP gateway annotation (parity with Subscribe).
-	Snapshot(ctx context.Context, in *SnapshotRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SnapshotEntry], error)
+	Snapshot(ctx context.Context, in *SnapshotRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SnapshotResponse], error)
 }
 
 type lanternReplicationServiceClient struct {
@@ -94,13 +94,13 @@ func (c *lanternReplicationServiceClient) Subscribe(ctx context.Context, in *Sub
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type LanternReplicationService_SubscribeClient = grpc.ServerStreamingClient[SubscribeResponse]
 
-func (c *lanternReplicationServiceClient) Snapshot(ctx context.Context, in *SnapshotRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SnapshotEntry], error) {
+func (c *lanternReplicationServiceClient) Snapshot(ctx context.Context, in *SnapshotRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SnapshotResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &LanternReplicationService_ServiceDesc.Streams[1], LanternReplicationService_Snapshot_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
-	x := &grpc.GenericClientStream[SnapshotRequest, SnapshotEntry]{ClientStream: stream}
+	x := &grpc.GenericClientStream[SnapshotRequest, SnapshotResponse]{ClientStream: stream}
 	if err := x.ClientStream.SendMsg(in); err != nil {
 		return nil, err
 	}
@@ -111,7 +111,7 @@ func (c *lanternReplicationServiceClient) Snapshot(ctx context.Context, in *Snap
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type LanternReplicationService_SnapshotClient = grpc.ServerStreamingClient[SnapshotEntry]
+type LanternReplicationService_SnapshotClient = grpc.ServerStreamingClient[SnapshotResponse]
 
 // LanternReplicationServiceServer is the server API for LanternReplicationService service.
 // All implementations should embed UnimplementedLanternReplicationServiceServer
@@ -154,7 +154,7 @@ type LanternReplicationServiceServer interface {
 	// live stream cannot be glued together without gap or overlap.
 	//
 	// No HTTP gateway annotation (parity with Subscribe).
-	Snapshot(*SnapshotRequest, grpc.ServerStreamingServer[SnapshotEntry]) error
+	Snapshot(*SnapshotRequest, grpc.ServerStreamingServer[SnapshotResponse]) error
 }
 
 // UnimplementedLanternReplicationServiceServer should be embedded to have
@@ -167,7 +167,7 @@ type UnimplementedLanternReplicationServiceServer struct{}
 func (UnimplementedLanternReplicationServiceServer) Subscribe(*SubscribeRequest, grpc.ServerStreamingServer[SubscribeResponse]) error {
 	return status.Error(codes.Unimplemented, "method Subscribe not implemented")
 }
-func (UnimplementedLanternReplicationServiceServer) Snapshot(*SnapshotRequest, grpc.ServerStreamingServer[SnapshotEntry]) error {
+func (UnimplementedLanternReplicationServiceServer) Snapshot(*SnapshotRequest, grpc.ServerStreamingServer[SnapshotResponse]) error {
 	return status.Error(codes.Unimplemented, "method Snapshot not implemented")
 }
 func (UnimplementedLanternReplicationServiceServer) testEmbeddedByValue() {}
@@ -206,11 +206,11 @@ func _LanternReplicationService_Snapshot_Handler(srv interface{}, stream grpc.Se
 	if err := stream.RecvMsg(m); err != nil {
 		return err
 	}
-	return srv.(LanternReplicationServiceServer).Snapshot(m, &grpc.GenericServerStream[SnapshotRequest, SnapshotEntry]{ServerStream: stream})
+	return srv.(LanternReplicationServiceServer).Snapshot(m, &grpc.GenericServerStream[SnapshotRequest, SnapshotResponse]{ServerStream: stream})
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type LanternReplicationService_SnapshotServer = grpc.ServerStreamingServer[SnapshotEntry]
+type LanternReplicationService_SnapshotServer = grpc.ServerStreamingServer[SnapshotResponse]
 
 // LanternReplicationService_ServiceDesc is the grpc.ServiceDesc for LanternReplicationService service.
 // It's only intended for direct use with grpc.RegisterService,

@@ -176,7 +176,7 @@ func (s *LanternReplicationService) loggerOrDefault() *slog.Logger {
 //     first valid seq); cutoff_hlc is `clock.Now()`.
 //  2. Materialise vertices and edges through the Backend snapshot API
 //     (taken under the GraphCache write lock). Stream each as its own
-//     SnapshotEntry frame, honouring stream.Context() cancellation
+//     SnapshotResponse frame, honouring stream.Context() cancellation
 //     between sends.
 //  3. Send a SnapshotFooter with the actually-streamed counts as the very
 //     last frame so receivers can detect truncation.
@@ -185,7 +185,7 @@ func (s *LanternReplicationService) loggerOrDefault() *slog.Logger {
 // Replication bootstrap is bounded (one peer per call, infrequent), so
 // the O(N+E) memory overhead is acceptable. True streaming is a follow-up
 // once the snapshot path is wired end-to-end.
-func (s *LanternReplicationService) Snapshot(_ *pb.SnapshotRequest, stream grpc.ServerStreamingServer[pb.SnapshotEntry]) error {
+func (s *LanternReplicationService) Snapshot(_ *pb.SnapshotRequest, stream grpc.ServerStreamingServer[pb.SnapshotResponse]) error {
 	if s.backend == nil {
 		return status.Error(codes.Unavailable, "snapshot is not enabled on this server")
 	}
@@ -201,8 +201,8 @@ func (s *LanternReplicationService) Snapshot(_ *pb.SnapshotRequest, stream grpc.
 	if s.clock != nil {
 		cutoffHLC = s.clock.Now()
 	}
-	header := &pb.SnapshotEntry{
-		Entry: &pb.SnapshotEntry_Header{
+	header := &pb.SnapshotResponse{
+		Entry: &pb.SnapshotResponse_Header{
 			Header: &pb.SnapshotHeader{
 				CutoffSeq: cutoffSeq,
 				CutoffHlc: hlcToProto(cutoffHLC),
@@ -219,8 +219,8 @@ func (s *LanternReplicationService) Snapshot(_ *pb.SnapshotRequest, stream grpc.
 		if err := ctx.Err(); err != nil {
 			return status.FromContextError(err).Err()
 		}
-		entry := &pb.SnapshotEntry{
-			Entry: &pb.SnapshotEntry_Vertex{
+		entry := &pb.SnapshotResponse{
+			Entry: &pb.SnapshotResponse_Vertex{
 				Vertex: &pb.SnapshotVertex{
 					Vertex: v.Value,
 					Hlc:    hlcToProto(v.HLC),
@@ -247,8 +247,8 @@ func (s *LanternReplicationService) Snapshot(_ *pb.SnapshotRequest, stream grpc.
 				ContribId:  contribIDBytes(c.ContribID),
 			})
 		}
-		entry := &pb.SnapshotEntry{
-			Entry: &pb.SnapshotEntry_Edge{
+		entry := &pb.SnapshotResponse{
+			Entry: &pb.SnapshotResponse_Edge{
 				Edge: &pb.SnapshotEdge{
 					Tail:          e.Tail,
 					Head:          e.Head,
@@ -263,8 +263,8 @@ func (s *LanternReplicationService) Snapshot(_ *pb.SnapshotRequest, stream grpc.
 		edgeCount++
 	}
 
-	footer := &pb.SnapshotEntry{
-		Entry: &pb.SnapshotEntry_Footer{
+	footer := &pb.SnapshotResponse{
+		Entry: &pb.SnapshotResponse_Footer{
 			Footer: &pb.SnapshotFooter{
 				VertexCount: vertexCount,
 				EdgeCount:   edgeCount,

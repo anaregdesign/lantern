@@ -539,7 +539,7 @@ func (*SnapshotRequest) Descriptor() ([]byte, []int) {
 	return file_graph_v1_replication_proto_rawDescGZIP(), []int{5}
 }
 
-// SnapshotHeader is always the FIRST SnapshotEntry on the wire. It freezes
+// SnapshotHeader is always the FIRST SnapshotResponse on the wire. It freezes
 // the (seq, hlc) cutoff the server used to materialise the snapshot. A
 // bootstrapping peer MUST persist (cutoff_seq, cutoff_hlc) before applying
 // any payload entries and MUST resume `Subscribe` from cutoff_seq + 1 so
@@ -596,7 +596,7 @@ func (x *SnapshotHeader) GetCutoffHlc() *HLCTimestamp {
 	return nil
 }
 
-// SnapshotFooter is always the LAST SnapshotEntry on the wire. It carries
+// SnapshotFooter is always the LAST SnapshotResponse on the wire. It carries
 // the running counts the server actually streamed so receivers can detect
 // truncation (channel-close, send-error mid-stream) without re-walking
 // their freshly-imported state.
@@ -852,38 +852,38 @@ func (x *SnapshotEdge) GetContributions() []*SnapshotEdgeContribution {
 	return nil
 }
 
-// SnapshotEntry is the union type streamed from `rpc Snapshot`. The frame
+// SnapshotResponse is the union type streamed from `rpc Snapshot`. The frame
 // order is always: exactly one SnapshotHeader, then zero or more
 // SnapshotVertex frames, then zero or more SnapshotEdge frames, then
 // exactly one SnapshotFooter. Receivers SHOULD treat any other order as a
 // protocol violation.
-type SnapshotEntry struct {
+type SnapshotResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Entry:
 	//
-	//	*SnapshotEntry_Header
-	//	*SnapshotEntry_Vertex
-	//	*SnapshotEntry_Edge
-	//	*SnapshotEntry_Footer
-	Entry         isSnapshotEntry_Entry `protobuf_oneof:"entry"`
+	//	*SnapshotResponse_Header
+	//	*SnapshotResponse_Vertex
+	//	*SnapshotResponse_Edge
+	//	*SnapshotResponse_Footer
+	Entry         isSnapshotResponse_Entry `protobuf_oneof:"entry"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *SnapshotEntry) Reset() {
-	*x = SnapshotEntry{}
+func (x *SnapshotResponse) Reset() {
+	*x = SnapshotResponse{}
 	mi := &file_graph_v1_replication_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *SnapshotEntry) String() string {
+func (x *SnapshotResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*SnapshotEntry) ProtoMessage() {}
+func (*SnapshotResponse) ProtoMessage() {}
 
-func (x *SnapshotEntry) ProtoReflect() protoreflect.Message {
+func (x *SnapshotResponse) ProtoReflect() protoreflect.Message {
 	mi := &file_graph_v1_replication_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -895,81 +895,81 @@ func (x *SnapshotEntry) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use SnapshotEntry.ProtoReflect.Descriptor instead.
-func (*SnapshotEntry) Descriptor() ([]byte, []int) {
+// Deprecated: Use SnapshotResponse.ProtoReflect.Descriptor instead.
+func (*SnapshotResponse) Descriptor() ([]byte, []int) {
 	return file_graph_v1_replication_proto_rawDescGZIP(), []int{11}
 }
 
-func (x *SnapshotEntry) GetEntry() isSnapshotEntry_Entry {
+func (x *SnapshotResponse) GetEntry() isSnapshotResponse_Entry {
 	if x != nil {
 		return x.Entry
 	}
 	return nil
 }
 
-func (x *SnapshotEntry) GetHeader() *SnapshotHeader {
+func (x *SnapshotResponse) GetHeader() *SnapshotHeader {
 	if x != nil {
-		if x, ok := x.Entry.(*SnapshotEntry_Header); ok {
+		if x, ok := x.Entry.(*SnapshotResponse_Header); ok {
 			return x.Header
 		}
 	}
 	return nil
 }
 
-func (x *SnapshotEntry) GetVertex() *SnapshotVertex {
+func (x *SnapshotResponse) GetVertex() *SnapshotVertex {
 	if x != nil {
-		if x, ok := x.Entry.(*SnapshotEntry_Vertex); ok {
+		if x, ok := x.Entry.(*SnapshotResponse_Vertex); ok {
 			return x.Vertex
 		}
 	}
 	return nil
 }
 
-func (x *SnapshotEntry) GetEdge() *SnapshotEdge {
+func (x *SnapshotResponse) GetEdge() *SnapshotEdge {
 	if x != nil {
-		if x, ok := x.Entry.(*SnapshotEntry_Edge); ok {
+		if x, ok := x.Entry.(*SnapshotResponse_Edge); ok {
 			return x.Edge
 		}
 	}
 	return nil
 }
 
-func (x *SnapshotEntry) GetFooter() *SnapshotFooter {
+func (x *SnapshotResponse) GetFooter() *SnapshotFooter {
 	if x != nil {
-		if x, ok := x.Entry.(*SnapshotEntry_Footer); ok {
+		if x, ok := x.Entry.(*SnapshotResponse_Footer); ok {
 			return x.Footer
 		}
 	}
 	return nil
 }
 
-type isSnapshotEntry_Entry interface {
-	isSnapshotEntry_Entry()
+type isSnapshotResponse_Entry interface {
+	isSnapshotResponse_Entry()
 }
 
-type SnapshotEntry_Header struct {
+type SnapshotResponse_Header struct {
 	Header *SnapshotHeader `protobuf:"bytes,1,opt,name=header,proto3,oneof"`
 }
 
-type SnapshotEntry_Vertex struct {
+type SnapshotResponse_Vertex struct {
 	Vertex *SnapshotVertex `protobuf:"bytes,2,opt,name=vertex,proto3,oneof"`
 }
 
-type SnapshotEntry_Edge struct {
+type SnapshotResponse_Edge struct {
 	Edge *SnapshotEdge `protobuf:"bytes,3,opt,name=edge,proto3,oneof"`
 }
 
-type SnapshotEntry_Footer struct {
+type SnapshotResponse_Footer struct {
 	Footer *SnapshotFooter `protobuf:"bytes,4,opt,name=footer,proto3,oneof"`
 }
 
-func (*SnapshotEntry_Header) isSnapshotEntry_Entry() {}
+func (*SnapshotResponse_Header) isSnapshotResponse_Entry() {}
 
-func (*SnapshotEntry_Vertex) isSnapshotEntry_Entry() {}
+func (*SnapshotResponse_Vertex) isSnapshotResponse_Entry() {}
 
-func (*SnapshotEntry_Edge) isSnapshotEntry_Entry() {}
+func (*SnapshotResponse_Edge) isSnapshotResponse_Entry() {}
 
-func (*SnapshotEntry_Footer) isSnapshotEntry_Entry() {}
+func (*SnapshotResponse_Footer) isSnapshotResponse_Entry() {}
 
 var File_graph_v1_replication_proto protoreflect.FileDescriptor
 
@@ -1030,16 +1030,16 @@ const file_graph_v1_replication_proto_rawDesc = "" +
 	"\x04tail\x18\x01 \x01(\tR\x04tail\x12\x12\n" +
 	"\x04head\x18\x02 \x01(\tR\x04head\x12(\n" +
 	"\x03hlc\x18\x03 \x01(\v2\x16.graph.v1.HLCTimestampR\x03hlc\x12H\n" +
-	"\rcontributions\x18\x04 \x03(\v2\".graph.v1.SnapshotEdgeContributionR\rcontributions\"\xe2\x01\n" +
-	"\rSnapshotEntry\x122\n" +
+	"\rcontributions\x18\x04 \x03(\v2\".graph.v1.SnapshotEdgeContributionR\rcontributions\"\xe5\x01\n" +
+	"\x10SnapshotResponse\x122\n" +
 	"\x06header\x18\x01 \x01(\v2\x18.graph.v1.SnapshotHeaderH\x00R\x06header\x122\n" +
 	"\x06vertex\x18\x02 \x01(\v2\x18.graph.v1.SnapshotVertexH\x00R\x06vertex\x12,\n" +
 	"\x04edge\x18\x03 \x01(\v2\x16.graph.v1.SnapshotEdgeH\x00R\x04edge\x122\n" +
 	"\x06footer\x18\x04 \x01(\v2\x18.graph.v1.SnapshotFooterH\x00R\x06footerB\a\n" +
-	"\x05entry2\xa5\x01\n" +
+	"\x05entry2\xa8\x01\n" +
 	"\x19LanternReplicationService\x12F\n" +
-	"\tSubscribe\x12\x1a.graph.v1.SubscribeRequest\x1a\x1b.graph.v1.SubscribeResponse0\x01\x12@\n" +
-	"\bSnapshot\x12\x19.graph.v1.SnapshotRequest\x1a\x17.graph.v1.SnapshotEntry0\x01B\x96\x01\n" +
+	"\tSubscribe\x12\x1a.graph.v1.SubscribeRequest\x1a\x1b.graph.v1.SubscribeResponse0\x01\x12C\n" +
+	"\bSnapshot\x12\x19.graph.v1.SnapshotRequest\x1a\x1a.graph.v1.SnapshotResponse0\x01B\x96\x01\n" +
 	"\fcom.graph.v1B\x10ReplicationProtoP\x01Z3github.com/anaregdesign/lantern/pb/graph/v1;graphv1\xa2\x02\x03GXX\xaa\x02\bGraph.V1\xca\x02\bGraph\\V1\xe2\x02\x14Graph\\V1\\GPBMetadata\xea\x02\tGraph::V1b\x06proto3"
 
 var (
@@ -1067,7 +1067,7 @@ var file_graph_v1_replication_proto_goTypes = []any{
 	(*SnapshotVertex)(nil),                // 8: graph.v1.SnapshotVertex
 	(*SnapshotEdgeContribution)(nil),      // 9: graph.v1.SnapshotEdgeContribution
 	(*SnapshotEdge)(nil),                  // 10: graph.v1.SnapshotEdge
-	(*SnapshotEntry)(nil),                 // 11: graph.v1.SnapshotEntry
+	(*SnapshotResponse)(nil),              // 11: graph.v1.SnapshotResponse
 	(*PutVertexRequest)(nil),              // 12: graph.v1.PutVertexRequest
 	(*PutVerticesRequest)(nil),            // 13: graph.v1.PutVerticesRequest
 	(*DeleteVertexRequest)(nil),           // 14: graph.v1.DeleteVertexRequest
@@ -1103,14 +1103,14 @@ var file_graph_v1_replication_proto_depIdxs = []int32{
 	24, // 17: graph.v1.SnapshotEdgeContribution.expiration:type_name -> google.protobuf.Timestamp
 	0,  // 18: graph.v1.SnapshotEdge.hlc:type_name -> graph.v1.HLCTimestamp
 	9,  // 19: graph.v1.SnapshotEdge.contributions:type_name -> graph.v1.SnapshotEdgeContribution
-	6,  // 20: graph.v1.SnapshotEntry.header:type_name -> graph.v1.SnapshotHeader
-	8,  // 21: graph.v1.SnapshotEntry.vertex:type_name -> graph.v1.SnapshotVertex
-	10, // 22: graph.v1.SnapshotEntry.edge:type_name -> graph.v1.SnapshotEdge
-	7,  // 23: graph.v1.SnapshotEntry.footer:type_name -> graph.v1.SnapshotFooter
+	6,  // 20: graph.v1.SnapshotResponse.header:type_name -> graph.v1.SnapshotHeader
+	8,  // 21: graph.v1.SnapshotResponse.vertex:type_name -> graph.v1.SnapshotVertex
+	10, // 22: graph.v1.SnapshotResponse.edge:type_name -> graph.v1.SnapshotEdge
+	7,  // 23: graph.v1.SnapshotResponse.footer:type_name -> graph.v1.SnapshotFooter
 	3,  // 24: graph.v1.LanternReplicationService.Subscribe:input_type -> graph.v1.SubscribeRequest
 	5,  // 25: graph.v1.LanternReplicationService.Snapshot:input_type -> graph.v1.SnapshotRequest
 	4,  // 26: graph.v1.LanternReplicationService.Subscribe:output_type -> graph.v1.SubscribeResponse
-	11, // 27: graph.v1.LanternReplicationService.Snapshot:output_type -> graph.v1.SnapshotEntry
+	11, // 27: graph.v1.LanternReplicationService.Snapshot:output_type -> graph.v1.SnapshotResponse
 	26, // [26:28] is the sub-list for method output_type
 	24, // [24:26] is the sub-list for method input_type
 	24, // [24:24] is the sub-list for extension type_name
@@ -1138,10 +1138,10 @@ func file_graph_v1_replication_proto_init() {
 		(*MutationOp_DeleteEdges)(nil),
 	}
 	file_graph_v1_replication_proto_msgTypes[11].OneofWrappers = []any{
-		(*SnapshotEntry_Header)(nil),
-		(*SnapshotEntry_Vertex)(nil),
-		(*SnapshotEntry_Edge)(nil),
-		(*SnapshotEntry_Footer)(nil),
+		(*SnapshotResponse_Header)(nil),
+		(*SnapshotResponse_Vertex)(nil),
+		(*SnapshotResponse_Edge)(nil),
+		(*SnapshotResponse_Footer)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

@@ -83,7 +83,7 @@ message SubscribeResponse {
 // filters without breaking the wire contract.
 message SnapshotRequest {}
 
-// SnapshotHeader is always the FIRST SnapshotEntry on the wire. It freezes
+// SnapshotHeader is always the FIRST SnapshotResponse on the wire. It freezes
 // the (seq, hlc) cutoff the server used to materialise the snapshot. A
 // bootstrapping peer MUST persist (cutoff_seq, cutoff_hlc) before applying
 // any payload entries and MUST resume `Subscribe` from cutoff_seq + 1 so
@@ -93,7 +93,7 @@ message SnapshotHeader {
   HLCTimestamp cutoff_hlc = 2;
 }
 
-// SnapshotFooter is always the LAST SnapshotEntry on the wire. It carries
+// SnapshotFooter is always the LAST SnapshotResponse on the wire. It carries
 // the running counts the server actually streamed so receivers can detect
 // truncation (channel-close, send-error mid-stream) without re-walking
 // their freshly-imported state.
@@ -140,12 +140,12 @@ message SnapshotEdge {
   repeated SnapshotEdgeContribution contributions = 4;
 }
 
-// SnapshotEntry is the union type streamed from `rpc Snapshot`. The frame
+// SnapshotResponse is the union type streamed from `rpc Snapshot`. The frame
 // order is always: exactly one SnapshotHeader, then zero or more
 // SnapshotVertex frames, then zero or more SnapshotEdge frames, then
 // exactly one SnapshotFooter. Receivers SHOULD treat any other order as a
 // protocol violation.
-message SnapshotEntry {
+message SnapshotResponse {
   oneof entry {
     SnapshotHeader header = 1;
     SnapshotVertex vertex = 2;
@@ -192,5 +192,5 @@ service LanternReplicationService {
   // live stream cannot be glued together without gap or overlap.
   //
   // No HTTP gateway annotation (parity with Subscribe).
-  rpc Snapshot(SnapshotRequest) returns (stream SnapshotEntry);
+  rpc Snapshot(SnapshotRequest) returns (stream SnapshotResponse);
 }

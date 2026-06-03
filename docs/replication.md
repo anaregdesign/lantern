@@ -301,9 +301,9 @@ Handler implementation notes (issue #180):
 ### 8.3 Snapshot (server streaming)
 
 ```proto
-rpc Snapshot(SnapshotRequest) returns (stream SnapshotEntry);
+rpc Snapshot(SnapshotRequest) returns (stream SnapshotResponse);
 
-message SnapshotEntry {
+message SnapshotResponse {
   oneof entry {
     SnapshotHeader header = 1;   // first frame: cutoff_seq + cutoff_hlc
     SnapshotVertex vertex = 2;   // body: live vertex with stored HLC

@@ -175,7 +175,7 @@ func TestSnapshot_E2E_PrimaryToFollower(t *testing.T) {
 			t.Fatalf("recv: %v", err)
 		}
 		switch e := entry.GetEntry().(type) {
-		case *pb.SnapshotEntry_Vertex:
+		case *pb.SnapshotResponse_Vertex:
 			if footer != nil {
 				t.Fatalf("vertex frame after footer")
 			}
@@ -186,7 +186,7 @@ func TestSnapshot_E2E_PrimaryToFollower(t *testing.T) {
 				snapshotHLC(sv.GetHlc()),
 			)
 			gotVertexCount++
-		case *pb.SnapshotEntry_Edge:
+		case *pb.SnapshotResponse_Edge:
 			if footer != nil {
 				t.Fatalf("edge frame after footer")
 			}
@@ -201,9 +201,9 @@ func TestSnapshot_E2E_PrimaryToFollower(t *testing.T) {
 				)
 			}
 			gotEdgeCount++
-		case *pb.SnapshotEntry_Footer:
+		case *pb.SnapshotResponse_Footer:
 			footer = e.Footer
-		case *pb.SnapshotEntry_Header:
+		case *pb.SnapshotResponse_Header:
 			t.Fatalf("second header frame mid-stream")
 		default:
 			t.Fatalf("unknown entry type: %T", e)
