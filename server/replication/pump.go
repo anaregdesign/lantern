@@ -36,7 +36,6 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"sync"
 	"time"
 
 	cachegraph "github.com/anaregdesign/lantern/core/cache/graph"
@@ -98,8 +97,26 @@ type Config struct {
 
 	// Peers is the static list of peer addresses to subscribe to.
 	// Each entry is consumed by grpc.NewClient verbatim
-	// ("host:port"). Empty (or nil) yields a no-op pump.
+	// ("host:port"). Empty (or nil) is valid when Source is set;
+	// otherwise yields a no-op pump.
 	Peers []string
+
+	// Source, when non-nil, takes precedence over Peers and is the
+	// dynamic peer-set resolver consulted at startup and (when
+	// DiscoveryInterval > 0) on every tick. The pump reconciles
+	// added / removed addresses by spawning / cancelling per-peer
+	// goroutines. nil means "use StaticSource{Peers}", which
+	// preserves the historical LANTERN_PEERS contract.
+	Source PeerSource
+
+	// DiscoveryInterval is the polling cadence for Source. Zero
+	// means "resolve once at startup and never re-poll" — the
+	// static behaviour. A positive value enables dynamic peer
+	// discovery (e.g. periodic DNS lookups against a k8s headless
+	// Service per #190). Resolution errors are logged and the
+	// previously-active peer set is retained so a transient DNS
+	// failure does not tear down established subscriptions.
+	DiscoveryInterval time.Duration
 
 	// DialOptions are passed to grpc.NewClient for each peer
 	// connection. When empty, insecure transport credentials are
@@ -160,25 +177,71 @@ func NewPump(cfg Config, apply MutationApplier, snap SnapshotApplier) *Pump {
 
 // Run starts one goroutine per peer and blocks until ctx is
 // cancelled. Returns nil after all goroutines have exited. A pump
-// with no configured peers is a no-op and returns immediately.
+// with no configured peers AND no dynamic Source is a no-op and
+// returns immediately.
+//
+// When Config.Source is set (or Config.Peers is non-empty — which
+// is wrapped in a StaticSource), Run:
+//
+//  1. Resolves the initial peer set and spawns one goroutine per
+//     address.
+//  2. If Config.DiscoveryInterval > 0, polls Source on every tick
+//     and reconciles add/remove against the active goroutine set.
+//     A resolution error logs and preserves the previous set
+//     (defensive: a transient DNS failure must not silently drop
+//     established peer streams).
+//  3. On ctx cancellation, cancels every per-peer goroutine and
+//     waits for them to exit before returning.
 func (p *Pump) Run(ctx context.Context) error {
-	if len(p.cfg.Peers) == 0 {
-		p.cfg.Logger.Info("replication pump: no peers configured, running in single-instance mode")
+	source := p.cfg.Source
+	if source == nil {
+		if len(p.cfg.Peers) == 0 {
+			p.cfg.Logger.Info("replication pump: no peers configured, running in single-instance mode")
+			return nil
+		}
+		source = StaticSource{Peers: p.cfg.Peers}
+	}
+
+	sup := newPeerSupervisor(p.runPeer)
+	defer sup.shutdown()
+
+	initial, err := source.Resolve(ctx)
+	if err != nil {
+		p.cfg.Logger.Warn("replication pump: initial peer resolution failed",
+			slog.Any("err", err))
+	}
+	if len(initial) == 0 && p.cfg.DiscoveryInterval == 0 {
+		p.cfg.Logger.Info("replication pump: no peers resolved and no discovery interval, running in single-instance mode")
 		return nil
 	}
-	p.cfg.Logger.Info("replication pump: starting", slog.Int("peers", len(p.cfg.Peers)))
+	sup.reconcile(ctx, initial)
+	p.cfg.Logger.Info("replication pump: starting",
+		slog.Int("peers", len(initial)),
+		slog.Duration("discovery_interval", p.cfg.DiscoveryInterval))
 
-	var wg sync.WaitGroup
-	for _, addr := range p.cfg.Peers {
-		wg.Add(1)
-		go func(addr string) {
-			defer wg.Done()
-			p.runPeer(ctx, addr)
-		}(addr)
+	if p.cfg.DiscoveryInterval <= 0 {
+		<-ctx.Done()
+		p.cfg.Logger.Info("replication pump: stopped")
+		return nil
 	}
-	wg.Wait()
-	p.cfg.Logger.Info("replication pump: stopped")
-	return nil
+
+	ticker := time.NewTicker(p.cfg.DiscoveryInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			p.cfg.Logger.Info("replication pump: stopped")
+			return nil
+		case <-ticker.C:
+			peers, err := source.Resolve(ctx)
+			if err != nil {
+				p.cfg.Logger.Warn("replication pump: peer resolution failed (keeping previous set)",
+					slog.Any("err", err))
+				continue
+			}
+			sup.reconcile(ctx, peers)
+		}
+	}
 }
 
 // runPeer is the per-peer reconnect loop. Each iteration represents
