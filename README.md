@@ -194,8 +194,9 @@ For Cloud Run / Azure Container Apps / AWS App Runner / Fly Machines /
 any platform without stable pod identities, deploy a **single
 instance** (or independent shards) without setting any `LANTERN_PEER_*`
 env. Peer discovery requires a stable in-cluster DNS that resolves to
-per-pod IPs, which these platforms do not provide. See the HA runbook
-(issue #192) for the trade-off matrix and Tier-B / Tier-C topologies.
+per-pod IPs, which these platforms do not provide. See the
+[HA runbook](docs/ha-runbook.md) for the per-platform topology matrix,
+signals to watch, partition behaviour, and recovery procedures.
 
 ### Use the CLI
 
@@ -495,6 +496,8 @@ Required toolchain:
 - **High availability / replication** — Lantern's leaderless full-replica
   design (HLC, mutation log, Subscribe/Snapshot, tombstones, deployment
   topology matrix) is specified in [docs/replication.md](docs/replication.md).
+  Operator-facing playbook (signals, partition recovery, upgrades,
+  per-platform deploy) is in [docs/ha-runbook.md](docs/ha-runbook.md).
   All HA-tagged issues implement against that RFC.
 - **Never hand-edit `server/cmd/wire_gen.go`** — it is generated. Edit providers
   in [server/provider/provider.go](server/provider/provider.go) or definitions

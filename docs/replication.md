@@ -463,7 +463,7 @@ Lantern is **AP** in CAP terms. During a partition:
   side learns about it, resurrecting the deleted entry. Operators must keep
   partition duration < tombstone TTL or extend D4.
 
-`#192` runbook describes detection (`lantern_replication_lag_seq` and
+The [HA runbook](ha-runbook.md) describes detection (`lantern_replication_lag_seq` and
 `lantern_anti_entropy_gaps_found_total`) and recovery (forced re-snapshot).
 
 ## 11. Failure modes
@@ -480,8 +480,8 @@ Lantern is **AP** in CAP terms. During a partition:
 
 ## 12. Deployment-topology suitability matrix
 
-This is the operator-facing decision table. The runbook (#192) carries the
-full per-platform instructions; this is the summary.
+This is the operator-facing decision table. The [HA runbook](ha-runbook.md)
+carries the full per-platform instructions; this is the summary.
 
 | Platform | HA mode | Single-instance | Notes |
 |---|---|---|---|
