@@ -98,6 +98,26 @@ submodules. The `Lint` job runs `golangci-lint` (CI installs it); `make lint`
 is the local equivalent if you have it. `Proto (buf)` fails on any uncommitted
 codegen diff — regenerate locally first (see below).
 
+### Before starting any non-trivial fix or feature
+
+**File a GitHub Issue first, then implement.** This is a hard rule, not a
+suggestion. The Issue is what makes the change reviewable: it pins down the
+problem statement, the chosen option among alternatives, the scope, and the
+"why now / why not now" decision **before** any diff exists. Skipping straight
+to a branch means the PR description has to carry all of that context, which
+in practice means it doesn't.
+
+- One Issue per coherent problem. Use `gh issue create --title ... --body ...`.
+- The PR that closes it references the Issue (`Closes #N`) so the merge wires
+  the discussion to the diff automatically.
+- Exceptions — no Issue required:
+  - Pure doc-only edits (README typos, comment fixes, AGENTS.md tweaks).
+  - Direct follow-ups requested in an in-flight PR review.
+  - One-line obvious bug fixes where writing the Issue would take longer than
+    the fix and there is nothing to discuss.
+- When in doubt, file the Issue. The overhead is ~2 minutes; the cost of a
+  rejected/reworked PR is far higher.
+
 ### Before merging a PR
 
 - Wait for **all 4 required checks** green. Never use `--admin` or
