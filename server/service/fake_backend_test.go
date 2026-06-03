@@ -8,6 +8,7 @@ import (
 
 	"github.com/anaregdesign/lantern/core/cache/graph"
 	coregraph "github.com/anaregdesign/lantern/core/graph"
+	"github.com/anaregdesign/lantern/core/hlc"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -212,6 +213,32 @@ func (f *fakeBackend) ScanEdgesByPrefix(_ context.Context, tailPrefix, headPrefi
 
 // Compile-time check that fakeBackend really satisfies Backend.
 var _ Backend = (*fakeBackend)(nil)
+
+// Replicated-write entry points (#182). The fake mirrors the production
+// semantics with a minimal in-memory model so service-level tests that
+// touch ApplyMutation can run against the fake without spinning up a
+// real GraphCache. It does not enforce HLC/ContribID dedup — tests that
+// care about convergence use the real backend.
+func (f *fakeBackend) AddEdgeWithExpirationContrib(tail, head string, w float32, _ time.Time, _ graph.ContribID) bool {
+	if f.edges[tail] == nil {
+		f.edges[tail] = map[string]float32{}
+	}
+	f.edges[tail][head] += w
+	return true
+}
+
+func (f *fakeBackend) PutVertexWithExpirationHLC(key string, value *pb.Vertex, _ time.Time, _ hlc.Timestamp) bool {
+	f.vertices[key] = value
+	return true
+}
+
+func (f *fakeBackend) PutEdgeWithExpirationHLC(tail, head string, w float32, _ time.Time, _ hlc.Timestamp) bool {
+	if f.edges[tail] == nil {
+		f.edges[tail] = map[string]float32{}
+	}
+	f.edges[tail][head] = w
+	return true
+}
 
 func TestLanternService_FakeBackend_PutGetDelete(t *testing.T) {
 	fb := newFakeBackend()

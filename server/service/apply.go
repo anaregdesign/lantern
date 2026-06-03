@@ -1,0 +1,169 @@
+package service
+
+import (
+	"context"
+	"encoding/binary"
+
+	"github.com/anaregdesign/lantern/core/cache/graph"
+	"github.com/anaregdesign/lantern/core/hlc"
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"google.golang.org/grpc/status"
+)
+
+// ApplyMutation is the internal entry point used by the peer-pump (#184)
+// and the snapshot bootstrap (#183) to replay a Mutation produced on a
+// remote node against the local cache. It is intentionally NOT a gRPC
+// method: external clients use the regular write RPCs which append to the
+// local log; ApplyMutation deliberately bypasses logMutation so a replayed
+// mutation is not re-broadcast.
+//
+// Idempotence rules per oneof case:
+//
+//   - Put* (vertex/edge): performed via the LWW-aware
+//     PutVertexWithExpirationHLC / PutEdgeWithExpirationHLC. A strictly
+//     older HLC is dropped silently; equal-ts writes apply, which is a
+//     no-op for value-equal payloads (the convergence guarantee).
+//
+//   - Add* (edge): performed via the ContribID-aware
+//     AddEdgeWithExpirationContrib. The mutation seq is folded together
+//     with the per-edge index inside the batch so two edges submitted in
+//     the same MutationOp_AddEdges receive distinct ContribIDs while
+//     replays of the same (mutation seq, edge index) pair dedup.
+//
+//   - Delete* (vertex/edge/by-prefix): performed via the existing
+//     destructive batch methods. Tombstone + TTL clamp semantics are
+//     deferred to #183; for now repeated deletes are naturally no-ops
+//     because the second pass finds nothing to remove.
+//
+// Returns ctx.Err() when ctx is cancelled; otherwise nil. Nil-or-empty
+// mutations are dropped silently so callers (pump, snapshot replay) can
+// forward whatever the wire produces without additional null checks.
+func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) error {
+	if err := ctx.Err(); err != nil {
+		return status.FromContextError(err).Err()
+	}
+	if m == nil || m.GetOp() == nil {
+		return nil
+	}
+
+	ts := hlcFromProto(m.GetHlc())
+	origin := m.GetOrigin()
+	seq := m.GetSeq()
+
+	switch op := m.GetOp().GetOp().(type) {
+	case *pb.MutationOp_PutVertex:
+		v := op.PutVertex.GetVertex()
+		if v == nil {
+			return nil
+		}
+		s.cache.PutVertexWithExpirationHLC(v.GetKey(), v, v.GetExpiration().AsTime(), ts)
+
+	case *pb.MutationOp_PutVertices:
+		for _, v := range op.PutVertices.GetVertices() {
+			if v == nil {
+				continue
+			}
+			s.cache.PutVertexWithExpirationHLC(v.GetKey(), v, v.GetExpiration().AsTime(), ts)
+		}
+
+	case *pb.MutationOp_DeleteVertex:
+		s.cache.DeleteVertices([]string{op.DeleteVertex.GetKey()})
+
+	case *pb.MutationOp_DeleteVertices:
+		s.cache.DeleteVertices(op.DeleteVertices.GetKeys())
+
+	case *pb.MutationOp_DeleteVerticesByPrefix:
+		// DeleteByPrefix returns the deleted count; the apply path does
+		// not need it. Use limit=0 (unlimited) to match the originating
+		// non-DryRun RPC's semantics; #183 will revisit this for
+		// snapshot-clamp interactions.
+		s.cache.DeleteByPrefix(ctx, op.DeleteVerticesByPrefix.GetPrefix(), 0)
+
+	case *pb.MutationOp_AddEdge:
+		e := op.AddEdge.GetEdge()
+		if e == nil {
+			return nil
+		}
+		cID := contribIDFor(origin, seq, 0)
+		s.cache.AddEdgeWithExpirationContrib(e.GetTail(), e.GetHead(), e.GetWeight(),
+			e.GetExpiration().AsTime(), cID)
+
+	case *pb.MutationOp_AddEdges:
+		edges := op.AddEdges.GetEdges()
+		for i, e := range edges {
+			if e == nil {
+				continue
+			}
+			cID := contribIDFor(origin, seq, uint16(i))
+			s.cache.AddEdgeWithExpirationContrib(e.GetTail(), e.GetHead(), e.GetWeight(),
+				e.GetExpiration().AsTime(), cID)
+		}
+
+	case *pb.MutationOp_PutEdge:
+		e := op.PutEdge.GetEdge()
+		if e == nil {
+			return nil
+		}
+		s.cache.PutEdgeWithExpirationHLC(e.GetTail(), e.GetHead(), e.GetWeight(),
+			e.GetExpiration().AsTime(), ts)
+
+	case *pb.MutationOp_PutEdges:
+		for _, e := range op.PutEdges.GetEdges() {
+			if e == nil {
+				continue
+			}
+			s.cache.PutEdgeWithExpirationHLC(e.GetTail(), e.GetHead(), e.GetWeight(),
+				e.GetExpiration().AsTime(), ts)
+		}
+
+	case *pb.MutationOp_DeleteEdge:
+		k := op.DeleteEdge
+		s.cache.DeleteEdges([]graph.EdgeKey[string]{{Tail: k.GetTail(), Head: k.GetHead()}})
+
+	case *pb.MutationOp_DeleteEdges:
+		in := op.DeleteEdges.GetEdges()
+		keys := make([]graph.EdgeKey[string], 0, len(in))
+		for _, e := range in {
+			keys = append(keys, graph.EdgeKey[string]{Tail: e.GetTail(), Head: e.GetHead()})
+		}
+		s.cache.DeleteEdges(keys)
+	}
+	return nil
+}
+
+// hlcFromProto converts the wire HLCTimestamp into the in-process value
+// type. A nil input yields the zero Timestamp, which Less() treats as the
+// minimum — i.e. any stored HLC will win the LWW compare. The NodeId byte
+// slice is right-padded/truncated into the fixed-size NodeID array so
+// peers using shorter test IDs still produce a stable total order.
+func hlcFromProto(p *pb.HLCTimestamp) hlc.Timestamp {
+	if p == nil {
+		return hlc.Timestamp{}
+	}
+	var nid hlc.NodeID
+	copy(nid[:], p.GetNodeId())
+	return hlc.Timestamp{
+		WallNs:  p.GetWallNs(),
+		Logical: p.GetLogical(),
+		NodeID:  nid,
+	}
+}
+
+// contribIDFor builds the dedup identifier for an additive contribution.
+// The 24-byte ContribID layout is documented on graph.ContribID:
+//
+//	bytes [0:16] = origin NodeID (replicating node)
+//	bytes [16:24] = uint64 BE = (mutation seq << 16) | edge index
+//
+// Folding the per-edge index into the low bits lets a single
+// MutationOp_AddEdges batch carry up to 65 536 distinct edges while still
+// guaranteeing a globally unique ContribID per (origin, seq, idx) triple.
+// Practical batch sizes are bounded by gRPC message size long before this
+// limit; the assertion is defensive.
+func contribIDFor(origin []byte, seq uint64, idx uint16) graph.ContribID {
+	var c graph.ContribID
+	copy(c[:16], origin)
+	combined := (seq << 16) | uint64(idx)
+	binary.BigEndian.PutUint64(c[16:], combined)
+	return c
+}

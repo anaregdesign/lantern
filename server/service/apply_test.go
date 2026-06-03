@@ -1,0 +1,514 @@
+package service
+
+import (
+	"context"
+	"fmt"
+	"math/rand/v2"
+	"sort"
+	"testing"
+	"time"
+
+	"github.com/anaregdesign/lantern/core/cache/graph"
+	"github.com/anaregdesign/lantern/core/hlc"
+	"github.com/anaregdesign/lantern/core/mutationlog"
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
+)
+
+// TestApplyMutation_BasicOps walks each MutationOp variant once and
+// asserts that ApplyMutation hits the matching cache method. The fake
+// backend's accumulators are sufficient because the test only verifies
+// "we dispatched at least once" — semantic correctness of dedup/LWW is
+// covered by TestApplyMutation_Convergence below using the real cache.
+func TestApplyMutation_BasicOps(t *testing.T) {
+	fb := newFakeBackend()
+	svc := NewLanternService(fb)
+	ctx := context.Background()
+	origin := bytes16("origin-A")
+	exp := timestamppb.New(time.Now().Add(time.Hour))
+	ts := newHLC(1, origin)
+
+	mustApply := func(t *testing.T, name string, op *pb.MutationOp) {
+		t.Helper()
+		m := &pb.Mutation{Seq: 1, Hlc: ts, Origin: origin[:], Op: op}
+		if err := svc.ApplyMutation(ctx, m); err != nil {
+			t.Fatalf("ApplyMutation %s: %v", name, err)
+		}
+	}
+
+	mustApply(t, "PutVertex", &pb.MutationOp{Op: &pb.MutationOp_PutVertex{
+		PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "v1", Expiration: exp}},
+	}})
+	mustApply(t, "PutVertices", &pb.MutationOp{Op: &pb.MutationOp_PutVertices{
+		PutVertices: &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: "v2", Expiration: exp}}},
+	}})
+	mustApply(t, "AddEdge", &pb.MutationOp{Op: &pb.MutationOp_AddEdge{
+		AddEdge: &pb.AddEdgeRequest{Edge: &pb.Edge{Tail: "v1", Head: "v2", Weight: 1, Expiration: exp}},
+	}})
+	mustApply(t, "AddEdges", &pb.MutationOp{Op: &pb.MutationOp_AddEdges{
+		AddEdges: &pb.AddEdgesRequest{Edges: []*pb.Edge{{Tail: "v1", Head: "v2", Weight: 1, Expiration: exp}}},
+	}})
+	mustApply(t, "PutEdge", &pb.MutationOp{Op: &pb.MutationOp_PutEdge{
+		PutEdge: &pb.PutEdgeRequest{Edge: &pb.Edge{Tail: "v1", Head: "v2", Weight: 2, Expiration: exp}},
+	}})
+	mustApply(t, "PutEdges", &pb.MutationOp{Op: &pb.MutationOp_PutEdges{
+		PutEdges: &pb.PutEdgesRequest{Edges: []*pb.Edge{{Tail: "v1", Head: "v2", Weight: 3, Expiration: exp}}},
+	}})
+	mustApply(t, "DeleteEdge", &pb.MutationOp{Op: &pb.MutationOp_DeleteEdge{
+		DeleteEdge: &pb.DeleteEdgeRequest{Tail: "v1", Head: "v2"},
+	}})
+	mustApply(t, "DeleteEdges", &pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{
+		DeleteEdges: &pb.DeleteEdgesRequest{Edges: []*pb.EdgeKey{{Tail: "v1", Head: "v2"}}},
+	}})
+	mustApply(t, "DeleteVertex", &pb.MutationOp{Op: &pb.MutationOp_DeleteVertex{
+		DeleteVertex: &pb.DeleteVertexRequest{Key: "v1"},
+	}})
+	mustApply(t, "DeleteVertices", &pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{
+		DeleteVertices: &pb.DeleteVerticesRequest{Keys: []string{"v2"}},
+	}})
+	mustApply(t, "DeleteVerticesByPrefix", &pb.MutationOp{Op: &pb.MutationOp_DeleteVerticesByPrefix{
+		DeleteVerticesByPrefix: &pb.DeleteVerticesByPrefixRequest{Prefix: "x"},
+	}})
+
+	// Nil-safety: empty mutation, nil op, nil request all return nil err.
+	if err := svc.ApplyMutation(ctx, nil); err != nil {
+		t.Errorf("ApplyMutation(nil) returned %v, want nil", err)
+	}
+	if err := svc.ApplyMutation(ctx, &pb.Mutation{}); err != nil {
+		t.Errorf("ApplyMutation(empty) returned %v, want nil", err)
+	}
+}
+
+// TestApplyMutation_DoesNotLog asserts the cardinal rule: replayed
+// mutations MUST NOT re-append to the local log. Otherwise the peer-pump
+// in #184 would echo every mutation back to its origin and loop forever.
+func TestApplyMutation_DoesNotLog(t *testing.T) {
+	cache := graph.NewGraphCache[string, *pb.Vertex](time.Minute)
+	log := mutationlog.New(mutationlog.Options{Capacity: 128, SubscriberBuffer: 128})
+	t.Cleanup(func() { _ = log.Close() })
+	origin := bytes16("origin-A")
+	clock := hlc.New(origin, hlc.Options{})
+	svc := NewLanternService(cache).
+		WithReplication(log, clock, nil)
+
+	ts := newHLC(1, origin)
+	exp := timestamppb.New(time.Now().Add(time.Hour))
+	m := &pb.Mutation{
+		Seq: 1, Hlc: ts, Origin: origin[:],
+		Op: &pb.MutationOp{Op: &pb.MutationOp_PutVertex{
+			PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "v1", Expiration: exp}},
+		}},
+	}
+	if err := svc.ApplyMutation(context.Background(), m); err != nil {
+		t.Fatalf("ApplyMutation: %v", err)
+	}
+	if _, ok := log.LastSeq(); ok {
+		t.Errorf("log has entries after ApplyMutation; want none (replay must not re-append)")
+	}
+}
+
+// TestApplyMutation_Convergence is the cluster-wide property test. It
+// builds three independent caches, generates a random batch of
+// mutations from a fixed pool of synthetic origins, then delivers the
+// same batch to every node in a SHUFFLED order (with occasional
+// duplicates). The post-condition: all three nodes hold identical
+// vertex and edge state.
+//
+// Restrictions for the #182 universe:
+//
+//   - Per-edge ops are partitioned: each (tail, head) pair receives ONLY
+//     Add operations OR ONLY Put operations across the whole trace.
+//     Mixing on the same edge composes additive contributions with an
+//     LWW reset and is order-sensitive (and is #185/#186 territory).
+//
+//   - No Delete* ops. Without tombstones a late Put may re-insert a
+//     deleted vertex on some nodes but not others; that's exactly what
+//     #183 will harden. Delete idempotence on a single node is tested
+//     separately in TestApplyMutation_Idempotence below.
+//
+//   - Add weights are always 1.0 so the float32 running sum is the
+//     integer count of distinct contributions (exact in float32 up to
+//     2^24). Put weights are integer-valued for the same reason.
+func TestApplyMutation_Convergence(t *testing.T) {
+	const (
+		traces     = 1000
+		mutsPerTrc = 12
+		numOrigins = 3
+		numNodes   = 3
+		vertexPool = 6
+		edgePool   = 8
+	)
+
+	for trace := 0; trace < traces; trace++ {
+		t.Run(fmt.Sprintf("trace=%04d", trace), func(t *testing.T) {
+			rng := rand.New(rand.NewPCG(uint64(trace), 0xC0FFEE))
+
+			origins := make([][16]byte, numOrigins)
+			clocks := make([]*hlc.Clock, numOrigins)
+			for i := range origins {
+				origins[i] = bytes16(fmt.Sprintf("origin-%d", i))
+				clocks[i] = hlc.New(origins[i], hlc.Options{})
+			}
+
+			// Pre-partition edges into "Add-only" vs "Put-only" so the
+			// universe is order-insensitive (see test header). Edges are
+			// keyed by (tail, head) and deduped so the same pair never
+			// straddles both buckets.
+			edgeSet := map[[2]string]bool{}
+			for len(edgeSet) < edgePool {
+				key := [2]string{
+					fmt.Sprintf("v%d", rng.IntN(vertexPool)),
+					fmt.Sprintf("v%d", rng.IntN(vertexPool)),
+				}
+				if _, dup := edgeSet[key]; dup {
+					continue
+				}
+				edgeSet[key] = rng.IntN(2) == 0
+			}
+			edges := make([][2]string, 0, len(edgeSet))
+			for k := range edgeSet {
+				edges = append(edges, k)
+			}
+			sort.Slice(edges, func(i, j int) bool {
+				if edges[i][0] != edges[j][0] {
+					return edges[i][0] < edges[j][0]
+				}
+				return edges[i][1] < edges[j][1]
+			})
+			edgeIsPut := make([]bool, len(edges))
+			for i, k := range edges {
+				edgeIsPut[i] = edgeSet[k]
+			}
+
+			// Build the mutation tape.
+			tape := make([]*pb.Mutation, 0, mutsPerTrc)
+			seqPerOrigin := make([]uint64, numOrigins)
+			for i := 0; i < mutsPerTrc; i++ {
+				oi := rng.IntN(numOrigins)
+				seqPerOrigin[oi]++
+				seq := seqPerOrigin[oi]
+				ts := clocks[oi].Now()
+				hlcTS := &pb.HLCTimestamp{
+					WallNs: ts.WallNs, Logical: ts.Logical,
+					NodeId: append([]byte(nil), ts.NodeID[:]...),
+				}
+				exp := timestamppb.New(time.Now().Add(time.Hour))
+				op := randomOp(rng, vertexPool, edges, edgeIsPut, oi, int64(i), exp)
+				tape = append(tape, &pb.Mutation{
+					Seq: seq, Hlc: hlcTS, Origin: origins[oi][:], Op: op,
+				})
+			}
+
+			// Three independent nodes, each receives the tape in a
+			// distinct shuffled order with random duplicates.
+			states := make([]nodeSnapshot, numNodes)
+			for n := 0; n < numNodes; n++ {
+				cache := graph.NewGraphCache[string, *pb.Vertex](time.Minute)
+				svc := NewLanternService(cache)
+
+				delivery := make([]*pb.Mutation, 0, len(tape)*2)
+				delivery = append(delivery, tape...)
+				// Random duplicates (idempotence stress).
+				for i := 0; i < len(tape)/3; i++ {
+					delivery = append(delivery, tape[rng.IntN(len(tape))])
+				}
+				rng.Shuffle(len(delivery), func(i, j int) {
+					delivery[i], delivery[j] = delivery[j], delivery[i]
+				})
+
+				for _, m := range delivery {
+					if err := svc.ApplyMutation(context.Background(), m); err != nil {
+						t.Fatalf("node %d ApplyMutation: %v", n, err)
+					}
+				}
+				states[n] = snapshotCache(cache, vertexPool, edges)
+			}
+
+			for n := 1; n < numNodes; n++ {
+				if diff := states[0].diff(states[n]); diff != "" {
+					t.Fatalf("node 0 vs node %d divergence:\n%s", n, diff)
+				}
+			}
+		})
+	}
+}
+
+// TestApplyMutation_Idempotence applies the same mutation twice against
+// a single node and asserts the cache state matches a single application.
+// Covers every oneof variant including Delete (where idempotence is
+// "second delete is a no-op").
+func TestApplyMutation_Idempotence(t *testing.T) {
+	origin := bytes16("origin-A")
+	exp := timestamppb.New(time.Now().Add(time.Hour))
+	ts := newHLC(42, origin)
+	mkMutation := func(op *pb.MutationOp) *pb.Mutation {
+		return &pb.Mutation{Seq: 7, Hlc: ts, Origin: origin[:], Op: op}
+	}
+
+	cases := []struct {
+		name string
+		op   *pb.MutationOp
+	}{
+		{"PutVertex", &pb.MutationOp{Op: &pb.MutationOp_PutVertex{
+			PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "v1", Expiration: exp}},
+		}}},
+		{"AddEdge", &pb.MutationOp{Op: &pb.MutationOp_AddEdge{
+			AddEdge: &pb.AddEdgeRequest{Edge: &pb.Edge{Tail: "a", Head: "b", Weight: 1.0, Expiration: exp}},
+		}}},
+		{"PutEdge", &pb.MutationOp{Op: &pb.MutationOp_PutEdge{
+			PutEdge: &pb.PutEdgeRequest{Edge: &pb.Edge{Tail: "a", Head: "b", Weight: 5.0, Expiration: exp}},
+		}}},
+		{"DeleteVertex", &pb.MutationOp{Op: &pb.MutationOp_DeleteVertex{
+			DeleteVertex: &pb.DeleteVertexRequest{Key: "v1"},
+		}}},
+		{"DeleteEdge", &pb.MutationOp{Op: &pb.MutationOp_DeleteEdge{
+			DeleteEdge: &pb.DeleteEdgeRequest{Tail: "a", Head: "b"},
+		}}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cacheA := graph.NewGraphCache[string, *pb.Vertex](time.Minute)
+			cacheB := graph.NewGraphCache[string, *pb.Vertex](time.Minute)
+			svcA := NewLanternService(cacheA)
+			svcB := NewLanternService(cacheB)
+
+			ctx := context.Background()
+			if err := svcA.ApplyMutation(ctx, mkMutation(tc.op)); err != nil {
+				t.Fatalf("A first apply: %v", err)
+			}
+			if err := svcB.ApplyMutation(ctx, mkMutation(tc.op)); err != nil {
+				t.Fatalf("B first apply: %v", err)
+			}
+			if err := svcB.ApplyMutation(ctx, mkMutation(tc.op)); err != nil {
+				t.Fatalf("B second apply: %v", err)
+			}
+
+			vs := []string{"v1", "a", "b"}
+			es := [][2]string{{"a", "b"}}
+			sa := snapshotCache(cacheA, 0, nil)
+			sa.includeKeys(cacheA, vs, es)
+			sb := snapshotCache(cacheB, 0, nil)
+			sb.includeKeys(cacheB, vs, es)
+			if diff := sa.diff(sb); diff != "" {
+				t.Errorf("second apply diverged from first apply:\n%s", diff)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------
+
+func bytes16(s string) [16]byte {
+	var b [16]byte
+	copy(b[:], s)
+	return b
+}
+
+func newHLC(wallNs int64, origin [16]byte) *pb.HLCTimestamp {
+	return &pb.HLCTimestamp{WallNs: wallNs, Logical: 0, NodeId: origin[:]}
+}
+
+// randomOp produces a random per-vertex/per-edge mutation drawn from
+// {PutVertex, PutVertices, AddEdge, AddEdges, PutEdge, PutEdges} subject
+// to the per-edge partition. Index i provides a deterministic value seed
+// so vertex payloads on different nodes converge to the same proto under
+// LWW.
+func randomOp(rng *rand.Rand, vp int, edges [][2]string, edgeIsPut []bool, oi int, i int64, exp *timestamppb.Timestamp) *pb.MutationOp {
+	pickEdge := func(want bool) (int, bool) {
+		// scan for an edge matching the desired Add/Put bucket
+		offset := rng.IntN(len(edges))
+		for s := 0; s < len(edges); s++ {
+			idx := (offset + s) % len(edges)
+			if edgeIsPut[idx] == want {
+				return idx, true
+			}
+		}
+		return 0, false
+	}
+	switch rng.IntN(6) {
+	case 0:
+		k := fmt.Sprintf("v%d", rng.IntN(vp))
+		return &pb.MutationOp{Op: &pb.MutationOp_PutVertex{
+			PutVertex: &pb.PutVertexRequest{Vertex: vertexFor(k, oi, i, exp)},
+		}}
+	case 1:
+		vs := []*pb.Vertex{
+			vertexFor(fmt.Sprintf("v%d", rng.IntN(vp)), oi, i, exp),
+			vertexFor(fmt.Sprintf("v%d", rng.IntN(vp)), oi, i+1, exp),
+		}
+		return &pb.MutationOp{Op: &pb.MutationOp_PutVertices{
+			PutVertices: &pb.PutVerticesRequest{Vertices: vs},
+		}}
+	case 2:
+		if idx, ok := pickEdge(false); ok {
+			e := edges[idx]
+			return &pb.MutationOp{Op: &pb.MutationOp_AddEdge{
+				AddEdge: &pb.AddEdgeRequest{Edge: &pb.Edge{Tail: e[0], Head: e[1], Weight: 1, Expiration: exp}},
+			}}
+		}
+	case 3:
+		if idx, ok := pickEdge(false); ok {
+			e := edges[idx]
+			return &pb.MutationOp{Op: &pb.MutationOp_AddEdges{
+				AddEdges: &pb.AddEdgesRequest{Edges: []*pb.Edge{
+					{Tail: e[0], Head: e[1], Weight: 1, Expiration: exp},
+				}},
+			}}
+		}
+	case 4:
+		if idx, ok := pickEdge(true); ok {
+			e := edges[idx]
+			return &pb.MutationOp{Op: &pb.MutationOp_PutEdge{
+				PutEdge: &pb.PutEdgeRequest{Edge: &pb.Edge{Tail: e[0], Head: e[1], Weight: float32(2 + (i % 7)), Expiration: exp}},
+			}}
+		}
+	case 5:
+		if idx, ok := pickEdge(true); ok {
+			e := edges[idx]
+			return &pb.MutationOp{Op: &pb.MutationOp_PutEdges{
+				PutEdges: &pb.PutEdgesRequest{Edges: []*pb.Edge{
+					{Tail: e[0], Head: e[1], Weight: float32(2 + (i % 7)), Expiration: exp},
+				}},
+			}}
+		}
+	}
+	// Fallback: a trivial PutVertex so we never return nil.
+	k := fmt.Sprintf("v%d", rng.IntN(vp))
+	return &pb.MutationOp{Op: &pb.MutationOp_PutVertex{
+		PutVertex: &pb.PutVertexRequest{Vertex: vertexFor(k, oi, i, exp)},
+	}}
+}
+
+// vertexFor returns a proto.Vertex whose payload is a deterministic
+// function of (key, origin, mutation index). Two nodes processing the
+// same mutation produce byte-equal vertices under proto.Equal.
+func vertexFor(key string, origin int, idx int64, exp *timestamppb.Timestamp) *pb.Vertex {
+	return &pb.Vertex{
+		Key:        key,
+		Value:      &pb.Vertex_Int64{Int64: int64(origin)*1000 + idx},
+		Expiration: exp,
+	}
+}
+
+// nodeSnapshot is the canonicalized post-trace state used to compare
+// nodes. Vertex values are serialized via proto.Marshal for byte
+// equality; edge weights are compared by exact float32 equality
+// (Add weight=1 sums and Put integer weights are exact in float32).
+type nodeSnapshot struct {
+	vertices map[string][]byte
+	weights  map[[2]string]float32
+}
+
+func snapshotCache(c *graph.GraphCache[string, *pb.Vertex], vp int, edges [][2]string) nodeSnapshot {
+	s := nodeSnapshot{
+		vertices: map[string][]byte{},
+		weights:  map[[2]string]float32{},
+	}
+	for i := 0; i < vp; i++ {
+		k := fmt.Sprintf("v%d", i)
+		if v, ok := c.GetVertex(k); ok {
+			s.vertices[k] = mustMarshal(v)
+		}
+	}
+	for _, e := range edges {
+		if w, ok := c.GetWeight(e[0], e[1]); ok {
+			s.weights[[2]string{e[0], e[1]}] = w
+		}
+	}
+	return s
+}
+
+// includeKeys extends a snapshot with explicit (vertex, edge) keys.
+// Used by the idempotence test where the universe is hand-picked.
+func (s *nodeSnapshot) includeKeys(c *graph.GraphCache[string, *pb.Vertex], vs []string, es [][2]string) {
+	for _, k := range vs {
+		if v, ok := c.GetVertex(k); ok {
+			s.vertices[k] = mustMarshal(v)
+		}
+	}
+	for _, e := range es {
+		if w, ok := c.GetWeight(e[0], e[1]); ok {
+			s.weights[[2]string{e[0], e[1]}] = w
+		}
+	}
+}
+
+func (s nodeSnapshot) diff(other nodeSnapshot) string {
+	out := ""
+	keys := unionKeys(s.vertices, other.vertices)
+	for _, k := range keys {
+		a, ok1 := s.vertices[k]
+		b, ok2 := other.vertices[k]
+		switch {
+		case ok1 && !ok2:
+			out += fmt.Sprintf("  vertex %q present in A, missing in B\n", k)
+		case !ok1 && ok2:
+			out += fmt.Sprintf("  vertex %q missing in A, present in B\n", k)
+		case string(a) != string(b):
+			out += fmt.Sprintf("  vertex %q diverged: A=%x B=%x\n", k, a, b)
+		}
+	}
+	ekeys := unionEdgeKeys(s.weights, other.weights)
+	for _, e := range ekeys {
+		a, ok1 := s.weights[e]
+		b, ok2 := other.weights[e]
+		switch {
+		case ok1 && !ok2:
+			out += fmt.Sprintf("  edge %v present in A (w=%g), missing in B\n", e, a)
+		case !ok1 && ok2:
+			out += fmt.Sprintf("  edge %v missing in A, present in B (w=%g)\n", e, b)
+		case a != b:
+			out += fmt.Sprintf("  edge %v weight diverged: A=%g B=%g\n", e, a, b)
+		}
+	}
+	return out
+}
+
+func unionKeys(a, b map[string][]byte) []string {
+	seen := map[string]struct{}{}
+	for k := range a {
+		seen[k] = struct{}{}
+	}
+	for k := range b {
+		seen[k] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for k := range seen {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func unionEdgeKeys(a, b map[[2]string]float32) [][2]string {
+	seen := map[[2]string]struct{}{}
+	for k := range a {
+		seen[k] = struct{}{}
+	}
+	for k := range b {
+		seen[k] = struct{}{}
+	}
+	out := make([][2]string, 0, len(seen))
+	for k := range seen {
+		out = append(out, k)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i][0] != out[j][0] {
+			return out[i][0] < out[j][0]
+		}
+		return out[i][1] < out[j][1]
+	})
+	return out
+}
+
+func mustMarshal(v *pb.Vertex) []byte {
+	b, err := proto.MarshalOptions{Deterministic: true}.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
