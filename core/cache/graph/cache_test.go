@@ -11,7 +11,7 @@ import (
 
 func TestGraph_AddEdge(t *testing.T) {
 	v := cache.NewCache[string, string](time.Minute)
-	e := newEdgeCache[string](time.Minute)
+	e := newEdgeCache[string](time.Minute, newDictionary[string]())
 	type args[S comparable] struct {
 		tail S
 		head S
@@ -46,7 +46,7 @@ func TestGraph_AddEdge(t *testing.T) {
 
 func TestGraph_AddEdgeWithTTL(t *testing.T) {
 	v := cache.NewCache[string, string](time.Minute)
-	e := newEdgeCache[string](time.Minute)
+	e := newEdgeCache[string](time.Minute, newDictionary[string]())
 	type args[S comparable] struct {
 		tail S
 		head S
@@ -175,7 +175,7 @@ func TestGraph_GetVertex(t *testing.T) {
 }
 
 func TestGraph_getWeight(t *testing.T) {
-	e := newEdgeCache[string](time.Minute)
+	e := newEdgeCache[string](time.Minute, newDictionary[string]())
 
 	type args[S comparable] struct {
 		tail S
@@ -229,7 +229,7 @@ func TestGraphCache_AddEdge(t *testing.T) {
 			name: "TestGraphCache_AddEdge",
 			c: GraphCache[string, string]{
 				vertices: cache.NewCache[string, string](time.Minute),
-				edges:    newEdgeCache[string](time.Minute),
+				edges:    newEdgeCache[string](time.Minute, newDictionary[string]()),
 			},
 			args: args[string]{tail: "tail", head: "head", w: 0},
 		},
@@ -259,7 +259,7 @@ func TestGraphCache_AddEdgeWithExpiration(t *testing.T) {
 			name: "TestGraphCache_AddEdgeWithExpiration",
 			c: GraphCache[string, string]{
 				vertices: cache.NewCache[string, string](time.Minute),
-				edges:    newEdgeCache[string](time.Minute),
+				edges:    newEdgeCache[string](time.Minute, newDictionary[string]()),
 			},
 			args: args[string]{tail: "tail", head: "head", w: 0, expiration: time.Now()},
 		},
@@ -289,7 +289,7 @@ func TestGraphCache_AddEdgeWithTTL(t *testing.T) {
 			name: "TestGraphCache_AddEdgeWithTTL",
 			c: GraphCache[string, string]{
 				vertices: cache.NewCache[string, string](time.Minute),
-				edges:    newEdgeCache[string](time.Minute),
+				edges:    newEdgeCache[string](time.Minute, newDictionary[string]()),
 			},
 			args: args[string]{tail: "tail", head: "head", w: 0, ttl: time.Minute},
 		},
@@ -468,30 +468,20 @@ func TestGraphCache_getWeight(t *testing.T) {
 	}
 	type testCase[S comparable, T any] struct {
 		name  string
-		c     GraphCache[S, T]
+		c     *GraphCache[S, T]
 		args  args[S]
 		want  float32
 		want1 bool
 	}
+	mk := func() *GraphCache[string, string] {
+		c := NewGraphCache[string, string](time.Minute)
+		c.AddEdgeWithExpiration("tail", "head", 1, time.Now().Add(time.Minute))
+		return c
+	}
 	tests := []testCase[string, string]{
 		{
-			name: "TestGraphCache_getWeight",
-			c: GraphCache[string, string]{
-				edges: &edgeCache[string]{
-					tf: map[string]map[string]*weight{
-						"tail": {
-							"head": &weight{
-								values: []weightValue{
-									{
-										value:      1,
-										expiration: time.Now().Add(time.Minute),
-									},
-								},
-							},
-						},
-					},
-				},
-			},
+			name:  "TestGraphCache_getWeight",
+			c:     mk(),
 			args:  args[string]{tail: "tail", head: "head"},
 			want:  1,
 			want1: true,

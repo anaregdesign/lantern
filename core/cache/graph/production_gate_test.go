@@ -214,11 +214,8 @@ func testResourceEdgeReaped(t *testing.T) {
 	time.Sleep(short + 80*time.Millisecond)
 	c.edges.flush()
 
-	c.mu.RLock()
-	_, exists := c.edges.tf["t"]
-	c.mu.RUnlock()
-	if exists {
-		t.Fatalf("R3 memory leak: expired edge bucket survived edges.flush()")
+	if n := c.edges.count(); n != 0 {
+		t.Fatalf("R3 memory leak: expired edge bucket survived edges.flush() (count=%d)", n)
 	}
 
 	// And the public API now reports the edge as gone.

@@ -36,7 +36,7 @@ func (c *GraphCache[S, T]) AddVerticesWithExpiration(items []VertexItem[S, T]) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, it := range items {
-		c.vertices.PutWithExpiration(it.Key, it.Value, it.Expiration)
+		c.putVertexLocked(it.Key, it.Value, it.Expiration)
 	}
 }
 
@@ -50,14 +50,9 @@ func (c *GraphCache[S, T]) AddEdgesWithExpiration(items []EdgeItem[S]) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var noop T
 	for _, it := range items {
-		if !c.vertices.Has(it.Tail) {
-			c.vertices.PutWithExpiration(it.Tail, noop, it.Expiration)
-		}
-		if !c.vertices.Has(it.Head) {
-			c.vertices.PutWithExpiration(it.Head, noop, it.Expiration)
-		}
+		c.ensureVertexLocked(it.Tail, it.Expiration)
+		c.ensureVertexLocked(it.Head, it.Expiration)
 		c.edges.addWithExpiration(it.Tail, it.Head, it.Weight, it.Expiration)
 	}
 }
@@ -72,14 +67,9 @@ func (c *GraphCache[S, T]) PutEdgesWithExpiration(items []EdgeItem[S]) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var noop T
 	for _, it := range items {
-		if !c.vertices.Has(it.Tail) {
-			c.vertices.PutWithExpiration(it.Tail, noop, it.Expiration)
-		}
-		if !c.vertices.Has(it.Head) {
-			c.vertices.PutWithExpiration(it.Head, noop, it.Expiration)
-		}
+		c.ensureVertexLocked(it.Tail, it.Expiration)
+		c.ensureVertexLocked(it.Head, it.Expiration)
 		c.edges.delete(it.Tail, it.Head)
 		c.edges.addWithExpiration(it.Tail, it.Head, it.Weight, it.Expiration)
 	}

@@ -17,6 +17,12 @@ type GraphCache[S comparable, T any] struct {
 	defaultTTL time.Duration
 	vertices   *cache.Cache[S, T]
 	edges      *edgeCache[S]
+	// dict is the shared vertex-id allocator. Both the vertex cache and the
+	// edge cache reference each key through this dictionary so the heavy
+	// edge maps can be keyed by uint32 instead of S. The vertex cache holds
+	// one reference per live entry (released via SetOnEvict); the edge cache
+	// holds one reference per endpoint per edge.
+	dict *dictionary[S]
 
 	// GC observability hooks. Both are optional; the cache stays metrics-free
 	// by default. The server wires Prometheus collectors via SetGCHooks so
@@ -32,11 +38,48 @@ type GraphCache[S comparable, T any] struct {
 }
 
 func NewGraphCache[S comparable, T any](defaultTTL time.Duration) *GraphCache[S, T] {
+	dict := newDictionary[S]()
+	vertices := cache.NewCache[S, T](defaultTTL)
+	// Vertex eviction (Delete, Clear, or Flush) must release the vertex
+	// cache's one dictionary reference per live key. The callback fires
+	// AFTER the inner cache lock is released (see cache.Cache.SetOnEvict),
+	// so taking dict.mu here cannot deadlock. Edges that still reference
+	// the evicted key keep refcount > 0 until the dangling-edge sweep
+	// removes them.
+	vertices.SetOnEvict(func(key S) {
+		if id, ok := dict.lookup(key); ok {
+			dict.release(id)
+		}
+	})
 	return &GraphCache[S, T]{
 		defaultTTL: defaultTTL,
-		vertices:   cache.NewCache[S, T](defaultTTL),
-		edges:      newEdgeCache[S](defaultTTL),
+		vertices:   vertices,
+		edges:      newEdgeCache[S](defaultTTL, dict),
+		dict:       dict,
 	}
+}
+
+// putVertexLocked inserts (or refreshes) a vertex entry, interning the key
+// in the dictionary exactly once per net live entry. Caller must hold c.mu.
+func (c *GraphCache[S, T]) putVertexLocked(key S, value T, expiration time.Time) {
+	if c.dict != nil && !c.vertices.Has(key) {
+		c.dict.intern(key)
+	}
+	c.vertices.PutWithExpiration(key, value, expiration)
+}
+
+// ensureVertexLocked auto-creates an endpoint vertex (used by edge writes)
+// without overwriting an existing value. The dict reference is taken only
+// on the first insertion so refcount tracks the cache contents 1:1.
+func (c *GraphCache[S, T]) ensureVertexLocked(key S, expiration time.Time) {
+	if c.vertices.Has(key) {
+		return
+	}
+	if c.dict != nil {
+		c.dict.intern(key)
+	}
+	var noop T
+	c.vertices.PutWithExpiration(key, noop, expiration)
 }
 
 func (c *GraphCache[S, T]) GetVertex(key S) (T, bool) {
@@ -67,7 +110,7 @@ func (c *GraphCache[S, T]) AddVertexWithExpiration(key S, value T, expiration ti
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.vertices.PutWithExpiration(key, value, expiration)
+	c.putVertexLocked(key, value, expiration)
 }
 
 func (c *GraphCache[S, T]) AddVertexWithTTL(key S, value T, ttl time.Duration) {
@@ -84,14 +127,8 @@ func (c *GraphCache[S, T]) AddEdgeWithExpiration(tail, head S, w float32, expira
 	// Auto-create endpoint vertices synchronously so that a subsequent flush
 	// cannot race ahead and drop the edge we are about to add. The inner
 	// vertex cache has its own mutex, so calling it while holding c.mu is safe.
-	if !c.vertices.Has(tail) {
-		var noop T
-		c.vertices.PutWithExpiration(tail, noop, expiration)
-	}
-	if !c.vertices.Has(head) {
-		var noop T
-		c.vertices.PutWithExpiration(head, noop, expiration)
-	}
+	c.ensureVertexLocked(tail, expiration)
+	c.ensureVertexLocked(head, expiration)
 	c.edges.addWithExpiration(tail, head, w, expiration)
 }
 
@@ -114,14 +151,8 @@ func (c *GraphCache[S, T]) PutEdgeWithExpiration(tail, head S, w float32, expira
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	// Same endpoint auto-creation invariant as AddEdgeWithExpiration.
-	if !c.vertices.Has(tail) {
-		var noop T
-		c.vertices.PutWithExpiration(tail, noop, expiration)
-	}
-	if !c.vertices.Has(head) {
-		var noop T
-		c.vertices.PutWithExpiration(head, noop, expiration)
-	}
+	c.ensureVertexLocked(tail, expiration)
+	c.ensureVertexLocked(head, expiration)
 	c.edges.delete(tail, head)
 	c.edges.addWithExpiration(tail, head, w, expiration)
 }
