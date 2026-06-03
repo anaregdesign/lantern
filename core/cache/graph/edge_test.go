@@ -194,7 +194,7 @@ func Test_edgeCache_delete(t *testing.T) {
 		{
 			name: "edgeCache_delete",
 			c: edgeCache[string]{
-				tf: make(map[string]map[string]*weight),
+				tf: make(map[vertexID]map[vertexID]*weight),
 			},
 			args: args[string]{
 				tail: "a",
@@ -226,7 +226,7 @@ func Test_edgeCache_get(t *testing.T) {
 		{
 			name: "edgeCache_get",
 			c: edgeCache[string]{
-				tf: make(map[string]map[string]*weight),
+				tf: make(map[vertexID]map[vertexID]*weight),
 			},
 			args: args[string]{
 				tail: "a",
@@ -264,8 +264,8 @@ func Test_edgeCache_set(t *testing.T) {
 		{
 			name: "edgeCache_set",
 			c: edgeCache[string]{
-				tf: make(map[string]map[string]*weight),
-				df: make(map[string]int),
+				tf: make(map[vertexID]map[vertexID]*weight),
+				df: make(map[vertexID]int),
 			},
 			args: args[string]{
 				tail: "a",
@@ -298,8 +298,8 @@ func Test_edgeCache_setWithExpiration(t *testing.T) {
 		{
 			name: "edgeCache_setWithExpiration",
 			c: edgeCache[string]{
-				tf: make(map[string]map[string]*weight),
-				df: make(map[string]int),
+				tf: make(map[vertexID]map[vertexID]*weight),
+				df: make(map[vertexID]int),
 			},
 			args: args[string]{
 				tail: "a",
@@ -332,8 +332,8 @@ func Test_edgeCache_setWithTTL(t *testing.T) {
 		{
 			name: "edgeCache_setWithTTL",
 			c: edgeCache[string]{
-				tf: make(map[string]map[string]*weight),
-				df: make(map[string]int),
+				tf: make(map[vertexID]map[vertexID]*weight),
+				df: make(map[vertexID]int),
 			},
 			args: args[string]{
 				tail: "a",
