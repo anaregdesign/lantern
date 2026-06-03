@@ -21,7 +21,19 @@ type weight struct {
 	mu     sync.Mutex
 	values []weightValue
 	sum    float32
+	// lastFlushLen is len(values) immediately after the most recent
+	// flushLocked. It anchors the amortized-compaction trigger in
+	// addWithExpiration: a flush fires when len(values) exceeds
+	// max(weightCompactMin, 2*lastFlushLen). This keeps memory within
+	// ~2× the working set even on write-only hot edges that no reader
+	// touches between GC ticks, while keeping the amortized add cost O(1).
+	lastFlushLen int
 }
+
+// weightCompactMin is the floor under the 2× growth trigger. Below this we
+// never compact — the slice header is already cheap and the linear walk would
+// dominate the add. Picked to roughly match an L1-resident weightValue slice.
+const weightCompactMin = 64
 
 func newWeight() *weight {
 	return &weight{}
@@ -58,6 +70,16 @@ func (w *weight) addWithExpiration(value float32, expiration time.Time) {
 		expiration: expiration,
 	})
 	w.sum += value
+
+	// Amortized compaction: a write-only hot edge that no reader visits
+	// between GC ticks would otherwise grow without bound, and the eventual
+	// flush (on read or on GC) would be O(N) over a giant slice. Trigger
+	// compaction once the slice has doubled past its last post-flush size,
+	// with a small floor so we skip the work on tiny edges. Cost stays O(1)
+	// amortized; worst-case write latency variance rises but is bounded.
+	if n := len(w.values); n > weightCompactMin && n > 2*w.lastFlushLen {
+		w.flushLocked()
+	}
 }
 
 func (w *weight) addWithTTL(value float32, ttl time.Duration) {
@@ -103,6 +125,7 @@ func (w *weight) flushLocked() {
 	}
 	w.values = w.values[:write]
 	w.sum = sum
+	w.lastFlushLen = write
 }
 
 // edgeCache stores directed weighted edges using compact vertexID keys

@@ -481,3 +481,49 @@ func Test_edgeCache_getDetail_noGoroutineForExpired(t *testing.T) {
 		t.Fatalf("flush should reclaim expired edge, count=%d", got)
 	}
 }
+
+// Test_weight_amortizedCompaction verifies that addWithExpiration triggers
+// flushLocked() in-band when the slice grows past 2*lastFlushLen (with a floor
+// of weightCompactMin), so a write-only edge cannot grow without bound.
+func Test_weight_amortizedCompaction(t *testing.T) {
+	w := newWeight()
+	// Add many already-expired entries. Without amortized compaction these
+	// would all accumulate; with it the slice must collapse to 0 once the
+	// trigger fires.
+	const n = 4096
+	past := time.Now().Add(-time.Hour)
+	for i := 0; i < n; i++ {
+		w.addWithExpiration(1, past)
+	}
+	w.mu.Lock()
+	live := len(w.values)
+	w.mu.Unlock()
+	// After the last in-band trigger, lastFlushLen drops to 0 (all expired),
+	// so subsequent adds re-grow up to the floor before the next trigger.
+	// The bound must therefore be the floor, not n.
+	if live > weightCompactMin {
+		t.Fatalf("expected slice bounded by floor, live=%d > %d", live, weightCompactMin)
+	}
+	// Sanity: peak slice growth between flushes is bounded by ~2x floor +
+	// last flush size, never the full n.
+	// (We can't observe the peak after the fact, but the post-state above
+	// already guarantees the trigger fired at least once.)
+
+	// Now mix live entries; trigger should still fire as the slice grows,
+	// but live entries must survive.
+	future := time.Now().Add(time.Hour)
+	for i := 0; i < n; i++ {
+		w.addWithExpiration(1, future)
+	}
+	w.mu.Lock()
+	live = len(w.values)
+	w.mu.Unlock()
+	// Live entries must survive every compaction; expired ones from the
+	// first loop get reclaimed, so the final live count is at least n.
+	if live < n {
+		t.Fatalf("live entries should survive compaction: got %d, want >= %d", live, n)
+	}
+	if got := w.value(); got != float32(n) {
+		t.Fatalf("sum mismatch after compaction: got %v, want %v", got, n)
+	}
+}
