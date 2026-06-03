@@ -182,70 +182,66 @@ func (g *Graph[S, T]) ShortestPathTree(seed S, costFunc func(x float32) float32)
 }
 
 // ShortestPathTreeContext is the context-aware variant of ShortestPathTree.
+//
+// Implementation: classic Dijkstra with relaxation against the original
+// graph. A dist[v] table tracks the best known cost from seed; whenever a
+// shorter path is discovered, dist/prev are updated and a new PQ entry is
+// pushed. Stale entries (top.Priority worse than the current dist[u]) are
+// skipped on pop. Each vertex is therefore settled at most once and each
+// edge is relaxed at most once, giving O((V+E) log V) time and O(V) active
+// PQ entries.
+//
+// The previous implementation called ConnectedGraphContext first (an extra
+// O(V+E) walk plus a full subgraph copy) and used a pivot/position trick
+// without a distance table, which allowed the PQ to grow to O(E). Both are
+// avoided here.
+//
+// PriorityQueue is a max-heap; priorities are negated so the smallest dist
+// surfaces first. costFunc must return non-negative values (Dijkstra
+// precondition).
 func (g *Graph[S, T]) ShortestPathTreeContext(ctx context.Context, seed S, costFunc func(x float32) float32) (*Graph[S, T], error) {
-	connected, err := g.ConnectedGraphContext(ctx, seed)
-	if err != nil {
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	spt := NewGraph[S, T]()
-	spt.PutVertex(seed, connected.Vertices[seed])
-
-	type edge struct {
-		tail   S
-		head   S
-		weight float32
+	if _, ok := g.Vertices[seed]; !ok {
+		spt := NewGraph[S, T]()
+		spt.PutVertex(seed, g.Vertices[seed])
+		return spt, nil
 	}
 
-	seen := set.NewSet[S]()
-	q := make(pq.PriorityQueue[*edge, float32], 0)
+	dist := map[S]float32{seed: 0}
+	prev := make(map[S]S)
+
+	q := make(pq.PriorityQueue[S, float32], 0)
 	heap.Init(&q)
-	pivot := seed
-	position := float32(0.0)
-	for {
+	heap.Push(&q, &pq.Item[S, float32]{Value: seed, Priority: 0})
+
+	for q.Len() > 0 {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if len(spt.Vertices) == len(connected.Vertices) {
-			break
+		top := heap.Pop(&q).(*pq.Item[S, float32])
+		u := top.Value
+		// max-heap: stored priority is -dist[u]; un-negate to compare.
+		if -top.Priority > dist[u] {
+			continue // stale
 		}
-
-		for head, weight := range connected.Edges[pivot] {
-			if seen.Has(head) {
-				continue
-			}
-			cost := costFunc(weight)
-
-			heap.Push(&q, &pq.Item[*edge, float32]{
-				Value: &edge{
-					tail:   pivot,
-					head:   head,
-					weight: weight,
-				},
-				Priority: position - cost,
-			})
-		}
-
-		var pickedUp *pq.Item[*edge, float32]
-		for {
-			if q.Len() == 0 {
-				break
-			}
-			pickedUp = heap.Pop(&q).(*pq.Item[*edge, float32])
-			if _, ok := spt.Vertices[pickedUp.Value.head]; !ok {
-				break
+		for v, w := range g.Edges[u] {
+			alt := dist[u] + costFunc(w)
+			if d, ok := dist[v]; !ok || alt < d {
+				dist[v] = alt
+				prev[v] = u
+				heap.Push(&q, &pq.Item[S, float32]{Value: v, Priority: -alt})
 			}
 		}
-		if pickedUp == nil {
-			break
-		}
-		spt.PutVertex(pickedUp.Value.head, connected.Vertices[pickedUp.Value.head])
-		spt.PutEdge(pickedUp.Value.tail, pickedUp.Value.head, pickedUp.Value.weight)
-
-		seen.Add(pivot)
-		pivot = pickedUp.Value.head
-		position = pickedUp.Priority
 	}
 
+	spt := NewGraph[S, T]()
+	spt.PutVertex(seed, g.Vertices[seed])
+	for v, u := range prev {
+		spt.PutVertex(v, g.Vertices[v])
+		spt.PutEdge(u, v, g.Edges[u][v])
+	}
 	return spt, nil
 }
 

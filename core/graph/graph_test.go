@@ -224,6 +224,45 @@ func TestGraph_ShortestPathTree(t *testing.T) {
 	}
 }
 
+func TestGraph_ShortestPathTree_IndirectCheaper(t *testing.T) {
+	// 4-vertex graph where the indirect path strictly beats the direct edge,
+	// and the indirect path is discovered AFTER the direct edge has already
+	// been pushed onto the priority queue. Exercises Dijkstra's relaxation
+	// step: dist[b] must be updated from 10 (a->b) to 3 (a->c->d->b), and
+	// the reconstructed predecessor of b must be d, not a.
+	g := NewGraph[string, int]()
+	g.PutEdge("a", "b", 10)
+	g.PutEdge("a", "c", 1)
+	g.PutEdge("c", "d", 1)
+	g.PutEdge("d", "b", 1)
+
+	spt := g.ShortestPathTree("a", func(w float32) float32 { return w })
+
+	if len(spt.Vertices) != 4 {
+		t.Errorf("SPT vertices = %d, want 4 (vertices=%v)", len(spt.Vertices), spt.Vertices)
+	}
+	if _, ok := spt.Edges["a"]["b"]; ok {
+		t.Errorf("SPT should NOT contain direct a->b edge (relaxation failed), got %v", spt.Edges)
+	}
+	if _, ok := spt.Edges["d"]["b"]; !ok {
+		t.Errorf("SPT should contain d->b edge as b's shortest predecessor, got %v", spt.Edges)
+	}
+	if _, ok := spt.Edges["a"]["c"]; !ok {
+		t.Errorf("SPT should contain a->c edge, got %v", spt.Edges)
+	}
+	if _, ok := spt.Edges["c"]["d"]; !ok {
+		t.Errorf("SPT should contain c->d edge, got %v", spt.Edges)
+	}
+	// Resulting tree has exactly 3 directed edges for 4 vertices.
+	totalEdges := 0
+	for _, m := range spt.Edges {
+		totalEdges += len(m)
+	}
+	if totalEdges != 3 {
+		t.Errorf("SPT total edges = %d, want 3 (edges=%v)", totalEdges, spt.Edges)
+	}
+}
+
 func TestGraph_Render(t *testing.T) {
 	g := NewGraph[string, int]()
 	g.PutVertex("a", 1)
