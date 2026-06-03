@@ -20,6 +20,7 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	LanternReplicationService_Subscribe_FullMethodName = "/graph.v1.LanternReplicationService/Subscribe"
+	LanternReplicationService_Snapshot_FullMethodName  = "/graph.v1.LanternReplicationService/Snapshot"
 )
 
 // LanternReplicationServiceClient is the client API for LanternReplicationService service.
@@ -51,6 +52,19 @@ type LanternReplicationServiceClient interface {
 	//
 	// No HTTP gateway annotation: replication is intentionally gRPC-only.
 	Subscribe(ctx context.Context, in *SubscribeRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SubscribeResponse], error)
+	// Snapshot streams a point-in-time, causally-consistent dump of every
+	// live vertex and edge to a bootstrapping peer. The first frame is a
+	// SnapshotHeader carrying the (cutoff_seq, cutoff_hlc) the server used
+	// to materialise the snapshot; the last frame is a SnapshotFooter with
+	// the actual vertex / edge counts streamed.
+	//
+	// Bootstrap stitch contract: after receiving the SnapshotFooter the
+	// peer MUST call `Subscribe(from_seq = cutoff_seq + 1)` on the same
+	// origin to pick up the live tail. Without that the snapshot and the
+	// live stream cannot be glued together without gap or overlap.
+	//
+	// No HTTP gateway annotation (parity with Subscribe).
+	Snapshot(ctx context.Context, in *SnapshotRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SnapshotEntry], error)
 }
 
 type lanternReplicationServiceClient struct {
@@ -79,6 +93,25 @@ func (c *lanternReplicationServiceClient) Subscribe(ctx context.Context, in *Sub
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type LanternReplicationService_SubscribeClient = grpc.ServerStreamingClient[SubscribeResponse]
+
+func (c *lanternReplicationServiceClient) Snapshot(ctx context.Context, in *SnapshotRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SnapshotEntry], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &LanternReplicationService_ServiceDesc.Streams[1], LanternReplicationService_Snapshot_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[SnapshotRequest, SnapshotEntry]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type LanternReplicationService_SnapshotClient = grpc.ServerStreamingClient[SnapshotEntry]
 
 // LanternReplicationServiceServer is the server API for LanternReplicationService service.
 // All implementations should embed UnimplementedLanternReplicationServiceServer
@@ -109,6 +142,19 @@ type LanternReplicationServiceServer interface {
 	//
 	// No HTTP gateway annotation: replication is intentionally gRPC-only.
 	Subscribe(*SubscribeRequest, grpc.ServerStreamingServer[SubscribeResponse]) error
+	// Snapshot streams a point-in-time, causally-consistent dump of every
+	// live vertex and edge to a bootstrapping peer. The first frame is a
+	// SnapshotHeader carrying the (cutoff_seq, cutoff_hlc) the server used
+	// to materialise the snapshot; the last frame is a SnapshotFooter with
+	// the actual vertex / edge counts streamed.
+	//
+	// Bootstrap stitch contract: after receiving the SnapshotFooter the
+	// peer MUST call `Subscribe(from_seq = cutoff_seq + 1)` on the same
+	// origin to pick up the live tail. Without that the snapshot and the
+	// live stream cannot be glued together without gap or overlap.
+	//
+	// No HTTP gateway annotation (parity with Subscribe).
+	Snapshot(*SnapshotRequest, grpc.ServerStreamingServer[SnapshotEntry]) error
 }
 
 // UnimplementedLanternReplicationServiceServer should be embedded to have
@@ -120,6 +166,9 @@ type UnimplementedLanternReplicationServiceServer struct{}
 
 func (UnimplementedLanternReplicationServiceServer) Subscribe(*SubscribeRequest, grpc.ServerStreamingServer[SubscribeResponse]) error {
 	return status.Error(codes.Unimplemented, "method Subscribe not implemented")
+}
+func (UnimplementedLanternReplicationServiceServer) Snapshot(*SnapshotRequest, grpc.ServerStreamingServer[SnapshotEntry]) error {
+	return status.Error(codes.Unimplemented, "method Snapshot not implemented")
 }
 func (UnimplementedLanternReplicationServiceServer) testEmbeddedByValue() {}
 
@@ -152,6 +201,17 @@ func _LanternReplicationService_Subscribe_Handler(srv interface{}, stream grpc.S
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type LanternReplicationService_SubscribeServer = grpc.ServerStreamingServer[SubscribeResponse]
 
+func _LanternReplicationService_Snapshot_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(SnapshotRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(LanternReplicationServiceServer).Snapshot(m, &grpc.GenericServerStream[SnapshotRequest, SnapshotEntry]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type LanternReplicationService_SnapshotServer = grpc.ServerStreamingServer[SnapshotEntry]
+
 // LanternReplicationService_ServiceDesc is the grpc.ServiceDesc for LanternReplicationService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -163,6 +223,11 @@ var LanternReplicationService_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "Subscribe",
 			Handler:       _LanternReplicationService_Subscribe_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "Snapshot",
+			Handler:       _LanternReplicationService_Snapshot_Handler,
 			ServerStreams: true,
 		},
 	},

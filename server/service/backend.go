@@ -87,4 +87,13 @@ type Backend interface {
 
 	// background GC loop driven by LanternServer.
 	Watch(ctx context.Context, interval time.Duration)
+
+	// Snapshot* return materialised dumps of the live state for the
+	// replication bootstrap RPC (#184). Both calls are taken under the
+	// GraphCache write lock and are intended to be called once per
+	// bootstrapping peer (not on the hot path). The returned slices own
+	// their backing storage and are safe to iterate without further
+	// locking.
+	SnapshotVertices() []graph.SnapshotVertex[string, *pb.Vertex]
+	SnapshotEdges() []graph.SnapshotEdge[string]
 }

@@ -271,6 +271,34 @@ func (f *fakeBackend) DeleteByPrefixHLC(ctx context.Context, prefix string, limi
 	return f.DeleteByPrefix(ctx, prefix, lim), nil
 }
 
+// Snapshot* implement the bootstrap surface (#184). The fake backend
+// returns the in-memory vertex/edge maps as flat slices with zero HLC
+// stamps and a single zero-ContribID contribution per edge — enough for
+// service-level wiring tests; convergence tests use the real backend.
+func (f *fakeBackend) SnapshotVertices() []graph.SnapshotVertex[string, *pb.Vertex] {
+	out := make([]graph.SnapshotVertex[string, *pb.Vertex], 0, len(f.vertices))
+	for k, v := range f.vertices {
+		out = append(out, graph.SnapshotVertex[string, *pb.Vertex]{Key: k, Value: v})
+	}
+	return out
+}
+
+func (f *fakeBackend) SnapshotEdges() []graph.SnapshotEdge[string] {
+	var out []graph.SnapshotEdge[string]
+	for tail, heads := range f.edges {
+		for head, w := range heads {
+			out = append(out, graph.SnapshotEdge[string]{
+				Tail: tail,
+				Head: head,
+				Contributions: []graph.SnapshotContribution{{
+					Weight: w,
+				}},
+			})
+		}
+	}
+	return out
+}
+
 func TestLanternService_FakeBackend_PutGetDelete(t *testing.T) {
 	fb := newFakeBackend()
 	svc := NewLanternService(fb)

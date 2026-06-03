@@ -301,21 +301,70 @@ Handler implementation notes (issue #180):
 ### 8.3 Snapshot (server streaming)
 
 ```proto
-rpc Snapshot(SnapshotRequest) returns (stream SnapshotChunk);
+rpc Snapshot(SnapshotRequest) returns (stream SnapshotEntry);
 
-message SnapshotChunk {
-  oneof chunk {
-    Vertex vertex = 1;
-    EdgeContribution edge = 2;
-    Tombstone tombstone = 3;
-    Cutoff cutoff = 4;     // terminal frame: { last_seq, last_hlc }
+message SnapshotEntry {
+  oneof entry {
+    SnapshotHeader header = 1;   // first frame: cutoff_seq + cutoff_hlc
+    SnapshotVertex vertex = 2;   // body: live vertex with stored HLC
+    SnapshotEdge   edge   = 3;   // body: edge with per-contribution payloads
+    SnapshotFooter footer = 4;   // last frame: streamed vertex/edge counts
   }
+}
+
+message SnapshotHeader {
+  uint64 cutoff_seq = 1;
+  HLCTimestamp cutoff_hlc = 2;
+}
+
+message SnapshotEdge {
+  string tail = 1;
+  string head = 2;
+  HLCTimestamp hlc = 3;
+  repeated SnapshotEdgeContribution contributions = 4;
+}
+
+message SnapshotEdgeContribution {
+  float weight = 1;
+  google.protobuf.Timestamp expiration = 2;
+  bytes contrib_id = 3;   // 24-byte ContribID; empty = local-only
 }
 ```
 
-The terminal `Cutoff` frame tells the consumer the exact `(seq, hlc)` to
-resume `Subscribe` from. Without it, the consumer cannot stitch the snapshot
-stream and the live tail without either missing or double-applying mutations.
+Framing contract:
+
+- The **header** is always the first frame. `cutoff_seq` is the primary's
+  `mutationlog.LastSeq()` at snapshot-open time (0 when the log is empty
+  — the peer Subscribes from seq 1). `cutoff_hlc` is the primary's
+  `clock.Now()` at snapshot-open time. The consumer Subscribes at
+  `cutoff_seq + 1` to stitch the snapshot and the live tail.
+- The **footer** is always the last frame. It reports the actually
+  streamed vertex and edge counts so consumers can detect truncation
+  without parsing a sentinel-typed body frame.
+- The snapshot deliberately preserves **per-contribution decomposition**:
+  each `SnapshotEdge` carries its full list of live `SnapshotEdgeContribution`
+  rows rather than a pre-summed weight. The consumer replays each
+  contribution via `AddEdgeWithExpirationContribHLC`, and the receiver's
+  `ContribID` dedup makes the snapshot-then-Subscribe-tail handoff
+  idempotent: any contribution that also appears in the replayed tail is
+  detected and dropped at apply time.
+
+Implementation notes:
+
+- The handler is `LanternReplicationService.Snapshot` in
+  `server/service/replication.go`. It holds references to the same
+  `Backend` and `*hlc.Clock` the write path uses; both are wired in
+  `server/cmd/wire.go`. `Snapshot` materialises vertices and edges via
+  `Backend.SnapshotVertices()` / `Backend.SnapshotEdges()` (which lock
+  the GraphCache once each) and streams them frame-by-frame, honouring
+  `stream.Context()` cancellation between sends.
+- v1 materialises the full snapshot in memory. Bootstrap is a bounded,
+  one-peer-at-a-time operation, so the O(N+E) overhead is acceptable.
+  Cursor-based / chunked snapshotting is a follow-up once the bootstrap
+  path is exercised at scale (tracked alongside #190).
+- Tombstones are NOT carried as standalone frames. The cache snapshot
+  returns only live state; the receiver re-derives tombstones from the
+  Subscribe tail beginning at `cutoff_seq + 1`.
 
 ## 9. Bootstrap flow
 
@@ -326,11 +375,12 @@ new pod boots
   │
   ├── for each peer P (in parallel; first to respond wins):
   │     stream = P.Snapshot(SnapshotRequest{})
-  │     apply chunks → local cache
-  │     cutoff = stream.Cutoff
+  │     header  = stream.Recv()      // {cutoff_seq, cutoff_hlc}
+  │     apply  body frames → local cache
+  │     footer = last frame          // assert counts match
   │
   ├── for each peer P:
-  │     go pump(P, from_seq = cutoff.seq + 1)
+  │     go pump(P, from_seq = header.cutoff_seq + 1)
   │
   └── /healthz/ready flips SERVING when:
         - lag(P) < LANTERN_MAX_REPLICATION_LAG for all peers, OR

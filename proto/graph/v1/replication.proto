@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package graph.v1;
 
+import "google/protobuf/timestamp.proto";
 import "graph/v1/graph.proto";
 
 // HLCTimestamp is the wire form of core/hlc.Timestamp. All replicated
@@ -76,6 +77,83 @@ message SubscribeResponse {
   Mutation mutation = 1;
 }
 
+// SnapshotRequest opens a server-streaming snapshot of the entire live
+// graph state at a single causal cutoff. The request body is intentionally
+// empty in this phase (#184); future revisions may add prefix / shard
+// filters without breaking the wire contract.
+message SnapshotRequest {}
+
+// SnapshotHeader is always the FIRST SnapshotEntry on the wire. It freezes
+// the (seq, hlc) cutoff the server used to materialise the snapshot. A
+// bootstrapping peer MUST persist (cutoff_seq, cutoff_hlc) before applying
+// any payload entries and MUST resume `Subscribe` from cutoff_seq + 1 so
+// the snapshot and the live tail stitch without gap or overlap.
+message SnapshotHeader {
+  uint64 cutoff_seq = 1;
+  HLCTimestamp cutoff_hlc = 2;
+}
+
+// SnapshotFooter is always the LAST SnapshotEntry on the wire. It carries
+// the running counts the server actually streamed so receivers can detect
+// truncation (channel-close, send-error mid-stream) without re-walking
+// their freshly-imported state.
+message SnapshotFooter {
+  uint64 vertex_count = 1;
+  uint64 edge_count = 2;
+}
+
+// SnapshotVertex is the snapshot-time representation of a single live
+// vertex. The HLC field carries the last LWW timestamp the source node
+// recorded for the key (zero when the vertex has never been touched by a
+// replicated Put, i.e. local-only writes); receivers feed it back through
+// PutVertexWithExpirationHLC so subsequent older replays (#182) are
+// correctly rejected.
+message SnapshotVertex {
+  Vertex vertex = 1;
+  HLCTimestamp hlc = 2;
+}
+
+// SnapshotEdgeContribution is one additive (or LWW-imported) entry inside
+// an edge's weight bucket. Snapshot preserves the per-contribution
+// decomposition so that the receiver's ContribID dedup (#182) keeps
+// suppressing duplicates when peer-pump later re-delivers the same
+// contribution from the live tail.
+//
+//   contrib_id: 24-byte ContribID; empty/zero when the contribution
+//               originated from a local non-replicated AddEdge and dedup
+//               is disabled (the legacy zero-id semantics).
+message SnapshotEdgeContribution {
+  float weight = 1;
+  google.protobuf.Timestamp expiration = 2;
+  bytes contrib_id = 3;
+}
+
+// SnapshotEdge is the snapshot-time representation of a single live edge.
+// `hlc` carries the bucket's lastHLC (the most recent Put-LWW position;
+// zero when no LWW write has happened) so receivers can apply each
+// contribution via AddEdgeWithExpirationContribHLC with the right LWW
+// floor, keeping ContribID dedup intact.
+message SnapshotEdge {
+  string tail = 1;
+  string head = 2;
+  HLCTimestamp hlc = 3;
+  repeated SnapshotEdgeContribution contributions = 4;
+}
+
+// SnapshotEntry is the union type streamed from `rpc Snapshot`. The frame
+// order is always: exactly one SnapshotHeader, then zero or more
+// SnapshotVertex frames, then zero or more SnapshotEdge frames, then
+// exactly one SnapshotFooter. Receivers SHOULD treat any other order as a
+// protocol violation.
+message SnapshotEntry {
+  oneof entry {
+    SnapshotHeader header = 1;
+    SnapshotVertex vertex = 2;
+    SnapshotEdge edge = 3;
+    SnapshotFooter footer = 4;
+  }
+}
+
 // LanternReplicationService carries the peer-to-peer (and CDC) replication
 // surface. It is intentionally a separate service from LanternService so
 // that operators can route, throttle, secure, or even disable replication
@@ -101,4 +179,18 @@ service LanternReplicationService {
   //
   // No HTTP gateway annotation: replication is intentionally gRPC-only.
   rpc Subscribe(SubscribeRequest) returns (stream SubscribeResponse);
+
+  // Snapshot streams a point-in-time, causally-consistent dump of every
+  // live vertex and edge to a bootstrapping peer. The first frame is a
+  // SnapshotHeader carrying the (cutoff_seq, cutoff_hlc) the server used
+  // to materialise the snapshot; the last frame is a SnapshotFooter with
+  // the actual vertex / edge counts streamed.
+  //
+  // Bootstrap stitch contract: after receiving the SnapshotFooter the
+  // peer MUST call `Subscribe(from_seq = cutoff_seq + 1)` on the same
+  // origin to pick up the live tail. Without that the snapshot and the
+  // live stream cannot be glued together without gap or overlap.
+  //
+  // No HTTP gateway annotation (parity with Subscribe).
+  rpc Snapshot(SnapshotRequest) returns (stream SnapshotEntry);
 }

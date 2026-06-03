@@ -193,6 +193,33 @@ func hlcFromProto(p *pb.HLCTimestamp) hlc.Timestamp {
 	}
 }
 
+// hlcToProto is the inverse of hlcFromProto and is used by the snapshot
+// path (#184) to stamp the cutoff HLC and per-entry HLCs onto the wire.
+// A zero in-process Timestamp returns nil so wire payloads stay compact
+// for entries with no recorded HLC (local-only writes).
+func hlcToProto(ts hlc.Timestamp) *pb.HLCTimestamp {
+	var zero hlc.Timestamp
+	if ts == zero {
+		return nil
+	}
+	return &pb.HLCTimestamp{
+		WallNs:  ts.WallNs,
+		Logical: ts.Logical,
+		NodeId:  append([]byte(nil), ts.NodeID[:]...),
+	}
+}
+
+// contribIDBytes returns the wire encoding of a ContribID. A zero ContribID
+// (the local-only / non-replicated sentinel) is encoded as a nil slice so
+// receivers can recognise it explicitly and skip dedup.
+func contribIDBytes(c graph.ContribID) []byte {
+	var zero graph.ContribID
+	if c == zero {
+		return nil
+	}
+	return append([]byte(nil), c[:]...)
+}
+
 // contribIDFor builds the dedup identifier for an additive contribution.
 // The 24-byte ContribID layout is documented on graph.ContribID:
 //

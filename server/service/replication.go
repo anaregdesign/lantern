@@ -4,11 +4,13 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // ReplicationServiceName is the fully-qualified gRPC service name for the
@@ -42,15 +44,25 @@ func (nopSubscribeMetrics) OnSubscribeDropped(string) {}
 type LanternReplicationService struct {
 	pb.UnimplementedLanternReplicationServiceServer
 	log     *mutationlog.Log
+	backend Backend
+	clock   *hlc.Clock
 	metrics SubscribeMetrics
 	logger  *slog.Logger
 }
 
 // NewLanternReplicationService constructs the service. log MUST be the same
 // instance handed to LanternService.WithReplication; otherwise subscribers
-// will not see locally-originated mutations.
-func NewLanternReplicationService(log *mutationlog.Log) *LanternReplicationService {
-	return &LanternReplicationService{log: log, metrics: nopSubscribeMetrics{}}
+// will not see locally-originated mutations. backend is the graph cache
+// the Snapshot RPC walks; clock supplies the cutoff HLC stamped into the
+// snapshot header. Both must be non-nil — Snapshot returns Unavailable
+// when backend is unset, mirroring how Subscribe handles a nil log.
+func NewLanternReplicationService(log *mutationlog.Log, backend Backend, clock *hlc.Clock) *LanternReplicationService {
+	return &LanternReplicationService{
+		log:     log,
+		backend: backend,
+		clock:   clock,
+		metrics: nopSubscribeMetrics{},
+	}
 }
 
 // WithMetrics attaches a SubscribeMetrics handle. Nil is treated as the
@@ -151,4 +163,113 @@ func (s *LanternReplicationService) loggerOrDefault() *slog.Logger {
 		return s.logger
 	}
 	return slog.Default()
+}
+
+// Snapshot implements pb.LanternReplicationServiceServer.
+//
+// Flow:
+//  1. Stamp the cutoff (cutoff_seq, cutoff_hlc) and send a SnapshotHeader
+//     as the very first frame so receivers know where to resume Subscribe.
+//     cutoff_seq is `log.LastSeq()` at snapshot-open time (0 when the log
+//     is empty or replication is disabled — the peer is expected to start
+//     Subscribe at cutoff_seq + 1 = 1, which matches the mutation log's
+//     first valid seq); cutoff_hlc is `clock.Now()`.
+//  2. Materialise vertices and edges through the Backend snapshot API
+//     (taken under the GraphCache write lock). Stream each as its own
+//     SnapshotEntry frame, honouring stream.Context() cancellation
+//     between sends.
+//  3. Send a SnapshotFooter with the actually-streamed counts as the very
+//     last frame so receivers can detect truncation.
+//
+// The implementation deliberately materialises the snapshot in memory.
+// Replication bootstrap is bounded (one peer per call, infrequent), so
+// the O(N+E) memory overhead is acceptable. True streaming is a follow-up
+// once the snapshot path is wired end-to-end.
+func (s *LanternReplicationService) Snapshot(_ *pb.SnapshotRequest, stream grpc.ServerStreamingServer[pb.SnapshotEntry]) error {
+	if s.backend == nil {
+		return status.Error(codes.Unavailable, "snapshot is not enabled on this server")
+	}
+	ctx := stream.Context()
+
+	var cutoffSeq uint64
+	if s.log != nil {
+		if last, ok := s.log.LastSeq(); ok {
+			cutoffSeq = last
+		}
+	}
+	var cutoffHLC hlc.Timestamp
+	if s.clock != nil {
+		cutoffHLC = s.clock.Now()
+	}
+	header := &pb.SnapshotEntry{
+		Entry: &pb.SnapshotEntry_Header{
+			Header: &pb.SnapshotHeader{
+				CutoffSeq: cutoffSeq,
+				CutoffHlc: hlcToProto(cutoffHLC),
+			},
+		},
+	}
+	if err := stream.Send(header); err != nil {
+		return err
+	}
+
+	vertices := s.backend.SnapshotVertices()
+	var vertexCount uint64
+	for _, v := range vertices {
+		if err := ctx.Err(); err != nil {
+			return status.FromContextError(err).Err()
+		}
+		entry := &pb.SnapshotEntry{
+			Entry: &pb.SnapshotEntry_Vertex{
+				Vertex: &pb.SnapshotVertex{
+					Vertex: v.Value,
+					Hlc:    hlcToProto(v.HLC),
+				},
+			},
+		}
+		if err := stream.Send(entry); err != nil {
+			return err
+		}
+		vertexCount++
+	}
+
+	edges := s.backend.SnapshotEdges()
+	var edgeCount uint64
+	for _, e := range edges {
+		if err := ctx.Err(); err != nil {
+			return status.FromContextError(err).Err()
+		}
+		contribs := make([]*pb.SnapshotEdgeContribution, 0, len(e.Contributions))
+		for _, c := range e.Contributions {
+			contribs = append(contribs, &pb.SnapshotEdgeContribution{
+				Weight:     c.Weight,
+				Expiration: timestamppb.New(c.Expiration),
+				ContribId:  contribIDBytes(c.ContribID),
+			})
+		}
+		entry := &pb.SnapshotEntry{
+			Entry: &pb.SnapshotEntry_Edge{
+				Edge: &pb.SnapshotEdge{
+					Tail:          e.Tail,
+					Head:          e.Head,
+					Hlc:           hlcToProto(e.HLC),
+					Contributions: contribs,
+				},
+			},
+		}
+		if err := stream.Send(entry); err != nil {
+			return err
+		}
+		edgeCount++
+	}
+
+	footer := &pb.SnapshotEntry{
+		Entry: &pb.SnapshotEntry_Footer{
+			Footer: &pb.SnapshotFooter{
+				VertexCount: vertexCount,
+				EdgeCount:   edgeCount,
+			},
+		},
+	}
+	return stream.Send(footer)
 }

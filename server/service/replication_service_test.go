@@ -41,7 +41,7 @@ func newReplicationServer(t *testing.T, log *mutationlog.Log, m service.Subscrib
 	t.Helper()
 	lis := bufconn.Listen(1 << 16)
 	srv := grpc.NewServer()
-	repl := service.NewLanternReplicationService(log).WithMetrics(m)
+	repl := service.NewLanternReplicationService(log, nil, nil).WithMetrics(m)
 	pb.RegisterLanternReplicationServiceServer(srv, repl)
 	go func() { _ = srv.Serve(lis) }()
 
