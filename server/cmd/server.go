@@ -12,6 +12,7 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 	"github.com/anaregdesign/lantern/server/provider"
+	"github.com/anaregdesign/lantern/server/replication"
 	"github.com/anaregdesign/lantern/server/service"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
@@ -29,6 +30,7 @@ type App struct {
 	tracing *provider.Tracing
 	domain  *domainmetrics.DomainMetrics
 	health  *health.Server
+	pump    *replication.Pump
 }
 
 func newApp(
@@ -39,6 +41,7 @@ func newApp(
 	tracing *provider.Tracing,
 	domain *domainmetrics.DomainMetrics,
 	hs *health.Server,
+	pump *replication.Pump,
 	_ registeredHealth,
 ) *App {
 	return &App{
@@ -49,6 +52,7 @@ func newApp(
 		tracing: tracing,
 		domain:  domain,
 		health:  hs,
+		pump:    pump,
 	}
 }
 
@@ -111,6 +115,7 @@ func (a *App) Run(ctx context.Context) error {
 	g.Go(func() error { return a.grpc.Run(gctx) })
 	g.Go(func() error { return a.metrics.Run(gctx) })
 	g.Go(func() error { a.domain.Run(gctx); return nil })
+	g.Go(func() error { return a.pump.Run(gctx) })
 	g.Go(func() error {
 		<-gctx.Done()
 		a.health.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)

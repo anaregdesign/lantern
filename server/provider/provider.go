@@ -132,6 +132,7 @@ type Config struct {
 	Scan          ScanConfig
 	MutationLog   MutationLogConfig
 	Replication   ReplicationConfig
+	Peer          PeerConfig
 }
 
 func NewConfig() *Config {
@@ -185,6 +186,7 @@ func NewConfig() *Config {
 		},
 		MutationLog: loadMutationLogConfig(),
 		Replication: loadReplicationConfig(),
+		Peer:        loadPeerConfig(),
 	}
 }
 
