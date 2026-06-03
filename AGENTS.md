@@ -67,10 +67,18 @@ CI: [.github/workflows/go.yml](.github/workflows/go.yml) runs `go build` + `go t
      test the code in `xxx.go`. Mirrors the Go standard library
      (`net/http/server.go` ↔ `server_test.go`, `transport.go` ↔
      `transport_test.go`, …).
-  2. **No suffix-qualified test files for the same source.** Splits like
-     `edge_test.go` + `edge_contrib_test.go` + `put_edge_atomic_test.go`
-     are forbidden. Use sub-test grouping (`t.Run("Contrib", …)`,
-     `t.Run("Atomic", …)`) inside the single `xxx_test.go`.
+  2. **No suffix-qualified test files for the same source in the same
+     package.** Splits like `edge_test.go` + `edge_contrib_test.go` +
+     `put_edge_atomic_test.go` (all package `xxx`) are forbidden. Use
+     sub-test grouping (`t.Run("Contrib", …)`, `t.Run("Atomic", …)`)
+     inside the single `xxx_test.go`.
+     **Carveout for black-box tests.** When the same source `xxx.go` needs
+     both white-box and black-box coverage, Go forces them into separate
+     files because the package differs. Use exactly this pair:
+     `xxx_test.go` (package `xxx`, white-box) **and**
+     `xxx_external_test.go` (package `xxx_test`, black-box). No other
+     suffix permitted; do not split black-box tests across multiple
+     `xxx_<flavor>_test.go` files.
   3. **Type-driven source splits.** A type's methods may live in multiple
      `*.go` files when the file would otherwise exceed ~600 LOC, but each
      split file must (a) own a coherent sub-feature
