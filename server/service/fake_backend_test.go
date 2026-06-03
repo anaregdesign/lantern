@@ -174,6 +174,42 @@ func (f *fakeBackend) DeleteByPrefix(_ context.Context, prefix string, limit int
 	return len(victims)
 }
 
+func (f *fakeBackend) ScanEdgesByPrefix(_ context.Context, tailPrefix, headPrefix string,
+	fn func(string, string, string, string, float32, time.Time) bool,
+) bool {
+	tails := make([]string, 0, len(f.edges))
+	for t := range f.edges {
+		if tailPrefix == "" || (len(t) >= len(tailPrefix) && t[:len(tailPrefix)] == tailPrefix) {
+			tails = append(tails, t)
+		}
+	}
+	for i := 1; i < len(tails); i++ {
+		for j := i; j > 0 && tails[j-1] > tails[j]; j-- {
+			tails[j-1], tails[j] = tails[j], tails[j-1]
+		}
+	}
+	for _, t := range tails {
+		row := f.edges[t]
+		heads := make([]string, 0, len(row))
+		for h := range row {
+			if headPrefix == "" || (len(h) >= len(headPrefix) && h[:len(headPrefix)] == headPrefix) {
+				heads = append(heads, h)
+			}
+		}
+		for i := 1; i < len(heads); i++ {
+			for j := i; j > 0 && heads[j-1] > heads[j]; j-- {
+				heads[j-1], heads[j] = heads[j], heads[j-1]
+			}
+		}
+		for _, h := range heads {
+			if !fn(t, t, h, h, row[h], time.Time{}) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // Compile-time check that fakeBackend really satisfies Backend.
 var _ Backend = (*fakeBackend)(nil)
 

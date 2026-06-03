@@ -37,6 +37,7 @@ const (
 	LanternService_PutEdges_FullMethodName               = "/graph.v1.LanternService/PutEdges"
 	LanternService_DeleteEdge_FullMethodName             = "/graph.v1.LanternService/DeleteEdge"
 	LanternService_DeleteEdges_FullMethodName            = "/graph.v1.LanternService/DeleteEdges"
+	LanternService_ScanEdges_FullMethodName              = "/graph.v1.LanternService/ScanEdges"
 )
 
 // LanternServiceClient is the client API for LanternService service.
@@ -78,6 +79,10 @@ type LanternServiceClient interface {
 	DeleteEdge(ctx context.Context, in *DeleteEdgeRequest, opts ...grpc.CallOption) (*DeleteEdgeResponse, error)
 	// DeleteEdges removes several edges in one round trip.
 	DeleteEdges(ctx context.Context, in *DeleteEdgesRequest, opts ...grpc.CallOption) (*DeleteEdgesResponse, error)
+	// ScanEdges streams edges whose tail key starts with `tail_prefix` AND
+	// whose head key starts with `head_prefix`, in ascending (tail, head)
+	// order, page by page. Plural-only — prefix scan is inherently plural.
+	ScanEdges(ctx context.Context, in *ScanEdgesRequest, opts ...grpc.CallOption) (*ScanEdgesResponse, error)
 }
 
 type lanternServiceClient struct {
@@ -268,6 +273,16 @@ func (c *lanternServiceClient) DeleteEdges(ctx context.Context, in *DeleteEdgesR
 	return out, nil
 }
 
+func (c *lanternServiceClient) ScanEdges(ctx context.Context, in *ScanEdgesRequest, opts ...grpc.CallOption) (*ScanEdgesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ScanEdgesResponse)
+	err := c.cc.Invoke(ctx, LanternService_ScanEdges_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // LanternServiceServer is the server API for LanternService service.
 // All implementations should embed UnimplementedLanternServiceServer
 // for forward compatibility.
@@ -307,6 +322,10 @@ type LanternServiceServer interface {
 	DeleteEdge(context.Context, *DeleteEdgeRequest) (*DeleteEdgeResponse, error)
 	// DeleteEdges removes several edges in one round trip.
 	DeleteEdges(context.Context, *DeleteEdgesRequest) (*DeleteEdgesResponse, error)
+	// ScanEdges streams edges whose tail key starts with `tail_prefix` AND
+	// whose head key starts with `head_prefix`, in ascending (tail, head)
+	// order, page by page. Plural-only — prefix scan is inherently plural.
+	ScanEdges(context.Context, *ScanEdgesRequest) (*ScanEdgesResponse, error)
 }
 
 // UnimplementedLanternServiceServer should be embedded to have
@@ -369,6 +388,9 @@ func (UnimplementedLanternServiceServer) DeleteEdge(context.Context, *DeleteEdge
 }
 func (UnimplementedLanternServiceServer) DeleteEdges(context.Context, *DeleteEdgesRequest) (*DeleteEdgesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteEdges not implemented")
+}
+func (UnimplementedLanternServiceServer) ScanEdges(context.Context, *ScanEdgesRequest) (*ScanEdgesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ScanEdges not implemented")
 }
 func (UnimplementedLanternServiceServer) testEmbeddedByValue() {}
 
@@ -714,6 +736,24 @@ func _LanternService_DeleteEdges_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LanternService_ScanEdges_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ScanEdgesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LanternServiceServer).ScanEdges(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LanternService_ScanEdges_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LanternServiceServer).ScanEdges(ctx, req.(*ScanEdgesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // LanternService_ServiceDesc is the grpc.ServiceDesc for LanternService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -792,6 +832,10 @@ var LanternService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteEdges",
 			Handler:    _LanternService_DeleteEdges_Handler,
+		},
+		{
+			MethodName: "ScanEdges",
+			Handler:    _LanternService_ScanEdges_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

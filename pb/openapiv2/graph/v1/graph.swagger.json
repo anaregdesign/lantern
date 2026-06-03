@@ -152,6 +152,40 @@
         ]
       }
     },
+    "/v1/edges/scan": {
+      "post": {
+        "summary": "ScanEdges streams edges whose tail key starts with `tail_prefix` AND\nwhose head key starts with `head_prefix`, in ascending (tail, head)\norder, page by page. Plural-only — prefix scan is inherently plural.",
+        "operationId": "LanternService_ScanEdges",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ScanEdgesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "ScanEdgesRequest streams edges whose tail key starts with `tail_prefix`\nAND whose head key starts with `head_prefix`, in ascending (tail, head)\norder. Either prefix may be empty to disable the corresponding filter\n(both empty scans every edge). `limit` caps the number returned in one\ncall; the server enforces a default when `limit == 0` and a hard maximum\n(see ScanConfig on the server). `cursor` MUST be treated as opaque bytes\nby clients — pass back exactly what the previous response returned in\n`next_cursor`. An empty `cursor` starts from the beginning.\n\nImplementation note: v1 walks the tail-side prefix index and applies\n`head_prefix` as a post-filter; for highly selective `head_prefix`\nqueries the server may visit many tails to fill one page. Latency is\nreported in the standard scan histogram so operators can spot\npathological filters.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1ScanEdgesRequest"
+            }
+          }
+        ],
+        "tags": [
+          "LanternService"
+        ]
+      }
+    },
     "/v1/edges/{edge.tail}/{edge.head}": {
       "put": {
         "summary": "PutEdge is idempotent (replaces weight). Thin facade over PutEdges.",
@@ -1124,6 +1158,44 @@
           "type": "integer",
           "format": "int32",
           "description": "Number of vertices accepted by the server. Currently always equals the\nrequest size on success; reserved for future per-item validation that may\nreport partial writes."
+        }
+      }
+    },
+    "v1ScanEdgesRequest": {
+      "type": "object",
+      "properties": {
+        "tailPrefix": {
+          "type": "string"
+        },
+        "headPrefix": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "cursor": {
+          "type": "string",
+          "format": "byte"
+        }
+      },
+      "description": "ScanEdgesRequest streams edges whose tail key starts with `tail_prefix`\nAND whose head key starts with `head_prefix`, in ascending (tail, head)\norder. Either prefix may be empty to disable the corresponding filter\n(both empty scans every edge). `limit` caps the number returned in one\ncall; the server enforces a default when `limit == 0` and a hard maximum\n(see ScanConfig on the server). `cursor` MUST be treated as opaque bytes\nby clients — pass back exactly what the previous response returned in\n`next_cursor`. An empty `cursor` starts from the beginning.\n\nImplementation note: v1 walks the tail-side prefix index and applies\n`head_prefix` as a post-filter; for highly selective `head_prefix`\nqueries the server may visit many tails to fill one page. Latency is\nreported in the standard scan histogram so operators can spot\npathological filters."
+    },
+    "v1ScanEdgesResponse": {
+      "type": "object",
+      "properties": {
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Edge"
+          },
+          "description": "edges returned in ascending (tail, head) order. May be shorter than\n`limit` when the underlying range is exhausted."
+        },
+        "nextCursor": {
+          "type": "string",
+          "format": "byte",
+          "description": "next_cursor is non-empty when more results are available. An empty\nvalue signals end of stream."
         }
       }
     },
