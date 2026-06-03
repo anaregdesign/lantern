@@ -51,7 +51,9 @@ func initializeApp() (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	peerConfig := provider.NewPeerConfig(config)
+	pump := provider.NewReplicationPump(peerConfig, replicationConfig, lanternService, graphCache, logger)
 	mainRegisteredHealth := registerHealthAndReflection(observabilityConfig, server, healthServer)
-	app := newApp(config, logger, lanternServer, metricsServer, tracing, domainMetrics, healthServer, mainRegisteredHealth)
+	app := newApp(config, logger, lanternServer, metricsServer, tracing, domainMetrics, healthServer, pump, mainRegisteredHealth)
 	return app, nil
 }
