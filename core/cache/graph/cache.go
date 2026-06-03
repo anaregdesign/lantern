@@ -265,13 +265,21 @@ func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int
 	var mu sync.Mutex
 	// targets / seen are accessed only from the main goroutine (between
 	// wg.Wait barriers), so plain maps suffice — no need for the locked
-	// set.Set wrapper. mu still protects concurrent writes to g.Edges.
+	// set.Set wrapper. mu protects concurrent writes to g.Edges and
+	// (when requested) expirations.
 	targets := map[S]struct{}{seed: {}}
 	seen := make(map[S]struct{})
-	// Snapshot edge maps once per Neighbor call. The TF clone is shallow so the
-	// per-edge *weight values remain shared and internally thread-safe.
-	tf := c.edges.snapshotTF()
-	df := c.edges.snapshotDF()
+	// expirations is allocated up front so per-tail goroutines can publish
+	// their surviving heads without an extra coordination pass.
+	var expirations map[S]map[S]time.Time
+	if collectExpirations {
+		expirations = make(map[S]map[S]time.Time)
+	}
+	// We deliberately do NOT clone the entire edge table here: with c.mu
+	// held read-locked, no writer can mutate c.edges.tf, so the per-tail
+	// edgeCache.headsOf / docFreq accessors are safe to call directly.
+	// This turns the per-call cost from O(V+E) (snapshotTF + snapshotDF)
+	// into O(sum of degrees of visited tails).
 	for range step {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
@@ -291,23 +299,51 @@ func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int
 			wg.Add(1)
 			go func(t S) {
 				defer wg.Done()
-				heads := tf[t]
-				if len(heads) == 0 {
+				heads, ok := c.edges.headsOf(t)
+				if !ok || len(heads) == 0 {
 					return
 				}
 				edges := make(pq.SortableMap[S, float32], len(heads))
-				for head, w := range heads {
+				var expRow map[S]time.Time
+				if collectExpirations {
+					expRow = make(map[S]time.Time, len(heads))
+				}
+				for headID, w := range heads {
+					head, ok := c.edges.resolveID(headID)
+					if !ok {
+						continue
+					}
+					sum, latest, nonZero := w.snapshot()
+					if !nonZero {
+						continue
+					}
 					if tfidf {
-						edges[head] = w.value() / float32(math.Log2(float64(1+df[head])))
+						edges[head] = sum / float32(math.Log2(float64(1+c.edges.docFreq(headID))))
 					} else {
-						edges[head] = w.value()
+						edges[head] = sum
+					}
+					if expRow != nil {
+						expRow[head] = latest
 					}
 				}
 
-				// Filter light edges
+				// Filter light edges; trim expirations to the survivors.
 				edges = edges.Top(k)
+				if expRow != nil {
+					filtered := make(map[S]time.Time, len(edges))
+					for head := range edges {
+						if exp, has := expRow[head]; has {
+							filtered[head] = exp
+						}
+					}
+					expRow = filtered
+				}
+
 				mu.Lock()
 				g.Edges[t] = edges
+				if expRow != nil {
+					expirations[t] = expRow
+				}
 				mu.Unlock()
 			}(tail)
 		}
@@ -335,27 +371,6 @@ func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int
 		g.Vertices[tail], _ = c.vertices.Get(tail)
 		for head := range heads {
 			g.Vertices[head], _ = c.vertices.Get(head)
-		}
-	}
-
-	// Collect expirations under the same RLock so the handler can compose
-	// edges without re-locking the cache O(E) times. Only edges that
-	// survived the Top-k filter are queried.
-	var expirations map[S]map[S]time.Time
-	if collectExpirations {
-		expirations = make(map[S]map[S]time.Time, len(g.Edges))
-		for tail, heads := range g.Edges {
-			if len(heads) == 0 {
-				continue
-			}
-			row := make(map[S]time.Time, len(heads))
-			tfRow := tf[tail]
-			for head := range heads {
-				if w, ok := tfRow[head]; ok {
-					row[head] = w.latestExpiration()
-				}
-			}
-			expirations[tail] = row
 		}
 	}
 

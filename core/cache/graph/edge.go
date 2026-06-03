@@ -184,6 +184,40 @@ func (c *edgeCache[S]) getDetail(tail, head S) (float32, time.Time, bool) {
 	return sum, latest, true
 }
 
+// headsOf returns the raw vertexID->*weight head map for `tail` without
+// acquiring the edgeCache lock. The caller must hold the surrounding
+// GraphCache.mu (R or W); under that lock, all edgeCache mutators are
+// serialized so c.tf is stable for the duration of the read. Intended for
+// the Neighbor read path, which only visits a small subset of tails and
+// would otherwise pay the O(V+E) cost of snapshotTF on every call.
+func (c *edgeCache[S]) headsOf(tail S) (map[vertexID]*weight, bool) {
+	if c.dict == nil {
+		return nil, false
+	}
+	tailID, ok := c.dict.lookup(tail)
+	if !ok {
+		return nil, false
+	}
+	heads, ok := c.tf[tailID]
+	return heads, ok
+}
+
+// docFreq returns df[head] without locking the edgeCache. Same lock
+// contract as headsOf: caller must hold the surrounding GraphCache.mu.
+func (c *edgeCache[S]) docFreq(head vertexID) int {
+	return c.df[head]
+}
+
+// resolveID resolves a vertexID back to S without locking the edgeCache.
+// Same lock contract as headsOf.
+func (c *edgeCache[S]) resolveID(id vertexID) (S, bool) {
+	if c.dict == nil {
+		var zero S
+		return zero, false
+	}
+	return c.dict.resolve(id)
+}
+
 // snapshotTF returns a shallow copy of the tail->heads map keyed by S so
 // callers can iterate without holding the edgeCache lock. The inner *weight
 // values are shared and remain individually thread-safe.
