@@ -141,6 +141,9 @@ message DeleteVerticesResponse {
 message ScanVerticesRequest {
   string prefix = 1;
   uint32 limit = 2;
+  // NOTE: opaque to the caller; not interchangeable with cursors from
+  // other Scan* RPCs (e.g. ScanEdges). Cross-feeding is rejected with
+  // INVALID_ARGUMENT rather than silently restarting the scan.
   bytes cursor = 3;
 }
 
@@ -237,6 +240,9 @@ message ScanEdgesRequest {
   string tail_prefix = 1;
   string head_prefix = 2;
   uint32 limit = 3;
+  // NOTE: opaque to the caller; not interchangeable with cursors from
+  // other Scan* RPCs (e.g. ScanVertices). Cross-feeding is rejected with
+  // INVALID_ARGUMENT rather than silently restarting the scan.
   bytes cursor = 4;
 }
 

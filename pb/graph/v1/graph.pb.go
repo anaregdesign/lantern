@@ -1139,10 +1139,13 @@ func (x *DeleteVerticesResponse) GetDeleted() int32 {
 // opaque bytes by clients — pass back exactly what the previous response
 // returned in `next_cursor`. An empty `cursor` starts from the beginning.
 type ScanVerticesRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Prefix        string                 `protobuf:"bytes,1,opt,name=prefix,proto3" json:"prefix,omitempty"`
-	Limit         uint32                 `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`
-	Cursor        []byte                 `protobuf:"bytes,3,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Prefix string                 `protobuf:"bytes,1,opt,name=prefix,proto3" json:"prefix,omitempty"`
+	Limit  uint32                 `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`
+	// NOTE: opaque to the caller; not interchangeable with cursors from
+	// other Scan* RPCs (e.g. ScanEdges). Cross-feeding is rejected with
+	// INVALID_ARGUMENT rather than silently restarting the scan.
+	Cursor        []byte `protobuf:"bytes,3,opt,name=cursor,proto3" json:"cursor,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1817,11 +1820,14 @@ func (x *EdgeKey) GetHead() string {
 // reported in the standard scan histogram so operators can spot
 // pathological filters.
 type ScanEdgesRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TailPrefix    string                 `protobuf:"bytes,1,opt,name=tail_prefix,json=tailPrefix,proto3" json:"tail_prefix,omitempty"`
-	HeadPrefix    string                 `protobuf:"bytes,2,opt,name=head_prefix,json=headPrefix,proto3" json:"head_prefix,omitempty"`
-	Limit         uint32                 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
-	Cursor        []byte                 `protobuf:"bytes,4,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	TailPrefix string                 `protobuf:"bytes,1,opt,name=tail_prefix,json=tailPrefix,proto3" json:"tail_prefix,omitempty"`
+	HeadPrefix string                 `protobuf:"bytes,2,opt,name=head_prefix,json=headPrefix,proto3" json:"head_prefix,omitempty"`
+	Limit      uint32                 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
+	// NOTE: opaque to the caller; not interchangeable with cursors from
+	// other Scan* RPCs (e.g. ScanVertices). Cross-feeding is rejected with
+	// INVALID_ARGUMENT rather than silently restarting the scan.
+	Cursor        []byte `protobuf:"bytes,4,opt,name=cursor,proto3" json:"cursor,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }

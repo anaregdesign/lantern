@@ -1176,7 +1176,8 @@
         },
         "cursor": {
           "type": "string",
-          "format": "byte"
+          "format": "byte",
+          "description": "NOTE: opaque to the caller; not interchangeable with cursors from\nother Scan* RPCs (e.g. ScanVertices). Cross-feeding is rejected with\nINVALID_ARGUMENT rather than silently restarting the scan."
         }
       },
       "description": "ScanEdgesRequest streams edges whose tail key starts with `tail_prefix`\nAND whose head key starts with `head_prefix`, in ascending (tail, head)\norder. Either prefix may be empty to disable the corresponding filter\n(both empty scans every edge). `limit` caps the number returned in one\ncall; the server enforces a default when `limit == 0` and a hard maximum\n(see ScanConfig on the server). `cursor` MUST be treated as opaque bytes\nby clients — pass back exactly what the previous response returned in\n`next_cursor`. An empty `cursor` starts from the beginning.\n\nImplementation note: v1 walks the tail-side prefix index and applies\n`head_prefix` as a post-filter; for highly selective `head_prefix`\nqueries the server may visit many tails to fill one page. Latency is\nreported in the standard scan histogram so operators can spot\npathological filters."
@@ -1211,7 +1212,8 @@
         },
         "cursor": {
           "type": "string",
-          "format": "byte"
+          "format": "byte",
+          "description": "NOTE: opaque to the caller; not interchangeable with cursors from\nother Scan* RPCs (e.g. ScanEdges). Cross-feeding is rejected with\nINVALID_ARGUMENT rather than silently restarting the scan."
         }
       },
       "description": "ScanVerticesRequest streams vertices whose key starts with `prefix` in\nlexicographic order. `limit` caps the number returned in one call; the\nserver enforces a default when `limit == 0` and a hard maximum (see\nRateLimitConfig / ScanConfig on the server). `cursor` MUST be treated as\nopaque bytes by clients — pass back exactly what the previous response\nreturned in `next_cursor`. An empty `cursor` starts from the beginning."

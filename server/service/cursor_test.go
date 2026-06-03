@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/base64"
+	"strings"
 	"testing"
 )
 
@@ -55,5 +56,27 @@ func TestCursor_RejectUnknownVersion(t *testing.T) {
 	b := []byte(base64.RawURLEncoding.EncodeToString(raw))
 	if _, err := decodeCursor(b); err == nil {
 		t.Errorf("expected error for unknown version")
+	}
+}
+
+// TestCursor_RejectCrossRPC pins the #168 behaviour: an edge cursor
+// (LastTail / LastHead populated) handed to decodeCursor — and a vertex
+// cursor (LastKey populated) handed to decodeEdgesCursor — must each be
+// rejected with a friendly error, not silently re-anchored to the start
+// of the scan. The error string is asserted because handlers forward it
+// verbatim into the codes.InvalidArgument status returned to clients.
+func TestCursor_RejectCrossRPC(t *testing.T) {
+	edgeCursor := encodeEdgesCursor(scanEdgesCursor{LastTail: "users/", LastHead: "posts/42"})
+	if _, err := decodeCursor(edgeCursor); err == nil {
+		t.Fatalf("decodeCursor(edge cursor) = nil error, want rejection")
+	} else if !strings.Contains(err.Error(), "different Scan RPC") {
+		t.Errorf("decodeCursor(edge cursor) error = %q, want 'different Scan RPC'", err)
+	}
+
+	vertexCursor := encodeCursor(scanCursor{LastKey: "users/42"})
+	if _, err := decodeEdgesCursor(vertexCursor); err == nil {
+		t.Fatalf("decodeEdgesCursor(vertex cursor) = nil error, want rejection")
+	} else if !strings.Contains(err.Error(), "different Scan RPC") {
+		t.Errorf("decodeEdgesCursor(vertex cursor) error = %q, want 'different Scan RPC'", err)
 	}
 }
