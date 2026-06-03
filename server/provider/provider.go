@@ -343,16 +343,36 @@ func NewGrpcServer(options []grpc.ServerOption) *grpc.Server {
 	return grpc.NewServer(options...)
 }
 
-// MetricsServer hosts /metrics (Prometheus) and /healthz + /readyz on a
-// dedicated HTTP port. Returns nil when LANTERN_METRICS_ADDR is empty.
-type MetricsServer struct {
+// MetricsServer is the long-running goroutine that exposes /metrics
+// (Prometheus) and /healthz + /readyz on a dedicated HTTP port. The
+// NewMetricsServer constructor returns a real HTTP server when
+// LANTERN_METRICS_ADDR is set and a NoopMetricsServer otherwise, so callers
+// never have to nil-check before calling Run (Null Object pattern).
+type MetricsServer interface {
+	// Run blocks until ctx is canceled or the underlying server exits with
+	// a non-shutdown error.
+	Run(ctx context.Context) error
+}
+
+// NoopMetricsServer is the disabled-metrics implementation. Its Run simply
+// waits for ctx to be canceled and returns nil, so the App errgroup behaves
+// identically whether or not metrics are enabled.
+type NoopMetricsServer struct{}
+
+func (NoopMetricsServer) Run(ctx context.Context) error {
+	<-ctx.Done()
+	return nil
+}
+
+// httpMetricsServer is the real /metrics + /healthz + /readyz HTTP server.
+type httpMetricsServer struct {
 	srv    *http.Server
 	logger *slog.Logger
 }
 
-func NewMetricsServer(o ObservabilityConfig, reg *prometheus.Registry, logger *slog.Logger) *MetricsServer {
+func NewMetricsServer(o ObservabilityConfig, reg *prometheus.Registry, logger *slog.Logger) MetricsServer {
 	if o.MetricsAddr == "" {
-		return nil
+		return NoopMetricsServer{}
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg}))
@@ -364,7 +384,7 @@ func NewMetricsServer(o ObservabilityConfig, reg *prometheus.Registry, logger *s
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ready"))
 	})
-	return &MetricsServer{
+	return &httpMetricsServer{
 		srv: &http.Server{
 			Addr:              o.MetricsAddr,
 			Handler:           mux,
@@ -375,12 +395,8 @@ func NewMetricsServer(o ObservabilityConfig, reg *prometheus.Registry, logger *s
 }
 
 // Run blocks until ctx is canceled or ListenAndServe returns an error other
-// than http.ErrServerClosed. Safe to call on a nil *MetricsServer (no-op).
-func (m *MetricsServer) Run(ctx context.Context) error {
-	if m == nil {
-		<-ctx.Done()
-		return nil
-	}
+// than http.ErrServerClosed.
+func (m *httpMetricsServer) Run(ctx context.Context) error {
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

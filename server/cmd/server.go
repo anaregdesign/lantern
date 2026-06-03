@@ -23,7 +23,7 @@ type App struct {
 	cfg     *provider.Config
 	logger  *slog.Logger
 	grpc    *service.LanternServer
-	metrics *provider.MetricsServer
+	metrics provider.MetricsServer
 	tracing *provider.Tracing
 	domain  *domainmetrics.DomainMetrics
 	health  *health.Server
@@ -33,7 +33,7 @@ func newApp(
 	cfg *provider.Config,
 	logger *slog.Logger,
 	grpcServer *service.LanternServer,
-	metricsServer *provider.MetricsServer,
+	metricsServer provider.MetricsServer,
 	tracing *provider.Tracing,
 	domain *domainmetrics.DomainMetrics,
 	hs *health.Server,
