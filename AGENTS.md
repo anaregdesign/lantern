@@ -34,8 +34,8 @@ Tag scheme: `vX.Y.Z` for server+CLI (root module), `sdks/go/vX.Y.Z` for the SDK,
 
 - **gRPC service**: [server/service/service.go](server/service/service.go) implements `LanternService`. Every read/write/delete has a **singular** and a **plural** form: `Illuminate`, `GetVertex`/`GetVertices`, `PutVertex`/`PutVertices`, `DeleteVertex`/`DeleteVertices`, `GetEdge`/`GetEdges`, `AddEdge`/`AddEdges`, `PutEdge`/`PutEdges`, `DeleteEdge`/`DeleteEdges`. The plural is the canonical implementation; the singular forwards a one-element batch to its plural counterpart (for `GetVertex`/`GetEdge`, `len(Missing)==1` maps to `codes.NotFound`; for `DeleteVertex`/`DeleteEdge`, `Existed = resp.GetDeleted() == 1`). When you add new write surface, **always implement plural first and singular as the facade** — do not duplicate logic.
 - **DI**: [google/wire](https://github.com/google/wire). [server/cmd/wire.go](server/cmd/wire.go) holds the definitions; [server/cmd/wire_gen.go](server/cmd/wire_gen.go) is generated — **never edit it by hand**. After changing providers, regenerate with `go generate ./...` (or `make wire` for just the wire step). Wire itself is pulled in via the `tool` directive in `go.mod`, so no install is required.
-- **Providers**: [server/provider/provider.go](server/provider/provider.go) assembles `Config` (env vars `LANTERN_PORT`, `LANTERN_DEFAULT_TTL_SECONDS`), `net.Listener`, `grpc.Server`, and `core/cache/graph.GraphCache`. `NewListener` now receives the wire-injected `*Config`.
-- **Client SDK**: [sdks/go/client.go](sdks/go/client.go) is a thin gRPC wrapper. [sdks/go/value.go](sdks/go/value.go) handles Go-native ↔ `pb.Vertex` conversion via `nativeVertex.asVertex()` and `Vertex.*Value()`, and renders Go-friendly JSON via `Vertex.MarshalJSON` (shape: `{key,type,value,expiration}`). **When adding a new value type, update all three:** `asVertex` (Go → proto), the matching `*Value()` accessor plus `Kind()` / `VertexKind*` constant (proto → Go), and the `MarshalJSON` switch. The import path is `github.com/anaregdesign/lantern/sdks/go` and the package name remains `client`.
+- **Providers**: [server/provider/provider.go](server/provider/provider.go) assembles the aggregate `Config` plus six focused sub-configs — `NetConfig`, `TLSConfig`, `RateLimitConfig`, `ObservabilityConfig`, `CacheConfig`, `ShutdownConfig` — read from env vars (`LANTERN_PORT`, `LANTERN_DEFAULT_TTL_SECONDS`, `LANTERN_METRICS_ADDR`, TLS material, rate-limit knobs, etc.). Each provider takes the **slice it actually needs** (e.g. `NewListener(*NetConfig)`), not `*Config` — keep that SRP invariant when adding providers. The full env-var contract lives in [server/internal/envconfig](server/internal/envconfig). `App` / `main` may still hold `*Config` because they observe multiple slices.
+- **Client SDK**: [sdks/go/client.go](sdks/go/client.go) is a thin gRPC wrapper. [sdks/go/value.go](sdks/go/value.go) handles Go-native ↔ `pb.Vertex` conversion. Since #106, `client.Vertex` and `client.Edge` are **true Go aliases** (`type Vertex = pb.Vertex`, `type Edge = pb.Edge`) — there is exactly one `Vertex` type in the system and no boundary casts. Accessors are **free functions**, not methods: `Kind(v)`, `IntValue(v)`, `UIntValue(v)`, `FloatValue(v)`, `StringValue(v)`, `BoolValue(v)`, `BytesValue(v)`, `TimeValue(v)`, `DurationValue(v)`, `IsNil(v)`, `VertexExpiration(v)`, `EdgeExpiration(e)`, and `MarshalVertexJSON(v)` (note: `MarshalVertexJSON` does NOT satisfy `json.Marshaler` — callers must invoke it explicitly). **When adding a new value type, update all three call sites in `value.go`:** `nativeVertex.asVertex` (Go → proto), the matching `*Value(v)` free function plus its `VertexKind*` constant + `Kind` switch entry (proto → Go), and the `MarshalVertexJSON` switch (proto → JSON). The import path is `github.com/anaregdesign/lantern/sdks/go` and the package name remains `client`. `VertexInput`, `EdgeInput`, `EdgeRef`, and `Graph` remain SDK-only (rationale documented in [sdks/go/doc.go](sdks/go/doc.go)).
 - **Dependency boundaries (enforce as invariants)**:
   - `pb/` and `core/` are leaves — neither imports any other lantern module.
   - `sdks/go/` imports `pb/` only — **never** `core/...` or `server/...`.
@@ -51,7 +51,7 @@ go build -v ./...                # build (same as CI)
 go test -v ./...                 # tests
 go generate ./...                # regenerate wire_gen.go AND pb/ stubs (zero-install)
 make wire                        # alias: go tool wire ./server/cmd (run from server/)
-make proto                       # alias: buf generate --clean (system `buf` if present, else `go run`)
+make proto                       # alias: buf generate (system `buf` if present, else `go run`)
 go run ./server/cmd              # start the server (:6380)
 go run ./cli                     # start the CLI
 docker build -t lantern .        # container build (Go 1.26-alpine)
@@ -61,9 +61,9 @@ CI: [.github/workflows/go.yml](.github/workflows/go.yml) runs `go build` + `go t
 
 ## Conventions and gotchas
 
-- **Go version**: `go.mod` is on `1.26` and the Dockerfile uses `golang:1.26-alpine`. Bumping it requires updating all three places at once: `go.mod`, Dockerfile, and the `go-version` in `.github/workflows/go.yml`.
+- **Go version**: every `go.mod` is on `1.26` and the Dockerfile uses `golang:1.26-alpine`; CI pins `1.26.4`. Bumping the toolchain requires updating **every** site in lockstep — see the [Maintenance checklist](#maintenance-checklist) for the full list.
 - **wire and generics**: as the `// Avoiding bug of 'wire'. Generic type is not supported.` comment in `service.go` notes, wire cannot handle generic type arguments, so the provider returns the concrete `GraphCache[string, *Vertex]`. Re-check this constraint before trying to introduce generics there.
-- **Regenerating proto**: `go_package_prefix` in `buf.gen.yaml` is `github.com/anaregdesign/lantern/pb`, so the generated files land **inside the standalone `pb/` module** at `pb/graph/v1`. `go generate ./...` (or `make proto`) runs `buf generate --clean` and rebuilds everything under `pb/`. `buf.yaml` (v2 workspace) and `buf.gen.yaml` live at the repo root. `buf` does not need to be installed locally — the directive in [generate.go](generate.go) falls back to `go run github.com/bufbuild/buf/cmd/buf@v1.70.0`. Treat `pb/` as generated-only — never hand-edit, never add domain code there.
+- **Regenerating proto**: `go_package_prefix` in `buf.gen.yaml` is `github.com/anaregdesign/lantern/pb`, so the generated files land **inside the standalone `pb/` module** at `pb/graph/v1`. `go generate ./...` (or `make proto`) runs `buf generate` and rebuilds everything under `pb/`. **Do NOT pass `--clean`** — `buf`'s output root is `pb/`, and `--clean` would delete `pb/go.mod` and `pb/doc.go` along with the stubs. `buf.yaml` (v2 workspace) and `buf.gen.yaml` live at the repo root. `buf` does not need to be installed locally — the directive in [generate.go](generate.go) falls back to `go run github.com/bufbuild/buf/cmd/buf@v1.70.0` (the pin is mirrored as `BUF_VERSION` in the Makefile — bump both together). Treat `pb/` as generated-only — never hand-edit, never add domain code there.
 - **Multi-module layout**: five modules (`.`, `core/`, `pb/`, `sdks/go/`, `server/`) are stitched together for local dev via [go.work](go.work) and via `replace` directives in each importing module's `go.mod`. When adding a dep, place it in the module that actually uses it (e.g. server-only middleware → `server/go.mod`; client transport → `sdks/go/go.mod`; cli/integration-test only → root `go.mod`). After dependency changes run `go mod tidy` in **every** affected module. The `tool github.com/google/wire/cmd/wire` directive lives in `server/go.mod` (not root), so wire regen must be run from `server/`.
 - **Test gaps**: there are no tests for the server/service layer, wire wiring, or client transport paths. For non-trivial changes, **add at least a minimal table test in the same PR**.
 
@@ -71,3 +71,117 @@ CI: [.github/workflows/go.yml](.github/workflows/go.yml) runs `go build` + `go t
 
 - End-to-end usage: [README.md](README.md)
 - Comprehensive client SDK example: [sdks/go/example/main.go](sdks/go/example/main.go)
+
+## Maintenance checklist
+
+Each item is **trigger → action**. Coding agents must consult this list whenever
+they take a listed action, and run the matching step before pushing / merging.
+This section is the canonical maintenance contract; mirror only the most
+load-bearing items into `/memories/repo/lantern.md` for compacted-state survival.
+
+### Before every `git push` (local quality gate)
+
+Run from repo root — this matches what the four required CI checks enforce
+(`Build & Test`, `Lint`, `Proto (buf)`, `govulncheck`):
+
+```bash
+gofmt -l . cli core pb sdks server tests   # must print nothing
+(cd server && go vet ./... && go test ./...)
+go test ./...
+(cd core    && go test ./...)
+(cd pb      && go test ./...)
+(cd sdks/go && go test ./...)
+```
+
+Per-module test runs are mandatory: root `go test ./...` does **not** span
+submodules. The `Lint` job runs `golangci-lint` (CI installs it); `make lint`
+is the local equivalent if you have it. `Proto (buf)` fails on any uncommitted
+codegen diff — regenerate locally first (see below).
+
+### Before merging a PR
+
+- Wait for **all 4 required checks** green. Never use `--admin` or
+  `--no-verify`. One PR per issue from clean main.
+- Merge with `gh pr merge <n> --squash --delete-branch`, then
+  `git checkout main && git pull --rebase`.
+
+### After editing `.proto`
+
+```bash
+go generate ./...   # runs buf generate (NO --clean) + wire
+```
+
+Commit the resulting `pb/graph/v1/*.go` and `pb/openapiv2/**`. Never pass
+`--clean` to buf — it deletes `pb/go.mod` and `pb/doc.go`.
+
+### After editing wire providers (`server/provider/*`, `server/cmd/wire.go`)
+
+```bash
+cd server && go tool wire ./cmd       # or: make wire
+```
+
+Commit the regenerated `server/cmd/wire_gen.go`. Never hand-edit it. If you
+introduced a new sub-config, update the **Providers** bullet in this file.
+
+### After renaming any public SDK / server symbol (refactor)
+
+- Grep the **entire workspace** (`cli/`, `core/`, `pb/`, `sdks/go/`, `server/`,
+  `testbed/`, `tests/integration/`, `*.md`) for every old name. A single-module
+  test pass is **not** sufficient — five modules can compile in isolation while
+  the cross-module call site is broken.
+- Update the **Architecture notes** bullets in this file and the
+  **Conventions and gotchas** section of `README.md` in the **same PR**. The
+  #106 alias refactor invalidated three method names across two docs — that
+  pattern recurs.
+
+### After adding a dependency
+
+- Add the require to the module that **actually imports** it (server-only
+  middleware → `server/go.mod`; client transport → `sdks/go/go.mod`; cli or
+  integration tests only → root `go.mod`).
+- Run `go mod tidy` in **every** affected module. Workspace `replace`s do not
+  propagate `go.sum` entries.
+- If the Dockerfile was touched, confirm every workspace member's `go.mod` and
+  `go.sum` are COPYed **before** `go mod download` (go.work prerequisite).
+
+### Bumping the Go toolchain
+
+Update **all** of the following in one PR:
+
+1. Every `go.mod` (5 files): root, `core/`, `pb/`, `sdks/go/`, `server/`.
+2. `Dockerfile` — `FROM golang:X.Y-alpine`.
+3. Every `go-version:` in `.github/workflows/*.yml` (currently 6 occurrences
+   across `go.yml` and `docker-publish.yml`).
+4. The `Go version` mentions in this file and `README.md`.
+5. The CI version note in `/memories/repo/lantern.md`.
+
+### Bumping the `buf` pin
+
+Update **both**: the `@vX.Y.Z` suffix in [generate.go](generate.go) **and**
+`BUF_VERSION` in the [Makefile](Makefile).
+
+### Cutting a release (`vX.Y.Z`)
+
+Tag order matters because each downstream module pins the upstream tag:
+
+1. `pb/vX.Y.Z`
+2. `core/vX.Y.Z`
+3. `sdks/go/vX.Y.Z`
+4. Bump the matching `require` (and any `replace`) lines in the root `go.mod`
+   to the freshly-tagged versions.
+5. Root `vX.Y.Z` — triggers `docker-publish.yml` (amd64 + arm64 buildx +
+   cosign keyless).
+
+The `server/` module is **never** tagged independently — it ships under the
+root tag. arm64 buildx under QEMU is slow; if a root tag already pushed the
+amd64 image, bump the patch number rather than force-moving the tag.
+
+### Periodic doc-staleness sweep (before each release, or whenever memory and
+### code disagree)
+
+- Re-read this file, `README.md` "Conventions and gotchas", and
+  `/memories/repo/lantern.md`.
+- For every cited symbol, file path, env var, and shell command, verify it
+  still exists and works. CLI command snippets in `README.md` can be checked
+  with `go run ./cli <subcommand> --help`.
+- Reconcile any drift in the same PR.

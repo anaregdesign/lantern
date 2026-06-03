@@ -421,10 +421,11 @@ Required toolchain:
   provider returns the concrete `*graph.GraphCache[string, *Vertex]`. Re-check
   this constraint before introducing generics there.
 - **Adding a new vertex value type** in the Go SDK requires updating *three*
-  call sites in [sdks/go/value.go](sdks/go/value.go): `nativeVertex.asVertex()`
-  (Go → proto), the matching `*Value()` accessor plus its `Kind()` /
-  `VertexKind*` constant (proto → Go), and the `Vertex.MarshalJSON` switch
-  (proto → JSON).
+  call sites in [sdks/go/value.go](sdks/go/value.go): `nativeVertex.asVertex`
+  (Go → proto), the matching `*Value(v)` free function plus its `VertexKind*`
+  constant and `Kind` switch entry (proto → Go), and the `MarshalVertexJSON`
+  switch (proto → JSON). Accessors are package-level functions, not methods —
+  `client.Vertex` is a true alias of `pb.Vertex`.
 - **Proto `go_package`** is `github.com/anaregdesign/lantern/pb/graph/v1`.
   `make proto` rewrites everything under `pb/`.
 - **Not every `*Response` message has a `Status` field** — check
