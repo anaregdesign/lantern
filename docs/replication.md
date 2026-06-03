@@ -389,6 +389,64 @@ new pod boots
 
 Target steady-state flush latency: **< 100 ms** intra-DC at 1k mut/s.
 
+### 9.1 Peer discovery (#190)
+
+The pump resolves its peer set via `LANTERN_PEER_DISCOVERY`:
+
+| Mode | Env vars consumed | Behaviour |
+|---|---|---|
+| `static` (default) | `LANTERN_PEERS` (CSV `host:port,host:port`) | Resolved once at startup. Empty list → single-instance mode. |
+| `dns` | `LANTERN_PEER_DNS_NAME`, `LANTERN_PEER_DEFAULT_PORT` (default `50051`), `LANTERN_PEER_DISCOVERY_INTERVAL_MS` (default `10000`) | Periodic `net.Resolver.LookupHost` against `LANTERN_PEER_DNS_NAME`. Every A/AAAA record except the local node's interface IPs is treated as a peer. Re-poll on every interval; reconcile via add/cancel against the active per-peer goroutine set. |
+
+DNS mode is the canonical multi-instance path: it works against k8s
+headless Services (`lantern-headless.<ns>.svc.cluster.local`), Docker
+Compose service names (Compose's embedded DNS returns one A per
+replica), and Nomad+Consul DNS. Self-filter uses
+`net.InterfaceAddrs()` for non-loopback IPs; the pump's existing
+HLC-NodeID self-echo guard (§5) remains as defence-in-depth.
+
+A transient resolution error logs at `WARN` and preserves the
+previously-active peer set — established subscriptions are NOT torn
+down on a flapping DNS resolver.
+
+**Manual verification recipe (k8s headless Service).**
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: lantern-headless
+spec:
+  clusterIP: None                      # headless: A records = pod IPs
+  selector: { app: lantern }
+  ports: [{ name: grpc, port: 50051, targetPort: 50051 }]
+---
+# StatefulSet pods set env:
+#   LANTERN_PEER_DISCOVERY=dns
+#   LANTERN_PEER_DNS_NAME=lantern-headless.default.svc.cluster.local
+#   LANTERN_PEER_DEFAULT_PORT=50051
+```
+
+Scale the StatefulSet up/down and observe
+`lantern_replication_peer_up{peer=...}` add/remove series within one
+discovery interval.
+
+**Manual verification recipe (Docker Compose).**
+
+```yaml
+services:
+  lantern:
+    image: lantern:dev
+    deploy: { replicas: 3 }
+    environment:
+      LANTERN_PEER_DISCOVERY: dns
+      LANTERN_PEER_DNS_NAME: lantern             # Compose service name
+      LANTERN_PEER_DEFAULT_PORT: "50051"
+```
+
+`docker compose scale lantern=N` triggers Compose's embedded DNS to
+add/remove A records; the pump converges on the next tick.
+
 ## 10. Partition & split-brain analysis
 
 Lantern is **AP** in CAP terms. During a partition:
