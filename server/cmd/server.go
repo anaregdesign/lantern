@@ -8,6 +8,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/anaregdesign/lantern/core/hlc"
+	"github.com/anaregdesign/lantern/core/mutationlog"
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
@@ -65,13 +67,23 @@ func registerHealthAndReflection(o provider.ObservabilityConfig, s *grpc.Server,
 // service-layer ScanLimits value. Keeping the conversion here (rather than
 // in package service) preserves the rule that service/ has zero imports
 // from provider/.
-func newLanternService(backend service.Backend, sc provider.ScanConfig) *service.LanternService {
-	return service.NewLanternService(backend).WithScanLimits(service.ScanLimits{
-		ScanDefaultLimit:           sc.ScanDefaultLimit,
-		ScanMaxLimit:               sc.ScanMaxLimit,
-		DeleteByPrefixDefaultLimit: sc.DeleteByPrefixDefaultLimit,
-		DeleteByPrefixMaxLimit:     sc.DeleteByPrefixMaxLimit,
-	})
+func newLanternService(
+	backend service.Backend,
+	sc provider.ScanConfig,
+	logger *slog.Logger,
+	log *mutationlog.Log,
+	clock *hlc.Clock,
+	dm *domainmetrics.DomainMetrics,
+) *service.LanternService {
+	return service.NewLanternService(backend).
+		WithScanLimits(service.ScanLimits{
+			ScanDefaultLimit:           sc.ScanDefaultLimit,
+			ScanMaxLimit:               sc.ScanMaxLimit,
+			DeleteByPrefixDefaultLimit: sc.DeleteByPrefixDefaultLimit,
+			DeleteByPrefixMaxLimit:     sc.DeleteByPrefixMaxLimit,
+		}).
+		WithReplication(log, clock, dm.OnMutationLogAppend).
+		WithLogger(logger)
 }
 
 func (a *App) Run(ctx context.Context) error {

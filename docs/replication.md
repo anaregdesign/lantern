@@ -151,8 +151,9 @@ Every locally-originated mutation gets a 16-byte contribution ID:
 contribID = uint64(originID) << 64 | uint64(localSeq)
 ```
 
-- `originID` is `LANTERN_NODE_ID` parsed as the low 64 bits of a UUIDv4
-  (stable for the pod's lifetime).
+- `originID` is `LANTERN_NODE_ID` parsed as 16 bytes of hex (32 chars, "0x"
+  prefix tolerated). Malformed values fall back to a `crypto/rand` 16-byte
+  identifier and emit a warning. Origin is stable for the pod's lifetime.
 - `localSeq` is a per-origin monotonic counter, 1-indexed at startup.
 
 Properties:
@@ -182,9 +183,11 @@ The log indexes by `Seq` for `Subscribe(from_seq=...)` resume, and tracks the
 **high-water mark per origin** (`map[uint64]uint64 // origin -> last contribSeq`)
 to detect duplicates from out-of-order Subscribe delivery.
 
-Buffer size is `LANTERN_REPLICATION_BUFFER` (default 1024). Overflow drops
-**oldest** entries; consumers that fall behind that far are forced to
-re-bootstrap via `Snapshot`.
+Buffer size is `LANTERN_MUTATION_LOG_CAPACITY` (default 100,000). Overflow
+drops **oldest** entries; consumers that fall behind that far are forced to
+re-bootstrap via `Snapshot`. The capacity is published as
+`lantern_mutation_log_capacity`; successful appends increment
+`lantern_mutation_log_entries_total`.
 
 ## 8. Wire protocol
 

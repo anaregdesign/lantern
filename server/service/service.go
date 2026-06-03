@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/anaregdesign/lantern/core/cache/graph"
+	"github.com/anaregdesign/lantern/core/hlc"
+	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -32,8 +34,13 @@ const ServiceName = "graph.v1.LanternService"
 // a fake without standing up the real cache.
 type LanternService struct {
 	pb.UnimplementedLanternServiceServer
-	cache Backend
-	scan  ScanLimits
+	cache    Backend
+	scan     ScanLimits
+	log      *mutationlog.Log
+	clock    *hlc.Clock
+	origin   []byte
+	onAppend func()
+	logger   *slog.Logger
 }
 
 // ScanLimits caps the per-call pagination knobs for the prefix RPCs. It is
@@ -66,6 +73,67 @@ func NewLanternService(cache Backend) *LanternService {
 func (s *LanternService) WithScanLimits(l ScanLimits) *LanternService {
 	s.scan = l
 	return s
+}
+
+// WithReplication attaches the mutation log, hybrid logical clock, and an
+// optional append-success callback (for metric counting). When log or clock
+// is nil the service silently skips logging, which keeps existing tests
+// (and the singular forwarders, which delegate to plurals) working without
+// modification.
+//
+// origin is captured from the clock's NodeID so every appended Mutation
+// carries the local node's identity.
+func (s *LanternService) WithReplication(log *mutationlog.Log, clock *hlc.Clock, onAppend func()) *LanternService {
+	s.log = log
+	s.clock = clock
+	if clock != nil {
+		id := clock.NodeID()
+		s.origin = id[:]
+	}
+	s.onAppend = onAppend
+	return s
+}
+
+// WithLogger replaces the slog handle used for replication-side warnings
+// (e.g. WAL write failures). Defaults to slog.Default() when unset.
+func (s *LanternService) WithLogger(l *slog.Logger) *LanternService {
+	s.logger = l
+	return s
+}
+
+// logMutation appends op to the mutation log after a local commit. The HLC
+// is stamped here so the seq->hlc ordering on the log is monotone with
+// commit order. Failures are logged but not surfaced to clients — the
+// local write has already succeeded and replication is best-effort within
+// the bounded ring buffer.
+//
+// Callers MUST construct op as a fully populated MutationOp (one oneof
+// case set). Returns immediately when the log is not wired (test path).
+func (s *LanternService) logMutation(op *pb.MutationOp) {
+	if s.log == nil || s.clock == nil {
+		return
+	}
+	ts := s.clock.Now()
+	mu := &pb.Mutation{
+		Hlc: &pb.HLCTimestamp{
+			WallNs:  ts.WallNs,
+			Logical: ts.Logical,
+			NodeId:  append([]byte(nil), ts.NodeID[:]...),
+		},
+		Origin: append([]byte(nil), s.origin...),
+		Op:     op,
+	}
+	if _, err := s.log.Append(mu, ts); err != nil {
+		l := s.logger
+		if l == nil {
+			l = slog.Default()
+		}
+		l.Warn("mutation log append failed", slog.Any("err", err))
+		return
+	}
+	if s.onAppend != nil {
+		s.onAppend()
+	}
 }
 
 // Illuminate returns a subgraph rooted at the seed, optionally optimized into
@@ -176,6 +244,7 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 		})
 	}
 	s.cache.PutVerticesWithExpiration(items)
+	s.logMutation(&pb.MutationOp{Op: &pb.MutationOp_PutVertices{PutVertices: request}})
 	return &pb.PutVerticesResponse{Written: int32(len(items))}, nil
 }
 
@@ -194,6 +263,7 @@ func (s *LanternService) DeleteVertices(ctx context.Context, in *pb.DeleteVertic
 		return nil, status.FromContextError(err).Err()
 	}
 	n := s.cache.DeleteVertices(in.GetKeys())
+	s.logMutation(&pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{DeleteVertices: in}})
 	return &pb.DeleteVerticesResponse{Deleted: int32(n)}, nil
 }
 
@@ -258,6 +328,7 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 		})
 	}
 	s.cache.AddEdgesWithExpiration(items)
+	s.logMutation(&pb.MutationOp{Op: &pb.MutationOp_AddEdges{AddEdges: request}})
 	return &pb.AddEdgesResponse{Written: int32(len(items))}, nil
 }
 
@@ -286,6 +357,7 @@ func (s *LanternService) PutEdges(ctx context.Context, request *pb.PutEdgesReque
 	// batch, so concurrent GetEdge readers never observe a transient
 	// NotFound between the per-edge delete and add.
 	s.cache.PutEdgesWithExpiration(items)
+	s.logMutation(&pb.MutationOp{Op: &pb.MutationOp_PutEdges{PutEdges: request}})
 	return &pb.PutEdgesResponse{Written: int32(len(items))}, nil
 }
 
@@ -309,6 +381,7 @@ func (s *LanternService) DeleteEdges(ctx context.Context, in *pb.DeleteEdgesRequ
 		keys = append(keys, graph.EdgeKey[string]{Tail: e.GetTail(), Head: e.GetHead()})
 	}
 	n := s.cache.DeleteEdges(keys)
+	s.logMutation(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: in}})
 	return &pb.DeleteEdgesResponse{Deleted: int32(n)}, nil
 }
 

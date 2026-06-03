@@ -130,6 +130,8 @@ type Config struct {
 	Shutdown      ShutdownConfig
 	Validation    ValidationLimits
 	Scan          ScanConfig
+	MutationLog   MutationLogConfig
+	Replication   ReplicationConfig
 }
 
 func NewConfig() *Config {
@@ -181,6 +183,8 @@ func NewConfig() *Config {
 			DeleteByPrefixDefaultLimit: uint32(envconfig.Int("LANTERN_DELETE_BY_PREFIX_DEFAULT_LIMIT", 10000)),
 			DeleteByPrefixMaxLimit:     uint32(envconfig.Int("LANTERN_DELETE_BY_PREFIX_MAX_LIMIT", 100000)),
 		},
+		MutationLog: loadMutationLogConfig(),
+		Replication: loadReplicationConfig(),
 	}
 }
 
