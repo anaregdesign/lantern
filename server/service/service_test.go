@@ -2,10 +2,14 @@ package service
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/anaregdesign/lantern/core/cache/graph"
+	"github.com/anaregdesign/lantern/core/hlc"
+	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -364,4 +368,259 @@ func TestLanternService_SingularWriteFacades(t *testing.T) {
 	} else if ge.GetEdge().GetWeight() != 9 {
 		t.Errorf("weight = %v, want 9 (replaced)", ge.GetEdge().GetWeight())
 	}
+}
+
+// When WithTombstoneTTL is set, RPCs that accept a per-entry Expiration
+// must reject values that exceed the clamp with codes.InvalidArgument and
+// an error message that names LANTERN_TOMBSTONE_TTL (so operators can
+// trace it back to the env knob).
+func TestExpirationClamp_RejectsBeyondTTL(t *testing.T) {
+	const ttl = time.Hour
+	s := NewLanternService(graph.NewGraphCache[string, *pb.Vertex](time.Minute)).
+		WithTombstoneTTL(ttl)
+	ctx := context.Background()
+
+	tooFar := timestamppb.New(time.Now().Add(2 * ttl))
+
+	cases := []struct {
+		name string
+		call func() error
+	}{
+		{"PutVertices", func() error {
+			_, err := s.PutVertices(ctx, &pb.PutVerticesRequest{
+				Vertices: []*pb.Vertex{{Key: "v", Value: &pb.Vertex_Nil{Nil: true}, Expiration: tooFar}},
+			})
+			return err
+		}},
+		{"AddEdges", func() error {
+			_, err := s.AddEdges(ctx, &pb.AddEdgesRequest{
+				Edges: []*pb.Edge{{Tail: "a", Head: "b", Weight: 1, Expiration: tooFar}},
+			})
+			return err
+		}},
+		{"PutEdges", func() error {
+			_, err := s.PutEdges(ctx, &pb.PutEdgesRequest{
+				Edges: []*pb.Edge{{Tail: "a", Head: "b", Weight: 1, Expiration: tooFar}},
+			})
+			return err
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.call()
+			if err == nil {
+				t.Fatalf("want error, got nil")
+			}
+			if code := status.Code(err); code != codes.InvalidArgument {
+				t.Fatalf("code: got %v, want InvalidArgument", code)
+			}
+			if !strings.Contains(err.Error(), "LANTERN_TOMBSTONE_TTL") {
+				t.Errorf("message should reference LANTERN_TOMBSTONE_TTL; got %q", err.Error())
+			}
+		})
+	}
+}
+
+// Within the clamp, the same RPCs succeed.
+func TestExpirationClamp_AcceptsWithinTTL(t *testing.T) {
+	const ttl = time.Hour
+	s := NewLanternService(graph.NewGraphCache[string, *pb.Vertex](time.Minute)).
+		WithTombstoneTTL(ttl)
+	ctx := context.Background()
+
+	ok := timestamppb.New(time.Now().Add(ttl / 2))
+
+	if _, err := s.PutVertices(ctx, &pb.PutVerticesRequest{
+		Vertices: []*pb.Vertex{{Key: "v", Value: &pb.Vertex_Nil{Nil: true}, Expiration: ok}},
+	}); err != nil {
+		t.Fatalf("PutVertices within TTL: %v", err)
+	}
+	if _, err := s.AddEdges(ctx, &pb.AddEdgesRequest{
+		Edges: []*pb.Edge{{Tail: "a", Head: "b", Weight: 1, Expiration: ok}},
+	}); err != nil {
+		t.Fatalf("AddEdges within TTL: %v", err)
+	}
+}
+
+// Zero expiration (= no expiration) is always accepted regardless of TTL.
+func TestExpirationClamp_ZeroAlwaysAllowed(t *testing.T) {
+	s := NewLanternService(graph.NewGraphCache[string, *pb.Vertex](time.Minute)).
+		WithTombstoneTTL(time.Minute)
+	ctx := context.Background()
+	if _, err := s.PutVertices(ctx, &pb.PutVerticesRequest{
+		Vertices: []*pb.Vertex{{Key: "v", Value: &pb.Vertex_Nil{Nil: true}}},
+	}); err != nil {
+		t.Fatalf("PutVertices with zero expiration: %v", err)
+	}
+}
+
+func TestLanternService_FakeBackend_PutGetDelete(t *testing.T) {
+	fb := newFakeBackend()
+	svc := NewLanternService(fb)
+	ctx := context.Background()
+
+	v := &pb.Vertex{Key: "a", Value: &pb.Vertex_String_{String_: "alpha"}}
+	if _, err := svc.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{v}}); err != nil {
+		t.Fatalf("PutVertices: %v", err)
+	}
+	if fb.putVerticesCalls != 1 {
+		t.Errorf("putVerticesCalls = %d, want 1", fb.putVerticesCalls)
+	}
+
+	resp, err := svc.GetVertex(ctx, &pb.GetVertexRequest{Key: "a"})
+	if err != nil {
+		t.Fatalf("GetVertex: %v", err)
+	}
+	if got := resp.Vertex.GetString_(); got != "alpha" {
+		t.Errorf("value = %q, want \"alpha\"", got)
+	}
+
+	if _, err := svc.DeleteVertices(ctx, &pb.DeleteVerticesRequest{Keys: []string{"a"}}); err != nil {
+		t.Fatalf("DeleteVertices: %v", err)
+	}
+	if fb.deleteVertices != 1 {
+		t.Errorf("deleteVertices = %d, want 1", fb.deleteVertices)
+	}
+}
+
+func TestLanternService_FakeBackend_Illuminate_PropagatesError(t *testing.T) {
+	fb := newFakeBackend()
+	fb.neighborErr = errors.New("simulated cache failure")
+	svc := NewLanternService(fb)
+
+	_, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{Seed: "a", Step: 1, K: 1})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	// status.FromContextError turns a generic non-context error into Unknown.
+	if st, _ := status.FromError(err); st.Code() != codes.Unknown {
+		t.Errorf("status code = %v, want Unknown", st.Code())
+	}
+}
+
+func TestLanternService_FakeBackend_PutAndDeleteEdge(t *testing.T) {
+	fb := newFakeBackend()
+	svc := NewLanternService(fb)
+	ctx := context.Background()
+
+	if _, err := svc.PutEdge(ctx, &pb.PutEdgeRequest{Edge: &pb.Edge{Tail: "t", Head: "h", Weight: 2.5}}); err != nil {
+		t.Fatalf("PutEdge: %v", err)
+	}
+	if fb.putEdgesCalls != 1 {
+		t.Errorf("putEdgesCalls = %d, want 1", fb.putEdgesCalls)
+	}
+
+	resp, err := svc.GetEdge(ctx, &pb.GetEdgeRequest{Tail: "t", Head: "h"})
+	if err != nil {
+		t.Fatalf("GetEdge: %v", err)
+	}
+	if resp.Edge.Weight != 2.5 {
+		t.Errorf("weight = %v, want 2.5", resp.Edge.Weight)
+	}
+
+	del, err := svc.DeleteEdge(ctx, &pb.DeleteEdgeRequest{Tail: "t", Head: "h"})
+	if err != nil {
+		t.Fatalf("DeleteEdge: %v", err)
+	}
+	if !del.Existed {
+		t.Error("Existed = false, want true")
+	}
+}
+
+// TestLanternService_MutationLog_BurstAppendsMonotone exercises the wire-in
+// from issue #179: a burst of N plural-write RPCs must produce N entries on
+// the in-memory mutation log with strictly monotonic Seq starting at 1, and
+// the onAppend metric callback must fire exactly once per append.
+func TestLanternService_MutationLog_BurstAppendsMonotone(t *testing.T) {
+	const N = 100
+
+	log := mutationlog.New(mutationlog.Options{Capacity: 2 * N, SubscriberBuffer: 2 * N})
+	t.Cleanup(func() { _ = log.Close() })
+
+	clock := hlc.New(hlc.NodeID{0x11, 0x22, 0x33, 0x44}, hlc.Options{})
+
+	var appendCount int
+	s := NewLanternService(graph.NewGraphCache[string, *pb.Vertex](time.Minute)).
+		WithReplication(log, clock, func() { appendCount++ })
+
+	ch, cancel, err := log.Subscribe(0)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	t.Cleanup(func() { _ = cancel() })
+
+	for i := 0; i < N; i++ {
+		_, err := s.PutVertices(context.Background(), &pb.PutVerticesRequest{
+			Vertices: []*pb.Vertex{{Key: keyFor(i)}},
+		})
+		if err != nil {
+			t.Fatalf("PutVertices[%d] error: %v", i, err)
+		}
+	}
+
+	if appendCount != N {
+		t.Fatalf("onAppend count = %d, want %d", appendCount, N)
+	}
+	first, ok1 := log.FirstSeq()
+	last, ok2 := log.LastSeq()
+	if !ok1 || !ok2 {
+		t.Fatalf("log empty after %d appends (first ok=%v, last ok=%v)", N, ok1, ok2)
+	}
+	if got := last - first + 1; int(got) != N {
+		t.Fatalf("log length = %d, want %d (first=%d last=%d)", got, N, first, last)
+	}
+
+	prev := uint64(0)
+	for i := 0; i < N; i++ {
+		select {
+		case e := <-ch:
+			if e.Seq != prev+1 {
+				t.Fatalf("entry[%d] seq = %d, want %d", i, e.Seq, prev+1)
+			}
+			prev = e.Seq
+			mu, ok := e.Op.(*pb.Mutation)
+			if !ok {
+				t.Fatalf("entry[%d] op type = %T, want *pb.Mutation", i, e.Op)
+			}
+			if mu.GetOp().GetPutVertices() == nil {
+				t.Fatalf("entry[%d] missing PutVertices oneof", i)
+			}
+			if len(mu.GetOrigin()) != len(hlc.NodeID{}) {
+				t.Fatalf("entry[%d] origin len = %d, want %d",
+					i, len(mu.GetOrigin()), len(hlc.NodeID{}))
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for entry %d", i)
+		}
+	}
+}
+
+// TestLanternService_MutationLog_NotWired_NoOp guards the test path where
+// the service is built without WithReplication: write RPCs must still
+// succeed and not panic on the nil log/clock.
+func TestLanternService_MutationLog_NotWired_NoOp(t *testing.T) {
+	s := NewLanternService(graph.NewGraphCache[string, *pb.Vertex](time.Minute))
+	if _, err := s.PutVertices(context.Background(), &pb.PutVerticesRequest{
+		Vertices: []*pb.Vertex{{Key: "k"}},
+	}); err != nil {
+		t.Fatalf("PutVertices: %v", err)
+	}
+}
+
+func keyFor(i int) string {
+	return "k-" + itoa(i)
+}
+
+func itoa(i int) string {
+	if i == 0 {
+		return "0"
+	}
+	var b [20]byte
+	pos := len(b)
+	for i > 0 {
+		pos--
+		b[pos] = byte('0' + i%10)
+		i /= 10
+	}
+	return string(b[pos:])
 }

@@ -1,92 +1,110 @@
-package service_test
+package service
 
 import (
 	"context"
-	"errors"
+	"io"
 	"log/slog"
 	"net"
-	"sync"
 	"testing"
 	"time"
 
-	cachegraph "github.com/anaregdesign/lantern/core/cache/graph"
-	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"github.com/anaregdesign/lantern/server/service"
 	"google.golang.org/grpc"
-	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/test/bufconn"
 )
 
-// recordingHealth captures every SetServingStatus call so we can assert
-// that Run flips NOT_SERVING after Serve returns, regardless of cause.
-type recordingHealth struct {
-	mu     sync.Mutex
-	events []healthpb.HealthCheckResponse_ServingStatus
+// blockingStream is a server-side stream handler that blocks until the
+// stream's context is canceled. Used to force GracefulStop to hang so the
+// timeout branch of gracefulShutdown is exercised.
+func blockingStream(_ any, stream grpc.ServerStream) error {
+	<-stream.Context().Done()
+	return stream.Context().Err()
 }
 
-func (r *recordingHealth) SetServingStatus(_ string, s healthpb.HealthCheckResponse_ServingStatus) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.events = append(r.events, s)
-}
-
-func (r *recordingHealth) last() healthpb.HealthCheckResponse_ServingStatus {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if len(r.events) == 0 {
-		return healthpb.HealthCheckResponse_UNKNOWN
-	}
-	return r.events[len(r.events)-1]
-}
-
-// brokenListener.Accept returns immediately with a non-temporary error,
-// causing grpc.Server.Serve to return without ctx cancellation.
-type brokenListener struct{ addr net.Addr }
-
-func (b *brokenListener) Accept() (net.Conn, error) { return nil, errBroken }
-func (b *brokenListener) Close() error              { return nil }
-func (b *brokenListener) Addr() net.Addr            { return b.addr }
-
-var errBroken = errors.New("listener is broken")
-
-type fakeAddr struct{}
-
-func (fakeAddr) Network() string { return "fake" }
-func (fakeAddr) String() string  { return "fake://broken" }
-
-func TestLanternServer_Run_FlipsHealthOnServeReturn(t *testing.T) {
-	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
-	svc := service.NewLanternService(cache)
+// TestLanternServer_gracefulShutdown_TimeoutForcesStop pins an in-flight
+// stream open so GracefulStop cannot drain, then asserts gracefulShutdown
+// honors ShutdownTimeout by escalating to Stop instead of blocking forever.
+func TestLanternServer_gracefulShutdown_TimeoutForcesStop(t *testing.T) {
+	lis := bufconn.Listen(1 << 16)
 	grpcSrv := grpc.NewServer()
-	lis := &brokenListener{addr: fakeAddr{}}
-	hs := &recordingHealth{}
 
-	srv := service.NewLanternServer(
-		svc, nil, grpcSrv, lis,
-		slog.New(slog.NewTextHandler(discardWriter{}, nil)),
-		service.LifecycleConfig{GCInterval: time.Hour, ShutdownTimeout: time.Second},
-		hs,
-		cache,
+	fakeDesc := grpc.ServiceDesc{
+		ServiceName: "fake.GracefulShutdownService",
+		HandlerType: (*any)(nil),
+		Streams: []grpc.StreamDesc{{
+			StreamName:    "Block",
+			Handler:       blockingStream,
+			ClientStreams: true,
+			ServerStreams: true,
+		}},
+		Metadata: "graceful_shutdown_test.go",
+	}
+	grpcSrv.RegisterService(&fakeDesc, struct{}{})
+
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- grpcSrv.Serve(lis) }()
+
+	conn, err := grpc.NewClient(
+		"passthrough://bufconn",
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+			return lis.DialContext(ctx)
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
+	if err != nil {
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	defer conn.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	err := srv.Run(ctx)
-	if err == nil {
-		t.Fatal("Run returned nil error; want listener error")
+	streamCtx, streamCancel := context.WithCancel(context.Background())
+	defer streamCancel()
+	clientDesc := &grpc.StreamDesc{
+		StreamName:    "Block",
+		ClientStreams: true,
+		ServerStreams: true,
+	}
+	stream, err := conn.NewStream(streamCtx, clientDesc, "/fake.GracefulShutdownService/Block")
+	if err != nil {
+		t.Fatalf("NewStream: %v", err)
+	}
+	// Send one frame so the server-side handler has actually been entered;
+	// GracefulStop only waits on in-flight RPCs.
+	if err := stream.SendMsg(&emptypb{}); err != nil {
+		t.Fatalf("SendMsg: %v", err)
 	}
 
-	if got := hs.last(); got != healthpb.HealthCheckResponse_NOT_SERVING {
-		t.Errorf("last health status = %v, want NOT_SERVING", got)
+	s := &LanternServer{
+		server:          grpcSrv,
+		logger:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+		shutdownTimeout: 200 * time.Millisecond,
 	}
-	// Must have transitioned through SERVING first.
-	hs.mu.Lock()
-	defer hs.mu.Unlock()
-	if len(hs.events) < 2 || hs.events[0] != healthpb.HealthCheckResponse_SERVING {
-		t.Errorf("expected SERVING then NOT_SERVING, got %v", hs.events)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // gracefulShutdown waits on ctx.Done, so pre-cancel
+
+	start := time.Now()
+	s.gracefulShutdown(ctx)
+	elapsed := time.Since(start)
+
+	if elapsed < s.shutdownTimeout {
+		t.Fatalf("gracefulShutdown returned before timeout: %v < %v", elapsed, s.shutdownTimeout)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("gracefulShutdown blocked far past timeout: %v", elapsed)
+	}
+
+	// Serve must have returned after Stop was forced.
+	select {
+	case <-serveErr:
+	case <-time.After(2 * time.Second):
+		t.Fatal("grpc.Server.Serve did not return after forced Stop")
 	}
 }
 
-type discardWriter struct{}
+// emptypb is a zero-byte proto-compatible message we can SendMsg without
+// pulling in a real proto type — grpc only needs Marshal/Unmarshal.
+type emptypb struct{}
 
-func (discardWriter) Write(p []byte) (int, error) { return len(p), nil }
+func (*emptypb) Reset()         {}
+func (*emptypb) String() string { return "" }
+func (*emptypb) ProtoMessage()  {}
