@@ -27,9 +27,12 @@ PREFIXES
   endpoint. Either may be omitted to leave that dimension unconstrained;
   omitting both scans every live edge.
 
-  v1 walks the vertex-side prefix index for the tail dimension and
-  applies --head-prefix as a post-filter, so a head-only scan is no
-  cheaper than a full scan. Combine the two prefixes when possible.
+  The server walks the vertex-side prefix index for the tail dimension
+  and, for each matching tail, probes a per-tail head radix to honour
+  --head-prefix as an index lookup (not a post-filter). A head-only
+  scan still has to iterate every tail because no global head->tails
+  reverse index exists, so combining both prefixes remains the most
+  efficient shape.
 
 PAGINATION
   Without --all the server returns at most --limit edges and an opaque
