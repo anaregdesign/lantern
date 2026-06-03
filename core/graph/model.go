@@ -49,36 +49,35 @@ func (g *Graph[S, T]) ConnectedGraph(seed S) *Graph[S, T] {
 // ConnectedGraphContext is the context-aware variant of ConnectedGraph.
 // It returns ctx.Err() as soon as the context is cancelled or its deadline
 // has expired, so callers can short-circuit large traversals.
+//
+// Implementation: classic FIFO-queue BFS. Each reachable vertex is enqueued
+// exactly once, each outgoing edge is visited exactly once, giving O(V+E)
+// time and O(V) auxiliary memory. The prior round-based loop re-scanned
+// connected.Edges every iteration for O(V·(V+E)).
 func (g *Graph[S, T]) ConnectedGraphContext(ctx context.Context, seed S) (*Graph[S, T], error) {
-	targets := set.NewSet[S]()
-	seen := set.NewSet[S]()
 	connected := NewGraph[S, T]()
 	connected.PutVertex(seed, g.Vertices[seed])
 
-	targets.Add(seed)
-	for {
+	seen := set.NewSet[S]()
+	seen.Add(seed)
+
+	queue := make([]S, 0, 16)
+	queue = append(queue, seed)
+
+	for len(queue) > 0 {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		for _, tail := range targets.Values() {
-			if seen.Has(tail) {
-				continue
-			}
+		tail := queue[0]
+		queue = queue[1:]
 
-			for head, weight := range g.Edges[tail] {
+		for head, weight := range g.Edges[tail] {
+			if !seen.Has(head) {
 				connected.PutVertex(head, g.Vertices[head])
-				connected.PutEdge(tail, head, weight)
+				seen.Add(head)
+				queue = append(queue, head)
 			}
-			seen.Add(tail)
-		}
-		for _, heads := range connected.Edges {
-			for head := range heads {
-				targets.Add(head)
-			}
-		}
-
-		if targets.Size() == seen.Size() {
-			break
+			connected.PutEdge(tail, head, weight)
 		}
 	}
 

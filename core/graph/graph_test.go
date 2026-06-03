@@ -50,6 +50,59 @@ func TestGraph_ConnectedGraph(t *testing.T) {
 	}
 }
 
+// TestGraph_ConnectedGraph_DeepChain exercises a path that previously required
+// many "rounds" in the old algorithm and now drains through a single FIFO BFS.
+// All chain vertices plus a cycle edge must be reached; an unreachable side
+// component must be excluded.
+func TestGraph_ConnectedGraph_DeepChain(t *testing.T) {
+	g := NewGraph[string, int]()
+	chain := []string{"v0", "v1", "v2", "v3", "v4", "v5", "v6"}
+	for i, v := range chain {
+		g.PutVertex(v, i)
+	}
+	for i := 0; i < len(chain)-1; i++ {
+		g.PutEdge(chain[i], chain[i+1], 1)
+	}
+	// back-edge forming a cycle
+	g.PutEdge("v6", "v3", 1)
+	// unreachable component
+	g.PutEdge("x", "y", 1)
+
+	c := g.ConnectedGraph("v0")
+
+	for _, want := range chain {
+		if _, ok := c.Vertices[want]; !ok {
+			t.Errorf("missing reachable vertex %q", want)
+		}
+	}
+	for _, dont := range []string{"x", "y"} {
+		if _, ok := c.Vertices[dont]; ok {
+			t.Errorf("unreachable vertex %q must not be included", dont)
+		}
+	}
+	// cycle edge must be preserved
+	if _, ok := c.Edges["v6"]["v3"]; !ok {
+		t.Errorf("cycle edge v6->v3 must be preserved")
+	}
+}
+
+// TestGraph_ConnectedGraph_SelfLoop pins behavior for self-loops: the loop
+// edge is preserved and traversal terminates.
+func TestGraph_ConnectedGraph_SelfLoop(t *testing.T) {
+	g := NewGraph[string, int]()
+	g.PutVertex("a", 1)
+	g.PutEdge("a", "a", 1)
+	g.PutEdge("a", "b", 1)
+
+	c := g.ConnectedGraph("a")
+	if _, ok := c.Edges["a"]["a"]; !ok {
+		t.Errorf("self-loop a->a must be preserved")
+	}
+	if _, ok := c.Vertices["b"]; !ok {
+		t.Errorf("neighbor b must be reached")
+	}
+}
+
 func TestGraph_MinimumSpanningTree(t *testing.T) {
 	// Triangle: a-b=1, b-c=2, a-c=10. MST picks (a-b) + (b-c) = total 3.
 	g := NewGraph[string, int]()
