@@ -74,7 +74,7 @@ func TestLantern_PutGetDeleteVertex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetVertex: %v", err)
 	}
-	got, err := v.StringValue()
+	got, err := client.StringValue(v)
 	if err != nil {
 		t.Fatalf("StringValue: %v", err)
 	}

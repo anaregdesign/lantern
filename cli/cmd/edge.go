@@ -82,7 +82,7 @@ EXAMPLES
 			"tail":       args[0],
 			"head":       args[1],
 			"weight":     e.Weight,
-			"expiration": e.ExpirationTime().Format(time.RFC3339),
+			"expiration": client.EdgeExpiration(e).Format(time.RFC3339),
 		}
 		return json.NewEncoder(cmd.OutOrStdout()).Encode(out)
 	},

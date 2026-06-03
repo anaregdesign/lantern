@@ -79,17 +79,23 @@ func (v nativeVertex) asVertex() (*pb.Vertex, error) {
 	}
 }
 
-// Vertex is a thin type alias over the generated protobuf Vertex that adds
-// Go-friendly value accessors. Convert a *pb.Vertex with (*Vertex)(p).
+// Vertex re-exports the generated protobuf Vertex type so SDK callers do not
+// need to import the pb package directly. It is a true Go type alias, not a
+// parallel struct: client.Vertex and pb.Vertex are the same type, freely
+// interchangeable without conversion.
 //
-// A Vertex whose Kind() reports VertexKindNil is a present tombstone, not a
+// Go-friendly accessors (Kind, IntValue, StringValue, ExpirationTime, …) are
+// defined as free functions in this package because methods cannot be added
+// to aliases of types declared in another package.
+//
+// A Vertex whose Kind reports VertexKindNil is a present tombstone, not a
 // missing entry: GetVertex returns it with a nil error. "Key absent" is
 // signalled separately by an error wrapping ErrNotFound. See GetVertex for
 // the full presence vs. nil-value contract.
-type Vertex pb.Vertex
+type Vertex = pb.Vertex
 
-// VertexKind identifies which oneof variant is set on a Vertex. Use
-// Vertex.Kind to dispatch without writing a switch over Value.(type).
+// VertexKind identifies which oneof variant is set on a Vertex. Use Kind to
+// dispatch without writing a switch over Value.(type).
 type VertexKind int
 
 const (
@@ -113,7 +119,7 @@ const (
 )
 
 // Kind reports which oneof variant is set on v.
-func (v *Vertex) Kind() VertexKind {
+func Kind(v *Vertex) VertexKind {
 	if v == nil {
 		return VertexKindUnset
 	}
@@ -147,19 +153,22 @@ func (v *Vertex) Kind() VertexKind {
 	}
 }
 
-// ExpirationTime returns the absolute expiration carried by v, or the zero
+// VertexExpiration returns the absolute expiration carried by v, or the zero
 // time if no expiration was set on the server response.
-func (v *Vertex) ExpirationTime() time.Time {
+func VertexExpiration(v *Vertex) time.Time {
 	if v == nil || v.Expiration == nil {
 		return time.Time{}
 	}
 	return v.Expiration.AsTime()
 }
 
-// IntValue returns the underlying signed integer value. It also accepts
+// IntValue returns the underlying signed integer value of v. It also accepts
 // unsigned variants and reports ErrOverflow when a Uint64 value exceeds
 // math.MaxInt64.
-func (v *Vertex) IntValue() (int, error) {
+func IntValue(v *Vertex) (int, error) {
+	if v == nil {
+		return 0, ErrInvalidType
+	}
 	switch x := v.Value.(type) {
 	case *pb.Vertex_Int32:
 		return int(x.Int32), nil
@@ -177,9 +186,12 @@ func (v *Vertex) IntValue() (int, error) {
 	}
 }
 
-// UIntValue returns the underlying unsigned integer value. It also accepts
-// signed variants and reports ErrOverflow when the value is negative.
-func (v *Vertex) UIntValue() (uint, error) {
+// UIntValue returns the underlying unsigned integer value of v. It also
+// accepts signed variants and reports ErrOverflow when the value is negative.
+func UIntValue(v *Vertex) (uint, error) {
+	if v == nil {
+		return 0, ErrInvalidType
+	}
 	switch x := v.Value.(type) {
 	case *pb.Vertex_Uint32:
 		return uint(x.Uint32), nil
@@ -200,8 +212,11 @@ func (v *Vertex) UIntValue() (uint, error) {
 	}
 }
 
-// FloatValue widens any numeric oneof variant to float64.
-func (v *Vertex) FloatValue() (float64, error) {
+// FloatValue widens any numeric oneof variant of v to float64.
+func FloatValue(v *Vertex) (float64, error) {
+	if v == nil {
+		return 0, ErrInvalidType
+	}
 	switch x := v.Value.(type) {
 	case *pb.Vertex_Int64:
 		return float64(x.Int64), nil
@@ -220,51 +235,76 @@ func (v *Vertex) FloatValue() (float64, error) {
 	}
 }
 
-func (v *Vertex) StringValue() (string, error) {
+// StringValue returns the underlying string value of v.
+func StringValue(v *Vertex) (string, error) {
+	if v == nil {
+		return "", ErrInvalidType
+	}
 	if x, ok := v.Value.(*pb.Vertex_String_); ok {
 		return x.String_, nil
 	}
 	return "", ErrInvalidType
 }
 
-func (v *Vertex) BoolValue() (bool, error) {
+// BoolValue returns the underlying bool value of v.
+func BoolValue(v *Vertex) (bool, error) {
+	if v == nil {
+		return false, ErrInvalidType
+	}
 	if x, ok := v.Value.(*pb.Vertex_Bool); ok {
 		return x.Bool, nil
 	}
 	return false, ErrInvalidType
 }
 
-func (v *Vertex) BytesValue() ([]byte, error) {
+// BytesValue returns the underlying bytes value of v.
+func BytesValue(v *Vertex) ([]byte, error) {
+	if v == nil {
+		return nil, ErrInvalidType
+	}
 	if x, ok := v.Value.(*pb.Vertex_Bytes); ok {
 		return x.Bytes, nil
 	}
 	return nil, ErrInvalidType
 }
 
-func (v *Vertex) TimeValue() (time.Time, error) {
+// TimeValue returns the underlying timestamp value of v as time.Time.
+func TimeValue(v *Vertex) (time.Time, error) {
+	if v == nil {
+		return time.Time{}, ErrInvalidType
+	}
 	if x, ok := v.Value.(*pb.Vertex_Timestamp); ok {
 		return x.Timestamp.AsTime(), nil
 	}
 	return time.Time{}, ErrInvalidType
 }
 
-func (v *Vertex) DurationValue() (time.Duration, error) {
+// DurationValue returns the underlying duration value of v as time.Duration.
+func DurationValue(v *Vertex) (time.Duration, error) {
+	if v == nil {
+		return 0, ErrInvalidType
+	}
 	if x, ok := v.Value.(*pb.Vertex_Duration); ok {
 		return x.Duration.AsDuration(), nil
 	}
 	return 0, ErrInvalidType
 }
 
-func (v *Vertex) IsNil() bool {
+// IsNil reports whether v carries the proto Vertex_Nil tombstone (a present
+// vertex whose value was explicitly set to nil).
+func IsNil(v *Vertex) bool {
+	if v == nil {
+		return false
+	}
 	if x, ok := v.Value.(*pb.Vertex_Nil); ok {
 		return x.Nil
 	}
 	return false
 }
 
-// MarshalJSON renders a Vertex as a stable, human-readable JSON object so
-// callers don't have to peek at protobuf-generated oneof field names (e.g.
-// "String_", "Int64", "Nil"). The shape is:
+// MarshalVertexJSON renders a Vertex as a stable, human-readable JSON object
+// so callers don't have to peek at protobuf-generated oneof field names
+// (e.g. "String_", "Int64", "Nil"). The shape is:
 //
 //	{
 //	  "key":        "<key>",                // omitted when empty
@@ -274,7 +314,12 @@ func (v *Vertex) IsNil() bool {
 //	}
 //
 // Bytes are base64-encoded (Go's default for []byte); timestamps are RFC3339Nano.
-func (v *Vertex) MarshalJSON() ([]byte, error) {
+//
+// MarshalVertexJSON exists as a free function (rather than a MarshalJSON
+// method) because Vertex is an alias of pb.Vertex and methods cannot be added
+// to aliases of types declared in another package. Callers that want this
+// shape from encoding/json should invoke MarshalVertexJSON explicitly.
+func MarshalVertexJSON(v *Vertex) ([]byte, error) {
 	out := struct {
 		Key        string `json:"key,omitempty"`
 		Type       string `json:"type"`
@@ -286,7 +331,7 @@ func (v *Vertex) MarshalJSON() ([]byte, error) {
 		return json.Marshal(out)
 	}
 	out.Key = v.Key
-	if t := v.ExpirationTime(); !t.IsZero() {
+	if t := VertexExpiration(v); !t.IsZero() {
 		out.Expiration = t.Format(time.RFC3339Nano)
 	}
 	switch x := v.Value.(type) {

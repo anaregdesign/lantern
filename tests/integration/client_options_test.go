@@ -131,7 +131,7 @@ func TestClient_RetryOnUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetVertex: %v", err)
 	}
-	if got, _ := v.StringValue(); got != "v" {
+	if got, _ := client.StringValue(v); got != "v" {
 		t.Errorf("StringValue = %q, want %q", got, "v")
 	}
 	if attempts < 2 {
