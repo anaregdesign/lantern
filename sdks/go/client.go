@@ -215,17 +215,11 @@ func (l *Lantern) PutVertices(ctx context.Context, inputs []VertexInput) error {
 		}
 		vs = append(vs, v)
 	}
-	written := 0
-	for _, chunk := range chunkSlice(vs, l.opts.batchChunkSize) {
-		ctx, cancel := l.applyTimeout(ctx)
+	_, err := runBatchWrite(ctx, l, vs, func(ctx context.Context, chunk []*pb.Vertex) (int32, error) {
 		_, err := l.client.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: chunk})
-		cancel()
-		if err != nil {
-			return &BatchError{Written: written, Err: wrapStatus(err)}
-		}
-		written += len(chunk)
-	}
-	return nil
+		return 0, err
+	})
+	return err
 }
 
 // DeleteVertex removes the vertex identified by key. The returned
@@ -253,22 +247,13 @@ func (l *Lantern) DeleteVertex(ctx context.Context, key string) (bool, error) {
 // returned error is a *BatchError whose Written field records the number of
 // keys already deleted, so callers can resume with keys[err.Written:].
 func (l *Lantern) DeleteVertices(ctx context.Context, keys []string) (int, error) {
-	if len(keys) == 0 {
-		return 0, nil
-	}
-	written := 0
-	deleted := 0
-	for _, chunk := range chunkSlice(keys, l.opts.batchChunkSize) {
-		ctx, cancel := l.applyTimeout(ctx)
+	return runBatchWrite(ctx, l, keys, func(ctx context.Context, chunk []string) (int32, error) {
 		resp, err := l.client.DeleteVertices(ctx, &pb.DeleteVerticesRequest{Keys: chunk})
-		cancel()
 		if err != nil {
-			return deleted, &BatchError{Written: written, Err: wrapStatus(err)}
+			return 0, err
 		}
-		written += len(chunk)
-		deleted += int(resp.GetDeleted())
-	}
-	return deleted, nil
+		return resp.GetDeleted(), nil
+	})
 }
 
 // GetVertices reads a batch of vertices in one (or a few chunked) round
@@ -277,20 +262,19 @@ func (l *Lantern) DeleteVertices(ctx context.Context, keys []string) (int, error
 // callers should match by Vertex.Key. Automatically chunked to respect the
 // server's MaxBatchSize cap.
 func (l *Lantern) GetVertices(ctx context.Context, keys []string) (found []*Vertex, missing []string, err error) {
-	if len(keys) == 0 {
-		return nil, nil, nil
-	}
-	for _, chunk := range chunkSlice(keys, l.opts.batchChunkSize) {
-		cctx, cancel := l.applyTimeout(ctx)
-		resp, rerr := l.client.GetVertices(cctx, &pb.GetVerticesRequest{Keys: chunk})
-		cancel()
+	err = runBatchRead(ctx, l, keys, func(ctx context.Context, chunk []string) error {
+		resp, rerr := l.client.GetVertices(ctx, &pb.GetVerticesRequest{Keys: chunk})
 		if rerr != nil {
-			return nil, nil, wrapStatus(rerr)
+			return rerr
 		}
 		for _, v := range resp.GetVertices() {
 			found = append(found, (*Vertex)(v))
 		}
 		missing = append(missing, resp.GetMissing()...)
+		return nil
+	})
+	if err != nil {
+		return nil, nil, err
 	}
 	return found, missing, nil
 }
@@ -333,18 +317,11 @@ func (l *Lantern) AddEdges(ctx context.Context, inputs []EdgeInput) error {
 	if len(inputs) == 0 {
 		return nil
 	}
-	edges := edgesFrom(inputs)
-	written := 0
-	for _, chunk := range chunkSlice(edges, l.opts.batchChunkSize) {
-		ctx, cancel := l.applyTimeout(ctx)
+	_, err := runBatchWrite(ctx, l, edgesFrom(inputs), func(ctx context.Context, chunk []*pb.Edge) (int32, error) {
 		_, err := l.client.AddEdges(ctx, &pb.AddEdgesRequest{Edges: chunk})
-		cancel()
-		if err != nil {
-			return &BatchError{Written: written, Err: wrapStatus(err)}
-		}
-		written += len(chunk)
-	}
-	return nil
+		return 0, err
+	})
+	return err
 }
 
 // PutEdge overwrites the (tail, head) pair.
@@ -373,18 +350,11 @@ func (l *Lantern) PutEdges(ctx context.Context, inputs []EdgeInput) error {
 	if len(inputs) == 0 {
 		return nil
 	}
-	edges := edgesFrom(inputs)
-	written := 0
-	for _, chunk := range chunkSlice(edges, l.opts.batchChunkSize) {
-		ctx, cancel := l.applyTimeout(ctx)
+	_, err := runBatchWrite(ctx, l, edgesFrom(inputs), func(ctx context.Context, chunk []*pb.Edge) (int32, error) {
 		_, err := l.client.PutEdges(ctx, &pb.PutEdgesRequest{Edges: chunk})
-		cancel()
-		if err != nil {
-			return &BatchError{Written: written, Err: wrapStatus(err)}
-		}
-		written += len(chunk)
-	}
-	return nil
+		return 0, err
+	})
+	return err
 }
 
 // DeleteEdge removes the (tail, head) edge. The returned bool reports
@@ -423,19 +393,13 @@ func (l *Lantern) DeleteEdges(ctx context.Context, refs []EdgeRef) (int, error) 
 	for _, r := range refs {
 		keys = append(keys, &pb.EdgeKey{Tail: r.Tail, Head: r.Head})
 	}
-	written := 0
-	deleted := 0
-	for _, chunk := range chunkSlice(keys, l.opts.batchChunkSize) {
-		ctx, cancel := l.applyTimeout(ctx)
+	return runBatchWrite(ctx, l, keys, func(ctx context.Context, chunk []*pb.EdgeKey) (int32, error) {
 		resp, err := l.client.DeleteEdges(ctx, &pb.DeleteEdgesRequest{Edges: chunk})
-		cancel()
 		if err != nil {
-			return deleted, &BatchError{Written: written, Err: wrapStatus(err)}
+			return 0, err
 		}
-		written += len(chunk)
-		deleted += int(resp.GetDeleted())
-	}
-	return deleted, nil
+		return resp.GetDeleted(), nil
+	})
 }
 
 // GetEdges reads a batch of edges in one (or a few chunked) round trips.
@@ -451,12 +415,10 @@ func (l *Lantern) GetEdges(ctx context.Context, refs []EdgeRef) (found []*Edge, 
 	for _, r := range refs {
 		keys = append(keys, &pb.EdgeKey{Tail: r.Tail, Head: r.Head})
 	}
-	for _, chunk := range chunkSlice(keys, l.opts.batchChunkSize) {
-		cctx, cancel := l.applyTimeout(ctx)
-		resp, rerr := l.client.GetEdges(cctx, &pb.GetEdgesRequest{Edges: chunk})
-		cancel()
+	err = runBatchRead(ctx, l, keys, func(ctx context.Context, chunk []*pb.EdgeKey) error {
+		resp, rerr := l.client.GetEdges(ctx, &pb.GetEdgesRequest{Edges: chunk})
 		if rerr != nil {
-			return nil, nil, wrapStatus(rerr)
+			return rerr
 		}
 		for _, e := range resp.GetEdges() {
 			found = append(found, (*Edge)(e))
@@ -464,6 +426,10 @@ func (l *Lantern) GetEdges(ctx context.Context, refs []EdgeRef) (found []*Edge, 
 		for _, m := range resp.GetMissing() {
 			missing = append(missing, EdgeRef{Tail: m.GetTail(), Head: m.GetHead()})
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, nil, err
 	}
 	return found, missing, nil
 }
