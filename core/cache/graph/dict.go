@@ -160,6 +160,25 @@ func (d *dictionary[S]) len() int {
 	return len(d.forward)
 }
 
+// findByProjection scans the live forward map for the first key K whose
+// extract(K) equals projected. It exists as the slow-path inverse used
+// by GraphCache.ScanByPrefix when S is not string; the typical S=string
+// instantiation never reaches this path.
+//
+// O(N) in the live key count. Intentionally not exposed beyond the
+// graph package \u2014 callers should rely on the string fast path.
+func (d *dictionary[S]) findByProjection(extract func(S) string, projected string) (S, bool) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	for k := range d.forward {
+		if extract(k) == projected {
+			return k, true
+		}
+	}
+	var zero S
+	return zero, false
+}
+
 // allocateLocked mints a fresh id (or recycles one from the freelist),
 // records the forward/reverse mapping, and sets refcount to 1. The
 // caller MUST hold d.mu for writing.

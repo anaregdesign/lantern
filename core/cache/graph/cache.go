@@ -41,37 +41,84 @@ type GraphCache[S comparable, T any] struct {
 	hookMu       sync.RWMutex
 	onExpire     func(kind string, n int)
 	onGCDuration func(d time.Duration)
+
+	// prefixIndex is an optional secondary index keyed by the string
+	// projection of S (see EnablePrefixIndex). When non-nil it is kept in
+	// sync with the vertex cache under c.mu so prefix scans return a
+	// view consistent with point reads. When nil the put / evict paths
+	// pay no extra cost beyond a single nil check.
+	prefixIndex   *radix
+	prefixExtract func(S) string
 }
 
 func NewGraphCache[S comparable, T any](defaultTTL time.Duration) *GraphCache[S, T] {
 	dict := newDictionary[S]()
 	vertices := cache.NewCache[S, T](defaultTTL)
-	// Vertex eviction (Delete, Clear, or Flush) must release the vertex
-	// cache's one dictionary reference per live key. The callback fires
-	// AFTER the inner cache lock is released (see cache.Cache.SetOnEvict),
-	// so taking dict.mu here cannot deadlock. Edges that still reference
-	// the evicted key keep refcount > 0 until the dangling-edge sweep
-	// removes them.
-	vertices.SetOnEvict(func(key S) {
-		if id, ok := dict.lookup(key); ok {
-			dict.release(id)
-		}
-	})
-	return &GraphCache[S, T]{
+	c := &GraphCache[S, T]{
 		defaultTTL: defaultTTL,
 		vertices:   vertices,
 		edges:      newEdgeCache[S](defaultTTL, dict),
 		dict:       dict,
 	}
+	// Vertex eviction (Delete, Clear, or Flush) must release the vertex
+	// cache's one dictionary reference per live key AND drop the key from
+	// the optional prefix index. The callback fires AFTER the inner cache
+	// lock is released (see cache.Cache.SetOnEvict). When invoked via the
+	// outer GraphCache write paths (DeleteVertex, etc.) we are still
+	// holding c.mu.Lock, which is exactly the ordering radix.mu and
+	// dict.mu expect — neither lock calls back into GraphCache.
+	vertices.SetOnEvict(func(key S) {
+		if id, ok := dict.lookup(key); ok {
+			dict.release(id)
+		}
+		if idx := c.prefixIndex; idx != nil {
+			idx.delete(c.prefixExtract(key))
+		}
+	})
+	return c
+}
+
+// EnablePrefixIndex turns on the optional prefix index, projecting each
+// key S through extract to obtain the string used by ScanByPrefix /
+// CountByPrefix / DeleteByPrefix. It must be called before any vertex is
+// stored; calling it on a non-empty cache panics so the caller cannot
+// silently observe an index that disagrees with point reads. extract
+// must not be nil.
+//
+// EnablePrefixIndex is intentionally separate from the constructor:
+//   - GraphCache is generic over S comparable, but prefix semantics are
+//     well-defined only for string-like keys. Lifting the constraint
+//     into the signature would force every caller (including those that
+//     never want prefix scans) to thread a projection through;
+//   - opt-in keeps the put / evict hot paths free of any radix work for
+//     the existing string-keyed deployments that have not migrated.
+func (c *GraphCache[S, T]) EnablePrefixIndex(extract func(S) string) {
+	if extract == nil {
+		panic("graph: EnablePrefixIndex extract must not be nil")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.prefixIndex != nil {
+		return // idempotent: re-enabling with the same intent is fine
+	}
+	if c.vertices.Count() != 0 {
+		panic("graph: EnablePrefixIndex must be called before any vertex is stored")
+	}
+	c.prefixExtract = extract
+	c.prefixIndex = newRadix()
 }
 
 // putVertexLocked inserts (or refreshes) a vertex entry, interning the key
 // in the dictionary exactly once per net live entry. Caller must hold c.mu.
 func (c *GraphCache[S, T]) putVertexLocked(key S, value T, expiration time.Time) {
-	if c.dict != nil && !c.vertices.Has(key) {
+	firstInsert := !c.vertices.Has(key)
+	if c.dict != nil && firstInsert {
 		c.dict.intern(key)
 	}
 	c.vertices.PutWithExpiration(key, value, expiration)
+	if firstInsert && c.prefixIndex != nil {
+		c.prefixIndex.insert(c.prefixExtract(key))
+	}
 }
 
 // ensureVertexLocked auto-creates an endpoint vertex (used by edge writes)
@@ -86,6 +133,9 @@ func (c *GraphCache[S, T]) ensureVertexLocked(key S, expiration time.Time) {
 	}
 	var noop T
 	c.vertices.PutWithExpiration(key, noop, expiration)
+	if c.prefixIndex != nil {
+		c.prefixIndex.insert(c.prefixExtract(key))
+	}
 }
 
 func (c *GraphCache[S, T]) GetVertex(key S) (T, bool) {
