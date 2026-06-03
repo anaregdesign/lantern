@@ -26,7 +26,7 @@ func TestInt(t *testing.T) {
 			if tc.set {
 				t.Setenv(key, tc.value)
 			} else {
-					unset(t, key)
+				unset(t, key)
 			}
 			if got := Int(key, tc.def); got != tc.expect {
 				t.Fatalf("Int(%q)=%d, want %d", tc.value, got, tc.expect)
