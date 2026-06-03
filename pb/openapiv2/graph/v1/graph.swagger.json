@@ -409,6 +409,37 @@
         ]
       }
     },
+    "/v1/vertices/count/{prefix}": {
+      "get": {
+        "summary": "CountVerticesByPrefix returns the number of live vertices whose key\nstarts with the given prefix.",
+        "operationId": "LanternService_CountVerticesByPrefix",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1CountVerticesByPrefixResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "prefix",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "LanternService"
+        ]
+      }
+    },
     "/v1/vertices/delete": {
       "post": {
         "summary": "DeleteVertices removes several vertices in one round trip.",
@@ -443,6 +474,40 @@
         ]
       }
     },
+    "/v1/vertices/delete-by-prefix": {
+      "post": {
+        "summary": "DeleteVerticesByPrefix deletes up to `limit` vertices whose key starts\nwith the given prefix. Pass `dry_run = true` to preview the count\nwithout mutating state.",
+        "operationId": "LanternService_DeleteVerticesByPrefix",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1DeleteVerticesByPrefixResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "DeleteVerticesByPrefixRequest deletes up to `limit` vertices whose key\nstarts with `prefix`. `limit == 0` lets the server apply its configured\ndefault (see RateLimitConfig / ScanConfig). When `dry_run` is true, no\ndeletion is performed and the response reports the number that *would*\nbe deleted.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1DeleteVerticesByPrefixRequest"
+            }
+          }
+        ],
+        "tags": [
+          "LanternService"
+        ]
+      }
+    },
     "/v1/vertices/get": {
       "post": {
         "summary": "GetVertices reads several vertices in one round trip.",
@@ -469,6 +534,40 @@
             "required": true,
             "schema": {
               "$ref": "#/definitions/v1GetVerticesRequest"
+            }
+          }
+        ],
+        "tags": [
+          "LanternService"
+        ]
+      }
+    },
+    "/v1/vertices/scan": {
+      "post": {
+        "summary": "ScanVertices streams vertices whose key starts with the given prefix in\nascending order, page by page. Plural-only — prefix scan is inherently\nplural.",
+        "operationId": "LanternService_ScanVertices",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ScanVerticesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "ScanVerticesRequest streams vertices whose key starts with `prefix` in\nlexicographic order. `limit` caps the number returned in one call; the\nserver enforces a default when `limit == 0` and a hard maximum (see\nRateLimitConfig / ScanConfig on the server). `cursor` MUST be treated as\nopaque bytes by clients — pass back exactly what the previous response\nreturned in `next_cursor`. An empty `cursor` starts from the beginning.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1ScanVerticesRequest"
             }
           }
         ],
@@ -728,6 +827,15 @@
         }
       }
     },
+    "v1CountVerticesByPrefixResponse": {
+      "type": "object",
+      "properties": {
+        "count": {
+          "type": "string",
+          "format": "uint64"
+        }
+      }
+    },
     "v1DeleteEdgeResponse": {
       "type": "object",
       "properties": {
@@ -766,6 +874,31 @@
         "existed": {
           "type": "boolean",
           "description": "existed is true if the vertex was present and removed by this call."
+        }
+      }
+    },
+    "v1DeleteVerticesByPrefixRequest": {
+      "type": "object",
+      "properties": {
+        "prefix": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "dryRun": {
+          "type": "boolean"
+        }
+      },
+      "description": "DeleteVerticesByPrefixRequest deletes up to `limit` vertices whose key\nstarts with `prefix`. `limit == 0` lets the server apply its configured\ndefault (see RateLimitConfig / ScanConfig). When `dry_run` is true, no\ndeletion is performed and the response reports the number that *would*\nbe deleted."
+    },
+    "v1DeleteVerticesByPrefixResponse": {
+      "type": "object",
+      "properties": {
+        "deleted": {
+          "type": "string",
+          "format": "uint64"
         }
       }
     },
@@ -991,6 +1124,41 @@
           "type": "integer",
           "format": "int32",
           "description": "Number of vertices accepted by the server. Currently always equals the\nrequest size on success; reserved for future per-item validation that may\nreport partial writes."
+        }
+      }
+    },
+    "v1ScanVerticesRequest": {
+      "type": "object",
+      "properties": {
+        "prefix": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "cursor": {
+          "type": "string",
+          "format": "byte"
+        }
+      },
+      "description": "ScanVerticesRequest streams vertices whose key starts with `prefix` in\nlexicographic order. `limit` caps the number returned in one call; the\nserver enforces a default when `limit == 0` and a hard maximum (see\nRateLimitConfig / ScanConfig on the server). `cursor` MUST be treated as\nopaque bytes by clients — pass back exactly what the previous response\nreturned in `next_cursor`. An empty `cursor` starts from the beginning."
+    },
+    "v1ScanVerticesResponse": {
+      "type": "object",
+      "properties": {
+        "vertices": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Vertex"
+          },
+          "description": "vertices returned in ascending key order. May be shorter than `limit`\nwhen the underlying range is exhausted."
+        },
+        "nextCursor": {
+          "type": "string",
+          "format": "byte",
+          "description": "next_cursor is non-empty when more results are available. An empty\nvalue signals end of stream."
         }
       }
     },
