@@ -71,6 +71,11 @@ CI: [.github/workflows/go.yml](.github/workflows/go.yml) runs `go build` + `go t
 
 - End-to-end usage: [README.md](README.md)
 - Comprehensive client SDK example: [sdks/go/example/main.go](sdks/go/example/main.go)
+- **HA / replication RFC**: [docs/replication.md](docs/replication.md) — canonical
+  spec for the leaderless full-replica design (HLC, mutation log,
+  Subscribe/Snapshot wire shapes, deployment-topology matrix). Every issue
+  labeled `ha` implements against it; deviations require amending the RFC in
+  the same PR.
 
 ## Maintenance checklist
 
