@@ -133,6 +133,7 @@ type Config struct {
 	MutationLog   MutationLogConfig
 	Replication   ReplicationConfig
 	Peer          PeerConfig
+	AntiEntropy   AntiEntropyConfig
 }
 
 func NewConfig() *Config {
@@ -187,6 +188,7 @@ func NewConfig() *Config {
 		MutationLog: loadMutationLogConfig(),
 		Replication: loadReplicationConfig(),
 		Peer:        loadPeerConfig(),
+		AntiEntropy: loadAntiEntropyConfig(),
 	}
 }
 

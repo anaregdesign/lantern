@@ -27,7 +27,7 @@ func initializeApp() (*App, error) {
 	log := provider.NewMutationLog(mutationLogConfig, domainMetrics)
 	clock := provider.NewHLCClock(replicationConfig)
 	lanternService := newLanternService(graphCache, scanConfig, replicationConfig, logger, log, clock, domainMetrics)
-	lanternReplicationService := newLanternReplicationService(log, graphCache, clock, logger, domainMetrics)
+	lanternReplicationService := newLanternReplicationService(log, graphCache, clock, logger, domainMetrics, lanternService)
 	netConfig := provider.NewNetConfig(config)
 	tlsConfig := provider.NewTLSConfig(config)
 	rateLimitConfig := provider.NewRateLimitConfig(config)
@@ -53,7 +53,9 @@ func initializeApp() (*App, error) {
 	}
 	peerConfig := provider.NewPeerConfig(config)
 	pump := provider.NewReplicationPump(peerConfig, replicationConfig, lanternService, graphCache, logger)
+	antiEntropyConfig := provider.NewAntiEntropyConfig(config)
+	antiEntropy := provider.NewAntiEntropyDriver(peerConfig, replicationConfig, antiEntropyConfig, lanternService, graphCache, pump, logger)
 	mainRegisteredHealth := registerHealthAndReflection(observabilityConfig, server, healthServer)
-	app := newApp(config, logger, lanternServer, metricsServer, tracing, domainMetrics, healthServer, pump, mainRegisteredHealth)
+	app := newApp(config, logger, lanternServer, metricsServer, tracing, domainMetrics, healthServer, pump, antiEntropy, mainRegisteredHealth)
 	return app, nil
 }

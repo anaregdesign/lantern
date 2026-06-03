@@ -193,4 +193,51 @@ service LanternReplicationService {
   //
   // No HTTP gateway annotation (parity with Subscribe).
   rpc Snapshot(SnapshotRequest) returns (stream SnapshotResponse);
+
+  // PeerStatus returns the responder's per-origin (last_applied_seq,
+  // last_applied_hlc) map. Used by anti-entropy (#186) as the
+  // convergence safety net for the Subscribe pump: a periodic
+  // PeerStatus poll lets each node detect that the peer's view of
+  // some origin is ahead of its own and request the missing tail
+  // (via Subscribe(from_seq = local+1)) or — when that returns
+  // FailedPrecondition — fall back to Snapshot.
+  //
+  // The reply set always includes the responder's OWN origin (taken
+  // from its mutation log's last appended seq + hlc) plus every
+  // remote origin whose mutation has ever been applied via
+  // ApplyMutation since process start. Origins the responder has
+  // never seen are simply absent from the map.
+  //
+  // The RPC is intentionally unary and stateless — callers can
+  // multiplex it across many peers without holding any server-side
+  // resources. Returns Unavailable when the mutation log is unset
+  // (single-instance test path).
+  rpc PeerStatus(PeerStatusRequest) returns (PeerStatusResponse);
+}
+
+// PeerStatusRequest is intentionally empty — the responder always
+// returns its full per-origin map. Future revisions may add an
+// optional origin filter without breaking the wire contract.
+message PeerStatusRequest {}
+
+// OriginState is the responder's last-applied position for a single
+// origin. origin is the 16-byte HLC NodeID; last_seq is the highest
+// per-origin seq ever passed through ApplyMutation (or appended to the
+// local log for the responder's own origin); last_hlc is the HLC of
+// that last-applied mutation.
+message OriginState {
+  bytes origin = 1;
+  uint64 last_seq = 2;
+  HLCTimestamp last_hlc = 3;
+}
+
+// PeerStatusResponse carries the responder's per-origin convergence
+// map. Order is unspecified; callers index by origin.
+//
+// self_origin names the responder's OWN 16-byte HLC NodeID so that
+// anti-entropy callers can pick out the row that represents this
+// peer's own writes without having to pre-configure peer NodeIDs.
+message PeerStatusResponse {
+  bytes self_origin = 1;
+  repeated OriginState origins = 2;
 }

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 
@@ -34,6 +35,14 @@ func (nopSubscribeMetrics) OnSubscribeStarted()       {}
 func (nopSubscribeMetrics) OnSubscribeEnded()         {}
 func (nopSubscribeMetrics) OnSubscribeDropped(string) {}
 
+// OriginStatesProvider is the narrow read surface the PeerStatus RPC
+// uses to enumerate per-origin watermarks. *LanternService satisfies
+// it via OriginStates(). Defined here so the replication service can
+// be constructed without a hard dependency on LanternService.
+type OriginStatesProvider interface {
+	OriginStates() []OriginState
+}
+
 // LanternReplicationService implements pb.LanternReplicationServiceServer.
 // It exposes the mutation log as a resumable, back-pressured server-streaming
 // RPC for peer replication and CDC consumers.
@@ -48,6 +57,7 @@ type LanternReplicationService struct {
 	clock   *hlc.Clock
 	metrics SubscribeMetrics
 	logger  *slog.Logger
+	origins OriginStatesProvider
 }
 
 // NewLanternReplicationService constructs the service. log MUST be the same
@@ -80,6 +90,15 @@ func (s *LanternReplicationService) WithMetrics(m SubscribeMetrics) *LanternRepl
 // Defaults to slog.Default() when unset.
 func (s *LanternReplicationService) WithLogger(l *slog.Logger) *LanternReplicationService {
 	s.logger = l
+	return s
+}
+
+// WithOriginStates wires the per-origin watermark provider used by the
+// PeerStatus RPC (#186). Nil disables the RPC (handler returns
+// Unavailable). Wired in production by passing the LanternService
+// instance — its OriginStates() method satisfies the interface.
+func (s *LanternReplicationService) WithOriginStates(p OriginStatesProvider) *LanternReplicationService {
+	s.origins = p
 	return s
 }
 
@@ -272,4 +291,39 @@ func (s *LanternReplicationService) Snapshot(_ *pb.SnapshotRequest, stream grpc.
 		},
 	}
 	return stream.Send(footer)
+}
+
+// PeerStatus implements pb.LanternReplicationServiceServer.
+//
+// Returns the responder's per-origin (last_seq, last_hlc) map. The
+// reply set always includes the local origin (sourced from the
+// mutation log via WithOriginStates) plus every remote origin whose
+// mutation has ever been applied via ApplyMutation since process
+// start.
+//
+// Returns Unavailable when the origin-state provider is unwired —
+// either because replication is disabled on this server (single-
+// instance test path) or because WithOriginStates was never called.
+func (s *LanternReplicationService) PeerStatus(ctx context.Context, _ *pb.PeerStatusRequest) (*pb.PeerStatusResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, status.FromContextError(err).Err()
+	}
+	if s.origins == nil {
+		return nil, status.Error(codes.Unavailable, "replication is not enabled on this server")
+	}
+	rows := s.origins.OriginStates()
+	out := &pb.PeerStatusResponse{Origins: make([]*pb.OriginState, 0, len(rows))}
+	if s.clock != nil {
+		nid := s.clock.NodeID()
+		out.SelfOrigin = append([]byte(nil), nid[:]...)
+	}
+	for _, r := range rows {
+		id := r.Origin
+		out.Origins = append(out.Origins, &pb.OriginState{
+			Origin:  append([]byte(nil), id[:]...),
+			LastSeq: r.LastSeq,
+			LastHlc: hlcToProto(r.LastHLC),
+		})
+	}
+	return out, nil
 }

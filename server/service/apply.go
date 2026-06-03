@@ -172,6 +172,15 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 			s.cache.DeleteEdges(keys)
 		}
 	}
+
+	// Update the per-origin watermark used by PeerStatus (#186). We
+	// only record after a successful apply so a malformed mutation
+	// that returned early above does not advance the watermark.
+	if s.origins != nil && len(origin) > 0 && seq > 0 {
+		var nid hlc.NodeID
+		copy(nid[:], origin)
+		s.origins.Record(nid, seq, ts)
+	}
 	return nil
 }
 

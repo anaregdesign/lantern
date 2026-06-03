@@ -23,14 +23,15 @@ import (
 // App is the composition root produced by wire. It owns every long-running
 // goroutine (gRPC server, metrics HTTP server) so main only has to call Run.
 type App struct {
-	cfg     *provider.Config
-	logger  *slog.Logger
-	grpc    *service.LanternServer
-	metrics provider.MetricsServer
-	tracing *provider.Tracing
-	domain  *domainmetrics.DomainMetrics
-	health  *health.Server
-	pump    *replication.Pump
+	cfg         *provider.Config
+	logger      *slog.Logger
+	grpc        *service.LanternServer
+	metrics     provider.MetricsServer
+	tracing     *provider.Tracing
+	domain      *domainmetrics.DomainMetrics
+	health      *health.Server
+	pump        *replication.Pump
+	antiEntropy *replication.AntiEntropy
 }
 
 func newApp(
@@ -42,17 +43,19 @@ func newApp(
 	domain *domainmetrics.DomainMetrics,
 	hs *health.Server,
 	pump *replication.Pump,
+	antiEntropy *replication.AntiEntropy,
 	_ registeredHealth,
 ) *App {
 	return &App{
-		cfg:     cfg,
-		logger:  logger,
-		grpc:    grpcServer,
-		metrics: metricsServer,
-		tracing: tracing,
-		domain:  domain,
-		health:  hs,
-		pump:    pump,
+		cfg:         cfg,
+		logger:      logger,
+		grpc:        grpcServer,
+		metrics:     metricsServer,
+		tracing:     tracing,
+		domain:      domain,
+		health:      hs,
+		pump:        pump,
+		antiEntropy: antiEntropy,
 	}
 }
 
@@ -102,10 +105,12 @@ func newLanternReplicationService(
 	clock *hlc.Clock,
 	logger *slog.Logger,
 	dm *domainmetrics.DomainMetrics,
+	svc *service.LanternService,
 ) *service.LanternReplicationService {
 	return service.NewLanternReplicationService(log, backend, clock).
 		WithMetrics(dm).
-		WithLogger(logger)
+		WithLogger(logger).
+		WithOriginStates(svc)
 }
 
 func (a *App) Run(ctx context.Context) error {
@@ -116,6 +121,7 @@ func (a *App) Run(ctx context.Context) error {
 	g.Go(func() error { return a.metrics.Run(gctx) })
 	g.Go(func() error { a.domain.Run(gctx); return nil })
 	g.Go(func() error { return a.pump.Run(gctx) })
+	g.Go(func() error { return a.antiEntropy.Run(gctx) })
 	g.Go(func() error {
 		<-gctx.Done()
 		a.health.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)

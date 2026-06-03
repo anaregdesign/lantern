@@ -19,8 +19,9 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	LanternReplicationService_Subscribe_FullMethodName = "/graph.v1.LanternReplicationService/Subscribe"
-	LanternReplicationService_Snapshot_FullMethodName  = "/graph.v1.LanternReplicationService/Snapshot"
+	LanternReplicationService_Subscribe_FullMethodName  = "/graph.v1.LanternReplicationService/Subscribe"
+	LanternReplicationService_Snapshot_FullMethodName   = "/graph.v1.LanternReplicationService/Snapshot"
+	LanternReplicationService_PeerStatus_FullMethodName = "/graph.v1.LanternReplicationService/PeerStatus"
 )
 
 // LanternReplicationServiceClient is the client API for LanternReplicationService service.
@@ -65,6 +66,25 @@ type LanternReplicationServiceClient interface {
 	//
 	// No HTTP gateway annotation (parity with Subscribe).
 	Snapshot(ctx context.Context, in *SnapshotRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SnapshotResponse], error)
+	// PeerStatus returns the responder's per-origin (last_applied_seq,
+	// last_applied_hlc) map. Used by anti-entropy (#186) as the
+	// convergence safety net for the Subscribe pump: a periodic
+	// PeerStatus poll lets each node detect that the peer's view of
+	// some origin is ahead of its own and request the missing tail
+	// (via Subscribe(from_seq = local+1)) or — when that returns
+	// FailedPrecondition — fall back to Snapshot.
+	//
+	// The reply set always includes the responder's OWN origin (taken
+	// from its mutation log's last appended seq + hlc) plus every
+	// remote origin whose mutation has ever been applied via
+	// ApplyMutation since process start. Origins the responder has
+	// never seen are simply absent from the map.
+	//
+	// The RPC is intentionally unary and stateless — callers can
+	// multiplex it across many peers without holding any server-side
+	// resources. Returns Unavailable when the mutation log is unset
+	// (single-instance test path).
+	PeerStatus(ctx context.Context, in *PeerStatusRequest, opts ...grpc.CallOption) (*PeerStatusResponse, error)
 }
 
 type lanternReplicationServiceClient struct {
@@ -113,6 +133,16 @@ func (c *lanternReplicationServiceClient) Snapshot(ctx context.Context, in *Snap
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type LanternReplicationService_SnapshotClient = grpc.ServerStreamingClient[SnapshotResponse]
 
+func (c *lanternReplicationServiceClient) PeerStatus(ctx context.Context, in *PeerStatusRequest, opts ...grpc.CallOption) (*PeerStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PeerStatusResponse)
+	err := c.cc.Invoke(ctx, LanternReplicationService_PeerStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // LanternReplicationServiceServer is the server API for LanternReplicationService service.
 // All implementations should embed UnimplementedLanternReplicationServiceServer
 // for forward compatibility.
@@ -155,6 +185,25 @@ type LanternReplicationServiceServer interface {
 	//
 	// No HTTP gateway annotation (parity with Subscribe).
 	Snapshot(*SnapshotRequest, grpc.ServerStreamingServer[SnapshotResponse]) error
+	// PeerStatus returns the responder's per-origin (last_applied_seq,
+	// last_applied_hlc) map. Used by anti-entropy (#186) as the
+	// convergence safety net for the Subscribe pump: a periodic
+	// PeerStatus poll lets each node detect that the peer's view of
+	// some origin is ahead of its own and request the missing tail
+	// (via Subscribe(from_seq = local+1)) or — when that returns
+	// FailedPrecondition — fall back to Snapshot.
+	//
+	// The reply set always includes the responder's OWN origin (taken
+	// from its mutation log's last appended seq + hlc) plus every
+	// remote origin whose mutation has ever been applied via
+	// ApplyMutation since process start. Origins the responder has
+	// never seen are simply absent from the map.
+	//
+	// The RPC is intentionally unary and stateless — callers can
+	// multiplex it across many peers without holding any server-side
+	// resources. Returns Unavailable when the mutation log is unset
+	// (single-instance test path).
+	PeerStatus(context.Context, *PeerStatusRequest) (*PeerStatusResponse, error)
 }
 
 // UnimplementedLanternReplicationServiceServer should be embedded to have
@@ -169,6 +218,9 @@ func (UnimplementedLanternReplicationServiceServer) Subscribe(*SubscribeRequest,
 }
 func (UnimplementedLanternReplicationServiceServer) Snapshot(*SnapshotRequest, grpc.ServerStreamingServer[SnapshotResponse]) error {
 	return status.Error(codes.Unimplemented, "method Snapshot not implemented")
+}
+func (UnimplementedLanternReplicationServiceServer) PeerStatus(context.Context, *PeerStatusRequest) (*PeerStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PeerStatus not implemented")
 }
 func (UnimplementedLanternReplicationServiceServer) testEmbeddedByValue() {}
 
@@ -212,13 +264,36 @@ func _LanternReplicationService_Snapshot_Handler(srv interface{}, stream grpc.Se
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type LanternReplicationService_SnapshotServer = grpc.ServerStreamingServer[SnapshotResponse]
 
+func _LanternReplicationService_PeerStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PeerStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LanternReplicationServiceServer).PeerStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LanternReplicationService_PeerStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LanternReplicationServiceServer).PeerStatus(ctx, req.(*PeerStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // LanternReplicationService_ServiceDesc is the grpc.ServiceDesc for LanternReplicationService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var LanternReplicationService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "graph.v1.LanternReplicationService",
 	HandlerType: (*LanternReplicationServiceServer)(nil),
-	Methods:     []grpc.MethodDesc{},
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "PeerStatus",
+			Handler:    _LanternReplicationService_PeerStatus_Handler,
+		},
+	},
 	Streams: []grpc.StreamDesc{
 		{
 			StreamName:    "Subscribe",

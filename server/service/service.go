@@ -42,6 +42,7 @@ type LanternService struct {
 	onAppend     func()
 	logger       *slog.Logger
 	tombstoneTTL time.Duration
+	origins      *originStateTracker
 }
 
 // ScanLimits caps the per-call pagination knobs for the prefix RPCs. It is
@@ -65,7 +66,7 @@ func defaultScanLimits() ScanLimits {
 }
 
 func NewLanternService(cache Backend) *LanternService {
-	return &LanternService{cache: cache, scan: defaultScanLimits()}
+	return &LanternService{cache: cache, scan: defaultScanLimits(), origins: newOriginStateTracker()}
 }
 
 // WithScanLimits returns s with its prefix-RPC limits replaced. Intended
@@ -139,6 +140,29 @@ func (s *LanternService) tombstoneExpiration() time.Time {
 	return time.Now().Add(s.tombstoneTTL)
 }
 
+// OriginStates returns a snapshot of the per-origin (last_seq, hlc)
+// watermark map maintained by logMutation and ApplyMutation. Used by
+// the PeerStatus RPC (#186). Returns nil when replication is unwired
+// (the tracker is nil in test paths that construct LanternService
+// directly without going through NewLanternService).
+func (s *LanternService) OriginStates() []OriginState {
+	if s.origins == nil {
+		return nil
+	}
+	return s.origins.States()
+}
+
+// LocalSeq returns the highest per-origin seq the local node has
+// recorded for the given origin (0 when the origin has never been
+// seen, or when the tracker is unwired). Used by the anti-entropy
+// driver (#186) to compute its catch-up start seq.
+func (s *LanternService) LocalSeq(origin hlc.NodeID) uint64 {
+	if s.origins == nil {
+		return 0
+	}
+	return s.origins.LocalSeq(origin)
+}
+
 // logMutation appends op to the mutation log after a local commit. The HLC
 // is stamped here so the seq->hlc ordering on the log is monotone with
 // commit order. Failures are logged but not surfaced to clients — the
@@ -161,13 +185,17 @@ func (s *LanternService) logMutation(op *pb.MutationOp) {
 		Origin: append([]byte(nil), s.origin...),
 		Op:     op,
 	}
-	if _, err := s.log.Append(mu, ts); err != nil {
+	entry, err := s.log.Append(mu, ts)
+	if err != nil {
 		l := s.logger
 		if l == nil {
 			l = slog.Default()
 		}
 		l.Warn("mutation log append failed", slog.Any("err", err))
 		return
+	}
+	if s.origins != nil {
+		s.origins.Record(ts.NodeID, entry.Seq, ts)
 	}
 	if s.onAppend != nil {
 		s.onAppend()
