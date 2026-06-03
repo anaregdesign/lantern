@@ -70,6 +70,7 @@ func registerHealthAndReflection(o provider.ObservabilityConfig, s *grpc.Server,
 func newLanternService(
 	backend service.Backend,
 	sc provider.ScanConfig,
+	rc provider.ReplicationConfig,
 	logger *slog.Logger,
 	log *mutationlog.Log,
 	clock *hlc.Clock,
@@ -83,6 +84,7 @@ func newLanternService(
 			DeleteByPrefixMaxLimit:     sc.DeleteByPrefixMaxLimit,
 		}).
 		WithReplication(log, clock, dm.OnMutationLogAppend).
+		WithTombstoneTTL(rc.TombstoneTTL).
 		WithLogger(logger)
 }
 

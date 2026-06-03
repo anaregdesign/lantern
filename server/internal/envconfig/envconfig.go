@@ -13,7 +13,18 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
+
+// Duration returns the time.Duration value of the named env var (accepted
+// by time.ParseDuration, e.g. "24h", "500ms"), or def when unset or
+// unparseable.
+func Duration(key string, def time.Duration) time.Duration {
+	if v, err := time.ParseDuration(strings.TrimSpace(os.Getenv(key))); err == nil {
+		return v
+	}
+	return def
+}
 
 // Int returns the integer value of the named env var, or def when unset or
 // not a valid base-10 integer.
