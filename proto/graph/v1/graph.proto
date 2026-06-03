@@ -132,6 +132,52 @@ message DeleteVerticesResponse {
   int32 deleted = 1;
 }
 
+// ScanVerticesRequest streams vertices whose key starts with `prefix` in
+// lexicographic order. `limit` caps the number returned in one call; the
+// server enforces a default when `limit == 0` and a hard maximum (see
+// RateLimitConfig / ScanConfig on the server). `cursor` MUST be treated as
+// opaque bytes by clients — pass back exactly what the previous response
+// returned in `next_cursor`. An empty `cursor` starts from the beginning.
+message ScanVerticesRequest {
+  string prefix = 1;
+  uint32 limit = 2;
+  bytes cursor = 3;
+}
+
+message ScanVerticesResponse {
+  // vertices returned in ascending key order. May be shorter than `limit`
+  // when the underlying range is exhausted.
+  repeated Vertex vertices = 1;
+  // next_cursor is non-empty when more results are available. An empty
+  // value signals end of stream.
+  bytes next_cursor = 2;
+}
+
+// CountVerticesByPrefixRequest returns the number of live vertex keys with
+// the given prefix. Cheap (radix-only) and not subject to `limit`.
+message CountVerticesByPrefixRequest {
+  string prefix = 1;
+}
+
+message CountVerticesByPrefixResponse {
+  uint64 count = 1;
+}
+
+// DeleteVerticesByPrefixRequest deletes up to `limit` vertices whose key
+// starts with `prefix`. `limit == 0` lets the server apply its configured
+// default (see RateLimitConfig / ScanConfig). When `dry_run` is true, no
+// deletion is performed and the response reports the number that *would*
+// be deleted.
+message DeleteVerticesByPrefixRequest {
+  string prefix = 1;
+  uint32 limit = 2;
+  bool dry_run = 3;
+}
+
+message DeleteVerticesByPrefixResponse {
+  uint64 deleted = 1;
+}
+
 message GetEdgeRequest {
   string tail = 1;
   string head = 2;
@@ -265,6 +311,32 @@ service LanternService {
   rpc DeleteVertices(DeleteVerticesRequest) returns (DeleteVerticesResponse) {
     option (google.api.http) = {
       post: "/v1/vertices/delete"
+      body: "*"
+    };
+  }
+
+  // ScanVertices streams vertices whose key starts with the given prefix in
+  // ascending order, page by page. Plural-only — prefix scan is inherently
+  // plural.
+  rpc ScanVertices(ScanVerticesRequest) returns (ScanVerticesResponse) {
+    option (google.api.http) = {
+      post: "/v1/vertices/scan"
+      body: "*"
+    };
+  }
+
+  // CountVerticesByPrefix returns the number of live vertices whose key
+  // starts with the given prefix.
+  rpc CountVerticesByPrefix(CountVerticesByPrefixRequest) returns (CountVerticesByPrefixResponse) {
+    option (google.api.http) = {get: "/v1/vertices/count/{prefix}"};
+  }
+
+  // DeleteVerticesByPrefix deletes up to `limit` vertices whose key starts
+  // with the given prefix. Pass `dry_run = true` to preview the count
+  // without mutating state.
+  rpc DeleteVerticesByPrefix(DeleteVerticesByPrefixRequest) returns (DeleteVerticesByPrefixResponse) {
+    option (google.api.http) = {
+      post: "/v1/vertices/delete-by-prefix"
       body: "*"
     };
   }

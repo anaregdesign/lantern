@@ -19,21 +19,24 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	LanternService_Illuminate_FullMethodName     = "/graph.v1.LanternService/Illuminate"
-	LanternService_GetVertex_FullMethodName      = "/graph.v1.LanternService/GetVertex"
-	LanternService_GetVertices_FullMethodName    = "/graph.v1.LanternService/GetVertices"
-	LanternService_PutVertex_FullMethodName      = "/graph.v1.LanternService/PutVertex"
-	LanternService_PutVertices_FullMethodName    = "/graph.v1.LanternService/PutVertices"
-	LanternService_DeleteVertex_FullMethodName   = "/graph.v1.LanternService/DeleteVertex"
-	LanternService_DeleteVertices_FullMethodName = "/graph.v1.LanternService/DeleteVertices"
-	LanternService_GetEdge_FullMethodName        = "/graph.v1.LanternService/GetEdge"
-	LanternService_GetEdges_FullMethodName       = "/graph.v1.LanternService/GetEdges"
-	LanternService_AddEdge_FullMethodName        = "/graph.v1.LanternService/AddEdge"
-	LanternService_AddEdges_FullMethodName       = "/graph.v1.LanternService/AddEdges"
-	LanternService_PutEdge_FullMethodName        = "/graph.v1.LanternService/PutEdge"
-	LanternService_PutEdges_FullMethodName       = "/graph.v1.LanternService/PutEdges"
-	LanternService_DeleteEdge_FullMethodName     = "/graph.v1.LanternService/DeleteEdge"
-	LanternService_DeleteEdges_FullMethodName    = "/graph.v1.LanternService/DeleteEdges"
+	LanternService_Illuminate_FullMethodName             = "/graph.v1.LanternService/Illuminate"
+	LanternService_GetVertex_FullMethodName              = "/graph.v1.LanternService/GetVertex"
+	LanternService_GetVertices_FullMethodName            = "/graph.v1.LanternService/GetVertices"
+	LanternService_PutVertex_FullMethodName              = "/graph.v1.LanternService/PutVertex"
+	LanternService_PutVertices_FullMethodName            = "/graph.v1.LanternService/PutVertices"
+	LanternService_DeleteVertex_FullMethodName           = "/graph.v1.LanternService/DeleteVertex"
+	LanternService_DeleteVertices_FullMethodName         = "/graph.v1.LanternService/DeleteVertices"
+	LanternService_ScanVertices_FullMethodName           = "/graph.v1.LanternService/ScanVertices"
+	LanternService_CountVerticesByPrefix_FullMethodName  = "/graph.v1.LanternService/CountVerticesByPrefix"
+	LanternService_DeleteVerticesByPrefix_FullMethodName = "/graph.v1.LanternService/DeleteVerticesByPrefix"
+	LanternService_GetEdge_FullMethodName                = "/graph.v1.LanternService/GetEdge"
+	LanternService_GetEdges_FullMethodName               = "/graph.v1.LanternService/GetEdges"
+	LanternService_AddEdge_FullMethodName                = "/graph.v1.LanternService/AddEdge"
+	LanternService_AddEdges_FullMethodName               = "/graph.v1.LanternService/AddEdges"
+	LanternService_PutEdge_FullMethodName                = "/graph.v1.LanternService/PutEdge"
+	LanternService_PutEdges_FullMethodName               = "/graph.v1.LanternService/PutEdges"
+	LanternService_DeleteEdge_FullMethodName             = "/graph.v1.LanternService/DeleteEdge"
+	LanternService_DeleteEdges_FullMethodName            = "/graph.v1.LanternService/DeleteEdges"
 )
 
 // LanternServiceClient is the client API for LanternService service.
@@ -50,6 +53,17 @@ type LanternServiceClient interface {
 	DeleteVertex(ctx context.Context, in *DeleteVertexRequest, opts ...grpc.CallOption) (*DeleteVertexResponse, error)
 	// DeleteVertices removes several vertices in one round trip.
 	DeleteVertices(ctx context.Context, in *DeleteVerticesRequest, opts ...grpc.CallOption) (*DeleteVerticesResponse, error)
+	// ScanVertices streams vertices whose key starts with the given prefix in
+	// ascending order, page by page. Plural-only — prefix scan is inherently
+	// plural.
+	ScanVertices(ctx context.Context, in *ScanVerticesRequest, opts ...grpc.CallOption) (*ScanVerticesResponse, error)
+	// CountVerticesByPrefix returns the number of live vertices whose key
+	// starts with the given prefix.
+	CountVerticesByPrefix(ctx context.Context, in *CountVerticesByPrefixRequest, opts ...grpc.CallOption) (*CountVerticesByPrefixResponse, error)
+	// DeleteVerticesByPrefix deletes up to `limit` vertices whose key starts
+	// with the given prefix. Pass `dry_run = true` to preview the count
+	// without mutating state.
+	DeleteVerticesByPrefix(ctx context.Context, in *DeleteVerticesByPrefixRequest, opts ...grpc.CallOption) (*DeleteVerticesByPrefixResponse, error)
 	GetEdge(ctx context.Context, in *GetEdgeRequest, opts ...grpc.CallOption) (*GetEdgeResponse, error)
 	// GetEdges reads several edges in one round trip.
 	GetEdges(ctx context.Context, in *GetEdgesRequest, opts ...grpc.CallOption) (*GetEdgesResponse, error)
@@ -138,6 +152,36 @@ func (c *lanternServiceClient) DeleteVertices(ctx context.Context, in *DeleteVer
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(DeleteVerticesResponse)
 	err := c.cc.Invoke(ctx, LanternService_DeleteVertices_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *lanternServiceClient) ScanVertices(ctx context.Context, in *ScanVerticesRequest, opts ...grpc.CallOption) (*ScanVerticesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ScanVerticesResponse)
+	err := c.cc.Invoke(ctx, LanternService_ScanVertices_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *lanternServiceClient) CountVerticesByPrefix(ctx context.Context, in *CountVerticesByPrefixRequest, opts ...grpc.CallOption) (*CountVerticesByPrefixResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CountVerticesByPrefixResponse)
+	err := c.cc.Invoke(ctx, LanternService_CountVerticesByPrefix_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *lanternServiceClient) DeleteVerticesByPrefix(ctx context.Context, in *DeleteVerticesByPrefixRequest, opts ...grpc.CallOption) (*DeleteVerticesByPrefixResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteVerticesByPrefixResponse)
+	err := c.cc.Invoke(ctx, LanternService_DeleteVerticesByPrefix_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -238,6 +282,17 @@ type LanternServiceServer interface {
 	DeleteVertex(context.Context, *DeleteVertexRequest) (*DeleteVertexResponse, error)
 	// DeleteVertices removes several vertices in one round trip.
 	DeleteVertices(context.Context, *DeleteVerticesRequest) (*DeleteVerticesResponse, error)
+	// ScanVertices streams vertices whose key starts with the given prefix in
+	// ascending order, page by page. Plural-only — prefix scan is inherently
+	// plural.
+	ScanVertices(context.Context, *ScanVerticesRequest) (*ScanVerticesResponse, error)
+	// CountVerticesByPrefix returns the number of live vertices whose key
+	// starts with the given prefix.
+	CountVerticesByPrefix(context.Context, *CountVerticesByPrefixRequest) (*CountVerticesByPrefixResponse, error)
+	// DeleteVerticesByPrefix deletes up to `limit` vertices whose key starts
+	// with the given prefix. Pass `dry_run = true` to preview the count
+	// without mutating state.
+	DeleteVerticesByPrefix(context.Context, *DeleteVerticesByPrefixRequest) (*DeleteVerticesByPrefixResponse, error)
 	GetEdge(context.Context, *GetEdgeRequest) (*GetEdgeResponse, error)
 	// GetEdges reads several edges in one round trip.
 	GetEdges(context.Context, *GetEdgesRequest) (*GetEdgesResponse, error)
@@ -281,6 +336,15 @@ func (UnimplementedLanternServiceServer) DeleteVertex(context.Context, *DeleteVe
 }
 func (UnimplementedLanternServiceServer) DeleteVertices(context.Context, *DeleteVerticesRequest) (*DeleteVerticesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteVertices not implemented")
+}
+func (UnimplementedLanternServiceServer) ScanVertices(context.Context, *ScanVerticesRequest) (*ScanVerticesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ScanVertices not implemented")
+}
+func (UnimplementedLanternServiceServer) CountVerticesByPrefix(context.Context, *CountVerticesByPrefixRequest) (*CountVerticesByPrefixResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CountVerticesByPrefix not implemented")
+}
+func (UnimplementedLanternServiceServer) DeleteVerticesByPrefix(context.Context, *DeleteVerticesByPrefixRequest) (*DeleteVerticesByPrefixResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteVerticesByPrefix not implemented")
 }
 func (UnimplementedLanternServiceServer) GetEdge(context.Context, *GetEdgeRequest) (*GetEdgeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetEdge not implemented")
@@ -448,6 +512,60 @@ func _LanternService_DeleteVertices_Handler(srv interface{}, ctx context.Context
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LanternServiceServer).DeleteVertices(ctx, req.(*DeleteVerticesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LanternService_ScanVertices_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ScanVerticesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LanternServiceServer).ScanVertices(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LanternService_ScanVertices_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LanternServiceServer).ScanVertices(ctx, req.(*ScanVerticesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LanternService_CountVerticesByPrefix_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CountVerticesByPrefixRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LanternServiceServer).CountVerticesByPrefix(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LanternService_CountVerticesByPrefix_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LanternServiceServer).CountVerticesByPrefix(ctx, req.(*CountVerticesByPrefixRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LanternService_DeleteVerticesByPrefix_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteVerticesByPrefixRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LanternServiceServer).DeleteVerticesByPrefix(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LanternService_DeleteVerticesByPrefix_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LanternServiceServer).DeleteVerticesByPrefix(ctx, req.(*DeleteVerticesByPrefixRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -630,6 +748,18 @@ var LanternService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteVertices",
 			Handler:    _LanternService_DeleteVertices_Handler,
+		},
+		{
+			MethodName: "ScanVertices",
+			Handler:    _LanternService_ScanVertices_Handler,
+		},
+		{
+			MethodName: "CountVerticesByPrefix",
+			Handler:    _LanternService_CountVerticesByPrefix_Handler,
+		},
+		{
+			MethodName: "DeleteVerticesByPrefix",
+			Handler:    _LanternService_DeleteVerticesByPrefix_Handler,
 		},
 		{
 			MethodName: "GetEdge",
