@@ -204,6 +204,10 @@ cat edges.ndjson | ./lantern bulk edges add - # streamed AddEdges
 ./lantern vertex delete-prefix tmp/ --dry-run        # preview count
 ./lantern vertex delete-prefix tmp/ --yes            # actually delete
 
+# edge scan (tail/head prefix; either may be empty)
+./lantern edge scan --tail-prefix user: --head-prefix post:  # one page
+./lantern edge scan --tail-prefix user: --all > edges.ndjson # stream every match
+
 # TLS / mTLS
 ./lantern --tls --tls-ca ./ca.pem -H lantern.example.com -p 443 vertex get alice
 

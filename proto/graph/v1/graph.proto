@@ -219,6 +219,36 @@ message EdgeKey {
   string head = 2;
 }
 
+// ScanEdgesRequest streams edges whose tail key starts with `tail_prefix`
+// AND whose head key starts with `head_prefix`, in ascending (tail, head)
+// order. Either prefix may be empty to disable the corresponding filter
+// (both empty scans every edge). `limit` caps the number returned in one
+// call; the server enforces a default when `limit == 0` and a hard maximum
+// (see ScanConfig on the server). `cursor` MUST be treated as opaque bytes
+// by clients — pass back exactly what the previous response returned in
+// `next_cursor`. An empty `cursor` starts from the beginning.
+//
+// Implementation note: v1 walks the tail-side prefix index and applies
+// `head_prefix` as a post-filter; for highly selective `head_prefix`
+// queries the server may visit many tails to fill one page. Latency is
+// reported in the standard scan histogram so operators can spot
+// pathological filters.
+message ScanEdgesRequest {
+  string tail_prefix = 1;
+  string head_prefix = 2;
+  uint32 limit = 3;
+  bytes cursor = 4;
+}
+
+message ScanEdgesResponse {
+  // edges returned in ascending (tail, head) order. May be shorter than
+  // `limit` when the underlying range is exhausted.
+  repeated Edge edges = 1;
+  // next_cursor is non-empty when more results are available. An empty
+  // value signals end of stream.
+  bytes next_cursor = 2;
+}
+
 // DeleteEdgesRequest removes several edges in one round trip. Subject to the
 // MaxBatchSize / MaxKeyLen guard rails.
 message DeleteEdgesRequest {
@@ -393,6 +423,16 @@ service LanternService {
   rpc DeleteEdges(DeleteEdgesRequest) returns (DeleteEdgesResponse) {
     option (google.api.http) = {
       post: "/v1/edges/delete"
+      body: "*"
+    };
+  }
+
+  // ScanEdges streams edges whose tail key starts with `tail_prefix` AND
+  // whose head key starts with `head_prefix`, in ascending (tail, head)
+  // order, page by page. Plural-only — prefix scan is inherently plural.
+  rpc ScanEdges(ScanEdgesRequest) returns (ScanEdgesResponse) {
+    option (google.api.http) = {
+      post: "/v1/edges/scan"
       body: "*"
     };
   }

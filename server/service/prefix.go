@@ -2,10 +2,12 @@ package service
 
 import (
 	"context"
+	"time"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // ScanVertices walks the vertex keyspace in lexicographic order, returning a
@@ -116,4 +118,63 @@ func clampLimit(requested, def, max uint32) uint32 {
 		requested = max
 	}
 	return requested
+}
+
+// ScanEdges walks the edge keyspace in ascending (tail, head) order,
+// returning a single page of edges whose tail key starts with TailPrefix
+// AND whose head key starts with HeadPrefix. Either prefix may be empty.
+//
+// Pagination shares the ScanVertices limits (clamped to (0,
+// ScanMaxLimit]; zero falls back to ScanDefaultLimit). The opaque cursor
+// encodes (LastTail, LastHead) — wire-incompatible with the vertex
+// cursor on purpose so the two pagination streams cannot be swapped.
+//
+// Implementation note: v1 walks the vertex-side prefix index for the
+// tail dimension and applies HeadPrefix as a post-filter. AddEdge /
+// PutEdge auto-create both endpoints as vertices, so the radix already
+// covers every live tail; no parallel edge index exists today.
+func (s *LanternService) ScanEdges(ctx context.Context, in *pb.ScanEdgesRequest) (*pb.ScanEdgesResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, status.FromContextError(err).Err()
+	}
+	limit := clampLimit(in.GetLimit(), s.scan.ScanDefaultLimit, s.scan.ScanMaxLimit)
+
+	cursor, err := decodeEdgesCursor(in.GetCursor())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%s", err.Error())
+	}
+
+	edges := make([]*pb.Edge, 0, limit)
+	var lastTail, lastHead string
+	hitLimit := false
+	s.cache.ScanEdgesByPrefix(ctx, in.GetTailPrefix(), in.GetHeadPrefix(),
+		func(_ string, tail string, _ string, head string, weight float32, exp time.Time) bool {
+			// Cursor skip: drop everything whose (tail, head) is <=
+			// cursor's last emitted pair. The walk is in ascending
+			// (tail, head) order so once we cross the cursor we never
+			// revisit a smaller pair.
+			if cursor.LastTail != "" || cursor.LastHead != "" {
+				if tail < cursor.LastTail ||
+					(tail == cursor.LastTail && head <= cursor.LastHead) {
+					return true
+				}
+			}
+			if uint32(len(edges)) >= limit {
+				hitLimit = true
+				return false
+			}
+			edge := &pb.Edge{Tail: tail, Head: head, Weight: weight}
+			if !exp.IsZero() {
+				edge.Expiration = timestamppb.New(exp)
+			}
+			edges = append(edges, edge)
+			lastTail, lastHead = tail, head
+			return true
+		})
+
+	resp := &pb.ScanEdgesResponse{Edges: edges}
+	if hitLimit && (lastTail != "" || lastHead != "") {
+		resp.NextCursor = encodeEdgesCursor(scanEdgesCursor{LastTail: lastTail, LastHead: lastHead})
+	}
+	return resp, nil
 }

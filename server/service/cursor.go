@@ -64,3 +64,44 @@ func decodeCursor(b []byte) (scanCursor, error) {
 	}
 	return c, nil
 }
+
+// scanEdgesCursor pages ScanEdges by the last (tail, head) pair returned.
+// Wire format mirrors scanCursor: a versioned, base64-wrapped JSON blob
+// opaque to clients. The next page resumes at the first edge whose
+// (tail, head) is strictly greater (lexicographic, tail dominant) than
+// (LastTail, LastHead) within the request's tail/head prefix.
+type scanEdgesCursor struct {
+	Version  uint8  `json:"v"`
+	LastTail string `json:"t"`
+	LastHead string `json:"h"`
+}
+
+func encodeEdgesCursor(c scanEdgesCursor) []byte {
+	c.Version = cursorVersion
+	raw, err := json.Marshal(c)
+	if err != nil {
+		return nil
+	}
+	out := make([]byte, base64.RawURLEncoding.EncodedLen(len(raw)))
+	base64.RawURLEncoding.Encode(out, raw)
+	return out
+}
+
+func decodeEdgesCursor(b []byte) (scanEdgesCursor, error) {
+	if len(b) == 0 {
+		return scanEdgesCursor{}, nil
+	}
+	raw := make([]byte, base64.RawURLEncoding.DecodedLen(len(b)))
+	n, err := base64.RawURLEncoding.Decode(raw, b)
+	if err != nil {
+		return scanEdgesCursor{}, fmt.Errorf("decode cursor: %w", err)
+	}
+	var c scanEdgesCursor
+	if err := json.Unmarshal(raw[:n], &c); err != nil {
+		return scanEdgesCursor{}, fmt.Errorf("decode cursor: %w", err)
+	}
+	if c.Version != cursorVersion {
+		return scanEdgesCursor{}, fmt.Errorf("decode cursor: unsupported version %d", c.Version)
+	}
+	return c, nil
+}

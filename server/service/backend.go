@@ -46,6 +46,14 @@ type Backend interface {
 	CountByPrefix(prefix string) int
 	DeleteByPrefix(ctx context.Context, prefix string, limit int) int
 
+	// edge-side prefix scan. ScanEdgesByPrefix invokes fn for each live
+	// edge whose tail starts with tailPrefix AND whose head starts with
+	// headPrefix, in ascending (tail, head) order. Either prefix may be
+	// empty to disable the corresponding filter. fn returns false to
+	// stop early. Plural-only on the wire (no CountEdges /
+	// DeleteEdgesByPrefix in this phase).
+	ScanEdgesByPrefix(ctx context.Context, tailPrefix, headPrefix string, fn func(tailProjected string, tail string, headProjected string, head string, weight float32, expiration time.Time) bool) bool
+
 	// background GC loop driven by LanternServer.
 	Watch(ctx context.Context, interval time.Duration)
 }
