@@ -178,21 +178,30 @@ func (c *GraphCache[S, T]) DeleteEdge(tail, head S) bool {
 
 	return c.edges.delete(tail, head)
 }
-func (c *GraphCache[S, T]) flush() int {
+
+// flush performs the fused GC sweep over the edge map in a single walk.
+// It removes zero-weight edges (returned as `zero`) and edges whose endpoints
+// reference vertices that are no longer live (returned as `dangling`).
+//
+// Previously the GC tick walked the edge map twice and additionally cloned
+// the whole tf map via snapshotTF before the dangling sweep; folding the two
+// checks into one walk eliminates that O(E) snapshot allocation and roughly
+// halves the c.mu.Lock hold time on large graphs.
+func (c *GraphCache[S, T]) flush() (zero, dangling int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	removed := 0
-	for tail, heads := range c.edges.snapshotTF() {
-		for head := range heads {
-			if !c.vertices.Has(tail) || !c.vertices.Has(head) {
-				if c.edges.delete(tail, head) {
-					removed++
-				}
-			}
+	return c.edges.flushFunc(func(tailID, headID vertexID) bool {
+		tail, ok := c.edges.resolveID(tailID)
+		if !ok {
+			return false
 		}
-	}
-	return removed
+		head, ok := c.edges.resolveID(headID)
+		if !ok {
+			return false
+		}
+		return c.vertices.Has(tail) && c.vertices.Has(head)
+	})
 }
 
 // VertexCount returns the live vertex count under an RLock. Intended for
@@ -421,8 +430,7 @@ func (c *GraphCache[S, T]) Watch(ctx context.Context, interval time.Duration) {
 		case <-ticker.C:
 			start := time.Now()
 			vExpired := c.vertices.Flush()
-			eExpired := c.edges.flush()
-			dRemoved := c.flush()
+			eExpired, dRemoved := c.flush()
 			d := time.Since(start)
 			onExpire, onGC := c.snapshotHooks()
 			if onExpire != nil {

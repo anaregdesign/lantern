@@ -375,6 +375,37 @@ func (c *edgeCache[S]) flush() int {
 	return removed
 }
 
+// flushFunc is the fused single-walk sweep used by GraphCache GC. In one
+// pass it removes zero-weight edges (counted in `zero`) and edges for which
+// the supplied keep predicate returns false (counted in `dangling`). A nil
+// keep skips the second check and behaves like flush.
+//
+// Caller is responsible for any cross-structure consistency: the predicate
+// runs while c.mu is held write-locked, so it must not take c.mu itself.
+// The typical caller (GraphCache.Watch) wraps the call in the surrounding
+// GraphCache.mu.Lock() so the predicate can read sibling state (e.g. the
+// vertex cache) without further locking.
+func (c *edgeCache[S]) flushFunc(keep func(tail, head vertexID) bool) (zero, dangling int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for tailID, heads := range c.tf {
+		for headID, w := range heads {
+			switch {
+			case w.isZero():
+				if c.deleteLocked(tailID, headID) {
+					zero++
+				}
+			case keep != nil && !keep(tailID, headID):
+				if c.deleteLocked(tailID, headID) {
+					dangling++
+				}
+			}
+		}
+	}
+	return
+}
+
 // count returns the current number of (tail, head) edges held in tf.
 // It acquires only an RLock so it is safe to call from metric collectors.
 func (c *edgeCache[S]) count() int {
