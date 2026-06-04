@@ -18,9 +18,15 @@ import (
 //     keeping the rest of the replication stack enabled.
 //   - LANTERN_ANTI_ENTROPY_SUBSCRIBE_TIMEOUT_MS  caps the duration of
 //     a single catch-up Subscribe stream. Default 30000 (30s).
+//   - LANTERN_ANTI_ENTROPY_GAP_WARN_THRESHOLD  when a per-peer catch-up
+//     gap (peer_seq - local_seq) exceeds this many mutations, emit a
+//     warn-level "gap exceeds threshold" log in addition to the
+//     standard info-level catch-up log. Default 1024. Set to 0 to
+//     disable the warn (info log still fires).
 type AntiEntropyConfig struct {
 	Interval         time.Duration
 	SubscribeTimeout time.Duration
+	GapWarnThreshold uint64
 }
 
 // NewAntiEntropyConfig selects the AntiEntropy slice of Config.
@@ -32,6 +38,7 @@ func loadAntiEntropyConfig() AntiEntropyConfig {
 	return AntiEntropyConfig{
 		Interval:         time.Duration(envconfig.Int("LANTERN_ANTI_ENTROPY_INTERVAL_MS", 30_000)) * time.Millisecond,
 		SubscribeTimeout: time.Duration(envconfig.Int("LANTERN_ANTI_ENTROPY_SUBSCRIBE_TIMEOUT_MS", 30_000)) * time.Millisecond,
+		GapWarnThreshold: uint64(envconfig.Int("LANTERN_ANTI_ENTROPY_GAP_WARN_THRESHOLD", 1024)),
 	}
 }
 
@@ -60,6 +67,7 @@ func NewAntiEntropyDriver(
 		Peers:            pc.Peers,
 		Interval:         ac.Interval,
 		SubscribeTimeout: ac.SubscribeTimeout,
+		GapWarnThreshold: ac.GapWarnThreshold,
 		Logger:           logger,
 		Metrics:          m,
 	}, svc, svc, cache)

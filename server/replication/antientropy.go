@@ -99,6 +99,13 @@ type AntiEntropyConfig struct {
 	// tick will resume from where we stopped.
 	SubscribeTimeout time.Duration
 
+	// GapWarnThreshold escalates the per-peer catch-up log from
+	// info to an additional warn when (peer_seq - local_seq)
+	// exceeds this many mutations. 0 disables the warn (the
+	// info log still fires). The standard catch-up info log is
+	// always emitted regardless of this knob.
+	GapWarnThreshold uint64
+
 	// DialOptions are passed to grpc.NewClient. Defaults to
 	// insecure credentials (in-cluster Tier-A topology).
 	DialOptions []grpc.DialOption
@@ -264,6 +271,12 @@ func (a *AntiEntropy) tickPeer(ctx context.Context, addr string) {
 		slog.Uint64("local_seq", localSeq),
 		slog.Uint64("peer_seq", target),
 		slog.Uint64("gap", gap))
+	if a.cfg.GapWarnThreshold > 0 && gap > a.cfg.GapWarnThreshold {
+		log.Warn("anti-entropy: gap exceeds warn threshold",
+			slog.String("origin", originHex),
+			slog.Uint64("gap", gap),
+			slog.Uint64("threshold", a.cfg.GapWarnThreshold))
+	}
 
 	applied, err := a.catchUp(ctx, cli, peerNID, localSeq+1, target)
 	if err != nil {

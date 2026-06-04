@@ -75,6 +75,8 @@ type RateLimitConfig struct {
 //   - LANTERN_REFLECTION                 true|false            (default true)
 //   - LANTERN_VERSION                    overrides lantern_build_info{version}
 //   - LANTERN_COMMIT                     overrides lantern_build_info{commit}
+//   - LANTERN_SLOW_RPC_THRESHOLD_MS      milliseconds; RPCs that take longer
+//     emit a warn-level "slow rpc" log. Default 500. Set to 0 to disable.
 type ObservabilityConfig struct {
 	LogLevel         slog.Level
 	LogFormat        string
@@ -82,6 +84,7 @@ type ObservabilityConfig struct {
 	EnableReflection bool
 	Version          string
 	Commit           string
+	SlowRPCThreshold time.Duration
 }
 
 // CacheConfig sizes the GraphCache TTL and its GC tick.
@@ -167,6 +170,7 @@ func NewConfig() *Config {
 			EnableReflection: envconfig.Bool("LANTERN_REFLECTION", true),
 			Version:          os.Getenv("LANTERN_VERSION"),
 			Commit:           os.Getenv("LANTERN_COMMIT"),
+			SlowRPCThreshold: time.Duration(envconfig.Int("LANTERN_SLOW_RPC_THRESHOLD_MS", 500)) * time.Millisecond,
 		},
 		Cache: CacheConfig{
 			TTL:        time.Duration(envconfig.Int("LANTERN_DEFAULT_TTL_SECONDS", 60)) * time.Second,
@@ -234,10 +238,11 @@ func NewGraphCache(c CacheConfig) *graph.GraphCache[string, *v1.Vertex] {
 }
 
 // NewDomainMetrics registers the Lantern-specific `lantern_*` collectors on
-// the shared Prometheus registry and wires the GraphCache GC hooks so each
-// Watch tick updates the eviction counters and histogram. The gauge sampler
-// runs from DomainMetrics.Run, started by App alongside the other long-lived
-// goroutines.
+// the shared Prometheus registry and binds the gauge sampler that reads
+// cache.VertexCount / EdgeCount on each DomainMetrics.Run tick. The GC
+// hooks themselves are installed separately by WireCacheGCHooks so the
+// metrics adapter can be multiplexed with the structured per-tick log
+// (#223).
 func NewDomainMetrics(
 	reg *prometheus.Registry,
 	o ObservabilityConfig,
@@ -250,8 +255,60 @@ func NewDomainMetrics(
 	m.BindSampler(func() (int, int) {
 		return cache.VertexCount(), cache.EdgeCount()
 	})
-	cache.SetGCHooks(m.OnExpire, m.OnGCDuration)
 	return m
+}
+
+// CacheGCHooksWired is a marker returned by WireCacheGCHooks so wire can
+// force ordering: the wiring must happen after both DomainMetrics and the
+// logger are constructed, but the result is not consumed by any downstream
+// provider directly. newApp accepts it as an unused parameter.
+type CacheGCHooksWired struct{}
+
+// WireCacheGCHooks installs a multiplexed pair of GC hooks on the cache:
+// one branch updates DomainMetrics (lantern_cache_evicted_total +
+// lantern_cache_gc_duration_seconds), the other emits one info-level
+// "graph cache: gc tick" slog line per tick summarising the work done
+// (#223). The hooks are fired sequentially by GraphCache.Watch on a
+// single goroutine, so the per-tick accumulator inside the closure is
+// safe without locking.
+func WireCacheGCHooks(
+	cache *graph.GraphCache[string, *v1.Vertex],
+	m *domainmetrics.DomainMetrics,
+	logger *slog.Logger,
+) CacheGCHooksWired {
+	// Per-tick accumulator. GraphCache.Watch calls onExpire 0–3 times
+	// (one per non-empty kind) then onGC once — atomically per tick,
+	// on a single goroutine — so a plain struct is sufficient.
+	var tick struct {
+		vertices int
+		edges    int
+		dangling int
+	}
+	onExpire := func(kind string, n int) {
+		m.OnExpire(kind, n)
+		switch kind {
+		case "vertex":
+			tick.vertices += n
+		case "edge":
+			tick.edges += n
+		case "dangling_edge":
+			tick.dangling += n
+		}
+	}
+	onGC := func(d time.Duration) {
+		m.OnGCDuration(d)
+		logger.LogAttrs(context.Background(), slog.LevelInfo, "graph cache: gc tick",
+			slog.Int("vertices_expired", tick.vertices),
+			slog.Int("edges_expired", tick.edges),
+			slog.Int("dangling_edges_removed", tick.dangling),
+			slog.Int("vertices_remaining", cache.VertexCount()),
+			slog.Int("edges_remaining", cache.EdgeCount()),
+			slog.Int64("duration_ms", d.Milliseconds()),
+		)
+		tick.vertices, tick.edges, tick.dangling = 0, 0, 0
+	}
+	cache.SetGCHooks(onExpire, onGC)
+	return CacheGCHooksWired{}
 }
 
 func NewListener(n NetConfig) (net.Listener, error) {
@@ -299,6 +356,7 @@ func NewGrpcServerOptions(
 	tlsCfg TLSConfig,
 	rl RateLimitConfig,
 	limits ValidationLimits,
+	obs ObservabilityConfig,
 	logger *slog.Logger,
 	metrics *grpcprom.ServerMetrics,
 	dm *domainmetrics.DomainMetrics,
@@ -314,7 +372,8 @@ func NewGrpcServerOptions(
 	}
 
 	validator := NewValidationInterceptor(limits).
-		WithRejectHook(dm.OnValidationRejected)
+		WithRejectHook(dm.OnValidationRejected).
+		WithLogger(logger)
 
 	unary := []grpc.UnaryServerInterceptor{
 		recovery.UnaryServerInterceptor(recoveryOpts...),
@@ -335,6 +394,13 @@ func NewGrpcServerOptions(
 	} else {
 		unary = append(unary, validator.UnaryServerInterceptor())
 		stream = append(stream, validator.StreamServerInterceptor())
+	}
+
+	// Slow-RPC warn log fires last so it observes the full handler
+	// duration including validation + rate-limit decisions (#223).
+	if slow := NewSlowRPCInterceptor(obs.SlowRPCThreshold, logger); slow.Enabled() {
+		unary = append(unary, slow.UnaryServerInterceptor())
+		stream = append(stream, slow.StreamServerInterceptor())
 	}
 
 	opts := []grpc.ServerOption{

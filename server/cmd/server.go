@@ -45,6 +45,7 @@ func newApp(
 	pump *replication.Pump,
 	antiEntropy *replication.AntiEntropy,
 	_ registeredHealth,
+	_ provider.CacheGCHooksWired,
 ) *App {
 	return &App{
 		cfg:         cfg,
