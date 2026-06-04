@@ -23,6 +23,12 @@ services:
       # and /debug/pprof/block to return useful data. Cheap at these rates.
       LANTERN_MUTEX_PROFILE_FRACTION: "100"
       LANTERN_BLOCK_PROFILE_RATE: "10000"
+      # Shrink the mutation-log ring from the prod default (100k) to a bench
+      # size. At 5k RPS for 5min the steady-state phase generates ~1.5M ops,
+      # so a 10k ring overflows ~150x — exercising gap-fill / snapshot paths
+      # while keeping legitimate ring retention well under the leak_gate
+      # heap budget. See issue #254.
+      LANTERN_MUTATION_LOG_CAPACITY: "10000"
     ports:
       - target: 9090
         published: "9390-9392"
