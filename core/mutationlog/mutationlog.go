@@ -103,6 +103,7 @@ type Log struct {
 	ring        []Entry
 	firstSeq    uint64 // seq of ring[0] when len(ring) > 0; otherwise next-to-assign
 	lastSeq     uint64 // seq of last appended entry; 0 means none appended yet
+	evicted     uint64 // total entries dropped by ring-buffer eviction
 	hasEntries  bool
 	closed      bool
 	subscribers map[*subscription]struct{}
@@ -159,6 +160,29 @@ func (l *Log) LastSeq() (uint64, bool) {
 	return l.lastSeq, true
 }
 
+// Cap returns the configured ring-buffer capacity.
+func (l *Log) Cap() int {
+	// capacity is set once at construction; no lock needed.
+	return l.capacity
+}
+
+// Len returns the number of entries currently resident in the ring buffer.
+// 0 <= Len() <= Cap().
+func (l *Log) Len() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.ring)
+}
+
+// Evicted returns the cumulative count of entries dropped from the ring
+// buffer because Append at full capacity displaced the oldest entry. The
+// counter is monotonic for the lifetime of the Log.
+func (l *Log) Evicted() uint64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.evicted
+}
+
 // Append assigns the next sequence number to op, persists the entry through
 // the WAL hook, stores it in the ring buffer, and fans it out to every live
 // subscriber. The returned [Entry] carries the assigned Seq.
@@ -197,6 +221,7 @@ func (l *Log) storeLocked(entry Entry) {
 	copy(l.ring, l.ring[1:])
 	l.ring[len(l.ring)-1] = entry
 	l.firstSeq = l.ring[0].Seq
+	l.evicted++
 }
 
 // fanoutLocked delivers entry to every subscriber. A subscriber that cannot

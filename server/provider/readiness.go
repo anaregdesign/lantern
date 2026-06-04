@@ -1,6 +1,8 @@
 package provider
 
 import (
+	"time"
+
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 	"github.com/anaregdesign/lantern/server/readiness"
@@ -72,9 +74,9 @@ func (f *pumpMetricsFanOut) OnPumpDropSelfEcho(peer string) {
 	f.gate.OnPumpDropSelfEcho(peer)
 }
 
-func (f *pumpMetricsFanOut) OnPumpSnapshotReplayed(peer string, vertices, edges uint64) {
-	f.dm.OnPumpSnapshotReplayed(peer, vertices, edges)
-	f.gate.OnPumpSnapshotReplayed(peer, vertices, edges)
+func (f *pumpMetricsFanOut) OnPumpSnapshotReplayed(peer string, vertices, edges uint64, duration time.Duration) {
+	f.dm.OnPumpSnapshotReplayed(peer, vertices, edges, duration)
+	f.gate.OnPumpSnapshotReplayed(peer, vertices, edges, duration)
 }
 
 // antiEntropyMetricsFanOut delegates AntiEntropyMetrics events to both

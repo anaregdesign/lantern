@@ -74,16 +74,16 @@ type Metrics interface {
 	OnPumpDisconnect(peer string, reason string)
 	OnPumpApply(peer string)
 	OnPumpDropSelfEcho(peer string)
-	OnPumpSnapshotReplayed(peer string, vertices, edges uint64)
+	OnPumpSnapshotReplayed(peer string, vertices, edges uint64, duration time.Duration)
 }
 
 type nopMetrics struct{}
 
-func (nopMetrics) OnPumpConnect(string)                          {}
-func (nopMetrics) OnPumpDisconnect(string, string)               {}
-func (nopMetrics) OnPumpApply(string)                            {}
-func (nopMetrics) OnPumpDropSelfEcho(string)                     {}
-func (nopMetrics) OnPumpSnapshotReplayed(string, uint64, uint64) {}
+func (nopMetrics) OnPumpConnect(string)                                         {}
+func (nopMetrics) OnPumpDisconnect(string, string)                              {}
+func (nopMetrics) OnPumpApply(string)                                           {}
+func (nopMetrics) OnPumpDropSelfEcho(string)                                    {}
+func (nopMetrics) OnPumpSnapshotReplayed(string, uint64, uint64, time.Duration) {}
 
 // Config groups the inputs every Pump goroutine needs. All fields
 // except Peers are required to be valid; NewPump fills sensible
@@ -369,6 +369,7 @@ func (p *Pump) snapshot(ctx context.Context, cli pb.LanternReplicationServiceCli
 	if err != nil {
 		return 0, err
 	}
+	start := time.Now()
 	var (
 		cutoff       uint64
 		gotHeader    bool
@@ -449,7 +450,7 @@ func (p *Pump) snapshot(ctx context.Context, cli pb.LanternReplicationServiceCli
 			slog.Uint64("edges_applied", edgeCount),
 			slog.Uint64("edges_footer", footerCounts.e))
 	}
-	p.cfg.Metrics.OnPumpSnapshotReplayed(addr, vertexCount, edgeCount)
+	p.cfg.Metrics.OnPumpSnapshotReplayed(addr, vertexCount, edgeCount, time.Since(start))
 	return cutoff, nil
 }
 

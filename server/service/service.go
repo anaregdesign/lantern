@@ -31,17 +31,18 @@ const ServiceName = "graph.v1.LanternService"
 // a fake without standing up the real cache.
 type LanternService struct {
 	pb.UnimplementedLanternServiceServer
-	cache        Backend
-	scan         ScanLimits
-	log          *mutationlog.Log
-	clock        *hlc.Clock
-	origin       []byte
-	onAppend     func()
-	logger       *slog.Logger
-	tombstoneTTL time.Duration
-	origins      *originStateTracker
-	onApplied    func(origin string)
-	metrics      HotPathMetrics
+	cache              Backend
+	scan               ScanLimits
+	log                *mutationlog.Log
+	clock              *hlc.Clock
+	origin             []byte
+	onAppend           func()
+	logger             *slog.Logger
+	tombstoneTTL       time.Duration
+	origins            *originStateTracker
+	onApplied          func(origin string)
+	onReplicationApply func(op string)
+	metrics            HotPathMetrics
 }
 
 // HotPathMetrics is the narrow observability surface consumed by the
@@ -154,6 +155,16 @@ func (s *LanternService) WithAppliedHook(f func(origin string)) *LanternService 
 	return s
 }
 
+// WithReplicationApplyHook registers a callback invoked after every
+// successful ApplyMutation, naming the MutationOp oneof variant
+// (e.g. "PutVertex", "AddEdges"). Used by provider/metrics to bump
+// lantern_replication_apply_total{op}. A nil hook disables the callback.
+// The hook MUST be non-blocking.
+func (s *LanternService) WithReplicationApplyHook(f func(op string)) *LanternService {
+	s.onReplicationApply = f
+	return s
+}
+
 // validateExpiration enforces the LANTERN_TOMBSTONE_TTL clamp on
 // caller-supplied per-entry expirations. A zero expiration (the proto
 // default — "no expiration") is always accepted; otherwise the
@@ -202,6 +213,16 @@ func (s *LanternService) LocalSeq(origin hlc.NodeID) uint64 {
 		return 0
 	}
 	return s.origins.LocalSeq(origin)
+}
+
+// OriginStatesCount returns the number of distinct origins currently
+// recorded in the per-origin watermark table, or 0 when the tracker is
+// unwired. Used by provider/metrics to sample lantern_origin_states_count.
+func (s *LanternService) OriginStatesCount() int {
+	if s.origins == nil {
+		return 0
+	}
+	return s.origins.OriginCount()
 }
 
 // logMutation appends op to the mutation log after a local commit. The HLC

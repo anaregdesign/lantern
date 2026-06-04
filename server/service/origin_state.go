@@ -94,3 +94,12 @@ func (t *originStateTracker) LocalSeq(origin hlc.NodeID) uint64 {
 	defer t.mu.RUnlock()
 	return t.m[origin].seq
 }
+
+// OriginCount returns the number of distinct origin NodeIDs currently
+// recorded. Used by provider/metrics to sample
+// lantern_origin_states_count. Safe to call concurrently with Record.
+func (t *originStateTracker) OriginCount() int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return len(t.m)
+}

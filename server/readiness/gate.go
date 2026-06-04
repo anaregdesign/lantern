@@ -17,6 +17,7 @@ package readiness
 import (
 	"sync"
 	"sync/atomic"
+	"time"
 
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
@@ -201,4 +202,4 @@ func (g *Gate) OnPumpDropSelfEcho(string) {}
 
 // OnPumpSnapshotReplayed marks bootstrap complete. A finished bootstrap
 // snapshot is the strongest "we have caught up" signal the pump emits.
-func (g *Gate) OnPumpSnapshotReplayed(string, uint64, uint64) { g.MarkBootstrapped() }
+func (g *Gate) OnPumpSnapshotReplayed(string, uint64, uint64, time.Duration) { g.MarkBootstrapped() }

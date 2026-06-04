@@ -18,6 +18,16 @@ import (
 // vertex/edge counts off the cache.
 type Sampler func() (vertices int, edges int)
 
+// MutationLogSampler reports the current ring-buffer occupancy. fill is
+// the number of entries resident; capacity is the configured ring size.
+// A nil sampler disables the lantern_mutation_log_fill_ratio gauge.
+type MutationLogSampler func() (fill int, capacity int, evicted uint64)
+
+// OriginStatesSampler reports the current cardinality of the per-origin
+// watermark table maintained by the apply path. A nil sampler disables
+// the lantern_origin_states_count gauge.
+type OriginStatesSampler func() int
+
 // DomainMetrics owns the Lantern-specific collectors. Construct with New and
 // pass the returned callbacks to GraphCache.SetGCHooks plus Start to begin
 // gauge sampling.
@@ -38,6 +48,17 @@ type DomainMetrics struct {
 	antiEntropyCycles    prometheus.Counter
 	antiEntropyGapsFound *prometheus.CounterVec
 
+	// Replication / mutation-log / back-pressure observability (#221).
+	peerConnected         *prometheus.GaugeVec
+	replicationApplyTotal *prometheus.CounterVec
+	snapshotReplayedTotal *prometheus.CounterVec
+	snapshotVertices      *prometheus.HistogramVec
+	snapshotEdges         *prometheus.HistogramVec
+	snapshotDuration      *prometheus.HistogramVec
+	mutationLogFillRatio  prometheus.Gauge
+	mutationLogEvicted    prometheus.Counter
+	originStatesCount     prometheus.Gauge
+
 	// Hot-path RPC observability (#220). Wired by the service layer via
 	// the HotPathMetrics interface in server/service. Histograms are
 	// label-pre-warmed so dashboards render the full set of variants from
@@ -51,6 +72,9 @@ type DomainMetrics struct {
 
 	sampleInterval time.Duration
 	sample         Sampler
+	mlogSample     MutationLogSampler
+	originSample   OriginStatesSampler
+	lastEvicted    uint64 // last observed cumulative eviction count
 }
 
 // Hot-path label values. Exposed so the service layer can reference the
@@ -76,6 +100,24 @@ var (
 		"GetEdges",
 		"AddEdges",
 		"PutEdges",
+		"DeleteEdges",
+	}
+	// replicationApplyOps covers every pb.MutationOp oneof variant. The
+	// service layer translates the proto-internal case selector into one
+	// of these strings; unknown variants fall through to "unknown" so a
+	// new MutationOp added in proto without a metrics update still
+	// scrapes without exploding the registry.
+	replicationApplyOps = []string{
+		"PutVertex",
+		"PutVertices",
+		"DeleteVertex",
+		"DeleteVertices",
+		"DeleteVerticesByPrefix",
+		"AddEdge",
+		"AddEdges",
+		"PutEdge",
+		"PutEdges",
+		"DeleteEdge",
 		"DeleteEdges",
 	}
 )
@@ -185,6 +227,45 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 			Help:    "Item count of a single plural-RPC batch (PutVertices, PutEdges, AddEdges, GetVertices, GetEdges, DeleteVertices, DeleteEdges). Singular RPC forwarders are not double-counted.",
 			Buckets: prometheus.ExponentialBuckets(1, 4, 10),
 		}, []string{"op"}),
+		peerConnected: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "lantern_peer_connected",
+			Help: "1 when the local replication pump currently holds an open Subscribe (or Subscribe+Snapshot) session to the named peer; 0 otherwise. Updated on every pump connect/disconnect lifecycle event.",
+		}, []string{"peer"}),
+		replicationApplyTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "lantern_replication_apply_total",
+			Help: "Total mutations applied locally via ApplyMutation, partitioned by MutationOp oneof variant. Both pump-delivered remote mutations and locally-originated ones increment this counter.",
+		}, []string{"op"}),
+		snapshotReplayedTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "lantern_snapshot_replayed_total",
+			Help: "Total Snapshot RPC streams the pump has fully replayed from the named peer.",
+		}, []string{"peer"}),
+		snapshotVertices: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "lantern_snapshot_vertices",
+			Help:    "Vertex count replayed from a single Snapshot stream, partitioned by source peer.",
+			Buckets: prometheus.ExponentialBuckets(1, 4, 10),
+		}, []string{"peer"}),
+		snapshotEdges: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "lantern_snapshot_edges",
+			Help:    "Edge count replayed from a single Snapshot stream, partitioned by source peer.",
+			Buckets: prometheus.ExponentialBuckets(1, 4, 10),
+		}, []string{"peer"}),
+		snapshotDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "lantern_snapshot_duration_seconds",
+			Help:    "Wall-clock duration of a single Snapshot stream replay, partitioned by source peer.",
+			Buckets: prometheus.ExponentialBuckets(0.001, 4, 9), // 1ms .. ~65s
+		}, []string{"peer"}),
+		mutationLogFillRatio: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "lantern_mutation_log_fill_ratio",
+			Help: "Current ring-buffer occupancy of the in-memory mutation log, expressed as fill/capacity in [0, 1]. Sampled on the same cadence as lantern_vertices / lantern_edges.",
+		}),
+		mutationLogEvicted: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "lantern_mutation_log_evicted_total",
+			Help: "Total mutation-log entries dropped from the ring buffer because Append at full capacity displaced the oldest entry. A non-zero rate indicates subscribers cannot keep up with append throughput and risk hitting ErrGapped.",
+		}),
+		originStatesCount: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "lantern_origin_states_count",
+			Help: "Number of distinct origin NodeIDs the local apply path has recorded in its per-origin watermark table.",
+		}),
 		sampleInterval: opts.SampleInterval,
 	}
 
@@ -193,7 +274,10 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		m.replicationApplied, m.replicationDropped, m.replicationLag,
 		m.antiEntropyCycles, m.antiEntropyGapsFound,
 		m.illuminateVisitedVertices, m.illuminateVisitedEdges, m.illuminateDuration,
-		m.scanResults, m.scanDuration, m.batchSize)
+		m.scanResults, m.scanDuration, m.batchSize,
+		m.peerConnected, m.replicationApplyTotal, m.snapshotReplayedTotal,
+		m.snapshotVertices, m.snapshotEdges, m.snapshotDuration,
+		m.mutationLogFillRatio, m.mutationLogEvicted, m.originStatesCount)
 
 	// Pre-create label rows so empty counters scrape as 0.
 	for _, r := range []string{"gapped", "send_failed"} {
@@ -222,6 +306,13 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 	}
 	for _, op := range batchOps {
 		m.batchSize.WithLabelValues(op)
+	}
+	// Pre-warm the replication-apply counter so dashboards render every
+	// MutationOp variant from process start. Per-peer collectors
+	// (peer_connected, snapshot_*) cannot be pre-warmed because peer
+	// addresses are discovered at runtime.
+	for _, op := range replicationApplyOps {
+		m.replicationApplyTotal.WithLabelValues(op)
 	}
 
 	version, commit := opts.Version, opts.Commit
@@ -345,15 +436,19 @@ func (m *DomainMetrics) OnAntiEntropyError(peer, reason string) {
 // --- replication.Metrics (pump) adapter ---
 //
 // The pump's narrow Metrics surface is satisfied by these methods so
-// provider/replication.go can pass *DomainMetrics directly. Only the two
-// events that map onto the dropped_total counter spec'd in #187 emit
-// metric updates; the connect/apply/snapshot hooks are reserved for
-// future expansion (per-peer connect gauges, snapshot counters) and
-// currently no-op so the pump compiles against the same handle.
+// provider/replication.go can pass *DomainMetrics directly. Connect /
+// disconnect drive the per-peer lantern_peer_connected gauge; snapshot
+// replay drives the lantern_snapshot_* family; the pump-apply hook is
+// reserved for future per-peer accounting (the canonical apply counter
+// is lantern_replication_apply_total, populated by OnReplicationApply
+// from ApplyMutation itself).
 
-func (m *DomainMetrics) OnPumpConnect(string) {}
+func (m *DomainMetrics) OnPumpConnect(peer string) {
+	m.peerConnected.WithLabelValues(peer).Set(1)
+}
 
 func (m *DomainMetrics) OnPumpDisconnect(peer, reason string) {
+	m.peerConnected.WithLabelValues(peer).Set(0)
 	m.OnReplicationDropped(peer, reason)
 }
 
@@ -363,7 +458,22 @@ func (m *DomainMetrics) OnPumpDropSelfEcho(peer string) {
 	m.OnReplicationDropped(peer, "self_echo")
 }
 
-func (m *DomainMetrics) OnPumpSnapshotReplayed(string, uint64, uint64) {}
+func (m *DomainMetrics) OnPumpSnapshotReplayed(peer string, vertices, edges uint64, duration time.Duration) {
+	m.snapshotReplayedTotal.WithLabelValues(peer).Inc()
+	m.snapshotVertices.WithLabelValues(peer).Observe(float64(vertices))
+	m.snapshotEdges.WithLabelValues(peer).Observe(float64(edges))
+	m.snapshotDuration.WithLabelValues(peer).Observe(duration.Seconds())
+}
+
+// OnReplicationApply increments lantern_replication_apply_total for one
+// applied MutationOp. The op label is the proto oneof variant name
+// (e.g. "PutVertex", "AddEdges"). Unknown labels are bucketed as
+// "unknown" so a new MutationOp added without a metrics update cannot
+// silently inflate the registry.
+func (m *DomainMetrics) OnReplicationApply(op string) {
+	o := sanitizeLabel(op, replicationApplyOps, "unknown")
+	m.replicationApplyTotal.WithLabelValues(o).Inc()
+}
 
 // --- Hot-path RPC observability (#220) ---
 //
@@ -418,11 +528,26 @@ func (m *DomainMetrics) BindSampler(s Sampler) {
 	m.sample = s
 }
 
+// BindMutationLogSampler installs the mutation-log occupancy callback.
+// Must be called before Run; safe to call exactly once during wiring.
+// A nil sampler leaves lantern_mutation_log_fill_ratio /
+// lantern_mutation_log_evicted_total unsampled.
+func (m *DomainMetrics) BindMutationLogSampler(s MutationLogSampler) {
+	m.mlogSample = s
+}
+
+// BindOriginStatesSampler installs the per-origin watermark cardinality
+// callback. Must be called before Run; safe to call exactly once during
+// wiring. A nil sampler leaves lantern_origin_states_count unsampled.
+func (m *DomainMetrics) BindOriginStatesSampler(s OriginStatesSampler) {
+	m.originSample = s
+}
+
 // Run drives the gauge sampler on the configured cadence until ctx is done.
 // Safe to launch as a goroutine. A nil sampler is treated as a no-op so
 // tests can construct the collectors without wiring a cache.
 func (m *DomainMetrics) Run(ctx context.Context) {
-	if m.sample == nil {
+	if m.sample == nil && m.mlogSample == nil && m.originSample == nil {
 		<-ctx.Done()
 		return
 	}
@@ -441,9 +566,33 @@ func (m *DomainMetrics) Run(ctx context.Context) {
 }
 
 func (m *DomainMetrics) tick() {
-	v, e := m.sample()
-	m.vertices.Set(float64(v))
-	m.edges.Set(float64(e))
+	if m.sample != nil {
+		v, e := m.sample()
+		m.vertices.Set(float64(v))
+		m.edges.Set(float64(e))
+	}
+	if m.mlogSample != nil {
+		fill, capacity, evicted := m.mlogSample()
+		if capacity > 0 {
+			m.mutationLogFillRatio.Set(float64(fill) / float64(capacity))
+		} else {
+			m.mutationLogFillRatio.Set(0)
+		}
+		// Counter is monotonic; advance to the cumulative source-of-truth.
+		// We use a delta-add against a remembered prior sample because
+		// prometheus.Counter has no Set.
+		delta := evicted - m.lastEvicted
+		if evicted < m.lastEvicted { // sampler reset (e.g. log re-instantiated in tests)
+			delta = evicted
+		}
+		if delta > 0 {
+			m.mutationLogEvicted.Add(float64(delta))
+		}
+		m.lastEvicted = evicted
+	}
+	if m.originSample != nil {
+		m.originStatesCount.Set(float64(m.originSample()))
+	}
 }
 
 // readBuildInfo extracts the module version and vcs.revision from the binary's
