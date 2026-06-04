@@ -88,6 +88,7 @@ most common knobs:
 | `LANTERN_SLOW_RPC_THRESHOLD_MS` | `500` | Emit a `slog` warning per unary/stream RPC whose handler exceeds this duration (0 disables). |
 | `LANTERN_ANTI_ENTROPY_GAP_WARN_THRESHOLD` | `1024` | Emit a `slog` warning per anti-entropy tick whose detected peer gap (in seq units) exceeds this value (0 disables). |
 | `LANTERN_METRICS_ADDR` | `:9090` | HTTP listen for `/metrics`, `/healthz`, `/readyz` (empty disables). |
+| `LANTERN_PPROF_ENABLED` | `false` | Mount `/debug/pprof/*` (heap, goroutine, allocs, threadcreate, block, mutex, profile, trace, cmdline, symbol) on the metrics listener. Keep off in production unless the metrics port is bound to an internal-only interface; the endpoint exposes goroutine stacks and live heap data. `block` / `mutex` profiles also require `LANTERN_BLOCK_PROFILE_RATE` / `LANTERN_MUTEX_PROFILE_FRACTION` to be non-zero. |
 | `LANTERN_REFLECTION` | `true` | gRPC server reflection. |
 | `LANTERN_LOG_LEVEL` / `LANTERN_LOG_FORMAT` | `info` / `json` | slog handler. |
 | `LANTERN_TLS_CERT_FILE` / `LANTERN_TLS_KEY_FILE` / `LANTERN_TLS_CLIENT_CA_FILE` | (unset) | TLS / mTLS material (all-or-nothing). |
