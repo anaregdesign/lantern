@@ -4,6 +4,8 @@ import (
 	"context"
 	"github.com/anaregdesign/lantern/core/model/function"
 	"reflect"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -134,6 +136,7 @@ func TestSubscription_nack(t *testing.T) {
 			name: "TestSubscription_nack",
 			s: Subscription[int]{
 				name: "test",
+				ch:   make(chan string, 1),
 				messages: map[string]*Message[int]{
 					"uuid": {id: "uuid", body: 1},
 				},
@@ -145,6 +148,14 @@ func TestSubscription_nack(t *testing.T) {
 		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			tt.s.nack(tt.args.message)
+			select {
+			case id := <-tt.s.ch:
+				if id != tt.args.message.id {
+					t.Fatalf("nack should requeue id %q, got %q", tt.args.message.id, id)
+				}
+			default:
+				t.Fatal("nack should requeue the message on s.ch")
+			}
 		})
 	}
 }
@@ -347,5 +358,130 @@ func TestSubscription_watch(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			go tt.s.watch(tt.args.ctx, tt.args.interval, tt.args.ttl)
 		})
+	}
+}
+
+// TestSubscription_SalvageRespectsLastViewedAt is a regression test for #229.
+// salvage previously re-published every in-flight message every tick because
+// Message.lastViewedAt was never written, so now.Sub(zeroTime) > interval was
+// always true. This test exercises the read path (dispatch) directly and then
+// invokes salvage() so the assertion is independent of goroutine scheduling.
+func TestSubscription_SalvageRespectsLastViewedAt(t *testing.T) {
+	topic := NewTopic[int]("t")
+	sub := topic.NewSubscription("s", 1, 50*time.Millisecond, time.Hour)
+
+	// Publish without a Subscribe loop: the message is parked in s.messages
+	// and its id sits on s.ch. Drain s.ch manually so a later remind() can
+	// observe whether salvage re-queued it.
+	topic.Publish(7)
+	id := <-sub.ch
+
+	// Simulate a consumer pickup: dispatch must stamp lastViewedAt.
+	m := sub.dispatch(id)
+	if m == nil {
+		t.Fatalf("dispatch returned nil for id %q (message missing from map)", id)
+	}
+	if m.lastViewedAt.IsZero() {
+		t.Fatal("dispatch must stamp lastViewedAt; got zero (regression #229)")
+	}
+
+	// salvage interval is 50ms; we just dispatched so the message is fresh.
+	// Bug: lastViewedAt would be zero, predicate true, message re-queued.
+	// Fix: predicate false, ch stays empty.
+	sub.salvage(50*time.Millisecond, time.Hour)
+
+	select {
+	case stray := <-sub.ch:
+		t.Fatalf("salvage re-queued a freshly-viewed message (id=%q); lastViewedAt stamping broken", stray)
+	default:
+	}
+}
+
+// TestSubscription_NackTriggersImmediateRedelivery is a regression test for
+// #229. Before the fix, Nack() was a silent no-op so the message would only
+// be retried after the salvage interval elapsed (and even then, only because
+// of the lastViewedAt bug). The new contract: Nack re-queues immediately.
+func TestSubscription_NackTriggersImmediateRedelivery(t *testing.T) {
+	topic := NewTopic[int]("t")
+	// Long interval — we want to assert that redelivery is driven by Nack,
+	// not by the salvage timer.
+	sub := topic.NewSubscription("s", 1, time.Hour, time.Hour)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var attempt atomic.Int64
+	done := make(chan struct{})
+	go sub.Subscribe(ctx, func(m *Message[int]) {
+		n := attempt.Add(1)
+		switch n {
+		case 1:
+			m.Nack()
+		case 2:
+			m.Ack()
+			close(done)
+		}
+	})
+
+	// Allow Subscribe to start before publishing.
+	time.Sleep(20 * time.Millisecond)
+	topic.Publish(1)
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("Nack did not redeliver within 500ms (attempts=%d)", attempt.Load())
+	}
+}
+
+// TestSubscription_SubscribeIsSingleFlight is a regression test for #229.
+// Two concurrent Subscribe calls on the same *Subscription previously shared
+// s.ch / s.wg silently, producing nondeterministic delivery split across two
+// consumer functions. The new contract: the second concurrent call is a
+// no-op (returns immediately).
+func TestSubscription_SubscribeIsSingleFlight(t *testing.T) {
+	topic := NewTopic[int]("t")
+	sub := topic.NewSubscription("s", 1, time.Hour, time.Hour)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var (
+		mu          sync.Mutex
+		consumerHit = map[string]int{"primary": 0, "secondary": 0}
+	)
+	consumer := func(label string) function.Consumer[*Message[int]] {
+		return func(m *Message[int]) {
+			mu.Lock()
+			consumerHit[label]++
+			mu.Unlock()
+			m.Ack()
+		}
+	}
+
+	go sub.Subscribe(ctx, consumer("primary"))
+	go sub.Subscribe(ctx, consumer("secondary"))
+
+	// Let both Subscribe calls race to register before publishing.
+	time.Sleep(20 * time.Millisecond)
+
+	const N = 20
+	for i := 0; i < N; i++ {
+		topic.Publish(i)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	total := consumerHit["primary"] + consumerHit["secondary"]
+	if total != N {
+		t.Fatalf("expected %d total deliveries, got %d (primary=%d secondary=%d)",
+			N, total, consumerHit["primary"], consumerHit["secondary"])
+	}
+	// The second Subscribe call must have observed exactly zero messages.
+	if consumerHit["primary"] != 0 && consumerHit["secondary"] != 0 {
+		t.Fatalf("expected single-flight Subscribe; both consumers received messages (primary=%d secondary=%d)",
+			consumerHit["primary"], consumerHit["secondary"])
 	}
 }
