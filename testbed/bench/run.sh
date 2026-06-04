@@ -74,6 +74,41 @@ if [[ "${SKIP_UP:-0}" != "1" ]]; then
   docker compose "${COMPOSE_FILES[@]}" up -d --scale lantern=3 --wait
 fi
 
+# ----- discover actual published ports ---------------------------------------
+# Compose's port-range allocation (`6380-6389`, `9390-9392`) is not stable
+# across runs: when a previous bench leaves entries in the daemon's port
+# bookkeeping, the next `up` skips them and we end up on e.g. 6386/6387/6388.
+# Query the live containers and rewrite REPLICA_*_PORTS + scenario endpoints
+# accordingly so the harness works regardless of what Compose assigned.
+discover_ports() {
+  local ps_json grpc metrics
+  ps_json="$(docker compose "${COMPOSE_FILES[@]}" ps --format json 2>/dev/null)"
+  # Sort by replica name so lantern-1/2/3 map to deterministic slots.
+  grpc=( $(jq -rs 'sort_by(.Name) | .[] | select(.Name | test("lantern-[0-9]+$")) | .Publishers[] | select(.TargetPort==6380 and .URL=="0.0.0.0") | .PublishedPort' <<<"$ps_json") )
+  metrics=( $(jq -rs 'sort_by(.Name) | .[] | select(.Name | test("lantern-[0-9]+$")) | .Publishers[] | select(.TargetPort==9090 and .URL=="0.0.0.0") | .PublishedPort' <<<"$ps_json") )
+  [[ ${#grpc[@]} -eq 3 && ${#metrics[@]} -eq 3 ]] || die "could not discover 3 grpc+metrics ports (grpc=${grpc[*]} metrics=${metrics[*]})"
+  REPLICA_GRPC_PORTS=( "${grpc[@]}" )
+  REPLICA_METRICS_PORTS=( "${metrics[@]}" )
+  log "discovered grpc=${REPLICA_GRPC_PORTS[*]} metrics=${REPLICA_METRICS_PORTS[*]}"
+}
+discover_ports
+
+# Rewrite scenario file with discovered ports so every `localhost:6380/81/82`
+# reference (target.endpoints, subscribe.endpoints, subscribe.consumers[].endpoint, ...)
+# points at the actually-published host port. Operate on a copy under OUTDIR
+# so the source-of-truth YAML stays clean and the resolved scenario is
+# preserved alongside the report for forensics.
+SCENARIO_RESOLVED="$OUTDIR/scenario.resolved.yaml"
+sed \
+  -e "s/localhost:6380/localhost:${REPLICA_GRPC_PORTS[0]}/g" \
+  -e "s/localhost:6381/localhost:${REPLICA_GRPC_PORTS[1]}/g" \
+  -e "s/localhost:6382/localhost:${REPLICA_GRPC_PORTS[2]}/g" \
+  "$SCENARIO_FILE" > "$SCENARIO_RESOLVED"
+SCENARIO_FILE="$SCENARIO_RESOLVED"
+
+# Re-parse fields that depend on endpoints after substitution.
+endpoints=( $(yq -r '.target.endpoints[]' "$SCENARIO_FILE") )
+
 wait_ready() {
   local p
   for p in "${REPLICA_METRICS_PORTS[@]}"; do
