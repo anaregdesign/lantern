@@ -1,0 +1,67 @@
+{
+  "name": "lantern-client",
+  "version": "0.1.0",
+  "description": "Official TypeScript client SDK for Lantern — an in-memory graph KVS over gRPC.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anaregdesign/lantern.git",
+    "directory": "sdks/node"
+  },
+  "homepage": "https://github.com/anaregdesign/lantern/tree/main/sdks/node",
+  "bugs": {
+    "url": "https://github.com/anaregdesign/lantern/issues"
+  },
+  "keywords": [
+    "lantern",
+    "graph",
+    "kvs",
+    "grpc",
+    "client",
+    "sdk"
+  ],
+  "scripts": {
+    "codegen": "bash scripts/codegen.sh",
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.12.0",
+    "long": "^5.2.3",
+    "protobufjs": "^7.4.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "@types/bun": "^1.1.0",
+    "@types/node": "^22.10.0",
+    "eslint": "^9.0.0",
+    "typescript-eslint": "^8.0.0",
+    "prettier": "^3.3.0",
+    "ts-proto": "^2.7.0",
+    "tsup": "^8.3.0",
+    "typescript": "^5.6.0"
+  }
+}
