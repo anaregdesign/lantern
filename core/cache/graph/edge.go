@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/anaregdesign/lantern/core/cache"
 	"github.com/anaregdesign/lantern/core/hlc"
 )
 
@@ -87,7 +88,7 @@ func (w *weight) addWithExpirationContrib(value float32, expiration time.Time, c
 	if !contribID.IsZero() {
 		now := time.Now()
 		for _, v := range w.values {
-			if v.contribID == contribID && v.expiration.After(now) {
+			if v.contribID == contribID && cache.IsLiveAt(v.expiration, now) {
 				return false
 			}
 		}
@@ -176,7 +177,7 @@ func (w *weight) snapshotEntry(now time.Time) ([]SnapshotContribution, hlc.Times
 	defer w.mu.Unlock()
 	out := make([]SnapshotContribution, 0, len(w.values))
 	for _, v := range w.values {
-		if !v.expiration.After(now) {
+		if !cache.IsLiveAt(v.expiration, now) {
 			continue
 		}
 		out = append(out, SnapshotContribution{
@@ -198,7 +199,7 @@ func (w *weight) flushLocked() {
 	write := 0
 	var sum float32
 	for _, v := range w.values {
-		if v.expiration.After(now) {
+		if cache.IsLiveAt(v.expiration, now) {
 			w.values[write] = v
 			write++
 			sum += v.value

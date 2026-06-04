@@ -439,3 +439,53 @@ func TestCache_OnEvict_Clearing(t *testing.T) {
 		t.Fatalf("calls = %d, want 0", got)
 	}
 }
+
+// TestIsLiveAt covers the "never expires" sentinels documented in the
+// IsLiveAt godoc. Regression for issue #250: PutVertex without an
+// Expiration was silently stored as already-expired because the volatile
+// entry was constructed from `(*timestamppb.Timestamp)(nil).AsTime()`,
+// which yields Unix(0,0) — not Go zero — so the original Before(now)
+// check evicted it on the next read.
+func TestIsLiveAt(t *testing.T) {
+	now := time.Date(2026, 6, 4, 0, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name string
+		exp  time.Time
+		want bool
+	}{
+		{"go zero is never-expires", time.Time{}, true},
+		{"unix epoch UTC is never-expires", time.Unix(0, 0).UTC(), true},
+		{"unix epoch local is never-expires", time.Unix(0, 0), true},
+		{"negative unix is never-expires", time.Unix(-1, 0), true},
+		{"future is live", now.Add(time.Hour), true},
+		{"past is expired", now.Add(-time.Hour), false},
+	}
+	for _, tt := range tests {
+		if got := IsLiveAt(tt.exp, now); got != tt.want {
+			t.Errorf("%s: IsLiveAt(%v) = %v, want %v", tt.name, tt.exp, got, tt.want)
+		}
+	}
+}
+
+// TestCache_PutWithExpiration_ZeroNeverExpires is the end-to-end regression
+// for #250: a value stored with a zero or unix-epoch expiration must remain
+// retrievable indefinitely, and must survive a Flush pass.
+func TestCache_PutWithExpiration_ZeroNeverExpires(t *testing.T) {
+	cases := map[string]time.Time{
+		"go-zero":    {},
+		"unix-epoch": time.Unix(0, 0).UTC(),
+	}
+	for name, exp := range cases {
+		t.Run(name, func(t *testing.T) {
+			c := NewCache[string, int](time.Minute)
+			c.PutWithExpiration("k", 42, exp)
+			if got, ok := c.Get("k"); !ok || got != 42 {
+				t.Fatalf("Get after put: got=%v ok=%v want=42 true", got, ok)
+			}
+			c.Flush()
+			if got, ok := c.Get("k"); !ok || got != 42 {
+				t.Fatalf("Get after flush: got=%v ok=%v want=42 true", got, ok)
+			}
+		})
+	}
+}

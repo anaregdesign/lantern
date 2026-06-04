@@ -280,3 +280,49 @@ func TestBufconn_GetEdges_PartialMiss(t *testing.T) {
 		t.Errorf("Missing = %v, want [{x y}]", resp.GetMissing())
 	}
 }
+
+// TestBufconn_PutVertex_NoExpiration_NeverExpires is the end-to-end
+// regression for #250. Before the fix, omitting Expiration on PutVertex
+// caused (*timestamppb.Timestamp)(nil).AsTime() == Unix(0,0) to flow into
+// the volatile cache entry. volatile.IsExpired returned Before(now)==true
+// for that timestamp, so GetVertex returned NotFound for every write —
+// exactly the silent data-loss observed in the read_heavy bench scenario.
+func TestBufconn_PutVertex_NoExpiration_NeverExpires(t *testing.T) {
+	c, ctx, cleanup := newBufconnClient(t)
+	defer cleanup()
+
+	v := &pb.Vertex{Key: "no-exp", Value: &pb.Vertex_Nil{Nil: true}} // no Expiration set
+	if _, err := c.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{v}}); err != nil {
+		t.Fatalf("PutVertices: %v", err)
+	}
+
+	got, err := c.GetVertex(ctx, &pb.GetVertexRequest{Key: "no-exp"})
+	if err != nil {
+		t.Fatalf("GetVertex(no-exp) returned %v, want vertex; this is the #250 regression", err)
+	}
+	if got.GetVertex().GetKey() != "no-exp" {
+		t.Errorf("key = %q, want %q", got.GetVertex().GetKey(), "no-exp")
+	}
+}
+
+// TestBufconn_AddEdge_NoExpiration_NeverExpires mirrors the vertex
+// regression for edges. The edgeCache flushLocked path also called
+// v.expiration.After(now), so an edge added without Expiration was
+// immediately swept on the next read.
+func TestBufconn_AddEdge_NoExpiration_NeverExpires(t *testing.T) {
+	c, ctx, cleanup := newBufconnClient(t)
+	defer cleanup()
+
+	e := &pb.Edge{Tail: "a", Head: "b", Weight: 1.5} // no Expiration set
+	if _, err := c.AddEdges(ctx, &pb.AddEdgesRequest{Edges: []*pb.Edge{e}}); err != nil {
+		t.Fatalf("AddEdges: %v", err)
+	}
+
+	got, err := c.GetEdge(ctx, &pb.GetEdgeRequest{Tail: "a", Head: "b"})
+	if err != nil {
+		t.Fatalf("GetEdge(a->b) returned %v, want edge; this is the #250 regression", err)
+	}
+	if got.GetEdge().GetWeight() != 1.5 {
+		t.Errorf("weight = %v, want 1.5", got.GetEdge().GetWeight())
+	}
+}

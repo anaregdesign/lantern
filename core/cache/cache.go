@@ -12,8 +12,36 @@ type volatile[T any] struct {
 	expiration time.Time
 }
 
+// IsLiveAt reports whether an expiration deadline is still in the future
+// relative to now. It centralises the "no expiration" sentinel handling
+// shared across the vertex cache, the edge cache, and any future expiring
+// store. Two values are treated as "never expires":
+//
+//   - Go zero time (`time.Time{}`, year 1) — the documented sentinel for
+//     "no expiration" used by service.validateExpiration and the proto
+//     contract (`Vertex.expiration` / `Edge.expiration` are optional).
+//   - Unix epoch or earlier (`expiration.Unix() <= 0`) — `(*timestamppb.
+//     Timestamp)(nil).AsTime()` returns `time.Unix(0,0).UTC()`, NOT Go zero,
+//     so the cache used to silently treat every PutVertex without an
+//     expiration as already-expired (issue #250).
+//
+// Any positive future deadline behaves as before: live until now passes it.
+func IsLiveAt(expiration, now time.Time) bool {
+	if expiration.IsZero() || expiration.Unix() <= 0 {
+		return true
+	}
+	return expiration.After(now)
+}
+
+// IsLive is the IsLiveAt shorthand that samples time.Now() once per call.
+func IsLive(expiration time.Time) bool {
+	return IsLiveAt(expiration, time.Now())
+}
+
+// IsExpired reports whether this entry has passed its expiration deadline.
+// See IsLiveAt for the "no expiration" sentinel semantics.
 func (v *volatile[T]) IsExpired() bool {
-	return v.expiration.Before(time.Now())
+	return !IsLive(v.expiration)
 }
 
 type Cache[S comparable, T any] struct {
@@ -156,9 +184,8 @@ func (c *Cache[S, T]) Count() int {
 func (c *Cache[S, T]) Range(fn func(key S, value T, expiration time.Time) bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	now := time.Now()
 	for k, v := range c.cache {
-		if v.expiration.Before(now) {
+		if v.IsExpired() {
 			continue
 		}
 		if !fn(k, v.value, v.expiration) {
