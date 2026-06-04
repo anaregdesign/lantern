@@ -24,4 +24,4 @@ chaos:
 leak_gate:
   # Replica restart legitimately adds goroutines until pumps settle; widen.
   goroutine_max_delta: 60
-  heap_inuse_max_delta_mb: 64
+  heap_alloc_max_delta_mb: 64

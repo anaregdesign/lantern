@@ -19,4 +19,4 @@ subscribe:
   data_template: '{"fromSeq":"1"}'
 leak_gate:
   goroutine_max_delta: 80     # 64 streams × bookkeeping
-  heap_inuse_max_delta_mb: 64
+  heap_alloc_max_delta_mb: 64

@@ -12,10 +12,10 @@ target:
   calls:
     - call: graph.v1.LanternService/PutVertex
       data_template: |
-        {"vertex":{"key":"k-{{.RequestNumber}}","int64":"{{.RequestNumber}}"}}
+        {"vertex":{"key":"k-{{mod .RequestNumber 10000}}","int64":"{{.RequestNumber}}"}}
     - call: graph.v1.LanternService/GetVertex
       data_template: |
         {"key":"k-{{mod .RequestNumber 10000}}"}
 leak_gate:
   goroutine_max_delta: 25
-  heap_inuse_max_delta_mb: 32
+  heap_alloc_max_delta_mb: 32

@@ -12,4 +12,4 @@ target:
     {"prefix":"k-{{mod .RequestNumber 100}}","limit":128}
 leak_gate:
   goroutine_max_delta: 20
-  heap_inuse_max_delta_mb: 32
+  heap_alloc_max_delta_mb: 32

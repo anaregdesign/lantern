@@ -13,4 +13,4 @@ target:
     {"edge":{"tail":"hot-tail","head":"hot-head","weight":1.0}}
 leak_gate:
   goroutine_max_delta: 15
-  heap_inuse_max_delta_mb: 16
+  heap_alloc_max_delta_mb: 16

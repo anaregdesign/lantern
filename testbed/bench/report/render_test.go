@@ -17,12 +17,15 @@ func TestRenderReport_AllSectionsAndVerdict(t *testing.T) {
 			Verdict: "pass",
 			Thresholds: struct {
 				GoroutineMaxDelta   int `json:"goroutine_max_delta"`
-				HeapInuseMaxDeltaMB int `json:"heap_inuse_max_delta_mb"`
-			}{GoroutineMaxDelta: 20, HeapInuseMaxDeltaMB: 32},
+				HeapAllocMaxDeltaMB int `json:"heap_alloc_max_delta_mb"`
+				HeapInuseMaxDeltaMB int `json:"heap_inuse_max_delta_mb,omitempty"`
+			}{GoroutineMaxDelta: 20, HeapAllocMaxDeltaMB: 32},
 			Replicas: []LeakGateReplica{{
 				Endpoint:      "localhost:9390",
 				GoroutinesPre: 100, GoroutinesPost: 110, GoroutineDelta: 10,
 				HeapInusePreBytes: 10 << 20, HeapInusePostBytes: 15 << 20, HeapInuseDeltaBytes: 5 << 20,
+				HeapAllocPreBytes: 8 << 20, HeapAllocPostBytes: 9 << 20, HeapAllocDeltaBytes: 1 << 20,
+				HeapObjectsPre: 1000, HeapObjectsPost: 1100, HeapObjectsDelta: 100,
 			}},
 		},
 		GhzFiles: []GhzFile{{
@@ -51,6 +54,7 @@ func TestRenderReport_AllSectionsAndVerdict(t *testing.T) {
 		"**Leak gate verdict:** `pass`",
 		"## Leak gate",
 		"goroutine_max_delta=20",
+		"heap_alloc_max_delta_mb=32",
 		"`localhost:9390`",
 		"**+10**",
 		"50.00", // p99 ms
@@ -94,8 +98,8 @@ func TestLoadInput_AssemblesFromDisk(t *testing.T) {
 
 	lg := LeakGate{Verdict: "fail"}
 	lg.Thresholds.GoroutineMaxDelta = 5
-	lg.Thresholds.HeapInuseMaxDeltaMB = 16
-	lg.Replicas = []LeakGateReplica{{Endpoint: "x", GoroutineDelta: 9, HeapInuseDeltaBytes: 1 << 20}}
+	lg.Thresholds.HeapAllocMaxDeltaMB = 16
+	lg.Replicas = []LeakGateReplica{{Endpoint: "x", GoroutineDelta: 9, HeapAllocDeltaBytes: 1 << 20}}
 	mustWriteJSON(t, filepath.Join(dir, "leak_gate.json"), lg)
 
 	gh := GhzSummary{Count: 42, Rps: 1, Average: 1_000_000,
