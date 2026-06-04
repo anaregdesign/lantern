@@ -2,13 +2,41 @@
 # One scenario stem per line (matches testbed/bench/scenarios/<stem>.yaml).
 # Lines starting with `#` and blank lines are ignored.
 #
-# Keep this list short: the release CI job runs each one sequentially on a
-# shared ubuntu-latest runner. The smoke_* variants finish in ~2 min wall
-# each (15s warmup + 60s steady + 15s cooldown + compose up/down), which
-# keeps total release time under ~10 min and avoids saturating the runner.
+# This is the canonical release-time signal. The release bench job is
+# `continue-on-error` (non-blocking), so we run the full canonical
+# scenarios — not just the smoke variants — to surface regressions across
+# every major call path. The three `smoke_*` entries at the top of the
+# sweep remain so the rendered report is partially populated even if a
+# later full scenario times out or the runner stalls.
 #
-# Full *_heavy / mixed_rw scenarios remain the canonical signal for
-# local deep-dives; do not put them here.
+# Wall-time budget on a fresh ubuntu-latest runner (single shared
+# 3-replica compose, sequential execution): ~50 min total.
+#
+# If you add a scenario here, keep it self-contained: the release driver
+# reuses ONE compose stack across all entries, so a scenario that mutates
+# global server config or leaves a wedged stream behind will pollute every
+# subsequent scenario's leak gate. Prefer adding a new `*.yaml` over
+# reusing an existing one with side effects.
+
+# --- fast head-of-sweep signal (~2 min each) -------------------------------
 smoke_write_heavy
 smoke_read_heavy
 smoke_mixed_rw
+
+# --- full canonical sweep --------------------------------------------------
+# read / write paths
+write_heavy
+read_heavy
+mixed_rw
+batch_put_vertices
+scan_prefix
+addedge_contention
+ttl_churn
+
+# graph traversal — three variants isolate per-traversal cost vs RPS tail
+illuminate
+illuminate_heavy
+illuminate_hot
+
+# replication / pubsub fan-out
+many_subscribers

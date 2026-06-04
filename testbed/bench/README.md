@@ -11,15 +11,18 @@ per-scenario leak gate, and renders a Markdown report.
 > performance or leak regressions. Its outputs (under `testbed/bench/out/`)
 > are git-ignored.
 >
-> **Release CI does run a smoke subset.** On every `vX.Y.Z` tag push, the
-> `Release` workflow runs `./testbed/bench/release.sh` — a driver that
-> sweeps the scenarios listed in `release-scenarios.txt` (currently the
-> `smoke_*` variants) and produces a fixed-format `bench-report.md` that
+> **Release CI runs the full canonical sweep.** On every `vX.Y.Z` tag
+> push, the `Release` workflow runs `./testbed/bench/release.sh` — a
+> driver that sweeps the scenarios listed in `release-scenarios.txt` (the
+> three `smoke_*` variants as a fast head-of-sweep signal, then the full
+> canonical scenarios across read/write/batch/scan/edge/TTL/illuminate
+> variants/fan-out) and produces a fixed-format `bench-report.md` that
 > is spliced into the GitHub Release notes. The bench job is
 > `continue-on-error`, so a noisy runner cannot block a release. See
-> issue [#256].
+> issues [#256], [#262].
 
 [#256]: https://github.com/anaregdesign/lantern/issues/256
+[#262]: https://github.com/anaregdesign/lantern/issues/262
 
 ## Prerequisites
 
