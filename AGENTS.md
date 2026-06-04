@@ -245,10 +245,14 @@ Tag order matters because each downstream module pins the upstream tag:
    to the freshly-tagged versions.
 5. Root `vX.Y.Z` — triggers `docker-publish.yml` (amd64 + arm64 buildx +
    cosign keyless). The same workflow also runs the release-time bench
-   sweep (`testbed/bench/release.sh` → smoke scenarios) and splices a
-   fixed-format report into the release notes. The bench job is
-   non-blocking — if it fails, the release still ships with a placeholder
-   bench section. See issue [#256](https://github.com/anaregdesign/lantern/issues/256).
+   sweep (`testbed/bench/release.sh` → full canonical scenarios listed in
+   `testbed/bench/release-scenarios.txt`, including all illuminate
+   variants, batch/scan/edge/TTL paths, and many_subscribers fan-out)
+   and splices a fixed-format report into the release notes. The bench
+   job is non-blocking — if it fails, the release still ships with a
+   placeholder bench section. See issues
+   [#256](https://github.com/anaregdesign/lantern/issues/256) and
+   [#262](https://github.com/anaregdesign/lantern/issues/262).
 
 The `server/` module is **never** tagged independently — it ships under the
 root tag. arm64 buildx under QEMU is slow; if a root tag already pushed the
