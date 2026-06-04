@@ -74,6 +74,43 @@ func TestRenderReport_AllSectionsAndVerdict(t *testing.T) {
 	}
 }
 
+func TestRenderReport_StreamingGhzRowsMaskNonOK(t *testing.T) {
+	in := Input{
+		Scenario:  "many_subscribers",
+		Timestamp: "t",
+		GhzFiles: []GhzFile{
+			{
+				Name: "ghz_steady_localhost_6380.json",
+				Summary: GhzSummary{
+					Count: 100, Rps: 100,
+					StatusCodeDistribution: map[string]int{"OK": 95, "Unavailable": 5},
+				},
+			},
+			{
+				Name: "ghz_sub_1.json",
+				Summary: GhzSummary{
+					Count: 130000, Rps: 433,
+					StatusCodeDistribution: map[string]int{"FailedPrecondition": 130000},
+				},
+			},
+		},
+	}
+	var buf bytes.Buffer
+	if err := RenderReport(&buf, in); err != nil {
+		t.Fatalf("RenderReport: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "| `ghz_steady_localhost_6380.json` | 100 | 100.0 | 0.00 | 0.00 | 5 |") {
+		t.Errorf("steady row should report numeric non-OK; got:\n%s", out)
+	}
+	if !strings.Contains(out, "| `ghz_sub_1.json` | 130000 | 433.0 | 0.00 | 0.00 | — |") {
+		t.Errorf("streaming row should mask non-OK with \"—\"; got:\n%s", out)
+	}
+	if !strings.Contains(out, "`ghz_sub_*` rows show `—` for non-OK") {
+		t.Errorf("expected footnote explaining masked non-OK; got:\n%s", out)
+	}
+}
+
 func TestRenderReport_HandlesMissingArtifactsGracefully(t *testing.T) {
 	var buf bytes.Buffer
 	if err := RenderReport(&buf, Input{Scenario: "x", Timestamp: "t"}); err != nil {

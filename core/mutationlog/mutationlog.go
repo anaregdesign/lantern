@@ -74,13 +74,19 @@ func (NopWAL) Write(Entry) error { return nil }
 // Options configures a [Log].
 //
 // A zero Options is valid: Capacity defaults to 1024 entries and WAL
-// defaults to [NopWAL]. SubscriberBuffer defaults to 64.
+// defaults to [NopWAL]. SubscriberBuffer defaults to 512.
 type Options struct {
 	// Capacity is the maximum number of entries retained in the ring buffer
 	// for replay. Must be > 0; defaults to 1024 when zero.
 	Capacity int
 	// SubscriberBuffer is the per-subscriber outbound channel size. Smaller
-	// values increase back-pressure sensitivity; defaults to 64 when zero.
+	// values increase back-pressure sensitivity; defaults to 512 when zero.
+	//
+	// At sustained write rates a too-small buffer turns transient scheduling
+	// jitter into permanent gap-closes: the fan-out path uses a
+	// non-blocking send and closes the subscriber on a full channel
+	// (see [Log.Append]). 512 gives ~256 ms of headroom at 2k writes/s,
+	// which is well above typical scheduler stalls on a loaded host.
 	SubscriberBuffer int
 	// WAL receives every appended entry before it fans out to subscribers.
 	// Nil defaults to [NopWAL].
@@ -89,7 +95,7 @@ type Options struct {
 
 const (
 	defaultCapacity         = 1024
-	defaultSubscriberBuffer = 64
+	defaultSubscriberBuffer = 512
 )
 
 // Log is an append-only, bounded, in-memory mutation log.
