@@ -10,6 +10,7 @@ import (
 	"runtime/debug"
 	"time"
 
+	"github.com/anaregdesign/lantern/core/concurrent/pubsub"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -41,6 +42,13 @@ type DomainMetrics struct {
 	mutationLogCapacity prometheus.Gauge
 	subscribeActive     prometheus.Gauge
 	subscribeDropped    *prometheus.CounterVec
+
+	// In-process pubsub subscription telemetry (#240). Wired by the
+	// server-side pubsub.Observer adapter so the leaf core/concurrent/
+	// pubsub package never imports server/metrics.
+	pubsubQueueDepth       prometheus.Histogram
+	pubsubDropped          *prometheus.CounterVec
+	pubsubDispatchDuration prometheus.Histogram
 
 	replicationApplied   *prometheus.CounterVec
 	replicationDropped   *prometheus.CounterVec
@@ -207,6 +215,20 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 			Name: "lantern_subscribe_dropped_total",
 			Help: "Total Subscribe streams terminated abnormally, partitioned by reason (gapped, send_failed).",
 		}, []string{"reason"}),
+		pubsubQueueDepth: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "lantern_subscription_queue_depth",
+			Help:    "Distribution of in-process pubsub subscription channel depth, sampled on every successful enqueue (#240). Aggregated across all subscriptions to avoid per-subscription cardinality.",
+			Buckets: prometheus.ExponentialBuckets(1, 2, 12), // 1 .. 2048
+		}),
+		pubsubDropped: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "lantern_subscription_dropped_total",
+			Help: "Total pubsub messages dropped at the subscription enqueue boundary, partitioned by FullPolicy decision (drop_newest | drop_oldest | drop_newest_after_oldest). Each drop path increments exactly once.",
+		}, []string{"policy"}),
+		pubsubDispatchDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "lantern_subscription_dispatch_duration_seconds",
+			Help:    "Distribution of pubsub dispatch latency measured from Publish to consumer return (#240). Aggregated across all subscriptions.",
+			Buckets: prometheus.ExponentialBuckets(0.0001, 4, 8), // 0.1ms .. ~1.6s
+		}),
 		replicationApplied: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "lantern_replication_applied_total",
 			Help: "Total remote mutations applied locally via the replication apply path, partitioned by origin (HLC NodeID, lowercase hex).",
@@ -313,6 +335,7 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 
 	reg.MustRegister(m.vertices, m.edges, m.expirations, m.gcDuration, m.buildInfo,
 		m.mutationLogEntries, m.mutationLogCapacity, m.subscribeActive, m.subscribeDropped,
+		m.pubsubQueueDepth, m.pubsubDropped, m.pubsubDispatchDuration,
 		m.replicationApplied, m.replicationDropped, m.replicationLag,
 		m.antiEntropyCycles, m.antiEntropyGapsFound,
 		m.illuminateVisitedVertices, m.illuminateVisitedEdges, m.illuminateDuration,
@@ -325,6 +348,14 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 	// Pre-create label rows so empty counters scrape as 0.
 	for _, r := range []string{"gapped", "send_failed"} {
 		m.subscribeDropped.WithLabelValues(r)
+	}
+
+	// Pre-warm the pubsub drop counter (#240) so every FullPolicy label
+	// row scrapes as 0 from process start. Sourced from
+	// pubsub.DropPolicies so adding a new policy in core/ surfaces here
+	// at compile time without a metrics edit.
+	for _, p := range pubsub.DropPolicies {
+		m.pubsubDropped.WithLabelValues(p)
 	}
 
 	// Pre-create label rows so empty counters are still scraped as 0.
@@ -423,6 +454,40 @@ func (m *DomainMetrics) OnSubscribeEnded() {
 func (m *DomainMetrics) OnSubscribeDropped(reason string) {
 	m.subscribeDropped.WithLabelValues(reason).Inc()
 }
+
+// OnPubsubQueueDepth records a single in-process pubsub subscription
+// channel-depth sample. Called once per successful enqueue by the
+// pubsub.Observer adapter installed via WithObserver (#240).
+func (m *DomainMetrics) OnPubsubQueueDepth(depth int) {
+	m.pubsubQueueDepth.Observe(float64(depth))
+}
+
+// OnPubsubDrop increments the pubsub drop counter for the given
+// FullPolicy decision. policy must be one of pubsub.DropPolicies; unknown
+// labels will register lazily but are not pre-warmed.
+func (m *DomainMetrics) OnPubsubDrop(policy string) {
+	m.pubsubDropped.WithLabelValues(policy).Inc()
+}
+
+// OnPubsubDispatchDuration records a single Publish→consumer-return
+// latency sample.
+func (m *DomainMetrics) OnPubsubDispatchDuration(d time.Duration) {
+	m.pubsubDispatchDuration.Observe(d.Seconds())
+}
+
+// PubsubObserver returns a pubsub.Observer adapter that fans out to the
+// three pubsub collectors. Server code installs it with pubsub.WithObserver
+// when constructing in-process subscriptions; the adapter keeps
+// core/concurrent/pubsub free of any server/metrics import (#240).
+func (m *DomainMetrics) PubsubObserver() pubsub.Observer {
+	return pubsubObserver{m: m}
+}
+
+type pubsubObserver struct{ m *DomainMetrics }
+
+func (o pubsubObserver) RecordEnqueueDepth(depth int)    { o.m.OnPubsubQueueDepth(depth) }
+func (o pubsubObserver) RecordDrop(policy string)        { o.m.OnPubsubDrop(policy) }
+func (o pubsubObserver) ObserveDispatch(d time.Duration) { o.m.OnPubsubDispatchDuration(d) }
 
 // OnReplicationApplied increments lantern_replication_applied_total for
 // a mutation accepted by the apply path. origin is the HLC NodeID of the

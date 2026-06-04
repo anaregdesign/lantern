@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anaregdesign/lantern/core/concurrent/pubsub"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
@@ -432,4 +433,71 @@ func TestDomainMetrics_RejectionFamilies(t *testing.T) {
 	if got := testutil.ToFloat64(m.tombstoneClampRejected); got != 1 {
 		t.Errorf("tombstone_clamp_rejected_total = %v, want 1", got)
 	}
+}
+
+func TestDomainMetrics_PubsubFamiliesAndPreWarm(t *testing.T) {
+	// Acceptance for #240: the three pubsub collectors must register and
+	// every DropPolicies label row must scrape as 0 from process start
+	// (pre-warmed in New). Methods must increment / observe correctly.
+	reg := prometheus.NewRegistry()
+	m := New(reg, Options{Version: "v0.7.0", Commit: "deadbeef", SampleInterval: time.Hour})
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	names := make(map[string]bool, len(mfs))
+	for _, mf := range mfs {
+		names[mf.GetName()] = true
+	}
+	for _, want := range []string{
+		"lantern_subscription_queue_depth",
+		"lantern_subscription_dropped_total",
+		"lantern_subscription_dispatch_duration_seconds",
+	} {
+		if !names[want] {
+			t.Errorf("metric family %q not registered", want)
+		}
+	}
+
+	// Every DropPolicy label row must be pre-warmed at 0.
+	for _, p := range pubsub.DropPolicies {
+		if got := testutil.ToFloat64(m.pubsubDropped.WithLabelValues(p)); got != 0 {
+			t.Errorf("pubsub_dropped_total{policy=%q} pre-warm = %v, want 0", p, got)
+		}
+	}
+
+	// Methods bump the right collectors.
+	m.OnPubsubQueueDepth(7)
+	m.OnPubsubDrop(pubsub.DropPolicyNewest)
+	m.OnPubsubDrop(pubsub.DropPolicyNewest)
+	m.OnPubsubDrop(pubsub.DropPolicyOldest)
+	m.OnPubsubDispatchDuration(3 * time.Millisecond)
+
+	if got := testutil.ToFloat64(m.pubsubDropped.WithLabelValues(pubsub.DropPolicyNewest)); got != 2 {
+		t.Errorf("pubsub_dropped_total{policy=drop_newest} = %v, want 2", got)
+	}
+	if got := testutil.ToFloat64(m.pubsubDropped.WithLabelValues(pubsub.DropPolicyOldest)); got != 1 {
+		t.Errorf("pubsub_dropped_total{policy=drop_oldest} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.pubsubDropped.WithLabelValues(pubsub.DropPolicyNewestAfterOldest)); got != 0 {
+		t.Errorf("pubsub_dropped_total{policy=drop_newest_after_oldest} = %v, want 0 (not called)", got)
+	}
+
+	// Histograms expose count via the dto.Metric; assert sample_count.
+	if got := collectHistogramCount(t, m.pubsubQueueDepth); got != 1 {
+		t.Errorf("pubsub_queue_depth count = %d, want 1", got)
+	}
+	if got := collectHistogramCount(t, m.pubsubDispatchDuration); got != 1 {
+		t.Errorf("pubsub_dispatch_duration count = %d, want 1", got)
+	}
+}
+
+func collectHistogramCount(t *testing.T, h prometheus.Histogram) uint64 {
+	t.Helper()
+	var dtoM dto.Metric
+	if err := h.Write(&dtoM); err != nil {
+		t.Fatalf("histogram write: %v", err)
+	}
+	return dtoM.GetHistogram().GetSampleCount()
 }
