@@ -65,8 +65,8 @@ func (t *Topic[T]) NewSubscription(name string, concurrency int, interval time.D
 		t.subscriptions[name] = &Subscription[T]{
 			name:        name,
 			topic:       t,
-			ch:          make(chan string, 65536),
-			messages:    make(map[string]*Message[T]),
+			ch:          make(chan uint64, 65536),
+			messages:    make(map[uint64]*Message[T]),
 			concurrency: concurrency,
 			interval:    interval,
 			ttl:         ttl,
