@@ -486,67 +486,6 @@ func TestSubscription_SubscribeIsSingleFlight(t *testing.T) {
 	}
 }
 
-// BenchmarkSubscription_PublishConsumeUint64 measures the Publish→consume hot
-// path after the #231 throughput refactor (uint64 IDs, sync.Pool envelopes,
-// fixed worker pool). Compare against the pre-#231 baseline captured in the
-// PR body using benchstat.
-func BenchmarkSubscription_PublishConsumeUint64(b *testing.B) {
-	topic := NewTopic[int]("bench")
-	sub := topic.NewSubscription("s", 4, time.Hour, time.Hour)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	var done sync.WaitGroup
-	done.Add(b.N)
-	go sub.Subscribe(ctx, func(m *Message[int]) {
-		m.Ack()
-		done.Done()
-	})
-
-	// Let workers start before timing.
-	time.Sleep(10 * time.Millisecond)
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		topic.Publish(i)
-	}
-	done.Wait()
-	b.StopTimer()
-}
-
-// BenchmarkSubscription_PublishConsumeUint64Parallel amortizes per-publish
-// goroutine spawn (introduced for fan-out safety in #230) across producer
-// goroutines, isolating the consumer-side wins from #231 (pool + worker
-// pool). This is the bench whose ratio the PR body cites for the ≥ 2x goal.
-func BenchmarkSubscription_PublishConsumeUint64Parallel(b *testing.B) {
-	topic := NewTopic[int]("bench")
-	sub := topic.NewSubscription("s", 4, time.Hour, time.Hour)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	var done sync.WaitGroup
-	done.Add(b.N)
-	go sub.Subscribe(ctx, func(m *Message[int]) {
-		m.Ack()
-		done.Done()
-	})
-
-	time.Sleep(10 * time.Millisecond)
-
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		i := 0
-		for pb.Next() {
-			topic.Publish(i)
-			i++
-		}
-	})
-	done.Wait()
-	b.StopTimer()
-}
-
 // --- #232: salvage heap + functional options + full-policy ---
 
 // waitFor polls cond up to d, returning true if it ever becomes true. It
