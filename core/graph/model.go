@@ -244,30 +244,3 @@ func (g *Graph[S, T]) ShortestPathTreeContext(ctx context.Context, seed S, costF
 	}
 	return spt, nil
 }
-
-func (g *Graph[S, T]) Render(key2int func(k S) int, value2string func(v T) string) GraphView {
-	var vertices []VertexView
-	var edges []EdgeView
-
-	for i, v := range g.Vertices {
-		vertices = append(vertices, VertexView{
-			ID:    key2int(i),
-			Label: value2string(v),
-		})
-	}
-
-	for from, tos := range g.Edges {
-		for to, value := range tos {
-			edges = append(edges, EdgeView{
-				From:  key2int(from),
-				To:    key2int(to),
-				Value: value,
-			})
-		}
-	}
-
-	return GraphView{
-		Vertices: vertices,
-		Edges:    edges,
-	}
-}
