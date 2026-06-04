@@ -15,7 +15,7 @@ import (
 // returns 200 on both /readyz and /healthz/ready immediately at startup.
 func TestMetricsMux_ReadinessSingleInstance(t *testing.T) {
 	gate := readiness.NewGate(10000, false, health.NewServer())
-	ts := httptest.NewServer(newMetricsMux(prometheus.NewRegistry(), gate))
+	ts := httptest.NewServer(newMetricsMux(prometheus.NewRegistry(), gate, false))
 	defer ts.Close()
 
 	for _, path := range []string{"/readyz", "/healthz/ready"} {
@@ -36,7 +36,7 @@ func TestMetricsMux_ReadinessSingleInstance(t *testing.T) {
 // each transition on both probe endpoints.
 func TestMetricsMux_ReadinessMultiPeerFlips(t *testing.T) {
 	gate := readiness.NewGate(100, true, health.NewServer())
-	ts := httptest.NewServer(newMetricsMux(prometheus.NewRegistry(), gate))
+	ts := httptest.NewServer(newMetricsMux(prometheus.NewRegistry(), gate, false))
 	defer ts.Close()
 
 	probe := func(path string) int {

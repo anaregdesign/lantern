@@ -77,6 +77,11 @@ type RateLimitConfig struct {
 //   - LANTERN_COMMIT                     overrides lantern_build_info{commit}
 //   - LANTERN_SLOW_RPC_THRESHOLD_MS      milliseconds; RPCs that take longer
 //     emit a warn-level "slow rpc" log. Default 500. Set to 0 to disable.
+//   - LANTERN_PPROF_ENABLED              true|false            (default false)
+//     when true, mounts /debug/pprof/* on the metrics listener for heap,
+//     goroutine, mutex, block, allocs, threadcreate, profile (CPU), trace,
+//     cmdline, and symbol. The metrics listener is intended for internal
+//     scrape traffic only — leave PPROF disabled unless that boundary holds.
 type ObservabilityConfig struct {
 	LogLevel         slog.Level
 	LogFormat        string
@@ -85,6 +90,7 @@ type ObservabilityConfig struct {
 	Version          string
 	Commit           string
 	SlowRPCThreshold time.Duration
+	EnablePprof      bool
 }
 
 // CacheConfig sizes the GraphCache TTL and its GC tick.
@@ -171,6 +177,7 @@ func NewConfig() *Config {
 			Version:          os.Getenv("LANTERN_VERSION"),
 			Commit:           os.Getenv("LANTERN_COMMIT"),
 			SlowRPCThreshold: time.Duration(envconfig.Int("LANTERN_SLOW_RPC_THRESHOLD_MS", 500)) * time.Millisecond,
+			EnablePprof:      envconfig.Bool("LANTERN_PPROF_ENABLED", false),
 		},
 		Cache: CacheConfig{
 			TTL:        time.Duration(envconfig.Int("LANTERN_DEFAULT_TTL_SECONDS", 60)) * time.Second,
@@ -488,7 +495,7 @@ func NewMetricsServer(o ObservabilityConfig, reg *prometheus.Registry, gate *rea
 	return &httpMetricsServer{
 		srv: &http.Server{
 			Addr:              o.MetricsAddr,
-			Handler:           newMetricsMux(reg, gate),
+			Handler:           newMetricsMux(reg, gate, o.EnablePprof),
 			ReadHeaderTimeout: 5 * time.Second,
 		},
 		logger: logger,
@@ -497,10 +504,14 @@ func NewMetricsServer(o ObservabilityConfig, reg *prometheus.Registry, gate *rea
 
 // newMetricsMux builds the /metrics + /healthz + /readyz + /healthz/ready
 // handler tree. Extracted so tests can exercise the readiness-aware HTTP
-// shim with httptest without binding a real port.
-func newMetricsMux(reg *prometheus.Registry, gate *readiness.Gate) http.Handler {
+// shim with httptest without binding a real port. When enablePprof is true,
+// /debug/pprof/* is additionally mounted; otherwise those paths 404.
+func newMetricsMux(reg *prometheus.Registry, gate *readiness.Gate, enablePprof bool) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg}))
+	if enablePprof {
+		registerPprofHandlers(mux)
+	}
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
