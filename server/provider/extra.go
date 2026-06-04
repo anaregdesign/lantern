@@ -84,7 +84,7 @@ func (v *ValidationInterceptor) reject(reason string, format string, args ...any
 	if v.logger != nil && v.logger.Enabled(context.Background(), slog.LevelDebug) {
 		v.logger.LogAttrs(context.Background(), slog.LevelDebug, "validation rejected",
 			slog.String("reason", reason),
-			slog.String("msg", status.Convert(err).Message()),
+			slog.String("error", status.Convert(err).Message()),
 		)
 	}
 	return err
