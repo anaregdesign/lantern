@@ -89,6 +89,8 @@ most common knobs:
 | `LANTERN_ANTI_ENTROPY_GAP_WARN_THRESHOLD` | `1024` | Emit a `slog` warning per anti-entropy tick whose detected peer gap (in seq units) exceeds this value (0 disables). |
 | `LANTERN_METRICS_ADDR` | `:9090` | HTTP listen for `/metrics`, `/healthz`, `/readyz` (empty disables). |
 | `LANTERN_PPROF_ENABLED` | `false` | Mount `/debug/pprof/*` (heap, goroutine, allocs, threadcreate, block, mutex, profile, trace, cmdline, symbol) on the metrics listener. Keep off in production unless the metrics port is bound to an internal-only interface; the endpoint exposes goroutine stacks and live heap data. `block` / `mutex` profiles also require `LANTERN_BLOCK_PROFILE_RATE` / `LANTERN_MUTEX_PROFILE_FRACTION` to be non-zero. |
+| `LANTERN_MUTEX_PROFILE_FRACTION` | `0` | `runtime.SetMutexProfileFraction` — 1-in-N sampling of mutex contention. Non-zero adds per-Unlock overhead; leave `0` in production unless actively profiling. Combine with `LANTERN_PPROF_ENABLED=true` to read the samples via `/debug/pprof/mutex`. |
+| `LANTERN_BLOCK_PROFILE_RATE` | `0` | `runtime.SetBlockProfileRate` — nanoseconds between block-event samples (lower = more samples). Non-zero adds per-blocking-op overhead; same caveats as `MUTEX_PROFILE_FRACTION`. Read via `/debug/pprof/block`. |
 | `LANTERN_REFLECTION` | `true` | gRPC server reflection. |
 | `LANTERN_LOG_LEVEL` / `LANTERN_LOG_FORMAT` | `info` / `json` | slog handler. |
 | `LANTERN_TLS_CERT_FILE` / `LANTERN_TLS_KEY_FILE` / `LANTERN_TLS_CLIENT_CA_FILE` | (unset) | TLS / mTLS material (all-or-nothing). |

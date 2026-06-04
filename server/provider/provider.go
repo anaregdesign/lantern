@@ -82,15 +82,24 @@ type RateLimitConfig struct {
 //     goroutine, mutex, block, allocs, threadcreate, profile (CPU), trace,
 //     cmdline, and symbol. The metrics listener is intended for internal
 //     scrape traffic only — leave PPROF disabled unless that boundary holds.
+//   - LANTERN_MUTEX_PROFILE_FRACTION     int   (default 0 = disabled)
+//     passed to runtime.SetMutexProfileFraction. Sampling rate for mutex
+//     contention events; 1-in-N stacks are recorded. Has runtime cost on
+//     contended workloads — leave 0 in production unless actively profiling.
+//   - LANTERN_BLOCK_PROFILE_RATE         int   (default 0 = disabled)
+//     passed to runtime.SetBlockProfileRate. Nanoseconds between block-event
+//     samples; lower = more samples. Same runtime-cost caveat as above.
 type ObservabilityConfig struct {
-	LogLevel         slog.Level
-	LogFormat        string
-	MetricsAddr      string
-	EnableReflection bool
-	Version          string
-	Commit           string
-	SlowRPCThreshold time.Duration
-	EnablePprof      bool
+	LogLevel             slog.Level
+	LogFormat            string
+	MetricsAddr          string
+	EnableReflection     bool
+	Version              string
+	Commit               string
+	SlowRPCThreshold     time.Duration
+	EnablePprof          bool
+	MutexProfileFraction int
+	BlockProfileRate     int
 }
 
 // CacheConfig sizes the GraphCache TTL and its GC tick.
@@ -170,14 +179,16 @@ func NewConfig() *Config {
 			Burst: burst,
 		},
 		Observability: ObservabilityConfig{
-			LogLevel:         envconfig.LogLevel(os.Getenv("LANTERN_LOG_LEVEL")),
-			LogFormat:        envconfig.String("LANTERN_LOG_FORMAT", "json"),
-			MetricsAddr:      envconfig.String("LANTERN_METRICS_ADDR", ":9090"),
-			EnableReflection: envconfig.Bool("LANTERN_REFLECTION", true),
-			Version:          os.Getenv("LANTERN_VERSION"),
-			Commit:           os.Getenv("LANTERN_COMMIT"),
-			SlowRPCThreshold: time.Duration(envconfig.Int("LANTERN_SLOW_RPC_THRESHOLD_MS", 500)) * time.Millisecond,
-			EnablePprof:      envconfig.Bool("LANTERN_PPROF_ENABLED", false),
+			LogLevel:             envconfig.LogLevel(os.Getenv("LANTERN_LOG_LEVEL")),
+			LogFormat:            envconfig.String("LANTERN_LOG_FORMAT", "json"),
+			MetricsAddr:          envconfig.String("LANTERN_METRICS_ADDR", ":9090"),
+			EnableReflection:     envconfig.Bool("LANTERN_REFLECTION", true),
+			Version:              os.Getenv("LANTERN_VERSION"),
+			Commit:               os.Getenv("LANTERN_COMMIT"),
+			SlowRPCThreshold:     time.Duration(envconfig.Int("LANTERN_SLOW_RPC_THRESHOLD_MS", 500)) * time.Millisecond,
+			EnablePprof:          envconfig.Bool("LANTERN_PPROF_ENABLED", false),
+			MutexProfileFraction: envconfig.Int("LANTERN_MUTEX_PROFILE_FRACTION", 0),
+			BlockProfileRate:     envconfig.Int("LANTERN_BLOCK_PROFILE_RATE", 0),
 		},
 		Cache: CacheConfig{
 			TTL:        time.Duration(envconfig.Int("LANTERN_DEFAULT_TTL_SECONDS", 60)) * time.Second,

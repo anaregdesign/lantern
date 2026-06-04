@@ -168,6 +168,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Apply runtime mutex/block profile sampling rates as early as
+	// possible so any subsequent contention is captured. Both knobs are
+	// no-ops when the env vars are unset (#239).
+	provider.ApplyRuntimeProfiling(app.cfg.Observability, app.logger)
+
 	app.logger.Info("lantern starting",
 		slog.Int("port", app.cfg.Net.Port),
 		slog.Duration("default_ttl", app.cfg.Cache.TTL),
