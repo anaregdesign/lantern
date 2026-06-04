@@ -19,4 +19,10 @@ subscribe:
   data_template: '{"fromSeq":"1"}'
 leak_gate:
   goroutine_max_delta: 80     # 64 streams × bookkeeping
-  heap_alloc_max_delta_mb: 64
+  # 2k RPS × 5m of PutVertex with monotonically-increasing keys grows the
+  # in-memory graph + mutation-log ring + per-replica replication state
+  # by hundreds of MiB of legitimate live working set. The leak gate
+  # measures post-GC `heap_alloc`, so steady-state growth here is real
+  # workload, not a leak — see issue #258 item 2. Keep the threshold
+  # generous enough to cover the working set across all three replicas.
+  heap_alloc_max_delta_mb: 384

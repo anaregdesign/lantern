@@ -214,23 +214,44 @@ func RenderReport(w io.Writer, in Input) error {
 	} else {
 		bw.printf("| file | count | rps | avg ms | p99 ms | non-OK |\n")
 		bw.printf("| --- | ---: | ---: | ---: | ---: | ---: |\n")
+		sawStream := false
 		for _, g := range in.GhzFiles {
-			nonOK := 0
-			for code, n := range g.Summary.StatusCodeDistribution {
-				if code != "OK" {
-					nonOK += n
+			// ghz reports server-streaming RPCs (file prefix `ghz_sub_`)
+			// as a sequence of short-lived call iterations whose terminal
+			// status is almost always non-OK (Subscribe never returns OK
+			// for a healthy stream — it streams forever). In that mode
+			// `non-OK` ≈ `count` and tells us nothing useful, so we mask
+			// the column with `—` and surface a footnote instead. See
+			// issue #258, item 4.
+			isStream := strings.HasPrefix(g.Name, "ghz_sub_")
+			nonOKCell := "—"
+			if !isStream {
+				nonOK := 0
+				for code, n := range g.Summary.StatusCodeDistribution {
+					if code != "OK" {
+						nonOK += n
+					}
 				}
+				nonOKCell = fmt.Sprintf("%d", nonOK)
+			} else {
+				sawStream = true
 			}
-			bw.printf("| `%s` | %d | %.1f | %.2f | %.2f | %d |\n",
+			bw.printf("| `%s` | %d | %.1f | %.2f | %.2f | %s |\n",
 				g.Name,
 				g.Summary.Count,
 				g.Summary.Rps,
 				nsToMs(g.Summary.Average),
 				nsToMs(percentileNs(g.Summary, 99)),
-				nonOK,
+				nonOKCell,
 			)
 		}
 		bw.printf("\n")
+		if sawStream {
+			bw.printf("> `ghz_sub_*` rows show `—` for non-OK: ghz reports server-streaming\n")
+			bw.printf("> RPCs as repeated short-lived iterations, so the column is structurally\n")
+			bw.printf("> equal to `count` and not actionable. Inspect `lantern_subscription_*`\n")
+			bw.printf("> Prom series or per-stream `count` to assess stream health.\n\n")
+		}
 	}
 
 	bw.printf("## Prometheus range queries\n\n")
