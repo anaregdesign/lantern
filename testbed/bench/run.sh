@@ -63,8 +63,10 @@ steady_conc="$(yq -r '.phases.steady.concurrency' "$SCENARIO_FILE")"
 steady_rps="$(yq -r '.phases.steady.rps' "$SCENARIO_FILE")"
 cooldown="$(yq -r '.phases.cooldown' "$SCENARIO_FILE")"
 endpoints=( $(yq -r '.target.endpoints[]' "$SCENARIO_FILE") )
-proto_path="$REPO_ROOT/proto/graph/v1/graph.proto"
-proto_import="$REPO_ROOT/proto"
+# ghz uses gRPC reflection to resolve method/message descriptors. The server
+# registers reflection unconditionally (see server/provider/provider.go), so
+# we do not need to point ghz at the .proto file — which would also pull in
+# google/api/annotations.proto from grpc-gateway and other transitive deps.
 
 # ----- compose up ------------------------------------------------------------
 if [[ "${SKIP_UP:-0}" != "1" ]]; then
@@ -101,9 +103,11 @@ snapshot_runtime() {
     local text
     text="$(curl -fsS --max-time 5 "http://localhost:${port}/metrics" || true)"
     local g h
-    g="$(prom_scalar go_goroutines "$text")"
-    h="$(prom_scalar go_memstats_heap_inuse_bytes "$text")"
-    samples+=( "$(jq -nc --arg ep "localhost:${port}" --argjson g "${g:-0}" --argjson h "${h:-0}" \
+    # Prom client formats large gauges in scientific notation (e.g. 1.949696e+07).
+    # Coerce to integer so downstream JSON consumers (jq + Go int64) don't choke.
+    g="$(printf '%.0f' "$(prom_scalar go_goroutines "$text")" 2>/dev/null)"; g="${g:-0}"
+    h="$(printf '%.0f' "$(prom_scalar go_memstats_heap_inuse_bytes "$text")" 2>/dev/null)"; h="${h:-0}"
+    samples+=( "$(jq -nc --arg ep "localhost:${port}" --argjson g "$g" --argjson h "$h" \
       '{endpoint: $ep, goroutines: $g, heap_inuse_bytes: $h}')" )
   done
   printf '%s\n' "${samples[@]}" | jq -s '.' > "$out"
@@ -115,7 +119,6 @@ run_ghz() {
   local jsonout="$OUTDIR/ghz_${phase}_${ep//[:.]/_}.json"
   ghz \
     --insecure \
-    --proto "$proto_path" -i "$proto_import" \
     --call "$call" \
     -c "$conc" --rps "$rps" -z "$dur" \
     -d "$data" \
@@ -151,7 +154,7 @@ if [[ "$sub_count" != "0" && "$sub_count" != "null" ]]; then
   sub_eps=( $(yq -r '.subscribe.endpoints[]' "$SCENARIO_FILE") )
   for i in $(seq 1 "$sub_count"); do
     ep="${sub_eps[$(( (i-1) % ${#sub_eps[@]} ))]}"
-    ghz --insecure --proto "$proto_path" -i "$proto_import" \
+    ghz --insecure \
       --call "$sub_call" -c 1 --rps 0 -z "$steady_duration" \
       -d "$sub_data" --format json \
       -o "$OUTDIR/ghz_sub_${i}.json" "$ep" >/dev/null 2>&1 &
@@ -165,7 +168,7 @@ if [[ "$sub_consumers_len" != "0" && "$sub_consumers_len" != "null" ]]; then
     ep="$(yq -r ".subscribe.consumers[$i].endpoint" "$SCENARIO_FILE")"
     call="$(yq -r ".subscribe.consumers[$i].call" "$SCENARIO_FILE")"
     data="$(yq -r ".subscribe.consumers[$i].data_template" "$SCENARIO_FILE")"
-    ghz --insecure --proto "$proto_path" -i "$proto_import" \
+    ghz --insecure \
       --call "$call" -c 1 --rps 0 -z "$steady_duration" \
       -d "$data" --format json \
       -o "$OUTDIR/ghz_sub_consumer_${i}.json" "$ep" >/dev/null 2>&1 &
@@ -204,7 +207,7 @@ if [[ "$calls_len" != "0" && "$calls_len" != "null" ]]; then
     data="$(yq -r ".target.calls[$i].data_template" "$SCENARIO_FILE")"
     ep="${endpoints[$(( i % ${#endpoints[@]} ))]}"
     f="$OUTDIR/ghz_steady_${i}_${ep//[:.]/_}.json"
-    ghz --insecure --proto "$proto_path" -i "$proto_import" \
+    ghz --insecure \
       --call "$call" -c "$steady_conc" --rps "$per_rps" -z "$steady_duration" \
       -d "$data" --format json -o "$f" "$ep" >/dev/null 2>&1 &
     prod_pids+=( "$!" )
@@ -248,7 +251,7 @@ while IFS= read -r line; do
     --data-urlencode "end=$steady_end_epoch" \
     --data-urlencode "step=5s" \
     > "$out" || log "prom query failed: $q"
-  jq -n --arg q "$q" --arg f "$(basename "$out")" '{query:$q, file:$f}' \
+  jq -nc --arg q "$q" --arg f "$(basename "$out")" '{query:$q, file:$f}' \
     >> "$OUTDIR/prom/_index.ndjson"
 done < "$CAPTURE_DIR/prom_queries.txt"
 
