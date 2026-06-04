@@ -96,12 +96,17 @@ const (
 //
 // The zero value is not ready for use; construct with [New].
 type Log struct {
-	mu          sync.Mutex
-	capacity    int
-	subBuf      int
-	wal         WAL
+	mu       sync.Mutex
+	capacity int
+	subBuf   int
+	wal      WAL
+	// ring is a fixed-size circular buffer allocated once at construction.
+	// Valid entries occupy positions [head, head+size) modulo capacity.
+	// Append is O(1) at all fill levels; eviction is a single head bump.
 	ring        []Entry
-	firstSeq    uint64 // seq of ring[0] when len(ring) > 0; otherwise next-to-assign
+	head        int    // index of the oldest entry when size > 0
+	size        int    // number of valid entries; 0 <= size <= capacity
+	firstSeq    uint64 // seq of ring[head] when size > 0; meaningless otherwise
 	lastSeq     uint64 // seq of last appended entry; 0 means none appended yet
 	evicted     uint64 // total entries dropped by ring-buffer eviction
 	hasEntries  bool
@@ -133,7 +138,7 @@ func New(opts Options) *Log {
 		capacity:    capacity,
 		subBuf:      subBuf,
 		wal:         wal,
-		ring:        make([]Entry, 0, capacity),
+		ring:        make([]Entry, capacity),
 		subscribers: make(map[*subscription]struct{}),
 	}
 }
@@ -171,7 +176,7 @@ func (l *Log) Cap() int {
 func (l *Log) Len() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return len(l.ring)
+	return l.size
 }
 
 // Evicted returns the cumulative count of entries dropped from the ring
@@ -207,20 +212,26 @@ func (l *Log) Append(op MutationOp, ts hlc.Timestamp) (Entry, error) {
 	return entry, nil
 }
 
-// storeLocked inserts entry into the ring buffer, evicting the oldest entry
-// when capacity is reached. The caller must hold l.mu.
+// storeLocked inserts entry into the circular ring buffer. When the ring
+// is at capacity the oldest entry is overwritten in place and head is
+// advanced by one slot; this keeps Append at O(1) regardless of fill
+// level. See issue #252 for the regression that prompted the rewrite.
+//
+// The caller must hold l.mu.
 func (l *Log) storeLocked(entry Entry) {
-	if len(l.ring) < l.capacity {
-		if len(l.ring) == 0 {
+	if l.size < l.capacity {
+		if l.size == 0 {
 			l.firstSeq = entry.Seq
 		}
-		l.ring = append(l.ring, entry)
+		l.ring[(l.head+l.size)%l.capacity] = entry
+		l.size++
 		return
 	}
-	// Capacity reached: drop the oldest, append at the end.
-	copy(l.ring, l.ring[1:])
-	l.ring[len(l.ring)-1] = entry
-	l.firstSeq = l.ring[0].Seq
+	// Capacity reached: overwrite the slot at head, advance head, and
+	// recompute firstSeq from the new head position.
+	l.ring[l.head] = entry
+	l.head = (l.head + 1) % l.capacity
+	l.firstSeq = l.ring[l.head].Seq
 	l.evicted++
 }
 
@@ -270,8 +281,12 @@ func (l *Log) Subscribe(fromSeq uint64) (<-chan Entry, func() error, error) {
 		return nil, nil, ErrGapped
 	}
 	sub := &subscription{ch: make(chan Entry, l.subBuf)}
-	// Replay any in-buffer entries with Seq >= fromSeq.
-	for _, e := range l.ring {
+	// Replay any in-buffer entries with Seq >= fromSeq. Entries are stored
+	// in the circular ring at positions [head, head+size); iterate that
+	// active window rather than ranging over the backing slice (which
+	// contains stale slots past size).
+	for i := 0; i < l.size; i++ {
+		e := l.ring[(l.head+i)%l.capacity]
 		if e.Seq < fromSeq {
 			continue
 		}
