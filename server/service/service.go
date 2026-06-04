@@ -41,7 +41,26 @@ type LanternService struct {
 	tombstoneTTL time.Duration
 	origins      *originStateTracker
 	onApplied    func(origin string)
+	metrics      HotPathMetrics
 }
+
+// HotPathMetrics is the narrow observability surface consumed by the
+// hot-path handlers (#220). Implemented by *server/metrics.DomainMetrics in
+// production; tests can install a fake to assert per-RPC instrumentation
+// fires.
+//
+// Implementations must be safe for concurrent use.
+type HotPathMetrics interface {
+	OnIlluminate(optimization string, visitedVertices, visitedEdges int, traversal, optimize time.Duration)
+	OnScan(op string, results int, duration time.Duration)
+	OnBatch(op string, size int)
+}
+
+type noopHotPathMetrics struct{}
+
+func (noopHotPathMetrics) OnIlluminate(string, int, int, time.Duration, time.Duration) {}
+func (noopHotPathMetrics) OnScan(string, int, time.Duration)                           {}
+func (noopHotPathMetrics) OnBatch(string, int)                                         {}
 
 // ScanLimits caps the per-call pagination knobs for the prefix RPCs. It is
 // a value struct rather than a pointer-to-provider type so the service
@@ -64,7 +83,7 @@ func defaultScanLimits() ScanLimits {
 }
 
 func NewLanternService(cache Backend) *LanternService {
-	return &LanternService{cache: cache, scan: defaultScanLimits(), origins: newOriginStateTracker()}
+	return &LanternService{cache: cache, scan: defaultScanLimits(), origins: newOriginStateTracker(), metrics: noopHotPathMetrics{}}
 }
 
 // WithScanLimits returns s with its prefix-RPC limits replaced. Intended
@@ -101,7 +120,17 @@ func (s *LanternService) WithLogger(l *slog.Logger) *LanternService {
 	return s
 }
 
-// WithTombstoneTTL configures the maximum retention window for delete
+// WithHotPathMetrics installs the hot-path observability sink (#220).
+// Defaults to a no-op so unit tests can construct the service without
+// pulling in the metrics package.
+func (s *LanternService) WithHotPathMetrics(m HotPathMetrics) *LanternService {
+	if m == nil {
+		s.metrics = noopHotPathMetrics{}
+	} else {
+		s.metrics = m
+	}
+	return s
+}
 
 // WithTombstoneTTL configures the maximum retention window for delete
 // tombstones AND the upper bound on caller-supplied Expiration on the
@@ -221,13 +250,18 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 		return nil, status.FromContextError(err).Err()
 	}
 
+	traversalStart := time.Now()
 	g, expirations, err := s.cache.NeighborWithExpirationsContext(ctx, request.GetSeed(), int(request.GetStep()), int(request.GetK()), request.GetTfidf())
+	traversalDur := time.Since(traversalStart)
 	if err != nil {
 		return nil, status.FromContextError(err).Err()
 	}
 
+	var optimizeDur time.Duration
 	if opt := optimizers[request.GetOptimization()]; opt != nil {
+		optStart := time.Now()
 		g, err = opt(ctx, g, request.GetSeed())
+		optimizeDur = time.Since(optStart)
 		if err != nil {
 			return nil, status.FromContextError(err).Err()
 		}
@@ -247,6 +281,7 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 	}
 
 	var edges []*pb.Edge
+	edgeCount := 0
 	for tail, heads := range g.Edges {
 		expRow := expirations[tail]
 		for head, weight := range heads {
@@ -255,8 +290,11 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 				edge.Expiration = timestamppb.New(exp)
 			}
 			edges = append(edges, edge)
+			edgeCount++
 		}
 	}
+
+	s.metrics.OnIlluminate(optimizationLabel(request.GetOptimization()), len(vertices), edgeCount, traversalDur, optimizeDur)
 
 	return &pb.IlluminateResponse{
 		Graph: &pb.Graph{Vertices: vertices, Edges: edges},
@@ -283,6 +321,7 @@ func (s *LanternService) GetVertices(ctx context.Context, request *pb.GetVertice
 		return nil, status.FromContextError(err).Err()
 	}
 	keys := request.GetKeys()
+	s.metrics.OnBatch("GetVertices", len(keys))
 	resp := &pb.GetVerticesResponse{
 		Vertices: make([]*pb.Vertex, 0, len(keys)),
 	}
@@ -313,6 +352,7 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 		return nil, status.FromContextError(err).Err()
 	}
 	in := request.GetVertices()
+	s.metrics.OnBatch("PutVertices", len(in))
 	items := make([]graph.VertexItem[string, *pb.Vertex], 0, len(in))
 	for _, v := range in {
 		if err := s.validateExpiration(v.GetExpiration().AsTime()); err != nil {
@@ -343,6 +383,7 @@ func (s *LanternService) DeleteVertices(ctx context.Context, in *pb.DeleteVertic
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()
 	}
+	s.metrics.OnBatch("DeleteVertices", len(in.GetKeys()))
 	var n int
 	if s.clock != nil && s.tombstoneTTL > 0 {
 		// Replicated path: stamp tombstones at clock.Now() so peers
@@ -376,6 +417,7 @@ func (s *LanternService) GetEdges(ctx context.Context, request *pb.GetEdgesReque
 		return nil, status.FromContextError(err).Err()
 	}
 	in := request.GetEdges()
+	s.metrics.OnBatch("GetEdges", len(in))
 	resp := &pb.GetEdgesResponse{
 		Edges: make([]*pb.Edge, 0, len(in)),
 	}
@@ -406,6 +448,7 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 		return nil, status.FromContextError(err).Err()
 	}
 	in := request.GetEdges()
+	s.metrics.OnBatch("AddEdges", len(in))
 	items := make([]graph.EdgeItem[string], 0, len(in))
 	for _, e := range in {
 		if err := s.validateExpiration(e.GetExpiration().AsTime()); err != nil {
@@ -435,6 +478,7 @@ func (s *LanternService) PutEdges(ctx context.Context, request *pb.PutEdgesReque
 		return nil, status.FromContextError(err).Err()
 	}
 	in := request.GetEdges()
+	s.metrics.OnBatch("PutEdges", len(in))
 	items := make([]graph.EdgeItem[string], 0, len(in))
 	for _, e := range in {
 		if err := s.validateExpiration(e.GetExpiration().AsTime()); err != nil {
@@ -470,6 +514,7 @@ func (s *LanternService) DeleteEdges(ctx context.Context, in *pb.DeleteEdgesRequ
 		return nil, status.FromContextError(err).Err()
 	}
 	inEdges := in.GetEdges()
+	s.metrics.OnBatch("DeleteEdges", len(inEdges))
 	keys := make([]graph.EdgeKey[string], 0, len(inEdges))
 	for _, e := range inEdges {
 		keys = append(keys, graph.EdgeKey[string]{Tail: e.GetTail(), Head: e.GetHead()})

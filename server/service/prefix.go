@@ -25,6 +25,7 @@ func (s *LanternService) ScanVertices(ctx context.Context, in *pb.ScanVerticesRe
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()
 	}
+	start := time.Now()
 	limit := clampLimit(in.GetLimit(), s.scan.ScanDefaultLimit, s.scan.ScanMaxLimit)
 
 	cursor, err := decodeCursor(in.GetCursor())
@@ -67,6 +68,7 @@ func (s *LanternService) ScanVertices(ctx context.Context, in *pb.ScanVerticesRe
 	if hitLimit && lastKey != "" {
 		resp.NextCursor = encodeCursor(scanCursor{LastKey: lastKey})
 	}
+	s.metrics.OnScan("ScanVertices", len(vertices), time.Since(start))
 	return resp, nil
 }
 
@@ -94,6 +96,7 @@ func (s *LanternService) DeleteVerticesByPrefix(ctx context.Context, in *pb.Dele
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()
 	}
+	start := time.Now()
 	limit := clampLimit(in.GetLimit(), s.scan.DeleteByPrefixDefaultLimit, s.scan.DeleteByPrefixMaxLimit)
 
 	if in.GetDryRun() {
@@ -101,6 +104,7 @@ func (s *LanternService) DeleteVerticesByPrefix(ctx context.Context, in *pb.Dele
 		if n > uint64(limit) {
 			n = uint64(limit)
 		}
+		s.metrics.OnScan("DeleteVerticesByPrefix", int(n), time.Since(start))
 		return &pb.DeleteVerticesByPrefixResponse{Deleted: n}, nil
 	}
 	deleted := 0
@@ -114,6 +118,7 @@ func (s *LanternService) DeleteVerticesByPrefix(ctx context.Context, in *pb.Dele
 		deleted = s.cache.DeleteByPrefix(ctx, in.GetPrefix(), int(limit))
 	}
 	s.logMutation(&pb.MutationOp{Op: &pb.MutationOp_DeleteVerticesByPrefix{DeleteVerticesByPrefix: in}})
+	s.metrics.OnScan("DeleteVerticesByPrefix", deleted, time.Since(start))
 	return &pb.DeleteVerticesByPrefixResponse{Deleted: uint64(deleted)}, nil
 }
 
@@ -147,6 +152,7 @@ func (s *LanternService) ScanEdges(ctx context.Context, in *pb.ScanEdgesRequest)
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()
 	}
+	start := time.Now()
 	limit := clampLimit(in.GetLimit(), s.scan.ScanDefaultLimit, s.scan.ScanMaxLimit)
 
 	cursor, err := decodeEdgesCursor(in.GetCursor())
@@ -186,5 +192,6 @@ func (s *LanternService) ScanEdges(ctx context.Context, in *pb.ScanEdgesRequest)
 	if hitLimit && (lastTail != "" || lastHead != "") {
 		resp.NextCursor = encodeEdgesCursor(scanEdgesCursor{LastTail: lastTail, LastHead: lastHead})
 	}
+	s.metrics.OnScan("ScanEdges", len(edges), time.Since(start))
 	return resp, nil
 }
