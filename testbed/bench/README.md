@@ -57,7 +57,13 @@ artifacts are written under
 Each YAML declares the phases (`warmup`, `steady`, `cooldown`), the ghz
 target (`call` + `data_template`), optional `subscribe` and `chaos`
 blocks, and the leak-gate thresholds (`goroutine_max_delta`,
-`heap_inuse_max_delta_mb`).
+`heap_alloc_max_delta_mb`). The gate evaluates against `heap_alloc`
+(post-GC live bytes), forcing a `runtime.GC()` via
+`/debug/pprof/heap?gc=1` before each snapshot so the reading reflects
+live memory rather than span-level allocator headroom. The legacy field
+name `heap_inuse_max_delta_mb` is still accepted for backward
+compatibility but produced false-positive verdicts under sustained
+churn — see issue #248.
 
 ## Output layout
 
@@ -65,7 +71,7 @@ blocks, and the leak-gate thresholds (`goroutine_max_delta`,
 testbed/bench/out/<scenario>/<ts>/
 ├── report.md                       # rendered summary (start here)
 ├── leak_gate.json                  # verdict + per-replica deltas + thresholds
-├── runtime_pre.json                # per-replica go_goroutines + heap_inuse, after warmup
+├── runtime_pre.json                # per-replica go_goroutines + heap_alloc/heap_inuse/heap_objects, after warmup
 ├── runtime_post.json               # same, after cooldown
 ├── ghz_warmup_<endpoint>.json      # raw ghz results, one per invocation
 ├── ghz_steady_<...>.json
@@ -80,8 +86,10 @@ testbed/bench/out/<scenario>/<ts>/
 ## Drill-down workflow
 
 1. **Verdict & deltas.** Open `report.md`. The leak-gate table shows the
-   pre/post goroutines + heap_inuse per replica with the Δ vs the
-   scenario threshold. Any cell exceeding the threshold is the first
+   pre/post goroutines + heap_alloc + heap_inuse + heap_objects per
+   replica with the Δ vs the scenario threshold. The verdict is driven
+   by `heap_alloc` (post-GC live bytes); `heap_inuse` and `heap_objects`
+   are shown for context. Any cell exceeding the threshold is the first
    place to look.
 2. **Allocation source.** For a leaking replica, diff its heap profiles:
 

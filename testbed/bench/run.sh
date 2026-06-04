@@ -132,18 +132,30 @@ prom_scalar() {
 }
 
 snapshot_runtime() {
+  # Force a GC on every replica before sampling so heap_alloc_bytes reflects
+  # live (post-GC) memory rather than transient allocation between cycles.
+  # /debug/pprof/heap?gc=1 calls runtime.GC() before returning the profile —
+  # we discard the body and just use the side effect.
   local out="$1" port
+  for port in "${REPLICA_METRICS_PORTS[@]}"; do
+    curl -fsS --max-time 10 "http://localhost:${port}/debug/pprof/heap?gc=1" \
+      -o /dev/null || true
+  done
   local -a samples=()
   for port in "${REPLICA_METRICS_PORTS[@]}"; do
     local text
     text="$(curl -fsS --max-time 5 "http://localhost:${port}/metrics" || true)"
-    local g h
+    local g h_inuse h_alloc h_objs
     # Prom client formats large gauges in scientific notation (e.g. 1.949696e+07).
     # Coerce to integer so downstream JSON consumers (jq + Go int64) don't choke.
     g="$(printf '%.0f' "$(prom_scalar go_goroutines "$text")" 2>/dev/null)"; g="${g:-0}"
-    h="$(printf '%.0f' "$(prom_scalar go_memstats_heap_inuse_bytes "$text")" 2>/dev/null)"; h="${h:-0}"
-    samples+=( "$(jq -nc --arg ep "localhost:${port}" --argjson g "$g" --argjson h "$h" \
-      '{endpoint: $ep, goroutines: $g, heap_inuse_bytes: $h}')" )
+    h_inuse="$(printf '%.0f' "$(prom_scalar go_memstats_heap_inuse_bytes "$text")" 2>/dev/null)"; h_inuse="${h_inuse:-0}"
+    h_alloc="$(printf '%.0f' "$(prom_scalar go_memstats_heap_alloc_bytes "$text")" 2>/dev/null)"; h_alloc="${h_alloc:-0}"
+    h_objs="$(printf '%.0f'  "$(prom_scalar go_memstats_heap_objects     "$text")" 2>/dev/null)"; h_objs="${h_objs:-0}"
+    samples+=( "$(jq -nc --arg ep "localhost:${port}" \
+        --argjson g "$g" \
+        --argjson hi "$h_inuse" --argjson ha "$h_alloc" --argjson ho "$h_objs" \
+      '{endpoint: $ep, goroutines: $g, heap_inuse_bytes: $hi, heap_alloc_bytes: $ha, heap_objects: $ho}')" )
   done
   printf '%s\n' "${samples[@]}" | jq -s '.' > "$out"
 }
@@ -292,7 +304,11 @@ done < "$CAPTURE_DIR/prom_queries.txt"
 
 # ----- Leak gate -------------------------------------------------------------
 g_thresh="$(yq -r '.leak_gate.goroutine_max_delta' "$SCENARIO_FILE")"
-h_thresh_mb="$(yq -r '.leak_gate.heap_inuse_max_delta_mb' "$SCENARIO_FILE")"
+# Prefer the new heap_alloc-based threshold; fall back to the legacy
+# heap_inuse_max_delta_mb so scenarios that haven't been updated yet still
+# evaluate. See issue #248 — heap_inuse is span-level and includes free
+# slots, so it is unreliable as a leak signal under sustained churn.
+h_thresh_mb="$(yq -r '.leak_gate.heap_alloc_max_delta_mb // .leak_gate.heap_inuse_max_delta_mb' "$SCENARIO_FILE")"
 h_thresh_bytes=$(( h_thresh_mb * 1024 * 1024 ))
 
 leak_json="$(jq -n \
@@ -310,13 +326,19 @@ leak_json="$(jq -n \
       goroutine_delta:   ($post[$i].goroutines - $pre[$i].goroutines),
       heap_inuse_pre_bytes:  $pre[$i].heap_inuse_bytes,
       heap_inuse_post_bytes: $post[$i].heap_inuse_bytes,
-      heap_inuse_delta_bytes:($post[$i].heap_inuse_bytes - $pre[$i].heap_inuse_bytes)
+      heap_inuse_delta_bytes:($post[$i].heap_inuse_bytes - $pre[$i].heap_inuse_bytes),
+      heap_alloc_pre_bytes:  $pre[$i].heap_alloc_bytes,
+      heap_alloc_post_bytes: $post[$i].heap_alloc_bytes,
+      heap_alloc_delta_bytes:($post[$i].heap_alloc_bytes - $pre[$i].heap_alloc_bytes),
+      heap_objects_pre:      $pre[$i].heap_objects,
+      heap_objects_post:     $post[$i].heap_objects,
+      heap_objects_delta:   ($post[$i].heap_objects - $pre[$i].heap_objects)
     }
   ] as $r |
   {
-    thresholds: {goroutine_max_delta: $g_thresh, heap_inuse_max_delta_mb: $h_thresh_mb},
+    thresholds: {goroutine_max_delta: $g_thresh, heap_alloc_max_delta_mb: $h_thresh_mb},
     replicas: $r,
-    verdict: (if any($r[]; .goroutine_delta > $g_thresh or .heap_inuse_delta_bytes > $h_thresh)
+    verdict: (if any($r[]; .goroutine_delta > $g_thresh or .heap_alloc_delta_bytes > $h_thresh)
               then "fail" else "pass" end)
   }')"
 printf '%s\n' "$leak_json" > "$OUTDIR/leak_gate.json"

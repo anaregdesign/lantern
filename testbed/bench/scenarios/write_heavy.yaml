@@ -11,8 +11,14 @@ target:
   # Templates are evaluated AFTER JSON parse, so every templated value must
   # sit inside a string literal. int64 is a proto3 JSON-string-encoded
   # numeric field, so `"int64":"{{.RequestNumber}}"` round-trips cleanly.
+  #
+  # Key is wrapped in `mod` to bound the working set: warmup fills the
+  # cache, steady-state writes are overwrites (mutate-in-place). Without
+  # this bound the cache grows unboundedly (no size-based eviction in
+  # core/cache) and the leak gate fires on legitimate fill, not on a
+  # real leak. See issue #248.
   data_template: |
-    {"vertex":{"key":"k-{{.RequestNumber}}","int64":"{{.RequestNumber}}"}}
+    {"vertex":{"key":"k-{{mod .RequestNumber 50000}}","int64":"{{.RequestNumber}}"}}
 leak_gate:
   goroutine_max_delta: 20
-  heap_inuse_max_delta_mb: 32
+  heap_alloc_max_delta_mb: 32

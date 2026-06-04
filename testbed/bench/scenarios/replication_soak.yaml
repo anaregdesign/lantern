@@ -24,4 +24,4 @@ subscribe:
       data_template: '{"fromSeq":"1"}'
 leak_gate:
   goroutine_max_delta: 30
-  heap_inuse_max_delta_mb: 64
+  heap_alloc_max_delta_mb: 64

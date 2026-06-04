@@ -18,4 +18,4 @@ target:
 leak_gate:
   # cooldown is long enough that expirations have drained; tighter bounds.
   goroutine_max_delta: 15
-  heap_inuse_max_delta_mb: 16
+  heap_alloc_max_delta_mb: 16

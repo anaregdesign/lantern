@@ -27,10 +27,18 @@ import (
 )
 
 // LeakGate mirrors the schema written by run.sh.
+//
+// The leak gate evaluates against heap_alloc (post-GC live bytes), not
+// heap_inuse (span-level, includes free slots). See issue #248 — under
+// sustained churn, heap_inuse drifts upward as the allocator opens new
+// spans even when live memory is flat, producing false-positive verdicts.
 type LeakGate struct {
 	Thresholds struct {
 		GoroutineMaxDelta   int `json:"goroutine_max_delta"`
-		HeapInuseMaxDeltaMB int `json:"heap_inuse_max_delta_mb"`
+		HeapAllocMaxDeltaMB int `json:"heap_alloc_max_delta_mb"`
+		// HeapInuseMaxDeltaMB is the legacy field name retained for backward
+		// compatibility with older leak_gate.json artifacts.
+		HeapInuseMaxDeltaMB int `json:"heap_inuse_max_delta_mb,omitempty"`
 	} `json:"thresholds"`
 	Replicas []LeakGateReplica `json:"replicas"`
 	Verdict  string            `json:"verdict"`
@@ -45,6 +53,12 @@ type LeakGateReplica struct {
 	HeapInusePreBytes   int64  `json:"heap_inuse_pre_bytes"`
 	HeapInusePostBytes  int64  `json:"heap_inuse_post_bytes"`
 	HeapInuseDeltaBytes int64  `json:"heap_inuse_delta_bytes"`
+	HeapAllocPreBytes   int64  `json:"heap_alloc_pre_bytes"`
+	HeapAllocPostBytes  int64  `json:"heap_alloc_post_bytes"`
+	HeapAllocDeltaBytes int64  `json:"heap_alloc_delta_bytes"`
+	HeapObjectsPre      int64  `json:"heap_objects_pre"`
+	HeapObjectsPost     int64  `json:"heap_objects_post"`
+	HeapObjectsDelta    int64  `json:"heap_objects_delta"`
 }
 
 // GhzSummary captures the subset of fields ghz writes that the report uses.
@@ -169,18 +183,26 @@ func RenderReport(w io.Writer, in Input) error {
 	if in.LeakGate == nil {
 		bw.printf("_not captured_\n\n")
 	} else {
-		bw.printf("Thresholds: goroutine_max_delta=%d, heap_inuse_max_delta_mb=%d\n\n",
-			in.LeakGate.Thresholds.GoroutineMaxDelta,
-			in.LeakGate.Thresholds.HeapInuseMaxDeltaMB)
-		bw.printf("| replica | goroutines (pre → post = Δ) | heap_inuse MiB (pre → post = Δ) |\n")
-		bw.printf("| --- | --- | --- |\n")
+		hMB := in.LeakGate.Thresholds.HeapAllocMaxDeltaMB
+		if hMB == 0 {
+			hMB = in.LeakGate.Thresholds.HeapInuseMaxDeltaMB
+		}
+		bw.printf("Thresholds: goroutine_max_delta=%d, heap_alloc_max_delta_mb=%d\n\n",
+			in.LeakGate.Thresholds.GoroutineMaxDelta, hMB)
+		bw.printf("Gate evaluates against `heap_alloc` (post-GC live bytes); `heap_inuse` and `heap_objects` are shown for context only.\n\n")
+		bw.printf("| replica | goroutines (Δ) | heap_alloc MiB (pre → post = Δ) | heap_inuse MiB (pre → post = Δ) | heap_objects (Δ) |\n")
+		bw.printf("| --- | --- | --- | --- | --- |\n")
 		for _, r := range in.LeakGate.Replicas {
-			bw.printf("| `%s` | %d → %d = **%+d** | %.1f → %.1f = **%+.1f** |\n",
+			bw.printf("| `%s` | %d → %d = **%+d** | %.1f → %.1f = **%+.1f** | %.1f → %.1f = **%+.1f** | %d → %d = **%+d** |\n",
 				r.Endpoint,
 				r.GoroutinesPre, r.GoroutinesPost, r.GoroutineDelta,
+				bytesToMiB(r.HeapAllocPreBytes),
+				bytesToMiB(r.HeapAllocPostBytes),
+				bytesToMiB(r.HeapAllocDeltaBytes),
 				bytesToMiB(r.HeapInusePreBytes),
 				bytesToMiB(r.HeapInusePostBytes),
 				bytesToMiB(r.HeapInuseDeltaBytes),
+				r.HeapObjectsPre, r.HeapObjectsPost, r.HeapObjectsDelta,
 			)
 		}
 		bw.printf("\n")

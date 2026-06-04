@@ -10,11 +10,11 @@ target:
   call: graph.v1.LanternService/PutVertices
   data_template: |
     {"vertices":[
-      {"key":"bk-{{.RequestNumber}}-0","int64":"{{.RequestNumber}}"},
-      {"key":"bk-{{.RequestNumber}}-1","int64":"{{.RequestNumber}}"},
-      {"key":"bk-{{.RequestNumber}}-2","int64":"{{.RequestNumber}}"},
-      {"key":"bk-{{.RequestNumber}}-3","int64":"{{.RequestNumber}}"}
+      {"key":"bk-{{mod .RequestNumber 10000}}-0","int64":"{{.RequestNumber}}"},
+      {"key":"bk-{{mod .RequestNumber 10000}}-1","int64":"{{.RequestNumber}}"},
+      {"key":"bk-{{mod .RequestNumber 10000}}-2","int64":"{{.RequestNumber}}"},
+      {"key":"bk-{{mod .RequestNumber 10000}}-3","int64":"{{.RequestNumber}}"}
     ]}
 leak_gate:
   goroutine_max_delta: 20
-  heap_inuse_max_delta_mb: 48
+  heap_alloc_max_delta_mb: 48
