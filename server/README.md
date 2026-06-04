@@ -123,6 +123,9 @@ runtime, process, and `grpc_server_*` collectors):
 | `lantern_mutation_log_capacity` | gauge | — | Configured ring slots. |
 | `lantern_subscribe_active_streams` | gauge | — | Active `Subscribe` streams. |
 | `lantern_subscribe_dropped_total` | counter | `reason` | `Subscribe` aborts. |
+| `lantern_subscription_queue_depth` | histogram | — | In-process pubsub subscription channel depth, sampled on every successful enqueue (#240). Aggregate across subscriptions. |
+| `lantern_subscription_dropped_total` | counter | `policy` | Pubsub messages dropped at the subscription enqueue boundary, partitioned by `FullPolicy` decision (`drop_newest`, `drop_oldest`, `drop_newest_after_oldest`). Pre-warmed. |
+| `lantern_subscription_dispatch_duration_seconds` | histogram | — | Pubsub dispatch latency from `Publish` to consumer return. Aggregate across subscriptions. |
 | `lantern_replication_applied_total` | counter | `origin` | Remote mutations applied locally. |
 | `lantern_replication_dropped_total` | counter | `peer`, `reason` | Replication frames or peer interactions dropped. |
 | `lantern_replication_lag_seq` | gauge | `peer`, `origin` | Per-(peer, origin) lag in seq units. |

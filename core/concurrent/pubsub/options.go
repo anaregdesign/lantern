@@ -37,6 +37,7 @@ type subscriptionConfig struct {
 	ttl         time.Duration
 	bufferSize  int
 	fullPolicy  FullPolicy
+	observer    Observer
 }
 
 func defaultSubscriptionConfig() subscriptionConfig {
@@ -46,6 +47,7 @@ func defaultSubscriptionConfig() subscriptionConfig {
 		ttl:         time.Minute,
 		bufferSize:  defaultBufferSize,
 		fullPolicy:  FullPolicyBlock,
+		observer:    noopObserver{},
 	}
 }
 
@@ -85,4 +87,19 @@ func WithBufferSize(n int) SubscriptionOption {
 // full. See FullPolicy for the available modes.
 func WithFullPolicy(p FullPolicy) SubscriptionOption {
 	return func(c *subscriptionConfig) { c.fullPolicy = p }
+}
+
+// WithObserver installs an Observer that receives enqueue-depth samples,
+// drop counters, and dispatch-duration observations for this subscription.
+// A nil observer reverts to the no-op (no telemetry). core/ never imports
+// server/metrics directly; the server wires a Prometheus-backed Observer
+// here (#240).
+func WithObserver(o Observer) SubscriptionOption {
+	return func(c *subscriptionConfig) {
+		if o == nil {
+			c.observer = noopObserver{}
+			return
+		}
+		c.observer = o
+	}
 }

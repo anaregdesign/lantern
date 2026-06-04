@@ -829,3 +829,157 @@ func TestSubscription_FullPolicyDropOldest(t *testing.T) {
 		t.Errorf("DropOldest: newest message missing from s.messages")
 	}
 }
+
+// recordingObserver captures Observer invocations for assertion in tests.
+// All fields are read after the system under test has quiesced so a plain
+// mutex (not atomic) keeps the test code readable.
+type recordingObserver struct {
+	mu         sync.Mutex
+	depths     []int
+	drops      []string
+	dispatches []time.Duration
+}
+
+func (r *recordingObserver) RecordEnqueueDepth(d int) {
+	r.mu.Lock()
+	r.depths = append(r.depths, d)
+	r.mu.Unlock()
+}
+
+func (r *recordingObserver) RecordDrop(policy string) {
+	r.mu.Lock()
+	r.drops = append(r.drops, policy)
+	r.mu.Unlock()
+}
+
+func (r *recordingObserver) ObserveDispatch(d time.Duration) {
+	r.mu.Lock()
+	r.dispatches = append(r.dispatches, d)
+	r.mu.Unlock()
+}
+
+func (r *recordingObserver) snapshot() (depths []int, drops []string, dispatches []time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	depths = append(depths, r.depths...)
+	drops = append(drops, r.drops...)
+	dispatches = append(dispatches, r.dispatches...)
+	return
+}
+
+func TestSubscription_Observer_RecordEnqueueDepthOnPublish(t *testing.T) {
+	// Each successful publish must produce exactly one depth sample equal
+	// to the channel length immediately after the send (#240).
+	obs := &recordingObserver{}
+	topic := NewTopic[int]("obs-depth")
+	sub := topic.NewSubscriptionWithOptions("s",
+		WithBufferSize(4),
+		WithObserver(obs),
+	)
+	sub.publish(sub.newMessage(1))
+	sub.publish(sub.newMessage(2))
+	sub.publish(sub.newMessage(3))
+
+	depths, drops, _ := obs.snapshot()
+	if len(drops) != 0 {
+		t.Errorf("unexpected drops on uncongested publish: %v", drops)
+	}
+	want := []int{1, 2, 3}
+	if !reflect.DeepEqual(depths, want) {
+		t.Errorf("depths = %v, want %v", depths, want)
+	}
+}
+
+func TestSubscription_Observer_RecordDropNewest(t *testing.T) {
+	obs := &recordingObserver{}
+	topic := NewTopic[int]("obs-drop-newest")
+	sub := topic.NewSubscriptionWithOptions("s",
+		WithBufferSize(1),
+		WithFullPolicy(FullPolicyDropNewest),
+		WithObserver(obs),
+	)
+	sub.publish(sub.newMessage(1)) // fills channel
+	sub.publish(sub.newMessage(2)) // dropped
+
+	_, drops, _ := obs.snapshot()
+	if !reflect.DeepEqual(drops, []string{DropPolicyNewest}) {
+		t.Errorf("drops = %v, want [%s]", drops, DropPolicyNewest)
+	}
+}
+
+func TestSubscription_Observer_RecordDropOldest(t *testing.T) {
+	obs := &recordingObserver{}
+	topic := NewTopic[int]("obs-drop-oldest")
+	sub := topic.NewSubscriptionWithOptions("s",
+		WithBufferSize(1),
+		WithFullPolicy(FullPolicyDropOldest),
+		WithObserver(obs),
+	)
+	sub.publish(sub.newMessage(1)) // fills channel
+	sub.publish(sub.newMessage(2)) // evicts id=1, enqueues id=2
+
+	_, drops, _ := obs.snapshot()
+	if !reflect.DeepEqual(drops, []string{DropPolicyOldest}) {
+		t.Errorf("drops = %v, want [%s]", drops, DropPolicyOldest)
+	}
+}
+
+func TestSubscription_Observer_ObserveDispatchOnConsumerReturn(t *testing.T) {
+	// Subscribe drains the channel and the worker must call
+	// ObserveDispatch after the consumer returns, with a duration
+	// measured from the originating Publish (#240).
+	obs := &recordingObserver{}
+	topic := NewTopic[int]("obs-dispatch")
+	sub := topic.NewSubscriptionWithOptions("s",
+		WithBufferSize(4),
+		WithObserver(obs),
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go sub.Subscribe(ctx, func(m *Message[int]) {
+		defer wg.Done()
+		m.Ack()
+	})
+
+	sub.publish(sub.newMessage(1))
+	sub.publish(sub.newMessage(2))
+	sub.publish(sub.newMessage(3))
+
+	wg.Wait()
+	// Give the worker a moment to run the post-consumer Observe call.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		_, _, dispatches := obs.snapshot()
+		if len(dispatches) >= 3 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	_, _, dispatches := obs.snapshot()
+	if len(dispatches) != 3 {
+		t.Fatalf("dispatch observations = %d, want 3", len(dispatches))
+	}
+	for i, d := range dispatches {
+		if d < 0 {
+			t.Errorf("dispatch[%d] = %v, want >= 0", i, d)
+		}
+	}
+}
+
+func TestWithObserver_NilRestoresNoop(t *testing.T) {
+	// WithObserver(nil) must not leave the subscription with a nil
+	// observer (which would NPE in enqueue). It must restore the
+	// internal no-op sentinel.
+	topic := NewTopic[int]("obs-nil")
+	sub := topic.NewSubscriptionWithOptions("s", WithObserver(nil))
+	if sub.observer == nil {
+		t.Fatal("observer is nil; WithObserver(nil) should restore noopObserver{}")
+	}
+	if _, ok := sub.observer.(noopObserver); !ok {
+		t.Errorf("observer type = %T, want noopObserver", sub.observer)
+	}
+}

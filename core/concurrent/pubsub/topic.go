@@ -95,6 +95,7 @@ func (t *Topic[T]) NewSubscriptionWithOptions(name string, opts ...SubscriptionO
 			ttl:         cfg.ttl,
 			bufferSize:  cfg.bufferSize,
 			fullPolicy:  cfg.fullPolicy,
+			observer:    cfg.observer,
 		}
 	}
 	return t.subscriptions[name]

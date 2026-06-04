@@ -26,6 +26,7 @@ type Subscription[T any] struct {
 	ttl         time.Duration
 	bufferSize  int
 	fullPolicy  FullPolicy
+	observer    Observer
 
 	// expMu guards exp. Kept separate from s.mu so the salvage path can
 	// peek/pop heap entries without blocking the consumer's dispatch path
@@ -82,6 +83,13 @@ func (s *Subscription[T]) Subscribe(ctx context.Context, consumer function.Consu
 						continue
 					}
 					consumer(m)
+					if obs := s.observer; obs != nil {
+						// Enqueue-to-consumer-return latency, measured from the
+						// originating Publish (#240). Reads m.createdAt without
+						// the lock: the field is stamped once in newMessage and
+						// never mutated thereafter.
+						obs.ObserveDispatch(time.Since(m.createdAt))
+					}
 				case <-ctx.Done():
 					return
 				}
@@ -166,18 +174,28 @@ func (s *Subscription[T]) publish(message *Message[T]) {
 // policies trade strict delivery for liveness and ack the dropped envelope
 // so its pool slot and map entry are released (#232).
 func (s *Subscription[T]) enqueue(message *Message[T]) {
+	obs := s.observer
 	switch s.fullPolicy {
 	case FullPolicyDropNewest:
 		select {
 		case s.ch <- message.id:
+			if obs != nil {
+				obs.RecordEnqueueDepth(len(s.ch))
+			}
 		default:
 			slog.Warn("pubsub: drop newest (channel full)",
 				"topic", s.topic.name, "subscription", s.name)
+			if obs != nil {
+				obs.RecordDrop(DropPolicyNewest)
+			}
 			s.ack(message)
 		}
 	case FullPolicyDropOldest:
 		select {
 		case s.ch <- message.id:
+			if obs != nil {
+				obs.RecordEnqueueDepth(len(s.ch))
+			}
 		default:
 			// Single non-blocking drain + retry. Looping unbounded would
 			// let a fast publisher starve the consumer indefinitely.
@@ -185,27 +203,42 @@ func (s *Subscription[T]) enqueue(message *Message[T]) {
 			case droppedID := <-s.ch:
 				slog.Warn("pubsub: drop oldest (channel full)",
 					"topic", s.topic.name, "subscription", s.name)
+				if obs != nil {
+					obs.RecordDrop(DropPolicyOldest)
+				}
 				if dropped := s.message(droppedID); dropped != nil {
 					s.ack(dropped)
 				}
 				select {
 				case s.ch <- message.id:
+					if obs != nil {
+						obs.RecordEnqueueDepth(len(s.ch))
+					}
 				default:
 					// A concurrent publisher refilled the slot; treat
 					// this publish as a newest-drop fallback rather
 					// than spinning on the channel.
 					slog.Warn("pubsub: drop newest after oldest drop (still full)",
 						"topic", s.topic.name, "subscription", s.name)
+					if obs != nil {
+						obs.RecordDrop(DropPolicyNewestAfterOldest)
+					}
 					s.ack(message)
 				}
 			default:
 				// Channel drained between the full-select and the drain
 				// attempt; just send.
 				s.ch <- message.id
+				if obs != nil {
+					obs.RecordEnqueueDepth(len(s.ch))
+				}
 			}
 		}
 	default: // FullPolicyBlock
 		s.ch <- message.id
+		if obs != nil {
+			obs.RecordEnqueueDepth(len(s.ch))
+		}
 	}
 }
 
