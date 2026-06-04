@@ -57,7 +57,30 @@ func (t *Topic[T]) Publish(body T) {
 	}
 }
 
+// NewSubscription creates (or returns the existing) Subscription with the
+// historical positional arguments. New code should prefer
+// NewSubscriptionWithOptions which exposes buffer size and full-policy knobs;
+// this wrapper keeps existing call sites compiling.
 func (t *Topic[T]) NewSubscription(name string, concurrency int, interval time.Duration, ttl time.Duration) *Subscription[T] {
+	return t.NewSubscriptionWithOptions(
+		name,
+		WithConcurrency(concurrency),
+		WithSalvageInterval(interval),
+		WithTTL(ttl),
+	)
+}
+
+// NewSubscriptionWithOptions creates (or returns the existing) Subscription
+// configured via functional options. Defaults match the positional
+// NewSubscription wrapper: concurrency 1, interval/ttl 1 minute, buffer 65536,
+// FullPolicyBlock. If a Subscription with name already exists it is returned
+// unchanged; options on a second call are ignored.
+func (t *Topic[T]) NewSubscriptionWithOptions(name string, opts ...SubscriptionOption) *Subscription[T] {
+	cfg := defaultSubscriptionConfig()
+	for _, o := range opts {
+		o(&cfg)
+	}
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -65,11 +88,13 @@ func (t *Topic[T]) NewSubscription(name string, concurrency int, interval time.D
 		t.subscriptions[name] = &Subscription[T]{
 			name:        name,
 			topic:       t,
-			ch:          make(chan uint64, 65536),
+			ch:          make(chan uint64, cfg.bufferSize),
 			messages:    make(map[uint64]*Message[T]),
-			concurrency: concurrency,
-			interval:    interval,
-			ttl:         ttl,
+			concurrency: cfg.concurrency,
+			interval:    cfg.interval,
+			ttl:         cfg.ttl,
+			bufferSize:  cfg.bufferSize,
+			fullPolicy:  cfg.fullPolicy,
 		}
 	}
 	return t.subscriptions[name]
