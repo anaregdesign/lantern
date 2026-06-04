@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 
@@ -44,6 +45,7 @@ type ValidationLimits struct {
 type ValidationInterceptor struct {
 	limits     ValidationLimits
 	rejectHook func(reason string)
+	logger     *slog.Logger
 }
 
 func NewValidationInterceptor(l ValidationLimits) *ValidationInterceptor {
@@ -61,6 +63,16 @@ func (v *ValidationInterceptor) WithRejectHook(f func(reason string)) *Validatio
 	return v
 }
 
+// WithLogger registers a logger that receives a debug-level "validation
+// rejected" line per rejection with the canonical reason label and the
+// formatted error message. Operators flip LANTERN_LOG_LEVEL=debug to
+// surface field-level rejection reasons during incident triage; prod
+// stays quiet at the default info level. A nil logger disables emission.
+func (v *ValidationInterceptor) WithLogger(l *slog.Logger) *ValidationInterceptor {
+	v.logger = l
+	return v
+}
+
 // reject fires the registered hook (if any) and returns the constructed
 // gRPC status error. Centralised so every validation rejection path is
 // counted exactly once.
@@ -68,7 +80,14 @@ func (v *ValidationInterceptor) reject(reason string, format string, args ...any
 	if v.rejectHook != nil {
 		v.rejectHook(reason)
 	}
-	return status.Errorf(codes.InvalidArgument, format, args...)
+	err := status.Errorf(codes.InvalidArgument, format, args...)
+	if v.logger != nil && v.logger.Enabled(context.Background(), slog.LevelDebug) {
+		v.logger.LogAttrs(context.Background(), slog.LevelDebug, "validation rejected",
+			slog.String("reason", reason),
+			slog.String("error", status.Convert(err).Message()),
+		)
+	}
+	return err
 }
 
 func (v *ValidationInterceptor) UnaryServerInterceptor() grpc.UnaryServerInterceptor {

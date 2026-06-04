@@ -85,6 +85,8 @@ most common knobs:
 | `LANTERN_MAX_RECV_MSG_BYTES` / `LANTERN_MAX_SEND_MSG_BYTES` | `16 MiB` | gRPC message size caps. |
 | `LANTERN_MAX_CONCURRENT_STREAMS` | `1024` | Per-connection stream cap (0 = unlimited). |
 | `LANTERN_RATE_LIMIT_RPS` / `LANTERN_RATE_LIMIT_BURST` | `0` | Process-wide token-bucket rate limit (0 disables). |
+| `LANTERN_SLOW_RPC_THRESHOLD_MS` | `500` | Emit a `slog` warning per unary/stream RPC whose handler exceeds this duration (0 disables). |
+| `LANTERN_ANTI_ENTROPY_GAP_WARN_THRESHOLD` | `1024` | Emit a `slog` warning per anti-entropy tick whose detected peer gap (in seq units) exceeds this value (0 disables). |
 | `LANTERN_METRICS_ADDR` | `:9090` | HTTP listen for `/metrics`, `/healthz`, `/readyz` (empty disables). |
 | `LANTERN_REFLECTION` | `true` | gRPC server reflection. |
 | `LANTERN_LOG_LEVEL` / `LANTERN_LOG_FORMAT` | `info` / `json` | slog handler. |
@@ -146,6 +148,34 @@ Tracing is wired via `otelgrpc.NewServerHandler` so any `OTEL_*` env var the
 OpenTelemetry Go SDK honours will Just Work. Per-call logging goes through
 the `grpc-ecosystem` slog middleware at `info` level on `StartCall` /
 `FinishCall`.
+
+### Structured-log channels (#223)
+
+In addition to the `grpc-ecosystem` per-call logger, the server emits
+targeted `slog` records on the default logger so operators can grep without
+standing up a metrics stack:
+
+| Logger message | Level | Trigger | Key attrs |
+| --- | --- | --- | --- |
+| `slow rpc` | `warn` | Unary or stream handler ran longer than `LANTERN_SLOW_RPC_THRESHOLD_MS`. | `method`, `code`, `duration_ms`, `threshold_ms` |
+| `validation rejected` | `debug` | Validation interceptor returned `InvalidArgument` (also bumps `lantern_validation_rejected_total`). | `reason`, `error` |
+| `graph cache: gc tick` | `info` | One record per `GraphCache.Watch` tick (always fires, even on empty ticks). | `vertices_expired`, `edges_expired`, `dangling_edges_removed`, `vertices_remaining`, `edges_remaining`, `duration_ms` |
+| `anti-entropy: gap exceeds warn threshold` | `warn` | Detected per-origin gap exceeds `LANTERN_ANTI_ENTROPY_GAP_WARN_THRESHOLD`. | `origin`, `gap`, `threshold` |
+| `replication pump: peer transition` | `info` / `warn` | Connect / disconnect / snapshot start / snapshot finish. | `peer`, `transition`, `reason` |
+
+### What to watch in production
+
+- **Replication divergence** — `lantern_anti_entropy_gaps_found_total` rising +
+  the `anti-entropy: gap exceeds warn threshold` slog line both point at
+  the same condition; the metric is the alerting signal, the log is the
+  grep target during triage.
+- **Back-pressure** — `lantern_rate_limit_rejected_total` and the
+  `slow rpc` slog line correlate: rate-limit rejections without slow-RPC
+  warnings mean the limiter is saturating ahead of handler latency,
+  whereas the inverse means handlers are blocking upstream of the limiter.
+- **Hot scans** — `lantern_scan_results` / `lantern_scan_duration_seconds`
+  flag clients fan-paging large prefixes; expect to also see `slow rpc`
+  records for the same `method`.
 
 ## Dependency boundaries (invariants)
 

@@ -1,7 +1,9 @@
 package provider
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"math"
 	"strings"
 	"testing"
@@ -187,5 +189,73 @@ func TestRateLimitInterceptor_NilHookSafe(t *testing.T) {
 	}
 	if _, err := unary(context.Background(), nil, &grpc.UnaryServerInfo{}, handler); err == nil || status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("second call: expected ResourceExhausted, got %v", err)
+	}
+}
+
+// TestValidationInterceptor_LoggerEmitsDebugOnReject asserts that
+// WithLogger() causes reject() to emit one debug-level "validation
+// rejected" record with the documented reason/msg fields, and that
+// successful paths stay silent.
+func TestValidationInterceptor_LoggerEmitsDebugOnReject(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	v := NewValidationInterceptor(ValidationLimits{MaxKeyLen: 4}).WithLogger(logger)
+
+	// success path: no log records.
+	handler := func(ctx context.Context, req any) (any, error) { return "ok", nil }
+	if _, err := v.UnaryServerInterceptor()(context.Background(), &pb.GetVertexRequest{Key: "k"}, &grpc.UnaryServerInfo{}, handler); err != nil {
+		t.Fatalf("success path: %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("success path emitted logs: %s", buf.String())
+	}
+
+	// reject path: exactly one debug record with reason + msg.
+	_, err := v.UnaryServerInterceptor()(context.Background(), &pb.GetVertexRequest{Key: ""}, &grpc.UnaryServerInfo{}, handler)
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("reject path code = %s, want InvalidArgument", status.Code(err))
+	}
+	recs := decodeRecords(t, &buf)
+	if len(recs) != 1 {
+		t.Fatalf("got %d log records, want 1", len(recs))
+	}
+	rec := recs[0]
+	if rec["msg"] != "validation rejected" {
+		t.Errorf("msg = %v, want %q", rec["msg"], "validation rejected")
+	}
+	if rec["reason"] != "empty_key" {
+		t.Errorf("reason = %v, want %q", rec["reason"], "empty_key")
+	}
+	if got, _ := rec["error"].(string); !strings.Contains(got, "key") {
+		t.Errorf("error field missing or unexpected: %v", rec)
+	}
+}
+
+// TestValidationInterceptor_LoggerSuppressedBelowDebug asserts the gate
+// short-circuits when the logger handler is set above debug, keeping the
+// hot path quiet by default.
+func TestValidationInterceptor_LoggerSuppressedBelowDebug(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	v := NewValidationInterceptor(ValidationLimits{}).WithLogger(logger)
+
+	handler := func(ctx context.Context, req any) (any, error) { return "ok", nil }
+	_, err := v.UnaryServerInterceptor()(context.Background(), &pb.GetVertexRequest{Key: ""}, &grpc.UnaryServerInfo{}, handler)
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("reject path code = %s, want InvalidArgument", status.Code(err))
+	}
+	if buf.Len() != 0 {
+		t.Errorf("info-level logger emitted records: %s", buf.String())
+	}
+}
+
+// TestValidationInterceptor_NilLoggerSafe asserts that the reject path
+// stays safe when WithLogger was never invoked (default install).
+func TestValidationInterceptor_NilLoggerSafe(t *testing.T) {
+	v := NewValidationInterceptor(ValidationLimits{})
+	handler := func(ctx context.Context, req any) (any, error) { return "ok", nil }
+	_, err := v.UnaryServerInterceptor()(context.Background(), &pb.GetVertexRequest{Key: ""}, &grpc.UnaryServerInfo{}, handler)
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("reject path: %v", err)
 	}
 }

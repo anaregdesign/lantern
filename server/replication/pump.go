@@ -289,6 +289,7 @@ func (p *Pump) runPeer(ctx context.Context, addr string) {
 // next attempt, plus any non-nil error (nil means clean ctx-cancel
 // exit).
 func (p *Pump) session(ctx context.Context, addr string, fromSeq uint64) (uint64, error) {
+	log := p.cfg.Logger.With(slog.String("peer", addr))
 	conn, err := grpc.NewClient(addr, p.cfg.DialOptions...)
 	if err != nil {
 		return fromSeq, err
@@ -297,30 +298,60 @@ func (p *Pump) session(ctx context.Context, addr string, fromSeq uint64) (uint64
 	cli := pb.NewLanternReplicationServiceClient(conn)
 
 	p.cfg.Metrics.OnPumpConnect(addr)
+	log.Info("replication pump: peer transition",
+		slog.String("transition", "connect"),
+		slog.Uint64("from_seq", fromSeq))
 
 	next, err := p.subscribe(ctx, cli, addr, fromSeq)
 	if err == nil {
 		p.cfg.Metrics.OnPumpDisconnect(addr, "clean")
+		log.Info("replication pump: peer transition",
+			slog.String("transition", "disconnect"),
+			slog.String("reason", "clean"),
+			slog.Uint64("next_seq", next))
 		return next, nil
 	}
 	if ctx.Err() != nil {
 		p.cfg.Metrics.OnPumpDisconnect(addr, "ctx_cancel")
+		log.Info("replication pump: peer transition",
+			slog.String("transition", "disconnect"),
+			slog.String("reason", "ctx_cancel"))
 		return next, nil
 	}
 	if status.Code(err) == codes.FailedPrecondition {
 		// gapped: snapshot, then resume from cutoff+1.
+		log.Info("replication pump: peer transition",
+			slog.String("transition", "snapshot_start"),
+			slog.String("reason", "gapped"),
+			slog.Uint64("requested_from_seq", fromSeq))
 		cutoff, sErr := p.snapshot(ctx, cli, addr)
 		if sErr != nil {
 			p.cfg.Metrics.OnPumpDisconnect(addr, "snapshot_failed")
+			log.Warn("replication pump: peer transition",
+				slog.String("transition", "snapshot_finish"),
+				slog.String("reason", "snapshot_failed"),
+				slog.Any("err", sErr))
 			return next, sErr
 		}
+		log.Info("replication pump: peer transition",
+			slog.String("transition", "snapshot_finish"),
+			slog.String("reason", "applied"),
+			slog.Uint64("cutoff_seq", cutoff))
 		next, err = p.subscribe(ctx, cli, addr, cutoff+1)
 		if err == nil {
 			p.cfg.Metrics.OnPumpDisconnect(addr, "clean")
+			log.Info("replication pump: peer transition",
+				slog.String("transition", "disconnect"),
+				slog.String("reason", "clean"),
+				slog.Uint64("next_seq", next))
 			return next, nil
 		}
 	}
 	p.cfg.Metrics.OnPumpDisconnect(addr, "subscribe_failed")
+	log.Warn("replication pump: peer transition",
+		slog.String("transition", "disconnect"),
+		slog.String("reason", "subscribe_failed"),
+		slog.Any("err", err))
 	return next, err
 }
 

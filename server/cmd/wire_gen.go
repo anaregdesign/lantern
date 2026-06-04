@@ -33,7 +33,7 @@ func initializeApp() (*App, error) {
 	rateLimitConfig := provider.NewRateLimitConfig(config)
 	validationLimits := provider.NewValidationLimits(config)
 	serverMetrics := provider.NewGrpcServerMetrics(registry)
-	v, err := provider.NewGrpcServerOptions(netConfig, tlsConfig, rateLimitConfig, validationLimits, logger, serverMetrics, domainMetrics)
+	v, err := provider.NewGrpcServerOptions(netConfig, tlsConfig, rateLimitConfig, validationLimits, observabilityConfig, logger, serverMetrics, domainMetrics)
 	if err != nil {
 		return nil, err
 	}
@@ -60,6 +60,7 @@ func initializeApp() (*App, error) {
 	antiEntropyMetrics := provider.NewAntiEntropyMetrics(domainMetrics, gate)
 	antiEntropy := provider.NewAntiEntropyDriver(peerConfig, replicationConfig, antiEntropyConfig, lanternService, graphCache, pump, antiEntropyMetrics, logger)
 	mainRegisteredHealth := registerHealthAndReflection(observabilityConfig, server, healthServer)
-	app := newApp(config, logger, lanternServer, metricsServer, tracing, domainMetrics, healthServer, pump, antiEntropy, mainRegisteredHealth)
+	cacheGCHooksWired := provider.WireCacheGCHooks(graphCache, domainMetrics, logger)
+	app := newApp(config, logger, lanternServer, metricsServer, tracing, domainMetrics, healthServer, pump, antiEntropy, mainRegisteredHealth, cacheGCHooksWired)
 	return app, nil
 }

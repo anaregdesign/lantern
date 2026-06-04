@@ -34,6 +34,7 @@ func initializeApp() (*App, error) {
 		provider.NewTracing,
 		provider.NewGraphCache,
 		provider.NewDomainMetrics,
+		provider.WireCacheGCHooks,
 		provider.NewReadinessGate,
 		provider.NewPumpMetrics,
 		provider.NewAntiEntropyMetrics,
