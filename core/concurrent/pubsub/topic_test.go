@@ -90,8 +90,8 @@ func TestTopic_NewSubscription(t1 *testing.T) {
 			want: &Subscription[int]{
 				name:        "test",
 				concurrency: 8,
-				ch:          make(chan string, 65536),
-				messages:    make(map[string]*Message[int]),
+				ch:          make(chan uint64, 65536),
+				messages:    make(map[uint64]*Message[int]),
 				interval:    time.Minute,
 				ttl:         time.Minute,
 				topic:       topic,
@@ -233,20 +233,20 @@ func TestTopic_PublishFansOutWithoutBlocking(t *testing.T) {
 	subA := &Subscription[int]{
 		name:     "a",
 		topic:    topic,
-		ch:       make(chan string, 1),
-		messages: make(map[string]*Message[int]),
+		ch:       make(chan uint64, 1),
+		messages: make(map[uint64]*Message[int]),
 	}
 	subB := &Subscription[int]{
 		name:     "b",
 		topic:    topic,
-		ch:       make(chan string, 1),
-		messages: make(map[string]*Message[int]),
+		ch:       make(chan uint64, 1),
+		messages: make(map[uint64]*Message[int]),
 	}
 	topic.register(subA)
 	topic.register(subB)
 
 	// Saturate subA so any further send would block forever.
-	subA.ch <- "blocker"
+	subA.ch <- 0
 
 	topic.Publish(42)
 

@@ -107,11 +107,11 @@ func TestSubscription_ack(t *testing.T) {
 			name: "TestSubscription_ack",
 			s: Subscription[int]{
 				name: "test",
-				messages: map[string]*Message[int]{
-					"uuid": {id: "uuid", body: 1},
+				messages: map[uint64]*Message[int]{
+					1: {id: 1, body: 1},
 				},
 			},
-			args: args[int]{message: &Message[int]{id: "uuid", body: 1}},
+			args: args[int]{message: &Message[int]{id: 1, body: 1}},
 		},
 	}
 	for i := range tests {
@@ -136,12 +136,12 @@ func TestSubscription_nack(t *testing.T) {
 			name: "TestSubscription_nack",
 			s: Subscription[int]{
 				name: "test",
-				ch:   make(chan string, 1),
-				messages: map[string]*Message[int]{
-					"uuid": {id: "uuid", body: 1},
+				ch:   make(chan uint64, 1),
+				messages: map[uint64]*Message[int]{
+					1: {id: 1, body: 1},
 				},
 			},
-			args: args[int]{message: &Message[int]{id: "uuid", body: 1}},
+			args: args[int]{message: &Message[int]{id: 1, body: 1}},
 		},
 	}
 	for i := range tests {
@@ -151,7 +151,7 @@ func TestSubscription_nack(t *testing.T) {
 			select {
 			case id := <-tt.s.ch:
 				if id != tt.args.message.id {
-					t.Fatalf("nack should requeue id %q, got %q", tt.args.message.id, id)
+					t.Fatalf("nack should requeue id %d, got %d", tt.args.message.id, id)
 				}
 			default:
 				t.Fatal("nack should requeue the message on s.ch")
@@ -204,10 +204,10 @@ func TestSubscription_publish(t *testing.T) {
 			name: "TestSubscription_publish",
 			s: Subscription[int]{
 				name:     "test",
-				ch:       make(chan string, 10),
-				messages: map[string]*Message[int]{},
+				ch:       make(chan uint64, 10),
+				messages: map[uint64]*Message[int]{},
 			},
-			args: args[int]{message: &Message[int]{id: "uuid", body: 1}},
+			args: args[int]{message: &Message[int]{id: 1, body: 1}},
 		},
 	}
 	for i := range tests {
@@ -257,12 +257,12 @@ func TestSubscription_remind(t *testing.T) {
 			name: "TestSubscription_remind",
 			s: Subscription[int]{
 				name: "test",
-				ch:   make(chan string, 10),
-				messages: map[string]*Message[int]{
-					"uuid": {id: "uuid", body: 1},
+				ch:   make(chan uint64, 10),
+				messages: map[uint64]*Message[int]{
+					1: {id: 1, body: 1},
 				},
 			},
-			args: args[int]{message: &Message[int]{id: "uuid", body: 1}},
+			args: args[int]{message: &Message[int]{id: 1, body: 1}},
 		},
 	}
 	for i := range tests {
@@ -288,9 +288,9 @@ func TestSubscription_salvage(t *testing.T) {
 			name: "TestSubscription_salvage",
 			s: Subscription[int]{
 				name: "test",
-				ch:   make(chan string, 10),
-				messages: map[string]*Message[int]{
-					"uuid": {id: "uuid", body: 1},
+				ch:   make(chan uint64, 10),
+				messages: map[uint64]*Message[int]{
+					1: {id: 1, body: 1},
 				},
 			},
 			args: args{interval: time.Second, ttl: time.Second},
@@ -379,7 +379,7 @@ func TestSubscription_SalvageRespectsLastViewedAt(t *testing.T) {
 	// Simulate a consumer pickup: dispatch must stamp lastViewedAt.
 	m := sub.dispatch(id)
 	if m == nil {
-		t.Fatalf("dispatch returned nil for id %q (message missing from map)", id)
+		t.Fatalf("dispatch returned nil for id %d (message missing from map)", id)
 	}
 	if m.lastViewedAt.IsZero() {
 		t.Fatal("dispatch must stamp lastViewedAt; got zero (regression #229)")
@@ -392,7 +392,7 @@ func TestSubscription_SalvageRespectsLastViewedAt(t *testing.T) {
 
 	select {
 	case stray := <-sub.ch:
-		t.Fatalf("salvage re-queued a freshly-viewed message (id=%q); lastViewedAt stamping broken", stray)
+		t.Fatalf("salvage re-queued a freshly-viewed message (id=%d); lastViewedAt stamping broken", stray)
 	default:
 	}
 }
@@ -484,4 +484,65 @@ func TestSubscription_SubscribeIsSingleFlight(t *testing.T) {
 		t.Fatalf("expected single-flight Subscribe; both consumers received messages (primary=%d secondary=%d)",
 			consumerHit["primary"], consumerHit["secondary"])
 	}
+}
+
+// BenchmarkSubscription_PublishConsumeUint64 measures the Publish→consume hot
+// path after the #231 throughput refactor (uint64 IDs, sync.Pool envelopes,
+// fixed worker pool). Compare against the pre-#231 baseline captured in the
+// PR body using benchstat.
+func BenchmarkSubscription_PublishConsumeUint64(b *testing.B) {
+	topic := NewTopic[int]("bench")
+	sub := topic.NewSubscription("s", 4, time.Hour, time.Hour)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var done sync.WaitGroup
+	done.Add(b.N)
+	go sub.Subscribe(ctx, func(m *Message[int]) {
+		m.Ack()
+		done.Done()
+	})
+
+	// Let workers start before timing.
+	time.Sleep(10 * time.Millisecond)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		topic.Publish(i)
+	}
+	done.Wait()
+	b.StopTimer()
+}
+
+// BenchmarkSubscription_PublishConsumeUint64Parallel amortizes per-publish
+// goroutine spawn (introduced for fan-out safety in #230) across producer
+// goroutines, isolating the consumer-side wins from #231 (pool + worker
+// pool). This is the bench whose ratio the PR body cites for the ≥ 2x goal.
+func BenchmarkSubscription_PublishConsumeUint64Parallel(b *testing.B) {
+	topic := NewTopic[int]("bench")
+	sub := topic.NewSubscription("s", 4, time.Hour, time.Hour)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var done sync.WaitGroup
+	done.Add(b.N)
+	go sub.Subscribe(ctx, func(m *Message[int]) {
+		m.Ack()
+		done.Done()
+	})
+
+	time.Sleep(10 * time.Millisecond)
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			topic.Publish(i)
+			i++
+		}
+	})
+	done.Wait()
+	b.StopTimer()
 }

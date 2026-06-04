@@ -7,18 +7,18 @@ import (
 	"time"
 
 	"github.com/anaregdesign/lantern/core/model/function"
-	"github.com/google/uuid"
-	"golang.org/x/sync/semaphore"
 )
 
 type Subscription[T any] struct {
 	mu          sync.RWMutex
 	wg          sync.WaitGroup
 	started     atomic.Bool
+	nextID      atomic.Uint64
 	name        string
 	topic       *Topic[T]
-	ch          chan string
-	messages    map[string]*Message[T]
+	ch          chan uint64
+	messages    map[uint64]*Message[T]
+	pool        sync.Pool
 	concurrency int
 	interval    time.Duration
 	ttl         time.Duration
@@ -36,6 +36,11 @@ func (s *Subscription[T]) Topic() *Topic[T] {
 // until ctx is cancelled. It is single-flight per *Subscription: concurrent or
 // reentrant calls return immediately without dispatching. After Subscribe
 // returns (ctx done) the subscription may be Subscribe'd to again.
+//
+// Concurrency is enforced by a fixed worker pool of size s.concurrency that
+// drains s.ch directly (#231). The prior model of one goroutine per message,
+// gated by a sync semaphore, allocated a goroutine and paid a sync.Cond
+// wake-up on every Publish; the worker pool amortises both costs to zero.
 func (s *Subscription[T]) Subscribe(ctx context.Context, consumer function.Consumer[*Message[T]]) {
 	if !s.started.CompareAndSwap(false, true) {
 		// Another goroutine already owns the dispatcher for this
@@ -45,36 +50,36 @@ func (s *Subscription[T]) Subscribe(ctx context.Context, consumer function.Consu
 	}
 	defer s.started.Store(false)
 
-	sem := semaphore.NewWeighted(int64(s.concurrency))
 	s.register()
 	go s.watch(ctx, s.interval, s.ttl)
 
-	for {
-		select {
-		case id := <-s.ch:
-			message := s.dispatch(id)
-			if message == nil {
-				// Already acked (e.g. salvaged past TTL) between publish and lookup.
-				continue
-			}
-
-			s.wg.Add(1)
-			if err := sem.Acquire(ctx, 1); err != nil {
-				s.wg.Done()
-				continue
-			}
-			go func(m *Message[T]) {
-				defer sem.Release(1)
-				defer s.wg.Done()
-				consumer(m)
-			}(message)
-
-		case <-ctx.Done():
-			s.wg.Wait()
-			s.unregister()
-			return
-		}
+	workers := s.concurrency
+	if workers < 1 {
+		workers = 1
 	}
+	for i := 0; i < workers; i++ {
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			for {
+				select {
+				case id := <-s.ch:
+					m := s.dispatch(id)
+					if m == nil {
+						// Already acked (e.g. salvaged past TTL) between publish and lookup.
+						continue
+					}
+					consumer(m)
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+
+	<-ctx.Done()
+	s.wg.Wait()
+	s.unregister()
 }
 
 func (s *Subscription[T]) register() {
@@ -85,16 +90,24 @@ func (s *Subscription[T]) unregister() {
 	s.topic.unregister(s)
 }
 
+// newMessage allocates (or recycles) a *Message[T] for body. Envelopes come
+// from s.pool to keep the hot path allocation-free (#231); ack returns them
+// after the map delete. The id is a per-Subscription monotonic counter, which
+// is sufficient because the messages map is per-subscription.
 func (s *Subscription[T]) newMessage(body T) *Message[T] {
-	return &Message[T]{
-		id:           uuid.New().String(),
-		body:         body,
-		subscription: s,
-		createdAt:    time.Now(),
+	m, _ := s.pool.Get().(*Message[T])
+	if m == nil {
+		m = &Message[T]{}
 	}
+	m.id = s.nextID.Add(1)
+	m.body = body
+	m.subscription = s
+	m.createdAt = time.Now()
+	m.lastViewedAt = time.Time{}
+	return m
 }
 
-func (s *Subscription[T]) message(id string) *Message[T] {
+func (s *Subscription[T]) message(id uint64) *Message[T] {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -106,7 +119,7 @@ func (s *Subscription[T]) message(id string) *Message[T] {
 // the only correct way for the Subscribe loop to take a message off s.ch; a
 // plain message() read leaves lastViewedAt at the zero value forever, which
 // makes salvage re-push the same id every interval tick (#229).
-func (s *Subscription[T]) dispatch(id string) *Message[T] {
+func (s *Subscription[T]) dispatch(id uint64) *Message[T] {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -130,9 +143,15 @@ func (s *Subscription[T]) publish(message *Message[T]) {
 
 func (s *Subscription[T]) ack(message *Message[T]) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	delete(s.messages, message.id)
+	s.mu.Unlock()
+
+	// Return the envelope to the pool. The consumer contract on Message.Ack
+	// is "do not retain after Ack" (#231); zero the body so a stale
+	// reference cannot keep a large T alive.
+	var zero T
+	message.body = zero
+	s.pool.Put(message)
 }
 
 func (s *Subscription[T]) nack(message *Message[T]) {

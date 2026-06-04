@@ -59,15 +59,15 @@ func TestMessage_ID(t *testing.T) {
 	type testCase[T any] struct {
 		name string
 		m    Message[T]
-		want string
+		want uint64
 	}
 	tests := []testCase[int]{
 		{
 			name: "TestMessage_ID",
 			m: Message[int]{
-				id: "uuid",
+				id: 42,
 			},
-			want: "uuid",
+			want: 42,
 		},
 	}
 	for _, tt := range tests {
