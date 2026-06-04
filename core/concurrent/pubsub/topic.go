@@ -2,6 +2,7 @@ package pubsub
 
 import (
 	"maps"
+	"slices"
 	"sync"
 	"time"
 )
@@ -31,17 +32,28 @@ func (t *Topic[T]) Subscriptions() map[string]*Subscription[T] {
 	return maps.Clone(t.subscriptions)
 }
 
+// Publish performs best-effort concurrent fan-out: each subscription receives
+// the message on its own goroutine, so a single slow or saturated subscriber
+// cannot block delivery to its peers (#230). Delivery order across
+// subscriptions is unspecified, matching the prior map-iteration behavior.
+//
+// Publish returns immediately after scheduling the fan-out goroutines; it does
+// not wait for each subscription's channel send to complete. This trades
+// synchronous backpressure (which no caller currently observes) for
+// independence between subscribers. The pattern is intended for topics with
+// tens of subscribers; if you need to fan out to thousands, prefer a
+// long-lived per-subscription delivery goroutine instead.
 func (t *Topic[T]) Publish(body T) {
 	t.mu.RLock()
-	subs := make([]*Subscription[T], 0, len(t.subscriptions))
-	for _, s := range t.subscriptions {
-		subs = append(subs, s)
-	}
+	subs := slices.Collect(maps.Values(t.subscriptions))
 	t.mu.RUnlock()
 
 	for _, s := range subs {
-		message := s.newMessage(body)
-		s.publish(message)
+		s := s
+		go func() {
+			m := s.newMessage(body)
+			s.publish(m)
+		}()
 	}
 }
 

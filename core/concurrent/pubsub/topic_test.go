@@ -1,7 +1,10 @@
 package pubsub
 
 import (
+	"context"
 	"reflect"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -215,5 +218,82 @@ func TestTopic_unregister(t1 *testing.T) {
 		t1.Run(tt.name, func(t1 *testing.T) {
 			tt.t.unregister(tt.args.subscription)
 		})
+	}
+}
+
+// TestTopic_PublishFansOutWithoutBlocking pins #230: a slow / saturated
+// subscriber must not block delivery to its peers. We construct two
+// subscriptions with a single-slot channel each, fill subA's channel so any
+// further send to it would block, then assert subB still receives within a
+// short deadline. On main (sequential Publish) subA's blocked send hangs
+// Publish forever and this test times out.
+func TestTopic_PublishFansOutWithoutBlocking(t *testing.T) {
+	topic := NewTopic[int]("fanout")
+
+	subA := &Subscription[int]{
+		name:     "a",
+		topic:    topic,
+		ch:       make(chan string, 1),
+		messages: make(map[string]*Message[int]),
+	}
+	subB := &Subscription[int]{
+		name:     "b",
+		topic:    topic,
+		ch:       make(chan string, 1),
+		messages: make(map[string]*Message[int]),
+	}
+	topic.register(subA)
+	topic.register(subB)
+
+	// Saturate subA so any further send would block forever.
+	subA.ch <- "blocker"
+
+	topic.Publish(42)
+
+	select {
+	case <-subB.ch:
+		// expected: subB received despite subA being blocked.
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Publish blocked on saturated subA; subB did not receive within 500ms")
+	}
+}
+
+// TestTopic_PublishConcurrentSafe drives N concurrent Publish callers against
+// a single subscriber and asserts every message is delivered exactly once with
+// no deadlock. Guards against races introduced by the goroutine-per-Publish
+// fan-out (#230).
+func TestTopic_PublishConcurrentSafe(t *testing.T) {
+	const N = 100
+
+	topic := NewTopic[int]("concurrent")
+	sub := topic.NewSubscription("c", 8, time.Hour, time.Hour)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var received atomic.Int64
+	done := make(chan struct{})
+	go sub.Subscribe(ctx, func(m *Message[int]) {
+		m.Ack()
+		if received.Add(1) == int64(N) {
+			close(done)
+		}
+	})
+
+	var wg sync.WaitGroup
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(v int) {
+			defer wg.Done()
+			topic.Publish(v)
+		}(i)
+	}
+	wg.Wait()
+
+	select {
+	case <-done:
+		// good: N messages delivered.
+	case <-time.After(2 * time.Second):
+		t.Fatalf("only %d/%d messages delivered before timeout", received.Load(), N)
 	}
 }
