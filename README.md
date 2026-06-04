@@ -559,7 +559,12 @@ Worked examples (with diagrams) live in the walkthrough below.
 
 #### Put a couple of vertices and an edge
 
-![Asset 5](https://github.com/anaregdesign/lantern/assets/6128022/bdac71a9-d860-4a27-8bb7-3c5442d8d5f4)
+The two `put vertex` and one `put edge` commands below build this tiny graph:
+
+```mermaid
+graph LR
+    a((a:A)) -- 1 --> b((b:B))
+```
 
 ```shell
 > put vertex a A
@@ -576,9 +581,22 @@ OK (642.748µs)
 
 #### Explore neighborhoods with `illuminate`
 
-After loading a richer graph:
+After loading a richer graph — `a` connects out to `b`, `c`; `b` and `c` fan
+out further, with mixed weights so the tree examples below have something
+to choose between:
 
-![Asset 6](https://github.com/anaregdesign/lantern/assets/6128022/c1a35db5-a230-4b66-a24f-372ded1f814c)
+```mermaid
+graph LR
+    a((a)) -- 1 --> b((b))
+    a((a)) -- 1 --> c((c))
+    b -- 2 --> d((d))
+    b -- 3 --> e((e))
+    c -- 1 --> e
+    c -- 4 --> f((f))
+```
+
+`illuminate neighbor a 1 2 false` returns just the 1-hop neighborhood of
+seed `a` (top-`k=2` edges per vertex, no TF-IDF reweighting):
 
 ```shell
 > illuminate neighbor a 1 2 false
@@ -588,7 +606,11 @@ After loading a richer graph:
 }
 ```
 
-![Asset 9](https://github.com/anaregdesign/lantern/assets/6128022/486e892e-a3c3-4cf3-bcb7-501db6cfed13)
+```mermaid
+graph LR
+    a((a)) -- 1 --> b((b))
+    a((a)) -- 1 --> c((c))
+```
 
 #### Shortest-path tree by cost vs. relevance
 
@@ -597,8 +619,30 @@ After loading a richer graph:
 > illuminate spt_relevance a 2 2 false   # uses 1/weight as cost
 ```
 
-![Asset 7](https://github.com/anaregdesign/lantern/assets/6128022/14843e9f-53b3-4bb9-9dd6-51c60f020aff)
-![Asset 8](https://github.com/anaregdesign/lantern/assets/6128022/4c5d6606-5266-4df9-8a8d-7a617e3a672a)
+`spt_cost` treats edge weight directly as cost — lighter edges are
+preferred, so the tree reaches `e` via `c` (cost `1+1=2`) rather than via
+`b` (cost `1+3=4`):
+
+```mermaid
+graph LR
+    a((a)) -- 1 --> b((b))
+    a((a)) -- 1 --> c((c))
+    b -- 2 --> d((d))
+    c -- 1 --> e((e))
+```
+
+`spt_relevance` inverts the weight (cost = `1/weight`), so heavier edges
+become cheaper — relevance-weighted traversal picks the `c → f`
+(weight `4`, cost `0.25`) and `b → e` (weight `3`, cost `0.33`) branches
+instead:
+
+```mermaid
+graph LR
+    a((a)) -- 1 --> b((b))
+    a((a)) -- 1 --> c((c))
+    b -- 3 --> e((e))
+    c -- 4 --> f((f))
+```
 
 ---
 
