@@ -91,6 +91,13 @@ type Options struct {
 	// WAL receives every appended entry before it fans out to subscribers.
 	// Nil defaults to [NopWAL].
 	WAL WAL
+	// OnDrop, when non-nil, is invoked synchronously from the dispatcher
+	// goroutine each time a live fan-out drops an entry to a subscriber.
+	// The cause argument is one of the DropCause* constants in this
+	// package. Implementations must not block (they run on the hot
+	// fan-out path) and must not call back into the [Log] — the
+	// dispatcher holds the subscriber mutex at the call site (#260).
+	OnDrop func(cause string)
 }
 
 const (
@@ -98,9 +105,33 @@ const (
 	defaultSubscriberBuffer = 512
 )
 
+// Drop-cause labels passed to [Options.OnDrop]. New causes may be added
+// in future revisions; consumers should treat unknown values as opaque
+// strings rather than enumerate (#260).
+const (
+	// DropCauseBufferFull is reported when the dispatcher's non-blocking
+	// send to a subscriber's outbound channel fails because the channel
+	// is full. The subscriber is marked gapped, its channel is closed,
+	// and it is unregistered from the log.
+	DropCauseBufferFull = "buffer_full"
+)
+
 // Log is an append-only, bounded, in-memory mutation log.
 //
 // The zero value is not ready for use; construct with [New].
+//
+// Locking model (#260): two mutexes split the hot path so [Log.Append]
+// no longer iterates subscribers under its own critical section.
+//
+//   - mu  protects the ring buffer, sequence counters, and the closed flag.
+//     Held briefly by Append (WAL write + store + seq update + handoff
+//     to the dispatcher) and by Subscribe (replay + sub registration).
+//   - subsMu protects the subscribers map and per-subscriber state.
+//     Held by the dispatcher goroutine during fan-out and by cancel.
+//
+// Lock order when both are taken: mu → subsMu. The dispatcher only takes
+// subsMu, and Append only takes mu (the channel send happens under mu to
+// preserve global Seq ordering), so the two paths cannot deadlock.
 type Log struct {
 	mu       sync.Mutex
 	capacity int
@@ -109,24 +140,39 @@ type Log struct {
 	// ring is a fixed-size circular buffer allocated once at construction.
 	// Valid entries occupy positions [head, head+size) modulo capacity.
 	// Append is O(1) at all fill levels; eviction is a single head bump.
-	ring        []Entry
-	head        int    // index of the oldest entry when size > 0
-	size        int    // number of valid entries; 0 <= size <= capacity
-	firstSeq    uint64 // seq of ring[head] when size > 0; meaningless otherwise
-	lastSeq     uint64 // seq of last appended entry; 0 means none appended yet
-	evicted     uint64 // total entries dropped by ring-buffer eviction
-	hasEntries  bool
-	closed      bool
+	ring       []Entry
+	head       int    // index of the oldest entry when size > 0
+	size       int    // number of valid entries; 0 <= size <= capacity
+	firstSeq   uint64 // seq of ring[head] when size > 0; meaningless otherwise
+	lastSeq    uint64 // seq of last appended entry; 0 means none appended yet
+	evicted    uint64 // total entries dropped by ring-buffer eviction
+	hasEntries bool
+	closed     bool
+
+	// Dispatcher pipeline (#260). Append hands entries off to a single
+	// background goroutine that performs the per-subscriber fan-out, so
+	// writer latency is independent of subscriber count.
+	dispatch       chan Entry
+	dispatcherDone chan struct{}
+	onDrop         func(cause string)
+
+	subsMu      sync.Mutex
 	subscribers map[*subscription]struct{}
 }
 
 // subscription is the live state for one subscriber.
 type subscription struct {
-	ch     chan Entry
-	gapped bool // set when a fan-out drop turned into a gap
+	ch chan Entry
+	// startSeq is the first Seq the dispatcher is allowed to deliver to
+	// this subscriber. Entries with Seq < startSeq were already loaded
+	// into ch as part of the replay window during Subscribe, so the
+	// dispatcher must skip them to avoid duplicate delivery.
+	startSeq uint64
+	gapped   bool // set when a fan-out drop turned into a gap
 }
 
-// New constructs a [Log] with the given options.
+// New constructs a [Log] with the given options. It also starts a
+// background dispatcher goroutine; call [Log.Close] to stop it.
 func New(opts Options) *Log {
 	capacity := opts.Capacity
 	if capacity <= 0 {
@@ -140,13 +186,22 @@ func New(opts Options) *Log {
 	if wal == nil {
 		wal = NopWAL{}
 	}
-	return &Log{
+	l := &Log{
 		capacity:    capacity,
 		subBuf:      subBuf,
 		wal:         wal,
 		ring:        make([]Entry, capacity),
 		subscribers: make(map[*subscription]struct{}),
+		// Inbox sized to SubscriberBuffer mirrors the headroom budget
+		// documented on Options.SubscriberBuffer: a dispatcher stall of
+		// that many entries is tolerated before Append blocks waiting
+		// for the dispatcher to drain.
+		dispatch:       make(chan Entry, subBuf),
+		dispatcherDone: make(chan struct{}),
+		onDrop:         opts.OnDrop,
 	}
+	go l.dispatcher()
+	return l
 }
 
 // FirstSeq returns the lowest Seq still resident in the ring buffer. It
@@ -195,11 +250,15 @@ func (l *Log) Evicted() uint64 {
 }
 
 // Append assigns the next sequence number to op, persists the entry through
-// the WAL hook, stores it in the ring buffer, and fans it out to every live
-// subscriber. The returned [Entry] carries the assigned Seq.
+// the WAL hook, stores it in the ring buffer, and hands it off to the
+// dispatcher goroutine which performs per-subscriber fan-out. The
+// returned [Entry] carries the assigned Seq.
 //
 // Append is safe for concurrent use; calls are serialised so Seq strictly
-// increases by one for each successful return.
+// increases by one for each successful return. The hand-off to the
+// dispatcher happens under the log mutex so the dispatcher observes
+// entries in strict Seq order (#260); under sustained overload Append
+// will block briefly waiting for the dispatcher to drain its inbox.
 func (l *Log) Append(op MutationOp, ts hlc.Timestamp) (Entry, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -214,7 +273,13 @@ func (l *Log) Append(op MutationOp, ts hlc.Timestamp) (Entry, error) {
 	l.storeLocked(entry)
 	l.lastSeq = seq
 	l.hasEntries = true
-	l.fanoutLocked(entry)
+	// Hand-off to dispatcher. The send is under l.mu so concurrent
+	// Append calls cannot reorder entries on the inbox channel; the
+	// dispatcher consumes single-threaded so subscribers observe Seq
+	// in strictly increasing order. If the inbox is full Append blocks
+	// here — this is the writer-side back-pressure that protects the
+	// dispatcher from runaway producers.
+	l.dispatch <- entry
 	return entry, nil
 }
 
@@ -241,23 +306,61 @@ func (l *Log) storeLocked(entry Entry) {
 	l.evicted++
 }
 
-// fanoutLocked delivers entry to every subscriber. A subscriber that cannot
-// receive without blocking has its channel marked gapped and closed on the
-// next replay attempt. Live delivery uses a non-blocking send to preserve
-// the back-pressure semantics promised by SubscriberBuffer.
-func (l *Log) fanoutLocked(entry Entry) {
+// dispatcher consumes entries handed off by [Log.Append] and fans each
+// one out to every live subscriber. It runs on its own goroutine started
+// by [New] and exits when [Log.Close] closes the inbox channel; the
+// exit path closes any subscribers still registered so callers blocked
+// in <-ch observe channel closure (#260).
+func (l *Log) dispatcher() {
+	defer close(l.dispatcherDone)
+	for entry := range l.dispatch {
+		l.fanout(entry)
+	}
+	// Inbox closed by Close. Drain any subscribers that haven't been
+	// cancelled. Close holds l.mu before closing the inbox so no Append
+	// can race with us here.
+	l.subsMu.Lock()
+	defer l.subsMu.Unlock()
+	for sub := range l.subscribers {
+		close(sub.ch)
+		delete(l.subscribers, sub)
+	}
+}
+
+// fanout delivers entry to every live subscriber registered at the time of
+// the call. A subscriber whose outbound channel is full is marked gapped,
+// has its channel closed, and is unregistered; the optional
+// [Options.OnDrop] hook is then invoked with [DropCauseBufferFull].
+//
+// Live delivery uses a non-blocking send to preserve the back-pressure
+// semantics promised by [Options.SubscriberBuffer]: a slow subscriber
+// loses its subscription rather than stalling fan-out for everyone else.
+//
+// fanout runs exclusively on the dispatcher goroutine, so the only
+// other goroutines that contend on subsMu are Subscribe (briefly, to
+// register) and the per-subscription cancel func.
+func (l *Log) fanout(entry Entry) {
+	l.subsMu.Lock()
+	defer l.subsMu.Unlock()
 	for sub := range l.subscribers {
 		if sub.gapped {
+			continue
+		}
+		// Entries below startSeq were already delivered as part of the
+		// replay window during Subscribe; skip them to avoid duplicate
+		// delivery (#260).
+		if entry.Seq < sub.startSeq {
 			continue
 		}
 		select {
 		case sub.ch <- entry:
 		default:
-			// Subscriber is too slow: mark gapped and close to signal a
-			// reconnect-and-snapshot to the caller.
 			sub.gapped = true
 			close(sub.ch)
 			delete(l.subscribers, sub)
+			if l.onDrop != nil {
+				l.onDrop(DropCauseBufferFull)
+			}
 		}
 	}
 }
@@ -286,7 +389,14 @@ func (l *Log) Subscribe(fromSeq uint64) (<-chan Entry, func() error, error) {
 	if l.hasEntries && fromSeq < l.firstSeq {
 		return nil, nil, ErrGapped
 	}
-	sub := &subscription{ch: make(chan Entry, l.subBuf)}
+	// startSeq pins the boundary between replay (loaded synchronously
+	// into sub.ch below) and live delivery (handed in by the
+	// dispatcher). It is captured under l.mu so it cannot tear against
+	// concurrent Append calls (#260).
+	sub := &subscription{
+		ch:       make(chan Entry, l.subBuf),
+		startSeq: l.lastSeq + 1,
+	}
 	// Replay any in-buffer entries with Seq >= fromSeq. Entries are stored
 	// in the circular ring at positions [head, head+size); iterate that
 	// active window rather than ranging over the backing slice (which
@@ -306,13 +416,20 @@ func (l *Log) Subscribe(fromSeq uint64) (<-chan Entry, func() error, error) {
 			return nil, nil, ErrGapped
 		}
 	}
+	// Register the subscriber under subsMu (lock order: mu → subsMu).
+	// Holding mu here ensures the dispatcher cannot deliver an entry
+	// with Seq >= startSeq before the subscriber is visible, because the
+	// dispatcher needs subsMu and Append needs mu to enqueue further
+	// entries.
+	l.subsMu.Lock()
 	l.subscribers[sub] = struct{}{}
+	l.subsMu.Unlock()
 
 	var cancelOnce sync.Once
 	cancel := func() error {
 		cancelOnce.Do(func() {
-			l.mu.Lock()
-			defer l.mu.Unlock()
+			l.subsMu.Lock()
+			defer l.subsMu.Unlock()
 			if _, ok := l.subscribers[sub]; ok {
 				delete(l.subscribers, sub)
 				close(sub.ch)
@@ -323,18 +440,23 @@ func (l *Log) Subscribe(fromSeq uint64) (<-chan Entry, func() error, error) {
 	return sub.ch, cancel, nil
 }
 
-// Close stops accepting appends and closes every subscriber channel.
-// Calling Close more than once returns nil.
+// Close stops accepting appends, signals the dispatcher to drain, and
+// waits for it to exit. The dispatcher closes every still-live
+// subscriber channel on its way out. Calling Close more than once
+// returns nil.
 func (l *Log) Close() error {
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	if l.closed {
+		l.mu.Unlock()
 		return nil
 	}
 	l.closed = true
-	for sub := range l.subscribers {
-		close(sub.ch)
-		delete(l.subscribers, sub)
-	}
+	// Close the inbox while holding l.mu: this guarantees no concurrent
+	// Append can be in the middle of `l.dispatch <- entry` (Append
+	// holds l.mu across the send), so we cannot panic on send to a
+	// closed channel.
+	close(l.dispatch)
+	l.mu.Unlock()
+	<-l.dispatcherDone
 	return nil
 }

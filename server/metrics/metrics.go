@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/anaregdesign/lantern/core/concurrent/pubsub"
+	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -76,6 +77,14 @@ type DomainMetrics struct {
 	validationRejected     *prometheus.CounterVec
 	rateLimitRejected      prometheus.Counter
 	tombstoneClampRejected prometheus.Counter
+
+	// Mutation-log subscriber drop counter (#260). Incremented when the
+	// mutationlog dispatcher's non-blocking send to a subscriber's
+	// outbound channel fails and the subscriber is unregistered. The
+	// existing lantern_subscription_dropped_total{policy} metric covers
+	// the (currently dormant) core/concurrent/pubsub package and is
+	// intentionally distinct from this one.
+	mutationLogSubscriberDropped *prometheus.CounterVec
 
 	// Hot-path RPC observability (#220). Wired by the service layer via
 	// the HotPathMetrics interface in server/service. Histograms are
@@ -330,6 +339,10 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 			Name: "lantern_tombstone_clamp_rejected_total",
 			Help: "Total ApplyMutation Put/Add operations dropped on the tombstone-aware HLC path because the incoming mutation lost the LWW comparison against an existing tombstone or a strictly-newer live HLC. A sustained rate indicates causally-late replication frames or clock skew larger than LANTERN_TOMBSTONE_TTL.",
 		}),
+		mutationLogSubscriberDropped: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "lantern_mutationlog_subscriber_dropped_total",
+			Help: "Total mutation-log subscribers terminated by the dispatcher because their outbound channel could not absorb a live entry (#260). cause=\"buffer_full\" is the only label today; new causes may be added.",
+		}, []string{"cause"}),
 		sampleInterval: opts.SampleInterval,
 	}
 
@@ -343,7 +356,8 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		m.peerConnected, m.replicationApplyTotal, m.snapshotReplayedTotal,
 		m.snapshotVertices, m.snapshotEdges, m.snapshotDuration,
 		m.mutationLogFillRatio, m.mutationLogEvicted, m.originStatesCount,
-		m.validationRejected, m.rateLimitRejected, m.tombstoneClampRejected)
+		m.validationRejected, m.rateLimitRejected, m.tombstoneClampRejected,
+		m.mutationLogSubscriberDropped)
 
 	// Pre-create label rows so empty counters scrape as 0.
 	for _, r := range []string{"gapped", "send_failed"} {
@@ -396,6 +410,10 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		m.validationRejected.WithLabelValues(r)
 	}
 	m.validationRejected.WithLabelValues("unknown")
+
+	// Pre-warm the single known mutation-log drop cause so dashboards
+	// render the series at 0 from process start (#260).
+	m.mutationLogSubscriberDropped.WithLabelValues(mutationlog.DropCauseBufferFull)
 
 	version, commit := opts.Version, opts.Commit
 	if version == "" || commit == "" {
@@ -616,6 +634,19 @@ func (m *DomainMetrics) OnRateLimitRejected() {
 // against a live tombstone or against a strictly-newer existing entry).
 func (m *DomainMetrics) OnTombstoneClampRejected() {
 	m.tombstoneClampRejected.Inc()
+}
+
+// OnMutationLogSubscriberDropped increments
+// lantern_mutationlog_subscriber_dropped_total{cause} when the
+// mutationlog dispatcher's non-blocking send to a subscriber's outbound
+// channel fails and the subscriber is unregistered (#260). The "cause"
+// label is sanitised against the known set
+// (currently just mutationlog.DropCauseBufferFull); unknown values fall
+// back to "unknown" so a future cause added without a metrics update
+// still shows up.
+func (m *DomainMetrics) OnMutationLogSubscriberDropped(cause string) {
+	c := sanitizeLabel(cause, []string{mutationlog.DropCauseBufferFull}, "unknown")
+	m.mutationLogSubscriberDropped.WithLabelValues(c).Inc()
 }
 
 // --- Hot-path RPC observability (#220) ---

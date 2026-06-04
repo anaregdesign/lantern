@@ -104,6 +104,10 @@ func NewMutationLog(mlc MutationLogConfig, m *domainmetrics.DomainMetrics) *muta
 	log := mutationlog.New(mutationlog.Options{
 		Capacity:         mlc.Capacity,
 		SubscriberBuffer: mlc.SubscriberBuffer,
+		// Forward dispatcher fan-out drops to the Prometheus counter so
+		// operators see slow-subscriber pressure (#260). The callback
+		// pattern keeps core/mutationlog free of prometheus deps.
+		OnDrop: m.OnMutationLogSubscriberDropped,
 	})
 	m.SetMutationLogCapacity(mlc.Capacity)
 	return log

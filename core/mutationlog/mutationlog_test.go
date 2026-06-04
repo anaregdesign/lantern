@@ -317,3 +317,100 @@ func TestCancelIsIdempotent(t *testing.T) {
 		t.Fatalf("second cancel = %v, want nil", err)
 	}
 }
+
+// TestOnDropFiresForBufferFullSubscriber asserts the #260 drop hook:
+// when the dispatcher's non-blocking send to a slow subscriber fails
+// because that subscriber's channel is full, OnDrop is invoked exactly
+// once with DropCauseBufferFull and the subscriber is unregistered.
+func TestOnDropFiresForBufferFullSubscriber(t *testing.T) {
+	var (
+		mu     sync.Mutex
+		causes []string
+	)
+	l := New(Options{
+		Capacity:         64,
+		SubscriberBuffer: 2,
+		OnDrop: func(cause string) {
+			mu.Lock()
+			defer mu.Unlock()
+			causes = append(causes, cause)
+		},
+	})
+	defer l.Close()
+
+	_, cancel, err := l.Subscribe(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	// Append more entries than SubscriberBuffer without draining. The
+	// dispatcher's non-blocking send will eventually fail and OnDrop
+	// must fire with DropCauseBufferFull.
+	for i := 1; i <= 20; i++ {
+		if _, err := l.Append(i, ts(int64(i))); err != nil {
+			t.Fatalf("append #%d: %v", i, err)
+		}
+	}
+
+	// The dispatcher is asynchronous; poll briefly for the hook.
+	deadline := time.After(2 * time.Second)
+	for {
+		mu.Lock()
+		n := len(causes)
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("OnDrop never fired for slow subscriber")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(causes) != 1 {
+		t.Fatalf("OnDrop fired %d times, want exactly 1: %v", len(causes), causes)
+	}
+	if causes[0] != DropCauseBufferFull {
+		t.Fatalf("cause = %q, want %q", causes[0], DropCauseBufferFull)
+	}
+}
+
+// TestAppendDoesNotIterateSubscribersUnderMu is a behavioural smoke
+// test for the #260 decoupling: Append must not be blocked by a slow
+// subscriber's outbound channel because fan-out runs on the dispatcher
+// goroutine, not under l.mu. With SubscriberBuffer large enough that
+// the dispatcher inbox never fills, Append latency must remain
+// independent of subscriber count.
+func TestAppendDoesNotBlockOnSlowSubscriber(t *testing.T) {
+	l := New(Options{Capacity: 1024, SubscriberBuffer: 1024})
+	defer l.Close()
+
+	// Register a subscriber that never drains. The dispatcher will fill
+	// its channel up to SubscriberBuffer, then drop it. Either way,
+	// Append must return promptly for all 100 calls.
+	_, cancel, err := l.Subscribe(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 1; i <= 100; i++ {
+			if _, err := l.Append(i, ts(int64(i))); err != nil {
+				t.Errorf("append #%d: %v", i, err)
+				return
+			}
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Append blocked despite dispatcher fan-out being decoupled")
+	}
+}
