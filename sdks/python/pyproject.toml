@@ -1,0 +1,69 @@
+[project]
+name = "lantern-client"
+version = "0.1.0"
+description = "Python client SDK for Lantern, an in-memory graph key-vertex-store served over gRPC."
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+authors = [
+    { name = "Hiroki Mizukami", email = "hmizukami+microsoft@microsoft.com" },
+]
+keywords = ["lantern", "grpc", "graph", "kvs", "key-value", "client"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+dependencies = [
+    "grpcio>=1.60",
+    "grpcio-health-checking>=1.60",
+    "protobuf>=4.25",
+]
+
+[project.urls]
+Homepage = "https://github.com/anaregdesign/lantern"
+Repository = "https://github.com/anaregdesign/lantern"
+Issues = "https://github.com/anaregdesign/lantern/issues"
+"Source (SDK)" = "https://github.com/anaregdesign/lantern/tree/main/sdks/python"
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lantern_client"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/lantern_client", "README.md", "LICENSE"]
+
+[dependency-groups]
+dev = [
+    "googleapis-common-protos>=1.75.0",
+    "grpcio-tools>=1.60",
+    "mypy-protobuf>=3.6",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["src/lantern_client/_pb"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
