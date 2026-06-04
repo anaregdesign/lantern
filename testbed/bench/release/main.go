@@ -287,11 +287,15 @@ func main() {
 		fmt.Fprintln(os.Stderr, "release: create:", err)
 		os.Exit(1)
 	}
-	defer f.Close()
 
 	h := Header{Tag: *tag, Commit: *commit, Runner: *runner, Captured: *captured}
 	if err := Render(f, h, scenarios); err != nil {
+		_ = f.Close()
 		fmt.Fprintln(os.Stderr, "release: render:", err)
+		os.Exit(1)
+	}
+	if err := f.Close(); err != nil {
+		fmt.Fprintln(os.Stderr, "release: close:", err)
 		os.Exit(1)
 	}
 }
