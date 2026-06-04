@@ -1,7 +1,9 @@
 package pubsub
 
 import (
+	"container/heap"
 	"context"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,6 +24,16 @@ type Subscription[T any] struct {
 	concurrency int
 	interval    time.Duration
 	ttl         time.Duration
+	bufferSize  int
+	fullPolicy  FullPolicy
+
+	// expMu guards exp. Kept separate from s.mu so the salvage path can
+	// peek/pop heap entries without blocking the consumer's dispatch path
+	// (which holds s.mu in write mode to stamp lastViewedAt). Always acquire
+	// expMu first and release it before touching s.mu to avoid a lock-order
+	// inversion.
+	expMu sync.Mutex
+	exp   expHeap
 }
 
 func (s *Subscription[T]) Name() string {
@@ -136,9 +148,65 @@ func (s *Subscription[T]) publish(message *Message[T]) {
 	s.messages[message.id] = message
 	s.mu.Unlock()
 
-	// Send outside the lock: a full channel would otherwise block while the
+	// Record the expiry deadline so salvage can find the earliest-expiring
+	// message in O(log N) instead of scanning all in-flight messages (#232).
+	// Ack leaves the heap entry behind as a tombstone — salvage skips ids
+	// that are no longer in s.messages.
+	s.expMu.Lock()
+	heap.Push(&s.exp, expEntry{id: message.id, deadline: message.createdAt.Add(s.ttl).UnixNano()})
+	s.expMu.Unlock()
+
+	// Send outside the locks: a full channel would otherwise block while a
 	// lock is held, deadlocking any concurrent ack/message lookup.
-	s.ch <- message.id
+	s.enqueue(message)
+}
+
+// enqueue routes message.id onto s.ch according to s.fullPolicy. The default
+// FullPolicyBlock preserves the historical blocking semantics; the drop
+// policies trade strict delivery for liveness and ack the dropped envelope
+// so its pool slot and map entry are released (#232).
+func (s *Subscription[T]) enqueue(message *Message[T]) {
+	switch s.fullPolicy {
+	case FullPolicyDropNewest:
+		select {
+		case s.ch <- message.id:
+		default:
+			slog.Warn("pubsub: drop newest (channel full)",
+				"topic", s.topic.name, "subscription", s.name)
+			s.ack(message)
+		}
+	case FullPolicyDropOldest:
+		select {
+		case s.ch <- message.id:
+		default:
+			// Single non-blocking drain + retry. Looping unbounded would
+			// let a fast publisher starve the consumer indefinitely.
+			select {
+			case droppedID := <-s.ch:
+				slog.Warn("pubsub: drop oldest (channel full)",
+					"topic", s.topic.name, "subscription", s.name)
+				if dropped := s.message(droppedID); dropped != nil {
+					s.ack(dropped)
+				}
+				select {
+				case s.ch <- message.id:
+				default:
+					// A concurrent publisher refilled the slot; treat
+					// this publish as a newest-drop fallback rather
+					// than spinning on the channel.
+					slog.Warn("pubsub: drop newest after oldest drop (still full)",
+						"topic", s.topic.name, "subscription", s.name)
+					s.ack(message)
+				}
+			default:
+				// Channel drained between the full-select and the drain
+				// attempt; just send.
+				s.ch <- message.id
+			}
+		}
+	default: // FullPolicyBlock
+		s.ch <- message.id
+	}
 }
 
 func (s *Subscription[T]) ack(message *Message[T]) {
@@ -162,11 +230,55 @@ func (s *Subscription[T]) nack(message *Message[T]) {
 }
 
 func (s *Subscription[T]) remind(message *Message[T]) {
-	s.ch <- message.id
+	if s.fullPolicy == FullPolicyBlock {
+		s.ch <- message.id
+		return
+	}
+	// Under a drop policy, never block the salvage goroutine on a full
+	// channel: the message stays in s.messages and the next interval tick
+	// will retry the remind.
+	select {
+	case s.ch <- message.id:
+	default:
+	}
 }
 
 func (s *Subscription[T]) salvage(interval time.Duration, ttl time.Duration) {
-	// Snapshot under the lock so we can iterate without racing publish/ack.
+	now := time.Now()
+	nowNano := now.UnixNano()
+
+	// Expiry path: pop every heap entry whose deadline has passed and ack
+	// the corresponding live message. Tombstones (entries for already-acked
+	// messages) are popped and skipped. Cost is O(K log N) where K is the
+	// number of expirations on this tick (#232).
+	for {
+		s.expMu.Lock()
+		if s.exp.Len() == 0 || s.exp[0].deadline > nowNano {
+			s.expMu.Unlock()
+			break
+		}
+		entry := heap.Pop(&s.exp).(expEntry)
+		s.expMu.Unlock()
+
+		// Look up under s.mu; ack also takes s.mu so we release expMu first
+		// to keep lock order (expMu -> s.mu, never the reverse).
+		m := s.message(entry.id)
+		if m == nil {
+			continue
+		}
+		// Re-verify against the live createdAt: a Nack does not reset the
+		// envelope, so the heap entry is still authoritative, but checking
+		// keeps us safe if the policy ever changes.
+		if now.Sub(m.createdAt) > ttl {
+			s.ack(m)
+		}
+	}
+
+	// Remind path: re-push ids whose consumer has been silent for at least
+	// one interval. This still scans the in-flight map because lastViewedAt
+	// changes mid-flight and would require an indexable structure to track
+	// efficiently; the heap optimisation targets the expiry hot path, which
+	// dominates when ttl >> interval (#232).
 	s.mu.RLock()
 	snapshot := make([]*Message[T], 0, len(s.messages))
 	for _, m := range s.messages {
@@ -174,12 +286,7 @@ func (s *Subscription[T]) salvage(interval time.Duration, ttl time.Duration) {
 	}
 	s.mu.RUnlock()
 
-	now := time.Now()
 	for _, message := range snapshot {
-		if now.Sub(message.createdAt) > ttl {
-			s.ack(message)
-			continue
-		}
 		if now.Sub(message.lastViewedAt) > interval {
 			s.remind(message)
 		}
