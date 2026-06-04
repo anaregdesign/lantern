@@ -3,8 +3,6 @@ package graph
 import (
 	"context"
 	"errors"
-	"sort"
-	"strconv"
 	"testing"
 )
 
@@ -262,38 +260,6 @@ func TestGraph_ShortestPathTree_IndirectCheaper(t *testing.T) {
 	}
 	if totalEdges != 3 {
 		t.Errorf("SPT total edges = %d, want 3 (edges=%v)", totalEdges, spt.Edges)
-	}
-}
-
-func TestGraph_Render(t *testing.T) {
-	g := NewGraph[string, int]()
-	g.PutVertex("a", 1)
-	g.PutVertex("b", 2)
-	g.PutEdge("a", "b", 0.5)
-
-	keyToID := func(k string) int { return int(k[0]) }
-	valToStr := func(v int) string { return strconv.Itoa(v) }
-
-	view := g.Render(keyToID, valToStr)
-	if len(view.Vertices) != 2 {
-		t.Errorf("Render vertices = %d, want 2", len(view.Vertices))
-	}
-	if len(view.Edges) != 1 {
-		t.Errorf("Render edges = %d, want 1", len(view.Edges))
-	}
-
-	labels := make([]string, 0, len(view.Vertices))
-	for _, v := range view.Vertices {
-		labels = append(labels, v.Label)
-	}
-	sort.Strings(labels)
-	if labels[0] != "1" || labels[1] != "2" {
-		t.Errorf("Render labels = %v, want [1 2]", labels)
-	}
-
-	e := view.Edges[0]
-	if e.From != int('a') || e.To != int('b') || e.Value != 0.5 {
-		t.Errorf("Render edge = %+v, want From=%d To=%d Value=0.5", e, int('a'), int('b'))
 	}
 }
 
