@@ -138,6 +138,9 @@ runtime, process, and `grpc_server_*` collectors):
 | `lantern_scan_results` | histogram | `op` | Result counts for prefix scans (`ScanVertices`, `ScanEdges`, `DeleteVerticesByPrefix`). |
 | `lantern_scan_duration_seconds` | histogram | `op` | Wall-clock for the same scan ops. |
 | `lantern_batch_size` | histogram | `op` | Batch size for plural RPCs (`GetVertices`, `PutVertices`, `DeleteVertices`, `GetEdges`, `AddEdges`, `PutEdges`, `DeleteEdges`). Singular forwarders are NOT instrumented to avoid double-counting. |
+| `lantern_validation_rejected_total` | counter | `reason` | Requests rejected by the validation interceptor or service-layer guards. Reasons: `empty_key`, `key_too_long`, `empty_batch`, `batch_too_large`, `nil_item`, `bad_weight`, `step_too_large`, `k_too_large`, `bad_ttl`, `bad_cursor`. Unknown reasons fold onto `unknown`. Pre-warmed at startup. |
+| `lantern_rate_limit_rejected_total` | counter | — | RPCs rejected with `ResourceExhausted` by the process-wide token-bucket rate limiter (`LANTERN_RATE_LIMIT_RPS`). |
+| `lantern_tombstone_clamp_rejected_total` | counter | — | HLC `Put*` / `Add*` mutations rejected because a newer tombstone or LWW value already covered the key/edge (only counted while `LANTERN_TOMBSTONE_TTL_SECONDS > 0`). |
 
 Tracing is wired via `otelgrpc.NewServerHandler` so any `OTEL_*` env var the
 OpenTelemetry Go SDK honours will Just Work. Per-call logging goes through

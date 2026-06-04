@@ -42,11 +42,33 @@ type ValidationLimits struct {
 }
 
 type ValidationInterceptor struct {
-	limits ValidationLimits
+	limits     ValidationLimits
+	rejectHook func(reason string)
 }
 
 func NewValidationInterceptor(l ValidationLimits) *ValidationInterceptor {
 	return &ValidationInterceptor{limits: l}
+}
+
+// WithRejectHook registers a callback invoked once per rejected request
+// with the canonical reason label (one of empty_key, key_too_long,
+// empty_batch, batch_too_large, nil_item, bad_weight, step_too_large,
+// k_too_large). Used by provider/metrics to bump
+// lantern_validation_rejected_total{reason}. A nil hook disables the
+// callback; safe to call exactly once during wiring.
+func (v *ValidationInterceptor) WithRejectHook(f func(reason string)) *ValidationInterceptor {
+	v.rejectHook = f
+	return v
+}
+
+// reject fires the registered hook (if any) and returns the constructed
+// gRPC status error. Centralised so every validation rejection path is
+// counted exactly once.
+func (v *ValidationInterceptor) reject(reason string, format string, args ...any) error {
+	if v.rejectHook != nil {
+		v.rejectHook(reason)
+	}
+	return status.Errorf(codes.InvalidArgument, format, args...)
 }
 
 func (v *ValidationInterceptor) UnaryServerInterceptor() grpc.UnaryServerInterceptor {
@@ -96,7 +118,7 @@ func (v *ValidationInterceptor) validate(req any) error {
 		}
 		for i, vx := range r.GetVertices() {
 			if vx == nil {
-				return status.Errorf(codes.InvalidArgument, "vertices[%d] is nil", i)
+				return v.reject("nil_item", "vertices[%d] is nil", i)
 			}
 			if err := v.checkKey(fmt.Sprintf("vertices[%d].key", i), vx.GetKey()); err != nil {
 				return err
@@ -113,7 +135,7 @@ func (v *ValidationInterceptor) validate(req any) error {
 		}
 		for i, e := range r.GetEdges() {
 			if e == nil {
-				return status.Errorf(codes.InvalidArgument, "edges[%d] is nil", i)
+				return v.reject("nil_item", "edges[%d] is nil", i)
 			}
 			if err := v.checkKey(fmt.Sprintf("edges[%d].tail", i), e.GetTail()); err != nil {
 				return err
@@ -133,7 +155,7 @@ func (v *ValidationInterceptor) validate(req any) error {
 		}
 		for i, e := range r.GetEdges() {
 			if e == nil {
-				return status.Errorf(codes.InvalidArgument, "edges[%d] is nil", i)
+				return v.reject("nil_item", "edges[%d] is nil", i)
 			}
 			if err := v.checkKey(fmt.Sprintf("edges[%d].tail", i), e.GetTail()); err != nil {
 				return err
@@ -151,10 +173,10 @@ func (v *ValidationInterceptor) validate(req any) error {
 			return err
 		}
 		if v.limits.IlluminateMaxStep > 0 && int(r.GetStep()) > v.limits.IlluminateMaxStep {
-			return status.Errorf(codes.InvalidArgument, "step %d exceeds max %d", r.GetStep(), v.limits.IlluminateMaxStep)
+			return v.reject("step_too_large", "step %d exceeds max %d", r.GetStep(), v.limits.IlluminateMaxStep)
 		}
 		if v.limits.IlluminateMaxK > 0 && int(r.GetK()) > v.limits.IlluminateMaxK {
-			return status.Errorf(codes.InvalidArgument, "k %d exceeds max %d", r.GetK(), v.limits.IlluminateMaxK)
+			return v.reject("k_too_large", "k %d exceeds max %d", r.GetK(), v.limits.IlluminateMaxK)
 		}
 	}
 	return nil
@@ -166,7 +188,7 @@ func (v *ValidationInterceptor) validateEdges(edges []*pb.Edge) error {
 	}
 	for i, e := range edges {
 		if e == nil {
-			return status.Errorf(codes.InvalidArgument, "edges[%d] is nil", i)
+			return v.reject("nil_item", "edges[%d] is nil", i)
 		}
 		if err := v.checkKey(fmt.Sprintf("edges[%d].tail", i), e.GetTail()); err != nil {
 			return err
@@ -176,7 +198,7 @@ func (v *ValidationInterceptor) validateEdges(edges []*pb.Edge) error {
 		}
 		w := float64(e.GetWeight())
 		if math.IsNaN(w) || math.IsInf(w, 0) {
-			return status.Errorf(codes.InvalidArgument, "edges[%d].weight must be finite, got %v", i, e.GetWeight())
+			return v.reject("bad_weight", "edges[%d].weight must be finite, got %v", i, e.GetWeight())
 		}
 	}
 	return nil
@@ -184,20 +206,20 @@ func (v *ValidationInterceptor) validateEdges(edges []*pb.Edge) error {
 
 func (v *ValidationInterceptor) checkKey(field, value string) error {
 	if value == "" {
-		return status.Errorf(codes.InvalidArgument, "%s must not be empty", field)
+		return v.reject("empty_key", "%s must not be empty", field)
 	}
 	if v.limits.MaxKeyLen > 0 && len(value) > v.limits.MaxKeyLen {
-		return status.Errorf(codes.InvalidArgument, "%s length %d exceeds max %d", field, len(value), v.limits.MaxKeyLen)
+		return v.reject("key_too_long", "%s length %d exceeds max %d", field, len(value), v.limits.MaxKeyLen)
 	}
 	return nil
 }
 
 func (v *ValidationInterceptor) checkBatch(n int) error {
 	if n == 0 {
-		return status.Error(codes.InvalidArgument, "request batch must not be empty")
+		return v.reject("empty_batch", "request batch must not be empty")
 	}
 	if v.limits.MaxBatchSize > 0 && n > v.limits.MaxBatchSize {
-		return status.Errorf(codes.InvalidArgument, "batch size %d exceeds max %d", n, v.limits.MaxBatchSize)
+		return v.reject("batch_too_large", "batch size %d exceeds max %d", n, v.limits.MaxBatchSize)
 	}
 	return nil
 }
@@ -210,7 +232,8 @@ func (v *ValidationInterceptor) checkBatch(n int) error {
 // the bucket return codes.ResourceExhausted so well-behaved clients (and the
 // SDK's default retry policy) can back off.
 type RateLimitInterceptor struct {
-	lim *rate.Limiter
+	lim        *rate.Limiter
+	rejectHook func()
 }
 
 func NewRateLimitInterceptor(rps float64, burst int) *RateLimitInterceptor {
@@ -223,9 +246,21 @@ func NewRateLimitInterceptor(rps float64, burst int) *RateLimitInterceptor {
 	return &RateLimitInterceptor{lim: rate.NewLimiter(rate.Limit(rps), burst)}
 }
 
+// WithRejectHook registers a callback invoked once per rejected RPC
+// before codes.ResourceExhausted is returned. Used by provider/metrics
+// to bump lantern_rate_limit_rejected_total. A nil hook disables the
+// callback; safe to call exactly once during wiring.
+func (r *RateLimitInterceptor) WithRejectHook(f func()) *RateLimitInterceptor {
+	r.rejectHook = f
+	return r
+}
+
 func (r *RateLimitInterceptor) UnaryServerInterceptor() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		if !r.lim.Allow() {
+			if r.rejectHook != nil {
+				r.rejectHook()
+			}
 			return nil, status.Error(codes.ResourceExhausted, "rate limit exceeded")
 		}
 		return handler(ctx, req)
@@ -235,6 +270,9 @@ func (r *RateLimitInterceptor) UnaryServerInterceptor() grpc.UnaryServerIntercep
 func (r *RateLimitInterceptor) StreamServerInterceptor() grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		if !r.lim.Allow() {
+			if r.rejectHook != nil {
+				r.rejectHook()
+			}
 			return status.Error(codes.ResourceExhausted, "rate limit exceeded")
 		}
 		return handler(srv, ss)

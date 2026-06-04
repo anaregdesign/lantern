@@ -59,6 +59,16 @@ type DomainMetrics struct {
 	mutationLogEvicted    prometheus.Counter
 	originStatesCount     prometheus.Gauge
 
+	// Validation / back-pressure rejection counters (#222). Bumped on
+	// every InvalidArgument / ResourceExhausted / tombstone-clamp drop
+	// the server emits before the request reaches its handler
+	// (validation, rate limit) or before the apply commits
+	// (tombstone clamp). Pre-warmed so dashboards render the full reason
+	// set as 0 from process start.
+	validationRejected     *prometheus.CounterVec
+	rateLimitRejected      prometheus.Counter
+	tombstoneClampRejected prometheus.Counter
+
 	// Hot-path RPC observability (#220). Wired by the service layer via
 	// the HotPathMetrics interface in server/service. Histograms are
 	// label-pre-warmed so dashboards render the full set of variants from
@@ -119,6 +129,26 @@ var (
 		"PutEdges",
 		"DeleteEdge",
 		"DeleteEdges",
+	}
+	// validationRejectReasons is the bounded reason set bumped on
+	// lantern_validation_rejected_total. Sources:
+	//   - ValidationInterceptor (server/provider/extra.go): empty_key,
+	//     key_too_long, empty_batch, batch_too_large, nil_item,
+	//     bad_weight, step_too_large, k_too_large
+	//   - service.LanternService.validateExpiration: bad_ttl
+	//   - service prefix-scan cursor decode: bad_cursor
+	// Unknown labels fall through to "unknown" via sanitizeLabel.
+	validationRejectReasons = []string{
+		"empty_key",
+		"key_too_long",
+		"empty_batch",
+		"batch_too_large",
+		"nil_item",
+		"bad_weight",
+		"step_too_large",
+		"k_too_large",
+		"bad_ttl",
+		"bad_cursor",
 	}
 )
 
@@ -266,6 +296,18 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 			Name: "lantern_origin_states_count",
 			Help: "Number of distinct origin NodeIDs the local apply path has recorded in its per-origin watermark table.",
 		}),
+		validationRejected: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "lantern_validation_rejected_total",
+			Help: "Total requests rejected by server-side input validation, partitioned by reason (empty_key, key_too_long, empty_batch, batch_too_large, nil_item, bad_weight, step_too_large, k_too_large, bad_ttl, bad_cursor). Counted before the handler runs (ValidationInterceptor) or during validateExpiration / cursor decode in the service layer.",
+		}, []string{"reason"}),
+		rateLimitRejected: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "lantern_rate_limit_rejected_total",
+			Help: "Total RPCs rejected by the process-wide token-bucket rate limiter (codes.ResourceExhausted). Registered at 0 even when LANTERN_RATE_LIMIT_RPS=0 so dashboards can compare deployments uniformly.",
+		}),
+		tombstoneClampRejected: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "lantern_tombstone_clamp_rejected_total",
+			Help: "Total ApplyMutation Put/Add operations dropped on the tombstone-aware HLC path because the incoming mutation lost the LWW comparison against an existing tombstone or a strictly-newer live HLC. A sustained rate indicates causally-late replication frames or clock skew larger than LANTERN_TOMBSTONE_TTL.",
+		}),
 		sampleInterval: opts.SampleInterval,
 	}
 
@@ -277,7 +319,8 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		m.scanResults, m.scanDuration, m.batchSize,
 		m.peerConnected, m.replicationApplyTotal, m.snapshotReplayedTotal,
 		m.snapshotVertices, m.snapshotEdges, m.snapshotDuration,
-		m.mutationLogFillRatio, m.mutationLogEvicted, m.originStatesCount)
+		m.mutationLogFillRatio, m.mutationLogEvicted, m.originStatesCount,
+		m.validationRejected, m.rateLimitRejected, m.tombstoneClampRejected)
 
 	// Pre-create label rows so empty counters scrape as 0.
 	for _, r := range []string{"gapped", "send_failed"} {
@@ -314,6 +357,14 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 	for _, op := range replicationApplyOps {
 		m.replicationApplyTotal.WithLabelValues(op)
 	}
+	// Pre-warm the validation-rejection counter (#222) so the full
+	// reason set scrapes as 0 before any traffic arrives. Plus the
+	// "unknown" bucket sanitizeLabel falls back to so a future reason
+	// added without a metrics update still shows up.
+	for _, r := range validationRejectReasons {
+		m.validationRejected.WithLabelValues(r)
+	}
+	m.validationRejected.WithLabelValues("unknown")
 
 	version, commit := opts.Version, opts.Commit
 	if version == "" || commit == "" {
@@ -473,6 +524,33 @@ func (m *DomainMetrics) OnPumpSnapshotReplayed(peer string, vertices, edges uint
 func (m *DomainMetrics) OnReplicationApply(op string) {
 	o := sanitizeLabel(op, replicationApplyOps, "unknown")
 	m.replicationApplyTotal.WithLabelValues(o).Inc()
+}
+
+// OnValidationRejected increments lantern_validation_rejected_total for
+// one rejected request. reason must be one of validationRejectReasons;
+// unknown values are bucketed as "unknown" to keep label cardinality
+// bounded. Wired into ValidationInterceptor (server/provider) and into
+// service.validateExpiration / prefix-scan cursor decode via
+// WithValidationRejectHook.
+func (m *DomainMetrics) OnValidationRejected(reason string) {
+	r := sanitizeLabel(reason, validationRejectReasons, "unknown")
+	m.validationRejected.WithLabelValues(r).Inc()
+}
+
+// OnRateLimitRejected increments lantern_rate_limit_rejected_total when
+// the token-bucket interceptor returns codes.ResourceExhausted. The
+// counter is registered even when LANTERN_RATE_LIMIT_RPS=0 so dashboards
+// can compare deployments uniformly.
+func (m *DomainMetrics) OnRateLimitRejected() {
+	m.rateLimitRejected.Inc()
+}
+
+// OnTombstoneClampRejected increments lantern_tombstone_clamp_rejected_total
+// when an ApplyMutation Put/Add on the tombstone-aware HLC path is
+// dropped because the incoming HLC lost the LWW comparison (either
+// against a live tombstone or against a strictly-newer existing entry).
+func (m *DomainMetrics) OnTombstoneClampRejected() {
+	m.tombstoneClampRejected.Inc()
 }
 
 // --- Hot-path RPC observability (#220) ---

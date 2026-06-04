@@ -381,3 +381,55 @@ func TestDomainMetrics_MutationLogEvictedMonotonic(t *testing.T) {
 		t.Errorf("after reset+3: counter = %v, want 15 (12+3)", got)
 	}
 }
+
+// TestDomainMetrics_RejectionFamilies asserts the #222 rejection
+// collectors register, the validation reason label is pre-warmed for
+// every canonical reason (plus the "unknown" fallback row), and the
+// three adapters increment exactly the right counters.
+func TestDomainMetrics_RejectionFamilies(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := New(reg, Options{SampleInterval: time.Hour})
+
+	for _, r := range validationRejectReasons {
+		m.OnValidationRejected(r)
+	}
+	m.OnValidationRejected("bogus-reason") // → "unknown"
+	m.OnRateLimitRejected()
+	m.OnRateLimitRejected()
+	m.OnTombstoneClampRejected()
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	names := map[string]bool{}
+	for _, mf := range mfs {
+		names[mf.GetName()] = true
+	}
+	for _, want := range []string{
+		"lantern_validation_rejected_total",
+		"lantern_rate_limit_rejected_total",
+		"lantern_tombstone_clamp_rejected_total",
+	} {
+		if !names[want] {
+			t.Errorf("metric family %q not registered", want)
+		}
+	}
+
+	// Pre-warming: every canonical reason has a row visible from the
+	// start (so dashboards never have to wait for the first reject).
+	for _, r := range validationRejectReasons {
+		if got := testutil.ToFloat64(m.validationRejected.WithLabelValues(r)); got != 1 {
+			t.Errorf("validation_rejected_total{reason=%q} = %v, want 1", r, got)
+		}
+	}
+	if got := testutil.ToFloat64(m.validationRejected.WithLabelValues("unknown")); got != 1 {
+		t.Errorf("validation_rejected_total{reason=unknown} = %v, want 1 (bogus reason should fold)", got)
+	}
+	if got := testutil.ToFloat64(m.rateLimitRejected); got != 2 {
+		t.Errorf("rate_limit_rejected_total = %v, want 2", got)
+	}
+	if got := testutil.ToFloat64(m.tombstoneClampRejected); got != 1 {
+		t.Errorf("tombstone_clamp_rejected_total = %v, want 1", got)
+	}
+}

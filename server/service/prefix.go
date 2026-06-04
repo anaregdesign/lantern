@@ -30,6 +30,9 @@ func (s *LanternService) ScanVertices(ctx context.Context, in *pb.ScanVerticesRe
 
 	cursor, err := decodeCursor(in.GetCursor())
 	if err != nil {
+		if s.onValidationReject != nil {
+			s.onValidationReject("bad_cursor")
+		}
 		return nil, status.Errorf(codes.InvalidArgument, "%s", err.Error())
 	}
 
@@ -157,6 +160,9 @@ func (s *LanternService) ScanEdges(ctx context.Context, in *pb.ScanEdgesRequest)
 
 	cursor, err := decodeEdgesCursor(in.GetCursor())
 	if err != nil {
+		if s.onValidationReject != nil {
+			s.onValidationReject("bad_cursor")
+		}
 		return nil, status.Errorf(codes.InvalidArgument, "%s", err.Error())
 	}
 

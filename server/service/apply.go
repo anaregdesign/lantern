@@ -77,7 +77,10 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		if v == nil {
 			return nil
 		}
-		s.cache.PutVertexWithExpirationHLC(v.GetKey(), v, v.GetExpiration().AsTime(), ts)
+		applied := s.cache.PutVertexWithExpirationHLC(v.GetKey(), v, v.GetExpiration().AsTime(), ts)
+		if !applied && useTomb && s.onTombstoneClampReject != nil {
+			s.onTombstoneClampReject()
+		}
 		opName = "PutVertex"
 
 	case *pb.MutationOp_PutVertices:
@@ -85,7 +88,10 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 			if v == nil {
 				continue
 			}
-			s.cache.PutVertexWithExpirationHLC(v.GetKey(), v, v.GetExpiration().AsTime(), ts)
+			applied := s.cache.PutVertexWithExpirationHLC(v.GetKey(), v, v.GetExpiration().AsTime(), ts)
+			if !applied && useTomb && s.onTombstoneClampReject != nil {
+				s.onTombstoneClampReject()
+			}
 		}
 		opName = "PutVertices"
 
@@ -122,8 +128,11 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		}
 		cID := contribIDFor(origin, seq, 0)
 		if useTomb {
-			s.cache.AddEdgeWithExpirationContribHLC(e.GetTail(), e.GetHead(), e.GetWeight(),
+			applied := s.cache.AddEdgeWithExpirationContribHLC(e.GetTail(), e.GetHead(), e.GetWeight(),
 				e.GetExpiration().AsTime(), cID, ts)
+			if !applied && s.onTombstoneClampReject != nil {
+				s.onTombstoneClampReject()
+			}
 		} else {
 			s.cache.AddEdgeWithExpirationContrib(e.GetTail(), e.GetHead(), e.GetWeight(),
 				e.GetExpiration().AsTime(), cID)
@@ -138,8 +147,11 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 			}
 			cID := contribIDFor(origin, seq, uint16(i))
 			if useTomb {
-				s.cache.AddEdgeWithExpirationContribHLC(e.GetTail(), e.GetHead(), e.GetWeight(),
+				applied := s.cache.AddEdgeWithExpirationContribHLC(e.GetTail(), e.GetHead(), e.GetWeight(),
 					e.GetExpiration().AsTime(), cID, ts)
+				if !applied && s.onTombstoneClampReject != nil {
+					s.onTombstoneClampReject()
+				}
 			} else {
 				s.cache.AddEdgeWithExpirationContrib(e.GetTail(), e.GetHead(), e.GetWeight(),
 					e.GetExpiration().AsTime(), cID)
@@ -152,8 +164,11 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		if e == nil {
 			return nil
 		}
-		s.cache.PutEdgeWithExpirationHLC(e.GetTail(), e.GetHead(), e.GetWeight(),
+		applied := s.cache.PutEdgeWithExpirationHLC(e.GetTail(), e.GetHead(), e.GetWeight(),
 			e.GetExpiration().AsTime(), ts)
+		if !applied && useTomb && s.onTombstoneClampReject != nil {
+			s.onTombstoneClampReject()
+		}
 		opName = "PutEdge"
 
 	case *pb.MutationOp_PutEdges:
@@ -161,8 +176,11 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 			if e == nil {
 				continue
 			}
-			s.cache.PutEdgeWithExpirationHLC(e.GetTail(), e.GetHead(), e.GetWeight(),
+			applied := s.cache.PutEdgeWithExpirationHLC(e.GetTail(), e.GetHead(), e.GetWeight(),
 				e.GetExpiration().AsTime(), ts)
+			if !applied && useTomb && s.onTombstoneClampReject != nil {
+				s.onTombstoneClampReject()
+			}
 		}
 		opName = "PutEdges"
 
