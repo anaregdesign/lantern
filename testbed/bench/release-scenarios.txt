@@ -1,0 +1,14 @@
+# Scenarios executed by testbed/bench/release.sh at release time.
+# One scenario stem per line (matches testbed/bench/scenarios/<stem>.yaml).
+# Lines starting with `#` and blank lines are ignored.
+#
+# Keep this list short: the release CI job runs each one sequentially on a
+# shared ubuntu-latest runner. The smoke_* variants finish in ~2 min wall
+# each (15s warmup + 60s steady + 15s cooldown + compose up/down), which
+# keeps total release time under ~10 min and avoids saturating the runner.
+#
+# Full *_heavy / mixed_rw scenarios remain the canonical signal for
+# local deep-dives; do not put them here.
+smoke_write_heavy
+smoke_read_heavy
+smoke_mixed_rw

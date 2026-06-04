@@ -107,6 +107,64 @@ jobs:
         run: |
           echo "$TAGS" | xargs -I {} cosign sign --yes {}@${DIGEST}
 
+  bench:
+    # Release-time benchmark sweep. Runs the smoke scenarios listed in
+    # testbed/bench/release-scenarios.txt against a freshly-built local
+    # image and uploads a fixed-format bench-report.md for the release
+    # job to splice into the release notes. Non-blocking: a leak-gate
+    # failure or harness hiccup must not prevent a release from shipping.
+    # See issue #256.
+    name: Release-time benchmark
+    needs: verify
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.4'
+          check-latest: true
+      - name: Install bench prerequisites (ghz, yq)
+        run: |
+          set -euo pipefail
+          GHZ_VERSION="0.121.0"
+          curl -fsSL -o /tmp/ghz.tgz \
+            "https://github.com/bojand/ghz/releases/download/v${GHZ_VERSION}/ghz-linux-x86_64.tar.gz"
+          sudo tar -xzf /tmp/ghz.tgz -C /usr/local/bin ghz
+          sudo chmod +x /usr/local/bin/ghz
+          ghz --version
+          YQ_VERSION="v4.45.4"
+          sudo curl -fsSL -o /usr/local/bin/yq \
+            "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+      - name: Build lantern:local image
+        run: |
+          docker build \
+            --build-arg VERSION=${{ github.ref_name }} \
+            --build-arg COMMIT=${{ github.sha }} \
+            -t lantern:local .
+      - name: Run release bench sweep
+        env:
+          TAG: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+          RUNNER: linux/amd64 (ubuntu-latest)
+          LANTERN_IMAGE: lantern:local
+        run: ./testbed/bench/release.sh --out bench-report.md
+      - name: Upload bench report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-report
+          path: bench-report.md
+          if-no-files-found: warn
+          retention-days: 30
+
   binaries:
     name: Build CLI binaries
     needs: verify
@@ -142,7 +200,7 @@ jobs:
 
   release:
     name: GitHub Release
-    needs: [build, binaries]
+    needs: [build, binaries, bench]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -156,6 +214,12 @@ jobs:
         with:
           name: cli-binaries
           path: dist
+      - name: Download bench report
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: bench-report
+          path: bench
       - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -193,6 +257,18 @@ jobs:
             echo "curl -L -o lantern-cli.tar.gz https://github.com/${REPO}/releases/download/${TAG}/lantern-cli_${TAG#v}_Darwin_arm64.tar.gz"
             echo "tar -xzf lantern-cli.tar.gz && ./lantern-cli version"
             echo '```'
+            echo
+            # Splice in the release-time benchmark report if the bench job
+            # produced one. The bench job is non-blocking (continue-on-error)
+            # so a missing artifact is normal — fall back to a placeholder
+            # rather than aborting the release. Issue #256.
+            if [[ -s bench/bench-report.md ]]; then
+              cat bench/bench-report.md
+            else
+              echo "## Lantern benchmark — ${TAG}"
+              echo
+              echo "_Bench job did not produce a report for this release; see the workflow run for details._"
+            fi
             echo
             echo "$auto"
           } > "$notes_file"

@@ -5,10 +5,21 @@ cluster (see `deploy/compose/`). Drives the cluster with [`ghz`][ghz],
 captures Prometheus range queries + Go pprof snapshots, applies a
 per-scenario leak gate, and renders a Markdown report.
 
-> **Not wired into CI.** Per the parent epic [#237], CI runs only fast
-> functional checks; this harness is a local / on-demand tool meant to be
-> used by maintainers when investigating performance or leak regressions.
-> Its outputs (under `testbed/bench/out/`) are git-ignored.
+> **PR CI does not run this harness.** Per the parent epic [#237], the
+> default PR pipeline runs only fast functional checks; this harness is a
+> local / on-demand tool meant to be used by maintainers when investigating
+> performance or leak regressions. Its outputs (under `testbed/bench/out/`)
+> are git-ignored.
+>
+> **Release CI does run a smoke subset.** On every `vX.Y.Z` tag push, the
+> `Release` workflow runs `./testbed/bench/release.sh` — a driver that
+> sweeps the scenarios listed in `release-scenarios.txt` (currently the
+> `smoke_*` variants) and produces a fixed-format `bench-report.md` that
+> is spliced into the GitHub Release notes. The bench job is
+> `continue-on-error`, so a noisy runner cannot block a release. See
+> issue [#256].
+
+[#256]: https://github.com/anaregdesign/lantern/issues/256
 
 ## Prerequisites
 
