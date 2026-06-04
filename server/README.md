@@ -123,6 +123,15 @@ runtime, process, and `grpc_server_*` collectors):
 | `lantern_replication_lag_seq` | gauge | `peer`, `origin` | Per-(peer, origin) lag in seq units. |
 | `lantern_anti_entropy_cycles_total` | counter | — | Anti-entropy ticks. |
 | `lantern_anti_entropy_gaps_found_total` | counter | `peer`, `origin` | Ticks observing a non-zero gap. |
+| `lantern_peer_connected` | gauge | `peer` | 1 while the local pump holds a `Subscribe` stream to `peer`; 0 after disconnect. Flips back to 1 on reconnect. |
+| `lantern_replication_apply_total` | counter | `op` | Per-`MutationOp` apply count (`PutVertex`, `PutVertices`, `DeleteVertex`, `DeleteVertices`, `DeleteVerticesByPrefix`, `AddEdge`, `AddEdges`, `PutEdge`, `PutEdges`, `DeleteEdge`, `DeleteEdges`). Unknown ops fold onto `unknown`. Pre-warmed at startup. |
+| `lantern_snapshot_replayed_total` | counter | `peer` | Snapshots fully replayed from `peer` (after initial bootstrap or reconnect). |
+| `lantern_snapshot_vertices` | histogram | `peer` | Vertex count per replayed snapshot (exp buckets `(1, 4, 10)`). |
+| `lantern_snapshot_edges` | histogram | `peer` | Edge count per replayed snapshot (same bucketing). |
+| `lantern_snapshot_duration_seconds` | histogram | `peer` | Wall-clock from `Snapshot()` RPC start to last-frame applied (exp buckets `(0.001, 4, 9)`). |
+| `lantern_mutation_log_fill_ratio` | gauge | — | `len(log) / cap(log)` in `[0, 1]`. ≥ 0.8 sustained means peers risk needing a Snapshot reseed. |
+| `lantern_mutation_log_evicted_total` | counter | — | Ring-buffer evictions since process start. Monotonic; sampler resets are tolerated. |
+| `lantern_origin_states_count` | gauge | — | Distinct origins tracked in `originStateTracker` (1 per writer ever observed). Steady-state ≈ peer-set size. |
 | `lantern_illuminate_visited_vertices` | histogram | `optimization` | Vertices visited per `Illuminate` call. |
 | `lantern_illuminate_visited_edges` | histogram | `optimization` | Edges visited per `Illuminate` call. |
 | `lantern_illuminate_duration_seconds` | histogram | `optimization`, `phase` | Per-phase (`traversal`, `optimize`) wall-clock; `optimize` only emitted for non-unspecified optimizations. |

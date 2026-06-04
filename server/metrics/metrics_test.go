@@ -244,3 +244,140 @@ func TestDomainMetrics_HotPathSanitizesUnknownOptimization(t *testing.T) {
 		t.Errorf("unknown optimization should NOT route observations to its own row; sample count = %v, want 0", got)
 	}
 }
+
+// TestDomainMetrics_ReplicationObservabilityFamilies asserts the #221
+// collectors register, the per-MutationOp counter is pre-warmed, the
+// pump adapter flips the per-peer gauge and emits the snapshot
+// histograms, and the periodic tick populates mutation-log + origin
+// gauges from the bound samplers.
+func TestDomainMetrics_ReplicationObservabilityFamilies(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := New(reg, Options{SampleInterval: time.Hour})
+
+	// Adapter paths.
+	m.OnPumpConnect("peer-a:7000")
+	m.OnPumpConnect("peer-b:7000")
+	m.OnPumpSnapshotReplayed("peer-a:7000", 100, 250, 5*time.Millisecond)
+	m.OnPumpDisconnect("peer-b:7000", "ctx_cancel")
+	for _, op := range []string{"PutVertex", "PutVertices", "AddEdge", "DeleteEdges"} {
+		m.OnReplicationApply(op)
+	}
+	m.OnReplicationApply("bogus-op") // → "unknown"
+
+	// Periodic tick should pick up bound samplers.
+	m.BindMutationLogSampler(func() (int, int, uint64) { return 750, 1000, 42 })
+	m.BindOriginStatesSampler(func() int { return 3 })
+	m.tick()
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	names := map[string]bool{}
+	for _, mf := range mfs {
+		names[mf.GetName()] = true
+	}
+	for _, want := range []string{
+		"lantern_peer_connected",
+		"lantern_replication_apply_total",
+		"lantern_snapshot_replayed_total",
+		"lantern_snapshot_vertices",
+		"lantern_snapshot_edges",
+		"lantern_snapshot_duration_seconds",
+		"lantern_mutation_log_fill_ratio",
+		"lantern_mutation_log_evicted_total",
+		"lantern_origin_states_count",
+	} {
+		if !names[want] {
+			t.Errorf("metric family %q not registered", want)
+		}
+	}
+
+	// peer-a connected → 1, peer-b disconnected → 0.
+	if got := testutil.ToFloat64(m.peerConnected.WithLabelValues("peer-a:7000")); got != 1 {
+		t.Errorf("peer_connected{peer-a} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.peerConnected.WithLabelValues("peer-b:7000")); got != 0 {
+		t.Errorf("peer_connected{peer-b} = %v, want 0", got)
+	}
+	// Disconnect with reason fans out to replication_dropped_total.
+	if got := testutil.ToFloat64(m.replicationDropped.WithLabelValues("peer-b:7000", "ctx_cancel")); got != 1 {
+		t.Errorf("replication_dropped_total{peer-b,ctx_cancel} = %v, want 1", got)
+	}
+
+	// Snapshot counter + histograms.
+	if got := testutil.ToFloat64(m.snapshotReplayedTotal.WithLabelValues("peer-a:7000")); got != 1 {
+		t.Errorf("snapshot_replayed_total{peer-a} = %v, want 1", got)
+	}
+	if got := histSampleCount(t, m.snapshotVertices.WithLabelValues("peer-a:7000")); got != 1 {
+		t.Errorf("snapshot_vertices{peer-a} sample count = %v, want 1", got)
+	}
+	if got := histSampleCount(t, m.snapshotEdges.WithLabelValues("peer-a:7000")); got != 1 {
+		t.Errorf("snapshot_edges{peer-a} sample count = %v, want 1", got)
+	}
+	if got := histSampleCount(t, m.snapshotDuration.WithLabelValues("peer-a:7000")); got != 1 {
+		t.Errorf("snapshot_duration_seconds{peer-a} sample count = %v, want 1", got)
+	}
+
+	// Per-MutationOp counter: pre-warmed for all 11 variants and the
+	// observed ones incremented exactly once.
+	for _, op := range replicationApplyOps {
+		if testutil.ToFloat64(m.replicationApplyTotal.WithLabelValues(op)) < 0 {
+			t.Errorf("replication_apply_total{op=%q} not pre-warmed", op)
+		}
+	}
+	for _, want := range []struct {
+		op  string
+		exp float64
+	}{
+		{"PutVertex", 1},
+		{"PutVertices", 1},
+		{"AddEdge", 1},
+		{"DeleteEdges", 1},
+		{"unknown", 1},
+	} {
+		if got := testutil.ToFloat64(m.replicationApplyTotal.WithLabelValues(want.op)); got != want.exp {
+			t.Errorf("replication_apply_total{op=%q} = %v, want %v", want.op, got, want.exp)
+		}
+	}
+
+	// Sampler-driven gauges populated by tick().
+	if got := testutil.ToFloat64(m.mutationLogFillRatio); got != 0.75 {
+		t.Errorf("mutation_log_fill_ratio = %v, want 0.75", got)
+	}
+	if got := testutil.ToFloat64(m.mutationLogEvicted); got != 42 {
+		t.Errorf("mutation_log_evicted_total = %v, want 42", got)
+	}
+	if got := testutil.ToFloat64(m.originStatesCount); got != 3 {
+		t.Errorf("origin_states_count = %v, want 3", got)
+	}
+}
+
+// TestDomainMetrics_MutationLogEvictedMonotonic confirms the
+// Counter.Add path delta-applies cumulative evicted samples and
+// recovers gracefully from a sampler reset (e.g. log rebuild).
+func TestDomainMetrics_MutationLogEvictedMonotonic(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := New(reg, Options{SampleInterval: time.Hour})
+
+	var evicted uint64
+	m.BindMutationLogSampler(func() (int, int, uint64) { return 1, 10, evicted })
+
+	evicted = 5
+	m.tick()
+	if got := testutil.ToFloat64(m.mutationLogEvicted); got != 5 {
+		t.Errorf("after first tick (5): counter = %v, want 5", got)
+	}
+
+	evicted = 12 // +7 since last sample
+	m.tick()
+	if got := testutil.ToFloat64(m.mutationLogEvicted); got != 12 {
+		t.Errorf("after second tick (12): counter = %v, want 12", got)
+	}
+
+	evicted = 3 // sampler reset; treat as a fresh +3
+	m.tick()
+	if got := testutil.ToFloat64(m.mutationLogEvicted); got != 15 {
+		t.Errorf("after reset+3: counter = %v, want 15 (12+3)", got)
+	}
+}

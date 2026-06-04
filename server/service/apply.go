@@ -63,6 +63,14 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		tombExp = time.Now().Add(s.tombstoneTTL)
 	}
 
+	// opName is set by each case after it commits to a backend call so
+	// the replication-apply hook only fires for genuinely-applied
+	// mutations (nil-payload early returns above the switch and inside
+	// each arm leave opName empty and skip the counter bump). Per-case
+	// strings mirror the proto MutationOp oneof variant names so the
+	// metric label matches the wire schema.
+	var opName string
+
 	switch op := m.GetOp().GetOp().(type) {
 	case *pb.MutationOp_PutVertex:
 		v := op.PutVertex.GetVertex()
@@ -70,6 +78,7 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 			return nil
 		}
 		s.cache.PutVertexWithExpirationHLC(v.GetKey(), v, v.GetExpiration().AsTime(), ts)
+		opName = "PutVertex"
 
 	case *pb.MutationOp_PutVertices:
 		for _, v := range op.PutVertices.GetVertices() {
@@ -78,6 +87,7 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 			}
 			s.cache.PutVertexWithExpirationHLC(v.GetKey(), v, v.GetExpiration().AsTime(), ts)
 		}
+		opName = "PutVertices"
 
 	case *pb.MutationOp_DeleteVertex:
 		if useTomb {
@@ -85,6 +95,7 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		} else {
 			s.cache.DeleteVertices([]string{op.DeleteVertex.GetKey()})
 		}
+		opName = "DeleteVertex"
 
 	case *pb.MutationOp_DeleteVertices:
 		if useTomb {
@@ -92,19 +103,17 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		} else {
 			s.cache.DeleteVertices(op.DeleteVertices.GetKeys())
 		}
+		opName = "DeleteVertices"
 
 	case *pb.MutationOp_DeleteVerticesByPrefix:
 		if useTomb {
-			// Errors from DeleteByPrefixHLC only surface ctx
-			// cancellation; the outer ctx.Err() check at the top of
-			// ApplyMutation already handled the entry-point case, so
-			// propagate any new cancellation that occurred mid-scan.
 			if _, err := s.cache.DeleteByPrefixHLC(ctx, op.DeleteVerticesByPrefix.GetPrefix(), 0, ts, tombExp); err != nil {
 				return status.FromContextError(err).Err()
 			}
 		} else {
 			s.cache.DeleteByPrefix(ctx, op.DeleteVerticesByPrefix.GetPrefix(), 0)
 		}
+		opName = "DeleteVerticesByPrefix"
 
 	case *pb.MutationOp_AddEdge:
 		e := op.AddEdge.GetEdge()
@@ -119,6 +128,7 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 			s.cache.AddEdgeWithExpirationContrib(e.GetTail(), e.GetHead(), e.GetWeight(),
 				e.GetExpiration().AsTime(), cID)
 		}
+		opName = "AddEdge"
 
 	case *pb.MutationOp_AddEdges:
 		edges := op.AddEdges.GetEdges()
@@ -135,6 +145,7 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 					e.GetExpiration().AsTime(), cID)
 			}
 		}
+		opName = "AddEdges"
 
 	case *pb.MutationOp_PutEdge:
 		e := op.PutEdge.GetEdge()
@@ -143,6 +154,7 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		}
 		s.cache.PutEdgeWithExpirationHLC(e.GetTail(), e.GetHead(), e.GetWeight(),
 			e.GetExpiration().AsTime(), ts)
+		opName = "PutEdge"
 
 	case *pb.MutationOp_PutEdges:
 		for _, e := range op.PutEdges.GetEdges() {
@@ -152,6 +164,7 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 			s.cache.PutEdgeWithExpirationHLC(e.GetTail(), e.GetHead(), e.GetWeight(),
 				e.GetExpiration().AsTime(), ts)
 		}
+		opName = "PutEdges"
 
 	case *pb.MutationOp_DeleteEdge:
 		k := op.DeleteEdge
@@ -160,6 +173,7 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		} else {
 			s.cache.DeleteEdges([]graph.EdgeKey[string]{{Tail: k.GetTail(), Head: k.GetHead()}})
 		}
+		opName = "DeleteEdge"
 
 	case *pb.MutationOp_DeleteEdges:
 		in := op.DeleteEdges.GetEdges()
@@ -172,6 +186,11 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		} else {
 			s.cache.DeleteEdges(keys)
 		}
+		opName = "DeleteEdges"
+	}
+
+	if opName != "" && s.onReplicationApply != nil {
+		s.onReplicationApply(opName)
 	}
 
 	// Update the per-origin watermark used by PeerStatus (#186). We

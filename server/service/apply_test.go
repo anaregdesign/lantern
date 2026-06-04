@@ -80,6 +80,76 @@ func TestApplyMutation_BasicOps(t *testing.T) {
 	}
 }
 
+// TestApplyMutation_ReplicationApplyHook asserts the per-MutationOp
+// observability hook (#221) fires exactly once per applied case and
+// records the canonical op name used by the
+// lantern_replication_apply_total counter. Nil-payload mutations and
+// empty mutations must NOT fire the hook (they short-circuit before
+// the backend call).
+func TestApplyMutation_ReplicationApplyHook(t *testing.T) {
+	fb := newFakeBackend()
+	var recorded []string
+	svc := NewLanternService(fb).
+		WithReplicationApplyHook(func(op string) { recorded = append(recorded, op) })
+	ctx := context.Background()
+	origin := bytes16("origin-A")
+	exp := timestamppb.New(time.Now().Add(time.Hour))
+	ts := newHLC(1, origin)
+
+	mustApply := func(t *testing.T, op *pb.MutationOp) {
+		t.Helper()
+		m := &pb.Mutation{Seq: 1, Hlc: ts, Origin: origin[:], Op: op}
+		if err := svc.ApplyMutation(ctx, m); err != nil {
+			t.Fatalf("ApplyMutation: %v", err)
+		}
+	}
+
+	cases := []struct {
+		want string
+		op   *pb.MutationOp
+	}{
+		{"PutVertex", &pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "v1", Expiration: exp}}}}},
+		{"PutVertices", &pb.MutationOp{Op: &pb.MutationOp_PutVertices{PutVertices: &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: "v2", Expiration: exp}}}}}},
+		{"AddEdge", &pb.MutationOp{Op: &pb.MutationOp_AddEdge{AddEdge: &pb.AddEdgeRequest{Edge: &pb.Edge{Tail: "v1", Head: "v2", Weight: 1, Expiration: exp}}}}},
+		{"AddEdges", &pb.MutationOp{Op: &pb.MutationOp_AddEdges{AddEdges: &pb.AddEdgesRequest{Edges: []*pb.Edge{{Tail: "v1", Head: "v2", Weight: 1, Expiration: exp}}}}}},
+		{"PutEdge", &pb.MutationOp{Op: &pb.MutationOp_PutEdge{PutEdge: &pb.PutEdgeRequest{Edge: &pb.Edge{Tail: "v1", Head: "v2", Weight: 2, Expiration: exp}}}}},
+		{"PutEdges", &pb.MutationOp{Op: &pb.MutationOp_PutEdges{PutEdges: &pb.PutEdgesRequest{Edges: []*pb.Edge{{Tail: "v1", Head: "v2", Weight: 3, Expiration: exp}}}}}},
+		{"DeleteEdge", &pb.MutationOp{Op: &pb.MutationOp_DeleteEdge{DeleteEdge: &pb.DeleteEdgeRequest{Tail: "v1", Head: "v2"}}}},
+		{"DeleteEdges", &pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: &pb.DeleteEdgesRequest{Edges: []*pb.EdgeKey{{Tail: "v1", Head: "v2"}}}}}},
+		{"DeleteVertex", &pb.MutationOp{Op: &pb.MutationOp_DeleteVertex{DeleteVertex: &pb.DeleteVertexRequest{Key: "v1"}}}},
+		{"DeleteVertices", &pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{DeleteVertices: &pb.DeleteVerticesRequest{Keys: []string{"v2"}}}}},
+		{"DeleteVerticesByPrefix", &pb.MutationOp{Op: &pb.MutationOp_DeleteVerticesByPrefix{DeleteVerticesByPrefix: &pb.DeleteVerticesByPrefixRequest{Prefix: "x"}}}},
+	}
+	for _, c := range cases {
+		mustApply(t, c.op)
+	}
+
+	if len(recorded) != len(cases) {
+		t.Fatalf("recorded %d hook calls, want %d (recorded=%v)", len(recorded), len(cases), recorded)
+	}
+	for i, c := range cases {
+		if recorded[i] != c.want {
+			t.Errorf("recorded[%d] = %q, want %q", i, recorded[i], c.want)
+		}
+	}
+
+	// Nil-payload short-circuits and empty mutations must NOT bump the
+	// counter — they don't reach the backend.
+	before := len(recorded)
+	if err := svc.ApplyMutation(ctx, nil); err != nil {
+		t.Errorf("ApplyMutation(nil) returned %v, want nil", err)
+	}
+	if err := svc.ApplyMutation(ctx, &pb.Mutation{}); err != nil {
+		t.Errorf("ApplyMutation(empty) returned %v, want nil", err)
+	}
+	if err := svc.ApplyMutation(ctx, &pb.Mutation{Seq: 2, Hlc: ts, Origin: origin[:], Op: &pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: nil}}}); err != nil {
+		t.Errorf("ApplyMutation(nil PutVertex) returned %v, want nil", err)
+	}
+	if len(recorded) != before {
+		t.Errorf("hook fired on no-op path: recorded grew from %d to %d", before, len(recorded))
+	}
+}
+
 // TestApplyMutation_DoesNotLog asserts the cardinal rule: replayed
 // mutations MUST NOT re-append to the local log. Otherwise the peer-pump
 // in #184 would echo every mutation back to its origin and loop forever.

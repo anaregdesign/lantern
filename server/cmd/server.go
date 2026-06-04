@@ -83,7 +83,7 @@ func newLanternService(
 	clock *hlc.Clock,
 	dm *domainmetrics.DomainMetrics,
 ) *service.LanternService {
-	return service.NewLanternService(backend).
+	svc := service.NewLanternService(backend).
 		WithScanLimits(service.ScanLimits{
 			ScanDefaultLimit:           sc.ScanDefaultLimit,
 			ScanMaxLimit:               sc.ScanMaxLimit,
@@ -92,9 +92,23 @@ func newLanternService(
 		}).
 		WithReplication(log, clock, dm.OnMutationLogAppend).
 		WithAppliedHook(dm.OnReplicationApplied).
+		WithReplicationApplyHook(dm.OnReplicationApply).
 		WithTombstoneTTL(rc.TombstoneTTL).
 		WithHotPathMetrics(dm).
 		WithLogger(logger)
+	// Bind the mutation-log + origin-state samplers so DomainMetrics.Run
+	// can populate lantern_mutation_log_fill_ratio,
+	// lantern_mutation_log_evicted_total, and
+	// lantern_origin_states_count on its tick interval (#221). Done here
+	// because newLanternService is the only provider with access to both
+	// the log/service and the DomainMetrics instance.
+	if log != nil {
+		dm.BindMutationLogSampler(func() (int, int, uint64) {
+			return log.Len(), log.Cap(), log.Evicted()
+		})
+	}
+	dm.BindOriginStatesSampler(svc.OriginStatesCount)
+	return svc
 }
 
 // newLanternReplicationService wires the streaming replication surface so it
