@@ -38,9 +38,47 @@ type DomainMetrics struct {
 	antiEntropyCycles    prometheus.Counter
 	antiEntropyGapsFound *prometheus.CounterVec
 
+	// Hot-path RPC observability (#220). Wired by the service layer via
+	// the HotPathMetrics interface in server/service. Histograms are
+	// label-pre-warmed so dashboards render the full set of variants from
+	// process start, before any traffic arrives.
+	illuminateVisitedVertices *prometheus.HistogramVec
+	illuminateVisitedEdges    *prometheus.HistogramVec
+	illuminateDuration        *prometheus.HistogramVec
+	scanResults               *prometheus.HistogramVec
+	scanDuration              *prometheus.HistogramVec
+	batchSize                 *prometheus.HistogramVec
+
 	sampleInterval time.Duration
 	sample         Sampler
 }
+
+// Hot-path label values. Exposed so the service layer can reference the
+// canonical string set without importing prometheus.
+//
+// optimizationLabels covers every pb.Optimization variant. Service code
+// translates the enum into one of these strings and passes it to
+// OnIlluminate; unknown variants are normalised to "unspecified" so a new
+// optimization added in proto without a metrics update cannot break label
+// pre-warming on existing dashboards.
+var (
+	optimizationLabels = []string{"unspecified", "mst", "max_mst", "spt", "spt_inverse"}
+	illuminatePhases   = []string{"traversal", "optimize"}
+	scanOps            = []string{
+		"ScanVertices",
+		"ScanEdges",
+		"DeleteVerticesByPrefix",
+	}
+	batchOps = []string{
+		"GetVertices",
+		"PutVertices",
+		"DeleteVertices",
+		"GetEdges",
+		"AddEdges",
+		"PutEdges",
+		"DeleteEdges",
+	}
+)
 
 // Options configures DomainMetrics. Version/Commit fall back to debug.BuildInfo
 // fields when left empty so a tagged release reports the right values without
@@ -117,13 +155,45 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 			Name: "lantern_anti_entropy_gaps_found_total",
 			Help: "Total anti-entropy ticks that observed a non-zero gap, partitioned by peer address and origin (HLC NodeID, lowercase hex).",
 		}, []string{"peer", "origin"}),
+		illuminateVisitedVertices: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "lantern_illuminate_visited_vertices",
+			Help:    "Vertices in the subgraph returned by Illuminate, partitioned by post-traversal optimization.",
+			Buckets: prometheus.ExponentialBuckets(1, 4, 10), // 1 .. ~262K
+		}, []string{"optimization"}),
+		illuminateVisitedEdges: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "lantern_illuminate_visited_edges",
+			Help:    "Edges in the subgraph returned by Illuminate, partitioned by post-traversal optimization.",
+			Buckets: prometheus.ExponentialBuckets(1, 4, 10),
+		}, []string{"optimization"}),
+		illuminateDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "lantern_illuminate_duration_seconds",
+			Help:    "Wall-clock duration of Illuminate, partitioned by optimization and phase (traversal | optimize).",
+			Buckets: prometheus.ExponentialBuckets(0.0001, 4, 8), // 0.1ms .. ~1.6s
+		}, []string{"optimization", "phase"}),
+		scanResults: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "lantern_scan_results",
+			Help:    "Number of results returned by a prefix scan RPC, partitioned by op (ScanVertices | ScanEdges | DeleteVerticesByPrefix).",
+			Buckets: prometheus.ExponentialBuckets(1, 4, 10),
+		}, []string{"op"}),
+		scanDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "lantern_scan_duration_seconds",
+			Help:    "Wall-clock duration of a prefix scan RPC, partitioned by op.",
+			Buckets: prometheus.ExponentialBuckets(0.0001, 4, 8),
+		}, []string{"op"}),
+		batchSize: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "lantern_batch_size",
+			Help:    "Item count of a single plural-RPC batch (PutVertices, PutEdges, AddEdges, GetVertices, GetEdges, DeleteVertices, DeleteEdges). Singular RPC forwarders are not double-counted.",
+			Buckets: prometheus.ExponentialBuckets(1, 4, 10),
+		}, []string{"op"}),
 		sampleInterval: opts.SampleInterval,
 	}
 
 	reg.MustRegister(m.vertices, m.edges, m.expirations, m.gcDuration, m.buildInfo,
 		m.mutationLogEntries, m.mutationLogCapacity, m.subscribeActive, m.subscribeDropped,
 		m.replicationApplied, m.replicationDropped, m.replicationLag,
-		m.antiEntropyCycles, m.antiEntropyGapsFound)
+		m.antiEntropyCycles, m.antiEntropyGapsFound,
+		m.illuminateVisitedVertices, m.illuminateVisitedEdges, m.illuminateDuration,
+		m.scanResults, m.scanDuration, m.batchSize)
 
 	// Pre-create label rows so empty counters scrape as 0.
 	for _, r := range []string{"gapped", "send_failed"} {
@@ -133,6 +203,25 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 	// Pre-create label rows so empty counters are still scraped as 0.
 	for _, k := range []string{"vertex", "edge", "dangling_edge"} {
 		m.expirations.WithLabelValues(k)
+	}
+
+	// Pre-create hot-path histogram label rows so /metrics renders the
+	// full variant set on a fresh process. Histograms emit count/sum/
+	// bucket families lazily per label; observing a no-op is the
+	// idiomatic way to materialise the row.
+	for _, opt := range optimizationLabels {
+		m.illuminateVisitedVertices.WithLabelValues(opt)
+		m.illuminateVisitedEdges.WithLabelValues(opt)
+		for _, ph := range illuminatePhases {
+			m.illuminateDuration.WithLabelValues(opt, ph)
+		}
+	}
+	for _, op := range scanOps {
+		m.scanResults.WithLabelValues(op)
+		m.scanDuration.WithLabelValues(op)
+	}
+	for _, op := range batchOps {
+		m.batchSize.WithLabelValues(op)
 	}
 
 	version, commit := opts.Version, opts.Commit
@@ -275,6 +364,53 @@ func (m *DomainMetrics) OnPumpDropSelfEcho(peer string) {
 }
 
 func (m *DomainMetrics) OnPumpSnapshotReplayed(string, uint64, uint64) {}
+
+// --- Hot-path RPC observability (#220) ---
+//
+// These methods implement the HotPathMetrics interface consumed by
+// server/service.LanternService. Unknown label values fall back to a safe
+// constant so a stale enum or typo cannot blow up the registry.
+
+func sanitizeLabel(v string, allowed []string, fallback string) string {
+	for _, a := range allowed {
+		if a == v {
+			return v
+		}
+	}
+	return fallback
+}
+
+// OnIlluminate records one Illuminate RPC: visited vertex/edge counts and
+// the wall-clock duration of the two phases (traversal: neighbour walk;
+// optimize: post-processing such as spanning trees). optimize may be 0
+// when no optimization was requested.
+func (m *DomainMetrics) OnIlluminate(optimization string, visitedVertices, visitedEdges int, traversal, optimize time.Duration) {
+	opt := sanitizeLabel(optimization, optimizationLabels, "unspecified")
+	m.illuminateVisitedVertices.WithLabelValues(opt).Observe(float64(visitedVertices))
+	m.illuminateVisitedEdges.WithLabelValues(opt).Observe(float64(visitedEdges))
+	m.illuminateDuration.WithLabelValues(opt, "traversal").Observe(traversal.Seconds())
+	if optimize > 0 {
+		m.illuminateDuration.WithLabelValues(opt, "optimize").Observe(optimize.Seconds())
+	}
+}
+
+// OnScan records one prefix-scan RPC: result count and wall-clock
+// duration, partitioned by op (ScanVertices | ScanEdges |
+// DeleteVerticesByPrefix).
+func (m *DomainMetrics) OnScan(op string, results int, duration time.Duration) {
+	o := sanitizeLabel(op, scanOps, op) // pass-through unknowns to surface in dashboards
+	m.scanResults.WithLabelValues(o).Observe(float64(results))
+	m.scanDuration.WithLabelValues(o).Observe(duration.Seconds())
+}
+
+// OnBatch records the batch size for one plural RPC. Singular RPC
+// forwarders (GetVertex / PutVertex / ...) must NOT call this — the
+// canonical plural implementation owns the metric. See AGENTS.md for the
+// invariant.
+func (m *DomainMetrics) OnBatch(op string, size int) {
+	o := sanitizeLabel(op, batchOps, op)
+	m.batchSize.WithLabelValues(o).Observe(float64(size))
+}
 
 // BindSampler stores the gauge-population callback. Must be called before
 // Run; safe to call exactly once during wiring.

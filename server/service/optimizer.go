@@ -43,3 +43,23 @@ func inverseCost(weight float32) float32 {
 	}
 	return 1 / weight
 }
+
+// optimizationLabel maps a pb.Optimization enum value to the canonical
+// metrics label string. Unknown variants fall back to "unspecified" so
+// adding a new enum without a metrics update is non-fatal — dashboards
+// just bucket the new variant alongside no-op runs until the label set
+// expands.
+func optimizationLabel(o pb.Optimization) string {
+	switch o {
+	case pb.Optimization_OPTIMIZATION_MINIMUM_SPANNING_TREE:
+		return "mst"
+	case pb.Optimization_OPTIMIZATION_MAXIMUM_SPANNING_TREE:
+		return "max_mst"
+	case pb.Optimization_OPTIMIZATION_SHORTEST_PATH_TREE:
+		return "spt"
+	case pb.Optimization_OPTIMIZATION_SHORTEST_PATH_TREE_INVERSE:
+		return "spt_inverse"
+	default:
+		return "unspecified"
+	}
+}

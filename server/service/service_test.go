@@ -624,3 +624,129 @@ func itoa(i int) string {
 	}
 	return string(b[pos:])
 }
+
+// fakeHotPathMetrics captures one observation per RPC so tests can assert
+// the service-layer instrumentation hooks fire on the right callbacks.
+type fakeHotPathMetrics struct {
+	illuminate []illuminateObs
+	scan       []scanObs
+	batch      []batchObs
+}
+
+type illuminateObs struct {
+	optimization                  string
+	visitedVertices, visitedEdges int
+	traversal, optimize           time.Duration
+}
+
+type scanObs struct {
+	op       string
+	results  int
+	duration time.Duration
+}
+
+type batchObs struct {
+	op   string
+	size int
+}
+
+func (f *fakeHotPathMetrics) OnIlluminate(opt string, vV, vE int, traversal, optimize time.Duration) {
+	f.illuminate = append(f.illuminate, illuminateObs{opt, vV, vE, traversal, optimize})
+}
+func (f *fakeHotPathMetrics) OnScan(op string, results int, d time.Duration) {
+	f.scan = append(f.scan, scanObs{op, results, d})
+}
+func (f *fakeHotPathMetrics) OnBatch(op string, size int) {
+	f.batch = append(f.batch, batchObs{op, size})
+}
+
+func TestLanternService_HotPathMetrics_EmitsOnceForBatchAndIlluminate(t *testing.T) {
+	fm := &fakeHotPathMetrics{}
+	s := NewLanternService(graph.NewGraphCache[string, *pb.Vertex](time.Minute)).
+		WithHotPathMetrics(fm)
+
+	ctx := context.Background()
+
+	// PutVertices → one batch observation.
+	if _, err := s.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{
+		{Key: "a", Value: &pb.Vertex_Int64{Int64: 1}, Expiration: futureTs(time.Minute)},
+		{Key: "b", Value: &pb.Vertex_Int64{Int64: 2}, Expiration: futureTs(time.Minute)},
+	}}); err != nil {
+		t.Fatalf("PutVertices: %v", err)
+	}
+	// AddEdges → one batch observation.
+	if _, err := s.AddEdges(ctx, &pb.AddEdgesRequest{Edges: []*pb.Edge{
+		{Tail: "a", Head: "b", Weight: 1, Expiration: futureTs(time.Minute)},
+	}}); err != nil {
+		t.Fatalf("AddEdges: %v", err)
+	}
+
+	if len(fm.batch) != 2 {
+		t.Fatalf("batch observations = %d, want 2 (PutVertices, AddEdges)", len(fm.batch))
+	}
+	if fm.batch[0].op != "PutVertices" || fm.batch[0].size != 2 {
+		t.Errorf("batch[0] = %+v, want {PutVertices, 2}", fm.batch[0])
+	}
+	if fm.batch[1].op != "AddEdges" || fm.batch[1].size != 1 {
+		t.Errorf("batch[1] = %+v, want {AddEdges, 1}", fm.batch[1])
+	}
+
+	// Illuminate → exactly one illuminate observation with the right label.
+	if _, err := s.Illuminate(ctx, &pb.IlluminateRequest{
+		Seed:         "a",
+		Step:         2,
+		K:            10,
+		Optimization: pb.Optimization_OPTIMIZATION_MINIMUM_SPANNING_TREE,
+	}); err != nil {
+		t.Fatalf("Illuminate: %v", err)
+	}
+	if len(fm.illuminate) != 1 {
+		t.Fatalf("illuminate observations = %d, want 1", len(fm.illuminate))
+	}
+	if got := fm.illuminate[0]; got.optimization != "mst" || got.visitedVertices < 1 {
+		t.Errorf("illuminate[0] = %+v, want optimization=mst & visitedVertices≥1", got)
+	}
+
+	// Singular forwarders must NOT double-instrument: GetVertex forwards
+	// to GetVertices; one batch observation is expected, not two.
+	prev := len(fm.batch)
+	if _, err := s.GetVertex(ctx, &pb.GetVertexRequest{Key: "a"}); err != nil {
+		t.Fatalf("GetVertex: %v", err)
+	}
+	if added := len(fm.batch) - prev; added != 1 {
+		t.Errorf("singular GetVertex emitted %d batch observations, want 1 (must not double-count via plural)", added)
+	}
+}
+
+func TestLanternService_HotPathMetrics_EmitsOnScan(t *testing.T) {
+	fm := &fakeHotPathMetrics{}
+	fb := newFakeBackend()
+	fb.vertices["p:1"] = &pb.Vertex{Key: "p:1", Value: &pb.Vertex_Int64{Int64: 1}}
+	fb.vertices["p:2"] = &pb.Vertex{Key: "p:2", Value: &pb.Vertex_Int64{Int64: 2}}
+	s := NewLanternService(fb).WithHotPathMetrics(fm)
+	ctx := context.Background()
+	if _, err := s.ScanVertices(ctx, &pb.ScanVerticesRequest{Prefix: "p:", Limit: 100}); err != nil {
+		t.Fatalf("ScanVertices: %v", err)
+	}
+	if _, err := s.ScanEdges(ctx, &pb.ScanEdgesRequest{Limit: 100}); err != nil {
+		t.Fatalf("ScanEdges: %v", err)
+	}
+	if _, err := s.DeleteVerticesByPrefix(ctx, &pb.DeleteVerticesByPrefixRequest{Prefix: "p:", Limit: 100}); err != nil {
+		t.Fatalf("DeleteVerticesByPrefix: %v", err)
+	}
+	if len(fm.scan) != 3 {
+		t.Fatalf("scan observations = %d, want 3", len(fm.scan))
+	}
+	wantOps := []string{"ScanVertices", "ScanEdges", "DeleteVerticesByPrefix"}
+	for i, want := range wantOps {
+		if fm.scan[i].op != want {
+			t.Errorf("scan[%d].op = %q, want %q", i, fm.scan[i].op, want)
+		}
+	}
+	if fm.scan[0].results != 2 {
+		t.Errorf("ScanVertices results = %d, want 2", fm.scan[0].results)
+	}
+	if fm.scan[2].results != 2 {
+		t.Errorf("DeleteVerticesByPrefix results = %d, want 2", fm.scan[2].results)
+	}
+}

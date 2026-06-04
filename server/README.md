@@ -123,6 +123,12 @@ runtime, process, and `grpc_server_*` collectors):
 | `lantern_replication_lag_seq` | gauge | `peer`, `origin` | Per-(peer, origin) lag in seq units. |
 | `lantern_anti_entropy_cycles_total` | counter | — | Anti-entropy ticks. |
 | `lantern_anti_entropy_gaps_found_total` | counter | `peer`, `origin` | Ticks observing a non-zero gap. |
+| `lantern_illuminate_visited_vertices` | histogram | `optimization` | Vertices visited per `Illuminate` call. |
+| `lantern_illuminate_visited_edges` | histogram | `optimization` | Edges visited per `Illuminate` call. |
+| `lantern_illuminate_duration_seconds` | histogram | `optimization`, `phase` | Per-phase (`traversal`, `optimize`) wall-clock; `optimize` only emitted for non-unspecified optimizations. |
+| `lantern_scan_results` | histogram | `op` | Result counts for prefix scans (`ScanVertices`, `ScanEdges`, `DeleteVerticesByPrefix`). |
+| `lantern_scan_duration_seconds` | histogram | `op` | Wall-clock for the same scan ops. |
+| `lantern_batch_size` | histogram | `op` | Batch size for plural RPCs (`GetVertices`, `PutVertices`, `DeleteVertices`, `GetEdges`, `AddEdges`, `PutEdges`, `DeleteEdges`). Singular forwarders are NOT instrumented to avoid double-counting. |
 
 Tracing is wired via `otelgrpc.NewServerHandler` so any `OTEL_*` env var the
 OpenTelemetry Go SDK honours will Just Work. Per-call logging goes through
