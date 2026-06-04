@@ -63,14 +63,51 @@ steady_conc="$(yq -r '.phases.steady.concurrency' "$SCENARIO_FILE")"
 steady_rps="$(yq -r '.phases.steady.rps' "$SCENARIO_FILE")"
 cooldown="$(yq -r '.phases.cooldown' "$SCENARIO_FILE")"
 endpoints=( $(yq -r '.target.endpoints[]' "$SCENARIO_FILE") )
-proto_path="$REPO_ROOT/proto/graph/v1/graph.proto"
-proto_import="$REPO_ROOT/proto"
+# ghz uses gRPC reflection to resolve method/message descriptors. The server
+# registers reflection unconditionally (see server/provider/provider.go), so
+# we do not need to point ghz at the .proto file — which would also pull in
+# google/api/annotations.proto from grpc-gateway and other transitive deps.
 
 # ----- compose up ------------------------------------------------------------
 if [[ "${SKIP_UP:-0}" != "1" ]]; then
   log "compose up (project=$COMPOSE_PROJECT_NAME)"
   docker compose "${COMPOSE_FILES[@]}" up -d --scale lantern=3 --wait
 fi
+
+# ----- discover actual published ports ---------------------------------------
+# Compose's port-range allocation (`6380-6389`, `9390-9392`) is not stable
+# across runs: when a previous bench leaves entries in the daemon's port
+# bookkeeping, the next `up` skips them and we end up on e.g. 6386/6387/6388.
+# Query the live containers and rewrite REPLICA_*_PORTS + scenario endpoints
+# accordingly so the harness works regardless of what Compose assigned.
+discover_ports() {
+  local ps_json grpc metrics
+  ps_json="$(docker compose "${COMPOSE_FILES[@]}" ps --format json 2>/dev/null)"
+  # Sort by replica name so lantern-1/2/3 map to deterministic slots.
+  grpc=( $(jq -rs 'sort_by(.Name) | .[] | select(.Name | test("lantern-[0-9]+$")) | .Publishers[] | select(.TargetPort==6380 and .URL=="0.0.0.0") | .PublishedPort' <<<"$ps_json") )
+  metrics=( $(jq -rs 'sort_by(.Name) | .[] | select(.Name | test("lantern-[0-9]+$")) | .Publishers[] | select(.TargetPort==9090 and .URL=="0.0.0.0") | .PublishedPort' <<<"$ps_json") )
+  [[ ${#grpc[@]} -eq 3 && ${#metrics[@]} -eq 3 ]] || die "could not discover 3 grpc+metrics ports (grpc=${grpc[*]} metrics=${metrics[*]})"
+  REPLICA_GRPC_PORTS=( "${grpc[@]}" )
+  REPLICA_METRICS_PORTS=( "${metrics[@]}" )
+  log "discovered grpc=${REPLICA_GRPC_PORTS[*]} metrics=${REPLICA_METRICS_PORTS[*]}"
+}
+discover_ports
+
+# Rewrite scenario file with discovered ports so every `localhost:6380/81/82`
+# reference (target.endpoints, subscribe.endpoints, subscribe.consumers[].endpoint, ...)
+# points at the actually-published host port. Operate on a copy under OUTDIR
+# so the source-of-truth YAML stays clean and the resolved scenario is
+# preserved alongside the report for forensics.
+SCENARIO_RESOLVED="$OUTDIR/scenario.resolved.yaml"
+sed \
+  -e "s/localhost:6380/localhost:${REPLICA_GRPC_PORTS[0]}/g" \
+  -e "s/localhost:6381/localhost:${REPLICA_GRPC_PORTS[1]}/g" \
+  -e "s/localhost:6382/localhost:${REPLICA_GRPC_PORTS[2]}/g" \
+  "$SCENARIO_FILE" > "$SCENARIO_RESOLVED"
+SCENARIO_FILE="$SCENARIO_RESOLVED"
+
+# Re-parse fields that depend on endpoints after substitution.
+endpoints=( $(yq -r '.target.endpoints[]' "$SCENARIO_FILE") )
 
 wait_ready() {
   local p
@@ -101,9 +138,11 @@ snapshot_runtime() {
     local text
     text="$(curl -fsS --max-time 5 "http://localhost:${port}/metrics" || true)"
     local g h
-    g="$(prom_scalar go_goroutines "$text")"
-    h="$(prom_scalar go_memstats_heap_inuse_bytes "$text")"
-    samples+=( "$(jq -nc --arg ep "localhost:${port}" --argjson g "${g:-0}" --argjson h "${h:-0}" \
+    # Prom client formats large gauges in scientific notation (e.g. 1.949696e+07).
+    # Coerce to integer so downstream JSON consumers (jq + Go int64) don't choke.
+    g="$(printf '%.0f' "$(prom_scalar go_goroutines "$text")" 2>/dev/null)"; g="${g:-0}"
+    h="$(printf '%.0f' "$(prom_scalar go_memstats_heap_inuse_bytes "$text")" 2>/dev/null)"; h="${h:-0}"
+    samples+=( "$(jq -nc --arg ep "localhost:${port}" --argjson g "$g" --argjson h "$h" \
       '{endpoint: $ep, goroutines: $g, heap_inuse_bytes: $h}')" )
   done
   printf '%s\n' "${samples[@]}" | jq -s '.' > "$out"
@@ -115,7 +154,6 @@ run_ghz() {
   local jsonout="$OUTDIR/ghz_${phase}_${ep//[:.]/_}.json"
   ghz \
     --insecure \
-    --proto "$proto_path" -i "$proto_import" \
     --call "$call" \
     -c "$conc" --rps "$rps" -z "$dur" \
     -d "$data" \
@@ -151,7 +189,7 @@ if [[ "$sub_count" != "0" && "$sub_count" != "null" ]]; then
   sub_eps=( $(yq -r '.subscribe.endpoints[]' "$SCENARIO_FILE") )
   for i in $(seq 1 "$sub_count"); do
     ep="${sub_eps[$(( (i-1) % ${#sub_eps[@]} ))]}"
-    ghz --insecure --proto "$proto_path" -i "$proto_import" \
+    ghz --insecure \
       --call "$sub_call" -c 1 --rps 0 -z "$steady_duration" \
       -d "$sub_data" --format json \
       -o "$OUTDIR/ghz_sub_${i}.json" "$ep" >/dev/null 2>&1 &
@@ -165,7 +203,7 @@ if [[ "$sub_consumers_len" != "0" && "$sub_consumers_len" != "null" ]]; then
     ep="$(yq -r ".subscribe.consumers[$i].endpoint" "$SCENARIO_FILE")"
     call="$(yq -r ".subscribe.consumers[$i].call" "$SCENARIO_FILE")"
     data="$(yq -r ".subscribe.consumers[$i].data_template" "$SCENARIO_FILE")"
-    ghz --insecure --proto "$proto_path" -i "$proto_import" \
+    ghz --insecure \
       --call "$call" -c 1 --rps 0 -z "$steady_duration" \
       -d "$data" --format json \
       -o "$OUTDIR/ghz_sub_consumer_${i}.json" "$ep" >/dev/null 2>&1 &
@@ -204,7 +242,7 @@ if [[ "$calls_len" != "0" && "$calls_len" != "null" ]]; then
     data="$(yq -r ".target.calls[$i].data_template" "$SCENARIO_FILE")"
     ep="${endpoints[$(( i % ${#endpoints[@]} ))]}"
     f="$OUTDIR/ghz_steady_${i}_${ep//[:.]/_}.json"
-    ghz --insecure --proto "$proto_path" -i "$proto_import" \
+    ghz --insecure \
       --call "$call" -c "$steady_conc" --rps "$per_rps" -z "$steady_duration" \
       -d "$data" --format json -o "$f" "$ep" >/dev/null 2>&1 &
     prod_pids+=( "$!" )
@@ -248,7 +286,7 @@ while IFS= read -r line; do
     --data-urlencode "end=$steady_end_epoch" \
     --data-urlencode "step=5s" \
     > "$out" || log "prom query failed: $q"
-  jq -n --arg q "$q" --arg f "$(basename "$out")" '{query:$q, file:$f}' \
+  jq -nc --arg q "$q" --arg f "$(basename "$out")" '{query:$q, file:$f}' \
     >> "$OUTDIR/prom/_index.ndjson"
 done < "$CAPTURE_DIR/prom_queries.txt"
 

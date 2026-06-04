@@ -12,7 +12,7 @@ target:
   calls:
     - call: graph.v1.LanternService/PutVertex
       data_template: |
-        {"key":"k-{{.RequestNumber}}","value":{"intValue":{{.RequestNumber}}}}
+        {"vertex":{"key":"k-{{.RequestNumber}}","int64":"{{.RequestNumber}}"}}
     - call: graph.v1.LanternService/GetVertex
       data_template: |
         {"key":"k-{{mod .RequestNumber 10000}}"}

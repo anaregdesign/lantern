@@ -10,7 +10,7 @@ target:
   endpoints: ["localhost:6380"]
   call: graph.v1.LanternService/PutVertex
   data_template: |
-    {"key":"fan-{{.RequestNumber}}","value":{"intValue":{{.RequestNumber}}}}
+    {"vertex":{"key":"fan-{{.RequestNumber}}","int64":"{{.RequestNumber}}"}}
 subscribe:
   # run.sh launches `count` streams round-robined across `endpoints`.
   count: 64
