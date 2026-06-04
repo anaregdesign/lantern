@@ -1,0 +1,27 @@
+# replication_soak — writes on r0, Subscribe consumers on r1/r2.
+# Goal: long-running fan-out across replicas; surfaces pubsub queue depth
+#       (#240) and replication pump backlog.
+# NOTE: run.sh detects `subscribe.consumers` and launches them as separate
+#       long-lived ghz invocations against the listed endpoints; the
+#       `target` block below describes only the producer.
+name: replication_soak
+phases:
+  warmup:   { duration: 30s, concurrency: 8,  rps: 500 }
+  steady:   { duration: 10m, concurrency: 32, rps: 2000 }
+  cooldown: 60s
+target:
+  endpoints: ["localhost:6380"]
+  call: graph.v1.LanternService/PutVertex
+  data_template: |
+    {"key":"soak-{{.RequestNumber}}","value":{"intValue":{{.RequestNumber}}}}
+subscribe:
+  consumers:
+    - endpoint: localhost:6381
+      call: graph.v1.LanternReplicationService/Subscribe
+      data_template: '{"fromSeq":"1"}'
+    - endpoint: localhost:6382
+      call: graph.v1.LanternReplicationService/Subscribe
+      data_template: '{"fromSeq":"1"}'
+leak_gate:
+  goroutine_max_delta: 30
+  heap_inuse_max_delta_mb: 64

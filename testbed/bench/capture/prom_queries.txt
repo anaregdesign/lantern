@@ -1,0 +1,29 @@
+# PromQL range queries captured at the end of every bench run.
+#
+# Format: one query per line.  "#" lines and blank lines are ignored.
+# Each line is run as a /api/v1/query_range against the bench's Prometheus
+# (http://localhost:9091 by default) with the run's [start, end] window.
+# Results land under out/<scenario>/<ts>/prom/<sanitized-query>.json.
+#
+# These intentionally lean on the metrics introduced in #238 (pprof handles
+# nothing here directly), #239 (mutex/block — visible via pprof, not Prom),
+# and #240 (pubsub queue depth / drops / dispatch latency).
+
+# --- service-level throughput / errors ---------------------------------
+sum by (grpc_method) (rate(grpc_server_handled_total[30s]))
+sum by (grpc_method, grpc_code) (rate(grpc_server_handled_total{grpc_code!="OK"}[30s]))
+histogram_quantile(0.99, sum by (le, grpc_method) (rate(grpc_server_handling_seconds_bucket[30s])))
+
+# --- runtime + GC pressure (#238 pprof complements these) --------------
+avg by (instance) (go_goroutines)
+avg by (instance) (go_memstats_heap_inuse_bytes)
+rate(go_memstats_gc_cpu_fraction[1m])
+
+# --- replication health (HA topology) ----------------------------------
+sum by (instance) (rate(lantern_replication_events_total[30s]))
+max by (instance) (lantern_replication_lag_seconds)
+
+# --- pubsub fan-out (#240) --------------------------------------------
+histogram_quantile(0.99, sum by (le) (rate(lantern_subscription_queue_depth_bucket[30s])))
+sum by (policy) (rate(lantern_subscription_dropped_total[30s]))
+histogram_quantile(0.99, sum by (le) (rate(lantern_subscription_dispatch_duration_seconds_bucket[30s])))

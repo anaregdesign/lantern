@@ -1,0 +1,21 @@
+# mixed_rw — 50/50 PutVertex/GetVertex from concurrent clients.
+# Goal: realistic hot/cold split; exercises both replication & cache GC.
+name: mixed_rw
+phases:
+  warmup:   { duration: 30s, concurrency: 16, rps: 1000 }
+  steady:   { duration: 5m,  concurrency: 96, rps: 6000 }
+  cooldown: 30s
+target:
+  endpoints: ["localhost:6380", "localhost:6381", "localhost:6382"]
+  # Two parallel ghz invocations are launched by run.sh — one per call,
+  # each at half the total RPS. See run.sh for the split rule.
+  calls:
+    - call: graph.v1.LanternService/PutVertex
+      data_template: |
+        {"key":"k-{{.RequestNumber}}","value":{"intValue":{{.RequestNumber}}}}
+    - call: graph.v1.LanternService/GetVertex
+      data_template: |
+        {"key":"k-{{mod .RequestNumber 10000}}"}
+leak_gate:
+  goroutine_max_delta: 25
+  heap_inuse_max_delta_mb: 32

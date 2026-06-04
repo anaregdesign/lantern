@@ -1,0 +1,30 @@
+# Compose override for the bench harness.
+#
+# Layered on top of deploy/compose/docker-compose.yml so the bench can:
+#   1. reach each replica's /debug/pprof/* endpoint from the host, and
+#   2. capture mutex + block profiles (rates are server defaults of 0 in
+#      production; the harness opts in for contention scenarios).
+#
+# Apply via:
+#   docker compose \
+#     -f deploy/compose/docker-compose.yml \
+#     -f testbed/bench/compose.override.yml \
+#     up -d
+#
+# The metrics port (9090 inside the container) is published on a per-replica
+# host range 9390-9392 so each replica is independently scrape-able by the
+# harness's pprof.sh and direct /metrics curls.
+
+services:
+  lantern:
+    environment:
+      LANTERN_PPROF_ENABLED: "true"
+      # Sample 1/N events. Non-zero values are required for /debug/pprof/mutex
+      # and /debug/pprof/block to return useful data. Cheap at these rates.
+      LANTERN_MUTEX_PROFILE_FRACTION: "100"
+      LANTERN_BLOCK_PROFILE_RATE: "10000"
+    ports:
+      - target: 9090
+        published: "9390-9392"
+        protocol: tcp
+        mode: host

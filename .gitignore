@@ -15,3 +15,6 @@ dist/
 *.out
 coverage.out
 coverage.html
+
+# Bench harness output (testbed/bench/) — local-only run artifacts.
+testbed/bench/out/
