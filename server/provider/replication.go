@@ -17,9 +17,16 @@ import (
 // MutationLogConfig sizes the in-memory mutation log ring buffer used by
 // the replication subsystem.
 //
-//   - LANTERN_MUTATION_LOG_CAPACITY      (default 100000)
+//   - LANTERN_MUTATION_LOG_CAPACITY           (default 100000)
+//   - LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER  per-subscriber outbound
+//     channel depth. Each Subscribe stream owns a buffered channel of this
+//     size; the fan-out path uses a non-blocking send and tears the
+//     subscriber down on a full channel. Too-small values turn transient
+//     scheduler stalls under high write rates into permanent gap-closes
+//     (see issue #258). Default 512.
 type MutationLogConfig struct {
-	Capacity int
+	Capacity         int
+	SubscriberBuffer int
 }
 
 // ReplicationConfig groups identity knobs used by HLC stamping and the
@@ -49,7 +56,8 @@ func NewReplicationConfig(c *Config) ReplicationConfig { return c.Replication }
 // from NewConfig so all env reads remain colocated.
 func loadMutationLogConfig() MutationLogConfig {
 	return MutationLogConfig{
-		Capacity: envconfig.Int("LANTERN_MUTATION_LOG_CAPACITY", 100_000),
+		Capacity:         envconfig.Int("LANTERN_MUTATION_LOG_CAPACITY", 100_000),
+		SubscriberBuffer: envconfig.Int("LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER", 512),
 	}
 }
 
@@ -93,7 +101,10 @@ func NewHLCClock(rc ReplicationConfig) *hlc.Clock {
 // gauge is initialised here (rather than from inside mutationlog itself) so
 // the core package keeps zero dependencies on prometheus.
 func NewMutationLog(mlc MutationLogConfig, m *domainmetrics.DomainMetrics) *mutationlog.Log {
-	log := mutationlog.New(mutationlog.Options{Capacity: mlc.Capacity})
+	log := mutationlog.New(mutationlog.Options{
+		Capacity:         mlc.Capacity,
+		SubscriberBuffer: mlc.SubscriberBuffer,
+	})
 	m.SetMutationLogCapacity(mlc.Capacity)
 	return log
 }
