@@ -31,18 +31,20 @@ const ServiceName = "graph.v1.LanternService"
 // a fake without standing up the real cache.
 type LanternService struct {
 	pb.UnimplementedLanternServiceServer
-	cache              Backend
-	scan               ScanLimits
-	log                *mutationlog.Log
-	clock              *hlc.Clock
-	origin             []byte
-	onAppend           func()
-	logger             *slog.Logger
-	tombstoneTTL       time.Duration
-	origins            *originStateTracker
-	onApplied          func(origin string)
-	onReplicationApply func(op string)
-	metrics            HotPathMetrics
+	cache                  Backend
+	scan                   ScanLimits
+	log                    *mutationlog.Log
+	clock                  *hlc.Clock
+	origin                 []byte
+	onAppend               func()
+	logger                 *slog.Logger
+	tombstoneTTL           time.Duration
+	origins                *originStateTracker
+	onApplied              func(origin string)
+	onReplicationApply     func(op string)
+	onValidationReject     func(reason string)
+	onTombstoneClampReject func()
+	metrics                HotPathMetrics
 }
 
 // HotPathMetrics is the narrow observability surface consumed by the
@@ -165,6 +167,30 @@ func (s *LanternService) WithReplicationApplyHook(f func(op string)) *LanternSer
 	return s
 }
 
+// WithValidationRejectHook registers a callback invoked once per
+// rejected request, naming the canonical reason (one of
+// metrics.validationRejectReasons). Used by provider/metrics to bump
+// lantern_validation_rejected_total{reason}. A nil hook disables the
+// callback. The hook MUST be non-blocking — it runs synchronously on
+// the RPC critical path. Called from validateExpiration (#183) and the
+// prefix-scan cursor decode (server/service/prefix.go).
+func (s *LanternService) WithValidationRejectHook(f func(reason string)) *LanternService {
+	s.onValidationReject = f
+	return s
+}
+
+// WithTombstoneClampRejectHook registers a callback invoked once per
+// ApplyMutation Put/Add operation that the tombstone-aware HLC path
+// drops because the incoming HLC lost the LWW comparison (against a
+// live tombstone OR against a strictly-newer existing entry). Used by
+// provider/metrics to bump lantern_tombstone_clamp_rejected_total.
+// A nil hook disables the callback. Only fires inside the s.tombstoneTTL > 0
+// branch of apply.go — the non-HLC fast path never rejects.
+func (s *LanternService) WithTombstoneClampRejectHook(f func()) *LanternService {
+	s.onTombstoneClampReject = f
+	return s
+}
+
 // validateExpiration enforces the LANTERN_TOMBSTONE_TTL clamp on
 // caller-supplied per-entry expirations. A zero expiration (the proto
 // default — "no expiration") is always accepted; otherwise the
@@ -176,6 +202,9 @@ func (s *LanternService) validateExpiration(exp time.Time) error {
 		return nil
 	}
 	if exp.After(time.Now().Add(s.tombstoneTTL)) {
+		if s.onValidationReject != nil {
+			s.onValidationReject("bad_ttl")
+		}
 		return status.Errorf(codes.InvalidArgument,
 			"expiration %s exceeds LANTERN_TOMBSTONE_TTL=%s",
 			exp.UTC().Format(time.RFC3339Nano), s.tombstoneTTL)

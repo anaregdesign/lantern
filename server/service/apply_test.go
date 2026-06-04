@@ -582,3 +582,107 @@ func mustMarshal(v *pb.Vertex) []byte {
 	}
 	return b
 }
+
+// TestApplyMutation_TombstoneClampRejectHook covers the #222
+// tombstone-clamp counter wiring: any HLC Put/Add path that loses LWW
+// inside the s.tombstoneTTL>0 branch must fire the registered hook
+// exactly once per rejected case (per-entry in the plural variants).
+// Each scenario applies a "winner" mutation at a high HLC first, then
+// a strictly-older "loser" mutation for the same key/edge and asserts
+// the hook count.
+func TestApplyMutation_TombstoneClampRejectHook(t *testing.T) {
+	exp := timestamppb.New(time.Now().Add(time.Hour))
+	origin := bytes16("origin-A")
+
+	newSvc := func(tsCount *int) *LanternService {
+		cache := graph.NewGraphCache[string, *pb.Vertex](time.Minute)
+		return NewLanternService(cache).
+			WithTombstoneTTL(time.Hour).
+			WithTombstoneClampRejectHook(func() { *tsCount++ })
+	}
+
+	apply := func(t *testing.T, svc *LanternService, seq uint64, op *pb.MutationOp) {
+		t.Helper()
+		m := &pb.Mutation{Seq: seq, Hlc: newHLC(int64(seq), origin), Origin: origin[:], Op: op}
+		if err := svc.ApplyMutation(context.Background(), m); err != nil {
+			t.Fatalf("ApplyMutation seq=%d: %v", seq, err)
+		}
+	}
+
+	t.Run("PutVertex", func(t *testing.T) {
+		var n int
+		svc := newSvc(&n)
+		put := func(seq uint64) *pb.MutationOp {
+			return &pb.MutationOp{Op: &pb.MutationOp_PutVertex{
+				PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "k", Value: &pb.Vertex_Nil{Nil: true}, Expiration: exp}},
+			}}
+		}
+		apply(t, svc, 5, put(5)) // winner
+		apply(t, svc, 1, put(1)) // loser
+		if n != 1 {
+			t.Fatalf("hook fired %d times, want 1", n)
+		}
+	})
+
+	t.Run("PutVertices", func(t *testing.T) {
+		var n int
+		svc := newSvc(&n)
+		put := func() *pb.MutationOp {
+			return &pb.MutationOp{Op: &pb.MutationOp_PutVertices{
+				PutVertices: &pb.PutVerticesRequest{Vertices: []*pb.Vertex{
+					{Key: "k1", Value: &pb.Vertex_Nil{Nil: true}, Expiration: exp},
+					{Key: "k2", Value: &pb.Vertex_Nil{Nil: true}, Expiration: exp},
+				}},
+			}}
+		}
+		apply(t, svc, 5, put()) // both win
+		apply(t, svc, 1, put()) // both lose
+		if n != 2 {
+			t.Fatalf("hook fired %d times, want 2 (one per entry)", n)
+		}
+	})
+
+	t.Run("PutEdge", func(t *testing.T) {
+		var n int
+		svc := newSvc(&n)
+		put := func() *pb.MutationOp {
+			return &pb.MutationOp{Op: &pb.MutationOp_PutEdge{
+				PutEdge: &pb.PutEdgeRequest{Edge: &pb.Edge{Tail: "a", Head: "b", Weight: 1, Expiration: exp}},
+			}}
+		}
+		apply(t, svc, 5, put())
+		apply(t, svc, 1, put())
+		if n != 1 {
+			t.Fatalf("hook fired %d times, want 1", n)
+		}
+	})
+
+	t.Run("WinnerDoesNotFire", func(t *testing.T) {
+		var n int
+		svc := newSvc(&n)
+		apply(t, svc, 1, &pb.MutationOp{Op: &pb.MutationOp_PutVertex{
+			PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "k", Value: &pb.Vertex_Nil{Nil: true}, Expiration: exp}},
+		}})
+		if n != 0 {
+			t.Fatalf("hook fired %d times on first apply, want 0", n)
+		}
+	})
+
+	t.Run("ClampDisabledNeverFires", func(t *testing.T) {
+		var n int
+		cache := graph.NewGraphCache[string, *pb.Vertex](time.Minute)
+		svc := NewLanternService(cache).
+			WithTombstoneClampRejectHook(func() { n++ })
+		// useTomb=false: the non-HLC backend path is taken, hook stays at 0.
+		put := func(seq uint64) *pb.MutationOp {
+			return &pb.MutationOp{Op: &pb.MutationOp_PutVertex{
+				PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "k", Value: &pb.Vertex_Nil{Nil: true}, Expiration: exp}},
+			}}
+		}
+		apply(t, svc, 5, put(5))
+		apply(t, svc, 1, put(1))
+		if n != 0 {
+			t.Fatalf("hook fired %d times with clamp disabled, want 0", n)
+		}
+	})
+}

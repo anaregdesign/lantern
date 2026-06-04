@@ -93,6 +93,8 @@ func newLanternService(
 		WithReplication(log, clock, dm.OnMutationLogAppend).
 		WithAppliedHook(dm.OnReplicationApplied).
 		WithReplicationApplyHook(dm.OnReplicationApply).
+		WithValidationRejectHook(dm.OnValidationRejected).
+		WithTombstoneClampRejectHook(dm.OnTombstoneClampRejected).
 		WithTombstoneTTL(rc.TombstoneTTL).
 		WithHotPathMetrics(dm).
 		WithLogger(logger)

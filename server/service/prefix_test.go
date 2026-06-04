@@ -137,3 +137,24 @@ func TestDeleteVerticesByPrefix_DryRunAndReal(t *testing.T) {
 		t.Errorf("cache still has %d entries after delete", len(fb.vertices))
 	}
 }
+
+// TestScan_BadCursorFiresValidationRejectHook covers the #222
+// bad_cursor hook fires from both ScanVertices and ScanEdges when the
+// caller passes a malformed cursor.
+func TestScan_BadCursorFiresValidationRejectHook(t *testing.T) {
+	fb := newFakeBackend()
+	var got []string
+	svc := NewLanternService(fb).
+		WithValidationRejectHook(func(reason string) { got = append(got, reason) })
+	ctx := context.Background()
+
+	if _, err := svc.ScanVertices(ctx, &pb.ScanVerticesRequest{Prefix: "x", Cursor: []byte("not-base64-or-anything-valid!!!")}); err == nil {
+		t.Fatal("ScanVertices with bad cursor: expected error")
+	}
+	if _, err := svc.ScanEdges(ctx, &pb.ScanEdgesRequest{TailPrefix: "x", Cursor: []byte("not-base64-or-anything-valid!!!")}); err == nil {
+		t.Fatal("ScanEdges with bad cursor: expected error")
+	}
+	if len(got) != 2 || got[0] != "bad_cursor" || got[1] != "bad_cursor" {
+		t.Fatalf("reject hook calls = %v, want [bad_cursor bad_cursor]", got)
+	}
+}

@@ -750,3 +750,36 @@ func TestLanternService_HotPathMetrics_EmitsOnScan(t *testing.T) {
 		t.Errorf("DeleteVerticesByPrefix results = %d, want 2", fm.scan[2].results)
 	}
 }
+
+// TestExpirationClamp_FiresValidationRejectHook covers the #222
+// bad_ttl hook fire from validateExpiration. The hook MUST run before
+// the InvalidArgument status is returned and MUST NOT fire when the
+// expiration is within the clamp.
+func TestExpirationClamp_FiresValidationRejectHook(t *testing.T) {
+	const ttl = time.Hour
+	var got []string
+	s := NewLanternService(graph.NewGraphCache[string, *pb.Vertex](time.Minute)).
+		WithTombstoneTTL(ttl).
+		WithValidationRejectHook(func(reason string) { got = append(got, reason) })
+
+	bad := timestamppb.New(time.Now().Add(2 * ttl))
+	if _, err := s.PutVertices(context.Background(), &pb.PutVerticesRequest{
+		Vertices: []*pb.Vertex{{Key: "v", Value: &pb.Vertex_Nil{Nil: true}, Expiration: bad}},
+	}); err == nil {
+		t.Fatal("PutVertices over TTL: expected error")
+	}
+	if len(got) != 1 || got[0] != "bad_ttl" {
+		t.Fatalf("reject hook calls = %v, want [bad_ttl]", got)
+	}
+
+	got = nil
+	ok := timestamppb.New(time.Now().Add(ttl / 2))
+	if _, err := s.PutVertices(context.Background(), &pb.PutVerticesRequest{
+		Vertices: []*pb.Vertex{{Key: "v", Value: &pb.Vertex_Nil{Nil: true}, Expiration: ok}},
+	}); err != nil {
+		t.Fatalf("PutVertices within TTL: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("reject hook fired on success path: %v", got)
+	}
+}

@@ -33,7 +33,7 @@ func initializeApp() (*App, error) {
 	rateLimitConfig := provider.NewRateLimitConfig(config)
 	validationLimits := provider.NewValidationLimits(config)
 	serverMetrics := provider.NewGrpcServerMetrics(registry)
-	v, err := provider.NewGrpcServerOptions(netConfig, tlsConfig, rateLimitConfig, validationLimits, logger, serverMetrics)
+	v, err := provider.NewGrpcServerOptions(netConfig, tlsConfig, rateLimitConfig, validationLimits, logger, serverMetrics, domainMetrics)
 	if err != nil {
 		return nil, err
 	}

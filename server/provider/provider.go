@@ -301,6 +301,7 @@ func NewGrpcServerOptions(
 	limits ValidationLimits,
 	logger *slog.Logger,
 	metrics *grpcprom.ServerMetrics,
+	dm *domainmetrics.DomainMetrics,
 ) ([]grpc.ServerOption, error) {
 	logOpts := []logging.Option{
 		logging.WithLogOnEvents(logging.StartCall, logging.FinishCall),
@@ -312,7 +313,8 @@ func NewGrpcServerOptions(
 		}),
 	}
 
-	validator := NewValidationInterceptor(limits)
+	validator := NewValidationInterceptor(limits).
+		WithRejectHook(dm.OnValidationRejected)
 
 	unary := []grpc.UnaryServerInterceptor{
 		recovery.UnaryServerInterceptor(recoveryOpts...),
@@ -326,7 +328,8 @@ func NewGrpcServerOptions(
 	}
 
 	if rl.RPS > 0 {
-		rli := NewRateLimitInterceptor(rl.RPS, rl.Burst)
+		rli := NewRateLimitInterceptor(rl.RPS, rl.Burst).
+			WithRejectHook(dm.OnRateLimitRejected)
 		unary = append(unary, validator.UnaryServerInterceptor(), rli.UnaryServerInterceptor())
 		stream = append(stream, validator.StreamServerInterceptor(), rli.StreamServerInterceptor())
 	} else {
