@@ -13,7 +13,7 @@ target:
   endpoints: ["localhost:6380"]
   call: graph.v1.LanternService/PutVertex
   data_template: |
-    {"key":"soak-{{.RequestNumber}}","value":{"intValue":{{.RequestNumber}}}}
+    {"vertex":{"key":"soak-{{.RequestNumber}}","int64":"{{.RequestNumber}}"}}
 subscribe:
   consumers:
     - endpoint: localhost:6381
