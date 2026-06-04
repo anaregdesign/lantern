@@ -28,10 +28,16 @@ func (m *Message[T]) CreatedAt() time.Time {
 	return m.createdAt
 }
 
+// Ack marks the message as successfully processed and removes it from the
+// subscription's in-flight set, so the salvage path will no longer try to
+// redeliver it.
 func (m *Message[T]) Ack() {
 	m.subscription.ack(m)
 }
 
+// Nack signals that processing failed and the message should be retried.
+// The message is re-queued immediately on the subscription channel; the
+// salvage timer is not involved.
 func (m *Message[T]) Nack() {
 	m.subscription.nack(m)
 }
