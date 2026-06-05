@@ -32,7 +32,9 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v3
         with:
-          version: 'latest'
+          # Pin so a fresh uv release can't silently break CI. Dependabot's
+          # github-actions ecosystem will bump this via PR (#295).
+          version: '0.11.19'
       - name: Install Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
       - name: Install dependencies
