@@ -88,14 +88,14 @@ func TestMCP_EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("server.Connect: %v", err)
 	}
-	defer serverSession.Close()
+	defer func() { _ = serverSession.Close() }()
 
 	c := mcp.NewClient(&mcp.Implementation{Name: "integration", Version: "test"}, nil)
 	cs, err := c.Connect(ctx, clientT, nil)
 	if err != nil {
 		t.Fatalf("client.Connect: %v", err)
 	}
-	defer cs.Close()
+	defer func() { _ = cs.Close() }()
 
 	call := func(name string, args map[string]any) *mcp.CallToolResult {
 		t.Helper()
