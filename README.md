@@ -222,42 +222,101 @@ go build -o lantern ./cli
 ./lantern --help
 ```
 
-The CLI exposes every RPC as a scriptable subcommand with verbose,
-LLM-friendly help text (`lantern <cmd> --help`). All read commands emit JSON
-on stdout; all write commands print a single `OK` line.
+The CLI ships an interactive REPL (`lantern repl`) plus a scriptable
+subcommand for every RPC (`lantern vertex put`, `lantern edge add`,
+`lantern illuminate`, …). The REPL is the fastest way to poke at a running
+server; the one-shot subcommands are what you reach for when you want
+batch writes, prefix scans, NDJSON bulk loads, gzip compression, TLS
+flags, or typed values — features the REPL grammar intentionally does
+not cover. Every subcommand has long-form, LLM-friendly help text
+(`lantern <cmd> --help`); read commands emit JSON on stdout and write
+commands print `OK`.
+
+A REPL session that exercises the full vertex/edge/illuminate surface:
+
+```text
+$ ./lantern repl
+> put vertex alice Alice                # value parsed as string
+OK (1.2ms)
+> put vertex bob Bob 3600               # third arg = TTL seconds
+OK (0.9ms)
+> put vertex lamp Lamp 3600
+OK (0.8ms)
+
+> add edge alice bob 1.5 3600           # additive: appends a contribution
+OK (1.1ms)
+> add edge alice bob 0.5 3600           # second contribution
+OK (0.8ms)
+> get edge alice bob                    # live sum of unexpired contributions
+2.000000
+OK (0.6ms)
+
+> put edge alice lamp 0.7 3600          # idempotent: replaces any existing weight
+OK (1.0ms)
+
+> get vertex alice                      # value, JSON-encoded
+"Alice"
+OK (0.6ms)
+
+> illuminate neighbor alice 2 5 false   # 2 hops, top-5 neighbours/hop, no TF-IDF
+{
+        "vertices": { ... },
+        "edges":    { ... }
+}
+OK (2.3ms)
+> illuminate spt_relevance alice 3 8 true
+                                        # shortest-path tree under TF-IDF weighting
+{ ... }
+OK (3.1ms)
+> illuminate mst_relevance alice 3 8 true
+                                        # maximum spanning tree from the seed
+{ ... }
+OK (2.7ms)
+
+> delete edge alice bob
+OK (0.7ms)
+> delete vertex alice
+OK (0.6ms)
+> exit
+```
+
+REPL grammar (frozen for backward compatibility — full reference in
+`lantern repl --help`):
+
+```text
+get    vertex <key>
+put    vertex <key> <value> [ttl_seconds]
+delete vertex <key>
+get    edge   <tail> <head>
+add    edge   <tail> <head> <weight> [ttl_seconds]
+put    edge   <tail> <head> <weight> [ttl_seconds]
+delete edge   <tail> <head>
+illuminate { neighbor | spt_relevance | spt_cost | mst_relevance | mst_cost } \
+           <seed> <step> <k> <tfidf>
+exit
+```
+
+For everything outside that grammar — batch writes, prefix scans, bulk
+loads, gzip/TLS, typed values — use the one-shot subcommands:
 
 ```shell
-# writes
+# typed values, explicit TTL
 ./lantern vertex put alice '{"name":"Alice"}' --value-type json --ttl 1h
-./lantern edge   add alice bob 1.5            # additive (sums weight)
-./lantern edge   put alice bob 0.7            # idempotent (replaces)
 
-# reads
-./lantern vertex get alice                    # JSON: {key,value,expiration}
-./lantern edge   get alice bob                # JSON: {tail,head,weight,expiration}
-./lantern illuminate alice --step 2 --k 5 --optimize mst
+# batched and streamed
+./lantern vertex delete alice bob carol            # batch DeleteVertices
+cat edges.ndjson | ./lantern bulk edges add -      # streamed AddEdges
 
-# batches & streaming
-./lantern vertex delete alice bob carol       # batch DeleteVertices
-cat edges.ndjson | ./lantern bulk edges add - # streamed AddEdges
+# prefix scan / count / bulk-delete
+./lantern vertex count  users/
+./lantern vertex scan   users/ --all > snap.ndjson
+./lantern vertex delete-prefix tmp/ --dry-run
 
-# prefix scan (key-space enumeration)
-./lantern vertex count  users/                       # radix count for users/*
-./lantern vertex scan   users/ --limit 100           # one page; next-cursor on stderr
-./lantern vertex scan   users/ --all > snap.ndjson   # stream every match as NDJSON
-./lantern vertex delete-prefix tmp/                  # REFUSED (safety gate)
-./lantern vertex delete-prefix tmp/ --dry-run        # preview count
-./lantern vertex delete-prefix tmp/ --yes            # actually delete
-
-# edge scan (tail/head prefix; either may be empty)
-./lantern edge scan --tail-prefix user: --head-prefix post:  # one page
-./lantern edge scan --tail-prefix user: --all > edges.ndjson # stream every match
+# edge scan
+./lantern edge scan --tail-prefix user: --head-prefix post:
 
 # TLS / mTLS
 ./lantern --tls --tls-ca ./ca.pem -H lantern.example.com -p 443 vertex get alice
-
-# legacy interactive prompt
-./lantern repl
 ```
 
 Global flags include `--host/--port` (or `--address`), `--timeout`, `--tls*`,
