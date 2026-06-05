@@ -1,0 +1,46 @@
+package mcp
+
+import (
+	"context"
+	"testing"
+)
+
+func TestForget_ExistingKey(t *testing.T) {
+	h := newTestHarness(t)
+	h.fake.deleteVertexFn = func(_ context.Context, _ string) (bool, error) {
+		return true, nil
+	}
+	res := h.call(t, "forget", map[string]any{"key": "k"})
+	if res.IsError {
+		t.Fatalf("IsError = true")
+	}
+	var out forgetOutput
+	structuredAs(t, res, &out)
+	if !out.Existed || out.Key != "k" {
+		t.Fatalf("unexpected output: %+v", out)
+	}
+	if h.fake.lastDeleteKey != "k" {
+		t.Fatalf("lastDeleteKey = %q", h.fake.lastDeleteKey)
+	}
+}
+
+func TestForget_MissingKeyIsNotError(t *testing.T) {
+	h := newTestHarness(t)
+	h.fake.deleteVertexFn = func(_ context.Context, _ string) (bool, error) {
+		return false, nil
+	}
+	res := h.call(t, "forget", map[string]any{"key": "ghost"})
+	if res.IsError {
+		t.Fatalf("missing key must be idempotent, not error")
+	}
+	var out forgetOutput
+	structuredAs(t, res, &out)
+	if out.Existed {
+		t.Fatalf("Existed = true; want false")
+	}
+}
+
+func TestForget_RejectsEmptyKey(t *testing.T) {
+	h := newTestHarness(t)
+	h.callExpectError(t, "forget", map[string]any{"key": ""})
+}
