@@ -4,7 +4,7 @@ Lantern is an in-memory `key-vertex-store` (graph-based KVS). It runs as a gRPC 
 
 ## Monorepo layout
 
-This project used to be split across four separate repositories (`lantern` / `lantern-proto` / `lantern-cli`, plus a shared graph/cache/NLP toolkit), but **everything is now consolidated into this repo as a 5-module Go workspace** so each piece can be consumed (`go get`) on its own:
+This project used to be split across four separate repositories (`lantern` / `lantern-proto` / `lantern-cli`, plus a shared graph/cache/NLP toolkit), but **everything is now consolidated into this repo as a 6-module Go workspace** so each piece can be consumed (`go get`) on its own:
 
 | Path | Module | Role |
 |---|---|---|
@@ -12,14 +12,15 @@ This project used to be split across four separate repositories (`lantern` / `la
 | `core/` | `github.com/anaregdesign/lantern/core` | **Leaf.** Reusable building blocks: graph, cache, collections, concurrency, NLP. |
 | `sdks/go/` | `github.com/anaregdesign/lantern/sdks/go` | Go client SDK. Depends on `pb/` only. |
 | `server/` | `github.com/anaregdesign/lantern/server` | gRPC server (DI via google/wire). Depends on `pb/` and `core/`. **Does not depend on the client SDK.** |
-| `.` (root) | `github.com/anaregdesign/lantern` | Umbrella module — hosts the CLI (`cli/`) and cross-module integration tests (`tests/integration/`). Depends on all four submodules. |
+| `mcp/` | `github.com/anaregdesign/lantern/mcp` | MCP server binary that exposes Lantern as a decaying-memory tool to LLM agents. Depends on `pb/` and `sdks/go/` only. Ships as the `lantern-mcp` container. |
+| `.` (root) | `github.com/anaregdesign/lantern` | Umbrella module — hosts the CLI (`cli/`) and cross-module integration tests (`tests/integration/`). Depends on all five submodules. |
 | `proto/` | (no Go module) | `.proto` sources, regenerated with buf. |
-| `go.work` | — | Pins all 5 modules for local dev. |
+| `go.work` | — | Pins all 6 modules for local dev. |
 
 Dependency direction (must remain a DAG, no back edges):
 
 ```
-         pb ◀─── sdks/go ◀──┐
+         pb ◀─── sdks/go ◀──┬─── mcp
           ▲                  │
           │                  ├── . (root: cli + tests/integration)
          server ◀───────────┘
@@ -28,7 +29,7 @@ Dependency direction (must remain a DAG, no back edges):
          core ◀──────────────┘
 ```
 
-Tag scheme: `vX.Y.Z` for server+CLI (root module), `sdks/go/vX.Y.Z` for the SDK, `core/vX.Y.Z` for core, `pb/vX.Y.Z` for the proto stubs.
+Tag scheme: `vX.Y.Z` for server+CLI (root module), `sdks/go/vX.Y.Z` for the SDK, `core/vX.Y.Z` for core, `pb/vX.Y.Z` for the proto stubs, `mcp/vX.Y.Z` for the MCP server image (cut independently of the root release cadence).
 
 ## Architecture notes
 
@@ -139,10 +140,11 @@ Run from repo root — this matches what the four required CI checks enforce
 (`Build & Test`, `Lint`, `Proto (buf)`, `govulncheck`):
 
 ```bash
-gofmt -l . cli core pb sdks server tests   # must print nothing
+gofmt -l . cli core mcp pb sdks server tests   # must print nothing
 (cd server && go vet ./... && go test ./...)
 go test ./...
 (cd core    && go test ./...)
+(cd mcp     && go test ./...)
 (cd pb      && go test ./...)
 (cd sdks/go && go test ./...)
 ```
@@ -199,10 +201,10 @@ introduced a new sub-config, update the **Providers** bullet in this file.
 
 ### After renaming any public SDK / server symbol (refactor)
 
-- Grep the **entire workspace** (`cli/`, `core/`, `pb/`, `sdks/go/`, `server/`,
-  `testbed/`, `tests/integration/`, `*.md`) for every old name. A single-module
-  test pass is **not** sufficient — five modules can compile in isolation while
-  the cross-module call site is broken.
+- Grep the **entire workspace** (`cli/`, `core/`, `mcp/`, `pb/`, `sdks/go/`,
+  `server/`, `testbed/`, `tests/integration/`, `*.md`) for every old name. A
+  single-module test pass is **not** sufficient — six modules can compile in
+  isolation while the cross-module call site is broken.
 - Update the **Architecture notes** bullets in this file and the
   **Conventions and gotchas** section of `README.md` in the **same PR**. The
   #106 alias refactor invalidated three method names across two docs — that
@@ -222,10 +224,10 @@ introduced a new sub-config, update the **Providers** bullet in this file.
 
 Update **all** of the following in one PR:
 
-1. Every `go.mod` (5 files): root, `core/`, `pb/`, `sdks/go/`, `server/`.
-2. `Dockerfile` — `FROM golang:X.Y-alpine`.
-3. Every `go-version:` in `.github/workflows/*.yml` (currently 6 occurrences
-   across `go.yml` and `docker-publish.yml`).
+1. Every `go.mod` (6 files): root, `core/`, `mcp/`, `pb/`, `sdks/go/`, `server/`.
+2. `Dockerfile` and `mcp/Dockerfile` — `FROM golang:X.Y-alpine`.
+3. Every `go-version:` in `.github/workflows/*.yml` (`go.yml`, `docker-publish.yml`,
+   `mcp-publish.yml`).
 4. The `Go version` mentions in this file and `README.md`.
 5. The CI version note in `/memories/repo/lantern.md`.
 
@@ -257,6 +259,13 @@ Tag order matters because each downstream module pins the upstream tag:
 The `server/` module is **never** tagged independently — it ships under the
 root tag. arm64 buildx under QEMU is slow; if a root tag already pushed the
 amd64 image, bump the patch number rather than force-moving the tag.
+
+The `mcp/` module is cut **independently** of the root release cadence: tag
+`mcp/vX.Y.Z` triggers `.github/workflows/mcp-publish.yml`, which builds and
+publishes `ghcr.io/anaregdesign/lantern-mcp:X.Y.Z` (multi-arch + cosign
+keyless). It does NOT need to follow the `pb → core → sdks/go → root` order;
+the MCP server only imports `pb/` and `sdks/go/`, so a `sdks/go/vX.Y.Z` bump
+is the only upstream pin that requires re-tagging the MCP image.
 
 ### Periodic doc-staleness sweep (before each release, or whenever memory and
 ### code disagree)
