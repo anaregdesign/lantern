@@ -1,0 +1,57 @@
+name: Commitlint
+
+# Validates that PR titles follow the Conventional Commits format used
+# throughout this repo (feat / fix / chore / docs / ci / refactor / perf /
+# test / build / revert). Because we squash-merge every PR, the merge
+# commit subject defaults to the PR title, so enforcing the title is
+# effectively enforcing the commit log.
+#
+# Refs #295 (dev-flow improvements backlog).
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+# The action only needs to read the PR; it does not push status or
+# comments back when the title is valid.
+permissions:
+  pull-requests: read
+
+# Cancel superseded runs on the same PR — title edits can fire repeatedly.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr-title:
+    name: Validate PR title
+    runs-on: ubuntu-latest
+    steps:
+      # Pinned to a concrete release so a future major can't silently
+      # rewrite our type list. Dependabot's github-actions ecosystem will
+      # keep this current.
+      - uses: amannn/action-semantic-pull-request@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Allowed prefixes — matches what is already in the git log.
+          types: |
+            feat
+            fix
+            chore
+            docs
+            ci
+            refactor
+            perf
+            test
+            build
+            revert
+          # Scopes are optional; many one-shot fixes use a bare `ci:` or
+          # `docs:` prefix.
+          requireScope: false
+          # Subject lowercase preferred but not enforced — release titles
+          # and version bumps occasionally need capitals.
+          subjectPattern: ^.+$
+          # Don't validate individual commits in PRs that have just one
+          # commit; squash-merge collapses them anyway.
+          validateSingleCommit: false
