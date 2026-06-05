@@ -191,8 +191,8 @@ wheels = [
 ]
 
 [[package]]
-name = "lantern-client"
-version = "0.1.0"
+name = "lantern-sdk"
+version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "grpcio" },

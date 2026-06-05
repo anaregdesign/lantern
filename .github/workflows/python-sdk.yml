@@ -61,7 +61,7 @@ jobs:
       id-token: write   # for PyPI trusted publishing
     environment:
       name: pypi
-      url: https://pypi.org/p/lantern-client
+      url: https://pypi.org/p/lantern-sdk
     steps:
       - uses: actions/checkout@v4
       - name: Install uv

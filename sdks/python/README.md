@@ -1,4 +1,4 @@
-# lantern-client
+# lantern-sdk (Python)
 
 Python client SDK for [Lantern](https://github.com/anaregdesign/lantern), an
 in-memory graph key-vertex-store served over gRPC. Mirrors the [Go
@@ -13,10 +13,13 @@ gRPC health check.
 
 ## Install
 
+Distributed on PyPI as [`lantern-sdk`](https://pypi.org/project/lantern-sdk/);
+the Python import package name remains `lantern_client`.
+
 ```sh
-pip install lantern-client
+pip install lantern-sdk
 # or with uv
-uv add lantern-client
+uv add lantern-sdk
 ```
 
 ## Quick start

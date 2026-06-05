@@ -1,6 +1,6 @@
 [project]
-name = "lantern-client"
-version = "0.1.0"
+name = "lantern-sdk"
+version = "0.1.1"
 description = "Python client SDK for Lantern, an in-memory graph key-vertex-store served over gRPC."
 readme = "README.md"
 license = { text = "Apache-2.0" }
