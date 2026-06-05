@@ -95,7 +95,10 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v8
         with:
-          version: latest
+          # Pin to a concrete release so a fresh golangci-lint can't silently
+          # break CI. Dependabot's github-actions ecosystem will bump this
+          # via PR (#295).
+          version: v2.12.2
           args: --timeout=5m
 
   proto:
