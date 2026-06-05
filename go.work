@@ -3,6 +3,7 @@ go 1.26
 use (
 	.
 	./core
+	./mcp
 	./pb
 	./sdks/go
 	./server
