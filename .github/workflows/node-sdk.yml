@@ -30,7 +30,7 @@ jobs:
       matrix:
         node-version: ['20', '22']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Setup Node ${{ matrix.node-version }}
         uses: actions/setup-node@v4
         with:
@@ -77,7 +77,7 @@ jobs:
       contents: read
       id-token: write  # for npm Trusted Publishing (OIDC) + Sigstore provenance
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
