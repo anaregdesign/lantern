@@ -1,6 +1,6 @@
 {
   "name": "lantern-sdk",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Official TypeScript client SDK for Lantern — an in-memory graph KVS over gRPC.",
   "license": "Apache-2.0",
   "type": "module",
