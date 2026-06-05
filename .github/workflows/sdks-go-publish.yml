@@ -1,0 +1,75 @@
+# Tag-triggered verification + release notes for the Go client SDK.
+# The Go module ecosystem pulls source directly from VCS — there is no
+# artifact to push — but a `sdks/go/vX.Y.Z` tag bypasses the regular
+# Go CI run, so without this workflow we could index a broken tag on
+# pkg.go.dev. This mirrors the verify+release-notes pattern in
+# `mcp-publish.yml` (sans the Docker push).
+#
+# Per AGENTS.md "Release title convention (locked)": title MUST equal
+# the raw tag name verbatim.
+
+name: SDKs/Go Release
+
+on:
+  push:
+    tags: ['sdks/go/v*.*.*']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify (build + test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.4'
+          check-latest: true
+      - name: Vet
+        run: (cd sdks/go && go vet ./...)
+      - name: Build
+        run: (cd sdks/go && go build -v ./...)
+      - name: Test
+        run: (cd sdks/go && go test -race -shuffle=on ./...)
+
+  release:
+    name: Publish GitHub Release
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#sdks/go/}"
+          notes_file=$(mktemp)
+          {
+            echo "## Lantern Go client SDK"
+            echo
+            echo "Pull with:"
+            echo
+            echo '```sh'
+            echo "go get github.com/anaregdesign/lantern/sdks/go@${version}"
+            echo '```'
+            echo
+            echo "Import as \`github.com/anaregdesign/lantern/sdks/go\` (package name remains \`client\`)."
+          } > "$notes_file"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --notes-file "$notes_file" --verify-tag
+          else
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --notes-file "$notes_file" \
+              --verify-tag
+          fi

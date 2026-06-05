@@ -242,7 +242,13 @@ Tag order matters because each downstream module pins the upstream tag:
 
 1. `pb/vX.Y.Z`
 2. `core/vX.Y.Z`
-3. `sdks/go/vX.Y.Z`
+3. `sdks/go/vX.Y.Z` — triggers `.github/workflows/sdks-go-publish.yml`,
+   which runs vet/build/test against the tagged commit and creates a
+   GitHub Release with `--title "$TAG"` (raw-tag convention). The Go
+   module proxy pulls source directly from VCS, so there is no artifact
+   to push; the verify step exists because tag pushes do not trigger
+   the regular `Go` workflow and a broken `sdks/go/vX.Y.Z` would
+   otherwise land on pkg.go.dev unchecked.
 4. Bump the matching `require` (and any `replace`) lines in the root `go.mod`
    to the freshly-tagged versions.
 5. Root `vX.Y.Z` — triggers `docker-publish.yml` (amd64 + arm64 buildx +
