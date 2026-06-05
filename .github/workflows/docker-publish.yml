@@ -210,12 +210,12 @@ jobs:
         with:
           fetch-depth: 0
       - name: Download CLI artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: cli-binaries
           path: dist
       - name: Download bench report
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           name: bench-report
