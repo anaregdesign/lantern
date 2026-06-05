@@ -15,28 +15,11 @@ concurrency:
 jobs:
   # Re-run the canonical gates against the tagged commit. Tag pushes do
   # not trigger the `Go` workflow, so without this we could ship a broken
-  # MCP image from a bad tag.
+  # MCP image from a bad tag. The verify job is shared with
+  # docker-publish.yml / sdks-go-publish.yml via the reusable
+  # `_verify.yml` workflow — see #295.
   verify:
-    name: Verify (build + test)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
-        with:
-          go-version: '1.26.4'
-          check-latest: true
-      - name: Vet
-        run: |
-          go vet ./...
-          (cd mcp && go vet ./...)
-      - name: Build
-        run: |
-          go build -v ./...
-          (cd mcp && go build -v ./...)
-      - name: Test
-        run: |
-          go test -race -shuffle=on ./...
-          (cd mcp && go test -race -shuffle=on ./...)
+    uses: ./.github/workflows/_verify.yml
 
   build:
     needs: verify
