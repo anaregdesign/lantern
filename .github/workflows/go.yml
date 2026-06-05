@@ -39,32 +39,48 @@ jobs:
             exit 1
           fi
 
-      - name: Vet
+      # Per-module loop. Each module is a separate go.mod; the root `./...`
+      # does NOT recurse into core/, mcp/, pb/, sdks/go/, server/.
+      - name: Vet (all modules)
         run: |
-          go vet ./...
-          (cd mcp && go vet ./...)
-          (cd sdks/go && go vet ./...)
+          set -e
+          for mod in . core mcp pb sdks/go server; do
+            echo "::group::go vet ($mod)"
+            (cd "$mod" && go vet ./...)
+            echo "::endgroup::"
+          done
 
-      - name: Build
+      - name: Build (all modules)
         run: |
-          go build -v ./...
-          (cd mcp && go build -v ./...)
-          (cd sdks/go && go build -v ./...)
+          set -e
+          for mod in . core mcp pb sdks/go server; do
+            echo "::group::go build ($mod)"
+            (cd "$mod" && go build -v ./...)
+            echo "::endgroup::"
+          done
 
-      - name: Test (race + coverage)
-        run: go test -race -shuffle=on -covermode=atomic -coverprofile=coverage.out ./...
-
-      - name: Test SDK module (race)
-        run: cd sdks/go && go test -race -shuffle=on ./...
-
-      - name: Test MCP module (race)
-        run: cd mcp && go test -race -shuffle=on ./...
+      - name: Test (race + coverage, all modules)
+        run: |
+          set -e
+          mkdir -p coverage
+          for mod in . core mcp pb sdks/go server; do
+            # Slug for coverage filename: '.' -> root, 'sdks/go' -> sdks-go.
+            slug=$(echo "$mod" | sed 's|/|-|g; s|^\.$|root|')
+            echo "::group::go test ($mod)"
+            (cd "$mod" && go test -race -shuffle=on -covermode=atomic -coverprofile="$GITHUB_WORKSPACE/coverage/${slug}.out" ./...)
+            echo "::endgroup::"
+          done
+          # Keep the legacy artifact path so downstream tooling that expects
+          # coverage.out at the repo root keeps working.
+          cp coverage/root.out coverage.out
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
           name: coverage
-          path: coverage.out
+          path: |
+            coverage.out
+            coverage/
           if-no-files-found: warn
 
   lint:
@@ -119,7 +135,11 @@ jobs:
           check-latest: true
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
-      - name: Run govulncheck
+      - name: Run govulncheck (all modules)
         run: |
-          govulncheck ./...
-          (cd mcp && govulncheck ./...)
+          set -e
+          for mod in . core mcp pb sdks/go server; do
+            echo "::group::govulncheck ($mod)"
+            (cd "$mod" && govulncheck ./...)
+            echo "::endgroup::"
+          done
