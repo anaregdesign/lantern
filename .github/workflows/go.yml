@@ -74,6 +74,18 @@ jobs:
           # coverage.out at the repo root keeps working.
           cp coverage/root.out coverage.out
 
+      # Merge the six per-module coverage profiles into a single workspace-wide
+      # profile. `go test -coverprofile` only sees one module's packages, so
+      # merging is the only way to get a unified view across the workspace.
+      # gocovmerge is the standard tool — see https://github.com/wadey/gocovmerge.
+      # Refs #295.
+      - name: Merge per-module coverage
+        run: |
+          go install github.com/wadey/gocovmerge@latest
+          gocovmerge coverage/*.out > coverage/merged.out
+          echo "Merged coverage line count:"
+          wc -l coverage/merged.out
+
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
