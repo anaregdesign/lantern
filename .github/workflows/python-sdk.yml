@@ -30,7 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v7
         with:
           # Pin so a fresh uv release can't silently break CI. Dependabot's
           # github-actions ecosystem will bump this via PR (#295).
@@ -67,7 +67,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v7
       - name: Install Python
         run: uv python install 3.12
       - name: Build sdist + wheel
