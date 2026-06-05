@@ -1,0 +1,166 @@
+name: MCP Release
+
+on:
+  push:
+    tags: [ 'mcp/v*.*.*' ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/lantern-mcp
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Re-run the canonical gates against the tagged commit. Tag pushes do
+  # not trigger the `Go` workflow, so without this we could ship a broken
+  # MCP image from a bad tag.
+  verify:
+    name: Verify (build + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.4'
+          check-latest: true
+      - name: Vet
+        run: |
+          go vet ./...
+          (cd mcp && go vet ./...)
+      - name: Build
+        run: |
+          go build -v ./...
+          (cd mcp && go build -v ./...)
+      - name: Test
+        run: |
+          go test -race -shuffle=on ./...
+          (cd mcp && go test -race -shuffle=on ./...)
+
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.4.1'
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Setup Docker buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log into registry ${{ env.REGISTRY }}
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute mcp version
+        id: mcp_version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          # github.ref_name is `mcp/vX.Y.Z`; strip the `mcp/` prefix so the
+          # image tag is the plain `vX.Y.Z` (and SemVer-pure `X.Y.Z`).
+          version="${TAG#mcp/}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        env:
+          # docker/metadata-action's semver pattern engine needs the bare
+          # version, not the `mcp/v…` Go-module tag form.
+          DOCKER_METADATA_PR_HEAD_SHA: ''
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ steps.mcp_version.outputs.version }}
+            type=raw,value=${{ steps.mcp_version.outputs.version }},enable=${{ !contains(steps.mcp_version.outputs.version, '-') }}
+            type=raw,value=latest,enable=${{ !contains(steps.mcp_version.outputs.version, '-') }}
+            type=sha
+          labels: |
+            org.opencontainers.image.title=lantern-mcp
+            org.opencontainers.image.description=Lantern MCP server — exposes a decaying-memory tool surface (remember_fact, recall_fact, forget, list_under, remember_relation, recall_related) over Model Context Protocol stdio.
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.url=https://github.com/${{ github.repository }}/tree/main/mcp
+            org.opencontainers.image.licenses=Apache-2.0
+
+      - name: Build and push Docker image
+        id: build-and-push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: mcp/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.mcp_version.outputs.version }}
+          cache-from: type=gha,scope=mcp
+          cache-to: type=gha,mode=max,scope=mcp
+          provenance: true
+          sbom: true
+
+      - name: Sign the published Docker image
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.build-and-push.outputs.digest }}
+        run: |
+          echo "$TAGS" | xargs -I {} cosign sign --yes {}@${DIGEST}
+
+  release:
+    name: GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          version="${TAG#mcp/}"
+          notes_file=$(mktemp)
+          {
+            echo "## Lantern MCP server"
+            echo
+            echo "Multi-arch container (\`linux/amd64\`, \`linux/arm64\`), signed with cosign keyless."
+            echo
+            echo '```sh'
+            echo "docker pull ${IMAGE}:${version}"
+            echo '```'
+            echo
+            echo "Configure your MCP client to launch \`docker run --rm -i -e LANTERN_ADDR=<host>:6380 ${IMAGE}:${version}\` and the server will expose six tools (remember_fact, recall_fact, forget, list_under, remember_relation, recall_related) for LLM agents to interact with Lantern's decaying-memory graph."
+          } > "$notes_file"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --notes-file "$notes_file" --verify-tag
+          else
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --notes-file "$notes_file" \
+              --verify-tag
+          fi
