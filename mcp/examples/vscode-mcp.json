@@ -1,0 +1,13 @@
+{
+  "servers": {
+    "lantern": {
+      "type": "stdio",
+      "command": "docker",
+      "args": [
+        "run", "--rm", "-i",
+        "-e", "LANTERN_ADDR=host.docker.internal:6380",
+        "ghcr.io/anaregdesign/lantern-mcp:v0.1.0"
+      ]
+    }
+  }
+}

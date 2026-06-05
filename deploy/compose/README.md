@@ -83,3 +83,24 @@ which `LocalIPSet()` filters as self, so the pump becomes a no-op.
 - Peer discovery spec: [`../../docs/replication.md` §9.1](../../docs/replication.md#91-peer-discovery-190)
 - HA runbook: issue #192 (in flight).
 - Testbed (single-instance observability QA): [`../../testbed/`](../../testbed/)
+
+## Single-node + MCP server
+
+For local LLM-agent experiments there is a smaller compose file in
+[`docker-compose.mcp.yml`](docker-compose.mcp.yml) that stands up one
+`lantern` + one `lantern-mcp`. The MCP server is stdio-only, so the
+typical workflow is:
+
+```shell
+# Bring up just Lantern in the background.
+docker compose -f docker-compose.mcp.yml up -d lantern
+
+# Sanity-check the MCP wire (note `run`, not `up` — stdio).
+docker compose -f docker-compose.mcp.yml run --rm lantern-mcp
+```
+
+In production, the agent runtime (Claude Desktop, VS Code, Cursor, …)
+owns the MCP container's lifetime — see
+[`../../mcp/examples/`](../../mcp/examples/) for those configs and
+[`../../mcp/README.md`](../../mcp/README.md) for the full operator
+reference.

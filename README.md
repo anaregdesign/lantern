@@ -382,6 +382,142 @@ plain unary gRPC, no streaming required.
 
 ---
 
+## Use as an MCP server
+
+The [`mcp/`](mcp/) module ships **`lantern-mcp`**, a
+[Model Context Protocol](https://modelcontextprotocol.io) server that turns
+a running Lantern endpoint into **decaying graph memory** for LLM agents
+(Claude Desktop, VS Code / Copilot, Cursor, …).
+
+The pitch in one line: **facts decay on a TTL ladder; relations are additive
+and decay independently**. Treating Lantern as a Redis-style KV with TTLs
+misses the point — `recall_*` deliberately does NOT refresh TTL, and
+`remember_relation` is Hebbian (writing the same relation twice strengthens
+it). The agent learns which facts and relations are worth keeping by
+reinforcing them; everything else dies on schedule.
+
+`lantern-mcp` is **not** a replacement for the Go SDK, the gRPC surface, or
+the CLI — it is the LLM-facing facade. Under the hood it dials Lantern with
+the same SDK any other client uses; it never imports `server/` or `core/`.
+
+### Tools
+
+Six tools, advertised at session-open. Descriptions match those exposed via
+MCP `tools/list` (see [mcp/server.go](mcp/server.go) for the source of truth).
+
+| Tool | Purpose |
+|---|---|
+| `remember_fact` | Store a fact with a **required TTL bucket**. Re-writing the same key overwrites + resets TTL — the canonical way to refresh. |
+| `recall_fact` | Look up a single fact. Returns `{found=false}` for misses (structured, not a tool error). Does NOT refresh TTL. |
+| `forget` | Delete a fact by exact key. Idempotent. Edges incident to the key are NOT cascade-deleted; they decay on their own. |
+| `list_under` | Enumerate facts whose key starts with a prefix, ascending. Defaults to 50, max 500. |
+| `remember_relation` | Add or **reinforce** a directed relation. Additive: same write twice = stronger relation. |
+| `recall_related` | Walk the graph from a seed with `step`, `k`, and an optional `objective` (`mst` / `max-st` / `spt` / `inverse-spt`). |
+
+A `ping` tool also exists so operators can sanity-check the wire without
+touching state.
+
+### TTL buckets
+
+Every `remember_*` tool takes a **required** bucket parameter. Twelve enum
+horizons covering "next breath" through "next quarter":
+
+```
+seconds → transient → turn → conversation → task → workday → day →
+  week → sprint → month → quarter → durable
+```
+
+Defaults run from 30s to 180d and are all overridable via
+`LANTERN_MCP_TTL_<BUCKET>` environment variables (see
+[mcp/README.md](mcp/README.md#ttl-buckets-required-parameter-for-every-remember_-tool)
+for the full table). When in doubt about which bucket to pick, choose the
+shorter one — re-writing is cheap.
+
+### Run the container
+
+```shell
+# Pin to a release tag — never `:latest` for agent runtimes.
+docker run --rm -i \
+  -e LANTERN_ADDR=host.docker.internal:6380 \
+  ghcr.io/anaregdesign/lantern-mcp:v0.1.0
+```
+
+Images are published to `ghcr.io/anaregdesign/lantern-mcp` on every
+`mcp/vX.Y.Z` git tag (independent of the server's release cadence). Both
+`vX.Y.Z` and bare `X.Y.Z` tag forms are available, plus `latest` and
+`sha-<short>`; each image is multi-arch (`linux/amd64` + `linux/arm64`)
+and signed with cosign keyless.
+
+### Client configs
+
+Copy-paste snippets live in [`mcp/examples/`](mcp/examples/). The Claude
+Desktop entry:
+
+```json
+{
+  "mcpServers": {
+    "lantern": {
+      "command": "docker",
+      "args": [
+        "run", "--rm", "-i",
+        "-e", "LANTERN_ADDR=host.docker.internal:6380",
+        "ghcr.io/anaregdesign/lantern-mcp:v0.1.0"
+      ]
+    }
+  }
+}
+```
+
+VS Code (`.vscode/mcp.json`) and Cursor (`~/.cursor/mcp.json`) take the
+same shape — see [mcp/examples/README.md](mcp/examples/README.md) for
+file locations and `LANTERN_ADDR` tweaks for Linux / remote setups.
+
+### Worked example: agent memory session
+
+The interaction pattern that exercises Lantern's strengths is
+**reinforce-then-recall** — short-TTL writes that accumulate into a
+useful neighborhood:
+
+```text
+# 1. Capture facts as they arise. Bucket is required; prefer SHORTER.
+remember_fact(key="user:alice/role",      value="staff eng",     bucket="quarter")
+remember_fact(key="user:alice/team",      value="payments",      bucket="month")
+remember_fact(key="topic:payments/owner", value="alice",         bucket="month")
+
+# 2. Reinforce relations every time they show up in the conversation.
+#    Each call APPENDS a contribution — repeated co-occurrence builds weight.
+remember_relation(tail="user:alice", head="topic:payments", weight=1.0, bucket="day")
+remember_relation(tail="user:alice", head="topic:payments", weight=1.0, bucket="day")
+remember_relation(tail="user:alice", head="topic:auth",     weight=0.4, bucket="day")
+
+# 3. Later in the session, walk the live graph. SPT-inverse-weight returns
+#    a "most relevant" tree — exactly what you want for grounding context.
+recall_related(seed="user:alice", step=2, k=5, objective="inverse-spt")
+# → [{key: "topic:payments", weight: 2.0}, {key: "topic:auth", weight: 0.4}, …]
+```
+
+Two recurring traps worth memorising:
+
+- **`recall_*` does NOT refresh TTL.** A frequently-read but never-rewritten
+  fact will still decay. The canonical idiom is *"recall, then if you want
+  it to stick around, `remember_fact` again with the same key."*
+- **`remember_relation` is additive, not idempotent.** Re-writing the same
+  edge strengthens it; that is the design. Use the relation's TTL bucket as
+  a half-life knob — short buckets give you a "what's hot right now" view,
+  long buckets give you "what has this user historically cared about."
+
+### Docs and references
+
+- Operator / contributor reference: [mcp/README.md](mcp/README.md).
+- Server-instructions string the LLM sees at session-open:
+  [mcp/server.go](mcp/server.go) (`serverInstructions` constant).
+- Container build + publish pipeline:
+  [.github/workflows/mcp-publish.yml](.github/workflows/mcp-publish.yml).
+- Integration test that wires the MCP server against an in-process Lantern:
+  [tests/integration/mcp_test.go](tests/integration/mcp_test.go).
+
+---
+
 ## gRPC surface
 
 Defined in [proto/graph/v1/graph.proto](proto/graph/v1/graph.proto), served by
@@ -498,19 +634,20 @@ Lantern ships production-grade observability out of the box:
 
 ## Repository layout
 
-This is a monorepo consolidating four formerly separate repositories, now stitched together as a 5-module Go workspace so each piece can be consumed independently.
+This is a monorepo consolidating four formerly separate repositories, now stitched together as a 6-module Go workspace so each piece can be consumed independently.
 
 | Path | Module | Role |
 |---|---|---|
-| `pb/` | `github.com/anaregdesign/lantern/pb` | Generated protobuf / gRPC / grpc-gateway stubs. Shared contract — both `server/` and `sdks/go/` depend on it. |
+| `pb/` | `github.com/anaregdesign/lantern/pb` | Generated protobuf / gRPC / grpc-gateway stubs. Shared contract — `server/`, `sdks/go/`, and `mcp/` all depend on it. |
 | `core/` | `github.com/anaregdesign/lantern/core` | Shared building blocks: graph algorithms, TTL caches, collections, concurrency, NLP. |
 | `sdks/go/` | `github.com/anaregdesign/lantern/sdks/go` | Go client SDK — depends on `pb/` only. |
 | `server/` | `github.com/anaregdesign/lantern/server` | gRPC server (DI via google/wire) — depends on `pb/` + `core/`, **not** on the client SDK. |
+| `mcp/` | `github.com/anaregdesign/lantern/mcp` | MCP server binary that exposes Lantern as decaying graph memory to LLM agents. Depends on `pb/` + `sdks/go/` only; ships as the `ghcr.io/anaregdesign/lantern-mcp` container on `mcp/vX.Y.Z` tags. |
 | `.` (root) | `github.com/anaregdesign/lantern` | Umbrella module hosting `cli/` (cobra + promptui) and `tests/integration/` (cross-module bufconn tests). |
 | `proto/` | (no Go module) | `.proto` sources — formerly `lantern-proto`. |
-| `go.work` | — | Pins all 5 modules for local dev. |
+| `go.work` | — | Pins all 6 modules for local dev. |
 
-Dependency direction is a strict DAG: `pb` and `core` are leaves; `sdks/go` → `pb`; `server` → `pb`, `core`; root → all four.
+Dependency direction is a strict DAG: `pb` and `core` are leaves; `sdks/go` → `pb`; `server` → `pb`, `core`; `mcp` → `sdks/go` → `pb`; root → all five submodules.
 
 ---
 

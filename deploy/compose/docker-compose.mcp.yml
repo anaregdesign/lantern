@@ -1,0 +1,63 @@
+# Docker Compose: single-node lantern + lantern-mcp.
+#
+# Minimal local-dev topology for trying the MCP server against a fresh
+# Lantern. Not for HA — see `docker-compose.yml` in this directory for
+# the 3-replica peer-discovery cluster.
+#
+# Usage:
+#   cd deploy/compose
+#   docker compose -f docker-compose.mcp.yml up -d lantern
+#
+# The MCP server is a stdio server — `docker compose up lantern-mcp` is
+# rarely what you want, because the agent runtime (Claude Desktop, VS
+# Code, Cursor, …) owns the lifetime and stdio pipe. The `lantern-mcp`
+# service definition below is here so you can:
+#
+#   1. Sanity-check the wire: `docker compose -f docker-compose.mcp.yml \
+#        run --rm lantern-mcp` (note `run`, not `up`).
+#   2. Use the service spec as a template for your own compose file with
+#      a real MCP-aware client attached on stdio.
+#
+# Override the image tags:
+#   LANTERN_IMAGE=ghcr.io/anaregdesign/lantern:v0.8.0 \
+#   LANTERN_MCP_IMAGE=ghcr.io/anaregdesign/lantern-mcp:v0.1.0 \
+#       docker compose -f docker-compose.mcp.yml up -d lantern
+
+services:
+  lantern:
+    image: ${LANTERN_IMAGE:-ghcr.io/anaregdesign/lantern:latest}
+    ports:
+      - "6380:6380"
+      - "9090:9090"
+    environment:
+      LANTERN_PORT: "6380"
+      LANTERN_METRICS_ADDR: ":9090"
+      LANTERN_DEFAULT_TTL_SECONDS: "3600"
+      LANTERN_LOG_FORMAT: "json"
+      LANTERN_LOG_LEVEL: "info"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/readyz"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+      start_period: 5s
+
+  lantern-mcp:
+    image: ${LANTERN_MCP_IMAGE:-ghcr.io/anaregdesign/lantern-mcp:latest}
+    # MCP is a stdio protocol — `stdin_open: true` so `docker compose run
+    # --rm lantern-mcp` keeps stdin attached and the client can speak
+    # JSON-RPC. `up -d` would just exit because there's nothing to read.
+    stdin_open: true
+    tty: false
+    environment:
+      # Use the Compose service DNS name so this works on Linux without
+      # `host.docker.internal`.
+      LANTERN_ADDR: "lantern:6380"
+      LANTERN_MCP_PING_TIMEOUT: "5s"
+      # Uncomment any of the 12 TTL buckets you want to override; values
+      # must use Go time.ParseDuration syntax (no `d` suffix).
+      # LANTERN_MCP_TTL_TURN: "15m"
+      # LANTERN_MCP_TTL_CONVERSATION: "2h"
+    depends_on:
+      lantern:
+        condition: service_healthy
