@@ -1,0 +1,57 @@
+# Reusable verify gate — gofmt + vet + build + test across every Go
+# module in the workspace. Called from publish workflows so a bad tag
+# can't ship a broken release.
+#
+# Previously docker-publish.yml, mcp-publish.yml, and sdks-go-publish.yml
+# each maintained their own ad-hoc `verify` job; the bodies drifted over
+# time and only mcp-publish actually covered more than one module. This
+# workflow is now the single source of truth for the publish-side gate.
+#
+# Refs #295 (dev-flow improvements backlog).
+#
+# `go.yml` Build & Test intentionally still owns its own loop because it
+# also runs coverage + artifact upload and the job name is a branch-
+# protection required check — folding it in would risk renaming the
+# required check.
+
+name: Verify (reusable)
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.4'
+          check-latest: true
+
+      - name: Verify formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::These files are not gofmt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      # Per-module loop. Each module is a separate go.mod; the root
+      # `./...` does NOT recurse into core/, mcp/, pb/, sdks/go/,
+      # server/. Mirrored from go.yml.
+      - name: Vet / build / test (all modules)
+        run: |
+          set -e
+          for mod in . core mcp pb sdks/go server; do
+            echo "::group::$mod"
+            (cd "$mod" && go vet ./... && go build -v ./... && go test -race -shuffle=on ./...)
+            echo "::endgroup::"
+          done

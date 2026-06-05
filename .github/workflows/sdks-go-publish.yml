@@ -19,22 +19,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Shared verify gate — see _verify.yml and #295. Covers all six Go
+  # modules so a bad `sdks/go/vX.Y.Z` tag can't land on pkg.go.dev even
+  # if the breakage is in an upstream module the SDK depends on.
   verify:
-    name: Verify (build + test)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
-        with:
-          go-version: '1.26.4'
-          check-latest: true
-      - name: Vet
-        run: (cd sdks/go && go vet ./...)
-      - name: Build
-        run: (cd sdks/go && go build -v ./...)
-      - name: Test
-        run: (cd sdks/go && go test -race -shuffle=on ./...)
+    uses: ./.github/workflows/_verify.yml
 
   release:
     name: Publish GitHub Release
