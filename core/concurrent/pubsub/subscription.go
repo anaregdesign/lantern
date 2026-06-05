@@ -82,13 +82,17 @@ func (s *Subscription[T]) Subscribe(ctx context.Context, consumer function.Consu
 						// Already acked (e.g. salvaged past TTL) between publish and lookup.
 						continue
 					}
+					// Snapshot createdAt BEFORE handing m to consumer. If consumer
+					// acks synchronously, ack() returns the envelope to s.pool;
+					// a concurrent Publish may then recycle it via newMessage,
+					// which re-stamps createdAt. Reading m.createdAt after
+					// consumer returns is a use-after-pool-recycle race (#303).
+					createdAt := m.createdAt
 					consumer(m)
 					if obs := s.observer; obs != nil {
 						// Enqueue-to-consumer-return latency, measured from the
-						// originating Publish (#240). Reads m.createdAt without
-						// the lock: the field is stamped once in newMessage and
-						// never mutated thereafter.
-						obs.ObserveDispatch(time.Since(m.createdAt))
+						// originating Publish (#240).
+						obs.ObserveDispatch(time.Since(createdAt))
 					}
 				case <-ctx.Done():
 					return
