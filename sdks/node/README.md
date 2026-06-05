@@ -1,4 +1,4 @@
-# lantern-client (Node.js / TypeScript)
+# lantern-sdk (Node.js / TypeScript)
 
 Official Node.js / TypeScript client for [Lantern](https://github.com/anaregdesign/lantern) —
 an in-memory graph KVS with prefix scan, neighborhood traversal (`Illuminate`), and TTL.
@@ -10,17 +10,17 @@ an in-memory graph KVS with prefix scan, neighborhood traversal (`Illuminate`), 
 ## Install
 
 ```bash
-npm install lantern-client
+npm install lantern-sdk
 # or
-bun add lantern-client
+bun add lantern-sdk
 # or
-pnpm add lantern-client
+pnpm add lantern-sdk
 ```
 
 ## Quick Start
 
 ```ts
-import { Lantern, Optimization } from "lantern-client";
+import { Lantern, Optimization } from "lantern-sdk";
 
 const client = Lantern.connect("localhost:6380");
 try {
@@ -70,7 +70,7 @@ oneof field:
 | `Float32(n)`                           | `float32`                          |
 | `Duration({seconds, nanos})`           | `duration`                         |
 
-Use the typed wrappers from `lantern-client` when you need a narrower numeric
+Use the typed wrappers from `lantern-sdk` when you need a narrower numeric
 type than `number` / `bigint` would infer.
 
 ## Batch APIs
@@ -82,7 +82,7 @@ chunk failure the call throws `BatchError`, which carries `.written`
 error — and the underlying `cause`.
 
 ```ts
-import { BatchError } from "lantern-client";
+import { BatchError } from "lantern-sdk";
 
 try {
   await client.putEdges(edges, { chunkSize: 500 });

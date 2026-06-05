@@ -1,5 +1,5 @@
 /**
- * `lantern-client` — Bun-managed TypeScript SDK for the Lantern graph KVS.
+ * `lantern-sdk` — Bun-managed TypeScript SDK for the Lantern graph KVS.
  *
  * @packageDocumentation
  */

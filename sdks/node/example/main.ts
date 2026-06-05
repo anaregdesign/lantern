@@ -1,4 +1,4 @@
-import { Lantern, Optimization } from "lantern-client";
+import { Lantern, Optimization } from "lantern-sdk";
 
 async function main(): Promise<void> {
   const client = Lantern.connect("localhost:6380");
