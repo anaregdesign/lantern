@@ -267,6 +267,17 @@ keyless). It does NOT need to follow the `pb → core → sdks/go → root` orde
 the MCP server only imports `pb/` and `sdks/go/`, so a `sdks/go/vX.Y.Z` bump
 is the only upstream pin that requires re-tagging the MCP image.
 
+**Release title convention (locked).** Every GitHub Release title MUST equal
+its tag name verbatim — `v0.7.2`, `core/v0.2.0`, `sdks/go/v0.8.0`,
+`sdks/node/v0.1.2`, `sdks/python/v0.1.1`, `mcp/v0.1.0`. No friendly aliases
+(`Node SDK v0.1.2`, `Go SDK v0.6.0`, etc). `docker-publish.yml` and
+`mcp-publish.yml` already enforce this via `gh release create --title
+"$TAG"`. The Python and Node SDK GitHub Releases are currently created
+manually — when creating them, always pass `--title "$(git describe
+--tags)"` (or the literal tag) so the title matches. If you ever automate
+those releases inside `python-sdk.yml` / `node-sdk.yml`, use the same
+`--title "$TAG"` pattern.
+
 ### Periodic doc-staleness sweep (before each release, or whenever memory and
 ### code disagree)
 
