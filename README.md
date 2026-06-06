@@ -185,8 +185,11 @@ docker compose up -d --scale lantern=5    # reconciles in ≤1 discovery tick
 ```
 
 Each replica is published on its own host port (`6380`, `6381`, …) so
-the Go SDK's round-robin LB (`NewLanternWithEndpoints`) can fan reads
-across them, while Prometheus on `:9091` scrapes every pod via DNS SD.
+a reverse-proxy sidecar (Caddy / Traefik / envoy with a DNS-resolved
+upstream pool) or DNS round-robin from the client can fan reads across
+them, while Prometheus on `:9091` scrapes every pod via DNS SD. See
+[`deploy/compose/README.md`](deploy/compose/README.md) for the client
+LB options.
 
 ### Run on serverless container PaaS
 

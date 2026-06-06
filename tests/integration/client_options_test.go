@@ -4,64 +4,70 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	cachegraph "github.com/anaregdesign/lantern/core/cache/graph"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	client "github.com/anaregdesign/lantern/sdks/go"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/status"
-	"google.golang.org/grpc/test/bufconn"
 )
 
-func newBufServer(t *testing.T, lim provider.ValidationLimits, extra ...grpc.UnaryServerInterceptor) func(context.Context, string) (net.Conn, error) {
+// newOptsClient stands up a Connect-on-h2c httptest server with the
+// supplied validation limits + per-test extra Connect interceptors,
+// then returns a *client.Lantern speaking Connect against it.
+//
+// Replaces the legacy bufconn + grpc.NewServer harness retired with
+// the Connect-only SDK collapse (#367). The Connect interceptor list
+// is variadic so tests can layer in failure-injection / counting /
+// retry-probe behaviour without each spinning up its own helper.
+func newOptsClient(
+	t *testing.T,
+	lim provider.ValidationLimits,
+	extra ...connect.Interceptor,
+) *client.Lantern {
 	t.Helper()
-	lis := bufconn.Listen(1 << 20)
 	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
 	svc := service.NewLanternService(cache)
 	val := provider.NewValidationInterceptor(lim)
-
-	chain := []grpc.UnaryServerInterceptor{val.UnaryServerInterceptor()}
-	chain = append(chain, extra...)
-	srv := grpc.NewServer(grpc.ChainUnaryInterceptor(chain...))
-	pb.RegisterLanternServiceServer(srv, svc)
-
-	go func() {
-		if err := srv.Serve(lis); err != nil {
-			t.Logf("bufconn serve: %v", err)
-		}
-	}()
-
-	t.Cleanup(func() {
-		srv.Stop()
-		_ = lis.Close()
-	})
-	return func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }
+	interceptors := append([]connect.Interceptor{val.ConnectInterceptor()}, extra...)
+	srv := newConnectTestServer(t, svc, nil, interceptors...)
+	return newConnectClientFor(t, srv.url)
 }
 
-func newOptsClient(t *testing.T, dialer func(context.Context, string) (net.Conn, error), opts ...client.Option) *client.Lantern {
+// newOptsClientWithCustomOptions is the same harness but lets the
+// test pass extra SDK-side Options (WithDefaultTimeout, etc.).
+func newOptsClientWithCustomOptions(
+	t *testing.T,
+	lim provider.ValidationLimits,
+	clientOpts []client.Option,
+	extra ...connect.Interceptor,
+) *client.Lantern {
 	t.Helper()
-	base := []client.Option{
-		client.WithTransportCredentials(insecure.NewCredentials()),
-		client.WithDialOption(grpc.WithContextDialer(dialer)),
-	}
-	base = append(base, opts...)
-	c, err := client.NewLantern("passthrough://bufnet", base...)
+	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
+	svc := service.NewLanternService(cache)
+	val := provider.NewValidationInterceptor(lim)
+	interceptors := append([]connect.Interceptor{val.ConnectInterceptor()}, extra...)
+	srv := newConnectTestServer(t, svc, nil, interceptors...)
+	all := append([]client.Option{client.WithHTTPClient(h2cClient())}, clientOpts...)
+	l, err := client.NewLanternConnect(srv.url, all...)
 	if err != nil {
-		t.Fatalf("NewLantern: %v", err)
+		t.Fatalf("NewLanternConnect: %v", err)
 	}
-	t.Cleanup(func() { _ = c.Close() })
-	return c
+	t.Cleanup(func() { _ = l.Close() })
+	return l
 }
 
 func TestClient_GetVertex_NotFoundWrapped(t *testing.T) {
-	c := newOptsClient(t, newBufServer(t, provider.ValidationLimits{MaxKeyLen: 64, MaxBatchSize: 100}))
+	c := newOptsClient(t, provider.ValidationLimits{MaxKeyLen: 64, MaxBatchSize: 100})
 	_, err := c.GetVertex(context.Background(), "absent")
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -72,21 +78,23 @@ func TestClient_GetVertex_NotFoundWrapped(t *testing.T) {
 }
 
 func TestClient_ValidationInterceptor_RejectsLongKey(t *testing.T) {
-	c := newOptsClient(t, newBufServer(t, provider.ValidationLimits{MaxKeyLen: 4, MaxBatchSize: 10}))
+	c := newOptsClient(t, provider.ValidationLimits{MaxKeyLen: 4, MaxBatchSize: 10})
 	err := c.PutVertex(context.Background(), "way-too-long-key", 1, time.Minute)
 	if err == nil {
-		t.Fatal("expected InvalidArgument, got nil")
+		t.Fatal("expected error, got nil")
 	}
-	if got := status.Code(err); got != codes.InvalidArgument {
-		t.Errorf("code = %v, want InvalidArgument", got)
+	if !errors.Is(err, client.ErrInvalidArgument) {
+		t.Errorf("error %v should wrap ErrInvalidArgument", err)
 	}
 }
 
 func TestClient_BatchChunking(t *testing.T) {
-	// MaxBatchSize=5 on the server would reject an 8-element put. Chunking at
-	// 3 keeps every request under the cap.
-	dialer := newBufServer(t, provider.ValidationLimits{MaxKeyLen: 32, MaxBatchSize: 5})
-	c := newOptsClient(t, dialer, client.WithBatchChunkSize(3))
+	// MaxBatchSize=5 on the server would reject an 8-element put.
+	// Chunking at 3 keeps every request under the cap.
+	c := newOptsClientWithCustomOptions(t,
+		provider.ValidationLimits{MaxKeyLen: 32, MaxBatchSize: 5},
+		[]client.Option{client.WithBatchChunkSize(3)},
+	)
 
 	ctx := context.Background()
 	inputs := make([]client.VertexInput, 0, 8)
@@ -107,50 +115,21 @@ func TestClient_BatchChunking(t *testing.T) {
 	}
 }
 
-// TestClient_RetryOnUnavailable verifies that the default service config
-// transparently retries an idempotent RPC after a transient UNAVAILABLE.
-func TestClient_RetryOnUnavailable(t *testing.T) {
-	var attempts int
-	flaky := func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		if info.FullMethod == "/graph.v1.LanternService/GetVertex" {
-			attempts++
-			if attempts == 1 {
-				return nil, status.Error(codes.Unavailable, "simulated transient")
-			}
-		}
-		return handler(ctx, req)
-	}
-	dialer := newBufServer(t, provider.ValidationLimits{MaxKeyLen: 64, MaxBatchSize: 10}, flaky)
-	c := newOptsClient(t, dialer)
-
-	ctx := context.Background()
-	if err := c.PutVertex(ctx, "k", "v", time.Minute); err != nil {
-		t.Fatalf("PutVertex: %v", err)
-	}
-	v, err := c.GetVertex(ctx, "k")
-	if err != nil {
-		t.Fatalf("GetVertex: %v", err)
-	}
-	if got, _ := client.StringValue(v); got != "v" {
-		t.Errorf("StringValue = %q, want %q", got, "v")
-	}
-	if attempts < 2 {
-		t.Errorf("expected retry (attempts >= 2), got %d", attempts)
-	}
-}
-
+// TestClient_DefaultTimeoutHonoured asserts that WithDefaultTimeout
+// applies a context deadline to RPCs that arrive without one. A
+// server-side interceptor blocks until ctx cancellation so the
+// timeout is the only thing that can unstick the call.
 func TestClient_DefaultTimeoutHonoured(t *testing.T) {
-	// Server handler that blocks; default timeout must trip.
-	blocker := func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		<-ctx.Done()
-		return nil, status.FromContextError(ctx.Err()).Err()
-	}
-	dialer := newBufServer(t, provider.ValidationLimits{MaxKeyLen: 64, MaxBatchSize: 10}, blocker)
-	// Disable retries to keep the test fast: a retried DeadlineExceeded would
-	// burn through the policy budget.
-	c := newOptsClient(t, dialer,
-		client.WithDefaultTimeout(100*time.Millisecond),
-		client.WithDefaultServiceConfig(""),
+	blocker := connect.UnaryInterceptorFunc(func(_ connect.UnaryFunc) connect.UnaryFunc {
+		return func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+			<-ctx.Done()
+			return nil, connect.NewError(connect.CodeDeadlineExceeded, ctx.Err())
+		}
+	})
+	c := newOptsClientWithCustomOptions(t,
+		provider.ValidationLimits{MaxKeyLen: 64, MaxBatchSize: 10},
+		[]client.Option{client.WithDefaultTimeout(100 * time.Millisecond)},
+		blocker,
 	)
 	start := time.Now()
 	_, err := c.GetVertex(context.Background(), "k")
@@ -158,8 +137,16 @@ func TestClient_DefaultTimeoutHonoured(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected DeadlineExceeded, got nil")
 	}
-	if got := status.Code(err); got != codes.DeadlineExceeded {
-		t.Errorf("code = %v, want DeadlineExceeded", got)
+	// The SDK's connectErrToGRPC shim re-encodes Connect errors as
+	// google.golang.org/grpc/status errors so existing call-sites
+	// keep using status.Code(err) / codes.X. Accept either the
+	// gRPC code, the Connect code (for direct connect errors that
+	// slipped through), or context.DeadlineExceeded (for the local
+	// timeout path).
+	if status.Code(err) != codes.DeadlineExceeded &&
+		connect.CodeOf(err) != connect.CodeDeadlineExceeded &&
+		!errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("error %v, want DeadlineExceeded", err)
 	}
 	if elapsed > time.Second {
 		t.Errorf("default timeout did not fire promptly: %v", elapsed)
@@ -167,14 +154,24 @@ func TestClient_DefaultTimeoutHonoured(t *testing.T) {
 }
 
 func TestClient_RespectsContextCancel(t *testing.T) {
-	c := newOptsClient(t, newBufServer(t, provider.ValidationLimits{MaxKeyLen: 64, MaxBatchSize: 10}))
+	c := newOptsClient(t, provider.ValidationLimits{MaxKeyLen: 64, MaxBatchSize: 10})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, err := c.GetVertex(ctx, "k")
 	if err == nil {
 		t.Fatal("expected ctx cancel error, got nil")
 	}
-	if got := status.Code(err); got != codes.Canceled {
-		t.Errorf("code = %v, want Canceled", got)
+	if !errors.Is(err, context.Canceled) &&
+		connect.CodeOf(err) != connect.CodeCanceled &&
+		status.Code(err) != codes.Canceled {
+		t.Errorf("error %v, want Canceled", err)
 	}
 }
+
+// silenceUnused keeps the imports referenced when individual tests
+// above are commented out during local debugging.
+var (
+	_ = httptest.NewUnstartedServer
+	_ = http.MethodPost
+	_ = graphv1connect.LanternServiceName
+)

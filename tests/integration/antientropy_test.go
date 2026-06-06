@@ -2,7 +2,7 @@ package integration_test
 
 import (
 	"context"
-	"net"
+	"net/url"
 	"testing"
 	"time"
 
@@ -13,8 +13,6 @@ import (
 	client "github.com/anaregdesign/lantern/sdks/go"
 	"github.com/anaregdesign/lantern/server/replication"
 	"github.com/anaregdesign/lantern/server/service"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 // antiEntropyNode is a deliberately stripped-down variant of pumpNode
@@ -23,7 +21,8 @@ import (
 // — the whole point of this test is to prove the anti-entropy driver
 // alone can heal a missed write.
 type antiEntropyNode struct {
-	addr   string
+	addr   string // host:port form, for replication.AntiEntropy peer config
+	url    string // full http:// URL, for SDK + raw Connect clients
 	cache  *cachegraph.GraphCache[string, *pb.Vertex]
 	clock  *hlc.Clock
 	log    *mutationlog.Log
@@ -34,44 +33,30 @@ type antiEntropyNode struct {
 
 func newAntiEntropyNode(t *testing.T, nodeID hlc.NodeID) *antiEntropyNode {
 	t.Helper()
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	srv := grpc.NewServer()
-	log := mutationlog.New(mutationlog.Options{Capacity: 1024, SubscriberBuffer: 1024})
+	mlog := mutationlog.New(mutationlog.Options{Capacity: 1024, SubscriberBuffer: 1024})
+	t.Cleanup(func() { _ = mlog.Close() })
 	clock := hlc.New(nodeID, hlc.Options{})
 	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
-	svc := service.NewLanternService(cache).WithReplication(log, clock, nil)
-	pb.RegisterLanternServiceServer(srv, svc)
-	pb.RegisterLanternReplicationServiceServer(srv,
-		service.NewLanternReplicationService(log, cache, clock).WithOriginStates(svc),
-	)
-	go func() { _ = srv.Serve(lis) }()
+	svc := service.NewLanternService(cache).WithReplication(mlog, clock, nil)
+	rep := service.NewLanternReplicationService(mlog, cache, clock).WithOriginStates(svc)
+	srv := newConnectTestServer(t, svc, rep)
 
-	sdk, err := client.NewLantern(
-		lis.Addr().String(),
-		client.WithTransportCredentials(insecure.NewCredentials()),
-	)
+	sdk := newConnectClientFor(t, srv.url)
+	u, err := url.Parse(srv.url)
 	if err != nil {
-		t.Fatalf("NewLantern: %v", err)
+		t.Fatalf("parse %q: %v", srv.url, err)
 	}
-	t.Cleanup(func() {
-		_ = sdk.Close()
-		srv.Stop()
-		_ = log.Close()
-	})
 	return &antiEntropyNode{
-		addr: lis.Addr().String(), cache: cache, clock: clock,
-		log: log, svc: svc, sdk: sdk, nodeID: nodeID,
+		addr: u.Host, url: srv.url, cache: cache, clock: clock,
+		log: mlog, svc: svc, sdk: sdk, nodeID: nodeID,
 	}
 }
 
 // TestAntiEntropy_DriverConvergesWithoutPump asserts that the
 // anti-entropy driver (#186) alone — without the pump — is enough to
-// converge a follower node after a write to the leader. This is the
-// convergence safety-net case: the pump is assumed broken / not yet
-// connected, and anti-entropy fills the gap on its tick cadence.
+// converge a follower node after a write to the leader. Convergence
+// safety-net case: the pump is assumed broken / not yet connected,
+// and anti-entropy fills the gap on its tick cadence.
 func TestAntiEntropy_DriverConvergesWithoutPump(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping anti-entropy convergence test in short mode")
@@ -86,16 +71,15 @@ func TestAntiEntropy_DriverConvergesWithoutPump(t *testing.T) {
 	c := newAntiEntropyNode(t, hlc.NodeID{0x0C})
 
 	// Wire C's anti-entropy driver at B with a short tick interval.
-	// 50ms cadence keeps the test fast without thrashing the loopback.
-	// HTTPClient is left zero so the driver constructs its default
-	// h2c client (plaintext HTTP/2). The Connect-Go client is
-	// configured with connect.WithGRPC() internally so it talks to
-	// b's grpc.NewServer peer.
+	// 50ms cadence keeps the test fast without thrashing loopback.
+	// HTTPClient is supplied so the driver speaks h2c against the
+	// httptest server (replication.defaultH2CClient is unexported).
 	ae := replication.NewAntiEntropy(replication.AntiEntropyConfig{
 		NodeID:           c.nodeID,
-		Peers:            []string{b.addr},
+		Peers:            []string{b.url},
 		Interval:         50 * time.Millisecond,
 		SubscribeTimeout: 2 * time.Second,
+		HTTPClient:       h2cClient(),
 	}, c.svc, c.svc, c.cache)
 	aeCtx, cancelAE := context.WithCancel(ctx)
 	done := make(chan struct{})

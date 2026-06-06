@@ -143,20 +143,33 @@ docker compose scale lantern=5   # all 5 join the cluster on next tick
 
 There is **no nginx / haproxy sidecar**. OSS nginx's `resolve` keyword
 on `upstream server` is an nginx-plus feature, so a generic Compose
-recipe would need stream-block trickery to re-resolve DNS. The pragmatic
-answer is to do client-side LB in the SDK:
+recipe would need stream-block trickery to re-resolve DNS. Two pragmatic
+answers:
+
+1. **Reverse proxy / sidecar fan-out.** Drop in Caddy, Traefik, or
+   envoy with a `*.lantern` DNS-resolved upstream pool. Each of these
+   re-resolves DNS A records on a cadence (Caddy: `dynamic dns`;
+   Traefik: Docker provider; envoy: `STRICT_DNS` cluster), so scaling
+   `lantern=N` is picked up without a config push. The proxy speaks
+   h2c upstream → Lantern's single port, terminating TLS at the edge.
+2. **DNS round-robin from the client.** Point the SDK at a host name
+   that resolves to all backends; the OS resolver hands the addresses
+   to `net/http`'s `http2.Transport` in shuffled order, and any backend
+   returning a transient error triggers a fresh dial against the next
+   IP. Suitable for steady-state read traffic from a single client.
 
 ```go
-client, err := lantern.NewLanternWithEndpoints([]string{
-    "127.0.0.1:6380", "127.0.0.1:6381", "127.0.0.1:6382",
-})
+// Reverse-proxy fan-out: point one URL at the proxy, not at the pool.
+c, err := lantern.NewLantern("http://lantern-proxy.svc:6380")
 ```
 
-`NewLanternWithEndpoints`
-([#189](https://github.com/anaregdesign/lantern/issues/189)) gives you
-gRPC `round_robin` over those endpoints — same load distribution as a
-proper LB would provide. For Swarm mode, use `tasks.lantern` instead
-of `lantern` for the discovery DNS name.
+The pre-#367 `NewLanternWithEndpoints([]string{...})` constructor that
+did SDK-side round-robin LB has been removed
+([#367](https://github.com/anaregdesign/lantern/issues/367)); the
+Connect-only SDK only takes a single base URL. Use one of the two
+patterns above instead. For Swarm mode, use `tasks.lantern` instead
+of `lantern` for the discovery DNS name on the server side; clients
+still target a single proxy URL.
 
 **Single-instance on Compose.** `docker compose up --scale lantern=1`
 plus omitting `LANTERN_PEER_DISCOVERY` puts the service in single-

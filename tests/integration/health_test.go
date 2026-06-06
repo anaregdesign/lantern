@@ -2,69 +2,70 @@ package integration_test
 
 import (
 	"context"
-	"net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
+	"connectrpc.com/grpchealth"
+
 	cachegraph "github.com/anaregdesign/lantern/core/cache/graph"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	client "github.com/anaregdesign/lantern/sdks/go"
-	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	healthpb "google.golang.org/grpc/health/grpc_health_v1"
-	"google.golang.org/grpc/test/bufconn"
 )
 
-// newInProcessClientWithHealth is like newInProcessClient but additionally
-// registers the grpc.health.v1 service so the SDK's Ping helper can be
-// exercised end-to-end.
+// newInProcessClientWithHealth stands up a Connect-on-h2c httptest
+// server that mounts both the Lantern service AND a
+// connectrpc.com/grpchealth handler. The serving flag drives the
+// overall ("") status the handler reports. Mirrors how
+// server/provider/health.go + lantern_listener.go wire production.
+//
+// Replaces the legacy bufconn + grpc.health.v1 harness retired with
+// the Connect-only SDK collapse (#367).
 func newInProcessClientWithHealth(t *testing.T, serving bool) (*client.Lantern, func()) {
 	t.Helper()
+	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
+	svc := service.NewLanternService(cache)
 
-	lis := bufconn.Listen(1 << 16)
-	srv := grpc.NewServer()
-	svc := service.NewLanternService(cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute))
-	pb.RegisterLanternServiceServer(srv, svc)
-
-	hs := provider.NewHealthServer()
-	provider.RegisterHealth(srv, hs)
+	// Pre-register the canonical empty service name so the static
+	// checker recognises Check(""). The grpchealth handler answers
+	// CodeNotFound for any service it has never seen.
+	checker := grpchealth.NewStaticChecker("")
 	if serving {
-		hs.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+		checker.SetStatus("", grpchealth.StatusServing)
 	} else {
-		hs.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+		checker.SetStatus("", grpchealth.StatusNotServing)
 	}
 
-	go func() {
-		if err := srv.Serve(lis); err != nil {
-			t.Logf("grpc Serve returned: %v", err)
-		}
-	}()
+	mux := http.NewServeMux()
+	mux.Handle(graphv1connect.NewLanternServiceHandler(
+		service.NewLanternServiceConnectHandler(svc),
+	))
+	mux.Handle(grpchealth.NewHandler(checker))
 
-	dialer := func(context.Context, string) (net.Conn, error) {
-		return lis.Dial()
-	}
-	l, err := client.NewLantern(
-		"passthrough://bufconn",
-		client.WithTransportCredentials(insecure.NewCredentials()),
-		client.WithDialOption(grpc.WithContextDialer(dialer)),
-	)
+	srv := httptest.NewUnstartedServer(mux)
+	// Enable unencrypted HTTP/2 via the Go 1.24+ Server.Protocols
+	// surface (same pattern as helpers_test.go newConnectTestServer).
+	protos := new(http.Protocols)
+	protos.SetHTTP1(true)
+	protos.SetUnencryptedHTTP2(true)
+	srv.Config.Protocols = protos
+	srv.Start()
+	t.Cleanup(srv.Close)
+
+	l, err := client.NewLanternConnect(srv.URL, client.WithHTTPClient(h2cClient()))
 	if err != nil {
-		t.Fatalf("NewLantern: %v", err)
+		t.Fatalf("NewLanternConnect: %v", err)
 	}
-
-	cleanup := func() {
-		_ = l.Close()
-		srv.Stop()
-		_ = lis.Close()
-	}
-	return l, cleanup
+	t.Cleanup(func() { _ = l.Close() })
+	return l, func() {}
 }
 
 func TestLantern_Ping_Serving(t *testing.T) {
-	l, cleanup := newInProcessClientWithHealth(t, true)
-	defer cleanup()
+	l, _ := newInProcessClientWithHealth(t, true)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -74,8 +75,7 @@ func TestLantern_Ping_Serving(t *testing.T) {
 }
 
 func TestLantern_Ping_NotServing(t *testing.T) {
-	l, cleanup := newInProcessClientWithHealth(t, false)
-	defer cleanup()
+	l, _ := newInProcessClientWithHealth(t, false)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -83,3 +83,7 @@ func TestLantern_Ping_NotServing(t *testing.T) {
 		t.Fatal("Ping when NOT_SERVING: expected error, got nil")
 	}
 }
+
+// silenceUnused keeps cosmetic imports referenced when individual
+// tests above are commented out during local debugging.
+var _ = connect.CodeOf

@@ -79,7 +79,13 @@ func seedBaseline(ctx context.Context, c *client.Lantern) {
 }
 
 func writeDuringOutage(ctx context.Context, eps []string) {
-	cli, err := client.NewLanternWithEndpoints(eps)
+	// Pre-#367 used NewLanternWithEndpoints to fan writes across the
+	// survivors with built-in failover; the Connect-only SDK has no
+	// transport-level LB so we just pin to the first survivor (the
+	// outage scenario tests *replication*, not client-side LB —
+	// failover at the LB layer is now a reverse-proxy / k8s Service
+	// concern).
+	cli, err := client.NewLantern(eps[0])
 	if err != nil {
 		log.Fatalf("survivor client: %v", err)
 	}
@@ -192,8 +198,10 @@ func main() {
 	}
 	fmt.Println("✓ all 3 replicas reachable")
 
-	// 1) Seed baseline via round-robin LB.
-	rr, err := client.NewLanternWithEndpoints(allEndpoints)
+	// 1) Seed baseline via the first replica. Same rationale as
+	//    writeDuringOutage: client-side fan-out / LB has moved out of
+	//    the SDK since #367.
+	rr, err := client.NewLantern(allEndpoints[0])
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -44,55 +44,50 @@ See [`example/main.go`](example/main.go) for a comprehensive end-to-end
 walkthrough covering vertices, edges (`AddEdge` vs `PutEdge` semantics),
 `Illuminate`, prefix scans, batches, and TLS.
 
-## Switching to Connect (v1.0 preview)
+## Connect-only (since #367)
 
-The SDK ships an **additive** Connect-Go transport alongside the
-classic gRPC dial path (see [#335](https://github.com/anaregdesign/lantern/issues/335),
-[#337](https://github.com/anaregdesign/lantern/issues/337),
-[#338](https://github.com/anaregdesign/lantern/issues/338)). The Connect
-transport will become the default in v1.0; both constructors return the
-same `*Lantern`, so application code that holds the value is transport-
-agnostic.
-
-To use Connect today, run the server with the additive listener enabled
-(e.g. `LANTERN_CONNECT_PORT=6381`) and dial via:
+As of #367 the SDK is **Connect-only**. The legacy gRPC dial path and
+its options have been removed; both `NewLantern` and `NewLanternConnect`
+return the same `*Lantern` and share one `Option` type. Existing call
+sites that pass a bare `"host:port"` keep compiling — `NewLantern` now
+just normalises the input by prepending `http://` and delegates to
+`NewLanternConnect`.
 
 ```go
-c, err := client.NewLanternConnect("http://localhost:6381")
+// Equivalent — pick whichever reads better at your call site.
+c1, _ := client.NewLantern("lantern.svc:6380")
+c2, _ := client.NewLanternConnect("http://lantern.svc:6380")
 ```
 
-Differences from `NewLantern`:
+Differences from the pre-#367 surface:
 
-- **baseURL must include the scheme.** Use `http://` for h2c (the
-  built-in default) or `https://` for TLS — supply a TLS-aware
-  `http.Client` via `WithHTTPClient` for the latter.
-- **gRPC dial options are not accepted.** Pass a configured
-  `*http.Client` via `WithHTTPClient`; forward Connect-Go interceptors
-  via `WithConnectClientOption(connect.WithInterceptors(...))`.
-- **Health checks** move from the gRPC Health service to the metrics
-  server's `/healthz`. Use `client.PingConnect(ctx, httpClient,
-  "http://lantern:9090")` instead of `c.Ping(ctx)`.
+- **baseURL may include a scheme.** Bare `"host:port"` is upgraded to
+  `http://host:port` (h2c). Use `https://...` explicitly with a TLS-aware
+  `http.Client` via `WithHTTPClient` for TLS.
+- **gRPC dial options are gone.** Pass a configured `*http.Client` via
+  `WithHTTPClient`; forward Connect-Go client options via
+  `WithConnectClientOption(connect.With...())`. Compression: use
+  `client.WithConnectClientOption(connect.WithSendCompression("gzip"))`.
+- **Health check** now POSTs to the same Connect base URL at
+  `/grpc.health.v1.Health/Check` (mounted by the server's
+  connectrpc.com/grpchealth handler). Continue calling `c.Ping(ctx)`.
+- **Load balancing** moves out of the SDK. The pre-#367
+  `NewLanternWithEndpoints([]string{...})` LB constructor is gone; use
+  DNS (`dns:///service.ns.svc:6380` style works via the operating system
+  resolver), a k8s Service / Ingress, or a reverse proxy / sidecar in
+  front of Lantern. The HA runbook ([../../docs/ha-runbook.md](../../docs/ha-runbook.md))
+  walks through the canonical reverse-proxy fan-out pattern.
 
-Existing constructors and options remain fully supported through the
-v0.x line and only retire in v1.0.
+### v0.x → v1.0 option migration
 
-## Connection topologies
-
-All three constructors enable the same default retry policy
-(`UNAVAILABLE` + `RESOURCE_EXHAUSTED` retried with capped exponential
-backoff) and client-side `round_robin` load balancing; only the resolver
-changes.
-
-| Constructor | When to use |
+| v0.x option | Replacement |
 | --- | --- |
-| `NewLantern("host:port")` | Single endpoint — PaaS (Cloud Run, ACA, App Service single instance) or any case where you have one stable URL. |
-| `NewLantern("dns:///service.ns.svc:6380")` | DNS fan-out — k8s ClusterIP/headless Services, Compose service names, any DNS source resolving one host to N backends. gRPC re-resolves on connection failure. |
-| `NewLanternWithEndpoints([]string{...})` | Explicit static list — bare hosts, env-supplied pod IPs, any non-DNS discovery source. Uses gRPC's manual resolver under the hood. |
-
-All three transparently failover: any backend returning `codes.Unavailable`
-is retried on the next healthy address, and the server-side readiness gate
-(`/healthz/ready`) keeps draining nodes out of rotation until they catch up
-on replication.
+| `WithTransportCredentials(creds)` | `WithHTTPClient(&http.Client{Transport: &http2.Transport{TLSClientConfig: cfg}})` |
+| `WithDialOption(...)` | `WithConnectClientOption(...)` for Connect equivalents; per-RPC auth via a custom `http.RoundTripper` on the supplied `http.Client`. |
+| `WithCompression("gzip")` | `WithConnectClientOption(connect.WithSendCompression("gzip"))` |
+| `WithKeepaliveParams(...)` | Tune the `http2.Transport` on the supplied `http.Client` (`ReadIdleTimeout`, `PingTimeout`). |
+| `WithDefaultServiceConfig(...)` | Wrap the `http.Client.Transport` with your own retry middleware; the SDK no longer ships a built-in retry policy. |
+| `WithOpenTelemetry()` | Wrap the `http.Client.Transport` with `otelhttp.NewTransport(...)`. |
 
 ## Model definition policy ("no parallel models")
 
@@ -173,7 +168,23 @@ points at the new `pb` tag.
 
 ## Authentication
 
-TLS / mTLS via `WithTLS`, `WithMTLS`, or `WithSystemRootsTLS` options on the
-constructors. Per-RPC authentication (bearer tokens, OAuth) is not built in —
-wrap the dialer with your own
-`grpc.DialOption(grpc.WithPerRPCCredentials(...))` via `WithDialOptions(...)`.
+TLS / mTLS: pass a TLS-aware `*http.Client` via `WithHTTPClient` — wrap
+`http2.Transport{TLSClientConfig: cfg}` around a `tls.Config` carrying your
+roots and any client certs:
+
+```go
+cfg := &tls.Config{
+    RootCAs:      pool,
+    Certificates: []tls.Certificate{cert}, // mTLS
+    NextProtos:   []string{"h2"},
+}
+hc := &http.Client{Transport: &http2.Transport{TLSClientConfig: cfg}}
+c, _ := client.NewLantern("https://lantern.example.com:6380",
+    client.WithHTTPClient(hc))
+```
+
+Per-RPC authentication (bearer tokens, OAuth): wrap the `http.Client`'s
+`Transport` with a custom `http.RoundTripper` that injects the header — the
+SDK no longer hosts gRPC `PerRPCCredentials`. See
+[`cli/cmd/root.go`](../../cli/cmd/root.go) for the canonical TLS-aware
+`*http.Client` construction.

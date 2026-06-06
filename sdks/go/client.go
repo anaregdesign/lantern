@@ -4,12 +4,11 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -75,75 +74,59 @@ type EdgeInput struct {
 }
 
 type Lantern struct {
-	conn   *grpc.ClientConn
 	client pb.LanternServiceClient
 	opts   options
 
-	// connectHTTPClient and connectBaseURL are populated only by the
-	// additive NewLanternConnect constructor (#338). They are nil/empty
-	// on the legacy grpc path. SubscribeConnect / PingConnect check both
-	// and return a useful error when called on a grpc-backed *Lantern.
+	// connectHTTPClient + connectBaseURL are the wire-side bindings
+	// every *Lantern carries since the Connect-only collapse (#367).
+	// SubscribeConnect and Ping use them to build subordinate clients
+	// (replication, grpchealth) against the same base URL without
+	// asking the caller to plumb the URL through a second time.
 	connectHTTPClient *http.Client
 	connectBaseURL    string
 }
 
-// NewLantern dials target (host:port) and returns a connected Lantern client.
+// NewLantern dials the Lantern server at baseURL and returns a
+// connected client. baseURL must include the scheme: `http://host:port`
+// for h2c (matches the Lantern primary listener default), or
+// `https://host[:port]` for TLS. A bare `host:port` form is accepted
+// for source-compatibility with the legacy grpc-flavoured constructor
+// and gets `http://` prepended.
 //
-// The connection is established lazily on the first RPC (grpc.NewClient
-// semantics); pass a context with a deadline to your first call if you need
-// bounded connect time.
-//
-// Defaults:
-//   - insecure credentials (override with WithTransportCredentials)
-//   - retry policy on every idempotent RPC (override with
-//     WithDefaultServiceConfig)
-//   - batch helpers auto-chunk at 1000 entries (override with
-//     WithBatchChunkSize)
-func NewLantern(target string, opts ...Option) (*Lantern, error) {
-	o := options{
-		batchChunkSize:    defaultBatchChunkSize,
-		serviceConfigJSON: defaultServiceConfig,
-		keepalive:         defaultKeepalive,
-	}
-	for _, apply := range opts {
-		apply(&o)
-	}
+// Pre-#367 this constructor used `grpc.NewClient` and required the
+// caller to plumb credentials / dial options / a retry-policy service
+// config through bespoke WithXxx helpers. The Connect-only collapse
+// retired those knobs in favour of a single TLS-aware `http.Client`
+// supplied via WithHTTPClient — see the migration table in
+// sdks/go/README.md.
+func NewLantern(baseURL string, opts ...Option) (*Lantern, error) {
+	return NewLanternConnect(normaliseBaseURL(baseURL), opts...)
+}
 
-	dialOpts := make([]grpc.DialOption, 0, len(o.dialOptions)+3)
-	dialOpts = append(dialOpts, grpc.WithKeepaliveParams(o.keepalive))
-	if o.transportCreds != nil {
-		dialOpts = append(dialOpts, grpc.WithTransportCredentials(o.transportCreds))
-	} else {
-		dialOpts = append(dialOpts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+// normaliseBaseURL prepends "http://" to a bare "host:port" so
+// historical call sites that mirrored the grpc.NewClient target form
+// continue to work without source changes. Inputs that already carry
+// a scheme (or are empty) flow through unchanged so NewLanternConnect
+// can raise the proper error.
+func normaliseBaseURL(s string) string {
+	if s == "" {
+		return s
 	}
-	if o.serviceConfigJSON != "" {
-		dialOpts = append(dialOpts, grpc.WithDefaultServiceConfig(o.serviceConfigJSON))
+	if strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") {
+		return s
 	}
-	dialOpts = append(dialOpts, o.dialOptions...)
-
-	conn, err := grpc.NewClient(target, dialOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return &Lantern{
-		conn:   conn,
-		client: pb.NewLanternServiceClient(conn),
-		opts:   o,
-	}, nil
+	return "http://" + s
 }
 
 func (l *Lantern) Close() error {
-	// The additive Connect path (NewLanternConnect, #338) does not own a
-	// grpc.ClientConn — its http.Client manages its own connection pool
-	// internally and needs no explicit teardown. CloseIdleConnections is
-	// best-effort and noop-safe on a nil transport.
-	if l.conn == nil {
-		if l.connectHTTPClient != nil {
-			l.connectHTTPClient.CloseIdleConnections()
-		}
-		return nil
+	// The Connect transport does not own a *grpc.ClientConn — its
+	// http.Client manages its own connection pool internally and
+	// needs no explicit teardown. CloseIdleConnections is best-effort
+	// and noop-safe on a nil transport.
+	if l.connectHTTPClient != nil {
+		l.connectHTTPClient.CloseIdleConnections()
 	}
-	return l.conn.Close()
+	return nil
 }
 
 // applyTimeout returns ctx with the default timeout applied when the caller
