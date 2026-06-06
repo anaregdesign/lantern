@@ -122,19 +122,34 @@ which `LocalIPSet()` filters as self, so the pump becomes a no-op.
 
 For local LLM-agent experiments there is a smaller compose file in
 [`docker-compose.mcp.yml`](docker-compose.mcp.yml) that stands up one
-`lantern` + one `lantern-mcp`. The MCP server is stdio-only, so the
-typical workflow is:
+`lantern` + one `lantern-mcp`. The HA compose file in this directory
+also ships a `lantern-mcp` service behind a Compose profile, so the
+same MCP container can be exercised against the 3-replica cluster:
 
 ```shell
-# Bring up just Lantern in the background.
+# Single-node (small file): bring lantern up in the background, then
+# attach the MCP container interactively.
 docker compose -f docker-compose.mcp.yml up -d lantern
-
-# Sanity-check the MCP wire (note `run`, not `up` — stdio).
 docker compose -f docker-compose.mcp.yml run --rm lantern-mcp
+
+# HA cluster (this file): same lantern-mcp container, but talking to
+# the 3-replica cluster — Compose DNS round-robins `lantern:6380`
+# across the live replicas.
+docker compose --profile mcp run --rm lantern-mcp
 ```
+
+`docker compose up` is the wrong verb in both cases — the MCP server
+is **stdio-only** (`mcp/cmd/main.go` mounts `&mcp.StdioTransport{}`),
+so backgrounding the container would leave nothing consuming stdout.
 
 In production, the agent runtime (Claude Desktop, VS Code, Cursor, …)
 owns the MCP container's lifetime — see
 [`../../mcp/examples/`](../../mcp/examples/) for those configs and
 [`../../mcp/README.md`](../../mcp/README.md) for the full operator
 reference.
+
+> The standalone `docker-compose.mcp.yml` covers the single-node case
+> and stays useful as a template for embedding `lantern-mcp` in your
+> own agent-runtime compose file. The HA file's `mcp` profile covers
+> the multi-replica case without duplicating the lantern + Prometheus
+> stack.
