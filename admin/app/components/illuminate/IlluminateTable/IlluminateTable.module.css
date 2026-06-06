@@ -1,0 +1,27 @@
+.colKey {
+  width: 32%;
+}
+
+.colExp {
+  width: 18%;
+}
+
+.colActions {
+  width: 14%;
+  text-align: right;
+}
+
+.keyLink {
+  color: var(--colorBrandForegroundLink, #0078d4);
+  text-decoration: none;
+  font-family: var(
+    --fontFamilyMonospace,
+    ui-monospace,
+    SFMono-Regular,
+    monospace
+  );
+}
+
+.keyLink:hover {
+  text-decoration: underline;
+}

@@ -19,12 +19,14 @@ test("landing page renders with navigation and gateway connection", async ({
 });
 
 test.describe("placeholder routes", () => {
-  test("Illuminate route renders its placeholder", async ({ page }) => {
+  test("Illuminate route renders the seed prompt when no ?seed= is set", async ({
+    page,
+  }) => {
     await page.goto("/illuminate");
     await expect(
       page.getByRole("heading", { level: 1, name: "Illuminate" }),
     ).toBeVisible();
-    await expect(page.getByText(/Coming in #F4/)).toBeVisible();
+    await expect(page.getByTestId("illuminate-seed-prompt")).toBeVisible();
   });
 
   test("Ops route renders its placeholder", async ({ page }) => {
