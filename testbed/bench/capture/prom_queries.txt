@@ -20,10 +20,25 @@ avg by (instance) (go_memstats_heap_inuse_bytes)
 rate(go_memstats_gc_cpu_fraction[1m])
 
 # --- replication health (HA topology) ----------------------------------
-sum by (instance) (rate(lantern_replication_events_total[30s]))
-max by (instance) (lantern_replication_lag_seconds)
+# Metric names follow server/metrics/metrics.go:
+#   lantern_replication_applied_total{origin}  — counter, per-origin apply count
+#   lantern_replication_lag_seq{peer,origin}   — gauge,  peer.last_seq - local.last_applied_seq
+sum by (instance, origin) (rate(lantern_replication_applied_total[30s]))
+max by (instance, peer, origin) (lantern_replication_lag_seq)
 
 # --- pubsub fan-out (#240) --------------------------------------------
+# Note: lantern_subscription_dropped_total{policy} is the pubsub-package
+# counter (core/concurrent/pubsub) and is intentionally distinct from the
+# mutationlog drop counter below. The pubsub package is currently dormant
+# in the server, so this series is expected to be all-zero during runs.
 histogram_quantile(0.99, sum by (le) (rate(lantern_subscription_queue_depth_bucket[30s])))
 sum by (policy) (rate(lantern_subscription_dropped_total[30s]))
 histogram_quantile(0.99, sum by (le) (rate(lantern_subscription_dispatch_duration_seconds_bucket[30s])))
+
+# --- mutationlog fan-out (#260) --------------------------------------
+# Counter incremented when the mutationlog dispatcher's non-blocking send
+# to a subscriber's outbound channel fails and the subscriber is
+# unregistered. Pre-warmed with cause="buffer_full" so the series renders
+# from process start. Per-instance breakdown is what the many_subscribers
+# scenario specifically needs (see #260 acceptance + #392).
+sum by (instance, cause) (rate(lantern_mutationlog_subscriber_dropped_total[30s]))
