@@ -135,6 +135,49 @@ they take a listed action, and run the matching step before pushing / merging.
 This section is the canonical maintenance contract; mirror only the most
 load-bearing items into `/memories/repo/lantern.md` for compacted-state survival.
 
+### GitHub Project triage (`Lantern roadmap`)
+
+Cross-track triage lives in a single Project named `Lantern roadmap`. Issues
+remain the source of truth — the Project is a view layer + lightweight kanban
+on top of them.
+
+**Custom fields (all four are mandatory on every Issue):**
+
+| Field | Allowed values |
+|---|---|
+| `Track` | `Admin` / `HA` / `Connect` / `SDK` / `Maintenance` / `Docs` |
+| `Module` | `pb` / `core` / `server` / `sdks-go` / `sdks-node` / `sdks-python` / `admin` / `mcp` / `tests` / `docs` / `ci` |
+| `Release target` | `next pb` / `next sdks-go` / `next root` / `next mcp` / `next admin-internal` / `unscheduled` |
+| `Priority` | `P0` / `P1` / `P2` |
+
+**Rules:**
+
+- Every new Issue must have all four fields filled **in the same session it is
+  created** (typically via the Project Web UI right after `gh issue create`).
+- The Project is **not** the source of truth. Do not infer scope, dependencies,
+  or release order from the board — those live in the Issue body and in this
+  file. The board is a view.
+- Do not create additional Projects (per-module, per-release, etc.); a single
+  Project keeps the cost of "what is everyone working on" close to zero.
+- `gh` CLI needs the `project` scope (`gh auth refresh -s project`) to mutate
+  the board.
+
+### After closing any Issue with cross-cutting findings
+
+When the work that closed Issue #A surfaced a fact useful to another open Issue
+#B (a wire-shape gotcha, a flake reproducer, a perf number, a build-order
+constraint), drop a short comment on #B in the same PR that closes #A — or
+immediately after merge if the finding only became clear at merge time:
+
+> Finding from #A (closed by #M): \<one-paragraph fact\>. Source:
+> \<code/file/log link\>.
+
+Do not put this in the closing PR description; reviewers reading #B in six
+months will not follow that link. The comment must live on #B itself. If three
+or more Issues benefit, also append a one-line entry to the relevant section of
+this file (`Architecture notes` / `Conventions and gotchas`) so future
+agents see it without having to grep Issue threads.
+
 ### Before every `git push` (local quality gate)
 
 Run from repo root — this matches what the four required CI checks enforce
