@@ -16,6 +16,7 @@ import {
 } from "@fluentui/react-components";
 import {
   ArrowClockwise20Regular,
+  Edit20Regular,
   LightbulbFilament20Regular,
 } from "@fluentui/react-icons";
 import { Link, useNavigate } from "react-router";
@@ -151,6 +152,20 @@ export function BrowseEdgesPage() {
                     <ExpirationCell expiration={edge.expiration} />
                   </TableCell>
                   <TableCell className={styles.colActions}>
+                    <Button
+                      appearance="subtle"
+                      size="small"
+                      icon={<Edit20Regular />}
+                      onClick={() =>
+                        navigate(
+                          `/edges/${encodeURIComponent(tail)}/${encodeURIComponent(head)}`,
+                        )
+                      }
+                      aria-label={`Edit edge ${tail || "tail"} → ${head || "head"}`}
+                      data-testid="edge-row-edit"
+                    >
+                      Edit
+                    </Button>
                     <Button
                       appearance="subtle"
                       size="small"
