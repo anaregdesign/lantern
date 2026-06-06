@@ -3,7 +3,7 @@
 Official Node.js / TypeScript client for [Lantern](https://github.com/anaregdesign/lantern) —
 an in-memory graph KVS with prefix scan, neighborhood traversal (`Illuminate`), and TTL.
 
-- Transport: gRPC over `@grpc/grpc-js`
+- Transports: `@grpc/grpc-js` (legacy) and `@connectrpc/connect-node` (additive, v1.0 preview)
 - Module formats: ESM + CJS, with full TypeScript `.d.ts`
 - Node.js: 20+
 
@@ -16,6 +16,48 @@ bun add lantern-sdk
 # or
 pnpm add lantern-sdk
 ```
+
+## Switching to Connect (v1.0 preview)
+
+The SDK ships an **additive** Connect-Node transport alongside the
+classic gRPC dial path (see
+[#335](https://github.com/anaregdesign/lantern/issues/335),
+[#337](https://github.com/anaregdesign/lantern/issues/337),
+[#340](https://github.com/anaregdesign/lantern/issues/340)). The
+Connect transport will become the default in v1.0; both classes
+return the same `Vertex` / `Edge` / `Graph` value-object shapes,
+so application code that only holds typed values is transport-
+agnostic.
+
+To use Connect today, run the server with the additive listener
+enabled (e.g. `LANTERN_CONNECT_PORT=6381`) and dial via:
+
+```ts
+import { LanternConnect } from "lantern-sdk";
+
+const client = LanternConnect.connect("http://localhost:6381");
+try {
+  await client.putVertex({ key: "hello", value: "world", ttlSeconds: 60 });
+  const v = await client.getVertex("hello");
+  console.log(v.key, v.value); // "hello" "world"
+} finally {
+  client.close();
+}
+```
+
+Differences from `Lantern.connect`:
+
+- **baseUrl must include the scheme.** Use `http://` for h2c, or
+  `https://` for TLS — supply a TLS-aware http2 session via
+  `args.transportOptions`.
+- **`putVertex` / `addEdge` / `putEdge` take a single input object**
+  (`{ key, value, ttlSeconds }`) instead of positional `(key, value,
+extra)`, matching the sdks/go SDK shape.
+- **gRPC dial options are not accepted.** Pass Connect interceptors
+  via `args.interceptors`.
+
+The existing `Lantern` class and its options remain fully supported
+through the v0.x line and only retire in v1.0.
 
 ## Quick Start
 

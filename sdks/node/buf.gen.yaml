@@ -2,6 +2,11 @@ version: v2
 managed:
   enabled: true
 plugins:
+  # Legacy ts-proto + grpc-js stubs. Consumed by src/client.ts (the
+  # existing Lantern class). Kept additive alongside the new
+  # @bufbuild/es output during the migration window (#340 / #335).
+  # The grpc-js plugin output and its consumer are removed wholesale
+  # in #347 / #342.
   - local: ./node_modules/.bin/protoc-gen-ts_proto
     out: src/generated
     opt:
@@ -10,5 +15,22 @@ plugins:
       - useExactTypes=false
       - forceLong=long
       - env=node
+  # protobuf-es v2 codegen — emits message classes AND service schema
+  # descriptors in a single output. Consumed by the additive
+  # LanternConnect class via `createClient(LanternService, transport)`.
+  # Local plugin (not the remote bufbuild/es plugin) so the version
+  # tracks the @bufbuild/protobuf runtime pinned in package.json.
+  - local: ./node_modules/.bin/protoc-gen-es
+    out: src/gen
+    opt:
+      - target=ts
+      - import_extension=js
 inputs:
   - directory: ../../proto
+  # googleapis is brought in as an input so the v2 protoc-gen-es plugin
+  # can emit the google/api/annotations stub the v2-generated graph.proto
+  # output imports (the v1 plugin used to inline this, hence the
+  # asymmetry vs sdks/python and the admin SPA's v1 codegen). Without
+  # this, src/gen/graph/v1/graph_pb.ts has an unresolved import at
+  # ../../google/api/annotations_pb.js.
+  - module: buf.build/googleapis/googleapis
