@@ -45,7 +45,10 @@ export function EdgeWriteForm(props: EdgeWriteFormProps) {
     >
       <h2 className={styles.cardTitle}>{props.title}</h2>
       <p className={styles.cardLead}>{props.description}</p>
-      <Field label="Weight" hint="Floating-point. Negative values are allowed for PutEdge.">
+      <Field
+        label="Weight"
+        hint="Floating-point. Negative values are allowed for PutEdge."
+      >
         <Input
           type="number"
           step="any"
@@ -69,7 +72,11 @@ export function EdgeWriteForm(props: EdgeWriteFormProps) {
           appearance="primary"
           type="submit"
           icon={
-            props.status === "saving" ? <Spinner size="tiny" /> : <Save20Regular />
+            props.status === "saving" ? (
+              <Spinner size="tiny" />
+            ) : (
+              <Save20Regular />
+            )
           }
           disabled={!props.valid || props.status === "saving"}
           data-testid={`edge-${props.mode}-submit`}

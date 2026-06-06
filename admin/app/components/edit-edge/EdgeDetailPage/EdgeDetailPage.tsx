@@ -73,7 +73,10 @@ export function EdgeDetailPage(props: EdgeDetailPageProps) {
       ) : null}
 
       {editor.state.loadStatus === "ready" && editor.state.edge ? (
-        <CurrentEdge edge={editor.state.edge} onDelete={editor.openDeleteDialog} />
+        <CurrentEdge
+          edge={editor.state.edge}
+          onDelete={editor.openDeleteDialog}
+        />
       ) : null}
 
       {editor.state.loadStatus === "not-found" ? (

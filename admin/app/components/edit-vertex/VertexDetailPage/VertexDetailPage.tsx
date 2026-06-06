@@ -90,7 +90,9 @@ export function VertexDetailPage(props: VertexDetailPageProps) {
         />
       ) : null}
 
-      {editor.state.loadStatus === "ready" && editor.state.vertex && !editor.editing ? (
+      {editor.state.loadStatus === "ready" &&
+      editor.state.vertex &&
+      !editor.editing ? (
         <ReadView
           vertex={editor.state.vertex}
           onEdit={editor.beginEdit}
@@ -98,9 +100,7 @@ export function VertexDetailPage(props: VertexDetailPageProps) {
         />
       ) : null}
 
-      {editor.editing ? (
-        <EditView editor={editor} />
-      ) : null}
+      {editor.editing ? <EditView editor={editor} /> : null}
 
       <DeleteVertexDialog
         open={editor.state.deleteRequested}
@@ -216,7 +216,9 @@ function EditView({ editor }: EditViewProps) {
       data-testid="vertex-detail-edit"
     >
       <h2 className={styles.cardTitle}>
-        {editor.state.loadStatus === "not-found" ? "Create vertex" : "Edit vertex"}
+        {editor.state.loadStatus === "not-found"
+          ? "Create vertex"
+          : "Edit vertex"}
       </h2>
       <KindSelector value={editor.state.kind} onChange={editor.setKind} />
       <ValueEditor

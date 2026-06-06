@@ -1,8 +1,5 @@
 import type { Edge } from "~/lib/client/infrastructure/api/get-edge";
-import {
-  INITIAL_EDGE_WRITE_INPUTS,
-  type EdgeWriteInputs,
-} from "./edge-codec";
+import { INITIAL_EDGE_WRITE_INPUTS, type EdgeWriteInputs } from "./edge-codec";
 
 export type EditEdgeLoadStatus =
   | "idle"
@@ -13,11 +10,7 @@ export type EditEdgeLoadStatus =
 
 export type EditEdgeWriteStatus = "idle" | "saving" | "saved" | "error";
 
-export type EditEdgeDeleteStatus =
-  | "idle"
-  | "deleting"
-  | "deleted"
-  | "error";
+export type EditEdgeDeleteStatus = "idle" | "deleting" | "deleted" | "error";
 
 /**
  * State for the single-edge CRUD screen. Holds two independent forms —

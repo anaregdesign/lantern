@@ -37,9 +37,7 @@ test.beforeAll(async () => {
     }),
   });
   if (!put.ok) {
-    throw new Error(
-      `seed vertices failed: ${put.status} ${await put.text()}`,
-    );
+    throw new Error(`seed vertices failed: ${put.status} ${await put.text()}`);
   }
 });
 
@@ -146,7 +144,9 @@ test.describe("edge detail", () => {
     // Either the row is missing (first run) or already exists — both are
     // acceptable starting states for the test.
     await expect(
-      page.getByTestId("edge-form-add").or(page.getByTestId("edge-detail-missing")),
+      page
+        .getByTestId("edge-form-add")
+        .or(page.getByTestId("edge-detail-missing")),
     ).toBeVisible();
 
     // Add the same contribution twice. The exact accumulator math is

@@ -25,9 +25,7 @@ describe("kindOfVertex", () => {
     expect(kindOfVertex({ key: "k" })).toBe("nil");
   });
   test("prefers float64 over later variants when both somehow set", () => {
-    expect(kindOfVertex({ key: "k", float64: 1, string: "x" })).toBe(
-      "float64",
-    );
+    expect(kindOfVertex({ key: "k", float64: 1, string: "x" })).toBe("float64");
   });
 });
 

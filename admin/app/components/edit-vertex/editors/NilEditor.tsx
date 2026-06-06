@@ -8,8 +8,7 @@ export function NilEditor() {
   return (
     <MessageBar intent="info">
       <MessageBarBody>
-        Stores the key with no value. Useful for tombstones or set
-        membership.
+        Stores the key with no value. Useful for tombstones or set membership.
       </MessageBarBody>
     </MessageBar>
   );

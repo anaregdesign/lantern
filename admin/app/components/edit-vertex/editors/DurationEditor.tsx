@@ -7,10 +7,7 @@ export interface DurationEditorProps {
 
 export function DurationEditor(props: DurationEditorProps) {
   return (
-    <Field
-      label="duration value"
-      hint="Go syntax: e.g. 5m, 1h30m, 750ms."
-    >
+    <Field label="duration value" hint="Go syntax: e.g. 5m, 1h30m, 750ms.">
       <Input
         value={props.value}
         onChange={(_, data) => props.onChange(data.value)}

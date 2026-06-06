@@ -1,8 +1,5 @@
 import type { Vertex } from "~/lib/client/infrastructure/api/get-vertex";
-import {
-  INITIAL_EDIT_VERTEX_STATE,
-  type EditVertexState,
-} from "./state";
+import { INITIAL_EDIT_VERTEX_STATE, type EditVertexState } from "./state";
 import {
   INITIAL_TTL_INPUT,
   INITIAL_VERTEX_INPUTS,

@@ -1,15 +1,8 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import { useLanternClient } from "~/lib/client/infrastructure/api/use-lantern-client";
-import {
-  deleteVertexHandler,
-  loadVertex,
-  saveVertex,
-} from "./handlers";
+import { deleteVertexHandler, loadVertex, saveVertex } from "./handlers";
 import { editVertexReducer } from "./reducer";
-import {
-  INITIAL_EDIT_VERTEX_STATE,
-  type EditVertexState,
-} from "./state";
+import { INITIAL_EDIT_VERTEX_STATE, type EditVertexState } from "./state";
 import {
   selectDeleted,
   selectEditing,
@@ -88,12 +81,9 @@ export function useEditVertex(key: string): UseEditVertexResult {
   const setKind = useCallback((kind: VertexValueKind) => {
     dispatch({ type: "KIND_CHANGED", kind });
   }, []);
-  const setInput = useCallback(
-    (field: keyof VertexInputs, value: string) => {
-      dispatch({ type: "INPUT_CHANGED", field, value });
-    },
-    [],
-  );
+  const setInput = useCallback((field: keyof VertexInputs, value: string) => {
+    dispatch({ type: "INPUT_CHANGED", field, value });
+  }, []);
   const setBool = useCallback((value: boolean) => {
     dispatch({ type: "BOOL_INPUT_CHANGED", value });
   }, []);

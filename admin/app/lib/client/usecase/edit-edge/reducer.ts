@@ -1,8 +1,5 @@
 import type { Edge } from "~/lib/client/infrastructure/api/get-edge";
-import {
-  INITIAL_EDIT_EDGE_STATE,
-  type EditEdgeState,
-} from "./state";
+import { INITIAL_EDIT_EDGE_STATE, type EditEdgeState } from "./state";
 import {
   INITIAL_EDGE_WRITE_INPUTS,
   inputsFromEdge,

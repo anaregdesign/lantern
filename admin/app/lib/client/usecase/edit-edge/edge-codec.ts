@@ -1,7 +1,12 @@
 import type { Edge } from "~/lib/client/infrastructure/api/get-edge";
 import type { PutEdgeBody } from "~/lib/client/infrastructure/api/put-edge";
 import type { AddEdgeBody } from "~/lib/client/infrastructure/api/add-edge";
-import { parseGoDuration, ttlToExpiration, type TtlInput, INITIAL_TTL_INPUT } from "../edit-vertex/value-codec";
+import {
+  parseGoDuration,
+  ttlToExpiration,
+  type TtlInput,
+  INITIAL_TTL_INPUT,
+} from "../edit-vertex/value-codec";
 
 export type EdgeWriteMode = "add" | "put";
 

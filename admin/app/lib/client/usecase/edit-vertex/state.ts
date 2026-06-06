@@ -18,11 +18,7 @@ export type EditVertexMode = "view" | "edit";
 
 export type EditVertexSaveStatus = "idle" | "saving" | "saved" | "error";
 
-export type EditVertexDeleteStatus =
-  | "idle"
-  | "deleting"
-  | "deleted"
-  | "error";
+export type EditVertexDeleteStatus = "idle" | "deleting" | "deleted" | "error";
 
 /**
  * State for the single-vertex CRUD screen. The `loadEpoch` is bumped

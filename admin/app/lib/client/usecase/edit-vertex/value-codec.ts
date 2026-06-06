@@ -174,8 +174,8 @@ export function parseGoDuration(input: string): {
   const unitMap: Record<string, bigint> = {
     ns: 1n,
     us: 1_000n,
-    "µs": 1_000n,
-    "μs": 1_000n,
+    µs: 1_000n,
+    μs: 1_000n,
     ms: 1_000_000n,
     s: SECOND_NS,
     m: 60n * SECOND_NS,
@@ -327,7 +327,10 @@ export function buildPutVertexBody(
     case "uint32": {
       const raw = inputs.uint32.trim();
       if (!/^\d+$/.test(raw)) {
-        return { body: null, error: "uint32 must be a non-negative whole number." };
+        return {
+          body: null,
+          error: "uint32 must be a non-negative whole number.",
+        };
       }
       const num = Number(raw);
       if (num > UINT32_MAX) {
@@ -339,7 +342,10 @@ export function buildPutVertexBody(
     case "uint64": {
       const raw = inputs.uint64.trim();
       if (!/^\d+$/.test(raw)) {
-        return { body: null, error: "uint64 must be a non-negative whole number." };
+        return {
+          body: null,
+          error: "uint64 must be a non-negative whole number.",
+        };
       }
       let big: bigint;
       try {
@@ -419,7 +425,10 @@ export function parseBytesInput(
     return { b64: "", error: null };
   }
   if (encoding === "hex") {
-    let hex = trimmed.startsWith("0x") || trimmed.startsWith("0X") ? trimmed.slice(2) : trimmed;
+    let hex =
+      trimmed.startsWith("0x") || trimmed.startsWith("0X")
+        ? trimmed.slice(2)
+        : trimmed;
     hex = hex.replace(/\s+/g, "");
     if (hex.length % 2 !== 0) {
       return { b64: null, error: "Hex must have an even number of digits." };
