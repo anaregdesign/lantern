@@ -3,6 +3,7 @@ import {
   ArrowRight20Regular,
   DatabaseSearch24Regular,
   LightbulbFilament24Regular,
+  LinkMultiple24Regular,
   PulseSquare24Regular,
 } from "@fluentui/react-icons";
 import type { ReactElement } from "react";
@@ -18,10 +19,16 @@ interface Feature {
 
 const FEATURES: readonly Feature[] = [
   {
-    to: "/browse",
+    to: "/vertices",
     icon: <DatabaseSearch24Regular />,
-    title: "Browse",
-    copy: "List and edit vertices and edges by prefix. Land here for routine CRUD.",
+    title: "Vertices",
+    copy: "Scan vertices by key prefix and inspect their typed values and TTLs.",
+  },
+  {
+    to: "/edges",
+    icon: <LinkMultiple24Regular />,
+    title: "Edges",
+    copy: "Filter edges by tail and head prefix to follow relationships and weights.",
   },
   {
     to: "/illuminate",

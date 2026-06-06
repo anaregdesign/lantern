@@ -1,0 +1,28 @@
+.cell {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--spacingHorizontalS, 8px);
+  font-family: var(
+    --fontFamilyMonospace,
+    ui-monospace,
+    SFMono-Regular,
+    monospace
+  );
+  font-size: var(--fontSizeBase200, 12px);
+  max-width: 100%;
+}
+
+.variant {
+  color: var(--colorNeutralForeground3, #707070);
+  text-transform: lowercase;
+  font-family: var(--fontFamilyBase, system-ui, sans-serif);
+  font-size: var(--fontSizeBase100, 10px);
+  letter-spacing: 0.04em;
+}
+
+.display {
+  color: var(--colorNeutralForeground1, #242424);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

@@ -14,7 +14,8 @@ interface NavEntry {
 
 const NAV: readonly NavEntry[] = [
   { to: "/", label: "Home" },
-  { to: "/browse", label: "Browse" },
+  { to: "/vertices", label: "Vertices" },
+  { to: "/edges", label: "Edges" },
   { to: "/illuminate", label: "Illuminate" },
   { to: "/ops", label: "Ops" },
 ];

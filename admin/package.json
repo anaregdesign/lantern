@@ -19,6 +19,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "codegen": "bun ./scripts/codegen.mjs",
+    "test": "bun test app",
     "test:e2e": "playwright test"
   },
   "dependencies": {
@@ -38,6 +39,7 @@
     "@playwright/test": "^1.49.1",
     "@react-router/dev": "7.16.0",
     "@react-router/fs-routes": "7.16.0",
+    "@types/bun": "^1.3.14",
     "@types/node": "^22.10.5",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",

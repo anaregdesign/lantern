@@ -7,7 +7,10 @@ test("landing page renders with navigation and gateway connection", async ({
   await expect(
     page.getByRole("heading", { level: 1, name: "Lantern Admin" }),
   ).toBeVisible();
-  await expect(page.getByRole("link", { name: /Open Browse/i })).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: /Open Vertices/i }),
+  ).toBeVisible();
+  await expect(page.getByRole("link", { name: /Open Edges/i })).toBeVisible();
   await expect(
     page.getByRole("link", { name: /Open Illuminate/i }),
   ).toBeVisible();
@@ -16,14 +19,6 @@ test("landing page renders with navigation and gateway connection", async ({
 });
 
 test.describe("placeholder routes", () => {
-  test("Browse route renders its placeholder", async ({ page }) => {
-    await page.goto("/browse");
-    await expect(
-      page.getByRole("heading", { level: 1, name: "Browse" }),
-    ).toBeVisible();
-    await expect(page.getByText(/Coming in #F2/)).toBeVisible();
-  });
-
   test("Illuminate route renders its placeholder", async ({ page }) => {
     await page.goto("/illuminate");
     await expect(
