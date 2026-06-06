@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
-	"google.golang.org/grpc/codes"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
@@ -132,7 +131,7 @@ func TestRateLimitInterceptor_ConnectInterceptor_AllowsThenRejects(t *testing.T)
 // verifies the constructor's safety net: burst<=0 becomes 1 so the
 // interceptor never collapses into a permanent reject. Bursts of 0
 // would deadlock callers that expect at least one allowed request per
-// second of warm-up. Keep this in lockstep with the gRPC equivalent.
+// second of warm-up.
 func TestRateLimitInterceptor_ConnectInterceptor_ZeroBurstDefaults_To_One(t *testing.T) {
 	r := NewRateLimitInterceptor(1, 0)
 	allow := connect.UnaryFunc(func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
@@ -144,44 +143,5 @@ func TestRateLimitInterceptor_ConnectInterceptor_ZeroBurstDefaults_To_One(t *tes
 	// limiter immediately.
 	if _, err := wrapped(context.Background(), connect.NewRequest(&pb.GetVertexRequest{Key: "k"})); err != nil {
 		t.Fatalf("first call: %v", err)
-	}
-}
-
-// TestGRPCCodeToConnect verifies the 16-entry mapping is exhaustive
-// and unambiguous. If a future grpc release adds a new code, gofmt
-// won't catch it — this table will.
-func TestGRPCCodeToConnect(t *testing.T) {
-	cases := []struct {
-		name string
-		in   codes.Code
-		want connect.Code
-	}{
-		{name: "Canceled", in: codes.Canceled, want: connect.CodeCanceled},
-		{name: "Unknown", in: codes.Unknown, want: connect.CodeUnknown},
-		{name: "InvalidArgument", in: codes.InvalidArgument, want: connect.CodeInvalidArgument},
-		{name: "DeadlineExceeded", in: codes.DeadlineExceeded, want: connect.CodeDeadlineExceeded},
-		{name: "NotFound", in: codes.NotFound, want: connect.CodeNotFound},
-		{name: "AlreadyExists", in: codes.AlreadyExists, want: connect.CodeAlreadyExists},
-		{name: "PermissionDenied", in: codes.PermissionDenied, want: connect.CodePermissionDenied},
-		{name: "ResourceExhausted", in: codes.ResourceExhausted, want: connect.CodeResourceExhausted},
-		{name: "FailedPrecondition", in: codes.FailedPrecondition, want: connect.CodeFailedPrecondition},
-		{name: "Aborted", in: codes.Aborted, want: connect.CodeAborted},
-		{name: "OutOfRange", in: codes.OutOfRange, want: connect.CodeOutOfRange},
-		{name: "Unimplemented", in: codes.Unimplemented, want: connect.CodeUnimplemented},
-		{name: "Internal", in: codes.Internal, want: connect.CodeInternal},
-		{name: "Unavailable", in: codes.Unavailable, want: connect.CodeUnavailable},
-		{name: "DataLoss", in: codes.DataLoss, want: connect.CodeDataLoss},
-		{name: "Unauthenticated", in: codes.Unauthenticated, want: connect.CodeUnauthenticated},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			if got := grpcCodeToConnect(c.in); got != c.want {
-				t.Errorf("grpcCodeToConnect(%v) = %v, want %v", c.in, got, c.want)
-			}
-		})
-	}
-	// Sanity: an unknown code maps to CodeUnknown rather than panicking.
-	if got := grpcCodeToConnect(codes.Code(9999)); got != connect.CodeUnknown {
-		t.Errorf("unknown code = %v, want CodeUnknown", got)
 	}
 }
