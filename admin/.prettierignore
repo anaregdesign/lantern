@@ -3,5 +3,5 @@ build/
 node_modules/
 playwright-report/
 test-results/
-pnpm-lock.yaml
+bun.lock
 app/lib/client/infrastructure/api/lantern-api.gen.ts

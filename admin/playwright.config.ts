@@ -20,7 +20,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: `pnpm exec vite preview --outDir build/client --host 127.0.0.1 --port ${PORT} --strictPort`,
+    command: `bun x vite preview --outDir build/client --host 127.0.0.1 --port ${PORT} --strictPort`,
     url: `http://127.0.0.1:${PORT}`,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

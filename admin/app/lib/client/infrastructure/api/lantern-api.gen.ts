@@ -2,7 +2,7 @@
  * Generated OpenAPI types for the Lantern gateway.
  *
  * Source: pb/openapiv2/graph/v1/graph.swagger.json
- * Regenerate with `pnpm codegen`. Do not edit by hand.
+ * Regenerate with `bun run codegen`. Do not edit by hand.
  */
 
 export interface paths {

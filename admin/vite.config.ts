@@ -7,11 +7,15 @@ export default defineConfig({
     port: 5173,
   },
   ssr: {
-    // @fluentui/react-icons has barrel exports that omit `.js` extensions and
-    // therefore fail Node's strict ESM resolver when used in the SSR /
-    // pre-renderer environment. Bundling them keeps the import graph internal
-    // to Vite.
-    noExternal: ["@fluentui/react-icons", "@fluentui/react-components"],
+    // SPA mode (`ssr: false`) still spins up a Node-side pre-renderer to emit
+    // `build/client/index.html`. Several deps in our graph (Fluent UI v9,
+    // Griffel, stylis, …) ship dual CJS/ESM entry points whose interop layer
+    // breaks under Node's strict ESM resolver when installers like bun pick a
+    // different entry than pnpm did. Bundling every dep into the SSR build
+    // keeps imports internal to Vite/Rollup and sidesteps every installer-
+    // specific resolver quirk in one go. Safe because nothing about the
+    // pre-rendered output ships to the browser at runtime.
+    noExternal: true,
   },
   plugins: [tsconfigPaths(), reactRouter()],
 });

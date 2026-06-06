@@ -1,9 +1,9 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // Codegen: convert pb/openapiv2/graph/v1/graph.swagger.json (OpenAPI 2.0) to
 // OpenAPI 3.0 in a temp file, then emit TypeScript types via openapi-typescript.
 // Output: app/lib/client/infrastructure/api/lantern-api.gen.ts
 //
-// Regenerate with: pnpm codegen
+// Regenerate with: bun run codegen
 
 import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
@@ -29,7 +29,7 @@ const HEADER = `/**
  * Generated OpenAPI types for the Lantern gateway.
  *
  * Source: pb/openapiv2/graph/v1/graph.swagger.json
- * Regenerate with \`pnpm codegen\`. Do not edit by hand.
+ * Regenerate with \`bun run codegen\`. Do not edit by hand.
  */
 
 `;

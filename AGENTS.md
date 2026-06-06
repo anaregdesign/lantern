@@ -15,7 +15,7 @@ This project used to be split across four separate repositories (`lantern` / `la
 | `mcp/` | `github.com/anaregdesign/lantern/mcp` | MCP server binary that exposes Lantern as a decaying-memory tool to LLM agents. Depends on `pb/` and `sdks/go/` only. Ships as the `lantern-mcp` container. |
 | `.` (root) | `github.com/anaregdesign/lantern` | Umbrella module — hosts the CLI (`cli/`) and cross-module integration tests (`tests/integration/`). Depends on all five submodules. |
 | `proto/` | (no Go module) | `.proto` sources, regenerated with buf. |
-| `admin/` | (TypeScript, not Go) | Browser-only React Router SPA that talks to the gateway over HTTP/JSON. **Not** part of `go.work`. Owns its own `pnpm`-managed lockfile and Fluent UI v9 / Sigma.js stack. See [admin/README.md](admin/README.md). |
+| `admin/` | (TypeScript, not Go) | Browser-only React Router SPA that talks to the gateway over HTTP/JSON. **Not** part of `go.work`. Bun-managed (same pin as `sdks/node/`), Fluent UI v9 / Sigma.js stack. See [admin/README.md](admin/README.md). |
 | `go.work` | — | Pins all 6 Go modules for local dev. The TS admin SPA lives outside `go.work`. |
 
 Dependency direction (must remain a DAG, no back edges):

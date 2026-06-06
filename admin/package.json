@@ -2,9 +2,13 @@
   "name": "@lantern/admin",
   "private": true,
   "type": "module",
+  "packageManager": "bun@1.3.14",
   "engines": {
-    "node": ">=20.19.0"
+    "bun": ">=1.3.0"
   },
+  "trustedDependencies": [
+    "esbuild"
+  ],
   "scripts": {
     "dev": "react-router dev",
     "build": "react-router build",
@@ -14,7 +18,7 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "codegen": "node ./scripts/codegen.mjs",
+    "codegen": "bun ./scripts/codegen.mjs",
     "test:e2e": "playwright test"
   },
   "dependencies": {
