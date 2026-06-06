@@ -190,7 +190,7 @@ func dial() (*client.Lantern, error) {
 // --tls-cert is supplied. Replaces the legacy buildTLSCreds /
 // credentials.NewTLS path that fed gRPC dial options.
 func buildHTTPClient() (*http.Client, error) {
-	if !(flagTLS || flagTLSCA != "" || flagTLSCert != "") {
+	if !flagTLS && flagTLSCA == "" && flagTLSCert == "" {
 		// Plain h2c: same pattern as sdks/go/connect_h2c.go's
 		// defaultH2CClient (kept inline so the CLI does not have to
 		// reach into an SDK internal helper).

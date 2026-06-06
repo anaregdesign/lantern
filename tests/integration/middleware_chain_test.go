@@ -60,7 +60,7 @@ func TestIntegration_FullMiddlewareChain(t *testing.T) {
 		}
 		// Force a single oversized request by raising the SDK chunk
 		// size; the default would split into 5+1 and pass.
-		bigClient := newConnectClientFor(t, srv.url, client.WithConnectBatchChunkSize(100))
+		bigClient := newConnectClientFor(t, srv.url, client.WithBatchChunkSize(100))
 		err := bigClient.PutVertices(ctx, inputs)
 		if !errors.Is(err, client.ErrInvalidArgument) {
 			t.Fatalf("PutVertices(6) err = %v, want errors.Is(err, ErrInvalidArgument)", err)
@@ -170,7 +170,7 @@ func TestIntegration_BatchDeletes(t *testing.T) {
 	})
 
 	t.Run("validation rejects oversize delete vertices", func(t *testing.T) {
-		bigClient := newConnectClientFor(t, srv.url, client.WithConnectBatchChunkSize(100))
+		bigClient := newConnectClientFor(t, srv.url, client.WithBatchChunkSize(100))
 		keys := make([]string, 6)
 		for i := range keys {
 			keys[i] = string(rune('a' + i))
@@ -181,7 +181,7 @@ func TestIntegration_BatchDeletes(t *testing.T) {
 	})
 
 	t.Run("validation rejects oversize delete edges", func(t *testing.T) {
-		bigClient := newConnectClientFor(t, srv.url, client.WithConnectBatchChunkSize(100))
+		bigClient := newConnectClientFor(t, srv.url, client.WithBatchChunkSize(100))
 		refs := make([]client.EdgeRef, 6)
 		for i := range refs {
 			refs[i] = client.EdgeRef{Tail: string(rune('a' + i)), Head: "z"}

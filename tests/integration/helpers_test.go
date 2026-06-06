@@ -111,7 +111,7 @@ func newConnectTestServer(
 // newConnectClientFor wires a *client.Lantern via NewLanternConnect at
 // the supplied URL. The constructor is forced to use an h2c-capable
 // http.Client because httptest spins up plain HTTP/2-over-cleartext.
-// Optional SDK-side options (WithConnectBatchChunkSize, ...) flow
+// Optional SDK-side options (WithBatchChunkSize, ...) flow
 // through.
 func newConnectClientFor(t *testing.T, baseURL string, opts ...client.ConnectOption) *client.Lantern {
 	t.Helper()
@@ -167,7 +167,7 @@ func newInProcessClientChunked(t *testing.T, chunkSize int) (*client.Lantern, fu
 	svc := service.NewLanternService(cache)
 	val := provider.NewValidationInterceptor(defaultIntegrationValidationLimits())
 	srv := newConnectTestServer(t, svc, nil, val.ConnectInterceptor())
-	l := newConnectClientFor(t, srv.url, client.WithConnectBatchChunkSize(chunkSize))
+	l := newConnectClientFor(t, srv.url, client.WithBatchChunkSize(chunkSize))
 	return l, func() {}
 }
 
