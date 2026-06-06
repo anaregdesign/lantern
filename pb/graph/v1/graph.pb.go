@@ -2386,6 +2386,210 @@ func (x *PutEdgesResponse) GetWritten() int32 {
 	return 0
 }
 
+// GetServerStatusRequest carries no parameters — the response is a flat
+// snapshot of the server's identity, build, configuration ceilings, and
+// current live counts. Intended for the admin UI's "Ops" tab and any
+// lightweight smoke-test tooling that just needs to confirm "the server
+// is up and roughly configured as expected".
+type GetServerStatusRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetServerStatusRequest) Reset() {
+	*x = GetServerStatusRequest{}
+	mi := &file_graph_v1_graph_proto_msgTypes[42]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetServerStatusRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetServerStatusRequest) ProtoMessage() {}
+
+func (x *GetServerStatusRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_graph_v1_graph_proto_msgTypes[42]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetServerStatusRequest.ProtoReflect.Descriptor instead.
+func (*GetServerStatusRequest) Descriptor() ([]byte, []int) {
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{42}
+}
+
+type GetServerStatusResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Build/version stamp. Falls back to "dev" when the binary was built
+	// without VCS info or without LANTERN_VERSION set.
+	Version string `protobuf:"bytes,1,opt,name=version,proto3" json:"version,omitempty"`
+	// Reports `runtime.Version()` (e.g. "go1.26.4").
+	GoVersion string `protobuf:"bytes,2,opt,name=go_version,json=goVersion,proto3" json:"go_version,omitempty"`
+	// Wall-clock instant the server process started serving requests.
+	// Captured at gRPC server start, not at process start, so the value
+	// reflects "ready to serve" rather than "wire init done".
+	StartedAt *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
+	// Convenience field: now - started_at on the server side, so clients
+	// do not have to know the server's clock to display uptime.
+	Uptime *durationpb.Duration `protobuf:"bytes,4,opt,name=uptime,proto3" json:"uptime,omitempty"`
+	// The default TTL applied to vertices/edges when the caller does not
+	// specify Expiration (LANTERN_DEFAULT_TTL_SECONDS).
+	DefaultTtl *durationpb.Duration `protobuf:"bytes,5,opt,name=default_ttl,json=defaultTtl,proto3" json:"default_ttl,omitempty"`
+	// Validation ceiling for batch RPCs (LANTERN_MAX_BATCH_SIZE).
+	MaxBatchSize uint32 `protobuf:"varint,6,opt,name=max_batch_size,json=maxBatchSize,proto3" json:"max_batch_size,omitempty"`
+	// Validation ceiling for vertex/edge keys (LANTERN_MAX_KEY_BYTES).
+	MaxKeyBytes uint32 `protobuf:"varint,7,opt,name=max_key_bytes,json=maxKeyBytes,proto3" json:"max_key_bytes,omitempty"`
+	// Per-call defaults / hard caps for prefix-scan pagination
+	// (LANTERN_SCAN_DEFAULT_LIMIT / LANTERN_SCAN_MAX_LIMIT).
+	ScanDefaultLimit uint32 `protobuf:"varint,8,opt,name=scan_default_limit,json=scanDefaultLimit,proto3" json:"scan_default_limit,omitempty"`
+	ScanMaxLimit     uint32 `protobuf:"varint,9,opt,name=scan_max_limit,json=scanMaxLimit,proto3" json:"scan_max_limit,omitempty"`
+	// True when the gRPC server is terminating TLS
+	// (LANTERN_TLS_CERT_FILE + LANTERN_TLS_KEY_FILE both set).
+	TlsEnabled bool `protobuf:"varint,10,opt,name=tls_enabled,json=tlsEnabled,proto3" json:"tls_enabled,omitempty"`
+	// True when this server is wired to a mutation log + HLC clock and is
+	// therefore a member of a replication group. False on single-node
+	// deployments.
+	ReplicationEnabled bool `protobuf:"varint,11,opt,name=replication_enabled,json=replicationEnabled,proto3" json:"replication_enabled,omitempty"`
+	// Live counts pulled from the in-memory graph cache. Cheap to compute
+	// (index sizes, no scan). Intended for at-a-glance dashboards — these
+	// are not transactional snapshots and may include not-yet-collected
+	// expired entries bounded by the GC tick.
+	VertexCount   uint64 `protobuf:"varint,12,opt,name=vertex_count,json=vertexCount,proto3" json:"vertex_count,omitempty"`
+	EdgeCount     uint64 `protobuf:"varint,13,opt,name=edge_count,json=edgeCount,proto3" json:"edge_count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetServerStatusResponse) Reset() {
+	*x = GetServerStatusResponse{}
+	mi := &file_graph_v1_graph_proto_msgTypes[43]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetServerStatusResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetServerStatusResponse) ProtoMessage() {}
+
+func (x *GetServerStatusResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_graph_v1_graph_proto_msgTypes[43]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetServerStatusResponse.ProtoReflect.Descriptor instead.
+func (*GetServerStatusResponse) Descriptor() ([]byte, []int) {
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{43}
+}
+
+func (x *GetServerStatusResponse) GetVersion() string {
+	if x != nil {
+		return x.Version
+	}
+	return ""
+}
+
+func (x *GetServerStatusResponse) GetGoVersion() string {
+	if x != nil {
+		return x.GoVersion
+	}
+	return ""
+}
+
+func (x *GetServerStatusResponse) GetStartedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.StartedAt
+	}
+	return nil
+}
+
+func (x *GetServerStatusResponse) GetUptime() *durationpb.Duration {
+	if x != nil {
+		return x.Uptime
+	}
+	return nil
+}
+
+func (x *GetServerStatusResponse) GetDefaultTtl() *durationpb.Duration {
+	if x != nil {
+		return x.DefaultTtl
+	}
+	return nil
+}
+
+func (x *GetServerStatusResponse) GetMaxBatchSize() uint32 {
+	if x != nil {
+		return x.MaxBatchSize
+	}
+	return 0
+}
+
+func (x *GetServerStatusResponse) GetMaxKeyBytes() uint32 {
+	if x != nil {
+		return x.MaxKeyBytes
+	}
+	return 0
+}
+
+func (x *GetServerStatusResponse) GetScanDefaultLimit() uint32 {
+	if x != nil {
+		return x.ScanDefaultLimit
+	}
+	return 0
+}
+
+func (x *GetServerStatusResponse) GetScanMaxLimit() uint32 {
+	if x != nil {
+		return x.ScanMaxLimit
+	}
+	return 0
+}
+
+func (x *GetServerStatusResponse) GetTlsEnabled() bool {
+	if x != nil {
+		return x.TlsEnabled
+	}
+	return false
+}
+
+func (x *GetServerStatusResponse) GetReplicationEnabled() bool {
+	if x != nil {
+		return x.ReplicationEnabled
+	}
+	return false
+}
+
+func (x *GetServerStatusResponse) GetVertexCount() uint64 {
+	if x != nil {
+		return x.VertexCount
+	}
+	return 0
+}
+
+func (x *GetServerStatusResponse) GetEdgeCount() uint64 {
+	if x != nil {
+		return x.EdgeCount
+	}
+	return 0
+}
+
 var File_graph_v1_graph_proto protoreflect.FileDescriptor
 
 const file_graph_v1_graph_proto_rawDesc = "" +
@@ -2516,13 +2720,34 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x0fPutEdgesRequest\x12$\n" +
 	"\x05edges\x18\x01 \x03(\v2\x0e.graph.v1.EdgeR\x05edges\",\n" +
 	"\x10PutEdgesResponse\x12\x18\n" +
-	"\awritten\x18\x01 \x01(\x05R\awritten*\xce\x01\n" +
+	"\awritten\x18\x01 \x01(\x05R\awritten\"\x18\n" +
+	"\x16GetServerStatusRequest\"\xae\x04\n" +
+	"\x17GetServerStatusResponse\x12\x18\n" +
+	"\aversion\x18\x01 \x01(\tR\aversion\x12\x1d\n" +
+	"\n" +
+	"go_version\x18\x02 \x01(\tR\tgoVersion\x129\n" +
+	"\n" +
+	"started_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\x121\n" +
+	"\x06uptime\x18\x04 \x01(\v2\x19.google.protobuf.DurationR\x06uptime\x12:\n" +
+	"\vdefault_ttl\x18\x05 \x01(\v2\x19.google.protobuf.DurationR\n" +
+	"defaultTtl\x12$\n" +
+	"\x0emax_batch_size\x18\x06 \x01(\rR\fmaxBatchSize\x12\"\n" +
+	"\rmax_key_bytes\x18\a \x01(\rR\vmaxKeyBytes\x12,\n" +
+	"\x12scan_default_limit\x18\b \x01(\rR\x10scanDefaultLimit\x12$\n" +
+	"\x0escan_max_limit\x18\t \x01(\rR\fscanMaxLimit\x12\x1f\n" +
+	"\vtls_enabled\x18\n" +
+	" \x01(\bR\n" +
+	"tlsEnabled\x12/\n" +
+	"\x13replication_enabled\x18\v \x01(\bR\x12replicationEnabled\x12!\n" +
+	"\fvertex_count\x18\f \x01(\x04R\vvertexCount\x12\x1d\n" +
+	"\n" +
+	"edge_count\x18\r \x01(\x04R\tedgeCount*\xce\x01\n" +
 	"\fOptimization\x12\x1c\n" +
 	"\x18OPTIMIZATION_UNSPECIFIED\x10\x00\x12&\n" +
 	"\"OPTIMIZATION_MINIMUM_SPANNING_TREE\x10\x01\x12&\n" +
 	"\"OPTIMIZATION_MAXIMUM_SPANNING_TREE\x10\x02\x12#\n" +
 	"\x1fOPTIMIZATION_SHORTEST_PATH_TREE\x10\x03\x12+\n" +
-	"'OPTIMIZATION_SHORTEST_PATH_TREE_INVERSE\x10\x042\x95\x10\n" +
+	"'OPTIMIZATION_SHORTEST_PATH_TREE_INVERSE\x10\x042\x81\x11\n" +
 	"\x0eLanternService\x12f\n" +
 	"\n" +
 	"Illuminate\x12\x1b.graph.v1.IlluminateRequest\x1a\x1c.graph.v1.IlluminateResponse\"\x1d\x82\xd3\xe4\x93\x02\x17\x12\x15/v1/illuminate/{seed}\x12`\n" +
@@ -2544,7 +2769,9 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\n" +
 	"DeleteEdge\x12\x1b.graph.v1.DeleteEdgeRequest\x1a\x1c.graph.v1.DeleteEdgeResponse\"\x1f\x82\xd3\xe4\x93\x02\x19*\x17/v1/edges/{tail}/{head}\x12g\n" +
 	"\vDeleteEdges\x12\x1c.graph.v1.DeleteEdgesRequest\x1a\x1d.graph.v1.DeleteEdgesResponse\"\x1b\x82\xd3\xe4\x93\x02\x15:\x01*\"\x10/v1/edges/delete\x12_\n" +
-	"\tScanEdges\x12\x1a.graph.v1.ScanEdgesRequest\x1a\x1b.graph.v1.ScanEdgesResponse\"\x19\x82\xd3\xe4\x93\x02\x13:\x01*\"\x0e/v1/edges/scanB\x90\x01\n" +
+	"\tScanEdges\x12\x1a.graph.v1.ScanEdgesRequest\x1a\x1b.graph.v1.ScanEdgesResponse\"\x19\x82\xd3\xe4\x93\x02\x13:\x01*\"\x0e/v1/edges/scan\x12j\n" +
+	"\x0fGetServerStatus\x12 .graph.v1.GetServerStatusRequest\x1a!.graph.v1.GetServerStatusResponse\"\x12\x82\xd3\xe4\x93\x02\f\x12\n" +
+	"/v1/statusB\x90\x01\n" +
 	"\fcom.graph.v1B\n" +
 	"GraphProtoP\x01Z3github.com/anaregdesign/lantern/pb/graph/v1;graphv1\xa2\x02\x03GXX\xaa\x02\bGraph.V1\xca\x02\bGraph\\V1\xe2\x02\x14Graph\\V1\\GPBMetadata\xea\x02\tGraph::V1b\x06proto3"
 
@@ -2561,7 +2788,7 @@ func file_graph_v1_graph_proto_rawDescGZIP() []byte {
 }
 
 var file_graph_v1_graph_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_graph_v1_graph_proto_msgTypes = make([]protoimpl.MessageInfo, 42)
+var file_graph_v1_graph_proto_msgTypes = make([]protoimpl.MessageInfo, 44)
 var file_graph_v1_graph_proto_goTypes = []any{
 	(Optimization)(0),                      // 0: graph.v1.Optimization
 	(*Vertex)(nil),                         // 1: graph.v1.Vertex
@@ -2606,14 +2833,16 @@ var file_graph_v1_graph_proto_goTypes = []any{
 	(*PutEdgeResponse)(nil),                // 40: graph.v1.PutEdgeResponse
 	(*PutEdgesRequest)(nil),                // 41: graph.v1.PutEdgesRequest
 	(*PutEdgesResponse)(nil),               // 42: graph.v1.PutEdgesResponse
-	(*timestamppb.Timestamp)(nil),          // 43: google.protobuf.Timestamp
-	(*durationpb.Duration)(nil),            // 44: google.protobuf.Duration
+	(*GetServerStatusRequest)(nil),         // 43: graph.v1.GetServerStatusRequest
+	(*GetServerStatusResponse)(nil),        // 44: graph.v1.GetServerStatusResponse
+	(*timestamppb.Timestamp)(nil),          // 45: google.protobuf.Timestamp
+	(*durationpb.Duration)(nil),            // 46: google.protobuf.Duration
 }
 var file_graph_v1_graph_proto_depIdxs = []int32{
-	43, // 0: graph.v1.Vertex.expiration:type_name -> google.protobuf.Timestamp
-	43, // 1: graph.v1.Vertex.timestamp:type_name -> google.protobuf.Timestamp
-	44, // 2: graph.v1.Vertex.duration:type_name -> google.protobuf.Duration
-	43, // 3: graph.v1.Edge.expiration:type_name -> google.protobuf.Timestamp
+	45, // 0: graph.v1.Vertex.expiration:type_name -> google.protobuf.Timestamp
+	45, // 1: graph.v1.Vertex.timestamp:type_name -> google.protobuf.Timestamp
+	46, // 2: graph.v1.Vertex.duration:type_name -> google.protobuf.Duration
+	45, // 3: graph.v1.Edge.expiration:type_name -> google.protobuf.Timestamp
 	1,  // 4: graph.v1.Graph.vertices:type_name -> graph.v1.Vertex
 	2,  // 5: graph.v1.Graph.edges:type_name -> graph.v1.Edge
 	0,  // 6: graph.v1.IlluminateRequest.optimization:type_name -> graph.v1.Optimization
@@ -2633,49 +2862,54 @@ var file_graph_v1_graph_proto_depIdxs = []int32{
 	2,  // 20: graph.v1.AddEdgesRequest.edges:type_name -> graph.v1.Edge
 	2,  // 21: graph.v1.PutEdgeRequest.edge:type_name -> graph.v1.Edge
 	2,  // 22: graph.v1.PutEdgesRequest.edges:type_name -> graph.v1.Edge
-	4,  // 23: graph.v1.LanternService.Illuminate:input_type -> graph.v1.IlluminateRequest
-	6,  // 24: graph.v1.LanternService.GetVertex:input_type -> graph.v1.GetVertexRequest
-	8,  // 25: graph.v1.LanternService.GetVertices:input_type -> graph.v1.GetVerticesRequest
-	10, // 26: graph.v1.LanternService.PutVertex:input_type -> graph.v1.PutVertexRequest
-	12, // 27: graph.v1.LanternService.PutVertices:input_type -> graph.v1.PutVerticesRequest
-	14, // 28: graph.v1.LanternService.DeleteVertex:input_type -> graph.v1.DeleteVertexRequest
-	16, // 29: graph.v1.LanternService.DeleteVertices:input_type -> graph.v1.DeleteVerticesRequest
-	18, // 30: graph.v1.LanternService.ScanVertices:input_type -> graph.v1.ScanVerticesRequest
-	20, // 31: graph.v1.LanternService.CountVerticesByPrefix:input_type -> graph.v1.CountVerticesByPrefixRequest
-	22, // 32: graph.v1.LanternService.DeleteVerticesByPrefix:input_type -> graph.v1.DeleteVerticesByPrefixRequest
-	24, // 33: graph.v1.LanternService.GetEdge:input_type -> graph.v1.GetEdgeRequest
-	26, // 34: graph.v1.LanternService.GetEdges:input_type -> graph.v1.GetEdgesRequest
-	35, // 35: graph.v1.LanternService.AddEdge:input_type -> graph.v1.AddEdgeRequest
-	37, // 36: graph.v1.LanternService.AddEdges:input_type -> graph.v1.AddEdgesRequest
-	39, // 37: graph.v1.LanternService.PutEdge:input_type -> graph.v1.PutEdgeRequest
-	41, // 38: graph.v1.LanternService.PutEdges:input_type -> graph.v1.PutEdgesRequest
-	28, // 39: graph.v1.LanternService.DeleteEdge:input_type -> graph.v1.DeleteEdgeRequest
-	33, // 40: graph.v1.LanternService.DeleteEdges:input_type -> graph.v1.DeleteEdgesRequest
-	31, // 41: graph.v1.LanternService.ScanEdges:input_type -> graph.v1.ScanEdgesRequest
-	5,  // 42: graph.v1.LanternService.Illuminate:output_type -> graph.v1.IlluminateResponse
-	7,  // 43: graph.v1.LanternService.GetVertex:output_type -> graph.v1.GetVertexResponse
-	9,  // 44: graph.v1.LanternService.GetVertices:output_type -> graph.v1.GetVerticesResponse
-	11, // 45: graph.v1.LanternService.PutVertex:output_type -> graph.v1.PutVertexResponse
-	13, // 46: graph.v1.LanternService.PutVertices:output_type -> graph.v1.PutVerticesResponse
-	15, // 47: graph.v1.LanternService.DeleteVertex:output_type -> graph.v1.DeleteVertexResponse
-	17, // 48: graph.v1.LanternService.DeleteVertices:output_type -> graph.v1.DeleteVerticesResponse
-	19, // 49: graph.v1.LanternService.ScanVertices:output_type -> graph.v1.ScanVerticesResponse
-	21, // 50: graph.v1.LanternService.CountVerticesByPrefix:output_type -> graph.v1.CountVerticesByPrefixResponse
-	23, // 51: graph.v1.LanternService.DeleteVerticesByPrefix:output_type -> graph.v1.DeleteVerticesByPrefixResponse
-	25, // 52: graph.v1.LanternService.GetEdge:output_type -> graph.v1.GetEdgeResponse
-	27, // 53: graph.v1.LanternService.GetEdges:output_type -> graph.v1.GetEdgesResponse
-	36, // 54: graph.v1.LanternService.AddEdge:output_type -> graph.v1.AddEdgeResponse
-	38, // 55: graph.v1.LanternService.AddEdges:output_type -> graph.v1.AddEdgesResponse
-	40, // 56: graph.v1.LanternService.PutEdge:output_type -> graph.v1.PutEdgeResponse
-	42, // 57: graph.v1.LanternService.PutEdges:output_type -> graph.v1.PutEdgesResponse
-	29, // 58: graph.v1.LanternService.DeleteEdge:output_type -> graph.v1.DeleteEdgeResponse
-	34, // 59: graph.v1.LanternService.DeleteEdges:output_type -> graph.v1.DeleteEdgesResponse
-	32, // 60: graph.v1.LanternService.ScanEdges:output_type -> graph.v1.ScanEdgesResponse
-	42, // [42:61] is the sub-list for method output_type
-	23, // [23:42] is the sub-list for method input_type
-	23, // [23:23] is the sub-list for extension type_name
-	23, // [23:23] is the sub-list for extension extendee
-	0,  // [0:23] is the sub-list for field type_name
+	45, // 23: graph.v1.GetServerStatusResponse.started_at:type_name -> google.protobuf.Timestamp
+	46, // 24: graph.v1.GetServerStatusResponse.uptime:type_name -> google.protobuf.Duration
+	46, // 25: graph.v1.GetServerStatusResponse.default_ttl:type_name -> google.protobuf.Duration
+	4,  // 26: graph.v1.LanternService.Illuminate:input_type -> graph.v1.IlluminateRequest
+	6,  // 27: graph.v1.LanternService.GetVertex:input_type -> graph.v1.GetVertexRequest
+	8,  // 28: graph.v1.LanternService.GetVertices:input_type -> graph.v1.GetVerticesRequest
+	10, // 29: graph.v1.LanternService.PutVertex:input_type -> graph.v1.PutVertexRequest
+	12, // 30: graph.v1.LanternService.PutVertices:input_type -> graph.v1.PutVerticesRequest
+	14, // 31: graph.v1.LanternService.DeleteVertex:input_type -> graph.v1.DeleteVertexRequest
+	16, // 32: graph.v1.LanternService.DeleteVertices:input_type -> graph.v1.DeleteVerticesRequest
+	18, // 33: graph.v1.LanternService.ScanVertices:input_type -> graph.v1.ScanVerticesRequest
+	20, // 34: graph.v1.LanternService.CountVerticesByPrefix:input_type -> graph.v1.CountVerticesByPrefixRequest
+	22, // 35: graph.v1.LanternService.DeleteVerticesByPrefix:input_type -> graph.v1.DeleteVerticesByPrefixRequest
+	24, // 36: graph.v1.LanternService.GetEdge:input_type -> graph.v1.GetEdgeRequest
+	26, // 37: graph.v1.LanternService.GetEdges:input_type -> graph.v1.GetEdgesRequest
+	35, // 38: graph.v1.LanternService.AddEdge:input_type -> graph.v1.AddEdgeRequest
+	37, // 39: graph.v1.LanternService.AddEdges:input_type -> graph.v1.AddEdgesRequest
+	39, // 40: graph.v1.LanternService.PutEdge:input_type -> graph.v1.PutEdgeRequest
+	41, // 41: graph.v1.LanternService.PutEdges:input_type -> graph.v1.PutEdgesRequest
+	28, // 42: graph.v1.LanternService.DeleteEdge:input_type -> graph.v1.DeleteEdgeRequest
+	33, // 43: graph.v1.LanternService.DeleteEdges:input_type -> graph.v1.DeleteEdgesRequest
+	31, // 44: graph.v1.LanternService.ScanEdges:input_type -> graph.v1.ScanEdgesRequest
+	43, // 45: graph.v1.LanternService.GetServerStatus:input_type -> graph.v1.GetServerStatusRequest
+	5,  // 46: graph.v1.LanternService.Illuminate:output_type -> graph.v1.IlluminateResponse
+	7,  // 47: graph.v1.LanternService.GetVertex:output_type -> graph.v1.GetVertexResponse
+	9,  // 48: graph.v1.LanternService.GetVertices:output_type -> graph.v1.GetVerticesResponse
+	11, // 49: graph.v1.LanternService.PutVertex:output_type -> graph.v1.PutVertexResponse
+	13, // 50: graph.v1.LanternService.PutVertices:output_type -> graph.v1.PutVerticesResponse
+	15, // 51: graph.v1.LanternService.DeleteVertex:output_type -> graph.v1.DeleteVertexResponse
+	17, // 52: graph.v1.LanternService.DeleteVertices:output_type -> graph.v1.DeleteVerticesResponse
+	19, // 53: graph.v1.LanternService.ScanVertices:output_type -> graph.v1.ScanVerticesResponse
+	21, // 54: graph.v1.LanternService.CountVerticesByPrefix:output_type -> graph.v1.CountVerticesByPrefixResponse
+	23, // 55: graph.v1.LanternService.DeleteVerticesByPrefix:output_type -> graph.v1.DeleteVerticesByPrefixResponse
+	25, // 56: graph.v1.LanternService.GetEdge:output_type -> graph.v1.GetEdgeResponse
+	27, // 57: graph.v1.LanternService.GetEdges:output_type -> graph.v1.GetEdgesResponse
+	36, // 58: graph.v1.LanternService.AddEdge:output_type -> graph.v1.AddEdgeResponse
+	38, // 59: graph.v1.LanternService.AddEdges:output_type -> graph.v1.AddEdgesResponse
+	40, // 60: graph.v1.LanternService.PutEdge:output_type -> graph.v1.PutEdgeResponse
+	42, // 61: graph.v1.LanternService.PutEdges:output_type -> graph.v1.PutEdgesResponse
+	29, // 62: graph.v1.LanternService.DeleteEdge:output_type -> graph.v1.DeleteEdgeResponse
+	34, // 63: graph.v1.LanternService.DeleteEdges:output_type -> graph.v1.DeleteEdgesResponse
+	32, // 64: graph.v1.LanternService.ScanEdges:output_type -> graph.v1.ScanEdgesResponse
+	44, // 65: graph.v1.LanternService.GetServerStatus:output_type -> graph.v1.GetServerStatusResponse
+	46, // [46:66] is the sub-list for method output_type
+	26, // [26:46] is the sub-list for method input_type
+	26, // [26:26] is the sub-list for extension type_name
+	26, // [26:26] is the sub-list for extension extendee
+	0,  // [0:26] is the sub-list for field type_name
 }
 
 func init() { file_graph_v1_graph_proto_init() }
@@ -2703,7 +2937,7 @@ func file_graph_v1_graph_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_graph_v1_graph_proto_rawDesc), len(file_graph_v1_graph_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   42,
+			NumMessages:   44,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

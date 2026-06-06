@@ -38,6 +38,7 @@ const (
 	LanternService_DeleteEdge_FullMethodName             = "/graph.v1.LanternService/DeleteEdge"
 	LanternService_DeleteEdges_FullMethodName            = "/graph.v1.LanternService/DeleteEdges"
 	LanternService_ScanEdges_FullMethodName              = "/graph.v1.LanternService/ScanEdges"
+	LanternService_GetServerStatus_FullMethodName        = "/graph.v1.LanternService/GetServerStatus"
 )
 
 // LanternServiceClient is the client API for LanternService service.
@@ -83,6 +84,12 @@ type LanternServiceClient interface {
 	// whose head key starts with `head_prefix`, in ascending (tail, head)
 	// order, page by page. Plural-only — prefix scan is inherently plural.
 	ScanEdges(ctx context.Context, in *ScanEdgesRequest, opts ...grpc.CallOption) (*ScanEdgesResponse, error)
+	// GetServerStatus returns a flat snapshot of the server's identity,
+	// build info, configuration ceilings, and current live vertex/edge
+	// counts. Read-only and cheap — intended for the admin UI's "Ops"
+	// tab and lightweight smoke-test tooling. Auth is the caller's
+	// responsibility; no PII is returned.
+	GetServerStatus(ctx context.Context, in *GetServerStatusRequest, opts ...grpc.CallOption) (*GetServerStatusResponse, error)
 }
 
 type lanternServiceClient struct {
@@ -283,6 +290,16 @@ func (c *lanternServiceClient) ScanEdges(ctx context.Context, in *ScanEdgesReque
 	return out, nil
 }
 
+func (c *lanternServiceClient) GetServerStatus(ctx context.Context, in *GetServerStatusRequest, opts ...grpc.CallOption) (*GetServerStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetServerStatusResponse)
+	err := c.cc.Invoke(ctx, LanternService_GetServerStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // LanternServiceServer is the server API for LanternService service.
 // All implementations should embed UnimplementedLanternServiceServer
 // for forward compatibility.
@@ -326,6 +343,12 @@ type LanternServiceServer interface {
 	// whose head key starts with `head_prefix`, in ascending (tail, head)
 	// order, page by page. Plural-only — prefix scan is inherently plural.
 	ScanEdges(context.Context, *ScanEdgesRequest) (*ScanEdgesResponse, error)
+	// GetServerStatus returns a flat snapshot of the server's identity,
+	// build info, configuration ceilings, and current live vertex/edge
+	// counts. Read-only and cheap — intended for the admin UI's "Ops"
+	// tab and lightweight smoke-test tooling. Auth is the caller's
+	// responsibility; no PII is returned.
+	GetServerStatus(context.Context, *GetServerStatusRequest) (*GetServerStatusResponse, error)
 }
 
 // UnimplementedLanternServiceServer should be embedded to have
@@ -391,6 +414,9 @@ func (UnimplementedLanternServiceServer) DeleteEdges(context.Context, *DeleteEdg
 }
 func (UnimplementedLanternServiceServer) ScanEdges(context.Context, *ScanEdgesRequest) (*ScanEdgesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ScanEdges not implemented")
+}
+func (UnimplementedLanternServiceServer) GetServerStatus(context.Context, *GetServerStatusRequest) (*GetServerStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetServerStatus not implemented")
 }
 func (UnimplementedLanternServiceServer) testEmbeddedByValue() {}
 
@@ -754,6 +780,24 @@ func _LanternService_ScanEdges_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LanternService_GetServerStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetServerStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LanternServiceServer).GetServerStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LanternService_GetServerStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LanternServiceServer).GetServerStatus(ctx, req.(*GetServerStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // LanternService_ServiceDesc is the grpc.ServiceDesc for LanternService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -836,6 +880,10 @@ var LanternService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ScanEdges",
 			Handler:    _LanternService_ScanEdges_Handler,
+		},
+		{
+			MethodName: "GetServerStatus",
+			Handler:    _LanternService_GetServerStatus_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

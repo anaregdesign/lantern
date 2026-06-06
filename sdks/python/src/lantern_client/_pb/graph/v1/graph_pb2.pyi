@@ -340,3 +340,37 @@ class PutEdgesResponse(_message.Message):
     WRITTEN_FIELD_NUMBER: _ClassVar[int]
     written: int
     def __init__(self, written: _Optional[int] = ...) -> None: ...
+
+class GetServerStatusRequest(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class GetServerStatusResponse(_message.Message):
+    __slots__ = ("version", "go_version", "started_at", "uptime", "default_ttl", "max_batch_size", "max_key_bytes", "scan_default_limit", "scan_max_limit", "tls_enabled", "replication_enabled", "vertex_count", "edge_count")
+    VERSION_FIELD_NUMBER: _ClassVar[int]
+    GO_VERSION_FIELD_NUMBER: _ClassVar[int]
+    STARTED_AT_FIELD_NUMBER: _ClassVar[int]
+    UPTIME_FIELD_NUMBER: _ClassVar[int]
+    DEFAULT_TTL_FIELD_NUMBER: _ClassVar[int]
+    MAX_BATCH_SIZE_FIELD_NUMBER: _ClassVar[int]
+    MAX_KEY_BYTES_FIELD_NUMBER: _ClassVar[int]
+    SCAN_DEFAULT_LIMIT_FIELD_NUMBER: _ClassVar[int]
+    SCAN_MAX_LIMIT_FIELD_NUMBER: _ClassVar[int]
+    TLS_ENABLED_FIELD_NUMBER: _ClassVar[int]
+    REPLICATION_ENABLED_FIELD_NUMBER: _ClassVar[int]
+    VERTEX_COUNT_FIELD_NUMBER: _ClassVar[int]
+    EDGE_COUNT_FIELD_NUMBER: _ClassVar[int]
+    version: str
+    go_version: str
+    started_at: _timestamp_pb2.Timestamp
+    uptime: _duration_pb2.Duration
+    default_ttl: _duration_pb2.Duration
+    max_batch_size: int
+    max_key_bytes: int
+    scan_default_limit: int
+    scan_max_limit: int
+    tls_enabled: bool
+    replication_enabled: bool
+    vertex_count: int
+    edge_count: int
+    def __init__(self, version: _Optional[str] = ..., go_version: _Optional[str] = ..., started_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., uptime: _Optional[_Union[datetime.timedelta, _duration_pb2.Duration, _Mapping]] = ..., default_ttl: _Optional[_Union[datetime.timedelta, _duration_pb2.Duration, _Mapping]] = ..., max_batch_size: _Optional[int] = ..., max_key_bytes: _Optional[int] = ..., scan_default_limit: _Optional[int] = ..., scan_max_limit: _Optional[int] = ..., tls_enabled: _Optional[bool] = ..., replication_enabled: _Optional[bool] = ..., vertex_count: _Optional[int] = ..., edge_count: _Optional[int] = ...) -> None: ...

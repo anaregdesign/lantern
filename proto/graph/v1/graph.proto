@@ -307,6 +307,62 @@ message PutEdgesResponse {
   int32 written = 1;
 }
 
+// GetServerStatusRequest carries no parameters — the response is a flat
+// snapshot of the server's identity, build, configuration ceilings, and
+// current live counts. Intended for the admin UI's "Ops" tab and any
+// lightweight smoke-test tooling that just needs to confirm "the server
+// is up and roughly configured as expected".
+message GetServerStatusRequest {}
+
+message GetServerStatusResponse {
+  // Build/version stamp. Falls back to "dev" when the binary was built
+  // without VCS info or without LANTERN_VERSION set.
+  string version = 1;
+
+  // Reports `runtime.Version()` (e.g. "go1.26.4").
+  string go_version = 2;
+
+  // Wall-clock instant the server process started serving requests.
+  // Captured at gRPC server start, not at process start, so the value
+  // reflects "ready to serve" rather than "wire init done".
+  google.protobuf.Timestamp started_at = 3;
+
+  // Convenience field: now - started_at on the server side, so clients
+  // do not have to know the server's clock to display uptime.
+  google.protobuf.Duration uptime = 4;
+
+  // The default TTL applied to vertices/edges when the caller does not
+  // specify Expiration (LANTERN_DEFAULT_TTL_SECONDS).
+  google.protobuf.Duration default_ttl = 5;
+
+  // Validation ceiling for batch RPCs (LANTERN_MAX_BATCH_SIZE).
+  uint32 max_batch_size = 6;
+
+  // Validation ceiling for vertex/edge keys (LANTERN_MAX_KEY_BYTES).
+  uint32 max_key_bytes = 7;
+
+  // Per-call defaults / hard caps for prefix-scan pagination
+  // (LANTERN_SCAN_DEFAULT_LIMIT / LANTERN_SCAN_MAX_LIMIT).
+  uint32 scan_default_limit = 8;
+  uint32 scan_max_limit = 9;
+
+  // True when the gRPC server is terminating TLS
+  // (LANTERN_TLS_CERT_FILE + LANTERN_TLS_KEY_FILE both set).
+  bool tls_enabled = 10;
+
+  // True when this server is wired to a mutation log + HLC clock and is
+  // therefore a member of a replication group. False on single-node
+  // deployments.
+  bool replication_enabled = 11;
+
+  // Live counts pulled from the in-memory graph cache. Cheap to compute
+  // (index sizes, no scan). Intended for at-a-glance dashboards — these
+  // are not transactional snapshots and may include not-yet-collected
+  // expired entries bounded by the GC tick.
+  uint64 vertex_count = 12;
+  uint64 edge_count = 13;
+}
+
 service LanternService {
   rpc Illuminate(IlluminateRequest) returns (IlluminateResponse) {
     option (google.api.http) = {get: "/v1/illuminate/{seed}"};
@@ -441,5 +497,14 @@ service LanternService {
       post: "/v1/edges/scan"
       body: "*"
     };
+  }
+
+  // GetServerStatus returns a flat snapshot of the server's identity,
+  // build info, configuration ceilings, and current live vertex/edge
+  // counts. Read-only and cheap — intended for the admin UI's "Ops"
+  // tab and lightweight smoke-test tooling. Auth is the caller's
+  // responsibility; no PII is returned.
+  rpc GetServerStatus(GetServerStatusRequest) returns (GetServerStatusResponse) {
+    option (google.api.http) = {get: "/v1/status"};
   }
 }
