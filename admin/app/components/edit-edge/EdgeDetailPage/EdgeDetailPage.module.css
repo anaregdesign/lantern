@@ -1,0 +1,126 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacingVerticalL, 16px);
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacingVerticalS, 8px);
+}
+
+.crumbs {
+  display: flex;
+  align-items: center;
+  gap: var(--spacingHorizontalS, 8px);
+  font-size: var(--fontSizeBase200, 12px);
+  color: var(--colorNeutralForeground2, #424242);
+  flex-wrap: wrap;
+}
+
+.crumbs a {
+  color: var(--colorBrandForegroundLink, #0078d4);
+  text-decoration: none;
+}
+
+.crumbs a:hover {
+  text-decoration: underline;
+}
+
+.title {
+  font-size: var(--fontSizeBase600, 24px);
+  font-weight: var(--fontWeightSemibold, 600);
+  margin: 0;
+}
+
+.edgePair {
+  display: flex;
+  align-items: center;
+  gap: var(--spacingHorizontalM, 12px);
+  font-family: var(
+    --fontFamilyMonospace,
+    ui-monospace,
+    SFMono-Regular,
+    monospace
+  );
+  font-size: var(--fontSizeBase500, 20px);
+  overflow-wrap: anywhere;
+}
+
+.arrow {
+  color: var(--colorNeutralForeground3, #707070);
+  font-weight: 700;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: var(--spacingHorizontalL, 16px);
+}
+
+.card {
+  border: 1px solid var(--colorNeutralStroke2, #e0e0e0);
+  border-radius: var(--borderRadiusMedium, 6px);
+  padding: var(--spacingHorizontalL, 16px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacingVerticalM, 12px);
+  background: var(--colorNeutralBackground1, #fff);
+}
+
+.cardTitle {
+  font-size: var(--fontSizeBase400, 16px);
+  font-weight: var(--fontWeightSemibold, 600);
+  margin: 0;
+}
+
+.cardLead {
+  margin: 0;
+  color: var(--colorNeutralForeground2, #424242);
+  font-size: var(--fontSizeBase200, 12px);
+}
+
+.viewRow {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: var(--spacingHorizontalM, 12px);
+  align-items: baseline;
+}
+
+.viewLabel {
+  color: var(--colorNeutralForeground2, #424242);
+  font-size: var(--fontSizeBase200, 12px);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.viewValue {
+  font-family: var(
+    --fontFamilyMonospace,
+    ui-monospace,
+    SFMono-Regular,
+    monospace
+  );
+}
+
+.formActions {
+  display: flex;
+  gap: var(--spacingHorizontalS, 8px);
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.alert {
+  margin: 0;
+}
+
+.placeholder {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacingVerticalS, 8px);
+  align-items: center;
+  justify-content: center;
+  padding: var(--spacingVerticalXL, 24px);
+  color: var(--colorNeutralForeground3, #707070);
+}
