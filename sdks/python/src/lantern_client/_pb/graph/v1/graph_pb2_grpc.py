@@ -134,6 +134,11 @@ class LanternServiceStub:
                 request_serializer=graph_dot_v1_dot_graph__pb2.GetServerStatusRequest.SerializeToString,
                 response_deserializer=graph_dot_v1_dot_graph__pb2.GetServerStatusResponse.FromString,
                 _registered_method=True)
+        self.GetReplicationStatus = channel.unary_unary(
+                '/graph.v1.LanternService/GetReplicationStatus',
+                request_serializer=graph_dot_v1_dot_graph__pb2.GetReplicationStatusRequest.SerializeToString,
+                response_deserializer=graph_dot_v1_dot_graph__pb2.GetReplicationStatusResponse.FromString,
+                _registered_method=True)
 
 
 class LanternServiceServicer:
@@ -284,6 +289,17 @@ class LanternServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetReplicationStatus(self, request, context):
+        """GetReplicationStatus returns a flat snapshot of the local node's
+        outbound peer-replication state. Read-only — no peer add/remove
+        surface is exposed (see #315 out-of-scope). Cheap to call from a
+        dashboard at any cadence the operator finds useful. On
+        single-instance deployments enabled=false and peers is empty.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_LanternServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -386,6 +402,11 @@ def add_LanternServiceServicer_to_server(servicer, server):
                     servicer.GetServerStatus,
                     request_deserializer=graph_dot_v1_dot_graph__pb2.GetServerStatusRequest.FromString,
                     response_serializer=graph_dot_v1_dot_graph__pb2.GetServerStatusResponse.SerializeToString,
+            ),
+            'GetReplicationStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetReplicationStatus,
+                    request_deserializer=graph_dot_v1_dot_graph__pb2.GetReplicationStatusRequest.FromString,
+                    response_serializer=graph_dot_v1_dot_graph__pb2.GetReplicationStatusResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -928,6 +949,33 @@ class LanternService:
             '/graph.v1.LanternService/GetServerStatus',
             graph_dot_v1_dot_graph__pb2.GetServerStatusRequest.SerializeToString,
             graph_dot_v1_dot_graph__pb2.GetServerStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetReplicationStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/graph.v1.LanternService/GetReplicationStatus',
+            graph_dot_v1_dot_graph__pb2.GetReplicationStatusRequest.SerializeToString,
+            graph_dot_v1_dot_graph__pb2.GetReplicationStatusResponse.FromString,
             options,
             channel_credentials,
             insecure,

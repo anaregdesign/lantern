@@ -374,3 +374,45 @@ class GetServerStatusResponse(_message.Message):
     vertex_count: int
     edge_count: int
     def __init__(self, version: _Optional[str] = ..., go_version: _Optional[str] = ..., started_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., uptime: _Optional[_Union[datetime.timedelta, _duration_pb2.Duration, _Mapping]] = ..., default_ttl: _Optional[_Union[datetime.timedelta, _duration_pb2.Duration, _Mapping]] = ..., max_batch_size: _Optional[int] = ..., max_key_bytes: _Optional[int] = ..., scan_default_limit: _Optional[int] = ..., scan_max_limit: _Optional[int] = ..., tls_enabled: _Optional[bool] = ..., replication_enabled: _Optional[bool] = ..., vertex_count: _Optional[int] = ..., edge_count: _Optional[int] = ...) -> None: ...
+
+class ReplicationPeer(_message.Message):
+    __slots__ = ("address", "state", "last_event_at", "applied_seq", "error")
+    class State(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+        __slots__ = ()
+        STATE_UNSPECIFIED: _ClassVar[ReplicationPeer.State]
+        STATE_CONNECTING: _ClassVar[ReplicationPeer.State]
+        STATE_STREAMING: _ClassVar[ReplicationPeer.State]
+        STATE_BACKOFF: _ClassVar[ReplicationPeer.State]
+        STATE_CLOSED: _ClassVar[ReplicationPeer.State]
+    STATE_UNSPECIFIED: ReplicationPeer.State
+    STATE_CONNECTING: ReplicationPeer.State
+    STATE_STREAMING: ReplicationPeer.State
+    STATE_BACKOFF: ReplicationPeer.State
+    STATE_CLOSED: ReplicationPeer.State
+    ADDRESS_FIELD_NUMBER: _ClassVar[int]
+    STATE_FIELD_NUMBER: _ClassVar[int]
+    LAST_EVENT_AT_FIELD_NUMBER: _ClassVar[int]
+    APPLIED_SEQ_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    address: str
+    state: ReplicationPeer.State
+    last_event_at: _timestamp_pb2.Timestamp
+    applied_seq: int
+    error: str
+    def __init__(self, address: _Optional[str] = ..., state: _Optional[_Union[ReplicationPeer.State, str]] = ..., last_event_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., applied_seq: _Optional[int] = ..., error: _Optional[str] = ...) -> None: ...
+
+class GetReplicationStatusRequest(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class GetReplicationStatusResponse(_message.Message):
+    __slots__ = ("node_id", "local_now", "enabled", "peers")
+    NODE_ID_FIELD_NUMBER: _ClassVar[int]
+    LOCAL_NOW_FIELD_NUMBER: _ClassVar[int]
+    ENABLED_FIELD_NUMBER: _ClassVar[int]
+    PEERS_FIELD_NUMBER: _ClassVar[int]
+    node_id: str
+    local_now: _timestamp_pb2.Timestamp
+    enabled: bool
+    peers: _containers.RepeatedCompositeFieldContainer[ReplicationPeer]
+    def __init__(self, node_id: _Optional[str] = ..., local_now: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., enabled: _Optional[bool] = ..., peers: _Optional[_Iterable[_Union[ReplicationPeer, _Mapping]]] = ...) -> None: ...

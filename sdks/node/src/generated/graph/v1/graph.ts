@@ -493,6 +493,145 @@ export interface GetServerStatusResponse {
   edgeCount: Long;
 }
 
+/**
+ * ReplicationPeer is one row of the GetReplicationStatus snapshot.
+ * Each row models the local node's view of a single outbound peer
+ * connection owned by the replication pump (#185). Fields are
+ * best-effort point-in-time samples; clients should treat consecutive
+ * snapshots as monotonically advancing rather than transactional.
+ */
+export interface ReplicationPeer {
+  /**
+   * address is the dial target as configured in LANTERN_PEERS (or
+   * resolved from DNS discovery). Stable across reconnects for a given
+   * peer, so it doubles as the row identity for admin UI displays.
+   */
+  address: string;
+  state: ReplicationPeer_State;
+  /**
+   * last_event_at is the wall-clock instant the pump last received any
+   * frame (Subscribe or Snapshot) from this peer. Unset when nothing
+   * has been received yet. Combined with the response-level local_now
+   * it yields the "how stale is this stream" diagnostic the admin UI
+   * shows as a lag bar.
+   */
+  lastEventAt:
+    | Date
+    | undefined;
+  /**
+   * applied_seq is the highest peer-local sequence number the pump has
+   * successfully consumed from this peer. Zero on a fresh connection.
+   */
+  appliedSeq: Long;
+  /**
+   * error carries the last non-recoverable error message reported by
+   * the per-peer session loop. Cleared on the next successful frame.
+   */
+  error: string;
+}
+
+export enum ReplicationPeer_State {
+  STATE_UNSPECIFIED = 0,
+  /**
+   * STATE_CONNECTING - Pump is dialing or has dialed but Subscribe has not yet
+   * returned a frame.
+   */
+  STATE_CONNECTING = 1,
+  /** STATE_STREAMING - Subscribe stream is open and frames have been received. */
+  STATE_STREAMING = 2,
+  /**
+   * STATE_BACKOFF - Last session errored; the pump is sleeping before the next
+   * reconnect attempt.
+   */
+  STATE_BACKOFF = 3,
+  /**
+   * STATE_CLOSED - Per-peer goroutine has exited (typically because DNS discovery
+   * removed the address). Reported transiently — the row drops out
+   * of subsequent snapshots once the supervisor has reaped it.
+   */
+  STATE_CLOSED = 4,
+  UNRECOGNIZED = -1,
+}
+
+export function replicationPeer_StateFromJSON(object: any): ReplicationPeer_State {
+  switch (object) {
+    case 0:
+    case "STATE_UNSPECIFIED":
+      return ReplicationPeer_State.STATE_UNSPECIFIED;
+    case 1:
+    case "STATE_CONNECTING":
+      return ReplicationPeer_State.STATE_CONNECTING;
+    case 2:
+    case "STATE_STREAMING":
+      return ReplicationPeer_State.STATE_STREAMING;
+    case 3:
+    case "STATE_BACKOFF":
+      return ReplicationPeer_State.STATE_BACKOFF;
+    case 4:
+    case "STATE_CLOSED":
+      return ReplicationPeer_State.STATE_CLOSED;
+    case -1:
+    case "UNRECOGNIZED":
+    default:
+      return ReplicationPeer_State.UNRECOGNIZED;
+  }
+}
+
+export function replicationPeer_StateToJSON(object: ReplicationPeer_State): string {
+  switch (object) {
+    case ReplicationPeer_State.STATE_UNSPECIFIED:
+      return "STATE_UNSPECIFIED";
+    case ReplicationPeer_State.STATE_CONNECTING:
+      return "STATE_CONNECTING";
+    case ReplicationPeer_State.STATE_STREAMING:
+      return "STATE_STREAMING";
+    case ReplicationPeer_State.STATE_BACKOFF:
+      return "STATE_BACKOFF";
+    case ReplicationPeer_State.STATE_CLOSED:
+      return "STATE_CLOSED";
+    case ReplicationPeer_State.UNRECOGNIZED:
+    default:
+      return "UNRECOGNIZED";
+  }
+}
+
+/**
+ * GetReplicationStatusRequest carries no parameters. The response is a
+ * flat snapshot of the local node's view of every outbound peer.
+ */
+export interface GetReplicationStatusRequest {
+}
+
+export interface GetReplicationStatusResponse {
+  /**
+   * node_id is the local HLC NodeID rendered as lowercase hex (32 chars).
+   * Stable for the lifetime of the process; either configured via
+   * LANTERN_NODE_ID or randomly generated at startup.
+   */
+  nodeId: string;
+  /**
+   * local_now is the server's wall-clock at the moment the snapshot
+   * was taken. Provided so clients can compute per-peer staleness
+   * (local_now - last_event_at) without trusting their own clock.
+   */
+  localNow:
+    | Date
+    | undefined;
+  /**
+   * enabled is false on a single-instance deployment (no peers
+   * configured AND no DNS discovery). When false, peers is empty but
+   * the response is still well-formed — handlers never return
+   * Unimplemented for this RPC.
+   */
+  enabled: boolean;
+  /**
+   * peers is the per-peer slice. Order is the supervisor's iteration
+   * order and is intentionally unspecified; clients sort by address
+   * for display.
+   */
+  peers: ReplicationPeer[];
+}
+
 function createBaseVertex(): Vertex {
   return {
     key: "",
@@ -3880,6 +4019,299 @@ export const GetServerStatusResponse: MessageFns<GetServerStatusResponse> = {
   },
 };
 
+function createBaseReplicationPeer(): ReplicationPeer {
+  return { address: "", state: 0, lastEventAt: undefined, appliedSeq: Long.UZERO, error: "" };
+}
+
+export const ReplicationPeer: MessageFns<ReplicationPeer> = {
+  encode(message: ReplicationPeer, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.address !== "") {
+      writer.uint32(10).string(message.address);
+    }
+    if (message.state !== 0) {
+      writer.uint32(16).int32(message.state);
+    }
+    if (message.lastEventAt !== undefined) {
+      Timestamp.encode(toTimestamp(message.lastEventAt), writer.uint32(26).fork()).join();
+    }
+    if (!message.appliedSeq.equals(Long.UZERO)) {
+      writer.uint32(32).uint64(message.appliedSeq.toString());
+    }
+    if (message.error !== "") {
+      writer.uint32(42).string(message.error);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ReplicationPeer {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseReplicationPeer();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.address = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.state = reader.int32() as any;
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.lastEventAt = fromTimestamp(Timestamp.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.appliedSeq = Long.fromString(reader.uint64().toString(), true);
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.error = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ReplicationPeer {
+    return {
+      address: isSet(object.address) ? globalThis.String(object.address) : "",
+      state: isSet(object.state) ? replicationPeer_StateFromJSON(object.state) : 0,
+      lastEventAt: isSet(object.lastEventAt)
+        ? fromJsonTimestamp(object.lastEventAt)
+        : isSet(object.last_event_at)
+        ? fromJsonTimestamp(object.last_event_at)
+        : undefined,
+      appliedSeq: isSet(object.appliedSeq)
+        ? Long.fromValue(object.appliedSeq)
+        : isSet(object.applied_seq)
+        ? Long.fromValue(object.applied_seq)
+        : Long.UZERO,
+      error: isSet(object.error) ? globalThis.String(object.error) : "",
+    };
+  },
+
+  toJSON(message: ReplicationPeer): unknown {
+    const obj: any = {};
+    if (message.address !== "") {
+      obj.address = message.address;
+    }
+    if (message.state !== 0) {
+      obj.state = replicationPeer_StateToJSON(message.state);
+    }
+    if (message.lastEventAt !== undefined) {
+      obj.lastEventAt = message.lastEventAt.toISOString();
+    }
+    if (!message.appliedSeq.equals(Long.UZERO)) {
+      obj.appliedSeq = (message.appliedSeq || Long.UZERO).toString();
+    }
+    if (message.error !== "") {
+      obj.error = message.error;
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<ReplicationPeer>): ReplicationPeer {
+    return ReplicationPeer.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<ReplicationPeer>): ReplicationPeer {
+    const message = createBaseReplicationPeer();
+    message.address = object.address ?? "";
+    message.state = object.state ?? 0;
+    message.lastEventAt = object.lastEventAt ?? undefined;
+    message.appliedSeq = (object.appliedSeq !== undefined && object.appliedSeq !== null)
+      ? Long.fromValue(object.appliedSeq)
+      : Long.UZERO;
+    message.error = object.error ?? "";
+    return message;
+  },
+};
+
+function createBaseGetReplicationStatusRequest(): GetReplicationStatusRequest {
+  return {};
+}
+
+export const GetReplicationStatusRequest: MessageFns<GetReplicationStatusRequest> = {
+  encode(_: GetReplicationStatusRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GetReplicationStatusRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGetReplicationStatusRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(_: any): GetReplicationStatusRequest {
+    return {};
+  },
+
+  toJSON(_: GetReplicationStatusRequest): unknown {
+    const obj: any = {};
+    return obj;
+  },
+
+  create(base?: DeepPartial<GetReplicationStatusRequest>): GetReplicationStatusRequest {
+    return GetReplicationStatusRequest.fromPartial(base ?? {});
+  },
+  fromPartial(_: DeepPartial<GetReplicationStatusRequest>): GetReplicationStatusRequest {
+    const message = createBaseGetReplicationStatusRequest();
+    return message;
+  },
+};
+
+function createBaseGetReplicationStatusResponse(): GetReplicationStatusResponse {
+  return { nodeId: "", localNow: undefined, enabled: false, peers: [] };
+}
+
+export const GetReplicationStatusResponse: MessageFns<GetReplicationStatusResponse> = {
+  encode(message: GetReplicationStatusResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.nodeId !== "") {
+      writer.uint32(10).string(message.nodeId);
+    }
+    if (message.localNow !== undefined) {
+      Timestamp.encode(toTimestamp(message.localNow), writer.uint32(18).fork()).join();
+    }
+    if (message.enabled !== false) {
+      writer.uint32(24).bool(message.enabled);
+    }
+    for (const v of message.peers) {
+      ReplicationPeer.encode(v!, writer.uint32(82).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GetReplicationStatusResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGetReplicationStatusResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.nodeId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.localNow = fromTimestamp(Timestamp.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.enabled = reader.bool();
+          continue;
+        }
+        case 10: {
+          if (tag !== 82) {
+            break;
+          }
+
+          message.peers.push(ReplicationPeer.decode(reader, reader.uint32()));
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): GetReplicationStatusResponse {
+    return {
+      nodeId: isSet(object.nodeId)
+        ? globalThis.String(object.nodeId)
+        : isSet(object.node_id)
+        ? globalThis.String(object.node_id)
+        : "",
+      localNow: isSet(object.localNow)
+        ? fromJsonTimestamp(object.localNow)
+        : isSet(object.local_now)
+        ? fromJsonTimestamp(object.local_now)
+        : undefined,
+      enabled: isSet(object.enabled) ? globalThis.Boolean(object.enabled) : false,
+      peers: globalThis.Array.isArray(object?.peers) ? object.peers.map((e: any) => ReplicationPeer.fromJSON(e)) : [],
+    };
+  },
+
+  toJSON(message: GetReplicationStatusResponse): unknown {
+    const obj: any = {};
+    if (message.nodeId !== "") {
+      obj.nodeId = message.nodeId;
+    }
+    if (message.localNow !== undefined) {
+      obj.localNow = message.localNow.toISOString();
+    }
+    if (message.enabled !== false) {
+      obj.enabled = message.enabled;
+    }
+    if (message.peers?.length) {
+      obj.peers = message.peers.map((e) => ReplicationPeer.toJSON(e));
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<GetReplicationStatusResponse>): GetReplicationStatusResponse {
+    return GetReplicationStatusResponse.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<GetReplicationStatusResponse>): GetReplicationStatusResponse {
+    const message = createBaseGetReplicationStatusResponse();
+    message.nodeId = object.nodeId ?? "";
+    message.localNow = object.localNow ?? undefined;
+    message.enabled = object.enabled ?? false;
+    message.peers = object.peers?.map((e) => ReplicationPeer.fromPartial(e)) || [];
+    return message;
+  },
+};
+
 export type LanternServiceService = typeof LanternServiceService;
 export const LanternServiceService = {
   illuminate: {
@@ -4108,6 +4540,24 @@ export const LanternServiceService = {
       Buffer.from(GetServerStatusResponse.encode(value).finish()),
     responseDeserialize: (value: Buffer): GetServerStatusResponse => GetServerStatusResponse.decode(value),
   },
+  /**
+   * GetReplicationStatus returns a flat snapshot of the local node's
+   * outbound peer-replication state. Read-only — no peer add/remove
+   * surface is exposed (see #315 out-of-scope). Cheap to call from a
+   * dashboard at any cadence the operator finds useful. On
+   * single-instance deployments enabled=false and peers is empty.
+   */
+  getReplicationStatus: {
+    path: "/graph.v1.LanternService/GetReplicationStatus" as const,
+    requestStream: false as const,
+    responseStream: false as const,
+    requestSerialize: (value: GetReplicationStatusRequest): Buffer =>
+      Buffer.from(GetReplicationStatusRequest.encode(value).finish()),
+    requestDeserialize: (value: Buffer): GetReplicationStatusRequest => GetReplicationStatusRequest.decode(value),
+    responseSerialize: (value: GetReplicationStatusResponse): Buffer =>
+      Buffer.from(GetReplicationStatusResponse.encode(value).finish()),
+    responseDeserialize: (value: Buffer): GetReplicationStatusResponse => GetReplicationStatusResponse.decode(value),
+  },
 } as const;
 
 export interface LanternServiceServer extends UntypedServiceImplementation {
@@ -4166,6 +4616,14 @@ export interface LanternServiceServer extends UntypedServiceImplementation {
    * responsibility; no PII is returned.
    */
   getServerStatus: handleUnaryCall<GetServerStatusRequest, GetServerStatusResponse>;
+  /**
+   * GetReplicationStatus returns a flat snapshot of the local node's
+   * outbound peer-replication state. Read-only — no peer add/remove
+   * surface is exposed (see #315 out-of-scope). Cheap to call from a
+   * dashboard at any cadence the operator finds useful. On
+   * single-instance deployments enabled=false and peers is empty.
+   */
+  getReplicationStatus: handleUnaryCall<GetReplicationStatusRequest, GetReplicationStatusResponse>;
 }
 
 export interface LanternServiceClient extends Client {
@@ -4503,6 +4961,28 @@ export interface LanternServiceClient extends Client {
     metadata: Metadata,
     options: Partial<CallOptions>,
     callback: (error: ServiceError | null, response: GetServerStatusResponse) => void,
+  ): ClientUnaryCall;
+  /**
+   * GetReplicationStatus returns a flat snapshot of the local node's
+   * outbound peer-replication state. Read-only — no peer add/remove
+   * surface is exposed (see #315 out-of-scope). Cheap to call from a
+   * dashboard at any cadence the operator finds useful. On
+   * single-instance deployments enabled=false and peers is empty.
+   */
+  getReplicationStatus(
+    request: GetReplicationStatusRequest,
+    callback: (error: ServiceError | null, response: GetReplicationStatusResponse) => void,
+  ): ClientUnaryCall;
+  getReplicationStatus(
+    request: GetReplicationStatusRequest,
+    metadata: Metadata,
+    callback: (error: ServiceError | null, response: GetReplicationStatusResponse) => void,
+  ): ClientUnaryCall;
+  getReplicationStatus(
+    request: GetReplicationStatusRequest,
+    metadata: Metadata,
+    options: Partial<CallOptions>,
+    callback: (error: ServiceError | null, response: GetReplicationStatusResponse) => void,
   ): ClientUnaryCall;
 }
 

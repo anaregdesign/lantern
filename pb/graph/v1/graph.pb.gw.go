@@ -773,6 +773,27 @@ func local_request_LanternService_GetServerStatus_0(ctx context.Context, marshal
 	return msg, metadata, err
 }
 
+func request_LanternService_GetReplicationStatus_0(ctx context.Context, marshaler runtime.Marshaler, client LanternServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq GetReplicationStatusRequest
+		metadata runtime.ServerMetadata
+	)
+	if req.Body != nil {
+		_, _ = io.Copy(io.Discard, req.Body)
+	}
+	msg, err := client.GetReplicationStatus(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+}
+
+func local_request_LanternService_GetReplicationStatus_0(ctx context.Context, marshaler runtime.Marshaler, server LanternServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq GetReplicationStatusRequest
+		metadata runtime.ServerMetadata
+	)
+	msg, err := server.GetReplicationStatus(ctx, &protoReq)
+	return msg, metadata, err
+}
+
 // RegisterLanternServiceHandlerServer registers the http handlers for service LanternService to "mux".
 // UnaryRPC     :call LanternServiceServer directly.
 // StreamingRPC :currently unsupported pending https://github.com/grpc/grpc-go/issues/906.
@@ -1179,6 +1200,26 @@ func RegisterLanternServiceHandlerServer(ctx context.Context, mux *runtime.Serve
 		}
 		forward_LanternService_GetServerStatus_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodGet, pattern_LanternService_GetReplicationStatus_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/graph.v1.LanternService/GetReplicationStatus", runtime.WithHTTPPathPattern("/v1/replication/status"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_LanternService_GetReplicationStatus_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_LanternService_GetReplicationStatus_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 
 	return nil
 }
@@ -1559,6 +1600,23 @@ func RegisterLanternServiceHandlerClient(ctx context.Context, mux *runtime.Serve
 		}
 		forward_LanternService_GetServerStatus_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodGet, pattern_LanternService_GetReplicationStatus_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/graph.v1.LanternService/GetReplicationStatus", runtime.WithHTTPPathPattern("/v1/replication/status"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_LanternService_GetReplicationStatus_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_LanternService_GetReplicationStatus_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 	return nil
 }
 
@@ -1583,6 +1641,7 @@ var (
 	pattern_LanternService_DeleteEdges_0            = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "edges", "delete"}, ""))
 	pattern_LanternService_ScanEdges_0              = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "edges", "scan"}, ""))
 	pattern_LanternService_GetServerStatus_0        = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "status"}, ""))
+	pattern_LanternService_GetReplicationStatus_0   = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "replication", "status"}, ""))
 )
 
 var (
@@ -1606,4 +1665,5 @@ var (
 	forward_LanternService_DeleteEdges_0            = runtime.ForwardResponseMessage
 	forward_LanternService_ScanEdges_0              = runtime.ForwardResponseMessage
 	forward_LanternService_GetServerStatus_0        = runtime.ForwardResponseMessage
+	forward_LanternService_GetReplicationStatus_0   = runtime.ForwardResponseMessage
 )

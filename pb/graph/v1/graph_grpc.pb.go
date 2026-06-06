@@ -39,6 +39,7 @@ const (
 	LanternService_DeleteEdges_FullMethodName            = "/graph.v1.LanternService/DeleteEdges"
 	LanternService_ScanEdges_FullMethodName              = "/graph.v1.LanternService/ScanEdges"
 	LanternService_GetServerStatus_FullMethodName        = "/graph.v1.LanternService/GetServerStatus"
+	LanternService_GetReplicationStatus_FullMethodName   = "/graph.v1.LanternService/GetReplicationStatus"
 )
 
 // LanternServiceClient is the client API for LanternService service.
@@ -90,6 +91,12 @@ type LanternServiceClient interface {
 	// tab and lightweight smoke-test tooling. Auth is the caller's
 	// responsibility; no PII is returned.
 	GetServerStatus(ctx context.Context, in *GetServerStatusRequest, opts ...grpc.CallOption) (*GetServerStatusResponse, error)
+	// GetReplicationStatus returns a flat snapshot of the local node's
+	// outbound peer-replication state. Read-only — no peer add/remove
+	// surface is exposed (see #315 out-of-scope). Cheap to call from a
+	// dashboard at any cadence the operator finds useful. On
+	// single-instance deployments enabled=false and peers is empty.
+	GetReplicationStatus(ctx context.Context, in *GetReplicationStatusRequest, opts ...grpc.CallOption) (*GetReplicationStatusResponse, error)
 }
 
 type lanternServiceClient struct {
@@ -300,6 +307,16 @@ func (c *lanternServiceClient) GetServerStatus(ctx context.Context, in *GetServe
 	return out, nil
 }
 
+func (c *lanternServiceClient) GetReplicationStatus(ctx context.Context, in *GetReplicationStatusRequest, opts ...grpc.CallOption) (*GetReplicationStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetReplicationStatusResponse)
+	err := c.cc.Invoke(ctx, LanternService_GetReplicationStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // LanternServiceServer is the server API for LanternService service.
 // All implementations should embed UnimplementedLanternServiceServer
 // for forward compatibility.
@@ -349,6 +366,12 @@ type LanternServiceServer interface {
 	// tab and lightweight smoke-test tooling. Auth is the caller's
 	// responsibility; no PII is returned.
 	GetServerStatus(context.Context, *GetServerStatusRequest) (*GetServerStatusResponse, error)
+	// GetReplicationStatus returns a flat snapshot of the local node's
+	// outbound peer-replication state. Read-only — no peer add/remove
+	// surface is exposed (see #315 out-of-scope). Cheap to call from a
+	// dashboard at any cadence the operator finds useful. On
+	// single-instance deployments enabled=false and peers is empty.
+	GetReplicationStatus(context.Context, *GetReplicationStatusRequest) (*GetReplicationStatusResponse, error)
 }
 
 // UnimplementedLanternServiceServer should be embedded to have
@@ -417,6 +440,9 @@ func (UnimplementedLanternServiceServer) ScanEdges(context.Context, *ScanEdgesRe
 }
 func (UnimplementedLanternServiceServer) GetServerStatus(context.Context, *GetServerStatusRequest) (*GetServerStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetServerStatus not implemented")
+}
+func (UnimplementedLanternServiceServer) GetReplicationStatus(context.Context, *GetReplicationStatusRequest) (*GetReplicationStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetReplicationStatus not implemented")
 }
 func (UnimplementedLanternServiceServer) testEmbeddedByValue() {}
 
@@ -798,6 +824,24 @@ func _LanternService_GetServerStatus_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LanternService_GetReplicationStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetReplicationStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LanternServiceServer).GetReplicationStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LanternService_GetReplicationStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LanternServiceServer).GetReplicationStatus(ctx, req.(*GetReplicationStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // LanternService_ServiceDesc is the grpc.ServiceDesc for LanternService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -884,6 +928,10 @@ var LanternService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetServerStatus",
 			Handler:    _LanternService_GetServerStatus_Handler,
+		},
+		{
+			MethodName: "GetReplicationStatus",
+			Handler:    _LanternService_GetReplicationStatus_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
