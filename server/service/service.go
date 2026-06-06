@@ -55,6 +55,13 @@ type LanternService struct {
 	statusInfo    StatusInfo
 	startedAt     time.Time
 	startedAtOnce sync.Once
+
+	// replicationSnapshotter + replicationStatusInfo back
+	// GetReplicationStatus (#315). Both nil/zero by default so tests
+	// constructing LanternService directly get a well-formed
+	// "single-instance, no peers" response.
+	replicationSnapshotter ReplicationSnapshotter
+	replicationStatusInfo  ReplicationStatusInfo
 }
 
 // HotPathMetrics is the narrow observability surface consumed by the

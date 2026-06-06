@@ -147,9 +147,10 @@ type Config struct {
 // (or returns immediately when Peers is empty), so it is meant to be
 // invoked from inside an errgroup alongside the gRPC server.
 type Pump struct {
-	cfg   Config
-	apply MutationApplier
-	snap  SnapshotApplier
+	cfg     Config
+	apply   MutationApplier
+	snap    SnapshotApplier
+	tracker *peerTracker
 }
 
 // NewPump constructs the pump. apply MUST be the local
@@ -172,7 +173,7 @@ func NewPump(cfg Config, apply MutationApplier, snap SnapshotApplier) *Pump {
 	if len(cfg.DialOptions) == 0 {
 		cfg.DialOptions = []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
 	}
-	return &Pump{cfg: cfg, apply: apply, snap: snap}
+	return &Pump{cfg: cfg, apply: apply, snap: snap, tracker: newPeerTracker()}
 }
 
 // Run starts one goroutine per peer and blocks until ctx is
@@ -250,6 +251,7 @@ func (p *Pump) Run(ctx context.Context) error {
 // BackoffMax) and retries until ctx is cancelled.
 func (p *Pump) runPeer(ctx context.Context, addr string) {
 	log := p.cfg.Logger.With(slog.String("peer", addr))
+	defer p.tracker.removePeer(addr)
 	backoff := p.cfg.BackoffMin
 	// fromSeq is the next seq we expect from THIS peer. Survives
 	// across reconnects so transient disconnects don't trigger a
@@ -257,6 +259,7 @@ func (p *Pump) runPeer(ctx context.Context, addr string) {
 	var fromSeq uint64
 
 	for ctx.Err() == nil {
+		p.tracker.setState(addr, PeerStateConnecting)
 		nextSeq, err := p.session(ctx, addr, fromSeq)
 		fromSeq = nextSeq
 		if err == nil {
@@ -266,6 +269,7 @@ func (p *Pump) runPeer(ctx context.Context, addr string) {
 		if ctx.Err() != nil {
 			return
 		}
+		p.tracker.recordError(addr, err)
 		log.Warn("replication pump: peer session error",
 			slog.Any("err", err), slog.Duration("backoff", backoff))
 
@@ -388,6 +392,7 @@ func (p *Pump) subscribe(ctx context.Context, cli pb.LanternReplicationServiceCl
 		}
 		p.cfg.Metrics.OnPumpApply(addr)
 		next = mu.GetSeq() + 1
+		p.tracker.recordEvent(addr, mu.GetSeq(), time.Now())
 	}
 }
 

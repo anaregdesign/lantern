@@ -363,6 +363,77 @@ message GetServerStatusResponse {
   uint64 edge_count = 13;
 }
 
+// ReplicationPeer is one row of the GetReplicationStatus snapshot.
+// Each row models the local node's view of a single outbound peer
+// connection owned by the replication pump (#185). Fields are
+// best-effort point-in-time samples; clients should treat consecutive
+// snapshots as monotonically advancing rather than transactional.
+message ReplicationPeer {
+  // address is the dial target as configured in LANTERN_PEERS (or
+  // resolved from DNS discovery). Stable across reconnects for a given
+  // peer, so it doubles as the row identity for admin UI displays.
+  string address = 1;
+
+  enum State {
+    STATE_UNSPECIFIED = 0;
+    // Pump is dialing or has dialed but Subscribe has not yet
+    // returned a frame.
+    STATE_CONNECTING = 1;
+    // Subscribe stream is open and frames have been received.
+    STATE_STREAMING = 2;
+    // Last session errored; the pump is sleeping before the next
+    // reconnect attempt.
+    STATE_BACKOFF = 3;
+    // Per-peer goroutine has exited (typically because DNS discovery
+    // removed the address). Reported transiently — the row drops out
+    // of subsequent snapshots once the supervisor has reaped it.
+    STATE_CLOSED = 4;
+  }
+  State state = 2;
+
+  // last_event_at is the wall-clock instant the pump last received any
+  // frame (Subscribe or Snapshot) from this peer. Unset when nothing
+  // has been received yet. Combined with the response-level local_now
+  // it yields the "how stale is this stream" diagnostic the admin UI
+  // shows as a lag bar.
+  google.protobuf.Timestamp last_event_at = 3;
+
+  // applied_seq is the highest peer-local sequence number the pump has
+  // successfully consumed from this peer. Zero on a fresh connection.
+  uint64 applied_seq = 4;
+
+  // error carries the last non-recoverable error message reported by
+  // the per-peer session loop. Cleared on the next successful frame.
+  string error = 5;
+}
+
+// GetReplicationStatusRequest carries no parameters. The response is a
+// flat snapshot of the local node's view of every outbound peer.
+message GetReplicationStatusRequest {}
+
+message GetReplicationStatusResponse {
+  // node_id is the local HLC NodeID rendered as lowercase hex (32 chars).
+  // Stable for the lifetime of the process; either configured via
+  // LANTERN_NODE_ID or randomly generated at startup.
+  string node_id = 1;
+
+  // local_now is the server's wall-clock at the moment the snapshot
+  // was taken. Provided so clients can compute per-peer staleness
+  // (local_now - last_event_at) without trusting their own clock.
+  google.protobuf.Timestamp local_now = 2;
+
+  // enabled is false on a single-instance deployment (no peers
+  // configured AND no DNS discovery). When false, peers is empty but
+  // the response is still well-formed — handlers never return
+  // Unimplemented for this RPC.
+  bool enabled = 3;
+
+  // peers is the per-peer slice. Order is the supervisor's iteration
+  // order and is intentionally unspecified; clients sort by address
+  // for display.
+  repeated ReplicationPeer peers = 10;
+}
+
 service LanternService {
   rpc Illuminate(IlluminateRequest) returns (IlluminateResponse) {
     option (google.api.http) = {get: "/v1/illuminate/{seed}"};
@@ -506,5 +577,14 @@ service LanternService {
   // responsibility; no PII is returned.
   rpc GetServerStatus(GetServerStatusRequest) returns (GetServerStatusResponse) {
     option (google.api.http) = {get: "/v1/status"};
+  }
+
+  // GetReplicationStatus returns a flat snapshot of the local node's
+  // outbound peer-replication state. Read-only — no peer add/remove
+  // surface is exposed (see #315 out-of-scope). Cheap to call from a
+  // dashboard at any cadence the operator finds useful. On
+  // single-instance deployments enabled=false and peers is empty.
+  rpc GetReplicationStatus(GetReplicationStatusRequest) returns (GetReplicationStatusResponse) {
+    option (google.api.http) = {get: "/v1/replication/status"};
   }
 }

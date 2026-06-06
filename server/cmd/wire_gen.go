@@ -61,6 +61,6 @@ func initializeApp() (*App, error) {
 	antiEntropy := provider.NewAntiEntropyDriver(peerConfig, replicationConfig, antiEntropyConfig, lanternService, graphCache, pump, antiEntropyMetrics, logger)
 	mainRegisteredHealth := registerHealthAndReflection(observabilityConfig, server, healthServer)
 	cacheGCHooksWired := provider.WireCacheGCHooks(graphCache, domainMetrics, logger)
-	app := newApp(config, logger, lanternServer, metricsServer, tracing, domainMetrics, healthServer, pump, antiEntropy, mainRegisteredHealth, cacheGCHooksWired)
+	app := newApp(config, logger, lanternService, lanternServer, metricsServer, tracing, domainMetrics, healthServer, pump, antiEntropy, peerConfig, replicationConfig, mainRegisteredHealth, cacheGCHooksWired)
 	return app, nil
 }

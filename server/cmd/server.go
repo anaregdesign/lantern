@@ -38,6 +38,7 @@ type App struct {
 func newApp(
 	cfg *provider.Config,
 	logger *slog.Logger,
+	svc *service.LanternService,
 	grpcServer *service.LanternServer,
 	metricsServer provider.MetricsServer,
 	tracing *provider.Tracing,
@@ -45,9 +46,25 @@ func newApp(
 	hs *health.Server,
 	pump *replication.Pump,
 	antiEntropy *replication.AntiEntropy,
+	pc provider.PeerConfig,
+	rc provider.ReplicationConfig,
 	_ registeredHealth,
 	_ provider.CacheGCHooksWired,
 ) *App {
+	// Wire the replication snapshotter onto svc here (rather than inside
+	// newLanternService) because pump itself depends on svc; that cycle
+	// is broken by deferring the binding until after both have been
+	// constructed. Safe to write the field now — gRPC has not started
+	// serving yet, so no goroutine can be reading
+	// replicationSnapshotter concurrently. enabled reflects "this server
+	// is wired to talk to peers": static peer list non-empty OR DNS
+	// discovery configured.
+	enabled := len(pc.Peers) > 0 || pc.Discovery == "dns"
+	svc.WithReplicationStatus(pump, service.ReplicationStatusInfo{
+		NodeID:  rc.NodeID,
+		Enabled: enabled,
+	})
+
 	return &App{
 		cfg:         cfg,
 		logger:      logger,

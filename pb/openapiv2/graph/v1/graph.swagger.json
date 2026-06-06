@@ -410,6 +410,29 @@
         ]
       }
     },
+    "/v1/replication/status": {
+      "get": {
+        "summary": "GetReplicationStatus returns a flat snapshot of the local node's\noutbound peer-replication state. Read-only — no peer add/remove\nsurface is exposed (see #315 out-of-scope). Cheap to call from a\ndashboard at any cadence the operator finds useful. On\nsingle-instance deployments enabled=false and peers is empty.",
+        "operationId": "LanternService_GetReplicationStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetReplicationStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "LanternService"
+        ]
+      }
+    },
     "/v1/status": {
       "get": {
         "summary": "GetServerStatus returns a flat snapshot of the server's identity,\nbuild info, configuration ceilings, and current live vertex/edge\ncounts. Read-only and cheap — intended for the admin UI's \"Ops\"\ntab and lightweight smoke-test tooling. Auth is the caller's\nresponsibility; no PII is returned.",
@@ -830,6 +853,18 @@
       },
       "description": "PutVertexRequest writes a single vertex with upsert semantics. The\nVertex.key field selects the target row and Vertex.expiration controls\nthe TTL (absolute time). This is the singular convenience wrapper over\nPutVertices and shares its guard rails."
     },
+    "ReplicationPeerState": {
+      "type": "string",
+      "enum": [
+        "STATE_UNSPECIFIED",
+        "STATE_CONNECTING",
+        "STATE_STREAMING",
+        "STATE_BACKOFF",
+        "STATE_CLOSED"
+      ],
+      "default": "STATE_UNSPECIFIED",
+      "description": " - STATE_CONNECTING: Pump is dialing or has dialed but Subscribe has not yet\nreturned a frame.\n - STATE_STREAMING: Subscribe stream is open and frames have been received.\n - STATE_BACKOFF: Last session errored; the pump is sleeping before the next\nreconnect attempt.\n - STATE_CLOSED: Per-peer goroutine has exited (typically because DNS discovery\nremoved the address). Reported transiently — the row drops out\nof subsequent snapshots once the supervisor has reaped it."
+    },
     "protobufAny": {
       "type": "object",
       "properties": {
@@ -1054,6 +1089,32 @@
         }
       }
     },
+    "v1GetReplicationStatusResponse": {
+      "type": "object",
+      "properties": {
+        "nodeId": {
+          "type": "string",
+          "description": "node_id is the local HLC NodeID rendered as lowercase hex (32 chars).\nStable for the lifetime of the process; either configured via\nLANTERN_NODE_ID or randomly generated at startup."
+        },
+        "localNow": {
+          "type": "string",
+          "format": "date-time",
+          "description": "local_now is the server's wall-clock at the moment the snapshot\nwas taken. Provided so clients can compute per-peer staleness\n(local_now - last_event_at) without trusting their own clock."
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "enabled is false on a single-instance deployment (no peers\nconfigured AND no DNS discovery). When false, peers is empty but\nthe response is still well-formed — handlers never return\nUnimplemented for this RPC."
+        },
+        "peers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1ReplicationPeer"
+          },
+          "description": "peers is the per-peer slice. Order is the supervisor's iteration\norder and is intentionally unspecified; clients sort by address\nfor display."
+        }
+      }
+    },
     "v1GetServerStatusResponse": {
       "type": "object",
       "properties": {
@@ -1245,6 +1306,33 @@
           "description": "Number of vertices accepted by the server. Currently always equals the\nrequest size on success; reserved for future per-item validation that may\nreport partial writes."
         }
       }
+    },
+    "v1ReplicationPeer": {
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "string",
+          "description": "address is the dial target as configured in LANTERN_PEERS (or\nresolved from DNS discovery). Stable across reconnects for a given\npeer, so it doubles as the row identity for admin UI displays."
+        },
+        "state": {
+          "$ref": "#/definitions/ReplicationPeerState"
+        },
+        "lastEventAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "last_event_at is the wall-clock instant the pump last received any\nframe (Subscribe or Snapshot) from this peer. Unset when nothing\nhas been received yet. Combined with the response-level local_now\nit yields the \"how stale is this stream\" diagnostic the admin UI\nshows as a lag bar."
+        },
+        "appliedSeq": {
+          "type": "string",
+          "format": "uint64",
+          "description": "applied_seq is the highest peer-local sequence number the pump has\nsuccessfully consumed from this peer. Zero on a fresh connection."
+        },
+        "error": {
+          "type": "string",
+          "description": "error carries the last non-recoverable error message reported by\nthe per-peer session loop. Cleared on the next successful frame."
+        }
+      },
+      "description": "ReplicationPeer is one row of the GetReplicationStatus snapshot.\nEach row models the local node's view of a single outbound peer\nconnection owned by the replication pump (#185). Fields are\nbest-effort point-in-time samples; clients should treat consecutive\nsnapshots as monotonically advancing rather than transactional."
     },
     "v1ScanEdgesRequest": {
       "type": "object",
