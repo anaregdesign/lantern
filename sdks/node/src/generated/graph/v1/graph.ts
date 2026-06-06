@@ -422,6 +422,77 @@ export interface PutEdgesResponse {
   written: number;
 }
 
+/**
+ * GetServerStatusRequest carries no parameters — the response is a flat
+ * snapshot of the server's identity, build, configuration ceilings, and
+ * current live counts. Intended for the admin UI's "Ops" tab and any
+ * lightweight smoke-test tooling that just needs to confirm "the server
+ * is up and roughly configured as expected".
+ */
+export interface GetServerStatusRequest {
+}
+
+export interface GetServerStatusResponse {
+  /**
+   * Build/version stamp. Falls back to "dev" when the binary was built
+   * without VCS info or without LANTERN_VERSION set.
+   */
+  version: string;
+  /** Reports `runtime.Version()` (e.g. "go1.26.4"). */
+  goVersion: string;
+  /**
+   * Wall-clock instant the server process started serving requests.
+   * Captured at gRPC server start, not at process start, so the value
+   * reflects "ready to serve" rather than "wire init done".
+   */
+  startedAt:
+    | Date
+    | undefined;
+  /**
+   * Convenience field: now - started_at on the server side, so clients
+   * do not have to know the server's clock to display uptime.
+   */
+  uptime:
+    | Duration
+    | undefined;
+  /**
+   * The default TTL applied to vertices/edges when the caller does not
+   * specify Expiration (LANTERN_DEFAULT_TTL_SECONDS).
+   */
+  defaultTtl:
+    | Duration
+    | undefined;
+  /** Validation ceiling for batch RPCs (LANTERN_MAX_BATCH_SIZE). */
+  maxBatchSize: number;
+  /** Validation ceiling for vertex/edge keys (LANTERN_MAX_KEY_BYTES). */
+  maxKeyBytes: number;
+  /**
+   * Per-call defaults / hard caps for prefix-scan pagination
+   * (LANTERN_SCAN_DEFAULT_LIMIT / LANTERN_SCAN_MAX_LIMIT).
+   */
+  scanDefaultLimit: number;
+  scanMaxLimit: number;
+  /**
+   * True when the gRPC server is terminating TLS
+   * (LANTERN_TLS_CERT_FILE + LANTERN_TLS_KEY_FILE both set).
+   */
+  tlsEnabled: boolean;
+  /**
+   * True when this server is wired to a mutation log + HLC clock and is
+   * therefore a member of a replication group. False on single-node
+   * deployments.
+   */
+  replicationEnabled: boolean;
+  /**
+   * Live counts pulled from the in-memory graph cache. Cheap to compute
+   * (index sizes, no scan). Intended for at-a-glance dashboards — these
+   * are not transactional snapshots and may include not-yet-collected
+   * expired entries bounded by the GC tick.
+   */
+  vertexCount: Long;
+  edgeCount: Long;
+}
+
 function createBaseVertex(): Vertex {
   return {
     key: "",
@@ -3448,6 +3519,367 @@ export const PutEdgesResponse: MessageFns<PutEdgesResponse> = {
   },
 };
 
+function createBaseGetServerStatusRequest(): GetServerStatusRequest {
+  return {};
+}
+
+export const GetServerStatusRequest: MessageFns<GetServerStatusRequest> = {
+  encode(_: GetServerStatusRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GetServerStatusRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGetServerStatusRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(_: any): GetServerStatusRequest {
+    return {};
+  },
+
+  toJSON(_: GetServerStatusRequest): unknown {
+    const obj: any = {};
+    return obj;
+  },
+
+  create(base?: DeepPartial<GetServerStatusRequest>): GetServerStatusRequest {
+    return GetServerStatusRequest.fromPartial(base ?? {});
+  },
+  fromPartial(_: DeepPartial<GetServerStatusRequest>): GetServerStatusRequest {
+    const message = createBaseGetServerStatusRequest();
+    return message;
+  },
+};
+
+function createBaseGetServerStatusResponse(): GetServerStatusResponse {
+  return {
+    version: "",
+    goVersion: "",
+    startedAt: undefined,
+    uptime: undefined,
+    defaultTtl: undefined,
+    maxBatchSize: 0,
+    maxKeyBytes: 0,
+    scanDefaultLimit: 0,
+    scanMaxLimit: 0,
+    tlsEnabled: false,
+    replicationEnabled: false,
+    vertexCount: Long.UZERO,
+    edgeCount: Long.UZERO,
+  };
+}
+
+export const GetServerStatusResponse: MessageFns<GetServerStatusResponse> = {
+  encode(message: GetServerStatusResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.version !== "") {
+      writer.uint32(10).string(message.version);
+    }
+    if (message.goVersion !== "") {
+      writer.uint32(18).string(message.goVersion);
+    }
+    if (message.startedAt !== undefined) {
+      Timestamp.encode(toTimestamp(message.startedAt), writer.uint32(26).fork()).join();
+    }
+    if (message.uptime !== undefined) {
+      Duration.encode(message.uptime, writer.uint32(34).fork()).join();
+    }
+    if (message.defaultTtl !== undefined) {
+      Duration.encode(message.defaultTtl, writer.uint32(42).fork()).join();
+    }
+    if (message.maxBatchSize !== 0) {
+      writer.uint32(48).uint32(message.maxBatchSize);
+    }
+    if (message.maxKeyBytes !== 0) {
+      writer.uint32(56).uint32(message.maxKeyBytes);
+    }
+    if (message.scanDefaultLimit !== 0) {
+      writer.uint32(64).uint32(message.scanDefaultLimit);
+    }
+    if (message.scanMaxLimit !== 0) {
+      writer.uint32(72).uint32(message.scanMaxLimit);
+    }
+    if (message.tlsEnabled !== false) {
+      writer.uint32(80).bool(message.tlsEnabled);
+    }
+    if (message.replicationEnabled !== false) {
+      writer.uint32(88).bool(message.replicationEnabled);
+    }
+    if (!message.vertexCount.equals(Long.UZERO)) {
+      writer.uint32(96).uint64(message.vertexCount.toString());
+    }
+    if (!message.edgeCount.equals(Long.UZERO)) {
+      writer.uint32(104).uint64(message.edgeCount.toString());
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GetServerStatusResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGetServerStatusResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.version = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.goVersion = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.startedAt = fromTimestamp(Timestamp.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.uptime = Duration.decode(reader, reader.uint32());
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.defaultTtl = Duration.decode(reader, reader.uint32());
+          continue;
+        }
+        case 6: {
+          if (tag !== 48) {
+            break;
+          }
+
+          message.maxBatchSize = reader.uint32();
+          continue;
+        }
+        case 7: {
+          if (tag !== 56) {
+            break;
+          }
+
+          message.maxKeyBytes = reader.uint32();
+          continue;
+        }
+        case 8: {
+          if (tag !== 64) {
+            break;
+          }
+
+          message.scanDefaultLimit = reader.uint32();
+          continue;
+        }
+        case 9: {
+          if (tag !== 72) {
+            break;
+          }
+
+          message.scanMaxLimit = reader.uint32();
+          continue;
+        }
+        case 10: {
+          if (tag !== 80) {
+            break;
+          }
+
+          message.tlsEnabled = reader.bool();
+          continue;
+        }
+        case 11: {
+          if (tag !== 88) {
+            break;
+          }
+
+          message.replicationEnabled = reader.bool();
+          continue;
+        }
+        case 12: {
+          if (tag !== 96) {
+            break;
+          }
+
+          message.vertexCount = Long.fromString(reader.uint64().toString(), true);
+          continue;
+        }
+        case 13: {
+          if (tag !== 104) {
+            break;
+          }
+
+          message.edgeCount = Long.fromString(reader.uint64().toString(), true);
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): GetServerStatusResponse {
+    return {
+      version: isSet(object.version) ? globalThis.String(object.version) : "",
+      goVersion: isSet(object.goVersion)
+        ? globalThis.String(object.goVersion)
+        : isSet(object.go_version)
+        ? globalThis.String(object.go_version)
+        : "",
+      startedAt: isSet(object.startedAt)
+        ? fromJsonTimestamp(object.startedAt)
+        : isSet(object.started_at)
+        ? fromJsonTimestamp(object.started_at)
+        : undefined,
+      uptime: isSet(object.uptime) ? Duration.fromJSON(object.uptime) : undefined,
+      defaultTtl: isSet(object.defaultTtl)
+        ? Duration.fromJSON(object.defaultTtl)
+        : isSet(object.default_ttl)
+        ? Duration.fromJSON(object.default_ttl)
+        : undefined,
+      maxBatchSize: isSet(object.maxBatchSize)
+        ? globalThis.Number(object.maxBatchSize)
+        : isSet(object.max_batch_size)
+        ? globalThis.Number(object.max_batch_size)
+        : 0,
+      maxKeyBytes: isSet(object.maxKeyBytes)
+        ? globalThis.Number(object.maxKeyBytes)
+        : isSet(object.max_key_bytes)
+        ? globalThis.Number(object.max_key_bytes)
+        : 0,
+      scanDefaultLimit: isSet(object.scanDefaultLimit)
+        ? globalThis.Number(object.scanDefaultLimit)
+        : isSet(object.scan_default_limit)
+        ? globalThis.Number(object.scan_default_limit)
+        : 0,
+      scanMaxLimit: isSet(object.scanMaxLimit)
+        ? globalThis.Number(object.scanMaxLimit)
+        : isSet(object.scan_max_limit)
+        ? globalThis.Number(object.scan_max_limit)
+        : 0,
+      tlsEnabled: isSet(object.tlsEnabled)
+        ? globalThis.Boolean(object.tlsEnabled)
+        : isSet(object.tls_enabled)
+        ? globalThis.Boolean(object.tls_enabled)
+        : false,
+      replicationEnabled: isSet(object.replicationEnabled)
+        ? globalThis.Boolean(object.replicationEnabled)
+        : isSet(object.replication_enabled)
+        ? globalThis.Boolean(object.replication_enabled)
+        : false,
+      vertexCount: isSet(object.vertexCount)
+        ? Long.fromValue(object.vertexCount)
+        : isSet(object.vertex_count)
+        ? Long.fromValue(object.vertex_count)
+        : Long.UZERO,
+      edgeCount: isSet(object.edgeCount)
+        ? Long.fromValue(object.edgeCount)
+        : isSet(object.edge_count)
+        ? Long.fromValue(object.edge_count)
+        : Long.UZERO,
+    };
+  },
+
+  toJSON(message: GetServerStatusResponse): unknown {
+    const obj: any = {};
+    if (message.version !== "") {
+      obj.version = message.version;
+    }
+    if (message.goVersion !== "") {
+      obj.goVersion = message.goVersion;
+    }
+    if (message.startedAt !== undefined) {
+      obj.startedAt = message.startedAt.toISOString();
+    }
+    if (message.uptime !== undefined) {
+      obj.uptime = Duration.toJSON(message.uptime);
+    }
+    if (message.defaultTtl !== undefined) {
+      obj.defaultTtl = Duration.toJSON(message.defaultTtl);
+    }
+    if (message.maxBatchSize !== 0) {
+      obj.maxBatchSize = Math.round(message.maxBatchSize);
+    }
+    if (message.maxKeyBytes !== 0) {
+      obj.maxKeyBytes = Math.round(message.maxKeyBytes);
+    }
+    if (message.scanDefaultLimit !== 0) {
+      obj.scanDefaultLimit = Math.round(message.scanDefaultLimit);
+    }
+    if (message.scanMaxLimit !== 0) {
+      obj.scanMaxLimit = Math.round(message.scanMaxLimit);
+    }
+    if (message.tlsEnabled !== false) {
+      obj.tlsEnabled = message.tlsEnabled;
+    }
+    if (message.replicationEnabled !== false) {
+      obj.replicationEnabled = message.replicationEnabled;
+    }
+    if (!message.vertexCount.equals(Long.UZERO)) {
+      obj.vertexCount = (message.vertexCount || Long.UZERO).toString();
+    }
+    if (!message.edgeCount.equals(Long.UZERO)) {
+      obj.edgeCount = (message.edgeCount || Long.UZERO).toString();
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<GetServerStatusResponse>): GetServerStatusResponse {
+    return GetServerStatusResponse.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<GetServerStatusResponse>): GetServerStatusResponse {
+    const message = createBaseGetServerStatusResponse();
+    message.version = object.version ?? "";
+    message.goVersion = object.goVersion ?? "";
+    message.startedAt = object.startedAt ?? undefined;
+    message.uptime = (object.uptime !== undefined && object.uptime !== null)
+      ? Duration.fromPartial(object.uptime)
+      : undefined;
+    message.defaultTtl = (object.defaultTtl !== undefined && object.defaultTtl !== null)
+      ? Duration.fromPartial(object.defaultTtl)
+      : undefined;
+    message.maxBatchSize = object.maxBatchSize ?? 0;
+    message.maxKeyBytes = object.maxKeyBytes ?? 0;
+    message.scanDefaultLimit = object.scanDefaultLimit ?? 0;
+    message.scanMaxLimit = object.scanMaxLimit ?? 0;
+    message.tlsEnabled = object.tlsEnabled ?? false;
+    message.replicationEnabled = object.replicationEnabled ?? false;
+    message.vertexCount = (object.vertexCount !== undefined && object.vertexCount !== null)
+      ? Long.fromValue(object.vertexCount)
+      : Long.UZERO;
+    message.edgeCount = (object.edgeCount !== undefined && object.edgeCount !== null)
+      ? Long.fromValue(object.edgeCount)
+      : Long.UZERO;
+    return message;
+  },
+};
+
 export type LanternServiceService = typeof LanternServiceService;
 export const LanternServiceService = {
   illuminate: {
@@ -3658,6 +4090,24 @@ export const LanternServiceService = {
     responseSerialize: (value: ScanEdgesResponse): Buffer => Buffer.from(ScanEdgesResponse.encode(value).finish()),
     responseDeserialize: (value: Buffer): ScanEdgesResponse => ScanEdgesResponse.decode(value),
   },
+  /**
+   * GetServerStatus returns a flat snapshot of the server's identity,
+   * build info, configuration ceilings, and current live vertex/edge
+   * counts. Read-only and cheap — intended for the admin UI's "Ops"
+   * tab and lightweight smoke-test tooling. Auth is the caller's
+   * responsibility; no PII is returned.
+   */
+  getServerStatus: {
+    path: "/graph.v1.LanternService/GetServerStatus" as const,
+    requestStream: false as const,
+    responseStream: false as const,
+    requestSerialize: (value: GetServerStatusRequest): Buffer =>
+      Buffer.from(GetServerStatusRequest.encode(value).finish()),
+    requestDeserialize: (value: Buffer): GetServerStatusRequest => GetServerStatusRequest.decode(value),
+    responseSerialize: (value: GetServerStatusResponse): Buffer =>
+      Buffer.from(GetServerStatusResponse.encode(value).finish()),
+    responseDeserialize: (value: Buffer): GetServerStatusResponse => GetServerStatusResponse.decode(value),
+  },
 } as const;
 
 export interface LanternServiceServer extends UntypedServiceImplementation {
@@ -3708,6 +4158,14 @@ export interface LanternServiceServer extends UntypedServiceImplementation {
    * order, page by page. Plural-only — prefix scan is inherently plural.
    */
   scanEdges: handleUnaryCall<ScanEdgesRequest, ScanEdgesResponse>;
+  /**
+   * GetServerStatus returns a flat snapshot of the server's identity,
+   * build info, configuration ceilings, and current live vertex/edge
+   * counts. Read-only and cheap — intended for the admin UI's "Ops"
+   * tab and lightweight smoke-test tooling. Auth is the caller's
+   * responsibility; no PII is returned.
+   */
+  getServerStatus: handleUnaryCall<GetServerStatusRequest, GetServerStatusResponse>;
 }
 
 export interface LanternServiceClient extends Client {
@@ -4023,6 +4481,28 @@ export interface LanternServiceClient extends Client {
     metadata: Metadata,
     options: Partial<CallOptions>,
     callback: (error: ServiceError | null, response: ScanEdgesResponse) => void,
+  ): ClientUnaryCall;
+  /**
+   * GetServerStatus returns a flat snapshot of the server's identity,
+   * build info, configuration ceilings, and current live vertex/edge
+   * counts. Read-only and cheap — intended for the admin UI's "Ops"
+   * tab and lightweight smoke-test tooling. Auth is the caller's
+   * responsibility; no PII is returned.
+   */
+  getServerStatus(
+    request: GetServerStatusRequest,
+    callback: (error: ServiceError | null, response: GetServerStatusResponse) => void,
+  ): ClientUnaryCall;
+  getServerStatus(
+    request: GetServerStatusRequest,
+    metadata: Metadata,
+    callback: (error: ServiceError | null, response: GetServerStatusResponse) => void,
+  ): ClientUnaryCall;
+  getServerStatus(
+    request: GetServerStatusRequest,
+    metadata: Metadata,
+    options: Partial<CallOptions>,
+    callback: (error: ServiceError | null, response: GetServerStatusResponse) => void,
   ): ClientUnaryCall;
 }
 

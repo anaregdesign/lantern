@@ -129,6 +129,11 @@ class LanternServiceStub:
                 request_serializer=graph_dot_v1_dot_graph__pb2.ScanEdgesRequest.SerializeToString,
                 response_deserializer=graph_dot_v1_dot_graph__pb2.ScanEdgesResponse.FromString,
                 _registered_method=True)
+        self.GetServerStatus = channel.unary_unary(
+                '/graph.v1.LanternService/GetServerStatus',
+                request_serializer=graph_dot_v1_dot_graph__pb2.GetServerStatusRequest.SerializeToString,
+                response_deserializer=graph_dot_v1_dot_graph__pb2.GetServerStatusResponse.FromString,
+                _registered_method=True)
 
 
 class LanternServiceServicer:
@@ -268,6 +273,17 @@ class LanternServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetServerStatus(self, request, context):
+        """GetServerStatus returns a flat snapshot of the server's identity,
+        build info, configuration ceilings, and current live vertex/edge
+        counts. Read-only and cheap — intended for the admin UI's "Ops"
+        tab and lightweight smoke-test tooling. Auth is the caller's
+        responsibility; no PII is returned.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_LanternServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -365,6 +381,11 @@ def add_LanternServiceServicer_to_server(servicer, server):
                     servicer.ScanEdges,
                     request_deserializer=graph_dot_v1_dot_graph__pb2.ScanEdgesRequest.FromString,
                     response_serializer=graph_dot_v1_dot_graph__pb2.ScanEdgesResponse.SerializeToString,
+            ),
+            'GetServerStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetServerStatus,
+                    request_deserializer=graph_dot_v1_dot_graph__pb2.GetServerStatusRequest.FromString,
+                    response_serializer=graph_dot_v1_dot_graph__pb2.GetServerStatusResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -880,6 +901,33 @@ class LanternService:
             '/graph.v1.LanternService/ScanEdges',
             graph_dot_v1_dot_graph__pb2.ScanEdgesRequest.SerializeToString,
             graph_dot_v1_dot_graph__pb2.ScanEdgesResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetServerStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/graph.v1.LanternService/GetServerStatus',
+            graph_dot_v1_dot_graph__pb2.GetServerStatusRequest.SerializeToString,
+            graph_dot_v1_dot_graph__pb2.GetServerStatusResponse.FromString,
             options,
             channel_credentials,
             insecure,
