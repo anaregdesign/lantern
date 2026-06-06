@@ -1992,8 +1992,9 @@ export class GetServerStatusResponse extends Message<GetServerStatusResponse> {
 
   /**
    * Wall-clock instant the server process started serving requests.
-   * Captured at gRPC server start, not at process start, so the value
-   * reflects "ready to serve" rather than "wire init done".
+   * Captured when the Connect listener starts accepting, not at process
+   * start, so the value reflects "ready to serve" rather than "wire
+   * init done".
    *
    * @generated from field: google.protobuf.Timestamp started_at = 3;
    */
@@ -2043,7 +2044,7 @@ export class GetServerStatusResponse extends Message<GetServerStatusResponse> {
   scanMaxLimit = 0;
 
   /**
-   * True when the gRPC server is terminating TLS
+   * True when the server is terminating TLS
    * (LANTERN_TLS_CERT_FILE + LANTERN_TLS_KEY_FILE both set).
    *
    * @generated from field: bool tls_enabled = 10;

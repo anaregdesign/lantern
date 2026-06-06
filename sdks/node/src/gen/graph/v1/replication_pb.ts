@@ -14,7 +14,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file graph/v1/replication.proto.
  */
 export const file_graph_v1_replication: GenFile = /*@__PURE__*/
-  fileDesc("ChpncmFwaC92MS9yZXBsaWNhdGlvbi5wcm90bxIIZ3JhcGgudjEiQQoMSExDVGltZXN0YW1wEg8KB3dhbGxfbnMYASABKAMSDwoHbG9naWNhbBgCIAEoDRIPCgdub2RlX2lkGAMgASgMIuIECgpNdXRhdGlvbk9wEjAKCnB1dF92ZXJ0ZXgYASABKAsyGi5ncmFwaC52MS5QdXRWZXJ0ZXhSZXF1ZXN0SAASNAoMcHV0X3ZlcnRpY2VzGAIgASgLMhwuZ3JhcGgudjEuUHV0VmVydGljZXNSZXF1ZXN0SAASNgoNZGVsZXRlX3ZlcnRleBgDIAEoCzIdLmdyYXBoLnYxLkRlbGV0ZVZlcnRleFJlcXVlc3RIABI6Cg9kZWxldGVfdmVydGljZXMYBCABKAsyHy5ncmFwaC52MS5EZWxldGVWZXJ0aWNlc1JlcXVlc3RIABJMChlkZWxldGVfdmVydGljZXNfYnlfcHJlZml4GAUgASgLMicuZ3JhcGgudjEuRGVsZXRlVmVydGljZXNCeVByZWZpeFJlcXVlc3RIABIsCghhZGRfZWRnZRgGIAEoCzIYLmdyYXBoLnYxLkFkZEVkZ2VSZXF1ZXN0SAASLgoJYWRkX2VkZ2VzGAcgASgLMhkuZ3JhcGgudjEuQWRkRWRnZXNSZXF1ZXN0SAASLAoIcHV0X2VkZ2UYCCABKAsyGC5ncmFwaC52MS5QdXRFZGdlUmVxdWVzdEgAEi4KCXB1dF9lZGdlcxgJIAEoCzIZLmdyYXBoLnYxLlB1dEVkZ2VzUmVxdWVzdEgAEjIKC2RlbGV0ZV9lZGdlGAogASgLMhsuZ3JhcGgudjEuRGVsZXRlRWRnZVJlcXVlc3RIABI0CgxkZWxldGVfZWRnZXMYCyABKAsyHC5ncmFwaC52MS5EZWxldGVFZGdlc1JlcXVlc3RIAEIECgJvcCJuCghNdXRhdGlvbhILCgNzZXEYASABKAQSIwoDaGxjGAIgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wEg4KBm9yaWdpbhgDIAEoDBIgCgJvcBgEIAEoCzIULmdyYXBoLnYxLk11dGF0aW9uT3AiJAoQU3Vic2NyaWJlUmVxdWVzdBIQCghmcm9tX3NlcRgBIAEoBCI5ChFTdWJzY3JpYmVSZXNwb25zZRIkCghtdXRhdGlvbhgBIAEoCzISLmdyYXBoLnYxLk11dGF0aW9uIhEKD1NuYXBzaG90UmVxdWVzdCJQCg5TbmFwc2hvdEhlYWRlchISCgpjdXRvZmZfc2VxGAEgASgEEioKCmN1dG9mZl9obGMYAiABKAsyFi5ncmFwaC52MS5ITENUaW1lc3RhbXAiOgoOU25hcHNob3RGb290ZXISFAoMdmVydGV4X2NvdW50GAEgASgEEhIKCmVkZ2VfY291bnQYAiABKAQiVwoOU25hcHNob3RWZXJ0ZXgSIAoGdmVydGV4GAEgASgLMhAuZ3JhcGgudjEuVmVydGV4EiMKA2hsYxgCIAEoCzIWLmdyYXBoLnYxLkhMQ1RpbWVzdGFtcCJuChhTbmFwc2hvdEVkZ2VDb250cmlidXRpb24SDgoGd2VpZ2h0GAEgASgCEi4KCmV4cGlyYXRpb24YAiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhIKCmNvbnRyaWJfaWQYAyABKAwiigEKDFNuYXBzaG90RWRnZRIMCgR0YWlsGAEgASgJEgwKBGhlYWQYAiABKAkSIwoDaGxjGAMgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wEjkKDWNvbnRyaWJ1dGlvbnMYBCADKAsyIi5ncmFwaC52MS5TbmFwc2hvdEVkZ2VDb250cmlidXRpb24ixwEKEFNuYXBzaG90UmVzcG9uc2USKgoGaGVhZGVyGAEgASgLMhguZ3JhcGgudjEuU25hcHNob3RIZWFkZXJIABIqCgZ2ZXJ0ZXgYAiABKAsyGC5ncmFwaC52MS5TbmFwc2hvdFZlcnRleEgAEiYKBGVkZ2UYAyABKAsyFi5ncmFwaC52MS5TbmFwc2hvdEVkZ2VIABIqCgZmb290ZXIYBCABKAsyGC5ncmFwaC52MS5TbmFwc2hvdEZvb3RlckgAQgcKBWVudHJ5IhMKEVBlZXJTdGF0dXNSZXF1ZXN0IlkKC09yaWdpblN0YXRlEg4KBm9yaWdpbhgBIAEoDBIQCghsYXN0X3NlcRgCIAEoBBIoCghsYXN0X2hsYxgDIAEoCzIWLmdyYXBoLnYxLkhMQ1RpbWVzdGFtcCJRChJQZWVyU3RhdHVzUmVzcG9uc2USEwoLc2VsZl9vcmlnaW4YASABKAwSJgoHb3JpZ2lucxgCIAMoCzIVLmdyYXBoLnYxLk9yaWdpblN0YXRlMvEBChlMYW50ZXJuUmVwbGljYXRpb25TZXJ2aWNlEkYKCVN1YnNjcmliZRIaLmdyYXBoLnYxLlN1YnNjcmliZVJlcXVlc3QaGy5ncmFwaC52MS5TdWJzY3JpYmVSZXNwb25zZTABEkMKCFNuYXBzaG90EhkuZ3JhcGgudjEuU25hcHNob3RSZXF1ZXN0GhouZ3JhcGgudjEuU25hcHNob3RSZXNwb25zZTABEkcKClBlZXJTdGF0dXMSGy5ncmFwaC52MS5QZWVyU3RhdHVzUmVxdWVzdBocLmdyYXBoLnYxLlBlZXJTdGF0dXNSZXNwb25zZUJhCgxjb20uZ3JhcGgudjFCEFJlcGxpY2F0aW9uUHJvdG9QAaICA0dYWKoCCEdyYXBoLlYxygIIR3JhcGhcVjHiAhRHcmFwaFxWMVxHUEJNZXRhZGF0YeoCCUdyYXBoOjpWMWIGcHJvdG8z", [file_google_protobuf_timestamp, file_graph_v1_graph]);
+  fileDesc("ChpncmFwaC92MS9yZXBsaWNhdGlvbi5wcm90bxIIZ3JhcGgudjEiQQoMSExDVGltZXN0YW1wEg8KB3dhbGxfbnMYASABKAMSDwoHbG9naWNhbBgCIAEoDRIPCgdub2RlX2lkGAMgASgMIuIECgpNdXRhdGlvbk9wEjAKCnB1dF92ZXJ0ZXgYASABKAsyGi5ncmFwaC52MS5QdXRWZXJ0ZXhSZXF1ZXN0SAASNAoMcHV0X3ZlcnRpY2VzGAIgASgLMhwuZ3JhcGgudjEuUHV0VmVydGljZXNSZXF1ZXN0SAASNgoNZGVsZXRlX3ZlcnRleBgDIAEoCzIdLmdyYXBoLnYxLkRlbGV0ZVZlcnRleFJlcXVlc3RIABI6Cg9kZWxldGVfdmVydGljZXMYBCABKAsyHy5ncmFwaC52MS5EZWxldGVWZXJ0aWNlc1JlcXVlc3RIABJMChlkZWxldGVfdmVydGljZXNfYnlfcHJlZml4GAUgASgLMicuZ3JhcGgudjEuRGVsZXRlVmVydGljZXNCeVByZWZpeFJlcXVlc3RIABIsCghhZGRfZWRnZRgGIAEoCzIYLmdyYXBoLnYxLkFkZEVkZ2VSZXF1ZXN0SAASLgoJYWRkX2VkZ2VzGAcgASgLMhkuZ3JhcGgudjEuQWRkRWRnZXNSZXF1ZXN0SAASLAoIcHV0X2VkZ2UYCCABKAsyGC5ncmFwaC52MS5QdXRFZGdlUmVxdWVzdEgAEi4KCXB1dF9lZGdlcxgJIAEoCzIZLmdyYXBoLnYxLlB1dEVkZ2VzUmVxdWVzdEgAEjIKC2RlbGV0ZV9lZGdlGAogASgLMhsuZ3JhcGgudjEuRGVsZXRlRWRnZVJlcXVlc3RIABI0CgxkZWxldGVfZWRnZXMYCyABKAsyHC5ncmFwaC52MS5EZWxldGVFZGdlc1JlcXVlc3RIAEIECgJvcCJuCghNdXRhdGlvbhILCgNzZXEYASABKAQSIwoDaGxjGAIgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wEg4KBm9yaWdpbhgDIAEoDBIgCgJvcBgEIAEoCzIULmdyYXBoLnYxLk11dGF0aW9uT3AimgEKEFN1YnNjcmliZVJlcXVlc3QSTQoTZnJvbV9zZXFfcGVyX29yaWdpbhgBIAMoCzIwLmdyYXBoLnYxLlN1YnNjcmliZVJlcXVlc3QuRnJvbVNlcVBlck9yaWdpbkVudHJ5GjcKFUZyb21TZXFQZXJPcmlnaW5FbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAQ6AjgBIjkKEVN1YnNjcmliZVJlc3BvbnNlEiQKCG11dGF0aW9uGAEgASgLMhIuZ3JhcGgudjEuTXV0YXRpb24iEQoPU25hcHNob3RSZXF1ZXN0IlAKDlNuYXBzaG90SGVhZGVyEhIKCmN1dG9mZl9zZXEYASABKAQSKgoKY3V0b2ZmX2hsYxgCIAEoCzIWLmdyYXBoLnYxLkhMQ1RpbWVzdGFtcCI6Cg5TbmFwc2hvdEZvb3RlchIUCgx2ZXJ0ZXhfY291bnQYASABKAQSEgoKZWRnZV9jb3VudBgCIAEoBCJXCg5TbmFwc2hvdFZlcnRleBIgCgZ2ZXJ0ZXgYASABKAsyEC5ncmFwaC52MS5WZXJ0ZXgSIwoDaGxjGAIgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wIm4KGFNuYXBzaG90RWRnZUNvbnRyaWJ1dGlvbhIOCgZ3ZWlnaHQYASABKAISLgoKZXhwaXJhdGlvbhgCIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASEgoKY29udHJpYl9pZBgDIAEoDCKKAQoMU25hcHNob3RFZGdlEgwKBHRhaWwYASABKAkSDAoEaGVhZBgCIAEoCRIjCgNobGMYAyABKAsyFi5ncmFwaC52MS5ITENUaW1lc3RhbXASOQoNY29udHJpYnV0aW9ucxgEIAMoCzIiLmdyYXBoLnYxLlNuYXBzaG90RWRnZUNvbnRyaWJ1dGlvbiLHAQoQU25hcHNob3RSZXNwb25zZRIqCgZoZWFkZXIYASABKAsyGC5ncmFwaC52MS5TbmFwc2hvdEhlYWRlckgAEioKBnZlcnRleBgCIAEoCzIYLmdyYXBoLnYxLlNuYXBzaG90VmVydGV4SAASJgoEZWRnZRgDIAEoCzIWLmdyYXBoLnYxLlNuYXBzaG90RWRnZUgAEioKBmZvb3RlchgEIAEoCzIYLmdyYXBoLnYxLlNuYXBzaG90Rm9vdGVySABCBwoFZW50cnkiEwoRUGVlclN0YXR1c1JlcXVlc3QiWQoLT3JpZ2luU3RhdGUSDgoGb3JpZ2luGAEgASgMEhAKCGxhc3Rfc2VxGAIgASgEEigKCGxhc3RfaGxjGAMgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wIlEKElBlZXJTdGF0dXNSZXNwb25zZRITCgtzZWxmX29yaWdpbhgBIAEoDBImCgdvcmlnaW5zGAIgAygLMhUuZ3JhcGgudjEuT3JpZ2luU3RhdGUy8QEKGUxhbnRlcm5SZXBsaWNhdGlvblNlcnZpY2USRgoJU3Vic2NyaWJlEhouZ3JhcGgudjEuU3Vic2NyaWJlUmVxdWVzdBobLmdyYXBoLnYxLlN1YnNjcmliZVJlc3BvbnNlMAESQwoIU25hcHNob3QSGS5ncmFwaC52MS5TbmFwc2hvdFJlcXVlc3QaGi5ncmFwaC52MS5TbmFwc2hvdFJlc3BvbnNlMAESRwoKUGVlclN0YXR1cxIbLmdyYXBoLnYxLlBlZXJTdGF0dXNSZXF1ZXN0GhwuZ3JhcGgudjEuUGVlclN0YXR1c1Jlc3BvbnNlQmEKDGNvbS5ncmFwaC52MUIQUmVwbGljYXRpb25Qcm90b1ABogIDR1hYqgIIR3JhcGguVjHKAghHcmFwaFxWMeICFEdyYXBoXFYxXEdQQk1ldGFkYXRh6gIJR3JhcGg6OlYxYgZwcm90bzM", [file_google_protobuf_timestamp, file_graph_v1_graph]);
 
 /**
  * HLCTimestamp is the wire form of core/hlc.Timestamp. All replicated
@@ -191,19 +191,47 @@ export const MutationSchema: GenMessage<Mutation> = /*@__PURE__*/
 
 /**
  * SubscribeRequest opens a stream of replicated mutations starting at
- * `from_seq` (inclusive). The server replays any in-buffer entries with
- * seq >= from_seq, then streams live mutations as they are appended.
+ * the per-origin cursor in `from_seq_per_origin`.
  *
- * If `from_seq` is below the server's first available seq the call fails
- * with FAILED_PRECONDITION and the caller must snapshot + resubscribe.
+ * Under the leaderless Subscribe contract (#415, B-3), every replica's
+ * local mutation log carries entries from every cluster origin (each
+ * stamped with its writer's HLC NodeID). A consumer can therefore pick
+ * any one replica and see every committed cluster mutation; on failover
+ * to a different replica it resumes by passing the highest `seq` it
+ * has already observed FOR EACH origin.
+ *
+ * Semantics:
+ *
+ *   - Empty map (or unset field) requests every entry the server still
+ *     retains. This is the new-consumer / cold-start case.
+ *   - For each origin key present in the map, the server delivers only
+ *     entries with `seq >= from_seq_per_origin[origin]` for that
+ *     origin. Entries for origins NOT in the map are delivered from
+ *     the oldest retained entry; this lets a consumer that has only
+ *     ever talked to a subset of replicas naturally pick up entries
+ *     from a newly-joined origin.
+ *   - If the resulting overall earliest requested seq is below the
+ *     server's first retained log seq the call fails with
+ *     FAILED_PRECONDITION and the caller must snapshot + resubscribe.
+ *
+ * Keys are 32-character lowercase hexadecimal encodings of the 16-byte
+ * HLC NodeID (matching `HLCTimestamp.node_id` and `Mutation.origin`).
+ * Hex was chosen over raw bytes because proto3 map keys forbid `bytes`
+ * and because the hex form already appears in `lantern_replication_*`
+ * Prometheus labels and in admin UI surfaces, keeping the consumer
+ * debug experience uniform across wire, metrics, and UI.
  *
  * @generated from message graph.v1.SubscribeRequest
  */
 export type SubscribeRequest = Message<"graph.v1.SubscribeRequest"> & {
   /**
-   * @generated from field: uint64 from_seq = 1;
+   * Per-origin resume cursor. Keys are 32-char lowercase hex of the
+   * 16-byte HLC NodeID; values are the next local `seq` the consumer
+   * expects from that origin.
+   *
+   * @generated from field: map<string, uint64> from_seq_per_origin = 1;
    */
-  fromSeq: bigint;
+  fromSeqPerOrigin: { [key: string]: bigint };
 };
 
 /**
@@ -563,7 +591,9 @@ export const LanternReplicationService: GenService<{
    * also have the stream terminated with FAILED_PRECONDITION — the
    * remedy is the same.
    *
-   * No HTTP gateway annotation: replication is intentionally gRPC-only.
+   * No HTTP gateway annotation: replication is intentionally exposed
+   * only as Connect server-streaming (consumed by replication pumps on
+   * peer nodes, never directly from browsers).
    *
    * @generated from rpc graph.v1.LanternReplicationService.Subscribe
    */

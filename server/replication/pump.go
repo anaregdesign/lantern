@@ -367,13 +367,29 @@ func (p *Pump) session(ctx context.Context, addr string, fromSeq uint64) (uint64
 	return next, err
 }
 
-// subscribe opens a Subscribe stream at fromSeq and applies every
-// received Mutation. Self-origin mutations are dropped before
-// dispatch. Returns the seq of the last successfully-applied mutation
-// + 1 (i.e. the next seq to resume at) and any error from Receive /
-// Apply. A clean stream end returns nil.
+// subscribe opens a Subscribe stream and applies every received
+// Mutation. Self-origin mutations are dropped before dispatch.
+// Returns the seq of the last successfully-applied mutation + 1 (i.e.
+// the next seq to resume at) and any error from Receive / Apply. A
+// clean stream end returns nil.
+//
+// Under the leaderless Subscribe contract (#415) the peer's local log
+// carries mutations from every cluster origin, not just the peer's
+// own writes. The pump intentionally requests the entire retained
+// range on every reconnect (empty cursor) and relies on the per-origin
+// watermark CAS inside LanternService.ApplyMutation to dedup entries
+// it has already seen via another peer hop. This keeps reconnect logic
+// simple — no need to track per-(peer, origin) state on the pump side
+// — at the price of one full-range scan per reconnect, which is
+// bounded by the mutation log ring capacity.
+//
+// The fromSeq argument is retained for reconnect bookkeeping (the
+// pump remembers it across reconnects, and the snapshot fallback path
+// resumes from cutoff_seq + 1), but it is intentionally NOT sent on
+// the wire — the cursor stays empty so the pump observes every
+// retained entry and the CAS gate filters out duplicates.
 func (p *Pump) subscribe(ctx context.Context, cli graphv1connect.LanternReplicationServiceClient, addr string, fromSeq uint64) (uint64, error) {
-	stream, err := cli.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{FromSeq: fromSeq}))
+	stream, err := cli.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{}))
 	if err != nil {
 		return fromSeq, err
 	}
