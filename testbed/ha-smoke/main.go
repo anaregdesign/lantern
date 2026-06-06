@@ -14,14 +14,13 @@ import (
 
 func main() {
 	ctx := context.Background()
-	endpoints := []string{"localhost:6380", "localhost:6381", "localhost:6382"}
+	endpoints := []string{"http://localhost:6380", "http://localhost:6381", "http://localhost:6382"}
 
-	// 1) Client pinned to the first replica. The pre-#367 SDK exposed
-	//    a built-in round-robin balancer (NewLanternWithEndpoints); the
-	//    Connect-only collapse retired it because Connect has no
-	//    transport-level LB concept (use a reverse proxy / k8s Service
-	//    for production fan-out). For the smoke test we drive one
-	//    replica and verify the others converge via replication.
+	// 1) Client pinned to the first replica. The SDK has no built-in
+	//    round-robin LB — Connect has no transport-level LB concept;
+	//    use a reverse proxy / k8s Service for production fan-out. For
+	//    the smoke test we drive one replica and verify the others
+	//    converge via replication.
 	rr, err := client.NewLantern(endpoints[0])
 	if err != nil {
 		log.Fatalf("NewLantern(%s): %v", endpoints[0], err)

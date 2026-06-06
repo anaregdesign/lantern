@@ -13,8 +13,8 @@ func TestDefaultConfig_DefaultsWhenUnset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DefaultConfig() returned error: %v", err)
 	}
-	if cfg.LanternAddr != "localhost:6380" {
-		t.Fatalf("LanternAddr = %q, want localhost:6380", cfg.LanternAddr)
+	if cfg.LanternAddr != "http://localhost:6380" {
+		t.Fatalf("LanternAddr = %q, want http://localhost:6380", cfg.LanternAddr)
 	}
 	if cfg.PingTimeout != 5*time.Second {
 		t.Fatalf("PingTimeout = %v, want 5s", cfg.PingTimeout)

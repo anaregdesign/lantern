@@ -56,7 +56,7 @@ func newInProcessClientWithHealth(t *testing.T, serving bool) (*client.Lantern, 
 	srv.Start()
 	t.Cleanup(srv.Close)
 
-	l, err := client.NewLanternConnect(srv.URL, client.WithHTTPClient(h2cClient()))
+	l, err := client.NewLantern(srv.URL, client.WithHTTPClient(h2cClient()))
 	if err != nil {
 		t.Fatalf("NewLanternConnect: %v", err)
 	}

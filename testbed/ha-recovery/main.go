@@ -29,7 +29,7 @@ func docker(args ...string) {
 	}
 }
 
-// hostPort returns the localhost port mapped to the container's :6380.
+// hostPort returns the http:// URL mapped to the container's :6380.
 func hostPort(container string) string {
 	out, err := exec.Command("docker", "port", container, "6380/tcp").Output()
 	if err != nil {
@@ -38,7 +38,7 @@ func hostPort(container string) string {
 	// e.g. "0.0.0.0:6384\n[::]:6384\n"
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		if i := strings.LastIndex(line, ":"); i >= 0 {
-			return "localhost:" + strings.TrimSpace(line[i+1:])
+			return "http://localhost:" + strings.TrimSpace(line[i+1:])
 		}
 	}
 	log.Fatalf("docker port %s: no mapping in %q", container, string(out))
@@ -79,12 +79,10 @@ func seedBaseline(ctx context.Context, c *client.Lantern) {
 }
 
 func writeDuringOutage(ctx context.Context, eps []string) {
-	// Pre-#367 used NewLanternWithEndpoints to fan writes across the
-	// survivors with built-in failover; the Connect-only SDK has no
-	// transport-level LB so we just pin to the first survivor (the
-	// outage scenario tests *replication*, not client-side LB —
-	// failover at the LB layer is now a reverse-proxy / k8s Service
-	// concern).
+	// The SDK has no built-in client-side LB — Connect leaves fan-out
+	// to the deployment (reverse proxy / k8s Service). For this test
+	// we pin to the first survivor; the outage scenario tests
+	// *replication*, not client-side failover.
 	cli, err := client.NewLantern(eps[0])
 	if err != nil {
 		log.Fatalf("survivor client: %v", err)

@@ -1,32 +1,42 @@
+// Package client: client.go owns the *Lantern type, its
+// Connect-Go-backed constructor, the unary forwarder helper, and the
+// canonical surface of the SDK (GetVertex, PutVertices, Illuminate, …).
+//
+// Wire transport is Connect-Go over h2c (plaintext HTTP/2) or
+// TLS-backed HTTP/2. The SDK does not speak gRPC and does not depend
+// on google.golang.org/grpc.
 package client
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
-	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
+
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 )
 
 // ErrNotFound is returned by GetVertex / GetEdge when the requested key or
-// edge does not exist. Use errors.Is to detect it; the underlying gRPC error
-// (with codes.NotFound) is wrapped for callers that need the full detail.
+// edge does not exist. Use errors.Is to detect it; the underlying
+// *connect.Error (with connect.CodeNotFound) is joined for callers that
+// need the full detail.
 var ErrNotFound = errors.New("not found")
 
-// ErrInvalidArgument wraps gRPC codes.InvalidArgument responses from the
+// ErrInvalidArgument wraps connect.CodeInvalidArgument responses from the
 // server (typically raised by the ValidationInterceptor for empty/oversized
 // keys or batch entries above MaxBatchSize). Use errors.Is to branch on
 // caller-fixable input errors vs. transient failures.
 var ErrInvalidArgument = errors.New("invalid argument")
 
-// ErrResourceExhausted wraps gRPC codes.ResourceExhausted responses (rate
-// limiter, server-side back-pressure). Callers that see this should back off
-// before retrying.
+// ErrResourceExhausted wraps connect.CodeResourceExhausted responses
+// (rate limiter, server-side back-pressure). Callers that see this
+// should back off before retrying.
 var ErrResourceExhausted = errors.New("resource exhausted")
 
 // Edge re-exports the generated protobuf Edge type so SDK callers do not
@@ -73,58 +83,54 @@ type EdgeInput struct {
 	Expiration time.Time
 }
 
+// Lantern is a Connect-Go-backed client for the Lantern graph service.
+// Construct one via NewLantern; share it across goroutines.
 type Lantern struct {
-	client pb.LanternServiceClient
-	opts   options
-
-	// connectHTTPClient + connectBaseURL are the wire-side bindings
-	// every *Lantern carries since the Connect-only collapse (#367).
-	// SubscribeConnect and Ping use them to build subordinate clients
-	// (replication, grpchealth) against the same base URL without
-	// asking the caller to plumb the URL through a second time.
-	connectHTTPClient *http.Client
-	connectBaseURL    string
+	client     graphv1connect.LanternServiceClient
+	opts       options
+	httpClient *http.Client
+	baseURL    string
 }
 
 // NewLantern dials the Lantern server at baseURL and returns a
-// connected client. baseURL must include the scheme: `http://host:port`
-// for h2c (matches the Lantern primary listener default), or
-// `https://host[:port]` for TLS. A bare `host:port` form is accepted
-// for source-compatibility with the legacy grpc-flavoured constructor
-// and gets `http://` prepended.
+// connected client. baseURL must include the scheme: "http://host:port"
+// for h2c (matches the Lantern primary listener default) or
+// "https://host[:port]" for TLS. A trailing slash is stripped
+// defensively; an empty string or schemeless input is rejected.
 //
-// Pre-#367 this constructor used `grpc.NewClient` and required the
-// caller to plumb credentials / dial options / a retry-policy service
-// config through bespoke WithXxx helpers. The Connect-only collapse
-// retired those knobs in favour of a single TLS-aware `http.Client`
-// supplied via WithHTTPClient — see the migration table in
-// sdks/go/README.md.
+// Override the default h2c http.Client via WithHTTPClient — for TLS
+// supply &http.Client{Transport: &http2.Transport{TLSClientConfig: cfg}}.
 func NewLantern(baseURL string, opts ...Option) (*Lantern, error) {
-	return NewLanternConnect(normaliseBaseURL(baseURL), opts...)
+	if baseURL == "" {
+		return nil, errors.New("client: NewLantern requires a base URL with scheme")
+	}
+	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
+		return nil, fmt.Errorf("client: NewLantern baseURL must start with http:// or https://; got %q", baseURL)
+	}
+	baseURL = strings.TrimRight(baseURL, "/")
+
+	o := options{batchChunkSize: defaultBatchChunkSize}
+	for _, apply := range opts {
+		apply(&o)
+	}
+	if o.httpClient == nil {
+		o.httpClient = defaultH2CClient()
+	}
+
+	return &Lantern{
+		client:     graphv1connect.NewLanternServiceClient(o.httpClient, baseURL, o.clientOptions...),
+		opts:       o,
+		httpClient: o.httpClient,
+		baseURL:    baseURL,
+	}, nil
 }
 
-// normaliseBaseURL prepends "http://" to a bare "host:port" so
-// historical call sites that mirrored the grpc.NewClient target form
-// continue to work without source changes. Inputs that already carry
-// a scheme (or are empty) flow through unchanged so NewLanternConnect
-// can raise the proper error.
-func normaliseBaseURL(s string) string {
-	if s == "" {
-		return s
-	}
-	if strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") {
-		return s
-	}
-	return "http://" + s
-}
-
+// Close releases any idle HTTP/2 connections the SDK is holding. The
+// underlying http.Client manages its own connection pool, so Close is
+// best-effort and noop-safe to call multiple times.
 func (l *Lantern) Close() error {
-	// The Connect transport does not own a *grpc.ClientConn — its
-	// http.Client manages its own connection pool internally and
-	// needs no explicit teardown. CloseIdleConnections is best-effort
-	// and noop-safe on a nil transport.
-	if l.connectHTTPClient != nil {
-		l.connectHTTPClient.CloseIdleConnections()
+	if l.httpClient != nil {
+		l.httpClient.CloseIdleConnections()
 	}
 	return nil
 }
@@ -142,20 +148,41 @@ func (l *Lantern) applyTimeout(ctx context.Context) (context.Context, context.Ca
 	return context.WithTimeout(ctx, l.opts.defaultTimeout)
 }
 
-// wrapStatus converts a gRPC status error into one that satisfies
-// errors.Is against the matching SDK sentinel (ErrNotFound /
-// ErrInvalidArgument / ErrResourceExhausted) while preserving the original
-// gRPC error for callers that want full status detail.
-func wrapStatus(err error) error {
+// unary is the one-line forwarding helper every *Lantern RPC method
+// uses. It boxes req via connect.NewRequest, runs the typed Connect-Go
+// method, lifts errors through wrapConnectErr so the SDK sentinels
+// (ErrNotFound, etc.) match, and returns the unwrapped response.
+//
+// Callers are responsible for applyTimeout — unary leaves ctx alone so
+// batch helpers can drive a single outer deadline across multiple
+// chunks.
+func unary[Req, Resp any](
+	ctx context.Context,
+	req *Req,
+	fn func(context.Context, *connect.Request[Req]) (*connect.Response[Resp], error),
+) (*Resp, error) {
+	resp, err := fn(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, wrapConnectErr(err)
+	}
+	return resp.Msg, nil
+}
+
+// wrapConnectErr lifts a *connect.Error into a joined error that
+// satisfies errors.Is against the matching SDK sentinel (ErrNotFound /
+// ErrInvalidArgument / ErrResourceExhausted) while preserving the
+// original *connect.Error for callers that need connect.CodeOf or the
+// per-error metadata. Non-Connect errors pass through unchanged.
+func wrapConnectErr(err error) error {
 	if err == nil {
 		return nil
 	}
-	switch status.Code(err) {
-	case codes.NotFound:
+	switch connect.CodeOf(err) {
+	case connect.CodeNotFound:
 		return errors.Join(ErrNotFound, err)
-	case codes.InvalidArgument:
+	case connect.CodeInvalidArgument:
 		return errors.Join(ErrInvalidArgument, err)
-	case codes.ResourceExhausted:
+	case connect.CodeResourceExhausted:
 		return errors.Join(ErrResourceExhausted, err)
 	}
 	return err
@@ -174,11 +201,11 @@ func wrapStatus(err error) error {
 func (l *Lantern) GetVertex(ctx context.Context, key string) (*Vertex, error) {
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	result, err := l.client.GetVertex(ctx, &pb.GetVertexRequest{Key: key})
+	resp, err := unary(ctx, &pb.GetVertexRequest{Key: key}, l.client.GetVertex)
 	if err != nil {
-		return nil, wrapStatus(err)
+		return nil, err
 	}
-	return result.Vertex, nil
+	return resp.Vertex, nil
 }
 
 // PutVertex upserts a single vertex with a relative TTL.
@@ -194,8 +221,8 @@ func (l *Lantern) PutVertexAt(ctx context.Context, key string, value any, expira
 	}
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	_, err = l.client.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{v}})
-	return wrapStatus(err)
+	_, err = unary(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{v}}, l.client.PutVertices)
+	return err
 }
 
 // PutVertices upserts a batch of vertices. Large batches are automatically
@@ -206,7 +233,7 @@ func (l *Lantern) PutVertexAt(ctx context.Context, key string, value any, expira
 // returned error is a *BatchError whose Written field records the number of
 // successfully committed inputs, so callers can resume with
 // inputs[err.Written:]. errors.Is / errors.As continue to work against the
-// wrapped gRPC sentinel.
+// wrapped SDK sentinel.
 func (l *Lantern) PutVertices(ctx context.Context, inputs []VertexInput) error {
 	if len(inputs) == 0 {
 		return nil
@@ -220,7 +247,7 @@ func (l *Lantern) PutVertices(ctx context.Context, inputs []VertexInput) error {
 		vs = append(vs, v)
 	}
 	_, err := runBatchWrite(ctx, l, vs, func(ctx context.Context, chunk []*pb.Vertex) (int32, error) {
-		_, err := l.client.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: chunk})
+		_, err := unary(ctx, &pb.PutVerticesRequest{Vertices: chunk}, l.client.PutVertices)
 		return 0, err
 	})
 	return err
@@ -232,9 +259,9 @@ func (l *Lantern) PutVertices(ctx context.Context, inputs []VertexInput) error {
 func (l *Lantern) DeleteVertex(ctx context.Context, key string) (bool, error) {
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	resp, err := l.client.DeleteVertex(ctx, &pb.DeleteVertexRequest{Key: key})
+	resp, err := unary(ctx, &pb.DeleteVertexRequest{Key: key}, l.client.DeleteVertex)
 	if err != nil {
-		return false, wrapStatus(err)
+		return false, err
 	}
 	return resp.GetExisted(), nil
 }
@@ -252,7 +279,7 @@ func (l *Lantern) DeleteVertex(ctx context.Context, key string) (bool, error) {
 // keys already deleted, so callers can resume with keys[err.Written:].
 func (l *Lantern) DeleteVertices(ctx context.Context, keys []string) (int, error) {
 	return runBatchWrite(ctx, l, keys, func(ctx context.Context, chunk []string) (int32, error) {
-		resp, err := l.client.DeleteVertices(ctx, &pb.DeleteVerticesRequest{Keys: chunk})
+		resp, err := unary(ctx, &pb.DeleteVerticesRequest{Keys: chunk}, l.client.DeleteVertices)
 		if err != nil {
 			return 0, err
 		}
@@ -267,7 +294,7 @@ func (l *Lantern) DeleteVertices(ctx context.Context, keys []string) (int, error
 // server's MaxBatchSize cap.
 func (l *Lantern) GetVertices(ctx context.Context, keys []string) (found []*Vertex, missing []string, err error) {
 	err = runBatchRead(ctx, l, keys, func(ctx context.Context, chunk []string) error {
-		resp, rerr := l.client.GetVertices(ctx, &pb.GetVerticesRequest{Keys: chunk})
+		resp, rerr := unary(ctx, &pb.GetVerticesRequest{Keys: chunk}, l.client.GetVertices)
 		if rerr != nil {
 			return rerr
 		}
@@ -285,11 +312,11 @@ func (l *Lantern) GetVertices(ctx context.Context, keys []string) (found []*Vert
 func (l *Lantern) GetEdge(ctx context.Context, tail string, head string) (*Edge, error) {
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	result, err := l.client.GetEdge(ctx, &pb.GetEdgeRequest{Tail: tail, Head: head})
+	resp, err := unary(ctx, &pb.GetEdgeRequest{Tail: tail, Head: head}, l.client.GetEdge)
 	if err != nil {
-		return nil, wrapStatus(err)
+		return nil, err
 	}
-	return result.Edge, nil
+	return resp.Edge, nil
 }
 
 // AddEdge accumulates weight onto the (tail, head) pair: repeated calls with
@@ -302,10 +329,10 @@ func (l *Lantern) AddEdge(ctx context.Context, tail string, head string, weight 
 func (l *Lantern) AddEdgeAt(ctx context.Context, tail string, head string, weight float32, expiration time.Time) error {
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	_, err := l.client.AddEdges(ctx, &pb.AddEdgesRequest{
+	_, err := unary(ctx, &pb.AddEdgesRequest{
 		Edges: []*pb.Edge{{Tail: tail, Head: head, Weight: weight, Expiration: timestamppb.New(expiration)}},
-	})
-	return wrapStatus(err)
+	}, l.client.AddEdges)
+	return err
 }
 
 // AddEdges accumulates weight onto a batch of edges. Automatically chunked.
@@ -320,7 +347,7 @@ func (l *Lantern) AddEdges(ctx context.Context, inputs []EdgeInput) error {
 		return nil
 	}
 	_, err := runBatchWrite(ctx, l, edgesFrom(inputs), func(ctx context.Context, chunk []*pb.Edge) (int32, error) {
-		_, err := l.client.AddEdges(ctx, &pb.AddEdgesRequest{Edges: chunk})
+		_, err := unary(ctx, &pb.AddEdgesRequest{Edges: chunk}, l.client.AddEdges)
 		return 0, err
 	})
 	return err
@@ -335,10 +362,10 @@ func (l *Lantern) PutEdge(ctx context.Context, tail string, head string, weight 
 func (l *Lantern) PutEdgeAt(ctx context.Context, tail string, head string, weight float32, expiration time.Time) error {
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	_, err := l.client.PutEdges(ctx, &pb.PutEdgesRequest{
+	_, err := unary(ctx, &pb.PutEdgesRequest{
 		Edges: []*pb.Edge{{Tail: tail, Head: head, Weight: weight, Expiration: timestamppb.New(expiration)}},
-	})
-	return wrapStatus(err)
+	}, l.client.PutEdges)
+	return err
 }
 
 // PutEdges overwrites a batch of edges. Automatically chunked.
@@ -353,7 +380,7 @@ func (l *Lantern) PutEdges(ctx context.Context, inputs []EdgeInput) error {
 		return nil
 	}
 	_, err := runBatchWrite(ctx, l, edgesFrom(inputs), func(ctx context.Context, chunk []*pb.Edge) (int32, error) {
-		_, err := l.client.PutEdges(ctx, &pb.PutEdgesRequest{Edges: chunk})
+		_, err := unary(ctx, &pb.PutEdgesRequest{Edges: chunk}, l.client.PutEdges)
 		return 0, err
 	})
 	return err
@@ -364,9 +391,9 @@ func (l *Lantern) PutEdges(ctx context.Context, inputs []EdgeInput) error {
 func (l *Lantern) DeleteEdge(ctx context.Context, tail string, head string) (bool, error) {
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	resp, err := l.client.DeleteEdge(ctx, &pb.DeleteEdgeRequest{Tail: tail, Head: head})
+	resp, err := unary(ctx, &pb.DeleteEdgeRequest{Tail: tail, Head: head}, l.client.DeleteEdge)
 	if err != nil {
-		return false, wrapStatus(err)
+		return false, err
 	}
 	return resp.GetExisted(), nil
 }
@@ -396,7 +423,7 @@ func (l *Lantern) DeleteEdges(ctx context.Context, refs []EdgeRef) (int, error) 
 		keys = append(keys, &pb.EdgeKey{Tail: r.Tail, Head: r.Head})
 	}
 	return runBatchWrite(ctx, l, keys, func(ctx context.Context, chunk []*pb.EdgeKey) (int32, error) {
-		resp, err := l.client.DeleteEdges(ctx, &pb.DeleteEdgesRequest{Edges: chunk})
+		resp, err := unary(ctx, &pb.DeleteEdgesRequest{Edges: chunk}, l.client.DeleteEdges)
 		if err != nil {
 			return 0, err
 		}
@@ -418,7 +445,7 @@ func (l *Lantern) GetEdges(ctx context.Context, refs []EdgeRef) (found []*Edge, 
 		keys = append(keys, &pb.EdgeKey{Tail: r.Tail, Head: r.Head})
 	}
 	err = runBatchRead(ctx, l, keys, func(ctx context.Context, chunk []*pb.EdgeKey) error {
-		resp, rerr := l.client.GetEdges(ctx, &pb.GetEdgesRequest{Edges: chunk})
+		resp, rerr := unary(ctx, &pb.GetEdgesRequest{Edges: chunk}, l.client.GetEdges)
 		if rerr != nil {
 			return rerr
 		}
@@ -497,21 +524,21 @@ func (l *Lantern) Illuminate(ctx context.Context, seed string, opts ...Illuminat
 	}
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	result, err := l.client.Illuminate(ctx, &pb.IlluminateRequest{
+	resp, err := unary(ctx, &pb.IlluminateRequest{
 		Seed:         seed,
 		Step:         cfg.step,
 		K:            cfg.k,
 		Tfidf:        cfg.tfidf,
 		Optimization: cfg.optimization,
-	})
+	}, l.client.Illuminate)
 	if err != nil {
-		return nil, wrapStatus(err)
+		return nil, err
 	}
 	g := NewGraph()
-	for _, v := range result.Graph.Vertices {
+	for _, v := range resp.Graph.Vertices {
 		g.Vertices[v.Key] = v
 	}
-	for _, e := range result.Graph.Edges {
+	for _, e := range resp.Graph.Edges {
 		if _, ok := g.Edges[e.Tail]; !ok {
 			g.Edges[e.Tail] = make(map[string]float32)
 		}

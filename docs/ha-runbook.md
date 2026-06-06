@@ -102,10 +102,9 @@ kubectl get statefulset,svc,pdb -l app.kubernetes.io/instance=lantern
 `clusterIP: None`, `publishNotReadyAddresses: false`) is what the
 DNS pump resolves — its A records are the live pod IPs. The
 `ClusterIP` Service is what clients hit; they get a stable VIP and
-the SDK's `dns:///<svc>:6380` + `round_robin` LB
-([#189](https://github.com/anaregdesign/lantern/issues/189)) spreads
-load across pods. Splitting them means client traffic never
-accidentally targets a pod that's still bootstrapping.
+kube-proxy spreads load across the backing pods. Splitting them means
+client traffic never accidentally targets a pod that's still
+bootstrapping.
 
 **Single-instance on k8s.** Set `replicaCount: 1` and
 `replication.discovery.mode: static` with empty `replication.peers`.
@@ -511,8 +510,9 @@ A short checklist to walk before opening an incident:
       publishes nothing, and nobody bootstraps. Roll pods one at a
       time, or temporarily flip the flag.
 - [ ] **OSS nginx as a Lantern LB:** the `resolve` keyword on
-      `upstream server` is nginx-plus only. Use gRPC-native LBs
-      (Envoy, the SDK's `round_robin`) instead.
+      `upstream server` is nginx-plus only. Use an HTTP/2-aware
+      reverse proxy (Envoy, Caddy, Traefik) or kube-proxy via a
+      ClusterIP Service instead.
 - [ ] **Tombstone TTL < live TTL:** RFC §4 / D4 — any `Put*` whose
       TTL would exceed `tombstone_ttl` is **rejected** with
       `InvalidArgument`. Either lower the live TTL or raise the
@@ -562,9 +562,9 @@ cd deploy/compose && docker compose up -d && docker compose ps
 Then from a host that can reach the cluster:
 
 ```sh
-# Write to one pod (via the SDK round_robin LB it might land anywhere
-# — that's the point).
-go run ./sdks/go/example -addr localhost:6380 -op put-vertices
+# Write to one pod (the Service VIP / reverse proxy fans it out;
+# it might land anywhere — that's the point).
+go run ./sdks/go/example -addr http://localhost:6380 -op put-vertices
 
 # Within ~1s, every pod should report the same vertex count.
 for pod in lantern-0 lantern-1 lantern-2; do

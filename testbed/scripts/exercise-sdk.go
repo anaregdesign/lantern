@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	addr = "localhost:6380"
+	addr = "http://localhost:6380"
 )
 
 func main() {
@@ -57,10 +57,8 @@ func run() error {
 		addr,
 		client.WithDefaultTimeout(5*time.Second),
 		client.WithBatchChunkSize(3), // tiny chunk to exercise chunking
-		// Pre-#367 used client.WithCompression("gzip") which mapped to
-		// a grpc.CallOption; the Connect-only SDK exposes compression
-		// via the Connect-side option set (the gzip codec is
-		// auto-registered by the Connect runtime).
+		// Compression goes through Connect's send-compression option;
+		// the gzip codec is auto-registered by the Connect runtime.
 		client.WithConnectClientOption(connect.WithSendCompression("gzip")),
 	)
 	if err != nil {

@@ -43,9 +43,9 @@ func PeerLag(s *ReplicationStatus, peer *ReplicationPeer) time.Duration {
 func (l *Lantern) GetReplicationStatus(ctx context.Context) (*ReplicationStatus, error) {
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	resp, err := l.client.GetReplicationStatus(ctx, &pb.GetReplicationStatusRequest{})
+	resp, err := unary(ctx, &pb.GetReplicationStatusRequest{}, l.client.GetReplicationStatus)
 	if err != nil {
-		return nil, wrapStatus(err)
+		return nil, err
 	}
 	return resp, nil
 }

@@ -10,8 +10,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	cachegraph "github.com/anaregdesign/lantern/core/cache/graph"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -58,7 +56,7 @@ func newOptsClientWithCustomOptions(
 	interceptors := append([]connect.Interceptor{val.ConnectInterceptor()}, extra...)
 	srv := newConnectTestServer(t, svc, nil, interceptors...)
 	all := append([]client.Option{client.WithHTTPClient(h2cClient())}, clientOpts...)
-	l, err := client.NewLanternConnect(srv.url, all...)
+	l, err := client.NewLantern(srv.url, all...)
 	if err != nil {
 		t.Fatalf("NewLanternConnect: %v", err)
 	}
@@ -137,14 +135,10 @@ func TestClient_DefaultTimeoutHonoured(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected DeadlineExceeded, got nil")
 	}
-	// The SDK's connectErrToGRPC shim re-encodes Connect errors as
-	// google.golang.org/grpc/status errors so existing call-sites
-	// keep using status.Code(err) / codes.X. Accept either the
-	// gRPC code, the Connect code (for direct connect errors that
-	// slipped through), or context.DeadlineExceeded (for the local
-	// timeout path).
-	if status.Code(err) != codes.DeadlineExceeded &&
-		connect.CodeOf(err) != connect.CodeDeadlineExceeded &&
+	// Accept the Connect deadline code or context.DeadlineExceeded
+	// (the SDK's WithDefaultTimeout fires locally, so either surface
+	// is valid depending on which leg of the race wins).
+	if connect.CodeOf(err) != connect.CodeDeadlineExceeded &&
 		!errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("error %v, want DeadlineExceeded", err)
 	}
@@ -162,8 +156,7 @@ func TestClient_RespectsContextCancel(t *testing.T) {
 		t.Fatal("expected ctx cancel error, got nil")
 	}
 	if !errors.Is(err, context.Canceled) &&
-		connect.CodeOf(err) != connect.CodeCanceled &&
-		status.Code(err) != codes.Canceled {
+		connect.CodeOf(err) != connect.CodeCanceled {
 		t.Errorf("error %v, want Canceled", err)
 	}
 }

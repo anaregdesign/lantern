@@ -18,7 +18,7 @@ holding the actual workload shape of a `StatefulSet` (stable pod identity for
 peer discovery).
 
 ```
-Client (sdks/go: dns:///lantern + grpc round_robin + retry)
+Client (sdks/go: Connect over h2c to a ClusterIP / reverse proxy)
                 │
    ┌────────────┼────────────┐
    ▼            ▼            ▼

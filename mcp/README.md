@@ -37,7 +37,7 @@ and bare `X.Y.Z` tag forms are available, plus `latest` and `sha-<short>`.
 
 ```shell
 # from repo root
-LANTERN_ADDR=localhost:6380 go run ./mcp/cmd
+LANTERN_ADDR=http://localhost:6380 go run ./mcp/cmd
 ```
 
 ## Tools
@@ -87,7 +87,7 @@ fatal startup error.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `LANTERN_ADDR` | `localhost:6380` | Upstream Lantern gRPC target. |
+| `LANTERN_ADDR` | `http://localhost:6380` | Upstream Lantern endpoint URL (Connect-on-h2c by default; use `https://` for TLS). |
 | `LANTERN_MCP_PING_TIMEOUT` | `5s` | Bounds the startup health probe. A failed probe aborts startup with a non-zero exit so MCP clients surface a clear error. |
 | `LANTERN_MCP_TTL_<BUCKET>` | see table above | Per-bucket TTL override. |
 

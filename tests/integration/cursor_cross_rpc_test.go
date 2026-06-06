@@ -2,12 +2,11 @@ package integration_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	client "github.com/anaregdesign/lantern/sdks/go"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 // TestSDK_Cursor_CrossRPC_Rejected is the end-to-end pin for #168: a
@@ -54,8 +53,8 @@ func TestSDK_Cursor_CrossRPC_Rejected(t *testing.T) {
 		client.WithEdgeScanCursor(vertexCursor),
 	); err == nil {
 		t.Fatalf("ScanEdges(vertex cursor) = nil error, want InvalidArgument")
-	} else if got := status.Code(err); got != codes.InvalidArgument {
-		t.Errorf("ScanEdges(vertex cursor) code = %s, want InvalidArgument", got)
+	} else if !errors.Is(err, client.ErrInvalidArgument) {
+		t.Errorf("ScanEdges(vertex cursor) err = %v, want ErrInvalidArgument", err)
 	}
 
 	// Edge cursor -> ScanVertices must reject.
@@ -64,7 +63,7 @@ func TestSDK_Cursor_CrossRPC_Rejected(t *testing.T) {
 		client.WithScanCursor(edgeCursor),
 	); err == nil {
 		t.Fatalf("ScanVertices(edge cursor) = nil error, want InvalidArgument")
-	} else if got := status.Code(err); got != codes.InvalidArgument {
-		t.Errorf("ScanVertices(edge cursor) code = %s, want InvalidArgument", got)
+	} else if !errors.Is(err, client.ErrInvalidArgument) {
+		t.Errorf("ScanVertices(edge cursor) err = %v, want ErrInvalidArgument", err)
 	}
 }

@@ -1,10 +1,10 @@
-// Command lantern-mcp exposes a remote Lantern gRPC instance as a Model
+// Command lantern-mcp exposes a remote Lantern instance as a Model
 // Context Protocol server speaking stdio.
 //
 // Configuration:
 //
-//	LANTERN_ADDR              host:port of the Lantern gRPC server.
-//	                          Default: localhost:6380.
+//	LANTERN_ADDR              http(s):// URL of the Lantern server.
+//	                          Default: http://localhost:6380.
 //	LANTERN_MCP_PING_TIMEOUT  bounds the startup health check.
 //	                          Default: 5s.
 //	LANTERN_MCP_TTL_<BUCKET>  per-bucket TTL override; see package

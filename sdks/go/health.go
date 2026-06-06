@@ -1,19 +1,14 @@
-// Package client: health.go owns the SDK's Ping helper. After the
-// #347 listener cutover the Lantern primary port mounts the
-// gRPC-Health-v1 surface via connectrpc.com/grpchealth, which accepts
-// the same Connect / gRPC / gRPC-Web protocols the rest of the
-// Connect mux speaks. The SDK uses Connect+JSON for the Check call so
-// it can reuse the same *http.Client / baseURL the Lantern client was
-// constructed with — no separate metrics-port plumbing required (the
-// old PingConnect helper that hit /healthz on the metrics listener is
-// retired).
+// Package client: health.go owns the SDK's Ping helper. The Lantern
+// primary listener mounts the gRPC-Health-v1 surface via
+// connectrpc.com/grpchealth on the same port as the
+// LanternService — Ping reuses the *http.Client + baseURL the
+// *Lantern was built with and POSTs a Connect+JSON Health/Check.
 package client
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -35,14 +30,12 @@ type healthCheckRequest struct {
 // healthCheckResponse is the Connect+JSON wire shape of
 // grpc.health.v1.HealthCheckResponse. The proto enum field renders as
 // its symbolic name per the proto3 JSON spec. The
-// connectrpc.com/grpchealth handler — which Lantern uses to mount the
-// gRPC-Health-v1 surface — bundles its own proto descriptor whose enum
-// constants are prefixed: SERVING_STATUS_SERVING /
+// connectrpc.com/grpchealth handler bundles its own proto descriptor
+// whose enum constants are prefixed: SERVING_STATUS_SERVING /
 // SERVING_STATUS_NOT_SERVING / SERVING_STATUS_UNSPECIFIED /
-// SERVING_STATUS_SERVICE_UNKNOWN. The legacy
-// google.golang.org/grpc/health proto uses the shorter SERVING /
-// NOT_SERVING / UNKNOWN / SERVICE_UNKNOWN. We accept either shape via
-// servingStatusOK.
+// SERVING_STATUS_SERVICE_UNKNOWN. Other gRPC-Health-v1 implementations
+// use the shorter SERVING / NOT_SERVING / UNKNOWN /
+// SERVICE_UNKNOWN. We accept either shape via servingStatusOK.
 type healthCheckResponse struct {
 	Status string `json:"status"`
 }
@@ -66,27 +59,23 @@ func servingStatusOK(status string) bool {
 //
 // Implementation: Connect+JSON POST to /grpc.health.v1.Health/Check
 // over the same http.Client + baseURL the Lantern client was built
-// with. No additional plumbing — the gRPC-Health-v1 surface is mounted
-// on the primary listener via connectrpc.com/grpchealth since #347.
+// with.
 func (l *Lantern) Ping(ctx context.Context) error {
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	if l.connectHTTPClient == nil || l.connectBaseURL == "" {
-		return errors.New("client: Ping requires a Lantern constructed via NewLantern / NewLanternConnect")
-	}
 	body, err := json.Marshal(healthCheckRequest{})
 	if err != nil {
 		return err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		l.connectBaseURL+grpcHealthCheckProcedure,
+		l.baseURL+grpcHealthCheckProcedure,
 		bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Connect-Protocol-Version", "1")
-	resp, err := l.connectHTTPClient.Do(req)
+	resp, err := l.httpClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -107,9 +96,9 @@ func (l *Lantern) Ping(ctx context.Context) error {
 }
 
 // healthStatusError surfaces a non-SERVING reply so callers can branch
-// via errors.As. The legacy gRPC-health-v1 enum was an integer; the
-// Connect+JSON wire emits the symbolic name, which is more useful for
-// log messages anyway.
+// via errors.As. The Connect+JSON wire emits the enum's symbolic name,
+// which is more useful for log messages than the integer constant
+// would be.
 type healthStatusError struct {
 	status string
 }
