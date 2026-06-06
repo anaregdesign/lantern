@@ -107,31 +107,81 @@ the shape you asked for.
 
 ```mermaid
 flowchart LR
-    subgraph Client
-        SDK["Go client SDK<br/>(sdks/go/)"]
-        CLI["lantern-cli<br/>(cli/)"]
-        Other["any Connect / gRPC / gRPC-Web client<br/>(proto/graph/v1)"]
+    subgraph Outside["Outside the cluster"]
+        Browser["Browser"]
+        LLM["LLM agent<br/>(Claude / VS Code / Cursor)"]
+        GoApp["Go service"]
+        NodeApp["Node / TS service"]
+        Human["Human operator"]
+        Other3P["any 3rd-party<br/>Connect client"]
     end
-    subgraph Server["lantern-server (server/)"]
+
+    subgraph Clients["Lantern clients (this repo)"]
+        Admin["lantern-admin<br/>(admin/)<br/>React Router SPA"]
+        MCP["lantern-mcp<br/>(mcp/)<br/>MCP stdio server"]
+        GoSDK["sdks/go<br/>Go client"]
+        NodeSDK["sdks/node<br/>Node / TS client"]
+        CLI["lantern-cli<br/>(cli/)"]
+    end
+
+    Browser -->|HTTPS| Admin
+    LLM     -->|stdio JSON-RPC| MCP
+    GoApp   --> GoSDK
+    NodeApp --> NodeSDK
+    Human   --> CLI
+    MCP     -. embeds .-> GoSDK
+
+    Admin   -->|Connect-Web| SVC
+    GoSDK   -->|Connect / gRPC| SVC
+    NodeSDK -->|Connect / gRPC| SVC
+    CLI     -->|Connect / gRPC| SVC
+    Other3P -->|"Connect / gRPC / gRPC-Web :6380"| SVC
+
+    subgraph Server["lantern-server (server/) — one of N full replicas"]
+        direction TB
         SVC["LanternService<br/>(Connect on h2c)"]
         GC["GraphCache[string, *Vertex]"]
         VC["vertex cache<br/>(TTL)"]
         EC["edge cache<br/>(additive + TTL)"]
         W["Watch loop<br/>(GC every 1m)"]
+        Repl["replication pump<br/>(HLC + mutation log)"]
+        SVC --> GC
+        GC --> VC
+        GC --> EC
+        W -.compacts.-> VC
+        W -.compacts.-> EC
+        SVC <--> Repl
     end
-    SDK & CLI & Other -->|Connect / gRPC / gRPC-Web :6380| SVC
-    SVC --> GC
-    GC --> VC
-    GC --> EC
-    W -.compacts.-> VC
-    W -.compacts.-> EC
+
+    Peers[("peer replicas<br/>(HA mode)")]
+    Repl <-->|Subscribe / Snapshot| Peers
 ```
 
-- DI: [google/wire](https://github.com/google/wire) — see
-  [server/cmd/wire.go](server/cmd/wire.go). Never edit `wire_gen.go` by hand;
-  run `go generate ./...` after changing providers.
-- Generic `GraphCache[S, T]` is instantiated as `GraphCache[string, *Vertex]`
-  at the wire boundary (wire cannot synthesize generic type arguments).
+- **One wire surface for everything.** The server's `:6380` listener accepts
+  Connect, gRPC, and gRPC-Web on the same h2c socket, so the Admin SPA (via
+  Connect-Web), the Go and Node SDKs, the CLI, and the MCP server all share
+  the exact same RPC contract from `proto/graph/v1/`.
+- **lantern-mcp** ([`mcp/`](mcp/)) — exposes Lantern as **decaying graph
+  memory** to LLM agents over MCP stdio JSON-RPC. Depends on `pb/` and
+  `sdks/go/` only; ships as the `ghcr.io/anaregdesign/lantern-mcp` container
+  on `mcp/vX.Y.Z` tags.
+- **lantern-admin** ([`admin/`](admin/)) — browser-only React Router /
+  Fluent UI / Sigma.js control surface. Talks Connect-Web straight to the
+  server (no backend of its own) and ships as the
+  `ghcr.io/anaregdesign/lantern-admin` container on `admin/vX.Y.Z` tags.
+  Requires the server's `LANTERN_CORS_ALLOWED_ORIGINS` to include the admin
+  origin.
+- **HA mode (optional).** Every replica holds the **full** graph. Writes
+  commit locally on the receiving pod and then fan out asynchronously to all
+  peers via `Subscribe` / `Snapshot` RPCs tagged with HLC timestamps. No
+  leader, no quorum, no external storage. See
+  [`docs/replication.md`](docs/replication.md) for the RFC and
+  [`docs/ha-runbook.md`](docs/ha-runbook.md) for the operator playbook.
+- **DI**: [google/wire](https://github.com/google/wire) — see
+  [server/cmd/wire.go](server/cmd/wire.go). Never edit `wire_gen.go` by
+  hand; run `go generate ./...` after changing providers. The generic
+  `GraphCache[S, T]` is instantiated as `GraphCache[string, *Vertex]` at
+  the wire boundary because wire cannot synthesize generic type arguments.
 
 ---
 
@@ -655,20 +705,22 @@ Lantern ships production-grade observability out of the box:
 
 ## Repository layout
 
-This is a monorepo consolidating four formerly separate repositories, now stitched together as a 6-module Go workspace so each piece can be consumed independently.
+This is a monorepo consolidating four formerly separate repositories (Go) plus a browser-only admin SPA and a Node/TS SDK. The Go pieces are stitched together as a 6-module Go workspace so each can be consumed independently; the TypeScript pieces live outside `go.work` and ship on their own release cadence.
 
 | Path | Module | Role |
 |---|---|---|
 | `pb/` | `github.com/anaregdesign/lantern/pb` | Generated protobuf messages and Connect-Go service stubs (under `graph/v1/graphv1connect/`). Shared contract — `server/`, `sdks/go/`, and `mcp/` all depend on it. |
 | `core/` | `github.com/anaregdesign/lantern/core` | Shared building blocks: graph algorithms, TTL caches, collections, concurrency, NLP. |
 | `sdks/go/` | `github.com/anaregdesign/lantern/sdks/go` | Go client SDK — depends on `pb/` only. |
+| `sdks/node/` | `lantern-sdk` (npm) | Node.js / TypeScript client built on `@connectrpc/connect-node`. Not a Go module; Bun-managed (same version pin as `admin/`). |
 | `server/` | `github.com/anaregdesign/lantern/server` | gRPC server (DI via google/wire) — depends on `pb/` + `core/`, **not** on the client SDK. |
 | `mcp/` | `github.com/anaregdesign/lantern/mcp` | MCP server binary that exposes Lantern as decaying graph memory to LLM agents. Depends on `pb/` + `sdks/go/` only; ships as the `ghcr.io/anaregdesign/lantern-mcp` container on `mcp/vX.Y.Z` tags. |
+| `admin/` | (TypeScript) | Browser-only React Router / Fluent UI / Sigma.js control surface. Not a Go module and not part of `go.work`; talks Connect-Web straight to the server. Ships as the `ghcr.io/anaregdesign/lantern-admin` container on `admin/vX.Y.Z` tags. |
 | `.` (root) | `github.com/anaregdesign/lantern` | Umbrella module hosting `cli/` (cobra + promptui) and `tests/integration/` (cross-module bufconn tests). |
 | `proto/` | (no Go module) | `.proto` sources — formerly `lantern-proto`. |
-| `go.work` | — | Pins all 6 modules for local dev. |
+| `go.work` | — | Pins the 6 Go modules for local dev. The TS pieces (`admin/`, `sdks/node/`) sit outside it. |
 
-Dependency direction is a strict DAG: `pb` and `core` are leaves; `sdks/go` → `pb`; `server` → `pb`, `core`; `mcp` → `sdks/go` → `pb`; root → all five submodules.
+Dependency direction is a strict DAG: `pb` and `core` are leaves; `sdks/go` → `pb`; `server` → `pb`, `core`; `mcp` → `sdks/go` → `pb`; root → all five Go submodules. The TS pieces (`admin/`, `sdks/node/`) consume `proto/` at codegen time but have no build-time dependency on any Go module.
 
 ---
 
