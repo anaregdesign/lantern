@@ -31,9 +31,11 @@ func initializeApp() (*App, error) {
 	lanternService := newLanternService(graphCache, scanConfig, replicationConfig, validationLimits, tlsConfig, cacheConfig, observabilityConfig, logger, log, clock, domainMetrics)
 	lanternReplicationService := newLanternReplicationService(log, graphCache, clock, logger, domainMetrics, lanternService)
 	netConfig := provider.NewNetConfig(config)
-	rateLimitConfig := provider.NewRateLimitConfig(config)
 	serverMetrics := provider.NewGrpcServerMetrics(registry)
-	v, err := provider.NewGrpcServerOptions(netConfig, tlsConfig, rateLimitConfig, validationLimits, observabilityConfig, logger, serverMetrics, domainMetrics)
+	validationInterceptor := provider.NewValidationInterceptorProvider(validationLimits, domainMetrics, logger)
+	rateLimitConfig := provider.NewRateLimitConfig(config)
+	rateLimitInterceptor := provider.NewRateLimitInterceptorProvider(rateLimitConfig, domainMetrics)
+	v, err := provider.NewGrpcServerOptions(netConfig, tlsConfig, observabilityConfig, logger, serverMetrics, validationInterceptor, rateLimitInterceptor)
 	if err != nil {
 		return nil, err
 	}
@@ -57,7 +59,7 @@ func initializeApp() (*App, error) {
 		return nil, err
 	}
 	connectListenerConfig := provider.NewConnectListenerConfig(config)
-	connectServer := provider.NewConnectServer(connectListenerConfig, lanternService, lanternReplicationService, logger)
+	connectServer := provider.NewConnectServer(connectListenerConfig, lanternService, lanternReplicationService, validationInterceptor, rateLimitInterceptor, logger)
 	tracing, err := provider.NewTracing(logger)
 	if err != nil {
 		return nil, err

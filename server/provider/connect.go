@@ -18,6 +18,8 @@ import (
 	"net/http"
 	"time"
 
+	"connectrpc.com/connect"
+
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	"github.com/anaregdesign/lantern/server/service"
@@ -81,24 +83,37 @@ type httpConnectServer struct {
 // "/graph.v1.LanternService/" prefix), so the resulting URLs are
 // directly addressable by `curl -X POST` for Connect+JSON.
 //
+// The ValidationInterceptor and RateLimitInterceptor — already wired
+// onto the primary gRPC server via grpc.ChainUnaryInterceptor — are
+// mounted here as connect.WithInterceptors so the additive listener
+// enforces identical limits and bumps the same
+// lantern_validation_rejected_total / lantern_rate_limit_rejected_total
+// counters. Behaviour is observable as identical across both
+// transports; see #349.
+//
 // rep MAY be nil — in that case the replication handler is not mounted
 // (mirroring the gRPC path where replication can be disabled).
 func NewConnectServer(
 	cfg ConnectListenerConfig,
 	svc *service.LanternService,
 	rep *service.LanternReplicationService,
+	val *ValidationInterceptor,
+	rl *RateLimitInterceptor,
 	logger *slog.Logger,
 ) ConnectServer {
 	if cfg.Port <= 0 {
 		return NoopConnectServer{}
 	}
+	handlerOpts := connectHandlerOptions(val, rl)
 	mux := http.NewServeMux()
 	mux.Handle(graphv1connect.NewLanternServiceHandler(
 		service.NewLanternServiceConnectHandler(svc),
+		handlerOpts...,
 	))
 	if rep != nil {
 		mux.Handle(graphv1connect.NewLanternReplicationServiceHandler(
 			service.NewLanternReplicationServiceConnectHandler(rep),
+			handlerOpts...,
 		))
 	}
 	addr := fmt.Sprintf(":%d", cfg.Port)
@@ -111,6 +126,27 @@ func NewConnectServer(
 		logger: logger,
 		addr:   addr,
 	}
+}
+
+// connectHandlerOptions assembles the connect.HandlerOption chain shared
+// by every mounted Connect handler. Pulled out so adding a new
+// interceptor (auth, OTel, etc.) is a one-line edit at a single site
+// rather than two parallel handler-mount blocks.
+//
+// Skips nil interceptors so call sites with a disabled rate limiter
+// (RateLimitConfig.RPS<=0) don't have to special-case construction.
+func connectHandlerOptions(val *ValidationInterceptor, rl *RateLimitInterceptor) []connect.HandlerOption {
+	var ints []connect.Interceptor
+	if val != nil {
+		ints = append(ints, val.ConnectInterceptor())
+	}
+	if rl != nil && rl.lim != nil {
+		ints = append(ints, rl.ConnectInterceptor())
+	}
+	if len(ints) == 0 {
+		return nil
+	}
+	return []connect.HandlerOption{connect.WithInterceptors(ints...)}
 }
 
 func (c *httpConnectServer) Run(ctx context.Context) error {
