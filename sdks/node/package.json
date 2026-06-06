@@ -1,7 +1,7 @@
 {
   "name": "lantern-sdk",
   "version": "0.1.2",
-  "description": "Official TypeScript client SDK for Lantern — an in-memory graph KVS over gRPC.",
+  "description": "Official TypeScript client SDK for Lantern — an in-memory graph KVS, over Connect (HTTP/2).",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -35,7 +35,8 @@
     "lantern",
     "graph",
     "kvs",
-    "grpc",
+    "connect",
+    "connectrpc",
     "client",
     "sdk"
   ],
@@ -51,10 +52,7 @@
   "dependencies": {
     "@bufbuild/protobuf": "^2",
     "@connectrpc/connect": "^2",
-    "@connectrpc/connect-node": "^2",
-    "@grpc/grpc-js": "^1.12.0",
-    "long": "^5.2.3",
-    "protobufjs": "^7.4.0"
+    "@connectrpc/connect-node": "^2"
   },
   "devDependencies": {
     "@bufbuild/protoc-gen-es": "^2.12",
@@ -63,7 +61,6 @@
     "@types/node": "^22.10.0",
     "eslint": "^9.0.0",
     "prettier": "^3.3.0",
-    "ts-proto": "~2.7.0",
     "tsup": "^8.3.0",
     "typescript": "^5.6.0",
     "typescript-eslint": "^8.0.0"

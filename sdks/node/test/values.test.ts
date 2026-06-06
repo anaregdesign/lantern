@@ -8,9 +8,9 @@ import {
   OverflowError,
   Uint32,
   Uint64,
-  fromPbEdge,
-  fromPbVertex,
-  toPbVertex,
+  fromEdgeJson,
+  fromVertexJson,
+  toVertexJson,
 } from "../src/index.js";
 
 describe("narrowing markers", () => {
@@ -41,80 +41,101 @@ describe("narrowing markers", () => {
   });
 });
 
-describe("toPbVertex dispatch", () => {
+describe("Duration.toString", () => {
+  test("renders integer seconds", () => {
+    expect(new Duration(5n, 0).toString()).toBe("5s");
+    expect(new Duration(0n, 0).toString()).toBe("0s");
+  });
+
+  test("renders fractional seconds with trimmed zeros", () => {
+    expect(Duration.fromMillis(1500).toString()).toBe("1.5s");
+    expect(Duration.fromMillis(250).toString()).toBe("0.25s");
+  });
+
+  test("renders negatives", () => {
+    expect(Duration.fromMillis(-1500).toString()).toBe("-1.5s");
+  });
+});
+
+describe("toVertexJson dispatch", () => {
   test("null → nil tombstone", () => {
-    const pv = toPbVertex("k", null);
-    expect(pv.nil).toBe(true);
+    const j = toVertexJson({ key: "k", value: null });
+    expect(j.nil).toBe(true);
   });
 
   test("boolean dispatched before number", () => {
-    const pv = toPbVertex("k", true);
-    expect(pv.bool).toBe(true);
-    expect(pv.int64).toBeUndefined();
+    const j = toVertexJson({ key: "k", value: true });
+    expect(j.bool).toBe(true);
+    expect(j.int64).toBeUndefined();
   });
 
-  test("integer Number → int64", () => {
-    const pv = toPbVertex("k", 42);
-    expect(pv.int64?.toString()).toBe("42");
-    expect(pv.float64).toBeUndefined();
+  test("integer Number → int64 (as string)", () => {
+    const j = toVertexJson({ key: "k", value: 42 });
+    expect(j.int64).toBe("42");
+    expect(j.float64).toBeUndefined();
   });
 
   test("fractional Number → float64", () => {
-    const pv = toPbVertex("k", 3.14);
-    expect(pv.float64).toBe(3.14);
+    const j = toVertexJson({ key: "k", value: 3.14 });
+    expect(j.float64).toBe(3.14);
   });
 
   test("negative bigint → int64", () => {
-    const pv = toPbVertex("k", -10n);
-    expect(pv.int64?.toString()).toBe("-10");
+    const j = toVertexJson({ key: "k", value: -10n });
+    expect(j.int64).toBe("-10");
   });
 
   test("bigint ≥ 2^63 → uint64", () => {
-    const pv = toPbVertex("k", 1n << 63n);
-    expect(pv.uint64?.toString()).toBe((1n << 63n).toString());
+    const big = 1n << 63n;
+    const j = toVertexJson({ key: "k", value: big });
+    expect(j.uint64).toBe(big.toString());
   });
 
   test("bigint overflowing uint64 throws", () => {
-    expect(() => toPbVertex("k", 1n << 64n)).toThrow(OverflowError);
+    expect(() => toVertexJson({ key: "k", value: 1n << 64n })).toThrow(OverflowError);
   });
 
   test("bigint underflowing int64 throws", () => {
-    expect(() => toPbVertex("k", -(1n << 63n) - 1n)).toThrow(OverflowError);
+    expect(() => toVertexJson({ key: "k", value: -(1n << 63n) - 1n })).toThrow(OverflowError);
   });
 
   test("string, bytes, Date", () => {
-    expect(toPbVertex("k", "hello").string).toBe("hello");
-    expect(toPbVertex("k", new Uint8Array([1, 2, 3])).bytes).toEqual(Buffer.from([1, 2, 3]));
+    expect(toVertexJson({ key: "k", value: "hello" }).string).toBe("hello");
+    // bytes encode to base64 on the JSON wire.
+    expect(toVertexJson({ key: "k", value: new Uint8Array([1, 2, 3]) }).bytes).toBe(
+      Buffer.from([1, 2, 3]).toString("base64"),
+    );
     const d = new Date(1700000000000);
-    expect(toPbVertex("k", d).timestamp).toBe(d);
+    expect(toVertexJson({ key: "k", value: d }).timestamp).toBe(d.toISOString());
   });
 
   test("Duration carrier", () => {
-    const pv = toPbVertex("k", Duration.fromMillis(1500));
-    expect(pv.duration?.seconds.toString()).toBe("1");
-    expect(pv.duration?.nanos).toBe(500_000_000);
+    const j = toVertexJson({ key: "k", value: Duration.fromMillis(1500) });
+    expect(j.duration).toBe("1.5s");
   });
 
   test("markers route to pinned variants", () => {
-    expect(toPbVertex("k", new Int32(7)).int32).toBe(7);
-    expect(toPbVertex("k", new Uint32(7)).uint32).toBe(7);
-    expect(toPbVertex("k", new Uint64(7n)).uint64?.toString()).toBe("7");
-    expect(toPbVertex("k", new Float32(1.5)).float32).toBe(1.5);
+    expect(toVertexJson({ key: "k", value: new Int32(7) }).int32).toBe(7);
+    expect(toVertexJson({ key: "k", value: new Uint32(7) }).uint32).toBe(7);
+    expect(toVertexJson({ key: "k", value: new Uint64(7n) }).uint64).toBe("7");
+    expect(toVertexJson({ key: "k", value: new Float32(1.5) }).float32).toBe(1.5);
   });
 
   test("ttl and expiration are mutually exclusive", () => {
-    expect(() => toPbVertex("k", 1, 1, new Date())).toThrow(TypeError);
+    expect(() =>
+      toVertexJson({ key: "k", value: 1, ttlSeconds: 1, expiration: new Date() }),
+    ).toThrow(TypeError);
   });
 
-  test("ttl materialises to absolute Date", () => {
-    const pv = toPbVertex("k", 1, 60);
-    expect(pv.expiration).toBeInstanceOf(Date);
-    const skew = Math.abs((pv.expiration as Date).getTime() - (Date.now() + 60_000));
+  test("ttl materialises to absolute ISO string", () => {
+    const j = toVertexJson({ key: "k", value: 1, ttlSeconds: 60 });
+    expect(typeof j.expiration).toBe("string");
+    const skew = Math.abs(Date.parse(String(j.expiration)) - (Date.now() + 60_000));
     expect(skew).toBeLessThan(1_000);
   });
 });
 
-describe("fromPbVertex", () => {
+describe("fromVertexJson", () => {
   test("round-trips primitives", () => {
     const cases: Array<[string, unknown]> = [
       ["string", "hello"],
@@ -123,32 +144,48 @@ describe("fromPbVertex", () => {
       ["float64", 3.14],
     ];
     for (const [_label, value] of cases) {
-      const sv = fromPbVertex(toPbVertex("k", value));
+      const j = toVertexJson({
+        key: "k",
+        value: value as Parameters<typeof toVertexJson>[0]["value"],
+      });
+      const sv = fromVertexJson(j);
       expect(sv.value).toEqual(value);
     }
   });
 
   test("nil round-trip yields null", () => {
-    const sv = fromPbVertex(toPbVertex("k", null));
+    const sv = fromVertexJson(toVertexJson({ key: "k", value: null }));
     expect(sv.value).toBeNull();
     expect(sv.kind).toBe("nil");
   });
 
   test("zero-epoch expiration normalises to null", () => {
-    const sv = fromPbVertex({ key: "k", expiration: new Date(0), string: "x" });
+    const sv = fromVertexJson({ key: "k", expiration: new Date(0).toISOString(), string: "x" });
     expect(sv.expiration).toBeNull();
   });
 
   test("non-zero expiration preserved", () => {
     const exp = new Date(Date.now() + 60_000);
-    const sv = fromPbVertex({ key: "k", expiration: exp, string: "x" });
+    const sv = fromVertexJson({ key: "k", expiration: exp.toISOString(), string: "x" });
     expect(sv.expiration?.getTime()).toBe(exp.getTime());
+  });
+
+  test("int64 out of safe range promotes to bigint", () => {
+    const big = (BigInt(Number.MAX_SAFE_INTEGER) + 10n).toString();
+    const sv = fromVertexJson({ key: "k", int64: big });
+    expect(typeof sv.value).toBe("bigint");
+    expect(sv.value).toBe(BigInt(big));
   });
 });
 
-describe("fromPbEdge", () => {
+describe("fromEdgeJson", () => {
   test("zero-epoch expiration normalises to null", () => {
-    const se = fromPbEdge({ tail: "t", head: "h", weight: 1, expiration: new Date(0) });
+    const se = fromEdgeJson({
+      tail: "t",
+      head: "h",
+      weight: 1,
+      expiration: new Date(0).toISOString(),
+    });
     expect(se.expiration).toBeNull();
     expect(se.tail).toBe("t");
     expect(se.head).toBe("h");

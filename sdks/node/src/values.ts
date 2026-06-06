@@ -1,7 +1,8 @@
 /**
- * Value-type bridge between JS natives and the protobuf Vertex/Edge messages.
+ * Value-type bridge between JS natives and the Connect protobuf JSON
+ * shape of the Lantern Vertex / Edge messages.
  *
- * Native ↔ proto mapping (mirrors the Go and Python SDKs):
+ * Native ↔ proto mapping (mirrors the Go SDK):
  *
  *   JS value                               proto oneof
  *   ─────────────────────────────────────  ─────────────────────────
@@ -16,16 +17,19 @@
  *   Duration (sdk type)                    duration
  *   null                                   nil tombstone
  *
- * To pin a narrower wire type, wrap with `int32`, `uint32`, `uint64`, or
- * `float32`. Each marker range-checks at construction and throws
+ * To pin a narrower wire type, wrap with `Int32`, `Uint32`, `Uint64`, or
+ * `Float32`. Each marker range-checks at construction and throws
  * OverflowError on out-of-range input.
+ *
+ * Wire format: this module produces and consumes the protobuf JSON
+ * representation (oneof fields appear flat on the message: `{ key,
+ * string }` / `{ key, int64 }` / ...). The Connect client feeds the
+ * output of `toVertexJson` through `fromJson(VertexSchema, ...)` and
+ * decodes responses with `toJson(VertexSchema, msg)` before handing
+ * them to `fromVertexJson`.
  */
 
-import Long from "long";
-
 import { OverflowError } from "./errors.js";
-import { Duration as PbDuration } from "./generated/google/protobuf/duration.js";
-import { type Edge as PbEdge, type Vertex as PbVertex } from "./generated/graph/v1/graph.js";
 
 // ----------------------------------------------------------------------------
 // Narrowing markers
@@ -86,8 +90,11 @@ export class Float32 {
 /**
  * SDK-side Duration carrier. Construct via `Duration.fromMillis(ms)` or
  * `new Duration(seconds, nanos)`. Use in `putVertex` / `vertexInput` to
- * pin the `duration` proto oneof variant. Read-side returns ms as
- * `number` via Vertex.value when kind === "duration".
+ * pin the `duration` proto oneof variant. Read-side returns the same
+ * Duration via Vertex.value when kind === "duration".
+ *
+ * The on-the-wire shape is a Go-duration string ("1.5s", "2m30s"), which
+ * `toString()` produces and `parseGoDuration` consumes.
  */
 export class Duration {
   readonly seconds: bigint;
@@ -105,6 +112,23 @@ export class Duration {
   }
   toMillis(): number {
     return Number(this.seconds) * 1000 + this.nanos / 1_000_000;
+  }
+  /**
+   * Render as a Go-style duration string (e.g. "1.5s", "750ms"). The
+   * Connect/JSON codec accepts this form for the google.protobuf.Duration
+   * mapping.
+   */
+  toString(): string {
+    const totalNs = this.seconds * 1_000_000_000n + BigInt(this.nanos);
+    if (totalNs === 0n) return "0s";
+    const sign = totalNs < 0n ? "-" : "";
+    const absNs = totalNs < 0n ? -totalNs : totalNs;
+    const secs = absNs / 1_000_000_000n;
+    const remNs = absNs % 1_000_000_000n;
+    if (remNs === 0n) return `${sign}${secs}s`;
+    // Trim trailing zeros from the fractional second component.
+    const frac = remNs.toString().padStart(9, "0").replace(/0+$/, "");
+    return `${sign}${secs}.${frac}s`;
   }
 }
 
@@ -177,10 +201,190 @@ export interface Graph {
 }
 
 // ----------------------------------------------------------------------------
-// Conversion: JS value → proto Vertex
+// JSON bridge: SDK ↔ protobuf JSON
 // ----------------------------------------------------------------------------
 
 const TWO_POW_63 = 1n << 63n;
+
+/**
+ * Build the protobuf JSON shape for a VertexInput so it can feed
+ * `fromJson(VertexSchema, ...)`. The oneof field name lives flat on
+ * the JSON object per the proto3 JSON mapping spec (so `value: "hello"`
+ * becomes `string: "hello"`), which is the exact representation the
+ * Connect+JSON codec emits and accepts.
+ */
+export function toVertexJson(input: VertexInput): Record<string, unknown> {
+  const out: Record<string, unknown> = { key: input.key };
+  const exp = resolveExpiration(input.ttlSeconds, input.expiration);
+  if (exp) out.expiration = exp.toISOString();
+  encodeValue(out, input.value);
+  return out;
+}
+
+/**
+ * Build the protobuf JSON shape for an EdgeInput.
+ */
+export function toEdgeJson(input: EdgeInput): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    tail: input.tail,
+    head: input.head,
+    weight: input.weight,
+  };
+  const exp = resolveExpiration(input.ttlSeconds, input.expiration);
+  if (exp) out.expiration = exp.toISOString();
+  return out;
+}
+
+/**
+ * Decode a Vertex from its protobuf JSON form. The input matches what
+ * `toJson(VertexSchema, msg)` produces (one of the oneof fields appears
+ * flat on the object: `{ key, string }` / `{ key, int64 }` / ...).
+ */
+export function fromVertexJson(json: Record<string, unknown>): Vertex {
+  const key = String(json.key ?? "");
+  const expiration = parseExpiration(json.expiration);
+  const { value, kind } = decodeValue(json);
+  return { key, value, kind, expiration };
+}
+
+export function fromEdgeJson(json: Record<string, unknown>): Edge {
+  return {
+    tail: String(json.tail ?? ""),
+    head: String(json.head ?? ""),
+    weight: Number(json.weight ?? 0),
+    expiration: parseExpiration(json.expiration),
+  };
+}
+
+// ----------------------------------------------------------------------------
+// Internals
+// ----------------------------------------------------------------------------
+
+function encodeValue(out: Record<string, unknown>, value: VertexInput["value"]): void {
+  if (value === null) {
+    // The proto `nil` field is a `bool` that is always true when
+    // present — it is the existence-only marker for a vertex carrying
+    // no payload. See proto/graph/v1/graph.proto.
+    out.nil = true;
+    return;
+  }
+  if (typeof value === "string") {
+    out.string = value;
+    return;
+  }
+  if (typeof value === "boolean") {
+    out.bool = value;
+    return;
+  }
+  if (value instanceof Uint8Array) {
+    out.bytes = bytesToBase64(value);
+    return;
+  }
+  if (value instanceof Date) {
+    out.timestamp = value.toISOString();
+    return;
+  }
+  if (value instanceof Duration) {
+    out.duration = value.toString();
+    return;
+  }
+  if (value instanceof Int32) {
+    out.int32 = value.value;
+    return;
+  }
+  if (value instanceof Uint32) {
+    out.uint32 = value.value;
+    return;
+  }
+  if (value instanceof Uint64) {
+    out.uint64 = value.value.toString();
+    return;
+  }
+  if (value instanceof Float32) {
+    out.float32 = value.value;
+    return;
+  }
+  if (typeof value === "number") {
+    if (Number.isInteger(value)) {
+      if (value > Number.MAX_SAFE_INTEGER || value < Number.MIN_SAFE_INTEGER) {
+        throw new OverflowError(
+          `integer ${value} exceeds Number safe range; use BigInt or a narrowing marker`,
+        );
+      }
+      out.int64 = String(value);
+    } else {
+      out.float64 = value;
+    }
+    return;
+  }
+  if (typeof value === "bigint") {
+    if (value < 0n) {
+      if (value < -TWO_POW_63) {
+        throw new OverflowError(`bigint ${value} underflows int64`);
+      }
+      out.int64 = value.toString();
+      return;
+    }
+    if (value >= TWO_POW_63) {
+      if (value >= 1n << 64n) {
+        throw new OverflowError(`bigint ${value} overflows uint64`);
+      }
+      out.uint64 = value.toString();
+      return;
+    }
+    out.int64 = value.toString();
+    return;
+  }
+  throw new TypeError(
+    `unsupported Vertex value type: ${typeof value}; supported: number, bigint, boolean, string, Uint8Array, Date, Duration, null, or Int32/Uint32/Uint64/Float32`,
+  );
+}
+
+function decodeValue(json: Record<string, unknown>): { value: VertexValue; kind: VertexKind } {
+  if (json.float64 !== undefined) return { value: Number(json.float64), kind: "float64" };
+  if (json.float32 !== undefined) return { value: Number(json.float32), kind: "float32" };
+  if (json.int32 !== undefined) return { value: Number(json.int32), kind: "int32" };
+  if (json.int64 !== undefined) {
+    const raw = String(json.int64);
+    const bi = BigInt(raw);
+    // Promote to plain number if it fits safely — keeps consumer code
+    // that round-trips small ints idiomatic.
+    const n = Number(bi);
+    return {
+      value: Number.isSafeInteger(n) && BigInt(n) === bi ? n : bi,
+      kind: "int64",
+    };
+  }
+  if (json.uint32 !== undefined) return { value: Number(json.uint32), kind: "uint32" };
+  if (json.uint64 !== undefined) {
+    const bi = BigInt(String(json.uint64));
+    const n = Number(bi);
+    return {
+      value: Number.isSafeInteger(n) && BigInt(n) === bi ? n : bi,
+      kind: "uint64",
+    };
+  }
+  if (json.bool !== undefined) return { value: Boolean(json.bool), kind: "bool" };
+  if (json.string !== undefined) return { value: String(json.string), kind: "string" };
+  if (json.bytes !== undefined) {
+    return { value: base64ToBytes(String(json.bytes)), kind: "bytes" };
+  }
+  if (json.timestamp !== undefined) {
+    return { value: new Date(String(json.timestamp)), kind: "timestamp" };
+  }
+  if (json.duration !== undefined) {
+    return { value: parseGoDuration(String(json.duration)), kind: "duration" };
+  }
+  if (json.nil !== undefined) return { value: null, kind: "nil" };
+  return { value: null, kind: "unset" };
+}
+
+function parseExpiration(raw: unknown): Date | null {
+  if (typeof raw !== "string" || raw === "") return null;
+  const ms = Date.parse(raw);
+  if (!Number.isFinite(ms) || ms === 0) return null;
+  return new Date(ms);
+}
 
 function resolveExpiration(ttlSeconds?: number, expiration?: Date): Date | undefined {
   if (expiration !== undefined && ttlSeconds !== undefined) {
@@ -191,170 +395,42 @@ function resolveExpiration(ttlSeconds?: number, expiration?: Date): Date | undef
   return undefined;
 }
 
-export function toPbVertex(
-  key: string,
-  value: VertexInput["value"],
-  ttlSeconds?: number,
-  expiration?: Date,
-): PbVertex {
-  const exp = resolveExpiration(ttlSeconds, expiration);
-  const base: PbVertex = { key, expiration: exp };
+function bytesToBase64(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString("base64");
+}
 
-  if (value === null) {
-    return { ...base, nil: true };
-  }
-  if (value instanceof Int32) return { ...base, int32: value.value };
-  if (value instanceof Uint32) return { ...base, uint32: value.value };
-  if (value instanceof Uint64)
-    return { ...base, uint64: Long.fromString(value.value.toString(), true) };
-  if (value instanceof Float32) return { ...base, float32: value.value };
+function base64ToBytes(b64: string): Uint8Array {
+  return new Uint8Array(Buffer.from(b64, "base64"));
+}
 
-  switch (typeof value) {
-    case "boolean":
-      return { ...base, bool: value };
-    case "string":
-      return { ...base, string: value };
-    case "number":
-      if (Number.isInteger(value)) {
-        if (value > Number.MAX_SAFE_INTEGER || value < Number.MIN_SAFE_INTEGER) {
-          throw new OverflowError(
-            `integer ${value} exceeds Number safe range; use BigInt or a narrowing marker`,
-          );
-        }
-        return { ...base, int64: Long.fromNumber(value) };
-      }
-      return { ...base, float64: value };
-    case "bigint": {
-      if (value < 0n) {
-        if (value < -TWO_POW_63) throw new OverflowError(`bigint ${value} underflows int64`);
-        return { ...base, int64: Long.fromString(value.toString()) };
-      }
-      if (value >= TWO_POW_63) {
-        if (value >= 1n << 64n) throw new OverflowError(`bigint ${value} overflows uint64`);
-        return { ...base, uint64: Long.fromString(value.toString(), true) };
-      }
-      return { ...base, int64: Long.fromString(value.toString()) };
+/**
+ * Minimal Go-duration parser ("10s", "1m30s", "1.5h", "2.5ms") returning
+ * a Duration. Used only by the decode path; the encode path goes
+ * through `Duration.toString()`.
+ */
+function parseGoDuration(s: string): Duration {
+  const trimmed = s.trim();
+  if (!trimmed) return new Duration(0n, 0);
+  const re = /([0-9]*\.?[0-9]+)(ns|us|µs|ms|s|m|h)/g;
+  const unitMultiplierNs: Record<string, bigint> = {
+    ns: 1n,
+    us: 1_000n,
+    µs: 1_000n,
+    ms: 1_000_000n,
+    s: 1_000_000_000n,
+    m: 60n * 1_000_000_000n,
+    h: 3600n * 1_000_000_000n,
+  };
+  let totalNs = 0n;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(trimmed)) !== null) {
+    const n = Number(match[1]);
+    const mult = unitMultiplierNs[match[2] ?? ""] ?? 0n;
+    if (Number.isFinite(n)) {
+      totalNs += BigInt(Math.round(n * Number(mult)));
     }
   }
-  if (value instanceof Date) return { ...base, timestamp: value };
-  if (value instanceof Duration) {
-    return {
-      ...base,
-      duration: { seconds: Long.fromString(value.seconds.toString()), nanos: value.nanos },
-    };
-  }
-  if (value instanceof Uint8Array) return { ...base, bytes: Buffer.from(value) };
-
-  throw new TypeError(
-    `unsupported Vertex value type: ${typeof value}; supported: number, bigint, boolean, string, Uint8Array, Date, Duration, null, or Int32/Uint32/Uint64/Float32`,
-  );
-}
-
-// ----------------------------------------------------------------------------
-// Conversion: proto Vertex → SDK Vertex
-// ----------------------------------------------------------------------------
-
-const VARIANT_KEYS = [
-  "float32",
-  "float64",
-  "int32",
-  "int64",
-  "uint32",
-  "uint64",
-  "bool",
-  "string",
-  "bytes",
-  "timestamp",
-  "duration",
-  "nil",
-] as const;
-
-function longToNumber(v: Long | undefined): number {
-  if (v === undefined) return 0;
-  // Fall back to bigint via string if outside safe integer range.
-  if (v.greaterThan(Long.MAX_VALUE) || v.lessThan(Long.MIN_VALUE)) return Number(v.toString());
-  return v.toNumber();
-}
-
-function longToBigInt(v: Long | undefined): bigint {
-  if (v === undefined) return 0n;
-  return BigInt(v.toString());
-}
-
-export function fromPbVertex(pv: PbVertex): Vertex {
-  let kind: VertexKind = "unset";
-  let value: VertexValue = null;
-  const bag = pv as unknown as Record<string, unknown>;
-  for (const k of VARIANT_KEYS) {
-    if (bag[k] !== undefined && bag[k] !== null) {
-      kind = k;
-      break;
-    }
-  }
-  switch (kind) {
-    case "unset":
-    case "nil":
-      value = null;
-      break;
-    case "float32":
-      value = pv.float32 ?? 0;
-      break;
-    case "float64":
-      value = pv.float64 ?? 0;
-      break;
-    case "int32":
-      value = pv.int32 ?? 0;
-      break;
-    case "int64": {
-      const n = longToNumber(pv.int64);
-      // Promote to bigint if loss-of-precision was possible.
-      value = Number.isSafeInteger(n) ? n : longToBigInt(pv.int64);
-      break;
-    }
-    case "uint32":
-      value = pv.uint32 ?? 0;
-      break;
-    case "uint64": {
-      const n = longToNumber(pv.uint64);
-      value = Number.isSafeInteger(n) ? n : longToBigInt(pv.uint64);
-      break;
-    }
-    case "bool":
-      value = pv.bool ?? false;
-      break;
-    case "string":
-      value = pv.string ?? "";
-      break;
-    case "bytes":
-      value = pv.bytes ? new Uint8Array(pv.bytes) : new Uint8Array();
-      break;
-    case "timestamp":
-      value = pv.timestamp ?? new Date(0);
-      break;
-    case "duration": {
-      const d = pv.duration as PbDuration | undefined;
-      value = d ? new Duration(BigInt(d.seconds.toString()), d.nanos) : new Duration(0n, 0);
-      break;
-    }
-  }
-  const expiration =
-    pv.expiration instanceof Date && pv.expiration.getTime() !== 0 ? pv.expiration : null;
-  return { key: pv.key, value, kind, expiration };
-}
-
-export function fromPbEdge(pe: PbEdge): Edge {
-  const expiration =
-    pe.expiration instanceof Date && pe.expiration.getTime() !== 0 ? pe.expiration : null;
-  return { tail: pe.tail, head: pe.head, weight: pe.weight, expiration };
-}
-
-/** @internal */
-export function vertexInputToPb(vi: VertexInput): PbVertex {
-  return toPbVertex(vi.key, vi.value, vi.ttlSeconds, vi.expiration);
-}
-
-/** @internal */
-export function edgeInputToPb(ei: EdgeInput): PbEdge {
-  const exp = resolveExpiration(ei.ttlSeconds, ei.expiration);
-  return { tail: ei.tail, head: ei.head, weight: ei.weight, expiration: exp };
+  const seconds = totalNs / 1_000_000_000n;
+  const nanos = Number(totalNs % 1_000_000_000n);
+  return new Duration(seconds, nanos);
 }

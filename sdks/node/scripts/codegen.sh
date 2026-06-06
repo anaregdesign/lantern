@@ -4,25 +4,22 @@
 # Run from sdks/node/ via `bun run codegen` or directly:
 #   ./scripts/codegen.sh
 #
-# Outputs:
-#   - src/generated/graph/v1/{graph,replication}.ts (legacy ts-proto +
-#     grpc-js stubs consumed by src/client.ts)
-#   - src/gen/graph/v1/{graph,replication}_{pb,connect}.ts (Connect-ES
-#     stubs consumed by the new LanternConnect class introduced in
-#     #340)
+# Output:
+#   - src/gen/graph/v1/{graph,replication}_pb.ts (protobuf-es v2 message
+#     classes + Connect-ES service schema descriptors consumed by
+#     src/client.ts via createClient(LanternService, transport))
 #
 # Requires:
 #   - buf on PATH (https://buf.build/docs/installation)
-#   - node_modules installed (`bun install`) so the ts-proto plugin
+#   - node_modules installed (`bun install`) so the protoc-gen-es plugin
 #     resolves.
 
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-PLUGIN="./node_modules/.bin/protoc-gen-ts_proto"
-LEGACY_OUT="src/generated"
-CONNECT_OUT="src/gen"
+PLUGIN="./node_modules/.bin/protoc-gen-es"
+OUT="src/gen"
 
 if [[ ! -x "$PLUGIN" ]]; then
   echo "error: $PLUGIN not found — run 'bun install' first." >&2
@@ -34,11 +31,9 @@ if ! command -v buf >/dev/null 2>&1; then
   exit 1
 fi
 
-rm -rf "$LEGACY_OUT" "$CONNECT_OUT"
-mkdir -p "$LEGACY_OUT" "$CONNECT_OUT"
+rm -rf "$OUT"
+mkdir -p "$OUT"
 
 buf generate --template buf.gen.yaml
 
-echo "✓ TypeScript stubs regenerated:"
-echo "    legacy (ts-proto + grpc-js)   → $LEGACY_OUT"
-echo "    Connect-ES + protobuf-es      → $CONNECT_OUT"
+echo "✓ TypeScript stubs regenerated → $OUT"
