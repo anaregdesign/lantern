@@ -1,14 +1,15 @@
 import { Buffer } from "node:buffer";
 
 /**
- * The Lantern Connect listener URL the Playwright webServer starts on
+ * The Lantern primary listener URL the Playwright webServer starts on
  * (see playwright.config.ts). Tests seed data through this URL using
- * Connect+JSON's `POST /graph.v1.LanternService/<Method>` shape rather
- * than the legacy grpc-gateway REST URLs — the gateway is no longer
- * started in the e2e profile (#339).
+ * Connect+JSON's `POST /graph.v1.LanternService/<Method>` shape. Since
+ * #347 the primary :6380 port multiplexes Connect / gRPC / gRPC-Web on
+ * the same h2c socket, so the additive listener (#337) and the
+ * grpc-gateway shim (#339) are both gone.
  */
 export const CONNECT_URL =
-  process.env.LANTERN_E2E_GATEWAY_URL ?? "http://127.0.0.1:6381";
+  process.env.LANTERN_E2E_GATEWAY_URL ?? "http://127.0.0.1:6380";
 
 /**
  * The localStorage key the admin SPA stores the active gateway URL

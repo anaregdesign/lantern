@@ -33,7 +33,7 @@ export function ConnectionSwitcher() {
   const onSave = () => {
     const ok = setBaseUrl(draft);
     if (!ok) {
-      setError("Enter an http(s) URL like http://localhost:6381");
+      setError("Enter an http(s) URL like http://localhost:6380");
       return;
     }
     setOpen(false);

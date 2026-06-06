@@ -1,0 +1,113 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  padding: 1.5rem;
+  max-width: 1080px;
+  margin: 0 auto;
+}
+
+.header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.title {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+.lead {
+  margin: 0.25rem 0 0 0;
+  color: var(--colorNeutralForeground3);
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1.5rem;
+}
+
+@media (min-width: 960px) {
+  .cards {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1.25rem;
+}
+
+.cardTitle {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.cardLead {
+  margin: 0;
+  color: var(--colorNeutralForeground3);
+  font-size: 0.9rem;
+}
+
+.definitionList {
+  display: grid;
+  grid-template-columns: minmax(140px, max-content) 1fr;
+  gap: 0.4rem 1rem;
+  margin: 0;
+}
+
+.definitionList dt {
+  color: var(--colorNeutralForeground3);
+  font-weight: 500;
+}
+
+.definitionList dd {
+  margin: 0;
+  font-family: var(--fontFamilyMonospace, monospace);
+  word-break: break-word;
+}
+
+.peerTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.peerTable th,
+.peerTable td {
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--colorNeutralStroke2);
+  font-family: var(--fontFamilyMonospace, monospace);
+}
+
+.peerTable th {
+  font-family: var(--fontFamilyBase);
+  color: var(--colorNeutralForeground3);
+  font-weight: 600;
+}
+
+.peerErrorRow {
+  color: var(--colorPaletteRedForeground1);
+  font-size: 0.85rem;
+}
+
+.empty {
+  color: var(--colorNeutralForeground3);
+  font-style: italic;
+}

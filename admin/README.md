@@ -11,7 +11,7 @@ the Go workspace (`go.work`). The TypeScript toolchain is [Bun](https://bun.sh/)
 ## Requirements
 
 - [Bun](https://bun.sh/) `1.3.14+` (the version pinned in `package.json`).
-- A running Lantern gateway (defaults to `http://localhost:6381`) with CORS
+- A running Lantern server (defaults to `http://localhost:6380`) with CORS
   configured to allow the admin origin — see
   `LANTERN_CORS_ALLOWED_ORIGINS` in [`server/README.md`](../server/README.md).
 
