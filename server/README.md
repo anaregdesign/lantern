@@ -19,17 +19,21 @@ go build -o lantern ./cmd
 go run ./cmd
 
 # Container image (published per root tag)
-docker run --rm -p 6380:6380 -p 9090:9090 ghcr.io/anaregdesign/lantern:latest
+docker run --rm -p 6380:6380 -p 6381:6381 -p 9090:9090 ghcr.io/anaregdesign/lantern:latest
 ```
 
 The server listens on:
 
 - `:6380` — gRPC (`graph.v1.LanternService`, `graph.v1.LanternReplicationService`,
   `grpc.health.v1.Health`, optional `grpc.reflection.v1alpha.ServerReflection`).
+- `:6381` — HTTP/JSON via grpc-gateway: the unary `graph.v1.LanternService`
+  RPCs annotated with `google.api.http` plus a `/v1/health` probe that
+  reports per-subsystem status and `uptime_seconds`. Streaming RPCs
+  (`Illuminate`, `Subscribe`) intentionally stay gRPC-only.
 - `:9090` — HTTP: `/metrics` (Prometheus), `/healthz` (liveness),
   `/readyz` and `/healthz/ready` (readiness, gated by replication catch-up).
 
-Both ports are configurable via environment variables (see below).
+All three ports are configurable via environment variables (see below).
 
 ## Package layout
 
@@ -88,6 +92,8 @@ most common knobs:
 | `LANTERN_SLOW_RPC_THRESHOLD_MS` | `500` | Emit a `slog` warning per unary/stream RPC whose handler exceeds this duration (0 disables). |
 | `LANTERN_ANTI_ENTROPY_GAP_WARN_THRESHOLD` | `1024` | Emit a `slog` warning per anti-entropy tick whose detected peer gap (in seq units) exceeds this value (0 disables). |
 | `LANTERN_METRICS_ADDR` | `:9090` | HTTP listen for `/metrics`, `/healthz`, `/readyz` (empty disables). |
+| `LANTERN_GATEWAY_ADDR` | `:6381` | HTTP/JSON gateway listen address (empty disables). Serves the unary REST mapping for `LanternService` plus `/v1/health`. |
+| `LANTERN_GATEWAY_READ_HEADER_TIMEOUT_MS` | `5000` | `http.Server.ReadHeaderTimeout` for the gateway. |
 | `LANTERN_PPROF_ENABLED` | `false` | Mount `/debug/pprof/*` (heap, goroutine, allocs, threadcreate, block, mutex, profile, trace, cmdline, symbol) on the metrics listener. Keep off in production unless the metrics port is bound to an internal-only interface; the endpoint exposes goroutine stacks and live heap data. `block` / `mutex` profiles also require `LANTERN_BLOCK_PROFILE_RATE` / `LANTERN_MUTEX_PROFILE_FRACTION` to be non-zero. |
 | `LANTERN_MUTEX_PROFILE_FRACTION` | `0` | `runtime.SetMutexProfileFraction` — 1-in-N sampling of mutex contention. Non-zero adds per-Unlock overhead; leave `0` in production unless actively profiling. Combine with `LANTERN_PPROF_ENABLED=true` to read the samples via `/debug/pprof/mutex`. |
 | `LANTERN_BLOCK_PROFILE_RATE` | `0` | `runtime.SetBlockProfileRate` — nanoseconds between block-event samples (lower = more samples). Non-zero adds per-blocking-op overhead; same caveats as `MUTEX_PROFILE_FRACTION`. Read via `/debug/pprof/block`. |
