@@ -7,7 +7,6 @@
 package graphv1
 
 import (
-	_ "google.golang.org/genproto/googleapis/api/annotations"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	durationpb "google.golang.org/protobuf/types/known/durationpb"
@@ -2869,7 +2868,7 @@ var File_graph_v1_graph_proto protoreflect.FileDescriptor
 
 const file_graph_v1_graph_proto_rawDesc = "" +
 	"\n" +
-	"\x14graph/v1/graph.proto\x12\bgraph.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xcc\x03\n" +
+	"\x14graph/v1/graph.proto\x12\bgraph.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xcc\x03\n" +
 	"\x06Vertex\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12:\n" +
 	"\n" +
@@ -3042,32 +3041,31 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\"OPTIMIZATION_MINIMUM_SPANNING_TREE\x10\x01\x12&\n" +
 	"\"OPTIMIZATION_MAXIMUM_SPANNING_TREE\x10\x02\x12#\n" +
 	"\x1fOPTIMIZATION_SHORTEST_PATH_TREE\x10\x03\x12+\n" +
-	"'OPTIMIZATION_SHORTEST_PATH_TREE_INVERSE\x10\x042\x89\x12\n" +
-	"\x0eLanternService\x12f\n" +
+	"'OPTIMIZATION_SHORTEST_PATH_TREE_INVERSE\x10\x042\xea\f\n" +
+	"\x0eLanternService\x12G\n" +
 	"\n" +
-	"Illuminate\x12\x1b.graph.v1.IlluminateRequest\x1a\x1c.graph.v1.IlluminateResponse\"\x1d\x82\xd3\xe4\x93\x02\x17\x12\x15/v1/illuminate/{seed}\x12`\n" +
-	"\tGetVertex\x12\x1a.graph.v1.GetVertexRequest\x1a\x1b.graph.v1.GetVertexResponse\"\x1a\x82\xd3\xe4\x93\x02\x14\x12\x12/v1/vertices/{key}\x12g\n" +
-	"\vGetVertices\x12\x1c.graph.v1.GetVerticesRequest\x1a\x1d.graph.v1.GetVerticesResponse\"\x1b\x82\xd3\xe4\x93\x02\x15:\x01*\"\x10/v1/vertices/get\x12j\n" +
-	"\tPutVertex\x12\x1a.graph.v1.PutVertexRequest\x1a\x1b.graph.v1.PutVertexResponse\"$\x82\xd3\xe4\x93\x02\x1e:\x01*\x1a\x19/v1/vertices/{vertex.key}\x12c\n" +
-	"\vPutVertices\x12\x1c.graph.v1.PutVerticesRequest\x1a\x1d.graph.v1.PutVerticesResponse\"\x17\x82\xd3\xe4\x93\x02\x11:\x01*\x1a\f/v1/vertices\x12i\n" +
-	"\fDeleteVertex\x12\x1d.graph.v1.DeleteVertexRequest\x1a\x1e.graph.v1.DeleteVertexResponse\"\x1a\x82\xd3\xe4\x93\x02\x14*\x12/v1/vertices/{key}\x12s\n" +
-	"\x0eDeleteVertices\x12\x1f.graph.v1.DeleteVerticesRequest\x1a .graph.v1.DeleteVerticesResponse\"\x1e\x82\xd3\xe4\x93\x02\x18:\x01*\"\x13/v1/vertices/delete\x12k\n" +
-	"\fScanVertices\x12\x1d.graph.v1.ScanVerticesRequest\x1a\x1e.graph.v1.ScanVerticesResponse\"\x1c\x82\xd3\xe4\x93\x02\x16:\x01*\"\x11/v1/vertices/scan\x12\x8d\x01\n" +
-	"\x15CountVerticesByPrefix\x12&.graph.v1.CountVerticesByPrefixRequest\x1a'.graph.v1.CountVerticesByPrefixResponse\"#\x82\xd3\xe4\x93\x02\x1d\x12\x1b/v1/vertices/count/{prefix}\x12\x95\x01\n" +
-	"\x16DeleteVerticesByPrefix\x12'.graph.v1.DeleteVerticesByPrefixRequest\x1a(.graph.v1.DeleteVerticesByPrefixResponse\"(\x82\xd3\xe4\x93\x02\":\x01*\"\x1d/v1/vertices/delete-by-prefix\x12_\n" +
-	"\aGetEdge\x12\x18.graph.v1.GetEdgeRequest\x1a\x19.graph.v1.GetEdgeResponse\"\x1f\x82\xd3\xe4\x93\x02\x19\x12\x17/v1/edges/{tail}/{head}\x12[\n" +
-	"\bGetEdges\x12\x19.graph.v1.GetEdgesRequest\x1a\x1a.graph.v1.GetEdgesResponse\"\x18\x82\xd3\xe4\x93\x02\x12:\x01*\"\r/v1/edges/get\x12p\n" +
-	"\aAddEdge\x12\x18.graph.v1.AddEdgeRequest\x1a\x19.graph.v1.AddEdgeResponse\"0\x82\xd3\xe4\x93\x02*:\x01*\"%/v1/edges/{edge.tail}/{edge.head}/add\x12[\n" +
-	"\bAddEdges\x12\x19.graph.v1.AddEdgesRequest\x1a\x1a.graph.v1.AddEdgesResponse\"\x18\x82\xd3\xe4\x93\x02\x12:\x01*\"\r/v1/edges/add\x12l\n" +
-	"\aPutEdge\x12\x18.graph.v1.PutEdgeRequest\x1a\x19.graph.v1.PutEdgeResponse\",\x82\xd3\xe4\x93\x02&:\x01*\x1a!/v1/edges/{edge.tail}/{edge.head}\x12[\n" +
-	"\bPutEdges\x12\x19.graph.v1.PutEdgesRequest\x1a\x1a.graph.v1.PutEdgesResponse\"\x18\x82\xd3\xe4\x93\x02\x12:\x01*\x1a\r/v1/edges/put\x12h\n" +
+	"Illuminate\x12\x1b.graph.v1.IlluminateRequest\x1a\x1c.graph.v1.IlluminateResponse\x12D\n" +
+	"\tGetVertex\x12\x1a.graph.v1.GetVertexRequest\x1a\x1b.graph.v1.GetVertexResponse\x12J\n" +
+	"\vGetVertices\x12\x1c.graph.v1.GetVerticesRequest\x1a\x1d.graph.v1.GetVerticesResponse\x12D\n" +
+	"\tPutVertex\x12\x1a.graph.v1.PutVertexRequest\x1a\x1b.graph.v1.PutVertexResponse\x12J\n" +
+	"\vPutVertices\x12\x1c.graph.v1.PutVerticesRequest\x1a\x1d.graph.v1.PutVerticesResponse\x12M\n" +
+	"\fDeleteVertex\x12\x1d.graph.v1.DeleteVertexRequest\x1a\x1e.graph.v1.DeleteVertexResponse\x12S\n" +
+	"\x0eDeleteVertices\x12\x1f.graph.v1.DeleteVerticesRequest\x1a .graph.v1.DeleteVerticesResponse\x12M\n" +
+	"\fScanVertices\x12\x1d.graph.v1.ScanVerticesRequest\x1a\x1e.graph.v1.ScanVerticesResponse\x12h\n" +
+	"\x15CountVerticesByPrefix\x12&.graph.v1.CountVerticesByPrefixRequest\x1a'.graph.v1.CountVerticesByPrefixResponse\x12k\n" +
+	"\x16DeleteVerticesByPrefix\x12'.graph.v1.DeleteVerticesByPrefixRequest\x1a(.graph.v1.DeleteVerticesByPrefixResponse\x12>\n" +
+	"\aGetEdge\x12\x18.graph.v1.GetEdgeRequest\x1a\x19.graph.v1.GetEdgeResponse\x12A\n" +
+	"\bGetEdges\x12\x19.graph.v1.GetEdgesRequest\x1a\x1a.graph.v1.GetEdgesResponse\x12>\n" +
+	"\aAddEdge\x12\x18.graph.v1.AddEdgeRequest\x1a\x19.graph.v1.AddEdgeResponse\x12A\n" +
+	"\bAddEdges\x12\x19.graph.v1.AddEdgesRequest\x1a\x1a.graph.v1.AddEdgesResponse\x12>\n" +
+	"\aPutEdge\x12\x18.graph.v1.PutEdgeRequest\x1a\x19.graph.v1.PutEdgeResponse\x12A\n" +
+	"\bPutEdges\x12\x19.graph.v1.PutEdgesRequest\x1a\x1a.graph.v1.PutEdgesResponse\x12G\n" +
 	"\n" +
-	"DeleteEdge\x12\x1b.graph.v1.DeleteEdgeRequest\x1a\x1c.graph.v1.DeleteEdgeResponse\"\x1f\x82\xd3\xe4\x93\x02\x19*\x17/v1/edges/{tail}/{head}\x12g\n" +
-	"\vDeleteEdges\x12\x1c.graph.v1.DeleteEdgesRequest\x1a\x1d.graph.v1.DeleteEdgesResponse\"\x1b\x82\xd3\xe4\x93\x02\x15:\x01*\"\x10/v1/edges/delete\x12_\n" +
-	"\tScanEdges\x12\x1a.graph.v1.ScanEdgesRequest\x1a\x1b.graph.v1.ScanEdgesResponse\"\x19\x82\xd3\xe4\x93\x02\x13:\x01*\"\x0e/v1/edges/scan\x12j\n" +
-	"\x0fGetServerStatus\x12 .graph.v1.GetServerStatusRequest\x1a!.graph.v1.GetServerStatusResponse\"\x12\x82\xd3\xe4\x93\x02\f\x12\n" +
-	"/v1/status\x12\x85\x01\n" +
-	"\x14GetReplicationStatus\x12%.graph.v1.GetReplicationStatusRequest\x1a&.graph.v1.GetReplicationStatusResponse\"\x1e\x82\xd3\xe4\x93\x02\x18\x12\x16/v1/replication/statusB\x90\x01\n" +
+	"DeleteEdge\x12\x1b.graph.v1.DeleteEdgeRequest\x1a\x1c.graph.v1.DeleteEdgeResponse\x12J\n" +
+	"\vDeleteEdges\x12\x1c.graph.v1.DeleteEdgesRequest\x1a\x1d.graph.v1.DeleteEdgesResponse\x12D\n" +
+	"\tScanEdges\x12\x1a.graph.v1.ScanEdgesRequest\x1a\x1b.graph.v1.ScanEdgesResponse\x12V\n" +
+	"\x0fGetServerStatus\x12 .graph.v1.GetServerStatusRequest\x1a!.graph.v1.GetServerStatusResponse\x12e\n" +
+	"\x14GetReplicationStatus\x12%.graph.v1.GetReplicationStatusRequest\x1a&.graph.v1.GetReplicationStatusResponseB\x90\x01\n" +
 	"\fcom.graph.v1B\n" +
 	"GraphProtoP\x01Z3github.com/anaregdesign/lantern/pb/graph/v1;graphv1\xa2\x02\x03GXX\xaa\x02\bGraph.V1\xca\x02\bGraph\\V1\xe2\x02\x14Graph\\V1\\GPBMetadata\xea\x02\tGraph::V1b\x06proto3"
 
