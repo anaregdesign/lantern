@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/hex"
+	"log/slog"
 	"time"
 
 	"github.com/anaregdesign/lantern/core/cache/graph"
@@ -15,8 +16,15 @@ import (
 // and the snapshot bootstrap (#183) to replay a Mutation produced on a
 // remote node against the local cache. It is intentionally NOT exposed
 // as an RPC: external clients use the regular write RPCs which append to
-// the local log; ApplyMutation deliberately bypasses logMutation so a
-// replayed mutation is not re-broadcast.
+// the local log via logMutation.
+//
+// Under the Reading B contract (#415), a successfully-applied remote
+// mutation is ALSO appended to the local mutation log so external
+// Subscribe consumers on any replica observe every committed cluster
+// mutation. Replication loops are prevented by an atomic per-origin
+// watermark check at the top of the function: a (origin, seq) pair
+// that another peer hop already covered is short-circuited before any
+// cache or log mutation happens.
 //
 // Idempotence rules per oneof case:
 //
@@ -50,6 +58,31 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 	ts := hlcFromProto(m.GetHlc())
 	origin := m.GetOrigin()
 	seq := m.GetSeq()
+
+	// Reading B watermark check (#415, B-3). Record CAS-advances the
+	// per-origin (last_seq, last_hlc) watermark when seq is strictly
+	// greater than what we have already seen for this origin. The
+	// bool return drives two later decisions:
+	//
+	//   - log Append: only on advance, so external Subscribe streams
+	//     do not see the same (origin, seq) replayed when the same
+	//     mutation arrived through two different peer hops in a
+	//     fan-out triangle.
+	//   - onApplied hook: only on advance, so peer-status counters
+	//     reflect distinct cluster mutations rather than redelivery
+	//     volume.
+	//
+	// The cache apply itself runs unconditionally: it is HLC LWW
+	// (Put*) or ContribID-deduped (Add*), so out-of-order or
+	// duplicate deliveries are absorbed without divergence. This is
+	// the convergence invariant that
+	// TestApplyMutation_Convergence stresses.
+	var nid hlc.NodeID
+	advanced := false
+	if s.origins != nil && len(origin) > 0 && seq > 0 {
+		copy(nid[:], origin)
+		advanced = s.origins.Record(nid, seq, ts)
+	}
 
 	// Tombstone expiration is computed once per apply so a batch of
 	// per-edge contributions inside a single MutationOp_AddEdges shares
@@ -210,16 +243,36 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		s.onReplicationApply(opName)
 	}
 
-	// Update the per-origin watermark used by PeerStatus (#186). We
-	// only record after a successful apply so a malformed mutation
-	// that returned early above does not advance the watermark.
-	if s.origins != nil && len(origin) > 0 && seq > 0 {
-		var nid hlc.NodeID
-		copy(nid[:], origin)
-		s.origins.Record(nid, seq, ts)
-		if s.onApplied != nil {
-			s.onApplied(hex.EncodeToString(nid[:]))
+	// Reading B (#415, B-3). After a successful apply of an entry we
+	// have not seen before, also append the mutation to the local log
+	// so external Subscribe consumers on this replica observe it. The
+	// advanced check above ensures the same (origin, seq) is appended
+	// at most once even when it reaches us through multiple peer hops.
+	//
+	// The append uses the remote HLC unchanged so Entry.HLC.NodeID
+	// equals the originating writer's NodeID — that is the field
+	// downstream actors (the peer pump, external CDC consumers) read
+	// to attribute each entry to its origin.
+	//
+	// Append errors after a successful apply are logged but not
+	// surfaced: the apply already committed and reverting it would
+	// leak inconsistency. The next remote receipt of the same
+	// mutation will short-circuit at the watermark check.
+	if advanced && s.log != nil {
+		if _, err := s.log.Append(m, ts); err != nil {
+			l := s.logger
+			if l == nil {
+				l = slog.Default()
+			}
+			l.Warn("mutation log append on remote apply failed",
+				slog.Any("err", err),
+				slog.String("origin", hex.EncodeToString(nid[:])),
+				slog.Uint64("seq", seq))
 		}
+	}
+
+	if advanced && s.onApplied != nil {
+		s.onApplied(hex.EncodeToString(nid[:]))
 	}
 	return nil
 }

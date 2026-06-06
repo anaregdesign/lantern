@@ -9,15 +9,20 @@ import (
 
 // originStateTracker records the (last_seq, last_hlc) the local node
 // has applied for each known origin NodeID. It is the in-memory
-// backing store for the PeerStatus RPC (#186).
+// backing store for the PeerStatus RPC (#186) and the dedup gate for
+// remote-applied mutations under the Reading B contract (#415).
 //
 // Update sites:
 //
-//   - ApplyMutation, after a successful remote-origin apply, calls
-//     Record(origin, seq, hlc).
+//   - ApplyMutation, at the TOP of the function, calls Record(origin,
+//     seq, hlc) as an atomic claim. The bool return tells the caller
+//     whether the watermark advanced — if it did not, the (origin, seq)
+//     pair was already applied via another peer hop, so the apply is
+//     skipped to avoid duplicate cache writes and a duplicate log entry.
 //   - logMutation, after a successful local append, calls Record with
 //     the local origin so PeerStatus always reflects the local node's
-//     own progress too.
+//     own progress too. The bool return is ignored: local seqs are
+//     strictly monotone by construction, so the call always advances.
 //
 // Concurrency: a single RWMutex protects the map. Updates are O(1);
 // the snapshot returned by States() is a copy so callers can iterate
@@ -36,25 +41,31 @@ func newOriginStateTracker() *originStateTracker {
 	return &originStateTracker{m: make(map[hlc.NodeID]originRow)}
 }
 
-// Record updates the per-origin watermark with the strictly-greatest
-// (seq, hlc) ever seen. Lower seqs are ignored — replays and
-// out-of-order delivery must not regress the watermark.
+// Record advances the per-origin watermark to (seq, ts) iff seq is
+// strictly greater than the previously-recorded seq for origin. It
+// returns true when the watermark advanced (the caller may proceed to
+// apply and log the mutation) and false when this (origin, seq) was
+// already recorded (the caller MUST treat the mutation as a duplicate
+// and skip it). The check-and-set is performed under a single Lock so
+// concurrent ApplyMutation invocations cannot both observe a stale
+// watermark and double-apply.
 //
-// A zero origin (all-zero NodeID) is silently dropped: the wire
-// protocol forbids zero NodeIDs and accepting them would conflate
-// "unset" with "node-zero" in the PeerStatus map.
-func (t *originStateTracker) Record(origin hlc.NodeID, seq uint64, ts hlc.Timestamp) {
+// A zero origin (all-zero NodeID) is silently dropped and returns
+// false: the wire protocol forbids zero NodeIDs and accepting them
+// would conflate "unset" with "node-zero" in the PeerStatus map.
+func (t *originStateTracker) Record(origin hlc.NodeID, seq uint64, ts hlc.Timestamp) bool {
 	var zero hlc.NodeID
 	if origin == zero {
-		return
+		return false
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	prev, ok := t.m[origin]
 	if ok && seq <= prev.seq {
-		return
+		return false
 	}
 	t.m[origin] = originRow{seq: seq, hlc: ts}
+	return true
 }
 
 // OriginState is a snapshot row returned by States().
