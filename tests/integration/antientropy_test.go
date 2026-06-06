@@ -87,12 +87,15 @@ func TestAntiEntropy_DriverConvergesWithoutPump(t *testing.T) {
 
 	// Wire C's anti-entropy driver at B with a short tick interval.
 	// 50ms cadence keeps the test fast without thrashing the loopback.
+	// HTTPClient is left zero so the driver constructs its default
+	// h2c client (plaintext HTTP/2). The Connect-Go client is
+	// configured with connect.WithGRPC() internally so it talks to
+	// b's grpc.NewServer peer.
 	ae := replication.NewAntiEntropy(replication.AntiEntropyConfig{
 		NodeID:           c.nodeID,
 		Peers:            []string{b.addr},
 		Interval:         50 * time.Millisecond,
 		SubscribeTimeout: 2 * time.Second,
-		DialOptions:      []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())},
 	}, c.svc, c.svc, c.cache)
 	aeCtx, cancelAE := context.WithCancel(ctx)
 	done := make(chan struct{})
