@@ -33,15 +33,15 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
 	"sync"
 	"time"
 
 	"github.com/anaregdesign/lantern/core/hlc"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/status"
+	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+
+	"connectrpc.com/connect"
 )
 
 // LocalStateProvider is the surface the anti-entropy driver uses to
@@ -106,9 +106,10 @@ type AntiEntropyConfig struct {
 	// always emitted regardless of this knob.
 	GapWarnThreshold uint64
 
-	// DialOptions are passed to grpc.NewClient. Defaults to
-	// insecure credentials (in-cluster Tier-A topology).
-	DialOptions []grpc.DialOption
+	// HTTPClient is the http.Client used to open Connect-Go streams
+	// against each peer. Defaults to defaultH2CClient() (plaintext
+	// HTTP/2 for the in-cluster Tier-A topology).
+	HTTPClient *http.Client
 
 	// Logger receives lifecycle events. slog.Default() when nil.
 	Logger *slog.Logger
@@ -146,8 +147,8 @@ func NewAntiEntropy(cfg AntiEntropyConfig, local LocalStateProvider, apply Mutat
 	if cfg.Metrics == nil {
 		cfg.Metrics = nopAntiEntropyMetrics{}
 	}
-	if len(cfg.DialOptions) == 0 {
-		cfg.DialOptions = []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
+	if cfg.HTTPClient == nil {
+		cfg.HTTPClient = defaultH2CClient()
 	}
 	return &AntiEntropy{cfg: cfg, local: local, apply: apply, snap: snap}
 }
@@ -202,28 +203,24 @@ func (a *AntiEntropy) tickPeer(ctx context.Context, addr string) {
 	a.cfg.Metrics.OnAntiEntropyTick(addr)
 	log := a.cfg.Logger.With(slog.String("peer", addr))
 
-	conn, err := grpc.NewClient(addr, a.cfg.DialOptions...)
-	if err != nil {
-		log.Warn("anti-entropy: dial failed", slog.Any("err", err))
-		a.cfg.Metrics.OnAntiEntropyError(addr, "dial_failed")
-		return
-	}
-	defer func() { _ = conn.Close() }()
-	cli := pb.NewLanternReplicationServiceClient(conn)
+	cli := graphv1connect.NewLanternReplicationServiceClient(
+		a.cfg.HTTPClient, peerBaseURL(addr), connect.WithGRPC(),
+	)
 
-	resp, err := cli.PeerStatus(ctx, &pb.PeerStatusRequest{})
+	resp, err := cli.PeerStatus(ctx, connect.NewRequest(&pb.PeerStatusRequest{}))
 	if err != nil {
 		log.Warn("anti-entropy: PeerStatus failed", slog.Any("err", err))
 		a.cfg.Metrics.OnAntiEntropyError(addr, "peerstatus_failed")
 		return
 	}
-	if len(resp.GetSelfOrigin()) == 0 {
+	msg := resp.Msg
+	if len(msg.GetSelfOrigin()) == 0 {
 		// Peer cannot identify itself — older binary or
 		// replication unwired on the peer side. Nothing to do.
 		return
 	}
 	var peerNID hlc.NodeID
-	copy(peerNID[:], resp.GetSelfOrigin())
+	copy(peerNID[:], msg.GetSelfOrigin())
 	// Self-skip: a configured peer pointing back to ourselves (e.g.
 	// stale DNS in a single-node test) should be ignored.
 	if peerNID == a.cfg.NodeID {
@@ -238,7 +235,7 @@ func (a *AntiEntropy) tickPeer(ctx context.Context, addr string) {
 	// replay them.
 	var target uint64
 	found := false
-	for _, row := range resp.GetOrigins() {
+	for _, row := range msg.GetOrigins() {
 		if len(row.GetOrigin()) != len(peerNID) {
 			continue
 		}
@@ -298,37 +295,21 @@ func (a *AntiEntropy) tickPeer(ctx context.Context, addr string) {
 // after which catchUp returns — the next tick will re-probe.
 //
 // Returns the number of mutations applied during this call.
-func (a *AntiEntropy) catchUp(ctx context.Context, cli pb.LanternReplicationServiceClient, peerNID hlc.NodeID, fromSeq, target uint64) (uint64, error) {
+func (a *AntiEntropy) catchUp(ctx context.Context, cli graphv1connect.LanternReplicationServiceClient, peerNID hlc.NodeID, fromSeq, target uint64) (uint64, error) {
 	tctx, cancel := context.WithTimeout(ctx, a.cfg.SubscribeTimeout)
 	defer cancel()
 
-	stream, err := cli.Subscribe(tctx, &pb.SubscribeRequest{FromSeq: fromSeq})
+	stream, err := cli.Subscribe(tctx, connect.NewRequest(&pb.SubscribeRequest{FromSeq: fromSeq}))
 	if err != nil {
-		if status.Code(err) == codes.FailedPrecondition {
+		if connect.CodeOf(err) == connect.CodeFailedPrecondition {
 			return 0, a.snapshotFrom(ctx, cli)
 		}
 		return 0, err
 	}
+	defer func() { _ = stream.Close() }()
 	var applied uint64
-	for {
-		resp, recvErr := stream.Recv()
-		if errors.Is(recvErr, io.EOF) {
-			return applied, nil
-		}
-		if recvErr != nil {
-			if status.Code(recvErr) == codes.FailedPrecondition {
-				return applied, a.snapshotFrom(ctx, cli)
-			}
-			// Deadline-exceeded from the subscribe timeout is
-			// expected when the catch-up window is shorter
-			// than the gap — surface as nil so the tick is
-			// accounted as a partial success, the next tick
-			// will resume.
-			if errors.Is(recvErr, context.DeadlineExceeded) || status.Code(recvErr) == codes.DeadlineExceeded {
-				return applied, nil
-			}
-			return applied, recvErr
-		}
+	for stream.Receive() {
+		resp := stream.Msg()
 		mu := resp.GetMutation()
 		if mu == nil {
 			continue
@@ -348,25 +329,35 @@ func (a *AntiEntropy) catchUp(ctx context.Context, cli pb.LanternReplicationServ
 			return applied, nil
 		}
 	}
+	recvErr := stream.Err()
+	if recvErr == nil || errors.Is(recvErr, io.EOF) {
+		return applied, nil
+	}
+	if connect.CodeOf(recvErr) == connect.CodeFailedPrecondition {
+		return applied, a.snapshotFrom(ctx, cli)
+	}
+	// Deadline-exceeded from the subscribe timeout is expected
+	// when the catch-up window is shorter than the gap — surface as
+	// nil so the tick is accounted as a partial success, the next
+	// tick will resume.
+	if errors.Is(recvErr, context.DeadlineExceeded) || connect.CodeOf(recvErr) == connect.CodeDeadlineExceeded {
+		return applied, nil
+	}
+	return applied, recvErr
 }
 
 // snapshotFrom replays a full Snapshot from the peer into the local
 // cache. Triggered by FailedPrecondition on Subscribe. After this
 // returns, the next anti-entropy tick will re-probe PeerStatus and
 // resume normal catch-up.
-func (a *AntiEntropy) snapshotFrom(ctx context.Context, cli pb.LanternReplicationServiceClient) error {
-	stream, err := cli.Snapshot(ctx, &pb.SnapshotRequest{})
+func (a *AntiEntropy) snapshotFrom(ctx context.Context, cli graphv1connect.LanternReplicationServiceClient) error {
+	stream, err := cli.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{}))
 	if err != nil {
 		return err
 	}
-	for {
-		resp, recvErr := stream.Recv()
-		if errors.Is(recvErr, io.EOF) {
-			return nil
-		}
-		if recvErr != nil {
-			return recvErr
-		}
+	defer func() { _ = stream.Close() }()
+	for stream.Receive() {
+		resp := stream.Msg()
 		switch e := resp.GetEntry().(type) {
 		case *pb.SnapshotResponse_Header:
 			// nothing to apply
@@ -396,4 +387,8 @@ func (a *AntiEntropy) snapshotFrom(ctx context.Context, cli pb.LanternReplicatio
 			// path. Anti-entropy is best-effort.
 		}
 	}
+	if err := stream.Err(); err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	return nil
 }

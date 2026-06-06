@@ -36,15 +36,15 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
 	"time"
 
 	cachegraph "github.com/anaregdesign/lantern/core/cache/graph"
 	"github.com/anaregdesign/lantern/core/hlc"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/status"
+	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+
+	"connectrpc.com/connect"
 )
 
 // MutationApplier is the narrow surface the pump uses to replay a
@@ -96,9 +96,10 @@ type Config struct {
 	NodeID hlc.NodeID
 
 	// Peers is the static list of peer addresses to subscribe to.
-	// Each entry is consumed by grpc.NewClient verbatim
-	// ("host:port"). Empty (or nil) is valid when Source is set;
-	// otherwise yields a no-op pump.
+	// Each entry must be a bare "host:port" (e.g. "lantern-0:6380").
+	// The pump prepends "http://" to build the Connect baseURL.
+	// Empty (or nil) is valid when Source is set; otherwise yields
+	// a no-op pump.
 	Peers []string
 
 	// Source, when non-nil, takes precedence over Peers and is the
@@ -118,11 +119,13 @@ type Config struct {
 	// failure does not tear down established subscriptions.
 	DiscoveryInterval time.Duration
 
-	// DialOptions are passed to grpc.NewClient for each peer
-	// connection. When empty, insecure transport credentials are
-	// used — sufficient for the in-cluster Tier-A topology where
-	// peers are reachable only via the cluster network.
-	DialOptions []grpc.DialOption
+	// HTTPClient is the http.Client used to open Connect-Go streams
+	// against each peer. When nil, defaultH2CClient() is used so the
+	// pump talks plain HTTP/2 over the cluster network — sufficient
+	// for the Tier-A topology where peers are only reachable via the
+	// cluster network. For TLS, supply an http.Client backed by an
+	// http2.Transport with a real *tls.Config.
+	HTTPClient *http.Client
 
 	// BackoffMin is the initial reconnect delay after a session
 	// error. Doubles on each successive failure, capped at
@@ -170,8 +173,8 @@ func NewPump(cfg Config, apply MutationApplier, snap SnapshotApplier) *Pump {
 	if cfg.Metrics == nil {
 		cfg.Metrics = nopMetrics{}
 	}
-	if len(cfg.DialOptions) == 0 {
-		cfg.DialOptions = []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
+	if cfg.HTTPClient == nil {
+		cfg.HTTPClient = defaultH2CClient()
 	}
 	return &Pump{cfg: cfg, apply: apply, snap: snap, tracker: newPeerTracker()}
 }
@@ -294,12 +297,19 @@ func (p *Pump) runPeer(ctx context.Context, addr string) {
 // exit).
 func (p *Pump) session(ctx context.Context, addr string, fromSeq uint64) (uint64, error) {
 	log := p.cfg.Logger.With(slog.String("peer", addr))
-	conn, err := grpc.NewClient(addr, p.cfg.DialOptions...)
-	if err != nil {
-		return fromSeq, err
-	}
-	defer func() { _ = conn.Close() }()
-	cli := pb.NewLanternReplicationServiceClient(conn)
+	// Connect-Go clients are cheap to construct and own no
+	// connection state of their own — the underlying http.Client
+	// pools connections internally. No defer-close needed.
+	//
+	// WithGRPC pins the wire protocol to gRPC-over-h2 instead of the
+	// Connect protocol so this client can talk to both legacy
+	// grpc.NewServer peers (the production state until #347 cuts
+	// over) and Connect handlers (which accept all three protocols
+	// natively). Streaming RPCs benefit from gRPC's binary framing
+	// over the JSON-friendly Connect framing.
+	cli := graphv1connect.NewLanternReplicationServiceClient(
+		p.cfg.HTTPClient, peerBaseURL(addr), connect.WithGRPC(),
+	)
 
 	p.cfg.Metrics.OnPumpConnect(addr)
 	log.Info("replication pump: peer transition",
@@ -322,7 +332,7 @@ func (p *Pump) session(ctx context.Context, addr string, fromSeq uint64) (uint64
 			slog.String("reason", "ctx_cancel"))
 		return next, nil
 	}
-	if status.Code(err) == codes.FailedPrecondition {
+	if connect.CodeOf(err) == connect.CodeFailedPrecondition {
 		// gapped: snapshot, then resume from cutoff+1.
 		log.Info("replication pump: peer transition",
 			slog.String("transition", "snapshot_start"),
@@ -362,22 +372,17 @@ func (p *Pump) session(ctx context.Context, addr string, fromSeq uint64) (uint64
 // subscribe opens a Subscribe stream at fromSeq and applies every
 // received Mutation. Self-origin mutations are dropped before
 // dispatch. Returns the seq of the last successfully-applied mutation
-// + 1 (i.e. the next seq to resume at) and any error from Recv/Apply.
-// io.EOF is treated as a normal end-of-stream (returns nil).
-func (p *Pump) subscribe(ctx context.Context, cli pb.LanternReplicationServiceClient, addr string, fromSeq uint64) (uint64, error) {
-	stream, err := cli.Subscribe(ctx, &pb.SubscribeRequest{FromSeq: fromSeq})
+// + 1 (i.e. the next seq to resume at) and any error from Receive /
+// Apply. A clean stream end returns nil.
+func (p *Pump) subscribe(ctx context.Context, cli graphv1connect.LanternReplicationServiceClient, addr string, fromSeq uint64) (uint64, error) {
+	stream, err := cli.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{FromSeq: fromSeq}))
 	if err != nil {
 		return fromSeq, err
 	}
+	defer func() { _ = stream.Close() }()
 	next := fromSeq
-	for {
-		resp, err := stream.Recv()
-		if errors.Is(err, io.EOF) {
-			return next, nil
-		}
-		if err != nil {
-			return next, err
-		}
+	for stream.Receive() {
+		resp := stream.Msg()
 		mu := resp.GetMutation()
 		if mu == nil {
 			continue
@@ -394,17 +399,22 @@ func (p *Pump) subscribe(ctx context.Context, cli pb.LanternReplicationServiceCl
 		next = mu.GetSeq() + 1
 		p.tracker.recordEvent(addr, mu.GetSeq(), time.Now())
 	}
+	if err := stream.Err(); err != nil && !errors.Is(err, io.EOF) {
+		return next, err
+	}
+	return next, nil
 }
 
 // snapshot opens a Snapshot stream and replays every Header / Vertex
 // / Edge frame into the local cache via the SnapshotApplier seams.
 // Returns the cutoff_seq from the Header (the value the caller
 // should pass as fromSeq-1 on the subsequent Subscribe).
-func (p *Pump) snapshot(ctx context.Context, cli pb.LanternReplicationServiceClient, addr string) (uint64, error) {
-	stream, err := cli.Snapshot(ctx, &pb.SnapshotRequest{})
+func (p *Pump) snapshot(ctx context.Context, cli graphv1connect.LanternReplicationServiceClient, addr string) (uint64, error) {
+	stream, err := cli.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{}))
 	if err != nil {
 		return 0, err
 	}
+	defer func() { _ = stream.Close() }()
 	start := time.Now()
 	var (
 		cutoff       uint64
@@ -414,27 +424,21 @@ func (p *Pump) snapshot(ctx context.Context, cli pb.LanternReplicationServiceCli
 		sawFooter    bool
 		footerCounts struct{ v, e uint64 }
 	)
-	for {
-		resp, err := stream.Recv()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return cutoff, err
-		}
+	for stream.Receive() {
+		resp := stream.Msg()
 		switch e := resp.GetEntry().(type) {
 		case *pb.SnapshotResponse_Header:
 			if gotHeader {
-				return cutoff, status.Error(codes.Internal, "snapshot: duplicate header frame")
+				return cutoff, connect.NewError(connect.CodeInternal, errors.New("snapshot: duplicate header frame"))
 			}
 			cutoff = e.Header.GetCutoffSeq()
 			gotHeader = true
 		case *pb.SnapshotResponse_Vertex:
 			if !gotHeader {
-				return cutoff, status.Error(codes.Internal, "snapshot: vertex frame before header")
+				return cutoff, connect.NewError(connect.CodeInternal, errors.New("snapshot: vertex frame before header"))
 			}
 			if sawFooter {
-				return cutoff, status.Error(codes.Internal, "snapshot: vertex frame after footer")
+				return cutoff, connect.NewError(connect.CodeInternal, errors.New("snapshot: vertex frame after footer"))
 			}
 			sv := e.Vertex
 			v := sv.GetVertex()
@@ -447,10 +451,10 @@ func (p *Pump) snapshot(ctx context.Context, cli pb.LanternReplicationServiceCli
 			}
 		case *pb.SnapshotResponse_Edge:
 			if !gotHeader {
-				return cutoff, status.Error(codes.Internal, "snapshot: edge frame before header")
+				return cutoff, connect.NewError(connect.CodeInternal, errors.New("snapshot: edge frame before header"))
 			}
 			if sawFooter {
-				return cutoff, status.Error(codes.Internal, "snapshot: edge frame after footer")
+				return cutoff, connect.NewError(connect.CodeInternal, errors.New("snapshot: edge frame after footer"))
 			}
 			se := e.Edge
 			edgeHLC := snapshotHLC(se.GetHlc())
@@ -469,11 +473,14 @@ func (p *Pump) snapshot(ctx context.Context, cli pb.LanternReplicationServiceCli
 			footerCounts.e = e.Footer.GetEdgeCount()
 		}
 	}
+	if err := stream.Err(); err != nil && !errors.Is(err, io.EOF) {
+		return cutoff, err
+	}
 	if !gotHeader {
-		return cutoff, status.Error(codes.Internal, "snapshot: stream ended before header")
+		return cutoff, connect.NewError(connect.CodeInternal, errors.New("snapshot: stream ended before header"))
 	}
 	if !sawFooter {
-		return cutoff, status.Error(codes.Internal, "snapshot: stream ended before footer")
+		return cutoff, connect.NewError(connect.CodeInternal, errors.New("snapshot: stream ended before footer"))
 	}
 	if footerCounts.v != vertexCount || footerCounts.e != edgeCount {
 		// Count mismatch is a soft warning, not a hard error — the
