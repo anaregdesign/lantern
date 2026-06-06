@@ -105,7 +105,7 @@ jobs:
           go-version: '1.26.4'
           check-latest: true
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v8
+        uses: golangci/golangci-lint-action@v9
         with:
           # Pin to a concrete release so a fresh golangci-lint can't silently
           # break CI. Dependabot's github-actions ecosystem will bump this
