@@ -1,17 +1,20 @@
-import type { components } from "./lantern-api.gen";
+import { Vertex as ProtoVertex } from "~/lib/api/gen/graph/v1/graph_pb";
+import type { JsonValue } from "@bufbuild/protobuf";
+
 import type { LanternClient } from "./lantern-client";
 import { LanternApiError } from "./error";
+import type { PutVertexBody, PutVertexResponse, Vertex } from "./types";
 
-export type PutVertexResponse = components["schemas"]["v1PutVertexResponse"];
-export type PutVertexBody =
-  components["schemas"]["LanternServicePutVertexBody"];
+export type { PutVertexBody, PutVertexResponse, Vertex } from "./types";
 
 /**
- * Calls `LanternService_PutVertex` (PUT `/v1/vertices/{vertex.key}`).
+ * Calls `LanternService.PutVertex` over Connect-Web.
  *
- * Idempotent upsert for a single vertex by key. The key travels in the
- * URL path; the body carries the value oneof and TTL via the wrapping
- * `vertex` object minus its own `key` field.
+ * The `key` argument always overrides any `body.vertex.key` so the
+ * call shape mirrors the legacy REST URL (where the key lived in the
+ * path). This keeps the existing edit-vertex flow unchanged: callers
+ * still pass the key separately even though the wire form is a single
+ * proto message.
  */
 export async function putVertex(
   client: LanternClient,
@@ -19,14 +22,14 @@ export async function putVertex(
   body: PutVertexBody,
   init?: { signal?: AbortSignal },
 ): Promise<PutVertexResponse> {
-  const path = `/v1/vertices/${encodeURIComponent(key)}`;
-  const response = await client.request(path, {
-    method: "PUT",
-    body: JSON.stringify(body),
-    signal: init?.signal,
-  });
-  if (!response.ok) {
-    throw await LanternApiError.fromResponse(response, "PutVertex");
+  const flat: Vertex = { ...(body.vertex ?? {}), key };
+  try {
+    const resp = await client.putVertex(
+      { vertex: ProtoVertex.fromJson(flat as JsonValue) },
+      { signal: init?.signal },
+    );
+    return resp.toJson() as PutVertexResponse;
+  } catch (err) {
+    throw LanternApiError.fromUnknown("PutVertex", err);
   }
-  return (await response.json()) as PutVertexResponse;
 }

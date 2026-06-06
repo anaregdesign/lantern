@@ -1,33 +1,28 @@
-import type { components } from "./lantern-api.gen";
 import type { LanternClient } from "./lantern-client";
 import { LanternApiError } from "./error";
+import type { DeleteVertexResponse } from "./types";
 
-export type DeleteVertexResponse =
-  components["schemas"]["v1DeleteVertexResponse"];
+export type { DeleteVertexResponse } from "./types";
 
 /**
- * Calls `LanternService_DeleteVertex` (DELETE `/v1/vertices/{key}`).
+ * Calls `LanternService.DeleteVertex` over Connect-Web.
  *
  * Returns the response payload as-is, including the `existed` flag.
- * HTTP 404 is treated as a successful "already gone" outcome
- * (`{ existed: false }`) so callers can render a single "deleted" path.
+ * A NotFound from the server is normalised to `{ existed: false }` so
+ * callers can render a single "deleted" path.
  */
 export async function deleteVertex(
   client: LanternClient,
   key: string,
   init?: { signal?: AbortSignal },
 ): Promise<DeleteVertexResponse> {
-  const path = `/v1/vertices/${encodeURIComponent(key)}`;
-  const response = await client.request(path, {
-    method: "DELETE",
-    signal: init?.signal,
-  });
-  if (response.status === 404) {
-    await response.text().catch(() => undefined);
-    return { existed: false };
+  try {
+    const resp = await client.deleteVertex({ key }, { signal: init?.signal });
+    return resp.toJson() as DeleteVertexResponse;
+  } catch (err) {
+    if (LanternApiError.isNotFound(err)) {
+      return { existed: false };
+    }
+    throw LanternApiError.fromUnknown("DeleteVertex", err);
   }
-  if (!response.ok) {
-    throw await LanternApiError.fromResponse(response, "DeleteVertex");
-  }
-  return (await response.json()) as DeleteVertexResponse;
 }

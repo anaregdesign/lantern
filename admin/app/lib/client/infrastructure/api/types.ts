@@ -1,0 +1,130 @@
+// Public value-object shapes the admin SPA's usecase layer consumes.
+//
+// These mirror the JSON-flat shape the legacy `pb/openapiv2/`-derived
+// OpenAPI types exposed so the usecase layer (browse-vertices,
+// edit-vertex, illuminate, …) survives the transport switch without
+// touching every field access. The adapter layer
+// (`infrastructure/api/*.ts`) marshals between this flat shape and the
+// connect-es message classes via the message's `fromJson` / `toJson`
+// helpers — those use exactly this shape per the protobuf JSON mapping
+// spec, so the marshalling is a direct round trip with no field-by-
+// field code.
+//
+// Why duplicate types instead of consuming the generated classes:
+//   1. The connect-es v1 oneof representation
+//      (`{ case: "string", value: "..." }`) is non-trivial to map
+//      across the entire UI. Keeping the flat shape at the adapter
+//      boundary lets edit-vertex/value-codec.ts (and every other
+//      consumer) stay untouched.
+//   2. Timestamps travel as ISO strings in protobuf JSON, matching the
+//      legacy `expiration?: string` field — so `new Date(expiration)`
+//      calls keep working.
+//   3. `bytes` is base64-encoded in protobuf JSON — matches the legacy
+//      `string` representation byte-for-byte.
+
+export interface Vertex {
+  key?: string;
+  expiration?: string;
+  float64?: number;
+  float32?: number;
+  int32?: number;
+  int64?: string;
+  uint32?: number;
+  uint64?: string;
+  bool?: boolean;
+  string?: string;
+  bytes?: string;
+  timestamp?: string;
+  duration?: string;
+  // Proto Empty message → JSON `{}`; some legacy code paths still set
+  // `true` so we accept both.
+  nil?: Record<string, never> | true;
+}
+
+export interface Edge {
+  tail?: string;
+  head?: string;
+  weight?: number;
+  expiration?: string;
+}
+
+export interface Graph {
+  vertices?: Vertex[];
+  edges?: Edge[];
+}
+
+// Request/response value-object shapes that the legacy adapters
+// returned. The usecase layer imports them by name (PutVertexBody,
+// ScanVerticesRequest, ...) so re-declaring here keeps the imports
+// stable post-migration.
+
+export interface PutVertexBody {
+  vertex?: Vertex;
+}
+
+export interface PutVertexResponse {
+  vertex?: Vertex;
+}
+
+export interface PutVerticesRequest {
+  vertices?: Vertex[];
+}
+
+export interface PutVerticesResponse {
+  vertices?: Vertex[];
+}
+
+export interface DeleteVertexResponse {
+  existed?: boolean;
+}
+
+export interface ScanVerticesRequest {
+  prefix?: string;
+  limit?: number;
+  cursor?: string;
+}
+
+export interface ScanVerticesResponse {
+  vertices?: Vertex[];
+  nextCursor?: string;
+}
+
+export interface AddEdgeBody {
+  edge?: Edge;
+}
+
+export interface AddEdgeResponse {
+  edge?: Edge;
+}
+
+export interface PutEdgeBody {
+  edge?: Edge;
+}
+
+export interface PutEdgeResponse {
+  edge?: Edge;
+}
+
+export interface PutEdgesRequest {
+  edges?: Edge[];
+}
+
+export interface PutEdgesResponse {
+  edges?: Edge[];
+}
+
+export interface ScanEdgesRequest {
+  tailPrefix?: string;
+  headPrefix?: string;
+  limit?: number;
+  cursor?: string;
+}
+
+export interface ScanEdgesResponse {
+  edges?: Edge[];
+  nextCursor?: string;
+}
+
+export interface IlluminateResponse {
+  graph?: Graph;
+}

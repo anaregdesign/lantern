@@ -1,8 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-const GATEWAY_URL =
-  process.env.LANTERN_E2E_GATEWAY_URL ?? "http://127.0.0.1:6381";
-const STORAGE_KEY = "lantern.admin.baseUrl";
+import { CONNECT_URL, STORAGE_KEY, connectCall, putVertices } from "./helpers";
 
 const VERTEX_KEY = "e2e:crud:vertex";
 const EDGE_TAIL = "e2e:crud:tail";
@@ -14,31 +12,19 @@ const EDGE_HEAD = "e2e:crud:head";
  */
 test.beforeAll(async () => {
   for (const key of [VERTEX_KEY, EDGE_TAIL, EDGE_HEAD]) {
-    await fetch(`${GATEWAY_URL}/v1/vertices/${encodeURIComponent(key)}`, {
-      method: "DELETE",
-    }).catch(() => undefined);
+    await connectCall("DeleteVertex", { key }).catch(() => undefined);
   }
-  await fetch(
-    `${GATEWAY_URL}/v1/edges/${encodeURIComponent(EDGE_TAIL)}/${encodeURIComponent(EDGE_HEAD)}`,
-    { method: "DELETE" },
-  ).catch(() => undefined);
+  await connectCall("DeleteEdge", { tail: EDGE_TAIL, head: EDGE_HEAD }).catch(
+    () => undefined,
+  );
 
   // Seed a starting vertex + edge so the UI has something to load on the
   // detail pages before the user edits or replaces.
-  const put = await fetch(`${GATEWAY_URL}/v1/vertices`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      vertices: [
-        { key: VERTEX_KEY, value: { string: "seed" } },
-        { key: EDGE_TAIL, value: { string: "tail" } },
-        { key: EDGE_HEAD, value: { string: "head" } },
-      ],
-    }),
-  });
-  if (!put.ok) {
-    throw new Error(`seed vertices failed: ${put.status} ${await put.text()}`);
-  }
+  await putVertices([
+    { key: VERTEX_KEY, string: "seed" },
+    { key: EDGE_TAIL, string: "tail" },
+    { key: EDGE_HEAD, string: "head" },
+  ]);
 });
 
 test.beforeEach(async ({ page }) => {
@@ -50,7 +36,7 @@ test.beforeEach(async ({ page }) => {
         // ignore — storage may be unavailable in private mode
       }
     },
-    { key: STORAGE_KEY, value: GATEWAY_URL },
+    { key: STORAGE_KEY, value: CONNECT_URL },
   );
 });
 
@@ -75,11 +61,7 @@ test.describe("vertex detail", () => {
     await page.getByTestId("vertex-save").click();
     await expect(page.getByTestId("vertex-detail-read")).toBeVisible();
 
-    const fetched = await fetch(
-      `${GATEWAY_URL}/v1/vertices/${encodeURIComponent(VERTEX_KEY)}`,
-    );
-    expect(fetched.ok).toBeTruthy();
-    const body = (await fetched.json()) as {
+    const body = (await connectCall("GetVertex", { key: VERTEX_KEY })) as {
       vertex?: { int32?: number; string?: string };
     };
     expect(body.vertex?.int32).toBe(42);
@@ -105,13 +87,7 @@ test.describe("vertex detail", () => {
   }) => {
     // Use a one-shot key so the rest of the suite is unaffected.
     const oneShot = `${VERTEX_KEY}:delete`;
-    await fetch(`${GATEWAY_URL}/v1/vertices`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        vertices: [{ key: oneShot, value: { string: "doomed" } }],
-      }),
-    });
+    await putVertices([{ key: oneShot, string: "doomed" }]);
 
     await page.goto(`/vertices/${encodeURIComponent(oneShot)}`);
     await expect(page.getByTestId("vertex-detail-read")).toBeVisible();
@@ -120,10 +96,15 @@ test.describe("vertex detail", () => {
 
     await expect(page).toHaveURL(/\/vertices$/);
 
-    const recheck = await fetch(
-      `${GATEWAY_URL}/v1/vertices/${encodeURIComponent(oneShot)}`,
-    );
-    expect(recheck.status).toBe(404);
+    // GetVertex on a deleted key returns NotFound, which connectCall
+    // surfaces as a thrown error — catching it is the assertion.
+    let notFound = false;
+    try {
+      await connectCall("GetVertex", { key: oneShot });
+    } catch {
+      notFound = true;
+    }
+    expect(notFound).toBe(true);
   });
 });
 
@@ -132,10 +113,10 @@ test.describe("edge detail", () => {
     page,
   }) => {
     // Reset edge state so this test owns the row.
-    await fetch(
-      `${GATEWAY_URL}/v1/edges/${encodeURIComponent(EDGE_TAIL)}/${encodeURIComponent(EDGE_HEAD)}`,
-      { method: "DELETE" },
-    ).catch(() => undefined);
+    await connectCall("DeleteEdge", {
+      tail: EDGE_TAIL,
+      head: EDGE_HEAD,
+    }).catch(() => undefined);
 
     await page.goto(
       `/edges/${encodeURIComponent(EDGE_TAIL)}/${encodeURIComponent(EDGE_HEAD)}`,
@@ -180,12 +161,8 @@ test.describe("edge detail", () => {
 
   test("delete removes the edge", async ({ page }) => {
     // Make sure something exists first.
-    await fetch(`${GATEWAY_URL}/v1/edges/put`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        edges: [{ tail: EDGE_TAIL, head: EDGE_HEAD, weight: 1 }],
-      }),
+    await connectCall("PutEdges", {
+      edges: [{ tail: EDGE_TAIL, head: EDGE_HEAD, weight: 1 }],
     });
 
     await page.goto(
@@ -197,10 +174,13 @@ test.describe("edge detail", () => {
 
     await expect(page).toHaveURL(/\/edges$/);
 
-    const recheck = await fetch(
-      `${GATEWAY_URL}/v1/edges/${encodeURIComponent(EDGE_TAIL)}/${encodeURIComponent(EDGE_HEAD)}`,
-    );
-    expect(recheck.status).toBe(404);
+    let edgeGone = false;
+    try {
+      await connectCall("GetEdge", { tail: EDGE_TAIL, head: EDGE_HEAD });
+    } catch {
+      edgeGone = true;
+    }
+    expect(edgeGone).toBe(true);
   });
 });
 
@@ -211,12 +191,8 @@ async function selectKind(page: Page, kind: string) {
 }
 
 async function fetchEdgeWeight(tail: string, head: string): Promise<number> {
-  const res = await fetch(
-    `${GATEWAY_URL}/v1/edges/${encodeURIComponent(tail)}/${encodeURIComponent(head)}`,
-  );
-  if (!res.ok) {
-    throw new Error(`fetchEdgeWeight failed: ${res.status}`);
-  }
-  const body = (await res.json()) as { edge?: { weight?: number } };
+  const body = (await connectCall("GetEdge", { tail, head })) as {
+    edge?: { weight?: number };
+  };
   return body.edge?.weight ?? 0;
 }

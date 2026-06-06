@@ -1,47 +1,40 @@
+import { createPromiseClient, type PromiseClient } from "@connectrpc/connect";
+import { createConnectTransport } from "@connectrpc/connect-web";
+
+import { LanternService } from "~/lib/api/gen/graph/v1/graph_connect";
+
 export interface LanternClientOptions {
   baseUrl: string;
-  fetch?: typeof fetch;
-}
-
-export interface LanternClient {
-  /** Configured base URL, e.g. `http://localhost:6381`. */
-  readonly baseUrl: string;
-  /**
-   * Calls the Lantern gateway with a path relative to the base URL.
-   * The response is returned untyped at this layer — typed wrappers live
-   * alongside the codegen'd `lantern-api.gen.ts` consumers under
-   * `lib/client/usecase/`.
-   */
-  request: (path: string, init?: RequestInit) => Promise<Response>;
 }
 
 /**
- * Thin adapter around `fetch` that owns the gateway base URL. Keep all
- * Lantern HTTP knowledge in this module; do not call `fetch` directly from
- * use-cases or components.
+ * Lantern Connect-Web client. Re-exports the generated PromiseClient so
+ * adapter modules under `lib/client/infrastructure/api/` can stay narrow
+ * (one function per RPC) while sharing the same transport.
+ *
+ * The protocol set here is Connect-flavoured JSON because the
+ * Lantern server's additive `LANTERN_CONNECT_PORT` listener mounts
+ * Connect+JSON+Protobuf+gRPC-Web on h2c. JSON is the lowest-friction
+ * choice for a browser SPA: it round-trips cleanly through the browser
+ * fetch implementation, is human-readable in DevTools, and matches the
+ * shape the legacy REST adapters returned (so usecase value-objects do
+ * not need to change).
+ */
+export type LanternClient = PromiseClient<typeof LanternService>;
+
+/**
+ * Build a Connect-Web client bound to the supplied gateway base URL.
+ * The base URL is normalised by trimming any trailing slash so paths
+ * concatenated by the Connect transport produce
+ * `${baseUrl}/graph.v1.LanternService/...` without doubled separators.
+ *
+ * Browsers default to fetch/Streams under the hood — no explicit
+ * transport configuration is required for unary RPCs against the
+ * Connect listener on the same origin (or any origin allowed by
+ * `LANTERN_CORS_ALLOWED_ORIGINS` on the server).
  */
 export function createLanternClient(opts: LanternClientOptions): LanternClient {
-  const fetchImpl = opts.fetch ?? globalThis.fetch.bind(globalThis);
   const baseUrl = opts.baseUrl.replace(/\/$/, "");
-
-  return {
-    baseUrl,
-    request: (path, init) => {
-      const url = path.startsWith("http")
-        ? path
-        : `${baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
-      const headers = new Headers(init?.headers);
-      if (!headers.has("Accept")) {
-        headers.set("Accept", "application/json");
-      }
-      if (
-        init?.body !== undefined &&
-        init.body !== null &&
-        !headers.has("Content-Type")
-      ) {
-        headers.set("Content-Type", "application/json");
-      }
-      return fetchImpl(url, { ...init, headers });
-    },
-  };
+  const transport = createConnectTransport({ baseUrl, useBinaryFormat: false });
+  return createPromiseClient(LanternService, transport);
 }

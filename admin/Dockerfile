@@ -2,8 +2,8 @@
 
 # --- build stage ---------------------------------------------------------
 # Multi-stage build for lantern-admin. The build context MUST be the repo
-# root (not admin/) because the codegen step reads pb/openapiv2/.../*.swagger.json
-# from the sibling pb/ module — see admin/scripts/codegen.mjs.
+# root (not admin/) because the codegen step reads proto/ from the
+# sibling proto module — see admin/scripts/codegen.mjs + admin/buf.gen.yaml.
 FROM oven/bun:1.3.14-alpine AS builder
 
 WORKDIR /src
@@ -15,9 +15,10 @@ COPY admin/package.json admin/bun.lock ./admin/
 RUN --mount=type=cache,target=/root/.bun/install/cache \
     cd admin && bun install --frozen-lockfile
 
-# pb/openapiv2 holds the swagger source that admin's codegen consumes.
+# proto/ holds the canonical .proto files admin's Connect-Web codegen
+# consumes via the bufbuild/es + connectrpc/es remote plugins (#339).
 # We bring it in before the rest so it stays on its own cacheable layer.
-COPY pb/openapiv2 ./pb/openapiv2
+COPY proto ./proto
 
 # Everything the build actually needs from admin/. .dockerignore keeps
 # node_modules, tests, build artefacts, and editor noise out of the

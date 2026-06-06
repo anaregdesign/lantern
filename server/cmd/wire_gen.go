@@ -59,7 +59,7 @@ func initializeApp() (*App, error) {
 		return nil, err
 	}
 	connectListenerConfig := provider.NewConnectListenerConfig(config)
-	connectServer := provider.NewConnectServer(connectListenerConfig, lanternService, lanternReplicationService, validationInterceptor, rateLimitInterceptor, logger)
+	connectServer := provider.NewConnectServer(connectListenerConfig, corsConfig, lanternService, lanternReplicationService, validationInterceptor, rateLimitInterceptor, logger)
 	tracing, err := provider.NewTracing(logger)
 	if err != nil {
 		return nil, err

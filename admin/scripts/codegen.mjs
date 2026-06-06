@@ -1,64 +1,59 @@
 #!/usr/bin/env bun
-// Codegen: convert pb/openapiv2/graph/v1/graph.swagger.json (OpenAPI 2.0) to
-// OpenAPI 3.0 in a temp file, then emit TypeScript types via openapi-typescript.
-// Output: app/lib/client/infrastructure/api/lantern-api.gen.ts
+// Codegen: generate protobuf-es message classes + Connect-Web client
+// boilerplate from the canonical .proto files under repo `proto/`.
+// Output: app/lib/api/gen/{graph,replication}/...
 //
 // Regenerate with: bun run codegen
+//
+// The bun runtime invokes `buf` via npx so the build does not need a
+// global buf install — the bufbuild org publishes the CLI as
+// @bufbuild/buf. The pinned version matches the rest of the repo (see
+// root buf.gen.yaml).
 
-import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { tmpdir } from "node:os";
-import openapiTS, { astToString } from "openapi-typescript";
-import swagger2openapi from "swagger2openapi";
+import { rm, mkdir } from "node:fs/promises";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const adminRoot = resolve(__dirname, "..");
-const repoRoot = resolve(adminRoot, "..");
+const genDir = resolve(adminRoot, "app/lib/api/gen");
 
-const swaggerPath = resolve(
-  repoRoot,
-  "pb/openapiv2/graph/v1/graph.swagger.json",
-);
-const outPath = resolve(
-  adminRoot,
-  "app/lib/client/infrastructure/api/lantern-api.gen.ts",
-);
-
-const HEADER = `/**
- * Generated OpenAPI types for the Lantern gateway.
- *
- * Source: pb/openapiv2/graph/v1/graph.swagger.json
- * Regenerate with \`bun run codegen\`. Do not edit by hand.
- */
-
-`;
+const BUF_VERSION = "1.70.0";
 
 async function main() {
-  const swaggerRaw = await readFile(swaggerPath, "utf8");
-  const swagger = JSON.parse(swaggerRaw);
-  const converted = await new Promise((resolveP, rejectP) => {
-    swagger2openapi.convertObj(swagger, { patch: true }, (err, result) => {
-      if (err) {
-        rejectP(err);
+  // Wipe the gen directory before re-emitting so deleted RPCs don't leave
+  // stale stubs behind. Re-create the directory afterwards because buf
+  // expects the output root to exist.
+  await rm(genDir, { recursive: true, force: true });
+  await mkdir(genDir, { recursive: true });
+
+  await run("npx", [
+    "--yes",
+    `@bufbuild/buf@${BUF_VERSION}`,
+    "generate",
+    "--template",
+    resolve(adminRoot, "buf.gen.yaml"),
+  ]);
+  console.log(`Wrote Connect-Web stubs to ${genDir}`);
+}
+
+function run(cmd, args) {
+  return new Promise((res, rej) => {
+    const child = spawn(cmd, args, {
+      cwd: adminRoot,
+      stdio: "inherit",
+      env: process.env,
+    });
+    child.on("error", rej);
+    child.on("exit", (code) => {
+      if (code === 0) {
+        res();
       } else {
-        resolveP(result.openapi);
+        rej(new Error(`${cmd} ${args.join(" ")} exited ${code}`));
       }
     });
   });
-
-  const tmpFile = resolve(tmpdir(), `lantern-openapi-${process.pid}.json`);
-  await writeFile(tmpFile, JSON.stringify(converted), "utf8");
-
-  try {
-    const ast = await openapiTS(new URL(`file://${tmpFile}`));
-    const body = astToString(ast);
-    await mkdir(dirname(outPath), { recursive: true });
-    await writeFile(outPath, HEADER + body, "utf8");
-    console.log(`Wrote ${outPath}`);
-  } finally {
-    await unlink(tmpFile).catch(() => {});
-  }
 }
 
 main().catch((err) => {

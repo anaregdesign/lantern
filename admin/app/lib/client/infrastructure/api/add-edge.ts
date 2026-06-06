@@ -1,16 +1,19 @@
-import type { components } from "./lantern-api.gen";
+import { Edge as ProtoEdge } from "~/lib/api/gen/graph/v1/graph_pb";
+import type { JsonValue } from "@bufbuild/protobuf";
+
 import type { LanternClient } from "./lantern-client";
 import { LanternApiError } from "./error";
+import type { AddEdgeBody, AddEdgeResponse, Edge } from "./types";
 
-export type AddEdgeResponse = components["schemas"]["v1AddEdgeResponse"];
-export type AddEdgeBody = components["schemas"]["LanternServiceAddEdgeBody"];
+export type { AddEdgeBody, AddEdgeResponse, Edge } from "./types";
 
 /**
- * Calls `LanternService_AddEdge`
- * (POST `/v1/edges/{edge.tail}/{edge.head}/add`).
+ * Calls `LanternService.AddEdge` over Connect-Web.
  *
- * Non-idempotent: each call accumulates another time-decaying contribution
- * onto the (tail, head) edge. Use `putEdge` instead for idempotent replace.
+ * Non-idempotent: each call accumulates another time-decaying
+ * contribution onto the (tail, head) edge. `tail` and `head` always
+ * override any value carried on `body.edge` so the call shape mirrors
+ * the legacy REST URL where the endpoints lived in the path.
  */
 export async function addEdge(
   client: LanternClient,
@@ -19,14 +22,14 @@ export async function addEdge(
   body: AddEdgeBody,
   init?: { signal?: AbortSignal },
 ): Promise<AddEdgeResponse> {
-  const path = `/v1/edges/${encodeURIComponent(tail)}/${encodeURIComponent(head)}/add`;
-  const response = await client.request(path, {
-    method: "POST",
-    body: JSON.stringify(body),
-    signal: init?.signal,
-  });
-  if (!response.ok) {
-    throw await LanternApiError.fromResponse(response, "AddEdge");
+  const flat: Edge = { ...(body.edge ?? {}), tail, head };
+  try {
+    const resp = await client.addEdge(
+      { edge: ProtoEdge.fromJson(flat as JsonValue) },
+      { signal: init?.signal },
+    );
+    return resp.toJson() as AddEdgeResponse;
+  } catch (err) {
+    throw LanternApiError.fromUnknown("AddEdge", err);
   }
-  return (await response.json()) as AddEdgeResponse;
 }

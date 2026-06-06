@@ -1,0 +1,23 @@
+version: v2
+managed:
+  enabled: true
+inputs:
+  - directory: ../proto
+plugins:
+  # Plain protobuf-es message classes for Lantern's three v1 messages.
+  # Output mirrors the Go layout (one file per .proto, package path
+  # graph/v1/), so import paths under app/lib/api/gen/ stay predictable.
+  # Pinned to the v1 line so the message class shape matches
+  # connect-es v1.6.1 (the v2 line is a breaking type-shape change and
+  # has not yet shipped its Connect-Web companion).
+  - remote: buf.build/bufbuild/es:v1.10.0
+    out: app/lib/api/gen
+    opt:
+      - target=ts
+  # Connect-Web client + handler boilerplate. Generates
+  # graph/v1/graph_connect.ts (and ditto for replication.proto) that the
+  # admin SPA imports via createPromiseClient(LanternService, transport).
+  - remote: buf.build/connectrpc/es:v1.6.1
+    out: app/lib/api/gen
+    opt:
+      - target=ts

@@ -1,8 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-const GATEWAY_URL =
-  process.env.LANTERN_E2E_GATEWAY_URL ?? "http://127.0.0.1:6381";
-const STORAGE_KEY = "lantern.admin.baseUrl";
+import { CONNECT_URL, STORAGE_KEY, putEdges, putVertices } from "./helpers";
 
 /**
  * Seeds a small graph for the Browse screen:
@@ -11,59 +9,25 @@ const STORAGE_KEY = "lantern.admin.baseUrl";
  *   - 1 vertex under prefix `e2e:other:` (must NOT appear when filtering)
  *   - 2 edges `e2e:vertex:a → e2e:vertex:b` and `e2e:vertex:a → e2e:vertex:c`
  *
- * The seed runs against the gateway started by Playwright's webServer.
+ * The seed runs against the additive Connect listener started by
+ * Playwright's webServer (#337 / #339).
  */
 test.beforeAll(async () => {
   await seed();
 });
 
 async function seed() {
-  const putVertices = await fetch(`${GATEWAY_URL}/v1/vertices`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      vertices: [
-        {
-          key: "e2e:vertex:a",
-          value: { string: "alpha" },
-        },
-        {
-          key: "e2e:vertex:b",
-          value: { int32: 42 },
-        },
-        {
-          key: "e2e:vertex:c",
-          value: { bool: true },
-        },
-        {
-          key: "e2e:other:z",
-          value: { string: "ignored" },
-        },
-      ],
-    }),
-  });
-  if (!putVertices.ok) {
-    throw new Error(
-      `seed putVertices failed: ${putVertices.status} ${await putVertices.text()}`,
-    );
-  }
-
-  const putEdges = await fetch(`${GATEWAY_URL}/v1/edges/put`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      edges: [
-        { tail: "e2e:vertex:a", head: "e2e:vertex:b", weight: 1 },
-        { tail: "e2e:vertex:a", head: "e2e:vertex:c", weight: 2 },
-        { tail: "e2e:other:z", head: "e2e:vertex:b", weight: 9 },
-      ],
-    }),
-  });
-  if (!putEdges.ok) {
-    throw new Error(
-      `seed putEdges failed: ${putEdges.status} ${await putEdges.text()}`,
-    );
-  }
+  await putVertices([
+    { key: "e2e:vertex:a", string: "alpha" },
+    { key: "e2e:vertex:b", int32: 42 },
+    { key: "e2e:vertex:c", bool: true },
+    { key: "e2e:other:z", string: "ignored" },
+  ]);
+  await putEdges([
+    { tail: "e2e:vertex:a", head: "e2e:vertex:b", weight: 1 },
+    { tail: "e2e:vertex:a", head: "e2e:vertex:c", weight: 2 },
+    { tail: "e2e:other:z", head: "e2e:vertex:b", weight: 9 },
+  ]);
 }
 
 test.beforeEach(async ({ page }) => {
@@ -75,7 +39,7 @@ test.beforeEach(async ({ page }) => {
         // ignore — storage may be unavailable in private mode
       }
     },
-    { key: STORAGE_KEY, value: GATEWAY_URL },
+    { key: STORAGE_KEY, value: CONNECT_URL },
   );
 });
 
