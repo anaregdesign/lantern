@@ -36,7 +36,14 @@ func TestSubscription_Name(t *testing.T) {
 }
 
 func TestSubscription_Subscribe(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	// Use a short, test-scoped context so Subscribe returns promptly,
+	// and a WaitGroup so the test waits for the goroutine to exit
+	// before t.Run returns. The previous fire-and-forget pattern
+	// (`go tt.s.Subscribe(...)` with no synchronisation) leaked the
+	// Subscribe goroutine past the test boundary, where its internal
+	// worker pool's accesses raced with the testing framework's
+	// teardown reads under -race (#397).
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	topic := NewTopic[int]("test")
 	sub := topic.NewSubscription("test", 1, time.Minute, time.Minute)
@@ -54,15 +61,25 @@ func TestSubscription_Subscribe(t *testing.T) {
 			name: "TestSubscription_Subscribe",
 			s:    sub,
 			args: args[int]{
-				ctx:      ctx,
-				consumer: func(x *Message[int]) { t.Log(x) },
+				ctx: ctx,
+				// Consumer must not call t.Log: the test goroutine
+				// may have ticked past tt.s.Subscribe(...) and the
+				// testing.T may be in the middle of teardown when a
+				// late message arrives.
+				consumer: func(*Message[int]) {},
 			},
 		},
 	}
 	for i := range tests {
 		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
-			go tt.s.Subscribe(tt.args.ctx, tt.args.consumer)
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				tt.s.Subscribe(tt.args.ctx, tt.args.consumer)
+			}()
+			wg.Wait()
 		})
 	}
 }
