@@ -301,14 +301,12 @@ func (p *Pump) session(ctx context.Context, addr string, fromSeq uint64) (uint64
 	// connection state of their own — the underlying http.Client
 	// pools connections internally. No defer-close needed.
 	//
-	// WithGRPC pins the wire protocol to gRPC-over-h2 instead of the
-	// Connect protocol so this client can talk to both legacy
-	// grpc.NewServer peers (the production state until #347 cuts
-	// over) and Connect handlers (which accept all three protocols
-	// natively). Streaming RPCs benefit from gRPC's binary framing
-	// over the JSON-friendly Connect framing.
+	// The default Connect-Go wire protocol is used. Both ends of the
+	// replication channel are Connect handlers in the same process
+	// family, so the gRPC binary framing pin from earlier cutover
+	// builds (§A of #393) is no longer needed.
 	cli := graphv1connect.NewLanternReplicationServiceClient(
-		p.cfg.HTTPClient, peerBaseURL(addr), connect.WithGRPC(),
+		p.cfg.HTTPClient, peerBaseURL(addr),
 	)
 
 	p.cfg.Metrics.OnPumpConnect(addr)
