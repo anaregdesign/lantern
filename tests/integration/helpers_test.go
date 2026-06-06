@@ -11,7 +11,6 @@ import (
 
 	"connectrpc.com/connect"
 	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 
 	cachegraph "github.com/anaregdesign/lantern/core/cache/graph"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -96,7 +95,15 @@ func newConnectTestServer(
 		))
 	}
 
-	srv := httptest.NewServer(h2c.NewHandler(mux, &http2.Server{}))
+	srv := httptest.NewUnstartedServer(mux)
+	// Enable unencrypted HTTP/2 via the Go 1.24+ Server.Protocols
+	// surface (the older h2c.NewHandler wrapper is deprecated by
+	// staticcheck SA1019).
+	protos := new(http.Protocols)
+	protos.SetHTTP1(true)
+	protos.SetUnencryptedHTTP2(true)
+	srv.Config.Protocols = protos
+	srv.Start()
 	t.Cleanup(srv.Close)
 	return &connectTestServer{svc: svc, rep: rep, srv: srv, url: srv.URL}
 }
