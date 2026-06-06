@@ -201,14 +201,18 @@ func (h *lanternReplicationServiceConnect) Subscribe(ctx context.Context, req *c
 	if h.svc == nil {
 		return connect.NewError(connect.CodeUnavailable, errReplicationDisabled)
 	}
-	return h.svc.Subscribe(req.Msg, newConnectServerStream[pb.SubscribeResponse](ctx, stream))
+	// Translate gRPC status errors from the underlying service into
+	// connect.Error so wire clients (and the in-process pump) see
+	// CodeFailedPrecondition / CodeInvalidArgument instead of an
+	// opaque CodeUnknown wrapping a status string.
+	return grpcErrToConnect(h.svc.Subscribe(req.Msg, newConnectServerStream[pb.SubscribeResponse](ctx, stream)))
 }
 
 func (h *lanternReplicationServiceConnect) Snapshot(ctx context.Context, req *connect.Request[pb.SnapshotRequest], stream *connect.ServerStream[pb.SnapshotResponse]) error {
 	if h.svc == nil {
 		return connect.NewError(connect.CodeUnavailable, errReplicationDisabled)
 	}
-	return h.svc.Snapshot(req.Msg, newConnectServerStream[pb.SnapshotResponse](ctx, stream))
+	return grpcErrToConnect(h.svc.Snapshot(req.Msg, newConnectServerStream[pb.SnapshotResponse](ctx, stream)))
 }
 
 func (h *lanternReplicationServiceConnect) PeerStatus(ctx context.Context, req *connect.Request[pb.PeerStatusRequest]) (*connect.Response[pb.PeerStatusResponse], error) {

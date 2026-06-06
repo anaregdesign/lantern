@@ -2,7 +2,7 @@ package integration_test
 
 import (
 	"context"
-	"net"
+	"errors"
 	"testing"
 	"time"
 
@@ -11,19 +11,13 @@ import (
 	client "github.com/anaregdesign/lantern/sdks/go"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/status"
-	"google.golang.org/grpc/test/bufconn"
 )
 
-// TestIntegration_FullMiddlewareChain spins up a real gRPC server with the
-// full provider middleware stack (validation + rate-limit) and drives it
-// through the public client SDK. It is the closest thing to an end-to-end
-// smoke test we have without hitting the wire.
+// TestIntegration_FullMiddlewareChain spins up an h2c httptest server
+// mounting the full Connect interceptor chain (validation + rate-limit)
+// and drives it through the public SDK Connect client. The closest
+// thing to an end-to-end smoke test without hitting the wire.
 func TestIntegration_FullMiddlewareChain(t *testing.T) {
-	lis := bufconn.Listen(1 << 20)
 	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
 	svc := service.NewLanternService(cache)
 	val := provider.NewValidationInterceptor(provider.ValidationLimits{
@@ -36,36 +30,8 @@ func TestIntegration_FullMiddlewareChain(t *testing.T) {
 	// that a burst of 10 quickly exhausts the bucket.
 	rl := provider.NewRateLimitInterceptor(2, 2)
 
-	srv := grpc.NewServer(grpc.ChainUnaryInterceptor(
-		val.UnaryServerInterceptor(),
-		rl.UnaryServerInterceptor(),
-	))
-	pb.RegisterLanternServiceServer(srv, svc)
-
-	go func() {
-		if err := srv.Serve(lis); err != nil {
-			t.Logf("bufconn serve: %v", err)
-		}
-	}()
-	t.Cleanup(func() {
-		srv.Stop()
-		_ = lis.Close()
-	})
-
-	dialer := func(ctx context.Context, _ string) (net.Conn, error) {
-		return lis.DialContext(ctx)
-	}
-	c, err := client.NewLantern("passthrough://bufnet",
-		client.WithTransportCredentials(insecure.NewCredentials()),
-		client.WithDialOption(grpc.WithContextDialer(dialer)),
-		// Disable the SDK's retry policy so we can observe rate limiting
-		// directly without it being masked by retry-then-succeed.
-		client.WithDefaultServiceConfig(""),
-	)
-	if err != nil {
-		t.Fatalf("NewLantern: %v", err)
-	}
-	defer func() { _ = c.Close() }()
+	srv := newConnectTestServer(t, svc, nil, val.ConnectInterceptor(), rl.ConnectInterceptor())
+	c := newConnectClientFor(t, srv.url)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -92,53 +58,42 @@ func TestIntegration_FullMiddlewareChain(t *testing.T) {
 				Expiration: time.Now().Add(time.Minute),
 			})
 		}
-		// Force a single oversized request by raising the SDK chunk size.
-		bigClient, err := client.NewLantern("passthrough://bufnet",
-			client.WithTransportCredentials(insecure.NewCredentials()),
-			client.WithDialOption(grpc.WithContextDialer(dialer)),
-			client.WithDefaultServiceConfig(""),
-			client.WithBatchChunkSize(100),
-		)
-		if err != nil {
-			t.Fatalf("NewLantern: %v", err)
-		}
-		defer func() { _ = bigClient.Close() }()
-		err = bigClient.PutVertices(ctx, inputs)
-		if status.Code(err) != codes.InvalidArgument {
-			t.Fatalf("PutVertices(6) code = %v, want InvalidArgument", status.Code(err))
+		// Force a single oversized request by raising the SDK chunk
+		// size; the default would split into 5+1 and pass.
+		bigClient := newConnectClientFor(t, srv.url, client.WithConnectBatchChunkSize(100))
+		err := bigClient.PutVertices(ctx, inputs)
+		if !errors.Is(err, client.ErrInvalidArgument) {
+			t.Fatalf("PutVertices(6) err = %v, want errors.Is(err, ErrInvalidArgument)", err)
 		}
 	})
 
 	t.Run("illuminate caps enforced", func(t *testing.T) {
 		_, err := c.Illuminate(ctx, "k", client.WithStep(99), client.WithK(1))
-		if status.Code(err) != codes.InvalidArgument {
-			t.Errorf("Illuminate step=99 code = %v, want InvalidArgument", status.Code(err))
+		if !errors.Is(err, client.ErrInvalidArgument) {
+			t.Errorf("Illuminate step=99 err = %v, want errors.Is(err, ErrInvalidArgument)", err)
 		}
 	})
 
 	t.Run("rate limiter trips under burst", func(t *testing.T) {
-		// Hammer a fresh client; SDK retries are disabled so a tripped
-		// limiter surfaces directly.
 		var hit bool
 		for i := 0; i < 20; i++ {
 			err := c.PutVertex(ctx, "rl", int64(i), time.Minute)
-			if status.Code(err) == codes.ResourceExhausted {
+			if errors.Is(err, client.ErrResourceExhausted) {
 				hit = true
 				break
 			}
 		}
 		if !hit {
-			t.Error("expected at least one ResourceExhausted within 20 rapid calls")
+			t.Error("expected at least one ErrResourceExhausted within 20 rapid calls")
 		}
 	})
 }
 
-// TestIntegration_BatchDeletes exercises the DeleteVertices and DeleteEdges
-// RPCs end-to-end through bufconn. It uses its own server with no rate
-// limiter so the assertions aren't sensitive to token bucket state from
-// other tests in this file.
+// TestIntegration_BatchDeletes exercises the DeleteVertices and
+// DeleteEdges RPCs end-to-end through the Connect transport. Uses its
+// own server with no rate limiter so the assertions aren't sensitive
+// to token bucket state from other tests in this file.
 func TestIntegration_BatchDeletes(t *testing.T) {
-	lis := bufconn.Listen(1 << 20)
 	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
 	svc := service.NewLanternService(cache)
 	val := provider.NewValidationInterceptor(provider.ValidationLimits{
@@ -148,30 +103,8 @@ func TestIntegration_BatchDeletes(t *testing.T) {
 		IlluminateMaxK:    8,
 	})
 
-	srv := grpc.NewServer(grpc.ChainUnaryInterceptor(val.UnaryServerInterceptor()))
-	pb.RegisterLanternServiceServer(srv, svc)
-	go func() {
-		if err := srv.Serve(lis); err != nil {
-			t.Logf("bufconn serve: %v", err)
-		}
-	}()
-	t.Cleanup(func() {
-		srv.Stop()
-		_ = lis.Close()
-	})
-
-	dialer := func(ctx context.Context, _ string) (net.Conn, error) {
-		return lis.DialContext(ctx)
-	}
-	c, err := client.NewLantern("passthrough://bufnet",
-		client.WithTransportCredentials(insecure.NewCredentials()),
-		client.WithDialOption(grpc.WithContextDialer(dialer)),
-		client.WithDefaultServiceConfig(""),
-	)
-	if err != nil {
-		t.Fatalf("NewLantern: %v", err)
-	}
-	defer func() { _ = c.Close() }()
+	srv := newConnectTestServer(t, svc, nil, val.ConnectInterceptor())
+	c := newConnectClientFor(t, srv.url)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -189,8 +122,8 @@ func TestIntegration_BatchDeletes(t *testing.T) {
 			t.Errorf("DeleteVertices n = %d, want %d", n, len(keys))
 		}
 		for _, k := range keys {
-			if _, err := c.GetVertex(ctx, k); status.Code(err) != codes.NotFound {
-				t.Errorf("GetVertex(%s) after delete: code = %v, want NotFound", k, status.Code(err))
+			if _, err := c.GetVertex(ctx, k); !errors.Is(err, client.ErrNotFound) {
+				t.Errorf("GetVertex(%s) after delete: err = %v, want errors.Is(err, ErrNotFound)", k, err)
 			}
 		}
 	})
@@ -214,8 +147,8 @@ func TestIntegration_BatchDeletes(t *testing.T) {
 			t.Errorf("DeleteEdges n = %d, want %d", n, len(refs))
 		}
 		for _, r := range refs {
-			if _, err := c.GetEdge(ctx, r.Tail, r.Head); status.Code(err) != codes.NotFound {
-				t.Errorf("GetEdge(%s,%s) after delete: code = %v, want NotFound", r.Tail, r.Head, status.Code(err))
+			if _, err := c.GetEdge(ctx, r.Tail, r.Head); !errors.Is(err, client.ErrNotFound) {
+				t.Errorf("GetEdge(%s,%s) after delete: err = %v, want errors.Is(err, ErrNotFound)", r.Tail, r.Head, err)
 			}
 		}
 	})
@@ -237,44 +170,24 @@ func TestIntegration_BatchDeletes(t *testing.T) {
 	})
 
 	t.Run("validation rejects oversize delete vertices", func(t *testing.T) {
-		// Bypass SDK auto-chunking by raising chunk size, so the server
-		// sees a single >MaxBatchSize request.
-		bigClient, err := client.NewLantern("passthrough://bufnet",
-			client.WithTransportCredentials(insecure.NewCredentials()),
-			client.WithDialOption(grpc.WithContextDialer(dialer)),
-			client.WithDefaultServiceConfig(""),
-			client.WithBatchChunkSize(100),
-		)
-		if err != nil {
-			t.Fatalf("NewLantern: %v", err)
-		}
-		defer func() { _ = bigClient.Close() }()
+		bigClient := newConnectClientFor(t, srv.url, client.WithConnectBatchChunkSize(100))
 		keys := make([]string, 6)
 		for i := range keys {
 			keys[i] = string(rune('a' + i))
 		}
-		if _, err := bigClient.DeleteVertices(ctx, keys); status.Code(err) != codes.InvalidArgument {
-			t.Errorf("DeleteVertices(6) code = %v, want InvalidArgument", status.Code(err))
+		if _, err := bigClient.DeleteVertices(ctx, keys); !errors.Is(err, client.ErrInvalidArgument) {
+			t.Errorf("DeleteVertices(6) err = %v, want errors.Is(err, ErrInvalidArgument)", err)
 		}
 	})
 
 	t.Run("validation rejects oversize delete edges", func(t *testing.T) {
-		bigClient, err := client.NewLantern("passthrough://bufnet",
-			client.WithTransportCredentials(insecure.NewCredentials()),
-			client.WithDialOption(grpc.WithContextDialer(dialer)),
-			client.WithDefaultServiceConfig(""),
-			client.WithBatchChunkSize(100),
-		)
-		if err != nil {
-			t.Fatalf("NewLantern: %v", err)
-		}
-		defer func() { _ = bigClient.Close() }()
+		bigClient := newConnectClientFor(t, srv.url, client.WithConnectBatchChunkSize(100))
 		refs := make([]client.EdgeRef, 6)
 		for i := range refs {
 			refs[i] = client.EdgeRef{Tail: string(rune('a' + i)), Head: "z"}
 		}
-		if _, err := bigClient.DeleteEdges(ctx, refs); status.Code(err) != codes.InvalidArgument {
-			t.Errorf("DeleteEdges(6) code = %v, want InvalidArgument", status.Code(err))
+		if _, err := bigClient.DeleteEdges(ctx, refs); !errors.Is(err, client.ErrInvalidArgument) {
+			t.Errorf("DeleteEdges(6) err = %v, want errors.Is(err, ErrInvalidArgument)", err)
 		}
 	})
 }

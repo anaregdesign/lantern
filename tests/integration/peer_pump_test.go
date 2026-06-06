@@ -3,7 +3,6 @@ package integration_test
 import (
 	"context"
 	"fmt"
-	"net"
 	"testing"
 	"time"
 
@@ -14,17 +13,16 @@ import (
 	client "github.com/anaregdesign/lantern/sdks/go"
 	"github.com/anaregdesign/lantern/server/replication"
 	"github.com/anaregdesign/lantern/server/service"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 // pumpNode is a tiny harness that stands up LanternService +
-// LanternReplicationService on a real TCP loopback listener so that
-// other nodes' Pump instances (which dial with grpc.NewClient) can
-// reach it by host:port. bufconn would work for a single peer but
-// not for many-to-many wiring across a Pump.
+// LanternReplicationService on an h2c httptest.Server reachable by
+// host:port (so other nodes' Pump instances can dial it via
+// graphv1connect's HTTP client). Mirrors the legacy bufconn-flavoured
+// helper the pre-#363 suite used; the migration to Connect is
+// observationally equivalent at the wire level.
 type pumpNode struct {
-	addr   string
+	url    string // full http://host:port URL (used by pump dialer + replication client)
 	cache  *cachegraph.GraphCache[string, *pb.Vertex]
 	clock  *hlc.Clock
 	log    *mutationlog.Log
@@ -36,47 +34,32 @@ type pumpNode struct {
 
 func newPumpNode(t *testing.T, nodeID hlc.NodeID) *pumpNode {
 	t.Helper()
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	srv := grpc.NewServer()
 	log := mutationlog.New(mutationlog.Options{Capacity: 1024, SubscriberBuffer: 1024})
+	t.Cleanup(func() { _ = log.Close() })
 	clock := hlc.New(nodeID, hlc.Options{})
 	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
 	svc := service.NewLanternService(cache).WithReplication(log, clock, nil)
-	pb.RegisterLanternServiceServer(srv, svc)
-	pb.RegisterLanternReplicationServiceServer(srv, service.NewLanternReplicationService(log, cache, clock))
+	rep := service.NewLanternReplicationService(log, cache, clock)
 
-	go func() { _ = srv.Serve(lis) }()
+	// Connect-on-h2c httptest.Server — same pattern as
+	// newConnectTestServer but the URL form is what the pump
+	// consumes directly (replication.peerBaseURL accepts both
+	// "host:port" and "http://host:port" forms).
+	srv := newConnectTestServer(t, svc, rep)
 
-	sdk, err := client.NewLantern(
-		lis.Addr().String(),
-		client.WithTransportCredentials(insecure.NewCredentials()),
-	)
-	if err != nil {
-		t.Fatalf("NewLantern: %v", err)
-	}
-
-	n := &pumpNode{
-		addr:   lis.Addr().String(),
+	return &pumpNode{
+		url:    srv.url,
 		cache:  cache,
 		clock:  clock,
 		log:    log,
 		svc:    svc,
-		sdk:    sdk,
+		sdk:    newConnectClientFor(t, srv.url),
 		nodeID: nodeID,
 	}
-	t.Cleanup(func() {
-		_ = sdk.Close()
-		srv.Stop()
-		_ = log.Close()
-	})
-	return n
 }
 
 // startPump attaches a Pump to the node aimed at the supplied peer
-// addresses and runs it under the test's context.
+// URLs (or "host:port" — replication.peerBaseURL coerces both).
 func (n *pumpNode) startPump(ctx context.Context, t *testing.T, peers []string) {
 	t.Helper()
 	p := replication.NewPump(replication.Config{
@@ -84,6 +67,7 @@ func (n *pumpNode) startPump(ctx context.Context, t *testing.T, peers []string) 
 		Peers:      peers,
 		BackoffMin: 20 * time.Millisecond,
 		BackoffMax: 200 * time.Millisecond,
+		HTTPClient: h2cClient(),
 	}, n.svc, n.cache)
 	n.pump = p
 	pumpCtx, cancel := context.WithCancel(ctx)
@@ -147,9 +131,9 @@ func TestPeerPump_E2E_ThreeNodeConvergence(t *testing.T) {
 	b := newPumpNode(t, hlc.NodeID{0x0B})
 	c := newPumpNode(t, hlc.NodeID{0x0C})
 
-	a.startPump(ctx, t, []string{b.addr, c.addr})
-	b.startPump(ctx, t, []string{a.addr, c.addr})
-	c.startPump(ctx, t, []string{a.addr, b.addr})
+	a.startPump(ctx, t, []string{b.url, c.url})
+	b.startPump(ctx, t, []string{a.url, c.url})
+	c.startPump(ctx, t, []string{a.url, b.url})
 
 	// Give the pumps a moment to attach Subscribe streams before we
 	// start writing — without this small head-start a fast write
@@ -241,8 +225,8 @@ func TestPeerPump_EmptyPeers_NoOp(t *testing.T) {
 // TestPeerPump_GapRecoverySnapshot verifies that a follower attaching
 // to a primary that has already advanced past the follower's known
 // next-seq triggers the snapshot-then-resubscribe fallback path. This
-// indirectly exercises Pump.session's codes.FailedPrecondition
-// handler (#184/#185 stitching).
+// indirectly exercises Pump.session's FailedPrecondition handler
+// (#184/#185 stitching).
 func TestPeerPump_GapRecoverySnapshot(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping snapshot-recovery test in short mode")
@@ -262,7 +246,7 @@ func TestPeerPump_GapRecoverySnapshot(t *testing.T) {
 	}
 
 	follower := newPumpNode(t, hlc.NodeID{0xA2})
-	follower.startPump(ctx, t, []string{primary.addr})
+	follower.startPump(ctx, t, []string{primary.url})
 
 	// Snapshot should replay all 16 pre-existing vertices.
 	for i := 0; i < 16; i++ {

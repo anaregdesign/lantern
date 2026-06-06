@@ -183,3 +183,30 @@ func newInProcessClientWithPrefix(t *testing.T) (*client.Lantern, func()) {
 	srv := newConnectTestServer(t, svc, nil, val.ConnectInterceptor())
 	return newConnectClientFor(t, srv.url), func() {}
 }
+
+// newRawConnectClient returns the generated Connect-Go LanternService
+// client directly (i.e. the surface that mirrors pb.LanternServiceClient)
+// for tests that drive RPCs at the wire level — typically prefix /
+// snapshot / subscribe tests that need request types not yet wrapped by
+// the SDK. The returned cleanup hook is registered via t.Cleanup so
+// callers just discard it (the legacy gRPC bufconn pattern returned an
+// explicit cleanup func; we keep the signature for source-compat).
+func newRawConnectClient(t *testing.T, enablePrefixIndex bool) (graphv1connect.LanternServiceClient, func()) {
+	t.Helper()
+	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
+	if enablePrefixIndex {
+		cache.EnablePrefixIndex(func(k string) string { return k })
+	}
+	svc := service.NewLanternService(cache)
+	srv := newConnectTestServer(t, svc, nil)
+	return graphv1connect.NewLanternServiceClient(h2cClient(), srv.url), func() {}
+}
+
+// newReplicationRawClient returns the generated Connect-Go
+// LanternReplicationService client for tests that drive Subscribe /
+// Snapshot streams directly. Pairs with newConnectTestServer when the
+// caller supplies a non-nil replication service.
+func newReplicationRawClient(t *testing.T, baseURL string) graphv1connect.LanternReplicationServiceClient {
+	t.Helper()
+	return graphv1connect.NewLanternReplicationServiceClient(h2cClient(), baseURL)
+}
