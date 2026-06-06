@@ -51,7 +51,8 @@ func initializeApp() (*App, error) {
 	gate := provider.NewReadinessGate(readinessConfig, peerConfig, healthServer)
 	metricsServer := provider.NewMetricsServer(observabilityConfig, registry, gate, logger)
 	gatewayConfig := provider.NewGatewayConfig(config)
-	gatewayServer, err := provider.NewGatewayServer(gatewayConfig, lanternService, healthServer, gate, logger)
+	corsConfig := provider.NewCORSConfig(config)
+	gatewayServer, err := provider.NewGatewayServer(gatewayConfig, corsConfig, lanternService, healthServer, gate, logger)
 	if err != nil {
 		return nil, err
 	}

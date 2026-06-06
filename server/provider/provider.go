@@ -155,6 +155,7 @@ type Config struct {
 	AntiEntropy   AntiEntropyConfig
 	Readiness     ReadinessConfig
 	Gateway       GatewayConfig
+	CORS          CORSConfig
 }
 
 func NewConfig() *Config {
@@ -216,6 +217,7 @@ func NewConfig() *Config {
 		Peer:        loadPeerConfig(),
 		AntiEntropy: loadAntiEntropyConfig(),
 		Gateway:     loadGatewayConfig(),
+		CORS:        loadCORSConfig(),
 	}
 }
 

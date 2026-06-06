@@ -34,6 +34,13 @@ type gatewayHarness struct {
 }
 
 func startGatewayHarness(t *testing.T, ready bool, hsStatus healthpb.HealthCheckResponse_ServingStatus) *gatewayHarness {
+	return startGatewayHarnessOpts(t, ready, hsStatus, provider.CORSConfig{})
+}
+
+// startGatewayHarnessOpts is the full-fat variant that lets a test inject
+// a CORS allow-list. The two-helper split keeps the common path readable
+// while still routing through one implementation.
+func startGatewayHarnessOpts(t *testing.T, ready bool, hsStatus healthpb.HealthCheckResponse_ServingStatus, cors provider.CORSConfig) *gatewayHarness {
 	t.Helper()
 
 	// Pre-bind to find a free port — the provider's NewGatewayServer
@@ -70,6 +77,7 @@ func startGatewayHarness(t *testing.T, ready bool, hsStatus healthpb.HealthCheck
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	gw, err := provider.NewGatewayServer(
 		provider.GatewayConfig{Addr: addr, ReadHeaderTimeout: time.Second},
+		cors,
 		svc, hs, gate, logger,
 	)
 	if err != nil {
@@ -244,3 +252,44 @@ func keys(m map[string]any) []string {
 // Compile-time guard: the harness builds against the public provider
 // surface only.
 var _ = fmt.Sprintf
+
+// TestGateway_CORSPreflight exercises the CORS middleware end-to-end on a
+// live gateway listener. It does the smallest possible round-trip that
+// proves wiring is correct: a preflight OPTIONS from an allowed origin
+// must return 204 with the echoed Access-Control-Allow-Origin and the
+// advertised methods/headers.
+func TestGateway_CORSPreflight(t *testing.T) {
+	h := startGatewayHarnessOpts(
+		t, true, healthpb.HealthCheckResponse_SERVING,
+		provider.CORSConfig{AllowedOrigins: []string{"http://localhost:5173"}},
+	)
+	defer h.cleanup()
+
+	req, err := http.NewRequest(http.MethodOptions, h.baseURL+"/v1/status", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Origin", "http://localhost:5173")
+	req.Header.Set("Access-Control-Request-Method", "GET")
+	req.Header.Set("Access-Control-Request-Headers", "Content-Type")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d want 204, body=%s", resp.StatusCode, string(body))
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "http://localhost:5173" {
+		t.Errorf("ACAO: got %q want echoed origin", got)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Methods"); !strings.Contains(got, "GET") {
+		t.Errorf("ACAM: got %q want to contain GET", got)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Credentials"); got != "" {
+		t.Errorf("ACAC must not be set, got %q", got)
+	}
+}
