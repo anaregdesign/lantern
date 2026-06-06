@@ -4,23 +4,23 @@ import (
 	"sync"
 	"testing"
 
-	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"connectrpc.com/grpchealth"
 )
 
 type fakeHealth struct {
 	mu     sync.Mutex
-	calls  []healthpb.HealthCheckResponse_ServingStatus
-	latest healthpb.HealthCheckResponse_ServingStatus
+	calls  []grpchealth.Status
+	latest grpchealth.Status
 }
 
-func (f *fakeHealth) SetServingStatus(_ string, s healthpb.HealthCheckResponse_ServingStatus) {
+func (f *fakeHealth) SetServingStatus(_ string, s grpchealth.Status) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, s)
 	f.latest = s
 }
 
-func (f *fakeHealth) snapshot() (latest healthpb.HealthCheckResponse_ServingStatus, n int) {
+func (f *fakeHealth) snapshot() (latest grpchealth.Status, n int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.latest, len(f.calls)
@@ -34,7 +34,7 @@ func TestGate_SingleInstanceBypass(t *testing.T) {
 		t.Fatalf("single-instance gate must be Ready at construction")
 	}
 	latest, n := hs.snapshot()
-	if n != 1 || latest != healthpb.HealthCheckResponse_SERVING {
+	if n != 1 || latest != grpchealth.StatusServing {
 		t.Fatalf("expected 1 SERVING transition, got %d calls latest=%v", n, latest)
 	}
 
@@ -73,7 +73,7 @@ func TestGate_MultiPeer_BootstrapAndLag(t *testing.T) {
 		t.Fatalf("expected SERVING after bootstrap with lag below threshold")
 	}
 	latest, _ := hs.snapshot()
-	if latest != healthpb.HealthCheckResponse_SERVING {
+	if latest != grpchealth.StatusServing {
 		t.Fatalf("expected SERVING transition, got %v", latest)
 	}
 
@@ -83,7 +83,7 @@ func TestGate_MultiPeer_BootstrapAndLag(t *testing.T) {
 		t.Fatalf("expected NOT_SERVING when lag > maxLag")
 	}
 	latest, _ = hs.snapshot()
-	if latest != healthpb.HealthCheckResponse_NOT_SERVING {
+	if latest != grpchealth.StatusNotServing {
 		t.Fatalf("expected NOT_SERVING transition, got %v", latest)
 	}
 

@@ -16,23 +16,26 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
-// ServiceName is the fully-qualified gRPC service name used for per-service
+// ServiceName is the fully-qualified service name used for per-service
 // health reporting (grpc.health.v1) and as a logical metric label.
 const ServiceName = "graph.v1.LanternService"
 
-// LanternService implements pb.LanternServiceServer.
+// LanternService is the in-process implementation of the
+// graph.v1.LanternService surface. The Connect handler adapter in
+// connect.go wraps it; tests exercise it directly.
 //
-// Per-call logging, metrics, recovery, tracing and validation are wired up
-// via interceptors in server/provider so handlers stay focused on business
-// logic. Handlers honor the incoming context — short paths rely on gRPC to
-// propagate cancellation; the early ctx.Err() checks let us return a clean
-// Canceled / DeadlineExceeded status when a client already gave up.
+// Per-call logging, metrics, recovery, tracing and validation are
+// wired up via Connect interceptors in server/provider so handlers
+// stay focused on business logic. Handlers honor the incoming
+// context — short paths rely on the transport to propagate
+// cancellation; the early ctx.Err() checks let us return a clean
+// Canceled / DeadlineExceeded *connect.Error when a client already
+// gave up.
 //
 // The service depends on the narrow Backend interface (see backend.go); a
 // wire binding maps it to *graph.GraphCache in production. Tests can supply
 // a fake without standing up the real cache.
 type LanternService struct {
-	pb.UnimplementedLanternServiceServer
 	cache                  Backend
 	scan                   ScanLimits
 	log                    *mutationlog.Log

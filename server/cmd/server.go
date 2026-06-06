@@ -15,8 +15,9 @@ import (
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/replication"
 	"github.com/anaregdesign/lantern/server/service"
+
+	"connectrpc.com/grpchealth"
 	"golang.org/x/sync/errgroup"
-	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
 // App is the composition root produced by wire. It owns every long-running
@@ -180,7 +181,7 @@ func (a *App) Run(ctx context.Context) error {
 	g.Go(func() error { return a.antiEntropy.Run(gctx) })
 	g.Go(func() error {
 		<-gctx.Done()
-		a.health.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+		a.health.SetServingStatus("", grpchealth.StatusNotServing)
 		a.health.Shutdown()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

@@ -1,27 +1,24 @@
-// Package service: connect.go adapts the existing *LanternService and
-// *LanternReplicationService structs to the Connect-Go handler interfaces
-// generated under pb/graph/v1/graphv1connect (#336). The adapters forward
-// every Connect call to the unchanged underlying method, so all existing
-// gRPC tests keep covering the business logic by reference.
+// Package service: connect.go adapts *LanternService and
+// *LanternReplicationService to the Connect-Go handler interfaces
+// generated under pb/graph/v1/graphv1connect. The adapters forward
+// every Connect call to the unchanged underlying method.
 //
-// Why an adapter (rather than rewriting the service struct's method set):
-//   - Until #347 cuts the primary :6380 listener over to h2c+Connect, both
-//     the gRPC and Connect surfaces are live concurrently. Keeping the two
-//     handler shapes in separate structs lets each surface evolve without
-//     either becoming an "almost-Connect" or "almost-gRPC" Frankenstein.
-//   - The grpc.ServerStreamingServer[T] interface that the existing
-//     Subscribe/Snapshot methods take has seven methods; only Send and
-//     Context are actually called inside replication.go. We satisfy the
-//     full interface here with a tiny shim (connectServerStream) so the
-//     unchanged Subscribe/Snapshot implementations work over Connect with
-//     zero modification.
+// Why an adapter (rather than implementing the Connect interfaces
+// directly on the service structs):
+//   - The service structs predate Connect codegen and have signatures
+//     shaped by the original gRPC contract (req/resp values, no
+//     connect.Request[T] wrapper). Adapting them here keeps each side
+//     idiomatic for its consumers.
+//   - The Connect server-stream method signature takes ctx + req +
+//     *connect.ServerStream[T]. *connect.ServerStream[T] satisfies the
+//     local service.Sender[T] interface directly (both expose
+//     Send(*T) error), so streaming methods forward without a bridge.
 package service
 
 import (
 	"context"
 
 	"connectrpc.com/connect"
-	"google.golang.org/grpc/metadata"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
@@ -136,16 +133,17 @@ func (h *lanternReplicationServiceConnect) Subscribe(ctx context.Context, req *c
 	if h.svc == nil {
 		return connect.NewError(connect.CodeUnavailable, errReplicationDisabled)
 	}
-	// Subscribe returns *connect.Error directly (see replication.go),
-	// so no extra translation is needed at this seam.
-	return h.svc.Subscribe(req.Msg, newConnectServerStream[pb.SubscribeResponse](ctx, stream))
+	// *connect.ServerStream[T] satisfies service.Sender[T] directly
+	// (both expose Send(*T) error). The service method returns a
+	// *connect.Error already, so no translation layer is needed.
+	return h.svc.Subscribe(ctx, req.Msg, stream)
 }
 
 func (h *lanternReplicationServiceConnect) Snapshot(ctx context.Context, req *connect.Request[pb.SnapshotRequest], stream *connect.ServerStream[pb.SnapshotResponse]) error {
 	if h.svc == nil {
 		return connect.NewError(connect.CodeUnavailable, errReplicationDisabled)
 	}
-	return h.svc.Snapshot(req.Msg, newConnectServerStream[pb.SnapshotResponse](ctx, stream))
+	return h.svc.Snapshot(ctx, req.Msg, stream)
 }
 
 func (h *lanternReplicationServiceConnect) PeerStatus(ctx context.Context, req *connect.Request[pb.PeerStatusRequest]) (*connect.Response[pb.PeerStatusResponse], error) {
@@ -163,38 +161,4 @@ type replicationDisabledError struct{}
 
 func (*replicationDisabledError) Error() string {
 	return "replication is not enabled on this server"
-}
-
-// connectServerStream adapts *connect.ServerStream[T] to the
-// grpc.ServerStreamingServer[T] interface that the existing
-// Subscribe/Snapshot methods take. The Subscribe/Snapshot implementations
-// in replication.go only call Send and Context — the remaining
-// grpc.ServerStream methods (SetHeader/SendHeader/SetTrailer/SendMsg/
-// RecvMsg) are no-ops or panic, which is safe because the production
-// callers never invoke them.
-type connectServerStream[T any] struct {
-	ctx    context.Context
-	stream *connect.ServerStream[T]
-}
-
-func newConnectServerStream[T any](ctx context.Context, stream *connect.ServerStream[T]) *connectServerStream[T] {
-	return &connectServerStream[T]{ctx: ctx, stream: stream}
-}
-
-func (s *connectServerStream[T]) Send(m *T) error          { return s.stream.Send(m) }
-func (s *connectServerStream[T]) Context() context.Context { return s.ctx }
-
-// SetHeader / SendHeader / SetTrailer / SendMsg / RecvMsg satisfy the
-// remaining grpc.ServerStream surface. They are unused by the underlying
-// Subscribe/Snapshot implementations.
-func (s *connectServerStream[T]) SetHeader(md metadata.MD) error  { return nil }
-func (s *connectServerStream[T]) SendHeader(md metadata.MD) error { return nil }
-func (s *connectServerStream[T]) SetTrailer(md metadata.MD)       {}
-
-func (s *connectServerStream[T]) SendMsg(any) error {
-	panic("connectServerStream.SendMsg: unsupported on the Connect adapter; production callers use Send")
-}
-
-func (s *connectServerStream[T]) RecvMsg(any) error {
-	panic("connectServerStream.RecvMsg: unsupported on the Connect adapter; server-streaming has no client→server frames")
 }

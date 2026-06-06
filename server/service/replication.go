@@ -7,13 +7,21 @@ import (
 	"log/slog"
 
 	"connectrpc.com/connect"
-	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
+
+// Sender is the slim, transport-agnostic surface Subscribe and
+// Snapshot need from a server-streaming client connection: a single
+// typed Send method. *connect.ServerStream[T] satisfies it directly.
+// Tests that need to observe the streamed messages provide their own
+// implementation (see replication_test.go).
+type Sender[T any] interface {
+	Send(*T) error
+}
 
 // ReplicationServiceName is the fully-qualified gRPC service name for the
 // replication surface. Used for per-service health reporting.
@@ -44,15 +52,15 @@ type OriginStatesProvider interface {
 	OriginStates() []OriginState
 }
 
-// LanternReplicationService implements pb.LanternReplicationServiceServer.
-// It exposes the mutation log as a resumable, back-pressured server-streaming
-// RPC for peer replication and CDC consumers.
+// LanternReplicationService is the in-process implementation of the
+// graph.v1.LanternReplicationService surface. It exposes the
+// mutation log as a resumable, back-pressured server-streaming RPC
+// for peer replication and CDC consumers.
 //
 // The service holds a reference to the same *mutationlog.Log that
-// LanternService.WithReplication wired into the write path, so subscribers
-// see every successfully appended mutation in seq order.
+// LanternService.WithReplication wired into the write path, so
+// subscribers see every successfully appended mutation in seq order.
 type LanternReplicationService struct {
-	pb.UnimplementedLanternReplicationServiceServer
 	log     *mutationlog.Log
 	backend Backend
 	clock   *hlc.Clock
@@ -103,7 +111,8 @@ func (s *LanternReplicationService) WithOriginStates(p OriginStatesProvider) *La
 	return s
 }
 
-// Subscribe implements pb.LanternReplicationServiceServer.
+// Subscribe streams every mutation log entry at or after req.FromSeq
+// to the supplied Sender, honouring ctx cancellation throughout.
 //
 // Flow:
 //  1. Open a subscription on the mutation log starting at req.FromSeq.
@@ -118,10 +127,10 @@ func (s *LanternReplicationService) WithOriginStates(p OriginStatesProvider) *La
 //  3. If the channel is closed mid-stream the subscriber fell behind the
 //     per-subscriber buffer (Options.SubscriberBuffer). Surface this as
 //     FailedPrecondition + "gapped" — symmetric with case 1.
-//  4. Honor stream.Context() cancellation throughout.
+//  4. Honor ctx cancellation throughout.
 //
 // Send errors terminate the stream and increment dropped{reason="send_failed"}.
-func (s *LanternReplicationService) Subscribe(req *pb.SubscribeRequest, stream grpc.ServerStreamingServer[pb.SubscribeResponse]) error {
+func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.SubscribeRequest, stream Sender[pb.SubscribeResponse]) error {
 	if s.log == nil {
 		return connect.NewError(connect.CodeUnavailable, errors.New("replication is not enabled on this server"))
 	}
@@ -140,7 +149,6 @@ func (s *LanternReplicationService) Subscribe(req *pb.SubscribeRequest, stream g
 	s.metrics.OnSubscribeStarted()
 	defer s.metrics.OnSubscribeEnded()
 
-	ctx := stream.Context()
 	for {
 		select {
 		case <-ctx.Done():
@@ -205,11 +213,10 @@ func (s *LanternReplicationService) loggerOrDefault() *slog.Logger {
 // Replication bootstrap is bounded (one peer per call, infrequent), so
 // the O(N+E) memory overhead is acceptable. True streaming is a follow-up
 // once the snapshot path is wired end-to-end.
-func (s *LanternReplicationService) Snapshot(_ *pb.SnapshotRequest, stream grpc.ServerStreamingServer[pb.SnapshotResponse]) error {
+func (s *LanternReplicationService) Snapshot(ctx context.Context, _ *pb.SnapshotRequest, stream Sender[pb.SnapshotResponse]) error {
 	if s.backend == nil {
 		return connect.NewError(connect.CodeUnavailable, errors.New("snapshot is not enabled on this server"))
 	}
-	ctx := stream.Context()
 
 	var cutoffSeq uint64
 	if s.log != nil {
