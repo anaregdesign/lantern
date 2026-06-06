@@ -1,0 +1,12 @@
+.errorMain {
+  padding: 2rem;
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.errorStack {
+  overflow-x: auto;
+  padding: 1rem;
+  background-color: var(--colorNeutralBackground3);
+  border-radius: var(--borderRadiusMedium);
+}

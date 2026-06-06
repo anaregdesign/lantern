@@ -1,0 +1,55 @@
+.hero {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacingVerticalM);
+  margin-bottom: var(--spacingVerticalXXL);
+}
+
+.heroTitle {
+  margin: 0;
+  font-size: var(--fontSizeHero900);
+  line-height: var(--lineHeightHero900);
+  font-weight: var(--fontWeightSemibold);
+}
+
+.heroLead {
+  margin: 0;
+  color: var(--colorNeutralForeground2);
+  font-size: var(--fontSizeBase400);
+  max-width: 640px;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--spacingHorizontalL);
+}
+
+.card {
+  padding: var(--spacingVerticalL);
+}
+
+.cardTitle {
+  display: flex;
+  align-items: center;
+  gap: var(--spacingHorizontalS);
+  margin-bottom: var(--spacingVerticalS);
+  font-weight: var(--fontWeightSemibold);
+}
+
+.cardCopy {
+  color: var(--colorNeutralForeground2);
+  margin-bottom: var(--spacingVerticalM);
+}
+
+.cardLink {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacingHorizontalXS);
+  color: var(--colorBrandForegroundLink);
+  font-weight: var(--fontWeightSemibold);
+}
+
+.cardLink:hover {
+  color: var(--colorBrandForegroundLinkHover);
+}
