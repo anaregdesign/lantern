@@ -80,12 +80,8 @@ func Validate(input string) error {
 			return errors.New("usage: add edge ... ")
 		}
 	case "illuminate":
-		o, err := IlluminateObjective(s)
-		if err != nil {
-			return errors.New("usage: illuminate { neighbor | spt_relevance | spt_cost | mst_relevance | mst_cost } ... ")
-		}
 		if _, err := IlluminateParam(s); err != nil {
-			return errors.New("usage: illuminate " + o + "<key: string> <step: int> <k: int> <tfidf: bool>")
+			return errors.New("usage: illuminate <key: string> <step: int> <k: int> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf]")
 		}
 
 	case "exit":

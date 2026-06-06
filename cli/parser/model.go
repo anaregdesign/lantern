@@ -41,8 +41,10 @@ type DeleteEdge struct {
 }
 
 type Illuminate struct {
-	Seed  string
-	Step  int
-	K     int
-	Tfidf bool
+	Seed      string
+	Step      int
+	K         int
+	Algorithm string // "none" | "mst" | "spt" (default: "none")
+	Objective string // "min" | "max"           (default: "min")
+	Weighting string // "raw" | "tfidf"         (default: "raw")
 }

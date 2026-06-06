@@ -40,20 +40,56 @@ message Graph {
   repeated Edge edges = 2;
 }
 
-enum Optimization {
-  OPTIMIZATION_UNSPECIFIED = 0;
-  OPTIMIZATION_MINIMUM_SPANNING_TREE = 1;
-  OPTIMIZATION_MAXIMUM_SPANNING_TREE = 2;
-  OPTIMIZATION_SHORTEST_PATH_TREE = 3;
-  OPTIMIZATION_SHORTEST_PATH_TREE_INVERSE = 4;
+// Algorithm selects the subgraph reduction strategy applied AFTER the
+// BFS walk has discovered the neighbourhood around the seed.
+//
+// UNSPECIFIED returns the raw discovered subgraph (no reduction).
+// MINIMUM_SPANNING_TREE / SHORTEST_PATH_TREE pick the reduction; the
+// MIN/MAX direction is independent and carried by Objective.
+enum Algorithm {
+  ALGORITHM_UNSPECIFIED = 0;
+  ALGORITHM_MINIMUM_SPANNING_TREE = 1;
+  ALGORITHM_SHORTEST_PATH_TREE = 2;
+}
+
+// Objective is the direction of the Algorithm-driven optimisation.
+//
+// UNSPECIFIED defaults to MINIMIZE server-side. MINIMIZE treats edge
+// weights as costs (smallest tree wins); MAXIMIZE treats them as
+// relevance (largest tree wins, equivalent to the historical
+// "inverse-SPT" / "max-MST" variants).
+enum Objective {
+  OBJECTIVE_UNSPECIFIED = 0;
+  OBJECTIVE_MINIMIZE = 1;
+  OBJECTIVE_MAXIMIZE = 2;
+}
+
+// Weighting is the edge-weight transform applied BEFORE the BFS walk
+// (and therefore before any Algorithm-driven reduction).
+//
+// UNSPECIFIED defaults to RAW server-side. RAW uses the stored
+// edge.weight verbatim. TFIDF re-scores edge weights using TF-IDF
+// over the per-vertex out-edge distribution; useful when raw weights
+// are noisy "hit counts" and the caller wants relevance ranking.
+enum Weighting {
+  WEIGHTING_UNSPECIFIED = 0;
+  WEIGHTING_RAW = 1;
+  WEIGHTING_TFIDF = 2;
 }
 
 message IlluminateRequest {
   string seed = 1;
   uint32 step = 2;
   uint32 k = 3;
-  bool tfidf = 4;
-  Optimization optimization = 5;
+  // Field numbers 4 ("tfidf") and 5 ("optimization") were retired in the
+  // orthogonal-axes redesign (closes #410) — kept reserved so a stale
+  // client whose binary still emits the old field numbers cannot silently
+  // alias the new typed fields below.
+  reserved 4, 5;
+  reserved "tfidf", "optimization";
+  Algorithm algorithm = 6;
+  Objective objective = 7;
+  Weighting weighting = 8;
 }
 
 message IlluminateResponse {

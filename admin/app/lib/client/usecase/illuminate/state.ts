@@ -1,31 +1,37 @@
 import type {
+  Algorithm,
   Edge,
-  Optimization,
+  Objective,
   Vertex,
+  Weighting,
 } from "~/lib/client/infrastructure/api/illuminate";
 
 /**
  * Knobs that the user can tweak from the toolbar. Persisted in state so
  * the reducer can decide when a control change should kick off a re-fetch.
+ * Per #410 the three Illuminate axes (algorithm, objective, weighting)
+ * are first-class controls; the legacy single "optimization" knob and
+ * the standalone tfidf switch are gone.
  */
 export interface IlluminateControls {
   step: number;
   k: number;
-  tfidf: boolean;
-  optimization: Optimization;
+  algorithm: Algorithm;
+  objective: Objective;
+  weighting: Weighting;
 }
 
 /**
  * Defaults that match the server's behaviour when knobs are omitted, and
- * give a sensible first frame for the user. The radio defaults to
- * "unspecified" so the server's natural ordering is preserved until the
- * user explicitly switches to an SPT / MST view.
+ * give a sensible first frame for the user. UNSPECIFIED on every axis
+ * lets the server pick (raw subgraph, minimise direction, raw weighting).
  */
 export const DEFAULT_ILLUMINATE_CONTROLS: IlluminateControls = {
   step: 2,
   k: 8,
-  tfidf: false,
-  optimization: "OPTIMIZATION_UNSPECIFIED",
+  algorithm: "ALGORITHM_UNSPECIFIED",
+  objective: "OBJECTIVE_UNSPECIFIED",
+  weighting: "WEIGHTING_UNSPECIFIED",
 };
 
 export type IlluminateStatus = "idle" | "loading" | "ready" | "error";

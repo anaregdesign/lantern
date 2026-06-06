@@ -11,24 +11,41 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// recallRelatedObjective is the string-enum the LLM passes for the
-// server-side optimization strategy. We accept the friendly names
-// {none, mst, max-st, spt, inverse-spt} and translate to the SDK enum.
+// recall_related accepts three string-enum inputs that map 1:1 to the
+// Illuminate proto axes introduced in #410: algorithm × objective ×
+// weighting. The friendly names match the CLI/REPL grammar so an LLM
+// (and a human operator) see one consistent vocabulary across all
+// surfaces.
+
+type recallRelatedAlgorithm string
+
+const (
+	algorithmNone recallRelatedAlgorithm = "none"
+	algorithmMST  recallRelatedAlgorithm = "mst"
+	algorithmSPT  recallRelatedAlgorithm = "spt"
+)
+
 type recallRelatedObjective string
 
 const (
-	objectiveNone       recallRelatedObjective = "none"
-	objectiveMST        recallRelatedObjective = "mst"
-	objectiveMaxST      recallRelatedObjective = "max-st"
-	objectiveSPT        recallRelatedObjective = "spt"
-	objectiveInverseSPT recallRelatedObjective = "inverse-spt"
+	objectiveMin recallRelatedObjective = "min"
+	objectiveMax recallRelatedObjective = "max"
+)
+
+type recallRelatedWeighting string
+
+const (
+	weightingRaw   recallRelatedWeighting = "raw"
+	weightingTFIDF recallRelatedWeighting = "tfidf"
 )
 
 type recallRelatedInput struct {
 	Seed      string                 `json:"seed"                jsonschema:"Starting fact key for the walk. The seed itself is returned at depth 0."`
 	Step      uint32                 `json:"step,omitempty"      jsonschema:"BFS depth (default 2). Larger values explore further at quadratic cost. Server enforces a hard cap."`
 	K         uint32                 `json:"k,omitempty"         jsonschema:"Per-hop fan-out: keep the top-k strongest outgoing edges at each step (default 8). Server enforces a hard cap."`
-	Objective recallRelatedObjective `json:"objective,omitempty" jsonschema:"Optional post-processing strategy on the illuminated subgraph. one of: none (default - return raw BFS), mst (minimum spanning tree), max-st (maximum spanning tree), spt (shortest-path tree from seed), inverse-spt (shortest-path tree TO seed)."`
+	Algorithm recallRelatedAlgorithm `json:"algorithm,omitempty" jsonschema:"Post-traversal subgraph reduction: one of: none (default - raw BFS subgraph), mst (minimum/maximum spanning tree depending on objective), spt (shortest-path tree from seed)."`
+	Objective recallRelatedObjective `json:"objective,omitempty" jsonschema:"Direction of the algorithm reduction: min (default - cost-weighted, smallest tree wins) or max (relevance-weighted, largest tree wins). Ignored when algorithm=none."`
+	Weighting recallRelatedWeighting `json:"weighting,omitempty" jsonschema:"Edge-weight transform applied BEFORE the walk: raw (default - edge weights as stored) or tfidf (re-score via TF-IDF over per-vertex out-edge distribution)."`
 }
 
 type recallRelatedNeighbor struct {
@@ -39,12 +56,14 @@ type recallRelatedNeighbor struct {
 
 type recallRelatedOutput struct {
 	Seed      string                  `json:"seed"`
+	Algorithm string                  `json:"algorithm"`
 	Objective string                  `json:"objective"`
+	Weighting string                  `json:"weighting"`
 	Count     int                     `json:"count"`
 	Neighbors []recallRelatedNeighbor `json:"neighbors"`
 }
 
-const recallRelatedDescription = "Walk Lantern's graph from a seed key, returning the related facts with their cumulative edge weights. Use step + k to bound exploration; use objective to apply a graph-theoretic reduction (mst / max-st / spt / inverse-spt). IMPORTANT: recall does NOT refresh TTL for any vertex or edge visited; weak relations will still decay on schedule."
+const recallRelatedDescription = "Walk Lantern's graph from a seed key, returning the related facts with their cumulative edge weights. Use step + k to bound exploration. Use algorithm + objective + weighting to control how the discovered subgraph is reduced and weighted (see #410). IMPORTANT: recall does NOT refresh TTL for any vertex or edge visited; weak relations will still decay on schedule."
 
 func registerRecallRelated(srv *mcp.Server, lc lanternClient) {
 	mcp.AddTool(srv, &mcp.Tool{
@@ -54,15 +73,35 @@ func registerRecallRelated(srv *mcp.Server, lc lanternClient) {
 		if in.Seed == "" {
 			return nil, recallRelatedOutput{}, fmt.Errorf("recall_related: seed must not be empty")
 		}
+		algorithm := in.Algorithm
+		if algorithm == "" {
+			algorithm = algorithmNone
+		}
 		objective := in.Objective
 		if objective == "" {
-			objective = objectiveNone
+			objective = objectiveMin
 		}
-		opt, err := mapObjective(objective)
+		weighting := in.Weighting
+		if weighting == "" {
+			weighting = weightingRaw
+		}
+		algo, err := mapAlgorithm(algorithm)
 		if err != nil {
 			return nil, recallRelatedOutput{}, fmt.Errorf("recall_related: %w", err)
 		}
-		opts := []client.IlluminateOption{client.WithOptimization(opt)}
+		obj, err := mapObjective(objective)
+		if err != nil {
+			return nil, recallRelatedOutput{}, fmt.Errorf("recall_related: %w", err)
+		}
+		w, err := mapWeighting(weighting)
+		if err != nil {
+			return nil, recallRelatedOutput{}, fmt.Errorf("recall_related: %w", err)
+		}
+		opts := []client.IlluminateOption{
+			client.WithAlgorithm(algo),
+			client.WithObjective(obj),
+			client.WithWeighting(w),
+		}
 		if in.Step > 0 {
 			opts = append(opts, client.WithStep(in.Step))
 		}
@@ -76,35 +115,54 @@ func registerRecallRelated(srv *mcp.Server, lc lanternClient) {
 		neighbors := flattenNeighbors(in.Seed, g)
 		out := recallRelatedOutput{
 			Seed:      in.Seed,
+			Algorithm: string(algorithm),
 			Objective: string(objective),
+			Weighting: string(weighting),
 			Count:     len(neighbors),
 			Neighbors: neighbors,
 		}
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{
-				Text: fmt.Sprintf("Recalled %d related facts for seed %q (objective=%s). Recall did NOT refresh TTL.", out.Count, in.Seed, out.Objective),
+				Text: fmt.Sprintf("Recalled %d related facts for seed %q (algorithm=%s, objective=%s, weighting=%s). Recall did NOT refresh TTL.", out.Count, in.Seed, out.Algorithm, out.Objective, out.Weighting),
 			}},
 		}, out, nil
 	})
 }
 
-// mapObjective converts the friendly enum string into the SDK's
-// Optimization constant. Unknown values return an InvalidArgument-style
-// error.
-func mapObjective(o recallRelatedObjective) (client.Optimization, error) {
-	switch o {
-	case objectiveNone:
-		return client.OptimizationUnspecified, nil
-	case objectiveMST:
-		return client.OptimizationMinimumSpanningTree, nil
-	case objectiveMaxST:
-		return client.OptimizationMaximumSpanningTree, nil
-	case objectiveSPT:
-		return client.OptimizationShortestPathTree, nil
-	case objectiveInverseSPT:
-		return client.OptimizationShortestPathTreeInverse, nil
+// mapAlgorithm / mapObjective / mapWeighting translate the friendly
+// MCP-input string enums into the SDK enums. Unknown values return an
+// InvalidArgument-style error so the LLM gets actionable feedback.
+
+func mapAlgorithm(a recallRelatedAlgorithm) (client.Algorithm, error) {
+	switch a {
+	case algorithmNone:
+		return client.AlgorithmUnspecified, nil
+	case algorithmMST:
+		return client.AlgorithmMinimumSpanningTree, nil
+	case algorithmSPT:
+		return client.AlgorithmShortestPathTree, nil
 	}
-	return client.OptimizationUnspecified, fmt.Errorf("unknown objective %q (want one of: none, mst, max-st, spt, inverse-spt)", string(o))
+	return client.AlgorithmUnspecified, fmt.Errorf("unknown algorithm %q (want one of: none, mst, spt)", string(a))
+}
+
+func mapObjective(o recallRelatedObjective) (client.Objective, error) {
+	switch o {
+	case objectiveMin:
+		return client.ObjectiveMinimize, nil
+	case objectiveMax:
+		return client.ObjectiveMaximize, nil
+	}
+	return client.ObjectiveUnspecified, fmt.Errorf("unknown objective %q (want one of: min, max)", string(o))
+}
+
+func mapWeighting(w recallRelatedWeighting) (client.Weighting, error) {
+	switch w {
+	case weightingRaw:
+		return client.WeightingRaw, nil
+	case weightingTFIDF:
+		return client.WeightingTFIDF, nil
+	}
+	return client.WeightingUnspecified, fmt.Errorf("unknown weighting %q (want one of: raw, tfidf)", string(w))
 }
 
 // flattenNeighbors collapses the SDK Graph into a flat list of

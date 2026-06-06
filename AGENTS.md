@@ -43,7 +43,7 @@ Tag scheme: `vX.Y.Z` for server+CLI (root module), `sdks/go/vX.Y.Z` for the SDK,
   - `sdks/go/` imports `pb/` only — **never** `core/...` or `server/...`.
   - `server/` imports `pb/` and `core/` only — **never** the client SDK. If a server test needs the client (e.g. a full-stack bufconn round-trip), put it in `tests/integration/` instead of under `server/`.
   - The root module (cli + tests/integration) is the only place that depends on all four submodules.
-  - `Illuminate*` returns the SDK-local `client.Graph` (field shape `{Vertices map[string]*Vertex; Edges map[string]map[string]float32}`, JSON-compatible with `core/graph.Graph`). Consumers that need richer graph algorithms (SPT/MST) adapt it themselves — see `cli/service/service.go`'s `toModelGraph` for the canonical pattern.
+  - `Illuminate*` returns the SDK-local `client.Graph` (field shape `{Vertices map[string]*Vertex; Edges map[string]map[string]float32}`, JSON-compatible with `core/graph.Graph`). Per #410 the server now owns every post-traversal reduction (MST/SPT × min/max × raw/TFIDF) via the orthogonal axes carried on `IlluminateRequest` (`Algorithm`, `Objective`, `Weighting`); consumers no longer adapt the result to `core/graph` for client-side SPT/MST — pass the SDK helpers `client.WithAlgorithm`, `client.WithObjective`, `client.WithWeighting` instead.
 - **Decay model**: edges are **additive** and carry their own TTL. Be mindful of the difference between `AddEdge` and `PutEdge` (idempotency) — see the discussion in [sdks/go/example/main.go](sdks/go/example/main.go).
 
 ## Build / Run / Test / Generate

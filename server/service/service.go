@@ -76,16 +76,17 @@ type LanternService struct {
 //
 // Implementations must be safe for concurrent use.
 type HotPathMetrics interface {
-	OnIlluminate(optimization string, visitedVertices, visitedEdges int, traversal, optimize time.Duration)
+	OnIlluminate(algorithm, objective, weighting string, visitedVertices, visitedEdges int, traversal, optimize time.Duration)
 	OnScan(op string, results int, duration time.Duration)
 	OnBatch(op string, size int)
 }
 
 type noopHotPathMetrics struct{}
 
-func (noopHotPathMetrics) OnIlluminate(string, int, int, time.Duration, time.Duration) {}
-func (noopHotPathMetrics) OnScan(string, int, time.Duration)                           {}
-func (noopHotPathMetrics) OnBatch(string, int)                                         {}
+func (noopHotPathMetrics) OnIlluminate(string, string, string, int, int, time.Duration, time.Duration) {
+}
+func (noopHotPathMetrics) OnScan(string, int, time.Duration) {}
+func (noopHotPathMetrics) OnBatch(string, int)               {}
 
 // ScanLimits caps the per-call pagination knobs for the prefix RPCs. It is
 // a value struct rather than a pointer-to-provider type so the service
@@ -325,22 +326,28 @@ func (s *LanternService) logMutation(op *pb.MutationOp) {
 	}
 }
 
-// Illuminate returns a subgraph rooted at the seed, optionally optimized into
-// a spanning or shortest-path tree.
+// Illuminate returns a subgraph rooted at the seed, optionally reduced via
+// an (algorithm, objective) pair after the BFS walk. Edge weighting (RAW vs
+// TF-IDF) is applied BEFORE the walk and therefore feeds into both the BFS
+// frontier ranking and any subsequent algorithm reduction. See #410.
 func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateRequest) (*pb.IlluminateResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
 	}
 
+	weighting := request.GetWeighting()
+	useTFIDF := weighting == pb.Weighting_WEIGHTING_TFIDF
 	traversalStart := time.Now()
-	g, expirations, err := s.cache.NeighborWithExpirationsContext(ctx, request.GetSeed(), int(request.GetStep()), int(request.GetK()), request.GetTfidf())
+	g, expirations, err := s.cache.NeighborWithExpirationsContext(ctx, request.GetSeed(), int(request.GetStep()), int(request.GetK()), useTFIDF)
 	traversalDur := time.Since(traversalStart)
 	if err != nil {
 		return nil, ctxToConnect(err)
 	}
 
+	algorithm := request.GetAlgorithm()
+	objective := request.GetObjective()
 	var optimizeDur time.Duration
-	if opt := optimizers[request.GetOptimization()]; opt != nil {
+	if opt := resolveOptimizer(algorithm, objective); opt != nil {
 		optStart := time.Now()
 		g, err = opt(ctx, g, request.GetSeed())
 		optimizeDur = time.Since(optStart)
@@ -376,7 +383,7 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 		}
 	}
 
-	s.metrics.OnIlluminate(optimizationLabel(request.GetOptimization()), len(vertices), edgeCount, traversalDur, optimizeDur)
+	s.metrics.OnIlluminate(algorithmLabel(algorithm), objectiveLabel(objective), weightingLabel(weighting), len(vertices), edgeCount, traversalDur, optimizeDur)
 
 	return &pb.IlluminateResponse{
 		Graph: &pb.Graph{Vertices: vertices, Edges: edges},

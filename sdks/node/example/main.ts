@@ -1,4 +1,4 @@
-import { Lantern, Optimization } from "lantern-sdk";
+import { Lantern, Algorithm, Objective, Weighting } from "lantern-sdk";
 
 async function main(): Promise<void> {
   const client = Lantern.connect("localhost:6380");
@@ -23,12 +23,17 @@ async function main(): Promise<void> {
     await client.addEdge("string", "float", 1.0, { ttlSeconds: 60 });
     await client.addEdge("int", "bool", 1.0, { ttlSeconds: 60 });
 
-    // Illuminate — neighborhood graph traversal
+    // Illuminate — neighborhood graph traversal. The three orthogonal
+    // axes (algorithm × objective × weighting) replaced the legacy
+    // `tfidf` flag + `optimization` enum in #410. UNSPECIFIED on every
+    // axis defers to the server's defaults (raw subgraph, minimise,
+    // raw weighting).
     const graph = await client.illuminate("string", {
       step: 2,
       k: 16,
-      tfidf: false,
-      optimization: Optimization.UNSPECIFIED,
+      algorithm: Algorithm.UNSPECIFIED,
+      objective: Objective.UNSPECIFIED,
+      weighting: Weighting.UNSPECIFIED,
     });
     console.log(`vertices: ${graph.vertices.size}`);
     for (const [tail, row] of graph.edges) {

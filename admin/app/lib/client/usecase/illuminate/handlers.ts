@@ -31,8 +31,9 @@ export async function fetchIlluminate(
       seed: input.seed,
       step: input.controls.step,
       k: input.controls.k,
-      tfidf: input.controls.tfidf,
-      optimization: input.controls.optimization,
+      algorithm: input.controls.algorithm,
+      objective: input.controls.objective,
+      weighting: input.controls.weighting,
     };
     const response = await illuminate(input.client, request, {
       signal: input.signal,

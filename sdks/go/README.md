@@ -105,9 +105,11 @@ re-exports the `pb` type directly via a Go **alias** rather than introducing
 a parallel struct:
 
 ```go
-type Vertex       = pb.Vertex
-type Edge         = pb.Edge
-type Optimization = pb.Optimization
+type Vertex    = pb.Vertex
+type Edge      = pb.Edge
+type Algorithm = pb.Algorithm
+type Objective = pb.Objective
+type Weighting = pb.Weighting
 ```
 
 Because these are *true* aliases (`type X = pb.X`, not `type X pb.X`),

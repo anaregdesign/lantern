@@ -369,22 +369,24 @@ func run() error {
 			{Tail: "ill:carol", Head: "ill:dave", Weight: 0.2, Expiration: now},
 		})
 	})
-	for _, opt := range []struct {
+	for _, c := range []struct {
 		name string
-		o    client.Optimization
+		algo client.Algorithm
+		obj  client.Objective
 	}{
-		{"none", client.OptimizationUnspecified},
-		{"mst", client.OptimizationMinimumSpanningTree},
-		{"max-st", client.OptimizationMaximumSpanningTree},
-		{"spt", client.OptimizationShortestPathTree},
-		{"inverse-spt", client.OptimizationShortestPathTreeInverse},
+		{"none", client.AlgorithmUnspecified, client.ObjectiveUnspecified},
+		{"mst/min", client.AlgorithmMinimumSpanningTree, client.ObjectiveMinimize},
+		{"mst/max", client.AlgorithmMinimumSpanningTree, client.ObjectiveMaximize},
+		{"spt/min", client.AlgorithmShortestPathTree, client.ObjectiveMinimize},
+		{"spt/max", client.AlgorithmShortestPathTree, client.ObjectiveMaximize},
 	} {
-		opt := opt
-		step("Illuminate "+opt.name, func() error {
+		c := c
+		step("Illuminate "+c.name, func() error {
 			g, err := lc.Illuminate(ctx, "ill:alice",
 				client.WithStep(3),
 				client.WithK(10),
-				client.WithOptimization(opt.o),
+				client.WithAlgorithm(c.algo),
+				client.WithObjective(c.obj),
 			)
 			if err != nil {
 				return err
@@ -397,7 +399,7 @@ func run() error {
 	}
 	step("Illuminate TFIDF", func() error {
 		g, err := lc.Illuminate(ctx, "ill:alice",
-			client.WithStep(2), client.WithK(5), client.WithTFIDF(true),
+			client.WithStep(2), client.WithK(5), client.WithWeighting(client.WeightingTFIDF),
 		)
 		if err != nil {
 			return err

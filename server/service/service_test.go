@@ -204,15 +204,15 @@ func seedTriangle(t *testing.T, s *LanternService) {
 	}
 }
 
-func TestLanternService_Illuminate_Unspecified(t *testing.T) {
+func TestLanternService_Illuminate_NoAlgorithm(t *testing.T) {
 	s := newTestService(t)
 	seedTriangle(t, s)
 
 	resp, err := s.Illuminate(context.Background(), &pb.IlluminateRequest{
-		Seed:         "a",
-		Step:         3,
-		K:            10,
-		Optimization: pb.Optimization_OPTIMIZATION_UNSPECIFIED,
+		Seed:      "a",
+		Step:      3,
+		K:         10,
+		Algorithm: pb.Algorithm_ALGORITHM_UNSPECIFIED,
 	})
 	if err != nil {
 		t.Fatalf("Illuminate: %v", err)
@@ -222,30 +222,48 @@ func TestLanternService_Illuminate_Unspecified(t *testing.T) {
 	}
 }
 
-func TestLanternService_Illuminate_AllOptimizations(t *testing.T) {
-	cases := []pb.Optimization{
-		pb.Optimization_OPTIMIZATION_MINIMUM_SPANNING_TREE,
-		pb.Optimization_OPTIMIZATION_MAXIMUM_SPANNING_TREE,
-		pb.Optimization_OPTIMIZATION_SHORTEST_PATH_TREE,
-		pb.Optimization_OPTIMIZATION_SHORTEST_PATH_TREE_INVERSE,
+// TestLanternService_Illuminate_AllAxisCombos exercises the orthogonal
+// axes introduced in #410: every algorithm × objective × weighting tuple
+// must run to completion and return at least one vertex against the
+// triangle seed. The (UNSPECIFIED algorithm, UNSPECIFIED objective)
+// combos are covered separately by the _NoAlgorithm test above.
+func TestLanternService_Illuminate_AllAxisCombos(t *testing.T) {
+	algorithms := []pb.Algorithm{
+		pb.Algorithm_ALGORITHM_MINIMUM_SPANNING_TREE,
+		pb.Algorithm_ALGORITHM_SHORTEST_PATH_TREE,
 	}
-	for _, opt := range cases {
-		t.Run(opt.String(), func(t *testing.T) {
-			s := newTestService(t)
-			seedTriangle(t, s)
-			resp, err := s.Illuminate(context.Background(), &pb.IlluminateRequest{
-				Seed:         "a",
-				Step:         3,
-				K:            10,
-				Optimization: opt,
-			})
-			if err != nil {
-				t.Fatalf("Illuminate(%v): %v", opt, err)
+	objectives := []pb.Objective{
+		pb.Objective_OBJECTIVE_MINIMIZE,
+		pb.Objective_OBJECTIVE_MAXIMIZE,
+	}
+	weightings := []pb.Weighting{
+		pb.Weighting_WEIGHTING_RAW,
+		pb.Weighting_WEIGHTING_TFIDF,
+	}
+	for _, algo := range algorithms {
+		for _, obj := range objectives {
+			for _, w := range weightings {
+				name := algo.String() + "/" + obj.String() + "/" + w.String()
+				t.Run(name, func(t *testing.T) {
+					s := newTestService(t)
+					seedTriangle(t, s)
+					resp, err := s.Illuminate(context.Background(), &pb.IlluminateRequest{
+						Seed:      "a",
+						Step:      3,
+						K:         10,
+						Algorithm: algo,
+						Objective: obj,
+						Weighting: w,
+					})
+					if err != nil {
+						t.Fatalf("Illuminate(%s): %v", name, err)
+					}
+					if len(resp.Graph.Vertices) == 0 {
+						t.Errorf("Illuminate(%s) returned empty vertices", name)
+					}
+				})
 			}
-			if len(resp.Graph.Vertices) == 0 {
-				t.Errorf("Illuminate(%v) returned empty vertices", opt)
-			}
-		})
+		}
 	}
 }
 
@@ -635,9 +653,9 @@ type fakeHotPathMetrics struct {
 }
 
 type illuminateObs struct {
-	optimization                  string
-	visitedVertices, visitedEdges int
-	traversal, optimize           time.Duration
+	algorithm, objective, weighting string
+	visitedVertices, visitedEdges   int
+	traversal, optimize             time.Duration
 }
 
 type scanObs struct {
@@ -651,8 +669,8 @@ type batchObs struct {
 	size int
 }
 
-func (f *fakeHotPathMetrics) OnIlluminate(opt string, vV, vE int, traversal, optimize time.Duration) {
-	f.illuminate = append(f.illuminate, illuminateObs{opt, vV, vE, traversal, optimize})
+func (f *fakeHotPathMetrics) OnIlluminate(algorithm, objective, weighting string, vV, vE int, traversal, optimize time.Duration) {
+	f.illuminate = append(f.illuminate, illuminateObs{algorithm, objective, weighting, vV, vE, traversal, optimize})
 }
 func (f *fakeHotPathMetrics) OnScan(op string, results int, d time.Duration) {
 	f.scan = append(f.scan, scanObs{op, results, d})
@@ -692,20 +710,20 @@ func TestLanternService_HotPathMetrics_EmitsOnceForBatchAndIlluminate(t *testing
 		t.Errorf("batch[1] = %+v, want {AddEdges, 1}", fm.batch[1])
 	}
 
-	// Illuminate → exactly one illuminate observation with the right label.
+	// Illuminate → exactly one illuminate observation with the right labels.
 	if _, err := s.Illuminate(ctx, &pb.IlluminateRequest{
-		Seed:         "a",
-		Step:         2,
-		K:            10,
-		Optimization: pb.Optimization_OPTIMIZATION_MINIMUM_SPANNING_TREE,
+		Seed:      "a",
+		Step:      2,
+		K:         10,
+		Algorithm: pb.Algorithm_ALGORITHM_MINIMUM_SPANNING_TREE,
 	}); err != nil {
 		t.Fatalf("Illuminate: %v", err)
 	}
 	if len(fm.illuminate) != 1 {
 		t.Fatalf("illuminate observations = %d, want 1", len(fm.illuminate))
 	}
-	if got := fm.illuminate[0]; got.optimization != "mst" || got.visitedVertices < 1 {
-		t.Errorf("illuminate[0] = %+v, want optimization=mst & visitedVertices≥1", got)
+	if got := fm.illuminate[0]; got.algorithm != "mst" || got.objective != "minimize" || got.weighting != "raw" || got.visitedVertices < 1 {
+		t.Errorf("illuminate[0] = %+v, want algorithm=mst objective=minimize weighting=raw visitedVertices≥1", got)
 	}
 
 	// Singular forwarders must NOT double-instrument: GetVertex forwards

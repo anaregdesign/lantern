@@ -53,7 +53,7 @@ from the source so the LLM and the human reader see the same contract.
 | `forget` | Delete a fact by exact key. Idempotent. Edges incident to the key are NOT cascade-deleted; they decay on their own TTL. |
 | `list_under` | Enumerate facts whose key starts with the given prefix, in ascending key order. Defaults to 50 entries, max 500. |
 | `remember_relation` | Add (or reinforce) a directed relation from one fact to another. **Additive** — writing the same relation twice strengthens it; this is the Hebbian primitive. |
-| `recall_related` | Walk the graph from a seed key with `step`, `k`, and an optional `objective` (`mst` / `max-st` / `spt` / `inverse-spt`). Returns related facts with cumulative weights. Does NOT refresh TTL. |
+| `recall_related` | Walk the graph from a seed key with `step`, `k`, and three orthogonal axes (`algorithm` ∈ `none` / `mst` / `spt`, `objective` ∈ `min` / `max`, `weighting` ∈ `raw` / `tfidf`; see #410). Returns related facts with cumulative weights. Does NOT refresh TTL. |
 
 A `ping` tool also exists so operators can sanity-check the wire without
 mutating state.

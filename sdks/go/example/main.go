@@ -219,12 +219,13 @@ func main() {
 
 	/*
 		Illuminate:
-			Illuminate is a function that returns neighbor graph of a vertex.
-			seed is a vertex to start illuminate.
-			step is a number of step from seed.
-			k is a number of edges from each vertex.
-			tfidf is a flag to use tfidf or not. If tfidf is true, weight of edge is calculated by tfidf.
-			Else, weight of edge is calculated by weights of edges.
+			Illuminate returns a subgraph rooted at `seed`. The walk runs
+			server-side and returns the subgraph already shaped for the
+			caller via three orthogonal axes introduced in #410:
+
+				- WithAlgorithm: AlgorithmUnspecified | AlgorithmMinimumSpanningTree | AlgorithmShortestPathTree
+				- WithObjective: ObjectiveMinimize | ObjectiveMaximize
+				- WithWeighting: WeightingRaw | WeightingTFIDF
 
 			ex)
 			a -> b -> c -> d

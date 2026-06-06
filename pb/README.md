@@ -24,7 +24,7 @@ go get github.com/anaregdesign/lantern/pb@latest
 
 | Path | Description |
 | --- | --- |
-| `graph/v1/` | Generated protobuf message types and enums (e.g. `Vertex`, `Edge`, `Optimization`) for the `graph.v1` package. |
+| `graph/v1/` | Generated protobuf message types and enums (e.g. `Vertex`, `Edge`, `Algorithm`, `Objective`, `Weighting`) for the `graph.v1` package. |
 | `graph/v1/graphv1connect/` | Connect-Go handler and client interfaces for `graph.v1.LanternService` and `graph.v1.LanternReplicationService`. |
 
 The package name is `pb` for the root module marker and matches the

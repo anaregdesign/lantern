@@ -152,17 +152,42 @@ export type VertexKind =
   | "nil";
 
 /**
- * Server-side post-processing strategy for Lantern.illuminate. Values match
- * the proto enum exactly; pass `Optimization.UNSPECIFIED` to disable.
+ * Post-traversal subgraph reduction for Lantern.illuminate (#410). The
+ * orthogonal triple `Algorithm × Objective × Weighting` replaces the
+ * legacy flat `Optimization` enum.
+ *
+ *   - `Algorithm`  selects the reduction: NONE (raw subgraph), MST,
+ *                  or SPT (shortest-path tree from the seed).
+ *   - `Objective`  selects the direction: MINIMIZE (cost-weighted) or
+ *                  MAXIMIZE (relevance-weighted). Ignored when
+ *                  algorithm = UNSPECIFIED.
+ *   - `Weighting`  selects the edge-weight transform applied BEFORE
+ *                  the BFS walk: RAW (edge.weight verbatim) or TFIDF
+ *                  (re-score over per-vertex out-edge distribution).
+ *
+ * Values match the proto enum exactly; the server resolves UNSPECIFIED
+ * to (algorithm=NONE, objective=MINIMIZE, weighting=RAW).
  */
-export const Optimization = {
+export const Algorithm = {
   UNSPECIFIED: 0,
   MINIMUM_SPANNING_TREE: 1,
-  MAXIMUM_SPANNING_TREE: 2,
-  SHORTEST_PATH_TREE: 3,
-  SHORTEST_PATH_TREE_INVERSE: 4,
+  SHORTEST_PATH_TREE: 2,
 } as const;
-export type Optimization = (typeof Optimization)[keyof typeof Optimization];
+export type Algorithm = (typeof Algorithm)[keyof typeof Algorithm];
+
+export const Objective = {
+  UNSPECIFIED: 0,
+  MINIMIZE: 1,
+  MAXIMIZE: 2,
+} as const;
+export type Objective = (typeof Objective)[keyof typeof Objective];
+
+export const Weighting = {
+  UNSPECIFIED: 0,
+  RAW: 1,
+  TFIDF: 2,
+} as const;
+export type Weighting = (typeof Weighting)[keyof typeof Weighting];
 
 export interface Vertex {
   readonly key: string;

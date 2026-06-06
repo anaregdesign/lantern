@@ -38,12 +38,14 @@ export type {
   ScanOptions,
 } from "./options.js";
 export {
+  Algorithm,
   Duration,
   Float32,
   Int32,
-  Optimization,
+  Objective,
   Uint32,
   Uint64,
+  Weighting,
   fromEdgeJson,
   fromVertexJson,
   toEdgeJson,

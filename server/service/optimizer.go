@@ -13,26 +13,39 @@ import (
 // trees) and must honour ctx for cancellation.
 type optimizer func(ctx context.Context, g *coregraph.Graph[string, *pb.Vertex], seed string) (*coregraph.Graph[string, *pb.Vertex], error)
 
-// optimizers maps each pb.Optimization variant to its strategy. The zero /
-// UNSPECIFIED variant is intentionally absent: callers treat a nil lookup
-// result as "no optimization", which preserves the original behaviour where
-// the switch's default branch was a no-op.
+// resolveOptimizer returns the post-traversal reduction for an
+// (algorithm, objective) pair. Returns nil when no reduction is needed
+// — the caller treats nil as "return the raw discovered subgraph".
 //
-// Adding a new optimization is now a single map entry — no service-handler
-// edit required.
-var optimizers = map[pb.Optimization]optimizer{
-	pb.Optimization_OPTIMIZATION_MINIMUM_SPANNING_TREE: func(ctx context.Context, g *coregraph.Graph[string, *pb.Vertex], seed string) (*coregraph.Graph[string, *pb.Vertex], error) {
-		return g.MinimumSpanningTreeContext(ctx, seed)
-	},
-	pb.Optimization_OPTIMIZATION_MAXIMUM_SPANNING_TREE: func(ctx context.Context, g *coregraph.Graph[string, *pb.Vertex], seed string) (*coregraph.Graph[string, *pb.Vertex], error) {
-		return g.MaximumSpanningTreeContext(ctx, seed)
-	},
-	pb.Optimization_OPTIMIZATION_SHORTEST_PATH_TREE: func(ctx context.Context, g *coregraph.Graph[string, *pb.Vertex], seed string) (*coregraph.Graph[string, *pb.Vertex], error) {
-		return g.ShortestPathTreeContext(ctx, seed, identityCost)
-	},
-	pb.Optimization_OPTIMIZATION_SHORTEST_PATH_TREE_INVERSE: func(ctx context.Context, g *coregraph.Graph[string, *pb.Vertex], seed string) (*coregraph.Graph[string, *pb.Vertex], error) {
-		return g.ShortestPathTreeContext(ctx, seed, inverseCost)
-	},
+// Adding a new algorithm × objective combination is now a single switch
+// arm; no service-handler edit required. Per #410 the dispatch surface
+// is the orthogonal three-axes design (algorithm, objective, weighting)
+// and the historical flat Optimization enum is gone.
+//
+// Note: objective ALGORITHM_UNSPECIFIED → nil (no reduction). Objective
+// OBJECTIVE_UNSPECIFIED resolves to MINIMIZE per the proto-level default.
+func resolveOptimizer(algo pb.Algorithm, obj pb.Objective) optimizer {
+	switch algo {
+	case pb.Algorithm_ALGORITHM_MINIMUM_SPANNING_TREE:
+		if obj == pb.Objective_OBJECTIVE_MAXIMIZE {
+			return func(ctx context.Context, g *coregraph.Graph[string, *pb.Vertex], seed string) (*coregraph.Graph[string, *pb.Vertex], error) {
+				return g.MaximumSpanningTreeContext(ctx, seed)
+			}
+		}
+		return func(ctx context.Context, g *coregraph.Graph[string, *pb.Vertex], seed string) (*coregraph.Graph[string, *pb.Vertex], error) {
+			return g.MinimumSpanningTreeContext(ctx, seed)
+		}
+	case pb.Algorithm_ALGORITHM_SHORTEST_PATH_TREE:
+		if obj == pb.Objective_OBJECTIVE_MAXIMIZE {
+			return func(ctx context.Context, g *coregraph.Graph[string, *pb.Vertex], seed string) (*coregraph.Graph[string, *pb.Vertex], error) {
+				return g.ShortestPathTreeContext(ctx, seed, inverseCost)
+			}
+		}
+		return func(ctx context.Context, g *coregraph.Graph[string, *pb.Vertex], seed string) (*coregraph.Graph[string, *pb.Vertex], error) {
+			return g.ShortestPathTreeContext(ctx, seed, identityCost)
+		}
+	}
+	return nil
 }
 
 func identityCost(weight float32) float32 { return weight }
@@ -44,22 +57,44 @@ func inverseCost(weight float32) float32 {
 	return 1 / weight
 }
 
-// optimizationLabel maps a pb.Optimization enum value to the canonical
-// metrics label string. Unknown variants fall back to "unspecified" so
-// adding a new enum without a metrics update is non-fatal — dashboards
-// just bucket the new variant alongside no-op runs until the label set
-// expands.
-func optimizationLabel(o pb.Optimization) string {
-	switch o {
-	case pb.Optimization_OPTIMIZATION_MINIMUM_SPANNING_TREE:
+// algorithmLabel / objectiveLabel / weightingLabel produce the canonical
+// metric label string for each axis. UNSPECIFIED resolves to the same
+// label the server would resolve it to at execution time:
+//   - Algorithm UNSPECIFIED → "none"  (no reduction)
+//   - Objective UNSPECIFIED → "minimize"
+//   - Weighting UNSPECIFIED → "raw"
+//
+// Unknown enum values (a future axis added in proto without a metrics
+// update) fall through to a synthetic "unknown" bucket so dashboards
+// still surface them instead of crashing the pre-warm step.
+func algorithmLabel(a pb.Algorithm) string {
+	switch a {
+	case pb.Algorithm_ALGORITHM_UNSPECIFIED:
+		return "none"
+	case pb.Algorithm_ALGORITHM_MINIMUM_SPANNING_TREE:
 		return "mst"
-	case pb.Optimization_OPTIMIZATION_MAXIMUM_SPANNING_TREE:
-		return "max_mst"
-	case pb.Optimization_OPTIMIZATION_SHORTEST_PATH_TREE:
+	case pb.Algorithm_ALGORITHM_SHORTEST_PATH_TREE:
 		return "spt"
-	case pb.Optimization_OPTIMIZATION_SHORTEST_PATH_TREE_INVERSE:
-		return "spt_inverse"
-	default:
-		return "unspecified"
 	}
+	return "unknown"
+}
+
+func objectiveLabel(o pb.Objective) string {
+	switch o {
+	case pb.Objective_OBJECTIVE_UNSPECIFIED, pb.Objective_OBJECTIVE_MINIMIZE:
+		return "minimize"
+	case pb.Objective_OBJECTIVE_MAXIMIZE:
+		return "maximize"
+	}
+	return "unknown"
+}
+
+func weightingLabel(w pb.Weighting) string {
+	switch w {
+	case pb.Weighting_WEIGHTING_UNSPECIFIED, pb.Weighting_WEIGHTING_RAW:
+		return "raw"
+	case pb.Weighting_WEIGHTING_TFIDF:
+		return "tfidf"
+	}
+	return "unknown"
 }

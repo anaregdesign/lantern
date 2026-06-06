@@ -35,7 +35,9 @@
 //
 //   - Vertex       = pb.Vertex       (see value.go)
 //   - Edge         = pb.Edge         (see client.go)
-//   - Optimization = pb.Optimization (see client.go)
+//   - Algorithm    = pb.Algorithm    (see client.go)
+//   - Objective    = pb.Objective    (see client.go)
+//   - Weighting    = pb.Weighting    (see client.go)
 //
 // Because these are true aliases (declared with `type X = pb.X`, not
 // `type X pb.X`), client.Vertex and pb.Vertex are the same type and

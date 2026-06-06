@@ -137,7 +137,8 @@ function controlsEqual(a: IlluminateControls, b: IlluminateControls): boolean {
   return (
     a.step === b.step &&
     a.k === b.k &&
-    a.tfidf === b.tfidf &&
-    a.optimization === b.optimization
+    a.algorithm === b.algorithm &&
+    a.objective === b.objective &&
+    a.weighting === b.weighting
   );
 }

@@ -8,8 +8,11 @@ phases:
 target:
   endpoints: ["localhost:6380", "localhost:6381", "localhost:6382"]
   call: graph.v1.LanternService/Illuminate
-  # IlluminateRequest fields: seed, step, k, tfidf, optimization. There is
-  # no `tolerance` field — earlier drafts of this scenario had a typo.
+  # IlluminateRequest fields (#410): seed, step, k, algorithm, objective,
+  # weighting. Missing axes default to UNSPECIFIED, which the server
+  # resolves to (algorithm=none, objective=minimize, weighting=raw) — i.e.
+  # the raw discovered subgraph. See `illuminate_mst_max` /
+  # `illuminate_spt_tfidf` for the exercised-axes variants.
   data_template: |
     {"seed":"k-{{mod .RequestNumber 1000}}","step":2,"k":32}
 leak_gate:

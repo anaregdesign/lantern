@@ -52,20 +52,20 @@ func TestRecallRelated_FlatNeighborsRanked(t *testing.T) {
 	}
 }
 
-func TestRecallRelated_RejectsUnknownObjective(t *testing.T) {
+func TestRecallRelated_RejectsUnknownAlgorithm(t *testing.T) {
 	h := newTestHarness(t)
 	h.callExpectError(t, "recall_related", map[string]any{
 		"seed":      "x",
-		"objective": "not-a-real-objective",
+		"algorithm": "not-a-real-algorithm",
 	})
 }
 
 func TestRecallRelated_PropagatesIlluminateOptions(t *testing.T) {
 	h := newTestHarness(t)
 	h.fake.illuminateFn = func(_ context.Context, _ string, opts ...client.IlluminateOption) (*client.Graph, error) {
-		// Three options expected: optimization + step + k.
-		if len(opts) != 3 {
-			t.Errorf("Illuminate option count = %d, want 3", len(opts))
+		// Five options expected: algorithm + objective + weighting + step + k.
+		if len(opts) != 5 {
+			t.Errorf("Illuminate option count = %d, want 5", len(opts))
 		}
 		return &client.Graph{Vertices: map[string]*client.Vertex{"x": {Key: "x"}}}, nil
 	}
@@ -73,7 +73,9 @@ func TestRecallRelated_PropagatesIlluminateOptions(t *testing.T) {
 		"seed":      "x",
 		"step":      3,
 		"k":         5,
-		"objective": "mst",
+		"algorithm": "mst",
+		"objective": "max",
+		"weighting": "tfidf",
 	})
 }
 
