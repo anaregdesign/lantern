@@ -1,34 +1,31 @@
-import type { components } from "./lantern-api.gen";
 import type { LanternClient } from "./lantern-client";
 import { LanternApiError } from "./error";
+import type { Vertex } from "./types";
 
-export type GetVertexResponse = components["schemas"]["v1GetVertexResponse"];
-export type Vertex = components["schemas"]["v1Vertex"];
+export type { Vertex } from "./types";
 
 /**
- * Calls `LanternService_GetVertex` (GET `/v1/vertices/{key}`).
+ * Calls `LanternService.GetVertex` over Connect-Web.
  *
- * Returns `null` when the vertex does not exist (HTTP 404 / NOT_FOUND).
- * Any other non-2xx response is thrown as a `LanternApiError`.
+ * Returns `null` when the vertex does not exist (CodeNotFound).
+ * Any other failure is rethrown as a `LanternApiError` so existing
+ * usecase error toasts surface unchanged.
  */
 export async function getVertex(
   client: LanternClient,
   key: string,
   init?: { signal?: AbortSignal },
 ): Promise<Vertex | null> {
-  const path = `/v1/vertices/${encodeURIComponent(key)}`;
-  const response = await client.request(path, {
-    method: "GET",
-    signal: init?.signal,
-  });
-  if (response.status === 404) {
-    // Drain body to release the connection.
-    await response.text().catch(() => undefined);
-    return null;
+  try {
+    const resp = await client.getVertex({ key }, { signal: init?.signal });
+    if (!resp.vertex) {
+      return null;
+    }
+    return resp.vertex.toJson() as Vertex;
+  } catch (err) {
+    if (LanternApiError.isNotFound(err)) {
+      return null;
+    }
+    throw LanternApiError.fromUnknown("GetVertex", err);
   }
-  if (!response.ok) {
-    throw await LanternApiError.fromResponse(response, "GetVertex");
-  }
-  const body = (await response.json()) as GetVertexResponse;
-  return body.vertex ?? null;
 }

@@ -1,8 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-const GATEWAY_URL =
-  process.env.LANTERN_E2E_GATEWAY_URL ?? "http://127.0.0.1:6381";
-const STORAGE_KEY = "lantern.admin.baseUrl";
+import { CONNECT_URL, STORAGE_KEY, putEdges, putVertices } from "./helpers";
 
 /**
  * Seeds a tiny star graph centred on `e2e:illum:hub` so the Illuminate
@@ -11,35 +9,15 @@ const STORAGE_KEY = "lantern.admin.baseUrl";
  * to keep the assertions tight.
  */
 test.beforeAll(async () => {
-  const put = await fetch(`${GATEWAY_URL}/v1/vertices`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      vertices: [
-        { key: "e2e:illum:hub", value: { string: "hub" } },
-        { key: "e2e:illum:left", value: { int32: 1 } },
-        { key: "e2e:illum:right", value: { int32: 2 } },
-      ],
-    }),
-  });
-  if (!put.ok) {
-    throw new Error(`seed vertices failed: ${put.status} ${await put.text()}`);
-  }
-  const putEdges = await fetch(`${GATEWAY_URL}/v1/edges/put`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      edges: [
-        { tail: "e2e:illum:hub", head: "e2e:illum:left", weight: 1 },
-        { tail: "e2e:illum:hub", head: "e2e:illum:right", weight: 3 },
-      ],
-    }),
-  });
-  if (!putEdges.ok) {
-    throw new Error(
-      `seed edges failed: ${putEdges.status} ${await putEdges.text()}`,
-    );
-  }
+  await putVertices([
+    { key: "e2e:illum:hub", string: "hub" },
+    { key: "e2e:illum:left", int32: 1 },
+    { key: "e2e:illum:right", int32: 2 },
+  ]);
+  await putEdges([
+    { tail: "e2e:illum:hub", head: "e2e:illum:left", weight: 1 },
+    { tail: "e2e:illum:hub", head: "e2e:illum:right", weight: 3 },
+  ]);
 });
 
 test.beforeEach(async ({ page }) => {
@@ -51,7 +29,7 @@ test.beforeEach(async ({ page }) => {
         // Storage may be unavailable in some browser modes.
       }
     },
-    { key: STORAGE_KEY, value: GATEWAY_URL },
+    { key: STORAGE_KEY, value: CONNECT_URL },
   );
 });
 

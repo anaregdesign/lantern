@@ -1,16 +1,18 @@
-import type { components } from "./lantern-api.gen";
+import { Edge as ProtoEdge } from "~/lib/api/gen/graph/v1/graph_pb";
+import type { JsonValue } from "@bufbuild/protobuf";
+
 import type { LanternClient } from "./lantern-client";
 import { LanternApiError } from "./error";
+import type { Edge, PutEdgeBody, PutEdgeResponse } from "./types";
 
-export type PutEdgeResponse = components["schemas"]["v1PutEdgeResponse"];
-export type PutEdgeBody = components["schemas"]["LanternServicePutEdgeBody"];
+export type { Edge, PutEdgeBody, PutEdgeResponse } from "./types";
 
 /**
- * Calls `LanternService_PutEdge` (PUT `/v1/edges/{edge.tail}/{edge.head}`).
+ * Calls `LanternService.PutEdge` over Connect-Web.
  *
- * Idempotent: overwrites the (tail, head) edge with the supplied weight
- * and expiration. The CRUD UI surfaces this side-by-side with
- * `AddEdge` so users see the additive vs replacing distinction.
+ * Idempotent: overwrites the (tail, head) edge with the supplied
+ * weight and expiration. `tail` and `head` always override any value
+ * on `body.edge`.
  */
 export async function putEdge(
   client: LanternClient,
@@ -19,14 +21,14 @@ export async function putEdge(
   body: PutEdgeBody,
   init?: { signal?: AbortSignal },
 ): Promise<PutEdgeResponse> {
-  const path = `/v1/edges/${encodeURIComponent(tail)}/${encodeURIComponent(head)}`;
-  const response = await client.request(path, {
-    method: "PUT",
-    body: JSON.stringify(body),
-    signal: init?.signal,
-  });
-  if (!response.ok) {
-    throw await LanternApiError.fromResponse(response, "PutEdge");
+  const flat: Edge = { ...(body.edge ?? {}), tail, head };
+  try {
+    const resp = await client.putEdge(
+      { edge: ProtoEdge.fromJson(flat as JsonValue) },
+      { signal: init?.signal },
+    );
+    return resp.toJson() as PutEdgeResponse;
+  } catch (err) {
+    throw LanternApiError.fromUnknown("PutEdge", err);
   }
-  return (await response.json()) as PutEdgeResponse;
 }

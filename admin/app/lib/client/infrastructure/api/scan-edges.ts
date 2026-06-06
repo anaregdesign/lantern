@@ -1,29 +1,45 @@
-import type { components } from "./lantern-api.gen";
 import type { LanternClient } from "./lantern-client";
 import { LanternApiError } from "./error";
+import type { ScanEdgesRequest, ScanEdgesResponse } from "./types";
 
-export type Edge = components["schemas"]["v1Edge"];
-export type ScanEdgesRequest = components["schemas"]["v1ScanEdgesRequest"];
-export type ScanEdgesResponse = components["schemas"]["v1ScanEdgesResponse"];
+export type { Edge, ScanEdgesRequest, ScanEdgesResponse } from "./types";
 
 /**
- * Calls `LanternService_ScanEdges` (POST `/v1/edges/scan`).
+ * Calls `LanternService.ScanEdges` over Connect-Web.
  *
- * Pass `cursor` from a previous response's `nextCursor` to fetch the next
- * page. Either prefix may be empty; both empty scans every edge.
+ * Pass `cursor` from a previous response's `nextCursor` to fetch the
+ * next page. Either prefix may be empty; both empty scans every edge.
  */
 export async function scanEdges(
   client: LanternClient,
   request: ScanEdgesRequest,
   init?: { signal?: AbortSignal },
 ): Promise<ScanEdgesResponse> {
-  const response = await client.request("/v1/edges/scan", {
-    method: "POST",
-    body: JSON.stringify(request),
-    signal: init?.signal,
-  });
-  if (!response.ok) {
-    throw await LanternApiError.fromResponse(response, "ScanEdges");
+  try {
+    const resp = await client.scanEdges(
+      {
+        tailPrefix: request.tailPrefix ?? "",
+        headPrefix: request.headPrefix ?? "",
+        limit: request.limit ?? 0,
+        cursor: decodeCursor(request.cursor),
+      },
+      { signal: init?.signal },
+    );
+    return resp.toJson() as ScanEdgesResponse;
+  } catch (err) {
+    throw LanternApiError.fromUnknown("ScanEdges", err);
   }
-  return (await response.json()) as ScanEdgesResponse;
+}
+
+function decodeCursor(cursor: string | undefined): Uint8Array<ArrayBuffer> {
+  if (!cursor) {
+    return new Uint8Array(new ArrayBuffer(0));
+  }
+  const bin = atob(cursor);
+  const buf = new ArrayBuffer(bin.length);
+  const out = new Uint8Array(buf);
+  for (let i = 0; i < bin.length; i++) {
+    out[i] = bin.charCodeAt(i);
+  }
+  return out;
 }

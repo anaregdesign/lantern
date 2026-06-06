@@ -95,6 +95,7 @@ type httpConnectServer struct {
 // (mirroring the gRPC path where replication can be disabled).
 func NewConnectServer(
 	cfg ConnectListenerConfig,
+	cors CORSConfig,
 	svc *service.LanternService,
 	rep *service.LanternReplicationService,
 	val *ValidationInterceptor,
@@ -116,11 +117,16 @@ func NewConnectServer(
 			handlerOpts...,
 		))
 	}
+	// Apply the same CORS middleware the gateway used so browser SPAs
+	// (admin, #339) can talk to the Connect listener without a separate
+	// allow-list. CORSMiddleware is a no-op when LANTERN_CORS_ALLOWED_
+	// ORIGINS is empty, so non-browser callers see no overhead.
+	handler := CORSMiddleware(cors)(mux)
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	return &httpConnectServer{
 		srv: &http.Server{
 			Addr:              addr,
-			Handler:           h2c.NewHandler(mux, &http2.Server{}),
+			Handler:           h2c.NewHandler(handler, &http2.Server{}),
 			ReadHeaderTimeout: cfg.ReadHeaderTimeout,
 		},
 		logger: logger,

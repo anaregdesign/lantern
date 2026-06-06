@@ -71,10 +71,11 @@ func loadCORSConfig() CORSConfig {
 // response. They match the surface declared by the grpc-gateway annotations
 // today plus the headers the admin SPA needs (Content-Type for JSON
 // payloads, Authorization for the future bearer flow, X-Request-Id for
-// correlation logging).
+// correlation logging, Connect-Protocol-Version and Connect-Timeout-Ms
+// for the additive Connect-Web transport introduced in #337/#339).
 var (
 	corsAllowedMethods = "GET, POST, PUT, DELETE, OPTIONS"
-	corsAllowedHeaders = "Content-Type, Authorization, X-Request-Id"
+	corsAllowedHeaders = "Content-Type, Authorization, X-Request-Id, Connect-Protocol-Version, Connect-Timeout-Ms"
 )
 
 // CORSMiddleware returns an HTTP middleware that applies cfg to every
