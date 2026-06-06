@@ -44,6 +44,38 @@ See [`example/main.go`](example/main.go) for a comprehensive end-to-end
 walkthrough covering vertices, edges (`AddEdge` vs `PutEdge` semantics),
 `Illuminate`, prefix scans, batches, and TLS.
 
+## Switching to Connect (v1.0 preview)
+
+The SDK ships an **additive** Connect-Go transport alongside the
+classic gRPC dial path (see [#335](https://github.com/anaregdesign/lantern/issues/335),
+[#337](https://github.com/anaregdesign/lantern/issues/337),
+[#338](https://github.com/anaregdesign/lantern/issues/338)). The Connect
+transport will become the default in v1.0; both constructors return the
+same `*Lantern`, so application code that holds the value is transport-
+agnostic.
+
+To use Connect today, run the server with the additive listener enabled
+(e.g. `LANTERN_CONNECT_PORT=6381`) and dial via:
+
+```go
+c, err := client.NewLanternConnect("http://localhost:6381")
+```
+
+Differences from `NewLantern`:
+
+- **baseURL must include the scheme.** Use `http://` for h2c (the
+  built-in default) or `https://` for TLS — supply a TLS-aware
+  `http.Client` via `WithHTTPClient` for the latter.
+- **gRPC dial options are not accepted.** Pass a configured
+  `*http.Client` via `WithHTTPClient`; forward Connect-Go interceptors
+  via `WithConnectClientOption(connect.WithInterceptors(...))`.
+- **Health checks** move from the gRPC Health service to the metrics
+  server's `/healthz`. Use `client.PingConnect(ctx, httpClient,
+  "http://lantern:9090")` instead of `c.Ping(ctx)`.
+
+Existing constructors and options remain fully supported through the
+v0.x line and only retire in v1.0.
+
 ## Connection topologies
 
 All three constructors enable the same default retry policy
