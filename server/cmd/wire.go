@@ -48,6 +48,8 @@ func initializeApp() (*App, error) {
 		provider.NewGatewayConfig,
 		provider.NewCORSConfig,
 		provider.NewGatewayServer,
+		provider.NewConnectListenerConfig,
+		provider.NewConnectServer,
 		provider.NewLifecycleConfig,
 		newLanternService,
 		newLanternReplicationService,

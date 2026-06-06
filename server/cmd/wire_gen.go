@@ -56,6 +56,8 @@ func initializeApp() (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	connectListenerConfig := provider.NewConnectListenerConfig(config)
+	connectServer := provider.NewConnectServer(connectListenerConfig, lanternService, lanternReplicationService, logger)
 	tracing, err := provider.NewTracing(logger)
 	if err != nil {
 		return nil, err
@@ -67,6 +69,6 @@ func initializeApp() (*App, error) {
 	antiEntropy := provider.NewAntiEntropyDriver(peerConfig, replicationConfig, antiEntropyConfig, lanternService, graphCache, pump, antiEntropyMetrics, logger)
 	mainRegisteredHealth := registerHealthAndReflection(observabilityConfig, server, healthServer)
 	cacheGCHooksWired := provider.WireCacheGCHooks(graphCache, domainMetrics, logger)
-	app := newApp(config, logger, lanternService, lanternServer, metricsServer, gatewayServer, tracing, domainMetrics, healthServer, pump, antiEntropy, peerConfig, replicationConfig, mainRegisteredHealth, cacheGCHooksWired)
+	app := newApp(config, logger, lanternService, lanternServer, metricsServer, gatewayServer, connectServer, tracing, domainMetrics, healthServer, pump, antiEntropy, peerConfig, replicationConfig, mainRegisteredHealth, cacheGCHooksWired)
 	return app, nil
 }
