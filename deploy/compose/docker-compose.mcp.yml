@@ -52,7 +52,7 @@ services:
     environment:
       # Use the Compose service DNS name so this works on Linux without
       # `host.docker.internal`.
-      LANTERN_ADDR: "lantern:6380"
+      LANTERN_ADDR: "http://lantern:6380"
       LANTERN_MCP_PING_TIMEOUT: "5s"
       # Uncomment any of the 12 TTL buckets you want to override; values
       # must use Go time.ParseDuration syntax (no `d` suffix).

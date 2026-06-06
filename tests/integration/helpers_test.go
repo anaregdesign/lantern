@@ -113,10 +113,10 @@ func newConnectTestServer(
 // http.Client because httptest spins up plain HTTP/2-over-cleartext.
 // Optional SDK-side options (WithBatchChunkSize, ...) flow
 // through.
-func newConnectClientFor(t *testing.T, baseURL string, opts ...client.ConnectOption) *client.Lantern {
+func newConnectClientFor(t *testing.T, baseURL string, opts ...client.Option) *client.Lantern {
 	t.Helper()
-	all := append([]client.ConnectOption{client.WithHTTPClient(h2cClient())}, opts...)
-	l, err := client.NewLanternConnect(baseURL, all...)
+	all := append([]client.Option{client.WithHTTPClient(h2cClient())}, opts...)
+	l, err := client.NewLantern(baseURL, all...)
 	if err != nil {
 		t.Fatalf("NewLanternConnect: %v", err)
 	}

@@ -70,13 +70,13 @@ func (l *Lantern) ScanVertices(ctx context.Context, prefix string, opts ...ScanO
 	}
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	resp, err := l.client.ScanVertices(ctx, &pb.ScanVerticesRequest{
+	resp, err := unary(ctx, &pb.ScanVerticesRequest{
 		Prefix: prefix,
 		Limit:  o.limit,
 		Cursor: o.cursor,
-	})
+	}, l.client.ScanVertices)
 	if err != nil {
-		return nil, nil, wrapStatus(err)
+		return nil, nil, err
 	}
 	return resp.GetVertices(), resp.GetNextCursor(), nil
 }
@@ -89,9 +89,9 @@ func (l *Lantern) ScanVertices(ctx context.Context, prefix string, opts ...ScanO
 func (l *Lantern) CountVerticesByPrefix(ctx context.Context, prefix string) (uint64, error) {
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	resp, err := l.client.CountVerticesByPrefix(ctx, &pb.CountVerticesByPrefixRequest{Prefix: prefix})
+	resp, err := unary(ctx, &pb.CountVerticesByPrefixRequest{Prefix: prefix}, l.client.CountVerticesByPrefix)
 	if err != nil {
-		return 0, wrapStatus(err)
+		return 0, err
 	}
 	return resp.GetCount(), nil
 }
@@ -103,9 +103,10 @@ func (l *Lantern) CountVerticesByPrefix(ctx context.Context, prefix string) (uin
 // Operational notes:
 //   - This is a destructive bulk operation. Always run with WithDryRun first
 //     to confirm the matched count before issuing a real delete.
-//   - The call is excluded from the SDK's default retry policy because a
-//     partial-success retry could over-delete (server already removed N when
-//     UNAVAILABLE was returned; the retry would remove the next N).
+//   - The SDK does not retry this call automatically. If you wrap your
+//     http.Client with retry middleware, exclude DeleteVerticesByPrefix
+//     because a partial-success retry could over-delete (server already
+//     removed N when transport failed; the retry would remove the next N).
 //   - To remove EVERY matching vertex when the prefix exceeds the server's
 //     max delete-by-prefix limit, call repeatedly until the returned count is
 //     zero — the server applies the limit per call.
@@ -116,13 +117,13 @@ func (l *Lantern) DeleteVerticesByPrefix(ctx context.Context, prefix string, opt
 	}
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	resp, err := l.client.DeleteVerticesByPrefix(ctx, &pb.DeleteVerticesByPrefixRequest{
+	resp, err := unary(ctx, &pb.DeleteVerticesByPrefixRequest{
 		Prefix: prefix,
 		Limit:  o.limit,
 		DryRun: o.dryRun,
-	})
+	}, l.client.DeleteVerticesByPrefix)
 	if err != nil {
-		return 0, wrapStatus(err)
+		return 0, err
 	}
 	return resp.GetDeleted(), nil
 }

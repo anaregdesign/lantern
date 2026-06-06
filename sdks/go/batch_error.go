@@ -12,7 +12,7 @@ import "fmt"
 //
 //   - resume by re-sending input[Written:],
 //   - surface the partial progress in logs/metrics,
-//   - branch on errors.Is for the underlying gRPC sentinel
+//   - branch on errors.Is for the underlying SDK sentinel
 //     (ErrInvalidArgument / ErrResourceExhausted / ...).
 //
 // BatchError wraps the underlying error, so errors.Is and errors.Unwrap
@@ -21,8 +21,9 @@ type BatchError struct {
 	// Written is the number of input entries successfully committed before
 	// the failure. Always 0 <= Written < len(input).
 	Written int
-	// Err is the underlying error returned by the failing chunk RPC, already
-	// passed through wrapStatus so SDK sentinels match via errors.Is.
+	// Err is the underlying error returned by the failing chunk RPC,
+	// already passed through wrapConnectErr so SDK sentinels match via
+	// errors.Is.
 	Err error
 }
 

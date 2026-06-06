@@ -64,14 +64,14 @@ func (l *Lantern) ScanEdges(ctx context.Context, opts ...EdgeScanOption) (edges 
 	}
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	resp, err := l.client.ScanEdges(ctx, &pb.ScanEdgesRequest{
+	resp, err := unary(ctx, &pb.ScanEdgesRequest{
 		TailPrefix: o.tailPrefix,
 		HeadPrefix: o.headPrefix,
 		Limit:      o.limit,
 		Cursor:     o.cursor,
-	})
+	}, l.client.ScanEdges)
 	if err != nil {
-		return nil, nil, wrapStatus(err)
+		return nil, nil, err
 	}
 	return resp.GetEdges(), resp.GetNextCursor(), nil
 }

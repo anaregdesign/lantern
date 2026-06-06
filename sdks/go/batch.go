@@ -29,7 +29,7 @@ func runBatchWrite[T any](
 		n, err := fn(cctx, chunk)
 		cancel()
 		if err != nil {
-			return total, &BatchError{Written: written, Err: wrapStatus(err)}
+			return total, &BatchError{Written: written, Err: err}
 		}
 		written += len(chunk)
 		total += int(n)
@@ -38,9 +38,10 @@ func runBatchWrite[T any](
 }
 
 // runBatchRead splits items into chunks and invokes fn for each chunk with
-// the per-call timeout applied. Read paths abort on the first failure with a
-// wrapped gRPC error (no *BatchError) — they have no partial-result contract
-// to expose. Callers accumulate into their own variables via the closure.
+// the per-call timeout applied. Read paths abort on the first failure with
+// the underlying (already-wrapped) error — they have no partial-result
+// contract to expose. Callers accumulate into their own variables via the
+// closure.
 func runBatchRead[T any](
 	ctx context.Context,
 	l *Lantern,
@@ -55,7 +56,7 @@ func runBatchRead[T any](
 		err := fn(cctx, chunk)
 		cancel()
 		if err != nil {
-			return wrapStatus(err)
+			return err
 		}
 	}
 	return nil

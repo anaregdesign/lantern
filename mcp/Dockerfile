@@ -44,7 +44,7 @@ FROM gcr.io/distroless/static:nonroot
 # Default Lantern endpoint and ping timeout. Override at runtime via -e.
 # The TTL ladder is loaded from LANTERN_MCP_TTL_<BUCKET>=<duration> env
 # overrides; see mcp/internal/ttl for the 12 bucket names.
-ENV LANTERN_ADDR=localhost:6380 \
+ENV LANTERN_ADDR=http://localhost:6380 \
     LANTERN_MCP_PING_TIMEOUT=3s
 
 COPY --from=builder /out/lantern-mcp /lantern-mcp

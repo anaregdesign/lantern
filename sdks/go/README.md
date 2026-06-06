@@ -19,17 +19,13 @@ The package name is `client`, so once imported you call into it as
 ```go
 ctx := context.Background()
 
-c, err := client.NewLantern("localhost:6380")
+c, err := client.NewLantern("http://localhost:6380")
 if err != nil {
     log.Fatal(err)
 }
 defer c.Close()
 
-if err := c.PutVertex(ctx, client.VertexInput{
-    Key:   "user:42",
-    Value: "alice",
-    TTL:   10 * time.Minute,
-}); err != nil {
+if err := c.PutVertex(ctx, "user:42", "alice", 10*time.Minute); err != nil {
     log.Fatal(err)
 }
 
@@ -44,50 +40,63 @@ See [`example/main.go`](example/main.go) for a comprehensive end-to-end
 walkthrough covering vertices, edges (`AddEdge` vs `PutEdge` semantics),
 `Illuminate`, prefix scans, batches, and TLS.
 
-## Connect-only (since #367)
+## Transport
 
-As of #367 the SDK is **Connect-only**. The legacy gRPC dial path and
-its options have been removed; both `NewLantern` and `NewLanternConnect`
-return the same `*Lantern` and share one `Option` type. Existing call
-sites that pass a bare `"host:port"` keep compiling — `NewLantern` now
-just normalises the input by prepending `http://` and delegates to
-`NewLanternConnect`.
+The SDK is Connect-only (Connect-Go over h2c by default, or HTTP/2 over
+TLS). `NewLantern` requires a base URL with scheme:
+
+- `http://host:port` — h2c, the Lantern primary listener default.
+- `https://host[:port]` — TLS; supply a TLS-aware `*http.Client` via
+  `WithHTTPClient`.
 
 ```go
-// Equivalent — pick whichever reads better at your call site.
-c1, _ := client.NewLantern("lantern.svc:6380")
-c2, _ := client.NewLanternConnect("http://lantern.svc:6380")
+import (
+    "crypto/tls"
+    "net/http"
+
+    "golang.org/x/net/http2"
+    client "github.com/anaregdesign/lantern/sdks/go"
+)
+
+cfg := &tls.Config{
+    RootCAs:    pool,
+    NextProtos: []string{"h2"},
+}
+hc := &http.Client{Transport: &http2.Transport{TLSClientConfig: cfg}}
+c, _ := client.NewLantern("https://lantern.example.com:6380",
+    client.WithHTTPClient(hc))
 ```
 
-Differences from the pre-#367 surface:
+Bare `"host:port"` is rejected. For load balancing across multiple
+replicas use a reverse proxy, k8s Service / Ingress, or DNS round-robin
+in front of Lantern — the SDK speaks to one URL. The HA runbook
+([../../docs/ha-runbook.md](../../docs/ha-runbook.md)) walks through the
+canonical reverse-proxy fan-out pattern.
 
-- **baseURL may include a scheme.** Bare `"host:port"` is upgraded to
-  `http://host:port` (h2c). Use `https://...` explicitly with a TLS-aware
-  `http.Client` via `WithHTTPClient` for TLS.
-- **gRPC dial options are gone.** Pass a configured `*http.Client` via
-  `WithHTTPClient`; forward Connect-Go client options via
-  `WithConnectClientOption(connect.With...())`. Compression: use
-  `client.WithConnectClientOption(connect.WithSendCompression("gzip"))`.
-- **Health check** now POSTs to the same Connect base URL at
-  `/grpc.health.v1.Health/Check` (mounted by the server's
-  connectrpc.com/grpchealth handler). Continue calling `c.Ping(ctx)`.
-- **Load balancing** moves out of the SDK. The pre-#367
-  `NewLanternWithEndpoints([]string{...})` LB constructor is gone; use
-  DNS (`dns:///service.ns.svc:6380` style works via the operating system
-  resolver), a k8s Service / Ingress, or a reverse proxy / sidecar in
-  front of Lantern. The HA runbook ([../../docs/ha-runbook.md](../../docs/ha-runbook.md))
-  walks through the canonical reverse-proxy fan-out pattern.
+### Options
 
-### v0.x → v1.0 option migration
-
-| v0.x option | Replacement |
+| Option | Purpose |
 | --- | --- |
-| `WithTransportCredentials(creds)` | `WithHTTPClient(&http.Client{Transport: &http2.Transport{TLSClientConfig: cfg}})` |
-| `WithDialOption(...)` | `WithConnectClientOption(...)` for Connect equivalents; per-RPC auth via a custom `http.RoundTripper` on the supplied `http.Client`. |
-| `WithCompression("gzip")` | `WithConnectClientOption(connect.WithSendCompression("gzip"))` |
-| `WithKeepaliveParams(...)` | Tune the `http2.Transport` on the supplied `http.Client` (`ReadIdleTimeout`, `PingTimeout`). |
-| `WithDefaultServiceConfig(...)` | Wrap the `http.Client.Transport` with your own retry middleware; the SDK no longer ships a built-in retry policy. |
-| `WithOpenTelemetry()` | Wrap the `http.Client.Transport` with `otelhttp.NewTransport(...)`. |
+| `WithHTTPClient(*http.Client)` | Override the default h2c client (for TLS, custom timeouts, OpenTelemetry transport wrapping, etc.). |
+| `WithConnectClientOption(...connect.ClientOption)` | Escape hatch for Connect-Go client options — interceptors, codec selection, compression, `connect.WithGRPC()`, `otelconnect.NewInterceptor()`. |
+| `WithDefaultTimeout(time.Duration)` | Per-call timeout applied when the caller's context has no deadline. `0` (default) disables. |
+| `WithBatchChunkSize(int)` | Override the chunk size used by `PutVertices`, `AddEdges`, `PutEdges`, `DeleteVertices`, `DeleteEdges`, `GetVertices`, `GetEdges`. Default `1000`. |
+
+Compression example:
+
+```go
+import "connectrpc.com/connect"
+
+c, _ := client.NewLantern("http://lantern.svc:6380",
+    client.WithConnectClientOption(connect.WithSendCompression("gzip")))
+```
+
+### Health check
+
+`(*Lantern).Ping` POSTs a `Connect+JSON` `grpc.health.v1.Health/Check`
+against the same base URL the client was built with. The Lantern server
+mounts the gRPC-Health-v1 surface via `connectrpc.com/grpchealth` on
+the primary listener (no separate metrics port required).
 
 ## Model definition policy ("no parallel models")
 
@@ -147,17 +156,17 @@ design discussion.
 | Category | Singular | Plural |
 | --- | --- | --- |
 | Read   | `GetVertex` / `GetEdge` | `GetVertices` / `GetEdges` |
-| Write  | `PutVertex` / `AddEdge` / `PutEdge` | `PutVertices` / `AddEdges` / `PutEdges` |
+| Write  | `PutVertex` / `PutVertexAt` / `AddEdge` / `AddEdgeAt` / `PutEdge` / `PutEdgeAt` | `PutVertices` / `AddEdges` / `PutEdges` |
 | Delete | `DeleteVertex` / `DeleteEdge` | `DeleteVertices` / `DeleteEdges` |
-| Scan   | — | `ScanByPrefix`, `ScanEdgesByTailPrefix`, `ScanEdgesByHeadPrefix`, `DeleteByPrefix` |
-| Graph  | — | `Illuminate` |
-| Batches | — | `Batch(...).Do(ctx)` builder for mixed ops in one round trip |
-| Health | `Check`, `Watch` (grpc health/v1) | — |
+| Scan   | — | `ScanVertices`, `ScanVerticesAll`, `ScanEdges`, `ScanEdgesAll`, `CountVerticesByPrefix`, `DeleteVerticesByPrefix` |
+| Graph  | `Illuminate` | — |
+| Replication | `Subscribe` (server-stream iter.Seq2) | — |
+| Status | `Ping`, `GetServerStatus`, `GetReplicationStatus` | — |
 
-`AddEdge` is **additive** (multiple calls add weight, each contribution carries
-its own TTL); `PutEdge` is **idempotent replace** (single weight, single TTL).
-See the in-line discussion in `example/main.go` for the semantic
-difference.
+`AddEdge` is **additive** (multiple calls add weight, each contribution
+carries its own TTL); `PutEdge` is **idempotent replace** (single weight,
+single TTL). See the in-line discussion in `example/main.go` for the
+semantic difference.
 
 ## Versioning
 
@@ -168,23 +177,8 @@ points at the new `pb` tag.
 
 ## Authentication
 
-TLS / mTLS: pass a TLS-aware `*http.Client` via `WithHTTPClient` — wrap
-`http2.Transport{TLSClientConfig: cfg}` around a `tls.Config` carrying your
-roots and any client certs:
-
-```go
-cfg := &tls.Config{
-    RootCAs:      pool,
-    Certificates: []tls.Certificate{cert}, // mTLS
-    NextProtos:   []string{"h2"},
-}
-hc := &http.Client{Transport: &http2.Transport{TLSClientConfig: cfg}}
-c, _ := client.NewLantern("https://lantern.example.com:6380",
-    client.WithHTTPClient(hc))
-```
-
-Per-RPC authentication (bearer tokens, OAuth): wrap the `http.Client`'s
-`Transport` with a custom `http.RoundTripper` that injects the header — the
-SDK no longer hosts gRPC `PerRPCCredentials`. See
-[`cli/cmd/root.go`](../../cli/cmd/root.go) for the canonical TLS-aware
-`*http.Client` construction.
+TLS / mTLS is plumbed through `WithHTTPClient` — see the [Transport](#transport)
+section. Per-RPC authentication (bearer tokens, OAuth) is supplied by
+wrapping the `http.Client`'s `Transport` with a custom `http.RoundTripper`
+that injects the header. See [`cli/cmd/root.go`](../../cli/cmd/root.go) for
+the canonical TLS-aware `*http.Client` construction.

@@ -22,7 +22,8 @@ var Version = "dev"
 // directly to skip env wiring.
 type Config struct {
 	// LanternAddr is the target passed to client.NewLantern. Default
-	// "localhost:6380" matches the Lantern server's default port.
+	// "http://localhost:6380" matches the Lantern server's default
+	// port and the SDK's plaintext-h2c scheme requirement.
 	LanternAddr string
 	// PingTimeout bounds the startup health check. The MCP server will
 	// refuse to register tools if the Lantern endpoint is unreachable
@@ -46,7 +47,7 @@ type Config struct {
 func DefaultConfig() (Config, error) {
 	addr := os.Getenv("LANTERN_ADDR")
 	if addr == "" {
-		addr = "localhost:6380"
+		addr = "http://localhost:6380"
 	}
 	timeout := 5 * time.Second
 	if raw := os.Getenv("LANTERN_MCP_PING_TIMEOUT"); raw != "" {
