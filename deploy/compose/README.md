@@ -12,6 +12,11 @@ single-host HA experiments.
   per running replica. Each lantern container's peer pump (#190)
   resolves that name, filters its own IP via `LocalIPSet()`, and opens
   replication streams to the other peers.
+- 1 × `admin` browser SPA (`ghcr.io/anaregdesign/lantern-admin`)
+  on host port `8080`. Pure SPA host (Caddy on `:8080`), no reverse
+  proxy — the browser talks to the gateway directly, so the `lantern`
+  service has `LANTERN_CORS_ALLOWED_ORIGINS=http://localhost:8080`
+  baked in.
 - `prometheus` scrapes via `dns_sd_configs` so it picks up every
   replica automatically (no static targets file to maintain).
 
@@ -63,6 +68,26 @@ Pick one of:
 > round-robin LB was removed when the SDK collapsed to Connect-only
 > ([#367](https://github.com/anaregdesign/lantern/issues/367)). Use a
 > reverse proxy or DNS round-robin instead.
+
+## Admin UI
+
+The compose file ships the `lantern-admin` browser SPA alongside the
+cluster. Open **<http://localhost:8080/>** after `docker compose up -d`
+finishes warming up. The admin connects to whichever lantern node the
+**Gateway** button (top-right of the SPA header) is set to — defaults
+to `http://localhost:6380`; change to `:6381` or `:6382` to point at
+the other replicas.
+
+The browser fetches directly against the gateway, so the lantern
+service sets `LANTERN_CORS_ALLOWED_ORIGINS=http://localhost:8080`.
+If you map the admin to a different external port / host, override
+that env to match (otherwise the browser preflight blocks the
+request). Override the image with
+`LANTERN_ADMIN_IMAGE=ghcr.io/anaregdesign/lantern-admin:v0.1.1
+docker compose up -d`.
+
+The admin container is **not** auth-fronted. Run it only on trusted
+networks, or put your own ingress-level auth proxy in front.
 
 ## Verifying peer discovery
 

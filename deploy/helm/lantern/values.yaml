@@ -132,3 +132,73 @@ serviceAccount:
 
 podAnnotations: {}
 podLabels: {}
+
+# Browser-facing admin SPA (lantern-admin). Disabled by default to
+# preserve the existing install footprint; flip `admin.enabled=true`
+# to render a Deployment + Service (and optionally an Ingress) for
+# the SPA. The container is a pure Caddy SPA host — the browser
+# calls the Lantern Service directly over Connect-Web, so the
+# lantern server must allow the admin origin via
+# `LANTERN_CORS_ALLOWED_ORIGINS` (set under `extraEnv` on the
+# StatefulSet, or via the auto-derived value when
+# `admin.ingress.enabled=true` — see admin-deployment.yaml).
+#
+# v1 ships **without** auth in front of the admin. Run it only on
+# trusted networks or front it with your own ingress-level auth
+# proxy.
+admin:
+  enabled: false
+
+  image:
+    repository: ghcr.io/anaregdesign/lantern-admin
+    # Defaults to .Chart.AppVersion (same convention as the server
+    # image); pin to a specific admin tag (e.g. "v0.1.1") in production.
+    tag: ""
+    pullPolicy: IfNotPresent
+
+  replicaCount: 1
+
+  service:
+    type: ClusterIP
+    port: 8080
+    annotations: {}
+
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    # When enabled, host MUST be set — the chart appends
+    # `https://<host>` to LANTERN_CORS_ALLOWED_ORIGINS on the
+    # StatefulSet so the browser preflight succeeds. Multiple hosts
+    # are not supported in v1; copy admin-ingress.yaml if you need a
+    # richer routing setup.
+    host: ""
+    tls: []
+    #  - secretName: lantern-admin-tls
+    #    hosts:
+    #      - admin.example.com
+
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 500m
+      memory: 128Mi
+
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    fsGroup: 65532
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
+    readOnlyRootFilesystem: false
+
+  extraEnv: []
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
