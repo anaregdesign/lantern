@@ -1,0 +1,32 @@
+/* Global host styles for FluentProvider. Keep this file minimal: feature styles
+ * live in CSS Modules colocated with their components. Per the project
+ * architecture skill, this file may only contain reset + FluentProvider host
+ * wiring.
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  background-color: var(--colorNeutralBackground1);
+  color: var(--colorNeutralForeground1);
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}

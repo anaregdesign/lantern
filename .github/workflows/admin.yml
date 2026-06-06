@@ -1,0 +1,83 @@
+name: Admin
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'admin/**'
+      - 'pb/openapiv2/**'
+      - '.github/workflows/admin.yml'
+  pull_request:
+    paths:
+      - 'admin/**'
+      - 'pb/openapiv2/**'
+      - '.github/workflows/admin.yml'
+
+defaults:
+  run:
+    working-directory: admin
+
+jobs:
+  build:
+    name: Build (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ['20', '22']
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node ${{ matrix.node-version }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'pnpm'
+          cache-dependency-path: admin/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Codegen (OpenAPI types)
+        run: pnpm codegen
+
+      - name: Verify codegen is up to date
+        run: |
+          if ! git diff --quiet -- app/lib/client/infrastructure/api/lantern-api.gen.ts; then
+            echo "::error::Generated API types are out of date. Run 'pnpm codegen' inside admin/ and commit the result."
+            git diff -- app/lib/client/infrastructure/api/lantern-api.gen.ts
+            exit 1
+          fi
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Format check
+        run: pnpm format:check
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build
+        run: pnpm build
+
+      - name: Install Playwright browsers
+        if: matrix.node-version == '22'
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Playwright smoke test
+        if: matrix.node-version == '22'
+        run: pnpm test:e2e
+
+      - name: Upload Playwright report
+        if: matrix.node-version == '22' && failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: admin/playwright-report
+          retention-days: 7
