@@ -239,12 +239,13 @@ func (s *LanternReplicationService) loggerOrDefault() *slog.Logger {
 // Snapshot implements pb.LanternReplicationServiceServer.
 //
 // Flow:
-//  1. Stamp the cutoff (cutoff_seq, cutoff_hlc) and send a SnapshotHeader
-//     as the very first frame so receivers know where to resume Subscribe.
-//     cutoff_seq is `log.LastSeq()` at snapshot-open time (0 when the log
-//     is empty or replication is disabled — the peer is expected to start
-//     Subscribe at cutoff_seq + 1 = 1, which matches the mutation log's
-//     first valid seq); cutoff_hlc is `clock.Now()`.
+//  1. Stamp the per-origin cutoff and cutoff_hlc and send a
+//     SnapshotHeader as the very first frame so receivers know how
+//     to resume Subscribe. cutoff_seq_per_origin is the current
+//     contents of the OriginStatesProvider (each origin's last applied
+//     seq); cutoff_hlc is clock.Now(). An empty map is sent when the
+//     local server has not yet applied any origin (cold cluster) or
+//     when no origin state provider is wired (test path).
 //  2. Materialise vertices and edges through the Backend snapshot API
 //     (taken under the GraphCache write lock). Stream each as its own
 //     SnapshotResponse frame, honouring stream.Context() cancellation
@@ -261,10 +262,14 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, _ *pb.Snapshot
 		return connect.NewError(connect.CodeUnavailable, errors.New("snapshot is not enabled on this server"))
 	}
 
-	var cutoffSeq uint64
-	if s.log != nil {
-		if last, ok := s.log.LastSeq(); ok {
-			cutoffSeq = last
+	var cutoffPerOrigin map[string]uint64
+	if s.origins != nil {
+		states := s.origins.OriginStates()
+		if len(states) > 0 {
+			cutoffPerOrigin = make(map[string]uint64, len(states))
+			for _, st := range states {
+				cutoffPerOrigin[hex.EncodeToString(st.Origin[:])] = st.LastSeq
+			}
 		}
 	}
 	var cutoffHLC hlc.Timestamp
@@ -274,8 +279,8 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, _ *pb.Snapshot
 	header := &pb.SnapshotResponse{
 		Entry: &pb.SnapshotResponse_Header{
 			Header: &pb.SnapshotHeader{
-				CutoffSeq: cutoffSeq,
-				CutoffHlc: hlcToProto(cutoffHLC),
+				CutoffSeqPerOrigin: cutoffPerOrigin,
+				CutoffHlc:          hlcToProto(cutoffHLC),
 			},
 		},
 	}

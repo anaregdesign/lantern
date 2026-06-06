@@ -252,19 +252,22 @@ func (p *Pump) Run(ctx context.Context) error {
 // one Subscribe (and optional Snapshot) session. On session error,
 // the loop sleeps for the current backoff (doubling, capped at
 // BackoffMax) and retries until ctx is cancelled.
+//
+// Under the leaderless Subscribe contract (#415, B-2/B-3/B-4) the
+// pump no longer tracks per-peer next-seq state across reconnects:
+// every Subscribe sends an empty per-origin cursor and the local
+// ApplyMutation watermark CAS dedups anything we have already seen
+// via this peer or any other. This trades one full-range scan per
+// reconnect (bounded by the mutation log ring capacity) for a much
+// simpler reconnect path that holds zero authoritative state.
 func (p *Pump) runPeer(ctx context.Context, addr string) {
 	log := p.cfg.Logger.With(slog.String("peer", addr))
 	defer p.tracker.removePeer(addr)
 	backoff := p.cfg.BackoffMin
-	// fromSeq is the next seq we expect from THIS peer. Survives
-	// across reconnects so transient disconnects don't trigger a
-	// full snapshot — Subscribe(fromSeq) just resumes.
-	var fromSeq uint64
 
 	for ctx.Err() == nil {
 		p.tracker.setState(addr, PeerStateConnecting)
-		nextSeq, err := p.session(ctx, addr, fromSeq)
-		fromSeq = nextSeq
+		err := p.session(ctx, addr)
 		if err == nil {
 			// session ended cleanly (ctx cancelled mid-stream).
 			return
@@ -291,11 +294,10 @@ func (p *Pump) runPeer(ctx context.Context, addr string) {
 }
 
 // session runs one Subscribe attempt against addr, falling back to a
-// Snapshot+Subscribe bootstrap when the server reports the requested
-// from_seq as gapped. Returns the next from_seq to resume at on the
-// next attempt, plus any non-nil error (nil means clean ctx-cancel
-// exit).
-func (p *Pump) session(ctx context.Context, addr string, fromSeq uint64) (uint64, error) {
+// Snapshot+Subscribe bootstrap when the server reports the request as
+// gapped. Returns nil on clean ctx-cancel exit; otherwise the
+// non-nil error from the Subscribe / Snapshot RPC.
+func (p *Pump) session(ctx context.Context, addr string) error {
 	log := p.cfg.Logger.With(slog.String("peer", addr))
 	// Connect-Go clients are cheap to construct and own no
 	// connection state of their own — the underlying http.Client
@@ -311,52 +313,50 @@ func (p *Pump) session(ctx context.Context, addr string, fromSeq uint64) (uint64
 
 	p.cfg.Metrics.OnPumpConnect(addr)
 	log.Info("replication pump: peer transition",
-		slog.String("transition", "connect"),
-		slog.Uint64("from_seq", fromSeq))
+		slog.String("transition", "connect"))
 
-	next, err := p.subscribe(ctx, cli, addr, fromSeq)
+	err := p.subscribe(ctx, cli, addr)
 	if err == nil {
 		p.cfg.Metrics.OnPumpDisconnect(addr, "clean")
 		log.Info("replication pump: peer transition",
 			slog.String("transition", "disconnect"),
-			slog.String("reason", "clean"),
-			slog.Uint64("next_seq", next))
-		return next, nil
+			slog.String("reason", "clean"))
+		return nil
 	}
 	if ctx.Err() != nil {
 		p.cfg.Metrics.OnPumpDisconnect(addr, "ctx_cancel")
 		log.Info("replication pump: peer transition",
 			slog.String("transition", "disconnect"),
 			slog.String("reason", "ctx_cancel"))
-		return next, nil
+		return nil
 	}
 	if connect.CodeOf(err) == connect.CodeFailedPrecondition {
-		// gapped: snapshot, then resume from cutoff+1.
+		// gapped: snapshot, then resume Subscribe with an empty
+		// cursor again. The local ApplyMutation watermark CAS
+		// (#415, B-3) dedups any entries the snapshot already
+		// covered, so we do not need to thread cutoff_seq_per_origin
+		// through to the Subscribe call.
 		log.Info("replication pump: peer transition",
 			slog.String("transition", "snapshot_start"),
-			slog.String("reason", "gapped"),
-			slog.Uint64("requested_from_seq", fromSeq))
-		cutoff, sErr := p.snapshot(ctx, cli, addr)
-		if sErr != nil {
+			slog.String("reason", "gapped"))
+		if sErr := p.snapshot(ctx, cli, addr); sErr != nil {
 			p.cfg.Metrics.OnPumpDisconnect(addr, "snapshot_failed")
 			log.Warn("replication pump: peer transition",
 				slog.String("transition", "snapshot_finish"),
 				slog.String("reason", "snapshot_failed"),
 				slog.Any("err", sErr))
-			return next, sErr
+			return sErr
 		}
 		log.Info("replication pump: peer transition",
 			slog.String("transition", "snapshot_finish"),
-			slog.String("reason", "applied"),
-			slog.Uint64("cutoff_seq", cutoff))
-		next, err = p.subscribe(ctx, cli, addr, cutoff+1)
+			slog.String("reason", "applied"))
+		err = p.subscribe(ctx, cli, addr)
 		if err == nil {
 			p.cfg.Metrics.OnPumpDisconnect(addr, "clean")
 			log.Info("replication pump: peer transition",
 				slog.String("transition", "disconnect"),
-				slog.String("reason", "clean"),
-				slog.Uint64("next_seq", next))
-			return next, nil
+				slog.String("reason", "clean"))
+			return nil
 		}
 	}
 	p.cfg.Metrics.OnPumpDisconnect(addr, "subscribe_failed")
@@ -364,37 +364,28 @@ func (p *Pump) session(ctx context.Context, addr string, fromSeq uint64) (uint64
 		slog.String("transition", "disconnect"),
 		slog.String("reason", "subscribe_failed"),
 		slog.Any("err", err))
-	return next, err
+	return err
 }
 
 // subscribe opens a Subscribe stream and applies every received
 // Mutation. Self-origin mutations are dropped before dispatch.
-// Returns the seq of the last successfully-applied mutation + 1 (i.e.
-// the next seq to resume at) and any error from Receive / Apply. A
-// clean stream end returns nil.
+// Returns any error from Receive / Apply; a clean stream end
+// returns nil.
 //
-// Under the leaderless Subscribe contract (#415) the peer's local log
-// carries mutations from every cluster origin, not just the peer's
-// own writes. The pump intentionally requests the entire retained
-// range on every reconnect (empty cursor) and relies on the per-origin
-// watermark CAS inside LanternService.ApplyMutation to dedup entries
-// it has already seen via another peer hop. This keeps reconnect logic
-// simple — no need to track per-(peer, origin) state on the pump side
-// — at the price of one full-range scan per reconnect, which is
-// bounded by the mutation log ring capacity.
-//
-// The fromSeq argument is retained for reconnect bookkeeping (the
-// pump remembers it across reconnects, and the snapshot fallback path
-// resumes from cutoff_seq + 1), but it is intentionally NOT sent on
-// the wire — the cursor stays empty so the pump observes every
-// retained entry and the CAS gate filters out duplicates.
-func (p *Pump) subscribe(ctx context.Context, cli graphv1connect.LanternReplicationServiceClient, addr string, fromSeq uint64) (uint64, error) {
+// Under the leaderless Subscribe contract (#415) the peer's local
+// log carries mutations from every cluster origin, not just the
+// peer's own writes. The pump intentionally sends an empty cursor
+// (= deliver every retained entry) and relies on the per-origin
+// watermark CAS inside LanternService.ApplyMutation to dedup
+// entries it has already seen via another peer hop. This keeps the
+// reconnect path simple at the price of one full-range scan per
+// reconnect, bounded by the mutation log ring capacity.
+func (p *Pump) subscribe(ctx context.Context, cli graphv1connect.LanternReplicationServiceClient, addr string) error {
 	stream, err := cli.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{}))
 	if err != nil {
-		return fromSeq, err
+		return err
 	}
 	defer func() { _ = stream.Close() }()
-	next := fromSeq
 	for stream.Receive() {
 		resp := stream.Msg()
 		mu := resp.GetMutation()
@@ -403,35 +394,38 @@ func (p *Pump) subscribe(ctx context.Context, cli graphv1connect.LanternReplicat
 		}
 		if p.isSelfEcho(mu) {
 			p.cfg.Metrics.OnPumpDropSelfEcho(addr)
-			next = mu.GetSeq() + 1
 			continue
 		}
 		if err := p.apply.ApplyMutation(ctx, mu); err != nil {
-			return next, err
+			return err
 		}
 		p.cfg.Metrics.OnPumpApply(addr)
-		next = mu.GetSeq() + 1
 		p.tracker.recordEvent(addr, mu.GetSeq(), time.Now())
 	}
 	if err := stream.Err(); err != nil && !errors.Is(err, io.EOF) {
-		return next, err
+		return err
 	}
-	return next, nil
+	return nil
 }
 
 // snapshot opens a Snapshot stream and replays every Header / Vertex
 // / Edge frame into the local cache via the SnapshotApplier seams.
-// Returns the cutoff_seq from the Header (the value the caller
-// should pass as fromSeq-1 on the subsequent Subscribe).
-func (p *Pump) snapshot(ctx context.Context, cli graphv1connect.LanternReplicationServiceClient, addr string) (uint64, error) {
+// Returns nil on a clean (header + payload + footer) stream, or any
+// receive / apply error.
+//
+// The header's cutoff_seq_per_origin and cutoff_hlc are intentionally
+// not propagated outwards: the next Subscribe call sends an empty
+// cursor and relies on the local per-origin watermark CAS to dedup
+// any entries that the snapshot already covered, so the pump does not
+// need to thread the cutoff through to the resume call.
+func (p *Pump) snapshot(ctx context.Context, cli graphv1connect.LanternReplicationServiceClient, addr string) error {
 	stream, err := cli.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{}))
 	if err != nil {
-		return 0, err
+		return err
 	}
 	defer func() { _ = stream.Close() }()
 	start := time.Now()
 	var (
-		cutoff       uint64
 		gotHeader    bool
 		vertexCount  uint64
 		edgeCount    uint64
@@ -443,16 +437,15 @@ func (p *Pump) snapshot(ctx context.Context, cli graphv1connect.LanternReplicati
 		switch e := resp.GetEntry().(type) {
 		case *pb.SnapshotResponse_Header:
 			if gotHeader {
-				return cutoff, connect.NewError(connect.CodeInternal, errors.New("snapshot: duplicate header frame"))
+				return connect.NewError(connect.CodeInternal, errors.New("snapshot: duplicate header frame"))
 			}
-			cutoff = e.Header.GetCutoffSeq()
 			gotHeader = true
 		case *pb.SnapshotResponse_Vertex:
 			if !gotHeader {
-				return cutoff, connect.NewError(connect.CodeInternal, errors.New("snapshot: vertex frame before header"))
+				return connect.NewError(connect.CodeInternal, errors.New("snapshot: vertex frame before header"))
 			}
 			if sawFooter {
-				return cutoff, connect.NewError(connect.CodeInternal, errors.New("snapshot: vertex frame after footer"))
+				return connect.NewError(connect.CodeInternal, errors.New("snapshot: vertex frame after footer"))
 			}
 			sv := e.Vertex
 			v := sv.GetVertex()
@@ -465,10 +458,10 @@ func (p *Pump) snapshot(ctx context.Context, cli graphv1connect.LanternReplicati
 			}
 		case *pb.SnapshotResponse_Edge:
 			if !gotHeader {
-				return cutoff, connect.NewError(connect.CodeInternal, errors.New("snapshot: edge frame before header"))
+				return connect.NewError(connect.CodeInternal, errors.New("snapshot: edge frame before header"))
 			}
 			if sawFooter {
-				return cutoff, connect.NewError(connect.CodeInternal, errors.New("snapshot: edge frame after footer"))
+				return connect.NewError(connect.CodeInternal, errors.New("snapshot: edge frame after footer"))
 			}
 			se := e.Edge
 			edgeHLC := snapshotHLC(se.GetHlc())
@@ -488,13 +481,13 @@ func (p *Pump) snapshot(ctx context.Context, cli graphv1connect.LanternReplicati
 		}
 	}
 	if err := stream.Err(); err != nil && !errors.Is(err, io.EOF) {
-		return cutoff, err
+		return err
 	}
 	if !gotHeader {
-		return cutoff, connect.NewError(connect.CodeInternal, errors.New("snapshot: stream ended before header"))
+		return connect.NewError(connect.CodeInternal, errors.New("snapshot: stream ended before header"))
 	}
 	if !sawFooter {
-		return cutoff, connect.NewError(connect.CodeInternal, errors.New("snapshot: stream ended before footer"))
+		return connect.NewError(connect.CodeInternal, errors.New("snapshot: stream ended before footer"))
 	}
 	if footerCounts.v != vertexCount || footerCounts.e != edgeCount {
 		// Count mismatch is a soft warning, not a hard error — the
@@ -508,7 +501,7 @@ func (p *Pump) snapshot(ctx context.Context, cli graphv1connect.LanternReplicati
 			slog.Uint64("edges_footer", footerCounts.e))
 	}
 	p.cfg.Metrics.OnPumpSnapshotReplayed(addr, vertexCount, edgeCount, time.Since(start))
-	return cutoff, nil
+	return nil
 }
 
 // isSelfEcho returns true when mu was originated by the local node.

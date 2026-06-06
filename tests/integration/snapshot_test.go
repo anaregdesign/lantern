@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,7 +45,8 @@ func newSnapshotPeer(t *testing.T, nodeID hlc.NodeID) *snapshotPeer {
 	clock := hlc.New(nodeID, hlc.Options{})
 	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
 	svc := service.NewLanternService(cache).WithReplication(log, clock, nil)
-	rep := service.NewLanternReplicationService(log, cache, clock)
+	rep := service.NewLanternReplicationService(log, cache, clock).
+		WithOriginStates(svc)
 	srv := newConnectTestServer(t, svc, rep, vi.ConnectInterceptor())
 
 	return &snapshotPeer{
@@ -60,10 +62,11 @@ func newSnapshotPeer(t *testing.T, nodeID hlc.NodeID) *snapshotPeer {
 // surface (#184): a follower opens Snapshot on a primary populated
 // with a mix of vertices and additive edges, replays every frame
 // into its own cache via the HLC + ContribID seams, and observes the
-// same Illuminate answers as the primary. The header's cutoff_seq is
-// also asserted to equal the primary's mutationlog LastSeq at
-// snapshot-open time so that downstream Subscribe(cutoff_seq+1) is
-// guaranteed to stitch cleanly.
+// same Illuminate answers as the primary. The header's per-origin
+// cutoff is also asserted to equal the primary's local writes
+// watermark at snapshot-open time so that downstream
+// `Subscribe(from_seq_per_origin = {origin: seq+1})` is guaranteed
+// to stitch cleanly (#415, B-4).
 func TestSnapshot_E2E_PrimaryToFollower(t *testing.T) {
 	primary := newSnapshotPeer(t, hlc.NodeID{0x01})
 	follower := newSnapshotPeer(t, hlc.NodeID{0x02})
@@ -114,8 +117,17 @@ func TestSnapshot_E2E_PrimaryToFollower(t *testing.T) {
 	if hdr == nil {
 		t.Fatalf("first frame is not a header: %T", first.GetEntry())
 	}
-	if hdr.GetCutoffSeq() != wantSeq {
-		t.Errorf("cutoff_seq=%d want %d", hdr.GetCutoffSeq(), wantSeq)
+	// Per-origin cutoff (#415, B-4): primary only saw its own writes,
+	// so the map has exactly one entry keyed by primary's NodeID with
+	// the latest applied seq for that origin (== primary.log.LastSeq
+	// when the log only ever held local writes).
+	cutoff := hdr.GetCutoffSeqPerOrigin()
+	if len(cutoff) != 1 {
+		t.Fatalf("cutoff_seq_per_origin has %d entries, want 1", len(cutoff))
+	}
+	primaryOriginHex := "01" + strings.Repeat("00", 15)
+	if got := cutoff[primaryOriginHex]; got != wantSeq {
+		t.Errorf("cutoff_seq_per_origin[%s]=%d want %d", primaryOriginHex, got, wantSeq)
 	}
 	if hdr.GetCutoffHlc() == nil {
 		t.Errorf("cutoff_hlc is nil; expected the primary clock's current Now()")

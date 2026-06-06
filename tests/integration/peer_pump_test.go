@@ -238,9 +238,10 @@ func TestPeerPump_GapRecoverySnapshot(t *testing.T) {
 
 	primary := newPumpNode(t, hlc.NodeID{0xA1})
 	// Pre-populate the primary BEFORE the follower attaches. With a
-	// small ring buffer the follower's effective fromSeq=1 will be
-	// below firstSeq → service returns FailedPrecondition reason=gapped
-	// → Pump runs a snapshot to catch up, then resubscribes.
+	// small ring buffer the follower's effective request (empty
+	// cursor → server starts at oldest = 1) will be below firstSeq
+	// → service returns FailedPrecondition reason=gapped → Pump runs
+	// a snapshot to catch up, then resubscribes.
 	for i := 0; i < 16; i++ {
 		if err := primary.sdk.PutVertex(ctx, fmt.Sprintf("pre-%d", i), "v", time.Minute); err != nil {
 			t.Fatalf("primary.PutVertex[%d]: %v", i, err)
@@ -260,7 +261,10 @@ func TestPeerPump_GapRecoverySnapshot(t *testing.T) {
 
 	// After the snapshot, a fresh write on the primary must arrive
 	// via the resubscribed stream — proves that Pump correctly
-	// resumed Subscribe from cutoff_seq+1.
+	// resubscribed after the snapshot bootstrap (#415, B-4: cutoff is
+	// per-origin and lives in the server's watermark tracker; the
+	// pump just sends an empty cursor again and the local
+	// ApplyMutation CAS dedups whatever the snapshot already covered).
 	if err := primary.sdk.PutVertex(ctx, "post-snapshot", "v", time.Minute); err != nil {
 		t.Fatalf("primary.PutVertex post: %v", err)
 	}
