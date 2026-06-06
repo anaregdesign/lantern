@@ -96,4 +96,13 @@ type Backend interface {
 	// locking.
 	SnapshotVertices() []graph.SnapshotVertex[string, *pb.Vertex]
 	SnapshotEdges() []graph.SnapshotEdge[string]
+
+	// VertexCount and EdgeCount return the current number of live entries
+	// in the underlying graph cache. Backed by index sizes — O(1) and
+	// safe to call from any RPC. Returned values are eventually-consistent
+	// snapshots (may include not-yet-GC'd expired entries, bounded by the
+	// LANTERN_GC_INTERVAL_SECONDS tick). Used by GetServerStatus (#314)
+	// to populate the admin UI's at-a-glance counters.
+	VertexCount() int
+	EdgeCount() int
 }

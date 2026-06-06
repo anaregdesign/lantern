@@ -79,6 +79,10 @@ func newLanternService(
 	backend service.Backend,
 	sc provider.ScanConfig,
 	rc provider.ReplicationConfig,
+	vc provider.ValidationLimits,
+	tc provider.TLSConfig,
+	cc provider.CacheConfig,
+	obs provider.ObservabilityConfig,
 	logger *slog.Logger,
 	log *mutationlog.Log,
 	clock *hlc.Clock,
@@ -98,7 +102,17 @@ func newLanternService(
 		WithTombstoneClampRejectHook(dm.OnTombstoneClampRejected).
 		WithTombstoneTTL(rc.TombstoneTTL).
 		WithHotPathMetrics(dm).
-		WithLogger(logger)
+		WithLogger(logger).
+		WithStatusInfo(service.StatusInfo{
+			Version:            obs.Version,
+			DefaultTTL:         cc.TTL,
+			MaxBatchSize:       uint32(vc.MaxBatchSize),
+			MaxKeyBytes:        uint32(vc.MaxKeyLen),
+			ScanDefaultLimit:   sc.ScanDefaultLimit,
+			ScanMaxLimit:       sc.ScanMaxLimit,
+			TLSEnabled:         tc.CertFile != "" && tc.KeyFile != "",
+			ReplicationEnabled: log != nil && clock != nil,
+		})
 	// Bind the mutation-log + origin-state samplers so DomainMetrics.Run
 	// can populate lantern_mutation_log_fill_ratio,
 	// lantern_mutation_log_evicted_total, and

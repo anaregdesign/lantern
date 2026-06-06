@@ -82,6 +82,11 @@ func (s *LanternServer) Run(ctx context.Context) error {
 		}
 	}
 
+	// Capture the "ready to serve" instant so GetServerStatus (#314)
+	// reports uptime relative to when the server actually started
+	// accepting traffic, not wire-init time.
+	s.service.MarkStarted(time.Now())
+
 	go s.gracefulShutdown(ctx)
 
 	go s.watcher.Watch(ctx, s.gcInterval)

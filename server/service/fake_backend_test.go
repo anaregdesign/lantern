@@ -294,3 +294,20 @@ func (f *fakeBackend) SnapshotEdges() []graph.SnapshotEdge[string] {
 	}
 	return out
 }
+
+// VertexCount returns the in-memory vertex map size. Sufficient for the
+// service-layer tests that exercise GetServerStatus (#314) without
+// standing up a real GraphCache.
+func (f *fakeBackend) VertexCount() int {
+	return len(f.vertices)
+}
+
+// EdgeCount returns the total number of (tail, head) pairs across the
+// fake adjacency map.
+func (f *fakeBackend) EdgeCount() int {
+	n := 0
+	for _, heads := range f.edges {
+		n += len(heads)
+	}
+	return n
+}

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/anaregdesign/lantern/core/cache/graph"
@@ -45,6 +46,15 @@ type LanternService struct {
 	onValidationReject     func(reason string)
 	onTombstoneClampReject func()
 	metrics                HotPathMetrics
+
+	// statusInfo + startedAt + startedAtOnce back GetServerStatus
+	// (#314). Populated by WithStatusInfo / MarkStarted from the
+	// composition root; default zero values keep tests that construct
+	// LanternService directly compatible (the RPC still returns a
+	// well-formed response, just with empty fields).
+	statusInfo    StatusInfo
+	startedAt     time.Time
+	startedAtOnce sync.Once
 }
 
 // HotPathMetrics is the narrow observability surface consumed by the
