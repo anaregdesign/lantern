@@ -141,21 +141,22 @@ type ScanConfig struct {
 // it (SRP). main / App may keep *Config because they observe several aspects
 // for startup logging.
 type Config struct {
-	Net           NetConfig
-	TLS           TLSConfig
-	RateLimit     RateLimitConfig
-	Observability ObservabilityConfig
-	Cache         CacheConfig
-	Shutdown      ShutdownConfig
-	Validation    ValidationLimits
-	Scan          ScanConfig
-	MutationLog   MutationLogConfig
-	Replication   ReplicationConfig
-	Peer          PeerConfig
-	AntiEntropy   AntiEntropyConfig
-	Readiness     ReadinessConfig
-	Gateway       GatewayConfig
-	CORS          CORSConfig
+	Net             NetConfig
+	TLS             TLSConfig
+	RateLimit       RateLimitConfig
+	Observability   ObservabilityConfig
+	Cache           CacheConfig
+	Shutdown        ShutdownConfig
+	Validation      ValidationLimits
+	Scan            ScanConfig
+	MutationLog     MutationLogConfig
+	Replication     ReplicationConfig
+	Peer            PeerConfig
+	AntiEntropy     AntiEntropyConfig
+	Readiness       ReadinessConfig
+	Gateway         GatewayConfig
+	CORS            CORSConfig
+	ConnectListener ConnectListenerConfig
 }
 
 func NewConfig() *Config {
@@ -211,13 +212,14 @@ func NewConfig() *Config {
 			DeleteByPrefixDefaultLimit: uint32(envconfig.Int("LANTERN_DELETE_BY_PREFIX_DEFAULT_LIMIT", 10000)),
 			DeleteByPrefixMaxLimit:     uint32(envconfig.Int("LANTERN_DELETE_BY_PREFIX_MAX_LIMIT", 100000)),
 		},
-		MutationLog: loadMutationLogConfig(),
-		Replication: loadReplicationConfig(),
-		Readiness:   loadReadinessConfig(),
-		Peer:        loadPeerConfig(),
-		AntiEntropy: loadAntiEntropyConfig(),
-		Gateway:     loadGatewayConfig(),
-		CORS:        loadCORSConfig(),
+		MutationLog:     loadMutationLogConfig(),
+		Replication:     loadReplicationConfig(),
+		Readiness:       loadReadinessConfig(),
+		Peer:            loadPeerConfig(),
+		AntiEntropy:     loadAntiEntropyConfig(),
+		Gateway:         loadGatewayConfig(),
+		CORS:            loadCORSConfig(),
+		ConnectListener: loadConnectListenerConfig(),
 	}
 }
 

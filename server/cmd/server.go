@@ -29,6 +29,7 @@ type App struct {
 	grpc        *service.LanternServer
 	metrics     provider.MetricsServer
 	gateway     provider.GatewayServer
+	connect     provider.ConnectServer
 	tracing     *provider.Tracing
 	domain      *domainmetrics.DomainMetrics
 	health      *health.Server
@@ -43,6 +44,7 @@ func newApp(
 	grpcServer *service.LanternServer,
 	metricsServer provider.MetricsServer,
 	gatewayServer provider.GatewayServer,
+	connectServer provider.ConnectServer,
 	tracing *provider.Tracing,
 	domain *domainmetrics.DomainMetrics,
 	hs *health.Server,
@@ -73,6 +75,7 @@ func newApp(
 		grpc:        grpcServer,
 		metrics:     metricsServer,
 		gateway:     gatewayServer,
+		connect:     connectServer,
 		tracing:     tracing,
 		domain:      domain,
 		health:      hs,
@@ -192,6 +195,7 @@ func (a *App) Run(ctx context.Context) error {
 	g.Go(func() error { return a.grpc.Run(gctx) })
 	g.Go(func() error { return a.metrics.Run(gctx) })
 	g.Go(func() error { return a.gateway.Run(gctx) })
+	g.Go(func() error { return a.connect.Run(gctx) })
 	g.Go(func() error { a.domain.Run(gctx); return nil })
 	g.Go(func() error { return a.pump.Run(gctx) })
 	g.Go(func() error { return a.antiEntropy.Run(gctx) })
@@ -229,6 +233,7 @@ func main() {
 		slog.Duration("default_ttl", app.cfg.Cache.TTL),
 		slog.String("metrics_addr", app.cfg.Observability.MetricsAddr),
 		slog.String("gateway_addr", app.cfg.Gateway.Addr),
+		slog.Int("connect_port", app.cfg.ConnectListener.Port),
 		slog.Bool("reflection", app.cfg.Observability.EnableReflection),
 	)
 
