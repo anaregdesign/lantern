@@ -15,23 +15,11 @@ plugins:
     out: pb
     opt:
       - paths=source_relative
-  - remote: buf.build/grpc/go
-    out: pb
-    opt:
-      - paths=source_relative
-      - require_unimplemented_servers=false
-  - remote: buf.build/grpc-ecosystem/gateway
-    out: pb
-    opt:
-      - paths=source_relative
-  - remote: buf.build/grpc-ecosystem/openapiv2
-    out: pb/openapiv2
-  # Connect-Go stubs land alongside the gRPC stubs under
+  # Connect-Go stubs land alongside the protobuf stubs under
   # pb/graph/v1/graphv1connect/ — the canonical *Connect/* sub-package
-  # convention from connectrpc.com/connect. Kept additive alongside the
-  # gRPC + grpc-gateway outputs while the Connect-only migration (#335)
-  # is in flight; the gRPC and gateway plugins are removed in #342 once
-  # every consumer has flipped over.
+  # convention from connectrpc.com/connect. Since #362 the gRPC,
+  # grpc-gateway, and openapiv2 plugins are gone — Lantern is
+  # Connect-only end-to-end.
   - remote: buf.build/connectrpc/go
     out: pb
     opt:

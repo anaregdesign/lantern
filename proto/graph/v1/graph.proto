@@ -2,7 +2,6 @@ syntax = "proto3";
 
 package graph.v1;
 
-import "google/api/annotations.proto";
 import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 
@@ -435,156 +434,75 @@ message GetReplicationStatusResponse {
 }
 
 service LanternService {
-  rpc Illuminate(IlluminateRequest) returns (IlluminateResponse) {
-    option (google.api.http) = {get: "/v1/illuminate/{seed}"};
-  }
+  rpc Illuminate(IlluminateRequest) returns (IlluminateResponse);
 
-  rpc GetVertex(GetVertexRequest) returns (GetVertexResponse) {
-    option (google.api.http) = {get: "/v1/vertices/{key}"};
-  }
+  rpc GetVertex(GetVertexRequest) returns (GetVertexResponse);
 
   // GetVertices reads several vertices in one round trip.
-  rpc GetVertices(GetVerticesRequest) returns (GetVerticesResponse) {
-    option (google.api.http) = {
-      post: "/v1/vertices/get"
-      body: "*"
-    };
-  }
+  rpc GetVertices(GetVerticesRequest) returns (GetVerticesResponse);
 
   // PutVertex writes a single vertex. Thin facade over PutVertices.
-  rpc PutVertex(PutVertexRequest) returns (PutVertexResponse) {
-    option (google.api.http) = {
-      put: "/v1/vertices/{vertex.key}"
-      body: "*"
-    };
-  }
+  rpc PutVertex(PutVertexRequest) returns (PutVertexResponse);
 
-  rpc PutVertices(PutVerticesRequest) returns (PutVerticesResponse) {
-    option (google.api.http) = {
-      put: "/v1/vertices"
-      body: "*"
-    };
-  }
+  rpc PutVertices(PutVerticesRequest) returns (PutVerticesResponse);
 
-  rpc DeleteVertex(DeleteVertexRequest) returns (DeleteVertexResponse) {
-    option (google.api.http) = {delete: "/v1/vertices/{key}"};
-  }
+  rpc DeleteVertex(DeleteVertexRequest) returns (DeleteVertexResponse);
 
   // DeleteVertices removes several vertices in one round trip.
-  rpc DeleteVertices(DeleteVerticesRequest) returns (DeleteVerticesResponse) {
-    option (google.api.http) = {
-      post: "/v1/vertices/delete"
-      body: "*"
-    };
-  }
+  rpc DeleteVertices(DeleteVerticesRequest) returns (DeleteVerticesResponse);
 
   // ScanVertices streams vertices whose key starts with the given prefix in
   // ascending order, page by page. Plural-only — prefix scan is inherently
   // plural.
-  rpc ScanVertices(ScanVerticesRequest) returns (ScanVerticesResponse) {
-    option (google.api.http) = {
-      post: "/v1/vertices/scan"
-      body: "*"
-    };
-  }
+  rpc ScanVertices(ScanVerticesRequest) returns (ScanVerticesResponse);
 
   // CountVerticesByPrefix returns the number of live vertices whose key
   // starts with the given prefix.
-  rpc CountVerticesByPrefix(CountVerticesByPrefixRequest) returns (CountVerticesByPrefixResponse) {
-    option (google.api.http) = {get: "/v1/vertices/count/{prefix}"};
-  }
+  rpc CountVerticesByPrefix(CountVerticesByPrefixRequest) returns (CountVerticesByPrefixResponse);
 
   // DeleteVerticesByPrefix deletes up to `limit` vertices whose key starts
   // with the given prefix. Pass `dry_run = true` to preview the count
   // without mutating state.
-  rpc DeleteVerticesByPrefix(DeleteVerticesByPrefixRequest) returns (DeleteVerticesByPrefixResponse) {
-    option (google.api.http) = {
-      post: "/v1/vertices/delete-by-prefix"
-      body: "*"
-    };
-  }
+  rpc DeleteVerticesByPrefix(DeleteVerticesByPrefixRequest) returns (DeleteVerticesByPrefixResponse);
 
-  rpc GetEdge(GetEdgeRequest) returns (GetEdgeResponse) {
-    option (google.api.http) = {get: "/v1/edges/{tail}/{head}"};
-  }
+  rpc GetEdge(GetEdgeRequest) returns (GetEdgeResponse);
 
   // GetEdges reads several edges in one round trip.
-  rpc GetEdges(GetEdgesRequest) returns (GetEdgesResponse) {
-    option (google.api.http) = {
-      post: "/v1/edges/get"
-      body: "*"
-    };
-  }
+  rpc GetEdges(GetEdgesRequest) returns (GetEdgesResponse);
 
   // AddEdge is non-idempotent (accumulates weight). Thin facade over AddEdges.
-  rpc AddEdge(AddEdgeRequest) returns (AddEdgeResponse) {
-    option (google.api.http) = {
-      post: "/v1/edges/{edge.tail}/{edge.head}/add"
-      body: "*"
-    };
-  }
+  rpc AddEdge(AddEdgeRequest) returns (AddEdgeResponse);
 
   // AddEdges is non-idempotent (accumulates weight). POST per REST conventions.
-  rpc AddEdges(AddEdgesRequest) returns (AddEdgesResponse) {
-    option (google.api.http) = {
-      post: "/v1/edges/add"
-      body: "*"
-    };
-  }
+  rpc AddEdges(AddEdgesRequest) returns (AddEdgesResponse);
 
   // PutEdge is idempotent (replaces weight). Thin facade over PutEdges.
-  rpc PutEdge(PutEdgeRequest) returns (PutEdgeResponse) {
-    option (google.api.http) = {
-      put: "/v1/edges/{edge.tail}/{edge.head}"
-      body: "*"
-    };
-  }
+  rpc PutEdge(PutEdgeRequest) returns (PutEdgeResponse);
 
   // PutEdges is idempotent (replaces weight). PUT per REST conventions.
-  rpc PutEdges(PutEdgesRequest) returns (PutEdgesResponse) {
-    option (google.api.http) = {
-      put: "/v1/edges/put"
-      body: "*"
-    };
-  }
+  rpc PutEdges(PutEdgesRequest) returns (PutEdgesResponse);
 
-  rpc DeleteEdge(DeleteEdgeRequest) returns (DeleteEdgeResponse) {
-    option (google.api.http) = {delete: "/v1/edges/{tail}/{head}"};
-  }
+  rpc DeleteEdge(DeleteEdgeRequest) returns (DeleteEdgeResponse);
 
   // DeleteEdges removes several edges in one round trip.
-  rpc DeleteEdges(DeleteEdgesRequest) returns (DeleteEdgesResponse) {
-    option (google.api.http) = {
-      post: "/v1/edges/delete"
-      body: "*"
-    };
-  }
+  rpc DeleteEdges(DeleteEdgesRequest) returns (DeleteEdgesResponse);
 
   // ScanEdges streams edges whose tail key starts with `tail_prefix` AND
   // whose head key starts with `head_prefix`, in ascending (tail, head)
   // order, page by page. Plural-only — prefix scan is inherently plural.
-  rpc ScanEdges(ScanEdgesRequest) returns (ScanEdgesResponse) {
-    option (google.api.http) = {
-      post: "/v1/edges/scan"
-      body: "*"
-    };
-  }
+  rpc ScanEdges(ScanEdgesRequest) returns (ScanEdgesResponse);
 
   // GetServerStatus returns a flat snapshot of the server's identity,
   // build info, configuration ceilings, and current live vertex/edge
   // counts. Read-only and cheap — intended for the admin UI's "Ops"
   // tab and lightweight smoke-test tooling. Auth is the caller's
   // responsibility; no PII is returned.
-  rpc GetServerStatus(GetServerStatusRequest) returns (GetServerStatusResponse) {
-    option (google.api.http) = {get: "/v1/status"};
-  }
+  rpc GetServerStatus(GetServerStatusRequest) returns (GetServerStatusResponse);
 
   // GetReplicationStatus returns a flat snapshot of the local node's
   // outbound peer-replication state. Read-only — no peer add/remove
   // surface is exposed (see #315 out-of-scope). Cheap to call from a
   // dashboard at any cadence the operator finds useful. On
   // single-instance deployments enabled=false and peers is empty.
-  rpc GetReplicationStatus(GetReplicationStatusRequest) returns (GetReplicationStatusResponse) {
-    option (google.api.http) = {get: "/v1/replication/status"};
-  }
+  rpc GetReplicationStatus(GetReplicationStatusRequest) returns (GetReplicationStatusResponse);
 }
