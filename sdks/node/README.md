@@ -29,13 +29,14 @@ return the same `Vertex` / `Edge` / `Graph` value-object shapes,
 so application code that only holds typed values is transport-
 agnostic.
 
-To use Connect today, run the server with the additive listener
-enabled (e.g. `LANTERN_CONNECT_PORT=6381`) and dial via:
+Since #347 the primary `:6380` listener accepts Connect / gRPC /
+gRPC-Web on the same h2c socket, so the Connect transport just
+dials it directly:
 
 ```ts
 import { LanternConnect } from "lantern-sdk";
 
-const client = LanternConnect.connect("http://localhost:6381");
+const client = LanternConnect.connect("http://localhost:6380");
 try {
   await client.putVertex({ key: "hello", value: "world", ttlSeconds: 60 });
   const v = await client.getVertex("hello");

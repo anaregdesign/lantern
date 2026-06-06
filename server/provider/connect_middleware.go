@@ -1,0 +1,226 @@
+// Package provider: connect_middleware.go hosts the Connect-Go
+// interceptors that replace the gRPC middleware chain wired by
+// NewGrpcServerOptions before #347. They keep behaviour observable as
+// identical (same slog channels, same Prometheus metric names) so
+// dashboards, alerts, and the ops runbook do not need to change when
+// the primary listener flips from grpc.NewServer to http.Server +
+// Connect mux.
+//
+// Coverage:
+//   - LoggingInterceptor       slog StartCall / FinishCall lines per RPC
+//   - PrometheusInterceptor    grpc_server_started_total /
+//     grpc_server_handled_total /
+//     grpc_server_handling_seconds — same names
+//     the grpcprom collector used, so existing
+//     Prometheus scrape configs and Grafana
+//     dashboards keep working.
+//   - SlowRPCInterceptor.ConnectInterceptor() — wired on
+//     the existing type so the gRPC and Connect
+//     paths share one threshold knob.
+//
+// Panic recovery is handled by Connect's own connect.WithRecover handler
+// option, not by an interceptor here, because connect.WithRecover hooks
+// the per-RPC error path before any interceptor runs.
+//
+// OpenTelemetry tracing is handled by otelhttp at the listener level
+// (server/provider/lantern_listener.go) so every request — including
+// non-RPC paths like /grpc.health.v1.Health/Check — gets a span without
+// per-handler wiring.
+package provider
+
+import (
+	"context"
+	"log/slog"
+	"time"
+
+	"connectrpc.com/connect"
+	"github.com/prometheus/client_golang/prometheus"
+)
+
+// ConnectInterceptor returns a connect.UnaryInterceptorFunc that emits
+// the same warn-level "slow rpc" slog channel the existing gRPC
+// SlowRPCInterceptor.UnaryServerInterceptor produces. Threshold of 0
+// disables emission (Enabled() reports false and the listener skips
+// installation, matching the gRPC wiring).
+//
+// Fields match the gRPC variant verbatim so operators can grep the same
+// signal across the cutover window:
+//
+//   - method        Connect procedure path (e.g.
+//     "/graph.v1.LanternService/GetVertex")
+//   - code          Connect status code string (e.g. "not_found", "ok")
+//   - duration_ms   handler wall-clock in milliseconds
+//   - threshold_ms  the configured threshold in milliseconds
+func (s *SlowRPCInterceptor) ConnectInterceptor() connect.UnaryInterceptorFunc {
+	return func(next connect.UnaryFunc) connect.UnaryFunc {
+		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+			start := time.Now()
+			resp, err := next(ctx, req)
+			d := time.Since(start)
+			if d > s.threshold {
+				s.logger.LogAttrs(ctx, slog.LevelWarn, "slow rpc",
+					slog.String("method", req.Spec().Procedure),
+					slog.String("code", connectCodeString(err)),
+					slog.Int64("duration_ms", d.Milliseconds()),
+					slog.Int64("threshold_ms", s.threshold.Milliseconds()),
+				)
+			}
+			return resp, err
+		}
+	}
+}
+
+// LoggingInterceptor emits one info-level "rpc start" line on call entry
+// and one info-level "rpc end" line on call exit. Replaces the
+// grpc-middleware logging interceptor previously installed by
+// NewGrpcServerOptions.
+//
+// The events match the grpc-middleware shape (started_at / msg /
+// grpc.method / grpc.code / grpc.duration) so existing log-search
+// patterns keep working across the cutover. The "grpc." prefix is
+// preserved deliberately even though we now serve Connect — log
+// pipelines should treat the transport as an implementation detail.
+type LoggingInterceptor struct {
+	logger *slog.Logger
+}
+
+// NewLoggingInterceptor builds the per-RPC slog interceptor. A nil
+// logger disables logging entirely (the returned interceptor is a
+// pass-through so callers can wire unconditionally).
+func NewLoggingInterceptor(logger *slog.Logger) *LoggingInterceptor {
+	return &LoggingInterceptor{logger: logger}
+}
+
+// ConnectInterceptor returns the unary interceptor. It is named
+// ConnectInterceptor (not the more obvious Interceptor) for symmetry
+// with SlowRPCInterceptor.ConnectInterceptor() and
+// ValidationInterceptor.ConnectInterceptor() so the listener wiring
+// reads uniformly.
+func (l *LoggingInterceptor) ConnectInterceptor() connect.UnaryInterceptorFunc {
+	if l == nil || l.logger == nil {
+		return func(next connect.UnaryFunc) connect.UnaryFunc { return next }
+	}
+	return func(next connect.UnaryFunc) connect.UnaryFunc {
+		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+			method := req.Spec().Procedure
+			start := time.Now()
+			l.logger.LogAttrs(ctx, slog.LevelInfo, "started call",
+				slog.String("protocol", "connect"),
+				slog.String("grpc.method", method),
+			)
+			resp, err := next(ctx, req)
+			l.logger.LogAttrs(ctx, slog.LevelInfo, "finished call",
+				slog.String("protocol", "connect"),
+				slog.String("grpc.method", method),
+				slog.String("grpc.code", connectCodeString(err)),
+				slog.Int64("grpc.duration_ms", time.Since(start).Milliseconds()),
+			)
+			return resp, err
+		}
+	}
+}
+
+// PrometheusInterceptor reproduces the four grpc-middleware metric
+// families on the Connect path so Grafana dashboards built against
+// grpc_server_* metric names keep working after the cutover. The names
+// are LOCKED — operators have alerts wired against them.
+//
+// Families (counter / counter / histogram):
+//
+//   - grpc_server_started_total{grpc_type,grpc_service,grpc_method}
+//   - grpc_server_handled_total{grpc_type,grpc_service,grpc_method,grpc_code}
+//   - grpc_server_handling_seconds_bucket{grpc_type,grpc_service,grpc_method,le}
+//     (plus the matching _sum / _count series)
+//
+// grpc_type is hard-coded to "unary" because the only streaming RPCs
+// (Subscribe / Snapshot) are not metered by grpc-middleware either (the
+// stream interceptor only counts started / handled at stream
+// lifecycle boundaries, which is captured by the listener-level
+// otelhttp span). Connect's interceptor seam only fires on unary calls
+// anyway.
+type PrometheusInterceptor struct {
+	started         *prometheus.CounterVec
+	handled         *prometheus.CounterVec
+	handlingSeconds *prometheus.HistogramVec
+}
+
+// NewPrometheusInterceptor registers the three metric vectors on reg.
+// Panics if registration fails (mirrors grpcprom's strict approach —
+// duplicate metric registration is a wire-time bug, not a runtime
+// condition).
+func NewPrometheusInterceptor(reg *prometheus.Registry) *PrometheusInterceptor {
+	started := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "grpc_server_started_total",
+			Help: "Total number of RPCs started on the server.",
+		},
+		[]string{"grpc_type", "grpc_service", "grpc_method"},
+	)
+	handled := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "grpc_server_handled_total",
+			Help: "Total number of RPCs completed on the server, regardless of success or failure.",
+		},
+		[]string{"grpc_type", "grpc_service", "grpc_method", "grpc_code"},
+	)
+	handlingSeconds := prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "grpc_server_handling_seconds",
+			Help:    "Histogram of response latency (seconds) of gRPC that had been application-level handled by the server.",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"grpc_type", "grpc_service", "grpc_method"},
+	)
+	reg.MustRegister(started, handled, handlingSeconds)
+	return &PrometheusInterceptor{
+		started:         started,
+		handled:         handled,
+		handlingSeconds: handlingSeconds,
+	}
+}
+
+// ConnectInterceptor returns the interceptor that bumps the three
+// metric families per RPC.
+func (p *PrometheusInterceptor) ConnectInterceptor() connect.UnaryInterceptorFunc {
+	return func(next connect.UnaryFunc) connect.UnaryFunc {
+		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+			service, method := splitProcedure(req.Spec().Procedure)
+			p.started.WithLabelValues("unary", service, method).Inc()
+			start := time.Now()
+			resp, err := next(ctx, req)
+			code := connectCodeString(err)
+			p.handled.WithLabelValues("unary", service, method, code).Inc()
+			p.handlingSeconds.WithLabelValues("unary", service, method).Observe(time.Since(start).Seconds())
+			return resp, err
+		}
+	}
+}
+
+// splitProcedure parses a Connect procedure path of the form
+// "/<service>/<method>" into ("<service>", "<method>"). Malformed
+// inputs collapse the whole path into method so the metric is still
+// emitted (visibility > correctness when the parser surprises us).
+func splitProcedure(p string) (service, method string) {
+	if len(p) == 0 || p[0] != '/' {
+		return "", p
+	}
+	rest := p[1:]
+	for i := len(rest) - 1; i >= 0; i-- {
+		if rest[i] == '/' {
+			return rest[:i], rest[i+1:]
+		}
+	}
+	return "", rest
+}
+
+// connectCodeString maps a handler error to the Connect code's
+// canonical lower_snake_case string ("ok" / "not_found" /
+// "resource_exhausted" / …). Returns "ok" for nil. Used by every
+// metrics / logging label so the wire format matches what
+// grpc-middleware emitted historically.
+func connectCodeString(err error) string {
+	if err == nil {
+		return "ok"
+	}
+	return connect.CodeOf(err).String()
+}

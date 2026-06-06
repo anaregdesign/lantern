@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
@@ -13,9 +12,7 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/service"
 	"golang.org/x/time/rate"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 )
 
@@ -88,23 +85,6 @@ func (v *ValidationInterceptor) reject(reason string, format string, args ...any
 		)
 	}
 	return err
-}
-
-func (v *ValidationInterceptor) UnaryServerInterceptor() grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		if err := v.validate(req); err != nil {
-			return nil, err
-		}
-		return handler(ctx, req)
-	}
-}
-
-func (v *ValidationInterceptor) StreamServerInterceptor() grpc.StreamServerInterceptor {
-	// Lantern has no streaming RPCs yet; the wrapper is registered so future
-	// streams pick up validation without re-wiring the server.
-	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		return handler(srv, ss)
-	}
 }
 
 func (v *ValidationInterceptor) validate(req any) error {
@@ -274,66 +254,23 @@ func (r *RateLimitInterceptor) WithRejectHook(f func()) *RateLimitInterceptor {
 	return r
 }
 
-func (r *RateLimitInterceptor) UnaryServerInterceptor() grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		if !r.lim.Allow() {
-			if r.rejectHook != nil {
-				r.rejectHook()
-			}
-			return nil, status.Error(codes.ResourceExhausted, "rate limit exceeded")
-		}
-		return handler(ctx, req)
-	}
-}
-
-func (r *RateLimitInterceptor) StreamServerInterceptor() grpc.StreamServerInterceptor {
-	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		if !r.lim.Allow() {
-			if r.rejectHook != nil {
-				r.rejectHook()
-			}
-			return status.Error(codes.ResourceExhausted, "rate limit exceeded")
-		}
-		return handler(srv, ss)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // TLS
 // ---------------------------------------------------------------------------
 
-// loadServerTLS returns nil credentials (insecure) when cert/key are empty,
-// TLS server credentials when both are set, or mTLS credentials when a client
-// CA file is also provided.
-func loadServerTLS(c TLSConfig) (credentials.TransportCredentials, error) {
-	if c.CertFile == "" && c.KeyFile == "" {
-		if c.ClientCAFile != "" {
-			return nil, errors.New("LANTERN_TLS_CLIENT_CA_FILE set without LANTERN_TLS_CERT_FILE / LANTERN_TLS_KEY_FILE")
-		}
-		return nil, nil
-	}
-	if c.CertFile == "" || c.KeyFile == "" {
-		return nil, errors.New("LANTERN_TLS_CERT_FILE and LANTERN_TLS_KEY_FILE must both be set")
-	}
-	cert, err := tls.LoadX509KeyPair(c.CertFile, c.KeyFile)
+// loadClientCAPool reads the PEM-encoded CA bundle at path into a
+// fresh *x509.CertPool. Returns an error when the file is missing /
+// unreadable or contains zero parseable certificates. Consumed by
+// loadTLSConfig (lantern_listener.go) when LANTERN_TLS_CLIENT_CA_FILE
+// is set; kept here so the TLS knobs live alongside the TLSConfig type.
+func loadClientCAPool(path string) (*x509.CertPool, error) {
+	caPEM, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("load cert/key: %w", err)
+		return nil, fmt.Errorf("read client CA: %w", err)
 	}
-	cfg := &tls.Config{
-		MinVersion:   tls.VersionTLS12,
-		Certificates: []tls.Certificate{cert},
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		return nil, errors.New("client CA file contained no usable certificates")
 	}
-	if c.ClientCAFile != "" {
-		caPEM, err := os.ReadFile(c.ClientCAFile)
-		if err != nil {
-			return nil, fmt.Errorf("read client CA: %w", err)
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(caPEM) {
-			return nil, errors.New("client CA file contained no usable certificates")
-		}
-		cfg.ClientCAs = pool
-		cfg.ClientAuth = tls.RequireAndVerifyClientCert
-	}
-	return credentials.NewTLS(cfg), nil
+	return pool, nil
 }

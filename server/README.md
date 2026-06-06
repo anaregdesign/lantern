@@ -1,8 +1,13 @@
-# server — Lantern gRPC server
+# server — Lantern Connect server
 
-The `lantern` gRPC server: an in-memory `key-vertex-store` (graph-based KVS)
+The `lantern` server: an in-memory `key-vertex-store` (graph-based KVS)
 with replication, exposed on **`:6380`** by default. This module produces
 the `lantern` binary; the root module's `Dockerfile` builds and ships it.
+
+Since #347 the primary listener speaks **Connect** (Connect protocol,
+gRPC, and gRPC-Web all multiplexed on the same h2c port). The legacy
+standalone grpc-gateway listener (`:6381`) and the additive Connect
+listener (`LANTERN_CONNECT_PORT`) have both been folded into `:6380`.
 
 See the [repo README](../README.md) for the end-user usage walkthrough; this
 file documents the **server module itself** (layout, providers, env vars,
@@ -19,29 +24,32 @@ go build -o lantern ./cmd
 go run ./cmd
 
 # Container image (published per root tag)
-docker run --rm -p 6380:6380 -p 6381:6381 -p 9090:9090 ghcr.io/anaregdesign/lantern:latest
+docker run --rm -p 6380:6380 -p 9090:9090 ghcr.io/anaregdesign/lantern:latest
 ```
 
 The server listens on:
 
-- `:6380` — gRPC (`graph.v1.LanternService`, `graph.v1.LanternReplicationService`,
-  `grpc.health.v1.Health`, optional `grpc.reflection.v1alpha.ServerReflection`).
-- `:6381` — HTTP/JSON via grpc-gateway: the unary `graph.v1.LanternService`
-  RPCs annotated with `google.api.http` plus a `/v1/health` probe that
-  reports per-subsystem status and `uptime_seconds`. Streaming RPCs
-  (`Illuminate`, `Subscribe`) intentionally stay gRPC-only.
+- `:6380` — the single Lantern RPC port. Accepts all three Connect
+  protocols (Connect+JSON / Connect+proto, gRPC, gRPC-Web) over the same
+  h2c socket. Surfaces mounted on this port:
+  - `graph.v1.LanternService` and `graph.v1.LanternReplicationService`
+  - `grpc.health.v1.Health` via `connectrpc.com/grpchealth`
+  - `grpc.reflection.v1` / `grpc.reflection.v1alpha.ServerReflection`
+    via `connectrpc.com/grpcreflect` (when `LANTERN_REFLECTION=true`,
+    the default).
+  Browser SPAs (admin/, #339) call this port directly via Connect-Web.
 - `:9090` — HTTP: `/metrics` (Prometheus), `/healthz` (liveness),
   `/readyz` and `/healthz/ready` (readiness, gated by replication catch-up).
 
-All three ports are configurable via environment variables (see below).
+Both ports are configurable via environment variables (see below).
 
 ## Package layout
 
 | Path | Description |
 | --- | --- |
 | `cmd/` | `main`, the `App` composition root, and `wire`-generated graph (`wire.go` / `wire_gen.go`). |
-| `service/` | gRPC handlers: `LanternService`, `LanternReplicationService`, `LanternServer` (lifecycle + GC + graceful shutdown), apply path, cursor pagination, prefix scans. |
-| `provider/` | Wire providers — `Config` aggregation, listener, gRPC server opts (interceptors, TLS, keepalive), Prometheus registry, metrics HTTP server, tracing, readiness gate, replication pump, anti-entropy driver. |
+| `service/` | RPC handlers: `LanternService`, `LanternReplicationService`, `LanternServer` (http.Server lifecycle + GC + graceful shutdown), apply path, cursor pagination, prefix scans, Connect adapter. |
+| `provider/` | Wire providers — `Config` aggregation, `LanternListener` (the h2c http.Server wired with the Connect mux + grpchealth + grpcreflect + CORS + otelhttp), Connect interceptors (logging, metrics, slow-rpc, validation, rate-limit), TLS loader, Prometheus registry, metrics HTTP server, OTel tracing, readiness gate, replication pump, anti-entropy driver. |
 | `metrics/` | `DomainMetrics` — the `lantern_*` Prometheus collectors and the gauge sampler. |
 | `readiness/` | The `Gate` that publishes the overall (`""`) gRPC health and gates HTTP `/readyz` on replication lag bounds. |
 | `replication/` | Peer discovery, pump (Subscribe consumer), anti-entropy driver. |
@@ -92,16 +100,14 @@ most common knobs:
 | `LANTERN_SLOW_RPC_THRESHOLD_MS` | `500` | Emit a `slog` warning per unary/stream RPC whose handler exceeds this duration (0 disables). |
 | `LANTERN_ANTI_ENTROPY_GAP_WARN_THRESHOLD` | `1024` | Emit a `slog` warning per anti-entropy tick whose detected peer gap (in seq units) exceeds this value (0 disables). |
 | `LANTERN_METRICS_ADDR` | `:9090` | HTTP listen for `/metrics`, `/healthz`, `/readyz` (empty disables). |
-| `LANTERN_GATEWAY_ADDR` | `:6381` | HTTP/JSON gateway listen address (empty disables). Serves the unary REST mapping for `LanternService` plus `/v1/health`. |
-| `LANTERN_GATEWAY_READ_HEADER_TIMEOUT_MS` | `5000` | `http.Server.ReadHeaderTimeout` for the gateway. |
-| `LANTERN_CORS_ALLOWED_ORIGINS` | _(empty)_ | Comma-separated allow-list of origins for the gateway (e.g. `http://localhost:5173,https://admin.example.com`). Empty disables CORS (default). `*` is honoured only when it is the sole entry. Methods `GET, POST, PUT, DELETE, OPTIONS` and headers `Content-Type, Authorization, X-Request-Id` are advertised on preflight. Allow-Credentials is never set. |
+| `LANTERN_CORS_ALLOWED_ORIGINS` | _(empty)_ | Comma-separated allow-list of origins for the primary `:6380` listener (e.g. `http://localhost:5173,https://admin.example.com`). Empty disables CORS (default). `*` is honoured only when it is the sole entry. Methods `GET, POST, PUT, DELETE, OPTIONS` and headers `Content-Type, Authorization, X-Request-Id, Connect-Protocol-Version, Connect-Timeout-Ms` are advertised on preflight. Allow-Credentials is never set. |
 | `LANTERN_PPROF_ENABLED` | `false` | Mount `/debug/pprof/*` (heap, goroutine, allocs, threadcreate, block, mutex, profile, trace, cmdline, symbol) on the metrics listener. Keep off in production unless the metrics port is bound to an internal-only interface; the endpoint exposes goroutine stacks and live heap data. `block` / `mutex` profiles also require `LANTERN_BLOCK_PROFILE_RATE` / `LANTERN_MUTEX_PROFILE_FRACTION` to be non-zero. |
 | `LANTERN_MUTEX_PROFILE_FRACTION` | `0` | `runtime.SetMutexProfileFraction` — 1-in-N sampling of mutex contention. Non-zero adds per-Unlock overhead; leave `0` in production unless actively profiling. Combine with `LANTERN_PPROF_ENABLED=true` to read the samples via `/debug/pprof/mutex`. |
 | `LANTERN_BLOCK_PROFILE_RATE` | `0` | `runtime.SetBlockProfileRate` — nanoseconds between block-event samples (lower = more samples). Non-zero adds per-blocking-op overhead; same caveats as `MUTEX_PROFILE_FRACTION`. Read via `/debug/pprof/block`. |
 | `LANTERN_REFLECTION` | `true` | gRPC server reflection. |
 | `LANTERN_LOG_LEVEL` / `LANTERN_LOG_FORMAT` | `info` / `json` | slog handler. |
 | `LANTERN_TLS_CERT_FILE` / `LANTERN_TLS_KEY_FILE` / `LANTERN_TLS_CLIENT_CA_FILE` | (unset) | TLS / mTLS material (all-or-nothing). |
-| `LANTERN_SHUTDOWN_TIMEOUT_SECONDS` | `30` | `GracefulStop` deadline. |
+| `LANTERN_SHUTDOWN_TIMEOUT_SECONDS` | `30` | `http.Server.Shutdown` deadline; on expiry, `http.Server.Close` is called as a fallback. |
 | `LANTERN_VERSION` / `LANTERN_COMMIT` | (build-info) | Override `lantern_build_info{version,commit}`. |
 | `LANTERN_SCAN_DEFAULT_LIMIT` / `LANTERN_SCAN_MAX_LIMIT` | `1000` / `10000` | Prefix-scan pagination caps. |
 | `LANTERN_DELETE_BY_PREFIX_DEFAULT_LIMIT` / `LANTERN_DELETE_BY_PREFIX_MAX_LIMIT` | `10000` / `100000` | Delete-by-prefix caps. |
@@ -157,14 +163,15 @@ runtime, process, and `grpc_server_*` collectors):
 | `lantern_rate_limit_rejected_total` | counter | — | RPCs rejected with `ResourceExhausted` by the process-wide token-bucket rate limiter (`LANTERN_RATE_LIMIT_RPS`). |
 | `lantern_tombstone_clamp_rejected_total` | counter | — | HLC `Put*` / `Add*` mutations rejected because a newer tombstone or LWW value already covered the key/edge (only counted while `LANTERN_TOMBSTONE_TTL_SECONDS > 0`). |
 
-Tracing is wired via `otelgrpc.NewServerHandler` so any `OTEL_*` env var the
-OpenTelemetry Go SDK honours will Just Work. Per-call logging goes through
-the `grpc-ecosystem` slog middleware at `info` level on `StartCall` /
-`FinishCall`.
+Tracing is wired via `otelhttp.NewHandler` so every request — Connect,
+gRPC-Health-v1, gRPC reflection — produces a server-side span and any
+`OTEL_*` env var the OpenTelemetry Go SDK honours will Just Work. Per-call
+logging goes through the Connect `LoggingInterceptor` at `info` level on
+call entry and exit.
 
 ### Structured-log channels (#223)
 
-In addition to the `grpc-ecosystem` per-call logger, the server emits
+In addition to the per-call `LoggingInterceptor`, the server emits
 targeted `slog` records on the default logger so operators can grep without
 standing up a metrics stack:
 

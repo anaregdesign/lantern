@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -12,7 +13,6 @@ import (
 	cachegraph "github.com/anaregdesign/lantern/core/cache/graph"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/service"
-	"google.golang.org/grpc"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
@@ -39,7 +39,7 @@ func (r *recordingHealth) last() healthpb.HealthCheckResponse_ServingStatus {
 }
 
 // brokenListener.Accept returns immediately with a non-temporary error,
-// causing grpc.Server.Serve to return without ctx cancellation.
+// causing http.Server.Serve to return without ctx cancellation.
 type brokenListener struct{ addr net.Addr }
 
 func (b *brokenListener) Accept() (net.Conn, error) { return nil, errBroken }
@@ -53,19 +53,40 @@ type fakeAddr struct{}
 func (fakeAddr) Network() string { return "fake" }
 func (fakeAddr) String() string  { return "fake://broken" }
 
+// fakeListenerWrapper satisfies service.Listener for tests by composing
+// a *http.Server + net.Listener directly. Production wiring uses
+// *provider.LanternListener which exposes the same surface.
+type fakeListenerWrapper struct {
+	server *http.Server
+	lis    net.Listener
+}
+
+func (f *fakeListenerWrapper) Server() *http.Server { return f.server }
+func (f *fakeListenerWrapper) Listener() net.Listener {
+	return f.lis
+}
+func (f *fakeListenerWrapper) TLSEnabled() bool { return false }
+
+// noopWatcher satisfies service.Watcher without touching the cache.
+type noopWatcher struct{}
+
+func (noopWatcher) Watch(ctx context.Context, _ time.Duration) { <-ctx.Done() }
+
 func TestLanternServer_Run_FlipsHealthOnServeReturn(t *testing.T) {
 	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
 	svc := service.NewLanternService(cache)
-	grpcSrv := grpc.NewServer()
+	httpSrv := &http.Server{Handler: http.NewServeMux()}
 	lis := &brokenListener{addr: fakeAddr{}}
 	hs := &recordingHealth{}
 
 	srv := service.NewLanternServer(
-		svc, nil, grpcSrv, lis,
+		&fakeListenerWrapper{server: httpSrv, lis: lis},
 		slog.New(slog.NewTextHandler(discardWriter{}, nil)),
 		service.LifecycleConfig{GCInterval: time.Hour, ShutdownTimeout: time.Second},
 		hs,
-		cache,
+		noopWatcher{},
+		svc,
+		nil,
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

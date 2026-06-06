@@ -9,7 +9,6 @@ import (
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
 	"github.com/google/wire"
-	"google.golang.org/grpc/health"
 )
 
 func initializeApp() (*App, error) {
@@ -40,28 +39,25 @@ func initializeApp() (*App, error) {
 		provider.NewAntiEntropyMetrics,
 		provider.NewListener,
 		provider.NewPrometheusRegistry,
-		provider.NewGrpcServerMetrics,
+		provider.NewPrometheusInterceptor,
+		provider.NewLoggingInterceptor,
+		provider.NewSlowRPCInterceptorProvider,
 		provider.NewValidationInterceptorProvider,
 		provider.NewRateLimitInterceptorProvider,
-		provider.NewGrpcServerOptions,
-		provider.NewGrpcServer,
-		provider.NewHealthServer,
+		provider.NewHealthChecker,
+		provider.NewLanternListener,
 		provider.NewMetricsServer,
-		provider.NewGatewayConfig,
 		provider.NewCORSConfig,
-		provider.NewGatewayServer,
-		provider.NewConnectListenerConfig,
-		provider.NewConnectServer,
 		provider.NewLifecycleConfig,
 		newLanternService,
 		newLanternReplicationService,
 		provider.NewReplicationPump,
 		provider.NewAntiEntropyDriver,
 		service.NewLanternServer,
-		wire.Bind(new(service.HealthSetter), new(*health.Server)),
+		wire.Bind(new(service.Listener), new(*provider.LanternListener)),
+		wire.Bind(new(service.HealthSetter), new(*provider.HealthChecker)),
 		wire.Bind(new(service.Backend), new(*graph.GraphCache[string, *pb.Vertex])),
 		wire.Bind(new(service.Watcher), new(*graph.GraphCache[string, *pb.Vertex])),
-		registerHealthAndReflection,
 		newApp,
 	)
 	return nil, nil

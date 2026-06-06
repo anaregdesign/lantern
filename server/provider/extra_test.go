@@ -3,22 +3,58 @@ package provider
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"math"
 	"strings"
 	"testing"
 
+	"connectrpc.com/connect"
+
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
+
+// connectCallValidator drives the ValidationInterceptor's Connect
+// surface end-to-end: builds a connect.Request from the proto payload,
+// invokes the interceptor, and reports back (response-or-nil, error).
+// The hop through connect.NewRequest exercises the same code path
+// production calls take, so the rejection codes and metadata observed
+// here mirror what wire clients see.
+func connectCallValidator[T any](t *testing.T, v *ValidationInterceptor, req *T) error {
+	t.Helper()
+	interceptor := v.ConnectInterceptor()
+	next := connect.UnaryFunc(func(_ context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+		t.Fatal("handler called on rejected request")
+		return nil, nil
+	})
+	_, err := interceptor(next)(context.Background(), connect.NewRequest(req))
+	return err
+}
+
+// connectCallValidatorOK invokes the interceptor on a known-valid
+// payload and asserts the handler runs.
+func connectCallValidatorOK[T any](t *testing.T, v *ValidationInterceptor, req *T) {
+	t.Helper()
+	interceptor := v.ConnectInterceptor()
+	called := false
+	next := connect.UnaryFunc(func(_ context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+		called = true
+		return connect.NewResponse[T](new(T)), nil
+	})
+	if _, err := interceptor(next)(context.Background(), connect.NewRequest(req)); err != nil {
+		t.Fatalf("interceptor returned error on accepted request: %v", err)
+	}
+	if !called {
+		t.Fatal("handler not invoked on valid request")
+	}
+}
 
 // TestValidationInterceptor_RejectHookFiresPerReason walks every
 // canonical reason exposed by lantern_validation_rejected_total{reason}
 // (excluding bad_ttl and bad_cursor which the service layer owns) and
-// asserts that (a) the interceptor returns InvalidArgument and (b) the
-// registered hook is invoked with the matching reason exactly once.
+// asserts that (a) the Connect interceptor returns CodeInvalidArgument
+// and (b) the registered hook is invoked with the matching reason
+// exactly once.
 func TestValidationInterceptor_RejectHookFiresPerReason(t *testing.T) {
 	limits := ValidationLimits{
 		MaxKeyLen:         4,
@@ -26,82 +62,58 @@ func TestValidationInterceptor_RejectHookFiresPerReason(t *testing.T) {
 		IlluminateMaxStep: 3,
 		IlluminateMaxK:    5,
 	}
-	cases := []struct {
-		name   string
-		want   string
-		req    any
-		anyMsg string // optional substring assertion on error message
-	}{
-		{
-			name: "empty_key",
-			want: "empty_key",
-			req:  &pb.GetVertexRequest{Key: ""},
-		},
-		{
-			name: "key_too_long",
-			want: "key_too_long",
-			req:  &pb.GetVertexRequest{Key: "abcdef"}, // 6 > MaxKeyLen=4
-		},
-		{
-			name: "empty_batch",
-			want: "empty_batch",
-			req:  &pb.PutVerticesRequest{Vertices: nil},
-		},
-		{
-			name: "batch_too_large",
-			want: "batch_too_large",
-			req: &pb.PutVerticesRequest{Vertices: []*pb.Vertex{
-				{Key: "a"}, {Key: "b"}, {Key: "c"}, // 3 > MaxBatchSize=2
-			}},
-		},
-		{
-			name: "nil_item",
-			want: "nil_item",
-			req: &pb.PutVerticesRequest{Vertices: []*pb.Vertex{
-				{Key: "a"}, nil,
-			}},
-		},
-		{
-			name: "bad_weight",
-			want: "bad_weight",
-			req: &pb.AddEdgesRequest{Edges: []*pb.Edge{
-				{Tail: "a", Head: "b", Weight: float32(math.NaN())},
-			}},
-		},
-		{
-			name: "step_too_large",
-			want: "step_too_large",
-			req:  &pb.IlluminateRequest{Seed: "s", Step: 99}, // > IlluminateMaxStep=3
-		},
-		{
-			name: "k_too_large",
-			want: "k_too_large",
-			req:  &pb.IlluminateRequest{Seed: "s", Step: 1, K: 99}, // > IlluminateMaxK=5
-		},
+	type c struct {
+		name string
+		want string
+		fn   func(t *testing.T, v *ValidationInterceptor) error
 	}
-
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
+	cases := []c{
+		{"empty_key", "empty_key", func(t *testing.T, v *ValidationInterceptor) error {
+			return connectCallValidator(t, v, &pb.GetVertexRequest{Key: ""})
+		}},
+		{"key_too_long", "key_too_long", func(t *testing.T, v *ValidationInterceptor) error {
+			return connectCallValidator(t, v, &pb.GetVertexRequest{Key: "abcdef"}) // 6 > MaxKeyLen=4
+		}},
+		{"empty_batch", "empty_batch", func(t *testing.T, v *ValidationInterceptor) error {
+			return connectCallValidator(t, v, &pb.PutVerticesRequest{Vertices: nil})
+		}},
+		{"batch_too_large", "batch_too_large", func(t *testing.T, v *ValidationInterceptor) error {
+			return connectCallValidator(t, v, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{
+				{Key: "a"}, {Key: "b"}, {Key: "c"}, // 3 > MaxBatchSize=2
+			}})
+		}},
+		{"nil_item", "nil_item", func(t *testing.T, v *ValidationInterceptor) error {
+			return connectCallValidator(t, v, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{
+				{Key: "a"}, nil,
+			}})
+		}},
+		{"bad_weight", "bad_weight", func(t *testing.T, v *ValidationInterceptor) error {
+			return connectCallValidator(t, v, &pb.AddEdgesRequest{Edges: []*pb.Edge{
+				{Tail: "a", Head: "b", Weight: float32(math.NaN())},
+			}})
+		}},
+		{"step_too_large", "step_too_large", func(t *testing.T, v *ValidationInterceptor) error {
+			return connectCallValidator(t, v, &pb.IlluminateRequest{Seed: "s", Step: 99}) // > IlluminateMaxStep=3
+		}},
+		{"k_too_large", "k_too_large", func(t *testing.T, v *ValidationInterceptor) error {
+			return connectCallValidator(t, v, &pb.IlluminateRequest{Seed: "s", Step: 1, K: 99}) // > IlluminateMaxK=5
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			var got string
 			v := NewValidationInterceptor(limits).
 				WithRejectHook(func(reason string) { got = reason })
-			interceptor := v.UnaryServerInterceptor()
-			handler := func(ctx context.Context, req any) (any, error) {
-				t.Fatal("handler called on rejected request")
-				return nil, nil
-			}
-			_, err := interceptor(context.Background(), c.req, &grpc.UnaryServerInfo{}, handler)
+			err := tc.fn(t, v)
 			if err == nil {
 				t.Fatalf("expected error, got nil")
 			}
-			if code := status.Code(err); code != codes.InvalidArgument {
-				t.Errorf("status code = %s, want InvalidArgument", code)
+			var connErr *connect.Error
+			if !errors.As(err, &connErr) || connErr.Code() != connect.CodeInvalidArgument {
+				t.Errorf("error = %v, want connect.CodeInvalidArgument", err)
 			}
-			if got != c.want {
-				t.Errorf("reject hook reason = %q, want %q", got, c.want)
-			}
-			if c.anyMsg != "" && !strings.Contains(err.Error(), c.anyMsg) {
-				t.Errorf("error %q does not contain %q", err.Error(), c.anyMsg)
+			if got != tc.want {
+				t.Errorf("reject hook reason = %q, want %q", got, tc.want)
 			}
 		})
 	}
@@ -114,18 +126,7 @@ func TestValidationInterceptor_AcceptedRequestDoesNotFireHook(t *testing.T) {
 	var got string
 	v := NewValidationInterceptor(ValidationLimits{MaxKeyLen: 16}).
 		WithRejectHook(func(reason string) { got = reason })
-	interceptor := v.UnaryServerInterceptor()
-	called := false
-	handler := func(ctx context.Context, req any) (any, error) {
-		called = true
-		return "ok", nil
-	}
-	if _, err := interceptor(context.Background(), &pb.GetVertexRequest{Key: "k"}, &grpc.UnaryServerInfo{}, handler); err != nil {
-		t.Fatalf("interceptor: %v", err)
-	}
-	if !called {
-		t.Errorf("handler not invoked on valid request")
-	}
+	connectCallValidatorOK(t, v, &pb.GetVertexRequest{Key: "k"})
 	if got != "" {
 		t.Errorf("reject hook fired on success path: reason=%q", got)
 	}
@@ -135,46 +136,38 @@ func TestValidationInterceptor_AcceptedRequestDoesNotFireHook(t *testing.T) {
 // not panic when no hook was registered.
 func TestValidationInterceptor_NilHookSafe(t *testing.T) {
 	v := NewValidationInterceptor(ValidationLimits{})
-	interceptor := v.UnaryServerInterceptor()
-	handler := func(ctx context.Context, req any) (any, error) { return nil, nil }
-	_, err := interceptor(context.Background(), &pb.GetVertexRequest{Key: ""}, &grpc.UnaryServerInfo{}, handler)
-	if err == nil || status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("expected InvalidArgument, got %v", err)
+	err := connectCallValidator(t, v, &pb.GetVertexRequest{Key: ""})
+	var connErr *connect.Error
+	if !errors.As(err, &connErr) || connErr.Code() != connect.CodeInvalidArgument {
+		t.Fatalf("expected CodeInvalidArgument, got %v", err)
 	}
 }
 
 // TestRateLimitInterceptor_RejectHookFires asserts the limiter fires
-// the registered hook once per ResourceExhausted return on both the
-// unary and the stream interceptor.
+// the registered hook once per CodeResourceExhausted return.
 func TestRateLimitInterceptor_RejectHookFires(t *testing.T) {
 	// rps = small, burst = 1: first call passes, second call blocked.
 	r := NewRateLimitInterceptor(0.0001, 1)
 	var n int
 	r.WithRejectHook(func() { n++ })
 
-	unary := r.UnaryServerInterceptor()
-	handler := func(ctx context.Context, req any) (any, error) { return "ok", nil }
-	if _, err := unary(context.Background(), nil, &grpc.UnaryServerInfo{}, handler); err != nil {
-		t.Fatalf("first unary call: %v", err)
+	interceptor := r.ConnectInterceptor()
+	next := connect.UnaryFunc(func(_ context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+		return connect.NewResponse(&pb.GetVertexResponse{}), nil
+	})
+	if _, err := interceptor(next)(context.Background(), connect.NewRequest(&pb.GetVertexRequest{Key: "k"})); err != nil {
+		t.Fatalf("first call: %v", err)
 	}
-	if _, err := unary(context.Background(), nil, &grpc.UnaryServerInfo{}, handler); err == nil {
-		t.Fatal("second unary call: expected ResourceExhausted")
-	} else if status.Code(err) != codes.ResourceExhausted {
-		t.Errorf("second unary call: code = %s, want ResourceExhausted", status.Code(err))
+	_, err := interceptor(next)(context.Background(), connect.NewRequest(&pb.GetVertexRequest{Key: "k"}))
+	if err == nil {
+		t.Fatal("second call: expected ResourceExhausted")
+	}
+	var connErr *connect.Error
+	if !errors.As(err, &connErr) || connErr.Code() != connect.CodeResourceExhausted {
+		t.Errorf("second call: code = %v, want ResourceExhausted", err)
 	}
 	if n != 1 {
-		t.Errorf("hook calls after unary = %d, want 1", n)
-	}
-
-	stream := r.StreamServerInterceptor()
-	streamHandler := func(srv any, ss grpc.ServerStream) error { return nil }
-	if err := stream(nil, nil, &grpc.StreamServerInfo{}, streamHandler); err == nil {
-		t.Fatal("stream call: expected ResourceExhausted")
-	} else if status.Code(err) != codes.ResourceExhausted {
-		t.Errorf("stream call: code = %s, want ResourceExhausted", status.Code(err))
-	}
-	if n != 2 {
-		t.Errorf("hook calls after stream = %d, want 2", n)
+		t.Errorf("hook calls after second call = %d, want 1", n)
 	}
 }
 
@@ -182,19 +175,23 @@ func TestRateLimitInterceptor_RejectHookFires(t *testing.T) {
 // not panic when no hook was registered.
 func TestRateLimitInterceptor_NilHookSafe(t *testing.T) {
 	r := NewRateLimitInterceptor(0.0001, 1)
-	unary := r.UnaryServerInterceptor()
-	handler := func(ctx context.Context, req any) (any, error) { return "ok", nil }
-	if _, err := unary(context.Background(), nil, &grpc.UnaryServerInfo{}, handler); err != nil {
+	interceptor := r.ConnectInterceptor()
+	next := connect.UnaryFunc(func(_ context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+		return connect.NewResponse(&pb.GetVertexResponse{}), nil
+	})
+	if _, err := interceptor(next)(context.Background(), connect.NewRequest(&pb.GetVertexRequest{Key: "k"})); err != nil {
 		t.Fatalf("first call: %v", err)
 	}
-	if _, err := unary(context.Background(), nil, &grpc.UnaryServerInfo{}, handler); err == nil || status.Code(err) != codes.ResourceExhausted {
-		t.Fatalf("second call: expected ResourceExhausted, got %v", err)
+	_, err := interceptor(next)(context.Background(), connect.NewRequest(&pb.GetVertexRequest{Key: "k"}))
+	var connErr *connect.Error
+	if !errors.As(err, &connErr) || connErr.Code() != connect.CodeResourceExhausted {
+		t.Fatalf("second call: expected CodeResourceExhausted, got %v", err)
 	}
 }
 
 // TestValidationInterceptor_LoggerEmitsDebugOnReject asserts that
 // WithLogger() causes reject() to emit one debug-level "validation
-// rejected" record with the documented reason/msg fields, and that
+// rejected" record with the documented reason/error fields, and that
 // successful paths stay silent.
 func TestValidationInterceptor_LoggerEmitsDebugOnReject(t *testing.T) {
 	var buf bytes.Buffer
@@ -202,18 +199,16 @@ func TestValidationInterceptor_LoggerEmitsDebugOnReject(t *testing.T) {
 	v := NewValidationInterceptor(ValidationLimits{MaxKeyLen: 4}).WithLogger(logger)
 
 	// success path: no log records.
-	handler := func(ctx context.Context, req any) (any, error) { return "ok", nil }
-	if _, err := v.UnaryServerInterceptor()(context.Background(), &pb.GetVertexRequest{Key: "k"}, &grpc.UnaryServerInfo{}, handler); err != nil {
-		t.Fatalf("success path: %v", err)
-	}
+	connectCallValidatorOK(t, v, &pb.GetVertexRequest{Key: "k"})
 	if buf.Len() != 0 {
 		t.Fatalf("success path emitted logs: %s", buf.String())
 	}
 
-	// reject path: exactly one debug record with reason + msg.
-	_, err := v.UnaryServerInterceptor()(context.Background(), &pb.GetVertexRequest{Key: ""}, &grpc.UnaryServerInfo{}, handler)
-	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("reject path code = %s, want InvalidArgument", status.Code(err))
+	// reject path: exactly one debug record with reason + error.
+	err := connectCallValidator(t, v, &pb.GetVertexRequest{Key: ""})
+	var connErr *connect.Error
+	if !errors.As(err, &connErr) || connErr.Code() != connect.CodeInvalidArgument {
+		t.Fatalf("reject path code = %v, want CodeInvalidArgument", err)
 	}
 	recs := decodeRecords(t, &buf)
 	if len(recs) != 1 {
@@ -239,10 +234,10 @@ func TestValidationInterceptor_LoggerSuppressedBelowDebug(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	v := NewValidationInterceptor(ValidationLimits{}).WithLogger(logger)
 
-	handler := func(ctx context.Context, req any) (any, error) { return "ok", nil }
-	_, err := v.UnaryServerInterceptor()(context.Background(), &pb.GetVertexRequest{Key: ""}, &grpc.UnaryServerInfo{}, handler)
-	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("reject path code = %s, want InvalidArgument", status.Code(err))
+	err := connectCallValidator(t, v, &pb.GetVertexRequest{Key: ""})
+	var connErr *connect.Error
+	if !errors.As(err, &connErr) || connErr.Code() != connect.CodeInvalidArgument {
+		t.Fatalf("reject path code = %v, want CodeInvalidArgument", err)
 	}
 	if buf.Len() != 0 {
 		t.Errorf("info-level logger emitted records: %s", buf.String())
@@ -253,9 +248,9 @@ func TestValidationInterceptor_LoggerSuppressedBelowDebug(t *testing.T) {
 // stays safe when WithLogger was never invoked (default install).
 func TestValidationInterceptor_NilLoggerSafe(t *testing.T) {
 	v := NewValidationInterceptor(ValidationLimits{})
-	handler := func(ctx context.Context, req any) (any, error) { return "ok", nil }
-	_, err := v.UnaryServerInterceptor()(context.Background(), &pb.GetVertexRequest{Key: ""}, &grpc.UnaryServerInfo{}, handler)
-	if status.Code(err) != codes.InvalidArgument {
+	err := connectCallValidator(t, v, &pb.GetVertexRequest{Key: ""})
+	var connErr *connect.Error
+	if !errors.As(err, &connErr) || connErr.Code() != connect.CodeInvalidArgument {
 		t.Fatalf("reject path: %v", err)
 	}
 }

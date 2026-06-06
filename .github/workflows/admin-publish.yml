@@ -177,7 +177,7 @@ jobs:
             echo "docker run --rm -p 8080:8080 ${IMAGE}:${version}"
             echo '```'
             echo
-            echo "Then open http://localhost:8080 and point the Gateway picker in the header at your Lantern gateway (defaults to \`http://localhost:6381\`). Make sure \`LANTERN_CORS_ALLOWED_ORIGINS\` on the gateway includes the admin origin — see [server/README.md](https://github.com/${REPO}/blob/${TAG}/server/README.md)."
+            echo "Then open http://localhost:8080 and point the Lantern picker in the header at your Lantern server (defaults to \`http://localhost:6380\`). Make sure \`LANTERN_CORS_ALLOWED_ORIGINS\` on the server includes the admin origin — see [server/README.md](https://github.com/${REPO}/blob/${TAG}/server/README.md)."
           } > "$notes_file"
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" --notes-file "$notes_file" --verify-tag

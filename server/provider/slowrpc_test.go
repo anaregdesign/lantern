@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"connectrpc.com/connect"
+
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
 func newJSONLogger(buf *bytes.Buffer, lvl slog.Level) *slog.Logger {
@@ -38,7 +38,7 @@ func decodeRecords(t *testing.T, buf *bytes.Buffer) []map[string]any {
 
 // TestSlowRPCInterceptor_Enabled asserts the Enabled() gate honours
 // threshold/logger preconditions (drives the wiring branch in
-// NewGrpcServerOptions).
+// NewLanternListener).
 func TestSlowRPCInterceptor_Enabled(t *testing.T) {
 	var buf bytes.Buffer
 	l := newJSONLogger(&buf, slog.LevelWarn)
@@ -62,22 +62,23 @@ func TestSlowRPCInterceptor_Enabled(t *testing.T) {
 	}
 }
 
-// TestSlowRPCInterceptor_UnaryFiresOnSlowHandler asserts a single warn
-// line per slow unary RPC with the documented field schema.
-func TestSlowRPCInterceptor_UnaryFiresOnSlowHandler(t *testing.T) {
+// TestSlowRPCInterceptor_ConnectFiresOnSlowHandler asserts a single
+// warn line per slow unary Connect call with the documented field
+// schema. method comes from req.Spec().Procedure; code is the Connect
+// canonical lower_snake_case string.
+func TestSlowRPCInterceptor_ConnectFiresOnSlowHandler(t *testing.T) {
 	var buf bytes.Buffer
 	logger := newJSONLogger(&buf, slog.LevelWarn)
 	s := NewSlowRPCInterceptor(5*time.Millisecond, logger)
 
-	handler := func(ctx context.Context, req any) (any, error) {
+	next := connect.UnaryFunc(func(_ context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
 		time.Sleep(20 * time.Millisecond)
-		return "ok", status.Error(codes.DeadlineExceeded, "boom")
-	}
-	info := &grpc.UnaryServerInfo{FullMethod: "/lantern.v1.Test/Slow"}
+		return nil, connect.NewError(connect.CodeDeadlineExceeded, errors.New("boom"))
+	})
 
-	_, err := s.UnaryServerInterceptor()(context.Background(), nil, info, handler)
-	if status.Code(err) != codes.DeadlineExceeded {
-		t.Fatalf("err code = %s, want DeadlineExceeded", status.Code(err))
+	_, err := s.ConnectInterceptor()(next)(context.Background(), connect.NewRequest(&pb.GetVertexRequest{Key: "k"}))
+	if connect.CodeOf(err) != connect.CodeDeadlineExceeded {
+		t.Fatalf("err code = %v, want CodeDeadlineExceeded", connect.CodeOf(err))
 	}
 
 	recs := decodeRecords(t, &buf)
@@ -88,11 +89,15 @@ func TestSlowRPCInterceptor_UnaryFiresOnSlowHandler(t *testing.T) {
 	if rec["msg"] != "slow rpc" {
 		t.Errorf("msg = %v, want %q", rec["msg"], "slow rpc")
 	}
-	if rec["method"] != info.FullMethod {
-		t.Errorf("method = %v, want %q", rec["method"], info.FullMethod)
+	// Spec().Procedure is populated only when the request flows
+	// through a real connect.Handler; the helper-only test path
+	// leaves it empty. The wired-up integration tests cover the
+	// procedure path.
+	if _, ok := rec["method"].(string); !ok {
+		t.Errorf("method field missing: %v", rec)
 	}
-	if rec["code"] != codes.DeadlineExceeded.String() {
-		t.Errorf("code = %v, want %s", rec["code"], codes.DeadlineExceeded)
+	if rec["code"] != "deadline_exceeded" {
+		t.Errorf("code = %v, want %q", rec["code"], "deadline_exceeded")
 	}
 	if rec["threshold_ms"] != float64(5) {
 		t.Errorf("threshold_ms = %v, want 5", rec["threshold_ms"])
@@ -102,63 +107,21 @@ func TestSlowRPCInterceptor_UnaryFiresOnSlowHandler(t *testing.T) {
 	}
 }
 
-// TestSlowRPCInterceptor_UnarySilentOnFastHandler asserts that handlers
-// completing within the threshold emit no log records.
-func TestSlowRPCInterceptor_UnarySilentOnFastHandler(t *testing.T) {
+// TestSlowRPCInterceptor_ConnectSilentOnFastHandler asserts that
+// handlers completing within the threshold emit no log records.
+func TestSlowRPCInterceptor_ConnectSilentOnFastHandler(t *testing.T) {
 	var buf bytes.Buffer
 	logger := newJSONLogger(&buf, slog.LevelWarn)
 	s := NewSlowRPCInterceptor(500*time.Millisecond, logger)
 
-	handler := func(ctx context.Context, req any) (any, error) { return "ok", nil }
-	info := &grpc.UnaryServerInfo{FullMethod: "/lantern.v1.Test/Fast"}
+	next := connect.UnaryFunc(func(_ context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+		return connect.NewResponse(&pb.GetVertexResponse{}), nil
+	})
 
-	if _, err := s.UnaryServerInterceptor()(context.Background(), nil, info, handler); err != nil {
+	if _, err := s.ConnectInterceptor()(next)(context.Background(), connect.NewRequest(&pb.GetVertexRequest{Key: "k"})); err != nil {
 		t.Fatalf("handler: %v", err)
 	}
 	if buf.Len() != 0 {
 		t.Errorf("unexpected log output: %s", buf.String())
-	}
-}
-
-// fakeServerStream lets us drive StreamServerInterceptor without spinning
-// up a real gRPC server.
-type fakeServerStream struct {
-	grpc.ServerStream
-	ctx context.Context
-}
-
-func (f *fakeServerStream) Context() context.Context { return f.ctx }
-
-// TestSlowRPCInterceptor_StreamFiresOnSlowHandler asserts the stream
-// interceptor mirrors the unary fields and uses ServerStream.Context()
-// for the log record.
-func TestSlowRPCInterceptor_StreamFiresOnSlowHandler(t *testing.T) {
-	var buf bytes.Buffer
-	logger := newJSONLogger(&buf, slog.LevelWarn)
-	s := NewSlowRPCInterceptor(5*time.Millisecond, logger)
-
-	info := &grpc.StreamServerInfo{FullMethod: "/lantern.v1.Test/StreamSlow"}
-	ss := &fakeServerStream{ctx: context.Background()}
-	handler := func(srv any, ss grpc.ServerStream) error {
-		time.Sleep(20 * time.Millisecond)
-		return errors.New("stream boom")
-	}
-
-	err := s.StreamServerInterceptor()(nil, ss, info, handler)
-	// errors.New() wraps as codes.Unknown.
-	if status.Code(err) != codes.Unknown {
-		t.Fatalf("err code = %s, want Unknown", status.Code(err))
-	}
-
-	recs := decodeRecords(t, &buf)
-	if len(recs) != 1 {
-		t.Fatalf("got %d log records, want 1", len(recs))
-	}
-	rec := recs[0]
-	if rec["method"] != info.FullMethod {
-		t.Errorf("method = %v, want %q", rec["method"], info.FullMethod)
-	}
-	if rec["code"] != codes.Unknown.String() {
-		t.Errorf("code = %v, want %s", rec["code"], codes.Unknown)
 	}
 }

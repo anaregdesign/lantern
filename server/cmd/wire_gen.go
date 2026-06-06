@@ -29,37 +29,31 @@ func initializeApp() (*App, error) {
 	log := provider.NewMutationLog(mutationLogConfig, domainMetrics)
 	clock := provider.NewHLCClock(replicationConfig)
 	lanternService := newLanternService(graphCache, scanConfig, replicationConfig, validationLimits, tlsConfig, cacheConfig, observabilityConfig, logger, log, clock, domainMetrics)
-	lanternReplicationService := newLanternReplicationService(log, graphCache, clock, logger, domainMetrics, lanternService)
 	netConfig := provider.NewNetConfig(config)
-	serverMetrics := provider.NewGrpcServerMetrics(registry)
-	validationInterceptor := provider.NewValidationInterceptorProvider(validationLimits, domainMetrics, logger)
-	rateLimitConfig := provider.NewRateLimitConfig(config)
-	rateLimitInterceptor := provider.NewRateLimitInterceptorProvider(rateLimitConfig, domainMetrics)
-	v, err := provider.NewGrpcServerOptions(netConfig, tlsConfig, observabilityConfig, logger, serverMetrics, validationInterceptor, rateLimitInterceptor)
+	listener, err := provider.NewListener(netConfig)
 	if err != nil {
 		return nil, err
 	}
-	server := provider.NewGrpcServer(v)
-	listener, err := provider.NewListener(netConfig)
+	corsConfig := provider.NewCORSConfig(config)
+	lanternReplicationService := newLanternReplicationService(log, graphCache, clock, logger, domainMetrics, lanternService)
+	validationInterceptor := provider.NewValidationInterceptorProvider(validationLimits, domainMetrics, logger)
+	rateLimitConfig := provider.NewRateLimitConfig(config)
+	rateLimitInterceptor := provider.NewRateLimitInterceptorProvider(rateLimitConfig, domainMetrics)
+	loggingInterceptor := provider.NewLoggingInterceptor(logger)
+	prometheusInterceptor := provider.NewPrometheusInterceptor(registry)
+	slowRPCInterceptor := provider.NewSlowRPCInterceptorProvider(observabilityConfig, logger)
+	healthChecker := provider.NewHealthChecker()
+	lanternListener, err := provider.NewLanternListener(listener, netConfig, tlsConfig, observabilityConfig, corsConfig, lanternService, lanternReplicationService, validationInterceptor, rateLimitInterceptor, loggingInterceptor, prometheusInterceptor, slowRPCInterceptor, healthChecker, logger)
 	if err != nil {
 		return nil, err
 	}
 	shutdownConfig := provider.NewShutdownConfig(config)
 	lifecycleConfig := provider.NewLifecycleConfig(cacheConfig, shutdownConfig)
-	healthServer := provider.NewHealthServer()
-	lanternServer := service.NewLanternServer(lanternService, lanternReplicationService, server, listener, logger, lifecycleConfig, healthServer, graphCache)
+	lanternServer := service.NewLanternServer(lanternListener, logger, lifecycleConfig, healthChecker, graphCache, lanternService, lanternReplicationService)
 	readinessConfig := provider.NewReadinessConfig(config)
 	peerConfig := provider.NewPeerConfig(config)
-	gate := provider.NewReadinessGate(readinessConfig, peerConfig, healthServer)
+	gate := provider.NewReadinessGate(readinessConfig, peerConfig, healthChecker)
 	metricsServer := provider.NewMetricsServer(observabilityConfig, registry, gate, logger)
-	gatewayConfig := provider.NewGatewayConfig(config)
-	corsConfig := provider.NewCORSConfig(config)
-	gatewayServer, err := provider.NewGatewayServer(gatewayConfig, corsConfig, lanternService, healthServer, gate, logger)
-	if err != nil {
-		return nil, err
-	}
-	connectListenerConfig := provider.NewConnectListenerConfig(config)
-	connectServer := provider.NewConnectServer(connectListenerConfig, corsConfig, lanternService, lanternReplicationService, validationInterceptor, rateLimitInterceptor, logger)
 	tracing, err := provider.NewTracing(logger)
 	if err != nil {
 		return nil, err
@@ -69,8 +63,7 @@ func initializeApp() (*App, error) {
 	antiEntropyConfig := provider.NewAntiEntropyConfig(config)
 	antiEntropyMetrics := provider.NewAntiEntropyMetrics(domainMetrics, gate)
 	antiEntropy := provider.NewAntiEntropyDriver(peerConfig, replicationConfig, antiEntropyConfig, lanternService, graphCache, pump, antiEntropyMetrics, logger)
-	mainRegisteredHealth := registerHealthAndReflection(observabilityConfig, server, healthServer)
 	cacheGCHooksWired := provider.WireCacheGCHooks(graphCache, domainMetrics, logger)
-	app := newApp(config, logger, lanternService, lanternServer, metricsServer, gatewayServer, connectServer, tracing, domainMetrics, healthServer, pump, antiEntropy, peerConfig, replicationConfig, mainRegisteredHealth, cacheGCHooksWired)
+	app := newApp(config, logger, lanternService, lanternServer, metricsServer, tracing, domainMetrics, healthChecker, pump, antiEntropy, peerConfig, replicationConfig, cacheGCHooksWired)
 	return app, nil
 }
