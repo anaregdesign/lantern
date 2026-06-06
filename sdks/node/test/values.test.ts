@@ -1,13 +1,15 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  Algorithm,
   Duration,
   Float32,
   Int32,
-  Optimization,
+  Objective,
   OverflowError,
   Uint32,
   Uint64,
+  Weighting,
   fromEdgeJson,
   fromVertexJson,
   toVertexJson,
@@ -193,12 +195,20 @@ describe("fromEdgeJson", () => {
   });
 });
 
-describe("Optimization enum", () => {
-  test("matches proto codes", () => {
-    expect(Optimization.UNSPECIFIED).toBe(0);
-    expect(Optimization.MINIMUM_SPANNING_TREE).toBe(1);
-    expect(Optimization.MAXIMUM_SPANNING_TREE).toBe(2);
-    expect(Optimization.SHORTEST_PATH_TREE).toBe(3);
-    expect(Optimization.SHORTEST_PATH_TREE_INVERSE).toBe(4);
+describe("Illuminate axis enums (#410)", () => {
+  test("Algorithm matches proto codes", () => {
+    expect(Algorithm.UNSPECIFIED).toBe(0);
+    expect(Algorithm.MINIMUM_SPANNING_TREE).toBe(1);
+    expect(Algorithm.SHORTEST_PATH_TREE).toBe(2);
+  });
+  test("Objective matches proto codes", () => {
+    expect(Objective.UNSPECIFIED).toBe(0);
+    expect(Objective.MINIMIZE).toBe(1);
+    expect(Objective.MAXIMIZE).toBe(2);
+  });
+  test("Weighting matches proto codes", () => {
+    expect(Weighting.UNSPECIFIED).toBe(0);
+    expect(Weighting.RAW).toBe(1);
+    expect(Weighting.TFIDF).toBe(2);
   });
 });

@@ -24,7 +24,7 @@ and gRPC-Web on the same h2c socket, so this client points at the
 server URL with an `http://` (or `https://` for TLS) scheme.
 
 ```ts
-import { Lantern, Optimization } from "lantern-sdk";
+import { Lantern, Algorithm } from "lantern-sdk";
 
 const client = Lantern.connect("http://localhost:6380");
 try {
@@ -38,7 +38,7 @@ try {
   const graph = await client.illuminate("hello", {
     step: 2,
     k: 16,
-    optimization: Optimization.UNSPECIFIED,
+    algorithm: Algorithm.UNSPECIFIED,
   });
   console.log(`vertices=${graph.vertices.size}`);
 } finally {

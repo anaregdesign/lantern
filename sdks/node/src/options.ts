@@ -2,17 +2,28 @@
  * Per-call and per-client options.
  */
 
-import { Optimization } from "./values.js";
+import { Algorithm, Objective, Weighting } from "./values.js";
 
 export interface IlluminateOptions {
   /** BFS depth limit (0 = server default; treated as "no expansion"). */
   step?: number;
   /** Per-hop fan-out, top-k neighbours kept at each frontier (0 = unlimited). */
   k?: number;
-  /** Whether the server should TF-IDF re-weight edges before optimization. */
-  tfidf?: boolean;
-  /** Post-processing strategy. Defaults to UNSPECIFIED. */
-  optimization?: Optimization;
+  /**
+   * Post-traversal subgraph reduction. Defaults to UNSPECIFIED (raw
+   * discovered subgraph). See #410 for the orthogonal-axes design.
+   */
+  algorithm?: Algorithm;
+  /**
+   * Reduction direction. Ignored when `algorithm === Algorithm.UNSPECIFIED`.
+   * Server resolves UNSPECIFIED to MINIMIZE.
+   */
+  objective?: Objective;
+  /**
+   * Edge-weight transform applied BEFORE the BFS walk. Server resolves
+   * UNSPECIFIED to RAW.
+   */
+  weighting?: Weighting;
 }
 
 export interface ScanOptions {

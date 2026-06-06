@@ -16,11 +16,10 @@ import (
 // dedicated subcommands (vertex, edge, illuminate, bulk).
 var replCmd = &cobra.Command{
 	Use:   "repl",
-	Short: "Interactive prompt (legacy)",
-	Long: `Launch the legacy interactive prompt.
+	Short: "Interactive prompt",
+	Long: `Launch the interactive prompt.
 
-The REPL accepts whitespace-delimited verbs that mirror the legacy
-lantern-cli grammar:
+The REPL accepts whitespace-delimited verbs:
 
   get vertex <key>
   put vertex <key> <value> [ttl_seconds]
@@ -29,13 +28,15 @@ lantern-cli grammar:
   add edge <tail> <head> <weight> [ttl_seconds]
   put edge <tail> <head> <weight> [ttl_seconds]
   delete edge <tail> <head>
-  illuminate { neighbor | spt_relevance | spt_cost | mst_relevance | mst_cost } <seed> <step> <k> <tfidf>
+  illuminate <seed> <step> <k> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf]
   exit
 
-NOTE
-  The REPL grammar is frozen for backward compatibility. New features
-  (batch RPCs, gzip, TLS flags, value typing) are only available via the
-  scriptable subcommands.
+The illuminate verb exposes the orthogonal axes introduced in #410:
+algorithm selects the post-traversal reduction, objective picks the
+direction (minimise/maximise), and weighting toggles RAW vs TF-IDF edge
+weights. The three keyword arguments may appear in any order; each
+defaults to the server's UNSPECIFIED resolution (algorithm=none,
+objective=min, weighting=raw).
 
 EXAMPLE
   $ lantern repl
@@ -44,6 +45,9 @@ EXAMPLE
   > get vertex alice
   "Alice"
   OK (0.8ms)
+  > illuminate alice 2 5 algorithm=spt objective=max weighting=tfidf
+  { ... }
+  OK (3.2ms)
   > exit
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -103,7 +107,7 @@ EXAMPLE
 			case service.ErrAddEdge:
 				fmt.Println("Usage: add edge <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]")
 			case service.ErrIlluminate:
-				fmt.Println("Usage: illuminate { neighbor | spt_relevance | spt_cost | mst_relevance | mst_cost } <seed: string> <step: int> <k: int> <tfidf: bool>")
+				fmt.Println("Usage: illuminate <seed: string> <step: int> <k: int> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf]")
 			case service.ErrInvalidVerb:
 				fmt.Println("Usage: { get | put | delete | add | illuminate } ...")
 			case service.ErrInvalidObjective:

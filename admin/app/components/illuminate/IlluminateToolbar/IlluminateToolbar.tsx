@@ -17,7 +17,10 @@ import type {
   IlluminateControls,
   IlluminateStatus,
 } from "~/lib/client/usecase/illuminate/state";
-import type { Optimization } from "~/lib/client/infrastructure/api/illuminate";
+import type {
+  Algorithm,
+  Objective,
+} from "~/lib/client/infrastructure/api/illuminate";
 import styles from "./IlluminateToolbar.module.css";
 
 export interface IlluminateToolbarProps {
@@ -30,21 +33,19 @@ export interface IlluminateToolbarProps {
   onRefresh: () => void;
 }
 
-const OPTIMIZATIONS: Array<{ value: Optimization; label: string }> = [
-  { value: "OPTIMIZATION_UNSPECIFIED", label: "All edges" },
-  { value: "OPTIMIZATION_SHORTEST_PATH_TREE", label: "Shortest path tree" },
-  {
-    value: "OPTIMIZATION_SHORTEST_PATH_TREE_INVERSE",
-    label: "Inverse SPT",
-  },
-  {
-    value: "OPTIMIZATION_MINIMUM_SPANNING_TREE",
-    label: "Minimum spanning tree",
-  },
-  {
-    value: "OPTIMIZATION_MAXIMUM_SPANNING_TREE",
-    label: "Maximum spanning tree",
-  },
+// Per #410 the post-traversal reduction is the orthogonal triple
+// algorithm × objective × weighting. The toolbar surfaces each as its
+// own control so an operator can independently change one axis without
+// re-learning combo names.
+const ALGORITHMS: Array<{ value: Algorithm; label: string }> = [
+  { value: "ALGORITHM_UNSPECIFIED", label: "None (raw subgraph)" },
+  { value: "ALGORITHM_MINIMUM_SPANNING_TREE", label: "Spanning tree" },
+  { value: "ALGORITHM_SHORTEST_PATH_TREE", label: "Shortest-path tree" },
+];
+
+const OBJECTIVES: Array<{ value: Objective; label: string }> = [
+  { value: "OBJECTIVE_MINIMIZE", label: "Minimize (cost)" },
+  { value: "OBJECTIVE_MAXIMIZE", label: "Maximize (relevance)" },
 ];
 
 /**
@@ -135,26 +136,54 @@ export function IlluminateToolbar({
         </Field>
         <Switch
           label="TF-IDF reweight"
-          checked={controls.tfidf}
-          onChange={(_, data) => update("tfidf", data.checked)}
+          checked={controls.weighting === "WEIGHTING_TFIDF"}
+          onChange={(_, data) =>
+            update(
+              "weighting",
+              data.checked ? "WEIGHTING_TFIDF" : "WEIGHTING_RAW",
+            )
+          }
           data-testid="illuminate-tfidf"
         />
       </div>
 
-      <Field label="Tree selection" className={styles.optimization}>
+      <Field label="Algorithm" className={styles.optimization}>
         <RadioGroup
-          value={controls.optimization}
-          onChange={(_, data) =>
-            update("optimization", data.value as Optimization)
-          }
+          value={controls.algorithm}
+          onChange={(_, data) => update("algorithm", data.value as Algorithm)}
           layout="horizontal-stacked"
         >
-          {OPTIMIZATIONS.map((opt) => (
+          {ALGORITHMS.map((opt) => (
             <Radio
               key={opt.value}
               value={opt.value}
               label={opt.label}
-              data-testid={`illuminate-opt-${opt.value}`}
+              data-testid={`illuminate-algorithm-${opt.value}`}
+            />
+          ))}
+        </RadioGroup>
+      </Field>
+
+      <Field label="Objective" className={styles.optimization}>
+        <RadioGroup
+          value={
+            controls.objective === "OBJECTIVE_UNSPECIFIED"
+              ? "OBJECTIVE_MINIMIZE"
+              : controls.objective
+          }
+          onChange={(_, data) => update("objective", data.value as Objective)}
+          layout="horizontal-stacked"
+          // Objective is only meaningful when an algorithm reduction is
+          // selected; disable the radio when algorithm = UNSPECIFIED so the
+          // UI reflects the server semantics.
+          disabled={controls.algorithm === "ALGORITHM_UNSPECIFIED"}
+        >
+          {OBJECTIVES.map((opt) => (
+            <Radio
+              key={opt.value}
+              value={opt.value}
+              label={opt.label}
+              data-testid={`illuminate-objective-${opt.value}`}
             />
           ))}
         </RadioGroup>

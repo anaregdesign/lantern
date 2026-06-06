@@ -37,6 +37,10 @@ ttl_churn
 illuminate
 illuminate_heavy
 illuminate_hot
+# orthogonal-axes Illuminate variants (#410): MST/MAX and SPT/TF-IDF cover
+# the two most expensive (algorithm, objective, weighting) combinations.
+illuminate_mst_max
+illuminate_spt_tfidf
 
 # replication / pubsub fan-out
 many_subscribers

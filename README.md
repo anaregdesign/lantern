@@ -50,16 +50,22 @@ you want classic idempotent replace instead.
 ### 3. Built-in online graph algorithms over the live snapshot
 
 A single `Illuminate` RPC walks the live graph from a seed vertex and returns
-a subgraph already shaped for your use case:
+a subgraph already shaped for your use case. Three orthogonal axes select the
+shape (#410):
 
-| Optimization | What you get | Typical use |
+| Axis | Values | What it does |
 |---|---|---|
-| _(none)_ | k-nearest neighbors per hop, up to N hops | "what is related to X" |
-| `MINIMUM_SPANNING_TREE` | MST rooted at seed | clustering / dedup |
-| `MAXIMUM_SPANNING_TREE` | Max-spanning tree | strongest-relationship backbone |
-| `SHORTEST_PATH_TREE` | SPT using raw weights as cost | low-cost reachability |
-| `SHORTEST_PATH_TREE_INVERSE` | SPT using `1/weight` as cost | **most-relevant** path tree |
-| `tfidf=true` flag | Per-hop top-k weighted by `w / log2(1+df(head))` | suppress hub vertices like "popular" items |
+| `algorithm` | `none` (default) — raw k-NN subgraph<br>`mst` — spanning tree<br>`spt` — shortest-path tree from seed | Picks the post-traversal subgraph reduction |
+| `objective` | `min` (default) — smallest-weight tree wins<br>`max` — largest-weight tree wins | Picks the direction of the reduction. Ignored when `algorithm=none` |
+| `weighting` | `raw` (default) — edge.weight verbatim<br>`tfidf` — per-hop top-k weighted by `w / log2(1+df(head))` | Picks the edge-weight transform applied BEFORE the BFS walk |
+
+Examples:
+
+- `algorithm=mst objective=min`  — clustering / dedup (smallest connecting tree)
+- `algorithm=mst objective=max`  — strongest-relationship backbone
+- `algorithm=spt objective=min`  — low-cost reachability
+- `algorithm=spt objective=max`  — **most-relevant** path tree
+- `weighting=tfidf`              — suppress hub vertices like "popular" items
 
 You don't fetch a wall of edges and post-process — the server returns exactly
 the shape you asked for.
@@ -71,7 +77,7 @@ the shape you asked for.
 **Good fit**
 
 - **Real-time recommenders** — user → item interaction graph with decaying
-  weights; `illuminate(user, step=2, k=10, tfidf=true)` gives a candidate set
+  weights; `illuminate(user, step=2, k=10, weighting=tfidf)` gives a candidate set
   that already discounts popular items.
 - **Session-aware personalization** — short-TTL session graph layered on top
   of long-TTL preference graph in the same store.
@@ -319,17 +325,17 @@ OK (1.0ms)
 {"String_":"Alice"}
 OK (0.6ms)
 
-> illuminate neighbor alice 2 5 false   # 2 hops, top-5 neighbours/hop, no TF-IDF
+> illuminate alice 2 5                                   # 2 hops, top-5 neighbours/hop, raw subgraph
 {
         "vertices": { ... },
         "edges":    { ... }
 }
 OK (2.3ms)
-> illuminate spt_relevance alice 3 8 true
-                                        # shortest-path tree under TF-IDF weighting
+> illuminate alice 3 8 algorithm=spt objective=max weighting=tfidf
+                                        # SPT under TF-IDF weighting, relevance-maximising
 { ... }
 OK (3.1ms)
-> illuminate mst_relevance alice 3 8 true
+> illuminate alice 3 8 algorithm=mst objective=max
                                         # maximum spanning tree from the seed
 { ... }
 OK (2.7ms)
@@ -341,8 +347,7 @@ OK (0.6ms)
 > exit
 ```
 
-REPL grammar (frozen for backward compatibility — full reference in
-`lantern repl --help`):
+REPL grammar (full reference in `lantern repl --help`):
 
 ```text
 get    vertex <key>
@@ -352,8 +357,8 @@ get    edge   <tail> <head>
 add    edge   <tail> <head> <weight> [ttl_seconds]
 put    edge   <tail> <head> <weight> [ttl_seconds]
 delete edge   <tail> <head>
-illuminate { neighbor | spt_relevance | spt_cost | mst_relevance | mst_cost } \
-           <seed> <step> <k> <tfidf>
+illuminate <seed> <step> <k> [algorithm=none|mst|spt] [objective=min|max] \
+           [weighting=raw|tfidf]
 exit
 ```
 
@@ -412,7 +417,7 @@ _ = cli.AddEdge(ctx, "user:42", "item:7", 1.0, 30*time.Minute)
 
 // Walk: 2 hops, top-3 per hop, TF-IDF weighted.
 g, _ := cli.Illuminate(ctx, "user:42",
-    client.WithStep(2), client.WithK(3), client.WithTFIDF(true))
+    client.WithStep(2), client.WithK(3), client.WithWeighting(client.WeightingTFIDF))
 
 // Prefix scan: enumerate every vertex under a namespace, auto-paginated.
 for batch, err := range cli.ScanVerticesAll(ctx, "user:", 100) {
@@ -477,7 +482,7 @@ MCP `tools/list` (see [mcp/server.go](mcp/server.go) for the source of truth).
 | `forget` | Delete a fact by exact key. Idempotent. Edges incident to the key are NOT cascade-deleted; they decay on their own. |
 | `list_under` | Enumerate facts whose key starts with a prefix, ascending. Defaults to 50, max 500. |
 | `remember_relation` | Add or **reinforce** a directed relation. Additive: same write twice = stronger relation. |
-| `recall_related` | Walk the graph from a seed with `step`, `k`, and an optional `objective` (`mst` / `max-st` / `spt` / `inverse-spt`). |
+| `recall_related` | Walk the graph from a seed with `step`, `k`, and the orthogonal axes `algorithm` (`none` / `mst` / `spt`), `objective` (`min` / `max`), and `weighting` (`raw` / `tfidf`) introduced in #410. |
 
 A `ping` tool also exists so operators can sanity-check the wire without
 touching state.
@@ -555,9 +560,9 @@ remember_relation(tail="user:alice", head="topic:payments", weight=1.0, bucket="
 remember_relation(tail="user:alice", head="topic:payments", weight=1.0, bucket="day")
 remember_relation(tail="user:alice", head="topic:auth",     weight=0.4, bucket="day")
 
-# 3. Later in the session, walk the live graph. SPT-inverse-weight returns
+# 3. Later in the session, walk the live graph. SPT-max-weight returns
 #    a "most relevant" tree — exactly what you want for grounding context.
-recall_related(seed="user:alice", step=2, k=5, objective="inverse-spt")
+recall_related(seed="user:alice", step=2, k=5, algorithm="spt", objective="max")
 # → [{key: "topic:payments", weight: 2.0}, {key: "topic:auth", weight: 0.4}, …]
 ```
 
@@ -607,7 +612,7 @@ whole subgraph, so there is no plural form.
 | `CountVerticesByPrefix` | Count live vertices under a prefix | Radix-only (cheap); not subject to `limit` |
 | `DeleteVerticesByPrefix` | Bulk-delete a namespace | Capped by server-configured `limit`; `dry_run` returns the count that *would* be deleted without mutating; edges incident to removed vertices are reaped on the next GC tick |
 | `ScanEdges` | Enumerate edges by `tail_prefix` AND `head_prefix` | Either prefix may be empty; head dimension is served by a per-tail head radix (not a post-filter); head-only scans still iterate every tail, so combining both prefixes is the most efficient shape; same opaque-cursor / cross-RPC rejection rules as `ScanVertices`; SDK helper `ScanEdgesAll` auto-paginates |
-| `Illuminate` | Walk the graph from a seed | `WithStep`, `WithK`, `WithTFIDF`, and `WithOptimization` (none / MST / max-ST / SPT / inverse-SPT); honours `ctx` cancellation; `step`/`k` are clamped at `LANTERN_ILLUMINATE_MAX_STEP` / `LANTERN_ILLUMINATE_MAX_K` |
+| `Illuminate` | Walk the graph from a seed | `WithStep`, `WithK`, `WithAlgorithm` (none / MST / SPT), `WithObjective` (min / max), `WithWeighting` (raw / TF-IDF); honours `ctx` cancellation; `step`/`k` are clamped at `LANTERN_ILLUMINATE_MAX_STEP` / `LANTERN_ILLUMINATE_MAX_K`. See #410. |
 
 Vertices auto-materialize on `AddEdge`/`PutEdge` if the endpoint key does not
 yet exist (they get the edge's expiration as their TTL). This keeps event-stream
@@ -822,8 +827,8 @@ get vertex <key:string>
 get edge   <tail:string> <head:string>
 delete vertex <key:string>
 delete edge   <tail:string> <head:string>
-illuminate <neighbor|spt_cost|spt_relevance|mst_cost|mst_relevance> \
-           <seed:string> <step:int> <k:int> <tfidf:bool>
+illuminate <seed:string> <step:int> <k:int> [algorithm=none|mst|spt] \
+           [objective=min|max] [weighting=raw|tfidf]
 ```
 
 Worked examples (with diagrams) live in the walkthrough below.
@@ -868,11 +873,11 @@ graph LR
     c -- 4 --> f((f))
 ```
 
-`illuminate neighbor a 1 2 false` returns just the 1-hop neighborhood of
-seed `a` (top-`k=2` edges per vertex, no TF-IDF reweighting):
+`illuminate a 1 2` returns just the 1-hop neighborhood of
+seed `a` (top-`k=2` edges per vertex, default RAW weighting):
 
 ```shell
-> illuminate neighbor a 1 2 false
+> illuminate a 1 2
 {
   "vertices": { ... },
   "edges": { "a": { "b": 1, "c": 1 } }
@@ -888,11 +893,12 @@ graph LR
 #### Shortest-path tree by cost vs. relevance
 
 ```shell
-> illuminate spt_cost a 2 2 false        # uses raw weight as cost
-> illuminate spt_relevance a 2 2 false   # uses 1/weight as cost
+> illuminate a 2 2 algorithm=spt objective=min        # uses raw weight as cost
+> illuminate a 2 2 algorithm=spt objective=max        # uses 1/weight as cost (relevance-weighted)
 ```
 
-`spt_cost` treats edge weight directly as cost — lighter edges are
+`algorithm=spt objective=min` treats edge weight directly as cost —
+lighter edges are
 preferred, so the tree reaches `e` via `c` (cost `1+1=2`) rather than via
 `b` (cost `1+3=4`):
 
@@ -904,7 +910,7 @@ graph LR
     c -- 1 --> e((e))
 ```
 
-`spt_relevance` inverts the weight (cost = `1/weight`), so heavier edges
+`algorithm=spt objective=max` inverts the weight (cost = `1/weight`), so heavier edges
 become cheaper — relevance-weighted traversal picks the `c → f`
 (weight `4`, cost `0.25`) and `b → e` (weight `3`, cost `0.33`) branches
 instead:

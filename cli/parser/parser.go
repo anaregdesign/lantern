@@ -20,13 +20,14 @@ var (
 		"vertex",
 		"edge",
 	}
-	IlluminateObjectives = []string{
-		"neighbor",
-		"spt_relevance",
-		"spt_cost",
-		"mst_relevance",
-		"mst_cost",
-	}
+
+	// IlluminateAlgorithms / IlluminateObjectives / IlluminateWeightings
+	// are the canonical sets the REPL accepts for the keyword arguments of
+	// the modernised illuminate verb (#410). The keyword form replaces the
+	// legacy positional grammar (neighbor / spt_* / mst_*) entirely.
+	IlluminateAlgorithms = []string{"none", "mst", "spt"}
+	IlluminateObjectives = []string{"min", "max"}
+	IlluminateWeightings = []string{"raw", "tfidf"}
 
 	ErrNotFound = errors.New("not found")
 	ErrNotEOF   = errors.New("not EOF")
@@ -161,10 +162,6 @@ func Objective(s *Source) (string, error) {
 	return AnyOf(s, Objectives)
 }
 
-func IlluminateObjective(s *Source) (string, error) {
-	return AnyOf(s, IlluminateObjectives)
-}
-
 func GetVertexParam(s *Source) (*GetVertex, error) {
 	var err error
 	m := &GetVertex{}
@@ -291,9 +288,19 @@ func DeleteEdgeParam(s *Source) (*DeleteEdge, error) {
 	return m, nil
 }
 
+// IlluminateParam parses the modernised illuminate grammar (#410):
+//
+//	illuminate <seed> <step> <k> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf]
+//
+// The three keyword arguments may appear in any order and any subset.
+// Each defaults to its UNSPECIFIED enum value, which the server
+// resolves to (algorithm=none, objective=minimize, weighting=raw).
+// Unknown keyword names, malformed `key=value` tokens, or values
+// outside the canonical set above are rejected with a descriptive
+// error so the REPL can surface a usage hint.
 func IlluminateParam(s *Source) (*Illuminate, error) {
 	var err error
-	m := &Illuminate{}
+	m := &Illuminate{Algorithm: "none", Objective: "min", Weighting: "raw"}
 	if m.Seed, err = String(s); err != nil {
 		return nil, err
 	}
@@ -303,9 +310,52 @@ func IlluminateParam(s *Source) (*Illuminate, error) {
 	if m.K, err = Integer(s); err != nil {
 		return nil, err
 	}
-	if m.Tfidf, err = Bool(s); err != nil {
-		return nil, err
+	for s.HasNext() {
+		tok, err := String(s)
+		if err != nil {
+			return nil, err
+		}
+		key, value, ok := splitKeyValue(tok)
+		if !ok {
+			return nil, errors.New("illuminate: expected key=value token, got " + tok)
+		}
+		switch key {
+		case "algorithm":
+			if !contains(IlluminateAlgorithms, value) {
+				return nil, errors.New("illuminate: algorithm=" + value + " (want none|mst|spt)")
+			}
+			m.Algorithm = value
+		case "objective":
+			if !contains(IlluminateObjectives, value) {
+				return nil, errors.New("illuminate: objective=" + value + " (want min|max)")
+			}
+			m.Objective = value
+		case "weighting":
+			if !contains(IlluminateWeightings, value) {
+				return nil, errors.New("illuminate: weighting=" + value + " (want raw|tfidf)")
+			}
+			m.Weighting = value
+		default:
+			return nil, errors.New("illuminate: unknown key " + key + " (want algorithm|objective|weighting)")
+		}
 	}
-
 	return m, nil
+}
+
+func splitKeyValue(tok string) (key, value string, ok bool) {
+	for i := 0; i < len(tok); i++ {
+		if tok[i] == '=' {
+			return tok[:i], tok[i+1:], true
+		}
+	}
+	return "", "", false
+}
+
+func contains(set []string, v string) bool {
+	for _, s := range set {
+		if s == v {
+			return true
+		}
+	}
+	return false
 }

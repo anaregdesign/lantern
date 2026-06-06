@@ -66,7 +66,7 @@ WHAT LANTERN IS
 COMMAND LAYOUT
   vertex      get / put / delete vertices (single or batch)
   edge        get / add / put / delete edges (single or batch)
-  illuminate  walk the graph from a seed; optional server-side optimization
+  illuminate  walk the graph from a seed; optional algorithm × objective × weighting reduction
   bulk        stream NDJSON from a file or stdin (bulk load)
   repl        legacy interactive prompt
   version     print client version

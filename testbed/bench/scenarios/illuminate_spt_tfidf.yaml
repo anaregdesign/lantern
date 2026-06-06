@@ -1,0 +1,21 @@
+# illuminate_spt_tfidf — relevance-weighted SPT with TF-IDF reweighting.
+# Goal: cover the most expensive orthogonal-axes combination (algorithm=spt,
+# objective=maximize, weighting=tfidf) from #410. TF-IDF transforms edge
+# weights BEFORE the BFS walk; SPT/MAX then picks the maximum-weight tree.
+#
+#   Algorithm.SHORTEST_PATH_TREE = 2
+#   Objective.MAXIMIZE           = 2
+#   Weighting.TFIDF              = 2
+name: illuminate_spt_tfidf
+phases:
+  warmup:   { duration: 30s, concurrency: 8,  rps: 200 }
+  steady:   { duration: 3m,  concurrency: 32, rps: 1000 }
+  cooldown: 30s
+target:
+  endpoints: ["localhost:6380", "localhost:6381", "localhost:6382"]
+  call: graph.v1.LanternService/Illuminate
+  data_template: |
+    {"seed":"k-{{mod .RequestNumber 1000}}","step":2,"k":32,"algorithm":2,"objective":2,"weighting":2}
+leak_gate:
+  goroutine_max_delta: 20
+  heap_alloc_max_delta_mb: 32

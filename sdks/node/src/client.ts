@@ -24,7 +24,9 @@ import { fromJson, toJson, type JsonValue } from "@bufbuild/protobuf";
 import {
   EdgeSchema,
   LanternService,
-  Optimization as PbOptimization,
+  Algorithm as PbAlgorithm,
+  Objective as PbObjective,
+  Weighting as PbWeighting,
   VertexSchema,
 } from "./gen/graph/v1/graph_pb.js";
 
@@ -36,7 +38,9 @@ import {
   wrapConnectError,
 } from "./errors.js";
 import {
-  Optimization,
+  Algorithm,
+  Objective,
+  Weighting,
   fromEdgeJson,
   fromVertexJson,
   toEdgeJson,
@@ -77,14 +81,24 @@ export interface LanternArgs {
   transportOptions?: Omit<ConnectTransportOptions, "baseUrl">;
 }
 
-// Connect-es v2 enum values match the proto numeric IDs verbatim
-// — no translation needed beyond the type cast.
-const OPTIMIZATION_TO_PB: Record<number, PbOptimization> = {
-  [Optimization.UNSPECIFIED]: PbOptimization.UNSPECIFIED,
-  [Optimization.MINIMUM_SPANNING_TREE]: PbOptimization.MINIMUM_SPANNING_TREE,
-  [Optimization.MAXIMUM_SPANNING_TREE]: PbOptimization.MAXIMUM_SPANNING_TREE,
-  [Optimization.SHORTEST_PATH_TREE]: PbOptimization.SHORTEST_PATH_TREE,
-  [Optimization.SHORTEST_PATH_TREE_INVERSE]: PbOptimization.SHORTEST_PATH_TREE_INVERSE,
+// Connect-es v2 enum values match the proto numeric IDs verbatim — no
+// translation needed beyond the type cast. Per #410 the Illuminate
+// request carries three orthogonal axes; each is a flat numeric enum on
+// the wire so a single Number(...) coercion is sufficient.
+const ALGORITHM_TO_PB: Record<number, PbAlgorithm> = {
+  [Algorithm.UNSPECIFIED]: PbAlgorithm.UNSPECIFIED,
+  [Algorithm.MINIMUM_SPANNING_TREE]: PbAlgorithm.MINIMUM_SPANNING_TREE,
+  [Algorithm.SHORTEST_PATH_TREE]: PbAlgorithm.SHORTEST_PATH_TREE,
+};
+const OBJECTIVE_TO_PB: Record<number, PbObjective> = {
+  [Objective.UNSPECIFIED]: PbObjective.UNSPECIFIED,
+  [Objective.MINIMIZE]: PbObjective.MINIMIZE,
+  [Objective.MAXIMIZE]: PbObjective.MAXIMIZE,
+};
+const WEIGHTING_TO_PB: Record<number, PbWeighting> = {
+  [Weighting.UNSPECIFIED]: PbWeighting.UNSPECIFIED,
+  [Weighting.RAW]: PbWeighting.RAW,
+  [Weighting.TFIDF]: PbWeighting.TFIDF,
 };
 
 /**
@@ -419,10 +433,12 @@ export class Lantern {
           seed,
           step: opts.step ?? 0,
           k: opts.k ?? 0,
-          tfidf: opts.tfidf ?? false,
-          optimization:
-            OPTIMIZATION_TO_PB[opts.optimization ?? Optimization.UNSPECIFIED] ??
-            PbOptimization.UNSPECIFIED,
+          algorithm:
+            ALGORITHM_TO_PB[opts.algorithm ?? Algorithm.UNSPECIFIED] ?? PbAlgorithm.UNSPECIFIED,
+          objective:
+            OBJECTIVE_TO_PB[opts.objective ?? Objective.UNSPECIFIED] ?? PbObjective.UNSPECIFIED,
+          weighting:
+            WEIGHTING_TO_PB[opts.weighting ?? Weighting.UNSPECIFIED] ?? PbWeighting.UNSPECIFIED,
         },
         this.callOpts(signal),
       );

@@ -56,16 +56,40 @@ func EdgeExpiration(e *Edge) time.Time {
 	return e.Expiration.AsTime()
 }
 
-// Optimization re-exports the server-side Optimization enum so SDK callers do
-// not need to import the generated proto package directly.
-type Optimization = pb.Optimization
+// Algorithm re-exports the server-side post-traversal reduction enum so SDK
+// callers do not need to import the generated proto package directly. See
+// #410 for the orthogonal-axes redesign that replaced the legacy
+// Optimization enum with (Algorithm, Objective, Weighting).
+type Algorithm = pb.Algorithm
 
 const (
-	OptimizationUnspecified             = pb.Optimization_OPTIMIZATION_UNSPECIFIED
-	OptimizationMinimumSpanningTree     = pb.Optimization_OPTIMIZATION_MINIMUM_SPANNING_TREE
-	OptimizationMaximumSpanningTree     = pb.Optimization_OPTIMIZATION_MAXIMUM_SPANNING_TREE
-	OptimizationShortestPathTree        = pb.Optimization_OPTIMIZATION_SHORTEST_PATH_TREE
-	OptimizationShortestPathTreeInverse = pb.Optimization_OPTIMIZATION_SHORTEST_PATH_TREE_INVERSE
+	AlgorithmUnspecified         = pb.Algorithm_ALGORITHM_UNSPECIFIED
+	AlgorithmMinimumSpanningTree = pb.Algorithm_ALGORITHM_MINIMUM_SPANNING_TREE
+	AlgorithmShortestPathTree    = pb.Algorithm_ALGORITHM_SHORTEST_PATH_TREE
+)
+
+// Objective is the direction of the Algorithm-driven optimisation:
+// MINIMIZE treats edge weights as costs (smallest tree wins), MAXIMIZE
+// treats them as relevance (largest tree wins). Server resolves
+// ObjectiveUnspecified to ObjectiveMinimize.
+type Objective = pb.Objective
+
+const (
+	ObjectiveUnspecified = pb.Objective_OBJECTIVE_UNSPECIFIED
+	ObjectiveMinimize    = pb.Objective_OBJECTIVE_MINIMIZE
+	ObjectiveMaximize    = pb.Objective_OBJECTIVE_MAXIMIZE
+)
+
+// Weighting is the edge-weight transform applied BEFORE the BFS walk.
+// RAW uses the stored edge.weight verbatim; TFIDF re-scores using TF-IDF
+// over the per-vertex out-edge distribution. Server resolves
+// WeightingUnspecified to WeightingRaw.
+type Weighting = pb.Weighting
+
+const (
+	WeightingUnspecified = pb.Weighting_WEIGHTING_UNSPECIFIED
+	WeightingRaw         = pb.Weighting_WEIGHTING_RAW
+	WeightingTFIDF       = pb.Weighting_WEIGHTING_TFIDF
 )
 
 // VertexInput describes one vertex for the batch PutVertices API.
@@ -479,14 +503,16 @@ func NewGraph() *Graph {
 }
 
 // IlluminateOption configures a single Illuminate call. Pass any combination
-// of WithStep, WithK, WithTFIDF, and WithOptimization to Illuminate.
+// of WithStep, WithK, WithAlgorithm, WithObjective, and WithWeighting to
+// Illuminate. See #410 for the orthogonal-axes design.
 type IlluminateOption func(*illuminateConfig)
 
 type illuminateConfig struct {
-	step         uint32
-	k            uint32
-	tfidf        bool
-	optimization Optimization
+	step      uint32
+	k         uint32
+	algorithm Algorithm
+	objective Objective
+	weighting Weighting
 }
 
 // WithStep sets the BFS depth for an Illuminate call.
@@ -499,37 +525,46 @@ func WithK(k uint32) IlluminateOption {
 	return func(c *illuminateConfig) { c.k = k }
 }
 
-// WithTFIDF toggles server-side TF-IDF re-weighting of edges before
-// optimization runs.
-func WithTFIDF(tfidf bool) IlluminateOption {
-	return func(c *illuminateConfig) { c.tfidf = tfidf }
+// WithAlgorithm selects the post-traversal subgraph reduction applied to
+// the illuminated subgraph. Pass AlgorithmUnspecified to disable the
+// reduction (the server returns the raw discovered subgraph).
+func WithAlgorithm(a Algorithm) IlluminateOption {
+	return func(c *illuminateConfig) { c.algorithm = a }
 }
 
-// WithOptimization selects the server-side post-processing strategy applied
-// to the illuminated subgraph (e.g. MST, SPT). Pass OptimizationUnspecified
-// to disable it.
-func WithOptimization(opt Optimization) IlluminateOption {
-	return func(c *illuminateConfig) { c.optimization = opt }
+// WithObjective sets the direction of the Algorithm-driven reduction
+// (MINIMIZE for cost-weighted trees, MAXIMIZE for relevance-weighted
+// trees). Ignored when Algorithm == AlgorithmUnspecified.
+func WithObjective(o Objective) IlluminateOption {
+	return func(c *illuminateConfig) { c.objective = o }
+}
+
+// WithWeighting toggles the edge-weight transform applied BEFORE the
+// BFS walk. WeightingRaw (the default) uses edge.weight verbatim;
+// WeightingTFIDF re-scores edges using TF-IDF over the per-vertex
+// out-edge distribution.
+func WithWeighting(w Weighting) IlluminateOption {
+	return func(c *illuminateConfig) { c.weighting = w }
 }
 
 // Illuminate runs a k-bounded BFS from seed, returning the resulting subgraph.
-// Configure step, k, TF-IDF, and optimization via IlluminateOption values; any
-// option omitted defaults to its zero value (step=0, k=0, tfidf=false,
-// optimization=OptimizationUnspecified), which the server treats as "no
-// expansion / no optimization".
+// Configure step, k, algorithm, objective, and weighting via IlluminateOption
+// values; any option omitted defaults to its zero value, which the server
+// resolves to (step=0, k=0, no reduction, RAW weighting). See #410.
 func (l *Lantern) Illuminate(ctx context.Context, seed string, opts ...IlluminateOption) (*Graph, error) {
-	cfg := illuminateConfig{optimization: OptimizationUnspecified}
+	var cfg illuminateConfig
 	for _, opt := range opts {
 		opt(&cfg)
 	}
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
 	resp, err := unary(ctx, &pb.IlluminateRequest{
-		Seed:         seed,
-		Step:         cfg.step,
-		K:            cfg.k,
-		Tfidf:        cfg.tfidf,
-		Optimization: cfg.optimization,
+		Seed:      seed,
+		Step:      cfg.step,
+		K:         cfg.k,
+		Algorithm: cfg.algorithm,
+		Objective: cfg.objective,
+		Weighting: cfg.weighting,
 	}, l.client.Illuminate)
 	if err != nil {
 		return nil, err

@@ -9,23 +9,35 @@ import (
 )
 
 var (
-	illuminateStep   uint32
-	illuminateK      uint32
-	illuminateTfidf  bool
-	illuminateOptStr string
+	illuminateStep         uint32
+	illuminateK            uint32
+	illuminateAlgorithmStr string
+	illuminateObjectiveStr string
+	illuminateWeightingStr string
 )
 
-// optimizationByName maps human-friendly --optimize values to the server enum.
-var optimizationByName = map[string]client.Optimization{
-	"none":             client.OptimizationUnspecified,
-	"":                 client.OptimizationUnspecified,
-	"mst":              client.OptimizationMinimumSpanningTree,
-	"max-st":           client.OptimizationMaximumSpanningTree,
-	"maximum":          client.OptimizationMaximumSpanningTree,
-	"spt":              client.OptimizationShortestPathTree,
-	"shortest":         client.OptimizationShortestPathTree,
-	"inverse-spt":      client.OptimizationShortestPathTreeInverse,
-	"shortest-inverse": client.OptimizationShortestPathTreeInverse,
+// algorithmByName, objectiveByName, weightingByName map human-friendly
+// flag values to the SDK enums. The Illuminate API is the orthogonal
+// (algorithm, objective, weighting) triple introduced in #410.
+var algorithmByName = map[string]client.Algorithm{
+	"none": client.AlgorithmUnspecified,
+	"":     client.AlgorithmUnspecified,
+	"mst":  client.AlgorithmMinimumSpanningTree,
+	"spt":  client.AlgorithmShortestPathTree,
+}
+
+var objectiveByName = map[string]client.Objective{
+	"":         client.ObjectiveUnspecified,
+	"min":      client.ObjectiveMinimize,
+	"minimize": client.ObjectiveMinimize,
+	"max":      client.ObjectiveMaximize,
+	"maximize": client.ObjectiveMaximize,
+}
+
+var weightingByName = map[string]client.Weighting{
+	"":      client.WeightingUnspecified,
+	"raw":   client.WeightingRaw,
+	"tfidf": client.WeightingTFIDF,
 }
 
 var illuminateCmd = &cobra.Command{
@@ -35,21 +47,22 @@ var illuminateCmd = &cobra.Command{
 as JSON.
 
 PARAMETERS
-  --step <uint32>   maximum walk depth from the seed (default 1)
-  --k <uint32>      max neighbours visited per node (default 10)
-  --tfidf           re-rank neighbours by TF-IDF over edge weights before
-                    truncating to top-k (default false)
+  --step <uint32>       maximum walk depth from the seed (default 1)
+  --k <uint32>          max neighbours visited per node (default 10)
 
-OPTIMIZATION (server-side post-processing)
-  --optimize <mode> apply a graph operator to the discovered subgraph before
-                    returning it:
-
-    none          (default) return the raw discovered subgraph
-    mst           minimum spanning tree
-    max-st        maximum spanning tree
-    spt           shortest path tree from seed (edge weight = cost)
-    inverse-spt   shortest path tree from seed using 1/weight as cost
-                  (use this when weight encodes RELEVANCE, not cost)
+ORTHOGONAL ILLUMINATE AXES (#410)
+  --algorithm <mode>    post-traversal subgraph reduction:
+                          none  (default) return the raw discovered subgraph
+                          mst   minimum or maximum spanning tree
+                          spt   shortest-path tree rooted at the seed
+  --objective <dir>     direction of the algorithm-driven reduction:
+                          min   (default) smallest-weight tree wins
+                          max   largest-weight tree wins (use when weight
+                                encodes RELEVANCE, not cost)
+  --weighting <mode>    edge-weight transform applied BEFORE the walk:
+                          raw   (default) edge.weight as stored
+                          tfidf re-score using TF-IDF over the per-vertex
+                                out-edge distribution
 
 OUTPUT
   JSON object on stdout:
@@ -69,20 +82,28 @@ EXAMPLES
   # raw 1-hop neighbourhood, top-10 by weight
   lantern illuminate alice
 
-  # 2-hop reachability ranked by TF-IDF, top-5 per node
-  lantern illuminate alice --step 2 --k 5 --tfidf
+  # 2-hop reachability re-ranked by TF-IDF, top-5 per node
+  lantern illuminate alice --step 2 --k 5 --weighting tfidf
 
   # 3-hop MST rooted at alice (smallest-weight connecting tree)
-  lantern illuminate alice --step 3 --k 20 --optimize mst
+  lantern illuminate alice --step 3 --k 20 --algorithm mst
 
-  # 3-hop relevance-weighted shortest path tree
-  lantern illuminate alice --step 3 --k 20 --optimize inverse-spt
+  # 3-hop relevance-weighted SPT (formerly the "inverse-SPT" enum value)
+  lantern illuminate alice --step 3 --k 20 --algorithm spt --objective max
 `,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		opt, ok := optimizationByName[illuminateOptStr]
+		algo, ok := algorithmByName[illuminateAlgorithmStr]
 		if !ok {
-			return fmt.Errorf("unknown --optimize %q (want none|mst|max-st|spt|inverse-spt)", illuminateOptStr)
+			return fmt.Errorf("unknown --algorithm %q (want none|mst|spt)", illuminateAlgorithmStr)
+		}
+		obj, ok := objectiveByName[illuminateObjectiveStr]
+		if !ok {
+			return fmt.Errorf("unknown --objective %q (want min|max)", illuminateObjectiveStr)
+		}
+		w, ok := weightingByName[illuminateWeightingStr]
+		if !ok {
+			return fmt.Errorf("unknown --weighting %q (want raw|tfidf)", illuminateWeightingStr)
 		}
 		cli, err := dial()
 		if err != nil {
@@ -94,8 +115,9 @@ EXAMPLES
 			cmd.Context(), args[0],
 			client.WithStep(illuminateStep),
 			client.WithK(illuminateK),
-			client.WithTFIDF(illuminateTfidf),
-			client.WithOptimization(opt),
+			client.WithAlgorithm(algo),
+			client.WithObjective(obj),
+			client.WithWeighting(w),
 		)
 		if err != nil {
 			return err
@@ -109,7 +131,8 @@ EXAMPLES
 func init() {
 	illuminateCmd.Flags().Uint32Var(&illuminateStep, "step", 1, "maximum walk depth from the seed")
 	illuminateCmd.Flags().Uint32Var(&illuminateK, "k", 10, "max neighbours visited per node")
-	illuminateCmd.Flags().BoolVar(&illuminateTfidf, "tfidf", false, "re-rank neighbours by TF-IDF over edge weights before truncating")
-	illuminateCmd.Flags().StringVar(&illuminateOptStr, "optimize", "none", "server-side post-processing: none|mst|max-st|spt|inverse-spt")
+	illuminateCmd.Flags().StringVar(&illuminateAlgorithmStr, "algorithm", "none", "post-traversal reduction: none|mst|spt (#410)")
+	illuminateCmd.Flags().StringVar(&illuminateObjectiveStr, "objective", "min", "reduction direction: min|max (ignored when --algorithm none) (#410)")
+	illuminateCmd.Flags().StringVar(&illuminateWeightingStr, "weighting", "raw", "edge-weight transform before walk: raw|tfidf (#410)")
 	rootCmd.AddCommand(illuminateCmd)
 }

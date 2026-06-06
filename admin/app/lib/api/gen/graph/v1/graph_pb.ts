@@ -7,41 +7,103 @@ import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialM
 import { Duration, Message, proto3, protoInt64, Timestamp } from "@bufbuild/protobuf";
 
 /**
- * @generated from enum graph.v1.Optimization
+ * Algorithm selects the subgraph reduction strategy applied AFTER the
+ * BFS walk has discovered the neighbourhood around the seed.
+ *
+ * UNSPECIFIED returns the raw discovered subgraph (no reduction).
+ * MINIMUM_SPANNING_TREE / SHORTEST_PATH_TREE pick the reduction; the
+ * MIN/MAX direction is independent and carried by Objective.
+ *
+ * @generated from enum graph.v1.Algorithm
  */
-export enum Optimization {
+export enum Algorithm {
   /**
-   * @generated from enum value: OPTIMIZATION_UNSPECIFIED = 0;
+   * @generated from enum value: ALGORITHM_UNSPECIFIED = 0;
    */
   UNSPECIFIED = 0,
 
   /**
-   * @generated from enum value: OPTIMIZATION_MINIMUM_SPANNING_TREE = 1;
+   * @generated from enum value: ALGORITHM_MINIMUM_SPANNING_TREE = 1;
    */
   MINIMUM_SPANNING_TREE = 1,
 
   /**
-   * @generated from enum value: OPTIMIZATION_MAXIMUM_SPANNING_TREE = 2;
+   * @generated from enum value: ALGORITHM_SHORTEST_PATH_TREE = 2;
    */
-  MAXIMUM_SPANNING_TREE = 2,
-
-  /**
-   * @generated from enum value: OPTIMIZATION_SHORTEST_PATH_TREE = 3;
-   */
-  SHORTEST_PATH_TREE = 3,
-
-  /**
-   * @generated from enum value: OPTIMIZATION_SHORTEST_PATH_TREE_INVERSE = 4;
-   */
-  SHORTEST_PATH_TREE_INVERSE = 4,
+  SHORTEST_PATH_TREE = 2,
 }
-// Retrieve enum metadata with: proto3.getEnumType(Optimization)
-proto3.util.setEnumType(Optimization, "graph.v1.Optimization", [
-  { no: 0, name: "OPTIMIZATION_UNSPECIFIED" },
-  { no: 1, name: "OPTIMIZATION_MINIMUM_SPANNING_TREE" },
-  { no: 2, name: "OPTIMIZATION_MAXIMUM_SPANNING_TREE" },
-  { no: 3, name: "OPTIMIZATION_SHORTEST_PATH_TREE" },
-  { no: 4, name: "OPTIMIZATION_SHORTEST_PATH_TREE_INVERSE" },
+// Retrieve enum metadata with: proto3.getEnumType(Algorithm)
+proto3.util.setEnumType(Algorithm, "graph.v1.Algorithm", [
+  { no: 0, name: "ALGORITHM_UNSPECIFIED" },
+  { no: 1, name: "ALGORITHM_MINIMUM_SPANNING_TREE" },
+  { no: 2, name: "ALGORITHM_SHORTEST_PATH_TREE" },
+]);
+
+/**
+ * Objective is the direction of the Algorithm-driven optimisation.
+ *
+ * UNSPECIFIED defaults to MINIMIZE server-side. MINIMIZE treats edge
+ * weights as costs (smallest tree wins); MAXIMIZE treats them as
+ * relevance (largest tree wins, equivalent to the historical
+ * "inverse-SPT" / "max-MST" variants).
+ *
+ * @generated from enum graph.v1.Objective
+ */
+export enum Objective {
+  /**
+   * @generated from enum value: OBJECTIVE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: OBJECTIVE_MINIMIZE = 1;
+   */
+  MINIMIZE = 1,
+
+  /**
+   * @generated from enum value: OBJECTIVE_MAXIMIZE = 2;
+   */
+  MAXIMIZE = 2,
+}
+// Retrieve enum metadata with: proto3.getEnumType(Objective)
+proto3.util.setEnumType(Objective, "graph.v1.Objective", [
+  { no: 0, name: "OBJECTIVE_UNSPECIFIED" },
+  { no: 1, name: "OBJECTIVE_MINIMIZE" },
+  { no: 2, name: "OBJECTIVE_MAXIMIZE" },
+]);
+
+/**
+ * Weighting is the edge-weight transform applied BEFORE the BFS walk
+ * (and therefore before any Algorithm-driven reduction).
+ *
+ * UNSPECIFIED defaults to RAW server-side. RAW uses the stored
+ * edge.weight verbatim. TFIDF re-scores edge weights using TF-IDF
+ * over the per-vertex out-edge distribution; useful when raw weights
+ * are noisy "hit counts" and the caller wants relevance ranking.
+ *
+ * @generated from enum graph.v1.Weighting
+ */
+export enum Weighting {
+  /**
+   * @generated from enum value: WEIGHTING_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: WEIGHTING_RAW = 1;
+   */
+  RAW = 1,
+
+  /**
+   * @generated from enum value: WEIGHTING_TFIDF = 2;
+   */
+  TFIDF = 2,
+}
+// Retrieve enum metadata with: proto3.getEnumType(Weighting)
+proto3.util.setEnumType(Weighting, "graph.v1.Weighting", [
+  { no: 0, name: "WEIGHTING_UNSPECIFIED" },
+  { no: 1, name: "WEIGHTING_RAW" },
+  { no: 2, name: "WEIGHTING_TFIDF" },
 ]);
 
 /**
@@ -298,14 +360,19 @@ export class IlluminateRequest extends Message<IlluminateRequest> {
   k = 0;
 
   /**
-   * @generated from field: bool tfidf = 4;
+   * @generated from field: graph.v1.Algorithm algorithm = 6;
    */
-  tfidf = false;
+  algorithm = Algorithm.UNSPECIFIED;
 
   /**
-   * @generated from field: graph.v1.Optimization optimization = 5;
+   * @generated from field: graph.v1.Objective objective = 7;
    */
-  optimization = Optimization.UNSPECIFIED;
+  objective = Objective.UNSPECIFIED;
+
+  /**
+   * @generated from field: graph.v1.Weighting weighting = 8;
+   */
+  weighting = Weighting.UNSPECIFIED;
 
   constructor(data?: PartialMessage<IlluminateRequest>) {
     super();
@@ -318,8 +385,9 @@ export class IlluminateRequest extends Message<IlluminateRequest> {
     { no: 1, name: "seed", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 2, name: "step", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
     { no: 3, name: "k", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
-    { no: 4, name: "tfidf", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
-    { no: 5, name: "optimization", kind: "enum", T: proto3.getEnumType(Optimization) },
+    { no: 6, name: "algorithm", kind: "enum", T: proto3.getEnumType(Algorithm) },
+    { no: 7, name: "objective", kind: "enum", T: proto3.getEnumType(Objective) },
+    { no: 8, name: "weighting", kind: "enum", T: proto3.getEnumType(Weighting) },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): IlluminateRequest {
