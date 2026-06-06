@@ -19,14 +19,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"connectrpc.com/grpchealth"
 )
 
-// HealthSetter is the narrow surface of *health.Server consumed by Gate.
-// Matches the same shape as service.HealthSetter so wire bindings reuse
-// the existing *health.Server registration.
+// HealthSetter is the narrow surface of *grpchealth.StaticChecker (wrapped
+// by *provider.HealthChecker) consumed by Gate. Defined here so the
+// readiness package stays free of any concrete health-server dependency.
 type HealthSetter interface {
-	SetServingStatus(service string, status healthpb.HealthCheckResponse_ServingStatus)
+	SetServingStatus(service string, status grpchealth.Status)
 }
 
 // Gate tracks readiness state for the overall ("") gRPC health entry.
@@ -49,7 +49,7 @@ type Gate struct {
 	mu           sync.Mutex
 	bootstrapped bool
 	lags         map[string]uint64 // key = peer + "\x00" + origin
-	current      healthpb.HealthCheckResponse_ServingStatus
+	current      grpchealth.Status
 
 	// ready is a lock-free mirror of the current status so HTTP probes
 	// can answer without contending with metric updates.
@@ -66,16 +66,16 @@ func NewGate(maxLag uint64, hasPeers bool, hs HealthSetter) *Gate {
 		hasPeers: hasPeers,
 		health:   hs,
 		lags:     make(map[string]uint64),
-		current:  healthpb.HealthCheckResponse_NOT_SERVING,
+		current:  grpchealth.StatusNotServing,
 	}
 	if !hasPeers {
 		// Single-instance: ready immediately. Surface SERVING via the
 		// health setter so probes see green from t=0.
 		g.bootstrapped = true
-		g.current = healthpb.HealthCheckResponse_SERVING
+		g.current = grpchealth.StatusServing
 		g.ready.Store(true)
 		if hs != nil {
-			hs.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+			hs.SetServingStatus("", grpchealth.StatusServing)
 		}
 	}
 	return g
@@ -142,15 +142,15 @@ func (g *Gate) readyLocked() bool {
 }
 
 func (g *Gate) evaluateLocked() {
-	want := healthpb.HealthCheckResponse_NOT_SERVING
+	want := grpchealth.StatusNotServing
 	if g.readyLocked() {
-		want = healthpb.HealthCheckResponse_SERVING
+		want = grpchealth.StatusServing
 	}
 	if want == g.current {
 		return
 	}
 	g.current = want
-	g.ready.Store(want == healthpb.HealthCheckResponse_SERVING)
+	g.ready.Store(want == grpchealth.StatusServing)
 	if g.health != nil {
 		g.health.SetServingStatus("", want)
 	}

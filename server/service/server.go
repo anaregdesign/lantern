@@ -17,7 +17,7 @@ import (
 	"net/http"
 	"time"
 
-	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"connectrpc.com/grpchealth"
 )
 
 // LanternServer owns the lifecycle of the primary listener: starts the
@@ -48,7 +48,7 @@ type Watcher interface {
 // (the connectrpc.com/grpchealth-backed implementation) so the wire
 // binding is one line.
 type HealthSetter interface {
-	SetServingStatus(service string, status healthpb.HealthCheckResponse_ServingStatus)
+	SetServingStatus(service string, status grpchealth.Status)
 }
 
 // Listener is the narrow surface of provider.LanternListener that
@@ -104,8 +104,8 @@ func NewLanternServer(
 // a hard tear-down so the process can exit.
 func (s *LanternServer) Run(ctx context.Context) error {
 	if s.health != nil {
-		s.health.SetServingStatus(ServiceName, healthpb.HealthCheckResponse_SERVING)
-		s.health.SetServingStatus(ReplicationServiceName, healthpb.HealthCheckResponse_SERVING)
+		s.health.SetServingStatus(ServiceName, grpchealth.StatusServing)
+		s.health.SetServingStatus(ReplicationServiceName, grpchealth.StatusServing)
 	}
 
 	go s.gracefulShutdown(ctx)
@@ -134,8 +134,8 @@ func (s *LanternServer) Run(ctx context.Context) error {
 	}
 
 	if s.health != nil {
-		s.health.SetServingStatus(ServiceName, healthpb.HealthCheckResponse_NOT_SERVING)
-		s.health.SetServingStatus(ReplicationServiceName, healthpb.HealthCheckResponse_NOT_SERVING)
+		s.health.SetServingStatus(ServiceName, grpchealth.StatusNotServing)
+		s.health.SetServingStatus(ReplicationServiceName, grpchealth.StatusNotServing)
 	}
 	return err
 }
@@ -150,8 +150,8 @@ func (s *LanternServer) gracefulShutdown(ctx context.Context) {
 	s.logger.Info("shutting down lantern server",
 		slog.Duration("timeout", s.shutdownTimeout))
 	if s.health != nil {
-		s.health.SetServingStatus(ServiceName, healthpb.HealthCheckResponse_NOT_SERVING)
-		s.health.SetServingStatus(ReplicationServiceName, healthpb.HealthCheckResponse_NOT_SERVING)
+		s.health.SetServingStatus(ServiceName, grpchealth.StatusNotServing)
+		s.health.SetServingStatus(ReplicationServiceName, grpchealth.StatusNotServing)
 	}
 	shutdownCtx := context.Background()
 	if s.shutdownTimeout > 0 {

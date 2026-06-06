@@ -15,7 +15,6 @@ import (
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 	"github.com/anaregdesign/lantern/server/readiness"
 	"github.com/prometheus/client_golang/prometheus"
-	"google.golang.org/grpc/health"
 )
 
 // TestWireCacheGCHooks_EmitsTickSummary asserts that a single
@@ -72,7 +71,7 @@ func TestMetricsMux(t *testing.T) {
 	t.Run("ReadinessSingleInstance", func(t *testing.T) {
 		// Single-instance mode (peerMode=false) returns 200 on
 		// /readyz + /healthz/ready immediately at startup.
-		gate := readiness.NewGate(10000, false, health.NewServer())
+		gate := readiness.NewGate(10000, false, NewHealthChecker())
 		ts := httptest.NewServer(newMetricsMux(prometheus.NewRegistry(), gate, false))
 		defer ts.Close()
 
@@ -93,7 +92,7 @@ func TestMetricsMux(t *testing.T) {
 		// Multi-peer mode drives the gate through bootstrap and
 		// per-peer lag transitions; both probe endpoints must
 		// reflect each transition.
-		gate := readiness.NewGate(100, true, health.NewServer())
+		gate := readiness.NewGate(100, true, NewHealthChecker())
 		ts := httptest.NewServer(newMetricsMux(prometheus.NewRegistry(), gate, false))
 		defer ts.Close()
 
