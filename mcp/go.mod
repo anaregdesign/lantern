@@ -4,7 +4,7 @@ go 1.26
 
 require (
 	github.com/anaregdesign/lantern/pb v0.2.0
-	github.com/anaregdesign/lantern/sdks/go v0.7.1
+	github.com/anaregdesign/lantern/sdks/go v0.9.0
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 )
 
