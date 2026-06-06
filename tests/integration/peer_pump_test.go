@@ -186,11 +186,11 @@ func TestPeerPump_E2E_ThreeNodeConvergence(t *testing.T) {
 
 	// Reading B (#415): every node's mutation log retains all four
 	// cluster-wide writes (A's PutVertex + AddEdge, B's PutVertex,
-	// C's PutVertex). The peer-pump still suppresses self-echo and
-	// the ApplyMutation watermark gate still dedups duplicate hops,
-	// so each (origin, seq) lands at most once on every replica.
-	// The canonical witness is the monotonic last-seq: it equals
-	// the count of distinct cluster mutations seen by each replica.
+	// C's PutVertex). Per-origin watermark CAS (ApplyMutation) +
+	// origin-anchored mu.Seq (logMutation stamps it; Subscribe relay
+	// preserves it across hops) guarantee each (origin, seq) lands
+	// at most once on every replica, so the monotonic LastSeq is
+	// exactly the count of distinct cluster mutations.
 	const wantClusterWrites = 4
 	if last, ok := a.log.LastSeq(); !ok || last != wantClusterWrites {
 		t.Errorf("a.log.LastSeq=%d ok=%v want %d (leaderless Subscribe contract)", last, ok, wantClusterWrites)

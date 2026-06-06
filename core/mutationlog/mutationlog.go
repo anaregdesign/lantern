@@ -259,13 +259,29 @@ func (l *Log) Evicted() uint64 {
 // dispatcher happens under the log mutex so the dispatcher observes
 // entries in strict Seq order (#260); under sustained overload Append
 // will block briefly waiting for the dispatcher to drain its inbox.
-func (l *Log) Append(op MutationOp, ts hlc.Timestamp) (Entry, error) {
+//
+// The optional last argument is a SeqStamper: when non-nil it is
+// invoked with the assigned seq while [Log] still holds its lock and
+// before the entry is placed into the ring or handed to the
+// dispatcher. This is the seam that lets producers stamp the
+// originating-writer's seq onto the in-flight payload (typically
+// `pb.Mutation.Seq`) without racing the dispatcher, which would
+// otherwise read the payload concurrently as it fans out to
+// subscribers. The leaderless Subscribe contract (#415) keys per-hop
+// dedup on (origin, origin_seq), so this stamping is mandatory for
+// any payload that re-enters the system via Subscribe relay.
+func (l *Log) Append(op MutationOp, ts hlc.Timestamp, stampers ...SeqStamper) (Entry, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.closed {
 		return Entry{}, ErrClosed
 	}
 	seq := l.lastSeq + 1
+	for _, s := range stampers {
+		if s != nil {
+			s(seq)
+		}
+	}
 	entry := Entry{Seq: seq, HLC: ts, Op: op}
 	if err := l.wal.Write(entry); err != nil {
 		return Entry{}, err
@@ -282,6 +298,15 @@ func (l *Log) Append(op MutationOp, ts hlc.Timestamp) (Entry, error) {
 	l.dispatch <- entry
 	return entry, nil
 }
+
+// SeqStamper is invoked synchronously by [Log.Append] with the
+// freshly-assigned seq while the log mutex is still held. Implementers
+// typically write the seq onto a field of the in-flight payload so
+// that subsequent readers (notably the dispatcher fanning the entry
+// out to subscribers) observe a payload whose own seq matches the
+// log entry's seq. The stamper MUST NOT block and MUST NOT call back
+// into the Log.
+type SeqStamper func(seq uint64)
 
 // storeLocked inserts entry into the circular ring buffer. When the ring
 // is at capacity the oldest entry is overwritten in place and head is

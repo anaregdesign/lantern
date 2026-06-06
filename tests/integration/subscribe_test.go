@@ -132,17 +132,19 @@ func TestSubscribe_PerOriginCursor_Skips(t *testing.T) {
 	srv := newConnectTestServer(t, svc, rep, nil)
 	subCli := newReplicationRawClient(t, srv.url)
 
-	// Append four entries: A, B, A, B. The log assigns Seq 1..4 in
-	// that order; per-origin seqs are A=1,2 and B=1,2. The cursor
-	// {hex(A): 2} should skip seq 1 (A's first) while keeping seq 2
-	// (B's first, absent from cursor → delivered from oldest), seq 3
-	// (A's second, exactly at cursor), seq 4 (B's second, no cursor).
+	// Append four entries with per-origin seqs: A=1, B=1, A=2, B=2.
+	// Reading B (#415) anchors mu.Seq to the originating writer's
+	// seq, not to the local log seq, so the cursor {hex(A): 2}
+	// should skip A's entry at seq 1 while keeping every other one:
+	// B's seq 1 (B absent from cursor → delivered from oldest),
+	// A's seq 2 (exactly at cursor), B's seq 2 (still no cursor).
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	mkMu := func(originID hlc.NodeID, key string) *pb.Mutation {
+	mkMu := func(originID hlc.NodeID, originSeq uint64, key string) *pb.Mutation {
 		ts := hlc.New(originID, hlc.Options{}).Now()
 		return &pb.Mutation{
+			Seq: originSeq,
 			Hlc: &pb.HLCTimestamp{
 				WallNs: ts.WallNs, Logical: ts.Logical,
 				NodeId: append([]byte(nil), originID[:]...),
@@ -154,11 +156,12 @@ func TestSubscribe_PerOriginCursor_Skips(t *testing.T) {
 		}
 	}
 	for _, m := range []*pb.Mutation{
-		mkMu(originA, "a1"), mkMu(originB, "b1"),
-		mkMu(originA, "a2"), mkMu(originB, "b2"),
+		mkMu(originA, 1, "a1"), mkMu(originB, 1, "b1"),
+		mkMu(originA, 2, "a2"), mkMu(originB, 2, "b2"),
 	} {
-		// Append directly to the log so we control origin assignment;
-		// going through PutVertex would stamp originA for every call.
+		// Append directly to the log so we control origin assignment
+		// and per-origin seq; going through PutVertex would stamp
+		// originA + auto-assigned seqs.
 		if _, err := log.Append(m, hlc.Timestamp{NodeID: hlc.NodeID(m.GetHlc().GetNodeId()[0:16])}); err != nil {
 			t.Fatalf("log.Append: %v", err)
 		}
@@ -188,9 +191,9 @@ func TestSubscribe_PerOriginCursor_Skips(t *testing.T) {
 	}
 
 	want := []got{
-		{seq: 2, origin: hex.EncodeToString(originB[:])}, // B's first; not in cursor → oldest
-		{seq: 3, origin: hex.EncodeToString(originA[:])}, // A's second; exactly at cursor
-		{seq: 4, origin: hex.EncodeToString(originB[:])}, // B's second
+		{seq: 1, origin: hex.EncodeToString(originB[:])}, // B's first; not in cursor → oldest
+		{seq: 2, origin: hex.EncodeToString(originA[:])}, // A's second; exactly at cursor
+		{seq: 2, origin: hex.EncodeToString(originB[:])}, // B's second
 	}
 	for i, g := range seen {
 		if g != want[i] {
