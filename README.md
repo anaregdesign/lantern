@@ -174,7 +174,11 @@ flowchart LR
 - **HA mode (optional).** Every replica holds the **full** graph. Writes
   commit locally on the receiving pod and then fan out asynchronously to all
   peers via `Subscribe` / `Snapshot` RPCs tagged with HLC timestamps. No
-  leader, no quorum, no external storage. See
+  leader, no quorum, no external storage. External CDC consumers attach
+  `Subscribe` to **any one replica** and observe every cluster mutation
+  (leaderless Subscribe contract — see #415 / `docs/replication.md` §8.2);
+  per-origin resume cursor (`from_seq_per_origin`) lets a consumer fail
+  over between replicas without seq remapping. See
   [`docs/replication.md`](docs/replication.md) for the RFC and
   [`docs/ha-runbook.md`](docs/ha-runbook.md) for the operator playbook.
 - **DI**: [google/wire](https://github.com/google/wire) — see

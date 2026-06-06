@@ -40,8 +40,12 @@ is required for either reads or writes.
    than once, or out of order relative to other mutations from other origins,
    is a no-op or produces the same final state.
 3. **Snapshot + tail bootstrap.** A new pod calls `Snapshot` against any peer
-   to seed its in-memory state, then opens `Subscribe(from_seq = cutoff + 1)`
-   to tail new mutations.
+   to seed its in-memory state. `SnapshotHeader.cutoff_seq_per_origin`
+   carries the per-origin watermark the snapshot was materialised against;
+   the bootstrapping peer resumes by opening `Subscribe(from_seq_per_origin
+   = {origin: seq + 1 for each (origin, seq) in cutoff_seq_per_origin})`
+   so the snapshot and the live tail stitch without gap or overlap. See
+   #415 (Reading B) and the wire types in §8.2/§8.3.
 4. **Readiness gates traffic.** `/healthz/ready` returns `NOT_SERVING`
    whenever replication lag exceeds `LANTERN_MAX_REPLICATION_LAG`, so the
    load balancer drains the instance. **Single-instance mode** (empty
@@ -57,7 +61,7 @@ is required for either reads or writes.
 | # | Decision | Default | Rationale |
 |---|---|---|---|
 | D1 | Crash persistence | **None for v1.** WAL is a hook only. | Bootstrap from peers covers single-node loss; persistence adds operational surface area we don't yet need. |
-| D2 | External CDC | **Same `Subscribe` RPC**, gated by auth/ACL later. | Internal replication and external CDC are isomorphic; splitting RPCs would duplicate machinery. |
+| D2 | External CDC | **Same `Subscribe` RPC**, gated by auth/ACL later. Under the leaderless Subscribe contract (#415, Reading B), an external CDC consumer attaches to any **one** replica and observes every committed cluster mutation — failover to a different replica is supported by passing the per-origin watermark in `SubscribeRequest.from_seq_per_origin`. | Internal replication and external CDC are isomorphic; splitting RPCs would duplicate machinery. The per-origin cursor lets consumers spread load across replicas without reimplementing the internal pump's dedup. |
 | D3 | WAN replication | **Out of scope for v1**, single DC only. HLC max skew bound = **500 ms**. | Geo replication requires looser skew + read repair; defer until single-DC HA is proven. |
 | D4 | Tombstone TTL | **Cluster-wide config, default 24h.** Any `Add*` / `Put*` whose TTL would exceed tombstone TTL is **rejected** with `InvalidArgument`. | Resurrection-proof deletes require tombstones to outlive every live contribution. This is a real backwards-incompatible constraint. |
 | D5 | Workload kind (k8s reference impl) | **StatefulSet** (not Deployment). | Stable pod identity simplifies peer discovery; leaves room for an optional WAL PVC later. The *user experience* is Deployment-like; the *resource kind* is `StatefulSet`. |
@@ -258,23 +262,61 @@ service LanternReplicationService {
   rpc Subscribe(SubscribeRequest) returns (stream SubscribeResponse);
 }
 
-message SubscribeRequest  { uint64 from_seq = 1; }
+message SubscribeRequest  {
+  // Per-origin resume cursor. Keys are 32-char lowercase hex of the
+  // 16-byte HLC NodeID; values are the next origin-anchored seq the
+  // consumer expects from that origin. An empty map = cold start =
+  // deliver every retained entry from every origin.
+  map<string, uint64> from_seq_per_origin = 1;
+}
 message SubscribeResponse { Mutation mutation = 1; }
 ```
 
 Realised on a dedicated `LanternReplicationService` (split from
 `LanternService`) so that replication can be authorised, throttled, or
 disabled independently of the public read/write API; the split also avoids
-a cyclic proto import between `graph.proto` and `replication.proto`. The
-caller's origin is **not** carried in the request — instead, peers filter
-self-echo by inspecting `Mutation.origin` (which equals `HLCTimestamp.node_id`),
-so any per-origin tracking is symmetric with the rest of the design.
+a cyclic proto import between `graph.proto` and `replication.proto`.
+
+**Leaderless Subscribe contract** (#415, Reading B). Every replica's
+local mutation log retains entries from every cluster origin: a write
+that lands at replica X via `PutVertex` is appended at X's local log
+(via `logMutation`); replicas Y and Z then receive it through the peer
+pump and append it to their own local logs via
+`LanternService.ApplyMutation` (which calls `Log.Append` only after a
+per-origin watermark CAS to avoid double-Append from fan-out triangles).
+
+Consequence:
+
+- A consumer that picks **any one** replica and calls `Subscribe` with
+  an empty cursor observes the entire cluster's mutation stream,
+  ordered by per-origin local seq inside each origin and HLC-orderable
+  across origins. There is no need to subscribe to every replica and
+  dedupe by `(origin, seq)` on the client side; the server already
+  does that work via the watermark CAS.
+- A consumer that fails over from replica X to replica Y resumes by
+  sending the highest seq it has already observed FOR EACH origin in
+  `from_seq_per_origin`. The new replica delivers only entries with
+  `mu.Seq >= cursor[origin]` for origins present in the cursor;
+  origins absent from the cursor are delivered from the oldest
+  retained entry (so a freshly-joined origin is picked up
+  automatically).
+- `Mutation.Seq` is the originating writer's local seq, NOT the
+  forwarding replica's local seq. This is preserved end-to-end: the
+  Subscribe relay never overwrites `mu.Seq`, and the originating
+  writer stamps it atomically at `Log.Append` time via the
+  `SeqStamper` callback (see `core/mutationlog`).
+
+The internal peer pump uses the same RPC but with an empty cursor and
+relies on `ApplyMutation`'s watermark CAS to dedup duplicate hops; it
+still performs input-side self-echo suppression (`Mutation.Origin ==
+local NodeID → drop`) as defence-in-depth.
 
 Back-pressure: server terminates the stream with `FAILED_PRECONDITION`
-(`gapped`) if either (a) `from_seq` is below the server's first available
-seq, or (b) the consumer's send buffer overflows. In both cases the pump
-(§9) must re-bootstrap via `Snapshot` and resume `Subscribe` from the
-snapshot's cutoff seq.
+(`gapped`) if either (a) the ring has been truncated below the
+oldest seq the cursor could match, or (b) the consumer's send buffer
+overflows. In both cases the consumer must re-bootstrap via
+`Snapshot` and resume `Subscribe` with the
+`cutoff_seq_per_origin` returned by `SnapshotHeader`.
 
 Handler implementation notes (issue #180):
 
@@ -305,7 +347,7 @@ rpc Snapshot(SnapshotRequest) returns (stream SnapshotResponse);
 
 message SnapshotResponse {
   oneof entry {
-    SnapshotHeader header = 1;   // first frame: cutoff_seq + cutoff_hlc
+    SnapshotHeader header = 1;   // first frame: cutoff_seq_per_origin + cutoff_hlc
     SnapshotVertex vertex = 2;   // body: live vertex with stored HLC
     SnapshotEdge   edge   = 3;   // body: edge with per-contribution payloads
     SnapshotFooter footer = 4;   // last frame: streamed vertex/edge counts
@@ -313,7 +355,11 @@ message SnapshotResponse {
 }
 
 message SnapshotHeader {
-  uint64 cutoff_seq = 1;
+  // Per-origin watermark at snapshot-open time. Same keying convention
+  // as SubscribeRequest.from_seq_per_origin (§8.2): 32-char hex of the
+  // 16-byte HLC NodeID → highest origin-anchored seq the server had
+  // applied from that origin. Empty when the cluster is cold.
+  map<string, uint64> cutoff_seq_per_origin = 1;
   HLCTimestamp cutoff_hlc = 2;
 }
 
@@ -333,11 +379,16 @@ message SnapshotEdgeContribution {
 
 Framing contract:
 
-- The **header** is always the first frame. `cutoff_seq` is the primary's
-  `mutationlog.LastSeq()` at snapshot-open time (0 when the log is empty
-  — the peer Subscribes from seq 1). `cutoff_hlc` is the primary's
-  `clock.Now()` at snapshot-open time. The consumer Subscribes at
-  `cutoff_seq + 1` to stitch the snapshot and the live tail.
+- The **header** is always the first frame. `cutoff_seq_per_origin` is
+  the primary's per-origin watermark (every (origin, seq) the primary
+  had already applied at snapshot-open time, with seq = the
+  origin-anchored local seq stamped by the originating writer's
+  `logMutation`). `cutoff_hlc` is the primary's `clock.Now()` at
+  snapshot-open time. The consumer Subscribes with
+  `from_seq_per_origin = {origin: seq + 1 for each (origin, seq) in
+  cutoff_seq_per_origin}` to stitch the snapshot and the live tail.
+  An empty map means the primary has not yet applied any origin
+  (cold cluster); the consumer should pass an empty Subscribe cursor.
 - The **footer** is always the last frame. It reports the actually
   streamed vertex and edge counts so consumers can detect truncation
   without parsing a sentinel-typed body frame.
@@ -364,7 +415,7 @@ Implementation notes:
   path is exercised at scale (tracked alongside #190).
 - Tombstones are NOT carried as standalone frames. The cache snapshot
   returns only live state; the receiver re-derives tombstones from the
-  Subscribe tail beginning at `cutoff_seq + 1`.
+  Subscribe tail beginning at the per-origin cutoff + 1.
 
 ## 9. Bootstrap flow
 
@@ -375,12 +426,14 @@ new pod boots
   │
   ├── for each peer P (in parallel; first to respond wins):
   │     stream = P.Snapshot(SnapshotRequest{})
-  │     header  = stream.Recv()      // {cutoff_seq, cutoff_hlc}
+  │     header  = stream.Recv()      // {cutoff_seq_per_origin, cutoff_hlc}
   │     apply  body frames → local cache
   │     footer = last frame          // assert counts match
   │
   ├── for each peer P:
-  │     go pump(P, from_seq = header.cutoff_seq + 1)
+  │     go pump(P)                  // Subscribe sends an empty cursor;
+  │                                  // the local watermark CAS dedups
+  │                                  // anything the snapshot already covered
   │
   └── /healthz/ready flips SERVING when:
         - lag(P) < LANTERN_MAX_REPLICATION_LAG for all peers, OR

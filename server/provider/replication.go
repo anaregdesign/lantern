@@ -18,6 +18,14 @@ import (
 // the replication subsystem.
 //
 //   - LANTERN_MUTATION_LOG_CAPACITY           (default 100000)
+//     Under the leaderless Subscribe contract (#415, Reading B) each
+//     replica appends entries from EVERY cluster origin (local writes
+//     plus remote applies that reached us through the peer pump),
+//     so effective per-origin retention at constant capacity scales
+//     ~1/N with cluster size. Operators running clusters with N > 1
+//     replicas at sustained write rates should size capacity as
+//     roughly `peak_cluster_rps × retention_seconds × safety_margin`
+//     and watch `lantern_mutation_log_fill_ratio` for headroom.
 //   - LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER  per-subscriber outbound
 //     channel depth. Each Subscribe stream owns a buffered channel of this
 //     size; the fan-out path uses a non-blocking send and tears the
