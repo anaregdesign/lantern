@@ -1,24 +1,27 @@
 /**
  * `lantern-sdk` — Bun-managed TypeScript SDK for the Lantern graph KVS.
  *
- * Two transports ship side-by-side during the Connect-only migration
- * (#335 / #340):
+ * Built on Connect-Node v2. The server's primary listener accepts
+ * Connect, gRPC, and gRPC-Web on the same h2c socket, so consumers
+ * point this client at the same `host:6380` URL the legacy gRPC
+ * clients used — just with an `http://` (or `https://`) scheme:
  *
- *   - `Lantern` (legacy, grpc-js) — production today.
- *   - `LanternConnect` (additive, Connect-Node) — targets the
- *     server's additive Connect listener (`LANTERN_CONNECT_PORT`).
- *
- * Both return the same `Vertex` / `Edge` / `Graph` value-object
- * shapes, so consumer code that only holds typed values is
- * transport-agnostic — only the constructor call changes.
+ *   ```ts
+ *   import { Lantern } from "lantern-sdk";
+ *   const client = Lantern.connect("http://localhost:6380");
+ *   try {
+ *     await client.putVertex({ key: "hello", value: "world" });
+ *     const v = await client.getVertex("hello");
+ *   } finally {
+ *     client.close();
+ *   }
+ *   ```
  *
  * @packageDocumentation
  */
 
-export { Lantern, defaultServiceConfig, hasEndpoints, staticTarget } from "./client.js";
-export type { LanternConnectArgs } from "./client.js";
-export { LanternConnect } from "./connect-client.js";
-export type { LanternConnectArgs as LanternConnectClientArgs } from "./connect-client.js";
+export { Lantern } from "./client.js";
+export type { LanternArgs } from "./client.js";
 export {
   BatchError,
   InvalidArgumentError,
@@ -41,9 +44,10 @@ export {
   Optimization,
   Uint32,
   Uint64,
-  fromPbEdge,
-  fromPbVertex,
-  toPbVertex,
+  fromEdgeJson,
+  fromVertexJson,
+  toEdgeJson,
+  toVertexJson,
 } from "./values.js";
 export type {
   Edge,

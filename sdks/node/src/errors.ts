@@ -1,15 +1,15 @@
 /**
  * Typed error hierarchy raised by the Lantern Node SDK.
  *
- * The SDK maps gRPC status codes to typed JS errors so callers can branch
+ * The SDK maps Connect status codes to typed JS errors so callers can branch
  * on category without inspecting status messages:
  *
- *   - NotFoundError           ← status.NOT_FOUND
- *   - InvalidArgumentError    ← status.INVALID_ARGUMENT
- *   - ResourceExhaustedError  ← status.RESOURCE_EXHAUSTED
+ *   - NotFoundError           ← Code.NotFound (5)
+ *   - InvalidArgumentError    ← Code.InvalidArgument (3)
+ *   - ResourceExhaustedError  ← Code.ResourceExhausted (8)
  *
  * All three extend LanternError for catch-all handling and preserve the
- * underlying ServiceError as `cause`.
+ * underlying ConnectError as `cause`.
  *
  * BatchError is thrown by batch helpers (putVertices, addEdges, putEdges,
  * deleteVertices, deleteEdges) on partial-write failure; its `written`
@@ -17,8 +17,6 @@
  * before the failing chunk, so callers can resume with
  * `inputs.slice(err.written)`.
  */
-
-import { status as GrpcStatus, type ServiceError } from "@grpc/grpc-js";
 
 export class LanternError extends Error {
   override readonly cause?: unknown;
@@ -81,21 +79,30 @@ function stringify(err: unknown): string {
   return String(err);
 }
 
-export function wrapRpcError(err: unknown): LanternError {
+/**
+ * Translates a thrown Connect error into the typed LanternError
+ * hierarchy. Non-Connect errors fall through unchanged so cancellation
+ * (AbortError) and network failures keep their native shape.
+ *
+ * Code numbers mirror the @connectrpc/connect `Code` enum (which is
+ * gRPC-code-compatible by design):
+ *   3 = InvalidArgument
+ *   5 = NotFound
+ *   8 = ResourceExhausted
+ */
+export function wrapConnectError(err: unknown): LanternError {
   if (err instanceof LanternError) return err;
-  const se = err as Partial<ServiceError> | null;
-  const code = se?.code;
-  const details = se?.details ?? (err instanceof Error ? err.message : String(err));
-  switch (code) {
-    case GrpcStatus.NOT_FOUND:
-      return new NotFoundError(details || "not found", { cause: err });
-    case GrpcStatus.INVALID_ARGUMENT:
-      return new InvalidArgumentError(details || "invalid argument", { cause: err });
-    case GrpcStatus.RESOURCE_EXHAUSTED:
-      return new ResourceExhaustedError(details || "resource exhausted", { cause: err });
+  // Duck-type to avoid importing ConnectError at this layer.
+  const ce = err as { code?: number; rawMessage?: string; message?: string };
+  const message = ce.rawMessage ?? ce.message ?? String(err);
+  switch (ce.code) {
+    case 5:
+      return new NotFoundError(message, { cause: err });
+    case 3:
+      return new InvalidArgumentError(message, { cause: err });
+    case 8:
+      return new ResourceExhaustedError(message, { cause: err });
     default:
-      return new LanternError(code !== undefined ? `gRPC ${code}: ${details}` : String(details), {
-        cause: err,
-      });
+      return new LanternError(message, { cause: err });
   }
 }

@@ -1,31 +1,52 @@
 /**
- * Promise-based gRPC client for the Lantern service.
+ * Promise-based Connect-Node client for the Lantern service.
  *
- * Open with `Lantern.connect(target)` for a single target or DNS-resolved
- * fan-out, or `Lantern.connectEndpoints([...])` for an explicit static
- * endpoint list. Always call `client.close()` when done, or use it inside
- * a `try { ... } finally { client.close(); }` block.
+ * Open with `Lantern.connect("http://host:6380")` against the server's
+ * Connect listener. All methods return Promises; pass `signal` for
+ * AbortController-driven cancellation.
  *
- * All methods return Promises. Pass `signal` for AbortController-driven
- * cancellation — it translates to a gRPC deadline + channel cancel.
+ * Batch helpers (`putVertices`, `addEdges`, `putEdges`,
+ * `deleteVertices`, `deleteEdges`) auto-chunk at
+ * `ConnectOptions.batchChunkSize` (default 1000) and throw
+ * `BatchError` with a resumable `written` offset on partial failure.
  *
- * Batch helpers (putVertices, addEdges, putEdges, deleteVertices,
- * deleteEdges) auto-chunk at `ConnectOptions.batchChunkSize` (default
- * 1000) and throw `BatchError` with a resumable `written` offset on
- * partial failure.
+ * Wire: Connect protocol (Connect/JSON by default; flip to binary via
+ * `transportOptions.useBinaryFormat`). Built on @connectrpc/connect v2
+ * + @connectrpc/connect-node v2; codegen via @bufbuild/protoc-gen-es
+ * (single plugin emits both message classes and the service schema
+ * descriptor `LanternService`).
  */
 
-import {
-  type CallOptions,
-  type ChannelCredentials,
-  type ChannelOptions,
-  Metadata,
-  type ServiceError,
-  credentials as grpcCredentials,
-} from "@grpc/grpc-js";
+import { type Client, type Interceptor, createClient } from "@connectrpc/connect";
+import { createConnectTransport, type ConnectTransportOptions } from "@connectrpc/connect-node";
+import { fromJson, toJson, type JsonValue } from "@bufbuild/protobuf";
 
-import { BatchError, wrapRpcError } from "./errors.js";
-import { hasEndpoints, staticTarget } from "./endpoints.js";
+import {
+  EdgeSchema,
+  LanternService,
+  Optimization as PbOptimization,
+  VertexSchema,
+} from "./gen/graph/v1/graph_pb.js";
+
+import {
+  BatchError,
+  InvalidArgumentError,
+  LanternError,
+  NotFoundError,
+  wrapConnectError,
+} from "./errors.js";
+import {
+  Optimization,
+  fromEdgeJson,
+  fromVertexJson,
+  toEdgeJson,
+  toVertexJson,
+  type Edge,
+  type EdgeInput,
+  type Graph,
+  type Vertex,
+  type VertexInput,
+} from "./values.js";
 import {
   type ConnectOptions,
   DEFAULT_BATCH_CHUNK_SIZE,
@@ -34,578 +55,451 @@ import {
   type IlluminateOptions,
   type ScanOptions,
 } from "./options.js";
-import {
-  type Edge,
-  type EdgeInput,
-  type Graph,
-  Optimization,
-  type Vertex,
-  type VertexInput,
-  edgeInputToPb,
-  fromPbEdge,
-  fromPbVertex,
-  vertexInputToPb,
-} from "./values.js";
 
-import { LanternServiceClient } from "./generated/graph/v1/graph.js";
-
-function longToNumber(v: unknown): number {
-  if (typeof v === "number") return v;
-  if (
-    v &&
-    typeof v === "object" &&
-    "toNumber" in v &&
-    typeof (v as { toNumber: () => number }).toNumber === "function"
-  ) {
-    return (v as { toNumber: () => number }).toNumber();
-  }
-  return Number(v);
+/**
+ * Constructor arguments for `Lantern.connect`. The HTTP base URL is the
+ * only required field; everything else either has a sensible default or
+ * is an opt-in tuning knob.
+ */
+export interface LanternArgs {
+  options?: ConnectOptions;
+  /**
+   * Optional list of Connect interceptors run on every unary call.
+   * The order matches @connectrpc/connect's `Interceptor[]` chain —
+   * the first entry sees outgoing requests first and responses last.
+   */
+  interceptors?: Interceptor[];
+  /**
+   * Override the transport options forwarded to
+   * `createConnectTransport`. `baseUrl` is filled in from the
+   * constructor arg and cannot be overridden here.
+   */
+  transportOptions?: Omit<ConnectTransportOptions, "baseUrl">;
 }
 
-function longToBigInt(v: unknown): bigint {
-  if (typeof v === "bigint") return v;
-  if (typeof v === "number") return BigInt(v);
-  if (v && typeof v === "object" && "toString" in v) {
-    return BigInt((v as { toString(): string }).toString());
-  }
-  return BigInt(String(v));
-}
-
-const SERVICE = "graph.v1.LanternService";
-
-const DEFAULT_SERVICE_CONFIG_OBJECT = {
-  loadBalancingConfig: [{ round_robin: {} }],
-  methodConfig: [
-    {
-      name: [{ service: SERVICE }],
-      retryPolicy: {
-        maxAttempts: 5,
-        initialBackoff: "0.1s",
-        maxBackoff: "2s",
-        backoffMultiplier: 2.0,
-        retryableStatusCodes: ["UNAVAILABLE", "RESOURCE_EXHAUSTED"],
-      },
-    },
-    {
-      // AddEdge / AddEdges are additive: omitting retryPolicy entirely
-      // disables retries so duplicate weights cannot accumulate from
-      // transient network blips.
-      name: [
-        { service: SERVICE, method: "AddEdge" },
-        { service: SERVICE, method: "AddEdges" },
-      ],
-    },
-  ],
+// Connect-es v2 enum values match the proto numeric IDs verbatim
+// — no translation needed beyond the type cast.
+const OPTIMIZATION_TO_PB: Record<number, PbOptimization> = {
+  [Optimization.UNSPECIFIED]: PbOptimization.UNSPECIFIED,
+  [Optimization.MINIMUM_SPANNING_TREE]: PbOptimization.MINIMUM_SPANNING_TREE,
+  [Optimization.MAXIMUM_SPANNING_TREE]: PbOptimization.MAXIMUM_SPANNING_TREE,
+  [Optimization.SHORTEST_PATH_TREE]: PbOptimization.SHORTEST_PATH_TREE,
+  [Optimization.SHORTEST_PATH_TREE_INVERSE]: PbOptimization.SHORTEST_PATH_TREE_INVERSE,
 };
 
-const DEFAULT_SERVICE_CONFIG_JSON = JSON.stringify(DEFAULT_SERVICE_CONFIG_OBJECT);
-
-/** Return the JSON service config the SDK applies by default. */
-export function defaultServiceConfig(): string {
-  return DEFAULT_SERVICE_CONFIG_JSON;
-}
-
-export interface LanternConnectArgs {
-  credentials?: ChannelCredentials;
-  options?: ConnectOptions;
-  channelOptions?: ChannelOptions;
-}
-
+/**
+ * Promise-based Lantern client built on Connect-Node v2.
+ *
+ * Construct with `Lantern.connect("http://host:6380")`. All methods
+ * return Promises; pass `signal` for AbortController-driven
+ * cancellation.
+ *
+ * Batch helpers auto-chunk at `ConnectOptions.batchChunkSize`
+ * (default 1000) and throw `BatchError` with a resumable `written`
+ * offset on partial failure.
+ */
 export class Lantern {
-  private readonly stub: LanternServiceClient;
-  private readonly opts: Required<Pick<ConnectOptions, "batchChunkSize">> & ConnectOptions;
-  private closed = false;
+  private readonly client: Client<typeof LanternService>;
+  private readonly options: ConnectOptions;
 
-  private constructor(stub: LanternServiceClient, opts: ConnectOptions) {
-    this.stub = stub;
-    this.opts = { ...opts, batchChunkSize: opts.batchChunkSize ?? DEFAULT_BATCH_CHUNK_SIZE };
+  private constructor(client: Client<typeof LanternService>, options: ConnectOptions) {
+    this.client = client;
+    this.options = options;
   }
 
-  // ------------------------------------------------------------------
-  // Construction / lifecycle
-  // ------------------------------------------------------------------
-
-  static connect(target: string, args: LanternConnectArgs = {}): Lantern {
-    const opts = args.options ?? {};
-    const creds = args.credentials ?? grpcCredentials.createInsecure();
-    const channelOptions: ChannelOptions = { ...(args.channelOptions ?? {}) };
-    channelOptions["grpc.service_config"] = opts.serviceConfigJson ?? DEFAULT_SERVICE_CONFIG_JSON;
-    if (opts.userAgent) channelOptions["grpc.primary_user_agent"] = opts.userAgent;
-    const stub = new LanternServiceClient(target, creds, channelOptions);
-    return new Lantern(stub, opts);
+  /**
+   * Open a Connect-Node client against the supplied base URL. The
+   * base URL MUST include the scheme — `http://` for h2c (the server
+   * default), or `https://` for TLS.
+   *
+   * Defaults:
+   *   - HTTP/2 transport (Connect protocol, JSON codec); set
+   *     `args.transportOptions.useBinaryFormat = true` to flip to
+   *     protobuf.
+   *   - Batch chunk size 1000.
+   *   - No per-call timeout; pass
+   *     `args.options.defaultTimeoutMs` to apply one.
+   */
+  static connect(baseUrl: string, args: LanternArgs = {}): Lantern {
+    if (!baseUrl) {
+      throw new Error("Lantern.connect: baseUrl is required");
+    }
+    if (!/^https?:\/\//.test(baseUrl)) {
+      throw new Error(
+        `Lantern.connect: baseUrl must include scheme (http:// or https://); got ${JSON.stringify(baseUrl)}`,
+      );
+    }
+    const normalised = baseUrl.replace(/\/$/, "");
+    const transport = createConnectTransport({
+      baseUrl: normalised,
+      httpVersion: "2",
+      interceptors: args.interceptors,
+      ...(args.transportOptions as Partial<ConnectTransportOptions> | undefined),
+    } as ConnectTransportOptions);
+    return new Lantern(createClient(LanternService, transport), {
+      batchChunkSize: DEFAULT_BATCH_CHUNK_SIZE,
+      ...(args.options ?? {}),
+    });
   }
 
-  static connectEndpoints(endpoints: readonly string[], args: LanternConnectArgs = {}): Lantern {
-    return Lantern.connect(staticTarget(endpoints), args);
-  }
-
+  /**
+   * Releases the Node http2.Session pool the Connect transport owns.
+   * @connectrpc/connect-node v2 does not expose a public close hook;
+   * the session pool is torn down by GC and by node's natural
+   * shutdown. Kept for API parity with consumers that wrap close()
+   * in a `try { ... } finally { client.close(); }` block.
+   */
   close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    this.stub.close();
+    // No-op until @connectrpc/connect-node surfaces a public
+    // `transport.disconnect()` method. The Node event loop closes
+    // h2 sessions on process exit naturally.
   }
 
-  /** Expose the underlying gRPC stub for advanced interop. */
-  get rawStub(): LanternServiceClient {
-    return this.stub;
-  }
-
-  // ------------------------------------------------------------------
-  // Vertex — single
-  // ------------------------------------------------------------------
+  // --- Vertex unary RPCs ---
 
   async getVertex(key: string, signal?: AbortSignal): Promise<Vertex> {
-    const resp = await this.unary<
-      { key: string },
-      { vertex: import("./generated/graph/v1/graph.js").Vertex | undefined }
-    >("getVertex", { key }, signal);
-    return fromPbVertex(resp.vertex ?? { key: "", expiration: undefined });
+    return this.invoke(async () => {
+      const resp = await this.client.getVertex({ key }, this.callOpts(signal));
+      if (!resp.vertex) {
+        throw new NotFoundError(`vertex not found: ${key}`);
+      }
+      return fromVertexJson(toJson(VertexSchema, resp.vertex) as Record<string, unknown>);
+    });
   }
 
-  async putVertex(
-    key: string,
-    value: VertexInput["value"],
-    extra: { ttlSeconds?: number; expiration?: Date; signal?: AbortSignal } = {},
-  ): Promise<void> {
-    const vertex = vertexInputToPb({
-      key,
-      value,
-      ttlSeconds: extra.ttlSeconds,
-      expiration: extra.expiration,
+  async putVertex(input: VertexInput, signal?: AbortSignal): Promise<void> {
+    const vertex = fromJson(VertexSchema, toVertexJson(input) as JsonValue);
+    return this.invoke(async () => {
+      await this.client.putVertex({ vertex }, this.callOpts(signal));
     });
-    await this.unary("putVertex", { vertex }, extra.signal);
   }
 
   async deleteVertex(key: string, signal?: AbortSignal): Promise<boolean> {
-    const resp = await this.unary<{ key: string }, { existed: boolean }>(
-      "deleteVertex",
-      { key },
-      signal,
-    );
-    return resp.existed;
+    return this.invoke(async () => {
+      const resp = await this.client.deleteVertex({ key }, this.callOpts(signal));
+      return resp.existed;
+    });
   }
-
-  // ------------------------------------------------------------------
-  // Vertex — batch
-  // ------------------------------------------------------------------
 
   async getVertices(
     keys: readonly string[],
     signal?: AbortSignal,
-  ): Promise<{ present: Vertex[]; missing: string[] }> {
-    const resp = await this.unary<
-      { keys: string[] },
-      { vertices: import("./generated/graph/v1/graph.js").Vertex[]; missing: string[] }
-    >("getVertices", { keys: [...keys] }, signal);
-    return {
-      present: resp.vertices.map(fromPbVertex),
-      missing: [...resp.missing],
-    };
-  }
-
-  async putVertices(
-    inputs: readonly VertexInput[],
-    extra: { chunkSize?: number; signal?: AbortSignal } = {},
-  ): Promise<number> {
-    const chunk = extra.chunkSize ?? this.opts.batchChunkSize;
-    let written = 0;
-    for (const batch of chunks(inputs, chunk)) {
-      try {
-        const resp = await this.unary<
-          { vertices: import("./generated/graph/v1/graph.js").Vertex[] },
-          { written: unknown }
-        >("putVertices", { vertices: batch.map(vertexInputToPb) }, extra.signal);
-        written += longToNumber(resp.written);
-      } catch (err) {
-        if (err instanceof BatchError) throw err;
-        throw new BatchError(written, err);
+  ): Promise<{ found: Vertex[]; missing: string[] }> {
+    if (keys.length === 0) return { found: [], missing: [] };
+    const found: Vertex[] = [];
+    const missing: string[] = [];
+    await this.runBatchRead(keys, async (chunk) => {
+      const resp = await this.client.getVertices({ keys: chunk }, this.callOpts(signal));
+      for (const v of resp.vertices) {
+        found.push(fromVertexJson(toJson(VertexSchema, v) as Record<string, unknown>));
       }
-    }
-    return written;
+      for (const m of resp.missing) missing.push(m);
+    });
+    return { found, missing };
   }
 
-  async deleteVertices(
-    keys: readonly string[],
-    extra: { chunkSize?: number; signal?: AbortSignal } = {},
-  ): Promise<number> {
-    const chunk = extra.chunkSize ?? this.opts.batchChunkSize;
-    let deleted = 0;
-    let seen = 0;
-    for (const batch of chunks(keys, chunk)) {
-      try {
-        const resp = await this.unary<{ keys: string[] }, { deleted: unknown }>(
-          "deleteVertices",
-          { keys: [...batch] },
-          extra.signal,
-        );
-        deleted += longToNumber(resp.deleted);
-        seen += batch.length;
-      } catch (err) {
-        throw new BatchError(seen, err);
-      }
-    }
-    return deleted;
+  async putVertices(inputs: readonly VertexInput[], signal?: AbortSignal): Promise<void> {
+    if (inputs.length === 0) return;
+    await this.runBatchWrite(inputs, async (chunk) => {
+      const vertices = chunk.map((vi) => fromJson(VertexSchema, toVertexJson(vi) as JsonValue));
+      await this.client.putVertices({ vertices }, this.callOpts(signal));
+    });
   }
 
-  // ------------------------------------------------------------------
-  // Vertex — prefix
-  // ------------------------------------------------------------------
+  async deleteVertices(keys: readonly string[], signal?: AbortSignal): Promise<number> {
+    if (keys.length === 0) return 0;
+    let total = 0;
+    await this.runBatchWrite(keys, async (chunk) => {
+      const resp = await this.client.deleteVertices({ keys: chunk }, this.callOpts(signal));
+      total += resp.deleted;
+    });
+    return total;
+  }
 
   async scanVertices(
     prefix: string,
-    options: ScanOptions & { signal?: AbortSignal } = {},
+    opts: ScanOptions = {},
+    signal?: AbortSignal,
   ): Promise<{ vertices: Vertex[]; nextCursor: Uint8Array }> {
-    const resp = await this.unary<
-      { prefix: string; limit: number; cursor: Buffer },
-      { vertices: import("./generated/graph/v1/graph.js").Vertex[]; nextCursor: Buffer }
-    >(
-      "scanVertices",
-      {
-        prefix,
-        limit: options.limit ?? 0,
-        cursor: Buffer.from(options.cursor ?? new Uint8Array()),
-      },
-      options.signal,
-    );
-    return {
-      vertices: resp.vertices.map(fromPbVertex),
-      nextCursor: new Uint8Array(resp.nextCursor),
-    };
+    return this.invoke(async () => {
+      const resp = await this.client.scanVertices(
+        {
+          prefix,
+          limit: opts.limit ?? 0,
+          cursor: opts.cursor ?? new Uint8Array(),
+        },
+        this.callOpts(signal),
+      );
+      return {
+        vertices: resp.vertices.map((v) =>
+          fromVertexJson(toJson(VertexSchema, v) as Record<string, unknown>),
+        ),
+        nextCursor: resp.nextCursor,
+      };
+    });
   }
 
   async *scanVerticesAll(
     prefix: string,
-    options: { limit?: number; signal?: AbortSignal } = {},
-  ): AsyncIterableIterator<Vertex[]> {
-    let cursor: Uint8Array = Buffer.alloc(0);
-    for (;;) {
-      const page = await this.scanVertices(prefix, {
-        limit: options.limit ?? 0,
-        cursor,
-        signal: options.signal,
-      });
-      if (page.vertices.length > 0) yield page.vertices;
+    batchSize?: number,
+    signal?: AbortSignal,
+  ): AsyncIterable<Vertex[]> {
+    let cursor: Uint8Array = new Uint8Array();
+    while (true) {
+      if (signal?.aborted) throw new LanternError("scanVerticesAll aborted");
+      const page = await this.scanVertices(prefix, { limit: batchSize ?? 0, cursor }, signal);
+      yield page.vertices;
       if (page.nextCursor.length === 0) return;
       cursor = page.nextCursor;
     }
   }
 
   async countVerticesByPrefix(prefix: string, signal?: AbortSignal): Promise<bigint> {
-    const resp = await this.unary<{ prefix: string }, { count: unknown }>(
-      "countVerticesByPrefix",
-      { prefix },
-      signal,
-    );
-    return longToBigInt(resp.count);
+    return this.invoke(async () => {
+      const resp = await this.client.countVerticesByPrefix({ prefix }, this.callOpts(signal));
+      return resp.count;
+    });
   }
 
   async deleteVerticesByPrefix(
     prefix: string,
-    options: DeleteByPrefixOptions & { signal?: AbortSignal } = {},
+    opts: DeleteByPrefixOptions = {},
+    signal?: AbortSignal,
   ): Promise<bigint> {
-    const resp = await this.unary<
-      { prefix: string; limit: number; dryRun: boolean },
-      { deleted: unknown }
-    >(
-      "deleteVerticesByPrefix",
-      { prefix, limit: options.limit ?? 0, dryRun: options.dryRun ?? false },
-      options.signal,
-    );
-    return longToBigInt(resp.deleted);
+    return this.invoke(async () => {
+      const resp = await this.client.deleteVerticesByPrefix(
+        {
+          prefix,
+          limit: opts.limit ?? 0,
+          dryRun: opts.dryRun ?? false,
+        },
+        this.callOpts(signal),
+      );
+      return resp.deleted;
+    });
   }
 
-  // ------------------------------------------------------------------
-  // Edge — single
-  // ------------------------------------------------------------------
+  // --- Edge unary RPCs ---
 
   async getEdge(tail: string, head: string, signal?: AbortSignal): Promise<Edge> {
-    const resp = await this.unary<
-      { tail: string; head: string },
-      { edge: import("./generated/graph/v1/graph.js").Edge | undefined }
-    >("getEdge", { tail, head }, signal);
-    return fromPbEdge(resp.edge ?? { tail: "", head: "", weight: 0, expiration: undefined });
+    return this.invoke(async () => {
+      const resp = await this.client.getEdge({ tail, head }, this.callOpts(signal));
+      if (!resp.edge) {
+        throw new NotFoundError(`edge not found: ${tail} -> ${head}`);
+      }
+      return fromEdgeJson(toJson(EdgeSchema, resp.edge) as Record<string, unknown>);
+    });
   }
 
-  async addEdge(
-    tail: string,
-    head: string,
-    weight = 1.0,
-    extra: { ttlSeconds?: number; expiration?: Date; signal?: AbortSignal } = {},
-  ): Promise<void> {
-    const edge = edgeInputToPb({
-      tail,
-      head,
-      weight,
-      ttlSeconds: extra.ttlSeconds,
-      expiration: extra.expiration,
+  async addEdge(input: EdgeInput, signal?: AbortSignal): Promise<void> {
+    const edge = fromJson(EdgeSchema, toEdgeJson(input) as JsonValue);
+    return this.invoke(async () => {
+      await this.client.addEdge({ edge }, this.callOpts(signal));
     });
-    await this.unary("addEdge", { edge }, extra.signal);
   }
 
-  async putEdge(
-    tail: string,
-    head: string,
-    weight = 1.0,
-    extra: { ttlSeconds?: number; expiration?: Date; signal?: AbortSignal } = {},
-  ): Promise<void> {
-    const edge = edgeInputToPb({
-      tail,
-      head,
-      weight,
-      ttlSeconds: extra.ttlSeconds,
-      expiration: extra.expiration,
+  async putEdge(input: EdgeInput, signal?: AbortSignal): Promise<void> {
+    const edge = fromJson(EdgeSchema, toEdgeJson(input) as JsonValue);
+    return this.invoke(async () => {
+      await this.client.putEdge({ edge }, this.callOpts(signal));
     });
-    await this.unary("putEdge", { edge }, extra.signal);
   }
 
   async deleteEdge(tail: string, head: string, signal?: AbortSignal): Promise<boolean> {
-    const resp = await this.unary<{ tail: string; head: string }, { existed: boolean }>(
-      "deleteEdge",
-      { tail, head },
-      signal,
-    );
-    return resp.existed;
+    return this.invoke(async () => {
+      const resp = await this.client.deleteEdge({ tail, head }, this.callOpts(signal));
+      return resp.existed;
+    });
   }
-
-  // ------------------------------------------------------------------
-  // Edge — batch
-  // ------------------------------------------------------------------
 
   async getEdges(
-    pairs: readonly { tail: string; head: string }[],
+    refs: readonly { tail: string; head: string }[],
     signal?: AbortSignal,
-  ): Promise<{ present: Edge[]; missing: { tail: string; head: string }[] }> {
-    const resp = await this.unary<
-      { edges: { tail: string; head: string }[] },
-      {
-        edges: import("./generated/graph/v1/graph.js").Edge[];
-        missing: { tail: string; head: string }[];
+  ): Promise<{ found: Edge[]; missing: { tail: string; head: string }[] }> {
+    if (refs.length === 0) return { found: [], missing: [] };
+    const found: Edge[] = [];
+    const missing: { tail: string; head: string }[] = [];
+    await this.runBatchRead(refs, async (chunk) => {
+      const resp = await this.client.getEdges(
+        { edges: chunk.map((r) => ({ tail: r.tail, head: r.head })) },
+        this.callOpts(signal),
+      );
+      for (const e of resp.edges) {
+        found.push(fromEdgeJson(toJson(EdgeSchema, e) as Record<string, unknown>));
       }
-    >("getEdges", { edges: [...pairs] }, signal);
-    return {
-      present: resp.edges.map(fromPbEdge),
-      missing: resp.missing.map((k) => ({ tail: k.tail, head: k.head })),
-    };
+      for (const m of resp.missing) {
+        missing.push({ tail: m.tail, head: m.head });
+      }
+    });
+    return { found, missing };
   }
 
-  async addEdges(
-    inputs: readonly EdgeInput[],
-    extra: { chunkSize?: number; signal?: AbortSignal } = {},
-  ): Promise<number> {
-    return this.batchEdgeWrite("addEdges", inputs, extra);
+  async addEdges(inputs: readonly EdgeInput[], signal?: AbortSignal): Promise<void> {
+    if (inputs.length === 0) return;
+    await this.runBatchWrite(inputs, async (chunk) => {
+      const edges = chunk.map((e) => fromJson(EdgeSchema, toEdgeJson(e) as JsonValue));
+      await this.client.addEdges({ edges }, this.callOpts(signal));
+    });
   }
 
-  async putEdges(
-    inputs: readonly EdgeInput[],
-    extra: { chunkSize?: number; signal?: AbortSignal } = {},
-  ): Promise<number> {
-    return this.batchEdgeWrite("putEdges", inputs, extra);
+  async putEdges(inputs: readonly EdgeInput[], signal?: AbortSignal): Promise<void> {
+    if (inputs.length === 0) return;
+    await this.runBatchWrite(inputs, async (chunk) => {
+      const edges = chunk.map((e) => fromJson(EdgeSchema, toEdgeJson(e) as JsonValue));
+      await this.client.putEdges({ edges }, this.callOpts(signal));
+    });
   }
 
   async deleteEdges(
-    pairs: readonly { tail: string; head: string }[],
-    extra: { chunkSize?: number; signal?: AbortSignal } = {},
+    refs: readonly { tail: string; head: string }[],
+    signal?: AbortSignal,
   ): Promise<number> {
-    const chunk = extra.chunkSize ?? this.opts.batchChunkSize;
-    let deleted = 0;
-    let seen = 0;
-    for (const batch of chunks(pairs, chunk)) {
-      try {
-        const resp = await this.unary<
-          { edges: { tail: string; head: string }[] },
-          { deleted: unknown }
-        >("deleteEdges", { edges: [...batch] }, extra.signal);
-        deleted += longToNumber(resp.deleted);
-        seen += batch.length;
-      } catch (err) {
-        throw new BatchError(seen, err);
-      }
-    }
-    return deleted;
+    if (refs.length === 0) return 0;
+    let total = 0;
+    await this.runBatchWrite(refs, async (chunk) => {
+      const resp = await this.client.deleteEdges(
+        { edges: chunk.map((r) => ({ tail: r.tail, head: r.head })) },
+        this.callOpts(signal),
+      );
+      total += resp.deleted;
+    });
+    return total;
   }
 
-  // ------------------------------------------------------------------
-  // Edge — prefix
-  // ------------------------------------------------------------------
-
   async scanEdges(
-    options: EdgeScanOptions & { signal?: AbortSignal } = {},
+    opts: EdgeScanOptions = {},
+    signal?: AbortSignal,
   ): Promise<{ edges: Edge[]; nextCursor: Uint8Array }> {
-    const resp = await this.unary<
-      { tailPrefix: string; headPrefix: string; limit: number; cursor: Buffer },
-      { edges: import("./generated/graph/v1/graph.js").Edge[]; nextCursor: Buffer }
-    >(
-      "scanEdges",
-      {
-        tailPrefix: options.tailPrefix ?? "",
-        headPrefix: options.headPrefix ?? "",
-        limit: options.limit ?? 0,
-        cursor: Buffer.from(options.cursor ?? new Uint8Array()),
-      },
-      options.signal,
-    );
-    return {
-      edges: resp.edges.map(fromPbEdge),
-      nextCursor: new Uint8Array(resp.nextCursor),
-    };
+    return this.invoke(async () => {
+      const resp = await this.client.scanEdges(
+        {
+          tailPrefix: opts.tailPrefix ?? "",
+          headPrefix: opts.headPrefix ?? "",
+          limit: opts.limit ?? 0,
+          cursor: opts.cursor ?? new Uint8Array(),
+        },
+        this.callOpts(signal),
+      );
+      return {
+        edges: resp.edges.map((e) =>
+          fromEdgeJson(toJson(EdgeSchema, e) as Record<string, unknown>),
+        ),
+        nextCursor: resp.nextCursor,
+      };
+    });
   }
 
   async *scanEdgesAll(
-    options: {
-      tailPrefix?: string;
-      headPrefix?: string;
-      limit?: number;
-      signal?: AbortSignal;
-    } = {},
-  ): AsyncIterableIterator<Edge[]> {
-    let cursor: Uint8Array = Buffer.alloc(0);
-    for (;;) {
-      const page = await this.scanEdges({
-        tailPrefix: options.tailPrefix,
-        headPrefix: options.headPrefix,
-        limit: options.limit ?? 0,
-        cursor,
-        signal: options.signal,
-      });
-      if (page.edges.length > 0) yield page.edges;
+    opts: EdgeScanOptions = {},
+    batchSize?: number,
+    signal?: AbortSignal,
+  ): AsyncIterable<Edge[]> {
+    let cursor: Uint8Array = opts.cursor ?? new Uint8Array();
+    while (true) {
+      if (signal?.aborted) throw new LanternError("scanEdgesAll aborted");
+      const page = await this.scanEdges(
+        { ...opts, limit: batchSize ?? opts.limit ?? 0, cursor },
+        signal,
+      );
+      yield page.edges;
       if (page.nextCursor.length === 0) return;
       cursor = page.nextCursor;
     }
   }
 
-  // ------------------------------------------------------------------
-  // Illuminate
-  // ------------------------------------------------------------------
-
   async illuminate(
     seed: string,
-    options: IlluminateOptions & { signal?: AbortSignal } = {},
-  ): Promise<Graph> {
-    const resp = await this.unary<
-      { seed: string; step: number; k: number; tfidf: boolean; optimization: number },
-      {
-        graph:
-          | {
-              vertices: import("./generated/graph/v1/graph.js").Vertex[];
-              edges: import("./generated/graph/v1/graph.js").Edge[];
-            }
-          | undefined;
-      }
-    >(
-      "illuminate",
-      {
-        seed,
-        step: options.step ?? 0,
-        k: options.k ?? 0,
-        tfidf: options.tfidf ?? false,
-        optimization: options.optimization ?? Optimization.UNSPECIFIED,
-      },
-      options.signal,
-    );
-    const graph: Graph = { vertices: new Map(), edges: new Map() };
-    if (!resp.graph) return graph;
-    for (const v of resp.graph.vertices) {
-      const sv = fromPbVertex(v);
-      graph.vertices.set(sv.key, sv);
-    }
-    for (const e of resp.graph.edges) {
-      let row = graph.edges.get(e.tail);
-      if (!row) {
-        row = new Map();
-        graph.edges.set(e.tail, row);
-      }
-      row.set(e.head, e.weight);
-    }
-    return graph;
-  }
-
-  // ------------------------------------------------------------------
-  // Internals
-  // ------------------------------------------------------------------
-
-  private async batchEdgeWrite(
-    method: "addEdges" | "putEdges",
-    inputs: readonly EdgeInput[],
-    extra: { chunkSize?: number; signal?: AbortSignal },
-  ): Promise<number> {
-    const chunk = extra.chunkSize ?? this.opts.batchChunkSize;
-    let written = 0;
-    for (const batch of chunks(inputs, chunk)) {
-      try {
-        const resp = await this.unary<
-          { edges: import("./generated/graph/v1/graph.js").Edge[] },
-          { written: unknown }
-        >(method, { edges: batch.map(edgeInputToPb) }, extra.signal);
-        written += longToNumber(resp.written);
-      } catch (err) {
-        throw new BatchError(written, err);
-      }
-    }
-    return written;
-  }
-
-  private unary<Req, Resp>(
-    method: keyof LanternServiceClient,
-    req: Req,
+    opts: IlluminateOptions = {},
     signal?: AbortSignal,
-  ): Promise<Resp> {
-    return new Promise<Resp>((resolve, reject) => {
-      if (signal?.aborted) {
-        reject(wrapRpcError(new Error("aborted")));
-        return;
-      }
-      const callOptions: CallOptions = {};
-      if (this.opts.defaultTimeoutMs !== undefined) {
-        callOptions.deadline = new Date(Date.now() + this.opts.defaultTimeoutMs);
-      }
-      type UnaryFn = (
-        request: Req,
-        metadata: Metadata,
-        options: CallOptions,
-        callback: (err: ServiceError | null, response: Resp) => void,
-      ) => { cancel(): void };
-      const stubAny = this.stub as unknown as Record<string, UnaryFn>;
-      const fn = stubAny[method as string];
-      if (!fn) {
-        reject(new Error(`unknown rpc method: ${String(method)}`));
-        return;
-      }
-      const call = fn.call(
-        this.stub as unknown as ThisType<UnaryFn>,
-        req,
-        new Metadata(),
-        callOptions,
-        (err, response) => {
-          if (err) {
-            reject(wrapRpcError(err));
-            return;
-          }
-          resolve(response);
+  ): Promise<Graph> {
+    if (!seed) throw new InvalidArgumentError("illuminate: seed is required");
+    return this.invoke(async () => {
+      const resp = await this.client.illuminate(
+        {
+          seed,
+          step: opts.step ?? 0,
+          k: opts.k ?? 0,
+          tfidf: opts.tfidf ?? false,
+          optimization:
+            OPTIMIZATION_TO_PB[opts.optimization ?? Optimization.UNSPECIFIED] ??
+            PbOptimization.UNSPECIFIED,
         },
+        this.callOpts(signal),
       );
-      if (signal) {
-        const onAbort = () => {
-          try {
-            call.cancel();
-          } catch {
-            /* ignore */
-          }
-        };
-        if (signal.aborted) onAbort();
-        else signal.addEventListener("abort", onAbort, { once: true });
+      const vertices = new Map<string, Vertex>();
+      for (const v of resp.graph?.vertices ?? []) {
+        const flat = toJson(VertexSchema, v) as Record<string, unknown>;
+        vertices.set(String(flat.key ?? ""), fromVertexJson(flat));
       }
+      const edges = new Map<string, Map<string, number>>();
+      for (const e of resp.graph?.edges ?? []) {
+        const flat = toJson(EdgeSchema, e) as Record<string, unknown>;
+        const tail = String(flat.tail ?? "");
+        const head = String(flat.head ?? "");
+        const weight = Number(flat.weight ?? 0);
+        if (!edges.has(tail)) edges.set(tail, new Map());
+        edges.get(tail)!.set(head, weight);
+      }
+      return { vertices, edges };
     });
   }
-}
 
-function* chunks<T>(seq: readonly T[], n: number): IterableIterator<readonly T[]> {
-  if (n <= 0) {
-    yield seq;
-    return;
+  // --- internals ---
+
+  private callOpts(signal?: AbortSignal): {
+    signal?: AbortSignal;
+    timeoutMs?: number;
+  } {
+    const out: { signal?: AbortSignal; timeoutMs?: number } = {};
+    if (signal) out.signal = signal;
+    if (this.options.defaultTimeoutMs && this.options.defaultTimeoutMs > 0) {
+      out.timeoutMs = this.options.defaultTimeoutMs;
+    }
+    return out;
   }
-  for (let i = 0; i < seq.length; i += n) {
-    yield seq.slice(i, i + n);
+
+  private async invoke<T>(fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn();
+    } catch (err) {
+      throw wrapConnectError(err);
+    }
+  }
+
+  private chunkSize(): number {
+    const n = this.options.batchChunkSize ?? DEFAULT_BATCH_CHUNK_SIZE;
+    return n > 0 ? n : DEFAULT_BATCH_CHUNK_SIZE;
+  }
+
+  private async runBatchWrite<T>(
+    items: readonly T[],
+    sendChunk: (chunk: T[]) => Promise<void>,
+  ): Promise<void> {
+    const size = this.chunkSize();
+    let written = 0;
+    for (let i = 0; i < items.length; i += size) {
+      const chunk = items.slice(i, Math.min(i + size, items.length));
+      try {
+        await sendChunk(chunk);
+      } catch (err) {
+        throw new BatchError(written, wrapConnectError(err));
+      }
+      written += chunk.length;
+    }
+  }
+
+  private async runBatchRead<T>(
+    items: readonly T[],
+    sendChunk: (chunk: T[]) => Promise<void>,
+  ): Promise<void> {
+    const size = this.chunkSize();
+    for (let i = 0; i < items.length; i += size) {
+      const chunk = items.slice(i, Math.min(i + size, items.length));
+      try {
+        await sendChunk(chunk);
+      } catch (err) {
+        throw wrapConnectError(err);
+      }
+    }
   }
 }
-
-export { hasEndpoints, staticTarget };

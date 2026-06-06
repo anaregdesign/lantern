@@ -15,9 +15,12 @@ the Go workspace (`go.work`). The TypeScript toolchain is [Bun](https://bun.sh/)
   configured to allow the admin origin — see
   `LANTERN_CORS_ALLOWED_ORIGINS` in [`server/README.md`](../server/README.md).
 
-Admin talks to the gateway over plain HTTP/JSON using `fetch` and types
-generated from `pb/openapiv2/graph/v1/graph.swagger.json`. It does **not**
-depend on `lantern-sdk` (Node) because `@grpc/grpc-js` is not browser-safe.
+Admin talks to the server over the Connect protocol (HTTP/2) using
+`@connectrpc/connect-web` and types generated from `proto/graph/v1/`
+via `@bufbuild/protoc-gen-es`. It does **not** depend on
+`lantern-sdk` (Node) because the SDK targets Node.js (not the
+browser); the same generated client surface is consumed directly
+here via the browser-targeted transport.
 
 ## Quick start
 
