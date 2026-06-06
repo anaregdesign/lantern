@@ -26,5 +26,15 @@ plugins:
       - paths=source_relative
   - remote: buf.build/grpc-ecosystem/openapiv2
     out: pb/openapiv2
+  # Connect-Go stubs land alongside the gRPC stubs under
+  # pb/graph/v1/graphv1connect/ — the canonical *Connect/* sub-package
+  # convention from connectrpc.com/connect. Kept additive alongside the
+  # gRPC + grpc-gateway outputs while the Connect-only migration (#335)
+  # is in flight; the gRPC and gateway plugins are removed in #342 once
+  # every consumer has flipped over.
+  - remote: buf.build/connectrpc/go
+    out: pb
+    opt:
+      - paths=source_relative
 inputs:
   - directory: proto
