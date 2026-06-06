@@ -7,7 +7,7 @@ require (
 	connectrpc.com/grpchealth v1.4.0
 	github.com/anaregdesign/lantern/core v0.1.1
 	github.com/anaregdesign/lantern/mcp v0.0.0-00010101000000-000000000000
-	github.com/anaregdesign/lantern/pb v0.1.1
+	github.com/anaregdesign/lantern/pb v0.2.0
 	github.com/anaregdesign/lantern/sdks/go v0.7.1
 	github.com/anaregdesign/lantern/server v0.0.0-00010101000000-000000000000
 	github.com/manifoldco/promptui v0.9.0
