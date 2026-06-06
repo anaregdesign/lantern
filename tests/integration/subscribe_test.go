@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"io"
 	"testing"
@@ -59,7 +60,7 @@ func TestSubscribe_E2E_100Writes(t *testing.T) {
 		}
 	}
 
-	stream, err := subCli.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{FromSeq: 1}))
+	stream, err := subCli.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{}))
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
@@ -101,4 +102,99 @@ func itoa(i int) string {
 		i /= 10
 	}
 	return string(b[pos:])
+}
+
+// TestSubscribe_PerOriginCursor_Skips covers the leaderless Subscribe
+// contract's resume semantics (#415, B-2). The wire-level cursor is
+// `map<string, uint64> from_seq_per_origin` keyed by hex-encoded HLC
+// NodeID; an entry whose origin appears in the cursor is delivered
+// only when its seq is >= the cursor value, and an entry whose origin
+// is absent from the cursor is delivered from the oldest retained
+// entry.
+//
+// The test fabricates entries from two origins on a single replica's
+// log via the LanternReplicationService directly (cheaper and more
+// targeted than spinning a multi-node cluster — the per-origin filter
+// lives entirely in the Subscribe handler and is independent of the
+// peer pump).
+func TestSubscribe_PerOriginCursor_Skips(t *testing.T) {
+	originA := hlc.NodeID{0x11}
+	originB := hlc.NodeID{0x22}
+
+	log := mutationlog.New(mutationlog.Options{Capacity: 64, SubscriberBuffer: 64})
+	t.Cleanup(func() { _ = log.Close() })
+	clock := hlc.New(originA, hlc.Options{})
+
+	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
+	svc := service.NewLanternService(cache).
+		WithReplication(log, clock, nil)
+	rep := service.NewLanternReplicationService(log, cache, clock)
+	srv := newConnectTestServer(t, svc, rep, nil)
+	subCli := newReplicationRawClient(t, srv.url)
+
+	// Append four entries: A, B, A, B. The log assigns Seq 1..4 in
+	// that order; per-origin seqs are A=1,2 and B=1,2. The cursor
+	// {hex(A): 2} should skip seq 1 (A's first) while keeping seq 2
+	// (B's first, absent from cursor → delivered from oldest), seq 3
+	// (A's second, exactly at cursor), seq 4 (B's second, no cursor).
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	mkMu := func(originID hlc.NodeID, key string) *pb.Mutation {
+		ts := hlc.New(originID, hlc.Options{}).Now()
+		return &pb.Mutation{
+			Hlc: &pb.HLCTimestamp{
+				WallNs: ts.WallNs, Logical: ts.Logical,
+				NodeId: append([]byte(nil), originID[:]...),
+			},
+			Origin: append([]byte(nil), originID[:]...),
+			Op: &pb.MutationOp{Op: &pb.MutationOp_PutVertex{
+				PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: key}},
+			}},
+		}
+	}
+	for _, m := range []*pb.Mutation{
+		mkMu(originA, "a1"), mkMu(originB, "b1"),
+		mkMu(originA, "a2"), mkMu(originB, "b2"),
+	} {
+		// Append directly to the log so we control origin assignment;
+		// going through PutVertex would stamp originA for every call.
+		if _, err := log.Append(m, hlc.Timestamp{NodeID: hlc.NodeID(m.GetHlc().GetNodeId()[0:16])}); err != nil {
+			t.Fatalf("log.Append: %v", err)
+		}
+	}
+
+	cursor := map[string]uint64{hex.EncodeToString(originA[:]): 2}
+	stream, err := subCli.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{FromSeqPerOrigin: cursor}))
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	t.Cleanup(func() { _ = stream.Close() })
+
+	type got struct {
+		seq    uint64
+		origin string
+	}
+	var seen []got
+	for i := 0; i < 3; i++ {
+		if !stream.Receive() {
+			if streamErr := stream.Err(); streamErr != nil && !errors.Is(streamErr, io.EOF) {
+				t.Fatalf("Recv[%d]: %v", i, streamErr)
+			}
+			t.Fatalf("stream ended after %d entries; want 3", len(seen))
+		}
+		m := stream.Msg().GetMutation()
+		seen = append(seen, got{seq: m.GetSeq(), origin: hex.EncodeToString(m.GetOrigin())})
+	}
+
+	want := []got{
+		{seq: 2, origin: hex.EncodeToString(originB[:])}, // B's first; not in cursor → oldest
+		{seq: 3, origin: hex.EncodeToString(originA[:])}, // A's second; exactly at cursor
+		{seq: 4, origin: hex.EncodeToString(originB[:])}, // B's second
+	}
+	for i, g := range seen {
+		if g != want[i] {
+			t.Errorf("entry[%d] got %+v want %+v", i, g, want[i])
+		}
+	}
 }

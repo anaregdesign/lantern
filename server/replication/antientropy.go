@@ -294,12 +294,20 @@ func (a *AntiEntropy) tickPeer(ctx context.Context, addr string) {
 // itself advances local watermarks via the SnapshotApplier seams)
 // after which catchUp returns — the next tick will re-probe.
 //
+// Under the leaderless Subscribe contract (#415), the peer's log
+// carries entries from every cluster origin. We narrow the request to
+// peerNID's own origin via a per-origin cursor so the server only
+// streams the entries we actually care about, avoiding wasted
+// bandwidth on cross-origin entries that this catch-up call would
+// drop anyway.
+//
 // Returns the number of mutations applied during this call.
 func (a *AntiEntropy) catchUp(ctx context.Context, cli graphv1connect.LanternReplicationServiceClient, peerNID hlc.NodeID, fromSeq, target uint64) (uint64, error) {
 	tctx, cancel := context.WithTimeout(ctx, a.cfg.SubscribeTimeout)
 	defer cancel()
 
-	stream, err := cli.Subscribe(tctx, connect.NewRequest(&pb.SubscribeRequest{FromSeq: fromSeq}))
+	cursor := map[string]uint64{hex.EncodeToString(peerNID[:]): fromSeq}
+	stream, err := cli.Subscribe(tctx, connect.NewRequest(&pb.SubscribeRequest{FromSeqPerOrigin: cursor}))
 	if err != nil {
 		if connect.CodeOf(err) == connect.CodeFailedPrecondition {
 			return 0, a.snapshotFrom(ctx, cli)

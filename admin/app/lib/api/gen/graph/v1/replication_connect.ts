@@ -36,7 +36,9 @@ export const LanternReplicationService = {
      * also have the stream terminated with FAILED_PRECONDITION — the
      * remedy is the same.
      *
-     * No HTTP gateway annotation: replication is intentionally gRPC-only.
+     * No HTTP gateway annotation: replication is intentionally exposed
+     * only as Connect server-streaming (consumed by replication pumps on
+     * peer nodes, never directly from browsers).
      *
      * @generated from rpc graph.v1.LanternReplicationService.Subscribe
      */

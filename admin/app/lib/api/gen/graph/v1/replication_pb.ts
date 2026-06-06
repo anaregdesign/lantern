@@ -257,19 +257,47 @@ export class Mutation extends Message<Mutation> {
 
 /**
  * SubscribeRequest opens a stream of replicated mutations starting at
- * `from_seq` (inclusive). The server replays any in-buffer entries with
- * seq >= from_seq, then streams live mutations as they are appended.
+ * the per-origin cursor in `from_seq_per_origin`.
  *
- * If `from_seq` is below the server's first available seq the call fails
- * with FAILED_PRECONDITION and the caller must snapshot + resubscribe.
+ * Under the leaderless Subscribe contract (#415, B-3), every replica's
+ * local mutation log carries entries from every cluster origin (each
+ * stamped with its writer's HLC NodeID). A consumer can therefore pick
+ * any one replica and see every committed cluster mutation; on failover
+ * to a different replica it resumes by passing the highest `seq` it
+ * has already observed FOR EACH origin.
+ *
+ * Semantics:
+ *
+ *   - Empty map (or unset field) requests every entry the server still
+ *     retains. This is the new-consumer / cold-start case.
+ *   - For each origin key present in the map, the server delivers only
+ *     entries with `seq >= from_seq_per_origin[origin]` for that
+ *     origin. Entries for origins NOT in the map are delivered from
+ *     the oldest retained entry; this lets a consumer that has only
+ *     ever talked to a subset of replicas naturally pick up entries
+ *     from a newly-joined origin.
+ *   - If the resulting overall earliest requested seq is below the
+ *     server's first retained log seq the call fails with
+ *     FAILED_PRECONDITION and the caller must snapshot + resubscribe.
+ *
+ * Keys are 32-character lowercase hexadecimal encodings of the 16-byte
+ * HLC NodeID (matching `HLCTimestamp.node_id` and `Mutation.origin`).
+ * Hex was chosen over raw bytes because proto3 map keys forbid `bytes`
+ * and because the hex form already appears in `lantern_replication_*`
+ * Prometheus labels and in admin UI surfaces, keeping the consumer
+ * debug experience uniform across wire, metrics, and UI.
  *
  * @generated from message graph.v1.SubscribeRequest
  */
 export class SubscribeRequest extends Message<SubscribeRequest> {
   /**
-   * @generated from field: uint64 from_seq = 1;
+   * Per-origin resume cursor. Keys are 32-char lowercase hex of the
+   * 16-byte HLC NodeID; values are the next local `seq` the consumer
+   * expects from that origin.
+   *
+   * @generated from field: map<string, uint64> from_seq_per_origin = 1;
    */
-  fromSeq = protoInt64.zero;
+  fromSeqPerOrigin: { [key: string]: bigint } = {};
 
   constructor(data?: PartialMessage<SubscribeRequest>) {
     super();
@@ -279,7 +307,7 @@ export class SubscribeRequest extends Message<SubscribeRequest> {
   static readonly runtime: typeof proto3 = proto3;
   static readonly typeName = "graph.v1.SubscribeRequest";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "from_seq", kind: "scalar", T: 4 /* ScalarType.UINT64 */ },
+    { no: 1, name: "from_seq_per_origin", kind: "map", K: 9 /* ScalarType.STRING */, V: {kind: "scalar", T: 4 /* ScalarType.UINT64 */} },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SubscribeRequest {

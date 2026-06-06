@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -112,36 +113,51 @@ func (s *LanternReplicationService) WithOriginStates(p OriginStatesProvider) *La
 	return s
 }
 
-// Subscribe streams every mutation log entry at or after req.FromSeq
-// to the supplied Sender, honouring ctx cancellation throughout.
+// Subscribe streams every mutation log entry whose (origin, seq)
+// satisfies the per-origin resume cursor in req.FromSeqPerOrigin to
+// the supplied Sender, honouring ctx cancellation throughout.
+//
+// Under the leaderless Subscribe contract (#415), every replica's log
+// carries entries from every cluster origin (each stamped with its
+// writer's HLC NodeID on Entry.HLC.NodeID, which round-trips to the
+// wire as Mutation.Hlc.NodeId / Mutation.Origin). A consumer attaches
+// to any replica and resumes per-origin so failover between replicas
+// does not require deduplication or seq remapping.
 //
 // Flow:
-//  1. Open a subscription on the mutation log starting at req.FromSeq.
-//     If FromSeq is below the ring's firstSeq the log returns ErrGapped
-//     and we surface FailedPrecondition + reason "gapped" so the client
-//     knows to snapshot and resubscribe (see RFC §8.2).
-//  2. Drain the subscription channel and forward each entry as a
-//     SubscribeResponse. The Mutation stored on the entry already carries
-//     hlc/origin/op; we shallow-copy it to overwrite Seq with the
-//     authoritative value from the log entry (the stored Mutation has
-//     Seq=0 because the log assigns seq at Append time).
-//  3. If the channel is closed mid-stream the subscriber fell behind the
-//     per-subscriber buffer (Options.SubscriberBuffer). Surface this as
-//     FailedPrecondition + "gapped" — symmetric with case 1.
-//  4. Honor ctx cancellation throughout.
+//  1. Compute the minimum seq across all requested origins (cold-start
+//     callers pass an empty map, which yields min=1 = oldest retained
+//     entry). Open a log subscription at that minimum so the dispatcher
+//     hands us every entry the cursor could possibly want.
+//  2. For each entry, filter by the per-origin cursor: deliver only
+//     when entry.Seq >= cursor[origin]. Origins absent from the cursor
+//     are delivered from the oldest retained entry — this lets a
+//     consumer that has never seen origin X (e.g. X joined the cluster
+//     while the consumer was offline) catch up naturally.
+//  3. ErrGapped from the log layer (the computed minimum is below the
+//     ring's firstSeq) surfaces as FailedPrecondition + reason
+//     "gapped" so the client knows to snapshot and resubscribe (RFC
+//     §8.2).
+//  4. If the channel is closed mid-stream the subscriber fell behind
+//     the per-subscriber buffer (Options.SubscriberBuffer). Surface
+//     this as FailedPrecondition + "gapped" — symmetric with case 3.
+//  5. Honor ctx cancellation throughout.
 //
-// Send errors terminate the stream and increment dropped{reason="send_failed"}.
+// Send errors terminate the stream and increment
+// dropped{reason="send_failed"}.
 func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.SubscribeRequest, stream Sender[pb.SubscribeResponse]) error {
 	if s.log == nil {
 		return connect.NewError(connect.CodeUnavailable, errors.New("replication is not enabled on this server"))
 	}
-	ch, cancel, err := s.log.Subscribe(req.GetFromSeq())
+	cursor := req.GetFromSeqPerOrigin()
+	minSeq := minSeqFromCursor(cursor)
+	ch, cancel, err := s.log.Subscribe(minSeq)
 	if err != nil {
 		if errors.Is(err, mutationlog.ErrGapped) {
 			s.metrics.OnSubscribeDropped("gapped")
 			return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf(
 				"gapped: from_seq=%d is older than the first available seq; snapshot and resubscribe",
-				req.GetFromSeq()))
+				minSeq))
 		}
 		return connect.NewError(connect.CodeUnavailable, fmt.Errorf("subscribe failed: %w", err))
 	}
@@ -170,6 +186,14 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 				return connect.NewError(connect.CodeInternal, fmt.Errorf(
 					"replication: malformed mutation log entry at seq=%d", entry.Seq))
 			}
+			// Per-origin filter: skip entries whose origin watermark
+			// the consumer already covers. Origins absent from the
+			// cursor are NOT skipped — they are delivered from the
+			// oldest retained entry, matching the contract documented
+			// on pb.SubscribeRequest.
+			if want, present := cursor[hex.EncodeToString(mu.GetOrigin())]; present && entry.Seq < want {
+				continue
+			}
 			// Shallow copy so we can stamp Seq without mutating the
 			// shared Mutation pointer other subscribers (or the WAL) may
 			// be observing.
@@ -185,6 +209,24 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 			}
 		}
 	}
+}
+
+// minSeqFromCursor returns the smallest seq present in the per-origin
+// cursor, or 1 (the first valid log seq) when the cursor is empty so a
+// cold-start subscriber receives every retained entry.
+func minSeqFromCursor(cursor map[string]uint64) uint64 {
+	if len(cursor) == 0 {
+		return 1
+	}
+	var min uint64
+	first := true
+	for _, v := range cursor {
+		if first || v < min {
+			min = v
+			first = false
+		}
+	}
+	return min
 }
 
 func (s *LanternReplicationService) loggerOrDefault() *slog.Logger {
