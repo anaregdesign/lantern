@@ -7,7 +7,6 @@ import (
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 	"github.com/anaregdesign/lantern/server/readiness"
 	"github.com/anaregdesign/lantern/server/replication"
-	"google.golang.org/grpc/health"
 )
 
 // ReadinessConfig groups the LB-drain hook knobs (#188).
@@ -35,8 +34,8 @@ func loadReadinessConfig() ReadinessConfig {
 // ("") gRPC health entry. The peer-mode flag is derived from PeerConfig:
 // empty LANTERN_PEERS yields a permanently-ready gate that bypasses lag
 // gating, matching the single-instance startup contract.
-func NewReadinessGate(rc ReadinessConfig, pc PeerConfig, hs *health.Server) *readiness.Gate {
-	return readiness.NewGate(rc.MaxLag, len(pc.Peers) > 0, hs)
+func NewReadinessGate(rc ReadinessConfig, pc PeerConfig, hc *HealthChecker) *readiness.Gate {
+	return readiness.NewGate(rc.MaxLag, len(pc.Peers) > 0, hc)
 }
 
 // pumpMetricsFanOut delegates replication.Metrics events to both

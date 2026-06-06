@@ -3,7 +3,6 @@ package provider
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -17,19 +16,9 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 	"github.com/anaregdesign/lantern/server/readiness"
-	grpcprom "github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus"
-	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/logging"
-	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/recovery"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
-	"google.golang.org/grpc"
-	_ "google.golang.org/grpc/encoding/gzip" // register gzip compressor so clients requesting it work
-	"google.golang.org/grpc/health"
-	healthpb "google.golang.org/grpc/health/grpc_health_v1"
-	"google.golang.org/grpc/keepalive"
-	"google.golang.org/grpc/reflection"
 )
 
 // NetConfig groups the gRPC listener and message-size / concurrency caps.
@@ -141,22 +130,20 @@ type ScanConfig struct {
 // it (SRP). main / App may keep *Config because they observe several aspects
 // for startup logging.
 type Config struct {
-	Net             NetConfig
-	TLS             TLSConfig
-	RateLimit       RateLimitConfig
-	Observability   ObservabilityConfig
-	Cache           CacheConfig
-	Shutdown        ShutdownConfig
-	Validation      ValidationLimits
-	Scan            ScanConfig
-	MutationLog     MutationLogConfig
-	Replication     ReplicationConfig
-	Peer            PeerConfig
-	AntiEntropy     AntiEntropyConfig
-	Readiness       ReadinessConfig
-	Gateway         GatewayConfig
-	CORS            CORSConfig
-	ConnectListener ConnectListenerConfig
+	Net           NetConfig
+	TLS           TLSConfig
+	RateLimit     RateLimitConfig
+	Observability ObservabilityConfig
+	Cache         CacheConfig
+	Shutdown      ShutdownConfig
+	Validation    ValidationLimits
+	Scan          ScanConfig
+	MutationLog   MutationLogConfig
+	Replication   ReplicationConfig
+	Peer          PeerConfig
+	AntiEntropy   AntiEntropyConfig
+	Readiness     ReadinessConfig
+	CORS          CORSConfig
 }
 
 func NewConfig() *Config {
@@ -212,14 +199,12 @@ func NewConfig() *Config {
 			DeleteByPrefixDefaultLimit: uint32(envconfig.Int("LANTERN_DELETE_BY_PREFIX_DEFAULT_LIMIT", 10000)),
 			DeleteByPrefixMaxLimit:     uint32(envconfig.Int("LANTERN_DELETE_BY_PREFIX_MAX_LIMIT", 100000)),
 		},
-		MutationLog:     loadMutationLogConfig(),
-		Replication:     loadReplicationConfig(),
-		Readiness:       loadReadinessConfig(),
-		Peer:            loadPeerConfig(),
-		AntiEntropy:     loadAntiEntropyConfig(),
-		Gateway:         loadGatewayConfig(),
-		CORS:            loadCORSConfig(),
-		ConnectListener: loadConnectListenerConfig(),
+		MutationLog: loadMutationLogConfig(),
+		Replication: loadReplicationConfig(),
+		Readiness:   loadReadinessConfig(),
+		Peer:        loadPeerConfig(),
+		AntiEntropy: loadAntiEntropyConfig(),
+		CORS:        loadCORSConfig(),
 	}
 }
 
@@ -339,10 +324,11 @@ func NewListener(n NetConfig) (net.Listener, error) {
 	return net.Listen("tcp", ":"+strconv.Itoa(n.Port))
 }
 
-// NewHealthServer is the gRPC health-checking implementation.
-func NewHealthServer() *health.Server {
-	return health.NewServer()
-}
+// NewHealthChecker is provided by health.go and now serves the gRPC
+// health surface via connectrpc.com/grpchealth. The legacy
+// NewHealthServer() returning *health.Server was removed by #347; wire
+// now binds *HealthChecker into service.HealthSetter +
+// readiness.HealthSetter.
 
 // NewPrometheusRegistry isolates server metrics in a dedicated registry so the
 // global default stays clean.
@@ -355,128 +341,17 @@ func NewPrometheusRegistry() *prometheus.Registry {
 	return reg
 }
 
-// NewGrpcServerMetrics exposes per-RPC histograms/counters via the
-// grpc-middleware Prometheus provider.
-func NewGrpcServerMetrics(reg *prometheus.Registry) *grpcprom.ServerMetrics {
-	m := grpcprom.NewServerMetrics(
-		grpcprom.WithServerHandlingTimeHistogram(),
-	)
-	reg.MustRegister(m)
-	return m
-}
+// NewGrpcServerMetrics has been removed; the Connect-Go cutover (#347)
+// replaced grpcprom with PrometheusInterceptor in connect_middleware.go
+// which registers the same `grpc_server_*` metric names so dashboards
+// keep working.
 
-// NewGrpcServerOptions assembles the modern interceptor + stats-handler chain:
-//   - otelgrpc stats handler (replaces the deprecated unary interceptor)
-//   - recovery interceptor (panic -> Internal status)
-//   - slog logging interceptor
-//   - Prometheus server metrics interceptor
-//   - request validation interceptor (codes.InvalidArgument guard rails)
-//   - optional token-bucket rate limiter (codes.ResourceExhausted)
-//   - keepalive policy that pings idle clients and rejects abusive ones
-//   - message size + concurrent stream caps
-//   - optional TLS / mTLS credentials
-func NewGrpcServerOptions(
-	net NetConfig,
-	tlsCfg TLSConfig,
-	obs ObservabilityConfig,
-	logger *slog.Logger,
-	metrics *grpcprom.ServerMetrics,
-	validator *ValidationInterceptor,
-	rli *RateLimitInterceptor,
-) ([]grpc.ServerOption, error) {
-	logOpts := []logging.Option{
-		logging.WithLogOnEvents(logging.StartCall, logging.FinishCall),
-	}
-	recoveryOpts := []recovery.Option{
-		recovery.WithRecoveryHandlerContext(func(ctx context.Context, p any) error {
-			logger.ErrorContext(ctx, "grpc handler panic", slog.Any("panic", p))
-			return fmt.Errorf("internal server error")
-		}),
-	}
-
-	unary := []grpc.UnaryServerInterceptor{
-		recovery.UnaryServerInterceptor(recoveryOpts...),
-		logging.UnaryServerInterceptor(slogInterceptorLogger(logger), logOpts...),
-		metrics.UnaryServerInterceptor(),
-	}
-	stream := []grpc.StreamServerInterceptor{
-		recovery.StreamServerInterceptor(recoveryOpts...),
-		logging.StreamServerInterceptor(slogInterceptorLogger(logger), logOpts...),
-		metrics.StreamServerInterceptor(),
-	}
-
-	// validator and rli are wire providers (lifted out of this function
-	// in #349) so the additive Connect listener (#337) and the legacy
-	// gRPC server share the SAME *rate.Limiter token bucket. Sharing
-	// the limiter — rather than constructing a parallel one per
-	// transport — means a client that hammers the Connect surface
-	// cannot bypass the protection the operator configured for the
-	// gRPC surface (and vice versa).
-	if rli != nil && rli.lim != nil {
-		unary = append(unary, validator.UnaryServerInterceptor(), rli.UnaryServerInterceptor())
-		stream = append(stream, validator.StreamServerInterceptor(), rli.StreamServerInterceptor())
-	} else {
-		unary = append(unary, validator.UnaryServerInterceptor())
-		stream = append(stream, validator.StreamServerInterceptor())
-	}
-
-	// Slow-RPC warn log fires last so it observes the full handler
-	// duration including validation + rate-limit decisions (#223).
-	if slow := NewSlowRPCInterceptor(obs.SlowRPCThreshold, logger); slow.Enabled() {
-		unary = append(unary, slow.UnaryServerInterceptor())
-		stream = append(stream, slow.StreamServerInterceptor())
-	}
-
-	opts := []grpc.ServerOption{
-		grpc.StatsHandler(otelgrpc.NewServerHandler()),
-		grpc.ChainUnaryInterceptor(unary...),
-		grpc.ChainStreamInterceptor(stream...),
-		grpc.KeepaliveParams(keepalive.ServerParameters{
-			MaxConnectionIdle: 15 * time.Minute,
-			Time:              30 * time.Second,
-			Timeout:           5 * time.Second,
-		}),
-		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
-			MinTime:             10 * time.Second,
-			PermitWithoutStream: true,
-		}),
-	}
-	if net.MaxRecvMsgBytes > 0 {
-		opts = append(opts, grpc.MaxRecvMsgSize(net.MaxRecvMsgBytes))
-	}
-	if net.MaxSendMsgBytes > 0 {
-		opts = append(opts, grpc.MaxSendMsgSize(net.MaxSendMsgBytes))
-	}
-	if net.MaxConcurrentStreams > 0 {
-		opts = append(opts, grpc.MaxConcurrentStreams(net.MaxConcurrentStreams))
-	}
-
-	creds, err := loadServerTLS(tlsCfg)
-	if err != nil {
-		return nil, fmt.Errorf("load tls: %w", err)
-	}
-	if creds != nil {
-		opts = append(opts, grpc.Creds(creds))
-		logger.Info("tls enabled",
-			slog.String("cert", tlsCfg.CertFile),
-			slog.Bool("mtls", tlsCfg.ClientCAFile != ""),
-		)
-	}
-	return opts, nil
-}
-
-// slogInterceptorLogger bridges grpc-middleware's logging.Logger to slog.
-// logging.Level constants are numerically identical to slog.Level values
-// (debug=-4, info=0, warn=4, error=8) so we pass through directly.
-func slogInterceptorLogger(l *slog.Logger) logging.Logger {
-	return logging.LoggerFunc(func(ctx context.Context, lvl logging.Level, msg string, fields ...any) {
-		l.Log(ctx, slog.Level(lvl), msg, fields...)
-	})
-}
-
-func NewGrpcServer(options []grpc.ServerOption) *grpc.Server {
-	return grpc.NewServer(options...)
-}
+// NewGrpcServerOptions and NewGrpcServer have been removed by #347.
+// The primary :6380 listener now runs *http.Server with Connect-Go
+// handlers and the equivalent Connect interceptors
+// (PrometheusInterceptor + LoggingInterceptor + SlowRPCInterceptor +
+// ValidationInterceptor + RateLimitInterceptor + connect.WithRecover).
+// See lantern_listener.go and connect_middleware.go.
 
 // MetricsServer is the long-running goroutine that exposes /metrics
 // (Prometheus) and /healthz + /readyz on a dedicated HTTP port. The
@@ -568,16 +443,8 @@ func (m *httpMetricsServer) Run(ctx context.Context) error {
 	return nil
 }
 
-// RegisterHealth wires the gRPC health service so probes / LBs can query
-// SERVING status.
-func RegisterHealth(s *grpc.Server, hs *health.Server) {
-	healthpb.RegisterHealthServer(s, hs)
-}
-
-// RegisterReflection enables grpcurl-style descriptor reflection when allowed
-// by the LANTERN_REFLECTION env var.
-func RegisterReflection(o ObservabilityConfig, s *grpc.Server) {
-	if o.EnableReflection {
-		reflection.Register(s)
-	}
-}
+// RegisterHealth + RegisterReflection have been removed by #347. Both
+// surfaces are now mounted directly on the http.Server mux by
+// NewLanternListener via connectrpc.com/grpchealth and
+// connectrpc.com/grpcreflect; the env-var contract (LANTERN_REFLECTION)
+// is unchanged.

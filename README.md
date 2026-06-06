@@ -568,17 +568,15 @@ The server is configured via environment variables, parsed in
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `LANTERN_PORT` | `6380` | gRPC listen port |
+| `LANTERN_PORT` | `6380` | Primary RPC listen port (Connect / gRPC / gRPC-Web multiplexed) |
 | `LANTERN_DEFAULT_TTL_SECONDS` | `60` | Default TTL when a request omits one |
 | `LANTERN_GC_INTERVAL_SECONDS` | `60` | Cache GC tick interval |
 | `LANTERN_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `LANTERN_LOG_FORMAT` | `json` | `json` or `text` (slog handler) |
 | `LANTERN_METRICS_ADDR` | `:9090` | Address for Prometheus + health HTTP; empty disables |
-| `LANTERN_GATEWAY_ADDR` | `:6381` | HTTP/JSON gateway (grpc-gateway) listen address; serves the unary REST mapping of `LanternService` plus `/v1/health`; empty disables |
-| `LANTERN_GATEWAY_READ_HEADER_TIMEOUT_MS` | `5000` | `http.Server.ReadHeaderTimeout` for the gateway |
-| `LANTERN_CORS_ALLOWED_ORIGINS` | _(empty)_ | Comma-separated CORS allow-list for the gateway (e.g. `http://localhost:5173,https://admin.example.com`). Empty disables CORS. `*` is honoured only when sole entry. |
+| `LANTERN_CORS_ALLOWED_ORIGINS` | _(empty)_ | Comma-separated CORS allow-list for the primary `:6380` listener (e.g. `http://localhost:5173,https://admin.example.com`). Empty disables CORS. `*` is honoured only when sole entry. |
 | `LANTERN_REFLECTION` | `true` | Register gRPC server reflection (useful for `grpcurl`) |
-| `LANTERN_SHUTDOWN_TIMEOUT_SECONDS` | `30` | Upper bound on graceful shutdown before forcing `Stop()` |
+| `LANTERN_SHUTDOWN_TIMEOUT_SECONDS` | `30` | Upper bound on graceful shutdown before forcing `http.Server.Close()` |
 | `LANTERN_MAX_RECV_MSG_BYTES` | `16777216` | Per-RPC inbound message limit (16 MiB default) |
 | `LANTERN_MAX_SEND_MSG_BYTES` | `16777216` | Per-RPC outbound message limit |
 | `LANTERN_MAX_CONCURRENT_STREAMS` | `1024` | Upper bound on concurrent streams per HTTP/2 connection |

@@ -16,23 +16,20 @@ import (
 	"github.com/anaregdesign/lantern/server/replication"
 	"github.com/anaregdesign/lantern/server/service"
 	"golang.org/x/sync/errgroup"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
 // App is the composition root produced by wire. It owns every long-running
-// goroutine (gRPC server, metrics HTTP server) so main only has to call Run.
+// goroutine (lantern http server, metrics HTTP server) so main only has to
+// call Run.
 type App struct {
 	cfg         *provider.Config
 	logger      *slog.Logger
-	grpc        *service.LanternServer
+	server      *service.LanternServer
 	metrics     provider.MetricsServer
-	gateway     provider.GatewayServer
-	connect     provider.ConnectServer
 	tracing     *provider.Tracing
 	domain      *domainmetrics.DomainMetrics
-	health      *health.Server
+	health      *provider.HealthChecker
 	pump        *replication.Pump
 	antiEntropy *replication.AntiEntropy
 }
@@ -41,25 +38,22 @@ func newApp(
 	cfg *provider.Config,
 	logger *slog.Logger,
 	svc *service.LanternService,
-	grpcServer *service.LanternServer,
+	server *service.LanternServer,
 	metricsServer provider.MetricsServer,
-	gatewayServer provider.GatewayServer,
-	connectServer provider.ConnectServer,
 	tracing *provider.Tracing,
 	domain *domainmetrics.DomainMetrics,
-	hs *health.Server,
+	hc *provider.HealthChecker,
 	pump *replication.Pump,
 	antiEntropy *replication.AntiEntropy,
 	pc provider.PeerConfig,
 	rc provider.ReplicationConfig,
-	_ registeredHealth,
 	_ provider.CacheGCHooksWired,
 ) *App {
 	// Wire the replication snapshotter onto svc here (rather than inside
 	// newLanternService) because pump itself depends on svc; that cycle
 	// is broken by deferring the binding until after both have been
-	// constructed. Safe to write the field now — gRPC has not started
-	// serving yet, so no goroutine can be reading
+	// constructed. Safe to write the field now — the listener has not
+	// started serving yet, so no goroutine can be reading
 	// replicationSnapshotter concurrently. enabled reflects "this server
 	// is wired to talk to peers": static peer list non-empty OR DNS
 	// discovery configured.
@@ -72,27 +66,14 @@ func newApp(
 	return &App{
 		cfg:         cfg,
 		logger:      logger,
-		grpc:        grpcServer,
+		server:      server,
 		metrics:     metricsServer,
-		gateway:     gatewayServer,
-		connect:     connectServer,
 		tracing:     tracing,
 		domain:      domain,
-		health:      hs,
+		health:      hc,
 		pump:        pump,
 		antiEntropy: antiEntropy,
 	}
-}
-
-// registeredHealth is a marker emitted after the health and reflection
-// services have been registered on the gRPC server. wire injects it into
-// newApp purely to enforce ordering.
-type registeredHealth struct{}
-
-func registerHealthAndReflection(o provider.ObservabilityConfig, s *grpc.Server, hs *health.Server) registeredHealth {
-	provider.RegisterHealth(s, hs)
-	provider.RegisterReflection(o, s)
-	return registeredHealth{}
 }
 
 // clampU32 safely narrows an arbitrary platform-sized int (e.g. a value
@@ -192,10 +173,8 @@ func (a *App) Run(ctx context.Context) error {
 	// and replication lag is within LANTERN_MAX_REPLICATION_LAG.
 
 	g, gctx := errgroup.WithContext(ctx)
-	g.Go(func() error { return a.grpc.Run(gctx) })
+	g.Go(func() error { return a.server.Run(gctx) })
 	g.Go(func() error { return a.metrics.Run(gctx) })
-	g.Go(func() error { return a.gateway.Run(gctx) })
-	g.Go(func() error { return a.connect.Run(gctx) })
 	g.Go(func() error { a.domain.Run(gctx); return nil })
 	g.Go(func() error { return a.pump.Run(gctx) })
 	g.Go(func() error { return a.antiEntropy.Run(gctx) })
@@ -232,8 +211,6 @@ func main() {
 		slog.Int("port", app.cfg.Net.Port),
 		slog.Duration("default_ttl", app.cfg.Cache.TTL),
 		slog.String("metrics_addr", app.cfg.Observability.MetricsAddr),
-		slog.String("gateway_addr", app.cfg.Gateway.Addr),
-		slog.Int("connect_port", app.cfg.ConnectListener.Port),
 		slog.Bool("reflection", app.cfg.Observability.EnableReflection),
 	)
 
