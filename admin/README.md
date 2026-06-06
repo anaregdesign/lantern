@@ -35,16 +35,16 @@ the top-right header. The choice is persisted to `localStorage`.
 
 ## Scripts
 
-| Script              | Purpose                                                                     |
-| ------------------- | --------------------------------------------------------------------------- |
-| `bun run dev`       | Vite dev server on `:5173`.                                                 |
-| `bun run build`     | Production build to `build/client/`.                                        |
-| `bun run start`     | Preview the built SPA on `:4173`.                                           |
-| `bun run typecheck` | `react-router typegen` then `tsc -b`.                                       |
-| `bun run lint`      | ESLint (flat config).                                                       |
-| `bun run format`    | Prettier write.                                                             |
+| Script              | Purpose                                                                               |
+| ------------------- | ------------------------------------------------------------------------------------- |
+| `bun run dev`       | Vite dev server on `:5173`.                                                           |
+| `bun run build`     | Production build to `build/client/`.                                                  |
+| `bun run start`     | Preview the built SPA on `:4173`.                                                     |
+| `bun run typecheck` | `react-router typegen` then `tsc -b`.                                                 |
+| `bun run lint`      | ESLint (flat config).                                                                 |
+| `bun run format`    | Prettier write.                                                                       |
 | `bun run codegen`   | Run buf to regenerate Connect-ES stubs + protobuf-es messages from `proto/graph/v1/`. |
-| `bun run test:e2e`  | Playwright smoke tests.                                                     |
+| `bun run test:e2e`  | Playwright smoke tests.                                                               |
 
 ## Project layout
 
