@@ -1,0 +1,56 @@
+# SPA host config for lantern-admin.
+#
+# Caddy serves the React Router (SPA mode) build from /srv with:
+#   - SPA fallback to /index.html so client-side routes (e.g. /browse,
+#     /illuminate, /ops) work on direct navigation or refresh.
+#   - Aggressive cache headers on hashed asset paths (Vite emits
+#     `/assets/<name>-<hash>.js|css`), no-cache on index.html so a new
+#     deploy is picked up on next page load.
+#   - Listens on :8080 unprivileged (image runs as `caddy` non-root user)
+#     to match the README "Container image" docs.
+#
+# This file is intentionally minimal — no reverse proxy. The admin SPA
+# talks to the Lantern gateway directly from the user's browser. CORS is
+# enforced on the gateway side via LANTERN_CORS_ALLOWED_ORIGINS; see
+# server/README.md.
+
+{
+	# Disable Caddy's admin endpoint inside the container. We never need
+	# to reload config at runtime; image tag swap is the deploy unit.
+	admin off
+	# Suppress the persistent-config write attempt that would fail on a
+	# read-only rootfs.
+	persist_config off
+}
+
+:8080 {
+	encode zstd gzip
+
+	# Health endpoint for container orchestrators. Declared FIRST and as
+	# an exclusive `handle` block so it wins over the SPA `try_files`
+	# fallback below (which would otherwise rewrite /healthz → index.html
+	# because no such file exists on disk). No upstream dependency, so it
+	# stays green even when the Lantern gateway is unreachable.
+	handle /healthz {
+		respond "ok" 200
+	}
+
+	# Everything else is the SPA: cache-headers + try_files + file_server.
+	handle {
+		root * /srv
+
+		# Long-lived immutable cache for hashed assets.
+		@hashed path /assets/* /favicon.ico
+		header @hashed Cache-Control "public, max-age=31536000, immutable"
+
+		# Never cache the SPA shell — index.html is the entry point and
+		# changes every deploy.
+		@html path / /index.html
+		header @html Cache-Control "no-cache, no-store, must-revalidate"
+
+		# SPA fallback: any path that doesn't match a file on disk serves
+		# index.html so React Router can handle the route client-side.
+		try_files {path} /index.html
+		file_server
+	}
+}

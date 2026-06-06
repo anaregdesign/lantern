@@ -317,12 +317,24 @@ keyless). It does NOT need to follow the `pb → core → sdks/go → root` orde
 the MCP server only imports `pb/` and `sdks/go/`, so a `sdks/go/vX.Y.Z` bump
 is the only upstream pin that requires re-tagging the MCP image.
 
+The `admin/` module is cut **independently** of the root release cadence and
+the SDK cadences (it is not a Go module and not part of `go.work`): tag
+`admin/vX.Y.Z` triggers `.github/workflows/admin-publish.yml`, which re-runs
+the admin gates (lint / typecheck / codegen-up-to-date / build), then builds
+and publishes `ghcr.io/anaregdesign/lantern-admin:X.Y.Z` (multi-arch + cosign
+keyless). It does NOT need to follow the `pb → core → sdks/go → root` order;
+the admin SPA's only cross-module build-time dependency is `pb/openapiv2/`
+(consumed by `bun run codegen`), so a `pb/vX.Y.Z` bump is the one upstream
+pin that requires re-tagging the admin image. The admin container is a pure
+SPA host (Caddy on `:8080`) — it does not reverse-proxy to the gateway, so
+the gateway's `LANTERN_CORS_ALLOWED_ORIGINS` must include the admin origin.
+
 **Release title convention (locked).** Every GitHub Release title MUST equal
 its tag name verbatim — `v0.7.2`, `core/v0.2.0`, `sdks/go/v0.8.0`,
-`sdks/node/v0.1.2`, `sdks/python/v0.1.1`, `mcp/v0.1.0`. No friendly aliases
-(`Node SDK v0.1.2`, `Go SDK v0.6.0`, etc). `docker-publish.yml` and
-`mcp-publish.yml` already enforce this via `gh release create --title
-"$TAG"`. The Python and Node SDK GitHub Releases are currently created
+`sdks/node/v0.1.2`, `sdks/python/v0.1.1`, `mcp/v0.1.0`, `admin/v0.1.0`. No
+friendly aliases (`Node SDK v0.1.2`, `Go SDK v0.6.0`, etc).
+`docker-publish.yml`, `mcp-publish.yml`, and `admin-publish.yml` already
+enforce this via `gh release create --title "$TAG"`. The Python and Node SDK GitHub Releases are currently created
 manually — when creating them, always pass `--title "$(git describe
 --tags)"` (or the literal tag) so the title matches. If you ever automate
 those releases inside `python-sdk.yml` / `node-sdk.yml`, use the same

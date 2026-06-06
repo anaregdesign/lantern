@@ -1,0 +1,20 @@
+# Local toolchain output. The Docker build runs `bun install` and
+# `bun run build` from scratch inside the build stage; copying the host
+# `node_modules/` in would (a) bloat the build context to hundreds of MB,
+# (b) risk an arch mismatch (host arm64 → linux/amd64 image), and
+# (c) defeat the lockfile-pinned reproducibility guarantee.
+node_modules
+
+# Test + tooling artefacts that are never part of the runtime image.
+tests
+playwright-report
+test-results
+.vite
+.react-router
+
+# Build output is regenerated inside the build stage, never copied in.
+build
+
+# Editor / VCS noise.
+.DS_Store
+*.log
