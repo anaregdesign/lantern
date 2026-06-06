@@ -9,11 +9,11 @@ import (
 	"math"
 	"os"
 
+	"connectrpc.com/connect"
+	"golang.org/x/time/rate"
+
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/service"
-	"golang.org/x/time/rate"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 // NewLifecycleConfig forwards Config knobs into the service-layer lifecycle
@@ -71,17 +71,17 @@ func (v *ValidationInterceptor) WithLogger(l *slog.Logger) *ValidationIntercepto
 }
 
 // reject fires the registered hook (if any) and returns the constructed
-// gRPC status error. Centralised so every validation rejection path is
+// Connect error. Centralised so every validation rejection path is
 // counted exactly once.
 func (v *ValidationInterceptor) reject(reason string, format string, args ...any) error {
 	if v.rejectHook != nil {
 		v.rejectHook(reason)
 	}
-	err := status.Errorf(codes.InvalidArgument, format, args...)
+	err := connect.NewError(connect.CodeInvalidArgument, fmt.Errorf(format, args...))
 	if v.logger != nil && v.logger.Enabled(context.Background(), slog.LevelDebug) {
 		v.logger.LogAttrs(context.Background(), slog.LevelDebug, "validation rejected",
 			slog.String("reason", reason),
-			slog.String("error", status.Convert(err).Message()),
+			slog.String("error", err.Error()),
 		)
 	}
 	return err

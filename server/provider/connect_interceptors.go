@@ -1,21 +1,8 @@
 // Package provider: connect_interceptors.go wires the existing
 // ValidationInterceptor and RateLimitInterceptor into Connect-Go's
-// connect.UnaryInterceptorFunc shape so the additive Connect listener
-// from #337 — and later the cutover in #347 — pick up the same
-// validation rules, token-bucket policy, reject hooks, and slog
-// channels the gRPC path uses.
-//
-// Design constraints (per #349):
-//   - Reuse the existing private validate(req any) and r.lim.Allow()
-//     logic verbatim. Behaviour MUST be observable as identical from
-//     reject-hook callbacks and slog output regardless of transport.
-//   - Translate the gRPC status errors the underlying logic returns
-//     into the matching connect.Error so wire clients see
-//     CodeInvalidArgument / CodeResourceExhausted, not a leaked
-//     gRPC-flavoured payload.
-//   - The existing UnaryServerInterceptor / StreamServerInterceptor
-//     gRPC methods are untouched (additive only — production deletion
-//     lives in #347).
+// connect.UnaryInterceptorFunc shape so the listener picks up the
+// same validation rules, token-bucket policy, reject hooks, and
+// slog channels.
 package provider
 
 import (
@@ -24,8 +11,6 @@ import (
 	"log/slog"
 
 	"connectrpc.com/connect"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 )
@@ -69,21 +54,16 @@ func NewRateLimitInterceptorProvider(
 
 // ConnectInterceptor returns a connect.UnaryInterceptorFunc that
 // validates every unary Connect call against the same ValidationLimits
-// the gRPC path uses.
-//
-// The interceptor calls the private validate(req any) shared with the
-// gRPC path so the canonical reason set, reject hook, and debug-level
-// slog channel stay identical across transports.
+// configured on the interceptor.
 //
 // Streaming RPCs (Subscribe / Snapshot) skip validation because
-// validate() only has cases for unary request types; the gRPC stream
-// interceptor (StreamServerInterceptor) is similarly a pass-through.
-// If validation is ever extended to streams, mirror the change here.
+// validate() only has cases for unary request types. If validation is
+// ever extended to streams, mirror the change here.
 func (v *ValidationInterceptor) ConnectInterceptor() connect.UnaryInterceptorFunc {
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
 			if err := v.validate(req.Any()); err != nil {
-				return nil, grpcStatusToConnect(err)
+				return nil, err
 			}
 			return next(ctx, req)
 		}
@@ -95,8 +75,7 @@ func (v *ValidationInterceptor) ConnectInterceptor() connect.UnaryInterceptorFun
 // and returns connect.CodeResourceExhausted when the bucket is empty.
 //
 // The reject hook fires on the rejection path so
-// lantern_rate_limit_rejected_total keeps incrementing whether the
-// caller hit the gRPC or the Connect surface.
+// lantern_rate_limit_rejected_total keeps incrementing.
 func (r *RateLimitInterceptor) ConnectInterceptor() connect.UnaryInterceptorFunc {
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
@@ -108,64 +87,5 @@ func (r *RateLimitInterceptor) ConnectInterceptor() connect.UnaryInterceptorFunc
 			}
 			return next(ctx, req)
 		}
-	}
-}
-
-// grpcStatusToConnect translates the gRPC status errors the existing
-// validate() path returns into matching connect.Errors so wire clients
-// receive Connect-flavoured codes and messages. Non-status errors fall
-// through unchanged.
-//
-// The 16-entry table mirrors connect-go's own internal table verbatim
-// (the names match by design — Connect's codes are wire-compatible with
-// gRPC's). The unknown fallback preserves CodeUnknown semantics for any
-// future gRPC code the bridge has not yet learned.
-func grpcStatusToConnect(err error) error {
-	if err == nil {
-		return nil
-	}
-	st, ok := status.FromError(err)
-	if !ok {
-		return err
-	}
-	return connect.NewError(grpcCodeToConnect(st.Code()), errors.New(st.Message()))
-}
-
-func grpcCodeToConnect(c codes.Code) connect.Code {
-	switch c {
-	case codes.Canceled:
-		return connect.CodeCanceled
-	case codes.Unknown:
-		return connect.CodeUnknown
-	case codes.InvalidArgument:
-		return connect.CodeInvalidArgument
-	case codes.DeadlineExceeded:
-		return connect.CodeDeadlineExceeded
-	case codes.NotFound:
-		return connect.CodeNotFound
-	case codes.AlreadyExists:
-		return connect.CodeAlreadyExists
-	case codes.PermissionDenied:
-		return connect.CodePermissionDenied
-	case codes.ResourceExhausted:
-		return connect.CodeResourceExhausted
-	case codes.FailedPrecondition:
-		return connect.CodeFailedPrecondition
-	case codes.Aborted:
-		return connect.CodeAborted
-	case codes.OutOfRange:
-		return connect.CodeOutOfRange
-	case codes.Unimplemented:
-		return connect.CodeUnimplemented
-	case codes.Internal:
-		return connect.CodeInternal
-	case codes.Unavailable:
-		return connect.CodeUnavailable
-	case codes.DataLoss:
-		return connect.CodeDataLoss
-	case codes.Unauthenticated:
-		return connect.CodeUnauthenticated
-	default:
-		return connect.CodeUnknown
 	}
 }
