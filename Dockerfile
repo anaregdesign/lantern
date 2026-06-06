@@ -6,9 +6,13 @@ FROM golang:1.26-alpine AS builder
 WORKDIR /src
 
 # Cache module downloads independently of source changes.
-# go.work pulls in the sdks/go module from this monorepo.
+# go.work pulls in every workspace member; `go mod download` fails with
+# `cannot load module <name> listed in go.work file` if any per-module
+# go.mod is missing from the build context. Keep this COPY block in
+# lockstep with `go.work`.
 COPY go.mod go.sum go.work go.work.sum* ./
 COPY core/go.mod core/go.sum ./core/
+COPY mcp/go.mod mcp/go.sum ./mcp/
 COPY pb/go.mod pb/go.sum ./pb/
 COPY sdks/go/go.mod sdks/go/go.sum ./sdks/go/
 COPY server/go.mod server/go.sum ./server/

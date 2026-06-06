@@ -63,10 +63,14 @@ steady_conc="$(yq -r '.phases.steady.concurrency' "$SCENARIO_FILE")"
 steady_rps="$(yq -r '.phases.steady.rps' "$SCENARIO_FILE")"
 cooldown="$(yq -r '.phases.cooldown' "$SCENARIO_FILE")"
 endpoints=( $(yq -r '.target.endpoints[]' "$SCENARIO_FILE") )
-# ghz uses gRPC reflection to resolve method/message descriptors. The server
-# registers reflection unconditionally (see server/provider/provider.go), so
-# we do not need to point ghz at the .proto file — which would also pull in
-# google/api/annotations.proto from grpc-gateway and other transitive deps.
+# ghz drives load over gRPC wire, which the server's Connect-Go handlers
+# accept natively on the same h2c socket (per #347 — the primary :6380
+# port serves Connect + gRPC + gRPC-Web simultaneously). ghz uses gRPC
+# reflection to resolve method/message descriptors; the server mounts
+# `connectrpc.com/grpcreflect` unconditionally (see
+# server/provider/lantern_listener.go), so no .proto file is needed and
+# the harness keeps working unchanged against the Connect-only server.
+# See #383 for the empirical verification log.
 
 # ----- compose up ------------------------------------------------------------
 if [[ "${SKIP_UP:-0}" != "1" ]]; then

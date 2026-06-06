@@ -27,10 +27,19 @@ per-scenario leak gate, and renders a Markdown report.
 ## Prerequisites
 
 - Docker + `docker compose` v2
-- [`ghz`][ghz] ≥ 0.117
+- [`ghz`][ghz] ≥ 0.117 — drives load over gRPC wire frames. The Lantern
+  server is Connect-only (see [#335][i335]), but the Connect-Go handlers
+  accept gRPC, gRPC-Web, and Connect on the same h2c socket, and
+  `connectrpc.com/grpcreflect` exposes the standard
+  `grpc.reflection.v1*` service the harness uses for descriptor
+  discovery. ghz keeps working unchanged. See [#383][i383] for the
+  verification log.
 - [`yq`][yq] v4 (Go reimplementation)
 - `jq`, `curl`, `bash` ≥ 4
 - Go (matching `go.mod` toolchain) — used to build the report renderer
+
+[i335]: https://github.com/anaregdesign/lantern/issues/335
+[i383]: https://github.com/anaregdesign/lantern/issues/383
 
 ## Quick start
 
