@@ -2,11 +2,12 @@
 
 ![lantern](https://github.com/anaregdesign/lantern/assets/6128022/d0484704-707d-4dcb-b780-4bbd318c444c)
 
-Lantern is a **time-decaying, in-memory graph KVS** that speaks gRPC. It behaves
-like a key-value store — values are *vertices* — and lets you walk the
-relationships between them in real time. Both vertices **and edges** carry
-their own TTLs, so the graph naturally forgets old information the same way
-real-world relationships fade.
+Lantern is a **time-decaying, in-memory graph KVS** served over the
+[Connect protocol](https://connectrpc.com/) (with gRPC and gRPC-Web wire
+compatibility on the same h2c socket). It behaves like a key-value store —
+values are *vertices* — and lets you walk the relationships between them in
+real time. Both vertices **and edges** carry their own TTLs, so the graph
+naturally forgets old information the same way real-world relationships fade.
 
 It is not an ontology engine, not a global-shortest-path solver, and not a
 disk-backed graph database. It is the small, hot, online piece you put in front
@@ -92,10 +93,13 @@ the shape you asked for.
   put a queue in front.
 - Global graph analytics (PageRank over the whole graph, community detection
   across billions of edges, etc.).
-- Massive working sets that don't fit in one process's RAM. There is no
-  built-in sharding or replication today.
-- Strong-consistency multi-writer scenarios. The store is a single-process
-  cache with internal locking, not a distributed database.
+- Massive working sets that don't fit in one process's RAM. Lantern has
+  built-in leaderless **replication** for HA (every replica holds the full
+  graph — see [docs/replication.md](docs/replication.md)), but no sharding:
+  the working set must fit in one process.
+- Strong-consistency multi-writer scenarios. The store is a leaderless
+  full-replica cache with last-writer-wins per key under an HLC clock, not a
+  linearizable distributed database.
 
 ---
 
@@ -106,16 +110,16 @@ flowchart LR
     subgraph Client
         SDK["Go client SDK<br/>(sdks/go/)"]
         CLI["lantern-cli<br/>(cli/)"]
-        Other["any gRPC client<br/>(proto/graph/v1)"]
+        Other["any Connect / gRPC / gRPC-Web client<br/>(proto/graph/v1)"]
     end
     subgraph Server["lantern-server (server/)"]
-        SVC["LanternService<br/>(gRPC)"]
+        SVC["LanternService<br/>(Connect on h2c)"]
         GC["GraphCache[string, *Vertex]"]
         VC["vertex cache<br/>(TTL)"]
         EC["edge cache<br/>(additive + TTL)"]
         W["Watch loop<br/>(GC every 1m)"]
     end
-    SDK & CLI & Other -->|gRPC :6380| SVC
+    SDK & CLI & Other -->|Connect / gRPC / gRPC-Web :6380| SVC
     SVC --> GC
     GC --> VC
     GC --> EC
@@ -257,8 +261,8 @@ OK (0.6ms)
 > put edge alice lamp 0.7 3600          # idempotent: replaces any existing weight
 OK (1.0ms)
 
-> get vertex alice                      # value, JSON-encoded
-"Alice"
+> get vertex alice                      # value, JSON-encoded oneof wrapper
+{"String_":"Alice"}
 OK (0.6ms)
 
 > illuminate neighbor alice 2 5 false   # 2 hops, top-5 neighbours/hop, no TF-IDF
@@ -380,8 +384,12 @@ The full multi-type, additive-edge, and `Illuminate` example lives in
 ### Use it from another language
 
 Generate bindings from [proto/graph/v1/graph.proto](proto/graph/v1/graph.proto)
-with your favorite protoc plugin or [buf](https://buf.build). The service is
-plain unary gRPC, no streaming required.
+with your favorite protoc plugin, [buf](https://buf.build), or one of the
+[Connect codegen plugins](https://connectrpc.com/docs/). The primary
+`LanternService` is unary; `LanternReplicationService.Subscribe` and
+`Snapshot` are server-streaming. The server multiplexes Connect (JSON or
+proto), gRPC, and gRPC-Web over the same `:6380` h2c socket, so any of those
+three protocols works without a sidecar.
 
 ---
 
@@ -556,11 +564,9 @@ All requests pass through a server-side validation interceptor that enforces
 oversize or malformed requests fail fast with `InvalidArgument` before touching
 the cache.
 
-In addition to the gRPC surface, every RPC carries `google.api.http` annotations
-in [proto/graph/v1/graph.proto](proto/graph/v1/graph.proto) (for example
-`PUT /v1/vertices/{vertex.key}`, `POST /v1/edges/{tail}/{head}/add`). These
-bindings are shipped so downstream consumers can stand up a grpc-gateway in
-front of Lantern; the server itself only speaks gRPC today.
+Browser clients reach the same RPCs via Connect-Web (and gRPC-Web) on the
+same `:6380` listener — no separate HTTP/JSON gateway is involved. See the
+[admin SPA](admin/) for a worked example.
 
 ---
 
@@ -599,13 +605,16 @@ The server is configured via environment variables, parsed in
 Lantern ships production-grade observability out of the box:
 
 - **Structured logging** via `log/slog` — JSON by default, with per-RPC
-  start/finish events emitted by the
-  [`grpc-ecosystem/go-grpc-middleware/v2`](https://github.com/grpc-ecosystem/go-grpc-middleware)
-  logging interceptor.
-- **Prometheus metrics** — gRPC server metrics (including a handling-time
-  histogram) plus Go runtime and process collectors, exposed on
-  `LANTERN_METRICS_ADDR` at `/metrics`. Lantern also publishes its own
-  domain collectors so you can chart cache load and GC pressure directly:
+  start/finish events emitted by a Connect logging interceptor
+  ([`server/provider/connect_middleware.go`](server/provider/connect_middleware.go)).
+- **Prometheus metrics** — RPC metrics exposed by a Connect interceptor
+  that mirrors the canonical `grpc-ecosystem/go-grpc-middleware` metric
+  names (`grpc_server_started_total`, `grpc_server_handled_total`,
+  `grpc_server_handling_seconds_*`), so existing scrape configs and
+  Grafana dashboards keep working. Go runtime + process collectors are
+  also registered and the whole lot is served on `LANTERN_METRICS_ADDR`
+  at `/metrics`. Lantern also publishes its own domain collectors so you
+  can chart cache load and GC pressure directly:
 
   | Metric | Type | Labels | Description |
   |---|---|---|---|
@@ -614,12 +623,14 @@ Lantern ships production-grade observability out of the box:
   | `lantern_ttl_expirations_total` | counter | `kind` (`vertex`, `edge`, `dangling_edge`) | Entries reaped per GC tick, partitioned by kind. |
   | `lantern_gc_duration_seconds` | histogram | — | Wall-clock duration of a single GC tick (buckets `0.1ms..~1.6s`). |
   | `lantern_build_info` | gauge (=1) | `version`, `commit`, `go_version` | Build metadata for the running server. |
-- **Health checks** — gRPC standard health service (`grpc.health.v1.Health`)
-  *and* HTTP `/healthz` + `/readyz` on the metrics listener, so both
+- **Health checks** — the standard `grpc.health.v1.Health` service
+  (served via [`connectrpc.com/grpchealth`](https://pkg.go.dev/connectrpc.com/grpchealth)
+  on `:6380`, reachable by Connect / gRPC / gRPC-Web clients alike) plus
+  HTTP `/healthz` and `/readyz` on the metrics listener, so both
   Kubernetes probes and `grpc_health_probe` work.
 - **Distributed tracing** — OpenTelemetry server instrumentation via
-  `otelgrpc.NewServerHandler()` (modern stats-handler API; the deprecated
-  unary/stream interceptors are not used). Set `OTEL_EXPORTER_OTLP_ENDPOINT`
+  `otelhttp.NewHandler` wrapped around the h2c listener, so every Connect,
+  gRPC, and gRPC-Web request gets a span. Set `OTEL_EXPORTER_OTLP_ENDPOINT`
   (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) to install an OTLP exporter and
   start shipping spans; without it the global tracer provider stays at noop
   so there is zero export overhead. `OTEL_EXPORTER_OTLP_PROTOCOL` selects
@@ -627,12 +638,14 @@ Lantern ships production-grade observability out of the box:
   (`OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_EXPORTER_OTLP_INSECURE`,
   `OTEL_EXPORTER_OTLP_TIMEOUT`, …) are honoured. The tracer provider is
   flushed on graceful shutdown.
-- **gRPC reflection** — registered by default; turn off with
+- **gRPC reflection** — the v1 and v1alpha reflection services are
+  registered via [`connectrpc.com/grpcreflect`](https://pkg.go.dev/connectrpc.com/grpcreflect)
+  by default (handy for `grpcurl`); turn them off with
   `LANTERN_REFLECTION=false` for hardened deployments.
-- **Keepalive + panic recovery** — sensible `keepalive.ServerParameters` and
-  an enforcement policy are applied, and a recovery interceptor turns panics
-  into `Internal` status responses with a logged stack trace instead of
-  crashing the process.
+- **Keepalive + panic recovery** — sensible HTTP/2 keepalive parameters
+  are applied at the listener, and a Connect recovery interceptor turns
+  panics into `Internal` status responses with a logged stack trace
+  instead of crashing the process.
 
 ---
 
@@ -642,7 +655,7 @@ This is a monorepo consolidating four formerly separate repositories, now stitch
 
 | Path | Module | Role |
 |---|---|---|
-| `pb/` | `github.com/anaregdesign/lantern/pb` | Generated protobuf / gRPC / grpc-gateway stubs. Shared contract — `server/`, `sdks/go/`, and `mcp/` all depend on it. |
+| `pb/` | `github.com/anaregdesign/lantern/pb` | Generated protobuf messages and Connect-Go service stubs (under `graph/v1/graphv1connect/`). Shared contract — `server/`, `sdks/go/`, and `mcp/` all depend on it. |
 | `core/` | `github.com/anaregdesign/lantern/core` | Shared building blocks: graph algorithms, TTL caches, collections, concurrency, NLP. |
 | `sdks/go/` | `github.com/anaregdesign/lantern/sdks/go` | Go client SDK — depends on `pb/` only. |
 | `server/` | `github.com/anaregdesign/lantern/server` | gRPC server (DI via google/wire) — depends on `pb/` + `core/`, **not** on the client SDK. |
@@ -665,7 +678,7 @@ make fmt         # gofmt -s -w .
 make vet         # go vet ./...
 make generate    # go generate ./...  (runs wire + buf — no install required)
 make wire        # alias: go tool wire ./server/cmd
-make proto       # alias: buf generate --clean (uses system `buf` if present, else `go run`)
+make proto       # alias: buf generate (uses system `buf` if present, else `go run`; no --clean — it would wipe pb/go.mod)
 make vuln        # govulncheck ./...
 make tidy        # go mod tidy
 ```
@@ -848,9 +861,12 @@ graph LR
 
 ## Roadmap & limitations
 
-- **Single-process, in-memory only.** Multi-node sharding and replication are
-  not built in. Production deployments typically replay events from a durable
-  log (Kafka, etc.) into Lantern on boot.
+- **In-memory only.** Snapshots / WAL aren't built in — production
+  deployments typically replay events from a durable log (Kafka, etc.) into
+  Lantern on boot. Multi-replica HA *is* built in (every node holds the full
+  graph, leaderless replication via mutation-log streaming + anti-entropy;
+  see [docs/replication.md](docs/replication.md)), but **sharding is not**:
+  the working set must fit in one process.
 - **No authn / authz built in.** TLS and mTLS *are* supported out of the
   box via the `LANTERN_TLS_*` env vars (and the matching `--tls*` client
   flags), but per-RPC authentication is not — front it with a service mesh
