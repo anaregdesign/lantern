@@ -1,6 +1,11 @@
 # pb
 
-Generated protobuf, gRPC, and grpc-gateway stubs for Lantern's wire format.
+Generated protobuf messages and [Connect-Go](https://connectrpc.com/) service
+stubs for Lantern's wire format. Since #362 this is a Connect-only module — the
+legacy gRPC and grpc-gateway plugins have been removed. Connect handlers are
+still wire-compatible with gRPC and gRPC-Web clients on the same h2c socket,
+so existing tooling (`grpcurl`, `ghz`, gRPC SDKs) continues to work against
+the server without changes.
 
 This module is the **leaf** of the Lantern dependency graph: both the server
 ([`github.com/anaregdesign/lantern/server`](../server)) and the Go client SDK
@@ -19,12 +24,13 @@ go get github.com/anaregdesign/lantern/pb@latest
 
 | Path | Description |
 | --- | --- |
-| `graph/v1/` | Generated Go stubs for the `graph.v1.LanternService` and `graph.v1.LanternReplicationService` gRPC services, plus all request/response messages, enums (e.g. `Optimization`), and the `Vertex` / `Edge` value types. |
-| `openapiv2/graph/` | grpc-gateway-generated OpenAPI v2 (Swagger) descriptors for the same services. Useful when wrapping Lantern with an HTTP/JSON gateway. |
+| `graph/v1/` | Generated protobuf message types and enums (e.g. `Vertex`, `Edge`, `Optimization`) for the `graph.v1` package. |
+| `graph/v1/graphv1connect/` | Connect-Go handler and client interfaces for `graph.v1.LanternService` and `graph.v1.LanternReplicationService`. |
 
 The package name is `pb` for the root module marker and matches the
 `go_package_prefix` declared in `buf.gen.yaml`. The generated Go packages live
-under `graph/v1` (package `graph_v1`).
+under `graph/v1` (package `graph_v1`) and `graph/v1/graphv1connect` (package
+`graphv1connect`).
 
 ## Source of truth
 
@@ -41,8 +47,8 @@ go generate ./...
 
 This invokes `buf generate` (no `--clean`; that would delete `pb/go.mod` and
 `pb/doc.go` along with the stubs) and rewrites everything under `pb/graph/v1`
-and `pb/openapiv2`. `buf` itself does not need to be installed — the
-`go:generate` directive falls back to
+(both the protobuf messages and the Connect-Go stubs). `buf` itself does not
+need to be installed — the `go:generate` directive falls back to
 `go run github.com/bufbuild/buf/cmd/buf@v1.70.0` automatically.
 
 ## Versioning
