@@ -17,7 +17,7 @@ services:
     image: ${LANTERN_IMAGE:-lantern:local}
     container_name: lantern-testbed
     ports:
-      - "6380:6380"   # gRPC
+      - "6380:6380"   # Connect (also accepts gRPC + gRPC-Web on the same h2c socket)
       - "9090:9090"   # /metrics, /healthz, /readyz
     environment:
       LANTERN_PORT: "6380"

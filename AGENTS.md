@@ -263,6 +263,11 @@ introduced a new sub-config, update the **Providers** bullet in this file.
   propagate `go.sum` entries.
 - If the Dockerfile was touched, confirm every workspace member's `go.mod` and
   `go.sum` are COPYed **before** `go mod download` (go.work prerequisite).
+  The current list (6 modules: root, `core/`, `mcp/`, `pb/`, `sdks/go/`,
+  `server/`) must stay in lockstep with `go.work`. PR CI does not run
+  `docker build`, so a missed `COPY` only surfaces at release-tag time —
+  see [#382](https://github.com/anaregdesign/lantern/issues/382) for the
+  `mcp/go.mod` regression caused by exactly this.
 
 ### Bumping the Go toolchain
 
@@ -301,7 +306,12 @@ Tag order matters because each downstream module pins the upstream tag:
    `testbed/bench/release-scenarios.txt`, including all illuminate
    variants, batch/scan/edge/TTL paths, and many_subscribers fan-out)
    and splices a fixed-format report into the release notes. The bench
-   job is non-blocking — if it fails, the release still ships with a
+   driver uses `ghz`; Connect-Go handlers accept gRPC frames natively
+   on the same h2c socket and `connectrpc.com/grpcreflect` exposes the
+   reflection service, so the harness works unchanged against the
+   Connect-only server (verified in
+   [#383](https://github.com/anaregdesign/lantern/issues/383)). The
+   bench job is non-blocking — if it fails, the release still ships with a
    placeholder bench section. See issues
    [#256](https://github.com/anaregdesign/lantern/issues/256) and
    [#262](https://github.com/anaregdesign/lantern/issues/262).
