@@ -9,7 +9,6 @@ import (
 	"github.com/anaregdesign/lantern/core/cache/graph"
 	"github.com/anaregdesign/lantern/core/hlc"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"google.golang.org/grpc/status"
 )
 
 // ApplyMutation is the internal entry point used by the peer-pump (#184)
@@ -42,7 +41,7 @@ import (
 // forward whatever the wire produces without additional null checks.
 func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) error {
 	if err := ctx.Err(); err != nil {
-		return status.FromContextError(err).Err()
+		return ctxToConnect(err)
 	}
 	if m == nil || m.GetOp() == nil {
 		return nil
@@ -114,7 +113,7 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 	case *pb.MutationOp_DeleteVerticesByPrefix:
 		if useTomb {
 			if _, err := s.cache.DeleteByPrefixHLC(ctx, op.DeleteVerticesByPrefix.GetPrefix(), 0, ts, tombExp); err != nil {
-				return status.FromContextError(err).Err()
+				return ctxToConnect(err)
 			}
 		} else {
 			s.cache.DeleteByPrefix(ctx, op.DeleteVerticesByPrefix.GetPrefix(), 0)

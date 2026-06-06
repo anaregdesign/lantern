@@ -7,13 +7,13 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	"github.com/anaregdesign/lantern/core/cache/graph"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func newTestService(t *testing.T) *LanternService {
@@ -53,8 +53,8 @@ func TestLanternService_GetVertex_NotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing vertex, got nil")
 	}
-	if st, _ := status.FromError(err); st.Code() != codes.NotFound {
-		t.Errorf("status code = %v, want NotFound", st.Code())
+	if code := connect.CodeOf(err); code != connect.CodeNotFound {
+		t.Errorf("connect code = %v, want CodeNotFound", code)
 	}
 }
 
@@ -107,8 +107,8 @@ func TestLanternService_GetEdge_NotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if st, _ := status.FromError(err); st.Code() != codes.NotFound {
-		t.Errorf("code = %v, want NotFound", st.Code())
+	if code := connect.CodeOf(err); code != connect.CodeNotFound {
+		t.Errorf("code = %v, want CodeNotFound", code)
 	}
 }
 
@@ -314,8 +314,8 @@ func TestLanternService_RespectsContextCancel(t *testing.T) {
 	cancel()
 	if _, err := s.GetVertex(ctx, &pb.GetVertexRequest{Key: "x"}); err == nil {
 		t.Fatal("expected ctx cancel error, got nil")
-	} else if st, _ := status.FromError(err); st.Code() != codes.Canceled {
-		t.Errorf("code = %v, want Canceled", st.Code())
+	} else if code := connect.CodeOf(err); code != connect.CodeCanceled {
+		t.Errorf("code = %v, want CodeCanceled", code)
 	}
 }
 
@@ -411,8 +411,8 @@ func TestExpirationClamp_RejectsBeyondTTL(t *testing.T) {
 			if err == nil {
 				t.Fatalf("want error, got nil")
 			}
-			if code := status.Code(err); code != codes.InvalidArgument {
-				t.Fatalf("code: got %v, want InvalidArgument", code)
+			if code := connect.CodeOf(err); code != connect.CodeInvalidArgument {
+				t.Fatalf("code: got %v, want CodeInvalidArgument", code)
 			}
 			if !strings.Contains(err.Error(), "LANTERN_TOMBSTONE_TTL") {
 				t.Errorf("message should reference LANTERN_TOMBSTONE_TTL; got %q", err.Error())
@@ -492,9 +492,10 @@ func TestLanternService_FakeBackend_Illuminate_PropagatesError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	// status.FromContextError turns a generic non-context error into Unknown.
-	if st, _ := status.FromError(err); st.Code() != codes.Unknown {
-		t.Errorf("status code = %v, want Unknown", st.Code())
+	// A bare non-context error from the backend passes through to the
+	// service handler unwrapped; connect.CodeOf reports CodeUnknown.
+	if code := connect.CodeOf(err); code != connect.CodeUnknown {
+		t.Errorf("connect code = %v, want CodeUnknown", code)
 	}
 }
 

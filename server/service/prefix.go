@@ -4,10 +4,10 @@ import (
 	"context"
 	"time"
 
-	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
+
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
 // ScanVertices walks the vertex keyspace in lexicographic order, returning a
@@ -23,7 +23,7 @@ import (
 // that need a different order must sort downstream.
 func (s *LanternService) ScanVertices(ctx context.Context, in *pb.ScanVerticesRequest) (*pb.ScanVerticesResponse, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, status.FromContextError(err).Err()
+		return nil, ctxToConnect(err)
 	}
 	start := time.Now()
 	limit := clampLimit(in.GetLimit(), s.scan.ScanDefaultLimit, s.scan.ScanMaxLimit)
@@ -33,7 +33,7 @@ func (s *LanternService) ScanVertices(ctx context.Context, in *pb.ScanVerticesRe
 		if s.onValidationReject != nil {
 			s.onValidationReject("bad_cursor")
 		}
-		return nil, status.Errorf(codes.InvalidArgument, "%s", err.Error())
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
 	// Pre-allocate one extra slot so the callback can land the (limit+1)-th
@@ -82,7 +82,7 @@ func (s *LanternService) ScanVertices(ctx context.Context, in *pb.ScanVerticesRe
 // bounded by LANTERN_GC_INTERVAL_SECONDS.
 func (s *LanternService) CountVerticesByPrefix(ctx context.Context, in *pb.CountVerticesByPrefixRequest) (*pb.CountVerticesByPrefixResponse, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, status.FromContextError(err).Err()
+		return nil, ctxToConnect(err)
 	}
 	n := s.cache.CountByPrefix(in.GetPrefix())
 	return &pb.CountVerticesByPrefixResponse{Count: uint64(n)}, nil
@@ -97,7 +97,7 @@ func (s *LanternService) CountVerticesByPrefix(ctx context.Context, in *pb.Count
 // run uses CountByPrefix and so inherits its bounded-skew semantics.
 func (s *LanternService) DeleteVerticesByPrefix(ctx context.Context, in *pb.DeleteVerticesByPrefixRequest) (*pb.DeleteVerticesByPrefixResponse, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, status.FromContextError(err).Err()
+		return nil, ctxToConnect(err)
 	}
 	start := time.Now()
 	limit := clampLimit(in.GetLimit(), s.scan.DeleteByPrefixDefaultLimit, s.scan.DeleteByPrefixMaxLimit)
@@ -115,7 +115,7 @@ func (s *LanternService) DeleteVerticesByPrefix(ctx context.Context, in *pb.Dele
 		var err error
 		deleted, err = s.cache.DeleteByPrefixHLC(ctx, in.GetPrefix(), limit, s.clock.Now(), s.tombstoneExpiration())
 		if err != nil {
-			return nil, status.FromContextError(err).Err()
+			return nil, ctxToConnect(err)
 		}
 	} else {
 		deleted = s.cache.DeleteByPrefix(ctx, in.GetPrefix(), int(limit))
@@ -153,7 +153,7 @@ func clampLimit(requested, def, max uint32) uint32 {
 // covers every live tail; no parallel edge index exists today.
 func (s *LanternService) ScanEdges(ctx context.Context, in *pb.ScanEdgesRequest) (*pb.ScanEdgesResponse, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, status.FromContextError(err).Err()
+		return nil, ctxToConnect(err)
 	}
 	start := time.Now()
 	limit := clampLimit(in.GetLimit(), s.scan.ScanDefaultLimit, s.scan.ScanMaxLimit)
@@ -163,7 +163,7 @@ func (s *LanternService) ScanEdges(ctx context.Context, in *pb.ScanEdgesRequest)
 		if s.onValidationReject != nil {
 			s.onValidationReject("bad_cursor")
 		}
-		return nil, status.Errorf(codes.InvalidArgument, "%s", err.Error())
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
 	edges := make([]*pb.Edge, 0, limit)
