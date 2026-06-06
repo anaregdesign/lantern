@@ -64,7 +64,44 @@ points:
 No `lib/server/` is present in v1 because the admin app calls the Lantern
 gateway directly from the browser (CORS is enforced by the gateway).
 
-## Releases & Docker
+## Container image
 
-The container image and GHCR publishing pipeline are tracked under
-[F-R1 (#323)](../README.md) and are not in this package yet.
+Tagged releases of `admin/vX.Y.Z` publish a multi-arch (`linux/amd64`,
+`linux/arm64`) image to
+[`ghcr.io/anaregdesign/lantern-admin`](https://github.com/anaregdesign/lantern/pkgs/container/lantern-admin),
+signed with cosign keyless. The image is Caddy 2 Alpine serving the built
+SPA from `/srv` on port `8080`, with SPA fallback to `index.html`,
+immutable cache headers on hashed `/assets/*`, and a `GET /healthz`
+endpoint that returns `200 ok`.
+
+```sh
+# Pull and run the latest tagged admin.
+docker run --rm -p 8080:8080 ghcr.io/anaregdesign/lantern-admin:latest
+# → http://localhost:8080
+```
+
+The container is a **pure SPA host** — there is no reverse proxy to the
+Lantern gateway. The user's browser talks to the gateway directly, so the
+gateway must have `LANTERN_CORS_ALLOWED_ORIGINS` set to allow the admin
+origin (see [`server/README.md`](../server/README.md)). Switch between
+gateways at runtime via the **Gateway** button in the header.
+
+### Releasing
+
+Tag from `main` with the `admin/vX.Y.Z` prefix and push:
+
+```sh
+git tag admin/v0.1.0
+git push origin admin/v0.1.0
+```
+
+This triggers
+[`.github/workflows/admin-publish.yml`](../.github/workflows/admin-publish.yml),
+which re-runs the admin gates (lint / typecheck / codegen-up-to-date /
+build), builds + pushes the multi-arch image, signs it with cosign, and
+creates a GitHub Release titled exactly `admin/vX.Y.Z` (per the AGENTS.md
+release-title convention).
+
+The admin module's only cross-module dependency at build time is
+`pb/openapiv2/` (consumed by `bun run codegen`), so a `pb/vX.Y.Z` bump is
+the one upstream pin that requires re-tagging the admin image.
