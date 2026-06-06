@@ -204,7 +204,7 @@ func (a *AntiEntropy) tickPeer(ctx context.Context, addr string) {
 	log := a.cfg.Logger.With(slog.String("peer", addr))
 
 	cli := graphv1connect.NewLanternReplicationServiceClient(
-		a.cfg.HTTPClient, peerBaseURL(addr), connect.WithGRPC(),
+		a.cfg.HTTPClient, peerBaseURL(addr),
 	)
 
 	resp, err := cli.PeerStatus(ctx, connect.NewRequest(&pb.PeerStatusRequest{}))
