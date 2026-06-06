@@ -86,3 +86,27 @@ Service account name.
 {{- default "default" .Values.serviceAccount.name -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Admin-scoped helpers (gated by .Values.admin.enabled). The admin
+Deployment / Service / Ingress share the lantern.* common labels but
+need a distinct fullname and selector so they don't collide with the
+server StatefulSet selector.
+*/}}
+{{- define "lantern.adminFullname" -}}
+{{- printf "%s-admin" (include "lantern.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "lantern.adminSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "lantern.name" . }}-admin
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: admin
+{{- end -}}
+
+{{- define "lantern.adminLabels" -}}
+helm.sh/chart: {{ include "lantern.chart" . }}
+{{ include "lantern.adminSelectorLabels" . }}
+app.kubernetes.io/version: {{ .Values.admin.image.tag | default .Chart.AppVersion | quote }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+app.kubernetes.io/part-of: {{ include "lantern.name" . }}
+{{- end -}}

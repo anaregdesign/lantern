@@ -46,12 +46,31 @@ services:
       LANTERN_PEER_DISCOVERY_INTERVAL_MS: "10000"
       # Readiness gating (#188).
       LANTERN_MAX_REPLICATION_LAG: "10000"
+      # Allow the admin SPA to call this listener from the browser.
+      # Lantern serves Connect / gRPC / gRPC-Web on the same h2c socket,
+      # and the admin container is a pure SPA host (no reverse proxy),
+      # so CORS must allow the admin origin.
+      LANTERN_CORS_ALLOWED_ORIGINS: "http://localhost:8080"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:9090/readyz"]
       interval: 5s
       timeout: 2s
       retries: 12
       start_period: 10s
+
+  admin:
+    image: ${LANTERN_ADMIN_IMAGE:-ghcr.io/anaregdesign/lantern-admin:latest}
+    ports:
+      - "8080:8080"
+    depends_on:
+      lantern:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
 
   prometheus:
     image: prom/prometheus:v3.5.0

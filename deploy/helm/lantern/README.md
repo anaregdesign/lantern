@@ -68,9 +68,66 @@ HA runbook (#192) for the limits.
 | `antiEntropy.intervalMs`                    | `30000`                | Background reconciliation cadence.                 |
 | `podDisruptionBudget.minAvailable`          | `2`                    | Quorum-ish.                                        |
 | `metrics.serviceMonitor.enabled`            | `false`                | Requires the prometheus-operator CRD.              |
+| `admin.enabled`                             | `false`                | Render the `lantern-admin` SPA Deployment + Service. |
+| `admin.image.repository`                    | `ghcr.io/anaregdesign/lantern-admin` | Admin SPA image (Caddy serving the built bundle).     |
+| `admin.image.tag`                           | `.Chart.AppVersion`    | Pin to an `admin/vX.Y.Z` tag in production.        |
+| `admin.service.port`                        | `8080`                 | Service ClusterIP port for the SPA.                |
+| `admin.ingress.enabled`                     | `false`                | Render an Ingress for the admin Service.           |
+| `admin.ingress.host`                        | `""` (required when enabled) | Host name the Ingress rule matches.        |
 
 See [`values.yaml`](values.yaml) for the full set including probes,
 resources, security context, anti-affinity, and `extraEnv`.
+
+## Admin UI (`admin.enabled=true`)
+
+The browser-facing admin SPA (`lantern-admin`) ships as part of this
+chart but is **disabled by default** to preserve the existing install
+footprint.
+
+```shell
+helm upgrade --install lantern deploy/helm/lantern \
+  --set admin.enabled=true \
+  --set extraEnv[0].name=LANTERN_CORS_ALLOWED_ORIGINS \
+  --set extraEnv[0].value=http://localhost:8080
+kubectl port-forward svc/lantern-admin 8080:8080
+# Open http://localhost:8080/ — the Gateway button (top-right) points
+# at the lantern service; default is http://localhost:6380, override
+# at runtime.
+```
+
+The admin container is a **pure Caddy SPA host** — the browser calls
+the lantern listener (Connect-Web) directly, so the lantern server
+**must** allow the admin origin via `LANTERN_CORS_ALLOWED_ORIGINS`.
+Set it on the server StatefulSet via `extraEnv` (above) to include
+every origin the SPA may be served from (`http://localhost:8080`
+during port-forward dev, `https://<ingress-host>` once an Ingress is
+configured, …). Multiple origins are comma-separated.
+
+### Ingress
+
+```shell
+helm upgrade --install lantern deploy/helm/lantern \
+  --set admin.enabled=true \
+  --set admin.ingress.enabled=true \
+  --set admin.ingress.host=admin.example.com \
+  --set admin.ingress.className=nginx \
+  --set extraEnv[0].name=LANTERN_CORS_ALLOWED_ORIGINS \
+  --set extraEnv[0].value=https://admin.example.com
+```
+
+`admin.ingress.host` is required when `admin.ingress.enabled=true`;
+the template fails fast (`helm: …admin.ingress.host to be set`) if it
+is omitted. For TLS, set `admin.ingress.tls` to the standard
+networking.k8s.io/v1 Ingress TLS slice. For multi-host setups, fork
+`templates/admin-ingress.yaml` — v1 of the chart deliberately only
+covers the single-host happy path.
+
+### No auth
+
+v1 ships **no** auth in front of the admin (same posture as the
+container image's `admin/README.md`). Run it only on trusted networks
+(`admin.ingress.enabled=false` + `kubectl port-forward`) or front it
+with your own ingress-level auth proxy.
 
 ## Smoke test
 
