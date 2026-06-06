@@ -45,6 +45,8 @@ func initializeApp() (*App, error) {
 		provider.NewGrpcServer,
 		provider.NewHealthServer,
 		provider.NewMetricsServer,
+		provider.NewGatewayConfig,
+		provider.NewGatewayServer,
 		provider.NewLifecycleConfig,
 		newLanternService,
 		newLanternReplicationService,

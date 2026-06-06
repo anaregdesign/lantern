@@ -50,6 +50,17 @@ func (s *LanternService) MarkStarted(t time.Time) {
 	})
 }
 
+// Uptime returns the duration since MarkStarted was called, or 0 when the
+// server has not yet been marked started. Exposed so the gateway-side
+// /v1/health probe (#316) can include uptime_seconds in its JSON body
+// without re-deriving the start instant.
+func (s *LanternService) Uptime() time.Duration {
+	if s.startedAt.IsZero() {
+		return 0
+	}
+	return time.Since(s.startedAt)
+}
+
 // GetServerStatus returns a flat snapshot of the server's identity, build
 // info, configuration ceilings, and current live vertex/edge counts. The
 // cache-count fields are read directly from the in-memory index — O(1)

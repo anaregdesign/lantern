@@ -574,6 +574,8 @@ The server is configured via environment variables, parsed in
 | `LANTERN_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `LANTERN_LOG_FORMAT` | `json` | `json` or `text` (slog handler) |
 | `LANTERN_METRICS_ADDR` | `:9090` | Address for Prometheus + health HTTP; empty disables |
+| `LANTERN_GATEWAY_ADDR` | `:6381` | HTTP/JSON gateway (grpc-gateway) listen address; serves the unary REST mapping of `LanternService` plus `/v1/health`; empty disables |
+| `LANTERN_GATEWAY_READ_HEADER_TIMEOUT_MS` | `5000` | `http.Server.ReadHeaderTimeout` for the gateway |
 | `LANTERN_REFLECTION` | `true` | Register gRPC server reflection (useful for `grpcurl`) |
 | `LANTERN_SHUTDOWN_TIMEOUT_SECONDS` | `30` | Upper bound on graceful shutdown before forcing `Stop()` |
 | `LANTERN_MAX_RECV_MSG_BYTES` | `16777216` | Per-RPC inbound message limit (16 MiB default) |
