@@ -2,107 +2,68 @@ package integration_test
 
 import (
 	"context"
+	"errors"
 	"io"
-	"net"
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	cachegraph "github.com/anaregdesign/lantern/core/cache/graph"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	client "github.com/anaregdesign/lantern/sdks/go"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/test/bufconn"
 )
 
-// snapshotPeer is a tiny harness that stands up LanternService +
-// LanternReplicationService on bufconn and exposes both an SDK client
-// (for writes) and a raw replication client (for Snapshot/Subscribe).
+// snapshotPeer stands up LanternService + LanternReplicationService
+// on an h2c httptest server and exposes both an SDK client (for
+// writes) and a raw Connect-Go replication client (for
+// Snapshot/Subscribe).
 type snapshotPeer struct {
-	t        *testing.T
-	cache    *cachegraph.GraphCache[string, *pb.Vertex]
-	clock    *hlc.Clock
-	log      *mutationlog.Log
-	sdk      *client.Lantern
-	repl     pb.LanternReplicationServiceClient
-	repConn  *grpc.ClientConn
-	cleanups []func()
+	cache *cachegraph.GraphCache[string, *pb.Vertex]
+	clock *hlc.Clock
+	log   *mutationlog.Log
+	sdk   *client.Lantern
+	repl  graphv1connect.LanternReplicationServiceClient
 }
 
 func newSnapshotPeer(t *testing.T, nodeID hlc.NodeID) *snapshotPeer {
 	t.Helper()
-	lis := bufconn.Listen(1 << 16)
 	vi := provider.NewValidationInterceptor(provider.ValidationLimits{
 		MaxKeyLen:         256,
 		MaxBatchSize:      1024,
 		IlluminateMaxStep: 32,
 		IlluminateMaxK:    256,
 	})
-	srv := grpc.NewServer(grpc.UnaryInterceptor(vi.UnaryServerInterceptor()))
 
 	log := mutationlog.New(mutationlog.Options{Capacity: 1024, SubscriberBuffer: 1024})
+	t.Cleanup(func() { _ = log.Close() })
 	clock := hlc.New(nodeID, hlc.Options{})
 	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
 	svc := service.NewLanternService(cache).WithReplication(log, clock, nil)
-	pb.RegisterLanternServiceServer(srv, svc)
-	pb.RegisterLanternReplicationServiceServer(srv, service.NewLanternReplicationService(log, cache, clock))
+	rep := service.NewLanternReplicationService(log, cache, clock)
+	srv := newConnectTestServer(t, svc, rep, vi.ConnectInterceptor())
 
-	go func() { _ = srv.Serve(lis) }()
-
-	dialer := func(context.Context, string) (net.Conn, error) { return lis.Dial() }
-	conn, err := grpc.NewClient(
-		"passthrough://bufconn",
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithContextDialer(dialer),
-	)
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
-	sdk, err := client.NewLantern(
-		"passthrough://bufconn",
-		client.WithTransportCredentials(insecure.NewCredentials()),
-		client.WithDialOption(grpc.WithContextDialer(dialer)),
-	)
-	if err != nil {
-		t.Fatalf("NewLantern: %v", err)
-	}
-
-	p := &snapshotPeer{
-		t:       t,
-		cache:   cache,
-		clock:   clock,
-		log:     log,
-		sdk:     sdk,
-		repl:    pb.NewLanternReplicationServiceClient(conn),
-		repConn: conn,
-	}
-	p.cleanups = []func(){
-		func() { _ = sdk.Close() },
-		func() { _ = conn.Close() },
-		srv.Stop,
-		func() { _ = log.Close() },
-	}
-	t.Cleanup(p.close)
-	return p
-}
-
-func (p *snapshotPeer) close() {
-	for i := len(p.cleanups) - 1; i >= 0; i-- {
-		p.cleanups[i]()
+	return &snapshotPeer{
+		cache: cache,
+		clock: clock,
+		log:   log,
+		sdk:   newConnectClientFor(t, srv.url),
+		repl:  newReplicationRawClient(t, srv.url),
 	}
 }
 
 // TestSnapshot_E2E_PrimaryToFollower verifies the snapshot bootstrap
-// surface (#184): a follower opens Snapshot on a primary populated with a
-// mix of vertices and additive edges, replays every frame into its own
-// cache via the HLC + ContribID seams, and observes the same Illuminate
-// answers as the primary. The header's cutoff_seq is also asserted to
-// equal the primary's mutationlog LastSeq at snapshot-open time so that
-// downstream Subscribe(cutoff_seq+1) is guaranteed to stitch cleanly.
+// surface (#184): a follower opens Snapshot on a primary populated
+// with a mix of vertices and additive edges, replays every frame
+// into its own cache via the HLC + ContribID seams, and observes the
+// same Illuminate answers as the primary. The header's cutoff_seq is
+// also asserted to equal the primary's mutationlog LastSeq at
+// snapshot-open time so that downstream Subscribe(cutoff_seq+1) is
+// guaranteed to stitch cleanly.
 func TestSnapshot_E2E_PrimaryToFollower(t *testing.T) {
 	primary := newSnapshotPeer(t, hlc.NodeID{0x01})
 	follower := newSnapshotPeer(t, hlc.NodeID{0x02})
@@ -138,16 +99,17 @@ func TestSnapshot_E2E_PrimaryToFollower(t *testing.T) {
 
 	wantSeq, _ := primary.log.LastSeq()
 
-	stream, err := primary.repl.Snapshot(ctx, &pb.SnapshotRequest{})
+	stream, err := primary.repl.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{}))
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
+	t.Cleanup(func() { _ = stream.Close() })
 
 	// First frame MUST be the header.
-	first, err := stream.Recv()
-	if err != nil {
-		t.Fatalf("recv header: %v", err)
+	if !stream.Receive() {
+		t.Fatalf("recv header: %v", stream.Err())
 	}
+	first := stream.Msg()
 	hdr := first.GetHeader()
 	if hdr == nil {
 		t.Fatalf("first frame is not a header: %T", first.GetEntry())
@@ -166,14 +128,8 @@ func TestSnapshot_E2E_PrimaryToFollower(t *testing.T) {
 		gotEdgeCount   uint64
 		footer         *pb.SnapshotFooter
 	)
-	for {
-		entry, err := stream.Recv()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatalf("recv: %v", err)
-		}
+	for stream.Receive() {
+		entry := stream.Msg()
 		switch e := entry.GetEntry().(type) {
 		case *pb.SnapshotResponse_Vertex:
 			if footer != nil {
@@ -209,6 +165,9 @@ func TestSnapshot_E2E_PrimaryToFollower(t *testing.T) {
 			t.Fatalf("unknown entry type: %T", e)
 		}
 	}
+	if err := stream.Err(); err != nil && !errors.Is(err, io.EOF) {
+		t.Fatalf("stream err: %v", err)
+	}
 	if footer == nil {
 		t.Fatalf("stream ended without a footer")
 	}
@@ -226,8 +185,8 @@ func TestSnapshot_E2E_PrimaryToFollower(t *testing.T) {
 		t.Errorf("edge_count=%d want %d", footer.GetEdgeCount(), got)
 	}
 
-	// Verify convergence: every (tail, head) pair has the same weight on
-	// both peers and every vertex round-trips.
+	// Verify convergence: every (tail, head) pair has the same weight
+	// on both peers and every vertex round-trips.
 	for _, e := range []struct {
 		tail, head string
 	}{

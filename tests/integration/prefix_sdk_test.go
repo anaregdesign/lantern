@@ -2,48 +2,19 @@ package integration_test
 
 import (
 	"context"
-	"net"
 	"testing"
 	"time"
 
-	cachegraph "github.com/anaregdesign/lantern/core/cache/graph"
-	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	client "github.com/anaregdesign/lantern/sdks/go"
-	"github.com/anaregdesign/lantern/server/service"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/test/bufconn"
 )
 
-// newPrefixSDKClient wires the high-level SDK to an in-process server whose
-// cache has the prefix index enabled. Mirrors newPrefixScanRaw but goes
-// through *client.Lantern so we exercise the Phase 4 wrappers end-to-end.
+// newPrefixSDKClient wires the SDK to a Connect-on-h2c in-process
+// server whose cache has the prefix index enabled. Mirrors
+// newInProcessClientWithPrefix exactly — kept as a named helper so
+// the per-test call sites stay readable.
 func newPrefixSDKClient(t *testing.T) (*client.Lantern, func()) {
 	t.Helper()
-
-	lis := bufconn.Listen(1 << 16)
-	gc := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
-	gc.EnablePrefixIndex(func(s string) string { return s })
-
-	srv := grpc.NewServer()
-	pb.RegisterLanternServiceServer(srv, service.NewLanternService(gc))
-	go func() { _ = srv.Serve(lis) }()
-
-	dialer := func(context.Context, string) (net.Conn, error) { return lis.Dial() }
-	l, err := client.NewLantern(
-		"passthrough://bufconn",
-		client.WithTransportCredentials(insecure.NewCredentials()),
-		client.WithDialOption(grpc.WithContextDialer(dialer)),
-	)
-	if err != nil {
-		t.Fatalf("NewLantern: %v", err)
-	}
-	cleanup := func() {
-		_ = l.Close()
-		srv.Stop()
-		_ = lis.Close()
-	}
-	return l, cleanup
+	return newInProcessClientWithPrefix(t)
 }
 
 // seedPrefixVertices upserts keys with an explicit one-hour Expiration.
