@@ -1,0 +1,20 @@
+# .mailmap — author/committer identity normalisation for `git log`,
+# `git shortlog`, GitHub Insights, and tooling that reads commit
+# metadata. No SHAs, tags, or release notes are altered by this file —
+# it is a pure display-time mapping. See `git help mailmap` for the
+# full syntax.
+#
+# All historical commits authored by Hiroki Mizukami appear under one
+# canonical identity going forward:
+#
+#   piroyoung <6128022+piroyoung@users.noreply.github.com>
+#
+# The GitHub `users.noreply.github.com` form is preferred because it
+# (a) cannot leak a working email address, (b) is the same form GitHub
+# itself uses when squash-merging via the web UI, and (c) lights up
+# GitHub's account avatar for any commit that resolves through it.
+
+piroyoung <6128022+piroyoung@users.noreply.github.com> Hiroki Mizukami <hmizukami+microsoft@microsoft.com>
+piroyoung <6128022+piroyoung@users.noreply.github.com> Hiroki Mizukami <6128022+piroyoung@users.noreply.github.com>
+piroyoung <6128022+piroyoung@users.noreply.github.com> piroyoung <piroyoung@users.noreply.github.com>
+piroyoung <6128022+piroyoung@users.noreply.github.com> hiroki <hiroki@anaregdesign.io>
