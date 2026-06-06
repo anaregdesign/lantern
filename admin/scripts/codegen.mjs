@@ -5,10 +5,12 @@
 //
 // Regenerate with: bun run codegen
 //
-// The bun runtime invokes `buf` via npx so the build does not need a
+// The bun runtime invokes `buf` via bunx so the build does not need a
 // global buf install — the bufbuild org publishes the CLI as
 // @bufbuild/buf. The pinned version matches the rest of the repo (see
-// root buf.gen.yaml).
+// root buf.gen.yaml). bunx is used (not npx) so the script works inside
+// the production builder image `oven/bun:alpine`, which ships only bun
+// — no Node.js / npm / npx. See #387.
 
 import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
@@ -28,7 +30,7 @@ async function main() {
   await rm(genDir, { recursive: true, force: true });
   await mkdir(genDir, { recursive: true });
 
-  await run("npx", [
+  await run("bunx", [
     "--yes",
     `@bufbuild/buf@${BUF_VERSION}`,
     "generate",
