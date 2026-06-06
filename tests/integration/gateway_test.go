@@ -125,7 +125,7 @@ func TestGateway_HealthServing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get health: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status: got %d want 200", resp.StatusCode)
@@ -162,7 +162,7 @@ func TestGateway_HealthNotServing_WhenGateNotReady(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get health: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("status: got %d want 503", resp.StatusCode)
@@ -188,7 +188,7 @@ func TestGateway_StatusRoute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get status: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -216,7 +216,7 @@ func TestGateway_ReplicationStatusRoute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get replication status: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
