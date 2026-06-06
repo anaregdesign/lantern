@@ -13,8 +13,8 @@ import (
 // TestSDK_Cursor_CrossRPC_Rejected is the end-to-end pin for #168: a
 // next_cursor minted by ScanVertices, fed back into ScanEdges (and vice
 // versa), must surface as INVALID_ARGUMENT rather than silently restart
-// the scan. Exercises the full bufconn wire path so the proto comments
-// and server-side discriminator decode stay honest.
+// the scan. Exercises the full wire path so the proto comments and
+// server-side discriminator decode stay honest.
 func TestSDK_Cursor_CrossRPC_Rejected(t *testing.T) {
 	l, cleanup := newPrefixSDKClient(t)
 	defer cleanup()
