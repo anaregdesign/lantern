@@ -5,10 +5,9 @@
 //
 // Why an adapter (rather than implementing the Connect interfaces
 // directly on the service structs):
-//   - The service structs predate Connect codegen and have signatures
-//     shaped by the original gRPC contract (req/resp values, no
-//     connect.Request[T] wrapper). Adapting them here keeps each side
-//     idiomatic for its consumers.
+//   - The service structs predate Connect codegen and have value-typed
+//     request/response signatures (no connect.Request[T] wrapper).
+//     Adapting them here keeps each side idiomatic for its consumers.
 //   - The Connect server-stream method signature takes ctx + req +
 //     *connect.ServerStream[T]. *connect.ServerStream[T] satisfies the
 //     local service.Sender[T] interface directly (both expose
@@ -33,9 +32,9 @@ func NewLanternServiceConnectHandler(svc *LanternService) graphv1connect.Lantern
 
 // NewLanternReplicationServiceConnectHandler wraps
 // *LanternReplicationService so it satisfies
-// graphv1connect.LanternReplicationServiceHandler. Nil is permitted (mirrors
-// the gRPC path where replication can be disabled); in that case all three
-// RPCs return Unavailable.
+// graphv1connect.LanternReplicationServiceHandler. Nil is permitted (so
+// replication can be disabled on single-node deployments); in that case
+// all three RPCs return Unavailable.
 func NewLanternReplicationServiceConnectHandler(svc *LanternReplicationService) graphv1connect.LanternReplicationServiceHandler {
 	return &lanternReplicationServiceConnect{svc: svc}
 }

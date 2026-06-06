@@ -194,7 +194,7 @@ func TestPeerSupervisor_Reconcile_AddsAndRemoves(t *testing.T) {
 // TestPump_Run_DiscoveryInterval_PollsAndReconciles boots Pump.Run
 // against a fake PeerSource and asserts the supervisor reconciles
 // added / removed peers on each tick. We avoid spinning up real
-// gRPC clients by leaving the runner field on Pump unchanged but
+// Connect-Go clients by leaving the runner field on Pump unchanged but
 // pointing peers at unroutable loopback ports — runPeer will fail
 // to dial and back off, which is fine: we only assert the
 // supervisor lifecycle, not connection success.

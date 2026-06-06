@@ -12,13 +12,12 @@ export interface LanternClientOptions {
  * adapter modules under `lib/client/infrastructure/api/` can stay narrow
  * (one function per RPC) while sharing the same transport.
  *
- * The protocol set here is Connect-flavoured JSON because the
- * Lantern server's additive `LANTERN_CONNECT_PORT` listener mounts
- * Connect+JSON+Protobuf+gRPC-Web on h2c. JSON is the lowest-friction
- * choice for a browser SPA: it round-trips cleanly through the browser
- * fetch implementation, is human-readable in DevTools, and matches the
- * shape the legacy REST adapters returned (so usecase value-objects do
- * not need to change).
+ * The protocol set here is Connect-flavoured JSON because the Lantern
+ * server's primary listener mounts Connect + gRPC + gRPC-Web on the
+ * same h2c socket. JSON is the lowest-friction choice for a browser
+ * SPA: it round-trips cleanly through the browser fetch implementation,
+ * is human-readable in DevTools, and matches the shape the legacy REST
+ * adapters returned (so usecase value-objects do not need to change).
  */
 export type LanternClient = PromiseClient<typeof LanternService>;
 

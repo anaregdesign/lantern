@@ -23,8 +23,9 @@ type Sender[T any] interface {
 	Send(*T) error
 }
 
-// ReplicationServiceName is the fully-qualified gRPC service name for the
-// replication surface. Used for per-service health reporting.
+// ReplicationServiceName is the fully-qualified RPC service name for the
+// replication surface. Used for per-service health reporting via
+// grpc.health.v1.
 const ReplicationServiceName = "graph.v1.LanternReplicationService"
 
 // SubscribeMetrics is the narrow surface the replication service uses to

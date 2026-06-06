@@ -7,7 +7,7 @@ package replication
 // In production every dropped or stalled stream is healed by the
 // pump's reconnect loop, but the pump can only detect "my stream
 // broke" — not "the peer applied a write but I never received the
-// frame" (e.g. silent gRPC keepalive miss, OS-level connection
+// frame" (e.g. silent HTTP/2 keepalive miss, OS-level connection
 // reset that the kernel hid from us).
 //
 // The AntiEntropy driver closes that hole. It periodically calls
@@ -121,8 +121,8 @@ type AntiEntropyConfig struct {
 // AntiEntropy is the periodic convergence driver. Construct with
 // NewAntiEntropy and start with Run(ctx). Run blocks until ctx is
 // cancelled (or returns immediately when Peers is empty or Interval
-// is 0), so it is meant to run alongside the gRPC server and pump in
-// an errgroup.
+// is 0), so it is meant to run alongside the Connect listener and
+// pump in an errgroup.
 type AntiEntropy struct {
 	cfg   AntiEntropyConfig
 	local LocalStateProvider

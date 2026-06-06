@@ -5,11 +5,9 @@ import { defineConfig, devices } from "@playwright/test";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const PORT = 4173;
-// Since #347 the primary :6380 listener serves Connect / gRPC /
-// gRPC-Web on the same h2c socket. The legacy LANTERN_CONNECT_PORT
-// (additive listener from #337) and LANTERN_GATEWAY_ADDR
-// (grpc-gateway) env vars were both retired; the admin SPA talks to
-// the primary port directly.
+// The Lantern primary listener (:6380 by default) serves Connect /
+// gRPC / gRPC-Web on the same h2c socket. The admin SPA talks to it
+// directly via Connect-Web.
 const LANTERN_PORT = 6380;
 const METRICS_PORT = 9090;
 const CONNECT_URL = `http://127.0.0.1:${LANTERN_PORT}`;

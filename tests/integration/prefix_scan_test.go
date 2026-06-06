@@ -13,10 +13,7 @@ import (
 // TestPrefixScan_EndToEnd drives the prefix RPCs through the raw
 // Connect-Go client (the SDK does not yet expose prefix wrappers —
 // Phase 4). Seeded fixtures with explicit Expiration to dodge the
-// timestamppb-nil → 1970 trap (#250 lesson). Mirrors the legacy
-// gRPC-flavoured suite the bufconn helper used to back; the migration
-// to Connect+httptest (#363) is observationally equivalent at the
-// wire level.
+// timestamppb-nil → 1970 trap (#250 lesson).
 func TestPrefixScan_EndToEnd(t *testing.T) {
 	c, _ := newRawConnectClient(t, true)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

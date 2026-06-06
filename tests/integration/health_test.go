@@ -22,9 +22,6 @@ import (
 // connectrpc.com/grpchealth handler. The serving flag drives the
 // overall ("") status the handler reports. Mirrors how
 // server/provider/health.go + lantern_listener.go wire production.
-//
-// Replaces the legacy bufconn + grpc.health.v1 harness retired with
-// the Connect-only SDK collapse (#367).
 func newInProcessClientWithHealth(t *testing.T, serving bool) (*client.Lantern, func()) {
 	t.Helper()
 	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)

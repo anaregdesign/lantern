@@ -1,5 +1,5 @@
 // Package cmd implements the `lantern` CLI: a cobra-based command tree that
-// exposes every Lantern gRPC RPC as a one-shot subcommand and ships the legacy
+// exposes every Lantern RPC as a one-shot subcommand and ships the legacy
 // interactive prompt as `lantern repl`.
 //
 // The help text on every subcommand is intentionally long-form and
@@ -52,14 +52,15 @@ var (
 var rootCmd = &cobra.Command{
 	Use:   "lantern",
 	Short: "CLI for the Lantern in-memory key-vertex store",
-	Long: `lantern is the official command-line client for the Lantern gRPC server
+	Long: `lantern is the official command-line client for the Lantern server
 (github.com/anaregdesign/lantern).
 
 WHAT LANTERN IS
   Lantern is an in-memory graph KVS. Every vertex and every edge carries a
   TTL and decays on its own; edges are additive (AddEdge sums weight onto
   the same (tail, head) pair, PutEdge replaces it). The server exposes a
-  small gRPC surface — this CLI wraps every RPC as a scriptable subcommand
+  small Connect RPC surface (also accepting gRPC + gRPC-Web on the same
+  h2c socket) — this CLI wraps every RPC as a scriptable subcommand
   plus an interactive REPL.
 
 COMMAND LAYOUT
@@ -92,7 +93,7 @@ OUTPUT
 EXIT CODES
   0  success
   1  invalid arguments or local error (parse, file I/O)
-  2  gRPC error returned by the server (NotFound, InvalidArgument, …)
+  2  RPC error returned by the server (NotFound, InvalidArgument, …)
 
 EXAMPLES
   # one-shot writes against a local server
@@ -117,7 +118,7 @@ EXAMPLES
 func Execute() {
 	if err := rootCmd.ExecuteContext(signalContext()); err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
-		// Exit code 2 if the error came from the server (gRPC errors carry an
+		// Exit code 2 if the error came from the server (RPC errors carry an
 		// "rpc error:" prefix). Use 1 for everything else.
 		if strings.Contains(err.Error(), "rpc error") {
 			os.Exit(2)
@@ -187,8 +188,7 @@ func dial() (*client.Lantern, error) {
 
 // buildHTTPClient returns an h2c-flavoured *http.Client when TLS is
 // off, or a real TLS-backed http2.Transport when --tls / --tls-ca /
-// --tls-cert is supplied. Replaces the legacy buildTLSCreds /
-// credentials.NewTLS path that fed gRPC dial options.
+// --tls-cert is supplied.
 func buildHTTPClient() (*http.Client, error) {
 	if !flagTLS && flagTLSCA == "" && flagTLSCert == "" {
 		// Plain h2c: same pattern as sdks/go/connect_h2c.go's

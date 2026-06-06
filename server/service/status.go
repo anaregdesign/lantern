@@ -40,9 +40,10 @@ func (s *LanternService) WithStatusInfo(info StatusInfo) *LanternService {
 
 // MarkStarted records the wall-clock instant the server began serving
 // requests. Intended to be called from the LanternServer lifecycle right
-// before grpc.Server.Serve so the value reflects "ready to serve" rather
-// than wire-init time. Safe to call multiple times — only the first call
-// wins so a hot-reload that re-invokes Run does not reset the uptime
+// before the Connect listener starts accepting so the value reflects
+// "ready to serve" rather than wire-init time. Safe to call multiple
+// times — only the first call wins so a hot-reload that re-invokes Run
+// does not reset the uptime
 // gauge mid-flight.
 func (s *LanternService) MarkStarted(t time.Time) {
 	s.startedAtOnce.Do(func() {

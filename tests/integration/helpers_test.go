@@ -21,14 +21,11 @@ import (
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Helpers — Connect-on-h2c in-process harness (#350)
-// ─────────────────────────────────────────────────────────────────────────────
+// Helpers — Connect-on-h2c in-process harness
+// ──────────────────────────────────────────────────────────────────────────
 //
-// The integration suite migrated from bufconn + grpc.NewServer to
-// httptest + h2c + Connect-Go handlers in #350 (part of #335). Every
-// helper here returns a *client.Lantern wired through the Connect
-// transport so the tests exercise the production wire path the
-// server will use once #347 cuts over.
+// Every helper returns a *client.Lantern wired through the Connect
+// transport so the tests exercise the production wire path.
 //
 // Why httptest instead of net.Listen: httptest.Server owns the
 // listener lifecycle (auto-close on t.Cleanup), picks an ephemeral
@@ -69,7 +66,7 @@ func defaultIntegrationValidationLimits() provider.ValidationLimits {
 // newInProcessClientWithInterceptors, ...) rather than this directly.
 //
 // rep MAY be nil — the replication handler is then not mounted,
-// mirroring the gRPC path where replication can be disabled.
+// so single-node deployments can be exercised end-to-end.
 func newConnectTestServer(
 	t *testing.T,
 	svc *service.LanternService,
@@ -185,12 +182,11 @@ func newInProcessClientWithPrefix(t *testing.T) (*client.Lantern, func()) {
 }
 
 // newRawConnectClient returns the generated Connect-Go LanternService
-// client directly (i.e. the surface that mirrors pb.LanternServiceClient)
-// for tests that drive RPCs at the wire level — typically prefix /
-// snapshot / subscribe tests that need request types not yet wrapped by
-// the SDK. The returned cleanup hook is registered via t.Cleanup so
-// callers just discard it (the legacy gRPC bufconn pattern returned an
-// explicit cleanup func; we keep the signature for source-compat).
+// client directly (i.e. the surface that mirrors the SDK client) for
+// tests that drive RPCs at the wire level — typically prefix /
+// snapshot / subscribe tests that need request types not yet wrapped
+// by the SDK. The returned cleanup hook is registered via t.Cleanup
+// so callers may discard it.
 func newRawConnectClient(t *testing.T, enablePrefixIndex bool) (graphv1connect.LanternServiceClient, func()) {
 	t.Helper()
 	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)

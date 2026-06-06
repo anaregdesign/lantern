@@ -1,12 +1,9 @@
 // Package service: server.go owns the primary :6380 listener lifecycle.
-// The pre-#347 implementation wrapped *grpc.Server + GracefulStop. The
-// cutover replaces that with *http.Server + Shutdown so the listener can
-// serve the Connect mux (LanternService + LanternReplicationService +
-// grpc-health-v1 + grpc-reflection) over a single port.
-//
-// The exported surface is preserved verbatim — NewLanternServer, Run,
-// HealthSetter, LifecycleConfig, Watcher — so call sites only need to
-// swap the listener wiring; the lifecycle contract is unchanged.
+// LanternServer wraps *http.Server + Shutdown so the listener can serve
+// the Connect mux (LanternService + LanternReplicationService +
+// grpc.health.v1 + grpc.reflection.v1) over a single port. The exported
+// surface — NewLanternServer, Run, HealthSetter, LifecycleConfig,
+// Watcher — is the only contract callers depend on.
 package service
 
 import (
@@ -122,7 +119,7 @@ func (s *LanternServer) Run(ctx context.Context) error {
 	if s.useTLS {
 		// TLS cert/key are already loaded into s.server.TLSConfig by
 		// NewLanternListener; ServeTLS with empty filenames falls
-		// through to that, matching the legacy grpc.Creds() behaviour.
+		// through to that.
 		err = s.server.ServeTLS(s.listener, "", "")
 	} else {
 		err = s.server.Serve(s.listener)

@@ -31,7 +31,8 @@ podDisruptionBudget:
   minAvailable: 2
 
 service:
-  # ClusterIP service exposes the gRPC port to clients.
+  # ClusterIP service exposes the Lantern wire port to clients
+  # (Connect / gRPC / gRPC-Web multiplexed on h2c).
   port: 6380
   # Headless service drives DNS-based peer discovery (#190).
   # No ClusterIP — DNS returns one A per ready pod.

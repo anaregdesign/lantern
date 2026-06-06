@@ -257,9 +257,9 @@ export interface BuildBodyResult {
 
 /**
  * Validates the typed value inputs for `kind`, encodes the result onto
- * the body shape grpc-gateway accepts, and stamps the absolute
- * expiration. Returns either a ready-to-PUT body or a single human-
- * readable error message.
+ * the flat protobuf-JSON body shape the Connect handler accepts, and
+ * stamps the absolute expiration. Returns either a ready-to-PUT body or
+ * a single human-readable error message.
  */
 export function buildPutVertexBody(
   kind: VertexValueKind,

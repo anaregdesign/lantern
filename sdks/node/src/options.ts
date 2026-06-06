@@ -38,9 +38,9 @@ export interface ConnectOptions {
   defaultTimeoutMs?: number;
   /** Auto-chunk size for putVertices / addEdges / putEdges / delete* (default 1000). */
   batchChunkSize?: number;
-  /** Override the built-in retry + round_robin gRPC service config. */
+  /** Override the built-in retry + round_robin Connect service config. */
   serviceConfigJson?: string;
-  /** Optional gRPC user-agent string appended to the default. */
+  /** Optional Connect user-agent string appended to the default. */
   userAgent?: string;
 }
 

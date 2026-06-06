@@ -21,7 +21,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-// NetConfig groups the gRPC listener and message-size / concurrency caps.
+// NetConfig groups the primary listener and message-size / concurrency caps.
 //
 //   - LANTERN_PORT                       (default 6380)
 //   - LANTERN_MAX_RECV_MSG_BYTES         (default 16 MiB)
@@ -54,7 +54,8 @@ type RateLimitConfig struct {
 	Burst int
 }
 
-// ObservabilityConfig groups logging, metrics endpoint, gRPC reflection and
+// ObservabilityConfig groups logging, metrics endpoint, gRPC reflection
+// (the on-the-wire surface served by connectrpc.com/grpcreflect), and
 // build-info knobs.
 //
 //   - LANTERN_LOG_LEVEL                  debug|info|warn|error (default info)
@@ -324,10 +325,9 @@ func NewListener(n NetConfig) (net.Listener, error) {
 	return net.Listen("tcp", ":"+strconv.Itoa(n.Port))
 }
 
-// NewHealthChecker is provided by health.go and now serves the gRPC
-// health surface via connectrpc.com/grpchealth. The legacy
-// NewHealthServer() returning *health.Server was removed by #347; wire
-// now binds *HealthChecker into service.HealthSetter +
+// NewHealthChecker is provided by health.go and serves the
+// `grpc.health.v1.Health` wire surface via connectrpc.com/grpchealth.
+// Wire binds *HealthChecker into service.HealthSetter +
 // readiness.HealthSetter.
 
 // NewPrometheusRegistry isolates server metrics in a dedicated registry so the
@@ -341,16 +341,15 @@ func NewPrometheusRegistry() *prometheus.Registry {
 	return reg
 }
 
-// NewGrpcServerMetrics has been removed; the Connect-Go cutover (#347)
-// replaced grpcprom with PrometheusInterceptor in connect_middleware.go
-// which registers the same `grpc_server_*` metric names so dashboards
-// keep working.
+// NewGrpcServerMetrics has been removed; PrometheusInterceptor in
+// connect_middleware.go registers the canonical `grpc_server_*` metric
+// names so dashboards keep working.
 
-// NewGrpcServerOptions and NewGrpcServer have been removed by #347.
-// The primary :6380 listener now runs *http.Server with Connect-Go
-// handlers and the equivalent Connect interceptors
-// (PrometheusInterceptor + LoggingInterceptor + SlowRPCInterceptor +
-// ValidationInterceptor + RateLimitInterceptor + connect.WithRecover).
+// NewGrpcServerOptions and NewGrpcServer have been removed.
+// The primary :6380 listener runs *http.Server with Connect-Go
+// handlers and Connect interceptors (PrometheusInterceptor +
+// LoggingInterceptor + SlowRPCInterceptor + ValidationInterceptor +
+// RateLimitInterceptor + connect.WithRecover).
 // See lantern_listener.go and connect_middleware.go.
 
 // MetricsServer is the long-running goroutine that exposes /metrics
@@ -410,9 +409,9 @@ func newMetricsMux(reg *prometheus.Registry, gate *readiness.Gate, enablePprof b
 	})
 	// /readyz and /healthz/ready both consult the readiness Gate so HTTP
 	// probes (k8s httpGet, Cloud Run / ACA startup probes, plain LB
-	// health probes) see the same drain signal as the gRPC overall ("")
-	// health entry. Single-instance mode returns 200 immediately —
-	// PaaS startup behaviour is unchanged.
+	// health probes) see the same drain signal as the `grpc.health.v1`
+	// overall ("") entry served on the primary listener. Single-instance
+	// mode returns 200 immediately — PaaS startup behaviour is unchanged.
 	readyHandler := func(w http.ResponseWriter, _ *http.Request) {
 		if gate == nil || gate.Ready() {
 			w.WriteHeader(http.StatusOK)

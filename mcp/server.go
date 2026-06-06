@@ -136,8 +136,8 @@ func NewServer(lantern *client.Lantern, logger *slog.Logger) (*mcp.Server, error
 
 // newServer constructs the MCP server and registers the full tool set
 // (ping + the six fact/relation tools). Tests pass a fake lanternClient
-// and an in-memory resolver to exercise handlers without spinning up
-// gRPC.
+// and an in-memory resolver to exercise handlers without dialing the
+// Lantern server.
 func newServer(lc lanternClient, resolver *ttl.Resolver, logger *slog.Logger) *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{
 		Name:    "lantern-mcp",

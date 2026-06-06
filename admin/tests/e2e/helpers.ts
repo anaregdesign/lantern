@@ -3,10 +3,9 @@ import { Buffer } from "node:buffer";
 /**
  * The Lantern primary listener URL the Playwright webServer starts on
  * (see playwright.config.ts). Tests seed data through this URL using
- * Connect+JSON's `POST /graph.v1.LanternService/<Method>` shape. Since
- * #347 the primary :6380 port multiplexes Connect / gRPC / gRPC-Web on
- * the same h2c socket, so the additive listener (#337) and the
- * grpc-gateway shim (#339) are both gone.
+ * Connect+JSON's `POST /graph.v1.LanternService/<Method>` shape. The
+ * primary :6380 port multiplexes Connect / gRPC / gRPC-Web on the same
+ * h2c socket.
  */
 export const CONNECT_URL =
   process.env.LANTERN_E2E_GATEWAY_URL ?? "http://127.0.0.1:6380";
@@ -21,7 +20,7 @@ export const STORAGE_KEY = "lantern.admin.baseUrl";
 
 /**
  * Issues a unary Connect+JSON RPC against the Lantern server's
- * additive Connect listener. The body is the proto-JSON shape: oneof
+ * primary listener. The body is the proto-JSON shape: oneof
  * fields appear flat on the message (e.g. `{ key, string: "alpha" }`
  * rather than the legacy gateway's nested `{ key, value: { string } }`).
  * Throws on any non-2xx response so failures stop the test early

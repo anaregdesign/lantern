@@ -13,10 +13,10 @@ import (
 
 // ApplyMutation is the internal entry point used by the peer-pump (#184)
 // and the snapshot bootstrap (#183) to replay a Mutation produced on a
-// remote node against the local cache. It is intentionally NOT a gRPC
-// method: external clients use the regular write RPCs which append to the
-// local log; ApplyMutation deliberately bypasses logMutation so a replayed
-// mutation is not re-broadcast.
+// remote node against the local cache. It is intentionally NOT exposed
+// as an RPC: external clients use the regular write RPCs which append to
+// the local log; ApplyMutation deliberately bypasses logMutation so a
+// replayed mutation is not re-broadcast.
 //
 // Idempotence rules per oneof case:
 //
@@ -278,8 +278,8 @@ func contribIDBytes(c graph.ContribID) []byte {
 // Folding the per-edge index into the low bits lets a single
 // MutationOp_AddEdges batch carry up to 65 536 distinct edges while still
 // guaranteeing a globally unique ContribID per (origin, seq, idx) triple.
-// Practical batch sizes are bounded by gRPC message size long before this
-// limit; the assertion is defensive.
+// Practical batch sizes are bounded by the Connect/gRPC message size cap
+// long before this limit; the assertion is defensive.
 func contribIDFor(origin []byte, seq uint64, idx uint16) graph.ContribID {
 	var c graph.ContribID
 	copy(c[:16], origin)

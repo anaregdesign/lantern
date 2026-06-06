@@ -171,7 +171,7 @@ helm template lantern deploy/helm/lantern | less
 
 The chart creates a `StatefulSet`, a headless `Service` for peer
 discovery (`replication.discovery.mode=dns`), a `ClusterIP` `Service`
-for clients (gRPC `:6380`), and an optional `ServiceMonitor`. See
+for clients (Connect/gRPC/gRPC-Web on `:6380`), and an optional `ServiceMonitor`. See
 [`deploy/helm/lantern/README.md`](deploy/helm/lantern/README.md) for
 the full values reference and
 [`docs/replication.md` §9.1](docs/replication.md#91-peer-discovery-190)
@@ -328,12 +328,12 @@ cat edges.ndjson | ./lantern bulk edges add -      # streamed AddEdges
 
 Global flags include `--host/--port` (or `--address`), `--timeout`, `--tls*`,
 `--compression {none|gzip}`, and `--chunk-size`. Exit code `0` is success,
-`1` is a local / parse error, `2` is a gRPC error from the server.
+`1` is a local / parse error, `2` is an RPC error from the server.
 
 ### Use it from Go
 
-The Go client SDK is its own module, so external projects pull only gRPC and
-protobuf — nothing from `server/`, `cli/`, or `core/`:
+The Go client SDK is its own module, so external projects pull only Connect-Go
+and protobuf — nothing from `server/`, `cli/`, or `core/`:
 
 ```shell
 go get github.com/anaregdesign/lantern/sdks/go
@@ -607,11 +607,15 @@ Lantern ships production-grade observability out of the box:
 - **Structured logging** via `log/slog` — JSON by default, with per-RPC
   start/finish events emitted by a Connect logging interceptor
   ([`server/provider/connect_middleware.go`](server/provider/connect_middleware.go)).
-- **Prometheus metrics** — RPC metrics exposed by a Connect interceptor
-  that mirrors the canonical `grpc-ecosystem/go-grpc-middleware` metric
+- **Prometheus metrics** — RPC metrics exposed by the in-house Connect
+  interceptor in
+  ([`server/provider/connect_middleware.go`](server/provider/connect_middleware.go))
+  that reproduces the canonical `grpc-ecosystem/go-grpc-middleware` metric
   names (`grpc_server_started_total`, `grpc_server_handled_total`,
-  `grpc_server_handling_seconds_*`), so existing scrape configs and
-  Grafana dashboards keep working. Go runtime + process collectors are
+  `grpc_server_handling_seconds_*`). The names are intentionally retained
+  so existing scrape configs and Grafana dashboards keep working; the
+  underlying middleware itself was deleted with the rest of the gRPC stack
+  in #337/#352. Go runtime + process collectors are
   also registered and the whole lot is served on `LANTERN_METRICS_ADDR`
   at `/metrics`. Lantern also publishes its own domain collectors so you
   can chart cache load and GC pressure directly:

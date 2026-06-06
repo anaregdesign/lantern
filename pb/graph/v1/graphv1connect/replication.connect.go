@@ -57,7 +57,9 @@ type LanternReplicationServiceClient interface {
 	// also have the stream terminated with FAILED_PRECONDITION — the
 	// remedy is the same.
 	//
-	// No HTTP gateway annotation: replication is intentionally gRPC-only.
+	// No HTTP gateway annotation: replication is intentionally exposed
+	// only as Connect server-streaming (consumed by replication pumps on
+	// peer nodes, never directly from browsers).
 	Subscribe(context.Context, *connect.Request[v1.SubscribeRequest]) (*connect.ServerStreamForClient[v1.SubscribeResponse], error)
 	// Snapshot streams a point-in-time, causally-consistent dump of every
 	// live vertex and edge to a bootstrapping peer. The first frame is a
@@ -160,7 +162,9 @@ type LanternReplicationServiceHandler interface {
 	// also have the stream terminated with FAILED_PRECONDITION — the
 	// remedy is the same.
 	//
-	// No HTTP gateway annotation: replication is intentionally gRPC-only.
+	// No HTTP gateway annotation: replication is intentionally exposed
+	// only as Connect server-streaming (consumed by replication pumps on
+	// peer nodes, never directly from browsers).
 	Subscribe(context.Context, *connect.Request[v1.SubscribeRequest], *connect.ServerStream[v1.SubscribeResponse]) error
 	// Snapshot streams a point-in-time, causally-consistent dump of every
 	// live vertex and edge to a bootstrapping peer. The first frame is a

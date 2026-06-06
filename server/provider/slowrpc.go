@@ -11,8 +11,7 @@ import (
 //
 // Fields:
 //   - method        the RPC procedure path (Connect Spec.Procedure;
-//     identical shape to grpc info.FullMethod —
-//     "/<service>/<method>")
+//     shape "/<service>/<method>")
 //   - code          the resulting Connect status code (string form;
 //     "ok" / "not_found" / …)
 //   - duration_ms   handler wall-clock in milliseconds (int64)
