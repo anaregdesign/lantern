@@ -1,8 +1,10 @@
 /**
- * Default Lantern gateway base URL. Matches the gateway's default listener
- * (`:6381`) documented in `server/README.md`.
+ * Default Lantern primary listener URL. Matches the production
+ * default (`:6380`) documented in `server/README.md`. Since the #347
+ * cutover the primary listener multiplexes Connect / gRPC / gRPC-Web
+ * on the same h2c socket, so no separate gateway port is required.
  */
-export const DEFAULT_BASE_URL = "http://localhost:6381";
+export const DEFAULT_BASE_URL = "http://localhost:6380";
 
 /**
  * Normalises a user-entered base URL by trimming whitespace and stripping a
