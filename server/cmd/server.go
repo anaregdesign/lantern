@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"math"
 	"os"
 	"os/signal"
 	"syscall"
@@ -71,6 +72,21 @@ func registerHealthAndReflection(o provider.ObservabilityConfig, s *grpc.Server,
 	return registeredHealth{}
 }
 
+// clampU32 safely narrows an arbitrary platform-sized int (e.g. a value
+// loaded by envconfig.Int) into the uint32 surface exposed by
+// GetServerStatusResponse. Negative values collapse to 0 and oversized
+// values saturate at math.MaxUint32 — both are the "ceiling does not
+// apply" sentinel the admin UI already treats as "no configured limit".
+func clampU32(v int) uint32 {
+	if v <= 0 {
+		return 0
+	}
+	if v > math.MaxUint32 {
+		return math.MaxUint32
+	}
+	return uint32(v)
+}
+
 // newLanternService is the wire seam between provider.ScanConfig and the
 // service-layer ScanLimits value. Keeping the conversion here (rather than
 // in package service) preserves the rule that service/ has zero imports
@@ -106,8 +122,8 @@ func newLanternService(
 		WithStatusInfo(service.StatusInfo{
 			Version:            obs.Version,
 			DefaultTTL:         cc.TTL,
-			MaxBatchSize:       uint32(vc.MaxBatchSize),
-			MaxKeyBytes:        uint32(vc.MaxKeyLen),
+			MaxBatchSize:       clampU32(vc.MaxBatchSize),
+			MaxKeyBytes:        clampU32(vc.MaxKeyLen),
 			ScanDefaultLimit:   sc.ScanDefaultLimit,
 			ScanMaxLimit:       sc.ScanMaxLimit,
 			TLSEnabled:         tc.CertFile != "" && tc.KeyFile != "",
