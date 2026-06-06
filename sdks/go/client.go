@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"net/http"
 	"time"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -77,6 +78,13 @@ type Lantern struct {
 	conn   *grpc.ClientConn
 	client pb.LanternServiceClient
 	opts   options
+
+	// connectHTTPClient and connectBaseURL are populated only by the
+	// additive NewLanternConnect constructor (#338). They are nil/empty
+	// on the legacy grpc path. SubscribeConnect / PingConnect check both
+	// and return a useful error when called on a grpc-backed *Lantern.
+	connectHTTPClient *http.Client
+	connectBaseURL    string
 }
 
 // NewLantern dials target (host:port) and returns a connected Lantern client.
@@ -125,6 +133,16 @@ func NewLantern(target string, opts ...Option) (*Lantern, error) {
 }
 
 func (l *Lantern) Close() error {
+	// The additive Connect path (NewLanternConnect, #338) does not own a
+	// grpc.ClientConn — its http.Client manages its own connection pool
+	// internally and needs no explicit teardown. CloseIdleConnections is
+	// best-effort and noop-safe on a nil transport.
+	if l.conn == nil {
+		if l.connectHTTPClient != nil {
+			l.connectHTTPClient.CloseIdleConnections()
+		}
+		return nil
+	}
 	return l.conn.Close()
 }
 
