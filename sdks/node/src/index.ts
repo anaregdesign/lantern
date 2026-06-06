@@ -1,10 +1,10 @@
 /**
  * `lantern-sdk` — Bun-managed TypeScript SDK for the Lantern graph KVS.
  *
- * Built on Connect-Node v2. The server's primary listener accepts
- * Connect, gRPC, and gRPC-Web on the same h2c socket, so consumers
- * point this client at the same `host:6380` URL the legacy gRPC
- * clients used — just with an `http://` (or `https://`) scheme:
+ * Built on Connect-Node v2. The Lantern server's primary listener
+ * speaks Connect / gRPC / gRPC-Web on the same h2c socket, so this
+ * client points at the server's `host:6380` URL prefixed with an
+ * `http://` (or `https://`) scheme:
  *
  *   ```ts
  *   import { Lantern } from "lantern-sdk";

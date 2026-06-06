@@ -51,9 +51,6 @@ updates:
           - "google.golang.org/grpc*"
           - "google.golang.org/protobuf*"
           - "google.golang.org/genproto*"
-      grpc-gateway:
-        patterns:
-          - "github.com/grpc-ecosystem/grpc-gateway*"
 
   - package-ecosystem: gomod
     directory: /sdks/go

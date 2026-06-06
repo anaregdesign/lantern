@@ -1,14 +1,22 @@
 // Public value-object shapes the admin SPA's usecase layer consumes.
 //
-// These mirror the JSON-flat shape the legacy `pb/openapiv2/`-derived
-// OpenAPI types exposed so the usecase layer (browse-vertices,
-// edit-vertex, illuminate, …) survives the transport switch without
-// touching every field access. The adapter layer
-// (`infrastructure/api/*.ts`) marshals between this flat shape and the
-// connect-es message classes via the message's `fromJson` / `toJson`
-// helpers — those use exactly this shape per the protobuf JSON mapping
-// spec, so the marshalling is a direct round trip with no field-by-
-// field code.
+// These mirror the JSON-flat shape the protobuf JSON spec defines so
+// the usecase layer (browse-vertices, edit-vertex, illuminate, …)
+// stays decoupled from the connect-es message classes. The adapter
+// layer (`infrastructure/api/*.ts`) marshals between this flat shape
+// and the connect-es message classes via the message's `fromJson` /
+// `toJson` helpers — those use exactly this shape per the protobuf
+// JSON mapping spec, so the marshalling is a direct round trip with
+// no field-by-field code.
+//
+// Why duplicate types instead of consuming the generated classes:
+//   1. The connect-es v1 oneof representation
+//      (`{ case: "string", value: "..." }`) is non-trivial to map
+//      across the entire UI. Keeping the flat shape at the adapter
+//      boundary lets edit-vertex/value-codec.ts (and every other
+//      consumer) stay untouched.
+//   2. Timestamps travel as ISO strings in protobuf JSON, matching the
+//      legacy `expiration?: string` field — so `new Date(expiration)`
 //
 // Why duplicate types instead of consuming the generated classes:
 //   1. The connect-es v1 oneof representation

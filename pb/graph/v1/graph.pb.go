@@ -2497,8 +2497,9 @@ type GetServerStatusResponse struct {
 	// Reports `runtime.Version()` (e.g. "go1.26.4").
 	GoVersion string `protobuf:"bytes,2,opt,name=go_version,json=goVersion,proto3" json:"go_version,omitempty"`
 	// Wall-clock instant the server process started serving requests.
-	// Captured at gRPC server start, not at process start, so the value
-	// reflects "ready to serve" rather than "wire init done".
+	// Captured when the Connect listener starts accepting, not at process
+	// start, so the value reflects "ready to serve" rather than "wire
+	// init done".
 	StartedAt *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
 	// Convenience field: now - started_at on the server side, so clients
 	// do not have to know the server's clock to display uptime.
@@ -2514,7 +2515,7 @@ type GetServerStatusResponse struct {
 	// (LANTERN_SCAN_DEFAULT_LIMIT / LANTERN_SCAN_MAX_LIMIT).
 	ScanDefaultLimit uint32 `protobuf:"varint,8,opt,name=scan_default_limit,json=scanDefaultLimit,proto3" json:"scan_default_limit,omitempty"`
 	ScanMaxLimit     uint32 `protobuf:"varint,9,opt,name=scan_max_limit,json=scanMaxLimit,proto3" json:"scan_max_limit,omitempty"`
-	// True when the gRPC server is terminating TLS
+	// True when the server is terminating TLS
 	// (LANTERN_TLS_CERT_FILE + LANTERN_TLS_KEY_FILE both set).
 	TlsEnabled bool `protobuf:"varint,10,opt,name=tls_enabled,json=tlsEnabled,proto3" json:"tls_enabled,omitempty"`
 	// True when this server is wired to a mutation log + HLC clock and is

@@ -1,7 +1,7 @@
 // Package provider: connect_interceptors.go wires the existing
 // ValidationInterceptor and RateLimitInterceptor into Connect-Go's
 // connect.UnaryInterceptorFunc shape so the listener picks up the
-// same validation rules, token-bucket policy, reject hooks, and
+// shared validation rules, token-bucket policy, reject hooks, and
 // slog channels.
 package provider
 
@@ -16,12 +16,10 @@ import (
 )
 
 // NewValidationInterceptorProvider wires the shared
-// *ValidationInterceptor instance both the gRPC server and the
-// additive Connect listener mount as their per-request validator.
-// Hoisting construction out of NewGrpcServerOptions (where it used to
-// live inline) lets both transports observe the same reject hook and
-// slog channel for free — the underlying validate() rules + reason set
-// stay in lockstep without duplication.
+// *ValidationInterceptor instance the Connect listener mounts as its
+// per-request validator. It also publishes the reject hook so
+// lantern_validation_rejected_total{reason} keeps incrementing on
+// rejection.
 func NewValidationInterceptorProvider(
 	limits ValidationLimits,
 	dm *domainmetrics.DomainMetrics,
@@ -33,14 +31,13 @@ func NewValidationInterceptorProvider(
 }
 
 // NewRateLimitInterceptorProvider wires the shared
-// *RateLimitInterceptor instance both the gRPC server and the
-// additive Connect listener consult before forwarding a call.
+// *RateLimitInterceptor instance the Connect listener consults before
+// forwarding a call.
 //
 // When LANTERN_RATE_LIMIT_RPS<=0 the limiter is disabled: a
-// *RateLimitInterceptor with lim=nil is returned so the gRPC chain
-// builder can detect the disabled state (rli.lim == nil) and skip the
-// interceptor, mirroring the original RPS-gate behaviour. The Connect
-// side does the same check inside connectHandlerOptions.
+// *RateLimitInterceptor with lim=nil is returned so the listener
+// wiring inside connectHandlerOptions can detect the disabled state
+// (rli.lim == nil) and skip the interceptor.
 func NewRateLimitInterceptorProvider(
 	rl RateLimitConfig,
 	dm *domainmetrics.DomainMetrics,

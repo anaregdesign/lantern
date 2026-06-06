@@ -5,9 +5,8 @@
 // Gate and LanternServer can drive per-service status transitions
 // through a single typed API.
 //
-//   - SetServingStatus(service, grpchealth.Status) mirrors
-//     *grpc/health/v1.Server.SetServingStatus so the call shape stays
-//     boring at every call site.
+//   - SetServingStatus(service, grpchealth.Status) is the call shape
+//     used at every transition site.
 //   - Shutdown() flips every known service to StatusNotServing — the
 //     drain signal infra probes look for during teardown.
 //
@@ -61,9 +60,8 @@ func NewHealthChecker() *HealthChecker {
 func (h *HealthChecker) Inner() *grpchealth.StaticChecker { return h.inner }
 
 // SetServingStatus flips the service entry to the supplied status.
-// Mirrors the historical *grpc/health/v1.Server.SetServingStatus call
-// shape so readiness.Gate and service.LanternServer don't need to
-// know about the Connect-side type.
+// readiness.Gate and service.LanternServer call into this; they don't
+// need to know about the Connect-side type.
 func (h *HealthChecker) SetServingStatus(service string, status grpchealth.Status) {
 	h.inner.SetStatus(service, status)
 }

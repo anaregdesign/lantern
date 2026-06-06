@@ -19,10 +19,9 @@ pnpm add lantern-sdk
 
 ## Quick start
 
-The server's primary `:6380` listener accepts Connect, gRPC, and
-gRPC-Web on the same h2c socket, so this client points at the same
-URL the legacy gRPC clients used — just prefix it with `http://` (or
-`https://` for TLS).
+The Lantern server's primary `:6380` listener speaks Connect, gRPC,
+and gRPC-Web on the same h2c socket, so this client points at the
+server URL with an `http://` (or `https://` for TLS) scheme.
 
 ```ts
 import { Lantern, Optimization } from "lantern-sdk";

@@ -1,8 +1,8 @@
 // Package replication implements the outbound peer-replication pump (#185).
 //
 // One *Pump owns one goroutine per peer address in LANTERN_PEERS. Each
-// goroutine maintains a long-lived gRPC connection to its peer and, in
-// order:
+// goroutine maintains a long-lived Connect-Go HTTP/2 stream to its peer
+// and, in order:
 //
 //  1. Opens LanternReplicationService.Subscribe(from_seq=N), where N is
 //     the next seq the local node expects from THAT peer (tracked
@@ -148,7 +148,7 @@ type Config struct {
 // Pump is the long-running peer-replication driver. Construct with
 // NewPump and start with Run(ctx). Run blocks until ctx is cancelled
 // (or returns immediately when Peers is empty), so it is meant to be
-// invoked from inside an errgroup alongside the gRPC server.
+// invoked from inside an errgroup alongside the Connect listener.
 type Pump struct {
 	cfg     Config
 	apply   MutationApplier

@@ -17,7 +17,8 @@ import (
 )
 
 // ServiceName is the fully-qualified service name used for per-service
-// health reporting (grpc.health.v1) and as a logical metric label.
+// health reporting (grpc.health.v1, the published wire surface) and as a
+// logical metric label.
 const ServiceName = "graph.v1.LanternService"
 
 // LanternService is the in-process implementation of the
@@ -600,4 +601,4 @@ func (s *LanternService) DeleteEdges(ctx context.Context, in *pb.DeleteEdgesRequ
 	return &pb.DeleteEdgesResponse{Deleted: int32(n)}, nil
 }
 
-// LanternServer ties the gRPC server, its listener, the cache GC loop, and
+// LanternServer ties the Connect HTTP/2 server, its listener, the cache GC loop, and

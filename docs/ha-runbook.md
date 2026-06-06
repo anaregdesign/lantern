@@ -120,10 +120,11 @@ fast enough". **Brief 503s on `/readyz` immediately after a scale-up
 are expected**, not a bug.
 
 **Probe-port gotcha.** Probes are on the metrics port (9090), not the
-gRPC port (6380). The gRPC port serves the gRPC health protocol via
-`grpc-health-probe`; the metrics port serves HTTP `/healthz` and
-`/readyz`. Use the HTTP probes — they're cheaper and don't open a
-gRPC stream on every check.
+Lantern RPC port (6380). The RPC port serves the `grpc.health.v1`
+surface via `connectrpc.com/grpchealth` (reachable by `grpc-health-probe`
+and any Connect / gRPC / gRPC-Web client); the metrics port serves
+HTTP `/healthz` and `/readyz`. Use the HTTP probes — they're cheaper
+and don't open an HTTP/2 stream on every check.
 
 **Upgrade procedure.** See [§7](#7-rolling-upgrade-procedure).
 
@@ -275,11 +276,14 @@ exact Prometheus series.
 | `lantern_gc_duration_seconds` | GC sweep latency histogram. |
 | `lantern_build_info{version,commit}` | Version pinning for cross-checks during upgrade. |
 
-### 4.3 gRPC layer
+### 4.3 RPC layer
 
-The grpc-ecosystem middleware exposes `grpc_server_*` metrics
-(handled / handling time / received / sent). Use them for per-RPC
-latency SLOs.
+The in-house Connect interceptor in
+`server/provider/connect_middleware.go` exposes the canonical
+`grpc_server_*` metric names (handled / handling time / received / sent).
+The names are intentionally retained for operator-dashboard continuity
+after the gRPC middleware was deleted in #337/#352; the wire protocol is
+Connect. Use them for per-RPC latency SLOs.
 
 ### 4.4 Alerts worth shipping (PromQL sketches)
 

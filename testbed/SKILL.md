@@ -72,7 +72,9 @@ docker compose down -v
 ## Useful one-liners
 
 Per-RPC method coverage after a sweep (proves the harness actually hit every
-method — `grpc_server_*` is wired through grpc-ecosystem middleware):
+method — `grpc_server_*` is wired through the in-house Connect interceptor in
+`server/provider/connect_middleware.go`; the names are retained for dashboard
+compat after the grpc-ecosystem middleware was removed in #337/#352):
 
 ```bash
 curl -s http://localhost:9090/metrics \

@@ -11,7 +11,7 @@ import (
 
 // lanternClient is the narrow subset of *client.Lantern that the MCP
 // tool handlers depend on. It exists so per-tool tests can swap in a
-// fake without dialing gRPC.
+// fake without dialing the Lantern server.
 //
 // The interface is intentionally tied to the SDK's concrete option types
 // (ScanOption, IlluminateOption); duplicating those would force the fakes

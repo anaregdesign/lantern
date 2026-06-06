@@ -8,13 +8,14 @@ import (
 )
 
 // CORSConfig governs the cross-origin policy enforced on top of the
-// grpc-gateway HTTP handler. It exists to let the `lantern-admin` SPA call
-// `/v1/...` from a different origin (e.g. `http://localhost:5173` during
-// dev, or the GHCR-served admin container in deployment).
+// Connect mux. It exists to let the `lantern-admin` SPA call
+// `/graph.v1.LanternService/...` from a different origin (e.g.
+// `http://localhost:5173` during dev, or the GHCR-served admin
+// container in deployment).
 //
 //   - LANTERN_CORS_ALLOWED_ORIGINS    Comma-separated list of exact
-//     origins permitted to call the gateway. Empty (default) leaves the
-//     handler untouched, so existing single-port deployments are
+//     origins permitted to call the listener. Empty (default) leaves
+//     the handler untouched, so existing single-port deployments are
 //     byte-for-byte unchanged. The special value "*" allows any origin —
 //     but ONLY when it is the only entry in the list, mirroring the
 //     fetch-spec restriction on `*` together with credentials.
@@ -68,11 +69,13 @@ func loadCORSConfig() CORSConfig {
 }
 
 // corsAllowedMethods and corsAllowedHeaders are advertised on the preflight
-// response. They match the surface declared by the grpc-gateway annotations
-// today plus the headers the admin SPA needs (Content-Type for JSON
-// payloads, Authorization for the future bearer flow, X-Request-Id for
-// correlation logging, Connect-Protocol-Version and Connect-Timeout-Ms
-// for the additive Connect-Web transport introduced in #337/#339).
+// response. They cover the methods Connect-Web fetch() actually issues
+// (POST for unary + streaming, OPTIONS for preflight, plus GET/PUT/DELETE
+// kept for forward compat) and the headers the admin SPA needs:
+// Content-Type for JSON payloads, Authorization for the future bearer
+// flow, X-Request-Id for correlation logging, and the
+// Connect-Protocol-Version / Connect-Timeout-Ms headers Connect-Web
+// advertises on every request.
 var (
 	corsAllowedMethods = "GET, POST, PUT, DELETE, OPTIONS"
 	corsAllowedHeaders = "Content-Type, Authorization, X-Request-Id, Connect-Protocol-Version, Connect-Timeout-Ms"

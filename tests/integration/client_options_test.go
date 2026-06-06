@@ -23,10 +23,9 @@ import (
 // supplied validation limits + per-test extra Connect interceptors,
 // then returns a *client.Lantern speaking Connect against it.
 //
-// Replaces the legacy bufconn + grpc.NewServer harness retired with
-// the Connect-only SDK collapse (#367). The Connect interceptor list
-// is variadic so tests can layer in failure-injection / counting /
-// retry-probe behaviour without each spinning up its own helper.
+// The Connect interceptor list is variadic so tests can layer in
+// failure-injection / counting / retry-probe behaviour without each
+// spinning up its own helper.
 func newOptsClient(
 	t *testing.T,
 	lim provider.ValidationLimits,

@@ -2,9 +2,9 @@
 // RPC methods use to surface failures as native connect.Error values.
 //
 // Service code returns these errors directly; the Connect-Go handlers
-// wrap them once via connect.NewError up the stack. There is no
-// google.golang.org/grpc/{codes,status} dependency: every code that
-// used to be codes.X is now connect.CodeX.
+// wrap them once via connect.NewError up the stack. The error model is
+// Connect's connect.CodeX enum end-to-end — no
+// google.golang.org/grpc/{codes,status} dependency.
 package service
 
 import (

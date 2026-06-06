@@ -1,7 +1,7 @@
 // Package mcp hosts the lantern-mcp binary and its supporting packages.
 //
 // lantern-mcp is a Model Context Protocol (MCP) server that exposes a remote
-// Lantern gRPC instance as decaying graph memory for LLM agents. It is a
+// Lantern instance as decaying graph memory for LLM agents. It is a
 // standalone executable, not a library: import paths under this module are
 // intentionally internal-leaning.
 //

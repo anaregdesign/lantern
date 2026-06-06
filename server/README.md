@@ -4,10 +4,10 @@ The `lantern` server: an in-memory `key-vertex-store` (graph-based KVS)
 with replication, exposed on **`:6380`** by default. This module produces
 the `lantern` binary; the root module's `Dockerfile` builds and ships it.
 
-Since #347 the primary listener speaks **Connect** (Connect protocol,
-gRPC, and gRPC-Web all multiplexed on the same h2c port). The legacy
-standalone grpc-gateway listener (`:6381`) and the additive Connect
-listener (`LANTERN_CONNECT_PORT`) have both been folded into `:6380`.
+The primary listener speaks **Connect** (Connect protocol, gRPC, and
+gRPC-Web all multiplexed on the same h2c port). The pre-#347 split
+(separate grpc-gateway listener + additive Connect listener) is gone —
+everything serves on the single `LANTERN_PORT` socket.
 
 See the [repo README](../README.md) for the end-user usage walkthrough; this
 file documents the **server module itself** (layout, providers, env vars,
@@ -51,7 +51,7 @@ Both ports are configurable via environment variables (see below).
 | `service/` | RPC handlers: `LanternService`, `LanternReplicationService`, `LanternServer` (http.Server lifecycle + GC + graceful shutdown), apply path, cursor pagination, prefix scans, Connect adapter. |
 | `provider/` | Wire providers — `Config` aggregation, `LanternListener` (the h2c http.Server wired with the Connect mux + grpchealth + grpcreflect + CORS + otelhttp), Connect interceptors (logging, metrics, slow-rpc, validation, rate-limit), TLS loader, Prometheus registry, metrics HTTP server, OTel tracing, readiness gate, replication pump, anti-entropy driver. |
 | `metrics/` | `DomainMetrics` — the `lantern_*` Prometheus collectors and the gauge sampler. |
-| `readiness/` | The `Gate` that publishes the overall (`""`) gRPC health and gates HTTP `/readyz` on replication lag bounds. |
+| `readiness/` | The `Gate` that publishes the overall (`""`) `grpc.health.v1` status and gates HTTP `/readyz` on replication lag bounds. |
 | `replication/` | Peer discovery, pump (Subscribe consumer), anti-entropy driver. |
 | `internal/envconfig/` | Env-var parsing helpers used by `provider/`. |
 
@@ -91,10 +91,10 @@ most common knobs:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `LANTERN_PORT` | `6380` | gRPC listen port. |
+| `LANTERN_PORT` | `6380` | Primary Lantern RPC listen port (Connect / gRPC / gRPC-Web multiplexed on h2c). |
 | `LANTERN_DEFAULT_TTL_SECONDS` | `60` | Default vertex/edge TTL. |
 | `LANTERN_GC_INTERVAL_SECONDS` | `60` | GraphCache GC tick. |
-| `LANTERN_MAX_RECV_MSG_BYTES` / `LANTERN_MAX_SEND_MSG_BYTES` | `16 MiB` | gRPC message size caps. |
+| `LANTERN_MAX_RECV_MSG_BYTES` / `LANTERN_MAX_SEND_MSG_BYTES` | `16 MiB` | Per-RPC message size caps (Connect / gRPC / gRPC-Web). |
 | `LANTERN_MAX_CONCURRENT_STREAMS` | `1024` | Per-connection stream cap (0 = unlimited). |
 | `LANTERN_RATE_LIMIT_RPS` / `LANTERN_RATE_LIMIT_BURST` | `0` | Process-wide token-bucket rate limit (0 disables). |
 | `LANTERN_SLOW_RPC_THRESHOLD_MS` | `500` | Emit a `slog` warning per unary/stream RPC whose handler exceeds this duration (0 disables). |

@@ -21,9 +21,9 @@ import (
 // same set every call is correct and cheap — the supervisor only
 // acts on differences.
 //
-// Returned addresses are passed to grpc.NewClient verbatim, so each
-// entry MUST already be in "host:port" form. Implementations are
-// responsible for any self-filtering (so the local node does not
+// Returned addresses are passed to the Connect peer client verbatim,
+// so each entry MUST already be in "host:port" form. Implementations
+// are responsible for any self-filtering (so the local node does not
 // subscribe to itself); the pump's mutation-level self-echo guard
 // is a defence-in-depth backstop, not a substitute.
 type PeerSource interface {
@@ -57,7 +57,7 @@ type HostLookup interface {
 // DNSSource resolves a single DNS name to its current A/AAAA
 // records, applies an optional self-IP filter (so the local node
 // does not subscribe to its own listener), and emits the surviving
-// addresses as "ip:port" strings ready for grpc.NewClient.
+// addresses as "ip:port" strings ready for the Connect peer client.
 //
 // The DNS source is platform-neutral: it works against k8s headless
 // Services (`lantern-headless.<ns>.svc.cluster.local`), Docker
@@ -74,7 +74,7 @@ type DNSSource struct {
 	// "lantern-headless.default.svc.cluster.local".
 	Name string
 
-	// Port is the gRPC port appended to every resolved IP. Must
+	// Port is the wire port appended to every resolved IP. Must
 	// be non-empty (the wire protocol has no default port).
 	Port string
 

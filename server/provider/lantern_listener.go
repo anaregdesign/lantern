@@ -1,16 +1,8 @@
 // Package provider: lantern_listener.go owns the primary :6380
-// listener (#347 cutover). It replaces the pre-cutover topology:
-//
-//   - grpc.NewServer on :6380 (gRPC binary only, deleted in this PR)
-//   - grpc-gateway on LANTERN_GATEWAY_PORT (HTTP/JSON shim, deleted in
-//     this PR — admin now speaks Connect-Web directly per #339)
-//   - additive Connect listener on LANTERN_CONNECT_PORT (deleted in
-//     this PR — primary port now serves Connect natively)
-//
-// The new single :6380 listener accepts all three Connect protocols
-// (gRPC, gRPC-Web, Connect) over h2c — exactly what
-// graphv1connect.NewLanternServiceHandler advertises — and adds two
-// addon handlers so existing infra continues to work:
+// listener. A single http.Server bound to LANTERN_PORT accepts all
+// three Connect protocols (Connect, gRPC, gRPC-Web) over h2c — exactly
+// what graphv1connect.NewLanternServiceHandler advertises — and adds
+// two addon handlers so existing infra continues to work:
 //
 //   - grpchealth: serves grpc.health.v1.Health (consumed by
 //     grpc-health-probe, Kubernetes startup/liveness probes, grpcurl)
@@ -121,7 +113,7 @@ func (l *LanternListener) Listener() net.Listener { return l.listener }
 
 // Addr is the listen address (host:port) the underlying listener is bound
 // to. Used by LanternServer for the "lantern server starting" slog line so
-// operators see the same field they used to see for the gRPC server.
+// operators see a stable field across restarts.
 func (l *LanternListener) Addr() string {
 	if l.listener == nil {
 		return l.server.Addr
@@ -134,19 +126,19 @@ func (l *LanternListener) Addr() string {
 func (l *LanternListener) TLSEnabled() bool { return l.tls }
 
 // NewLanternListener mounts both Lantern service handlers, the
-// gRPC-health-v1 surface, and (when enabled) the gRPC reflection
+// gRPC-Health-v1 surface, and (when enabled) the gRPC reflection
 // surface on a single http.Server. The net.Listener is wire-injected
 // (so tests can substitute bufconn) and consumed by LanternServer.Run.
 //
 //   - Net is unused for the bind itself (lis owns that) but supplies
-//     the cap knobs that used to be passed via grpc.MaxRecv/SendMsgSize.
-//     The Connect handlers honour these implicitly via http2 default
-//     frame caps; they remain on Config for documentation continuity
-//     and are slated for explicit wiring in #342.
+//     per-RPC message size caps. The Connect handlers honour these
+//     implicitly via http2 default frame caps; they remain on Config
+//     for documentation continuity and are slated for explicit wiring
+//     in #342.
 //   - tlsCfg switches Serve → ServeTLS.
 //   - svc / rep are the wire bindings to the in-process services.
 //   - val / rl / log / met / slow are the Connect interceptors.
-//   - hc is the gRPC-health-v1 implementation served at
+//   - hc is the gRPC-Health-v1 implementation served at
 //     /grpc.health.v1.Health/.
 //   - cors wraps the mux with the CORS middleware (no-op when
 //     LANTERN_CORS_ALLOWED_ORIGINS is empty).
@@ -154,8 +146,8 @@ func (l *LanternListener) TLSEnabled() bool { return l.tls }
 //     true).
 //
 // h2c is enabled via http.Server.Protocols.SetUnencryptedHTTP2()
-// (Go 1.24+). This replaces the deprecated h2c.NewHandler wrapper
-// the additive listener (#337) used and is SA1019-clean.
+// (Go 1.24+). This is SA1019-clean and replaces the deprecated
+// h2c.NewHandler wrapper pattern.
 func NewLanternListener(
 	lis net.Listener,
 	_ NetConfig,
@@ -226,13 +218,13 @@ func NewLanternListener(
 		Handler:           handler,
 		ReadHeaderTimeout: 30 * time.Second,
 	}
-	// Enable HTTP/2 cleartext (h2c) so gRPC + gRPC-Web clients can
-	// negotiate without TLS. Setting via the Protocols field
-	// replaces the deprecated h2c.NewHandler wrapper and is the
-	// Go 1.24+ recommended path. Calling SetUnencryptedHTTP2 on the
-	// zero-value Protocols also implicitly preserves HTTP/1.1 and
-	// HTTP/2 (over TLS) so the same listener serves browser
-	// fetch() + grpcurl + grpc-Go clients without further tuning.
+	// Enable HTTP/2 cleartext (h2c) so Connect, gRPC, and gRPC-Web
+	// clients can negotiate without TLS. Setting via the Protocols
+	// field is the Go 1.24+ recommended path. Calling
+	// SetUnencryptedHTTP2 on the zero-value Protocols also implicitly
+	// preserves HTTP/1.1 and HTTP/2 (over TLS) so the same listener
+	// serves browser fetch() + grpcurl + Connect-Go clients without
+	// further tuning.
 	var protos http.Protocols
 	protos.SetHTTP1(true)
 	protos.SetHTTP2(true)

@@ -3,11 +3,9 @@
 // the caller does not supply one via Config.HTTPClient /
 // AntiEntropyConfig.HTTPClient.
 //
-// The default speaks HTTP/2 over plaintext so the cluster-internal
-// replication path (Tier-A topology) works without TLS plumbing —
-// matching the gRPC behaviour previously achieved via
-// grpc.WithTransportCredentials(insecure.NewCredentials()). Operators
-// that need TLS supply their own http.Client backed by an
+// The default speaks HTTP/2 over plaintext (h2c) so the cluster-internal
+// replication path (Tier-A topology) works without TLS plumbing.
+// Operators that need TLS supply their own http.Client backed by an
 // http2.Transport with a real *tls.Config.
 //
 // peerBaseURL prepends the "http://" scheme to a bare "host:port"

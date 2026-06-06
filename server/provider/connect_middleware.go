@@ -1,22 +1,20 @@
 // Package provider: connect_middleware.go hosts the Connect-Go
-// interceptors that replace the gRPC middleware chain wired by
-// NewGrpcServerOptions before #347. They keep behaviour observable as
-// identical (same slog channels, same Prometheus metric names) so
-// dashboards, alerts, and the ops runbook do not need to change when
-// the primary listener flips from grpc.NewServer to http.Server +
-// Connect mux.
+// interceptors that supply Lantern's per-RPC observability. The slog
+// channels and Prometheus metric names are intentionally locked to the
+// `grpc.*` / `grpc_server_*` vocabulary that the historical
+// `grpc-ecosystem/go-grpc-middleware` chain emitted, so existing
+// dashboards, alerts, and log-search patterns keep working unchanged.
+// The wire protocol is Connect; the field names are an operator-
+// continuity contract, not a transport claim.
 //
 // Coverage:
 //   - LoggingInterceptor       slog StartCall / FinishCall lines per RPC
 //   - PrometheusInterceptor    grpc_server_started_total /
 //     grpc_server_handled_total /
 //     grpc_server_handling_seconds — same names
-//     the grpcprom collector used, so existing
-//     Prometheus scrape configs and Grafana
-//     dashboards keep working.
-//   - SlowRPCInterceptor.ConnectInterceptor() — wired on
-//     the existing type so the gRPC and Connect
-//     paths share one threshold knob.
+//     the grpcprom collector used.
+//   - SlowRPCInterceptor.ConnectInterceptor() exposes the per-RPC
+//     threshold knob.
 //
 // Panic recovery is handled by Connect's own connect.WithRecover handler
 // option, not by an interceptor here, because connect.WithRecover hooks
@@ -38,13 +36,11 @@ import (
 )
 
 // ConnectInterceptor returns a connect.UnaryInterceptorFunc that emits
-// the same warn-level "slow rpc" slog channel the existing gRPC
-// SlowRPCInterceptor.UnaryServerInterceptor produces. Threshold of 0
-// disables emission (Enabled() reports false and the listener skips
-// installation, matching the gRPC wiring).
+// the warn-level "slow rpc" slog channel. Threshold of 0 disables
+// emission (Enabled() reports false and the listener skips
+// installation).
 //
-// Fields match the gRPC variant verbatim so operators can grep the same
-// signal across the cutover window:
+// Fields:
 //
 //   - method        Connect procedure path (e.g.
 //     "/graph.v1.LanternService/GetVertex")
@@ -71,15 +67,13 @@ func (s *SlowRPCInterceptor) ConnectInterceptor() connect.UnaryInterceptorFunc {
 }
 
 // LoggingInterceptor emits one info-level "rpc start" line on call entry
-// and one info-level "rpc end" line on call exit. Replaces the
-// grpc-middleware logging interceptor previously installed by
-// NewGrpcServerOptions.
+// and one info-level "rpc end" line on call exit.
 //
-// The events match the grpc-middleware shape (started_at / msg /
-// grpc.method / grpc.code / grpc.duration) so existing log-search
-// patterns keep working across the cutover. The "grpc." prefix is
-// preserved deliberately even though we now serve Connect — log
-// pipelines should treat the transport as an implementation detail.
+// The field names (started_at / msg / grpc.method / grpc.code /
+// grpc.duration_ms) intentionally retain the `grpc.*` prefix the
+// historical grpc-middleware logging interceptor used, so existing
+// log-search patterns keep working. The wire protocol is Connect; the
+// field names are an operator-continuity contract.
 type LoggingInterceptor struct {
 	logger *slog.Logger
 }
@@ -122,8 +116,9 @@ func (l *LoggingInterceptor) ConnectInterceptor() connect.UnaryInterceptorFunc {
 
 // PrometheusInterceptor reproduces the four grpc-middleware metric
 // families on the Connect path so Grafana dashboards built against
-// grpc_server_* metric names keep working after the cutover. The names
-// are LOCKED — operators have alerts wired against them.
+// `grpc_server_*` metric names keep working. The names are LOCKED —
+// operators have alerts wired against them; the wire protocol is
+// Connect.
 //
 // Families (counter / counter / histogram):
 //
@@ -133,11 +128,10 @@ func (l *LoggingInterceptor) ConnectInterceptor() connect.UnaryInterceptorFunc {
 //     (plus the matching _sum / _count series)
 //
 // grpc_type is hard-coded to "unary" because the only streaming RPCs
-// (Subscribe / Snapshot) are not metered by grpc-middleware either (the
-// stream interceptor only counts started / handled at stream
-// lifecycle boundaries, which is captured by the listener-level
-// otelhttp span). Connect's interceptor seam only fires on unary calls
-// anyway.
+// (Subscribe / Snapshot) are not metered by this interceptor either
+// (Connect's interceptor seam only fires on unary calls; stream
+// lifecycle observation is captured by the listener-level otelhttp
+// span).
 type PrometheusInterceptor struct {
 	started         *prometheus.CounterVec
 	handled         *prometheus.CounterVec
@@ -166,7 +160,7 @@ func NewPrometheusInterceptor(reg *prometheus.Registry) *PrometheusInterceptor {
 	handlingSeconds := prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "grpc_server_handling_seconds",
-			Help:    "Histogram of response latency (seconds) of gRPC that had been application-level handled by the server.",
+			Help:    "Histogram of response latency (seconds) of RPCs that had been application-level handled by the server.",
 			Buckets: prometheus.DefBuckets,
 		},
 		[]string{"grpc_type", "grpc_service", "grpc_method"},
@@ -216,8 +210,8 @@ func splitProcedure(p string) (service, method string) {
 // connectCodeString maps a handler error to the Connect code's
 // canonical lower_snake_case string ("ok" / "not_found" /
 // "resource_exhausted" / …). Returns "ok" for nil. Used by every
-// metrics / logging label so the wire format matches what
-// grpc-middleware emitted historically.
+// metrics / logging label so the wire format matches what the
+// grpc-middleware chain emitted historically.
 func connectCodeString(err error) string {
 	if err == nil {
 		return "ok"
