@@ -189,7 +189,13 @@ jobs:
 
   release:
     name: GitHub Release
-    needs: [build, binaries, bench]
+    # bench is intentionally NOT in `needs:`. Per #394, a bench-job cancellation
+    # (e.g. via `timeout-minutes`) does not count as success-or-failure and
+    # would skip this job, even though bench is `continue-on-error: true`.
+    # The release-notes step below tolerates a missing bench report via
+    # `download-artifact … continue-on-error: true`, so coupling them
+    # structurally only adds gating risk.
+    needs: [build, binaries]
     runs-on: ubuntu-latest
     permissions:
       contents: write
