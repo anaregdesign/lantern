@@ -19,16 +19,12 @@ package service
 
 import (
 	"context"
-	"errors"
 
 	"connectrpc.com/connect"
+	"google.golang.org/grpc/metadata"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
-
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
 )
 
 // NewLanternServiceConnectHandler wraps *LanternService so it satisfies
@@ -56,76 +52,15 @@ type lanternServiceConnect struct {
 // Generics keep the per-method code to a single line while preserving
 // type safety: the call site supplies the typed underlying method.
 //
-// gRPC status errors from the underlying service are translated to
-// connect.Error so wire clients receive Connect-flavoured error codes
-// (e.g. NOT_FOUND → connect.CodeNotFound) instead of the
-// double-wrapped "rpc error: code = Unknown desc = rpc error: ..."
-// surface a plain error would produce.
+// Service-layer errors are already native *connect.Error values (see
+// server/service/errors.go and the per-method bodies), so this helper
+// is a pure boxing shim — no error translation required.
 func unary[Req, Resp any](ctx context.Context, req *connect.Request[Req], fn func(context.Context, *Req) (*Resp, error)) (*connect.Response[Resp], error) {
 	out, err := fn(ctx, req.Msg)
 	if err != nil {
-		return nil, grpcErrToConnect(err)
+		return nil, err
 	}
 	return connect.NewResponse(out), nil
-}
-
-// grpcErrToConnect translates a gRPC status error (the shape every
-// service.LanternService method returns on failure) into a
-// connect.Error carrying the matching code. Non-status errors fall
-// through unchanged.
-func grpcErrToConnect(err error) error {
-	if err == nil {
-		return nil
-	}
-	st, ok := status.FromError(err)
-	if !ok {
-		return err
-	}
-	return connect.NewError(grpcCodeToConnect(st.Code()), errors.New(st.Message()))
-}
-
-// grpcCodeToConnect mirrors the 16-entry table in
-// server/provider/connect_interceptors.go (the package-private
-// translator there serves the interceptor layer; this copy serves
-// the adapter layer). Kept identical so a future refactor can hoist
-// either copy into a shared helper without behaviour changes.
-func grpcCodeToConnect(c codes.Code) connect.Code {
-	switch c {
-	case codes.Canceled:
-		return connect.CodeCanceled
-	case codes.Unknown:
-		return connect.CodeUnknown
-	case codes.InvalidArgument:
-		return connect.CodeInvalidArgument
-	case codes.DeadlineExceeded:
-		return connect.CodeDeadlineExceeded
-	case codes.NotFound:
-		return connect.CodeNotFound
-	case codes.AlreadyExists:
-		return connect.CodeAlreadyExists
-	case codes.PermissionDenied:
-		return connect.CodePermissionDenied
-	case codes.ResourceExhausted:
-		return connect.CodeResourceExhausted
-	case codes.FailedPrecondition:
-		return connect.CodeFailedPrecondition
-	case codes.Aborted:
-		return connect.CodeAborted
-	case codes.OutOfRange:
-		return connect.CodeOutOfRange
-	case codes.Unimplemented:
-		return connect.CodeUnimplemented
-	case codes.Internal:
-		return connect.CodeInternal
-	case codes.Unavailable:
-		return connect.CodeUnavailable
-	case codes.DataLoss:
-		return connect.CodeDataLoss
-	case codes.Unauthenticated:
-		return connect.CodeUnauthenticated
-	default:
-		return connect.CodeUnknown
-	}
 }
 
 func (h *lanternServiceConnect) Illuminate(ctx context.Context, req *connect.Request[pb.IlluminateRequest]) (*connect.Response[pb.IlluminateResponse], error) {
@@ -201,18 +136,16 @@ func (h *lanternReplicationServiceConnect) Subscribe(ctx context.Context, req *c
 	if h.svc == nil {
 		return connect.NewError(connect.CodeUnavailable, errReplicationDisabled)
 	}
-	// Translate gRPC status errors from the underlying service into
-	// connect.Error so wire clients (and the in-process pump) see
-	// CodeFailedPrecondition / CodeInvalidArgument instead of an
-	// opaque CodeUnknown wrapping a status string.
-	return grpcErrToConnect(h.svc.Subscribe(req.Msg, newConnectServerStream[pb.SubscribeResponse](ctx, stream)))
+	// Subscribe returns *connect.Error directly (see replication.go),
+	// so no extra translation is needed at this seam.
+	return h.svc.Subscribe(req.Msg, newConnectServerStream[pb.SubscribeResponse](ctx, stream))
 }
 
 func (h *lanternReplicationServiceConnect) Snapshot(ctx context.Context, req *connect.Request[pb.SnapshotRequest], stream *connect.ServerStream[pb.SnapshotResponse]) error {
 	if h.svc == nil {
 		return connect.NewError(connect.CodeUnavailable, errReplicationDisabled)
 	}
-	return grpcErrToConnect(h.svc.Snapshot(req.Msg, newConnectServerStream[pb.SnapshotResponse](ctx, stream)))
+	return h.svc.Snapshot(req.Msg, newConnectServerStream[pb.SnapshotResponse](ctx, stream))
 }
 
 func (h *lanternReplicationServiceConnect) PeerStatus(ctx context.Context, req *connect.Request[pb.PeerStatusRequest]) (*connect.Response[pb.PeerStatusResponse], error) {

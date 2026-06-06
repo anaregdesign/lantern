@@ -3,15 +3,16 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+
+	"connectrpc.com/connect"
+	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // ReplicationServiceName is the fully-qualified gRPC service name for the
@@ -122,17 +123,17 @@ func (s *LanternReplicationService) WithOriginStates(p OriginStatesProvider) *La
 // Send errors terminate the stream and increment dropped{reason="send_failed"}.
 func (s *LanternReplicationService) Subscribe(req *pb.SubscribeRequest, stream grpc.ServerStreamingServer[pb.SubscribeResponse]) error {
 	if s.log == nil {
-		return status.Error(codes.Unavailable, "replication is not enabled on this server")
+		return connect.NewError(connect.CodeUnavailable, errors.New("replication is not enabled on this server"))
 	}
 	ch, cancel, err := s.log.Subscribe(req.GetFromSeq())
 	if err != nil {
 		if errors.Is(err, mutationlog.ErrGapped) {
 			s.metrics.OnSubscribeDropped("gapped")
-			return status.Errorf(codes.FailedPrecondition,
+			return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf(
 				"gapped: from_seq=%d is older than the first available seq; snapshot and resubscribe",
-				req.GetFromSeq())
+				req.GetFromSeq()))
 		}
-		return status.Errorf(codes.Unavailable, "subscribe failed: %v", err)
+		return connect.NewError(connect.CodeUnavailable, fmt.Errorf("subscribe failed: %w", err))
 	}
 	defer func() { _ = cancel() }()
 
@@ -143,13 +144,13 @@ func (s *LanternReplicationService) Subscribe(req *pb.SubscribeRequest, stream g
 	for {
 		select {
 		case <-ctx.Done():
-			return status.FromContextError(ctx.Err()).Err()
+			return ctxToConnect(ctx.Err())
 		case entry, ok := <-ch:
 			if !ok {
 				// Slow subscriber: log closed our channel mid-stream.
 				s.metrics.OnSubscribeDropped("gapped")
-				return status.Error(codes.FailedPrecondition,
-					"gapped: subscriber fell behind; snapshot and resubscribe")
+				return connect.NewError(connect.CodeFailedPrecondition,
+					errors.New("gapped: subscriber fell behind; snapshot and resubscribe"))
 			}
 			mu, ok := entry.Op.(*pb.Mutation)
 			if !ok {
@@ -157,8 +158,8 @@ func (s *LanternReplicationService) Subscribe(req *pb.SubscribeRequest, stream g
 				l.Warn("replication: unexpected mutation log entry type",
 					slog.String("type", "non-Mutation payload"),
 					slog.Uint64("seq", entry.Seq))
-				return status.Errorf(codes.Internal,
-					"replication: malformed mutation log entry at seq=%d", entry.Seq)
+				return connect.NewError(connect.CodeInternal, fmt.Errorf(
+					"replication: malformed mutation log entry at seq=%d", entry.Seq))
 			}
 			// Shallow copy so we can stamp Seq without mutating the
 			// shared Mutation pointer other subscribers (or the WAL) may
@@ -206,7 +207,7 @@ func (s *LanternReplicationService) loggerOrDefault() *slog.Logger {
 // once the snapshot path is wired end-to-end.
 func (s *LanternReplicationService) Snapshot(_ *pb.SnapshotRequest, stream grpc.ServerStreamingServer[pb.SnapshotResponse]) error {
 	if s.backend == nil {
-		return status.Error(codes.Unavailable, "snapshot is not enabled on this server")
+		return connect.NewError(connect.CodeUnavailable, errors.New("snapshot is not enabled on this server"))
 	}
 	ctx := stream.Context()
 
@@ -236,7 +237,7 @@ func (s *LanternReplicationService) Snapshot(_ *pb.SnapshotRequest, stream grpc.
 	var vertexCount uint64
 	for _, v := range vertices {
 		if err := ctx.Err(); err != nil {
-			return status.FromContextError(err).Err()
+			return ctxToConnect(err)
 		}
 		entry := &pb.SnapshotResponse{
 			Entry: &pb.SnapshotResponse_Vertex{
@@ -256,7 +257,7 @@ func (s *LanternReplicationService) Snapshot(_ *pb.SnapshotRequest, stream grpc.
 	var edgeCount uint64
 	for _, e := range edges {
 		if err := ctx.Err(); err != nil {
-			return status.FromContextError(err).Err()
+			return ctxToConnect(err)
 		}
 		contribs := make([]*pb.SnapshotEdgeContribution, 0, len(e.Contributions))
 		for _, c := range e.Contributions {
@@ -306,10 +307,10 @@ func (s *LanternReplicationService) Snapshot(_ *pb.SnapshotRequest, stream grpc.
 // instance test path) or because WithOriginStates was never called.
 func (s *LanternReplicationService) PeerStatus(ctx context.Context, _ *pb.PeerStatusRequest) (*pb.PeerStatusResponse, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, status.FromContextError(err).Err()
+		return nil, ctxToConnect(err)
 	}
 	if s.origins == nil {
-		return nil, status.Error(codes.Unavailable, "replication is not enabled on this server")
+		return nil, connect.NewError(connect.CodeUnavailable, errors.New("replication is not enabled on this server"))
 	}
 	rows := s.origins.OriginStates()
 	out := &pb.PeerStatusResponse{Origins: make([]*pb.OriginState, 0, len(rows))}

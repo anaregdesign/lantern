@@ -2,17 +2,18 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
+
+	"connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/anaregdesign/lantern/core/cache/graph"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // ServiceName is the fully-qualified gRPC service name used for per-service
@@ -222,9 +223,9 @@ func (s *LanternService) validateExpiration(exp time.Time) error {
 		if s.onValidationReject != nil {
 			s.onValidationReject("bad_ttl")
 		}
-		return status.Errorf(codes.InvalidArgument,
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf(
 			"expiration %s exceeds LANTERN_TOMBSTONE_TTL=%s",
-			exp.UTC().Format(time.RFC3339Nano), s.tombstoneTTL)
+			exp.UTC().Format(time.RFC3339Nano), s.tombstoneTTL))
 	}
 	return nil
 }
@@ -314,14 +315,14 @@ func (s *LanternService) logMutation(op *pb.MutationOp) {
 // a spanning or shortest-path tree.
 func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateRequest) (*pb.IlluminateResponse, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, status.FromContextError(err).Err()
+		return nil, ctxToConnect(err)
 	}
 
 	traversalStart := time.Now()
 	g, expirations, err := s.cache.NeighborWithExpirationsContext(ctx, request.GetSeed(), int(request.GetStep()), int(request.GetK()), request.GetTfidf())
 	traversalDur := time.Since(traversalStart)
 	if err != nil {
-		return nil, status.FromContextError(err).Err()
+		return nil, ctxToConnect(err)
 	}
 
 	var optimizeDur time.Duration
@@ -330,12 +331,12 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 		g, err = opt(ctx, g, request.GetSeed())
 		optimizeDur = time.Since(optStart)
 		if err != nil {
-			return nil, status.FromContextError(err).Err()
+			return nil, ctxToConnect(err)
 		}
 	}
 
 	if err := ctx.Err(); err != nil {
-		return nil, status.FromContextError(err).Err()
+		return nil, ctxToConnect(err)
 	}
 
 	vertices := make([]*pb.Vertex, 0, len(g.Vertices))
@@ -374,7 +375,7 @@ func (s *LanternService) GetVertex(ctx context.Context, request *pb.GetVertexReq
 		return nil, err
 	}
 	if len(resp.GetMissing()) == 1 {
-		return nil, status.Errorf(codes.NotFound, "vertex %q not found", request.GetKey())
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("vertex %q not found", request.GetKey()))
 	}
 	return &pb.GetVertexResponse{Vertex: resp.GetVertices()[0]}, nil
 }
@@ -385,7 +386,7 @@ func (s *LanternService) GetVertex(ctx context.Context, request *pb.GetVertexReq
 // order — clients should match by Vertex.key.
 func (s *LanternService) GetVertices(ctx context.Context, request *pb.GetVerticesRequest) (*pb.GetVerticesResponse, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, status.FromContextError(err).Err()
+		return nil, ctxToConnect(err)
 	}
 	keys := request.GetKeys()
 	s.metrics.OnBatch("GetVertices", len(keys))
@@ -416,7 +417,7 @@ func (s *LanternService) PutVertex(ctx context.Context, request *pb.PutVertexReq
 
 func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVerticesRequest) (*pb.PutVerticesResponse, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, status.FromContextError(err).Err()
+		return nil, ctxToConnect(err)
 	}
 	in := request.GetVertices()
 	s.metrics.OnBatch("PutVertices", len(in))
@@ -448,7 +449,7 @@ func (s *LanternService) DeleteVertex(ctx context.Context, in *pb.DeleteVertexRe
 
 func (s *LanternService) DeleteVertices(ctx context.Context, in *pb.DeleteVerticesRequest) (*pb.DeleteVerticesResponse, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, status.FromContextError(err).Err()
+		return nil, ctxToConnect(err)
 	}
 	s.metrics.OnBatch("DeleteVertices", len(in.GetKeys()))
 	var n int
@@ -471,7 +472,7 @@ func (s *LanternService) GetEdge(ctx context.Context, request *pb.GetEdgeRequest
 		return nil, err
 	}
 	if len(resp.GetMissing()) == 1 {
-		return nil, status.Errorf(codes.NotFound, "edge %q -> %q not found", request.GetTail(), request.GetHead())
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("edge %q -> %q not found", request.GetTail(), request.GetHead()))
 	}
 	return &pb.GetEdgeResponse{Edge: resp.GetEdges()[0]}, nil
 }
@@ -481,7 +482,7 @@ func (s *LanternService) GetEdge(ctx context.Context, request *pb.GetEdgeRequest
 // Order within either slice is not guaranteed to follow request order.
 func (s *LanternService) GetEdges(ctx context.Context, request *pb.GetEdgesRequest) (*pb.GetEdgesResponse, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, status.FromContextError(err).Err()
+		return nil, ctxToConnect(err)
 	}
 	in := request.GetEdges()
 	s.metrics.OnBatch("GetEdges", len(in))
@@ -512,7 +513,7 @@ func (s *LanternService) AddEdge(ctx context.Context, request *pb.AddEdgeRequest
 
 func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesRequest) (*pb.AddEdgesResponse, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, status.FromContextError(err).Err()
+		return nil, ctxToConnect(err)
 	}
 	in := request.GetEdges()
 	s.metrics.OnBatch("AddEdges", len(in))
@@ -542,7 +543,7 @@ func (s *LanternService) PutEdge(ctx context.Context, request *pb.PutEdgeRequest
 
 func (s *LanternService) PutEdges(ctx context.Context, request *pb.PutEdgesRequest) (*pb.PutEdgesResponse, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, status.FromContextError(err).Err()
+		return nil, ctxToConnect(err)
 	}
 	in := request.GetEdges()
 	s.metrics.OnBatch("PutEdges", len(in))
@@ -578,7 +579,7 @@ func (s *LanternService) DeleteEdge(ctx context.Context, in *pb.DeleteEdgeReques
 
 func (s *LanternService) DeleteEdges(ctx context.Context, in *pb.DeleteEdgesRequest) (*pb.DeleteEdgesResponse, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, status.FromContextError(err).Err()
+		return nil, ctxToConnect(err)
 	}
 	inEdges := in.GetEdges()
 	s.metrics.OnBatch("DeleteEdges", len(inEdges))
