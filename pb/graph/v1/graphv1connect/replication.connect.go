@@ -63,14 +63,15 @@ type LanternReplicationServiceClient interface {
 	Subscribe(context.Context, *connect.Request[v1.SubscribeRequest]) (*connect.ServerStreamForClient[v1.SubscribeResponse], error)
 	// Snapshot streams a point-in-time, causally-consistent dump of every
 	// live vertex and edge to a bootstrapping peer. The first frame is a
-	// SnapshotHeader carrying the (cutoff_seq, cutoff_hlc) the server used
-	// to materialise the snapshot; the last frame is a SnapshotFooter with
-	// the actual vertex / edge counts streamed.
+	// SnapshotHeader carrying the (cutoff_seq_per_origin, cutoff_hlc) the
+	// server used to materialise the snapshot; the last frame is a
+	// SnapshotFooter with the actual vertex / edge counts streamed.
 	//
 	// Bootstrap stitch contract: after receiving the SnapshotFooter the
-	// peer MUST call `Subscribe(from_seq = cutoff_seq + 1)` on the same
-	// origin to pick up the live tail. Without that the snapshot and the
-	// live stream cannot be glued together without gap or overlap.
+	// peer MUST call `Subscribe(from_seq_per_origin = {origin: seq+1 for
+	// each (origin, seq) in cutoff_seq_per_origin})` to pick up the live
+	// tail. Without that the snapshot and the live stream cannot be glued
+	// together without gap or overlap.
 	//
 	// No HTTP gateway annotation (parity with Subscribe).
 	Snapshot(context.Context, *connect.Request[v1.SnapshotRequest]) (*connect.ServerStreamForClient[v1.SnapshotResponse], error)
@@ -168,14 +169,15 @@ type LanternReplicationServiceHandler interface {
 	Subscribe(context.Context, *connect.Request[v1.SubscribeRequest], *connect.ServerStream[v1.SubscribeResponse]) error
 	// Snapshot streams a point-in-time, causally-consistent dump of every
 	// live vertex and edge to a bootstrapping peer. The first frame is a
-	// SnapshotHeader carrying the (cutoff_seq, cutoff_hlc) the server used
-	// to materialise the snapshot; the last frame is a SnapshotFooter with
-	// the actual vertex / edge counts streamed.
+	// SnapshotHeader carrying the (cutoff_seq_per_origin, cutoff_hlc) the
+	// server used to materialise the snapshot; the last frame is a
+	// SnapshotFooter with the actual vertex / edge counts streamed.
 	//
 	// Bootstrap stitch contract: after receiving the SnapshotFooter the
-	// peer MUST call `Subscribe(from_seq = cutoff_seq + 1)` on the same
-	// origin to pick up the live tail. Without that the snapshot and the
-	// live stream cannot be glued together without gap or overlap.
+	// peer MUST call `Subscribe(from_seq_per_origin = {origin: seq+1 for
+	// each (origin, seq) in cutoff_seq_per_origin})` to pick up the live
+	// tail. Without that the snapshot and the live stream cannot be glued
+	// together without gap or overlap.
 	//
 	// No HTTP gateway annotation (parity with Subscribe).
 	Snapshot(context.Context, *connect.Request[v1.SnapshotRequest], *connect.ServerStream[v1.SnapshotResponse]) error

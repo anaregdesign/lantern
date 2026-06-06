@@ -297,8 +297,18 @@ func (s *LanternService) logMutation(op *pb.MutationOp) {
 		},
 		Origin: append([]byte(nil), s.origin...),
 		Op:     op,
+		// Seq is stamped atomically inside Append via the
+		// SeqStamper callback below — by the time Append returns,
+		// the dispatcher has already broadcast the entry to
+		// subscribers with mu.Seq already set to the assigned
+		// origin's seq. This is what keeps the leaderless
+		// Subscribe contract (#415) race-free: Subscribe relay
+		// forwards mu unchanged, so downstream consumers always
+		// see (origin, origin_seq) anchored to the originating
+		// writer regardless of how many replicas the entry
+		// transits.
 	}
-	entry, err := s.log.Append(mu, ts)
+	entry, err := s.log.Append(mu, ts, func(seq uint64) { mu.Seq = seq })
 	if err != nil {
 		l := s.logger
 		if l == nil {

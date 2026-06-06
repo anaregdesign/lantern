@@ -125,19 +125,21 @@ func (s *LanternReplicationService) WithOriginStates(p OriginStatesProvider) *La
 // does not require deduplication or seq remapping.
 //
 // Flow:
-//  1. Compute the minimum seq across all requested origins (cold-start
-//     callers pass an empty map, which yields min=1 = oldest retained
-//     entry). Open a log subscription at that minimum so the dispatcher
-//     hands us every entry the cursor could possibly want.
+//  1. Open a log subscription at seq 1 so the dispatcher hands us
+//     every retained entry. Per-origin filtering happens entirely at
+//     this layer — the log itself is origin-agnostic.
 //  2. For each entry, filter by the per-origin cursor: deliver only
-//     when entry.Seq >= cursor[origin]. Origins absent from the cursor
+//     when mu.Seq >= cursor[origin]. Origins absent from the cursor
 //     are delivered from the oldest retained entry — this lets a
-//     consumer that has never seen origin X (e.g. X joined the cluster
-//     while the consumer was offline) catch up naturally.
-//  3. ErrGapped from the log layer (the computed minimum is below the
-//     ring's firstSeq) surfaces as FailedPrecondition + reason
-//     "gapped" so the client knows to snapshot and resubscribe (RFC
-//     §8.2).
+//     consumer that has never seen origin X (e.g. X joined the
+//     cluster while the consumer was offline) catch up naturally.
+//     mu.Seq carries the originating writer's seq (stamped at
+//     logMutation / preserved across relay), NOT the forwarding
+//     replica's local log seq.
+//  3. ErrGapped from the log layer (the log was truncated below seq
+//     1, which only happens if the ring evicted entries) surfaces as
+//     FailedPrecondition + reason "gapped" so the client knows to
+//     snapshot and resubscribe (RFC §8.2).
 //  4. If the channel is closed mid-stream the subscriber fell behind
 //     the per-subscriber buffer (Options.SubscriberBuffer). Surface
 //     this as FailedPrecondition + "gapped" — symmetric with case 3.
@@ -150,14 +152,12 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 		return connect.NewError(connect.CodeUnavailable, errors.New("replication is not enabled on this server"))
 	}
 	cursor := req.GetFromSeqPerOrigin()
-	minSeq := minSeqFromCursor(cursor)
-	ch, cancel, err := s.log.Subscribe(minSeq)
+	ch, cancel, err := s.log.Subscribe(1)
 	if err != nil {
 		if errors.Is(err, mutationlog.ErrGapped) {
 			s.metrics.OnSubscribeDropped("gapped")
-			return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf(
-				"gapped: from_seq=%d is older than the first available seq; snapshot and resubscribe",
-				minSeq))
+			return connect.NewError(connect.CodeFailedPrecondition,
+				errors.New("gapped: log truncated below seq 1; snapshot and resubscribe"))
 		}
 		return connect.NewError(connect.CodeUnavailable, fmt.Errorf("subscribe failed: %w", err))
 	}
@@ -191,42 +191,25 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 			// cursor are NOT skipped — they are delivered from the
 			// oldest retained entry, matching the contract documented
 			// on pb.SubscribeRequest.
-			if want, present := cursor[hex.EncodeToString(mu.GetOrigin())]; present && entry.Seq < want {
+			if want, present := cursor[hex.EncodeToString(mu.GetOrigin())]; present && mu.GetSeq() < want {
 				continue
 			}
-			// Shallow copy so we can stamp Seq without mutating the
-			// shared Mutation pointer other subscribers (or the WAL) may
-			// be observing.
-			out := &pb.Mutation{
-				Seq:    entry.Seq,
-				Hlc:    mu.GetHlc(),
-				Origin: mu.GetOrigin(),
-				Op:     mu.GetOp(),
-			}
-			if err := stream.Send(&pb.SubscribeResponse{Mutation: out}); err != nil {
+			// Forward the mutation as stamped at the originating
+			// writer (mu.Seq = origin's seq). The relay does NOT
+			// overwrite Seq with entry.Seq (this replica's local
+			// log seq), because downstream consumers in the
+			// leaderless Subscribe contract (#415) key on
+			// (origin, origin_seq), not on the forwarding replica's
+			// local seq. Forwarding entry.Seq instead would make
+			// the same (origin, origin_seq) tuple appear with a
+			// different Seq value on every hop, breaking the
+			// per-origin dedup gate in ApplyMutation.
+			if err := stream.Send(&pb.SubscribeResponse{Mutation: mu}); err != nil {
 				s.metrics.OnSubscribeDropped("send_failed")
 				return err
 			}
 		}
 	}
-}
-
-// minSeqFromCursor returns the smallest seq present in the per-origin
-// cursor, or 1 (the first valid log seq) when the cursor is empty so a
-// cold-start subscriber receives every retained entry.
-func minSeqFromCursor(cursor map[string]uint64) uint64 {
-	if len(cursor) == 0 {
-		return 1
-	}
-	var min uint64
-	first := true
-	for _, v := range cursor {
-		if first || v < min {
-			min = v
-			first = false
-		}
-	}
-	return min
 }
 
 func (s *LanternReplicationService) loggerOrDefault() *slog.Logger {
@@ -239,12 +222,13 @@ func (s *LanternReplicationService) loggerOrDefault() *slog.Logger {
 // Snapshot implements pb.LanternReplicationServiceServer.
 //
 // Flow:
-//  1. Stamp the cutoff (cutoff_seq, cutoff_hlc) and send a SnapshotHeader
-//     as the very first frame so receivers know where to resume Subscribe.
-//     cutoff_seq is `log.LastSeq()` at snapshot-open time (0 when the log
-//     is empty or replication is disabled — the peer is expected to start
-//     Subscribe at cutoff_seq + 1 = 1, which matches the mutation log's
-//     first valid seq); cutoff_hlc is `clock.Now()`.
+//  1. Stamp the per-origin cutoff and cutoff_hlc and send a
+//     SnapshotHeader as the very first frame so receivers know how
+//     to resume Subscribe. cutoff_seq_per_origin is the current
+//     contents of the OriginStatesProvider (each origin's last applied
+//     seq); cutoff_hlc is clock.Now(). An empty map is sent when the
+//     local server has not yet applied any origin (cold cluster) or
+//     when no origin state provider is wired (test path).
 //  2. Materialise vertices and edges through the Backend snapshot API
 //     (taken under the GraphCache write lock). Stream each as its own
 //     SnapshotResponse frame, honouring stream.Context() cancellation
@@ -261,10 +245,14 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, _ *pb.Snapshot
 		return connect.NewError(connect.CodeUnavailable, errors.New("snapshot is not enabled on this server"))
 	}
 
-	var cutoffSeq uint64
-	if s.log != nil {
-		if last, ok := s.log.LastSeq(); ok {
-			cutoffSeq = last
+	var cutoffPerOrigin map[string]uint64
+	if s.origins != nil {
+		states := s.origins.OriginStates()
+		if len(states) > 0 {
+			cutoffPerOrigin = make(map[string]uint64, len(states))
+			for _, st := range states {
+				cutoffPerOrigin[hex.EncodeToString(st.Origin[:])] = st.LastSeq
+			}
 		}
 	}
 	var cutoffHLC hlc.Timestamp
@@ -274,8 +262,8 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, _ *pb.Snapshot
 	header := &pb.SnapshotResponse{
 		Entry: &pb.SnapshotResponse_Header{
 			Header: &pb.SnapshotHeader{
-				CutoffSeq: cutoffSeq,
-				CutoffHlc: hlcToProto(cutoffHLC),
+				CutoffSeqPerOrigin: cutoffPerOrigin,
+				CutoffHlc:          hlcToProto(cutoffHLC),
 			},
 		},
 	}

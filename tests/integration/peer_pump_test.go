@@ -186,11 +186,11 @@ func TestPeerPump_E2E_ThreeNodeConvergence(t *testing.T) {
 
 	// Reading B (#415): every node's mutation log retains all four
 	// cluster-wide writes (A's PutVertex + AddEdge, B's PutVertex,
-	// C's PutVertex). The peer-pump still suppresses self-echo and
-	// the ApplyMutation watermark gate still dedups duplicate hops,
-	// so each (origin, seq) lands at most once on every replica.
-	// The canonical witness is the monotonic last-seq: it equals
-	// the count of distinct cluster mutations seen by each replica.
+	// C's PutVertex). Per-origin watermark CAS (ApplyMutation) +
+	// origin-anchored mu.Seq (logMutation stamps it; Subscribe relay
+	// preserves it across hops) guarantee each (origin, seq) lands
+	// at most once on every replica, so the monotonic LastSeq is
+	// exactly the count of distinct cluster mutations.
 	const wantClusterWrites = 4
 	if last, ok := a.log.LastSeq(); !ok || last != wantClusterWrites {
 		t.Errorf("a.log.LastSeq=%d ok=%v want %d (leaderless Subscribe contract)", last, ok, wantClusterWrites)
@@ -238,9 +238,10 @@ func TestPeerPump_GapRecoverySnapshot(t *testing.T) {
 
 	primary := newPumpNode(t, hlc.NodeID{0xA1})
 	// Pre-populate the primary BEFORE the follower attaches. With a
-	// small ring buffer the follower's effective fromSeq=1 will be
-	// below firstSeq → service returns FailedPrecondition reason=gapped
-	// → Pump runs a snapshot to catch up, then resubscribes.
+	// small ring buffer the follower's effective request (empty
+	// cursor → server starts at oldest = 1) will be below firstSeq
+	// → service returns FailedPrecondition reason=gapped → Pump runs
+	// a snapshot to catch up, then resubscribes.
 	for i := 0; i < 16; i++ {
 		if err := primary.sdk.PutVertex(ctx, fmt.Sprintf("pre-%d", i), "v", time.Minute); err != nil {
 			t.Fatalf("primary.PutVertex[%d]: %v", i, err)
@@ -260,7 +261,10 @@ func TestPeerPump_GapRecoverySnapshot(t *testing.T) {
 
 	// After the snapshot, a fresh write on the primary must arrive
 	// via the resubscribed stream — proves that Pump correctly
-	// resumed Subscribe from cutoff_seq+1.
+	// resubscribed after the snapshot bootstrap (#415, B-4: cutoff is
+	// per-origin and lives in the server's watermark tracker; the
+	// pump just sends an empty cursor again and the local
+	// ApplyMutation CAS dedups whatever the snapshot already covered).
 	if err := primary.sdk.PutVertex(ctx, "post-snapshot", "v", time.Minute); err != nil {
 		t.Fatalf("primary.PutVertex post: %v", err)
 	}

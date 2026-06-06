@@ -403,19 +403,30 @@ export class SnapshotRequest extends Message<SnapshotRequest> {
 }
 
 /**
- * SnapshotHeader is always the FIRST SnapshotResponse on the wire. It freezes
- * the (seq, hlc) cutoff the server used to materialise the snapshot. A
- * bootstrapping peer MUST persist (cutoff_seq, cutoff_hlc) before applying
- * any payload entries and MUST resume `Subscribe` from cutoff_seq + 1 so
- * the snapshot and the live tail stitch without gap or overlap.
+ * SnapshotHeader is always the FIRST SnapshotResponse on the wire. It
+ * freezes the per-origin watermark and the snapshot-open HLC the server
+ * used to materialise the snapshot.
+ *
+ * A bootstrapping peer MUST persist `cutoff_seq_per_origin` and
+ * `cutoff_hlc` before applying any payload entries and MUST resume
+ * `Subscribe` with `from_seq_per_origin = {origin: seq+1 for each
+ * (origin, seq) in cutoff_seq_per_origin}` so the snapshot and the
+ * live tail stitch without gap or overlap.
+ *
+ * Keys in `cutoff_seq_per_origin` are 32-char lowercase hex of the
+ * 16-byte HLC NodeID, matching `SubscribeRequest.from_seq_per_origin`.
+ * Values are the local seq of the last entry the server had applied
+ * from each origin when the snapshot started. An empty map indicates
+ * the server has not yet applied any origin (cold cluster) and the
+ * resume Subscribe should pass an empty cursor.
  *
  * @generated from message graph.v1.SnapshotHeader
  */
 export class SnapshotHeader extends Message<SnapshotHeader> {
   /**
-   * @generated from field: uint64 cutoff_seq = 1;
+   * @generated from field: map<string, uint64> cutoff_seq_per_origin = 1;
    */
-  cutoffSeq = protoInt64.zero;
+  cutoffSeqPerOrigin: { [key: string]: bigint } = {};
 
   /**
    * @generated from field: graph.v1.HLCTimestamp cutoff_hlc = 2;
@@ -430,7 +441,7 @@ export class SnapshotHeader extends Message<SnapshotHeader> {
   static readonly runtime: typeof proto3 = proto3;
   static readonly typeName = "graph.v1.SnapshotHeader";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "cutoff_seq", kind: "scalar", T: 4 /* ScalarType.UINT64 */ },
+    { no: 1, name: "cutoff_seq_per_origin", kind: "map", K: 9 /* ScalarType.STRING */, V: {kind: "scalar", T: 4 /* ScalarType.UINT64 */} },
     { no: 2, name: "cutoff_hlc", kind: "message", T: HLCTimestamp },
   ]);
 
