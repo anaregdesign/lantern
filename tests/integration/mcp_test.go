@@ -5,71 +5,18 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
-	"net"
 	"testing"
 	"time"
 
-	cachegraph "github.com/anaregdesign/lantern/core/cache/graph"
 	lmcp "github.com/anaregdesign/lantern/mcp"
-	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	client "github.com/anaregdesign/lantern/sdks/go"
-	"github.com/anaregdesign/lantern/server/provider"
-	"github.com/anaregdesign/lantern/server/service"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/test/bufconn"
 )
 
-// newInProcessClientWithPrefix is a variant of newInProcessClient whose
-// backing GraphCache has the prefix index enabled, so list_under (which
-// drives ScanVertices) actually returns results. The default shared
-// helper does not enable it because most integration tests don't need
-// the index and we want to keep their behaviour unchanged.
-func newInProcessClientWithPrefix(t *testing.T) (*client.Lantern, func()) {
-	t.Helper()
-	lis := bufconn.Listen(1 << 16)
-
-	gc := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
-	gc.EnablePrefixIndex(func(s string) string { return s })
-
-	vi := provider.NewValidationInterceptor(provider.ValidationLimits{
-		MaxKeyLen:         256,
-		MaxBatchSize:      1024,
-		IlluminateMaxStep: 32,
-		IlluminateMaxK:    256,
-	})
-	srv := grpc.NewServer(grpc.UnaryInterceptor(vi.UnaryServerInterceptor()))
-	pb.RegisterLanternServiceServer(srv, service.NewLanternService(gc))
-
-	go func() {
-		if err := srv.Serve(lis); err != nil {
-			t.Logf("grpc Serve returned: %v", err)
-		}
-	}()
-
-	dialer := func(context.Context, string) (net.Conn, error) { return lis.Dial() }
-	l, err := client.NewLantern(
-		"passthrough://bufconn",
-		client.WithTransportCredentials(insecure.NewCredentials()),
-		client.WithDialOption(grpc.WithContextDialer(dialer)),
-	)
-	if err != nil {
-		t.Fatalf("NewLantern: %v", err)
-	}
-	cleanup := func() {
-		_ = l.Close()
-		srv.Stop()
-		_ = lis.Close()
-	}
-	return l, cleanup
-}
-
 // TestMCP_EndToEnd exercises the 6-tool MCP surface through a real MCP
-// client session over InMemoryTransport, backed by a real Lantern gRPC
-// service (bufconn). It is the smoke test that proves the whole stack
-// — schema inference, argument validation, SDK round-trip, and result
-// shape — agrees end-to-end.
+// client session over InMemoryTransport, backed by a real Lantern
+// service (Connect-on-h2c per #350). It is the smoke test that proves
+// the whole stack — schema inference, argument validation, SDK
+// round-trip, and result shape — agrees end-to-end.
 func TestMCP_EndToEnd(t *testing.T) {
 	lan, cleanup := newInProcessClientWithPrefix(t)
 	defer cleanup()
