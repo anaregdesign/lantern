@@ -72,6 +72,28 @@ services:
       retries: 6
       start_period: 5s
 
+  # Opt-in MCP server. The MCP protocol is stdio-only, so this service
+  # is only useful via `docker compose --profile mcp run --rm lantern-mcp`
+  # (NOT `up`, which would just background the container with nothing
+  # consuming stdout). Real production traffic should live inside the
+  # agent runtime's pod — see `mcp/examples/` for the configs that wire
+  # Claude Desktop / VS Code / Cursor to a local container.
+  #
+  # Usage:
+  #   docker compose --profile mcp run --rm lantern-mcp
+  lantern-mcp:
+    profiles: ["mcp"]
+    image: ${LANTERN_MCP_IMAGE:-ghcr.io/anaregdesign/lantern-mcp:latest}
+    stdin_open: true
+    tty: false
+    environment:
+      # Compose DNS round-robins the `lantern` service across replicas.
+      LANTERN_ADDR: "http://lantern:6380"
+      LANTERN_MCP_PING_TIMEOUT: "5s"
+    depends_on:
+      lantern:
+        condition: service_healthy
+
   prometheus:
     image: prom/prometheus:v3.5.0
     ports:

@@ -202,3 +202,54 @@ admin:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+
+# Bring-your-own MCP sidecar (lantern-mcp). The chart does NOT render
+# a Pod / Deployment for lantern-mcp on its own — MCP is a stdio
+# protocol, so the canonical deployment shape is a sidecar inside the
+# agent runtime's pod (Claude Desktop / VS Code Server / a custom
+# worker). This `mcp:` block configures the named template
+# `lantern.mcpSidecar` defined in templates/_mcp-sidecar.tpl, which
+# external charts / manifests splice into their own Pod spec via:
+#
+#   containers:
+#     - name: agent
+#       ...
+#     {{- include "lantern.mcpSidecar" . | nindent 4 }}
+#
+# See deploy/helm/lantern/README.md "MCP sidecar" for the full
+# walkthrough and mcp/examples/ for the agent-runtime configs that
+# already wire lantern-mcp end-to-end.
+mcp:
+  image:
+    repository: ghcr.io/anaregdesign/lantern-mcp
+    tag: ""        # defaults to .Chart.AppVersion; pin to mcp/vX.Y.Z in prod
+    pullPolicy: IfNotPresent
+
+  # Address the MCP container dials. Empty (default) lets the sidecar
+  # template fall back to the chart's ClusterIP Service FQDN so the
+  # sidecar talks to the in-cluster lantern automatically. Override
+  # only when the sidecar runs in a different namespace / cluster.
+  lanternAddr: ""
+
+  # Startup health-check timeout for the MCP container's initial ping.
+  pingTimeout: "5s"
+
+  # Per-TTL-bucket override map. Each non-empty value is emitted as a
+  # `LANTERN_MCP_TTL_<UPPER_BUCKET>` env var on the sidecar. See
+  # mcp/internal/ttl/ for the canonical bucket list + defaults.
+  ttl: {}
+    # turn: "15m"
+    # conversation: "2h"
+
+  resources:
+    requests:
+      cpu: 5m
+      memory: 16Mi
+    limits:
+      cpu: 200m
+      memory: 64Mi
+
+  # Raw env list appended to the templated entries above. Useful for
+  # LANTERN_MCP_LOG_LEVEL or any future knob the sidecar template
+  # hasn't been updated for yet.
+  extraEnv: []

@@ -129,6 +129,59 @@ container image's `admin/README.md`). Run it only on trusted networks
 (`admin.ingress.enabled=false` + `kubectl port-forward`) or front it
 with your own ingress-level auth proxy.
 
+## MCP sidecar
+
+The chart **does not render a Pod / Deployment for `lantern-mcp`**.
+MCP is a stdio protocol (the binary mounts `&mcp.StdioTransport{}`
+in `mcp/cmd/main.go`), so a free-standing Service shape doesn't fit:
+there's no socket to expose and no obvious client to attach to. The
+canonical deployment shape is a **sidecar inside the agent runtime's
+pod** (Claude Desktop / VS Code Server / a custom worker).
+
+To make that easy, the chart exports a named template,
+`lantern.mcpSidecar`, that emits a container spec your own
+chart / manifest can splice in:
+
+```yaml
+# my-agent/templates/pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-agent
+spec:
+  containers:
+    - name: agent
+      image: my-agent:latest
+      stdin: true
+      tty: false
+    {{- include "lantern.mcpSidecar" . | nindent 4 }}
+```
+
+The sidecar reads its config from `.Values.mcp`:
+
+| Value | Default | Purpose |
+| --- | --- | --- |
+| `mcp.image.repository` | `ghcr.io/anaregdesign/lantern-mcp` | Override for private mirrors. |
+| `mcp.image.tag` | `.Chart.AppVersion` | Pin to a specific `mcp/vX.Y.Z`. |
+| `mcp.lanternAddr` | _(empty → in-cluster Service FQDN)_ | Override only for cross-namespace / cross-cluster setups. |
+| `mcp.pingTimeout` | `5s` | Startup health-check timeout. |
+| `mcp.ttl.<bucket>` | _(unset)_ | Per-bucket TTL override; rendered as `LANTERN_MCP_TTL_<UPPER>` env. |
+| `mcp.resources` | small | requests/limits for the sidecar container. |
+| `mcp.extraEnv` | `[]` | Raw env list appended to the templated ones. |
+
+Real production traffic happens over stdio inside the pod; for
+manual probes use `kubectl exec -it <pod> -c lantern-mcp` which
+hands you the same stdio channel the agent uses.
+
+If you actually want a free-standing `lantern-mcp` Deployment (e.g.
+for `kubectl attach` exploration), the agent-runtime configs in
+[`mcp/examples/`](../../../mcp/examples/) show the pattern — fork
+them into your own chart rather than complicating this one.
+
+If an HTTP/SSE transport lands in the upstream `go-sdk`, the chart
+will gain a proper `mcp-deployment.yaml` + `mcp-service.yaml`; tracked
+as a follow-up.
+
 ## Smoke test
 
 ```shell
