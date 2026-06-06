@@ -378,12 +378,11 @@ func NewGrpcServerMetrics(reg *prometheus.Registry) *grpcprom.ServerMetrics {
 func NewGrpcServerOptions(
 	net NetConfig,
 	tlsCfg TLSConfig,
-	rl RateLimitConfig,
-	limits ValidationLimits,
 	obs ObservabilityConfig,
 	logger *slog.Logger,
 	metrics *grpcprom.ServerMetrics,
-	dm *domainmetrics.DomainMetrics,
+	validator *ValidationInterceptor,
+	rli *RateLimitInterceptor,
 ) ([]grpc.ServerOption, error) {
 	logOpts := []logging.Option{
 		logging.WithLogOnEvents(logging.StartCall, logging.FinishCall),
@@ -394,10 +393,6 @@ func NewGrpcServerOptions(
 			return fmt.Errorf("internal server error")
 		}),
 	}
-
-	validator := NewValidationInterceptor(limits).
-		WithRejectHook(dm.OnValidationRejected).
-		WithLogger(logger)
 
 	unary := []grpc.UnaryServerInterceptor{
 		recovery.UnaryServerInterceptor(recoveryOpts...),
@@ -410,9 +405,14 @@ func NewGrpcServerOptions(
 		metrics.StreamServerInterceptor(),
 	}
 
-	if rl.RPS > 0 {
-		rli := NewRateLimitInterceptor(rl.RPS, rl.Burst).
-			WithRejectHook(dm.OnRateLimitRejected)
+	// validator and rli are wire providers (lifted out of this function
+	// in #349) so the additive Connect listener (#337) and the legacy
+	// gRPC server share the SAME *rate.Limiter token bucket. Sharing
+	// the limiter — rather than constructing a parallel one per
+	// transport — means a client that hammers the Connect surface
+	// cannot bypass the protection the operator configured for the
+	// gRPC surface (and vice versa).
+	if rli != nil && rli.lim != nil {
 		unary = append(unary, validator.UnaryServerInterceptor(), rli.UnaryServerInterceptor())
 		stream = append(stream, validator.StreamServerInterceptor(), rli.StreamServerInterceptor())
 	} else {

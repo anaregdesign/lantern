@@ -41,6 +41,8 @@ func initializeApp() (*App, error) {
 		provider.NewListener,
 		provider.NewPrometheusRegistry,
 		provider.NewGrpcServerMetrics,
+		provider.NewValidationInterceptorProvider,
+		provider.NewRateLimitInterceptorProvider,
 		provider.NewGrpcServerOptions,
 		provider.NewGrpcServer,
 		provider.NewHealthServer,
