@@ -184,20 +184,22 @@ func TestPeerPump_E2E_ThreeNodeConvergence(t *testing.T) {
 		t.Errorf("c edge from-a->target: got w=%v ok=%v want 1.5/true", w, ok)
 	}
 
-	// Self-echo defence: A's mutation seq for "from-a" must NOT be
-	// re-applied on A. The mutationlog's monotonic last-seq is the
-	// canonical witness — if a peer had bounced our own mutation
-	// back, ApplyMutation would have appended a new entry and the
-	// lastSeq would exceed the count of local writes. A produced
-	// exactly 2 local writes (PutVertex + AddEdge).
-	if last, ok := a.log.LastSeq(); !ok || last != 2 {
-		t.Errorf("a.log.LastSeq=%d ok=%v want 2 (self-echo suppression broken?)", last, ok)
+	// Reading B (#415): every node's mutation log retains all four
+	// cluster-wide writes (A's PutVertex + AddEdge, B's PutVertex,
+	// C's PutVertex). The peer-pump still suppresses self-echo and
+	// the ApplyMutation watermark gate still dedups duplicate hops,
+	// so each (origin, seq) lands at most once on every replica.
+	// The canonical witness is the monotonic last-seq: it equals
+	// the count of distinct cluster mutations seen by each replica.
+	const wantClusterWrites = 4
+	if last, ok := a.log.LastSeq(); !ok || last != wantClusterWrites {
+		t.Errorf("a.log.LastSeq=%d ok=%v want %d (leaderless Subscribe contract)", last, ok, wantClusterWrites)
 	}
-	if last, ok := b.log.LastSeq(); !ok || last != 1 {
-		t.Errorf("b.log.LastSeq=%d ok=%v want 1", last, ok)
+	if last, ok := b.log.LastSeq(); !ok || last != wantClusterWrites {
+		t.Errorf("b.log.LastSeq=%d ok=%v want %d", last, ok, wantClusterWrites)
 	}
-	if last, ok := c.log.LastSeq(); !ok || last != 1 {
-		t.Errorf("c.log.LastSeq=%d ok=%v want 1", last, ok)
+	if last, ok := c.log.LastSeq(); !ok || last != wantClusterWrites {
+		t.Errorf("c.log.LastSeq=%d ok=%v want %d", last, ok, wantClusterWrites)
 	}
 }
 

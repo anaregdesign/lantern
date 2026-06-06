@@ -150,10 +150,15 @@ func TestApplyMutation_ReplicationApplyHook(t *testing.T) {
 	}
 }
 
-// TestApplyMutation_DoesNotLog asserts the cardinal rule: replayed
-// mutations MUST NOT re-append to the local log. Otherwise the peer-pump
-// in #184 would echo every mutation back to its origin and loop forever.
-func TestApplyMutation_DoesNotLog(t *testing.T) {
+// TestApplyMutation_AppendsToLocalLog is the Reading B contract test
+// (#415, B-3): a remote-applied mutation MUST land in the local
+// mutation log so external Subscribe consumers on this replica observe
+// every cluster-wide mutation, not just writes that this replica
+// directly received. Replication loops are prevented by the per-origin
+// watermark dedup in ApplyMutation itself (covered separately by
+// TestApplyMutation_DoesNotReAppendDuplicate), not by bypassing the
+// log on apply.
+func TestApplyMutation_AppendsToLocalLog(t *testing.T) {
 	cache := graph.NewGraphCache[string, *pb.Vertex](time.Minute)
 	log := mutationlog.New(mutationlog.Options{Capacity: 128, SubscriberBuffer: 128})
 	t.Cleanup(func() { _ = log.Close() })
@@ -173,8 +178,49 @@ func TestApplyMutation_DoesNotLog(t *testing.T) {
 	if err := svc.ApplyMutation(context.Background(), m); err != nil {
 		t.Fatalf("ApplyMutation: %v", err)
 	}
-	if _, ok := log.LastSeq(); ok {
-		t.Errorf("log has entries after ApplyMutation; want none (replay must not re-append)")
+	gotSeq, ok := log.LastSeq()
+	if !ok {
+		t.Fatalf("log empty after ApplyMutation; want one entry under Reading B")
+	}
+	if gotSeq != 1 {
+		t.Errorf("log.LastSeq = %d, want 1 (first entry on a fresh log)", gotSeq)
+	}
+}
+
+// TestApplyMutation_DoesNotReAppendDuplicate asserts the per-origin
+// watermark dedup gate in ApplyMutation: the same (origin, seq) tuple
+// arriving twice (e.g. through two different peer hops in a fan-out
+// triangle) appends to the local log exactly once. Without this, the
+// peer-pump in #184 would amplify every mutation by the fan-out
+// factor on external Subscribe streams.
+func TestApplyMutation_DoesNotReAppendDuplicate(t *testing.T) {
+	cache := graph.NewGraphCache[string, *pb.Vertex](time.Minute)
+	log := mutationlog.New(mutationlog.Options{Capacity: 128, SubscriberBuffer: 128})
+	t.Cleanup(func() { _ = log.Close() })
+	origin := bytes16("origin-A")
+	clock := hlc.New(origin, hlc.Options{})
+	svc := NewLanternService(cache).
+		WithReplication(log, clock, nil)
+
+	ts := newHLC(1, origin)
+	exp := timestamppb.New(time.Now().Add(time.Hour))
+	m := &pb.Mutation{
+		Seq: 1, Hlc: ts, Origin: origin[:],
+		Op: &pb.MutationOp{Op: &pb.MutationOp_PutVertex{
+			PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "v1", Expiration: exp}},
+		}},
+	}
+	for i := 0; i < 3; i++ {
+		if err := svc.ApplyMutation(context.Background(), m); err != nil {
+			t.Fatalf("ApplyMutation iter=%d: %v", i, err)
+		}
+	}
+	gotSeq, ok := log.LastSeq()
+	if !ok {
+		t.Fatalf("log empty after three ApplyMutation calls; want one entry")
+	}
+	if gotSeq != 1 {
+		t.Errorf("log.LastSeq = %d after dedup; want 1 (single append)", gotSeq)
 	}
 }
 
