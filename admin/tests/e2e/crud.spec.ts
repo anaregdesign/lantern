@@ -142,11 +142,15 @@ test.describe("edge detail", () => {
     );
 
     // Either the row is missing (first run) or already exists — both are
-    // acceptable starting states for the test.
+    // acceptable starting states for the test. After the DELETE fixture the
+    // page renders both `edge-detail-missing` (placeholder card) and
+    // `edge-form-add` (the add-weight form) as siblings, so `.or()` must be
+    // collapsed with `.first()` to relax Playwright strict-mode (#344).
     await expect(
       page
         .getByTestId("edge-form-add")
-        .or(page.getByTestId("edge-detail-missing")),
+        .or(page.getByTestId("edge-detail-missing"))
+        .first(),
     ).toBeVisible();
 
     // Add the same contribution twice. The exact accumulator math is
