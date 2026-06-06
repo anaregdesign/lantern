@@ -15,6 +15,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -22,10 +23,11 @@ import (
 	"syscall"
 	"time"
 
+	"connectrpc.com/connect"
+	"golang.org/x/net/http2"
+
 	"github.com/anaregdesign/lantern/sdks/go"
 	"github.com/spf13/cobra"
-	"google.golang.org/grpc/credentials"
-	credinsecure "google.golang.org/grpc/credentials/insecure"
 )
 
 // connection / transport flags (global)
@@ -147,41 +149,74 @@ func init() {
 	pf.IntVar(&flagChunkSize, "chunk-size", 1000, "batch chunk size for multi-key write/delete")
 }
 
-// target returns the resolved dial target host:port.
+// target returns the resolved server URL (with scheme) the SDK
+// expects since the Connect-only collapse (#367). Flag semantics
+// stay the same: --host/--port build a host:port pair, --address
+// overrides it, and --tls flips http → https.
 func target() string {
-	if flagAddress != "" {
-		return flagAddress
+	hostport := flagAddress
+	if hostport == "" {
+		hostport = net.JoinHostPort(flagHost, strconv.Itoa(flagPort))
 	}
-	return net.JoinHostPort(flagHost, strconv.Itoa(flagPort))
+	scheme := "http"
+	if flagTLS || flagTLSCA != "" || flagTLSCert != "" {
+		scheme = "https"
+	}
+	return scheme + "://" + hostport
 }
 
-// dial constructs a *client.Lantern using the resolved global flags. The
-// caller is responsible for calling Close on the returned client.
+// dial constructs a *client.Lantern using the resolved global flags.
+// The caller is responsible for calling Close on the returned client.
 func dial() (*client.Lantern, error) {
 	opts := []client.Option{
 		client.WithDefaultTimeout(flagTimeout),
 		client.WithBatchChunkSize(flagChunkSize),
 	}
 	if flagCompression != "" && flagCompression != "none" {
-		opts = append(opts, client.WithCompression(flagCompression))
+		opts = append(opts, client.WithConnectClientOption(
+			connect.WithSendCompression(flagCompression),
+		))
 	}
-	if flagTLS || flagTLSCA != "" || flagTLSCert != "" {
-		creds, err := buildTLSCreds()
-		if err != nil {
-			return nil, fmt.Errorf("tls: %w", err)
-		}
-		opts = append(opts, client.WithTransportCredentials(creds))
-	} else {
-		opts = append(opts, client.WithTransportCredentials(credinsecure.NewCredentials()))
+	hc, err := buildHTTPClient()
+	if err != nil {
+		return nil, fmt.Errorf("http client: %w", err)
 	}
+	opts = append(opts, client.WithHTTPClient(hc))
 	return client.NewLantern(target(), opts...)
 }
 
-func buildTLSCreds() (credentials.TransportCredentials, error) {
+// buildHTTPClient returns an h2c-flavoured *http.Client when TLS is
+// off, or a real TLS-backed http2.Transport when --tls / --tls-ca /
+// --tls-cert is supplied. Replaces the legacy buildTLSCreds /
+// credentials.NewTLS path that fed gRPC dial options.
+func buildHTTPClient() (*http.Client, error) {
+	if !flagTLS && flagTLSCA == "" && flagTLSCert == "" {
+		// Plain h2c: same pattern as sdks/go/connect_h2c.go's
+		// defaultH2CClient (kept inline so the CLI does not have to
+		// reach into an SDK internal helper).
+		return &http.Client{
+			Transport: &http2.Transport{
+				AllowHTTP: true,
+				DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+					var d net.Dialer
+					return d.DialContext(ctx, network, addr)
+				},
+			},
+		}, nil
+	}
+	cfg, err := buildTLSConfig()
+	if err != nil {
+		return nil, err
+	}
+	return &http.Client{Transport: &http2.Transport{TLSClientConfig: cfg}}, nil
+}
+
+func buildTLSConfig() (*tls.Config, error) {
 	cfg := &tls.Config{
 		ServerName:         flagTLSServer,
 		InsecureSkipVerify: flagInsecureTLS, //nolint:gosec // opt-in via flag
 		MinVersion:         tls.VersionTLS12,
+		NextProtos:         []string{"h2"},
 	}
 	if flagTLSCA != "" {
 		caPEM, err := os.ReadFile(flagTLSCA)
@@ -204,5 +239,5 @@ func buildTLSCreds() (credentials.TransportCredentials, error) {
 		}
 		cfg.Certificates = []tls.Certificate{pair}
 	}
-	return credentials.NewTLS(cfg), nil
+	return cfg, nil
 }

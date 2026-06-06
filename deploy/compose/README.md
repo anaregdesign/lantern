@@ -43,17 +43,26 @@ docker compose down -v
 The example does **not** include an in-cluster client LB sidecar.
 Pick one of:
 
-- **Go SDK** (`#189`): pass all replica endpoints; the SDK uses
-  gRPC's `round_robin` LB policy.
+- **Reverse proxy / sidecar.** Drop in Caddy / Traefik / envoy with a
+  DNS-resolved upstream pool against `lantern:6380`. The SDK then dials
+  one URL (`http://lantern-proxy:6380`), TLS terminates at the edge,
+  and replica scaling is automatically picked up.
   ```go
-  c, _ := lantern.NewLanternWithEndpoints([]string{
-      "localhost:6380", "localhost:6381", "localhost:6382",
-  })
+  c, _ := lantern.NewLantern("http://lantern-proxy:6380")
   ```
-- **CLI / grpcurl**: hit any pod directly; writes propagate via the
-  peer pump.
-- **Your own LB** (nginx-plus stream `resolve`, Envoy, HAProxy with
-  DNS resolution): point upstream at `lantern:6380`.
+- **DNS round-robin from the client.** If the SDK lives in the same
+  Compose network, dial the service name and let the OS resolver hand
+  out IPs:
+  ```go
+  c, _ := lantern.NewLantern("http://lantern:6380")
+  ```
+- **CLI / grpcurl**: hit any container directly; writes propagate via
+  the peer pump.
+
+> The pre-#367 `NewLanternWithEndpoints([]string{...})` SDK-side
+> round-robin LB was removed when the SDK collapsed to Connect-only
+> ([#367](https://github.com/anaregdesign/lantern/issues/367)). Use a
+> reverse proxy or DNS round-robin instead.
 
 ## Verifying peer discovery
 

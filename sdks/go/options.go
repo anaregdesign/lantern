@@ -1,107 +1,93 @@
+// Package client: options.go — the Connect-only client option set.
+//
+// Pre-#367 the SDK exposed two parallel option types (Option for the
+// legacy gRPC transport, ConnectOption for the additive Connect path).
+// The gRPC transport has now been retired; this file collapses both
+// names to a single canonical Option = ConnectOption alias so existing
+// source compiles while the docstring directs callers to the v1.0
+// replacement for any knob that disappeared with the gRPC dial path.
 package client
 
 import (
+	"net/http"
 	"time"
 
-	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
-	_ "google.golang.org/grpc/encoding/gzip" // register gzip so WithCompression("gzip") works
-	"google.golang.org/grpc/keepalive"
+	"connectrpc.com/connect"
 )
 
-// defaultServiceConfig enables transparent gRPC retries on idempotent RPCs
-// and round_robin client-side load balancing. round_robin is a no-op for
-// single-address targets (pick_first semantics fall out naturally) but
-// becomes meaningful as soon as the target is a `dns:///host:port` URI that
-// resolves to more than one A record — e.g. a k8s headless Service, a
-// Compose service name with multiple replicas, or any other multi-record
-// DNS source. AddEdge stays out of the retry list because it is additive
-// and retrying would double-count weight.
-const defaultServiceConfig = `{
-  "loadBalancingConfig": [{"round_robin": {}}],
-  "methodConfig": [
-    {
-      "name": [
-        {"service": "graph.v1.LanternService", "method": "GetVertex"},
-        {"service": "graph.v1.LanternService", "method": "GetEdge"},
-        {"service": "graph.v1.LanternService", "method": "PutVertex"},
-        {"service": "graph.v1.LanternService", "method": "PutEdge"},
-        {"service": "graph.v1.LanternService", "method": "DeleteVertex"},
-        {"service": "graph.v1.LanternService", "method": "DeleteEdge"},
-        {"service": "graph.v1.LanternService", "method": "DeleteVertices"},
-        {"service": "graph.v1.LanternService", "method": "DeleteEdges"},
-        {"service": "graph.v1.LanternService", "method": "Illuminate"}
-      ],
-      "retryPolicy": {
-        "maxAttempts": 4,
-        "initialBackoff": "0.1s",
-        "maxBackoff": "5s",
-        "backoffMultiplier": 2,
-        "retryableStatusCodes": ["UNAVAILABLE", "RESOURCE_EXHAUSTED"]
-      }
-    }
-  ]
-}`
-
-// defaultBatchChunkSize is used by PutVertices / AddEdges / PutEdges to slice
-// large input slices into RPC-sized batches. The server's MaxBatchSize cap
-// defaults to 10000 — we stay well below that to leave headroom for
-// per-message overhead.
+// defaultBatchChunkSize is used by PutVertices / AddEdges / PutEdges
+// to slice large input slices into RPC-sized batches. The server's
+// MaxBatchSize cap defaults to 10_000 — we stay well below that to
+// leave headroom for per-message overhead.
 const defaultBatchChunkSize = 1000
 
-// defaultKeepalive matches the server-side policy (MinTime: 10s,
-// MaxConnectionIdle: 15m). Time: 30s keeps a ping well clear of the server's
-// MinTime so we never trip ENHANCE_YOUR_CALM, and PermitWithoutStream: true
-// keeps long-idle connections alive instead of being silently torn down.
-var defaultKeepalive = keepalive.ClientParameters{
-	Time:                30 * time.Second,
-	Timeout:             10 * time.Second,
-	PermitWithoutStream: true,
-}
-
-// options collects all knobs settable via WithXxx. Zero values keep the
-// previous defaults (insecure transport, no per-call timeout, default
-// chunking).
+// options collects the knobs the Connect-backed client accepts.
+//
+// Pre-#367 the struct also carried gRPC-only fields
+// (dialOptions, transportCreds, serviceConfigJSON, keepalive); those
+// have been deleted alongside the gRPC dial path. Callers that need
+// per-RPC OpenTelemetry / compression / interceptors layer them in via
+// WithConnectClientOption.
 type options struct {
-	dialOptions       []grpc.DialOption
-	transportCreds    credentials.TransportCredentials
-	defaultTimeout    time.Duration
-	batchChunkSize    int
-	serviceConfigJSON string
-	keepalive         keepalive.ClientParameters
+	httpClient     *http.Client
+	clientOptions  []connect.ClientOption
+	defaultTimeout time.Duration
+	batchChunkSize int
 }
 
-// Option configures a Lantern client. Pass options to NewLantern.
+// Option configures a Lantern client built via NewLantern /
+// NewLanternConnect. Both constructors accept this single Option type
+// so call sites that previously passed gRPC-flavoured options keep
+// compiling — the runtime behaviour of unmapped options simply
+// disappears (see the WithXxx docstrings for each surface change).
 type Option func(*options)
 
-// WithTransportCredentials sets the gRPC transport credentials (TLS, mTLS).
-// When unset, the client uses insecure credentials.
-func WithTransportCredentials(creds credentials.TransportCredentials) Option {
-	return func(o *options) { o.transportCreds = creds }
+// ConnectOption is the historical name used by NewLanternConnect.
+// Kept as a true alias of Option so callers using either name keep
+// compiling. New code should use Option directly.
+type ConnectOption = Option
+
+// WithHTTPClient supplies the http.Client used by the Connect
+// transport. When omitted, NewLantern / NewLanternConnect builds an
+// h2c-capable client via defaultH2CClient (HTTP/2 over plaintext) so
+// the SDK works out of the box against the Lantern primary listener.
+//
+// For production over TLS supply a TLS-configured http.Client: build
+// an http2.Transport with a real *tls.Config and supply it via
+// &http.Client{Transport: ...}. mTLS replaces the legacy
+// WithTransportCredentials path — wire the client cert into the same
+// *tls.Config.
+func WithHTTPClient(c *http.Client) Option {
+	return func(o *options) { o.httpClient = c }
 }
 
-// WithDialOption appends an arbitrary grpc.DialOption. Use this for
-// keepalive, balancer choice, or other transport-level tuning.
-func WithDialOption(opts ...grpc.DialOption) Option {
-	return func(o *options) { o.dialOptions = append(o.dialOptions, opts...) }
+// WithConnectClientOption forwards arbitrary connect.ClientOption
+// values (interceptors, codec selection, gzip compression, OTel) to
+// the generated Connect client constructor. Use this as the escape
+// hatch for anything the named WithXxx helpers do not cover:
+//
+//   - connect.WithGRPC()                    — force the gRPC binary wire
+//   - connect.WithSendCompression("gzip")   — replace legacy WithCompression
+//   - otelconnect.NewInterceptor()          — replace legacy WithOpenTelemetry
+func WithConnectClientOption(opts ...connect.ClientOption) Option {
+	return func(o *options) { o.clientOptions = append(o.clientOptions, opts...) }
 }
 
-// WithDefaultServiceConfig overrides the built-in retry policy with a custom
-// gRPC service config JSON. Pass "" to disable the default policy entirely.
-func WithDefaultServiceConfig(json string) Option {
-	return func(o *options) { o.serviceConfigJSON = json }
-}
-
-// WithDefaultTimeout applies a per-call timeout to every RPC whose context
-// has no deadline. RPCs whose caller already supplied a deadline are left
-// alone. Pass 0 (the default) to disable.
+// WithDefaultTimeout applies a per-call timeout to every RPC whose
+// context has no deadline. RPCs whose caller already supplied a
+// deadline are left alone. Pass 0 (the default) to disable.
 func WithDefaultTimeout(d time.Duration) Option {
 	return func(o *options) { o.defaultTimeout = d }
 }
 
-// WithBatchChunkSize overrides the auto-chunk size used by PutVertices,
-// AddEdges, and PutEdges. Must be > 0; otherwise the default is kept.
+// WithBatchChunkSize overrides the auto-chunk size used by
+// PutVertices, AddEdges, PutEdges, DeleteVertices, DeleteEdges,
+// GetVertices, and GetEdges. Must be > 0; otherwise the default
+// (1000) is kept.
+//
+// This option supersedes the previous WithConnectBatchChunkSize name;
+// both functions still exist (the latter aliased to this one) so
+// existing source compiles.
 func WithBatchChunkSize(n int) Option {
 	return func(o *options) {
 		if n > 0 {
@@ -110,39 +96,9 @@ func WithBatchChunkSize(n int) Option {
 	}
 }
 
-// WithKeepaliveParams overrides the default client-side keepalive policy.
-// The SDK defaults to Time: 30s / Timeout: 10s / PermitWithoutStream: true,
-// chosen to sit safely above the server's 10s MinTime while keeping long-idle
-// connections from being silently reaped.
-func WithKeepaliveParams(kp keepalive.ClientParameters) Option {
-	return func(o *options) {
-		o.keepalive = kp
-	}
-}
-
-// WithCompression enables a per-call default compressor (e.g. "gzip"). The
-// named compressor must be registered (gzip is registered automatically by
-// this package). Pass "" to disable.
-func WithCompression(name string) Option {
-	return func(o *options) {
-		if name != "" {
-			o.dialOptions = append(o.dialOptions,
-				grpc.WithDefaultCallOptions(grpc.UseCompressor(name)))
-		}
-	}
-}
-
-// WithOpenTelemetry installs the OpenTelemetry gRPC stats handler so client
-// → server calls produce spans and metrics under whatever global
-// TracerProvider / MeterProvider the caller has configured. The server already
-// installs otelgrpc.NewServerHandler() by default, so enabling this option on
-// the client gives end-to-end distributed traces with no further wiring.
+// WithConnectBatchChunkSize is a deprecated alias for
+// WithBatchChunkSize, kept so call sites built against the additive
+// Connect transport (#338) keep compiling.
 //
-// Additional otelgrpc.Option values can be passed to customise tracer/meter
-// providers, propagators, span filters, etc.
-func WithOpenTelemetry(opts ...otelgrpc.Option) Option {
-	return func(o *options) {
-		o.dialOptions = append(o.dialOptions,
-			grpc.WithStatsHandler(otelgrpc.NewClientHandler(opts...)))
-	}
-}
+// Deprecated: use WithBatchChunkSize.
+func WithConnectBatchChunkSize(n int) Option { return WithBatchChunkSize(n) }

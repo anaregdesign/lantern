@@ -16,71 +16,23 @@ import (
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 )
 
-// ConnectOption configures the additive Connect-backed Lantern constructor.
-// It is intentionally NOT compatible with the existing Option type — the
-// underlying transports take fundamentally different knobs (http.Client vs
-// grpc.DialOption), and overloading one shape across two transports would
-// produce confusing runtime behavior at every WithXxx site.
-type ConnectOption func(*connectOptions)
-
-type connectOptions struct {
-	httpClient     *http.Client
-	clientOptions  []connect.ClientOption
-	defaultTimeout int64 // nanoseconds; stored as int64 to skip the time import.
-	batchChunkSize int
-}
-
-// WithHTTPClient supplies the http.Client used by the Connect transport.
-// When omitted, NewLanternConnect builds an h2c-capable client via
-// defaultH2CClient (HTTP/2 over plaintext) so the SDK works out of the box
-// against the server's additive Connect listener.
-//
-// Pass a TLS-configured http.Client for production: build an
-// http2.Transport with a real *tls.Config and supply it via
-// &http.Client{Transport: ...}. The Connect protocol does NOT require h2c —
-// HTTPS is the recommended production transport.
-func WithHTTPClient(c *http.Client) ConnectOption {
-	return func(o *connectOptions) { o.httpClient = c }
-}
-
-// WithConnectClientOption forwards arbitrary connect.ClientOption values
-// (interceptors, codec selection, gzip compression, etc.) to the generated
-// Connect client constructor. Callers needing the gRPC wire protocol pass
-// connect.WithGRPC() here; callers wanting OTel pass an OTel interceptor.
-func WithConnectClientOption(opts ...connect.ClientOption) ConnectOption {
-	return func(o *connectOptions) { o.clientOptions = append(o.clientOptions, opts...) }
-}
-
-// WithConnectBatchChunkSize mirrors WithBatchChunkSize for the Connect-
-// backed client. Must be > 0; otherwise the default of 1000 is kept.
-func WithConnectBatchChunkSize(n int) ConnectOption {
-	return func(o *connectOptions) {
-		if n > 0 {
-			o.batchChunkSize = n
-		}
-	}
-}
-
 // NewLanternConnect returns a Lantern client backed by the Connect-Go
-// transport. baseURL must include the scheme: `http://host:port` for h2c
-// (matches LANTERN_CONNECT_PORT default), or `https://host` for TLS.
+// transport. baseURL must include the scheme: `http://host:port` for
+// h2c (matches the Lantern primary listener default), or
+// `https://host[:port]` for TLS.
 //
-// This constructor is the **additive** preview of the future v1.0 transport
-// (see #335, #337, #338). It coexists with the existing grpc-backed
-// NewLantern / NewLanternWithEndpoints constructors; both return the same
-// *Lantern type, so downstream code that holds a *Lantern is transport-
-// agnostic. Pick the constructor that matches your wire-side reality:
-//
-//   - NewLanternConnect("http://lantern:6381") — server with
-//     LANTERN_CONNECT_PORT=6381 (additive Connect listener from #337).
-//   - NewLantern("lantern:6380") — server with the primary gRPC port
-//     (default until #347 cuts over).
+// Pre-#367 this was an additive constructor that coexisted with the
+// grpc-flavoured NewLantern. The Connect-only collapse merged the two
+// paths — NewLantern now delegates here — so this constructor is
+// the canonical entry point. The historical name is retained so call
+// sites built against the additive Connect transport (#338) keep
+// compiling unchanged.
 //
 // baseURL must not end with a trailing slash; the Connect-Go client
 // constructs paths by concatenation and a trailing slash would produce
-// `//graph.v1.LanternService/...` URLs that the server rejects. A trailing
-// slash supplied by the caller is stripped defensively.
-func NewLanternConnect(baseURL string, opts ...ConnectOption) (*Lantern, error) {
+// `//graph.v1.LanternService/...` URLs that the server rejects. A
+// trailing slash supplied by the caller is stripped defensively.
+func NewLanternConnect(baseURL string, opts ...Option) (*Lantern, error) {
 	if baseURL == "" {
 		return nil, errors.New("client: NewLanternConnect requires a base URL with scheme")
 	}
@@ -89,25 +41,21 @@ func NewLanternConnect(baseURL string, opts ...ConnectOption) (*Lantern, error) 
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
 
-	co := connectOptions{
+	o := options{
 		batchChunkSize: defaultBatchChunkSize,
 	}
 	for _, apply := range opts {
-		apply(&co)
+		apply(&o)
 	}
-	if co.httpClient == nil {
-		co.httpClient = defaultH2CClient()
+	if o.httpClient == nil {
+		o.httpClient = defaultH2CClient()
 	}
 
-	cc := graphv1connect.NewLanternServiceClient(co.httpClient, baseURL, co.clientOptions...)
+	cc := graphv1connect.NewLanternServiceClient(o.httpClient, baseURL, o.clientOptions...)
 	return &Lantern{
-		conn:   nil, // No grpc.ClientConn on this transport path.
-		client: &connectClientAdapter{svc: cc},
-		opts: options{
-			batchChunkSize:    co.batchChunkSize,
-			serviceConfigJSON: "", // unused by Connect transport
-		},
-		connectHTTPClient: co.httpClient,
+		client:            &connectClientAdapter{svc: cc},
+		opts:              o,
+		connectHTTPClient: o.httpClient,
 		connectBaseURL:    baseURL,
 	}, nil
 }

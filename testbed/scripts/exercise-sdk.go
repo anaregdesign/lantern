@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"connectrpc.com/connect"
+
 	client "github.com/anaregdesign/lantern/sdks/go"
 )
 
@@ -55,7 +57,11 @@ func run() error {
 		addr,
 		client.WithDefaultTimeout(5*time.Second),
 		client.WithBatchChunkSize(3), // tiny chunk to exercise chunking
-		client.WithCompression("gzip"),
+		// Pre-#367 used client.WithCompression("gzip") which mapped to
+		// a grpc.CallOption; the Connect-only SDK exposes compression
+		// via the Connect-side option set (the gzip codec is
+		// auto-registered by the Connect runtime).
+		client.WithConnectClientOption(connect.WithSendCompression("gzip")),
 	)
 	if err != nil {
 		return fmt.Errorf("NewLantern: %w", err)
