@@ -86,6 +86,7 @@ type httpGatewayServer struct {
 // /v1/health/ready split can be added without rewriting the shape.
 func NewGatewayServer(
 	cfg GatewayConfig,
+	cors CORSConfig,
 	svc *service.LanternService,
 	hs *health.Server,
 	gate *readiness.Gate,
@@ -117,10 +118,17 @@ func NewGatewayServer(
 	// authoritative.
 	root.Handle("/", mux)
 
+	// CORS wraps the whole root: the /v1/health probe needs the same
+	// cross-origin allowance as the gateway-routed RPCs so the admin
+	// SPA's status panel can poll it directly. When the allow-list is
+	// empty CORSMiddleware is the identity wrapper, so single-port
+	// deployments stay byte-for-byte unchanged.
+	handler := CORSMiddleware(cors)(root)
+
 	return &httpGatewayServer{
 		srv: &http.Server{
 			Addr:              cfg.Addr,
-			Handler:           root,
+			Handler:           handler,
 			ReadHeaderTimeout: cfg.ReadHeaderTimeout,
 		},
 		logger: logger,

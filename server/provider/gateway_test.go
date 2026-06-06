@@ -162,7 +162,7 @@ func TestNoopGatewayServer(t *testing.T) {
 }
 
 func TestNewGatewayServer_DisabledWhenAddrEmpty(t *testing.T) {
-	gw, err := NewGatewayServer(GatewayConfig{Addr: ""}, nil, nil, nil, nil)
+	gw, err := NewGatewayServer(GatewayConfig{Addr: ""}, CORSConfig{}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
 	}
