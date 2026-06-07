@@ -362,6 +362,13 @@ illuminate <seed> <step> <k> [algorithm=none|mst|spt] [objective=min|max] \
 exit
 ```
 
+Tokens are whitespace-delimited and quotable — wrap a value in
+`"double quotes"` for C-style escapes (`\"`, `\\`, `\n`, `\r`, `\t`)
+or `'single quotes'` to carry the payload verbatim (no escapes). Verb
+and objective tokens are matched case-insensitively (`Get VERTEX foo`
+works); positional arguments preserve case (`put vertex CamelKey
+CamelValue` stores `CamelKey` / `CamelValue`).
+
 For everything outside that grammar — batch writes, prefix scans, bulk
 loads, gzip/TLS, typed values — use the one-shot subcommands:
 
@@ -830,6 +837,12 @@ delete edge   <tail:string> <head:string>
 illuminate <seed:string> <step:int> <k:int> [algorithm=none|mst|spt] \
            [objective=min|max] [weighting=raw|tfidf]
 ```
+
+Verb and objective (`vertex` / `edge` / `vertices` / `edges`) tokens are
+case-insensitive; arguments preserve case verbatim. Wrap any argument
+in `"double quotes"` (with `\"`, `\\`, `\n`, `\r`, `\t` escapes) or
+`'single quotes'` (verbatim, no escapes) to carry whitespace or other
+special characters — e.g. `put vertex greeting "hello world"`.
 
 Worked examples (with diagrams) live in the walkthrough below.
 

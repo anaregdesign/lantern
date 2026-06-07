@@ -3,6 +3,7 @@ package parser
 import (
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -150,6 +151,13 @@ func Float32(s *Source) (float32, error) {
 	return float32(v), nil
 }
 
+// AnyOf returns the canonical lowercase choice that matches the next
+// token case-insensitively, or ErrNotFound. The returned value is
+// always one of the entries in `choices` (not the raw token), so
+// downstream switches can compare against the canonical form. This
+// mirrors the Go REPL's existing ToLower-on-dispatch convention and
+// keeps argument tokens (vertex keys, edge endpoints, illuminate
+// seeds) free of case mangling \u2014 see #437.
 func AnyOf(s *Source, choices []string) (string, error) {
 	defer s.Next()
 	str, err := s.Peek()
@@ -157,8 +165,8 @@ func AnyOf(s *Source, choices []string) (string, error) {
 		return "", err
 	}
 	for _, v := range choices {
-		if str == v {
-			return str, nil
+		if strings.EqualFold(str, v) {
+			return v, nil
 		}
 	}
 	return "", ErrNotFound
@@ -333,6 +341,11 @@ func IlluminateParam(s *Source) (*Illuminate, error) {
 		if !ok {
 			return nil, errors.New("illuminate: expected key=value token, got " + tok)
 		}
+		// Keyword KEY and the keyword VALUE for the three closed-set
+		// axes are case-insensitive — they only ever take values from
+		// a small fixed enum. See #437.
+		key = strings.ToLower(key)
+		value = strings.ToLower(value)
 		switch key {
 		case "algorithm":
 			if !contains(IlluminateAlgorithms, value) {

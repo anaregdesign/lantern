@@ -332,6 +332,7 @@ function initialBanner(): ScrollbackEntry {
       "Lantern admin CLI (#411). Same grammar as `lantern repl`.",
       "Type a verb and Enter; arrow-up / arrow-down cycle history.",
       "Verbs: get | put | delete | add | scan | illuminate | exit",
+      'Quoting: "double" with C-style escapes (\\" \\\\ \\n \\r \\t); \'single\' verbatim. Verb/objective case-insensitive; args preserve case.',
     ].join("\n"),
   };
 }

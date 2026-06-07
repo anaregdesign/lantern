@@ -39,7 +39,11 @@ func NewCLIService(client *client.Lantern) *CLIService {
 }
 
 func (c *CLIService) Run(ctx context.Context, str string) error {
-	s := parser.NewSource(str)
+	s, err := parser.NewSource(str)
+	if err != nil {
+		fmt.Printf("Error: %s\n", err)
+		return ErrInvalidVerb
+	}
 	verb, err := parser.Verb(s)
 	if err != nil {
 		fmt.Printf("Error: %s\n", err)

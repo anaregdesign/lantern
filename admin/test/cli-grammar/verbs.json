@@ -26,6 +26,34 @@
     {
       "input": "illuminate alice 2 5 weighting=tfidf objective=max algorithm=spt",
       "comment": "keyword args may appear in any order"
+    },
+    {
+      "input": "Get VERTEX alice",
+      "comment": "#437: verb + objective case-insensitive"
+    },
+    {
+      "input": "PUT VERTEX CamelKey CamelValue",
+      "comment": "#437: verb + objective case-insensitive; key/value preserve case downstream"
+    },
+    {
+      "input": "illuminate alice 2 5 Algorithm=SPT Objective=Max Weighting=TFIDF",
+      "comment": "#437: illuminate keyword key + closed-set value case-insensitive"
+    },
+    {
+      "input": "put vertex greeting \"hello world\"",
+      "comment": "#438: double-quoted value carries whitespace"
+    },
+    {
+      "input": "put vertex code 'console.log(\"hi\")'",
+      "comment": "#438: single-quoted value carries embedded double-quotes verbatim"
+    },
+    {
+      "input": "put vertex path \"a\\nb\\tc\"",
+      "comment": "#438: C-style escapes inside double-quoted token"
+    },
+    {
+      "input": "get vertex \"key with spaces\"",
+      "comment": "#438: quoted key works in non-put positions too"
     }
   ],
   "invalid": [
@@ -76,6 +104,18 @@
     {
       "input": "illuminate alice 2 5 algorithm",
       "comment": "keyword without value"
+    },
+    {
+      "input": "put vertex greeting \"hello world",
+      "comment": "#438: unterminated double-quote is a parse error"
+    },
+    {
+      "input": "put vertex greeting 'hello world",
+      "comment": "#438: unterminated single-quote is a parse error"
+    },
+    {
+      "input": "put vertex greeting \"bad \\q escape\"",
+      "comment": "#438: unknown backslash escape inside double-quote is rejected"
     }
   ]
 }
