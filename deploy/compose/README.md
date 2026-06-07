@@ -6,19 +6,37 @@ single-host HA experiments.
 
 ## Topology
 
-- 3 × `lantern` replicas (`deploy.replicas: 3`), each on host ports
-  `6380`, `6381`, `6382`.
-- Compose's embedded DNS resolves the service name `lantern` to one A
-  per running replica. Each lantern container's peer pump (#190)
-  resolves that name, filters its own IP via `LocalIPSet()`, and opens
-  replication streams to the other peers.
+- 3 × explicit lantern services — `lantern-0`, `lantern-1`, `lantern-2` —
+  on host ports **`6380`**, **`6381`**, **`6382`** respectively. Each
+  service is its own entry (no `deploy.replicas`) so the host-port
+  mapping is pinned across restarts; this is what `#435` fixes. The
+  admin SPA's default gateway `http://localhost:6380` therefore keeps
+  working out of the box.
+- All three services share the network alias `lantern`. Compose's
+  embedded DNS resolves `lantern` to one A per healthy replica, so the
+  peer pump (#190) — and any SDK / MCP container dialing
+  `http://lantern:6380` — continues to round-robin across the live
+  replicas without knowing about the per-service names.
 - 1 × `admin` browser SPA (`ghcr.io/anaregdesign/lantern-admin`)
   on host port `8080`. Pure SPA host (Caddy on `:8080`), no reverse
-  proxy — the browser talks to the gateway directly, so the `lantern`
+  proxy — the browser talks to the gateway directly, so each lantern
   service has `LANTERN_CORS_ALLOWED_ORIGINS=http://localhost:8080`
   baked in.
-- `prometheus` scrapes via `dns_sd_configs` so it picks up every
-  replica automatically (no static targets file to maintain).
+- `prometheus` scrapes via `dns_sd_configs` against the `lantern`
+  alias, so it picks up every replica automatically (no static targets
+  file to maintain).
+
+| service     | host port → container | compose container name              |
+|-------------|-----------------------|-------------------------------------|
+| `lantern-0` | `6380` → `6380`       | `${COMPOSE_PROJECT_NAME}-lantern-0-1` |
+| `lantern-1` | `6381` → `6380`       | `${COMPOSE_PROJECT_NAME}-lantern-1-1` |
+| `lantern-2` | `6382` → `6380`       | `${COMPOSE_PROJECT_NAME}-lantern-2-1` |
+
+Use the service name (`lantern-0`, ...) when invoking
+`docker compose` subcommands; use the full container name only when
+shelling out to `docker` directly (e.g. `docker inspect`,
+`docker logs --details`). The project name defaults to the directory
+basename (`compose`).
 
 ## Run
 
@@ -28,20 +46,19 @@ docker compose up -d
 docker compose ps
 ```
 
-Scale up or down without restarting; each lantern container reconciles
-within one discovery tick (default `LANTERN_PEER_DISCOVERY_INTERVAL_MS=10000`):
-
-```shell
-docker compose up -d --scale lantern=5
-# Logs on any one container should show 4 active peers within ~10s.
-docker compose logs --tail=20 lantern
-```
-
 Tear down:
 
 ```shell
 docker compose down -v
 ```
+
+> `docker compose up -d --scale lantern=N` no longer applies — the
+> canonical compose uses three explicit services so the host-port
+> mapping stays stable across restarts (#435). For >3 replicas, add a
+> `lantern-3` block (host port `6383`, etc.) using the
+> `x-lantern-common` YAML anchor, or switch to the Helm chart in
+> [`../helm/lantern/`](../helm/lantern/) which has no host-port
+> constraint.
 
 ## Client access
 
@@ -93,7 +110,7 @@ networks, or put your own ingress-level auth proxy in front.
 
 ```shell
 # Each replica should log "peer_discovery" lines with the other 2 IPs.
-docker compose logs lantern | grep peer_discovery
+docker compose logs lantern-0 lantern-1 lantern-2 | grep peer_discovery
 
 # Prometheus (http://localhost:9091):
 #   lantern_replication_peer_up         — 1 gauge per active peer link
@@ -102,14 +119,15 @@ docker compose logs lantern | grep peer_discovery
 
 ## Single-instance fallback
 
-For non-HA development just override the replicas to 1:
+For non-HA development bring up only one replica:
 
 ```shell
-docker compose up -d --scale lantern=1
+docker compose up -d lantern-0 admin prometheus
 ```
 
-`LANTERN_PEER_DNS_NAME=lantern` still resolves — to a single A record
-which `LocalIPSet()` filters as self, so the pump becomes a no-op.
+`LANTERN_PEER_DNS_NAME=lantern` still resolves — to the single A
+record for `lantern-0`, which `LocalIPSet()` filters as self, so the
+pump becomes a no-op.
 
 ## Cross-references
 

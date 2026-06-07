@@ -15,10 +15,12 @@ target:
   data_template: |
     {"vertex":{"key":"chaos-{{.RequestNumber}}","int64":"{{.RequestNumber}}"}}
 chaos:
-  # Replica container name as known to docker compose (compose adds the
-  # project prefix). run.sh forces COMPOSE_PROJECT_NAME=lantern-bench, so
-  # the default container name follows that.
-  kill_target: "lantern-bench-lantern-2"
+  # Replica container name as known to docker compose. With the explicit
+  # lantern-{0,1,2} services introduced in #435, Compose names the
+  # container `${PROJECT}-${SERVICE}-${REPLICA_INDEX}`. run.sh forces
+  # COMPOSE_PROJECT_NAME=lantern-bench and there's only one replica per
+  # service, so the middle replica is `lantern-bench-lantern-1-1`.
+  kill_target: "lantern-bench-lantern-1-1"
   kill_at: 30s
   restart_at: 90s
 leak_gate:

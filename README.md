@@ -245,15 +245,19 @@ A 3-replica HA topology for local experiments lives in
 ```shell
 cd deploy/compose
 docker compose up -d
-docker compose up -d --scale lantern=5    # reconciles in ≤1 discovery tick
 ```
 
-Each replica is published on its own host port (`6380`, `6381`, …) so
-a reverse-proxy sidecar (Caddy / Traefik / envoy with a DNS-resolved
-upstream pool) or DNS round-robin from the client can fan reads across
-them, while Prometheus on `:9091` scrapes every pod via DNS SD. See
-[`deploy/compose/README.md`](deploy/compose/README.md) for the client
-LB options.
+The canonical compose declares three explicit `lantern-{0,1,2}` services
+with pinned host ports (`6380`, `6381`, `6382`) since
+[#435](https://github.com/anaregdesign/lantern/issues/435), so the admin
+SPA's default gateway (`http://localhost:6380`) and any direct curls
+land on a stable replica across `up`/`down` cycles. All three join the
+same `lantern` DNS alias, so peer discovery and Compose-side round-robin
+still work unchanged. Prometheus on `:9091` scrapes every replica via
+DNS SD. See [`deploy/compose/README.md`](deploy/compose/README.md) for
+the full port table and client LB options, and the
+[Helm chart](deploy/helm/lantern/) when you need more than three
+replicas.
 
 ### Run on serverless container PaaS
 
