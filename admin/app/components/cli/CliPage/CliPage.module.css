@@ -7,8 +7,60 @@
   padding: var(--spacingVerticalL, 16px);
 }
 
+/* Canvas panel rendered above the scrollback when the most recent
+   command produced graph data. The body owns ~45% of the panel and
+   shrinks gracefully on short viewports; the scrollback still has at
+   least a few lines of room thanks to min-height on `.scrollback`. */
+.canvasPanel {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 45%;
+  min-height: 240px;
+  border: 1px solid var(--colorNeutralStroke2, #e0e0e0);
+  border-radius: var(--borderRadiusMedium, 6px);
+  background: var(--colorNeutralBackground1, #ffffff);
+  overflow: hidden;
+}
+
+.canvasHeader {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spacingHorizontalS, 8px);
+  padding: var(--spacingVerticalXS, 4px) var(--spacingHorizontalS, 8px);
+  border-bottom: 1px solid var(--colorNeutralStroke2, #e0e0e0);
+  background: var(--colorNeutralBackground2, #fafafa);
+  font-family: var(
+    --fontFamilyMonospace,
+    ui-monospace,
+    SFMono-Regular,
+    monospace
+  );
+  font-size: var(--fontSizeBase200, 12px);
+}
+
+.canvasHeaderLabel {
+  color: var(--colorNeutralForeground3, #707070);
+}
+
+.canvasHeaderSource {
+  color: var(--colorNeutralForeground1, #242424);
+}
+
+.canvasHeaderHint {
+  margin-left: auto;
+  color: var(--colorNeutralForeground3, #707070);
+  font-size: var(--fontSizeBase100, 10px);
+}
+
+.canvasBody {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
 .scrollback {
   flex: 1 1 auto;
+  min-height: 120px;
   overflow-y: auto;
   border: 1px solid var(--colorNeutralStroke2, #e0e0e0);
   border-radius: var(--borderRadiusMedium, 6px);
