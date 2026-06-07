@@ -64,4 +64,16 @@ export class LanternApiError extends Error {
   static isNotFound(err: unknown): boolean {
     return err instanceof NotFoundError;
   }
+
+  /**
+   * Synthetic factory for callers that want to surface a NotFound
+   * outcome that they discovered locally (e.g. an adapter that
+   * already swallowed `NotFoundError` and returned `null`, but a
+   * higher-level surface — the admin `/cli` panel per #430 — needs
+   * the user-visible "[not_found] ..." error chip rather than a
+   * misleading `OK`).
+   */
+  static notFound(rpc: string, message: string): LanternApiError {
+    return new LanternApiError(rpc, "not_found", message);
+  }
 }

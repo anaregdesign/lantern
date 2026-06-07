@@ -46,10 +46,7 @@ export function commandResultToGraphView(
       return getEdgeView(command.tail, command.head, result as Edge | null);
     case "scan":
       if (command.objective === "vertices") {
-        return scanVerticesView(
-          command.prefix,
-          result as ScanVerticesResponse & { count?: number },
-        );
+        return scanVerticesView(command.prefix, result as ScanVerticesResponse);
       }
       return scanEdgesView(command.tailPrefix, result as ScanEdgesResponse);
     default:
