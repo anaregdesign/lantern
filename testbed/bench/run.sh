@@ -75,21 +75,24 @@ endpoints=( $(yq -r '.target.endpoints[]' "$SCENARIO_FILE") )
 # ----- compose up ------------------------------------------------------------
 if [[ "${SKIP_UP:-0}" != "1" ]]; then
   log "compose up (project=$COMPOSE_PROJECT_NAME)"
-  docker compose "${COMPOSE_FILES[@]}" up -d --scale lantern=3 --wait
+  # Since #435 the canonical compose declares three explicit lantern-{0,1,2}
+  # services with pinned host ports, so `--scale lantern=3` is no longer
+  # needed (and would in fact fail — there is no `lantern` service).
+  docker compose "${COMPOSE_FILES[@]}" up -d --wait
 fi
 
 # ----- discover actual published ports ---------------------------------------
-# Compose's port-range allocation (`6380-6389`, `9390-9392`) is not stable
-# across runs: when a previous bench leaves entries in the daemon's port
-# bookkeeping, the next `up` skips them and we end up on e.g. 6386/6387/6388.
-# Query the live containers and rewrite REPLICA_*_PORTS + scenario endpoints
-# accordingly so the harness works regardless of what Compose assigned.
+# Ports are pinned in the canonical compose (6380-6382 / 9390-9392) since
+# #435, but we keep the discovery step as a belt-and-suspenders check that
+# the harness keeps working if a future override hops back to dynamic
+# ranges. Query the live containers and rewrite REPLICA_*_PORTS + scenario
+# endpoints from the live mapping.
 discover_ports() {
   local ps_json grpc metrics
   ps_json="$(docker compose "${COMPOSE_FILES[@]}" ps --format json 2>/dev/null)"
-  # Sort by replica name so lantern-1/2/3 map to deterministic slots.
-  grpc=( $(jq -rs 'sort_by(.Name) | .[] | select(.Name | test("lantern-[0-9]+$")) | .Publishers[] | select(.TargetPort==6380 and .URL=="0.0.0.0") | .PublishedPort' <<<"$ps_json") )
-  metrics=( $(jq -rs 'sort_by(.Name) | .[] | select(.Name | test("lantern-[0-9]+$")) | .Publishers[] | select(.TargetPort==9090 and .URL=="0.0.0.0") | .PublishedPort' <<<"$ps_json") )
+  # Sort by service name so lantern-0/1/2 map to deterministic slots.
+  grpc=( $(jq -rs 'sort_by(.Service) | .[] | select(.Service | test("^lantern-[0-9]+$")) | .Publishers[] | select(.TargetPort==6380 and .URL=="0.0.0.0") | .PublishedPort' <<<"$ps_json") )
+  metrics=( $(jq -rs 'sort_by(.Service) | .[] | select(.Service | test("^lantern-[0-9]+$")) | .Publishers[] | select(.TargetPort==9090 and .URL=="0.0.0.0") | .PublishedPort' <<<"$ps_json") )
   [[ ${#grpc[@]} -eq 3 && ${#metrics[@]} -eq 3 ]] || die "could not discover 3 grpc+metrics ports (grpc=${grpc[*]} metrics=${metrics[*]})"
   REPLICA_GRPC_PORTS=( "${grpc[@]}" )
   REPLICA_METRICS_PORTS=( "${metrics[@]}" )

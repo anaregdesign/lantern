@@ -497,8 +497,12 @@ services:
       LANTERN_PEER_DEFAULT_PORT: "50051"
 ```
 
-`docker compose scale lantern=N` triggers Compose's embedded DNS to
-add/remove A records; the pump converges on the next tick.
+Since [#435](https://github.com/anaregdesign/lantern/issues/435) the
+canonical compose declares three explicit `lantern-{0,1,2}` services
+sharing the `lantern` network alias, so Compose's embedded DNS resolves
+that alias to all three replica IPs and the pump picks up new entries
+on the next tick. To run with more than three replicas, switch to the
+Helm chart.
 
 ## 10. Partition & split-brain analysis
 
@@ -539,7 +543,7 @@ carries the full per-platform instructions; this is the summary.
 | Platform | HA mode | Single-instance | Notes |
 |---|---|---|---|
 | Kubernetes (StatefulSet + headless Service) | ✅ canonical | ✅ | Helm chart in `deploy/helm/lantern/` (#191). |
-| Docker Compose (`deploy.replicas` + service DNS) | ✅ | ✅ | Example in `deploy/compose/` (#191). Best for local dev / single-host. |
+| Docker Compose (explicit `lantern-N` services + shared DNS alias) | ✅ | ✅ | Example in `deploy/compose/` (#191, #435). Best for local dev / single-host. |
 | Nomad + Consul DNS | ✅ | ✅ | User-configured; same `LANTERN_PEER_DISCOVERY=dns` works. |
 | Plain VMs / bare metal | ✅ | ✅ | Static `LANTERN_PEERS` CSV or DNS round-robin. |
 | Google Cloud Run | ❌ HA not supported | ✅ | Instance-level addressing hidden; long-lived peer streams incompatible with the request-scoped lifecycle. Use as a fast in-memory KVS with CDC via `Subscribe`. |

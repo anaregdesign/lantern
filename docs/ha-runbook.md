@@ -22,7 +22,7 @@ Start here. Pick a row, then jump to the corresponding section.
 | Platform | HA (multi-instance) | Single-instance | Section |
 |---|---|---|---|
 | Kubernetes (StatefulSet + headless Service) | ✅ canonical | ✅ | [§3.1](#31-kubernetes) |
-| Docker Compose (`deploy.replicas` + service DNS) | ✅ | ✅ | [§3.2](#32-docker-compose) |
+| Docker Compose (explicit `lantern-N` services + DNS alias) | ✅ | ✅ | [§3.2](#32-docker-compose) |
 | HashiCorp Nomad + Consul DNS | ✅ user-configured | ✅ | [§3.3](#33-nomad) |
 | Plain VMs / bare metal | ✅ static or DNS | ✅ | [§3.4](#34-plain-vms) |
 | Google Cloud Run | ❌ HA not supported | ✅ | [§3.5](#35-serverless-paas-single-instance-only) |
@@ -130,16 +130,21 @@ and don't open an HTTP/2 stream on every check.
 
 ### 3.2 Docker Compose
 
-**Example at [`deploy/compose/`](../deploy/compose/).** The compose file
-scales the `lantern` service to 3 replicas, exposes a host port
-*range* (6380–6389) so each replica gets a unique host port, and uses
-Compose's embedded DNS for `LANTERN_PEER_DNS_NAME=lantern`.
+**Example at [`deploy/compose/`](../deploy/compose/).** Since
+[#435](https://github.com/anaregdesign/lantern/issues/435) the compose
+file declares three explicit `lantern-{0,1,2}` services with pinned
+host ports (`6380`, `6381`, `6382`); all three share the `lantern`
+network alias so `LANTERN_PEER_DNS_NAME=lantern` round-robins across
+them via Compose's embedded DNS.
 
 ```sh
 cd deploy/compose
 docker compose up -d
-docker compose scale lantern=5   # all 5 join the cluster on next tick
 ```
+
+Scaling past three replicas via `docker compose --scale` no longer
+applies — the canonical compose is a fixed 3-node topology. For larger
+clusters, use the [Helm chart](../deploy/helm/lantern/).
 
 There is **no nginx / haproxy sidecar**. OSS nginx's `resolve` keyword
 on `upstream server` is an nginx-plus feature, so a generic Compose
@@ -147,11 +152,12 @@ recipe would need stream-block trickery to re-resolve DNS. Two pragmatic
 answers:
 
 1. **Reverse proxy / sidecar fan-out.** Drop in Caddy, Traefik, or
-   envoy with a `*.lantern` DNS-resolved upstream pool. Each of these
+   envoy with a `lantern` DNS-resolved upstream pool. Each of these
    re-resolves DNS A records on a cadence (Caddy: `dynamic dns`;
-   Traefik: Docker provider; envoy: `STRICT_DNS` cluster), so scaling
-   `lantern=N` is picked up without a config push. The proxy speaks
-   h2c upstream → Lantern's single port, terminating TLS at the edge.
+   Traefik: Docker provider; envoy: `STRICT_DNS` cluster), so adding or
+   removing replicas is picked up without a config push. The proxy
+   speaks h2c upstream → Lantern's single port, terminating TLS at the
+   edge.
 2. **DNS round-robin from the client.** Point the SDK at a host name
    that resolves to all backends; the OS resolver hands the addresses
    to `net/http`'s `http2.Transport` in shuffled order, and any backend
@@ -171,10 +177,10 @@ patterns above instead. For Swarm mode, use `tasks.lantern` instead
 of `lantern` for the discovery DNS name on the server side; clients
 still target a single proxy URL.
 
-**Single-instance on Compose.** `docker compose up --scale lantern=1`
-plus omitting `LANTERN_PEER_DISCOVERY` puts the service in single-
-instance mode (§2.1). Useful for local dev against the same compose
-file you'd run in HA.
+**Single-instance on Compose.** `docker compose up -d lantern-0 admin
+prometheus` plus omitting `LANTERN_PEER_DISCOVERY` (override the env
+locally) puts the service in single-instance mode (§2.1). Useful for
+local dev against the same compose file you'd run in HA.
 
 ### 3.3 Nomad
 
@@ -418,7 +424,10 @@ this runbook.
 - `/readyz` flips to 200 once lag-to-all-peers is below the threshold.
 
 No operator action required. Just `kubectl scale statefulset lantern
---replicas=N` or `docker compose scale lantern=N`.
+--replicas=N`. On Docker Compose the canonical topology is a fixed
+three-node cluster (`lantern-{0,1,2}`) since
+[#435](https://github.com/anaregdesign/lantern/issues/435); use the
+Helm chart when you need to scale past three.
 
 ### 8.2 Scale down (remove a pod)
 

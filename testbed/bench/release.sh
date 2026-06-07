@@ -85,7 +85,9 @@ export LANTERN_IMAGE="$img"
 
 # Bring up the shared cluster once.
 log "compose up (project=$COMPOSE_PROJECT_NAME, image=$img)"
-docker compose "${COMPOSE_FILES[@]}" up -d --scale lantern=3 --wait
+# Since #435 the canonical compose declares three explicit lantern-{0,1,2}
+# services, so `--scale lantern=3` is no longer needed.
+docker compose "${COMPOSE_FILES[@]}" up -d --wait
 
 cleanup() {
   log "compose down"

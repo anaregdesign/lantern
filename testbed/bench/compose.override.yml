@@ -11,26 +11,37 @@
 #     -f testbed/bench/compose.override.yml \
 #     up -d
 #
-# The metrics port (9090 inside the container) is published on a per-replica
-# host range 9390-9392 so each replica is independently scrape-able by the
-# harness's pprof.sh and direct /metrics curls.
+# Since #435 the canonical compose declares three explicit lantern-{0,1,2}
+# services with pinned host ports (6380-6382). This override extends each
+# one with bench-only env + an explicit per-replica metrics port mapping
+# (9390/9391/9392) so the harness's pprof.sh and direct /metrics curls
+# address each replica deterministically.
+
+x-lantern-bench-env: &lantern-bench-env
+  LANTERN_PPROF_ENABLED: "true"
+  # Sample 1/N events. Non-zero values are required for /debug/pprof/mutex
+  # and /debug/pprof/block to return useful data. Cheap at these rates.
+  LANTERN_MUTEX_PROFILE_FRACTION: "100"
+  LANTERN_BLOCK_PROFILE_RATE: "10000"
+  # Shrink the mutation-log ring from the prod default (100k) to a bench
+  # size. At 5k RPS for 5min the steady-state phase generates ~1.5M ops,
+  # so a 10k ring overflows ~150x — exercising gap-fill / snapshot paths
+  # while keeping legitimate ring retention well under the leak_gate
+  # heap budget. See issue #254.
+  LANTERN_MUTATION_LOG_CAPACITY: "10000"
 
 services:
-  lantern:
-    environment:
-      LANTERN_PPROF_ENABLED: "true"
-      # Sample 1/N events. Non-zero values are required for /debug/pprof/mutex
-      # and /debug/pprof/block to return useful data. Cheap at these rates.
-      LANTERN_MUTEX_PROFILE_FRACTION: "100"
-      LANTERN_BLOCK_PROFILE_RATE: "10000"
-      # Shrink the mutation-log ring from the prod default (100k) to a bench
-      # size. At 5k RPS for 5min the steady-state phase generates ~1.5M ops,
-      # so a 10k ring overflows ~150x — exercising gap-fill / snapshot paths
-      # while keeping legitimate ring retention well under the leak_gate
-      # heap budget. See issue #254.
-      LANTERN_MUTATION_LOG_CAPACITY: "10000"
+  lantern-0:
+    environment: *lantern-bench-env
     ports:
-      - target: 9090
-        published: "9390-9392"
-        protocol: tcp
-        mode: host
+      - "9390:9090"
+
+  lantern-1:
+    environment: *lantern-bench-env
+    ports:
+      - "9391:9090"
+
+  lantern-2:
+    environment: *lantern-bench-env
+    ports:
+      - "9392:9090"

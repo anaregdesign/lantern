@@ -224,6 +224,12 @@ in practice means it doesn't.
   `--no-verify`. One PR per issue from clean main.
 - Merge with `gh pr merge <n> --squash --delete-branch`, then
   `git checkout main && git pull --rebase`.
+- **Multi-issue `Closes` syntax.** GitHub only auto-links the *first* issue
+  on a comma-separated line. `Closes #1, #2, #3` closes `#1` and leaves
+  `#2`/`#3` orphaned after merge. Use either one keyword per issue
+  (`Closes #1, closes #2, closes #3`) or one keyword per line. PR #441
+  shipped fixes for #428/#429/#430/#432 but only #428 closed
+  automatically.
 
 ### After editing `.proto`
 

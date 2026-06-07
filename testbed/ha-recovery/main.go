@@ -1,8 +1,8 @@
 // Compose HA failure-recovery test:
 //  1. seed baseline data via round-robin LB
-//  2. stop compose-lantern-2 (one of three replicas)
+//  2. stop compose-lantern-1-1 (one of three replicas)
 //  3. write new data while it is down (only 2 replicas accept)
-//  4. start compose-lantern-2 again
+//  4. start compose-lantern-1-1 again
 //  5. wait for catch-up via Subscribe replay / Snapshot
 //  6. assert the restarted replica has every vertex/edge
 package main
@@ -18,9 +18,14 @@ import (
 	client "github.com/anaregdesign/lantern/sdks/go"
 )
 
-const victimContainer = "compose-lantern-2"
+// Since #435 the canonical compose declares three explicit lantern-{0,1,2}
+// services, so Compose names containers `${PROJECT}-${SERVICE}-1` (the
+// trailing `-1` is the per-service replica index, always 1). When you run
+// `docker compose up -d` from deploy/compose/, the project defaults to the
+// directory name `compose`, giving these container names.
+const victimContainer = "compose-lantern-1-1"
 
-var containers = []string{"compose-lantern-1", "compose-lantern-2", "compose-lantern-3"}
+var containers = []string{"compose-lantern-0-1", "compose-lantern-1-1", "compose-lantern-2-1"}
 
 func docker(args ...string) {
 	out, err := exec.Command("docker", args...).CombinedOutput()
@@ -169,16 +174,18 @@ func metricsFor(container string) string {
 func main() {
 	ctx := context.Background()
 
-	// Resolve dynamic host-port mappings (mode:host range allocation drifts
-	// between compose restarts).
+	// Resolve host-port mappings. Since #435 these are pinned in the
+	// canonical compose (6380/6381/6382), but we still query at runtime
+	// so a bench override that hops back to dynamic ports would keep
+	// working.
 	endpointByContainer := map[string]string{}
 	for _, c := range containers {
 		endpointByContainer[c] = hostPort(c)
 	}
 	allEndpoints := []string{
-		endpointByContainer["compose-lantern-1"],
-		endpointByContainer["compose-lantern-2"],
-		endpointByContainer["compose-lantern-3"],
+		endpointByContainer["compose-lantern-0-1"],
+		endpointByContainer["compose-lantern-1-1"],
+		endpointByContainer["compose-lantern-2-1"],
 	}
 	victimEndpoint := endpointByContainer[victimContainer]
 	survivorEndpoints := []string{}
@@ -228,7 +235,8 @@ func main() {
 	// 5) Restart the victim.
 	fmt.Printf("\n--- starting %s ---\n", victimContainer)
 	docker("start", victimContainer)
-	// Compose's mode:host reassigns the host port on restart — re-resolve.
+	// Ports are pinned in the canonical compose, but re-resolve in case a
+	// bench override has switched back to dynamic mode:host ranges.
 	victimEndpoint = hostPort(victimContainer)
 	fmt.Printf("    (post-restart host port: %s)\n", victimEndpoint)
 	waitReady(victimEndpoint, 60*time.Second)
@@ -244,7 +252,7 @@ func main() {
 
 	// 8) Per-replica metric dump.
 	fmt.Println("\n--- per-replica metrics ---")
-	for _, c := range []string{"compose-lantern-1", "compose-lantern-2", "compose-lantern-3"} {
+	for _, c := range containers {
 		fmt.Printf("=== %s ===\n%s", c, metricsFor(c))
 	}
 

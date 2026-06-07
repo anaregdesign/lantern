@@ -1,69 +1,97 @@
 # Docker Compose: HA topology (3-replica peer-discovery cluster).
 #
 # Mirrors the Helm chart's Tier-A topology for local development and
-# single-host HA experiments. Uses Compose's embedded DNS: the service
-# name `lantern` resolves to one A per replica, and the lantern peer
-# pump (#190) filters its own IP.
+# single-host HA experiments. Each replica is its own service
+# (`lantern-0`, `lantern-1`, `lantern-2`) with a pinned host port
+# (`6380`, `6381`, `6382` respectively), so the admin SPA's default
+# gateway URL (`http://localhost:6380`) keeps working across restarts
+# (#435). All three share the `lantern` network alias, so Compose
+# embedded DNS still resolves `lantern` to one A per healthy replica
+# — the lantern peer pump (#190) and lantern-mcp / prometheus / SDK
+# DNS round-robin continue to work unchanged.
 #
-# Clients use the Go SDK's round-robin LB (#189):
-#   c, _ := lantern.NewLanternWithEndpoints(
-#       []string{"localhost:6380", "localhost:6381", "localhost:6382"})
+# Clients pick one of:
+#   c, _ := lantern.NewLantern("http://lantern:6380")  // DNS round-robin
+#   c, _ := lantern.NewLantern("http://localhost:6380") // single replica
 # There is intentionally no client-side LB sidecar in this example —
 # picking one would push opinions that don't belong in a quickstart.
 #
 # Usage:
 #   cd deploy/compose
 #   docker compose up -d
-#   docker compose up -d --scale lantern=5     # each pod reconciles in ≤1 tick
 #   docker compose down -v
+#
+# To scale beyond three replicas, edit the file (each replica needs
+# its own service + host port) or use the Helm chart. The previous
+# `--scale lantern=N` workflow is gone — it depended on Compose's
+# port-range allocator, which is what #435 fixes.
 #
 # Override the image:
 #   LANTERN_IMAGE=ghcr.io/anaregdesign/lantern:v0.7.1 docker compose up -d
 
+# Shared lantern config. Each replica differs only in the published
+# host port; container naming is left to Compose so the canonical
+# stack and the testbed/bench overlay can run side-by-side without
+# colliding on globally-scoped container names.
+x-lantern-common: &lantern-common
+  image: ${LANTERN_IMAGE:-lantern:local}
+  environment:
+    LANTERN_PORT: "6380"
+    LANTERN_METRICS_ADDR: ":9090"
+    LANTERN_DEFAULT_TTL_SECONDS: "3600"
+    LANTERN_LOG_FORMAT: "json"
+    LANTERN_LOG_LEVEL: "info"
+    # Peer discovery (#190): resolve the shared `lantern` alias via
+    # Compose DNS. All three services join the default network with
+    # this alias, so the pump sees one A per healthy peer.
+    LANTERN_PEER_DISCOVERY: "dns"
+    LANTERN_PEER_DNS_NAME: "lantern"
+    LANTERN_PEER_DEFAULT_PORT: "6380"
+    LANTERN_PEER_DISCOVERY_INTERVAL_MS: "10000"
+    # Readiness gating (#188).
+    LANTERN_MAX_REPLICATION_LAG: "10000"
+    # Allow the admin SPA to call this listener from the browser.
+    # Lantern serves Connect / gRPC / gRPC-Web on the same h2c socket,
+    # and the admin container is a pure SPA host (no reverse proxy),
+    # so CORS must allow the admin origin.
+    LANTERN_CORS_ALLOWED_ORIGINS: "http://localhost:8080"
+  networks:
+    default:
+      aliases:
+        - lantern
+  healthcheck:
+    test: ["CMD", "wget", "-qO-", "http://localhost:9090/readyz"]
+    interval: 5s
+    timeout: 2s
+    retries: 12
+    start_period: 10s
+
 services:
-  lantern:
-    image: ${LANTERN_IMAGE:-lantern:local}
-    deploy:
-      replicas: 3
-    # Publish a port range so each replica is reachable on its own host
-    # port (6380, 6381, 6382, ...) — clients can enumerate them all for
-    # SDK round-robin. Compose assigns the next free port to each replica.
+  lantern-0:
+    <<: *lantern-common
     ports:
-      - target: 6380
-        published: "6380-6389"
-        protocol: tcp
-        mode: host
-    environment:
-      LANTERN_PORT: "6380"
-      LANTERN_METRICS_ADDR: ":9090"
-      LANTERN_DEFAULT_TTL_SECONDS: "3600"
-      LANTERN_LOG_FORMAT: "json"
-      LANTERN_LOG_LEVEL: "info"
-      # Peer discovery (#190): resolve the service name via Compose DNS.
-      LANTERN_PEER_DISCOVERY: "dns"
-      LANTERN_PEER_DNS_NAME: "lantern"
-      LANTERN_PEER_DEFAULT_PORT: "6380"
-      LANTERN_PEER_DISCOVERY_INTERVAL_MS: "10000"
-      # Readiness gating (#188).
-      LANTERN_MAX_REPLICATION_LAG: "10000"
-      # Allow the admin SPA to call this listener from the browser.
-      # Lantern serves Connect / gRPC / gRPC-Web on the same h2c socket,
-      # and the admin container is a pure SPA host (no reverse proxy),
-      # so CORS must allow the admin origin.
-      LANTERN_CORS_ALLOWED_ORIGINS: "http://localhost:8080"
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:9090/readyz"]
-      interval: 5s
-      timeout: 2s
-      retries: 12
-      start_period: 10s
+      - "6380:6380"
+
+  lantern-1:
+    <<: *lantern-common
+    ports:
+      - "6381:6380"
+
+  lantern-2:
+    <<: *lantern-common
+    ports:
+      - "6382:6380"
 
   admin:
     image: ${LANTERN_ADMIN_IMAGE:-ghcr.io/anaregdesign/lantern-admin:latest}
     ports:
       - "8080:8080"
     depends_on:
-      lantern:
+      lantern-0:
+        condition: service_healthy
+      lantern-1:
+        condition: service_healthy
+      lantern-2:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
@@ -87,11 +115,16 @@ services:
     stdin_open: true
     tty: false
     environment:
-      # Compose DNS round-robins the `lantern` service across replicas.
+      # Compose DNS round-robins the `lantern` alias across the three
+      # lantern-N services.
       LANTERN_ADDR: "http://lantern:6380"
       LANTERN_MCP_PING_TIMEOUT: "5s"
     depends_on:
-      lantern:
+      lantern-0:
+        condition: service_healthy
+      lantern-1:
+        condition: service_healthy
+      lantern-2:
         condition: service_healthy
 
   prometheus:
@@ -104,5 +137,9 @@ services:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.retention.time=1h"
     depends_on:
-      lantern:
+      lantern-0:
+        condition: service_healthy
+      lantern-1:
+        condition: service_healthy
+      lantern-2:
         condition: service_healthy
