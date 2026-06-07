@@ -31,7 +31,11 @@ The REPL accepts whitespace-delimited verbs:
   scan vertices <prefix> [limit]
   scan edges <tail-prefix> [limit]
   illuminate <seed> <step> <k> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf]
+  help
   exit
+
+Type 'help' at the prompt to print the per-verb grammar with defaults
+into the scrollback (#436).
 
 QUOTING (#438)
   Any argument may be wrapped in "double quotes" — C-style escapes
@@ -127,7 +131,7 @@ EXAMPLE
 			case service.ErrIlluminate:
 				fmt.Println("Usage: illuminate <seed: string> <step: int> <k: int> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf]")
 			case service.ErrInvalidVerb:
-				fmt.Println("Usage: { get | put | delete | add | scan | illuminate } ...")
+				fmt.Println("Usage: { get | put | delete | add | scan | illuminate | help | exit } ...")
 			case service.ErrInvalidObjective:
 				fmt.Println("{ get { vertex | edge } | put { vertex | edge } | delete { vertex | edge } | add edge | scan { vertices | edges } | illuminate {...} } ...")
 			case service.ErrConnection:

@@ -54,6 +54,11 @@
     {
       "input": "get vertex \"key with spaces\"",
       "comment": "#438: quoted key works in non-put positions too"
+    },
+    { "input": "help", "comment": "#436: help verb prints per-verb grammar" },
+    {
+      "input": "help me",
+      "comment": "#436: help silently accepts extra args (mirrors exit)"
     }
   ],
   "invalid": [

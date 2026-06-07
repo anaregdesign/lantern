@@ -7,6 +7,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { dispatch, isDestructive } from "~/lib/cli/dispatcher";
 import { parse, type Command, type ParseResult } from "~/lib/cli/parser";
+import { HELP_TEXT } from "~/lib/cli/verbs";
 import { commandResultToGraphView } from "~/lib/cli/graph-view";
 import { IlluminateCanvas } from "~/components/illuminate/IlluminateCanvas/IlluminateCanvas";
 import type { GraphView } from "~/lib/client/usecase/illuminate/selectors";
@@ -136,6 +137,14 @@ export function CliPage() {
           input: raw,
           kind: "info",
           text: "(exit is a no-op in the web CLI; close the tab to leave)",
+        });
+        return;
+      }
+      if (result.command.verb === "help") {
+        append({
+          input: raw,
+          kind: "info",
+          text: HELP_TEXT,
         });
         return;
       }
@@ -331,8 +340,7 @@ function initialBanner(): ScrollbackEntry {
     text: [
       "Lantern admin CLI (#411). Same grammar as `lantern repl`.",
       "Type a verb and Enter; arrow-up / arrow-down cycle history.",
-      "Verbs: get | put | delete | add | scan | illuminate | exit",
-      'Quoting: "double" with C-style escapes (\\" \\\\ \\n \\r \\t); \'single\' verbatim. Verb/objective case-insensitive; args preserve case.',
+      'Type "help" for verb signatures.',
     ].join("\n"),
   };
 }

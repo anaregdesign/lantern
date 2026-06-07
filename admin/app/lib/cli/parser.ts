@@ -18,16 +18,18 @@ import {
   parseAdd,
   parseDelete,
   parseGet,
+  parseHelp,
   parseIlluminate,
   parsePut,
   parseScan,
 } from "./verbs";
 
 const VERB_LIST_USAGE =
-  "usage: { get | put | delete | add | scan | illuminate | exit } ...";
+  "usage: { get | put | delete | add | scan | illuminate | help | exit } ...";
 
 const VERBS = new Set([
   "exit",
+  "help",
   "get",
   "put",
   "delete",
@@ -56,6 +58,8 @@ export function parse(input: string): ParseResult {
         return { ok: false, usage: "usage: exit" };
       }
       return { ok: true, command: { verb: "exit" } };
+    case "help":
+      return parseHelp(rest);
     case "get":
       return parseGet(rest);
     case "put":

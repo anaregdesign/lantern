@@ -347,7 +347,8 @@ OK (0.6ms)
 > exit
 ```
 
-REPL grammar (full reference in `lantern repl --help`):
+REPL grammar (full reference in `lantern repl --help`, or type `help`
+inside the prompt to print it into the scrollback):
 
 ```text
 get    vertex <key>
@@ -359,6 +360,7 @@ put    edge   <tail> <head> <weight> [ttl_seconds]
 delete edge   <tail> <head>
 illuminate <seed> <step> <k> [algorithm=none|mst|spt] [objective=min|max] \
            [weighting=raw|tfidf]
+help
 exit
 ```
 
@@ -836,7 +838,12 @@ delete vertex <key:string>
 delete edge   <tail:string> <head:string>
 illuminate <seed:string> <step:int> <k:int> [algorithm=none|mst|spt] \
            [objective=min|max] [weighting=raw|tfidf]
+help
+exit
 ```
+
+Type `help` at the prompt (REPL or admin `/cli`) to print the per-verb
+grammar with `illuminate` kwarg defaults into the scrollback (#436).
 
 Verb and objective (`vertex` / `edge` / `vertices` / `edges`) tokens are
 case-insensitive; arguments preserve case verbatim. Wrap any argument

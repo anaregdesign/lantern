@@ -11,7 +11,13 @@
  */
 import { describe, expect, test } from "bun:test";
 
-import { parseAdd, parsePut, parseFloatStrict } from "./verbs";
+import {
+  HELP_TEXT,
+  parseAdd,
+  parseHelp,
+  parsePut,
+  parseFloatStrict,
+} from "./verbs";
 
 describe("parseFloatStrict (#434 — Go strconv.ParseFloat parity)", () => {
   test.each([
@@ -85,5 +91,62 @@ describe("parseAdd / parsePut weight uses parseFloatStrict (#434)", () => {
   test("add edge rejects garbled token", () => {
     const r = parseAdd(["edge", "alice", "bob", "1abc"]);
     expect(r.ok).toBe(false);
+  });
+});
+
+describe("parseHelp (#436 — help verb)", () => {
+  test("bare `help` returns a help command", () => {
+    const r = parseHelp([]);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.command).toEqual({ verb: "help" });
+    }
+  });
+
+  test("extra args accepted silently (mirrors exit)", () => {
+    const r = parseHelp(["me"]);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.command).toEqual({ verb: "help" });
+    }
+  });
+});
+
+describe("HELP_TEXT (#436 — grammar contract)", () => {
+  test("enumerates illuminate kwarg names", () => {
+    expect(HELP_TEXT).toContain("algorithm=");
+    expect(HELP_TEXT).toContain("objective=");
+    expect(HELP_TEXT).toContain("weighting=");
+  });
+
+  test("enumerates illuminate kwarg valid values", () => {
+    expect(HELP_TEXT).toContain("none");
+    expect(HELP_TEXT).toContain("mst");
+    expect(HELP_TEXT).toContain("spt");
+    expect(HELP_TEXT).toContain("min");
+    expect(HELP_TEXT).toContain("max");
+    expect(HELP_TEXT).toContain("raw");
+    expect(HELP_TEXT).toContain("tfidf");
+  });
+
+  test("documents illuminate kwarg defaults", () => {
+    expect(HELP_TEXT).toContain("default=none");
+    expect(HELP_TEXT).toContain("default=min");
+    expect(HELP_TEXT).toContain("default=raw");
+  });
+
+  test("lists every verb (including help and exit)", () => {
+    for (const verb of [
+      "get",
+      "put",
+      "add",
+      "delete",
+      "scan",
+      "illuminate",
+      "help",
+      "exit",
+    ]) {
+      expect(HELP_TEXT).toContain(verb);
+    }
   });
 });
