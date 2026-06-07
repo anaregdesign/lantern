@@ -1,29 +1,23 @@
-import { Edge as ProtoEdge } from "~/lib/api/gen/graph/v1/graph_pb";
-import type { JsonValue } from "@bufbuild/protobuf";
-
 import type { LanternClient } from "./lantern-client";
 import { LanternApiError } from "./error";
+import { flatEdgeToSdkInput } from "./to-flat";
 import type { PutEdgesRequest, PutEdgesResponse } from "./types";
 
 export type { PutEdgesRequest, PutEdgesResponse } from "./types";
 
 /**
- * Calls `LanternService.PutEdges` over Connect-Web.
- *
- * Idempotent: each (tail, head) pair is overwritten with the supplied
- * weight and expiration. Used for seeding fixtures.
+ * Calls `LanternService.PutEdges` via `lantern-sdk/web`. Idempotent
+ * batch upsert; the SDK auto-chunks (#409).
  */
 export async function putEdges(
   client: LanternClient,
   request: PutEdgesRequest,
   init?: { signal?: AbortSignal },
 ): Promise<PutEdgesResponse> {
-  const edges = (request.edges ?? []).map((e) =>
-    ProtoEdge.fromJson(e as JsonValue),
-  );
+  const inputs = (request.edges ?? []).map(flatEdgeToSdkInput);
   try {
-    const resp = await client.putEdges({ edges }, { signal: init?.signal });
-    return resp.toJson() as PutEdgesResponse;
+    await client.putEdges(inputs, init?.signal);
+    return {};
   } catch (err) {
     throw LanternApiError.fromUnknown("PutEdges", err);
   }

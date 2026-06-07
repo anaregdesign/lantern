@@ -1,5 +1,6 @@
 import type { LanternClient } from "./lantern-client";
 import { LanternApiError } from "./error";
+import { sdkVertexToFlat } from "./to-flat";
 import type { ScanVerticesRequest, ScanVerticesResponse } from "./types";
 
 export type {
@@ -9,16 +10,11 @@ export type {
 } from "./types";
 
 /**
- * Calls `LanternService.ScanVertices` over Connect-Web.
- *
- * Pass `cursor` from a previous response's `nextCursor` to fetch the
- * next page. The server enforces a default + hard maximum on `limit`;
- * passing `0` (or omitting it) accepts the server default.
- *
- * The wire cursor is bytes; the Connect+JSON transport encodes it as
- * base64 in either direction, so callers continue to round-trip the
- * `nextCursor` string from one response straight back into the next
- * request without ever decoding it themselves.
+ * Calls `LanternService.ScanVertices` via `lantern-sdk/web`. Pass
+ * `cursor` from a previous response's `nextCursor` to fetch the next
+ * page. The wire cursor is bytes; this adapter decodes it from
+ * admin's base64-string representation (the legacy adapter's wire
+ * shape) and re-encodes the next cursor for the caller (#409).
  */
 export async function scanVertices(
   client: LanternClient,
@@ -26,35 +22,35 @@ export async function scanVertices(
   init?: { signal?: AbortSignal },
 ): Promise<ScanVerticesResponse> {
   try {
-    const resp = await client.scanVertices(
-      {
-        prefix: request.prefix ?? "",
-        limit: request.limit ?? 0,
-        cursor: decodeCursor(request.cursor),
-      },
-      { signal: init?.signal },
+    const page = await client.scanVertices(
+      request.prefix ?? "",
+      { limit: request.limit ?? 0, cursor: decodeCursor(request.cursor) },
+      init?.signal,
     );
-    return resp.toJson() as ScanVerticesResponse;
+    return {
+      vertices: page.vertices.map((v) => {
+        // Page items come back as SDK rich Vertex objects already;
+        // sdkVertexToFlat re-projects them onto admin's flat shape.
+        return sdkVertexToFlat(v);
+      }),
+      nextCursor: encodeCursor(page.nextCursor),
+    };
   } catch (err) {
     throw LanternApiError.fromUnknown("ScanVertices", err);
   }
 }
 
-/**
- * Cursor bytes round-trip as base64 in protobuf JSON. The legacy REST
- * adapter passed the cursor through opaquely as a JSON string, so we
- * decode it to a Uint8Array on the way in (Connect-Web's transport
- * re-encodes it the same way the server emitted it).
- */
-function decodeCursor(cursor: string | undefined): Uint8Array<ArrayBuffer> {
-  if (!cursor) {
-    return new Uint8Array(new ArrayBuffer(0));
-  }
+function decodeCursor(cursor: string | undefined): Uint8Array {
+  if (!cursor) return new Uint8Array();
   const bin = atob(cursor);
-  const buf = new ArrayBuffer(bin.length);
-  const out = new Uint8Array(buf);
-  for (let i = 0; i < bin.length; i++) {
-    out[i] = bin.charCodeAt(i);
-  }
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
+}
+
+function encodeCursor(cursor: Uint8Array): string {
+  if (cursor.length === 0) return "";
+  let s = "";
+  for (let i = 0; i < cursor.length; i++) s += String.fromCharCode(cursor[i]);
+  return btoa(s);
 }

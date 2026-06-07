@@ -1,14 +1,14 @@
 import type { LanternClient } from "./lantern-client";
 import { LanternApiError } from "./error";
+import { sdkEdgeToFlat } from "./to-flat";
 import type { Edge } from "./types";
 
 export type { Edge } from "./types";
 
 /**
- * Calls `LanternService.GetEdge` over Connect-Web.
- *
- * Returns `null` when the edge does not exist (CodeNotFound). Any
- * other failure is rethrown as a `LanternApiError`.
+ * Calls `LanternService.GetEdge` via `lantern-sdk/web`. Returns
+ * `null` when the edge does not exist; any other failure rethrows as
+ * `LanternApiError` (#409).
  */
 export async function getEdge(
   client: LanternClient,
@@ -17,11 +17,7 @@ export async function getEdge(
   init?: { signal?: AbortSignal },
 ): Promise<Edge | null> {
   try {
-    const resp = await client.getEdge({ tail, head }, { signal: init?.signal });
-    if (!resp.edge) {
-      return null;
-    }
-    return resp.edge.toJson() as Edge;
+    return sdkEdgeToFlat(await client.getEdge(tail, head, init?.signal));
   } catch (err) {
     if (LanternApiError.isNotFound(err)) {
       return null;

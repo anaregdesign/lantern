@@ -1,39 +1,29 @@
-import { createPromiseClient, type PromiseClient } from "@connectrpc/connect";
-import { createConnectTransport } from "@connectrpc/connect-web";
+import { connectWeb, type Lantern } from "lantern-sdk/web";
 
-import { LanternService } from "~/lib/api/gen/graph/v1/graph_connect";
+/**
+ * Thin re-export of the lantern-sdk Lantern client type. The admin SPA
+ * has historically called the client type `LanternClient`; keeping
+ * that alias avoids renaming every usecase hook now that the SDK is
+ * the source of truth (#409).
+ */
+export type LanternClient = Lantern;
 
 export interface LanternClientOptions {
   baseUrl: string;
 }
 
 /**
- * Lantern Connect-Web client. Re-exports the generated PromiseClient so
- * adapter modules under `lib/client/infrastructure/api/` can stay narrow
- * (one function per RPC) while sharing the same transport.
+ * Build a `lantern-sdk/web` Connect-Web client bound to the supplied
+ * gateway base URL. The base URL is normalised by trimming any
+ * trailing slash; the SDK itself enforces the scheme requirement
+ * (`http://` or `https://`).
  *
- * The protocol set here is Connect-flavoured JSON because the Lantern
- * server's primary listener mounts Connect + gRPC + gRPC-Web on the
- * same h2c socket. JSON is the lowest-friction choice for a browser
- * SPA: it round-trips cleanly through the browser fetch implementation,
- * is human-readable in DevTools, and matches the shape the legacy REST
- * adapters returned (so usecase value-objects do not need to change).
- */
-export type LanternClient = PromiseClient<typeof LanternService>;
-
-/**
- * Build a Connect-Web client bound to the supplied gateway base URL.
- * The base URL is normalised by trimming any trailing slash so paths
- * concatenated by the Connect transport produce
- * `${baseUrl}/graph.v1.LanternService/...` without doubled separators.
- *
- * Browsers default to fetch/Streams under the hood — no explicit
- * transport configuration is required for unary RPCs against the
- * Connect listener on the same origin (or any origin allowed by
- * `LANTERN_CORS_ALLOWED_ORIGINS` on the server).
+ * The browser flavour of the SDK speaks Connect over HTTP/1.1 fetch
+ * with the JSON codec by default — matching what the legacy admin
+ * adapter shipped. Same wire shape, same server requirements
+ * (`LANTERN_CORS_ALLOWED_ORIGINS` must include the admin origin), one
+ * fewer adapter layer to maintain.
  */
 export function createLanternClient(opts: LanternClientOptions): LanternClient {
-  const baseUrl = opts.baseUrl.replace(/\/$/, "");
-  const transport = createConnectTransport({ baseUrl, useBinaryFormat: false });
-  return createPromiseClient(LanternService, transport);
+  return connectWeb(opts.baseUrl.replace(/\/$/, ""));
 }

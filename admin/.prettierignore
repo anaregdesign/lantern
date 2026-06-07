@@ -4,7 +4,3 @@ node_modules/
 playwright-report/
 test-results/
 bun.lock
-# Generated Connect-Web stubs (buf + protoc-gen-es + protoc-gen-connect-es);
-# regenerate with `bun run codegen`. The header on each file already
-# disables eslint+ts checks for the same reason.
-app/lib/api/gen/

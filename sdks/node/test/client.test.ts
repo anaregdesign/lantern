@@ -3,7 +3,8 @@
  *
  * Stands up a Node http server that mounts a stub implementation of
  * the LanternService Connect handler via `connectNodeAdapter`, then
- * drives `Lantern.connect` against it. The stub is intentionally
+ * drives `connect()` (the Node entrypoint helper from
+ * `lantern-sdk`) against it. The stub is intentionally
  * narrow — it only implements the RPCs the round-trip tests exercise
  * — so the test stays focused on the transport bridge rather than the
  * service semantics. The full service contract is covered by the Go
@@ -24,7 +25,7 @@ import { Code, ConnectError, type ConnectRouter } from "@connectrpc/connect";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
 import { create } from "@bufbuild/protobuf";
 
-import { Lantern, NotFoundError } from "../src/index.js";
+import { Lantern, NotFoundError, connect } from "../src/index.js";
 import { LanternService, VertexSchema } from "../src/gen/graph/v1/graph_pb.js";
 
 interface StubState {
@@ -92,18 +93,18 @@ function newClient(): Lantern {
   // Pin the transport to httpVersion: "1.1" because the test server
   // is a plain http.Server (see beforeAll). The transport default is
   // "2" which would attempt h2 upgrade against an http/1 server.
-  return Lantern.connect(baseUrl, {
+  return connect(baseUrl, {
     transportOptions: { httpVersion: "1.1" },
   });
 }
 
 describe("Lantern client", () => {
   test("connect rejects baseUrl without scheme", () => {
-    expect(() => Lantern.connect("lantern:6380")).toThrow(/scheme/);
+    expect(() => connect("lantern:6380")).toThrow(/scheme/);
   });
 
   test("connect rejects empty baseUrl", () => {
-    expect(() => Lantern.connect("")).toThrow(/baseUrl/);
+    expect(() => connect("")).toThrow(/baseUrl/);
   });
 
   test("PutVertex + GetVertex round-trips a string value", async () => {

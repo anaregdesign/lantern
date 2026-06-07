@@ -2,9 +2,9 @@ import type { LanternClient } from "./lantern-client";
 import { LanternApiError } from "./error";
 
 /**
- * ServerStatus is the JSON-flat view of GetServerStatusResponse the Ops
- * view consumes. Durations are surfaced as both the raw seconds value
- * (for tooling) and a human-readable label (for the card).
+ * ServerStatus is the JSON-flat view of GetServerStatusResponse the
+ * Ops view consumes. Durations are surfaced as both the raw seconds
+ * value (for tooling) and a human-readable label (for the card).
  *
  * Mirrors the field set of pb.GetServerStatusResponse but flattens
  * google.protobuf.Timestamp / Duration into plain numbers so the
@@ -31,16 +31,17 @@ export interface ServerStatus {
 }
 
 /**
- * Calls LanternService.GetServerStatus and normalises the response into
- * the flat ServerStatus shape. Connect errors are rethrown as
- * LanternApiError so existing usecase error toasts keep working.
+ * Calls LanternService.GetServerStatus via `lantern-sdk/web` and
+ * normalises the response into the flat ServerStatus shape (#409).
+ * SDK errors are rethrown as LanternApiError so existing usecase
+ * error toasts keep working.
  */
 export async function getServerStatus(
   client: LanternClient,
   init?: { signal?: AbortSignal },
 ): Promise<ServerStatus> {
   try {
-    const resp = await client.getServerStatus({}, { signal: init?.signal });
+    const resp = await client.getServerStatus(init?.signal);
     return {
       version: resp.version,
       goVersion: resp.goVersion,
@@ -58,8 +59,7 @@ export async function getServerStatus(
       replicationEnabled: resp.replicationEnabled,
       // protobuf-es returns BigInt for uint64 fields; the admin UI
       // works in plain numbers (count <= 2^53 is fine for any
-      // realistic cache size). Coerce here so the use case layer
-      // stays BigInt-free.
+      // realistic cache size).
       vertexCount: Number(resp.vertexCount),
       edgeCount: Number(resp.edgeCount),
     };

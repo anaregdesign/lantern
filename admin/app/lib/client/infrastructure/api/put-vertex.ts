@@ -1,20 +1,20 @@
-import { Vertex as ProtoVertex } from "~/lib/api/gen/graph/v1/graph_pb";
-import type { JsonValue } from "@bufbuild/protobuf";
-
 import type { LanternClient } from "./lantern-client";
 import { LanternApiError } from "./error";
+import { flatVertexToSdkInput } from "./to-flat";
 import type { PutVertexBody, PutVertexResponse, Vertex } from "./types";
 
 export type { PutVertexBody, PutVertexResponse, Vertex } from "./types";
 
 /**
- * Calls `LanternService.PutVertex` over Connect-Web.
+ * Calls `LanternService.PutVertex` via `lantern-sdk/web`. The `key`
+ * argument always overrides any `body.vertex.key` so the call shape
+ * mirrors the legacy REST URL (where the key lived in the path) and
+ * the edit-vertex form does not have to re-stitch the key into the
+ * payload before sending (#409).
  *
- * The `key` argument always overrides any `body.vertex.key` so the
- * call shape mirrors the legacy REST URL (where the key lived in the
- * path). This keeps the existing edit-vertex flow unchanged: callers
- * still pass the key separately even though the wire form is a single
- * proto message.
+ * Returns the wire response shape (empty object today, kept as
+ * `PutVertexResponse` for upward compatibility with future write-side
+ * acknowledgements).
  */
 export async function putVertex(
   client: LanternClient,
@@ -24,11 +24,8 @@ export async function putVertex(
 ): Promise<PutVertexResponse> {
   const flat: Vertex = { ...(body.vertex ?? {}), key };
   try {
-    const resp = await client.putVertex(
-      { vertex: ProtoVertex.fromJson(flat as JsonValue) },
-      { signal: init?.signal },
-    );
-    return resp.toJson() as PutVertexResponse;
+    await client.putVertex(flatVertexToSdkInput(flat), init?.signal);
+    return {};
   } catch (err) {
     throw LanternApiError.fromUnknown("PutVertex", err);
   }
