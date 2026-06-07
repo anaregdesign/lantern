@@ -312,10 +312,31 @@ function parseInt10(s: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function parseFloatStrict(s: string): number | null {
-  if (s === "" || !/^-?\d+(\.\d+)?$/.test(s)) {
-    return null;
-  }
+/**
+ * Parses a Go-style float literal — exposed for unit tests (#434).
+ *
+ * Mirrors `strconv.ParseFloat` as it's invoked from
+ * `cli/parser/parser.go` (used for edge weight + the put-vertex
+ * coercion cascade), with one deliberate divergence:
+ *
+ * - Go's ParseFloat accepts the IEEE special tokens
+ *   `NaN`, `Inf`, `+Inf`, `-Inf`, `Infinity`, `-Infinity` (any case).
+ *   We reject them up-front: an edge weight of NaN is a bug magnet and
+ *   nothing in lantern actually wants one.
+ *
+ * Otherwise we accept anything `Number.parseFloat` can finitely parse:
+ *   1e3, 1.5e-3, .5, -.5, 5., 0, -1.25, +2.5
+ *
+ * Returns null on parse failure (so the call site can surface its own
+ * "usage:" line).
+ */
+export function parseFloatStrict(s: string): number | null {
+  if (s === "") return null;
+  // Reject IEEE special tokens that ParseFloat would otherwise accept.
+  if (/^[+-]?(nan|inf|infinity)$/i.test(s)) return null;
+  // Structural guard so a stray "abc1" does not slip through
+  // Number.parseFloat's prefix-only parse.
+  if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(s)) return null;
   const n = Number.parseFloat(s);
   return Number.isFinite(n) ? n : null;
 }
