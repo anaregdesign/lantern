@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/anaregdesign/lantern/cli/parser"
@@ -187,7 +188,7 @@ func (c *CLIService) Run(ctx context.Context, str string) error {
 				return ErrScan
 			}
 			opts := []client.ScanOption{}
-			if p.Limit > 0 {
+			if p.Limit > 0 && p.Limit <= math.MaxUint32 {
 				opts = append(opts, client.WithScanLimit(uint32(p.Limit)))
 			}
 			vs, _, err := c.client.ScanVertices(ctx, p.Prefix, opts...)
@@ -206,7 +207,7 @@ func (c *CLIService) Run(ctx context.Context, str string) error {
 				return ErrScan
 			}
 			opts := []client.EdgeScanOption{client.WithEdgeScanTailPrefix(p.TailPrefix)}
-			if p.Limit > 0 {
+			if p.Limit > 0 && p.Limit <= math.MaxUint32 {
 				opts = append(opts, client.WithEdgeScanLimit(uint32(p.Limit)))
 			}
 			es, _, err := c.client.ScanEdges(ctx, opts...)
