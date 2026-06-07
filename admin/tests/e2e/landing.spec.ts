@@ -15,6 +15,9 @@ test("landing page renders with navigation and gateway connection", async ({
     page.getByRole("link", { name: /Open Illuminate/i }),
   ).toBeVisible();
   await expect(page.getByRole("link", { name: /Open Ops/i })).toBeVisible();
+  // #439 — landing tile + AppShell nav now expose /cli alongside the
+  // other top-level sections.
+  await expect(page.getByRole("link", { name: /Open CLI/i })).toBeVisible();
   await expect(page.getByText("http://localhost:6380")).toBeVisible();
 });
 

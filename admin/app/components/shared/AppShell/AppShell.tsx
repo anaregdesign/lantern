@@ -17,6 +17,10 @@ const NAV: readonly NavEntry[] = [
   { to: "/vertices", label: "Vertices" },
   { to: "/edges", label: "Edges" },
   { to: "/illuminate", label: "Illuminate" },
+  // CLI is the power-user shortcut to the same RPC surface the other
+  // routes wrap; place it next to Illuminate (the other "explore"
+  // surface) and before the operator-facing Ops page (#439, #431).
+  { to: "/cli", label: "CLI" },
   { to: "/ops", label: "Ops" },
 ];
 
