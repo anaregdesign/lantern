@@ -267,6 +267,14 @@ func (c *CLIService) Run(ctx context.Context, str string) error {
 		}
 		fmt.Println(string(jsonString))
 		return nil
+	case "help":
+		// Help prints the per-verb grammar reference (#436). Single
+		// source of truth lives in `parser.HelpText`; the TS port keeps
+		// a byte-equivalent copy at `admin/app/lib/cli/verbs.ts`
+		// `HELP_TEXT`. Extra arguments are accepted silently to mirror
+		// `exit`.
+		fmt.Println(parser.HelpText)
+		return nil
 	default:
 		return ErrInvalidVerb
 	}

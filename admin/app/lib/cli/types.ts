@@ -20,6 +20,7 @@ export type WeightingName = "raw" | "tfidf";
 
 export type Command =
   | { verb: "exit" }
+  | { verb: "help" }
   | { verb: "get"; objective: "vertex"; key: string }
   | { verb: "get"; objective: "edge"; tail: string; head: string }
   | {

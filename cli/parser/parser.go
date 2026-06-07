@@ -15,6 +15,7 @@ var (
 		"delete",
 		"scan",
 		"illuminate",
+		"help",
 		"exit",
 	}
 
@@ -431,3 +432,33 @@ func ScanEdgesParam(s *Source) (*ScanEdges, error) {
 	}
 	return m, nil
 }
+
+// HelpText is the per-verb grammar reference printed by the `help` verb
+// (#436). Single source of truth for the Go REPL; the TypeScript port
+// keeps a byte-equivalent copy at `admin/app/lib/cli/verbs.ts` `HELP_TEXT`,
+// and the shared fixture `admin/test/cli-grammar/verbs.json` exercises both
+// parsers against the bare `help` verb.
+//
+// The kwarg enums and defaults below MUST stay in lockstep with
+// `IlluminateParam`'s `IlluminateAlgorithms` / `IlluminateObjectives` /
+// `IlluminateWeightings` sets and the corresponding TS parser.
+const HelpText = `Lantern CLI grammar:
+
+  get    vertex <key: string>
+  get    edge   <tail: string> <head: string>
+  put    vertex <key: string> <value: string|int|float|bool|datetime> [<ttl_seconds: int>]
+  put    edge   <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]
+  add    edge   <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]
+  delete vertex <key: string>
+  delete edge   <tail: string> <head: string>
+  scan   vertices <prefix: string> [<limit: int>]
+  scan   edges    <tail-prefix: string> [<limit: int>]
+  illuminate <seed: string> <step: int> <k: int>
+             [algorithm={none|mst|spt}]  default=none
+             [objective={min|max}]       default=min
+             [weighting={raw|tfidf}]     default=raw
+  help
+  exit
+
+Quoting: "double" with C-style escapes (\" \\ \n \r \t); 'single' verbatim.
+Verb/objective case-insensitive; argument values preserve case.`

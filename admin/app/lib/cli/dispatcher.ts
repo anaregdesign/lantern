@@ -79,6 +79,12 @@ export async function dispatch(input: DispatchInput): Promise<unknown> {
   switch (command.verb) {
     case "exit":
       return null;
+    case "help":
+      // Help is intrinsically caller-handled (no RPC) — the React
+      // panel intercepts it before reaching the dispatcher and
+      // renders `HELP_TEXT` from `verbs.ts` into the scrollback.
+      // The case lives here only so the switch stays exhaustive.
+      return null;
     case "get":
       if (command.objective === "vertex") {
         const v = await getVertex(client, command.key, { signal });

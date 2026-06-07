@@ -312,6 +312,50 @@ export function parseIlluminate(rest: string[]): ParseResult {
   };
 }
 
+/**
+ * Human-readable per-verb grammar reference printed by the `help`
+ * verb (#436). Single source of truth for the TypeScript side; the
+ * Go REPL keeps a byte-equivalent copy in `cli/parser/parser.go`
+ * `HelpText`, and the shared fixture `verbs.json` exercises both
+ * parsers against the bare `help` verb.
+ *
+ * The kwarg enums and defaults below MUST stay in lockstep with
+ * `parseIlluminate`'s `ILL_ALGORITHMS` / `ILL_OBJECTIVES` /
+ * `ILL_WEIGHTINGS` sets and the corresponding Go REPL parser.
+ */
+export const HELP_TEXT = [
+  "Lantern CLI grammar:",
+  "",
+  "  get    vertex <key: string>",
+  "  get    edge   <tail: string> <head: string>",
+  "  put    vertex <key: string> <value: string|int|float|bool|datetime> [<ttl_seconds: int>]",
+  "  put    edge   <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]",
+  "  add    edge   <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]",
+  "  delete vertex <key: string>",
+  "  delete edge   <tail: string> <head: string>",
+  "  scan   vertices <prefix: string> [<limit: int>]",
+  "  scan   edges    <tail-prefix: string> [<limit: int>]",
+  "  illuminate <seed: string> <step: int> <k: int>",
+  "             [algorithm={none|mst|spt}]  default=none",
+  "             [objective={min|max}]       default=min",
+  "             [weighting={raw|tfidf}]     default=raw",
+  "  help",
+  "  exit",
+  "",
+  'Quoting: "double" with C-style escapes (\\" \\\\ \\n \\r \\t); \'single\' verbatim.',
+  "Verb/objective case-insensitive; argument values preserve case.",
+].join("\n");
+
+/**
+ * Parses the `help` verb. Extra arguments are accepted silently so
+ * the verb behaves like `exit` — discoverability beats strictness
+ * here, since the operator typing `help` is by definition asking for
+ * the grammar reference, not for a usage hint about `help` itself.
+ */
+export function parseHelp(_rest: string[]): ParseResult {
+  return { ok: true, command: { verb: "help" } };
+}
+
 function parseInt10(s: string): number | null {
   if (s === "" || !/^-?\d+$/.test(s)) {
     return null;
