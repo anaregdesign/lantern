@@ -18,7 +18,7 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test": "bun test app",
+    "test": "bun test app test/cli-grammar",
     "test:e2e": "playwright test"
   },
   "dependencies": {

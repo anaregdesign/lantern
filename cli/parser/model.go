@@ -48,3 +48,16 @@ type Illuminate struct {
 	Objective string // "min" | "max"           (default: "min")
 	Weighting string // "raw" | "tfidf"         (default: "raw")
 }
+
+// ScanVertices / ScanEdges back the `scan vertices` / `scan edges` REPL
+// verbs that mirror the admin web CLI shape (#411). Limit is optional;
+// 0 means "use the server default".
+type ScanVertices struct {
+	Prefix string
+	Limit  int
+}
+
+type ScanEdges struct {
+	TailPrefix string
+	Limit      int
+}

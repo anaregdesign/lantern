@@ -12,6 +12,7 @@ var (
 		"put",
 		"add",
 		"delete",
+		"scan",
 		"illuminate",
 		"exit",
 	}
@@ -19,6 +20,15 @@ var (
 	Objectives = []string{
 		"vertex",
 		"edge",
+	}
+
+	// ScanObjectives are the plural-form objectives accepted by the
+	// `scan` verb. They intentionally do NOT overlap with `Objectives`
+	// (singular vertex/edge), which the get/put/delete/add verbs use, so
+	// `get vertices` and `scan vertex` are both clean parse errors.
+	ScanObjectives = []string{
+		"vertices",
+		"edges",
 	}
 
 	// IlluminateAlgorithms / IlluminateObjectives / IlluminateWeightings
@@ -160,6 +170,10 @@ func Verb(s *Source) (string, error) {
 
 func Objective(s *Source) (string, error) {
 	return AnyOf(s, Objectives)
+}
+
+func ScanObjective(s *Source) (string, error) {
+	return AnyOf(s, ScanObjectives)
 }
 
 func GetVertexParam(s *Source) (*GetVertex, error) {
@@ -358,4 +372,49 @@ func contains(set []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// ScanVerticesParam parses `scan vertices <prefix> [limit]`. The objective
+// token ("vertices") has already been consumed by the caller; this
+// function only reads the prefix and optional limit. An empty prefix is
+// rejected because an unbounded vertex scan from the REPL is
+// almost never what the operator meant.
+func ScanVerticesParam(s *Source) (*ScanVertices, error) {
+	var err error
+	m := &ScanVertices{}
+	if m.Prefix, err = String(s); err != nil {
+		return nil, err
+	}
+	if err := EOF(s); err == nil {
+		return m, nil
+	}
+	if m.Limit, err = Integer(s); err != nil {
+		return nil, err
+	}
+	if err := EOF(s); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// ScanEdgesParam parses `scan edges <tail-prefix> [limit]`. The objective
+// token ("edges") has already been consumed by the caller. An empty
+// tail-prefix is permitted (scans every tail), matching the server's
+// ScanEdges semantics where both prefixes default to empty.
+func ScanEdgesParam(s *Source) (*ScanEdges, error) {
+	var err error
+	m := &ScanEdges{}
+	if m.TailPrefix, err = String(s); err != nil {
+		return nil, err
+	}
+	if err := EOF(s); err == nil {
+		return m, nil
+	}
+	if m.Limit, err = Integer(s); err != nil {
+		return nil, err
+	}
+	if err := EOF(s); err != nil {
+		return nil, err
+	}
+	return m, nil
 }

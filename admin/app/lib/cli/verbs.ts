@@ -1,0 +1,321 @@
+/**
+ * Verb-specific parse helpers split out of parser.ts so the dispatch
+ * file stays narrow. Each `parseX` returns `ParseResult`; the
+ * usage strings match the Go REPL's per-error usage hints verbatim.
+ */
+
+import type {
+  AlgorithmName,
+  ObjectiveName,
+  ParseResult,
+  WeightingName,
+} from "./types";
+
+const DEFAULT_TTL_SECONDS = 365 * 24 * 3600;
+
+const ILL_ALGORITHMS = new Set<AlgorithmName>(["none", "mst", "spt"]);
+const ILL_OBJECTIVES = new Set<ObjectiveName>(["min", "max"]);
+const ILL_WEIGHTINGS = new Set<WeightingName>(["raw", "tfidf"]);
+
+export function parseGet(rest: string[]): ParseResult {
+  const [obj, ...args] = rest;
+  if (obj === "vertex") {
+    if (args.length !== 1 || args[0] === "") {
+      return { ok: false, usage: "usage: get vertex <key: string>" };
+    }
+    return {
+      ok: true,
+      command: { verb: "get", objective: "vertex", key: args[0] },
+    };
+  }
+  if (obj === "edge") {
+    if (args.length !== 2 || args[0] === "" || args[1] === "") {
+      return {
+        ok: false,
+        usage: "usage: get edge <tail: string> <head: string>",
+      };
+    }
+    return {
+      ok: true,
+      command: { verb: "get", objective: "edge", tail: args[0], head: args[1] },
+    };
+  }
+  return { ok: false, usage: "usage: get { vertex | edge } ... " };
+}
+
+export function parsePut(rest: string[]): ParseResult {
+  const [obj, ...args] = rest;
+  if (obj === "vertex") {
+    if (args.length < 2 || args.length > 3) {
+      return {
+        ok: false,
+        usage:
+          "usage: put vertex <key: string> <value: string|int|float|bool|datetime> [<ttl_seconds: int>]",
+      };
+    }
+    const [key, value, ttlTok] = args;
+    const ttlSeconds =
+      ttlTok === undefined ? DEFAULT_TTL_SECONDS : parseInt10(ttlTok);
+    if (ttlSeconds === null) {
+      return {
+        ok: false,
+        usage:
+          "usage: put vertex <key: string> <value: string|int|float|bool|datetime> [<ttl_seconds: int>]",
+      };
+    }
+    return {
+      ok: true,
+      command: {
+        verb: "put",
+        objective: "vertex",
+        key,
+        value,
+        ttlSeconds,
+      },
+    };
+  }
+  if (obj === "edge") {
+    if (args.length < 3 || args.length > 4) {
+      return {
+        ok: false,
+        usage:
+          "usage: put edge <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]",
+      };
+    }
+    const [tail, head, weightTok, ttlTok] = args;
+    const weight = parseFloatStrict(weightTok);
+    if (weight === null) {
+      return {
+        ok: false,
+        usage:
+          "usage: put edge <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]",
+      };
+    }
+    const ttlSeconds =
+      ttlTok === undefined ? DEFAULT_TTL_SECONDS : parseInt10(ttlTok);
+    if (ttlSeconds === null) {
+      return {
+        ok: false,
+        usage:
+          "usage: put edge <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]",
+      };
+    }
+    return {
+      ok: true,
+      command: {
+        verb: "put",
+        objective: "edge",
+        tail,
+        head,
+        weight,
+        ttlSeconds,
+      },
+    };
+  }
+  return { ok: false, usage: "usage: put { vertex | edge } ... " };
+}
+
+export function parseDelete(rest: string[]): ParseResult {
+  const [obj, ...args] = rest;
+  if (obj === "vertex") {
+    if (args.length !== 1 || args[0] === "") {
+      return { ok: false, usage: "usage: delete vertex <key: string>" };
+    }
+    return {
+      ok: true,
+      command: { verb: "delete", objective: "vertex", key: args[0] },
+    };
+  }
+  if (obj === "edge") {
+    if (args.length !== 2 || args[0] === "" || args[1] === "") {
+      return {
+        ok: false,
+        usage: "usage: delete edge <tail: string> <head: string>",
+      };
+    }
+    return {
+      ok: true,
+      command: {
+        verb: "delete",
+        objective: "edge",
+        tail: args[0],
+        head: args[1],
+      },
+    };
+  }
+  return { ok: false, usage: "usage: delete { vertex | edge }" };
+}
+
+export function parseAdd(rest: string[]): ParseResult {
+  const [obj, ...args] = rest;
+  if (obj !== "edge") {
+    return { ok: false, usage: "usage: add edge ... " };
+  }
+  if (args.length < 3 || args.length > 4) {
+    return {
+      ok: false,
+      usage:
+        "usage: add edge <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]",
+    };
+  }
+  const [tail, head, weightTok, ttlTok] = args;
+  const weight = parseFloatStrict(weightTok);
+  if (weight === null) {
+    return {
+      ok: false,
+      usage:
+        "usage: add edge <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]",
+    };
+  }
+  const ttlSeconds =
+    ttlTok === undefined ? DEFAULT_TTL_SECONDS : parseInt10(ttlTok);
+  if (ttlSeconds === null) {
+    return {
+      ok: false,
+      usage:
+        "usage: add edge <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]",
+    };
+  }
+  return {
+    ok: true,
+    command: {
+      verb: "add",
+      objective: "edge",
+      tail,
+      head,
+      weight,
+      ttlSeconds,
+    },
+  };
+}
+
+export function parseScan(rest: string[]): ParseResult {
+  const [obj, ...args] = rest;
+  if (obj === "vertices") {
+    if (args.length < 1 || args.length > 2 || args[0] === "") {
+      return {
+        ok: false,
+        usage: "usage: scan vertices <prefix: string> [<limit: int>]",
+      };
+    }
+    const limit = args[1] === undefined ? 0 : parseInt10(args[1]);
+    if (limit === null) {
+      return {
+        ok: false,
+        usage: "usage: scan vertices <prefix: string> [<limit: int>]",
+      };
+    }
+    return {
+      ok: true,
+      command: {
+        verb: "scan",
+        objective: "vertices",
+        prefix: args[0],
+        limit,
+      },
+    };
+  }
+  if (obj === "edges") {
+    if (args.length < 1 || args.length > 2 || args[0] === "") {
+      return {
+        ok: false,
+        usage: "usage: scan edges <tail-prefix: string> [<limit: int>]",
+      };
+    }
+    const limit = args[1] === undefined ? 0 : parseInt10(args[1]);
+    if (limit === null) {
+      return {
+        ok: false,
+        usage: "usage: scan edges <tail-prefix: string> [<limit: int>]",
+      };
+    }
+    return {
+      ok: true,
+      command: {
+        verb: "scan",
+        objective: "edges",
+        tailPrefix: args[0],
+        limit,
+      },
+    };
+  }
+  return { ok: false, usage: "usage: scan { vertices | edges } ... " };
+}
+
+export function parseIlluminate(rest: string[]): ParseResult {
+  const usage =
+    "usage: illuminate <key: string> <step: int> <k: int> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf]";
+  if (rest.length < 3) {
+    return { ok: false, usage };
+  }
+  const seed = rest[0];
+  if (seed === "") {
+    return { ok: false, usage };
+  }
+  const step = parseInt10(rest[1]);
+  if (step === null) {
+    return { ok: false, usage };
+  }
+  const k = parseInt10(rest[2]);
+  if (k === null) {
+    return { ok: false, usage };
+  }
+  let algorithm: AlgorithmName = "none";
+  let objective: ObjectiveName = "min";
+  let weighting: WeightingName = "raw";
+  for (let i = 3; i < rest.length; i++) {
+    const tok = rest[i];
+    const eq = tok.indexOf("=");
+    if (eq < 0) {
+      return { ok: false, usage };
+    }
+    const key = tok.slice(0, eq);
+    const value = tok.slice(eq + 1);
+    if (key === "algorithm") {
+      if (!ILL_ALGORITHMS.has(value as AlgorithmName)) {
+        return { ok: false, usage };
+      }
+      algorithm = value as AlgorithmName;
+    } else if (key === "objective") {
+      if (!ILL_OBJECTIVES.has(value as ObjectiveName)) {
+        return { ok: false, usage };
+      }
+      objective = value as ObjectiveName;
+    } else if (key === "weighting") {
+      if (!ILL_WEIGHTINGS.has(value as WeightingName)) {
+        return { ok: false, usage };
+      }
+      weighting = value as WeightingName;
+    } else {
+      return { ok: false, usage };
+    }
+  }
+  return {
+    ok: true,
+    command: {
+      verb: "illuminate",
+      seed,
+      step,
+      k,
+      algorithm,
+      objective,
+      weighting,
+    },
+  };
+}
+
+function parseInt10(s: string): number | null {
+  if (s === "" || !/^-?\d+$/.test(s)) {
+    return null;
+  }
+  const n = Number.parseInt(s, 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+function parseFloatStrict(s: string): number | null {
+  if (s === "" || !/^-?\d+(\.\d+)?$/.test(s)) {
+    return null;
+  }
+  const n = Number.parseFloat(s);
+  return Number.isFinite(n) ? n : null;
+}

@@ -1,0 +1,81 @@
+{
+  "$schema": "Lantern REPL/CLI grammar fixture (#411).",
+  "$description": "Drift-detection fixture shared by the Go REPL and the admin web CLI. Every entry is exercised by BOTH cli/parser/grammar_fixture_test.go and admin/test/cli/grammar.test.ts so a grammar change that only updates one side fails the other side's CI. Add a new verb here whenever you add it to either parser.",
+  "valid": [
+    { "input": "exit", "comment": "single-token exit verb" },
+    { "input": "get vertex alice" },
+    { "input": "get edge alice bob" },
+    { "input": "put vertex alice Alice" },
+    { "input": "put vertex alice Alice 60", "comment": "with TTL" },
+    { "input": "put edge alice bob 1.5" },
+    { "input": "put edge alice bob 1.5 60" },
+    { "input": "add edge alice bob 1.0" },
+    { "input": "add edge alice bob 1.0 60" },
+    { "input": "delete vertex alice" },
+    { "input": "delete edge alice bob" },
+    { "input": "scan vertices users/" },
+    { "input": "scan vertices users/ 100" },
+    { "input": "scan edges alice" },
+    { "input": "scan edges alice 100" },
+    { "input": "illuminate alice 2 5" },
+    { "input": "illuminate alice 2 5 algorithm=mst" },
+    { "input": "illuminate alice 2 5 algorithm=spt objective=max" },
+    {
+      "input": "illuminate alice 2 5 algorithm=spt objective=max weighting=tfidf"
+    },
+    {
+      "input": "illuminate alice 2 5 weighting=tfidf objective=max algorithm=spt",
+      "comment": "keyword args may appear in any order"
+    }
+  ],
+  "invalid": [
+    { "input": "", "comment": "empty input" },
+    { "input": "nonsense", "comment": "unknown verb" },
+    { "input": "get", "comment": "missing objective" },
+    { "input": "get vertex", "comment": "missing key" },
+    { "input": "get edge alice", "comment": "missing head" },
+    { "input": "put vertex", "comment": "missing key/value" },
+    {
+      "input": "put edge alice bob notafloat",
+      "comment": "non-numeric weight"
+    },
+    { "input": "add", "comment": "missing objective" },
+    { "input": "add vertex alice", "comment": "add only supports edge" },
+    { "input": "delete", "comment": "missing objective" },
+    { "input": "delete edge alice", "comment": "missing head" },
+    { "input": "scan", "comment": "missing objective" },
+    {
+      "input": "scan vertex users/",
+      "comment": "scan takes plural objective; vertex (singular) is not allowed"
+    },
+    { "input": "scan vertices", "comment": "missing prefix" },
+    {
+      "input": "scan vertices users/ notanint",
+      "comment": "non-numeric limit"
+    },
+    { "input": "illuminate", "comment": "missing seed" },
+    { "input": "illuminate alice", "comment": "missing step" },
+    { "input": "illuminate alice 2", "comment": "missing k" },
+    { "input": "illuminate alice notanint 5", "comment": "non-numeric step" },
+    {
+      "input": "illuminate alice 2 5 algorithm=bogus",
+      "comment": "unknown algorithm value"
+    },
+    {
+      "input": "illuminate alice 2 5 objective=bogus",
+      "comment": "unknown objective value"
+    },
+    {
+      "input": "illuminate alice 2 5 weighting=bogus",
+      "comment": "unknown weighting value"
+    },
+    {
+      "input": "illuminate alice 2 5 unknown=foo",
+      "comment": "unknown keyword"
+    },
+    {
+      "input": "illuminate alice 2 5 algorithm",
+      "comment": "keyword without value"
+    }
+  ]
+}
