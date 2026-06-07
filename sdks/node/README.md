@@ -24,9 +24,9 @@ and gRPC-Web on the same h2c socket, so this client points at the
 server URL with an `http://` (or `https://` for TLS) scheme.
 
 ```ts
-import { Lantern, Algorithm } from "lantern-sdk";
+import { Algorithm, connect } from "lantern-sdk";
 
-const client = Lantern.connect("http://localhost:6380");
+const client = connect("http://localhost:6380");
 try {
   await client.putVertex({ key: "hello", value: "world", ttlSeconds: 60 });
 
@@ -117,9 +117,9 @@ await client.getVertex("slow-key", ctrl.signal);
 Override the Connect-Node transport options via `transportOptions`:
 
 ```ts
-import { Lantern } from "lantern-sdk";
+import { connect } from "lantern-sdk";
 
-const client = Lantern.connect("https://lantern.example.com:6380", {
+const client = connect("https://lantern.example.com:6380", {
   transportOptions: {
     useBinaryFormat: true, // flip from Connect/JSON to Connect/protobuf
     httpVersion: "2",
@@ -133,6 +133,29 @@ const client = Lantern.connect("https://lantern.example.com:6380", {
   ],
 });
 ```
+
+## Browser entrypoint (`lantern-sdk/web`)
+
+The package also exports a browser-flavoured entrypoint that swaps the
+Node `http2` transport for a `fetch`-based one from
+`@connectrpc/connect-web`. Bundlers that follow the `package.json#exports`
+map (Vite, Webpack 5+, Rollup, esbuild) will route
+`import { connectWeb } from "lantern-sdk/web"` to a bundle that excludes
+`@connectrpc/connect-node` entirely — verified by the `bundle-isolation`
+test in `test/bundle-isolation.test.ts`.
+
+```ts
+import { connectWeb, Algorithm } from "lantern-sdk/web";
+
+const client = connectWeb("https://lantern.example.com:6380");
+const graph = await client.illuminate("hello", { algorithm: Algorithm.SHORTEST_PATH_TREE });
+console.log(`vertices=${graph.vertices.size}`);
+```
+
+The browser entrypoint exposes the same `Lantern` class, value enums,
+error hierarchy, and option types as the Node entrypoint; only the
+transport differs. CORS preflights must be allowed on the Lantern
+server via `LANTERN_CORS_ALLOWED_ORIGINS`.
 
 ## License
 

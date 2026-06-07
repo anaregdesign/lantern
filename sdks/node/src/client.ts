@@ -1,9 +1,21 @@
 /**
- * Promise-based Connect-Node client for the Lantern service.
+ * Promise-based Connect client for the Lantern service.
  *
- * Open with `Lantern.connect("http://host:6380")` against the server's
- * Connect listener. All methods return Promises; pass `signal` for
- * AbortController-driven cancellation.
+ * Two entrypoints, one client class:
+ *
+ *   - `import { Lantern } from "lantern-sdk";`
+ *     `Lantern.connect("http://host:6380")` — Node h2c (HTTP/2)
+ *     via `@connectrpc/connect-node`.
+ *   - `import { Lantern } from "lantern-sdk/web";`
+ *     `Lantern.connectWeb("http://host:6380")` — browser fetch
+ *     (HTTP/1.1) via `@connectrpc/connect-web`. No
+ *     `@connectrpc/connect-node` code is pulled into the browser
+ *     bundle.
+ *
+ * Advanced consumers can inject any `@connectrpc/connect` `Transport`
+ * directly via `Lantern.withTransport(transport)` — useful for tests
+ * with a transport mock or for embedding the client in a host that
+ * already owns the transport (e.g. an Electron renderer).
  *
  * Batch helpers (`putVertices`, `addEdges`, `putEdges`,
  * `deleteVertices`, `deleteEdges`) auto-chunk at
@@ -11,14 +23,13 @@
  * `BatchError` with a resumable `written` offset on partial failure.
  *
  * Wire: Connect protocol (Connect/JSON by default; flip to binary via
- * `transportOptions.useBinaryFormat`). Built on @connectrpc/connect v2
- * + @connectrpc/connect-node v2; codegen via @bufbuild/protoc-gen-es
+ * `transportOptions.useBinaryFormat`). Built on
+ * @connectrpc/connect v2 + codegen via @bufbuild/protoc-gen-es
  * (single plugin emits both message classes and the service schema
  * descriptor `LanternService`).
  */
 
-import { type Client, type Interceptor, createClient } from "@connectrpc/connect";
-import { createConnectTransport, type ConnectTransportOptions } from "@connectrpc/connect-node";
+import { type Client, type Interceptor, type Transport, createClient } from "@connectrpc/connect";
 import { fromJson, toJson, type JsonValue } from "@bufbuild/protobuf";
 
 import {
@@ -28,6 +39,8 @@ import {
   Objective as PbObjective,
   Weighting as PbWeighting,
   VertexSchema,
+  type GetReplicationStatusResponse,
+  type GetServerStatusResponse,
 } from "./gen/graph/v1/graph_pb.js";
 
 import {
@@ -61,9 +74,10 @@ import {
 } from "./options.js";
 
 /**
- * Constructor arguments for `Lantern.connect`. The HTTP base URL is the
- * only required field; everything else either has a sensible default or
- * is an opt-in tuning knob.
+ * Constructor arguments for `Lantern.connect` /
+ * `Lantern.connectWeb`. The HTTP base URL is the only required field;
+ * everything else either has a sensible default or is an opt-in
+ * tuning knob.
  */
 export interface LanternArgs {
   options?: ConnectOptions;
@@ -76,9 +90,13 @@ export interface LanternArgs {
   /**
    * Override the transport options forwarded to
    * `createConnectTransport`. `baseUrl` is filled in from the
-   * constructor arg and cannot be overridden here.
+   * constructor arg and cannot be overridden here. The shape is the
+   * underlying `@connectrpc/connect-node` / `@connectrpc/connect-web`
+   * options object minus `baseUrl`; passed through verbatim so
+   * consumers can flip `useBinaryFormat`, override the fetch
+   * implementation, etc.
    */
-  transportOptions?: Omit<ConnectTransportOptions, "baseUrl">;
+  transportOptions?: Record<string, unknown>;
 }
 
 // Connect-es v2 enum values match the proto numeric IDs verbatim — no
@@ -101,6 +119,20 @@ const WEIGHTING_TO_PB: Record<number, PbWeighting> = {
   [Weighting.TFIDF]: PbWeighting.TFIDF,
 };
 
+function normaliseBaseUrl(caller: string, baseUrl: string): string {
+  if (!baseUrl) {
+    throw new Error(`${caller}: baseUrl is required`);
+  }
+  if (!/^https?:\/\//.test(baseUrl)) {
+    throw new Error(
+      `${caller}: baseUrl must include scheme (http:// or https://); got ${JSON.stringify(baseUrl)}`,
+    );
+  }
+  return baseUrl.replace(/\/$/, "");
+}
+
+export { normaliseBaseUrl };
+
 /**
  * Promise-based Lantern client built on Connect-Node v2.
  *
@@ -122,37 +154,24 @@ export class Lantern {
   }
 
   /**
-   * Open a Connect-Node client against the supplied base URL. The
-   * base URL MUST include the scheme — `http://` for h2c (the server
-   * default), or `https://` for TLS.
+   * Construct a Lantern client around any pre-built
+   * `@connectrpc/connect` `Transport`. Most callers should use the
+   * entrypoint-specific `connect()` (Node) or `connectWeb()`
+   * (browser) helpers instead — those are thin wrappers that pick
+   * the right transport package for their runtime so the unused one
+   * stays out of the bundle.
    *
-   * Defaults:
-   *   - HTTP/2 transport (Connect protocol, JSON codec); set
-   *     `args.transportOptions.useBinaryFormat = true` to flip to
-   *     protobuf.
-   *   - Batch chunk size 1000.
-   *   - No per-call timeout; pass
-   *     `args.options.defaultTimeoutMs` to apply one.
+   * Use `withTransport()` directly when:
+   *   - the host already owns the transport (Electron renderer with
+   *     a custom fetch pipeline, a worker thread sharing a parent's
+   *     transport, …),
+   *   - the test injects a mock transport,
+   *   - the runtime is unsupported by the bundled transport helpers.
    */
-  static connect(baseUrl: string, args: LanternArgs = {}): Lantern {
-    if (!baseUrl) {
-      throw new Error("Lantern.connect: baseUrl is required");
-    }
-    if (!/^https?:\/\//.test(baseUrl)) {
-      throw new Error(
-        `Lantern.connect: baseUrl must include scheme (http:// or https://); got ${JSON.stringify(baseUrl)}`,
-      );
-    }
-    const normalised = baseUrl.replace(/\/$/, "");
-    const transport = createConnectTransport({
-      baseUrl: normalised,
-      httpVersion: "2",
-      interceptors: args.interceptors,
-      ...(args.transportOptions as Partial<ConnectTransportOptions> | undefined),
-    } as ConnectTransportOptions);
+  static withTransport(transport: Transport, options: ConnectOptions = {}): Lantern {
     return new Lantern(createClient(LanternService, transport), {
       batchChunkSize: DEFAULT_BATCH_CHUNK_SIZE,
-      ...(args.options ?? {}),
+      ...options,
     });
   }
 
@@ -458,6 +477,30 @@ export class Lantern {
       }
       return { vertices, edges };
     });
+  }
+
+  // --- Observability RPCs ---
+
+  /**
+   * Returns the server's identity, build info, runtime configuration
+   * and live cache counts. Used by admin's Ops view; the returned
+   * shape is the raw `GetServerStatusResponse` protobuf-es message
+   * (timestamps as `Timestamp`, durations as `Duration`, counts as
+   * `bigint`). Callers that want JSON-flat values can pass the result
+   * through `toJson(GetServerStatusResponseSchema, ...)`.
+   */
+  async getServerStatus(signal?: AbortSignal): Promise<GetServerStatusResponse> {
+    return this.invoke(() => this.client.getServerStatus({}, this.callOpts(signal)));
+  }
+
+  /**
+   * Returns a per-peer snapshot of the local replication pump state.
+   * On single-node deployments returns `{ enabled: false, peers: [] }`.
+   * The returned shape is the raw `GetReplicationStatusResponse`
+   * protobuf-es message; admin renders it via its own selector layer.
+   */
+  async getReplicationStatus(signal?: AbortSignal): Promise<GetReplicationStatusResponse> {
+    return this.invoke(() => this.client.getReplicationStatus({}, this.callOpts(signal)));
   }
 
   // --- internals ---

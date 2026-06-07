@@ -1,7 +1,7 @@
-import { Lantern, Algorithm, Objective, Weighting } from "lantern-sdk";
+import { Algorithm, Objective, Weighting, connect } from "lantern-sdk";
 
 async function main(): Promise<void> {
-  const client = Lantern.connect("localhost:6380");
+  const client = connect("http://localhost:6380");
 
   try {
     // PutVertex — value can be string, number, bigint, boolean, Date,

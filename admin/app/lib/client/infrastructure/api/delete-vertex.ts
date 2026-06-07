@@ -5,11 +5,10 @@ import type { DeleteVertexResponse } from "./types";
 export type { DeleteVertexResponse } from "./types";
 
 /**
- * Calls `LanternService.DeleteVertex` over Connect-Web.
- *
- * Returns the response payload as-is, including the `existed` flag.
- * A NotFound from the server is normalised to `{ existed: false }` so
- * callers can render a single "deleted" path.
+ * Calls `LanternService.DeleteVertex` via `lantern-sdk/web`. A
+ * NotFound from the server is normalised to `{ existed: false }` so
+ * callers can collapse the "deleted" and "wasn't there" paths into a
+ * single branch (#409).
  */
 export async function deleteVertex(
   client: LanternClient,
@@ -17,8 +16,8 @@ export async function deleteVertex(
   init?: { signal?: AbortSignal },
 ): Promise<DeleteVertexResponse> {
   try {
-    const resp = await client.deleteVertex({ key }, { signal: init?.signal });
-    return resp.toJson() as DeleteVertexResponse;
+    const existed = await client.deleteVertex(key, init?.signal);
+    return { existed };
   } catch (err) {
     if (LanternApiError.isNotFound(err)) {
       return { existed: false };

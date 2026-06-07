@@ -1,14 +1,14 @@
 /**
- * `lantern-sdk` — Bun-managed TypeScript SDK for the Lantern graph KVS.
+ * `lantern-sdk/web` — browser entrypoint built on `@connectrpc/connect-web`.
  *
- * Built on Connect-Node v2. The Lantern server's primary listener
- * speaks Connect / gRPC / gRPC-Web on the same h2c socket, so this
- * client points at the server's `host:6380` URL prefixed with an
- * `http://` (or `https://`) scheme:
+ * Use this from any browser bundle (Vite/Webpack/Rollup) so the bundler
+ * does NOT pull in `@connectrpc/connect-node`. The Lantern class itself
+ * is identical to the Node entrypoint; only the underlying transport
+ * differs.
  *
  *   ```ts
- *   import { connect } from "lantern-sdk";
- *   const client = connect("http://localhost:6380");
+ *   import { connectWeb } from "lantern-sdk/web";
+ *   const client = connectWeb("http://localhost:6380");
  *   try {
  *     await client.putVertex({ key: "hello", value: "world" });
  *     const v = await client.getVertex("hello");
@@ -17,33 +17,27 @@
  *   }
  *   ```
  *
- * For browser consumers, import from `lantern-sdk/web` instead — that
- * subpath ships `connectWeb()` and a bundle that excludes
- * `@connectrpc/connect-node`.
- *
  * @packageDocumentation
  */
 
 import { Lantern, normaliseBaseUrl, type LanternArgs } from "./client.js";
-import { makeNodeTransport } from "./transport-node.js";
+import { makeWebTransport } from "./transport-web.js";
 
 /**
- * Open a Connect-Node-backed Lantern client. The base URL MUST
- * include the scheme — `http://` for h2c (the server default), or
- * `https://` for TLS.
+ * Open a Connect-Web (browser fetch) Lantern client. The base URL
+ * MUST include the scheme.
  *
  * Defaults:
- *   - HTTP/2 transport (Connect protocol, JSON codec); set
- *     `args.transportOptions.useBinaryFormat = true` to flip to
- *     protobuf.
+ *   - HTTP/1.1 fetch transport (Connect protocol, JSON codec); set
+ *     `args.transportOptions.useBinaryFormat = true` for binary.
  *   - Batch chunk size 1000.
  *   - No per-call timeout; pass `args.options.defaultTimeoutMs` to
  *     apply one.
  */
-export function connect(baseUrl: string, args: LanternArgs = {}): Lantern {
-  const normalised = normaliseBaseUrl("connect", baseUrl);
+export function connectWeb(baseUrl: string, args: LanternArgs = {}): Lantern {
+  const normalised = normaliseBaseUrl("connectWeb", baseUrl);
   return Lantern.withTransport(
-    makeNodeTransport(normalised, args.interceptors, args.transportOptions),
+    makeWebTransport(normalised, args.interceptors, args.transportOptions),
     args.options,
   );
 }

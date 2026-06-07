@@ -2,13 +2,10 @@ import type { LanternClient } from "./lantern-client";
 import { LanternApiError } from "./error";
 
 /**
- * Calls `LanternService.CountVerticesByPrefix` over Connect-Web.
- *
- * Returns the live vertex count whose key starts with the given prefix.
- * The wire format uses a `uint64` rendered as a JSON string; this
- * helper parses it back into a JS number — safe up to 2^53. Counts
- * beyond that are clamped to `Number.MAX_SAFE_INTEGER`; the UI only
- * needs an order-of-magnitude indicator.
+ * Calls `LanternService.CountVerticesByPrefix` via `lantern-sdk/web`.
+ * The wire format uses `uint64`; the SDK surfaces it as bigint.
+ * Admin's UI only needs an order-of-magnitude indicator, so this
+ * adapter clamps at `Number.MAX_SAFE_INTEGER` (#409).
  */
 export async function countVerticesByPrefix(
   client: LanternClient,
@@ -16,14 +13,7 @@ export async function countVerticesByPrefix(
   init?: { signal?: AbortSignal },
 ): Promise<number> {
   try {
-    const resp = await client.countVerticesByPrefix(
-      { prefix },
-      { signal: init?.signal },
-    );
-    // resp.count is a bigint on the proto class (uint64 maps to bigint
-    // in connect-es v1). Clamp at MAX_SAFE_INTEGER for the UI's order-
-    // of-magnitude display.
-    const big = resp.count;
+    const big = await client.countVerticesByPrefix(prefix, init?.signal);
     if (big > BigInt(Number.MAX_SAFE_INTEGER)) {
       return Number.MAX_SAFE_INTEGER;
     }

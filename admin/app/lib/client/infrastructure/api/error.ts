@@ -1,14 +1,21 @@
-import { Code, ConnectError } from "@connectrpc/connect";
+import {
+  InvalidArgumentError,
+  LanternError,
+  NotFoundError,
+  ResourceExhaustedError,
+} from "lantern-sdk/web";
 
 /**
- * Translates a thrown Connect error into the LanternApiError shape the
- * usecase layer already discriminates on. Existing call sites match on
- * `error.code` (the HTTP-derived string equivalent of the gRPC code)
- * and `error.message`, so this shim keeps those branches working
- * after the transport switch.
+ * Adapter that translates the SDK's typed error hierarchy
+ * (`NotFoundError`, `InvalidArgumentError`, `ResourceExhaustedError`,
+ * `LanternError` for the catch-all) into the `LanternApiError` shape
+ * the admin usecase layer has historically discriminated on
+ * (`error.code`, `error.grpcMessage`). Existing call sites match on
+ * those two fields, so this shim keeps those branches working after
+ * the migration to `lantern-sdk/web` (#409).
  *
- * Non-Connect errors fall through unchanged so cancellation
- * (AbortError) and network failures retain their native shape.
+ * Non-Lantern errors fall through unchanged so cancellation
+ * (`AbortError`) and network failures retain their native shape.
  */
 export class LanternApiError extends Error {
   readonly code: string;
@@ -33,29 +40,28 @@ export class LanternApiError extends Error {
     if (err instanceof LanternApiError) {
       return err;
     }
-    if (err instanceof ConnectError) {
-      return new LanternApiError(rpc, codeLabel(err.code), err.rawMessage);
+    if (err instanceof NotFoundError) {
+      return new LanternApiError(rpc, "not_found", err.message);
+    }
+    if (err instanceof InvalidArgumentError) {
+      return new LanternApiError(rpc, "invalid_argument", err.message);
+    }
+    if (err instanceof ResourceExhaustedError) {
+      return new LanternApiError(rpc, "resource_exhausted", err.message);
+    }
+    if (err instanceof LanternError) {
+      return new LanternApiError(rpc, "unknown", err.message);
     }
     return err instanceof Error ? err : new Error(String(err));
   }
 
   /**
    * Returns true when the underlying call failed because the resource
-   * does not exist. Used by getVertex / getEdge to translate the
-   * Connect CodeNotFound into a clean `null` return rather than a
+   * does not exist. Used by `getVertex` / `getEdge` to translate the
+   * SDK's `NotFoundError` into a clean `null` return rather than a
    * thrown error.
    */
   static isNotFound(err: unknown): boolean {
-    return err instanceof ConnectError && err.code === Code.NotFound;
+    return err instanceof NotFoundError;
   }
-}
-
-// Lower-case dotted label mirroring the gRPC code names the legacy
-// LanternApiError carried (e.g. NOT_FOUND → "not_found"). Matches what
-// downstream consumers display in the error toast.
-function codeLabel(c: Code): string {
-  return Code[c]
-    .replace(/([A-Z])/g, "_$1")
-    .toLowerCase()
-    .replace(/^_/, "");
 }

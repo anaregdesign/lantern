@@ -1,24 +1,19 @@
 import type { LanternClient } from "./lantern-client";
 import { LanternApiError } from "./error";
-import type { IlluminateResponse } from "./types";
+import { sdkEdgeToFlat, sdkVertexToFlat } from "./to-flat";
+import type { Graph, IlluminateResponse } from "./types";
 import {
-  Algorithm as ProtoAlgorithm,
-  Objective as ProtoObjective,
-  Weighting as ProtoWeighting,
-} from "~/lib/api/gen/graph/v1/graph_pb";
+  Algorithm as SdkAlgorithm,
+  Objective as SdkObjective,
+  Weighting as SdkWeighting,
+} from "lantern-sdk/web";
 
 export type { Edge, Graph, IlluminateResponse, Vertex } from "./types";
 
-/**
- * String enum forms exposed to the UI. Per #410 the wire schema carries
- * three orthogonal axes (algorithm × objective × weighting); the admin
- * UI tracks each as a stable string so router serialisation, persisted
- * URL state, and Playwright fixtures keep one human-readable vocabulary
- * across surfaces.
- *
- * The string literals match the protobuf enum value names verbatim so a
- * future binary-format transport only swaps one mapping table.
- */
+// Per #410 the wire schema carries three orthogonal axes (algorithm
+// × objective × weighting); the admin UI tracks each as a stable
+// string so router serialisation and Playwright fixtures keep one
+// human-readable vocabulary across surfaces.
 export type Algorithm =
   | "ALGORITHM_UNSPECIFIED"
   | "ALGORITHM_MINIMUM_SPANNING_TREE"
@@ -43,30 +38,31 @@ export interface IlluminateRequest {
   weighting?: Weighting;
 }
 
-// connect-es v1 strips the common <NAME>_ prefix from enum members;
-// keep these tables as the single source of truth for the
-// string-to-numeric mapping the UI relies on.
-const ALGORITHM_TO_PROTO: Record<Algorithm, ProtoAlgorithm> = {
-  ALGORITHM_UNSPECIFIED: ProtoAlgorithm.UNSPECIFIED,
-  ALGORITHM_MINIMUM_SPANNING_TREE: ProtoAlgorithm.MINIMUM_SPANNING_TREE,
-  ALGORITHM_SHORTEST_PATH_TREE: ProtoAlgorithm.SHORTEST_PATH_TREE,
+const ALGORITHM_TO_SDK: Record<Algorithm, SdkAlgorithm> = {
+  ALGORITHM_UNSPECIFIED: SdkAlgorithm.UNSPECIFIED,
+  ALGORITHM_MINIMUM_SPANNING_TREE: SdkAlgorithm.MINIMUM_SPANNING_TREE,
+  ALGORITHM_SHORTEST_PATH_TREE: SdkAlgorithm.SHORTEST_PATH_TREE,
 };
-const OBJECTIVE_TO_PROTO: Record<Objective, ProtoObjective> = {
-  OBJECTIVE_UNSPECIFIED: ProtoObjective.UNSPECIFIED,
-  OBJECTIVE_MINIMIZE: ProtoObjective.MINIMIZE,
-  OBJECTIVE_MAXIMIZE: ProtoObjective.MAXIMIZE,
+const OBJECTIVE_TO_SDK: Record<Objective, SdkObjective> = {
+  OBJECTIVE_UNSPECIFIED: SdkObjective.UNSPECIFIED,
+  OBJECTIVE_MINIMIZE: SdkObjective.MINIMIZE,
+  OBJECTIVE_MAXIMIZE: SdkObjective.MAXIMIZE,
 };
-const WEIGHTING_TO_PROTO: Record<Weighting, ProtoWeighting> = {
-  WEIGHTING_UNSPECIFIED: ProtoWeighting.UNSPECIFIED,
-  WEIGHTING_RAW: ProtoWeighting.RAW,
-  WEIGHTING_TFIDF: ProtoWeighting.TFIDF,
+const WEIGHTING_TO_SDK: Record<Weighting, SdkWeighting> = {
+  WEIGHTING_UNSPECIFIED: SdkWeighting.UNSPECIFIED,
+  WEIGHTING_RAW: SdkWeighting.RAW,
+  WEIGHTING_TFIDF: SdkWeighting.TFIDF,
 };
 
 /**
- * Calls `LanternService.Illuminate` over Connect-Web.
+ * Calls `LanternService.Illuminate` via `lantern-sdk/web`.
  *
- * Runs a k-bounded BFS from the supplied seed. Optional knobs (step / k /
- * algorithm / objective / weighting) default server-side when omitted.
+ * Runs a k-bounded BFS from the supplied seed. Optional knobs (step
+ * / k / algorithm / objective / weighting) default server-side when
+ * omitted. The SDK returns a rich-shape Graph with `Map<>` values;
+ * this adapter flattens it back to admin's array-of-flat-JSON shape
+ * so the existing canvas + table consumers keep working unchanged
+ * (#409, #410).
  */
 export async function illuminate(
   client: LanternClient,
@@ -77,27 +73,38 @@ export async function illuminate(
     throw new Error("illuminate: seed must be non-empty");
   }
   try {
-    const resp = await client.illuminate(
+    const sdkGraph = await client.illuminate(
+      request.seed,
       {
-        seed: request.seed,
         step: request.step ?? 0,
         k: request.k ?? 0,
         algorithm:
-          request.algorithm === undefined
-            ? ProtoAlgorithm.UNSPECIFIED
-            : ALGORITHM_TO_PROTO[request.algorithm],
+          request.algorithm !== undefined
+            ? ALGORITHM_TO_SDK[request.algorithm]
+            : undefined,
         objective:
-          request.objective === undefined
-            ? ProtoObjective.UNSPECIFIED
-            : OBJECTIVE_TO_PROTO[request.objective],
+          request.objective !== undefined
+            ? OBJECTIVE_TO_SDK[request.objective]
+            : undefined,
         weighting:
-          request.weighting === undefined
-            ? ProtoWeighting.UNSPECIFIED
-            : WEIGHTING_TO_PROTO[request.weighting],
+          request.weighting !== undefined
+            ? WEIGHTING_TO_SDK[request.weighting]
+            : undefined,
       },
-      { signal: init?.signal },
+      init?.signal,
     );
-    return resp.toJson() as IlluminateResponse;
+    const graph: Graph = {
+      vertices: Array.from(sdkGraph.vertices.values()).map(sdkVertexToFlat),
+      edges: [],
+    };
+    for (const [tail, heads] of sdkGraph.edges) {
+      for (const [head, weight] of heads) {
+        graph.edges!.push(
+          sdkEdgeToFlat({ tail, head, weight, expiration: null }),
+        );
+      }
+    }
+    return { graph };
   } catch (err) {
     throw LanternApiError.fromUnknown("Illuminate", err);
   }
