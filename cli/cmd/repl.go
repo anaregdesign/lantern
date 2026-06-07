@@ -33,6 +33,20 @@ The REPL accepts whitespace-delimited verbs:
   illuminate <seed> <step> <k> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf]
   exit
 
+QUOTING (#438)
+  Any argument may be wrapped in "double quotes" — C-style escapes
+  \" \\ \n \r \t apply — or 'single quotes' (verbatim, no escapes).
+  Quotes are only special at token boundaries; embedded quotes inside
+  a bareword stay verbatim. Examples:
+    put vertex greeting "hello world"
+    put vertex code 'console.log("hi")'
+    put vertex path "C:\\Users\\hiroki"
+
+CASE (#437)
+  Verb and objective tokens are matched case-insensitively
+  ('Get VERTEX foo' works). Arguments preserve case verbatim
+  ('put vertex CamelKey CamelValue' stores CamelKey / CamelValue).
+
 The illuminate verb exposes the orthogonal axes introduced in #410:
 algorithm selects the post-traversal reduction, objective picks the
 direction (minimise/maximise), and weighting toggles RAW vs TF-IDF edge

@@ -2,13 +2,16 @@ package parser
 
 import (
 	"errors"
-	"strings"
+	"fmt"
 )
 
 var ErrParse = errors.New("parse error")
 
 func Validate(input string) error {
-	s := NewSource(strings.ToLower(input))
+	s, err := NewSource(input)
+	if err != nil {
+		return fmt.Errorf("error: %w", err)
+	}
 	v, err := Verb(s)
 	if err != nil {
 		return errors.New("usage: { get | put | delete | add | scan | illuminate | exit } ... ")

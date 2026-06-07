@@ -1,11 +1,15 @@
 /**
  * REPL/CLI verb parser entry. See `types.ts` for the public Command
- * shape and `tokenise.ts` for the whitespace-split tokeniser.
+ * shape and `tokenise.ts` for the quoting-aware tokeniser.
  *
  * The dispatch layout matches `cli/parser/validate.go`'s switch
  * statement so the error messages line up: the Go test under
  * `cli/parser/grammar_fixture_test.go` and this side's bun test
  * (`grammar.test.ts`) both consume `admin/test/cli-grammar/verbs.json`.
+ *
+ * Verb names are matched case-insensitively (mirrors the Go REPL's
+ * `strings.ToLower(verb)` dispatch). Arguments are passed through
+ * untouched — see #437.
  */
 
 import type { ParseResult } from "./types";
@@ -33,11 +37,15 @@ const VERBS = new Set([
 ]);
 
 export function parse(input: string): ParseResult {
-  const tokens = tokenise(input);
+  const r = tokenise(input);
+  if (!r.ok) {
+    return { ok: false, usage: r.error };
+  }
+  const tokens = r.tokens;
   if (tokens.length === 0) {
     return { ok: false, usage: VERB_LIST_USAGE };
   }
-  const verb = tokens[0];
+  const verb = tokens[0].toLowerCase();
   if (!VERBS.has(verb)) {
     return { ok: false, usage: VERB_LIST_USAGE };
   }

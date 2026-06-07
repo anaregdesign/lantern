@@ -19,7 +19,8 @@ const ILL_WEIGHTINGS = new Set<WeightingName>(["raw", "tfidf"]);
 
 export function parseGet(rest: string[]): ParseResult {
   const [obj, ...args] = rest;
-  if (obj === "vertex") {
+  const o = obj?.toLowerCase();
+  if (o === "vertex") {
     if (args.length !== 1 || args[0] === "") {
       return { ok: false, usage: "usage: get vertex <key: string>" };
     }
@@ -28,7 +29,7 @@ export function parseGet(rest: string[]): ParseResult {
       command: { verb: "get", objective: "vertex", key: args[0] },
     };
   }
-  if (obj === "edge") {
+  if (o === "edge") {
     if (args.length !== 2 || args[0] === "" || args[1] === "") {
       return {
         ok: false,
@@ -45,7 +46,8 @@ export function parseGet(rest: string[]): ParseResult {
 
 export function parsePut(rest: string[]): ParseResult {
   const [obj, ...args] = rest;
-  if (obj === "vertex") {
+  const o = obj?.toLowerCase();
+  if (o === "vertex") {
     if (args.length < 2 || args.length > 3) {
       return {
         ok: false,
@@ -74,7 +76,7 @@ export function parsePut(rest: string[]): ParseResult {
       },
     };
   }
-  if (obj === "edge") {
+  if (o === "edge") {
     if (args.length < 3 || args.length > 4) {
       return {
         ok: false,
@@ -117,7 +119,8 @@ export function parsePut(rest: string[]): ParseResult {
 
 export function parseDelete(rest: string[]): ParseResult {
   const [obj, ...args] = rest;
-  if (obj === "vertex") {
+  const o = obj?.toLowerCase();
+  if (o === "vertex") {
     if (args.length !== 1 || args[0] === "") {
       return { ok: false, usage: "usage: delete vertex <key: string>" };
     }
@@ -126,7 +129,7 @@ export function parseDelete(rest: string[]): ParseResult {
       command: { verb: "delete", objective: "vertex", key: args[0] },
     };
   }
-  if (obj === "edge") {
+  if (o === "edge") {
     if (args.length !== 2 || args[0] === "" || args[1] === "") {
       return {
         ok: false,
@@ -148,7 +151,7 @@ export function parseDelete(rest: string[]): ParseResult {
 
 export function parseAdd(rest: string[]): ParseResult {
   const [obj, ...args] = rest;
-  if (obj !== "edge") {
+  if (obj?.toLowerCase() !== "edge") {
     return { ok: false, usage: "usage: add edge ... " };
   }
   if (args.length < 3 || args.length > 4) {
@@ -191,7 +194,8 @@ export function parseAdd(rest: string[]): ParseResult {
 
 export function parseScan(rest: string[]): ParseResult {
   const [obj, ...args] = rest;
-  if (obj === "vertices") {
+  const o = obj?.toLowerCase();
+  if (o === "vertices") {
     if (args.length < 1 || args.length > 2 || args[0] === "") {
       return {
         ok: false,
@@ -215,7 +219,7 @@ export function parseScan(rest: string[]): ParseResult {
       },
     };
   }
-  if (obj === "edges") {
+  if (o === "edges") {
     if (args.length < 1 || args.length > 2 || args[0] === "") {
       return {
         ok: false,
@@ -269,8 +273,12 @@ export function parseIlluminate(rest: string[]): ParseResult {
     if (eq < 0) {
       return { ok: false, usage };
     }
-    const key = tok.slice(0, eq);
-    const value = tok.slice(eq + 1);
+    // The keyword KEY and the keyword VALUE for the three closed-set
+    // axes (algorithm / objective / weighting) are case-insensitive —
+    // they only ever take values from a small fixed enum the Go REPL
+    // also matches case-insensitively. See #437.
+    const key = tok.slice(0, eq).toLowerCase();
+    const value = tok.slice(eq + 1).toLowerCase();
     if (key === "algorithm") {
       if (!ILL_ALGORITHMS.has(value as AlgorithmName)) {
         return { ok: false, usage };
