@@ -845,6 +845,11 @@ exit
 Type `help` at the prompt (REPL or admin `/cli`) to print the per-verb
 grammar with `illuminate` kwarg defaults into the scrollback (#436).
 
+The admin `/cli` panel also exposes a `Clear` button (or `Ctrl+L` /
+`Cmd+L`) that empties the scrollback in place and a `Cancel` button
+(or `Esc`) that aborts an in-flight RPC (#433). History, gateway
+override, and the "do not ask again" toggle survive a clear.
+
 Verb and objective (`vertex` / `edge` / `vertices` / `edges`) tokens are
 case-insensitive; arguments preserve case verbatim. Wrap any argument
 in `"double quotes"` (with `\"`, `\\`, `\n`, `\r`, `\t` escapes) or

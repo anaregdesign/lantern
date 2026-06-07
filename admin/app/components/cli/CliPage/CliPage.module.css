@@ -58,6 +58,17 @@
   min-height: 0;
 }
 
+/* Slim toolbar above the scrollback. Hosts the Clear button and a
+   conditional Cancel button that appears only while a command is in
+   flight (#433). Sized to look like a chip strip, not a primary
+   action bar. */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--spacingHorizontalS, 8px);
+  flex: 0 0 auto;
+}
+
 .scrollback {
   flex: 1 1 auto;
   min-height: 120px;
