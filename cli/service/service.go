@@ -22,6 +22,7 @@ var (
 	ErrDeleteVertex     = errors.New("delete vertex error")
 	ErrDeleteEdge       = errors.New("delete edge error")
 	ErrAddEdge          = errors.New("add edge error")
+	ErrScan             = errors.New("scan error")
 	ErrIlluminate       = errors.New("illuminate error")
 	ErrConnection       = errors.New("connection error")
 )
@@ -166,6 +167,55 @@ func (c *CLIService) Run(ctx context.Context, str string) error {
 			if _, err := c.client.DeleteEdge(ctx, p.Tail, p.Head); err != nil {
 				fmt.Printf("Error: %s\n", err)
 				return ErrConnection
+			}
+			return nil
+		default:
+			return ErrInvalidObjective
+		}
+
+	case "scan":
+		obj, err := parser.ScanObjective(s)
+		if err != nil {
+			fmt.Printf("Error: %s\n", err)
+			return ErrInvalidObjective
+		}
+		switch obj {
+		case "vertices":
+			p, err := parser.ScanVerticesParam(s)
+			if err != nil {
+				fmt.Printf("Error: %s\n", err)
+				return ErrScan
+			}
+			opts := []client.ScanOption{}
+			if p.Limit > 0 {
+				opts = append(opts, client.WithScanLimit(uint32(p.Limit)))
+			}
+			vs, _, err := c.client.ScanVertices(ctx, p.Prefix, opts...)
+			if err != nil {
+				fmt.Printf("Error: %s\n", err)
+				return ErrConnection
+			}
+			if jsonString, err := json.MarshalIndent(vs, "", "\t"); err == nil {
+				fmt.Println(string(jsonString))
+			}
+			return nil
+		case "edges":
+			p, err := parser.ScanEdgesParam(s)
+			if err != nil {
+				fmt.Printf("Error: %s\n", err)
+				return ErrScan
+			}
+			opts := []client.EdgeScanOption{client.WithEdgeScanTailPrefix(p.TailPrefix)}
+			if p.Limit > 0 {
+				opts = append(opts, client.WithEdgeScanLimit(uint32(p.Limit)))
+			}
+			es, _, err := c.client.ScanEdges(ctx, opts...)
+			if err != nil {
+				fmt.Printf("Error: %s\n", err)
+				return ErrConnection
+			}
+			if jsonString, err := json.MarshalIndent(es, "", "\t"); err == nil {
+				fmt.Println(string(jsonString))
 			}
 			return nil
 		default:

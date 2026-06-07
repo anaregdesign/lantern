@@ -28,6 +28,8 @@ The REPL accepts whitespace-delimited verbs:
   add edge <tail> <head> <weight> [ttl_seconds]
   put edge <tail> <head> <weight> [ttl_seconds]
   delete edge <tail> <head>
+  scan vertices <prefix> [limit]
+  scan edges <tail-prefix> [limit]
   illuminate <seed> <step> <k> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf]
   exit
 
@@ -106,12 +108,14 @@ EXAMPLE
 				fmt.Println("Usage: delete edge <tail: string> <head: string>")
 			case service.ErrAddEdge:
 				fmt.Println("Usage: add edge <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]")
+			case service.ErrScan:
+				fmt.Println("Usage: scan { vertices <prefix: string> [<limit: int>] | edges <tail-prefix: string> [<limit: int>] }")
 			case service.ErrIlluminate:
 				fmt.Println("Usage: illuminate <seed: string> <step: int> <k: int> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf]")
 			case service.ErrInvalidVerb:
-				fmt.Println("Usage: { get | put | delete | add | illuminate } ...")
+				fmt.Println("Usage: { get | put | delete | add | scan | illuminate } ...")
 			case service.ErrInvalidObjective:
-				fmt.Println("{ get { vertex | edge } | put { vertex | edge } | delete { vertex | edge } | add edge | illuminate {...} } ...")
+				fmt.Println("{ get { vertex | edge } | put { vertex | edge } | delete { vertex | edge } | add edge | scan { vertices | edges } | illuminate {...} } ...")
 			case service.ErrConnection:
 				fmt.Println("server error")
 			default:

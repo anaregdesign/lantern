@@ -1,0 +1,67 @@
+/**
+ * REPL/CLI verb parser entry. See `types.ts` for the public Command
+ * shape and `tokenise.ts` for the whitespace-split tokeniser.
+ *
+ * The dispatch layout matches `cli/parser/validate.go`'s switch
+ * statement so the error messages line up: the Go test under
+ * `cli/parser/grammar_fixture_test.go` and this side's bun test
+ * (`grammar.test.ts`) both consume `admin/test/cli-grammar/verbs.json`.
+ */
+
+import type { ParseResult } from "./types";
+import { tokenise } from "./tokenise";
+import {
+  parseAdd,
+  parseDelete,
+  parseGet,
+  parseIlluminate,
+  parsePut,
+  parseScan,
+} from "./verbs";
+
+const VERB_LIST_USAGE =
+  "usage: { get | put | delete | add | scan | illuminate | exit } ...";
+
+const VERBS = new Set([
+  "exit",
+  "get",
+  "put",
+  "delete",
+  "add",
+  "scan",
+  "illuminate",
+]);
+
+export function parse(input: string): ParseResult {
+  const tokens = tokenise(input);
+  if (tokens.length === 0) {
+    return { ok: false, usage: VERB_LIST_USAGE };
+  }
+  const verb = tokens[0];
+  if (!VERBS.has(verb)) {
+    return { ok: false, usage: VERB_LIST_USAGE };
+  }
+  const rest = tokens.slice(1);
+  switch (verb) {
+    case "exit":
+      if (rest.length !== 0) {
+        return { ok: false, usage: "usage: exit" };
+      }
+      return { ok: true, command: { verb: "exit" } };
+    case "get":
+      return parseGet(rest);
+    case "put":
+      return parsePut(rest);
+    case "delete":
+      return parseDelete(rest);
+    case "add":
+      return parseAdd(rest);
+    case "scan":
+      return parseScan(rest);
+    case "illuminate":
+      return parseIlluminate(rest);
+  }
+  return { ok: false, usage: VERB_LIST_USAGE };
+}
+
+export type { Command, ParseResult } from "./types";

@@ -11,7 +11,7 @@ func Validate(input string) error {
 	s := NewSource(strings.ToLower(input))
 	v, err := Verb(s)
 	if err != nil {
-		return errors.New("usage: { get | put | delete | add | illuminate | exit } ... ")
+		return errors.New("usage: { get | put | delete | add | scan | illuminate | exit } ... ")
 	}
 
 	switch v {
@@ -79,6 +79,23 @@ func Validate(input string) error {
 		default:
 			return errors.New("usage: add edge ... ")
 		}
+	case "scan":
+		o, err := ScanObjective(s)
+		if err != nil {
+			return errors.New("usage: scan { vertices | edges } ... ")
+		}
+		switch o {
+		case "vertices":
+			if _, err := ScanVerticesParam(s); err != nil {
+				return errors.New("usage: scan vertices <prefix: string> [<limit: int>]")
+			}
+		case "edges":
+			if _, err := ScanEdgesParam(s); err != nil {
+				return errors.New("usage: scan edges <tail-prefix: string> [<limit: int>]")
+			}
+		default:
+			return errors.New("usage: scan { vertices | edges } ... ")
+		}
 	case "illuminate":
 		if _, err := IlluminateParam(s); err != nil {
 			return errors.New("usage: illuminate <key: string> <step: int> <k: int> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf]")
@@ -87,7 +104,7 @@ func Validate(input string) error {
 	case "exit":
 
 	default:
-		return errors.New("usage: { get | put | delete | add | illuminate | exit } ... ")
+		return errors.New("usage: { get | put | delete | add | scan | illuminate | exit } ... ")
 	}
 	return nil
 }

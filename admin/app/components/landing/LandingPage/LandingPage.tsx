@@ -1,6 +1,7 @@
 import { Card } from "@fluentui/react-components";
 import {
   ArrowRight20Regular,
+  Code24Regular,
   DatabaseSearch24Regular,
   LightbulbFilament24Regular,
   LinkMultiple24Regular,
@@ -41,6 +42,12 @@ const FEATURES: readonly Feature[] = [
     icon: <PulseSquare24Regular />,
     title: "Ops",
     copy: "Inspect server status and replication health. Triage live before paging.",
+  },
+  {
+    to: "/cli",
+    icon: <Code24Regular />,
+    title: "CLI",
+    copy: "Type-and-run REPL — same grammar as `lantern repl` (#411). Useful for quick CRUD without leaving the SPA.",
   },
 ];
 
