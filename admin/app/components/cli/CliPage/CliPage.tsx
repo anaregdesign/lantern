@@ -70,6 +70,12 @@ export function CliPage() {
   const [latestGraph, setLatestGraph] = useState<LatestGraph | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const idRef = useRef(2);
+  // Backs the `Cancel` action (#433). `runCommand` populates this
+  // with a fresh controller before each dispatch and clears it on
+  // settle; the toolbar's `Cancel` button calls `.abort()` on it
+  // while busy. The dispatcher already plumbs `signal` through every
+  // underlying RPC, so the abort propagates end-to-end.
+  const abortRef = useRef<AbortController | null>(null);
 
   const append = useCallback((entry: Omit<ScrollbackEntry, "id">) => {
     setScrollback((prev) => [...prev, { ...entry, id: idRef.current++ }]);
@@ -82,13 +88,18 @@ export function CliPage() {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [scrollback]);
-
   const runCommand = useCallback(
     async (rawInput: string, command: Command) => {
       setBusy(true);
+      const controller = new AbortController();
+      abortRef.current = controller;
       const start = performance.now();
       try {
-        const out = await dispatch({ client, command });
+        const out = await dispatch({
+          client,
+          command,
+          signal: controller.signal,
+        });
         const elapsed = performance.now() - start;
         append({
           input: rawInput,
@@ -108,18 +119,53 @@ export function CliPage() {
         }
       } catch (err) {
         const elapsed = performance.now() - start;
-        append({
-          input: rawInput,
-          kind: "error",
-          text: errorMessage(err),
-          durationMs: elapsed,
-        });
+        // Cancellation via the Cancel button / Esc — render an
+        // `info` line ("aborted") rather than the red error chip so
+        // the operator can tell the difference between a failed RPC
+        // and a deliberate stop (#433).
+        if (isAbortError(err) || controller.signal.aborted) {
+          append({
+            input: rawInput,
+            kind: "info",
+            text: "aborted",
+            durationMs: elapsed,
+          });
+        } else {
+          append({
+            input: rawInput,
+            kind: "error",
+            text: errorMessage(err),
+            durationMs: elapsed,
+          });
+        }
       } finally {
+        abortRef.current = null;
         setBusy(false);
       }
     },
     [append, client],
   );
+
+  /**
+   * Resets the scrollback to just the banner line. Wired to the
+   * toolbar `Clear` button and `Ctrl+L` / `Cmd+L` (#433). Gateway
+   * override, skipConfirm, and history are deliberately preserved
+   * so a clear behaves like an editor's "clear screen", not a hard
+   * reset of the session.
+   */
+  const clearScrollback = useCallback(() => {
+    idRef.current = 2;
+    setScrollback([initialBanner()]);
+  }, []);
+
+  /**
+   * Aborts the in-flight dispatch, if any. Wired to the toolbar
+   * `Cancel` button and `Esc` (#433). The `runCommand` catch handler
+   * is responsible for rendering the `aborted` scrollback line.
+   */
+  const cancelInFlight = useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
 
   const runRaw = useCallback(
     async (raw: string) => {
@@ -164,6 +210,35 @@ export function CliPage() {
     await runRaw(input);
   }, [input, runRaw]);
 
+  // Window-level keyboard shortcuts (#433):
+  //   - Esc while a command is in flight aborts the dispatch. The
+  //     prompt `<Input>` is `disabled` while busy and so cannot
+  //     receive its own keydown events; binding at window scope
+  //     is the only way to make Esc reach `cancelInFlight`.
+  //   - Ctrl+L / Cmd+L clears the scrollback. Bound globally so it
+  //     works whether the prompt has focus or not (matches xterm /
+  //     bash behaviour).
+  // The handler ignores events from text inputs, contenteditables,
+  // and textareas the user might be typing in elsewhere on the
+  // panel, except the prompt itself (which still calls the same
+  // handlers via its onKeyDown — duplication is harmless because
+  // both call sites land in idempotent setters).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "l") {
+        e.preventDefault();
+        clearScrollback();
+        return;
+      }
+      if (e.key === "Escape" && busy) {
+        e.preventDefault();
+        cancelInFlight();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [busy, cancelInFlight, clearScrollback]);
+
   // Click-to-illuminate (#439). Writes `illuminate <key> 2 5` into
   // the prompt and submits it through the same parser path the user
   // would hit by typing it. Illuminate is non-destructive, so the
@@ -180,6 +255,10 @@ export function CliPage() {
 
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
+      // Esc / Ctrl+L are owned by the window-level handler above so
+      // they work even while the input is `disabled` (busy state) or
+      // without focus. Enter / ArrowUp / ArrowDown stay local
+      // because they read and write input state.
       if (e.key === "Enter") {
         e.preventDefault();
         void submit();
@@ -278,6 +357,31 @@ export function CliPage() {
           </div>
         </div>
       ) : null}
+      <div className={styles.toolbar} data-testid="cli-toolbar">
+        <Button
+          appearance="secondary"
+          size="small"
+          onClick={clearScrollback}
+          disabled={scrollback.length <= 1}
+          data-testid="cli-clear"
+          aria-label="Clear scrollback (Ctrl+L)"
+          title="Clear scrollback (Ctrl+L)"
+        >
+          Clear
+        </Button>
+        {busy ? (
+          <Button
+            appearance="secondary"
+            size="small"
+            onClick={cancelInFlight}
+            data-testid="cli-cancel"
+            aria-label="Cancel in-flight command (Esc)"
+            title="Cancel in-flight command (Esc)"
+          >
+            Cancel
+          </Button>
+        ) : null}
+      </div>
       <div className={styles.scrollback} ref={scrollRef} aria-live="polite">
         {renderedScrollback}
       </div>
@@ -360,4 +464,20 @@ function errorMessage(err: unknown): string {
     return err.message;
   }
   return String(err);
+}
+
+/**
+ * Distinguishes a deliberate cancellation (from `AbortController.abort`)
+ * from a genuine RPC failure. The Connect SDK and `fetch` both raise
+ * `DOMException`/`Error` instances whose `name` is `"AbortError"` —
+ * `error.ts` deliberately lets these through unwrapped so this check
+ * works without needing a `LanternApiError` adapter.
+ */
+function isAbortError(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "name" in err &&
+    (err as { name?: string }).name === "AbortError"
+  );
 }
