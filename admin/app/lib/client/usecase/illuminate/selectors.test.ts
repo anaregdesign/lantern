@@ -221,6 +221,98 @@ describe("selectGraphView", () => {
     const view = selectGraphView(state);
     expect(view.overSoftCap).toBe(false);
   });
+
+  // ── #459 TTL decay: selector-level filtering ──────────────────────
+  // The reducer keeps everything the server sends; the selector is the
+  // single place that drops past-expiry data so the canvas never sees
+  // tombstones. Mid-frame fading lives in the canvas reducer chain.
+
+  const T_NOW = Date.parse("2026-06-09T12:00:00.000Z");
+  const isoAt = (deltaMs: number): string =>
+    new Date(T_NOW + deltaMs).toISOString();
+  const vWithExpiration = (key: string, expiration: string): Vertex => ({
+    key,
+    expiration,
+  });
+  const eWithExpiration = (
+    tail: string,
+    head: string,
+    expiration: string,
+    weight = 1,
+  ): Edge => ({ tail, head, weight, expiration });
+
+  it("treats a vertex with no expiration as ∞ (never filtered)", () => {
+    let state = stateWithInitialSeed("a");
+    state = applyExpansion(state, {
+      expansionId: 1,
+      origin: "a",
+      vertices: [v("a"), v("b")],
+      edges: [e("a", "b")],
+    });
+    const view = selectGraphView(state, T_NOW);
+    expect(view.nodes.map((n) => n.id).sort()).toEqual(["a", "b"]);
+    expect(view.edges).toHaveLength(1);
+  });
+
+  it("drops a vertex whose expiration is at or past nowMs", () => {
+    let state = stateWithInitialSeed("a");
+    state = applyExpansion(state, {
+      expansionId: 1,
+      origin: "a",
+      vertices: [v("a"), vWithExpiration("b", isoAt(-1_000))],
+      edges: [e("a", "b")],
+    });
+    const view = selectGraphView(state, T_NOW);
+    expect(view.nodes.map((n) => n.id)).toEqual(["a"]);
+    // Cascading filter: edge incident on dropped vertex is also gone.
+    expect(view.edges).toEqual([]);
+  });
+
+  it("keeps a vertex whose expiration is in the near future (cliff/warning state)", () => {
+    let state = stateWithInitialSeed("a");
+    state = applyExpansion(state, {
+      expansionId: 1,
+      origin: "a",
+      vertices: [v("a"), vWithExpiration("b", isoAt(500))],
+      edges: [e("a", "b")],
+    });
+    const view = selectGraphView(state, T_NOW);
+    // Inside the warning window but still present — the canvas
+    // reducer is responsible for the visual cliff treatment.
+    expect(view.nodes.map((n) => n.id).sort()).toEqual(["a", "b"]);
+    expect(view.edges).toHaveLength(1);
+  });
+
+  it("drops an edge whose own expiration has passed even when both endpoints survive", () => {
+    let state = stateWithInitialSeed("a");
+    state = applyExpansion(state, {
+      expansionId: 1,
+      origin: "a",
+      vertices: [v("a"), v("b")],
+      edges: [eWithExpiration("a", "b", isoAt(-1_000))],
+    });
+    const view = selectGraphView(state, T_NOW);
+    expect(view.nodes.map((n) => n.id).sort()).toEqual(["a", "b"]);
+    expect(view.edges).toEqual([]);
+  });
+
+  it("does not let an expired edge inflate node importance", () => {
+    let state = stateWithInitialSeed("a");
+    // Two edges: live a→b with weight 1, expired a→c with weight 100.
+    // Without filtering, 'c' would dominate importance ranking.
+    state = applyExpansion(state, {
+      expansionId: 1,
+      origin: "a",
+      vertices: [v("a"), v("b"), v("c")],
+      edges: [e("a", "b", 1), eWithExpiration("a", "c", isoAt(-1_000), 100)],
+    });
+    const view = selectGraphView(state, T_NOW);
+    const b = view.nodes.find((n) => n.id === "b");
+    const c = view.nodes.find((n) => n.id === "c");
+    // 'c' has no surviving edges contributing to its weight, so it
+    // falls to the default importance for non-seed/non-origin vertices.
+    expect(b?.importance).toBeGreaterThan(c?.importance ?? Infinity);
+  });
 });
 
 describe("selectCanClear", () => {

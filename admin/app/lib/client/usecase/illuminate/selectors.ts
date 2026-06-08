@@ -2,6 +2,25 @@ import type { Edge, Vertex } from "~/lib/client/infrastructure/api/illuminate";
 import { ACCUMULATOR_SOFT_CAP, type IlluminateState } from "./state";
 
 /**
+ * `true` when the given protobuf-JSON timestamp is at or before the
+ * supplied wall clock. Missing / unparseable timestamps are treated as
+ * "never expires" (returns `false`) — defensive: we'd rather render a
+ * value at full opacity than drop it over a malformed ISO string.
+ *
+ * Mirrors the semantics of
+ * `IlluminateCanvas/ttl-decay.ts:computeTtlFraction` but specialised
+ * to the boolean "should this be filtered?" question the selector
+ * cares about. Kept here (not imported from the canvas package) so
+ * the use-case layer stays free of component-side dependencies.
+ */
+function isExpired(expiration: string | undefined, nowMs: number): boolean {
+  if (expiration === undefined || expiration === "") return false;
+  const expiresAtMs = Date.parse(expiration);
+  if (!Number.isFinite(expiresAtMs)) return false;
+  return expiresAtMs <= nowMs;
+}
+
+/**
  * Graph node shape consumed by `IlluminateCanvas`. We keep the full
  * Vertex around so the tooltip / a11y table / Drawer can render typed
  * values without a second pass over the response.
@@ -51,8 +70,26 @@ export interface GraphView {
  * Builds the view model the canvas renders from the accumulator. Pure;
  * no React, no DOM, no graphology — those live in the component layer
  * so this stays trivial to unit-test.
+ *
+ * `nowMs` is an injected "wall clock" used to drop already-expired
+ * vertices and (cascading) their incident edges — per #459 the canvas
+ * should never render a value that the server has already let go,
+ * even if a stale response is still in the accumulator. The parameter
+ * is optional and defaults to `Date.now()` because the vast majority
+ * of test fixtures construct vertices without expiration; only the
+ * decay-aware tests pass an explicit value.
+ *
+ * Mid-frame fading (per-tick alpha as a vertex approaches the
+ * cliff) is NOT a selector concern — the canvas reducer reads the
+ * expiration off each node and fades it on every refresh tick so we
+ * avoid recomputing the whole view model every second. See
+ * {@link IlluminateCanvas} `nowRef` / `tickRef` for the per-frame
+ * machinery.
  */
-export function selectGraphView(state: IlluminateState): GraphView {
+export function selectGraphView(
+  state: IlluminateState,
+  nowMs: number = Date.now(),
+): GraphView {
   const initialSeed = state.initialSeed;
   const expansionOrigins = state.expansions.map((e) => e.origin);
   const latestExpansionOrigin =
@@ -72,11 +109,14 @@ export function selectGraphView(state: IlluminateState): GraphView {
 
   const originSet = new Set(expansionOrigins);
 
-  // Edge weights drive node importance. Aggregate over the merged edges.
+  // Edge weights drive node importance. Aggregate over the merged edges,
+  // skipping ones that are already past expiry — a dying edge shouldn't
+  // inflate a node's importance score (#459).
   const weightByKey = new Map<string, number>();
   for (const acc of state.accumulator.edges.values()) {
     const e = acc.edge;
     if (!e.tail || !e.head) continue;
+    if (isExpired(e.expiration, nowMs)) continue;
     const w = e.weight ?? 0;
     weightByKey.set(e.tail, (weightByKey.get(e.tail) ?? 0) + w);
     weightByKey.set(e.head, (weightByKey.get(e.head) ?? 0) + w);
@@ -86,6 +126,10 @@ export function selectGraphView(state: IlluminateState): GraphView {
   const nodes: GraphNode[] = [];
   for (const [key, acc] of state.accumulator.vertices) {
     if (key === "") continue;
+    // #459: filter expired vertices at selector time. The next fetch
+    // would drop them anyway, but explicit removal here means a stale
+    // accumulator never renders a tombstone.
+    if (isExpired(acc.vertex.expiration, nowMs)) continue;
     const isInitialSeed = initialSeed !== null && key === initialSeed;
     const isExpansionOrigin = originSet.has(key);
     const raw = weightByKey.get(key) ?? 0;
@@ -114,8 +158,12 @@ export function selectGraphView(state: IlluminateState): GraphView {
     if (!e.tail || !e.head) continue;
     // Drop edges that reference vertices we don't have; the canvas would
     // otherwise throw when sigma tries to look them up. (Shouldn't happen
-    // with current server behaviour, but defensive.)
+    // with current server behaviour, but defensive.) This also handles
+    // the #459 cascade where an expired vertex was filtered above.
     if (!knownKeys.has(e.tail) || !knownKeys.has(e.head)) continue;
+    // #459: an edge can have its own TTL that's shorter than either
+    // endpoint's. Filter past-expiry edges explicitly.
+    if (isExpired(e.expiration, nowMs)) continue;
     edges.push({
       id,
       source: e.tail,
