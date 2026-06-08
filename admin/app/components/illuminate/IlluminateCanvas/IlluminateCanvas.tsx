@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Graph from "graphology";
 import forceAtlas2 from "graphology-layout-forceatlas2";
 import Sigma from "sigma";
@@ -6,6 +6,14 @@ import type {
   GraphEdge,
   GraphNode,
 } from "~/lib/client/usecase/illuminate/selectors";
+import { usePreferredTheme } from "~/lib/client/usecase/theme/use-preferred-theme";
+import {
+  FALLBACK_PALETTE,
+  LABEL_SIZE,
+  LABEL_WEIGHT,
+  resolvePalette,
+  type SigmaPalette,
+} from "./palette";
 import styles from "./IlluminateCanvas.module.css";
 
 export interface IlluminateCanvasProps {
@@ -23,11 +31,6 @@ export interface IlluminateCanvasProps {
   /** When true, the canvas dims to communicate a stale frame. */
   isBusy: boolean;
 }
-
-const SEED_COLOR = "#0078d4"; // FluentUI brandColor (web theme accent)
-const ORIGIN_COLOR = "#5c2d91"; // Darker accent for non-seed expansion origins
-const NODE_COLOR = "#5b5b5b";
-const EDGE_COLOR = "#bdbdbd";
 
 interface HoverState {
   kind: "node" | "edge";
@@ -55,6 +58,26 @@ export function IlluminateCanvas({
   const sigmaRef = useRef<Sigma | null>(null);
   const graphRef = useRef<Graph | null>(null);
   const [hover, setHover] = useState<HoverState | null>(null);
+  const [palette, setPalette] = useState<SigmaPalette>(FALLBACK_PALETTE);
+  const theme = usePreferredTheme();
+
+  // Resolve theme-aware palette from FluentProvider CSS variables (#453).
+  // Re-runs whenever the OS color scheme flips so Sigma stays in sync
+  // with the Fluent theme without requiring a full remount.
+  useEffect(() => {
+    if (!containerRef.current) return;
+    setPalette(resolvePalette(containerRef.current));
+  }, [theme]);
+
+  const pickFill = useCallback(
+    (node: { isInitialSeed: boolean; isExpansionOrigin: boolean }) =>
+      node.isInitialSeed
+        ? palette.seed
+        : node.isExpansionOrigin
+          ? palette.origin
+          : palette.baseNode,
+    [palette],
+  );
 
   // Stable callback ref so the click listener doesn't have to be rebound
   // every render (would otherwise drop hover state).
@@ -73,8 +96,12 @@ export function IlluminateCanvas({
       labelDensity: 0.5,
       labelGridCellSize: 80,
       labelRenderedSizeThreshold: 8,
-      defaultEdgeColor: EDGE_COLOR,
-      defaultNodeColor: NODE_COLOR,
+      defaultEdgeColor: FALLBACK_PALETTE.edge,
+      defaultNodeColor: FALLBACK_PALETTE.baseNode,
+      labelColor: { color: FALLBACK_PALETTE.labelText },
+      labelSize: LABEL_SIZE,
+      labelWeight: LABEL_WEIGHT,
+      labelFont: FALLBACK_PALETTE.labelFont,
     });
     graphRef.current = graph;
     sigmaRef.current = renderer;
@@ -128,6 +155,37 @@ export function IlluminateCanvas({
     };
   }, []);
 
+  // Apply palette changes to sigma's global settings + repaint existing
+  // node fills. Splitting this out from the reconcile effect lets a
+  // theme toggle re-skin the canvas without re-running ForceAtlas2.
+  useEffect(() => {
+    const sigma = sigmaRef.current;
+    const graph = graphRef.current;
+    if (!sigma || !graph) return;
+    sigma.setSetting("defaultNodeColor", palette.baseNode);
+    sigma.setSetting("defaultEdgeColor", palette.edge);
+    sigma.setSetting("labelColor", { color: palette.labelText });
+    sigma.setSetting("labelFont", palette.labelFont);
+    for (const id of graph.nodes()) {
+      const attrs = graph.getNodeAttributes(id) as {
+        isInitialSeed?: boolean;
+        isExpansionOrigin?: boolean;
+      };
+      graph.setNodeAttribute(
+        id,
+        "color",
+        pickFill({
+          isInitialSeed: !!attrs.isInitialSeed,
+          isExpansionOrigin: !!attrs.isExpansionOrigin,
+        }),
+      );
+    }
+    for (const id of graph.edges()) {
+      graph.setEdgeAttribute(id, "color", palette.edge);
+    }
+    sigma.refresh();
+  }, [palette, pickFill]);
+
   // Reconcile the graph with the latest view model. We diff by ID rather
   // than clearing so ForceAtlas2 can keep the positions of nodes that
   // survived from the previous frame — the canvas reads as a smooth
@@ -158,11 +216,7 @@ export function IlluminateCanvas({
 
     for (const node of nodes) {
       const size = 4 + node.importance * 10;
-      const color = node.isInitialSeed
-        ? SEED_COLOR
-        : node.isExpansionOrigin
-          ? ORIGIN_COLOR
-          : NODE_COLOR;
+      const color = pickFill(node);
       const detail = describeVertex(node);
       if (graph.hasNode(node.id)) {
         graph.mergeNodeAttributes(node.id, {
@@ -202,7 +256,7 @@ export function IlluminateCanvas({
       } else {
         graph.addEdgeWithKey(edge.id, edge.source, edge.target, {
           size: 1 + Math.min(4, edge.weight),
-          color: EDGE_COLOR,
+          color: palette.edge,
           label: edge.id,
           detail: `weight = ${edge.weight}`,
         });
@@ -222,7 +276,7 @@ export function IlluminateCanvas({
     }
 
     sigma?.refresh();
-  }, [nodes, edges, latestExpansionOrigin]);
+  }, [nodes, edges, latestExpansionOrigin, palette, pickFill]);
 
   const empty = nodes.length === 0;
   const wrapperClass = useMemo(
