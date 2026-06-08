@@ -38,6 +38,22 @@ export interface SigmaPalette {
   dimEdge: string;
   /** Label color resolved from `--colorNeutralForeground1`. */
   labelText: string;
+  /**
+   * #484 hover-label chip background, resolved from
+   * `--colorNeutralBackground1`. The custom hover renderer
+   * (`makeDrawNodeHover`) fills the hovered node's label box with this
+   * so the box and the {@link labelText} on top of it always contrast,
+   * fixing the white-on-white collision sigma's default hover renderer
+   * produced in dark theme.
+   */
+  labelBackground: string;
+  /**
+   * #484 hover-label chip border, resolved from `--colorNeutralStroke1`.
+   * Drawn as a 1px stroke around the hover box so the chip reads as a
+   * distinct surface even when its background is close to the canvas
+   * background.
+   */
+  labelStroke: string;
   /** Label font stack resolved from `--fontFamilyBase`. */
   labelFont: string;
   /**
@@ -72,6 +88,12 @@ export const FALLBACK_PALETTE: SigmaPalette = {
   dimNode: "#3f3f4626",
   dimEdge: "#bdbdbd26",
   labelText: "#242424",
+  // #484 hover chip. Light-theme literals for `--colorNeutralBackground1`
+  // (#ffffff) and `--colorNeutralStroke1` (#d1d1d1); paired with the
+  // `#242424` labelText they give a legible chip before FluentProvider
+  // hydrates and in the unit suite.
+  labelBackground: "#ffffff",
+  labelStroke: "#d1d1d1",
   labelFont:
     'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
   // #460 hop ramp. Light-theme literals — these are the swatches the
@@ -123,6 +145,15 @@ export function resolvePaletteFromTokens(reader: CssTokenReader): SigmaPalette {
     dimNode: FALLBACK_PALETTE.dimNode,
     dimEdge: FALLBACK_PALETTE.dimEdge,
     labelText: readVar("--colorNeutralForeground1", FALLBACK_PALETTE.labelText),
+    // #484 hover chip. Follow the Fluent surface tokens so a theme flip
+    // re-skins the hover box alongside the label text; the canvas
+    // re-applies them via `setSetting("defaultDrawNodeHover", …)` in the
+    // palette effect.
+    labelBackground: readVar(
+      "--colorNeutralBackground1",
+      FALLBACK_PALETTE.labelBackground,
+    ),
+    labelStroke: readVar("--colorNeutralStroke1", FALLBACK_PALETTE.labelStroke),
     labelFont: readVar("--fontFamilyBase", FALLBACK_PALETTE.labelFont),
     // #460 hop ramp. Token mapping per spec: hop 0/1/2 trace the
     // Fluent brand foreground/stroke ladder so the warmest stop

@@ -53,6 +53,51 @@ describe("resolvePaletteFromTokens", () => {
     expect(palette.labelFont).toBe("Inter, sans-serif");
   });
 
+  // ── #484 hover-label chip ───────────────────────────────────────
+  // The custom hover renderer fills the hovered node's label box with
+  // `labelBackground` and outlines it with `labelStroke`, then draws
+  // the label in `labelText`. The tokens must follow the Fluent
+  // surface ramp so a theme flip re-skins the box (and never collides
+  // with the foreground text the way sigma's near-white default did).
+
+  test("reads --colorNeutralBackground1 for the hover-label background", () => {
+    const palette = resolvePaletteFromTokens(
+      readerFrom({ "--colorNeutralBackground1": "#1b1a19" }),
+    );
+    expect(palette.labelBackground).toBe("#1b1a19");
+  });
+
+  test("reads --colorNeutralStroke1 for the hover-label border", () => {
+    const palette = resolvePaletteFromTokens(
+      readerFrom({ "--colorNeutralStroke1": "#484644" }),
+    );
+    expect(palette.labelStroke).toBe("#484644");
+  });
+
+  test("hover-label tokens fall back to light-theme literals when unset", () => {
+    const palette = resolvePaletteFromTokens(readerFrom({}));
+    expect(palette.labelBackground).toBe("#ffffff");
+    expect(palette.labelStroke).toBe("#d1d1d1");
+  });
+
+  test("hover-label background contrasts with label text in both fallback and a dark token set (#484)", () => {
+    // Light fallback: white box, near-black text.
+    const light = resolvePaletteFromTokens(readerFrom({}));
+    expect(light.labelBackground).not.toBe(light.labelText);
+
+    // Dark theme: the very collision #484 fixes — sigma's default hover
+    // box was near-white while the foreground token is also near-white.
+    // With the box now following `--colorNeutralBackground1`, the box
+    // (near-black) and the text (near-white) read as opposites.
+    const dark = resolvePaletteFromTokens(
+      readerFrom({
+        "--colorNeutralBackground1": "#292929",
+        "--colorNeutralForeground1": "#ffffff",
+      }),
+    );
+    expect(dark.labelBackground).not.toBe(dark.labelText);
+  });
+
   test("trims whitespace around the resolved CSS variable", () => {
     const palette = resolvePaletteFromTokens(
       readerFrom({ "--colorNeutralForeground1": "  #0a0a0a  " }),
