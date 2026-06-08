@@ -272,4 +272,95 @@ test.describe("/illuminate", () => {
     expect(contrastReport.error).toBeUndefined();
     expect(contrastReport.ratio).toBeGreaterThanOrEqual(4.5);
   });
+
+  test("Additive expansion keeps surviving nodes within layout tolerance (#454)", async ({
+    page,
+  }) => {
+    const seed = encodeURIComponent("e2e:illum:hub");
+    await page.goto(`/illuminate?seed=${seed}`);
+    await expect(page.getByTestId("illuminate-toolbar")).toBeVisible();
+    await expect(page.getByTestId("illuminate-counter")).toContainText(
+      "5 vertices",
+    );
+
+    // Wait for the canvas test bridge to be installed (it is set in the
+    // Sigma mount effect, after the renderer is created).
+    await page.waitForFunction(() => {
+      const win = window as Window & {
+        __illuminateCanvas?: {
+          getNodePosition: (key: string) => { x: number; y: number } | null;
+        };
+      };
+      return !!win.__illuminateCanvas;
+    });
+
+    // Capture positions of two surviving nodes (a 1-hop neighbour of
+    // the seed, and a 2-hop "leaf" on the right branch) before the
+    // additive expansion fires. Both should hold steady — only the
+    // newly-added `leftleftleft` should land at fresh coordinates.
+    type Pos = { x: number; y: number };
+    const sampleKeys = ["e2e:illum:right", "e2e:illum:rightright"] as const;
+    const readPositions = (): Promise<(Pos | null)[]> =>
+      page.evaluate(
+        (keys) => {
+          const win = window as Window & {
+            __illuminateCanvas?: {
+              getNodePosition: (k: string) => Pos | null;
+            };
+          };
+          const bridge = win.__illuminateCanvas;
+          return keys.map((k) => (bridge ? bridge.getNodePosition(k) : null));
+        },
+        sampleKeys as unknown as string[],
+      );
+
+    const before = await readPositions();
+    expect(before.every((p) => p !== null)).toBe(true);
+
+    // Trigger an additive expansion from `leftleft` (adds
+    // `leftleftleft` — one fresh node, no drops).
+    await page
+      .getByRole("group")
+      .getByText(/List view \(5 vertices/)
+      .click();
+    const table = page.getByTestId("illuminate-table");
+    await table
+      .getByRole("button", { name: "Expand from e2e:illum:leftleft" })
+      .click();
+    await expect(page.getByTestId("illuminate-counter")).toContainText(
+      "6 vertices",
+    );
+
+    const after = await readPositions();
+
+    // Tolerance: with the additive-relax path running only 5 FA2
+    // iterations from the prior equilibrium, surviving nodes must not
+    // drift by more than a couple of graphology units. The pre-#454
+    // behaviour (80 iterations) would routinely move them tens of
+    // units; this guard ensures we don't regress to that.
+    const TOLERANCE = 2.0;
+    for (let i = 0; i < sampleKeys.length; i++) {
+      const a = before[i];
+      const b = after[i];
+      expect(
+        a,
+        `expected position for ${sampleKeys[i]} before expansion`,
+      ).not.toBeNull();
+      expect(
+        b,
+        `expected position for ${sampleKeys[i]} after expansion`,
+      ).not.toBeNull();
+      if (!a || !b) continue;
+      const dx = Math.abs(b.x - a.x);
+      const dy = Math.abs(b.y - a.y);
+      expect(
+        dx,
+        `${sampleKeys[i]} drifted by Δx=${dx.toFixed(2)} (tolerance ${TOLERANCE})`,
+      ).toBeLessThanOrEqual(TOLERANCE);
+      expect(
+        dy,
+        `${sampleKeys[i]} drifted by Δy=${dy.toFixed(2)} (tolerance ${TOLERANCE})`,
+      ).toBeLessThanOrEqual(TOLERANCE);
+    }
+  });
 });

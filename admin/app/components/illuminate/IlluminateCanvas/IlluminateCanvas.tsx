@@ -7,6 +7,7 @@ import type {
   GraphNode,
 } from "~/lib/client/usecase/illuminate/selectors";
 import { usePreferredTheme } from "~/lib/client/usecase/theme/use-preferred-theme";
+import { decideFa2Iterations } from "./layout-iterations";
 import {
   FALLBACK_PALETTE,
   LABEL_SIZE,
@@ -57,6 +58,14 @@ export function IlluminateCanvas({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const sigmaRef = useRef<Sigma | null>(null);
   const graphRef = useRef<Graph | null>(null);
+  /**
+   * Snapshot of the node IDs the graph held at the end of the previous
+   * reconcile. Diffing against the next reconcile's IDs feeds
+   * `decideFa2Iterations` (#454) so we only burn an 80-iteration FA2
+   * pass on cold mounts; additive expansions (the common case) cost a
+   * cheap 5-iter relax and surviving vertices stay put.
+   */
+  const previousNodeIdsRef = useRef<Set<string>>(new Set());
   const [hover, setHover] = useState<HoverState | null>(null);
   const [palette, setPalette] = useState<SigmaPalette>(FALLBACK_PALETTE);
   const theme = usePreferredTheme();
@@ -147,11 +156,36 @@ export function IlluminateCanvas({
     renderer.on("enterEdge", showEdgeHover);
     renderer.on("leaveEdge", clearHover);
 
+    // Read-only Playwright test bridge (#454). Lets the e2e suite assert
+    // surviving-node positions across an additive expansion without
+    // resorting to flaky pixel diffs. Harmless in production — pure
+    // read-only accessor over the live graphology positions.
+    const win = window as Window & {
+      __illuminateCanvas?: {
+        getNodePosition: (key: string) => { x: number; y: number } | null;
+      };
+    };
+    win.__illuminateCanvas = {
+      getNodePosition: (key: string) => {
+        if (!graph.hasNode(key)) return null;
+        const attrs = graph.getNodeAttributes(key) as {
+          x?: number;
+          y?: number;
+        };
+        if (typeof attrs.x !== "number" || typeof attrs.y !== "number") {
+          return null;
+        }
+        return { x: attrs.x, y: attrs.y };
+      },
+    };
+
     return () => {
       renderer.kill();
       graph.clear();
       sigmaRef.current = null;
       graphRef.current = null;
+      previousNodeIdsRef.current = new Set();
+      delete win.__illuminateCanvas;
     };
   }, []);
 
@@ -197,6 +231,20 @@ export function IlluminateCanvas({
 
     const nextNodeIds = new Set(nodes.map((n) => n.id));
     const nextEdgeIds = new Set(edges.map((e) => e.id));
+
+    // Per-reconcile diff used by `decideFa2Iterations` (#454). We
+    // compute it BEFORE mutating the graph so the counts reflect the
+    // structural delta, not the post-merge state.
+    const previousNodeIds = previousNodeIdsRef.current;
+    const previousNodeCount = previousNodeIds.size;
+    let addedCount = 0;
+    let droppedCount = 0;
+    for (const id of nextNodeIds) {
+      if (!previousNodeIds.has(id)) addedCount += 1;
+    }
+    for (const id of previousNodeIds) {
+      if (!nextNodeIds.has(id)) droppedCount += 1;
+    }
 
     // Drop edges first to avoid orphan references when we drop nodes.
     for (const edgeId of graph.edges()) {
@@ -263,9 +311,19 @@ export function IlluminateCanvas({
       }
     }
 
-    if (graph.order > 0) {
+    // Per #454: only burn an 80-iteration FA2 pass on a cold mount or
+    // post-drop reseed; the common additive case relaxes in 5 so
+    // surviving vertices stay within roughly ±10% of their prior pixel
+    // position.
+    const iterations = decideFa2Iterations({
+      previousNodeCount,
+      addedCount,
+      droppedCount,
+      nextNodeCount: nextNodeIds.size,
+    });
+    if (iterations > 0 && graph.order > 0) {
       forceAtlas2.assign(graph, {
-        iterations: 80,
+        iterations,
         settings: {
           gravity: 1,
           scalingRatio: 8,
@@ -274,6 +332,8 @@ export function IlluminateCanvas({
         },
       });
     }
+
+    previousNodeIdsRef.current = nextNodeIds;
 
     sigma?.refresh();
   }, [nodes, edges, latestExpansionOrigin, palette, pickFill]);
