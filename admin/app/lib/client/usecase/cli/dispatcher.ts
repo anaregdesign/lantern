@@ -44,7 +44,7 @@ import { putVertex } from "~/lib/client/infrastructure/api/put-vertex";
 import { scanEdges } from "~/lib/client/infrastructure/api/scan-edges";
 import { scanVertices } from "~/lib/client/infrastructure/api/scan-vertices";
 import type { Vertex } from "~/lib/client/infrastructure/api/types";
-import type { Command } from "./types";
+import type { Command } from "~/lib/cli/types";
 
 export interface DispatchInput {
   client: LanternClient;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { commandResultToGraphView } from "./graph-view";
-import type { Command } from "./types";
+import type { Command } from "~/lib/cli/types";
 import type {
   Edge,
   IlluminateResponse,

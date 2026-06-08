@@ -5,13 +5,13 @@ import {
   type InputProps,
 } from "@fluentui/react-components";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { dispatch, isDestructive } from "~/lib/cli/dispatcher";
+import { dispatch, isDestructive } from "~/lib/client/usecase/cli/dispatcher";
 import { parse, type Command, type ParseResult } from "~/lib/cli/parser";
 import { HELP_TEXT } from "~/lib/cli/verbs";
-import { commandResultToGraphView } from "~/lib/cli/graph-view";
-import { useCliSplitter } from "~/lib/cli/use-cli-splitter";
+import { commandResultToGraphView } from "~/lib/client/usecase/cli/graph-view";
+import { useCliSplitter } from "~/lib/client/usecase/cli/use-cli-splitter";
 import { formatIlluminateClick } from "~/lib/cli/illuminate-axes";
-import { useCliAxisPicker } from "~/lib/cli/use-cli-axis-picker";
+import { useCliAxisPicker } from "~/lib/client/usecase/cli/use-cli-axis-picker";
 import { CliAxisPicker } from "~/components/cli/CliAxisPicker/CliAxisPicker";
 import { IlluminateCanvas } from "~/components/illuminate/IlluminateCanvas/IlluminateCanvas";
 import type { GraphView } from "~/lib/client/usecase/illuminate/selectors";
