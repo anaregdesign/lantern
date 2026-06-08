@@ -15,7 +15,7 @@ import { InvalidArgumentError, NotFoundError } from "lantern-sdk/web";
 import { LanternApiError } from "~/lib/client/infrastructure/api/error";
 import type { LanternClient } from "~/lib/client/infrastructure/api/lantern-client";
 import { coerceValue, dispatch, ttlSecondsToExpiration } from "./dispatcher";
-import type { Command } from "./types";
+import type { Command } from "~/lib/cli/types";
 
 // ----------------------------------------------------------------------------
 // FakeLanternClient

@@ -18,7 +18,7 @@
  * is always false (no accumulation across commands).
  */
 
-import type { Command } from "./types";
+import type { Command } from "~/lib/cli/types";
 import type {
   GraphEdge,
   GraphNode,

@@ -14,7 +14,7 @@ import {
   parseStoredStep,
   parseStoredWeighting,
   type CliClickAxes,
-} from "./illuminate-axes";
+} from "~/lib/cli/illuminate-axes";
 
 export interface UseCliAxisPickerOptions {
   /** Override for tests. Defaults to {@link browserStorage}. */
