@@ -3,6 +3,7 @@ import type {
   TtlInput,
   TtlMode,
 } from "~/lib/client/usecase/edit-vertex/value-codec";
+import styles from "./TtlField.module.css";
 
 export interface TtlFieldProps {
   value: TtlInput;
@@ -45,7 +46,7 @@ export function TtlField(props: TtlFieldProps) {
             onChange={(_, data) => onChange({ ...value, custom: data.value })}
             placeholder="e.g. 15m, 2h30m, 7d (use Go syntax)"
             data-testid="vertex-ttl-custom"
-            style={{ marginTop: "8px" }}
+            className={styles.customInput}
           />
         ) : null}
       </div>
