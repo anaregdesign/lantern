@@ -14,3 +14,15 @@ Dockerfile
 README.md
 AGENTS.md
 LICENSE
+
+# Toolchain output. The admin image (admin/Dockerfile) uses the repo root
+# as its build context, so node_modules / build artefacts must be excluded
+# here too — otherwise a host `bun install` collides with the in-image,
+# lockfile-pinned install (a directory-vs-symlink COPY conflict). CI builds
+# from a clean checkout, so this is a local-build correctness fix.
+**/node_modules
+admin/build
+admin/.vite
+admin/.react-router
+admin/test-results
+admin/playwright-report
