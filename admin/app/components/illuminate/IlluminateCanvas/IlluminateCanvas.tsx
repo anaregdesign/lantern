@@ -55,18 +55,18 @@ export interface IlluminateCanvasProps {
    */
   latestExpansionOrigin: string | null;
   /**
-   * Vertex keys belonging to the most recent expansion's result (#483).
-   * Every node whose id is absent from this set is hidden (graphology
-   * `hidden: true`) so the canvas collapses to just the latest
-   * Illuminate result. Hidden nodes are retained (not dropped) so they
-   * reappear at their remembered position when a later result includes
-   * them. An empty set means "no filter" (cold start / no expansion yet)
-   * — the canvas shows everything.
+   * Vertex keys belonging to the most recent expansion's result (#483,
+   * delete-not-hide per #491). The canvas renders ONLY this set: every
+   * node whose id is absent from it is dropped from graphology, so each
+   * graph switch deletes the previous frame's nodes and lets d3-force
+   * re-converge the new frame from scratch (no retained/frozen
+   * positions). An empty set means "no result yet" (cold start / Clear)
+   * — the canvas falls back to the full accumulator (itself empty then).
    */
   latestResultVertexKeys: Set<string>;
   /**
    * Edge ids belonging to the most recent expansion's result (#483).
-   * Same hide-but-retain semantics as {@link latestResultVertexKeys}.
+   * Same delete-only semantics as {@link latestResultVertexKeys}.
    */
   latestResultEdgeIds: Set<string>;
   onNodeClick: (key: string) => void;
@@ -202,9 +202,9 @@ export function IlluminateCanvas({
   } | null>(null);
   /**
    * When true, the rAF tick loop is suspended (#483 test bridge): the
-   * simulation is built and applied (hidden filter + survivor positions)
-   * but does not advance until `stepLayout`/`settleLayout` is called or
-   * the pause is released. Lets the e2e assert EXACT survivor positions
+   * simulation is built and applied (survivor positions retained) but
+   * does not advance until `stepLayout`/`settleLayout` is called or the
+   * pause is released. Lets the e2e assert EXACT survivor positions
    * immediately after a click, before any easing has occurred.
    */
   const layoutPausedRef = useRef<boolean>(false);
@@ -288,12 +288,10 @@ export function IlluminateCanvas({
   // without re-wiring sigma listeners.
 
   /**
-   * Copy the simulation's positions into graphology. Pinned nodes (#455
-   * `fixed`) flow the OTHER way — graphology is authoritative, so we feed
-   * the user-placed coordinate back into the sim (`fx`/`fy`) and never
-   * overwrite it. This keeps a drag performed mid-animation authoritative
-   * and guarantees pinned nodes never drift (#483 acceptance: drag-pinned
-   * remain fixed).
+   * Copy the simulation's positions into graphology. No node is ever
+   * pinned (drag-to-pin was removed in #491), so this is a one-way
+   * sim → graphology flow; the simulation is always authoritative for
+   * position and is free to relax every node toward equilibrium.
    */
   const writeBackLayoutPositions = useCallback(() => {
     const layout = layoutRef.current;
@@ -301,13 +299,6 @@ export function IlluminateCanvas({
     if (!layout || !graph) return;
     for (const fn of layout.forceNodes) {
       if (!graph.hasNode(fn.id)) continue;
-      if (graph.getNodeAttribute(fn.id, "fixed") === true) {
-        const x = graph.getNodeAttribute(fn.id, "x");
-        const y = graph.getNodeAttribute(fn.id, "y");
-        if (typeof x === "number") fn.fx = x;
-        if (typeof y === "number") fn.fy = y;
-        continue;
-      }
       if (typeof fn.x === "number") graph.setNodeAttribute(fn.id, "x", fn.x);
       if (typeof fn.y === "number") graph.setNodeAttribute(fn.id, "y", fn.y);
     }
@@ -367,6 +358,44 @@ export function IlluminateCanvas({
     },
     [],
   );
+
+  /**
+   * Rebuild the simulation over the currently-rendered nodes/edges and
+   * start animating so the layout re-converges. Used after a drag
+   * release (#491): the dropped node is NOT pinned, so reheating lets
+   * physics settle the whole graph around its new position instead of
+   * freezing it where the cursor left it. Rebuilding from the live
+   * graphology positions means no `fx`/`fy` pin survives the gesture.
+   */
+  const reheatLayout = useCallback(() => {
+    const graph = graphRef.current;
+    if (!graph) return;
+    const forceNodes: ForceNode[] = [];
+    for (const id of graph.nodes()) {
+      forceNodes.push({
+        id,
+        size: graph.getNodeAttribute(id, "size") as number,
+        x: graph.getNodeAttribute(id, "x") as number,
+        y: graph.getNodeAttribute(id, "y") as number,
+      });
+    }
+    if (forceNodes.length === 0) {
+      stopLayout();
+      return;
+    }
+    const forceLinks: ForceLink[] = graph.edges().map((id) => {
+      const [source, target] = graph.extremities(id);
+      return { source, target, weight: 1 };
+    });
+    beginLayout(forceNodes, forceLinks, FORCE_ALPHA);
+    startLayoutLoop();
+  }, [beginLayout, startLayoutLoop, stopLayout]);
+  // Ref mirror so the mount-effect drag handlers can reheat without the
+  // sigma setup effect (which runs once) needing to re-bind.
+  const reheatLayoutRef = useRef(reheatLayout);
+  useEffect(() => {
+    reheatLayoutRef.current = reheatLayout;
+  }, [reheatLayout]);
 
   /**
    * Advance the simulation `ticks` steps synchronously (no rAF) and write
@@ -619,15 +648,6 @@ export function IlluminateCanvas({
       renderer.refresh();
     };
     renderer.setSetting("nodeReducer", (key, data) => {
-      // === #483 hide non-result nodes ==================================
-      // Nodes outside the latest expansion result carry `hidden: true`
-      // (set in the reconcile effect). Return early so sigma skips them
-      // entirely and we don't waste TTL/hover math on invisible nodes.
-      // They are retained in graphology (not dropped) so they reappear
-      // at their remembered position when a later result includes them.
-      const baseAttrs = data as { hidden?: boolean };
-      if (baseAttrs.hidden === true) return data;
-      // === end #483 ===================================================
       // === #459 TTL alpha (composition note) ============================
       // Composition order is hop hue (#460) \u2192 TTL alpha (#459) \u2192 hover
       // dim (#458). TTL fade applies first so the hover dim's solid
@@ -674,12 +694,6 @@ export function IlluminateCanvas({
       };
     });
     renderer.setSetting("edgeReducer", (key, data) => {
-      // === #483 hide non-result edges =================================
-      // Edges outside the latest expansion result carry `hidden: true`.
-      // Skip them so they neither render nor incur TTL/hover compute.
-      const baseAttrs = data as { hidden?: boolean };
-      if (baseAttrs.hidden === true) return data;
-      // === end #483 ===================================================
       // === #459 TTL alpha (composition note same as nodeReducer) ========
       const attrs = data as { color: string; expiration?: string | null };
       const nowMs = nowRef.current;
@@ -812,16 +826,16 @@ export function IlluminateCanvas({
     renderer.on("enterEdge", showEdgeHover);
     renderer.on("leaveEdge", clearHoverNode);
 
-    // === #455 drag-to-pin ===================================================
+    // === #455 drag (no pin, per #491) =======================================
     // Sigma's standard drag-and-drop recipe. The dragged node id lives in
     // a closure-local ref (not React state) so a mid-drag rerender can't
     // wipe it. On mouse-down we suspend sigma's default camera-pan via
     // `preventSigmaDefault()` and mark the node highlighted so the user
     // gets a visual lock-on. On `mousemovebody` we project the cursor
     // into graph space and rewrite the node's x/y; sigma re-renders on
-    // the next frame. On mouse-up we set `fixed: true` so the continuous
-    // d3-force layout (#483) holds the user-placed node at its fx/fy on
-    // every subsequent expansion and never relaxes it.
+    // the next frame. On mouse-up we release the node back to the
+    // simulation (NO pin) and reheat the layout so physics re-converges
+    // the graph around its new position — the drag never freezes a node.
     const draggedNodeRef: { current: string | null } = { current: null };
     // Diagnostic counters exposed via the test bridge so #455's e2e can
     // disambiguate "drag fired but didn't move the node" from "drag
@@ -841,9 +855,9 @@ export function IlluminateCanvas({
       const pos = renderer.viewportToGraph({ x: coords.x, y: coords.y });
       graph.setNodeAttribute(node, "x", pos.x);
       graph.setNodeAttribute(node, "y", pos.y);
-      // #483: if a layout animation is in flight, pin this node in the
-      // sim to the cursor so the simulation respects the drag instead of
-      // fighting it (finishDrag then marks it `fixed` for good).
+      // #483: if a layout animation is in flight, hold this node at the
+      // cursor (temporary fx/fy) so the simulation respects the drag
+      // instead of fighting it; finishDrag clears the hold and reheats.
       const draggingForceNode = layoutRef.current?.nodeById.get(node);
       if (draggingForceNode) {
         draggingForceNode.fx = pos.x;
@@ -861,10 +875,12 @@ export function IlluminateCanvas({
       const node = draggedNodeRef.current;
       if (!node) return;
       graph.setNodeAttribute(node, "highlighted", false);
-      // Pin: the continuous d3-force layout (#483) holds this node at its
-      // fx/fy on every subsequent expansion so it never drifts.
-      graph.setNodeAttribute(node, "fixed", true);
       draggedNodeRef.current = null;
+      // No pin (#491): release the node back to physics and reheat the
+      // layout so it re-converges around the dropped position instead of
+      // freezing there. reheatLayout rebuilds the sim from the live
+      // graphology positions (including this drag), so no fx/fy survives.
+      reheatLayoutRef.current();
     };
     mouseCaptor.on("mouseup", finishDrag);
     // === end #455 ===========================================================
@@ -882,6 +898,12 @@ export function IlluminateCanvas({
       __illuminateCanvas?: {
         getNodePosition: (key: string) => { x: number; y: number } | null;
         isNodeFixed: (key: string) => boolean;
+        /**
+         * #491 test bridge: whether an edge currently exists in
+         * graphology. Lets the e2e assert delete-not-hide — a non-result
+         * edge is dropped (false), a result edge is present (true).
+         */
+        hasEdge: (key: string) => boolean;
         dragStats: () => {
           downNode: number;
           moveBody: number;
@@ -1022,21 +1044,6 @@ export function IlluminateCanvas({
           text: string;
         };
         /**
-         * #483 test bridge: whether a node currently carries the
-         * `hidden: true` attribute (i.e., it falls outside the latest
-         * expansion result). Hidden nodes are retained in graphology so
-         * they reappear at their remembered position; `false` when the
-         * key is unknown.
-         */
-        isNodeHidden: (key: string) => boolean;
-        /**
-         * #483 test bridge: whether an edge currently carries the
-         * `hidden: true` attribute (i.e., it falls outside the latest
-         * expansion result). Mirrors {@link isNodeHidden}; `false` when
-         * the edge id is unknown.
-         */
-        isEdgeHidden: (key: string) => boolean;
-        /**
          * #483 test bridge: pause or resume the continuous d3-force
          * layout. While paused the animation loop suspends (no ticks)
          * so the e2e can assert exact survivor positions immediately
@@ -1082,6 +1089,7 @@ export function IlluminateCanvas({
         if (!graph.hasNode(key)) return false;
         return graph.getNodeAttribute(key, "fixed") === true;
       },
+      hasEdge: (key: string) => graph.hasEdge(key),
       dragStats: () => ({ ...dragStats }),
       simulateDrag: (key: string, deltaGraphX: number, deltaGraphY: number) => {
         if (!graph.hasNode(key)) return false;
@@ -1108,7 +1116,7 @@ export function IlluminateCanvas({
           forceNode.fy = attrs.y + deltaGraphY;
         }
         dragStats.moveBody += 1;
-        // 3) mouseup \u2014 release + pin
+        // 3) mouseup \u2014 release (no pin, #491); finishDrag reheats the layout
         finishDrag();
         return true;
       },
@@ -1186,14 +1194,6 @@ export function IlluminateCanvas({
         stroke: paletteRef.current.labelStroke,
         text: paletteRef.current.labelText,
       }),
-      isNodeHidden: (key: string) => {
-        if (!graph.hasNode(key)) return false;
-        return graph.getNodeAttribute(key, "hidden") === true;
-      },
-      isEdgeHidden: (key: string) => {
-        if (!graph.hasEdge(key)) return false;
-        return graph.getEdgeAttribute(key, "hidden") === true;
-      },
       setLayoutPaused: (paused: boolean) => setLayoutPaused(paused),
       stepLayout: (ticks: number) => stepLayout(ticks),
       settleLayout: (maxTicks?: number) => settleLayout(maxTicks),
@@ -1318,23 +1318,29 @@ export function IlluminateCanvas({
   }, []);
   // === end #459 ==========================================================
 
-  // Reconcile the graph with the latest view model. We diff by ID rather
-  // than clearing so the continuous d3-force layout (#483) can keep the
-  // positions of nodes that survived from the previous frame — the canvas
-  // reads as a smooth, gradual expansion instead of a layout reshuffle on
-  // every refetch, and surviving nodes never snap on click.
+  // Reconcile the graph with the latest view model. The canvas renders
+  // ONLY the latest expansion result (#491): nodes/edges outside it are
+  // DROPPED (not hidden), and a survivor that carries over keeps its exact
+  // position so the d3-force layout (#483) eases the new frame in smoothly
+  // instead of reshuffling — surviving nodes never snap on click, while
+  // everything else is deleted and re-converges from scratch on return.
   useEffect(() => {
     const graph = graphRef.current;
     if (!graph) return;
     const sigma = sigmaRef.current;
 
-    const nextNodeIds = new Set(nodes.map((n) => n.id));
-    const nextEdgeIds = new Set(edges.map((e) => e.id));
-
-    // #483: once an expansion has produced a result, hide everything
-    // outside the latest result. An empty result set (cold mount, reseed,
-    // or Clear) hides nothing, so the full graph stays visible.
-    const hideNonResult = latestResultVertexKeys.size > 0;
+    // #491: the rendered set IS the latest expansion result. Once an
+    // expansion has produced a result we reconcile graphology down to
+    // exactly those nodes/edges (dropping the rest); an empty result set
+    // (cold mount, reseed, or Clear) falls back to the full accumulator
+    // (which is itself empty in that case).
+    const hasResult = latestResultVertexKeys.size > 0;
+    const nextNodeIds = hasResult
+      ? latestResultVertexKeys
+      : new Set(nodes.map((n) => n.id));
+    const nextEdgeIds = hasResult
+      ? latestResultEdgeIds
+      : new Set(edges.map((e) => e.id));
 
     // Per-reconcile diff used to choose the layout regime below (#483).
     // We compute it BEFORE mutating the graph so the counts reflect the
@@ -1366,6 +1372,10 @@ export function IlluminateCanvas({
     const neighboursByKey = buildNeighbourMap(nodes, edges);
 
     for (const node of nodes) {
+      // #491: render only the latest result; skip everything else so it is
+      // neither merged nor (re)created — the drop loop above already
+      // deleted it from graphology.
+      if (!nextNodeIds.has(node.id)) continue;
       const size = 4 + node.importance * 10;
       const color = pickFill(node);
       const detail = describeVertex(node);
@@ -1388,10 +1398,6 @@ export function IlluminateCanvas({
           // up against the new palette.
           hopDistance: node.hopDistance,
           firstSeenExpansion: node.firstSeenExpansion,
-          // #483: hide nodes outside the latest expansion result. We do
-          // NOT touch x/y here, so a survivor keeps its exact position
-          // (no snap); only its visibility flips.
-          hidden: hideNonResult && !latestResultVertexKeys.has(node.id),
         });
       } else {
         const { x, y } = pickInitialPosition({
@@ -1412,25 +1418,22 @@ export function IlluminateCanvas({
           expiration,
           hopDistance: node.hopDistance,
           firstSeenExpansion: node.firstSeenExpansion,
-          // #483: a freshly added node outside the latest result starts
-          // hidden but retains its seed position for when it returns.
-          hidden: hideNonResult && !latestResultVertexKeys.has(node.id),
         });
       }
     }
     for (const edge of edges) {
+      // #491: render only the latest result's edges, and never create an
+      // edge whose endpoints were dropped above (graphology would throw).
+      if (!nextEdgeIds.has(edge.id)) continue;
+      if (!graph.hasNode(edge.source) || !graph.hasNode(edge.target)) continue;
       // #459: edges have their own expiration; mirror the node treatment.
       const expiration = edge.edge.expiration ?? null;
-      // #483: hide edges that aren't part of the latest expansion result
-      // so the canvas shows only the clicked vertex's subgraph.
-      const edgeHidden = hideNonResult && !latestResultEdgeIds.has(edge.id);
       if (graph.hasEdge(edge.id)) {
         graph.mergeEdgeAttributes(edge.id, {
           size: 1 + Math.min(4, edge.weight),
           label: edge.id,
           detail: `weight = ${edge.weight}`,
           expiration,
-          hidden: edgeHidden,
         });
       } else {
         graph.addEdgeWithKey(edge.id, edge.source, edge.target, {
@@ -1439,33 +1442,27 @@ export function IlluminateCanvas({
           label: edge.id,
           detail: `weight = ${edge.weight}`,
           expiration,
-          hidden: edgeHidden,
         });
       }
     }
 
     // === #483 continuous layout regime =================================
-    // Build the simulation over only the VISIBLE nodes (hidden nodes are
-    // frozen — excluded from the sim, retaining their x/y so they reappear
-    // in place). Pinned nodes (#455 `fixed`) seed their fx/fy so the very
-    // first tick already respects the pin.
-    const visibleNodeIds = new Set<string>();
+    // Build the simulation over every rendered node (#491: delete-not-
+    // hide means graphology already holds exactly the latest result, so
+    // there is nothing to exclude). No node is pinned — drag-to-pin was
+    // removed in #491, so the sim is free to relax the whole frame toward
+    // equilibrium every reconcile.
     const forceNodes: ForceNode[] = [];
     for (const id of graph.nodes()) {
-      if (graph.getNodeAttribute(id, "hidden") === true) continue;
-      visibleNodeIds.add(id);
       const x = graph.getNodeAttribute(id, "x") as number;
       const y = graph.getNodeAttribute(id, "y") as number;
       const size = graph.getNodeAttribute(id, "size") as number;
-      const pinned = graph.getNodeAttribute(id, "fixed") === true;
-      forceNodes.push(
-        pinned ? { id, size, x, y, fx: x, fy: y } : { id, size, x, y },
-      );
+      forceNodes.push({ id, size, x, y });
     }
     const forceLinks: ForceLink[] = [];
     for (const edge of edges) {
-      if (!visibleNodeIds.has(edge.source)) continue;
-      if (!visibleNodeIds.has(edge.target)) continue;
+      if (!nextEdgeIds.has(edge.id)) continue;
+      if (!graph.hasNode(edge.source) || !graph.hasNode(edge.target)) continue;
       forceLinks.push({
         source: edge.source,
         target: edge.target,
@@ -1477,7 +1474,7 @@ export function IlluminateCanvas({
     // first paint is already a sensible layout. An incremental expansion
     // refreshes ONCE at t=0 (survivors render at their EXACT prior
     // position — no snap) and then eases on rAF. A pure attribute or
-    // visibility change just refreshes and leaves any running animation
+    // weight change just refreshes and leaves any running animation
     // alone.
     const survivorCount = nextNodeIds.size - addedCount;
     const isColdStart = nextNodeIds.size > 0 && survivorCount === 0;
@@ -1532,12 +1529,20 @@ export function IlluminateCanvas({
   // legend stays compact in the common case (most graphs have no
   // unreachables, and many won't have anything past 2 hops).
   const legendBuckets = useMemo(() => {
+    // #491: the canvas renders ONLY the latest expansion result, so the
+    // legend must count only those nodes — otherwise it would tally
+    // vertices that have been dropped from the canvas. Mirror the
+    // reconcile's membership predicate: when a result is present the
+    // rendered set IS that result; otherwise (cold/reseed/Clear) every
+    // accumulator node renders.
+    const hasResult = latestResultVertexKeys.size > 0;
     let origin = 0;
     let oneHop = 0;
     let twoHop = 0;
     let far = 0;
     let unreachable = 0;
     for (const node of nodes) {
+      if (hasResult && !latestResultVertexKeys.has(node.id)) continue;
       const h = node.hopDistance;
       if (!Number.isFinite(h) || h < 0) {
         unreachable += 1;
@@ -1583,7 +1588,7 @@ export function IlluminateCanvas({
         color: palette.hopUnreachable,
       },
     ].filter((b) => b.count > 0);
-  }, [nodes, palette]);
+  }, [nodes, palette, latestResultVertexKeys]);
 
   return (
     <div className={wrapperClass} data-testid="illuminate-canvas">

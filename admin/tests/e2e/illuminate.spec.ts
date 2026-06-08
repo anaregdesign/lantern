@@ -438,10 +438,11 @@ test.describe("/illuminate", () => {
 
     // Requirement A (no snap): pause the continuous layout BEFORE the
     // click so the post-click reconcile builds the simulation but never
-    // ticks it. Every node that existed before the click must therefore
-    // hold its EXACT pre-click coordinates at t=0 (the first rendered
-    // frame) — whether it stays visible or gets hidden by the result
-    // filter — and only the brand-new node lands at fresh coordinates.
+    // ticks it. The node that SURVIVES into the latest result (leftleft,
+    // the expansion origin) must hold its EXACT pre-click coordinates at
+    // t=0 (the first rendered frame); the brand-new node lands at fresh
+    // coordinates, and every node outside the latest result is DELETED
+    // (#491) — readPos returns null for it.
     await pause(true);
 
     await page
@@ -456,13 +457,23 @@ test.describe("/illuminate", () => {
       "6 vertices",
     );
 
-    // t=0: exact equality for every pre-existing node — no jump.
+    // t=0: the surviving node (leftleft) holds its exact pre-click
+    // coordinates — no snap. Every other seed node falls outside the
+    // latest result and is therefore DELETED (#491), so readPos is null.
+    const survivorKey = "e2e:illum:leftleft";
     for (const k of seedKeys) {
       const now = await readPos(k);
-      const was = cold.get(k)!;
-      expect(now, `node ${k} vanished after the click`).not.toBeNull();
-      expect(now!.x, `${k} x snapped at t=0`).toBe(was.x);
-      expect(now!.y, `${k} y snapped at t=0`).toBe(was.y);
+      if (k === survivorKey) {
+        const was = cold.get(k)!;
+        expect(now, `survivor ${k} vanished after the click`).not.toBeNull();
+        expect(now!.x, `${k} x snapped at t=0`).toBe(was.x);
+        expect(now!.y, `${k} y snapped at t=0`).toBe(was.y);
+      } else {
+        expect(
+          now,
+          `${k} should be deleted (outside the latest result)`,
+        ).toBeNull();
+      }
     }
     // The newcomer is seeded a position near its parent's neighbourhood.
     const newcomer = await readPos("e2e:illum:leftleftleft");
@@ -528,7 +539,7 @@ test.describe("/illuminate", () => {
     expect(await layoutRunning()).toBe(false);
   });
 
-  test("Hides nodes and edges outside the latest result, retaining their positions (#483)", async ({
+  test("Deletes nodes and edges outside the latest result (#491)", async ({
     page,
   }) => {
     const seed = encodeURIComponent("e2e:illum:hub");
@@ -540,32 +551,26 @@ test.describe("/illuminate", () => {
     type Pos = { x: number; y: number };
     type Bridge = {
       getNodePosition: (k: string) => Pos | null;
-      isNodeHidden: (k: string) => boolean;
-      isEdgeHidden: (k: string) => boolean;
+      hasEdge: (k: string) => boolean;
     };
     await page.waitForFunction(() => {
       const win = window as Window & { __illuminateCanvas?: Bridge };
-      return !!win.__illuminateCanvas?.isEdgeHidden;
+      return !!win.__illuminateCanvas?.hasEdge;
     });
 
-    const nodeHidden = (k: string): Promise<boolean> =>
-      page.evaluate((key) => {
-        const win = window as Window & { __illuminateCanvas?: Bridge };
-        return win.__illuminateCanvas?.isNodeHidden(key) ?? false;
-      }, k);
-    const edgeHidden = (k: string): Promise<boolean> =>
-      page.evaluate((key) => {
-        const win = window as Window & { __illuminateCanvas?: Bridge };
-        return win.__illuminateCanvas?.isEdgeHidden(key) ?? false;
-      }, k);
     const readPos = (k: string): Promise<Pos | null> =>
       page.evaluate((key) => {
         const win = window as Window & { __illuminateCanvas?: Bridge };
         return win.__illuminateCanvas?.getNodePosition(key) ?? null;
       }, k);
+    const hasEdge = (k: string): Promise<boolean> =>
+      page.evaluate((key) => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        return win.__illuminateCanvas?.hasEdge(key) ?? false;
+      }, k);
 
     // After the seed load (the only expansion so far) its result IS the
-    // whole frame, so nothing is hidden — all five seed nodes are shown.
+    // whole frame, so every seed node is rendered.
     for (const k of [
       "e2e:illum:hub",
       "e2e:illum:left",
@@ -573,20 +578,16 @@ test.describe("/illuminate", () => {
       "e2e:illum:leftleft",
       "e2e:illum:rightright",
     ]) {
-      expect(await nodeHidden(k), `${k} should be visible after seed`).toBe(
-        false,
-      );
+      expect(
+        await readPos(k),
+        `${k} should be rendered after seed`,
+      ).not.toBeNull();
     }
 
-    // Remember the far-right leaf's coordinates; it must be retained
-    // (hidden, not deleted) once it falls outside the next result.
-    const rightRightBefore = await readPos("e2e:illum:rightright");
-    expect(rightRightBefore).not.toBeNull();
-
     // Expand from `leftleft`. The latest result is now the leftleft
-    // neighbourhood, so the right-hand branch — four hops away and not in
-    // that result — must be hidden, while the freshly illuminated
-    // leftleftleft (and its origin) are shown.
+    // neighbourhood {leftleft, leftleftleft}, so every node outside it —
+    // hub, left, right, rightright — is DELETED (#491), while the freshly
+    // illuminated leftleftleft and its origin leftleft are rendered.
     await page
       .getByRole("group")
       .getByText(/List view \(5 vertices/)
@@ -597,29 +598,33 @@ test.describe("/illuminate", () => {
       .click();
     await expect(counter).toContainText("6 vertices");
 
-    // In the latest result → visible.
-    expect(await nodeHidden("e2e:illum:leftleftleft")).toBe(false);
-    expect(await nodeHidden("e2e:illum:leftleft")).toBe(false);
-    // Outside the latest result → hidden.
-    expect(await nodeHidden("e2e:illum:rightright")).toBe(true);
+    // In the latest result → rendered.
+    expect(await readPos("e2e:illum:leftleftleft")).not.toBeNull();
+    expect(await readPos("e2e:illum:leftleft")).not.toBeNull();
+    // Outside the latest result → deleted (not hidden).
+    for (const k of [
+      "e2e:illum:hub",
+      "e2e:illum:left",
+      "e2e:illum:right",
+      "e2e:illum:rightright",
+    ]) {
+      expect(
+        await readPos(k),
+        `${k} should be deleted (outside the latest result)`,
+      ).toBeNull();
+    }
 
-    // ...yet retained at its remembered coordinates so it reappears in
-    // place if a later result includes it.
-    const rightRightAfter = await readPos("e2e:illum:rightright");
-    expect(rightRightAfter).not.toBeNull();
-    expect(rightRightAfter!.x).toBe(rightRightBefore!.x);
-    expect(rightRightAfter!.y).toBe(rightRightBefore!.y);
-
-    // Edge filter: the edge inside the latest result is shown; an edge on
-    // the hidden right branch is hidden. Edge ids are `${tail}→${head}`
-    // (see edgeIdOf in app/lib/client/usecase/illuminate/state.ts).
-    expect(await edgeHidden("e2e:illum:leftleft→e2e:illum:leftleftleft")).toBe(
-      false,
+    // Edge delete-not-hide: the edge inside the latest result is present;
+    // an edge on the deleted right branch is gone (graphology drops the
+    // edges of any dropped node). Edge ids are `${tail}→${head}` (see
+    // edgeIdOf in app/lib/client/usecase/illuminate/state.ts).
+    expect(await hasEdge("e2e:illum:leftleft→e2e:illum:leftleftleft")).toBe(
+      true,
     );
-    expect(await edgeHidden("e2e:illum:right→e2e:illum:rightright")).toBe(true);
+    expect(await hasEdge("e2e:illum:right→e2e:illum:rightright")).toBe(false);
   });
 
-  test("Drag-to-pin: drag moves the node, releases pinned, and survives a subsequent expansion (#455)", async ({
+  test("Drag releases the node without pinning it; physics reclaims it (#491)", async ({
     page,
   }) => {
     const seed = encodeURIComponent("e2e:illum:hub");
@@ -634,10 +639,12 @@ test.describe("/illuminate", () => {
       isNodeFixed: (k: string) => boolean;
       dragStats: () => { downNode: number; moveBody: number; mouseUp: number };
       simulateDrag: (k: string, dx: number, dy: number) => boolean;
+      setLayoutPaused: (paused: boolean) => void;
+      stepLayout: (ticks: number) => number;
     };
     await page.waitForFunction(() => {
       const win = window as Window & { __illuminateCanvas?: Bridge };
-      return !!win.__illuminateCanvas;
+      return !!win.__illuminateCanvas?.setLayoutPaused;
     });
 
     const targetKey = "e2e:illum:left";
@@ -652,6 +659,23 @@ test.describe("/illuminate", () => {
         const win = window as Window & { __illuminateCanvas?: Bridge };
         return win.__illuminateCanvas?.isNodeFixed(key) ?? false;
       }, k);
+    const pause = (p: boolean): Promise<void> =>
+      page.evaluate((paused) => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        win.__illuminateCanvas?.setLayoutPaused(paused);
+      }, p);
+    const step = (n: number): Promise<number> =>
+      page.evaluate((ticks) => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        return win.__illuminateCanvas?.stepLayout(ticks) ?? 0;
+      }, n);
+
+    // Pause the continuous layout BEFORE the gesture so the reheat that
+    // finishDrag triggers (#491) builds a fresh simulation but does NOT
+    // tick it. That makes the immediate post-drag position deterministic
+    // (no rAF race), so we can assert the exact drag delta, then step the
+    // simulation by hand to prove the node is NOT pinned.
+    await pause(true);
 
     // Sanity: before the gesture, the node exists, has a graph position,
     // and is not pinned.
@@ -671,7 +695,7 @@ test.describe("/illuminate", () => {
     // serial test runs, making real-mouse synthesis unreliable. The
     // bridge invokes the SAME closure-local handlers the real sigma
     // events fire (downNode → mousemovebody → mouseup → finishDrag),
-    // so we cover the position-write + pin + dragStats accounting
+    // so we cover the position-write + release + dragStats accounting
     // without re-testing sigma's WebGL plumbing.
     const dragResult = await page.evaluate(
       ({ key, dx, dy }) => {
@@ -703,12 +727,13 @@ test.describe("/illuminate", () => {
       "drag bridge never registered mouseup",
     ).toBeGreaterThan(0);
 
+    // Immediately after release (layout paused, sim not ticked): the node
+    // sits at exactly before+delta and is NOT pinned (#491 — drag-to-pin
+    // was removed). simulateDrag bypasses sigma's viewport↔graph
+    // projection so the graph-space delta is what we put in.
     const afterDrag = await readGraphPos(targetKey);
     expect(afterDrag).not.toBeNull();
-    expect(await isFixed(targetKey)).toBe(true);
-    // The position must have moved by exactly the requested delta —
-    // simulateDrag bypasses sigma's viewport↔graph projection so the
-    // graph-space delta is what we put in.
+    expect(await isFixed(targetKey)).toBe(false);
     expect(afterDrag!.x - before!.x).toBeCloseTo(deltaX, 6);
     expect(afterDrag!.y - before!.y).toBeCloseTo(deltaY, 6);
 
@@ -722,34 +747,24 @@ test.describe("/illuminate", () => {
       "1 expansion",
     );
 
-    // Trigger an additive expansion. The continuous d3-force layout
-    // (#483) pins `left` via the simulation's fx/fy, and the write-back
-    // never overwrites a node flagged `fixed: true`, so the dropped node
-    // must stay exactly where the user left it.
-    await page
-      .getByRole("group")
-      .getByText(/List view \(5 vertices/)
-      .click();
-    const table = page.getByTestId("illuminate-table");
-    await table
-      .getByRole("button", { name: "Expand from e2e:illum:leftleft" })
-      .click();
-    await expect(page.getByTestId("illuminate-counter")).toContainText(
-      "6 vertices",
+    // No pin: the reheated simulation is free to relax the dropped node.
+    // Stepping the sim by hand must MOVE `left` away from where the drag
+    // left it — proving physics reclaims it instead of freezing it at the
+    // cursor (the old drag-to-pin behaviour held it exactly in place).
+    const ticked = await step(40);
+    expect(ticked, "stepLayout should advance the simulation").toBeGreaterThan(
+      0,
     );
-
-    const afterExpansion = await readGraphPos(targetKey);
-    expect(afterExpansion).not.toBeNull();
-    // A pinned node (fx/fy held) sees zero displacement from the force
-    // simulation — allow only floating-point noise.
-    const drift = Math.hypot(
-      afterExpansion!.x - afterDrag!.x,
-      afterExpansion!.y - afterDrag!.y,
+    const afterTicks = await readGraphPos(targetKey);
+    expect(afterTicks).not.toBeNull();
+    const reclaimed = Math.hypot(
+      afterTicks!.x - afterDrag!.x,
+      afterTicks!.y - afterDrag!.y,
     );
     expect(
-      drift,
-      `pinned node drifted by ${drift.toFixed(6)} graph units across an additive expansion`,
-    ).toBeLessThan(0.001);
+      reclaimed,
+      `unpinned node should be moved by the simulation, but only drifted ${reclaimed.toFixed(4)} units`,
+    ).toBeGreaterThan(1);
   });
 
   test("Hover focus mode dims non-neighbours and keeps incident edges saturated (#458)", async ({
@@ -1064,7 +1079,7 @@ test.describe("/illuminate", () => {
     ).toBeGreaterThan(tickAfterHidden);
   });
 
-  test("Hop-distance coloring separates each ring and never grows existing distances across an additive expansion (#460)", async ({
+  test("Hop-distance coloring separates each ring, then recolors to the latest result after an expansion (#460, #491)", async ({
     page,
   }) => {
     const seed = encodeURIComponent("e2e:illum:hub");
@@ -1139,21 +1154,20 @@ test.describe("/illuminate", () => {
       0,
     );
 
-    // === Phase 2: additive expansion from leftleft =======================
-    // Adds leftleftleft (a fresh vertex) AND a second expansion origin
-    // (leftleft). After this:
-    //   - hub stays at hop 0 (still the original seed AND still an
-    //     expansion origin via the URL anchor; multi-source BFS keeps
-    //     it at 0).
-    //   - leftleft drops from hop 2 → hop 0 (it's now an expansion
-    //     origin itself).
-    //   - left drops from hop 1 → hop 1 (already at 1 from hub; can't
-    //     get lower since the chain hub→left→leftleft is 1 hop apart).
-    //   - leftleftleft enters at hop 1 (one edge from the new origin).
+    // === Phase 2: expand from leftleft — render only the latest result ===
+    // Per #491 the canvas renders ONLY the most recent expansion's
+    // result and DELETES everything else. Expanding from leftleft
+    // (step=2) yields the result {leftleft, leftleftleft}; the previous
+    // frame's hub/left/right/rightright are dropped from graphology even
+    // though they stay in the accumulator (the counter still totals 6).
     //
-    // The monotonic-shrink invariant is the key thing this test
-    // protects: every existing vertex's hop distance must stay the
-    // same or shrink, NEVER grow.
+    // Hop distances are computed over the full accumulator with both
+    // origins (hub via the URL anchor + leftleft as the new expansion),
+    // but only the rendered survivors expose a distance through the
+    // bridge:
+    //   - leftleft is now an expansion origin → hop 0.
+    //   - leftleftleft is one edge from it → hop 1.
+    //   - hub/left/right/rightright are deleted → no hop (null).
     await page
       .getByRole("group")
       .getByText(/List view \(5 vertices/)
@@ -1166,34 +1180,31 @@ test.describe("/illuminate", () => {
       "6 vertices",
     );
 
-    const newHubHop = await readHop(hubKey);
-    const newLeftHop = await readHop(leftKey);
-    const newRightHop = await readHop(rightKey);
-    const newLeftLeftHop = await readHop(leftLeftKey);
-    const newRightRightHop = await readHop(rightRightKey);
-    const newLeftLeftLeftHop = await readHop(leftLeftLeftKey);
+    // The latest result renders with its own ring colours.
+    expect(await readHop(leftLeftKey)).toBe(0);
+    expect(await readHop(leftLeftLeftKey)).toBe(1);
 
-    // The new origin and the vertex one edge from it.
-    expect(newLeftLeftHop).toBe(0);
-    expect(newLeftLeftLeftHop).toBe(1);
+    // Everything outside the latest result is gone from the canvas.
+    expect(await readHop(hubKey)).toBeNull();
+    expect(await readHop(leftKey)).toBeNull();
+    expect(await readHop(rightKey)).toBeNull();
+    expect(await readHop(rightRightKey)).toBeNull();
 
-    // Monotonic shrink: every previous distance MUST be ≤ what it was
-    // in phase 1.
-    expect(newHubHop).not.toBeNull();
-    expect(newLeftHop).not.toBeNull();
-    expect(newRightHop).not.toBeNull();
-    expect(newRightRightHop).not.toBeNull();
-    expect(newHubHop).toBeLessThanOrEqual(0);
-    expect(newLeftHop).toBeLessThanOrEqual(1);
-    expect(newRightHop).toBeLessThanOrEqual(1);
-    expect(newLeftLeftHop).toBeLessThanOrEqual(2);
-    expect(newRightRightHop).toBeLessThanOrEqual(2);
-
-    // Concretely: hub stays at 0 (still an origin), leftleft is now
-    // also at 0 (new origin), and the previously-2-hop leftleft is
-    // now a brand colour, not a far colour.
-    expect(newHubHop).toBe(0);
+    // The new origin paints with the origin colour and its single
+    // neighbour with the 1-hop colour — the same buckets phase 1 used.
     expect(await readNode(leftLeftKey)).toBe(hubColor);
+    expect(await readNode(leftLeftLeftKey)).toBe(leftColor);
+
+    // The legend recomputes to the rendered set: origin + 1-hop only.
+    // The earlier 2-hop row disappears because its only member
+    // (rightright) was deleted from the canvas.
+    await expect(page.getByTestId("illuminate-legend-origin")).toBeVisible();
+    await expect(page.getByTestId("illuminate-legend-1hop")).toBeVisible();
+    await expect(page.getByTestId("illuminate-legend-2hop")).toHaveCount(0);
+    await expect(page.getByTestId("illuminate-legend-far")).toHaveCount(0);
+    await expect(page.getByTestId("illuminate-legend-unreachable")).toHaveCount(
+      0,
+    );
   });
 
   test("Lineage chip strip scrolls the camera back to an expansion origin without mutating state (#456)", async ({
