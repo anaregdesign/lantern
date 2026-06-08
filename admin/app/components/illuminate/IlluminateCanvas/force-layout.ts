@@ -40,23 +40,34 @@ import {
  * springs pulling their endpoints toward this separation. Sigma
  * auto-rescales the whole layout to the viewport, so the absolute value
  * only matters *relative* to {@link FORCE_CHARGE_STRENGTH} and
- * {@link collideRadius}.
+ * {@link collideRadius}. Deliberately short: paired with a strong charge,
+ * short stiff edges reel each connected cluster into a tight, cohesive
+ * blob while repulsion drives the blobs apart — the classic readable
+ * force-layout look of tight edges + wide inter-cluster gaps.
  */
-export const FORCE_LINK_DISTANCE = 60;
+export const FORCE_LINK_DISTANCE = 40;
 /**
- * Spring stiffness in [0, 1]. Kept gentle so edges nudge rather than
- * yank — the charge + collide forces do most of the spacing work and a
- * stiff spring would make survivors lurch on the first tick.
+ * Spring stiffness in [0, 1]. Stiff enough that edges genuinely stay
+ * short — so a connected cluster reads as one tight group rather than a
+ * loose web — yet still below 1 so survivors ease into place after an
+ * expansion instead of snapping (#483 acceptance A; the gradual-motion
+ * invariant only requires that a node not reach its settled spot in a
+ * single tick, which velocity damping still guarantees at this
+ * stiffness).
  */
-export const FORCE_LINK_STRENGTH = 0.25;
+export const FORCE_LINK_STRENGTH = 0.5;
 /**
- * Many-body charge. Negative = mutual repulsion, so disconnected nodes
- * push apart and the graph fills open space instead of collapsing onto
- * its edges. Magnitude is balanced against the link distance to give a
- * readable, non-overlapping spread for the small-to-medium
- * neighbourhoods Illuminate returns.
+ * Many-body charge. Negative = mutual repulsion, so nodes push apart and
+ * the graph fills open space instead of collapsing onto its edges. Kept
+ * strong relative to {@link FORCE_LINK_DISTANCE}: the short, stiff edges
+ * hold each cluster together locally while this repulsion spreads the
+ * nodes — and drives whole clusters apart — opening the wide
+ * inter-cluster gaps that keep cross-cluster edges from overlapping.
+ * Because sigma rescales the layout to the viewport, it is this
+ * charge:link-distance *ratio* (not the absolute edge length) that sets
+ * how far things fan.
  */
-export const FORCE_CHARGE_STRENGTH = -180;
+export const FORCE_CHARGE_STRENGTH = -360;
 /**
  * Extra gap (graph units) added beyond a node's size-derived radius in
  * {@link collideRadius}. Guarantees a visible channel between two nodes
