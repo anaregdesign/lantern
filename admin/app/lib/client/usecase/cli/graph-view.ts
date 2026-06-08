@@ -77,6 +77,12 @@ function wrapView(
     latestExpansionOrigin: seed,
     expansionOrigins: seed !== null && seed !== "" ? [seed] : [],
     overSoftCap: false,
+    // #483: the CLI surface is stateless — every command overwrites the
+    // previous frame, so the whole view IS the latest result and there
+    // are no accumulator survivors to hide. Empty sets tell the canvas
+    // to apply no result filter (show everything).
+    latestResultVertexKeys: new Set<string>(),
+    latestResultEdgeIds: new Set<string>(),
   };
 }
 

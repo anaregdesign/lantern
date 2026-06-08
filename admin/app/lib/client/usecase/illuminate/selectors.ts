@@ -85,6 +85,26 @@ export interface GraphView {
   expansionOrigins: string[];
   /** True when the accumulator is past the soft cap; UI surfaces a MessageBar. */
   overSoftCap: boolean;
+  /**
+   * Vertex keys belonging to the most recent expansion's result (#483).
+   * The canvas hides every node whose id is absent from this set so the
+   * view collapses to just the latest Illuminate result. Empty when
+   * there are no expansions yet — the canvas treats an empty set as
+   * "no filter" and shows everything (cold-start fallback).
+   *
+   * Keys match {@link GraphNode.id}; derived from the latest
+   * `Expansion.vertexKeys`.
+   */
+  latestResultVertexKeys: Set<string>;
+  /**
+   * Edge ids belonging to the most recent expansion's result (#483).
+   * The canvas hides every edge whose id is absent from this set. Empty
+   * when there are no expansions yet (treated as "no filter").
+   *
+   * Ids match {@link GraphEdge.id} (`${tail}→${head}`); derived from the
+   * latest `Expansion.edgeIds`.
+   */
+  latestResultEdgeIds: Set<string>;
 }
 
 /**
@@ -189,6 +209,16 @@ export function selectGraphView(
       ? (expansionOrigins[expansionOrigins.length - 1] ?? null)
       : null;
 
+  // #483: the "latest result" is the membership of the most recent
+  // expansion. The canvas hides everything outside it. Empty sets when
+  // there are no expansions act as "no filter" downstream.
+  const latestExpansion =
+    state.expansions.length > 0
+      ? state.expansions[state.expansions.length - 1]
+      : undefined;
+  const latestResultVertexKeys = new Set(latestExpansion?.vertexKeys ?? []);
+  const latestResultEdgeIds = new Set(latestExpansion?.edgeIds ?? []);
+
   if (state.accumulator.vertices.size === 0) {
     return {
       nodes: [],
@@ -196,6 +226,8 @@ export function selectGraphView(
       latestExpansionOrigin,
       expansionOrigins,
       overSoftCap: false,
+      latestResultVertexKeys,
+      latestResultEdgeIds,
     };
   }
 
@@ -284,6 +316,8 @@ export function selectGraphView(
     latestExpansionOrigin,
     expansionOrigins,
     overSoftCap: state.accumulator.vertices.size > ACCUMULATOR_SOFT_CAP,
+    latestResultVertexKeys,
+    latestResultEdgeIds,
   };
 }
 

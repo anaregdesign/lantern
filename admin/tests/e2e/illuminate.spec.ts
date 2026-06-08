@@ -351,7 +351,7 @@ test.describe("/illuminate", () => {
     expect(contrastReport.ratio).toBeGreaterThanOrEqual(4.5);
   });
 
-  test("Additive expansion keeps surviving nodes within layout tolerance (#454)", async ({
+  test("No positional snap at t=0 after a click, then gradual non-overlapping easing (#483)", async ({
     page,
   }) => {
     const seed = encodeURIComponent("e2e:illum:hub");
@@ -361,42 +361,89 @@ test.describe("/illuminate", () => {
       "5 vertices",
     );
 
-    // Wait for the canvas test bridge to be installed (it is set in the
-    // Sigma mount effect, after the renderer is created).
+    type Pos = { x: number; y: number };
+    type Bridge = {
+      getNodePosition: (k: string) => Pos | null;
+      setLayoutPaused: (paused: boolean) => void;
+      stepLayout: (ticks: number) => number;
+      settleLayout: (maxTicks?: number) => number;
+      layoutRunning: () => boolean;
+    };
+    // The #483 layout bridge is installed in the sigma mount effect.
     await page.waitForFunction(() => {
-      const win = window as Window & {
-        __illuminateCanvas?: {
-          getNodePosition: (key: string) => { x: number; y: number } | null;
-        };
-      };
-      return !!win.__illuminateCanvas;
+      const win = window as Window & { __illuminateCanvas?: Bridge };
+      return !!win.__illuminateCanvas?.setLayoutPaused;
     });
 
-    // Capture positions of two surviving nodes (a 1-hop neighbour of
-    // the seed, and a 2-hop "leaf" on the right branch) before the
-    // additive expansion fires. Both should hold steady — only the
-    // newly-added `leftleftleft` should land at fresh coordinates.
-    type Pos = { x: number; y: number };
-    const sampleKeys = ["e2e:illum:right", "e2e:illum:rightright"] as const;
-    const readPositions = (): Promise<(Pos | null)[]> =>
-      page.evaluate(
-        (keys) => {
-          const win = window as Window & {
-            __illuminateCanvas?: {
-              getNodePosition: (k: string) => Pos | null;
-            };
-          };
-          const bridge = win.__illuminateCanvas;
-          return keys.map((k) => (bridge ? bridge.getNodePosition(k) : null));
-        },
-        sampleKeys as unknown as string[],
-      );
+    const readPos = (k: string): Promise<Pos | null> =>
+      page.evaluate((key) => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        return win.__illuminateCanvas?.getNodePosition(key) ?? null;
+      }, k);
+    const pause = (p: boolean): Promise<void> =>
+      page.evaluate((paused) => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        win.__illuminateCanvas?.setLayoutPaused(paused);
+      }, p);
+    const step = (n: number): Promise<number> =>
+      page.evaluate((ticks) => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        return win.__illuminateCanvas?.stepLayout(ticks) ?? 0;
+      }, n);
+    const settle = (): Promise<number> =>
+      page.evaluate(() => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        return win.__illuminateCanvas?.settleLayout() ?? 0;
+      });
+    const layoutRunning = (): Promise<boolean> =>
+      page.evaluate(() => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        return win.__illuminateCanvas?.layoutRunning() ?? false;
+      });
 
-    const before = await readPositions();
-    expect(before.every((p) => p !== null)).toBe(true);
+    const seedKeys = [
+      "e2e:illum:hub",
+      "e2e:illum:left",
+      "e2e:illum:right",
+      "e2e:illum:leftleft",
+      "e2e:illum:rightright",
+    ] as const;
 
-    // Trigger an additive expansion from `leftleft` (adds
-    // `leftleftleft` — one fresh node, no drops).
+    // The cold-start layout (empty → 5 nodes) settles synchronously, so
+    // by the time the counter reads "5 vertices" the seed frame is
+    // already spread out. Snapshot the five seed nodes' coordinates.
+    const cold = new Map<string, Pos>();
+    for (const k of seedKeys) {
+      const p = await readPos(k);
+      expect(p, `seed node ${k} should have a position`).not.toBeNull();
+      cold.set(k, p!);
+    }
+
+    // Requirement B (spacing): the cold layout must not clump — every
+    // pair of seed nodes sits a comfortable distance apart. The pre-#483
+    // clumping bug left nodes < 1 unit apart; a generous floor cleanly
+    // distinguishes a real spread from a knot.
+    const SPACING_FLOOR = 10;
+    for (let i = 0; i < seedKeys.length; i++) {
+      for (let j = i + 1; j < seedKeys.length; j++) {
+        const a = cold.get(seedKeys[i])!;
+        const b = cold.get(seedKeys[j])!;
+        const dist = Math.hypot(a.x - b.x, a.y - b.y);
+        expect(
+          dist,
+          `${seedKeys[i]} and ${seedKeys[j]} are clumped (${dist.toFixed(2)} < ${SPACING_FLOOR})`,
+        ).toBeGreaterThanOrEqual(SPACING_FLOOR);
+      }
+    }
+
+    // Requirement A (no snap): pause the continuous layout BEFORE the
+    // click so the post-click reconcile builds the simulation but never
+    // ticks it. Every node that existed before the click must therefore
+    // hold its EXACT pre-click coordinates at t=0 (the first rendered
+    // frame) — whether it stays visible or gets hidden by the result
+    // filter — and only the brand-new node lands at fresh coordinates.
+    await pause(true);
+
     await page
       .getByRole("group")
       .getByText(/List view \(5 vertices/)
@@ -409,37 +456,167 @@ test.describe("/illuminate", () => {
       "6 vertices",
     );
 
-    const after = await readPositions();
-
-    // Tolerance: with the additive-relax path running only 5 FA2
-    // iterations from the prior equilibrium, surviving nodes must not
-    // drift by more than a couple of graphology units. The pre-#454
-    // behaviour (80 iterations) would routinely move them tens of
-    // units; this guard ensures we don't regress to that.
-    const TOLERANCE = 2.0;
-    for (let i = 0; i < sampleKeys.length; i++) {
-      const a = before[i];
-      const b = after[i];
-      expect(
-        a,
-        `expected position for ${sampleKeys[i]} before expansion`,
-      ).not.toBeNull();
-      expect(
-        b,
-        `expected position for ${sampleKeys[i]} after expansion`,
-      ).not.toBeNull();
-      if (!a || !b) continue;
-      const dx = Math.abs(b.x - a.x);
-      const dy = Math.abs(b.y - a.y);
-      expect(
-        dx,
-        `${sampleKeys[i]} drifted by Δx=${dx.toFixed(2)} (tolerance ${TOLERANCE})`,
-      ).toBeLessThanOrEqual(TOLERANCE);
-      expect(
-        dy,
-        `${sampleKeys[i]} drifted by Δy=${dy.toFixed(2)} (tolerance ${TOLERANCE})`,
-      ).toBeLessThanOrEqual(TOLERANCE);
+    // t=0: exact equality for every pre-existing node — no jump.
+    for (const k of seedKeys) {
+      const now = await readPos(k);
+      const was = cold.get(k)!;
+      expect(now, `node ${k} vanished after the click`).not.toBeNull();
+      expect(now!.x, `${k} x snapped at t=0`).toBe(was.x);
+      expect(now!.y, `${k} y snapped at t=0`).toBe(was.y);
     }
+    // The newcomer is seeded a position near its parent's neighbourhood.
+    const newcomer = await readPos("e2e:illum:leftleftleft");
+    expect(newcomer, "leftleftleft should be seeded a position").not.toBeNull();
+
+    // Gradual motion (no instant snap): the newcomer is seeded a couple
+    // of units from its parent, so the compressed spring eases the
+    // affected nodes toward equilibrium over many frames. A single tick
+    // must MOVE a relaxing node (the animation is live) yet must NOT
+    // carry it all the way to its final settled position (no
+    // teleport-to-final like the old synchronous solve). We compare the
+    // t=0, one-tick, and fully-settled positions to assert exactly that,
+    // which is robust to the spring's magnitude and the random seed.
+    const animatedKeys = [...seedKeys, "e2e:illum:leftleftleft"];
+    const atT0 = new Map<string, Pos>();
+    for (const k of animatedKeys) {
+      const p = await readPos(k);
+      if (p) atT0.set(k, p);
+    }
+    const ticked = await step(1);
+    expect(ticked, "stepLayout should advance exactly one tick").toBe(1);
+    const afterOneTick = new Map<string, Pos>();
+    for (const k of animatedKeys) {
+      const p = await readPos(k);
+      if (p) afterOneTick.set(k, p);
+    }
+    await settle();
+    const settled = new Map<string, Pos>();
+    for (const k of animatedKeys) {
+      const p = await readPos(k);
+      if (p) settled.set(k, p);
+    }
+
+    const MOVE_EPS = 5; // total journey that counts a node as "relaxing"
+    const SETTLE_EPS = 2; // still-this-far-from-final ⇒ not yet settled
+    let movers = 0;
+    for (const k of animatedKeys) {
+      const p0 = atT0.get(k);
+      const p1 = afterOneTick.get(k);
+      const pf = settled.get(k);
+      if (!p0 || !p1 || !pf) continue;
+      const journey = Math.hypot(pf.x - p0.x, pf.y - p0.y);
+      if (journey <= MOVE_EPS) continue; // (near-)static node — skip
+      movers += 1;
+      const firstStep = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+      const remaining = Math.hypot(p1.x - pf.x, p1.y - pf.y);
+      expect(firstStep, `${k} did not move on the first tick`).toBeGreaterThan(
+        0,
+      );
+      expect(
+        remaining,
+        `${k} snapped to its final position in a single tick (${remaining.toFixed(2)} ≤ ${SETTLE_EPS})`,
+      ).toBeGreaterThan(SETTLE_EPS);
+    }
+    expect(
+      movers,
+      "expected at least one node to ease toward equilibrium",
+    ).toBeGreaterThan(0);
+
+    // The layout is already at rest after settle(): the simulation must
+    // stop (no perpetual motion / battery drain), satisfying the "stop
+    // once alpha cools" acceptance criterion.
+    expect(await layoutRunning()).toBe(false);
+  });
+
+  test("Hides nodes and edges outside the latest result, retaining their positions (#483)", async ({
+    page,
+  }) => {
+    const seed = encodeURIComponent("e2e:illum:hub");
+    await page.goto(`/illuminate?seed=${seed}`);
+    await expect(page.getByTestId("illuminate-toolbar")).toBeVisible();
+    const counter = page.getByTestId("illuminate-counter");
+    await expect(counter).toContainText("5 vertices");
+
+    type Pos = { x: number; y: number };
+    type Bridge = {
+      getNodePosition: (k: string) => Pos | null;
+      isNodeHidden: (k: string) => boolean;
+      isEdgeHidden: (k: string) => boolean;
+    };
+    await page.waitForFunction(() => {
+      const win = window as Window & { __illuminateCanvas?: Bridge };
+      return !!win.__illuminateCanvas?.isEdgeHidden;
+    });
+
+    const nodeHidden = (k: string): Promise<boolean> =>
+      page.evaluate((key) => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        return win.__illuminateCanvas?.isNodeHidden(key) ?? false;
+      }, k);
+    const edgeHidden = (k: string): Promise<boolean> =>
+      page.evaluate((key) => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        return win.__illuminateCanvas?.isEdgeHidden(key) ?? false;
+      }, k);
+    const readPos = (k: string): Promise<Pos | null> =>
+      page.evaluate((key) => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        return win.__illuminateCanvas?.getNodePosition(key) ?? null;
+      }, k);
+
+    // After the seed load (the only expansion so far) its result IS the
+    // whole frame, so nothing is hidden — all five seed nodes are shown.
+    for (const k of [
+      "e2e:illum:hub",
+      "e2e:illum:left",
+      "e2e:illum:right",
+      "e2e:illum:leftleft",
+      "e2e:illum:rightright",
+    ]) {
+      expect(await nodeHidden(k), `${k} should be visible after seed`).toBe(
+        false,
+      );
+    }
+
+    // Remember the far-right leaf's coordinates; it must be retained
+    // (hidden, not deleted) once it falls outside the next result.
+    const rightRightBefore = await readPos("e2e:illum:rightright");
+    expect(rightRightBefore).not.toBeNull();
+
+    // Expand from `leftleft`. The latest result is now the leftleft
+    // neighbourhood, so the right-hand branch — four hops away and not in
+    // that result — must be hidden, while the freshly illuminated
+    // leftleftleft (and its origin) are shown.
+    await page
+      .getByRole("group")
+      .getByText(/List view \(5 vertices/)
+      .click();
+    const table = page.getByTestId("illuminate-table");
+    await table
+      .getByRole("button", { name: "Expand from e2e:illum:leftleft" })
+      .click();
+    await expect(counter).toContainText("6 vertices");
+
+    // In the latest result → visible.
+    expect(await nodeHidden("e2e:illum:leftleftleft")).toBe(false);
+    expect(await nodeHidden("e2e:illum:leftleft")).toBe(false);
+    // Outside the latest result → hidden.
+    expect(await nodeHidden("e2e:illum:rightright")).toBe(true);
+
+    // ...yet retained at its remembered coordinates so it reappears in
+    // place if a later result includes it.
+    const rightRightAfter = await readPos("e2e:illum:rightright");
+    expect(rightRightAfter).not.toBeNull();
+    expect(rightRightAfter!.x).toBe(rightRightBefore!.x);
+    expect(rightRightAfter!.y).toBe(rightRightBefore!.y);
+
+    // Edge filter: the edge inside the latest result is shown; an edge on
+    // the hidden right branch is hidden. Edge ids are `${tail}→${head}`
+    // (see edgeIdOf in app/lib/client/usecase/illuminate/state.ts).
+    expect(await edgeHidden("e2e:illum:leftleft→e2e:illum:leftleftleft")).toBe(
+      false,
+    );
+    expect(await edgeHidden("e2e:illum:right→e2e:illum:rightright")).toBe(true);
   });
 
   test("Drag-to-pin: drag moves the node, releases pinned, and survives a subsequent expansion (#455)", async ({
@@ -545,10 +722,10 @@ test.describe("/illuminate", () => {
       "1 expansion",
     );
 
-    // Trigger an additive expansion. Despite the per-#454 5-iter FA2
-    // relax, the pinned `left` node must stay exactly where the user
-    // dropped it — graphology FA2 skips position updates for nodes with
-    // `fixed: true`.
+    // Trigger an additive expansion. The continuous d3-force layout
+    // (#483) pins `left` via the simulation's fx/fy, and the write-back
+    // never overwrites a node flagged `fixed: true`, so the dropped node
+    // must stay exactly where the user left it.
     await page
       .getByRole("group")
       .getByText(/List view \(5 vertices/)
@@ -563,8 +740,8 @@ test.describe("/illuminate", () => {
 
     const afterExpansion = await readGraphPos(targetKey);
     expect(afterExpansion).not.toBeNull();
-    // FA2 with `fixed: true` produces zero displacement — allow only
-    // floating-point noise.
+    // A pinned node (fx/fy held) sees zero displacement from the force
+    // simulation — allow only floating-point noise.
     const drift = Math.hypot(
       afterExpansion!.x - afterDrag!.x,
       afterExpansion!.y - afterDrag!.y,
@@ -1065,10 +1242,22 @@ test.describe("/illuminate", () => {
       cameraState: () => Camera;
       getNodeDisplayPosition: (k: string) => Pos | null;
       isNodeHighlighted: (k: string) => boolean;
+      settleLayout: (maxTicks?: number) => number;
     };
     await page.waitForFunction(() => {
       const win = window as Window & { __illuminateCanvas?: Bridge };
       return !!win.__illuminateCanvas?.cameraState;
+    });
+
+    // #483: the additive expansion kicks off a continuous d3-force
+    // layout animation. Settle it synchronously so `leftleft` stops
+    // moving before we pan — otherwise the camera animates toward a
+    // position the still-easing node has already left and never lands
+    // within tolerance. In real use the layout cools within ~1s; the
+    // test just races it.
+    await page.evaluate(() => {
+      const win = window as Window & { __illuminateCanvas?: Bridge };
+      win.__illuminateCanvas?.settleLayout();
     });
 
     const readCamera = (): Promise<Camera> =>
