@@ -4,9 +4,11 @@ import { runExpansion } from "./handlers";
 import { illuminateReducer, type IlluminateAction } from "./reducer";
 import {
   selectCanClear,
+  selectExpansionChips,
   selectExpansionCount,
   selectGraphView,
   selectIsBusy,
+  type ExpansionChip,
   type GraphView,
 } from "./selectors";
 import {
@@ -21,6 +23,8 @@ export interface UseIlluminateResult {
   isBusy: boolean;
   canClear: boolean;
   expansionCount: number;
+  /** Per-expansion lineage chips for the toolbar strip (#456). */
+  expansionChips: ExpansionChip[];
   /** Fire an Illuminate from `origin` and merge the response into the accumulator. */
   expand: (origin: string) => void;
   /** Empty accumulator + expansions; preserves `initialSeed` so the seed expansion re-fires. */
@@ -156,6 +160,7 @@ export function useIlluminate(urlSeed: string): UseIlluminateResult {
   const isBusy = selectIsBusy(state);
   const canClear = selectCanClear(state);
   const expansionCount = selectExpansionCount(state);
+  const expansionChips = useMemo(() => selectExpansionChips(state), [state]);
 
   return useMemo<UseIlluminateResult>(
     () => ({
@@ -164,6 +169,7 @@ export function useIlluminate(urlSeed: string): UseIlluminateResult {
       isBusy,
       canClear,
       expansionCount,
+      expansionChips,
       expand,
       clear,
       setControls,
@@ -175,6 +181,7 @@ export function useIlluminate(urlSeed: string): UseIlluminateResult {
       isBusy,
       canClear,
       expansionCount,
+      expansionChips,
       expand,
       clear,
       setControls,

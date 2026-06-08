@@ -3,6 +3,7 @@ import type { Edge, Vertex } from "~/lib/client/infrastructure/api/illuminate";
 import { illuminateReducer } from "./reducer";
 import {
   selectCanClear,
+  selectExpansionChips,
   selectExpansionCount,
   selectGraphView,
   selectIsBusy,
@@ -537,5 +538,66 @@ describe("selectIsBusy", () => {
     expect(selectIsBusy({ ...INITIAL_ILLUMINATE_STATE, pendingCount: 1 })).toBe(
       true,
     );
+  });
+});
+
+describe("selectExpansionChips (#456)", () => {
+  it("is empty when no expansion has happened yet", () => {
+    expect(selectExpansionChips(INITIAL_ILLUMINATE_STATE)).toEqual([]);
+  });
+
+  it("emits one chip per expansion in chronological order, with the seed flag on chip 0", () => {
+    let state = stateWithInitialSeed("Distributed_computing");
+    state = applyExpansion(state, {
+      expansionId: 1,
+      origin: "Distributed_computing",
+      vertices: [v("Distributed_computing"), v("CAP_theorem")],
+      edges: [e("Distributed_computing", "CAP_theorem")],
+    });
+    state = applyExpansion(state, {
+      expansionId: 2,
+      origin: "CAP_theorem",
+      vertices: [v("CAP_theorem"), v("Eric_Brewer_(scientist)")],
+      edges: [e("CAP_theorem", "Eric_Brewer_(scientist)")],
+    });
+    state = applyExpansion(state, {
+      expansionId: 3,
+      origin: "Eric_Brewer_(scientist)",
+      vertices: [v("Eric_Brewer_(scientist)"), v("Larry_Page")],
+      edges: [e("Eric_Brewer_(scientist)", "Larry_Page")],
+    });
+
+    const chips = selectExpansionChips(state);
+    expect(chips).toHaveLength(3);
+    expect(chips.map((c) => c.originKey)).toEqual([
+      "Distributed_computing",
+      "CAP_theorem",
+      "Eric_Brewer_(scientist)",
+    ]);
+    expect(chips[0]).toMatchObject({ isSeed: true, index: 0 });
+    expect(chips[1]).toMatchObject({ isSeed: false, index: 1 });
+    expect(chips[2]).toMatchObject({ isSeed: false, index: 2 });
+  });
+
+  it("preserves duplicate origin keys when the user re-clicks the same vertex", () => {
+    let state = stateWithInitialSeed("a");
+    state = applyExpansion(state, {
+      expansionId: 1,
+      origin: "a",
+      vertices: [v("a")],
+      edges: [],
+    });
+    state = applyExpansion(state, {
+      expansionId: 2,
+      origin: "a",
+      vertices: [v("a")],
+      edges: [],
+    });
+    const chips = selectExpansionChips(state);
+    expect(chips.map((c) => c.originKey)).toEqual(["a", "a"]);
+    // Both chips keep their distinct React keys (Expansion.id).
+    expect(new Set(chips.map((c) => c.id)).size).toBe(2);
+    expect(chips[0]?.isSeed).toBe(true);
+    expect(chips[1]?.isSeed).toBe(false);
   });
 });
