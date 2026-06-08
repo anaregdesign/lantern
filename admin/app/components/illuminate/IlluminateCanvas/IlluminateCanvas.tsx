@@ -10,6 +10,7 @@ import {
 import Graph from "graphology";
 import forceAtlas2 from "graphology-layout-forceatlas2";
 import Sigma from "sigma";
+import { Info16Regular } from "@fluentui/react-icons";
 import type {
   GraphEdge,
   GraphNode,
@@ -45,6 +46,14 @@ export interface IlluminateCanvasProps {
    */
   latestExpansionOrigin: string | null;
   onNodeClick: (key: string) => void;
+  /**
+   * Fired when the user activates a node's info icon (#461). Distinct
+   * from `onNodeClick` (which drives the additive expansion on a node
+   * body click): inspecting opens the read-only detail Drawer and must
+   * NOT expand or refetch. Optional so the canvas stays reusable from
+   * contexts that don't surface a detail panel.
+   */
+  onNodeInspect?: (key: string) => void;
   /** When true, the canvas dims to communicate a stale frame. */
   isBusy: boolean;
   /**
@@ -85,6 +94,35 @@ interface HoverState {
 }
 
 /**
+ * Per-node info-icon position (#461). Viewport-pixel coordinates of the
+ * icon button that, when activated, opens the read-only detail Drawer.
+ */
+interface InfoIconState {
+  key: string;
+  x: number;
+  y: number;
+}
+
+/**
+ * #461 info-icon tuning.
+ *
+ * - `INFO_ICON_HIDE_DELAY_MS`: grace period after the cursor leaves a
+ *   node before the icon hides, so the user can travel from the node to
+ *   the icon without it disappearing (the standard hover-bridge
+ *   pattern).
+ * - `INFO_ICON_DRAG_TOLERANCE_PX`: pointer travel (viewport px) at or
+ *   below which a press → release on the icon counts as a click; beyond
+ *   it the gesture is treated as a drag and the inspect is suppressed so
+ *   #455 drag-to-pin keeps precedence.
+ * - `INFO_ICON_OFFSET_*`: where the icon sits relative to the node's
+ *   viewport centre.
+ */
+const INFO_ICON_HIDE_DELAY_MS = 160;
+const INFO_ICON_DRAG_TOLERANCE_PX = 4;
+const INFO_ICON_OFFSET_X = 10;
+const INFO_ICON_OFFSET_Y = 18;
+
+/**
  * Hosts a `graphology` graph and a `sigma` renderer. The component owns
  * the lifecycle of the renderer (mount on first paint, destroy on unmount)
  * and reconciles the graph in-place when the view model changes — full
@@ -96,6 +134,7 @@ export function IlluminateCanvas({
   edges,
   latestExpansionOrigin,
   onNodeClick,
+  onNodeInspect,
   isBusy,
   ref,
 }: IlluminateCanvasProps) {
@@ -149,6 +188,26 @@ export function IlluminateCanvas({
    */
   const tickCountRef = useRef<number>(0);
   const [hover, setHover] = useState<HoverState | null>(null);
+  /**
+   * #461 per-node info icon. `null` when no node is hovered. Held as
+   * React state (not a ref) because the icon is rendered declaratively
+   * in JSX; a ref mirror ({@link infoIconRef}) lets the mount-effect
+   * closure (test bridge) read it without re-installing handlers.
+   */
+  const [infoIcon, setInfoIcon] = useState<InfoIconState | null>(null);
+  const infoIconRef = useRef<InfoIconState | null>(null);
+  useEffect(() => {
+    infoIconRef.current = infoIcon;
+  }, [infoIcon]);
+  /**
+   * Viewport coords of the pointer-down that began the current info-icon
+   * press (#461). Compared against the click position so a press that
+   * travelled more than {@link INFO_ICON_DRAG_TOLERANCE_PX} is treated
+   * as a drag and suppresses the inspect — keeping #455 drag-to-pin the
+   * dominant gesture. `null` for keyboard activation, which always
+   * inspects.
+   */
+  const infoIconPointerDownRef = useRef<{ x: number; y: number } | null>(null);
   const [palette, setPalette] = useState<SigmaPalette>(FALLBACK_PALETTE);
   // The mount effect runs ONCE, so any palette swatch read inside the
   // hover-focus reducer (#458) needs a ref so it tracks the latest
@@ -179,6 +238,22 @@ export function IlluminateCanvas({
   useEffect(() => {
     onNodeClickRef.current = onNodeClick;
   }, [onNodeClick]);
+
+  // #461: stable ref to the inspect callback, read at event time inside
+  // the once-mounted sigma effect (and by the info-icon click handler)
+  // so we never rebind sigma listeners when the parent re-renders.
+  const onNodeInspectRef = useRef(onNodeInspect);
+  useEffect(() => {
+    onNodeInspectRef.current = onNodeInspect;
+  }, [onNodeInspect]);
+
+  // #461 hover-bridge plumbing. The pending-hide timer lives in the
+  // mount-effect closure (it owns the sigma handlers), but the
+  // JSX-rendered icon needs to cancel/re-arm that timer from its own
+  // mouse events. These refs publish the closure's cancel/schedule
+  // helpers to the render body.
+  const cancelInfoIconHideRef = useRef<(() => void) | null>(null);
+  const scheduleInfoIconHideRef = useRef<(() => void) | null>(null);
 
   // #456 imperative handle. Reads from `graphRef`/`sigmaRef` at call
   // time so the closure stays valid across re-renders without any
@@ -404,6 +479,54 @@ export function IlluminateCanvas({
     renderer.setSetting("zIndex", true);
     // === end #458 ===========================================================
 
+    // === #461 per-node info icon ===========================================
+    // On hover, surface a small info button anchored near the node's
+    // viewport position. Activating it opens the read-only detail Drawer
+    // (the parent's `onNodeInspect`) WITHOUT expanding — node-body
+    // clicks keep their #466 additive-expansion meaning. A short hide
+    // delay lets the cursor travel from the node onto the icon without
+    // it vanishing; the icon's own `onMouseEnter` cancels the pending
+    // hide (the standard hover-bridge pattern).
+    let infoIconHideTimer: ReturnType<typeof setTimeout> | null = null;
+    const computeIconViewport = (
+      key: string,
+    ): { x: number; y: number } | null => {
+      const display = renderer.getNodeDisplayData(key);
+      if (!display) return null;
+      // `getNodeDisplayData` is in sigma's framed-graph space; convert
+      // to viewport pixels so the DOM overlay lands on the node.
+      const vp = renderer.framedGraphToViewport({
+        x: display.x,
+        y: display.y,
+      });
+      return { x: vp.x + INFO_ICON_OFFSET_X, y: vp.y - INFO_ICON_OFFSET_Y };
+    };
+    const showInfoIconFor = (key: string): boolean => {
+      if (infoIconHideTimer !== null) {
+        clearTimeout(infoIconHideTimer);
+        infoIconHideTimer = null;
+      }
+      const pos = computeIconViewport(key);
+      if (!pos) return false;
+      setInfoIcon({ key, x: pos.x, y: pos.y });
+      return true;
+    };
+    const scheduleInfoIconHide = () => {
+      if (infoIconHideTimer !== null) clearTimeout(infoIconHideTimer);
+      infoIconHideTimer = setTimeout(() => {
+        infoIconHideTimer = null;
+        setInfoIcon(null);
+      }, INFO_ICON_HIDE_DELAY_MS);
+    };
+    cancelInfoIconHideRef.current = () => {
+      if (infoIconHideTimer !== null) {
+        clearTimeout(infoIconHideTimer);
+        infoIconHideTimer = null;
+      }
+    };
+    scheduleInfoIconHideRef.current = scheduleInfoIconHide;
+    // === end #461 ===========================================================
+
     const showNodeHover = (event: {
       node: string;
       event: { x: number; y: number };
@@ -421,6 +544,8 @@ export function IlluminateCanvas({
       });
       // #458: trigger hover focus mode for the node under the cursor.
       setHoveredNode(event.node);
+      // #461: surface the per-node info icon near the hovered node.
+      showInfoIconFor(event.node);
     };
     const showEdgeHover = (event: {
       edge: string;
@@ -448,6 +573,9 @@ export function IlluminateCanvas({
       setHover(null);
       // #458: leaving any node/edge restores the full graph.
       setHoveredNode(null);
+      // #461: arm the delayed hide so the cursor can bridge onto the
+      // icon before it disappears.
+      scheduleInfoIconHide();
     };
     renderer.on("enterNode", showNodeHover);
     renderer.on("leaveNode", clearHoverNode);
@@ -615,6 +743,24 @@ export function IlluminateCanvas({
          * e2e confirm the pulse fires (and later clears).
          */
         isNodeHighlighted: (key: string) => boolean;
+        /**
+         * #461 test bridge: open the detail Drawer for a node exactly as
+         * the info-icon click would, bypassing the WebGL hover + DOM
+         * click headless chromium populates only intermittently. Returns
+         * `false` when the key isn't in the live graph.
+         */
+        inspectNode: (key: string) => boolean;
+        /**
+         * #461 test bridge: surface the per-node info icon for a node as
+         * a real `enterNode` hover would. Returns `false` when the key
+         * isn't in the live graph or has no display data yet.
+         */
+        showInfoIcon: (key: string) => boolean;
+        /**
+         * #461 test bridge: the key of the node whose info icon is
+         * currently visible, or `null` when none is shown.
+         */
+        infoIconNode: () => string | null;
       };
     };
     win.__illuminateCanvas = {
@@ -715,6 +861,16 @@ export function IlluminateCanvas({
         if (!graph.hasNode(key)) return false;
         return graph.getNodeAttribute(key, "highlighted") === true;
       },
+      inspectNode: (key: string) => {
+        if (!graph.hasNode(key)) return false;
+        onNodeInspectRef.current?.(key);
+        return true;
+      },
+      showInfoIcon: (key: string) => {
+        if (!graph.hasNode(key)) return false;
+        return showInfoIconFor(key);
+      },
+      infoIconNode: () => infoIconRef.current?.key ?? null,
     };
 
     return () => {
@@ -723,6 +879,12 @@ export function IlluminateCanvas({
       sigmaRef.current = null;
       graphRef.current = null;
       previousNodeIdsRef.current = new Set();
+      if (infoIconHideTimer !== null) {
+        clearTimeout(infoIconHideTimer);
+        infoIconHideTimer = null;
+      }
+      cancelInfoIconHideRef.current = null;
+      scheduleInfoIconHideRef.current = null;
       delete win.__illuminateCanvas;
     };
   }, []);
@@ -1081,6 +1243,41 @@ export function IlluminateCanvas({
             <div className={styles.tooltipDetail}>{hover.detail}</div>
           ) : null}
         </div>
+      ) : null}
+      {infoIcon ? (
+        <button
+          type="button"
+          className={styles.infoIcon}
+          data-testid="illuminate-info-icon"
+          aria-label={`Inspect ${infoIcon.key}`}
+          ref={(el) => {
+            if (!el) return;
+            el.style.setProperty("--icon-x", `${infoIcon.x}px`);
+            el.style.setProperty("--icon-y", `${infoIcon.y}px`);
+          }}
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            infoIconPointerDownRef.current = { x: e.clientX, y: e.clientY };
+          }}
+          onClick={(e) => {
+            e.stopPropagation();
+            const down = infoIconPointerDownRef.current;
+            infoIconPointerDownRef.current = null;
+            // A pointer press that travelled too far is a drag, not a
+            // click — suppress so #455 drag-to-pin wins. `down === null`
+            // means keyboard activation (Enter/Space), which inspects.
+            if (down) {
+              const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
+              if (moved > INFO_ICON_DRAG_TOLERANCE_PX) return;
+            }
+            onNodeInspectRef.current?.(infoIcon.key);
+            setInfoIcon(null);
+          }}
+          onMouseEnter={() => cancelInfoIconHideRef.current?.()}
+          onMouseLeave={() => scheduleInfoIconHideRef.current?.()}
+        >
+          <Info16Regular />
+        </button>
       ) : null}
     </div>
   );
