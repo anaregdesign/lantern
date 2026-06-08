@@ -2,13 +2,16 @@ import { describe, expect, it } from "bun:test";
 import type { Edge, Vertex } from "~/lib/client/infrastructure/api/illuminate";
 import { illuminateReducer } from "./reducer";
 import {
+  HOP_FAR_THRESHOLD,
   filterInboundEdges,
   selectCanClear,
   selectExpansionChips,
   selectExpansionCount,
   selectGraphView,
+  selectHopBucketCounts,
   selectInspectedDetail,
   selectIsBusy,
+  type GraphNode,
 } from "./selectors";
 import {
   ACCUMULATOR_SOFT_CAP,
@@ -727,5 +730,94 @@ describe("filterInboundEdges", () => {
 
   it("returns an empty array for an empty key", () => {
     expect(filterInboundEdges([e("a", "")], "")).toEqual([]);
+  });
+});
+
+describe("selectHopBucketCounts", () => {
+  function node(id: string, hopDistance: number): GraphNode {
+    return {
+      id,
+      label: id,
+      vertex: v(id),
+      isInitialSeed: false,
+      isExpansionOrigin: false,
+      importance: 0.5,
+      firstSeenExpansion: 0,
+      hopDistance,
+    };
+  }
+
+  it("returns all five tiers in palette-ramp order, zeros included", () => {
+    const buckets = selectHopBucketCounts([], new Set());
+    expect(buckets).toEqual([
+      { key: "origin", count: 0 },
+      { key: "1hop", count: 0 },
+      { key: "2hop", count: 0 },
+      { key: "far", count: 0 },
+      { key: "unreachable", count: 0 },
+    ]);
+  });
+
+  it("buckets each finite hop distance into its own tier", () => {
+    const buckets = selectHopBucketCounts(
+      [node("o", 0), node("a", 1), node("b", 1), node("c", 2)],
+      new Set(),
+    );
+    expect(buckets).toEqual([
+      { key: "origin", count: 1 },
+      { key: "1hop", count: 2 },
+      { key: "2hop", count: 1 },
+      { key: "far", count: 0 },
+      { key: "unreachable", count: 0 },
+    ]);
+  });
+
+  it("collapses every distance >= HOP_FAR_THRESHOLD into the far tier", () => {
+    const buckets = selectHopBucketCounts(
+      [node("a", HOP_FAR_THRESHOLD), node("b", 4), node("c", 9)],
+      new Set(),
+    );
+    expect(buckets.find((b) => b.key === "far")?.count).toBe(3);
+  });
+
+  it("treats non-finite and negative distances as unreachable", () => {
+    const buckets = selectHopBucketCounts(
+      [
+        node("inf", Number.POSITIVE_INFINITY),
+        node("nan", Number.NaN),
+        node("neg", -1),
+      ],
+      new Set(),
+    );
+    expect(buckets.find((b) => b.key === "unreachable")?.count).toBe(3);
+  });
+
+  it("counts every node when latestResultVertexKeys is empty", () => {
+    const buckets = selectHopBucketCounts(
+      [node("a", 0), node("b", 1)],
+      new Set(),
+    );
+    const total = buckets.reduce((sum, b) => sum + b.count, 0);
+    expect(total).toBe(2);
+  });
+
+  it("counts only nodes in the latest result when one is present (#491)", () => {
+    // `dropped` is past the membership filter and must not be tallied,
+    // mirroring the canvas dropping it from the rendered set.
+    const buckets = selectHopBucketCounts(
+      [node("kept", 0), node("dropped", 1)],
+      new Set(["kept"]),
+    );
+    expect(buckets).toEqual([
+      { key: "origin", count: 1 },
+      { key: "1hop", count: 0 },
+      { key: "2hop", count: 0 },
+      { key: "far", count: 0 },
+      { key: "unreachable", count: 0 },
+    ]);
+  });
+
+  it("pins HOP_FAR_THRESHOLD at the #460 spec boundary of 3", () => {
+    expect(HOP_FAR_THRESHOLD).toBe(3);
   });
 });

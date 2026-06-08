@@ -12,9 +12,11 @@ import type { Simulation } from "d3-force";
 import Sigma from "sigma";
 import { EdgeArrowProgram } from "sigma/rendering";
 import { Info16Regular } from "@fluentui/react-icons";
-import type {
-  GraphEdge,
-  GraphNode,
+import {
+  selectHopBucketCounts,
+  type GraphEdge,
+  type GraphNode,
+  type HopBucketKey,
 } from "~/lib/client/usecase/illuminate/selectors";
 import { usePreferredTheme } from "~/lib/client/usecase/theme/use-preferred-theme";
 import {
@@ -1529,65 +1531,26 @@ export function IlluminateCanvas({
   // legend stays compact in the common case (most graphs have no
   // unreachables, and many won't have anything past 2 hops).
   const legendBuckets = useMemo(() => {
-    // #491: the canvas renders ONLY the latest expansion result, so the
-    // legend must count only those nodes — otherwise it would tally
-    // vertices that have been dropped from the canvas. Mirror the
-    // reconcile's membership predicate: when a result is present the
-    // rendered set IS that result; otherwise (cold/reseed/Clear) every
-    // accumulator node renders.
-    const hasResult = latestResultVertexKeys.size > 0;
-    let origin = 0;
-    let oneHop = 0;
-    let twoHop = 0;
-    let far = 0;
-    let unreachable = 0;
-    for (const node of nodes) {
-      if (hasResult && !latestResultVertexKeys.has(node.id)) continue;
-      const h = node.hopDistance;
-      if (!Number.isFinite(h) || h < 0) {
-        unreachable += 1;
-      } else if (h === 0) {
-        origin += 1;
-      } else if (h === 1) {
-        oneHop += 1;
-      } else if (h === 2) {
-        twoHop += 1;
-      } else if (h >= HOP_FAR_THRESHOLD) {
-        far += 1;
-      }
-    }
-    return [
+    // Counting — including the #491 "render only the latest expansion
+    // result" membership rule — now lives in the pure
+    // `selectHopBucketCounts` selector (it desynced from the rendered set
+    // when it was inline here). This memo only attaches presentation: a
+    // theme-derived swatch colour and the human hop label per tier, then
+    // hides empty tiers so the legend stays compact.
+    const presentation: Record<HopBucketKey, { label: string; color: string }> =
       {
-        key: "origin" as const,
-        label: describeHop(0),
-        count: origin,
-        color: palette.hop0,
-      },
-      {
-        key: "1hop" as const,
-        label: describeHop(1),
-        count: oneHop,
-        color: palette.hop1,
-      },
-      {
-        key: "2hop" as const,
-        label: describeHop(2),
-        count: twoHop,
-        color: palette.hop2,
-      },
-      {
-        key: "far" as const,
-        label: describeHop(HOP_FAR_THRESHOLD),
-        count: far,
-        color: palette.hopFar,
-      },
-      {
-        key: "unreachable" as const,
-        label: describeHop(Number.POSITIVE_INFINITY),
-        count: unreachable,
-        color: palette.hopUnreachable,
-      },
-    ].filter((b) => b.count > 0);
+        origin: { label: describeHop(0), color: palette.hop0 },
+        "1hop": { label: describeHop(1), color: palette.hop1 },
+        "2hop": { label: describeHop(2), color: palette.hop2 },
+        far: { label: describeHop(HOP_FAR_THRESHOLD), color: palette.hopFar },
+        unreachable: {
+          label: describeHop(Number.POSITIVE_INFINITY),
+          color: palette.hopUnreachable,
+        },
+      };
+    return selectHopBucketCounts(nodes, latestResultVertexKeys)
+      .filter((b) => b.count > 0)
+      .map((b) => ({ ...b, ...presentation[b.key] }));
   }, [nodes, palette, latestResultVertexKeys]);
 
   return (

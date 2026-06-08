@@ -179,6 +179,86 @@ function appendAdjacency(
 }
 
 /**
+ * The hop distance at which the per-step ramp collapses into the single
+ * desaturated "far" tier (#460): every vertex `>= HOP_FAR_THRESHOLD`
+ * hops from the nearest expansion origin shares one swatch, because
+ * distinguishing 3-hop from 5-hop adds visual noise without
+ * informational value when the canvas already encodes TTL alpha and
+ * hover focus on the same pixel.
+ *
+ * Canonical home is the use-case layer so the legend read-model
+ * ({@link selectHopBucketCounts}) and the canvas palette
+ * (`IlluminateCanvas/hop-palette.ts`, which re-exports this constant)
+ * agree on the boundary without duplicating the literal across the
+ * component/use-case line.
+ */
+export const HOP_FAR_THRESHOLD = 3;
+
+/**
+ * Hop-distance legend tiers, in palette-ramp order (#460):
+ * `origin` (0) → `1hop` → `2hop` → `far` (>= {@link HOP_FAR_THRESHOLD})
+ * → `unreachable` (∞ / disconnected from every origin).
+ */
+export type HopBucketKey = "origin" | "1hop" | "2hop" | "far" | "unreachable";
+
+/** One legend tier and how many rendered nodes fall into it. */
+export interface HopBucketCount {
+  key: HopBucketKey;
+  count: number;
+}
+
+/**
+ * Counts the rendered nodes per hop-distance tier for the legend (#460).
+ *
+ * The canvas renders ONLY the latest expansion result (#491), so the
+ * legend must tally exactly that set — otherwise it counts vertices that
+ * have already been dropped from the canvas. This mirrors the reconcile's
+ * membership predicate: when a latest result is present the rendered set
+ * IS that result; otherwise (cold mount, reseed, or Clear) every
+ * accumulator node renders. An empty `latestResultVertexKeys` therefore
+ * counts every node in `nodes`.
+ *
+ * Returns all five tiers in palette-ramp order with their counts (zeros
+ * included); presentation decides whether to hide empty tiers and which
+ * swatch/label to attach. Kept pure here — the previous incarnation lived
+ * inline in the component `useMemo`, the exact selector-in-component seam
+ * that desynced the legend from the rendered set in #491.
+ */
+export function selectHopBucketCounts(
+  nodes: GraphNode[],
+  latestResultVertexKeys: Set<string>,
+): HopBucketCount[] {
+  const hasResult = latestResultVertexKeys.size > 0;
+  let origin = 0;
+  let oneHop = 0;
+  let twoHop = 0;
+  let far = 0;
+  let unreachable = 0;
+  for (const node of nodes) {
+    if (hasResult && !latestResultVertexKeys.has(node.id)) continue;
+    const h = node.hopDistance;
+    if (!Number.isFinite(h) || h < 0) {
+      unreachable += 1;
+    } else if (h === 0) {
+      origin += 1;
+    } else if (h === 1) {
+      oneHop += 1;
+    } else if (h === 2) {
+      twoHop += 1;
+    } else if (h >= HOP_FAR_THRESHOLD) {
+      far += 1;
+    }
+  }
+  return [
+    { key: "origin", count: origin },
+    { key: "1hop", count: oneHop },
+    { key: "2hop", count: twoHop },
+    { key: "far", count: far },
+    { key: "unreachable", count: unreachable },
+  ];
+}
+
+/**
  * Builds the view model the canvas renders from the accumulator. Pure;
  * no React, no DOM, no graphology — those live in the component layer
  * so this stays trivial to unit-test.
