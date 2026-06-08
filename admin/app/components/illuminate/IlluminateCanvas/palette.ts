@@ -26,6 +26,16 @@ export interface SigmaPalette {
   baseNode: string;
   /** Edge color. */
   edge: string;
+  /**
+   * Dimmed node fill applied by the hover-focus reducer (#458) to
+   * every node outside the focused subset. Uses 8-char hex so sigma's
+   * default node program renders it at ~15% alpha (`0x26 / 0xff ≈
+   * 0.15`), which is enough for the focused subset to pop without
+   * making the surrounding context vanish.
+   */
+  dimNode: string;
+  /** Dimmed edge color paired with {@link dimNode}; same alpha. */
+  dimEdge: string;
   /** Label color resolved from `--colorNeutralForeground1`. */
   labelText: string;
   /** Label font stack resolved from `--fontFamilyBase`. */
@@ -37,6 +47,11 @@ export const FALLBACK_PALETTE: SigmaPalette = {
   origin: "#5c2d91",
   baseNode: "#3f3f46",
   edge: "#bdbdbd",
+  // Same hue as baseNode/edge but at ~15% alpha so the unfocused
+  // subset still hints at the surrounding structure without competing
+  // visually with the focused subset.
+  dimNode: "#3f3f4626",
+  dimEdge: "#bdbdbd26",
   labelText: "#242424",
   labelFont:
     'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
@@ -70,6 +85,12 @@ export function resolvePaletteFromTokens(reader: CssTokenReader): SigmaPalette {
     origin: FALLBACK_PALETTE.origin,
     baseNode: FALLBACK_PALETTE.baseNode,
     edge: readVar("--colorNeutralStroke2", FALLBACK_PALETTE.edge),
+    // Dim swatches are fixed literals — they need a consistent visual
+    // weight across light/dark, which Fluent's neutral stroke ramps
+    // don't guarantee at this alpha. Keep them code-side so the
+    // focused-subset contrast story doesn't drift with token churn.
+    dimNode: FALLBACK_PALETTE.dimNode,
+    dimEdge: FALLBACK_PALETTE.dimEdge,
     labelText: readVar("--colorNeutralForeground1", FALLBACK_PALETTE.labelText),
     labelFont: readVar("--fontFamilyBase", FALLBACK_PALETTE.labelFont),
   };

@@ -68,6 +68,14 @@ export function IlluminateCanvas({
   const previousNodeIdsRef = useRef<Set<string>>(new Set());
   const [hover, setHover] = useState<HoverState | null>(null);
   const [palette, setPalette] = useState<SigmaPalette>(FALLBACK_PALETTE);
+  // The mount effect runs ONCE, so any palette swatch read inside the
+  // hover-focus reducer (#458) needs a ref so it tracks the latest
+  // value after a theme flip. Keeping the ref in sync via a separate
+  // useEffect avoids reinstalling the reducer on every palette change.
+  const paletteRef = useRef(palette);
+  useEffect(() => {
+    paletteRef.current = palette;
+  }, [palette]);
   const theme = usePreferredTheme();
 
   // Resolve theme-aware palette from FluentProvider CSS variables (#453).
@@ -118,6 +126,73 @@ export function IlluminateCanvas({
     renderer.on("clickNode", (event) => {
       onNodeClickRef.current(event.node);
     });
+
+    // === #458 hover focus mode ==============================================
+    // On hover, dim every node and edge that isn't incident to the
+    // hovered vertex so the local structure pops. Idiomatic for sigma:
+    // install a `nodeReducer` / `edgeReducer` that swaps the rendered
+    // colour to a low-alpha swatch and hides the label. The hovered
+    // node id lives in closure-local state (NOT React state) so
+    // changing it doesn't rerender the parent; we just bump sigma's
+    // refresh tick to re-evaluate the reducers.
+    //
+    // Composition note: future siblings #459 (TTL halo) and #460 (min-
+    // hop coloring) will wrap these reducers. The locked composition
+    // order is hop hue (#460) \u2192 TTL alpha (#459) \u2192 hover dim (#458)
+    // so that hover always wins as the topmost visual filter. Keep the
+    // body of these reducers small and pure so wrapping stays trivial.
+    let hoveredNodeId: string | null = null;
+    let focusSet: Set<string> | null = null;
+    /**
+     * Compute the focus set for a hovered node: `{N} \u222a neighbors(N)`.
+     * Cached so the reducer doesn't re-scan adjacency every frame; the
+     * cache is rebuilt only when the hovered node id changes.
+     */
+    const rebuildFocusSet = (key: string | null): Set<string> | null => {
+      if (key === null) return null;
+      if (!graph.hasNode(key)) return null;
+      const s = new Set<string>([key]);
+      for (const neighbour of graph.neighbors(key)) {
+        s.add(neighbour);
+      }
+      return s;
+    };
+    const setHoveredNode = (key: string | null) => {
+      if (hoveredNodeId === key) return;
+      hoveredNodeId = key;
+      focusSet = rebuildFocusSet(key);
+      renderer.refresh();
+    };
+    renderer.setSetting("nodeReducer", (key, data) => {
+      if (focusSet === null) return data;
+      if (focusSet.has(key)) return data;
+      return {
+        ...data,
+        color: paletteRef.current.dimNode,
+        // Drop the label so the focused subset is the only labelled
+        // group; protects against label-vs-dim-disc contrast going
+        // out of WCAG-AA range (#453).
+        label: "",
+        // Push behind the focused subset so any overlap reads as the
+        // focused node sitting on top.
+        zIndex: 0,
+      };
+    });
+    renderer.setSetting("edgeReducer", (key, data) => {
+      if (focusSet === null || hoveredNodeId === null) return data;
+      const [src, dst] = graph.extremities(key);
+      // Incident edges stay at full saturation so the local subgraph
+      // structure is obvious.
+      if (src === hoveredNodeId || dst === hoveredNodeId) {
+        return { ...data, zIndex: 1 };
+      }
+      return { ...data, color: paletteRef.current.dimEdge, zIndex: 0 };
+    });
+    // Sigma needs zIndex sorting opted-in to honour the per-element
+    // zIndex hints emitted by the reducers above.
+    renderer.setSetting("zIndex", true);
+    // === end #458 ===========================================================
+
     const showNodeHover = (event: {
       node: string;
       event: { x: number; y: number };
@@ -133,6 +208,8 @@ export function IlluminateCanvas({
         x: event.event.x,
         y: event.event.y,
       });
+      // #458: trigger hover focus mode for the node under the cursor.
+      setHoveredNode(event.node);
     };
     const showEdgeHover = (event: {
       edge: string;
@@ -149,12 +226,22 @@ export function IlluminateCanvas({
         x: event.event.x,
         y: event.event.y,
       });
+      // #458: hovering an edge focuses both endpoints so the edge and
+      // its incidents pop together \u2014 mirrors the issue's acceptance
+      // criterion for "enterEdge: highlight both endpoints + the edge
+      // itself."
+      const [src] = graph.extremities(event.edge);
+      setHoveredNode(src);
     };
-    const clearHover = () => setHover(null);
+    const clearHoverNode = () => {
+      setHover(null);
+      // #458: leaving any node/edge restores the full graph.
+      setHoveredNode(null);
+    };
     renderer.on("enterNode", showNodeHover);
-    renderer.on("leaveNode", clearHover);
+    renderer.on("leaveNode", clearHoverNode);
     renderer.on("enterEdge", showEdgeHover);
-    renderer.on("leaveEdge", clearHover);
+    renderer.on("leaveEdge", clearHoverNode);
 
     // === #455 drag-to-pin ===================================================
     // Sigma's standard drag-and-drop recipe. The dragged node id lives in
@@ -205,11 +292,15 @@ export function IlluminateCanvas({
     mouseCaptor.on("mouseup", finishDrag);
     // === end #455 ===========================================================
 
-    // Read-only Playwright test bridge (#454, extended in #455). Lets
-    // the e2e suite assert surviving-node positions across an additive
-    // expansion and the position/pin state after a drag without
-    // resorting to flaky pixel diffs. Harmless in production — pure
-    // read-only accessors over the live graphology + sigma state.
+    // Read-only Playwright test bridge (#454, extended in #455/#458).
+    // Lets the e2e suite assert surviving-node positions across an
+    // additive expansion, the position/pin state after a drag, and the
+    // post-reducer colour after a hover \u2014 all without resorting to
+    // flaky pixel diffs. Harmless in production: all production-facing
+    // accessors are pure read-only views over the live graphology +
+    // sigma state; the two write methods (`simulateDrag`, `setHoveredNode`)
+    // mirror the behaviour the real user pointer would produce, and
+    // the same internal helpers are invoked.
     const win = window as Window & {
       __illuminateCanvas?: {
         getNodePosition: (key: string) => { x: number; y: number } | null;
@@ -219,8 +310,8 @@ export function IlluminateCanvas({
           moveBody: number;
           mouseUp: number;
         };
-        // Test-only: fires a synthetic drag (downNode → mousemovebody
-        // → mouseup → finishDrag) by invoking the same closure-local
+        // Test-only: fires a synthetic drag (downNode \u2192 mousemovebody
+        // \u2192 mouseup \u2192 finishDrag) by invoking the same closure-local
         // handlers the real sigma events trigger. We use this instead
         // of dispatching real `MouseEvent`s through the page because
         // sigma's `downNode` hit-test reads from a WebGL picking
@@ -231,6 +322,30 @@ export function IlluminateCanvas({
           deltaGraphX: number,
           deltaGraphY: number,
         ) => boolean;
+        /**
+         * #458 test bridge: set or clear the hover-focus subject.
+         * Same effect as a real `enterNode` / `leaveNode` event: the
+         * reducer chain re-evaluates and the post-reducer colours
+         * become observable via {@link getRenderedNodeColor}.
+         * Returns `true` when the supplied key exists (or is `null`),
+         * `false` if the key isn't in the live graph.
+         */
+        setHoveredNode: (key: string | null) => boolean;
+        /**
+         * #458 test bridge: read the post-reducer render colour for a
+         * given node id. Returns `null` if the node is unknown.
+         */
+        getRenderedNodeColor: (key: string) => string | null;
+        /**
+         * #458 test bridge: read the post-reducer render colour for a
+         * given edge id. Returns `null` if the edge is unknown.
+         */
+        getRenderedEdgeColor: (key: string) => string | null;
+        /**
+         * #458 test bridge: read whether the hover-focus reducer is
+         * currently active (i.e., a node is focused).
+         */
+        hoveredNode: () => string | null;
       };
     };
     win.__illuminateCanvas = {
@@ -259,20 +374,36 @@ export function IlluminateCanvas({
         if (typeof attrs.x !== "number" || typeof attrs.y !== "number") {
           return false;
         }
-        // 1) downNode — latch the dragged node
+        // 1) downNode \u2014 latch the dragged node
         draggedNodeRef.current = key;
         graph.setNodeAttribute(key, "highlighted", true);
         dragStats.downNode += 1;
-        // 2) mousemovebody — write the new position. We don't go
+        // 2) mousemovebody \u2014 write the new position. We don't go
         //    through viewportToGraph because the test supplies graph
         //    deltas directly.
         graph.setNodeAttribute(key, "x", attrs.x + deltaGraphX);
         graph.setNodeAttribute(key, "y", attrs.y + deltaGraphY);
         dragStats.moveBody += 1;
-        // 3) mouseup — release + pin
+        // 3) mouseup \u2014 release + pin
         finishDrag();
         return true;
       },
+      setHoveredNode: (key: string | null) => {
+        if (key !== null && !graph.hasNode(key)) return false;
+        setHoveredNode(key);
+        return true;
+      },
+      getRenderedNodeColor: (key: string) => {
+        if (!graph.hasNode(key)) return null;
+        const data = renderer.getNodeDisplayData(key);
+        return data?.color ?? null;
+      },
+      getRenderedEdgeColor: (key: string) => {
+        if (!graph.hasEdge(key)) return null;
+        const data = renderer.getEdgeDisplayData(key);
+        return data?.color ?? null;
+      },
+      hoveredNode: () => hoveredNodeId,
     };
 
     return () => {

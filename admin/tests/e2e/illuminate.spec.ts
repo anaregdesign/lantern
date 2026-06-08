@@ -496,4 +496,134 @@ test.describe("/illuminate", () => {
       `pinned node drifted by ${drift.toFixed(6)} graph units across an additive expansion`,
     ).toBeLessThan(0.001);
   });
+
+  test("Hover focus mode dims non-neighbours and keeps incident edges saturated (#458)", async ({
+    page,
+  }) => {
+    const seed = encodeURIComponent("e2e:illum:hub");
+    await page.goto(`/illuminate?seed=${seed}`);
+    await expect(page.getByTestId("illuminate-counter")).toContainText(
+      "5 vertices",
+    );
+
+    type Bridge = {
+      setHoveredNode: (k: string | null) => boolean;
+      getRenderedNodeColor: (k: string) => string | null;
+      getRenderedEdgeColor: (k: string) => string | null;
+      hoveredNode: () => string | null;
+    };
+    await page.waitForFunction(() => {
+      const win = window as Window & { __illuminateCanvas?: Bridge };
+      return !!win.__illuminateCanvas;
+    });
+
+    const readNode = (k: string): Promise<string | null> =>
+      page.evaluate((key) => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        return win.__illuminateCanvas?.getRenderedNodeColor(key) ?? null;
+      }, k);
+    const readEdge = (k: string): Promise<string | null> =>
+      page.evaluate((key) => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        return win.__illuminateCanvas?.getRenderedEdgeColor(key) ?? null;
+      }, k);
+    const setHover = (k: string | null): Promise<boolean> =>
+      page.evaluate((key) => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        return win.__illuminateCanvas?.setHoveredNode(key) ?? false;
+      }, k);
+    const hoveredNow = (): Promise<string | null> =>
+      page.evaluate(() => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        return win.__illuminateCanvas?.hoveredNode() ?? null;
+      });
+
+    // Layout (see beforeAll seeder):
+    //
+    //    hub --(1)--> left      --(1)--> leftleft  --(1)--> leftleftleft
+    //    hub --(3)--> right     --(2)--> rightright
+    //
+    // From `hub` the 2-hop frontier is {left, right, leftleft,
+    // rightright} but only `left` + `right` are direct neighbours,
+    // so `leftleft` and `rightright` MUST dim when hub is focused.
+    const hubKey = "e2e:illum:hub";
+    const leftKey = "e2e:illum:left";
+    const rightKey = "e2e:illum:right";
+    const leftLeftKey = "e2e:illum:leftleft";
+    const rightRightKey = "e2e:illum:rightright";
+    // Edge ids follow `${tail}→${head}` (see edgeIdOf in
+    // app/lib/client/usecase/illuminate/state.ts).
+    const hubToLeftEdge = `${hubKey}→${leftKey}`;
+    const leftToLeftLeftEdge = `${leftKey}→e2e:illum:leftleft`;
+
+    const DIM_NODE = "#3f3f4626";
+    const DIM_EDGE = "#bdbdbd26";
+
+    // Sanity: baseline colours BEFORE any hover. The reducer returns
+    // `data` unchanged when nothing is focused, so every node renders
+    // at whatever colour the data layer wrote into graphology.
+    expect(await hoveredNow()).toBeNull();
+    const baselineHub = await readNode(hubKey);
+    const baselineLeft = await readNode(leftKey);
+    const baselineRight = await readNode(rightKey);
+    const baselineLeftLeft = await readNode(leftLeftKey);
+    const baselineRightRight = await readNode(rightRightKey);
+    const baselineHubLeft = await readEdge(hubToLeftEdge);
+    const baselineLeftLeftLeft = await readEdge(leftToLeftLeftEdge);
+    for (const c of [
+      baselineHub,
+      baselineLeft,
+      baselineRight,
+      baselineLeftLeft,
+      baselineRightRight,
+      baselineHubLeft,
+      baselineLeftLeftLeft,
+    ]) {
+      expect(c).not.toBeNull();
+      // Dim swatches end in `26` (alpha 0x26 ≈ 0.15). The baseline
+      // must NOT use either dim swatch.
+      expect(c).not.toBe(DIM_NODE);
+      expect(c).not.toBe(DIM_EDGE);
+    }
+
+    // Focus hub: hub + neighbours stay saturated, 2-hop dims.
+    expect(await setHover(hubKey)).toBe(true);
+    expect(await hoveredNow()).toBe(hubKey);
+    expect(await readNode(hubKey)).toBe(baselineHub);
+    expect(await readNode(leftKey)).toBe(baselineLeft);
+    expect(await readNode(rightKey)).toBe(baselineRight);
+    expect(await readNode(leftLeftKey)).toBe(DIM_NODE);
+    expect(await readNode(rightRightKey)).toBe(DIM_NODE);
+
+    // Edges incident to hub keep their base colour; edges not touching
+    // hub get the dim edge swatch.
+    expect(await readEdge(hubToLeftEdge)).toBe(baselineHubLeft);
+    expect(await readEdge(leftToLeftLeftEdge)).toBe(DIM_EDGE);
+
+    // Switching focus to `left` shifts the focus set: `hub` AND
+    // `leftleft` are now neighbours of `left`, while `right` +
+    // `rightright` dim instead. This proves the reducer recomputes
+    // the focus set per hover (not just the first time).
+    expect(await setHover(leftKey)).toBe(true);
+    expect(await readNode(hubKey)).toBe(baselineHub);
+    expect(await readNode(leftLeftKey)).toBe(baselineLeftLeft);
+    expect(await readNode(rightKey)).toBe(DIM_NODE);
+    expect(await readNode(rightRightKey)).toBe(DIM_NODE);
+
+    // Clear the hover → every colour returns to its baseline.
+    expect(await setHover(null)).toBe(true);
+    expect(await hoveredNow()).toBeNull();
+    expect(await readNode(hubKey)).toBe(baselineHub);
+    expect(await readNode(leftKey)).toBe(baselineLeft);
+    expect(await readNode(rightKey)).toBe(baselineRight);
+    expect(await readNode(leftLeftKey)).toBe(baselineLeftLeft);
+    expect(await readNode(rightRightKey)).toBe(baselineRightRight);
+    expect(await readEdge(hubToLeftEdge)).toBe(baselineHubLeft);
+    expect(await readEdge(leftToLeftLeftEdge)).toBe(baselineLeftLeftLeft);
+
+    // Unknown node id: the bridge must reject without throwing AND
+    // must NOT mutate the hover state.
+    expect(await setHover("e2e:illum:does-not-exist")).toBe(false);
+    expect(await hoveredNow()).toBeNull();
+  });
 });
