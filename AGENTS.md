@@ -162,21 +162,43 @@ on top of them.
 - `gh` CLI needs the `project` scope (`gh auth refresh -s project`) to mutate
   the board.
 
-### After closing any Issue with cross-cutting findings
+### When your work surfaces a finding useful to another open Issue
 
-When the work that closed Issue #A surfaced a fact useful to another open Issue
-#B (a wire-shape gotcha, a flake reproducer, a perf number, a build-order
-constraint), drop a short comment on #B in the same PR that closes #A — or
-immediately after merge if the finding only became clear at merge time:
+Whether you are closing #A, filing a foundation Issue that re-frames others, or
+just reading code mid-task, the rule is the same: **the moment your current work
+produces a fact that future-you (or another agent) will need when picking up an
+unrelated open Issue, post it as a comment on that Issue, in the same session,
+before you forget.** Wire-shape gotchas, flake reproducers, perf numbers,
+build-order constraints, model-shift implications — anything that would make a
+reader of Issue #B six months from now ask "why didn't anyone mention this?".
 
-> Finding from #A (closed by #M): \<one-paragraph fact\>. Source:
-> \<code/file/log link\>.
+Format the comment so #B's reader gets the context without having to chase the
+link:
 
-Do not put this in the closing PR description; reviewers reading #B in six
-months will not follow that link. The comment must live on #B itself. If three
-or more Issues benefit, also append a one-line entry to the relevant section of
-this file (`Architecture notes` / `Conventions and gotchas`) so future
-agents see it without having to grep Issue threads.
+> Finding from \<work that surfaced this — PR/Issue/exploration\>:
+> \<one-paragraph fact\>. Source: \<code/file/log link\>.
+
+Concrete triggers (non-exhaustive):
+
+- **Closing #A.** If the work on #A's PR surfaced something #B needs, comment
+  on #B in the same PR — not in the PR description (reviewers of #B won't
+  follow that link six months from now).
+- **Filing a foundation Issue #F that re-frames others.** When #F shifts the
+  assumptions #B1, #B2, … were built on, comment on each downstream Issue with
+  the impact (blocked / body needs revision / unchanged) and a pointer to the
+  relevant section of #F, in the same session you file #F. Precedent: #466
+  → comments on #456 / #460 / #461 (blocked, bodies revised) and on
+  #457 / #458 / #459 / #464 / #465 (unchanged).
+- **Mid-task exploration.** If reading the code for task #A reveals that #B's
+  reproduction steps are wrong, its proposed approach won't work, or a
+  prerequisite it assumes is already done, comment on #B before resuming #A.
+  Don't promise yourself you'll come back to it.
+
+Always post the comment **on #B itself**, never only in a PR description or a
+chat reply — those surfaces are invisible to whoever opens #B next. If three
+or more Issues benefit from the same finding, also append a one-line entry to
+the relevant section of this file (`Architecture notes` / `Conventions and
+gotchas`) so future agents see it without having to grep Issue threads.
 
 ### Before every `git push` (local quality gate)
 
