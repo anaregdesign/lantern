@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+  type Ref,
+} from "react";
 import Graph from "graphology";
 import forceAtlas2 from "graphology-layout-forceatlas2";
 import Sigma from "sigma";
@@ -39,6 +47,33 @@ export interface IlluminateCanvasProps {
   onNodeClick: (key: string) => void;
   /** When true, the canvas dims to communicate a stale frame. */
   isBusy: boolean;
+  /**
+   * Imperative handle (#456). The expansion chip strip calls
+   * `panToNode(originKey)` to scroll the camera to a previous click
+   * point without mutating state or refetching. Optional — keeps the
+   * canvas reusable from contexts that don't need camera control.
+   */
+  ref?: Ref<IlluminateCanvasHandle>;
+}
+
+/**
+ * Imperative API exposed to parent components via `ref` (#456). Only
+ * pan-to-node is published today; the rest of the canvas's surface
+ * remains declarative (props) so test-bridge methods stay isolated to
+ * `window.__illuminateCanvas`.
+ */
+export interface IlluminateCanvasHandle {
+  /**
+   * Animate the sigma camera so the supplied vertex is centred, then
+   * briefly highlight it (~600 ms). Returns `false` when the key is
+   * not currently in the graph (e.g., the user cleared the
+   * accumulator). Repeated calls cancel the previous highlight so
+   * rapidly clicked chips don't stack pulse timers on each other.
+   */
+  panToNode: (
+    key: string,
+    options?: { duration?: number; highlightMs?: number; ratio?: number },
+  ) => boolean;
 }
 
 interface HoverState {
@@ -62,10 +97,23 @@ export function IlluminateCanvas({
   latestExpansionOrigin,
   onNodeClick,
   isBusy,
+  ref,
 }: IlluminateCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const sigmaRef = useRef<Sigma | null>(null);
   const graphRef = useRef<Graph | null>(null);
+  /**
+   * #456 highlight-cancellation handle. `panToNode` schedules a
+   * setTimeout to revert the `highlighted` attribute it sets on the
+   * pulsing node; if the user clicks another chip before the pulse
+   * expires, the prior timeout must be cancelled (and its node
+   * un-highlighted) so the new pulse doesn't get cleared early.
+   */
+  const highlightTimeoutRef = useRef<{
+    handle: ReturnType<typeof setTimeout>;
+    nodeKey: string;
+    previousHighlighted: boolean;
+  } | null>(null);
   /**
    * Snapshot of the node IDs the graph held at the end of the previous
    * reconcile. Diffing against the next reconcile's IDs feeds
@@ -131,6 +179,94 @@ export function IlluminateCanvas({
   useEffect(() => {
     onNodeClickRef.current = onNodeClick;
   }, [onNodeClick]);
+
+  // #456 imperative handle. Reads from `graphRef`/`sigmaRef` at call
+  // time so the closure stays valid across re-renders without any
+  // dependency wiring; mount/unmount of sigma is handled by the
+  // dedicated effect below.
+  useImperativeHandle(
+    ref,
+    () => ({
+      panToNode: (key, options) => {
+        const sigma = sigmaRef.current;
+        const graph = graphRef.current;
+        if (!sigma || !graph || !graph.hasNode(key)) return false;
+
+        // `getNodeDisplayData` returns coordinates in the sigma camera's
+        // coordinate frame, which is exactly what `camera.animate`
+        // accepts as a target state. The graph-space coordinates from
+        // `graph.getNodeAttributes` are NOT directly compatible (they
+        // pre-date sigma's normalization pass), so always go through
+        // the renderer's display data.
+        const display = sigma.getNodeDisplayData(key);
+        if (!display) return false;
+
+        const duration = options?.duration ?? 600;
+        const ratio = options?.ratio ?? 0.5;
+        const highlightMs = options?.highlightMs ?? duration;
+
+        const camera = sigma.getCamera();
+        camera.animate({ x: display.x, y: display.y, ratio }, { duration });
+
+        // Cancel any prior highlight pulse — restore its node first so
+        // a rapid sequence of chip clicks doesn't leave stranded
+        // `highlighted=true` attrs around.
+        const prior = highlightTimeoutRef.current;
+        if (prior) {
+          clearTimeout(prior.handle);
+          if (graph.hasNode(prior.nodeKey)) {
+            graph.setNodeAttribute(
+              prior.nodeKey,
+              "highlighted",
+              prior.previousHighlighted,
+            );
+          }
+          highlightTimeoutRef.current = null;
+        }
+
+        const previousHighlighted =
+          graph.getNodeAttribute(key, "highlighted") === true;
+        graph.setNodeAttribute(key, "highlighted", true);
+        sigma.refresh();
+
+        const handle = setTimeout(() => {
+          highlightTimeoutRef.current = null;
+          if (!graphRef.current?.hasNode(key)) return;
+          graphRef.current.setNodeAttribute(
+            key,
+            "highlighted",
+            previousHighlighted,
+          );
+          sigmaRef.current?.refresh();
+        }, highlightMs);
+
+        highlightTimeoutRef.current = {
+          handle,
+          nodeKey: key,
+          previousHighlighted,
+        };
+        return true;
+      },
+    }),
+    // The handle reads `sigmaRef`/`graphRef`/`highlightTimeoutRef` at
+    // call time, so it has no reactive dependencies; an empty array
+    // keeps the imperative handle identity stable for the lifetime of
+    // the component.
+    [],
+  );
+
+  // Cancel any in-flight #456 highlight pulse on unmount so a stale
+  // setTimeout doesn't fire against a discarded sigma instance.
+  useEffect(
+    () => () => {
+      const pending = highlightTimeoutRef.current;
+      if (pending) {
+        clearTimeout(pending.handle);
+        highlightTimeoutRef.current = null;
+      }
+    },
+    [],
+  );
 
   // Mount sigma once. The graph and renderer survive across data updates;
   // see the reconcile effect below.
@@ -452,6 +588,33 @@ export function IlluminateCanvas({
          * waiting on `setInterval`.
          */
         forceTick: () => void;
+        /**
+         * #456 test bridge: read the current sigma camera state
+         * (`x`/`y`/`ratio`/`angle`). The e2e suite snapshots this
+         * before and after a chip click to assert the camera animated
+         * toward the clicked origin without relying on pixel diffs.
+         */
+        cameraState: () => {
+          x: number;
+          y: number;
+          ratio: number;
+          angle: number;
+        };
+        /**
+         * #456 test bridge: read the post-reducer display coordinates
+         * of a node (the same frame `panToNode` animates the camera
+         * to). Returns `null` when the node is unknown. Lets the e2e
+         * assert the camera converged on the chip's origin vertex.
+         */
+        getNodeDisplayPosition: (
+          key: string,
+        ) => { x: number; y: number } | null;
+        /**
+         * #456 test bridge: whether a node currently carries the
+         * transient highlight `panToNode` applies for ~600 ms. Lets the
+         * e2e confirm the pulse fires (and later clears).
+         */
+        isNodeHighlighted: (key: string) => boolean;
       };
     };
     win.__illuminateCanvas = {
@@ -533,6 +696,24 @@ export function IlluminateCanvas({
         nowRef.current = nowOverrideRef.current ?? Date.now();
         tickCountRef.current += 1;
         renderer.refresh();
+      },
+      cameraState: () => {
+        const state = renderer.getCamera().getState();
+        return {
+          x: state.x,
+          y: state.y,
+          ratio: state.ratio,
+          angle: state.angle,
+        };
+      },
+      getNodeDisplayPosition: (key: string) => {
+        if (!graph.hasNode(key)) return null;
+        const data = renderer.getNodeDisplayData(key);
+        return data ? { x: data.x, y: data.y } : null;
+      },
+      isNodeHighlighted: (key: string) => {
+        if (!graph.hasNode(key)) return false;
+        return graph.getNodeAttribute(key, "highlighted") === true;
       },
     };
 

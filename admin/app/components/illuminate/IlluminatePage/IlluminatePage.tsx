@@ -1,7 +1,10 @@
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 import { MessageBar, MessageBarBody } from "@fluentui/react-components";
 import { useNavigate, useSearchParams } from "react-router";
-import { IlluminateCanvas } from "../IlluminateCanvas/IlluminateCanvas";
+import {
+  IlluminateCanvas,
+  type IlluminateCanvasHandle,
+} from "../IlluminateCanvas/IlluminateCanvas";
 import { IlluminateTable } from "../IlluminateTable/IlluminateTable";
 import { IlluminateToolbar } from "../IlluminateToolbar/IlluminateToolbar";
 import { SeedPrompt } from "../SeedPrompt/SeedPrompt";
@@ -24,6 +27,8 @@ export function IlluminatePage() {
 
   const ill = useIlluminate(urlSeed);
 
+  const canvasRef = useRef<IlluminateCanvasHandle | null>(null);
+
   const handleNodeClick = useCallback(
     (key: string) => {
       if (!key) return;
@@ -34,6 +39,11 @@ export function IlluminatePage() {
     },
     [ill],
   );
+
+  // #456 scroll-to-origin: pure camera move, no state mutation, no RPC.
+  const handleChipClick = useCallback((originKey: string) => {
+    canvasRef.current?.panToNode(originKey);
+  }, []);
 
   const handleClear = useCallback(() => {
     // Clear navigates back to the bare `/illuminate` URL; the hook's
@@ -71,9 +81,11 @@ export function IlluminatePage() {
             vertexCount={ill.view.nodes.length}
             edgeCount={ill.view.edges.length}
             expansionCount={ill.expansionCount}
+            expansionChips={ill.expansionChips}
             onControlsChange={ill.setControls}
             onClear={handleClear}
             onRefresh={ill.refresh}
+            onChipClick={handleChipClick}
           />
           {ill.state.error ? (
             <MessageBar
@@ -98,6 +110,7 @@ export function IlluminatePage() {
             </MessageBar>
           ) : null}
           <IlluminateCanvas
+            ref={canvasRef}
             nodes={ill.view.nodes}
             edges={ill.view.edges}
             latestExpansionOrigin={ill.view.latestExpansionOrigin}

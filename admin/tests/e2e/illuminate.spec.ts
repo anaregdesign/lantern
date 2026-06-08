@@ -62,8 +62,14 @@ test.describe("/illuminate", () => {
     await page.goto(`/illuminate?seed=${seed}`);
 
     await expect(page.getByTestId("illuminate-toolbar")).toBeVisible();
-    await expect(page.getByTestId("illuminate-seed")).toHaveText(
+    // #456: the seed echo is now the leading lineage chip (chip 0).
+    await expect(page.getByTestId("illuminate-chip-0")).toHaveAttribute(
+      "data-chip-origin",
       "e2e:illum:hub",
+    );
+    await expect(page.getByTestId("illuminate-chip-0")).toHaveAttribute(
+      "data-chip-is-seed",
+      "true",
     );
     await expect(page.getByTestId("illuminate-canvas")).toBeVisible();
 
@@ -132,7 +138,9 @@ test.describe("/illuminate", () => {
     await expect(counter).toContainText("6 vertices");
     await expect(counter).toContainText("2 expansions");
     await expect(page).toHaveURL(/\?seed=e2e%3Aillum%3Ahub/);
-    await expect(page.getByTestId("illuminate-seed")).toHaveText(
+    // #456: the seed remains the leading lineage chip across an expansion.
+    await expect(page.getByTestId("illuminate-chip-0")).toHaveAttribute(
+      "data-chip-origin",
       "e2e:illum:hub",
     );
 
@@ -939,5 +947,125 @@ test.describe("/illuminate", () => {
     // now a brand colour, not a far colour.
     expect(newHubHop).toBe(0);
     expect(await readNode(leftLeftKey)).toBe(hubColor);
+  });
+
+  test("Lineage chip strip scrolls the camera back to an expansion origin without mutating state (#456)", async ({
+    page,
+  }) => {
+    const seed = encodeURIComponent("e2e:illum:hub");
+    await page.goto(`/illuminate?seed=${seed}`);
+    await expect(page.getByTestId("illuminate-toolbar")).toBeVisible();
+
+    const counter = page.getByTestId("illuminate-counter");
+    await expect(counter).toContainText("5 vertices");
+    await expect(counter).toContainText("1 expansion");
+
+    // The strip starts with a single seed chip carrying the seed marker.
+    await expect(page.getByTestId("illuminate-expansion-chips")).toBeVisible();
+    const seedChip = page.getByTestId("illuminate-chip-0");
+    await expect(seedChip).toHaveAttribute("data-chip-origin", "e2e:illum:hub");
+    await expect(seedChip).toHaveAttribute("data-chip-is-seed", "true");
+
+    // Grow the lineage with an additive expansion from `leftleft` so a
+    // SECOND, non-seed chip appears.
+    await page
+      .getByRole("group")
+      .getByText(/List view \(5 vertices/)
+      .click();
+    const table = page.getByTestId("illuminate-table");
+    await table
+      .getByRole("button", { name: "Expand from e2e:illum:leftleft" })
+      .click();
+    await expect(counter).toContainText("6 vertices");
+    await expect(counter).toContainText("2 expansions");
+
+    // Now there are two chips: the seed (chip 0) and the leftleft
+    // expansion (chip 1). The second is NOT marked as the seed.
+    const expansionChip = page.getByTestId("illuminate-chip-1");
+    await expect(expansionChip).toHaveAttribute(
+      "data-chip-origin",
+      "e2e:illum:leftleft",
+    );
+    await expect(expansionChip).toHaveAttribute("data-chip-is-seed", "false");
+
+    // Wait for the camera test bridge.
+    type Camera = { x: number; y: number; ratio: number; angle: number };
+    type Pos = { x: number; y: number };
+    type Bridge = {
+      cameraState: () => Camera;
+      getNodeDisplayPosition: (k: string) => Pos | null;
+      isNodeHighlighted: (k: string) => boolean;
+    };
+    await page.waitForFunction(() => {
+      const win = window as Window & { __illuminateCanvas?: Bridge };
+      return !!win.__illuminateCanvas?.cameraState;
+    });
+
+    const readCamera = (): Promise<Camera> =>
+      page.evaluate(() => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        return win.__illuminateCanvas!.cameraState();
+      });
+    const readDisplay = (k: string): Promise<Pos | null> =>
+      page.evaluate((key) => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        return win.__illuminateCanvas?.getNodeDisplayPosition(key) ?? null;
+      }, k);
+    const isHighlighted = (k: string): Promise<boolean> =>
+      page.evaluate((key) => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        return win.__illuminateCanvas?.isNodeHighlighted(key) ?? false;
+      }, k);
+
+    // Snapshot the camera, then click the leftleft chip. Its display
+    // position is off-centre from the seed-anchored view, so the camera
+    // must move toward it.
+    const before = await readCamera();
+    const target = await readDisplay("e2e:illum:leftleft");
+    expect(target).not.toBeNull();
+
+    await expansionChip.click();
+
+    // The pan animates over ~600 ms — wait until the camera arrives at
+    // the leftleft display coordinates (within a small tolerance).
+    await page.waitForFunction(
+      ({ key }) => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        const b = win.__illuminateCanvas;
+        if (!b) return false;
+        const cam = b.cameraState();
+        const dp = b.getNodeDisplayPosition(key);
+        if (!dp) return false;
+        return Math.abs(cam.x - dp.x) < 0.02 && Math.abs(cam.y - dp.y) < 0.02;
+      },
+      { key: "e2e:illum:leftleft" },
+      { timeout: 4000 },
+    );
+
+    const after = await readCamera();
+    // The camera genuinely moved (the click was not a no-op).
+    const moved =
+      Math.abs(after.x - before.x) > 1e-6 ||
+      Math.abs(after.y - before.y) > 1e-6;
+    expect(moved).toBe(true);
+
+    // The transient highlight pulse fired on the target.
+    expect(await isHighlighted("e2e:illum:leftleft")).toBe(true);
+
+    // Crucially the click is UI-only: it does NOT re-fetch, push a new
+    // expansion, or change the accumulator. Counts are unchanged.
+    await expect(counter).toContainText("6 vertices");
+    await expect(counter).toContainText("2 expansions");
+    await expect(page).toHaveURL(/\?seed=e2e%3Aillum%3Ahub/);
+
+    // The highlight reverts after the pulse window (~600 ms) elapses.
+    await page.waitForFunction(
+      ({ key }) => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        return win.__illuminateCanvas?.isNodeHighlighted(key) === false;
+      },
+      { key: "e2e:illum:leftleft" },
+      { timeout: 4000 },
+    );
   });
 });

@@ -298,3 +298,35 @@ export function selectExpansionCount(state: IlluminateState): number {
 export function selectCanClear(state: IlluminateState): boolean {
   return state.expansions.length > 0 || state.accumulator.vertices.size > 0;
 }
+
+/**
+ * View-model for the per-expansion chip in the toolbar (#456). Each chip
+ * is a "scroll-to-origin" affordance — clicking it pans the camera to the
+ * origin vertex without mutating state or re-issuing any RPC.
+ *
+ * Order matches `state.expansions` (chronological); `chips[0]` is the
+ * seed expansion (#466 D5) and carries `isSeed: true` so the toolbar
+ * can render a star/badge marker. Duplicates by `originKey` are
+ * preserved on purpose: clicking the same vertex twice produces two
+ * chips with the same label because the user genuinely performed two
+ * exploration actions and may want to revisit either point in time.
+ */
+export interface ExpansionChip {
+  /** Stable React key — mirrors `Expansion.id`. */
+  id: number;
+  /** Display label + camera target. */
+  originKey: string;
+  /** True only for `expansions[0]` (the URL-level seed). */
+  isSeed: boolean;
+  /** Zero-based position in `state.expansions` for tooltips. */
+  index: number;
+}
+
+export function selectExpansionChips(state: IlluminateState): ExpansionChip[] {
+  return state.expansions.map((exp, index) => ({
+    id: exp.id,
+    originKey: exp.origin,
+    isSeed: index === 0,
+    index,
+  }));
+}

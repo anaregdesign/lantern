@@ -13,6 +13,7 @@ import {
   ArrowClockwise20Regular,
   Delete20Regular,
 } from "@fluentui/react-icons";
+import { ExpansionChipStrip } from "../ExpansionChipStrip/ExpansionChipStrip";
 import type {
   IlluminateControls,
   IlluminateStatus,
@@ -21,6 +22,7 @@ import type {
   Algorithm,
   Objective,
 } from "~/lib/client/infrastructure/api/illuminate";
+import type { ExpansionChip } from "~/lib/client/usecase/illuminate/selectors";
 import styles from "./IlluminateToolbar.module.css";
 
 export interface IlluminateToolbarProps {
@@ -31,9 +33,21 @@ export interface IlluminateToolbarProps {
   vertexCount: number;
   edgeCount: number;
   expansionCount: number;
+  /**
+   * Per-expansion lineage chips (#456). The strip replaces the legacy
+   * `<code>` seed echo: the first chip carries the seed marker so the
+   * URL-level seed is still surfaced at a glance.
+   */
+  expansionChips: ExpansionChip[];
   onControlsChange: (next: IlluminateControls) => void;
   onClear: () => void;
   onRefresh: () => void;
+  /**
+   * Fired when the user clicks one of the lineage chips (#456). The
+   * handler is pure UI — pan the canvas camera to the chip's origin
+   * vertex; no state mutation, no re-fetch.
+   */
+  onChipClick: (originKey: string) => void;
 }
 
 // Per #410 the post-traversal reduction is the orthogonal triple
@@ -68,9 +82,11 @@ export function IlluminateToolbar({
   vertexCount,
   edgeCount,
   expansionCount,
+  expansionChips,
   onControlsChange,
   onClear,
   onRefresh,
+  onChipClick,
 }: IlluminateToolbarProps) {
   const update = <K extends keyof IlluminateControls>(
     key: K,
@@ -86,12 +102,13 @@ export function IlluminateToolbar({
       data-testid="illuminate-toolbar"
     >
       <div className={styles.seedRow}>
-        <Label className={styles.seedLabel}>Seed</Label>
-        <Tooltip content={initialSeed} relationship="label" withArrow>
-          <code className={styles.seedValue} data-testid="illuminate-seed">
-            {initialSeed || "—"}
-          </code>
-        </Tooltip>
+        <Label className={styles.seedLabel}>Lineage</Label>
+        <div className={styles.chipStripSlot}>
+          <ExpansionChipStrip
+            chips={expansionChips}
+            onChipClick={onChipClick}
+          />
+        </div>
         <Badge
           appearance="tint"
           color="informative"

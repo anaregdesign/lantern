@@ -1,0 +1,27 @@
+.strip {
+  display: flex;
+  align-items: center;
+  gap: var(--spacingHorizontalXS, 4px);
+  min-width: 0;
+  width: 100%;
+}
+
+.overflowContainer {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: var(--spacingHorizontalXS, 4px);
+  min-width: 0;
+  width: 100%;
+  overflow: hidden;
+}
+
+.chip {
+  /* Keep chip labels on one line; Fluent's overflow plumbing measures
+   * full button width to decide visibility, so we lean on truncation
+   * only as a safety net for pathological key lengths. */
+  max-width: 240px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
