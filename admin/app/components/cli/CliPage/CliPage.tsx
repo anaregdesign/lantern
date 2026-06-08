@@ -351,6 +351,7 @@ export function CliPage() {
             <IlluminateCanvas
               nodes={latestGraph.view.nodes}
               edges={latestGraph.view.edges}
+              latestExpansionOrigin={latestGraph.view.latestExpansionOrigin}
               onNodeClick={onNodeClick}
               isBusy={busy}
             />

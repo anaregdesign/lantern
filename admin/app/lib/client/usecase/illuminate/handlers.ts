@@ -5,30 +5,41 @@ import {
 } from "~/lib/client/infrastructure/api/illuminate";
 import type { LanternClient } from "~/lib/client/infrastructure/api/lantern-client";
 import type { IlluminateAction } from "./reducer";
-import type { IlluminateControls, IlluminateFrame } from "./state";
+import type { IlluminateControls } from "./state";
 
-export interface FetchIlluminateInput {
+export interface ExpandInput {
   client: LanternClient;
-  seed: string;
+  expansionId: number;
+  origin: string;
   controls: IlluminateControls;
-  epoch: number;
+  startedAtMs: number;
   signal?: AbortSignal;
 }
 
 /**
- * Fetches one Illuminate frame and dispatches the resulting state
- * transition. Swallows `AbortError` because cancellation is a normal
- * control-flow event in this view (the user drags a slider and we move on
- * to a fresh request).
+ * Fires one Illuminate call and dispatches the resulting expansion
+ * action. Swallows `AbortError` because cancellation is a normal
+ * control-flow event in this view (the hook aborts in-flight
+ * expansions on Clear / unmount / initial-seed change).
+ *
+ * Per #466 each expansion carries its own AbortController, so a later
+ * click does NOT cancel earlier ones — they all merge into the
+ * accumulator as they return.
  */
-export async function fetchIlluminate(
-  input: FetchIlluminateInput,
+export async function runExpansion(
+  input: ExpandInput,
   dispatch: (action: IlluminateAction) => void,
 ): Promise<void> {
-  dispatch({ type: "FETCH_REQUESTED", epoch: input.epoch });
+  dispatch({
+    type: "EXPANSION_REQUESTED",
+    expansionId: input.expansionId,
+    origin: input.origin,
+    controls: input.controls,
+    startedAtMs: input.startedAtMs,
+  });
   try {
     const request: IlluminateRequest = {
-      seed: input.seed,
+      seed: input.origin,
       step: input.controls.step,
       k: input.controls.k,
       algorithm: input.controls.algorithm,
@@ -38,20 +49,32 @@ export async function fetchIlluminate(
     const response = await illuminate(input.client, request, {
       signal: input.signal,
     });
-    const frame: IlluminateFrame = {
-      seed: input.seed,
+    dispatch({
+      type: "EXPANSION_RECEIVED",
+      expansionId: input.expansionId,
+      origin: input.origin,
       controls: input.controls,
+      startedAtMs: input.startedAtMs,
       vertices: response.graph?.vertices ?? [],
       edges: response.graph?.edges ?? [],
-    };
-    dispatch({ type: "FETCH_RECEIVED", epoch: input.epoch, frame });
+      receivedAtMs:
+        typeof performance !== "undefined" ? performance.now() : Date.now(),
+    });
   } catch (err) {
     if (isAbortError(err)) {
+      // Synthesise a FAILED that the reducer treats as "discount the
+      // pending counter" without setting an error; we still need to
+      // balance the optimistic EXPANSION_REQUESTED.
+      dispatch({
+        type: "EXPANSION_FAILED",
+        expansionId: input.expansionId,
+        error: "",
+      });
       return;
     }
     dispatch({
-      type: "FETCH_FAILED",
-      epoch: input.epoch,
+      type: "EXPANSION_FAILED",
+      expansionId: input.expansionId,
       error: messageOf(err),
     });
   }

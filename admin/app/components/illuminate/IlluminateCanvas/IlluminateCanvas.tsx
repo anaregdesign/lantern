@@ -11,12 +11,21 @@ import styles from "./IlluminateCanvas.module.css";
 export interface IlluminateCanvasProps {
   nodes: GraphNode[];
   edges: GraphEdge[];
+  /**
+   * Key of the vertex that originated the most recent expansion. Used as
+   * the position hint for new nodes (#466 D7): when a node is being
+   * added for the first time, we place it near the centroid of its
+   * (already-placed) neighbours so ForceAtlas2 settles without yanking
+   * the existing layout.
+   */
+  latestExpansionOrigin: string | null;
   onNodeClick: (key: string) => void;
   /** When true, the canvas dims to communicate a stale frame. */
   isBusy: boolean;
 }
 
 const SEED_COLOR = "#0078d4"; // FluentUI brandColor (web theme accent)
+const ORIGIN_COLOR = "#5c2d91"; // Darker accent for non-seed expansion origins
 const NODE_COLOR = "#5b5b5b";
 const EDGE_COLOR = "#bdbdbd";
 
@@ -38,6 +47,7 @@ interface HoverState {
 export function IlluminateCanvas({
   nodes,
   edges,
+  latestExpansionOrigin,
   onNodeClick,
   isBusy,
 }: IlluminateCanvasProps) {
@@ -142,9 +152,17 @@ export function IlluminateCanvas({
       }
     }
 
+    // Per-node neighbour lookup for the placement hint. We build it once
+    // per reconcile so we don't rescan the edge list per node below.
+    const neighboursByKey = buildNeighbourMap(nodes, edges);
+
     for (const node of nodes) {
       const size = 4 + node.importance * 10;
-      const color = node.isSeed ? SEED_COLOR : NODE_COLOR;
+      const color = node.isInitialSeed
+        ? SEED_COLOR
+        : node.isExpansionOrigin
+          ? ORIGIN_COLOR
+          : NODE_COLOR;
       const detail = describeVertex(node);
       if (graph.hasNode(node.id)) {
         graph.mergeNodeAttributes(node.id, {
@@ -152,22 +170,25 @@ export function IlluminateCanvas({
           size,
           color,
           detail,
-          isSeed: node.isSeed,
+          isInitialSeed: node.isInitialSeed,
+          isExpansionOrigin: node.isExpansionOrigin,
         });
       } else {
-        // Seed the layout near the origin, neighbours in a wide ring so
-        // ForceAtlas2 has somewhere to push from. Random within a circle
-        // keeps the first frame stable.
-        const angle = Math.random() * Math.PI * 2;
-        const radius = node.isSeed ? 0 : 1 + Math.random() * 4;
+        const { x, y } = pickInitialPosition({
+          graph,
+          node,
+          neighbours: neighboursByKey.get(node.id) ?? [],
+          latestExpansionOrigin,
+        });
         graph.addNode(node.id, {
           label: node.label,
-          x: Math.cos(angle) * radius,
-          y: Math.sin(angle) * radius,
+          x,
+          y,
           size,
           color,
           detail,
-          isSeed: node.isSeed,
+          isInitialSeed: node.isInitialSeed,
+          isExpansionOrigin: node.isExpansionOrigin,
         });
       }
     }
@@ -201,7 +222,7 @@ export function IlluminateCanvas({
     }
 
     sigma?.refresh();
-  }, [nodes, edges]);
+  }, [nodes, edges, latestExpansionOrigin]);
 
   const empty = nodes.length === 0;
   const wrapperClass = useMemo(
@@ -236,6 +257,112 @@ export function IlluminateCanvas({
       ) : null}
     </div>
   );
+}
+
+/**
+ * Build an undirected neighbour map: for each node id, the keys of its
+ * neighbours (in either direction). Used by `pickInitialPosition` to
+ * seed a new node near its existing neighbours, per #466 D7.
+ */
+function buildNeighbourMap(
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+): Map<string, string[]> {
+  const keys = new Set(nodes.map((n) => n.id));
+  const out = new Map<string, string[]>();
+  for (const e of edges) {
+    if (!keys.has(e.source) || !keys.has(e.target)) continue;
+    appendNeighbour(out, e.source, e.target);
+    appendNeighbour(out, e.target, e.source);
+  }
+  return out;
+}
+
+function appendNeighbour(
+  map: Map<string, string[]>,
+  key: string,
+  neighbour: string,
+) {
+  const list = map.get(key);
+  if (list) {
+    list.push(neighbour);
+  } else {
+    map.set(key, [neighbour]);
+  }
+}
+
+/**
+ * Pick an (x, y) for a node that's being added to the graph for the
+ * first time.
+ *
+ * Priority order:
+ *  1. The initial seed sits at the origin.
+ *  2. If the node has neighbours that are ALREADY placed in graphology,
+ *     drop it at their centroid with small jitter — ForceAtlas2 then
+ *     only has to nudge it into place instead of yanking the whole
+ *     layout.
+ *  3. If the latest expansion origin is placed, drop the node in a ring
+ *     around it (#466 D7 explicitly calls out "near the parent click").
+ *  4. Otherwise, the original random-in-a-circle seeding.
+ */
+function pickInitialPosition({
+  graph,
+  node,
+  neighbours,
+  latestExpansionOrigin,
+}: {
+  graph: Graph;
+  node: GraphNode;
+  neighbours: string[];
+  latestExpansionOrigin: string | null;
+}): { x: number; y: number } {
+  if (node.isInitialSeed) {
+    return { x: 0, y: 0 };
+  }
+  // 2 — centroid of already-placed neighbours.
+  let sumX = 0;
+  let sumY = 0;
+  let placedCount = 0;
+  for (const neighbour of neighbours) {
+    if (!graph.hasNode(neighbour)) continue;
+    const attrs = graph.getNodeAttributes(neighbour) as {
+      x?: number;
+      y?: number;
+    };
+    if (typeof attrs.x !== "number" || typeof attrs.y !== "number") continue;
+    sumX += attrs.x;
+    sumY += attrs.y;
+    placedCount += 1;
+  }
+  if (placedCount > 0) {
+    const cx = sumX / placedCount;
+    const cy = sumY / placedCount;
+    // Small jitter so colocated nodes don't sit exactly on top of each
+    // other (would make ForceAtlas2's first iteration meaningless).
+    return {
+      x: cx + (Math.random() - 0.5) * 0.5,
+      y: cy + (Math.random() - 0.5) * 0.5,
+    };
+  }
+  // 3 — ring around the latest expansion origin if it's placed.
+  if (latestExpansionOrigin !== null && graph.hasNode(latestExpansionOrigin)) {
+    const attrs = graph.getNodeAttributes(latestExpansionOrigin) as {
+      x?: number;
+      y?: number;
+    };
+    const ox = typeof attrs.x === "number" ? attrs.x : 0;
+    const oy = typeof attrs.y === "number" ? attrs.y : 0;
+    const angle = Math.random() * Math.PI * 2;
+    const radius = 1 + Math.random() * 2;
+    return {
+      x: ox + Math.cos(angle) * radius,
+      y: oy + Math.sin(angle) * radius,
+    };
+  }
+  // 4 — fallback random-in-circle seeding.
+  const angle = Math.random() * Math.PI * 2;
+  const radius = 1 + Math.random() * 4;
+  return { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius };
 }
 
 function describeVertex(node: GraphNode): string {
