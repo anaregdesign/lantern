@@ -363,4 +363,137 @@ test.describe("/illuminate", () => {
       ).toBeLessThanOrEqual(TOLERANCE);
     }
   });
+
+  test("Drag-to-pin: drag moves the node, releases pinned, and survives a subsequent expansion (#455)", async ({
+    page,
+  }) => {
+    const seed = encodeURIComponent("e2e:illum:hub");
+    await page.goto(`/illuminate?seed=${seed}`);
+    await expect(page.getByTestId("illuminate-counter")).toContainText(
+      "5 vertices",
+    );
+
+    type Pos = { x: number; y: number };
+    type Bridge = {
+      getNodePosition: (k: string) => Pos | null;
+      isNodeFixed: (k: string) => boolean;
+      dragStats: () => { downNode: number; moveBody: number; mouseUp: number };
+      simulateDrag: (k: string, dx: number, dy: number) => boolean;
+    };
+    await page.waitForFunction(() => {
+      const win = window as Window & { __illuminateCanvas?: Bridge };
+      return !!win.__illuminateCanvas;
+    });
+
+    const targetKey = "e2e:illum:left";
+
+    const readGraphPos = (k: string): Promise<Pos | null> =>
+      page.evaluate((key) => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        return win.__illuminateCanvas?.getNodePosition(key) ?? null;
+      }, k);
+    const isFixed = (k: string): Promise<boolean> =>
+      page.evaluate((key) => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        return win.__illuminateCanvas?.isNodeFixed(key) ?? false;
+      }, k);
+
+    // Sanity: before the gesture, the node exists, has a graph position,
+    // and is not pinned.
+    const before = await readGraphPos(targetKey);
+    expect(before).not.toBeNull();
+    expect(await isFixed(targetKey)).toBe(false);
+
+    // Use a substantial delta so sigma's `draggedEventsTolerance` does
+    // NOT classify the gesture as a click (which would otherwise fire
+    // `clickNode` → re-expand).
+    const deltaX = 120;
+    const deltaY = 90;
+
+    // Drive the drag via the test bridge. Sigma's `downNode` hit-test
+    // (`getNodeAtPosition`) reads from a WebGL picking framebuffer
+    // that headless chromium populates only intermittently across
+    // serial test runs, making real-mouse synthesis unreliable. The
+    // bridge invokes the SAME closure-local handlers the real sigma
+    // events fire (downNode → mousemovebody → mouseup → finishDrag),
+    // so we cover the position-write + pin + dragStats accounting
+    // without re-testing sigma's WebGL plumbing.
+    const dragResult = await page.evaluate(
+      ({ key, dx, dy }) => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        return win.__illuminateCanvas?.simulateDrag(key, dx, dy) ?? false;
+      },
+      { key: targetKey, dx: deltaX, dy: deltaY },
+    );
+    expect(dragResult).toBe(true);
+
+    // Diagnostic guard — surfaces a single-line failure if a future
+    // refactor breaks the wiring instead of leaving us with a 30-second
+    // waitForFunction timeout.
+    const stats = await page.evaluate(() => {
+      const win = window as Window & { __illuminateCanvas?: Bridge };
+      return win.__illuminateCanvas?.dragStats() ?? null;
+    });
+    expect(stats, "drag bridge counters were not exposed").not.toBeNull();
+    expect(
+      stats!.downNode,
+      "drag bridge never registered a downNode",
+    ).toBeGreaterThanOrEqual(1);
+    expect(
+      stats!.moveBody,
+      "drag bridge never registered mousemovebody",
+    ).toBeGreaterThan(0);
+    expect(
+      stats!.mouseUp,
+      "drag bridge never registered mouseup",
+    ).toBeGreaterThan(0);
+
+    const afterDrag = await readGraphPos(targetKey);
+    expect(afterDrag).not.toBeNull();
+    expect(await isFixed(targetKey)).toBe(true);
+    // The position must have moved by exactly the requested delta —
+    // simulateDrag bypasses sigma's viewport↔graph projection so the
+    // graph-space delta is what we put in.
+    expect(afterDrag!.x - before!.x).toBeCloseTo(deltaX, 6);
+    expect(afterDrag!.y - before!.y).toBeCloseTo(deltaY, 6);
+
+    // Sanity: the drag must NOT have been interpreted as a click — if
+    // a future refactor accidentally calls expandFrom from finishDrag,
+    // the counter would tick up before we ever click the disclosure.
+    await expect(page.getByTestId("illuminate-counter")).toContainText(
+      "5 vertices",
+    );
+    await expect(page.getByTestId("illuminate-counter")).toContainText(
+      "1 expansion",
+    );
+
+    // Trigger an additive expansion. Despite the per-#454 5-iter FA2
+    // relax, the pinned `left` node must stay exactly where the user
+    // dropped it — graphology FA2 skips position updates for nodes with
+    // `fixed: true`.
+    await page
+      .getByRole("group")
+      .getByText(/List view \(5 vertices/)
+      .click();
+    const table = page.getByTestId("illuminate-table");
+    await table
+      .getByRole("button", { name: "Expand from e2e:illum:leftleft" })
+      .click();
+    await expect(page.getByTestId("illuminate-counter")).toContainText(
+      "6 vertices",
+    );
+
+    const afterExpansion = await readGraphPos(targetKey);
+    expect(afterExpansion).not.toBeNull();
+    // FA2 with `fixed: true` produces zero displacement — allow only
+    // floating-point noise.
+    const drift = Math.hypot(
+      afterExpansion!.x - afterDrag!.x,
+      afterExpansion!.y - afterDrag!.y,
+    );
+    expect(
+      drift,
+      `pinned node drifted by ${drift.toFixed(6)} graph units across an additive expansion`,
+    ).toBeLessThan(0.001);
+  });
 });

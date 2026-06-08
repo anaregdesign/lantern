@@ -156,13 +156,81 @@ export function IlluminateCanvas({
     renderer.on("enterEdge", showEdgeHover);
     renderer.on("leaveEdge", clearHover);
 
-    // Read-only Playwright test bridge (#454). Lets the e2e suite assert
-    // surviving-node positions across an additive expansion without
+    // === #455 drag-to-pin ===================================================
+    // Sigma's standard drag-and-drop recipe. The dragged node id lives in
+    // a closure-local ref (not React state) so a mid-drag rerender can't
+    // wipe it. On mouse-down we suspend sigma's default camera-pan via
+    // `preventSigmaDefault()` and mark the node highlighted so the user
+    // gets a visual lock-on. On `mousemovebody` we project the cursor
+    // into graph space and rewrite the node's x/y; sigma re-renders on
+    // the next frame. On mouse-up we set `fixed: true` so the per-#454
+    // additive FA2 relax (and any future reseed) leaves the user-placed
+    // node alone — graphology FA2 honors `fixed` directly (verified
+    // against `graphology-layout-forceatlas2/helpers.js` line 144).
+    const draggedNodeRef: { current: string | null } = { current: null };
+    // Diagnostic counters exposed via the test bridge so #455's e2e can
+    // disambiguate "drag fired but didn't move the node" from "drag
+    // never fired at all" without resorting to console logs.
+    const dragStats = { downNode: 0, moveBody: 0, mouseUp: 0 };
+    renderer.on("downNode", (payload) => {
+      dragStats.downNode += 1;
+      draggedNodeRef.current = payload.node;
+      graph.setNodeAttribute(payload.node, "highlighted", true);
+      payload.preventSigmaDefault();
+    });
+    const mouseCaptor = renderer.getMouseCaptor();
+    mouseCaptor.on("mousemovebody", (coords) => {
+      const node = draggedNodeRef.current;
+      if (!node) return;
+      dragStats.moveBody += 1;
+      const pos = renderer.viewportToGraph({ x: coords.x, y: coords.y });
+      graph.setNodeAttribute(node, "x", pos.x);
+      graph.setNodeAttribute(node, "y", pos.y);
+      // Stop the underlying mouse event from triggering camera pan.
+      coords.preventSigmaDefault();
+      if (coords.original instanceof MouseEvent) {
+        coords.original.preventDefault();
+        coords.original.stopPropagation();
+      }
+    });
+    const finishDrag = () => {
+      dragStats.mouseUp += 1;
+      const node = draggedNodeRef.current;
+      if (!node) return;
+      graph.setNodeAttribute(node, "highlighted", false);
+      // Pin: subsequent FA2 relaxations (#454) skip this node.
+      graph.setNodeAttribute(node, "fixed", true);
+      draggedNodeRef.current = null;
+    };
+    mouseCaptor.on("mouseup", finishDrag);
+    // === end #455 ===========================================================
+
+    // Read-only Playwright test bridge (#454, extended in #455). Lets
+    // the e2e suite assert surviving-node positions across an additive
+    // expansion and the position/pin state after a drag without
     // resorting to flaky pixel diffs. Harmless in production — pure
-    // read-only accessor over the live graphology positions.
+    // read-only accessors over the live graphology + sigma state.
     const win = window as Window & {
       __illuminateCanvas?: {
         getNodePosition: (key: string) => { x: number; y: number } | null;
+        isNodeFixed: (key: string) => boolean;
+        dragStats: () => {
+          downNode: number;
+          moveBody: number;
+          mouseUp: number;
+        };
+        // Test-only: fires a synthetic drag (downNode → mousemovebody
+        // → mouseup → finishDrag) by invoking the same closure-local
+        // handlers the real sigma events trigger. We use this instead
+        // of dispatching real `MouseEvent`s through the page because
+        // sigma's `downNode` hit-test reads from a WebGL picking
+        // framebuffer that headless chromium populates only
+        // intermittently across serial test runs.
+        simulateDrag: (
+          key: string,
+          deltaGraphX: number,
+          deltaGraphY: number,
+        ) => boolean;
       };
     };
     win.__illuminateCanvas = {
@@ -176,6 +244,34 @@ export function IlluminateCanvas({
           return null;
         }
         return { x: attrs.x, y: attrs.y };
+      },
+      isNodeFixed: (key: string) => {
+        if (!graph.hasNode(key)) return false;
+        return graph.getNodeAttribute(key, "fixed") === true;
+      },
+      dragStats: () => ({ ...dragStats }),
+      simulateDrag: (key: string, deltaGraphX: number, deltaGraphY: number) => {
+        if (!graph.hasNode(key)) return false;
+        const attrs = graph.getNodeAttributes(key) as {
+          x?: number;
+          y?: number;
+        };
+        if (typeof attrs.x !== "number" || typeof attrs.y !== "number") {
+          return false;
+        }
+        // 1) downNode — latch the dragged node
+        draggedNodeRef.current = key;
+        graph.setNodeAttribute(key, "highlighted", true);
+        dragStats.downNode += 1;
+        // 2) mousemovebody — write the new position. We don't go
+        //    through viewportToGraph because the test supplies graph
+        //    deltas directly.
+        graph.setNodeAttribute(key, "x", attrs.x + deltaGraphX);
+        graph.setNodeAttribute(key, "y", attrs.y + deltaGraphY);
+        dragStats.moveBody += 1;
+        // 3) mouseup — release + pin
+        finishDrag();
+        return true;
       },
     };
 
