@@ -313,6 +313,185 @@ describe("selectGraphView", () => {
     // falls to the default importance for non-seed/non-origin vertices.
     expect(b?.importance).toBeGreaterThan(c?.importance ?? Infinity);
   });
+
+  // ── #460 multi-source BFS hop distances ───────────────────────────
+  // The selector annotates each node with its shortest hop to ANY
+  // expansion origin, computed over the undirected projection of the
+  // live (post-TTL) edge set. The canvas uses this for hop-distance
+  // colouring (#460); the test bridge reads it through the rendered
+  // node colour in the e2e suite.
+
+  it("attaches hopDistance 0 to expansion origins and Infinity to an empty graph", () => {
+    const view = selectGraphView(INITIAL_ILLUMINATE_STATE);
+    expect(view.nodes).toEqual([]);
+    expect(view.expansionOrigins).toEqual([]);
+  });
+
+  it("assigns hopDistance 0 to the only origin and BFS hops to its reachable neighbours", () => {
+    let state = stateWithInitialSeed("a");
+    state = applyExpansion(state, {
+      expansionId: 1,
+      origin: "a",
+      vertices: [v("a"), v("b"), v("c"), v("d")],
+      edges: [e("a", "b"), e("b", "c"), e("c", "d")],
+    });
+    const view = selectGraphView(state);
+    const byId = new Map(view.nodes.map((n) => [n.id, n.hopDistance]));
+    expect(byId.get("a")).toBe(0);
+    expect(byId.get("b")).toBe(1);
+    expect(byId.get("c")).toBe(2);
+    expect(byId.get("d")).toBe(3);
+  });
+
+  it("treats edges as undirected for hop distance (matches Illuminate's symmetric step semantics)", () => {
+    let state = stateWithInitialSeed("a");
+    // All edges point AWAY from 'a' — a strictly directed BFS would
+    // never reach 'a' from 'c'. Hop distance must be 0 at 'a' and 1
+    // at 'b', 2 at 'c' under the undirected projection.
+    state = applyExpansion(state, {
+      expansionId: 1,
+      origin: "a",
+      vertices: [v("a"), v("b"), v("c")],
+      edges: [e("a", "b"), e("b", "c")],
+    });
+    // Now run a second expansion from 'c' so 'c' itself becomes hop 0,
+    // and assert the previously-1 vertex 'b' becomes hop 1 to whichever
+    // origin is closer (still 1: 'a' is hop 0 from 'a', 'b' is hop 1
+    // from BOTH origins; 'c' is hop 0 from 'c').
+    state = applyExpansion(state, {
+      expansionId: 2,
+      origin: "c",
+      vertices: [v("c")],
+      edges: [],
+    });
+    const view = selectGraphView(state);
+    const byId = new Map(view.nodes.map((n) => [n.id, n.hopDistance]));
+    expect(byId.get("a")).toBe(0);
+    expect(byId.get("b")).toBe(1);
+    expect(byId.get("c")).toBe(0);
+  });
+
+  it("picks the minimum hop across multiple origins (multi-source BFS)", () => {
+    let state = stateWithInitialSeed("a");
+    // Topology:  a — b — c — d — e — f
+    // Origins: 'a' and 'f'. Expected hops: a=0, b=1, c=2, d=2, e=1, f=0.
+    state = applyExpansion(state, {
+      expansionId: 1,
+      origin: "a",
+      vertices: [v("a"), v("b"), v("c"), v("d"), v("e"), v("f")],
+      edges: [e("a", "b"), e("b", "c"), e("c", "d"), e("d", "e"), e("e", "f")],
+    });
+    state = applyExpansion(state, {
+      expansionId: 2,
+      origin: "f",
+      vertices: [v("f")],
+      edges: [],
+    });
+    const view = selectGraphView(state);
+    const byId = new Map(view.nodes.map((n) => [n.id, n.hopDistance]));
+    expect(byId.get("a")).toBe(0);
+    expect(byId.get("b")).toBe(1);
+    expect(byId.get("c")).toBe(2);
+    expect(byId.get("d")).toBe(2);
+    expect(byId.get("e")).toBe(1);
+    expect(byId.get("f")).toBe(0);
+  });
+
+  it("assigns Infinity to vertices disconnected from every origin", () => {
+    // Two components: {a, b} reachable from 'a'; {x, y} an orphan
+    // subgraph that was somehow merged in (defensive — shouldn't
+    // happen with current server behaviour but the selector must not
+    // throw).
+    const state: IlluminateState = {
+      ...INITIAL_ILLUMINATE_STATE,
+      initialSeed: "a",
+      accumulator: {
+        vertices: new Map([
+          ["a", { vertex: v("a"), receivedAtMs: 1, expansionIndexes: [0] }],
+          ["b", { vertex: v("b"), receivedAtMs: 1, expansionIndexes: [0] }],
+          ["x", { vertex: v("x"), receivedAtMs: 1, expansionIndexes: [0] }],
+          ["y", { vertex: v("y"), receivedAtMs: 1, expansionIndexes: [0] }],
+        ]),
+        edges: new Map([
+          [
+            "a→b",
+            { edge: e("a", "b"), receivedAtMs: 1, expansionIndexes: [0] },
+          ],
+          [
+            "x→y",
+            { edge: e("x", "y"), receivedAtMs: 1, expansionIndexes: [0] },
+          ],
+        ]),
+      },
+      expansions: [
+        {
+          id: 1,
+          origin: "a",
+          controls: INITIAL_ILLUMINATE_STATE.controls,
+          startedAtMs: 0,
+          vertexKeys: ["a", "b", "x", "y"],
+          edgeIds: ["a→b", "x→y"],
+        },
+      ],
+    };
+    const view = selectGraphView(state);
+    const byId = new Map(view.nodes.map((n) => [n.id, n.hopDistance]));
+    expect(byId.get("a")).toBe(0);
+    expect(byId.get("b")).toBe(1);
+    expect(byId.get("x")).toBe(Number.POSITIVE_INFINITY);
+    expect(byId.get("y")).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it("never grows an existing vertex's hopDistance after a new expansion (#460 monotonic shrink invariant)", () => {
+    let state = stateWithInitialSeed("a");
+    state = applyExpansion(state, {
+      expansionId: 1,
+      origin: "a",
+      vertices: [v("a"), v("b"), v("c"), v("d")],
+      edges: [e("a", "b"), e("b", "c"), e("c", "d")],
+    });
+    const firstByKey = new Map(
+      selectGraphView(state).nodes.map((n) => [n.id, n.hopDistance]),
+    );
+    // Pull in 'd' as an additional expansion origin — every other
+    // vertex's distance can only stay the same or shrink.
+    state = applyExpansion(state, {
+      expansionId: 2,
+      origin: "d",
+      vertices: [v("d")],
+      edges: [],
+    });
+    const secondByKey = new Map(
+      selectGraphView(state).nodes.map((n) => [n.id, n.hopDistance]),
+    );
+    for (const [key, before] of firstByKey) {
+      const after = secondByKey.get(key);
+      expect(after).toBeDefined();
+      expect(after!).toBeLessThanOrEqual(before);
+    }
+    // And the newly-promoted origin really did drop to 0.
+    expect(secondByKey.get("d")).toBe(0);
+  });
+
+  it("does not let an expired edge bridge a BFS gap (#459/#460 interaction)", () => {
+    let state = stateWithInitialSeed("a");
+    state = applyExpansion(state, {
+      expansionId: 1,
+      origin: "a",
+      vertices: [v("a"), v("b"), v("c")],
+      edges: [
+        // a→b is live; b→c is expired. Without filtering, 'c' would
+        // be hop 2; with filtering it must be Infinity.
+        e("a", "b", 1),
+        eWithExpiration("b", "c", isoAt(-1_000)),
+      ],
+    });
+    const view = selectGraphView(state, T_NOW);
+    const byId = new Map(view.nodes.map((n) => [n.id, n.hopDistance]));
+    expect(byId.get("a")).toBe(0);
+    expect(byId.get("b")).toBe(1);
+    expect(byId.get("c")).toBe(Number.POSITIVE_INFINITY);
+  });
 });
 
 describe("selectCanClear", () => {

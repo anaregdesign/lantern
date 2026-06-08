@@ -7,6 +7,7 @@ import type {
   GraphNode,
 } from "~/lib/client/usecase/illuminate/selectors";
 import { usePreferredTheme } from "~/lib/client/usecase/theme/use-preferred-theme";
+import { HOP_FAR_THRESHOLD, colorForHop, describeHop } from "./hop-palette";
 import { decideFa2Iterations } from "./layout-iterations";
 import {
   FALLBACK_PALETTE,
@@ -120,12 +121,7 @@ export function IlluminateCanvas({
   }, [theme]);
 
   const pickFill = useCallback(
-    (node: { isInitialSeed: boolean; isExpansionOrigin: boolean }) =>
-      node.isInitialSeed
-        ? palette.seed
-        : node.isExpansionOrigin
-          ? palette.origin
-          : palette.baseNode,
+    (node: { hopDistance: number }) => colorForHop(node.hopDistance, palette),
     [palette],
   );
 
@@ -421,6 +417,14 @@ export function IlluminateCanvas({
          */
         getRenderedEdgeColor: (key: string) => string | null;
         /**
+         * #460 test bridge: read the hop distance stamped on a node
+         * by the selector. Returns `null` if the node is unknown,
+         * `Number.POSITIVE_INFINITY` for unreachable. The e2e suite
+         * uses this to assert the multi-source BFS result without
+         * having to reverse-engineer it from rendered colours.
+         */
+        getNodeHopDistance: (key: string) => number | null;
+        /**
          * #458 test bridge: read whether the hover-focus reducer is
          * currently active (i.e., a node is focused).
          */
@@ -505,6 +509,15 @@ export function IlluminateCanvas({
         const data = renderer.getEdgeDisplayData(key);
         return data?.color ?? null;
       },
+      getNodeHopDistance: (key: string) => {
+        if (!graph.hasNode(key)) return null;
+        const attrs = graph.getNodeAttributes(key) as {
+          hopDistance?: number;
+        };
+        return typeof attrs.hopDistance === "number"
+          ? attrs.hopDistance
+          : Number.POSITIVE_INFINITY;
+      },
       hoveredNode: () => hoveredNodeId,
       tickCount: () => tickCountRef.current,
       setNow: (ms: number | null) => {
@@ -546,15 +559,20 @@ export function IlluminateCanvas({
     sigma.setSetting("labelFont", palette.labelFont);
     for (const id of graph.nodes()) {
       const attrs = graph.getNodeAttributes(id) as {
-        isInitialSeed?: boolean;
-        isExpansionOrigin?: boolean;
+        hopDistance?: number;
       };
+      // #460: re-derive the hop hue against the new palette so a theme
+      // flip recolours every node without re-running the reconcile
+      // effect. Missing/invalid `hopDistance` falls through to the
+      // unreachable tone via `colorForHop`'s defensive branch.
       graph.setNodeAttribute(
         id,
         "color",
         pickFill({
-          isInitialSeed: !!attrs.isInitialSeed,
-          isExpansionOrigin: !!attrs.isExpansionOrigin,
+          hopDistance:
+            typeof attrs.hopDistance === "number"
+              ? attrs.hopDistance
+              : Number.POSITIVE_INFINITY,
         }),
       );
     }
@@ -681,6 +699,11 @@ export function IlluminateCanvas({
           isInitialSeed: node.isInitialSeed,
           isExpansionOrigin: node.isExpansionOrigin,
           expiration,
+          // #460: stamp hop distance for the legend computation and
+          // (post-theme-flip) for the palette repaint effect to look
+          // up against the new palette.
+          hopDistance: node.hopDistance,
+          firstSeenExpansion: node.firstSeenExpansion,
         });
       } else {
         const { x, y } = pickInitialPosition({
@@ -699,6 +722,8 @@ export function IlluminateCanvas({
           isInitialSeed: node.isInitialSeed,
           isExpansionOrigin: node.isExpansionOrigin,
           expiration,
+          hopDistance: node.hopDistance,
+          firstSeenExpansion: node.firstSeenExpansion,
         });
       }
     }
@@ -756,12 +781,107 @@ export function IlluminateCanvas({
     [isBusy],
   );
 
+  // #460: hop-distance legend buckets. Recomputed whenever the
+  // accumulator changes (i.e. on the same trigger as the reconcile
+  // effect), so the counts stay in lockstep with what's rendered.
+  // Bucket order matches the palette ramp: origin (0) → 1 → 2 → far
+  // (≥3) → unreachable (∞). Buckets with zero count are hidden so the
+  // legend stays compact in the common case (most graphs have no
+  // unreachables, and many won't have anything past 2 hops).
+  const legendBuckets = useMemo(() => {
+    let origin = 0;
+    let oneHop = 0;
+    let twoHop = 0;
+    let far = 0;
+    let unreachable = 0;
+    for (const node of nodes) {
+      const h = node.hopDistance;
+      if (!Number.isFinite(h) || h < 0) {
+        unreachable += 1;
+      } else if (h === 0) {
+        origin += 1;
+      } else if (h === 1) {
+        oneHop += 1;
+      } else if (h === 2) {
+        twoHop += 1;
+      } else if (h >= HOP_FAR_THRESHOLD) {
+        far += 1;
+      }
+    }
+    return [
+      {
+        key: "origin" as const,
+        label: describeHop(0),
+        count: origin,
+        color: palette.hop0,
+      },
+      {
+        key: "1hop" as const,
+        label: describeHop(1),
+        count: oneHop,
+        color: palette.hop1,
+      },
+      {
+        key: "2hop" as const,
+        label: describeHop(2),
+        count: twoHop,
+        color: palette.hop2,
+      },
+      {
+        key: "far" as const,
+        label: describeHop(HOP_FAR_THRESHOLD),
+        count: far,
+        color: palette.hopFar,
+      },
+      {
+        key: "unreachable" as const,
+        label: describeHop(Number.POSITIVE_INFINITY),
+        count: unreachable,
+        color: palette.hopUnreachable,
+      },
+    ].filter((b) => b.count > 0);
+  }, [nodes, palette]);
+
   return (
     <div className={wrapperClass} data-testid="illuminate-canvas">
       <div ref={containerRef} className={styles.canvas} aria-hidden="true" />
       {empty ? (
         <div className={styles.emptyOverlay}>
           <span>No vertices to display.</span>
+        </div>
+      ) : null}
+      {!empty && legendBuckets.length > 0 ? (
+        <div
+          className={styles.legend}
+          role="img"
+          aria-label="Hop distance legend"
+          data-testid="illuminate-legend"
+          ref={(el) => {
+            if (!el) return;
+            // Pipe each bucket's resolved colour to the swatch via a
+            // CSS custom property. Avoids per-element inline styles
+            // (lint forbids them) while keeping the colours fully
+            // theme-derived.
+            for (const b of legendBuckets) {
+              el.style.setProperty(`--hop-swatch-${b.key}`, b.color);
+            }
+          }}
+        >
+          <div className={styles.legendTitle}>hop distance</div>
+          {legendBuckets.map((b) => (
+            <div
+              key={b.key}
+              className={styles.legendRow}
+              data-testid={`illuminate-legend-${b.key}`}
+            >
+              <span
+                className={`${styles.legendSwatch} ${styles[`swatch_${b.key}`]}`}
+                aria-hidden="true"
+              />
+              <span>{b.label}</span>
+              <span className={styles.legendCount}>{b.count}</span>
+            </div>
+          ))}
         </div>
       ) : null}
       {hover ? (
@@ -892,7 +1012,16 @@ function pickInitialPosition({
 }
 
 function describeVertex(node: GraphNode): string {
-  const v = node.vertex;
+  const valueText = formatVertexValue(node.vertex);
+  // #460: append the per-vertex audit trail the hop-distance encoding
+  // implies — "hop = N · first seen in expansion #M" — so the user can
+  // disambiguate "1 hop from origin A" vs "1 hop from origin B" via
+  // the same tooltip the hover focus reducer (#458) surfaces.
+  const auditText = `hop = ${describeHop(node.hopDistance)} · first seen in expansion #${node.firstSeenExpansion + 1}`;
+  return valueText ? `${valueText}\n${auditText}` : auditText;
+}
+
+function formatVertexValue(v: GraphNode["vertex"]): string {
   if (v.bool !== undefined) return `bool = ${v.bool}`;
   if (v.int32 !== undefined) return `int32 = ${v.int32}`;
   if (v.int64 !== undefined) return `int64 = ${v.int64}`;
