@@ -15,6 +15,13 @@ import {
   resolvePalette,
   type SigmaPalette,
 } from "./palette";
+import {
+  applyTtlFade,
+  applyWarningTint,
+  computeTtlFraction,
+  isInWarningWindow,
+  warningUrgency,
+} from "./ttl-decay";
 import styles from "./IlluminateCanvas.module.css";
 
 export interface IlluminateCanvasProps {
@@ -66,6 +73,32 @@ export function IlluminateCanvas({
    * cheap 5-iter relax and surviving vertices stay put.
    */
   const previousNodeIdsRef = useRef<Set<string>>(new Set());
+  /**
+   * Wall clock the TTL reducer reads on every frame (#459). Bumped by
+   * the 1 Hz tick effect below; the mount effect captures `.current`
+   * inside the reducer so a single value flows from the tick into both
+   * the node and edge reducers without re-installing them.
+   *
+   * Kept as a ref (not React state) so a tick doesn't rerender the
+   * canvas \u2014 the only observable effect of a tick is the reducer
+   * output, which sigma picks up via the explicit `refresh()` call.
+   */
+  const nowRef = useRef<number>(Date.now());
+  /**
+   * Test-only override for {@link nowRef}. When set, the tick effect
+   * reads from this instead of `Date.now()` so e2e tests can simulate
+   * the passage of time without waiting real seconds. Production code
+   * never writes here.
+   */
+  const nowOverrideRef = useRef<number | null>(null);
+  /**
+   * Diagnostic counter exposed via the test bridge: how many TTL
+   * refresh ticks have actually executed. The e2e suite uses this to
+   * verify that the tick pauses while `document.visibilityState ===
+   * "hidden"` (acceptance criterion 5) without having to wait real
+   * wall-clock seconds.
+   */
+  const tickCountRef = useRef<number>(0);
   const [hover, setHover] = useState<HoverState | null>(null);
   const [palette, setPalette] = useState<SigmaPalette>(FALLBACK_PALETTE);
   // The mount effect runs ONCE, so any palette swatch read inside the
@@ -164,8 +197,39 @@ export function IlluminateCanvas({
       renderer.refresh();
     };
     renderer.setSetting("nodeReducer", (key, data) => {
-      if (focusSet === null) return data;
-      if (focusSet.has(key)) return data;
+      // === #459 TTL alpha (composition note) ============================
+      // Composition order is hop hue (#460) \u2192 TTL alpha (#459) \u2192 hover
+      // dim (#458). TTL fade applies first so the hover dim's solid
+      // grey swatch can override it for out-of-focus nodes \u2014 we don't
+      // want a dim node to "double-fade" and disappear entirely.
+      const attrs = data as {
+        color: string;
+        expiration?: string | null;
+      };
+      const nowMs = nowRef.current;
+      const expiration = attrs.expiration ?? undefined;
+      const fraction = computeTtlFraction(expiration, nowMs);
+      // Compute the TTL-tinted, faded color once. Falls through to
+      // `attrs.color` when there's no expiration.
+      let ttlColor = attrs.color;
+      if (fraction !== null) {
+        // Warning window: red-tint the base before fading so the
+        // surviving alpha communicates urgency, not just decay. The
+        // spec asks for a "pulsing red halo" \u2014 we deliver the simpler
+        // red tint here and leave the halo to a follow-up (it requires
+        // a custom WebGL node program; out of scope for #459).
+        const baseColor = isInWarningWindow(expiration, nowMs)
+          ? applyWarningTint(attrs.color, warningUrgency(expiration, nowMs))
+          : attrs.color;
+        ttlColor = applyTtlFade(baseColor, fraction);
+      }
+      // === end #459 ===================================================
+      if (focusSet === null) {
+        return fraction !== null ? { ...data, color: ttlColor } : data;
+      }
+      if (focusSet.has(key)) {
+        return fraction !== null ? { ...data, color: ttlColor } : data;
+      }
       return {
         ...data,
         color: paletteRef.current.dimNode,
@@ -179,12 +243,27 @@ export function IlluminateCanvas({
       };
     });
     renderer.setSetting("edgeReducer", (key, data) => {
-      if (focusSet === null || hoveredNodeId === null) return data;
+      // === #459 TTL alpha (composition note same as nodeReducer) ========
+      const attrs = data as { color: string; expiration?: string | null };
+      const nowMs = nowRef.current;
+      const expiration = attrs.expiration ?? undefined;
+      const fraction = computeTtlFraction(expiration, nowMs);
+      let ttlColor = attrs.color;
+      if (fraction !== null) {
+        ttlColor = applyTtlFade(attrs.color, fraction);
+      }
+      // === end #459 ===================================================
+      if (focusSet === null || hoveredNodeId === null) {
+        return fraction !== null ? { ...data, color: ttlColor } : data;
+      }
       const [src, dst] = graph.extremities(key);
-      // Incident edges stay at full saturation so the local subgraph
-      // structure is obvious.
+      // Incident edges stay at their TTL-faded saturation so the local
+      // subgraph structure is obvious; the fade still communicates
+      // remaining lifetime.
       if (src === hoveredNodeId || dst === hoveredNodeId) {
-        return { ...data, zIndex: 1 };
+        return fraction !== null
+          ? { ...data, color: ttlColor, zIndex: 1 }
+          : { ...data, zIndex: 1 };
       }
       return { ...data, color: paletteRef.current.dimEdge, zIndex: 0 };
     });
@@ -346,6 +425,29 @@ export function IlluminateCanvas({
          * currently active (i.e., a node is focused).
          */
         hoveredNode: () => string | null;
+        /**
+         * #459 test bridge: how many TTL refresh ticks have actually
+         * executed. The e2e suite uses this to verify the tick pauses
+         * while the tab is hidden \u2014 polling for the count to stay
+         * flat is faster than waiting on real wall-clock seconds.
+         */
+        tickCount: () => number;
+        /**
+         * #459 test bridge: override the wall clock the TTL reducer
+         * reads, then force a refresh so the new value is applied.
+         * Lets the e2e test simulate elapsed time without waiting.
+         * Pass `null` to release the override and resume reading
+         * `Date.now()` on the next tick.
+         */
+        setNow: (ms: number | null) => void;
+        /**
+         * #459 test bridge: synchronously execute a TTL refresh tick
+         * (bumps `nowRef` if no override is active, increments the
+         * tick counter, then refreshes sigma). Lets the e2e
+         * deterministically observe the post-tick color without
+         * waiting on `setInterval`.
+         */
+        forceTick: () => void;
       };
     };
     win.__illuminateCanvas = {
@@ -404,6 +506,21 @@ export function IlluminateCanvas({
         return data?.color ?? null;
       },
       hoveredNode: () => hoveredNodeId,
+      tickCount: () => tickCountRef.current,
+      setNow: (ms: number | null) => {
+        nowOverrideRef.current = ms;
+        // Push the override into `nowRef` immediately so the next
+        // forceTick (or the next observable refresh) sees it without
+        // waiting for the scheduled interval to fire.
+        if (ms !== null) {
+          nowRef.current = ms;
+        }
+      },
+      forceTick: () => {
+        nowRef.current = nowOverrideRef.current ?? Date.now();
+        tickCountRef.current += 1;
+        renderer.refresh();
+      },
     };
 
     return () => {
@@ -446,6 +563,63 @@ export function IlluminateCanvas({
     }
     sigma.refresh();
   }, [palette, pickFill]);
+
+  // === #459 TTL refresh tick ============================================
+  // Bump `nowRef` once a second and refresh sigma so the TTL fade
+  // reducer re-evaluates against the new wall clock. Pauses when the
+  // tab is hidden \u2014 there's no point burning a render/sec when the
+  // user isn't watching, and per spec acceptance criterion 5 it MUST
+  // pause so we don't keep React's event loop spinning on
+  // background tabs.
+  //
+  // The cadence (1 Hz) is deliberately coarse. The TTL alpha fades
+  // over 10 minutes (see LIFETIME_BUDGET_MS in ttl-decay.ts), so a
+  // per-second refresh changes the alpha byte by at most
+  // 255 / 600 \u2248 0.42 \u2014 imperceptible per tick, smooth in
+  // aggregate. The warning-window red tint sweeps over 60 s so it
+  // remains visually obvious without a higher refresh rate.
+  useEffect(() => {
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+    const sigma = sigmaRef.current;
+    const tick = () => {
+      nowRef.current = nowOverrideRef.current ?? Date.now();
+      tickCountRef.current += 1;
+      sigmaRef.current?.refresh();
+    };
+    const start = () => {
+      if (intervalId !== null) return;
+      // Capture a baseline tick on (re)start so the test bridge and
+      // the user see an immediate fade after a tab switch instead of
+      // waiting a full second.
+      tick();
+      intervalId = setInterval(tick, 1000);
+    };
+    const stop = () => {
+      if (intervalId === null) return;
+      clearInterval(intervalId);
+      intervalId = null;
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        stop();
+      } else {
+        start();
+      }
+    };
+    // Only start if we have a sigma instance (post-mount) AND the tab
+    // is currently visible. The mount effect ordering guarantees
+    // `sigmaRef.current` is set by the time this effect runs because
+    // both effects depend on the same render pass.
+    if (sigma !== null && document.visibilityState !== "hidden") {
+      start();
+    }
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, []);
+  // === end #459 ==========================================================
 
   // Reconcile the graph with the latest view model. We diff by ID rather
   // than clearing so ForceAtlas2 can keep the positions of nodes that
@@ -493,6 +667,11 @@ export function IlluminateCanvas({
       const size = 4 + node.importance * 10;
       const color = pickFill(node);
       const detail = describeVertex(node);
+      // #459: stash the protobuf-JSON expiration on the graphology
+      // node so the per-tick reducer can read it without crossing back
+      // through the selector. `null` means "no expiration", same
+      // semantics as `Vertex.expiration === undefined`.
+      const expiration = node.vertex.expiration ?? null;
       if (graph.hasNode(node.id)) {
         graph.mergeNodeAttributes(node.id, {
           label: node.label,
@@ -501,6 +680,7 @@ export function IlluminateCanvas({
           detail,
           isInitialSeed: node.isInitialSeed,
           isExpansionOrigin: node.isExpansionOrigin,
+          expiration,
         });
       } else {
         const { x, y } = pickInitialPosition({
@@ -518,15 +698,19 @@ export function IlluminateCanvas({
           detail,
           isInitialSeed: node.isInitialSeed,
           isExpansionOrigin: node.isExpansionOrigin,
+          expiration,
         });
       }
     }
     for (const edge of edges) {
+      // #459: edges have their own expiration; mirror the node treatment.
+      const expiration = edge.edge.expiration ?? null;
       if (graph.hasEdge(edge.id)) {
         graph.mergeEdgeAttributes(edge.id, {
           size: 1 + Math.min(4, edge.weight),
           label: edge.id,
           detail: `weight = ${edge.weight}`,
+          expiration,
         });
       } else {
         graph.addEdgeWithKey(edge.id, edge.source, edge.target, {
@@ -534,6 +718,7 @@ export function IlluminateCanvas({
           color: palette.edge,
           label: edge.id,
           detail: `weight = ${edge.weight}`,
+          expiration,
         });
       }
     }

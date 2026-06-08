@@ -626,4 +626,186 @@ test.describe("/illuminate", () => {
     expect(await setHover("e2e:illum:does-not-exist")).toBe(false);
     expect(await hoveredNow()).toBeNull();
   });
+
+  test("TTL decay fades vertex opacity and pauses the tick on hidden tabs (#459)", async ({
+    page,
+  }) => {
+    // Seed a tiny graph specifically for #459 so the TTL fixtures
+    // don't interfere with the rest of the spec's neighbourhoods.
+    // The expiration is set ~10 minutes in the future so on the first
+    // render `computeTtlFraction \u2248 1.0` (full alpha), then we use
+    // the test bridge's `setNow` to fast-forward without waiting on
+    // a real wall clock.
+    //
+    // LIFETIME_BUDGET_MS = 600_000 ms (see ttl-decay.ts). At T+0 the
+    // fraction is 1; at T+5min it's 0.5; at T+10min it's 0; past that
+    // the selector drops the vertex on the next refetch (we don't
+    // exercise that path here \u2014 it has a unit test in selectors).
+    const ttlSeed = "e2e:illum:ttl-seed";
+    const ttlEdge = "e2e:illum:ttl-edge";
+    const baseNow = Date.now();
+    const tenMinutes = 10 * 60_000;
+    const expirationIso = new Date(baseNow + tenMinutes).toISOString();
+    await putVertices([
+      { key: ttlSeed, string: "ttl-seed", expiration: expirationIso },
+      { key: ttlEdge, string: "ttl-edge", expiration: expirationIso },
+    ]);
+    await putEdges([
+      {
+        tail: ttlSeed,
+        head: ttlEdge,
+        weight: 1,
+        expiration: expirationIso,
+      },
+    ]);
+
+    const seedParam = encodeURIComponent(ttlSeed);
+    await page.goto(`/illuminate?seed=${seedParam}`);
+    await expect(page.getByTestId("illuminate-canvas")).toBeVisible();
+    await expect(page.getByTestId("illuminate-counter")).toContainText(
+      "2 vertices",
+    );
+
+    type Bridge = {
+      getRenderedNodeColor: (k: string) => string | null;
+      getRenderedEdgeColor: (k: string) => string | null;
+      tickCount: () => number;
+      setNow: (ms: number | null) => void;
+      forceTick: () => void;
+    };
+    await page.waitForFunction(() => {
+      const win = window as Window & { __illuminateCanvas?: Bridge };
+      return !!win.__illuminateCanvas;
+    });
+
+    const readNode = (k: string): Promise<string | null> =>
+      page.evaluate((key) => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        return win.__illuminateCanvas?.getRenderedNodeColor(key) ?? null;
+      }, k);
+    const tickCount = (): Promise<number> =>
+      page.evaluate(() => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        return win.__illuminateCanvas?.tickCount() ?? -1;
+      });
+    const setNow = (ms: number | null): Promise<void> =>
+      page.evaluate((value) => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        win.__illuminateCanvas?.setNow(value);
+      }, ms);
+    const forceTick = (): Promise<void> =>
+      page.evaluate(() => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        win.__illuminateCanvas?.forceTick();
+      });
+
+    // --- Part 1: opacity fades as time advances --------------------------
+    //
+    // Pin "now" to T0 (the baseline we sent to the server) so the
+    // first tick reports `fraction \u2248 1.0` and the color carries an
+    // alpha byte near `ff`.
+    await setNow(baseNow);
+    await forceTick();
+    const colorAtT0 = await readNode(ttlSeed);
+    expect(
+      colorAtT0,
+      `expected a rendered color for ${ttlSeed} at T0`,
+    ).not.toBeNull();
+    // applyTtlFade always returns 9 chars ('#' + RRGGBBAA) when the
+    // vertex has an expiration. The alpha byte (last two chars) MUST
+    // be high (>= 0xf0) at T0 because remaining lifetime is the full
+    // budget.
+    expect(colorAtT0!).toMatch(/^#[0-9a-f]{8}$/i);
+    const alphaT0 = parseInt(colorAtT0!.slice(7, 9), 16);
+    expect(alphaT0).toBeGreaterThanOrEqual(0xf0);
+
+    // Fast-forward to T+5min: half the budget is gone, so the alpha
+    // byte should drop into the (0.25 + 0.5 * 0.75) * 255 \u2248 159
+    // territory. We assert a generous window (130..200) to tolerate
+    // tiny clock skew and rounding.
+    await setNow(baseNow + 5 * 60_000);
+    await forceTick();
+    const colorAtT5 = await readNode(ttlSeed);
+    expect(colorAtT5).not.toBeNull();
+    expect(colorAtT5!).toMatch(/^#[0-9a-f]{8}$/i);
+    const alphaT5 = parseInt(colorAtT5!.slice(7, 9), 16);
+    expect(alphaT5).toBeLessThan(alphaT0);
+    expect(alphaT5).toBeGreaterThanOrEqual(130);
+    expect(alphaT5).toBeLessThanOrEqual(200);
+
+    // Fast-forward to T+10min: zero budget remaining \u2192 fraction = 0,
+    // alpha clamps to MIN_ALPHA (0.25 * 255 \u2248 64). Past expiry the
+    // selector would drop the node on the next fetch, but the
+    // reducer is the only layer running here so it pins at MIN_ALPHA.
+    await setNow(baseNow + tenMinutes);
+    await forceTick();
+    const colorAtTExpiry = await readNode(ttlSeed);
+    expect(colorAtTExpiry).not.toBeNull();
+    expect(colorAtTExpiry!).toMatch(/^#[0-9a-f]{8}$/i);
+    const alphaTExpiry = parseInt(colorAtTExpiry!.slice(7, 9), 16);
+    expect(alphaTExpiry).toBeLessThan(alphaT5);
+    // MIN_ALPHA rounds to 64. Allow \u00b12 for rounding.
+    expect(alphaTExpiry).toBeGreaterThanOrEqual(62);
+    expect(alphaTExpiry).toBeLessThanOrEqual(66);
+
+    // --- Part 2: hidden tab pauses the tick ------------------------------
+    //
+    // Release the clock override so the production tick path is
+    // fully exercised, then wait for the interval to fire at least
+    // once.
+    await setNow(null);
+    const tickBefore = await tickCount();
+    // The 1Hz interval starts on mount with an immediate baseline
+    // tick (see `start()` in IlluminateCanvas.tsx). Wait long enough
+    // for at least one scheduled tick so our "before" sample is
+    // stable. 1500ms allows for 1\u20132 ticks (1 scheduled + maybe a
+    // visibilitychange-induced start).
+    await page.waitForTimeout(1500);
+    const tickAfterVisible = await tickCount();
+    expect(
+      tickAfterVisible,
+      `expected the tick counter to advance while the tab is visible (before=${tickBefore} after=${tickAfterVisible})`,
+    ).toBeGreaterThan(tickBefore);
+
+    // Flip visibility to hidden. The component listens on
+    // `visibilitychange` and calls `clearInterval` so no more ticks
+    // should fire. We can't actually hide the page (Playwright keeps
+    // it foregrounded), so we monkey-patch `document.visibilityState`
+    // to report "hidden" AND dispatch the event manually \u2014 the
+    // production code only reads `document.visibilityState` from
+    // inside the handler so the spoof is observationally
+    // indistinguishable from a real hide.
+    await page.evaluate(() => {
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        get: () => "hidden",
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    const tickAtHide = await tickCount();
+    // Wait long enough for a real tick to have fired had we NOT
+    // stopped the interval.
+    await page.waitForTimeout(1500);
+    const tickAfterHidden = await tickCount();
+    expect(
+      tickAfterHidden,
+      `tick counter MUST NOT advance while the tab is hidden (atHide=${tickAtHide} afterHidden=${tickAfterHidden})`,
+    ).toBe(tickAtHide);
+
+    // Restore visibility and confirm the tick resumes. The
+    // visibilitychange handler runs `start()` which immediately
+    // ticks once (the "baseline" tick), so the count must advance.
+    await page.evaluate(() => {
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        get: () => "visible",
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    const tickAfterRestore = await tickCount();
+    expect(
+      tickAfterRestore,
+      "expected the immediate baseline tick on visibilitychange to advance the counter",
+    ).toBeGreaterThan(tickAfterHidden);
+  });
 });
