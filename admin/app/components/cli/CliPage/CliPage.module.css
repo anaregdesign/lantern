@@ -1,4 +1,21 @@
+/* The /cli root.
+ *
+ * Two layout modes (#465):
+ *   data-mode="cli"   : no graph yet — full-width terminal, splitter hidden.
+ *   data-mode="split" : graph present and viewport ≥ 1024px — two-column
+ *                       grid with a draggable splitter between the canvas
+ *                       (left) and the toolbar/scrollback/input stack
+ *                       (right). Below 1024px the layout falls back to the
+ *                       legacy single-column stack regardless of mode.
+ *
+ * The grid template columns are driven by `--cli-canvas-frac` and
+ * `--cli-right-frac` written from the `useCliSplitter` hook. Defaults are
+ * declared on the host so the layout has a sensible value before the hook
+ * mounts and on first paint after SSR.
+ */
 .root {
+  --cli-canvas-frac: 0.6fr;
+  --cli-right-frac: 0.4fr;
   display: flex;
   flex-direction: column;
   height: calc(100vh - 120px);
@@ -7,15 +24,69 @@
   padding: var(--spacingVerticalL, 16px);
 }
 
-/* Canvas panel rendered above the scrollback when the most recent
-   command produced graph data. The body owns ~45% of the panel and
-   shrinks gracefully on short viewports; the scrollback still has at
-   least a few lines of room thanks to min-height on `.scrollback`. */
-.canvasPanel {
+.root[data-dragging="true"] {
+  user-select: none;
+  cursor: col-resize;
+}
+
+/* Left column wraps the canvas panel; on narrow viewports it carries the
+   45% sizing the canvasPanel used to own. */
+.leftColumn {
   display: flex;
   flex-direction: column;
   flex: 0 0 45%;
   min-height: 240px;
+  min-width: 0;
+}
+
+/* Right column wraps the toolbar / scrollback / confirm bar / input row.
+   On narrow viewports it fills the remaining vertical space. */
+.rightColumn {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacingVerticalM, 12px);
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* Splitter handle — hidden by default; only visible in `split` mode at
+   ≥ 1024px (see media query at the bottom of the file). The thin visible
+   strip is 4px wide; an invisible ::before extends the hit target to 12px
+   so it's easy to grab without making the visible line thick. */
+.splitter {
+  display: none;
+  position: relative;
+  background: var(--colorNeutralStroke2, #e0e0e0);
+  cursor: col-resize;
+  outline: none;
+}
+
+.splitter::before {
+  content: "";
+  position: absolute;
+  inset: 0 -4px;
+  /* Invisible hit target, 12px wide centered on the visible strip. */
+}
+
+.splitter:hover,
+.splitter:focus-visible,
+.root[data-dragging="true"] .splitter {
+  background: var(--colorBrandStroke1, #0f6cbd);
+}
+
+.splitter:focus-visible {
+  outline: 2px solid var(--colorStrokeFocus2, #115ea3);
+  outline-offset: 1px;
+}
+
+/* Canvas panel rendered inside `.leftColumn` when the most recent
+   command produced graph data. Fills the column. */
+.canvasPanel {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
   border: 1px solid var(--colorNeutralStroke2, #e0e0e0);
   border-radius: var(--borderRadiusMedium, 6px);
   background: var(--colorNeutralBackground1, #ffffff);
@@ -144,4 +215,35 @@
 .confirmText {
   flex: 1 1 auto;
   font-size: var(--fontSizeBase200, 12px);
+}
+
+/* Wide viewports — switch to the two-column grid when a graph is present. */
+@media (min-width: 1024px) {
+  .root[data-mode="split"] {
+    display: grid;
+    grid-template-columns: var(--cli-canvas-frac, 0.6fr) 4px var(
+        --cli-right-frac,
+        0.4fr
+      );
+    grid-template-rows: 1fr;
+    gap: 0;
+  }
+
+  .root[data-mode="split"] > .leftColumn {
+    flex: 1 1 auto;
+    min-height: 0;
+    grid-column: 1;
+  }
+
+  .root[data-mode="split"] > .splitter {
+    display: block;
+    grid-column: 2;
+    height: 100%;
+  }
+
+  .root[data-mode="split"] > .rightColumn {
+    flex: 1 1 auto;
+    grid-column: 3;
+    padding-left: var(--spacingHorizontalM, 12px);
+  }
 }

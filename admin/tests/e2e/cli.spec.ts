@@ -204,4 +204,126 @@ test.describe("/cli", () => {
     );
     await expect(input).toBeEnabled();
   });
+
+  // #465 — splitter L/R layout. The splitter is hidden while no graph
+  // has been rendered yet; once a graph-producing command lands, the
+  // page switches to a two-column grid with the canvas on the left,
+  // the toolbar/scrollback/input on the right, and a draggable splitter
+  // between them.
+  test("splitter is hidden until a graph-producing command lands (#465)", async ({
+    page,
+  }) => {
+    await page.goto("/cli");
+    await expect(page.getByTestId("cli-splitter")).toHaveCount(0);
+    // data-mode reads "cli" while no graph is present.
+    await expect(page.getByTestId("cli-root")).toHaveAttribute(
+      "data-mode",
+      "cli",
+    );
+    const input = page.getByTestId("cli-input");
+    await input.fill("get vertex cli:alpha");
+    await input.press("Enter");
+    await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
+    await expect(page.getByTestId("cli-root")).toHaveAttribute(
+      "data-mode",
+      "split",
+    );
+    await expect(page.getByTestId("cli-splitter")).toBeVisible();
+  });
+
+  test("dragging the splitter changes the column ratio and persists it (#465)", async ({
+    page,
+  }) => {
+    // Playwright's `fullyParallel` runs each test in a fresh browser
+    // context, so localStorage starts empty and the splitter takes
+    // the default 0.6 ratio without any explicit cleanup.
+    await page.goto("/cli");
+    const input = page.getByTestId("cli-input");
+    await input.fill("get vertex cli:alpha");
+    await input.press("Enter");
+    const splitter = page.getByTestId("cli-splitter");
+    await expect(splitter).toBeVisible();
+    // Initial aria-valuenow reflects the 60% default.
+    await expect(splitter).toHaveAttribute("aria-valuenow", "60");
+    // Drag the handle ~150px to the left and verify the ratio shrank.
+    // 150px against the ~1100px-wide root is well inside the 360px
+    // min-pane clamp on both sides.
+    const box = await splitter.boundingBox();
+    if (!box) throw new Error("splitter has no bounding box");
+    const startX = box.x + box.width / 2;
+    const startY = box.y + box.height / 2;
+    await page.mouse.move(startX, startY);
+    await page.mouse.down();
+    await page.mouse.move(startX - 150, startY, { steps: 12 });
+    await page.mouse.up();
+    // aria-valuenow should now be noticeably below 60 and well above
+    // the min-pane clamp.
+    const afterDrag = Number(await splitter.getAttribute("aria-valuenow"));
+    expect(afterDrag).toBeLessThan(55);
+    expect(afterDrag).toBeGreaterThan(35);
+    // localStorage holds the persisted value.
+    const stored = await page.evaluate(() =>
+      window.localStorage.getItem("cli.splitRatio"),
+    );
+    expect(stored).not.toBeNull();
+    const storedNum = Number.parseFloat(stored ?? "");
+    expect(storedNum).toBeGreaterThan(0);
+    expect(storedNum).toBeLessThan(1);
+    // Reload and verify the splitter starts at the persisted ratio.
+    await page.reload();
+    await page.getByTestId("cli-input").fill("get vertex cli:alpha");
+    await page.getByTestId("cli-input").press("Enter");
+    const splitter2 = page.getByTestId("cli-splitter");
+    await expect(splitter2).toBeVisible();
+    const persisted = Number(await splitter2.getAttribute("aria-valuenow"));
+    // Should be within 1pp of the post-drag value (rounded to integer pct).
+    expect(Math.abs(persisted - afterDrag)).toBeLessThanOrEqual(1);
+  });
+
+  test("double-clicking the splitter resets to the default ratio (#465)", async ({
+    page,
+  }) => {
+    // Pre-seed a non-default ratio so the reset is observable. 0.45
+    // sits safely inside the 360px-min clamp at desktop widths.
+    await page.addInitScript(() => {
+      try {
+        window.localStorage.setItem("cli.splitRatio", "0.4500");
+      } catch {
+        // intentionally empty
+      }
+    });
+    await page.goto("/cli");
+    const input = page.getByTestId("cli-input");
+    await input.fill("get vertex cli:alpha");
+    await input.press("Enter");
+    const splitter = page.getByTestId("cli-splitter");
+    await expect(splitter).toBeVisible();
+    await expect(splitter).toHaveAttribute("aria-valuenow", "45");
+    await splitter.dblclick();
+    await expect(splitter).toHaveAttribute("aria-valuenow", "60");
+    const stored = await page.evaluate(() =>
+      window.localStorage.getItem("cli.splitRatio"),
+    );
+    expect(stored).toBeNull();
+  });
+
+  test("auto-scroll keeps the latest scrollback entry visible after a graph command (#465)", async ({
+    page,
+  }) => {
+    await page.goto("/cli");
+    const input = page.getByTestId("cli-input");
+    // Pile up enough entries that the scrollback would naturally need
+    // to scroll for the latest one to be visible.
+    for (let i = 0; i < 6; i++) {
+      await input.fill("get vertex cli:alpha");
+      await input.press("Enter");
+      await expect(page.getByTestId("cli-entry-ok").last()).toContainText(
+        "first",
+      );
+    }
+    // The most recent ok entry must be in the viewport AND scrolled
+    // into view inside the scrollback container.
+    const last = page.getByTestId("cli-entry-ok").last();
+    await expect(last).toBeInViewport();
+  });
 });
