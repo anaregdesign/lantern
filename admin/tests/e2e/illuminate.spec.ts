@@ -767,6 +767,212 @@ test.describe("/illuminate", () => {
     ).toBeGreaterThan(1);
   });
 
+  test("Seed anchor is pinned, enlarged, and hop-coloured while other nodes relayout; edges show their weight (#500)", async ({
+    page,
+  }) => {
+    const seed = encodeURIComponent("e2e:illum:hub");
+    await page.goto(`/illuminate?seed=${seed}`);
+    await expect(page.getByTestId("illuminate-toolbar")).toBeVisible();
+    const counter = page.getByTestId("illuminate-counter");
+    await expect(counter).toContainText("5 vertices");
+
+    type Pos = { x: number; y: number };
+    type Bridge = {
+      getNodePosition: (k: string) => Pos | null;
+      getRenderedNodeColor: (k: string) => string | null;
+      getNodeSize: (k: string) => number | null;
+      getEdgeLabel: (k: string) => string | null;
+      isNodeFixed: (k: string) => boolean;
+      setLayoutPaused: (paused: boolean) => void;
+      settleLayout: (maxTicks?: number) => number;
+    };
+    // `getNodeSize` + `getEdgeLabel` are the #500 additions to the
+    // bridge; waiting on the former proves the new bridge is installed.
+    await page.waitForFunction(() => {
+      const win = window as Window & { __illuminateCanvas?: Bridge };
+      return !!win.__illuminateCanvas?.getNodeSize;
+    });
+
+    const readPos = (k: string): Promise<Pos | null> =>
+      page.evaluate((key) => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        return win.__illuminateCanvas?.getNodePosition(key) ?? null;
+      }, k);
+    const readColor = (k: string): Promise<string | null> =>
+      page.evaluate((key) => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        return win.__illuminateCanvas?.getRenderedNodeColor(key) ?? null;
+      }, k);
+    const readSize = (k: string): Promise<number | null> =>
+      page.evaluate((key) => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        return win.__illuminateCanvas?.getNodeSize(key) ?? null;
+      }, k);
+    const readEdgeLabel = (k: string): Promise<string | null> =>
+      page.evaluate((key) => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        return win.__illuminateCanvas?.getEdgeLabel(key) ?? null;
+      }, k);
+    const isFixed = (k: string): Promise<boolean> =>
+      page.evaluate((key) => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        return win.__illuminateCanvas?.isNodeFixed(key) ?? false;
+      }, k);
+    const pause = (p: boolean): Promise<void> =>
+      page.evaluate((paused) => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        win.__illuminateCanvas?.setLayoutPaused(paused);
+      }, p);
+    const settle = (): Promise<number> =>
+      page.evaluate(() => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        return win.__illuminateCanvas?.settleLayout() ?? 0;
+      });
+
+    // The seed echoed by `?seed=` is the latest expansion origin, so it
+    // is THE seed anchor (都度Seed). These fixtures carry no TTL and we
+    // never hover, so the node reducer is an identity pass-through —
+    // `getRenderedNodeColor` returns the stamped colour verbatim.
+    const SEED = "e2e:illum:hub";
+
+    // Feature B: the seed is the ONLY pinned node …
+    expect(await isFixed(SEED), "seed must be pinned").toBe(true);
+    // … and, as the hop-0 origin, renders on the warm red end of the
+    // #500 red→blue hop ramp. Dropping the separate orange accent, this
+    // is now what colour-distinguishes the seed (plus its size + pin).
+    const HOP0_RED = "#d13438";
+    const HOP1_VIOLET = "#8764b8";
+    const HOP2_BLUE = "#0078d4";
+    expect(
+      await readColor(SEED),
+      "seed must render as the hop-0 red origin",
+    ).toBe(HOP0_RED);
+
+    // Feature C: the seed is strictly larger than every other node.
+    const seedSize = await readSize(SEED);
+    expect(seedSize).not.toBeNull();
+
+    const others = [
+      "e2e:illum:left",
+      "e2e:illum:right",
+      "e2e:illum:leftleft",
+      "e2e:illum:rightright",
+    ] as const;
+    const otherSizes: number[] = [];
+    for (const k of others) {
+      expect(await isFixed(k), `${k} must not be pinned`).toBe(false);
+      expect(
+        await readColor(k),
+        `${k} must not render as the hop-0 red origin`,
+      ).not.toBe(HOP0_RED);
+      const s = await readSize(k);
+      expect(s, `${k} should have a size`).not.toBeNull();
+      otherSizes.push(s!);
+    }
+    for (const s of otherSizes) {
+      expect(
+        seedSize!,
+        "seed must be larger than every other node",
+      ).toBeGreaterThan(s);
+    }
+    // Feature C (uniformity): all non-seed nodes share ONE size.
+    expect(
+      new Set(otherSizes).size,
+      "non-seed nodes must all be the same size",
+    ).toBe(1);
+
+    // The core #500 colour acceptance: origin / 1 hop / 2 hops are three
+    // obviously-different colours (red → violet → blue), not three shades
+    // of one blue. left/right are 1 hop from the hub; leftleft/rightright
+    // are 2 hops.
+    expect(await readColor("e2e:illum:left")).toBe(HOP1_VIOLET);
+    expect(await readColor("e2e:illum:right")).toBe(HOP1_VIOLET);
+    expect(await readColor("e2e:illum:leftleft")).toBe(HOP2_BLUE);
+    expect(await readColor("e2e:illum:rightright")).toBe(HOP2_BLUE);
+    expect(
+      new Set([HOP0_RED, HOP1_VIOLET, HOP2_BLUE]).size,
+      "origin/1hop/2hop must be three distinct hues",
+    ).toBe(3);
+
+    // Feature D: each edge renders its weight as the on-edge label.
+    // Edge ids follow `${tail}→${head}` (edgeIdOf); integer weights
+    // render with no decimal point (see formatEdgeWeight).
+    expect(await readEdgeLabel("e2e:illum:hub→e2e:illum:left")).toBe("1");
+    expect(await readEdgeLabel("e2e:illum:hub→e2e:illum:right")).toBe("3");
+    expect(await readEdgeLabel("e2e:illum:right→e2e:illum:rightright")).toBe(
+      "2",
+    );
+
+    // Features A + B in motion. Expanding from `left` makes `left` the
+    // new seed; its 2-hop result is {left, leftleft, leftleftleft}.
+    // `leftleft` SURVIVES the frame but is NOT the new seed, so it is
+    // free to move (Feature A — 既存ノードも動いていい); `left` is the
+    // new seed, so it is pinned and must not move (Feature B —
+    // これだけは動かない).
+    await pause(true);
+    await page
+      .getByRole("group")
+      .getByText(/List view \(5 vertices/)
+      .click();
+    const table = page.getByTestId("illuminate-table");
+    await table
+      .getByRole("button", { name: "Expand from e2e:illum:left", exact: true })
+      .click();
+    await expect(counter).toContainText("6 vertices");
+
+    const NEW_SEED = "e2e:illum:left";
+    const SURVIVOR = "e2e:illum:leftleft";
+
+    // The accent + pin + size move with the seed identity to `left`.
+    expect(await isFixed(NEW_SEED), "new seed must be pinned").toBe(true);
+    expect(await isFixed(SURVIVOR), "non-seed survivor must be free").toBe(
+      false,
+    );
+    // The red hop-0 origin colour follows the seed identity to `left`;
+    // the survivor `leftleft` is now 1 hop from the new seed, so it
+    // recolours to the violet 1-hop tier (and is NOT the red origin).
+    expect(await readColor(NEW_SEED), "new seed must be the hop-0 red").toBe(
+      HOP0_RED,
+    );
+    expect(
+      await readColor(SURVIVOR),
+      "survivor must not wear the hop-0 red origin colour",
+    ).not.toBe(HOP0_RED);
+    const newSeedSize = await readSize(NEW_SEED);
+    const survivorSize = await readSize(SURVIVOR);
+    expect(newSeedSize).not.toBeNull();
+    expect(survivorSize).not.toBeNull();
+    expect(newSeedSize!).toBeGreaterThan(survivorSize!);
+
+    // Drive the (paused) simulation to rest by hand: the pinned seed
+    // holds its EXACT coordinates while the springs relax the non-seed
+    // survivor away from where it started.
+    const seedBefore = await readPos(NEW_SEED);
+    const survivorBefore = await readPos(SURVIVOR);
+    expect(seedBefore, "new seed should have a position").not.toBeNull();
+    expect(survivorBefore, "survivor should have a position").not.toBeNull();
+    await settle();
+    const seedAfter = await readPos(NEW_SEED);
+    const survivorAfter = await readPos(SURVIVOR);
+    expect(seedAfter, "new seed vanished").not.toBeNull();
+    expect(survivorAfter, "survivor vanished").not.toBeNull();
+
+    // Feature B: pinned seed is immovable — exact equality after settle
+    // (d3-force overwrites x/y with fx/fy every tick).
+    expect(seedAfter!.x, "pinned seed x drifted").toBe(seedBefore!.x);
+    expect(seedAfter!.y, "pinned seed y drifted").toBe(seedBefore!.y);
+
+    // Feature A: the non-seed survivor is repositioned by the layout.
+    const survivorMove = Math.hypot(
+      survivorAfter!.x - survivorBefore!.x,
+      survivorAfter!.y - survivorBefore!.y,
+    );
+    expect(
+      survivorMove,
+      "non-seed survivor should be relaxed by the layout, not frozen",
+    ).toBeGreaterThan(1);
+  });
+
   test("Hover focus mode dims non-neighbours and keeps incident edges saturated (#458)", async ({
     page,
   }) => {

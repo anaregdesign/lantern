@@ -63,12 +63,14 @@ export interface SigmaPalette {
    * `hopUnreachable` covers vertices with no path to any origin (the
    * `Number.POSITIVE_INFINITY` case in `selectGraphView`).
    *
-   * Fluent token mapping (per #460 spec):
-   *   hop0          → colorBrandForeground1 (origin highlight)
-   *   hop1          → colorBrandForeground2 (single-hop ring)
-   *   hop2          → colorBrandForeground2Hover (two-hop ring)
-   *   hopFar        → desaturated neutral   (everything ≥ 3 hops)
-   *   hopUnreachable → low-chroma red       (disconnected; visually distinct)
+   * #500 made this a deliberate red→blue diverging colormap (code-side
+   * literals, not Fluent brand tokens) so the tiers are obviously
+   * distinct at a glance:
+   *   hop0          → vivid red    (origin / pinned anchor — "you are here")
+   *   hop1          → violet       (single-hop ring; midpoint of the sweep)
+   *   hop2          → azure blue   (two-hop ring)
+   *   hopFar        → deep blue    (everything ≥ 3 hops — coldest/furthest)
+   *   hopUnreachable → neutral grey (disconnected; off the warm→cool ramp)
    */
   hop0: string;
   hop1: string;
@@ -96,22 +98,32 @@ export const FALLBACK_PALETTE: SigmaPalette = {
   labelStroke: "#d1d1d1",
   labelFont:
     'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-  // #460 hop ramp. Light-theme literals — these are the swatches the
-  // canvas falls back to before FluentProvider hydrates and the test
-  // suite asserts against. The ramp moves from the Fluent brand
-  // accent (hop 0, origin) outward through brand-foreground tints to
-  // a desaturated neutral for ≥3 hops, then to a low-chroma red for
-  // unreachable. Distinct enough to read at a glance, similar enough
-  // in luminance to avoid clobbering the hover dim's contrast story.
-  hop0: "#005a9e", // colorBrandForeground1 (light)
-  hop1: "#106ebe", // colorBrandForeground2 (light)
-  hop2: "#2b88d8", // colorBrandForeground2Hover (light)
-  hopFar: "#8a8886", // colorNeutralForeground3 (light, desaturated)
-  hopUnreachable: "#a4262c", // colorPaletteRedForeground1 (light, low chroma)
+  // #500 red→blue diverging hop ramp. Deliberate code-side literals (not
+  // Fluent brand tokens): the original #460 ramp pulled hop 0/1/2 from the
+  // single-hue brand foreground ladder, which rendered as three nearly
+  // identical blues and read as "no colour coding" at all. This sweep runs
+  // warm→cool so structural distance from the origin is obvious at a
+  // glance — vivid red at the pinned anchor, through a violet midpoint, to
+  // azure then deep blue as you move outward; disconnected nodes sit off
+  // the ramp in neutral grey. Hues are far enough apart to distinguish the
+  // tiers, dark enough to keep the hover-dim contrast story intact.
+  hop0: "#d13438", // origin — vivid red ("you are here")
+  hop1: "#8764b8", // 1 hop — violet midpoint
+  hop2: "#0078d4", // 2 hops — azure blue
+  hopFar: "#004e8c", // ≥3 hops — deep/cold blue (furthest)
+  hopUnreachable: "#605e5c", // disconnected — neutral grey, off the ramp
 };
 
 export const LABEL_SIZE = 13;
 export const LABEL_WEIGHT = "600";
+
+/**
+ * #500 edge-weight label sizing. Slightly smaller than {@link LABEL_SIZE}
+ * so an on-edge weight reads as secondary to the vertex labels it sits
+ * between.
+ */
+export const EDGE_LABEL_SIZE = 11;
+export const EDGE_LABEL_WEIGHT = "600";
 
 /**
  * Token reader injected into `resolvePaletteFromTokens`. Receives a
@@ -155,27 +167,18 @@ export function resolvePaletteFromTokens(reader: CssTokenReader): SigmaPalette {
     ),
     labelStroke: readVar("--colorNeutralStroke1", FALLBACK_PALETTE.labelStroke),
     labelFont: readVar("--fontFamilyBase", FALLBACK_PALETTE.labelFont),
-    // #460 hop ramp. Token mapping per spec: hop 0/1/2 trace the
-    // Fluent brand foreground/stroke ladder so the warmest stop
-    // (origin) reads as "you are here" and the cooler stops indicate
-    // distance. `hopFar` flattens to a desaturated neutral so the
-    // canvas reads as "out of focus past 2 hops" without falling all
-    // the way to the unreachable red.
-    //
-    // Token rationale: the issue spec suggested `colorBrandStroke1`
-    // for hop 2, but in Fluent v9's default brand ramp `BrandStroke1`
-    // (Shade80) and `BrandForeground1` (Shade100) collide at the
-    // same hex value — hop 0 and hop 2 would render identically.
-    // `BrandForeground2Hover` (Shade120) gives us a properly
-    // separated third stop in the same brand family.
-    hop0: readVar("--colorBrandForeground1", FALLBACK_PALETTE.hop0),
-    hop1: readVar("--colorBrandForeground2", FALLBACK_PALETTE.hop1),
-    hop2: readVar("--colorBrandForeground2Hover", FALLBACK_PALETTE.hop2),
-    hopFar: readVar("--colorNeutralForeground3", FALLBACK_PALETTE.hopFar),
-    hopUnreachable: readVar(
-      "--colorPaletteRedForeground1",
-      FALLBACK_PALETTE.hopUnreachable,
-    ),
+    // #500: the hop ramp is a controlled red→blue diverging colormap, so
+    // every stop is a code-side literal (like the dim swatches). Pulling
+    // each tier from an independent Fluent token — or worse, three shades
+    // of the single-hue brand ladder, as the original #460 ramp did —
+    // can't guarantee the "origin/1hop/2hop are obviously different"
+    // property; it flattened to three near-identical blues. Fixed literals
+    // keep the sweep extreme and stable across themes.
+    hop0: FALLBACK_PALETTE.hop0,
+    hop1: FALLBACK_PALETTE.hop1,
+    hop2: FALLBACK_PALETTE.hop2,
+    hopFar: FALLBACK_PALETTE.hopFar,
+    hopUnreachable: FALLBACK_PALETTE.hopUnreachable,
   };
 }
 
