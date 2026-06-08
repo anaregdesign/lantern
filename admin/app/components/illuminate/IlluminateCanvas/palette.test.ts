@@ -105,6 +105,58 @@ describe("resolvePaletteFromTokens", () => {
     expect(palette.labelText).toBe(FALLBACK_PALETTE.labelText);
     expect(palette.seed).toBe(FALLBACK_PALETTE.seed);
   });
+
+  // ── #460 hop ramp ───────────────────────────────────────────────
+  // The hop-distance reducer reads `hop0/1/2/Far/Unreachable` off the
+  // palette and applies them BEFORE the TTL fade so a node's hue
+  // communicates structural distance and its alpha communicates
+  // remaining lifetime. The token mapping comes straight from the
+  // #460 spec; the test pins it so a Fluent token rename can't
+  // silently change the canvas reading.
+
+  test("reads --colorBrandForeground1 for hop 0 (origin)", () => {
+    const palette = resolvePaletteFromTokens(
+      readerFrom({ "--colorBrandForeground1": "#aabbcc" }),
+    );
+    expect(palette.hop0).toBe("#aabbcc");
+  });
+
+  test("reads --colorBrandForeground2 for hop 1", () => {
+    const palette = resolvePaletteFromTokens(
+      readerFrom({ "--colorBrandForeground2": "#112233" }),
+    );
+    expect(palette.hop1).toBe("#112233");
+  });
+
+  test("reads --colorBrandForeground2Hover for hop 2", () => {
+    const palette = resolvePaletteFromTokens(
+      readerFrom({ "--colorBrandForeground2Hover": "#445566" }),
+    );
+    expect(palette.hop2).toBe("#445566");
+  });
+
+  test("reads --colorNeutralForeground3 for hopFar (≥3 hops)", () => {
+    const palette = resolvePaletteFromTokens(
+      readerFrom({ "--colorNeutralForeground3": "#778899" }),
+    );
+    expect(palette.hopFar).toBe("#778899");
+  });
+
+  test("reads --colorPaletteRedForeground1 for unreachable", () => {
+    const palette = resolvePaletteFromTokens(
+      readerFrom({ "--colorPaletteRedForeground1": "#992222" }),
+    );
+    expect(palette.hopUnreachable).toBe("#992222");
+  });
+
+  test("hop ramp falls back to the light-theme literals when no tokens are set", () => {
+    const palette = resolvePaletteFromTokens(readerFrom({}));
+    expect(palette.hop0).toBe(FALLBACK_PALETTE.hop0);
+    expect(palette.hop1).toBe(FALLBACK_PALETTE.hop1);
+    expect(palette.hop2).toBe(FALLBACK_PALETTE.hop2);
+    expect(palette.hopFar).toBe(FALLBACK_PALETTE.hopFar);
+    expect(palette.hopUnreachable).toBe(FALLBACK_PALETTE.hopUnreachable);
+  });
 });
 
 describe("label constants", () => {

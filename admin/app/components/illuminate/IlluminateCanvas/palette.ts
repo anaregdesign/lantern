@@ -40,6 +40,25 @@ export interface SigmaPalette {
   labelText: string;
   /** Label font stack resolved from `--fontFamilyBase`. */
   labelFont: string;
+  /**
+   * #460 hop-distance ramp. Each `hopN` is the canvas fill applied to
+   * a node whose minimum-hop distance from any expansion origin is
+   * exactly `N`; `hopFar` is everything ≥ `HOP_FAR_THRESHOLD` and
+   * `hopUnreachable` covers vertices with no path to any origin (the
+   * `Number.POSITIVE_INFINITY` case in `selectGraphView`).
+   *
+   * Fluent token mapping (per #460 spec):
+   *   hop0          → colorBrandForeground1 (origin highlight)
+   *   hop1          → colorBrandForeground2 (single-hop ring)
+   *   hop2          → colorBrandForeground2Hover (two-hop ring)
+   *   hopFar        → desaturated neutral   (everything ≥ 3 hops)
+   *   hopUnreachable → low-chroma red       (disconnected; visually distinct)
+   */
+  hop0: string;
+  hop1: string;
+  hop2: string;
+  hopFar: string;
+  hopUnreachable: string;
 }
 
 export const FALLBACK_PALETTE: SigmaPalette = {
@@ -55,6 +74,18 @@ export const FALLBACK_PALETTE: SigmaPalette = {
   labelText: "#242424",
   labelFont:
     'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+  // #460 hop ramp. Light-theme literals — these are the swatches the
+  // canvas falls back to before FluentProvider hydrates and the test
+  // suite asserts against. The ramp moves from the Fluent brand
+  // accent (hop 0, origin) outward through brand-foreground tints to
+  // a desaturated neutral for ≥3 hops, then to a low-chroma red for
+  // unreachable. Distinct enough to read at a glance, similar enough
+  // in luminance to avoid clobbering the hover dim's contrast story.
+  hop0: "#005a9e", // colorBrandForeground1 (light)
+  hop1: "#106ebe", // colorBrandForeground2 (light)
+  hop2: "#2b88d8", // colorBrandForeground2Hover (light)
+  hopFar: "#8a8886", // colorNeutralForeground3 (light, desaturated)
+  hopUnreachable: "#a4262c", // colorPaletteRedForeground1 (light, low chroma)
 };
 
 export const LABEL_SIZE = 13;
@@ -93,6 +124,27 @@ export function resolvePaletteFromTokens(reader: CssTokenReader): SigmaPalette {
     dimEdge: FALLBACK_PALETTE.dimEdge,
     labelText: readVar("--colorNeutralForeground1", FALLBACK_PALETTE.labelText),
     labelFont: readVar("--fontFamilyBase", FALLBACK_PALETTE.labelFont),
+    // #460 hop ramp. Token mapping per spec: hop 0/1/2 trace the
+    // Fluent brand foreground/stroke ladder so the warmest stop
+    // (origin) reads as "you are here" and the cooler stops indicate
+    // distance. `hopFar` flattens to a desaturated neutral so the
+    // canvas reads as "out of focus past 2 hops" without falling all
+    // the way to the unreachable red.
+    //
+    // Token rationale: the issue spec suggested `colorBrandStroke1`
+    // for hop 2, but in Fluent v9's default brand ramp `BrandStroke1`
+    // (Shade80) and `BrandForeground1` (Shade100) collide at the
+    // same hex value — hop 0 and hop 2 would render identically.
+    // `BrandForeground2Hover` (Shade120) gives us a properly
+    // separated third stop in the same brand family.
+    hop0: readVar("--colorBrandForeground1", FALLBACK_PALETTE.hop0),
+    hop1: readVar("--colorBrandForeground2", FALLBACK_PALETTE.hop1),
+    hop2: readVar("--colorBrandForeground2Hover", FALLBACK_PALETTE.hop2),
+    hopFar: readVar("--colorNeutralForeground3", FALLBACK_PALETTE.hopFar),
+    hopUnreachable: readVar(
+      "--colorPaletteRedForeground1",
+      FALLBACK_PALETTE.hopUnreachable,
+    ),
   };
 }
 

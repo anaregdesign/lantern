@@ -24,6 +24,7 @@ import type {
   GraphNode,
   GraphView,
 } from "~/lib/client/usecase/illuminate/selectors";
+import { computeHopDistances } from "~/lib/client/usecase/illuminate/selectors";
 import type {
   Edge,
   IlluminateResponse,
@@ -124,6 +125,11 @@ function illuminateView(seed: string, response: IlluminateResponse): GraphView {
         isExpansionOrigin: isSeed,
         importance,
         firstSeenExpansion: 0,
+        // Placeholder; filled in by the BFS below now that we know the
+        // full node set + edge filter. The CLI uses single-source BFS
+        // from THE seed (#460 issue body explicitly carves out the CLI
+        // path as not affected by the multi-source semantics).
+        hopDistance: Number.POSITIVE_INFINITY,
       };
     });
 
@@ -139,6 +145,13 @@ function illuminateView(seed: string, response: IlluminateResponse): GraphView {
       weight: e.weight ?? 0,
       edge: e,
     });
+  }
+  // Single-source BFS from the seed so the cli's per-call frame
+  // gets the same hop encoding as the /illuminate route (just with
+  // one origin instead of N).
+  const hopByKey = computeHopDistances(knownKeys, edges, [seedKey]);
+  for (const node of nodes) {
+    node.hopDistance = hopByKey.get(node.id) ?? Number.POSITIVE_INFINITY;
   }
   return wrapView(nodes, edges, seedKey === "" ? null : seedKey);
 }
@@ -159,6 +172,8 @@ function getVertexView(key: string, vertex: Vertex | null): GraphView {
         isExpansionOrigin: true,
         importance: 1,
         firstSeenExpansion: 0,
+        // Sole node IS the seed/origin, so hop 0 by definition.
+        hopDistance: 0,
       },
     ],
     [],
@@ -183,6 +198,8 @@ function getEdgeView(tail: string, head: string, edge: Edge | null): GraphView {
       isExpansionOrigin: true,
       importance: 1,
       firstSeenExpansion: 0,
+      // `get edge` is rooted at the tail; head is exactly one hop away.
+      hopDistance: 0,
     },
     {
       id: head,
@@ -192,6 +209,7 @@ function getEdgeView(tail: string, head: string, edge: Edge | null): GraphView {
       isExpansionOrigin: false,
       importance: 0.5,
       firstSeenExpansion: 0,
+      hopDistance: 1,
     },
   ];
   const edges: GraphEdge[] = [
@@ -227,6 +245,11 @@ function scanVerticesView(
         isExpansionOrigin: isSeed,
         importance: 0.5,
         firstSeenExpansion: 0,
+        // Scan results have NO edges so BFS isn't meaningful. The
+        // matched seed gets hop 0 (origin); everyone else gets hop 1
+        // so the legend reads as "origin + 1 neighbour bucket"
+        // instead of degenerating into an unreachable-red sea.
+        hopDistance: isSeed ? 0 : 1,
       };
     });
   // For scan we treat the prefix as the latest origin only if a node
@@ -259,6 +282,11 @@ function scanEdgesView(
         isExpansionOrigin: isSeed,
         importance: 0.5,
         firstSeenExpansion: 0,
+        // The tail endpoint is the "starting" side of the edge from
+        // the prefix scan's perspective. Same 0/1 ramp as
+        // scanVerticesView: matched prefix → origin, else first
+        // neighbour ring.
+        hopDistance: isSeed ? 0 : 1,
       });
     }
     if (!nodeMap.has(e.head)) {
@@ -270,6 +298,9 @@ function scanEdgesView(
         isExpansionOrigin: false,
         importance: 0.5,
         firstSeenExpansion: 0,
+        // Heads are always one step beyond their tails. Keep them
+        // visually distinct from the matched-prefix origins.
+        hopDistance: 1,
       });
     }
     edges.push({

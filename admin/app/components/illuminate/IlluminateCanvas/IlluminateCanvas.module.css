@@ -70,3 +70,76 @@
   margin-top: 2px;
   word-break: break-all;
 }
+
+/* #460: hop-distance legend in the canvas wrapper. Floats over the
+   bottom-left corner so it doesn't collide with the empty-state
+   overlay (centred) or the tooltip (pointer-tracked, top-anchored). */
+.legend {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  z-index: 2;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px;
+  background: var(--colorNeutralBackground1, #fff);
+  border: 1px solid var(--colorNeutralStroke2, #e0e0e0);
+  border-radius: var(--borderRadiusMedium, 6px);
+  box-shadow: var(--shadow4, 0 1px 4px rgba(0, 0, 0, 0.08));
+  font-family: var(--fontFamilyBase, system-ui, sans-serif);
+  font-size: var(--fontSizeBase200, 12px);
+  color: var(--colorNeutralForeground2, #424242);
+  max-width: 220px;
+}
+
+.legendTitle {
+  color: var(--colorNeutralForeground3, #707070);
+  text-transform: uppercase;
+  font-size: var(--fontSizeBase100, 10px);
+  letter-spacing: 0.04em;
+  margin-bottom: 2px;
+}
+
+.legendRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.legendSwatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* Per-bucket swatch classes. Each reads the matching custom property
+   the legend wrapper writes via its ref callback (see
+   IlluminateCanvas.tsx). Keeping the fallback as transparent makes a
+   theme-init race visible rather than silently rendering a misleading
+   colour. */
+.swatch_origin {
+  background: var(--hop-swatch-origin, transparent);
+}
+.swatch_1hop {
+  background: var(--hop-swatch-1hop, transparent);
+}
+.swatch_2hop {
+  background: var(--hop-swatch-2hop, transparent);
+}
+.swatch_far {
+  background: var(--hop-swatch-far, transparent);
+}
+.swatch_unreachable {
+  background: var(--hop-swatch-unreachable, transparent);
+}
+
+.legendCount {
+  margin-left: auto;
+  color: var(--colorNeutralForeground3, #707070);
+  font-variant-numeric: tabular-nums;
+}

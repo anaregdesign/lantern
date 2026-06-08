@@ -808,4 +808,136 @@ test.describe("/illuminate", () => {
       "expected the immediate baseline tick on visibilitychange to advance the counter",
     ).toBeGreaterThan(tickAfterHidden);
   });
+
+  test("Hop-distance coloring separates each ring and never grows existing distances across an additive expansion (#460)", async ({
+    page,
+  }) => {
+    const seed = encodeURIComponent("e2e:illum:hub");
+    await page.goto(`/illuminate?seed=${seed}`);
+    await expect(page.getByTestId("illuminate-counter")).toContainText(
+      "5 vertices",
+    );
+
+    type Bridge = {
+      getRenderedNodeColor: (k: string) => string | null;
+      getNodeHopDistance: (k: string) => number | null;
+    };
+    await page.waitForFunction(() => {
+      const win = window as Window & { __illuminateCanvas?: Bridge };
+      return !!win.__illuminateCanvas;
+    });
+
+    const readNode = (k: string): Promise<string | null> =>
+      page.evaluate((key) => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        return win.__illuminateCanvas?.getRenderedNodeColor(key) ?? null;
+      }, k);
+    const readHop = (k: string): Promise<number | null> =>
+      page.evaluate((key) => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        return win.__illuminateCanvas?.getNodeHopDistance(key) ?? null;
+      }, k);
+
+    const hubKey = "e2e:illum:hub";
+    const leftKey = "e2e:illum:left";
+    const rightKey = "e2e:illum:right";
+    const leftLeftKey = "e2e:illum:leftleft";
+    const rightRightKey = "e2e:illum:rightright";
+    const leftLeftLeftKey = "e2e:illum:leftleftleft";
+
+    // === Phase 1: initial seed from hub ==================================
+    // The default step=2 brings the full 2-hop frontier in one shot, so
+    // the selector sees one expansion with origin=hub. Hop distances:
+    //   hub=0, left=1, right=1, leftleft=2, rightright=2.
+    expect(await readHop(hubKey)).toBe(0);
+    expect(await readHop(leftKey)).toBe(1);
+    expect(await readHop(rightKey)).toBe(1);
+    expect(await readHop(leftLeftKey)).toBe(2);
+    expect(await readHop(rightRightKey)).toBe(2);
+
+    // Rendered colours must be distinct across hop buckets: that's the
+    // whole point of the encoding. Nodes WITHIN a bucket share the
+    // same colour (left vs right, leftleft vs rightright).
+    const hubColor = await readNode(hubKey);
+    const leftColor = await readNode(leftKey);
+    const leftLeftColor = await readNode(leftLeftKey);
+    expect(hubColor).not.toBeNull();
+    expect(leftColor).not.toBeNull();
+    expect(leftLeftColor).not.toBeNull();
+    expect(hubColor).not.toBe(leftColor);
+    expect(leftColor).not.toBe(leftLeftColor);
+    expect(hubColor).not.toBe(leftLeftColor);
+    // Same-bucket nodes match.
+    expect(await readNode(rightKey)).toBe(leftColor);
+    expect(await readNode(rightRightKey)).toBe(leftLeftColor);
+
+    // Legend is visible and surfaces the three populated buckets.
+    const legend = page.getByTestId("illuminate-legend");
+    await expect(legend).toBeVisible();
+    await expect(page.getByTestId("illuminate-legend-origin")).toBeVisible();
+    await expect(page.getByTestId("illuminate-legend-1hop")).toBeVisible();
+    await expect(page.getByTestId("illuminate-legend-2hop")).toBeVisible();
+    // No 3+ or unreachable bucket yet — those rows are hidden when
+    // empty so the legend stays compact.
+    await expect(page.getByTestId("illuminate-legend-far")).toHaveCount(0);
+    await expect(page.getByTestId("illuminate-legend-unreachable")).toHaveCount(
+      0,
+    );
+
+    // === Phase 2: additive expansion from leftleft =======================
+    // Adds leftleftleft (a fresh vertex) AND a second expansion origin
+    // (leftleft). After this:
+    //   - hub stays at hop 0 (still the original seed AND still an
+    //     expansion origin via the URL anchor; multi-source BFS keeps
+    //     it at 0).
+    //   - leftleft drops from hop 2 → hop 0 (it's now an expansion
+    //     origin itself).
+    //   - left drops from hop 1 → hop 1 (already at 1 from hub; can't
+    //     get lower since the chain hub→left→leftleft is 1 hop apart).
+    //   - leftleftleft enters at hop 1 (one edge from the new origin).
+    //
+    // The monotonic-shrink invariant is the key thing this test
+    // protects: every existing vertex's hop distance must stay the
+    // same or shrink, NEVER grow.
+    await page
+      .getByRole("group")
+      .getByText(/List view \(5 vertices/)
+      .click();
+    const table = page.getByTestId("illuminate-table");
+    await table
+      .getByRole("button", { name: "Expand from e2e:illum:leftleft" })
+      .click();
+    await expect(page.getByTestId("illuminate-counter")).toContainText(
+      "6 vertices",
+    );
+
+    const newHubHop = await readHop(hubKey);
+    const newLeftHop = await readHop(leftKey);
+    const newRightHop = await readHop(rightKey);
+    const newLeftLeftHop = await readHop(leftLeftKey);
+    const newRightRightHop = await readHop(rightRightKey);
+    const newLeftLeftLeftHop = await readHop(leftLeftLeftKey);
+
+    // The new origin and the vertex one edge from it.
+    expect(newLeftLeftHop).toBe(0);
+    expect(newLeftLeftLeftHop).toBe(1);
+
+    // Monotonic shrink: every previous distance MUST be ≤ what it was
+    // in phase 1.
+    expect(newHubHop).not.toBeNull();
+    expect(newLeftHop).not.toBeNull();
+    expect(newRightHop).not.toBeNull();
+    expect(newRightRightHop).not.toBeNull();
+    expect(newHubHop).toBeLessThanOrEqual(0);
+    expect(newLeftHop).toBeLessThanOrEqual(1);
+    expect(newRightHop).toBeLessThanOrEqual(1);
+    expect(newLeftLeftHop).toBeLessThanOrEqual(2);
+    expect(newRightRightHop).toBeLessThanOrEqual(2);
+
+    // Concretely: hub stays at 0 (still an origin), leftleft is now
+    // also at 0 (new origin), and the previously-2-hop leftleft is
+    // now a brand colour, not a far colour.
+    expect(newHubHop).toBe(0);
+    expect(await readNode(leftLeftKey)).toBe(hubColor);
+  });
 });
