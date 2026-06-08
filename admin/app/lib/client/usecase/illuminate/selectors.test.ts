@@ -14,6 +14,7 @@ import {
   ACCUMULATOR_SOFT_CAP,
   INITIAL_ILLUMINATE_STATE,
   type IlluminateState,
+  edgeIdOf,
 } from "./state";
 
 function v(key: string): Vertex {
@@ -67,6 +68,8 @@ describe("selectGraphView", () => {
     expect(view.latestExpansionOrigin).toBeNull();
     expect(view.expansionOrigins).toEqual([]);
     expect(view.overSoftCap).toBe(false);
+    expect(view.latestResultVertexKeys.size).toBe(0);
+    expect(view.latestResultEdgeIds.size).toBe(0);
   });
 
   it("marks the initial seed and the expansion origin", () => {
@@ -113,6 +116,32 @@ describe("selectGraphView", () => {
     expect(view.nodes.find((n) => n.id === "b")?.isExpansionOrigin).toBe(true);
     expect(view.nodes.find((n) => n.id === "a")?.isInitialSeed).toBe(true);
     expect(view.nodes.find((n) => n.id === "b")?.isInitialSeed).toBe(false);
+  });
+
+  it("exposes only the latest expansion's membership as the result sets (#483)", () => {
+    let state = stateWithInitialSeed("a");
+    state = applyExpansion(state, {
+      expansionId: 1,
+      origin: "a",
+      vertices: [v("a"), v("b")],
+      edges: [e("a", "b")],
+    });
+    state = applyExpansion(state, {
+      expansionId: 2,
+      origin: "b",
+      vertices: [v("b"), v("c")],
+      edges: [e("b", "c")],
+    });
+    const view = selectGraphView(state);
+
+    // The accumulator still holds 'a' (a survivor), but the latest result
+    // is only the b→c expansion — 'a' must NOT be in the result sets.
+    expect([...view.latestResultVertexKeys].sort()).toEqual(["b", "c"]);
+    expect(view.latestResultVertexKeys.has("a")).toBe(false);
+    expect([...view.latestResultEdgeIds]).toEqual([edgeIdOf("b", "c")]);
+    expect(view.latestResultEdgeIds.has(edgeIdOf("a", "b"))).toBe(false);
+    // The accumulator (nodes/edges) still carries the survivor 'a'.
+    expect(view.nodes.find((n) => n.id === "a")).toBeDefined();
   });
 
   it("attributes firstSeenExpansion to the earliest expansion that brought the vertex in", () => {

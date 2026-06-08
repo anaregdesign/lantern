@@ -8,7 +8,7 @@ import {
   type Ref,
 } from "react";
 import Graph from "graphology";
-import forceAtlas2 from "graphology-layout-forceatlas2";
+import type { Simulation } from "d3-force";
 import Sigma from "sigma";
 import { EdgeArrowProgram } from "sigma/rendering";
 import { Info16Regular } from "@fluentui/react-icons";
@@ -17,9 +17,16 @@ import type {
   GraphNode,
 } from "~/lib/client/usecase/illuminate/selectors";
 import { usePreferredTheme } from "~/lib/client/usecase/theme/use-preferred-theme";
+import {
+  FORCE_ALPHA,
+  FORCE_ALPHA_COLD,
+  FORCE_ALPHA_MIN,
+  createForceSimulation,
+  type ForceLink,
+  type ForceNode,
+} from "./force-layout";
 import { HOP_FAR_THRESHOLD, colorForHop, describeHop } from "./hop-palette";
 import { makeDrawNodeHover } from "./hover-label";
-import { decideFa2Iterations } from "./layout-iterations";
 import {
   FALLBACK_PALETTE,
   LABEL_SIZE,
@@ -43,10 +50,25 @@ export interface IlluminateCanvasProps {
    * Key of the vertex that originated the most recent expansion. Used as
    * the position hint for new nodes (#466 D7): when a node is being
    * added for the first time, we place it near the centroid of its
-   * (already-placed) neighbours so ForceAtlas2 settles without yanking
-   * the existing layout.
+   * (already-placed) neighbours so the continuous d3-force layout (#483)
+   * settles without yanking the existing layout.
    */
   latestExpansionOrigin: string | null;
+  /**
+   * Vertex keys belonging to the most recent expansion's result (#483).
+   * Every node whose id is absent from this set is hidden (graphology
+   * `hidden: true`) so the canvas collapses to just the latest
+   * Illuminate result. Hidden nodes are retained (not dropped) so they
+   * reappear at their remembered position when a later result includes
+   * them. An empty set means "no filter" (cold start / no expansion yet)
+   * — the canvas shows everything.
+   */
+  latestResultVertexKeys: Set<string>;
+  /**
+   * Edge ids belonging to the most recent expansion's result (#483).
+   * Same hide-but-retain semantics as {@link latestResultVertexKeys}.
+   */
+  latestResultEdgeIds: Set<string>;
   onNodeClick: (key: string) => void;
   /**
    * Fired when the user activates a node's info icon (#461). Distinct
@@ -135,6 +157,8 @@ export function IlluminateCanvas({
   nodes,
   edges,
   latestExpansionOrigin,
+  latestResultVertexKeys,
+  latestResultEdgeIds,
   onNodeClick,
   onNodeInspect,
   isBusy,
@@ -157,12 +181,33 @@ export function IlluminateCanvas({
   } | null>(null);
   /**
    * Snapshot of the node IDs the graph held at the end of the previous
-   * reconcile. Diffing against the next reconcile's IDs feeds
-   * `decideFa2Iterations` (#454) so we only burn an 80-iteration FA2
-   * pass on cold mounts; additive expansions (the common case) cost a
-   * cheap 5-iter relax and surviving vertices stay put.
+   * reconcile. Diffing against the next reconcile's IDs tells us whether
+   * this is a cold mount (empty → populated, full synchronous layout),
+   * an incremental expansion (animated easing, #483), or a no-op
+   * structural delta (just re-apply the hide filter).
    */
   const previousNodeIdsRef = useRef<Set<string>>(new Set());
+  /**
+   * The live d3-force simulation driving the continuous layout (#483),
+   * or `null` when nothing is animating. `forceNodes` is the array d3
+   * mutates in place; `nodeById` indexes it so the drag handlers can
+   * pin a node mid-animation; `raf` is the in-flight
+   * `requestAnimationFrame` handle (or `null` when settled or paused).
+   */
+  const layoutRef = useRef<{
+    simulation: Simulation<ForceNode, ForceLink>;
+    forceNodes: ForceNode[];
+    nodeById: Map<string, ForceNode>;
+    raf: number | null;
+  } | null>(null);
+  /**
+   * When true, the rAF tick loop is suspended (#483 test bridge): the
+   * simulation is built and applied (hidden filter + survivor positions)
+   * but does not advance until `stepLayout`/`settleLayout` is called or
+   * the pause is released. Lets the e2e assert EXACT survivor positions
+   * immediately after a click, before any easing has occurred.
+   */
+  const layoutPausedRef = useRef<boolean>(false);
   /**
    * Wall clock the TTL reducer reads on every frame (#459). Bumped by
    * the 1 Hz tick effect below; the mount effect captures `.current`
@@ -233,6 +278,149 @@ export function IlluminateCanvas({
     (node: { hopDistance: number }) => colorForHop(node.hopDistance, palette),
     [palette],
   );
+
+  // === #483 continuous d3-force layout driver ============================
+  // The simulation lives in `layoutRef`; these helpers own ticking it,
+  // writing positions back into graphology, and the rAF scheduling. They
+  // touch sigma/graph/layout exclusively through refs so their identities
+  // stay stable for the component's lifetime (stable deps), letting both
+  // the mount-effect test bridge and the reconcile effect call them
+  // without re-wiring sigma listeners.
+
+  /**
+   * Copy the simulation's positions into graphology. Pinned nodes (#455
+   * `fixed`) flow the OTHER way — graphology is authoritative, so we feed
+   * the user-placed coordinate back into the sim (`fx`/`fy`) and never
+   * overwrite it. This keeps a drag performed mid-animation authoritative
+   * and guarantees pinned nodes never drift (#483 acceptance: drag-pinned
+   * remain fixed).
+   */
+  const writeBackLayoutPositions = useCallback(() => {
+    const layout = layoutRef.current;
+    const graph = graphRef.current;
+    if (!layout || !graph) return;
+    for (const fn of layout.forceNodes) {
+      if (!graph.hasNode(fn.id)) continue;
+      if (graph.getNodeAttribute(fn.id, "fixed") === true) {
+        const x = graph.getNodeAttribute(fn.id, "x");
+        const y = graph.getNodeAttribute(fn.id, "y");
+        if (typeof x === "number") fn.fx = x;
+        if (typeof y === "number") fn.fy = y;
+        continue;
+      }
+      if (typeof fn.x === "number") graph.setNodeAttribute(fn.id, "x", fn.x);
+      if (typeof fn.y === "number") graph.setNodeAttribute(fn.id, "y", fn.y);
+    }
+  }, []);
+
+  /** Cancel any in-flight animation frame and drop the simulation. */
+  const stopLayout = useCallback(() => {
+    const layout = layoutRef.current;
+    if (layout?.raf != null) cancelAnimationFrame(layout.raf);
+    layoutRef.current = null;
+  }, []);
+
+  /**
+   * One animation frame: tick the sim, write back, refresh sigma, then
+   * either reschedule, suspend (paused), or stop (settled).
+   */
+  const runLayoutFrame = useCallback(() => {
+    const layout = layoutRef.current;
+    if (!layout) return;
+    if (layoutPausedRef.current) {
+      // Suspend: keep the sim so a later resume/step can continue it.
+      layout.raf = null;
+      return;
+    }
+    layout.simulation.tick();
+    writeBackLayoutPositions();
+    sigmaRef.current?.refresh();
+    if (layout.simulation.alpha() <= FORCE_ALPHA_MIN) {
+      stopLayout();
+      return;
+    }
+    layout.raf = requestAnimationFrame(runLayoutFrame);
+  }, [writeBackLayoutPositions, stopLayout]);
+
+  /** Schedule the animation loop unless it is already running or paused. */
+  const startLayoutLoop = useCallback(() => {
+    const layout = layoutRef.current;
+    if (!layout || layout.raf != null || layoutPausedRef.current) return;
+    layout.raf = requestAnimationFrame(runLayoutFrame);
+  }, [runLayoutFrame]);
+
+  /**
+   * Replace the current simulation with a fresh one over the supplied
+   * visible nodes/links, seeded from their current positions. Does NOT
+   * start the loop — the caller decides whether to animate (incremental)
+   * or settle synchronously (cold).
+   */
+  const beginLayout = useCallback(
+    (forceNodes: ForceNode[], forceLinks: ForceLink[], alpha: number) => {
+      const previous = layoutRef.current;
+      if (previous?.raf != null) cancelAnimationFrame(previous.raf);
+      const simulation = createForceSimulation(forceNodes, forceLinks, {
+        alpha,
+      });
+      const nodeById = new Map(forceNodes.map((n) => [n.id, n] as const));
+      layoutRef.current = { simulation, forceNodes, nodeById, raf: null };
+    },
+    [],
+  );
+
+  /**
+   * Advance the simulation `ticks` steps synchronously (no rAF) and write
+   * the result back. Used by the #483 e2e to observe gradual motion one
+   * controlled frame at a time. Returns the number of ticks executed.
+   */
+  const stepLayout = useCallback(
+    (ticks: number): number => {
+      const layout = layoutRef.current;
+      if (!layout) return 0;
+      let done = 0;
+      for (let i = 0; i < ticks; i += 1) {
+        layout.simulation.tick();
+        done += 1;
+        if (layout.simulation.alpha() <= FORCE_ALPHA_MIN) break;
+      }
+      writeBackLayoutPositions();
+      sigmaRef.current?.refresh();
+      return done;
+    },
+    [writeBackLayoutPositions],
+  );
+
+  /**
+   * Run the simulation to rest synchronously (bounded by `maxTicks`),
+   * write back, refresh, and drop it. Used for the cold-start layout and
+   * by the e2e to freeze positions before camera assertions.
+   */
+  const settleLayout = useCallback(
+    (maxTicks = 500): number => {
+      const layout = layoutRef.current;
+      if (!layout) return 0;
+      let done = 0;
+      while (layout.simulation.alpha() > FORCE_ALPHA_MIN && done < maxTicks) {
+        layout.simulation.tick();
+        done += 1;
+      }
+      writeBackLayoutPositions();
+      sigmaRef.current?.refresh();
+      stopLayout();
+      return done;
+    },
+    [writeBackLayoutPositions, stopLayout],
+  );
+
+  /** Pause/resume the animated layout (#483 test bridge). */
+  const setLayoutPaused = useCallback(
+    (paused: boolean) => {
+      layoutPausedRef.current = paused;
+      if (!paused) startLayoutLoop();
+    },
+    [startLayoutLoop],
+  );
+  // === end #483 ==========================================================
 
   // Stable callback ref so the click listener doesn't have to be rebound
   // every render (would otherwise drop hover state).
@@ -431,6 +619,15 @@ export function IlluminateCanvas({
       renderer.refresh();
     };
     renderer.setSetting("nodeReducer", (key, data) => {
+      // === #483 hide non-result nodes ==================================
+      // Nodes outside the latest expansion result carry `hidden: true`
+      // (set in the reconcile effect). Return early so sigma skips them
+      // entirely and we don't waste TTL/hover math on invisible nodes.
+      // They are retained in graphology (not dropped) so they reappear
+      // at their remembered position when a later result includes them.
+      const baseAttrs = data as { hidden?: boolean };
+      if (baseAttrs.hidden === true) return data;
+      // === end #483 ===================================================
       // === #459 TTL alpha (composition note) ============================
       // Composition order is hop hue (#460) \u2192 TTL alpha (#459) \u2192 hover
       // dim (#458). TTL fade applies first so the hover dim's solid
@@ -477,6 +674,12 @@ export function IlluminateCanvas({
       };
     });
     renderer.setSetting("edgeReducer", (key, data) => {
+      // === #483 hide non-result edges =================================
+      // Edges outside the latest expansion result carry `hidden: true`.
+      // Skip them so they neither render nor incur TTL/hover compute.
+      const baseAttrs = data as { hidden?: boolean };
+      if (baseAttrs.hidden === true) return data;
+      // === end #483 ===================================================
       // === #459 TTL alpha (composition note same as nodeReducer) ========
       const attrs = data as { color: string; expiration?: string | null };
       const nowMs = nowRef.current;
@@ -616,10 +819,9 @@ export function IlluminateCanvas({
     // `preventSigmaDefault()` and mark the node highlighted so the user
     // gets a visual lock-on. On `mousemovebody` we project the cursor
     // into graph space and rewrite the node's x/y; sigma re-renders on
-    // the next frame. On mouse-up we set `fixed: true` so the per-#454
-    // additive FA2 relax (and any future reseed) leaves the user-placed
-    // node alone — graphology FA2 honors `fixed` directly (verified
-    // against `graphology-layout-forceatlas2/helpers.js` line 144).
+    // the next frame. On mouse-up we set `fixed: true` so the continuous
+    // d3-force layout (#483) holds the user-placed node at its fx/fy on
+    // every subsequent expansion and never relaxes it.
     const draggedNodeRef: { current: string | null } = { current: null };
     // Diagnostic counters exposed via the test bridge so #455's e2e can
     // disambiguate "drag fired but didn't move the node" from "drag
@@ -639,6 +841,14 @@ export function IlluminateCanvas({
       const pos = renderer.viewportToGraph({ x: coords.x, y: coords.y });
       graph.setNodeAttribute(node, "x", pos.x);
       graph.setNodeAttribute(node, "y", pos.y);
+      // #483: if a layout animation is in flight, pin this node in the
+      // sim to the cursor so the simulation respects the drag instead of
+      // fighting it (finishDrag then marks it `fixed` for good).
+      const draggingForceNode = layoutRef.current?.nodeById.get(node);
+      if (draggingForceNode) {
+        draggingForceNode.fx = pos.x;
+        draggingForceNode.fy = pos.y;
+      }
       // Stop the underlying mouse event from triggering camera pan.
       coords.preventSigmaDefault();
       if (coords.original instanceof MouseEvent) {
@@ -651,7 +861,8 @@ export function IlluminateCanvas({
       const node = draggedNodeRef.current;
       if (!node) return;
       graph.setNodeAttribute(node, "highlighted", false);
-      // Pin: subsequent FA2 relaxations (#454) skip this node.
+      // Pin: the continuous d3-force layout (#483) holds this node at its
+      // fx/fy on every subsequent expansion so it never drifts.
       graph.setNodeAttribute(node, "fixed", true);
       draggedNodeRef.current = null;
     };
@@ -810,6 +1021,49 @@ export function IlluminateCanvas({
           stroke: string;
           text: string;
         };
+        /**
+         * #483 test bridge: whether a node currently carries the
+         * `hidden: true` attribute (i.e., it falls outside the latest
+         * expansion result). Hidden nodes are retained in graphology so
+         * they reappear at their remembered position; `false` when the
+         * key is unknown.
+         */
+        isNodeHidden: (key: string) => boolean;
+        /**
+         * #483 test bridge: whether an edge currently carries the
+         * `hidden: true` attribute (i.e., it falls outside the latest
+         * expansion result). Mirrors {@link isNodeHidden}; `false` when
+         * the edge id is unknown.
+         */
+        isEdgeHidden: (key: string) => boolean;
+        /**
+         * #483 test bridge: pause or resume the continuous d3-force
+         * layout. While paused the animation loop suspends (no ticks)
+         * so the e2e can assert exact survivor positions immediately
+         * after a click, then step the layout deterministically.
+         */
+        setLayoutPaused: (paused: boolean) => void;
+        /**
+         * #483 test bridge: advance the live simulation `ticks` steps
+         * synchronously (no rAF), writing positions back and refreshing
+         * sigma. Returns the number of ticks executed (short-circuits
+         * once the layout has cooled). Lets the e2e observe gradual,
+         * bounded motion one controlled frame at a time.
+         */
+        stepLayout: (ticks: number) => number;
+        /**
+         * #483 test bridge: run the live simulation to rest
+         * synchronously (bounded by `maxTicks`), write back, refresh,
+         * and drop it. Returns the tick count. Lets the e2e freeze the
+         * final layout before asserting spacing / camera convergence.
+         */
+        settleLayout: (maxTicks?: number) => number;
+        /**
+         * #483 test bridge: whether the animated layout loop currently
+         * has a frame scheduled. The e2e polls this to wait for the
+         * auto-run animation to converge.
+         */
+        layoutRunning: () => boolean;
       };
     };
     win.__illuminateCanvas = {
@@ -847,6 +1101,12 @@ export function IlluminateCanvas({
         //    deltas directly.
         graph.setNodeAttribute(key, "x", attrs.x + deltaGraphX);
         graph.setNodeAttribute(key, "y", attrs.y + deltaGraphY);
+        // Keep an in-flight simulation in sync with the drag (#483).
+        const forceNode = layoutRef.current?.nodeById.get(key);
+        if (forceNode) {
+          forceNode.fx = attrs.x + deltaGraphX;
+          forceNode.fy = attrs.y + deltaGraphY;
+        }
         dragStats.moveBody += 1;
         // 3) mouseup \u2014 release + pin
         finishDrag();
@@ -926,9 +1186,27 @@ export function IlluminateCanvas({
         stroke: paletteRef.current.labelStroke,
         text: paletteRef.current.labelText,
       }),
+      isNodeHidden: (key: string) => {
+        if (!graph.hasNode(key)) return false;
+        return graph.getNodeAttribute(key, "hidden") === true;
+      },
+      isEdgeHidden: (key: string) => {
+        if (!graph.hasEdge(key)) return false;
+        return graph.getEdgeAttribute(key, "hidden") === true;
+      },
+      setLayoutPaused: (paused: boolean) => setLayoutPaused(paused),
+      stepLayout: (ticks: number) => stepLayout(ticks),
+      settleLayout: (maxTicks?: number) => settleLayout(maxTicks),
+      layoutRunning: () => layoutRef.current?.raf != null,
     };
 
     return () => {
+      // #483: tear down any in-flight layout animation before sigma dies.
+      if (layoutRef.current?.raf != null) {
+        cancelAnimationFrame(layoutRef.current.raf);
+      }
+      layoutRef.current = null;
+      layoutPausedRef.current = false;
       renderer.kill();
       graph.clear();
       sigmaRef.current = null;
@@ -942,11 +1220,11 @@ export function IlluminateCanvas({
       scheduleInfoIconHideRef.current = null;
       delete win.__illuminateCanvas;
     };
-  }, []);
+  }, [setLayoutPaused, stepLayout, settleLayout]);
 
   // Apply palette changes to sigma's global settings + repaint existing
   // node fills. Splitting this out from the reconcile effect lets a
-  // theme toggle re-skin the canvas without re-running ForceAtlas2.
+  // theme toggle re-skin the canvas without re-running the layout.
   useEffect(() => {
     const sigma = sigmaRef.current;
     const graph = graphRef.current;
@@ -1041,9 +1319,10 @@ export function IlluminateCanvas({
   // === end #459 ==========================================================
 
   // Reconcile the graph with the latest view model. We diff by ID rather
-  // than clearing so ForceAtlas2 can keep the positions of nodes that
-  // survived from the previous frame — the canvas reads as a smooth
-  // expansion instead of a layout reshuffle on every refetch.
+  // than clearing so the continuous d3-force layout (#483) can keep the
+  // positions of nodes that survived from the previous frame — the canvas
+  // reads as a smooth, gradual expansion instead of a layout reshuffle on
+  // every refetch, and surviving nodes never snap on click.
   useEffect(() => {
     const graph = graphRef.current;
     if (!graph) return;
@@ -1052,11 +1331,15 @@ export function IlluminateCanvas({
     const nextNodeIds = new Set(nodes.map((n) => n.id));
     const nextEdgeIds = new Set(edges.map((e) => e.id));
 
-    // Per-reconcile diff used by `decideFa2Iterations` (#454). We
-    // compute it BEFORE mutating the graph so the counts reflect the
+    // #483: once an expansion has produced a result, hide everything
+    // outside the latest result. An empty result set (cold mount, reseed,
+    // or Clear) hides nothing, so the full graph stays visible.
+    const hideNonResult = latestResultVertexKeys.size > 0;
+
+    // Per-reconcile diff used to choose the layout regime below (#483).
+    // We compute it BEFORE mutating the graph so the counts reflect the
     // structural delta, not the post-merge state.
     const previousNodeIds = previousNodeIdsRef.current;
-    const previousNodeCount = previousNodeIds.size;
     let addedCount = 0;
     let droppedCount = 0;
     for (const id of nextNodeIds) {
@@ -1105,6 +1388,10 @@ export function IlluminateCanvas({
           // up against the new palette.
           hopDistance: node.hopDistance,
           firstSeenExpansion: node.firstSeenExpansion,
+          // #483: hide nodes outside the latest expansion result. We do
+          // NOT touch x/y here, so a survivor keeps its exact position
+          // (no snap); only its visibility flips.
+          hidden: hideNonResult && !latestResultVertexKeys.has(node.id),
         });
       } else {
         const { x, y } = pickInitialPosition({
@@ -1125,18 +1412,25 @@ export function IlluminateCanvas({
           expiration,
           hopDistance: node.hopDistance,
           firstSeenExpansion: node.firstSeenExpansion,
+          // #483: a freshly added node outside the latest result starts
+          // hidden but retains its seed position for when it returns.
+          hidden: hideNonResult && !latestResultVertexKeys.has(node.id),
         });
       }
     }
     for (const edge of edges) {
       // #459: edges have their own expiration; mirror the node treatment.
       const expiration = edge.edge.expiration ?? null;
+      // #483: hide edges that aren't part of the latest expansion result
+      // so the canvas shows only the clicked vertex's subgraph.
+      const edgeHidden = hideNonResult && !latestResultEdgeIds.has(edge.id);
       if (graph.hasEdge(edge.id)) {
         graph.mergeEdgeAttributes(edge.id, {
           size: 1 + Math.min(4, edge.weight),
           label: edge.id,
           detail: `weight = ${edge.weight}`,
           expiration,
+          hidden: edgeHidden,
         });
       } else {
         graph.addEdgeWithKey(edge.id, edge.source, edge.target, {
@@ -1145,36 +1439,84 @@ export function IlluminateCanvas({
           label: edge.id,
           detail: `weight = ${edge.weight}`,
           expiration,
+          hidden: edgeHidden,
         });
       }
     }
 
-    // Per #454: only burn an 80-iteration FA2 pass on a cold mount or
-    // post-drop reseed; the common additive case relaxes in 5 so
-    // surviving vertices stay within roughly ±10% of their prior pixel
-    // position.
-    const iterations = decideFa2Iterations({
-      previousNodeCount,
-      addedCount,
-      droppedCount,
-      nextNodeCount: nextNodeIds.size,
-    });
-    if (iterations > 0 && graph.order > 0) {
-      forceAtlas2.assign(graph, {
-        iterations,
-        settings: {
-          gravity: 1,
-          scalingRatio: 8,
-          slowDown: 4,
-          barnesHutOptimize: graph.order > 100,
-        },
+    // === #483 continuous layout regime =================================
+    // Build the simulation over only the VISIBLE nodes (hidden nodes are
+    // frozen — excluded from the sim, retaining their x/y so they reappear
+    // in place). Pinned nodes (#455 `fixed`) seed their fx/fy so the very
+    // first tick already respects the pin.
+    const visibleNodeIds = new Set<string>();
+    const forceNodes: ForceNode[] = [];
+    for (const id of graph.nodes()) {
+      if (graph.getNodeAttribute(id, "hidden") === true) continue;
+      visibleNodeIds.add(id);
+      const x = graph.getNodeAttribute(id, "x") as number;
+      const y = graph.getNodeAttribute(id, "y") as number;
+      const size = graph.getNodeAttribute(id, "size") as number;
+      const pinned = graph.getNodeAttribute(id, "fixed") === true;
+      forceNodes.push(
+        pinned ? { id, size, x, y, fx: x, fy: y } : { id, size, x, y },
+      );
+    }
+    const forceLinks: ForceLink[] = [];
+    for (const edge of edges) {
+      if (!visibleNodeIds.has(edge.source)) continue;
+      if (!visibleNodeIds.has(edge.target)) continue;
+      forceLinks.push({
+        source: edge.source,
+        target: edge.target,
+        weight: edge.weight,
       });
     }
 
-    previousNodeIdsRef.current = nextNodeIds;
+    // Cold (or full reseed: no survivors) settles synchronously so the
+    // first paint is already a sensible layout. An incremental expansion
+    // refreshes ONCE at t=0 (survivors render at their EXACT prior
+    // position — no snap) and then eases on rAF. A pure attribute or
+    // visibility change just refreshes and leaves any running animation
+    // alone.
+    const survivorCount = nextNodeIds.size - addedCount;
+    const isColdStart = nextNodeIds.size > 0 && survivorCount === 0;
+    const isIncremental =
+      !isColdStart &&
+      forceNodes.length > 0 &&
+      (addedCount > 0 || droppedCount > 0);
 
-    sigma?.refresh();
-  }, [nodes, edges, latestExpansionOrigin, palette, pickFill]);
+    if (isColdStart && forceNodes.length > 0) {
+      beginLayout(forceNodes, forceLinks, FORCE_ALPHA_COLD);
+      settleLayout();
+    } else if (isIncremental) {
+      beginLayout(forceNodes, forceLinks, FORCE_ALPHA);
+      // Paint survivors at their exact prior position before the first
+      // tick so the click never snaps; the animation then eases on rAF.
+      sigma?.refresh();
+      startLayoutLoop();
+    } else {
+      // Nothing structural changed. Drop a now-empty sim (Clear), but
+      // otherwise leave a converging animation undisturbed.
+      if (forceNodes.length === 0) stopLayout();
+      sigma?.refresh();
+    }
+    // === end #483 ======================================================
+
+    previousNodeIdsRef.current = nextNodeIds;
+  }, [
+    nodes,
+    edges,
+    latestExpansionOrigin,
+    latestResultVertexKeys,
+    latestResultEdgeIds,
+    palette,
+    pickFill,
+    beginLayout,
+    settleLayout,
+    startLayoutLoop,
+    stopLayout,
+  ]);
 
   const empty = nodes.length === 0;
   const wrapperClass = useMemo(
@@ -1380,9 +1722,9 @@ function appendNeighbour(
  * Priority order:
  *  1. The initial seed sits at the origin.
  *  2. If the node has neighbours that are ALREADY placed in graphology,
- *     drop it at their centroid with small jitter — ForceAtlas2 then
- *     only has to nudge it into place instead of yanking the whole
- *     layout.
+ *     drop it at their centroid with small jitter — the d3-force
+ *     simulation then only has to nudge it into place instead of yanking
+ *     the whole layout.
  *  3. If the latest expansion origin is placed, drop the node in a ring
  *     around it (#466 D7 explicitly calls out "near the parent click").
  *  4. Otherwise, the original random-in-a-circle seeding.
@@ -1420,7 +1762,7 @@ function pickInitialPosition({
     const cx = sumX / placedCount;
     const cy = sumY / placedCount;
     // Small jitter so colocated nodes don't sit exactly on top of each
-    // other (would make ForceAtlas2's first iteration meaningless).
+    // other (would make the simulation's first tick meaningless).
     return {
       x: cx + (Math.random() - 0.5) * 0.5,
       y: cy + (Math.random() - 0.5) * 0.5,

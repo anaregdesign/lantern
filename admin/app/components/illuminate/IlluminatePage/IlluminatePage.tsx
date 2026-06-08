@@ -139,6 +139,8 @@ export function IlluminatePage() {
             nodes={ill.view.nodes}
             edges={ill.view.edges}
             latestExpansionOrigin={ill.view.latestExpansionOrigin}
+            latestResultVertexKeys={ill.view.latestResultVertexKeys}
+            latestResultEdgeIds={ill.view.latestResultEdgeIds}
             onNodeClick={handleNodeClick}
             onNodeInspect={setInspectedVertex}
             isBusy={ill.isBusy}

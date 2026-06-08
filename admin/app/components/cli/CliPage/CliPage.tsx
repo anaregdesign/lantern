@@ -374,6 +374,8 @@ export function CliPage() {
                 nodes={latestGraph.view.nodes}
                 edges={latestGraph.view.edges}
                 latestExpansionOrigin={latestGraph.view.latestExpansionOrigin}
+                latestResultVertexKeys={latestGraph.view.latestResultVertexKeys}
+                latestResultEdgeIds={latestGraph.view.latestResultEdgeIds}
                 onNodeClick={onNodeClick}
                 isBusy={busy}
               />
