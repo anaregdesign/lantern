@@ -55,6 +55,40 @@ test.describe("/illuminate", () => {
     await expect(page.getByTestId("illuminate-open")).toBeDisabled();
   });
 
+  test("Seed prompt suggests keys as you type and opens on commit (#457)", async ({
+    page,
+  }) => {
+    await page.goto("/illuminate");
+    await expect(page.getByTestId("illuminate-seed-prompt")).toBeVisible();
+
+    // Empty prefix shows the placeholder caption, not a count.
+    await expect(page.getByTestId("illuminate-seed-matches")).toContainText(
+      /at least/i,
+    );
+
+    const input = page.getByTestId("illuminate-seed-input");
+    await input.click();
+    await input.pressSequentially("e2e:illum:left");
+
+    // CountVerticesByPrefix surfaces a match tally beneath the field.
+    await expect(page.getByTestId("illuminate-seed-matches")).toContainText(
+      /\d+ match/,
+    );
+
+    // ScanVertices feeds the Combobox listbox; the three `left*` keys all
+    // share the typed prefix, so the exact `leftleft` option is offered.
+    const option = page.getByRole("option", {
+      name: "e2e:illum:leftleft",
+      exact: true,
+    });
+    await expect(option).toBeVisible();
+    await option.click();
+
+    // Committing a suggestion opens that neighbourhood (no Browse detour).
+    await expect(page.getByTestId("illuminate-toolbar")).toBeVisible();
+    await expect(page).toHaveURL(/\?seed=e2e%3Aillum%3Aleftleft/);
+  });
+
   test("renders the canvas and neighbour table for a seed", async ({
     page,
   }) => {
@@ -158,6 +192,42 @@ test.describe("/illuminate", () => {
     await expect(
       table.getByRole("link", { name: "e2e:illum:leftleftleft", exact: true }),
     ).toBeVisible();
+  });
+
+  test("Expand from key (toolbar typeahead) ADDS a neighbourhood in place (#457)", async ({
+    page,
+  }) => {
+    const seed = encodeURIComponent("e2e:illum:hub");
+    await page.goto(`/illuminate?seed=${seed}`);
+    await expect(page.getByTestId("illuminate-toolbar")).toBeVisible();
+
+    const counter = page.getByTestId("illuminate-counter");
+    await expect(counter).toContainText("5 vertices");
+
+    // Open the inline Expand-from-key picker from the toolbar.
+    await page.getByTestId("illuminate-expand-toggle").click();
+    const input = page.getByTestId("illuminate-expand-input");
+    await expect(input).toBeVisible();
+    await input.click();
+    await input.pressSequentially("e2e:illum:leftleft");
+
+    // Commit the suggestion that bridges to a vertex outside the initial
+    // 2-hop frame (`leftleftleft` is 3 hops from hub).
+    const option = page.getByRole("option", {
+      name: "e2e:illum:leftleft",
+      exact: true,
+    });
+    await expect(option).toBeVisible();
+    await option.click();
+
+    // The accumulator grows additively (5 → 6) and the deep-link URL stays
+    // anchored on the original seed (the picker dispatches `ill.expand`,
+    // not a fresh navigation).
+    await expect(counter).toContainText("6 vertices");
+    await expect(counter).toContainText("2 expansions");
+    await expect(page).toHaveURL(/\?seed=e2e%3Aillum%3Ahub/);
+    // The picker collapses once a key is committed.
+    await expect(input).toHaveCount(0);
   });
 
   test("Clear empties the accumulator and returns to the seed prompt", async ({

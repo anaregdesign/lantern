@@ -8,8 +8,3 @@
   border-radius: var(--borderRadiusMedium, 6px);
   background: var(--colorNeutralBackground1, #fff);
 }
-
-.field {
-  display: flex;
-  flex-direction: column;
-}
