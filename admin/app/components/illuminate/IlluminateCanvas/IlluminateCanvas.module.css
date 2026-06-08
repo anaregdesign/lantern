@@ -51,6 +51,39 @@
   font-size: var(--fontSizeBase200, 12px);
 }
 
+/* #461: per-node info icon. The only canvas overlay that takes pointer
+   events (pointer-events: auto) so the user can click it to open the
+   detail Drawer; sits above the tooltip/legend (z-index 3). */
+.infoIcon {
+  position: absolute;
+  left: var(--icon-x, 0px);
+  top: var(--icon-y, 0px);
+  pointer-events: auto;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  margin: 0;
+  color: var(--colorNeutralForegroundOnBrand, #fff);
+  background: var(--colorBrandBackground, #0f6cbd);
+  border: none;
+  border-radius: var(--borderRadiusCircular, 9999px);
+  box-shadow: var(--shadow8, 0 2px 8px rgba(0, 0, 0, 0.18));
+  cursor: pointer;
+}
+
+.infoIcon:hover {
+  background: var(--colorBrandBackgroundHover, #115ea3);
+}
+
+.infoIcon:focus-visible {
+  outline: 2px solid var(--colorStrokeFocus2, #000);
+  outline-offset: 1px;
+}
+
 .tooltipKind {
   color: var(--colorNeutralForeground3, #707070);
   text-transform: lowercase;

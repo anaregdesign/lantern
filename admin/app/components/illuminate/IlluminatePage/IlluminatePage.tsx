@@ -1,4 +1,4 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { MessageBar, MessageBarBody } from "@fluentui/react-components";
 import { useNavigate, useSearchParams } from "react-router";
 import {
@@ -7,8 +7,10 @@ import {
 } from "../IlluminateCanvas/IlluminateCanvas";
 import { IlluminateTable } from "../IlluminateTable/IlluminateTable";
 import { IlluminateToolbar } from "../IlluminateToolbar/IlluminateToolbar";
+import { NodeDetailPanel } from "../NodeDetailPanel/NodeDetailPanel";
 import { SeedPrompt } from "../SeedPrompt/SeedPrompt";
 import { useIlluminate } from "~/lib/client/usecase/illuminate/use-illuminate";
+import { selectInspectedDetail } from "~/lib/client/usecase/illuminate/selectors";
 import { ACCUMULATOR_SOFT_CAP } from "~/lib/client/usecase/illuminate/state";
 import styles from "./IlluminatePage.module.css";
 
@@ -29,13 +31,35 @@ export function IlluminatePage() {
 
   const canvasRef = useRef<IlluminateCanvasHandle | null>(null);
 
+  // #461 node-detail Drawer. The inspected vertex is pure UI state
+  // (page-local) — opening/closing never touches the accumulator,
+  // expansions, or camera. The selector projects the live accumulator
+  // into the panel's view-model and returns null once the vertex is
+  // gone (TTL sweep), so the Drawer self-closes without extra wiring.
+  const [inspectedVertex, setInspectedVertex] = useState<string | null>(null);
+  const inspectedDetail = useMemo(
+    () => selectInspectedDetail(ill.state, inspectedVertex),
+    [ill.state, inspectedVertex],
+  );
+
   const handleNodeClick = useCallback(
     (key: string) => {
       if (!key) return;
-      // Per #466 D11 the expand is idempotent — even when the user clicks
-      // the same node twice we fire the request so they can pick up newly
-      // arrived neighbours (server-side decay).
+      // A node-body click is an additive expansion (#466 D11, idempotent).
+      // It also dismisses the inspect Drawer so a body click never leaves
+      // a stale panel open over the freshly expanded neighbourhood.
+      setInspectedVertex(null);
       ill.expand(key);
+    },
+    [ill],
+  );
+
+  // #461 "Expand from here": same additive expansion as a body click,
+  // then close the Drawer so the canvas takes focus on the new nodes.
+  const handleExpandFromHere = useCallback(
+    (key: string) => {
+      ill.expand(key);
+      setInspectedVertex(null);
     },
     [ill],
   );
@@ -116,7 +140,13 @@ export function IlluminatePage() {
             edges={ill.view.edges}
             latestExpansionOrigin={ill.view.latestExpansionOrigin}
             onNodeClick={handleNodeClick}
+            onNodeInspect={setInspectedVertex}
             isBusy={ill.isBusy}
+          />
+          <NodeDetailPanel
+            detail={inspectedDetail}
+            onClose={() => setInspectedVertex(null)}
+            onExpandFromHere={handleExpandFromHere}
           />
           <details className={styles.tableDisclosure}>
             <summary className={styles.summary}>

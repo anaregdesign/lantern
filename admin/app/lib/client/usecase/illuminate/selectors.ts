@@ -300,6 +300,92 @@ export function selectCanClear(state: IlluminateState): boolean {
 }
 
 /**
+ * One outgoing edge as surfaced by the node-detail Drawer (#461). The
+ * `id` mirrors `edgeIdOf(tail, head)` so React keys stay stable and the
+ * caller can cross-reference the accumulator if needed.
+ */
+export interface OutgoingEdge {
+  id: string;
+  /** Head vertex key (the edge's destination). */
+  target: string;
+  weight: number;
+  /** Proto-JSON expiration of the edge, if any. */
+  expiration?: string;
+}
+
+/**
+ * View-model the node-detail Drawer renders for the inspected vertex
+ * (#461). Built purely from the accumulator so opening the Drawer never
+ * issues an RPC — outgoing edges come straight from
+ * `state.accumulator.edges`. Inbound edges are NOT included here: they
+ * require a fresh `ScanEdges({ headPrefix })` and are fetched on demand
+ * by {@link useInboundEdges} into panel-local state so they never
+ * mutate the canvas accumulator (#466 keeps the canvas the sole graph
+ * owner).
+ */
+export interface InspectedVertexDetail {
+  key: string;
+  vertex: Vertex;
+  /**
+   * Live (non-expired) outgoing edges whose tail is `key`, sorted by
+   * target key for a stable render order.
+   */
+  outgoing: OutgoingEdge[];
+}
+
+/**
+ * Builds the {@link InspectedVertexDetail} for the supplied key, or
+ * `null` when the vertex is absent / expired. Returning `null` for a
+ * vanished vertex lets the page drive the Drawer's `open` state straight
+ * off this selector: if a TTL sweep drops the inspected vertex, the
+ * Drawer self-closes on the next render without any extra wiring.
+ *
+ * Pure (no React, no client) so the accumulator → panel projection is
+ * unit-testable in isolation.
+ */
+export function selectInspectedDetail(
+  state: IlluminateState,
+  key: string | null,
+  nowMs: number = Date.now(),
+): InspectedVertexDetail | null {
+  if (key === null || key === "") return null;
+  const acc = state.accumulator.vertices.get(key);
+  if (!acc) return null;
+  if (isExpired(acc.vertex.expiration, nowMs)) return null;
+
+  const outgoing: OutgoingEdge[] = [];
+  for (const [id, accEdge] of state.accumulator.edges) {
+    const e = accEdge.edge;
+    if (e.tail !== key || !e.head) continue;
+    if (isExpired(e.expiration, nowMs)) continue;
+    outgoing.push({
+      id,
+      target: e.head,
+      weight: e.weight ?? 0,
+      expiration: e.expiration,
+    });
+  }
+  outgoing.sort((a, b) =>
+    a.target < b.target ? -1 : a.target > b.target ? 1 : 0,
+  );
+
+  return { key, vertex: acc.vertex, outgoing };
+}
+
+/**
+ * Narrows a `ScanEdges({ headPrefix: key })` result to the edges that
+ * terminate at exactly `key` (#461 "Show inbound edges"). The wire
+ * `headPrefix` scan is a prefix match, so `key = "a"` would also return
+ * `a*→…` edges whose head merely starts with the prefix; the Drawer
+ * only wants true inbound edges, hence the exact `head === key` filter.
+ * Pure so it can be unit-tested without a live client.
+ */
+export function filterInboundEdges(edges: Edge[], key: string): Edge[] {
+  if (key === "") return [];
+  return edges.filter((e) => e.head === key);
+}
+
+/**
  * View-model for the per-expansion chip in the toolbar (#456). Each chip
  * is a "scroll-to-origin" affordance — clicking it pans the camera to the
  * origin vertex without mutating state or re-issuing any RPC.

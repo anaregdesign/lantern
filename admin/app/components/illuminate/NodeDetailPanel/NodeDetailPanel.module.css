@@ -1,0 +1,114 @@
+.drawer {
+  width: min(420px, 100vw);
+}
+
+.headerLabel {
+  font-weight: var(--fontWeightSemibold, 600);
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sectionTitle {
+  margin: 0;
+  font-size: var(--fontSizeBase200, 12px);
+  font-weight: var(--fontWeightSemibold, 600);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--colorNeutralForeground3, #616161);
+}
+
+.keyRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.key {
+  font-family: var(
+    --fontFamilyMonospace,
+    ui-monospace,
+    SFMono-Regular,
+    monospace
+  );
+  font-size: var(--fontSizeBase300, 14px);
+  overflow-wrap: anywhere;
+}
+
+.copied {
+  font-size: var(--fontSizeBase200, 12px);
+  color: var(--colorPaletteGreenForeground1, #0e700e);
+}
+
+.empty {
+  margin: 0;
+  font-size: var(--fontSizeBase200, 12px);
+  color: var(--colorNeutralForeground3, #616161);
+}
+
+.edgeList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.edgeRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fontSizeBase200, 12px);
+}
+
+.edgeArrow {
+  color: var(--colorNeutralForeground3, #616161);
+}
+
+.edgeTarget {
+  font-family: var(
+    --fontFamilyMonospace,
+    ui-monospace,
+    SFMono-Regular,
+    monospace
+  );
+  overflow-wrap: anywhere;
+}
+
+.edgeWeight {
+  margin-left: auto;
+  color: var(--colorNeutralForeground3, #616161);
+  font-variant-numeric: tabular-nums;
+}
+
+.inboundError {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.errorText {
+  margin: 0;
+  font-size: var(--fontSizeBase200, 12px);
+  color: var(--colorPaletteRedForeground1, #b10e1c);
+}
+
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}

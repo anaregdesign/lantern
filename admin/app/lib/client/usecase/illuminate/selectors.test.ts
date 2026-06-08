@@ -2,10 +2,12 @@ import { describe, expect, it } from "bun:test";
 import type { Edge, Vertex } from "~/lib/client/infrastructure/api/illuminate";
 import { illuminateReducer } from "./reducer";
 import {
+  filterInboundEdges,
   selectCanClear,
   selectExpansionChips,
   selectExpansionCount,
   selectGraphView,
+  selectInspectedDetail,
   selectIsBusy,
 } from "./selectors";
 import {
@@ -599,5 +601,102 @@ describe("selectExpansionChips (#456)", () => {
     expect(new Set(chips.map((c) => c.id)).size).toBe(2);
     expect(chips[0]?.isSeed).toBe(true);
     expect(chips[1]?.isSeed).toBe(false);
+  });
+});
+
+describe("selectInspectedDetail", () => {
+  it("returns null for a null key, empty key, or unknown vertex", () => {
+    let state = stateWithInitialSeed("hub");
+    state = applyExpansion(state, {
+      expansionId: 1,
+      origin: "hub",
+      vertices: [v("hub"), v("left")],
+      edges: [e("hub", "left")],
+    });
+    expect(selectInspectedDetail(state, null)).toBeNull();
+    expect(selectInspectedDetail(state, "")).toBeNull();
+    expect(selectInspectedDetail(state, "not-in-accumulator")).toBeNull();
+  });
+
+  it("projects the vertex and its live outgoing edges, sorted by target", () => {
+    let state = stateWithInitialSeed("hub");
+    state = applyExpansion(state, {
+      expansionId: 1,
+      origin: "hub",
+      vertices: [v("hub"), v("alpha"), v("beta"), v("gamma")],
+      // Intentionally out of target order so the sort is observable.
+      edges: [
+        e("hub", "gamma", 3),
+        e("hub", "alpha", 1),
+        e("hub", "beta", 2),
+        // An edge that does NOT originate at hub must be excluded.
+        e("alpha", "beta", 9),
+      ],
+    });
+
+    const detail = selectInspectedDetail(state, "hub");
+    expect(detail).not.toBeNull();
+    expect(detail?.key).toBe("hub");
+    expect(detail?.vertex.key).toBe("hub");
+    expect(detail?.outgoing.map((o) => o.target)).toEqual([
+      "alpha",
+      "beta",
+      "gamma",
+    ]);
+    expect(detail?.outgoing.map((o) => o.weight)).toEqual([1, 2, 3]);
+    // Stable edge ids mirror `edgeIdOf(tail, head)`.
+    expect(detail?.outgoing[0]?.id).toBe("hub\u2192alpha");
+  });
+
+  it("drops the inspected vertex once it has expired", () => {
+    const past = new Date(Date.now() - 60_000).toISOString();
+    let state = stateWithInitialSeed("hub");
+    state = applyExpansion(state, {
+      expansionId: 1,
+      origin: "hub",
+      vertices: [{ key: "hub", expiration: past }, v("left")],
+      edges: [e("hub", "left")],
+    });
+    // With a wall clock after the expiry, the vertex is gone → null so the
+    // Drawer self-closes.
+    expect(selectInspectedDetail(state, "hub", Date.now())).toBeNull();
+    // But reading it as-of a time BEFORE the expiry still resolves it.
+    expect(
+      selectInspectedDetail(state, "hub", Date.parse(past) - 1_000),
+    ).not.toBeNull();
+  });
+
+  it("filters expired outgoing edges out of the projection", () => {
+    const past = new Date(Date.now() - 60_000).toISOString();
+    let state = stateWithInitialSeed("hub");
+    state = applyExpansion(state, {
+      expansionId: 1,
+      origin: "hub",
+      vertices: [v("hub"), v("live"), v("dead")],
+      edges: [
+        { tail: "hub", head: "live", weight: 1 },
+        { tail: "hub", head: "dead", weight: 1, expiration: past },
+      ],
+    });
+    const detail = selectInspectedDetail(state, "hub", Date.now());
+    expect(detail?.outgoing.map((o) => o.target)).toEqual(["live"]);
+  });
+});
+
+describe("filterInboundEdges", () => {
+  it("keeps only edges whose head exactly equals the key", () => {
+    const edges: Edge[] = [
+      e("a", "target"),
+      e("b", "target"),
+      // Prefix over-match the wire `headPrefix` scan can return.
+      e("c", "target:child"),
+      e("d", "other"),
+    ];
+    const inbound = filterInboundEdges(edges, "target");
+    expect(inbound.map((x) => x.tail)).toEqual(["a", "b"]);
+  });
+
+  it("returns an empty array for an empty key", () => {
+    expect(filterInboundEdges([e("a", "")], "")).toEqual([]);
   });
 });

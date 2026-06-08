@@ -1138,4 +1138,85 @@ test.describe("/illuminate", () => {
       { timeout: 4000 },
     );
   });
+
+  test("Info icon opens a read-only detail Drawer; Expand from here grows the lineage (#461)", async ({
+    page,
+  }) => {
+    const seed = encodeURIComponent("e2e:illum:hub");
+    await page.goto(`/illuminate?seed=${seed}`);
+    await expect(page.getByTestId("illuminate-toolbar")).toBeVisible();
+
+    const counter = page.getByTestId("illuminate-counter");
+    await expect(counter).toContainText("5 vertices");
+    await expect(counter).toContainText("1 expansion");
+
+    // Wait for the #461 test-bridge surface, then surface the info icon
+    // for `left` exactly as a real hover would. The WebGL hover hit-test
+    // is flaky under headless chromium, so we drive the icon through the
+    // bridge — the icon it renders and the click path are the real ones.
+    type Bridge = {
+      showInfoIcon: (k: string) => boolean;
+      infoIconNode: () => string | null;
+      inspectNode: (k: string) => boolean;
+    };
+    await page.waitForFunction(() => {
+      const win = window as Window & { __illuminateCanvas?: Bridge };
+      return !!win.__illuminateCanvas?.showInfoIcon;
+    });
+    const shown = await page.evaluate(() => {
+      const win = window as Window & { __illuminateCanvas?: Bridge };
+      return win.__illuminateCanvas!.showInfoIcon("e2e:illum:left");
+    });
+    expect(shown).toBe(true);
+
+    // The icon is the one canvas overlay that takes pointer events.
+    const infoIcon = page.getByTestId("illuminate-info-icon");
+    await expect(infoIcon).toBeVisible();
+    await expect(infoIcon).toHaveAttribute("aria-label", /e2e:illum:left/);
+
+    // Clicking it opens the detail Drawer for that vertex.
+    await infoIcon.click();
+    const panel = page.getByTestId("illuminate-node-detail");
+    await expect(panel).toBeVisible();
+    await expect(page.getByTestId("illuminate-detail-key")).toHaveText(
+      "e2e:illum:left",
+    );
+
+    // Inspecting is read-only: it must NOT expand or refetch. The
+    // accumulator counts stay exactly where they were.
+    await expect(counter).toContainText("5 vertices");
+    await expect(counter).toContainText("1 expansion");
+
+    // The accumulator already holds the outgoing edge left -> leftleft,
+    // so the outgoing list renders without any RPC.
+    await expect(page.getByTestId("illuminate-detail-outgoing")).toContainText(
+      "e2e:illum:leftleft",
+    );
+
+    // "Show inbound edges" issues a fresh prefix scan. The wire scan is a
+    // prefix match, so headPrefix "e2e:illum:left" over-matches
+    // `leftleft`/`leftleftleft`; the panel must filter to the exact
+    // inbound edge hub -> left only.
+    await page.getByTestId("illuminate-detail-inbound-toggle").click();
+    const inbound = page.getByTestId("illuminate-detail-inbound");
+    await expect(inbound).toBeVisible();
+    await expect(inbound).toContainText("e2e:illum:hub");
+    await expect(inbound.getByRole("listitem")).toHaveCount(1);
+
+    // "Expand from here" fires an additive expansion from `left` and
+    // closes the Drawer. `leftleftleft` is the one vertex outside the
+    // current 2-hop frame, so the accumulator grows by exactly one.
+    await page.getByTestId("illuminate-detail-expand").click();
+    await expect(panel).toBeHidden();
+    await expect(counter).toContainText("6 vertices");
+    await expect(counter).toContainText("2 expansions");
+
+    // A new, non-seed lineage chip records the `left` expansion (#456).
+    const expansionChip = page.getByTestId("illuminate-chip-1");
+    await expect(expansionChip).toHaveAttribute(
+      "data-chip-origin",
+      "e2e:illum:left",
+    );
+    await expect(expansionChip).toHaveAttribute("data-chip-is-seed", "false");
+  });
 });
