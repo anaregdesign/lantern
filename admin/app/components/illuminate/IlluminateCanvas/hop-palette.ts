@@ -27,15 +27,17 @@
  * the test bridge and a stale-accumulator scenario have a stable
  * colour to render.
  */
+import { HOP_FAR_THRESHOLD } from "~/lib/client/usecase/illuminate/selectors";
 import type { SigmaPalette } from "./palette";
 
 /**
- * The hop distance at which the per-step ramp collapses to the
- * desaturated `hopFar` swatch. Pinned here (not inlined into the
- * `if/else` ladder) so the unit test can assert the boundary
- * unambiguously.
+ * Re-exported from the use-case layer so existing `./hop-palette` import
+ * sites keep resolving the same constant. {@link HOP_FAR_THRESHOLD} is
+ * now canonically owned by `usecase/illuminate/selectors` (shared with the
+ * legend read-model); `colorForHop` / `describeHop` below still use it to
+ * pin the `>= 3` boundary unambiguously for the unit suite.
  */
-export const HOP_FAR_THRESHOLD = 3;
+export { HOP_FAR_THRESHOLD };
 
 export function colorForHop(
   hopDistance: number,
