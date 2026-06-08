@@ -10,6 +10,9 @@ import { parse, type Command, type ParseResult } from "~/lib/cli/parser";
 import { HELP_TEXT } from "~/lib/cli/verbs";
 import { commandResultToGraphView } from "~/lib/cli/graph-view";
 import { useCliSplitter } from "~/lib/cli/use-cli-splitter";
+import { formatIlluminateClick } from "~/lib/cli/illuminate-axes";
+import { useCliAxisPicker } from "~/lib/cli/use-cli-axis-picker";
+import { CliAxisPicker } from "~/components/cli/CliAxisPicker/CliAxisPicker";
 import { IlluminateCanvas } from "~/components/illuminate/IlluminateCanvas/IlluminateCanvas";
 import type { GraphView } from "~/lib/client/usecase/illuminate/selectors";
 import { useLanternClient } from "~/lib/client/infrastructure/api/use-lantern-client";
@@ -17,9 +20,6 @@ import { LanternApiError } from "~/lib/client/infrastructure/api/error";
 import styles from "./CliPage.module.css";
 
 type EntryKind = "ok" | "error" | "info";
-
-/** Default step/k for click-to-illuminate. Matches the placeholder text. */
-const CLICK_TO_ILLUMINATE = { step: 2, k: 5 } as const;
 
 interface LatestGraph {
   /** The exact CLI input that produced this graph (`get vertex alice`, …). */
@@ -85,6 +85,11 @@ export function CliPage() {
     enabled: latestGraph !== null,
     rootRef,
   });
+  // Owns the click-to-illuminate axis picker strip state (#464). The
+  // hook hydrates from localStorage so a refresh preserves a tuned
+  // exploration session, and persists each axis change so the next
+  // page load picks up where the operator left off.
+  const axisPicker = useCliAxisPicker();
 
   const append = useCallback((entry: Omit<ScrollbackEntry, "id">) => {
     setScrollback((prev) => [...prev, { ...entry, id: idRef.current++ }]);
@@ -248,18 +253,20 @@ export function CliPage() {
     return () => window.removeEventListener("keydown", onKey);
   }, [busy, cancelInFlight, clearScrollback]);
 
-  // Click-to-illuminate (#439). Writes `illuminate <key> 2 5` into
-  // the prompt and submits it through the same parser path the user
-  // would hit by typing it. Illuminate is non-destructive, so the
-  // confirmation chip never fires here.
+  // Click-to-illuminate (#439, #464). Writes the picker-formatted
+  // illuminate command into the prompt and submits it through the
+  // same parser path the user would hit by typing it. Illuminate is
+  // non-destructive, so the confirmation chip never fires here. With
+  // the picker at its defaults the formatter emits the canonical
+  // short form `illuminate <key> 2 5` (regression guard).
   const onNodeClick = useCallback(
     (key: string) => {
       if (busy || pending !== null) return;
-      const raw = `illuminate ${key} ${CLICK_TO_ILLUMINATE.step} ${CLICK_TO_ILLUMINATE.k}`;
+      const raw = formatIlluminateClick(key, axisPicker.axes);
       setInput(raw);
       void runRaw(raw);
     },
-    [busy, pending, runRaw],
+    [busy, pending, runRaw, axisPicker.axes],
   );
 
   const onKeyDown = useCallback(
@@ -357,9 +364,8 @@ export function CliPage() {
               </code>
               <span className={styles.canvasHeaderHint}>
                 click any node to run{" "}
-                <code>
-                  illuminate &lt;key&gt; {CLICK_TO_ILLUMINATE.step}{" "}
-                  {CLICK_TO_ILLUMINATE.k}
+                <code data-testid="cli-click-hint">
+                  {formatIlluminateClick("<key>", axisPicker.axes)}
                 </code>
               </span>
             </div>
@@ -408,6 +414,11 @@ export function CliPage() {
               Cancel
             </Button>
           ) : null}
+          <CliAxisPicker
+            axes={axisPicker.axes}
+            setAxis={axisPicker.setAxis}
+            disabled={busy || pending !== null}
+          />
         </div>
         <div className={styles.scrollback} ref={scrollRef} aria-live="polite">
           {renderedScrollback}

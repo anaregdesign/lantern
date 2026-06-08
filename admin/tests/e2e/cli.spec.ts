@@ -326,4 +326,101 @@ test.describe("/cli", () => {
     const last = page.getByTestId("cli-entry-ok").last();
     await expect(last).toBeInViewport();
   });
+
+  // #464 — the click-to-illuminate axis picker is the operator's
+  // primary control for tuning the next click. These tests cover the
+  // user-visible contract:
+  //   1. Default-state preview equals the canonical short form
+  //      (regression guard for #439).
+  //   2. Tweaking controls updates the preview deterministically and
+  //      the canvas-header hint mirrors the picker (single source of
+  //      truth via `formatIlluminateClick`).
+  //   3. localStorage round-trips axes across a reload so a tuned
+  //      exploration session survives a refresh.
+  test("default picker state previews the canonical short-form click (#464)", async ({
+    page,
+  }) => {
+    await page.goto("/cli");
+    const picker = page.getByTestId("cli-axis-picker");
+    await expect(picker).toBeVisible();
+    // Defaults: step=2, k=5, algorithm=none, objective=min, weighting=raw
+    // → short form `illuminate <key> 2 5`.
+    await expect(page.getByTestId("cli-axis-preview")).toHaveText(
+      "illuminate <key> 2 5",
+    );
+    await expect(page.getByTestId("cli-axis-step")).toHaveValue("2");
+    await expect(page.getByTestId("cli-axis-k")).toHaveValue("5");
+    await expect(page.getByTestId("cli-axis-tfidf")).not.toBeChecked();
+    // Canvas-header hint mirrors the picker; render a graph first so
+    // the canvas panel mounts.
+    const input = page.getByTestId("cli-input");
+    await input.fill("get vertex cli:alpha");
+    await input.press("Enter");
+    await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
+    await expect(page.getByTestId("cli-click-hint")).toHaveText(
+      "illuminate <key> 2 5",
+    );
+  });
+
+  test("tuning axes updates the picker preview to the long form (#464)", async ({
+    page,
+  }) => {
+    await page.goto("/cli");
+    const preview = page.getByTestId("cli-axis-preview");
+    await expect(preview).toHaveText("illuminate <key> 2 5");
+
+    // Bump step and k to long-form values.
+    const step = page.getByTestId("cli-axis-step");
+    await step.fill("3");
+    await expect(preview).toHaveText("illuminate <key> 3 5");
+    const k = page.getByTestId("cli-axis-k");
+    await k.fill("10");
+    await expect(preview).toHaveText("illuminate <key> 3 10");
+
+    // Pick algorithm=spt via the Dropdown.
+    await page.getByTestId("cli-axis-algorithm").click();
+    await page.getByRole("option", { name: "Shortest-path tree" }).click();
+    await expect(preview).toHaveText("illuminate <key> 3 10 algorithm=spt");
+
+    // Pick objective=max.
+    await page.getByTestId("cli-axis-objective").click();
+    await page.getByRole("option", { name: /Maximize/ }).click();
+    await expect(preview).toHaveText(
+      "illuminate <key> 3 10 algorithm=spt objective=max",
+    );
+
+    // Flip TF-IDF on. Token order must be algorithm → objective → weighting.
+    await page.getByTestId("cli-axis-tfidf").click();
+    await expect(preview).toHaveText(
+      "illuminate <key> 3 10 algorithm=spt objective=max weighting=tfidf",
+    );
+
+    // Render the canvas so the header hint shows up, and verify it
+    // tracks the picker.
+    const input = page.getByTestId("cli-input");
+    await input.fill("get vertex cli:alpha");
+    await input.press("Enter");
+    await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
+    await expect(page.getByTestId("cli-click-hint")).toHaveText(
+      "illuminate <key> 3 10 algorithm=spt objective=max weighting=tfidf",
+    );
+  });
+
+  test("picker state persists across a reload (#464)", async ({ page }) => {
+    await page.goto("/cli");
+    await page.getByTestId("cli-axis-step").fill("4");
+    await page.getByTestId("cli-axis-k").fill("12");
+    await page.getByTestId("cli-axis-algorithm").click();
+    await page.getByRole("option", { name: "Spanning tree" }).click();
+    await expect(page.getByTestId("cli-axis-preview")).toHaveText(
+      "illuminate <key> 4 12 algorithm=mst",
+    );
+    // Reload — picker should hydrate from localStorage on mount.
+    await page.reload();
+    await expect(page.getByTestId("cli-axis-step")).toHaveValue("4");
+    await expect(page.getByTestId("cli-axis-k")).toHaveValue("12");
+    await expect(page.getByTestId("cli-axis-preview")).toHaveText(
+      "illuminate <key> 4 12 algorithm=mst",
+    );
+  });
 });
