@@ -1219,4 +1219,46 @@ test.describe("/illuminate", () => {
     );
     await expect(expansionChip).toHaveAttribute("data-chip-is-seed", "false");
   });
+
+  test("Directed edges render with the arrow program (#485)", async ({
+    page,
+  }) => {
+    const seed = encodeURIComponent("e2e:illum:hub");
+    await page.goto(`/illuminate?seed=${seed}`);
+    await expect(page.getByTestId("illuminate-counter")).toContainText(
+      "5 vertices",
+    );
+
+    type Bridge = {
+      getDefaultEdgeType: () => string;
+      getRenderedEdgeColor: (k: string) => string | null;
+    };
+    await page.waitForFunction(() => {
+      const win = window as Window & { __illuminateCanvas?: Bridge };
+      return !!win.__illuminateCanvas;
+    });
+
+    // The graphology graph is directed (tail → head). Sigma's default
+    // edge program draws plain undirected bars, so the canvas must opt
+    // into the arrow program to make direction legible. No edge sets a
+    // per-edge `type`, so the resolved `defaultEdgeType` governs the
+    // whole graph — asserting it is `"arrow"` proves every edge renders
+    // an arrowhead.
+    const defaultEdgeType = await page.evaluate(() => {
+      const win = window as Window & { __illuminateCanvas?: Bridge };
+      return win.__illuminateCanvas?.getDefaultEdgeType() ?? null;
+    });
+    expect(defaultEdgeType).toBe("arrow");
+
+    // Sanity: an actual edge from the seeded graph carries rendered
+    // display data, so the arrow program governs a live edge rather than
+    // an empty registry. Edge ids follow `${tail}→${head}` (see edgeIdOf
+    // in app/lib/client/usecase/illuminate/state.ts).
+    const hubToLeftEdge = "e2e:illum:hub→e2e:illum:left";
+    const renderedColor = await page.evaluate((edgeId) => {
+      const win = window as Window & { __illuminateCanvas?: Bridge };
+      return win.__illuminateCanvas?.getRenderedEdgeColor(edgeId) ?? null;
+    }, hubToLeftEdge);
+    expect(renderedColor).not.toBeNull();
+  });
 });
