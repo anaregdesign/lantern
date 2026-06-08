@@ -9,6 +9,7 @@ import { dispatch, isDestructive } from "~/lib/cli/dispatcher";
 import { parse, type Command, type ParseResult } from "~/lib/cli/parser";
 import { HELP_TEXT } from "~/lib/cli/verbs";
 import { commandResultToGraphView } from "~/lib/cli/graph-view";
+import { useCliSplitter } from "~/lib/cli/use-cli-splitter";
 import { IlluminateCanvas } from "~/components/illuminate/IlluminateCanvas/IlluminateCanvas";
 import type { GraphView } from "~/lib/client/usecase/illuminate/selectors";
 import { useLanternClient } from "~/lib/client/infrastructure/api/use-lantern-client";
@@ -76,6 +77,14 @@ export function CliPage() {
   // while busy. The dispatcher already plumbs `signal` through every
   // underlying RPC, so the abort propagates end-to-end.
   const abortRef = useRef<AbortController | null>(null);
+  // Drives the two-column grid + draggable splitter (#465). Only active
+  // when a graph is present; otherwise the right column owns the full
+  // width and the splitter handle is hidden by CSS.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const splitter = useCliSplitter({
+    enabled: latestGraph !== null,
+    rootRef,
+  });
 
   const append = useCallback((entry: Omit<ScrollbackEntry, "id">) => {
     setScrollback((prev) => [...prev, { ...entry, id: idRef.current++ }]);
@@ -331,107 +340,125 @@ export function CliPage() {
   );
 
   return (
-    <div className={styles.root} data-testid="cli-root">
+    <div
+      ref={rootRef}
+      className={styles.root}
+      data-testid="cli-root"
+      data-mode={latestGraph !== null ? "split" : "cli"}
+      data-dragging={splitter.dragging ? "true" : undefined}
+    >
       {latestGraph !== null ? (
-        <div className={styles.canvasPanel} data-testid="cli-canvas-panel">
-          <div className={styles.canvasHeader}>
-            <span className={styles.canvasHeaderLabel}>from:</span>{" "}
-            <code className={styles.canvasHeaderSource}>
-              {latestGraph.source}
-            </code>
-            <span className={styles.canvasHeaderHint}>
-              click any node to run{" "}
-              <code>
-                illuminate &lt;key&gt; {CLICK_TO_ILLUMINATE.step}{" "}
-                {CLICK_TO_ILLUMINATE.k}
+        <div className={styles.leftColumn} data-testid="cli-left-column">
+          <div className={styles.canvasPanel} data-testid="cli-canvas-panel">
+            <div className={styles.canvasHeader}>
+              <span className={styles.canvasHeaderLabel}>from:</span>{" "}
+              <code className={styles.canvasHeaderSource}>
+                {latestGraph.source}
               </code>
-            </span>
-          </div>
-          <div className={styles.canvasBody}>
-            <IlluminateCanvas
-              nodes={latestGraph.view.nodes}
-              edges={latestGraph.view.edges}
-              latestExpansionOrigin={latestGraph.view.latestExpansionOrigin}
-              onNodeClick={onNodeClick}
-              isBusy={busy}
-            />
+              <span className={styles.canvasHeaderHint}>
+                click any node to run{" "}
+                <code>
+                  illuminate &lt;key&gt; {CLICK_TO_ILLUMINATE.step}{" "}
+                  {CLICK_TO_ILLUMINATE.k}
+                </code>
+              </span>
+            </div>
+            <div className={styles.canvasBody}>
+              <IlluminateCanvas
+                nodes={latestGraph.view.nodes}
+                edges={latestGraph.view.edges}
+                latestExpansionOrigin={latestGraph.view.latestExpansionOrigin}
+                onNodeClick={onNodeClick}
+                isBusy={busy}
+              />
+            </div>
           </div>
         </div>
       ) : null}
-      <div className={styles.toolbar} data-testid="cli-toolbar">
-        <Button
-          appearance="secondary"
-          size="small"
-          onClick={clearScrollback}
-          disabled={scrollback.length <= 1}
-          data-testid="cli-clear"
-          aria-label="Clear scrollback (Ctrl+L)"
-          title="Clear scrollback (Ctrl+L)"
-        >
-          Clear
-        </Button>
-        {busy ? (
+      {latestGraph !== null ? (
+        <div
+          className={styles.splitter}
+          data-testid="cli-splitter"
+          aria-label="Resize canvas vs scrollback"
+          {...splitter.handleProps}
+        />
+      ) : null}
+      <div className={styles.rightColumn} data-testid="cli-right-column">
+        <div className={styles.toolbar} data-testid="cli-toolbar">
           <Button
             appearance="secondary"
             size="small"
-            onClick={cancelInFlight}
-            data-testid="cli-cancel"
-            aria-label="Cancel in-flight command (Esc)"
-            title="Cancel in-flight command (Esc)"
+            onClick={clearScrollback}
+            disabled={scrollback.length <= 1}
+            data-testid="cli-clear"
+            aria-label="Clear scrollback (Ctrl+L)"
+            title="Clear scrollback (Ctrl+L)"
           >
-            Cancel
+            Clear
           </Button>
-        ) : null}
-      </div>
-      <div className={styles.scrollback} ref={scrollRef} aria-live="polite">
-        {renderedScrollback}
-      </div>
-      {pending !== null ? (
-        <div className={styles.confirmBar} data-testid="cli-confirm">
-          <span className={styles.confirmText}>
-            About to run: <code>{pending.rendered}</code> — this mutates server
-            state.
-          </span>
-          <Checkbox
-            label="Do not ask again this session"
-            checked={skipConfirm}
-            onChange={(_e, data) => setSkipConfirm(Boolean(data.checked))}
-            data-testid="cli-skip-confirm"
-          />
-          <Button
-            appearance="secondary"
-            onClick={() => setPending(null)}
-            data-testid="cli-confirm-cancel"
-          >
-            Cancel
-          </Button>
-          <Button
-            appearance="primary"
-            onClick={async () => {
-              const p = pending;
-              setPending(null);
-              if (p) {
-                await runCommand(p.rendered, p.command);
-              }
-            }}
-            data-testid="cli-confirm-run"
-          >
-            Run
-          </Button>
+          {busy ? (
+            <Button
+              appearance="secondary"
+              size="small"
+              onClick={cancelInFlight}
+              data-testid="cli-cancel"
+              aria-label="Cancel in-flight command (Esc)"
+              title="Cancel in-flight command (Esc)"
+            >
+              Cancel
+            </Button>
+          ) : null}
         </div>
-      ) : null}
-      <div className={styles.inputRow}>
-        <span className={styles.prompt}>&gt;</span>
-        <Input
-          className={styles.input}
-          value={input}
-          onChange={onChange}
-          onKeyDown={onKeyDown}
-          placeholder="get vertex alice    |    illuminate alice 2 5 algorithm=spt"
-          disabled={busy || pending !== null}
-          data-testid="cli-input"
-          aria-label="CLI command input"
-        />
+        <div className={styles.scrollback} ref={scrollRef} aria-live="polite">
+          {renderedScrollback}
+        </div>
+        {pending !== null ? (
+          <div className={styles.confirmBar} data-testid="cli-confirm">
+            <span className={styles.confirmText}>
+              About to run: <code>{pending.rendered}</code> — this mutates
+              server state.
+            </span>
+            <Checkbox
+              label="Do not ask again this session"
+              checked={skipConfirm}
+              onChange={(_e, data) => setSkipConfirm(Boolean(data.checked))}
+              data-testid="cli-skip-confirm"
+            />
+            <Button
+              appearance="secondary"
+              onClick={() => setPending(null)}
+              data-testid="cli-confirm-cancel"
+            >
+              Cancel
+            </Button>
+            <Button
+              appearance="primary"
+              onClick={async () => {
+                const p = pending;
+                setPending(null);
+                if (p) {
+                  await runCommand(p.rendered, p.command);
+                }
+              }}
+              data-testid="cli-confirm-run"
+            >
+              Run
+            </Button>
+          </div>
+        ) : null}
+        <div className={styles.inputRow}>
+          <span className={styles.prompt}>&gt;</span>
+          <Input
+            className={styles.input}
+            value={input}
+            onChange={onChange}
+            onKeyDown={onKeyDown}
+            placeholder="get vertex alice    |    illuminate alice 2 5 algorithm=spt"
+            disabled={busy || pending !== null}
+            data-testid="cli-input"
+            aria-label="CLI command input"
+          />
+        </div>
       </div>
     </div>
   );
