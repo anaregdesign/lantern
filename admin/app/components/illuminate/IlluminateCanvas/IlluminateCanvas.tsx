@@ -18,6 +18,7 @@ import type {
 } from "~/lib/client/usecase/illuminate/selectors";
 import { usePreferredTheme } from "~/lib/client/usecase/theme/use-preferred-theme";
 import { HOP_FAR_THRESHOLD, colorForHop, describeHop } from "./hop-palette";
+import { makeDrawNodeHover } from "./hover-label";
 import { decideFa2Iterations } from "./layout-iterations";
 import {
   FALLBACK_PALETTE,
@@ -374,6 +375,17 @@ export function IlluminateCanvas({
       labelSize: LABEL_SIZE,
       labelWeight: LABEL_WEIGHT,
       labelFont: FALLBACK_PALETTE.labelFont,
+      // === #484 theme-aware hover label =================================
+      // Sigma's default `drawDiscNodeHover` paints a hard-coded near-white
+      // box behind the hovered label, then draws the label in
+      // `labelColor` (our `--colorNeutralForeground1`) — which is also
+      // near-white in dark theme, so the hovered label rendered
+      // white-on-white. Swap in a palette-skinned renderer: the chip is
+      // filled with `--colorNeutralBackground1` and outlined with a 1px
+      // `--colorNeutralStroke1`, guaranteeing it contrasts with the text.
+      // The palette effect re-applies this on every theme flip.
+      defaultDrawNodeHover: makeDrawNodeHover(FALLBACK_PALETTE),
+      // === end #484 =====================================================
     });
     graphRef.current = graph;
     sigmaRef.current = renderer;
@@ -783,6 +795,21 @@ export function IlluminateCanvas({
          * directed arrowheads are wired and have not regressed.
          */
         getDefaultEdgeType: () => string;
+        /**
+         * #484 test bridge: the resolved hover-label chip colours
+         * (`background` ← `--colorNeutralBackground1`, `stroke` ←
+         * `--colorNeutralStroke1`, `text` ← `--colorNeutralForeground1`).
+         * The custom hover renderer paints the chip with `background` +
+         * a 1px `stroke` and the label with `text`, so asserting
+         * `background !== text` in the live theme proves the hovered
+         * label can never collide with its own box. Reads `paletteRef`
+         * so it reflects the current theme after a flip.
+         */
+        getHoverLabelColors: () => {
+          background: string;
+          stroke: string;
+          text: string;
+        };
       };
     };
     win.__illuminateCanvas = {
@@ -894,6 +921,11 @@ export function IlluminateCanvas({
       },
       infoIconNode: () => infoIconRef.current?.key ?? null,
       getDefaultEdgeType: () => renderer.getSetting("defaultEdgeType"),
+      getHoverLabelColors: () => ({
+        background: paletteRef.current.labelBackground,
+        stroke: paletteRef.current.labelStroke,
+        text: paletteRef.current.labelText,
+      }),
     };
 
     return () => {
@@ -923,6 +955,9 @@ export function IlluminateCanvas({
     sigma.setSetting("defaultEdgeColor", palette.edge);
     sigma.setSetting("labelColor", { color: palette.labelText });
     sigma.setSetting("labelFont", palette.labelFont);
+    // #484: rebuild the hover renderer against the new palette so the
+    // hovered-label chip follows the theme alongside the label text.
+    sigma.setSetting("defaultDrawNodeHover", makeDrawNodeHover(palette));
     for (const id of graph.nodes()) {
       const attrs = graph.getNodeAttributes(id) as {
         hopDistance?: number;

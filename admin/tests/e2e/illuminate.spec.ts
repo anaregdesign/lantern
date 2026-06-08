@@ -1261,4 +1261,46 @@ test.describe("/illuminate", () => {
     }, hubToLeftEdge);
     expect(renderedColor).not.toBeNull();
   });
+
+  test("Hovered label chip contrasts with its text in both themes (#484)", async ({
+    page,
+  }) => {
+    const seed = encodeURIComponent("e2e:illum:hub");
+    await page.goto(`/illuminate?seed=${seed}`);
+    await expect(page.getByTestId("illuminate-counter")).toContainText(
+      "5 vertices",
+    );
+
+    type Bridge = {
+      getHoverLabelColors: () => {
+        background: string;
+        stroke: string;
+        text: string;
+      };
+    };
+    await page.waitForFunction(() => {
+      const win = window as Window & { __illuminateCanvas?: Bridge };
+      return !!win.__illuminateCanvas?.getHoverLabelColors;
+    });
+
+    // #484: sigma's default hover renderer painted a near-white box and
+    // drew the label in `--colorNeutralForeground1`, which is also
+    // near-white in dark theme — an unreadable white-on-white collision.
+    // The custom renderer skins the chip from `--colorNeutralBackground1`
+    // (+ a 1px `--colorNeutralStroke1` border) so the box always
+    // contrasts with the text. Asserting the resolved tokens differ in
+    // the *live* theme proves the wiring resolves real Fluent variables
+    // (not just the fallback literals) and that they never collide.
+    const colors = await page.evaluate(() => {
+      const win = window as Window & { __illuminateCanvas?: Bridge };
+      return win.__illuminateCanvas?.getHoverLabelColors() ?? null;
+    });
+    expect(colors).not.toBeNull();
+    expect(colors?.background).toBeTruthy();
+    expect(colors?.stroke).toBeTruthy();
+    expect(colors?.text).toBeTruthy();
+    // The chip background and the label text must be different colours —
+    // the exact collision #484 fixes.
+    expect(colors?.background).not.toBe(colors?.text);
+  });
 });
