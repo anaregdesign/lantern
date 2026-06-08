@@ -179,6 +179,52 @@ function appendAdjacency(
 }
 
 /**
+ * The set of node/edge ids graphology keeps for the current frame.
+ * {@link selectRenderTargets} resolves it; the reconcile effect and the
+ * hop legend both consume it so they agree on exactly what is rendered.
+ */
+export interface RenderTargets {
+  /** Node ids to keep this frame (everything else is dropped). */
+  nodeIds: Set<string>;
+  /** Edge ids to keep this frame (everything else is dropped). */
+  edgeIds: Set<string>;
+}
+
+/**
+ * Resolves which nodes and edges the canvas renders this frame (#491).
+ *
+ * The canvas renders ONLY the latest expansion result: once an expansion
+ * produces a result, graphology is reconciled down to exactly those
+ * nodes/edges and the rest are DROPPED (not hidden). An empty result set
+ * — cold mount, reseed, or Clear — falls back to the full accumulator
+ * (itself empty in that case), i.e. "no filter".
+ *
+ * Single membership authority: the reconcile diff (add/drop) and the hop
+ * legend ({@link selectHopBucketCounts}) both derive their rendered set
+ * from here, so the legend can never again tally vertices that have been
+ * dropped from the canvas (the #491 desync). The `hasResult` branch
+ * returns the SAME Set references the caller passed in, so reference
+ * identity (e.g. the reconcile's `previousNodeIdsRef`) is preserved.
+ */
+export function selectRenderTargets({
+  nodes,
+  edges,
+  latestResultVertexKeys,
+  latestResultEdgeIds,
+}: Pick<
+  GraphView,
+  "nodes" | "edges" | "latestResultVertexKeys" | "latestResultEdgeIds"
+>): RenderTargets {
+  const hasResult = latestResultVertexKeys.size > 0;
+  return {
+    nodeIds: hasResult
+      ? latestResultVertexKeys
+      : new Set(nodes.map((n) => n.id)),
+    edgeIds: hasResult ? latestResultEdgeIds : new Set(edges.map((e) => e.id)),
+  };
+}
+
+/**
  * The hop distance at which the per-step ramp collapses into the single
  * desaturated "far" tier (#460): every vertex `>= HOP_FAR_THRESHOLD`
  * hops from the nearest expansion origin shares one swatch, because
@@ -210,32 +256,28 @@ export interface HopBucketCount {
 /**
  * Counts the rendered nodes per hop-distance tier for the legend (#460).
  *
- * The canvas renders ONLY the latest expansion result (#491), so the
- * legend must tally exactly that set — otherwise it counts vertices that
- * have already been dropped from the canvas. This mirrors the reconcile's
- * membership predicate: when a latest result is present the rendered set
- * IS that result; otherwise (cold mount, reseed, or Clear) every
- * accumulator node renders. An empty `latestResultVertexKeys` therefore
- * counts every node in `nodes`.
+ * `renderNodeIds` is the resolved render set from
+ * {@link selectRenderTargets} — the SAME membership the reconcile uses —
+ * so the legend can only ever tally nodes that are actually on the canvas
+ * (the #491 desync came from re-deriving membership inline here). Nodes
+ * absent from the set are skipped; pass every node id (the cold-start
+ * fallback `selectRenderTargets` already returns) to count them all.
  *
  * Returns all five tiers in palette-ramp order with their counts (zeros
  * included); presentation decides whether to hide empty tiers and which
- * swatch/label to attach. Kept pure here — the previous incarnation lived
- * inline in the component `useMemo`, the exact selector-in-component seam
- * that desynced the legend from the rendered set in #491.
+ * swatch/label to attach.
  */
 export function selectHopBucketCounts(
   nodes: GraphNode[],
-  latestResultVertexKeys: Set<string>,
+  renderNodeIds: Set<string>,
 ): HopBucketCount[] {
-  const hasResult = latestResultVertexKeys.size > 0;
   let origin = 0;
   let oneHop = 0;
   let twoHop = 0;
   let far = 0;
   let unreachable = 0;
   for (const node of nodes) {
-    if (hasResult && !latestResultVertexKeys.has(node.id)) continue;
+    if (!renderNodeIds.has(node.id)) continue;
     const h = node.hopDistance;
     if (!Number.isFinite(h) || h < 0) {
       unreachable += 1;

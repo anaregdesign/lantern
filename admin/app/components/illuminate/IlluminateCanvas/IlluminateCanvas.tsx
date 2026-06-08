@@ -14,6 +14,7 @@ import { EdgeArrowProgram } from "sigma/rendering";
 import { Info16Regular } from "@fluentui/react-icons";
 import {
   selectHopBucketCounts,
+  selectRenderTargets,
   type GraphEdge,
   type GraphNode,
   type HopBucketKey,
@@ -1331,18 +1332,16 @@ export function IlluminateCanvas({
     if (!graph) return;
     const sigma = sigmaRef.current;
 
-    // #491: the rendered set IS the latest expansion result. Once an
-    // expansion has produced a result we reconcile graphology down to
-    // exactly those nodes/edges (dropping the rest); an empty result set
-    // (cold mount, reseed, or Clear) falls back to the full accumulator
-    // (which is itself empty in that case).
-    const hasResult = latestResultVertexKeys.size > 0;
-    const nextNodeIds = hasResult
-      ? latestResultVertexKeys
-      : new Set(nodes.map((n) => n.id));
-    const nextEdgeIds = hasResult
-      ? latestResultEdgeIds
-      : new Set(edges.map((e) => e.id));
+    // #491: the rendered set IS the latest expansion result. The
+    // membership rule (latest-result-or-full-accumulator fallback) is
+    // owned by the pure `selectRenderTargets` selector so the reconcile
+    // diff and the hop legend can never disagree about what's on screen.
+    const { nodeIds: nextNodeIds, edgeIds: nextEdgeIds } = selectRenderTargets({
+      nodes,
+      edges,
+      latestResultVertexKeys,
+      latestResultEdgeIds,
+    });
 
     // Per-reconcile diff used to choose the layout regime below (#483).
     // We compute it BEFORE mutating the graph so the counts reflect the
@@ -1531,12 +1530,13 @@ export function IlluminateCanvas({
   // legend stays compact in the common case (most graphs have no
   // unreachables, and many won't have anything past 2 hops).
   const legendBuckets = useMemo(() => {
-    // Counting — including the #491 "render only the latest expansion
-    // result" membership rule — now lives in the pure
-    // `selectHopBucketCounts` selector (it desynced from the rendered set
-    // when it was inline here). This memo only attaches presentation: a
-    // theme-derived swatch colour and the human hop label per tier, then
-    // hides empty tiers so the legend stays compact.
+    // Membership (#491 "render only the latest expansion result") comes
+    // from the shared `selectRenderTargets` selector and counting from
+    // `selectHopBucketCounts` — the same membership the reconcile uses, so
+    // the legend can't desync from the canvas the way it did inline here.
+    // This memo only attaches presentation: a theme-derived swatch colour
+    // and the human hop label per tier, then hides empty tiers so the
+    // legend stays compact.
     const presentation: Record<HopBucketKey, { label: string; color: string }> =
       {
         origin: { label: describeHop(0), color: palette.hop0 },
@@ -1548,10 +1548,16 @@ export function IlluminateCanvas({
           color: palette.hopUnreachable,
         },
       };
-    return selectHopBucketCounts(nodes, latestResultVertexKeys)
+    const { nodeIds } = selectRenderTargets({
+      nodes,
+      edges,
+      latestResultVertexKeys,
+      latestResultEdgeIds,
+    });
+    return selectHopBucketCounts(nodes, nodeIds)
       .filter((b) => b.count > 0)
       .map((b) => ({ ...b, ...presentation[b.key] }));
-  }, [nodes, palette, latestResultVertexKeys]);
+  }, [nodes, edges, palette, latestResultVertexKeys, latestResultEdgeIds]);
 
   return (
     <div className={wrapperClass} data-testid="illuminate-canvas">
