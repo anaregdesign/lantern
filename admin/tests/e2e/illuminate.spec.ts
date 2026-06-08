@@ -1079,7 +1079,7 @@ test.describe("/illuminate", () => {
     ).toBeGreaterThan(tickAfterHidden);
   });
 
-  test("Hop-distance coloring separates each ring and never grows existing distances across an additive expansion (#460)", async ({
+  test("Hop-distance coloring separates each ring, then recolors to the latest result after an expansion (#460, #491)", async ({
     page,
   }) => {
     const seed = encodeURIComponent("e2e:illum:hub");
@@ -1154,21 +1154,20 @@ test.describe("/illuminate", () => {
       0,
     );
 
-    // === Phase 2: additive expansion from leftleft =======================
-    // Adds leftleftleft (a fresh vertex) AND a second expansion origin
-    // (leftleft). After this:
-    //   - hub stays at hop 0 (still the original seed AND still an
-    //     expansion origin via the URL anchor; multi-source BFS keeps
-    //     it at 0).
-    //   - leftleft drops from hop 2 → hop 0 (it's now an expansion
-    //     origin itself).
-    //   - left drops from hop 1 → hop 1 (already at 1 from hub; can't
-    //     get lower since the chain hub→left→leftleft is 1 hop apart).
-    //   - leftleftleft enters at hop 1 (one edge from the new origin).
+    // === Phase 2: expand from leftleft — render only the latest result ===
+    // Per #491 the canvas renders ONLY the most recent expansion's
+    // result and DELETES everything else. Expanding from leftleft
+    // (step=2) yields the result {leftleft, leftleftleft}; the previous
+    // frame's hub/left/right/rightright are dropped from graphology even
+    // though they stay in the accumulator (the counter still totals 6).
     //
-    // The monotonic-shrink invariant is the key thing this test
-    // protects: every existing vertex's hop distance must stay the
-    // same or shrink, NEVER grow.
+    // Hop distances are computed over the full accumulator with both
+    // origins (hub via the URL anchor + leftleft as the new expansion),
+    // but only the rendered survivors expose a distance through the
+    // bridge:
+    //   - leftleft is now an expansion origin → hop 0.
+    //   - leftleftleft is one edge from it → hop 1.
+    //   - hub/left/right/rightright are deleted → no hop (null).
     await page
       .getByRole("group")
       .getByText(/List view \(5 vertices/)
@@ -1181,34 +1180,31 @@ test.describe("/illuminate", () => {
       "6 vertices",
     );
 
-    const newHubHop = await readHop(hubKey);
-    const newLeftHop = await readHop(leftKey);
-    const newRightHop = await readHop(rightKey);
-    const newLeftLeftHop = await readHop(leftLeftKey);
-    const newRightRightHop = await readHop(rightRightKey);
-    const newLeftLeftLeftHop = await readHop(leftLeftLeftKey);
+    // The latest result renders with its own ring colours.
+    expect(await readHop(leftLeftKey)).toBe(0);
+    expect(await readHop(leftLeftLeftKey)).toBe(1);
 
-    // The new origin and the vertex one edge from it.
-    expect(newLeftLeftHop).toBe(0);
-    expect(newLeftLeftLeftHop).toBe(1);
+    // Everything outside the latest result is gone from the canvas.
+    expect(await readHop(hubKey)).toBeNull();
+    expect(await readHop(leftKey)).toBeNull();
+    expect(await readHop(rightKey)).toBeNull();
+    expect(await readHop(rightRightKey)).toBeNull();
 
-    // Monotonic shrink: every previous distance MUST be ≤ what it was
-    // in phase 1.
-    expect(newHubHop).not.toBeNull();
-    expect(newLeftHop).not.toBeNull();
-    expect(newRightHop).not.toBeNull();
-    expect(newRightRightHop).not.toBeNull();
-    expect(newHubHop).toBeLessThanOrEqual(0);
-    expect(newLeftHop).toBeLessThanOrEqual(1);
-    expect(newRightHop).toBeLessThanOrEqual(1);
-    expect(newLeftLeftHop).toBeLessThanOrEqual(2);
-    expect(newRightRightHop).toBeLessThanOrEqual(2);
-
-    // Concretely: hub stays at 0 (still an origin), leftleft is now
-    // also at 0 (new origin), and the previously-2-hop leftleft is
-    // now a brand colour, not a far colour.
-    expect(newHubHop).toBe(0);
+    // The new origin paints with the origin colour and its single
+    // neighbour with the 1-hop colour — the same buckets phase 1 used.
     expect(await readNode(leftLeftKey)).toBe(hubColor);
+    expect(await readNode(leftLeftLeftKey)).toBe(leftColor);
+
+    // The legend recomputes to the rendered set: origin + 1-hop only.
+    // The earlier 2-hop row disappears because its only member
+    // (rightright) was deleted from the canvas.
+    await expect(page.getByTestId("illuminate-legend-origin")).toBeVisible();
+    await expect(page.getByTestId("illuminate-legend-1hop")).toBeVisible();
+    await expect(page.getByTestId("illuminate-legend-2hop")).toHaveCount(0);
+    await expect(page.getByTestId("illuminate-legend-far")).toHaveCount(0);
+    await expect(page.getByTestId("illuminate-legend-unreachable")).toHaveCount(
+      0,
+    );
   });
 
   test("Lineage chip strip scrolls the camera back to an expansion origin without mutating state (#456)", async ({

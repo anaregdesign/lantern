@@ -1529,12 +1529,20 @@ export function IlluminateCanvas({
   // legend stays compact in the common case (most graphs have no
   // unreachables, and many won't have anything past 2 hops).
   const legendBuckets = useMemo(() => {
+    // #491: the canvas renders ONLY the latest expansion result, so the
+    // legend must count only those nodes — otherwise it would tally
+    // vertices that have been dropped from the canvas. Mirror the
+    // reconcile's membership predicate: when a result is present the
+    // rendered set IS that result; otherwise (cold/reseed/Clear) every
+    // accumulator node renders.
+    const hasResult = latestResultVertexKeys.size > 0;
     let origin = 0;
     let oneHop = 0;
     let twoHop = 0;
     let far = 0;
     let unreachable = 0;
     for (const node of nodes) {
+      if (hasResult && !latestResultVertexKeys.has(node.id)) continue;
       const h = node.hopDistance;
       if (!Number.isFinite(h) || h < 0) {
         unreachable += 1;
@@ -1580,7 +1588,7 @@ export function IlluminateCanvas({
         color: palette.hopUnreachable,
       },
     ].filter((b) => b.count > 0);
-  }, [nodes, palette]);
+  }, [nodes, palette, latestResultVertexKeys]);
 
   return (
     <div className={wrapperClass} data-testid="illuminate-canvas">
