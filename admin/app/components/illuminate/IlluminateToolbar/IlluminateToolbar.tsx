@@ -10,9 +10,12 @@ import {
   Tooltip,
 } from "@fluentui/react-components";
 import {
+  Add20Regular,
   ArrowClockwise20Regular,
   Delete20Regular,
 } from "@fluentui/react-icons";
+import { useCallback, useState } from "react";
+import { VertexPicker } from "~/components/shared/VertexPicker/VertexPicker";
 import { ExpansionChipStrip } from "../ExpansionChipStrip/ExpansionChipStrip";
 import type {
   IlluminateControls,
@@ -48,6 +51,14 @@ export interface IlluminateToolbarProps {
    * vertex; no state mutation, no re-fetch.
    */
   onChipClick: (originKey: string) => void;
+  /**
+   * Fired when the user commits a key in the inline “Expand from key…”
+   * picker (#457). Under the additive model (#466) this dispatches a fresh
+   * expansion (`ill.expand`) rather than replacing the URL-level seed, so
+   * the operator can grow the accumulator from an arbitrary key without
+   * navigating back to the SeedPrompt.
+   */
+  onExpandFromKey: (key: string) => void;
 }
 
 // Per #410 the post-traversal reduction is the orthogonal triple
@@ -87,7 +98,22 @@ export function IlluminateToolbar({
   onClear,
   onRefresh,
   onChipClick,
+  onExpandFromKey,
 }: IlluminateToolbarProps) {
+  const [expandOpen, setExpandOpen] = useState(false);
+  const [expandValue, setExpandValue] = useState("");
+
+  const commitExpand = useCallback(
+    (key: string) => {
+      const next = key.trim();
+      if (next === "") return;
+      onExpandFromKey(next);
+      setExpandValue("");
+      setExpandOpen(false);
+    },
+    [onExpandFromKey],
+  );
+
   const update = <K extends keyof IlluminateControls>(
     key: K,
     value: IlluminateControls[K],
@@ -117,6 +143,16 @@ export function IlluminateToolbar({
           {vertexCount} vertices · {edgeCount} edges · {expansionCount}{" "}
           expansions
         </Badge>
+        <Button
+          appearance="subtle"
+          size="small"
+          icon={<Add20Regular />}
+          onClick={() => setExpandOpen((open) => !open)}
+          aria-expanded={expandOpen}
+          data-testid="illuminate-expand-toggle"
+        >
+          Expand from key…
+        </Button>
         <Tooltip
           content="Re-fire the most recent expansion with current controls"
           relationship="label"
@@ -151,6 +187,43 @@ export function IlluminateToolbar({
         </Tooltip>
         <StatusBadge status={status} />
       </div>
+
+      {expandOpen ? (
+        <div className={styles.expandRow} data-testid="illuminate-expand-row">
+          <div className={styles.expandPickerSlot}>
+            <VertexPicker
+              value={expandValue}
+              onValueChange={setExpandValue}
+              onSelect={commitExpand}
+              label="Expand from key"
+              placeholder="Type a vertex key…"
+              autoFocus
+              inputTestId="illuminate-expand-input"
+              captionTestId="illuminate-expand-matches"
+            />
+          </div>
+          <Button
+            appearance="primary"
+            size="small"
+            disabled={expandValue.trim() === ""}
+            onClick={() => commitExpand(expandValue)}
+            data-testid="illuminate-expand-submit"
+          >
+            Expand
+          </Button>
+          <Button
+            appearance="subtle"
+            size="small"
+            onClick={() => {
+              setExpandOpen(false);
+              setExpandValue("");
+            }}
+            data-testid="illuminate-expand-cancel"
+          >
+            Cancel
+          </Button>
+        </div>
+      ) : null}
 
       <div className={styles.knobs}>
         <Field

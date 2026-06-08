@@ -1,0 +1,10 @@
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacingVerticalXS, 4px);
+}
+
+.caption {
+  color: var(--colorNeutralForeground3, #616161);
+  min-height: var(--lineHeightBase200, 16px);
+}

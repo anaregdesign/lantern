@@ -44,6 +44,19 @@
   min-width: 0;
 }
 
+.expandRow {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--spacingHorizontalS, 8px);
+  flex-wrap: wrap;
+}
+
+.expandPickerSlot {
+  flex: 1 1 320px;
+  min-width: 0;
+  max-width: 480px;
+}
+
 .knobs {
   display: flex;
   align-items: center;

@@ -86,6 +86,7 @@ export function IlluminatePage() {
             onClear={handleClear}
             onRefresh={ill.refresh}
             onChipClick={handleChipClick}
+            onExpandFromKey={ill.expand}
           />
           {ill.state.error ? (
             <MessageBar
