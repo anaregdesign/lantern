@@ -70,6 +70,31 @@ describe("resolvePaletteFromTokens", () => {
     expect(palette.origin).toBe("#5c2d91");
   });
 
+  test("dim swatches stay at the fallback literals regardless of Fluent CSS variables (#458)", () => {
+    // The hover-focus reducer (#458) needs a stable ~15% alpha across
+    // both themes; neutral stroke tokens differ enough across themes
+    // that we keep the dim swatches hard-coded.
+    const palette = resolvePaletteFromTokens(
+      readerFrom({
+        "--colorNeutralStroke2": "#000000",
+        "--colorBrandBackground": "#ff00ff",
+      }),
+    );
+    expect(palette.dimNode).toBe("#3f3f4626");
+    expect(palette.dimEdge).toBe("#bdbdbd26");
+  });
+
+  test("dim swatches encode alpha 0x26 (~15%) so sigma's WebGL blend renders them at ~15% opacity (#458)", () => {
+    // Sigma's `parseColor` reads the trailing two hex digits of a
+    // 9-char `#RRGGBBAA` as alpha (`parseInt("26", 16) / 255 \u2248 0.149`).
+    // The reducer documentation in IlluminateCanvas relies on this
+    // exact mapping; if Fluent ever bumps the desired dim intensity
+    // we change it here so the unit + e2e tests catch any drift.
+    expect(FALLBACK_PALETTE.dimNode.slice(-2)).toBe("26");
+    expect(FALLBACK_PALETTE.dimEdge.slice(-2)).toBe("26");
+    expect(parseInt("26", 16) / 255).toBeCloseTo(0.149, 3);
+  });
+
   test("empty CSS variable values fall back to the light-theme literal", () => {
     const palette = resolvePaletteFromTokens(
       readerFrom({
