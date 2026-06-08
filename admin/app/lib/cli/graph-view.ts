@@ -11,6 +11,11 @@
  *
  * Pure: no React, no DOM, no Sigma. The CliPage component handles
  * mount lifecycle.
+ *
+ * The CLI surface is stateless from the canvas's perspective — every
+ * command produces a single "expansion" that overwrites the previous
+ * frame. So every node gets `firstSeenExpansion: 0` and `overSoftCap`
+ * is always false (no accumulation across commands).
  */
 
 import type { Command } from "./types";
@@ -55,6 +60,25 @@ export function commandResultToGraphView(
   }
 }
 
+/**
+ * Wrap a freshly built {nodes, edges} pair in the additive-model
+ * envelope the canvas expects. `seed` doubles as both the initial
+ * seed and the latest expansion origin in the CLI's stateless view.
+ */
+function wrapView(
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+  seed: string | null,
+): GraphView {
+  return {
+    nodes,
+    edges,
+    latestExpansionOrigin: seed,
+    expansionOrigins: seed !== null && seed !== "" ? [seed] : [],
+    overSoftCap: false,
+  };
+}
+
 function illuminateView(seed: string, response: IlluminateResponse): GraphView {
   const graph = response.graph ?? {};
   const seedKey = seed;
@@ -96,8 +120,10 @@ function illuminateView(seed: string, response: IlluminateResponse): GraphView {
         id: v.key,
         label: v.key,
         vertex: v,
-        isSeed,
+        isInitialSeed: isSeed,
+        isExpansionOrigin: isSeed,
         importance,
+        firstSeenExpansion: 0,
       };
     });
 
@@ -114,32 +140,35 @@ function illuminateView(seed: string, response: IlluminateResponse): GraphView {
       edge: e,
     });
   }
-  return { nodes, edges };
+  return wrapView(nodes, edges, seedKey === "" ? null : seedKey);
 }
 
 function getVertexView(key: string, vertex: Vertex | null): GraphView {
   if (!vertex) {
     // The server returned NotFound. Render an empty canvas; the
     // scrollback already shows the error.
-    return { nodes: [], edges: [] };
+    return wrapView([], [], null);
   }
-  return {
-    nodes: [
+  return wrapView(
+    [
       {
         id: key,
         label: key,
         vertex: { ...vertex, key },
-        isSeed: true,
+        isInitialSeed: true,
+        isExpansionOrigin: true,
         importance: 1,
+        firstSeenExpansion: 0,
       },
     ],
-    edges: [],
-  };
+    [],
+    key,
+  );
 }
 
 function getEdgeView(tail: string, head: string, edge: Edge | null): GraphView {
   if (!edge) {
-    return { nodes: [], edges: [] };
+    return wrapView([], [], null);
   }
   const nodes: GraphNode[] = [
     {
@@ -150,15 +179,19 @@ function getEdgeView(tail: string, head: string, edge: Edge | null): GraphView {
       // canvas tooltip / a11y table render a recognisable label
       // rather than crashing on missing fields.
       vertex: { key: tail },
-      isSeed: true,
+      isInitialSeed: true,
+      isExpansionOrigin: true,
       importance: 1,
+      firstSeenExpansion: 0,
     },
     {
       id: head,
       label: head,
       vertex: { key: head },
-      isSeed: false,
+      isInitialSeed: false,
+      isExpansionOrigin: false,
       importance: 0.5,
+      firstSeenExpansion: 0,
     },
   ];
   const edges: GraphEdge[] = [
@@ -170,7 +203,7 @@ function getEdgeView(tail: string, head: string, edge: Edge | null): GraphView {
       edge,
     },
   ];
-  return { nodes, edges };
+  return wrapView(nodes, edges, tail);
 }
 
 function scanVerticesView(
@@ -184,14 +217,25 @@ function scanVerticesView(
       (v): v is Vertex & { key: string } =>
         typeof v.key === "string" && v.key !== "",
     )
-    .map((v) => ({
-      id: v.key,
-      label: v.key,
-      vertex: v,
-      isSeed: seedKey !== "" && v.key === seedKey,
-      importance: 0.5,
-    }));
-  return { nodes, edges: [] };
+    .map((v) => {
+      const isSeed = seedKey !== "" && v.key === seedKey;
+      return {
+        id: v.key,
+        label: v.key,
+        vertex: v,
+        isInitialSeed: isSeed,
+        isExpansionOrigin: isSeed,
+        importance: 0.5,
+        firstSeenExpansion: 0,
+      };
+    });
+  // For scan we treat the prefix as the latest origin only if a node
+  // matches it exactly (otherwise the canvas would render a halo
+  // around an absent vertex). Returning null is the right signal.
+  const matchedSeed = nodes.some((n) => seedKey !== "" && n.id === seedKey)
+    ? seedKey
+    : null;
+  return wrapView(nodes, [], matchedSeed);
 }
 
 function scanEdgesView(
@@ -204,14 +248,17 @@ function scanEdgesView(
   for (const e of rawEdges) {
     if (!e.tail || !e.head) continue;
     if (!nodeMap.has(e.tail)) {
+      const isSeed = tailPrefix !== "" && e.tail === tailPrefix;
       nodeMap.set(e.tail, {
         id: e.tail,
         label: e.tail,
         vertex: { key: e.tail },
         // Mark every endpoint whose key matches the scan prefix as
         // a seed. Empty prefix → no seeds (every node neutral).
-        isSeed: tailPrefix !== "" && e.tail === tailPrefix,
+        isInitialSeed: isSeed,
+        isExpansionOrigin: isSeed,
         importance: 0.5,
+        firstSeenExpansion: 0,
       });
     }
     if (!nodeMap.has(e.head)) {
@@ -219,8 +266,10 @@ function scanEdgesView(
         id: e.head,
         label: e.head,
         vertex: { key: e.head },
-        isSeed: false,
+        isInitialSeed: false,
+        isExpansionOrigin: false,
         importance: 0.5,
+        firstSeenExpansion: 0,
       });
     }
     edges.push({
@@ -231,5 +280,7 @@ function scanEdgesView(
       edge: e,
     });
   }
-  return { nodes: Array.from(nodeMap.values()), edges };
+  const matchedSeed =
+    nodeMap.has(tailPrefix) && tailPrefix !== "" ? tailPrefix : null;
+  return wrapView(Array.from(nodeMap.values()), edges, matchedSeed);
 }

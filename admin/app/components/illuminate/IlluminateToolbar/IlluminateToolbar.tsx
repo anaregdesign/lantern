@@ -11,7 +11,7 @@ import {
 } from "@fluentui/react-components";
 import {
   ArrowClockwise20Regular,
-  ArrowUndo20Regular,
+  Delete20Regular,
 } from "@fluentui/react-icons";
 import type {
   IlluminateControls,
@@ -24,12 +24,15 @@ import type {
 import styles from "./IlluminateToolbar.module.css";
 
 export interface IlluminateToolbarProps {
-  seed: string;
+  initialSeed: string;
   controls: IlluminateControls;
   status: IlluminateStatus;
-  canPop: boolean;
+  canClear: boolean;
+  vertexCount: number;
+  edgeCount: number;
+  expansionCount: number;
   onControlsChange: (next: IlluminateControls) => void;
-  onPop: () => void;
+  onClear: () => void;
   onRefresh: () => void;
 }
 
@@ -52,14 +55,21 @@ const OBJECTIVES: Array<{ value: Objective; label: string }> = [
  * Controlled toolbar above the Illuminate canvas. Owns no async state of
  * its own — every change fans out through `onControlsChange` so the
  * usecase hook stays the single source of truth.
+ *
+ * Per #466 the additive model means there is no seed stack to pop — the
+ * old `Pop` button is replaced with `Clear` which empties the
+ * accumulator (and navigates back to the SeedPrompt).
  */
 export function IlluminateToolbar({
-  seed,
+  initialSeed,
   controls,
   status,
-  canPop,
+  canClear,
+  vertexCount,
+  edgeCount,
+  expansionCount,
   onControlsChange,
-  onPop,
+  onClear,
   onRefresh,
 }: IlluminateToolbarProps) {
   const update = <K extends keyof IlluminateControls>(
@@ -77,31 +87,51 @@ export function IlluminateToolbar({
     >
       <div className={styles.seedRow}>
         <Label className={styles.seedLabel}>Seed</Label>
-        <Tooltip content={seed} relationship="label" withArrow>
+        <Tooltip content={initialSeed} relationship="label" withArrow>
           <code className={styles.seedValue} data-testid="illuminate-seed">
-            {seed || "—"}
+            {initialSeed || "—"}
           </code>
         </Tooltip>
-        <Button
-          appearance="subtle"
-          size="small"
-          icon={<ArrowUndo20Regular />}
-          disabled={!canPop}
-          onClick={onPop}
-          data-testid="illuminate-pop"
+        <Badge
+          appearance="tint"
+          color="informative"
+          data-testid="illuminate-counter"
         >
-          Pop
-        </Button>
-        <Button
-          appearance="subtle"
-          size="small"
-          icon={<ArrowClockwise20Regular />}
-          disabled={status === "loading" || seed === ""}
-          onClick={onRefresh}
-          data-testid="illuminate-refresh"
+          {vertexCount} vertices · {edgeCount} edges · {expansionCount}{" "}
+          expansions
+        </Badge>
+        <Tooltip
+          content="Re-fire the most recent expansion with current controls"
+          relationship="label"
+          withArrow
         >
-          Refresh
-        </Button>
+          <Button
+            appearance="subtle"
+            size="small"
+            icon={<ArrowClockwise20Regular />}
+            disabled={status === "loading" || initialSeed === ""}
+            onClick={onRefresh}
+            data-testid="illuminate-refresh"
+          >
+            Refresh
+          </Button>
+        </Tooltip>
+        <Tooltip
+          content="Empty accumulator and return to seed prompt"
+          relationship="label"
+          withArrow
+        >
+          <Button
+            appearance="subtle"
+            size="small"
+            icon={<Delete20Regular />}
+            disabled={!canClear}
+            onClick={onClear}
+            data-testid="illuminate-clear"
+          >
+            Clear
+          </Button>
+        </Tooltip>
         <StatusBadge status={status} />
       </div>
 

@@ -15,15 +15,17 @@ import styles from "./IlluminateTable.module.css";
 
 export interface IlluminateTableProps {
   nodes: GraphNode[];
-  onIlluminate: (key: string) => void;
+  /** Fire an Illuminate expansion using this row's key as the origin. */
+  onExpand: (key: string) => void;
 }
 
 /**
  * Accessible companion view for the canvas. Keyboard and screen-reader
- * users get the same neighbourhood data as a flat table; clicking a row
- * pushes that key onto the seed history.
+ * users get the same neighbourhood data as a flat table; clicking a
+ * row's Expand button fires an additive Illuminate using that key as
+ * the origin (#466 D11: idempotent, including for the initial seed).
  */
-export function IlluminateTable({ nodes, onIlluminate }: IlluminateTableProps) {
+export function IlluminateTable({ nodes, onExpand }: IlluminateTableProps) {
   if (nodes.length === 0) {
     return null;
   }
@@ -51,7 +53,11 @@ export function IlluminateTable({ nodes, onIlluminate }: IlluminateTableProps) {
                 to={`/vertices/${encodeURIComponent(node.id)}`}
                 className={styles.keyLink}
               >
-                {node.isSeed ? <strong>{node.label}</strong> : node.label}
+                {node.isInitialSeed ? (
+                  <strong>{node.label}</strong>
+                ) : (
+                  node.label
+                )}
               </Link>
             </TableCell>
             <TableCell>
@@ -64,11 +70,10 @@ export function IlluminateTable({ nodes, onIlluminate }: IlluminateTableProps) {
               <Button
                 appearance="subtle"
                 size="small"
-                onClick={() => onIlluminate(node.id)}
-                disabled={node.isSeed}
-                aria-label={`Re-seed from ${node.id}`}
+                onClick={() => onExpand(node.id)}
+                aria-label={`Expand from ${node.id}`}
               >
-                Re-seed
+                Expand
               </Button>
             </TableCell>
           </TableRow>

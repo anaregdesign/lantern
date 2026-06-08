@@ -32,7 +32,7 @@ describe("commandResultToGraphView — illuminate", () => {
     };
     const view = commandResultToGraphView(cmd, response)!;
     expect(view.nodes.map((n) => n.id).sort()).toEqual(["a", "b", "c"]);
-    expect(view.nodes.find((n) => n.id === "a")!.isSeed).toBe(true);
+    expect(view.nodes.find((n) => n.id === "a")!.isInitialSeed).toBe(true);
     expect(view.nodes.find((n) => n.id === "a")!.importance).toBe(1);
     expect(view.edges.map((e) => e.id).sort()).toEqual(["a→b", "a→c"]);
   });
@@ -66,7 +66,7 @@ describe("commandResultToGraphView — get vertex", () => {
     const view = commandResultToGraphView(cmd, vertex)!;
     expect(view.nodes).toHaveLength(1);
     expect(view.nodes[0].id).toBe("alice");
-    expect(view.nodes[0].isSeed).toBe(true);
+    expect(view.nodes[0].isInitialSeed).toBe(true);
     expect(view.nodes[0].importance).toBe(1);
     expect(view.edges).toEqual([]);
   });
@@ -90,8 +90,8 @@ describe("commandResultToGraphView — get edge", () => {
     const edge: Edge = { tail: "alice", head: "bob", weight: 7 };
     const view = commandResultToGraphView(cmd, edge)!;
     expect(view.nodes.map((n) => n.id).sort()).toEqual(["alice", "bob"]);
-    expect(view.nodes.find((n) => n.id === "alice")!.isSeed).toBe(true);
-    expect(view.nodes.find((n) => n.id === "bob")!.isSeed).toBe(false);
+    expect(view.nodes.find((n) => n.id === "alice")!.isInitialSeed).toBe(true);
+    expect(view.nodes.find((n) => n.id === "bob")!.isInitialSeed).toBe(false);
     expect(view.edges).toHaveLength(1);
     expect(view.edges[0].id).toBe("alice→bob");
     expect(view.edges[0].weight).toBe(7);
@@ -127,7 +127,7 @@ describe("commandResultToGraphView — scan vertices", () => {
       "user:carol",
     ]);
     expect(view.edges).toEqual([]);
-    expect(view.nodes.every((n) => !n.isSeed)).toBe(true);
+    expect(view.nodes.every((n) => !n.isInitialSeed)).toBe(true);
   });
 
   it("marks the exact-match vertex as a seed when prefix is non-empty", () => {
@@ -141,8 +141,10 @@ describe("commandResultToGraphView — scan vertices", () => {
       vertices: [{ key: "alice" }, { key: "aliceland" }],
     };
     const view = commandResultToGraphView(cmd, response)!;
-    expect(view.nodes.find((n) => n.id === "alice")!.isSeed).toBe(true);
-    expect(view.nodes.find((n) => n.id === "aliceland")!.isSeed).toBe(false);
+    expect(view.nodes.find((n) => n.id === "alice")!.isInitialSeed).toBe(true);
+    expect(view.nodes.find((n) => n.id === "aliceland")!.isInitialSeed).toBe(
+      false,
+    );
   });
 });
 
@@ -176,8 +178,8 @@ describe("commandResultToGraphView — scan edges", () => {
       edges: [{ tail: "alice", head: "bob", weight: 1 }],
     };
     const view = commandResultToGraphView(cmd, response)!;
-    expect(view.nodes.find((n) => n.id === "alice")!.isSeed).toBe(true);
-    expect(view.nodes.find((n) => n.id === "bob")!.isSeed).toBe(false);
+    expect(view.nodes.find((n) => n.id === "alice")!.isInitialSeed).toBe(true);
+    expect(view.nodes.find((n) => n.id === "bob")!.isInitialSeed).toBe(false);
   });
 
   it("does not seed any node when the tail prefix is empty", () => {
@@ -191,7 +193,7 @@ describe("commandResultToGraphView — scan edges", () => {
       edges: [{ tail: "alice", head: "bob", weight: 1 }],
     };
     const view = commandResultToGraphView(empty, response)!;
-    expect(view.nodes.every((n) => !n.isSeed)).toBe(true);
+    expect(view.nodes.every((n) => !n.isInitialSeed)).toBe(true);
   });
 });
 
