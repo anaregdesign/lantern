@@ -10,6 +10,7 @@ import {
 import Graph from "graphology";
 import forceAtlas2 from "graphology-layout-forceatlas2";
 import Sigma from "sigma";
+import { EdgeArrowProgram } from "sigma/rendering";
 import { Info16Regular } from "@fluentui/react-icons";
 import type {
   GraphEdge,
@@ -355,6 +356,20 @@ export function IlluminateCanvas({
       labelRenderedSizeThreshold: 8,
       defaultEdgeColor: FALLBACK_PALETTE.edge,
       defaultNodeColor: FALLBACK_PALETTE.baseNode,
+      // === #485 directed-edge arrowheads ================================
+      // The graphology graph is `type: "directed"`, but Sigma's default
+      // edge renderer (`EdgeRectangleProgram`) draws every edge as a
+      // plain undirected bar, so the canvas hid the direction Lantern's
+      // edges actually carry (tail → head). Render the built-in arrow
+      // program instead: `EdgeClampedProgram` body + `EdgeArrowHeadProgram`
+      // head, with the head clamped to the target node radius so it never
+      // disappears under the disc. We register the program explicitly and
+      // make it the default type for every edge (no edge sets a per-edge
+      // `type`, so this governs the whole graph) rather than relying on
+      // the default registry, keeping the wiring self-contained.
+      defaultEdgeType: "arrow",
+      edgeProgramClasses: { arrow: EdgeArrowProgram },
+      // === end #485 =====================================================
       labelColor: { color: FALLBACK_PALETTE.labelText },
       labelSize: LABEL_SIZE,
       labelWeight: LABEL_WEIGHT,
@@ -761,6 +776,13 @@ export function IlluminateCanvas({
          * currently visible, or `null` when none is shown.
          */
         infoIconNode: () => string | null;
+        /**
+         * #485 test bridge: the resolved `defaultEdgeType` sigma
+         * setting. Every edge renders with this program (none set a
+         * per-edge `type`), so asserting it is `"arrow"` proves the
+         * directed arrowheads are wired and have not regressed.
+         */
+        getDefaultEdgeType: () => string;
       };
     };
     win.__illuminateCanvas = {
@@ -871,6 +893,7 @@ export function IlluminateCanvas({
         return showInfoIconFor(key);
       },
       infoIconNode: () => infoIconRef.current?.key ?? null,
+      getDefaultEdgeType: () => renderer.getSetting("defaultEdgeType"),
     };
 
     return () => {
