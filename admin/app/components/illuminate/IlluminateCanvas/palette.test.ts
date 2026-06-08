@@ -155,43 +155,54 @@ describe("resolvePaletteFromTokens", () => {
   // The hop-distance reducer reads `hop0/1/2/Far/Unreachable` off the
   // palette and applies them BEFORE the TTL fade so a node's hue
   // communicates structural distance and its alpha communicates
-  // remaining lifetime. The token mapping comes straight from the
-  // #460 spec; the test pins it so a Fluent token rename can't
-  // silently change the canvas reading.
+  // remaining lifetime. #500 turned the ramp into a deliberate
+  // red→blue diverging colormap of code-side literals: the original
+  // #460 mapping pulled hop 0/1/2 from the single-hue Fluent brand
+  // ladder, which flattened to three near-identical blues. The tiers
+  // are now fixed literals (like the dim swatches) so the sweep stays
+  // extreme and theme-stable — supplying brand/neutral tokens must
+  // NOT move them.
 
-  test("reads --colorBrandForeground1 for hop 0 (origin)", () => {
+  test("hop ramp ignores Fluent brand/neutral tokens and stays the red→blue literals (#500)", () => {
     const palette = resolvePaletteFromTokens(
-      readerFrom({ "--colorBrandForeground1": "#aabbcc" }),
+      readerFrom({
+        // The very tokens the original #460 ramp consumed — proving the
+        // ramp no longer tracks them.
+        "--colorBrandForeground1": "#aabbcc",
+        "--colorBrandForeground2": "#112233",
+        "--colorBrandForeground2Hover": "#445566",
+        "--colorNeutralForeground3": "#778899",
+        "--colorPaletteRedForeground1": "#992222",
+      }),
     );
-    expect(palette.hop0).toBe("#aabbcc");
+    expect(palette.hop0).toBe(FALLBACK_PALETTE.hop0);
+    expect(palette.hop1).toBe(FALLBACK_PALETTE.hop1);
+    expect(palette.hop2).toBe(FALLBACK_PALETTE.hop2);
+    expect(palette.hopFar).toBe(FALLBACK_PALETTE.hopFar);
+    expect(palette.hopUnreachable).toBe(FALLBACK_PALETTE.hopUnreachable);
   });
 
-  test("reads --colorBrandForeground2 for hop 1", () => {
-    const palette = resolvePaletteFromTokens(
-      readerFrom({ "--colorBrandForeground2": "#112233" }),
-    );
-    expect(palette.hop1).toBe("#112233");
-  });
+  test("hop ramp spans a genuinely warm→cool sweep so origin/1hop/2hop are distinguishable (#500)", () => {
+    // The user-visible acceptance: the three tiers a default expansion
+    // shows (origin, 1 hop, 2 hops) must be obviously different colours,
+    // not three shades of one blue. Assert they are mutually distinct and
+    // that the ramp ends on opposite temperature poles (red origin, blue
+    // far). Channel checks encode "warm" (red-dominant) vs "cool"
+    // (blue-dominant) without pinning exact hexes.
+    const p = FALLBACK_PALETTE;
+    const distinct = new Set([p.hop0, p.hop1, p.hop2]);
+    expect(distinct.size).toBe(3);
 
-  test("reads --colorBrandForeground2Hover for hop 2", () => {
-    const palette = resolvePaletteFromTokens(
-      readerFrom({ "--colorBrandForeground2Hover": "#445566" }),
-    );
-    expect(palette.hop2).toBe("#445566");
-  });
-
-  test("reads --colorNeutralForeground3 for hopFar (≥3 hops)", () => {
-    const palette = resolvePaletteFromTokens(
-      readerFrom({ "--colorNeutralForeground3": "#778899" }),
-    );
-    expect(palette.hopFar).toBe("#778899");
-  });
-
-  test("reads --colorPaletteRedForeground1 for unreachable", () => {
-    const palette = resolvePaletteFromTokens(
-      readerFrom({ "--colorPaletteRedForeground1": "#992222" }),
-    );
-    expect(palette.hopUnreachable).toBe("#992222");
+    const channels = (hex: string) => ({
+      r: parseInt(hex.slice(1, 3), 16),
+      b: parseInt(hex.slice(5, 7), 16),
+    });
+    // origin is warm: red channel dominates blue.
+    const origin = channels(p.hop0);
+    expect(origin.r).toBeGreaterThan(origin.b);
+    // the far end is cool: blue channel dominates red.
+    const far = channels(p.hopFar);
+    expect(far.b).toBeGreaterThan(far.r);
   });
 
   test("hop ramp falls back to the light-theme literals when no tokens are set", () => {

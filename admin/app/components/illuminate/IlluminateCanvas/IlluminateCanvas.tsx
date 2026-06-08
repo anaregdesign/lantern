@@ -28,9 +28,12 @@ import {
   type ForceLink,
   type ForceNode,
 } from "./force-layout";
+import { formatEdgeWeight } from "./edge-label";
 import { HOP_FAR_THRESHOLD, colorForHop, describeHop } from "./hop-palette";
 import { makeDrawNodeHover } from "./hover-label";
 import {
+  EDGE_LABEL_SIZE,
+  EDGE_LABEL_WEIGHT,
   FALLBACK_PALETTE,
   LABEL_SIZE,
   LABEL_WEIGHT,
@@ -150,6 +153,16 @@ const INFO_ICON_OFFSET_X = 10;
 const INFO_ICON_OFFSET_Y = 18;
 
 /**
+ * #500 node sizing. The per-expansion seed (the canvas's pinned anchor)
+ * renders at {@link SEED_NODE_SIZE}; every other node renders at the
+ * single uniform {@link DEFAULT_NODE_SIZE}. Sizes feed both the sigma
+ * disc radius and the d3-force collision radius, so the larger seed also
+ * claims more space — reinforcing its role as the layout's fixed point.
+ */
+const DEFAULT_NODE_SIZE = 7;
+const SEED_NODE_SIZE = 16;
+
+/**
  * Hosts a `graphology` graph and a `sigma` renderer. The component owns
  * the lifecycle of the renderer (mount on first paint, destroy on unmount)
  * and reconciles the graph in-place when the view model changes — full
@@ -190,6 +203,14 @@ export function IlluminateCanvas({
    * structural delta (just re-apply the hide filter).
    */
   const previousNodeIdsRef = useRef<Set<string>>(new Set());
+  /**
+   * Snapshot of the edge IDs the graph held at the end of the previous
+   * reconcile (#500). Diffing against the next reconcile's edge IDs lets
+   * an expansion that only adds/removes EDGES among already-present nodes
+   * (no node delta) still trigger an animated reheat of the whole render
+   * set, so existing nodes move on every structural expansion.
+   */
+  const previousEdgeIdsRef = useRef<Set<string>>(new Set());
   /**
    * The live d3-force simulation driving the continuous layout (#483),
    * or `null` when nothing is animating. `forceNodes` is the array d3
@@ -278,6 +299,10 @@ export function IlluminateCanvas({
   }, [theme]);
 
   const pickFill = useCallback(
+    // #460/#500: every node (including the pinned seed) draws from the
+    // red→blue hop ramp. The seed is the hop-0 origin, so it naturally
+    // lands on the warm red end — it's distinguished by colour via the
+    // ramp itself, plus its larger size and pinned position (#500).
     (node: { hopDistance: number }) => colorForHop(node.hopDistance, palette),
     [palette],
   );
@@ -291,10 +316,12 @@ export function IlluminateCanvas({
   // without re-wiring sigma listeners.
 
   /**
-   * Copy the simulation's positions into graphology. No node is ever
-   * pinned (drag-to-pin was removed in #491), so this is a one-way
-   * sim → graphology flow; the simulation is always authoritative for
-   * position and is free to relax every node toward equilibrium.
+   * Copy the simulation's positions into graphology. The only pinned
+   * node is the per-expansion seed (#500), whose `fx`/`fy` hold its
+   * coordinates constant — writing those back is a harmless no-op since
+   * d3-force keeps `x === fx`. Every other node is unpinned (drag-to-pin
+   * was removed in #491), so this stays a one-way sim → graphology flow
+   * with the simulation authoritative for position.
    */
   const writeBackLayoutPositions = useCallback(() => {
     const layout = layoutRef.current;
@@ -367,20 +394,29 @@ export function IlluminateCanvas({
    * start animating so the layout re-converges. Used after a drag
    * release (#491): the dropped node is NOT pinned, so reheating lets
    * physics settle the whole graph around its new position instead of
-   * freezing it where the cursor left it. Rebuilding from the live
-   * graphology positions means no `fx`/`fy` pin survives the gesture.
+   * freezing it where the cursor left it. The one exception is the
+   * per-expansion seed (#500): its `fixed` attribute re-pins it (fx/fy)
+   * so the reheat relaxes everything else around the anchor.
    */
   const reheatLayout = useCallback(() => {
     const graph = graphRef.current;
     if (!graph) return;
     const forceNodes: ForceNode[] = [];
     for (const id of graph.nodes()) {
-      forceNodes.push({
+      const x = graph.getNodeAttribute(id, "x") as number;
+      const y = graph.getNodeAttribute(id, "y") as number;
+      const fn: ForceNode = {
         id,
         size: graph.getNodeAttribute(id, "size") as number,
-        x: graph.getNodeAttribute(id, "x") as number,
-        y: graph.getNodeAttribute(id, "y") as number,
-      });
+        x,
+        y,
+      };
+      // #500: keep the seed pinned across a reheat.
+      if (graph.getNodeAttribute(id, "fixed") === true) {
+        fn.fx = x;
+        fn.fy = y;
+      }
+      forceNodes.push(fn);
     }
     if (forceNodes.length === 0) {
       stopLayout();
@@ -595,6 +631,18 @@ export function IlluminateCanvas({
       labelSize: LABEL_SIZE,
       labelWeight: LABEL_WEIGHT,
       labelFont: FALLBACK_PALETTE.labelFont,
+      // === #500 on-edge weight labels ===================================
+      // Render each edge's accumulated weight as a label along the edge
+      // body. The per-edge text is stamped in the reconcile loop
+      // (`formatEdgeWeight(edge.weight)`); these settings govern its
+      // appearance, and the palette effect re-applies the colour/font on
+      // a theme flip, mirroring the node-label settings above.
+      renderEdgeLabels: true,
+      edgeLabelColor: { color: FALLBACK_PALETTE.labelText },
+      edgeLabelSize: EDGE_LABEL_SIZE,
+      edgeLabelWeight: EDGE_LABEL_WEIGHT,
+      edgeLabelFont: FALLBACK_PALETTE.labelFont,
+      // === end #500 =====================================================
       // === #484 theme-aware hover label =================================
       // Sigma's default `drawDiscNodeHover` paints a hard-coded near-white
       // box behind the hovered label, then draws the label in
@@ -952,6 +1000,19 @@ export function IlluminateCanvas({
          */
         getNodeHopDistance: (key: string) => number | null;
         /**
+         * #500 test bridge: read the disc size stamped on a node.
+         * Returns `null` if the node is unknown. The e2e suite uses
+         * this to assert the seed renders larger than the uniform
+         * non-seed size.
+         */
+        getNodeSize: (key: string) => number | null;
+        /**
+         * #500 test bridge: read the weight label stamped on an edge.
+         * Returns `null` if the edge is unknown. Lets the e2e assert
+         * the on-edge weight label without reading WebGL pixels.
+         */
+        getEdgeLabel: (key: string) => string | null;
+        /**
          * #458 test bridge: read whether the hover-focus reducer is
          * currently active (i.e., a node is focused).
          */
@@ -1147,6 +1208,16 @@ export function IlluminateCanvas({
           ? attrs.hopDistance
           : Number.POSITIVE_INFINITY;
       },
+      getNodeSize: (key: string) => {
+        if (!graph.hasNode(key)) return null;
+        const size = graph.getNodeAttribute(key, "size");
+        return typeof size === "number" ? size : null;
+      },
+      getEdgeLabel: (key: string) => {
+        if (!graph.hasEdge(key)) return null;
+        const label = graph.getEdgeAttribute(key, "label");
+        return typeof label === "string" ? label : null;
+      },
       hoveredNode: () => hoveredNodeId,
       tickCount: () => tickCountRef.current,
       setNow: (ms: number | null) => {
@@ -1215,6 +1286,7 @@ export function IlluminateCanvas({
       sigmaRef.current = null;
       graphRef.current = null;
       previousNodeIdsRef.current = new Set();
+      previousEdgeIdsRef.current = new Set();
       if (infoIconHideTimer !== null) {
         clearTimeout(infoIconHideTimer);
         infoIconHideTimer = null;
@@ -1236,6 +1308,9 @@ export function IlluminateCanvas({
     sigma.setSetting("defaultEdgeColor", palette.edge);
     sigma.setSetting("labelColor", { color: palette.labelText });
     sigma.setSetting("labelFont", palette.labelFont);
+    // #500: keep the on-edge weight labels in sync with the theme.
+    sigma.setSetting("edgeLabelColor", { color: palette.labelText });
+    sigma.setSetting("edgeLabelFont", palette.labelFont);
     // #484: rebuild the hover renderer against the new palette so the
     // hovered-label chip follows the theme alongside the label text.
     sigma.setSetting("defaultDrawNodeHover", makeDrawNodeHover(palette));
@@ -1355,6 +1430,20 @@ export function IlluminateCanvas({
     for (const id of previousNodeIds) {
       if (!nextNodeIds.has(id)) droppedCount += 1;
     }
+    // #500: an expansion can add/remove EDGES among nodes that are all
+    // already present (no node delta). Detect that so the whole render
+    // set still reheats and existing nodes move on every structural
+    // expansion, not only when the node set changes.
+    const previousEdgeIds = previousEdgeIdsRef.current;
+    let edgeSetChanged = previousEdgeIds.size !== nextEdgeIds.size;
+    if (!edgeSetChanged) {
+      for (const id of nextEdgeIds) {
+        if (!previousEdgeIds.has(id)) {
+          edgeSetChanged = true;
+          break;
+        }
+      }
+    }
 
     // Drop edges first to avoid orphan references when we drop nodes.
     for (const edgeId of graph.edges()) {
@@ -1377,8 +1466,17 @@ export function IlluminateCanvas({
       // neither merged nor (re)created — the drop loop above already
       // deleted it from graphology.
       if (!nextNodeIds.has(node.id)) continue;
-      const size = 4 + node.importance * 10;
-      const color = pickFill(node);
+      // #500: the per-expansion seed (origin of the most recent
+      // expansion) is the canvas's pinned anchor — render it larger and
+      // stamp `fixed` so the layout driver pins it (fx/fy) and the drag
+      // bridge reports it fixed. Its colour comes from the hop ramp like
+      // every other node: as the hop-0 origin it sits on the warm red end,
+      // which is what visually distinguishes it. Every other node renders
+      // at a single uniform size.
+      const isSeed =
+        latestExpansionOrigin != null && node.id === latestExpansionOrigin;
+      const size = isSeed ? SEED_NODE_SIZE : DEFAULT_NODE_SIZE;
+      const color = pickFill({ hopDistance: node.hopDistance });
       const detail = describeVertex(node);
       // #459: stash the protobuf-JSON expiration on the graphology
       // node so the per-tick reducer can read it without crossing back
@@ -1393,6 +1491,11 @@ export function IlluminateCanvas({
           detail,
           isInitialSeed: node.isInitialSeed,
           isExpansionOrigin: node.isExpansionOrigin,
+          // #500: mark the per-expansion seed so the layout driver pins
+          // it (fx/fy). Size (above) is what visually enlarges it; colour
+          // comes from the hop ramp (hop-0 origin = warm red end).
+          isSeed,
+          fixed: isSeed,
           expiration,
           // #460: stamp hop distance for the legend computation and
           // (post-theme-flip) for the palette repaint effect to look
@@ -1416,6 +1519,9 @@ export function IlluminateCanvas({
           detail,
           isInitialSeed: node.isInitialSeed,
           isExpansionOrigin: node.isExpansionOrigin,
+          // #500: see the merge branch above.
+          isSeed,
+          fixed: isSeed,
           expiration,
           hopDistance: node.hopDistance,
           firstSeenExpansion: node.firstSeenExpansion,
@@ -1432,7 +1538,8 @@ export function IlluminateCanvas({
       if (graph.hasEdge(edge.id)) {
         graph.mergeEdgeAttributes(edge.id, {
           size: 1 + Math.min(4, edge.weight),
-          label: edge.id,
+          // #500: render the accumulated weight on the edge itself.
+          label: formatEdgeWeight(edge.weight),
           detail: `weight = ${edge.weight}`,
           expiration,
         });
@@ -1440,7 +1547,8 @@ export function IlluminateCanvas({
         graph.addEdgeWithKey(edge.id, edge.source, edge.target, {
           size: 1 + Math.min(4, edge.weight),
           color: palette.edge,
-          label: edge.id,
+          // #500: render the accumulated weight on the edge itself.
+          label: formatEdgeWeight(edge.weight),
           detail: `weight = ${edge.weight}`,
           expiration,
         });
@@ -1450,15 +1558,20 @@ export function IlluminateCanvas({
     // === #483 continuous layout regime =================================
     // Build the simulation over every rendered node (#491: delete-not-
     // hide means graphology already holds exactly the latest result, so
-    // there is nothing to exclude). No node is pinned — drag-to-pin was
-    // removed in #491, so the sim is free to relax the whole frame toward
-    // equilibrium every reconcile.
+    // there is nothing to exclude). The per-expansion seed is pinned
+    // (#500): its `fixed` attribute fixes fx/fy so the sim relaxes every
+    // other node around the anchor instead of letting it drift.
     const forceNodes: ForceNode[] = [];
     for (const id of graph.nodes()) {
       const x = graph.getNodeAttribute(id, "x") as number;
       const y = graph.getNodeAttribute(id, "y") as number;
       const size = graph.getNodeAttribute(id, "size") as number;
-      forceNodes.push({ id, size, x, y });
+      const fn: ForceNode = { id, size, x, y };
+      if (graph.getNodeAttribute(id, "fixed") === true) {
+        fn.fx = x;
+        fn.fy = y;
+      }
+      forceNodes.push(fn);
     }
     const forceLinks: ForceLink[] = [];
     for (const edge of edges) {
@@ -1482,7 +1595,7 @@ export function IlluminateCanvas({
     const isIncremental =
       !isColdStart &&
       forceNodes.length > 0 &&
-      (addedCount > 0 || droppedCount > 0);
+      (addedCount > 0 || droppedCount > 0 || edgeSetChanged);
 
     if (isColdStart && forceNodes.length > 0) {
       beginLayout(forceNodes, forceLinks, FORCE_ALPHA_COLD);
@@ -1502,6 +1615,7 @@ export function IlluminateCanvas({
     // === end #483 ======================================================
 
     previousNodeIdsRef.current = nextNodeIds;
+    previousEdgeIdsRef.current = nextEdgeIds;
   }, [
     nodes,
     edges,
