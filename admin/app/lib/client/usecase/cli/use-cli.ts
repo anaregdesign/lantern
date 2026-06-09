@@ -13,7 +13,10 @@ import {
   dispatch as dispatchCommand,
   isDestructive,
 } from "~/lib/client/usecase/cli/dispatcher";
-import { commandResultToGraphView } from "~/lib/client/usecase/cli/graph-view";
+import {
+  commandResultToGraphView,
+  commandResultToGraphMerge,
+} from "~/lib/client/usecase/cli/graph-view";
 import { parse, type Command, type ParseResult } from "~/lib/cli/parser";
 import { HELP_TEXT } from "~/lib/cli/verbs";
 import { cliReducer } from "./reducer";
@@ -142,15 +145,23 @@ export function useCli(): UseCliResult {
             durationMs: elapsed,
           },
         });
-        // Project graph-shaped results onto the canvas. null means the
-        // verb carries no graph payload (put/add/delete/exit) — leave
-        // the previous canvas alone in that case.
+        // Project graph-shaped results onto the canvas. A read verb
+        // returns a full view that REPLACES the frame; a mutating verb
+        // (put/add) returns null here but yields a GraphMerge that is
+        // folded onto the live frame (#518) so the new element shows up
+        // without discarding the operator's exploration context. delete /
+        // exit yield neither and leave the canvas untouched.
         const view = commandResultToGraphView(command, out);
         if (view !== null) {
           dispatch({
             type: "GRAPH_UPDATED",
             graph: { source: rawInput, view },
           });
+        } else {
+          const merge = commandResultToGraphMerge(command);
+          if (merge !== null) {
+            dispatch({ type: "GRAPH_MERGED", source: rawInput, merge });
+          }
         }
       } catch (err) {
         const elapsed = performance.now() - start;

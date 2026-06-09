@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { cliReducer } from "./reducer";
+import { commandResultToGraphMerge } from "./graph-view";
+import type { Command } from "~/lib/cli/types";
 import {
   INITIAL_CLI_STATE,
   initialBanner,
@@ -167,6 +169,51 @@ describe("cliReducer", () => {
         graph: GRAPH,
       });
       expect(next.latestGraph).toBe(GRAPH);
+    });
+  });
+
+  describe("GRAPH_MERGED", () => {
+    const putX: Command = {
+      verb: "put",
+      objective: "vertex",
+      key: "x",
+      value: "1",
+      ttlSeconds: 0,
+    };
+    const putY: Command = {
+      verb: "put",
+      objective: "vertex",
+      key: "y",
+      value: "1",
+      ttlSeconds: 0,
+    };
+
+    it("folds a put onto an empty canvas and records the source", () => {
+      const next = cliReducer(INITIAL_CLI_STATE, {
+        type: "GRAPH_MERGED",
+        source: "put vertex x 1",
+        merge: commandResultToGraphMerge(putX)!,
+      });
+      expect(next.latestGraph?.source).toBe("put vertex x 1");
+      expect(next.latestGraph?.view.nodes.map((n) => n.id)).toEqual(["x"]);
+    });
+
+    it("merges onto the existing frame instead of replacing it", () => {
+      const first = cliReducer(INITIAL_CLI_STATE, {
+        type: "GRAPH_MERGED",
+        source: "put vertex x 1",
+        merge: commandResultToGraphMerge(putX)!,
+      });
+      const second = cliReducer(first, {
+        type: "GRAPH_MERGED",
+        source: "put vertex y 1",
+        merge: commandResultToGraphMerge(putY)!,
+      });
+      expect(second.latestGraph?.view.nodes.map((n) => n.id).sort()).toEqual([
+        "x",
+        "y",
+      ]);
+      expect(second.latestGraph?.source).toBe("put vertex y 1");
     });
   });
 

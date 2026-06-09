@@ -47,9 +47,10 @@ export interface CliState {
   /** Dispatch lifecycle phase. */
   phase: CliPhase;
   /**
-   * Most recent graph-producing command's view. Mutating verbs leave
-   * this alone so the operator keeps their exploration context after a
-   * write. Null until the first graph-producing command lands.
+   * Most recent canvas frame. Read verbs replace it; mutating verbs
+   * (`put`/`add`) fold the new element onto it (#518) so the operator
+   * keeps their exploration context after a write. Null until the first
+   * graph-producing or mutating command lands.
    */
   latestGraph: LatestGraph | null;
   /** Monotonic id source for scrollback entries. */

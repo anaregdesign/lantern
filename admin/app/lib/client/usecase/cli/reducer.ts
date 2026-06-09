@@ -5,6 +5,7 @@ import {
   type PendingDestructive,
   type ScrollbackEntry,
 } from "./state";
+import { mergeGraphView, type GraphMerge } from "./graph-view";
 
 export type CliAction =
   /** Prompt text changed (typing into the `<Input>`). */
@@ -25,6 +26,12 @@ export type CliAction =
   | { type: "RUN_SETTLED" }
   /** A graph-producing verb landed: replace the canvas view. */
   | { type: "GRAPH_UPDATED"; graph: LatestGraph }
+  /**
+   * A mutating verb (`put`/`add`) landed: fold the new element onto the
+   * live frame instead of replacing it (#518), so the operator's context
+   * survives the write. Opens a fresh frame when the canvas was empty.
+   */
+  | { type: "GRAPH_MERGED"; source: string; merge: GraphMerge }
   /** A destructive verb needs confirmation. */
   | { type: "PENDING_SET"; pending: PendingDestructive }
   /** Confirmation resolved (Run or Cancel) — clear the prompt chip. */
@@ -89,6 +96,15 @@ export function cliReducer(state: CliState, action: CliAction): CliState {
     }
     case "GRAPH_UPDATED": {
       return { ...state, latestGraph: action.graph };
+    }
+    case "GRAPH_MERGED": {
+      return {
+        ...state,
+        latestGraph: {
+          source: action.source,
+          view: mergeGraphView(state.latestGraph?.view ?? null, action.merge),
+        },
+      };
     }
     case "PENDING_SET": {
       return { ...state, pending: action.pending };
