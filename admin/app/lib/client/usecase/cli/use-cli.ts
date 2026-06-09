@@ -1,5 +1,13 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import { useLanternClient } from "~/lib/client/infrastructure/api/use-lantern-client";
+import { scanVertices } from "~/lib/client/infrastructure/api/scan-vertices";
 import { LanternApiError } from "~/lib/client/infrastructure/api/error";
 import {
   dispatch as dispatchCommand,
@@ -29,6 +37,11 @@ export interface UseCliResult {
   busy: boolean;
   /** Most recent graph-producing command's view, or null. */
   latestGraph: LatestGraph | null;
+  /**
+   * Vertex keys available for Tab completion (#515): the union of a
+   * best-effort mount scan and every key currently on the canvas.
+   */
+  knownKeys: string[];
   /** Update the prompt text. */
   setInput: (value: string) => void;
   /** Run the current prompt text (Enter). */
@@ -73,6 +86,34 @@ export function useCli(): UseCliResult {
   // plumbs `signal` through every underlying RPC, so the abort
   // propagates end-to-end.
   const abortRef = useRef<AbortController | null>(null);
+
+  // Best-effort completion vocabulary (#515). One page of vertex keys is
+  // pulled on mount so Tab can complete real keys, not just the ones the
+  // canvas already shows. This is a convenience, never a correctness
+  // dependency: a failed/aborted scan simply degrades completion to the
+  // canvas-derived keys merged in by `knownKeys` below.
+  const [scannedKeys, setScannedKeys] = useState<string[]>([]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const page = await scanVertices(
+          client,
+          { prefix: "", limit: 1000 },
+          { signal: controller.signal },
+        );
+        setScannedKeys(
+          (page.vertices ?? [])
+            .map((v) => v.key)
+            .filter((k): k is string => typeof k === "string"),
+        );
+      } catch {
+        // Swallow — Tab completion falls back to canvas-only keys.
+      }
+    })();
+    return () => controller.abort();
+  }, [client]);
 
   const busy = state.phase === "running";
 
@@ -262,6 +303,17 @@ export function useCli(): UseCliResult {
     return () => window.removeEventListener("keydown", onKey);
   }, [busy, cancelInFlight, clearScrollback]);
 
+  // Completion vocabulary = mount scan ∪ keys currently on the canvas.
+  // The canvas keys keep completion fresh after writes the mount scan
+  // never saw (e.g. a `put vertex` issued this session).
+  const knownKeys = useMemo<string[]>(() => {
+    const keys = new Set<string>(scannedKeys);
+    for (const node of state.latestGraph?.view.nodes ?? []) {
+      keys.add(node.id);
+    }
+    return Array.from(keys).sort((a, b) => a.localeCompare(b));
+  }, [scannedKeys, state.latestGraph]);
+
   return useMemo<UseCliResult>(
     () => ({
       scrollback: state.scrollback,
@@ -270,6 +322,7 @@ export function useCli(): UseCliResult {
       skipConfirm: state.skipConfirm,
       busy,
       latestGraph: state.latestGraph,
+      knownKeys,
       setInput,
       submit,
       runRaw: (raw: string) => void runRaw(raw),
@@ -288,6 +341,7 @@ export function useCli(): UseCliResult {
       state.skipConfirm,
       busy,
       state.latestGraph,
+      knownKeys,
       setInput,
       submit,
       runRaw,

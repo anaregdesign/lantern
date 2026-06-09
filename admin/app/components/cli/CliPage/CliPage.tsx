@@ -1,6 +1,7 @@
 import { Button, Checkbox, Spinner } from "@fluentui/react-components";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatIlluminateClick } from "~/lib/cli/illuminate-axes";
+import { completeCommandLine, longestCommonPrefix } from "~/lib/cli/complete";
 import { useCli } from "~/lib/client/usecase/cli/use-cli";
 import { useCliSplitter } from "~/lib/client/usecase/cli/use-cli-splitter";
 import { useCliAxisPicker } from "~/lib/client/usecase/cli/use-cli-axis-picker";
@@ -22,6 +23,11 @@ import styles from "./CliPage.module.css";
 export function CliPage() {
   const cli = useCli();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  // Tab-completion candidates surfaced under the prompt when the active
+  // token is ambiguous (#515). Local UI state only — never written to the
+  // scrollback log, so it behaves like a shell's transient completion row.
+  const [hints, setHints] = useState<string[]>([]);
   // Drives the two-column grid + draggable splitter (#465). Only active
   // when a graph is present; otherwise the right column owns the full
   // width and the splitter handle is hidden by CSS.
@@ -38,11 +44,12 @@ export function CliPage() {
 
   // Auto-scroll the scrollback to the bottom on every new entry so the
   // operator always sees their most recent output without chasing the
-  // panel's scrollbar.
+  // panel's scrollbar. The live prompt lives inside the scroll region
+  // now (#515), so a pending-confirmation change is tracked too.
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [cli.scrollback]);
+  }, [cli.scrollback, cli.pending]);
 
   // Click-to-illuminate (#439, #464). Writes the picker-formatted
   // illuminate command into the prompt and submits it through the same
@@ -64,6 +71,38 @@ export function CliPage() {
       // so they work even while the input is `disabled` (busy state) or
       // without focus. Enter / ArrowUp / ArrowDown stay local because
       // they read and write input state.
+      if (e.key === "Tab") {
+        // Terminal-style completion (#515). Resolve the active token,
+        // then either apply the sole candidate, advance to the longest
+        // common prefix, or surface the ambiguous set as a hint row.
+        e.preventDefault();
+        const { candidates, start } = completeCommandLine(
+          cli.input,
+          cli.knownKeys,
+        );
+        if (candidates.length === 0) {
+          setHints([]);
+          return;
+        }
+        if (candidates.length === 1) {
+          const value = candidates[0];
+          // Option keys (`algorithm=`) keep the cursor on the value, so
+          // no trailing space; completed words advance to the next slot.
+          const suffix = value.endsWith("=") ? "" : " ";
+          cli.setInput(cli.input.slice(0, start) + value + suffix);
+          setHints([]);
+          return;
+        }
+        const lcp = longestCommonPrefix(candidates);
+        const active = cli.input.slice(start);
+        if (lcp.length > active.length) {
+          cli.setInput(cli.input.slice(0, start) + lcp);
+        }
+        setHints(candidates);
+        return;
+      }
+      // Any other key dismisses a stale completion hint.
+      setHints([]);
       if (e.key === "Enter") {
         e.preventDefault();
         cli.submit();
@@ -148,57 +187,82 @@ export function CliPage() {
           ref={scrollRef}
           aria-live="polite"
           data-testid="cli-scrollback"
+          onClick={(e) => {
+            // Click empty terminal space to focus the prompt (like a real
+            // terminal). Guarded so clicking/selecting output text or a
+            // control inside the scroll region never steals the caret.
+            if (e.target === e.currentTarget) inputRef.current?.focus();
+          }}
         >
           {renderedScrollback}
-        </div>
 
-        {cli.pending !== null ? (
-          <div className={styles.confirmBar} data-testid="cli-confirm">
-            <span className={styles.confirmText}>
-              About to run: <code>{cli.pending.rendered}</code> — this mutates
-              server state.
+          {cli.pending !== null ? (
+            <div className={styles.confirmBar} data-testid="cli-confirm">
+              <span className={styles.confirmText}>
+                About to run: <code>{cli.pending.rendered}</code> — this mutates
+                server state.
+              </span>
+              <Checkbox
+                label="Do not ask again this session"
+                checked={cli.skipConfirm}
+                onChange={(_e, data) =>
+                  cli.setSkipConfirm(Boolean(data.checked))
+                }
+                data-testid="cli-skip-confirm"
+              />
+              <Button
+                appearance="secondary"
+                onClick={cli.confirmCancel}
+                data-testid="cli-confirm-cancel"
+              >
+                Cancel
+              </Button>
+              <Button
+                appearance="primary"
+                onClick={cli.confirmRun}
+                data-testid="cli-confirm-run"
+              >
+                Run
+              </Button>
+            </div>
+          ) : null}
+
+          {/* Live prompt — an inline terminal line that scrolls with the
+              output, not a detached form (#515). Always rendered so the
+              `cli-input` testid and disabled-while-busy semantics hold. */}
+          <div className={styles.promptRow}>
+            <span className={styles.prompt} aria-hidden="true">
+              ❯
             </span>
-            <Checkbox
-              label="Do not ask again this session"
-              checked={cli.skipConfirm}
-              onChange={(_e, data) => cli.setSkipConfirm(Boolean(data.checked))}
-              data-testid="cli-skip-confirm"
+            <input
+              ref={inputRef}
+              className={styles.input}
+              value={cli.input}
+              onChange={(e) => {
+                setHints([]);
+                cli.setInput(e.target.value);
+              }}
+              onKeyDown={onKeyDown}
+              placeholder="get vertex alice    |    illuminate alice 2 5 algorithm=spt"
+              disabled={cli.busy || cli.pending !== null}
+              data-testid="cli-input"
+              aria-label="CLI command input"
+              autoComplete="off"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
             />
-            <Button
-              appearance="secondary"
-              onClick={cli.confirmCancel}
-              data-testid="cli-confirm-cancel"
-            >
-              Cancel
-            </Button>
-            <Button
-              appearance="primary"
-              onClick={cli.confirmRun}
-              data-testid="cli-confirm-run"
-            >
-              Run
-            </Button>
           </div>
-        ) : null}
 
-        <div className={styles.promptRow}>
-          <span className={styles.prompt} aria-hidden="true">
-            ❯
-          </span>
-          <input
-            className={styles.input}
-            value={cli.input}
-            onChange={(e) => cli.setInput(e.target.value)}
-            onKeyDown={onKeyDown}
-            placeholder="get vertex alice    |    illuminate alice 2 5 algorithm=spt"
-            disabled={cli.busy || cli.pending !== null}
-            data-testid="cli-input"
-            aria-label="CLI command input"
-            autoComplete="off"
-            autoCapitalize="off"
-            autoCorrect="off"
-            spellCheck={false}
-          />
+          {hints.length > 0 ? (
+            <div className={styles.hints} data-testid="cli-hints">
+              {hints.map((hint) => (
+                <span key={hint} className={styles.hint}>
+                  {hint}
+                </span>
+              ))}
+            </div>
+          ) : null}
         </div>
       </section>
 
