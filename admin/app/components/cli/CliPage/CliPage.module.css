@@ -170,26 +170,6 @@
   margin-left: var(--spacingHorizontalXS, 4px);
 }
 
-/* Destructive-command confirmation, rendered inline inside the scroll
-   region just above the live prompt (#515) as a self-contained callout. */
-.confirmBar {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--spacingHorizontalS, 8px);
-  margin: var(--spacingVerticalS, 8px) 0;
-  padding: var(--spacingVerticalS, 8px) var(--spacingHorizontalM, 12px);
-  border: 1px solid var(--colorPaletteRedBorder2, #f1bbbb);
-  border-radius: var(--borderRadiusMedium, 4px);
-  background: var(--colorPaletteRedBackground1, #fff5f5);
-}
-
-.confirmText {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-size: var(--fontSizeBase200, 12px);
-}
-
 /* The live prompt row — an inline terminal line that flows directly after
    the last output inside the scroll region, not a detached form (#515).
    No frame of its own: the surrounding scrollback owns the padding. */

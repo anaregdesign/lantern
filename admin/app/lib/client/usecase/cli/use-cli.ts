@@ -9,10 +9,7 @@ import {
 import { useLanternClient } from "~/lib/client/infrastructure/api/use-lantern-client";
 import { scanVertices } from "~/lib/client/infrastructure/api/scan-vertices";
 import { LanternApiError } from "~/lib/client/infrastructure/api/error";
-import {
-  dispatch as dispatchCommand,
-  isDestructive,
-} from "~/lib/client/usecase/cli/dispatcher";
+import { dispatch as dispatchCommand } from "~/lib/client/usecase/cli/dispatcher";
 import {
   commandResultToGraphView,
   commandResultToGraphMerge,
@@ -23,7 +20,6 @@ import { cliReducer } from "./reducer";
 import {
   INITIAL_CLI_STATE,
   type LatestGraph,
-  type PendingDestructive,
   type ScrollbackEntry,
 } from "./state";
 
@@ -32,10 +28,6 @@ export interface UseCliResult {
   scrollback: ScrollbackEntry[];
   /** Current prompt text. */
   input: string;
-  /** Destructive verb awaiting confirmation, if any. */
-  pending: PendingDestructive | null;
-  /** Per-session "do not ask again" flag. */
-  skipConfirm: boolean;
   /** True while a dispatch is in flight (drives `Cancel` + disabled prompt). */
   busy: boolean;
   /** Most recent graph-producing command's view, or null. */
@@ -59,19 +51,13 @@ export interface UseCliResult {
   clearScrollback: () => void;
   /** Abort the in-flight dispatch (Cancel / Esc). */
   cancelInFlight: () => void;
-  /** Toggle the per-session confirmation skip. */
-  setSkipConfirm: (value: boolean) => void;
-  /** Confirm and run the pending destructive command. */
-  confirmRun: () => void;
-  /** Dismiss the pending destructive command. */
-  confirmCancel: () => void;
 }
 
 /**
  * Owns the /cli route's stateful dispatch loop: command parsing,
  * per-verb dispatch through `lantern-sdk/web`, arrow-key history,
- * destructive-verb confirmation, cancellation via `AbortController`,
- * and the graph projection that feeds the canvas.
+ * cancellation via `AbortController`, and the graph projection that
+ * feeds the canvas.
  *
  * Per the skill's stateful-flow compromise, the lifecycle-heavy
  * orchestration (async dispatch + abort handle) lives here in the
@@ -228,16 +214,9 @@ export function useCli(): UseCliResult {
         });
         return;
       }
-      if (isDestructive(result.command) && !state.skipConfirm) {
-        dispatch({
-          type: "PENDING_SET",
-          pending: { command: result.command, rendered: raw },
-        });
-        return;
-      }
       await runCommand(raw, result.command);
     },
-    [runCommand, state.skipConfirm],
+    [runCommand],
   );
 
   const submit = useCallback(() => {
@@ -258,9 +237,9 @@ export function useCli(): UseCliResult {
 
   /**
    * Resets the scrollback to just the banner line. Wired to the toolbar
-   * `Clear` button and `Ctrl+L` / `Cmd+L` (#433). Gateway override,
-   * skipConfirm, and history are deliberately preserved so a clear
-   * behaves like an editor's "clear screen", not a hard reset.
+   * `Clear` button and `Ctrl+L` / `Cmd+L` (#433). Gateway override and
+   * history are deliberately preserved so a clear behaves like an
+   * editor's "clear screen", not a hard reset.
    */
   const clearScrollback = useCallback(() => {
     dispatch({ type: "SCROLLBACK_CLEARED" });
@@ -273,22 +252,6 @@ export function useCli(): UseCliResult {
    */
   const cancelInFlight = useCallback(() => {
     abortRef.current?.abort();
-  }, []);
-
-  const setSkipConfirm = useCallback((value: boolean) => {
-    dispatch({ type: "SKIP_CONFIRM_CHANGED", value });
-  }, []);
-
-  const confirmRun = useCallback(() => {
-    const p = state.pending;
-    dispatch({ type: "PENDING_CLEARED" });
-    if (p) {
-      void runCommand(p.rendered, p.command);
-    }
-  }, [runCommand, state.pending]);
-
-  const confirmCancel = useCallback(() => {
-    dispatch({ type: "PENDING_CLEARED" });
   }, []);
 
   // Window-level keyboard shortcuts (#433):
@@ -329,8 +292,6 @@ export function useCli(): UseCliResult {
     () => ({
       scrollback: state.scrollback,
       input: state.input,
-      pending: state.pending,
-      skipConfirm: state.skipConfirm,
       busy,
       latestGraph: state.latestGraph,
       knownKeys,
@@ -341,15 +302,10 @@ export function useCli(): UseCliResult {
       historyNext,
       clearScrollback,
       cancelInFlight,
-      setSkipConfirm,
-      confirmRun,
-      confirmCancel,
     }),
     [
       state.scrollback,
       state.input,
-      state.pending,
-      state.skipConfirm,
       busy,
       state.latestGraph,
       knownKeys,
@@ -360,9 +316,6 @@ export function useCli(): UseCliResult {
       historyNext,
       clearScrollback,
       cancelInFlight,
-      setSkipConfirm,
-      confirmRun,
-      confirmCancel,
     ],
   );
 }

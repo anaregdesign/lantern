@@ -55,14 +55,16 @@ test.describe("/cli", () => {
     await expect(err.last()).toContainText("usage:");
   });
 
-  test("destructive verb shows the confirmation chip", async ({ page }) => {
+  test("destructive verb runs immediately with no confirmation chip", async ({
+    page,
+  }) => {
     await page.goto("/cli");
     const input = page.getByTestId("cli-input");
     await input.fill("delete vertex cli:never-existed");
     await input.press("Enter");
-    await expect(page.getByTestId("cli-confirm")).toBeVisible();
-    await page.getByTestId("cli-confirm-cancel").click();
-    await expect(page.getByTestId("cli-confirm")).toBeHidden();
+    // No confirmation chip — the verb dispatches straight through (#521).
+    await expect(page.getByTestId("cli-confirm")).toHaveCount(0);
+    await expect(page.getByTestId("cli-entry-ok").last()).toBeVisible();
   });
 
   // #439 — graph-producing verbs render the IlluminateCanvas above
@@ -108,10 +110,10 @@ test.describe("/cli", () => {
 
   // #518 — a mutating verb (put/add) folds the new element onto the
   // canvas so the operator sees what they just wrote, instead of the
-  // canvas staying blank. put is destructive-gated, so the write lands
-  // only after the confirm chip is accepted. An explicit TTL keeps the
-  // expiration inside the server's tombstone window (24h in the e2e
-  // harness); the grammar is `put vertex <key> <value> [ttl_seconds]`.
+  // canvas staying blank. The verb dispatches straight through with no
+  // confirmation chip (#521). An explicit TTL keeps the expiration inside
+  // the server's tombstone window (24h in the e2e harness); the grammar
+  // is `put vertex <key> <value> [ttl_seconds]`.
   test("put vertex adds the new node to the canvas (#518)", async ({
     page,
   }) => {
@@ -121,9 +123,7 @@ test.describe("/cli", () => {
     const input = page.getByTestId("cli-input");
     await input.fill("put vertex cli:gamma fresh 3600");
     await input.press("Enter");
-    // Destructive verb gates behind the confirm chip.
-    await expect(page.getByTestId("cli-confirm")).toBeVisible();
-    await page.getByTestId("cli-confirm-run").click();
+    // Destructive verb dispatches straight through — no confirm chip (#521).
     await expect(page.getByTestId("cli-entry-ok").last()).toBeVisible();
     // The canvas opens with the put as its source label and the node
     // now lives on it.
@@ -136,7 +136,7 @@ test.describe("/cli", () => {
   // #433 — Ctrl+L is the editor-conventional clear-screen binding and
   // the only way to clear the scrollback now that the Clear button has
   // been removed (#512). It empties the scrollback in place, leaving the
-  // banner, while gateway override, skipConfirm, and history survive.
+  // banner, while gateway override and history survive.
   test("Ctrl+L clears the scrollback but keeps history", async ({ page }) => {
     await page.goto("/cli");
     const input = page.getByTestId("cli-input");

@@ -2,7 +2,6 @@ import {
   initialBanner,
   type CliState,
   type LatestGraph,
-  type PendingDestructive,
   type ScrollbackEntry,
 } from "./state";
 import { mergeGraphView, type GraphMerge } from "./graph-view";
@@ -31,13 +30,7 @@ export type CliAction =
    * live frame instead of replacing it (#518), so the operator's context
    * survives the write. Opens a fresh frame when the canvas was empty.
    */
-  | { type: "GRAPH_MERGED"; source: string; merge: GraphMerge }
-  /** A destructive verb needs confirmation. */
-  | { type: "PENDING_SET"; pending: PendingDestructive }
-  /** Confirmation resolved (Run or Cancel) — clear the prompt chip. */
-  | { type: "PENDING_CLEARED" }
-  /** Toggle the per-session "do not ask again" flag. */
-  | { type: "SKIP_CONFIRM_CHANGED"; value: boolean };
+  | { type: "GRAPH_MERGED"; source: string; merge: GraphMerge };
 
 export function cliReducer(state: CliState, action: CliAction): CliState {
   switch (action.type) {
@@ -105,21 +98,6 @@ export function cliReducer(state: CliState, action: CliAction): CliState {
           view: mergeGraphView(state.latestGraph?.view ?? null, action.merge),
         },
       };
-    }
-    case "PENDING_SET": {
-      return { ...state, pending: action.pending };
-    }
-    case "PENDING_CLEARED": {
-      if (state.pending === null) {
-        return state;
-      }
-      return { ...state, pending: null };
-    }
-    case "SKIP_CONFIRM_CHANGED": {
-      if (action.value === state.skipConfirm) {
-        return state;
-      }
-      return { ...state, skipConfirm: action.value };
     }
     default: {
       const exhaustive: never = action;

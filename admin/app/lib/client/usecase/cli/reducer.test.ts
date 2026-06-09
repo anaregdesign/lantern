@@ -141,15 +141,13 @@ describe("cliReducer", () => {
       expect(state.nextEntryId).toBe(2);
     });
 
-    it("preserves history and skipConfirm (clear-screen, not reset)", () => {
+    it("preserves history (clear-screen, not reset)", () => {
       const base: CliState = {
         ...INITIAL_CLI_STATE,
         history: ["a", "b"],
-        skipConfirm: true,
       };
       const next = cliReducer(base, { type: "SCROLLBACK_CLEARED" });
       expect(next.history).toEqual(["a", "b"]);
-      expect(next.skipConfirm).toBe(true);
     });
   });
 
@@ -214,45 +212,6 @@ describe("cliReducer", () => {
         "y",
       ]);
       expect(second.latestGraph?.source).toBe("put vertex y 1");
-    });
-  });
-
-  describe("pending destructive confirmation", () => {
-    it("sets and clears the pending command", () => {
-      const pending = {
-        rendered: "delete vertex alice",
-        command: { verb: "delete", objective: "vertex", key: "alice" },
-      } as const;
-      const set = cliReducer(INITIAL_CLI_STATE, {
-        type: "PENDING_SET",
-        pending,
-      });
-      expect(set.pending).toBe(pending);
-      const cleared = cliReducer(set, { type: "PENDING_CLEARED" });
-      expect(cleared.pending).toBeNull();
-    });
-
-    it("is identity when clearing an already-empty pending", () => {
-      const next = cliReducer(INITIAL_CLI_STATE, { type: "PENDING_CLEARED" });
-      expect(next).toBe(INITIAL_CLI_STATE);
-    });
-  });
-
-  describe("SKIP_CONFIRM_CHANGED", () => {
-    it("toggles the per-session flag", () => {
-      const next = cliReducer(INITIAL_CLI_STATE, {
-        type: "SKIP_CONFIRM_CHANGED",
-        value: true,
-      });
-      expect(next.skipConfirm).toBe(true);
-    });
-
-    it("is identity when the value is unchanged", () => {
-      const next = cliReducer(INITIAL_CLI_STATE, {
-        type: "SKIP_CONFIRM_CHANGED",
-        value: false,
-      });
-      expect(next).toBe(INITIAL_CLI_STATE);
     });
   });
 });
