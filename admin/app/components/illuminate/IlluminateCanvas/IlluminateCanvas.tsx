@@ -90,6 +90,15 @@ export interface IlluminateCanvasProps {
   /** When true, the canvas dims to communicate a stale frame. */
   isBusy: boolean;
   /**
+   * #516: fill the parent container (absolute `inset: 0`) instead of
+   * imposing the standalone `70vh`/`min-height` sizing. The `/cli` split
+   * view embeds the canvas in a height-constrained, `overflow: hidden`
+   * panel; without this the fixed-height wrapper overflows the panel and
+   * clips the bottom-left hop-distance legend on short viewports.
+   * `/illuminate` leaves it unset and keeps the `70vh` sizing.
+   */
+  fill?: boolean;
+  /**
    * Imperative handle (#456). The expansion chip strip calls
    * `panToNode(originKey)` to scroll the camera to a previous click
    * point without mutating state or refetching. Optional — keeps the
@@ -190,6 +199,7 @@ export function IlluminateCanvas({
   onNodeClick,
   onNodeInspect,
   isBusy,
+  fill = false,
   ref,
 }: IlluminateCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -270,6 +280,15 @@ export function IlluminateCanvas({
    * inspects.
    */
   const infoIconPointerDownRef = useRef<{ x: number; y: number } | null>(null);
+  /**
+   * #517: label-visibility toggles. Both default on. These drive sigma's
+   * `renderLabels` / `renderEdgeLabels` settings, which gate ALL node /
+   * edge labels regardless of any per-element `forceLabel`, so flipping
+   * them is the clean way to hide one label class without touching the
+   * graphology label attributes (which the test bridge still reads).
+   */
+  const [showNodeLabels, setShowNodeLabels] = useState(true);
+  const [showEdgeLabels, setShowEdgeLabels] = useState(true);
   const [palette, setPalette] = useState<SigmaPalette>(FALLBACK_PALETTE);
   // The mount effect runs ONCE, so any palette swatch read inside the
   // hover-focus reducer (#458) needs a ref so it tracks the latest
@@ -288,6 +307,23 @@ export function IlluminateCanvas({
     if (!containerRef.current) return;
     setPalette(resolvePalette(containerRef.current));
   }, [theme]);
+
+  // #517: keep sigma's label-visibility settings in lockstep with the
+  // toggles. The canvas mounts once and survives data updates, so these
+  // small effects are the single writers of these two settings (the
+  // palette effect never touches them). `refresh()` repaints immediately.
+  useEffect(() => {
+    const sigma = sigmaRef.current;
+    if (!sigma) return;
+    sigma.setSetting("renderLabels", showNodeLabels);
+    sigma.refresh();
+  }, [showNodeLabels]);
+  useEffect(() => {
+    const sigma = sigmaRef.current;
+    if (!sigma) return;
+    sigma.setSetting("renderEdgeLabels", showEdgeLabels);
+    sigma.refresh();
+  }, [showEdgeLabels]);
 
   const pickFill = useCallback(
     // #460/#500: every node (including the pinned seed) draws from the
@@ -983,6 +1019,12 @@ export function IlluminateCanvas({
          * auto-run animation to converge.
          */
         layoutRunning: () => boolean;
+        /**
+         * #517 test bridge: the live label-visibility settings the two
+         * on-canvas toggles drive. Reads `renderer.getSetting(...)` so it
+         * reflects the current sigma state, not the mount-time closure.
+         */
+        getLabelVisibility: () => { vertex: boolean; edge: boolean };
       };
     };
     win.__illuminateCanvas = {
@@ -1120,6 +1162,10 @@ export function IlluminateCanvas({
       stepLayout: (ticks: number) => stepLayout(ticks),
       settleLayout: (maxTicks?: number) => settleLayout(maxTicks),
       layoutRunning: () => layoutRef.current?.raf != null,
+      getLabelVisibility: () => ({
+        vertex: renderer.getSetting("renderLabels"),
+        edge: renderer.getSetting("renderEdgeLabels"),
+      }),
     };
 
     return () => {
@@ -1513,8 +1559,11 @@ export function IlluminateCanvas({
 
   const empty = nodes.length === 0;
   const wrapperClass = useMemo(
-    () => [styles.wrapper, isBusy ? styles.busy : ""].filter(Boolean).join(" "),
-    [isBusy],
+    () =>
+      [styles.wrapper, fill ? styles.fill : "", isBusy ? styles.busy : ""]
+        .filter(Boolean)
+        .join(" "),
+    [fill, isBusy],
   );
 
   // #460: hop-distance legend buckets. Recomputed whenever the
@@ -1594,6 +1643,33 @@ export function IlluminateCanvas({
               <span className={styles.legendCount}>{b.count}</span>
             </div>
           ))}
+        </div>
+      ) : null}
+      {!empty ? (
+        <div
+          className={styles.labelControls}
+          data-testid="illuminate-label-controls"
+        >
+          <button
+            type="button"
+            className={styles.labelToggle}
+            data-testid="illuminate-toggle-node-labels"
+            aria-pressed={showNodeLabels}
+            title={showNodeLabels ? "Hide vertex labels" : "Show vertex labels"}
+            onClick={() => setShowNodeLabels((v) => !v)}
+          >
+            vertex labels
+          </button>
+          <button
+            type="button"
+            className={styles.labelToggle}
+            data-testid="illuminate-toggle-edge-labels"
+            aria-pressed={showEdgeLabels}
+            title={showEdgeLabels ? "Hide edge labels" : "Show edge labels"}
+            onClick={() => setShowEdgeLabels((v) => !v)}
+          >
+            edge labels
+          </button>
         </div>
       ) : null}
       {hover ? (

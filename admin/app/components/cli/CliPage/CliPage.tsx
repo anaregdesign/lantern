@@ -316,6 +316,7 @@ export function CliPage() {
                 latestResultEdgeIds={cli.latestGraph.view.latestResultEdgeIds}
                 onNodeClick={onNodeClick}
                 isBusy={cli.busy}
+                fill
               />
             </div>
           </div>

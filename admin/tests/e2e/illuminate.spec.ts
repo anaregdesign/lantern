@@ -351,6 +351,55 @@ test.describe("/illuminate", () => {
     expect(contrastReport.ratio).toBeGreaterThanOrEqual(4.5);
   });
 
+  // #517 — the operator can independently hide vertex and edge labels.
+  // The toggles drive Sigma's renderLabels / renderEdgeLabels settings,
+  // surfaced for assertion through the canvas bridge.
+  test("label toggles hide and restore vertex and edge labels (#517)", async ({
+    page,
+  }) => {
+    const seed = encodeURIComponent("e2e:illum:hub");
+    await page.goto(`/illuminate?seed=${seed}`);
+    await expect(page.getByTestId("illuminate-counter")).toContainText(
+      "5 vertices",
+    );
+
+    type LabelBridge = {
+      getLabelVisibility?: () => { vertex: boolean; edge: boolean };
+    };
+    // The label-visibility bridge is installed in the sigma mount effect.
+    await page.waitForFunction(() => {
+      const win = window as Window & { __illuminateCanvas?: LabelBridge };
+      return !!win.__illuminateCanvas?.getLabelVisibility;
+    });
+    const vis = (): Promise<{ vertex: boolean; edge: boolean }> =>
+      page.evaluate(() => {
+        const win = window as Window & { __illuminateCanvas?: LabelBridge };
+        return (
+          win.__illuminateCanvas?.getLabelVisibility?.() ?? {
+            vertex: false,
+            edge: false,
+          }
+        );
+      });
+
+    // Both kinds of labels are on by default.
+    expect(await vis()).toEqual({ vertex: true, edge: true });
+
+    // Toggling vertex labels off hides only the vertex labels.
+    await page.getByTestId("illuminate-toggle-node-labels").click();
+    await expect.poll(async () => (await vis()).vertex).toBe(false);
+    expect((await vis()).edge).toBe(true);
+
+    // Toggling edge labels off hides them too, independently.
+    await page.getByTestId("illuminate-toggle-edge-labels").click();
+    await expect.poll(async () => (await vis()).edge).toBe(false);
+
+    // Toggling vertex labels back on restores only them.
+    await page.getByTestId("illuminate-toggle-node-labels").click();
+    await expect.poll(async () => (await vis()).vertex).toBe(true);
+    expect((await vis()).edge).toBe(false);
+  });
+
   test("No positional snap at t=0 after a click, then gradual non-overlapping easing (#483)", async ({
     page,
   }) => {
