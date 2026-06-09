@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { NavLink } from "react-router";
+import { NavLink, useLocation } from "react-router";
 import { ConnectionSwitcher } from "~/components/shared/ConnectionSwitcher/ConnectionSwitcher";
 import styles from "./AppShell.module.css";
 
@@ -25,6 +25,13 @@ const NAV: readonly NavEntry[] = [
 ];
 
 export function AppShell({ children }: AppShellProps) {
+  // The /cli route is a full-bleed shell terminal + canvas workspace, so
+  // it opts out of the centered max-width column the other routes use and
+  // spans the screen width instead (#512).
+  const { pathname } = useLocation();
+  const mainClassName =
+    pathname === "/cli" ? `${styles.main} ${styles.mainFull}` : styles.main;
+
   return (
     <div className={styles.shell}>
       <header className={styles.header}>
@@ -49,7 +56,7 @@ export function AppShell({ children }: AppShellProps) {
           <ConnectionSwitcher />
         </div>
       </header>
-      <main className={styles.main}>{children}</main>
+      <main className={mainClassName}>{children}</main>
     </div>
   );
 }

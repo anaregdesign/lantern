@@ -106,16 +106,15 @@ test.describe("/cli", () => {
     );
   });
 
-  // #433 — Clear button empties the scrollback in place, leaving the
-  // banner. Gateway override, skipConfirm, and history are preserved.
-  test("Clear button empties the scrollback to just the banner", async ({
-    page,
-  }) => {
+  // #433 — Ctrl+L is the editor-conventional clear-screen binding and
+  // the only way to clear the scrollback now that the Clear button has
+  // been removed (#512). It empties the scrollback in place, leaving the
+  // banner, while gateway override, skipConfirm, and history survive.
+  test("Ctrl+L clears the scrollback but keeps history", async ({ page }) => {
     await page.goto("/cli");
     const input = page.getByTestId("cli-input");
-    // Initial state: only the banner entry. Clear button starts disabled.
+    // Initial state: only the banner entry.
     await expect(page.getByTestId("cli-entry-info")).toHaveCount(1);
-    await expect(page.getByTestId("cli-clear")).toBeDisabled();
     // Run a couple of commands to grow the scrollback.
     await input.fill("get vertex cli:alpha");
     await input.press("Enter");
@@ -127,32 +126,16 @@ test.describe("/cli", () => {
     await expect(page.getByTestId("cli-entry-error").last()).toContainText(
       "usage:",
     );
-    // Clear is now enabled. Click it; only the banner survives.
-    await expect(page.getByTestId("cli-clear")).toBeEnabled();
-    await page.getByTestId("cli-clear").click();
+    // Ctrl+L empties the scrollback; only the banner survives.
+    await input.focus();
+    await input.press("Control+l");
     await expect(page.getByTestId("cli-entry-ok")).toHaveCount(0);
     await expect(page.getByTestId("cli-entry-error")).toHaveCount(0);
     await expect(page.getByTestId("cli-entry-info")).toHaveCount(1);
-    await expect(page.getByTestId("cli-clear")).toBeDisabled();
     // History survives clear: arrow-up restores the last command.
     await input.focus();
     await input.press("ArrowUp");
     await expect(input).toHaveValue("nonsense");
-  });
-
-  // #433 — Ctrl+L is the editor-conventional clear-screen binding.
-  test("Ctrl+L clears the scrollback", async ({ page }) => {
-    await page.goto("/cli");
-    const input = page.getByTestId("cli-input");
-    await input.fill("get vertex cli:alpha");
-    await input.press("Enter");
-    await expect(page.getByTestId("cli-entry-ok").last()).toContainText(
-      "first",
-    );
-    await input.focus();
-    await input.press("Control+l");
-    await expect(page.getByTestId("cli-entry-ok")).toHaveCount(0);
-    await expect(page.getByTestId("cli-entry-info")).toHaveCount(1);
   });
 
   // #433 — Cancel aborts the in-flight RPC. We slow-route the Connect
@@ -205,11 +188,11 @@ test.describe("/cli", () => {
     await expect(input).toBeEnabled();
   });
 
-  // #465 — splitter L/R layout. The splitter is hidden while no graph
-  // has been rendered yet; once a graph-producing command lands, the
-  // page switches to a two-column grid with the canvas on the left,
-  // the toolbar/scrollback/input on the right, and a draggable splitter
-  // between them.
+  // #465 / #512 — splitter L/R layout. The splitter is hidden while no
+  // graph has been rendered yet; once a graph-producing command lands,
+  // the page switches to a two-column grid with the shell terminal on
+  // the left, the axis picker + canvas on the right, and a draggable
+  // splitter between them.
   test("splitter is hidden until a graph-producing command lands (#465)", async ({
     page,
   }) => {
@@ -236,18 +219,20 @@ test.describe("/cli", () => {
   }) => {
     // Playwright's `fullyParallel` runs each test in a fresh browser
     // context, so localStorage starts empty and the splitter takes
-    // the default 0.6 ratio without any explicit cleanup.
+    // the default 0.4 ratio (terminal share) without any explicit
+    // cleanup.
     await page.goto("/cli");
     const input = page.getByTestId("cli-input");
     await input.fill("get vertex cli:alpha");
     await input.press("Enter");
     const splitter = page.getByTestId("cli-splitter");
     await expect(splitter).toBeVisible();
-    // Initial aria-valuenow reflects the 60% default.
-    await expect(splitter).toHaveAttribute("aria-valuenow", "60");
-    // Drag the handle ~150px to the left and verify the ratio shrank.
-    // 150px against the ~1100px-wide root is well inside the 360px
-    // min-pane clamp on both sides.
+    // Initial aria-valuenow reflects the 40% terminal default.
+    await expect(splitter).toHaveAttribute("aria-valuenow", "40");
+    // `aria-valuenow` is the LEFT (terminal) column's share, so dragging
+    // the handle left SHRINKS the terminal. Drag ~150px left and verify
+    // the ratio dropped. 150px against the ~1100px-wide root keeps both
+    // panes inside the 360px min-pane clamp.
     const box = await splitter.boundingBox();
     if (!box) throw new Error("splitter has no bounding box");
     const startX = box.x + box.width / 2;
@@ -256,11 +241,11 @@ test.describe("/cli", () => {
     await page.mouse.down();
     await page.mouse.move(startX - 150, startY, { steps: 12 });
     await page.mouse.up();
-    // aria-valuenow should now be noticeably below 60 and well above
+    // aria-valuenow should now be noticeably below 40 and still above
     // the min-pane clamp.
     const afterDrag = Number(await splitter.getAttribute("aria-valuenow"));
-    expect(afterDrag).toBeLessThan(55);
-    expect(afterDrag).toBeGreaterThan(35);
+    expect(afterDrag).toBeLessThan(40);
+    expect(afterDrag).toBeGreaterThan(15);
     // localStorage holds the persisted value.
     const stored = await page.evaluate(() =>
       window.localStorage.getItem("cli.splitRatio"),
@@ -300,7 +285,7 @@ test.describe("/cli", () => {
     await expect(splitter).toBeVisible();
     await expect(splitter).toHaveAttribute("aria-valuenow", "45");
     await splitter.dblclick();
-    await expect(splitter).toHaveAttribute("aria-valuenow", "60");
+    await expect(splitter).toHaveAttribute("aria-valuenow", "40");
     const stored = await page.evaluate(() =>
       window.localStorage.getItem("cli.splitRatio"),
     );
@@ -341,6 +326,12 @@ test.describe("/cli", () => {
     page,
   }) => {
     await page.goto("/cli");
+    // The picker lives inside the canvas panel, so render a graph first
+    // to mount it (#512).
+    const input = page.getByTestId("cli-input");
+    await input.fill("get vertex cli:alpha");
+    await input.press("Enter");
+    await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
     const picker = page.getByTestId("cli-axis-picker");
     await expect(picker).toBeVisible();
     // Defaults: step=2, k=5, algorithm=none, objective=min, weighting=raw
@@ -351,12 +342,7 @@ test.describe("/cli", () => {
     await expect(page.getByTestId("cli-axis-step")).toHaveValue("2");
     await expect(page.getByTestId("cli-axis-k")).toHaveValue("5");
     await expect(page.getByTestId("cli-axis-tfidf")).not.toBeChecked();
-    // Canvas-header hint mirrors the picker; render a graph first so
-    // the canvas panel mounts.
-    const input = page.getByTestId("cli-input");
-    await input.fill("get vertex cli:alpha");
-    await input.press("Enter");
-    await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
+    // Canvas-header hint mirrors the picker.
     await expect(page.getByTestId("cli-click-hint")).toHaveText(
       "illuminate <key> 2 5",
     );
@@ -366,6 +352,12 @@ test.describe("/cli", () => {
     page,
   }) => {
     await page.goto("/cli");
+    // Render a graph first so the canvas panel — and the picker inside
+    // it — mounts (#512).
+    const input = page.getByTestId("cli-input");
+    await input.fill("get vertex cli:alpha");
+    await input.press("Enter");
+    await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
     const preview = page.getByTestId("cli-axis-preview");
     await expect(preview).toHaveText("illuminate <key> 2 5");
 
@@ -395,12 +387,7 @@ test.describe("/cli", () => {
       "illuminate <key> 3 10 algorithm=spt objective=max weighting=tfidf",
     );
 
-    // Render the canvas so the header hint shows up, and verify it
-    // tracks the picker.
-    const input = page.getByTestId("cli-input");
-    await input.fill("get vertex cli:alpha");
-    await input.press("Enter");
-    await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
+    // The header hint tracks the picker.
     await expect(page.getByTestId("cli-click-hint")).toHaveText(
       "illuminate <key> 3 10 algorithm=spt objective=max weighting=tfidf",
     );
@@ -408,6 +395,11 @@ test.describe("/cli", () => {
 
   test("picker state persists across a reload (#464)", async ({ page }) => {
     await page.goto("/cli");
+    // Render a graph so the picker mounts (#512).
+    const input = page.getByTestId("cli-input");
+    await input.fill("get vertex cli:alpha");
+    await input.press("Enter");
+    await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
     await page.getByTestId("cli-axis-step").fill("4");
     await page.getByTestId("cli-axis-k").fill("12");
     await page.getByTestId("cli-axis-algorithm").click();
@@ -415,8 +407,12 @@ test.describe("/cli", () => {
     await expect(page.getByTestId("cli-axis-preview")).toHaveText(
       "illuminate <key> 4 12 algorithm=mst",
     );
-    // Reload — picker should hydrate from localStorage on mount.
+    // Reload — picker should hydrate from localStorage on mount. Re-run
+    // a graph command so the canvas panel (and picker) mount again.
     await page.reload();
+    await page.getByTestId("cli-input").fill("get vertex cli:alpha");
+    await page.getByTestId("cli-input").press("Enter");
+    await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
     await expect(page.getByTestId("cli-axis-step")).toHaveValue("4");
     await expect(page.getByTestId("cli-axis-k")).toHaveValue("12");
     await expect(page.getByTestId("cli-axis-preview")).toHaveText(

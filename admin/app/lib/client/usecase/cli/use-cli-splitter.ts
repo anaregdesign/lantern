@@ -52,7 +52,7 @@ type HandleProps = AriaAttributes &
   };
 
 export interface CliSplitterApi {
-  /** The current canvas-share ratio (committed value, not the live drag). */
+  /** The current terminal-share ratio (committed value, not the live drag). */
   ratio: number;
   /** True while a pointer drag is in progress. */
   dragging: boolean;
@@ -63,8 +63,8 @@ export interface CliSplitterApi {
 /**
  * Drives the L/R splitter on the /cli page (#465).
  *
- * Writes the canvas fraction to two CSS variables on the host root —
- * `--cli-canvas-frac` and `--cli-right-frac` — so the grid layout updates
+ * Writes the terminal fraction to two CSS variables on the host root —
+ * `--cli-left-frac` and `--cli-right-frac` — so the grid layout updates
  * without re-rendering the React tree on every pointermove. Persists the
  * final ratio to localStorage under {@link SPLITTER_STORAGE_KEY}.
  *
@@ -93,7 +93,7 @@ export function useCliSplitter({
     liveRatioRef.current = ratio;
     const root = rootRef.current;
     if (!root) return;
-    root.style.setProperty("--cli-canvas-frac", `${ratio}fr`);
+    root.style.setProperty("--cli-left-frac", `${ratio}fr`);
     root.style.setProperty("--cli-right-frac", `${1 - ratio}fr`);
   }, [ratio, rootRef]);
 
@@ -154,7 +154,7 @@ export function useCliSplitter({
       const desired = (e.clientX - rect.left) / rect.width;
       const next = clampRatio(desired, rect.width);
       liveRatioRef.current = next;
-      root.style.setProperty("--cli-canvas-frac", `${next}fr`);
+      root.style.setProperty("--cli-left-frac", `${next}fr`);
       root.style.setProperty("--cli-right-frac", `${1 - next}fr`);
       e.currentTarget.setAttribute(
         "aria-valuenow",

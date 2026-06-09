@@ -8,11 +8,15 @@
  * PointerEvent/ResizeObserver wiring is best left to Playwright.
  */
 
-/** localStorage key used to persist the canvas's share of the row. */
+/** localStorage key used to persist the left (terminal) share of the row. */
 export const SPLITTER_STORAGE_KEY = "cli.splitRatio";
 
-/** Default canvas share (60% canvas / 40% right column). */
-export const SPLITTER_DEFAULT_RATIO = 0.6;
+/**
+ * Default left-column (terminal) share: 40% terminal / 60% canvas (#512).
+ * The canvas is the larger surface so a fresh graph has room to breathe;
+ * the terminal still gets a comfortable 40% for typing and scrollback.
+ */
+export const SPLITTER_DEFAULT_RATIO = 0.4;
 
 /** Neither pane may collapse below this many CSS pixels. */
 export const SPLITTER_MIN_PANE_PX = 360;
@@ -27,11 +31,11 @@ export const SPLITTER_NUDGE = 0.02;
 export const SPLITTER_JUMP = 0.1;
 
 /**
- * Clamp a desired canvas fraction so that neither pane shrinks below
- * {@link SPLITTER_MIN_PANE_PX}. When the container itself is too narrow to
- * honour the min size on both sides, falls back to a soft [0.1, 0.9] clamp so
- * the splitter remains usable — narrow viewports are not the primary target
- * anyway.
+ * Clamp a desired left-column (terminal) fraction so that neither pane
+ * shrinks below {@link SPLITTER_MIN_PANE_PX}. When the container itself is too
+ * narrow to honour the min size on both sides, falls back to a soft [0.1, 0.9]
+ * clamp so the splitter remains usable — narrow viewports are not the primary
+ * target anyway.
  */
 export function clampRatio(
   desired: number,
