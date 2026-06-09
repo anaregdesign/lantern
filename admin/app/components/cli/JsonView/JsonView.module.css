@@ -1,0 +1,46 @@
+/* Syntax colouring for the /cli JSON payloads (#512).
+ *
+ * Colours come from Fluent UI palette foreground tokens so the scheme
+ * follows the light/dark theme wired by `root.tsx`'s FluentProvider; the
+ * hex fallbacks only apply if a token is ever missing. The palette is
+ * chosen for contrast against the neutral scrollback background and to
+ * keep keys, strings, and numbers visually distinct at a glance.
+ */
+.json {
+  display: block;
+  margin-top: var(--spacingVerticalXXS, 2px);
+  font-family: var(
+    --fontFamilyMonospace,
+    ui-monospace,
+    SFMono-Regular,
+    monospace
+  );
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.key {
+  color: var(--colorBrandForeground1, #0f6cbd);
+}
+
+.string {
+  color: var(--colorPaletteGreenForeground1, #0e700e);
+}
+
+.number {
+  color: var(--colorPaletteBerryForeground1, #ad1457);
+}
+
+.boolean {
+  color: var(--colorPaletteMarigoldForeground1, #835b00);
+  font-weight: var(--fontWeightSemibold, 600);
+}
+
+.null {
+  color: var(--colorNeutralForeground3, #707070);
+  font-style: italic;
+}
+
+.punctuation {
+  color: var(--colorNeutralForeground4, #919191);
+}

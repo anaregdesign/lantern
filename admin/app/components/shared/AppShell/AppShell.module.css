@@ -54,6 +54,13 @@
   margin: 0 auto;
 }
 
+/* Full-bleed variant for /cli — keeps the comfortable page gutter but
+   drops the centered max-width column so the terminal and canvas can use
+   the full screen width (#512). */
+.mainFull {
+  max-width: none;
+}
+
 @media (max-width: 600px) {
   .header {
     flex-wrap: wrap;

@@ -1,23 +1,22 @@
-/* Click-to-illuminate axis picker (#464).
+/* Click-to-illuminate axis picker (#464, restyled for #512).
  *
- * Single-line strip at desktop widths; wraps onto multiple rows
- * gracefully on narrow viewports. Sized to read as a chip strip
- * (compact, calm) rather than a primary action bar — the picker is
- * a secondary control above the scrollback, not a hero surface.
+ * Rendered as the control header inside the canvas panel, so it carries
+ * NO frame of its own — the surrounding `.canvasControls` provides the
+ * background and bottom border, letting the picker read as part of the
+ * panel chrome. Wraps gracefully: the controls flow onto multiple rows
+ * and every control may shrink, so the strip never overflows even in a
+ * narrow canvas column.
  *
- * Uses Fluent UI design tokens via CSS custom property fallbacks
- * so it follows the theme that root.tsx wires via FluentProvider.
+ * Uses Fluent UI design tokens via CSS custom property fallbacks so it
+ * follows the theme that root.tsx wires via FluentProvider.
  */
 .strip {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--spacingHorizontalM, 12px);
-  padding: var(--spacingVerticalXS, 4px) var(--spacingHorizontalS, 8px);
-  border: 1px solid var(--colorNeutralStroke2, #e0e0e0);
-  border-radius: var(--borderRadiusMedium, 6px);
-  background: var(--colorNeutralBackground2, #fafafa);
-  flex: 0 0 auto;
+  gap: var(--spacingHorizontalS, 8px);
+  padding: var(--spacingVerticalXS, 4px) var(--spacingHorizontalM, 12px);
+  min-width: 0;
 }
 
 .field {
@@ -26,6 +25,7 @@
   gap: var(--spacingHorizontalXS, 4px);
   /* Implicit label wrappers should not look clickable beyond the
    * inner control — keep the label text inline and small. */
+  min-width: 0;
   cursor: default;
   margin: 0;
 }
@@ -41,29 +41,31 @@
   );
 }
 
-/* Number inputs for step / k. Narrow so the strip stays single-row on
- * common laptop widths; the integers we accept are at most two digits. */
+/* Number inputs for step / k. Narrow — the integers we accept are at most
+ * two digits. */
 .numberInput {
   width: 72px;
 }
 
-/* Dropdowns for algorithm / objective. Wide enough for the longest
- * label ("Shortest-path tree", "Maximize (relevance)") without
- * clipping at the standard Fluent UI font size. */
-.dropdown {
-  min-width: 200px;
+/* Dropdowns for algorithm / objective. The descendant selector raises
+ * specificity above Fluent UI's default 250px min-width so the controls
+ * can shrink and the strip never overflows a narrow canvas column. */
+.strip .dropdown {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .tfidf {
   /* Switch has its own internal label; no extra spacing needed. */
 }
 
-/* Live preview of the command the next click will write into the
- * prompt. Placed at the right of the strip on wide viewports so it
- * doesn't push the interactive controls around when the operator
- * tunes axes; falls below on narrow viewports via the wrap rules. */
+/* Live preview of the command the next click will write into the prompt.
+ * Always sits on its own full-width row beneath the controls (flex-basis
+ * 100%) so it reads like a status line and never collides with the
+ * interactive controls, regardless of the canvas column's width. */
 .preview {
-  margin-left: auto;
+  flex: 1 1 100%;
+  margin-top: var(--spacingVerticalXXS, 2px);
   font-family: var(
     --fontFamilyMonospace,
     ui-monospace,
@@ -75,17 +77,4 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 100%;
-}
-
-@media (max-width: 720px) {
-  .preview {
-    margin-left: 0;
-    flex: 1 1 100%;
-    white-space: normal;
-    text-overflow: clip;
-  }
-  .dropdown {
-    min-width: 160px;
-  }
 }

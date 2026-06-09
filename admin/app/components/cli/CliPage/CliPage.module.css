@@ -1,27 +1,30 @@
-/* The /cli root.
+/* The /cli root (#512).
  *
- * Two layout modes (#465):
- *   data-mode="cli"   : no graph yet — full-width terminal, splitter hidden.
- *   data-mode="split" : graph present and viewport ≥ 1024px — two-column
- *                       grid with a draggable splitter between the canvas
- *                       (left) and the toolbar/scrollback/input stack
- *                       (right). Below 1024px the layout falls back to the
- *                       legacy single-column stack regardless of mode.
+ * Two layout modes:
+ *   data-mode="cli"   : no graph yet — the shell terminal owns the full
+ *                       width; splitter and canvas are absent.
+ *   data-mode="split" : graph present and viewport ≥ 1024px — a two-column
+ *                       grid with the terminal on the LEFT, a draggable
+ *                       splitter, and the canvas (with its integrated axis
+ *                       picker) on the RIGHT. Below 1024px the layout falls
+ *                       back to a single-column stack (terminal above the
+ *                       canvas) regardless of mode.
  *
- * The grid template columns are driven by `--cli-canvas-frac` and
- * `--cli-right-frac` written from the `useCliSplitter` hook. Defaults are
- * declared on the host so the layout has a sensible value before the hook
- * mounts and on first paint after SSR.
+ * The grid template columns are driven by `--cli-left-frac` (terminal) and
+ * `--cli-right-frac` (canvas) written from the `useCliSplitter` hook.
+ * Defaults are declared on the host so the layout has a sensible value
+ * before the hook mounts and on first paint after SSR.
  */
 .root {
-  --cli-canvas-frac: 0.6fr;
-  --cli-right-frac: 0.4fr;
+  --cli-left-frac: 0.4fr;
+  --cli-right-frac: 0.6fr;
   display: flex;
   flex-direction: column;
   height: calc(100vh - 120px);
   min-height: 400px;
   gap: var(--spacingVerticalM, 12px);
-  padding: var(--spacingVerticalL, 16px);
+  /* No padding here — AppShell's <main> provides the page gutter, and on
+     /cli it runs full-bleed so the terminal can use the screen width. */
 }
 
 .root[data-dragging="true"] {
@@ -29,31 +32,207 @@
   cursor: col-resize;
 }
 
-/* Left column wraps the canvas panel; on narrow viewports it carries the
-   45% sizing the canvasPanel used to own. */
-.leftColumn {
+/* ── The unified shell terminal ─────────────────────────────────────────
+   A single bordered, elevated box that fuses the faux title chrome, the
+   scrollback, an optional confirm bar, and the pinned prompt row into one
+   surface — like a real shell, output and input are never separated. */
+.terminal {
   display: flex;
   flex-direction: column;
-  flex: 0 0 45%;
-  min-height: 240px;
-  min-width: 0;
-}
-
-/* Right column wraps the toolbar / scrollback / confirm bar / input row.
-   On narrow viewports it fills the remaining vertical space. */
-.rightColumn {
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacingVerticalM, 12px);
   flex: 1 1 auto;
   min-height: 0;
   min-width: 0;
+  border: 1px solid var(--colorNeutralStroke2, #e0e0e0);
+  border-radius: var(--borderRadiusLarge, 8px);
+  background: var(--colorNeutralBackground1, #ffffff);
+  box-shadow: var(--shadow4, 0 2px 4px rgba(0, 0, 0, 0.14));
+  overflow: hidden;
 }
 
-/* Splitter handle — hidden by default; only visible in `split` mode at
-   ≥ 1024px (see media query at the bottom of the file). The thin visible
-   strip is 4px wide; an invisible ::before extends the hit target to 12px
-   so it's easy to grab without making the visible line thick. */
+/* Faux terminal title bar with decorative traffic-light dots. */
+.chrome {
+  display: flex;
+  align-items: center;
+  gap: var(--spacingHorizontalS, 8px);
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: var(--spacingVerticalXS, 4px) var(--spacingHorizontalM, 12px);
+  border-bottom: 1px solid var(--colorNeutralStroke2, #e0e0e0);
+  background: var(--colorNeutralBackground2, #fafafa);
+}
+
+.dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: var(--borderRadiusCircular, 999px);
+}
+
+/* Decorative only (aria-hidden); classic terminal traffic lights. */
+.dotRed {
+  background: #ff5f56;
+}
+
+.dotAmber {
+  background: #ffbd2e;
+}
+
+.dotGreen {
+  background: #27c93f;
+}
+
+.chromeTitle {
+  font-family: var(
+    --fontFamilyMonospace,
+    ui-monospace,
+    SFMono-Regular,
+    monospace
+  );
+  font-size: var(--fontSizeBase200, 12px);
+  color: var(--colorNeutralForeground3, #707070);
+  letter-spacing: 0.02em;
+}
+
+/* Spinner + Cancel, pushed to the right edge while a command is in flight. */
+.chromeBusy {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacingHorizontalS, 8px);
+  margin-left: auto;
+}
+
+/* Scrollback body — transparent because the terminal box owns the frame. */
+.scrollback {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--spacingVerticalS, 8px) var(--spacingHorizontalM, 12px);
+  font-family: var(
+    --fontFamilyMonospace,
+    ui-monospace,
+    SFMono-Regular,
+    monospace
+  );
+  font-size: var(--fontSizeBase200, 12px);
+  line-height: 1.5;
+  color: var(--colorNeutralForeground1, #242424);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.entry {
+  margin-bottom: var(--spacingVerticalS, 8px);
+}
+
+/* Echoed command line (`❯ get vertex alice`). */
+.entryEcho {
+  color: var(--colorNeutralForeground1, #242424);
+}
+
+.prompt {
+  color: var(--colorBrandForeground2, #115ea3);
+  font-weight: 600;
+  user-select: none;
+}
+
+.entryInput {
+  color: var(--colorNeutralForeground1, #242424);
+}
+
+.entryBody {
+  display: block;
+}
+
+/* The `OK (1.2ms)` header line above a highlighted JSON payload. */
+.entryOkLine {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spacingHorizontalXS, 4px);
+}
+
+.entryOk {
+  color: var(--colorPaletteGreenForeground1, #0e700e);
+  font-weight: 600;
+}
+
+.entryError {
+  color: var(--colorPaletteRedForeground1, #b10e1c);
+}
+
+.entryTiming {
+  color: var(--colorNeutralForeground3, #707070);
+  font-size: var(--fontSizeBase100, 10px);
+  margin-left: var(--spacingHorizontalXS, 4px);
+}
+
+/* Destructive-command confirmation, rendered inside the box above the
+   prompt row. */
+.confirmBar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--spacingHorizontalS, 8px);
+  flex: 0 0 auto;
+  padding: var(--spacingVerticalS, 8px) var(--spacingHorizontalM, 12px);
+  border-top: 1px solid var(--colorPaletteRedBorder2, #f1bbbb);
+  background: var(--colorPaletteRedBackground1, #fff5f5);
+}
+
+.confirmText {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--fontSizeBase200, 12px);
+}
+
+/* The pinned prompt row — always the last line of the terminal. Hosts a
+   native <input> styled as a bare shell line for an authentic feel. */
+.promptRow {
+  display: flex;
+  align-items: center;
+  gap: var(--spacingHorizontalS, 8px);
+  flex: 0 0 auto;
+  padding: var(--spacingVerticalS, 8px) var(--spacingHorizontalM, 12px);
+  border-top: 1px solid var(--colorNeutralStroke2, #e0e0e0);
+  background: var(--colorNeutralBackground1, #ffffff);
+}
+
+.input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  color: var(--colorNeutralForeground1, #242424);
+  font-family: var(
+    --fontFamilyMonospace,
+    ui-monospace,
+    SFMono-Regular,
+    monospace
+  );
+  font-size: var(--fontSizeBase300, 14px);
+  line-height: 1.5;
+}
+
+.input::placeholder {
+  color: var(--colorNeutralForeground4, #919191);
+}
+
+.input:disabled {
+  color: var(--colorNeutralForeground3, #707070);
+  cursor: not-allowed;
+}
+
+/* ── Splitter handle ────────────────────────────────────────────────────
+   Hidden by default; only visible in `split` mode at ≥ 1024px (see media
+   query below). The thin visible strip is 4px wide; an invisible ::before
+   widens the hit target so it's easy to grab. */
 .splitter {
   display: none;
   position: relative;
@@ -65,8 +244,7 @@
 .splitter::before {
   content: "";
   position: absolute;
-  inset: 0 -4px;
-  /* Invisible hit target, 12px wide centered on the visible strip. */
+  inset: 0 -6px;
 }
 
 .splitter:hover,
@@ -80,24 +258,46 @@
   outline-offset: 1px;
 }
 
-/* Canvas panel rendered inside `.leftColumn` when the most recent
-   command produced graph data. Fills the column. */
+/* ── Canvas column ──────────────────────────────────────────────────────
+   Mounts only when the latest command produced a graph. Wraps the canvas
+   panel; on narrow viewports it carries an explicit share of the stack. */
+.canvasColumn {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 50%;
+  min-height: 240px;
+  min-width: 0;
+}
+
+/* The canvas panel: integrated axis-picker control header, a meta line,
+   and the graph body. Mirrors the terminal's frame for visual symmetry. */
 .canvasPanel {
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
   min-height: 0;
   border: 1px solid var(--colorNeutralStroke2, #e0e0e0);
-  border-radius: var(--borderRadiusMedium, 6px);
+  border-radius: var(--borderRadiusLarge, 8px);
   background: var(--colorNeutralBackground1, #ffffff);
+  box-shadow: var(--shadow4, 0 2px 4px rgba(0, 0, 0, 0.14));
   overflow: hidden;
 }
 
-.canvasHeader {
+/* Wraps the CliAxisPicker as the panel's control header; the picker itself
+   renders seamlessly (no frame of its own) so it reads as part of the
+   panel chrome. */
+.canvasControls {
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--colorNeutralStroke2, #e0e0e0);
+  background: var(--colorNeutralBackground2, #fafafa);
+}
+
+.canvasMeta {
   display: flex;
   align-items: baseline;
+  flex-wrap: wrap;
   gap: var(--spacingHorizontalS, 8px);
-  padding: var(--spacingVerticalXS, 4px) var(--spacingHorizontalS, 8px);
+  padding: var(--spacingVerticalXS, 4px) var(--spacingHorizontalM, 12px);
   border-bottom: 1px solid var(--colorNeutralStroke2, #e0e0e0);
   background: var(--colorNeutralBackground2, #fafafa);
   font-family: var(
@@ -109,15 +309,16 @@
   font-size: var(--fontSizeBase200, 12px);
 }
 
-.canvasHeaderLabel {
+.canvasMetaLabel {
   color: var(--colorNeutralForeground3, #707070);
 }
 
-.canvasHeaderSource {
+.canvasMetaSource {
   color: var(--colorNeutralForeground1, #242424);
+  font-weight: 600;
 }
 
-.canvasHeaderHint {
+.canvasMetaHint {
   margin-left: auto;
   color: var(--colorNeutralForeground3, #707070);
   font-size: var(--fontSizeBase100, 10px);
@@ -129,110 +330,23 @@
   min-height: 0;
 }
 
-/* Slim toolbar above the scrollback. Hosts the Clear button and a
-   conditional Cancel button that appears only while a command is in
-   flight (#433). Sized to look like a chip strip, not a primary
-   action bar. */
-.toolbar {
-  display: flex;
-  align-items: center;
-  gap: var(--spacingHorizontalS, 8px);
-  flex: 0 0 auto;
-}
-
-.scrollback {
-  flex: 1 1 auto;
-  min-height: 120px;
-  overflow-y: auto;
-  border: 1px solid var(--colorNeutralStroke2, #e0e0e0);
-  border-radius: var(--borderRadiusMedium, 6px);
-  background: var(--colorNeutralBackground2, #fafafa);
-  font-family: var(
-    --fontFamilyMonospace,
-    ui-monospace,
-    SFMono-Regular,
-    monospace
-  );
-  font-size: var(--fontSizeBase200, 12px);
-  padding: var(--spacingVerticalS, 8px);
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-
-.entry {
-  margin-bottom: var(--spacingVerticalS, 8px);
-}
-
-.prompt {
-  color: var(--colorBrandForeground2, #115ea3);
-  font-weight: 600;
-}
-
-.entryInput {
-  color: var(--colorNeutralForeground1, #242424);
-}
-
-.entryOk {
-  color: var(--colorPaletteGreenForeground1, #0e700e);
-}
-
-.entryError {
-  color: var(--colorPaletteRedForeground1, #b10e1c);
-}
-
-.entryTiming {
-  color: var(--colorNeutralForeground3, #707070);
-  font-size: var(--fontSizeBase100, 10px);
-  margin-left: var(--spacingHorizontalXS, 4px);
-}
-
-.inputRow {
-  display: flex;
-  align-items: center;
-  gap: var(--spacingHorizontalS, 8px);
-}
-
-.input {
-  flex: 1 1 auto;
-  font-family: var(
-    --fontFamilyMonospace,
-    ui-monospace,
-    SFMono-Regular,
-    monospace
-  );
-}
-
-.confirmBar {
-  display: flex;
-  align-items: center;
-  gap: var(--spacingHorizontalS, 8px);
-  padding: var(--spacingVerticalS, 8px);
-  border: 1px solid var(--colorPaletteRedBorder1, #f3b1b1);
-  border-radius: var(--borderRadiusMedium, 6px);
-  background: var(--colorPaletteRedBackground1, #fff5f5);
-}
-
-.confirmText {
-  flex: 1 1 auto;
-  font-size: var(--fontSizeBase200, 12px);
-}
-
-/* Wide viewports — switch to the two-column grid when a graph is present. */
+/* ── Wide viewports — two-column grid when a graph is present ─────────────
+   Terminal (col 1) · splitter (col 2) · canvas (col 3). */
 @media (min-width: 1024px) {
   .root[data-mode="split"] {
     display: grid;
-    grid-template-columns: var(--cli-canvas-frac, 0.6fr) 4px var(
+    grid-template-columns: var(--cli-left-frac, 0.4fr) 4px var(
         --cli-right-frac,
-        0.4fr
+        0.6fr
       );
     grid-template-rows: 1fr;
     gap: 0;
   }
 
-  .root[data-mode="split"] > .leftColumn {
-    flex: 1 1 auto;
-    min-height: 0;
+  .root[data-mode="split"] > .terminal {
     grid-column: 1;
+    min-height: 0;
+    margin-right: var(--spacingHorizontalS, 8px);
   }
 
   .root[data-mode="split"] > .splitter {
@@ -241,9 +355,10 @@
     height: 100%;
   }
 
-  .root[data-mode="split"] > .rightColumn {
+  .root[data-mode="split"] > .canvasColumn {
     flex: 1 1 auto;
     grid-column: 3;
-    padding-left: var(--spacingHorizontalM, 12px);
+    min-height: 0;
+    margin-left: var(--spacingHorizontalS, 8px);
   }
 }
