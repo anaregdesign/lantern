@@ -51,6 +51,33 @@ export function CliPage() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [cli.scrollback, cli.pending]);
 
+  // The prompt is `disabled` while a dispatch is in flight (busy) or a
+  // destructive confirmation chip is up (pending) — that preserves the
+  // `Cancel`/busy semantics and lets the window-level Esc handler own
+  // cancellation. But the browser blurs a disabled element and never
+  // restores focus when it re-enables, so after every Enter-submitted
+  // command the caret would be ejected to <body> and the operator would
+  // have to click back in (#520). Refocus the prompt + park the caret at
+  // the end on the disabled→enabled edge. This is the Enter counterpart
+  // to the Tab refocus in `onKeyDown` (#519); here the cause is the
+  // disabled→blur edge (not Tabster), so no rAF deferral is needed. Only
+  // reclaim focus if the disable left it on <body> — respect a deliberate
+  // focus move (e.g. into the axis picker) the operator made mid-command.
+  const promptDisabled = cli.busy || cli.pending !== null;
+  const wasPromptDisabled = useRef(promptDisabled);
+  useEffect(() => {
+    const justEnabled = wasPromptDisabled.current && !promptDisabled;
+    wasPromptDisabled.current = promptDisabled;
+    if (!justEnabled) return;
+    const active = document.activeElement;
+    if (active !== null && active !== document.body) return;
+    const node = inputRef.current;
+    if (!node) return;
+    node.focus();
+    const end = node.value.length;
+    node.setSelectionRange(end, end);
+  }, [promptDisabled]);
+
   // Click-to-illuminate (#439, #464). Writes the picker-formatted
   // illuminate command into the prompt and submits it through the same
   // parser path the user would hit by typing it. Illuminate is
@@ -258,7 +285,7 @@ export function CliPage() {
               }}
               onKeyDown={onKeyDown}
               placeholder="get vertex alice    |    illuminate alice 2 5 algorithm=spt"
-              disabled={cli.busy || cli.pending !== null}
+              disabled={promptDisabled}
               data-testid="cli-input"
               aria-label="CLI command input"
               autoComplete="off"

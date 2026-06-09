@@ -473,4 +473,35 @@ test.describe("/cli", () => {
     await expect(page.getByTestId("cli-hints")).toBeVisible();
     await expect(input).toBeFocused();
   });
+
+  // #520 — Enter submits a command, which disables the prompt while the
+  // dispatch is in flight. The browser blurs a disabled element, so the
+  // component must restore focus when the input re-enables; otherwise the
+  // operator is ejected to <body> after every command and has to click
+  // back in. Slow-route the RPC so the disabled→blurred window is
+  // observable, then assert focus returns to the prompt once it settles.
+  test("prompt regains focus after an Enter-submitted command settles (#520)", async ({
+    page,
+  }) => {
+    await page.route("**/graph.v1.LanternService/**", async (route) => {
+      await new Promise((r) => setTimeout(r, 250));
+      await route.continue();
+    });
+    await page.goto("/cli");
+    const input = page.getByTestId("cli-input");
+    await input.click();
+    await input.fill("get vertex cli:alpha");
+    await input.press("Enter");
+    // While in flight the prompt is disabled and the browser has moved
+    // focus off it (to <body>) — this is the regression's trigger.
+    await expect(input).toBeDisabled();
+    await expect(input).not.toBeFocused();
+    // Once the command settles the component restores focus to the prompt
+    // so the next command can be typed without a click.
+    await expect(page.getByTestId("cli-entry-ok").last()).toContainText(
+      "first",
+    );
+    await expect(input).toBeEnabled();
+    await expect(input).toBeFocused();
+  });
 });
