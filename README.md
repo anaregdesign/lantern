@@ -237,27 +237,48 @@ the full values reference and
 [`docs/replication.md` §9.1](docs/replication.md#91-peer-discovery-190)
 for the discovery semantics.
 
-### Run with Docker Compose (HA mode)
+### Run with Docker Compose + open the Admin UI
 
-A 3-replica HA topology for local experiments lives in
-[`deploy/compose/`](deploy/compose/):
+The fastest way to get a running cluster **and** a browser console in front of
+it is the Compose stack in [`deploy/compose/`](deploy/compose/). One `up`
+brings up a 3-replica HA cluster, the [`lantern-admin`](admin/) SPA, and
+Prometheus — no local build required:
 
 ```shell
 cd deploy/compose
-docker compose up -d
+# Pull published images for the server and the Admin SPA, then start the stack.
+LANTERN_IMAGE=ghcr.io/anaregdesign/lantern:latest docker compose up -d
 ```
 
-The canonical compose declares three explicit `lantern-{0,1,2}` services
-with pinned host ports (`6380`, `6381`, `6382`) since
-[#435](https://github.com/anaregdesign/lantern/issues/435), so the admin
-SPA's default gateway (`http://localhost:6380`) and any direct curls
-land on a stable replica across `up`/`down` cycles. All three join the
-same `lantern` DNS alias, so peer discovery and Compose-side round-robin
-still work unchanged. Prometheus on `:9091` scrapes every replica via
-DNS SD. See [`deploy/compose/README.md`](deploy/compose/README.md) for
-the full port table and client LB options, and the
-[Helm chart](deploy/helm/lantern/) when you need more than three
-replicas.
+Then open the Admin in your browser:
+
+**→ <http://localhost:8080>**
+
+That's the whole flow — the SPA loads immediately and is ready to
+`Illuminate`, browse, and run ops against the live cluster. The Admin talks
+Connect-Web straight to a lantern node; the **Gateway** button in the
+top-right header selects which replica it hits, defaulting to
+`http://localhost:6380` (`lantern-0`) — switch to `:6381` / `:6382` for the
+other two. Each replica ships
+`LANTERN_CORS_ALLOWED_ORIGINS=http://localhost:8080` so the browser preflight
+from the Admin origin is allowed out of the box. Tear the stack down with
+`docker compose down -v`.
+
+> **Iterating on the server itself?** The `lantern` service defaults to the
+> locally-built `lantern:local` tag, so build it once from the repo root
+> (`docker build -t lantern:local .`) and drop the `LANTERN_IMAGE` override to
+> run the cluster against your own changes.
+
+Under the hood the canonical compose declares three explicit
+`lantern-{0,1,2}` services with pinned host ports (`6380`, `6381`, `6382`)
+since [#435](https://github.com/anaregdesign/lantern/issues/435), so the
+Admin's default gateway and any direct curls land on a stable replica across
+`up`/`down` cycles. All three join the same `lantern` DNS alias, so peer
+discovery and Compose-side round-robin still work unchanged. Prometheus on
+`:9091` scrapes every replica via DNS SD. See
+[`deploy/compose/README.md`](deploy/compose/README.md) for the full port
+table and client LB options, and the [Helm chart](deploy/helm/lantern/) when
+you need more than three replicas.
 
 ### Run on serverless container PaaS
 
