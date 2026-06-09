@@ -1,4 +1,3 @@
-import type { Command } from "~/lib/cli/types";
 import type { GraphView } from "~/lib/client/usecase/illuminate/selectors";
 
 export type EntryKind = "ok" | "error" | "info";
@@ -15,11 +14,6 @@ export interface LatestGraph {
   /** The exact CLI input that produced this graph (`get vertex alice`, …). */
   source: string;
   view: GraphView;
-}
-
-export interface PendingDestructive {
-  command: Command;
-  rendered: string;
 }
 
 /**
@@ -40,16 +34,13 @@ export interface CliState {
   history: string[];
   /** Cursor into `history`; null means "not navigating history". */
   historyIndex: number | null;
-  /** Set while a destructive verb awaits confirmation. */
-  pending: PendingDestructive | null;
-  /** Per-session "do not ask again" for destructive verbs. */
-  skipConfirm: boolean;
   /** Dispatch lifecycle phase. */
   phase: CliPhase;
   /**
-   * Most recent graph-producing command's view. Mutating verbs leave
-   * this alone so the operator keeps their exploration context after a
-   * write. Null until the first graph-producing command lands.
+   * Most recent canvas frame. Read verbs replace it; mutating verbs
+   * (`put`/`add`) fold the new element onto it (#518) so the operator
+   * keeps their exploration context after a write. Null until the first
+   * graph-producing or mutating command lands.
    */
   latestGraph: LatestGraph | null;
   /** Monotonic id source for scrollback entries. */
@@ -78,8 +69,6 @@ export const INITIAL_CLI_STATE: CliState = {
   input: "",
   history: [],
   historyIndex: null,
-  pending: null,
-  skipConfirm: false,
   phase: "idle",
   latestGraph: null,
   nextEntryId: 2,

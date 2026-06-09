@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { cliReducer } from "./reducer";
+import { commandResultToGraphMerge } from "./graph-view";
+import type { Command } from "~/lib/cli/types";
 import {
   INITIAL_CLI_STATE,
   initialBanner,
@@ -139,15 +141,13 @@ describe("cliReducer", () => {
       expect(state.nextEntryId).toBe(2);
     });
 
-    it("preserves history and skipConfirm (clear-screen, not reset)", () => {
+    it("preserves history (clear-screen, not reset)", () => {
       const base: CliState = {
         ...INITIAL_CLI_STATE,
         history: ["a", "b"],
-        skipConfirm: true,
       };
       const next = cliReducer(base, { type: "SCROLLBACK_CLEARED" });
       expect(next.history).toEqual(["a", "b"]);
-      expect(next.skipConfirm).toBe(true);
     });
   });
 
@@ -170,42 +170,48 @@ describe("cliReducer", () => {
     });
   });
 
-  describe("pending destructive confirmation", () => {
-    it("sets and clears the pending command", () => {
-      const pending = {
-        rendered: "delete vertex alice",
-        command: { verb: "delete", objective: "vertex", key: "alice" },
-      } as const;
-      const set = cliReducer(INITIAL_CLI_STATE, {
-        type: "PENDING_SET",
-        pending,
-      });
-      expect(set.pending).toBe(pending);
-      const cleared = cliReducer(set, { type: "PENDING_CLEARED" });
-      expect(cleared.pending).toBeNull();
-    });
+  describe("GRAPH_MERGED", () => {
+    const putX: Command = {
+      verb: "put",
+      objective: "vertex",
+      key: "x",
+      value: "1",
+      ttlSeconds: 0,
+    };
+    const putY: Command = {
+      verb: "put",
+      objective: "vertex",
+      key: "y",
+      value: "1",
+      ttlSeconds: 0,
+    };
 
-    it("is identity when clearing an already-empty pending", () => {
-      const next = cliReducer(INITIAL_CLI_STATE, { type: "PENDING_CLEARED" });
-      expect(next).toBe(INITIAL_CLI_STATE);
-    });
-  });
-
-  describe("SKIP_CONFIRM_CHANGED", () => {
-    it("toggles the per-session flag", () => {
+    it("folds a put onto an empty canvas and records the source", () => {
       const next = cliReducer(INITIAL_CLI_STATE, {
-        type: "SKIP_CONFIRM_CHANGED",
-        value: true,
+        type: "GRAPH_MERGED",
+        source: "put vertex x 1",
+        merge: commandResultToGraphMerge(putX)!,
       });
-      expect(next.skipConfirm).toBe(true);
+      expect(next.latestGraph?.source).toBe("put vertex x 1");
+      expect(next.latestGraph?.view.nodes.map((n) => n.id)).toEqual(["x"]);
     });
 
-    it("is identity when the value is unchanged", () => {
-      const next = cliReducer(INITIAL_CLI_STATE, {
-        type: "SKIP_CONFIRM_CHANGED",
-        value: false,
+    it("merges onto the existing frame instead of replacing it", () => {
+      const first = cliReducer(INITIAL_CLI_STATE, {
+        type: "GRAPH_MERGED",
+        source: "put vertex x 1",
+        merge: commandResultToGraphMerge(putX)!,
       });
-      expect(next).toBe(INITIAL_CLI_STATE);
+      const second = cliReducer(first, {
+        type: "GRAPH_MERGED",
+        source: "put vertex y 1",
+        merge: commandResultToGraphMerge(putY)!,
+      });
+      expect(second.latestGraph?.view.nodes.map((n) => n.id).sort()).toEqual([
+        "x",
+        "y",
+      ]);
+      expect(second.latestGraph?.source).toBe("put vertex y 1");
     });
   });
 });

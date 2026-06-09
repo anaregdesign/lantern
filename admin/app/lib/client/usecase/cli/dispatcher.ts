@@ -183,19 +183,6 @@ export async function dispatch(input: DispatchInput): Promise<unknown> {
   }
 }
 
-/**
- * Returns true when the command would mutate server state. Used by
- * the React panel to gate destructive verbs behind a confirmation
- * chip (#411).
- */
-export function isDestructive(command: Command): boolean {
-  return (
-    command.verb === "delete" ||
-    command.verb === "put" ||
-    command.verb === "add"
-  );
-}
-
 // ----------------------------------------------------------------------------
 // Internals
 // ----------------------------------------------------------------------------

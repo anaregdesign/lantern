@@ -9,6 +9,19 @@
   overflow: hidden;
 }
 
+/* #516: when embedded in a height-constrained, overflow:hidden panel
+   (the /cli split view), fill the parent exactly instead of imposing the
+   standalone 70vh/min-height sizing — otherwise the fixed-height wrapper
+   overflows its container and clips the bottom-left hop-distance legend
+   on short viewports. */
+.fill {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  height: auto;
+  min-height: 0;
+}
+
 .busy {
   opacity: 0.65;
   transition: opacity 120ms ease-out;
@@ -175,4 +188,71 @@
   margin-left: auto;
   color: var(--colorNeutralForeground3, #707070);
   font-variant-numeric: tabular-nums;
+}
+
+/* #517: on-canvas label-visibility toggles. Top-right corner so they
+   don't collide with the bottom-left legend, the centred empty-state
+   overlay, or the pointer-tracked tooltip. The cluster ignores pointer
+   events; only the buttons capture them. */
+.labelControls {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 3;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-end;
+}
+
+.labelToggle {
+  pointer-events: auto;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: var(--borderRadiusCircular, 9999px);
+  border: 1px solid var(--colorNeutralStroke2, #e0e0e0);
+  background: var(--colorNeutralBackground1, #fff);
+  color: var(--colorNeutralForeground2, #424242);
+  font-family: var(--fontFamilyBase, system-ui, sans-serif);
+  font-size: var(--fontSizeBase200, 12px);
+  box-shadow: var(--shadow4, 0 1px 4px rgba(0, 0, 0, 0.08));
+}
+
+/* A leading dot conveys on/off state at a glance, redundant with the
+   active styling and the aria-pressed state exposed to assistive tech. */
+.labelToggle::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--colorNeutralForeground4, #bdbdbd);
+}
+
+.labelToggle[aria-pressed="true"] {
+  background: var(--colorBrandBackground, #0f6cbd);
+  border-color: var(--colorBrandBackground, #0f6cbd);
+  color: var(--colorNeutralForegroundOnBrand, #fff);
+}
+
+.labelToggle[aria-pressed="true"]::before {
+  background: var(--colorNeutralForegroundOnBrand, #fff);
+}
+
+.labelToggle:hover {
+  border-color: var(--colorNeutralStroke1, #d1d1d1);
+}
+
+.labelToggle[aria-pressed="true"]:hover {
+  background: var(--colorBrandBackgroundHover, #115ea3);
+  border-color: var(--colorBrandBackgroundHover, #115ea3);
+}
+
+.labelToggle:focus-visible {
+  outline: 2px solid var(--colorStrokeFocus2, #000);
+  outline-offset: 1px;
 }

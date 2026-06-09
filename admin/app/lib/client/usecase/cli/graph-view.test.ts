@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { commandResultToGraphView } from "./graph-view";
+import {
+  commandResultToGraphMerge,
+  commandResultToGraphView,
+  mergeGraphView,
+} from "./graph-view";
 import type { Command } from "~/lib/cli/types";
 import type {
   Edge,
@@ -251,5 +255,243 @@ describe("commandResultToGraphView — non-graph verbs", () => {
   it("returns null for exit", () => {
     const cmd: Command = { verb: "exit" };
     expect(commandResultToGraphView(cmd, null)).toBeNull();
+  });
+});
+
+describe("commandResultToGraphMerge", () => {
+  it("projects a put vertex into a single focus node carrying its value", () => {
+    const cmd: Command = {
+      verb: "put",
+      objective: "vertex",
+      key: "alice",
+      value: "wonderland",
+      ttlSeconds: 0,
+    };
+    const merge = commandResultToGraphMerge(cmd)!;
+    expect(merge.nodes).toHaveLength(1);
+    expect(merge.nodes[0].id).toBe("alice");
+    expect(merge.nodes[0].vertex.key).toBe("alice");
+    expect(merge.nodes[0].vertex.string).toBe("wonderland");
+    expect(typeof merge.nodes[0].vertex.expiration).toBe("string");
+    expect(merge.edges).toEqual([]);
+    expect(merge.additive).toBe(false);
+    expect(merge.focus).toBe("alice");
+  });
+
+  it("coerces a numeric put vertex value onto int64", () => {
+    const cmd: Command = {
+      verb: "put",
+      objective: "vertex",
+      key: "n",
+      value: "42",
+      ttlSeconds: 0,
+    };
+    const merge = commandResultToGraphMerge(cmd)!;
+    expect(merge.nodes[0].vertex.int64).toBe("42");
+  });
+
+  it("projects a put edge into two key-only endpoints plus the edge", () => {
+    const cmd: Command = {
+      verb: "put",
+      objective: "edge",
+      tail: "alice",
+      head: "bob",
+      weight: 2,
+      ttlSeconds: 0,
+    };
+    const merge = commandResultToGraphMerge(cmd)!;
+    expect(merge.nodes.map((n) => n.id).sort()).toEqual(["alice", "bob"]);
+    // endpoints are placeholders — identity only, no value fields.
+    expect(
+      merge.nodes.every(
+        (n) => Object.keys(n.vertex).filter((k) => k !== "key").length === 0,
+      ),
+    ).toBe(true);
+    expect(merge.edges).toHaveLength(1);
+    expect(merge.edges[0].id).toBe("alice→bob");
+    expect(merge.edges[0].weight).toBe(2);
+    expect(merge.edges[0].edge.weight).toBe(2);
+    expect(merge.additive).toBe(false);
+    expect(merge.focus).toBe("alice");
+  });
+
+  it("marks an add edge as additive", () => {
+    const cmd: Command = {
+      verb: "add",
+      objective: "edge",
+      tail: "alice",
+      head: "bob",
+      weight: 1,
+      ttlSeconds: 0,
+    };
+    const merge = commandResultToGraphMerge(cmd)!;
+    expect(merge.additive).toBe(true);
+    expect(merge.focus).toBe("alice");
+  });
+
+  it("returns null for verbs that carry no mergeable element", () => {
+    expect(
+      commandResultToGraphMerge({
+        verb: "delete",
+        objective: "vertex",
+        key: "x",
+      }),
+    ).toBeNull();
+    expect(
+      commandResultToGraphMerge({
+        verb: "delete",
+        objective: "edge",
+        tail: "a",
+        head: "b",
+      }),
+    ).toBeNull();
+    expect(commandResultToGraphMerge({ verb: "exit" })).toBeNull();
+    expect(
+      commandResultToGraphMerge({ verb: "get", objective: "vertex", key: "a" }),
+    ).toBeNull();
+  });
+});
+
+describe("mergeGraphView", () => {
+  /** A two-node illuminate frame (seed `a` → `b`, origin `a`). */
+  function illuminateBase() {
+    const cmd: Command = {
+      verb: "illuminate",
+      seed: "a",
+      step: 2,
+      k: 5,
+      algorithm: "none",
+      objective: "min",
+      weighting: "raw",
+    };
+    const response: IlluminateResponse = {
+      graph: {
+        vertices: [{ key: "a" }, { key: "b" }],
+        edges: [{ tail: "a", head: "b", weight: 1 }],
+      },
+    };
+    return commandResultToGraphView(cmd, response)!;
+  }
+
+  it("opens a fresh frame anchored on the put vertex when the canvas is empty", () => {
+    const merge = commandResultToGraphMerge({
+      verb: "put",
+      objective: "vertex",
+      key: "x",
+      value: "1",
+      ttlSeconds: 0,
+    })!;
+    const view = mergeGraphView(null, merge);
+    expect(view.nodes.map((n) => n.id)).toEqual(["x"]);
+    const x = view.nodes[0];
+    expect(x.isInitialSeed).toBe(true);
+    expect(x.isExpansionOrigin).toBe(true);
+    expect(x.hopDistance).toBe(0);
+    expect(view.expansionOrigins).toEqual(["x"]);
+    expect(view.latestExpansionOrigin).toBe("x");
+  });
+
+  it("opens a fresh frame anchored on the tail when the first command is a put edge", () => {
+    const merge = commandResultToGraphMerge({
+      verb: "put",
+      objective: "edge",
+      tail: "a",
+      head: "b",
+      weight: 2,
+      ttlSeconds: 0,
+    })!;
+    const view = mergeGraphView(null, merge);
+    expect(view.nodes.map((n) => n.id).sort()).toEqual(["a", "b"]);
+    expect(view.edges.map((e) => e.id)).toEqual(["a→b"]);
+    expect(view.nodes.find((n) => n.id === "a")!.isExpansionOrigin).toBe(true);
+    expect(view.nodes.find((n) => n.id === "a")!.hopDistance).toBe(0);
+    expect(view.nodes.find((n) => n.id === "b")!.hopDistance).toBe(1);
+    expect(view.expansionOrigins).toEqual(["a"]);
+  });
+
+  it("folds a new node onto an existing frame without disturbing its origins", () => {
+    const base = illuminateBase();
+    const merge = commandResultToGraphMerge({
+      verb: "put",
+      objective: "vertex",
+      key: "c",
+      value: "1",
+      ttlSeconds: 0,
+    })!;
+    const view = mergeGraphView(base, merge);
+    expect(view.nodes.map((n) => n.id).sort()).toEqual(["a", "b", "c"]);
+    // origins + seed survive the write.
+    expect(view.expansionOrigins).toEqual(["a"]);
+    expect(view.latestExpansionOrigin).toBe("a");
+    expect(view.nodes.find((n) => n.id === "a")!.isInitialSeed).toBe(true);
+    // the new node is NOT promoted to a seed/origin in a non-empty frame.
+    const c = view.nodes.find((n) => n.id === "c")!;
+    expect(c.isInitialSeed).toBe(false);
+    expect(c.isExpansionOrigin).toBe(false);
+    expect(c.hopDistance).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it("sums an additive edge's weight onto an existing edge", () => {
+    const base = illuminateBase();
+    const merge = commandResultToGraphMerge({
+      verb: "add",
+      objective: "edge",
+      tail: "a",
+      head: "b",
+      weight: 3,
+      ttlSeconds: 0,
+    })!;
+    const view = mergeGraphView(base, merge);
+    const edge = view.edges.find((e) => e.id === "a→b")!;
+    expect(edge.weight).toBe(4);
+    expect(edge.edge.weight).toBe(4);
+  });
+
+  it("replaces an existing edge's weight on a non-additive put", () => {
+    const base = illuminateBase();
+    const merge = commandResultToGraphMerge({
+      verb: "put",
+      objective: "edge",
+      tail: "a",
+      head: "b",
+      weight: 9,
+      ttlSeconds: 0,
+    })!;
+    const view = mergeGraphView(base, merge);
+    expect(view.edges.find((e) => e.id === "a→b")!.weight).toBe(9);
+  });
+
+  it("refreshes a node's value on put but keeps its role, and a later edge placeholder never clobbers it", () => {
+    const base = illuminateBase();
+    const enriched = mergeGraphView(
+      base,
+      commandResultToGraphMerge({
+        verb: "put",
+        objective: "vertex",
+        key: "a",
+        value: "rich",
+        ttlSeconds: 0,
+      })!,
+    );
+    const a1 = enriched.nodes.find((n) => n.id === "a")!;
+    expect(a1.vertex.string).toBe("rich");
+    expect(a1.isInitialSeed).toBe(true);
+
+    const withEdge = mergeGraphView(
+      enriched,
+      commandResultToGraphMerge({
+        verb: "put",
+        objective: "edge",
+        tail: "a",
+        head: "z",
+        weight: 1,
+        ttlSeconds: 0,
+      })!,
+    );
+    const a2 = withEdge.nodes.find((n) => n.id === "a")!;
+    // the key-only "a" placeholder from the edge must not wipe the value.
+    expect(a2.vertex.string).toBe("rich");
+    expect(a2.isInitialSeed).toBe(true);
+    expect(withEdge.nodes.find((n) => n.id === "z")).toBeDefined();
   });
 });

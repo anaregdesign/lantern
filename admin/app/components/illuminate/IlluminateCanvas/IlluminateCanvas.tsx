@@ -30,9 +30,10 @@ import {
 } from "~/lib/client/usecase/illuminate/force-layout";
 import { useIlluminateCanvas } from "~/lib/client/usecase/illuminate/use-illuminate-canvas";
 import { usePreferredTheme } from "~/lib/client/usecase/theme/use-preferred-theme";
-import { formatEdgeWeight } from "./edge-label";
+import { formatEdgeWeight, makeDrawEdgeLabel } from "./edge-label";
 import { HOP_FAR_THRESHOLD, colorForHop, describeHop } from "./hop-palette";
 import { makeDrawNodeHover } from "./hover-label";
+import { makeDrawNodeLabel } from "./node-label";
 import {
   EDGE_LABEL_SIZE,
   EDGE_LABEL_WEIGHT,
@@ -88,6 +89,15 @@ export interface IlluminateCanvasProps {
   onNodeInspect?: (key: string) => void;
   /** When true, the canvas dims to communicate a stale frame. */
   isBusy: boolean;
+  /**
+   * #516: fill the parent container (absolute `inset: 0`) instead of
+   * imposing the standalone `70vh`/`min-height` sizing. The `/cli` split
+   * view embeds the canvas in a height-constrained, `overflow: hidden`
+   * panel; without this the fixed-height wrapper overflows the panel and
+   * clips the bottom-left hop-distance legend on short viewports.
+   * `/illuminate` leaves it unset and keeps the `70vh` sizing.
+   */
+  fill?: boolean;
   /**
    * Imperative handle (#456). The expansion chip strip calls
    * `panToNode(originKey)` to scroll the camera to a previous click
@@ -165,6 +175,15 @@ const DEFAULT_NODE_SIZE = 7;
 const SEED_NODE_SIZE = 16;
 
 /**
+ * #514 camera re-frame duration (ms). After a click-to-expand or a fresh
+ * seed reshapes the rendered subgraph, the reconcile effect animates the
+ * camera back to its default framing over this window so the new result
+ * is centred and zoomed to fit. Long enough to read as a smooth glide,
+ * short enough not to lag the layout ease that runs alongside it.
+ */
+const CAMERA_FIT_MS = 500;
+
+/**
  * Hosts a `graphology` graph and a `sigma` renderer. The component owns
  * the lifecycle of the renderer (mount on first paint, destroy on unmount)
  * and reconciles the graph in-place when the view model changes — full
@@ -180,6 +199,7 @@ export function IlluminateCanvas({
   onNodeClick,
   onNodeInspect,
   isBusy,
+  fill = false,
   ref,
 }: IlluminateCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -260,6 +280,15 @@ export function IlluminateCanvas({
    * inspects.
    */
   const infoIconPointerDownRef = useRef<{ x: number; y: number } | null>(null);
+  /**
+   * #517: label-visibility toggles. Both default on. These drive sigma's
+   * `renderLabels` / `renderEdgeLabels` settings, which gate ALL node /
+   * edge labels regardless of any per-element `forceLabel`, so flipping
+   * them is the clean way to hide one label class without touching the
+   * graphology label attributes (which the test bridge still reads).
+   */
+  const [showNodeLabels, setShowNodeLabels] = useState(true);
+  const [showEdgeLabels, setShowEdgeLabels] = useState(true);
   const [palette, setPalette] = useState<SigmaPalette>(FALLBACK_PALETTE);
   // The mount effect runs ONCE, so any palette swatch read inside the
   // hover-focus reducer (#458) needs a ref so it tracks the latest
@@ -278,6 +307,23 @@ export function IlluminateCanvas({
     if (!containerRef.current) return;
     setPalette(resolvePalette(containerRef.current));
   }, [theme]);
+
+  // #517: keep sigma's label-visibility settings in lockstep with the
+  // toggles. The canvas mounts once and survives data updates, so these
+  // small effects are the single writers of these two settings (the
+  // palette effect never touches them). `refresh()` repaints immediately.
+  useEffect(() => {
+    const sigma = sigmaRef.current;
+    if (!sigma) return;
+    sigma.setSetting("renderLabels", showNodeLabels);
+    sigma.refresh();
+  }, [showNodeLabels]);
+  useEffect(() => {
+    const sigma = sigmaRef.current;
+    if (!sigma) return;
+    sigma.setSetting("renderEdgeLabels", showEdgeLabels);
+    sigma.refresh();
+  }, [showEdgeLabels]);
 
   const pickFill = useCallback(
     // #460/#500: every node (including the pinned seed) draws from the
@@ -429,7 +475,11 @@ export function IlluminateCanvas({
       renderLabels: true,
       labelDensity: 0.5,
       labelGridCellSize: 80,
-      labelRenderedSizeThreshold: 8,
+      // #514: every node carries `forceLabel: true` (set in the reconcile
+      // loop) so the key is always drawn; drop the size threshold to 0 so
+      // the default-sized discs (size 7 < the old 8px gate) are never
+      // culled even on the rare frame before `forceLabel` is applied.
+      labelRenderedSizeThreshold: 0,
       defaultEdgeColor: FALLBACK_PALETTE.edge,
       defaultNodeColor: FALLBACK_PALETTE.baseNode,
       // === #485 directed-edge arrowheads ================================
@@ -450,6 +500,16 @@ export function IlluminateCanvas({
       labelSize: LABEL_SIZE,
       labelWeight: LABEL_WEIGHT,
       labelFont: FALLBACK_PALETTE.labelFont,
+      // === #514 always-on, readable node-key labels =====================
+      // Sigma's built-in `drawDiscNodeLabel` paints the key as bare text
+      // with no background, so a key over a same-luminance disc or a busy
+      // patch of canvas was hard to read. Swap in a palette-skinned
+      // renderer that draws an opaque chip behind every key (same contrast
+      // story as the hover chip). Combined with per-node `forceLabel` in
+      // the reconcile loop, every vertex key is now always visible and
+      // legible. The palette effect re-applies this on a theme flip.
+      defaultDrawNodeLabel: makeDrawNodeLabel(FALLBACK_PALETTE),
+      // === end #514 =====================================================
       // === #500 on-edge weight labels ===================================
       // Render each edge's accumulated weight as a label along the edge
       // body. The per-edge text is stamped in the reconcile loop
@@ -461,6 +521,11 @@ export function IlluminateCanvas({
       edgeLabelSize: EDGE_LABEL_SIZE,
       edgeLabelWeight: EDGE_LABEL_WEIGHT,
       edgeLabelFont: FALLBACK_PALETTE.labelFont,
+      // #514: skin the weight label the same way as the node key — an
+      // opaque chip behind the text, drawn for every edge (sigma's default
+      // skips short edges), so the weight never collides with the edge
+      // line or the discs underneath. Re-applied on a theme flip below.
+      defaultDrawEdgeLabel: makeDrawEdgeLabel(FALLBACK_PALETTE),
       // === end #500 =====================================================
       // === #484 theme-aware hover label =================================
       // Sigma's default `drawDiscNodeHover` paints a hard-coded near-white
@@ -954,6 +1019,12 @@ export function IlluminateCanvas({
          * auto-run animation to converge.
          */
         layoutRunning: () => boolean;
+        /**
+         * #517 test bridge: the live label-visibility settings the two
+         * on-canvas toggles drive. Reads `renderer.getSetting(...)` so it
+         * reflects the current sigma state, not the mount-time closure.
+         */
+        getLabelVisibility: () => { vertex: boolean; edge: boolean };
       };
     };
     win.__illuminateCanvas = {
@@ -1091,6 +1162,10 @@ export function IlluminateCanvas({
       stepLayout: (ticks: number) => stepLayout(ticks),
       settleLayout: (maxTicks?: number) => settleLayout(maxTicks),
       layoutRunning: () => layoutRef.current?.raf != null,
+      getLabelVisibility: () => ({
+        vertex: renderer.getSetting("renderLabels"),
+        edge: renderer.getSetting("renderEdgeLabels"),
+      }),
     };
 
     return () => {
@@ -1144,6 +1219,11 @@ export function IlluminateCanvas({
     // #484: rebuild the hover renderer against the new palette so the
     // hovered-label chip follows the theme alongside the label text.
     sigma.setSetting("defaultDrawNodeHover", makeDrawNodeHover(palette));
+    // #514: rebuild the always-on node-key and edge-weight renderers
+    // against the new palette so their chips follow the theme too,
+    // mirroring the hover renderer above.
+    sigma.setSetting("defaultDrawNodeLabel", makeDrawNodeLabel(palette));
+    sigma.setSetting("defaultDrawEdgeLabel", makeDrawEdgeLabel(palette));
     for (const id of graph.nodes()) {
       const attrs = graph.getNodeAttributes(id) as {
         hopDistance?: number;
@@ -1303,6 +1383,9 @@ export function IlluminateCanvas({
       if (graph.hasNode(node.id)) {
         graph.mergeNodeAttributes(node.id, {
           label: node.label,
+          // #514: force the key label so it is never culled by label
+          // density/grid selection — every vertex key is always visible.
+          forceLabel: true,
           size,
           color,
           detail,
@@ -1329,6 +1412,8 @@ export function IlluminateCanvas({
         });
         graph.addNode(node.id, {
           label: node.label,
+          // #514: force the key label (see the merge branch above).
+          forceLabel: true,
           x,
           y,
           size,
@@ -1357,6 +1442,8 @@ export function IlluminateCanvas({
           size: 1 + Math.min(4, edge.weight),
           // #500: render the accumulated weight on the edge itself.
           label: formatEdgeWeight(edge.weight),
+          // #514: force the weight label so it is always drawn.
+          forceLabel: true,
           detail: `weight = ${edge.weight}`,
           expiration,
         });
@@ -1366,6 +1453,8 @@ export function IlluminateCanvas({
           color: palette.edge,
           // #500: render the accumulated weight on the edge itself.
           label: formatEdgeWeight(edge.weight),
+          // #514: force the weight label (see the merge branch above).
+          forceLabel: true,
           detail: `weight = ${edge.weight}`,
           expiration,
         });
@@ -1433,6 +1522,25 @@ export function IlluminateCanvas({
     }
     // === end #483 ======================================================
 
+    // === #514 re-frame the camera on the latest subgraph ===============
+    // After a structural change (click-to-expand or a fresh seed) glide
+    // the camera back to its default framing so the new result is centred
+    // and zoomed to fit. `animatedReset` returns the camera to its default
+    // (x:0.5, y:0.5, ratio:1); with sigma's autoRescale + autoCenter that
+    // frames the whole rendered graph. Gated on the structural regimes +
+    // a non-empty result so a TTL tick, theme flip, or hover ("static",
+    // or an empty Clear) never yanks the viewport. For `cold` the layout
+    // has already settled synchronously; for `incremental` autoRescale
+    // re-normalises every eased frame, so resetting to the default still
+    // frames the whole graph as it relaxes.
+    if (
+      (regime === "cold" || regime === "incremental") &&
+      forceNodes.length > 0
+    ) {
+      void sigma?.getCamera().animatedReset({ duration: CAMERA_FIT_MS });
+    }
+    // === end #514 ======================================================
+
     previousNodeIdsRef.current = nextNodeIds;
     previousEdgeIdsRef.current = nextEdgeIds;
   }, [
@@ -1451,8 +1559,11 @@ export function IlluminateCanvas({
 
   const empty = nodes.length === 0;
   const wrapperClass = useMemo(
-    () => [styles.wrapper, isBusy ? styles.busy : ""].filter(Boolean).join(" "),
-    [isBusy],
+    () =>
+      [styles.wrapper, fill ? styles.fill : "", isBusy ? styles.busy : ""]
+        .filter(Boolean)
+        .join(" "),
+    [fill, isBusy],
   );
 
   // #460: hop-distance legend buckets. Recomputed whenever the
@@ -1532,6 +1643,33 @@ export function IlluminateCanvas({
               <span className={styles.legendCount}>{b.count}</span>
             </div>
           ))}
+        </div>
+      ) : null}
+      {!empty ? (
+        <div
+          className={styles.labelControls}
+          data-testid="illuminate-label-controls"
+        >
+          <button
+            type="button"
+            className={styles.labelToggle}
+            data-testid="illuminate-toggle-node-labels"
+            aria-pressed={showNodeLabels}
+            title={showNodeLabels ? "Hide vertex labels" : "Show vertex labels"}
+            onClick={() => setShowNodeLabels((v) => !v)}
+          >
+            vertex labels
+          </button>
+          <button
+            type="button"
+            className={styles.labelToggle}
+            data-testid="illuminate-toggle-edge-labels"
+            aria-pressed={showEdgeLabels}
+            title={showEdgeLabels ? "Hide edge labels" : "Show edge labels"}
+            onClick={() => setShowEdgeLabels((v) => !v)}
+          >
+            edge labels
+          </button>
         </div>
       ) : null}
       {hover ? (

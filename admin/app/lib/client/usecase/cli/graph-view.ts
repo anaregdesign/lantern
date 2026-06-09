@@ -32,6 +32,7 @@ import type {
   ScanVerticesResponse,
   Vertex,
 } from "~/lib/client/infrastructure/api/types";
+import { coerceValue, ttlSecondsToExpiration } from "./dispatcher";
 
 /**
  * Project the dispatcher result for `command` into a `GraphView`.
@@ -320,4 +321,218 @@ function scanEdgesView(
   const matchedSeed =
     nodeMap.has(tailPrefix) && tailPrefix !== "" ? tailPrefix : null;
   return wrapView(Array.from(nodeMap.values()), edges, matchedSeed);
+}
+
+/**
+ * The graph elements a mutating verb (`put`/`add`) contributes to the
+ * canvas (#518). Unlike {@link commandResultToGraphView} — which REPLACES
+ * the frame for read verbs — a merge is folded additively onto the live
+ * frame (see {@link mergeGraphView}) so a `put`/`add` shows up immediately
+ * without discarding the operator's current exploration context.
+ */
+export interface GraphMerge {
+  /** Nodes to upsert. A node carrying a value replaces an existing one;
+   *  a key-only edge-endpoint placeholder never clobbers a richer node. */
+  nodes: GraphNode[];
+  /** Edges to upsert. */
+  edges: GraphEdge[];
+  /** True for `add edge` (the server sums weights additively); false for
+   *  `put`, which overwrites. Decides merge-vs-replace for an existing
+   *  edge of the same id. */
+  additive: boolean;
+  /** The key the mutation is "about" (put-vertex key / edge tail). Used as
+   *  the hop origin when the canvas is otherwise empty, so a put into a
+   *  cold canvas opens focused on the new element. */
+  focus: string | null;
+}
+
+/**
+ * Project a mutating `put`/`add` command into the {@link GraphMerge} the
+ * reducer folds onto the live canvas frame (#518). Returns `null` for
+ * every verb that already produces a full {@link GraphView} (via
+ * {@link commandResultToGraphView}) or carries nothing to show
+ * (`delete`, `exit`) — those keep their existing behaviour.
+ *
+ * Pure: derives entirely from the parsed command (the dispatcher's write
+ * responses carry no echo we need). Reuses the dispatcher's `coerceValue`
+ * / `ttlSecondsToExpiration` so the rendered vertex matches exactly what
+ * the dispatcher sent over the wire.
+ */
+export function commandResultToGraphMerge(command: Command): GraphMerge | null {
+  if (command.verb === "put" && command.objective === "vertex") {
+    const vertex: Vertex = {
+      key: command.key,
+      ...coerceValue(command.value),
+      expiration: ttlSecondsToExpiration(command.ttlSeconds),
+    };
+    return {
+      nodes: [mergeNode(command.key, vertex)],
+      edges: [],
+      additive: false,
+      focus: command.key,
+    };
+  }
+  if (
+    (command.verb === "put" || command.verb === "add") &&
+    command.objective === "edge"
+  ) {
+    const edge: Edge = {
+      tail: command.tail,
+      head: command.head,
+      weight: command.weight,
+      expiration: ttlSecondsToExpiration(command.ttlSeconds),
+    };
+    return {
+      // Key-only endpoint placeholders: if either vertex already lives on
+      // the canvas (with a value), the merge keeps the richer copy.
+      nodes: [
+        mergeNode(command.tail, { key: command.tail }),
+        mergeNode(command.head, { key: command.head }),
+      ],
+      edges: [
+        {
+          id: `${command.tail}→${command.head}`,
+          source: command.tail,
+          target: command.head,
+          weight: command.weight,
+          edge,
+        },
+      ],
+      additive: command.verb === "add",
+      focus: command.tail,
+    };
+  }
+  return null;
+}
+
+/** Build a neutral merge node. Hop distance / origin flags are finalised
+ *  by {@link mergeGraphView} once the full post-merge node + edge set is
+ *  known. */
+function mergeNode(key: string, vertex: Vertex): GraphNode {
+  return {
+    id: key,
+    label: key,
+    vertex,
+    isInitialSeed: false,
+    isExpansionOrigin: false,
+    importance: 0.5,
+    firstSeenExpansion: 0,
+    hopDistance: Number.POSITIVE_INFINITY,
+  };
+}
+
+/**
+ * Fold a {@link GraphMerge} onto the current canvas frame (#518),
+ * returning a fresh {@link GraphView}. Additive by construction so the
+ * operator's exploration context survives a write:
+ *
+ *  - **nodes** upsert — an incoming node refreshes an existing one's
+ *    payload only when it carries a value ({@link vertexHasValue}), while
+ *    preserving that node's role (seed / importance) in the current frame;
+ *    a bare edge-endpoint placeholder never overwrites a vertex already on
+ *    the canvas.
+ *  - **edges** upsert — for `add edge` an existing edge's weight is summed
+ *    (mirroring the server's additive semantics); `put edge` replaces.
+ *  - **hop distances** are recomputed from the surviving origins (or the
+ *    merge `focus` when the canvas was empty) so ramp colours stay
+ *    consistent.
+ *
+ * When `current` is `null` (cold canvas) the merge becomes the whole
+ * frame, anchored on the new element.
+ */
+export function mergeGraphView(
+  current: GraphView | null,
+  merge: GraphMerge,
+): GraphView {
+  const base = current ?? emptyView();
+  const wasEmpty = base.nodes.length === 0;
+
+  const nodeById = new Map(base.nodes.map((n) => [n.id, n]));
+  for (const incoming of merge.nodes) {
+    const existing = nodeById.get(incoming.id);
+    if (!existing) {
+      nodeById.set(incoming.id, { ...incoming });
+    } else if (vertexHasValue(incoming.vertex)) {
+      // Refresh the payload (value + expiration) but keep the node's
+      // existing role/importance in the current frame — a put must not
+      // demote the seed the operator is exploring around.
+      nodeById.set(incoming.id, { ...existing, vertex: incoming.vertex });
+    }
+    // else: key-only placeholder for a node already present → keep it.
+  }
+
+  const edgeById = new Map(base.edges.map((e) => [e.id, e]));
+  for (const incoming of merge.edges) {
+    const existing = edgeById.get(incoming.id);
+    if (existing && merge.additive) {
+      const weight = existing.weight + incoming.weight;
+      edgeById.set(incoming.id, {
+        ...incoming,
+        weight,
+        edge: { ...incoming.edge, weight },
+      });
+    } else {
+      edgeById.set(incoming.id, incoming);
+    }
+  }
+
+  const nodes = Array.from(nodeById.values());
+  const edges = Array.from(edgeById.values());
+
+  // Keep the established origins when the canvas already had a frame;
+  // otherwise anchor hop colouring on the merge focus.
+  const origins =
+    base.expansionOrigins.length > 0
+      ? base.expansionOrigins
+      : merge.focus !== null && merge.focus !== ""
+        ? [merge.focus]
+        : [];
+  const knownKeys = new Set(nodes.map((n) => n.id));
+  const hopByKey = computeHopDistances(knownKeys, edges, origins);
+  const originSet = new Set(origins);
+  const rehopped = nodes.map((n) => ({
+    ...n,
+    hopDistance: hopByKey.get(n.id) ?? Number.POSITIVE_INFINITY,
+    // Only promote a node to origin/seed when the canvas started empty —
+    // a put into an existing frame must not steal the seed halo from the
+    // node the operator is already exploring around.
+    isExpansionOrigin: n.isExpansionOrigin || (wasEmpty && originSet.has(n.id)),
+    isInitialSeed: n.isInitialSeed || (wasEmpty && originSet.has(n.id)),
+  }));
+
+  return {
+    nodes: rehopped,
+    edges,
+    latestExpansionOrigin: wasEmpty
+      ? (merge.focus ?? base.latestExpansionOrigin)
+      : base.latestExpansionOrigin,
+    expansionOrigins: origins,
+    overSoftCap: base.overSoftCap,
+    latestResultVertexKeys: new Set<string>(),
+    latestResultEdgeIds: new Set<string>(),
+  };
+}
+
+/** Empty additive-model frame — the base a merge folds onto when the
+ *  canvas has no prior view. */
+function emptyView(): GraphView {
+  return {
+    nodes: [],
+    edges: [],
+    latestExpansionOrigin: null,
+    expansionOrigins: [],
+    overSoftCap: false,
+    latestResultVertexKeys: new Set<string>(),
+    latestResultEdgeIds: new Set<string>(),
+  };
+}
+
+/** True when a vertex carries any value field beyond its identity
+ *  (`key`) and lifetime (`expiration`). Field-name-agnostic so it
+ *  survives additions to the value oneof. */
+function vertexHasValue(vertex: Vertex): boolean {
+  for (const k of Object.keys(vertex)) {
+    if (k !== "key" && k !== "expiration") return true;
+  }
+  return false;
 }

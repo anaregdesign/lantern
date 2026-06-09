@@ -55,14 +55,16 @@ test.describe("/cli", () => {
     await expect(err.last()).toContainText("usage:");
   });
 
-  test("destructive verb shows the confirmation chip", async ({ page }) => {
+  test("destructive verb runs immediately with no confirmation chip", async ({
+    page,
+  }) => {
     await page.goto("/cli");
     const input = page.getByTestId("cli-input");
     await input.fill("delete vertex cli:never-existed");
     await input.press("Enter");
-    await expect(page.getByTestId("cli-confirm")).toBeVisible();
-    await page.getByTestId("cli-confirm-cancel").click();
-    await expect(page.getByTestId("cli-confirm")).toBeHidden();
+    // No confirmation chip — the verb dispatches straight through (#521).
+    await expect(page.getByTestId("cli-confirm")).toHaveCount(0);
+    await expect(page.getByTestId("cli-entry-ok").last()).toBeVisible();
   });
 
   // #439 — graph-producing verbs render the IlluminateCanvas above
@@ -106,10 +108,35 @@ test.describe("/cli", () => {
     );
   });
 
+  // #518 — a mutating verb (put/add) folds the new element onto the
+  // canvas so the operator sees what they just wrote, instead of the
+  // canvas staying blank. The verb dispatches straight through with no
+  // confirmation chip (#521). An explicit TTL keeps the expiration inside
+  // the server's tombstone window (24h in the e2e harness); the grammar
+  // is `put vertex <key> <value> [ttl_seconds]`.
+  test("put vertex adds the new node to the canvas (#518)", async ({
+    page,
+  }) => {
+    await page.goto("/cli");
+    // Canvas starts hidden — no graph rendered yet.
+    await expect(page.getByTestId("cli-canvas-panel")).toHaveCount(0);
+    const input = page.getByTestId("cli-input");
+    await input.fill("put vertex cli:gamma fresh 3600");
+    await input.press("Enter");
+    // Destructive verb dispatches straight through — no confirm chip (#521).
+    await expect(page.getByTestId("cli-entry-ok").last()).toBeVisible();
+    // The canvas opens with the put as its source label and the node
+    // now lives on it.
+    await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
+    await expect(page.getByTestId("cli-canvas-panel")).toContainText(
+      "put vertex cli:gamma fresh 3600",
+    );
+  });
+
   // #433 — Ctrl+L is the editor-conventional clear-screen binding and
   // the only way to clear the scrollback now that the Clear button has
   // been removed (#512). It empties the scrollback in place, leaving the
-  // banner, while gateway override, skipConfirm, and history survive.
+  // banner, while gateway override and history survive.
   test("Ctrl+L clears the scrollback but keeps history", async ({ page }) => {
     await page.goto("/cli");
     const input = page.getByTestId("cli-input");
@@ -418,5 +445,63 @@ test.describe("/cli", () => {
     await expect(page.getByTestId("cli-axis-preview")).toHaveText(
       "illuminate <key> 4 12 algorithm=mst",
     );
+  });
+
+  // #519 — Tab completion must keep the caret in the prompt. Fluent's
+  // focus manager (Tabster) moves focus to an invisible boundary
+  // sentinel on Tab from a window/document capture-phase handler, so the
+  // component restores focus + caret on the next frame. Without the fix
+  // the operator is ejected from the input after every completion and has
+  // to click back in to keep typing.
+  test("Tab completion keeps focus in the prompt (#519)", async ({ page }) => {
+    await page.goto("/cli");
+    const input = page.getByTestId("cli-input");
+    // Single-candidate completion: `illumi` → `illuminate `.
+    await input.click();
+    await input.fill("illumi");
+    await input.press("Tab");
+    await expect(input).toHaveValue("illuminate ");
+    await expect(input).toBeFocused();
+    // Caret sits at the end of the completed token, ready for the key.
+    expect(
+      await input.evaluate((el: HTMLInputElement) => el.selectionStart),
+    ).toBe("illuminate ".length);
+
+    // Ambiguous completion keeps focus while surfacing the hint row.
+    await input.fill("get ");
+    await input.press("Tab");
+    await expect(page.getByTestId("cli-hints")).toBeVisible();
+    await expect(input).toBeFocused();
+  });
+
+  // #520 — Enter submits a command, which disables the prompt while the
+  // dispatch is in flight. The browser blurs a disabled element, so the
+  // component must restore focus when the input re-enables; otherwise the
+  // operator is ejected to <body> after every command and has to click
+  // back in. Slow-route the RPC so the disabled→blurred window is
+  // observable, then assert focus returns to the prompt once it settles.
+  test("prompt regains focus after an Enter-submitted command settles (#520)", async ({
+    page,
+  }) => {
+    await page.route("**/graph.v1.LanternService/**", async (route) => {
+      await new Promise((r) => setTimeout(r, 250));
+      await route.continue();
+    });
+    await page.goto("/cli");
+    const input = page.getByTestId("cli-input");
+    await input.click();
+    await input.fill("get vertex cli:alpha");
+    await input.press("Enter");
+    // While in flight the prompt is disabled and the browser has moved
+    // focus off it (to <body>) — this is the regression's trigger.
+    await expect(input).toBeDisabled();
+    await expect(input).not.toBeFocused();
+    // Once the command settles the component restores focus to the prompt
+    // so the next command can be typed without a click.
+    await expect(page.getByTestId("cli-entry-ok").last()).toContainText(
+      "first",
+    );
+    await expect(input).toBeEnabled();
+    await expect(input).toBeFocused();
   });
 });
