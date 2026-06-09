@@ -76,14 +76,11 @@ export function CliPage() {
         // then either apply the sole candidate, advance to the longest
         // common prefix, or surface the ambiguous set as a hint row.
         e.preventDefault();
+        e.stopPropagation();
         const { candidates, start } = completeCommandLine(
           cli.input,
           cli.knownKeys,
         );
-        if (candidates.length === 0) {
-          setHints([]);
-          return;
-        }
         if (candidates.length === 1) {
           const value = candidates[0];
           // Option keys (`algorithm=`) keep the cursor on the value, so
@@ -91,14 +88,31 @@ export function CliPage() {
           const suffix = value.endsWith("=") ? "" : " ";
           cli.setInput(cli.input.slice(0, start) + value + suffix);
           setHints([]);
-          return;
+        } else if (candidates.length > 1) {
+          const lcp = longestCommonPrefix(candidates);
+          const active = cli.input.slice(start);
+          if (lcp.length > active.length) {
+            cli.setInput(cli.input.slice(0, start) + lcp);
+          }
+          setHints(candidates);
+        } else {
+          setHints([]);
         }
-        const lcp = longestCommonPrefix(candidates);
-        const active = cli.input.slice(start);
-        if (lcp.length > active.length) {
-          cli.setInput(cli.input.slice(0, start) + lcp);
-        }
-        setHints(candidates);
+        // Fluent's focus manager (Tabster) installs invisible
+        // `<i tabindex="0" data-tabster-dummy>` sentinels at the
+        // FluentProvider boundary and moves focus to one of them on Tab
+        // from a window/document *capture-phase* handler — which runs
+        // before this bubble-phase onKeyDown, so e.preventDefault() alone
+        // cannot keep the caret in the prompt (#519). Restore focus and
+        // the caret to the end of the input on the next frame, after
+        // Tabster has settled.
+        requestAnimationFrame(() => {
+          const node = inputRef.current;
+          if (!node) return;
+          node.focus();
+          const end = node.value.length;
+          node.setSelectionRange(end, end);
+        });
         return;
       }
       // Any other key dismisses a stale completion hint.

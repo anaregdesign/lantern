@@ -446,4 +446,31 @@ test.describe("/cli", () => {
       "illuminate <key> 4 12 algorithm=mst",
     );
   });
+
+  // #519 — Tab completion must keep the caret in the prompt. Fluent's
+  // focus manager (Tabster) moves focus to an invisible boundary
+  // sentinel on Tab from a window/document capture-phase handler, so the
+  // component restores focus + caret on the next frame. Without the fix
+  // the operator is ejected from the input after every completion and has
+  // to click back in to keep typing.
+  test("Tab completion keeps focus in the prompt (#519)", async ({ page }) => {
+    await page.goto("/cli");
+    const input = page.getByTestId("cli-input");
+    // Single-candidate completion: `illumi` → `illuminate `.
+    await input.click();
+    await input.fill("illumi");
+    await input.press("Tab");
+    await expect(input).toHaveValue("illuminate ");
+    await expect(input).toBeFocused();
+    // Caret sits at the end of the completed token, ready for the key.
+    expect(
+      await input.evaluate((el: HTMLInputElement) => el.selectionStart),
+    ).toBe("illuminate ".length);
+
+    // Ambiguous completion keeps focus while surfacing the hint row.
+    await input.fill("get ");
+    await input.press("Tab");
+    await expect(page.getByTestId("cli-hints")).toBeVisible();
+    await expect(input).toBeFocused();
+  });
 });
