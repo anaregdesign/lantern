@@ -19,6 +19,10 @@ import {
   type GraphNode,
   type HopBucketKey,
 } from "~/lib/client/usecase/illuminate/selectors";
+import {
+  decideLayoutRegime,
+  diffRenderSets,
+} from "~/lib/client/usecase/illuminate/reconcile";
 import { usePreferredTheme } from "~/lib/client/usecase/theme/use-preferred-theme";
 import {
   FORCE_ALPHA,
@@ -1420,30 +1424,17 @@ export function IlluminateCanvas({
 
     // Per-reconcile diff used to choose the layout regime below (#483).
     // We compute it BEFORE mutating the graph so the counts reflect the
-    // structural delta, not the post-merge state.
-    const previousNodeIds = previousNodeIdsRef.current;
-    let addedCount = 0;
-    let droppedCount = 0;
-    for (const id of nextNodeIds) {
-      if (!previousNodeIds.has(id)) addedCount += 1;
-    }
-    for (const id of previousNodeIds) {
-      if (!nextNodeIds.has(id)) droppedCount += 1;
-    }
-    // #500: an expansion can add/remove EDGES among nodes that are all
-    // already present (no node delta). Detect that so the whole render
-    // set still reheats and existing nodes move on every structural
-    // expansion, not only when the node set changes.
-    const previousEdgeIds = previousEdgeIdsRef.current;
-    let edgeSetChanged = previousEdgeIds.size !== nextEdgeIds.size;
-    if (!edgeSetChanged) {
-      for (const id of nextEdgeIds) {
-        if (!previousEdgeIds.has(id)) {
-          edgeSetChanged = true;
-          break;
-        }
-      }
-    }
+    // structural delta, not the post-merge state. The add/drop + edge-set
+    // arithmetic is pure, so it lives in the use-case layer (#495 batch 3)
+    // where it is unit-tested in isolation; #500's edge-only-change rule
+    // (an expansion that adds/removes EDGES among already-present nodes
+    // still reheats the whole render set) is folded into `edgeSetChanged`.
+    const { addedCount, droppedCount, edgeSetChanged } = diffRenderSets(
+      previousNodeIdsRef.current,
+      nextNodeIds,
+      previousEdgeIdsRef.current,
+      nextEdgeIds,
+    );
 
     // Drop edges first to avoid orphan references when we drop nodes.
     for (const edgeId of graph.edges()) {
@@ -1589,18 +1580,20 @@ export function IlluminateCanvas({
     // refreshes ONCE at t=0 (survivors render at their EXACT prior
     // position — no snap) and then eases on rAF. A pure attribute or
     // weight change just refreshes and leaves any running animation
-    // alone.
-    const survivorCount = nextNodeIds.size - addedCount;
-    const isColdStart = nextNodeIds.size > 0 && survivorCount === 0;
-    const isIncremental =
-      !isColdStart &&
-      forceNodes.length > 0 &&
-      (addedCount > 0 || droppedCount > 0 || edgeSetChanged);
-
-    if (isColdStart && forceNodes.length > 0) {
+    // alone. The decision is pure (#495 batch 3): `decideLayoutRegime`
+    // owns the cold/incremental/static branch; the component maps the
+    // chosen regime to the heat constant + the imperative sim calls.
+    const regime = decideLayoutRegime({
+      nextNodeCount: nextNodeIds.size,
+      forceNodeCount: forceNodes.length,
+      addedCount,
+      droppedCount,
+      edgeSetChanged,
+    });
+    if (regime === "cold") {
       beginLayout(forceNodes, forceLinks, FORCE_ALPHA_COLD);
       settleLayout();
-    } else if (isIncremental) {
+    } else if (regime === "incremental") {
       beginLayout(forceNodes, forceLinks, FORCE_ALPHA);
       // Paint survivors at their exact prior position before the first
       // tick so the click never snaps; the animation then eases on rAF.
