@@ -147,7 +147,7 @@ jobs:
         run: ./testbed/bench/release.sh --out bench-report.md
       - name: Upload bench report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bench-report
           path: bench-report.md
@@ -177,7 +177,7 @@ jobs:
           version: '~> v2'
           args: release --clean
       - name: Upload CLI artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cli-binaries
           path: |
