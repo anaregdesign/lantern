@@ -14,6 +14,30 @@ disk-backed graph database. It is the small, hot, online piece you put in front
 of those systems so request-path code can ask *"who is this user related to
 right now, and how strongly?"* in a single millisecond-scale RPC.
 
+**In one glance:**
+
+- **Time-decaying by design** — every vertex *and* edge carries its own TTL,
+  so the working set forgets stale data with no batch job.
+  [Why →](#why-lantern-is-different)
+- **Additive, decaying edge weights** — each event appends a contribution; the
+  live weight is the sum of what hasn't expired yet.
+  [Why →](#why-lantern-is-different)
+- **Online graph algorithms in one RPC** — `Illuminate` walks the live graph
+  from a seed and returns an MST / SPT subgraph (min/max, raw or TF-IDF)
+  already shaped for your use case.
+  [Algorithms →](#3-built-in-online-graph-algorithms-over-the-live-snapshot)
+- **Decaying memory for LLM agents** — `lantern-mcp` exposes the store over the
+  Model Context Protocol so Claude / VS Code / Cursor remember and forget on a
+  TTL ladder. [MCP →](#use-as-an-mcp-server)
+- **Browser console** — a React Router + Sigma.js admin SPA to browse,
+  `Illuminate`, and run ops against a live cluster. [Admin →](admin/)
+- **Leaderless HA, no external storage** — every replica holds the full graph;
+  writes commit locally and fan out under an HLC clock (last-writer-wins).
+  [Replication RFC →](docs/replication.md)
+- **Polyglot, one wire** — Go and Node / TypeScript SDKs, a scriptable
+  CLI + REPL, and Connect / gRPC / gRPC-Web multiplexed on a single `:6380`
+  socket. [Quick start →](#quick-start)
+
 ---
 
 ## Why Lantern is different
@@ -237,27 +261,48 @@ the full values reference and
 [`docs/replication.md` §9.1](docs/replication.md#91-peer-discovery-190)
 for the discovery semantics.
 
-### Run with Docker Compose (HA mode)
+### Run with Docker Compose + open the Admin UI
 
-A 3-replica HA topology for local experiments lives in
-[`deploy/compose/`](deploy/compose/):
+The fastest way to get a running cluster **and** a browser console in front of
+it is the Compose stack in [`deploy/compose/`](deploy/compose/). One `up`
+brings up a 3-replica HA cluster, the [`lantern-admin`](admin/) SPA, and
+Prometheus — no local build required:
 
 ```shell
 cd deploy/compose
-docker compose up -d
+# Pull published images for the server and the Admin SPA, then start the stack.
+LANTERN_IMAGE=ghcr.io/anaregdesign/lantern:latest docker compose up -d
 ```
 
-The canonical compose declares three explicit `lantern-{0,1,2}` services
-with pinned host ports (`6380`, `6381`, `6382`) since
-[#435](https://github.com/anaregdesign/lantern/issues/435), so the admin
-SPA's default gateway (`http://localhost:6380`) and any direct curls
-land on a stable replica across `up`/`down` cycles. All three join the
-same `lantern` DNS alias, so peer discovery and Compose-side round-robin
-still work unchanged. Prometheus on `:9091` scrapes every replica via
-DNS SD. See [`deploy/compose/README.md`](deploy/compose/README.md) for
-the full port table and client LB options, and the
-[Helm chart](deploy/helm/lantern/) when you need more than three
-replicas.
+Then open the Admin in your browser:
+
+**→ <http://localhost:8080>**
+
+That's the whole flow — the SPA loads immediately and is ready to
+`Illuminate`, browse, and run ops against the live cluster. The Admin talks
+Connect-Web straight to a lantern node; the **Gateway** button in the
+top-right header selects which replica it hits, defaulting to
+`http://localhost:6380` (`lantern-0`) — switch to `:6381` / `:6382` for the
+other two. Each replica ships
+`LANTERN_CORS_ALLOWED_ORIGINS=http://localhost:8080` so the browser preflight
+from the Admin origin is allowed out of the box. Tear the stack down with
+`docker compose down -v`.
+
+> **Iterating on the server itself?** The `lantern` service defaults to the
+> locally-built `lantern:local` tag, so build it once from the repo root
+> (`docker build -t lantern:local .`) and drop the `LANTERN_IMAGE` override to
+> run the cluster against your own changes.
+
+Under the hood the canonical compose declares three explicit
+`lantern-{0,1,2}` services with pinned host ports (`6380`, `6381`, `6382`)
+since [#435](https://github.com/anaregdesign/lantern/issues/435), so the
+Admin's default gateway and any direct curls land on a stable replica across
+`up`/`down` cycles. All three join the same `lantern` DNS alias, so peer
+discovery and Compose-side round-robin still work unchanged. Prometheus on
+`:9091` scrapes every replica via DNS SD. See
+[`deploy/compose/README.md`](deploy/compose/README.md) for the full port
+table and client LB options, and the [Helm chart](deploy/helm/lantern/) when
+you need more than three replicas.
 
 ### Run on serverless container PaaS
 
@@ -452,6 +497,45 @@ _ = edges
 
 The full multi-type, additive-edge, and `Illuminate` example lives in
 [sdks/go/example/main.go](sdks/go/example/main.go).
+
+### Use it from Node / TypeScript
+
+The Node / TypeScript client ships to npm as [`lantern-sdk`](sdks/node/)
+(ESM + CJS, bundled TypeScript types, Node 20+):
+
+```shell
+npm install lantern-sdk      # or: bun add lantern-sdk / pnpm add lantern-sdk
+```
+
+```ts
+import { Algorithm, connect } from "lantern-sdk";
+
+const client = connect("http://localhost:6380");
+try {
+  await client.putVertex({ key: "user:42", value: "alice", ttlSeconds: 3600 });
+
+  // Each addEdge appends a contribution with its own TTL.
+  await client.addEdge({ tail: "user:42", head: "item:7", weight: 1.0, ttlSeconds: 1800 });
+
+  // Walk: 2 hops, top-16 per hop.
+  const graph = await client.illuminate("user:42", { step: 2, k: 16, algorithm: Algorithm.UNSPECIFIED });
+  console.log(`vertices=${graph.vertices.size}`);
+
+  // Prefix scan: async-iterate every vertex under a namespace, auto-paginated.
+  for await (const page of client.scanVerticesAll("user:", 500)) {
+    for (const v of page) console.log(v.key);
+  }
+} finally {
+  client.close();
+}
+```
+
+JS values map to typed proto fields (`string`, `number`, `bigint`, `boolean`,
+`Date`, `Uint8Array`, `null`, plus `Int32` / `Uint32` / `Uint64` / `Float32` /
+`Duration` wrappers); batch writes auto-chunk and throw `BatchError` (carrying
+`.written`) on partial failure. The browser-only `lantern-sdk/web` subpath is
+what powers the [admin SPA](admin/). See
+[sdks/node/README.md](sdks/node/README.md) for the full API.
 
 ### Use it from another language
 
@@ -662,9 +746,11 @@ The server is configured via environment variables, parsed in
 | `LANTERN_MAX_SEND_MSG_BYTES` | `16777216` | Per-RPC outbound message limit |
 | `LANTERN_MAX_CONCURRENT_STREAMS` | `1024` | Upper bound on concurrent streams per HTTP/2 connection |
 | `LANTERN_RATE_LIMIT_RPS` | `0` | Global token-bucket rate limit; `0` disables |
-| `LANTERN_RATE_LIMIT_BURST` | `max(1, rps)` | Burst capacity for the rate limiter |
+| `LANTERN_RATE_LIMIT_BURST` | `2×RPS` | Burst capacity for the rate limiter; falls back to `2×RPS` if set to `0` while a limit is active |
 | `LANTERN_MAX_KEY_LEN` | `1024` | Reject vertex/edge keys longer than this (validation interceptor) |
 | `LANTERN_MAX_BATCH_SIZE` | `10000` | Reject batch Put/Add requests over this size |
+| `LANTERN_SCAN_DEFAULT_LIMIT` / `LANTERN_SCAN_MAX_LIMIT` | `1000` / `10000` | Default page size and hard cap for `ScanVertices` / `ScanEdges` |
+| `LANTERN_DELETE_BY_PREFIX_DEFAULT_LIMIT` / `LANTERN_DELETE_BY_PREFIX_MAX_LIMIT` | `10000` / `100000` | Default and hard cap for `DeleteVerticesByPrefix` per call |
 | `LANTERN_ILLUMINATE_MAX_STEP` | `16` | Cap on BFS depth accepted by `Illuminate` |
 | `LANTERN_ILLUMINATE_MAX_K` | `1024` | Cap on neighbours-per-step accepted by `Illuminate` |
 | `LANTERN_TLS_CERT_FILE` | _(unset)_ | Server certificate; enables TLS when set with key |
@@ -680,7 +766,7 @@ Lantern ships production-grade observability out of the box:
   start/finish events emitted by a Connect logging interceptor
   ([`server/provider/connect_middleware.go`](server/provider/connect_middleware.go)).
 - **Prometheus metrics** — RPC metrics exposed by the in-house Connect
-  interceptor in
+  interceptor
   ([`server/provider/connect_middleware.go`](server/provider/connect_middleware.go))
   that reproduces the canonical `grpc-ecosystem/go-grpc-middleware` metric
   names (`grpc_server_started_total`, `grpc_server_handled_total`,
