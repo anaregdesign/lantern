@@ -13,10 +13,10 @@
  *
  * Behaviour is identical to the inline logic this replaces; the move is a
  * relocation, not a change (#495). The regime enum is deliberately
- * alpha-free: the cold/incremental heat constants (`FORCE_ALPHA_COLD` /
- * `FORCE_ALPHA`) live in the component-layer `force-layout.ts`, and the
- * use-case layer must not import upward from the component layer, so the
- * component owns the trivial regime → alpha mapping.
+ * alpha-free: deciding the regime is a pure semantic choice, while mapping
+ * the chosen regime to a d3-force heat constant (`FORCE_ALPHA_COLD` /
+ * `FORCE_ALPHA`) and driving the live simulation is imperative glue the
+ * rendering shell owns.
  */
 
 /**

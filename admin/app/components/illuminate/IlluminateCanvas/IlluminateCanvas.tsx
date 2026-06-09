@@ -8,7 +8,6 @@ import {
   type Ref,
 } from "react";
 import Graph from "graphology";
-import type { Simulation } from "d3-force";
 import Sigma from "sigma";
 import { EdgeArrowProgram } from "sigma/rendering";
 import { Info16Regular } from "@fluentui/react-icons";
@@ -23,15 +22,14 @@ import {
   decideLayoutRegime,
   diffRenderSets,
 } from "~/lib/client/usecase/illuminate/reconcile";
-import { usePreferredTheme } from "~/lib/client/usecase/theme/use-preferred-theme";
 import {
   FORCE_ALPHA,
   FORCE_ALPHA_COLD,
-  FORCE_ALPHA_MIN,
-  createForceSimulation,
   type ForceLink,
   type ForceNode,
-} from "./force-layout";
+} from "~/lib/client/usecase/illuminate/force-layout";
+import { useIlluminateCanvas } from "~/lib/client/usecase/illuminate/use-illuminate-canvas";
+import { usePreferredTheme } from "~/lib/client/usecase/theme/use-preferred-theme";
 import { formatEdgeWeight } from "./edge-label";
 import { HOP_FAR_THRESHOLD, colorForHop, describeHop } from "./hop-palette";
 import { makeDrawNodeHover } from "./hover-label";
@@ -216,27 +214,6 @@ export function IlluminateCanvas({
    */
   const previousEdgeIdsRef = useRef<Set<string>>(new Set());
   /**
-   * The live d3-force simulation driving the continuous layout (#483),
-   * or `null` when nothing is animating. `forceNodes` is the array d3
-   * mutates in place; `nodeById` indexes it so the drag handlers can
-   * pin a node mid-animation; `raf` is the in-flight
-   * `requestAnimationFrame` handle (or `null` when settled or paused).
-   */
-  const layoutRef = useRef<{
-    simulation: Simulation<ForceNode, ForceLink>;
-    forceNodes: ForceNode[];
-    nodeById: Map<string, ForceNode>;
-    raf: number | null;
-  } | null>(null);
-  /**
-   * When true, the rAF tick loop is suspended (#483 test bridge): the
-   * simulation is built and applied (survivor positions retained) but
-   * does not advance until `stepLayout`/`settleLayout` is called or the
-   * pause is released. Lets the e2e assert EXACT survivor positions
-   * immediately after a click, before any easing has occurred.
-   */
-  const layoutPausedRef = useRef<boolean>(false);
-  /**
    * Wall clock the TTL reducer reads on every frame (#459). Bumped by
    * the 1 Hz tick effect below; the mount effect captures `.current`
    * inside the reducer so a single value flows from the tick into both
@@ -311,188 +288,26 @@ export function IlluminateCanvas({
     [palette],
   );
 
-  // === #483 continuous d3-force layout driver ============================
-  // The simulation lives in `layoutRef`; these helpers own ticking it,
-  // writing positions back into graphology, and the rAF scheduling. They
-  // touch sigma/graph/layout exclusively through refs so their identities
-  // stay stable for the component's lifetime (stable deps), letting both
-  // the mount-effect test bridge and the reconcile effect call them
-  // without re-wiring sigma listeners.
-
-  /**
-   * Copy the simulation's positions into graphology. The only pinned
-   * node is the per-expansion seed (#500), whose `fx`/`fy` hold its
-   * coordinates constant — writing those back is a harmless no-op since
-   * d3-force keeps `x === fx`. Every other node is unpinned (drag-to-pin
-   * was removed in #491), so this stays a one-way sim → graphology flow
-   * with the simulation authoritative for position.
-   */
-  const writeBackLayoutPositions = useCallback(() => {
-    const layout = layoutRef.current;
-    const graph = graphRef.current;
-    if (!layout || !graph) return;
-    for (const fn of layout.forceNodes) {
-      if (!graph.hasNode(fn.id)) continue;
-      if (typeof fn.x === "number") graph.setNodeAttribute(fn.id, "x", fn.x);
-      if (typeof fn.y === "number") graph.setNodeAttribute(fn.id, "y", fn.y);
-    }
-  }, []);
-
-  /** Cancel any in-flight animation frame and drop the simulation. */
-  const stopLayout = useCallback(() => {
-    const layout = layoutRef.current;
-    if (layout?.raf != null) cancelAnimationFrame(layout.raf);
-    layoutRef.current = null;
-  }, []);
-
-  /**
-   * One animation frame: tick the sim, write back, refresh sigma, then
-   * either reschedule, suspend (paused), or stop (settled).
-   */
-  const runLayoutFrame = useCallback(() => {
-    const layout = layoutRef.current;
-    if (!layout) return;
-    if (layoutPausedRef.current) {
-      // Suspend: keep the sim so a later resume/step can continue it.
-      layout.raf = null;
-      return;
-    }
-    layout.simulation.tick();
-    writeBackLayoutPositions();
-    sigmaRef.current?.refresh();
-    if (layout.simulation.alpha() <= FORCE_ALPHA_MIN) {
-      stopLayout();
-      return;
-    }
-    layout.raf = requestAnimationFrame(runLayoutFrame);
-  }, [writeBackLayoutPositions, stopLayout]);
-
-  /** Schedule the animation loop unless it is already running or paused. */
-  const startLayoutLoop = useCallback(() => {
-    const layout = layoutRef.current;
-    if (!layout || layout.raf != null || layoutPausedRef.current) return;
-    layout.raf = requestAnimationFrame(runLayoutFrame);
-  }, [runLayoutFrame]);
-
-  /**
-   * Replace the current simulation with a fresh one over the supplied
-   * visible nodes/links, seeded from their current positions. Does NOT
-   * start the loop — the caller decides whether to animate (incremental)
-   * or settle synchronously (cold).
-   */
-  const beginLayout = useCallback(
-    (forceNodes: ForceNode[], forceLinks: ForceLink[], alpha: number) => {
-      const previous = layoutRef.current;
-      if (previous?.raf != null) cancelAnimationFrame(previous.raf);
-      const simulation = createForceSimulation(forceNodes, forceLinks, {
-        alpha,
-      });
-      const nodeById = new Map(forceNodes.map((n) => [n.id, n] as const));
-      layoutRef.current = { simulation, forceNodes, nodeById, raf: null };
-    },
-    [],
-  );
-
-  /**
-   * Rebuild the simulation over the currently-rendered nodes/edges and
-   * start animating so the layout re-converges. Used after a drag
-   * release (#491): the dropped node is NOT pinned, so reheating lets
-   * physics settle the whole graph around its new position instead of
-   * freezing it where the cursor left it. The one exception is the
-   * per-expansion seed (#500): its `fixed` attribute re-pins it (fx/fy)
-   * so the reheat relaxes everything else around the anchor.
-   */
-  const reheatLayout = useCallback(() => {
-    const graph = graphRef.current;
-    if (!graph) return;
-    const forceNodes: ForceNode[] = [];
-    for (const id of graph.nodes()) {
-      const x = graph.getNodeAttribute(id, "x") as number;
-      const y = graph.getNodeAttribute(id, "y") as number;
-      const fn: ForceNode = {
-        id,
-        size: graph.getNodeAttribute(id, "size") as number,
-        x,
-        y,
-      };
-      // #500: keep the seed pinned across a reheat.
-      if (graph.getNodeAttribute(id, "fixed") === true) {
-        fn.fx = x;
-        fn.fy = y;
-      }
-      forceNodes.push(fn);
-    }
-    if (forceNodes.length === 0) {
-      stopLayout();
-      return;
-    }
-    const forceLinks: ForceLink[] = graph.edges().map((id) => {
-      const [source, target] = graph.extremities(id);
-      return { source, target, weight: 1 };
-    });
-    beginLayout(forceNodes, forceLinks, FORCE_ALPHA);
-    startLayoutLoop();
-  }, [beginLayout, startLayoutLoop, stopLayout]);
-  // Ref mirror so the mount-effect drag handlers can reheat without the
-  // sigma setup effect (which runs once) needing to re-bind.
-  const reheatLayoutRef = useRef(reheatLayout);
-  useEffect(() => {
-    reheatLayoutRef.current = reheatLayout;
-  }, [reheatLayout]);
-
-  /**
-   * Advance the simulation `ticks` steps synchronously (no rAF) and write
-   * the result back. Used by the #483 e2e to observe gradual motion one
-   * controlled frame at a time. Returns the number of ticks executed.
-   */
-  const stepLayout = useCallback(
-    (ticks: number): number => {
-      const layout = layoutRef.current;
-      if (!layout) return 0;
-      let done = 0;
-      for (let i = 0; i < ticks; i += 1) {
-        layout.simulation.tick();
-        done += 1;
-        if (layout.simulation.alpha() <= FORCE_ALPHA_MIN) break;
-      }
-      writeBackLayoutPositions();
-      sigmaRef.current?.refresh();
-      return done;
-    },
-    [writeBackLayoutPositions],
-  );
-
-  /**
-   * Run the simulation to rest synchronously (bounded by `maxTicks`),
-   * write back, refresh, and drop it. Used for the cold-start layout and
-   * by the e2e to freeze positions before camera assertions.
-   */
-  const settleLayout = useCallback(
-    (maxTicks = 500): number => {
-      const layout = layoutRef.current;
-      if (!layout) return 0;
-      let done = 0;
-      while (layout.simulation.alpha() > FORCE_ALPHA_MIN && done < maxTicks) {
-        layout.simulation.tick();
-        done += 1;
-      }
-      writeBackLayoutPositions();
-      sigmaRef.current?.refresh();
-      stopLayout();
-      return done;
-    },
-    [writeBackLayoutPositions, stopLayout],
-  );
-
-  /** Pause/resume the animated layout (#483 test bridge). */
-  const setLayoutPaused = useCallback(
-    (paused: boolean) => {
-      layoutPausedRef.current = paused;
-      if (!paused) startLayoutLoop();
-    },
-    [startLayoutLoop],
-  );
-  // === end #483 ==========================================================
+  // #483 continuous d3-force layout lifecycle — the live simulation
+  // handle, the rAF tick loop, and the synchronous settle/step/pause
+  // controls — lives in a feature-local controller hook (#495 batch 4).
+  // This component is the Sigma/graphology rendering shell that drives it
+  // from the reconcile effect, the drag handlers, and the test bridge.
+  // `layoutRef` / `layoutPausedRef` / `reheatLayoutRef` are surfaced as
+  // refs because the once-mounted sigma effect reads and writes them from
+  // event-time closures; the destructured callbacks keep stable
+  // identities so that effect's dependency array stays minimal.
+  const {
+    layoutRef,
+    layoutPausedRef,
+    reheatLayoutRef,
+    beginLayout,
+    startLayoutLoop,
+    stopLayout,
+    settleLayout,
+    stepLayout,
+    setLayoutPaused,
+  } = useIlluminateCanvas({ graphRef, sigmaRef });
 
   // Stable callback ref so the click listener doesn't have to be rebound
   // every render (would otherwise drop hover state).
@@ -1299,7 +1114,18 @@ export function IlluminateCanvas({
       scheduleInfoIconHideRef.current = null;
       delete win.__illuminateCanvas;
     };
-  }, [setLayoutPaused, stepLayout, settleLayout]);
+    // The layout refs/callbacks now come from `useIlluminateCanvas`; they
+    // all have stable identities (the refs never change, the callbacks have
+    // stable deps), so listing them keeps this a once-on-mount effect while
+    // satisfying exhaustive-deps now that they are no longer local `useRef`s.
+  }, [
+    setLayoutPaused,
+    stepLayout,
+    settleLayout,
+    layoutRef,
+    layoutPausedRef,
+    reheatLayoutRef,
+  ]);
 
   // Apply palette changes to sigma's global settings + repaint existing
   // node fills. Splitting this out from the reconcile effect lets a
