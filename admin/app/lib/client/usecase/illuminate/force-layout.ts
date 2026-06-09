@@ -20,8 +20,8 @@
  *
  * This module is deliberately free of React, sigma, and graphology so it
  * stays trivially unit-testable: it owns the force *recipe* and the
- * tuning constants; the component owns the rAF loop, the graphology
- * read/write-back, and the sigma refresh.
+ * tuning constants; the canvas controller hook (`use-illuminate-canvas.ts`)
+ * owns the rAF loop, the graphology read/write-back, and the sigma refresh.
  */
 import {
   forceCollide,
