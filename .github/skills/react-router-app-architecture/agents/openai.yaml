@@ -1,0 +1,4 @@
+interface:
+  display_name: "React Router App Architecture"
+  short_description: "Own app-code architecture, route boundaries, UI structure, and verification"
+  default_prompt: "Use $react-router-app-architecture when the work is primarily React Router routes, loaders or actions, component boundaries, use cases, domain models, server-side data access through repository ports, Fluent UI screens, responsive UI, charts, Playwright verification, or app-structure refactoring. Do not use it for `/docs/spec` planning, Azure platform setup, app registration, end-user auth contract design, release delivery, or for choosing a specific ORM or database engine."
