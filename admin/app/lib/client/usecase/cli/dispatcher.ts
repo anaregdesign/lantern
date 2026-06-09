@@ -16,8 +16,10 @@
  *     (#428).
  *   - `put vertex` / `put edge` / `add edge` carry the parser-supplied
  *     `ttlSeconds` through as `expiration = now + ttl` so server-side
- *     decay matches what the user typed (#429). Mirrors Go REPL
- *     `cli/service/service.go` `c.client.PutVertex(ctx, key, value, ttl)`.
+ *     decay matches what the user typed (#429); an omitted `ttl_seconds`
+ *     (null) sends no expiration and is stored permanently (#523).
+ *     Mirrors Go REPL `cli/service/service.go`
+ *     `c.client.PutVertex(ctx, key, value, ttl)`.
  *   - `get vertex` / `get edge` raise `LanternApiError.notFound` when the
  *     adapter returned `null` so the scrollback renders a red `[not_found]`
  *     error chip rather than a misleading `OK` (#430).
@@ -237,13 +239,18 @@ export function coerceValue(
 }
 
 /**
- * Convert a parser-supplied TTL (in whole seconds; the verbs default
- * to one year) to the ISO-8601 absolute expiration the wire format
- * carries. Mirrors `cli/service/service.go`'s `time.Now().Add(ttl)`
- * server-side computation.
+ * Convert a parser-supplied TTL (in whole seconds) to the ISO-8601
+ * absolute expiration the wire format carries. A `null` TTL means the
+ * verb omitted `ttl_seconds`, which maps to `undefined` so no
+ * expiration is sent and the server stores the value permanently
+ * (decay is opt-in; see #523). Mirrors `cli/service/service.go`'s
+ * `time.Now().Add(ttl)` server-side computation for positive TTLs.
  *
  * Exported for unit testing.
  */
-export function ttlSecondsToExpiration(ttlSeconds: number): string {
+export function ttlSecondsToExpiration(
+  ttlSeconds: number | null,
+): string | undefined {
+  if (ttlSeconds === null) return undefined;
   return new Date(Date.now() + ttlSeconds * 1000).toISOString();
 }

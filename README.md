@@ -14,29 +14,6 @@ disk-backed graph database. It is the small, hot, online piece you put in front
 of those systems so request-path code can ask *"who is this user related to
 right now, and how strongly?"* in a single millisecond-scale RPC.
 
-**In one glance:**
-
-- **Time-decaying by design** — every vertex *and* edge carries its own TTL,
-  so the working set forgets stale data with no batch job.
-  [Why →](#why-lantern-is-different)
-- **Additive, decaying edge weights** — each event appends a contribution; the
-  live weight is the sum of what hasn't expired yet.
-  [Why →](#why-lantern-is-different)
-- **Online graph algorithms in one RPC** — `Illuminate` walks the live graph
-  from a seed and returns an MST / SPT subgraph (min/max, raw or TF-IDF)
-  already shaped for your use case.
-  [Algorithms →](#3-built-in-online-graph-algorithms-over-the-live-snapshot)
-- **Decaying memory for LLM agents** — `lantern-mcp` exposes the store over the
-  Model Context Protocol so Claude / VS Code / Cursor remember and forget on a
-  TTL ladder. [MCP →](#use-as-an-mcp-server)
-- **Browser console** — a React Router + Sigma.js admin SPA to browse,
-  `Illuminate`, and run ops against a live cluster. [Admin →](admin/)
-- **Leaderless HA, no external storage** — every replica holds the full graph;
-  writes commit locally and fan out under an HLC clock (last-writer-wins).
-  [Replication RFC →](docs/replication.md)
-- **Polyglot, one wire** — Go and Node / TypeScript SDKs, a scriptable
-  CLI + REPL, and Connect / gRPC / gRPC-Web multiplexed on a single `:6380`
-  socket. [Quick start →](#quick-start)
 
 ---
 
@@ -734,7 +711,7 @@ The server is configured via environment variables, parsed in
 | Variable | Default | Meaning |
 |---|---|---|
 | `LANTERN_PORT` | `6380` | Primary RPC listen port (Connect / gRPC / gRPC-Web multiplexed) |
-| `LANTERN_DEFAULT_TTL_SECONDS` | `60` | Default TTL when a request omits one |
+| `LANTERN_DEFAULT_TTL_SECONDS` | `60` | Surfaced in `GetServerStatus`/startup logs only; **not** applied to RPC writes — a write that omits TTL/expiration is stored permanently (decay is opt-in per write, #523). |
 | `LANTERN_GC_INTERVAL_SECONDS` | `60` | Cache GC tick interval |
 | `LANTERN_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `LANTERN_LOG_FORMAT` | `json` | `json` or `text` (slog handler) |

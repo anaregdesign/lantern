@@ -232,9 +232,24 @@ func (l *Lantern) GetVertex(ctx context.Context, key string) (*Vertex, error) {
 	return resp.Vertex, nil
 }
 
-// PutVertex upserts a single vertex with a relative TTL.
+// expirationFromTTL converts a relative TTL into the absolute expiration
+// the wire carries. A non-positive ttl means "no expiration" (permanent):
+// it yields the zero time.Time, which serialises to the wire's permanent
+// sentinel and is stored by the server as never-expiring (see #523 and
+// core/cache.IsLiveAt). Decay is therefore strictly opt-in via a positive
+// ttl. This keeps the relative-TTL convenience methods consistent with the
+// absolute *At variants, which already treat a zero expiration as permanent.
+func expirationFromTTL(ttl time.Duration) time.Time {
+	if ttl <= 0 {
+		return time.Time{}
+	}
+	return time.Now().Add(ttl)
+}
+
+// PutVertex upserts a single vertex with a relative TTL. A non-positive ttl
+// stores the vertex permanently (no decay); see expirationFromTTL.
 func (l *Lantern) PutVertex(ctx context.Context, key string, value any, ttl time.Duration) error {
-	return l.PutVertexAt(ctx, key, value, time.Now().Add(ttl))
+	return l.PutVertexAt(ctx, key, value, expirationFromTTL(ttl))
 }
 
 // PutVertexAt upserts a single vertex with an absolute expiration time.
@@ -344,9 +359,10 @@ func (l *Lantern) GetEdge(ctx context.Context, tail string, head string) (*Edge,
 }
 
 // AddEdge accumulates weight onto the (tail, head) pair: repeated calls with
-// the same endpoints sum their weights.
+// the same endpoints sum their weights. A non-positive ttl stores the edge
+// permanently (no decay); see expirationFromTTL.
 func (l *Lantern) AddEdge(ctx context.Context, tail string, head string, weight float32, ttl time.Duration) error {
-	return l.AddEdgeAt(ctx, tail, head, weight, time.Now().Add(ttl))
+	return l.AddEdgeAt(ctx, tail, head, weight, expirationFromTTL(ttl))
 }
 
 // AddEdgeAt is AddEdge with an absolute expiration.
@@ -377,9 +393,10 @@ func (l *Lantern) AddEdges(ctx context.Context, inputs []EdgeInput) error {
 	return err
 }
 
-// PutEdge overwrites the (tail, head) pair.
+// PutEdge overwrites the (tail, head) pair. A non-positive ttl stores the
+// edge permanently (no decay); see expirationFromTTL.
 func (l *Lantern) PutEdge(ctx context.Context, tail string, head string, weight float32, ttl time.Duration) error {
-	return l.PutEdgeAt(ctx, tail, head, weight, time.Now().Add(ttl))
+	return l.PutEdgeAt(ctx, tail, head, weight, expirationFromTTL(ttl))
 }
 
 // PutEdgeAt is PutEdge with an absolute expiration.

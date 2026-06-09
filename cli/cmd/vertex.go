@@ -98,7 +98,8 @@ VALUE TYPING
 TTL SEMANTICS
   --ttl is a Go duration relative to the server's "now" at receipt
   (e.g. 30s, 5m, 1h, 24h, 168h). The vertex is reaped lazily after it
-  expires. Default 24h.
+  expires. Omit --ttl (or pass 0) to store the vertex permanently
+  (no decay).
 
 OUTPUT
   Prints "OK" on success. Errors go to stderr (exit code 2 for server
@@ -188,7 +189,7 @@ EXAMPLES
 }
 
 func init() {
-	vertexPutCmd.Flags().DurationVar(&vertexPutTTL, "ttl", 24*time.Hour, "TTL relative to now (e.g. 30s, 5m, 24h)")
+	vertexPutCmd.Flags().DurationVar(&vertexPutTTL, "ttl", 0, "TTL relative to now (e.g. 30s, 5m, 24h); omit or 0 = permanent")
 	vertexPutCmd.Flags().StringVar(&vertexPutValueType, "value-type", "auto", "type of <value>: auto|string|int|float|bool|datetime|duration|json")
 
 	vertexCmd.AddCommand(vertexGetCmd, vertexPutCmd, vertexDeleteCmd)

@@ -28,7 +28,7 @@ export type Command =
       objective: "vertex";
       key: string;
       value: string;
-      ttlSeconds: number;
+      ttlSeconds: number | null;
     }
   | {
       verb: "put";
@@ -36,7 +36,7 @@ export type Command =
       tail: string;
       head: string;
       weight: number;
-      ttlSeconds: number;
+      ttlSeconds: number | null;
     }
   | { verb: "delete"; objective: "vertex"; key: string }
   | { verb: "delete"; objective: "edge"; tail: string; head: string }
@@ -46,7 +46,7 @@ export type Command =
       tail: string;
       head: string;
       weight: number;
-      ttlSeconds: number;
+      ttlSeconds: number | null;
     }
   | { verb: "scan"; objective: "vertices"; prefix: string; limit: number }
   | { verb: "scan"; objective: "edges"; tailPrefix: string; limit: number }

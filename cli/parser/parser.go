@@ -222,7 +222,10 @@ func PutVertexParam(s *Source) (*PutVertex, error) {
 		return nil, err
 	}
 	if err := EOF(s); err == nil {
-		m.TTL = 24 * 365 * time.Hour
+		// Omitted ttl_seconds ⇒ permanent (no decay). Leaving TTL at its
+		// zero value makes cli/service forward a ttl<=0 to the SDK, whose
+		// convenience methods send the wire's permanent sentinel (#523).
+		m.TTL = 0
 		return m, nil
 	}
 	if m.TTL, err = Duration(s); err != nil {
@@ -248,7 +251,8 @@ func PutEdgeParam(s *Source) (*PutEdge, error) {
 		return nil, err
 	}
 	if err := EOF(s); err == nil {
-		m.TTL = 24 * 365 * time.Hour
+		// Omitted ttl_seconds ⇒ permanent (no decay); see PutVertexParam (#523).
+		m.TTL = 0
 		return m, nil
 	}
 	if m.TTL, err = Duration(s); err != nil {
@@ -273,7 +277,8 @@ func AddEdgeParam(s *Source) (*AddEdge, error) {
 		return nil, err
 	}
 	if err := EOF(s); err == nil {
-		m.TTL = 24 * 365 * time.Hour
+		// Omitted ttl_seconds ⇒ permanent (no decay); see PutVertexParam (#523).
+		m.TTL = 0
 		return m, nil
 	}
 	if m.TTL, err = Duration(s); err != nil {

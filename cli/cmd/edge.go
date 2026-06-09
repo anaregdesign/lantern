@@ -111,7 +111,8 @@ SEMANTICS
 
 TTL
   --ttl bumps the edge's expiration to now+ttl on every call. There is no
-  "extend by" mode — each call sets a fresh absolute expiration. Default 24h.
+  "extend by" mode — each call sets a fresh absolute expiration. Omit --ttl
+  (or pass 0) to store the edge permanently (no decay).
 
 WEIGHT
   Parsed as float32 (the wire type). NaN and ±Inf are rejected server-side.
@@ -157,7 +158,8 @@ SEMANTICS
   it on UNAVAILABLE / RESOURCE_EXHAUSTED.
 
 TTL
-  --ttl sets the edge's expiration to now+ttl. Default 24h.
+  --ttl sets the edge's expiration to now+ttl. Omit --ttl (or pass 0) to
+  store the edge permanently (no decay).
 
 WEIGHT
   Parsed as float32. NaN and ±Inf are rejected server-side.
@@ -274,8 +276,8 @@ EXAMPLES
 }
 
 func init() {
-	edgeAddCmd.Flags().DurationVar(&edgeAddTTL, "ttl", 24*time.Hour, "TTL relative to now (e.g. 30s, 5m, 24h)")
-	edgePutCmd.Flags().DurationVar(&edgePutTTL, "ttl", 24*time.Hour, "TTL relative to now (e.g. 30s, 5m, 24h)")
+	edgeAddCmd.Flags().DurationVar(&edgeAddTTL, "ttl", 0, "TTL relative to now (e.g. 30s, 5m, 24h); omit or 0 = permanent")
+	edgePutCmd.Flags().DurationVar(&edgePutTTL, "ttl", 0, "TTL relative to now (e.g. 30s, 5m, 24h); omit or 0 = permanent")
 	edgeDeleteCmd.Flags().String("separator", ":", "delimiter inside each tail:head positional argument")
 
 	edgeCmd.AddCommand(edgeGetCmd, edgeAddCmd, edgePutCmd, edgeDeleteCmd)

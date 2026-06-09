@@ -26,6 +26,17 @@
 // multiple replicas use a reverse proxy or DNS round-robin in front
 // of Lantern — the SDK speaks to one URL.
 //
+// # TTL and expiration
+//
+// Decay is opt-in. The relative-TTL convenience methods (PutVertex,
+// AddEdge, PutEdge) treat a non-positive ttl as "no expiration": a ttl
+// of 0 (or any negative duration) stores the vertex/edge permanently,
+// and the value never decays. Pass a positive ttl to opt into decay,
+// or use the absolute *At variants (PutVertexAt, AddEdgeAt, PutEdgeAt)
+// with a zero time.Time for the same permanent semantics. The SDK never
+// injects a hidden default expiration — an omitted/zero TTL is honoured
+// as permanent end to end (see #523).
+//
 // # Model definition policy
 //
 // This SDK follows a strict "no parallel models" rule: wherever a

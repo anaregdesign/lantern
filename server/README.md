@@ -92,7 +92,7 @@ most common knobs:
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `LANTERN_PORT` | `6380` | Primary Lantern RPC listen port (Connect / gRPC / gRPC-Web multiplexed on h2c). |
-| `LANTERN_DEFAULT_TTL_SECONDS` | `60` | Default vertex/edge TTL. |
+| `LANTERN_DEFAULT_TTL_SECONDS` | `60` | Surfaced in `GetServerStatus`/startup logs only; **not** applied to RPC writes (omitted TTL/expiration ⇒ permanent; decay is opt-in per write, #523). |
 | `LANTERN_GC_INTERVAL_SECONDS` | `60` | GraphCache GC tick. |
 | `LANTERN_MAX_RECV_MSG_BYTES` / `LANTERN_MAX_SEND_MSG_BYTES` | `16 MiB` | Per-RPC message size caps (Connect / gRPC / gRPC-Web). |
 | `LANTERN_MAX_CONCURRENT_STREAMS` | `1024` | Per-connection stream cap (0 = unlimited). |

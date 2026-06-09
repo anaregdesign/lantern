@@ -12,6 +12,7 @@ import {
   Weighting,
   fromEdgeJson,
   fromVertexJson,
+  toEdgeJson,
   toVertexJson,
 } from "../src/index.js";
 
@@ -131,6 +132,25 @@ describe("toVertexJson dispatch", () => {
 
   test("ttl materialises to absolute ISO string", () => {
     const j = toVertexJson({ key: "k", value: 1, ttlSeconds: 60 });
+    expect(typeof j.expiration).toBe("string");
+    const skew = Math.abs(Date.parse(String(j.expiration)) - (Date.now() + 60_000));
+    expect(skew).toBeLessThan(1_000);
+  });
+
+  test("no opts ⇒ no expiration field (permanent) (#523)", () => {
+    const j = toVertexJson({ key: "k", value: 1 });
+    expect(j).not.toHaveProperty("expiration");
+  });
+});
+
+describe("toEdgeJson dispatch (#523)", () => {
+  test("no opts ⇒ no expiration field (permanent)", () => {
+    const j = toEdgeJson({ tail: "a", head: "b", weight: 1 });
+    expect(j).not.toHaveProperty("expiration");
+  });
+
+  test("ttl materialises to absolute ISO string", () => {
+    const j = toEdgeJson({ tail: "a", head: "b", weight: 1, ttlSeconds: 60 });
     expect(typeof j.expiration).toBe("string");
     const skew = Math.abs(Date.parse(String(j.expiration)) - (Date.now() + 60_000));
     expect(skew).toBeLessThan(1_000);
