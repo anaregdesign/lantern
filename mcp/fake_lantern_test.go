@@ -32,6 +32,15 @@ type fakeLantern struct {
 	lastScanPrefix  string
 	lastScanOptions []client.ScanOption
 
+	// CountVerticesByPrefix
+	countByPrefixFn func(ctx context.Context, prefix string) (uint64, error)
+	lastCountPrefix string
+
+	// DeleteVerticesByPrefix
+	deleteByPrefixFn    func(ctx context.Context, prefix string, opts ...client.DeleteByPrefixOption) (uint64, error)
+	lastDeletePrefix    string
+	deleteByPrefixCalls int
+
 	// AddEdge
 	addEdgeErr     error
 	lastEdgeTail   string
@@ -87,6 +96,23 @@ func (f *fakeLantern) ScanVertices(ctx context.Context, prefix string, opts ...c
 		return f.scanVerticesFn(ctx, prefix, opts...)
 	}
 	return nil, nil, nil
+}
+
+func (f *fakeLantern) CountVerticesByPrefix(ctx context.Context, prefix string) (uint64, error) {
+	f.lastCountPrefix = prefix
+	if f.countByPrefixFn != nil {
+		return f.countByPrefixFn(ctx, prefix)
+	}
+	return 0, nil
+}
+
+func (f *fakeLantern) DeleteVerticesByPrefix(ctx context.Context, prefix string, opts ...client.DeleteByPrefixOption) (uint64, error) {
+	f.deleteByPrefixCalls++
+	f.lastDeletePrefix = prefix
+	if f.deleteByPrefixFn != nil {
+		return f.deleteByPrefixFn(ctx, prefix, opts...)
+	}
+	return 0, nil
 }
 
 func (f *fakeLantern) AddEdge(_ context.Context, tail, head string, weight float32, ttl time.Duration) error {
