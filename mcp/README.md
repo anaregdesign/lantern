@@ -158,6 +158,12 @@ All three follow the same shape: a single `url` pointing at the running
 endpoint (`http://localhost:6390/mcp`). Hosts that only speak stdio can
 bridge via `mcp-remote` — see [`examples/README.md`](examples/README.md).
 
+Connecting the server only makes the tools *available*. To make the agent
+**use** them without being asked — recall before answering, capture durable
+facts after — install the ambient-memory instruction profile:
+
+- [`examples/ambient-memory.instructions.md`](examples/ambient-memory.instructions.md) — copy-paste capture+recall policy, plus VS Code / Claude Desktop wiring and an Admin Illuminate "watch your mind map" pointer in [`examples/README.md`](examples/README.md#make-the-agent-use-lantern-automatically).
+
 ## Development
 
 ```shell
