@@ -263,6 +263,7 @@ func newServer(lc lanternClient, resolver *ttl.Resolver, logger *slog.Logger) *m
 	registerSearchFacts(srv, lc)
 	registerTouch(srv, lc, resolver)
 	registerForget(srv, lc)
+	registerForgetUnder(srv, lc)
 	registerListUnder(srv, lc)
 	registerListNamespaces(srv, lc)
 	registerRememberRelation(srv, lc, resolver)
