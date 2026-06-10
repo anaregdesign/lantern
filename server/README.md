@@ -159,6 +159,10 @@ runtime, process, and `grpc_server_*` collectors):
 | `lantern_scan_results` | histogram | `op` | Result counts for prefix scans (`ScanVertices`, `ScanEdges`, `DeleteVerticesByPrefix`). |
 | `lantern_scan_duration_seconds` | histogram | `op` | Wall-clock for the same scan ops. |
 | `lantern_batch_size` | histogram | `op` | Batch size for plural RPCs (`GetVertices`, `PutVertices`, `DeleteVertices`, `GetEdges`, `AddEdges`, `PutEdges`, `DeleteEdges`). Singular forwarders are NOT instrumented to avoid double-counting. |
+| `lantern_get_vertex_hits_total` | counter | — | `GetVertices` key lookups that found a live vertex (present at read time, including a present-but-nil value). Counted once by the plural impl; the singular `GetVertex` forwards through it. Recall hit ratio = `hits / (hits + misses)`. |
+| `lantern_get_vertex_misses_total` | counter | — | `GetVertices` key lookups that found no live vertex (absent or expired). The miss side of the vertex recall ratio. |
+| `lantern_get_edge_hits_total` | counter | — | `GetEdges` (tail, head) lookups that found a live edge. Counted once by the plural impl; the singular `GetEdge` forwards through it. |
+| `lantern_get_edge_misses_total` | counter | — | `GetEdges` (tail, head) lookups that found no live edge (absent or expired). |
 | `lantern_validation_rejected_total` | counter | `reason` | Requests rejected by the validation interceptor or service-layer guards. Reasons: `empty_key`, `key_too_long`, `empty_batch`, `batch_too_large`, `nil_item`, `bad_weight`, `step_too_large`, `k_too_large`, `bad_ttl`, `bad_cursor`. Unknown reasons fold onto `unknown`. Pre-warmed at startup. |
 | `lantern_rate_limit_rejected_total` | counter | — | RPCs rejected with `ResourceExhausted` by the process-wide token-bucket rate limiter (`LANTERN_RATE_LIMIT_RPS`). |
 | `lantern_tombstone_clamp_rejected_total` | counter | — | HLC `Put*` / `Add*` mutations rejected because a newer tombstone or LWW value already covered the key/edge (only counted while `LANTERN_TOMBSTONE_TTL_SECONDS > 0`). |
@@ -196,6 +200,11 @@ standing up a metrics stack:
 - **Hot scans** — `lantern_scan_results` / `lantern_scan_duration_seconds`
   flag clients fan-paging large prefixes; expect to also see `slow rpc`
   records for the same `method`.
+- **Recall effectiveness** — `lantern_get_vertex_hits_total` /
+  `lantern_get_vertex_misses_total` (and the `_edge_` pair) give a hit
+  ratio `hits / (hits + misses)`; a falling ratio means callers are asking
+  for keys that have decayed away or were never written — the read-side
+  signal for "memory isn't sticking."
 
 ## Dependency boundaries (invariants)
 

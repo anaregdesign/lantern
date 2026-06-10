@@ -66,6 +66,55 @@ func TestDomainMetrics_ExposesLanternFamilies(t *testing.T) {
 	}
 }
 
+// TestDomainMetrics_GetHitMissCounters asserts the #539 recall hit/miss
+// counters register, scrape as 0 from process start (plain counters need no
+// pre-warm), and accumulate across calls via the OnGetVertices / OnGetEdges
+// hooks.
+func TestDomainMetrics_GetHitMissCounters(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := New(reg, Options{Version: "v", Commit: "c", SampleInterval: time.Hour})
+
+	// Registered and scrape as 0 before any traffic.
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	names := map[string]bool{}
+	for _, mf := range mfs {
+		names[mf.GetName()] = true
+	}
+	for _, want := range []string{
+		"lantern_get_vertex_hits_total",
+		"lantern_get_vertex_misses_total",
+		"lantern_get_edge_hits_total",
+		"lantern_get_edge_misses_total",
+	} {
+		if !names[want] {
+			t.Errorf("metric family %q not registered (plain counters should scrape as 0 from start)", want)
+		}
+	}
+
+	// Accumulate across two batches; zero-valued sides are skipped but the
+	// counters still total correctly.
+	m.OnGetVertices(2, 1)
+	m.OnGetVertices(3, 0)
+	m.OnGetEdges(0, 4)
+	m.OnGetEdges(1, 1)
+
+	if got := testutil.ToFloat64(m.getVertexHits); got != 5 {
+		t.Errorf("get_vertex_hits_total = %v, want 5", got)
+	}
+	if got := testutil.ToFloat64(m.getVertexMisses); got != 1 {
+		t.Errorf("get_vertex_misses_total = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.getEdgeHits); got != 1 {
+		t.Errorf("get_edge_hits_total = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.getEdgeMisses); got != 5 {
+		t.Errorf("get_edge_misses_total = %v, want 5", got)
+	}
+}
+
 func TestDomainMetrics_Run_NoSampler_StopsOnContextCancel(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := New(reg, Options{SampleInterval: time.Millisecond})

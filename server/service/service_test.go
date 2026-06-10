@@ -650,6 +650,8 @@ type fakeHotPathMetrics struct {
 	illuminate []illuminateObs
 	scan       []scanObs
 	batch      []batchObs
+	getVertex  []hitMissObs
+	getEdge    []hitMissObs
 }
 
 type illuminateObs struct {
@@ -669,6 +671,11 @@ type batchObs struct {
 	size int
 }
 
+type hitMissObs struct {
+	hits   int
+	misses int
+}
+
 func (f *fakeHotPathMetrics) OnIlluminate(algorithm, objective, weighting string, vV, vE int, traversal, optimize time.Duration) {
 	f.illuminate = append(f.illuminate, illuminateObs{algorithm, objective, weighting, vV, vE, traversal, optimize})
 }
@@ -677,6 +684,12 @@ func (f *fakeHotPathMetrics) OnScan(op string, results int, d time.Duration) {
 }
 func (f *fakeHotPathMetrics) OnBatch(op string, size int) {
 	f.batch = append(f.batch, batchObs{op, size})
+}
+func (f *fakeHotPathMetrics) OnGetVertices(hits, misses int) {
+	f.getVertex = append(f.getVertex, hitMissObs{hits, misses})
+}
+func (f *fakeHotPathMetrics) OnGetEdges(hits, misses int) {
+	f.getEdge = append(f.getEdge, hitMissObs{hits, misses})
 }
 
 func TestLanternService_HotPathMetrics_EmitsOnceForBatchAndIlluminate(t *testing.T) {
@@ -767,6 +780,97 @@ func TestLanternService_HotPathMetrics_EmitsOnScan(t *testing.T) {
 	}
 	if fm.scan[2].results != 2 {
 		t.Errorf("DeleteVerticesByPrefix results = %d, want 2", fm.scan[2].results)
+	}
+}
+
+// TestLanternService_HotPathMetrics_EmitsGetVertexHitMiss asserts the #539
+// hit/miss split fires once per GetVertices with the right counts, that the
+// singular GetVertex forwards through the plural (so it counts exactly
+// once), and that a present-but-nil vertex value still scores as a hit.
+func TestLanternService_HotPathMetrics_EmitsGetVertexHitMiss(t *testing.T) {
+	fm := &fakeHotPathMetrics{}
+	s := NewLanternService(graph.NewGraphCache[string, *pb.Vertex](time.Minute)).
+		WithHotPathMetrics(fm)
+	ctx := context.Background()
+
+	// Two live vertices: one with a concrete value, one explicitly nil.
+	if _, err := s.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{
+		{Key: "a", Value: &pb.Vertex_Int64{Int64: 1}, Expiration: futureTs(time.Minute)},
+		{Key: "n", Value: &pb.Vertex_Nil{Nil: true}, Expiration: futureTs(time.Minute)},
+	}}); err != nil {
+		t.Fatalf("PutVertices: %v", err)
+	}
+
+	// Mixed batch: 2 hits (a, n incl. present-but-nil) + 1 miss (gone).
+	if _, err := s.GetVertices(ctx, &pb.GetVerticesRequest{Keys: []string{"a", "n", "gone"}}); err != nil {
+		t.Fatalf("GetVertices: %v", err)
+	}
+	if len(fm.getVertex) != 1 {
+		t.Fatalf("getVertex observations = %d, want 1", len(fm.getVertex))
+	}
+	if got := fm.getVertex[0]; got.hits != 2 || got.misses != 1 {
+		t.Errorf("getVertex[0] = %+v, want {hits:2 misses:1}", got)
+	}
+
+	// Singular GetVertex must forward through the plural: exactly one more
+	// observation, counted as a single hit.
+	if _, err := s.GetVertex(ctx, &pb.GetVertexRequest{Key: "a"}); err != nil {
+		t.Fatalf("GetVertex: %v", err)
+	}
+	if len(fm.getVertex) != 2 {
+		t.Fatalf("getVertex observations after singular = %d, want 2", len(fm.getVertex))
+	}
+	if got := fm.getVertex[1]; got.hits != 1 || got.misses != 0 {
+		t.Errorf("getVertex[1] = %+v, want {hits:1 misses:0}", got)
+	}
+
+	// A pure miss scores only on the miss side.
+	if _, err := s.GetVertex(ctx, &pb.GetVertexRequest{Key: "absent"}); err == nil {
+		t.Fatal("GetVertex(absent): expected NotFound error, got nil")
+	}
+	if got := fm.getVertex[2]; got.hits != 0 || got.misses != 1 {
+		t.Errorf("getVertex[2] = %+v, want {hits:0 misses:1}", got)
+	}
+}
+
+// TestLanternService_HotPathMetrics_EmitsGetEdgeHitMiss asserts the #539
+// edge-side hit/miss split fires once per GetEdges and that the singular
+// GetEdge forwards through the plural.
+func TestLanternService_HotPathMetrics_EmitsGetEdgeHitMiss(t *testing.T) {
+	fm := &fakeHotPathMetrics{}
+	s := NewLanternService(graph.NewGraphCache[string, *pb.Vertex](time.Minute)).
+		WithHotPathMetrics(fm)
+	ctx := context.Background()
+
+	if _, err := s.AddEdges(ctx, &pb.AddEdgesRequest{Edges: []*pb.Edge{
+		{Tail: "a", Head: "b", Weight: 1, Expiration: futureTs(time.Minute)},
+	}}); err != nil {
+		t.Fatalf("AddEdges: %v", err)
+	}
+
+	// 1 hit (a->b) + 1 miss (a->z).
+	if _, err := s.GetEdges(ctx, &pb.GetEdgesRequest{Edges: []*pb.EdgeKey{
+		{Tail: "a", Head: "b"},
+		{Tail: "a", Head: "z"},
+	}}); err != nil {
+		t.Fatalf("GetEdges: %v", err)
+	}
+	if len(fm.getEdge) != 1 {
+		t.Fatalf("getEdge observations = %d, want 1", len(fm.getEdge))
+	}
+	if got := fm.getEdge[0]; got.hits != 1 || got.misses != 1 {
+		t.Errorf("getEdge[0] = %+v, want {hits:1 misses:1}", got)
+	}
+
+	// Singular GetEdge forwards through the plural: one more observation.
+	if _, err := s.GetEdge(ctx, &pb.GetEdgeRequest{Tail: "a", Head: "b"}); err != nil {
+		t.Fatalf("GetEdge: %v", err)
+	}
+	if len(fm.getEdge) != 2 {
+		t.Fatalf("getEdge observations after singular = %d, want 2", len(fm.getEdge))
+	}
+	if got := fm.getEdge[1]; got.hits != 1 || got.misses != 0 {
+		t.Errorf("getEdge[1] = %+v, want {hits:1 misses:0}", got)
 	}
 }
 
