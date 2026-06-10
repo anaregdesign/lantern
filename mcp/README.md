@@ -65,7 +65,7 @@ before exit.
 
 ## Tools
 
-Six tools, all advertised at session-open via the server-instructions
+The tool set below is advertised at session-open via the server-instructions
 string in [`server.go`](server.go). Descriptions are reproduced verbatim
 from the source so the LLM and the human reader see the same contract.
 
@@ -73,6 +73,7 @@ from the source so the LLM and the human reader see the same contract.
 |---|---|
 | `remember_fact` | Store a fact in Lantern with a **required TTL bucket**. Writing the same key again overwrites the value and resets the TTL — that is the canonical way to refresh a fact since `recall_*` does NOT refresh. |
 | `recall_fact` | Look up a single fact by exact key. Returns `{found=false}` for missing keys (structured result, not a tool error). Does NOT refresh TTL. |
+| `touch` | Extend a fact's TTL **without rewriting its value** — the cheap keep-alive. Since recall does NOT refresh TTL, touch a fact you want to keep instead of re-supplying its whole value via `remember_fact`. Reads the current value and re-stores it unchanged with a fresh expiry of now + the chosen bucket. A missing key returns `{found=false}` (structured result, not a tool error); touch never creates a fact. The vertex-side counterpart to `remember_relation` (which strengthens an edge rather than just keeping it alive). |
 | `search_facts` | Find facts by a case-insensitive substring matched against both keys **and** values — the approximate counterpart to `recall_fact` for when you recall a topic but not the exact key. Returns compact `{key, snippet, expires_at}` previews (same shape as `list_under` `projection=snippet`); pass a `prefix` to scope and speed the scan. Does NOT refresh TTL. |
 | `forget` | Delete a fact by exact key. Idempotent. Edges incident to the key are NOT cascade-deleted; they decay on their own TTL. |
 | `list_under` | Enumerate facts whose key starts with the given prefix, in ascending key order. Defaults to 50 entries, max 500. A `projection` (`keys` / `snippet` / `full`, default `full`) controls how much of each value is returned. |
