@@ -25,6 +25,7 @@ type lanternClient interface {
 	DeleteVertex(ctx context.Context, key string) (bool, error)
 	ScanVertices(ctx context.Context, prefix string, opts ...client.ScanOption) (vertices []*client.Vertex, nextCursor []byte, err error)
 	AddEdge(ctx context.Context, tail, head string, weight float32, ttl time.Duration) error
+	GetEdge(ctx context.Context, tail, head string) (*client.Edge, error)
 	Illuminate(ctx context.Context, seed string, opts ...client.IlluminateOption) (*client.Graph, error)
 	Ping(ctx context.Context) error
 }
