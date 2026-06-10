@@ -112,8 +112,8 @@ test.describe("/cli", () => {
   // canvas so the operator sees what they just wrote, instead of the
   // canvas staying blank. The verb dispatches straight through with no
   // confirmation chip (#521). An explicit TTL keeps the expiration inside
-  // the server's tombstone window (24h in the e2e harness); the grammar
-  // is `put vertex <key> <value> [ttl_seconds]`.
+  // the server's tombstone window (the default 1 year in the e2e harness); the
+  // grammar is `put vertex <key> <value> [ttl_seconds]`.
   test("put vertex adds the new node to the canvas (#518)", async ({
     page,
   }) => {

@@ -113,7 +113,7 @@ most common knobs:
 | `LANTERN_DELETE_BY_PREFIX_DEFAULT_LIMIT` / `LANTERN_DELETE_BY_PREFIX_MAX_LIMIT` | `10000` / `100000` | Delete-by-prefix caps. |
 | `LANTERN_MAX_KEY_LEN` / `LANTERN_MAX_BATCH_SIZE` | `1024` / `10000` | Validation limits. |
 | `LANTERN_ILLUMINATE_MAX_STEP` / `LANTERN_ILLUMINATE_MAX_K` | `16` / `1024` | Validation limits. |
-| `LANTERN_TOMBSTONE_TTL` | (unset = disabled) | Tombstone retention + clamp on caller-supplied `Expiration` (see HA RFC). |
+| `LANTERN_TOMBSTONE_TTL` | `8760h` (1 year) | Tombstone retention + clamp on caller-supplied `Expiration`; set to `0` to disable (see HA RFC). |
 
 Replication-specific variables (`LANTERN_PEERS`, `LANTERN_MAX_REPLICATION_LAG`,
 anti-entropy intervals, etc.) are documented in

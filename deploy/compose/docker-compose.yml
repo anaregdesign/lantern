@@ -18,7 +18,7 @@
 #
 # Usage:
 #   cd deploy/compose
-#   docker compose up -d
+#   docker compose up -d --pull always   # --pull always re-fetches the :latest images
 #   docker compose down -v
 #
 # To scale beyond three replicas, edit the file (each replica needs
@@ -26,15 +26,18 @@
 # `--scale lantern=N` workflow is gone — it depended on Compose's
 # port-range allocator, which is what #435 fixes.
 #
-# Override the image:
+# The lantern services default to ghcr.io/anaregdesign/lantern:latest, so a
+# bare `docker compose up -d` runs the published image with no local build.
+# Override to pin a release or run a local build instead:
 #   LANTERN_IMAGE=ghcr.io/anaregdesign/lantern:v0.7.1 docker compose up -d
+#   LANTERN_IMAGE=lantern:local docker compose up -d   # after `docker build -t lantern:local .`
 
 # Shared lantern config. Each replica differs only in the published
 # host port; container naming is left to Compose so the canonical
 # stack and the testbed/bench overlay can run side-by-side without
 # colliding on globally-scoped container names.
 x-lantern-common: &lantern-common
-  image: ${LANTERN_IMAGE:-lantern:local}
+  image: ${LANTERN_IMAGE:-ghcr.io/anaregdesign/lantern:latest}
   environment:
     LANTERN_PORT: "6380"
     LANTERN_METRICS_ADDR: ":9090"
@@ -111,16 +114,12 @@ services:
       retries: 6
       start_period: 5s
 
-  # Opt-in MCP server. lantern-mcp serves the Model Context Protocol over
-  # Streamable HTTP, so it's a long-lived service — bring it up with the
-  # `mcp` profile and point your agent at http://localhost:6390/mcp. See
-  # `mcp/examples/` for the configs that wire Claude Desktop / VS Code /
-  # Cursor to it.
-  #
-  # Usage:
-  #   docker compose --profile mcp up -d lantern-mcp
+  # MCP server. lantern-mcp serves the Model Context Protocol over
+  # Streamable HTTP, so it's a long-lived service — it comes up with the
+  # rest of the stack on `docker compose up -d`. Point your agent at
+  # http://localhost:6390/mcp. See `mcp/examples/` for the configs that
+  # wire Claude Desktop / VS Code / Cursor to it.
   lantern-mcp:
-    profiles: ["mcp"]
     image: ${LANTERN_MCP_IMAGE:-ghcr.io/anaregdesign/lantern-mcp:latest}
     ports:
       - "6390:6390"

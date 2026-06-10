@@ -356,7 +356,7 @@ for the full analysis. The operational summary:
 |---|---|---|
 | `AddEdge*` | Both sides accumulate contributions. | G-Set union: every contribution survives. Weight = sum. |
 | `PutVertex*` / `PutEdge*` | Both sides accept. | Higher-HLC wins (LWW); same HLC → higher origin ID wins. Losing side's value silently dropped. |
-| `DeleteVertex*` / `DeleteEdge*` | Both sides accept. | Higher-HLC tombstone wins. **Resurrection hazard if partition > `tombstone_ttl`** (D4, default 24h). |
+| `DeleteVertex*` / `DeleteEdge*` | Both sides accept. | Higher-HLC tombstone wins. **Resurrection hazard if partition > `tombstone_ttl`** (D4, default 1 year / 8760h). |
 
 **The one real failure case** is a partition that exceeds tombstone
 TTL: a `Delete` on side A may be GC'd from the mutation log before

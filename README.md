@@ -243,13 +243,15 @@ for the discovery semantics.
 
 The fastest way to get a running cluster **and** a browser console in front of
 it is the Compose stack in [`deploy/compose/`](deploy/compose/). One `up`
-brings up a 3-replica HA cluster, the [`lantern-admin`](admin/) SPA, and
-Prometheus — no local build required:
+brings up a 3-replica HA cluster, the [`lantern-admin`](admin/) SPA, the
+`lantern-mcp` server, and Prometheus — no local build required:
 
 ```shell
 cd deploy/compose
-# Pull published images for the server and the Admin SPA, then start the stack.
-LANTERN_IMAGE=ghcr.io/anaregdesign/lantern:latest docker compose up -d
+# Every service defaults to its published `:latest` image, so no local build is
+# needed. `--pull always` re-fetches the `:latest` tags so you never run a stale
+# cached image.
+docker compose up -d --pull always
 ```
 
 Then open the Admin in your browser:
@@ -266,10 +268,11 @@ other two. Each replica ships
 from the Admin origin is allowed out of the box. Tear the stack down with
 `docker compose down -v`.
 
-> **Iterating on the server itself?** The `lantern` service defaults to the
-> locally-built `lantern:local` tag, so build it once from the repo root
-> (`docker build -t lantern:local .`) and drop the `LANTERN_IMAGE` override to
-> run the cluster against your own changes.
+> **Iterating on the server itself?** The `lantern` services default to the
+> published `ghcr.io/anaregdesign/lantern:latest` image. To run the cluster
+> against your own changes, build the repo once
+> (`docker build -t lantern:local .`) and set `LANTERN_IMAGE=lantern:local`
+> before `docker compose up -d`.
 
 Under the hood the canonical compose declares three explicit
 `lantern-{0,1,2}` services with pinned host ports (`6380`, `6381`, `6382`)
@@ -742,7 +745,7 @@ The server is configured via environment variables, parsed in
 | `LANTERN_TLS_CERT_FILE` | _(unset)_ | Server certificate; enables TLS when set with key |
 | `LANTERN_TLS_KEY_FILE` | _(unset)_ | Server private key |
 | `LANTERN_TLS_CLIENT_CA_FILE` | _(unset)_ | Client CA bundle; enables mTLS (`RequireAndVerifyClientCert`) when set |
-| `LANTERN_TOMBSTONE_TTL` | `24h` | Replication tombstone retention window. While the tombstone is live, any incoming `AddEdge`/`PutEdge`/`PutVertex` (including peer-replayed mutations via `ApplyMutation`) with an HLC strictly older than the delete is dropped, so deletes converge across nodes even under reorder. Mutations whose `Expiration` exceeds this TTL are rejected with `InvalidArgument`. Set to `0` to disable tombstones entirely (legacy behaviour; delete-then-re-add reorders may resurrect data). |
+| `LANTERN_TOMBSTONE_TTL` | `8760h` (1 year) | Replication tombstone retention window. While the tombstone is live, any incoming `AddEdge`/`PutEdge`/`PutVertex` (including peer-replayed mutations via `ApplyMutation`) with an HLC strictly older than the delete is dropped, so deletes converge across nodes even under reorder. Mutations whose `Expiration` exceeds this TTL are rejected with `InvalidArgument`. Set to `0` to disable tombstones entirely (legacy behaviour; delete-then-re-add reorders may resurrect data). |
 
 ## Observability
 
