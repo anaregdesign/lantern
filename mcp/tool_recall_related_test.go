@@ -2,8 +2,10 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	client "github.com/anaregdesign/lantern/sdks/go"
@@ -262,5 +264,212 @@ func TestRecallRelated_ReverseScanTruncates(t *testing.T) {
 	structuredAs(t, res, &out)
 	if !out.Truncated {
 		t.Fatalf("Truncated = false; want true once the scan budget is hit")
+	}
+}
+
+// captureReinforce wires an addEdgeFn that records every reinforcement write
+// into a tail->head keyed map and returns the supplied per-call error.
+func captureReinforce(f *fakeLantern, err error) map[string]float32 {
+	got := make(map[string]float32)
+	f.addEdgeFn = func(_ context.Context, tail, head string, weight float32, _ time.Duration) error {
+		got[tail+"->"+head] = weight
+		return err
+	}
+	return got
+}
+
+// TestRecallRelated_DefaultDoesNotReinforce confirms recall stays read-only
+// unless reinforce is set: no AddEdge write happens and the reinforced count
+// is zero (#549).
+func TestRecallRelated_DefaultDoesNotReinforce(t *testing.T) {
+	h := newTestHarness(t)
+	h.fake.illuminateFn = func(_ context.Context, _ string, _ ...client.IlluminateOption) (*client.Graph, error) {
+		return &client.Graph{
+			Vertices: map[string]*client.Vertex{"seed": {Key: "seed"}, "a": {Key: "a"}},
+			Edges:    map[string]map[string]float32{"seed": {"a": 0.7}},
+		}, nil
+	}
+	res := h.call(t, "recall_related", map[string]any{"seed": "seed"})
+	if res.IsError {
+		t.Fatalf("IsError = true")
+	}
+	if h.fake.addEdgeCalls != 0 {
+		t.Fatalf("AddEdge called %d times without reinforce; want 0", h.fake.addEdgeCalls)
+	}
+	var out recallRelatedOutput
+	structuredAs(t, res, &out)
+	if out.Reinforced != 0 {
+		t.Fatalf("Reinforced = %d, want 0", out.Reinforced)
+	}
+	if !strings.Contains(contentText(res), "did NOT refresh") {
+		t.Fatalf("read-only recall should restate the no-refresh invariant: %q", contentText(res))
+	}
+}
+
+// TestRecallRelated_ReinforceBumpsTraversedEdgesOut asserts every edge the
+// forward walk traverses is reinforced exactly once with the default pulse,
+// and an edge that is NOT part of the traversed subgraph is left alone (#549).
+func TestRecallRelated_ReinforceBumpsTraversedEdgesOut(t *testing.T) {
+	h := newTestHarness(t)
+	h.fake.illuminateFn = func(_ context.Context, _ string, _ ...client.IlluminateOption) (*client.Graph, error) {
+		return &client.Graph{
+			Vertices: map[string]*client.Vertex{
+				"seed": {Key: "seed"}, "a": {Key: "a"}, "b": {Key: "b"},
+			},
+			Edges: map[string]map[string]float32{
+				"seed": {"a": 0.7, "b": 0.1},
+				"a":    {"b": 0.2},
+			},
+		}, nil
+	}
+	got := captureReinforce(h.fake, nil)
+	res := h.call(t, "recall_related", map[string]any{"seed": "seed", "reinforce": true})
+	if res.IsError {
+		t.Fatalf("IsError = true")
+	}
+	want := map[string]float32{"seed->a": 1, "seed->b": 1, "a->b": 1}
+	if len(got) != len(want) {
+		t.Fatalf("reinforced edges = %v, want %v", got, want)
+	}
+	for k, w := range want {
+		if got[k] != w {
+			t.Fatalf("edge %q reinforced with %v, want %v (all=%v)", k, got[k], w, got)
+		}
+	}
+	if _, bumped := got["seed->z"]; bumped {
+		t.Fatalf("untraversed edge seed->z must not be reinforced; got=%v", got)
+	}
+	var out recallRelatedOutput
+	structuredAs(t, res, &out)
+	if out.Reinforced != 3 {
+		t.Fatalf("Reinforced = %d, want 3", out.Reinforced)
+	}
+}
+
+// TestRecallRelated_ReinforceCustomWeight asserts reinforce_weight overrides
+// the default pulse magnitude on every traversed edge (#549).
+func TestRecallRelated_ReinforceCustomWeight(t *testing.T) {
+	h := newTestHarness(t)
+	h.fake.illuminateFn = func(_ context.Context, _ string, _ ...client.IlluminateOption) (*client.Graph, error) {
+		return &client.Graph{
+			Vertices: map[string]*client.Vertex{"seed": {Key: "seed"}, "a": {Key: "a"}},
+			Edges:    map[string]map[string]float32{"seed": {"a": 0.7}},
+		}, nil
+	}
+	got := captureReinforce(h.fake, nil)
+	res := h.call(t, "recall_related", map[string]any{
+		"seed": "seed", "reinforce": true, "reinforce_weight": 2.5,
+	})
+	if res.IsError {
+		t.Fatalf("IsError = true")
+	}
+	if got["seed->a"] != 2.5 {
+		t.Fatalf("edge seed->a reinforced with %v, want 2.5 (all=%v)", got["seed->a"], got)
+	}
+}
+
+// TestRecallRelated_ReinforceInDirectionBumpsPredecessors confirms reinforce
+// also strengthens the reverse-walk edges (predecessor -> seed) when
+// direction=in (#549).
+func TestRecallRelated_ReinforceInDirectionBumpsPredecessors(t *testing.T) {
+	h := newTestHarness(t)
+	h.fake.scanEdgesFn = func(_ context.Context, _ ...client.EdgeScanOption) ([]*client.Edge, []byte, error) {
+		return []*client.Edge{
+			{Tail: "x", Head: "seed", Weight: 0.4},
+			{Tail: "y", Head: "seed", Weight: 0.6},
+		}, nil, nil
+	}
+	got := captureReinforce(h.fake, nil)
+	res := h.call(t, "recall_related", map[string]any{
+		"seed": "seed", "direction": "in", "reinforce": true,
+	})
+	if res.IsError {
+		t.Fatalf("IsError = true")
+	}
+	want := map[string]float32{"x->seed": 1, "y->seed": 1}
+	if len(got) != len(want) {
+		t.Fatalf("reinforced edges = %v, want %v", got, want)
+	}
+	for k, w := range want {
+		if got[k] != w {
+			t.Fatalf("edge %q reinforced with %v, want %v (all=%v)", k, got[k], w, got)
+		}
+	}
+	var out recallRelatedOutput
+	structuredAs(t, res, &out)
+	if out.Reinforced != 2 {
+		t.Fatalf("Reinforced = %d, want 2", out.Reinforced)
+	}
+}
+
+// TestRecallRelated_ReinforceIsBestEffort asserts a failing reinforcement
+// write never fails the recall: the neighbours still return and Reinforced
+// reflects that nothing landed (#549).
+func TestRecallRelated_ReinforceIsBestEffort(t *testing.T) {
+	h := newTestHarness(t)
+	h.fake.illuminateFn = func(_ context.Context, _ string, _ ...client.IlluminateOption) (*client.Graph, error) {
+		return &client.Graph{
+			Vertices: map[string]*client.Vertex{
+				"seed": {Key: "seed"}, "a": {Key: "a"}, "b": {Key: "b"},
+			},
+			Edges: map[string]map[string]float32{"seed": {"a": 0.7, "b": 0.1}},
+		}, nil
+	}
+	captureReinforce(h.fake, errors.New("edge store unavailable"))
+	res := h.call(t, "recall_related", map[string]any{"seed": "seed", "reinforce": true})
+	if res.IsError {
+		t.Fatalf("IsError = true; a failed reinforcement must not fail the recall")
+	}
+	var out recallRelatedOutput
+	structuredAs(t, res, &out)
+	if out.Count != 3 {
+		t.Fatalf("Count = %d, want 3 (seed, a, b)", out.Count)
+	}
+	if out.Reinforced != 0 {
+		t.Fatalf("Reinforced = %d, want 0 (no write landed)", out.Reinforced)
+	}
+}
+
+// TestRecallRelated_RejectsUnknownReinforceTTL asserts a bad reinforce_ttl
+// bucket fails fast with a tool error and never writes (#549).
+func TestRecallRelated_RejectsUnknownReinforceTTL(t *testing.T) {
+	h := newTestHarness(t)
+	h.fake.illuminateFn = func(_ context.Context, _ string, _ ...client.IlluminateOption) (*client.Graph, error) {
+		return &client.Graph{Vertices: map[string]*client.Vertex{"seed": {Key: "seed"}}}, nil
+	}
+	h.callExpectError(t, "recall_related", map[string]any{
+		"seed": "seed", "reinforce": true, "reinforce_ttl": "not-a-bucket",
+	})
+	if h.fake.addEdgeCalls != 0 {
+		t.Fatalf("AddEdge called %d times after a bad bucket; want 0", h.fake.addEdgeCalls)
+	}
+}
+
+// TestRecallRelated_ReinforceTTLControlsHorizon asserts reinforce_ttl selects
+// the pulse's decay horizon: a short bucket yields a strictly shorter AddEdge
+// TTL than the conversation default, and neither alters the long-lived base
+// edge (the store keeps each contribution independently) (#549).
+func TestRecallRelated_ReinforceTTLControlsHorizon(t *testing.T) {
+	graph := func(_ context.Context, _ string, _ ...client.IlluminateOption) (*client.Graph, error) {
+		return &client.Graph{
+			Vertices: map[string]*client.Vertex{"seed": {Key: "seed"}, "a": {Key: "a"}},
+			Edges:    map[string]map[string]float32{"seed": {"a": 0.7}},
+		}, nil
+	}
+
+	hDefault := newTestHarness(t)
+	hDefault.fake.illuminateFn = graph
+	hDefault.call(t, "recall_related", map[string]any{"seed": "seed", "reinforce": true})
+	defaultTTL := hDefault.fake.lastEdgeTTL
+
+	hShort := newTestHarness(t)
+	hShort.fake.illuminateFn = graph
+	hShort.call(t, "recall_related", map[string]any{
+		"seed": "seed", "reinforce": true, "reinforce_ttl": "seconds",
+	})
+	shortTTL := hShort.fake.lastEdgeTTL
+
+	if !(shortTTL < defaultTTL) {
+		t.Fatalf("reinforce_ttl=seconds TTL %v should be shorter than default %v", shortTTL, defaultTTL)
 	}
 }

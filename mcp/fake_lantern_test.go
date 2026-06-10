@@ -46,6 +46,7 @@ type fakeLantern struct {
 	lastPutVertices []client.VertexInput
 
 	// AddEdge
+	addEdgeFn      func(ctx context.Context, tail, head string, weight float32, ttl time.Duration) error
 	addEdgeErr     error
 	lastEdgeTail   string
 	lastEdgeHead   string
@@ -144,12 +145,15 @@ func (f *fakeLantern) AddEdges(ctx context.Context, inputs []client.EdgeInput) e
 	return nil
 }
 
-func (f *fakeLantern) AddEdge(_ context.Context, tail, head string, weight float32, ttl time.Duration) error {
+func (f *fakeLantern) AddEdge(ctx context.Context, tail, head string, weight float32, ttl time.Duration) error {
 	f.addEdgeCalls++
 	f.lastEdgeTail = tail
 	f.lastEdgeHead = head
 	f.lastEdgeWeight = weight
 	f.lastEdgeTTL = ttl
+	if f.addEdgeFn != nil {
+		return f.addEdgeFn(ctx, tail, head, weight, ttl)
+	}
 	return f.addEdgeErr
 }
 
