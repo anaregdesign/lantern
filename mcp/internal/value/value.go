@@ -127,17 +127,13 @@ func FromVertex(v *client.Vertex) any {
 // multi-KB values into the model context.
 const SnippetMaxRunes = 120
 
-// Snippet renders a vertex value as a compact, single-line preview for
-// namespace surveys and search results: structured values are JSON-encoded,
-// embedded newlines and tabs are collapsed to spaces, and the result is
-// truncated to SnippetMaxRunes runes with a trailing "…" when shortened. It
-// returns "" for a nil vertex or a nil value. Callers that need the full
-// value should use FromVertex instead.
-func Snippet(v *client.Vertex) string {
-	return snippetN(v, SnippetMaxRunes)
-}
-
-func snippetN(v *client.Vertex, max int) string {
+// Text renders a vertex value as a single-line string with embedded
+// newlines, carriage returns, and tabs collapsed to single spaces, and with
+// NO length limit. Structured values are JSON-encoded. It returns "" for a
+// nil vertex or a nil value. Text is the full-length searchable form used by
+// substring search (search_facts); Snippet is the truncated preview built on
+// top of it.
+func Text(v *client.Vertex) string {
 	val := FromVertex(v)
 	if val == nil {
 		return ""
@@ -153,11 +149,19 @@ func snippetN(v *client.Vertex, max int) string {
 			s = fmt.Sprintf("%v", x)
 		}
 	}
-	s = strings.NewReplacer("\n", " ", "\r", " ", "\t", " ").Replace(s)
-	if max > 0 {
-		if runes := []rune(s); len(runes) > max {
-			return string(runes[:max]) + "…"
-		}
+	return strings.NewReplacer("\n", " ", "\r", " ", "\t", " ").Replace(s)
+}
+
+// Snippet renders a vertex value as a compact, single-line preview for
+// namespace surveys and search results: structured values are JSON-encoded,
+// embedded newlines and tabs are collapsed to spaces, and the result is
+// truncated to SnippetMaxRunes runes with a trailing "…" when shortened. It
+// returns "" for a nil vertex or a nil value. Callers that need the full
+// value should use FromVertex instead.
+func Snippet(v *client.Vertex) string {
+	s := Text(v)
+	if runes := []rune(s); len(runes) > SnippetMaxRunes {
+		return string(runes[:SnippetMaxRunes]) + "…"
 	}
 	return s
 }
