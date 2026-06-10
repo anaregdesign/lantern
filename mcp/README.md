@@ -243,7 +243,7 @@ for `in`, and the union for `both`.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `LANTERN_ADDR` | `http://localhost:6380` | Upstream Lantern endpoint URL (Connect-on-h2c by default; use `https://` for TLS). |
+| `LANTERN_ADDR` | `http://localhost:6380` | Upstream Lantern endpoint URL (Connect-on-h2c by default; use `https://` for TLS). Accepts a **comma-separated list** of endpoints for multi-node failover — see [Multi-node failover](#multi-node-failover). |
 | `LANTERN_MCP_HTTP_ADDR` | `127.0.0.1:6390` | Address the Streamable-HTTP MCP endpoint listens on. Loopback by default; set `0.0.0.0:6390` to expose on all interfaces (the container/Helm defaults). |
 | `LANTERN_MCP_PING_TIMEOUT` | `5s` | Bounds the startup health probe. A failed probe aborts startup with a non-zero exit so MCP clients surface a clear error. |
 | `LANTERN_MCP_TTL_<BUCKET>` | see table above | Per-bucket TTL override. |
@@ -251,6 +251,41 @@ for `in`, and the union for `both`.
 
 Logging is structured JSON via `log/slog` to stderr at `INFO` level;
 there is no log-level or format knob today.
+
+## Multi-node failover
+
+In a high-availability Lantern deployment the cluster runs several
+full-mesh-replicated nodes that hold identical state. Point the MCP at all
+of them by passing a **comma-separated** `LANTERN_ADDR` so the loss of any
+single node does not cut the agent off from its memory:
+
+```sh
+LANTERN_ADDR=http://lantern-0:6380,http://lantern-1:6380,http://lantern-2:6380 \
+  go run ./mcp/cmd
+```
+
+Behaviour:
+
+- **Startup probe.** The health check passes as long as **at least one**
+  endpoint reports `SERVING`; the MCP sticks to that endpoint.
+- **Per-call failover.** Each tool call is sent to the current endpoint.
+  If — and only if — that endpoint is **unreachable** (a connection
+  refused / `Unavailable` transport error), the client rotates to the next
+  endpoint and retries, walking the ring once. Application errors
+  (`not found`, `invalid argument`, rate limiting) are returned as-is and
+  never trigger failover, because a consistent replica answers them
+  identically.
+- **Stickiness.** After a rotation the client stays on the endpoint that
+  answered, so a downed node is not retried on every subsequent call.
+- **Writes.** Failover for the additive edge writes only fires on a
+  pre-delivery `Unavailable` (nothing was committed on the dead node), so a
+  rotation does not double-apply a write in the common node-down case. The
+  residual at-least-once window (a write that commits but whose response is
+  lost) is inherent to any failover and is harmless here — edge weights are
+  additive and `reinforce` is best-effort.
+
+A single (non-comma) `LANTERN_ADDR` keeps the original single-endpoint
+behaviour exactly.
 
 ## Dependency boundary
 
