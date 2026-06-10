@@ -106,6 +106,23 @@ syntax (no `d` suffix — use `168h` for a week). The resolved durations
 must remain **strictly monotonic**; a misordered configuration is a
 fatal startup error.
 
+### Capping long buckets to a low server `LANTERN_TOMBSTONE_TTL`
+
+The upstream Lantern server **rejects** any write whose expiry exceeds its
+`LANTERN_TOMBSTONE_TTL` with `invalid_argument`. The server default
+(`8760h`, 1 year) sits above the longest bucket, so out of the box every
+bucket is accepted. But a node deliberately run with a short tombstone
+window (e.g. `LANTERN_TOMBSTONE_TTL=24h`) would make `week` and longer
+buckets fail hard.
+
+Set `LANTERN_MCP_MAX_TTL` to the same (or a smaller) value to have the MCP
+**clamp** each bucket's horizon down to that cap *before* writing, instead
+of surfacing an error. When a write is clamped, the tool result sets
+`"capped": true`, reports the shortened `expires_at`, and the text content
+reminds you to re-`remember_*` before it expires. The bucket label is
+preserved so the intent is still legible. Unset (the default) means **no
+cap** — buckets resolve to their nominal horizons.
+
 ## Environment reference
 
 | Variable | Default | Purpose |
@@ -114,6 +131,7 @@ fatal startup error.
 | `LANTERN_MCP_HTTP_ADDR` | `127.0.0.1:6390` | Address the Streamable-HTTP MCP endpoint listens on. Loopback by default; set `0.0.0.0:6390` to expose on all interfaces (the container/Helm defaults). |
 | `LANTERN_MCP_PING_TIMEOUT` | `5s` | Bounds the startup health probe. A failed probe aborts startup with a non-zero exit so MCP clients surface a clear error. |
 | `LANTERN_MCP_TTL_<BUCKET>` | see table above | Per-bucket TTL override. |
+| `LANTERN_MCP_MAX_TTL` | unset (no cap) | Clamp every resolved bucket to at most this duration, matching a low upstream `LANTERN_TOMBSTONE_TTL`. Clamped writes report `"capped": true`. `time.ParseDuration` syntax. |
 
 Logging is structured JSON via `log/slog` to stderr at `INFO` level;
 there is no log-level or format knob today.

@@ -137,3 +137,93 @@ func TestEnvVar(t *testing.T) {
 		t.Fatalf("EnvVar(Day) = %q, want LANTERN_MCP_TTL_DAY", got)
 	}
 }
+
+func TestResolveCapped_NoCapByDefault(t *testing.T) {
+	r, err := loadFrom(func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatalf("loadFrom(empty env) returned error: %v", err)
+	}
+	if r.MaxTTL() != 0 {
+		t.Fatalf("MaxTTL() = %v, want 0 (no cap) when %s unset", r.MaxTTL(), MaxTTLEnvVar)
+	}
+	// Every bucket resolves to its nominal horizon and never reports capped.
+	for _, b := range AllBuckets() {
+		d, capped := r.ResolveCapped(b)
+		if capped {
+			t.Fatalf("ResolveCapped(%v) reported capped with no cap configured", b)
+		}
+		if d != Defaults[b] {
+			t.Fatalf("ResolveCapped(%v) = %v, want %v", b, d, Defaults[b])
+		}
+	}
+}
+
+func TestResolveCapped_ClampsOverCapBuckets(t *testing.T) {
+	// Mirror an operator whose server runs LANTERN_TOMBSTONE_TTL=24h: the MCP
+	// cap is set to match, so day and below pass through untouched while
+	// week+ clamp down to 24h instead of producing invalid_argument.
+	env := map[string]string{MaxTTLEnvVar: "24h"}
+	r, err := loadFrom(func(k string) (string, bool) { v, ok := env[k]; return v, ok })
+	if err != nil {
+		t.Fatalf("loadFrom returned error: %v", err)
+	}
+	if r.MaxTTL() != 24*time.Hour {
+		t.Fatalf("MaxTTL() = %v, want 24h", r.MaxTTL())
+	}
+	cap := 24 * time.Hour
+	for _, b := range AllBuckets() {
+		d, capped := r.ResolveCapped(b)
+		nominal := Defaults[b]
+		if nominal > cap {
+			if !capped {
+				t.Errorf("ResolveCapped(%v): capped = false, want true (nominal %v > cap %v)", b, nominal, cap)
+			}
+			if d != cap {
+				t.Errorf("ResolveCapped(%v) = %v, want %v (clamped)", b, d, cap)
+			}
+			continue
+		}
+		if capped {
+			t.Errorf("ResolveCapped(%v): capped = true, want false (nominal %v <= cap %v)", b, nominal, cap)
+		}
+		if d != nominal {
+			t.Errorf("ResolveCapped(%v) = %v, want %v (unclamped)", b, d, nominal)
+		}
+	}
+}
+
+func TestResolveCapped_ExactCapNotReportedCapped(t *testing.T) {
+	// A bucket whose nominal horizon equals the cap is NOT clamped — the
+	// boundary is inclusive, so no misleading "capped" flag fires.
+	env := map[string]string{MaxTTLEnvVar: Defaults[Day].String()}
+	r, err := loadFrom(func(k string) (string, bool) { v, ok := env[k]; return v, ok })
+	if err != nil {
+		t.Fatalf("loadFrom returned error: %v", err)
+	}
+	d, capped := r.ResolveCapped(Day)
+	if capped {
+		t.Fatalf("ResolveCapped(Day) reported capped when nominal == cap")
+	}
+	if d != Defaults[Day] {
+		t.Fatalf("ResolveCapped(Day) = %v, want %v", d, Defaults[Day])
+	}
+}
+
+func TestLoadFromEnv_MaxTTLInvalid(t *testing.T) {
+	env := map[string]string{MaxTTLEnvVar: "1y"} // "y" unsupported by ParseDuration
+	_, err := loadFrom(func(k string) (string, bool) { v, ok := env[k]; return v, ok })
+	if err == nil {
+		t.Fatal("loadFrom with invalid max TTL returned nil error")
+	}
+	if !strings.Contains(err.Error(), MaxTTLEnvVar) {
+		t.Fatalf("error %q does not mention %s", err, MaxTTLEnvVar)
+	}
+}
+
+func TestLoadFromEnv_MaxTTLNonPositive(t *testing.T) {
+	env := map[string]string{MaxTTLEnvVar: "0s"}
+	_, err := loadFrom(func(k string) (string, bool) { v, ok := env[k]; return v, ok })
+	if err == nil {
+		t.Fatal("loadFrom with 0s max TTL returned nil error")
+	}
+}

@@ -22,6 +22,10 @@ type rememberRelationOutput struct {
 	Bucket    string  `json:"bucket"`
 	Weight    float32 `json:"weight"`
 	ExpiresAt string  `json:"expires_at"`
+	// Capped is true when the bucket's nominal horizon was clamped down to
+	// LANTERN_MCP_MAX_TTL before writing, so the caller knows the stored
+	// expiry is shorter than the bucket label implies.
+	Capped bool `json:"capped,omitempty"`
 }
 
 const rememberRelationDescription = "Add (or reinforce) a directed relation from one fact to another. Call this PROACTIVELY whenever you learn how two things connect — you do not need to be asked. IMPORTANT: writes are ADDITIVE — writing the same relation twice STRENGTHENS it, it does not idempotently overwrite. This is the Hebbian-style memory primitive: frequent short-TTL writes accumulate into strong associations, while weak relations decay, so reinforce associations you keep using. Use remember_fact to ensure the endpoint keys exist."
@@ -42,7 +46,7 @@ func registerRememberRelation(srv *mcp.Server, lc lanternClient, r *ttl.Resolver
 		if weight == 0 {
 			weight = 1
 		}
-		d := r.Resolve(bucket)
+		d, capped := r.ResolveCapped(bucket)
 		if err := lc.AddEdge(ctx, in.From, in.To, weight, d); err != nil {
 			return nil, rememberRelationOutput{}, mapSDKError("remember_relation", err)
 		}
@@ -52,10 +56,15 @@ func registerRememberRelation(srv *mcp.Server, lc lanternClient, r *ttl.Resolver
 			Bucket:    bucket.String(),
 			Weight:    weight,
 			ExpiresAt: time.Now().Add(d).UTC().Format(time.RFC3339),
+			Capped:    capped,
+		}
+		text := fmt.Sprintf("Added relation %q -> %q (+%.2f, bucket=%s, expires≈%s). Repeated calls strengthen.", in.From, in.To, weight, out.Bucket, out.ExpiresAt)
+		if capped {
+			text += fmt.Sprintf(" Note: TTL clamped to the server cap (%s); re-remember before it expires to keep the relation alive.", d)
 		}
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{
-				Text: fmt.Sprintf("Added relation %q -> %q (+%.2f, bucket=%s, expires≈%s). Repeated calls strengthen.", in.From, in.To, weight, out.Bucket, out.ExpiresAt),
+				Text: text,
 			}},
 		}, out, nil
 	})

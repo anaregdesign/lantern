@@ -65,3 +65,28 @@ func TestRememberRelationDescription_IsProactive(t *testing.T) {
 		t.Errorf("rememberRelationDescription should keep the ADDITIVE-write contract: %q", rememberRelationDescription)
 	}
 }
+
+// TestRememberRelation_TTLCappedToMaxTTL mirrors the fact-side clamp (#537):
+// with LANTERN_MCP_MAX_TTL=24h, a durable relation is written with the
+// clamped TTL and reports capped=true instead of letting the server reject
+// the over-cap Expiration.
+func TestRememberRelation_TTLCappedToMaxTTL(t *testing.T) {
+	h := newTestHarnessWith(t, mustCappedResolver(t, "24h"))
+	res := h.call(t, "remember_relation", map[string]any{
+		"from": "user.identity.role", "to": "project.lantern", "ttl": "durable",
+	})
+	if res.IsError {
+		t.Fatalf("IsError = true, text=%q", contentText(res))
+	}
+	if h.fake.lastEdgeTTL != 24*time.Hour {
+		t.Fatalf("lastEdgeTTL = %v, want clamped 24h", h.fake.lastEdgeTTL)
+	}
+	var out rememberRelationOutput
+	structuredAs(t, res, &out)
+	if !out.Capped {
+		t.Fatalf("output Capped = false, want true; out=%+v", out)
+	}
+	if !strings.Contains(contentText(res), "clamped") {
+		t.Fatalf("result text should mention the clamp; got %q", contentText(res))
+	}
+}
