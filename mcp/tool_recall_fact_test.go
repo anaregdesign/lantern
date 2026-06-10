@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -49,4 +50,15 @@ func TestRecallFact_NotFoundIsStructured(t *testing.T) {
 func TestRecallFact_RejectsEmptyKey(t *testing.T) {
 	h := newTestHarness(t)
 	h.callExpectError(t, "recall_fact", map[string]any{"key": ""})
+}
+
+// TestRecallFactDescription_IsProactive guards the recall-before-answering
+// framing while keeping the no-refresh invariant (#528).
+func TestRecallFactDescription_IsProactive(t *testing.T) {
+	if !strings.Contains(strings.ToUpper(recallFactDescription), "PROACTIVELY") {
+		t.Errorf("recallFactDescription should tell the agent to recall PROACTIVELY: %q", recallFactDescription)
+	}
+	if !strings.Contains(recallFactDescription, "does NOT refresh") {
+		t.Errorf("recallFactDescription should keep the recall-does-not-refresh invariant: %q", recallFactDescription)
+	}
 }

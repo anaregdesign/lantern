@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -52,4 +53,15 @@ func TestRememberRelation_RejectsEmptyEndpoints(t *testing.T) {
 	h.callExpectError(t, "remember_relation", map[string]any{
 		"from": "a", "to": "", "ttl": "turn",
 	})
+}
+
+// TestRememberRelationDescription_IsProactive guards the proactive framing
+// for capturing associations, plus the additive-write contract (#528).
+func TestRememberRelationDescription_IsProactive(t *testing.T) {
+	if !strings.Contains(strings.ToUpper(rememberRelationDescription), "PROACTIVELY") {
+		t.Errorf("rememberRelationDescription should tell the agent to act PROACTIVELY: %q", rememberRelationDescription)
+	}
+	if !strings.Contains(rememberRelationDescription, "ADDITIVE") {
+		t.Errorf("rememberRelationDescription should keep the ADDITIVE-write contract: %q", rememberRelationDescription)
+	}
 }

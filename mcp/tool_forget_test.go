@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -43,4 +44,13 @@ func TestForget_MissingKeyIsNotError(t *testing.T) {
 func TestForget_RejectsEmptyKey(t *testing.T) {
 	h := newTestHarness(t)
 	h.callExpectError(t, "forget", map[string]any{"key": ""})
+}
+
+// TestForgetDescription_DiscouragesRoutineUse guards the framing that
+// forget is for wrong/unwanted facts, not routine staleness (TTL handles
+// that), so the agent does not over-delete (#528).
+func TestForgetDescription_DiscouragesRoutineUse(t *testing.T) {
+	if !strings.Contains(forgetDescription, "TTL decay") {
+		t.Errorf("forgetDescription should point routine staleness at TTL decay: %q", forgetDescription)
+	}
 }

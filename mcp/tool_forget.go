@@ -16,7 +16,7 @@ type forgetOutput struct {
 	Existed bool   `json:"existed"`
 }
 
-const forgetDescription = "Delete a fact by exact key. Idempotent: deleting a missing key returns existed=false rather than erroring. Edges incident to the key are NOT cascade-deleted — they will decay naturally on their own TTL."
+const forgetDescription = "Delete a fact by exact key. Use this only when a fact is now wrong or the user asks you to forget it — normal staleness is handled by TTL decay, so you rarely need to call this. Idempotent: deleting a missing key returns existed=false rather than erroring. Edges incident to the key are NOT cascade-deleted — they will decay naturally on their own TTL."
 
 func registerForget(srv *mcp.Server, lc lanternClient) {
 	mcp.AddTool(srv, &mcp.Tool{

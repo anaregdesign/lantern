@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -82,4 +83,15 @@ func TestRecallRelated_PropagatesIlluminateOptions(t *testing.T) {
 func TestRecallRelated_RejectsEmptySeed(t *testing.T) {
 	h := newTestHarness(t)
 	h.callExpectError(t, "recall_related", map[string]any{"seed": ""})
+}
+
+// TestRecallRelatedDescription_IsProactive guards the recall-before-
+// answering framing while keeping the no-refresh invariant (#528).
+func TestRecallRelatedDescription_IsProactive(t *testing.T) {
+	if !strings.Contains(strings.ToUpper(recallRelatedDescription), "PROACTIVELY") {
+		t.Errorf("recallRelatedDescription should tell the agent to recall PROACTIVELY: %q", recallRelatedDescription)
+	}
+	if !strings.Contains(recallRelatedDescription, "does NOT refresh") {
+		t.Errorf("recallRelatedDescription should keep the recall-does-not-refresh invariant: %q", recallRelatedDescription)
+	}
 }

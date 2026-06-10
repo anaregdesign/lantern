@@ -269,12 +269,22 @@ func newServer(lc lanternClient, resolver *ttl.Resolver, logger *slog.Logger) *m
 }
 
 // serverInstructions is the system-prompt-style guidance the MCP server
-// advertises to the LLM at session-open. The wording is deliberate:
-//   - states the core mental model (decaying graph),
-//   - calls out the single most-violated invariant (recall does NOT
-//     refresh TTL), and
-//   - gives a one-line tie-breaker for ambiguous bucket choices.
+// advertises to the LLM at session-open. The wording is deliberate and
+// does three jobs:
+//   - states the core mental model (a decaying graph) and the single
+//     most-violated invariant (recall does NOT refresh TTL);
+//   - mandates an ambient capture+recall LOOP (recall before answering,
+//     capture after a substantive exchange) so memory accrues without the
+//     user having to ask for it; and
+//   - establishes a key-namespace convention (user.* / project.* /
+//     session.*) so the captured graph stays navigable as a mind map in
+//     Admin Illuminate.
 //
 // Changing this text is an LLM-behavior-affecting change; treat it the
 // way you would a prompt update and call it out in release notes.
-const serverInstructions = "Lantern is a decaying graph memory. Vertices (facts) and edges (relations) carry TTLs and disappear when they expire. Two critical properties: (1) there is no \"forever\" — every write picks a bucket from {seconds, transient, turn, conversation, task, workday, day, week, sprint, month, quarter, durable}; (2) recall does NOT refresh TTL, so to keep a fact alive you must call remember_fact again. When in doubt about the right bucket, ask yourself \"when will this stop being true?\" and \"how bad is it if this lingers past then?\" — and pick the SHORTER bucket. Relations are additive: writing the same relation twice strengthens it."
+const serverInstructions = "Lantern is your ambient, decaying graph memory. Use it proactively — you do not need to be asked. Run this loop every turn: " +
+	"(1) RECALL FIRST: before answering anything that could depend on remembered context, call recall_fact (exact key), recall_related (walk from a seed), or list_under (enumerate a namespace) to pull in what you already know. " +
+	"(2) ANSWER using what you recalled. " +
+	"(3) CAPTURE AFTER: once the exchange settles, write any new durable facts with remember_fact and any new associations with remember_relation — preferences, decisions, identities, project facts, and how they connect. Capturing is the default, not the exception. " +
+	"Two invariants govern every write: (a) there is no \"forever\" — each write picks a TTL bucket from {seconds, transient, turn, conversation, task, workday, day, week, sprint, month, quarter, durable}; (b) recall does NOT refresh TTL, so to keep a fact alive you must re-remember it when you reference it. Choosing a bucket: ask \"when will this stop being true?\" and \"how bad is it if this lingers past then?\" and pick the SHORTER one. Relations are additive — writing the same relation twice strengthens it, so reinforce associations you keep using. " +
+	"Namespace keys so the graph reads as a mind map: user.* for stable facts about the person (user.preferences.tone, user.identity.role), project.* for the work at hand (project.lantern.stack), session.* for ephemeral working state (session.current-task). Prefer dotted, hierarchical keys; reuse a key to update its value."

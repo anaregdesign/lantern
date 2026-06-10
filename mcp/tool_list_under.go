@@ -38,7 +38,7 @@ type listUnderOutput struct {
 	Suggestion string           `json:"suggestion,omitempty"`
 }
 
-const listUnderDescription = "Enumerate facts whose key starts with the given prefix, in ascending key order. Defaults to 50 entries, max 500. If has_more=true the result is truncated; narrow the prefix or follow the suggestion. Does NOT refresh TTL for the listed facts."
+const listUnderDescription = "Enumerate facts whose key starts with the given prefix, in ascending key order. Call this PROACTIVELY to survey a namespace (e.g. user. or project.) before answering, so you recall everything you know about that topic. Defaults to 50 entries, max 500. If has_more=true the result is truncated; narrow the prefix or follow the suggestion. Does NOT refresh TTL for the listed facts."
 
 func registerListUnder(srv *mcp.Server, lc lanternClient) {
 	mcp.AddTool(srv, &mcp.Tool{
