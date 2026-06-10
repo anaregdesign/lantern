@@ -25,7 +25,7 @@ type rememberFactOutput struct {
 	ExpiresAt string `json:"expires_at"`
 }
 
-const rememberFactDescription = "Store a fact in Lantern with a required TTL bucket. The value can be any JSON-encodable shape (string, number, bool, object, array). Writing the same key again overwrites the previous value and resets the TTL — that is the canonical way to refresh a fact since recall does NOT refresh."
+const rememberFactDescription = "Store a fact in Lantern with a required TTL bucket. Call this PROACTIVELY whenever the user states a durable preference, decision, identity, or project fact — you do not need to be asked. The value can be any JSON-encodable shape (string, number, bool, object, array). Use a dotted namespaced key (user.* / project.* / session.*). Writing the same key again overwrites the previous value and resets the TTL — that is the canonical way to refresh a fact since recall does NOT refresh."
 
 func registerRememberFact(srv *mcp.Server, lc lanternClient, r *ttl.Resolver) {
 	mcp.AddTool(srv, &mcp.Tool{

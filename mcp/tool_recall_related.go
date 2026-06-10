@@ -63,7 +63,7 @@ type recallRelatedOutput struct {
 	Neighbors []recallRelatedNeighbor `json:"neighbors"`
 }
 
-const recallRelatedDescription = "Walk Lantern's graph from a seed key, returning the related facts with their cumulative edge weights. Use step + k to bound exploration. Use algorithm + objective + weighting to control how the discovered subgraph is reduced and weighted (see #410). IMPORTANT: recall does NOT refresh TTL for any vertex or edge visited; weak relations will still decay on schedule."
+const recallRelatedDescription = "Walk Lantern's graph from a seed key, returning the related facts with their cumulative edge weights. Call this PROACTIVELY to pull in surrounding context before answering — start from the most relevant known key. Use step + k to bound exploration. Use algorithm + objective + weighting to control how the discovered subgraph is reduced and weighted (see #410). IMPORTANT: recall does NOT refresh TTL for any vertex or edge visited; weak relations will still decay on schedule."
 
 func registerRecallRelated(srv *mcp.Server, lc lanternClient) {
 	mcp.AddTool(srv, &mcp.Tool{

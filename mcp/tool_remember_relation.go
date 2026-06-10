@@ -24,7 +24,7 @@ type rememberRelationOutput struct {
 	ExpiresAt string  `json:"expires_at"`
 }
 
-const rememberRelationDescription = "Add (or reinforce) a directed relation from one fact to another. IMPORTANT: writes are ADDITIVE — writing the same relation twice STRENGTHENS it, it does not idempotently overwrite. This is the Hebbian-style memory primitive: frequent short-TTL writes accumulate into strong associations, while weak relations decay. Use remember_fact to ensure the endpoint keys exist."
+const rememberRelationDescription = "Add (or reinforce) a directed relation from one fact to another. Call this PROACTIVELY whenever you learn how two things connect — you do not need to be asked. IMPORTANT: writes are ADDITIVE — writing the same relation twice STRENGTHENS it, it does not idempotently overwrite. This is the Hebbian-style memory primitive: frequent short-TTL writes accumulate into strong associations, while weak relations decay, so reinforce associations you keep using. Use remember_fact to ensure the endpoint keys exist."
 
 func registerRememberRelation(srv *mcp.Server, lc lanternClient, r *ttl.Resolver) {
 	mcp.AddTool(srv, &mcp.Tool{

@@ -25,7 +25,7 @@ type recallFactOutput struct {
 	ExpiresAt string `json:"expires_at,omitempty"`
 }
 
-const recallFactDescription = "Look up a single fact by exact key. Returns {found=false} for missing keys (this is a structured result, NOT a tool error). IMPORTANT: recalling a fact does NOT refresh its TTL — the fact will still decay on schedule. To extend a fact's lifetime, call remember_fact again."
+const recallFactDescription = "Look up a single fact by exact key. Call this PROACTIVELY at the start of a turn — before answering anything that might depend on what you already know about the user or project. Returns {found=false} for missing keys (this is a structured result, NOT a tool error). IMPORTANT: recalling a fact does NOT refresh its TTL — the fact will still decay on schedule. To extend a fact's lifetime, call remember_fact again."
 
 func registerRecallFact(srv *mcp.Server, lc lanternClient) {
 	mcp.AddTool(srv, &mcp.Tool{

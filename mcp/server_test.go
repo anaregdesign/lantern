@@ -135,3 +135,39 @@ func TestMCPHTTPHandler_ServesMCPOverStreamableHTTP(t *testing.T) {
 		t.Fatalf("ping content = %q, want pong", got)
 	}
 }
+
+// TestServerInstructions_DefinesCaptureRecallLoop asserts the
+// session-open instructions advertise the ambient loop contract: recall
+// before answering, capture after the exchange, the no-forever / recall-
+// does-not-refresh invariants, and the key-namespace convention. These
+// are string-level guards so a future edit cannot silently drop the
+// loop-shaped guidance the LLM relies on (#528).
+func TestServerInstructions_DefinesCaptureRecallLoop(t *testing.T) {
+	lower := strings.ToLower(serverInstructions)
+	for _, want := range []string{
+		"recall",   // step 1
+		"answer",   // step 2
+		"capture",  // step 3
+		"proactiv", // proactive framing (matches proactive/proactively)
+		"does not refresh",
+		"there is no \"forever\"",
+	} {
+		if !strings.Contains(lower, strings.ToLower(want)) {
+			t.Errorf("serverInstructions missing %q", want)
+		}
+	}
+	// All three namespace prefixes must be named so the captured graph is
+	// navigable as a mind map.
+	for _, ns := range []string{"user.", "project.", "session."} {
+		if !strings.Contains(serverInstructions, ns) {
+			t.Errorf("serverInstructions missing namespace %q", ns)
+		}
+	}
+	// Every memory tool should be referenced so the agent knows the full
+	// toolset participates in the loop.
+	for _, tool := range []string{"remember_fact", "recall_fact", "recall_related", "list_under", "remember_relation"} {
+		if !strings.Contains(serverInstructions, tool) {
+			t.Errorf("serverInstructions does not mention tool %q", tool)
+		}
+	}
+}

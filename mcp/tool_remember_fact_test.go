@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -75,4 +76,15 @@ func TestRememberFact_RejectsUnknownBucket(t *testing.T) {
 		t.Fatalf("PutVertex should not have been called; calls=%d", h.fake.putVertexCalls)
 	}
 	_ = res
+}
+
+// TestRememberFactDescription_IsProactive guards the proactive framing
+// that nudges the agent to capture facts without being asked (#528).
+func TestRememberFactDescription_IsProactive(t *testing.T) {
+	if !strings.Contains(strings.ToUpper(rememberFactDescription), "PROACTIVELY") {
+		t.Errorf("rememberFactDescription should tell the agent to act PROACTIVELY: %q", rememberFactDescription)
+	}
+	if !strings.Contains(rememberFactDescription, "does NOT refresh") {
+		t.Errorf("rememberFactDescription should keep the recall-does-not-refresh invariant: %q", rememberFactDescription)
+	}
 }

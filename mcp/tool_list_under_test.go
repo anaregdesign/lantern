@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -59,4 +60,15 @@ func TestListUnder_RespectsExplicitLimit(t *testing.T) {
 func TestListUnder_RejectsEmptyPrefix(t *testing.T) {
 	h := newTestHarness(t)
 	h.callExpectError(t, "list_under", map[string]any{"prefix": ""})
+}
+
+// TestListUnderDescription_IsProactive guards the survey-before-answering
+// framing while keeping the no-refresh invariant (#528).
+func TestListUnderDescription_IsProactive(t *testing.T) {
+	if !strings.Contains(strings.ToUpper(listUnderDescription), "PROACTIVELY") {
+		t.Errorf("listUnderDescription should tell the agent to survey PROACTIVELY: %q", listUnderDescription)
+	}
+	if !strings.Contains(listUnderDescription, "NOT refresh") {
+		t.Errorf("listUnderDescription should keep the does-not-refresh invariant: %q", listUnderDescription)
+	}
 }
