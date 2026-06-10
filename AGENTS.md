@@ -12,7 +12,7 @@ This project used to be split across four separate repositories (`lantern` / `la
 | `core/` | `github.com/anaregdesign/lantern/core` | **Leaf.** Reusable building blocks: graph, cache, collections, concurrency, NLP. |
 | `sdks/go/` | `github.com/anaregdesign/lantern/sdks/go` | Go client SDK. Depends on `pb/` only. |
 | `server/` | `github.com/anaregdesign/lantern/server` | Connect/HTTP-2 server (DI via google/wire). Depends on `pb/` and `core/`. **Does not depend on the client SDK.** |
-| `mcp/` | `github.com/anaregdesign/lantern/mcp` | MCP server binary that exposes Lantern as a decaying-memory tool to LLM agents. Depends on `pb/` and `sdks/go/` only. Ships as the `lantern-mcp` container. |
+| `mcp/` | `github.com/anaregdesign/lantern/mcp` | MCP server binary that exposes Lantern as a decaying-memory tool to LLM agents over **Streamable HTTP** (default `:6390`, endpoint `/mcp`). Depends on `pb/` and `sdks/go/` only. Ships as the `lantern-mcp` container. |
 | `.` (root) | `github.com/anaregdesign/lantern` | Umbrella module — hosts the CLI (`cli/`) and cross-module integration tests (`tests/integration/`). Depends on all five submodules. |
 | `proto/` | (no Go module) | `.proto` sources, regenerated with buf. |
 | `admin/` | (TypeScript, not Go) | Browser-only React Router SPA that talks to the server over Connect-Web. **Not** part of `go.work`. Bun-managed (same pin as `sdks/node/`), Fluent UI v9 / Sigma.js stack. See [admin/README.md](admin/README.md). |

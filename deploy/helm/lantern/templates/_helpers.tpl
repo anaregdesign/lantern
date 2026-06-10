@@ -110,3 +110,27 @@ app.kubernetes.io/version: {{ .Values.admin.image.tag | default .Chart.AppVersio
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/part-of: {{ include "lantern.name" . }}
 {{- end -}}
+
+{{/*
+MCP-scoped helpers (gated by .Values.mcp.enabled). lantern-mcp serves
+the Model Context Protocol over Streamable HTTP, so it ships as its own
+Deployment + Service (mirroring the admin pattern) with a distinct
+fullname / selector that does not collide with the server StatefulSet.
+*/}}
+{{- define "lantern.mcpFullname" -}}
+{{- printf "%s-mcp" (include "lantern.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "lantern.mcpSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "lantern.name" . }}-mcp
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: mcp
+{{- end -}}
+
+{{- define "lantern.mcpLabels" -}}
+helm.sh/chart: {{ include "lantern.chart" . }}
+{{ include "lantern.mcpSelectorLabels" . }}
+app.kubernetes.io/version: {{ .Values.mcp.image.tag | default .Chart.AppVersion | quote }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+app.kubernetes.io/part-of: {{ include "lantern.name" . }}
+{{- end -}}

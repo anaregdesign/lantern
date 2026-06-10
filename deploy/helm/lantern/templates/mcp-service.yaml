@@ -1,0 +1,22 @@
+{{- if .Values.mcp.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "lantern.mcpFullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lantern.mcpLabels" . | nindent 4 }}
+  {{- with .Values.mcp.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.mcp.service.type }}
+  selector:
+    {{- include "lantern.mcpSelectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.mcp.service.port }}
+      targetPort: http
+      protocol: TCP
+{{- end }}

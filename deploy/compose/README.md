@@ -155,23 +155,22 @@ also ships a `lantern-mcp` service behind a Compose profile, so the
 same MCP container can be exercised against the 3-replica cluster:
 
 ```shell
-# Single-node (small file): bring lantern up in the background, then
-# attach the MCP container interactively.
-docker compose -f docker-compose.mcp.yml up -d lantern
-docker compose -f docker-compose.mcp.yml run --rm lantern-mcp
+# Single-node (small file): bring lantern + the MCP server up together.
+docker compose -f docker-compose.mcp.yml up -d
 
 # HA cluster (this file): same lantern-mcp container, but talking to
 # the 3-replica cluster — Compose DNS round-robins `lantern:6380`
 # across the live replicas.
-docker compose --profile mcp run --rm lantern-mcp
+docker compose --profile mcp up -d lantern-mcp
 ```
 
-`docker compose up` is the wrong verb in both cases — the MCP server
-is **stdio-only** (`mcp/cmd/main.go` mounts `&mcp.StdioTransport{}`),
-so backgrounding the container would leave nothing consuming stdout.
+`lantern-mcp` serves the Model Context Protocol over **Streamable
+HTTP**, so it's a long-lived service: bring it up with `up -d` and
+point your agent at `http://localhost:6390/mcp` (a `GET /healthz`
+returns `200 ok` for probes).
 
 In production, the agent runtime (Claude Desktop, VS Code, Cursor, …)
-owns the MCP container's lifetime — see
+connects to that URL — see
 [`../../mcp/examples/`](../../mcp/examples/) for those configs and
 [`../../mcp/README.md`](../../mcp/README.md) for the full operator
 reference.

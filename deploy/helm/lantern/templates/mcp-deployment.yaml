@@ -1,0 +1,93 @@
+{{- if .Values.mcp.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "lantern.mcpFullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lantern.mcpLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.mcp.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "lantern.mcpSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "lantern.mcpSelectorLabels" . | nindent 8 }}
+        {{- with .Values.mcp.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.mcp.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.mcp.podSecurityContext | nindent 8 }}
+      {{- with .Values.mcp.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.mcp.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.mcp.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: mcp
+          image: "{{ .Values.mcp.image.repository }}:{{ .Values.mcp.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.mcp.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.mcp.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.mcp.service.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+            successThreshold: 1
+          env:
+            # Bind all interfaces inside the container so the Service can
+            # reach the listener (the bare binary defaults to loopback).
+            - name: LANTERN_MCP_HTTP_ADDR
+              value: {{ printf "0.0.0.0:%v" .Values.mcp.service.port | quote }}
+            # Dial the in-cluster lantern by default; override mcp.lanternAddr
+            # only when the MCP server runs in a different namespace / cluster.
+            - name: LANTERN_ADDR
+              value: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "lantern.fullname" .) .Release.Namespace .Values.service.port) .Values.mcp.lanternAddr | quote }}
+            - name: LANTERN_MCP_PING_TIMEOUT
+              value: {{ .Values.mcp.pingTimeout | quote }}
+            {{- range $bucket, $ttl := .Values.mcp.ttl }}
+            {{- if $ttl }}
+            - name: {{ printf "LANTERN_MCP_TTL_%s" (upper $bucket) }}
+              value: {{ $ttl | quote }}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.mcp.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.mcp.resources | nindent 12 }}
+{{- end }}

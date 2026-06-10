@@ -17,17 +17,24 @@ reference for operators and contributors.
 
 ## Run
 
-The binary speaks MCP over **stdio**. Diagnostics go to stderr; stdout
-is owned by the JSON-RPC stream.
+The binary serves MCP over **Streamable HTTP** (MCP spec 2025-06-18). It
+listens on `LANTERN_MCP_HTTP_ADDR` (default `127.0.0.1:6390`), serves the
+MCP endpoint at `/mcp`, and answers a plain `/healthz` probe with
+`200 ok`. All diagnostics go to stderr.
 
 ### From a container (recommended)
 
 ```shell
 # Pin to a release tag — never `:latest` for agent runtimes.
-docker run --rm -i \
+docker run --rm \
+  -p 6390:6390 \
   -e LANTERN_ADDR=host.docker.internal:6380 \
-  ghcr.io/anaregdesign/lantern-mcp:v0.1.0
+  ghcr.io/anaregdesign/lantern-mcp:v0.4.0
 ```
+
+Point your agent at `http://localhost:6390/mcp`. The image sets
+`LANTERN_MCP_HTTP_ADDR=0.0.0.0:6390` so the published port is reachable
+(the bare binary defaults to loopback — see **Network & security**).
 
 The image is published on every `mcp/vX.Y.Z` tag push (see
 [mcp-publish.yml](../.github/workflows/mcp-publish.yml)). Both `vX.Y.Z`
@@ -36,9 +43,25 @@ and bare `X.Y.Z` tag forms are available, plus `latest` and `sha-<short>`.
 ### From source
 
 ```shell
-# from repo root
+# from repo root — serves http://127.0.0.1:6390/mcp
 LANTERN_ADDR=http://localhost:6380 go run ./mcp/cmd
 ```
+
+### Network & security
+
+The MCP endpoint is **unauthenticated**. The defaults are conservative:
+
+- The bare binary binds **loopback only** (`127.0.0.1:6390`), so nothing
+  off-host can reach it unless you opt in via `LANTERN_MCP_HTTP_ADDR`.
+- The container and Helm chart set `0.0.0.0:6390` because the port has to
+  cross the container boundary — only publish it on trusted networks.
+- The handler wraps the MCP endpoint in `net/http` cross-origin
+  protection (a DNS-rebinding defence) and the go-sdk rejects loopback
+  requests carrying a non-loopback `Host` header. `/healthz` is
+  unprotected so orchestrator probes (which send no `Origin`) pass.
+
+`SIGINT`/`SIGTERM` triggers a graceful drain (5s) of in-flight requests
+before exit.
 
 ## Tools
 
@@ -88,12 +111,12 @@ fatal startup error.
 | Variable | Default | Purpose |
 |---|---|---|
 | `LANTERN_ADDR` | `http://localhost:6380` | Upstream Lantern endpoint URL (Connect-on-h2c by default; use `https://` for TLS). |
+| `LANTERN_MCP_HTTP_ADDR` | `127.0.0.1:6390` | Address the Streamable-HTTP MCP endpoint listens on. Loopback by default; set `0.0.0.0:6390` to expose on all interfaces (the container/Helm defaults). |
 | `LANTERN_MCP_PING_TIMEOUT` | `5s` | Bounds the startup health probe. A failed probe aborts startup with a non-zero exit so MCP clients surface a clear error. |
 | `LANTERN_MCP_TTL_<BUCKET>` | see table above | Per-bucket TTL override. |
 
-Logging is structured JSON via `log/slog` to stderr at `INFO` level
-(stdout is owned by the JSON-RPC stream); there is no log-level or
-format knob today.
+Logging is structured JSON via `log/slog` to stderr at `INFO` level;
+there is no log-level or format knob today.
 
 ## Dependency boundary
 
@@ -115,7 +138,8 @@ Built by [mcp-publish.yml](../.github/workflows/mcp-publish.yml) on every
 - Tag forms: `vX.Y.Z`, `X.Y.Z`, `latest` (non-prerelease only), `sha-<short>`.
 - Multi-arch: `linux/amd64` + `linux/arm64`.
 - Base: `gcr.io/distroless/static:nonroot` (no shell, no writable FS —
-  fine for stdio MCP, but `docker exec` is not supported).
+  the server needs neither, but `docker exec` and in-container
+  healthchecks are not supported; probe `GET /healthz` from outside).
 - Signed with cosign keyless (`cosign verify --certificate-identity-regexp
   '^https://github.com/anaregdesign/lantern' ...`).
 
@@ -130,8 +154,9 @@ See [`examples/`](examples/) for ready-to-copy snippets:
 - [`examples/vscode-mcp.json`](examples/vscode-mcp.json) — VS Code workspace `.vscode/mcp.json`.
 - [`examples/cursor-mcp.json`](examples/cursor-mcp.json) — Cursor `~/.cursor/mcp.json`.
 
-All three follow the same shape: `command: docker`, `args` invoke the
-container with stdio and your `LANTERN_ADDR`.
+All three follow the same shape: a single `url` pointing at the running
+endpoint (`http://localhost:6390/mcp`). Hosts that only speak stdio can
+bridge via `mcp-remote` — see [`examples/README.md`](examples/README.md).
 
 ## Development
 
