@@ -9,11 +9,15 @@
 #   - Listens on :8080 unprivileged (image runs as `caddy` non-root user)
 #     to match the README "Container image" docs.
 #
-# This file is intentionally minimal — no reverse proxy. The admin SPA
-# talks to the Lantern gateway directly from the user's browser. CORS is
-# enforced on the gateway side via LANTERN_CORS_ALLOWED_ORIGINS; see
-# server/README.md.
-
+# This file serves the SPA and, optionally, reverse-proxies Prometheus.
+# The admin SPA talks to the Lantern gateway directly from the user's
+# browser (CORS enforced on the gateway via LANTERN_CORS_ALLOWED_ORIGINS;
+# see server/README.md). Prometheus, however, is proxied SAME-ORIGIN
+# through this host so the browser never makes a cross-origin call to it:
+# the `import` below pulls in /etc/caddy/conf.d/*.caddy, which
+# docker-entrypoint.sh populates with a `handle_path /api/prom/*` reverse
+# proxy ONLY when LANTERN_ADMIN_PROMETHEUS_UPSTREAM is set (otherwise the
+# snippet is empty and the import is a no-op).
 {
 	# Disable Caddy's admin endpoint inside the container. We never need
 	# to reload config at runtime; image tag swap is the deploy unit.
@@ -34,6 +38,16 @@
 	handle /healthz {
 		respond "ok" 200
 	}
+
+	# Optional same-origin Prometheus reverse proxy. No-op unless
+	# LANTERN_ADMIN_PROMETHEUS_UPSTREAM is set at container start. Declared
+	# BEFORE the catch-all SPA `handle` so /api/prom/* is proxied rather
+	# than rewritten to index.html. handle_path strips the /api/prom
+	# prefix, so /api/prom/api/v1/query_range hits Prometheus at
+	# /api/v1/query_range. The GLOB import is deliberate: a directory with
+	# no *.caddy file is a no-op (the SPA still serves), so the container
+	# stays up even if the entrypoint could not write the snippet.
+	import /etc/caddy/conf.d/*.caddy
 
 	# Everything else is the SPA: cache-headers + try_files + file_server.
 	handle {

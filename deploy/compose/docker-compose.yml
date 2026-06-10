@@ -52,8 +52,10 @@ x-lantern-common: &lantern-common
     LANTERN_MAX_REPLICATION_LAG: "10000"
     # Allow the admin SPA to call this listener from the browser.
     # Lantern serves Connect / gRPC / gRPC-Web on the same h2c socket,
-    # and the admin container is a pure SPA host (no reverse proxy),
-    # so CORS must allow the admin origin.
+    # and the admin container does not proxy the gateway (the browser
+    # calls it directly), so CORS must allow the admin origin. (The
+    # admin container DOES optionally reverse-proxy Prometheus same-
+    # origin under /api/prom — that path needs no gateway CORS.)
     LANTERN_CORS_ALLOWED_ORIGINS: "http://localhost:8080"
   networks:
     default:
@@ -86,6 +88,13 @@ services:
     image: ${LANTERN_ADMIN_IMAGE:-ghcr.io/anaregdesign/lantern-admin:latest}
     ports:
       - "8080:8080"
+    environment:
+      # Enable the same-origin Prometheus reverse proxy. The admin
+      # entrypoint writes a `handle_path /api/prom/* { reverse_proxy ... }`
+      # Caddy snippet from this value, so the SPA's default Prometheus URL
+      # (`/api/prom`) reaches Prometheus without a cross-origin browser
+      # call. Unset this to disable the proxy.
+      LANTERN_ADMIN_PROMETHEUS_UPSTREAM: "http://prometheus:9090"
     depends_on:
       lantern-0:
         condition: service_healthy
@@ -93,6 +102,8 @@ services:
         condition: service_healthy
       lantern-2:
         condition: service_healthy
+      prometheus:
+        condition: service_started
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
       interval: 10s

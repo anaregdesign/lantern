@@ -70,8 +70,30 @@ spec:
             successThreshold: 1
           resources:
             {{- toYaml .Values.admin.resources | nindent 12 }}
-          {{- with .Values.admin.extraEnv }}
+          {{- if or .Values.admin.prometheus.upstream .Values.admin.extraEnv }}
           env:
+            {{- if .Values.admin.prometheus.upstream }}
+            # Enables the same-origin Prometheus reverse proxy. The
+            # container entrypoint turns this into a Caddy
+            # `handle_path /api/prom/*` reverse_proxy snippet.
+            - name: LANTERN_ADMIN_PROMETHEUS_UPSTREAM
+              value: {{ .Values.admin.prometheus.upstream | quote }}
+            {{- end }}
+            {{- with .Values.admin.extraEnv }}
             {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- end }}
+          {{- if .Values.admin.prometheus.upstream }}
+          # Writable conf.d so the non-root container can drop the
+          # generated Prometheus proxy snippet even when the root
+          # filesystem is read-only.
+          volumeMounts:
+            - name: caddy-conf-d
+              mountPath: /etc/caddy/conf.d
+          {{- end }}
+      {{- if .Values.admin.prometheus.upstream }}
+      volumes:
+        - name: caddy-conf-d
+          emptyDir: {}
+      {{- end }}
 {{- end }}

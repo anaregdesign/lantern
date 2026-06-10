@@ -54,11 +54,27 @@ FROM caddy:2.10-alpine
 COPY --from=builder /src/admin/build/client /srv
 COPY admin/Caddyfile /etc/caddy/Caddyfile
 
+# Entrypoint generates the optional Prometheus reverse-proxy snippet at
+# container start. Pre-create the conf.d dir + an empty snippet so the
+# Caddyfile glob import resolves even if the entrypoint is bypassed. The
+# dir is made group-writable and assigned to gid 0 (the k8s/OpenShift
+# arbitrary-uid pattern) so a non-root `runAsUser` can still write the
+# snippet when the Helm chart sets one. Containers that mount a writable
+# volume over /etc/caddy/conf.d (e.g. the Helm emptyDir) override this.
+COPY admin/docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh \
+    && mkdir -p /etc/caddy/conf.d \
+    && : > /etc/caddy/conf.d/prom.caddy \
+    && chgrp -R 0 /etc/caddy/conf.d \
+    && chmod -R g+rwX /etc/caddy/conf.d
+
 # The image binds :8080 (see Caddyfile). Containers running orchestrated
 # can map that to whatever external port the platform exposes.
 EXPOSE 8080
 
-# Caddy's default entrypoint loads /etc/caddy/Caddyfile. We pass --adapter
-# caddyfile explicitly so the format is unambiguous even if a future
-# base-image change ever swaps the default.
+# The entrypoint wires up the optional Prometheus proxy (driven by
+# LANTERN_ADMIN_PROMETHEUS_UPSTREAM) and then execs the CMD. We pass
+# --adapter caddyfile explicitly so the format is unambiguous even if a
+# future base-image change ever swaps the default.
+ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]

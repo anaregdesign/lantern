@@ -1,0 +1,40 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem 1.25rem 1.25rem;
+}
+
+.head {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.description {
+  margin: 0;
+  color: var(--colorNeutralForeground3);
+  font-size: 0.85rem;
+}
+
+.summary {
+  margin: 0;
+  color: var(--colorNeutralForeground2);
+  font-size: 0.85rem;
+  font-family: var(--fontFamilyMonospace, monospace);
+  word-break: break-word;
+}
+
+.empty {
+  margin: 0;
+  padding: 1.5rem 0;
+  text-align: center;
+  color: var(--colorNeutralForeground3);
+  font-style: italic;
+}

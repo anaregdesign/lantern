@@ -369,10 +369,15 @@ keyless). It does NOT need to follow the `pb → core → sdks/go → root` orde
 the admin SPA's only cross-module build-time dependency is the `proto/`
 sources (consumed by `bun run codegen` via `@bufbuild/protoc-gen-es` +
 `@connectrpc/protoc-gen-connect-es`), so a `pb/vX.Y.Z` bump is the one
-upstream pin that requires re-tagging the admin image. The admin container is
-a pure SPA host (Caddy on `:8080`) — it does not reverse-proxy to the
-listener, so the server's `LANTERN_CORS_ALLOWED_ORIGINS` must include the
-admin origin.
+upstream pin that requires re-tagging the admin image. The admin container
+hosts the SPA on Caddy (`:8080`) and does **not** reverse-proxy the Lantern
+listener — the browser calls the gateway directly, so the server's
+`LANTERN_CORS_ALLOWED_ORIGINS` must include the admin origin. It *does*
+optionally reverse-proxy Prometheus same-origin under `/api/prom` (opt-in via
+the `LANTERN_ADMIN_PROMETHEUS_UPSTREAM` env var, materialised at container
+start by `admin/docker-entrypoint.sh` into a Caddy `handle_path` snippet the
+Caddyfile glob-imports); the SPA's Ops Metrics page uses that path to dodge
+Prometheus's missing CORS headers.
 
 **Release title convention (locked).** Every GitHub Release title MUST equal
 its tag name verbatim — `v0.7.2`, `core/v0.2.0`, `sdks/go/v0.8.0`,
