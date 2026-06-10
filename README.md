@@ -125,14 +125,14 @@ flowchart LR
 
     subgraph Clients["Lantern clients (this repo)"]
         Admin["lantern-admin<br/>(admin/)<br/>React Router SPA"]
-        MCP["lantern-mcp<br/>(mcp/)<br/>MCP stdio server"]
+        MCP["lantern-mcp<br/>(mcp/)<br/>MCP Streamable HTTP server"]
         GoSDK["sdks/go<br/>Go client"]
         NodeSDK["sdks/node<br/>Node / TS client"]
         CLI["lantern-cli<br/>(cli/)"]
     end
 
     Browser -->|HTTPS| Admin
-    LLM     -->|stdio JSON-RPC| MCP
+    LLM     -->|Streamable HTTP :6390| MCP
     GoApp   --> GoSDK
     NodeApp --> NodeSDK
     Human   --> CLI
@@ -169,7 +169,8 @@ flowchart LR
   Connect-Web), the Go and Node SDKs, the CLI, and the MCP server all share
   the exact same RPC contract from `proto/graph/v1/`.
 - **lantern-mcp** ([`mcp/`](mcp/)) — exposes Lantern as **decaying graph
-  memory** to LLM agents over MCP stdio JSON-RPC. Depends on `pb/` and
+  memory** to LLM agents over MCP Streamable HTTP (default `:6390`, endpoint
+  `/mcp`). Depends on `pb/` and
   `sdks/go/` only; ships as the `ghcr.io/anaregdesign/lantern-mcp` container
   on `mcp/vX.Y.Z` tags.
 - **lantern-admin** ([`admin/`](admin/)) — browser-only React Router /
@@ -579,12 +580,22 @@ shorter one — re-writing is cheap.
 
 ### Run the container
 
+`lantern-mcp` serves MCP over **Streamable HTTP**: run it as a long-lived
+process, then point your agent at `http://localhost:6390/mcp`.
+
 ```shell
 # Pin to a release tag — never `:latest` for agent runtimes.
-docker run --rm -i \
+docker run --rm \
+  -p 6390:6390 \
   -e LANTERN_ADDR=host.docker.internal:6380 \
-  ghcr.io/anaregdesign/lantern-mcp:v0.1.0
+  ghcr.io/anaregdesign/lantern-mcp:v0.4.0
 ```
+
+The container binds `0.0.0.0:6390` internally so the published port is
+reachable; the endpoint is **unauthenticated**, so only publish it on
+trusted networks (the handler still applies cross-origin / DNS-rebinding
+protection, and the bare binary defaults to loopback only). A `GET
+/healthz` returns `200 ok` for liveness probes.
 
 Images are published to `ghcr.io/anaregdesign/lantern-mcp` on every
 `mcp/vX.Y.Z` git tag (independent of the server's release cadence). Both
@@ -594,27 +605,25 @@ and signed with cosign keyless.
 
 ### Client configs
 
-Copy-paste snippets live in [`mcp/examples/`](mcp/examples/). The Claude
-Desktop entry:
+Copy-paste snippets live in [`mcp/examples/`](mcp/examples/). Start the
+server (above) first, then point the agent at the URL. The Claude Desktop
+entry:
 
 ```json
 {
   "mcpServers": {
     "lantern": {
-      "command": "docker",
-      "args": [
-        "run", "--rm", "-i",
-        "-e", "LANTERN_ADDR=host.docker.internal:6380",
-        "ghcr.io/anaregdesign/lantern-mcp:v0.1.0"
-      ]
+      "url": "http://localhost:6390/mcp"
     }
   }
 }
 ```
 
-VS Code (`.vscode/mcp.json`) and Cursor (`~/.cursor/mcp.json`) take the
-same shape — see [mcp/examples/README.md](mcp/examples/README.md) for
-file locations and `LANTERN_ADDR` tweaks for Linux / remote setups.
+VS Code (`.vscode/mcp.json`, `"type": "http"`) and Cursor
+(`~/.cursor/mcp.json`) take the same `url` shape. Hosts that only speak
+stdio can bridge via `mcp-remote` — see
+[mcp/examples/README.md](mcp/examples/README.md) for file locations, the
+`mcp-remote` fallback, and `LANTERN_ADDR` tweaks for Linux / remote setups.
 
 ### Worked example: agent memory session
 

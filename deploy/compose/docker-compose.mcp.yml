@@ -6,22 +6,21 @@
 #
 # Usage:
 #   cd deploy/compose
-#   docker compose -f docker-compose.mcp.yml up -d lantern
+#   docker compose -f docker-compose.mcp.yml up -d
 #
-# The MCP server is a stdio server — `docker compose up lantern-mcp` is
-# rarely what you want, because the agent runtime (Claude Desktop, VS
-# Code, Cursor, …) owns the lifetime and stdio pipe. The `lantern-mcp`
-# service definition below is here so you can:
+# `lantern-mcp` is a long-lived Streamable-HTTP server, so `up -d` is the
+# right verb (unlike the old stdio server, which the agent runtime
+# spawned per-session). Once it is up, point your agent at:
 #
-#   1. Sanity-check the wire: `docker compose -f docker-compose.mcp.yml \
-#        run --rm lantern-mcp` (note `run`, not `up`).
-#   2. Use the service spec as a template for your own compose file with
-#      a real MCP-aware client attached on stdio.
+#   http://localhost:6390/mcp
+#
+# The endpoint is unauthenticated; this compose file binds it to the host
+# for local dev only. See deploy/helm for a cluster-internal deployment.
 #
 # Override the image tags:
 #   LANTERN_IMAGE=ghcr.io/anaregdesign/lantern:v0.8.0 \
-#   LANTERN_MCP_IMAGE=ghcr.io/anaregdesign/lantern-mcp:v0.1.0 \
-#       docker compose -f docker-compose.mcp.yml up -d lantern
+#   LANTERN_MCP_IMAGE=ghcr.io/anaregdesign/lantern-mcp:v0.4.0 \
+#       docker compose -f docker-compose.mcp.yml up -d
 
 services:
   lantern:
@@ -44,12 +43,14 @@ services:
 
   lantern-mcp:
     image: ${LANTERN_MCP_IMAGE:-ghcr.io/anaregdesign/lantern-mcp:latest}
-    # MCP is a stdio protocol — `stdin_open: true` so `docker compose run
-    # --rm lantern-mcp` keeps stdin attached and the client can speak
-    # JSON-RPC. `up -d` would just exit because there's nothing to read.
-    stdin_open: true
-    tty: false
+    ports:
+      # The MCP endpoint, served at /mcp. Map a different host port with
+      # e.g. "7000:6390" and connect to http://localhost:7000/mcp.
+      - "6390:6390"
     environment:
+      # Bind all interfaces inside the container so the published port is
+      # reachable (the bare binary defaults to loopback only).
+      LANTERN_MCP_HTTP_ADDR: "0.0.0.0:6390"
       # Use the Compose service DNS name so this works on Linux without
       # `host.docker.internal`.
       LANTERN_ADDR: "http://lantern:6380"
@@ -58,6 +59,8 @@ services:
       # must use Go time.ParseDuration syntax (no `d` suffix).
       # LANTERN_MCP_TTL_TURN: "15m"
       # LANTERN_MCP_TTL_CONVERSATION: "2h"
+    # No container healthcheck: the distroless image has no shell or wget.
+    # Probe GET http://localhost:6390/healthz from the host instead.
     depends_on:
       lantern:
         condition: service_healthy

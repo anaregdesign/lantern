@@ -129,58 +129,51 @@ container image's `admin/README.md`). Run it only on trusted networks
 (`admin.ingress.enabled=false` + `kubectl port-forward`) or front it
 with your own ingress-level auth proxy.
 
-## MCP sidecar
+## MCP server
 
-The chart **does not render a Pod / Deployment for `lantern-mcp`**.
-MCP is a stdio protocol (the binary mounts `&mcp.StdioTransport{}`
-in `mcp/cmd/main.go`), so a free-standing Service shape doesn't fit:
-there's no socket to expose and no obvious client to attach to. The
-canonical deployment shape is a **sidecar inside the agent runtime's
-pod** (Claude Desktop / VS Code Server / a custom worker).
+`lantern-mcp` serves the Model Context Protocol over **Streamable HTTP**,
+so the chart renders a standard **Deployment + ClusterIP Service** for it
+(mirroring the admin pattern), gated on `mcp.enabled` (default `false`):
 
-To make that easy, the chart exports a named template,
-`lantern.mcpSidecar`, that emits a container spec your own
-chart / manifest can splice in:
-
-```yaml
-# my-agent/templates/pod.yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: my-agent
-spec:
-  containers:
-    - name: agent
-      image: my-agent:latest
-      stdin: true
-      tty: false
-    {{- include "lantern.mcpSidecar" . | nindent 4 }}
+```shell
+helm upgrade --install lantern deploy/helm/lantern \
+  --set mcp.enabled=true \
+  --set mcp.image.tag=v0.4.0
 ```
 
-The sidecar reads its config from `.Values.mcp`:
+Agent pods in the same cluster reach it at:
+
+```
+http://<release>-mcp.<namespace>.svc:6390/mcp
+```
+
+The container listens on `0.0.0.0:6390` (set automatically via
+`LANTERN_MCP_HTTP_ADDR`) and dials the in-cluster lantern Service by
+default. A `GET /healthz` backs the liveness / readiness probes.
+
+The MCP config lives under `.Values.mcp`:
 
 | Value | Default | Purpose |
 | --- | --- | --- |
+| `mcp.enabled` | `false` | Render the Deployment + Service. |
+| `mcp.replicaCount` | `1` | MCP server replicas. |
 | `mcp.image.repository` | `ghcr.io/anaregdesign/lantern-mcp` | Override for private mirrors. |
 | `mcp.image.tag` | `.Chart.AppVersion` | Pin to a specific `mcp/vX.Y.Z`. |
+| `mcp.service.type` | `ClusterIP` | Keep cluster-internal — the endpoint is unauthenticated. |
+| `mcp.service.port` | `6390` | Service + container port (endpoint `/mcp`). |
 | `mcp.lanternAddr` | _(empty → in-cluster Service FQDN)_ | Override only for cross-namespace / cross-cluster setups. |
 | `mcp.pingTimeout` | `5s` | Startup health-check timeout. |
 | `mcp.ttl.<bucket>` | _(unset)_ | Per-bucket TTL override; rendered as `LANTERN_MCP_TTL_<UPPER>` env. |
-| `mcp.resources` | small | requests/limits for the sidecar container. |
+| `mcp.resources` | small | requests/limits for the container. |
 | `mcp.extraEnv` | `[]` | Raw env list appended to the templated ones. |
 
-Real production traffic happens over stdio inside the pod; for
-manual probes use `kubectl exec -it <pod> -c lantern-mcp` which
-hands you the same stdio channel the agent uses.
+The endpoint is **unauthenticated** — keep `mcp.service.type=ClusterIP`
+and reach it from agent pods in the same cluster, or front it with your
+own ingress-level auth proxy. For local probing use
+`kubectl port-forward svc/<release>-mcp 6390:6390` and connect to
+`http://localhost:6390/mcp`. The agent-runtime client configs in
+[`mcp/examples/`](../../../mcp/examples/) show the host-side wiring.
 
-If you actually want a free-standing `lantern-mcp` Deployment (e.g.
-for `kubectl attach` exploration), the agent-runtime configs in
-[`mcp/examples/`](../../../mcp/examples/) show the pattern — fork
-them into your own chart rather than complicating this one.
-
-If an HTTP/SSE transport lands in the upstream `go-sdk`, the chart
-will gain a proper `mcp-deployment.yaml` + `mcp-service.yaml`; tracked
-as a follow-up.
 
 ## Smoke test
 

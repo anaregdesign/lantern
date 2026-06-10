@@ -37,20 +37,27 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       -o /out/lantern-mcp ./cmd
 
 # --- final stage ---------------------------------------------------------
-# Distroless static + nonroot. The MCP server speaks stdio only; it needs
-# no shell, no package manager, and no writable filesystem.
+# Distroless static + nonroot. The MCP server serves Streamable HTTP; it
+# needs no shell, no package manager, and no writable filesystem.
 FROM gcr.io/distroless/static:nonroot
 
 # Default Lantern endpoint and ping timeout. Override at runtime via -e.
-# The TTL ladder is loaded from LANTERN_MCP_TTL_<BUCKET>=<duration> env
-# overrides; see mcp/internal/ttl for the 12 bucket names.
+# LANTERN_MCP_HTTP_ADDR binds 0.0.0.0 (not the loopback default the bare
+# binary uses) because the endpoint must be reachable through the
+# published container port. The endpoint is unauthenticated, so only
+# publish it on trusted networks — the handler still applies cross-origin
+# and DNS-rebinding protection (see mcp/README.md). The TTL ladder is
+# loaded from LANTERN_MCP_TTL_<BUCKET>=<duration> env overrides; see
+# mcp/internal/ttl for the 12 bucket names.
 ENV LANTERN_ADDR=http://localhost:6380 \
-    LANTERN_MCP_PING_TIMEOUT=3s
+    LANTERN_MCP_PING_TIMEOUT=3s \
+    LANTERN_MCP_HTTP_ADDR=0.0.0.0:6390
 
 COPY --from=builder /out/lantern-mcp /lantern-mcp
 
-# The MCP transport owns stdin/stdout; MCP clients invoke the binary
-# directly and tear it down when the session ends. There are no ports
-# to expose and no signal-handling quirks (the SDK reads to EOF).
+# The MCP server listens for Streamable HTTP on :6390 and serves the MCP
+# endpoint at /mcp plus a /healthz probe. SIGTERM triggers a graceful
+# drain, so the default distroless stop signal works without quirks.
+EXPOSE 6390
 USER nonroot:nonroot
 ENTRYPOINT ["/lantern-mcp"]

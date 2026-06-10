@@ -78,7 +78,7 @@ jobs:
             type=sha
           labels: |
             org.opencontainers.image.title=lantern-mcp
-            org.opencontainers.image.description=Lantern MCP server — exposes a decaying-memory tool surface (remember_fact, recall_fact, forget, list_under, remember_relation, recall_related) over Model Context Protocol stdio.
+            org.opencontainers.image.description=Lantern MCP server — exposes a decaying-memory tool surface (remember_fact, recall_fact, forget, list_under, remember_relation, recall_related) over the Model Context Protocol via Streamable HTTP (endpoint /mcp, default port 6390).
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.url=https://github.com/${{ github.repository }}/tree/main/mcp
             org.opencontainers.image.licenses=Apache-2.0

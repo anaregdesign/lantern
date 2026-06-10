@@ -111,21 +111,23 @@ services:
       retries: 6
       start_period: 5s
 
-  # Opt-in MCP server. The MCP protocol is stdio-only, so this service
-  # is only useful via `docker compose --profile mcp run --rm lantern-mcp`
-  # (NOT `up`, which would just background the container with nothing
-  # consuming stdout). Real production traffic should live inside the
-  # agent runtime's pod — see `mcp/examples/` for the configs that wire
-  # Claude Desktop / VS Code / Cursor to a local container.
+  # Opt-in MCP server. lantern-mcp serves the Model Context Protocol over
+  # Streamable HTTP, so it's a long-lived service — bring it up with the
+  # `mcp` profile and point your agent at http://localhost:6390/mcp. See
+  # `mcp/examples/` for the configs that wire Claude Desktop / VS Code /
+  # Cursor to it.
   #
   # Usage:
-  #   docker compose --profile mcp run --rm lantern-mcp
+  #   docker compose --profile mcp up -d lantern-mcp
   lantern-mcp:
     profiles: ["mcp"]
     image: ${LANTERN_MCP_IMAGE:-ghcr.io/anaregdesign/lantern-mcp:latest}
-    stdin_open: true
-    tty: false
+    ports:
+      - "6390:6390"
     environment:
+      # Bind all interfaces so the published port is reachable (the bare
+      # binary defaults to loopback only).
+      LANTERN_MCP_HTTP_ADDR: "0.0.0.0:6390"
       # Compose DNS round-robins the `lantern` alias across the three
       # lantern-N services.
       LANTERN_ADDR: "http://lantern:6380"
