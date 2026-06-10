@@ -141,3 +141,48 @@ func TestRememberFact_UnderCapNotClamped(t *testing.T) {
 		t.Fatalf("output Capped = true, want false for under-cap bucket; out=%+v", out)
 	}
 }
+
+// TestRememberFact_LintsBadKeyButStillStores proves the non-blocking key lint
+// (#551): a key that violates conventions is STILL written (PutVertex called)
+// and the advisory warnings ride along in the structured output and the text.
+func TestRememberFact_LintsBadKeyButStillStores(t *testing.T) {
+	h := newTestHarness(t)
+	res := h.call(t, "remember_fact", map[string]any{
+		"key":   "topic.2026-06-10.note", // unrecognized scope + mid-key date
+		"value": "v",
+		"ttl":   "day",
+	})
+	if res.IsError {
+		t.Fatalf("a lint warning must NOT block the write; text=%q", contentText(res))
+	}
+	if h.fake.putVertexCalls != 1 {
+		t.Fatalf("PutVertex calls = %d, want 1 (lint is non-blocking)", h.fake.putVertexCalls)
+	}
+	var out rememberFactOutput
+	structuredAs(t, res, &out)
+	if len(out.Warnings) == 0 {
+		t.Fatalf("expected key warnings in output; got none: %+v", out)
+	}
+	if !strings.Contains(contentText(res), "hint") {
+		t.Errorf("result text should surface the key hint(s); got %q", contentText(res))
+	}
+}
+
+// TestRememberFact_GoodKeyHasNoWarnings is the output-level back-stop for the
+// "good keys return no warnings" criterion.
+func TestRememberFact_GoodKeyHasNoWarnings(t *testing.T) {
+	h := newTestHarness(t)
+	res := h.call(t, "remember_fact", map[string]any{
+		"key":   "user.preferences.tone",
+		"value": "warm",
+		"ttl":   "conversation",
+	})
+	if res.IsError {
+		t.Fatalf("IsError = true, text=%q", contentText(res))
+	}
+	var out rememberFactOutput
+	structuredAs(t, res, &out)
+	if len(out.Warnings) != 0 {
+		t.Fatalf("canonical key should lint clean; got warnings %v", out.Warnings)
+	}
+}

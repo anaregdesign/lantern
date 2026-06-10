@@ -187,3 +187,30 @@ func TestRememberFactsDescription_FramesBatch(t *testing.T) {
 		t.Errorf("description should promise per-item partial-failure reporting: %q", rememberFactsDescription)
 	}
 }
+
+// TestRememberFacts_LintsPerItemKey proves the non-blocking key lint (#551)
+// runs per batch item: a bad key is still stored but its result row carries
+// warnings, while a good key in the same call stays clean.
+func TestRememberFacts_LintsPerItemKey(t *testing.T) {
+	h := newTestHarness(t)
+	res := h.call(t, "remember_facts", map[string]any{
+		"items": []map[string]any{
+			{"key": "user.preferences.tone", "value": "warm", "ttl": "day"}, // clean
+			{"key": "topic.2026-06-10.note", "value": "v", "ttl": "day"},    // bad scope + mid-key date
+		},
+	})
+	if res.IsError {
+		t.Fatalf("a lint warning must NOT block the batch; content=%s", contentText(res))
+	}
+	var out rememberFactsOutput
+	structuredAs(t, res, &out)
+	if out.Stored != 2 {
+		t.Fatalf("both items should still store; stored=%d", out.Stored)
+	}
+	if len(out.Results[0].Warnings) != 0 {
+		t.Errorf("clean key should have no warnings; got %v", out.Results[0].Warnings)
+	}
+	if len(out.Results[1].Warnings) == 0 {
+		t.Errorf("bad key should carry warnings; got none in %+v", out.Results[1])
+	}
+}
