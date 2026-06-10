@@ -40,6 +40,11 @@ type fakeLantern struct {
 	lastEdgeTTL    time.Duration
 	addEdgeCalls   int
 
+	// GetEdge
+	getEdgeFn       func(ctx context.Context, tail, head string) (*client.Edge, error)
+	lastGetEdgeTail string
+	lastGetEdgeHead string
+
 	// Illuminate
 	illuminateFn  func(ctx context.Context, seed string, opts ...client.IlluminateOption) (*client.Graph, error)
 	lastSeed      string
@@ -91,6 +96,15 @@ func (f *fakeLantern) AddEdge(_ context.Context, tail, head string, weight float
 	f.lastEdgeWeight = weight
 	f.lastEdgeTTL = ttl
 	return f.addEdgeErr
+}
+
+func (f *fakeLantern) GetEdge(ctx context.Context, tail, head string) (*client.Edge, error) {
+	f.lastGetEdgeTail = tail
+	f.lastGetEdgeHead = head
+	if f.getEdgeFn != nil {
+		return f.getEdgeFn(ctx, tail, head)
+	}
+	return nil, nil
 }
 
 func (f *fakeLantern) Illuminate(ctx context.Context, seed string, opts ...client.IlluminateOption) (*client.Graph, error) {
