@@ -38,9 +38,13 @@ const (
 // here is read from environment variables in main; tests construct Config
 // directly to skip env wiring.
 type Config struct {
-	// LanternAddr is the target passed to client.NewLantern. Default
-	// "http://localhost:6380" matches the Lantern server's default
-	// port and the SDK's plaintext-h2c scheme requirement.
+	// LanternAddr is the target — or comma-separated list of targets —
+	// the Lantern client dials. A single value dials one endpoint; a
+	// comma-separated list (e.g. "http://a:6380,http://b:6380") enables
+	// multi-node failover across HA replicas (see #544 and the failover
+	// notes in mcp/README.md). Default "http://localhost:6380" matches the
+	// Lantern server's default port and the SDK's plaintext-h2c scheme
+	// requirement.
 	LanternAddr string
 	// PingTimeout bounds the startup health check. The MCP server will
 	// refuse to register tools if the Lantern endpoint is unreachable
@@ -128,13 +132,18 @@ func Run(ctx context.Context, cfg Config) error {
 		httpAddr = defaultHTTPAddr
 	}
 
+	addrs := parseLanternAddrs(cfg.LanternAddr)
+	if len(addrs) == 0 {
+		return fmt.Errorf("mcp: no lantern address configured (set LANTERN_ADDR)")
+	}
 	logger.Info("mcp: dialing lantern",
-		slog.String("addr", cfg.LanternAddr),
+		slog.Any("addrs", addrs),
+		slog.Int("nodes", len(addrs)),
 		slog.String("version", Version),
 	)
-	lantern, err := client.NewLantern(cfg.LanternAddr)
+	lantern, err := newFailoverClient(addrs)
 	if err != nil {
-		return fmt.Errorf("mcp: dial %s: %w", cfg.LanternAddr, err)
+		return fmt.Errorf("mcp: dial lantern: %w", err)
 	}
 	defer func() {
 		if cerr := lantern.Close(); cerr != nil {
@@ -145,7 +154,7 @@ func Run(ctx context.Context, cfg Config) error {
 	pingCtx, cancel := context.WithTimeout(ctx, cfg.PingTimeout)
 	defer cancel()
 	if err := lantern.Ping(pingCtx); err != nil {
-		return fmt.Errorf("mcp: lantern health check at %s failed: %w", cfg.LanternAddr, err)
+		return fmt.Errorf("mcp: lantern health check failed (tried %d node(s)): %w", len(addrs), err)
 	}
 	logger.Info("mcp: lantern reachable, registering tools")
 
