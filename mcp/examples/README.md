@@ -12,6 +12,12 @@ share the same shape — a single `url` pointing at the running endpoint.
 | [`vscode-mcp.json`](vscode-mcp.json) | `.vscode/mcp.json` in your workspace, or `~/.config/Code/User/mcp.json` for user scope |
 | [`cursor-mcp.json`](cursor-mcp.json) | `~/.cursor/mcp.json` |
 
+> These three files only **connect** the agent to Lantern. To make the agent
+> actually *use* it — recall before answering, capture durable facts after —
+> without being asked, also install the
+> [ambient-memory instruction profile](#make-the-agent-use-lantern-automatically)
+> below.
+
 ## Start the server first
 
 The agent no longer spawns the container — it connects to an
@@ -89,3 +95,55 @@ endpoint is unreachable, the server exits non-zero at startup with a
 single line on stderr identifying the address that failed — so a failing
 `curl` against a dead container means the server never came up; check
 `docker logs`.
+
+## Make the agent use Lantern automatically
+
+Connecting the server (above) only makes the tools *available*. The server
+already advertises a system-prompt-style nudge at session-open, but the host
+agent ultimately decides when to call tools — so for reliably always-on
+behaviour, also install a client-side instruction profile:
+
+**→ [`ambient-memory.instructions.md`](ambient-memory.instructions.md)**
+
+It tells the agent to run a per-turn loop — **recall** relevant context before
+answering, **capture** durable facts and relations after a substantive
+exchange — with sensible TTL buckets and the `user.*` / `project.*` /
+`session.*` key-namespace convention so the graph stays a navigable mind map.
+
+### VS Code Copilot
+
+1. Wire the server: drop [`vscode-mcp.json`](vscode-mcp.json) into
+   `.vscode/mcp.json` (note `"type": "http"` — required since the server
+   moved to Streamable HTTP).
+2. Install the policy: copy `ambient-memory.instructions.md` into your
+   workspace at `.github/instructions/ambient-memory.instructions.md`. Its
+   `applyTo: '**'` frontmatter makes Copilot apply it to every request
+   automatically. (Alternatively, paste the body — everything below the
+   frontmatter — into `.github/copilot-instructions.md`.)
+
+### Claude Desktop / other MCP hosts
+
+1. Wire the server with [`claude-desktop.json`](claude-desktop.json) (or the
+   [`mcp-remote`](#hosts-that-only-support-stdio-mcp-servers) bridge for
+   stdio-only hosts).
+2. Copy the body of `ambient-memory.instructions.md` (skip the YAML
+   frontmatter) into the host's system prompt, project instructions, or
+   custom-instructions field. The text is host-agnostic — it only references
+   the Lantern tool names.
+
+## Watch your mind map
+
+Everything the agent captures lands in the same Lantern the MCP server writes
+to, so you can watch the graph fill in live. Point the
+[**lantern-admin**](../../admin/) SPA at that Lantern and open **Illuminate**:
+
+- In the [compose stack](../../README.md#run-with-docker-compose--open-the-admin-ui)
+  the Admin is served at **<http://localhost:8080>** — open it and go to
+  **Illuminate** (`/illuminate`).
+- Seed the walk with a namespace root you have been writing under — e.g.
+  `user.identity.name` or `project.lantern` — then increase the hop count to
+  watch related facts and relations fan out.
+
+Because recall does **not** refresh TTL, stale corners of the map fade on their
+own between visits; the keys the agent keeps re-remembering stay bright. That
+visible decay *is* the feature.
