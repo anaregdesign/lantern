@@ -33,14 +33,18 @@ type lanternClient interface {
 // low-cardinality form suitable for an LLM tool result. The original
 // error is wrapped so callers using errors.Is on the sentinels still
 // match; the prefix is purely additive context.
+//
+// Only ErrResourceExhausted earns a bespoke label, because "rate limited;
+// back off and retry" is actionable guidance the sentinel text ("resource
+// exhausted") does not convey. The other sentinels already stringify to a
+// clear phrase (ErrInvalidArgument → "invalid argument", ErrNotFound →
+// "not found"), so adding a matching literal label only produced doubled
+// noise like "invalid argument: invalid argument"; they fall through to the
+// generic "%s: %w" form alongside unclassified errors.
 func mapSDKError(tool string, err error) error {
 	switch {
-	case errors.Is(err, client.ErrInvalidArgument):
-		return fmt.Errorf("%s: invalid argument: %w", tool, err)
 	case errors.Is(err, client.ErrResourceExhausted):
 		return fmt.Errorf("%s: rate limited; back off and retry: %w", tool, err)
-	case errors.Is(err, client.ErrNotFound):
-		return fmt.Errorf("%s: not found: %w", tool, err)
 	default:
 		return fmt.Errorf("%s: %w", tool, err)
 	}
