@@ -41,6 +41,10 @@ type fakeLantern struct {
 	lastDeletePrefix    string
 	deleteByPrefixCalls int
 
+	// PutVertices
+	putVerticesFn   func(ctx context.Context, inputs []client.VertexInput) error
+	lastPutVertices []client.VertexInput
+
 	// AddEdge
 	addEdgeErr     error
 	lastEdgeTail   string
@@ -48,6 +52,10 @@ type fakeLantern struct {
 	lastEdgeWeight float32
 	lastEdgeTTL    time.Duration
 	addEdgeCalls   int
+
+	// AddEdges
+	addEdgesFn   func(ctx context.Context, inputs []client.EdgeInput) error
+	lastAddEdges []client.EdgeInput
 
 	// GetEdge
 	getEdgeFn       func(ctx context.Context, tail, head string) (*client.Edge, error)
@@ -113,6 +121,22 @@ func (f *fakeLantern) DeleteVerticesByPrefix(ctx context.Context, prefix string,
 		return f.deleteByPrefixFn(ctx, prefix, opts...)
 	}
 	return 0, nil
+}
+
+func (f *fakeLantern) PutVertices(ctx context.Context, inputs []client.VertexInput) error {
+	f.lastPutVertices = inputs
+	if f.putVerticesFn != nil {
+		return f.putVerticesFn(ctx, inputs)
+	}
+	return nil
+}
+
+func (f *fakeLantern) AddEdges(ctx context.Context, inputs []client.EdgeInput) error {
+	f.lastAddEdges = inputs
+	if f.addEdgesFn != nil {
+		return f.addEdgesFn(ctx, inputs)
+	}
+	return nil
 }
 
 func (f *fakeLantern) AddEdge(_ context.Context, tail, head string, weight float32, ttl time.Duration) error {
