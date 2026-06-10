@@ -161,21 +161,54 @@ func EnvVar(b Bucket) string {
 	return "LANTERN_MCP_TTL_" + strings.ToUpper(b.String())
 }
 
+// MaxTTLEnvVar is the environment variable that caps every resolved bucket
+// duration. It exists so an operator whose Lantern server runs a low
+// LANTERN_TOMBSTONE_TTL (which rejects any Expiration beyond it with
+// invalid_argument) can have the MCP clamp long buckets down to a value
+// the server will accept, instead of surfacing a hard error for week+
+// horizons. Unset or non-positive means no cap — the default server
+// LANTERN_TOMBSTONE_TTL (8760h) already exceeds the longest bucket.
+const MaxTTLEnvVar = "LANTERN_MCP_MAX_TTL"
+
 // Resolver maps each bucket to its configured duration after applying env
 // overrides. It is the single source of truth for ttl.Resolve at runtime.
 type Resolver struct {
 	values map[Bucket]time.Duration
+	// maxTTL clamps every resolved duration when positive; zero disables
+	// the cap. Configured via LANTERN_MCP_MAX_TTL.
+	maxTTL time.Duration
 }
 
 // Resolve returns the configured duration for b, or panics if b is not a
 // valid bucket — bucket values originate from ParseBucket so this should
-// be unreachable in normal flow.
+// be unreachable in normal flow. Resolve returns the bucket's nominal
+// horizon and does NOT apply the LANTERN_MCP_MAX_TTL cap; callers that
+// write to the server should use ResolveCapped.
 func (r *Resolver) Resolve(b Bucket) time.Duration {
 	d, ok := r.values[b]
 	if !ok {
 		panic(fmt.Sprintf("ttl: bucket %v not configured", b))
 	}
 	return d
+}
+
+// MaxTTL reports the configured cap, or zero when no cap is set.
+func (r *Resolver) MaxTTL() time.Duration {
+	return r.maxTTL
+}
+
+// ResolveCapped returns the duration the MCP should actually send to the
+// server for bucket b: the bucket's nominal horizon clamped to
+// LANTERN_MCP_MAX_TTL when that cap is configured and shorter. The second
+// return value reports whether the clamp fired, so handlers can tell the
+// caller their requested horizon was shortened rather than silently
+// writing a different expiry.
+func (r *Resolver) ResolveCapped(b Bucket) (time.Duration, bool) {
+	d := r.Resolve(b)
+	if r.maxTTL > 0 && d > r.maxTTL {
+		return r.maxTTL, true
+	}
+	return d, false
 }
 
 // LoadFromEnv constructs a Resolver from os.LookupEnv overrides applied on
@@ -213,7 +246,18 @@ func loadFrom(lookup func(string) (string, bool)) (*Resolver, error) {
 	if err := validateMonotonic(values); err != nil {
 		return nil, err
 	}
-	return &Resolver{values: values}, nil
+	var maxTTL time.Duration
+	if raw, ok := lookup(MaxTTLEnvVar); ok {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("ttl: %s=%q: %w", MaxTTLEnvVar, raw, err)
+		}
+		if parsed <= 0 {
+			return nil, fmt.Errorf("ttl: %s=%q: duration must be positive", MaxTTLEnvVar, raw)
+		}
+		maxTTL = parsed
+	}
+	return &Resolver{values: values, maxTTL: maxTTL}, nil
 }
 
 // errNonMonotonic indicates a configuration that would lie to the model

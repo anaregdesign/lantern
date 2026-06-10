@@ -19,8 +19,15 @@ import (
 // and inspect calls.
 func newTestHarness(t *testing.T) *testHarness {
 	t.Helper()
+	return newTestHarnessWith(t, mustDefaultResolver(t))
+}
+
+// newTestHarnessWith is newTestHarness with an explicit TTL resolver so a
+// test can exercise the LANTERN_MCP_MAX_TTL clamp without mutating process
+// environment.
+func newTestHarnessWith(t *testing.T, r *ttl.Resolver) *testHarness {
+	t.Helper()
 	fake := &fakeLantern{}
-	r := mustDefaultResolver(t)
 	srv := newServer(fake, r, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 
 	serverT, clientT := mcp.NewInMemoryTransports()
@@ -62,6 +69,15 @@ func mustDefaultResolver(t *testing.T) *ttl.Resolver {
 		t.Fatalf("ttl.LoadFromEnv: %v", err)
 	}
 	return r
+}
+
+// mustCappedResolver builds a resolver whose LANTERN_MCP_MAX_TTL cap is
+// maxTTL (a time.ParseDuration string). t.Setenv restores the previous
+// value at test end, so callers must not run in parallel.
+func mustCappedResolver(t *testing.T, maxTTL string) *ttl.Resolver {
+	t.Helper()
+	t.Setenv(ttl.MaxTTLEnvVar, maxTTL)
+	return mustDefaultResolver(t)
 }
 
 type testHarness struct {

@@ -23,6 +23,10 @@ type rememberFactOutput struct {
 	Key       string `json:"key"`
 	Bucket    string `json:"bucket"`
 	ExpiresAt string `json:"expires_at"`
+	// Capped is true when the bucket's nominal horizon was clamped down to
+	// LANTERN_MCP_MAX_TTL before writing, so the caller knows the stored
+	// expiry is shorter than the bucket label implies.
+	Capped bool `json:"capped,omitempty"`
 }
 
 const rememberFactDescription = "Store a fact in Lantern with a required TTL bucket. Call this PROACTIVELY whenever the user states a durable preference, decision, identity, or project fact — you do not need to be asked. The value can be any JSON-encodable shape (string, number, bool, object, array). Use a dotted namespaced key (user.* / project.* / session.*). Writing the same key again overwrites the previous value and resets the TTL — that is the canonical way to refresh a fact since recall does NOT refresh."
@@ -43,7 +47,7 @@ func registerRememberFact(srv *mcp.Server, lc lanternClient, r *ttl.Resolver) {
 		if err != nil {
 			return nil, rememberFactOutput{}, fmt.Errorf("remember_fact: %w", err)
 		}
-		d := r.Resolve(bucket)
+		d, capped := r.ResolveCapped(bucket)
 		if err := lc.PutVertex(ctx, in.Key, sdkValue, d); err != nil {
 			return nil, rememberFactOutput{}, mapSDKError("remember_fact", err)
 		}
@@ -51,10 +55,15 @@ func registerRememberFact(srv *mcp.Server, lc lanternClient, r *ttl.Resolver) {
 			Key:       in.Key,
 			Bucket:    bucket.String(),
 			ExpiresAt: time.Now().Add(d).UTC().Format(time.RFC3339),
+			Capped:    capped,
+		}
+		text := fmt.Sprintf("Stored %q (bucket=%s, expires≈%s).", out.Key, out.Bucket, out.ExpiresAt)
+		if capped {
+			text += fmt.Sprintf(" Note: TTL clamped to the server cap (%s); re-remember before it expires to keep the fact alive.", d)
 		}
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{
-				Text: fmt.Sprintf("Stored %q (bucket=%s, expires≈%s).", out.Key, out.Bucket, out.ExpiresAt),
+				Text: text,
 			}},
 		}, out, nil
 	})

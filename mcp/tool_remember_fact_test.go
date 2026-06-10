@@ -88,3 +88,56 @@ func TestRememberFactDescription_IsProactive(t *testing.T) {
 		t.Errorf("rememberFactDescription should keep the recall-does-not-refresh invariant: %q", rememberFactDescription)
 	}
 }
+
+// TestRememberFact_TTLCappedToMaxTTL proves that with LANTERN_MCP_MAX_TTL
+// set, an over-cap bucket (durable=180d) is clamped to the cap before the
+// PutVertex write and the result reports capped=true (#537). This is the
+// honesty contract: a bucket the server would reject is silently shortened
+// to a value the server accepts, with the shortening surfaced.
+func TestRememberFact_TTLCappedToMaxTTL(t *testing.T) {
+	h := newTestHarnessWith(t, mustCappedResolver(t, "24h"))
+	res := h.call(t, "remember_fact", map[string]any{
+		"key":   "user.identity.role",
+		"value": "architect",
+		"ttl":   "durable", // nominal 180d, far beyond the 24h cap
+	})
+	if res.IsError {
+		t.Fatalf("IsError = true, text=%q", contentText(res))
+	}
+	if h.fake.lastPutTTL != 24*time.Hour {
+		t.Fatalf("lastPutTTL = %v, want clamped 24h", h.fake.lastPutTTL)
+	}
+	var out rememberFactOutput
+	structuredAs(t, res, &out)
+	if !out.Capped {
+		t.Fatalf("output Capped = false, want true; out=%+v", out)
+	}
+	if out.Bucket != "durable" {
+		t.Fatalf("output Bucket = %q, want durable (label preserved)", out.Bucket)
+	}
+	if !strings.Contains(contentText(res), "clamped") {
+		t.Fatalf("result text should mention the clamp; got %q", contentText(res))
+	}
+}
+
+// TestRememberFact_UnderCapNotClamped confirms a bucket at/below the cap is
+// written verbatim with capped=false even when a cap is configured.
+func TestRememberFact_UnderCapNotClamped(t *testing.T) {
+	h := newTestHarnessWith(t, mustCappedResolver(t, "24h"))
+	res := h.call(t, "remember_fact", map[string]any{
+		"key":   "session.cursor",
+		"value": "x",
+		"ttl":   "conversation", // 1h, well under the 24h cap
+	})
+	if res.IsError {
+		t.Fatalf("IsError = true, text=%q", contentText(res))
+	}
+	if h.fake.lastPutTTL != time.Hour {
+		t.Fatalf("lastPutTTL = %v, want 1h (unclamped)", h.fake.lastPutTTL)
+	}
+	var out rememberFactOutput
+	structuredAs(t, res, &out)
+	if out.Capped {
+		t.Fatalf("output Capped = true, want false for under-cap bucket; out=%+v", out)
+	}
+}
