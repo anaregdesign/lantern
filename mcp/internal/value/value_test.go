@@ -211,6 +211,58 @@ func TestSnippet_CollapsesNewlinesToSpaces(t *testing.T) {
 	}
 }
 
+func TestText_NilVertexAndNilValueAreEmpty(t *testing.T) {
+	if got := Text(nil); got != "" {
+		t.Fatalf("Text(nil) = %q, want empty", got)
+	}
+	v, err := mustVertex("k", nil)
+	if err != nil {
+		t.Fatalf("mustVertex: %v", err)
+	}
+	if got := Text(v); got != "" {
+		t.Fatalf("Text(nil-variant) = %q, want empty", got)
+	}
+}
+
+func TestText_DoesNotTruncateLongValue(t *testing.T) {
+	long := strings.Repeat("z", SnippetMaxRunes+200)
+	v, err := mustVertex("k", long)
+	if err != nil {
+		t.Fatalf("mustVertex: %v", err)
+	}
+	got := Text(v)
+	if got != long {
+		t.Fatalf("Text truncated or altered the value: len=%d want=%d", len([]rune(got)), len([]rune(long)))
+	}
+	if strings.HasSuffix(got, "…") {
+		t.Fatalf("Text must not append an ellipsis: %q", got)
+	}
+}
+
+func TestText_CollapsesNewlinesToSpaces(t *testing.T) {
+	v, err := mustVertex("k", "build\n2026\trelease")
+	if err != nil {
+		t.Fatalf("mustVertex: %v", err)
+	}
+	if got := Text(v); got != "build 2026 release" {
+		t.Fatalf("Text = %q, want collapsed single line", got)
+	}
+}
+
+func TestText_StructuredValueJSONEncoded(t *testing.T) {
+	encoded, err := ToSDK(map[string]any{"name": "lantern"})
+	if err != nil {
+		t.Fatalf("ToSDK: %v", err)
+	}
+	v, err := mustVertex("k", encoded)
+	if err != nil {
+		t.Fatalf("mustVertex: %v", err)
+	}
+	if got := Text(v); got != `{"name":"lantern"}` {
+		t.Fatalf("Text = %q, want %q", got, `{"name":"lantern"}`)
+	}
+}
+
 // mustVertex builds a *client.Vertex (= *pb.Vertex) whose oneof variant
 // matches v's concrete type. The variant matrix replicates the SDK's
 // internal nativeVertex.asVertex path; we only need enough cases to cover

@@ -73,6 +73,7 @@ from the source so the LLM and the human reader see the same contract.
 |---|---|
 | `remember_fact` | Store a fact in Lantern with a **required TTL bucket**. Writing the same key again overwrites the value and resets the TTL — that is the canonical way to refresh a fact since `recall_*` does NOT refresh. |
 | `recall_fact` | Look up a single fact by exact key. Returns `{found=false}` for missing keys (structured result, not a tool error). Does NOT refresh TTL. |
+| `search_facts` | Find facts by a case-insensitive substring matched against both keys **and** values — the approximate counterpart to `recall_fact` for when you recall a topic but not the exact key. Returns compact `{key, snippet, expires_at}` previews (same shape as `list_under` `projection=snippet`); pass a `prefix` to scope and speed the scan. Does NOT refresh TTL. |
 | `forget` | Delete a fact by exact key. Idempotent. Edges incident to the key are NOT cascade-deleted; they decay on their own TTL. |
 | `list_under` | Enumerate facts whose key starts with the given prefix, in ascending key order. Defaults to 50 entries, max 500. A `projection` (`keys` / `snippet` / `full`, default `full`) controls how much of each value is returned. |
 | `remember_relation` | Add (or reinforce) a directed relation from one fact to another. **Additive** — writing the same relation twice strengthens it; this is the Hebbian primitive. |
@@ -138,6 +139,23 @@ you only wanted to know *which* keys exist. `list_under` accepts a
 `full` remains the default for backward compatibility. Each entry always
 carries its `key`; `value` is set only for `full`, `snippet` only for
 `snippet`. The chosen mode is echoed back as `projection` on the result.
+
+### Approximate recall with `search_facts`
+
+`recall_fact` needs the **exact** key. When you remember the *topic* of a
+fact but not where you filed it, `search_facts` does a case-insensitive
+substring match over both keys and values and returns the same compact
+`{key, snippet, expires_at}` rows as `list_under` `projection=snippet`. Read
+a full value by passing a returned key back to `recall_fact`.
+
+v1 is an unindexed scan-and-filter (no server change), so:
+
+- Pass a `prefix` whenever you know the rough namespace — it scopes the scan
+  to that subtree, making the search both faster and more precise.
+- A single call scans at most `10000` vertices before stopping. If that
+  ceiling is reached (or the `limit`, default 20 / max 100, is filled),
+  `truncated` is `true` and `suggestion` tells you to narrow the prefix or
+  raise the limit. `scanned` reports how many vertices were examined.
 
 ## Environment reference
 
