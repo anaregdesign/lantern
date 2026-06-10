@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/anaregdesign/lantern/mcp/internal/ttl"
@@ -27,6 +28,9 @@ type rememberFactOutput struct {
 	// LANTERN_MCP_MAX_TTL before writing, so the caller knows the stored
 	// expiry is shorter than the bucket label implies.
 	Capped bool `json:"capped,omitempty"`
+	// Warnings carries advisory, non-blocking key-quality hints from lintKey.
+	// The fact is always stored; these only teach better key conventions.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 const rememberFactDescription = "Store a fact in Lantern with a required TTL bucket. Call this PROACTIVELY whenever the user states a durable preference, decision, identity, or project fact — you do not need to be asked. The value can be any JSON-encodable shape (string, number, bool, object, array). Use a dotted namespaced key (user.* / project.* / session.*). Writing the same key again overwrites the previous value and resets the TTL — that is the canonical way to refresh a fact since recall does NOT refresh."
@@ -56,10 +60,14 @@ func registerRememberFact(srv *mcp.Server, lc lanternClient, r *ttl.Resolver) {
 			Bucket:    bucket.String(),
 			ExpiresAt: time.Now().Add(d).UTC().Format(time.RFC3339),
 			Capped:    capped,
+			Warnings:  lintKey(in.Key),
 		}
 		text := fmt.Sprintf("Stored %q (bucket=%s, expires≈%s).", out.Key, out.Bucket, out.ExpiresAt)
 		if capped {
 			text += fmt.Sprintf(" Note: TTL clamped to the server cap (%s); re-remember before it expires to keep the fact alive.", d)
+		}
+		if len(out.Warnings) > 0 {
+			text += fmt.Sprintf(" Key hint(s): %s", strings.Join(out.Warnings, " "))
 		}
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{

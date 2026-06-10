@@ -38,6 +38,9 @@ type rememberFactsResult struct {
 	// Capped is true when this item's bucket horizon was clamped down to
 	// LANTERN_MCP_MAX_TTL before writing.
 	Capped bool `json:"capped,omitempty"`
+	// Warnings carries advisory, non-blocking key-quality hints from lintKey
+	// for THIS item's key. Independent of the storage outcome.
+	Warnings []string `json:"warnings,omitempty"`
 	// Error carries the failure cause on the first non-committed item.
 	Error string `json:"error,omitempty"`
 }
@@ -91,6 +94,7 @@ func registerRememberFacts(srv *mcp.Server, lc lanternClient, r *ttl.Resolver) {
 				Bucket:    bucket.String(),
 				ExpiresAt: exp.UTC().Format(time.RFC3339),
 				Capped:    capped,
+				Warnings:  lintKey(it.Key),
 			}
 		}
 		if len(verrs) > 0 {

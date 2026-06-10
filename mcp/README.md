@@ -182,6 +182,31 @@ count and **no values** — the cheap way to learn the schema of memory.
   ceiling is hit, `truncated` is `true` (counts become lower bounds) and
   `suggestion` advises narrowing.
 
+### Non-blocking key linting on `remember_fact` / `remember_facts`
+
+Key quality decides whether a fact can later be recalled: a well-shaped key
+round-trips through all three recall surfaces (exact `recall_fact`, prefix
+`list_under`, substring `search_facts`), while a sloppy one is silently
+accepted and only hurts later. To teach the conventions without ever breaking
+a write, both `remember_fact` and every item of `remember_facts` run a shared
+**non-blocking** key linter (`lintKey`). The fact is **always stored**; when
+the key violates a convention the result simply carries a `warnings[]` field
+(per item, on the batch path) with actionable hints. A clean key yields no
+`warnings`.
+
+| Rule | Fires when | Why it hurts recall |
+|---|---|---|
+| Whitespace | the key contains any space/tab | Awkward to reproduce verbatim for exact `recall_fact`; reads oddly in scans. |
+| Unrecognized scope head | the first segment isn't `session` / `task` / `project` / `user` | A scope head keeps memory organized and predictable to address. |
+| High-cardinality token mid-key | a date, UUID, or 6+ digit run sits in any segment **except the leaf** | Per-write tokens in the middle fragment the prefix tree that `list_under` / `search_facts` walk. A date/UUID is fine **as the leaf** (a unique event id). |
+| Free-text leaf | the final segment has more than 3 alphabetic words | A descriptive phrase is hard to reconstruct exactly; prefer a concise canonical leaf. Pure-numeric tokens (a trailing date) don't count. |
+| Excessive depth | the key has more than 5 dot-delimited segments | Deep nesting is hard to recall and address. |
+
+Linting is advisory by design — it never rejects a key, so it nudges toward
+the documented namespacing without the friction of a hard failure. (Hard
+validation errors — an empty key, an unknown TTL bucket, an unencodable value
+— are separate and *do* reject the write.)
+
 ## Environment reference
 
 | Variable | Default | Purpose |
