@@ -95,3 +95,172 @@ func TestRecallRelatedDescription_IsProactive(t *testing.T) {
 		t.Errorf("recallRelatedDescription should keep the recall-does-not-refresh invariant: %q", recallRelatedDescription)
 	}
 }
+
+// TestRecallRelated_DefaultDirectionIsOut confirms the historical
+// behaviour is untouched: no direction means a forward Illuminate walk and
+// the reverse edge scan is never consulted (#542).
+func TestRecallRelated_DefaultDirectionIsOut(t *testing.T) {
+	h := newTestHarness(t)
+	h.fake.illuminateFn = func(_ context.Context, _ string, _ ...client.IlluminateOption) (*client.Graph, error) {
+		return &client.Graph{Vertices: map[string]*client.Vertex{"seed": {Key: "seed"}}}, nil
+	}
+	res := h.call(t, "recall_related", map[string]any{"seed": "seed"})
+	var out recallRelatedOutput
+	structuredAs(t, res, &out)
+	if out.Direction != "out" {
+		t.Fatalf("Direction = %q, want out", out.Direction)
+	}
+	if h.fake.scanEdgesCalls != 0 {
+		t.Fatalf("ScanEdges called %d times for direction=out; want 0", h.fake.scanEdgesCalls)
+	}
+}
+
+// TestRecallRelated_DirectionInReturnsPredecessors seeds a pure sink (a
+// node with only inbound edges) and asserts the reverse pass returns its
+// predecessors instead of just the seed. Illuminate must NOT run for a
+// pure in walk (#542).
+func TestRecallRelated_DirectionInReturnsPredecessors(t *testing.T) {
+	h := newTestHarness(t)
+	illuminateCalled := false
+	h.fake.illuminateFn = func(_ context.Context, _ string, _ ...client.IlluminateOption) (*client.Graph, error) {
+		illuminateCalled = true
+		return &client.Graph{}, nil
+	}
+	h.fake.scanEdgesFn = func(_ context.Context, _ ...client.EdgeScanOption) ([]*client.Edge, []byte, error) {
+		return []*client.Edge{
+			{Tail: "x", Head: "sink", Weight: 0.4},
+			{Tail: "y", Head: "sink", Weight: 0.6},
+		}, nil, nil
+	}
+	res := h.call(t, "recall_related", map[string]any{"seed": "sink", "direction": "in"})
+	if res.IsError {
+		t.Fatalf("IsError = true")
+	}
+	if illuminateCalled {
+		t.Fatalf("Illuminate must not run for direction=in")
+	}
+	if h.fake.scanEdgesCalls == 0 {
+		t.Fatalf("ScanEdges must run for direction=in")
+	}
+	var out recallRelatedOutput
+	structuredAs(t, res, &out)
+	if out.Direction != "in" {
+		t.Fatalf("Direction = %q, want in", out.Direction)
+	}
+	if out.Count != 3 {
+		t.Fatalf("Count = %d, want 3 (sink + 2 predecessors)", out.Count)
+	}
+	if out.Neighbors[0].Key != "sink" {
+		t.Fatalf("seed must sort first; got %+v", out.Neighbors[0])
+	}
+	// Highest-weight predecessor first.
+	if out.Neighbors[1].Key != "y" || out.Neighbors[1].Weight != 0.6 {
+		t.Fatalf("Neighbors[1] = %+v, want y@0.6", out.Neighbors[1])
+	}
+	if out.Neighbors[2].Key != "x" || out.Neighbors[2].Weight != 0.4 {
+		t.Fatalf("Neighbors[2] = %+v, want x@0.4", out.Neighbors[2])
+	}
+}
+
+// TestRecallRelated_DirectionInFiltersHeadOvermatch documents that the SDK
+// head-prefix scan is a prefix match, so the handler keeps only edges
+// whose head equals the seed exactly (#542).
+func TestRecallRelated_DirectionInFiltersHeadOvermatch(t *testing.T) {
+	h := newTestHarness(t)
+	h.fake.scanEdgesFn = func(_ context.Context, _ ...client.EdgeScanOption) ([]*client.Edge, []byte, error) {
+		return []*client.Edge{
+			{Tail: "a", Head: "seed", Weight: 0.5},     // exact head — keep
+			{Tail: "b", Head: "seedling", Weight: 0.9}, // prefix over-match — drop
+		}, nil, nil
+	}
+	res := h.call(t, "recall_related", map[string]any{"seed": "seed", "direction": "in"})
+	var out recallRelatedOutput
+	structuredAs(t, res, &out)
+	if out.Count != 2 {
+		t.Fatalf("Count = %d, want 2 (seed + a only)", out.Count)
+	}
+	for _, n := range out.Neighbors {
+		if n.Key == "b" {
+			t.Fatalf("over-matched predecessor b (head=seedling) must be excluded")
+		}
+	}
+}
+
+// TestRecallRelated_DirectionBothUnionsOutAndIn confirms both passes are
+// merged: a node reachable forward AND pointing back at the seed gets both
+// weight contributions summed and keeps its out-graph payload (#542).
+func TestRecallRelated_DirectionBothUnionsOutAndIn(t *testing.T) {
+	h := newTestHarness(t)
+	h.fake.illuminateFn = func(_ context.Context, _ string, _ ...client.IlluminateOption) (*client.Graph, error) {
+		return &client.Graph{
+			Vertices: map[string]*client.Vertex{
+				"seed": {Key: "seed", Value: &pb.Vertex_String_{String_: "S"}},
+				"a":    {Key: "a", Value: &pb.Vertex_String_{String_: "A"}},
+			},
+			Edges: map[string]map[string]float32{
+				"seed": {"a": 0.5},
+			},
+		}, nil
+	}
+	h.fake.scanEdgesFn = func(_ context.Context, _ ...client.EdgeScanOption) ([]*client.Edge, []byte, error) {
+		return []*client.Edge{
+			{Tail: "a", Head: "seed", Weight: 0.2}, // a is also a predecessor
+			{Tail: "p", Head: "seed", Weight: 0.3}, // p only inbound
+		}, nil, nil
+	}
+	res := h.call(t, "recall_related", map[string]any{"seed": "seed", "direction": "both"})
+	var out recallRelatedOutput
+	structuredAs(t, res, &out)
+	if out.Direction != "both" {
+		t.Fatalf("Direction = %q, want both", out.Direction)
+	}
+	if out.Count != 3 {
+		t.Fatalf("Count = %d, want 3 (seed, a, p)", out.Count)
+	}
+	if out.Neighbors[0].Key != "seed" {
+		t.Fatalf("seed must sort first; got %+v", out.Neighbors[0])
+	}
+	// a = out 0.5 + reverse 0.2 = 0.7, and keeps its out-graph payload.
+	if out.Neighbors[1].Key != "a" || out.Neighbors[1].Weight != 0.7 {
+		t.Fatalf("Neighbors[1] = %+v, want a@0.7", out.Neighbors[1])
+	}
+	if out.Neighbors[1].Value != "A" {
+		t.Fatalf("a should keep its out-graph value; got %+v", out.Neighbors[1].Value)
+	}
+	// p = reverse 0.3, no payload (reverse scan yields edges, not vertices).
+	if out.Neighbors[2].Key != "p" || out.Neighbors[2].Weight != 0.3 {
+		t.Fatalf("Neighbors[2] = %+v, want p@0.3", out.Neighbors[2])
+	}
+	if out.Neighbors[2].Value != nil {
+		t.Fatalf("predecessor p should have no payload; got %+v", out.Neighbors[2].Value)
+	}
+}
+
+func TestRecallRelated_RejectsUnknownDirection(t *testing.T) {
+	h := newTestHarness(t)
+	h.callExpectError(t, "recall_related", map[string]any{
+		"seed":      "x",
+		"direction": "sideways",
+	})
+}
+
+// TestRecallRelated_ReverseScanTruncates verifies the reverse pass is
+// bounded: when the scan budget is exhausted before the cursor drains, the
+// result is flagged truncated rather than walking unbounded (#542).
+func TestRecallRelated_ReverseScanTruncates(t *testing.T) {
+	h := newTestHarness(t)
+	page := make([]*client.Edge, recallRelatedReverseScanMax)
+	for i := range page {
+		page[i] = &client.Edge{Tail: "other", Head: "notseed"}
+	}
+	h.fake.scanEdgesFn = func(_ context.Context, _ ...client.EdgeScanOption) ([]*client.Edge, []byte, error) {
+		// Always report more pages remain; the handler must stop on budget.
+		return page, []byte("more"), nil
+	}
+	res := h.call(t, "recall_related", map[string]any{"seed": "seed", "direction": "in"})
+	var out recallRelatedOutput
+	structuredAs(t, res, &out)
+	if !out.Truncated {
+		t.Fatalf("Truncated = false; want true once the scan budget is hit")
+	}
+}
