@@ -428,10 +428,11 @@ func TestGraphCache_GetVertex(t *testing.T) {
 
 func TestGraphCache_Neighbor(t *testing.T) {
 	type args[S comparable] struct {
-		seed  S
-		step  int
-		k     int
-		tfidf bool
+		seed           S
+		step           int
+		k              int
+		tfidf          bool
+		selectSmallest bool
 	}
 	type testCase[S comparable, T any] struct {
 		name string
@@ -445,8 +446,77 @@ func TestGraphCache_Neighbor(t *testing.T) {
 	for i := range tests {
 		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.c.Neighbor(tt.args.seed, tt.args.step, tt.args.k, tt.args.tfidf); !reflect.DeepEqual(got, tt.want) {
+			if got := tt.c.Neighbor(tt.args.seed, tt.args.step, tt.args.k, tt.args.tfidf, tt.args.selectSmallest); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("Neighbor() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestGraphCache_Neighbor_ObjectiveDirection pins the #560 fix at the cache
+// layer. When a vertex's out-degree exceeds k, the selectSmallest flag chooses
+// WHICH k edges survive the per-hop prune: false keeps the k largest-weight
+// heads (Top — the maximise/strongest direction), true keeps the k smallest
+// (Bottom — the minimise/cheapest direction). Before the fix the prune always
+// kept the largest k regardless of objective, starving a cost minimiser of the
+// cheap edges it cares about. When k does not bind, the flag is a no-op.
+func TestGraphCache_Neighbor_ObjectiveDirection(t *testing.T) {
+	const seed = "seed"
+	mk := func() *GraphCache[string, string] {
+		c := NewGraphCache[string, string](time.Minute)
+		// Five heads with distinct weights 1..5 so k=2 binds and the two
+		// directions select disjoint survivors.
+		c.AddEdge(seed, "h1", 1)
+		c.AddEdge(seed, "h2", 2)
+		c.AddEdge(seed, "h3", 3)
+		c.AddEdge(seed, "h4", 4)
+		c.AddEdge(seed, "h5", 5)
+		return c
+	}
+
+	headSet := func(g *graph.Graph[string, string]) map[string]bool {
+		got := map[string]bool{}
+		if g != nil {
+			for head := range g.Edges[seed] {
+				got[head] = true
+			}
+		}
+		return got
+	}
+
+	tests := []struct {
+		name           string
+		k              int
+		selectSmallest bool
+		want           map[string]bool
+	}{
+		{
+			name:           "selectSmallest=false keeps the k largest",
+			k:              2,
+			selectSmallest: false,
+			want:           map[string]bool{"h4": true, "h5": true},
+		},
+		{
+			name:           "selectSmallest=true keeps the k smallest",
+			k:              2,
+			selectSmallest: true,
+			want:           map[string]bool{"h1": true, "h2": true},
+		},
+		{
+			name:           "k does not bind: direction is a no-op",
+			k:              5,
+			selectSmallest: true,
+			want: map[string]bool{
+				"h1": true, "h2": true, "h3": true, "h4": true, "h5": true,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := headSet(mk().Neighbor(seed, 1, tt.k, false, tt.selectSmallest))
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("Neighbor(k=%d, selectSmallest=%v) heads = %v, want %v",
+					tt.k, tt.selectSmallest, got, tt.want)
 			}
 		})
 	}
@@ -614,7 +684,7 @@ func TestGraphCache_NeighborContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if _, err := c.NeighborContext(ctx, "a", 5, 10, false); !errors.Is(err, context.Canceled) {
+	if _, err := c.NeighborContext(ctx, "a", 5, 10, false, false); !errors.Is(err, context.Canceled) {
 		t.Fatalf("want context.Canceled, got %v", err)
 	}
 }
@@ -633,7 +703,7 @@ func TestGraphCache_NeighborWithExpirationsContext_ReturnsAlignedMap(t *testing.
 	c.AddEdgeWithExpiration("a", "b", 1.0, expAB)
 	c.AddEdgeWithExpiration("a", "c", 2.0, expAC)
 
-	g, exps, err := c.NeighborWithExpirationsContext(context.Background(), "a", 2, 10, false)
+	g, exps, err := c.NeighborWithExpirationsContext(context.Background(), "a", 2, 10, false, false)
 	if err != nil {
 		t.Fatalf("NeighborWithExpirationsContext: %v", err)
 	}
@@ -674,7 +744,7 @@ func TestGraphCache_NeighborContext_StillWorksAfterRefactor(t *testing.T) {
 	c.PutVertex("b", 2)
 	c.AddEdge("a", "b", 1.0)
 
-	g, err := c.NeighborContext(context.Background(), "a", 2, 10, false)
+	g, err := c.NeighborContext(context.Background(), "a", 2, 10, false, false)
 	if err != nil {
 		t.Fatalf("NeighborContext: %v", err)
 	}

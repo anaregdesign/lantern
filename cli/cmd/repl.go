@@ -53,10 +53,11 @@ CASE (#437)
 
 The illuminate verb exposes the orthogonal axes introduced in #410:
 algorithm selects the post-traversal reduction, objective picks the
-direction (minimise/maximise), and weighting toggles RAW vs TF-IDF edge
-weights. The three keyword arguments may appear in any order; each
-defaults to the server's UNSPECIFIED resolution (algorithm=none,
-objective=min, weighting=raw).
+direction (minimise/maximise) for BOTH the per-hop top-k pruning and the
+reduction, and weighting toggles RAW vs TF-IDF edge weights. The three
+keyword arguments may appear in any order; each defaults to the
+strongest-edge behaviour (algorithm=none, objective=max, weighting=raw),
+so a bare illuminate keeps the top-k strongest neighbours (#560).
 
 EXAMPLE
   $ lantern repl

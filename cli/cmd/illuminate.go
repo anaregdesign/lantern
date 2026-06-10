@@ -55,10 +55,13 @@ ORTHOGONAL ILLUMINATE AXES (#410)
                           none  (default) return the raw discovered subgraph
                           mst   minimum or maximum spanning tree
                           spt   shortest-path tree rooted at the seed
-  --objective <dir>     direction of the algorithm-driven reduction:
-                          min   (default) smallest-weight tree wins
-                          max   largest-weight tree wins (use when weight
-                                encodes RELEVANCE, not cost)
+  --objective <dir>     direction of the weight-sensitive optimisation;
+                        governs BOTH the per-hop top-k pruning and the
+                        algorithm-driven reduction (#560):
+                          max   (default) largest-weight edges win (use when
+                                weight encodes RELEVANCE)
+                          min   smallest-weight edges win (use when weight
+                                encodes COST)
   --weighting <mode>    edge-weight transform applied BEFORE the walk:
                           raw   (default) edge.weight as stored
                           tfidf re-score using TF-IDF over the per-vertex
@@ -86,7 +89,7 @@ EXAMPLES
   lantern illuminate alice --step 2 --k 5 --weighting tfidf
 
   # 3-hop MST rooted at alice (smallest-weight connecting tree)
-  lantern illuminate alice --step 3 --k 20 --algorithm mst
+  lantern illuminate alice --step 3 --k 20 --algorithm mst --objective min
 
   # 3-hop relevance-weighted SPT (formerly the "inverse-SPT" enum value)
   lantern illuminate alice --step 3 --k 20 --algorithm spt --objective max
@@ -132,7 +135,7 @@ func init() {
 	illuminateCmd.Flags().Uint32Var(&illuminateStep, "step", 1, "maximum walk depth from the seed")
 	illuminateCmd.Flags().Uint32Var(&illuminateK, "k", 10, "max neighbours visited per node")
 	illuminateCmd.Flags().StringVar(&illuminateAlgorithmStr, "algorithm", "none", "post-traversal reduction: none|mst|spt (#410)")
-	illuminateCmd.Flags().StringVar(&illuminateObjectiveStr, "objective", "min", "reduction direction: min|max (ignored when --algorithm none) (#410)")
+	illuminateCmd.Flags().StringVar(&illuminateObjectiveStr, "objective", "max", "optimisation direction: min|max; governs per-hop top-k pruning AND reduction (#560)")
 	illuminateCmd.Flags().StringVar(&illuminateWeightingStr, "weighting", "raw", "edge-weight transform before walk: raw|tfidf (#410)")
 	rootCmd.AddCommand(illuminateCmd)
 }

@@ -436,8 +436,14 @@ func (c *GraphCache[S, T]) snapshotHooks() (func(string, int), func(time.Duratio
 	return c.onExpire, c.onGCDuration
 }
 
-func (c *GraphCache[S, T]) Neighbor(seed S, step int, k int, tfidf bool) *graph.Graph[S, T] {
-	g, _ := c.NeighborContext(context.Background(), seed, step, k, tfidf)
+// Neighbor walks the graph from seed and returns the visited subgraph. The
+// per-hop top-k pruning keeps the k largest-weight edges when selectSmallest
+// is false and the k smallest-weight edges when it is true (#560) — the
+// caller picks the direction that matches its Objective so a cost-minimiser
+// is not handed the costliest edges. tfidf re-scores edge weights BEFORE the
+// directional top/bottom-k selection.
+func (c *GraphCache[S, T]) Neighbor(seed S, step int, k int, tfidf bool, selectSmallest bool) *graph.Graph[S, T] {
+	g, _ := c.NeighborContext(context.Background(), seed, step, k, tfidf, selectSmallest)
 	return g
 }
 
@@ -445,8 +451,8 @@ func (c *GraphCache[S, T]) Neighbor(seed S, step int, k int, tfidf bool) *graph.
 // ctx.Err() as soon as the context is cancelled or its deadline has expired
 // — checked between BFS expansion steps — so handlers can short-circuit
 // large traversals when the caller has given up.
-func (c *GraphCache[S, T]) NeighborContext(ctx context.Context, seed S, step int, k int, tfidf bool) (*graph.Graph[S, T], error) {
-	g, _, err := c.neighborContext(ctx, seed, step, k, tfidf, false)
+func (c *GraphCache[S, T]) NeighborContext(ctx context.Context, seed S, step int, k int, tfidf bool, selectSmallest bool) (*graph.Graph[S, T], error) {
+	g, _, err := c.neighborContext(ctx, seed, step, k, tfidf, selectSmallest, false)
 	return g, err
 }
 
@@ -458,11 +464,11 @@ func (c *GraphCache[S, T]) NeighborContext(ctx context.Context, seed S, step int
 // The expirations map only contains entries for edges that ended up in
 // the returned graph; a missing or zero value means the edge has no
 // known expiration.
-func (c *GraphCache[S, T]) NeighborWithExpirationsContext(ctx context.Context, seed S, step int, k int, tfidf bool) (*graph.Graph[S, T], map[S]map[S]time.Time, error) {
-	return c.neighborContext(ctx, seed, step, k, tfidf, true)
+func (c *GraphCache[S, T]) NeighborWithExpirationsContext(ctx context.Context, seed S, step int, k int, tfidf bool, selectSmallest bool) (*graph.Graph[S, T], map[S]map[S]time.Time, error) {
+	return c.neighborContext(ctx, seed, step, k, tfidf, selectSmallest, true)
 }
 
-func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int, k int, tfidf bool, collectExpirations bool) (*graph.Graph[S, T], map[S]map[S]time.Time, error) {
+func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int, k int, tfidf bool, selectSmallest bool, collectExpirations bool) (*graph.Graph[S, T], map[S]map[S]time.Time, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	g := graph.NewGraph[S, T]()
@@ -528,8 +534,14 @@ func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int
 			}
 		}
 
-		// Filter light edges; trim expirations to the survivors.
-		edges = edges.Top(k)
+		// Prune to the k edges at the Objective-selected extreme — the k
+		// smallest weights when selectSmallest (MINIMIZE), the k largest
+		// otherwise (#560) — then trim expirations to the survivors.
+		if selectSmallest {
+			edges = edges.Bottom(k)
+		} else {
+			edges = edges.Top(k)
+		}
 		if expRow != nil {
 			filtered := make(map[S]time.Time, len(edges))
 			for head := range edges {

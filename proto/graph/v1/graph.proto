@@ -52,12 +52,17 @@ enum Algorithm {
   ALGORITHM_SHORTEST_PATH_TREE = 2;
 }
 
-// Objective is the direction of the Algorithm-driven optimisation.
+// Objective is the direction of the weight-sensitive optimisation. It
+// governs BOTH the per-hop top-k pruning during the BFS walk AND the
+// post-traversal Algorithm reduction (#560), so a cost-minimiser is never
+// handed a candidate set already pruned to the costliest edges.
 //
-// UNSPECIFIED defaults to MINIMIZE server-side. MINIMIZE treats edge
-// weights as costs (smallest tree wins); MAXIMIZE treats them as
-// relevance (largest tree wins, equivalent to the historical
-// "inverse-SPT" / "max-MST" variants).
+// UNSPECIFIED defaults to MAXIMIZE server-side. MINIMIZE treats edge
+// weights as costs (keeps the k smallest-weight edges per hop; smallest
+// tree wins); MAXIMIZE treats them as relevance (keeps the k largest-weight
+// edges per hop; largest tree wins, equivalent to the historical
+// "inverse-SPT" / "max-MST" variants and the default strongest-neighbour
+// behaviour of a bare illuminate).
 enum Objective {
   OBJECTIVE_UNSPECIFIED = 0;
   OBJECTIVE_MINIMIZE = 1;

@@ -78,12 +78,17 @@ func (Algorithm) EnumDescriptor() ([]byte, []int) {
 	return file_graph_v1_graph_proto_rawDescGZIP(), []int{0}
 }
 
-// Objective is the direction of the Algorithm-driven optimisation.
+// Objective is the direction of the weight-sensitive optimisation. It
+// governs BOTH the per-hop top-k pruning during the BFS walk AND the
+// post-traversal Algorithm reduction (#560), so a cost-minimiser is never
+// handed a candidate set already pruned to the costliest edges.
 //
-// UNSPECIFIED defaults to MINIMIZE server-side. MINIMIZE treats edge
-// weights as costs (smallest tree wins); MAXIMIZE treats them as
-// relevance (largest tree wins, equivalent to the historical
-// "inverse-SPT" / "max-MST" variants).
+// UNSPECIFIED defaults to MAXIMIZE server-side. MINIMIZE treats edge
+// weights as costs (keeps the k smallest-weight edges per hop; smallest
+// tree wins); MAXIMIZE treats them as relevance (keeps the k largest-weight
+// edges per hop; largest tree wins, equivalent to the historical
+// "inverse-SPT" / "max-MST" variants and the default strongest-neighbour
+// behaviour of a bare illuminate).
 type Objective int32
 
 const (

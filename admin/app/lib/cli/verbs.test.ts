@@ -131,7 +131,7 @@ describe("HELP_TEXT (#436 — grammar contract)", () => {
 
   test("documents illuminate kwarg defaults", () => {
     expect(HELP_TEXT).toContain("default=none");
-    expect(HELP_TEXT).toContain("default=min");
+    expect(HELP_TEXT).toContain("default=max");
     expect(HELP_TEXT).toContain("default=raw");
   });
 

@@ -62,9 +62,9 @@ describe("formatIlluminateClick", () => {
     expect(
       formatIlluminateClick("alice", {
         ...CLI_CLICK_AXIS_DEFAULTS,
-        objective: "max",
+        objective: "min",
       }),
-    ).toBe("illuminate alice 2 5 objective=max");
+    ).toBe("illuminate alice 2 5 objective=min");
   });
 
   test("only weighting off-default → single kwarg", () => {
@@ -82,10 +82,10 @@ describe("formatIlluminateClick", () => {
         step: 3,
         k: 10,
         algorithm: "spt",
-        objective: "max",
+        objective: "min",
         weighting: "tfidf",
       }),
-    ).toBe("illuminate alice 3 10 algorithm=spt objective=max weighting=tfidf");
+    ).toBe("illuminate alice 3 10 algorithm=spt objective=min weighting=tfidf");
   });
 
   test("seed containing a colon round-trips literally", () => {
@@ -115,8 +115,8 @@ describe("formatIlluminateClick ↔ parse round-trip", () => {
       axes: { ...CLI_CLICK_AXIS_DEFAULTS, algorithm: "spt" },
     },
     {
-      name: "only objective=max",
-      axes: { ...CLI_CLICK_AXIS_DEFAULTS, objective: "max" },
+      name: "only objective=min",
+      axes: { ...CLI_CLICK_AXIS_DEFAULTS, objective: "min" },
     },
     {
       name: "only weighting=tfidf",
@@ -128,7 +128,7 @@ describe("formatIlluminateClick ↔ parse round-trip", () => {
         step: 3,
         k: 10,
         algorithm: "spt",
-        objective: "max",
+        objective: "min",
         weighting: "tfidf",
       },
     },
