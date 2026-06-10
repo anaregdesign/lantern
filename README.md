@@ -57,7 +57,7 @@ shape (#410):
 | Axis | Values | What it does |
 |---|---|---|
 | `algorithm` | `none` (default) — raw k-NN subgraph<br>`mst` — spanning tree<br>`spt` — shortest-path tree from seed | Picks the post-traversal subgraph reduction |
-| `objective` | `min` (default) — smallest-weight tree wins<br>`max` — largest-weight tree wins | Picks the direction of the reduction. Ignored when `algorithm=none` |
+| `objective` | `max` (default) — keeps strongest edges, largest-weight tree wins<br>`min` — keeps smallest edges, smallest-weight tree wins | Picks the direction of BOTH the per-hop top-k prune and the reduction (#560) |
 | `weighting` | `raw` (default) — edge.weight verbatim<br>`tfidf` — per-hop top-k weighted by `w / log2(1+df(head))` | Picks the edge-weight transform applied BEFORE the BFS walk |
 
 Examples:

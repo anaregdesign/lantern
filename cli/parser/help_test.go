@@ -29,7 +29,7 @@ func TestHelpText_EnumeratesIlluminateKwargValues(t *testing.T) {
 }
 
 func TestHelpText_DocumentsIlluminateDefaults(t *testing.T) {
-	for _, d := range []string{"default=none", "default=min", "default=raw"} {
+	for _, d := range []string{"default=none", "default=max", "default=raw"} {
 		if !strings.Contains(HelpText, d) {
 			t.Errorf("HelpText missing illuminate default %q", d)
 		}

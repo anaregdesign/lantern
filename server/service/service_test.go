@@ -517,6 +517,146 @@ func TestLanternService_FakeBackend_Illuminate_PropagatesError(t *testing.T) {
 	}
 }
 
+// TestLanternService_FakeBackend_Illuminate_ObjectiveSteersPruning pins the
+// #560 contract at the service boundary: the Illuminate handler must translate
+// the request Objective into the per-hop pruning direction it hands the
+// backend. MINIMIZE asks for the cheapest edges (selectSmallest=true); MAXIMIZE
+// and the UNSPECIFIED default both ask for the strongest (selectSmallest=false),
+// preserving the historical strongest-neighbour behaviour.
+func TestLanternService_FakeBackend_Illuminate_ObjectiveSteersPruning(t *testing.T) {
+	tests := []struct {
+		name            string
+		objective       pb.Objective
+		wantSelectSmall bool
+	}{
+		{
+			name:            "MINIMIZE prunes to smallest",
+			objective:       pb.Objective_OBJECTIVE_MINIMIZE,
+			wantSelectSmall: true,
+		},
+		{
+			name:            "MAXIMIZE prunes to largest",
+			objective:       pb.Objective_OBJECTIVE_MAXIMIZE,
+			wantSelectSmall: false,
+		},
+		{
+			name:            "UNSPECIFIED defaults to largest (#560)",
+			objective:       pb.Objective_OBJECTIVE_UNSPECIFIED,
+			wantSelectSmall: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fb := newFakeBackend()
+			svc := NewLanternService(fb)
+			if _, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{
+				Seed:      "a",
+				Step:      1,
+				K:         3,
+				Objective: tt.objective,
+			}); err != nil {
+				t.Fatalf("Illuminate: %v", err)
+			}
+			if fb.neighborCalls != 1 {
+				t.Fatalf("neighborCalls = %d, want 1", fb.neighborCalls)
+			}
+			if fb.lastNeighborSelectSmall != tt.wantSelectSmall {
+				t.Errorf("lastNeighborSelectSmall = %v, want %v",
+					fb.lastNeighborSelectSmall, tt.wantSelectSmall)
+			}
+		})
+	}
+}
+
+// seedStar builds a directed star: seed "s" fans out to h1..h5 with distinct
+// weights 1..5 (and nothing else), so a per-hop prune at k < 5 must choose
+// which heads survive. Used by the #560 min-vs-max-differ end-to-end test.
+func seedStar(t *testing.T, s *LanternService) {
+	t.Helper()
+	ctx := context.Background()
+	exp := futureTs(time.Minute)
+	verts := []*pb.Vertex{
+		{Key: "s", Value: &pb.Vertex_String_{String_: "S"}, Expiration: exp},
+		{Key: "h1", Value: &pb.Vertex_String_{String_: "H1"}, Expiration: exp},
+		{Key: "h2", Value: &pb.Vertex_String_{String_: "H2"}, Expiration: exp},
+		{Key: "h3", Value: &pb.Vertex_String_{String_: "H3"}, Expiration: exp},
+		{Key: "h4", Value: &pb.Vertex_String_{String_: "H4"}, Expiration: exp},
+		{Key: "h5", Value: &pb.Vertex_String_{String_: "H5"}, Expiration: exp},
+	}
+	if _, err := s.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: verts}); err != nil {
+		t.Fatalf("PutVertices: %v", err)
+	}
+	edges := []*pb.Edge{
+		{Tail: "s", Head: "h1", Weight: 1, Expiration: exp},
+		{Tail: "s", Head: "h2", Weight: 2, Expiration: exp},
+		{Tail: "s", Head: "h3", Weight: 3, Expiration: exp},
+		{Tail: "s", Head: "h4", Weight: 4, Expiration: exp},
+		{Tail: "s", Head: "h5", Weight: 5, Expiration: exp},
+	}
+	if _, err := s.PutEdges(ctx, &pb.PutEdgesRequest{Edges: edges}); err != nil {
+		t.Fatalf("PutEdges: %v", err)
+	}
+}
+
+// TestLanternService_Illuminate_ObjectiveSelectsPrunedNeighbors is the #560
+// end-to-end regression through the real GraphCache: against a star where k
+// binds (out-degree 5, k=2), the surviving per-hop neighbours must differ by
+// Objective. MAXIMIZE (and the UNSPECIFIED default) keep the two STRONGEST
+// heads; MINIMIZE keeps the two weakest. Before #560 the prune always kept the
+// strongest two regardless of Objective, so the MINIMIZE row would have
+// (wrongly) returned {h4, h5}.
+func TestLanternService_Illuminate_ObjectiveSelectsPrunedNeighbors(t *testing.T) {
+	tests := []struct {
+		name      string
+		objective pb.Objective
+		wantHeads []string
+	}{
+		{
+			name:      "MAXIMIZE keeps the strongest k",
+			objective: pb.Objective_OBJECTIVE_MAXIMIZE,
+			wantHeads: []string{"h4", "h5"},
+		},
+		{
+			name:      "UNSPECIFIED defaults to strongest k (#560)",
+			objective: pb.Objective_OBJECTIVE_UNSPECIFIED,
+			wantHeads: []string{"h4", "h5"},
+		},
+		{
+			name:      "MINIMIZE keeps the weakest k",
+			objective: pb.Objective_OBJECTIVE_MINIMIZE,
+			wantHeads: []string{"h1", "h2"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newTestService(t)
+			seedStar(t, s)
+			resp, err := s.Illuminate(context.Background(), &pb.IlluminateRequest{
+				Seed:      "s",
+				Step:      1,
+				K:         2,
+				Objective: tt.objective,
+			})
+			if err != nil {
+				t.Fatalf("Illuminate: %v", err)
+			}
+			got := map[string]struct{}{}
+			for _, v := range resp.Graph.Vertices {
+				got[v.GetKey()] = struct{}{}
+			}
+			want := append([]string{"s"}, tt.wantHeads...)
+			if len(got) != len(want) {
+				t.Fatalf("vertex count = %d (%v), want %d (%v)", len(got), got, len(want), want)
+			}
+			for _, k := range want {
+				if _, ok := got[k]; !ok {
+					t.Errorf("missing vertex %q; got %v, want %v", k, got, want)
+				}
+			}
+		})
+	}
+}
+
 func TestLanternService_FakeBackend_PutAndDeleteEdge(t *testing.T) {
 	fb := newFakeBackend()
 	svc := NewLanternService(fb)
@@ -724,11 +864,15 @@ func TestLanternService_HotPathMetrics_EmitsOnceForBatchAndIlluminate(t *testing
 	}
 
 	// Illuminate → exactly one illuminate observation with the right labels.
+	// Objective is pinned to MINIMIZE so the asserted "minimize" label is
+	// explicit and independent of the UNSPECIFIED default (which is MAXIMIZE
+	// since #560).
 	if _, err := s.Illuminate(ctx, &pb.IlluminateRequest{
 		Seed:      "a",
 		Step:      2,
 		K:         10,
 		Algorithm: pb.Algorithm_ALGORITHM_MINIMUM_SPANNING_TREE,
+		Objective: pb.Objective_OBJECTIVE_MINIMIZE,
 	}); err != nil {
 		t.Fatalf("Illuminate: %v", err)
 	}

@@ -68,10 +68,12 @@ const (
 	AlgorithmShortestPathTree    = pb.Algorithm_ALGORITHM_SHORTEST_PATH_TREE
 )
 
-// Objective is the direction of the Algorithm-driven optimisation:
-// MINIMIZE treats edge weights as costs (smallest tree wins), MAXIMIZE
-// treats them as relevance (largest tree wins). Server resolves
-// ObjectiveUnspecified to ObjectiveMinimize.
+// Objective is the direction of the weight-sensitive optimisation. It
+// governs both the per-hop top-k pruning and the post-traversal reduction
+// (#560): MINIMIZE treats edge weights as costs (keeps the k smallest-weight
+// edges per hop, smallest tree wins), MAXIMIZE treats them as relevance
+// (keeps the k largest-weight edges per hop, largest tree wins). Server
+// resolves ObjectiveUnspecified to ObjectiveMaximize.
 type Objective = pb.Objective
 
 const (

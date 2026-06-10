@@ -45,7 +45,7 @@ type Illuminate struct {
 	Step      int
 	K         int
 	Algorithm string // "none" | "mst" | "spt" (default: "none")
-	Objective string // "min" | "max"           (default: "min")
+	Objective string // "min" | "max"           (default: "max")
 	Weighting string // "raw" | "tfidf"         (default: "raw")
 }
 

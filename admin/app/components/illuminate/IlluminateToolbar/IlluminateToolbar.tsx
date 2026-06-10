@@ -288,15 +288,15 @@ export function IlluminateToolbar({
         <RadioGroup
           value={
             controls.objective === "OBJECTIVE_UNSPECIFIED"
-              ? "OBJECTIVE_MINIMIZE"
+              ? "OBJECTIVE_MAXIMIZE"
               : controls.objective
           }
           onChange={(_, data) => update("objective", data.value as Objective)}
           layout="horizontal-stacked"
-          // Objective is only meaningful when an algorithm reduction is
-          // selected; disable the radio when algorithm = UNSPECIFIED so the
-          // UI reflects the server semantics.
-          disabled={controls.algorithm === "ALGORITHM_UNSPECIFIED"}
+          // Per #560 the objective governs BOTH the per-hop top-k pruning
+          // (always, even when algorithm = none) and the post-traversal
+          // reduction, so it is always meaningful — never disabled. The
+          // UNSPECIFIED fallback mirrors the server's MAXIMIZE default.
         >
           {OBJECTIVES.map((opt) => (
             <Radio

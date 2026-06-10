@@ -59,12 +59,16 @@ type Backend interface {
 	DeleteEdgesHLC(keys []graph.EdgeKey[string], ts hlc.Timestamp, expiration time.Time) int
 	DeleteByPrefixHLC(ctx context.Context, prefix string, limit uint32, ts hlc.Timestamp, expiration time.Time) (int, error)
 
-	// neighborhood traversal
+	// neighborhood traversal. selectSmallest steers the per-hop top-k
+	// pruning: the k smallest-weight edges are kept when true, the k
+	// largest when false (#560), so the caller's Objective governs which
+	// edges survive both pruning and any later reduction.
 	NeighborWithExpirationsContext(
 		ctx context.Context,
 		seed string,
 		step, k int,
 		tfidf bool,
+		selectSmallest bool,
 	) (*coregraph.Graph[string, *pb.Vertex], map[string]map[string]time.Time, error)
 
 	// prefix scan / count / delete. ScanByPrefix invokes fn for each live

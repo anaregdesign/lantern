@@ -92,7 +92,7 @@ type recallRelatedInput struct {
 	K               uint32                 `json:"k,omitempty"         jsonschema:"Per-hop fan-out: keep the top-k strongest outgoing edges at each step (default 8). Server enforces a hard cap. Applies to the out-direction walk only."`
 	Direction       recallRelatedDirection `json:"direction,omitempty" jsonschema:"Which edge direction to follow from the seed: out (default - forward BFS over out-edges, the historical behaviour), in (reverse - return the seed's direct predecessors, so seeding a pure sink is no longer empty), or both (union of the two). step/k/algorithm/objective/weighting shape the out walk; the in pass is a single bounded reverse-adjacency hop."`
 	Algorithm       recallRelatedAlgorithm `json:"algorithm,omitempty" jsonschema:"Post-traversal subgraph reduction: one of: none (default - raw BFS subgraph), mst (minimum/maximum spanning tree depending on objective), spt (shortest-path tree from seed)."`
-	Objective       recallRelatedObjective `json:"objective,omitempty" jsonschema:"Direction of the algorithm reduction: min (default - cost-weighted, smallest tree wins) or max (relevance-weighted, largest tree wins). Ignored when algorithm=none."`
+	Objective       recallRelatedObjective `json:"objective,omitempty" jsonschema:"Direction of edge selection AND any algorithm reduction: max (default - relevance-weighted, keeps the strongest edges per hop and the largest tree) or min (cost-weighted, keeps the smallest edges per hop and the smallest tree). Governs the per-hop top-k prune even when algorithm=none (see #560)."`
 	Weighting       recallRelatedWeighting `json:"weighting,omitempty" jsonschema:"Edge-weight transform applied BEFORE the walk: raw (default - edge weights as stored) or tfidf (re-score via TF-IDF over per-vertex out-edge distribution)."`
 	Reinforce       bool                   `json:"reinforce,omitempty"        jsonschema:"Opt in (default false) to strengthening the edges this walk actually traverses. Each traversed edge gains an additive weight pulse via the same additive model as remember_relation; recall stays read-only when false. This is the Hebbian use-strengthens-memory loop — the edge-side analog of touch and the one deliberate exception to 'recall does NOT refresh TTL'."`
 	ReinforceWeight float32                `json:"reinforce_weight,omitempty" jsonschema:"Weight added to each traversed edge when reinforce=true (default 1.0). Additive: the pulse stacks on the edge's existing weight. Ignored when reinforce=false."`
@@ -147,7 +147,12 @@ func registerRecallRelated(srv *mcp.Server, lc lanternClient, r *ttl.Resolver) {
 		}
 		objective := in.Objective
 		if objective == "" {
-			objective = objectiveMin
+			// #560: default to max so the per-hop top-k prune keeps the
+			// STRONGEST edges (the historical de-facto behaviour). Objective
+			// now steers the pruning direction, not just the algorithm
+			// reduction, so an unspecified objective must resolve to max to
+			// keep recall_related returning the strongest neighbours.
+			objective = objectiveMax
 		}
 		weighting := in.Weighting
 		if weighting == "" {

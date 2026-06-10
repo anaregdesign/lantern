@@ -361,7 +361,7 @@ test.describe("/cli", () => {
     await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
     const picker = page.getByTestId("cli-axis-picker");
     await expect(picker).toBeVisible();
-    // Defaults: step=2, k=5, algorithm=none, objective=min, weighting=raw
+    // Defaults: step=2, k=5, algorithm=none, objective=max, weighting=raw
     // → short form `illuminate <key> 2 5`.
     await expect(page.getByTestId("cli-axis-preview")).toHaveText(
       "illuminate <key> 2 5",
@@ -401,22 +401,22 @@ test.describe("/cli", () => {
     await page.getByRole("option", { name: "Shortest-path tree" }).click();
     await expect(preview).toHaveText("illuminate <key> 3 10 algorithm=spt");
 
-    // Pick objective=max.
+    // Pick objective=min (max is the default, so it would be omitted).
     await page.getByTestId("cli-axis-objective").click();
-    await page.getByRole("option", { name: /Maximize/ }).click();
+    await page.getByRole("option", { name: /Minimize/ }).click();
     await expect(preview).toHaveText(
-      "illuminate <key> 3 10 algorithm=spt objective=max",
+      "illuminate <key> 3 10 algorithm=spt objective=min",
     );
 
     // Flip TF-IDF on. Token order must be algorithm → objective → weighting.
     await page.getByTestId("cli-axis-tfidf").click();
     await expect(preview).toHaveText(
-      "illuminate <key> 3 10 algorithm=spt objective=max weighting=tfidf",
+      "illuminate <key> 3 10 algorithm=spt objective=min weighting=tfidf",
     );
 
     // The header hint tracks the picker.
     await expect(page.getByTestId("cli-click-hint")).toHaveText(
-      "illuminate <key> 3 10 algorithm=spt objective=max weighting=tfidf",
+      "illuminate <key> 3 10 algorithm=spt objective=min weighting=tfidf",
     );
   });
 

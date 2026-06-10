@@ -321,14 +321,16 @@ func DeleteEdgeParam(s *Source) (*DeleteEdge, error) {
 //	illuminate <seed> <step> <k> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf]
 //
 // The three keyword arguments may appear in any order and any subset.
-// Each defaults to its UNSPECIFIED enum value, which the server
-// resolves to (algorithm=none, objective=minimize, weighting=raw).
+// Each defaults to the strongest-edge behaviour (algorithm=none,
+// objective=max, weighting=raw); objective defaults to max so a bare
+// illuminate keeps the top-k strongest neighbours and the per-hop
+// pruning matches the reduction direction (#560).
 // Unknown keyword names, malformed `key=value` tokens, or values
 // outside the canonical set above are rejected with a descriptive
 // error so the REPL can surface a usage hint.
 func IlluminateParam(s *Source) (*Illuminate, error) {
 	var err error
-	m := &Illuminate{Algorithm: "none", Objective: "min", Weighting: "raw"}
+	m := &Illuminate{Algorithm: "none", Objective: "max", Weighting: "raw"}
 	if m.Seed, err = String(s); err != nil {
 		return nil, err
 	}
@@ -460,7 +462,7 @@ const HelpText = `Lantern CLI grammar:
   scan   edges    <tail-prefix: string> [<limit: int>]
   illuminate <seed: string> <step: int> <k: int>
              [algorithm={none|mst|spt}]  default=none
-             [objective={min|max}]       default=min
+             [objective={min|max}]       default=max
              [weighting={raw|tfidf}]     default=raw
   help
   exit

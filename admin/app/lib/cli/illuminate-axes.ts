@@ -53,7 +53,12 @@ export const CLI_CLICK_AXIS_DEFAULTS: CliClickAxes = {
   step: 2,
   k: 5,
   algorithm: "none",
-  objective: "min",
+  // #560: the server resolves an unspecified objective to MAXIMIZE, and the
+  // objective now also steers the per-hop top-k pruning. Defaulting the
+  // picker to `max` keeps the bare click on the strongest neighbours
+  // (the pre-#560 de-facto behaviour) instead of silently inverting to
+  // the weakest once the click is dispatched.
+  objective: "max",
   weighting: "raw",
 };
 

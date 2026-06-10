@@ -23,26 +23,28 @@ type optimizer func(ctx context.Context, g *coregraph.Graph[string, *pb.Vertex],
 // and the historical flat Optimization enum is gone.
 //
 // Note: objective ALGORITHM_UNSPECIFIED → nil (no reduction). Objective
-// OBJECTIVE_UNSPECIFIED resolves to MINIMIZE per the proto-level default.
+// OBJECTIVE_UNSPECIFIED resolves to MAXIMIZE per the proto-level default
+// (#560): a bare illuminate keeps the strongest edges both when pruning the
+// per-hop top-k and when reducing the discovered subgraph.
 func resolveOptimizer(algo pb.Algorithm, obj pb.Objective) optimizer {
 	switch algo {
 	case pb.Algorithm_ALGORITHM_MINIMUM_SPANNING_TREE:
-		if obj == pb.Objective_OBJECTIVE_MAXIMIZE {
+		if obj == pb.Objective_OBJECTIVE_MINIMIZE {
 			return func(ctx context.Context, g *coregraph.Graph[string, *pb.Vertex], seed string) (*coregraph.Graph[string, *pb.Vertex], error) {
-				return g.MaximumSpanningTreeContext(ctx, seed)
+				return g.MinimumSpanningTreeContext(ctx, seed)
 			}
 		}
 		return func(ctx context.Context, g *coregraph.Graph[string, *pb.Vertex], seed string) (*coregraph.Graph[string, *pb.Vertex], error) {
-			return g.MinimumSpanningTreeContext(ctx, seed)
+			return g.MaximumSpanningTreeContext(ctx, seed)
 		}
 	case pb.Algorithm_ALGORITHM_SHORTEST_PATH_TREE:
-		if obj == pb.Objective_OBJECTIVE_MAXIMIZE {
+		if obj == pb.Objective_OBJECTIVE_MINIMIZE {
 			return func(ctx context.Context, g *coregraph.Graph[string, *pb.Vertex], seed string) (*coregraph.Graph[string, *pb.Vertex], error) {
-				return g.ShortestPathTreeContext(ctx, seed, inverseCost)
+				return g.ShortestPathTreeContext(ctx, seed, identityCost)
 			}
 		}
 		return func(ctx context.Context, g *coregraph.Graph[string, *pb.Vertex], seed string) (*coregraph.Graph[string, *pb.Vertex], error) {
-			return g.ShortestPathTreeContext(ctx, seed, identityCost)
+			return g.ShortestPathTreeContext(ctx, seed, inverseCost)
 		}
 	}
 	return nil
@@ -61,7 +63,7 @@ func inverseCost(weight float32) float32 {
 // metric label string for each axis. UNSPECIFIED resolves to the same
 // label the server would resolve it to at execution time:
 //   - Algorithm UNSPECIFIED → "none"  (no reduction)
-//   - Objective UNSPECIFIED → "minimize"
+//   - Objective UNSPECIFIED → "maximize"
 //   - Weighting UNSPECIFIED → "raw"
 //
 // Unknown enum values (a future axis added in proto without a metrics
@@ -81,9 +83,9 @@ func algorithmLabel(a pb.Algorithm) string {
 
 func objectiveLabel(o pb.Objective) string {
 	switch o {
-	case pb.Objective_OBJECTIVE_UNSPECIFIED, pb.Objective_OBJECTIVE_MINIMIZE:
+	case pb.Objective_OBJECTIVE_MINIMIZE:
 		return "minimize"
-	case pb.Objective_OBJECTIVE_MAXIMIZE:
+	case pb.Objective_OBJECTIVE_UNSPECIFIED, pb.Objective_OBJECTIVE_MAXIMIZE:
 		return "maximize"
 	}
 	return "unknown"

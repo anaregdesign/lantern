@@ -275,7 +275,10 @@ export function parseIlluminate(rest: string[]): ParseResult {
     return { ok: false, usage };
   }
   let algorithm: AlgorithmName = "none";
-  let objective: ObjectiveName = "min";
+  // #560: defaults to `max` so a long-form command that omits the objective
+  // kwarg matches the server's MAXIMIZE default and the click picker's
+  // default — keeping the strongest-neighbour behaviour byte-for-byte.
+  let objective: ObjectiveName = "max";
   let weighting: WeightingName = "raw";
   for (let i = 3; i < rest.length; i++) {
     const tok = rest[i];
@@ -347,7 +350,7 @@ export const HELP_TEXT = [
   "  scan   edges    <tail-prefix: string> [<limit: int>]",
   "  illuminate <seed: string> <step: int> <k: int>",
   "             [algorithm={none|mst|spt}]  default=none",
-  "             [objective={min|max}]       default=min",
+  "             [objective={min|max}]       default=max",
   "             [weighting={raw|tfidf}]     default=raw",
   "  help",
   "  exit",

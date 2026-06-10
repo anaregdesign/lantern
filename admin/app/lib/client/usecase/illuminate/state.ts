@@ -30,7 +30,10 @@ export interface IlluminateControls {
 /**
  * Defaults that match the server's behaviour when knobs are omitted, and
  * give a sensible first frame for the user. UNSPECIFIED on every axis
- * lets the server pick (raw subgraph, minimise direction, raw weighting).
+ * lets the server pick (raw subgraph, maximise direction, raw weighting).
+ * Per #560 the server resolves an unspecified objective to MAXIMIZE and
+ * the objective steers the per-hop top-k pruning as well as the
+ * post-traversal reduction.
  */
 export const DEFAULT_ILLUMINATE_CONTROLS: IlluminateControls = {
   step: 2,

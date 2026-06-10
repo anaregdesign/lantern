@@ -341,15 +341,20 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 
 	weighting := request.GetWeighting()
 	useTFIDF := weighting == pb.Weighting_WEIGHTING_TFIDF
+	// Objective steers the per-hop top-k pruning as well as the post-traversal
+	// reduction (#560): a MINIMIZE caller keeps the k smallest-weight edges at
+	// each hop so the cost-minimiser is not handed a candidate set pruned to
+	// the costliest edges. UNSPECIFIED resolves to MAXIMIZE (strongest edges).
+	objective := request.GetObjective()
+	selectSmallest := objective == pb.Objective_OBJECTIVE_MINIMIZE
 	traversalStart := time.Now()
-	g, expirations, err := s.cache.NeighborWithExpirationsContext(ctx, request.GetSeed(), int(request.GetStep()), int(request.GetK()), useTFIDF)
+	g, expirations, err := s.cache.NeighborWithExpirationsContext(ctx, request.GetSeed(), int(request.GetStep()), int(request.GetK()), useTFIDF, selectSmallest)
 	traversalDur := time.Since(traversalStart)
 	if err != nil {
 		return nil, ctxToConnect(err)
 	}
 
 	algorithm := request.GetAlgorithm()
-	objective := request.GetObjective()
 	var optimizeDur time.Duration
 	if opt := resolveOptimizer(algorithm, objective); opt != nil {
 		optStart := time.Now()
