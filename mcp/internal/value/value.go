@@ -15,6 +15,7 @@ package value
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	client "github.com/anaregdesign/lantern/sdks/go"
@@ -119,4 +120,44 @@ func FromVertex(v *client.Vertex) any {
 		return d.String()
 	}
 	return nil
+}
+
+// SnippetMaxRunes bounds the truncated value preview returned by Snippet.
+// It keeps namespace surveys and search results legible without spilling
+// multi-KB values into the model context.
+const SnippetMaxRunes = 120
+
+// Snippet renders a vertex value as a compact, single-line preview for
+// namespace surveys and search results: structured values are JSON-encoded,
+// embedded newlines and tabs are collapsed to spaces, and the result is
+// truncated to SnippetMaxRunes runes with a trailing "…" when shortened. It
+// returns "" for a nil vertex or a nil value. Callers that need the full
+// value should use FromVertex instead.
+func Snippet(v *client.Vertex) string {
+	return snippetN(v, SnippetMaxRunes)
+}
+
+func snippetN(v *client.Vertex, max int) string {
+	val := FromVertex(v)
+	if val == nil {
+		return ""
+	}
+	var s string
+	switch x := val.(type) {
+	case string:
+		s = x
+	default:
+		if b, err := json.Marshal(x); err == nil {
+			s = string(b)
+		} else {
+			s = fmt.Sprintf("%v", x)
+		}
+	}
+	s = strings.NewReplacer("\n", " ", "\r", " ", "\t", " ").Replace(s)
+	if max > 0 {
+		if runes := []rune(s); len(runes) > max {
+			return string(runes[:max]) + "…"
+		}
+	}
+	return s
 }

@@ -19,26 +19,51 @@ const listUnderDefaultLimit uint32 = 50
 // further clamps this against its own configured maximum.
 const listUnderMaxLimit uint32 = 500
 
+// Projection modes select how much of each value list_under returns.
+// "full" is the default for backward compatibility with callers written
+// before the projection field existed.
+const (
+	projectionKeys    = "keys"
+	projectionSnippet = "snippet"
+	projectionFull    = "full"
+)
+
+// parseProjection validates the projection mode, defaulting empty to
+// "full" so existing callers keep their original full-value behaviour.
+func parseProjection(p string) (string, error) {
+	switch p {
+	case "":
+		return projectionFull, nil
+	case projectionKeys, projectionSnippet, projectionFull:
+		return p, nil
+	default:
+		return "", fmt.Errorf("invalid projection %q (want keys, snippet, or full)", p)
+	}
+}
+
 type listUnderInput struct {
-	Prefix string `json:"prefix" jsonschema:"Key prefix to enumerate (e.g. user.preferences. — note the trailing dot is part of the prefix). Empty string would scan the entire keyspace and is rejected; pick a meaningful namespace."`
-	Limit  uint32 `json:"limit,omitempty" jsonschema:"Maximum number of facts to return in this call (default 50, capped at 500). v1 does not expose a pagination cursor; if the response is full and you need more, narrow the prefix."`
+	Prefix     string `json:"prefix" jsonschema:"Key prefix to enumerate (e.g. user.preferences. — note the trailing dot is part of the prefix). Empty string would scan the entire keyspace and is rejected; pick a meaningful namespace."`
+	Limit      uint32 `json:"limit,omitempty" jsonschema:"Maximum number of facts to return in this call (default 50, capped at 500). v1 does not expose a pagination cursor; if the response is full and you need more, narrow the prefix."`
+	Projection string `json:"projection,omitempty" jsonschema:"How much of each fact to return: 'keys' (key + expires_at only — cheapest, use this to survey which keys exist without reading values), 'snippet' (adds a truncated ~120-char preview of each value), or 'full' (the entire value; the default). Prefer 'keys' or 'snippet' when you only need to know what exists, to avoid flooding the context with large values."`
 }
 
 type listUnderEntry struct {
 	Key       string `json:"key"`
 	Value     any    `json:"value,omitempty"`
+	Snippet   string `json:"snippet,omitempty"`
 	ExpiresAt string `json:"expires_at,omitempty"`
 }
 
 type listUnderOutput struct {
 	Prefix     string           `json:"prefix"`
+	Projection string           `json:"projection"`
 	Count      int              `json:"count"`
 	HasMore    bool             `json:"has_more"`
 	Entries    []listUnderEntry `json:"entries"`
 	Suggestion string           `json:"suggestion,omitempty"`
 }
 
-const listUnderDescription = "Enumerate facts whose key starts with the given prefix, in ascending key order. Call this PROACTIVELY to survey a namespace (e.g. user. or project.) before answering, so you recall everything you know about that topic. Defaults to 50 entries, max 500. If has_more=true the result is truncated; narrow the prefix or follow the suggestion. Does NOT refresh TTL for the listed facts."
+const listUnderDescription = "Enumerate facts whose key starts with the given prefix, in ascending key order. Call this PROACTIVELY to survey a namespace (e.g. user. or project.) before answering, so you recall everything you know about that topic. Defaults to 50 entries, max 500. Use projection=keys to list just the key names cheaply, or projection=snippet for short value previews, when you don't need full values. If has_more=true the result is truncated; narrow the prefix or follow the suggestion. Does NOT refresh TTL for the listed facts."
 
 func registerListUnder(srv *mcp.Server, lc lanternClient) {
 	mcp.AddTool(srv, &mcp.Tool{
@@ -47,6 +72,10 @@ func registerListUnder(srv *mcp.Server, lc lanternClient) {
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in listUnderInput) (*mcp.CallToolResult, listUnderOutput, error) {
 		if in.Prefix == "" {
 			return nil, listUnderOutput{}, fmt.Errorf("list_under: prefix must not be empty")
+		}
+		projection, err := parseProjection(in.Projection)
+		if err != nil {
+			return nil, listUnderOutput{}, fmt.Errorf("list_under: %w", err)
 		}
 		limit := in.Limit
 		if limit == 0 {
@@ -73,22 +102,31 @@ func registerListUnder(srv *mcp.Server, lc lanternClient) {
 			if v == nil {
 				continue
 			}
-			e := listUnderEntry{Key: v.GetKey(), Value: value.FromVertex(v)}
+			e := listUnderEntry{Key: v.GetKey()}
+			switch projection {
+			case projectionFull:
+				e.Value = value.FromVertex(v)
+			case projectionSnippet:
+				e.Snippet = value.Snippet(v)
+			case projectionKeys:
+				// key + expires_at only; no value payload.
+			}
 			if exp := client.VertexExpiration(v); !exp.IsZero() {
 				e.ExpiresAt = exp.UTC().Format("2006-01-02T15:04:05Z07:00")
 			}
 			entries = append(entries, e)
 		}
 		out := listUnderOutput{
-			Prefix:  in.Prefix,
-			Count:   len(entries),
-			HasMore: hasMore,
-			Entries: entries,
+			Prefix:     in.Prefix,
+			Projection: projection,
+			Count:      len(entries),
+			HasMore:    hasMore,
+			Entries:    entries,
 		}
 		if hasMore {
 			out.Suggestion = fmt.Sprintf("More than %d facts share this prefix. Narrow the prefix (e.g. %q + a sub-namespace) or raise limit (max %d).", limit, in.Prefix, listUnderMaxLimit)
 		}
-		text := fmt.Sprintf("Listed %d facts under %q (has_more=%t).", out.Count, in.Prefix, out.HasMore)
+		text := fmt.Sprintf("Listed %d facts under %q (projection=%s, has_more=%t).", out.Count, in.Prefix, out.Projection, out.HasMore)
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: text}},
 		}, out, nil
