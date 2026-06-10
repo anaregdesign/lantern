@@ -97,6 +97,19 @@ type DomainMetrics struct {
 	scanDuration              *prometheus.HistogramVec
 	batchSize                 *prometheus.HistogramVec
 
+	// Recall hit/miss counters (#539). Bumped by the service layer's
+	// plural GetVertices / GetEdges implementations (the singular GetVertex
+	// / GetEdge forwarders delegate to the plurals, so a read counts exactly
+	// once). A "hit" is a key present at read time — including a
+	// present-but-nil vertex value; a "miss" is a key absent or already
+	// expired. Plain counters scrape as 0 from process start once
+	// registered, so recall effectiveness = hits / (hits + misses) is
+	// observable without any label pre-warming.
+	getVertexHits   prometheus.Counter
+	getVertexMisses prometheus.Counter
+	getEdgeHits     prometheus.Counter
+	getEdgeMisses   prometheus.Counter
+
 	sampleInterval time.Duration
 	sample         Sampler
 	mlogSample     MutationLogSampler
@@ -296,6 +309,22 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 			Help:    "Item count of a single plural-RPC batch (PutVertices, PutEdges, AddEdges, GetVertices, GetEdges, DeleteVertices, DeleteEdges). Singular RPC forwarders are not double-counted.",
 			Buckets: prometheus.ExponentialBuckets(1, 4, 10),
 		}, []string{"op"}),
+		getVertexHits: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "lantern_get_vertex_hits_total",
+			Help: "Total GetVertices key lookups that found a live vertex (present at read time, including a present-but-nil value). Bumped by the plural GetVertices implementation; the singular GetVertex forwards through it so reads count exactly once. Recall hit ratio = hits / (hits + misses).",
+		}),
+		getVertexMisses: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "lantern_get_vertex_misses_total",
+			Help: "Total GetVertices key lookups that found no live vertex (absent or already expired at read time). See lantern_get_vertex_hits_total for the hit side.",
+		}),
+		getEdgeHits: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "lantern_get_edge_hits_total",
+			Help: "Total GetEdges (tail,head) lookups that found a live edge. Bumped by the plural GetEdges implementation; the singular GetEdge forwards through it so reads count exactly once.",
+		}),
+		getEdgeMisses: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "lantern_get_edge_misses_total",
+			Help: "Total GetEdges (tail,head) lookups that found no live edge (absent or already expired at read time). See lantern_get_edge_hits_total for the hit side.",
+		}),
 		peerConnected: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "lantern_peer_connected",
 			Help: "1 when the local replication pump currently holds an open Subscribe (or Subscribe+Snapshot) session to the named peer; 0 otherwise. Updated on every pump connect/disconnect lifecycle event.",
@@ -361,6 +390,7 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		m.antiEntropyCycles, m.antiEntropyGapsFound,
 		m.illuminateVisitedVertices, m.illuminateVisitedEdges, m.illuminateDuration,
 		m.scanResults, m.scanDuration, m.batchSize,
+		m.getVertexHits, m.getVertexMisses, m.getEdgeHits, m.getEdgeMisses,
 		m.peerConnected, m.replicationApplyTotal, m.snapshotReplayedTotal,
 		m.snapshotVertices, m.snapshotEdges, m.snapshotDuration,
 		m.mutationLogFillRatio, m.mutationLogEvicted, m.originStatesCount,
@@ -712,6 +742,35 @@ func (m *DomainMetrics) OnScan(op string, results int, duration time.Duration) {
 func (m *DomainMetrics) OnBatch(op string, size int) {
 	o := sanitizeLabel(op, batchOps, op)
 	m.batchSize.WithLabelValues(o).Observe(float64(size))
+}
+
+// OnGetVertices records the hit/miss split of one GetVertices RPC (#539):
+// hits is the number of requested keys that resolved to a live vertex,
+// misses the number absent or expired. Called once by the plural
+// GetVertices implementation, so the singular GetVertex forwarder counts
+// through it exactly once. Zero-valued sides are skipped so an all-hit or
+// all-miss batch touches only the relevant counter.
+func (m *DomainMetrics) OnGetVertices(hits, misses int) {
+	if hits > 0 {
+		m.getVertexHits.Add(float64(hits))
+	}
+	if misses > 0 {
+		m.getVertexMisses.Add(float64(misses))
+	}
+}
+
+// OnGetEdges records the hit/miss split of one GetEdges RPC (#539): hits is
+// the number of requested (tail,head) pairs that resolved to a live edge,
+// misses the number absent or expired. Called once by the plural GetEdges
+// implementation, so the singular GetEdge forwarder counts through it
+// exactly once.
+func (m *DomainMetrics) OnGetEdges(hits, misses int) {
+	if hits > 0 {
+		m.getEdgeHits.Add(float64(hits))
+	}
+	if misses > 0 {
+		m.getEdgeMisses.Add(float64(misses))
+	}
 }
 
 // BindSampler stores the gauge-population callback. Must be called before

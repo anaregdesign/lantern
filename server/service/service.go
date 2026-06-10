@@ -79,6 +79,8 @@ type HotPathMetrics interface {
 	OnIlluminate(algorithm, objective, weighting string, visitedVertices, visitedEdges int, traversal, optimize time.Duration)
 	OnScan(op string, results int, duration time.Duration)
 	OnBatch(op string, size int)
+	OnGetVertices(hits, misses int)
+	OnGetEdges(hits, misses int)
 }
 
 type noopHotPathMetrics struct{}
@@ -87,6 +89,8 @@ func (noopHotPathMetrics) OnIlluminate(string, string, string, int, int, time.Du
 }
 func (noopHotPathMetrics) OnScan(string, int, time.Duration) {}
 func (noopHotPathMetrics) OnBatch(string, int)               {}
+func (noopHotPathMetrics) OnGetVertices(int, int)            {}
+func (noopHotPathMetrics) OnGetEdges(int, int)               {}
 
 // ScanLimits caps the per-call pagination knobs for the prefix RPCs. It is
 // a value struct rather than a pointer-to-provider type so the service
@@ -426,6 +430,7 @@ func (s *LanternService) GetVertices(ctx context.Context, request *pb.GetVertice
 			resp.Vertices = append(resp.Vertices, v)
 		}
 	}
+	s.metrics.OnGetVertices(len(resp.Vertices), len(resp.Missing))
 	return resp, nil
 }
 
@@ -522,6 +527,7 @@ func (s *LanternService) GetEdges(ctx context.Context, request *pb.GetEdgesReque
 		}
 		resp.Edges = append(resp.Edges, edge)
 	}
+	s.metrics.OnGetEdges(len(resp.Edges), len(resp.Missing))
 	return resp, nil
 }
 
