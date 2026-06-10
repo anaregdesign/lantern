@@ -82,7 +82,7 @@ from the source so the LLM and the human reader see the same contract.
 | `list_namespaces` | Discover the **shape** of the key space: return the distinct child namespace segments under a prefix, each with a count of facts beneath it, and **no values**. An empty prefix (allowed here, unlike `list_under`) lists top-level namespaces; `depth` controls how many dot-delimited segments deep to aggregate (default 1). Does NOT refresh TTL. |
 | `remember_relation` | Add (or reinforce) a directed relation from one fact to another. **Additive** — writing the same relation twice strengthens it; this is the Hebbian primitive. Returns the resulting `accumulated_weight` (distinct from this write's `increment`) so you can observe an association getting stronger. |
 | `remember_relations` | Add (or reinforce) **several directed relations in one call** — the batch counterpart to `remember_relation`. Pass `edges[]`, each with `from`, `to`, TTL, and optional `weight`. **Additive**, so a PARTIAL failure must be resumed with only the edges that did not commit (resending a committed edge double-counts). For efficiency the batch path does NOT read back `accumulated_weight` — use `remember_relation` / `recall_relation` for that. |
-| `recall_related` | Walk the graph from a seed key with `step`, `k`, a `direction` (`out` default — forward BFS over out-edges; `in` — the seed's direct predecessors, so seeding a pure sink is no longer empty; `both` — union), and three orthogonal axes (`algorithm` ∈ `none` / `mst` / `spt`, `objective` ∈ `min` / `max`, `weighting` ∈ `raw` / `tfidf`; see #410). Returns related facts with cumulative weights. Reverse predecessors carry `key` + `weight` only (no payload — call `recall_fact`); the reverse scan is bounded and sets `truncated` when it stops early. Does NOT refresh TTL. |
+| `recall_related` | Walk the graph from a seed key with `step`, `k`, a `direction` (`out` default — forward BFS over out-edges; `in` — the seed's direct predecessors, so seeding a pure sink is no longer empty; `both` — union), and three orthogonal axes (`algorithm` ∈ `none` / `mst` / `spt`, `objective` ∈ `min` / `max`, `weighting` ∈ `raw` / `tfidf`; see #410). Returns related facts with cumulative weights. Reverse predecessors carry `key` + `weight` only (no payload — call `recall_fact`); the reverse scan is bounded and sets `truncated` when it stops early. Read-only by default; pass `reinforce=true` to add a decaying weight pulse to the edges it traverses (opt-in — see below). |
 | `recall_relation` | Read a **single** directed edge by its exact `(from, to)` endpoints, returning its current accumulated `weight` and `expires_at`. The per-edge counterpart to `recall_related` (which sums all incoming edges into a node-level score). Returns `{found=false}` for a missing or fully-decayed edge (structured result, not a tool error). Direction matters: `from→to` only. Does NOT refresh TTL or weight. |
 
 A `ping` tool also exists so operators can sanity-check the wire without
@@ -206,6 +206,37 @@ Linting is advisory by design — it never rejects a key, so it nudges toward
 the documented namespacing without the friction of a hard failure. (Hard
 validation errors — an empty key, an unknown TTL bucket, an unencodable value
 — are separate and *do* reject the write.)
+
+### Reinforce-on-recall with `recall_related`
+
+Recall is **read-only by default**: walking the graph does not refresh the
+TTL of any vertex or edge it touches (the single most-violated invariant —
+weak relations are supposed to decay). `recall_related` accepts an opt-in
+`reinforce` flag that makes a *use-strengthens-memory* exception for the
+edges the walk actually traverses — the Hebbian, edge-side analog of `touch`
+(which keeps a single vertex alive). It is **off unless you ask for it**.
+
+| Argument | Default | Effect |
+|---|---|---|
+| `reinforce` | `false` | When `true`, every edge traversed by this walk receives an additive weight pulse. `false` keeps the call purely read-only. |
+| `reinforce_weight` | `1.0` | The weight added to each traversed edge. Additive — it stacks on the edge's existing weight. |
+| `reinforce_ttl` | `conversation` | The decay horizon of the pulse, from the same 12-bucket ladder as `remember_*` (clamped by `LANTERN_MCP_MAX_TTL`, so a clamp sets `reinforce_capped`). |
+
+Because the store keeps **every contribution as an independent
+`(weight, expiration)` pulse** and an edge's life is its *latest*
+contribution's expiry, a reinforcement **never shortens** an edge — a short
+`reinforce_ttl` simply adds a pulse that itself fades on that horizon while
+leaving any longer-lived contribution untouched. Frequent use stacks pulses
+(sustained strength and a continually-extended life); sporadic use lets them
+fade back to baseline. This is exactly the "use it or lose it" loop.
+
+Reinforcement is a **best-effort side effect**: the recall result is produced
+first and is never failed by a reinforcement write that does not land. The
+result reports `reinforced` (how many traversed edges were bumped); to read an
+edge's resulting `accumulated_weight`, call `recall_relation` (the hot recall
+path deliberately skips a per-edge read-back). `reinforce` works for every
+`direction` — it bumps the forward-walk edges for `out`, the predecessor edges
+for `in`, and the union for `both`.
 
 ## Environment reference
 

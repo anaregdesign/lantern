@@ -269,7 +269,7 @@ func newServer(lc lanternClient, resolver *ttl.Resolver, logger *slog.Logger) *m
 	registerListNamespaces(srv, lc)
 	registerRememberRelation(srv, lc, resolver)
 	registerRememberRelations(srv, lc, resolver)
-	registerRecallRelated(srv, lc)
+	registerRecallRelated(srv, lc, resolver)
 	registerRecallRelation(srv, lc)
 
 	return srv
@@ -293,5 +293,5 @@ const serverInstructions = "Lantern is your ambient, decaying graph memory. Use 
 	"(1) RECALL FIRST: before answering anything that could depend on remembered context, call recall_fact (exact key), search_facts (substring over keys+values when you recall the topic but not the exact key), recall_related (walk from a seed), recall_relation (read one specific from→to edge's weight and decay), list_under (enumerate a namespace), or list_namespaces (discover which namespaces exist, counts only, no values) to pull in what you already know. " +
 	"(2) ANSWER using what you recalled. " +
 	"(3) CAPTURE AFTER: once the exchange settles, write any new durable facts with remember_fact and any new associations with remember_relation (or remember_facts / remember_relations to record several in one call) — preferences, decisions, identities, project facts, and how they connect. Capturing is the default, not the exception. " +
-	"Two invariants govern every write: (a) there is no \"forever\" — each write picks a TTL bucket from {seconds, transient, turn, conversation, task, workday, day, week, sprint, month, quarter, durable}; (b) recall does NOT refresh TTL, so to keep a fact alive you must re-remember it — or touch it to extend its TTL without resupplying the value — when you reference it. Choosing a bucket: ask \"when will this stop being true?\" and \"how bad is it if this lingers past then?\" and pick the SHORTER one. Relations are additive — writing the same relation twice strengthens it, so reinforce associations you keep using. " +
+	"Two invariants govern every write: (a) there is no \"forever\" — each write picks a TTL bucket from {seconds, transient, turn, conversation, task, workday, day, week, sprint, month, quarter, durable}; (b) recall does NOT refresh TTL, so to keep a fact alive you must re-remember it — or touch it to extend its TTL without resupplying the value — when you reference it. The edge-side keep-alive is recall_related with reinforce=true, which adds a decaying weight pulse to the edges it walks (the one opt-in exception to this no-refresh rule, and it never shortens an edge's existing life). Choosing a bucket: ask \"when will this stop being true?\" and \"how bad is it if this lingers past then?\" and pick the SHORTER one. Relations are additive — writing the same relation twice strengthens it, so reinforce associations you keep using. " +
 	"Namespace keys so the graph reads as a mind map: user.* for stable facts about the person (user.preferences.tone, user.identity.role), project.* for the work at hand (project.lantern.stack), session.* for ephemeral working state (session.current-task). Prefer dotted, hierarchical keys; reuse a key to update its value."
