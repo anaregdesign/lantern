@@ -62,6 +62,11 @@ type fakeLantern struct {
 	lastGetEdgeTail string
 	lastGetEdgeHead string
 
+	// ScanEdges
+	scanEdgesFn     func(ctx context.Context, opts ...client.EdgeScanOption) ([]*client.Edge, []byte, error)
+	scanEdgesCalls  int
+	lastScanEdgeOpt []client.EdgeScanOption
+
 	// Illuminate
 	illuminateFn  func(ctx context.Context, seed string, opts ...client.IlluminateOption) (*client.Graph, error)
 	lastSeed      string
@@ -155,6 +160,15 @@ func (f *fakeLantern) GetEdge(ctx context.Context, tail, head string) (*client.E
 		return f.getEdgeFn(ctx, tail, head)
 	}
 	return nil, nil
+}
+
+func (f *fakeLantern) ScanEdges(ctx context.Context, opts ...client.EdgeScanOption) ([]*client.Edge, []byte, error) {
+	f.scanEdgesCalls++
+	f.lastScanEdgeOpt = opts
+	if f.scanEdgesFn != nil {
+		return f.scanEdgesFn(ctx, opts...)
+	}
+	return nil, nil, nil
 }
 
 func (f *fakeLantern) Illuminate(ctx context.Context, seed string, opts ...client.IlluminateOption) (*client.Graph, error) {
