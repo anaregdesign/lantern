@@ -1,6 +1,9 @@
 package client
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // TestNewLantern_BaseURLValidation covers the constructor's argument-
 // shape guards: empty baseURL, missing scheme, bare host:port. The SDK
@@ -27,4 +30,35 @@ func TestNewLantern_BaseURLValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestExpirationFromTTL pins the opt-in decay contract (#523): a
+// non-positive ttl yields the zero time.Time (the wire's permanent
+// sentinel), while a positive ttl materialises an absolute expiration
+// at now+ttl. The relative-TTL convenience methods (PutVertex, AddEdge,
+// PutEdge) route through this helper, so an omitted/zero TTL stores a
+// vertex/edge permanently rather than injecting a hidden default.
+func TestExpirationFromTTL(t *testing.T) {
+	t.Run("zero ttl is permanent", func(t *testing.T) {
+		if got := expirationFromTTL(0); !got.IsZero() {
+			t.Fatalf("expirationFromTTL(0) = %v, want zero time", got)
+		}
+	})
+	t.Run("negative ttl is permanent", func(t *testing.T) {
+		if got := expirationFromTTL(-time.Hour); !got.IsZero() {
+			t.Fatalf("expirationFromTTL(-1h) = %v, want zero time", got)
+		}
+	})
+	t.Run("positive ttl materialises now+ttl", func(t *testing.T) {
+		const ttl = time.Minute
+		before := time.Now().Add(ttl)
+		got := expirationFromTTL(ttl)
+		after := time.Now().Add(ttl)
+		if got.IsZero() {
+			t.Fatalf("expirationFromTTL(%v) = zero time, want absolute expiration", ttl)
+		}
+		if got.Before(before) || got.After(after) {
+			t.Fatalf("expirationFromTTL(%v) = %v, want within [%v, %v]", ttl, got, before, after)
+		}
+	})
 }

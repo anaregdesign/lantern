@@ -30,8 +30,9 @@ INPUT SCHEMAS
   bulk edges add  / bulk edges put:
     {"tail":"alice","head":"bob","weight":1.5,"ttl":"1h"}
 
-  "ttl" is a Go duration string (e.g. 30s, 5m, 1h, 24h). If omitted, 24h
-  is used. "value" may be any JSON value (object, array, scalar).
+  "ttl" is a Go duration string (e.g. 30s, 5m, 1h, 24h). If omitted, the
+  vertex/edge is stored permanently (no decay). "value" may be any JSON
+  value (object, array, scalar).
 
 ERRORS
   A malformed line aborts the stream and returns exit code 1. Already-sent
@@ -59,9 +60,23 @@ type edgeLine struct {
 
 func parseTTL(s string) (time.Duration, error) {
 	if s == "" {
-		return 24 * time.Hour, nil
+		// Omitted "ttl" ⇒ permanent (no decay). expirationFromTTL maps the
+		// resulting zero duration to the wire's permanent sentinel (#523).
+		return 0, nil
 	}
 	return time.ParseDuration(s)
+}
+
+// expirationFromTTL maps a relative TTL onto the absolute expiration the
+// batch RPCs carry. A non-positive ttl ⇒ permanent: it yields the zero
+// time.Time, which the SDK serialises as the wire's never-expiring
+// sentinel. Mirrors the SDK convenience-method contract so the bulk path
+// injects no hidden default expiration (#523).
+func expirationFromTTL(ttl time.Duration) time.Time {
+	if ttl <= 0 {
+		return time.Time{}
+	}
+	return time.Now().Add(ttl)
 }
 
 func openInput(path string) (io.ReadCloser, error) {
@@ -80,7 +95,7 @@ Each line:
   {"key":"<string>","value":<any json>,"ttl":"<duration>"}
 
 Lines are accumulated into batches of --chunk-size and sent via PutVertices.
-` + "`ttl`" + ` defaults to 24h when omitted.`,
+` + "`ttl`" + ` is stored permanently (no decay) when omitted.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		r, err := openInput(args[0])
@@ -141,7 +156,7 @@ Lines are accumulated into batches of --chunk-size and sent via PutVertices.
 				value = string(b)
 			}
 			batch = append(batch, client.VertexInput{
-				Key: v.Key, Value: value, Expiration: time.Now().Add(ttl),
+				Key: v.Key, Value: value, Expiration: expirationFromTTL(ttl),
 			})
 			if len(batch) >= flagChunkSize {
 				if err := flush(); err != nil {
@@ -171,7 +186,7 @@ Each line:
 
 Lines are accumulated into batches of --chunk-size and sent via ` +
 			(map[string]string{"add": "AddEdges", "put": "PutEdges"})[verb] + `.
-` + "`ttl`" + ` defaults to 24h when omitted.
+` + "`ttl`" + ` is stored permanently (no decay) when omitted.
 
 Recall the semantic difference: ` + "`add`" + ` SUMS weight onto existing edges
 (non-idempotent), ` + "`put`" + ` REPLACES it (idempotent).`,
@@ -229,7 +244,7 @@ Recall the semantic difference: ` + "`add`" + ` SUMS weight onto existing edges
 				}
 				batch = append(batch, client.EdgeInput{
 					Tail: e.Tail, Head: e.Head, Weight: e.Weight,
-					Expiration: time.Now().Add(ttl),
+					Expiration: expirationFromTTL(ttl),
 				})
 				if len(batch) >= flagChunkSize {
 					if err := flush(); err != nil {

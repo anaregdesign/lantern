@@ -144,15 +144,20 @@ describe("coerceValue (#428 cascade matches Go cli/parser Value())", () => {
   });
 });
 
-describe("ttlSecondsToExpiration (#429)", () => {
-  test("returns now+ttl as ISO8601", () => {
+describe("ttlSecondsToExpiration (#429, #523)", () => {
+  test("returns now+ttl as ISO8601 for a positive ttl", () => {
     const before = Date.now();
     const iso = ttlSecondsToExpiration(60);
     const after = Date.now();
-    const t = new Date(iso).getTime();
+    expect(iso).toBeDefined();
+    const t = new Date(iso!).getTime();
     expect(t).toBeGreaterThanOrEqual(before + 60_000);
     expect(t).toBeLessThanOrEqual(after + 60_000);
-    expect(iso.endsWith("Z")).toBe(true);
+    expect(iso!.endsWith("Z")).toBe(true);
+  });
+
+  test("returns undefined for a null (omitted) ttl ⇒ permanent (#523)", () => {
+    expect(ttlSecondsToExpiration(null)).toBeUndefined();
   });
 });
 

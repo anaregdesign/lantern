@@ -11,8 +11,6 @@ import type {
   WeightingName,
 } from "./types";
 
-const DEFAULT_TTL_SECONDS = 365 * 24 * 3600;
-
 const ILL_ALGORITHMS = new Set<AlgorithmName>(["none", "mst", "spt"]);
 const ILL_OBJECTIVES = new Set<ObjectiveName>(["min", "max"]);
 const ILL_WEIGHTINGS = new Set<WeightingName>(["raw", "tfidf"]);
@@ -56,14 +54,18 @@ export function parsePut(rest: string[]): ParseResult {
       };
     }
     const [key, value, ttlTok] = args;
-    const ttlSeconds =
-      ttlTok === undefined ? DEFAULT_TTL_SECONDS : parseInt10(ttlTok);
-    if (ttlSeconds === null) {
-      return {
-        ok: false,
-        usage:
-          "usage: put vertex <key: string> <value: string|int|float|bool|datetime> [<ttl_seconds: int>]",
-      };
+    // Omitted ttl_seconds ⇒ permanent (no decay); only an explicit but
+    // malformed token is a usage error (#523).
+    let ttlSeconds: number | null = null;
+    if (ttlTok !== undefined) {
+      ttlSeconds = parseInt10(ttlTok);
+      if (ttlSeconds === null) {
+        return {
+          ok: false,
+          usage:
+            "usage: put vertex <key: string> <value: string|int|float|bool|datetime> [<ttl_seconds: int>]",
+        };
+      }
     }
     return {
       ok: true,
@@ -93,14 +95,18 @@ export function parsePut(rest: string[]): ParseResult {
           "usage: put edge <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]",
       };
     }
-    const ttlSeconds =
-      ttlTok === undefined ? DEFAULT_TTL_SECONDS : parseInt10(ttlTok);
-    if (ttlSeconds === null) {
-      return {
-        ok: false,
-        usage:
-          "usage: put edge <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]",
-      };
+    // Omitted ttl_seconds ⇒ permanent (no decay); only an explicit but
+    // malformed token is a usage error (#523).
+    let ttlSeconds: number | null = null;
+    if (ttlTok !== undefined) {
+      ttlSeconds = parseInt10(ttlTok);
+      if (ttlSeconds === null) {
+        return {
+          ok: false,
+          usage:
+            "usage: put edge <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]",
+        };
+      }
     }
     return {
       ok: true,
@@ -170,14 +176,18 @@ export function parseAdd(rest: string[]): ParseResult {
         "usage: add edge <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]",
     };
   }
-  const ttlSeconds =
-    ttlTok === undefined ? DEFAULT_TTL_SECONDS : parseInt10(ttlTok);
-  if (ttlSeconds === null) {
-    return {
-      ok: false,
-      usage:
-        "usage: add edge <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]",
-    };
+  // Omitted ttl_seconds ⇒ permanent (no decay); only an explicit but
+  // malformed token is a usage error (#523).
+  let ttlSeconds: number | null = null;
+  if (ttlTok !== undefined) {
+    ttlSeconds = parseInt10(ttlTok);
+    if (ttlSeconds === null) {
+      return {
+        ok: false,
+        usage:
+          "usage: add edge <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]",
+      };
+    }
   }
   return {
     ok: true,

@@ -70,7 +70,7 @@ describe("parseAdd / parsePut weight uses parseFloatStrict (#434)", () => {
         tail: "alice",
         head: "bob",
         weight: 1000,
-        ttlSeconds: expect.any(Number),
+        ttlSeconds: null,
       });
     }
   });
