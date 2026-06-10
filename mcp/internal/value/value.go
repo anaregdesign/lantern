@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	client "github.com/anaregdesign/lantern/sdks/go"
 )
 
@@ -120,6 +121,52 @@ func FromVertex(v *client.Vertex) any {
 		return d.String()
 	}
 	return nil
+}
+
+// Native extracts a vertex's stored value as the Go type that round-trips
+// back to the SAME oneof variant when handed to client.PutVertex (via
+// nativeVertex.asVertex). It exists for the value-preserving re-put that
+// backs the touch tool (#543): unlike FromVertex — which stringifies
+// timestamps/durations and promotes JSON strings to structured shapes for
+// MCP *output* — Native preserves the stored kind and width exactly
+// (Int32 stays Int32, Timestamp stays Timestamp), so touching a fact
+// extends its TTL without mutating the value the server holds.
+//
+// A nil vertex and the Vertex_Nil tombstone both return nil, which
+// re-puts as the same present-nil tombstone. Any unknown/unset variant
+// also returns nil rather than erroring: the caller is re-storing a value
+// the server already accepted, so there is nothing to validate.
+func Native(v *client.Vertex) any {
+	if v == nil {
+		return nil
+	}
+	switch x := v.Value.(type) {
+	case *pb.Vertex_Float32:
+		return x.Float32
+	case *pb.Vertex_Float64:
+		return x.Float64
+	case *pb.Vertex_Int32:
+		return x.Int32
+	case *pb.Vertex_Int64:
+		return x.Int64
+	case *pb.Vertex_Uint32:
+		return x.Uint32
+	case *pb.Vertex_Uint64:
+		return x.Uint64
+	case *pb.Vertex_Bool:
+		return x.Bool
+	case *pb.Vertex_String_:
+		return x.String_
+	case *pb.Vertex_Bytes:
+		return x.Bytes
+	case *pb.Vertex_Timestamp:
+		return x.Timestamp.AsTime()
+	case *pb.Vertex_Duration:
+		return x.Duration.AsDuration()
+	default:
+		// Vertex_Nil tombstone or an unset/unknown variant: re-put as nil.
+		return nil
+	}
 }
 
 // SnippetMaxRunes bounds the truncated value preview returned by Snippet.

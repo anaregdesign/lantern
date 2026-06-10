@@ -1,6 +1,7 @@
 package value
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -8,6 +9,8 @@ import (
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	client "github.com/anaregdesign/lantern/sdks/go"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestToSDK_PrimitivesPassThrough(t *testing.T) {
@@ -290,3 +293,75 @@ var errUnsupportedTestType = errInvalidTestType("unsupported test value type")
 type errInvalidTestType string
 
 func (e errInvalidTestType) Error() string { return string(e) }
+
+// TestNative_PreservesKindAndValue proves Native returns, for every oneof
+// variant, the concrete Go type that nativeVertex.asVertex re-encodes back
+// to the SAME variant — so a touch re-put leaves the stored kind and value
+// untouched. This is the contract that distinguishes Native from FromVertex,
+// which deliberately lossily stringifies timestamps/durations for MCP output.
+func TestNative_PreservesKindAndValue(t *testing.T) {
+	ts := time.Date(2031, 2, 3, 4, 5, 6, 0, time.UTC)
+	dur := 90 * time.Minute
+	cases := []struct {
+		name string
+		v    *pb.Vertex
+		want any
+	}{
+		{"float32", &pb.Vertex{Value: &pb.Vertex_Float32{Float32: 1.5}}, float32(1.5)},
+		{"float64", &pb.Vertex{Value: &pb.Vertex_Float64{Float64: 2.5}}, float64(2.5)},
+		{"int32", &pb.Vertex{Value: &pb.Vertex_Int32{Int32: -7}}, int32(-7)},
+		{"int64", &pb.Vertex{Value: &pb.Vertex_Int64{Int64: 42}}, int64(42)},
+		{"uint32", &pb.Vertex{Value: &pb.Vertex_Uint32{Uint32: 9}}, uint32(9)},
+		{"uint64", &pb.Vertex{Value: &pb.Vertex_Uint64{Uint64: 11}}, uint64(11)},
+		{"bool", &pb.Vertex{Value: &pb.Vertex_Bool{Bool: true}}, true},
+		{"string", &pb.Vertex{Value: &pb.Vertex_String_{String_: "warm"}}, "warm"},
+		{"bytes", &pb.Vertex{Value: &pb.Vertex_Bytes{Bytes: []byte{1, 2, 3}}}, []byte{1, 2, 3}},
+		{"timestamp", &pb.Vertex{Value: &pb.Vertex_Timestamp{Timestamp: timestamppb.New(ts)}}, ts},
+		{"duration", &pb.Vertex{Value: &pb.Vertex_Duration{Duration: durationpb.New(dur)}}, dur},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := Native(c.v)
+			switch want := c.want.(type) {
+			case []byte:
+				gb, ok := got.([]byte)
+				if !ok || !bytes.Equal(gb, want) {
+					t.Fatalf("Native = %v (%T), want %v ([]byte)", got, got, want)
+				}
+			case time.Time:
+				gt, ok := got.(time.Time)
+				if !ok || !gt.Equal(want) {
+					t.Fatalf("Native = %v (%T), want %v (time.Time)", got, got, want)
+				}
+			default:
+				if got != c.want {
+					t.Fatalf("Native = %v (%T), want %v (%T)", got, got, c.want, c.want)
+				}
+			}
+		})
+	}
+}
+
+// TestNative_StringStaysVerbatim guards the one place Native must NOT behave
+// like FromVertex: a JSON-looking string is returned as a string (not
+// promoted to a map), so re-putting it stores the identical String variant
+// rather than re-encoding a structured shape.
+func TestNative_StringStaysVerbatim(t *testing.T) {
+	v := &pb.Vertex{Value: &pb.Vertex_String_{String_: `{"x":1}`}}
+	got := Native(v)
+	if s, ok := got.(string); !ok || s != `{"x":1}` {
+		t.Fatalf("Native = %v (%T), want verbatim string {\"x\":1}", got, got)
+	}
+}
+
+// TestNative_NilVariantsAreNil confirms both a nil pointer and the present
+// Vertex_Nil tombstone collapse to a Go nil, which re-puts as the same
+// present-nil tombstone.
+func TestNative_NilVariantsAreNil(t *testing.T) {
+	if got := Native(nil); got != nil {
+		t.Fatalf("Native(nil) = %v, want nil", got)
+	}
+	if got := Native(&pb.Vertex{Value: &pb.Vertex_Nil{Nil: true}}); got != nil {
+		t.Fatalf("Native(nil-variant) = %v, want nil", got)
+	}
+}
