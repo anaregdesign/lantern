@@ -74,7 +74,7 @@ from the source so the LLM and the human reader see the same contract.
 | `remember_fact` | Store a fact in Lantern with a **required TTL bucket**. Writing the same key again overwrites the value and resets the TTL — that is the canonical way to refresh a fact since `recall_*` does NOT refresh. |
 | `recall_fact` | Look up a single fact by exact key. Returns `{found=false}` for missing keys (structured result, not a tool error). Does NOT refresh TTL. |
 | `forget` | Delete a fact by exact key. Idempotent. Edges incident to the key are NOT cascade-deleted; they decay on their own TTL. |
-| `list_under` | Enumerate facts whose key starts with the given prefix, in ascending key order. Defaults to 50 entries, max 500. |
+| `list_under` | Enumerate facts whose key starts with the given prefix, in ascending key order. Defaults to 50 entries, max 500. A `projection` (`keys` / `snippet` / `full`, default `full`) controls how much of each value is returned. |
 | `remember_relation` | Add (or reinforce) a directed relation from one fact to another. **Additive** — writing the same relation twice strengthens it; this is the Hebbian primitive. |
 | `recall_related` | Walk the graph from a seed key with `step`, `k`, and three orthogonal axes (`algorithm` ∈ `none` / `mst` / `spt`, `objective` ∈ `min` / `max`, `weighting` ∈ `raw` / `tfidf`; see #410). Returns related facts with cumulative weights. Does NOT refresh TTL. |
 
@@ -122,6 +122,22 @@ of surfacing an error. When a write is clamped, the tool result sets
 reminds you to re-`remember_*` before it expires. The bucket label is
 preserved so the intent is still legible. Unset (the default) means **no
 cap** — buckets resolve to their nominal horizons.
+
+### Value projections for `list_under`
+
+Surveying a namespace can dump large values into the model context when
+you only wanted to know *which* keys exist. `list_under` accepts a
+`projection` argument to control that:
+
+| Projection | Returns | Use when |
+|---|---|---|
+| `keys` | `key` + `expires_at` only (no value) | Surveying which keys exist — cheapest. |
+| `snippet` | `key` + a truncated ~120-char `snippet` of the value + `expires_at` | You want a preview without full payloads. |
+| `full` | `key` + the entire `value` + `expires_at` | You need the values (the **default**, preserving prior behaviour). |
+
+`full` remains the default for backward compatibility. Each entry always
+carries its `key`; `value` is set only for `full`, `snippet` only for
+`snippet`. The chosen mode is echoed back as `projection` on the result.
 
 ## Environment reference
 

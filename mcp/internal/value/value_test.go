@@ -2,6 +2,7 @@ package value
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -144,6 +145,69 @@ func TestFromVertex_NilVariantIsNil(t *testing.T) {
 func TestFromVertex_NilPointerIsNil(t *testing.T) {
 	if got := FromVertex(nil); got != nil {
 		t.Fatalf("FromVertex(nil) = %v, want nil", got)
+	}
+}
+
+func TestSnippet_NilVertexAndNilValueAreEmpty(t *testing.T) {
+	if got := Snippet(nil); got != "" {
+		t.Fatalf("Snippet(nil) = %q, want empty", got)
+	}
+	v, err := mustVertex("k", nil)
+	if err != nil {
+		t.Fatalf("mustVertex: %v", err)
+	}
+	if got := Snippet(v); got != "" {
+		t.Fatalf("Snippet(nil-variant) = %q, want empty", got)
+	}
+}
+
+func TestSnippet_ShortStringVerbatim(t *testing.T) {
+	v, err := mustVertex("k", "concise value")
+	if err != nil {
+		t.Fatalf("mustVertex: %v", err)
+	}
+	if got := Snippet(v); got != "concise value" {
+		t.Fatalf("Snippet = %q, want %q", got, "concise value")
+	}
+}
+
+func TestSnippet_TruncatesLongStringToCap(t *testing.T) {
+	long := strings.Repeat("x", SnippetMaxRunes+50)
+	v, err := mustVertex("k", long)
+	if err != nil {
+		t.Fatalf("mustVertex: %v", err)
+	}
+	got := Snippet(v)
+	wantRunes := SnippetMaxRunes + 1 // cap runes plus the trailing ellipsis
+	if n := len([]rune(got)); n != wantRunes {
+		t.Fatalf("Snippet length = %d runes, want %d", n, wantRunes)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Fatalf("truncated Snippet should end with ellipsis: %q", got)
+	}
+}
+
+func TestSnippet_StructuredValueJSONEncoded(t *testing.T) {
+	encoded, err := ToSDK(map[string]any{"name": "lantern"})
+	if err != nil {
+		t.Fatalf("ToSDK: %v", err)
+	}
+	v, err := mustVertex("k", encoded)
+	if err != nil {
+		t.Fatalf("mustVertex: %v", err)
+	}
+	if got := Snippet(v); got != `{"name":"lantern"}` {
+		t.Fatalf("Snippet = %q, want %q", got, `{"name":"lantern"}`)
+	}
+}
+
+func TestSnippet_CollapsesNewlinesToSpaces(t *testing.T) {
+	v, err := mustVertex("k", "line one\nline two\ttabbed")
+	if err != nil {
+		t.Fatalf("mustVertex: %v", err)
+	}
+	if got := Snippet(v); got != "line one line two tabbed" {
+		t.Fatalf("Snippet = %q, want collapsed single line", got)
 	}
 }
 
