@@ -1,4 +1,6 @@
 const STORAGE_KEY = "lantern.admin.baseUrl";
+const PROMETHEUS_STORAGE_KEY = "lantern.admin.prometheusUrl";
+const METRICS_RANGE_STORAGE_KEY = "lantern.admin.metricsRange";
 
 export interface BrowserStorage {
   get(key: string): string | null;
@@ -36,3 +38,16 @@ function memoryStorage(): BrowserStorage {
 }
 
 export const connectionStorageKey = STORAGE_KEY;
+
+/**
+ * localStorage key the admin SPA stores the Prometheus query base URL
+ * under (used by the Ops Metrics section). Defaults to the same-origin
+ * reverse-proxy path `/api/prom` — see `usecase/ops/metrics/prometheus-url.ts`.
+ */
+export const prometheusStorageKey = PROMETHEUS_STORAGE_KEY;
+
+/**
+ * localStorage key the admin SPA stores the Ops Metrics time range
+ * selection under (e.g. `1h`). See `usecase/ops/metrics/range.ts`.
+ */
+export const metricsRangeStorageKey = METRICS_RANGE_STORAGE_KEY;

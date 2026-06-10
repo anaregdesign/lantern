@@ -1,0 +1,108 @@
+.figure {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.chart {
+  width: 100%;
+  height: auto;
+  display: block;
+  overflow: visible;
+}
+
+.grid {
+  stroke: var(--colorNeutralStroke2);
+  stroke-width: 1;
+}
+
+.axisLabel {
+  fill: var(--colorNeutralForeground3);
+  font-size: 11px;
+  font-family: var(--fontFamilyMonospace, monospace);
+}
+
+.line {
+  fill: none;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+/*
+ * Eight categorical series styles. Each pairs a distinct hue with a
+ * distinct dash pattern so series remain distinguishable without relying
+ * on colour alone (accessibility) and in monochrome printouts.
+ */
+.series0 {
+  stroke: #0f6cbd;
+}
+.series1 {
+  stroke: #d13438;
+  stroke-dasharray: 6 3;
+}
+.series2 {
+  stroke: #107c10;
+  stroke-dasharray: 2 3;
+}
+.series3 {
+  stroke: #8764b8;
+  stroke-dasharray: 8 3 2 3;
+}
+.series4 {
+  stroke: #c19c00;
+  stroke-dasharray: 4 2;
+}
+.series5 {
+  stroke: #00b7c3;
+  stroke-dasharray: 1 3;
+}
+.series6 {
+  stroke: #e3008c;
+  stroke-dasharray: 10 4;
+}
+.series7 {
+  stroke: #5c2e91;
+  stroke-dasharray: 3 3;
+}
+
+.legend {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1rem;
+}
+
+.legendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+}
+
+.swatch {
+  width: 24px;
+  height: 8px;
+  flex: none;
+}
+
+.legendLabel {
+  color: var(--colorNeutralForeground2);
+}
+
+.legendValue {
+  color: var(--colorNeutralForeground1);
+  font-family: var(--fontFamilyMonospace, monospace);
+  font-weight: 600;
+}
+
+.empty {
+  margin: 0;
+  padding: 1.5rem 0;
+  text-align: center;
+  color: var(--colorNeutralForeground3);
+  font-style: italic;
+}

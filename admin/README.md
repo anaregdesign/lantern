@@ -71,6 +71,46 @@ No `lib/server/` is present in v1 because the admin app calls the Lantern
 server directly from the browser over Connect-Web (CORS is enforced by the
 server via `LANTERN_CORS_ALLOWED_ORIGINS`).
 
+## Metrics (Prometheus)
+
+The **Ops** page renders live Prometheus time-series charts (cache size,
+throughput, RPC latency, TTL expirations, replication lag, Go runtime, …)
+alongside the existing point-in-time status cards. The charts issue
+`query_range` calls against a Prometheus server that scrapes the Lantern
+`/metrics` endpoint.
+
+Prometheus serves no CORS headers, so the browser cannot call it
+cross-origin. The admin SPA therefore queries Prometheus **same-origin**
+under `/api/prom` (the default), and the container reverse-proxies that
+path to your Prometheus when `LANTERN_ADMIN_PROMETHEUS_UPSTREAM` is set:
+
+```sh
+docker run --rm -p 8080:8080 \
+  -e LANTERN_ADMIN_PROMETHEUS_UPSTREAM=http://prometheus:9090 \
+  ghcr.io/anaregdesign/lantern-admin:latest
+# Ops Metrics → /api/prom/api/v1/query_range → Prometheus /api/v1/query_range
+```
+
+- **Opt-in.** With `LANTERN_ADMIN_PROMETHEUS_UPSTREAM` unset, the proxy is
+  a no-op and the Metrics section degrades gracefully (it shows an
+  "unreachable" banner instead of charts). Everything else on the Ops page
+  keeps working.
+- **Runtime override.** Change the Prometheus URL at runtime via the
+  **Prometheus** button in the Metrics toolbar — a same-origin path like
+  `/api/prom`, or an absolute `http(s)://…` URL if that server sends CORS
+  headers. The choice is persisted to `localStorage`
+  (`lantern.admin.prometheusUrl`), as is the selected time range
+  (`lantern.admin.metricsRange`).
+- **Dev server.** Under `bun run dev` / `bun run start` there is no Caddy
+  proxy; point the **Prometheus** button at an absolute URL of a
+  CORS-enabled Prometheus, or run the container image to get the
+  same-origin proxy.
+
+Ready-made Prometheus + admin stacks: [`deploy/compose/`](../deploy/compose/)
+(`LANTERN_ADMIN_PROMETHEUS_UPSTREAM` pre-wired) and the Helm
+`admin.prometheus.upstream` value in
+[`deploy/helm/lantern/`](../deploy/helm/lantern/).
+
 ## Container image
 
 Tagged releases of `admin/vX.Y.Z` publish a multi-arch (`linux/amd64`,
@@ -87,11 +127,13 @@ docker run --rm -p 8080:8080 ghcr.io/anaregdesign/lantern-admin:latest
 # → http://localhost:8080
 ```
 
-The container is a **pure SPA host** — there is no reverse proxy to the
-Lantern server. The user's browser talks to the server directly, so the
-server must have `LANTERN_CORS_ALLOWED_ORIGINS` set to allow the admin
-origin (see [`server/README.md`](../server/README.md)). Switch between
-servers at runtime via the **Gateway** button in the header.
+The container does **not** reverse-proxy the Lantern gateway — the user's
+browser talks to the gateway directly, so the server must have
+`LANTERN_CORS_ALLOWED_ORIGINS` set to allow the admin origin (see
+[`server/README.md`](../server/README.md)). Switch between gateways at
+runtime via the **Gateway** button in the header. The container _does_
+optionally reverse-proxy Prometheus same-origin under `/api/prom` for the
+Ops Metrics page — see [Metrics (Prometheus)](#metrics-prometheus).
 
 ### Releasing
 

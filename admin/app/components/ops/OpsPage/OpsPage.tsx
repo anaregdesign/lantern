@@ -8,6 +8,7 @@ import {
   Switch,
 } from "@fluentui/react-components";
 import { ArrowClockwise20Regular } from "@fluentui/react-icons";
+import { useCallback, useState } from "react";
 
 import {
   peerStatePillIntent,
@@ -18,6 +19,7 @@ import {
 } from "~/lib/client/usecase/ops/selectors";
 import { DEFAULT_POLL_MS } from "~/lib/client/usecase/ops/state";
 import { useOps } from "~/lib/client/usecase/ops/use-ops";
+import { MetricsSection } from "../MetricsSection/MetricsSection";
 import styles from "./OpsPage.module.css";
 
 /**
@@ -32,10 +34,18 @@ import styles from "./OpsPage.module.css";
  */
 export function OpsPage() {
   const ops = useOps();
+  const [refreshNonce, setRefreshNonce] = useState(0);
   const pollingOn = ops.state.pollMs > 0;
   const onPollToggle = (_: unknown, data: { checked: boolean }) => {
     ops.setPollMs(data.checked ? DEFAULT_POLL_MS : 0);
   };
+  // The toolbar Refresh button refreshes both halves of the page: the
+  // status cards (ops.refresh) and the metric panels (refreshNonce bump,
+  // which the MetricsSection effect observes).
+  const onRefresh = useCallback(() => {
+    ops.refresh();
+    setRefreshNonce((n) => n + 1);
+  }, [ops]);
   return (
     <div className={styles.root}>
       <header className={styles.header}>
@@ -55,7 +65,7 @@ export function OpsPage() {
           />
           <Button
             icon={<ArrowClockwise20Regular />}
-            onClick={ops.refresh}
+            onClick={onRefresh}
             data-testid="ops-refresh"
           >
             Refresh
@@ -74,6 +84,7 @@ export function OpsPage() {
           error={ops.state.replication.error}
         />
       </section>
+      <MetricsSection pollMs={ops.state.pollMs} refreshNonce={refreshNonce} />
     </div>
   );
 }

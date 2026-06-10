@@ -18,10 +18,13 @@ single-host HA experiments.
   `http://lantern:6380` — continues to round-robin across the live
   replicas without knowing about the per-service names.
 - 1 × `admin` browser SPA (`ghcr.io/anaregdesign/lantern-admin`)
-  on host port `8080`. Pure SPA host (Caddy on `:8080`), no reverse
-  proxy — the browser talks to the gateway directly, so each lantern
-  service has `LANTERN_CORS_ALLOWED_ORIGINS=http://localhost:8080`
-  baked in.
+  on host port `8080`. Caddy SPA host on `:8080`; the browser talks to
+  the gateway directly (not proxied), so each lantern service has
+  `LANTERN_CORS_ALLOWED_ORIGINS=http://localhost:8080` baked in. The
+  admin container *does* reverse-proxy Prometheus same-origin under
+  `/api/prom` (`LANTERN_ADMIN_PROMETHEUS_UPSTREAM=http://prometheus:9090`
+  is set on the admin service) so the Ops Metrics charts work without a
+  cross-origin call to Prometheus.
 - `prometheus` scrapes via `dns_sd_configs` against the `lantern`
   alias, so it picks up every replica automatically (no static targets
   file to maintain).
@@ -102,6 +105,13 @@ that env to match (otherwise the browser preflight blocks the
 request). Override the image with
 `LANTERN_ADMIN_IMAGE=ghcr.io/anaregdesign/lantern-admin:v0.1.1
 docker compose up -d`.
+
+The **Ops** page's Prometheus time-series charts query Prometheus
+same-origin under `/api/prom`; the admin service's
+`LANTERN_ADMIN_PROMETHEUS_UPSTREAM=http://prometheus:9090` makes the
+admin container reverse-proxy that path to the bundled `prometheus`
+service, so the charts render out of the box. Point the **Prometheus**
+button in the Metrics toolbar elsewhere to override at runtime.
 
 The admin container is **not** auth-fronted. Run it only on trusted
 networks, or put your own ingress-level auth proxy in front.

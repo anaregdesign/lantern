@@ -178,6 +178,18 @@ admin:
     #    hosts:
     #      - admin.example.com
 
+  # Optional same-origin Prometheus reverse proxy for the admin Metrics
+  # page. When `upstream` is non-empty, the admin container's entrypoint
+  # writes a Caddy `handle_path /api/prom/* { reverse_proxy <upstream> }`
+  # snippet, the SPA's default Prometheus URL (`/api/prom`) reaches
+  # Prometheus without a cross-origin browser call, and the chart mounts
+  # an emptyDir at /etc/caddy/conf.d so the non-root container can write
+  # that snippet regardless of `securityContext.readOnlyRootFilesystem`.
+  # Leave empty to disable (Metrics page degrades gracefully; operators
+  # can still point it at any reachable Prometheus from the browser).
+  prometheus:
+    upstream: ""   # e.g. "http://prometheus-server.monitoring.svc:80"
+
   resources:
     requests:
       cpu: 10m
