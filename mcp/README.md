@@ -76,6 +76,7 @@ from the source so the LLM and the human reader see the same contract.
 | `search_facts` | Find facts by a case-insensitive substring matched against both keys **and** values — the approximate counterpart to `recall_fact` for when you recall a topic but not the exact key. Returns compact `{key, snippet, expires_at}` previews (same shape as `list_under` `projection=snippet`); pass a `prefix` to scope and speed the scan. Does NOT refresh TTL. |
 | `forget` | Delete a fact by exact key. Idempotent. Edges incident to the key are NOT cascade-deleted; they decay on their own TTL. |
 | `list_under` | Enumerate facts whose key starts with the given prefix, in ascending key order. Defaults to 50 entries, max 500. A `projection` (`keys` / `snippet` / `full`, default `full`) controls how much of each value is returned. |
+| `list_namespaces` | Discover the **shape** of the key space: return the distinct child namespace segments under a prefix, each with a count of facts beneath it, and **no values**. An empty prefix (allowed here, unlike `list_under`) lists top-level namespaces; `depth` controls how many dot-delimited segments deep to aggregate (default 1). Does NOT refresh TTL. |
 | `remember_relation` | Add (or reinforce) a directed relation from one fact to another. **Additive** — writing the same relation twice strengthens it; this is the Hebbian primitive. |
 | `recall_related` | Walk the graph from a seed key with `step`, `k`, and three orthogonal axes (`algorithm` ∈ `none` / `mst` / `spt`, `objective` ∈ `min` / `max`, `weighting` ∈ `raw` / `tfidf`; see #410). Returns related facts with cumulative weights. Does NOT refresh TTL. |
 
@@ -156,6 +157,25 @@ v1 is an unindexed scan-and-filter (no server change), so:
   ceiling is reached (or the `limit`, default 20 / max 100, is filled),
   `truncated` is `true` and `suggestion` tells you to narrow the prefix or
   raise the limit. `scanned` reports how many vertices were examined.
+
+### Namespace discovery with `list_namespaces`
+
+Before guessing keys, ask what's there. `list_namespaces` returns the
+distinct child namespace segments under a prefix with a per-segment fact
+count and **no values** — the cheap way to learn the schema of memory.
+
+- An **empty prefix** lists the top-level namespaces of the whole keyspace
+  (`user`, `project`, `session`, …). This is allowed here (unlike
+  `list_under`) precisely because only segment names and counts are
+  returned, never values.
+- `depth` controls how many dot-delimited segments below the prefix collapse
+  into each namespace (default 1 = immediate children, max 10).
+- `has_children` on a result marks namespaces you can drill into further
+  (with a longer prefix or a larger `depth`).
+- Results are ordered most-populated first and capped at 500 namespaces. Like
+  `search_facts`, the survey scans at most `10000` vertices; when either
+  ceiling is hit, `truncated` is `true` (counts become lower bounds) and
+  `suggestion` advises narrowing.
 
 ## Environment reference
 
