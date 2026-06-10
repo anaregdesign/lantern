@@ -63,7 +63,7 @@ is required for either reads or writes.
 | D1 | Crash persistence | **None for v1.** WAL is a hook only. | Bootstrap from peers covers single-node loss; persistence adds operational surface area we don't yet need. |
 | D2 | External CDC | **Same `Subscribe` RPC**, gated by auth/ACL later. Under the leaderless Subscribe contract (#415, Reading B), an external CDC consumer attaches to any **one** replica and observes every committed cluster mutation — failover to a different replica is supported by passing the per-origin watermark in `SubscribeRequest.from_seq_per_origin`. | Internal replication and external CDC are isomorphic; splitting RPCs would duplicate machinery. The per-origin cursor lets consumers spread load across replicas without reimplementing the internal pump's dedup. |
 | D3 | WAN replication | **Out of scope for v1**, single DC only. HLC max skew bound = **500 ms**. | Geo replication requires looser skew + read repair; defer until single-DC HA is proven. |
-| D4 | Tombstone TTL | **Cluster-wide config, default 24h.** Any `Add*` / `Put*` whose TTL would exceed tombstone TTL is **rejected** with `InvalidArgument`. | Resurrection-proof deletes require tombstones to outlive every live contribution. This is a real backwards-incompatible constraint. |
+| D4 | Tombstone TTL | **Cluster-wide config, default 1 year (8760h).** Any `Add*` / `Put*` whose TTL would exceed tombstone TTL is **rejected** with `InvalidArgument`. | Resurrection-proof deletes require tombstones to outlive every live contribution. This is a real backwards-incompatible constraint. |
 | D5 | Workload kind (k8s reference impl) | **StatefulSet** (not Deployment). | Stable pod identity simplifies peer discovery; leaves room for an optional WAL PVC later. The *user experience* is Deployment-like; the *resource kind* is `StatefulSet`. |
 | D6 | Cluster membership v1 | **Static `LANTERN_PEERS` env var.** v2 adds DNS-based discovery (#190). | Smallest surface that ships. Any DNS-routable platform (k8s headless Service, Compose service name, Nomad, plain DNS A-records) can populate it trivially. |
 | D7 | Supported deployment topologies | **Tier A (full HA):** k8s StatefulSet, Nomad, plain VMs, Docker Compose with stable peer hostnames. **Tier B (single-instance, no HA):** any container PaaS — Docker Compose single service, Cloud Run, Azure Container Apps, App Runner. **Not supported:** running multiple Cloud Run / ACA *instances* as a replicated cluster. | Leaderless P2P needs **stable inter-instance addressing** and **long-lived inbound gRPC streams between peers**. Serverless container platforms intentionally hide instance addresses and recycle instances; they fit single-instance deploys (still useful as a fast in-memory KVS) but not the replicated topology. |
@@ -516,7 +516,7 @@ Lantern is **AP** in CAP terms. During a partition:
 - `Delete*` followed by `Put*` on the **other** side of the partition is the
   only true hazard. If `Delete` HLC > later `Put` HLC on the other side, the
   `Put` will be dropped after heal. If the partition lasts **longer than
-  `tombstone_ttl` (D4, default 24h)**, the tombstone may GC before the other
+  `tombstone_ttl` (D4, default 1 year / 8760h)**, the tombstone may GC before the other
   side learns about it, resurrecting the deleted entry. Operators must keep
   partition duration < tombstone TTL or extend D4.
 

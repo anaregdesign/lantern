@@ -46,9 +46,9 @@ type MutationLogConfig struct {
 //     identity across restarts must set this explicitly.
 //   - LANTERN_TOMBSTONE_TTL              max retention window for delete
 //     tombstones and the upper bound on caller-supplied Expiration on
-//     Add*/Put* RPCs. Default 24h. Set to a value larger than the longest
-//     plausible cross-cluster delivery delay to avoid late writes
-//     resurrecting deleted entries.
+//     Add*/Put* RPCs. Default 1 year (8760h). Set to a value larger than
+//     the longest plausible cross-cluster delivery delay to avoid late
+//     writes resurrecting deleted entries.
 type ReplicationConfig struct {
 	NodeID       hlc.NodeID
 	TombstoneTTL time.Duration
@@ -72,7 +72,7 @@ func loadMutationLogConfig() MutationLogConfig {
 // loadReplicationConfig reads ReplicationConfig from the environment. Called
 // from NewConfig so all env reads remain colocated.
 func loadReplicationConfig() ReplicationConfig {
-	ttl := envconfig.Duration("LANTERN_TOMBSTONE_TTL", 24*time.Hour)
+	ttl := envconfig.Duration("LANTERN_TOMBSTONE_TTL", 365*24*time.Hour) // 1 year
 	var id hlc.NodeID
 	raw := strings.TrimSpace(os.Getenv("LANTERN_NODE_ID"))
 	raw = strings.TrimPrefix(raw, "0x")

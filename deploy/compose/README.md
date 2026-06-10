@@ -25,6 +25,12 @@ single-host HA experiments.
   `/api/prom` (`LANTERN_ADMIN_PROMETHEUS_UPSTREAM=http://prometheus:9090`
   is set on the admin service) so the Ops Metrics charts work without a
   cross-origin call to Prometheus.
+- 1 × `lantern-mcp` MCP server (`ghcr.io/anaregdesign/lantern-mcp`) on
+  host port `6390`, serving the Model Context Protocol over Streamable
+  HTTP at `/mcp`. It dials the `lantern` alias, so Compose DNS
+  round-robins its calls across the three replicas. It now comes up with
+  the rest of the stack on `docker compose up -d` — see
+  [Single-node + MCP server](#single-node--mcp-server) below.
 - `prometheus` scrapes via `dns_sd_configs` against the `lantern`
   alias, so it picks up every replica automatically (no static targets
   file to maintain).
@@ -45,7 +51,9 @@ basename (`compose`).
 
 ```shell
 cd deploy/compose
-docker compose up -d
+# Images default to the published `:latest` tags (no local build needed);
+# `--pull always` re-fetches them so you never run a stale cached image.
+docker compose up -d --pull always
 docker compose ps
 ```
 
@@ -132,7 +140,7 @@ docker compose logs lantern-0 lantern-1 lantern-2 | grep peer_discovery
 For non-HA development bring up only one replica:
 
 ```shell
-docker compose up -d lantern-0 admin prometheus
+docker compose up -d --pull always lantern-0 admin prometheus
 ```
 
 `LANTERN_PEER_DNS_NAME=lantern` still resolves — to the single A
@@ -148,20 +156,20 @@ pump becomes a no-op.
 
 ## Single-node + MCP server
 
-For local LLM-agent experiments there is a smaller compose file in
+The HA compose file in this directory ships a `lantern-mcp` service that
+comes up with the rest of the stack on `docker compose up -d`, talking to
+the 3-replica cluster — Compose DNS round-robins `lantern:6380` across the
+live replicas. For a smaller single-`lantern` topology there is also
 [`docker-compose.mcp.yml`](docker-compose.mcp.yml) that stands up one
-`lantern` + one `lantern-mcp`. The HA compose file in this directory
-also ships a `lantern-mcp` service behind a Compose profile, so the
-same MCP container can be exercised against the 3-replica cluster:
+`lantern` + one `lantern-mcp`:
 
 ```shell
-# Single-node (small file): bring lantern + the MCP server up together.
-docker compose -f docker-compose.mcp.yml up -d
+# HA cluster (this file): lantern-mcp starts with the rest of the stack.
+docker compose up -d
 
-# HA cluster (this file): same lantern-mcp container, but talking to
-# the 3-replica cluster — Compose DNS round-robins `lantern:6380`
-# across the live replicas.
-docker compose --profile mcp up -d lantern-mcp
+# Single-node (small file): one lantern + the MCP server. `--pull always`
+# re-fetches the `:latest` tags so you never run a stale cached image.
+docker compose -f docker-compose.mcp.yml up -d --pull always
 ```
 
 `lantern-mcp` serves the Model Context Protocol over **Streamable
@@ -177,6 +185,5 @@ reference.
 
 > The standalone `docker-compose.mcp.yml` covers the single-node case
 > and stays useful as a template for embedding `lantern-mcp` in your
-> own agent-runtime compose file. The HA file's `mcp` profile covers
-> the multi-replica case without duplicating the lantern + Prometheus
-> stack.
+> own agent-runtime compose file. The HA file brings `lantern-mcp` up
+> by default alongside the multi-replica cluster.
