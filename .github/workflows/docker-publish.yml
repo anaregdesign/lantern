@@ -97,9 +97,9 @@ jobs:
           echo "$TAGS" | xargs -I {} cosign sign --yes {}@${DIGEST}
 
   bench:
-    # Release-time benchmark sweep. Runs the smoke scenarios listed in
-    # testbed/bench/release-scenarios.txt against a freshly-built local
-    # image and uploads a fixed-format bench-report.md for the release
+    # Release-time benchmark sweep. Runs the full canonical scenario set
+    # listed in testbed/bench/release-scenarios.txt against a freshly-built
+    # local image and uploads a fixed-format bench-report.md for the release
     # job to splice into the release notes. Non-blocking: a leak-gate
     # failure or harness hiccup must not prevent a release from shipping.
     # See issue #256.
@@ -107,7 +107,14 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     continue-on-error: true
-    timeout-minutes: 30
+    # The full sweep is ~83 min of scenario execution (see release-scenarios.txt).
+    # release.sh self-bounds via RELEASE_BENCH_BUDGET_SECONDS (default 90 min) and
+    # always aggregates a report before returning, so this `timeout-minutes` is
+    # only a hard backstop — sized above the budget plus one scenario's worst-case
+    # overshoot (90 + ~6 min) plus job overhead so the script's graceful cutoff
+    # fires first and the report is never discarded by a mid-loop cancellation.
+    # See issue #571.
+    timeout-minutes: 105
     permissions:
       contents: read
     steps:

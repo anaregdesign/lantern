@@ -9,15 +9,21 @@
 #   ./testbed/bench/release.sh [--out PATH]
 #
 # Environment knobs:
-#   TAG            release tag (default: `git describe --tags --abbrev=0`)
-#   COMMIT         release commit SHA (default: `git rev-parse HEAD`)
-#   RUNNER         runner platform string (default: `uname -s/uname -m`, lowercased)
-#   LANTERN_IMAGE  image to run (default: lantern:local — must exist locally)
-#   KEEP_OUT=1     do not delete the per-scenario `out/` tree afterwards
+#   TAG                          release tag (default: `git describe --tags --abbrev=0`)
+#   COMMIT                       release commit SHA (default: `git rev-parse HEAD`)
+#   RUNNER                       runner platform string (default: `uname -s/uname -m`, lowercased)
+#   LANTERN_IMAGE                image to run (default: lantern:local — must exist locally)
+#   KEEP_OUT=1                   do not delete the per-scenario `out/` tree afterwards
+#   RELEASE_BENCH_BUDGET_SECONDS wall-clock budget for the scenario sweep (default: 5400).
+#                                Once exhausted, the remaining scenarios are skipped, the
+#                                report is aggregated from whatever ran (with a `## Truncated`
+#                                note appended), and the script still exits 0. Set to 0 to
+#                                disable the budget and always run every scenario.
 #
 # Exit codes:
-#   0  every scenario succeeded AND every leak gate verdict == "pass"
-#   1  the aggregator ran but at least one scenario failed or fail-gated
+#   0  every scenario that RAN passed its leak gate (the sweep may have been
+#      truncated by the wall-clock budget — truncation alone is not a failure)
+#   1  the aggregator ran but at least one scenario that ran failed or fail-gated
 #   2  setup error (missing tools, missing image, etc.)
 #
 # Design notes:
@@ -28,6 +34,10 @@
 #   - We DO NOT abort on a single scenario failure — the aggregator marks
 #     missing scenarios as `(failed)` rows and the workflow surfaces the
 #     overall verdict via this script's exit code.
+#   - We self-bound the sweep via RELEASE_BENCH_BUDGET_SECONDS so the report is
+#     always aggregated and uploaded *before* the CI job's hard `timeout-minutes`
+#     can cancel us mid-loop (which would discard the report entirely). The job
+#     timeout is the backstop; this budget is the graceful cutoff.
 
 set -euo pipefail
 
@@ -73,8 +83,18 @@ done < "$SCENARIO_LIST"
 
 [[ ${#scenarios[@]} -gt 0 ]] || die "no scenarios in $SCENARIO_LIST"
 
+# Wall-clock budget for the scenario sweep. The release workflow caps the whole
+# job via `timeout-minutes`; this budget is the *graceful* cutoff that lets us
+# aggregate a partial report and exit cleanly BEFORE the runner hard-kills the
+# job (which would discard the report entirely, leaving the release notes with a
+# placeholder). The default (5400s = 90 min) leaves the full canonical sweep
+# (~83 min) room to finish, so it only trips when a runner is abnormally slow or
+# the scenario set grows. Set RELEASE_BENCH_BUDGET_SECONDS=0 to disable.
+BUDGET_SECONDS="${RELEASE_BENCH_BUDGET_SECONDS:-5400}"
+
 log "release-bench: tag=$TAG commit=$COMMIT_SHORT runner=$RUNNER captured=$CAPTURED"
 log "release-bench: scenarios=${scenarios[*]}"
+log "release-bench: sweep budget=${BUDGET_SECONDS}s (0 = unbounded)"
 
 # Verify the image exists locally so we fail fast.
 img="${LANTERN_IMAGE:-lantern:local}"
@@ -97,9 +117,27 @@ trap cleanup EXIT
 
 # Track each scenario's output directory and overall verdict.
 scenario_args=()
+skipped=()
 fail_count=0
+sweep_start="$(date +%s)"
+budget_hit=0
 
 for s in "${scenarios[@]}"; do
+  # Graceful wall-clock cutoff: once the budget is spent, skip the rest of the
+  # sweep instead of letting the CI job's hard timeout cancel us mid-scenario.
+  if [[ "$budget_hit" -eq 0 && "$BUDGET_SECONDS" -gt 0 ]]; then
+    elapsed=$(( $(date +%s) - sweep_start ))
+    if [[ "$elapsed" -ge "$BUDGET_SECONDS" ]]; then
+      log "sweep budget ${BUDGET_SECONDS}s reached after ${elapsed}s — skipping remaining scenarios"
+      budget_hit=1
+    fi
+  fi
+  if [[ "$budget_hit" -eq 1 ]]; then
+    log "scenario $s: SKIPPED (sweep budget exhausted)"
+    skipped+=("$s")
+    continue
+  fi
+
   log "scenario: $s"
   before_dir="$HERE/out/$s"
   mkdir -p "$before_dir"
@@ -140,7 +178,24 @@ go run "$HERE/release" \
   -out "$OUT_PATH" \
   "${scenario_args[@]}"
 
-log "done: $OUT_PATH (failures=$fail_count)"
+# If the budget truncated the sweep, the aggregated report only covers the
+# scenarios that ran. Append an honest note listing what was skipped so readers
+# of the release notes know the sweep was partial (and why).
+if [[ ${#skipped[@]} -gt 0 ]]; then
+  log "sweep truncated: ${#skipped[@]} scenario(s) skipped: ${skipped[*]}"
+  {
+    printf '\n## Truncated\n\n'
+    printf 'The release bench wall-clock budget (%ss) was reached before the full ' "$BUDGET_SECONDS"
+    printf 'scenario sweep completed. %d of %d scenario(s) were skipped and are ' \
+      "${#skipped[@]}" "${#scenarios[@]}"
+    printf 'absent from the summary above:\n\n'
+    for s in "${skipped[@]}"; do
+      printf -- '- `%s`\n' "$s"
+    done
+  } >> "$OUT_PATH"
+fi
+
+log "done: $OUT_PATH (failures=$fail_count, skipped=${#skipped[@]})"
 if [[ "${KEEP_OUT:-0}" != "1" ]]; then
   rm -rf "$HERE/out"
 fi
