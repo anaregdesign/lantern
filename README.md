@@ -671,6 +671,7 @@ Two recurring traps worth memorising:
   [.github/workflows/mcp-publish.yml](.github/workflows/mcp-publish.yml).
 - Integration test that wires the MCP server against an in-process Lantern:
   [tests/integration/mcp_test.go](tests/integration/mcp_test.go).
+- **Custom Agents:** [.github/agents/](/.github/agents/) — role-specific agents (e.g. `User` for UX/UI review)
 
 ---
 
