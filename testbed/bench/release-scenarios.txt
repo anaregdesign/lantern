@@ -3,50 +3,59 @@
 # Lines starting with `#` and blank lines are ignored.
 #
 # This is the canonical release-time signal. The release bench job is
-# `continue-on-error` (non-blocking), so we run the full canonical
-# scenarios — not just the smoke variants — to surface regressions across
-# every major call path. The three `smoke_*` entries lead the sweep so the
-# rendered report is populated with useful rows first: release.sh self-bounds
-# the sweep via RELEASE_BENCH_BUDGET_SECONDS and always aggregates whatever
-# ran (appending a `## Truncated` note), so an over-budget runner still yields
-# a partial report instead of an empty one.
+# `continue-on-error` (non-blocking). Rather than run ~16 single-call
+# scenarios (which paid per-scenario fixed overhead — warmup + pre/post
+# runtime+pprof snapshots + cooldown + 12 Prometheus range queries + report
+# render — for each call path), the sweep is compacted to FOUR scenarios, two
+# of which fan out across many call paths inside a single steady window (see
+# the `target.calls` fan-out rule in run.sh). This keeps broad coverage while
+# cutting wall-time roughly 5x. See issue #573.
+#
+# Why steady = 2m (and not shorter): Lantern is purely in-memory — no LSM
+# compaction / WAL replay / page-cache warmup — so throughput stabilizes in
+# seconds. The ONLY slow scheduled background process is the 60s TTL/GC sweep
+# (LANTERN_GC_INTERVAL_SECONDS). The leak gate compares a post-warmup runtime
+# snapshot against a post-cooldown one, so the steady window must bracket that
+# 60s sweep at least twice to measure steady state rather than transients —
+# hence 2m is the spec-correct floor, not an arbitrary truncation.
+#
+# ORDER MATTERS: broad_rw populates the k-* vertices AND the k-*->k-* edges
+# that broad_illuminate then traverses, so broad_rw MUST precede
+# broad_illuminate. Do not reorder.
 #
 # Wall-time on a fresh ubuntu-latest runner (single shared 3-replica compose,
-# sequential execution): ~83 min total — ~6 min per full scenario (warmup 30s
-# + steady 5m + cooldown 30s) plus ~1.5 min per smoke scenario. The release
-# bench job's `timeout-minutes` and release.sh's RELEASE_BENCH_BUDGET_SECONDS
-# (default 90 min) are sized against this figure; see issue #571. If you add or
-# lengthen scenarios, update those two knobs in lockstep.
+# sequential execution): ~14 min of scenario loop (broad_rw ~3m +
+# broad_illuminate ~3m + ttl_churn ~4m + many_subscribers ~3.5m), ~15 min
+# including compose up + final aggregation. release.sh's
+# RELEASE_BENCH_BUDGET_SECONDS (default 1080s = 18 min) and the bench job's
+# `timeout-minutes` (35) are sized against this figure; see issues #571 and
+# #573. If you add or lengthen scenarios, update those two knobs in lockstep.
+#
+# release.sh self-bounds the sweep via RELEASE_BENCH_BUDGET_SECONDS and always
+# aggregates whatever ran (appending a `## Truncated` note), so an over-budget
+# runner still yields a partial report instead of an empty one.
 #
 # If you add a scenario here, keep it self-contained: the release driver
 # reuses ONE compose stack across all entries, so a scenario that mutates
 # global server config or leaves a wedged stream behind will pollute every
 # subsequent scenario's leak gate. Prefer adding a new `*.yaml` over
 # reusing an existing one with side effects.
+#
+# The heavier single-call scenarios (write_heavy, read_heavy, mixed_rw,
+# batch_put_vertices, scan_prefix, addedge_contention, illuminate*,
+# replication_soak, chaos_kill_replica, smoke_*) remain in scenarios/ and stay
+# runnable on demand via `run.sh <stem>` for deep dives — they are simply not
+# part of the compact release gate.
 
-# --- fast head-of-sweep signal (~2 min each) -------------------------------
-smoke_write_heavy
-smoke_read_heavy
-smoke_mixed_rw
+# read / write / scan / edge / delete call surface (8-way fan-out)
+broad_rw
 
-# --- full canonical sweep --------------------------------------------------
-# read / write paths
-write_heavy
-read_heavy
-mixed_rw
-batch_put_vertices
-scan_prefix
-addedge_contention
+# graph traversal across the orthogonal axes (4-way fan-out) — runs AFTER
+# broad_rw so the k-* graph it traverses is populated.
+broad_illuminate
+
+# TTL expiry / eviction plumbing under sustained write churn
 ttl_churn
 
-# graph traversal — three variants isolate per-traversal cost vs RPS tail
-illuminate
-illuminate_heavy
-illuminate_hot
-# orthogonal-axes Illuminate variants (#410): MST/MAX and SPT/TF-IDF cover
-# the two most expensive (algorithm, objective, weighting) combinations.
-illuminate_mst_max
-illuminate_spt_tfidf
-
-# replication / pubsub fan-out
+# leaderless Subscribe fan-out across replicas
 many_subscribers

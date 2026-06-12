@@ -14,7 +14,7 @@
 #   RUNNER                       runner platform string (default: `uname -s/uname -m`, lowercased)
 #   LANTERN_IMAGE                image to run (default: lantern:local — must exist locally)
 #   KEEP_OUT=1                   do not delete the per-scenario `out/` tree afterwards
-#   RELEASE_BENCH_BUDGET_SECONDS wall-clock budget for the scenario sweep (default: 5400).
+#   RELEASE_BENCH_BUDGET_SECONDS wall-clock budget for the scenario sweep (default: 1080).
 #                                Once exhausted, the remaining scenarios are skipped, the
 #                                report is aggregated from whatever ran (with a `## Truncated`
 #                                note appended), and the script still exits 0. Set to 0 to
@@ -87,10 +87,11 @@ done < "$SCENARIO_LIST"
 # job via `timeout-minutes`; this budget is the *graceful* cutoff that lets us
 # aggregate a partial report and exit cleanly BEFORE the runner hard-kills the
 # job (which would discard the report entirely, leaving the release notes with a
-# placeholder). The default (5400s = 90 min) leaves the full canonical sweep
-# (~83 min) room to finish, so it only trips when a runner is abnormally slow or
-# the scenario set grows. Set RELEASE_BENCH_BUDGET_SECONDS=0 to disable.
-BUDGET_SECONDS="${RELEASE_BENCH_BUDGET_SECONDS:-5400}"
+# placeholder). The default (1080s = 18 min) leaves the compact canonical sweep
+# (~14 min of scenario loop; see release-scenarios.txt, #573) headroom to finish,
+# so it only trips when a runner is abnormally slow or the scenario set grows.
+# Set RELEASE_BENCH_BUDGET_SECONDS=0 to disable.
+BUDGET_SECONDS="${RELEASE_BENCH_BUDGET_SECONDS:-1080}"
 
 log "release-bench: tag=$TAG commit=$COMMIT_SHORT runner=$RUNNER captured=$CAPTURED"
 log "release-bench: scenarios=${scenarios[*]}"

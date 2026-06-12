@@ -11,18 +11,21 @@ per-scenario leak gate, and renders a Markdown report.
 > performance or leak regressions. Its outputs (under `testbed/bench/out/`)
 > are git-ignored.
 >
-> **Release CI runs the full canonical sweep.** On every `vX.Y.Z` tag
+> **Release CI runs a compact canonical sweep.** On every `vX.Y.Z` tag
 > push, the `Release` workflow runs `./testbed/bench/release.sh` — a
-> driver that sweeps the scenarios listed in `release-scenarios.txt` (the
-> three `smoke_*` variants as a fast head-of-sweep signal, then the full
-> canonical scenarios across read/write/batch/scan/edge/TTL/illuminate
-> variants/fan-out) and produces a fixed-format `bench-report.md` that
-> is spliced into the GitHub Release notes. The bench job is
-> `continue-on-error`, so a noisy runner cannot block a release. See
-> issues [#256], [#262].
+> driver that sweeps the scenarios listed in `release-scenarios.txt`. To
+> keep wall-time bounded without losing coverage, the sweep is four
+> scenarios: two fan-out scenarios (`broad_rw`, `broad_illuminate`) that
+> exercise many call paths inside a single steady window (read / write /
+> batch / scan / edge / delete, and the Illuminate algorithm × objective ×
+> weighting axes) plus `ttl_churn` and `many_subscribers`. It produces a
+> fixed-format `bench-report.md` that is spliced into the GitHub Release
+> notes. The bench job is `continue-on-error`, so a noisy runner cannot
+> block a release. See issues [#256], [#262], [#573].
 
 [#256]: https://github.com/anaregdesign/lantern/issues/256
 [#262]: https://github.com/anaregdesign/lantern/issues/262
+[#573]: https://github.com/anaregdesign/lantern/issues/573
 
 ## Prerequisites
 
