@@ -211,6 +211,109 @@ func TestBatchAPIs_ReturnCounts(t *testing.T) {
 	}
 }
 
+// TestAddEdgesWithExpirationContrib_Dedup verifies the #588 idempotency
+// contract: a non-zero ContribID makes an additive contribution apply at
+// most once (so a retried batch is an exact no-op), while a zero ContribID
+// preserves the legacy additive (sum-on-replay) behavior. The deduped count
+// reports exactly the items suppressed by a matching live ContribID.
+func TestAddEdgesWithExpirationContrib_Dedup(t *testing.T) {
+	exp := time.Now().Add(time.Minute)
+
+	t.Run("same id twice contributes once", func(t *testing.T) {
+		c := graph.NewGraphCache[string, int](time.Minute)
+		var id graph.ContribID
+		id[0], id[23] = 0xAB, 0x01
+
+		batch := []graph.EdgeItem[string]{
+			{Tail: "s", Head: "h", Weight: 2.5, Expiration: exp, ContribID: id},
+		}
+		if deduped := c.AddEdgesWithExpirationContrib(batch); deduped != 0 {
+			t.Fatalf("first apply: deduped = %d, want 0", deduped)
+		}
+		// Replay the identical batch: must be an exact no-op.
+		if deduped := c.AddEdgesWithExpirationContrib(batch); deduped != 1 {
+			t.Fatalf("replay: deduped = %d, want 1", deduped)
+		}
+		w, ok := c.GetWeight("s", "h")
+		if !ok {
+			t.Fatal("edge missing after contrib writes")
+		}
+		if w != 2.5 {
+			t.Fatalf("weight = %v, want 2.5 (contribution must apply exactly once)", w)
+		}
+	})
+
+	t.Run("zero id stays additive", func(t *testing.T) {
+		c := graph.NewGraphCache[string, int](time.Minute)
+		batch := []graph.EdgeItem[string]{
+			{Tail: "s", Head: "h", Weight: 2, Expiration: exp}, // ContribID zero
+		}
+		if deduped := c.AddEdgesWithExpirationContrib(batch); deduped != 0 {
+			t.Fatalf("first apply: deduped = %d, want 0", deduped)
+		}
+		if deduped := c.AddEdgesWithExpirationContrib(batch); deduped != 0 {
+			t.Fatalf("replay: deduped = %d, want 0 (zero id must not dedup)", deduped)
+		}
+		if w, _ := c.GetWeight("s", "h"); w != 4 {
+			t.Fatalf("weight = %v, want 4 (zero id must sum on replay)", w)
+		}
+	})
+
+	t.Run("distinct ids both contribute", func(t *testing.T) {
+		c := graph.NewGraphCache[string, int](time.Minute)
+		var id1, id2 graph.ContribID
+		id1[0], id1[23] = 0x01, 0x01
+		id2[0], id2[23] = 0x01, 0x02
+		c.AddEdgesWithExpirationContrib([]graph.EdgeItem[string]{
+			{Tail: "s", Head: "h", Weight: 1, Expiration: exp, ContribID: id1},
+		})
+		deduped := c.AddEdgesWithExpirationContrib([]graph.EdgeItem[string]{
+			{Tail: "s", Head: "h", Weight: 1, Expiration: exp, ContribID: id2},
+		})
+		if deduped != 0 {
+			t.Fatalf("distinct id: deduped = %d, want 0", deduped)
+		}
+		if w, _ := c.GetWeight("s", "h"); w != 2 {
+			t.Fatalf("weight = %v, want 2 (distinct ids both contribute)", w)
+		}
+	})
+
+	t.Run("mixed batch counts only deduped items", func(t *testing.T) {
+		c := graph.NewGraphCache[string, int](time.Minute)
+		var id graph.ContribID
+		id[0] = 0x7F
+		c.AddEdgesWithExpirationContrib([]graph.EdgeItem[string]{
+			{Tail: "s", Head: "a", Weight: 1, Expiration: exp, ContribID: id},
+		})
+		// Mix the already-seen id (deduped) with a fresh zero-id edge (applies).
+		deduped := c.AddEdgesWithExpirationContrib([]graph.EdgeItem[string]{
+			{Tail: "s", Head: "a", Weight: 1, Expiration: exp, ContribID: id},
+			{Tail: "s", Head: "b", Weight: 1, Expiration: exp},
+		})
+		if deduped != 1 {
+			t.Fatalf("mixed batch: deduped = %d, want 1", deduped)
+		}
+		if w, _ := c.GetWeight("s", "a"); w != 1 {
+			t.Fatalf("weight s->a = %v, want 1 (deduped)", w)
+		}
+		if w, ok := c.GetWeight("s", "b"); !ok || w != 1 {
+			t.Fatalf("weight s->b = %v ok=%v, want 1 true (applied)", w, ok)
+		}
+	})
+
+	t.Run("facade preserves additive semantics", func(t *testing.T) {
+		c := graph.NewGraphCache[string, int](time.Minute)
+		batch := []graph.EdgeItem[string]{
+			{Tail: "s", Head: "h", Weight: 3, Expiration: exp},
+		}
+		c.AddEdgesWithExpiration(batch)
+		c.AddEdgesWithExpiration(batch)
+		if w, _ := c.GetWeight("s", "h"); w != 6 {
+			t.Fatalf("facade weight = %v, want 6 (AddEdgesWithExpiration stays additive)", w)
+		}
+	})
+}
+
 // itoa avoids pulling in strconv just to label test keys.
 func itoa(i int) string {
 	if i == 0 {

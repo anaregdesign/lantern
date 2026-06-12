@@ -308,18 +308,36 @@ message DeleteEdgesResponse {
 
 // AddEdgeRequest accumulates weight onto a single (tail, head) pair: repeated
 // calls with the same endpoints sum their weights. This is the singular
-// convenience wrapper over AddEdges and shares its non-idempotent semantics.
+// convenience wrapper over AddEdges and shares its semantics.
 message AddEdgeRequest {
   Edge edge = 1;
+  // contrib_id is an optional 24-byte idempotency key for the contribution.
+  // When set (non-empty and not all-zero), the server records the weight at
+  // most once per distinct id: re-sending the same request (e.g. a
+  // transport-level retry) is an exact no-op instead of double-counting the
+  // additive weight. An empty value preserves the legacy non-idempotent
+  // additive behavior. The id is opaque to the server; the Go SDK derives it
+  // from a per-client random nonce plus a monotonic call sequence when
+  // idempotent adds are enabled. Forwarded into contrib_ids[0] of the
+  // one-element AddEdges batch this wraps.
+  bytes contrib_id = 2;
 }
 
 message AddEdgeResponse {}
 
 // AddEdgesRequest accumulates weight onto each (tail, head) pair: repeated
-// calls with the same endpoints sum their weights. This operation is
-// non-idempotent.
+// calls with the same endpoints sum their weights. Additive writes are
+// non-idempotent unless an index-aligned contrib_ids entry is supplied.
 message AddEdgesRequest {
   repeated Edge edges = 1;
+  // contrib_ids is an optional index-aligned list of 24-byte idempotency
+  // keys, one per entry in edges. When contrib_ids[i] is set (non-empty and
+  // not all-zero) the server records edges[i] at most once per distinct id,
+  // making a retried batch safe to replay without double-counting weight. A
+  // shorter list, a missing entry, or an empty/zero value leaves the
+  // corresponding edge on the legacy non-idempotent additive path. Each id is
+  // opaque to the server.
+  repeated bytes contrib_ids = 2;
 }
 
 message AddEdgesResponse {

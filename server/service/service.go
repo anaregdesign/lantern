@@ -81,6 +81,7 @@ type HotPathMetrics interface {
 	OnBatch(op string, size int)
 	OnGetVertices(hits, misses int)
 	OnGetEdges(hits, misses int)
+	OnEdgeContribDeduped(n int)
 }
 
 type noopHotPathMetrics struct{}
@@ -91,6 +92,7 @@ func (noopHotPathMetrics) OnScan(string, int, time.Duration) {}
 func (noopHotPathMetrics) OnBatch(string, int)               {}
 func (noopHotPathMetrics) OnGetVertices(int, int)            {}
 func (noopHotPathMetrics) OnGetEdges(int, int)               {}
+func (noopHotPathMetrics) OnEdgeContribDeduped(int)          {}
 
 // ScanLimits caps the per-call pagination knobs for the prefix RPCs. It is
 // a value struct rather than a pointer-to-provider type so the service
@@ -537,7 +539,14 @@ func (s *LanternService) GetEdges(ctx context.Context, request *pb.GetEdgesReque
 }
 
 func (s *LanternService) AddEdge(ctx context.Context, request *pb.AddEdgeRequest) (*pb.AddEdgeResponse, error) {
-	if _, err := s.AddEdges(ctx, &pb.AddEdgesRequest{Edges: []*pb.Edge{request.GetEdge()}}); err != nil {
+	batch := &pb.AddEdgesRequest{Edges: []*pb.Edge{request.GetEdge()}}
+	// Forward the optional idempotency key into the plural request's
+	// index-aligned contrib_ids so the canonical AddEdges path applies the
+	// same dedup (#588). An empty key stays absent (legacy additive path).
+	if cid := request.GetContribId(); len(cid) > 0 {
+		batch.ContribIds = [][]byte{cid}
+	}
+	if _, err := s.AddEdges(ctx, batch); err != nil {
 		return nil, err
 	}
 	return &pb.AddEdgeResponse{}, nil
@@ -549,19 +558,30 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 	}
 	in := request.GetEdges()
 	s.metrics.OnBatch("AddEdges", len(in))
+	contribIDs := request.GetContribIds()
 	items := make([]graph.EdgeItem[string], 0, len(in))
-	for _, e := range in {
+	for i, e := range in {
 		if err := s.validateExpiration(e.GetExpiration().AsTime()); err != nil {
 			return nil, err
 		}
-		items = append(items, graph.EdgeItem[string]{
+		item := graph.EdgeItem[string]{
 			Tail:       e.GetTail(),
 			Head:       e.GetHead(),
 			Weight:     e.GetWeight(),
 			Expiration: e.GetExpiration().AsTime(),
-		})
+		}
+		// contrib_ids is index-aligned and optional (#588): a shorter or
+		// missing slot, or an empty/zero key, leaves ContribID zero — the
+		// legacy additive path. A non-zero key makes the contribution
+		// idempotent so a transport retry re-sending the same bytes is a
+		// no-op instead of double-counting edge weight.
+		if i < len(contribIDs) {
+			item.ContribID = contribIDFromBytes(contribIDs[i])
+		}
+		items = append(items, item)
 	}
-	s.cache.AddEdgesWithExpiration(items)
+	deduped := s.cache.AddEdgesWithExpirationContrib(items)
+	s.metrics.OnEdgeContribDeduped(deduped)
 	s.logMutation(&pb.MutationOp{Op: &pb.MutationOp_AddEdges{AddEdges: request}})
 	return &pb.AddEdgesResponse{Written: int32(len(items))}, nil
 }

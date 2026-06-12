@@ -21,6 +21,7 @@ type options struct {
 	clientOptions  []connect.ClientOption
 	defaultTimeout time.Duration
 	batchChunkSize int
+	idempotentAdds bool
 }
 
 // Option configures a Lantern client built via NewLantern.
@@ -68,4 +69,20 @@ func WithBatchChunkSize(n int) Option {
 			o.batchChunkSize = n
 		}
 	}
+}
+
+// WithIdempotentAdds makes AddEdge / AddEdgeAt / AddEdges attach a
+// client-generated, per-call idempotency key (ContribID) to every edge
+// contribution (#588). The server records each ContribID at most once, so a
+// transport-level retry that re-sends the identical request — e.g. a Connect
+// retry interceptor reacting to a transient Unavailable — adds the edge
+// weight exactly once instead of double-counting.
+//
+// The guarantee is scoped to retries of a single logical call: the SDK bakes
+// the keys into the request when it is built, and a transport retry re-sends
+// those same bytes. Calling AddEdge twice yourself is still two distinct
+// contributions (their keys differ), preserving the additive semantics of
+// the API. Off by default; opt in per client.
+func WithIdempotentAdds() Option {
+	return func(o *options) { o.idempotentAdds = true }
 }

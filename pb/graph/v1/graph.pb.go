@@ -2225,10 +2225,20 @@ func (x *DeleteEdgesResponse) GetDeleted() int32 {
 
 // AddEdgeRequest accumulates weight onto a single (tail, head) pair: repeated
 // calls with the same endpoints sum their weights. This is the singular
-// convenience wrapper over AddEdges and shares its non-idempotent semantics.
+// convenience wrapper over AddEdges and shares its semantics.
 type AddEdgeRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Edge          *Edge                  `protobuf:"bytes,1,opt,name=edge,proto3" json:"edge,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Edge  *Edge                  `protobuf:"bytes,1,opt,name=edge,proto3" json:"edge,omitempty"`
+	// contrib_id is an optional 24-byte idempotency key for the contribution.
+	// When set (non-empty and not all-zero), the server records the weight at
+	// most once per distinct id: re-sending the same request (e.g. a
+	// transport-level retry) is an exact no-op instead of double-counting the
+	// additive weight. An empty value preserves the legacy non-idempotent
+	// additive behavior. The id is opaque to the server; the Go SDK derives it
+	// from a per-client random nonce plus a monotonic call sequence when
+	// idempotent adds are enabled. Forwarded into contrib_ids[0] of the
+	// one-element AddEdges batch this wraps.
+	ContribId     []byte `protobuf:"bytes,2,opt,name=contrib_id,json=contribId,proto3" json:"contrib_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2270,6 +2280,13 @@ func (x *AddEdgeRequest) GetEdge() *Edge {
 	return nil
 }
 
+func (x *AddEdgeRequest) GetContribId() []byte {
+	if x != nil {
+		return x.ContribId
+	}
+	return nil
+}
+
 type AddEdgeResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -2307,11 +2324,19 @@ func (*AddEdgeResponse) Descriptor() ([]byte, []int) {
 }
 
 // AddEdgesRequest accumulates weight onto each (tail, head) pair: repeated
-// calls with the same endpoints sum their weights. This operation is
-// non-idempotent.
+// calls with the same endpoints sum their weights. Additive writes are
+// non-idempotent unless an index-aligned contrib_ids entry is supplied.
 type AddEdgesRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Edges         []*Edge                `protobuf:"bytes,1,rep,name=edges,proto3" json:"edges,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Edges []*Edge                `protobuf:"bytes,1,rep,name=edges,proto3" json:"edges,omitempty"`
+	// contrib_ids is an optional index-aligned list of 24-byte idempotency
+	// keys, one per entry in edges. When contrib_ids[i] is set (non-empty and
+	// not all-zero) the server records edges[i] at most once per distinct id,
+	// making a retried batch safe to replay without double-counting weight. A
+	// shorter list, a missing entry, or an empty/zero value leaves the
+	// corresponding edge on the legacy non-idempotent additive path. Each id is
+	// opaque to the server.
+	ContribIds    [][]byte `protobuf:"bytes,2,rep,name=contrib_ids,json=contribIds,proto3" json:"contrib_ids,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2349,6 +2374,13 @@ func (*AddEdgesRequest) Descriptor() ([]byte, []int) {
 func (x *AddEdgesRequest) GetEdges() []*Edge {
 	if x != nil {
 		return x.Edges
+	}
+	return nil
+}
+
+func (x *AddEdgesRequest) GetContribIds() [][]byte {
+	if x != nil {
+		return x.ContribIds
 	}
 	return nil
 }
@@ -3106,12 +3138,16 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x12DeleteEdgesRequest\x12'\n" +
 	"\x05edges\x18\x01 \x03(\v2\x11.graph.v1.EdgeKeyR\x05edges\"/\n" +
 	"\x13DeleteEdgesResponse\x12\x18\n" +
-	"\adeleted\x18\x01 \x01(\x05R\adeleted\"4\n" +
+	"\adeleted\x18\x01 \x01(\x05R\adeleted\"S\n" +
 	"\x0eAddEdgeRequest\x12\"\n" +
-	"\x04edge\x18\x01 \x01(\v2\x0e.graph.v1.EdgeR\x04edge\"\x11\n" +
-	"\x0fAddEdgeResponse\"7\n" +
+	"\x04edge\x18\x01 \x01(\v2\x0e.graph.v1.EdgeR\x04edge\x12\x1d\n" +
+	"\n" +
+	"contrib_id\x18\x02 \x01(\fR\tcontribId\"\x11\n" +
+	"\x0fAddEdgeResponse\"X\n" +
 	"\x0fAddEdgesRequest\x12$\n" +
-	"\x05edges\x18\x01 \x03(\v2\x0e.graph.v1.EdgeR\x05edges\",\n" +
+	"\x05edges\x18\x01 \x03(\v2\x0e.graph.v1.EdgeR\x05edges\x12\x1f\n" +
+	"\vcontrib_ids\x18\x02 \x03(\fR\n" +
+	"contribIds\",\n" +
 	"\x10AddEdgesResponse\x12\x18\n" +
 	"\awritten\x18\x01 \x01(\x05R\awritten\"4\n" +
 	"\x0ePutEdgeRequest\x12\"\n" +

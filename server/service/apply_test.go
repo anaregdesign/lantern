@@ -414,6 +414,64 @@ func TestApplyMutation_Idempotence(t *testing.T) {
 	}
 }
 
+// TestApplyMutation_WireContribIDDedupsAcrossSeq covers the #588 cross-replica
+// path: a client-supplied ContribID carried on the wire dedups a retried
+// additive contribution even when it arrives as two distinct mutation-log
+// entries (different Seq). Without the wire id the synthesized
+// (origin, seq, idx) id differs per entry, so legacy additive contributions
+// correctly sum.
+func TestApplyMutation_WireContribIDDedupsAcrossSeq(t *testing.T) {
+	origin := bytes16("origin-A")
+	exp := timestamppb.New(time.Now().Add(time.Hour))
+
+	var cid graph.ContribID
+	cid[0], cid[23] = 0xAB, 0x07
+
+	mkAddEdges := func(seq uint64, contribIDs [][]byte) *pb.Mutation {
+		return &pb.Mutation{
+			Seq:    seq,
+			Hlc:    newHLC(int64(seq), origin),
+			Origin: origin[:],
+			Op: &pb.MutationOp{Op: &pb.MutationOp_AddEdges{
+				AddEdges: &pb.AddEdgesRequest{
+					Edges:      []*pb.Edge{{Tail: "a", Head: "b", Weight: 2, Expiration: exp}},
+					ContribIds: contribIDs,
+				},
+			}},
+		}
+	}
+
+	t.Run("same wire ContribID dedups across distinct Seq", func(t *testing.T) {
+		cache := graph.NewGraphCache[string, *pb.Vertex](time.Minute)
+		svc := NewLanternService(cache)
+		ctx := context.Background()
+		if err := svc.ApplyMutation(ctx, mkAddEdges(1, [][]byte{cid[:]})); err != nil {
+			t.Fatalf("first apply: %v", err)
+		}
+		if err := svc.ApplyMutation(ctx, mkAddEdges(2, [][]byte{cid[:]})); err != nil {
+			t.Fatalf("second apply: %v", err)
+		}
+		if w, ok := cache.GetWeight("a", "b"); !ok || w != 2 {
+			t.Fatalf("weight = %v ok=%v, want 2 true (wire ContribID must dedup the retry)", w, ok)
+		}
+	})
+
+	t.Run("legacy AddEdges without wire ContribID sums across Seq", func(t *testing.T) {
+		cache := graph.NewGraphCache[string, *pb.Vertex](time.Minute)
+		svc := NewLanternService(cache)
+		ctx := context.Background()
+		if err := svc.ApplyMutation(ctx, mkAddEdges(1, nil)); err != nil {
+			t.Fatalf("first apply: %v", err)
+		}
+		if err := svc.ApplyMutation(ctx, mkAddEdges(2, nil)); err != nil {
+			t.Fatalf("second apply: %v", err)
+		}
+		if w, ok := cache.GetWeight("a", "b"); !ok || w != 4 {
+			t.Fatalf("weight = %v ok=%v, want 4 true (distinct synthesized ids must sum)", w, ok)
+		}
+	})
+}
+
 // ---------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------
