@@ -110,6 +110,7 @@ export function BrowseVerticesPage() {
           aria-label="Vertices"
           sortable={false}
           data-testid="vertices-table"
+          className={styles.table}
         >
           <TableHeader>
             <TableRow>

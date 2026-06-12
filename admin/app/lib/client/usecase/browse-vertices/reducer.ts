@@ -7,7 +7,18 @@ import {
 export type BrowseVerticesAction =
   | { type: "PREFIX_CHANGED"; prefix: string }
   | { type: "PAGE_REQUESTED"; epoch: number }
-  | { type: "PAGE_RECEIVED"; epoch: number; page: VertexPage }
+  | {
+      type: "PAGE_RECEIVED";
+      epoch: number;
+      page: VertexPage;
+      /**
+       * "append" (default) pushes a new page onto the history and advances the
+       * index — used by first-load and goNext. "replace" overwrites the page
+       * at `currentPageIndex` in place without moving the index — used by
+       * Refresh/retry, which re-fetches the page already on screen.
+       */
+      mode?: "append" | "replace";
+    }
   | { type: "PAGE_FAILED"; epoch: number; error: string }
   | { type: "COUNT_RECEIVED"; epoch: number; count: number }
   | { type: "NAVIGATE_PREVIOUS" }
@@ -43,6 +54,13 @@ export function browseVerticesReducer(
     case "PAGE_RECEIVED": {
       if (action.epoch !== state.prefixEpoch) {
         return state;
+      }
+      // Refresh/retry re-fetches the page already on screen: overwrite it in
+      // place and keep the index (and Previous/Next enablement) unchanged.
+      if (action.mode === "replace" && state.pages.length > 0) {
+        const pages = state.pages.slice();
+        pages[state.currentPageIndex] = action.page;
+        return { ...state, pages, status: "ready", error: null };
       }
       // If this is the first page for the epoch, replace history.
       // Otherwise we append (the previous step requested NEXT).

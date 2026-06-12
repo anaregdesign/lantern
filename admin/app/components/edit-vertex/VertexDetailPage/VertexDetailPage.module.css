@@ -85,6 +85,16 @@
     monospace
   );
   overflow-wrap: anywhere;
+  /* Allow the 1fr grid track to shrink below its content's intrinsic width so
+     a long value wraps/ellipses within the card instead of widening the page
+     (and forcing horizontal page scroll on mobile). */
+  min-width: 0;
+}
+
+.viewKind {
+  /* Keep the kind badge at its content width instead of stretching the full
+     grid column. */
+  justify-self: start;
 }
 
 .formActions {

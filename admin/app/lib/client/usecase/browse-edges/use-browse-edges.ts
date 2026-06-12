@@ -146,6 +146,7 @@ export function useBrowseEdges(
         cursor,
         pageSize,
         epoch: state.prefixEpoch,
+        mode: "replace",
       },
       dispatch as (action: BrowseEdgesAction) => void,
     );

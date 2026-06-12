@@ -82,8 +82,17 @@
   word-break: break-word;
 }
 
+.peerTableScroll {
+  /* Let the four-column peer table scroll horizontally on narrow screens so
+     the rightmost "Applied seq" column stays reachable on mobile. */
+  overflow-x: auto;
+}
+
 .peerTable {
   width: 100%;
+  /* Keep the four monospace columns legible; the wrapper scrolls horizontally
+     below this width instead of clipping "Applied seq". */
+  min-width: 420px;
   border-collapse: collapse;
   font-size: 0.9rem;
 }

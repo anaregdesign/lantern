@@ -158,21 +158,26 @@ function ReplicationCard({ status, data, error }: ReplicationCardProps) {
           </dl>
           {data.enabled ? (
             data.peers.length > 0 ? (
-              <table className={styles.peerTable} data-testid="ops-peer-table">
-                <thead>
-                  <tr>
-                    <th>Peer</th>
-                    <th>State</th>
-                    <th>Last event</th>
-                    <th>Applied seq</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.peers.map((p) => (
-                    <PeerRows key={p.address} peer={p} />
-                  ))}
-                </tbody>
-              </table>
+              <div className={styles.peerTableScroll}>
+                <table
+                  className={styles.peerTable}
+                  data-testid="ops-peer-table"
+                >
+                  <thead>
+                    <tr>
+                      <th>Peer</th>
+                      <th>State</th>
+                      <th>Last event</th>
+                      <th>Applied seq</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.peers.map((p) => (
+                      <PeerRows key={p.address} peer={p} />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             ) : (
               <p className={styles.empty} data-testid="ops-peer-empty">
                 Replication enabled, but no peers have reported yet.

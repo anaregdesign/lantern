@@ -11,6 +11,12 @@ export interface FetchPageInput {
   cursor: string;
   pageSize: number;
   epoch: number;
+  /**
+   * How the resulting page should enter the history stack. Defaults to
+   * "append"; Refresh/retry passes "replace" so the current page is
+   * overwritten in place instead of duplicated.
+   */
+  mode?: "append" | "replace";
   signal?: AbortSignal;
 }
 
@@ -40,7 +46,12 @@ export async function fetchPage(
       startCursor: input.cursor,
       nextCursor: response.nextCursor ?? "",
     };
-    dispatch({ type: "PAGE_RECEIVED", epoch: input.epoch, page });
+    dispatch({
+      type: "PAGE_RECEIVED",
+      epoch: input.epoch,
+      page,
+      mode: input.mode ?? "append",
+    });
   } catch (err) {
     if (isAbortError(err)) {
       return;

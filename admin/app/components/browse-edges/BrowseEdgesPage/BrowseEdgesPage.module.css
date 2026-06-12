@@ -83,7 +83,15 @@
   position: relative;
   border: 1px solid var(--colorNeutralStroke2, #e0e0e0);
   border-radius: var(--borderRadiusMedium, 6px);
-  overflow: hidden;
+  /* Scroll horizontally on narrow screens instead of clipping the right-hand
+     Actions column. */
+  overflow-x: auto;
+}
+
+.table {
+  /* Keep the percentage columns from collapsing/overlapping on phones; the
+     wrapper scrolls horizontally below this width. */
+  min-width: 480px;
 }
 
 .colKey {
