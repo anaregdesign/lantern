@@ -141,7 +141,7 @@ func Run(ctx context.Context, cfg Config) error {
 		slog.Int("nodes", len(addrs)),
 		slog.String("version", Version),
 	)
-	lantern, err := newFailoverClient(addrs)
+	lantern, err := client.NewLanternFailover(addrs)
 	if err != nil {
 		return fmt.Errorf("mcp: dial lantern: %w", err)
 	}
