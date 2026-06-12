@@ -7,8 +7,8 @@ model: claude-opus-4.8
 # (each host silently ignores names it does not recognize):
 #   - File & shell: VS Code aliases `execute` (Terminal) + `read` alongside the Copilot
 #     CLI / Claude names `bash`/`view`/`grep`/`glob`; `edit` + `search` are shared.
-#     `execute` is the Terminal tool — required to start the stack (docker compose /
-#     `bun run dev` / `go run`) and run Playwright. Without it VS Code denies Terminal
+#     `execute` is the Terminal tool — required to start the stack (docker compose)
+#     and run Playwright. Without it VS Code denies Terminal
 #     access (the agent is told it lacks Terminal permission).
 #   - Browser automation (VS Code built-in, for live UX verification): open a page,
 #     navigate routes, click/type/hover/drag, read the rendered DOM + accessibility
@@ -66,7 +66,7 @@ Conduct thorough UX/UI reviews focusing on user experience, interface design, us
 
 ### Phase 2: Browser Testing (Playwright)
 - **Drive the browser directly with the built-in browser tools** — open a page, navigate routes, click/type/hover/drag, read the rendered DOM + accessibility tree, capture screenshots, run ad-hoc Playwright code, and dismiss dialogs/modals — in addition to running the repo's Playwright specs from the terminal.
-- **Start the stack against the _pre-release_ build (NOT GHCR):** build a local image for **every component your branch changed** and pin it on compose, so you review current-branch code rather than the last published image — always the admin (`docker build -t lantern-admin:local -f admin/Dockerfile .`) and, **if the branch also touched the server, the server too** (`docker build -t lantern:local .`, from repo ROOT); then `cd deploy/compose && LANTERN_ADMIN_IMAGE=lantern-admin:local LANTERN_IMAGE=lantern:local docker compose up -d --force-recreate` (drop `LANTERN_IMAGE` if you didn't rebuild the server — it stays on GHCR `:latest`; production build on http://localhost:8080). See "Quick Start (Docker Compose)" for details and the fast `bun run dev` inner loop.
+- **Start the stack against the _pre-release_ build (NOT GHCR):** build a local image for **every component your branch changed** and pin it on compose, so you review current-branch code rather than the last published image — always the admin (`docker build -t lantern-admin:local -f admin/Dockerfile .`) and, **if the branch also touched the server, the server too** (`docker build -t lantern:local .`, from repo ROOT); then `cd deploy/compose && LANTERN_ADMIN_IMAGE=lantern-admin:local LANTERN_IMAGE=lantern:local docker compose up -d --force-recreate` (drop `LANTERN_IMAGE` if you didn't rebuild the server — it stays on GHCR `:latest`; production build on http://localhost:8080). See "Quick Start (Docker Compose)" for details.
 - **Screenshot key pages:** Vertices, Edges (the Browse surface), Illuminate, CLI, and Ops pages at multiple viewport sizes
 - **Test workflows:**
   - Can users complete tasks in 2-3 clicks? (navigation, search, vertex inspection, operations)
@@ -150,13 +150,13 @@ Before filing any issue, verify with browser testing:
 ### Reviewing the Browse Page
 
 ```bash
-# 1. Set up Admin + Lantern server
-cd admin && bun install && bun run dev  # Starts SPA on :5173
+# 1. Start the Docker Compose HA stack against the pre-release build (see "Quick Start")
+docker build -t lantern-admin:local -f admin/Dockerfile .   # from repo ROOT
+cd deploy/compose && LANTERN_ADMIN_IMAGE=lantern-admin:local \
+  docker compose up -d --force-recreate
+#    → 3-replica HA cluster (:6380–6382) + Admin SPA on :8080
 
-# In another terminal:
-cd .. && go run ./server/cmd            # Starts Lantern on :6380
-
-# 2. Open browser to http://localhost:5173/vertices
+# 2. Open browser to http://localhost:8080/vertices
 #    (the Browse surface — there is NO /browse route; the "Vertices" and
 #     "Edges" tabs are the two browse screens)
 
@@ -183,12 +183,13 @@ cd .. && go run ./server/cmd            # Starts Lantern on :6380
 ### Checking Accessibility
 
 ```bash
-# Using Playwright + axe-core for automated checks:
-cd admin
-npm install --save-dev @axe-core/playwright
-npx playwright test --project=chromium tests/e2e/accessibility.spec.ts
+# Run axe-core against the live Docker HA stack (already up on :8080):
+#   1. open_browser_page → http://localhost:8080/vertices
+#   2. run_playwright_code → inject @axe-core/playwright, run axe.run(),
+#      collect the violations array
+# (Reviewing the live HA build avoids spinning a second, non-Docker server.)
 
-# Manual walk-through:
+# Manual walk-through (against http://localhost:8080):
 # - Tab through browse page, check focus ring visibility
 # - Run browser DevTools Accessibility tree (F12 → Accessibility tab)
 # - Verify all buttons have accessible names
@@ -257,10 +258,9 @@ If any answer is "no," refine the issue or run additional browser tests before f
 ## Tools & Environment
 
 ### Required
-- **Admin SPA:** `admin/` directory with Bun + React Router
-- **Lantern server:** Go 1.26+, runs on `:6380`
+- **Docker + Docker Compose:** brings up the review stack — the 3-replica HA cluster (`:6380–6382`) + Admin SPA (`:8080`); see "Quick Start (Docker Compose)"
 - **Browser:** Chrome/Chromium (Playwright default)
-- **Playwright:** E2E framework with screenshot + accessibility support
+- **Playwright:** E2E framework with screenshot + accessibility support (the repo's specs manage their own ephemeral server — see "Playwright Commands")
 
 ### Optional (for deeper testing)
 - **axe-core/playwright:** Automated accessibility scanning
@@ -268,8 +268,15 @@ If any answer is "no," refine the issue or run additional browser tests before f
 - **WAVE browser extension:** Accessibility inspector
 
 ### Playwright Commands
+
+> The repo's automated specs run against their **own ephemeral server** (Playwright's
+> `webServer`), **not** the Docker HA review stack. They need Bun on the host and bind
+> the same ports as compose — stop the compose stack first (`docker compose down`) to
+> avoid a port clash. Use these for automated regression/accessibility specs; use the
+> Docker HA stack (`:8080`) + browser tools for interactive review.
+
 ```bash
-# Start E2E test runner (auto-starts Lantern + SPA)
+# Start E2E test runner (auto-starts its own ephemeral Lantern + SPA)
 cd admin && bun run test:e2e
 
 # Run tests in headed mode (see browser)
@@ -347,11 +354,6 @@ Either option starts:
 - **Prometheus** on `:9091` (scraped by Admin for metrics visualization)
 - **Lantern MCP server** on `:6390` (optional, for LLM agents)
 
-**Faster inner loop:** for rapid iteration, the Vite dev server always serves
-current source — `cd admin && bun install && bun run dev` (http://localhost:5173).
-That's the dev build, though; do a final pass against the `:8080` compose build
-(Option 1) before filing visual Issues.
-
 **Shutdown:**
 
 ```bash
@@ -363,11 +365,10 @@ docker compose down -v    # -v removes volumes (clears data)
 
 #### Via CLI (recommended for UX testing)
 
-**1. Start the server (Docker Compose or local)**
+**1. Start the Docker Compose HA stack**
 
 ```bash
 cd deploy/compose && docker compose up -d
-# or: go run ./server/cmd (in another terminal)
 ```
 
 **2. Generate sample graph data**
@@ -465,7 +466,7 @@ lantern vertex delete-prefix item:     # deletes all items
 ```bash
 cd deploy/compose
 docker compose down -v                 # stops containers and deletes volumes
-docker compose up -d --pull always     # fresh empty cluster
+docker compose up -d                   # fresh empty cluster (reuses configured images)
 ```
 
 **Option 4: Count before deletion (safety check)**
@@ -501,8 +502,10 @@ lantern -H localhost -p 6382 vertex get key1  # lantern-2
 ### Complete UX Review Workflow
 
 ```bash
-# 1. Start Docker Compose stack
-cd deploy/compose && docker compose up -d --pull always
+# 1. Start the Docker Compose HA stack against the pre-release build (see "Quick Start")
+docker build -t lantern-admin:local -f admin/Dockerfile .   # from repo ROOT
+cd deploy/compose && LANTERN_ADMIN_IMAGE=lantern-admin:local \
+  docker compose up -d --force-recreate
 echo "Waiting for services..."
 sleep 10
 
@@ -527,16 +530,13 @@ EDGES
 
 lantern bulk edges add test_edges.ndjson
 
-# 3. Run Playwright tests (from admin/)
-cd ../../admin && bun run test:e2e --headed
-
-# 4. Manual review
-# - Open http://localhost:8080 in browser
+# 3. Review the live HA stack at http://localhost:8080 via the browser tools
 # - Browse pages, test workflows, check keyboard navigation
+# - Drive ad-hoc Playwright (run_playwright_code) + axe-core against :8080
 # - Take screenshots at different viewports
 
-# 5. Clean up
-cd ../deploy/compose && docker compose down -v
+# 4. Clean up (still in deploy/compose from step 1)
+docker compose down -v
 ```
 
 ### Troubleshooting
