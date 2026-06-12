@@ -13,6 +13,7 @@ Each agent is defined as `<AgentName>.agent.md` (kebab-case agent name for code 
 name: AgentName                    # Display name
 description: One-line summary of what this agent does and when to use it
 argument-hint: "Expected input(s), e.g., 'a component to review' or 'a task to implement'"
+model: claude-opus-4.8            # Optional: pin the agent to a specific model (omit to use the session default)
 tools: [tool1, tool2, ...]        # Optional: explicit tool list (if omitted, all enabled tools allowed)
 ---
 ```
