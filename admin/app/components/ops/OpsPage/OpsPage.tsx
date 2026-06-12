@@ -159,7 +159,10 @@ function ReplicationCard({ status, data, error }: ReplicationCardProps) {
           {data.enabled ? (
             data.peers.length > 0 ? (
               <div className={styles.peerTableScroll}>
-                <table className={styles.peerTable} data-testid="ops-peer-table">
+                <table
+                  className={styles.peerTable}
+                  data-testid="ops-peer-table"
+                >
                   <thead>
                     <tr>
                       <th>Peer</th>
