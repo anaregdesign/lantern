@@ -42,6 +42,15 @@ var ErrInvalidArgument = errors.New("invalid argument")
 // should back off before retrying.
 var ErrResourceExhausted = errors.New("resource exhausted")
 
+// ErrUnavailable wraps connect.CodeUnavailable responses — the
+// "this node could not be reached / is not serving" signal. connect-go
+// returns CodeUnavailable both for transport dial failures (connection
+// refused) and for server-side UNAVAILABLE replies. Use errors.Is to
+// detect it; it is the signal the failover wrapper keys on to rotate to a
+// healthy replica (#592). Unlike the other sentinels it is transient — a
+// retry against a sibling replica may succeed.
+var ErrUnavailable = errors.New("unavailable")
+
 // Edge re-exports the generated protobuf Edge type so SDK callers do not
 // need to import the pb package directly. It is a true Go type alias, not a
 // parallel struct: client.Edge and pb.Edge are the same type, freely
@@ -214,9 +223,10 @@ func unary[Req, Resp any](
 
 // wrapConnectErr lifts a *connect.Error into a joined error that
 // satisfies errors.Is against the matching SDK sentinel (ErrNotFound /
-// ErrInvalidArgument / ErrResourceExhausted) while preserving the
-// original *connect.Error for callers that need connect.CodeOf or the
-// per-error metadata. Non-Connect errors pass through unchanged.
+// ErrInvalidArgument / ErrResourceExhausted / ErrUnavailable) while
+// preserving the original *connect.Error for callers that need
+// connect.CodeOf or the per-error metadata. Non-Connect errors pass
+// through unchanged.
 func wrapConnectErr(err error) error {
 	if err == nil {
 		return nil
@@ -228,6 +238,8 @@ func wrapConnectErr(err error) error {
 		return errors.Join(ErrInvalidArgument, err)
 	case connect.CodeResourceExhausted:
 		return errors.Join(ErrResourceExhausted, err)
+	case connect.CodeUnavailable:
+		return errors.Join(ErrUnavailable, err)
 	}
 	return err
 }
