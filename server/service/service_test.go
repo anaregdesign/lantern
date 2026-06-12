@@ -132,6 +132,105 @@ func TestLanternService_AddEdge_Additive(t *testing.T) {
 	}
 }
 
+// TestLanternService_AddEdges_ContribIDWiring asserts the #588 plumbing:
+// AddEdges maps the optional, index-aligned contrib_ids onto
+// EdgeItem.ContribID (short or empty slots stay zero), AddEdge forwards its
+// singular contrib_id into contrib_ids[0], and the backend's reported dedup
+// count is surfaced via HotPathMetrics.OnEdgeContribDeduped. Dedup
+// convergence itself is covered by the core tests and tests/integration.
+func TestLanternService_AddEdges_ContribIDWiring(t *testing.T) {
+	var id0, id1 graph.ContribID
+	id0[0], id0[23] = 0x11, 0x22
+	id1[0], id1[23] = 0x33, 0x44
+
+	t.Run("AddEdges maps index-aligned contrib_ids", func(t *testing.T) {
+		fb := newFakeBackend()
+		fm := &fakeHotPathMetrics{}
+		fb.dedupReturn = 2
+		s := NewLanternService(fb).WithHotPathMetrics(fm)
+
+		_, err := s.AddEdges(context.Background(), &pb.AddEdgesRequest{
+			Edges: []*pb.Edge{
+				{Tail: "a", Head: "b", Weight: 1, Expiration: futureTs(time.Minute)},
+				{Tail: "a", Head: "c", Weight: 1, Expiration: futureTs(time.Minute)},
+				{Tail: "a", Head: "d", Weight: 1, Expiration: futureTs(time.Minute)},
+			},
+			// id0 for edge 0; empty slot for edge 1; edge 2 has no slot.
+			ContribIds: [][]byte{id0[:], {}},
+		})
+		if err != nil {
+			t.Fatalf("AddEdges: %v", err)
+		}
+		if fb.addEdgesContribCalls != 1 {
+			t.Fatalf("AddEdgesWithExpirationContrib calls = %d, want 1", fb.addEdgesContribCalls)
+		}
+		if len(fb.lastAddEdgesItems) != 3 {
+			t.Fatalf("captured items = %d, want 3", len(fb.lastAddEdgesItems))
+		}
+		if got := fb.lastAddEdgesItems[0].ContribID; got != id0 {
+			t.Errorf("item[0].ContribID = %x, want %x", got, id0)
+		}
+		if got := fb.lastAddEdgesItems[1].ContribID; !got.IsZero() {
+			t.Errorf("item[1].ContribID = %x, want zero (empty slot)", got)
+		}
+		if got := fb.lastAddEdgesItems[2].ContribID; !got.IsZero() {
+			t.Errorf("item[2].ContribID = %x, want zero (missing slot)", got)
+		}
+		if len(fm.contribDed) != 1 || fm.contribDed[0] != 2 {
+			t.Errorf("OnEdgeContribDeduped = %v, want [2]", fm.contribDed)
+		}
+	})
+
+	t.Run("legacy AddEdges without contrib_ids stays zero", func(t *testing.T) {
+		fb := newFakeBackend()
+		fm := &fakeHotPathMetrics{}
+		s := NewLanternService(fb).WithHotPathMetrics(fm)
+		if _, err := s.AddEdges(context.Background(), &pb.AddEdgesRequest{
+			Edges: []*pb.Edge{{Tail: "a", Head: "b", Weight: 1, Expiration: futureTs(time.Minute)}},
+		}); err != nil {
+			t.Fatalf("AddEdges: %v", err)
+		}
+		if got := fb.lastAddEdgesItems[0].ContribID; !got.IsZero() {
+			t.Errorf("item[0].ContribID = %x, want zero (no contrib_ids on wire)", got)
+		}
+		// The service calls OnEdgeContribDeduped unconditionally; with the
+		// fake's default dedupReturn of 0 it fires once with 0.
+		if len(fm.contribDed) != 1 || fm.contribDed[0] != 0 {
+			t.Errorf("OnEdgeContribDeduped = %v, want [0]", fm.contribDed)
+		}
+	})
+
+	t.Run("AddEdge forwards contrib_id into contrib_ids[0]", func(t *testing.T) {
+		fb := newFakeBackend()
+		s := NewLanternService(fb)
+		if _, err := s.AddEdge(context.Background(), &pb.AddEdgeRequest{
+			Edge:      &pb.Edge{Tail: "a", Head: "b", Weight: 1, Expiration: futureTs(time.Minute)},
+			ContribId: id1[:],
+		}); err != nil {
+			t.Fatalf("AddEdge: %v", err)
+		}
+		if len(fb.lastAddEdgesItems) != 1 {
+			t.Fatalf("captured items = %d, want 1", len(fb.lastAddEdgesItems))
+		}
+		if got := fb.lastAddEdgesItems[0].ContribID; got != id1 {
+			t.Errorf("forwarded ContribID = %x, want %x", got, id1)
+		}
+	})
+
+	t.Run("AddEdge without contrib_id stays zero", func(t *testing.T) {
+		fb := newFakeBackend()
+		s := NewLanternService(fb)
+		if _, err := s.AddEdge(context.Background(), &pb.AddEdgeRequest{
+			Edge: &pb.Edge{Tail: "a", Head: "b", Weight: 1, Expiration: futureTs(time.Minute)},
+		}); err != nil {
+			t.Fatalf("AddEdge: %v", err)
+		}
+		if got := fb.lastAddEdgesItems[0].ContribID; !got.IsZero() {
+			t.Errorf("ContribID = %x, want zero (no contrib_id on wire)", got)
+		}
+	})
+}
+
 func TestLanternService_PutEdge_Replaces(t *testing.T) {
 	// PutEdge deletes-then-adds: repeated calls with the same weight stay at that weight.
 	s := newTestService(t)
@@ -792,6 +891,7 @@ type fakeHotPathMetrics struct {
 	batch      []batchObs
 	getVertex  []hitMissObs
 	getEdge    []hitMissObs
+	contribDed []int
 }
 
 type illuminateObs struct {
@@ -830,6 +930,9 @@ func (f *fakeHotPathMetrics) OnGetVertices(hits, misses int) {
 }
 func (f *fakeHotPathMetrics) OnGetEdges(hits, misses int) {
 	f.getEdge = append(f.getEdge, hitMissObs{hits, misses})
+}
+func (f *fakeHotPathMetrics) OnEdgeContribDeduped(n int) {
+	f.contribDed = append(f.contribDed, n)
 }
 
 func TestLanternService_HotPathMetrics_EmitsOnceForBatchAndIlluminate(t *testing.T) {

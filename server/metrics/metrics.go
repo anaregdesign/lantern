@@ -110,6 +110,13 @@ type DomainMetrics struct {
 	getEdgeHits     prometheus.Counter
 	getEdgeMisses   prometheus.Counter
 
+	// Idempotent-AddEdge dedup counter (#588). Bumped by the service
+	// layer's AddEdges implementation with the number of additive edge
+	// contributions suppressed because an incoming client-supplied
+	// ContribID matched a still-live prior contribution (a retried
+	// idempotent Add). Plain counter: scrapes as 0 from process start.
+	edgeContribDeduped prometheus.Counter
+
 	sampleInterval time.Duration
 	sample         Sampler
 	mlogSample     MutationLogSampler
@@ -325,6 +332,10 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 			Name: "lantern_get_edge_misses_total",
 			Help: "Total GetEdges (tail,head) lookups that found no live edge (absent or already expired at read time). See lantern_get_edge_hits_total for the hit side.",
 		}),
+		edgeContribDeduped: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "lantern_edge_contrib_deduped_total",
+			Help: "Total additive edge contributions suppressed by client-supplied ContribID dedup (#588). A retried idempotent AddEdge/AddEdges re-sending the same ContribID bumps this instead of double-counting edge weight.",
+		}),
 		peerConnected: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "lantern_peer_connected",
 			Help: "1 when the local replication pump currently holds an open Subscribe (or Subscribe+Snapshot) session to the named peer; 0 otherwise. Updated on every pump connect/disconnect lifecycle event.",
@@ -391,6 +402,7 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		m.illuminateVisitedVertices, m.illuminateVisitedEdges, m.illuminateDuration,
 		m.scanResults, m.scanDuration, m.batchSize,
 		m.getVertexHits, m.getVertexMisses, m.getEdgeHits, m.getEdgeMisses,
+		m.edgeContribDeduped,
 		m.peerConnected, m.replicationApplyTotal, m.snapshotReplayedTotal,
 		m.snapshotVertices, m.snapshotEdges, m.snapshotDuration,
 		m.mutationLogFillRatio, m.mutationLogEvicted, m.originStatesCount,
@@ -770,6 +782,16 @@ func (m *DomainMetrics) OnGetEdges(hits, misses int) {
 	}
 	if misses > 0 {
 		m.getEdgeMisses.Add(float64(misses))
+	}
+}
+
+// OnEdgeContribDeduped records that n additive edge contributions were
+// suppressed by client-supplied ContribID dedup during one AddEdges RPC
+// (#588). Called once per plural AddEdges; the singular AddEdge forwards
+// through it. Zero is skipped so a fully-applied batch touches nothing.
+func (m *DomainMetrics) OnEdgeContribDeduped(n int) {
+	if n > 0 {
+		m.edgeContribDeduped.Add(float64(n))
 	}
 }
 

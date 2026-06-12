@@ -30,6 +30,14 @@ type fakeBackend struct {
 	addEdgesCalls    int
 	putEdgesCalls    int
 	deleteEdges      int
+
+	// #588 idempotent-AddEdge wiring capture. The canonical AddEdges path
+	// now calls AddEdgesWithExpirationContrib; tests assert contrib_ids are
+	// mapped index-aligned onto EdgeItem.ContribID and that the returned
+	// dedup count is forwarded to HotPathMetrics.OnEdgeContribDeduped.
+	addEdgesContribCalls int
+	lastAddEdgesItems    []graph.EdgeItem[string]
+	dedupReturn          int
 }
 
 func newFakeBackend() *fakeBackend {
@@ -80,6 +88,24 @@ func (f *fakeBackend) AddEdgesWithExpiration(items []graph.EdgeItem[string]) {
 		}
 		f.edges[it.Tail][it.Head] += it.Weight
 	}
+}
+
+// AddEdgesWithExpirationContrib is the path the production AddEdges handler
+// now drives (#588). The fake applies weight additively (mirroring the
+// zero-ContribID legacy path), captures the items so tests can assert the
+// contrib_id mapping, and returns the configurable dedupReturn so the
+// OnEdgeContribDeduped metric wiring is observable. Real dedup convergence
+// is covered by the core tests and tests/integration.
+func (f *fakeBackend) AddEdgesWithExpirationContrib(items []graph.EdgeItem[string]) int {
+	f.addEdgesContribCalls++
+	f.lastAddEdgesItems = items
+	for _, it := range items {
+		if f.edges[it.Tail] == nil {
+			f.edges[it.Tail] = map[string]float32{}
+		}
+		f.edges[it.Tail][it.Head] += it.Weight
+	}
+	return f.dedupReturn
 }
 
 func (f *fakeBackend) PutEdgesWithExpiration(items []graph.EdgeItem[string]) {

@@ -26,6 +26,12 @@ type Backend interface {
 	// edge reads/writes
 	GetEdgeDetail(tail, head string) (float32, time.Time, bool)
 	AddEdgesWithExpiration(items []graph.EdgeItem[string])
+	// AddEdgesWithExpirationContrib is the dedup-aware batch sibling of
+	// AddEdgesWithExpiration: a per-item non-zero ContribID makes that
+	// contribution idempotent (a retried batch is an exact no-op). Returns
+	// the count of items suppressed by a matching live ContribID. Items
+	// with a zero ContribID keep legacy additive semantics.
+	AddEdgesWithExpirationContrib(items []graph.EdgeItem[string]) int
 	PutEdgesWithExpiration(items []graph.EdgeItem[string])
 	DeleteEdges(keys []graph.EdgeKey[string]) int
 

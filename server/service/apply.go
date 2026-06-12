@@ -158,7 +158,13 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		if e == nil {
 			return nil
 		}
-		cID := contribIDFor(origin, seq, 0)
+		// Prefer a client-supplied ContribID carried on the wire (#588) so a
+		// retried idempotent Add dedups identically on every replica; fall
+		// back to the synthesized per-entry id for legacy writes.
+		cID := contribIDFromBytes(op.AddEdge.GetContribId())
+		if cID.IsZero() {
+			cID = contribIDFor(origin, seq, 0)
+		}
 		if useTomb {
 			applied := s.cache.AddEdgeWithExpirationContribHLC(e.GetTail(), e.GetHead(), e.GetWeight(),
 				e.GetExpiration().AsTime(), cID, ts)
@@ -173,11 +179,21 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 
 	case *pb.MutationOp_AddEdges:
 		edges := op.AddEdges.GetEdges()
+		contribIDs := op.AddEdges.GetContribIds()
 		for i, e := range edges {
 			if e == nil {
 				continue
 			}
-			cID := contribIDFor(origin, seq, uint16(i))
+			// Prefer the index-aligned client ContribID (#588); fall back to
+			// the synthesized (origin, seq, idx) id when the wire slot is
+			// absent or empty so legacy mutations keep their replay-dedup id.
+			var cID graph.ContribID
+			if i < len(contribIDs) {
+				cID = contribIDFromBytes(contribIDs[i])
+			}
+			if cID.IsZero() {
+				cID = contribIDFor(origin, seq, uint16(i))
+			}
 			if useTomb {
 				applied := s.cache.AddEdgeWithExpirationContribHLC(e.GetTail(), e.GetHead(), e.GetWeight(),
 					e.GetExpiration().AsTime(), cID, ts)
@@ -320,6 +336,19 @@ func contribIDBytes(c graph.ContribID) []byte {
 		return nil
 	}
 	return append([]byte(nil), c[:]...)
+}
+
+// contribIDFromBytes decodes a wire-encoded ContribID. Only the canonical
+// 24-byte length is accepted; a shorter, longer, or empty slice yields the
+// zero ContribID (the "no identity" sentinel), letting callers fall back to
+// a synthesized id and skip dedup. The inverse of contribIDBytes.
+func contribIDFromBytes(b []byte) graph.ContribID {
+	var c graph.ContribID
+	if len(b) != len(c) {
+		return c
+	}
+	copy(c[:], b)
+	return c
 }
 
 // contribIDFor builds the dedup identifier for an additive contribution.
