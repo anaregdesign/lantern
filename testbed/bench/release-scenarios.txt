@@ -5,12 +5,18 @@
 # This is the canonical release-time signal. The release bench job is
 # `continue-on-error` (non-blocking), so we run the full canonical
 # scenarios — not just the smoke variants — to surface regressions across
-# every major call path. The three `smoke_*` entries at the top of the
-# sweep remain so the rendered report is partially populated even if a
-# later full scenario times out or the runner stalls.
+# every major call path. The three `smoke_*` entries lead the sweep so the
+# rendered report is populated with useful rows first: release.sh self-bounds
+# the sweep via RELEASE_BENCH_BUDGET_SECONDS and always aggregates whatever
+# ran (appending a `## Truncated` note), so an over-budget runner still yields
+# a partial report instead of an empty one.
 #
-# Wall-time budget on a fresh ubuntu-latest runner (single shared
-# 3-replica compose, sequential execution): ~50 min total.
+# Wall-time on a fresh ubuntu-latest runner (single shared 3-replica compose,
+# sequential execution): ~83 min total — ~6 min per full scenario (warmup 30s
+# + steady 5m + cooldown 30s) plus ~1.5 min per smoke scenario. The release
+# bench job's `timeout-minutes` and release.sh's RELEASE_BENCH_BUDGET_SECONDS
+# (default 90 min) are sized against this figure; see issue #571. If you add or
+# lengthen scenarios, update those two knobs in lockstep.
 #
 # If you add a scenario here, keep it self-contained: the release driver
 # reuses ONE compose stack across all entries, so a scenario that mutates
