@@ -2,6 +2,7 @@
 name: User
 description: UX/UI design review specialist for Lantern Admin interface — inspects actual browser behavior using Playwright, identifies usability friction, design opportunities, and accessibility concerns. Files actionable Issues.
 argument-hint: "Admin UI component or page to review, specific workflow to test, or UX concern to investigate (browser testing enabled)"
+model: claude-opus-4.8
 tools: ['bash', 'view', 'edit', 'grep', 'glob', 'github-issue_write', 'github-list_issues']
 ---
 
