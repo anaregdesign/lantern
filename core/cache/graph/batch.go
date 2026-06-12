@@ -17,6 +17,13 @@ type EdgeItem[S comparable] struct {
 	Head       S
 	Weight     float32
 	Expiration time.Time
+	// ContribID is an optional dedup key for additive AddEdges* writes.
+	// A non-zero id makes the contribution idempotent: re-applying an item
+	// with the same id leaves the stored weight unchanged (see
+	// AddEdgesWithExpirationContrib). The zero value disables dedup and keeps
+	// the legacy additive semantics. PutEdgesWithExpiration ignores this
+	// field — Put is already idempotent.
+	ContribID ContribID
 }
 
 // EdgeKey identifies a directed edge for batch deletion via DeleteEdges.
@@ -44,18 +51,48 @@ func (c *GraphCache[S, T]) PutVerticesWithExpiration(items []VertexItem[S, T]) {
 // single write lock, auto-creating endpoint vertices on demand (matching
 // the per-edge AddEdgeWithExpiration invariant). Concurrent readers see
 // either the pre-batch or the post-batch state.
+//
+// Each item's ContribID is honored: a non-zero id deduplicates the
+// contribution (see AddEdgesWithExpirationContrib). Leaving ContribID at its
+// zero value — the default — keeps the legacy non-idempotent additive path.
 func (c *GraphCache[S, T]) AddEdgesWithExpiration(items []EdgeItem[S]) {
+	c.AddEdgesWithExpirationContrib(items)
+}
+
+// AddEdgesWithExpirationContrib is the dedup-aware batch sibling of
+// AddEdgesWithExpiration. It applies the whole batch under a single write
+// lock and returns the number of items that were deduplicated — i.e. whose
+// non-zero ContribID matched a live contribution already stored on the
+// (tail, head) edge, so no weight was added. Items with a zero ContribID
+// always apply (legacy additive semantics) and never count as deduped.
+//
+// The dedup guarantee mirrors the per-edge AddEdgeWithExpirationContrib used
+// by the replication apply path (#182): replaying a batch with the same
+// ContribIDs leaves the stored weights unchanged. This is what lets a
+// client-supplied idempotency key make AddEdge(s) safe to retry (#588).
+func (c *GraphCache[S, T]) AddEdgesWithExpirationContrib(items []EdgeItem[S]) (deduped int) {
 	if len(items) == 0 {
-		return
+		return 0
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, it := range items {
 		c.ensureVertexLocked(it.Tail, it.Expiration)
 		c.ensureVertexLocked(it.Head, it.Expiration)
-		created, tailID, headID := c.edges.addWithExpiration(it.Tail, it.Head, it.Weight, it.Expiration)
-		c.onEdgeAddedLocked(created, tailID, headID, it.Head)
+		created, tailID, headID, applied := c.edges.addWithExpirationContrib(it.Tail, it.Head, it.Weight, it.Expiration, it.ContribID)
+		if applied {
+			c.onEdgeAddedLocked(created, tailID, headID, it.Head)
+			continue
+		}
+		deduped++
+		if created {
+			// Defensive: a dedup-skip cannot also create a fresh bucket
+			// (see AddEdgeWithExpirationContrib), but keep the side indexes
+			// consistent if that invariant ever changes.
+			c.onEdgeAddedLocked(created, tailID, headID, it.Head)
+		}
 	}
+	return deduped
 }
 
 // PutEdgesWithExpiration replaces every supplied edge atomically under a
