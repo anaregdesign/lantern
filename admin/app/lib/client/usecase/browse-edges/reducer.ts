@@ -7,7 +7,18 @@ import {
 export type BrowseEdgesAction =
   | { type: "PREFIXES_CHANGED"; tailPrefix: string; headPrefix: string }
   | { type: "PAGE_REQUESTED"; epoch: number }
-  | { type: "PAGE_RECEIVED"; epoch: number; page: EdgePage }
+  | {
+      type: "PAGE_RECEIVED";
+      epoch: number;
+      page: EdgePage;
+      /**
+       * "append" (default) pushes a new page onto the history and advances the
+       * index — used by first-load and goNext. "replace" overwrites the page
+       * at `currentPageIndex` in place without moving the index — used by
+       * Refresh/retry, which re-fetches the page already on screen.
+       */
+      mode?: "append" | "replace";
+    }
   | { type: "PAGE_FAILED"; epoch: number; error: string }
   | { type: "NAVIGATE_PREVIOUS" }
   | { type: "NAVIGATE_NEXT_REQUESTED"; epoch: number }
@@ -41,6 +52,13 @@ export function browseEdgesReducer(
     case "PAGE_RECEIVED": {
       if (action.epoch !== state.prefixEpoch) {
         return state;
+      }
+      // Refresh/retry re-fetches the page already on screen: overwrite it in
+      // place and keep the index (and Previous/Next enablement) unchanged.
+      if (action.mode === "replace" && state.pages.length > 0) {
+        const pages = state.pages.slice();
+        pages[state.currentPageIndex] = action.page;
+        return { ...state, pages, status: "ready", error: null };
       }
       const isFirstPage = state.pages.length === 0;
       const pages = isFirstPage ? [action.page] : [...state.pages, action.page];

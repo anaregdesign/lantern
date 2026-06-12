@@ -148,6 +148,7 @@ export function useBrowseVertices(
         cursor,
         pageSize,
         epoch: state.prefixEpoch,
+        mode: "replace",
       },
       dispatch as (action: BrowseVerticesAction) => void,
     );

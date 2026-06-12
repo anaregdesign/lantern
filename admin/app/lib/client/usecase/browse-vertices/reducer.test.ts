@@ -211,6 +211,52 @@ describe("browseVerticesReducer", () => {
     expect(next.currentPageIndex).toBe(0);
   });
 
+  it("replaces the current page in place on refresh without moving the index", () => {
+    let state: BrowseVerticesState = {
+      ...INITIAL_BROWSE_VERTICES_STATE,
+      prefixEpoch: 1,
+    };
+    const first = page("", "c1", ["a"]);
+    const second = page("c1", "", ["b"]);
+    state = browseVerticesReducer(state, {
+      type: "PAGE_RECEIVED",
+      epoch: 1,
+      page: first,
+    });
+    state = browseVerticesReducer(state, {
+      type: "PAGE_RECEIVED",
+      epoch: 1,
+      page: second,
+    });
+    // Step back to page 0, then refresh it.
+    state = browseVerticesReducer(state, { type: "NAVIGATE_PREVIOUS" });
+    expect(state.currentPageIndex).toBe(0);
+    const refreshed = page("", "c1", ["a", "a2"]);
+    const next = browseVerticesReducer(state, {
+      type: "PAGE_RECEIVED",
+      epoch: 1,
+      page: refreshed,
+      mode: "replace",
+    });
+    // History length and index are preserved; only page 0 is overwritten.
+    expect(next.pages).toEqual([refreshed, second]);
+    expect(next.currentPageIndex).toBe(0);
+    expect(next.status).toBe("ready");
+  });
+
+  it("treats a replace on empty history as a first-page load", () => {
+    const base = { ...INITIAL_BROWSE_VERTICES_STATE, prefixEpoch: 1 };
+    const first = page("", "c1", ["a"]);
+    const next = browseVerticesReducer(base, {
+      type: "PAGE_RECEIVED",
+      epoch: 1,
+      page: first,
+      mode: "replace",
+    });
+    expect(next.pages).toEqual([first]);
+    expect(next.currentPageIndex).toBe(0);
+  });
+
   it("resets to initial and bumps epoch on RESET", () => {
     const base: BrowseVerticesState = {
       ...INITIAL_BROWSE_VERTICES_STATE,

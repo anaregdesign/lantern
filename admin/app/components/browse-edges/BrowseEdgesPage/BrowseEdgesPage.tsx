@@ -101,7 +101,12 @@ export function BrowseEdgesPage() {
       ) : null}
 
       <div className={styles.tableWrapper}>
-        <Table aria-label="Edges" sortable={false} data-testid="edges-table">
+        <Table
+          aria-label="Edges"
+          sortable={false}
+          data-testid="edges-table"
+          className={styles.table}
+        >
           <TableHeader>
             <TableRow>
               <TableHeaderCell className={styles.colKey}>Tail</TableHeaderCell>

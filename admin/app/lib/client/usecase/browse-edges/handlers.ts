@@ -11,6 +11,12 @@ export interface FetchEdgePageInput {
   cursor: string;
   pageSize: number;
   epoch: number;
+  /**
+   * How the resulting page should enter the history stack. Defaults to
+   * "append"; Refresh/retry passes "replace" so the current page is
+   * overwritten in place instead of duplicated.
+   */
+  mode?: "append" | "replace";
   signal?: AbortSignal;
 }
 
@@ -35,7 +41,12 @@ export async function fetchEdgePage(
       startCursor: input.cursor,
       nextCursor: response.nextCursor ?? "",
     };
-    dispatch({ type: "PAGE_RECEIVED", epoch: input.epoch, page });
+    dispatch({
+      type: "PAGE_RECEIVED",
+      epoch: input.epoch,
+      page,
+      mode: input.mode ?? "append",
+    });
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") {
       return;

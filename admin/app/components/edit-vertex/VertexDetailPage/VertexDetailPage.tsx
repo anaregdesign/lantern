@@ -134,7 +134,7 @@ function ReadView({ vertex, onEdit, onDelete }: ReadViewProps) {
       <h2 className={styles.cardTitle}>Current value</h2>
       <div className={styles.viewRow}>
         <span className={styles.viewLabel}>Kind</span>
-        <Badge appearance="tint" shape="rounded">
+        <Badge appearance="tint" shape="rounded" className={styles.viewKind}>
           {kind}
         </Badge>
       </div>
