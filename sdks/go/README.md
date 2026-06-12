@@ -67,11 +67,64 @@ c, _ := client.NewLantern("https://lantern.example.com:6380",
     client.WithHTTPClient(hc))
 ```
 
-Bare `"host:port"` is rejected. For load balancing across multiple
-replicas use a reverse proxy, k8s Service / Ingress, or DNS round-robin
-in front of Lantern — the SDK speaks to one URL. The HA runbook
-([../../docs/ha-runbook.md](../../docs/ha-runbook.md)) walks through the
-canonical reverse-proxy fan-out pattern.
+Bare `"host:port"` is rejected. A single `NewLantern` client speaks to one
+URL. For load balancing across replicas you have two options:
+
+- **Reverse proxy, k8s Service / Ingress, or DNS round-robin** in front of
+  Lantern — the right choice when the replica set churns (pods come and go,
+  endpoints are not stable). The HA runbook
+  ([../../docs/ha-runbook.md](../../docs/ha-runbook.md)) walks through the
+  canonical reverse-proxy fan-out pattern.
+- **`NewLanternFailover`** (below) — opt-in client-side failover over a
+  **fixed, known** set of endpoints, with no extra infrastructure.
+
+### Static-endpoint failover
+
+`NewLanternFailover` wraps a fixed list of endpoints and transparently
+fails over to the next reachable one. It is the SDK-native generalisation
+of the failover MCP used to embed privately; the policy now lives here.
+
+```go
+c, err := client.NewLanternFailover([]string{
+    "http://lantern-0:6380",
+    "http://lantern-1:6380",
+    "http://lantern-2:6380",
+}, client.WithDefaultTimeout(2*time.Second))
+if err != nil {
+    log.Fatal(err)
+}
+defer c.Close()
+
+// Same surface as *Lantern — every call routes to the current node and
+// rotates to another only when a node is unreachable.
+if err := c.PutVertex(ctx, "user:42", "alice", 10*time.Minute); err != nil {
+    log.Fatal(err)
+}
+```
+
+Semantics:
+
+- **Static endpoint set, no discovery.** The endpoint list is supplied once
+  at construction and never changes. The SDK performs **no** dynamic
+  discovery, gossip, or membership tracking — that explicit non-goal keeps
+  the client a thin wrapper. If your endpoints churn, use a proxy / DNS
+  instead (see above).
+- **Sticky current node.** Calls go to the current node and stay there
+  until it becomes unreachable; only then does the client rotate to the
+  next node in the ring. Application-level errors (not-found, etc.) never
+  trigger rotation.
+- **`ErrUnavailable`.** Rotation is driven by the exported `ErrUnavailable`
+  sentinel — a node is considered down when an RPC fails with Connect's
+  `CodeUnavailable` (connection refused or server-side unavailable), which
+  the SDK joins with `ErrUnavailable`. `errors.Is(err, client.ErrUnavailable)`
+  is true for those failures. When **all** nodes are unreachable the last
+  such error is returned.
+- **Same API surface.** `*Failover` exposes the same read/write/delete/scan
+  methods plus `Ping` and `Close`, so it is a drop-in for `*Lantern`.
+
+> The Node SDK (`sdks/node`) has **no** failover counterpart yet — it speaks
+> to a single endpoint via `connect` / `connectWeb`. Front it with a proxy /
+> DNS for HA.
 
 ### Options
 

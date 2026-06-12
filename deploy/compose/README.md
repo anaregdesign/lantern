@@ -89,13 +89,31 @@ Pick one of:
   ```go
   c, _ := lantern.NewLantern("http://lantern:6380")
   ```
+- **SDK static-endpoint failover.** For a **fixed, known** replica set,
+  the Go SDK can fail over client-side with no extra infrastructure —
+  pass the endpoint list to `NewLanternFailover` and it sticks to one
+  node, rotating only when a node is unreachable:
+  ```go
+  c, _ := lantern.NewLanternFailover([]string{
+      "http://lantern-0:6380",
+      "http://lantern-1:6380",
+      "http://lantern-2:6380",
+  })
+  ```
+  This suits stable sets (a pinned replica count); prefer a proxy / DNS
+  when endpoints churn. See
+  [sdks/go/README.md](../../sdks/go/README.md#static-endpoint-failover).
 - **CLI / grpcurl**: hit any container directly; writes propagate via
   the peer pump.
 
 > The pre-#367 `NewLanternWithEndpoints([]string{...})` SDK-side
 > round-robin LB was removed when the SDK collapsed to Connect-only
-> ([#367](https://github.com/anaregdesign/lantern/issues/367)). Use a
-> reverse proxy or DNS round-robin instead.
+> ([#367](https://github.com/anaregdesign/lantern/issues/367)). The new
+> `NewLanternFailover` (#592) is **not** a revival of that round-robin
+> load balancer: it is sticky-current failover over a *static* endpoint
+> set with no dynamic discovery, complementing — not replacing — the
+> reverse-proxy / DNS options above. Use a proxy or DNS round-robin for
+> churning endpoints; use SDK failover for small fixed sets.
 
 ## Admin UI
 

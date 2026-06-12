@@ -157,6 +157,15 @@ error hierarchy, and option types as the Node entrypoint; only the
 transport differs. CORS preflights must be allowed on the Lantern
 server via `LANTERN_CORS_ALLOWED_ORIGINS`.
 
+## High availability
+
+Both `connect` and `connectWeb` dial a **single** endpoint. Unlike the Go
+SDK — which since #592 offers opt-in `NewLanternFailover([]string{...})`
+over a fixed endpoint set — this Node client has **no** failover
+counterpart yet. Front a multi-replica deployment with a reverse proxy,
+k8s Service / Ingress, or DNS round-robin and point the client at that
+single URL; see [docs/ha-runbook.md](../../docs/ha-runbook.md).
+
 ## License
 
 Apache-2.0 — see [LICENSE](./LICENSE).
