@@ -11,8 +11,11 @@
 # noise; ≤ 5/64 is the documented acceptance bar of #392).
 name: many_subscribers
 phases:
+  # steady compacted from 5m to 2m for the release sweep (#573); still long
+  # enough for the Subscribe fan-out to reach steady state and to bracket the
+  # 60s GC sweep twice for the leak gate.
   warmup:   { duration: 30s, concurrency: 8, rps: 500 }
-  steady:   { duration: 5m,  concurrency: 32, rps: 2000 }
+  steady:   { duration: 2m,  concurrency: 32, rps: 2000 }
   cooldown: 30s
 target:
   # Writes pinned to one replica on purpose — see scenario doc above.
@@ -31,7 +34,7 @@ subscribe:
   data_template: '{}'
 leak_gate:
   goroutine_max_delta: 80     # 64 streams × bookkeeping
-  # 2k RPS × 5m of PutVertex with monotonically-increasing keys grows
+  # 2k RPS × 2m of PutVertex with monotonically-increasing keys grows
   # the in-memory graph + mutation-log ring + per-replica replication
   # state by hundreds of MiB of legitimate live working set. Under
   # Reading B every replica now also appends remote-applied mutations

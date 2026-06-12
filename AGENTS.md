@@ -330,9 +330,13 @@ Tag order matters because each downstream module pins the upstream tag:
    to the freshly-tagged versions.
 5. Root `vX.Y.Z` — triggers `docker-publish.yml` (amd64 + arm64 buildx +
    cosign keyless). The same workflow also runs the release-time bench
-   sweep (`testbed/bench/release.sh` → full canonical scenarios listed in
-   `testbed/bench/release-scenarios.txt`, including all illuminate
-   variants, batch/scan/edge/TTL paths, and many_subscribers fan-out)
+   sweep (`testbed/bench/release.sh` → the compact canonical sweep listed in
+   `testbed/bench/release-scenarios.txt`: two fan-out scenarios
+   (`broad_rw`, `broad_illuminate`) covering read/write/batch/scan/edge/delete
+   and the Illuminate algorithm×objective×weighting axes inside a single steady
+   window, plus `ttl_churn` and `many_subscribers` — ~14 min of scenario loop,
+   self-bounded by `RELEASE_BENCH_BUDGET_SECONDS` (default 18 min); see
+   [#573](https://github.com/anaregdesign/lantern/issues/573))
    and splices a fixed-format report into the release notes. The bench
    driver uses `ghz`; Connect-Go handlers accept gRPC frames natively
    on the same h2c socket and `connectrpc.com/grpcreflect` exposes the
@@ -340,7 +344,7 @@ Tag order matters because each downstream module pins the upstream tag:
    Connect-only server (verified in
    [#383](https://github.com/anaregdesign/lantern/issues/383)). The
    bench job is non-blocking — if it fails OR is cancelled (e.g. hits the
-   30-min `timeout-minutes` cap), the release still ships with a
+   35-min `timeout-minutes` cap), the release still ships with a
    placeholder bench section. The `release` job's `needs:` deliberately
    excludes `bench` because GitHub Actions treats `cancelled` as neither
    success nor failure, so a `needs: [..., bench]` edge skips the release
