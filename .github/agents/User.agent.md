@@ -230,3 +230,303 @@ open playwright-report/index.html
   - [README.md](../../README.md) — Lantern overview
 - **Accessibility:** WCAG 2.1 AA baseline
 - **Playwright docs:** https://playwright.dev/
+
+---
+
+## Operations Guide: Setting up Test Environment
+
+### Quick Start (Docker Compose)
+
+**Option 1: Pre-built images (fastest)**
+
+```bash
+cd deploy/compose
+docker compose up -d --pull always    # Downloads :latest images for all services
+```
+
+This starts:
+- **3-replica HA cluster** (`lantern-0`, `lantern-1`, `lantern-2`) on `:6380–6382`
+- **Admin SPA** on `:8080`
+- **Prometheus** on `:9091` (scraped by Admin for metrics visualization)
+- **Lantern MCP server** on `:6390` (optional, for LLM agents)
+
+Open browser: **http://localhost:8080** (default gateway: `localhost:6380`)
+
+**Option 2: Local development build**
+
+```bash
+# Build Lantern server image locally
+docker build -t lantern:local .
+
+# Run with local image
+LANTERN_IMAGE=lantern:local docker compose up -d
+
+# In another terminal: start Admin SPA development
+cd admin && bun install && bun run dev     # runs on http://localhost:5173
+```
+
+**Shutdown:**
+
+```bash
+cd deploy/compose
+docker compose down -v    # -v removes volumes (clears data)
+```
+
+### Populating Test Data
+
+#### Via CLI (recommended for UX testing)
+
+**1. Start the server (Docker Compose or local)**
+
+```bash
+cd deploy/compose && docker compose up -d
+# or: go run ./server/cmd (in another terminal)
+```
+
+**2. Generate sample graph data**
+
+```bash
+# Single vertex
+lantern vertex put alice '{"name":"Alice","age":30}' --value-type json --ttl 1h
+
+# Single edge (additive weight)
+lantern edge add alice bob 1.5 --ttl 1h
+lantern edge add alice bob 0.5        # weight now totals 2.0
+
+# Batch delete
+lantern vertex delete alice bob carol
+
+# Scan vertices by prefix
+lantern vertex scan user: --limit 10
+
+# Count vertices
+lantern vertex count user:
+```
+
+#### Via NDJSON bulk load (for large datasets)
+
+**Create test data file (`vertices.ndjson`):**
+
+```jsonl
+{"key":"user:alice","value":{"name":"Alice","role":"admin"},"ttl":"24h"}
+{"key":"user:bob","value":{"name":"Bob","role":"user"},"ttl":"24h"}
+{"key":"user:carol","value":{"name":"Carol","role":"user"},"ttl":"24h"}
+{"key":"item:laptop","value":{"name":"MacBook Pro","price":2000},"ttl":"7d"}
+{"key":"item:phone","value":{"name":"iPhone 15","price":999},"ttl":"7d"}
+```
+
+**Load vertices:**
+
+```bash
+lantern bulk vertices vertices.ndjson
+# or from stdin
+cat vertices.ndjson | lantern bulk vertices -
+```
+
+**Create test edges file (`edges.ndjson`):**
+
+```jsonl
+{"tail":"user:alice","head":"item:laptop","weight":1.0,"ttl":"24h"}
+{"tail":"user:alice","head":"item:phone","weight":0.8,"ttl":"24h"}
+{"tail":"user:bob","head":"item:laptop","weight":0.5,"ttl":"24h"}
+{"tail":"user:carol","head":"item:phone","weight":1.2,"ttl":"24h"}
+```
+
+**Load edges:**
+
+```bash
+lantern bulk edges add edges.ndjson
+# or: lantern bulk edges put edges.ndjson (idempotent replace)
+```
+
+### Inspecting Data
+
+```bash
+# Fetch vertex by key
+lantern vertex get user:alice
+# Output: {"key":"user:alice","value":{"name":"Alice",...},"expiration":"..."}
+
+# Fetch edge weight
+lantern edge get user:alice item:laptop
+# Output: 1.000000
+
+# Walk from a seed (1-hop neighborhood)
+lantern illuminate user:alice --step 1 --k 5
+# Output: {"vertices":{...},"edges":{...}}
+
+# With algorithm + objective (e.g., MST, cost-weighted)
+lantern illuminate user:alice --step 2 --k 10 --algorithm mst --objective min
+```
+
+### Cleaning Up Test Data
+
+**Option 1: Delete specific vertices**
+
+```bash
+lantern vertex delete user:alice user:bob user:carol
+```
+
+**Option 2: Delete by prefix (destructive)**
+
+```bash
+lantern vertex delete-prefix user:     # deletes all vertices where key starts with "user:"
+lantern vertex delete-prefix item:     # deletes all items
+```
+
+**Option 3: Clear entire store (full reset)**
+
+```bash
+cd deploy/compose
+docker compose down -v                 # stops containers and deletes volumes
+docker compose up -d --pull always     # fresh empty cluster
+```
+
+**Option 4: Count before deletion (safety check)**
+
+```bash
+lantern vertex count user:             # shows how many vertices would be deleted
+lantern vertex delete-prefix user:     # then delete
+```
+
+### CLI Connection Flags
+
+**Default server (localhost:6380):**
+
+```bash
+lantern vertex get key1
+```
+
+**Custom server:**
+
+```bash
+lantern -H lantern.example.com -p 443 --tls vertex get key1
+```
+
+**Docker Compose replicas (round-robin via DNS):**
+
+```bash
+# All three replicas available
+lantern -H localhost -p 6380 vertex get key1  # lantern-0
+lantern -H localhost -p 6381 vertex get key1  # lantern-1
+lantern -H localhost -p 6382 vertex get key1  # lantern-2
+```
+
+### Complete UX Review Workflow
+
+```bash
+# 1. Start Docker Compose stack
+cd deploy/compose && docker compose up -d --pull always
+echo "Waiting for services..."
+sleep 10
+
+# 2. Populate test data
+cat > test_data.ndjson << 'DATA'
+{"key":"product:laptop","value":{"name":"MacBook Pro","category":"computers","price":2000},"ttl":"24h"}
+{"key":"product:phone","value":{"name":"iPhone 15","category":"phones","price":999},"ttl":"24h"}
+{"key":"product:headphones","value":{"name":"AirPods Pro","category":"audio","price":249},"ttl":"24h"}
+{"key":"user:alice","value":{"name":"Alice","preferences":{"theme":"dark"}},"ttl":"24h"}
+{"key":"user:bob","value":{"name":"Bob","preferences":{"theme":"light"}},"ttl":"24h"}
+DATA
+
+lantern bulk vertices test_data.ndjson
+
+# Create interaction graph
+cat > test_edges.ndjson << 'EDGES'
+{"tail":"user:alice","head":"product:laptop","weight":3.0,"ttl":"24h"}
+{"tail":"user:alice","head":"product:phone","weight":1.0,"ttl":"24h"}
+{"tail":"user:bob","head":"product:headphones","weight":2.0,"ttl":"24h"}
+{"tail":"user:bob","head":"product:phone","weight":0.5,"ttl":"24h"}
+EDGES
+
+lantern bulk edges add test_edges.ndjson
+
+# 3. Run Playwright tests (from admin/)
+cd ../../admin && bun run test:e2e --headed
+
+# 4. Manual review
+# - Open http://localhost:8080 in browser
+# - Browse pages, test workflows, check keyboard navigation
+# - Take screenshots at different viewports
+
+# 5. Clean up
+cd ../deploy/compose && docker compose down -v
+```
+
+### Troubleshooting
+
+**Port already in use:**
+
+```bash
+# Find process on port 6380
+lsof -i :6380
+# Kill it if needed, or use different port:
+LANTERN_PORT=6381 docker compose up -d
+```
+
+**Services not ready:**
+
+```bash
+# Check service health
+docker compose ps
+docker logs deploy-lantern-0-1
+
+# Wait longer for startup
+docker compose logs -f
+```
+
+**Test data not appearing in Admin:**
+
+```bash
+# Verify data exists on server
+lantern vertex scan "" --limit 5
+
+# Check network connectivity
+curl http://localhost:6380/healthz
+curl http://localhost:8080/healthz
+```
+
+**Bulk load failed mid-stream:**
+
+```bash
+# Verify which records succeeded
+lantern vertex scan user: --limit 100
+
+# Note: Lantern has no transactions, so partial data may exist
+# Manually edit .ndjson and retry from checkpoint if needed
+```
+
+### Environment Variables (docker-compose.yml)
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `LANTERN_IMAGE` | `ghcr.io/anaregdesign/lantern:latest` | Server image |
+| `LANTERN_ADMIN_IMAGE` | `ghcr.io/anaregdesign/lantern-admin:latest` | Admin SPA image |
+| `LANTERN_MCP_IMAGE` | `ghcr.io/anaregdesign/lantern-mcp:latest` | MCP server image |
+| `LANTERN_DEFAULT_TTL_SECONDS` | `3600` | Vertex/edge default TTL (1h) |
+| `LANTERN_CORS_ALLOWED_ORIGINS` | `http://localhost:8080` | Admin SPA origin |
+| `LANTERN_ADMIN_PROMETHEUS_UPSTREAM` | `http://prometheus:9090` | Prometheus reverse proxy URL |
+
+Override examples:
+
+```bash
+LANTERN_IMAGE=lantern:v0.10.0 docker compose up -d
+LANTERN_DEFAULT_TTL_SECONDS=7200 docker compose up -d   # 2h default TTL
+```
+
+### Full Service Readiness Check
+
+```bash
+# All services healthy
+docker compose ps --format "table {{.Service}}\t{{.Status}}"
+
+# Expected output:
+# lantern-0      Up ... (healthy)
+# lantern-1      Up ... (healthy)
+# lantern-2      Up ... (healthy)
+# admin          Up ... (healthy)
+# lantern-mcp    Up ... (running)
+# prometheus     Up ... (running)
+
+# If any service is "unhealthy" or "not running", check logs:
+docker compose logs SERVICE_NAME
+```
