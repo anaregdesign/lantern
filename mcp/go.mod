@@ -4,14 +4,14 @@ go 1.26
 
 require (
 	connectrpc.com/connect v1.20.0
-	github.com/anaregdesign/lantern/pb v0.3.0
+	github.com/anaregdesign/lantern/pb v0.4.0
 	github.com/anaregdesign/lantern/sdks/go v0.11.0
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	google.golang.org/protobuf v1.36.11
 )
 
 require (
-	github.com/anaregdesign/lantern/core v0.3.0 // indirect
+	github.com/anaregdesign/lantern/core v0.5.0 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
