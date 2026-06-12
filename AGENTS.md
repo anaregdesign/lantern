@@ -4,7 +4,7 @@ Lantern is an in-memory `key-vertex-store` (graph-based KVS). It runs as a Conne
 
 ## Monorepo layout
 
-This project used to be split across four separate repositories (`lantern` / `lantern-proto` / `lantern-cli`, plus a shared graph/cache/NLP toolkit), but **everything is now consolidated into this repo as a 6-module Go workspace** so each piece can be consumed (`go get`) on its own:
+This project used to be split across four separate repositories (`lantern` / `lantern-proto` / `lantern-cli`, plus a shared graph/cache/NLP toolkit), but **everything is now consolidated into this repo as a multi-module Go workspace** so each piece can be consumed (`go get`) on its own:
 
 | Path | Module | Role |
 |---|---|---|
@@ -56,10 +56,10 @@ make wire                        # alias: go tool wire ./server/cmd (run from se
 make proto                       # alias: buf generate (system `buf` if present, else `go run`)
 go run ./server/cmd              # start the server (:6380)
 go run ./cli                     # start the CLI
-docker build -t lantern .        # container build (Go 1.26-alpine)
+docker build -t lantern .        # container build
 ```
 
-CI: [.github/workflows/go.yml](.github/workflows/go.yml) runs `go build` + `go test` on PR/push (Go 1.26, actions/checkout@v4, setup-go@v5). [.github/workflows/docker-publish.yml](.github/workflows/docker-publish.yml) publishes to ghcr.io on `v*.*.*` tag pushes with cosign keyless signing (cosign v2, `--yes`).
+CI: [.github/workflows/go.yml](.github/workflows/go.yml) runs `go build` + `go test` on PR/push. [.github/workflows/docker-publish.yml](.github/workflows/docker-publish.yml) publishes to ghcr.io on `v*.*.*` tag pushes with cosign keyless signing. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full release and CI flow.
 
 ## Conventions and gotchas
 
@@ -108,10 +108,10 @@ CI: [.github/workflows/go.yml](.github/workflows/go.yml) runs `go build` + `go t
   9. When adding a new test, **append to the existing `xxx_test.go`**
      instead of creating a new file. Reviewers must reject PRs that
      introduce a new `<existing-source>_<concern>_test.go` sibling.
-- **Go version**: every `go.mod` is on `1.26` and the Dockerfile uses `golang:1.26-alpine`; CI pins `1.26.4`. Bumping the toolchain requires updating **every** site in lockstep — see the [Maintenance checklist](#maintenance-checklist) for the full list.
+- **Go version**: the toolchain version is whatever each `go.mod` and the CI workflows pin — treat those as the single source of truth and never hard-code a number in prose or docs. Bumping it requires updating **every** site in lockstep — see [CONTRIBUTING.md](CONTRIBUTING.md) for the checklist.
 - **wire and generics**: as the `// Avoiding bug of 'wire'. Generic type is not supported.` comment in `service.go` notes, wire cannot handle generic type arguments, so the provider returns the concrete `GraphCache[string, *Vertex]`. Re-check this constraint before trying to introduce generics there.
-- **Regenerating proto**: `go_package_prefix` in `buf.gen.yaml` is `github.com/anaregdesign/lantern/pb`, so the generated files land **inside the standalone `pb/` module** at `pb/graph/v1`. `go generate ./...` (or `make proto`) runs `buf generate` and rebuilds everything under `pb/`. **Do NOT pass `--clean`** — `buf`'s output root is `pb/`, and `--clean` would delete `pb/go.mod` and `pb/doc.go` along with the stubs. `buf.yaml` (v2 workspace) and `buf.gen.yaml` live at the repo root. `buf` does not need to be installed locally — the directive in [generate.go](generate.go) falls back to `go run github.com/bufbuild/buf/cmd/buf@v1.70.0` (the pin is mirrored as `BUF_VERSION` in the Makefile — bump both together). Treat `pb/` as generated-only — never hand-edit, never add domain code there.
-- **Multi-module layout**: five modules (`.`, `core/`, `pb/`, `sdks/go/`, `server/`) are stitched together for local dev via [go.work](go.work) and via `replace` directives in each importing module's `go.mod`. When adding a dep, place it in the module that actually uses it (e.g. server-only middleware → `server/go.mod`; client transport → `sdks/go/go.mod`; cli/integration-test only → root `go.mod`). After dependency changes run `go mod tidy` in **every** affected module. The `tool github.com/google/wire/cmd/wire` directive lives in `server/go.mod` (not root), so wire regen must be run from `server/`.
+- **Regenerating proto**: `go_package_prefix` in `buf.gen.yaml` is `github.com/anaregdesign/lantern/pb`, so the generated files land **inside the standalone `pb/` module** at `pb/graph/v1`. `go generate ./...` (or `make proto`) runs `buf generate` and rebuilds everything under `pb/`. **Do NOT pass `--clean`** — `buf`'s output root is `pb/`, and `--clean` would delete `pb/go.mod` and `pb/doc.go` along with the stubs. `buf.yaml` (v2 workspace) and `buf.gen.yaml` live at the repo root. `buf` does not need to be installed locally — the directive in [generate.go](generate.go) falls back to running buf via `go run` at the version pinned there (mirrored as `BUF_VERSION` in the Makefile — bump both together). Treat `pb/` as generated-only — never hand-edit, never add domain code there.
+- **Multi-module layout**: the workspace modules are stitched together for local dev via [go.work](go.work) and via `replace` directives in each importing module's `go.mod`. When adding a dep, place it in the module that actually uses it (e.g. server-only middleware → `server/go.mod`; client transport → `sdks/go/go.mod`; cli/integration-test only → root `go.mod`). After dependency changes run `go mod tidy` in **every** affected module. The `tool github.com/google/wire/cmd/wire` directive lives in `server/go.mod` (not root), so wire regen must be run from `server/`.
 - **Test gaps**: there are no tests for the server/service layer, wire wiring, or client transport paths. For non-trivial changes, **add at least a minimal table test in the same PR**.
 
 ## Docs / Links
@@ -128,278 +128,26 @@ CI: [.github/workflows/go.yml](.github/workflows/go.yml) runs `go build` + `go t
   rolling upgrades, common gotchas). Pair with the RFC; the runbook
   defers to the RFC on any disagreement.
 
-## Maintenance checklist
+## Workflow & maintenance
 
-Each item is **trigger → action**. Coding agents must consult this list whenever
-they take a listed action, and run the matching step before pushing / merging.
-This section is the canonical maintenance contract; mirror only the most
-load-bearing items into `/memories/repo/lantern.md` for compacted-state survival.
+The full release/CI/maintenance contract — issue triage, code-generation steps, the
+release tag order, the toolchain-bump checklist, and the doc-staleness sweep — lives in
+[CONTRIBUTING.md](CONTRIBUTING.md). Consult it whenever you take one of those actions.
+The load-bearing always-on essentials:
 
-### GitHub Project triage (`Lantern roadmap`)
+- **File a GitHub Issue before any non-trivial change** (exceptions: doc-only edits,
+  in-flight PR-review follow-ups, one-line obvious fixes). The closing PR references it
+  with `Closes #N` — one keyword per issue (`Closes #1, closes #2`).
+- **Before every push**, run the local quality gate: `gofmt -l` must print nothing, then
+  `go test ./...` from the root **and** from each submodule (the root run does not span
+  submodules).
+- **Never hand-edit generated code.** Regenerate `pb/**` with `go generate ./...` (buf,
+  never `--clean`) and `server/cmd/wire_gen.go` from `server/` with `go tool wire ./cmd`.
+- **When your work surfaces a fact another open Issue needs, comment it on that Issue in
+  the same session** — never only in a PR description or chat reply, which are invisible
+  to whoever opens the Issue next. See CONTRIBUTING.md for the format.
+- Wait for all required CI checks before merging; never use `--admin`/`--no-verify`;
+  merge `--squash --delete-branch`; never push to `main` directly.
 
-Cross-track triage lives in a single Project named `Lantern roadmap`. Issues
-remain the source of truth — the Project is a view layer + lightweight kanban
-on top of them.
-
-**Custom fields (all four are mandatory on every Issue):**
-
-| Field | Allowed values |
-|---|---|
-| `Track` | `Admin` / `HA` / `Connect` / `SDK` / `Maintenance` / `Docs` |
-| `Module` | `pb` / `core` / `server` / `sdks-go` / `sdks-node` / `sdks-python` / `admin` / `mcp` / `tests` / `docs` / `ci` |
-| `Release target` | `next pb` / `next sdks-go` / `next root` / `next mcp` / `next admin-internal` / `unscheduled` |
-| `Priority` | `P0` / `P1` / `P2` |
-
-**Rules:**
-
-- Every new Issue must have all four fields filled **in the same session it is
-  created** (typically via the Project Web UI right after `gh issue create`).
-- The Project is **not** the source of truth. Do not infer scope, dependencies,
-  or release order from the board — those live in the Issue body and in this
-  file. The board is a view.
-- Do not create additional Projects (per-module, per-release, etc.); a single
-  Project keeps the cost of "what is everyone working on" close to zero.
-- `gh` CLI needs the `project` scope (`gh auth refresh -s project`) to mutate
-  the board.
-
-### When your work surfaces a finding useful to another open Issue
-
-Whether you are closing #A, filing a foundation Issue that re-frames others, or
-just reading code mid-task, the rule is the same: **the moment your current work
-produces a fact that future-you (or another agent) will need when picking up an
-unrelated open Issue, post it as a comment on that Issue, in the same session,
-before you forget.** Wire-shape gotchas, flake reproducers, perf numbers,
-build-order constraints, model-shift implications — anything that would make a
-reader of Issue #B six months from now ask "why didn't anyone mention this?".
-
-Format the comment so #B's reader gets the context without having to chase the
-link:
-
-> Finding from \<work that surfaced this — PR/Issue/exploration\>:
-> \<one-paragraph fact\>. Source: \<code/file/log link\>.
-
-Concrete triggers (non-exhaustive):
-
-- **Closing #A.** If the work on #A's PR surfaced something #B needs, comment
-  on #B in the same PR — not in the PR description (reviewers of #B won't
-  follow that link six months from now).
-- **Filing a foundation Issue #F that re-frames others.** When #F shifts the
-  assumptions #B1, #B2, … were built on, comment on each downstream Issue with
-  the impact (blocked / body needs revision / unchanged) and a pointer to the
-  relevant section of #F, in the same session you file #F. Precedent: #466
-  → comments on #456 / #460 / #461 (blocked, bodies revised) and on
-  #457 / #458 / #459 / #464 / #465 (unchanged).
-- **Mid-task exploration.** If reading the code for task #A reveals that #B's
-  reproduction steps are wrong, its proposed approach won't work, or a
-  prerequisite it assumes is already done, comment on #B before resuming #A.
-  Don't promise yourself you'll come back to it.
-
-Always post the comment **on #B itself**, never only in a PR description or a
-chat reply — those surfaces are invisible to whoever opens #B next. If three
-or more Issues benefit from the same finding, also append a one-line entry to
-the relevant section of this file (`Architecture notes` / `Conventions and
-gotchas`) so future agents see it without having to grep Issue threads.
-
-### Before every `git push` (local quality gate)
-
-Run from repo root — this matches what the four required CI checks enforce
-(`Build & Test`, `Lint`, `Proto (buf)`, `govulncheck`):
-
-```bash
-gofmt -l . cli core mcp pb sdks server tests   # must print nothing
-(cd server && go vet ./... && go test ./...)
-go test ./...
-(cd core    && go test ./...)
-(cd mcp     && go test ./...)
-(cd pb      && go test ./...)
-(cd sdks/go && go test ./...)
-```
-
-Per-module test runs are mandatory: root `go test ./...` does **not** span
-submodules. The `Lint` job runs `golangci-lint` (CI installs it); `make lint`
-is the local equivalent if you have it. `Proto (buf)` fails on any uncommitted
-codegen diff — regenerate locally first (see below).
-
-### Before starting any non-trivial fix or feature
-
-**File a GitHub Issue first, then implement.** This is a hard rule, not a
-suggestion. The Issue is what makes the change reviewable: it pins down the
-problem statement, the chosen option among alternatives, the scope, and the
-"why now / why not now" decision **before** any diff exists. Skipping straight
-to a branch means the PR description has to carry all of that context, which
-in practice means it doesn't.
-
-- One Issue per coherent problem. Use `gh issue create --title ... --body ...`.
-- The PR that closes it references the Issue (`Closes #N`) so the merge wires
-  the discussion to the diff automatically.
-- Exceptions — no Issue required:
-  - Pure doc-only edits (README typos, comment fixes, AGENTS.md tweaks).
-  - Direct follow-ups requested in an in-flight PR review.
-  - One-line obvious bug fixes where writing the Issue would take longer than
-    the fix and there is nothing to discuss.
-- When in doubt, file the Issue. The overhead is ~2 minutes; the cost of a
-  rejected/reworked PR is far higher.
-
-### Before merging a PR
-
-- Wait for **all 4 required checks** green. Never use `--admin` or
-  `--no-verify`. One PR per issue from clean main.
-- Merge with `gh pr merge <n> --squash --delete-branch`, then
-  `git checkout main && git pull --rebase`.
-- **Multi-issue `Closes` syntax.** GitHub only auto-links the *first* issue
-  on a comma-separated line. `Closes #1, #2, #3` closes `#1` and leaves
-  `#2`/`#3` orphaned after merge. Use either one keyword per issue
-  (`Closes #1, closes #2, closes #3`) or one keyword per line. PR #441
-  shipped fixes for #428/#429/#430/#432 but only #428 closed
-  automatically.
-
-### After editing `.proto`
-
-```bash
-go generate ./...   # runs buf generate (NO --clean) + wire
-```
-
-Commit the resulting `pb/graph/v1/**` (protobuf messages + Connect-Go stubs).
-Never pass `--clean` to buf — it deletes `pb/go.mod` and `pb/doc.go`.
-
-### After editing wire providers (`server/provider/*`, `server/cmd/wire.go`)
-
-```bash
-cd server && go tool wire ./cmd       # or: make wire
-```
-
-Commit the regenerated `server/cmd/wire_gen.go`. Never hand-edit it. If you
-introduced a new sub-config, update the **Providers** bullet in this file.
-
-### After renaming any public SDK / server symbol (refactor)
-
-- Grep the **entire workspace** (`cli/`, `core/`, `mcp/`, `pb/`, `sdks/go/`,
-  `server/`, `testbed/`, `tests/integration/`, `*.md`) for every old name. A
-  single-module test pass is **not** sufficient — six modules can compile in
-  isolation while the cross-module call site is broken.
-- Update the **Architecture notes** bullets in this file and the
-  **Conventions and gotchas** section of `README.md` in the **same PR**. The
-  #106 alias refactor invalidated three method names across two docs — that
-  pattern recurs.
-
-### After adding a dependency
-
-- Add the require to the module that **actually imports** it (server-only
-  middleware → `server/go.mod`; client transport → `sdks/go/go.mod`; cli or
-  integration tests only → root `go.mod`).
-- Run `go mod tidy` in **every** affected module. Workspace `replace`s do not
-  propagate `go.sum` entries.
-- If the Dockerfile was touched, confirm every workspace member's `go.mod` and
-  `go.sum` are COPYed **before** `go mod download` (go.work prerequisite).
-  The current list (6 modules: root, `core/`, `mcp/`, `pb/`, `sdks/go/`,
-  `server/`) must stay in lockstep with `go.work`. PR CI does not run
-  `docker build`, so a missed `COPY` only surfaces at release-tag time —
-  see [#382](https://github.com/anaregdesign/lantern/issues/382) for the
-  `mcp/go.mod` regression caused by exactly this.
-
-### Bumping the Go toolchain
-
-Update **all** of the following in one PR:
-
-1. Every `go.mod` (6 files): root, `core/`, `mcp/`, `pb/`, `sdks/go/`, `server/`.
-2. `Dockerfile` and `mcp/Dockerfile` — `FROM golang:X.Y-alpine`.
-3. Every `go-version:` in `.github/workflows/*.yml` (`go.yml`, `docker-publish.yml`,
-   `mcp-publish.yml`).
-4. The `Go version` mentions in this file and `README.md`.
-5. The CI version note in `/memories/repo/lantern.md`.
-
-### Bumping the `buf` pin
-
-Update **both**: the `@vX.Y.Z` suffix in [generate.go](generate.go) **and**
-`BUF_VERSION` in the [Makefile](Makefile).
-
-### Cutting a release (`vX.Y.Z`)
-
-Tag order matters because each downstream module pins the upstream tag:
-
-1. `pb/vX.Y.Z`
-2. `core/vX.Y.Z`
-3. `sdks/go/vX.Y.Z` — triggers `.github/workflows/sdks-go-publish.yml`,
-   which runs vet/build/test against the tagged commit and creates a
-   GitHub Release with `--title "$TAG"` (raw-tag convention). The Go
-   module proxy pulls source directly from VCS, so there is no artifact
-   to push; the verify step exists because tag pushes do not trigger
-   the regular `Go` workflow and a broken `sdks/go/vX.Y.Z` would
-   otherwise land on pkg.go.dev unchecked.
-4. Bump the matching `require` (and any `replace`) lines in the root `go.mod`
-   to the freshly-tagged versions.
-5. Root `vX.Y.Z` — triggers `docker-publish.yml` (amd64 + arm64 buildx +
-   cosign keyless). The same workflow also runs the release-time bench
-   sweep (`testbed/bench/release.sh` → the compact canonical sweep listed in
-   `testbed/bench/release-scenarios.txt`: two fan-out scenarios
-   (`broad_rw`, `broad_illuminate`) covering read/write/batch/scan/edge/delete
-   and the Illuminate algorithm×objective×weighting axes inside a single steady
-   window, plus `ttl_churn` and `many_subscribers` — ~14 min of scenario loop,
-   self-bounded by `RELEASE_BENCH_BUDGET_SECONDS` (default 18 min); see
-   [#573](https://github.com/anaregdesign/lantern/issues/573))
-   and splices a fixed-format report into the release notes. The bench
-   driver uses `ghz`; Connect-Go handlers accept gRPC frames natively
-   on the same h2c socket and `connectrpc.com/grpcreflect` exposes the
-   reflection service, so the harness works unchanged against the
-   Connect-only server (verified in
-   [#383](https://github.com/anaregdesign/lantern/issues/383)). The
-   bench job is non-blocking — if it fails OR is cancelled (e.g. hits the
-   35-min `timeout-minutes` cap), the release still ships with a
-   placeholder bench section. The `release` job's `needs:` deliberately
-   excludes `bench` because GitHub Actions treats `cancelled` as neither
-   success nor failure, so a `needs: [..., bench]` edge skips the release
-   on cancellation regardless of `continue-on-error`. See issues
-   [#256](https://github.com/anaregdesign/lantern/issues/256),
-   [#262](https://github.com/anaregdesign/lantern/issues/262), and
-   [#394](https://github.com/anaregdesign/lantern/issues/394).
-
-The `server/` module is **never** tagged independently — it ships under the
-root tag. arm64 buildx under QEMU is slow; if a root tag already pushed the
-amd64 image, bump the patch number rather than force-moving the tag.
-
-The `mcp/` module is cut **independently** of the root release cadence: tag
-`mcp/vX.Y.Z` triggers `.github/workflows/mcp-publish.yml`, which builds and
-publishes `ghcr.io/anaregdesign/lantern-mcp:X.Y.Z` (multi-arch + cosign
-keyless). It does NOT need to follow the `pb → core → sdks/go → root` order;
-the MCP server only imports `pb/` and `sdks/go/`, so a `sdks/go/vX.Y.Z` bump
-is the only upstream pin that requires re-tagging the MCP image.
-
-The `admin/` module is cut **independently** of the root release cadence and
-the SDK cadences (it is not a Go module and not part of `go.work`): tag
-`admin/vX.Y.Z` triggers `.github/workflows/admin-publish.yml`, which re-runs
-the admin gates (lint / typecheck / codegen-up-to-date / build), then builds
-and publishes `ghcr.io/anaregdesign/lantern-admin:X.Y.Z` (multi-arch + cosign
-keyless). It does NOT need to follow the `pb → core → sdks/go → root` order;
-the admin SPA's only cross-module build-time dependency is the `proto/`
-sources (consumed by `bun run codegen` via `@bufbuild/protoc-gen-es` +
-`@connectrpc/protoc-gen-connect-es`), so a `pb/vX.Y.Z` bump is the one
-upstream pin that requires re-tagging the admin image. The admin container
-hosts the SPA on Caddy (`:8080`) and does **not** reverse-proxy the Lantern
-listener — the browser calls the gateway directly, so the server's
-`LANTERN_CORS_ALLOWED_ORIGINS` must include the admin origin. It *does*
-optionally reverse-proxy Prometheus same-origin under `/api/prom` (opt-in via
-the `LANTERN_ADMIN_PROMETHEUS_UPSTREAM` env var, materialised at container
-start by `admin/docker-entrypoint.sh` into a Caddy `handle_path` snippet the
-Caddyfile glob-imports); the SPA's Ops Metrics page uses that path to dodge
-Prometheus's missing CORS headers.
-
-**Release title convention (locked).** Every GitHub Release title MUST equal
-its tag name verbatim — `v0.7.2`, `core/v0.2.0`, `sdks/go/v0.8.0`,
-`sdks/node/v0.1.2`, `sdks/python/v0.1.1`, `mcp/v0.1.0`, `admin/v0.1.0`. No
-friendly aliases (`Node SDK v0.1.2`, `Go SDK v0.6.0`, etc).
-`docker-publish.yml`, `mcp-publish.yml`, and `admin-publish.yml` already
-enforce this via `gh release create --title "$TAG"`. The Python and Node SDK GitHub Releases are currently created
-manually — when creating them, always pass `--title "$(git describe
---tags)"` (or the literal tag) so the title matches. If you ever automate
-those releases inside `python-sdk.yml` / `node-sdk.yml`, use the same
-`--title "$TAG"` pattern.
-
-### Periodic doc-staleness sweep (before each release, or whenever memory and
-### code disagree)
-
-- Re-read this file, `README.md` "Conventions and gotchas", and
-  `/memories/repo/lantern.md`.
-- For every cited symbol, file path, env var, and shell command, verify it
-  still exists and works. CLI command snippets in `README.md` can be checked
-  with `go run ./cli <subcommand> --help`.
-- Reconcile any drift in the same PR.
+Mirror only the most load-bearing items into `/memories/repo/lantern.md` for
+compacted-state survival.
