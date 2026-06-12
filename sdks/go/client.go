@@ -9,10 +9,13 @@ package client
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"connectrpc.com/connect"
@@ -116,6 +119,13 @@ type Lantern struct {
 	opts       options
 	httpClient *http.Client
 	baseURL    string
+
+	// nonce + callSeq generate per-call ContribID idempotency keys when
+	// WithIdempotentAdds is set (#588). nonce is a per-client 128-bit random
+	// prefix that namespaces this client's keys; callSeq is bumped once per
+	// Add* request build. See nextContribIDs.
+	nonce   [16]byte
+	callSeq atomic.Uint64
 }
 
 // NewLantern dials the Lantern server at baseURL and returns a
@@ -143,12 +153,20 @@ func NewLantern(baseURL string, opts ...Option) (*Lantern, error) {
 		o.httpClient = defaultH2CClient()
 	}
 
-	return &Lantern{
+	l := &Lantern{
 		client:     graphv1connect.NewLanternServiceClient(o.httpClient, baseURL, o.clientOptions...),
 		opts:       o,
 		httpClient: o.httpClient,
 		baseURL:    baseURL,
-	}, nil
+	}
+	// A per-client random nonce namespaces this client's ContribIDs so two
+	// processes (or two NewLantern calls) never collide their idempotency
+	// keys. Only consulted when WithIdempotentAdds is set, but seeded
+	// unconditionally so the field is always valid.
+	if _, err := rand.Read(l.nonce[:]); err != nil {
+		return nil, fmt.Errorf("client: NewLantern could not seed idempotency nonce: %w", err)
+	}
+	return l, nil
 }
 
 // Close releases any idle HTTP/2 connections the SDK is holding. The
@@ -363,6 +381,11 @@ func (l *Lantern) GetEdge(ctx context.Context, tail string, head string) (*Edge,
 // AddEdge accumulates weight onto the (tail, head) pair: repeated calls with
 // the same endpoints sum their weights. A non-positive ttl stores the edge
 // permanently (no decay); see expirationFromTTL.
+//
+// When the client was built WithIdempotentAdds, a transport-level retry of a
+// single AddEdge/AddEdgeAt call records the weight once (the SDK attaches a
+// stable per-call idempotency key); calling AddEdge twice yourself still
+// sums, as documented above.
 func (l *Lantern) AddEdge(ctx context.Context, tail string, head string, weight float32, ttl time.Duration) error {
 	return l.AddEdgeAt(ctx, tail, head, weight, expirationFromTTL(ttl))
 }
@@ -372,7 +395,8 @@ func (l *Lantern) AddEdgeAt(ctx context.Context, tail string, head string, weigh
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
 	_, err := unary(ctx, &pb.AddEdgesRequest{
-		Edges: []*pb.Edge{{Tail: tail, Head: head, Weight: weight, Expiration: timestamppb.New(expiration)}},
+		Edges:      []*pb.Edge{{Tail: tail, Head: head, Weight: weight, Expiration: timestamppb.New(expiration)}},
+		ContribIds: l.nextContribIDs(1),
 	}, l.client.AddEdges)
 	return err
 }
@@ -384,15 +408,44 @@ func (l *Lantern) AddEdgeAt(ctx context.Context, tail string, head string, weigh
 // edges already committed, so callers can resume with inputs[err.Written:].
 // Note that because AddEdge is additive (not idempotent), naively retrying
 // from index 0 will double-count weight for the already-committed prefix.
+//
+// With WithIdempotentAdds the SDK stamps each contribution with a per-call
+// idempotency key, so a transport-level retry of a chunk records its weight
+// exactly once. That key is regenerated on each AddEdges invocation, so it
+// does not make an application-level resume/retry from index 0 idempotent —
+// use err.Written to resume, as above.
 func (l *Lantern) AddEdges(ctx context.Context, inputs []EdgeInput) error {
 	if len(inputs) == 0 {
 		return nil
 	}
 	_, err := runBatchWrite(ctx, l, edgesFrom(inputs), func(ctx context.Context, chunk []*pb.Edge) (int32, error) {
-		_, err := unary(ctx, &pb.AddEdgesRequest{Edges: chunk}, l.client.AddEdges)
+		_, err := unary(ctx, &pb.AddEdgesRequest{Edges: chunk, ContribIds: l.nextContribIDs(len(chunk))}, l.client.AddEdges)
 		return 0, err
 	})
 	return err
+}
+
+// nextContribIDs returns n per-edge idempotency keys for one Add* request,
+// or nil when WithIdempotentAdds is not set (nil → the wire carries no
+// contrib_ids, i.e. the legacy additive path). It bumps callSeq exactly once
+// per call; key i packs the client nonce into bytes [0:16] and the
+// big-endian (seq<<16)|i into bytes [16:24], matching the server's ContribID
+// layout. Because the keys are baked into the request when it is built, a
+// transport retry that re-sends the same request re-sends the same keys, so
+// the contribution is recorded exactly once.
+func (l *Lantern) nextContribIDs(n int) [][]byte {
+	if !l.opts.idempotentAdds || n <= 0 {
+		return nil
+	}
+	seq := l.callSeq.Add(1)
+	ids := make([][]byte, n)
+	for i := 0; i < n; i++ {
+		id := make([]byte, 24)
+		copy(id[:16], l.nonce[:])
+		binary.BigEndian.PutUint64(id[16:], (seq<<16)|uint64(uint16(i)))
+		ids[i] = id
+	}
+	return ids
 }
 
 // PutEdge overwrites the (tail, head) pair. A non-positive ttl stores the
