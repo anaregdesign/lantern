@@ -49,7 +49,7 @@ Conduct thorough UX/UI reviews focusing on user experience, interface design, us
 - Identify code-level issues (missing refs, unclear naming, duplicate logic)
 
 ### Phase 2: Browser Testing (Playwright)
-- **Start Lantern server + Admin SPA:** `cd admin && bun install && bun run dev` (or use Playwright's built-in webServer config)
+- **Start the stack against the _pre-release_ build (NOT GHCR):** build a local image for **every component your branch changed** and pin it on compose, so you review current-branch code rather than the last published image — always the admin (`docker build -t lantern-admin:local -f admin/Dockerfile .`) and, **if the branch also touched the server, the server too** (`docker build -t lantern:local .`, from repo ROOT); then `cd deploy/compose && LANTERN_ADMIN_IMAGE=lantern-admin:local LANTERN_IMAGE=lantern:local docker compose up -d --force-recreate` (drop `LANTERN_IMAGE` if you didn't rebuild the server — it stays on GHCR `:latest`; production build on http://localhost:8080). See "Quick Start (Docker Compose)" for details and the fast `bun run dev` inner loop.
 - **Screenshot key pages:** Browse, Illuminate, Operations pages at multiple viewport sizes
 - **Test workflows:**
   - Can users complete tasks in 2-3 clicks? (navigation, search, vertex inspection, operations)
@@ -69,6 +69,7 @@ Conduct thorough UX/UI reviews focusing on user experience, interface design, us
 
 ### Phase 4: Issue Filing
 - Ground observations in **actual test results** (screenshots, steps to reproduce in browser)
+- For any visual issue, **embed a screenshot of the UI being improved** in the Issue (see "Screenshots for visual issues")
 - Describe the behavior gap vs. user expectation
 - Recommend minimal fix aligned with minimalist philosophy
 
@@ -196,7 +197,30 @@ npx playwright test --project=chromium tests/e2e/accessibility.spec.ts
 - P1: Daily friction (e.g., takes extra 3 clicks)
 - P2: Nice-to-have (e.g., margin alignment)
 
-**Evidence:** Attach screenshot from browser testing, link to Playwright test repo
+**Evidence:** Embed a screenshot from browser testing (required for visual issues — see
+"Screenshots for visual issues" below); link to the Playwright spec or saved test artifacts
+
+### Screenshots for visual issues (required)
+
+If an Issue concerns **visual content** — anything observable in the rendered UI such as
+layout, spacing, alignment, color, contrast, typography, component rendering, focus
+indicators, responsive/overflow behavior, loading/empty/error states, or visual hierarchy —
+the Issue **must** include a screenshot of the UI being improved. Issues about purely
+non-visual behavior are exempt, though a screenshot is still encouraged when it adds clarity.
+
+**Capture** during Phase 2 with the `screenshot_page` tool or `page.screenshot()`:
+- Frame the problem area; crop or annotate (box/arrow) the region under discussion.
+- Capture at the viewport where the problem appears, and label it (375 / 768 / 1440).
+- Include one screenshot per relevant viewport for responsive issues.
+- Save raw captures under `admin/test-results/ux-review/` (this path is git-ignored — treat it as scratch).
+
+**Embed** in the Issue body with `![caption](url)`. Because `issue_write` accepts only a
+text body, a local file path will not render — the image must resolve to a public URL.
+To host it, copy the chosen capture out of the git-ignored `test-results/` into a tracked
+path (e.g. `docs/ux-reviews/<issue-slug>/`), commit it to a branch, and reference its raw URL
+(`https://github.com/anaregdesign/lantern/blob/<branch>/<file>?raw=true`). If image hosting
+is unavailable, stop and report the blocker instead of filing — a visual Issue is never
+filed without an embedded, rendering screenshot.
 
 ## Self-Check Before Filing
 
@@ -204,6 +228,7 @@ npx playwright test --project=chromium tests/e2e/accessibility.spec.ts
 - ✅ **Did you test at multiple viewport sizes?** (Mobile, tablet, desktop)
 - ✅ **Did you test keyboard navigation?** (Tab, ESC, Enter, Arrow keys)
 - ✅ **Does accessibility matter for this issue?** (ARIA labels, contrast, focus)
+- ✅ **If the issue is visual, did you embed a screenshot of the target UI?** (Required — see "Screenshots for visual issues")
 - ✅ **Is the recommendation actionable and minimal?** (Not over-scoped)
 - ✅ **Distinct from existing Issues?** (Search open Issues first)
 - ✅ **Recommendation aligns with minimalist philosophy?** (Less, not more)
@@ -255,33 +280,58 @@ open playwright-report/index.html
 
 ### Quick Start (Docker Compose)
 
-**Option 1: Pre-built images (fastest)**
+> **A UX review must inspect the _pre-release_ UI.** The compose stack defaults
+> to the **published** GHCR images (`admin` → `ghcr.io/anaregdesign/lantern-admin:latest`,
+> `lantern` → `ghcr.io/anaregdesign/lantern:latest`), so a bare `docker compose
+> up -d` — and especially `--pull always` — serves the **last released** build of
+> every service, not the code on the current branch. For a review, build a local
+> image for each component your branch changed (admin, and the server too if you
+> touched it) and pin it on compose (Option 1).
+
+**Option 1 (recommended for UX review): local pre-release build**
+
+Build a local image for **every component your branch changed**, then pin those
+images on compose. Any service you don't pin runs the published GHCR `:latest` —
+so a server-side change on your branch needs its own `docker build` too, not just
+the admin.
+
+```bash
+# Build context MUST be the repo ROOT for BOTH images — the admin Dockerfile
+# reaches sibling paths (`sdks/node/`, `admin/Caddyfile`) and the server
+# Dockerfile builds the whole Go workspace; building from a subdir fails
+# (e.g. from admin/ → `"/admin/Caddyfile": not found`).
+docker build -t lantern-admin:local -f admin/Dockerfile .   # admin SPA (the review target)
+docker build -t lantern:local .                             # server — only if your branch changed it
+
+# Pin compose to whichever images you built. Drop the env var for any component
+# you did NOT rebuild and it stays on GHCR :latest. --force-recreate replaces
+# containers still running an old image. Do NOT add --pull always — it re-fetches
+# the published images and clobbers your local pins.
+cd deploy/compose
+LANTERN_ADMIN_IMAGE=lantern-admin:local \
+  LANTERN_IMAGE=lantern:local \
+  docker compose up -d --force-recreate
+```
+
+Open browser: **http://localhost:8080** (default gateway: `localhost:6380`)
+
+**Option 2: published release (only to review an already-shipped version)**
 
 ```bash
 cd deploy/compose
-docker compose up -d --pull always    # Downloads :latest images for all services
+docker compose up -d --pull always    # pulls :latest GHCR images — released code, NOT your branch
 ```
 
-This starts:
+Either option starts:
 - **3-replica HA cluster** (`lantern-0`, `lantern-1`, `lantern-2`) on `:6380–6382`
 - **Admin SPA** on `:8080`
 - **Prometheus** on `:9091` (scraped by Admin for metrics visualization)
 - **Lantern MCP server** on `:6390` (optional, for LLM agents)
 
-Open browser: **http://localhost:8080** (default gateway: `localhost:6380`)
-
-**Option 2: Local development build**
-
-```bash
-# Build Lantern server image locally
-docker build -t lantern:local .
-
-# Run with local image
-LANTERN_IMAGE=lantern:local docker compose up -d
-
-# In another terminal: start Admin SPA development
-cd admin && bun install && bun run dev     # runs on http://localhost:5173
-```
+**Faster inner loop:** for rapid iteration, the Vite dev server always serves
+current source — `cd admin && bun install && bun run dev` (http://localhost:5173).
+That's the dev build, though; do a final pass against the `:8080` compose build
+(Option 1) before filing visual Issues.
 
 **Shutdown:**
 
