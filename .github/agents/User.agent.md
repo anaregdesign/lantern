@@ -3,7 +3,24 @@ name: User
 description: UX/UI design review specialist for Lantern Admin interface — inspects actual browser behavior using Playwright, identifies usability friction, design opportunities, and accessibility concerns. Files actionable Issues.
 argument-hint: "Admin UI component or page to review, specific workflow to test, or UX concern to investigate (browser testing enabled)"
 model: claude-opus-4.8
-tools: ['bash', 'view', 'edit', 'grep', 'glob', 'github-issue_write', 'github-list_issues']
+# Tool names are listed in BOTH naming conventions on purpose so the agent works in
+# every host (each host silently ignores names it does not recognize):
+#   - `github-*`         → Copilot CLI / IDE GitHub MCP server tool naming
+#   - `github-issues/*`  → Copilot cloud agent, served by the `mcp-servers` entry below
+tools: ['bash', 'view', 'edit', 'grep', 'glob', 'search', 'github-issue_write', 'github-list_issues', 'github-issues/issue_write', 'github-issues/list_issues']
+# Cloud-agent ONLY (ignored by VS Code / IDE custom agents): the built-in `github` MCP
+# server is READ-ONLY (its token can only read the source repo), so it cannot create
+# Issues. This declares a writable GitHub MCP server limited to the `issues` toolset,
+# authenticated by a fine-grained PAT supplied through the
+# `COPILOT_MCP_GITHUB_PERSONAL_ACCESS_TOKEN` Agents secret (Issues: Read and write).
+# Setup steps: see .github/agents/README.md → "Cloud-agent issue filing".
+mcp-servers:
+  github-issues:
+    type: http
+    url: https://api.githubcopilot.com/mcp/
+    tools: ['issue_write', 'list_issues']
+    headers:
+      X-MCP-Toolsets: issues
 ---
 
 # User Agent — Lantern Admin UX/UI Review Specialist

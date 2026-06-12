@@ -45,6 +45,36 @@ Document the agent's:
 
 **Scope:** Lantern Admin (`admin/` directory) UI/UX only. Does not cover backend behavior, performance, or architectural decisions.
 
+## Cloud-agent issue filing
+
+The **User** agent files GitHub Issues as part of its review. When it runs on the
+**Copilot cloud agent** (github.com), the built-in `github` MCP server is **read-only**
+— its token is scoped to *read* the source repository, so it cannot create Issues.
+Without extra configuration the "file Issue" step fails (the agent falls back to
+`gh issue create`, which has no write token).
+
+To enable issue filing on the cloud agent, a repository or organization admin provides a
+writable token **once**:
+
+1. Create a **fine-grained personal access token** scoped to this repository with the
+   **Issues: Read and write** permission (no other scopes needed). See
+   [Managing your personal access tokens](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens).
+2. Add it as an **Agents secret** named `COPILOT_MCP_GITHUB_PERSONAL_ACCESS_TOKEN`
+   (repository **Settings → Secrets and variables → Copilot**, or at the org level). The
+   hosted GitHub MCP server automatically consumes this specially-named secret.
+
+The wiring lives in [`User.agent.md`](User.agent.md)'s `mcp-servers` frontmatter, which
+points the cloud agent at the hosted GitHub MCP server with only the `issues` toolset
+enabled (least privilege). That block is ignored in VS Code / IDE / CLI runs, which use
+their own GitHub MCP server configuration.
+
+> If the secret is absent, the agent can still complete a review — instruct it to
+> summarize findings in its pull-request body instead of filing Issues.
+
+**References**
+- [Configure MCP servers for your repository → Customizing the built-in GitHub MCP server](https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/configure-mcp-servers#customizing-the-built-in-github-mcp-server)
+- [Custom agents configuration → MCP server configuration details](https://docs.github.com/en/copilot/reference/custom-agents-configuration#mcp-server-configuration-details)
+
 ## Adding a New Agent
 
 1. Create `<AgentName>.agent.md` in this directory
