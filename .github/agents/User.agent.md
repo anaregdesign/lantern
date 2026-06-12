@@ -3,11 +3,27 @@ name: User
 description: UX/UI design review specialist for Lantern Admin interface — inspects actual browser behavior using Playwright, identifies usability friction, design opportunities, and accessibility concerns. Files actionable Issues.
 argument-hint: "Admin UI component or page to review, specific workflow to test, or UX concern to investigate (browser testing enabled)"
 model: claude-opus-4.8
-# Tool names are listed in BOTH naming conventions on purpose so the agent works in
-# every host (each host silently ignores names it does not recognize):
-#   - `github-*`         → Copilot CLI / IDE GitHub MCP server tool naming
-#   - `github-issues/*`  → Copilot cloud agent, served by the `mcp-servers` entry below
-tools: ['bash', 'view', 'edit', 'grep', 'glob', 'search', 'github-issue_write', 'github-list_issues', 'github-issues/issue_write', 'github-issues/list_issues']
+# Tools are listed in EVERY host's naming on purpose so the agent works in each host
+# (each host silently ignores names it does not recognize):
+#   - File & shell: VS Code aliases `execute` (Terminal) + `read` alongside the Copilot
+#     CLI / Claude names `bash`/`view`/`grep`/`glob`; `edit` + `search` are shared.
+#     `execute` is the Terminal tool — required to start the stack (docker compose /
+#     `bun run dev` / `go run`) and run Playwright. Without it VS Code denies Terminal
+#     access (the agent is told it lacks Terminal permission).
+#   - Browser automation (VS Code built-in, for live UX verification): open a page,
+#     navigate routes, click/type/hover/drag, read the rendered DOM + accessibility
+#     tree, capture screenshots, drive ad-hoc Playwright, and handle dialogs/modals.
+#     Hosts without these tools ignore the names.
+#   - GitHub Issues: `github-*` → Copilot CLI / IDE GitHub MCP server tool naming;
+#     `github-issues/*` → Copilot cloud agent, served by the `mcp-servers` entry below.
+tools: [
+  'execute', 'bash', 'read', 'view', 'edit', 'search', 'grep', 'glob',
+  'open_browser_page', 'navigate_page', 'read_page', 'screenshot_page',
+  'click_element', 'type_in_page', 'hover_element', 'drag_element',
+  'handle_dialog', 'run_playwright_code',
+  'github-issue_write', 'github-list_issues',
+  'github-issues/issue_write', 'github-issues/list_issues'
+]
 # Cloud-agent ONLY (ignored by VS Code / IDE custom agents): the built-in `github` MCP
 # server is READ-ONLY (its token can only read the source repo), so it cannot create
 # Issues. This declares a writable GitHub MCP server limited to the `issues` toolset,
@@ -49,8 +65,9 @@ Conduct thorough UX/UI reviews focusing on user experience, interface design, us
 - Identify code-level issues (missing refs, unclear naming, duplicate logic)
 
 ### Phase 2: Browser Testing (Playwright)
+- **Drive the browser directly with the built-in browser tools** — open a page, navigate routes, click/type/hover/drag, read the rendered DOM + accessibility tree, capture screenshots, run ad-hoc Playwright code, and dismiss dialogs/modals — in addition to running the repo's Playwright specs from the terminal.
 - **Start the stack against the _pre-release_ build (NOT GHCR):** build a local image for **every component your branch changed** and pin it on compose, so you review current-branch code rather than the last published image — always the admin (`docker build -t lantern-admin:local -f admin/Dockerfile .`) and, **if the branch also touched the server, the server too** (`docker build -t lantern:local .`, from repo ROOT); then `cd deploy/compose && LANTERN_ADMIN_IMAGE=lantern-admin:local LANTERN_IMAGE=lantern:local docker compose up -d --force-recreate` (drop `LANTERN_IMAGE` if you didn't rebuild the server — it stays on GHCR `:latest`; production build on http://localhost:8080). See "Quick Start (Docker Compose)" for details and the fast `bun run dev` inner loop.
-- **Screenshot key pages:** Browse, Illuminate, Operations pages at multiple viewport sizes
+- **Screenshot key pages:** Vertices, Edges (the Browse surface), Illuminate, CLI, and Ops pages at multiple viewport sizes
 - **Test workflows:**
   - Can users complete tasks in 2-3 clicks? (navigation, search, vertex inspection, operations)
   - Are interactive elements responsive and visible in focus state?
@@ -139,10 +156,12 @@ cd admin && bun install && bun run dev  # Starts SPA on :5173
 # In another terminal:
 cd .. && go run ./server/cmd            # Starts Lantern on :6380
 
-# 2. Open browser to http://localhost:5173/browse
+# 2. Open browser to http://localhost:5173/vertices
+#    (the Browse surface — there is NO /browse route; the "Vertices" and
+#     "Edges" tabs are the two browse screens)
 
 # 3. Test workflow: "Find a vertex quickly"
-#    - Navigate to browse page (observe nav highlighting)
+#    - Navigate to the Vertices page (observe nav highlighting)
 #    - Type in search/filter box (observe latency, results update?)
 #    - Click a vertex (observe modal or detail panel)
 #    - Try to close (ESC key? X button? Both work?)
