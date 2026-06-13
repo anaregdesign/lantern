@@ -458,6 +458,7 @@ export class Lantern {
             OBJECTIVE_TO_PB[opts.objective ?? Objective.UNSPECIFIED] ?? PbObjective.UNSPECIFIED,
           weighting:
             WEIGHTING_TO_PB[opts.weighting ?? Weighting.UNSPECIFIED] ?? PbWeighting.UNSPECIFIED,
+          vertexPrefix: opts.vertexPrefix ?? "",
         },
         this.callOpts(signal),
       );
