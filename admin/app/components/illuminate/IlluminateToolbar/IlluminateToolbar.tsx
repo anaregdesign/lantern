@@ -2,6 +2,7 @@ import {
   Badge,
   Button,
   Field,
+  Input,
   Label,
   Radio,
   RadioGroup,
@@ -307,6 +308,22 @@ export function IlluminateToolbar({
             />
           ))}
         </RadioGroup>
+      </Field>
+
+      <Field
+        label="Vertex prefix"
+        className={styles.optimization}
+        // Per #606 the prefix restricts the traversal frontier to keys with
+        // this prefix; the seed is always kept as the anchor. Empty = no
+        // filter. The value is matched verbatim (case-sensitive).
+        hint="Restrict the frontier to keys with this prefix. Empty = all keys; the seed is always kept."
+      >
+        <Input
+          value={controls.vertexPrefix}
+          onChange={(_, data) => update("vertexPrefix", data.value)}
+          placeholder="all keys (e.g. users/)"
+          data-testid="illuminate-prefix"
+        />
       </Field>
     </section>
   );

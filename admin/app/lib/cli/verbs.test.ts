@@ -15,6 +15,7 @@ import {
   HELP_TEXT,
   parseAdd,
   parseHelp,
+  parseIlluminate,
   parsePut,
   parseFloatStrict,
 } from "./verbs";
@@ -117,6 +118,7 @@ describe("HELP_TEXT (#436 — grammar contract)", () => {
     expect(HELP_TEXT).toContain("algorithm=");
     expect(HELP_TEXT).toContain("objective=");
     expect(HELP_TEXT).toContain("weighting=");
+    expect(HELP_TEXT).toContain("prefix=");
   });
 
   test("enumerates illuminate kwarg valid values", () => {
@@ -133,6 +135,7 @@ describe("HELP_TEXT (#436 — grammar contract)", () => {
     expect(HELP_TEXT).toContain("default=none");
     expect(HELP_TEXT).toContain("default=max");
     expect(HELP_TEXT).toContain("default=raw");
+    expect(HELP_TEXT).toContain("default=all keys");
   });
 
   test("lists every verb (including help and exit)", () => {
@@ -148,5 +151,52 @@ describe("HELP_TEXT (#436 — grammar contract)", () => {
     ]) {
       expect(HELP_TEXT).toContain(verb);
     }
+  });
+});
+
+describe("parseIlluminate prefix= kwarg (#606)", () => {
+  function illuminate(rest: string[]) {
+    const r = parseIlluminate(rest);
+    if (!r.ok) {
+      throw new Error(`parse failed: ${r.usage}`);
+    }
+    if (r.command.verb !== "illuminate") {
+      throw new Error(`not an illuminate command: ${r.command.verb}`);
+    }
+    return r.command;
+  }
+
+  test("captures a free-text prefix value verbatim", () => {
+    expect(illuminate(["alice", "2", "5", "prefix=team:"]).vertexPrefix).toBe(
+      "team:",
+    );
+  });
+
+  test("keeps the prefix value case (key folds, value is case-sensitive)", () => {
+    expect(
+      illuminate(["alice", "2", "5", "PREFIX=Users/Alice"]).vertexPrefix,
+    ).toBe("Users/Alice");
+  });
+
+  test("omitting prefix leaves it empty (no filter)", () => {
+    expect(illuminate(["alice", "2", "5"]).vertexPrefix).toBe("");
+  });
+
+  test("parses prefix= alongside the closed-set axes in any order", () => {
+    const cmd = illuminate([
+      "alice",
+      "2",
+      "5",
+      "prefix=users/",
+      "algorithm=spt",
+      "objective=min",
+    ]);
+    expect(cmd.vertexPrefix).toBe("users/");
+    expect(cmd.algorithm).toBe("spt");
+    expect(cmd.objective).toBe("min");
+  });
+
+  test("rejects an explicit empty prefix= value", () => {
+    expect(parseIlluminate(["alice", "2", "5", "prefix="]).ok).toBe(false);
   });
 });

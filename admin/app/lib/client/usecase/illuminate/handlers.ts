@@ -45,6 +45,7 @@ export async function runExpansion(
       algorithm: input.controls.algorithm,
       objective: input.controls.objective,
       weighting: input.controls.weighting,
+      vertexPrefix: input.controls.vertexPrefix,
     };
     const response = await illuminate(input.client, request, {
       signal: input.signal,
