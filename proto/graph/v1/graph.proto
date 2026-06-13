@@ -95,6 +95,12 @@ message IlluminateRequest {
   Algorithm algorithm = 6;
   Objective objective = 7;
   Weighting weighting = 8;
+  // vertex_prefix, when non-empty, restricts the traversal frontier to
+  // vertices whose key has this prefix. The seed is always retained as the
+  // anchor even if it does not match. Empty = no filter. Applied BEFORE
+  // per-hop top-k and BEFORE the MST/SPT reduction (induced-subgraph
+  // semantics: non-matching vertices are not traversable bridges).
+  string vertex_prefix = 9;
 }
 
 message IlluminateResponse {

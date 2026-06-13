@@ -667,6 +667,53 @@ func TestLanternService_FakeBackend_Illuminate_ObjectiveSteersPruning(t *testing
 	}
 }
 
+// TestLanternService_FakeBackend_Illuminate_VertexPrefixBuildsKeep pins the
+// #602 contract at the service boundary: the Illuminate handler must translate
+// a non-empty vertex_prefix into a HasPrefix keep predicate it hands the
+// backend, and leave keep nil when the prefix is empty (an unfiltered walk).
+// The concrete string predicate lives in the server (core stays generic), so
+// this is the only seam that can prove the closure shape.
+func TestLanternService_FakeBackend_Illuminate_VertexPrefixBuildsKeep(t *testing.T) {
+	t.Run("empty prefix leaves keep nil", func(t *testing.T) {
+		fb := newFakeBackend()
+		svc := NewLanternService(fb)
+		if _, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{
+			Seed: "a", Step: 1, K: 3,
+		}); err != nil {
+			t.Fatalf("Illuminate: %v", err)
+		}
+		if fb.neighborCalls != 1 {
+			t.Fatalf("neighborCalls = %d, want 1", fb.neighborCalls)
+		}
+		if fb.lastNeighborKeep != nil {
+			t.Error("lastNeighborKeep = non-nil, want nil for empty vertex_prefix")
+		}
+	})
+
+	t.Run("non-empty prefix builds HasPrefix keep", func(t *testing.T) {
+		fb := newFakeBackend()
+		svc := NewLanternService(fb)
+		if _, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{
+			Seed: "users/1", Step: 1, K: 3, VertexPrefix: "users/",
+		}); err != nil {
+			t.Fatalf("Illuminate: %v", err)
+		}
+		if fb.neighborCalls != 1 {
+			t.Fatalf("neighborCalls = %d, want 1", fb.neighborCalls)
+		}
+		keep := fb.lastNeighborKeep
+		if keep == nil {
+			t.Fatal("lastNeighborKeep = nil, want non-nil for vertex_prefix=\"users/\"")
+		}
+		if !keep("users/42") {
+			t.Error(`keep("users/42") = false, want true`)
+		}
+		if keep("orgs/42") {
+			t.Error(`keep("orgs/42") = true, want false`)
+		}
+	})
+}
+
 // seedStar builds a directed star: seed "s" fans out to h1..h5 with distinct
 // weights 1..5 (and nothing else), so a per-hop prune at k < 5 must choose
 // which heads survive. Used by the #560 min-vs-max-differ end-to-end test.
