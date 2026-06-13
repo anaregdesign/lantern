@@ -246,3 +246,52 @@ func TestAddContribIDWiring(t *testing.T) {
 		}
 	})
 }
+
+// captureIlluminate is a fake LanternServiceClient that records every
+// IlluminateRequest it receives. It embeds the interface (left nil) so it
+// satisfies the full surface while only overriding Illuminate.
+type captureIlluminate struct {
+	graphv1connect.LanternServiceClient
+	reqs []*pb.IlluminateRequest
+}
+
+func (c *captureIlluminate) Illuminate(_ context.Context, req *connect.Request[pb.IlluminateRequest]) (*connect.Response[pb.IlluminateResponse], error) {
+	c.reqs = append(c.reqs, req.Msg)
+	return connect.NewResponse(&pb.IlluminateResponse{Graph: &pb.Graph{}}), nil
+}
+
+// TestWithVertexPrefixWiring verifies WithVertexPrefix round-trips onto the
+// emitted IlluminateRequest and that omitting it leaves the field empty (the
+// server's no-filter default).
+func TestWithVertexPrefixWiring(t *testing.T) {
+	newClient := func(t *testing.T) (*Lantern, *captureIlluminate) {
+		t.Helper()
+		l := mustLantern(t)
+		capt := &captureIlluminate{}
+		l.client = capt
+		return l, capt
+	}
+
+	t.Run("default leaves vertex_prefix empty", func(t *testing.T) {
+		l, capt := newClient(t)
+		if _, err := l.Illuminate(context.Background(), "seed"); err != nil {
+			t.Fatalf("Illuminate: %v", err)
+		}
+		if len(capt.reqs) != 1 {
+			t.Fatalf("want 1 request, got %d", len(capt.reqs))
+		}
+		if got := capt.reqs[0].GetVertexPrefix(); got != "" {
+			t.Fatalf("default must send empty vertex_prefix, got %q", got)
+		}
+	})
+
+	t.Run("WithVertexPrefix sets the field", func(t *testing.T) {
+		l, capt := newClient(t)
+		if _, err := l.Illuminate(context.Background(), "users/1", WithVertexPrefix("users/")); err != nil {
+			t.Fatalf("Illuminate: %v", err)
+		}
+		if got := capt.reqs[0].GetVertexPrefix(); got != "users/" {
+			t.Fatalf("vertex_prefix want %q got %q", "users/", got)
+		}
+	})
+}
