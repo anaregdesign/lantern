@@ -15,19 +15,6 @@ type NormalizerFunc func(text string) string
 // Normalize calls f(text).
 func (f NormalizerFunc) Normalize(text string) string { return f(text) }
 
-// Normalizers chains normalizers so the output of each feeds the next, in
-// order. Passing none returns an identity normalizer.
-func Normalizers(normalizers ...Normalizer) Normalizer {
-	chain := make([]Normalizer, len(normalizers))
-	copy(chain, normalizers)
-	return NormalizerFunc(func(text string) string {
-		for _, n := range chain {
-			text = n.Normalize(text)
-		}
-		return text
-	})
-}
-
 // LowercaseNormalizer folds text to lower case with Unicode case mapping, so
 // matching is case-insensitive independent of language.
 type LowercaseNormalizer struct{}
@@ -43,4 +30,23 @@ type SpaceNormalizer struct{}
 // Normalize collapses internal whitespace runs to single spaces.
 func (SpaceNormalizer) Normalize(text string) string {
 	return strings.Join(strings.Fields(text), " ")
+}
+
+// PunctuationNormalizer replaces every Unicode punctuation or symbol rune with
+// an ASCII space, turning marks such as '.', ',', '。', and '、' into word
+// boundaries independent of language. It does not merge the spaces it
+// introduces; chain SpaceNormalizer after it to collapse the resulting runs and
+// trim the ends. Unlike PunctuationFilter, which only trims marks from the
+// edges of an already-formed token (so "node-1" stays intact), this splits on
+// every mark, so "node-1" becomes "node 1".
+type PunctuationNormalizer struct{}
+
+// Normalize replaces each punctuation or symbol rune with a space.
+func (PunctuationNormalizer) Normalize(text string) string {
+	return strings.Map(func(r rune) rune {
+		if isPunctOrSymbol(r) {
+			return ' '
+		}
+		return r
+	}, text)
 }

@@ -21,19 +21,6 @@ type TokenFilterFunc func(tokens []Token) []Token
 // Filter calls f(tokens).
 func (f TokenFilterFunc) Filter(tokens []Token) []Token { return f(tokens) }
 
-// TokenFilters chains filters so the output of each feeds the next, in order.
-// Passing none returns an identity filter.
-func TokenFilters(filters ...TokenFilter) TokenFilter {
-	chain := make([]TokenFilter, len(filters))
-	copy(chain, filters)
-	return TokenFilterFunc(func(tokens []Token) []Token {
-		for _, f := range chain {
-			tokens = f.Filter(tokens)
-		}
-		return tokens
-	})
-}
-
 // LowercaseFilter folds each token to lower case. Use it when tokenization runs
 // before case folding; if you already lowercase with a LowercaseNormalizer it
 // is redundant.

@@ -23,7 +23,7 @@ func TestStandardAnalyzerNoStopWords(t *testing.T) {
 func TestNewAnalyzerWhitespacePunctuation(t *testing.T) {
 	// WhitespaceTokenizer keeps punctuation attached; PunctuationFilter trims
 	// the edges while preserving the inner hyphen of "node-1".
-	a := NewAnalyzer(LowercaseNormalizer{}, WhitespaceTokenizer{}, PunctuationFilter{})
+	a := NewAnalyzer([]Normalizer{LowercaseNormalizer{}}, WhitespaceTokenizer{}, PunctuationFilter{})
 	got := termsOf(a.Analyze("Hello, world! node-1."))
 	want := []string{"hello", "world", "node-1"}
 	if !equalStrings(got, want) {
@@ -31,8 +31,20 @@ func TestNewAnalyzerWhitespacePunctuation(t *testing.T) {
 	}
 }
 
+func TestNewAnalyzerMultipleNormalizers(t *testing.T) {
+	// Normalizers apply in order: PunctuationNormalizer turns every mark into a
+	// space, then SpaceNormalizer collapses the runs and trims, so the
+	// WhitespaceTokenizer sees clean, single-space-delimited text.
+	a := NewAnalyzer([]Normalizer{PunctuationNormalizer{}, SpaceNormalizer{}}, WhitespaceTokenizer{})
+	got := termsOf(a.Analyze("Hello,  world... テスト！"))
+	want := []string{"Hello", "world", "テスト"}
+	if !equalStrings(got, want) {
+		t.Fatalf("Analyze = %v, want %v", got, want)
+	}
+}
+
 func TestNewAnalyzerDefaultsTokenizer(t *testing.T) {
-	// A nil normalizer is skipped; a nil tokenizer falls back to UnicodeTokenizer.
+	// An empty normalizer list is skipped; a nil tokenizer falls back to UnicodeTokenizer.
 	a := NewAnalyzer(nil, nil)
 	got := termsOf(a.Analyze("a-b c"))
 	if !equalStrings(got, []string{"a", "b", "c"}) {

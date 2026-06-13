@@ -46,18 +46,6 @@ func TestStopWordFilter(t *testing.T) {
 	}
 }
 
-func TestTokenFiltersChain(t *testing.T) {
-	chain := TokenFilters(LowercaseFilter{}, NewStopWordFilter("the"))
-	got := termsOf(chain.Filter([]Token{{"The"}, {"Cat"}}))
-	if !equalStrings(got, []string{"cat"}) {
-		t.Fatalf("Filter = %v, want [cat]", got)
-	}
-	// An empty chain is the identity transform.
-	if got := termsOf(TokenFilters().Filter([]Token{{"x"}})); !equalStrings(got, []string{"x"}) {
-		t.Fatalf("empty chain = %v, want [x]", got)
-	}
-}
-
 func TestTokenFilterFunc(t *testing.T) {
 	var f TokenFilter = TokenFilterFunc(func(ts []Token) []Token { return ts[:0] })
 	if got := f.Filter([]Token{{"a"}}); len(got) != 0 {

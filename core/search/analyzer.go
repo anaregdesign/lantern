@@ -14,27 +14,28 @@ type AnalyzerFunc func(text string) []Token
 // Analyze calls f(text).
 func (f AnalyzerFunc) Analyze(text string) []Token { return f(text) }
 
-// pipelineAnalyzer is the standard analysis chain: an optional Normalizer
-// rewrites the raw text, a Tokenizer splits it into terms, and zero or more
-// TokenFilters post-process the term stream in order. It holds no mutable
+// pipelineAnalyzer is the standard analysis chain: zero or more Normalizers
+// rewrite the raw text in order, a Tokenizer splits it into terms, and zero or
+// more TokenFilters post-process the term stream in order. It holds no mutable
 // state, so one instance may be shared across goroutines.
 type pipelineAnalyzer struct {
-	normalizer Normalizer
-	tokenizer  Tokenizer
-	filters    []TokenFilter
+	normalizers []Normalizer
+	tokenizer   Tokenizer
+	filters     []TokenFilter
 }
 
-// NewAnalyzer builds an Analyzer from a normalizer (optional; nil skips the
-// normalization step), a tokenizer (defaults to UnicodeTokenizer when nil), and
-// an ordered list of token filters.
-func NewAnalyzer(normalizer Normalizer, tokenizer Tokenizer, filters ...TokenFilter) Analyzer {
+// NewAnalyzer builds an Analyzer from an ordered list of normalizers (each
+// applied in turn; pass nil or an empty slice to skip normalization), a
+// tokenizer (defaults to UnicodeTokenizer when nil), and an ordered list of
+// token filters.
+func NewAnalyzer(normalizers []Normalizer, tokenizer Tokenizer, filters ...TokenFilter) Analyzer {
 	if tokenizer == nil {
 		tokenizer = UnicodeTokenizer{}
 	}
 	return &pipelineAnalyzer{
-		normalizer: normalizer,
-		tokenizer:  tokenizer,
-		filters:    filters,
+		normalizers: normalizers,
+		tokenizer:   tokenizer,
+		filters:     filters,
 	}
 }
 
@@ -48,13 +49,13 @@ func NewStandardAnalyzer(stopWords ...string) Analyzer {
 	if len(stopWords) > 0 {
 		filters = append(filters, NewStopWordFilter(stopWords...))
 	}
-	return NewAnalyzer(LowercaseNormalizer{}, UnicodeTokenizer{}, filters...)
+	return NewAnalyzer([]Normalizer{LowercaseNormalizer{}}, UnicodeTokenizer{}, filters...)
 }
 
-// Analyze runs text through the normalizer, tokenizer, and filter chain.
+// Analyze runs text through the normalizers, tokenizer, and filter chain.
 func (a *pipelineAnalyzer) Analyze(text string) []Token {
-	if a.normalizer != nil {
-		text = a.normalizer.Normalize(text)
+	for _, n := range a.normalizers {
+		text = n.Normalize(text)
 	}
 	tokens := a.tokenizer.Tokenize(text)
 	for _, filter := range a.filters {
