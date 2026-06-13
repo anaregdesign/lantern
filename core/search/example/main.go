@@ -16,19 +16,37 @@ func main() {
 	// Drop the timestamp prefix so the output matches the comments below.
 	log.SetFlags(0)
 
-	// An InvertedIndex is the default Indexer + Searcher. Its Analyzer runs three
-	// stages in order; naming each one keeps the pipeline explicit:
-	//   1. normalizers rewrite the raw text (here: fold to lower case),
-	//   2. the tokenizer splits it into terms (UnicodeTokenizer treats whitespace
-	//      and punctuation as delimiters), and
-	//   3. token filters post-process the terms (none here—UnicodeTokenizer has
-	//      already dropped the punctuation a filter would otherwise trim).
-	// Passing a nil Scorer ranks matches with BM25 using its default parameters.
+	// An InvertedIndex is the default Indexer + Searcher. The Analyzer below is
+	// the combination you would actually reach for on English prose: every one
+	// of its three stages earns its place instead of leaving the term stream raw.
+	//   1. Normalizers rewrite the text before tokenization. LowercaseNormalizer
+	//      folds case so a query for "fox" also matches "Fox".
+	//   2. The tokenizer splits the normalized text into terms. UnicodeTokenizer
+	//      breaks on every non-letter/digit rune, so it strips punctuation in the
+	//      same pass and needs no separate PunctuationFilter.
+	//   3. Token filters prune the term stream in order. LengthFilter drops
+	//      1-rune noise, and StopWordFilter removes the high-frequency function
+	//      words ("the", "a", "and", …) that match almost everything and so add
+	//      no signal — only the content words ("fox", "panda", …) survive.
+	// Running this very analyzer over both documents and queries is what keeps
+	// index-time and query-time terms symmetric.
 	normalizers := []search.Normalizer{search.LowercaseNormalizer{}}
 	tokenizer := search.UnicodeTokenizer{}
-	var tokenFilters []search.TokenFilter
+	tokenFilters := []search.TokenFilter{
+		search.LengthFilter{Min: 2},
+		search.NewStopWordFilter(
+			"a", "an", "and", "are", "as", "at", "by", "for", "from",
+			"in", "into", "is", "of", "on", "or", "over", "the", "to", "with",
+		),
+	}
 	analyzer := search.NewAnalyzer(normalizers, tokenizer, tokenFilters...)
-	idx := search.NewInvertedIndex[string, search.Text](analyzer, nil)
+
+	// Rank matches with Okapi BM25, stated explicitly rather than left to the
+	// nil default: K1 = 1.2 tunes term-frequency saturation (the 2nd occurrence
+	// of a term counts far more than the 10th) and B = 0.75 tunes how strongly a
+	// longer-than-average document is penalized for diluting a term.
+	scorer := search.BM25{K1: 1.2, B: 0.75}
+	idx := search.NewInvertedIndex[string, search.Text](analyzer, scorer)
 
 	// Index documents under any comparable ID. Text adapts a plain string to a
 	// Document; indexing an existing ID again replaces it.
@@ -42,9 +60,9 @@ func main() {
 	for _, hit := range idx.Search("fox panda") {
 		log.Printf("  %-6s %.3f", hit.ID, hit.Score)
 	}
-	// both   0.991
-	// panda  0.470
-	// fox    0.447
+	// both   1.101
+	// panda  0.457
+	// fox    0.421
 
 	// Delete removes a document from every posting list it appears in.
 	idx.Delete("both")
@@ -53,6 +71,6 @@ func main() {
 	for _, hit := range idx.Search("fox panda") {
 		log.Printf("  %-6s %.3f", hit.ID, hit.Score)
 	}
-	// panda  0.710
-	// fox    0.677
+	// panda  0.720
+	// fox    0.668
 }
