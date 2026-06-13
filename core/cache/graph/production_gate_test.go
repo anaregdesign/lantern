@@ -89,7 +89,7 @@ func testLivenessHeavyMix(t *testing.T) {
 					c.AddEdgeWithExpiration(tail, head, 1, exp)
 					c.PutEdgeWithExpiration(tail, head, 2, exp)
 					c.GetEdgeDetail(tail, head)
-					c.Neighbor(tail, 1, 4, false, false)
+					c.Neighbor(tail, 1, 4, false, false, nil)
 					c.DeleteEdge(tail, head)
 					c.DeleteVertex(k)
 				}
@@ -294,8 +294,8 @@ func testInputNaNInf(t *testing.T) {
 	_, _, _ = c.GetEdgeDetail("a", "b")
 	_, _, _ = c.GetEdgeDetail("c", "d")
 	_, _, _ = c.GetEdgeDetail("e", "f")
-	_ = c.Neighbor("a", 1, 4, false, false)
-	_ = c.Neighbor("c", 1, 4, true, false) // also exercise the TF-IDF path
+	_ = c.Neighbor("a", 1, 4, false, false, nil)
+	_ = c.Neighbor("c", 1, 4, true, false, nil) // also exercise the TF-IDF path
 }
 
 // testInputDeleteMissing verifies idempotent delete: deleting an absent
@@ -351,7 +351,7 @@ func testReadConsistencyAfterExpiry(t *testing.T) {
 	if _, _, ok := c.GetEdgeDetail("a", "b"); ok {
 		t.Fatalf("C1: GetEdgeDetail still surfaces expired edge")
 	}
-	g := c.Neighbor("a", 2, 8, false, false)
+	g := c.Neighbor("a", 2, 8, false, false, nil)
 	if len(g.Vertices) != 0 || len(g.Edges) != 0 {
 		t.Fatalf("C1: Neighbor returned %d vertices and %d edges from an all-expired seed",
 			len(g.Vertices), len(g.Edges))
@@ -406,7 +406,7 @@ func testReadConsistencyNeighborChurn(t *testing.T) {
 					return
 				default:
 				}
-				_ = c.Neighbor(keyFromInt(i%8), 2, 4, i%2 == 0, false)
+				_ = c.Neighbor(keyFromInt(i%8), 2, 4, i%2 == 0, false, nil)
 			}
 		}()
 	}
@@ -463,7 +463,7 @@ func testTopologySelfLoop(t *testing.T) {
 	if !ok || w != 2.5 {
 		t.Fatalf("T1: self-loop weight wrong (got %v, ok=%v, want 2.5)", w, ok)
 	}
-	g := c.Neighbor("x", 1, 4, false, false)
+	g := c.Neighbor("x", 1, 4, false, false, nil)
 	if _, ok := g.Edges["x"]["x"]; !ok {
 		t.Fatalf("T1: Neighbor lost the self-loop edge: %#v", g.Edges)
 	}

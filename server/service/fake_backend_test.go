@@ -20,10 +20,12 @@ type fakeBackend struct {
 
 	// captured args from the most recent NeighborWithExpirationsContext
 	// call, so tests can assert how the Illuminate handler maps Objective
-	// onto the per-hop pruning direction (#560).
+	// onto the per-hop pruning direction (#560) and threads the optional
+	// frontier predicate (#601).
 	neighborCalls           int
 	lastNeighborTFIDF       bool
 	lastNeighborSelectSmall bool
+	lastNeighborKeep        func(string) bool
 
 	putVerticesCalls int
 	deleteVertices   int
@@ -138,10 +140,12 @@ func (f *fakeBackend) NeighborWithExpirationsContext(
 	step, k int,
 	tfidf bool,
 	selectSmallest bool,
+	keep func(string) bool,
 ) (*coregraph.Graph[string, *pb.Vertex], map[string]map[string]time.Time, error) {
 	f.neighborCalls++
 	f.lastNeighborTFIDF = tfidf
 	f.lastNeighborSelectSmall = selectSmallest
+	f.lastNeighborKeep = keep
 	if f.neighborErr != nil {
 		return nil, nil, f.neighborErr
 	}

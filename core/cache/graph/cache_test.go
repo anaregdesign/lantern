@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -446,7 +447,7 @@ func TestGraphCache_Neighbor(t *testing.T) {
 	for i := range tests {
 		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.c.Neighbor(tt.args.seed, tt.args.step, tt.args.k, tt.args.tfidf, tt.args.selectSmallest); !reflect.DeepEqual(got, tt.want) {
+			if got := tt.c.Neighbor(tt.args.seed, tt.args.step, tt.args.k, tt.args.tfidf, tt.args.selectSmallest, nil); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("Neighbor() = %v, want %v", got, tt.want)
 			}
 		})
@@ -513,13 +514,142 @@ func TestGraphCache_Neighbor_ObjectiveDirection(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := headSet(mk().Neighbor(seed, 1, tt.k, false, tt.selectSmallest))
+			got := headSet(mk().Neighbor(seed, 1, tt.k, false, tt.selectSmallest, nil))
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("Neighbor(k=%d, selectSmallest=%v) heads = %v, want %v",
 					tt.k, tt.selectSmallest, got, tt.want)
 			}
 		})
 	}
+}
+
+// TestGraphCache_NeighborKeep pins the #601 frontier predicate: keep func(S) bool
+// is applied at frontier materialisation, BEFORE scoring and the per-hop top-k
+// prune, and the seed is always exempt. The prefix-style closures here stand in
+// for the strings.HasPrefix closure the server builds in #602 — core itself stays
+// generic (it only ever sees a predicate over S).
+func TestGraphCache_NeighborKeep(t *testing.T) {
+	// KeepNil_Unchanged: a nil predicate is identical to an accept-all predicate
+	// (the pre-#601 behaviour).
+	t.Run("KeepNil_Unchanged", func(t *testing.T) {
+		mk := func() *GraphCache[string, int] {
+			c := NewGraphCache[string, int](time.Minute)
+			c.PutVertex("a", 0)
+			c.PutVertex("b", 0)
+			c.PutVertex("c", 0)
+			c.AddEdge("a", "b", 2)
+			c.AddEdge("a", "c", 1)
+			return c
+		}
+		gNil := mk().Neighbor("a", 2, 10, false, false, nil)
+		gAll := mk().Neighbor("a", 2, 10, false, false, func(string) bool { return true })
+		if !reflect.DeepEqual(gNil, gAll) {
+			t.Errorf("nil predicate graph = %v, want identical to accept-all %v", gNil, gAll)
+		}
+	})
+
+	// KeepExcludesNonMatching: a predicate that rejects some heads drops exactly
+	// those heads (and their vertices) from the result.
+	t.Run("KeepExcludesNonMatching", func(t *testing.T) {
+		c := NewGraphCache[string, int](time.Minute)
+		for _, k := range []string{"a", "keep1", "keep2", "drop1"} {
+			c.PutVertex(k, 0)
+		}
+		c.AddEdge("a", "keep1", 1)
+		c.AddEdge("a", "keep2", 1)
+		c.AddEdge("a", "drop1", 1)
+		g := c.Neighbor("a", 1, 10, false, false, func(s string) bool {
+			return strings.HasPrefix(s, "keep")
+		})
+		if _, ok := g.Edges["a"]["drop1"]; ok {
+			t.Errorf("non-matching head drop1 survived: %v", g.Edges["a"])
+		}
+		for _, want := range []string{"keep1", "keep2"} {
+			if _, ok := g.Edges["a"][want]; !ok {
+				t.Errorf("matching head %q missing: %v", want, g.Edges["a"])
+			}
+		}
+		if _, ok := g.Vertices["drop1"]; ok {
+			t.Errorf("non-matching vertex drop1 present in g.Vertices")
+		}
+	})
+
+	// SeedRetainedWhenItFails: the seed is the anchor exemption — present even
+	// when keep(seed) is false.
+	t.Run("SeedRetainedWhenItFails", func(t *testing.T) {
+		c := NewGraphCache[string, int](time.Minute)
+		c.PutVertex("seed", 0)
+		c.PutVertex("keep1", 0)
+		c.AddEdge("seed", "keep1", 1)
+		keep := func(s string) bool { return strings.HasPrefix(s, "keep") }
+		if keep("seed") {
+			t.Fatal("test setup: seed must NOT match the predicate")
+		}
+		g := c.Neighbor("seed", 1, 10, false, false, keep)
+		if _, ok := g.Vertices["seed"]; !ok {
+			t.Errorf("seed dropped despite anchor exemption: %v", g.Vertices)
+		}
+		if _, ok := g.Edges["seed"]["keep1"]; !ok {
+			t.Errorf("matching head keep1 missing from seed edges: %v", g.Edges["seed"])
+		}
+	})
+
+	// KeepBeforeTopK is the load-bearing ordering proof: the k strongest heads
+	// overall are all non-matching, so if the filter ran AFTER top-k the result
+	// would be empty. Filtering BEFORE top-k yields the k strongest *matching*
+	// heads instead.
+	t.Run("KeepBeforeTopK", func(t *testing.T) {
+		c := NewGraphCache[string, int](time.Minute)
+		for _, k := range []string{"a", "x1", "x2", "y1", "y2", "y3"} {
+			c.PutVertex(k, 0)
+		}
+		// Non-matching heads carry the largest weights; matching heads are weaker.
+		c.AddEdge("a", "x1", 100)
+		c.AddEdge("a", "x2", 90)
+		c.AddEdge("a", "y1", 10)
+		c.AddEdge("a", "y2", 9)
+		c.AddEdge("a", "y3", 8)
+		// k=2, Top (selectSmallest=false): without the before-top-k ordering this
+		// would select x1,x2 then filter to empty.
+		g := c.Neighbor("a", 1, 2, false, false, func(s string) bool {
+			return strings.HasPrefix(s, "y")
+		})
+		got := map[string]bool{}
+		for head := range g.Edges["a"] {
+			got[head] = true
+		}
+		want := map[string]bool{"y1": true, "y2": true}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("KeepBeforeTopK heads = %v, want %v (filter must run before top-k)", got, want)
+		}
+	})
+
+	// NonMatchingBridgeBlocks: induced-subgraph semantics — a matching vertex
+	// reachable only through a rejected bridge is never reached.
+	t.Run("NonMatchingBridgeBlocks", func(t *testing.T) {
+		c := NewGraphCache[string, int](time.Minute)
+		for _, k := range []string{"m_seed", "bridge", "m_target", "m_direct"} {
+			c.PutVertex(k, 0)
+		}
+		c.AddEdge("m_seed", "bridge", 5)   // non-matching bridge
+		c.AddEdge("bridge", "m_target", 5) // matching, but only reachable via bridge
+		c.AddEdge("m_seed", "m_direct", 1) // matching, directly reachable
+		g := c.Neighbor("m_seed", 2, 10, false, false, func(s string) bool {
+			return strings.HasPrefix(s, "m")
+		})
+		if _, ok := g.Vertices["bridge"]; ok {
+			t.Errorf("rejected bridge present in g.Vertices")
+		}
+		if _, ok := g.Vertices["m_target"]; ok {
+			t.Errorf("m_target reached through a rejected bridge (induced-subgraph violated)")
+		}
+		if _, ok := g.Vertices["m_direct"]; !ok {
+			t.Errorf("directly-reachable matching vertex m_direct missing")
+		}
+		if _, ok := g.Edges["bridge"]; ok {
+			t.Errorf("rejected bridge was expanded: %v", g.Edges["bridge"])
+		}
+	})
 }
 
 func TestGraphCache_flush(t *testing.T) {
@@ -684,7 +814,7 @@ func TestGraphCache_NeighborContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if _, err := c.NeighborContext(ctx, "a", 5, 10, false, false); !errors.Is(err, context.Canceled) {
+	if _, err := c.NeighborContext(ctx, "a", 5, 10, false, false, nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("want context.Canceled, got %v", err)
 	}
 }
@@ -703,7 +833,7 @@ func TestGraphCache_NeighborWithExpirationsContext_ReturnsAlignedMap(t *testing.
 	c.AddEdgeWithExpiration("a", "b", 1.0, expAB)
 	c.AddEdgeWithExpiration("a", "c", 2.0, expAC)
 
-	g, exps, err := c.NeighborWithExpirationsContext(context.Background(), "a", 2, 10, false, false)
+	g, exps, err := c.NeighborWithExpirationsContext(context.Background(), "a", 2, 10, false, false, nil)
 	if err != nil {
 		t.Fatalf("NeighborWithExpirationsContext: %v", err)
 	}
@@ -744,7 +874,7 @@ func TestGraphCache_NeighborContext_StillWorksAfterRefactor(t *testing.T) {
 	c.PutVertex("b", 2)
 	c.AddEdge("a", "b", 1.0)
 
-	g, err := c.NeighborContext(context.Background(), "a", 2, 10, false, false)
+	g, err := c.NeighborContext(context.Background(), "a", 2, 10, false, false, nil)
 	if err != nil {
 		t.Fatalf("NeighborContext: %v", err)
 	}

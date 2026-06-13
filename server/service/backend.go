@@ -68,13 +68,19 @@ type Backend interface {
 	// neighborhood traversal. selectSmallest steers the per-hop top-k
 	// pruning: the k smallest-weight edges are kept when true, the k
 	// largest when false (#560), so the caller's Objective governs which
-	// edges survive both pruning and any later reduction.
+	// edges survive both pruning and any later reduction. keep is an
+	// optional frontier predicate (#601): when non-nil, a head is admitted
+	// to the frontier only if keep(head) is true, evaluated BEFORE scoring
+	// and the per-hop top-k prune so the surviving edges are the k strongest
+	// *matching* neighbours. The seed is exempt. A nil keep accepts every
+	// head (unfiltered traversal).
 	NeighborWithExpirationsContext(
 		ctx context.Context,
 		seed string,
 		step, k int,
 		tfidf bool,
 		selectSmallest bool,
+		keep func(string) bool,
 	) (*coregraph.Graph[string, *pb.Vertex], map[string]map[string]time.Time, error)
 
 	// prefix scan / count / delete. ScanByPrefix invokes fn for each live
