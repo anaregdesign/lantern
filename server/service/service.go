@@ -350,7 +350,7 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 	objective := request.GetObjective()
 	selectSmallest := objective == pb.Objective_OBJECTIVE_MINIMIZE
 	traversalStart := time.Now()
-	g, expirations, err := s.cache.NeighborWithExpirationsContext(ctx, request.GetSeed(), int(request.GetStep()), int(request.GetK()), useTFIDF, selectSmallest)
+	g, expirations, err := s.cache.NeighborWithExpirationsContext(ctx, request.GetSeed(), int(request.GetStep()), int(request.GetK()), useTFIDF, selectSmallest, nil)
 	traversalDur := time.Since(traversalStart)
 	if err != nil {
 		return nil, ctxToConnect(err)

@@ -442,17 +442,28 @@ func (c *GraphCache[S, T]) snapshotHooks() (func(string, int), func(time.Duratio
 // caller picks the direction that matches its Objective so a cost-minimiser
 // is not handed the costliest edges. tfidf re-scores edge weights BEFORE the
 // directional top/bottom-k selection.
-func (c *GraphCache[S, T]) Neighbor(seed S, step int, k int, tfidf bool, selectSmallest bool) *graph.Graph[S, T] {
-	g, _ := c.NeighborContext(context.Background(), seed, step, k, tfidf, selectSmallest)
+//
+// keep is an optional frontier predicate (nil = accept all): a candidate head
+// is expanded into the result only when keep(head) is true. It is applied at
+// frontier materialisation, BEFORE scoring and the directional top/bottom-k
+// prune, so top-k selects the k best *accepted* neighbours per hop. The seed
+// is the anchor exemption — it is always retained and never passed through
+// keep. Because the next-hop frontier is derived from the surviving edges, a
+// matching vertex reachable only through a rejected "bridge" is not reached
+// (induced-subgraph semantics). core stays generic: keep is just a predicate
+// over S; the concrete prefix/string logic lives in the caller.
+func (c *GraphCache[S, T]) Neighbor(seed S, step int, k int, tfidf bool, selectSmallest bool, keep func(S) bool) *graph.Graph[S, T] {
+	g, _ := c.NeighborContext(context.Background(), seed, step, k, tfidf, selectSmallest, keep)
 	return g
 }
 
 // NeighborContext is the context-aware variant of Neighbor. It returns
 // ctx.Err() as soon as the context is cancelled or its deadline has expired
 // — checked between BFS expansion steps — so handlers can short-circuit
-// large traversals when the caller has given up.
-func (c *GraphCache[S, T]) NeighborContext(ctx context.Context, seed S, step int, k int, tfidf bool, selectSmallest bool) (*graph.Graph[S, T], error) {
-	g, _, err := c.neighborContext(ctx, seed, step, k, tfidf, selectSmallest, false)
+// large traversals when the caller has given up. keep is the optional frontier
+// predicate documented on Neighbor (nil = accept all).
+func (c *GraphCache[S, T]) NeighborContext(ctx context.Context, seed S, step int, k int, tfidf bool, selectSmallest bool, keep func(S) bool) (*graph.Graph[S, T], error) {
+	g, _, err := c.neighborContext(ctx, seed, step, k, tfidf, selectSmallest, keep, false)
 	return g, err
 }
 
@@ -463,12 +474,13 @@ func (c *GraphCache[S, T]) NeighborContext(ctx context.Context, seed S, step int
 //
 // The expirations map only contains entries for edges that ended up in
 // the returned graph; a missing or zero value means the edge has no
-// known expiration.
-func (c *GraphCache[S, T]) NeighborWithExpirationsContext(ctx context.Context, seed S, step int, k int, tfidf bool, selectSmallest bool) (*graph.Graph[S, T], map[S]map[S]time.Time, error) {
-	return c.neighborContext(ctx, seed, step, k, tfidf, selectSmallest, true)
+// known expiration. keep is the optional frontier predicate documented on
+// Neighbor (nil = accept all).
+func (c *GraphCache[S, T]) NeighborWithExpirationsContext(ctx context.Context, seed S, step int, k int, tfidf bool, selectSmallest bool, keep func(S) bool) (*graph.Graph[S, T], map[S]map[S]time.Time, error) {
+	return c.neighborContext(ctx, seed, step, k, tfidf, selectSmallest, keep, true)
 }
 
-func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int, k int, tfidf bool, selectSmallest bool, collectExpirations bool) (*graph.Graph[S, T], map[S]map[S]time.Time, error) {
+func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int, k int, tfidf bool, selectSmallest bool, keep func(S) bool, collectExpirations bool) (*graph.Graph[S, T], map[S]map[S]time.Time, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	g := graph.NewGraph[S, T]()
@@ -518,6 +530,13 @@ func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int
 		for headID, w := range heads {
 			head, ok := c.edges.resolveID(headID)
 			if !ok {
+				continue
+			}
+			// Frontier predicate: reject non-matching heads here, BEFORE
+			// scoring and the Top(k)/Bottom(k) prune below, so top-k selects
+			// the k best *accepted* neighbours. The seed is set on g.Vertices
+			// before the walk and never reaches this loop, so it is exempt.
+			if keep != nil && !keep(head) {
 				continue
 			}
 			sum, latest, nonZero := w.snapshot()
