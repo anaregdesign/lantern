@@ -5,7 +5,7 @@ go 1.26
 require (
 	connectrpc.com/connect v1.20.0
 	github.com/anaregdesign/lantern/core v0.5.0
-	github.com/anaregdesign/lantern/pb v0.4.0
+	github.com/anaregdesign/lantern/pb v0.5.0
 	golang.org/x/net v0.55.0
 	google.golang.org/protobuf v1.36.11
 )

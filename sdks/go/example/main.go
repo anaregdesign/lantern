@@ -234,6 +234,14 @@ func main() {
 			+--> h
 			+--> i
 
+			A fourth, orthogonal axis scopes the traversal frontier:
+
+				- WithVertexPrefix: restrict the walk to vertices whose key
+				  shares the given prefix (the seed is always kept as the
+				  anchor; empty = no filter). The filter is applied before
+				  per-hop top-k and before any MST/SPT reduction, so the
+				  result is the prefix-induced subgraph.
+
 	*/
 	// Add edges
 	if err := cli.AddEdge(ctx, "a", "b", 1, 1*time.Minute); err != nil {

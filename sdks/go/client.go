@@ -587,16 +587,17 @@ func NewGraph() *Graph {
 }
 
 // IlluminateOption configures a single Illuminate call. Pass any combination
-// of WithStep, WithK, WithAlgorithm, WithObjective, and WithWeighting to
-// Illuminate. See #410 for the orthogonal-axes design.
+// of WithStep, WithK, WithAlgorithm, WithObjective, WithWeighting, and
+// WithVertexPrefix to Illuminate. See #410 for the orthogonal-axes design.
 type IlluminateOption func(*illuminateConfig)
 
 type illuminateConfig struct {
-	step      uint32
-	k         uint32
-	algorithm Algorithm
-	objective Objective
-	weighting Weighting
+	step         uint32
+	k            uint32
+	algorithm    Algorithm
+	objective    Objective
+	weighting    Weighting
+	vertexPrefix string
 }
 
 // WithStep sets the BFS depth for an Illuminate call.
@@ -631,10 +632,23 @@ func WithWeighting(w Weighting) IlluminateOption {
 	return func(c *illuminateConfig) { c.weighting = w }
 }
 
+// WithVertexPrefix restricts the Illuminate traversal frontier to vertices
+// whose key has the given prefix. The seed is always retained as the anchor
+// even if it does not match. Empty (the default) = no filter. The filter is
+// applied server-side BEFORE per-hop top-k and before any Algorithm-driven
+// MST/SPT reduction: the result is the prefix-induced subgraph. Note that
+// WithVertexPrefix together with WithAlgorithm(MST|SPT) yields a tree over
+// that induced subgraph, NOT a true shortest path in the full graph — a
+// matching vertex reachable only via a non-matching bridge vertex is excluded.
+func WithVertexPrefix(prefix string) IlluminateOption {
+	return func(c *illuminateConfig) { c.vertexPrefix = prefix }
+}
+
 // Illuminate runs a k-bounded BFS from seed, returning the resulting subgraph.
-// Configure step, k, algorithm, objective, and weighting via IlluminateOption
-// values; any option omitted defaults to its zero value, which the server
-// resolves to (step=0, k=0, no reduction, RAW weighting). See #410.
+// Configure step, k, algorithm, objective, weighting, and vertex prefix via
+// IlluminateOption values; any option omitted defaults to its zero value, which
+// the server resolves to (step=0, k=0, no reduction, RAW weighting, no prefix
+// filter). See #410.
 func (l *Lantern) Illuminate(ctx context.Context, seed string, opts ...IlluminateOption) (*Graph, error) {
 	var cfg illuminateConfig
 	for _, opt := range opts {
@@ -643,12 +657,13 @@ func (l *Lantern) Illuminate(ctx context.Context, seed string, opts ...Illuminat
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
 	resp, err := unary(ctx, &pb.IlluminateRequest{
-		Seed:      seed,
-		Step:      cfg.step,
-		K:         cfg.k,
-		Algorithm: cfg.algorithm,
-		Objective: cfg.objective,
-		Weighting: cfg.weighting,
+		Seed:         seed,
+		Step:         cfg.step,
+		K:            cfg.k,
+		Algorithm:    cfg.algorithm,
+		Objective:    cfg.objective,
+		Weighting:    cfg.weighting,
+		VertexPrefix: cfg.vertexPrefix,
 	}, l.client.Illuminate)
 	if err != nil {
 		return nil, err
