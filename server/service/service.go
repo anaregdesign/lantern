@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -349,8 +350,19 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 	// the costliest edges. UNSPECIFIED resolves to MAXIMIZE (strongest edges).
 	objective := request.GetObjective()
 	selectSmallest := objective == pb.Objective_OBJECTIVE_MINIMIZE
+	// vertex_prefix (#602) scopes the traversal frontier to vertices whose key
+	// carries the prefix. The server owns the concrete predicate (S = string
+	// here); core only ever sees keep func(string) bool (#601). An empty prefix
+	// leaves keep nil, i.e. an unfiltered walk. The closure is applied inside
+	// the BFS BEFORE per-hop top-k and BEFORE any MST/SPT reduction below, so
+	// the result is an induced subgraph (non-matching vertices are not
+	// traversable bridges) and the seed stays as the anchor.
+	var keep func(string) bool
+	if p := request.GetVertexPrefix(); p != "" {
+		keep = func(s string) bool { return strings.HasPrefix(s, p) }
+	}
 	traversalStart := time.Now()
-	g, expirations, err := s.cache.NeighborWithExpirationsContext(ctx, request.GetSeed(), int(request.GetStep()), int(request.GetK()), useTFIDF, selectSmallest, nil)
+	g, expirations, err := s.cache.NeighborWithExpirationsContext(ctx, request.GetSeed(), int(request.GetStep()), int(request.GetK()), useTFIDF, selectSmallest, keep)
 	traversalDur := time.Since(traversalStart)
 	if err != nil {
 		return nil, ctxToConnect(err)

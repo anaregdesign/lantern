@@ -68,6 +68,16 @@ Examples:
 - `algorithm=spt objective=max`  — **most-relevant** path tree
 - `weighting=tfidf`              — suppress hub vertices like "popular" items
 
+**Scoping the frontier** — `vertex_prefix` (when non-empty) restricts the walk
+to vertices whose key carries that prefix; the seed is always retained as the
+anchor even if it does not match, and an empty value means no filter. The
+filter is applied during the walk — BEFORE the per-hop top-k prune and BEFORE
+the MST/SPT reduction — so the result is the prefix-*induced* subgraph. One
+consequence to keep in mind: `vertex_prefix` together with `algorithm=mst|spt`
+yields a tree over that induced subgraph, **not** a true shortest path in the
+full graph — a matching vertex reachable only through a non-matching bridge
+vertex is excluded, because the bridge is not traversable.
+
 You don't fetch a wall of edges and post-process — the server returns exactly
 the shape you asked for.
 

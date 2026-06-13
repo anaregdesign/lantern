@@ -639,13 +639,19 @@ func (x *Graph) GetEdges() []*Edge {
 }
 
 type IlluminateRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Seed          string                 `protobuf:"bytes,1,opt,name=seed,proto3" json:"seed,omitempty"`
-	Step          uint32                 `protobuf:"varint,2,opt,name=step,proto3" json:"step,omitempty"`
-	K             uint32                 `protobuf:"varint,3,opt,name=k,proto3" json:"k,omitempty"`
-	Algorithm     Algorithm              `protobuf:"varint,6,opt,name=algorithm,proto3,enum=graph.v1.Algorithm" json:"algorithm,omitempty"`
-	Objective     Objective              `protobuf:"varint,7,opt,name=objective,proto3,enum=graph.v1.Objective" json:"objective,omitempty"`
-	Weighting     Weighting              `protobuf:"varint,8,opt,name=weighting,proto3,enum=graph.v1.Weighting" json:"weighting,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Seed      string                 `protobuf:"bytes,1,opt,name=seed,proto3" json:"seed,omitempty"`
+	Step      uint32                 `protobuf:"varint,2,opt,name=step,proto3" json:"step,omitempty"`
+	K         uint32                 `protobuf:"varint,3,opt,name=k,proto3" json:"k,omitempty"`
+	Algorithm Algorithm              `protobuf:"varint,6,opt,name=algorithm,proto3,enum=graph.v1.Algorithm" json:"algorithm,omitempty"`
+	Objective Objective              `protobuf:"varint,7,opt,name=objective,proto3,enum=graph.v1.Objective" json:"objective,omitempty"`
+	Weighting Weighting              `protobuf:"varint,8,opt,name=weighting,proto3,enum=graph.v1.Weighting" json:"weighting,omitempty"`
+	// vertex_prefix, when non-empty, restricts the traversal frontier to
+	// vertices whose key has this prefix. The seed is always retained as the
+	// anchor even if it does not match. Empty = no filter. Applied BEFORE
+	// per-hop top-k and BEFORE the MST/SPT reduction (induced-subgraph
+	// semantics: non-matching vertices are not traversable bridges).
+	VertexPrefix  string `protobuf:"bytes,9,opt,name=vertex_prefix,json=vertexPrefix,proto3" json:"vertex_prefix,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -720,6 +726,13 @@ func (x *IlluminateRequest) GetWeighting() Weighting {
 		return x.Weighting
 	}
 	return Weighting_WEIGHTING_UNSPECIFIED
+}
+
+func (x *IlluminateRequest) GetVertexPrefix() string {
+	if x != nil {
+		return x.VertexPrefix
+	}
+	return ""
 }
 
 type IlluminateResponse struct {
@@ -3054,14 +3067,15 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"expiration\"[\n" +
 	"\x05Graph\x12,\n" +
 	"\bvertices\x18\x01 \x03(\v2\x10.graph.v1.VertexR\bvertices\x12$\n" +
-	"\x05edges\x18\x02 \x03(\v2\x0e.graph.v1.EdgeR\x05edges\"\x83\x02\n" +
+	"\x05edges\x18\x02 \x03(\v2\x0e.graph.v1.EdgeR\x05edges\"\xa8\x02\n" +
 	"\x11IlluminateRequest\x12\x12\n" +
 	"\x04seed\x18\x01 \x01(\tR\x04seed\x12\x12\n" +
 	"\x04step\x18\x02 \x01(\rR\x04step\x12\f\n" +
 	"\x01k\x18\x03 \x01(\rR\x01k\x121\n" +
 	"\talgorithm\x18\x06 \x01(\x0e2\x13.graph.v1.AlgorithmR\talgorithm\x121\n" +
 	"\tobjective\x18\a \x01(\x0e2\x13.graph.v1.ObjectiveR\tobjective\x121\n" +
-	"\tweighting\x18\b \x01(\x0e2\x13.graph.v1.WeightingR\tweightingJ\x04\b\x04\x10\x05J\x04\b\x05\x10\x06R\x05tfidfR\foptimization\";\n" +
+	"\tweighting\x18\b \x01(\x0e2\x13.graph.v1.WeightingR\tweighting\x12#\n" +
+	"\rvertex_prefix\x18\t \x01(\tR\fvertexPrefixJ\x04\b\x04\x10\x05J\x04\b\x05\x10\x06R\x05tfidfR\foptimization\";\n" +
 	"\x12IlluminateResponse\x12%\n" +
 	"\x05graph\x18\x01 \x01(\v2\x0f.graph.v1.GraphR\x05graph\"$\n" +
 	"\x10GetVertexRequest\x12\x10\n" +
