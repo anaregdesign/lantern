@@ -36,6 +36,13 @@ export interface IlluminateRequest {
   algorithm?: Algorithm;
   objective?: Objective;
   weighting?: Weighting;
+  /**
+   * Restrict the traversal frontier to vertices whose key has this prefix
+   * (#606). The seed is always retained as the anchor even if it does not
+   * match. Empty/omitted = no filter. Applied server-side BEFORE per-hop
+   * top-k and before any MST/SPT reduction (induced-subgraph semantics).
+   */
+  vertexPrefix?: string;
 }
 
 const ALGORITHM_TO_SDK: Record<Algorithm, SdkAlgorithm> = {
@@ -90,6 +97,7 @@ export async function illuminate(
           request.weighting !== undefined
             ? WEIGHTING_TO_SDK[request.weighting]
             : undefined,
+        vertexPrefix: request.vertexPrefix ?? "",
       },
       init?.signal,
     );

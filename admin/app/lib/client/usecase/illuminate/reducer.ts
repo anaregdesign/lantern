@@ -249,6 +249,7 @@ function controlsEqual(a: IlluminateControls, b: IlluminateControls): boolean {
     a.k === b.k &&
     a.algorithm === b.algorithm &&
     a.objective === b.objective &&
-    a.weighting === b.weighting
+    a.weighting === b.weighting &&
+    a.vertexPrefix === b.vertexPrefix
   );
 }

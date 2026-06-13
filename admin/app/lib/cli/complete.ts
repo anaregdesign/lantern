@@ -45,6 +45,9 @@ const ILLUMINATE_OPTION_KEYS: readonly string[] = [
   "algorithm",
   "objective",
   "weighting",
+  // #606: free-text vertex-prefix filter. Surfaced as a completion key so
+  // operators discover it, but it has no enum values to complete after `=`.
+  "prefix",
 ];
 
 /** Cap on how many key candidates we surface, so the hint stays compact. */

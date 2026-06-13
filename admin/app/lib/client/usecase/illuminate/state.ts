@@ -25,6 +25,12 @@ export interface IlluminateControls {
   algorithm: Algorithm;
   objective: Objective;
   weighting: Weighting;
+  /**
+   * Free-text vertex-key prefix filter (#606). Empty = no filter. The value
+   * is matched against vertex keys verbatim (case-sensitive); the seed is
+   * always retained as the traversal anchor.
+   */
+  vertexPrefix: string;
 }
 
 /**
@@ -41,6 +47,7 @@ export const DEFAULT_ILLUMINATE_CONTROLS: IlluminateControls = {
   algorithm: "ALGORITHM_UNSPECIFIED",
   objective: "OBJECTIVE_UNSPECIFIED",
   weighting: "WEIGHTING_UNSPECIFIED",
+  vertexPrefix: "",
 };
 
 export type IlluminateStatus = "idle" | "loading" | "ready" | "error";

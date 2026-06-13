@@ -179,6 +179,7 @@ export async function dispatch(input: DispatchInput): Promise<unknown> {
           algorithm: ALGORITHM_TO_API[command.algorithm],
           objective: OBJECTIVE_TO_API[command.objective],
           weighting: WEIGHTING_TO_API[command.weighting],
+          vertexPrefix: command.vertexPrefix,
         },
         { signal },
       );

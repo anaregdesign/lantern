@@ -22,6 +22,7 @@ describe("commandResultToGraphView — illuminate", () => {
     algorithm: "none",
     objective: "min",
     weighting: "raw",
+    vertexPrefix: "",
   };
 
   it("marks the seed and renders all returned vertices + edges", () => {
@@ -363,6 +364,7 @@ describe("mergeGraphView", () => {
       algorithm: "none",
       objective: "min",
       weighting: "raw",
+      vertexPrefix: "",
     };
     const response: IlluminateResponse = {
       graph: {

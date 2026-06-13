@@ -58,6 +58,7 @@ export type Command =
       algorithm: AlgorithmName;
       objective: ObjectiveName;
       weighting: WeightingName;
+      vertexPrefix: string;
     };
 
 export type ParseResult =

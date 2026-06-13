@@ -40,6 +40,18 @@
       "comment": "#437: illuminate keyword key + closed-set value case-insensitive"
     },
     {
+      "input": "illuminate alice 2 5 prefix=team:",
+      "comment": "#606: free-text vertex-prefix kwarg"
+    },
+    {
+      "input": "illuminate alice 2 5 prefix=users/ algorithm=spt objective=min",
+      "comment": "#606: prefix mixes with the closed-set axes in any order"
+    },
+    {
+      "input": "illuminate alice 2 5 PREFIX=Users/Alice",
+      "comment": "#606: prefix key case-insensitive, value case-sensitive (verbatim)"
+    },
+    {
       "input": "put vertex greeting \"hello world\"",
       "comment": "#438: double-quoted value carries whitespace"
     },
@@ -105,6 +117,10 @@
     {
       "input": "illuminate alice 2 5 unknown=foo",
       "comment": "unknown keyword"
+    },
+    {
+      "input": "illuminate alice 2 5 prefix=",
+      "comment": "#606: explicit empty prefix= value is rejected"
     },
     {
       "input": "illuminate alice 2 5 algorithm",

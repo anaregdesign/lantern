@@ -258,7 +258,7 @@ export function parseScan(rest: string[]): ParseResult {
 
 export function parseIlluminate(rest: string[]): ParseResult {
   const usage =
-    "usage: illuminate <key: string> <step: int> <k: int> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf]";
+    "usage: illuminate <key: string> <step: int> <k: int> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf] [prefix=<string>]";
   if (rest.length < 3) {
     return { ok: false, usage };
   }
@@ -280,33 +280,44 @@ export function parseIlluminate(rest: string[]): ParseResult {
   // default — keeping the strongest-neighbour behaviour byte-for-byte.
   let objective: ObjectiveName = "max";
   let weighting: WeightingName = "raw";
+  // #606: prefix is a FREE-TEXT kwarg (not a closed-set axis). Empty means
+  // "no filter"; an explicit empty `prefix=` is rejected, mirroring the Go
+  // REPL. The value is matched against vertex keys verbatim (case-SENSITIVE).
+  let vertexPrefix = "";
   for (let i = 3; i < rest.length; i++) {
     const tok = rest[i];
     const eq = tok.indexOf("=");
     if (eq < 0) {
       return { ok: false, usage };
     }
-    // The keyword KEY and the keyword VALUE for the three closed-set
-    // axes (algorithm / objective / weighting) are case-insensitive —
-    // they only ever take values from a small fixed enum the Go REPL
-    // also matches case-insensitively. See #437.
+    // The keyword KEY is always case-insensitive. The three closed-set
+    // axes (algorithm / objective / weighting) also fold their VALUE
+    // because they only ever take a small fixed enum the Go REPL matches
+    // case-insensitively (#437). The free-text `prefix` VALUE is matched
+    // against vertex keys verbatim, so it stays case-SENSITIVE (#604).
     const key = tok.slice(0, eq).toLowerCase();
-    const value = tok.slice(eq + 1).toLowerCase();
+    const value = tok.slice(eq + 1);
+    const lvalue = value.toLowerCase();
     if (key === "algorithm") {
-      if (!ILL_ALGORITHMS.has(value as AlgorithmName)) {
+      if (!ILL_ALGORITHMS.has(lvalue as AlgorithmName)) {
         return { ok: false, usage };
       }
-      algorithm = value as AlgorithmName;
+      algorithm = lvalue as AlgorithmName;
     } else if (key === "objective") {
-      if (!ILL_OBJECTIVES.has(value as ObjectiveName)) {
+      if (!ILL_OBJECTIVES.has(lvalue as ObjectiveName)) {
         return { ok: false, usage };
       }
-      objective = value as ObjectiveName;
+      objective = lvalue as ObjectiveName;
     } else if (key === "weighting") {
-      if (!ILL_WEIGHTINGS.has(value as WeightingName)) {
+      if (!ILL_WEIGHTINGS.has(lvalue as WeightingName)) {
         return { ok: false, usage };
       }
-      weighting = value as WeightingName;
+      weighting = lvalue as WeightingName;
+    } else if (key === "prefix") {
+      if (value === "") {
+        return { ok: false, usage };
+      }
+      vertexPrefix = value;
     } else {
       return { ok: false, usage };
     }
@@ -321,6 +332,7 @@ export function parseIlluminate(rest: string[]): ParseResult {
       algorithm,
       objective,
       weighting,
+      vertexPrefix,
     },
   };
 }
@@ -352,6 +364,7 @@ export const HELP_TEXT = [
   "             [algorithm={none|mst|spt}]  default=none",
   "             [objective={min|max}]       default=max",
   "             [weighting={raw|tfidf}]     default=raw",
+  "             [prefix=<string>]           default=all keys",
   "  help",
   "  exit",
   "",

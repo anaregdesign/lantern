@@ -134,10 +134,10 @@ describe("completeCommandLine — key slots", () => {
 });
 
 describe("completeCommandLine — illuminate option kwargs (slot ≥ 4)", () => {
-  test("offers the three option keys with a trailing =", () => {
+  test("offers the four option keys with a trailing =", () => {
     expect(
       completeCommandLine("illuminate alice 2 5 ", KEYS).candidates,
-    ).toEqual(["algorithm=", "objective=", "weighting="]);
+    ).toEqual(["algorithm=", "objective=", "weighting=", "prefix="]);
   });
 
   test("filters option keys by prefix", () => {
@@ -150,7 +150,7 @@ describe("completeCommandLine — illuminate option kwargs (slot ≥ 4)", () => 
     expect(
       completeCommandLine("illuminate alice 2 5 algorithm=spt ", KEYS)
         .candidates,
-    ).toEqual(["objective=", "weighting="]);
+    ).toEqual(["objective=", "weighting=", "prefix="]);
   });
 
   test("completes enum values once = is typed", () => {
@@ -171,6 +171,12 @@ describe("completeCommandLine — illuminate option kwargs (slot ≥ 4)", () => 
   test("unknown option keyword yields no value candidates", () => {
     expect(
       completeCommandLine("illuminate alice 2 5 bogus=", KEYS).candidates,
+    ).toEqual([]);
+  });
+
+  test("free-text prefix= yields no value candidates (#606)", () => {
+    expect(
+      completeCommandLine("illuminate alice 2 5 prefix=", KEYS).candidates,
     ).toEqual([]);
   });
 
