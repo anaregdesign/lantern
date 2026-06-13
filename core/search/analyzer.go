@@ -52,6 +52,21 @@ func NewStandardAnalyzer(stopWords ...string) Analyzer {
 	return NewAnalyzer([]Normalizer{LowercaseNormalizer{}}, UnicodeTokenizer{}, filters...)
 }
 
+// NewNGramAnalyzer returns the batteries-included analyzer for substring and
+// no-whitespace-script search: it lowercases the text and then emits every
+// n-rune window with an NGramTokenizer, so a query matches a document whenever
+// they share an n-gram. Prefer it over NewStandardAnalyzer when words are not
+// whitespace-delimited (e.g. CJK, where the word-splitting tokenizers emit one
+// giant token) or when infix matches matter ("arch" finding "search"). Because
+// the same analyzer runs on both sides, queries must use the same n: a query
+// shorter than n runes shares no n-gram with anything and therefore matches
+// nothing. Like NGramTokenizer, the window slides over whitespace and
+// punctuation too, so grams may straddle word boundaries; normalize the text
+// first if that matters. n < 1 is treated as 1 (unigrams).
+func NewNGramAnalyzer(n int) Analyzer {
+	return NewAnalyzer([]Normalizer{LowercaseNormalizer{}}, NGramTokenizer{N: n})
+}
+
 // Analyze runs text through the normalizers, tokenizer, and filter chain.
 func (a *pipelineAnalyzer) Analyze(text string) []Token {
 	for _, n := range a.normalizers {

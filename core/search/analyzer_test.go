@@ -52,6 +52,21 @@ func TestNewAnalyzerDefaultsTokenizer(t *testing.T) {
 	}
 }
 
+func TestNGramAnalyzer(t *testing.T) {
+	a := NewNGramAnalyzer(2)
+	// Lowercased bigrams over the whole input, CJK and Latin alike.
+	if got := termsOf(a.Analyze("東京都")); !equalStrings(got, []string{"東京", "京都"}) {
+		t.Fatalf("Analyze(東京都) = %v, want [東京 京都]", got)
+	}
+	if got := termsOf(a.Analyze("Go")); !equalStrings(got, []string{"go"}) {
+		t.Fatalf("Analyze(Go) = %v, want [go]", got)
+	}
+	// A single rune is shorter than n, so it shares no bigram with anything.
+	if got := termsOf(a.Analyze("都")); len(got) != 0 {
+		t.Fatalf("Analyze(都) = %v, want []", got)
+	}
+}
+
 func TestAnalyzerFunc(t *testing.T) {
 	var a Analyzer = AnalyzerFunc(func(s string) []Token { return []Token{{Term: s}} })
 	if got := termsOf(a.Analyze("x")); !equalStrings(got, []string{"x"}) {
