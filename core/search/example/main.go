@@ -17,29 +17,31 @@ func main() {
 	log.SetFlags(0)
 
 	// An InvertedIndex is the default Indexer + Searcher. The Analyzer below is
-	// the combination you would actually reach for on English prose: every one
-	// of its three stages earns its place instead of leaving the term stream raw.
-	//   1. Normalizers rewrite the text before tokenization. LowercaseNormalizer
-	//      folds case so a query for "fox" also matches "Fox".
-	//   2. The tokenizer splits the normalized text into terms. UnicodeTokenizer
-	//      breaks on every non-letter/digit rune, so it strips punctuation in the
-	//      same pass and needs no separate PunctuationFilter.
-	//   3. Token filters prune the term stream in order. LengthFilter drops
-	//      1-rune noise, and StopWordFilter removes the high-frequency function
-	//      words ("the", "a", "and", …) that match almost everything and so add
-	//      no signal — only the content words ("fox", "panda", …) survive.
-	// Running this very analyzer over both documents and queries is what keeps
-	// index-time and query-time terms symmetric.
-	normalizers := []search.Normalizer{search.LowercaseNormalizer{}}
-	tokenizer := search.UnicodeTokenizer{}
-	tokenFilters := []search.TokenFilter{
-		search.LengthFilter{Min: 2},
-		search.NewStopWordFilter(
-			"a", "an", "and", "are", "as", "at", "by", "for", "from",
-			"in", "into", "is", "of", "on", "or", "over", "the", "to", "with",
-		),
+	// the combination you would reach for when you need *infix* matching — finding
+	// a query inside longer words, which a word-splitting tokenizer cannot do.
+	// Its three stages:
+	//   1. Normalizers clean the raw text before tokenization. This matters more
+	//      for n-grams than for word tokens: NGramTokenizer slides its window over
+	//      every rune — punctuation and spaces included — so stray marks or double
+	//      spaces would leak straight into the grams. So we fold case
+	//      (LowercaseNormalizer), turn every mark into a space
+	//      (PunctuationNormalizer), then collapse the runs and trim
+	//      (SpaceNormalizer), leaving clean single-space-delimited text.
+	//   2. The tokenizer emits every 3-rune window (NGramTokenizer{N: 3}). Sharing
+	//      a gram is what makes a query match: "arch" and "search" both contain
+	//      the grams "arc" and "rch", so a search for "arch" finds "search".
+	//   3. No token filters. A StopWordFilter matches whole words ("the", "and"),
+	//      but n-gram terms are 3-rune fragments that never line up with a
+	//      whole-word stop list — it is simply the wrong tool for n-grams.
+	// The same analyzer runs over documents and queries, so both sides share the
+	// same n; a query shorter than 3 runes shares no gram and matches nothing.
+	normalizers := []search.Normalizer{
+		search.LowercaseNormalizer{},
+		search.PunctuationNormalizer{},
+		search.SpaceNormalizer{},
 	}
-	analyzer := search.NewAnalyzer(normalizers, tokenizer, tokenFilters...)
+	tokenizer := search.NGramTokenizer{N: 3}
+	analyzer := search.NewAnalyzer(normalizers, tokenizer)
 
 	// Rank matches with Okapi BM25, stated explicitly rather than left to the
 	// nil default: K1 = 1.2 tunes term-frequency saturation (the 2nd occurrence
@@ -49,28 +51,32 @@ func main() {
 	idx := search.NewInvertedIndex[string, search.Text](analyzer, scorer)
 
 	// Index documents under any comparable ID. Text adapts a plain string to a
-	// Document; indexing an existing ID again replaces it.
-	idx.Index("fox", search.Text("The quick brown fox jumps over the lazy dog"))
-	idx.Index("panda", search.Text("A giant panda eats bamboo in the forest"))
-	idx.Index("both", search.Text("The fox and the panda are friends"))
+	// Document; the messy punctuation and spacing here is exactly what the
+	// normalizers clean up before n-gramming.
+	idx.Index("search", search.Text("Full-text search."))
+	idx.Index("research", search.Text("Academic  research"))
+	idx.Index("arch", search.Text("A stone arch"))
+	idx.Index("panda", search.Text("A giant panda"))
 
 	// Search returns the matching documents ranked by relevance, most relevant
-	// first. The query's terms are matched as an OR union.
-	log.Println(`search("fox panda"):`)
-	for _, hit := range idx.Search("fox panda") {
-		log.Printf("  %-6s %.3f", hit.ID, hit.Score)
+	// first. "arch" matches as an infix: it is a substring of both "search" and
+	// "research", which a word tokenizer would never surface.
+	log.Println(`search("arch"):`)
+	for _, hit := range idx.Search("arch") {
+		log.Printf("  %-8s %.3f", hit.ID, hit.Score)
 	}
-	// both   1.101
-	// panda  0.457
-	// fox    0.421
+	// arch     0.777
+	// search   0.680
+	// research 0.659
 
-	// Delete removes a document from every posting list it appears in.
-	idx.Delete("both")
+	// Delete removes a document from every posting list it appears in. Dropping
+	// the literal "arch" leaves the infix matches in "search" and "research".
+	idx.Delete("arch")
 
-	log.Println(`search("fox panda") after deleting "both":`)
-	for _, hit := range idx.Search("fox panda") {
-		log.Printf("  %-6s %.3f", hit.ID, hit.Score)
+	log.Println(`search("arch") after deleting "arch":`)
+	for _, hit := range idx.Search("arch") {
+		log.Printf("  %-8s %.3f", hit.ID, hit.Score)
 	}
-	// panda  0.720
-	// fox    0.668
+	// search   0.921
+	// research 0.894
 }
