@@ -47,6 +47,14 @@
   width: 72px;
 }
 
+/* Free-text input for the vertex prefix (#617). Wider than the numeric
+ * inputs because namespace prefixes (`svc:`, `team:`, `users/`) need room,
+ * but still shrinks via min-width:0 on narrow canvas columns. */
+.textInput {
+  width: 140px;
+  min-width: 0;
+}
+
 /* Dropdowns for algorithm / objective. The descendant selector raises
  * specificity above Fluent UI's default 250px min-width so the controls
  * can shrink and the strip never overflows a narrow canvas column. */

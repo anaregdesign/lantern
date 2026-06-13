@@ -11,6 +11,7 @@ import {
   parseStoredAlgorithm,
   parseStoredK,
   parseStoredObjective,
+  parseStoredPrefix,
   parseStoredStep,
   parseStoredWeighting,
   type CliClickAxes,
@@ -65,19 +66,23 @@ export function useCliAxisPicker(
     weighting:
       parseStoredWeighting(store.get(AXIS_STORAGE_KEYS.weighting)) ??
       CLI_CLICK_AXIS_DEFAULTS.weighting,
+    vertexPrefix:
+      parseStoredPrefix(store.get(AXIS_STORAGE_KEYS.vertexPrefix)) ??
+      CLI_CLICK_AXIS_DEFAULTS.vertexPrefix,
   }));
 
-  // Re-persist whenever the axes change. We persist all five every time
+  // Re-persist whenever the axes change. We persist all six every time
   // rather than diffing because the picker fires at most once per user
-  // gesture — a Dropdown selection or a Switch toggle — so the cost is
-  // negligible and avoids subtle bugs from forgetting to persist a key
-  // after splitting setters apart.
+  // gesture — a Dropdown selection, a Switch toggle, or a keystroke in the
+  // prefix field — so the cost is negligible and avoids subtle bugs from
+  // forgetting to persist a key after splitting setters apart.
   useEffect(() => {
     store.set(AXIS_STORAGE_KEYS.step, formatStoredStep(axes.step));
     store.set(AXIS_STORAGE_KEYS.k, formatStoredK(axes.k));
     store.set(AXIS_STORAGE_KEYS.algorithm, axes.algorithm);
     store.set(AXIS_STORAGE_KEYS.objective, axes.objective);
     store.set(AXIS_STORAGE_KEYS.weighting, axes.weighting);
+    store.set(AXIS_STORAGE_KEYS.vertexPrefix, axes.vertexPrefix);
   }, [axes, store]);
 
   const setAxis = useCallback(

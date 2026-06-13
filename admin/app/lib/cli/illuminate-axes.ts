@@ -42,6 +42,14 @@ export interface CliClickAxes {
   algorithm: AlgorithmName;
   objective: ObjectiveName;
   weighting: WeightingName;
+  /**
+   * Free-text vertex-prefix filter (#604/#617). Restricts the click-driven
+   * walk frontier to keys under this prefix; the seed is always kept as the
+   * anchor even when it does not match. Empty means "no filter". Matched
+   * against vertex keys verbatim (case-SENSITIVE), unlike the closed-set
+   * axes above.
+   */
+  vertexPrefix: string;
 }
 
 /**
@@ -60,6 +68,9 @@ export const CLI_CLICK_AXIS_DEFAULTS: CliClickAxes = {
   // the weakest once the click is dispatched.
   objective: "max",
   weighting: "raw",
+  // Empty = no prefix filter, so the bare click stays byte-for-byte the
+  // canonical short form `illuminate <seed> 2 5` (the #439 regression guard).
+  vertexPrefix: "",
 };
 
 export const CLI_ALGORITHMS: ReadonlyArray<{
@@ -92,9 +103,9 @@ export const CLI_WEIGHTINGS: ReadonlyArray<{
  *
  * Emits the short form `illuminate <seed> <step> <k>` when every axis
  * matches {@link CLI_CLICK_AXIS_DEFAULTS}. Appends the optional kwargs
- * in fixed order (`algorithm=` → `objective=` → `weighting=`) only for
- * axes that diverge from the default; the fixed order keeps scrollback
- * snapshots deterministic and matches the parser's usage string.
+ * in fixed order (`algorithm=` → `objective=` → `weighting=` → `prefix=`)
+ * only for axes that diverge from the default; the fixed order keeps
+ * scrollback snapshots deterministic and matches the parser's usage string.
  *
  * The function is intentionally pure so `bun:test` can round-trip it
  * through {@link parse} without a DOM.
@@ -118,6 +129,15 @@ export function formatIlluminateClick(
   if (axes.weighting !== CLI_CLICK_AXIS_DEFAULTS.weighting) {
     tokens.push(`weighting=${axes.weighting}`);
   }
+  // #617: prefix is a FREE-TEXT axis, not a closed enum. Emit `prefix=<value>`
+  // only when non-empty — the parser (and the Go REPL) reject an explicit empty
+  // `prefix=`, and an empty prefix means "no filter" anyway, so the bare click
+  // stays the canonical short form. The value is echoed verbatim (case-
+  // SENSITIVE, #604); it carries no spaces because the CLI tokeniser splits on
+  // whitespace.
+  if (axes.vertexPrefix !== "") {
+    tokens.push(`prefix=${axes.vertexPrefix}`);
+  }
   return tokens.join(" ");
 }
 
@@ -131,6 +151,7 @@ export const AXIS_STORAGE_KEYS = {
   algorithm: "cli.click.algorithm",
   objective: "cli.click.objective",
   weighting: "cli.click.weighting",
+  vertexPrefix: "cli.click.prefix",
 } as const;
 
 /**
@@ -157,6 +178,15 @@ export function parseStoredObjective(raw: string | null): ObjectiveName | null {
 
 export function parseStoredWeighting(raw: string | null): WeightingName | null {
   return matchOption(raw, CLI_WEIGHTINGS);
+}
+
+/**
+ * Parse a stored vertex prefix. Prefix is free text, so every non-null
+ * string is valid (including ""); only a missing key returns null, letting
+ * the caller fall back to {@link CLI_CLICK_AXIS_DEFAULTS}.vertexPrefix.
+ */
+export function parseStoredPrefix(raw: string | null): string | null {
+  return raw;
 }
 
 /** Inverse of the parse helpers; numeric axes serialise as base-10 ints. */
