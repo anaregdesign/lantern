@@ -1,6 +1,7 @@
 import type { MetricPoint } from "~/lib/client/infrastructure/api/prometheus-query-range";
 
 import { METRIC_PANELS } from "./catalog";
+import { DEFAULT_MODE, type AggMode } from "./mode";
 import { DEFAULT_RANGE, type RangeKey } from "./range";
 
 /**
@@ -40,17 +41,19 @@ export interface PanelState {
 export interface MetricsState {
   panels: Record<string, PanelState>;
   range: RangeKey;
+  aggMode: AggMode;
   fetchEpoch: number;
 }
 
 export function initialMetricsState(
   range: RangeKey = DEFAULT_RANGE,
+  aggMode: AggMode = DEFAULT_MODE,
 ): MetricsState {
   const panels: Record<string, PanelState> = {};
   for (const panel of METRIC_PANELS) {
     panels[panel.id] = { status: "idle", series: [], error: null };
   }
-  return { panels, range, fetchEpoch: 0 };
+  return { panels, range, aggMode, fetchEpoch: 0 };
 }
 
 export const INITIAL_METRICS_STATE = initialMetricsState();

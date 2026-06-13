@@ -144,4 +144,35 @@ describe("metricsReducer", () => {
     expect(next.fetchEpoch).toBe(0);
     expect(next.panels[firstPanelId].status).toBe("idle");
   });
+
+  it("resets panels but keeps the range when the agg mode changes", () => {
+    let state = metricsReducer(initialMetricsState("6h", "per-replica"), {
+      type: "FETCH_STARTED",
+      epoch: 1,
+    });
+    state = metricsReducer(state, {
+      type: "PANEL_LOADED",
+      epoch: 1,
+      id: firstPanelId,
+      series: sampleSeries,
+    });
+    const next = metricsReducer(state, { type: "SET_MODE", mode: "sum" });
+    expect(next.aggMode).toBe("sum");
+    expect(next.range).toBe("6h");
+    expect(next.fetchEpoch).toBe(0);
+    expect(next.panels[firstPanelId].status).toBe("idle");
+    expect(next.panels[firstPanelId].series).toEqual([]);
+  });
+
+  it("is a no-op when SET_MODE matches the current agg mode", () => {
+    const state = initialMetricsState("1h", "sum");
+    const next = metricsReducer(state, { type: "SET_MODE", mode: "sum" });
+    expect(next).toBe(state);
+  });
+
+  it("preserves the agg mode across a range change", () => {
+    const state = initialMetricsState("1h", "sum");
+    const next = metricsReducer(state, { type: "SET_RANGE", range: "6h" });
+    expect(next.aggMode).toBe("sum");
+  });
 });

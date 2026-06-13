@@ -4,6 +4,7 @@ import {
   type PanelState,
   initialMetricsState,
 } from "./state";
+import type { AggMode } from "./mode";
 import type { RangeKey } from "./range";
 
 /**
@@ -16,6 +17,7 @@ export type MetricsAction =
   | { type: "PANEL_LOADED"; epoch: number; id: string; series: PanelSeries[] }
   | { type: "PANEL_ERROR"; epoch: number; id: string; error: string }
   | { type: "SET_RANGE"; range: RangeKey }
+  | { type: "SET_MODE"; mode: AggMode }
   | { type: "RESET" };
 
 /**
@@ -68,9 +70,16 @@ export function metricsReducer(
       if (action.range === state.range) return state;
       // Reset panels to idle so the new range shows a loading state rather
       // than briefly charting the previous window's data on a new axis.
-      return initialMetricsState(action.range);
+      return initialMetricsState(action.range, state.aggMode);
+    }
+    case "SET_MODE": {
+      if (action.mode === state.aggMode) return state;
+      // The aggregation mode changes the query shape (per-replica vs
+      // cluster-sum), so reset panels to idle and let the next round fetch
+      // the new series rather than charting incompatible data.
+      return initialMetricsState(state.range, action.mode);
     }
     case "RESET":
-      return initialMetricsState(state.range);
+      return initialMetricsState(state.range, state.aggMode);
   }
 }

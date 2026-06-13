@@ -6,12 +6,19 @@ import {
 } from "~/lib/client/infrastructure/api/prometheus-query-range";
 import {
   browserStorage,
+  metricsAggModeStorageKey,
   metricsRangeStorageKey,
 } from "~/lib/client/infrastructure/browser/storage";
 import { METRIC_PANELS } from "./catalog";
+import { DEFAULT_MODE, isAggMode, type AggMode } from "./mode";
 import { DEFAULT_RANGE, isRangeKey, type RangeKey } from "./range";
 import { metricsReducer } from "./reducer";
-import { rangeToWindow, rateWindow, resolveExpr } from "./selectors";
+import {
+  composeQuery,
+  rangeToWindow,
+  rateWindow,
+  resolveExpr,
+} from "./selectors";
 import { initialMetricsState, type PanelSeries } from "./state";
 
 export interface UseMetricsArgs {
@@ -27,6 +34,8 @@ export interface UseMetrics {
   state: ReturnType<typeof metricsReducer>;
   range: RangeKey;
   setRange: (range: RangeKey) => void;
+  aggMode: AggMode;
+  setAggMode: (mode: AggMode) => void;
 }
 
 /**
@@ -49,9 +58,13 @@ export function useMetrics({
 }: UseMetricsArgs): UseMetrics {
   const storage = useMemo(() => browserStorage(), []);
   const [state, dispatch] = useReducer(metricsReducer, undefined, () => {
-    const stored = storage.get(metricsRangeStorageKey);
-    const range = stored && isRangeKey(stored) ? stored : DEFAULT_RANGE;
-    return initialMetricsState(range);
+    const storedRange = storage.get(metricsRangeStorageKey);
+    const range =
+      storedRange && isRangeKey(storedRange) ? storedRange : DEFAULT_RANGE;
+    const storedMode = storage.get(metricsAggModeStorageKey);
+    const aggMode =
+      storedMode && isAggMode(storedMode) ? storedMode : DEFAULT_MODE;
+    return initialMetricsState(range, aggMode);
   });
 
   // epochRef carries the latest dispatched epoch so the polling closure
@@ -67,7 +80,16 @@ export function useMetrics({
     [storage],
   );
 
+  const setAggMode = useCallback(
+    (mode: AggMode) => {
+      storage.set(metricsAggModeStorageKey, mode);
+      dispatch({ type: "SET_MODE", mode });
+    },
+    [storage],
+  );
+
   const range = state.range;
+  const aggMode = state.aggMode;
 
   const fetchRound = useCallback(
     async (signal: AbortSignal) => {
@@ -86,7 +108,7 @@ export function useMetrics({
             const resolved = await Promise.all(
               panel.queries.map((query) =>
                 queryRange(prometheusUrl, {
-                  query: resolveExpr(query.expr, window),
+                  query: resolveExpr(composeQuery(query, aggMode), window),
                   start,
                   end,
                   step: stepSeconds,
@@ -120,7 +142,7 @@ export function useMetrics({
         }),
       );
     },
-    [prometheusUrl, range],
+    [prometheusUrl, range, aggMode],
   );
 
   // First-paint fetch + polling timer. refreshNonce in the dependency
@@ -140,7 +162,7 @@ export function useMetrics({
     };
   }, [fetchRound, pollMs, refreshNonce]);
 
-  return { state, range, setRange };
+  return { state, range, setRange, aggMode, setAggMode };
 }
 
 function errorMessage(err: unknown): string {

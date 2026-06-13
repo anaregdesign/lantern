@@ -33,16 +33,36 @@ export type MetricUnit = "count" | "rate" | "ratio" | "seconds" | "bytes";
 
 export interface PanelQuery {
   /**
-   * A PromQL expression. May contain the literal token `$__rate`, which the
-   * selector replaces with a concrete range-vector window (e.g. `1m`).
+   * The **inner** PromQL expression — a raw gauge or a `rate()` series,
+   * with **no** outer replica/cluster aggregation. May contain the literal
+   * token `$__rate`, which the selector replaces with a concrete
+   * range-vector window (e.g. `1m`). The selector layer
+   * (`selectors.ts#composeQuery`) wraps this in `sum by (…)` so the same
+   * query renders per-replica or as a cluster total depending on the active
+   * aggregation mode — keep the aggregation OUT of the catalog.
    */
   expr: string;
   /**
    * Optional legend template. `{{label}}` tokens are filled from each
    * returned series' label set. When omitted the legend is derived from the
-   * series labels (or the panel title for single-series queries).
+   * series labels (or the panel title for single-series queries). In
+   * per-replica mode the selector prefixes the resolved label with the
+   * series' short replica alias (`r0 · …`).
    */
   legend?: string;
+  /**
+   * Secondary grouping labels preserved in **both** aggregation modes
+   * (e.g. `["grpc_method"]`). The selector adds `instance` to this set in
+   * per-replica mode and drops it in cluster-sum mode. Omit (or `[]`) for a
+   * single undifferentiated series per replica.
+   */
+  by?: readonly string[];
+  /**
+   * How the inner expression is aggregated. `"sum"` (the default) wraps it
+   * in `sum by (…)`. `{ quantile }` wraps it in
+   * `histogram_quantile(q, sum by (le, …) (…))` for `_bucket` series.
+   */
+  agg?: "sum" | { quantile: number };
 }
 
 export interface PanelSpec {
@@ -103,7 +123,8 @@ export const METRIC_PANELS: readonly PanelSpec[] = [
     unit: "rate",
     queries: [
       {
-        expr: "sum by (grpc_method) (rate(grpc_server_handled_total[$__rate]))",
+        expr: "rate(grpc_server_handled_total[$__rate])",
+        by: ["grpc_method"],
         legend: "{{grpc_method}}",
       },
     ],
@@ -116,11 +137,13 @@ export const METRIC_PANELS: readonly PanelSpec[] = [
     unit: "seconds",
     queries: [
       {
-        expr: "histogram_quantile(0.5, sum by (le) (rate(grpc_server_handling_seconds_bucket[$__rate])))",
+        expr: "rate(grpc_server_handling_seconds_bucket[$__rate])",
+        agg: { quantile: 0.5 },
         legend: "p50",
       },
       {
-        expr: "histogram_quantile(0.99, sum by (le) (rate(grpc_server_handling_seconds_bucket[$__rate])))",
+        expr: "rate(grpc_server_handling_seconds_bucket[$__rate])",
+        agg: { quantile: 0.99 },
         legend: "p99",
       },
     ],
@@ -133,11 +156,14 @@ export const METRIC_PANELS: readonly PanelSpec[] = [
     unit: "seconds",
     queries: [
       {
-        expr: "histogram_quantile(0.99, sum by (le) (rate(lantern_illuminate_duration_seconds_bucket[$__rate])))",
+        expr: "rate(lantern_illuminate_duration_seconds_bucket[$__rate])",
+        agg: { quantile: 0.99 },
         legend: "illuminate",
       },
       {
-        expr: "histogram_quantile(0.99, sum by (le, op) (rate(lantern_scan_duration_seconds_bucket[$__rate])))",
+        expr: "rate(lantern_scan_duration_seconds_bucket[$__rate])",
+        by: ["op"],
+        agg: { quantile: 0.99 },
         legend: "scan {{op}}",
       },
     ],
@@ -150,7 +176,8 @@ export const METRIC_PANELS: readonly PanelSpec[] = [
     unit: "seconds",
     queries: [
       {
-        expr: "histogram_quantile(0.99, sum by (le) (rate(lantern_gc_duration_seconds_bucket[$__rate])))",
+        expr: "rate(lantern_gc_duration_seconds_bucket[$__rate])",
+        agg: { quantile: 0.99 },
         legend: "p99",
       },
     ],
@@ -163,7 +190,8 @@ export const METRIC_PANELS: readonly PanelSpec[] = [
     unit: "rate",
     queries: [
       {
-        expr: "sum by (kind) (rate(lantern_ttl_expirations_total[$__rate]))",
+        expr: "rate(lantern_ttl_expirations_total[$__rate])",
+        by: ["kind"],
         legend: "{{kind}}",
       },
     ],
@@ -208,6 +236,7 @@ export const METRIC_PANELS: readonly PanelSpec[] = [
     queries: [
       {
         expr: "lantern_replication_lag_seq",
+        by: ["peer", "origin"],
         legend: "{{peer}} ← {{origin}}",
       },
     ],
@@ -218,22 +247,31 @@ export const METRIC_PANELS: readonly PanelSpec[] = [
     title: "Peer connectivity",
     description: "1 when a peer link is up, 0 when down.",
     unit: "count",
-    queries: [{ expr: "lantern_peer_connected", legend: "{{peer}}" }],
+    queries: [
+      { expr: "lantern_peer_connected", by: ["peer"], legend: "{{peer}}" },
+    ],
   },
   {
     id: "replication-apply",
     group: "replication",
     title: "Replication apply / drop rate",
-    description: "Mutations applied (by op) and dropped per second.",
+    // The apply counter also carries an `op` label (11 RPC kinds). Breaking
+    // the panel down by `op` multiplies by replica count (33+ lines here) and
+    // is illegible as a legend; per-op apply rates belong in an ad-hoc query,
+    // not an at-a-glance health panel. We sum over `op` to show one applied
+    // line per replica, and keep the low-cardinality `reason` split on drops
+    // (where "why" is the actionable signal — e.g. self_echo suppression).
+    description: "Remote mutations applied per replica, and drops by reason.",
     unit: "rate",
     queries: [
       {
-        expr: "sum by (op) (rate(lantern_replication_apply_total[$__rate]))",
-        legend: "apply {{op}}",
+        expr: "rate(lantern_replication_apply_total[$__rate])",
+        legend: "applied",
       },
       {
-        expr: "sum(rate(lantern_replication_dropped_total[$__rate]))",
-        legend: "dropped",
+        expr: "rate(lantern_replication_dropped_total[$__rate])",
+        by: ["reason"],
+        legend: "dropped {{reason}}",
       },
     ],
   },
@@ -246,15 +284,15 @@ export const METRIC_PANELS: readonly PanelSpec[] = [
     unit: "rate",
     queries: [
       {
-        expr: "sum(rate(lantern_validation_rejected_total[$__rate]))",
+        expr: "rate(lantern_validation_rejected_total[$__rate])",
         legend: "validation",
       },
       {
-        expr: "sum(rate(lantern_rate_limit_rejected_total[$__rate]))",
+        expr: "rate(lantern_rate_limit_rejected_total[$__rate])",
         legend: "rate limit",
       },
       {
-        expr: "sum(rate(lantern_tombstone_clamp_rejected_total[$__rate]))",
+        expr: "rate(lantern_tombstone_clamp_rejected_total[$__rate])",
         legend: "tombstone clamp",
       },
     ],

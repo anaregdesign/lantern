@@ -1,8 +1,9 @@
 import type { MetricPoint } from "~/lib/client/infrastructure/api/prometheus-query-range";
 
-import type { MetricUnit } from "./catalog";
+import type { MetricUnit, PanelQuery } from "./catalog";
+import type { AggMode } from "./mode";
 import type { RangeKey } from "./range";
-import type { PanelSeries } from "./state";
+import type { PanelSeries, PanelState } from "./state";
 
 /**
  * Concrete `(rangeSeconds, stepSeconds)` window for each range key. Steps
@@ -52,6 +53,76 @@ export function resolveExpr(expr: string, window: string): string {
 }
 
 /**
+ * Composes a catalog {@link PanelQuery} into a full PromQL expression for
+ * the active aggregation {@link AggMode}. The catalog stores only the
+ * **inner** series; the outer aggregation is added here so the same query
+ * renders per-replica (one line per `instance`) or as a cluster total.
+ *
+ * - `"sum"` (default) → `sum by (<by…>[, instance]) (<expr>)`, or `sum(<expr>)`
+ *   when nothing is grouped.
+ * - `{ quantile }` → `histogram_quantile(q, sum by (le, <by…>[, instance]) (<expr>))`
+ *   for `_bucket` series.
+ *
+ * In per-replica mode `instance` is appended to the grouping set; in sum
+ * mode it is dropped, collapsing every replica into one cluster line. The
+ * `$__rate` placeholder (if any) is preserved for {@link resolveExpr}.
+ */
+export function composeQuery(query: PanelQuery, mode: AggMode): string {
+  const by = query.by ?? [];
+  const groupBy = mode === "per-replica" ? [...by, "instance"] : [...by];
+  const agg = query.agg ?? "sum";
+  if (typeof agg === "object") {
+    const labels = ["le", ...groupBy].join(", ");
+    return `histogram_quantile(${agg.quantile}, sum by (${labels}) (${query.expr}))`;
+  }
+  if (groupBy.length === 0) {
+    return `sum(${query.expr})`;
+  }
+  return `sum by (${groupBy.join(", ")}) (${query.expr})`;
+}
+
+/**
+ * A resolved replica identity: a short stable alias (`r0`, `r1`, …), the
+ * colour slot driving its line hue across every panel, and the full
+ * Prometheus `instance` value (`IP:port`) surfaced on hover.
+ */
+export interface ReplicaAlias {
+  alias: string;
+  colorSlot: number;
+  instance: string;
+}
+
+/** Maps a full `instance` label to its resolved {@link ReplicaAlias}. */
+export type ReplicaAliasMap = Record<string, ReplicaAlias>;
+
+/**
+ * Builds one `instance → alias` map for the whole Metrics section. The
+ * distinct `instance` labels are collected across **all** panels in a
+ * round and stable-sorted, so a given replica is assigned the same alias
+ * and colour slot in every panel (consistent cross-panel identity) and the
+ * assignment is deterministic regardless of Prometheus' series order.
+ */
+export function buildReplicaAliases(
+  panels: Record<string, PanelState>,
+): ReplicaAliasMap {
+  const instances = new Set<string>();
+  for (const panel of Object.values(panels)) {
+    for (const entry of panel.series) {
+      const instance = entry.labels.instance;
+      if (instance != null && instance !== "") {
+        instances.add(instance);
+      }
+    }
+  }
+  const sorted = [...instances].sort((a, b) => a.localeCompare(b));
+  const map: ReplicaAliasMap = {};
+  sorted.forEach((instance, index) => {
+    map[instance] = { alias: `r${index}`, colorSlot: index, instance };
+  });
+  return map;
+}
+
+/**
  * Computes a display label for one series. A legend template containing
  * `{{label}}` tokens is filled from the series' label set; a static
  * template is returned verbatim; with no template the label is derived
@@ -90,29 +161,65 @@ export function seriesLegend(
   return entries.map(([, value]) => value).join(", ");
 }
 
-/** A chart-ready series: a stable key, display label, colour slot, points. */
+/** A chart-ready series: a stable key, display label, colour/dash slots, points. */
 export interface ChartSeries {
   key: string;
   label: string;
+  /**
+   * Drives the line hue. For a per-replica series this is the replica's
+   * stable colour slot, so the **same replica keeps the same colour across
+   * every panel**. For a series with no `instance` (cluster-sum mode, or an
+   * inherently single-cluster metric) it falls back to the per-series
+   * secondary slot.
+   */
   colorIndex: number;
+  /**
+   * Drives the line dash pattern, keyed off the **secondary** label
+   * (e.g. `vertices` vs `edges`, `p50` vs `p99`). Within one replica's
+   * colour, the dash disambiguates the second dimension so lines stay
+   * distinguishable without relying on colour alone.
+   */
+  dashIndex: number;
+  /** Full Prometheus `instance` (`IP:port`), surfaced on hover when present. */
+  instance?: string;
   lastValue: number;
   points: MetricPoint[];
 }
 
 /**
  * Maps a panel's resolved series into chart-ready series with stable keys,
- * display labels, colour slots, and the latest finite value.
+ * replica-aware display labels, colour/dash slots, and the latest finite
+ * value. When a series carries an `instance` label present in `aliases`,
+ * its label is prefixed with the short replica alias (`r0 · …`), its colour
+ * tracks the replica, and its dash tracks the secondary label; otherwise it
+ * falls back to a per-series slot (cluster-sum and single-cluster panels).
  */
 export function toChartSeries(
   panelTitle: string,
   series: PanelSeries[],
+  aliases: ReplicaAliasMap = {},
 ): ChartSeries[] {
+  const dashSlots = new Map<string, number>();
   return series.map((entry, index) => {
-    const label = seriesLegend(entry.legendTemplate, entry.labels, panelTitle);
+    const baseLabel = seriesLegend(
+      entry.legendTemplate,
+      entry.labels,
+      panelTitle,
+    );
+    if (!dashSlots.has(baseLabel)) {
+      dashSlots.set(baseLabel, dashSlots.size);
+    }
+    const dashIndex = dashSlots.get(baseLabel) ?? 0;
+    const instance = entry.labels.instance;
+    const replica =
+      instance != null && instance !== "" ? aliases[instance] : undefined;
+    const label = replica ? `${replica.alias} · ${baseLabel}` : baseLabel;
     return {
-      key: `${index}:${label}`,
+      key: replica ? `${replica.alias}:${baseLabel}` : `${index}:${baseLabel}`,
       label,
-      colorIndex: index,
+      colorIndex: replica ? replica.colorSlot : dashIndex,
+      dashIndex,
+      instance: replica?.instance ?? instance,
       lastValue: lastFiniteValue(entry.points),
       points: entry.points,
     };

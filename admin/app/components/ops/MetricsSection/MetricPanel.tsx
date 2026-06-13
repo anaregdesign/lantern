@@ -9,6 +9,7 @@ import type { PanelSpec } from "~/lib/client/usecase/ops/metrics/catalog";
 import {
   summariseSeries,
   toChartSeries,
+  type ReplicaAliasMap,
 } from "~/lib/client/usecase/ops/metrics/selectors";
 import type { PanelState } from "~/lib/client/usecase/ops/metrics/state";
 import { TimeSeriesChart } from "./TimeSeriesChart";
@@ -17,6 +18,7 @@ import styles from "./MetricPanel.module.css";
 export interface MetricPanelProps {
   panel: PanelSpec;
   state: PanelState;
+  aliases?: ReplicaAliasMap;
 }
 
 /**
@@ -26,9 +28,9 @@ export interface MetricPanelProps {
  * metric the server has not emitted yet) surfaces an inline MessageBar and
  * never affects its siblings.
  */
-export function MetricPanel({ panel, state }: MetricPanelProps) {
+export function MetricPanel({ panel, state, aliases }: MetricPanelProps) {
   const testId = `ops-metric-${panel.id}`;
-  const chart = toChartSeries(panel.title, state.series);
+  const chart = toChartSeries(panel.title, state.series, aliases);
   const pending = state.status === "idle" || state.status === "loading";
 
   return (

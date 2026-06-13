@@ -1,0 +1,42 @@
+.key {
+  list-style: none;
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 1.25rem;
+  border: 1px solid var(--colorNeutralStroke2);
+  border-radius: var(--borderRadiusMedium);
+  background: var(--colorNeutralBackground2);
+}
+
+.caption {
+  color: var(--colorNeutralForeground3);
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+}
+
+.alias {
+  color: var(--colorNeutralForeground1);
+  font-weight: 600;
+  font-family: var(--fontFamilyMonospace, monospace);
+}
+
+.separator {
+  color: var(--colorNeutralForeground4);
+}
+
+.instance {
+  color: var(--colorNeutralForeground3);
+  font-family: var(--fontFamilyMonospace, monospace);
+}

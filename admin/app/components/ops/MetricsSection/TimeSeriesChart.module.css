@@ -31,39 +31,64 @@
 }
 
 /*
- * Eight categorical series styles. Each pairs a distinct hue with a
- * distinct dash pattern so series remain distinguishable without relying
- * on colour alone (accessibility) and in monochrome printouts.
+ * Eight categorical hues. Colour encodes identity: in per-replica mode a
+ * replica keeps the same hue across every panel; otherwise it indexes the
+ * series. Pairing with a dash pattern (below) keeps the chart legible
+ * without relying on colour alone (accessibility) and in monochrome.
  */
-.series0 {
+.color0 {
   stroke: #0f6cbd;
 }
-.series1 {
+.color1 {
   stroke: #d13438;
+}
+.color2 {
+  stroke: #107c10;
+}
+.color3 {
+  stroke: #8764b8;
+}
+.color4 {
+  stroke: #c19c00;
+}
+.color5 {
+  stroke: #00b7c3;
+}
+.color6 {
+  stroke: #e3008c;
+}
+.color7 {
+  stroke: #5c2e91;
+}
+
+/*
+ * Eight dash patterns. Dash encodes the secondary dimension within a panel
+ * (e.g. vertices vs edges, p50 vs p99), so lines that share a colour
+ * (same replica) stay distinguishable. Slot i pairs with colour i to
+ * reproduce the previous single-axis styling for non-replica panels.
+ */
+.dash0 {
+  stroke-dasharray: none;
+}
+.dash1 {
   stroke-dasharray: 6 3;
 }
-.series2 {
-  stroke: #107c10;
+.dash2 {
   stroke-dasharray: 2 3;
 }
-.series3 {
-  stroke: #8764b8;
+.dash3 {
   stroke-dasharray: 8 3 2 3;
 }
-.series4 {
-  stroke: #c19c00;
+.dash4 {
   stroke-dasharray: 4 2;
 }
-.series5 {
-  stroke: #00b7c3;
+.dash5 {
   stroke-dasharray: 1 3;
 }
-.series6 {
-  stroke: #e3008c;
+.dash6 {
   stroke-dasharray: 10 4;
 }
-.series7 {
-  stroke: #5c2e91;
+.dash7 {
   stroke-dasharray: 3 3;
 }
 
