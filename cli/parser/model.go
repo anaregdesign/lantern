@@ -47,6 +47,7 @@ type Illuminate struct {
 	Algorithm string // "none" | "mst" | "spt" (default: "none")
 	Objective string // "min" | "max"           (default: "max")
 	Weighting string // "raw" | "tfidf"         (default: "raw")
+	Prefix    string // vertex-key prefix filter; "" (default) = no filter (#604)
 }
 
 // ScanVertices / ScanEdges back the `scan vertices` / `scan edges` REPL

@@ -101,7 +101,7 @@ func Validate(input string) error {
 		}
 	case "illuminate":
 		if _, err := IlluminateParam(s); err != nil {
-			return errors.New("usage: illuminate <key: string> <step: int> <k: int> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf]")
+			return errors.New("usage: illuminate <key: string> <step: int> <k: int> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf] [prefix=<string>]")
 		}
 
 	case "help":

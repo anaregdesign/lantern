@@ -248,13 +248,17 @@ func (c *CLIService) Run(ctx context.Context, str string) error {
 			fmt.Printf("Error: illuminate: unknown weighting %q\n", p.Weighting)
 			return ErrIlluminate
 		}
-		g, err := c.client.Illuminate(ctx, p.Seed,
+		opts := []client.IlluminateOption{
 			client.WithStep(uint32(p.Step)),
 			client.WithK(uint32(p.K)),
 			client.WithAlgorithm(algo),
 			client.WithObjective(obj),
 			client.WithWeighting(w),
-		)
+		}
+		if p.Prefix != "" {
+			opts = append(opts, client.WithVertexPrefix(p.Prefix))
+		}
+		g, err := c.client.Illuminate(ctx, p.Seed, opts...)
 		if err != nil {
 			fmt.Printf("Error: %s\n", err)
 			return ErrConnection
