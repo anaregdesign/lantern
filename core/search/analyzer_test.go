@@ -40,13 +40,15 @@ func TestNewAnalyzerMultipleNormalizers(t *testing.T) {
 	}
 }
 
-func TestNewAnalyzerDefaultsTokenizer(t *testing.T) {
-	// An empty normalizer list is skipped; a nil tokenizer falls back to UnicodeTokenizer.
-	a := NewAnalyzer(nil, nil)
-	got := termsOf(a.Analyze("a-b c"))
-	if !equalStrings(got, []string{"a", "b", "c"}) {
-		t.Fatalf("Analyze = %v, want [a b c]", got)
-	}
+func TestNewAnalyzerNilTokenizerPanics(t *testing.T) {
+	// The tokenizer is required: NewAnalyzer forbids a nil default and panics
+	// instead of silently substituting one.
+	defer func() {
+		if recover() == nil {
+			t.Fatal("NewAnalyzer(nil, nil) did not panic")
+		}
+	}()
+	NewAnalyzer(nil, nil)
 }
 
 func TestNGramAnalyzer(t *testing.T) {

@@ -26,11 +26,13 @@ type pipelineAnalyzer struct {
 
 // NewAnalyzer builds an Analyzer from an ordered list of normalizers (each
 // applied in turn; pass nil or an empty slice to skip normalization), a
-// tokenizer (defaults to UnicodeTokenizer when nil), and an ordered list of
-// token filters.
+// tokenizer, and an ordered list of token filters. The tokenizer is required:
+// NewAnalyzer panics on a nil tokenizer rather than substituting a default, so
+// the analysis pipeline is always exactly what the caller spelled out. Pass
+// UnicodeTokenizer{} explicitly for the language-independent default.
 func NewAnalyzer(normalizers []Normalizer, tokenizer Tokenizer, filters ...TokenFilter) Analyzer {
 	if tokenizer == nil {
-		tokenizer = UnicodeTokenizer{}
+		panic("search: NewAnalyzer requires a non-nil tokenizer")
 	}
 	return &pipelineAnalyzer{
 		normalizers: normalizers,
