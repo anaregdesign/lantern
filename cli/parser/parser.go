@@ -316,18 +316,19 @@ func DeleteEdgeParam(s *Source) (*DeleteEdge, error) {
 	return m, nil
 }
 
-// IlluminateParam parses the modernised illuminate grammar (#410):
+// IlluminateParam parses the modernised illuminate grammar (#410, #604):
 //
-//	illuminate <seed> <step> <k> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf]
+//	illuminate <seed> <step> <k> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf] [prefix=<string>]
 //
-// The three keyword arguments may appear in any order and any subset.
-// Each defaults to the strongest-edge behaviour (algorithm=none,
+// The keyword arguments may appear in any order and any subset. The three
+// closed-set axes default to the strongest-edge behaviour (algorithm=none,
 // objective=max, weighting=raw); objective defaults to max so a bare
 // illuminate keeps the top-k strongest neighbours and the per-hop
-// pruning matches the reduction direction (#560).
-// Unknown keyword names, malformed `key=value` tokens, or values
-// outside the canonical set above are rejected with a descriptive
-// error so the REPL can surface a usage hint.
+// pruning matches the reduction direction (#560). prefix is free-text and
+// defaults to empty (no frontier filter; #604).
+// Unknown keyword names, malformed `key=value` tokens, closed-set values
+// outside the canonical set above, or an empty prefix= value are rejected
+// with a descriptive error so the REPL can surface a usage hint.
 func IlluminateParam(s *Source) (*Illuminate, error) {
 	var err error
 	m := &Illuminate{Algorithm: "none", Objective: "max", Weighting: "raw"}
@@ -349,29 +350,35 @@ func IlluminateParam(s *Source) (*Illuminate, error) {
 		if !ok {
 			return nil, errors.New("illuminate: expected key=value token, got " + tok)
 		}
-		// Keyword KEY and the keyword VALUE for the three closed-set
-		// axes are case-insensitive — they only ever take values from
-		// a small fixed enum. See #437.
+		// The keyword KEY is always case-insensitive. The three closed-set
+		// axes also fold their VALUE because they only ever take a small
+		// fixed enum (#437); the free-text prefix VALUE is matched against
+		// vertex keys verbatim, so it stays case-SENSITIVE (#604).
 		key = strings.ToLower(key)
-		value = strings.ToLower(value)
+		lvalue := strings.ToLower(value)
 		switch key {
 		case "algorithm":
-			if !contains(IlluminateAlgorithms, value) {
+			if !contains(IlluminateAlgorithms, lvalue) {
 				return nil, errors.New("illuminate: algorithm=" + value + " (want none|mst|spt)")
 			}
-			m.Algorithm = value
+			m.Algorithm = lvalue
 		case "objective":
-			if !contains(IlluminateObjectives, value) {
+			if !contains(IlluminateObjectives, lvalue) {
 				return nil, errors.New("illuminate: objective=" + value + " (want min|max)")
 			}
-			m.Objective = value
+			m.Objective = lvalue
 		case "weighting":
-			if !contains(IlluminateWeightings, value) {
+			if !contains(IlluminateWeightings, lvalue) {
 				return nil, errors.New("illuminate: weighting=" + value + " (want raw|tfidf)")
 			}
-			m.Weighting = value
+			m.Weighting = lvalue
+		case "prefix":
+			if value == "" {
+				return nil, errors.New("illuminate: prefix= requires a non-empty value")
+			}
+			m.Prefix = value
 		default:
-			return nil, errors.New("illuminate: unknown key " + key + " (want algorithm|objective|weighting)")
+			return nil, errors.New("illuminate: unknown key " + key + " (want algorithm|objective|weighting|prefix)")
 		}
 	}
 	return m, nil
@@ -464,6 +471,7 @@ const HelpText = `Lantern CLI grammar:
              [algorithm={none|mst|spt}]  default=none
              [objective={min|max}]       default=max
              [weighting={raw|tfidf}]     default=raw
+             [prefix=<string>]           default=all keys
   help
   exit
 

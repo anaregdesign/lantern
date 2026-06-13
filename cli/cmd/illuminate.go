@@ -14,6 +14,7 @@ var (
 	illuminateAlgorithmStr string
 	illuminateObjectiveStr string
 	illuminateWeightingStr string
+	illuminatePrefixStr    string
 )
 
 // algorithmByName, objectiveByName, weightingByName map human-friendly
@@ -67,6 +68,16 @@ ORTHOGONAL ILLUMINATE AXES (#410)
                           tfidf re-score using TF-IDF over the per-vertex
                                 out-edge distribution
 
+FRONTIER FILTER (#604)
+  --prefix <string>     restrict the walk frontier to vertices whose key
+                        has this prefix. The seed is always kept as the
+                        anchor even if it does not match. Empty (default)
+                        = no filter. The value is case-sensitive. Applied
+                        server-side BEFORE per-hop top-k and any --algorithm
+                        reduction, so --prefix with --algorithm mst|spt
+                        yields a tree over the prefix-induced subgraph, NOT
+                        a shortest path in the full graph.
+
 OUTPUT
   JSON object on stdout:
     {
@@ -93,6 +104,9 @@ EXAMPLES
 
   # 3-hop relevance-weighted SPT (formerly the "inverse-SPT" enum value)
   lantern illuminate alice --step 3 --k 20 --algorithm spt --objective max
+
+  # 2-hop walk restricted to the users/ keyspace (seed always kept)
+  lantern illuminate alice --step 2 --k 5 --prefix users/
 `,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -114,14 +128,17 @@ EXAMPLES
 		}
 		defer func() { _ = cli.Close() }()
 
-		g, err := cli.Illuminate(
-			cmd.Context(), args[0],
+		opts := []client.IlluminateOption{
 			client.WithStep(illuminateStep),
 			client.WithK(illuminateK),
 			client.WithAlgorithm(algo),
 			client.WithObjective(obj),
 			client.WithWeighting(w),
-		)
+		}
+		if illuminatePrefixStr != "" {
+			opts = append(opts, client.WithVertexPrefix(illuminatePrefixStr))
+		}
+		g, err := cli.Illuminate(cmd.Context(), args[0], opts...)
 		if err != nil {
 			return err
 		}
@@ -137,5 +154,6 @@ func init() {
 	illuminateCmd.Flags().StringVar(&illuminateAlgorithmStr, "algorithm", "none", "post-traversal reduction: none|mst|spt (#410)")
 	illuminateCmd.Flags().StringVar(&illuminateObjectiveStr, "objective", "max", "optimisation direction: min|max; governs per-hop top-k pruning AND reduction (#560)")
 	illuminateCmd.Flags().StringVar(&illuminateWeightingStr, "weighting", "raw", "edge-weight transform before walk: raw|tfidf (#410)")
+	illuminateCmd.Flags().StringVar(&illuminatePrefixStr, "prefix", "", "restrict walk frontier to vertices with this key prefix; seed always kept, empty = no filter (#604)")
 	rootCmd.AddCommand(illuminateCmd)
 }

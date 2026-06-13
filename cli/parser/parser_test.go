@@ -90,3 +90,76 @@ func TestParam_OmittedTTLIsPermanent(t *testing.T) {
 		}
 	})
 }
+
+// TestIlluminateParam_Prefix pins the #604 vertex-prefix kwarg. Unlike the
+// closed-set axes, prefix= is free-text: the key is case-insensitive but the
+// value is preserved verbatim (it matches vertex keys), it composes with the
+// axis kwargs in any order, an omitted prefix leaves the field empty (no
+// filter), and an explicit prefix= with no value is rejected.
+func TestIlluminateParam_Prefix(t *testing.T) {
+	t.Run("parses value verbatim", func(t *testing.T) {
+		s, err := NewSource("alice 2 5 prefix=team:")
+		if err != nil {
+			t.Fatalf("NewSource: %v", err)
+		}
+		m, err := IlluminateParam(s)
+		if err != nil {
+			t.Fatalf("IlluminateParam: %v", err)
+		}
+		if m.Prefix != "team:" {
+			t.Fatalf("Prefix = %q, want %q", m.Prefix, "team:")
+		}
+	})
+
+	t.Run("omitted leaves prefix empty", func(t *testing.T) {
+		s, err := NewSource("alice 2 5 algorithm=mst")
+		if err != nil {
+			t.Fatalf("NewSource: %v", err)
+		}
+		m, err := IlluminateParam(s)
+		if err != nil {
+			t.Fatalf("IlluminateParam: %v", err)
+		}
+		if m.Prefix != "" {
+			t.Fatalf("Prefix = %q, want empty", m.Prefix)
+		}
+	})
+
+	t.Run("key case-insensitive, value case-sensitive", func(t *testing.T) {
+		s, err := NewSource("alice 2 5 PREFIX=Users/Alice")
+		if err != nil {
+			t.Fatalf("NewSource: %v", err)
+		}
+		m, err := IlluminateParam(s)
+		if err != nil {
+			t.Fatalf("IlluminateParam: %v", err)
+		}
+		if m.Prefix != "Users/Alice" {
+			t.Fatalf("Prefix = %q, want %q", m.Prefix, "Users/Alice")
+		}
+	})
+
+	t.Run("composes with axis kwargs in any order", func(t *testing.T) {
+		s, err := NewSource("alice 2 5 prefix=users/ algorithm=spt objective=min")
+		if err != nil {
+			t.Fatalf("NewSource: %v", err)
+		}
+		m, err := IlluminateParam(s)
+		if err != nil {
+			t.Fatalf("IlluminateParam: %v", err)
+		}
+		if m.Prefix != "users/" || m.Algorithm != "spt" || m.Objective != "min" {
+			t.Fatalf("got prefix=%q algorithm=%q objective=%q", m.Prefix, m.Algorithm, m.Objective)
+		}
+	})
+
+	t.Run("empty value rejected", func(t *testing.T) {
+		s, err := NewSource("alice 2 5 prefix=")
+		if err != nil {
+			t.Fatalf("NewSource: %v", err)
+		}
+		if _, err := IlluminateParam(s); err == nil {
+			t.Fatal("IlluminateParam accepted empty prefix=; want error")
+		}
+	})
+}
