@@ -1,12 +1,21 @@
 package search
 
-import "sync"
+import (
+	"sort"
+	"sync"
+)
 
 // InvertedIndex is a generic, in-memory inverted index that maps each
-// analyzed term to the set of document IDs whose text contains it. It is the
-// default Indexer + Searcher implementation: indexed documents (any Document,
-// via doc.String()) and raw queries pass through the same Analyzer, so
-// index-time and query-time terms stay symmetric.
+// analyzed term to the documents whose text contains it. It is the default
+// Indexer + Searcher implementation: indexed documents (any Document, via
+// doc.String()) and raw queries pass through the same Analyzer, so index-time
+// and query-time terms stay symmetric.
+//
+// It splits the two responsibilities of relevance search. The index owns
+// matching and the statistics behind it — per-document term frequencies and
+// document lengths — while a pluggable Scorer (BM25 by default) turns those
+// statistics into the ranking. Search returns hits ordered by descending
+// score.
 //
 // InvertedIndex is safe for concurrent use by multiple goroutines: reads
 // (Search) take a shared lock and writes (Index, Delete) take an exclusive
@@ -14,25 +23,44 @@ import "sync"
 // short.
 type InvertedIndex[S comparable, D Document] struct {
 	analyzer Analyzer
+	scorer   Scorer
 
 	mu sync.RWMutex
-	// postings is the inverted index proper: term -> set of documents that
-	// contain it. Search reads it.
-	postings map[string]map[S]struct{}
-	// terms is a forward index: document -> set of terms it was indexed
-	// under. It lets Delete (and re-indexing) drop a document's old postings
-	// in O(terms-in-doc) without scanning the whole vocabulary.
-	terms map[S]map[string]struct{}
+	// postings is the inverted index proper: term -> (document -> term
+	// frequency in that document). Search reads it, and the per-document count
+	// is what the Scorer needs to weight a match.
+	postings map[string]map[S]int
+	// docs is a forward index: document -> the stats needed to drop it in
+	// O(terms-in-doc) on delete or re-index and to length-normalize its score.
+	docs map[S]docStats
+	// totalLen is the sum of every document's length, so the mean document
+	// length (for length normalization) is totalLen/len(docs) without a scan.
+	totalLen int
+}
+
+// docStats is the forward-index entry recorded for each indexed document.
+type docStats struct {
+	// length is the document's size in tokens, repeats included — the |d| that
+	// length normalization compares against the corpus average.
+	length int
+	// terms is the set of distinct terms the document was indexed under, used
+	// to find and drop its postings on delete or re-index.
+	terms map[string]struct{}
 }
 
 // NewInvertedIndex returns an empty index that analyzes both documents and
-// queries with analyzer. D is the document type it accepts; use Text to index
-// plain strings.
-func NewInvertedIndex[S comparable, D Document](analyzer Analyzer) *InvertedIndex[S, D] {
+// queries with analyzer and ranks matches with scorer. Passing a nil scorer
+// installs BM25 with the standard parameters (K1 = 1.2, B = 0.75). D is the
+// document type it accepts; use Text to index plain strings.
+func NewInvertedIndex[S comparable, D Document](analyzer Analyzer, scorer Scorer) *InvertedIndex[S, D] {
+	if scorer == nil {
+		scorer = BM25{K1: defaultBM25K1, B: defaultBM25B}
+	}
 	return &InvertedIndex[S, D]{
 		analyzer: analyzer,
-		postings: make(map[string]map[S]struct{}),
-		terms:    make(map[S]map[string]struct{}),
+		scorer:   scorer,
+		postings: make(map[string]map[S]int),
+		docs:     make(map[S]docStats),
 	}
 }
 
@@ -59,13 +87,14 @@ func (idx *InvertedIndex[S, D]) Index(id S, doc D) {
 	for _, token := range tokens {
 		posting, ok := idx.postings[token.Term]
 		if !ok {
-			posting = make(map[S]struct{})
+			posting = make(map[S]int)
 			idx.postings[token.Term] = posting
 		}
-		posting[id] = struct{}{}
+		posting[id]++ // accumulate this document's term frequency
 		terms[token.Term] = struct{}{}
 	}
-	idx.terms[id] = terms
+	idx.docs[id] = docStats{length: len(tokens), terms: terms}
+	idx.totalLen += len(tokens)
 }
 
 // Delete removes id and all of its postings from the index. It is a no-op when
@@ -81,45 +110,79 @@ func (idx *InvertedIndex[S, D]) Delete(id S) {
 // writing. It is shared by Delete and the replace step of Index, which already
 // holds the lock—sync.Mutex is not reentrant, so Index must not call Delete.
 func (idx *InvertedIndex[S, D]) deleteLocked(id S) {
-	terms, ok := idx.terms[id]
+	stats, ok := idx.docs[id]
 	if !ok {
 		return
 	}
-	for term := range terms {
+	for term := range stats.terms {
 		posting := idx.postings[term]
 		delete(posting, id)
 		if len(posting) == 0 {
 			delete(idx.postings, term)
 		}
 	}
-	delete(idx.terms, id)
+	idx.totalLen -= stats.length
+	delete(idx.docs, id)
 }
 
-// Search returns every document ID that shares at least one analyzed term with
-// query (union / OR semantics). OR maximizes recall, which is what a caller
-// wants when the result only has to seed a wider graph traversal. Each ID
-// appears once and the order is unspecified; a query with no analyzable terms
-// returns nil.
-func (idx *InvertedIndex[S, D]) Search(query string) []S {
+// Search returns the documents that share at least one analyzed term with
+// query, each paired with its relevance score, ordered from most to least
+// relevant. The set of matches is the union (OR) of the query's terms, which
+// maximizes recall for seeding a wider traversal, while the Scorer (BM25 by
+// default) ranks that set so the strongest seeds come first. A term repeated
+// in the query weights a document only once. A query with no analyzable terms,
+// or one that matches nothing, returns nil; ties in score have an unspecified
+// order.
+func (idx *InvertedIndex[S, D]) Search(query string) []Result[S] {
 	tokens := idx.analyzer.Analyze(query)
+	if len(tokens) == 0 {
+		return nil
+	}
+	// Collapse the query to its distinct terms so a term repeated in the query
+	// contributes a document's weight once, matching the boolean union.
+	queryTerms := make(map[string]struct{}, len(tokens))
+	for _, token := range tokens {
+		queryTerms[token.Term] = struct{}{}
+	}
 
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
-	matched := make(map[S]struct{})
-	for _, token := range tokens {
-		for id := range idx.postings[token.Term] {
-			matched[id] = struct{}{}
-		}
-	}
-	if len(matched) == 0 {
+	n := len(idx.docs)
+	if n == 0 {
 		return nil
 	}
-	ids := make([]S, 0, len(matched))
-	for id := range matched {
-		ids = append(ids, id)
+	avgLen := float64(idx.totalLen) / float64(n)
+
+	scores := make(map[S]float64)
+	for term := range queryTerms {
+		posting, ok := idx.postings[term]
+		if !ok {
+			continue
+		}
+		df := len(posting)
+		for id, tf := range posting {
+			scores[id] += idx.scorer.Score(TermStats{
+				TF:     tf,
+				DF:     df,
+				N:      n,
+				DocLen: idx.docs[id].length,
+				AvgLen: avgLen,
+			})
+		}
 	}
-	return ids
+	if len(scores) == 0 {
+		return nil
+	}
+	results := make([]Result[S], 0, len(scores))
+	for id, score := range scores {
+		results = append(results, Result[S]{ID: id, Score: score})
+	}
+	// Rank by descending score; ties keep an unspecified relative order.
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
+	})
+	return results
 }
 
 // Interface assertions: InvertedIndex is both an Indexer and a Searcher.

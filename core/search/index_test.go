@@ -22,7 +22,7 @@ func (fakeAnalyzer) Analyze(text string) []Token {
 }
 
 func TestInvertedIndex(t *testing.T) {
-	idx := NewInvertedIndex[string, Text](fakeAnalyzer{})
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil)
 	idx.Index("doc1", Text("Alpha Beta"))
 	idx.Index("doc2", Text("beta gamma"))
 
@@ -41,8 +41,8 @@ func TestInvertedIndex(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := idx.Search(tt.query)
-			sort.Strings(got) // Search order is unspecified.
+			got := idsOf(idx.Search(tt.query))
+			sort.Strings(got) // Search ranks by score; sort to compare the match set.
 			if !equalStrings(got, tt.want) {
 				t.Fatalf("Search(%q) = %v, want %v", tt.query, got, tt.want)
 			}
@@ -51,18 +51,17 @@ func TestInvertedIndex(t *testing.T) {
 }
 
 func TestInvertedIndexDelete(t *testing.T) {
-	idx := NewInvertedIndex[string, Text](fakeAnalyzer{})
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil)
 	idx.Index("doc1", Text("alpha beta"))
 	idx.Index("doc2", Text("beta gamma"))
 
 	idx.Delete("doc1")
 
-	if got := idx.Search("alpha"); got != nil {
-		t.Fatalf(`Search("alpha") after delete = %v, want nil`, got)
+	if got := idsOf(idx.Search("alpha")); len(got) != 0 {
+		t.Fatalf(`Search("alpha") after delete = %v, want none`, got)
 	}
 	// doc2 still owns "beta"; only doc1's posting is gone.
-	got := idx.Search("beta")
-	sort.Strings(got)
+	got := idsOf(idx.Search("beta"))
 	if !equalStrings(got, []string{"doc2"}) {
 		t.Fatalf(`Search("beta") after delete = %v, want [doc2]`, got)
 	}
@@ -75,17 +74,21 @@ func TestInvertedIndexDelete(t *testing.T) {
 	if got := idx.Search("beta gamma"); got != nil {
 		t.Fatalf("Search after deleting all docs = %v, want nil", got)
 	}
-	// Empty posting sets and forward entries must be reclaimed, not leaked.
+	// Empty posting sets, forward entries, and the length total must be
+	// reclaimed, not leaked.
 	if len(idx.postings) != 0 {
 		t.Fatalf("postings not fully reclaimed: %v", idx.postings)
 	}
-	if len(idx.terms) != 0 {
-		t.Fatalf("forward terms not fully reclaimed: %v", idx.terms)
+	if len(idx.docs) != 0 {
+		t.Fatalf("forward docs not fully reclaimed: %v", idx.docs)
+	}
+	if idx.totalLen != 0 {
+		t.Fatalf("totalLen not reset: %d", idx.totalLen)
 	}
 }
 
 func TestInvertedIndexReindexReplaces(t *testing.T) {
-	idx := NewInvertedIndex[string, Text](fakeAnalyzer{})
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil)
 	idx.Index("doc1", Text("alpha beta"))
 	// Re-index the same id with new text: the old terms must not linger.
 	idx.Index("doc1", Text("gamma"))
@@ -96,7 +99,7 @@ func TestInvertedIndexReindexReplaces(t *testing.T) {
 	if got := idx.Search("beta"); got != nil {
 		t.Fatalf(`Search("beta") after re-index = %v, want nil`, got)
 	}
-	if got := idx.Search("gamma"); !equalStrings(got, []string{"doc1"}) {
+	if got := idsOf(idx.Search("gamma")); !equalStrings(got, []string{"doc1"}) {
 		t.Fatalf(`Search("gamma") after re-index = %v, want [doc1]`, got)
 	}
 
@@ -105,6 +108,61 @@ func TestInvertedIndexReindexReplaces(t *testing.T) {
 	if got := idx.Search("gamma"); got != nil {
 		t.Fatalf(`Search("gamma") after empty re-index = %v, want nil`, got)
 	}
+	if idx.totalLen != 0 {
+		t.Fatalf("totalLen not reset after removing last doc: %d", idx.totalLen)
+	}
+}
+
+// TestInvertedIndexRanking covers the BM25 ranking the index applies on top of
+// boolean matching: more occurrences, shorter documents, and rarer query terms
+// all rank a document higher, and a query term repeated does not double-count.
+func TestInvertedIndexRanking(t *testing.T) {
+	t.Run("higher term frequency ranks first", func(t *testing.T) {
+		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil)
+		idx.Index("more", Text("go go go rust"))
+		idx.Index("less", Text("go rust python"))
+		res := idx.Search("go")
+		if len(res) != 2 {
+			t.Fatalf("Search(go) returned %d results, want 2", len(res))
+		}
+		if res[0].ID != "more" {
+			t.Fatalf("ranked %q first, want \"more\" (higher term frequency)", res[0].ID)
+		}
+		if !(res[0].Score > res[1].Score && res[1].Score > 0) {
+			t.Fatalf("scores not positive and descending: %+v", res)
+		}
+	})
+
+	t.Run("shorter document ranks first at equal term frequency", func(t *testing.T) {
+		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil)
+		idx.Index("short", Text("go rust"))
+		idx.Index("long", Text("go rust python java perl"))
+		res := idx.Search("go")
+		if len(res) != 2 || res[0].ID != "short" {
+			t.Fatalf("ranked %+v, want \"short\" first (length normalization)", res)
+		}
+	})
+
+	t.Run("rarer query term lifts its document", func(t *testing.T) {
+		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil)
+		idx.Index("a", Text("common rare"))
+		idx.Index("b", Text("common x"))
+		idx.Index("c", Text("common y"))
+		res := idx.Search("common rare")
+		if len(res) != 3 || res[0].ID != "a" {
+			t.Fatalf("ranked %+v, want \"a\" first (it owns the rare term)", res)
+		}
+	})
+
+	t.Run("repeated query term scored once", func(t *testing.T) {
+		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil)
+		idx.Index("d", Text("go rust"))
+		once := idx.Search("go")
+		twice := idx.Search("go go")
+		if len(once) != 1 || len(twice) != 1 || once[0].Score != twice[0].Score {
+			t.Fatalf("repeated query term changed the score: once=%+v twice=%+v", once, twice)
+		}
+	})
 }
 
 // TestInvertedIndexConcurrent exercises concurrent Index/Delete/Search so the
@@ -112,7 +170,7 @@ func TestInvertedIndexReindexReplaces(t *testing.T) {
 // final document count is deterministic: each writer keeps its odd-indexed
 // documents and deletes the even-indexed ones.
 func TestInvertedIndexConcurrent(t *testing.T) {
-	idx := NewInvertedIndex[int, Text](NewStandardAnalyzer())
+	idx := NewInvertedIndex[int, Text](NewStandardAnalyzer(), nil)
 
 	const writers = 8
 	const docsPerWriter = 200

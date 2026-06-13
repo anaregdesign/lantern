@@ -23,3 +23,13 @@ func termsOf(tokens []Token) []string {
 	}
 	return out
 }
+
+// idsOf extracts the document IDs from ranked search results, preserving the
+// result order, so index tests can assert on matches and ranking separately.
+func idsOf[S comparable](results []Result[S]) []S {
+	out := make([]S, len(results))
+	for i, r := range results {
+		out[i] = r.ID
+	}
+	return out
+}
