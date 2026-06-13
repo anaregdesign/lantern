@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import {
   MessageBar,
   MessageBarBody,
@@ -11,14 +12,23 @@ import {
   type PanelGroup,
 } from "~/lib/client/usecase/ops/metrics/catalog";
 import {
+  AGG_MODE_OPTIONS,
+  type AggMode,
+} from "~/lib/client/usecase/ops/metrics/mode";
+import {
   RANGE_OPTIONS,
   type RangeKey,
 } from "~/lib/client/usecase/ops/metrics/range";
+import {
+  buildReplicaAliases,
+  type ReplicaAliasMap,
+} from "~/lib/client/usecase/ops/metrics/selectors";
 import type { PanelState } from "~/lib/client/usecase/ops/metrics/state";
 import { useMetrics } from "~/lib/client/usecase/ops/metrics/use-metrics";
 import { usePrometheusUrl } from "~/lib/client/usecase/ops/metrics/use-prometheus-url";
 import { MetricPanel } from "./MetricPanel";
 import { PrometheusSwitcher } from "./PrometheusSwitcher";
+import { ReplicaKey } from "./ReplicaKey";
 import styles from "./MetricsSection.module.css";
 
 export interface MetricsSectionProps {
@@ -37,11 +47,19 @@ export interface MetricsSectionProps {
  */
 export function MetricsSection({ pollMs, refreshNonce }: MetricsSectionProps) {
   const prometheus = usePrometheusUrl();
-  const { state, range, setRange } = useMetrics({
+  const { state, range, setRange, aggMode, setAggMode } = useMetrics({
     prometheusUrl: prometheus.prometheusUrl,
     pollMs,
     refreshNonce,
   });
+
+  // One replica identity map for the whole section, recomputed only when the
+  // panel series change. Threading a single map down keeps each replica's
+  // alias and colour consistent across every panel.
+  const aliases = useMemo(
+    () => buildReplicaAliases(state.panels),
+    [state.panels],
+  );
 
   const panelStates = Object.values(state.panels);
   const allError =
@@ -59,6 +77,18 @@ export function MetricsSection({ pollMs, refreshNonce }: MetricsSectionProps) {
           </p>
         </div>
         <div className={styles.toolbar}>
+          <TabList
+            selectedValue={aggMode}
+            onTabSelect={(_, data) => setAggMode(data.value as AggMode)}
+            size="small"
+            data-testid="ops-metrics-agg-mode"
+          >
+            {AGG_MODE_OPTIONS.map((option) => (
+              <Tab key={option.key} value={option.key}>
+                {option.label}
+              </Tab>
+            ))}
+          </TabList>
           <TabList
             selectedValue={range}
             onTabSelect={(_, data) => setRange(data.value as RangeKey)}
@@ -86,6 +116,8 @@ export function MetricsSection({ pollMs, refreshNonce }: MetricsSectionProps) {
         </MessageBar>
       )}
 
+      <ReplicaKey aliases={aliases} />
+
       {PANEL_GROUPS.map((group) => {
         const panels = METRIC_PANELS.filter(
           (panel) => panel.group === group.id,
@@ -100,6 +132,7 @@ export function MetricsSection({ pollMs, refreshNonce }: MetricsSectionProps) {
             groupId={group.id}
             panels={panels}
             state={state.panels}
+            aliases={aliases}
           />
         );
       })}
@@ -112,9 +145,16 @@ interface MetricGroupProps {
   groupId: PanelGroup;
   panels: typeof METRIC_PANELS;
   state: Record<string, PanelState>;
+  aliases: ReplicaAliasMap;
 }
 
-function MetricGroup({ label, groupId, panels, state }: MetricGroupProps) {
+function MetricGroup({
+  label,
+  groupId,
+  panels,
+  state,
+  aliases,
+}: MetricGroupProps) {
   return (
     <div className={styles.group} data-testid={`ops-metrics-group-${groupId}`}>
       <h3 className={styles.groupTitle}>{label}</h3>
@@ -125,7 +165,12 @@ function MetricGroup({ label, groupId, panels, state }: MetricGroupProps) {
             return null;
           }
           return (
-            <MetricPanel key={panel.id} panel={panel} state={panelState} />
+            <MetricPanel
+              key={panel.id}
+              panel={panel}
+              state={panelState}
+              aliases={aliases}
+            />
           );
         })}
       </div>

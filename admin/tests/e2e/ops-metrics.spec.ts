@@ -30,6 +30,28 @@ function matrixEnvelope(now: number, step = 60, count = 10) {
   };
 }
 
+/**
+ * Builds a `query_range` matrix envelope with one series per `instance`, each
+ * offset so the lines are distinct. Mirrors what Prometheus returns for a
+ * per-replica query (`sum by (instance) (…)`): every series carries an
+ * `instance` label, which is what drives the replica alias map and key.
+ */
+function multiInstanceEnvelope(
+  now: number,
+  instances: string[],
+  step = 60,
+  count = 10,
+) {
+  const result = instances.map((instance, idx) => {
+    const values: Array<[number, string]> = [];
+    for (let i = count - 1; i >= 0; i -= 1) {
+      values.push([now - i * step, String(100 + idx * 10 + (count - i))]);
+    }
+    return { metric: { __name__: "lantern_vertices", instance }, values };
+  });
+  return { status: "success", data: { resultType: "matrix", result } };
+}
+
 test.describe("Ops metrics section", () => {
   test("renders the metrics section below the status cards", async ({
     page,
@@ -49,6 +71,27 @@ test.describe("Ops metrics section", () => {
     await expect(
       page.getByTestId("ops-metrics-range").getByRole("tab", { name: "1h" }),
     ).toHaveAttribute("aria-selected", "true");
+    // The aggregation toggle defaults to per-replica.
+    await expect(
+      page
+        .getByTestId("ops-metrics-agg-mode")
+        .getByRole("tab", { name: "Per-replica" }),
+    ).toHaveAttribute("aria-selected", "true");
+  });
+
+  test("persists the aggregation mode across reloads", async ({ page }) => {
+    await page.goto("/ops");
+    const toggle = page.getByTestId("ops-metrics-agg-mode");
+    await toggle.getByRole("tab", { name: "Sum" }).click();
+    await expect(toggle.getByRole("tab", { name: "Sum" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await page.reload();
+    await expect(toggle.getByRole("tab", { name: "Sum" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
   });
 
   test("shows the degraded banner when no Prometheus is reachable", async ({
@@ -81,6 +124,47 @@ test.describe("Ops metrics section", () => {
     await expect(
       page.getByTestId("ops-metric-cache-size-summary"),
     ).toBeVisible();
+  });
+
+  test("shows the replica key in per-replica mode and hides it in sum mode", async ({
+    page,
+  }) => {
+    // The mock branches on the composed query: per-replica queries group by
+    // `instance` (so series carry an instance label and the replica key
+    // appears); cluster-sum queries do not (so the key self-hides).
+    await page.route("**/api/prom/api/v1/query_range*", async (route) => {
+      const now = Math.floor(Date.now() / 1000);
+      const query = new URL(route.request().url()).searchParams.get("query");
+      const body = (query ?? "").includes("instance")
+        ? multiInstanceEnvelope(now, [
+            "10.0.0.1:9090",
+            "10.0.0.2:9090",
+            "10.0.0.3:9090",
+          ])
+        : matrixEnvelope(now);
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(body),
+      });
+    });
+
+    await page.goto("/ops");
+    // Per-replica is the default: the key maps each alias to its instance.
+    const key = page.getByTestId("ops-metrics-replica-key");
+    await expect(key).toBeVisible();
+    await expect(key).toContainText("r0");
+    await expect(key).toContainText("10.0.0.1:9090");
+    await expect(key).toContainText("r2");
+    await expect(key).toContainText("10.0.0.3:9090");
+
+    // Switching to cluster-sum drops the instance grouping; series lose their
+    // instance label and the key disappears.
+    await page
+      .getByTestId("ops-metrics-agg-mode")
+      .getByRole("tab", { name: "Sum" })
+      .click();
+    await expect(key).toHaveCount(0);
   });
 
   test("persists a runtime Prometheus URL override", async ({ page }) => {

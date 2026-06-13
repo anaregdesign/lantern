@@ -1,6 +1,7 @@
 const STORAGE_KEY = "lantern.admin.baseUrl";
 const PROMETHEUS_STORAGE_KEY = "lantern.admin.prometheusUrl";
 const METRICS_RANGE_STORAGE_KEY = "lantern.admin.metricsRange";
+const METRICS_AGG_MODE_STORAGE_KEY = "lantern.admin.metricsAggMode";
 
 export interface BrowserStorage {
   get(key: string): string | null;
@@ -51,3 +52,9 @@ export const prometheusStorageKey = PROMETHEUS_STORAGE_KEY;
  * selection under (e.g. `1h`). See `usecase/ops/metrics/range.ts`.
  */
 export const metricsRangeStorageKey = METRICS_RANGE_STORAGE_KEY;
+
+/**
+ * localStorage key the admin SPA stores the Ops Metrics aggregation mode
+ * under (`per-replica` or `sum`). See `usecase/ops/metrics/mode.ts`.
+ */
+export const metricsAggModeStorageKey = METRICS_AGG_MODE_STORAGE_KEY;

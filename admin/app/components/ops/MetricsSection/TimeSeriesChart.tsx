@@ -24,9 +24,11 @@ const PAD_BOTTOM = 28;
 const PLOT_W = WIDTH - PAD_LEFT - PAD_RIGHT;
 const PLOT_H = HEIGHT - PAD_TOP - PAD_BOTTOM;
 const Y_TICKS = 4;
-// Number of distinct series styles defined in the CSS module (.series0…N).
-// Colour AND dash pattern vary per slot so the chart is never colour-only.
-const SERIES_STYLES = 8;
+// Number of distinct hue / dash slots defined in the CSS module
+// (.color0…N / .dash0…N). Colour encodes identity (replica, or series) and
+// dash encodes the secondary dimension, so a chart is never colour-only.
+const COLOR_SLOTS = 8;
+const DASH_SLOTS = 8;
 
 /**
  * TimeSeriesChart is a dependency-free multi-series line chart. The admin
@@ -73,7 +75,11 @@ export function TimeSeriesChart({
         <desc id={descId}>
           {series.length} series, latest values:{" "}
           {series
-            .map((s) => `${s.label} ${formatValue(s.lastValue, unit)}`)
+            .map(
+              (s) =>
+                `${s.label} ${formatValue(s.lastValue, unit)}` +
+                (s.instance ? ` (${s.instance})` : ""),
+            )
             .join("; ")}
           .
         </desc>
@@ -122,22 +128,31 @@ export function TimeSeriesChart({
           return (
             <path
               key={s.key}
-              className={`${styles.line} ${seriesClass(s.colorIndex)}`}
+              className={`${styles.line} ${colorClass(s.colorIndex)} ${dashClass(s.dashIndex)}`}
               d={d}
-            />
+            >
+              <title>
+                {s.label} {formatValue(s.lastValue, unit)}
+                {s.instance ? ` — ${s.instance}` : ""}
+              </title>
+            </path>
           );
         })}
       </svg>
       <ul className={styles.legend}>
         {series.map((s) => (
-          <li key={s.key} className={styles.legendItem}>
+          <li
+            key={s.key}
+            className={styles.legendItem}
+            title={s.instance ?? undefined}
+          >
             <svg
               className={styles.swatch}
               viewBox="0 0 24 8"
               aria-hidden="true"
             >
               <line
-                className={`${styles.line} ${seriesClass(s.colorIndex)}`}
+                className={`${styles.line} ${colorClass(s.colorIndex)} ${dashClass(s.dashIndex)}`}
                 x1="0"
                 y1="4"
                 x2="24"
@@ -155,9 +170,14 @@ export function TimeSeriesChart({
   );
 }
 
-function seriesClass(colorIndex: number): string {
-  const slot = ((colorIndex % SERIES_STYLES) + SERIES_STYLES) % SERIES_STYLES;
-  return styles[`series${slot}`] ?? "";
+function colorClass(colorIndex: number): string {
+  const slot = ((colorIndex % COLOR_SLOTS) + COLOR_SLOTS) % COLOR_SLOTS;
+  return styles[`color${slot}`] ?? "";
+}
+
+function dashClass(dashIndex: number): string {
+  const slot = ((dashIndex % DASH_SLOTS) + DASH_SLOTS) % DASH_SLOTS;
+  return styles[`dash${slot}`] ?? "";
 }
 
 interface Domain {
