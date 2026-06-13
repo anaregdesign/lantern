@@ -17,9 +17,9 @@ func main() {
 	log.SetFlags(0)
 
 	// An InvertedIndex is the default Indexer + Searcher. The Analyzer below is
-	// the combination you would reach for when you need *infix* matching — finding
-	// a query inside longer words, which a word-splitting tokenizer cannot do.
-	// Its three stages:
+	// the combination you would reach for when one index has to serve *many
+	// languages* and still support *infix* matching — finding a query inside
+	// longer words, which a word-splitting tokenizer cannot do. Its four stages:
 	//   1. Normalizers clean the raw text before tokenization. This matters more
 	//      for n-grams than for word tokens: NGramTokenizer slides its window over
 	//      every rune — punctuation and spaces included — so stray marks or double
@@ -27,21 +27,26 @@ func main() {
 	//      (LowercaseNormalizer), turn every mark into a space
 	//      (PunctuationNormalizer), then collapse the runs and trim
 	//      (SpaceNormalizer), leaving clean single-space-delimited text.
-	//   2. The tokenizer emits every 3-rune window (NGramTokenizer{N: 3}). Sharing
-	//      a gram is what makes a query match: "arch" and "search" both contain
-	//      the grams "arc" and "rch", so a search for "arch" finds "search".
-	//   3. No token filters. A StopWordFilter matches whole words ("the", "and"),
-	//      but n-gram terms are 3-rune fragments that never line up with a
-	//      whole-word stop list — it is simply the wrong tool for n-grams.
+	//   2. The tokenizer emits every 2-rune window (NGramTokenizer{N: 2}). Bigrams
+	//      are the language-independent sweet spot: they keep two-character words
+	//      indexable — essential for CJK, where "東京" or "中国" is a whole word —
+	//      while still matching infixes, so "arch" and "search" share the grams
+	//      "ar", "rc", "ch" and a search for "arch" finds "search".
+	//   3. One token filter, WhitespaceFilter, is the *quality filter*: a bigram
+	//      that holds a space can only be one that straddles a word boundary, so
+	//      dropping it keeps just the intra-word grams. That stops a query from
+	//      matching on the noise between two words and keeps BM25 document lengths
+	//      honest. It is a no-op for space-free scripts (CJK, Thai), so the same
+	//      pipeline stays correct across languages.
 	// The same analyzer runs over documents and queries, so both sides share the
-	// same n; a query shorter than 3 runes shares no gram and matches nothing.
+	// same n; a query shorter than 2 runes shares no gram and matches nothing.
 	normalizers := []search.Normalizer{
 		search.LowercaseNormalizer{},
 		search.PunctuationNormalizer{},
 		search.SpaceNormalizer{},
 	}
-	tokenizer := search.NGramTokenizer{N: 3}
-	analyzer := search.NewAnalyzer(normalizers, tokenizer)
+	tokenizer := search.NGramTokenizer{N: 2}
+	analyzer := search.NewAnalyzer(normalizers, tokenizer, search.WhitespaceFilter{})
 
 	// Rank matches with Okapi BM25, stated explicitly rather than left to the
 	// nil default: K1 = 1.2 tunes term-frequency saturation (the 2nd occurrence
@@ -65,9 +70,9 @@ func main() {
 	for _, hit := range idx.Search("arch") {
 		log.Printf("  %-8s %.3f", hit.ID, hit.Score)
 	}
-	// arch     0.777
-	// search   0.680
-	// research 0.659
+	// arch     1.220
+	// search   1.028
+	// research 0.920
 
 	// Delete removes a document from every posting list it appears in. Dropping
 	// the literal "arch" leaves the infix matches in "search" and "research".
@@ -77,6 +82,6 @@ func main() {
 	for _, hit := range idx.Search("arch") {
 		log.Printf("  %-8s %.3f", hit.ID, hit.Score)
 	}
-	// search   0.921
-	// research 0.894
+	// search   1.410
+	// research 1.268
 }

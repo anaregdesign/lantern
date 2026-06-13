@@ -118,6 +118,32 @@ func (f *StopWordFilter) Filter(tokens []Token) []Token {
 	return out
 }
 
+// WhitespaceFilter drops every token whose term contains a Unicode whitespace
+// rune. Its purpose is to raise the precision of n-gram search: run an
+// NGramTokenizer over text whose words are already separated by single spaces
+// (normalize first with PunctuationNormalizer + SpaceNormalizer) and the only
+// grams that can contain a space are the ones straddling a word or punctuation
+// boundary, e.g. "search" and "engine" yield the cross-boundary gram "h e" for
+// N=3. Dropping them leaves just the intra-word grams, so a document is indexed
+// under its real word content instead of boundary noise: BM25 document lengths
+// reflect the words present, and a query no longer matches on a gram that
+// merely spans two adjacent words. It is language-independent (any whitespace,
+// any script) and a no-op for scripts written without spaces between words
+// (e.g. CJK, Thai), so it is safe to leave in a multilingual pipeline.
+type WhitespaceFilter struct{}
+
+// Filter removes tokens that contain any whitespace rune.
+func (WhitespaceFilter) Filter(tokens []Token) []Token {
+	out := tokens[:0]
+	for _, t := range tokens {
+		if strings.IndexFunc(t.Term, unicode.IsSpace) >= 0 {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
 // isPunctOrSymbol reports whether r is a Unicode punctuation or symbol rune.
 func isPunctOrSymbol(r rune) bool {
 	return unicode.IsPunct(r) || unicode.IsSymbol(r)

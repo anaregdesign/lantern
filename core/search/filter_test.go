@@ -46,6 +46,23 @@ func TestStopWordFilter(t *testing.T) {
 	}
 }
 
+func TestWhitespaceFilter(t *testing.T) {
+	// Cross-boundary grams (those holding a space) are dropped; intra-word grams
+	// and space-free tokens survive, regardless of which whitespace rune appears.
+	in := []Token{{"sea"}, {"a g"}, {"gia"}, {"t\tp"}, {"ねこ"}, {" x"}, {"y "}, {"ok"}}
+	got := termsOf(WhitespaceFilter{}.Filter(in))
+	want := []string{"sea", "gia", "ねこ", "ok"}
+	if !equalStrings(got, want) {
+		t.Fatalf("Filter = %v, want %v", got, want)
+	}
+	// A token written without spaces (CJK) is never touched: no-op for scripts
+	// that do not separate words with whitespace.
+	got = termsOf(WhitespaceFilter{}.Filter([]Token{{"東京"}, {"京都"}}))
+	if !equalStrings(got, []string{"東京", "京都"}) {
+		t.Fatalf("Filter = %v, want [東京 京都]", got)
+	}
+}
+
 func TestTokenFilterFunc(t *testing.T) {
 	var f TokenFilter = TokenFilterFunc(func(ts []Token) []Token { return ts[:0] })
 	if got := f.Filter([]Token{{"a"}}); len(got) != 0 {
