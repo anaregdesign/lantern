@@ -16,10 +16,12 @@ func main() {
 	// Drop the timestamp prefix so the output matches the comments below.
 	log.SetFlags(0)
 
-	// An InvertedIndex is the default Indexer + Searcher. NewStandardAnalyzer
-	// lowercases text and splits it into keywords; passing a nil Scorer ranks
+	// An InvertedIndex is the default Indexer + Searcher. The analyzer lowercases
+	// the text and splits it into keyword tokens (UnicodeTokenizer treats
+	// whitespace and punctuation as delimiters); passing a nil Scorer ranks
 	// matches with BM25 using its default parameters.
-	idx := search.NewInvertedIndex[string, search.Text](search.NewStandardAnalyzer(), nil)
+	analyzer := search.NewAnalyzer([]search.Normalizer{search.LowercaseNormalizer{}}, search.UnicodeTokenizer{})
+	idx := search.NewInvertedIndex[string, search.Text](analyzer, nil)
 
 	// Index documents under any comparable ID. Text adapts a plain string to a
 	// Document; indexing an existing ID again replaces it.

@@ -39,24 +39,12 @@ func NewAnalyzer(normalizers []Normalizer, tokenizer Tokenizer, filters ...Token
 	}
 }
 
-// NewStandardAnalyzer returns the batteries-included, language-independent
-// analyzer: it lowercases the text, splits it into letter/digit runs (so
-// whitespace and punctuation act as delimiters), and—if any stop words are
-// supplied—drops them. It is the analyzer most callers want for simple keyword
-// search.
-func NewStandardAnalyzer(stopWords ...string) Analyzer {
-	var filters []TokenFilter
-	if len(stopWords) > 0 {
-		filters = append(filters, NewStopWordFilter(stopWords...))
-	}
-	return NewAnalyzer([]Normalizer{LowercaseNormalizer{}}, UnicodeTokenizer{}, filters...)
-}
-
 // NewNGramAnalyzer returns the batteries-included analyzer for substring and
 // no-whitespace-script search: it lowercases the text and then emits every
 // n-rune window with an NGramTokenizer, so a query matches a document whenever
-// they share an n-gram. Prefer it over NewStandardAnalyzer when words are not
-// whitespace-delimited (e.g. CJK, where the word-splitting tokenizers emit one
+// they share an n-gram. Prefer it over a word-splitting analyzer (NewAnalyzer
+// with a Unicode or Whitespace tokenizer) when words are not whitespace
+// delimited (e.g. CJK, where the word-splitting tokenizers emit one
 // giant token) or when infix matches matter ("arch" finding "search"). Because
 // the same analyzer runs on both sides, queries must use the same n: a query
 // shorter than n runes shares no n-gram with anything and therefore matches

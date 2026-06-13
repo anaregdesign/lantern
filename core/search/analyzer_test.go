@@ -2,21 +2,18 @@ package search
 
 import "testing"
 
-func TestStandardAnalyzer(t *testing.T) {
-	a := NewStandardAnalyzer("the", "a")
-	// Lowercasing + letter/digit tokenization strips punctuation and case;
-	// the stop-word filter drops "the" and "a".
+func TestNewAnalyzerStopWordFilter(t *testing.T) {
+	// Lowercase normalization + letter/digit tokenization strips punctuation and
+	// case; the stop-word filter then drops "the" and "a".
+	a := NewAnalyzer(
+		[]Normalizer{LowercaseNormalizer{}},
+		UnicodeTokenizer{},
+		NewStopWordFilter("the", "a"),
+	)
 	got := termsOf(a.Analyze("The quick, brown FOX! a fox?"))
 	want := []string{"quick", "brown", "fox", "fox"}
 	if !equalStrings(got, want) {
 		t.Fatalf("Analyze = %v, want %v", got, want)
-	}
-}
-
-func TestStandardAnalyzerNoStopWords(t *testing.T) {
-	got := termsOf(NewStandardAnalyzer().Analyze("Hello, WORLD"))
-	if !equalStrings(got, []string{"hello", "world"}) {
-		t.Fatalf("Analyze = %v, want [hello world]", got)
 	}
 }
 
