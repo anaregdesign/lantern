@@ -30,6 +30,8 @@ import { LanternService, VertexSchema } from "../src/gen/graph/v1/graph_pb.js";
 
 interface StubState {
   vertices: Map<string, ReturnType<typeof create<typeof VertexSchema>>>;
+  /** Last IlluminateRequest the stub observed, for request-building assertions (#605). */
+  lastIlluminate?: { seed: string; step: number; k: number; vertexPrefix: string };
 }
 
 function newStubRoutes(state: StubState) {
@@ -60,6 +62,19 @@ function newStubRoutes(state: StubState) {
       },
       async getServerStatus() {
         return { version: "test" };
+      },
+      // Captures the request so tests can assert how the SDK assembles
+      // IlluminateRequest (e.g. vertexPrefix wiring, #605). Returns an
+      // empty graph — the round-trip semantics of the result are out of
+      // scope here.
+      async illuminate(req) {
+        state.lastIlluminate = {
+          seed: req.seed,
+          step: req.step,
+          k: req.k,
+          vertexPrefix: req.vertexPrefix,
+        };
+        return {};
       },
       // Remaining methods are intentionally absent — the connect-node
       // adapter rejects them with Code.Unimplemented, which the SDK
@@ -160,6 +175,31 @@ describe("Lantern client", () => {
       expect(c2.kind).toBe("bool");
       const d = await c.getVertex("batch/d");
       expect(d.kind).toBe("nil");
+    } finally {
+      c.close();
+    }
+  });
+});
+
+describe("illuminate request building (#605)", () => {
+  test("forwards vertexPrefix onto the request", async () => {
+    const c = newClient();
+    try {
+      await c.illuminate("alice", { step: 2, k: 5, vertexPrefix: "users/" });
+      expect(state.lastIlluminate?.seed).toBe("alice");
+      expect(state.lastIlluminate?.step).toBe(2);
+      expect(state.lastIlluminate?.k).toBe(5);
+      expect(state.lastIlluminate?.vertexPrefix).toBe("users/");
+    } finally {
+      c.close();
+    }
+  });
+
+  test("omitting vertexPrefix yields an empty string (no filter)", async () => {
+    const c = newClient();
+    try {
+      await c.illuminate("alice", { step: 1 });
+      expect(state.lastIlluminate?.vertexPrefix).toBe("");
     } finally {
       c.close();
     }

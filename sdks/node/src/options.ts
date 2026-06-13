@@ -24,6 +24,13 @@ export interface IlluminateOptions {
    * UNSPECIFIED to RAW.
    */
   weighting?: Weighting;
+  /**
+   * Restrict the traversal frontier to vertices whose key has this prefix.
+   * The seed is always retained as the anchor even if it does not match.
+   * Empty/omitted = no filter. Applied server-side BEFORE per-hop top-k and
+   * before any MST/SPT reduction (induced-subgraph semantics).
+   */
+  vertexPrefix?: string;
 }
 
 export interface ScanOptions {
