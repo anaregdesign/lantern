@@ -70,6 +70,16 @@ export function CliAxisPicker({ axes, setAxis, disabled }: CliAxisPickerProps) {
     [setAxis],
   );
 
+  // Free-text axis (#617): any string is valid, including "" (= no filter).
+  // The formatter only echoes a non-empty prefix, so clearing the field
+  // restores the canonical short-form click.
+  const onPrefixChange = useCallback<NonNullable<InputProps["onChange"]>>(
+    (_, data) => {
+      setAxis("vertexPrefix", data.value);
+    },
+    [setAxis],
+  );
+
   const preview = formatIlluminateClick("<key>", axes);
 
   return (
@@ -167,6 +177,20 @@ export function CliAxisPicker({ axes, setAxis, disabled }: CliAxisPickerProps) {
         }
         data-testid="cli-axis-tfidf"
       />
+
+      <label className={styles.field}>
+        <span className={styles.label}>prefix</span>
+        <Input
+          className={styles.textInput}
+          type="text"
+          value={axes.vertexPrefix}
+          onChange={onPrefixChange}
+          disabled={disabled}
+          placeholder="(none)"
+          data-testid="cli-axis-prefix"
+          aria-label="Vertex prefix (optional)"
+        />
+      </label>
 
       <code
         id="cli-axis-picker-preview"

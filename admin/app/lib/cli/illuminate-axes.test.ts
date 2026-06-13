@@ -6,9 +6,9 @@
  * 1. `formatIlluminateClick` emits the short form when every axis
  *    matches {@link CLI_CLICK_AXIS_DEFAULTS} and only appends the
  *    diverging kwargs, in the fixed order
- *    `algorithm=` → `objective=` → `weighting=`. The default-short-form
- *    case is the regression guard for #439 — the byte-for-byte stable
- *    click string the canvas snapshot test depends on.
+ *    `algorithm=` → `objective=` → `weighting=` → `prefix=`. The
+ *    default-short-form case is the regression guard for #439 — the
+ *    byte-for-byte stable click string the canvas snapshot test depends on.
  *
  * 2. Every shape this formatter can produce is parseable by the
  *    shared CLI parser in `./parser`, and round-trips to the same
@@ -25,6 +25,7 @@ import {
   parseStoredAlgorithm,
   parseStoredK,
   parseStoredObjective,
+  parseStoredPrefix,
   parseStoredStep,
   parseStoredWeighting,
   type CliClickAxes,
@@ -76,7 +77,25 @@ describe("formatIlluminateClick", () => {
     ).toBe("illuminate alice 2 5 weighting=tfidf");
   });
 
-  test("all axes off-default → fixed token order", () => {
+  test("only prefix off-default → single kwarg appended last", () => {
+    expect(
+      formatIlluminateClick("alice", {
+        ...CLI_CLICK_AXIS_DEFAULTS,
+        vertexPrefix: "svc:",
+      }),
+    ).toBe("illuminate alice 2 5 prefix=svc:");
+  });
+
+  test("prefix value is emitted verbatim (case-sensitive, #604)", () => {
+    expect(
+      formatIlluminateClick("alice", {
+        ...CLI_CLICK_AXIS_DEFAULTS,
+        vertexPrefix: "Users/Alice",
+      }),
+    ).toBe("illuminate alice 2 5 prefix=Users/Alice");
+  });
+
+  test("empty prefix emits no kwarg even with other axes off-default", () => {
     expect(
       formatIlluminateClick("alice", {
         step: 3,
@@ -84,8 +103,24 @@ describe("formatIlluminateClick", () => {
         algorithm: "spt",
         objective: "min",
         weighting: "tfidf",
+        vertexPrefix: "",
       }),
     ).toBe("illuminate alice 3 10 algorithm=spt objective=min weighting=tfidf");
+  });
+
+  test("all axes off-default → fixed token order ending in prefix=", () => {
+    expect(
+      formatIlluminateClick("alice", {
+        step: 3,
+        k: 10,
+        algorithm: "spt",
+        objective: "min",
+        weighting: "tfidf",
+        vertexPrefix: "svc:",
+      }),
+    ).toBe(
+      "illuminate alice 3 10 algorithm=spt objective=min weighting=tfidf prefix=svc:",
+    );
   });
 
   test("seed containing a colon round-trips literally", () => {
@@ -123,6 +158,10 @@ describe("formatIlluminateClick ↔ parse round-trip", () => {
       axes: { ...CLI_CLICK_AXIS_DEFAULTS, weighting: "tfidf" },
     },
     {
+      name: "only prefix",
+      axes: { ...CLI_CLICK_AXIS_DEFAULTS, vertexPrefix: "team:" },
+    },
+    {
       name: "all axes off-default",
       axes: {
         step: 3,
@@ -130,6 +169,7 @@ describe("formatIlluminateClick ↔ parse round-trip", () => {
         algorithm: "spt",
         objective: "min",
         weighting: "tfidf",
+        vertexPrefix: "svc:",
       },
     },
   ];
@@ -150,6 +190,7 @@ describe("formatIlluminateClick ↔ parse round-trip", () => {
     expect(result.command.algorithm).toBe(axes.algorithm);
     expect(result.command.objective).toBe(axes.objective);
     expect(result.command.weighting).toBe(axes.weighting);
+    expect(result.command.vertexPrefix).toBe(axes.vertexPrefix);
   });
 });
 
@@ -187,5 +228,14 @@ describe("parseStored* helpers", () => {
     expect(parseStoredWeighting("raw")).toBe("raw");
     expect(parseStoredWeighting("tfidf")).toBe("tfidf");
     expect(parseStoredWeighting("WEIGHTING_TFIDF")).toBeNull();
+  });
+
+  test("prefix is free text: any non-null string is valid, null stays null", () => {
+    expect(parseStoredPrefix("svc:")).toBe("svc:");
+    expect(parseStoredPrefix("Users/Alice")).toBe("Users/Alice");
+    // Empty is a legitimate stored value (= no filter), distinct from a
+    // missing key (null), which falls back to the default.
+    expect(parseStoredPrefix("")).toBe("");
+    expect(parseStoredPrefix(null)).toBeNull();
   });
 });
