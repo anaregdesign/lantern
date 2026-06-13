@@ -20,13 +20,15 @@ func main() {
 	// the combination you would reach for when one index has to serve *many
 	// languages* and still support *infix* matching — finding a query inside
 	// longer words, which a word-splitting tokenizer cannot do. Its four stages:
-	//   1. Normalizers clean the raw text before tokenization. This matters more
-	//      for n-grams than for word tokens: NGramTokenizer slides its window over
-	//      every rune — punctuation and spaces included — so stray marks or double
-	//      spaces would leak straight into the grams. So we fold case
-	//      (LowercaseNormalizer), turn every mark into a space
-	//      (PunctuationNormalizer), then collapse the runs and trim
-	//      (SpaceNormalizer), leaving clean single-space-delimited text.
+	//   1. Normalizers clean and fold the raw text before tokenization. This
+	//      matters more for n-grams than for word tokens: NGramTokenizer slides
+	//      its window over every rune — punctuation and spaces included — so stray
+	//      marks or double spaces would leak straight into the grams. We fold
+	//      full-width and half-width characters to normal width (WidthNormalizer,
+	//      so "ＴＯＫＹＯ" matches "TOKYO"), strip accents (DiacriticNormalizer, so
+	//      "café" matches "cafe"), fold case (LowercaseNormalizer), turn every
+	//      mark into a space (PunctuationNormalizer), then collapse the runs and
+	//      trim (SpaceNormalizer), leaving clean single-space-delimited text.
 	//   2. The tokenizer emits every 2-rune window (NGramTokenizer{N: 2}). Bigrams
 	//      are the language-independent sweet spot: they keep two-character words
 	//      indexable — essential for CJK, where "東京" or "中国" is a whole word —
@@ -41,6 +43,8 @@ func main() {
 	// The same analyzer runs over documents and queries, so both sides share the
 	// same n; a query shorter than 2 runes shares no gram and matches nothing.
 	normalizers := []search.Normalizer{
+		search.WidthNormalizer{},
+		search.DiacriticNormalizer{},
 		search.LowercaseNormalizer{},
 		search.PunctuationNormalizer{},
 		search.SpaceNormalizer{},
@@ -84,4 +88,28 @@ func main() {
 	}
 	// search   1.410
 	// research 1.268
+
+	// The folding normalizers also raise recall across scripts: the same index
+	// finds a document when the query differs only by accent or character width.
+	// A second index keeps this demo separate from the infix one above.
+	fold := search.NewInvertedIndex[string, search.Text](analyzer, scorer)
+	fold.Index("cafe", search.Text("Café"))   // accented Latin
+	fold.Index("tokyo", search.Text("ＴＯＫＹＯ")) // full-width Latin
+	fold.Index("naive", search.Text("naïve"))
+
+	// "cafe" with no accent still finds "Café": DiacriticNormalizer folded the
+	// document's é to e on the way into the index and the query needs no accent.
+	log.Println(`fold.Search("cafe"):`)
+	for _, hit := range fold.Search("cafe") {
+		log.Printf("  %-8s %.3f", hit.ID, hit.Score)
+	}
+	// cafe     3.179
+
+	// "tokyo" in plain ASCII finds the full-width "ＴＯＫＹＯ": WidthNormalizer
+	// folded both sides to the same normal-width letters.
+	log.Println(`fold.Search("tokyo"):`)
+	for _, hit := range fold.Search("tokyo") {
+		log.Printf("  %-8s %.3f", hit.ID, hit.Score)
+	}
+	// tokyo    3.783
 }

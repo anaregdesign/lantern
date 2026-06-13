@@ -41,3 +41,50 @@ func TestPunctuationNormalizerChain(t *testing.T) {
 		t.Fatalf("Normalize = %q, want %q", got, "Hello world テスト")
 	}
 }
+
+func TestDiacriticNormalizer(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"LatinAcute", "Café", "Cafe"},
+		{"LatinDiaeresis", "naïve", "naive"},
+		{"GreekTonos", "Ελλάδα", "Ελλαδα"},
+		{"CyrillicYo", "ёж", "еж"},
+		{"AtomicLetterKept", "Straße", "Straße"}, // ß is not base+mark
+		{"DevanagariMatraKept", "भारत", "भारत"},  // spacing mark (Mc) preserved
+		{"HangulStable", "한국", "한국"},             // NFC recomposition keeps syllables
+		{"CJKNoOp", "東京", "東京"},                  // no combining marks
+		{"CaseIndependent", "CAFÉ café", "CAFE cafe"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := (DiacriticNormalizer{}).Normalize(tc.in); got != tc.want {
+				t.Fatalf("Normalize(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWidthNormalizer(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"FullWidthLatin", "ＴＯＫＹＯ", "TOKYO"},
+		{"FullWidthDigits", "２０２４", "2024"},
+		{"FullWidthPunct", "ｉＰｈｏｎｅ！", "iPhone!"},
+		{"HalfWidthKatakana", "ｶﾀｶﾅ", "カタカナ"},
+		{"NormalWidthNoOp", "Tokyo 2024", "Tokyo 2024"},
+		{"CJKIdeographNoOp", "東京", "東京"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := (WidthNormalizer{}).Normalize(tc.in); got != tc.want {
+				t.Fatalf("Normalize(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}

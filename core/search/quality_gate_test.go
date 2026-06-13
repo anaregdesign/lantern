@@ -27,6 +27,29 @@ func gateIndex() *InvertedIndex[string, Text] {
 	return NewInvertedIndex[string, Text](gateAnalyzer(), BM25{K1: 1.2, B: 0.75})
 }
 
+// foldingAnalyzer extends the gate analyzer with the width and diacritic
+// folding normalizers, so a query typed at a different character width or
+// without accents still resolves to the same grams as the document.
+func foldingAnalyzer() Analyzer {
+	return NewAnalyzer(
+		[]Normalizer{
+			WidthNormalizer{},
+			DiacriticNormalizer{},
+			LowercaseNormalizer{},
+			PunctuationNormalizer{},
+			SpaceNormalizer{},
+		},
+		NGramTokenizer{N: 2},
+		WhitespaceFilter{},
+	)
+}
+
+// foldingIndex builds a fresh index wired with the folding analyzer and the
+// example's scorer.
+func foldingIndex() *InvertedIndex[string, Text] {
+	return NewInvertedIndex[string, Text](foldingAnalyzer(), BM25{K1: 1.2, B: 0.75})
+}
+
 // TestSearchQualityGateMultilingual indexes a small corpus per case and asserts
 // both recall (the right documents match) and ranking (the best match is on
 // top) across Latin, Cyrillic, Greek, Arabic, Hebrew, Devanagari, Han, Kana,
@@ -255,6 +278,87 @@ func TestSearchQualityGateIntraWordGrams(t *testing.T) {
 	}
 	if got := termsOf(a.Analyze("東京 タワー")); !equalStrings(got, []string{"東京", "タワ", "ワー"}) {
 		t.Fatalf("Analyze(%q) = %v, want [東京 タワ ワー]", "東京 タワー", got)
+	}
+}
+
+// TestSearchQualityGateFolding proves the width and diacritic folding
+// normalizers raise recall: a query typed without accents, with a different
+// case, or in a different character width still finds its document across
+// Latin, Greek, Cyrillic, and CJK width variants. Each case pairs the target
+// with a decoy whose grams are disjoint, so a hit is real recall, not a
+// collision.
+func TestSearchQualityGateFolding(t *testing.T) {
+	cases := []struct {
+		name     string
+		docs     map[string]string
+		query    string
+		wantTop  string
+		wantHits []string
+	}{
+		{
+			name:     "AccentInsensitiveLatin",
+			docs:     map[string]string{"cafe": "Café", "melon": "Melon"},
+			query:    "cafe",
+			wantTop:  "cafe",
+			wantHits: []string{"cafe"},
+		},
+		{
+			name:     "DiaeresisFolded",
+			docs:     map[string]string{"naive": "naïve", "story": "story"},
+			query:    "naive",
+			wantTop:  "naive",
+			wantHits: []string{"naive"},
+		},
+		{
+			name:     "GreekAccentFolded",
+			docs:     map[string]string{"hellas": "Ελλάδα", "athens": "Αθήνα"},
+			query:    "ελλαδα",
+			wantTop:  "hellas",
+			wantHits: []string{"hellas"},
+		},
+		{
+			name:     "CyrillicYoFolded",
+			docs:     map[string]string{"hedgehog": "ёж", "house": "дом"},
+			query:    "еж",
+			wantTop:  "hedgehog",
+			wantHits: []string{"hedgehog"},
+		},
+		{
+			name:     "FullWidthLatin",
+			docs:     map[string]string{"tokyo": "ＴＯＫＹＯ", "osaka": "Osaka"},
+			query:    "tokyo",
+			wantTop:  "tokyo",
+			wantHits: []string{"tokyo"},
+		},
+		{
+			name:     "FullWidthDigits",
+			docs:     map[string]string{"iphone": "iPhone １５", "pixel": "Pixel ９"},
+			query:    "15",
+			wantTop:  "iphone",
+			wantHits: []string{"iphone"},
+		},
+		{
+			name:     "HalfWidthKatakana",
+			docs:     map[string]string{"tower": "ﾀﾜｰ", "sky": "スカイ"},
+			query:    "タワー",
+			wantTop:  "tower",
+			wantHits: []string{"tower"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			idx := foldingIndex()
+			for id, text := range tc.docs {
+				idx.Index(id, Text(text))
+			}
+			results := idx.Search(tc.query)
+			if got := idsOf(results); !sortedEqual(got, tc.wantHits) {
+				t.Fatalf("Search(%q) hits = %v, want %v", tc.query, got, tc.wantHits)
+			}
+			if len(results) == 0 || results[0].ID != tc.wantTop {
+				t.Fatalf("Search(%q) top = %v, want %q", tc.query, idsOf(results), tc.wantTop)
+			}
+		})
 	}
 }
 
