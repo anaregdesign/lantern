@@ -163,19 +163,44 @@ answers:
    to `net/http`'s `http2.Transport` in shuffled order, and any backend
    returning a transient error triggers a fresh dial against the next
    IP. Suitable for steady-state read traffic from a single client.
+3. **SDK static-endpoint failover.** When the replica set is **fixed and
+   known**, the Go SDK can fail over client-side with no proxy or DNS
+   plumbing via `NewLanternFailover([]string{...})` (#592). It sticks to
+   one node and rotates to the next only when a node is unreachable
+   (`ErrUnavailable`). It performs **no** dynamic discovery, so it is the
+   wrong tool for churning endpoints — use option 1 or 2 there.
 
 ```go
 // Reverse-proxy fan-out: point one URL at the proxy, not at the pool.
 c, err := lantern.NewLantern("http://lantern-proxy.svc:6380")
+
+// SDK static-endpoint failover: a fixed, known replica set, no proxy.
+c, err = lantern.NewLanternFailover([]string{
+    "http://lantern-0.svc:6380",
+    "http://lantern-1.svc:6380",
+    "http://lantern-2.svc:6380",
+})
 ```
+
+#### Client-connectivity options at a glance
+
+| Option | Endpoints | Discovery | Extra infra | Best for |
+| --- | --- | --- | --- | --- |
+| Reverse proxy / sidecar | Churning | Proxy re-resolves DNS | Proxy | Autoscaled / churning replica sets, edge TLS |
+| DNS round-robin | Churning | OS resolver | DNS records | Single-client steady-state reads |
+| SDK `NewLanternFailover` | **Fixed/known** | **None** (static set) | None | Small pinned replica sets, no proxy/DNS |
+| SDK `NewLantern` (single URL) | One | None | None (front with proxy for HA) | Single endpoint or a proxy VIP |
 
 The pre-#367 `NewLanternWithEndpoints([]string{...})` constructor that
 did SDK-side round-robin LB has been removed
 ([#367](https://github.com/anaregdesign/lantern/issues/367)); the
-Connect-only SDK only takes a single base URL. Use one of the two
-patterns above instead. For Swarm mode, use `tasks.lantern` instead
-of `lantern` for the discovery DNS name on the server side; clients
-still target a single proxy URL.
+Connect-only SDK takes a single base URL per `NewLantern`. The newer
+`NewLanternFailover` (#592) is **not** a revival of that round-robin LB —
+it is sticky-current failover over a *static* endpoint set, complementing
+the patterns above rather than replacing them. For Swarm mode, use
+`tasks.lantern` instead of `lantern` for the discovery DNS name on the
+server side; clients still target a single proxy URL (or a fixed failover
+list).
 
 **Single-instance on Compose.** `docker compose up -d lantern-0 admin
 prometheus` plus omitting `LANTERN_PEER_DISCOVERY` (override the env
