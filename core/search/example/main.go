@@ -16,11 +16,18 @@ func main() {
 	// Drop the timestamp prefix so the output matches the comments below.
 	log.SetFlags(0)
 
-	// An InvertedIndex is the default Indexer + Searcher. The analyzer lowercases
-	// the text and splits it into keyword tokens (UnicodeTokenizer treats
-	// whitespace and punctuation as delimiters); passing a nil Scorer ranks
-	// matches with BM25 using its default parameters.
-	analyzer := search.NewAnalyzer([]search.Normalizer{search.LowercaseNormalizer{}}, search.UnicodeTokenizer{})
+	// An InvertedIndex is the default Indexer + Searcher. Its Analyzer runs three
+	// stages in order; naming each one keeps the pipeline explicit:
+	//   1. normalizers rewrite the raw text (here: fold to lower case),
+	//   2. the tokenizer splits it into terms (UnicodeTokenizer treats whitespace
+	//      and punctuation as delimiters), and
+	//   3. token filters post-process the terms (none here—UnicodeTokenizer has
+	//      already dropped the punctuation a filter would otherwise trim).
+	// Passing a nil Scorer ranks matches with BM25 using its default parameters.
+	normalizers := []search.Normalizer{search.LowercaseNormalizer{}}
+	tokenizer := search.UnicodeTokenizer{}
+	var tokenFilters []search.TokenFilter
+	analyzer := search.NewAnalyzer(normalizers, tokenizer, tokenFilters...)
 	idx := search.NewInvertedIndex[string, search.Text](analyzer, nil)
 
 	// Index documents under any comparable ID. Text adapts a plain string to a
