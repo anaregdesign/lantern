@@ -17,29 +17,40 @@ func main() {
 	log.SetFlags(0)
 
 	// An InvertedIndex is the default Indexer + Searcher. The Analyzer below is
-	// the combination you would reach for when one index has to serve *many
-	// languages* and still support *infix* matching — finding a query inside
-	// longer words, which a word-splitting tokenizer cannot do. Its four stages:
-	//   1. Normalizers clean and fold the raw text before tokenization. This
-	//      matters more for n-grams than for word tokens: NGramTokenizer slides
-	//      its window over every rune — punctuation and spaces included — so stray
-	//      marks or double spaces would leak straight into the grams. We fold
-	//      full-width and half-width characters to normal width (WidthNormalizer,
-	//      so "ＴＯＫＹＯ" matches "TOKYO"), strip accents (DiacriticNormalizer, so
-	//      "café" matches "cafe"), fold case (LowercaseNormalizer), turn every
-	//      mark into a space (PunctuationNormalizer), then collapse the runs and
-	//      trim (SpaceNormalizer), leaving clean single-space-delimited text.
+	// the *highest-quality general-purpose setup for n-gram search* — the lineup
+	// of normalizers and the single filter that, with NGramTokenizer{N: 2}, give
+	// the best recall and precision when one index must serve *many languages*
+	// and still match *infixes* (a query found inside a longer word, which a
+	// word-splitting tokenizer can never surface). Four stages:
+	//   1. Normalizers clean and fold the raw text before tokenization, and their
+	//      order matters — each step assumes the earlier ones ran. This weighs on
+	//      n-grams more than on word tokens: NGramTokenizer slides its window over
+	//      every rune — punctuation and spaces included — so any mark or double
+	//      space leaks straight into the grams. WidthNormalizer folds full- and
+	//      half-width characters to normal width (so "ＴＯＫＹＯ" matches "TOKYO")
+	//      and runs first, before the punctuation step, so a full-width "！" turns
+	//      into an ASCII "!" that step can act on. DiacriticNormalizer strips
+	//      accents (so "café" matches "cafe"); LowercaseNormalizer folds case;
+	//      PunctuationNormalizer turns every mark into a space, making it a word
+	//      boundary the grams will not bridge; SpaceNormalizer then collapses the
+	//      runs and trims, leaving clean single-space-delimited text.
 	//   2. The tokenizer emits every 2-rune window (NGramTokenizer{N: 2}). Bigrams
 	//      are the language-independent sweet spot: they keep two-character words
 	//      indexable — essential for CJK, where "東京" or "中国" is a whole word —
 	//      while still matching infixes, so "arch" and "search" share the grams
 	//      "ar", "rc", "ch" and a search for "arch" finds "search".
-	//   3. One token filter, WhitespaceFilter, is the *quality filter*: a bigram
-	//      that holds a space can only be one that straddles a word boundary, so
-	//      dropping it keeps just the intra-word grams. That stops a query from
-	//      matching on the noise between two words and keeps BM25 document lengths
-	//      honest. It is a no-op for space-free scripts (CJK, Thai), so the same
-	//      pipeline stays correct across languages.
+	//   3. WhitespaceFilter is the one filter that pays off for n-grams. Once the
+	//      normalizers leave words separated by single spaces, the only grams that
+	//      can hold a space are those straddling a word boundary; dropping them
+	//      indexes each document under its real word content, which raises
+	//      precision (no matching on the noise between two words) and keeps BM25
+	//      document lengths honest (the "data" demo below shows the ranking this
+	//      buys). It is a no-op for space-free scripts (CJK, Thai), so the pipeline
+	//      stays correct across languages. The package's other filters target
+	//      *word* tokens and are deliberately left out: every gram is exactly N
+	//      runes, so LengthFilter and EmptyTokenFilter never fire; StopWordFilter
+	//      matches whole words, not fragments; and PunctuationFilter and
+	//      LowercaseFilter would only repeat work the normalizers already did.
 	// The same analyzer runs over documents and queries, so both sides share the
 	// same n; a query shorter than 2 runes shares no gram and matches nothing.
 	normalizers := []search.Normalizer{
@@ -112,4 +123,41 @@ func main() {
 		log.Printf("  %-8s %.3f", hit.ID, hit.Score)
 	}
 	// tokyo    3.783
+
+	// Recall is only half of "best": the boundary normalizers and WhitespaceFilter
+	// also give the best *ranking*. Compare the pipeline against NewNGramAnalyzer(2)
+	// — the batteries-included baseline that only lowercases before bigramming,
+	// with no punctuation boundary and no whitespace filter — over the same three
+	// documents, querying "data".
+	tuned := search.NewInvertedIndex[string, search.Text](analyzer, scorer)
+	tuned.Index("database", search.Text("database"))
+	tuned.Index("data set", search.Text("data set"))
+	tuned.Index("data science", search.Text("data science and machine learning"))
+
+	naive := search.NewInvertedIndex[string, search.Text](search.NewNGramAnalyzer(2), scorer)
+	naive.Index("database", search.Text("database"))
+	naive.Index("data set", search.Text("data set"))
+	naive.Index("data science", search.Text("data science and machine learning"))
+
+	// The tuned pipeline ranks "data set" above "database": "data" is a whole word
+	// there, and dropping the cross-word grams gives it the shorter, honest length
+	// BM25 rewards.
+	log.Println(`tuned.Search("data"):`)
+	for _, hit := range tuned.Search("data") {
+		log.Printf("  %-12s %.3f", hit.ID, hit.Score)
+	}
+	// data set      0.526
+	// database      0.483
+	// data science  0.284
+
+	// The baseline counts "data set"'s boundary grams toward its length, so it
+	// looks as long as "database" and the two tie — naive bigrams cannot tell a
+	// whole-word match from a prefix fragment.
+	log.Println(`naive.Search("data"):`)
+	for _, hit := range naive.Search("data") {
+		log.Printf("  %-12s %.3f", hit.ID, hit.Score)
+	}
+	// database      0.515  (ties with "data set"; Searcher leaves ties unordered,
+	// data set      0.515   so these two may print in either order)
+	// data science  0.277
 }
