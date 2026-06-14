@@ -61,7 +61,8 @@ func main() {
 		search.SpaceNormalizer{},
 	}
 	tokenizer := search.NGramTokenizer{N: 2}
-	analyzer := search.NewAnalyzer(normalizers, tokenizer, search.WhitespaceFilter{})
+	filters := []search.TokenFilter{search.WhitespaceFilter{}}
+	analyzer := search.NewAnalyzer(normalizers, tokenizer, filters)
 
 	// Rank matches with Okapi BM25, stated explicitly rather than left to the
 	// nil default: K1 = 1.2 tunes term-frequency saturation (the 2nd occurrence

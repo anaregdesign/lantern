@@ -26,11 +26,12 @@ type pipelineAnalyzer struct {
 
 // NewAnalyzer builds an Analyzer from an ordered list of normalizers (each
 // applied in turn; pass nil or an empty slice to skip normalization), a
-// tokenizer, and an ordered list of token filters. The tokenizer is required:
+// tokenizer, and an ordered list of token filters (each applied in turn; pass
+// nil or an empty slice to skip filtering). The tokenizer is required:
 // NewAnalyzer panics on a nil tokenizer rather than substituting a default, so
 // the analysis pipeline is always exactly what the caller spelled out. Pass
 // UnicodeTokenizer{} explicitly for the language-independent default.
-func NewAnalyzer(normalizers []Normalizer, tokenizer Tokenizer, filters ...TokenFilter) Analyzer {
+func NewAnalyzer(normalizers []Normalizer, tokenizer Tokenizer, filters []TokenFilter) Analyzer {
 	if tokenizer == nil {
 		panic("search: NewAnalyzer requires a non-nil tokenizer")
 	}
@@ -54,7 +55,7 @@ func NewAnalyzer(normalizers []Normalizer, tokenizer Tokenizer, filters ...Token
 // punctuation too, so grams may straddle word boundaries; normalize the text
 // first if that matters. n < 1 is treated as 1 (unigrams).
 func NewNGramAnalyzer(n int) Analyzer {
-	return NewAnalyzer([]Normalizer{LowercaseNormalizer{}}, NGramTokenizer{N: n})
+	return NewAnalyzer([]Normalizer{LowercaseNormalizer{}}, NGramTokenizer{N: n}, nil)
 }
 
 // Analyze runs text through the normalizers, tokenizer, and filter chain.

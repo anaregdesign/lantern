@@ -170,7 +170,7 @@ func TestInvertedIndexRanking(t *testing.T) {
 // final document count is deterministic: each writer keeps its odd-indexed
 // documents and deletes the even-indexed ones.
 func TestInvertedIndexConcurrent(t *testing.T) {
-	idx := NewInvertedIndex[int, Text](NewAnalyzer([]Normalizer{LowercaseNormalizer{}}, UnicodeTokenizer{}), nil)
+	idx := NewInvertedIndex[int, Text](NewAnalyzer([]Normalizer{LowercaseNormalizer{}}, UnicodeTokenizer{}, nil), nil)
 
 	const writers = 8
 	const docsPerWriter = 200

@@ -18,7 +18,7 @@ func gateAnalyzer() Analyzer {
 	return NewAnalyzer(
 		[]Normalizer{LowercaseNormalizer{}, PunctuationNormalizer{}, SpaceNormalizer{}},
 		NGramTokenizer{N: 2},
-		WhitespaceFilter{},
+		[]TokenFilter{WhitespaceFilter{}},
 	)
 }
 
@@ -40,7 +40,7 @@ func foldingAnalyzer() Analyzer {
 			SpaceNormalizer{},
 		},
 		NGramTokenizer{N: 2},
-		WhitespaceFilter{},
+		[]TokenFilter{WhitespaceFilter{}},
 	)
 }
 
