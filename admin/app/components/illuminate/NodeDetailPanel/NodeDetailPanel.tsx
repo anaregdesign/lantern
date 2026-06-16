@@ -17,6 +17,7 @@ import {
 import { useNavigate } from "react-router";
 import { ExpirationCell } from "~/components/browse-vertices/ExpirationCell/ExpirationCell";
 import { ValueCell } from "~/components/browse-vertices/ValueCell/ValueCell";
+import { StringValueView } from "~/components/shared/StringValueView/StringValueView";
 import type { InspectedVertexDetail } from "~/lib/client/usecase/illuminate/selectors";
 import { edgeIdOf } from "~/lib/client/usecase/illuminate/state";
 import { useInboundEdges } from "~/lib/client/usecase/illuminate/use-inbound-edges";
@@ -161,7 +162,11 @@ export function NodeDetailPanel({
 
               <section className={styles.section}>
                 <h3 className={styles.sectionTitle}>Value</h3>
-                <ValueCell vertex={detail.vertex} />
+                {typeof detail.vertex.string === "string" ? (
+                  <StringValueView value={detail.vertex.string} />
+                ) : (
+                  <ValueCell vertex={detail.vertex} />
+                )}
               </section>
 
               <section className={styles.section}>

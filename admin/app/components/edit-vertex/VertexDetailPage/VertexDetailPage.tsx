@@ -18,6 +18,7 @@ import { kindOfVertex } from "~/lib/client/usecase/edit-vertex/value-codec";
 import type { Vertex } from "~/lib/client/infrastructure/api/get-vertex";
 import { ExpirationCell } from "../../browse-vertices/ExpirationCell/ExpirationCell";
 import { ValueCell } from "../../browse-vertices/ValueCell/ValueCell";
+import { StringValueView } from "../../shared/StringValueView/StringValueView";
 import { DeleteVertexDialog } from "../DeleteVertexDialog/DeleteVertexDialog";
 import { KindSelector } from "../KindSelector/KindSelector";
 import { TtlField } from "../TtlField/TtlField";
@@ -140,9 +141,13 @@ function ReadView({ vertex, onEdit, onDelete }: ReadViewProps) {
       </div>
       <div className={styles.viewRow}>
         <span className={styles.viewLabel}>Value</span>
-        <span className={styles.viewValue}>
-          <ValueCell vertex={vertex} />
-        </span>
+        {typeof vertex.string === "string" ? (
+          <StringValueView value={vertex.string} />
+        ) : (
+          <span className={styles.viewValue}>
+            <ValueCell vertex={vertex} />
+          </span>
+        )}
       </div>
       <div className={styles.viewRow}>
         <span className={styles.viewLabel}>Expires</span>

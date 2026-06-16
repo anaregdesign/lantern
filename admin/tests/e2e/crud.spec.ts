@@ -41,6 +41,56 @@ test.beforeEach(async ({ page }) => {
 });
 
 test.describe("vertex detail", () => {
+  test("string values render multi-line with a working Markdown toggle", async ({
+    page,
+  }) => {
+    // Self-contained key so this test is independent of the kind-switch
+    // test that mutates VERTEX_KEY.
+    const key = `${VERTEX_KEY}:markdown`;
+    const markdown = [
+      "# Heading One",
+      "",
+      "This is a **bold** statement with a [link](https://example.com).",
+      "",
+      "- first item",
+      "- second item",
+    ].join("\n");
+    await putVertices([{ key, string: markdown }]);
+
+    await page.goto(`/vertices/${encodeURIComponent(key)}`);
+    await expect(page.getByTestId("vertex-detail-read")).toBeVisible();
+
+    // The detail surface uses the multi-line StringValueView (#644), not
+    // the compact 48-char table ValueCell — the whole value is present and
+    // newlines are preserved.
+    const view = page.getByTestId("vertex-string-view");
+    await expect(view).toBeVisible();
+    const raw = page.getByTestId("vertex-string-raw");
+    await expect(raw).toBeVisible();
+    await expect(raw).toContainText("# Heading One");
+    await expect(raw).toContainText("second item");
+
+    // Default is Raw, so nothing is rendered as Markdown yet.
+    await expect(page.getByTestId("vertex-string-markdown")).toHaveCount(0);
+
+    // Flip the toggle — the raw block is replaced by rendered Markdown.
+    const toggle = view.getByRole("switch");
+    await toggle.click();
+    await expect(toggle).toBeChecked();
+
+    const rendered = page.getByTestId("vertex-string-markdown");
+    await expect(rendered).toBeVisible();
+    await expect(
+      rendered.getByRole("heading", { name: "Heading One" }),
+    ).toBeVisible();
+    // Links open safely in a new tab (custom anchor renderer).
+    await expect(rendered.getByRole("link", { name: "link" })).toHaveAttribute(
+      "target",
+      "_blank",
+    );
+    await expect(page.getByTestId("vertex-string-raw")).toHaveCount(0);
+  });
+
   test("loads the seeded vertex and switches kind via save round-trip", async ({
     page,
   }) => {
