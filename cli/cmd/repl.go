@@ -11,6 +11,15 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// replBanner is the terminal counterpart to the admin /cli intro banner
+// (#647). promptui renders only a bare ">" prompt, so a first-time user
+// has no cue that the shell is self-describing. Printing this once at
+// startup points them at the two verbs that make the REPL discoverable —
+// `help` (full per-verb grammar) and `exit` (quit) — mirroring the wording
+// of the web banner so both surfaces feel like one tool.
+const replBanner = `Lantern interactive REPL — same grammar as the admin /cli page.
+Type a verb and press Enter. Type "help" for the full command reference, "exit" to quit.`
+
 // replCmd preserves the legacy promptui-based interactive shell, now scoped
 // behind an explicit subcommand. New scripted use should prefer the
 // dedicated subcommands (vertex, edge, illuminate, bulk).
@@ -82,6 +91,8 @@ EXAMPLE
 			}
 		}()
 		srv := service.NewCLIService(cli)
+
+		fmt.Println(replBanner)
 
 		tpl := &promptui.PromptTemplates{
 			Prompt:  "{{ . }} ",
