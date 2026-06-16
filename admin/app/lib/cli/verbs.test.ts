@@ -11,7 +11,9 @@
  */
 import { describe, expect, test } from "bun:test";
 
+import { parse } from "./parser";
 import {
+  CLI_COMMAND_REFERENCE,
   HELP_TEXT,
   parseAdd,
   parseHelp,
@@ -19,6 +21,23 @@ import {
   parsePut,
   parseFloatStrict,
 } from "./verbs";
+
+/**
+ * The canonical verb set, duplicated here (not imported) on purpose so the
+ * test fails loudly if a verb is ever added to the parser without being
+ * surfaced in the reference and `HELP_TEXT`. Mirrors `parser.ts`'s `VERBS`
+ * and the Go `parser.Verbs`.
+ */
+const CANONICAL_VERBS = [
+  "get",
+  "put",
+  "delete",
+  "add",
+  "scan",
+  "illuminate",
+  "help",
+  "exit",
+] as const;
 
 describe("parseFloatStrict (#434 — Go strconv.ParseFloat parity)", () => {
   test.each([
@@ -198,5 +217,49 @@ describe("parseIlluminate prefix= kwarg (#606)", () => {
 
   test("rejects an explicit empty prefix= value", () => {
     expect(parseIlluminate(["alice", "2", "5", "prefix="]).ok).toBe(false);
+  });
+});
+
+describe("CLI_COMMAND_REFERENCE (#646 — structured reference ⇄ parser binding)", () => {
+  test("is non-empty", () => {
+    expect(CLI_COMMAND_REFERENCE.length).toBeGreaterThan(0);
+  });
+
+  test("every entry's verb is the first token of its signature", () => {
+    for (const doc of CLI_COMMAND_REFERENCE) {
+      expect(doc.signature.split(/\s+/)[0]).toBe(doc.verb);
+    }
+  });
+
+  test("every example parses successfully via the real parser", () => {
+    for (const doc of CLI_COMMAND_REFERENCE) {
+      const r = parse(doc.example);
+      if (!r.ok) {
+        throw new Error(`example did not parse: "${doc.example}" → ${r.usage}`);
+      }
+      // The parsed verb must match the documented verb so an example can
+      // never silently document the wrong command. The parser narrows
+      // `verb` to a literal union, so widen to string for the comparison.
+      expect(r.command.verb as string).toBe(doc.verb);
+    }
+  });
+
+  test("covers exactly the canonical verb set — no missing, no invented", () => {
+    const referenced = new Set(CLI_COMMAND_REFERENCE.map((d) => d.verb));
+    expect([...referenced].sort()).toEqual([...CANONICAL_VERBS].sort());
+  });
+
+  test("every referenced verb also appears in HELP_TEXT (cross-view parity)", () => {
+    for (const verb of new Set(CLI_COMMAND_REFERENCE.map((d) => d.verb))) {
+      expect(HELP_TEXT).toContain(verb);
+    }
+  });
+
+  test("entries carry a non-empty group, summary, and example", () => {
+    for (const doc of CLI_COMMAND_REFERENCE) {
+      expect(doc.group.length).toBeGreaterThan(0);
+      expect(doc.summary.length).toBeGreaterThan(0);
+      expect(doc.example.length).toBeGreaterThan(0);
+    }
   });
 });

@@ -373,6 +373,129 @@ export const HELP_TEXT = [
 ].join("\n");
 
 /**
+ * A single row of the structured CLI command reference rendered by the
+ * `/cli` "Commands" panel (`CliCommandReference`).
+ *
+ * This is a **separate, human-facing view** of the grammar — deliberately
+ * NOT derived from {@link HELP_TEXT}. `HELP_TEXT` is byte-locked to the Go
+ * `HelpText` (the `verbs.json` fixture compares both parsers against it) and
+ * its multi-line `illuminate` alignment must not be regenerated. The two are
+ * instead kept honest by `verbs.test.ts`, which asserts that every `example`
+ * parses and that the set of `verb`s equals the canonical verb list.
+ */
+export interface CliCommandDoc {
+  /** The group shown as a section header in the panel. */
+  readonly group: string;
+  /** The verb keyword as typed (`get`, `put`, `illuminate`, …). */
+  readonly verb: string;
+  /** Compact signature, e.g. `get vertex <key>`. */
+  readonly signature: string;
+  /** One-line, plain-English description. */
+  readonly summary: string;
+  /** A concrete, runnable example (must parse — bound by `verbs.test.ts`). */
+  readonly example: string;
+}
+
+/**
+ * Structured command reference for the `/cli` "Commands" panel, ordered by
+ * group (Vertices → Edges → Browse → Explore → Session). See
+ * {@link CliCommandDoc} for why this is not generated from `HELP_TEXT`.
+ */
+export const CLI_COMMAND_REFERENCE: readonly CliCommandDoc[] = [
+  {
+    group: "Vertices",
+    verb: "get",
+    signature: "get vertex <key>",
+    summary: "Read a vertex's value by key.",
+    example: "get vertex alice",
+  },
+  {
+    group: "Vertices",
+    verb: "put",
+    signature: "put vertex <key> <value> [ttl]",
+    summary:
+      "Create or replace a vertex. Value is typed (string / int / float / bool / datetime); TTL seconds optional.",
+    example: "put vertex alice Alice 3600",
+  },
+  {
+    group: "Vertices",
+    verb: "delete",
+    signature: "delete vertex <key>",
+    summary: "Remove a vertex by key.",
+    example: "delete vertex alice",
+  },
+  {
+    group: "Edges",
+    verb: "get",
+    signature: "get edge <tail> <head>",
+    summary: "Read the weight of the edge between two vertices.",
+    example: "get edge alice bob",
+  },
+  {
+    group: "Edges",
+    verb: "put",
+    signature: "put edge <tail> <head> <weight> [ttl]",
+    summary:
+      "Create or replace an edge, setting its weight. TTL seconds optional.",
+    example: "put edge alice bob 1.5",
+  },
+  {
+    group: "Edges",
+    verb: "add",
+    signature: "add edge <tail> <head> <weight> [ttl]",
+    summary:
+      "Add weight onto an edge (additive); creates it if absent. TTL seconds optional.",
+    example: "add edge alice bob 0.5",
+  },
+  {
+    group: "Edges",
+    verb: "delete",
+    signature: "delete edge <tail> <head>",
+    summary: "Remove the edge between two vertices.",
+    example: "delete edge alice bob",
+  },
+  {
+    group: "Browse",
+    verb: "scan",
+    signature: "scan vertices <prefix> [limit]",
+    summary:
+      "List vertices whose key starts with a prefix (optional max count).",
+    example: "scan vertices user: 20",
+  },
+  {
+    group: "Browse",
+    verb: "scan",
+    signature: "scan edges <tail-prefix> [limit]",
+    summary: "List edges whose tail starts with a prefix (optional max count).",
+    example: "scan edges alice 20",
+  },
+  {
+    group: "Explore",
+    verb: "illuminate",
+    signature:
+      "illuminate <seed> <step> <k> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf] [prefix=<string>]",
+    summary:
+      "Walk the graph from a seed (step hops, top-k per hop) and render the subgraph. Optional reduction axes.",
+    example: "illuminate alice 2 5 algorithm=spt",
+  },
+  {
+    group: "Session",
+    verb: "help",
+    signature: "help",
+    summary: "Print the grammar reference into the terminal.",
+    example: "help",
+  },
+  {
+    group: "Session",
+    verb: "exit",
+    signature: "exit",
+    summary:
+      "No-op in the web CLI (close the tab to leave); ends the prompt in `lantern repl`.",
+    example: "exit",
+  },
+];
+
+/**
  * Parses the `help` verb. Extra arguments are accepted silently so
  * the verb behaves like `exit` — discoverability beats strictness
  * here, since the operator typing `help` is by definition asking for

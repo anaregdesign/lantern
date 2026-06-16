@@ -1,4 +1,5 @@
 import { Button, Spinner } from "@fluentui/react-components";
+import { BookQuestionMark20Regular } from "@fluentui/react-icons";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatIlluminateClick } from "~/lib/cli/illuminate-axes";
 import { completeCommandLine, longestCommonPrefix } from "~/lib/cli/complete";
@@ -7,6 +8,7 @@ import { useCliSplitter } from "~/lib/client/usecase/cli/use-cli-splitter";
 import { useCliAxisPicker } from "~/lib/client/usecase/cli/use-cli-axis-picker";
 import type { ScrollbackEntry } from "~/lib/client/usecase/cli/state";
 import { CliAxisPicker } from "~/components/cli/CliAxisPicker/CliAxisPicker";
+import { CliCommandReference } from "~/components/cli/CliCommandReference/CliCommandReference";
 import { JsonView } from "~/components/cli/JsonView/JsonView";
 import { IlluminateCanvas } from "~/components/illuminate/IlluminateCanvas/IlluminateCanvas";
 import styles from "./CliPage.module.css";
@@ -28,6 +30,9 @@ export function CliPage() {
   // token is ambiguous (#515). Local UI state only — never written to the
   // scrollback log, so it behaves like a shell's transient completion row.
   const [hints, setHints] = useState<string[]>([]);
+  // Whether the slide-in "Commands" reference drawer is open (#646). Local
+  // UI state — it neither touches the dispatch loop nor the scrollback.
+  const [helpOpen, setHelpOpen] = useState(false);
   // Drives the two-column grid + draggable splitter (#465). Only active
   // when a graph is present; otherwise the right column owns the full
   // width and the splitter handle is hidden by CSS.
@@ -200,25 +205,38 @@ export function CliPage() {
             <span className={`${styles.dot} ${styles.dotGreen}`} />
           </span>
           <span className={styles.chromeTitle}>lantern · cli</span>
-          {cli.busy ? (
-            <span className={styles.chromeBusy}>
-              <Spinner
-                size="extra-tiny"
-                label="running"
-                labelPosition="before"
-              />
-              <Button
-                appearance="subtle"
-                size="small"
-                onClick={cli.cancelInFlight}
-                data-testid="cli-cancel"
-                aria-label="Cancel in-flight command (Esc)"
-                title="Cancel in-flight command (Esc)"
-              >
-                Cancel
-              </Button>
-            </span>
-          ) : null}
+          <span className={styles.chromeActions}>
+            <Button
+              appearance="subtle"
+              size="small"
+              icon={<BookQuestionMark20Regular />}
+              onClick={() => setHelpOpen(true)}
+              data-testid="cli-help-toggle"
+              aria-label="Show CLI commands"
+              title="Show CLI commands"
+            >
+              Commands
+            </Button>
+            {cli.busy ? (
+              <span className={styles.chromeBusy}>
+                <Spinner
+                  size="extra-tiny"
+                  label="running"
+                  labelPosition="before"
+                />
+                <Button
+                  appearance="subtle"
+                  size="small"
+                  onClick={cli.cancelInFlight}
+                  data-testid="cli-cancel"
+                  aria-label="Cancel in-flight command (Esc)"
+                  title="Cancel in-flight command (Esc)"
+                >
+                  Cancel
+                </Button>
+              </span>
+            ) : null}
+          </span>
         </div>
 
         <div
@@ -330,6 +348,12 @@ export function CliPage() {
           </div>
         </section>
       ) : null}
+
+      {/* Slide-in command reference (#646), toggled from the chrome
+          "Commands" button. Portals over the viewport, so its position in
+          the tree does not matter — it lives here to keep the toggle and
+          panel state co-located. */}
+      <CliCommandReference open={helpOpen} onClose={() => setHelpOpen(false)} />
     </div>
   );
 }

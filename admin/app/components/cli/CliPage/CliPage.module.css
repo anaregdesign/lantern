@@ -98,12 +98,22 @@
   letter-spacing: 0.02em;
 }
 
-/* Spinner + Cancel, pushed to the right edge while a command is in flight. */
-.chromeBusy {
+/* Right-aligned chrome controls: the persistent "Commands" toggle (#646)
+ * plus the transient busy spinner / Cancel cluster. `margin-left: auto`
+ * pushes the whole group to the right edge of the chrome bar. */
+.chromeActions {
   display: inline-flex;
   align-items: center;
   gap: var(--spacingHorizontalS, 8px);
   margin-left: auto;
+}
+
+/* Spinner + Cancel, shown while a command is in flight. Lives inside
+ * `.chromeActions`, which already owns the right-alignment. */
+.chromeBusy {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacingHorizontalS, 8px);
 }
 
 /* Scrollback body — transparent because the terminal box owns the frame. */

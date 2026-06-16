@@ -504,4 +504,32 @@ test.describe("/cli", () => {
     await expect(input).toBeEnabled();
     await expect(input).toBeFocused();
   });
+
+  // #646 — the chrome "Commands" button opens a slide-in reference drawer
+  // listing every verb with a signature and a runnable example, so a
+  // first-time operator can discover the grammar without already knowing
+  // to type `help`. Unlike the intro banner, the toggle never scrolls
+  // away, so the reference stays one click away for the whole session.
+  test("Commands button opens the CLI reference drawer (#646)", async ({
+    page,
+  }) => {
+    await page.goto("/cli");
+    // The toggle is part of the persistent chrome — visible from load.
+    const toggle = page.getByTestId("cli-help-toggle");
+    await expect(toggle).toBeVisible();
+    await expect(toggle).toContainText("Commands");
+    // The drawer is closed until the toggle is clicked (modal drawer
+    // keeps its content out of the DOM while closed).
+    await expect(page.getByTestId("cli-command-reference")).toHaveCount(0);
+    await toggle.click();
+    // It opens with the grouped reference, including the illuminate verb
+    // and at least one runnable example row.
+    const drawer = page.getByTestId("cli-command-reference");
+    await expect(drawer).toBeVisible();
+    await expect(drawer).toContainText("illuminate");
+    await expect(page.getByTestId("cli-command-row").first()).toBeVisible();
+    // The dismiss button closes it again.
+    await page.getByTestId("cli-command-reference-close").click();
+    await expect(page.getByTestId("cli-command-reference")).toHaveCount(0);
+  });
 });
