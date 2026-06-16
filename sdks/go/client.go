@@ -51,6 +51,15 @@ var ErrResourceExhausted = errors.New("resource exhausted")
 // retry against a sibling replica may succeed.
 var ErrUnavailable = errors.New("unavailable")
 
+// ErrFailedPrecondition wraps connect.CodeFailedPrecondition responses — the
+// "the server is not in a state to serve this call" signal. Its canonical
+// source is SearchVertices against a server started without the search index
+// (LANTERN_SEARCH_ENABLED=false): the call cannot succeed until an operator
+// enables the index, so it is a configuration state, not a transient failure.
+// Use errors.Is to present a calm "search is turned off" state rather than
+// retrying.
+var ErrFailedPrecondition = errors.New("failed precondition")
+
 // Edge re-exports the generated protobuf Edge type so SDK callers do not
 // need to import the pb package directly. It is a true Go type alias, not a
 // parallel struct: client.Edge and pb.Edge are the same type, freely
@@ -223,10 +232,10 @@ func unary[Req, Resp any](
 
 // wrapConnectErr lifts a *connect.Error into a joined error that
 // satisfies errors.Is against the matching SDK sentinel (ErrNotFound /
-// ErrInvalidArgument / ErrResourceExhausted / ErrUnavailable) while
-// preserving the original *connect.Error for callers that need
-// connect.CodeOf or the per-error metadata. Non-Connect errors pass
-// through unchanged.
+// ErrInvalidArgument / ErrResourceExhausted / ErrUnavailable /
+// ErrFailedPrecondition) while preserving the original *connect.Error for
+// callers that need connect.CodeOf or the per-error metadata. Non-Connect
+// errors pass through unchanged.
 func wrapConnectErr(err error) error {
 	if err == nil {
 		return nil
@@ -240,6 +249,8 @@ func wrapConnectErr(err error) error {
 		return errors.Join(ErrResourceExhausted, err)
 	case connect.CodeUnavailable:
 		return errors.Join(ErrUnavailable, err)
+	case connect.CodeFailedPrecondition:
+		return errors.Join(ErrFailedPrecondition, err)
 	}
 	return err
 }

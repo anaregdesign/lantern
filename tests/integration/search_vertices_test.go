@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/anaregdesign/lantern/core/search"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+	client "github.com/anaregdesign/lantern/sdks/go"
 	"github.com/anaregdesign/lantern/server/service"
 )
 
@@ -50,6 +52,26 @@ func newSearchRawClient(t *testing.T, enabled bool) graphv1connect.LanternServic
 	})
 	srv := newConnectTestServer(t, svc, nil)
 	return graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
+}
+
+// newSearchSDKClient mirrors newSearchRawClient but returns the high-level
+// *client.Lantern so the SDK SearchVertices forwarder (#625) is exercised
+// against the real service handler — the SDK package itself keeps only
+// white-box request/response tests.
+func newSearchSDKClient(t *testing.T, enabled bool) *client.Lantern {
+	t.Helper()
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+	cache.EnablePrefixIndex(func(k string) string { return k })
+	if enabled {
+		cache.EnableSearchIndex(searchVertexDocument)
+	}
+	svc := service.NewLanternService(cache).WithSearchLimits(service.SearchLimits{
+		Enabled:      enabled,
+		DefaultLimit: 100,
+		MaxLimit:     1000,
+	})
+	srv := newConnectTestServer(t, svc, nil)
+	return newConnectClientFor(t, srv.url)
 }
 
 func TestSearchVertices_EndToEnd(t *testing.T) {
@@ -119,4 +141,71 @@ func TestSearchVertices_DisabledReturnsFailedPrecondition(t *testing.T) {
 	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
 		t.Fatalf("code = %v, want FailedPrecondition", got)
 	}
+}
+
+// TestSearchVertices_SDKForwarder drives the SDK's high-level SearchVertices
+// against the live handler: ranked SearchHit mapping, WithSearchPrefix
+// scoping, the empty-query zero-hit success, and the disabled-server path
+// surfacing as the client.ErrFailedPrecondition sentinel (#625).
+func TestSearchVertices_SDKForwarder(t *testing.T) {
+	t.Run("ranked hits, prefix scope and empty query", func(t *testing.T) {
+		l := newSearchSDKClient(t, true)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		seed := []client.VertexInput{
+			{Key: "user.preferences.tone", Value: "calm and concise", Expiration: time.Now().Add(time.Hour)},
+			{Key: "user.preferences.format", Value: "calm bullet points", Expiration: time.Now().Add(time.Hour)},
+			{Key: "project.lantern.stack", Value: "go and react", Expiration: time.Now().Add(time.Hour)},
+		}
+		if err := l.PutVertices(ctx, seed); err != nil {
+			t.Fatalf("PutVertices: %v", err)
+		}
+
+		hits, err := l.SearchVertices(ctx, "calm")
+		if err != nil {
+			t.Fatalf("SearchVertices: %v", err)
+		}
+		if len(hits) != 2 {
+			t.Fatalf("hits = %d, want 2 (%+v)", len(hits), hits)
+		}
+		for _, h := range hits {
+			if !strings.HasPrefix(h.Key, "user.preferences.") {
+				t.Errorf("unexpected hit key %q", h.Key)
+			}
+			if h.Score <= 0 {
+				t.Errorf("hit %q score = %v, want > 0", h.Key, h.Score)
+			}
+		}
+
+		scoped, err := l.SearchVertices(ctx, "calm", client.WithSearchPrefix("user.preferences.tone"))
+		if err != nil {
+			t.Fatalf("SearchVertices scoped: %v", err)
+		}
+		if len(scoped) != 1 || scoped[0].Key != "user.preferences.tone" {
+			t.Fatalf("scoped hits = %+v, want only user.preferences.tone", scoped)
+		}
+
+		empty, err := l.SearchVertices(ctx, "")
+		if err != nil {
+			t.Fatalf("empty query must be a zero-hit success: %v", err)
+		}
+		if len(empty) != 0 {
+			t.Fatalf("empty-query hits = %d, want 0", len(empty))
+		}
+	})
+
+	t.Run("disabled server surfaces ErrFailedPrecondition", func(t *testing.T) {
+		l := newSearchSDKClient(t, false)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		hits, err := l.SearchVertices(ctx, "calm")
+		if hits != nil {
+			t.Errorf("want nil hits when disabled, got %+v", hits)
+		}
+		if !errors.Is(err, client.ErrFailedPrecondition) {
+			t.Fatalf("want errors.Is(err, client.ErrFailedPrecondition), got %v", err)
+		}
+	})
 }
