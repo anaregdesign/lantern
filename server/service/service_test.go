@@ -10,7 +10,7 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/anaregdesign/lantern/core/cache/graph"
+	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -18,7 +18,7 @@ import (
 
 func newTestService(t *testing.T) *LanternService {
 	t.Helper()
-	return NewLanternService(graph.NewGraphCache[string, *pb.Vertex](time.Minute))
+	return NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](time.Minute))
 }
 
 func futureTs(d time.Duration) *timestamppb.Timestamp {
@@ -139,7 +139,7 @@ func TestLanternService_AddEdge_Additive(t *testing.T) {
 // count is surfaced via HotPathMetrics.OnEdgeContribDeduped. Dedup
 // convergence itself is covered by the core tests and tests/integration.
 func TestLanternService_AddEdges_ContribIDWiring(t *testing.T) {
-	var id0, id1 graph.ContribID
+	var id0, id1 graphcache.ContribID
 	id0[0], id0[23] = 0x11, 0x22
 	id1[0], id1[23] = 0x33, 0x44
 
@@ -493,7 +493,7 @@ func TestLanternService_SingularWriteFacades(t *testing.T) {
 // trace it back to the env knob).
 func TestExpirationClamp_RejectsBeyondTTL(t *testing.T) {
 	const ttl = time.Hour
-	s := NewLanternService(graph.NewGraphCache[string, *pb.Vertex](time.Minute)).
+	s := NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)).
 		WithTombstoneTTL(ttl)
 	ctx := context.Background()
 
@@ -541,7 +541,7 @@ func TestExpirationClamp_RejectsBeyondTTL(t *testing.T) {
 // Within the clamp, the same RPCs succeed.
 func TestExpirationClamp_AcceptsWithinTTL(t *testing.T) {
 	const ttl = time.Hour
-	s := NewLanternService(graph.NewGraphCache[string, *pb.Vertex](time.Minute)).
+	s := NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)).
 		WithTombstoneTTL(ttl)
 	ctx := context.Background()
 
@@ -561,7 +561,7 @@ func TestExpirationClamp_AcceptsWithinTTL(t *testing.T) {
 
 // Zero expiration (= no expiration) is always accepted regardless of TTL.
 func TestExpirationClamp_ZeroAlwaysAllowed(t *testing.T) {
-	s := NewLanternService(graph.NewGraphCache[string, *pb.Vertex](time.Minute)).
+	s := NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)).
 		WithTombstoneTTL(time.Minute)
 	ctx := context.Background()
 	if _, err := s.PutVertices(ctx, &pb.PutVerticesRequest{
@@ -845,7 +845,7 @@ func TestLanternService_MutationLog_BurstAppendsMonotone(t *testing.T) {
 	clock := hlc.New(hlc.NodeID{0x11, 0x22, 0x33, 0x44}, hlc.Options{})
 
 	var appendCount int
-	s := NewLanternService(graph.NewGraphCache[string, *pb.Vertex](time.Minute)).
+	s := NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)).
 		WithReplication(log, clock, func() { appendCount++ })
 
 	ch, cancel, err := log.Subscribe(0)
@@ -904,7 +904,7 @@ func TestLanternService_MutationLog_BurstAppendsMonotone(t *testing.T) {
 // the service is built without WithReplication: write RPCs must still
 // succeed and not panic on the nil log/clock.
 func TestLanternService_MutationLog_NotWired_NoOp(t *testing.T) {
-	s := NewLanternService(graph.NewGraphCache[string, *pb.Vertex](time.Minute))
+	s := NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](time.Minute))
 	if _, err := s.PutVertices(context.Background(), &pb.PutVerticesRequest{
 		Vertices: []*pb.Vertex{{Key: "k"}},
 	}); err != nil {
@@ -984,7 +984,7 @@ func (f *fakeHotPathMetrics) OnEdgeContribDeduped(n int) {
 
 func TestLanternService_HotPathMetrics_EmitsOnceForBatchAndIlluminate(t *testing.T) {
 	fm := &fakeHotPathMetrics{}
-	s := NewLanternService(graph.NewGraphCache[string, *pb.Vertex](time.Minute)).
+	s := NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)).
 		WithHotPathMetrics(fm)
 
 	ctx := context.Background()
@@ -1083,7 +1083,7 @@ func TestLanternService_HotPathMetrics_EmitsOnScan(t *testing.T) {
 // once), and that a present-but-nil vertex value still scores as a hit.
 func TestLanternService_HotPathMetrics_EmitsGetVertexHitMiss(t *testing.T) {
 	fm := &fakeHotPathMetrics{}
-	s := NewLanternService(graph.NewGraphCache[string, *pb.Vertex](time.Minute)).
+	s := NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)).
 		WithHotPathMetrics(fm)
 	ctx := context.Background()
 
@@ -1132,7 +1132,7 @@ func TestLanternService_HotPathMetrics_EmitsGetVertexHitMiss(t *testing.T) {
 // GetEdge forwards through the plural.
 func TestLanternService_HotPathMetrics_EmitsGetEdgeHitMiss(t *testing.T) {
 	fm := &fakeHotPathMetrics{}
-	s := NewLanternService(graph.NewGraphCache[string, *pb.Vertex](time.Minute)).
+	s := NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)).
 		WithHotPathMetrics(fm)
 	ctx := context.Background()
 
@@ -1175,7 +1175,7 @@ func TestLanternService_HotPathMetrics_EmitsGetEdgeHitMiss(t *testing.T) {
 func TestExpirationClamp_FiresValidationRejectHook(t *testing.T) {
 	const ttl = time.Hour
 	var got []string
-	s := NewLanternService(graph.NewGraphCache[string, *pb.Vertex](time.Minute)).
+	s := NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)).
 		WithTombstoneTTL(ttl).
 		WithValidationRejectHook(func(reason string) { got = append(got, reason) })
 

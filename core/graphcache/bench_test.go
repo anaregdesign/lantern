@@ -1,4 +1,4 @@
-package graph
+package graphcache
 
 import (
 	"fmt"
@@ -102,7 +102,7 @@ func reportHeap(b *testing.B, before, after runtime.MemStats, scale benchScale) 
 // BenchmarkGraphCacheMemory reports heap-in-use after populating a cache at
 // several scales. Run with:
 //
-//	go test -bench=BenchmarkGraphCacheMemory -benchmem -benchtime=1x ./core/cache/graph
+//	go test -bench=BenchmarkGraphCacheMemory -benchmem -benchtime=1x ./core/graphcache
 //
 // The b.N loop iteration count is forced to 1 by -benchtime=1x so the heap
 // snapshot reflects exactly one populated cache. Without -benchtime=1x the

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	cachegraph "github.com/anaregdesign/lantern/core/cache/graph"
+	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -23,7 +23,7 @@ import (
 // observationally equivalent at the wire level.
 type pumpNode struct {
 	url    string // full http://host:port URL (used by pump dialer + replication client)
-	cache  *cachegraph.GraphCache[string, *pb.Vertex]
+	cache  *graphcache.GraphCache[string, *pb.Vertex]
 	clock  *hlc.Clock
 	log    *mutationlog.Log
 	svc    *service.LanternService
@@ -37,7 +37,7 @@ func newPumpNode(t *testing.T, nodeID hlc.NodeID) *pumpNode {
 	log := mutationlog.New(mutationlog.Options{Capacity: 1024, SubscriberBuffer: 1024})
 	t.Cleanup(func() { _ = log.Close() })
 	clock := hlc.New(nodeID, hlc.Options{})
-	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 	svc := service.NewLanternService(cache).WithReplication(log, clock, nil)
 	rep := service.NewLanternReplicationService(log, cache, clock)
 
@@ -88,7 +88,7 @@ func (n *pumpNode) startPump(ctx context.Context, t *testing.T, peers []string) 
 
 // waitForVertex polls cache.GetVertex until the key appears or the
 // deadline elapses.
-func waitForVertex(t *testing.T, cache *cachegraph.GraphCache[string, *pb.Vertex], key string, timeout time.Duration) bool {
+func waitForVertex(t *testing.T, cache *graphcache.GraphCache[string, *pb.Vertex], key string, timeout time.Duration) bool {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -102,7 +102,7 @@ func waitForVertex(t *testing.T, cache *cachegraph.GraphCache[string, *pb.Vertex
 
 // waitForEdge polls cache.GetWeight until the (tail,head) appears with
 // at least the expected weight, or the deadline elapses.
-func waitForEdge(t *testing.T, cache *cachegraph.GraphCache[string, *pb.Vertex], tail, head string, want float32, timeout time.Duration) (float32, bool) {
+func waitForEdge(t *testing.T, cache *graphcache.GraphCache[string, *pb.Vertex], tail, head string, want float32, timeout time.Duration) (float32, bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -162,7 +162,7 @@ func TestPeerPump_E2E_ThreeNodeConvergence(t *testing.T) {
 
 	for _, tc := range []struct {
 		name, key string
-		cache     *cachegraph.GraphCache[string, *pb.Vertex]
+		cache     *graphcache.GraphCache[string, *pb.Vertex]
 	}{
 		{"b sees from-a", "from-a", b.cache},
 		{"c sees from-a", "from-a", c.cache},

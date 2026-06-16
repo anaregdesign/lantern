@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	cachegraph "github.com/anaregdesign/lantern/core/cache/graph"
+	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -36,7 +36,7 @@ func TestSubscribe_E2E_100Writes(t *testing.T) {
 	t.Cleanup(func() { _ = log.Close() })
 	clock := hlc.New(hlc.NodeID{0xAA, 0xBB}, hlc.Options{})
 
-	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 
 	svc := service.NewLanternService(cache).
 		WithReplication(log, clock, nil)
@@ -125,7 +125,7 @@ func TestSubscribe_PerOriginCursor_Skips(t *testing.T) {
 	t.Cleanup(func() { _ = log.Close() })
 	clock := hlc.New(originA, hlc.Options{})
 
-	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 	svc := service.NewLanternService(cache).
 		WithReplication(log, clock, nil)
 	rep := service.NewLanternReplicationService(log, cache, clock)

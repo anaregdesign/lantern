@@ -12,7 +12,7 @@ import (
 // seedPrefixEdges creates both endpoints as live vertices and then puts the
 // edges with an explicit non-zero expiration. Edges without an explicit
 // expiration are born-expired (1970-01-01) — see the AGENTS.md note in
-// core/cache/graph for the same trap.
+// core/graphcache for the same trap.
 func seedPrefixEdges(t *testing.T, ctx context.Context, l *client.Lantern, pairs [][2]string) {
 	t.Helper()
 	keySet := map[string]struct{}{}

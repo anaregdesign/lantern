@@ -12,7 +12,7 @@ import (
 
 	"connectrpc.com/grpchealth"
 
-	cachegraph "github.com/anaregdesign/lantern/core/cache/graph"
+	"github.com/anaregdesign/lantern/core/graphcache"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/service"
 )
@@ -74,7 +74,7 @@ type noopWatcher struct{}
 func (noopWatcher) Watch(ctx context.Context, _ time.Duration) { <-ctx.Done() }
 
 func TestLanternServer_Run_FlipsHealthOnServeReturn(t *testing.T) {
-	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 	svc := service.NewLanternService(cache)
 	httpSrv := &http.Server{Handler: http.NewServeMux()}
 	lis := &brokenListener{addr: fakeAddr{}}

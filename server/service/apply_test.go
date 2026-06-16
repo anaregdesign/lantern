@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anaregdesign/lantern/core/cache/graph"
+	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -159,7 +159,7 @@ func TestApplyMutation_ReplicationApplyHook(t *testing.T) {
 // TestApplyMutation_DoesNotReAppendDuplicate), not by bypassing the
 // log on apply.
 func TestApplyMutation_AppendsToLocalLog(t *testing.T) {
-	cache := graph.NewGraphCache[string, *pb.Vertex](time.Minute)
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 	log := mutationlog.New(mutationlog.Options{Capacity: 128, SubscriberBuffer: 128})
 	t.Cleanup(func() { _ = log.Close() })
 	origin := bytes16("origin-A")
@@ -194,7 +194,7 @@ func TestApplyMutation_AppendsToLocalLog(t *testing.T) {
 // peer-pump in #184 would amplify every mutation by the fan-out
 // factor on external Subscribe streams.
 func TestApplyMutation_DoesNotReAppendDuplicate(t *testing.T) {
-	cache := graph.NewGraphCache[string, *pb.Vertex](time.Minute)
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 	log := mutationlog.New(mutationlog.Options{Capacity: 128, SubscriberBuffer: 128})
 	t.Cleanup(func() { _ = log.Close() })
 	origin := bytes16("origin-A")
@@ -320,7 +320,7 @@ func TestApplyMutation_Convergence(t *testing.T) {
 			// distinct shuffled order with random duplicates.
 			states := make([]nodeSnapshot, numNodes)
 			for n := 0; n < numNodes; n++ {
-				cache := graph.NewGraphCache[string, *pb.Vertex](time.Minute)
+				cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 				svc := NewLanternService(cache)
 
 				delivery := make([]*pb.Mutation, 0, len(tape)*2)
@@ -385,8 +385,8 @@ func TestApplyMutation_Idempotence(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cacheA := graph.NewGraphCache[string, *pb.Vertex](time.Minute)
-			cacheB := graph.NewGraphCache[string, *pb.Vertex](time.Minute)
+			cacheA := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+			cacheB := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 			svcA := NewLanternService(cacheA)
 			svcB := NewLanternService(cacheB)
 
@@ -424,7 +424,7 @@ func TestApplyMutation_WireContribIDDedupsAcrossSeq(t *testing.T) {
 	origin := bytes16("origin-A")
 	exp := timestamppb.New(time.Now().Add(time.Hour))
 
-	var cid graph.ContribID
+	var cid graphcache.ContribID
 	cid[0], cid[23] = 0xAB, 0x07
 
 	mkAddEdges := func(seq uint64, contribIDs [][]byte) *pb.Mutation {
@@ -442,7 +442,7 @@ func TestApplyMutation_WireContribIDDedupsAcrossSeq(t *testing.T) {
 	}
 
 	t.Run("same wire ContribID dedups across distinct Seq", func(t *testing.T) {
-		cache := graph.NewGraphCache[string, *pb.Vertex](time.Minute)
+		cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 		svc := NewLanternService(cache)
 		ctx := context.Background()
 		if err := svc.ApplyMutation(ctx, mkAddEdges(1, [][]byte{cid[:]})); err != nil {
@@ -457,7 +457,7 @@ func TestApplyMutation_WireContribIDDedupsAcrossSeq(t *testing.T) {
 	})
 
 	t.Run("legacy AddEdges without wire ContribID sums across Seq", func(t *testing.T) {
-		cache := graph.NewGraphCache[string, *pb.Vertex](time.Minute)
+		cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 		svc := NewLanternService(cache)
 		ctx := context.Background()
 		if err := svc.ApplyMutation(ctx, mkAddEdges(1, nil)); err != nil {
@@ -577,7 +577,7 @@ type nodeSnapshot struct {
 	weights  map[[2]string]float32
 }
 
-func snapshotCache(c *graph.GraphCache[string, *pb.Vertex], vp int, edges [][2]string) nodeSnapshot {
+func snapshotCache(c *graphcache.GraphCache[string, *pb.Vertex], vp int, edges [][2]string) nodeSnapshot {
 	s := nodeSnapshot{
 		vertices: map[string][]byte{},
 		weights:  map[[2]string]float32{},
@@ -598,7 +598,7 @@ func snapshotCache(c *graph.GraphCache[string, *pb.Vertex], vp int, edges [][2]s
 
 // includeKeys extends a snapshot with explicit (vertex, edge) keys.
 // Used by the idempotence test where the universe is hand-picked.
-func (s *nodeSnapshot) includeKeys(c *graph.GraphCache[string, *pb.Vertex], vs []string, es [][2]string) {
+func (s *nodeSnapshot) includeKeys(c *graphcache.GraphCache[string, *pb.Vertex], vs []string, es [][2]string) {
 	for _, k := range vs {
 		if v, ok := c.GetVertex(k); ok {
 			s.vertices[k] = mustMarshal(v)
@@ -699,7 +699,7 @@ func TestApplyMutation_TombstoneClampRejectHook(t *testing.T) {
 	origin := bytes16("origin-A")
 
 	newSvc := func(tsCount *int) *LanternService {
-		cache := graph.NewGraphCache[string, *pb.Vertex](time.Minute)
+		cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 		return NewLanternService(cache).
 			WithTombstoneTTL(time.Hour).
 			WithTombstoneClampRejectHook(func() { *tsCount++ })
@@ -774,7 +774,7 @@ func TestApplyMutation_TombstoneClampRejectHook(t *testing.T) {
 
 	t.Run("ClampDisabledNeverFires", func(t *testing.T) {
 		var n int
-		cache := graph.NewGraphCache[string, *pb.Vertex](time.Minute)
+		cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 		svc := NewLanternService(cache).
 			WithTombstoneClampRejectHook(func() { n++ })
 		// useTomb=false: the non-HLC backend path is taken, hook stays at 0.

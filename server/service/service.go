@@ -11,7 +11,7 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/anaregdesign/lantern/core/cache/graph"
+	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -35,7 +35,7 @@ const ServiceName = "graph.v1.LanternService"
 // gave up.
 //
 // The service depends on the narrow Backend interface (see backend.go); a
-// wire binding maps it to *graph.GraphCache in production. Tests can supply
+// wire binding maps it to *graphcache.GraphCache in production. Tests can supply
 // a fake without standing up the real cache.
 type LanternService struct {
 	cache                  Backend
@@ -466,12 +466,12 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 	}
 	in := request.GetVertices()
 	s.metrics.OnBatch("PutVertices", len(in))
-	items := make([]graph.VertexItem[string, *pb.Vertex], 0, len(in))
+	items := make([]graphcache.VertexItem[string, *pb.Vertex], 0, len(in))
 	for _, v := range in {
 		if err := s.validateExpiration(v.GetExpiration().AsTime()); err != nil {
 			return nil, err
 		}
-		items = append(items, graph.VertexItem[string, *pb.Vertex]{
+		items = append(items, graphcache.VertexItem[string, *pb.Vertex]{
 			Key:        v.GetKey(),
 			Value:      v,
 			Expiration: v.GetExpiration().AsTime(),
@@ -571,12 +571,12 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 	in := request.GetEdges()
 	s.metrics.OnBatch("AddEdges", len(in))
 	contribIDs := request.GetContribIds()
-	items := make([]graph.EdgeItem[string], 0, len(in))
+	items := make([]graphcache.EdgeItem[string], 0, len(in))
 	for i, e := range in {
 		if err := s.validateExpiration(e.GetExpiration().AsTime()); err != nil {
 			return nil, err
 		}
-		item := graph.EdgeItem[string]{
+		item := graphcache.EdgeItem[string]{
 			Tail:       e.GetTail(),
 			Head:       e.GetHead(),
 			Weight:     e.GetWeight(),
@@ -611,12 +611,12 @@ func (s *LanternService) PutEdges(ctx context.Context, request *pb.PutEdgesReque
 	}
 	in := request.GetEdges()
 	s.metrics.OnBatch("PutEdges", len(in))
-	items := make([]graph.EdgeItem[string], 0, len(in))
+	items := make([]graphcache.EdgeItem[string], 0, len(in))
 	for _, e := range in {
 		if err := s.validateExpiration(e.GetExpiration().AsTime()); err != nil {
 			return nil, err
 		}
-		items = append(items, graph.EdgeItem[string]{
+		items = append(items, graphcache.EdgeItem[string]{
 			Tail:       e.GetTail(),
 			Head:       e.GetHead(),
 			Weight:     e.GetWeight(),
@@ -647,9 +647,9 @@ func (s *LanternService) DeleteEdges(ctx context.Context, in *pb.DeleteEdgesRequ
 	}
 	inEdges := in.GetEdges()
 	s.metrics.OnBatch("DeleteEdges", len(inEdges))
-	keys := make([]graph.EdgeKey[string], 0, len(inEdges))
+	keys := make([]graphcache.EdgeKey[string], 0, len(inEdges))
 	for _, e := range inEdges {
-		keys = append(keys, graph.EdgeKey[string]{Tail: e.GetTail(), Head: e.GetHead()})
+		keys = append(keys, graphcache.EdgeKey[string]{Tail: e.GetTail(), Head: e.GetHead()})
 	}
 	var n int
 	if s.clock != nil && s.tombstoneTTL > 0 {

@@ -7,7 +7,7 @@ import (
 
 	"connectrpc.com/connect"
 
-	cachegraph "github.com/anaregdesign/lantern/core/cache/graph"
+	"github.com/anaregdesign/lantern/core/graphcache"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	client "github.com/anaregdesign/lantern/sdks/go"
 	"github.com/anaregdesign/lantern/server/provider"
@@ -44,7 +44,7 @@ func (doubleSendInterceptor) WrapStreamingHandler(next connect.StreamingHandlerF
 // stay isolated.
 func newIdempotencyHarness(t *testing.T, opts ...client.Option) *client.Lantern {
 	t.Helper()
-	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 	svc := service.NewLanternService(cache)
 	val := provider.NewValidationInterceptor(defaultIntegrationValidationLimits())
 	srv := newConnectTestServer(t, svc, nil, val.ConnectInterceptor())

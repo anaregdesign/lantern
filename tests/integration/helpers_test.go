@@ -12,7 +12,7 @@ import (
 	"connectrpc.com/connect"
 	"golang.org/x/net/http2"
 
-	cachegraph "github.com/anaregdesign/lantern/core/cache/graph"
+	"github.com/anaregdesign/lantern/core/graphcache"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	client "github.com/anaregdesign/lantern/sdks/go"
@@ -148,7 +148,7 @@ func h2cClient() *http.Client {
 // tear anything down explicitly.
 func newInProcessClient(t *testing.T) (*client.Lantern, func()) {
 	t.Helper()
-	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 	svc := service.NewLanternService(cache)
 	val := provider.NewValidationInterceptor(defaultIntegrationValidationLimits())
 	srv := newConnectTestServer(t, svc, nil, val.ConnectInterceptor())
@@ -160,7 +160,7 @@ func newInProcessClient(t *testing.T) (*client.Lantern, func()) {
 // trip mid-batch failures.
 func newInProcessClientChunked(t *testing.T, chunkSize int) (*client.Lantern, func()) {
 	t.Helper()
-	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 	svc := service.NewLanternService(cache)
 	val := provider.NewValidationInterceptor(defaultIntegrationValidationLimits())
 	srv := newConnectTestServer(t, svc, nil, val.ConnectInterceptor())
@@ -173,7 +173,7 @@ func newInProcessClientChunked(t *testing.T, chunkSize int) (*client.Lantern, fu
 // prefix-scan integration tests pass.
 func newInProcessClientWithPrefix(t *testing.T) (*client.Lantern, func()) {
 	t.Helper()
-	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 	cache.EnablePrefixIndex(func(k string) string { return k })
 	svc := service.NewLanternService(cache)
 	val := provider.NewValidationInterceptor(defaultIntegrationValidationLimits())
@@ -189,7 +189,7 @@ func newInProcessClientWithPrefix(t *testing.T) (*client.Lantern, func()) {
 // so callers may discard it.
 func newRawConnectClient(t *testing.T, enablePrefixIndex bool) (graphv1connect.LanternServiceClient, func()) {
 	t.Helper()
-	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 	if enablePrefixIndex {
 		cache.EnablePrefixIndex(func(k string) string { return k })
 	}

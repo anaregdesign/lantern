@@ -4,7 +4,7 @@
 package main
 
 import (
-	"github.com/anaregdesign/lantern/core/cache/graph"
+	"github.com/anaregdesign/lantern/core/graphcache"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
@@ -56,8 +56,8 @@ func initializeApp() (*App, error) {
 		service.NewLanternServer,
 		wire.Bind(new(service.Listener), new(*provider.LanternListener)),
 		wire.Bind(new(service.HealthSetter), new(*provider.HealthChecker)),
-		wire.Bind(new(service.Backend), new(*graph.GraphCache[string, *pb.Vertex])),
-		wire.Bind(new(service.Watcher), new(*graph.GraphCache[string, *pb.Vertex])),
+		wire.Bind(new(service.Backend), new(*graphcache.GraphCache[string, *pb.Vertex])),
+		wire.Bind(new(service.Watcher), new(*graphcache.GraphCache[string, *pb.Vertex])),
 		newApp,
 	)
 	return nil, nil

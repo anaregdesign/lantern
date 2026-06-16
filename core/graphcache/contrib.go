@@ -1,4 +1,4 @@
-package graph
+package graphcache
 
 // ContribID is a globally-unique identifier for an additive edge
 // contribution. It packs the 16-byte HLC NodeID of the originating writer

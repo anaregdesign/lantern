@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	cachegraph "github.com/anaregdesign/lantern/core/cache/graph"
+	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -23,7 +23,7 @@ import (
 type antiEntropyNode struct {
 	addr   string // host:port form, for replication.AntiEntropy peer config
 	url    string // full http:// URL, for SDK + raw Connect clients
-	cache  *cachegraph.GraphCache[string, *pb.Vertex]
+	cache  *graphcache.GraphCache[string, *pb.Vertex]
 	clock  *hlc.Clock
 	log    *mutationlog.Log
 	svc    *service.LanternService
@@ -36,7 +36,7 @@ func newAntiEntropyNode(t *testing.T, nodeID hlc.NodeID) *antiEntropyNode {
 	mlog := mutationlog.New(mutationlog.Options{Capacity: 1024, SubscriberBuffer: 1024})
 	t.Cleanup(func() { _ = mlog.Close() })
 	clock := hlc.New(nodeID, hlc.Options{})
-	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 	svc := service.NewLanternService(cache).WithReplication(mlog, clock, nil)
 	rep := service.NewLanternReplicationService(mlog, cache, clock).WithOriginStates(svc)
 	srv := newConnectTestServer(t, svc, rep)

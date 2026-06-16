@@ -1,4 +1,4 @@
-package graph
+package graphcache
 
 import "sync"
 

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anaregdesign/lantern/core/cache/graph"
+	"github.com/anaregdesign/lantern/core/graphcache"
 	v1 "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
@@ -237,8 +237,8 @@ func NewLogger(o ObservabilityConfig) *slog.Logger {
 	return l
 }
 
-func NewGraphCache(c CacheConfig) *graph.GraphCache[string, *v1.Vertex] {
-	gc := graph.NewGraphCache[string, *v1.Vertex](c.TTL)
+func NewGraphCache(c CacheConfig) *graphcache.GraphCache[string, *v1.Vertex] {
+	gc := graphcache.NewGraphCache[string, *v1.Vertex](c.TTL)
 	// Identity projection: vertex keys are themselves the indexed string.
 	// Enabling the prefix index up-front (before any insert) is required
 	// by the cache contract — EnablePrefixIndex panics on a non-empty
@@ -256,7 +256,7 @@ func NewGraphCache(c CacheConfig) *graph.GraphCache[string, *v1.Vertex] {
 func NewDomainMetrics(
 	reg *prometheus.Registry,
 	o ObservabilityConfig,
-	cache *graph.GraphCache[string, *v1.Vertex],
+	cache *graphcache.GraphCache[string, *v1.Vertex],
 ) *domainmetrics.DomainMetrics {
 	m := domainmetrics.New(reg, domainmetrics.Options{
 		Version: o.Version,
@@ -282,7 +282,7 @@ type CacheGCHooksWired struct{}
 // single goroutine, so the per-tick accumulator inside the closure is
 // safe without locking.
 func WireCacheGCHooks(
-	cache *graph.GraphCache[string, *v1.Vertex],
+	cache *graphcache.GraphCache[string, *v1.Vertex],
 	m *domainmetrics.DomainMetrics,
 	logger *slog.Logger,
 ) CacheGCHooksWired {

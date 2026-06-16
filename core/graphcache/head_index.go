@@ -1,4 +1,4 @@
-package graph
+package graphcache
 
 // headIndex is the per-tail head-side prefix index that backs the head
 // dimension of ScanEdgesByPrefix. For one tail vertex it carries:

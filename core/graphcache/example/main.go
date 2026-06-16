@@ -3,13 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"github.com/anaregdesign/lantern/core/cache/graph"
+	"github.com/anaregdesign/lantern/core/graphcache"
 	"time"
 )
 
 func main() {
 	ctx := context.Background()
-	c := graph.NewGraphCache[string, string](1 * time.Minute)
+	c := graphcache.NewGraphCache[string, string](1 * time.Minute)
 	go c.Watch(ctx, 1*time.Second)
 
 	c.AddEdge("a", "b", 1)
