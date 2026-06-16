@@ -40,6 +40,7 @@ const ServiceName = "graph.v1.LanternService"
 type LanternService struct {
 	cache                  Backend
 	scan                   ScanLimits
+	search                 SearchLimits
 	log                    *mutationlog.Log
 	clock                  *hlc.Clock
 	origin                 []byte
@@ -115,8 +116,29 @@ func defaultScanLimits() ScanLimits {
 	}
 }
 
+// SearchLimits configures the SearchVertices RPC. Enabled gates the RPC: a
+// false value makes SearchVertices return FAILED_PRECONDITION, mirroring
+// the composition root's decision NOT to call GraphCache.EnableSearchIndex
+// (the core search backend returns nil for a disabled index, a no-match,
+// and an empty query alike, so the gate cannot live in the cache — #624).
+// DefaultLimit / MaxLimit cap the per-call ranked-hit count exactly like
+// ScanLimits caps the prefix RPCs.
+type SearchLimits struct {
+	Enabled      bool
+	DefaultLimit uint32
+	MaxLimit     uint32
+}
+
+func defaultSearchLimits() SearchLimits {
+	return SearchLimits{
+		Enabled:      false,
+		DefaultLimit: 100,
+		MaxLimit:     1000,
+	}
+}
+
 func NewLanternService(cache Backend) *LanternService {
-	return &LanternService{cache: cache, scan: defaultScanLimits(), origins: newOriginStateTracker(), metrics: noopHotPathMetrics{}}
+	return &LanternService{cache: cache, scan: defaultScanLimits(), search: defaultSearchLimits(), origins: newOriginStateTracker(), metrics: noopHotPathMetrics{}}
 }
 
 // WithScanLimits returns s with its prefix-RPC limits replaced. Intended
@@ -124,6 +146,16 @@ func NewLanternService(cache Backend) *LanternService {
 // the service without forcing every test caller to construct the struct.
 func (s *LanternService) WithScanLimits(l ScanLimits) *LanternService {
 	s.scan = l
+	return s
+}
+
+// WithSearchLimits returns s with its SearchVertices configuration replaced.
+// Intended for the wire provider in package main to thread
+// provider.SearchConfig into the service. Defaults leave search disabled so
+// unit tests that construct LanternService directly get the FAILED_PRECONDITION
+// path until they opt in.
+func (s *LanternService) WithSearchLimits(l SearchLimits) *LanternService {
+	s.search = l
 	return s
 }
 

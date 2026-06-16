@@ -1,0 +1,67 @@
+package provider
+
+import (
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/anaregdesign/lantern/core/search"
+	v1 "github.com/anaregdesign/lantern/pb/graph/v1"
+)
+
+// vertexSearchDocument projects a vertex into the text that the full-text
+// index analyses (#624). It folds the key together with the value so a query
+// matches either the namespace path or the stored content — this mirrors the
+// MCP search_facts semantics, where a remembered topic word may live in the
+// key (e.g. "user.preferences.tone") or in the value, and the caller should
+// not need to know which.
+//
+// The value side is rendered to its natural human string: text and bytes
+// pass through, scalars are formatted decimally, timestamps use RFC3339 and
+// durations their Go form. The nil/unset variant contributes nothing, so an
+// existence-only vertex is still discoverable by its key alone.
+func vertexSearchDocument(v *v1.Vertex) search.Document {
+	if v == nil {
+		return search.Text("")
+	}
+	var b strings.Builder
+	b.WriteString(v.GetKey())
+	if text, ok := vertexValueText(v); ok && text != "" {
+		b.WriteByte(' ')
+		b.WriteString(text)
+	}
+	return search.Text(b.String())
+}
+
+// vertexValueText returns the indexable text form of a vertex's value and
+// whether the value carries any text at all. The unset and explicit-nil
+// variants return ("", false) so callers index the key only.
+func vertexValueText(v *v1.Vertex) (string, bool) {
+	switch val := v.GetValue().(type) {
+	case *v1.Vertex_String_:
+		return val.String_, true
+	case *v1.Vertex_Bytes:
+		return string(val.Bytes), true
+	case *v1.Vertex_Float64:
+		return strconv.FormatFloat(val.Float64, 'g', -1, 64), true
+	case *v1.Vertex_Float32:
+		return strconv.FormatFloat(float64(val.Float32), 'g', -1, 32), true
+	case *v1.Vertex_Int32:
+		return strconv.FormatInt(int64(val.Int32), 10), true
+	case *v1.Vertex_Int64:
+		return strconv.FormatInt(val.Int64, 10), true
+	case *v1.Vertex_Uint32:
+		return strconv.FormatUint(uint64(val.Uint32), 10), true
+	case *v1.Vertex_Uint64:
+		return strconv.FormatUint(val.Uint64, 10), true
+	case *v1.Vertex_Bool:
+		return strconv.FormatBool(val.Bool), true
+	case *v1.Vertex_Timestamp:
+		return val.Timestamp.AsTime().Format(time.RFC3339Nano), true
+	case *v1.Vertex_Duration:
+		return val.Duration.AsDuration().String(), true
+	default:
+		// Vertex_Nil and the unset oneof: key-only indexing.
+		return "", false
+	}
+}

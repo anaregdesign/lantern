@@ -7,6 +7,7 @@ import (
 	coregraph "github.com/anaregdesign/lantern/core/graph"
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
+	"github.com/anaregdesign/lantern/core/search"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
@@ -92,6 +93,15 @@ type Backend interface {
 	ScanByPrefix(ctx context.Context, prefix string, fn func(projected string, key string, value *pb.Vertex) bool) bool
 	CountByPrefix(prefix string) int
 	DeleteByPrefix(ctx context.Context, prefix string, limit int) int
+
+	// SearchVertices returns vertices ranked by full-text relevance over
+	// their indexed content, optionally scoped to keyPrefix, capped at
+	// limit (limit <= 0 returns nil). The returned slice is ordered by
+	// descending score. It returns nil when the search index is disabled,
+	// the query has no analysable terms, or nothing matches — the three
+	// are indistinguishable here, so the handler decides FAILED_PRECONDITION
+	// from its own SearchConfig.Enabled flag, not this return value (#624).
+	SearchVertices(query string, limit int, keyPrefix string) []search.Result[string]
 
 	// edge-side prefix scan. ScanEdgesByPrefix invokes fn for each live
 	// edge whose tail starts with tailPrefix AND whose head starts with

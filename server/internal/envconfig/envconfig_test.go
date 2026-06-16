@@ -35,6 +35,37 @@ func TestInt(t *testing.T) {
 	}
 }
 
+func TestUint32(t *testing.T) {
+	const key = "LANTERN_TEST_UINT32"
+	cases := []struct {
+		name   string
+		set    bool
+		value  string
+		def    uint32
+		expect uint32
+	}{
+		{"unset returns default", false, "", 7, 7},
+		{"valid value", true, "42", 7, 42},
+		{"empty value falls back", true, "", 7, 7},
+		{"non-numeric falls back", true, "abc", 7, 7},
+		{"negative falls back", true, "-3", 7, 7},
+		{"max uint32 is honoured", true, "4294967295", 7, 4294967295},
+		{"above uint32 range falls back", true, "4294967296", 7, 7},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.set {
+				t.Setenv(key, tc.value)
+			} else {
+				unset(t, key)
+			}
+			if got := Uint32(key, tc.def); got != tc.expect {
+				t.Fatalf("Uint32(%q)=%d, want %d", tc.value, got, tc.expect)
+			}
+		})
+	}
+}
+
 func TestFloat(t *testing.T) {
 	const key = "LANTERN_TEST_FLOAT"
 	cases := []struct {

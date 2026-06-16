@@ -99,6 +99,7 @@ func clampU32(v int) uint32 {
 func newLanternService(
 	backend service.Backend,
 	sc provider.ScanConfig,
+	src provider.SearchConfig,
 	rc provider.ReplicationConfig,
 	vc provider.ValidationLimits,
 	tc provider.TLSConfig,
@@ -115,6 +116,11 @@ func newLanternService(
 			ScanMaxLimit:               sc.ScanMaxLimit,
 			DeleteByPrefixDefaultLimit: sc.DeleteByPrefixDefaultLimit,
 			DeleteByPrefixMaxLimit:     sc.DeleteByPrefixMaxLimit,
+		}).
+		WithSearchLimits(service.SearchLimits{
+			Enabled:      src.Enabled,
+			DefaultLimit: src.DefaultLimit,
+			MaxLimit:     src.MaxLimit,
 		}).
 		WithReplication(log, clock, dm.OnMutationLogAppend).
 		WithAppliedHook(dm.OnReplicationApplied).

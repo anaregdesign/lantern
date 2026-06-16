@@ -18,7 +18,8 @@ func initializeApp() (*App, error) {
 	observabilityConfig := provider.NewObservabilityConfig(config)
 	logger := provider.NewLogger(observabilityConfig)
 	cacheConfig := provider.NewCacheConfig(config)
-	graphCache := provider.NewGraphCache(cacheConfig)
+	searchConfig := provider.NewSearchConfig(config)
+	graphCache := provider.NewGraphCache(cacheConfig, searchConfig)
 	scanConfig := provider.NewScanConfig(config)
 	replicationConfig := provider.NewReplicationConfig(config)
 	validationLimits := provider.NewValidationLimits(config)
@@ -28,7 +29,7 @@ func initializeApp() (*App, error) {
 	domainMetrics := provider.NewDomainMetrics(registry, observabilityConfig, graphCache)
 	log := provider.NewMutationLog(mutationLogConfig, domainMetrics)
 	clock := provider.NewHLCClock(replicationConfig)
-	lanternService := newLanternService(graphCache, scanConfig, replicationConfig, validationLimits, tlsConfig, cacheConfig, observabilityConfig, logger, log, clock, domainMetrics)
+	lanternService := newLanternService(graphCache, scanConfig, searchConfig, replicationConfig, validationLimits, tlsConfig, cacheConfig, observabilityConfig, logger, log, clock, domainMetrics)
 	netConfig := provider.NewNetConfig(config)
 	listener, err := provider.NewListener(netConfig)
 	if err != nil {

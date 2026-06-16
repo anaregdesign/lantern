@@ -83,6 +83,9 @@ func (h *lanternServiceConnect) DeleteVertices(ctx context.Context, req *connect
 func (h *lanternServiceConnect) ScanVertices(ctx context.Context, req *connect.Request[pb.ScanVerticesRequest]) (*connect.Response[pb.ScanVerticesResponse], error) {
 	return unary(ctx, req, h.svc.ScanVertices)
 }
+func (h *lanternServiceConnect) SearchVertices(ctx context.Context, req *connect.Request[pb.SearchVerticesRequest]) (*connect.Response[pb.SearchVerticesResponse], error) {
+	return unary(ctx, req, h.svc.SearchVertices)
+}
 func (h *lanternServiceConnect) CountVerticesByPrefix(ctx context.Context, req *connect.Request[pb.CountVerticesByPrefixRequest]) (*connect.Response[pb.CountVerticesByPrefixResponse], error) {
 	return unary(ctx, req, h.svc.CountVerticesByPrefix)
 }

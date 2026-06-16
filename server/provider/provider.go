@@ -125,6 +125,24 @@ type ScanConfig struct {
 	DeleteByPrefixMaxLimit     uint32
 }
 
+// SearchConfig governs the full-text SearchVertices RPC (#624). Enabled is
+// opt-out: the index is built by default because content search is the
+// headline reason most callers reach for Lantern's memory surface, and the
+// per-put cost is only paid while the feature is on. Operators who want the
+// leaner put hot path set LANTERN_SEARCH_ENABLED=false, which both skips
+// EnableSearchIndex at cache construction AND makes the RPC return
+// FAILED_PRECONDITION. DefaultLimit / MaxLimit cap the per-call ranked-hit
+// count the same way ScanConfig caps the prefix RPCs.
+//
+//   - LANTERN_SEARCH_ENABLED         (default true)
+//   - LANTERN_SEARCH_DEFAULT_LIMIT   (default 100)
+//   - LANTERN_SEARCH_MAX_LIMIT       (default 1000)
+type SearchConfig struct {
+	Enabled      bool
+	DefaultLimit uint32
+	MaxLimit     uint32
+}
+
 // Config aggregates every focused sub-config. It is constructed once at
 // startup by NewConfig and then projected into sub-configs that each provider
 // consumes — providers MUST NOT take *Config when they only need one slice of
@@ -139,6 +157,7 @@ type Config struct {
 	Shutdown      ShutdownConfig
 	Validation    ValidationLimits
 	Scan          ScanConfig
+	Search        SearchConfig
 	MutationLog   MutationLogConfig
 	Replication   ReplicationConfig
 	Peer          PeerConfig
@@ -200,6 +219,11 @@ func NewConfig() *Config {
 			DeleteByPrefixDefaultLimit: uint32(envconfig.Int("LANTERN_DELETE_BY_PREFIX_DEFAULT_LIMIT", 10000)),
 			DeleteByPrefixMaxLimit:     uint32(envconfig.Int("LANTERN_DELETE_BY_PREFIX_MAX_LIMIT", 100000)),
 		},
+		Search: SearchConfig{
+			Enabled:      envconfig.Bool("LANTERN_SEARCH_ENABLED", true),
+			DefaultLimit: envconfig.Uint32("LANTERN_SEARCH_DEFAULT_LIMIT", 100),
+			MaxLimit:     envconfig.Uint32("LANTERN_SEARCH_MAX_LIMIT", 1000),
+		},
 		MutationLog: loadMutationLogConfig(),
 		Replication: loadReplicationConfig(),
 		Readiness:   loadReadinessConfig(),
@@ -221,6 +245,7 @@ func NewCacheConfig(c *Config) CacheConfig                 { return c.Cache }
 func NewShutdownConfig(c *Config) ShutdownConfig           { return c.Shutdown }
 func NewValidationLimits(c *Config) ValidationLimits       { return c.Validation }
 func NewScanConfig(c *Config) ScanConfig                   { return c.Scan }
+func NewSearchConfig(c *Config) SearchConfig               { return c.Search }
 
 // NewLogger builds the process-wide structured logger and installs it as the
 // slog default so any package-level slog.* call inherits the same handler.
@@ -237,13 +262,20 @@ func NewLogger(o ObservabilityConfig) *slog.Logger {
 	return l
 }
 
-func NewGraphCache(c CacheConfig) *graphcache.GraphCache[string, *v1.Vertex] {
+func NewGraphCache(c CacheConfig, sc SearchConfig) *graphcache.GraphCache[string, *v1.Vertex] {
 	gc := graphcache.NewGraphCache[string, *v1.Vertex](c.TTL)
 	// Identity projection: vertex keys are themselves the indexed string.
 	// Enabling the prefix index up-front (before any insert) is required
 	// by the cache contract — EnablePrefixIndex panics on a non-empty
 	// cache. Doing it here in the constructor guarantees that invariant.
 	gc.EnablePrefixIndex(func(s string) string { return s })
+	// Content search (#624) is opt-out. EnableSearchIndex carries the same
+	// "before any insert" contract as EnablePrefixIndex, so it must also be
+	// called here; gating on sc.Enabled keeps the put hot path free of the
+	// inverted-index cost when an operator turns the feature off.
+	if sc.Enabled {
+		gc.EnableSearchIndex(vertexSearchDocument)
+	}
 	return gc
 }
 

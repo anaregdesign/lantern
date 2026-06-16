@@ -22,6 +22,7 @@ func initializeApp() (*App, error) {
 		provider.NewShutdownConfig,
 		provider.NewValidationLimits,
 		provider.NewScanConfig,
+		provider.NewSearchConfig,
 		provider.NewMutationLogConfig,
 		provider.NewReplicationConfig,
 		provider.NewReadinessConfig,
