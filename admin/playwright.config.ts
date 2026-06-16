@@ -4,12 +4,16 @@ import { defineConfig, devices } from "@playwright/test";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const PORT = 4173;
+// Ports are env-overridable (defaults match CI) so the suite can run on a
+// machine that already has a Lantern instance on :6380 — e.g. a local
+// `deploy/compose` cluster — without a bind conflict. CI sets none of these,
+// so it keeps the canonical 4173 / 6380 / 9090 trio.
+const PORT = Number(process.env.LANTERN_E2E_PREVIEW_PORT ?? 4173);
 // The Lantern primary listener (:6380 by default) serves Connect /
 // gRPC / gRPC-Web on the same h2c socket. The admin SPA talks to it
 // directly via Connect-Web.
-const LANTERN_PORT = 6380;
-const METRICS_PORT = 9090;
+const LANTERN_PORT = Number(process.env.LANTERN_PORT ?? 6380);
+const METRICS_PORT = Number(process.env.LANTERN_E2E_METRICS_PORT ?? 9090);
 const CONNECT_URL = `http://127.0.0.1:${LANTERN_PORT}`;
 
 process.env.LANTERN_E2E_GATEWAY_URL = CONNECT_URL;
@@ -46,6 +50,10 @@ export default defineConfig({
         LANTERN_METRICS_ADDR: `:${METRICS_PORT}`,
         LANTERN_CORS_ALLOWED_ORIGINS: `http://127.0.0.1:${PORT}`,
         LANTERN_LOG_LEVEL: "warn",
+        // Content search is opt-out (on by default), but pin it explicitly
+        // so the search e2e (#627) stays deterministic if the default ever
+        // changes.
+        LANTERN_SEARCH_ENABLED: "true",
       },
     },
     {

@@ -16,6 +16,10 @@ const NAV: readonly NavEntry[] = [
   { to: "/", label: "Home" },
   { to: "/vertices", label: "Vertices" },
   { to: "/edges", label: "Edges" },
+  // Content search feeds the same explore loop as Illuminate (select a
+  // ranked hit → seed the neighborhood), so it sits next to the browse
+  // surfaces and just before Illuminate (#627).
+  { to: "/search", label: "Search" },
   { to: "/illuminate", label: "Illuminate" },
   // CLI is the power-user shortcut to the same RPC surface the other
   // routes wrap; place it next to Illuminate (the other "explore"
