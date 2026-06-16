@@ -1,0 +1,184 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacingVerticalS, 8px);
+  width: 100%;
+  min-width: 0;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacingHorizontalS, 8px);
+  flex-wrap: wrap;
+}
+
+.empty {
+  color: var(--colorNeutralForeground3, #707070);
+  font-style: italic;
+}
+
+/* Shared box around both Raw and Markdown bodies: bounded height with
+   vertical scroll so an oversized value scrolls inside the card instead of
+   pushing the page. `min-width: 0` lets it shrink below intrinsic content
+   width inside a grid/flex track. */
+.raw,
+.markdown {
+  margin: 0;
+  min-width: 0;
+  max-height: 480px;
+  overflow: auto;
+  padding: var(--spacingVerticalM, 12px) var(--spacingHorizontalM, 12px);
+  border: 1px solid var(--colorNeutralStroke2, #e0e0e0);
+  border-radius: var(--borderRadiusMedium, 6px);
+  background: var(--colorNeutralBackground2, #fafafa);
+}
+
+/* Raw view — preserve newlines and wrap long unbroken runs. */
+.raw {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(
+    --fontFamilyMonospace,
+    ui-monospace,
+    SFMono-Regular,
+    monospace
+  );
+  font-size: var(--fontSizeBase300, 14px);
+  line-height: 1.5;
+  color: var(--colorNeutralForeground1, #242424);
+}
+
+/* Markdown view — readable prose, theme-aware. */
+.markdown {
+  font-family: var(--fontFamilyBase, system-ui, sans-serif);
+  font-size: var(--fontSizeBase300, 14px);
+  line-height: 1.6;
+  color: var(--colorNeutralForeground1, #242424);
+  overflow-wrap: anywhere;
+}
+
+.markdown > :first-child {
+  margin-top: 0;
+}
+
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+  margin: var(--spacingVerticalM, 12px) 0 var(--spacingVerticalS, 8px);
+  font-weight: var(--fontWeightSemibold, 600);
+  line-height: 1.3;
+}
+
+.markdown h1 {
+  font-size: var(--fontSizeBase600, 24px);
+}
+
+.markdown h2 {
+  font-size: var(--fontSizeBase500, 20px);
+}
+
+.markdown h3 {
+  font-size: var(--fontSizeBase400, 16px);
+}
+
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+  font-size: var(--fontSizeBase300, 14px);
+}
+
+.markdown p {
+  margin: 0 0 var(--spacingVerticalS, 8px);
+}
+
+.markdown ul,
+.markdown ol {
+  margin: 0 0 var(--spacingVerticalS, 8px);
+  padding-left: var(--spacingHorizontalXL, 24px);
+}
+
+.markdown li {
+  margin: 2px 0;
+}
+
+.markdown a {
+  color: var(--colorBrandForegroundLink, #0078d4);
+  text-decoration: none;
+}
+
+.markdown a:hover {
+  text-decoration: underline;
+}
+
+.markdown code {
+  font-family: var(
+    --fontFamilyMonospace,
+    ui-monospace,
+    SFMono-Regular,
+    monospace
+  );
+  font-size: 0.9em;
+  padding: 1px 4px;
+  border-radius: var(--borderRadiusSmall, 4px);
+  background: var(--colorNeutralBackground3, #f0f0f0);
+}
+
+.markdown pre {
+  margin: 0 0 var(--spacingVerticalS, 8px);
+  padding: var(--spacingVerticalS, 8px) var(--spacingHorizontalM, 12px);
+  border-radius: var(--borderRadiusMedium, 6px);
+  background: var(--colorNeutralBackground3, #f0f0f0);
+  overflow-x: auto;
+}
+
+/* Code inside a fenced block: drop the inline pill styling. */
+.markdown pre code {
+  padding: 0;
+  background: none;
+  font-size: var(--fontSizeBase200, 12px);
+}
+
+.markdown blockquote {
+  margin: 0 0 var(--spacingVerticalS, 8px);
+  padding-left: var(--spacingHorizontalM, 12px);
+  border-left: 3px solid var(--colorNeutralStroke1, #d1d1d1);
+  color: var(--colorNeutralForeground2, #424242);
+}
+
+.markdown table {
+  border-collapse: collapse;
+  margin: 0 0 var(--spacingVerticalS, 8px);
+  font-size: var(--fontSizeBase200, 12px);
+}
+
+.markdown th,
+.markdown td {
+  border: 1px solid var(--colorNeutralStroke2, #e0e0e0);
+  padding: var(--spacingVerticalXS, 4px) var(--spacingHorizontalS, 8px);
+  text-align: left;
+}
+
+.markdown th {
+  background: var(--colorNeutralBackground3, #f0f0f0);
+  font-weight: var(--fontWeightSemibold, 600);
+}
+
+.markdown img {
+  max-width: 100%;
+  height: auto;
+}
+
+.markdown hr {
+  border: none;
+  border-top: 1px solid var(--colorNeutralStroke2, #e0e0e0);
+  margin: var(--spacingVerticalM, 12px) 0;
+}
