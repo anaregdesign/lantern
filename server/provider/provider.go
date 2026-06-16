@@ -221,8 +221,8 @@ func NewConfig() *Config {
 		},
 		Search: SearchConfig{
 			Enabled:      envconfig.Bool("LANTERN_SEARCH_ENABLED", true),
-			DefaultLimit: uint32(envconfig.Int("LANTERN_SEARCH_DEFAULT_LIMIT", 100)),
-			MaxLimit:     uint32(envconfig.Int("LANTERN_SEARCH_MAX_LIMIT", 1000)),
+			DefaultLimit: envconfig.Uint32("LANTERN_SEARCH_DEFAULT_LIMIT", 100),
+			MaxLimit:     envconfig.Uint32("LANTERN_SEARCH_MAX_LIMIT", 1000),
 		},
 		MutationLog: loadMutationLogConfig(),
 		Replication: loadReplicationConfig(),

@@ -35,6 +35,17 @@ func Int(key string, def int) int {
 	return def
 }
 
+// Uint32 returns the uint32 value of the named env var, or def when unset,
+// not a valid base-10 unsigned integer, or outside the uint32 range. Parsing
+// with a 32-bit size makes the conversion bounds-safe: an out-of-range value
+// yields an error (and the default) rather than silently truncating.
+func Uint32(key string, def uint32) uint32 {
+	if v, err := strconv.ParseUint(os.Getenv(key), 10, 32); err == nil {
+		return uint32(v)
+	}
+	return def
+}
+
 // Float returns the float64 value of the named env var, or def when unset
 // or not a valid float.
 func Float(key string, def float64) float64 {
