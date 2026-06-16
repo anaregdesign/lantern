@@ -11,6 +11,7 @@ import (
 	"github.com/anaregdesign/lantern/core/collection/pq"
 	"github.com/anaregdesign/lantern/core/graph"
 	"github.com/anaregdesign/lantern/core/hlc"
+	"github.com/anaregdesign/lantern/core/search"
 )
 
 // neighborParallelThreshold is the minimum frontier size that triggers
@@ -64,6 +65,19 @@ type GraphCache[S comparable, T any] struct {
 	// before/after benchmarks. Production code never disables it.
 	headByTail map[vertexID]*headIndex
 
+	// searchIndex is an optional secondary inverted index (see
+	// EnableSearchIndex) that ranks live vertices by how well their
+	// projected value matches a query (BM25). Like prefixIndex it is opt-in
+	// and maintained under c.mu, but it differs in one way: it is refreshed
+	// on EVERY put, not just the first insert, because a vertex's value —
+	// and therefore its postings — changes on overwrite. Entries are dropped
+	// from the index by the shared vertices.SetOnEvict hook, so they decay
+	// in lockstep with the vertices they describe (Delete, Clear, and TTL
+	// Flush all route through that hook). When nil the put / evict paths pay
+	// only a single nil check.
+	searchIndex   *search.InvertedIndex[S, search.Document]
+	searchExtract func(T) search.Document
+
 	// vertexHLC tracks the last HLC accepted by PutVertexWithExpirationHLC
 	// (the LWW replication apply path; #182). It is only populated when
 	// a replicated write touches a vertex; the local non-replicated path
@@ -106,6 +120,11 @@ func NewGraphCache[S comparable, T any](defaultTTL time.Duration) *GraphCache[S,
 		}
 		if idx := c.prefixIndex; idx != nil {
 			idx.delete(c.prefixExtract(key))
+		}
+		// One hook covers Delete, Clear, and the TTL Flush GC tick, so the
+		// search index decays in lockstep with the vertices it describes.
+		if idx := c.searchIndex; idx != nil {
+			idx.Delete(key)
 		}
 	})
 	return c
@@ -152,6 +171,14 @@ func (c *GraphCache[S, T]) putVertexLocked(key S, value T, expiration time.Time)
 	c.vertices.PutWithExpiration(key, value, expiration)
 	if firstInsert && c.prefixIndex != nil {
 		c.prefixIndex.insert(c.prefixExtract(key))
+	}
+	// Unlike the prefix index, the search index is refreshed on EVERY put:
+	// an overwrite changes the value and therefore the postings, so the
+	// index must re-extract even when the key already existed. Index doubles
+	// as update (it drops stale postings first), and projecting a valueless
+	// entry to an empty Document is a no-op, so this is safe for every value.
+	if c.searchIndex != nil {
+		c.searchIndex.Index(key, c.searchExtract(value))
 	}
 }
 
