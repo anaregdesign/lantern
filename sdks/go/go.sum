@@ -1,7 +1,7 @@
 connectrpc.com/connect v1.20.0 h1:6TNDAB+WeNd2uolWNlYczB5E0KNNaVMNUEx8JEUsPmQ=
 connectrpc.com/connect v1.20.0/go.mod h1:A2ygJrukXwWy32vkCAAHNVguZrqZ+jeZ9rGRnGR4dN4=
-github.com/anaregdesign/lantern/core v0.5.0 h1:q5r+zwFqCLHaiBl/nwtO0/42u1MUHSexa1LDSUkJwdo=
-github.com/anaregdesign/lantern/core v0.5.0/go.mod h1:HIOhpdioYbCvoT0s/g0HGC4cgdBoMMAbTyizWbM0wPE=
+github.com/anaregdesign/lantern/core v0.6.0 h1:NylE4cY7p6j2cwMpGJFrWoF80UgX5oMcGid2XZ2dDOs=
+github.com/anaregdesign/lantern/core v0.6.0/go.mod h1:HIOhpdioYbCvoT0s/g0HGC4cgdBoMMAbTyizWbM0wPE=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
 github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=
 golang.org/x/net v0.55.0 h1:bcvxaJn3e1U6InsFWt1JUq1aSjnRxLzT2rtD2KfkDF8=
