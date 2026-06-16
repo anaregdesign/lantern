@@ -2,8 +2,8 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/anaregdesign/lantern/mcp/internal/value"
 	client "github.com/anaregdesign/lantern/sdks/go"
@@ -19,20 +19,8 @@ const searchFactsDefaultLimit uint32 = 20
 // flood the model context.
 const searchFactsMaxLimit uint32 = 100
 
-// searchFactsScanBatch is the per-page size forwarded to ScanVertices while
-// paginating. Larger pages mean fewer round trips; this is independent of how
-// many matches we ultimately return.
-const searchFactsScanBatch uint32 = 500
-
-// searchFactsMaxScan bounds how many vertices a single search may pull from
-// the server before giving up. v1 search is an unindexed scan-and-filter, so
-// without this ceiling a miss on a large keyspace would walk every vertex.
-// When the ceiling is hit before enough matches accumulate, the result is
-// marked truncated and the caller is told to narrow the prefix.
-const searchFactsMaxScan = 10_000
-
 type searchFactsInput struct {
-	Query  string `json:"query" jsonschema:"Case-insensitive substring to find. It is matched against BOTH each fact's key AND its value, so you can search by topic words you remember even when you have forgotten the exact key. Must not be empty."`
+	Query  string `json:"query" jsonschema:"Words or a phrase to search for. Matched against BOTH each fact's key AND its value through a relevance-ranked full-text index, so you can search by topic words you remember even when you have forgotten the exact key. Matches come back most-relevant-first. Must not be empty."`
 	Prefix string `json:"prefix,omitempty" jsonschema:"Optional key prefix to restrict the search to one namespace (e.g. user. or project.lantern.). Empty (the default) searches the entire keyspace. Supplying a prefix when you know the rough namespace makes the search both faster and more precise."`
 	Limit  uint32 `json:"limit,omitempty" jsonschema:"Maximum number of matching facts to return (default 20, capped at 100). Results are compact previews, not full values."`
 }
@@ -48,15 +36,12 @@ type searchFactsMatch struct {
 }
 
 type searchFactsOutput struct {
-	Query      string             `json:"query"`
-	Count      int                `json:"count"`
-	Matches    []searchFactsMatch `json:"matches"`
-	Scanned    int                `json:"scanned"`
-	Truncated  bool               `json:"truncated"`
-	Suggestion string             `json:"suggestion,omitempty"`
+	Query   string             `json:"query"`
+	Count   int                `json:"count"`
+	Matches []searchFactsMatch `json:"matches"`
 }
 
-const searchFactsDescription = "Find facts by a case-insensitive substring matched against both keys AND values. Use this when you remember the TOPIC of a stored fact but not its exact key — it is the approximate counterpart to recall_fact (exact key) and complements list_under (prefix scan). Returns compact {key, snippet, expires_at} previews, not full values; call recall_fact with a returned key to read the whole value. Pass a prefix to scope the search to a namespace and keep it fast. If truncated=true the scan hit its budget before finishing — narrow with a prefix. Does NOT refresh TTL for matched facts."
+const searchFactsDescription = "Find facts by relevance-ranked full-text search over both keys AND values. Use this when you remember the TOPIC of a stored fact but not its exact key — it is the approximate counterpart to recall_fact (exact key) and complements list_under (prefix scan). Matches come back most-relevant-first as compact {key, snippet, expires_at} previews, not full values; call recall_fact with a returned key to read the whole value. Pass a prefix to scope the search to a namespace. Requires the server's search index (LANTERN_SEARCH_ENABLED); if it is off the call returns a clear error. Does NOT refresh TTL for matched facts."
 
 func registerSearchFacts(srv *mcp.Server, lc lanternClient) {
 	mcp.AddTool(srv, &mcp.Tool{
@@ -73,75 +58,56 @@ func registerSearchFacts(srv *mcp.Server, lc lanternClient) {
 		if limit > searchFactsMaxLimit {
 			limit = searchFactsMaxLimit
 		}
-		needle := strings.ToLower(in.Query)
 
-		matches := make([]searchFactsMatch, 0, limit)
-		scanned := 0
-		truncated := false
-		var cursor []byte
-
-	scan:
-		for {
-			verts, next, err := lc.ScanVertices(ctx, in.Prefix,
-				client.WithScanLimit(searchFactsScanBatch),
-				client.WithScanCursor(cursor))
-			if err != nil {
-				return nil, searchFactsOutput{}, mapSDKError("search_facts", err)
+		hits, err := lc.SearchVertices(ctx, in.Query,
+			client.WithSearchLimit(limit),
+			client.WithSearchPrefix(in.Prefix))
+		if err != nil {
+			if errors.Is(err, client.ErrFailedPrecondition) {
+				return nil, searchFactsOutput{}, fmt.Errorf("search_facts: the server's search index is disabled; set LANTERN_SEARCH_ENABLED=true on the Lantern server to enable search_facts: %w", err)
 			}
-			for _, v := range verts {
-				if v == nil {
-					continue
+			return nil, searchFactsOutput{}, mapSDKError("search_facts", err)
+		}
+
+		matches := make([]searchFactsMatch, 0, len(hits))
+		if len(hits) > 0 {
+			keys := make([]string, len(hits))
+			for i, h := range hits {
+				keys[i] = h.Key
+			}
+			// SearchHit carries only {key, score}; hydrate each match's
+			// snippet and expiry with one batch read, then re-emit in the
+			// ranked order the index returned.
+			found, _, gerr := lc.GetVertices(ctx, keys)
+			if gerr != nil {
+				return nil, searchFactsOutput{}, mapSDKError("search_facts", gerr)
+			}
+			byKey := make(map[string]*client.Vertex, len(found))
+			for _, v := range found {
+				if v != nil {
+					byKey[v.GetKey()] = v
 				}
-				scanned++
-				if factMatchesQuery(v, needle) {
-					m := searchFactsMatch{Key: v.GetKey(), Snippet: value.Snippet(v)}
+			}
+			for _, h := range hits {
+				m := searchFactsMatch{Key: h.Key}
+				if v := byKey[h.Key]; v != nil {
+					m.Snippet = value.Snippet(v)
 					if exp := client.VertexExpiration(v); !exp.IsZero() {
 						m.ExpiresAt = exp.UTC().Format("2006-01-02T15:04:05Z07:00")
 					}
-					matches = append(matches, m)
-					if uint32(len(matches)) >= limit {
-						truncated = true
-						break scan
-					}
 				}
-				if scanned >= searchFactsMaxScan {
-					truncated = true
-					break scan
-				}
+				matches = append(matches, m)
 			}
-			if len(next) == 0 {
-				break
-			}
-			cursor = next
 		}
 
 		out := searchFactsOutput{
-			Query:     in.Query,
-			Count:     len(matches),
-			Matches:   matches,
-			Scanned:   scanned,
-			Truncated: truncated,
+			Query:   in.Query,
+			Count:   len(matches),
+			Matches: matches,
 		}
-		if truncated {
-			if uint32(len(matches)) >= limit {
-				out.Suggestion = fmt.Sprintf("Returned the first %d matches; more may exist. Raise limit (max %d) or pass a prefix to narrow the search.", limit, searchFactsMaxLimit)
-			} else {
-				out.Suggestion = fmt.Sprintf("Stopped after scanning %d facts without filling the result. Pass a prefix to scope the search to a namespace.", scanned)
-			}
-		}
-		text := fmt.Sprintf("Found %d fact(s) matching %q (scanned=%d, truncated=%t).", out.Count, in.Query, out.Scanned, out.Truncated)
+		text := fmt.Sprintf("Found %d fact(s) matching %q.", out.Count, in.Query)
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: text}},
 		}, out, nil
 	})
-}
-
-// factMatchesQuery reports whether the lower-cased needle occurs in the
-// vertex key or in its full single-line value text. value.Text (not Snippet)
-// is used so a match in a long value past the preview cap is not missed.
-func factMatchesQuery(v *client.Vertex, lowerNeedle string) bool {
-	if strings.Contains(strings.ToLower(v.GetKey()), lowerNeedle) {
-		return true
-	}
-	return strings.Contains(strings.ToLower(value.Text(v)), lowerNeedle)
 }
