@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/anaregdesign/lantern/core/search"
 )
 
 // makeKey returns a string of length n. It mimics a normalized URL by
@@ -256,4 +258,44 @@ func BenchmarkAddEdge_Existing(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		c.AddEdgeWithExpiration("hot-tail", "hot-head", 1, exp)
 	}
+}
+
+// benchSearchCorpus is a small pool of realistic content strings the put
+// benchmark cycles through so the analyzer (normalize → bigram → filter) does
+// representative work on every indexed write rather than re-tokenizing one
+// cached string.
+var benchSearchCorpus = []string{
+	"lantern graph database memory",
+	"connect http2 grpc gateway",
+	"vertex edge ttl decay model",
+	"inverted index bm25 ranking",
+	"namespace prefix scan traversal",
+}
+
+// BenchmarkPutVertex_Search contrasts the vertex put hot path with the search
+// index disabled ("Plain") versus enabled ("Indexed"). The Plain arm proves
+// the feature stays pay-for-what-you-use — a single nil check per put — while
+// the Indexed arm captures the analyze-and-index cost a search-enabled server
+// pays. Run with -benchmem; the delta between the two arms is the headline.
+func BenchmarkPutVertex_Search(b *testing.B) {
+	exp := time.Now().Add(time.Hour)
+
+	b.Run("Plain", func(b *testing.B) {
+		c := NewGraphCache[string, string](time.Hour)
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			c.PutVertexWithExpiration(makeKey("k", i, 24), benchSearchCorpus[i%len(benchSearchCorpus)], exp)
+		}
+	})
+
+	b.Run("Indexed", func(b *testing.B) {
+		c := NewGraphCache[string, string](time.Hour)
+		c.EnableSearchIndex(func(v string) search.Document { return search.Text(v) })
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			c.PutVertexWithExpiration(makeKey("k", i, 24), benchSearchCorpus[i%len(benchSearchCorpus)], exp)
+		}
+	})
 }
