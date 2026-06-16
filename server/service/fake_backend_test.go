@@ -7,6 +7,7 @@ import (
 	coregraph "github.com/anaregdesign/lantern/core/graph"
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
+	"github.com/anaregdesign/lantern/core/search"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
@@ -32,6 +33,15 @@ type fakeBackend struct {
 	addEdgesCalls    int
 	putEdgesCalls    int
 	deleteEdges      int
+
+	// #624 SearchVertices wiring. searchResults is returned verbatim by
+	// SearchVertices so handler tests can drive ranking/mapping without a
+	// real index; the call captures its args for clamp/prefix assertions.
+	searchResults    []search.Result[string]
+	searchCalls      int
+	lastSearchQuery  string
+	lastSearchLimit  int
+	lastSearchPrefix string
 
 	// #588 idempotent-AddEdge wiring capture. The canonical AddEdges path
 	// now calls AddEdgesWithExpirationContrib; tests assert contrib_ids are
@@ -193,6 +203,18 @@ func (f *fakeBackend) CountByPrefix(prefix string) int {
 		}
 	}
 	return n
+}
+
+// SearchVertices returns the pre-seeded searchResults verbatim and records
+// the args so handler tests can assert the clamped limit and prefix are
+// threaded through. Real ranking/index behaviour is covered by the core
+// graphcache tests and the bufconn integration suite.
+func (f *fakeBackend) SearchVertices(query string, limit int, keyPrefix string) []search.Result[string] {
+	f.searchCalls++
+	f.lastSearchQuery = query
+	f.lastSearchLimit = limit
+	f.lastSearchPrefix = keyPrefix
+	return f.searchResults
 }
 
 func (f *fakeBackend) DeleteByPrefix(_ context.Context, prefix string, limit int) int {
