@@ -58,8 +58,8 @@ export function initialBanner(): ScrollbackEntry {
     kind: "info",
     text: [
       "Lantern admin CLI (#411). Same grammar as `lantern repl`.",
-      "Type a verb and Enter; arrow-up / arrow-down cycle history.",
-      'Type "help" for verb signatures.',
+      "Type a verb and Enter; press Tab to autocomplete; arrow-up / arrow-down cycle history.",
+      'Click "Commands" (top-right) or type "help" for the full command reference.',
     ].join("\n"),
   };
 }
