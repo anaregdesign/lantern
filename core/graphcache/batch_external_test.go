@@ -1,4 +1,4 @@
-package graph_test
+package graphcache_test
 
 import (
 	"sync"
@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anaregdesign/lantern/core/cache/graph"
+	"github.com/anaregdesign/lantern/core/graphcache"
 )
 
 // TestAddEdgesWithExpiration_AtomicNeighborSnapshot verifies that a
@@ -16,17 +16,17 @@ import (
 // fan-in.
 func TestAddEdgesWithExpiration_AtomicNeighborSnapshot(t *testing.T) {
 	const fanOut = 128
-	c := graph.NewGraphCache[string, int](time.Minute)
+	c := graphcache.NewGraphCache[string, int](time.Minute)
 
 	exp := time.Now().Add(time.Minute)
 	c.PutVertexWithExpiration("s", 0, exp)
 
-	addBatch := make([]graph.EdgeItem[string], fanOut)
-	delBatch := make([]graph.EdgeKey[string], fanOut)
+	addBatch := make([]graphcache.EdgeItem[string], fanOut)
+	delBatch := make([]graphcache.EdgeKey[string], fanOut)
 	for i := 0; i < fanOut; i++ {
 		head := "h" + itoa(i)
-		addBatch[i] = graph.EdgeItem[string]{Tail: "s", Head: head, Weight: 1, Expiration: exp}
-		delBatch[i] = graph.EdgeKey[string]{Tail: "s", Head: head}
+		addBatch[i] = graphcache.EdgeItem[string]{Tail: "s", Head: head, Weight: 1, Expiration: exp}
+		delBatch[i] = graphcache.EdgeKey[string]{Tail: "s", Head: head}
 	}
 
 	var (
@@ -77,17 +77,17 @@ func TestAddEdgesWithExpiration_AtomicNeighborSnapshot(t *testing.T) {
 // Neighbor call sees either all batched edges or none.
 func TestDeleteEdges_AtomicNeighborSnapshot(t *testing.T) {
 	const fanOut = 128
-	c := graph.NewGraphCache[string, int](time.Minute)
+	c := graphcache.NewGraphCache[string, int](time.Minute)
 
 	exp := time.Now().Add(time.Minute)
 	c.PutVertexWithExpiration("s", 0, exp)
 
-	addBatch := make([]graph.EdgeItem[string], fanOut)
-	delBatch := make([]graph.EdgeKey[string], fanOut)
+	addBatch := make([]graphcache.EdgeItem[string], fanOut)
+	delBatch := make([]graphcache.EdgeKey[string], fanOut)
 	for i := 0; i < fanOut; i++ {
 		head := "h" + itoa(i)
-		addBatch[i] = graph.EdgeItem[string]{Tail: "s", Head: head, Weight: 1, Expiration: exp}
-		delBatch[i] = graph.EdgeKey[string]{Tail: "s", Head: head}
+		addBatch[i] = graphcache.EdgeItem[string]{Tail: "s", Head: head, Weight: 1, Expiration: exp}
+		delBatch[i] = graphcache.EdgeKey[string]{Tail: "s", Head: head}
 	}
 
 	var (
@@ -140,14 +140,14 @@ func TestDeleteEdges_AtomicNeighborSnapshot(t *testing.T) {
 // between the per-item delete and re-add.
 func TestPutEdgesWithExpiration_NoTransientNotFound(t *testing.T) {
 	const batchSize = 128
-	c := graph.NewGraphCache[string, int](time.Minute)
+	c := graphcache.NewGraphCache[string, int](time.Minute)
 
-	items := make([]graph.EdgeItem[string], batchSize)
-	keys := make([]graph.EdgeKey[string], batchSize)
+	items := make([]graphcache.EdgeItem[string], batchSize)
+	keys := make([]graphcache.EdgeKey[string], batchSize)
 	for i := 0; i < batchSize; i++ {
 		tail, head := "t"+itoa(i), "h"+itoa(i)
-		items[i] = graph.EdgeItem[string]{Tail: tail, Head: head, Weight: 1, Expiration: time.Now().Add(time.Minute)}
-		keys[i] = graph.EdgeKey[string]{Tail: tail, Head: head}
+		items[i] = graphcache.EdgeItem[string]{Tail: tail, Head: head, Weight: 1, Expiration: time.Now().Add(time.Minute)}
+		keys[i] = graphcache.EdgeKey[string]{Tail: tail, Head: head}
 	}
 	c.AddEdgesWithExpiration(items)
 
@@ -186,10 +186,10 @@ func TestPutEdgesWithExpiration_NoTransientNotFound(t *testing.T) {
 // TestBatchAPIs_ReturnCounts spot-checks the bookkeeping returned by
 // DeleteVertices / DeleteEdges (count of entries actually removed).
 func TestBatchAPIs_ReturnCounts(t *testing.T) {
-	c := graph.NewGraphCache[string, int](time.Minute)
+	c := graphcache.NewGraphCache[string, int](time.Minute)
 	exp := time.Now().Add(time.Minute)
 
-	c.PutVerticesWithExpiration([]graph.VertexItem[string, int]{
+	c.PutVerticesWithExpiration([]graphcache.VertexItem[string, int]{
 		{Key: "a", Value: 1, Expiration: exp},
 		{Key: "b", Value: 2, Expiration: exp},
 		{Key: "c", Value: 3, Expiration: exp},
@@ -198,11 +198,11 @@ func TestBatchAPIs_ReturnCounts(t *testing.T) {
 		t.Fatalf("DeleteVertices: got %d, want 2", n)
 	}
 
-	c.AddEdgesWithExpiration([]graph.EdgeItem[string]{
+	c.AddEdgesWithExpiration([]graphcache.EdgeItem[string]{
 		{Tail: "x", Head: "y", Weight: 1, Expiration: exp},
 		{Tail: "y", Head: "z", Weight: 1, Expiration: exp},
 	})
-	got := c.DeleteEdges([]graph.EdgeKey[string]{
+	got := c.DeleteEdges([]graphcache.EdgeKey[string]{
 		{Tail: "x", Head: "y"},
 		{Tail: "nope", Head: "nope"},
 	})
@@ -220,11 +220,11 @@ func TestAddEdgesWithExpirationContrib_Dedup(t *testing.T) {
 	exp := time.Now().Add(time.Minute)
 
 	t.Run("same id twice contributes once", func(t *testing.T) {
-		c := graph.NewGraphCache[string, int](time.Minute)
-		var id graph.ContribID
+		c := graphcache.NewGraphCache[string, int](time.Minute)
+		var id graphcache.ContribID
 		id[0], id[23] = 0xAB, 0x01
 
-		batch := []graph.EdgeItem[string]{
+		batch := []graphcache.EdgeItem[string]{
 			{Tail: "s", Head: "h", Weight: 2.5, Expiration: exp, ContribID: id},
 		}
 		if deduped := c.AddEdgesWithExpirationContrib(batch); deduped != 0 {
@@ -244,8 +244,8 @@ func TestAddEdgesWithExpirationContrib_Dedup(t *testing.T) {
 	})
 
 	t.Run("zero id stays additive", func(t *testing.T) {
-		c := graph.NewGraphCache[string, int](time.Minute)
-		batch := []graph.EdgeItem[string]{
+		c := graphcache.NewGraphCache[string, int](time.Minute)
+		batch := []graphcache.EdgeItem[string]{
 			{Tail: "s", Head: "h", Weight: 2, Expiration: exp}, // ContribID zero
 		}
 		if deduped := c.AddEdgesWithExpirationContrib(batch); deduped != 0 {
@@ -260,14 +260,14 @@ func TestAddEdgesWithExpirationContrib_Dedup(t *testing.T) {
 	})
 
 	t.Run("distinct ids both contribute", func(t *testing.T) {
-		c := graph.NewGraphCache[string, int](time.Minute)
-		var id1, id2 graph.ContribID
+		c := graphcache.NewGraphCache[string, int](time.Minute)
+		var id1, id2 graphcache.ContribID
 		id1[0], id1[23] = 0x01, 0x01
 		id2[0], id2[23] = 0x01, 0x02
-		c.AddEdgesWithExpirationContrib([]graph.EdgeItem[string]{
+		c.AddEdgesWithExpirationContrib([]graphcache.EdgeItem[string]{
 			{Tail: "s", Head: "h", Weight: 1, Expiration: exp, ContribID: id1},
 		})
-		deduped := c.AddEdgesWithExpirationContrib([]graph.EdgeItem[string]{
+		deduped := c.AddEdgesWithExpirationContrib([]graphcache.EdgeItem[string]{
 			{Tail: "s", Head: "h", Weight: 1, Expiration: exp, ContribID: id2},
 		})
 		if deduped != 0 {
@@ -279,14 +279,14 @@ func TestAddEdgesWithExpirationContrib_Dedup(t *testing.T) {
 	})
 
 	t.Run("mixed batch counts only deduped items", func(t *testing.T) {
-		c := graph.NewGraphCache[string, int](time.Minute)
-		var id graph.ContribID
+		c := graphcache.NewGraphCache[string, int](time.Minute)
+		var id graphcache.ContribID
 		id[0] = 0x7F
-		c.AddEdgesWithExpirationContrib([]graph.EdgeItem[string]{
+		c.AddEdgesWithExpirationContrib([]graphcache.EdgeItem[string]{
 			{Tail: "s", Head: "a", Weight: 1, Expiration: exp, ContribID: id},
 		})
 		// Mix the already-seen id (deduped) with a fresh zero-id edge (applies).
-		deduped := c.AddEdgesWithExpirationContrib([]graph.EdgeItem[string]{
+		deduped := c.AddEdgesWithExpirationContrib([]graphcache.EdgeItem[string]{
 			{Tail: "s", Head: "a", Weight: 1, Expiration: exp, ContribID: id},
 			{Tail: "s", Head: "b", Weight: 1, Expiration: exp},
 		})
@@ -302,8 +302,8 @@ func TestAddEdgesWithExpirationContrib_Dedup(t *testing.T) {
 	})
 
 	t.Run("facade preserves additive semantics", func(t *testing.T) {
-		c := graph.NewGraphCache[string, int](time.Minute)
-		batch := []graph.EdgeItem[string]{
+		c := graphcache.NewGraphCache[string, int](time.Minute)
+		batch := []graphcache.EdgeItem[string]{
 			{Tail: "s", Head: "h", Weight: 3, Expiration: exp},
 		}
 		c.AddEdgesWithExpiration(batch)

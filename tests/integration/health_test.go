@@ -10,7 +10,7 @@ import (
 	"connectrpc.com/connect"
 	"connectrpc.com/grpchealth"
 
-	cachegraph "github.com/anaregdesign/lantern/core/cache/graph"
+	"github.com/anaregdesign/lantern/core/graphcache"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	client "github.com/anaregdesign/lantern/sdks/go"
@@ -24,7 +24,7 @@ import (
 // server/provider/health.go + lantern_listener.go wire production.
 func newInProcessClientWithHealth(t *testing.T, serving bool) (*client.Lantern, func()) {
 	t.Helper()
-	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 	svc := service.NewLanternService(cache)
 
 	// Pre-register the canonical empty service name so the static

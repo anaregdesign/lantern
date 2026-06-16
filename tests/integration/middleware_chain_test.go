@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	cachegraph "github.com/anaregdesign/lantern/core/cache/graph"
+	"github.com/anaregdesign/lantern/core/graphcache"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	client "github.com/anaregdesign/lantern/sdks/go"
 	"github.com/anaregdesign/lantern/server/provider"
@@ -18,7 +18,7 @@ import (
 // and drives it through the public SDK Connect client. The closest
 // thing to an end-to-end smoke test without hitting the wire.
 func TestIntegration_FullMiddlewareChain(t *testing.T) {
-	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 	svc := service.NewLanternService(cache)
 	val := provider.NewValidationInterceptor(provider.ValidationLimits{
 		MaxKeyLen:         32,
@@ -94,7 +94,7 @@ func TestIntegration_FullMiddlewareChain(t *testing.T) {
 // own server with no rate limiter so the assertions aren't sensitive
 // to token bucket state from other tests in this file.
 func TestIntegration_BatchDeletes(t *testing.T) {
-	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 	svc := service.NewLanternService(cache)
 	val := provider.NewValidationInterceptor(provider.ValidationLimits{
 		MaxKeyLen:         32,

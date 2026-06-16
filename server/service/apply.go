@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/anaregdesign/lantern/core/cache/graph"
+	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
@@ -187,7 +187,7 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 			// Prefer the index-aligned client ContribID (#588); fall back to
 			// the synthesized (origin, seq, idx) id when the wire slot is
 			// absent or empty so legacy mutations keep their replay-dedup id.
-			var cID graph.ContribID
+			var cID graphcache.ContribID
 			if i < len(contribIDs) {
 				cID = contribIDFromBytes(contribIDs[i])
 			}
@@ -237,15 +237,15 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		if useTomb {
 			s.cache.DeleteEdgeHLC(k.GetTail(), k.GetHead(), ts, tombExp)
 		} else {
-			s.cache.DeleteEdges([]graph.EdgeKey[string]{{Tail: k.GetTail(), Head: k.GetHead()}})
+			s.cache.DeleteEdges([]graphcache.EdgeKey[string]{{Tail: k.GetTail(), Head: k.GetHead()}})
 		}
 		opName = "DeleteEdge"
 
 	case *pb.MutationOp_DeleteEdges:
 		in := op.DeleteEdges.GetEdges()
-		keys := make([]graph.EdgeKey[string], 0, len(in))
+		keys := make([]graphcache.EdgeKey[string], 0, len(in))
 		for _, e := range in {
-			keys = append(keys, graph.EdgeKey[string]{Tail: e.GetTail(), Head: e.GetHead()})
+			keys = append(keys, graphcache.EdgeKey[string]{Tail: e.GetTail(), Head: e.GetHead()})
 		}
 		if useTomb {
 			s.cache.DeleteEdgesHLC(keys, ts, tombExp)
@@ -330,8 +330,8 @@ func hlcToProto(ts hlc.Timestamp) *pb.HLCTimestamp {
 // contribIDBytes returns the wire encoding of a ContribID. A zero ContribID
 // (the local-only / non-replicated sentinel) is encoded as a nil slice so
 // receivers can recognise it explicitly and skip dedup.
-func contribIDBytes(c graph.ContribID) []byte {
-	var zero graph.ContribID
+func contribIDBytes(c graphcache.ContribID) []byte {
+	var zero graphcache.ContribID
 	if c == zero {
 		return nil
 	}
@@ -342,8 +342,8 @@ func contribIDBytes(c graph.ContribID) []byte {
 // 24-byte length is accepted; a shorter, longer, or empty slice yields the
 // zero ContribID (the "no identity" sentinel), letting callers fall back to
 // a synthesized id and skip dedup. The inverse of contribIDBytes.
-func contribIDFromBytes(b []byte) graph.ContribID {
-	var c graph.ContribID
+func contribIDFromBytes(b []byte) graphcache.ContribID {
+	var c graphcache.ContribID
 	if len(b) != len(c) {
 		return c
 	}
@@ -352,7 +352,7 @@ func contribIDFromBytes(b []byte) graph.ContribID {
 }
 
 // contribIDFor builds the dedup identifier for an additive contribution.
-// The 24-byte ContribID layout is documented on graph.ContribID:
+// The 24-byte ContribID layout is documented on graphcache.ContribID:
 //
 //	bytes [0:16] = origin NodeID (replicating node)
 //	bytes [16:24] = uint64 BE = (mutation seq << 16) | edge index
@@ -362,8 +362,8 @@ func contribIDFromBytes(b []byte) graph.ContribID {
 // guaranteeing a globally unique ContribID per (origin, seq, idx) triple.
 // Practical batch sizes are bounded by the Connect/gRPC message size cap
 // long before this limit; the assertion is defensive.
-func contribIDFor(origin []byte, seq uint64, idx uint16) graph.ContribID {
-	var c graph.ContribID
+func contribIDFor(origin []byte, seq uint64, idx uint16) graphcache.ContribID {
+	var c graphcache.ContribID
 	copy(c[:16], origin)
 	combined := (seq << 16) | uint64(idx)
 	binary.BigEndian.PutUint64(c[16:], combined)

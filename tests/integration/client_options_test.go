@@ -11,7 +11,7 @@ import (
 
 	"connectrpc.com/connect"
 
-	cachegraph "github.com/anaregdesign/lantern/core/cache/graph"
+	"github.com/anaregdesign/lantern/core/graphcache"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	client "github.com/anaregdesign/lantern/sdks/go"
@@ -32,7 +32,7 @@ func newOptsClient(
 	extra ...connect.Interceptor,
 ) *client.Lantern {
 	t.Helper()
-	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 	svc := service.NewLanternService(cache)
 	val := provider.NewValidationInterceptor(lim)
 	interceptors := append([]connect.Interceptor{val.ConnectInterceptor()}, extra...)
@@ -49,7 +49,7 @@ func newOptsClientWithCustomOptions(
 	extra ...connect.Interceptor,
 ) *client.Lantern {
 	t.Helper()
-	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 	svc := service.NewLanternService(cache)
 	val := provider.NewValidationInterceptor(lim)
 	interceptors := append([]connect.Interceptor{val.ConnectInterceptor()}, extra...)

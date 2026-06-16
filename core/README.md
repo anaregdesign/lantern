@@ -8,10 +8,11 @@ specific to the gRPC/transport layer.
 
 | Path | Description |
 | --- | --- |
-| `cache/` | Generic in-memory cache with TTL, and a graph-specialized cache (`cache/graph`). |
+| `cache/` | Generic in-memory cache with TTL. |
 | `collection/` | Generic collections: priority queue (`pq`), set, slice helpers. |
 | `concurrent/` | Concurrency primitives, including a typed pub/sub (`concurrent/pubsub`). |
 | `graph/` | In-memory graph model and traversal/scoring helpers. |
+| `graphcache/` | Graph-specialized cache: TTL'd vertices and additive decaying edges, with an optional prefix index. The server's primary store. |
 | `model/function/` | Functional-style type aliases used across the other packages. |
 | `nlp/` | Lightweight NLP helpers. |
 

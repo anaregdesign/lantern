@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/anaregdesign/lantern/core/cache/graph"
 	coregraph "github.com/anaregdesign/lantern/core/graph"
+	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
@@ -38,7 +38,7 @@ type fakeBackend struct {
 	// mapped index-aligned onto EdgeItem.ContribID and that the returned
 	// dedup count is forwarded to HotPathMetrics.OnEdgeContribDeduped.
 	addEdgesContribCalls int
-	lastAddEdgesItems    []graph.EdgeItem[string]
+	lastAddEdgesItems    []graphcache.EdgeItem[string]
 	dedupReturn          int
 }
 
@@ -54,7 +54,7 @@ func (f *fakeBackend) GetVertex(key string) (*pb.Vertex, bool) {
 	return v, ok
 }
 
-func (f *fakeBackend) PutVerticesWithExpiration(items []graph.VertexItem[string, *pb.Vertex]) {
+func (f *fakeBackend) PutVerticesWithExpiration(items []graphcache.VertexItem[string, *pb.Vertex]) {
 	f.putVerticesCalls++
 	for _, it := range items {
 		f.vertices[it.Key] = it.Value
@@ -82,7 +82,7 @@ func (f *fakeBackend) GetEdgeDetail(tail, head string) (float32, time.Time, bool
 	return 0, time.Time{}, false
 }
 
-func (f *fakeBackend) AddEdgesWithExpiration(items []graph.EdgeItem[string]) {
+func (f *fakeBackend) AddEdgesWithExpiration(items []graphcache.EdgeItem[string]) {
 	f.addEdgesCalls++
 	for _, it := range items {
 		if f.edges[it.Tail] == nil {
@@ -98,7 +98,7 @@ func (f *fakeBackend) AddEdgesWithExpiration(items []graph.EdgeItem[string]) {
 // contrib_id mapping, and returns the configurable dedupReturn so the
 // OnEdgeContribDeduped metric wiring is observable. Real dedup convergence
 // is covered by the core tests and tests/integration.
-func (f *fakeBackend) AddEdgesWithExpirationContrib(items []graph.EdgeItem[string]) int {
+func (f *fakeBackend) AddEdgesWithExpirationContrib(items []graphcache.EdgeItem[string]) int {
 	f.addEdgesContribCalls++
 	f.lastAddEdgesItems = items
 	for _, it := range items {
@@ -110,7 +110,7 @@ func (f *fakeBackend) AddEdgesWithExpirationContrib(items []graph.EdgeItem[strin
 	return f.dedupReturn
 }
 
-func (f *fakeBackend) PutEdgesWithExpiration(items []graph.EdgeItem[string]) {
+func (f *fakeBackend) PutEdgesWithExpiration(items []graphcache.EdgeItem[string]) {
 	f.putEdgesCalls++
 	for _, it := range items {
 		if f.edges[it.Tail] == nil {
@@ -120,7 +120,7 @@ func (f *fakeBackend) PutEdgesWithExpiration(items []graph.EdgeItem[string]) {
 	}
 }
 
-func (f *fakeBackend) DeleteEdges(keys []graph.EdgeKey[string]) int {
+func (f *fakeBackend) DeleteEdges(keys []graphcache.EdgeKey[string]) int {
 	n := 0
 	for _, k := range keys {
 		if row, ok := f.edges[k.Tail]; ok {
@@ -256,7 +256,7 @@ var _ Backend = (*fakeBackend)(nil)
 // touch ApplyMutation can run against the fake without spinning up a
 // real GraphCache. It does not enforce HLC/ContribID dedup — tests that
 // care about convergence use the real backend.
-func (f *fakeBackend) AddEdgeWithExpirationContrib(tail, head string, w float32, _ time.Time, _ graph.ContribID) bool {
+func (f *fakeBackend) AddEdgeWithExpirationContrib(tail, head string, w float32, _ time.Time, _ graphcache.ContribID) bool {
 	if f.edges[tail] == nil {
 		f.edges[tail] = map[string]float32{}
 	}
@@ -280,7 +280,7 @@ func (f *fakeBackend) PutEdgeWithExpirationHLC(tail, head string, w float32, _ t
 // Tombstone-aware entry points (#183). The fake intentionally collapses
 // the tombstone bookkeeping into the underlying delete; service-level
 // tests that exercise tombstone semantics use the real backend.
-func (f *fakeBackend) AddEdgeWithExpirationContribHLC(tail, head string, w float32, exp time.Time, c graph.ContribID, _ hlc.Timestamp) bool {
+func (f *fakeBackend) AddEdgeWithExpirationContribHLC(tail, head string, w float32, exp time.Time, c graphcache.ContribID, _ hlc.Timestamp) bool {
 	return f.AddEdgeWithExpirationContrib(tail, head, w, exp, c)
 }
 
@@ -293,10 +293,10 @@ func (f *fakeBackend) DeleteVerticesHLC(keys []string, _ hlc.Timestamp, _ time.T
 }
 
 func (f *fakeBackend) DeleteEdgeHLC(tail, head string, _ hlc.Timestamp, _ time.Time) bool {
-	return f.DeleteEdges([]graph.EdgeKey[string]{{Tail: tail, Head: head}}) > 0
+	return f.DeleteEdges([]graphcache.EdgeKey[string]{{Tail: tail, Head: head}}) > 0
 }
 
-func (f *fakeBackend) DeleteEdgesHLC(keys []graph.EdgeKey[string], _ hlc.Timestamp, _ time.Time) int {
+func (f *fakeBackend) DeleteEdgesHLC(keys []graphcache.EdgeKey[string], _ hlc.Timestamp, _ time.Time) int {
 	return f.DeleteEdges(keys)
 }
 
@@ -312,22 +312,22 @@ func (f *fakeBackend) DeleteByPrefixHLC(ctx context.Context, prefix string, limi
 // returns the in-memory vertex/edge maps as flat slices with zero HLC
 // stamps and a single zero-ContribID contribution per edge — enough for
 // service-level wiring tests; convergence tests use the real backend.
-func (f *fakeBackend) SnapshotVertices() []graph.SnapshotVertex[string, *pb.Vertex] {
-	out := make([]graph.SnapshotVertex[string, *pb.Vertex], 0, len(f.vertices))
+func (f *fakeBackend) SnapshotVertices() []graphcache.SnapshotVertex[string, *pb.Vertex] {
+	out := make([]graphcache.SnapshotVertex[string, *pb.Vertex], 0, len(f.vertices))
 	for k, v := range f.vertices {
-		out = append(out, graph.SnapshotVertex[string, *pb.Vertex]{Key: k, Value: v})
+		out = append(out, graphcache.SnapshotVertex[string, *pb.Vertex]{Key: k, Value: v})
 	}
 	return out
 }
 
-func (f *fakeBackend) SnapshotEdges() []graph.SnapshotEdge[string] {
-	var out []graph.SnapshotEdge[string]
+func (f *fakeBackend) SnapshotEdges() []graphcache.SnapshotEdge[string] {
+	var out []graphcache.SnapshotEdge[string]
 	for tail, heads := range f.edges {
 		for head, w := range heads {
-			out = append(out, graph.SnapshotEdge[string]{
+			out = append(out, graphcache.SnapshotEdge[string]{
 				Tail: tail,
 				Head: head,
-				Contributions: []graph.SnapshotContribution{{
+				Contributions: []graphcache.SnapshotContribution{{
 					Weight: w,
 				}},
 			})

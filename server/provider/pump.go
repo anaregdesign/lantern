@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	cachegraph "github.com/anaregdesign/lantern/core/cache/graph"
+	"github.com/anaregdesign/lantern/core/graphcache"
 	v1 "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	"github.com/anaregdesign/lantern/server/replication"
@@ -86,7 +86,7 @@ func NewReplicationPump(
 	pc PeerConfig,
 	rc ReplicationConfig,
 	svc *service.LanternService,
-	cache *cachegraph.GraphCache[string, *v1.Vertex],
+	cache *graphcache.GraphCache[string, *v1.Vertex],
 	m replication.Metrics,
 	logger *slog.Logger,
 ) *replication.Pump {

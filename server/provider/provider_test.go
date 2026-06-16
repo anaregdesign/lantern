@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anaregdesign/lantern/core/cache/graph"
+	"github.com/anaregdesign/lantern/core/graphcache"
 	v1 "github.com/anaregdesign/lantern/pb/graph/v1"
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 	"github.com/anaregdesign/lantern/server/readiness"
@@ -21,7 +21,7 @@ import (
 // "graph cache: gc tick" info log record is emitted per cache tick
 // after WireCacheGCHooks installs the multiplexed hooks (#223).
 func TestWireCacheGCHooks_EmitsTickSummary(t *testing.T) {
-	cache := graph.NewGraphCache[string, *v1.Vertex](time.Second)
+	cache := graphcache.NewGraphCache[string, *v1.Vertex](time.Second)
 	reg := prometheus.NewRegistry()
 	dm := domainmetrics.New(reg, domainmetrics.Options{})
 

@@ -34,7 +34,7 @@ type LanternServer struct {
 }
 
 // Watcher is the lifecycle hook LanternServer uses to drive the cache GC
-// loop. *graph.GraphCache satisfies it; tests can stub it.
+// loop. *graphcache.GraphCache satisfies it; tests can stub it.
 type Watcher interface {
 	Watch(ctx context.Context, interval time.Duration)
 }

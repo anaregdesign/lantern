@@ -1,4 +1,4 @@
-package graph
+package graphcache
 
 import (
 	"context"
@@ -109,7 +109,7 @@ func collectScan(c *GraphCache[string, string], tailP, headP string) []string {
 //
 // Run with:
 //
-//	go test -bench BenchmarkScanEdgesByPrefix_StarHead -run ^$ ./cache/graph/...
+//	go test -bench BenchmarkScanEdgesByPrefix_StarHead -run ^$ ./graphcache/...
 //
 // On a 1-tail / 1M-head graph with a ~0.1% match the fast path should
 // be at least an order of magnitude faster than the fallback.

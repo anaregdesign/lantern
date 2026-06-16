@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	cachegraph "github.com/anaregdesign/lantern/core/cache/graph"
+	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -24,7 +24,7 @@ import (
 // writes) and a raw Connect-Go replication client (for
 // Snapshot/Subscribe).
 type snapshotPeer struct {
-	cache *cachegraph.GraphCache[string, *pb.Vertex]
+	cache *graphcache.GraphCache[string, *pb.Vertex]
 	clock *hlc.Clock
 	log   *mutationlog.Log
 	sdk   *client.Lantern
@@ -43,7 +43,7 @@ func newSnapshotPeer(t *testing.T, nodeID hlc.NodeID) *snapshotPeer {
 	log := mutationlog.New(mutationlog.Options{Capacity: 1024, SubscriberBuffer: 1024})
 	t.Cleanup(func() { _ = log.Close() })
 	clock := hlc.New(nodeID, hlc.Options{})
-	cache := cachegraph.NewGraphCache[string, *pb.Vertex](time.Minute)
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 	svc := service.NewLanternService(cache).WithReplication(log, clock, nil)
 	rep := service.NewLanternReplicationService(log, cache, clock).
 		WithOriginStates(svc)
@@ -161,7 +161,7 @@ func TestSnapshot_E2E_PrimaryToFollower(t *testing.T) {
 			se := e.Edge
 			edgeHLC := snapshotHLC(se.GetHlc())
 			for _, c := range se.GetContributions() {
-				var cid cachegraph.ContribID
+				var cid graphcache.ContribID
 				copy(cid[:], c.GetContribId())
 				follower.cache.AddEdgeWithExpirationContribHLC(
 					se.GetTail(), se.GetHead(), c.GetWeight(),

@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"time"
 
-	cachegraph "github.com/anaregdesign/lantern/core/cache/graph"
+	"github.com/anaregdesign/lantern/core/graphcache"
 	v1 "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	"github.com/anaregdesign/lantern/server/replication"
@@ -56,7 +56,7 @@ func NewAntiEntropyDriver(
 	rc ReplicationConfig,
 	ac AntiEntropyConfig,
 	svc *service.LanternService,
-	cache *cachegraph.GraphCache[string, *v1.Vertex],
+	cache *graphcache.GraphCache[string, *v1.Vertex],
 	pump *replication.Pump,
 	m replication.AntiEntropyMetrics,
 	logger *slog.Logger,

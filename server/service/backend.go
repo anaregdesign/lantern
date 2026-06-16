@@ -4,36 +4,36 @@ import (
 	"context"
 	"time"
 
-	"github.com/anaregdesign/lantern/core/cache/graph"
 	coregraph "github.com/anaregdesign/lantern/core/graph"
+	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
 // Backend is the narrow seam the service depends on instead of the concrete
-// *graph.GraphCache. The interface is consumer-defined here so adding new
+// *graphcache.GraphCache. The interface is consumer-defined here so adding new
 // service-layer RPCs widens it deliberately, and tests can supply a fake.
 //
-// The batch types (graph.VertexItem, graph.EdgeItem, graph.EdgeKey) remain
+// The batch types (graphcache.VertexItem, graphcache.EdgeItem, graphcache.EdgeKey) remain
 // imported as plain value structs — they describe data, not behavior, so
 // re-declaring them would just shuffle conversions without buying anything.
 type Backend interface {
 	// vertex reads/writes
 	GetVertex(key string) (*pb.Vertex, bool)
-	PutVerticesWithExpiration(items []graph.VertexItem[string, *pb.Vertex])
+	PutVerticesWithExpiration(items []graphcache.VertexItem[string, *pb.Vertex])
 	DeleteVertices(keys []string) int
 
 	// edge reads/writes
 	GetEdgeDetail(tail, head string) (float32, time.Time, bool)
-	AddEdgesWithExpiration(items []graph.EdgeItem[string])
+	AddEdgesWithExpiration(items []graphcache.EdgeItem[string])
 	// AddEdgesWithExpirationContrib is the dedup-aware batch sibling of
 	// AddEdgesWithExpiration: a per-item non-zero ContribID makes that
 	// contribution idempotent (a retried batch is an exact no-op). Returns
 	// the count of items suppressed by a matching live ContribID. Items
 	// with a zero ContribID keep legacy additive semantics.
-	AddEdgesWithExpirationContrib(items []graph.EdgeItem[string]) int
-	PutEdgesWithExpiration(items []graph.EdgeItem[string])
-	DeleteEdges(keys []graph.EdgeKey[string]) int
+	AddEdgesWithExpirationContrib(items []graphcache.EdgeItem[string]) int
+	PutEdgesWithExpiration(items []graphcache.EdgeItem[string])
+	DeleteEdges(keys []graphcache.EdgeKey[string]) int
 
 	// replicated-write entry points used by ApplyMutation (#182).
 	//
@@ -46,7 +46,7 @@ type Backend interface {
 	// against the stored last-write HLC and silently drop strictly-older
 	// writes (LWW). Equal-ts writes apply (idempotent for value-equal
 	// payloads).
-	AddEdgeWithExpirationContrib(tail, head string, w float32, expiration time.Time, contribID graph.ContribID) bool
+	AddEdgeWithExpirationContrib(tail, head string, w float32, expiration time.Time, contribID graphcache.ContribID) bool
 	PutVertexWithExpirationHLC(key string, value *pb.Vertex, expiration time.Time, ts hlc.Timestamp) bool
 	PutEdgeWithExpirationHLC(tail, head string, w float32, expiration time.Time, ts hlc.Timestamp) bool
 
@@ -58,11 +58,11 @@ type Backend interface {
 	// the tombstone window. AddEdgeWithExpirationContribHLC is the HLC
 	// sibling of AddEdgeWithExpirationContrib that consults the edge
 	// tombstone store before applying.
-	AddEdgeWithExpirationContribHLC(tail, head string, w float32, expiration time.Time, contribID graph.ContribID, ts hlc.Timestamp) bool
+	AddEdgeWithExpirationContribHLC(tail, head string, w float32, expiration time.Time, contribID graphcache.ContribID, ts hlc.Timestamp) bool
 	DeleteVertexHLC(key string, ts hlc.Timestamp, expiration time.Time) bool
 	DeleteVerticesHLC(keys []string, ts hlc.Timestamp, expiration time.Time) int
 	DeleteEdgeHLC(tail, head string, ts hlc.Timestamp, expiration time.Time) bool
-	DeleteEdgesHLC(keys []graph.EdgeKey[string], ts hlc.Timestamp, expiration time.Time) int
+	DeleteEdgesHLC(keys []graphcache.EdgeKey[string], ts hlc.Timestamp, expiration time.Time) int
 	DeleteByPrefixHLC(ctx context.Context, prefix string, limit uint32, ts hlc.Timestamp, expiration time.Time) (int, error)
 
 	// neighborhood traversal. selectSmallest steers the per-hop top-k
@@ -110,8 +110,8 @@ type Backend interface {
 	// bootstrapping peer (not on the hot path). The returned slices own
 	// their backing storage and are safe to iterate without further
 	// locking.
-	SnapshotVertices() []graph.SnapshotVertex[string, *pb.Vertex]
-	SnapshotEdges() []graph.SnapshotEdge[string]
+	SnapshotVertices() []graphcache.SnapshotVertex[string, *pb.Vertex]
+	SnapshotEdges() []graphcache.SnapshotEdge[string]
 
 	// VertexCount and EdgeCount return the current number of live entries
 	// in the underlying graph cache. Backed by index sizes — O(1) and

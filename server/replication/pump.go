@@ -39,7 +39,7 @@ import (
 	"net/http"
 	"time"
 
-	cachegraph "github.com/anaregdesign/lantern/core/cache/graph"
+	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
@@ -56,12 +56,12 @@ type MutationApplier interface {
 }
 
 // SnapshotApplier is the surface the pump uses to replay snapshot
-// frames into the local graph cache. *cachegraph.GraphCache[string,
+// frames into the local graph cache. *graphcache.GraphCache[string,
 // *pb.Vertex] satisfies it directly via its HLC + ContribID seams added
 // in #181.
 type SnapshotApplier interface {
 	PutVertexWithExpirationHLC(key string, value *pb.Vertex, exp time.Time, ts hlc.Timestamp) bool
-	AddEdgeWithExpirationContribHLC(tail, head string, w float32, exp time.Time, cid cachegraph.ContribID, ts hlc.Timestamp) bool
+	AddEdgeWithExpirationContribHLC(tail, head string, w float32, exp time.Time, cid graphcache.ContribID, ts hlc.Timestamp) bool
 }
 
 // Metrics is the narrow surface the pump uses to publish per-peer
@@ -466,7 +466,7 @@ func (p *Pump) snapshot(ctx context.Context, cli graphv1connect.LanternReplicati
 			se := e.Edge
 			edgeHLC := snapshotHLC(se.GetHlc())
 			for _, c := range se.GetContributions() {
-				var cid cachegraph.ContribID
+				var cid graphcache.ContribID
 				copy(cid[:], c.GetContribId())
 				p.snap.AddEdgeWithExpirationContribHLC(
 					se.GetTail(), se.GetHead(), c.GetWeight(),
