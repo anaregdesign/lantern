@@ -97,6 +97,26 @@ export interface ScanVerticesResponse {
   nextCursor?: string;
 }
 
+// Content-search (BM25 keyword) value-object shapes (#627). The server
+// ranks vertices by indexed string/bytes content and returns lightweight
+// `{ key, score }` hits — the admin search usecase hydrates the keys back
+// into full vertices via GetVertices, preserving rank order.
+
+export interface SearchVerticesRequest {
+  query: string;
+  limit?: number;
+  prefix?: string;
+}
+
+export interface SearchHit {
+  key: string;
+  score: number;
+}
+
+export interface SearchVerticesResponse {
+  hits: SearchHit[];
+}
+
 export interface AddEdgeBody {
   edge?: Edge;
 }

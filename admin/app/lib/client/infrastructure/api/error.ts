@@ -1,4 +1,5 @@
 import {
+  FailedPreconditionError,
   InvalidArgumentError,
   LanternError,
   NotFoundError,
@@ -49,6 +50,9 @@ export class LanternApiError extends Error {
     if (err instanceof ResourceExhaustedError) {
       return new LanternApiError(rpc, "resource_exhausted", err.message);
     }
+    if (err instanceof FailedPreconditionError) {
+      return new LanternApiError(rpc, "failed_precondition", err.message);
+    }
     if (err instanceof LanternError) {
       return new LanternApiError(rpc, "unknown", err.message);
     }
@@ -63,6 +67,21 @@ export class LanternApiError extends Error {
    */
   static isNotFound(err: unknown): boolean {
     return err instanceof NotFoundError;
+  }
+
+  /**
+   * Returns true when the underlying call failed because the server has
+   * the feature disabled (FAILED_PRECONDITION). Content search
+   * (`SearchVertices`) raises this when the keyword index is turned off
+   * (opt-out via `LANTERN_SEARCH_ENABLED=false`); the search usecase
+   * uses it to render a calm "not enabled" state instead of an error
+   * toast (#627).
+   */
+  static isDisabled(err: unknown): boolean {
+    return (
+      err instanceof FailedPreconditionError ||
+      (err instanceof LanternApiError && err.code === "failed_precondition")
+    );
   }
 
   /**
