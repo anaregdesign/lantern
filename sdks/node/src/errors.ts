@@ -7,6 +7,7 @@
  *   - NotFoundError           ← Code.NotFound (5)
  *   - InvalidArgumentError    ← Code.InvalidArgument (3)
  *   - ResourceExhaustedError  ← Code.ResourceExhausted (8)
+ *   - FailedPreconditionError ← Code.FailedPrecondition (9)
  *
  * All three extend LanternError for catch-all handling and preserve the
  * underlying ConnectError as `cause`.
@@ -45,6 +46,20 @@ export class ResourceExhaustedError extends LanternError {
   constructor(message: string, options?: { cause?: unknown }) {
     super(message, options);
     this.name = "ResourceExhaustedError";
+  }
+}
+
+/**
+ * Raised when a precondition for the call is not met — notably when
+ * `searchVertices` runs against a server whose content-search index is
+ * disabled (`LANTERN_SEARCH_ENABLED=false`). Callers can branch on this
+ * type to render a calm "search not enabled" state instead of a hard
+ * error. Maps from `Code.FailedPrecondition` (9).
+ */
+export class FailedPreconditionError extends LanternError {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "FailedPreconditionError";
   }
 }
 
@@ -89,6 +104,7 @@ function stringify(err: unknown): string {
  *   3 = InvalidArgument
  *   5 = NotFound
  *   8 = ResourceExhausted
+ *   9 = FailedPrecondition
  */
 export function wrapConnectError(err: unknown): LanternError {
   if (err instanceof LanternError) return err;
@@ -102,6 +118,8 @@ export function wrapConnectError(err: unknown): LanternError {
       return new InvalidArgumentError(message, { cause: err });
     case 8:
       return new ResourceExhaustedError(message, { cause: err });
+    case 9:
+      return new FailedPreconditionError(message, { cause: err });
     default:
       return new LanternError(message, { cause: err });
   }

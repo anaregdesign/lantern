@@ -25,13 +25,19 @@ import { Code, ConnectError, type ConnectRouter } from "@connectrpc/connect";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
 import { create } from "@bufbuild/protobuf";
 
-import { Lantern, NotFoundError, connect } from "../src/index.js";
+import { Lantern, FailedPreconditionError, NotFoundError, connect } from "../src/index.js";
 import { LanternService, VertexSchema } from "../src/gen/graph/v1/graph_pb.js";
 
 interface StubState {
   vertices: Map<string, ReturnType<typeof create<typeof VertexSchema>>>;
   /** Last IlluminateRequest the stub observed, for request-building assertions (#605). */
   lastIlluminate?: { seed: string; step: number; k: number; vertexPrefix: string };
+  /** Last SearchVerticesRequest the stub observed, for request-building assertions (#639). */
+  lastSearch?: { query: string; limit: number; prefix: string };
+  /** Ranked hits the searchVertices stub returns (descending relevance). */
+  searchHits?: { key: string; score: number }[];
+  /** When true, searchVertices rejects with FAILED_PRECONDITION (index disabled). */
+  searchDisabled?: boolean;
 }
 
 function newStubRoutes(state: StubState) {
@@ -75,6 +81,16 @@ function newStubRoutes(state: StubState) {
           vertexPrefix: req.vertexPrefix,
         };
         return {};
+      },
+      // Captures the request so tests can assert how the SDK assembles
+      // SearchVerticesRequest (#639) and exercises the FAILED_PRECONDITION
+      // (index-disabled) branch. Returns the configured ranked hits.
+      async searchVertices(req) {
+        state.lastSearch = { query: req.query, limit: req.limit, prefix: req.prefix };
+        if (state.searchDisabled) {
+          throw new ConnectError("search index disabled", Code.FailedPrecondition);
+        }
+        return { hits: state.searchHits ?? [] };
       },
       // Remaining methods are intentionally absent — the connect-node
       // adapter rejects them with Code.Unimplemented, which the SDK
@@ -201,6 +217,63 @@ describe("illuminate request building (#605)", () => {
       await c.illuminate("alice", { step: 1 });
       expect(state.lastIlluminate?.vertexPrefix).toBe("");
     } finally {
+      c.close();
+    }
+  });
+});
+
+describe("searchVertices request building (#639)", () => {
+  test("forwards query, limit and prefix; returns ranked hits in order", async () => {
+    const c = newClient();
+    state.searchDisabled = false;
+    state.searchHits = [
+      { key: "doc/3", score: 9.5 },
+      { key: "doc/1", score: 4.2 },
+      { key: "doc/2", score: 1 },
+    ];
+    try {
+      const hits = await c.searchVertices("alpha beta", { limit: 5, prefix: "doc/" });
+      expect(state.lastSearch).toEqual({ query: "alpha beta", limit: 5, prefix: "doc/" });
+      expect(hits).toEqual([
+        { key: "doc/3", score: 9.5 },
+        { key: "doc/1", score: 4.2 },
+        { key: "doc/2", score: 1 },
+      ]);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("defaults limit to 0 and prefix to empty when opts omitted", async () => {
+    const c = newClient();
+    state.searchDisabled = false;
+    state.searchHits = [];
+    try {
+      await c.searchVertices("q");
+      expect(state.lastSearch).toEqual({ query: "q", limit: 0, prefix: "" });
+    } finally {
+      c.close();
+    }
+  });
+
+  test("no matches resolves to an empty array, not an error", async () => {
+    const c = newClient();
+    state.searchDisabled = false;
+    state.searchHits = [];
+    try {
+      await expect(c.searchVertices("nothing")).resolves.toEqual([]);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("disabled index surfaces FailedPreconditionError", async () => {
+    const c = newClient();
+    state.searchDisabled = true;
+    try {
+      await expect(c.searchVertices("q")).rejects.toThrow(FailedPreconditionError);
+    } finally {
+      state.searchDisabled = false;
       c.close();
     }
   });

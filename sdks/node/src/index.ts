@@ -53,6 +53,7 @@ export type { LanternArgs } from "./client.js";
 export { ReplicationPeer_State } from "./gen/graph/v1/graph_pb.js";
 export {
   BatchError,
+  FailedPreconditionError,
   InvalidArgumentError,
   LanternError,
   NotFoundError,
@@ -65,6 +66,7 @@ export type {
   EdgeScanOptions,
   IlluminateOptions,
   ScanOptions,
+  SearchOptions,
 } from "./options.js";
 export {
   Algorithm,
@@ -84,6 +86,7 @@ export type {
   Edge,
   EdgeInput,
   Graph,
+  SearchHit,
   Vertex,
   VertexInput,
   VertexKind,

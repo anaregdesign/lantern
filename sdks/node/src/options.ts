@@ -45,6 +45,13 @@ export interface EdgeScanOptions extends ScanOptions {
   headPrefix?: string;
 }
 
+export interface SearchOptions {
+  /** Caps the number of ranked hits returned (0 = server default; the server also enforces a hard max). */
+  limit?: number;
+  /** Restrict hits to vertices whose key carries this prefix (empty/omitted = no namespace scope). */
+  prefix?: string;
+}
+
 export interface DeleteByPrefixOptions {
   limit?: number;
   /** When true, the server reports the count that *would* be deleted. */
