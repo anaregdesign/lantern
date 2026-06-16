@@ -23,6 +23,10 @@ type fakeLantern struct {
 	getVertexFn func(ctx context.Context, key string) (*client.Vertex, error)
 	lastGetKey  string
 
+	// GetVertices
+	getVerticesFn       func(ctx context.Context, keys []string) ([]*client.Vertex, []string, error)
+	lastGetVerticesKeys []string
+
 	// DeleteVertex
 	deleteVertexFn func(ctx context.Context, key string) (bool, error)
 	lastDeleteKey  string
@@ -31,6 +35,11 @@ type fakeLantern struct {
 	scanVerticesFn  func(ctx context.Context, prefix string, opts ...client.ScanOption) ([]*client.Vertex, []byte, error)
 	lastScanPrefix  string
 	lastScanOptions []client.ScanOption
+
+	// SearchVertices
+	searchVerticesFn  func(ctx context.Context, query string, opts ...client.SearchOption) ([]client.SearchHit, error)
+	lastSearchQuery   string
+	lastSearchOptions []client.SearchOption
 
 	// CountVerticesByPrefix
 	countByPrefixFn func(ctx context.Context, prefix string) (uint64, error)
@@ -95,6 +104,14 @@ func (f *fakeLantern) GetVertex(ctx context.Context, key string) (*client.Vertex
 	return nil, nil
 }
 
+func (f *fakeLantern) GetVertices(ctx context.Context, keys []string) ([]*client.Vertex, []string, error) {
+	f.lastGetVerticesKeys = keys
+	if f.getVerticesFn != nil {
+		return f.getVerticesFn(ctx, keys)
+	}
+	return nil, nil, nil
+}
+
 func (f *fakeLantern) DeleteVertex(ctx context.Context, key string) (bool, error) {
 	f.lastDeleteKey = key
 	if f.deleteVertexFn != nil {
@@ -110,6 +127,15 @@ func (f *fakeLantern) ScanVertices(ctx context.Context, prefix string, opts ...c
 		return f.scanVerticesFn(ctx, prefix, opts...)
 	}
 	return nil, nil, nil
+}
+
+func (f *fakeLantern) SearchVertices(ctx context.Context, query string, opts ...client.SearchOption) ([]client.SearchHit, error) {
+	f.lastSearchQuery = query
+	f.lastSearchOptions = opts
+	if f.searchVerticesFn != nil {
+		return f.searchVerticesFn(ctx, query, opts...)
+	}
+	return nil, nil
 }
 
 func (f *fakeLantern) CountVerticesByPrefix(ctx context.Context, prefix string) (uint64, error) {

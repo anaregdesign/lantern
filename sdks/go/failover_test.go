@@ -37,6 +37,9 @@ func (f *fakeNode) DeleteVertices(context.Context, []string) (int, error) { retu
 func (f *fakeNode) ScanVertices(context.Context, string, ...ScanOption) ([]*Vertex, []byte, error) {
 	return nil, nil, nil
 }
+func (f *fakeNode) SearchVertices(context.Context, string, ...SearchOption) ([]SearchHit, error) {
+	return nil, nil
+}
 func (f *fakeNode) CountVerticesByPrefix(context.Context, string) (uint64, error) { return 0, nil }
 func (f *fakeNode) DeleteVerticesByPrefix(context.Context, string, ...DeleteByPrefixOption) (uint64, error) {
 	return 0, nil

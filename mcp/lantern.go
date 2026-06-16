@@ -22,8 +22,10 @@ import (
 type lanternClient interface {
 	PutVertex(ctx context.Context, key string, value any, ttl time.Duration) error
 	GetVertex(ctx context.Context, key string) (*client.Vertex, error)
+	GetVertices(ctx context.Context, keys []string) (found []*client.Vertex, missing []string, err error)
 	DeleteVertex(ctx context.Context, key string) (bool, error)
 	ScanVertices(ctx context.Context, prefix string, opts ...client.ScanOption) (vertices []*client.Vertex, nextCursor []byte, err error)
+	SearchVertices(ctx context.Context, query string, opts ...client.SearchOption) (hits []client.SearchHit, err error)
 	CountVerticesByPrefix(ctx context.Context, prefix string) (uint64, error)
 	DeleteVerticesByPrefix(ctx context.Context, prefix string, opts ...client.DeleteByPrefixOption) (uint64, error)
 	PutVertices(ctx context.Context, inputs []client.VertexInput) error
