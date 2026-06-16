@@ -101,6 +101,25 @@ for await (const page of client.scanVerticesAll("user:", 500)) {
 }
 ```
 
+## Content search
+
+`searchVertices` runs a relevance-ranked full-text query over vertex
+_content_ (key + value) — unlike `scanVertices`, which is a lexicographic
+key-prefix walk. It returns `{ key, score }` hits in descending BM25 order:
+the seed candidates to pick before an `illuminate` traversal, where `score`
+doubles as the seed's initial weight. Hits carry only the key and score, so
+hydrate value/TTL with a follow-up `getVertices`, preserving rank order.
+
+```ts
+const hits = await client.searchVertices("quarterly revenue", { limit: 10, prefix: "doc/" });
+const { found } = await client.getVertices(hits.map((h) => h.key));
+```
+
+An empty or unmatched query resolves to `[]` (not an error). When the
+server's index is disabled (`LANTERN_SEARCH_ENABLED=false`) the call rejects
+with `FailedPreconditionError`, so callers can render a calm "search not
+enabled" state instead of treating it as a hard failure.
+
 ## Cancellation
 
 Every method accepts an optional `AbortSignal` as the trailing arg.

@@ -61,6 +61,7 @@ import {
   type Edge,
   type EdgeInput,
   type Graph,
+  type SearchHit,
   type Vertex,
   type VertexInput,
 } from "./values.js";
@@ -71,6 +72,7 @@ import {
   type EdgeScanOptions,
   type IlluminateOptions,
   type ScanOptions,
+  type SearchOptions,
 } from "./options.js";
 
 /**
@@ -285,6 +287,47 @@ export class Lantern {
       if (page.nextCursor.length === 0) return;
       cursor = page.nextCursor;
     }
+  }
+
+  /**
+   * Content-addressed vertex search. Runs a relevance-ranked full-text
+   * query over vertex *content* (key + value) via the server-side
+   * index, returning ranked `{ key, score }` hits in descending BM25
+   * order — the seed candidates a caller picks before an `illuminate`
+   * traversal, where `score` doubles as the seed's initial weight.
+   *
+   * Unlike `scanVertices` (a lexicographic key-prefix walk), this
+   * matches the *value*. `opts.limit` caps the ranked hits (0 = server
+   * default; the server also enforces a hard maximum); `opts.prefix`
+   * composes content relevance with a key-prefix namespace scope.
+   *
+   * Hits carry only the key + score: the value and TTL are omitted, so
+   * callers that need them issue a follow-up `getVertices` with the
+   * returned keys, preserving rank order. Be defensive about a ranked
+   * key that no longer resolves (TTL expiry racing the follow-up read).
+   *
+   * An empty or unanalysable query yields `[]` (not an error). When the
+   * server-side index is disabled (`LANTERN_SEARCH_ENABLED=false`) the
+   * call rejects with `FailedPreconditionError`, so callers can render a
+   * calm "search not enabled" state rather than treating it as a hard
+   * failure.
+   */
+  async searchVertices(
+    query: string,
+    opts: SearchOptions = {},
+    signal?: AbortSignal,
+  ): Promise<SearchHit[]> {
+    return this.invoke(async () => {
+      const resp = await this.client.searchVertices(
+        {
+          query,
+          limit: opts.limit ?? 0,
+          prefix: opts.prefix ?? "",
+        },
+        this.callOpts(signal),
+      );
+      return resp.hits.map((h) => ({ key: h.key, score: h.score }));
+    });
   }
 
   async countVerticesByPrefix(prefix: string, signal?: AbortSignal): Promise<bigint> {
