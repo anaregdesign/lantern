@@ -34,7 +34,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go build -trimpath -ldflags="-s -w" -o /out/lantern ./server/cmd
 
 # --- final stage ---------------------------------------------------------
-FROM alpine:3.23
+FROM alpine:3.24
 
 RUN addgroup -S lantern && adduser -S -G lantern lantern
 
