@@ -9,14 +9,20 @@
   font-variant-numeric: tabular-nums;
 }
 
+/*
+ * Pair the Background2 status tint with the *Foreground2* token, not
+ * Foreground1: Foreground1 on Background2 only reaches ~3.5-3.9:1 and fails
+ * WCAG 2.1 AA (>=4.5:1) in both themes, whereas Foreground2 on Background2
+ * clears it comfortably (~5.6-6.6:1) in light and dark alike.
+ */
 .warning {
-  background: var(--colorStatusWarningBackground2, #fff4ce);
-  color: var(--colorStatusWarningForeground1, #8a6300);
+  background: var(--colorStatusWarningBackground2, #fdcfb4);
+  color: var(--colorStatusWarningForeground2, #8a3707);
 }
 
 .expired {
-  background: var(--colorStatusDangerBackground2, #fde7e9);
-  color: var(--colorStatusDangerForeground1, #b10e1c);
+  background: var(--colorStatusDangerBackground2, #eeacb2);
+  color: var(--colorStatusDangerForeground2, #6e0811);
 }
 
 .empty {
