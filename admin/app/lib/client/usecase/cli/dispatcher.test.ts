@@ -14,7 +14,12 @@ import { describe, expect, test } from "bun:test";
 import { InvalidArgumentError, NotFoundError } from "lantern-sdk/web";
 import { LanternApiError } from "~/lib/client/infrastructure/api/error";
 import type { LanternClient } from "~/lib/client/infrastructure/api/lantern-client";
-import { coerceValue, dispatch, ttlSecondsToExpiration } from "./dispatcher";
+import {
+  coerceValue,
+  dispatch,
+  ttlSecondsToExpiration,
+  writeEcho,
+} from "./dispatcher";
 import type { Command } from "~/lib/cli/types";
 
 // ----------------------------------------------------------------------------
@@ -313,6 +318,127 @@ describe("dispatch put / add edge carry expiration (#429)", () => {
     const call = fake.calls.find((c) => c.method === "addEdge");
     const input = call!.args[0] as { expiration?: Date };
     expect(input.expiration).toBeInstanceOf(Date);
+  });
+});
+
+describe("dispatch write echo surfaces the applied TTL/expiry (#653)", () => {
+  test("put vertex with a TTL echoes ttlSeconds + absolute expiresAt", async () => {
+    const fake = new FakeLanternClient();
+    fake.stub("putVertex", () => undefined);
+    const cmd: Command = {
+      verb: "put",
+      objective: "vertex",
+      key: "a",
+      value: "a",
+      ttlSeconds: 1,
+    };
+    const before = Date.now();
+    const out = (await dispatch({ client: asClient(fake), command: cmd })) as {
+      key: string;
+      ttlSeconds: number | null;
+      expiresAt: string | null;
+    };
+    const after = Date.now();
+    expect(out.key).toBe("a");
+    expect(out.ttlSeconds).toBe(1);
+    expect(out.expiresAt).not.toBeNull();
+    const ms = new Date(out.expiresAt!).getTime();
+    expect(ms).toBeGreaterThanOrEqual(before + 1_000);
+    expect(ms).toBeLessThanOrEqual(after + 1_000);
+  });
+
+  test("put vertex without a TTL echoes nulls (permanent, no decay)", async () => {
+    const fake = new FakeLanternClient();
+    fake.stub("putVertex", () => undefined);
+    const cmd: Command = {
+      verb: "put",
+      objective: "vertex",
+      key: "permkey",
+      value: "permval",
+      ttlSeconds: null,
+    };
+    const out = await dispatch({ client: asClient(fake), command: cmd });
+    expect(out).toEqual({ key: "permkey", ttlSeconds: null, expiresAt: null });
+  });
+
+  test("put edge echoes its identity + ttlSeconds + expiresAt", async () => {
+    const fake = new FakeLanternClient();
+    fake.stub("putEdge", () => undefined);
+    const cmd: Command = {
+      verb: "put",
+      objective: "edge",
+      tail: "a",
+      head: "b",
+      weight: 1.5,
+      ttlSeconds: null,
+    };
+    const out = await dispatch({ client: asClient(fake), command: cmd });
+    expect(out).toEqual({
+      tail: "a",
+      head: "b",
+      weight: 1.5,
+      ttlSeconds: null,
+      expiresAt: null,
+    });
+  });
+
+  test("add edge echoes its identity + ttlSeconds + expiresAt", async () => {
+    const fake = new FakeLanternClient();
+    fake.stub("addEdge", () => undefined);
+    const cmd: Command = {
+      verb: "add",
+      objective: "edge",
+      tail: "x",
+      head: "y",
+      weight: 0.25,
+      ttlSeconds: 30,
+    };
+    const before = Date.now();
+    const out = (await dispatch({ client: asClient(fake), command: cmd })) as {
+      tail: string;
+      head: string;
+      weight: number;
+      ttlSeconds: number | null;
+      expiresAt: string | null;
+    };
+    const after = Date.now();
+    expect(out.tail).toBe("x");
+    expect(out.head).toBe("y");
+    expect(out.weight).toBe(0.25);
+    expect(out.ttlSeconds).toBe(30);
+    const ms = new Date(out.expiresAt!).getTime();
+    expect(ms).toBeGreaterThanOrEqual(before + 30_000);
+    expect(ms).toBeLessThanOrEqual(after + 30_000);
+  });
+});
+
+describe("writeEcho (#653)", () => {
+  test("a positive TTL surfaces ttlSeconds + the absolute expiry it was given", () => {
+    expect(writeEcho({ key: "a" }, 1, "2026-06-16T12:34:57.000Z")).toEqual({
+      key: "a",
+      ttlSeconds: 1,
+      expiresAt: "2026-06-16T12:34:57.000Z",
+    });
+  });
+
+  test("an omitted TTL (null) maps undefined expiration → null (permanent)", () => {
+    expect(writeEcho({ key: "permkey" }, null, undefined)).toEqual({
+      key: "permkey",
+      ttlSeconds: null,
+      expiresAt: null,
+    });
+  });
+
+  test("carries arbitrary identity fields verbatim (edge tail/head/weight)", () => {
+    expect(
+      writeEcho({ tail: "a", head: "b", weight: 1.5 }, null, undefined),
+    ).toEqual({
+      tail: "a",
+      head: "b",
+      weight: 1.5,
+      ttlSeconds: null,
+      expiresAt: null,
+    });
   });
 });
 
