@@ -2,6 +2,7 @@ package parser
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,8 @@ var (
 		"add",
 		"delete",
 		"scan",
+		"count",
+		"delete-prefix",
 		"keys",
 		"illuminate",
 		"help",
@@ -290,29 +293,49 @@ func AddEdgeParam(s *Source) (*AddEdge, error) {
 	}
 	return m, nil
 }
+
+// DeleteVertexParam parses `delete vertex <key> [<key> …]` — one or more
+// keys. A one-element batch deletes a single vertex; more than one routes
+// to DeleteVertices in the dispatcher.
 func DeleteVertexParam(s *Source) (*DeleteVertex, error) {
-	var err error
 	m := &DeleteVertex{}
-	if m.Key, err = String(s); err != nil {
-		return nil, err
+	for s.HasNext() {
+		key, err := String(s)
+		if err != nil {
+			return nil, err
+		}
+		if key == "" {
+			return nil, ErrNotFound
+		}
+		m.Keys = append(m.Keys, key)
 	}
-	if err := EOF(s); err != nil {
-		return nil, err
+	if len(m.Keys) == 0 {
+		return nil, ErrNotFound
 	}
 	return m, nil
 }
 
+// DeleteEdgeParam parses `delete edge <tail> <head> [<tail> <head> …]` —
+// one or more (tail, head) pairs (an even, non-zero token count). A single
+// pair deletes one edge; more than one routes to DeleteEdges.
 func DeleteEdgeParam(s *Source) (*DeleteEdge, error) {
-	var err error
 	m := &DeleteEdge{}
-	if m.Tail, err = String(s); err != nil {
-		return nil, err
+	for s.HasNext() {
+		tail, err := String(s)
+		if err != nil {
+			return nil, err
+		}
+		head, err := String(s)
+		if err != nil {
+			return nil, err
+		}
+		if tail == "" || head == "" {
+			return nil, ErrNotFound
+		}
+		m.Pairs = append(m.Pairs, EdgePair{Tail: tail, Head: head})
 	}
-	if m.Head, err = String(s); err != nil {
-		return nil, err
-	}
-	if err := EOF(s); err != nil {
-		return nil, err
+	if len(m.Pairs) == 0 {
+		return nil, ErrNotFound
 	}
 	return m, nil
 }
@@ -409,19 +432,40 @@ func contains(set []string, v string) bool {
 // rejected because an unbounded vertex scan from the REPL is
 // almost never what the operator meant.
 func ScanVerticesParam(s *Source) (*ScanVertices, error) {
-	var err error
-	m := &ScanVertices{}
-	if m.Prefix, err = String(s); err != nil {
+	prefix, err := String(s)
+	if err != nil {
 		return nil, err
 	}
-	if err := EOF(s); err == nil {
-		return m, nil
-	}
-	if m.Limit, err = Integer(s); err != nil {
-		return nil, err
-	}
-	if err := EOF(s); err != nil {
-		return nil, err
+	m := &ScanVertices{Prefix: prefix}
+	limitSet := false
+	for s.HasNext() {
+		tok, err := String(s)
+		if err != nil {
+			return nil, err
+		}
+		key, value, isKwarg := strings.Cut(tok, "=")
+		if !isKwarg {
+			if limitSet {
+				return nil, fmt.Errorf("scan vertices: unexpected token %q", tok)
+			}
+			n, perr := strconv.Atoi(tok)
+			if perr != nil {
+				return nil, perr
+			}
+			m.Limit = n
+			limitSet = true
+			continue
+		}
+		switch strings.ToLower(key) {
+		case "all":
+			b, perr := strconv.ParseBool(value)
+			if perr != nil {
+				return nil, fmt.Errorf("scan vertices: all must be true or false")
+			}
+			m.All = b
+		default:
+			return nil, fmt.Errorf("scan vertices: unknown keyword %q", key)
+		}
 	}
 	return m, nil
 }
@@ -431,19 +475,45 @@ func ScanVerticesParam(s *Source) (*ScanVertices, error) {
 // tail-prefix is permitted (scans every tail), matching the server's
 // ScanEdges semantics where both prefixes default to empty.
 func ScanEdgesParam(s *Source) (*ScanEdges, error) {
-	var err error
-	m := &ScanEdges{}
-	if m.TailPrefix, err = String(s); err != nil {
+	tailPrefix, err := String(s)
+	if err != nil {
 		return nil, err
 	}
-	if err := EOF(s); err == nil {
-		return m, nil
-	}
-	if m.Limit, err = Integer(s); err != nil {
-		return nil, err
-	}
-	if err := EOF(s); err != nil {
-		return nil, err
+	m := &ScanEdges{TailPrefix: tailPrefix}
+	limitSet := false
+	for s.HasNext() {
+		tok, err := String(s)
+		if err != nil {
+			return nil, err
+		}
+		key, value, isKwarg := strings.Cut(tok, "=")
+		if !isKwarg {
+			if limitSet {
+				return nil, fmt.Errorf("scan edges: unexpected token %q", tok)
+			}
+			n, perr := strconv.Atoi(tok)
+			if perr != nil {
+				return nil, perr
+			}
+			m.Limit = n
+			limitSet = true
+			continue
+		}
+		switch strings.ToLower(key) {
+		case "head":
+			if value == "" {
+				return nil, fmt.Errorf("scan edges: empty head prefix")
+			}
+			m.HeadPrefix = value
+		case "all":
+			b, perr := strconv.ParseBool(value)
+			if perr != nil {
+				return nil, fmt.Errorf("scan edges: all must be true or false")
+			}
+			m.All = b
+		default:
+			return nil, fmt.Errorf("scan edges: unknown keyword %q", key)
+		}
 	}
 	return m, nil
 }
@@ -471,6 +541,76 @@ func KeysParam(s *Source) (*Keys, error) {
 	return m, nil
 }
 
+// CountVerticesParam parses `count vertices <prefix>` — exactly one prefix
+// (migrated from the `vertex count` subcommand). The objective token
+// ("vertices") has already been consumed by the caller.
+func CountVerticesParam(s *Source) (*CountVertices, error) {
+	prefix, err := String(s)
+	if err != nil {
+		return nil, err
+	}
+	if prefix == "" {
+		return nil, ErrNotFound
+	}
+	if err := EOF(s); err != nil {
+		return nil, err
+	}
+	return &CountVertices{Prefix: prefix}, nil
+}
+
+// DeletePrefixVerticesParam parses `delete-prefix vertices <prefix>
+// [limit=<int>] [confirm=yes|dry_run=true]`. Exactly one of confirm=yes or
+// dry_run=true is REQUIRED — the destructive-op safety gate; a bare
+// `delete-prefix vertices p` is a usage error. The objective token
+// ("vertices") has already been consumed by the caller.
+func DeletePrefixVerticesParam(s *Source) (*DeletePrefixVertices, error) {
+	prefix, err := String(s)
+	if err != nil {
+		return nil, err
+	}
+	if prefix == "" {
+		return nil, ErrNotFound
+	}
+	m := &DeletePrefixVertices{Prefix: prefix}
+	for s.HasNext() {
+		tok, err := String(s)
+		if err != nil {
+			return nil, err
+		}
+		key, value, ok := strings.Cut(tok, "=")
+		if !ok {
+			return nil, fmt.Errorf("delete-prefix: expected key=value, got %q", tok)
+		}
+		switch strings.ToLower(key) {
+		case "limit":
+			n, perr := strconv.Atoi(value)
+			if perr != nil {
+				return nil, fmt.Errorf("delete-prefix: limit must be an integer")
+			}
+			m.Limit = n
+		case "confirm":
+			if !strings.EqualFold(value, "yes") {
+				return nil, fmt.Errorf("delete-prefix: confirm must be 'yes'")
+			}
+			m.Confirm = true
+		case "dry_run":
+			b, perr := strconv.ParseBool(value)
+			if perr != nil {
+				return nil, fmt.Errorf("delete-prefix: dry_run must be true or false")
+			}
+			m.DryRun = b
+		default:
+			return nil, fmt.Errorf("delete-prefix: unknown keyword %q", key)
+		}
+	}
+	// Safety gate: require EXACTLY one of confirm=yes / dry_run=true. Both
+	// unset (no gate) and both set (ambiguous) are usage errors.
+	if m.Confirm == m.DryRun {
+		return nil, fmt.Errorf("delete-prefix: requires confirm=yes or dry_run=true")
+	}
+	return m, nil
+}
+
 // HelpText is the per-verb grammar reference printed by the `help` verb
 // (#436). Single source of truth for the Go REPL; the TypeScript port
 // keeps a byte-equivalent copy at `admin/app/lib/cli/verbs.ts` `HELP_TEXT`,
@@ -487,10 +627,12 @@ const HelpText = `Lantern CLI grammar:
   put    vertex <key: string> <value: string|int|float|bool|datetime> [<ttl_seconds: int>]
   put    edge   <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]
   add    edge   <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]
-  delete vertex <key: string>
-  delete edge   <tail: string> <head: string>
-  scan   vertices <prefix: string> [<limit: int>]
-  scan   edges    <tail-prefix: string> [<limit: int>]
+  delete vertex <key: string> [<key: string> ...]
+  delete edge   <tail: string> <head: string> [<tail: string> <head: string> ...]
+  scan   vertices <prefix: string> [<limit: int>] [all=true]
+  scan   edges    <tail-prefix: string> [<limit: int>] [head=<prefix>] [all=true]
+  count  vertices <prefix: string>
+  delete-prefix vertices <prefix: string> [limit=<int>] [confirm=yes|dry_run=true]
   keys   <prefix: string> [<limit: int>]
   illuminate <seed: string> <step: int> <k: int>
              [algorithm={none|mst|spt}]  default=none

@@ -99,6 +99,32 @@ func Validate(input string) error {
 		default:
 			return errors.New("usage: scan { vertices | edges } ... ")
 		}
+	case "count":
+		o, err := ScanObjective(s)
+		if err != nil {
+			return errors.New("usage: count vertices <prefix: string>")
+		}
+		switch o {
+		case "vertices":
+			if _, err := CountVerticesParam(s); err != nil {
+				return errors.New("usage: count vertices <prefix: string>")
+			}
+		default:
+			return errors.New("usage: count vertices <prefix: string>")
+		}
+	case "delete-prefix":
+		o, err := ScanObjective(s)
+		if err != nil {
+			return errors.New("usage: delete-prefix vertices <prefix: string> [limit=<int>] [confirm=yes|dry_run=true]")
+		}
+		switch o {
+		case "vertices":
+			if _, err := DeletePrefixVerticesParam(s); err != nil {
+				return errors.New("usage: delete-prefix vertices <prefix: string> [limit=<int>] [confirm=yes|dry_run=true]")
+			}
+		default:
+			return errors.New("usage: delete-prefix vertices <prefix: string> [limit=<int>] [confirm=yes|dry_run=true]")
+		}
 	case "keys":
 		if _, err := KeysParam(s); err != nil {
 			return errors.New("usage: keys <prefix: string> [<limit: int>]")
