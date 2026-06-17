@@ -83,15 +83,49 @@
   position: relative;
   border: 1px solid var(--colorNeutralStroke2, #e0e0e0);
   border-radius: var(--borderRadiusMedium, 6px);
-  /* Scroll horizontally on narrow screens instead of clipping the right-hand
-     Actions column. */
+  /* On narrow (phone) widths the fixed-column table is wider than the
+     viewport, so scroll it horizontally instead of clipping the right-hand
+     Actions column (#657). The layered background paints a soft shadow at
+     whichever horizontal edge still hides content — a visible "more columns
+     this way" affordance that fades out at the start/end. The `local` cover
+     gradients ride the scrolled content; the `scroll` shadows stay pinned to
+     the viewport edges. Rows are transparent at rest (TTL state lives on the
+     chip, not the row), so the shadow shows through cleanly. */
   overflow-x: auto;
+  background:
+    linear-gradient(
+        to right,
+        var(--colorNeutralBackground1, #fff) 30%,
+        rgba(255, 255, 255, 0)
+      )
+      0 0 / 32px 100% no-repeat,
+    linear-gradient(
+        to left,
+        var(--colorNeutralBackground1, #fff) 30%,
+        rgba(255, 255, 255, 0)
+      )
+      100% 0 / 32px 100% no-repeat,
+    radial-gradient(
+        farthest-side at 0 50%,
+        rgba(0, 0, 0, 0.18),
+        rgba(0, 0, 0, 0)
+      )
+      0 0 / 14px 100% no-repeat,
+    radial-gradient(
+        farthest-side at 100% 50%,
+        rgba(0, 0, 0, 0.18),
+        rgba(0, 0, 0, 0)
+      )
+      100% 0 / 14px 100% no-repeat;
+  background-attachment: local, local, scroll, scroll;
 }
 
 .table {
   /* Keep the percentage columns from collapsing/overlapping on phones; the
-     wrapper scrolls horizontally below this width. */
-  min-width: 480px;
+     wrapper scrolls horizontally below this width. Sized so the Edit +
+     Illuminate action pair and the Expires header render at full width
+     without clipping (#657). */
+  min-width: 680px;
 }
 
 .colKey {
