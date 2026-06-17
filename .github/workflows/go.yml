@@ -149,7 +149,13 @@ jobs:
           go-version: '1.26.4'
           check-latest: true
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+        # Pinned to v1.3.0: govulncheck@latest (v1.4.0) builds against
+        # golang.org/x/tools v0.46.0, which panics with
+        # "ForEachElement called on type containing *types.TypeParam" while
+        # analysing the generics in core/ and server/ (verified locally:
+        # v1.4.0 panics, v1.3.0 is clean on all six modules). Re-float to
+        # @latest once a fixed x/tools ships.
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
       - name: Run govulncheck (all modules)
         run: |
           set -e
