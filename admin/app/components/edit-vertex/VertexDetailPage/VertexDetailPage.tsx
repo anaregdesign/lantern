@@ -12,7 +12,7 @@ import {
   Save20Regular,
 } from "@fluentui/react-icons";
 import { Link, useNavigate } from "react-router";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useEditVertex } from "~/lib/client/usecase/edit-vertex/use-edit-vertex";
 import { kindOfVertex } from "~/lib/client/usecase/edit-vertex/value-codec";
 import type { Vertex } from "~/lib/client/infrastructure/api/get-vertex";
@@ -27,12 +27,21 @@ import styles from "./VertexDetailPage.module.css";
 
 export interface VertexDetailPageProps {
   vertexKey: string;
+  /**
+   * When true (the Browse row "Edit" affordance navigates with `?edit=1`),
+   * open the editor as soon as the vertex resolves instead of pausing on the
+   * read-only confirm step — giving Vertices the same single-click edit reach
+   * as the Edges Browse table (#652).
+   */
+  initialEdit?: boolean;
 }
 
 /**
  * Read/Edit/Delete page for a single vertex. Begins in view mode so the
  * user can confirm they have the right row before mutating it, then
  * flips to an inline editor sharing reducer state with the API handlers.
+ * Arriving via the Browse row Edit button (`initialEdit`) skips straight
+ * to the editor so the edit path costs no more clicks than Edges'.
  */
 export function VertexDetailPage(props: VertexDetailPageProps) {
   const navigate = useNavigate();
@@ -44,6 +53,25 @@ export function VertexDetailPage(props: VertexDetailPageProps) {
       navigate("/vertices");
     }
   }, [editor.deleted, navigate]);
+
+  // Drop straight into edit mode when reached via a row "Edit" affordance.
+  // Fires once per loaded vertex (after the row resolves ready/not-found); a
+  // later Cancel returns to the read view without re-triggering. The ref
+  // resets when the key changes so each vertex gets its own single shot.
+  const autoEditAppliedRef = useRef(false);
+  useEffect(() => {
+    autoEditAppliedRef.current = false;
+  }, [props.vertexKey]);
+  useEffect(() => {
+    if (!props.initialEdit || autoEditAppliedRef.current) return;
+    if (
+      editor.state.loadStatus === "ready" ||
+      editor.state.loadStatus === "not-found"
+    ) {
+      autoEditAppliedRef.current = true;
+      editor.beginEdit();
+    }
+  }, [props.initialEdit, editor.state.loadStatus, editor.beginEdit]);
 
   return (
     <div className={styles.root}>

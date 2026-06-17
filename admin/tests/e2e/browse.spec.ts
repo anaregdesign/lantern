@@ -86,6 +86,29 @@ test.describe("/vertices", () => {
     await illuminate.click();
     await expect(page).toHaveURL(/\/illuminate\?seed=e2e%3Avertex%3Aa/);
   });
+
+  test("Edit action opens the vertex editor directly (parity with Edges, #652)", async ({
+    page,
+  }) => {
+    await page.goto("/vertices");
+    await page.getByTestId("vertex-prefix-input").fill("e2e:vertex:");
+
+    const table = page.getByTestId("vertices-table");
+    // A specifically-named Edit button auto-waits for the filtered row; never
+    // `.first()` of the testid set, which would race the debounced prefix
+    // filter and hit the alphabetically-first unfiltered row.
+    const edit = table
+      .getByRole("button", { name: /Edit vertex e2e:vertex:a/i })
+      .first();
+    await expect(edit).toBeVisible();
+    await edit.click();
+
+    // One click lands directly on the editor — no intermediate read-only hop,
+    // matching the Edges row Edit affordance.
+    await expect(page).toHaveURL(/\/vertices\/e2e%3Avertex%3Aa\?edit=1/);
+    await expect(page.getByTestId("vertex-detail-edit")).toBeVisible();
+    await expect(page.getByTestId("vertex-detail-read")).toHaveCount(0);
+  });
 });
 
 test.describe("/edges", () => {

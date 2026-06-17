@@ -17,6 +17,7 @@ import {
 } from "@fluentui/react-components";
 import {
   ArrowClockwise20Regular,
+  Edit20Regular,
   LightbulbFilament20Regular,
 } from "@fluentui/react-icons";
 import { Link, useNavigate } from "react-router";
@@ -144,6 +145,20 @@ export function BrowseVerticesPage() {
                   <ExpirationCell expiration={vertex.expiration} />
                 </TableCell>
                 <TableCell className={styles.colActions}>
+                  <Button
+                    appearance="subtle"
+                    size="small"
+                    icon={<Edit20Regular />}
+                    onClick={() =>
+                      navigate(
+                        `/vertices/${encodeURIComponent(vertex.key ?? "")}?edit=1`,
+                      )
+                    }
+                    aria-label={`Edit vertex ${vertex.key ?? "vertex"}`}
+                    data-testid="vertex-row-edit"
+                  >
+                    Edit
+                  </Button>
                   <Button
                     appearance="subtle"
                     size="small"
