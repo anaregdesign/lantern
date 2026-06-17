@@ -375,20 +375,20 @@ cd deploy/compose && docker compose up -d
 
 ```bash
 # Single vertex
-lantern vertex put alice '{"name":"Alice","age":30}' --value-type json --ttl 1h
+lantern put vertex alice '{"name":"Alice","age":30}' 3600 type=json
 
 # Single edge (additive weight)
-lantern edge add alice bob 1.5 --ttl 1h
-lantern edge add alice bob 0.5        # weight now totals 2.0
+lantern add edge alice bob 1.5 3600
+lantern add edge alice bob 0.5        # weight now totals 2.0
 
 # Batch delete
-lantern vertex delete alice bob carol
+lantern delete vertex alice bob carol
 
 # Scan vertices by prefix
-lantern vertex scan user: --limit 10
+lantern scan vertices user: 10
 
 # Count vertices
-lantern vertex count user:
+lantern count vertices user:
 ```
 
 #### Via NDJSON bulk load (for large datasets)
@@ -431,11 +431,11 @@ lantern bulk edges add edges.ndjson
 
 ```bash
 # Fetch vertex by key
-lantern vertex get user:alice
+lantern get vertex user:alice
 # Output: {"key":"user:alice","value":{"name":"Alice",...},"expiration":"..."}
 
 # Fetch edge weight
-lantern edge get user:alice item:laptop
+lantern get edge user:alice item:laptop
 # Output: 1.000000
 
 # Walk from a seed (1-hop neighborhood)
@@ -451,14 +451,14 @@ lantern illuminate user:alice --step 2 --k 10 --algorithm mst --objective min
 **Option 1: Delete specific vertices**
 
 ```bash
-lantern vertex delete user:alice user:bob user:carol
+lantern delete vertex user:alice user:bob user:carol
 ```
 
 **Option 2: Delete by prefix (destructive)**
 
 ```bash
-lantern vertex delete-prefix user:     # deletes all vertices where key starts with "user:"
-lantern vertex delete-prefix item:     # deletes all items
+lantern delete-prefix vertices user: confirm=yes   # deletes all vertices where key starts with "user:"
+lantern delete-prefix vertices item: confirm=yes   # deletes all items
 ```
 
 **Option 3: Clear entire store (full reset)**
@@ -472,8 +472,8 @@ docker compose up -d                   # fresh empty cluster (reuses configured 
 **Option 4: Count before deletion (safety check)**
 
 ```bash
-lantern vertex count user:             # shows how many vertices would be deleted
-lantern vertex delete-prefix user:     # then delete
+lantern count vertices user:   # shows how many vertices would be deleted
+lantern delete-prefix vertices user: confirm=yes   # then delete
 ```
 
 ### CLI Connection Flags
@@ -481,22 +481,22 @@ lantern vertex delete-prefix user:     # then delete
 **Default server (localhost:6380):**
 
 ```bash
-lantern vertex get key1
+lantern get vertex key1
 ```
 
 **Custom server:**
 
 ```bash
-lantern -H lantern.example.com -p 443 --tls vertex get key1
+lantern -H lantern.example.com -p 443 --tls get vertex key1
 ```
 
 **Docker Compose replicas (round-robin via DNS):**
 
 ```bash
 # All three replicas available
-lantern -H localhost -p 6380 vertex get key1  # lantern-0
-lantern -H localhost -p 6381 vertex get key1  # lantern-1
-lantern -H localhost -p 6382 vertex get key1  # lantern-2
+lantern -H localhost -p 6380 get vertex key1  # lantern-0
+lantern -H localhost -p 6381 get vertex key1  # lantern-1
+lantern -H localhost -p 6382 get vertex key1  # lantern-2
 ```
 
 ### Complete UX Review Workflow
@@ -565,7 +565,7 @@ docker compose logs -f
 
 ```bash
 # Verify data exists on server
-lantern vertex scan "" --limit 5
+lantern scan vertices "" 5
 
 # Check network connectivity
 curl http://localhost:6380/healthz
@@ -576,7 +576,7 @@ curl http://localhost:8080/healthz
 
 ```bash
 # Verify which records succeeded
-lantern vertex scan user: --limit 100
+lantern scan vertices user: 100
 
 # Note: Lantern has no transactions, so partial data may exist
 # Manually edit .ndjson and retry from checkpoint if needed

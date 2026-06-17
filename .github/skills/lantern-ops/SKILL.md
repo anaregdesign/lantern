@@ -49,19 +49,18 @@ binary before guessing.
 
 ```shell
 lantern --help              # top-level: command layout, global flags, exit codes
-lantern <cmd> --help        # a command group, e.g. lantern vertex --help
-lantern <cmd> <sub> --help  # a specific subcommand, e.g. lantern vertex put --help
-lantern help [cmd]          # same content via cobra's `help` subcommand
-lantern <cmd> -h            # `-h` is the short alias for `--help`
+lantern <verb> --help       # a verb's grammar + examples, e.g. lantern put --help
+lantern help [verb]         # same content via cobra's `help` subcommand
+lantern <verb> -h           # `-h` is the short alias for `--help`
 ```
 
 Examples worth reading before first use:
 
 ```shell
-lantern vertex put --help        # value typing (--value-type) + TTL semantics
-lantern edge add --help          # additive vs idempotent write semantics
+lantern put --help               # vertex/edge writes: value typing (type=) + ttl_seconds
+lantern add --help               # additive vs idempotent edge write semantics
 lantern illuminate --help        # the algorithm × objective × weighting axes
-lantern vertex delete-prefix --help  # the destructive-delete safety gate
+lantern delete-prefix --help     # the destructive-delete safety gate
 ```
 
 Inside the interactive prompt, type `help` to print the per-verb grammar into
@@ -71,7 +70,7 @@ case rules. Shell completion install instructions: `lantern completion --help`.
 ## Global connection flags
 
 These apply to every subcommand and go **before** the subcommand (e.g.
-`lantern --tls -H host vertex get k`):
+`lantern --tls -H host get vertex k`):
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -91,16 +90,17 @@ Supplying any of `--tls-ca`, `--tls-cert` also implies TLS (`https`).
 
 ## Core concepts (read before writing)
 
-- **Value typing.** `vertex put` parses the raw arg per `--value-type`
-  (default `auto`): `auto` tries int → float → bool → RFC3339 datetime → else
-  string. Force the type when the value is ambiguous (e.g. keep a leading zero
-  with `--value-type=string`). Supported types: `auto|string|int|float|bool|
-  datetime|duration|json`. JSON **objects and arrays are re-encoded as a
-  compact JSON string** on the wire (Lantern has no nested value variant);
-  scalars pass through as their natural type.
-- **TTL semantics.** `--ttl` is a Go duration relative to the server's "now"
-  at receipt (`30s`, `5m`, `1h`, `24h`, `168h`). Omit `--ttl` or pass `0` to
-  store **permanently** (no decay). Expired entries are reaped lazily.
+- **Value typing.** `put vertex` parses the raw arg and, by default, auto-types
+  it (`auto`): `auto` tries int → float → bool → RFC3339 datetime → else
+  string. Force the type when the value is ambiguous by appending a `type=`
+  token (e.g. keep a leading zero with `type=string`). Supported types:
+  `auto|string|int|float|bool|datetime|duration|json`. JSON **objects and
+  arrays are re-encoded as a compact JSON string** on the wire (Lantern has no
+  nested value variant); scalars pass through as their natural type.
+- **TTL semantics.** The optional trailing `ttl_seconds` is an integer number
+  of seconds, relative to the server's "now" at receipt (`30`, `300`, `3600`,
+  `86400`). Omit it or pass `0` to store **permanently** (no decay). Expired
+  entries are reaped lazily.
 - **Edge `add` vs `put` are NOT equivalent.**
   - `add` (AddEdge) is **additive** — repeated calls **sum** the weight on the
     same `(tail, head)`. Not idempotent; excluded from client retry (a retry
@@ -120,62 +120,62 @@ Supplying any of `--tls-ca`, `--tls-cert` also implies TLS (`https`).
 
 ## Vertex commands
 
-### `vertex get <key>`
+### `get vertex <key>`
 Fetch one vertex. Prints a JSON object `{key, type, value, expiration}`.
 `NotFound` (exit 2) when the key is absent or expired.
 ```shell
-lantern vertex get alice
-lantern vertex get alice | jq .value
+lantern get vertex alice
+lantern get vertex alice | jq .value
 ```
 
-### `vertex put <key> <value>`
-Upsert one vertex. Flags: `--ttl <dur>` (default permanent),
-`--value-type <type>` (default `auto`). Prints `OK`.
+### `put vertex <key> <value> [ttl_seconds] [type=...]`
+Upsert one vertex. Optional trailing `ttl_seconds` (integer; default permanent)
+and a `type=<type>` token (default `auto`); the two may appear in either order.
+Prints `OK`.
 ```shell
-lantern vertex put alice "Alice Smith"                    # string (auto)
-lantern vertex put count 42                                # int (auto)
-lantern vertex put price 19.99                             # float (auto)
-lantern vertex put alice '{"age":30}' --value-type=json --ttl 1h
-lantern vertex put zipcode "01234" --value-type=string     # keep leading zero
+lantern put vertex alice "Alice Smith"                    # string (auto)
+lantern put vertex count 42                                # int (auto)
+lantern put vertex price 19.99                             # float (auto)
+lantern put vertex alice '{"age":30}' 3600 type=json       # JSON value, 1h TTL
+lantern put vertex zipcode "01234" type=string             # keep leading zero
 ```
 
-### `vertex delete <key> [<key>...]`
+### `delete vertex <key> [<key>...]`
 Delete one or more vertices. One key → `DeleteVertex`; multiple keys →
 batch `DeleteVertices` (chunked at `--chunk-size`). Idempotent.
 - Single: prints `OK existed=true|false`.
 - Batch: prints `OK <n>` (number that actually existed and were removed).
 ```shell
-lantern vertex delete alice                 # single
-lantern vertex delete alice bob carol       # batch
-cat keys.txt | xargs lantern vertex delete  # batch from file
+lantern delete vertex alice                 # single
+lantern delete vertex alice bob carol       # batch
+cat keys.txt | xargs lantern delete vertex  # batch from file
 ```
 
-### `vertex scan <prefix>`
-Enumerate live vertices whose key begins with `<prefix>`, one NDJSON object per
-line on stdout. Flags: `--limit <n>` (per-page size), `--cursor <token>`
-(resume), `--all` (iterate every page through the SDK helper).
-Without `--all`, a `next-cursor: <token>` line is printed to **stderr** when
-more pages exist; re-run with `--cursor <token>`. Cursors are opaque — do not
-hand-craft them.
+### `scan vertices <prefix> [limit] [all=true]`
+Enumerate live vertices whose key begins with `<prefix>` and print them as an
+indented **JSON array** on stdout. The optional positional `<limit>` caps the
+page size; `all=true` iterates every page through the SDK helper and
+concatenates the result into one array. Without `all=true` a single bounded
+page is returned (paging is handled internally — pass `all=true` for a full
+snapshot rather than resuming by hand).
 ```shell
-lantern vertex scan users/
-lantern vertex scan users/ --all > snapshot.ndjson
-lantern vertex scan users/ --limit 50            # then read stderr for cursor
-lantern vertex scan users/ --limit 50 --cursor "<token>"
+lantern scan vertices users/
+lantern scan vertices users/ all=true > snapshot.json
+lantern scan vertices users/ 50                  # first page, up to 50
 ```
 
-### `vertex count <prefix>`
+### `count vertices <prefix>`
 Print the number of keys in the prefix index as a single integer.
 **Caveat:** counted from the radix index, not cross-checked for liveness, so it
 may include expired-but-not-yet-reaped keys. For a strictly-live count use
-`lantern vertex scan <prefix> --all | wc -l`.
+`lantern scan vertices <prefix> all=true | jq 'length'`.
 ```shell
-lantern vertex count users/
+lantern count vertices users/
 ```
 
 ### `keys <prefix> [limit]`
 List vertex **keys** under `<prefix>`, one per line on stdout — the
-Redis-familiar, keys-only counterpart to `vertex scan` (no values, pipe-friendly).
+Redis-familiar, keys-only counterpart to `scan vertices` (no values, pipe-friendly).
 Lantern is prefix-indexed, so the argument is a key **prefix**, not a glob (no
 trailing `*`). A prefix is **required** (the server rejects an empty prefix); the
 optional `<limit>` caps the page (mirrors `scan vertices`). This is a verb-first
@@ -184,79 +184,75 @@ wire-efficient `ScanVertexKeys` RPC.
 ```shell
 lantern keys users/
 lantern keys users/ 100
-lantern keys users/ | xargs -n1 lantern vertex get   # hydrate values
+lantern keys users/ | xargs -n1 lantern get vertex   # hydrate values
 ```
 
-### `vertex delete-prefix <prefix>` (DESTRUCTIVE)
-Bulk-delete every live vertex under `<prefix>`, up to `--limit` per call.
-**Safety gate:** running without `--dry-run` or `--yes` is **refused** — it
-prints the current match count + suggested next steps to stderr and exits
-non-zero. Flags: `--dry-run` (count only, mutates nothing), `--yes` (perform
-delete), `--limit <n>` (cap per call). Prints `would delete <n>` / `deleted <n>`.
-Incident edges are not eagerly removed (lazy GC).
+### `delete-prefix vertices <prefix>` (DESTRUCTIVE)
+Bulk-delete every live vertex under `<prefix>`, up to `limit=<n>` per call.
+**Safety gate:** running without `dry_run=true` or `confirm=yes` is **refused**
+— it prints the current match count + suggested next steps to stderr and exits
+non-zero. Kwargs: `dry_run=true` (count only, mutates nothing), `confirm=yes`
+(perform delete), `limit=<n>` (cap per call). Prints `would delete <n>` /
+`deleted <n>`. Incident edges are not eagerly removed (lazy GC).
 ```shell
-lantern vertex delete-prefix tmp/             # refused → prints suggestion
-lantern vertex delete-prefix tmp/ --dry-run
-lantern vertex delete-prefix tmp/ --yes
-lantern vertex delete-prefix tmp/ --yes --limit 500
+lantern delete-prefix vertices tmp/                  # refused → prints suggestion
+lantern delete-prefix vertices tmp/ dry_run=true
+lantern delete-prefix vertices tmp/ confirm=yes
+lantern delete-prefix vertices tmp/ confirm=yes limit=500
 ```
 
 ## Edge commands
 
-### `edge get <tail> <head>`
+### `get edge <tail> <head>`
 Fetch one edge. Prints `{tail, head, weight, expiration}`. `NotFound` (exit 2)
 when the edge never existed, was deleted, or expired.
 ```shell
-lantern edge get alice bob
-lantern edge get alice bob | jq .weight
+lantern get edge alice bob
+lantern get edge alice bob | jq .weight
 ```
 
-### `edge add <tail> <head> <weight>`  (additive)
-Sum `<weight>` onto `(tail, head)`. Flag `--ttl <dur>` resets the edge's
-expiration to `now+ttl` each call (default permanent). Weight is `float32`;
-`NaN`/`±Inf` are rejected. Prints `OK`.
+### `add edge <tail> <head> <weight> [ttl_seconds]`  (additive)
+Sum `<weight>` onto `(tail, head)`. Optional trailing `ttl_seconds` resets the
+edge's expiration to `now+ttl_seconds` each call (default permanent). Weight is
+`float32`; `NaN`/`±Inf` are rejected. Prints `OK`.
 ```shell
-lantern edge add alice bob 1.5            # weight 1.5
-lantern edge add alice bob 0.5            # weight now 2.0
-lantern edge add alice bob 0.1 --ttl 30m  # weight 2.1, TTL reset to 30m
+lantern add edge alice bob 1.5            # weight 1.5
+lantern add edge alice bob 0.5            # weight now 2.0
+lantern add edge alice bob 0.1 1800       # weight 2.1, TTL reset to 30m
 ```
 
-### `edge put <tail> <head> <weight>`  (idempotent)
-Replace the `(tail, head)` weight. Flag `--ttl <dur>` (default permanent).
-Prints `OK`.
+### `put edge <tail> <head> <weight> [ttl_seconds]`  (idempotent)
+Replace the `(tail, head)` weight. Optional trailing `ttl_seconds`
+(default permanent). Prints `OK`.
 ```shell
-lantern edge put alice bob 1.5            # weight 1.5
-lantern edge put alice bob 0.5            # weight 0.5 (overwritten)
+lantern put edge alice bob 1.5            # weight 1.5
+lantern put edge alice bob 0.5            # weight 0.5 (overwritten)
 ```
 
-### `edge delete <tail> <head> | <tail>:<head> [...]`
-Delete edges. Two input shapes:
-1. **Positional pair** — exactly two args, neither containing the separator:
-   `lantern edge delete alice bob`.
-2. **Separated pairs** — any arg contains the separator (`:` by default) →
-   batch `DeleteEdges` (chunked at `--chunk-size`). Override the delimiter with
-   `--separator '|'` when an endpoint itself contains a colon.
-
-Idempotent. Single → `OK existed=true|false`; batch → `OK <n>`.
+### `delete edge <tail> <head> [<tail> <head>...]`
+Delete edges as a flat, whitespace-delimited sequence of `<tail> <head>` pairs.
+Exactly one pair → `DeleteEdge`; two or more pairs → batch `DeleteEdges`
+(chunked at `--chunk-size`). The token count must be even (each edge is two
+tokens); there is no separator character to configure. Idempotent. Single →
+`OK existed=true|false`; batch → `OK <n>`.
 ```shell
-lantern edge delete alice bob                     # positional single
-lantern edge delete alice:bob bob:carol carol:dave # batch
-lantern edge delete --separator '|' 'a:b|c:d'      # custom delimiter
-jq -r '"\(.tail):\(.head)"' edges.json | xargs lantern edge delete
+lantern delete edge alice bob                      # single pair
+lantern delete edge alice bob bob carol carol dave # batch: 3 pairs
+jq -r '.tail, .head' edges.json | xargs lantern delete edge
 ```
 
-### `edge scan`
-Enumerate live edges in ascending `(tail, head)` order as NDJSON. Flags:
-`--tail-prefix <p>`, `--head-prefix <p>` (either may be omitted; omitting both
-scans all edges), `--limit <n>`, `--cursor <token>`, `--all`. Cursor handling
-matches `vertex scan` (token to stderr without `--all`). Edge cursors are
-**not** interchangeable with vertex-scan cursors. A head-only scan still
-iterates every tail (no global reverse index), so combining both prefixes is
-the most efficient shape.
+### `scan edges <tail-prefix> [limit] [head=<prefix>] [all=true]`
+Enumerate live edges in ascending `(tail, head)` order, printed as an indented
+**JSON array** on stdout. The required positional `<tail-prefix>` may be the
+empty string `""` to scan every tail; `head=<prefix>` narrows by head endpoint;
+the optional positional `<limit>` caps the page; `all=true` iterates every page
+into one array. A head-only scan (empty tail-prefix) still iterates every tail
+(no global reverse index), so supplying both a tail-prefix and `head=` is the
+most efficient shape.
 ```shell
-lantern edge scan --tail-prefix user:
-lantern edge scan --tail-prefix user: --head-prefix post: --limit 100
-lantern edge scan --head-prefix post: --all > posts.ndjson
+lantern scan edges user:
+lantern scan edges user: 100 head=post:
+lantern scan edges "" head=post: all=true > posts.json
 ```
 
 ## `illuminate <seed>` — graph walk
@@ -315,19 +311,19 @@ lantern bulk edges put edges.ndjson --chunk-size 5000
 ## Common recipes
 
 ```shell
-# Snapshot a keyspace to NDJSON, then re-load it elsewhere
-lantern vertex scan users/ --all > users.ndjson
-lantern --address other-host:6380 bulk vertices users.ndjson
+# Snapshot a keyspace to a JSON array, then stream it elsewhere as NDJSON
+lantern scan vertices users/ all=true > users.json
+jq -c '.[]' users.json | lantern --address other-host:6380 bulk vertices -
 
 # Count then safely purge a temporary keyspace
-lantern vertex count tmp/
-lantern vertex delete-prefix tmp/ --dry-run
-lantern vertex delete-prefix tmp/ --yes
+lantern count vertices tmp/
+lantern delete-prefix vertices tmp/ dry_run=true
+lantern delete-prefix vertices tmp/ confirm=yes
 
 # Accumulate an interaction signal with decay, then inspect the live sum
-lantern edge add userA itemX 1 --ttl 24h
-lantern edge add userA itemX 1 --ttl 24h
-lantern edge get userA itemX | jq .weight     # → 2
+lantern add edge userA itemX 1 86400
+lantern add edge userA itemX 1 86400
+lantern get edge userA itemX | jq .weight     # → 2
 
 # Walk a relevance graph against a non-default replica over TLS
 lantern --tls --tls-ca ./ca.pem -H lantern.example.com -p 443 \
@@ -336,15 +332,15 @@ lantern --tls --tls-ca ./ca.pem -H lantern.example.com -p 443 \
 
 ## Gotchas checklist
 
-- Choosing `edge add` vs `edge put` wrong silently corrupts weights — `add`
+- Choosing `add edge` vs `put edge` wrong silently corrupts weights — `add`
   accumulates, `put` overwrites.
-- `vertex count` can over-report vs. live reality; use `scan --all | wc -l` for
-  an exact live count.
-- `delete-prefix` without `--dry-run`/`--yes` is intentionally refused — pass
-  one explicitly.
+- `count vertices` can over-report vs. live reality; use `scan vertices <prefix>
+  all=true | jq 'length'` for an exact live count.
+- `delete-prefix vertices` without `dry_run=true`/`confirm=yes` is intentionally
+  refused — pass one explicitly.
 - Vertex deletes leave incident edges to decay on their own TTL.
-- Scan cursors are opaque and per-(prefix, server version); vertex and edge
-  cursors are not interchangeable.
+- `scan` returns a single bounded page unless you pass `all=true`; there is no
+  hand-managed cursor to resume — `all=true` walks every page for you.
 - JSON object/array vertex values round-trip as compact JSON **strings**, not
   nested structures.
 - `NotFound` surfaces as **exit code 2**, distinct from local errors (exit 1) —
