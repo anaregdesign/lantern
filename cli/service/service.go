@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/anaregdesign/lantern/cli/parser"
 	client "github.com/anaregdesign/lantern/sdks/go"
@@ -109,6 +110,7 @@ func (c *CLIService) Run(ctx context.Context, str string) error {
 				fmt.Printf("Error: %s\n", err)
 				return ErrConnection
 			}
+			fmt.Println(formatWriteEcho(fmt.Sprintf("add edge %q -> %q (weight %g)", p.Tail, p.Head, p.Weight), p.TTL, time.Now()))
 			return nil
 		default:
 			return ErrInvalidObjective
@@ -130,6 +132,10 @@ func (c *CLIService) Run(ctx context.Context, str string) error {
 				fmt.Printf("Error: %s\n", err)
 				return ErrConnection
 			}
+			// Echo the applied TTL/expiry so a decaying write is never
+			// silent (#653) — the REPL's "OK (<elapsed>)" status alone
+			// hid that e.g. `put vertex a a 1` expires in one second.
+			fmt.Println(formatWriteEcho(fmt.Sprintf("put vertex %q", p.Key), p.TTL, time.Now()))
 			return nil
 		case "edge":
 			p, err := parser.PutEdgeParam(s)
@@ -141,6 +147,7 @@ func (c *CLIService) Run(ctx context.Context, str string) error {
 				fmt.Printf("Error: %s\n", err)
 				return ErrConnection
 			}
+			fmt.Println(formatWriteEcho(fmt.Sprintf("put edge %q -> %q (weight %g)", p.Tail, p.Head, p.Weight), p.TTL, time.Now()))
 			return nil
 		}
 
@@ -303,3 +310,17 @@ var (
 		"tfidf": client.WeightingTFIDF,
 	}
 )
+
+// formatWriteEcho builds the one-line success summary the REPL prints
+// after a mutating write so the applied TTL/expiry is never silent
+// (#653). The "OK (<elapsed>)" status line alone hid the TTL, so
+// `put vertex a a 1` looked permanent yet silently decayed in one
+// second. A zero/negative TTL is the permanent (no-decay) sentinel
+// (#523); a positive TTL echoes the absolute expiration the server
+// decays against (now + ttl), rendered in RFC3339.
+func formatWriteEcho(subject string, ttl time.Duration, now time.Time) string {
+	if ttl <= 0 {
+		return fmt.Sprintf("%s (no ttl)", subject)
+	}
+	return fmt.Sprintf("%s (ttl %s, expires %s)", subject, ttl, now.Add(ttl).Format(time.RFC3339))
+}

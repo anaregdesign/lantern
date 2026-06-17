@@ -71,7 +71,11 @@ so a bare illuminate keeps the top-k strongest neighbours (#560).
 EXAMPLE
   $ lantern repl
   > put vertex alice "Alice"
+  put vertex "alice" (no ttl)
   OK (1.4ms)
+  > put vertex temp "soon" 1
+  put vertex "temp" (ttl 1s, expires 2026-06-16T12:34:57Z)
+  OK (0.6ms)
   > get vertex alice
   "Alice"
   OK (0.8ms)

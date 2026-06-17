@@ -112,35 +112,47 @@ export async function dispatch(input: DispatchInput): Promise<unknown> {
       }
     case "put":
       if (command.objective === "vertex") {
+        // Compute the expiration ONCE so the echo reports exactly the
+        // instant sent to the server (a second `ttlSecondsToExpiration`
+        // call would drift by the elapsed `Date.now()` delta).
+        const expiration = ttlSecondsToExpiration(command.ttlSeconds);
         const vertex: Vertex = {
           key: command.key,
           ...coerceValue(command.value),
-          expiration: ttlSecondsToExpiration(command.ttlSeconds),
+          expiration,
         };
         await putVertex(client, command.key, { vertex }, { signal });
-        return { ok: true };
+        return writeEcho({ key: command.key }, command.ttlSeconds, expiration);
       }
-      await putEdge(
-        client,
-        command.tail,
-        command.head,
-        {
-          edge: {
-            tail: command.tail,
-            head: command.head,
-            weight: command.weight,
-            expiration: ttlSecondsToExpiration(command.ttlSeconds),
+      {
+        const expiration = ttlSecondsToExpiration(command.ttlSeconds);
+        await putEdge(
+          client,
+          command.tail,
+          command.head,
+          {
+            edge: {
+              tail: command.tail,
+              head: command.head,
+              weight: command.weight,
+              expiration,
+            },
           },
-        },
-        { signal },
-      );
-      return { ok: true };
+          { signal },
+        );
+        return writeEcho(
+          { tail: command.tail, head: command.head, weight: command.weight },
+          command.ttlSeconds,
+          expiration,
+        );
+      }
     case "delete":
       if (command.objective === "vertex") {
         return deleteVertex(client, command.key, { signal });
       }
       return deleteEdge(client, command.tail, command.head, { signal });
-    case "add":
+    case "add": {
+      const expiration = ttlSecondsToExpiration(command.ttlSeconds);
       await addEdge(
         client,
         command.tail,
@@ -150,12 +162,17 @@ export async function dispatch(input: DispatchInput): Promise<unknown> {
             tail: command.tail,
             head: command.head,
             weight: command.weight,
-            expiration: ttlSecondsToExpiration(command.ttlSeconds),
+            expiration,
           },
         },
         { signal },
       );
-      return { ok: true };
+      return writeEcho(
+        { tail: command.tail, head: command.head, weight: command.weight },
+        command.ttlSeconds,
+        expiration,
+      );
+    }
     case "scan":
       if (command.objective === "vertices") {
         return scanVertices(
@@ -254,4 +271,26 @@ export function ttlSecondsToExpiration(
 ): string | undefined {
   if (ttlSeconds === null) return undefined;
   return new Date(Date.now() + ttlSeconds * 1000).toISOString();
+}
+
+/**
+ * Build the success echo for a mutating write (#653).
+ *
+ * The dispatcher used to return a bare `{ ok: true }`, which hid the
+ * applied TTL: `put vertex a a 1` looked permanent in the scrollback
+ * yet silently decayed in one second, so a follow-up `get` returned
+ * nothing and read as data loss. Surfacing the applied TTL and the
+ * absolute expiry the server decays against makes the write
+ * self-explanatory. `ttlSeconds === null` (the verb omitted
+ * `ttl_seconds`) renders as `ttlSeconds: null, expiresAt: null` —
+ * i.e. permanent, no decay (#523).
+ *
+ * Exported for unit testing.
+ */
+export function writeEcho(
+  identity: Record<string, string | number>,
+  ttlSeconds: number | null,
+  expiration: string | undefined,
+): Record<string, unknown> {
+  return { ...identity, ttlSeconds, expiresAt: expiration ?? null };
 }
