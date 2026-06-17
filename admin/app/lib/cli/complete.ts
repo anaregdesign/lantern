@@ -33,8 +33,10 @@ const VERBS: readonly string[] = [
   "get",
   "put",
   "delete",
+  "delete-prefix",
   "add",
   "scan",
+  "count",
   "keys",
   "illuminate",
   "help",
@@ -155,6 +157,9 @@ function objectivesFor(verb: string): readonly string[] | null {
       return ["edge"];
     case "scan":
       return ["vertices", "edges"];
+    case "count":
+    case "delete-prefix":
+      return ["vertices"];
     default:
       return null;
   }
@@ -180,6 +185,8 @@ function isKeySlot(
     case "add": // add edge <tail> <head> ...
       return slotIndex === 2 || slotIndex === 3;
     case "scan": // scan { vertices | edges } <prefix> ...
+    case "count": // count vertices <prefix>
+    case "delete-prefix": // delete-prefix vertices <prefix> ...
       return slotIndex === 2;
     default:
       return false;

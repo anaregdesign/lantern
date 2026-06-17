@@ -519,6 +519,7 @@ describe("dispatch scan vertices (#432 drops extra count RPC)", () => {
       objective: "vertices",
       prefix: "p",
       limit: 10,
+      all: false,
     };
     const result = await dispatch({ client: asClient(fake), command: cmd });
     const methods = fake.calls.map((c) => c.method);

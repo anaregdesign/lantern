@@ -18,6 +18,46 @@
     { "input": "scan edges alice" },
     { "input": "scan edges alice 100" },
     {
+      "input": "scan vertices users/ all=true",
+      "comment": "#679: scan all=true iterates every page"
+    },
+    {
+      "input": "scan vertices users/ 100 all=true",
+      "comment": "#679: positional limit precedes the all kwarg"
+    },
+    {
+      "input": "scan edges alice head=post:",
+      "comment": "#679: head= narrows edges by head prefix"
+    },
+    {
+      "input": "scan edges alice 100 head=post: all=true",
+      "comment": "#679: limit + head + all together"
+    },
+    {
+      "input": "delete vertex alice bob carol",
+      "comment": "#679: variadic vertex batch delete"
+    },
+    {
+      "input": "delete edge alice bob carol dave",
+      "comment": "#679: variadic edge batch delete (two pairs)"
+    },
+    {
+      "input": "count vertices users/",
+      "comment": "#679: count verb"
+    },
+    {
+      "input": "delete-prefix vertices tmp/ confirm=yes",
+      "comment": "#679: prefix delete requires confirm=yes"
+    },
+    {
+      "input": "delete-prefix vertices tmp/ dry_run=true",
+      "comment": "#679: dry_run previews without mutating"
+    },
+    {
+      "input": "delete-prefix vertices tmp/ dry_run=true limit=500",
+      "comment": "#679: dry_run with a per-call limit"
+    },
+    {
       "input": "keys users/",
       "comment": "#674: keys lists vertex keys under a prefix"
     },
@@ -102,6 +142,51 @@
     {
       "input": "scan vertices users/ notanint",
       "comment": "non-numeric limit"
+    },
+    {
+      "input": "scan vertices users/ all=maybe",
+      "comment": "#679: all must be a boolean"
+    },
+    {
+      "input": "scan vertices users/ bogus=1",
+      "comment": "#679: unknown scan keyword"
+    },
+    {
+      "input": "scan edges alice head=",
+      "comment": "#679: empty head prefix rejected"
+    },
+    {
+      "input": "delete vertex",
+      "comment": "#679: delete vertex needs at least one key"
+    },
+    {
+      "input": "delete edge alice bob carol",
+      "comment": "#679: odd token count is not whole (tail,head) pairs"
+    },
+    { "input": "count", "comment": "#679: count missing objective" },
+    {
+      "input": "count vertices",
+      "comment": "#679: count missing prefix"
+    },
+    {
+      "input": "count edges alice",
+      "comment": "#679: count only supports the vertices objective"
+    },
+    {
+      "input": "delete-prefix vertices tmp/",
+      "comment": "#679: safety gate — confirm=yes or dry_run=true required"
+    },
+    {
+      "input": "delete-prefix vertices tmp/ confirm=yes dry_run=true",
+      "comment": "#679: confirm and dry_run are mutually exclusive"
+    },
+    {
+      "input": "delete-prefix vertices",
+      "comment": "#679: delete-prefix missing prefix"
+    },
+    {
+      "input": "delete-prefix vertices tmp/ confirm=no",
+      "comment": "#679: confirm must be 'yes'"
     },
     { "input": "keys", "comment": "#674: keys requires a prefix" },
     {
