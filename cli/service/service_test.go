@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -41,6 +42,31 @@ func TestFormatWriteEcho(t *testing.T) {
 		want := `put edge "a" -> "b" (weight 1.5) (ttl 1m30s, expires 2026-06-16T12:36:26Z)`
 		if got != want {
 			t.Errorf("formatWriteEcho() = %q, want %q", got, want)
+		}
+	})
+}
+
+// TestRunArgs pins the one-liner dispatch entry point (#672). RunArgs feeds
+// pre-split argv through the same runSource dispatcher Run uses for a raw
+// REPL line. The help and invalid-verb branches never touch the client, so
+// a nil-client service exercises the shared dispatch without a live server.
+func TestRunArgs(t *testing.T) {
+	svc := NewCLIService(nil)
+	ctx := context.Background()
+
+	t.Run("HelpVerbReturnsNil", func(t *testing.T) {
+		if err := svc.RunArgs(ctx, []string{"help"}); err != nil {
+			t.Errorf("RunArgs([help]) = %v, want nil", err)
+		}
+	})
+	t.Run("UnknownVerbReturnsErrInvalidVerb", func(t *testing.T) {
+		if err := svc.RunArgs(ctx, []string{"bogus"}); err != ErrInvalidVerb {
+			t.Errorf("RunArgs([bogus]) = %v, want ErrInvalidVerb", err)
+		}
+	})
+	t.Run("EmptyArgsReturnsErrInvalidVerb", func(t *testing.T) {
+		if err := svc.RunArgs(ctx, nil); err != ErrInvalidVerb {
+			t.Errorf("RunArgs(nil) = %v, want ErrInvalidVerb", err)
 		}
 	})
 }

@@ -64,11 +64,15 @@ WHAT LANTERN IS
   plus an interactive REPL.
 
 COMMAND LAYOUT
-  vertex      get / put / delete vertices (single or batch)
-  edge        get / add / put / delete edges (single or batch)
-  illuminate  walk the graph from a seed; optional algorithm × objective × weighting reduction
+  REPL grammar (verb-first one-liners — identical to the "lantern repl" prompt):
+    get / put / add / delete / scan   e.g. "lantern get vertex alice"
+  Noun-first subcommands (typed values, batch, paging, NDJSON bulk, TLS/gzip):
+    vertex      get / put / delete / scan / count / delete-prefix vertices
+    edge        get / add / put / delete / scan edges
+  illuminate  walk the graph from a seed; accepts flags OR the REPL
+              positional grammar (illuminate <seed> <step> <k> [key=value …])
   bulk        stream NDJSON from a file or stdin (bulk load)
-  repl        legacy interactive prompt
+  repl        interactive prompt
   version     print client version
   completion  generate shell completions (bash, zsh, fish, powershell)
 
@@ -96,7 +100,14 @@ EXIT CODES
   2  RPC error returned by the server (NotFound, InvalidArgument, …)
 
 EXAMPLES
-  # one-shot writes against a local server
+  # REPL grammar as one-liners (identical to the "lantern repl" prompt)
+  lantern get vertex alice
+  lantern put vertex alice "Alice" 3600        # value + TTL seconds
+  lantern add edge alice bob 1.5 3600          # additive edge write
+  lantern scan vertices users/ 100
+  lantern illuminate alice 2 5 algorithm=spt objective=max
+
+  # noun-first subcommands for typed values, batch, paging, TLS
   lantern vertex put alice '{"name":"Alice"}' --value-type json --ttl 1h
   lantern edge add alice bob 1.5 --ttl 30m
   lantern edge add alice bob 0.5      # weight now totals 2.0

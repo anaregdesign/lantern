@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/anaregdesign/lantern/cli/service"
 	client "github.com/anaregdesign/lantern/sdks/go"
 	"github.com/spf13/cobra"
 )
@@ -107,9 +108,36 @@ EXAMPLES
 
   # 2-hop walk restricted to the users/ keyspace (seed always kept)
   lantern illuminate alice --step 2 --k 5 --prefix users/
+
+REPL GRAMMAR (one-liner parity, #672)
+  In addition to the flags above, illuminate accepts the REPL's positional
+  form so the prompt and the shell share one grammar:
+
+    lantern illuminate <seed> <step> <k> [algorithm=none|mst|spt] \
+            [objective=min|max] [weighting=raw|tfidf] [prefix=<string>]
+
+  e.g. "lantern illuminate alice 2 5 algorithm=spt objective=max" is
+  identical to typing it at "lantern repl". The positional form kicks in
+  whenever more than the bare <seed> is supplied; a bare "lantern
+  illuminate alice" uses the flag defaults (step=1, k=10).
 `,
-	Args: cobra.ExactArgs(1),
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// REPL positional grammar: `illuminate <seed> <step> <k> [key=value …]`.
+		// When more than the bare seed is present, forward argv to the shared
+		// REPL dispatcher so `lantern illuminate alice 2 5 algorithm=spt`
+		// behaves exactly like the prompt (#672). A bare seed keeps the
+		// flag-driven path below, which is the only form that supplies the
+		// step/k defaults.
+		if len(args) > 1 {
+			cli, err := dial()
+			if err != nil {
+				return err
+			}
+			defer func() { _ = cli.Close() }()
+			return service.NewCLIService(cli).RunArgs(cmd.Context(), append([]string{"illuminate"}, args...))
+		}
+
 		algo, ok := algorithmByName[illuminateAlgorithmStr]
 		if !ok {
 			return fmt.Errorf("unknown --algorithm %q (want none|mst|spt)", illuminateAlgorithmStr)

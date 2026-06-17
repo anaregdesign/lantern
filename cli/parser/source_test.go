@@ -49,6 +49,36 @@ func TestNewSource_BarewordBoundary(t *testing.T) {
 	}
 }
 
+// TestNewSourceFromTokens pins the constructor the one-shot verbs use to
+// feed cobra's already-split argv into the REPL grammar without a second
+// tokenise pass (#672). It preserves tokens verbatim — including ones that
+// NewSource would have re-split (embedded spaces) — and the verb stream
+// reads back identically to a NewSource of the equivalent quoted line.
+func TestNewSourceFromTokens(t *testing.T) {
+	in := []string{"put", "vertex", "k", "hello world"}
+	s := NewSourceFromTokens(in)
+	if got := s.Slice(); !reflect.DeepEqual(got, in) {
+		t.Fatalf("Slice() = %#v, want %#v (no re-splitting)", got, in)
+	}
+	if s.Len() != len(in) {
+		t.Errorf("Len() = %d, want %d", s.Len(), len(in))
+	}
+	verb, err := Verb(s)
+	if err != nil {
+		t.Fatalf("Verb() error: %v", err)
+	}
+	if verb != "put" {
+		t.Errorf("Verb() = %q, want %q", verb, "put")
+	}
+	line, err := NewSource(`put vertex k "hello world"`)
+	if err != nil {
+		t.Fatalf("NewSource line failed: %v", err)
+	}
+	if !reflect.DeepEqual(line.Slice(), in) {
+		t.Errorf("NewSource line tokens = %#v, want %#v", line.Slice(), in)
+	}
+}
+
 func TestNewSource_DoubleQuoted(t *testing.T) {
 	cases := map[string][]string{
 		`put vertex k "hello world"`: {"put", "vertex", "k", "hello world"},
