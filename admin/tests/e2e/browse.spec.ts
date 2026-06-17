@@ -173,7 +173,12 @@ test.describe("mobile (390px) — Browse row actions stay reachable (#657)", () 
     });
     expect(overflows).toBe(true);
 
-    const edit = table.getByTestId("edge-row-edit").first();
+    // Click a specific tail's Edit button (auto-waits for the filtered row),
+    // not `.first()` of the testid set — the latter would race the debounced
+    // filter and hit the alphabetically-first `e2e:other:z` row instead.
+    const edit = table
+      .getByRole("button", { name: /Edit edge e2e:vertex:a/i })
+      .first();
     await edit.click();
     await expect(page).toHaveURL(/\/edges\/e2e%3Avertex%3Aa\//);
   });
