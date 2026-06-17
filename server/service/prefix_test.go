@@ -2,7 +2,10 @@ package service
 
 import (
 	"context"
+	"slices"
 	"testing"
+
+	"connectrpc.com/connect"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
@@ -77,6 +80,70 @@ func TestScanVertices_RejectsBadCursor(t *testing.T) {
 	if err == nil {
 		t.Errorf("expected error for malformed cursor")
 	}
+}
+
+// TestScanVertexKeys pins the keys-only prefix scan (#674): keys-only
+// pagination, the mandatory non-empty prefix, and the independent cursor
+// kind that must NOT interchange with ScanVertices in either direction.
+func TestScanVertexKeys(t *testing.T) {
+	fb := newFakeBackend()
+	for _, k := range []string{"users/1", "users/2", "users/3", "orders/1"} {
+		fb.vertices[k] = &pb.Vertex{Key: k, Value: &pb.Vertex_String_{String_: k}}
+	}
+	svc := NewLanternService(fb)
+	ctx := context.Background()
+
+	t.Run("BasicAndCursor", func(t *testing.T) {
+		r1, err := svc.ScanVertexKeys(ctx, &pb.ScanVertexKeysRequest{Prefix: "users/", Limit: 2})
+		if err != nil {
+			t.Fatalf("ScanVertexKeys: %v", err)
+		}
+		if want := []string{"users/1", "users/2"}; !slices.Equal(r1.Keys, want) {
+			t.Fatalf("page1 = %v, want %v", r1.Keys, want)
+		}
+		if len(r1.NextCursor) == 0 {
+			t.Fatalf("expected non-empty next_cursor when limit hit")
+		}
+		r2, err := svc.ScanVertexKeys(ctx, &pb.ScanVertexKeysRequest{Prefix: "users/", Limit: 2, Cursor: r1.NextCursor})
+		if err != nil {
+			t.Fatalf("ScanVertexKeys page2: %v", err)
+		}
+		if want := []string{"users/3"}; !slices.Equal(r2.Keys, want) {
+			t.Errorf("page2 = %v, want %v", r2.Keys, want)
+		}
+		if len(r2.NextCursor) != 0 {
+			t.Errorf("expected empty next_cursor on final page, got %q", r2.NextCursor)
+		}
+	})
+
+	t.Run("EmptyPrefixRejected", func(t *testing.T) {
+		_, err := svc.ScanVertexKeys(ctx, &pb.ScanVertexKeysRequest{Prefix: ""})
+		if err == nil {
+			t.Fatalf("expected InvalidArgument for empty prefix")
+		}
+		if connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Errorf("empty-prefix error code = %v, want InvalidArgument", connect.CodeOf(err))
+		}
+	})
+
+	t.Run("CursorIndependentFromScanVertices", func(t *testing.T) {
+		// A ScanVertices cursor must be rejected by ScanVertexKeys...
+		rv, err := svc.ScanVertices(ctx, &pb.ScanVerticesRequest{Prefix: "users/", Limit: 1})
+		if err != nil || len(rv.NextCursor) == 0 {
+			t.Fatalf("setup ScanVertices: err=%v cursor=%d", err, len(rv.NextCursor))
+		}
+		if _, err := svc.ScanVertexKeys(ctx, &pb.ScanVertexKeysRequest{Prefix: "users/", Limit: 1, Cursor: rv.NextCursor}); err == nil {
+			t.Errorf("ScanVertexKeys accepted a ScanVertices cursor; want rejection")
+		}
+		// ...and a ScanVertexKeys cursor must be rejected by ScanVertices.
+		rk, err := svc.ScanVertexKeys(ctx, &pb.ScanVertexKeysRequest{Prefix: "users/", Limit: 1})
+		if err != nil || len(rk.NextCursor) == 0 {
+			t.Fatalf("setup ScanVertexKeys: err=%v cursor=%d", err, len(rk.NextCursor))
+		}
+		if _, err := svc.ScanVertices(ctx, &pb.ScanVerticesRequest{Prefix: "users/", Limit: 1, Cursor: rk.NextCursor}); err == nil {
+			t.Errorf("ScanVertices accepted a ScanVertexKeys cursor; want rejection")
+		}
+	})
 }
 
 func TestCountVerticesByPrefix(t *testing.T) {

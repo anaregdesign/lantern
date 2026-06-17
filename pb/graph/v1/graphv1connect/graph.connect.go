@@ -57,6 +57,9 @@ const (
 	// LanternServiceScanVerticesProcedure is the fully-qualified name of the LanternService's
 	// ScanVertices RPC.
 	LanternServiceScanVerticesProcedure = "/graph.v1.LanternService/ScanVertices"
+	// LanternServiceScanVertexKeysProcedure is the fully-qualified name of the LanternService's
+	// ScanVertexKeys RPC.
+	LanternServiceScanVertexKeysProcedure = "/graph.v1.LanternService/ScanVertexKeys"
 	// LanternServiceSearchVerticesProcedure is the fully-qualified name of the LanternService's
 	// SearchVertices RPC.
 	LanternServiceSearchVerticesProcedure = "/graph.v1.LanternService/SearchVertices"
@@ -111,6 +114,10 @@ type LanternServiceClient interface {
 	// ascending order, page by page. Plural-only — prefix scan is inherently
 	// plural.
 	ScanVertices(context.Context, *connect.Request[v1.ScanVerticesRequest]) (*connect.Response[v1.ScanVerticesResponse], error)
+	// ScanVertexKeys streams just the KEYS (no values) of vertices whose key
+	// starts with the given prefix, page by page — the wire-efficient backing
+	// RPC for the `keys` CLI verb. A non-empty prefix is REQUIRED. Plural-only.
+	ScanVertexKeys(context.Context, *connect.Request[v1.ScanVertexKeysRequest]) (*connect.Response[v1.ScanVertexKeysResponse], error)
 	// SearchVertices returns vertices ranked by full-text relevance over their
 	// content (key + value), optionally scoped to a key prefix. Requires the
 	// server-side search index (LANTERN_SEARCH_ENABLED, on by default);
@@ -215,6 +222,12 @@ func NewLanternServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(lanternServiceMethods.ByName("ScanVertices")),
 			connect.WithClientOptions(opts...),
 		),
+		scanVertexKeys: connect.NewClient[v1.ScanVertexKeysRequest, v1.ScanVertexKeysResponse](
+			httpClient,
+			baseURL+LanternServiceScanVertexKeysProcedure,
+			connect.WithSchema(lanternServiceMethods.ByName("ScanVertexKeys")),
+			connect.WithClientOptions(opts...),
+		),
 		searchVertices: connect.NewClient[v1.SearchVerticesRequest, v1.SearchVerticesResponse](
 			httpClient,
 			baseURL+LanternServiceSearchVerticesProcedure,
@@ -312,6 +325,7 @@ type lanternServiceClient struct {
 	deleteVertex           *connect.Client[v1.DeleteVertexRequest, v1.DeleteVertexResponse]
 	deleteVertices         *connect.Client[v1.DeleteVerticesRequest, v1.DeleteVerticesResponse]
 	scanVertices           *connect.Client[v1.ScanVerticesRequest, v1.ScanVerticesResponse]
+	scanVertexKeys         *connect.Client[v1.ScanVertexKeysRequest, v1.ScanVertexKeysResponse]
 	searchVertices         *connect.Client[v1.SearchVerticesRequest, v1.SearchVerticesResponse]
 	countVerticesByPrefix  *connect.Client[v1.CountVerticesByPrefixRequest, v1.CountVerticesByPrefixResponse]
 	deleteVerticesByPrefix *connect.Client[v1.DeleteVerticesByPrefixRequest, v1.DeleteVerticesByPrefixResponse]
@@ -366,6 +380,11 @@ func (c *lanternServiceClient) DeleteVertices(ctx context.Context, req *connect.
 // ScanVertices calls graph.v1.LanternService.ScanVertices.
 func (c *lanternServiceClient) ScanVertices(ctx context.Context, req *connect.Request[v1.ScanVerticesRequest]) (*connect.Response[v1.ScanVerticesResponse], error) {
 	return c.scanVertices.CallUnary(ctx, req)
+}
+
+// ScanVertexKeys calls graph.v1.LanternService.ScanVertexKeys.
+func (c *lanternServiceClient) ScanVertexKeys(ctx context.Context, req *connect.Request[v1.ScanVertexKeysRequest]) (*connect.Response[v1.ScanVertexKeysResponse], error) {
+	return c.scanVertexKeys.CallUnary(ctx, req)
 }
 
 // SearchVertices calls graph.v1.LanternService.SearchVertices.
@@ -454,6 +473,10 @@ type LanternServiceHandler interface {
 	// ascending order, page by page. Plural-only — prefix scan is inherently
 	// plural.
 	ScanVertices(context.Context, *connect.Request[v1.ScanVerticesRequest]) (*connect.Response[v1.ScanVerticesResponse], error)
+	// ScanVertexKeys streams just the KEYS (no values) of vertices whose key
+	// starts with the given prefix, page by page — the wire-efficient backing
+	// RPC for the `keys` CLI verb. A non-empty prefix is REQUIRED. Plural-only.
+	ScanVertexKeys(context.Context, *connect.Request[v1.ScanVertexKeysRequest]) (*connect.Response[v1.ScanVertexKeysResponse], error)
 	// SearchVertices returns vertices ranked by full-text relevance over their
 	// content (key + value), optionally scoped to a key prefix. Requires the
 	// server-side search index (LANTERN_SEARCH_ENABLED, on by default);
@@ -552,6 +575,12 @@ func NewLanternServiceHandler(svc LanternServiceHandler, opts ...connect.Handler
 		LanternServiceScanVerticesProcedure,
 		svc.ScanVertices,
 		connect.WithSchema(lanternServiceMethods.ByName("ScanVertices")),
+		connect.WithHandlerOptions(opts...),
+	)
+	lanternServiceScanVertexKeysHandler := connect.NewUnaryHandler(
+		LanternServiceScanVertexKeysProcedure,
+		svc.ScanVertexKeys,
+		connect.WithSchema(lanternServiceMethods.ByName("ScanVertexKeys")),
 		connect.WithHandlerOptions(opts...),
 	)
 	lanternServiceSearchVerticesHandler := connect.NewUnaryHandler(
@@ -656,6 +685,8 @@ func NewLanternServiceHandler(svc LanternServiceHandler, opts ...connect.Handler
 			lanternServiceDeleteVerticesHandler.ServeHTTP(w, r)
 		case LanternServiceScanVerticesProcedure:
 			lanternServiceScanVerticesHandler.ServeHTTP(w, r)
+		case LanternServiceScanVertexKeysProcedure:
+			lanternServiceScanVertexKeysHandler.ServeHTTP(w, r)
 		case LanternServiceSearchVerticesProcedure:
 			lanternServiceSearchVerticesHandler.ServeHTTP(w, r)
 		case LanternServiceCountVerticesByPrefixProcedure:
@@ -723,6 +754,10 @@ func (UnimplementedLanternServiceHandler) DeleteVertices(context.Context, *conne
 
 func (UnimplementedLanternServiceHandler) ScanVertices(context.Context, *connect.Request[v1.ScanVerticesRequest]) (*connect.Response[v1.ScanVerticesResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternService.ScanVertices is not implemented"))
+}
+
+func (UnimplementedLanternServiceHandler) ScanVertexKeys(context.Context, *connect.Request[v1.ScanVertexKeysRequest]) (*connect.Response[v1.ScanVertexKeysResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternService.ScanVertexKeys is not implemented"))
 }
 
 func (UnimplementedLanternServiceHandler) SearchVertices(context.Context, *connect.Request[v1.SearchVerticesRequest]) (*connect.Response[v1.SearchVerticesResponse], error) {

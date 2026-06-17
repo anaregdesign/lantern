@@ -25,6 +25,7 @@ var (
 	ErrDeleteEdge       = errors.New("delete edge error")
 	ErrAddEdge          = errors.New("add edge error")
 	ErrScan             = errors.New("scan error")
+	ErrKeys             = errors.New("keys error")
 	ErrIlluminate       = errors.New("illuminate error")
 	ErrConnection       = errors.New("connection error")
 )
@@ -248,6 +249,30 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 		default:
 			return ErrInvalidObjective
 		}
+
+	case "keys":
+		p, err := parser.KeysParam(s)
+		if err != nil {
+			fmt.Printf("Error: %s\n", err)
+			return ErrKeys
+		}
+		// Redis-style KEYS: list vertex keys under a prefix (keys-only). Mirrors
+		// `scan vertices` — a single page with an optional limit — but prints
+		// just the keys, one per line, so it pipes cleanly into xargs/jq. The
+		// prefix is required (the server rejects an empty prefix).
+		opts := []client.ScanOption{}
+		if p.Limit > 0 && p.Limit <= math.MaxUint32 {
+			opts = append(opts, client.WithScanLimit(uint32(p.Limit)))
+		}
+		ks, _, err := c.client.ScanVertexKeys(ctx, p.Prefix, opts...)
+		if err != nil {
+			fmt.Printf("Error: %s\n", err)
+			return ErrConnection
+		}
+		for _, k := range ks {
+			fmt.Println(k)
+		}
+		return nil
 
 	case "illuminate":
 		p, err := parser.IlluminateParam(s)

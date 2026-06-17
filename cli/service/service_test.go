@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/anaregdesign/lantern/cli/parser"
 )
 
 // TestFormatWriteEcho pins the REPL success-echo formatting (#653): a
@@ -67,6 +69,27 @@ func TestRunArgs(t *testing.T) {
 	t.Run("EmptyArgsReturnsErrInvalidVerb", func(t *testing.T) {
 		if err := svc.RunArgs(ctx, nil); err != ErrInvalidVerb {
 			t.Errorf("RunArgs(nil) = %v, want ErrInvalidVerb", err)
+		}
+	})
+
+	// Forward parity guard (#672/#674): RunArgs backs every verb-first
+	// one-liner, so the shared dispatcher must RECOGNISE every verb the REPL
+	// grammar accepts (parser.Verbs). Feeding just the bare verb fails at
+	// objective/parameter parsing and returns a verb-specific sentinel (or nil
+	// for help), never ErrInvalidVerb and never dereferencing the nil client.
+	// Carveout: exit is consumed by the REPL read loop, not this dispatcher.
+	t.Run("EveryREPLVerbIsRecognisedByTheOneLinerDispatcher", func(t *testing.T) {
+		for _, verb := range parser.Verbs {
+			err := svc.RunArgs(ctx, []string{verb})
+			if verb == "exit" {
+				if err != ErrInvalidVerb {
+					t.Errorf("RunArgs([%s]) = %v, want ErrInvalidVerb (exit is REPL-loop only)", verb, err)
+				}
+				continue
+			}
+			if err == ErrInvalidVerb {
+				t.Errorf("one-liner dispatcher rejected REPL verb %q as invalid", verb)
+			}
 		}
 	})
 }

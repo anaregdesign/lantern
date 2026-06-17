@@ -14,6 +14,7 @@ var (
 		"add",
 		"delete",
 		"scan",
+		"keys",
 		"illuminate",
 		"help",
 		"exit",
@@ -447,6 +448,29 @@ func ScanEdgesParam(s *Source) (*ScanEdges, error) {
 	return m, nil
 }
 
+// KeysParam parses `keys <prefix> [limit]` — the Redis-familiar key lister.
+// Lantern is a prefix-indexed store, so the argument is a key PREFIX (not a
+// glob): `keys user:` lists every vertex key under "user:". A prefix is
+// required; the optional trailing limit caps the page (0 = server default),
+// mirroring ScanVerticesParam.
+func KeysParam(s *Source) (*Keys, error) {
+	var err error
+	m := &Keys{}
+	if m.Prefix, err = String(s); err != nil {
+		return nil, err
+	}
+	if err := EOF(s); err == nil {
+		return m, nil
+	}
+	if m.Limit, err = Integer(s); err != nil {
+		return nil, err
+	}
+	if err := EOF(s); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
 // HelpText is the per-verb grammar reference printed by the `help` verb
 // (#436). Single source of truth for the Go REPL; the TypeScript port
 // keeps a byte-equivalent copy at `admin/app/lib/cli/verbs.ts` `HELP_TEXT`,
@@ -467,6 +491,7 @@ const HelpText = `Lantern CLI grammar:
   delete edge   <tail: string> <head: string>
   scan   vertices <prefix: string> [<limit: int>]
   scan   edges    <tail-prefix: string> [<limit: int>]
+  keys   <prefix: string> [<limit: int>]
   illuminate <seed: string> <step: int> <k: int>
              [algorithm={none|mst|spt}]  default=none
              [objective={min|max}]       default=max

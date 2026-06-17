@@ -13,7 +13,7 @@ import (
 // vertex value) passes through as a positional token rather than being
 // mis-parsed as an unknown flag.
 func TestGrammarVerbsRegistered(t *testing.T) {
-	want := map[string]bool{"get": true, "put": true, "add": true, "delete": true, "scan": true}
+	want := map[string]bool{"get": true, "put": true, "add": true, "delete": true, "scan": true, "keys": true}
 	found := map[string]*cobra.Command{}
 	for _, c := range rootCmd.Commands() {
 		if want[c.Name()] {
@@ -41,7 +41,7 @@ func TestGrammarVerbsRegistered(t *testing.T) {
 // Drift guard: every top-level verb exposed as a one-liner must be a verb the
 // shared REPL grammar actually accepts, so the two surfaces cannot diverge.
 func TestGrammarVerbsAcceptedByParser(t *testing.T) {
-	for _, verb := range []string{"get", "put", "add", "delete", "scan"} {
+	for _, verb := range []string{"get", "put", "add", "delete", "scan", "keys"} {
 		accepted := false
 		for _, v := range parser.Verbs {
 			if v == verb {
@@ -51,6 +51,35 @@ func TestGrammarVerbsAcceptedByParser(t *testing.T) {
 		}
 		if !accepted {
 			t.Errorf("verb %q exposed as a one-liner but not in parser.Verbs", verb)
+		}
+	}
+}
+
+// Forward completeness drift guard: every verb the shared REPL grammar accepts
+// (parser.Verbs — the single source of truth) must also be reachable as a
+// one-shot one-liner, so the prompt and the shell never diverge. The only
+// exceptions are the interactive-session meta verbs help (cobra answers it
+// natively) and exit (terminates the REPL loop — meaningless as a one-liner).
+func TestEveryREPLVerbIsAvailableAsOneLiner(t *testing.T) {
+	replOnly := map[string]bool{"help": true, "exit": true}
+	registered := map[string]*cobra.Command{}
+	for _, c := range rootCmd.Commands() {
+		registered[c.Name()] = c
+	}
+	for _, verb := range parser.Verbs {
+		if replOnly[verb] {
+			if verb == "exit" && registered[verb] != nil {
+				t.Errorf("REPL-only meta verb %q must not be a top-level one-liner", verb)
+			}
+			continue
+		}
+		c, ok := registered[verb]
+		if !ok {
+			t.Errorf("REPL verb %q has no top-level one-liner command on rootCmd", verb)
+			continue
+		}
+		if c.RunE == nil && c.Run == nil {
+			t.Errorf("one-liner command %q is registered but not runnable", verb)
 		}
 	}
 }

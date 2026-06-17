@@ -65,7 +65,8 @@ WHAT LANTERN IS
 
 COMMAND LAYOUT
   REPL grammar (verb-first one-liners — identical to the "lantern repl" prompt):
-    get / put / add / delete / scan   e.g. "lantern get vertex alice"
+    get / put / add / delete / scan / keys   e.g. "lantern get vertex alice"
+    keys is Redis-style: "lantern keys user:" lists vertex keys under a prefix
   Noun-first subcommands (typed values, batch, paging, NDJSON bulk, TLS/gzip):
     vertex      get / put / delete / scan / count / delete-prefix vertices
     edge        get / add / put / delete / scan edges
@@ -105,6 +106,7 @@ EXAMPLES
   lantern put vertex alice "Alice" 3600        # value + TTL seconds
   lantern add edge alice bob 1.5 3600          # additive edge write
   lantern scan vertices users/ 100
+  lantern keys user: 100                       # Redis-style KEYS (vertex keys under a prefix)
   lantern illuminate alice 2 5 algorithm=spt objective=max
 
   # noun-first subcommands for typed values, batch, paging, TLS

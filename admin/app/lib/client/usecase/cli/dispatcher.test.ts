@@ -61,6 +61,9 @@ class FakeLanternClient {
   scanVertices(prefix: string, opts?: unknown, signal?: AbortSignal): unknown {
     return this.invoke("scanVertices", [prefix, opts, signal]);
   }
+  scanVertexKeys(prefix: string, opts?: unknown, signal?: AbortSignal): unknown {
+    return this.invoke("scanVertexKeys", [prefix, opts, signal]);
+  }
   countVerticesByPrefix(prefix: string, signal?: AbortSignal): unknown {
     return this.invoke("countVerticesByPrefix", [prefix, signal]);
   }
@@ -520,5 +523,22 @@ describe("dispatch scan vertices (#432 drops extra count RPC)", () => {
     // `count` field added.
     expect((result as { count?: unknown }).count).toBeUndefined();
     expect((result as { vertices: unknown[] }).vertices.length).toBe(1);
+  });
+});
+
+describe("dispatch keys (#674)", () => {
+  test("keys calls scanVertexKeys with the prefix + limit and returns keys", async () => {
+    const fake = new FakeLanternClient();
+    fake.stub("scanVertexKeys", () => ({
+      keys: ["user:1", "user:2"],
+      nextCursor: new Uint8Array(),
+    }));
+    const cmd: Command = { verb: "keys", prefix: "user:", limit: 50 };
+    const result = await dispatch({ client: asClient(fake), command: cmd });
+    expect(fake.calls.map((c) => c.method)).toEqual(["scanVertexKeys"]);
+    const [prefix, opts] = fake.calls[0].args as [string, { limit?: number }];
+    expect(prefix).toBe("user:");
+    expect(opts.limit).toBe(50);
+    expect((result as { keys: string[] }).keys).toEqual(["user:1", "user:2"]);
   });
 });

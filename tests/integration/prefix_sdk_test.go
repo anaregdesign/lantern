@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -158,6 +159,49 @@ func TestSDK_ScanVerticesAll_Iterator(t *testing.T) {
 	if batches < 2 {
 		t.Errorf("expected >=2 batches with batchSize=3 and 7 items, got %d", batches)
 	}
+}
+
+// TestSDK_ScanVertexKeys exercises the keys-only prefix RPC end-to-end (#674):
+// keys-only pagination, the mandatory non-empty prefix, and the independent
+// cursor kind that must not interchange with ScanVertices across the wire.
+func TestSDK_ScanVertexKeys(t *testing.T) {
+	l, cleanup := newPrefixSDKClient(t)
+	defer cleanup()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	seedPrefixVertices(t, ctx, l, []string{"users/1", "users/2", "users/3", "orders/1"})
+
+	t.Run("KeysOnlyPaginated", func(t *testing.T) {
+		got := []string{}
+		for batch, err := range l.ScanVertexKeysAll(ctx, "users/", 2) {
+			if err != nil {
+				t.Fatalf("ScanVertexKeysAll: %v", err)
+			}
+			got = append(got, batch...)
+		}
+		if want := []string{"users/1", "users/2", "users/3"}; !slices.Equal(got, want) {
+			t.Errorf("keys = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("EmptyPrefixRejected", func(t *testing.T) {
+		if _, _, err := l.ScanVertexKeys(ctx, ""); err == nil {
+			t.Errorf("ScanVertexKeys(empty prefix) = nil error, want InvalidArgument")
+		}
+	})
+
+	t.Run("CursorNotInterchangeableWithScanVertices", func(t *testing.T) {
+		// Mint a ScanVertices cursor and feed it to ScanVertexKeys — it must be
+		// rejected, proving the independent cursor kind end-to-end.
+		_, vcur, err := l.ScanVertices(ctx, "users/", client.WithScanLimit(1))
+		if err != nil || len(vcur) == 0 {
+			t.Fatalf("setup ScanVertices: err=%v cursor=%d", err, len(vcur))
+		}
+		if _, _, err := l.ScanVertexKeys(ctx, "users/", client.WithScanLimit(1), client.WithScanCursor(vcur)); err == nil {
+			t.Errorf("ScanVertexKeys accepted a ScanVertices cursor; want rejection")
+		}
+	})
 }
 
 func TestSDK_ScanVerticesAll_EarlyBreak(t *testing.T) {

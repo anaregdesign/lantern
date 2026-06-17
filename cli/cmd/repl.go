@@ -39,6 +39,7 @@ The REPL accepts whitespace-delimited verbs:
   delete edge <tail> <head>
   scan vertices <prefix> [limit]
   scan edges <tail-prefix> [limit]
+  keys <prefix> [limit]
   illuminate <seed> <step> <k> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf]
   help
   exit
@@ -144,6 +145,8 @@ EXAMPLE
 				fmt.Println("Usage: add edge <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]")
 			case service.ErrScan:
 				fmt.Println("Usage: scan { vertices <prefix: string> [<limit: int>] | edges <tail-prefix: string> [<limit: int>] }")
+			case service.ErrKeys:
+				fmt.Println("Usage: keys <prefix: string> [<limit: int>]")
 			case service.ErrIlluminate:
 				fmt.Println("Usage: illuminate <seed: string> <step: int> <k: int> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf]")
 			case service.ErrInvalidVerb:

@@ -290,6 +290,54 @@ export class Lantern {
   }
 
   /**
+   * Lists vertex KEYS under a prefix — the keys-only, wire-efficient
+   * counterpart to `scanVertices` (no vertex values are transferred),
+   * backing the Redis-familiar `keys` CLI verb.
+   *
+   * Unlike `scanVertices`, a non-empty `prefix` is REQUIRED: the server
+   * rejects an empty prefix with `invalid_argument`. The returned cursor
+   * is its own opaque kind and is NOT interchangeable with
+   * `scanVertices` / `scanEdges` cursors.
+   */
+  async scanVertexKeys(
+    prefix: string,
+    opts: ScanOptions = {},
+    signal?: AbortSignal,
+  ): Promise<{ keys: string[]; nextCursor: Uint8Array }> {
+    return this.invoke(async () => {
+      const resp = await this.client.scanVertexKeys(
+        {
+          prefix,
+          limit: opts.limit ?? 0,
+          cursor: opts.cursor ?? new Uint8Array(),
+        },
+        this.callOpts(signal),
+      );
+      return { keys: resp.keys, nextCursor: resp.nextCursor };
+    });
+  }
+
+  /**
+   * Async-iterable form of {@link scanVertexKeys} that pages through the
+   * whole prefix range. `batchSize` is the per-call limit (0 = server
+   * default). A non-empty `prefix` is REQUIRED.
+   */
+  async *scanVertexKeysAll(
+    prefix: string,
+    batchSize?: number,
+    signal?: AbortSignal,
+  ): AsyncIterable<string[]> {
+    let cursor: Uint8Array = new Uint8Array();
+    while (true) {
+      if (signal?.aborted) throw new LanternError("scanVertexKeysAll aborted");
+      const page = await this.scanVertexKeys(prefix, { limit: batchSize ?? 0, cursor }, signal);
+      yield page.keys;
+      if (page.nextCursor.length === 0) return;
+      cursor = page.nextCursor;
+    }
+  }
+
+  /**
    * Content-addressed vertex search. Runs a relevance-ranked full-text
    * query over vertex *content* (key + value) via the server-side
    * index, returning ranked `{ key, score }` hits in descending BM25

@@ -17,6 +17,11 @@
     { "input": "scan vertices users/ 100" },
     { "input": "scan edges alice" },
     { "input": "scan edges alice 100" },
+    {
+      "input": "keys users/",
+      "comment": "#674: keys lists vertex keys under a prefix"
+    },
+    { "input": "keys users/ 100", "comment": "#674: keys with optional limit" },
     { "input": "illuminate alice 2 5" },
     { "input": "illuminate alice 2 5 algorithm=mst" },
     { "input": "illuminate alice 2 5 algorithm=spt objective=max" },
@@ -97,6 +102,11 @@
     {
       "input": "scan vertices users/ notanint",
       "comment": "non-numeric limit"
+    },
+    { "input": "keys", "comment": "#674: keys requires a prefix" },
+    {
+      "input": "keys users/ notanint",
+      "comment": "#674: non-numeric keys limit"
     },
     { "input": "illuminate", "comment": "missing seed" },
     { "input": "illuminate alice", "comment": "missing step" },

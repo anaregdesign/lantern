@@ -14,7 +14,7 @@ func Validate(input string) error {
 	}
 	v, err := Verb(s)
 	if err != nil {
-		return errors.New("usage: { get | put | delete | add | scan | illuminate | help | exit } ... ")
+		return errors.New("usage: { get | put | delete | add | scan | keys | illuminate | help | exit } ... ")
 	}
 
 	switch v {
@@ -99,6 +99,10 @@ func Validate(input string) error {
 		default:
 			return errors.New("usage: scan { vertices | edges } ... ")
 		}
+	case "keys":
+		if _, err := KeysParam(s); err != nil {
+			return errors.New("usage: keys <prefix: string> [<limit: int>]")
+		}
 	case "illuminate":
 		if _, err := IlluminateParam(s); err != nil {
 			return errors.New("usage: illuminate <key: string> <step: int> <k: int> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf] [prefix=<string>]")
@@ -113,7 +117,7 @@ func Validate(input string) error {
 	case "exit":
 
 	default:
-		return errors.New("usage: { get | put | delete | add | scan | illuminate | help | exit } ... ")
+		return errors.New("usage: { get | put | delete | add | scan | keys | illuminate | help | exit } ... ")
 	}
 	return nil
 }

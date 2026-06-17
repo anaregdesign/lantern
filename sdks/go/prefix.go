@@ -168,3 +168,67 @@ func (l *Lantern) ScanVerticesAll(ctx context.Context, prefix string, batchSize 
 		}
 	}
 }
+
+// ScanVertexKeys returns one page of vertex KEYS whose key starts with prefix,
+// in ascending order — the keys-only, wire-efficient counterpart to
+// ScanVertices (no vertex values are transferred). nextCursor is non-empty
+// when more pages are available; pass it via WithScanCursor on the next call.
+//
+// Unlike ScanVertices, a non-empty prefix is REQUIRED — the server rejects an
+// empty prefix with InvalidArgument. The returned cursor is its own opaque
+// kind and is NOT interchangeable with ScanVertices / ScanEdges cursors.
+//
+// For most callers, ScanVertexKeysAll is the more ergonomic API — use this
+// method only when you need explicit control over a single page.
+func (l *Lantern) ScanVertexKeys(ctx context.Context, prefix string, opts ...ScanOption) (keys []string, nextCursor []byte, err error) {
+	o := scanOptions{}
+	for _, apply := range opts {
+		apply(&o)
+	}
+	ctx, cancel := l.applyTimeout(ctx)
+	defer cancel()
+	resp, err := unary(ctx, &pb.ScanVertexKeysRequest{
+		Prefix: prefix,
+		Limit:  o.limit,
+		Cursor: o.cursor,
+	}, l.client.ScanVertexKeys)
+	if err != nil {
+		return nil, nil, err
+	}
+	return resp.GetKeys(), resp.GetNextCursor(), nil
+}
+
+// ScanVertexKeysAll returns a Go 1.23+ iter.Seq2 that yields successive pages
+// of ScanVertexKeys results until the prefix range is exhausted or ctx is
+// cancelled. Each yielded value is one server response's key slice (never
+// nil, but possibly empty on the final page); errors short-circuit iteration.
+// batchSize is forwarded to the server as the per-call limit (0 = server
+// default). A non-empty prefix is REQUIRED (see ScanVertexKeys).
+//
+//	for batch, err := range cli.ScanVertexKeysAll(ctx, "users/", 500) {
+//	    if err != nil { return err }
+//	    for _, k := range batch { ... }
+//	}
+func (l *Lantern) ScanVertexKeysAll(ctx context.Context, prefix string, batchSize uint32) iter.Seq2[[]string, error] {
+	return func(yield func([]string, error) bool) {
+		var cursor []byte
+		for {
+			if ctx.Err() != nil {
+				yield(nil, ctx.Err())
+				return
+			}
+			ks, next, err := l.ScanVertexKeys(ctx, prefix, WithScanLimit(batchSize), WithScanCursor(cursor))
+			if err != nil {
+				yield(nil, err)
+				return
+			}
+			if !yield(ks, nil) {
+				return
+			}
+			if len(next) == 0 {
+				return
+			}
+			cursor = next
+		}
+	}
+}
