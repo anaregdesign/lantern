@@ -45,6 +45,179 @@ func TestKeysParam(t *testing.T) {
 	})
 }
 
+// TestDeleteParam_Batch pins the #679 variadic batch-delete grammar: one or
+// more keys for `delete vertex`, and one or more (tail,head) pairs for
+// `delete edge` (an even, non-zero token count). Zero targets and odd edge
+// token counts are errors.
+func TestDeleteParam_Batch(t *testing.T) {
+	t.Run("vertex single", func(t *testing.T) {
+		s, _ := NewSource("alice")
+		m, err := DeleteVertexParam(s)
+		if err != nil {
+			t.Fatalf("DeleteVertexParam: %v", err)
+		}
+		if len(m.Keys) != 1 || m.Keys[0] != "alice" {
+			t.Errorf("Keys = %v, want [alice]", m.Keys)
+		}
+	})
+	t.Run("vertex batch", func(t *testing.T) {
+		s, _ := NewSource("alice bob carol")
+		m, err := DeleteVertexParam(s)
+		if err != nil {
+			t.Fatalf("DeleteVertexParam: %v", err)
+		}
+		if len(m.Keys) != 3 {
+			t.Errorf("Keys = %v, want 3 keys", m.Keys)
+		}
+	})
+	t.Run("vertex zero is error", func(t *testing.T) {
+		s, _ := NewSource("")
+		if _, err := DeleteVertexParam(s); err == nil {
+			t.Errorf("DeleteVertexParam(empty) = nil, want error")
+		}
+	})
+	t.Run("edge single pair", func(t *testing.T) {
+		s, _ := NewSource("a b")
+		m, err := DeleteEdgeParam(s)
+		if err != nil {
+			t.Fatalf("DeleteEdgeParam: %v", err)
+		}
+		if len(m.Pairs) != 1 || m.Pairs[0].Tail != "a" || m.Pairs[0].Head != "b" {
+			t.Errorf("Pairs = %v, want [{a b}]", m.Pairs)
+		}
+	})
+	t.Run("edge batch pairs", func(t *testing.T) {
+		s, _ := NewSource("a b c d")
+		m, err := DeleteEdgeParam(s)
+		if err != nil {
+			t.Fatalf("DeleteEdgeParam: %v", err)
+		}
+		if len(m.Pairs) != 2 || m.Pairs[1].Tail != "c" || m.Pairs[1].Head != "d" {
+			t.Errorf("Pairs = %v, want 2 pairs", m.Pairs)
+		}
+	})
+	t.Run("edge odd token count is error", func(t *testing.T) {
+		s, _ := NewSource("a b c")
+		if _, err := DeleteEdgeParam(s); err == nil {
+			t.Errorf("DeleteEdgeParam(odd) = nil, want error")
+		}
+	})
+}
+
+// TestScanParam_Kwargs pins the #679 scan paging kwargs: an optional
+// positional limit followed by all=<bool> (vertices) and head=<prefix> +
+// all=<bool> (edges).
+func TestScanParam_Kwargs(t *testing.T) {
+	t.Run("vertices limit and all", func(t *testing.T) {
+		s, _ := NewSource("users/ 100 all=true")
+		m, err := ScanVerticesParam(s)
+		if err != nil {
+			t.Fatalf("ScanVerticesParam: %v", err)
+		}
+		if m.Prefix != "users/" || m.Limit != 100 || !m.All {
+			t.Errorf("got {%q, %d, %v}", m.Prefix, m.Limit, m.All)
+		}
+	})
+	t.Run("vertices unknown kwarg is error", func(t *testing.T) {
+		s, _ := NewSource("users/ bogus=1")
+		if _, err := ScanVerticesParam(s); err == nil {
+			t.Errorf("ScanVerticesParam(bogus) = nil, want error")
+		}
+	})
+	t.Run("vertices non-bool all is error", func(t *testing.T) {
+		s, _ := NewSource("users/ all=maybe")
+		if _, err := ScanVerticesParam(s); err == nil {
+			t.Errorf("ScanVerticesParam(all=maybe) = nil, want error")
+		}
+	})
+	t.Run("edges head and all", func(t *testing.T) {
+		s, _ := NewSource("alice 50 head=post: all=true")
+		m, err := ScanEdgesParam(s)
+		if err != nil {
+			t.Fatalf("ScanEdgesParam: %v", err)
+		}
+		if m.TailPrefix != "alice" || m.Limit != 50 || m.HeadPrefix != "post:" || !m.All {
+			t.Errorf("got {%q, %d, %q, %v}", m.TailPrefix, m.Limit, m.HeadPrefix, m.All)
+		}
+	})
+	t.Run("edges empty head is error", func(t *testing.T) {
+		s, _ := NewSource("alice head=")
+		if _, err := ScanEdgesParam(s); err == nil {
+			t.Errorf("ScanEdgesParam(head=) = nil, want error")
+		}
+	})
+}
+
+// TestCountVerticesParam pins `count vertices <prefix>` — exactly one prefix
+// and nothing else (#679).
+func TestCountVerticesParam(t *testing.T) {
+	t.Run("prefix", func(t *testing.T) {
+		s, _ := NewSource("users/")
+		m, err := CountVerticesParam(s)
+		if err != nil {
+			t.Fatalf("CountVerticesParam: %v", err)
+		}
+		if m.Prefix != "users/" {
+			t.Errorf("Prefix = %q, want users/", m.Prefix)
+		}
+	})
+	t.Run("missing prefix is error", func(t *testing.T) {
+		s, _ := NewSource("")
+		if _, err := CountVerticesParam(s); err == nil {
+			t.Errorf("CountVerticesParam(empty) = nil, want error")
+		}
+	})
+	t.Run("trailing token is error", func(t *testing.T) {
+		s, _ := NewSource("users/ extra")
+		if _, err := CountVerticesParam(s); err == nil {
+			t.Errorf("CountVerticesParam(extra) = nil, want error")
+		}
+	})
+}
+
+// TestDeletePrefixVerticesParam pins the #679 destructive-op safety gate:
+// exactly one of confirm=yes / dry_run=true is required.
+func TestDeletePrefixVerticesParam(t *testing.T) {
+	t.Run("confirm yes", func(t *testing.T) {
+		s, _ := NewSource("tmp/ confirm=yes")
+		m, err := DeletePrefixVerticesParam(s)
+		if err != nil {
+			t.Fatalf("DeletePrefixVerticesParam: %v", err)
+		}
+		if m.Prefix != "tmp/" || !m.Confirm || m.DryRun {
+			t.Errorf("got {%q confirm=%v dry=%v}", m.Prefix, m.Confirm, m.DryRun)
+		}
+	})
+	t.Run("dry_run with limit", func(t *testing.T) {
+		s, _ := NewSource("tmp/ dry_run=true limit=500")
+		m, err := DeletePrefixVerticesParam(s)
+		if err != nil {
+			t.Fatalf("DeletePrefixVerticesParam: %v", err)
+		}
+		if !m.DryRun || m.Limit != 500 {
+			t.Errorf("got dry=%v limit=%d", m.DryRun, m.Limit)
+		}
+	})
+	t.Run("no gate is error", func(t *testing.T) {
+		s, _ := NewSource("tmp/")
+		if _, err := DeletePrefixVerticesParam(s); err == nil {
+			t.Errorf("DeletePrefixVerticesParam(no gate) = nil, want error")
+		}
+	})
+	t.Run("both gates is error", func(t *testing.T) {
+		s, _ := NewSource("tmp/ confirm=yes dry_run=true")
+		if _, err := DeletePrefixVerticesParam(s); err == nil {
+			t.Errorf("DeletePrefixVerticesParam(both) = nil, want error")
+		}
+	})
+	t.Run("confirm not yes is error", func(t *testing.T) {
+		s, _ := NewSource("tmp/ confirm=no")
+		if _, err := DeletePrefixVerticesParam(s); err == nil {
+			t.Errorf("DeletePrefixVerticesParam(confirm=no) = nil, want error")
+		}
+	})
+}
+
 // TestParam_OmittedTTLIsPermanent pins the opt-in decay contract (#523)
 // for the REPL grammar: a write that omits ttl_seconds leaves TTL at its
 // zero value (forwarded to the SDK as "permanent"), while an explicit

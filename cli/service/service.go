@@ -25,6 +25,8 @@ var (
 	ErrDeleteEdge       = errors.New("delete edge error")
 	ErrAddEdge          = errors.New("add edge error")
 	ErrScan             = errors.New("scan error")
+	ErrCount            = errors.New("count error")
+	ErrDeletePrefix     = errors.New("delete-prefix error")
 	ErrKeys             = errors.New("keys error")
 	ErrIlluminate       = errors.New("illuminate error")
 	ErrConnection       = errors.New("connection error")
@@ -180,10 +182,19 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 				fmt.Printf("Error: %s\n", err)
 				return ErrDeleteVertex
 			}
-			if _, err := c.client.DeleteVertex(ctx, p.Key); err != nil {
+			if len(p.Keys) == 1 {
+				if _, err := c.client.DeleteVertex(ctx, p.Keys[0]); err != nil {
+					fmt.Printf("Error: %s\n", err)
+					return ErrConnection
+				}
+				return nil
+			}
+			n, err := c.client.DeleteVertices(ctx, p.Keys)
+			if err != nil {
 				fmt.Printf("Error: %s\n", err)
 				return ErrConnection
 			}
+			fmt.Printf("OK %d\n", n)
 			return nil
 
 		case "edge":
@@ -192,10 +203,23 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 				fmt.Printf("Error: %s\n", err)
 				return ErrDeleteEdge
 			}
-			if _, err := c.client.DeleteEdge(ctx, p.Tail, p.Head); err != nil {
+			if len(p.Pairs) == 1 {
+				if _, err := c.client.DeleteEdge(ctx, p.Pairs[0].Tail, p.Pairs[0].Head); err != nil {
+					fmt.Printf("Error: %s\n", err)
+					return ErrConnection
+				}
+				return nil
+			}
+			refs := make([]client.EdgeRef, len(p.Pairs))
+			for i, pr := range p.Pairs {
+				refs[i] = client.EdgeRef{Tail: pr.Tail, Head: pr.Head}
+			}
+			n, err := c.client.DeleteEdges(ctx, refs)
+			if err != nil {
 				fmt.Printf("Error: %s\n", err)
 				return ErrConnection
 			}
+			fmt.Printf("OK %d\n", n)
 			return nil
 		default:
 			return ErrInvalidObjective
@@ -214,9 +238,27 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 				fmt.Printf("Error: %s\n", err)
 				return ErrScan
 			}
-			opts := []client.ScanOption{}
+			var limit uint32
 			if p.Limit > 0 && p.Limit <= math.MaxUint32 {
-				opts = append(opts, client.WithScanLimit(uint32(p.Limit)))
+				limit = uint32(p.Limit)
+			}
+			if p.All {
+				var all []*client.Vertex
+				for batch, err := range c.client.ScanVerticesAll(ctx, p.Prefix, limit) {
+					if err != nil {
+						fmt.Printf("Error: %s\n", err)
+						return ErrConnection
+					}
+					all = append(all, batch...)
+				}
+				if jsonString, err := json.MarshalIndent(all, "", "\t"); err == nil {
+					fmt.Println(string(jsonString))
+				}
+				return nil
+			}
+			opts := []client.ScanOption{}
+			if limit > 0 {
+				opts = append(opts, client.WithScanLimit(limit))
 			}
 			vs, _, err := c.client.ScanVertices(ctx, p.Prefix, opts...)
 			if err != nil {
@@ -233,9 +275,31 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 				fmt.Printf("Error: %s\n", err)
 				return ErrScan
 			}
-			opts := []client.EdgeScanOption{client.WithEdgeScanTailPrefix(p.TailPrefix)}
+			var limit uint32
 			if p.Limit > 0 && p.Limit <= math.MaxUint32 {
-				opts = append(opts, client.WithEdgeScanLimit(uint32(p.Limit)))
+				limit = uint32(p.Limit)
+			}
+			baseOpts := []client.EdgeScanOption{client.WithEdgeScanTailPrefix(p.TailPrefix)}
+			if p.HeadPrefix != "" {
+				baseOpts = append(baseOpts, client.WithEdgeScanHeadPrefix(p.HeadPrefix))
+			}
+			if p.All {
+				var all []*client.Edge
+				for batch, err := range c.client.ScanEdgesAll(ctx, limit, baseOpts...) {
+					if err != nil {
+						fmt.Printf("Error: %s\n", err)
+						return ErrConnection
+					}
+					all = append(all, batch...)
+				}
+				if jsonString, err := json.MarshalIndent(all, "", "\t"); err == nil {
+					fmt.Println(string(jsonString))
+				}
+				return nil
+			}
+			opts := append([]client.EdgeScanOption{}, baseOpts...)
+			if limit > 0 {
+				opts = append(opts, client.WithEdgeScanLimit(limit))
 			}
 			es, _, err := c.client.ScanEdges(ctx, opts...)
 			if err != nil {
@@ -249,6 +313,61 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 		default:
 			return ErrInvalidObjective
 		}
+
+	case "count":
+		obj, err := parser.ScanObjective(s)
+		if err != nil {
+			fmt.Printf("Error: %s\n", err)
+			return ErrInvalidObjective
+		}
+		if obj != "vertices" {
+			return ErrInvalidObjective
+		}
+		p, err := parser.CountVerticesParam(s)
+		if err != nil {
+			fmt.Printf("Error: %s\n", err)
+			return ErrCount
+		}
+		n, err := c.client.CountVerticesByPrefix(ctx, p.Prefix)
+		if err != nil {
+			fmt.Printf("Error: %s\n", err)
+			return ErrConnection
+		}
+		fmt.Printf("%d\n", n)
+		return nil
+
+	case "delete-prefix":
+		obj, err := parser.ScanObjective(s)
+		if err != nil {
+			fmt.Printf("Error: %s\n", err)
+			return ErrInvalidObjective
+		}
+		if obj != "vertices" {
+			return ErrInvalidObjective
+		}
+		p, err := parser.DeletePrefixVerticesParam(s)
+		if err != nil {
+			fmt.Printf("Error: %s\n", err)
+			return ErrDeletePrefix
+		}
+		opts := []client.DeleteByPrefixOption{}
+		if p.Limit > 0 && p.Limit <= math.MaxUint32 {
+			opts = append(opts, client.WithDeleteByPrefixLimit(uint32(p.Limit)))
+		}
+		if p.DryRun {
+			opts = append(opts, client.WithDryRun())
+		}
+		n, err := c.client.DeleteVerticesByPrefix(ctx, p.Prefix, opts...)
+		if err != nil {
+			fmt.Printf("Error: %s\n", err)
+			return ErrConnection
+		}
+		word := "deleted"
+		if p.DryRun {
+			word = "would delete"
+		}
+		fmt.Printf("%s %d\n", word, n)
+		return nil
 
 	case "keys":
 		p, err := parser.KeysParam(s)
