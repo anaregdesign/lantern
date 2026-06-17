@@ -26,6 +26,13 @@ export function ExpirationCell({
   if (!Number.isFinite(expiresAt)) {
     return <span className={styles.empty}>{expiration}</span>;
   }
+  if (expiresAt <= 0) {
+    // Permanent sentinel: a no-TTL vertex/edge carries the server's zero
+    // `Timestamp` (`0001-01-01T00:00:00Z`, or the Unix epoch), i.e. a
+    // non-positive instant. Render "never" like an absent field rather
+    // than a long-expired chip (mirrors the server's `IsLiveAt` rule).
+    return <span className={styles.empty}>never</span>;
+  }
   const now = Date.now();
   const deltaMs = expiresAt - now;
   const expired = deltaMs <= 0;

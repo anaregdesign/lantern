@@ -32,7 +32,7 @@ import type { Edge, Vertex } from "./types";
  */
 export function sdkVertexToFlat(v: SdkVertex): Vertex {
   const out: Vertex = { key: v.key };
-  if (v.expiration) {
+  if (isRealExpiration(v.expiration)) {
     out.expiration = v.expiration.toISOString();
   }
   switch (v.kind) {
@@ -87,7 +87,7 @@ export function sdkEdgeToFlat(e: SdkEdge): Edge {
     head: e.head,
     weight: e.weight,
   };
-  if (e.expiration) {
+  if (isRealExpiration(e.expiration)) {
     out.expiration = e.expiration.toISOString();
   }
   return out;
@@ -154,6 +154,19 @@ export function flatEdgeToSdkInput(e: Edge): SdkEdgeInput {
 // ----------------------------------------------------------------------------
 // Internals
 // ----------------------------------------------------------------------------
+
+/**
+ * A vertex/edge written with no TTL is permanent. The server encodes that
+ * as the Go zero `time.Time` (`0001-01-01T00:00:00Z`), which the SDK
+ * surfaces as a `Date` with a non-positive epoch value rather than `null`.
+ * Treat any such sentinel (proto zero-time or the Unix epoch) as "no
+ * expiration" so the flat shape never carries a born-expired timestamp —
+ * mirrors the server's `IsLiveAt` rule (Unix seconds <= 0 means live
+ * forever). A genuinely-set expiration is always a positive future time.
+ */
+function isRealExpiration(d: Date | null | undefined): d is Date {
+  return d != null && d.getTime() > 0;
+}
 
 function bytesToBase64(bytes: Uint8Array): string {
   let s = "";
