@@ -305,10 +305,27 @@ per-pod IPs, which these platforms do not provide. See the
 [HA runbook](docs/ha-runbook.md) for the per-platform topology matrix,
 signals to watch, partition behaviour, and recovery procedures.
 
+### Install via Homebrew (macOS)
+
+On macOS, install the server and/or CLI from the
+[`anaregdesign/homebrew-tap`](https://github.com/anaregdesign/homebrew-tap) cask tap:
+
+```shell
+brew tap anaregdesign/tap
+brew install --cask lantern        # server (binary: lantern)
+brew install --cask lantern-cli    # client (binary: lantern-cli)
+```
+
+The cask binaries are not Apple-notarized, so each cask clears the macOS quarantine
+bit on install. The casks track the root `vX.Y.Z` release; `lantern-mcp` and
+`lantern-admin` remain container-only.
+
 ### Use the CLI
 
-Pre-built binaries for Linux, macOS, and Windows (amd64 + arm64) are
-attached to every [GitHub Release](https://github.com/anaregdesign/lantern/releases).
+On macOS the quickest path is `brew install --cask lantern-cli` (see
+[Install via Homebrew](#install-via-homebrew-macos)). Pre-built binaries for Linux,
+macOS, and Windows (amd64 + arm64) are also attached to every
+[GitHub Release](https://github.com/anaregdesign/lantern/releases).
 
 ```shell
 # macOS (Apple Silicon) — replace VERSION with the release tag, e.g. v0.6.0

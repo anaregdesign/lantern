@@ -159,6 +159,14 @@ Tag order matters because each downstream module pins its upstream tag:
    with a placeholder bench section (the `release` job's `needs:` deliberately excludes
    `bench`, because Actions treats `cancelled` as neither success nor failure).
 
+The root release also builds the `lantern` (server) and `lantern-cli` binaries via
+GoReleaser and pushes Homebrew casks to
+[`anaregdesign/homebrew-tap`](https://github.com/anaregdesign/homebrew-tap)
+(`brew install --cask lantern` / `lantern-cli`). Cask publishing needs the
+`HOMEBREW_TAP_GITHUB_TOKEN` secret — a fine-grained PAT or App token with
+`contents:write` on the tap repo. It is gated on that secret, so a release without it
+still succeeds but skips the cask push.
+
 The `server/` module is never tagged independently — it ships under the root tag. arm64
 buildx under QEMU is slow; if a root tag already pushed the amd64 image, bump the patch
 number rather than force-moving the tag.
