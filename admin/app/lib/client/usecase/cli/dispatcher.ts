@@ -123,7 +123,7 @@ export async function dispatch(input: DispatchInput): Promise<unknown> {
         const expiration = ttlSecondsToExpiration(command.ttlSeconds);
         const vertex: Vertex = {
           key: command.key,
-          ...coerceValue(command.value),
+          ...coerceValue(command.value, command.valueType),
           expiration,
         };
         await putVertex(client, command.key, { vertex }, { signal });
@@ -341,23 +341,73 @@ const FALSE_TOKENS = new Set(["0", "f", "F", "FALSE", "false", "False"]);
  */
 export function coerceValue(
   raw: string,
-): Pick<Vertex, "string" | "int64" | "float64" | "bool" | "timestamp"> {
-  if (INT_RE.test(raw)) {
-    return { int64: raw };
+  valueType: string = "auto",
+): Pick<
+  Vertex,
+  "string" | "int64" | "float64" | "bool" | "timestamp" | "duration"
+> {
+  switch (valueType) {
+    case "":
+    case "auto":
+      if (INT_RE.test(raw)) return { int64: raw };
+      if (FLOAT_RE.test(raw)) return { float64: Number.parseFloat(raw) };
+      if (TRUE_TOKENS.has(raw)) return { bool: true };
+      if (FALSE_TOKENS.has(raw)) return { bool: false };
+      if (RFC3339_RE.test(raw) && !Number.isNaN(Date.parse(raw)))
+        return { timestamp: raw };
+      return { string: raw };
+    case "string":
+      return { string: raw };
+    case "int":
+      if (!INT_RE.test(raw)) throw valueTypeError("int", raw);
+      return { int64: raw };
+    case "float":
+      if (!FLOAT_RE.test(raw)) throw valueTypeError("float", raw);
+      return { float64: Number.parseFloat(raw) };
+    case "bool":
+      if (TRUE_TOKENS.has(raw)) return { bool: true };
+      if (FALSE_TOKENS.has(raw)) return { bool: false };
+      throw valueTypeError("bool", raw);
+    case "datetime":
+      if (!RFC3339_RE.test(raw) || Number.isNaN(Date.parse(raw)))
+        throw valueTypeError("datetime", raw);
+      return { timestamp: raw };
+    case "duration":
+      return { duration: raw };
+    case "json":
+      return coerceJsonValue(raw);
+    default:
+      throw valueTypeError(valueType, raw);
   }
-  if (FLOAT_RE.test(raw)) {
-    return { float64: Number.parseFloat(raw) };
+}
+
+// A value that does not coerce to its forced `type=`. The Go REPL rejects
+// this at parse; on the web CLI the parser validates only the type NAME, so
+// the mismatch surfaces here at dispatch.
+function valueTypeError(typ: string, raw: string): Error {
+  return new Error(
+    `type=${typ}: cannot parse ${JSON.stringify(raw)} as ${typ}`,
+  );
+}
+
+// `type=json`: parse the token; objects / arrays / null re-encode as a
+// compact JSON string (the wire has no nested value variant), mirroring the
+// Go `parseValue`. JSON numbers are float64 (Go's encoding/json convention).
+function coerceJsonValue(
+  raw: string,
+): Pick<Vertex, "string" | "int64" | "float64" | "bool"> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`type=json: invalid JSON ${JSON.stringify(raw)}`);
   }
-  if (TRUE_TOKENS.has(raw)) {
-    return { bool: true };
+  if (parsed === null || typeof parsed === "object") {
+    return { string: JSON.stringify(parsed) };
   }
-  if (FALSE_TOKENS.has(raw)) {
-    return { bool: false };
-  }
-  if (RFC3339_RE.test(raw) && !Number.isNaN(Date.parse(raw))) {
-    return { timestamp: raw };
-  }
-  return { string: raw };
+  if (typeof parsed === "boolean") return { bool: parsed };
+  if (typeof parsed === "number") return { float64: parsed };
+  return { string: String(parsed) };
 }
 
 /**

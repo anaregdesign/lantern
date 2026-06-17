@@ -7,6 +7,18 @@
     { "input": "get edge alice bob" },
     { "input": "put vertex alice Alice" },
     { "input": "put vertex alice Alice 60", "comment": "with TTL" },
+    {
+      "input": "put vertex price 1234 type=int",
+      "comment": "#679: type= forces the value type"
+    },
+    {
+      "input": "put vertex name 007 type=string",
+      "comment": "#679: type=string keeps a numeric-looking value as a string"
+    },
+    {
+      "input": "put vertex alice Alice 60 type=string",
+      "comment": "#679: ttl and type= compose"
+    },
     { "input": "put edge alice bob 1.5" },
     { "input": "put edge alice bob 1.5 60" },
     { "input": "add edge alice bob 1.0" },
@@ -125,6 +137,14 @@
     { "input": "get vertex", "comment": "missing key" },
     { "input": "get edge alice", "comment": "missing head" },
     { "input": "put vertex", "comment": "missing key/value" },
+    {
+      "input": "put vertex k v type=bogus",
+      "comment": "#679: unknown value type"
+    },
+    {
+      "input": "put vertex k v type",
+      "comment": "#679: a bare type without =value is not a valid ttl token"
+    },
     {
       "input": "put edge alice bob notafloat",
       "comment": "non-numeric weight"

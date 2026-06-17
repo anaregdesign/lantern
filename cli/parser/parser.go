@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -217,29 +218,123 @@ func GetEdgeParam(s *Source) (*GetEdge, error) {
 }
 
 func PutVertexParam(s *Source) (*PutVertex, error) {
-	var err error
-	m := &PutVertex{}
-	if m.Key, err = String(s); err != nil {
+	key, err := String(s)
+	if err != nil {
 		return nil, err
 	}
-	if m.Value, err = Value(s); err != nil {
+	raw, err := String(s)
+	if err != nil {
 		return nil, err
 	}
-	if err := EOF(s); err == nil {
-		// Omitted ttl_seconds ⇒ permanent (no decay). Leaving TTL at its
-		// zero value makes cli/service forward a ttl<=0 to the SDK, whose
-		// convenience methods send the wire's permanent sentinel (#523).
-		m.TTL = 0
-		return m, nil
+	m := &PutVertex{Key: key, Type: "auto"}
+	// After the positional key/value, an optional ttl_seconds (a bare
+	// integer, the REPL form) and an optional type= override may follow in
+	// either order — mirroring illuminate's positional-then-kwarg tail.
+	// Omitted ttl_seconds ⇒ permanent (no decay) (#523).
+	ttlSet := false
+	for s.HasNext() {
+		tok, err := String(s)
+		if err != nil {
+			return nil, err
+		}
+		if k, v, ok := strings.Cut(tok, "="); ok {
+			if strings.ToLower(k) != "type" {
+				return nil, fmt.Errorf("put vertex: unknown keyword %q", k)
+			}
+			m.Type = strings.ToLower(v)
+			continue
+		}
+		if ttlSet {
+			return nil, fmt.Errorf("put vertex: unexpected token %q", tok)
+		}
+		n, perr := strconv.Atoi(tok)
+		if perr != nil {
+			return nil, perr
+		}
+		m.TTL = time.Duration(n) * time.Second
+		ttlSet = true
 	}
-	if m.TTL, err = Duration(s); err != nil {
+	if m.Value, err = CoerceValue(raw, m.Type); err != nil {
 		return nil, err
 	}
-	if err := EOF(s); err != nil {
-		return nil, err
-	}
-
 	return m, nil
+}
+
+// CoerceValue converts a raw CLI value token into a Go value for PutVertex,
+// honouring the optional `type=` override (migrated from the noun-first
+// `vertex put --value-type`). "" / "auto" auto-detects
+// (int→float→bool→RFC3339→string); otherwise the named type is forced and a
+// mismatch is an error. `json` parses the token and re-encodes objects /
+// arrays as a compact JSON string (the wire has no nested value variant);
+// json scalars pass through as their natural Go type.
+func CoerceValue(raw, typ string) (any, error) {
+	switch typ {
+	case "", "auto":
+		if v, err := strconv.Atoi(raw); err == nil {
+			return v, nil
+		}
+		if v, err := strconv.ParseFloat(raw, 64); err == nil {
+			return v, nil
+		}
+		if v, err := strconv.ParseBool(raw); err == nil {
+			return v, nil
+		}
+		if v, err := time.Parse(time.RFC3339, raw); err == nil {
+			return v, nil
+		}
+		return raw, nil
+	case "string":
+		return raw, nil
+	case "int":
+		v, err := strconv.Atoi(raw)
+		if err != nil {
+			return nil, fmt.Errorf("type=int: %w", err)
+		}
+		return v, nil
+	case "float":
+		v, err := strconv.ParseFloat(raw, 64)
+		if err != nil {
+			return nil, fmt.Errorf("type=float: %w", err)
+		}
+		return v, nil
+	case "bool":
+		v, err := strconv.ParseBool(raw)
+		if err != nil {
+			return nil, fmt.Errorf("type=bool: %w", err)
+		}
+		return v, nil
+	case "datetime":
+		v, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return nil, fmt.Errorf("type=datetime (RFC3339): %w", err)
+		}
+		return v, nil
+	case "duration":
+		v, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("type=duration: %w", err)
+		}
+		return v, nil
+	case "json":
+		var v any
+		if err := json.Unmarshal([]byte(raw), &v); err != nil {
+			return nil, fmt.Errorf("type=json: %w", err)
+		}
+		// The wire format has no nested value variant; re-encode objects and
+		// arrays as a compact JSON string. Scalars forward as-is.
+		switch v.(type) {
+		case map[string]any, []any:
+			b, err := json.Marshal(v)
+			if err != nil {
+				return nil, fmt.Errorf("type=json re-encode: %w", err)
+			}
+			return string(b), nil
+		default:
+			return v, nil
+		}
+	default:
+		return nil, fmt.Errorf("unknown type %q (want auto|string|int|float|bool|datetime|duration|json)", typ)
+	}
 }
 
 func PutEdgeParam(s *Source) (*PutEdge, error) {
@@ -624,7 +719,7 @@ const HelpText = `Lantern CLI grammar:
 
   get    vertex <key: string>
   get    edge   <tail: string> <head: string>
-  put    vertex <key: string> <value: string|int|float|bool|datetime> [<ttl_seconds: int>]
+  put    vertex <key: string> <value: string|int|float|bool|datetime> [<ttl_seconds: int>] [type=auto|string|int|float|bool|datetime|duration|json]
   put    edge   <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]
   add    edge   <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]
   delete vertex <key: string> [<key: string> ...]

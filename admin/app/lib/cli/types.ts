@@ -29,6 +29,7 @@ export type Command =
       key: string;
       value: string;
       ttlSeconds: number | null;
+      valueType: string;
     }
   | {
       verb: "put";
