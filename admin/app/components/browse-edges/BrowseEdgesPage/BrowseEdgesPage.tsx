@@ -176,7 +176,7 @@ export function BrowseEdgesPage() {
                       size="small"
                       icon={<LightbulbFilament20Regular />}
                       onClick={() =>
-                        navigate(`/illuminate?seed=${encodeURIComponent(tail)}`)
+                        navigate(`/cli?seed=${encodeURIComponent(tail)}`)
                       }
                       aria-label={`Illuminate from ${tail || "tail"}`}
                     >

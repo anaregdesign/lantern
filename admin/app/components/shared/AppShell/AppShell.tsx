@@ -30,10 +30,10 @@ const NAV: readonly NavEntry[] = [
     label: "Data",
     match: (p) => p.startsWith("/vertices") || p.startsWith("/edges"),
   },
-  { to: "/illuminate", label: "Illuminate" },
   // CLI is the power-user shortcut to the same RPC surface the other
-  // routes wrap; place it next to Illuminate (the other "explore"
-  // surface) and before the operator-facing Ops page (#439, #431).
+  // routes wrap, and since #651 it also hosts the interactive graph walk
+  // the retired Illuminate surface used to own. It sits before the
+  // operator-facing Ops page (#439, #431).
   { to: "/cli", label: "CLI" },
   { to: "/ops", label: "Ops" },
 ];

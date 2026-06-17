@@ -3,7 +3,6 @@ import {
   ArrowRight20Regular,
   Code24Regular,
   DatabaseSearch24Regular,
-  LightbulbFilament24Regular,
   LinkMultiple24Regular,
   PulseSquare24Regular,
 } from "@fluentui/react-icons";
@@ -30,12 +29,6 @@ const FEATURES: readonly Feature[] = [
     icon: <LinkMultiple24Regular />,
     title: "Edges",
     copy: "Filter edges by tail and head prefix to follow relationships and weights.",
-  },
-  {
-    to: "/illuminate",
-    icon: <LightbulbFilament24Regular />,
-    title: "Illuminate",
-    copy: "Walk the graph visually with Sigma.js — click any vertex to reseed the neighborhood and switch between SPT and MST views.",
   },
   {
     to: "/ops",

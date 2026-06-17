@@ -3,8 +3,8 @@
  *
  * Given a parsed CLI `Command` and the JSON-serialisable result the
  * dispatcher returned, project the response into the same
- * `GraphView` shape `IlluminateCanvas` already consumes on the
- * `/illuminate` route. Verbs whose response carries no graph data
+ * `GraphView` shape `IlluminateCanvas` consumes. Verbs whose response
+ * carries no graph data
  * (`put`, `add`, `delete`, `exit`) return `null` so the caller can
  * keep the previous canvas frame visible — the user does not lose
  * their context after a mutation.
@@ -96,7 +96,7 @@ function illuminateView(seed: string, response: IlluminateResponse): GraphView {
 
   // Importance == sum of incident edge weights, normalised against the
   // largest such sum. The seed is pinned to 1 regardless so it always
-  // dominates the canvas like the /illuminate route does.
+  // dominates the canvas.
   const weightByKey = new Map<string, number>();
   for (const edge of rawEdges) {
     if (!edge.tail || !edge.head) continue;
@@ -154,8 +154,8 @@ function illuminateView(seed: string, response: IlluminateResponse): GraphView {
     });
   }
   // Single-source BFS from the seed so the cli's per-call frame
-  // gets the same hop encoding as the /illuminate route (just with
-  // one origin instead of N).
+  // gets a canonical hop encoding (one origin instead of the
+  // general multi-source N).
   const hopByKey = computeHopDistances(knownKeys, edges, [seedKey]);
   for (const node of nodes) {
     node.hopDistance = hopByKey.get(node.id) ?? Number.POSITIVE_INFINITY;

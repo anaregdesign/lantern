@@ -61,7 +61,7 @@ export interface SigmaPalette {
    * a node whose minimum-hop distance from any expansion origin is
    * exactly `N`; `hopFar` is everything ≥ `HOP_FAR_THRESHOLD` and
    * `hopUnreachable` covers vertices with no path to any origin (the
-   * `Number.POSITIVE_INFINITY` case in `selectGraphView`).
+   * `Number.POSITIVE_INFINITY` case from `computeHopDistances`).
    *
    * #500 made this a deliberate red→blue diverging colormap (code-side
    * literals, not Fluent brand tokens) so the tiers are obviously

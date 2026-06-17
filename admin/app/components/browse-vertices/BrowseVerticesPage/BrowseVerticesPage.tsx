@@ -317,9 +317,7 @@ export function BrowseVerticesPage() {
                       size="small"
                       icon={<LightbulbFilament20Regular />}
                       onClick={() =>
-                        navigate(
-                          `/illuminate?seed=${encodeURIComponent(row.key)}`,
-                        )
+                        navigate(`/cli?seed=${encodeURIComponent(row.key)}`)
                       }
                       aria-label={`Illuminate from ${row.key || "vertex"}`}
                     >

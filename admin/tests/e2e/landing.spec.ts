@@ -11,9 +11,6 @@ test("landing page renders with navigation and gateway connection", async ({
     page.getByRole("link", { name: /Open Vertices/i }),
   ).toBeVisible();
   await expect(page.getByRole("link", { name: /Open Edges/i })).toBeVisible();
-  await expect(
-    page.getByRole("link", { name: /Open Illuminate/i }),
-  ).toBeVisible();
   await expect(page.getByRole("link", { name: /Open Ops/i })).toBeVisible();
   // #439 — landing tile + AppShell nav now expose /cli alongside the
   // other top-level sections.
@@ -22,16 +19,6 @@ test("landing page renders with navigation and gateway connection", async ({
 });
 
 test.describe("placeholder routes", () => {
-  test("Illuminate route renders the seed prompt when no ?seed= is set", async ({
-    page,
-  }) => {
-    await page.goto("/illuminate");
-    await expect(
-      page.getByRole("heading", { level: 1, name: "Illuminate" }),
-    ).toBeVisible();
-    await expect(page.getByTestId("illuminate-seed-prompt")).toBeVisible();
-  });
-
   test("Ops route renders the server status card", async ({ page }) => {
     await page.goto("/ops");
     await expect(

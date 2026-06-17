@@ -57,8 +57,8 @@ export const MIN_ALPHA = 0.25;
  * Returns:
  *   - `null` when no expiration is set — treat as ∞ (no decay).
  *   - `0` when the value is at or past its expiration — the caller is
- *     expected to drop these from the view entirely
- *     ({@link selectGraphView} filters expired vertices), but we still
+ *     expected to drop these from the view entirely (expired vertices
+ *     are pruned upstream before they reach the canvas), but we still
  *     return `0` here so render-side fallbacks behave gracefully if a
  *     stale frame is observed mid-tick.
  *   - A value in `(0, 1]` otherwise, linearly scaled against
