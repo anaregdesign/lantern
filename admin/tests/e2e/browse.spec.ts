@@ -123,3 +123,58 @@ test.describe("/edges", () => {
     );
   });
 });
+
+// #657: on a phone-class viewport the fixed-column Browse tables are wider
+// than the screen. They must scroll horizontally (advertised by the wrapper's
+// scroll-shadow) so the right-hand Actions column stays reachable instead of
+// being clipped off-screen with no affordance.
+test.describe("mobile (390px) — Browse row actions stay reachable (#657)", () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test("/vertices Illuminate action is reachable via horizontal scroll", async ({
+    page,
+  }) => {
+    await page.goto("/vertices");
+    await page.getByTestId("vertex-prefix-input").fill("e2e:vertex:");
+
+    const table = page.getByTestId("vertices-table");
+    await expect(table).toBeVisible();
+
+    // The table is wider than its scroll container, so there IS content
+    // hidden to the right that the wrapper scrolls to reveal (and the
+    // shadow advertises) — rather than the row being clipped away.
+    const overflows = await table.evaluate((el) => {
+      const wrap = el.parentElement;
+      return wrap ? wrap.scrollWidth > wrap.clientWidth + 1 : false;
+    });
+    expect(overflows).toBe(true);
+
+    // Reachable: clicking auto-scrolls the off-screen action into view and
+    // navigates, proving it is not clipped out of reach.
+    const illuminate = table
+      .getByRole("button", { name: /Illuminate from e2e:vertex:a/i })
+      .first();
+    await illuminate.click();
+    await expect(page).toHaveURL(/\/illuminate\?seed=e2e%3Avertex%3Aa/);
+  });
+
+  test("/edges Edit action is reachable via horizontal scroll", async ({
+    page,
+  }) => {
+    await page.goto("/edges");
+    await page.getByTestId("edge-tail-prefix-input").fill("e2e:vertex:");
+
+    const table = page.getByTestId("edges-table");
+    await expect(table).toBeVisible();
+
+    const overflows = await table.evaluate((el) => {
+      const wrap = el.parentElement;
+      return wrap ? wrap.scrollWidth > wrap.clientWidth + 1 : false;
+    });
+    expect(overflows).toBe(true);
+
+    const edit = table.getByTestId("edge-row-edit").first();
+    await edit.click();
+    await expect(page).toHaveURL(/\/edges\/e2e%3Avertex%3Aa\//);
+  });
+});
