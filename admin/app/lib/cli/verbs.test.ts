@@ -12,6 +12,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { parse } from "./parser";
+import type { Command } from "./types";
 import {
   CLI_COMMAND_REFERENCE,
   HELP_TEXT,
@@ -32,8 +33,10 @@ const CANONICAL_VERBS = [
   "get",
   "put",
   "delete",
+  "delete-prefix",
   "add",
   "scan",
+  "count",
   "keys",
   "illuminate",
   "help",
@@ -263,5 +266,107 @@ describe("CLI_COMMAND_REFERENCE (#646 — structured reference ⇄ parser bindin
       expect(doc.summary.length).toBeGreaterThan(0);
       expect(doc.example.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("#679 grammar — count / delete-prefix / batch delete / scan paging", () => {
+  function ok(input: string): Command {
+    const r = parse(input);
+    if (!r.ok) throw new Error(`expected ok for ${input}: ${r.usage}`);
+    return r.command;
+  }
+
+  test("delete vertex is variadic (one key → keys[1])", () => {
+    expect(ok("delete vertex a")).toEqual({
+      verb: "delete",
+      objective: "vertex",
+      keys: ["a"],
+    });
+  });
+
+  test("delete vertex collects every key", () => {
+    expect(ok("delete vertex a b c")).toEqual({
+      verb: "delete",
+      objective: "vertex",
+      keys: ["a", "b", "c"],
+    });
+  });
+
+  test("delete edge groups tokens into (tail, head) pairs", () => {
+    expect(ok("delete edge a b c d")).toEqual({
+      verb: "delete",
+      objective: "edge",
+      pairs: [
+        { tail: "a", head: "b" },
+        { tail: "c", head: "d" },
+      ],
+    });
+  });
+
+  test("delete edge rejects an odd token count", () => {
+    expect(parse("delete edge a b c").ok).toBe(false);
+  });
+
+  test("scan vertices extracts the all kwarg and positional limit", () => {
+    expect(ok("scan vertices users/ 100 all=true")).toEqual({
+      verb: "scan",
+      objective: "vertices",
+      prefix: "users/",
+      limit: 100,
+      all: true,
+    });
+  });
+
+  test("scan edges extracts head and all kwargs", () => {
+    expect(ok("scan edges alice head=post: all=true")).toEqual({
+      verb: "scan",
+      objective: "edges",
+      tailPrefix: "alice",
+      headPrefix: "post:",
+      limit: 0,
+      all: true,
+    });
+  });
+
+  test("scan rejects a non-boolean all and unknown kwargs", () => {
+    expect(parse("scan vertices p all=maybe").ok).toBe(false);
+    expect(parse("scan vertices p bogus=1").ok).toBe(false);
+  });
+
+  test("count vertices extracts the prefix", () => {
+    expect(ok("count vertices users/")).toEqual({
+      verb: "count",
+      objective: "vertices",
+      prefix: "users/",
+    });
+  });
+
+  test("count rejects a missing or wrong objective", () => {
+    expect(parse("count users/").ok).toBe(false);
+    expect(parse("count edges x").ok).toBe(false);
+  });
+
+  test("delete-prefix requires exactly one of confirm=yes / dry_run=true", () => {
+    expect(ok("delete-prefix vertices tmp/ confirm=yes")).toEqual({
+      verb: "delete-prefix",
+      objective: "vertices",
+      prefix: "tmp/",
+      limit: 0,
+      dryRun: false,
+      confirm: true,
+    });
+    expect(ok("delete-prefix vertices tmp/ dry_run=true limit=50")).toEqual({
+      verb: "delete-prefix",
+      objective: "vertices",
+      prefix: "tmp/",
+      limit: 50,
+      dryRun: true,
+      confirm: false,
+    });
+    expect(parse("delete-prefix vertices tmp/").ok).toBe(false);
+    expect(
+      parse("delete-prefix vertices tmp/ confirm=yes dry_run=true").ok,
+    ).toBe(false);
+    expect(parse("delete-prefix vertices tmp/ confirm=no").ok).toBe(false);
   });
 });

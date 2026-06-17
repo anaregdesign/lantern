@@ -38,8 +38,12 @@ export type Command =
       weight: number;
       ttlSeconds: number | null;
     }
-  | { verb: "delete"; objective: "vertex"; key: string }
-  | { verb: "delete"; objective: "edge"; tail: string; head: string }
+  | { verb: "delete"; objective: "vertex"; keys: string[] }
+  | {
+      verb: "delete";
+      objective: "edge";
+      pairs: { tail: string; head: string }[];
+    }
   | {
       verb: "add";
       objective: "edge";
@@ -48,9 +52,31 @@ export type Command =
       weight: number;
       ttlSeconds: number | null;
     }
-  | { verb: "scan"; objective: "vertices"; prefix: string; limit: number }
-  | { verb: "scan"; objective: "edges"; tailPrefix: string; limit: number }
+  | {
+      verb: "scan";
+      objective: "vertices";
+      prefix: string;
+      limit: number;
+      all: boolean;
+    }
+  | {
+      verb: "scan";
+      objective: "edges";
+      tailPrefix: string;
+      headPrefix: string;
+      limit: number;
+      all: boolean;
+    }
   | { verb: "keys"; prefix: string; limit: number }
+  | { verb: "count"; objective: "vertices"; prefix: string }
+  | {
+      verb: "delete-prefix";
+      objective: "vertices";
+      prefix: string;
+      limit: number;
+      dryRun: boolean;
+      confirm: boolean;
+    }
   | {
       verb: "illuminate";
       seed: string;

@@ -116,6 +116,7 @@ describe("commandResultToGraphView — scan vertices", () => {
       objective: "vertices",
       prefix: "user:",
       limit: 10,
+      all: false,
     };
     const response: ScanVerticesResponse & { count: number } = {
       vertices: [
@@ -141,6 +142,7 @@ describe("commandResultToGraphView — scan vertices", () => {
       objective: "vertices",
       prefix: "alice",
       limit: 10,
+      all: false,
     };
     const response: ScanVerticesResponse = {
       vertices: [{ key: "alice" }, { key: "aliceland" }],
@@ -158,7 +160,9 @@ describe("commandResultToGraphView — scan edges", () => {
     verb: "scan",
     objective: "edges",
     tailPrefix: "alice",
+    headPrefix: "",
     limit: 10,
+    all: false,
   };
 
   it("synthesises endpoints from edges and dedupes shared vertices", () => {
@@ -192,7 +196,9 @@ describe("commandResultToGraphView — scan edges", () => {
       verb: "scan",
       objective: "edges",
       tailPrefix: "",
+      headPrefix: "",
       limit: 10,
+      all: false,
     };
     const response: ScanEdgesResponse = {
       edges: [{ tail: "alice", head: "bob", weight: 1 }],
@@ -239,7 +245,11 @@ describe("commandResultToGraphView — non-graph verbs", () => {
   });
 
   it("returns null for delete vertex", () => {
-    const cmd: Command = { verb: "delete", objective: "vertex", key: "alice" };
+    const cmd: Command = {
+      verb: "delete",
+      objective: "vertex",
+      keys: ["alice"],
+    };
     expect(commandResultToGraphView(cmd, { existed: true })).toBeNull();
   });
 
@@ -247,8 +257,7 @@ describe("commandResultToGraphView — non-graph verbs", () => {
     const cmd: Command = {
       verb: "delete",
       objective: "edge",
-      tail: "alice",
-      head: "bob",
+      pairs: [{ tail: "alice", head: "bob" }],
     };
     expect(commandResultToGraphView(cmd, { existed: true })).toBeNull();
   });
@@ -335,15 +344,14 @@ describe("commandResultToGraphMerge", () => {
       commandResultToGraphMerge({
         verb: "delete",
         objective: "vertex",
-        key: "x",
+        keys: ["x"],
       }),
     ).toBeNull();
     expect(
       commandResultToGraphMerge({
         verb: "delete",
         objective: "edge",
-        tail: "a",
-        head: "b",
+        pairs: [{ tail: "a", head: "b" }],
       }),
     ).toBeNull();
     expect(commandResultToGraphMerge({ verb: "exit" })).toBeNull();

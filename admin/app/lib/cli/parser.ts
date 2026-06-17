@@ -16,7 +16,9 @@ import type { ParseResult } from "./types";
 import { tokenise } from "./tokenise";
 import {
   parseAdd,
+  parseCount,
   parseDelete,
+  parseDeletePrefix,
   parseGet,
   parseHelp,
   parseIlluminate,
@@ -26,7 +28,7 @@ import {
 } from "./verbs";
 
 const VERB_LIST_USAGE =
-  "usage: { get | put | delete | add | scan | keys | illuminate | help | exit } ...";
+  "usage: { get | put | delete | delete-prefix | add | scan | count | keys | illuminate | help | exit } ...";
 
 const VERBS = new Set([
   "exit",
@@ -34,8 +36,10 @@ const VERBS = new Set([
   "get",
   "put",
   "delete",
+  "delete-prefix",
   "add",
   "scan",
+  "count",
   "keys",
   "illuminate",
 ]);
@@ -72,6 +76,10 @@ export function parse(input: string): ParseResult {
       return parseAdd(rest);
     case "scan":
       return parseScan(rest);
+    case "count":
+      return parseCount(rest);
+    case "delete-prefix":
+      return parseDeletePrefix(rest);
     case "keys":
       return parseKeys(rest);
     case "illuminate":

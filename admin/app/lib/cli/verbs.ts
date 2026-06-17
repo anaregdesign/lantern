@@ -127,29 +127,36 @@ export function parseDelete(rest: string[]): ParseResult {
   const [obj, ...args] = rest;
   const o = obj?.toLowerCase();
   if (o === "vertex") {
-    if (args.length !== 1 || args[0] === "") {
-      return { ok: false, usage: "usage: delete vertex <key: string>" };
-    }
-    return {
-      ok: true,
-      command: { verb: "delete", objective: "vertex", key: args[0] },
-    };
-  }
-  if (o === "edge") {
-    if (args.length !== 2 || args[0] === "" || args[1] === "") {
+    if (args.length < 1 || args.some((a) => a === "")) {
       return {
         ok: false,
-        usage: "usage: delete edge <tail: string> <head: string>",
+        usage: "usage: delete vertex <key: string> [<key: string> ...]",
       };
     }
     return {
       ok: true,
-      command: {
-        verb: "delete",
-        objective: "edge",
-        tail: args[0],
-        head: args[1],
-      },
+      command: { verb: "delete", objective: "vertex", keys: args },
+    };
+  }
+  if (o === "edge") {
+    if (
+      args.length < 2 ||
+      args.length % 2 !== 0 ||
+      args.some((a) => a === "")
+    ) {
+      return {
+        ok: false,
+        usage:
+          "usage: delete edge <tail: string> <head: string> [<tail: string> <head: string> ...]",
+      };
+    }
+    const pairs: { tail: string; head: string }[] = [];
+    for (let i = 0; i < args.length; i += 2) {
+      pairs.push({ tail: args[i], head: args[i + 1] });
+    }
+    return {
+      ok: true,
+      command: { verb: "delete", objective: "edge", pairs },
     };
   }
   return { ok: false, usage: "usage: delete { vertex | edge }" };
@@ -206,18 +213,33 @@ export function parseScan(rest: string[]): ParseResult {
   const [obj, ...args] = rest;
   const o = obj?.toLowerCase();
   if (o === "vertices") {
-    if (args.length < 1 || args.length > 2 || args[0] === "") {
-      return {
-        ok: false,
-        usage: "usage: scan vertices <prefix: string> [<limit: int>]",
-      };
+    const usage =
+      "usage: scan vertices <prefix: string> [<limit: int>] [all=true]";
+    if (args.length < 1 || args[0] === "") {
+      return { ok: false, usage };
     }
-    const limit = args[1] === undefined ? 0 : parseInt10(args[1]);
-    if (limit === null) {
-      return {
-        ok: false,
-        usage: "usage: scan vertices <prefix: string> [<limit: int>]",
-      };
+    let limit = 0;
+    let limitSet = false;
+    let all = false;
+    for (const tok of args.slice(1)) {
+      const eq = tok.indexOf("=");
+      if (eq < 0) {
+        if (limitSet) return { ok: false, usage };
+        const n = parseInt10(tok);
+        if (n === null) return { ok: false, usage };
+        limit = n;
+        limitSet = true;
+        continue;
+      }
+      const key = tok.slice(0, eq).toLowerCase();
+      const value = tok.slice(eq + 1);
+      if (key === "all") {
+        const b = parseBoolStrict(value);
+        if (b === null) return { ok: false, usage };
+        all = b;
+      } else {
+        return { ok: false, usage };
+      }
     }
     return {
       ok: true,
@@ -226,22 +248,42 @@ export function parseScan(rest: string[]): ParseResult {
         objective: "vertices",
         prefix: args[0],
         limit,
+        all,
       },
     };
   }
   if (o === "edges") {
-    if (args.length < 1 || args.length > 2 || args[0] === "") {
-      return {
-        ok: false,
-        usage: "usage: scan edges <tail-prefix: string> [<limit: int>]",
-      };
+    const usage =
+      "usage: scan edges <tail-prefix: string> [<limit: int>] [head=<prefix>] [all=true]";
+    if (args.length < 1 || args[0] === "") {
+      return { ok: false, usage };
     }
-    const limit = args[1] === undefined ? 0 : parseInt10(args[1]);
-    if (limit === null) {
-      return {
-        ok: false,
-        usage: "usage: scan edges <tail-prefix: string> [<limit: int>]",
-      };
+    let limit = 0;
+    let limitSet = false;
+    let headPrefix = "";
+    let all = false;
+    for (const tok of args.slice(1)) {
+      const eq = tok.indexOf("=");
+      if (eq < 0) {
+        if (limitSet) return { ok: false, usage };
+        const n = parseInt10(tok);
+        if (n === null) return { ok: false, usage };
+        limit = n;
+        limitSet = true;
+        continue;
+      }
+      const key = tok.slice(0, eq).toLowerCase();
+      const value = tok.slice(eq + 1);
+      if (key === "head") {
+        if (value === "") return { ok: false, usage };
+        headPrefix = value;
+      } else if (key === "all") {
+        const b = parseBoolStrict(value);
+        if (b === null) return { ok: false, usage };
+        all = b;
+      } else {
+        return { ok: false, usage };
+      }
     }
     return {
       ok: true,
@@ -249,7 +291,9 @@ export function parseScan(rest: string[]): ParseResult {
         verb: "scan",
         objective: "edges",
         tailPrefix: args[0],
+        headPrefix,
         limit,
+        all,
       },
     };
   }
@@ -266,6 +310,74 @@ export function parseKeys(rest: string[]): ParseResult {
     return { ok: false, usage };
   }
   return { ok: true, command: { verb: "keys", prefix: rest[0], limit } };
+}
+
+export function parseCount(rest: string[]): ParseResult {
+  const usage = "usage: count vertices <prefix: string>";
+  const [obj, ...args] = rest;
+  if (obj?.toLowerCase() !== "vertices") {
+    return { ok: false, usage };
+  }
+  if (args.length !== 1 || args[0] === "") {
+    return { ok: false, usage };
+  }
+  return {
+    ok: true,
+    command: { verb: "count", objective: "vertices", prefix: args[0] },
+  };
+}
+
+export function parseDeletePrefix(rest: string[]): ParseResult {
+  const usage =
+    "usage: delete-prefix vertices <prefix: string> [limit=<int>] [confirm=yes|dry_run=true]";
+  const [obj, ...args] = rest;
+  if (obj?.toLowerCase() !== "vertices") {
+    return { ok: false, usage };
+  }
+  if (args.length < 1 || args[0] === "") {
+    return { ok: false, usage };
+  }
+  const prefix = args[0];
+  let limit = 0;
+  let dryRun = false;
+  let confirm = false;
+  for (const tok of args.slice(1)) {
+    const eq = tok.indexOf("=");
+    if (eq < 0) {
+      return { ok: false, usage };
+    }
+    const key = tok.slice(0, eq).toLowerCase();
+    const value = tok.slice(eq + 1);
+    if (key === "limit") {
+      const n = parseInt10(value);
+      if (n === null) return { ok: false, usage };
+      limit = n;
+    } else if (key === "confirm") {
+      if (value.toLowerCase() !== "yes") return { ok: false, usage };
+      confirm = true;
+    } else if (key === "dry_run") {
+      const b = parseBoolStrict(value);
+      if (b === null) return { ok: false, usage };
+      dryRun = b;
+    } else {
+      return { ok: false, usage };
+    }
+  }
+  // Safety gate: EXACTLY one of confirm=yes / dry_run=true is required.
+  if (confirm === dryRun) {
+    return { ok: false, usage };
+  }
+  return {
+    ok: true,
+    command: {
+      verb: "delete-prefix",
+      objective: "vertices",
+      prefix,
+      limit,
+      dryRun,
+      confirm,
+    },
+  };
 }
 
 export function parseIlluminate(rest: string[]): ParseResult {
@@ -368,10 +480,12 @@ export const HELP_TEXT = [
   "  put    vertex <key: string> <value: string|int|float|bool|datetime> [<ttl_seconds: int>]",
   "  put    edge   <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]",
   "  add    edge   <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]",
-  "  delete vertex <key: string>",
-  "  delete edge   <tail: string> <head: string>",
-  "  scan   vertices <prefix: string> [<limit: int>]",
-  "  scan   edges    <tail-prefix: string> [<limit: int>]",
+  "  delete vertex <key: string> [<key: string> ...]",
+  "  delete edge   <tail: string> <head: string> [<tail: string> <head: string> ...]",
+  "  scan   vertices <prefix: string> [<limit: int>] [all=true]",
+  "  scan   edges    <tail-prefix: string> [<limit: int>] [head=<prefix>] [all=true]",
+  "  count  vertices <prefix: string>",
+  "  delete-prefix vertices <prefix: string> [limit=<int>] [confirm=yes|dry_run=true]",
   "  keys   <prefix: string> [<limit: int>]",
   "  illuminate <seed: string> <step: int> <k: int>",
   "             [algorithm={none|mst|spt}]  default=none",
@@ -433,9 +547,17 @@ export const CLI_COMMAND_REFERENCE: readonly CliCommandDoc[] = [
   {
     group: "Vertices",
     verb: "delete",
-    signature: "delete vertex <key>",
-    summary: "Remove a vertex by key.",
+    signature: "delete vertex <key> [<key> ...]",
+    summary: "Remove one or more vertices by key (batched when more than one).",
     example: "delete vertex alice",
+  },
+  {
+    group: "Vertices",
+    verb: "delete-prefix",
+    signature: "delete-prefix vertices <prefix> [confirm=yes|dry_run=true]",
+    summary:
+      "Bulk-delete vertices under a key prefix (destructive). Requires confirm=yes or dry_run=true.",
+    example: "delete-prefix vertices tmp/ dry_run=true",
   },
   {
     group: "Edges",
@@ -463,23 +585,24 @@ export const CLI_COMMAND_REFERENCE: readonly CliCommandDoc[] = [
   {
     group: "Edges",
     verb: "delete",
-    signature: "delete edge <tail> <head>",
-    summary: "Remove the edge between two vertices.",
+    signature: "delete edge <tail> <head> [<tail> <head> ...]",
+    summary: "Remove one or more edges by (tail, head) pair.",
     example: "delete edge alice bob",
   },
   {
     group: "Browse",
     verb: "scan",
-    signature: "scan vertices <prefix> [limit]",
+    signature: "scan vertices <prefix> [limit] [all=true]",
     summary:
-      "List vertices whose key starts with a prefix (optional max count).",
+      "List vertices whose key starts with a prefix. all=true returns every page.",
     example: "scan vertices user: 20",
   },
   {
     group: "Browse",
     verb: "scan",
-    signature: "scan edges <tail-prefix> [limit]",
-    summary: "List edges whose tail starts with a prefix (optional max count).",
+    signature: "scan edges <tail-prefix> [limit] [head=<prefix>] [all=true]",
+    summary:
+      "List edges by tail prefix; head=<prefix> filters the head. all=true returns every page.",
     example: "scan edges alice 20",
   },
   {
@@ -489,6 +612,13 @@ export const CLI_COMMAND_REFERENCE: readonly CliCommandDoc[] = [
     summary:
       "List vertex keys under a prefix (keys-only, Redis-style KEYS; optional max count).",
     example: "keys user: 20",
+  },
+  {
+    group: "Browse",
+    verb: "count",
+    signature: "count vertices <prefix>",
+    summary: "Count vertices whose key starts with a prefix.",
+    example: "count vertices user:",
   },
   {
     group: "Explore",
@@ -524,6 +654,17 @@ export const CLI_COMMAND_REFERENCE: readonly CliCommandDoc[] = [
  */
 export function parseHelp(_rest: string[]): ParseResult {
   return { ok: true, command: { verb: "help" } };
+}
+
+// Exact set Go's `strconv.ParseBool` accepts (mirrors the dispatcher's
+// coerceValue tokens) — used by the `all=` / `dry_run=` kwargs.
+const BOOL_TRUE = new Set(["1", "t", "T", "TRUE", "true", "True"]);
+const BOOL_FALSE = new Set(["0", "f", "F", "FALSE", "false", "False"]);
+
+function parseBoolStrict(s: string): boolean | null {
+  if (BOOL_TRUE.has(s)) return true;
+  if (BOOL_FALSE.has(s)) return false;
+  return null;
 }
 
 function parseInt10(s: string): number | null {

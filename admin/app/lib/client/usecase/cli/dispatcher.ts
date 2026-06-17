@@ -30,8 +30,12 @@
 
 import type { LanternClient } from "~/lib/client/infrastructure/api/lantern-client";
 import { addEdge } from "~/lib/client/infrastructure/api/add-edge";
+import { countVerticesByPrefix } from "~/lib/client/infrastructure/api/count-vertices-by-prefix";
 import { deleteEdge } from "~/lib/client/infrastructure/api/delete-edge";
+import { deleteEdges } from "~/lib/client/infrastructure/api/delete-edges";
 import { deleteVertex } from "~/lib/client/infrastructure/api/delete-vertex";
+import { deleteVertices } from "~/lib/client/infrastructure/api/delete-vertices";
+import { deleteVerticesByPrefix } from "~/lib/client/infrastructure/api/delete-vertices-by-prefix";
 import { LanternApiError } from "~/lib/client/infrastructure/api/error";
 import { getEdge } from "~/lib/client/infrastructure/api/get-edge";
 import { getVertex } from "~/lib/client/infrastructure/api/get-vertex";
@@ -46,7 +50,7 @@ import { putVertex } from "~/lib/client/infrastructure/api/put-vertex";
 import { scanEdges } from "~/lib/client/infrastructure/api/scan-edges";
 import { scanVertexKeys } from "~/lib/client/infrastructure/api/scan-vertex-keys";
 import { scanVertices } from "~/lib/client/infrastructure/api/scan-vertices";
-import type { Vertex } from "~/lib/client/infrastructure/api/types";
+import type { Edge, Vertex } from "~/lib/client/infrastructure/api/types";
 import type { Command } from "~/lib/cli/types";
 
 export interface DispatchInput {
@@ -149,9 +153,24 @@ export async function dispatch(input: DispatchInput): Promise<unknown> {
       }
     case "delete":
       if (command.objective === "vertex") {
-        return deleteVertex(client, command.key, { signal });
+        if (command.keys.length === 1) {
+          return deleteVertex(client, command.keys[0], { signal });
+        }
+        return {
+          deleted: await deleteVertices(client, command.keys, { signal }),
+        };
       }
-      return deleteEdge(client, command.tail, command.head, { signal });
+      if (command.pairs.length === 1) {
+        return deleteEdge(
+          client,
+          command.pairs[0].tail,
+          command.pairs[0].head,
+          {
+            signal,
+          },
+        );
+      }
+      return { deleted: await deleteEdges(client, command.pairs, { signal }) };
     case "add": {
       const expiration = ttlSecondsToExpiration(command.ttlSeconds);
       await addEdge(
@@ -176,17 +195,49 @@ export async function dispatch(input: DispatchInput): Promise<unknown> {
     }
     case "scan":
       if (command.objective === "vertices") {
+        if (command.all) {
+          return scanAllVertices(client, command.prefix, command.limit, signal);
+        }
         return scanVertices(
           client,
           { prefix: command.prefix, limit: command.limit },
           { signal },
         );
       }
+      if (command.all) {
+        return scanAllEdges(
+          client,
+          command.tailPrefix,
+          command.headPrefix,
+          command.limit,
+          signal,
+        );
+      }
       return scanEdges(
         client,
-        { tailPrefix: command.tailPrefix, limit: command.limit },
+        {
+          tailPrefix: command.tailPrefix,
+          headPrefix: command.headPrefix,
+          limit: command.limit,
+        },
         { signal },
       );
+    case "count":
+      return {
+        count: await countVerticesByPrefix(client, command.prefix, { signal }),
+      };
+    case "delete-prefix": {
+      const n = await deleteVerticesByPrefix(
+        client,
+        {
+          prefix: command.prefix,
+          limit: command.limit,
+          dryRun: command.dryRun,
+        },
+        { signal },
+      );
+      return command.dryRun ? { wouldDelete: n } : { deleted: n };
+    }
     case "keys":
       return scanVertexKeys(
         client,
@@ -213,6 +264,52 @@ export async function dispatch(input: DispatchInput): Promise<unknown> {
 // ----------------------------------------------------------------------------
 // Internals
 // ----------------------------------------------------------------------------
+
+// Page through every `scan vertices` result so `all=true` renders the
+// full set (mirrors the Go REPL's ScanVerticesAll loop). The infra
+// adapter carries the opaque cursor as a base64 string.
+async function scanAllVertices(
+  client: LanternClient,
+  prefix: string,
+  limit: number,
+  signal?: AbortSignal,
+): Promise<{ vertices: Vertex[] }> {
+  const vertices: Vertex[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await scanVertices(
+      client,
+      { prefix, limit, cursor },
+      { signal },
+    );
+    vertices.push(...(page.vertices ?? []));
+    cursor = page.nextCursor || undefined;
+  } while (cursor);
+  return { vertices };
+}
+
+// Page through every `scan edges` result for `all=true`, honouring the
+// optional head-prefix filter (mirrors the Go REPL's ScanEdgesAll loop).
+async function scanAllEdges(
+  client: LanternClient,
+  tailPrefix: string,
+  headPrefix: string,
+  limit: number,
+  signal?: AbortSignal,
+): Promise<{ edges: Edge[] }> {
+  const edges: Edge[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await scanEdges(
+      client,
+      { tailPrefix, headPrefix, limit, cursor },
+      { signal },
+    );
+    edges.push(...(page.edges ?? []));
+    cursor = page.nextCursor || undefined;
+  } while (cursor);
+  return { edges };
+}
 
 const INT_RE = /^[+-]?\d+$/;
 // Mirrors Go's `strconv.ParseFloat` decimal grammar without the
