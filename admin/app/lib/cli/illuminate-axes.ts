@@ -17,9 +17,7 @@
  * `min|max` / `raw|tfidf`. Using the wire enums here would mean the
  * picker echoes something the parsers reject, breaking the "every
  * command echoed is something I could have typed" invariant the /cli
- * page is built on. The wire-vocabulary toolbar at /illuminate is a
- * separate surface and intentionally uses `ALGORITHM_*` directly
- * because it talks to the RPC layer, not to the parser.
+ * page is built on.
  *
  * Defaults match `parseIlluminate` in `./verbs.ts` so that an
  * untouched picker formats to the canonical short form

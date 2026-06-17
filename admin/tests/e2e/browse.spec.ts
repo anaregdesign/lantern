@@ -80,7 +80,7 @@ test.describe("/vertices", () => {
     await expect(page.getByTestId("vertex-count-badge")).toContainText(/\d/);
   });
 
-  test("Illuminate action navigates to the Illuminate screen seeded with the row key", async ({
+  test("Illuminate action navigates to the CLI explorer seeded with the row key", async ({
     page,
   }) => {
     await page.goto("/vertices");
@@ -92,7 +92,14 @@ test.describe("/vertices", () => {
       .first();
     await expect(illuminate).toBeVisible();
     await illuminate.click();
-    await expect(page).toHaveURL(/\/illuminate\?seed=e2e%3Avertex%3Aa/);
+    // #651 folded Illuminate into the CLI: the row action now lands on /cli
+    // with the row key as ?seed=, and the seed handoff auto-runs the
+    // canonical `illuminate <key> 2 5`, so the canvas opens on that command.
+    await expect(page).toHaveURL(/\/cli\?seed=e2e%3Avertex%3Aa/);
+    await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
+    await expect(page.getByTestId("cli-canvas-panel")).toContainText(
+      "illuminate e2e:vertex:a 2 5",
+    );
   });
 
   test("Edit action opens the vertex editor directly (parity with Edges, #652)", async ({
@@ -167,7 +174,7 @@ test.describe("/vertices — content search (#650)", () => {
     ).toBeVisible();
   });
 
-  test("Illuminate action seeds the Illuminate screen with the hit key", async ({
+  test("Illuminate action seeds the CLI explorer with the hit key", async ({
     page,
   }) => {
     await page.goto("/vertices");
@@ -180,7 +187,13 @@ test.describe("/vertices — content search (#650)", () => {
       .first();
     await expect(illuminate).toBeVisible();
     await illuminate.click();
-    await expect(page).toHaveURL(/\/illuminate\?seed=e2e%3Asearch%3Adoc3/);
+    // #651 — content-search hit hands off to /cli, same as a prefix-scan
+    // row: the seed handoff runs `illuminate <key> 2 5` onto the canvas.
+    await expect(page).toHaveURL(/\/cli\?seed=e2e%3Asearch%3Adoc3/);
+    await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
+    await expect(page.getByTestId("cli-canvas-panel")).toContainText(
+      "illuminate e2e:search:doc3 2 5",
+    );
   });
 });
 
@@ -251,7 +264,10 @@ test.describe("mobile (390px) — Browse row actions stay reachable (#657)", () 
       .getByRole("button", { name: /Illuminate from e2e:vertex:a/i })
       .first();
     await illuminate.click();
-    await expect(page).toHaveURL(/\/illuminate\?seed=e2e%3Avertex%3Aa/);
+    // #651 — the row action now lands on /cli (Illuminate folded into the
+    // CLI); reachability is the point of this test, so the URL hand-off is
+    // the assertion.
+    await expect(page).toHaveURL(/\/cli\?seed=e2e%3Avertex%3Aa/);
   });
 
   test("/edges Edit action is reachable via horizontal scroll", async ({

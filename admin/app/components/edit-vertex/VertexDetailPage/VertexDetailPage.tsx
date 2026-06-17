@@ -87,9 +87,7 @@ export function VertexDetailPage(props: VertexDetailPageProps) {
             appearance="subtle"
             icon={<LightbulbFilament20Regular />}
             onClick={() =>
-              navigate(
-                `/illuminate?seed=${encodeURIComponent(props.vertexKey)}`,
-              )
+              navigate(`/cli?seed=${encodeURIComponent(props.vertexKey)}`)
             }
           >
             Illuminate

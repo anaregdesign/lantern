@@ -1,7 +1,11 @@
 import { Button, Spinner } from "@fluentui/react-components";
 import { BookQuestionMark20Regular } from "@fluentui/react-icons";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { formatIlluminateClick } from "~/lib/cli/illuminate-axes";
+import { useSearchParams } from "react-router";
+import {
+  CLI_CLICK_AXIS_DEFAULTS,
+  formatIlluminateClick,
+} from "~/lib/cli/illuminate-axes";
 import { completeCommandLine, longestCommonPrefix } from "~/lib/cli/complete";
 import { useCli } from "~/lib/client/usecase/cli/use-cli";
 import { useCliSplitter } from "~/lib/client/usecase/cli/use-cli-splitter";
@@ -14,6 +18,22 @@ import { IlluminateCanvas } from "~/components/illuminate/IlluminateCanvas/Illum
 import styles from "./CliPage.module.css";
 
 /**
+ * Decode a `?seed=` query value. The browser already percent-decodes
+ * `URLSearchParams`, but the seed handoff mirrors the retired Illuminate
+ * page: try one more decode (some keys arrive double-encoded) and fall
+ * back to the raw value when it is already decoded.
+ */
+function decodeSeed(raw: string): string {
+  if (raw === "") return "";
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    // Browser already decoded once; pass through unmodified.
+    return raw;
+  }
+}
+
+/**
  * The /cli admin route. A Fluent UI command-line panel shared with the
  * Go REPL via the `lib/cli/parser` TypeScript port (#411).
  *
@@ -24,6 +44,7 @@ import styles from "./CliPage.module.css";
  */
 export function CliPage() {
   const cli = useCli();
+  const [searchParams] = useSearchParams();
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   // Tab-completion candidates surfaced under the prompt when the active
@@ -46,6 +67,33 @@ export function CliPage() {
   // exploration session, and persists each axis change so the next page
   // load picks up where the operator left off.
   const axisPicker = useCliAxisPicker();
+
+  // #651 deep-link handoff: a `/cli?seed=<key>` URL (from the Vertices /
+  // Edges Browse rows and the Vertex-detail toolbar) auto-fires one
+  // illuminate walk for that key — the same command a canvas click emits.
+  // The walk uses the canonical default axes (`illuminate <seed> 2 5`) so a
+  // cross-surface deep link is deterministic; the operator can re-tune and
+  // re-click from the canvas afterwards. `runRaw` is captured in a ref so the
+  // one-shot effect depends only on the seed string and never re-fires when
+  // the controller's identity changes between renders.
+  const seedParam = searchParams.get("seed") ?? "";
+  const seedHandoffRef = useRef<string | null>(null);
+  const runRawRef = useRef(cli.runRaw);
+  useEffect(() => {
+    runRawRef.current = cli.runRaw;
+  }, [cli.runRaw]);
+  useEffect(() => {
+    const seed = decodeSeed(seedParam);
+    if (seed === "") {
+      seedHandoffRef.current = null;
+      return;
+    }
+    // Fire once per distinct seed value; re-navigating to the same seed is a
+    // no-op (mirrors the retired Illuminate page's lastSeedRef).
+    if (seedHandoffRef.current === seed) return;
+    seedHandoffRef.current = seed;
+    runRawRef.current(formatIlluminateClick(seed, CLI_CLICK_AXIS_DEFAULTS));
+  }, [seedParam]);
 
   // Auto-scroll the scrollback to the bottom on every new entry so the
   // operator always sees their most recent output without chasing the

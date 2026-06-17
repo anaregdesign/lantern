@@ -95,7 +95,7 @@ export interface IlluminateCanvasProps {
    * view embeds the canvas in a height-constrained, `overflow: hidden`
    * panel; without this the fixed-height wrapper overflows the panel and
    * clips the bottom-left hop-distance legend on short viewports.
-   * `/illuminate` leaves it unset and keeps the `70vh` sizing.
+   * Leaving it unset keeps the standalone `70vh` sizing.
    */
   fill?: boolean;
   /**
