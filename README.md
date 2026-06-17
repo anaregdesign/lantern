@@ -320,6 +320,15 @@ The cask binaries are not Apple-notarized, so each cask clears the macOS quarant
 bit on install. The casks track the root `vX.Y.Z` release; `lantern-mcp` and
 `lantern-admin` remain container-only.
 
+The client cask installs the `lantern-cli` binary. It speaks the same grammar as
+the interactive prompt, so you can drive it as a one-liner straight away:
+
+```shell
+lantern-cli put vertex alice "Alice" 3600     # value + TTL seconds
+lantern-cli get vertex alice
+lantern-cli illuminate alice 2 5 algorithm=spt objective=max
+```
+
 ### Use the CLI
 
 On macOS the quickest path is `brew install --cask lantern-cli` (see
@@ -346,15 +355,26 @@ go build -o lantern ./cli
 ./lantern --help
 ```
 
-The CLI ships an interactive REPL (`lantern repl`) plus a scriptable
-subcommand for every RPC (`lantern vertex put`, `lantern edge add`,
-`lantern illuminate`, …). The REPL is the fastest way to poke at a running
-server; the one-shot subcommands are what you reach for when you want
-batch writes, prefix scans, NDJSON bulk loads, gzip compression, TLS
-flags, or typed values — features the REPL grammar intentionally does
-not cover. Every subcommand has long-form, LLM-friendly help text
+The CLI gives you the same grammar three ways:
+
+- **`lantern repl`** — an interactive prompt; the fastest way to poke at a
+  running server.
+- **Verb-first one-liners** — every line you can type at the prompt also works
+  as a single shell command: `lantern get vertex alice`,
+  `lantern put vertex alice "Alice" 3600`,
+  `lantern illuminate alice 2 5 algorithm=spt`. These share the exact parser
+  and dispatcher with the REPL ([#672](https://github.com/anaregdesign/lantern/issues/672)),
+  so the prompt and the shell never diverge.
+- **Noun-first subcommands** — `lantern vertex put`, `lantern edge add`,
+  `lantern vertex scan`, … — for everything the REPL grammar intentionally
+  does not cover: typed values, batch writes, cursor-paged prefix scans,
+  NDJSON bulk loads, gzip compression, and TLS flags.
+
+Every subcommand has long-form, LLM-friendly help text
 (`lantern <cmd> --help`); read commands emit JSON on stdout and write
-commands print `OK`.
+commands print `OK`. If you installed via Homebrew the client binary is
+`lantern-cli`; a from-source `go build -o lantern ./cli` names it `lantern`
+— the examples below use `lantern`, so substitute the name you have.
 
 A REPL session that exercises the full vertex/edge/illuminate surface:
 
@@ -404,22 +424,31 @@ OK (0.6ms)
 > exit
 ```
 
-REPL grammar (full reference in `lantern repl --help`, or type `help`
-inside the prompt to print it into the scrollback):
+REPL grammar — works both at the `lantern repl` prompt and as a verb-first
+one-liner (prefix any line with `lantern`). Full reference in
+`lantern repl --help`, or type `help` inside the prompt to print it into the
+scrollback:
 
 ```text
-get    vertex <key>
-put    vertex <key> <value> [ttl_seconds]
-delete vertex <key>
-get    edge   <tail> <head>
-add    edge   <tail> <head> <weight> [ttl_seconds]
-put    edge   <tail> <head> <weight> [ttl_seconds]
-delete edge   <tail> <head>
+get    vertex   <key>
+put    vertex   <key> <value> [ttl_seconds]
+delete vertex   <key>
+get    edge     <tail> <head>
+add    edge     <tail> <head> <weight> [ttl_seconds]
+put    edge     <tail> <head> <weight> [ttl_seconds]
+delete edge     <tail> <head>
+scan   vertices <prefix> [limit]
+scan   edges    <tail-prefix> [limit]
 illuminate <seed> <step> <k> [algorithm=none|mst|spt] [objective=min|max] \
-           [weighting=raw|tfidf]
+           [weighting=raw|tfidf] [prefix=<string>]
 help
 exit
 ```
+
+For example, `lantern get vertex alice` run as a shell command is identical
+to typing `get vertex alice` at the prompt; `lantern add edge a b -1.5`
+passes the negative weight through verbatim (global connection flags such
+as `--address` go before the verb).
 
 Tokens are whitespace-delimited and quotable — wrap a value in
 `"double quotes"` for C-style escapes (`\"`, `\\`, `\n`, `\r`, `\t`)

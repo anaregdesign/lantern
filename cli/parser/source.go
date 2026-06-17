@@ -44,6 +44,22 @@ func NewSource(str string) (*Source, error) {
 	}, nil
 }
 
+// NewSourceFromTokens builds a Source directly from already-split tokens,
+// skipping the quote-aware tokeniser entirely. It exists so the one-shot
+// CLI verbs (`lantern get vertex <key>`, etc.) can feed cobra's
+// shell-split argv straight into the same grammar the REPL parses from a
+// raw line — the shell already performed the word/quote splitting, so a
+// second pass through tokenise() would be both redundant and lossy (a
+// value containing spaces would be re-split). The verb token is expected
+// to be the first element, mirroring `Verb(s)` on a NewSource stream.
+func NewSourceFromTokens(tokens []string) *Source {
+	return &Source{
+		s:      tokens,
+		pos:    0,
+		length: len(tokens),
+	}
+}
+
 func tokenise(input string) ([]string, error) {
 	var out []string
 	i := 0
