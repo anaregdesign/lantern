@@ -7,6 +7,8 @@ import { CONNECT_URL, STORAGE_KEY, putEdges, putVertices } from "./helpers";
  *
  *   - 3 vertices under prefix `e2e:vertex:`
  *   - 1 vertex under prefix `e2e:other:` (must NOT appear when filtering)
+ *   - 3 vertices under prefix `e2e:search:` for the content-search find
+ *     mode (#650 folded the former /search screen into the Vertices page)
  *   - 2 edges `e2e:vertex:a → e2e:vertex:b` and `e2e:vertex:a → e2e:vertex:c`
  *
  * The seed runs against the additive Connect listener started by
@@ -22,6 +24,12 @@ async function seed() {
     { key: "e2e:vertex:b", int32: 42 },
     { key: "e2e:vertex:c", bool: true },
     { key: "e2e:other:z", string: "ignored" },
+    // Content-search corpus (#650). Deliberately rare tokens so a keyword
+    // query matches exactly these rows and nothing else on the shared
+    // server instance: `zorptangle` in two docs, `quibblefrost` in one.
+    { key: "e2e:search:doc1", string: "zorptangle distributed consensus" },
+    { key: "e2e:search:doc2", string: "zorptangle vector clocks" },
+    { key: "e2e:search:doc3", string: "quibblefrost unrelated content" },
   ]);
   await putEdges([
     { tail: "e2e:vertex:a", head: "e2e:vertex:b", weight: 1 },
@@ -108,6 +116,71 @@ test.describe("/vertices", () => {
     await expect(page).toHaveURL(/\/vertices\/e2e%3Avertex%3Aa\?edit=1/);
     await expect(page.getByTestId("vertex-detail-edit")).toBeVisible();
     await expect(page.getByTestId("vertex-detail-read")).toHaveCount(0);
+  });
+});
+
+test.describe("/vertices — content search (#650)", () => {
+  // #650 folded the standalone /search screen into the Vertices page as a
+  // second "find mode". Switching to the Content search tab swaps the prefix
+  // scan for a BM25 keyword query that lands in the same table.
+  test("prompts for a query before anything is typed", async ({ page }) => {
+    await page.goto("/vertices");
+    await page.getByRole("tab", { name: "Content search" }).click();
+
+    await expect(page.getByTestId("search-idle")).toBeVisible();
+    await expect(page.getByTestId("search-results-table")).toHaveCount(0);
+  });
+
+  test("ranks the strongest content matches to the top", async ({ page }) => {
+    await page.goto("/vertices");
+    await page.getByRole("tab", { name: "Content search" }).click();
+    await page.getByTestId("search-query-input").fill("zorptangle");
+
+    const table = page.getByTestId("search-results-table");
+    await expect(table).toBeVisible();
+
+    // The index is substring/fuzzy (n-gram BM25), so a vertex can match on a
+    // stray shared n-gram. doc1 and doc2 carry the full `zorptangle` token,
+    // so they always outrank that noise and occupy the top two ranks.
+    await expect(
+      table.getByRole("link", { name: "e2e:search:doc1" }),
+    ).toBeVisible();
+    await expect(
+      table.getByRole("link", { name: "e2e:search:doc2" }),
+    ).toBeVisible();
+
+    const keyLinks = table.locator("tbody a");
+    await expect(keyLinks.nth(0)).toHaveText(/e2e:search:doc[12]/);
+    await expect(keyLinks.nth(1)).toHaveText(/e2e:search:doc[12]/);
+
+    // Each ranked hit shows a relevance score, and the caption summarises the
+    // match count.
+    await expect(page.getByTestId("search-score").first()).toContainText(
+      /\d\.\d{3}/,
+    );
+    await expect(page.getByTestId("search-caption")).toContainText(/result/);
+
+    // A live hit carries the same Edit affordance as a prefix-scan row, so a
+    // content search can hand straight off to the editor (parity, #650/#652).
+    await expect(
+      table.getByRole("button", { name: /Edit vertex e2e:search:doc1/i }),
+    ).toBeVisible();
+  });
+
+  test("Illuminate action seeds the Illuminate screen with the hit key", async ({
+    page,
+  }) => {
+    await page.goto("/vertices");
+    await page.getByRole("tab", { name: "Content search" }).click();
+    await page.getByTestId("search-query-input").fill("quibblefrost");
+
+    const table = page.getByTestId("search-results-table");
+    const illuminate = table
+      .getByRole("button", { name: /Illuminate from e2e:search:doc3/i })
+      .first();
+    await expect(illuminate).toBeVisible();
+    await illuminate.click();
+    await expect(page).toHaveURL(/\/illuminate\?seed=e2e%3Asearch%3Adoc3/);
   });
 });
 

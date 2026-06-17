@@ -10,16 +10,26 @@ export interface AppShellProps {
 interface NavEntry {
   to: string;
   label: string;
+  /**
+   * Optional extra active-state predicate. NavLink only lights up for
+   * paths under `to`; an entry that fronts several sibling routes (e.g.
+   * the Data surface spanning /vertices and /edges) uses this to stay
+   * active across all of them.
+   */
+  match?: (pathname: string) => boolean;
 }
 
 const NAV: readonly NavEntry[] = [
   { to: "/", label: "Home" },
-  { to: "/vertices", label: "Vertices" },
-  { to: "/edges", label: "Edges" },
-  // Content search feeds the same explore loop as Illuminate (select a
-  // ranked hit → seed the neighborhood), so it sits next to the browse
-  // surfaces and just before Illuminate (#627).
-  { to: "/search", label: "Search" },
+  // Vertices, Edges, and content Search collapsed into one Data surface
+  // (#650): a single entry that lands on the vertex browse screen, with
+  // the Vertices / Edges sub-nav switching halves and content search
+  // folded in as a find mode. Active for every /vertices and /edges path.
+  {
+    to: "/vertices",
+    label: "Data",
+    match: (p) => p.startsWith("/vertices") || p.startsWith("/edges"),
+  },
   { to: "/illuminate", label: "Illuminate" },
   // CLI is the power-user shortcut to the same RPC surface the other
   // routes wrap; place it next to Illuminate (the other "explore"
@@ -47,7 +57,7 @@ export function AppShell({ children }: AppShellProps) {
               to={entry.to}
               end={entry.to === "/"}
               className={({ isActive }) =>
-                isActive
+                isActive || (entry.match?.(pathname) ?? false)
                   ? `${styles.navLink} ${styles.navLinkActive}`
                   : styles.navLink
               }
