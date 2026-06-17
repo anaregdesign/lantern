@@ -61,7 +61,11 @@ class FakeLanternClient {
   scanVertices(prefix: string, opts?: unknown, signal?: AbortSignal): unknown {
     return this.invoke("scanVertices", [prefix, opts, signal]);
   }
-  scanVertexKeys(prefix: string, opts?: unknown, signal?: AbortSignal): unknown {
+  scanVertexKeys(
+    prefix: string,
+    opts?: unknown,
+    signal?: AbortSignal,
+  ): unknown {
     return this.invoke("scanVertexKeys", [prefix, opts, signal]);
   }
   countVerticesByPrefix(prefix: string, signal?: AbortSignal): unknown {
