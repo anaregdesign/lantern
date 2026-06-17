@@ -11,10 +11,15 @@ type GetEdge struct {
 	Head string
 }
 
+// PutVertex backs `put vertex <key> <value> [ttl_seconds] [type=…]`. Type is
+// the optional value-type override migrated from `vertex put --value-type`:
+// "" / "auto" auto-detects (int→float→bool→RFC3339→string); otherwise one of
+// string|int|float|bool|datetime|duration|json.
 type PutVertex struct {
 	Key   string
 	Value any
 	TTL   time.Duration
+	Type  string
 }
 
 type PutEdge struct {

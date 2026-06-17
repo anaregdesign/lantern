@@ -177,6 +177,7 @@ describe("cliReducer", () => {
       key: "x",
       value: "1",
       ttlSeconds: 0,
+      valueType: "auto",
     };
     const putY: Command = {
       verb: "put",
@@ -184,6 +185,7 @@ describe("cliReducer", () => {
       key: "y",
       value: "1",
       ttlSeconds: 0,
+      valueType: "auto",
     };
 
     it("folds a put onto an empty canvas and records the source", () => {

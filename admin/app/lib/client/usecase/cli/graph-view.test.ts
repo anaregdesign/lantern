@@ -216,6 +216,7 @@ describe("commandResultToGraphView — non-graph verbs", () => {
       key: "alice",
       value: "wonderland",
       ttlSeconds: 0,
+      valueType: "auto",
     };
     expect(commandResultToGraphView(cmd, { ok: true })).toBeNull();
   });
@@ -276,6 +277,7 @@ describe("commandResultToGraphMerge", () => {
       key: "alice",
       value: "wonderland",
       ttlSeconds: 0,
+      valueType: "auto",
     };
     const merge = commandResultToGraphMerge(cmd)!;
     expect(merge.nodes).toHaveLength(1);
@@ -295,6 +297,7 @@ describe("commandResultToGraphMerge", () => {
       key: "n",
       value: "42",
       ttlSeconds: 0,
+      valueType: "auto",
     };
     const merge = commandResultToGraphMerge(cmd)!;
     expect(merge.nodes[0].vertex.int64).toBe("42");
@@ -390,6 +393,7 @@ describe("mergeGraphView", () => {
       key: "x",
       value: "1",
       ttlSeconds: 0,
+      valueType: "auto",
     })!;
     const view = mergeGraphView(null, merge);
     expect(view.nodes.map((n) => n.id)).toEqual(["x"]);
@@ -427,6 +431,7 @@ describe("mergeGraphView", () => {
       key: "c",
       value: "1",
       ttlSeconds: 0,
+      valueType: "auto",
     })!;
     const view = mergeGraphView(base, merge);
     expect(view.nodes.map((n) => n.id).sort()).toEqual(["a", "b", "c"]);
@@ -481,6 +486,7 @@ describe("mergeGraphView", () => {
         key: "a",
         value: "rich",
         ttlSeconds: 0,
+        valueType: "auto",
       })!,
     );
     const a1 = enriched.nodes.find((n) => n.id === "a")!;

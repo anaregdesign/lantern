@@ -218,6 +218,65 @@ func TestDeletePrefixVerticesParam(t *testing.T) {
 	})
 }
 
+// TestPutVertexParam_Type pins the #679 type= value-type override migrated
+// from `vertex put --value-type`: auto by default, an explicit type forces
+// coercion (and rejects a mismatch), json re-encodes objects to a compact
+// string, and ttl_seconds composes with type= in either order.
+func TestPutVertexParam_Type(t *testing.T) {
+	t.Run("auto by default", func(t *testing.T) {
+		s, _ := NewSource("k 123")
+		m, err := PutVertexParam(s)
+		if err != nil {
+			t.Fatalf("PutVertexParam: %v", err)
+		}
+		if m.Value != 123 {
+			t.Errorf("Value = %v (%T), want int 123", m.Value, m.Value)
+		}
+	})
+	t.Run("type=string forces string", func(t *testing.T) {
+		s, _ := NewSource("k 123 type=string")
+		m, err := PutVertexParam(s)
+		if err != nil {
+			t.Fatalf("PutVertexParam: %v", err)
+		}
+		if m.Value != "123" {
+			t.Errorf("Value = %v (%T), want string 123", m.Value, m.Value)
+		}
+	})
+	t.Run("type=json re-encodes objects to a compact string", func(t *testing.T) {
+		s, _ := NewSource(`k '{"a":1}' type=json`)
+		m, err := PutVertexParam(s)
+		if err != nil {
+			t.Fatalf("PutVertexParam: %v", err)
+		}
+		if m.Value != `{"a":1}` {
+			t.Errorf("Value = %v, want compact json string", m.Value)
+		}
+	})
+	t.Run("ttl and type compose in either order", func(t *testing.T) {
+		s, _ := NewSource("k v 60 type=string")
+		m, err := PutVertexParam(s)
+		if err != nil {
+			t.Fatalf("PutVertexParam: %v", err)
+		}
+		if m.TTL != 60*time.Second || m.Value != "v" {
+			t.Errorf("got ttl=%v value=%v", m.TTL, m.Value)
+		}
+	})
+	t.Run("unknown type is error", func(t *testing.T) {
+		s, _ := NewSource("k v type=bogus")
+		if _, err := PutVertexParam(s); err == nil {
+			t.Errorf("type=bogus accepted, want error")
+		}
+	})
+	t.Run("unknown keyword is error", func(t *testing.T) {
+		s, _ := NewSource("k v foo=bar")
+		if _, err := PutVertexParam(s); err == nil {
+			t.Errorf("foo=bar accepted, want error")
+		}
+	})
+}
+
 // TestParam_OmittedTTLIsPermanent pins the opt-in decay contract (#523)
 // for the REPL grammar: a write that omits ttl_seconds leaves TTL at its
 // zero value (forwarded to the SDK as "permanent"), while an explicit

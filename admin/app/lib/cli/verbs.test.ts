@@ -369,4 +369,36 @@ describe("#679 grammar — count / delete-prefix / batch delete / scan paging", 
     ).toBe(false);
     expect(parse("delete-prefix vertices tmp/ confirm=no").ok).toBe(false);
   });
+
+  test("put vertex extracts the type= override and ttl in either order", () => {
+    expect(ok("put vertex k 1234 type=int")).toEqual({
+      verb: "put",
+      objective: "vertex",
+      key: "k",
+      value: "1234",
+      ttlSeconds: null,
+      valueType: "int",
+    });
+    expect(ok("put vertex k v 60 type=string")).toEqual({
+      verb: "put",
+      objective: "vertex",
+      key: "k",
+      value: "v",
+      ttlSeconds: 60,
+      valueType: "string",
+    });
+    expect(ok("put vertex k v")).toEqual({
+      verb: "put",
+      objective: "vertex",
+      key: "k",
+      value: "v",
+      ttlSeconds: null,
+      valueType: "auto",
+    });
+  });
+
+  test("put vertex rejects an unknown type and a bare type token", () => {
+    expect(parse("put vertex k v type=bogus").ok).toBe(false);
+    expect(parse("put vertex k v type").ok).toBe(false);
+  });
 });

@@ -154,6 +154,25 @@ describe("coerceValue (#428 cascade matches Go cli/parser Value())", () => {
       string: "2024-01-02T03:04",
     });
   });
+
+  test("#679 type= forces the value field (and rejects a mismatch)", () => {
+    expect(coerceValue("123", "string")).toEqual({ string: "123" });
+    expect(coerceValue("007", "string")).toEqual({ string: "007" });
+    expect(coerceValue("42", "int")).toEqual({ int64: "42" });
+    expect(coerceValue("3.5", "float")).toEqual({ float64: 3.5 });
+    expect(coerceValue("true", "bool")).toEqual({ bool: true });
+    expect(coerceValue("2024-01-02T03:04:05Z", "datetime")).toEqual({
+      timestamp: "2024-01-02T03:04:05Z",
+    });
+    expect(coerceValue("30s", "duration")).toEqual({ duration: "30s" });
+    // json objects re-encode to a compact string; json scalars coerce naturally.
+    expect(coerceValue('{"a":1}', "json")).toEqual({ string: '{"a":1}' });
+    expect(coerceValue("true", "json")).toEqual({ bool: true });
+    // a value that does not match its forced type throws.
+    expect(() => coerceValue("abc", "int")).toThrow();
+    expect(() => coerceValue("abc", "datetime")).toThrow();
+    expect(() => coerceValue("{bad", "json")).toThrow();
+  });
 });
 
 describe("ttlSecondsToExpiration (#429, #523)", () => {
@@ -187,6 +206,7 @@ describe("dispatch put vertex (#428 + #429)", () => {
       key: "answer",
       value: "42",
       ttlSeconds: 120,
+      valueType: "auto",
     };
     const before = Date.now();
     await dispatch({ client: asClient(fake), command: cmd });
@@ -215,6 +235,7 @@ describe("dispatch put vertex (#428 + #429)", () => {
       key: "greeting",
       value: "hello",
       ttlSeconds: 60,
+      valueType: "auto",
     };
     await dispatch({ client: asClient(fake), command: cmd });
     const call = fake.calls.find((c) => c.method === "putVertex");
@@ -236,6 +257,7 @@ describe("dispatch put vertex (#428 + #429)", () => {
       key: "flag",
       value: "true",
       ttlSeconds: 60,
+      valueType: "auto",
     };
     await dispatch({ client: asClient(fake), command: cmd });
     const call = fake.calls.find((c) => c.method === "putVertex");
@@ -252,6 +274,7 @@ describe("dispatch put vertex (#428 + #429)", () => {
       key: "pi",
       value: "3.14",
       ttlSeconds: 60,
+      valueType: "auto",
     };
     await dispatch({ client: asClient(fake), command: cmd });
     const call = fake.calls.find((c) => c.method === "putVertex");
@@ -268,6 +291,7 @@ describe("dispatch put vertex (#428 + #429)", () => {
       key: "when",
       value: "2024-01-02T03:04:05Z",
       ttlSeconds: 60,
+      valueType: "auto",
     };
     await dispatch({ client: asClient(fake), command: cmd });
     const call = fake.calls.find((c) => c.method === "putVertex");
@@ -338,6 +362,7 @@ describe("dispatch write echo surfaces the applied TTL/expiry (#653)", () => {
       key: "a",
       value: "a",
       ttlSeconds: 1,
+      valueType: "auto",
     };
     const before = Date.now();
     const out = (await dispatch({ client: asClient(fake), command: cmd })) as {
@@ -363,6 +388,7 @@ describe("dispatch write echo surfaces the applied TTL/expiry (#653)", () => {
       key: "permkey",
       value: "permval",
       ttlSeconds: null,
+      valueType: "auto",
     };
     const out = await dispatch({ client: asClient(fake), command: cmd });
     expect(out).toEqual({ key: "permkey", ttlSeconds: null, expiresAt: null });

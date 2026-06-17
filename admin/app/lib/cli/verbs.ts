@@ -15,6 +15,21 @@ const ILL_ALGORITHMS = new Set<AlgorithmName>(["none", "mst", "spt"]);
 const ILL_OBJECTIVES = new Set<ObjectiveName>(["min", "max"]);
 const ILL_WEIGHTINGS = new Set<WeightingName>(["raw", "tfidf"]);
 
+// The value-type overrides accepted by `put vertex … type=` (migrated from
+// the noun-first `vertex put --value-type`). The grammar validates the type
+// NAME here; the value coercion itself happens in the dispatcher (the Go
+// REPL coerces at parse — a mismatch surfaces at execution on the web CLI).
+const VALUE_TYPES = new Set([
+  "auto",
+  "string",
+  "int",
+  "float",
+  "bool",
+  "datetime",
+  "duration",
+  "json",
+]);
+
 export function parseGet(rest: string[]): ParseResult {
   const [obj, ...args] = rest;
   const o = obj?.toLowerCase();
@@ -46,26 +61,38 @@ export function parsePut(rest: string[]): ParseResult {
   const [obj, ...args] = rest;
   const o = obj?.toLowerCase();
   if (o === "vertex") {
-    if (args.length < 2 || args.length > 3) {
-      return {
-        ok: false,
-        usage:
-          "usage: put vertex <key: string> <value: string|int|float|bool|datetime> [<ttl_seconds: int>]",
-      };
+    const usage =
+      "usage: put vertex <key: string> <value: string|int|float|bool|datetime> [<ttl_seconds: int>] [type=auto|string|int|float|bool|datetime|duration|json]";
+    if (args.length < 2) {
+      return { ok: false, usage };
     }
-    const [key, value, ttlTok] = args;
-    // Omitted ttl_seconds ⇒ permanent (no decay); only an explicit but
-    // malformed token is a usage error (#523).
+    const [key, value, ...tail] = args;
+    // Omitted ttl_seconds ⇒ permanent (no decay) (#523); the optional
+    // positional ttl and the type= kwarg may appear in either order.
     let ttlSeconds: number | null = null;
-    if (ttlTok !== undefined) {
-      ttlSeconds = parseInt10(ttlTok);
-      if (ttlSeconds === null) {
-        return {
-          ok: false,
-          usage:
-            "usage: put vertex <key: string> <value: string|int|float|bool|datetime> [<ttl_seconds: int>]",
-        };
+    let ttlSet = false;
+    let valueType = "auto";
+    for (const tok of tail) {
+      const eq = tok.indexOf("=");
+      if (eq >= 0) {
+        if (tok.slice(0, eq).toLowerCase() !== "type") {
+          return { ok: false, usage };
+        }
+        valueType = tok.slice(eq + 1).toLowerCase();
+        continue;
       }
+      if (ttlSet) {
+        return { ok: false, usage };
+      }
+      const n = parseInt10(tok);
+      if (n === null) {
+        return { ok: false, usage };
+      }
+      ttlSeconds = n;
+      ttlSet = true;
+    }
+    if (!VALUE_TYPES.has(valueType)) {
+      return { ok: false, usage };
     }
     return {
       ok: true,
@@ -75,6 +102,7 @@ export function parsePut(rest: string[]): ParseResult {
         key,
         value,
         ttlSeconds,
+        valueType,
       },
     };
   }
@@ -477,7 +505,7 @@ export const HELP_TEXT = [
   "",
   "  get    vertex <key: string>",
   "  get    edge   <tail: string> <head: string>",
-  "  put    vertex <key: string> <value: string|int|float|bool|datetime> [<ttl_seconds: int>]",
+  "  put    vertex <key: string> <value: string|int|float|bool|datetime> [<ttl_seconds: int>] [type=auto|string|int|float|bool|datetime|duration|json]",
   "  put    edge   <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]",
   "  add    edge   <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]",
   "  delete vertex <key: string> [<key: string> ...]",
@@ -539,9 +567,9 @@ export const CLI_COMMAND_REFERENCE: readonly CliCommandDoc[] = [
   {
     group: "Vertices",
     verb: "put",
-    signature: "put vertex <key> <value> [ttl]",
+    signature: "put vertex <key> <value> [ttl] [type=...]",
     summary:
-      "Create or replace a vertex. Value is typed (string / int / float / bool / datetime); TTL seconds optional.",
+      "Create or replace a vertex; value is auto-typed, or forced with type= (string/int/float/bool/datetime/duration/json). TTL seconds optional.",
     example: "put vertex alice Alice 3600",
   },
   {

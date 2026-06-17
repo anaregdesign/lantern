@@ -366,7 +366,7 @@ export function commandResultToGraphMerge(command: Command): GraphMerge | null {
   if (command.verb === "put" && command.objective === "vertex") {
     const vertex: Vertex = {
       key: command.key,
-      ...coerceValue(command.value),
+      ...coerceValue(command.value, command.valueType),
       expiration: ttlSecondsToExpiration(command.ttlSeconds),
     };
     return {
