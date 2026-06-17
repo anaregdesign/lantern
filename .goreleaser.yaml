@@ -1,13 +1,14 @@
-# GoReleaser config for the Lantern CLI.
+# GoReleaser config for the Lantern server + CLI binaries and their Homebrew casks.
 #
-# Produces cross-platform `lantern-cli` archives + checksums in ./dist for the
-# release workflow to attach to the GitHub Release. The GitHub Release itself
-# is owned by .github/workflows/docker-publish.yml so the container image and
-# CLI binaries land on a single release with consistent notes.
+# Produces cross-platform `lantern` (server) and `lantern-cli` archives + checksums
+# in ./dist for the release workflow to attach to the GitHub Release, and generates
+# + pushes Homebrew casks to anaregdesign/homebrew-tap. The GitHub Release itself is
+# owned by .github/workflows/docker-publish.yml so the container image and binaries
+# land on a single release with consistent notes.
 #
-# Run locally with:
-#   go tool github.com/goreleaser/goreleaser/v2 release --snapshot --clean
-# (or `goreleaser release --snapshot --clean` if you have the CLI installed).
+# Run locally with (a dummy tap token lets the cask templates render under snapshot):
+#   HOMEBREW_TAP_GITHUB_TOKEN=dummy \
+#     go run github.com/goreleaser/goreleaser/v2@latest release --snapshot --clean
 
 version: 2
 project_name: lantern
@@ -36,6 +37,26 @@ builds:
       - amd64
       - arm64
 
+  # Server daemon. Built from ./server/cmd in workspace mode, exactly like the
+  # Dockerfile (static, CGO-free). No Windows target — the daemon ships to
+  # linux/macOS and the cask is macOS-only. Version is surfaced at runtime via
+  # LANTERN_VERSION / debug.BuildInfo, so there is no -X ldflag to inject here.
+  - id: lantern
+    main: ./server/cmd
+    binary: lantern
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
 archives:
   - id: lantern-cli
     ids:
@@ -56,6 +77,21 @@ archives:
       - LICENSE
       - README.md
 
+  - id: lantern
+    ids:
+      - lantern
+    name_template: >-
+      lantern_{{ .Version }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+    formats:
+      - tar.gz
+    files:
+      - LICENSE
+      - README.md
+
 checksum:
   name_template: checksums.txt
 
@@ -64,6 +100,59 @@ snapshot:
   # git tag is a prefixed monorepo tag (e.g. sdks/go/vX.Y.Z) that GoReleaser
   # can't parse as semver. Real releases are driven by v*.*.* tags.
   version_template: "0.0.0-snapshot-{{ .ShortCommit }}"
+
+# Homebrew casks pushed to anaregdesign/homebrew-tap (brew tap anaregdesign/tap).
+# Cross-repo push needs a PAT/App token with contents:write on the tap repo,
+# supplied as HOMEBREW_TAP_GITHUB_TOKEN. Publishing is gated on that secret being
+# present, so a release still succeeds before the secret is configured (the cask
+# simply is not pushed). The binaries are unsigned, so a post-install hook clears
+# the macOS quarantine bit; full notarization would need an Apple Developer cert.
+homebrew_casks:
+  - name: lantern
+    ids:
+      - lantern
+    binaries:
+      - lantern
+    directory: Casks
+    homepage: "https://github.com/anaregdesign/lantern"
+    description: "Lantern — in-memory graph key-vertex-store server (Connect/HTTP-2)"
+    skip_upload: '{{ if .Env.HOMEBREW_TAP_GITHUB_TOKEN }}false{{ else }}true{{ end }}'
+    url:
+      template: "https://github.com/anaregdesign/lantern/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/lantern"]
+          end
+    repository:
+      owner: anaregdesign
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+
+  - name: lantern-cli
+    ids:
+      - lantern-cli
+    binaries:
+      - lantern-cli
+    directory: Casks
+    homepage: "https://github.com/anaregdesign/lantern"
+    description: "Lantern CLI — REPL and scriptable client for a Lantern server"
+    skip_upload: '{{ if .Env.HOMEBREW_TAP_GITHUB_TOKEN }}false{{ else }}true{{ end }}'
+    url:
+      template: "https://github.com/anaregdesign/lantern/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/lantern-cli"]
+          end
+    repository:
+      owner: anaregdesign
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
 
 # The GitHub Release is created/edited by the release job in
 # .github/workflows/docker-publish.yml. GoReleaser just produces the artifacts
