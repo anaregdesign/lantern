@@ -162,7 +162,7 @@ jobs:
           retention-days: 30
 
   binaries:
-    name: Build CLI binaries
+    name: Build CLI + server binaries
     needs: verify
     runs-on: ubuntu-latest
     permissions:
@@ -183,11 +183,24 @@ jobs:
           distribution: goreleaser
           version: '~> v2'
           args: release --clean
-      - name: Upload CLI artifacts
+        env:
+          # GoReleaser uses this for GitHub API calls; the GitHub Release itself
+          # is created by the `release` job below (release.disable: true keeps
+          # GoReleaser from touching it).
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Cross-repo token for pushing the generated casks to
+          # anaregdesign/homebrew-tap. Always exported (empty when the secret is
+          # absent) so the `skip_upload` template in .goreleaser.yaml can gate
+          # publishing without erroring on an undefined env var. Add a PAT/App
+          # token with contents:write on the tap repo as this secret to enable
+          # cask publishing.
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+      - name: Upload binary artifacts
         uses: actions/upload-artifact@v7
         with:
           name: cli-binaries
           path: |
+            dist/lantern_*.tar.gz
             dist/lantern-cli_*.tar.gz
             dist/lantern-cli_*.zip
             dist/checksums.txt
@@ -249,13 +262,24 @@ jobs:
             echo "docker pull ${IMAGE}:${TAG#v}"
             echo '```'
             echo
-            echo "## CLI binaries"
+            echo "## Binaries"
             echo
-            echo "Pre-built \`lantern-cli\` archives for macOS / Linux / Windows on x86_64 and arm64"
-            echo "are attached to this release. Verify with \`checksums.txt\`."
+            echo "Pre-built \`lantern\` (server) and \`lantern-cli\` archives are attached to this"
+            echo "release. The server covers macOS / Linux and the CLI also covers Windows, on"
+            echo "x86_64 and arm64. Verify with \`checksums.txt\`."
+            echo
+            echo "### Homebrew (macOS)"
             echo
             echo '```sh'
-            echo "# macOS arm64 example"
+            echo "brew tap anaregdesign/tap"
+            echo "brew install --cask lantern        # server"
+            echo "brew install --cask lantern-cli    # client"
+            echo '```'
+            echo
+            echo "### Direct download"
+            echo
+            echo '```sh'
+            echo "# macOS arm64 CLI example"
             echo "curl -L -o lantern-cli.tar.gz https://github.com/${REPO}/releases/download/${TAG}/lantern-cli_${TAG#v}_Darwin_arm64.tar.gz"
             echo "tar -xzf lantern-cli.tar.gz && ./lantern-cli version"
             echo '```'
@@ -276,7 +300,7 @@ jobs:
           } > "$notes_file"
 
           # Collect the artifacts to attach to the release.
-          assets=( dist/lantern-cli_*.tar.gz dist/lantern-cli_*.zip dist/checksums.txt )
+          assets=( dist/lantern_*.tar.gz dist/lantern-cli_*.tar.gz dist/lantern-cli_*.zip dist/checksums.txt )
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" --notes-file "$notes_file" --verify-tag
