@@ -79,6 +79,12 @@
   margin: 0;
 }
 
+.caption {
+  color: var(--colorNeutralForeground3, #707070);
+  font-size: var(--fontSizeBase200, 12px);
+  margin: 0;
+}
+
 .tableWrapper {
   position: relative;
   border: 1px solid var(--colorNeutralStroke2, #e0e0e0);
@@ -142,6 +148,10 @@
   text-align: right;
 }
 
+.colScore {
+  width: 12%;
+}
+
 .keyLink {
   color: var(--colorBrandForegroundLink, #0078d4);
   text-decoration: none;
@@ -157,10 +167,29 @@
   text-decoration: underline;
 }
 
+.score {
+  font-family: var(
+    --fontFamilyMonospace,
+    ui-monospace,
+    SFMono-Regular,
+    monospace
+  );
+  font-variant-numeric: tabular-nums;
+  color: var(--colorNeutralForeground2, #424242);
+}
+
+.expired {
+  color: var(--colorNeutralForeground3, #707070);
+  font-style: italic;
+}
+
 .placeholder {
   display: flex;
+  flex-direction: column;
   justify-content: center;
   align-items: center;
+  gap: var(--spacingVerticalS, 8px);
   padding: var(--spacingVerticalXL, 24px);
   color: var(--colorNeutralForeground3, #707070);
+  text-align: center;
 }

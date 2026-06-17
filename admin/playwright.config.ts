@@ -51,8 +51,8 @@ export default defineConfig({
         LANTERN_CORS_ALLOWED_ORIGINS: `http://127.0.0.1:${PORT}`,
         LANTERN_LOG_LEVEL: "warn",
         // Content search is opt-out (on by default), but pin it explicitly
-        // so the search e2e (#627) stays deterministic if the default ever
-        // changes.
+        // so the content-search e2e (#627, folded into browse.spec by #650)
+        // stays deterministic if the default ever changes.
         LANTERN_SEARCH_ENABLED: "true",
       },
     },
