@@ -122,10 +122,11 @@
 
 .table {
   /* Keep the percentage columns from collapsing/overlapping on phones; the
-     wrapper scrolls horizontally below this width. Sized so the single
-     Illuminate action and the Expires header render at full width without
-     clipping (#657). */
-  min-width: 520px;
+     wrapper scrolls horizontally below this width. Sized so the Edit +
+     Illuminate action pair and the Expires header render at full width
+     without clipping (#657, #652). Matches the Edges table floor now that
+     both Browse surfaces carry the same two-button Actions cell. */
+  min-width: 680px;
 }
 
 .colKey {
@@ -137,7 +138,7 @@
 }
 
 .colActions {
-  width: 14%;
+  width: 16%;
   text-align: right;
 }
 

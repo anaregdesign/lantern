@@ -1,5 +1,5 @@
 import type { Route } from "./+types/vertices.$key";
-import { Navigate, useParams } from "react-router";
+import { Navigate, useParams, useSearchParams } from "react-router";
 import { VertexDetailPage } from "~/components/edit-vertex/VertexDetailPage/VertexDetailPage";
 
 export function meta({ params }: Route.MetaArgs) {
@@ -13,11 +13,17 @@ export function meta({ params }: Route.MetaArgs) {
  */
 export default function VertexDetailRoute() {
   const { key } = useParams<{ key: string }>();
+  const [searchParams] = useSearchParams();
   const decoded = decodeKey(key);
   if (!decoded) {
     return <Navigate to="/vertices" replace />;
   }
-  return <VertexDetailPage vertexKey={decoded} />;
+  return (
+    <VertexDetailPage
+      vertexKey={decoded}
+      initialEdit={searchParams.get("edit") === "1"}
+    />
+  );
 }
 
 function decodeKey(raw: string | undefined): string {
