@@ -35,6 +35,7 @@ const VERBS: readonly string[] = [
   "delete",
   "add",
   "scan",
+  "keys",
   "illuminate",
   "help",
   "exit",
@@ -111,7 +112,7 @@ export function completeCommandLine(
     if (objectives) {
       return { candidates: filterByPrefix(objectives, token), start, token };
     }
-    if (verb === "illuminate") {
+    if (verb === "illuminate" || verb === "keys") {
       return { candidates: completeKeys(knownKeys, token), start, token };
     }
     return none;

@@ -136,6 +136,29 @@ or a --head-prefix on edges, use the noun-first "lantern vertex scan" /
 	},
 }
 
+var grammarKeysCmd = &cobra.Command{
+	Use:   "keys <prefix> [limit]",
+	Short: "List vertex keys under a prefix (Redis-style KEYS)",
+	Long: `List vertex keys under a prefix, like Redis KEYS, using the same
+verb-first grammar as the REPL:
+
+  lantern keys <prefix> [limit]
+
+Lantern is a prefix-indexed store, so the argument is a key PREFIX, not a
+Redis glob — there is no trailing "*" to append. "lantern keys user:" lists
+every vertex key under "user:" and is identical to typing "keys user:" at the
+"lantern repl" prompt. Matching keys print one per line (like redis-cli), so
+the output pipes cleanly into xargs/jq.
+
+The optional trailing limit caps the page (mirroring "scan vertices"); a
+prefix is required (the server rejects an empty prefix). This is the key-only
+counterpart to "lantern scan vertices <prefix>", which returns whole vertex
+objects.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runGrammarLine(cmd, "keys", args)
+	},
+}
+
 func init() {
 	// SetInterspersed(false): stop flag parsing at the first positional so
 	// leading-dash values (negative weights/values) pass through verbatim;
@@ -146,6 +169,7 @@ func init() {
 		grammarAddCmd,
 		grammarDeleteCmd,
 		grammarScanCmd,
+		grammarKeysCmd,
 	} {
 		c.Flags().SetInterspersed(false)
 		rootCmd.AddCommand(c)

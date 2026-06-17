@@ -21,6 +21,7 @@ describe("completeCommandLine — verbs (slot 0)", () => {
       "delete",
       "add",
       "scan",
+      "keys",
       "illuminate",
       "help",
       "exit",

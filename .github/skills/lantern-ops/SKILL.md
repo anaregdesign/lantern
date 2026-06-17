@@ -173,6 +173,20 @@ may include expired-but-not-yet-reaped keys. For a strictly-live count use
 lantern vertex count users/
 ```
 
+### `keys <prefix> [limit]`
+List vertex **keys** under `<prefix>`, one per line on stdout — the
+Redis-familiar, keys-only counterpart to `vertex scan` (no values, pipe-friendly).
+Lantern is prefix-indexed, so the argument is a key **prefix**, not a glob (no
+trailing `*`). A prefix is **required** (the server rejects an empty prefix); the
+optional `<limit>` caps the page (mirrors `scan vertices`). This is a verb-first
+one-liner — the same grammar as the `lantern repl` prompt, backed by the
+wire-efficient `ScanVertexKeys` RPC.
+```shell
+lantern keys users/
+lantern keys users/ 100
+lantern keys users/ | xargs -n1 lantern vertex get   # hydrate values
+```
+
 ### `vertex delete-prefix <prefix>` (DESTRUCTIVE)
 Bulk-delete every live vertex under `<prefix>`, up to `--limit` per call.
 **Safety gate:** running without `--dry-run` or `--yes` is **refused** — it

@@ -50,6 +50,7 @@ export type Command =
     }
   | { verb: "scan"; objective: "vertices"; prefix: string; limit: number }
   | { verb: "scan"; objective: "edges"; tailPrefix: string; limit: number }
+  | { verb: "keys"; prefix: string; limit: number }
   | {
       verb: "illuminate";
       seed: string;

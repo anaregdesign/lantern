@@ -62,3 +62,12 @@ type ScanEdges struct {
 	TailPrefix string
 	Limit      int
 }
+
+// Keys backs the `keys <prefix> [limit]` verb — the Redis-familiar key lister
+// that lists vertex keys under a prefix (keys-only output). Lantern is a
+// prefix-indexed store, so Prefix is a key PREFIX, not a glob. Limit is
+// optional (0 = server default), mirroring ScanVertices.
+type Keys struct {
+	Prefix string
+	Limit  int
+}

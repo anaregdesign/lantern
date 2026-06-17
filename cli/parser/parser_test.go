@@ -5,6 +5,46 @@ import (
 	"time"
 )
 
+// TestKeysParam pins `keys <prefix> [limit]` (#674): a prefix is required and
+// the trailing limit is optional (0 when omitted), mirroring ScanVerticesParam.
+func TestKeysParam(t *testing.T) {
+	t.Run("PrefixOnly", func(t *testing.T) {
+		s, err := NewSource("user:")
+		if err != nil {
+			t.Fatalf("NewSource: %v", err)
+		}
+		m, err := KeysParam(s)
+		if err != nil {
+			t.Fatalf("KeysParam: %v", err)
+		}
+		if m.Prefix != "user:" || m.Limit != 0 {
+			t.Errorf("got {%q, %d}, want {user:, 0}", m.Prefix, m.Limit)
+		}
+	})
+	t.Run("PrefixAndLimit", func(t *testing.T) {
+		s, _ := NewSource("user: 50")
+		m, err := KeysParam(s)
+		if err != nil {
+			t.Fatalf("KeysParam: %v", err)
+		}
+		if m.Prefix != "user:" || m.Limit != 50 {
+			t.Errorf("got {%q, %d}, want {user:, 50}", m.Prefix, m.Limit)
+		}
+	})
+	t.Run("MissingPrefixIsError", func(t *testing.T) {
+		s, _ := NewSource("")
+		if _, err := KeysParam(s); err == nil {
+			t.Errorf("KeysParam(empty) = nil, want error (prefix required)")
+		}
+	})
+	t.Run("NonNumericLimitIsError", func(t *testing.T) {
+		s, _ := NewSource("user: notanint")
+		if _, err := KeysParam(s); err == nil {
+			t.Errorf("KeysParam(bad limit) = nil, want error")
+		}
+	})
+}
+
 // TestParam_OmittedTTLIsPermanent pins the opt-in decay contract (#523)
 // for the REPL grammar: a write that omits ttl_seconds leaves TTL at its
 // zero value (forwarded to the SDK as "permanent"), while an explicit

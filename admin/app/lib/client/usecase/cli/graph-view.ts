@@ -56,6 +56,10 @@ export function commandResultToGraphView(
         return scanVerticesView(command.prefix, result as ScanVerticesResponse);
       }
       return scanEdgesView(command.tailPrefix, result as ScanEdgesResponse);
+    case "keys":
+      // keys yields a flat list of vertex keys, not a graph — the scrollback
+      // renders the key list; the canvas frame is left untouched.
+      return null;
     default:
       // put, add, delete, exit — no graph payload.
       return null;

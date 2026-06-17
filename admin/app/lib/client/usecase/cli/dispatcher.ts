@@ -44,6 +44,7 @@ import {
 import { putEdge } from "~/lib/client/infrastructure/api/put-edge";
 import { putVertex } from "~/lib/client/infrastructure/api/put-vertex";
 import { scanEdges } from "~/lib/client/infrastructure/api/scan-edges";
+import { scanVertexKeys } from "~/lib/client/infrastructure/api/scan-vertex-keys";
 import { scanVertices } from "~/lib/client/infrastructure/api/scan-vertices";
 import type { Vertex } from "~/lib/client/infrastructure/api/types";
 import type { Command } from "~/lib/cli/types";
@@ -184,6 +185,12 @@ export async function dispatch(input: DispatchInput): Promise<unknown> {
       return scanEdges(
         client,
         { tailPrefix: command.tailPrefix, limit: command.limit },
+        { signal },
+      );
+    case "keys":
+      return scanVertexKeys(
+        client,
+        { prefix: command.prefix, limit: command.limit },
         { signal },
       );
     case "illuminate":

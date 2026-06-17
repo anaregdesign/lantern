@@ -67,6 +67,7 @@ type failoverNode interface {
 	DeleteVertex(ctx context.Context, key string) (bool, error)
 	DeleteVertices(ctx context.Context, keys []string) (int, error)
 	ScanVertices(ctx context.Context, prefix string, opts ...ScanOption) (vertices []*Vertex, nextCursor []byte, err error)
+	ScanVertexKeys(ctx context.Context, prefix string, opts ...ScanOption) (keys []string, nextCursor []byte, err error)
 	SearchVertices(ctx context.Context, query string, opts ...SearchOption) (hits []SearchHit, err error)
 	CountVerticesByPrefix(ctx context.Context, prefix string) (uint64, error)
 	DeleteVerticesByPrefix(ctx context.Context, prefix string, opts ...DeleteByPrefixOption) (uint64, error)
@@ -219,6 +220,19 @@ func (f *Failover) ScanVertices(ctx context.Context, prefix string, opts ...Scan
 		return ie
 	})
 	return vertices, nextCursor, e
+}
+
+// ScanVertexKeys forwards to the current endpoint's ScanVertexKeys, failing
+// over on ErrUnavailable. Like ScanVertices, the keys-only cursor is a radix
+// position over the shared replicated keyspace, so a mid-scan rotation
+// resumes correctly against any replica.
+func (f *Failover) ScanVertexKeys(ctx context.Context, prefix string, opts ...ScanOption) (keys []string, nextCursor []byte, err error) {
+	e := f.try(func(l failoverNode) error {
+		var ie error
+		keys, nextCursor, ie = l.ScanVertexKeys(ctx, prefix, opts...)
+		return ie
+	})
+	return keys, nextCursor, e
 }
 
 // SearchVertices forwards to the current endpoint's SearchVertices, failing

@@ -202,6 +202,38 @@ message ScanVerticesResponse {
   bytes next_cursor = 2;
 }
 
+// ScanVertexKeysRequest streams vertex KEYS (no values) whose key starts
+// with `prefix`, in lexicographic order — the wire-efficient backbone of
+// the Redis-familiar `keys` CLI verb. It reuses ScanVertices' limit clamp
+// but carries its OWN opaque cursor kind, NOT interchangeable with any other
+// Scan* cursor (cross-feeding is rejected with INVALID_ARGUMENT). Unlike
+// ScanVertices, a non-empty `prefix` is REQUIRED: an empty prefix is
+// rejected with INVALID_ARGUMENT, so there is no whole-keyspace dump.
+// Plural-only.
+message ScanVertexKeysRequest {
+  // prefix is REQUIRED and must be non-empty; an empty prefix is rejected
+  // with INVALID_ARGUMENT.
+  string prefix = 1;
+  // limit caps the number of keys returned in one call. Zero falls back to
+  // the server's ScanDefaultLimit and the value is clamped to ScanMaxLimit
+  // — the same knobs as ScanVertices.
+  uint32 limit = 2;
+  // NOTE: opaque to the caller; its own cursor kind, NOT interchangeable
+  // with cursors from other Scan* RPCs (ScanVertices / ScanEdges).
+  // Cross-feeding is rejected with INVALID_ARGUMENT. An empty cursor starts
+  // from the beginning.
+  bytes cursor = 3;
+}
+
+message ScanVertexKeysResponse {
+  // keys returned in ascending lexicographic order. May be shorter than
+  // `limit` when the underlying range is exhausted.
+  repeated string keys = 1;
+  // next_cursor is non-empty when more results are available. An empty
+  // value signals end of stream.
+  bytes next_cursor = 2;
+}
+
 // SearchVerticesRequest runs a relevance-ranked full-text search over vertex
 // *content* (key + value), as opposed to ScanVertices' lexicographic
 // key-prefix walk. `query` is analysed with the same pipeline used to build
@@ -556,6 +588,11 @@ service LanternService {
   // ascending order, page by page. Plural-only — prefix scan is inherently
   // plural.
   rpc ScanVertices(ScanVerticesRequest) returns (ScanVerticesResponse);
+
+  // ScanVertexKeys streams just the KEYS (no values) of vertices whose key
+  // starts with the given prefix, page by page — the wire-efficient backing
+  // RPC for the `keys` CLI verb. A non-empty prefix is REQUIRED. Plural-only.
+  rpc ScanVertexKeys(ScanVertexKeysRequest) returns (ScanVertexKeysResponse);
 
   // SearchVertices returns vertices ranked by full-text relevance over their
   // content (key + value), optionally scoped to a key prefix. Requires the

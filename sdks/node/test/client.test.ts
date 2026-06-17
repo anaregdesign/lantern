@@ -92,6 +92,24 @@ function newStubRoutes(state: StubState) {
         }
         return { hits: state.searchHits ?? [] };
       },
+      // Keys-only prefix scan (#674): returns sorted matching keys with an
+      // opaque last-key cursor so pagination round-trips. The cursor shape
+      // here is a stub (raw last-key bytes); the SDK treats it as opaque.
+      async scanVertexKeys(req) {
+        const all = [...state.vertices.keys()].filter((k) => k.startsWith(req.prefix)).sort();
+        const after = req.cursor.length > 0 ? new TextDecoder().decode(req.cursor) : "";
+        const remaining = after ? all.filter((k) => k > after) : all;
+        const limit = req.limit > 0 ? req.limit : 100;
+        const page = remaining.slice(0, limit);
+        const hitLimit = remaining.length > limit;
+        return {
+          keys: page,
+          nextCursor:
+            hitLimit && page.length > 0
+              ? new TextEncoder().encode(page[page.length - 1])
+              : new Uint8Array(),
+        };
+      },
       // Remaining methods are intentionally absent — the connect-node
       // adapter rejects them with Code.Unimplemented, which the SDK
       // surfaces as the generic LanternError. Tests that need these
@@ -166,6 +184,31 @@ describe("Lantern client", () => {
       await c.putVertex({ key: "to-delete", value: "x" });
       await expect(c.deleteVertex("to-delete")).resolves.toBe(true);
       await expect(c.deleteVertex("to-delete")).resolves.toBe(false);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("scanVertexKeys lists keys-only and paginates (incl. scanVertexKeysAll)", async () => {
+    const c = newClient();
+    try {
+      await c.putVertices([
+        { key: "kx:1", value: "a" },
+        { key: "kx:2", value: "b" },
+        { key: "kx:3", value: "c" },
+      ]);
+
+      const p1 = await c.scanVertexKeys("kx:", { limit: 2 });
+      expect(p1.keys).toEqual(["kx:1", "kx:2"]);
+      expect(p1.nextCursor.length).toBeGreaterThan(0);
+
+      const p2 = await c.scanVertexKeys("kx:", { limit: 2, cursor: p1.nextCursor });
+      expect(p2.keys).toEqual(["kx:3"]);
+      expect(p2.nextCursor.length).toBe(0);
+
+      const all: string[] = [];
+      for await (const page of c.scanVertexKeysAll("kx:", 2)) all.push(...page);
+      expect(all).toEqual(["kx:1", "kx:2", "kx:3"]);
     } finally {
       c.close();
     }

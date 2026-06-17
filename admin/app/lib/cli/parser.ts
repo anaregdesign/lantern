@@ -20,12 +20,13 @@ import {
   parseGet,
   parseHelp,
   parseIlluminate,
+  parseKeys,
   parsePut,
   parseScan,
 } from "./verbs";
 
 const VERB_LIST_USAGE =
-  "usage: { get | put | delete | add | scan | illuminate | help | exit } ...";
+  "usage: { get | put | delete | add | scan | keys | illuminate | help | exit } ...";
 
 const VERBS = new Set([
   "exit",
@@ -35,6 +36,7 @@ const VERBS = new Set([
   "delete",
   "add",
   "scan",
+  "keys",
   "illuminate",
 ]);
 
@@ -70,6 +72,8 @@ export function parse(input: string): ParseResult {
       return parseAdd(rest);
     case "scan":
       return parseScan(rest);
+    case "keys":
+      return parseKeys(rest);
     case "illuminate":
       return parseIlluminate(rest);
   }

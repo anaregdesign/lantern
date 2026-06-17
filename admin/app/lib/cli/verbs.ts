@@ -256,6 +256,18 @@ export function parseScan(rest: string[]): ParseResult {
   return { ok: false, usage: "usage: scan { vertices | edges } ... " };
 }
 
+export function parseKeys(rest: string[]): ParseResult {
+  const usage = "usage: keys <prefix: string> [<limit: int>]";
+  if (rest.length < 1 || rest.length > 2 || rest[0] === "") {
+    return { ok: false, usage };
+  }
+  const limit = rest[1] === undefined ? 0 : parseInt10(rest[1]);
+  if (limit === null) {
+    return { ok: false, usage };
+  }
+  return { ok: true, command: { verb: "keys", prefix: rest[0], limit } };
+}
+
 export function parseIlluminate(rest: string[]): ParseResult {
   const usage =
     "usage: illuminate <key: string> <step: int> <k: int> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf] [prefix=<string>]";
@@ -360,6 +372,7 @@ export const HELP_TEXT = [
   "  delete edge   <tail: string> <head: string>",
   "  scan   vertices <prefix: string> [<limit: int>]",
   "  scan   edges    <tail-prefix: string> [<limit: int>]",
+  "  keys   <prefix: string> [<limit: int>]",
   "  illuminate <seed: string> <step: int> <k: int>",
   "             [algorithm={none|mst|spt}]  default=none",
   "             [objective={min|max}]       default=max",
@@ -468,6 +481,14 @@ export const CLI_COMMAND_REFERENCE: readonly CliCommandDoc[] = [
     signature: "scan edges <tail-prefix> [limit]",
     summary: "List edges whose tail starts with a prefix (optional max count).",
     example: "scan edges alice 20",
+  },
+  {
+    group: "Browse",
+    verb: "keys",
+    signature: "keys <prefix> [limit]",
+    summary:
+      "List vertex keys under a prefix (keys-only, Redis-style KEYS; optional max count).",
+    example: "keys user: 20",
   },
   {
     group: "Explore",

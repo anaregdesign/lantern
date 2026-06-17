@@ -439,6 +439,7 @@ put    edge     <tail> <head> <weight> [ttl_seconds]
 delete edge     <tail> <head>
 scan   vertices <prefix> [limit]
 scan   edges    <tail-prefix> [limit]
+keys   <prefix> [limit]
 illuminate <seed> <step> <k> [algorithm=none|mst|spt] [objective=min|max] \
            [weighting=raw|tfidf] [prefix=<string>]
 help
@@ -752,6 +753,7 @@ whole subgraph, so there is no plural form.
 | `PutEdge` / `PutEdges` | Idempotent replace (delete + add under one write lock) | Use when you want one-and-only-one weight; SDK auto-chunks; server enforces `LANTERN_MAX_BATCH_SIZE` |
 | `DeleteEdge` / `DeleteEdges` | Remove edges outright | Plural takes `[]EdgeRef{Tail, Head}`; SDK auto-chunks; idempotent |
 | `ScanVertices` | Enumerate vertices by key prefix, page-by-page | Opaque cursor; server enforces a default and hard cap on `limit` (see `LANTERN_SCAN_*`); cross-feeding a cursor from a different `Scan*` RPC is rejected with `InvalidArgument`; SDK helper `ScanVerticesAll` returns an `iter.Seq2` that auto-paginates |
+| `ScanVertexKeys` | Enumerate vertex **keys** (no values) by prefix, page-by-page | Keys-only, wire-efficient backing for the `keys` CLI verb; a non-empty `prefix` is REQUIRED (empty → `InvalidArgument`); its own opaque cursor kind (not interchangeable with other `Scan*`); reuses the `LANTERN_SCAN_*` clamps; SDK helper `ScanVertexKeysAll` auto-paginates |
 | `CountVerticesByPrefix` | Count live vertices under a prefix | Radix-only (cheap); not subject to `limit` |
 | `DeleteVerticesByPrefix` | Bulk-delete a namespace | Capped by server-configured `limit`; `dry_run` returns the count that *would* be deleted without mutating; edges incident to removed vertices are reaped on the next GC tick |
 | `ScanEdges` | Enumerate edges by `tail_prefix` AND `head_prefix` | Either prefix may be empty; head dimension is served by a per-tail head radix (not a post-filter); head-only scans still iterate every tail, so combining both prefixes is the most efficient shape; same opaque-cursor / cross-RPC rejection rules as `ScanVertices`; SDK helper `ScanEdgesAll` auto-paginates |
@@ -795,7 +797,7 @@ The server is configured via environment variables, parsed in
 | `LANTERN_RATE_LIMIT_BURST` | `2×RPS` | Burst capacity for the rate limiter; falls back to `2×RPS` if set to `0` while a limit is active |
 | `LANTERN_MAX_KEY_LEN` | `1024` | Reject vertex/edge keys longer than this (validation interceptor) |
 | `LANTERN_MAX_BATCH_SIZE` | `10000` | Reject batch Put/Add requests over this size |
-| `LANTERN_SCAN_DEFAULT_LIMIT` / `LANTERN_SCAN_MAX_LIMIT` | `1000` / `10000` | Default page size and hard cap for `ScanVertices` / `ScanEdges` |
+| `LANTERN_SCAN_DEFAULT_LIMIT` / `LANTERN_SCAN_MAX_LIMIT` | `1000` / `10000` | Default page size and hard cap for `ScanVertices` / `ScanVertexKeys` / `ScanEdges` |
 | `LANTERN_DELETE_BY_PREFIX_DEFAULT_LIMIT` / `LANTERN_DELETE_BY_PREFIX_MAX_LIMIT` | `10000` / `100000` | Default and hard cap for `DeleteVerticesByPrefix` per call |
 | `LANTERN_ILLUMINATE_MAX_STEP` | `16` | Cap on BFS depth accepted by `Illuminate` |
 | `LANTERN_ILLUMINATE_MAX_K` | `1024` | Cap on neighbours-per-step accepted by `Illuminate` |

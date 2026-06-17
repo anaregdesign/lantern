@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"connectrpc.com/connect"
@@ -72,6 +73,63 @@ func (s *LanternService) ScanVertices(ctx context.Context, in *pb.ScanVerticesRe
 		resp.NextCursor = encodeCursor(scanCursor{LastKey: lastKey})
 	}
 	s.metrics.OnScan("ScanVertices", len(vertices), time.Since(start))
+	return resp, nil
+}
+
+// ScanVertexKeys streams just the KEYS of vertices whose key starts with the
+// request prefix, in lexicographic order — the wire-efficient backing for the
+// `keys` CLI verb (#674). It differs from ScanVertices in two ways:
+//
+//   - a non-empty prefix is REQUIRED (empty prefix → InvalidArgument), so
+//     there is no whole-keyspace dump;
+//   - it carries its OWN opaque cursor kind (decodeKeysCursor rejects cursors
+//     minted by ScanVertices / ScanEdges with InvalidArgument).
+//
+// Limit clamping reuses the ScanVertices knobs (ScanDefaultLimit /
+// ScanMaxLimit). Only the key string is collected, so vertex values are never
+// materialised onto the wire.
+func (s *LanternService) ScanVertexKeys(ctx context.Context, in *pb.ScanVertexKeysRequest) (*pb.ScanVertexKeysResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, ctxToConnect(err)
+	}
+	if in.GetPrefix() == "" {
+		if s.onValidationReject != nil {
+			s.onValidationReject("empty_prefix")
+		}
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("prefix is required"))
+	}
+	start := time.Now()
+	limit := clampLimit(in.GetLimit(), s.scan.ScanDefaultLimit, s.scan.ScanMaxLimit)
+
+	cursor, err := decodeKeysCursor(in.GetCursor())
+	if err != nil {
+		if s.onValidationReject != nil {
+			s.onValidationReject("bad_cursor")
+		}
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	keys := make([]string, 0, limit)
+	var lastKey string
+	hitLimit := false
+	s.cache.ScanByPrefix(ctx, in.GetPrefix(), func(_ string, key string, _ *pb.Vertex) bool {
+		if cursor.LastKey != "" && key <= cursor.LastKey {
+			return true
+		}
+		if uint32(len(keys)) >= limit {
+			hitLimit = true
+			return false
+		}
+		keys = append(keys, key)
+		lastKey = key
+		return true
+	})
+
+	resp := &pb.ScanVertexKeysResponse{Keys: keys}
+	if hitLimit && lastKey != "" {
+		resp.NextCursor = encodeKeysCursor(scanKeysCursor{LastKey: lastKey})
+	}
+	s.metrics.OnScan("ScanVertexKeys", len(keys), time.Since(start))
 	return resp, nil
 }
 

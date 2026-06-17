@@ -49,17 +49,19 @@ func encodeCursor(c scanCursor) []byte {
 // friendly error rather than silently restarting the scan. Each Scan* RPC
 // owns exactly one shape:
 //
-//   - ScanVertices  -> {v, k}           (LastKey populated)
-//   - ScanEdges     -> {v, t, h}        (LastTail and/or LastHead populated)
+//   - ScanVertices   -> {v, k}           (LastKey populated)
+//   - ScanEdges      -> {v, t, h}        (LastTail and/or LastHead populated)
+//   - ScanVertexKeys -> {v, vk}          (LastVertexKey populated)
 //
 // json.Unmarshal silently ignores unknown fields, so a vertex cursor parsed
 // as scanEdgesCursor would otherwise yield an all-zero "start over" cursor
 // — exactly the bug #168 is about.
 type cursorEnvelope struct {
-	Version  uint8  `json:"v"`
-	LastKey  string `json:"k,omitempty"`
-	LastTail string `json:"t,omitempty"`
-	LastHead string `json:"h,omitempty"`
+	Version       uint8  `json:"v"`
+	LastKey       string `json:"k,omitempty"`
+	LastTail      string `json:"t,omitempty"`
+	LastHead      string `json:"h,omitempty"`
+	LastVertexKey string `json:"vk,omitempty"`
 }
 
 // decodeEnvelope is the shared base64+JSON+version unwrapper used by both
@@ -94,7 +96,7 @@ func decodeCursor(b []byte) (scanCursor, error) {
 	if err != nil {
 		return scanCursor{}, err
 	}
-	if env.LastTail != "" || env.LastHead != "" {
+	if env.LastTail != "" || env.LastHead != "" || env.LastVertexKey != "" {
 		return scanCursor{}, fmt.Errorf("decode cursor: cursor was issued by a different Scan RPC (expected ScanVertices cursor)")
 	}
 	return scanCursor{Version: env.Version, LastKey: env.LastKey}, nil
@@ -130,8 +132,43 @@ func decodeEdgesCursor(b []byte) (scanEdgesCursor, error) {
 	if err != nil {
 		return scanEdgesCursor{}, err
 	}
-	if env.LastKey != "" {
+	if env.LastKey != "" || env.LastVertexKey != "" {
 		return scanEdgesCursor{}, fmt.Errorf("decode cursor: cursor was issued by a different Scan RPC (expected ScanEdges cursor)")
 	}
 	return scanEdgesCursor{Version: env.Version, LastTail: env.LastTail, LastHead: env.LastHead}, nil
+}
+
+// scanKeysCursor pages ScanVertexKeys by the last vertex key returned. It
+// walks the SAME vertex keyspace as ScanVertices, so to keep the two cursors
+// NON-interchangeable (#674) it serialises its key under a distinct JSON tag
+// ("vk"), and decodeKeysCursor rejects any envelope whose ScanVertices ("k")
+// or ScanEdges ("t"/"h") fields are populated.
+type scanKeysCursor struct {
+	Version uint8  `json:"v"`
+	LastKey string `json:"vk"`
+}
+
+func encodeKeysCursor(c scanKeysCursor) []byte {
+	c.Version = cursorVersion
+	raw, err := json.Marshal(c)
+	if err != nil {
+		return nil
+	}
+	out := make([]byte, base64.RawURLEncoding.EncodedLen(len(raw)))
+	base64.RawURLEncoding.Encode(out, raw)
+	return out
+}
+
+func decodeKeysCursor(b []byte) (scanKeysCursor, error) {
+	if len(b) == 0 {
+		return scanKeysCursor{}, nil
+	}
+	env, err := decodeEnvelope(b)
+	if err != nil {
+		return scanKeysCursor{}, err
+	}
+	if env.LastKey != "" || env.LastTail != "" || env.LastHead != "" {
+		return scanKeysCursor{}, fmt.Errorf("decode cursor: cursor was issued by a different Scan RPC (expected ScanVertexKeys cursor)")
+	}
+	return scanKeysCursor{Version: env.Version, LastKey: env.LastVertexKey}, nil
 }

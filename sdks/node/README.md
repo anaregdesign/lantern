@@ -92,14 +92,19 @@ try {
 
 ## Streaming-like pagination
 
-`scanVerticesAll` and `scanEdgesAll` are async iterables that page through
-results until the server returns an empty cursor.
+`scanVerticesAll`, `scanEdgesAll`, and `scanVertexKeysAll` are async iterables
+that page through results until the server returns an empty cursor.
 
 ```ts
 for await (const page of client.scanVerticesAll("user:", 500)) {
   for (const v of page) console.log(v.key);
 }
 ```
+
+`scanVertexKeys` / `scanVertexKeysAll` are the keys-only, wire-efficient
+counterparts to `scanVertices` — they return just the matching vertex keys
+(no values), backing the Redis-familiar `keys` CLI verb. A non-empty prefix
+is required.
 
 ## Content search
 
