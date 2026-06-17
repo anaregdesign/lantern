@@ -3,7 +3,6 @@ import {
   ArrowRight20Regular,
   Code24Regular,
   DatabaseSearch24Regular,
-  LinkMultiple24Regular,
   PulseSquare24Regular,
 } from "@fluentui/react-icons";
 import type { ReactElement } from "react";
@@ -17,30 +16,28 @@ interface Feature {
   copy: string;
 }
 
+// The Home tiles mirror the three working surfaces in the AppShell nav
+// (#655): Data / CLI / Ops. Vertices, Edges, and content search were
+// folded into the single Data surface (#650); the standalone Illuminate
+// explorer moved into the CLI workspace (#651).
 const FEATURES: readonly Feature[] = [
   {
     to: "/vertices",
     icon: <DatabaseSearch24Regular />,
-    title: "Vertices",
-    copy: "Scan vertices by key prefix and inspect their typed values and TTLs.",
+    title: "Data",
+    copy: "Browse vertices and edges by key prefix, search vertices by content, and inspect typed values, TTLs, and relationship weights.",
   },
   {
-    to: "/edges",
-    icon: <LinkMultiple24Regular />,
-    title: "Edges",
-    copy: "Filter edges by tail and head prefix to follow relationships and weights.",
+    to: "/cli",
+    icon: <Code24Regular />,
+    title: "CLI",
+    copy: "Type-and-run REPL — same grammar as `lantern repl` (#411). Walk the graph on the canvas and do quick CRUD without leaving the SPA.",
   },
   {
     to: "/ops",
     icon: <PulseSquare24Regular />,
     title: "Ops",
     copy: "Inspect server status and replication health. Triage live before paging.",
-  },
-  {
-    to: "/cli",
-    icon: <Code24Regular />,
-    title: "CLI",
-    copy: "Type-and-run REPL — same grammar as `lantern repl` (#411). Useful for quick CRUD without leaving the SPA.",
   },
 ];
 

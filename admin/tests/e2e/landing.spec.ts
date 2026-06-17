@@ -7,14 +7,14 @@ test("landing page renders with navigation and gateway connection", async ({
   await expect(
     page.getByRole("heading", { level: 1, name: "Lantern Admin" }),
   ).toBeVisible();
-  await expect(
-    page.getByRole("link", { name: /Open Vertices/i }),
-  ).toBeVisible();
-  await expect(page.getByRole("link", { name: /Open Edges/i })).toBeVisible();
-  await expect(page.getByRole("link", { name: /Open Ops/i })).toBeVisible();
-  // #439 — landing tile + AppShell nav now expose /cli alongside the
-  // other top-level sections.
+  // The Home tiles mirror the three nav surfaces (#655): Data / CLI / Ops.
+  // Vertices + Edges collapsed into the single Data tile (#650); the
+  // Illuminate explorer folded into CLI (#651).
+  await expect(page.getByRole("link", { name: /Open Data/i })).toBeVisible();
+  // #439 — landing tile + AppShell nav expose /cli alongside the other
+  // top-level sections.
   await expect(page.getByRole("link", { name: /Open CLI/i })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Open Ops/i })).toBeVisible();
   await expect(page.getByText("http://localhost:6380")).toBeVisible();
 });
 
