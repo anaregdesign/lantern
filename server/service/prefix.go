@@ -142,7 +142,9 @@ func (s *LanternService) CountVerticesByPrefix(ctx context.Context, in *pb.Count
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
 	}
+	start := time.Now()
 	n := s.cache.CountByPrefix(in.GetPrefix())
+	s.metrics.OnScan("CountVerticesByPrefix", n, time.Since(start))
 	return &pb.CountVerticesByPrefixResponse{Count: uint64(n)}, nil
 }
 

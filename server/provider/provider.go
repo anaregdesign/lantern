@@ -297,6 +297,12 @@ func NewDomainMetrics(
 	m.BindSampler(func() (int, int) {
 		return cache.VertexCount(), cache.EdgeCount()
 	})
+	m.BindSearchIndexSampler(func() (int, int) {
+		return cache.SearchIndexStats()
+	})
+	m.BindVertexHLCSampler(func() int {
+		return cache.VertexHLCCount()
+	})
 	return m
 }
 

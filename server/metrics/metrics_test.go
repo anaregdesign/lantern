@@ -199,7 +199,9 @@ func TestDomainMetrics_HotPathFamilies(t *testing.T) {
 	m.OnIlluminate("mst", "minimize", "raw", 17, 42, 5*time.Millisecond, 2*time.Millisecond)
 	m.OnIlluminate("none", "minimize", "raw", 1, 0, 100*time.Microsecond, 0) // optimize=0 → no observation on optimize phase
 	m.OnScan("ScanVertices", 64, 750*time.Microsecond)
+	m.OnScan("ScanVertexKeys", 32, 500*time.Microsecond)
 	m.OnScan("ScanEdges", 128, time.Millisecond)
+	m.OnScan("CountVerticesByPrefix", 10, 100*time.Microsecond)
 	m.OnScan("DeleteVerticesByPrefix", 32, 200*time.Microsecond)
 	m.OnBatch("PutVertices", 8)
 	m.OnBatch("AddEdges", 4)
@@ -219,6 +221,11 @@ func TestDomainMetrics_HotPathFamilies(t *testing.T) {
 		"lantern_scan_results",
 		"lantern_scan_duration_seconds",
 		"lantern_batch_size",
+		"lantern_search_results",
+		"lantern_search_duration_seconds",
+		"lantern_search_index_terms",
+		"lantern_search_index_docs",
+		"lantern_vertex_hlc_entries",
 	} {
 		if !names[want] {
 			t.Errorf("metric family %q not registered", want)
@@ -262,6 +269,15 @@ func TestDomainMetrics_HotPathFamilies(t *testing.T) {
 	}
 	if got := histSampleCount(t, m.batchSize.WithLabelValues("AddEdges")); got != 1 {
 		t.Errorf("batch_size{AddEdges} sample count = %v, want 1", got)
+	}
+
+	// OnSearch emits on the dedicated search histograms, not the scan family.
+	m.OnSearch(5, 3*time.Millisecond)
+	if got := histSampleCount(t, m.searchResults); got != 1 {
+		t.Errorf("search_results sample count = %v, want 1", got)
+	}
+	if got := histSampleCount(t, m.searchDuration); got != 1 {
+		t.Errorf("search_duration sample count = %v, want 1", got)
 	}
 }
 

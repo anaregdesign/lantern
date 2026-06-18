@@ -1,0 +1,38 @@
+# search_churn — sustained PutVertex (string values, short TTL) concurrent
+# with SearchVertices. Exercises the search index lifecycle under churn:
+#
+# - leak: postings/docs maps must shrink after TTL eviction (index decays
+#   in lockstep with vertex eviction via the shared SetOnEvict hook).
+# - thread-safety: concurrent index-write (PutVertex) vs Search read
+#   under the InvertedIndex RWMutex.
+# - consistency: SearchVertices skips vertices whose TTL has expired but
+#   whose Flush has not yet run.
+#
+# steady ≥ 2m so the leak window brackets the 60s GC sweep twice.
+# Assert lantern_search_index_terms and lantern_search_index_docs return
+# to ~baseline after cooldown (the "index decays in lockstep" claim).
+#
+# No extra config: the bench cluster runs search on by default
+# (LANTERN_SEARCH_ENABLED=true).
+name: search_churn
+phases:
+  warmup:   { duration: 30s, concurrency: 16, rps: 500 }
+  steady:   { duration: 2m,  concurrency: 32, rps: 2000 }
+  cooldown: 60s
+target:
+  endpoints: ["localhost:6380", "localhost:6381", "localhost:6382"]
+  # Two parallel streams per fan-out rule: writes feed the index, reads
+  # query it.  per_rps = steady.rps / 2 = 1000 rps each.
+  calls:
+    # [0] short-TTL string vertex — expires after 10s so the GC sweep
+    #     churns the index continuously throughout the steady window.
+    - call: graph.v1.LanternService/PutVertex
+      data_template: |
+        {"vertex":{"key":"search-{{mod .RequestNumber 5000}}","string_":"topic {{mod .RequestNumber 100}}","expiration":"{{timeAfterSeconds 10}}"}}
+    # [1] full-text query over the indexed content.
+    - call: graph.v1.LanternService/SearchVertices
+      data_template: |
+        {"query":"topic {{mod .RequestNumber 100}}","limit":20}
+leak_gate:
+  goroutine_max_delta: 20
+  heap_alloc_max_delta_mb: 32

@@ -87,11 +87,11 @@ done < "$SCENARIO_LIST"
 # job via `timeout-minutes`; this budget is the *graceful* cutoff that lets us
 # aggregate a partial report and exit cleanly BEFORE the runner hard-kills the
 # job (which would discard the report entirely, leaving the release notes with a
-# placeholder). The default (1080s = 18 min) leaves the compact canonical sweep
-# (~14 min of scenario loop; see release-scenarios.txt, #573) headroom to finish,
-# so it only trips when a runner is abnormally slow or the scenario set grows.
-# Set RELEASE_BENCH_BUDGET_SECONDS=0 to disable.
-BUDGET_SECONDS="${RELEASE_BENCH_BUDGET_SECONDS:-1080}"
+# placeholder). The default (1380s = 23 min) leaves the compact canonical sweep
+# (~20 min of scenario loop; see release-scenarios.txt, #573, #708) headroom to
+# finish, so it only trips when a runner is abnormally slow or the scenario set
+# grows. Set RELEASE_BENCH_BUDGET_SECONDS=0 to disable.
+BUDGET_SECONDS="${RELEASE_BENCH_BUDGET_SECONDS:-1380}"
 
 log "release-bench: tag=$TAG commit=$COMMIT_SHORT runner=$RUNNER captured=$CAPTURED"
 log "release-bench: scenarios=${scenarios[*]}"

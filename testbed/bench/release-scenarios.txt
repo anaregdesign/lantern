@@ -6,10 +6,10 @@
 # `continue-on-error` (non-blocking). Rather than run ~16 single-call
 # scenarios (which paid per-scenario fixed overhead — warmup + pre/post
 # runtime+pprof snapshots + cooldown + 12 Prometheus range queries + report
-# render — for each call path), the sweep is compacted to FOUR scenarios, two
+# render — for each call path), the sweep is compacted to SIX scenarios, two
 # of which fan out across many call paths inside a single steady window (see
 # the `target.calls` fan-out rule in run.sh). This keeps broad coverage while
-# cutting wall-time roughly 5x. See issue #573.
+# cutting wall-time roughly 5x vs individual scenarios. See issue #573.
 #
 # Why steady = 2m (and not shorter): Lantern is purely in-memory — no LSM
 # compaction / WAL replay / page-cache warmup — so throughput stabilizes in
@@ -24,12 +24,13 @@
 # broad_illuminate. Do not reorder.
 #
 # Wall-time on a fresh ubuntu-latest runner (single shared 3-replica compose,
-# sequential execution): ~14 min of scenario loop (broad_rw ~3m +
-# broad_illuminate ~3m + ttl_churn ~4m + many_subscribers ~3.5m), ~15 min
-# including compose up + final aggregation. release.sh's
-# RELEASE_BENCH_BUDGET_SECONDS (default 1080s = 18 min) and the bench job's
-# `timeout-minutes` (35) are sized against this figure; see issues #571 and
-# #573. If you add or lengthen scenarios, update those two knobs in lockstep.
+# sequential execution): ~20 min of scenario loop (broad_rw ~3m +
+# broad_illuminate ~3m + ttl_churn ~4m + many_subscribers ~3.5m +
+# search_churn ~3.5m + replication_apply_churn ~4.5m), ~22 min including
+# compose up + final aggregation. release.sh's RELEASE_BENCH_BUDGET_SECONDS
+# (default 1380s = 23 min) and the bench job's `timeout-minutes` (45) are
+# sized against this figure; see issues #571, #573, and #708. If you add or
+# lengthen scenarios, update those two knobs in lockstep.
 #
 # release.sh self-bounds the sweep via RELEASE_BENCH_BUDGET_SECONDS and always
 # aggregates whatever ran (appending a `## Truncated` note), so an over-budget
@@ -43,11 +44,17 @@
 #
 # The heavier single-call scenarios (write_heavy, read_heavy, mixed_rw,
 # batch_put_vertices, scan_prefix, addedge_contention, illuminate*,
-# replication_soak, chaos_kill_replica, smoke_*) remain in scenarios/ and stay
+# replication_soak, chaos_kill_replica, smoke_*, prefix_surface,
+# edge_contrib_idempotent, backup_under_load) remain in scenarios/ and stay
 # runnable on demand via `run.sh <stem>` for deep dives — they are simply not
 # part of the compact release gate.
+#
+# broad_rw fan-out now covers the following paths (12-way, see #708):
+#   PutVertex, GetVertex, PutVertices, GetVertices, AddEdge, GetEdges,
+#   ScanVertices, DeleteVertex, ScanVertexKeys, ScanEdges,
+#   CountVerticesByPrefix, AddEdge(idempotent/ContribID)
 
-# read / write / scan / edge / delete call surface (8-way fan-out)
+# read / write / scan / edge / delete call surface (12-way fan-out, #708)
 broad_rw
 
 # graph traversal across the orthogonal axes (4-way fan-out) — runs AFTER
@@ -59,3 +66,12 @@ ttl_churn
 
 # leaderless Subscribe fan-out across replicas
 many_subscribers
+
+# search index lifecycle: churn PutVertex (short TTL) + parallel SearchVertices
+# asserts lantern_search_index_* returns to baseline after cooldown (#703)
+search_churn
+
+# replicated write churn: asserts lantern_vertex_hlc_entries returns to baseline
+# after cooldown (regression gate for the vertexHLC leak fix, #700, #705)
+# requires LANTERN_REPLICATION_ENABLED=true and the 3-replica compose
+replication_apply_churn

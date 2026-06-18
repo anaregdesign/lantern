@@ -30,6 +30,16 @@ type MutationLogSampler func() (fill int, capacity int, evicted uint64)
 // the lantern_origin_states_count gauge.
 type OriginStatesSampler func() int
 
+// SearchIndexSampler reports the current number of distinct terms and indexed
+// documents in the optional search index. A nil sampler leaves
+// lantern_search_index_terms and lantern_search_index_docs at 0.
+type SearchIndexSampler func() (terms, docs int)
+
+// VertexHLCSampler reports the current number of entries in the per-key LWW
+// watermark map (vertexHLC). A nil sampler leaves lantern_vertex_hlc_entries
+// unsampled.
+type VertexHLCSampler func() int
+
 // DomainMetrics owns the Lantern-specific collectors. Construct with New and
 // pass the returned callbacks to GraphCache.SetGCHooks plus Start to begin
 // gauge sampling.
@@ -117,11 +127,31 @@ type DomainMetrics struct {
 	// idempotent Add). Plain counter: scrapes as 0 from process start.
 	edgeContribDeduped prometheus.Counter
 
-	sampleInterval time.Duration
-	sample         Sampler
-	mlogSample     MutationLogSampler
-	originSample   OriginStatesSampler
-	lastEvicted    uint64 // last observed cumulative eviction count
+	// Search RPC observability (#703). searchResults and searchDuration
+	// are separate histograms (not reusing the scan family) so
+	// dashboards can alert on search-specific SLOs without filtering.
+	searchResults  prometheus.Histogram
+	searchDuration prometheus.Histogram
+
+	// Search-index size gauges (#703). Sampled off InvertedIndex.Stats()
+	// on the same cadence as lantern_vertices / lantern_edges. Both stay
+	// 0 when LANTERN_SEARCH_ENABLED=false (sampler is nil).
+	searchIndexTerms prometheus.Gauge
+	searchIndexDocs  prometheus.Gauge
+
+	// Per-structure cardinality gauge for the LWW watermark map (#705).
+	// Sampled off GraphCache.VertexHLCCount(). Tracks the live replicated
+	// key set; a value that grows monotonically across GC ticks signals
+	// the vertexHLC leak (issue #700).
+	vertexHLCEntries prometheus.Gauge
+
+	sampleInterval    time.Duration
+	sample            Sampler
+	mlogSample        MutationLogSampler
+	originSample      OriginStatesSampler
+	searchIndexSample SearchIndexSampler
+	vertexHLCSample   VertexHLCSampler
+	lastEvicted       uint64 // last observed cumulative eviction count
 }
 
 // Hot-path label values. Exposed so the service layer can reference the
@@ -145,7 +175,9 @@ var (
 	illuminatePhases = []string{"traversal", "optimize"}
 	scanOps          = []string{
 		"ScanVertices",
+		"ScanVertexKeys",
 		"ScanEdges",
+		"CountVerticesByPrefix",
 		"DeleteVerticesByPrefix",
 	}
 	batchOps = []string{
@@ -303,12 +335,12 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		}, []string{"algorithm", "objective", "weighting", "phase"}),
 		scanResults: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "lantern_scan_results",
-			Help:    "Number of results returned by a prefix scan RPC, partitioned by op (ScanVertices | ScanEdges | DeleteVerticesByPrefix).",
+			Help:    "Number of results returned by a prefix scan or count RPC, partitioned by op (ScanVertices | ScanVertexKeys | ScanEdges | CountVerticesByPrefix | DeleteVerticesByPrefix).",
 			Buckets: prometheus.ExponentialBuckets(1, 4, 10),
 		}, []string{"op"}),
 		scanDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "lantern_scan_duration_seconds",
-			Help:    "Wall-clock duration of a prefix scan RPC, partitioned by op.",
+			Help:    "Wall-clock duration of a prefix scan or count RPC, partitioned by op.",
 			Buckets: prometheus.ExponentialBuckets(0.0001, 4, 8),
 		}, []string{"op"}),
 		batchSize: prometheus.NewHistogramVec(prometheus.HistogramOpts{
@@ -335,6 +367,28 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		edgeContribDeduped: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "lantern_edge_contrib_deduped_total",
 			Help: "Total additive edge contributions suppressed by client-supplied ContribID dedup (#588). A retried idempotent AddEdge/AddEdges re-sending the same ContribID bumps this instead of double-counting edge weight.",
+		}),
+		searchResults: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "lantern_search_results",
+			Help:    "Number of hits returned by a SearchVertices RPC (#703). Separate from the scan family so search-specific SLOs can be alerted on independently.",
+			Buckets: prometheus.ExponentialBuckets(1, 4, 10),
+		}),
+		searchDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "lantern_search_duration_seconds",
+			Help:    "Wall-clock duration of a SearchVertices RPC (#703).",
+			Buckets: prometheus.ExponentialBuckets(0.0001, 4, 8), // 0.1ms .. ~1.6s
+		}),
+		searchIndexTerms: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "lantern_search_index_terms",
+			Help: "Current number of distinct terms in the search inverted index (#703). Sampled on the same cadence as lantern_vertices. Always 0 when LANTERN_SEARCH_ENABLED=false.",
+		}),
+		searchIndexDocs: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "lantern_search_index_docs",
+			Help: "Current number of documents (indexed vertices) in the search inverted index (#703). Sampled on the same cadence as lantern_vertices. Always 0 when LANTERN_SEARCH_ENABLED=false.",
+		}),
+		vertexHLCEntries: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "lantern_vertex_hlc_entries",
+			Help: "Current number of entries in the per-key LWW watermark map used by the replication apply path (#705). Tracks the live replicated-key set; a value growing monotonically across GC ticks signals the vertexHLC leak (issue #700). Always 0 on a single-node deployment.",
 		}),
 		peerConnected: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "lantern_peer_connected",
@@ -403,6 +457,8 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		m.scanResults, m.scanDuration, m.batchSize,
 		m.getVertexHits, m.getVertexMisses, m.getEdgeHits, m.getEdgeMisses,
 		m.edgeContribDeduped,
+		m.searchResults, m.searchDuration, m.searchIndexTerms, m.searchIndexDocs,
+		m.vertexHLCEntries,
 		m.peerConnected, m.replicationApplyTotal, m.snapshotReplayedTotal,
 		m.snapshotVertices, m.snapshotEdges, m.snapshotDuration,
 		m.mutationLogFillRatio, m.mutationLogEvicted, m.originStatesCount,
@@ -795,6 +851,14 @@ func (m *DomainMetrics) OnEdgeContribDeduped(n int) {
 	}
 }
 
+// OnSearch records one SearchVertices RPC: the number of ranked hits returned
+// and the wall-clock duration (#703). Called by the SearchVertices handler;
+// results=0 is still observed (an empty result is a valid outcome).
+func (m *DomainMetrics) OnSearch(results int, duration time.Duration) {
+	m.searchResults.Observe(float64(results))
+	m.searchDuration.Observe(duration.Seconds())
+}
+
 // BindSampler stores the gauge-population callback. Must be called before
 // Run; safe to call exactly once during wiring.
 func (m *DomainMetrics) BindSampler(s Sampler) {
@@ -816,11 +880,29 @@ func (m *DomainMetrics) BindOriginStatesSampler(s OriginStatesSampler) {
 	m.originSample = s
 }
 
+// BindSearchIndexSampler installs the search-index size callback.
+// Must be called before Run; safe to call exactly once during wiring.
+// A nil sampler leaves lantern_search_index_terms and
+// lantern_search_index_docs at 0 (always the case when
+// LANTERN_SEARCH_ENABLED=false).
+func (m *DomainMetrics) BindSearchIndexSampler(s SearchIndexSampler) {
+	m.searchIndexSample = s
+}
+
+// BindVertexHLCSampler installs the per-key LWW watermark count callback.
+// Must be called before Run; safe to call exactly once during wiring.
+// A nil sampler leaves lantern_vertex_hlc_entries unsampled (always 0 on
+// a single-node deployment where no replicated writes arrive).
+func (m *DomainMetrics) BindVertexHLCSampler(s VertexHLCSampler) {
+	m.vertexHLCSample = s
+}
+
 // Run drives the gauge sampler on the configured cadence until ctx is done.
 // Safe to launch as a goroutine. A nil sampler is treated as a no-op so
 // tests can construct the collectors without wiring a cache.
 func (m *DomainMetrics) Run(ctx context.Context) {
-	if m.sample == nil && m.mlogSample == nil && m.originSample == nil {
+	if m.sample == nil && m.mlogSample == nil && m.originSample == nil &&
+		m.searchIndexSample == nil && m.vertexHLCSample == nil {
 		<-ctx.Done()
 		return
 	}
@@ -865,6 +947,14 @@ func (m *DomainMetrics) tick() {
 	}
 	if m.originSample != nil {
 		m.originStatesCount.Set(float64(m.originSample()))
+	}
+	if m.searchIndexSample != nil {
+		terms, docs := m.searchIndexSample()
+		m.searchIndexTerms.Set(float64(terms))
+		m.searchIndexDocs.Set(float64(docs))
+	}
+	if m.vertexHLCSample != nil {
+		m.vertexHLCEntries.Set(float64(m.vertexHLCSample()))
 	}
 }
 

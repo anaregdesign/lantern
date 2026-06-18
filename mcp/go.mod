@@ -3,7 +3,7 @@ module github.com/anaregdesign/lantern/mcp
 go 1.26
 
 require (
-	github.com/anaregdesign/lantern/pb v0.6.0
+	github.com/anaregdesign/lantern/pb v0.8.0
 	github.com/anaregdesign/lantern/sdks/go v0.15.1
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	google.golang.org/protobuf v1.36.11

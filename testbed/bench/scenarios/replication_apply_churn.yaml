@@ -1,0 +1,34 @@
+# replication_apply_churn — drives the write-receiving replica with
+# high-cardinality replicated writes and short TTLs to reproduce the
+# vertexHLC map growth described in issue #700 (now fixed via
+# sweepStaleVertexHLCLocked in flush()).
+#
+# This scenario targets the three-replica compose defined in
+# testbed/docker-compose.replicated.yml.  It writes to the leader (6380)
+# and reads from both followers (6381, 6382) to confirm replication
+# convergence.  The leak gate asserts that lantern_vertex_hlc_entries
+# returns to ~baseline after cooldown (i.e., the map does not grow
+# monotonically across flushes as it did before the fix).
+#
+# Requires: LANTERN_REPLICATION_ENABLED=true, 3-replica compose.
+name: replication_apply_churn
+phases:
+  warmup:   { duration: 30s, concurrency: 16, rps: 500 }
+  steady:   { duration: 3m,  concurrency: 48, rps: 3000 }
+  cooldown: 90s
+target:
+  endpoints: ["localhost:6380"]
+  calls:
+    # [0] PutVertex via the replicated-write path, short TTL so the GC
+    #     sweep fires repeatedly during the 3-minute steady window.
+    - call: graph.v1.LanternService/PutVertex
+      data_template: |
+        {"vertex":{"key":"hlc-churn-{{mod .RequestNumber 10000}}","string_":"v{{.RequestNumber}}","expiration":"{{timeAfterSeconds 15}}"}}
+    # [1] GetVertex on a follower confirms replication convergence.
+    - call: graph.v1.LanternService/GetVertex
+      endpoint: "localhost:6381"
+      data_template: |
+        {"key":"hlc-churn-{{mod .RequestNumber 10000}}"}
+leak_gate:
+  goroutine_max_delta: 30
+  heap_alloc_max_delta_mb: 64

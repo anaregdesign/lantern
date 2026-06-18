@@ -1339,6 +1339,61 @@ func TestPutEdgeWithExpirationHLC_LWW(t *testing.T) {
 	}
 }
 
+// TestVertexHLCCount_BoundedByLiveSet pins issue #700: the vertexHLC map must
+// be swept back to (approximately) zero after replicated vertices expire and
+// the GC flush runs. Before the fix, the map grew monotonically because
+// sweepStaleVertexHLCLocked was never called.
+func TestVertexHLCCount_BoundedByLiveSet(t *testing.T) {
+	const n = 50
+	c := NewGraphCache[string, string](time.Minute)
+	ts := hlc.Timestamp{WallNs: 1}
+
+	// Apply n distinct replicated vertices with short TTL so they expire
+	// immediately after the test moves on.
+	exp := time.Now().Add(50 * time.Millisecond)
+	for i := range n {
+		key := fmt.Sprintf("hlc-%d", i)
+		if !c.PutVertexWithExpirationHLC(key, "v", exp, ts) {
+			t.Fatalf("put %s: want applied=true", key)
+		}
+	}
+	if got := c.VertexHLCCount(); got != n {
+		t.Errorf("VertexHLCCount after puts = %d, want %d", got, n)
+	}
+
+	// Let the TTLs expire, then run a flush tick to sweep stale entries.
+	time.Sleep(100 * time.Millisecond)
+	c.vertices.Flush() // evict expired vertices from the inner cache
+	c.flush()          // sweepStaleVertexHLCLocked runs here under c.mu
+
+	if got := c.VertexHLCCount(); got != 0 {
+		t.Errorf("VertexHLCCount after flush = %d, want 0 (map must track live set, not all-time set)", got)
+	}
+}
+
+// TestSearchIndexStats returns (0, 0) when the search index is disabled and
+// the actual term/doc counts when enabled.
+func TestSearchIndexStats(t *testing.T) {
+	c := NewGraphCache[string, string](time.Minute)
+	terms, docs := c.SearchIndexStats()
+	if terms != 0 || docs != 0 {
+		t.Errorf("disabled: got (%d, %d), want (0, 0)", terms, docs)
+	}
+
+	c.EnableSearchIndex(func(v string) search.Document { return search.Text(v) })
+	exp := time.Now().Add(time.Hour)
+	c.PutVertexWithExpiration("key:1", "hello world", exp)
+	c.PutVertexWithExpiration("key:2", "foo bar", exp)
+
+	terms, docs = c.SearchIndexStats()
+	if docs != 2 {
+		t.Errorf("enabled: docs = %d, want 2", docs)
+	}
+	if terms == 0 {
+		t.Errorf("enabled: terms = 0, want > 0")
+	}
+}
+
 // ContribID.IsZero distinguishes the zero value (no identity) from a
 // populated one with a low byte — guards against accidental "all bytes
 // must be set" implementations.
