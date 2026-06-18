@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// HelpText is consumed by `lantern repl`'s `help` verb (#436). It must
+// HelpText is consumed by `lantern-cli repl`'s `help` verb (#436). It must
 // stay in lockstep with the TS port at admin/app/lib/cli/verbs.ts
 // `HELP_TEXT`. These tests guard the documented contract from issue
 // #436's acceptance criteria: the illuminate entry must enumerate

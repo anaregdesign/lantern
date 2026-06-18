@@ -1,6 +1,6 @@
-// Package cmd implements the `lantern` CLI: a cobra-based command tree that
+// Package cmd implements the `lantern-cli` CLI: a cobra-based command tree that
 // exposes every Lantern RPC as a one-shot subcommand and ships the legacy
-// interactive prompt as `lantern repl`.
+// interactive prompt as `lantern-cli repl`.
 //
 // The help text on every subcommand is intentionally long-form and
 // example-heavy because this CLI is expected to be driven by both humans and
@@ -26,7 +26,7 @@ import (
 	"connectrpc.com/connect"
 	"golang.org/x/net/http2"
 
-	"github.com/anaregdesign/lantern/sdks/go"
+	client "github.com/anaregdesign/lantern/sdks/go"
 	"github.com/spf13/cobra"
 )
 
@@ -47,12 +47,12 @@ var (
 )
 
 // rootCmd is the top-level command. It prints help when invoked with no
-// subcommand so that "lantern" alone is a no-op rather than dropping into a
-// REPL — the REPL is now `lantern repl`.
+// subcommand so that "lantern-cli" alone is a no-op rather than dropping into a
+// REPL — the REPL is now `lantern-cli repl`.
 var rootCmd = &cobra.Command{
-	Use:   "lantern",
+	Use:   "lantern-cli",
 	Short: "CLI for the Lantern in-memory key-vertex store",
-	Long: `lantern is the official command-line client for the Lantern server
+	Long: `lantern-cli is the official command-line client for the Lantern server
 (github.com/anaregdesign/lantern).
 
 WHAT LANTERN IS
@@ -64,12 +64,11 @@ WHAT LANTERN IS
   plus an interactive REPL.
 
 COMMAND LAYOUT
-  REPL grammar (verb-first one-liners — identical to the "lantern repl" prompt):
-    get / put / add / delete / scan / keys   e.g. "lantern get vertex alice"
-    keys is Redis-style: "lantern keys user:" lists vertex keys under a prefix
-  Noun-first subcommands (typed values, batch, paging, NDJSON bulk, TLS/gzip):
-    vertex      get / put / delete / scan / count / delete-prefix vertices
-    edge        get / add / put / delete / scan edges
+  Verb-first grammar (one-liners — identical to the "lantern-cli repl" prompt and
+  the admin web /cli):
+    get / put / add / delete / scan / count / delete-prefix / keys
+      e.g. "lantern-cli get vertex alice", "lantern-cli scan vertices users/ all=true",
+      "lantern-cli count vertices users/", "lantern-cli keys user:" (Redis-style KEYS)
   illuminate  walk the graph from a seed; accepts flags OR the REPL
               positional grammar (illuminate <seed> <step> <k> [key=value …])
   bulk        stream NDJSON from a file or stdin (bulk load)
@@ -101,27 +100,26 @@ EXIT CODES
   2  RPC error returned by the server (NotFound, InvalidArgument, …)
 
 EXAMPLES
-  # REPL grammar as one-liners (identical to the "lantern repl" prompt)
-  lantern get vertex alice
-  lantern put vertex alice "Alice" 3600        # value + TTL seconds
-  lantern add edge alice bob 1.5 3600          # additive edge write
-  lantern scan vertices users/ 100
-  lantern keys user: 100                       # Redis-style KEYS (vertex keys under a prefix)
-  lantern illuminate alice 2 5 algorithm=spt objective=max
+  # the verb-first grammar (identical to the "lantern-cli repl" prompt)
+  lantern-cli get vertex alice
+  lantern-cli put vertex alice "Alice" 3600        # value + TTL seconds
+  lantern-cli put vertex cfg '{"a":1}' type=json   # forced value type
+  lantern-cli add edge alice bob 1.5 3600          # additive edge write
+  lantern-cli scan vertices users/ 100 all=true    # paged prefix scan
+  lantern-cli count vertices users/                # prefix cardinality
+  lantern-cli delete vertex alice bob carol        # variadic batch delete
+  lantern-cli delete-prefix vertices tmp/ dry_run=true
+  lantern-cli keys user: 100                       # Redis-style KEYS (vertex keys under a prefix)
+  lantern-cli illuminate alice 2 5 algorithm=spt objective=max
 
-  # noun-first subcommands for typed values, batch, paging, TLS
-  lantern vertex put alice '{"name":"Alice"}' --value-type json --ttl 1h
-  lantern edge add alice bob 1.5 --ttl 30m
-  lantern edge add alice bob 0.5      # weight now totals 2.0
-
-  # batch delete (uses DeleteVertices)
-  lantern vertex delete alice bob carol
+  # NDJSON bulk load (streamed)
+  cat vertices.ndjson | lantern-cli bulk vertices -
 
   # walk from a seed and emit the 1-hop neighborhood as JSON
-  lantern illuminate alice --step 1 --k 10
+  lantern-cli illuminate alice --step 1 --k 10
 
   # against a TLS server
-  lantern --tls --tls-ca ./ca.pem -H lantern.example.com -p 443 vertex get alice
+  lantern-cli --tls --tls-ca ./ca.pem -H lantern.example.com -p 443 get vertex alice
 `,
 	SilenceUsage:  true,
 	SilenceErrors: true,

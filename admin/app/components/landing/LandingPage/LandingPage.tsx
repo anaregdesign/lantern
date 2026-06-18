@@ -31,7 +31,7 @@ const FEATURES: readonly Feature[] = [
     to: "/cli",
     icon: <Code24Regular />,
     title: "CLI",
-    copy: "Type-and-run REPL — same grammar as `lantern repl` (#411). Walk the graph on the canvas and do quick CRUD without leaving the SPA.",
+    copy: "Type-and-run REPL — same grammar as `lantern-cli repl` (#411). Walk the graph on the canvas and do quick CRUD without leaving the SPA.",
   },
   {
     to: "/ops",

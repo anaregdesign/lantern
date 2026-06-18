@@ -85,7 +85,7 @@ func TestEveryREPLVerbIsAvailableAsOneLiner(t *testing.T) {
 }
 
 // runGrammarLine must print help (and not dial) when invoked with no
-// arguments, so `lantern get` with nothing is a friendly no-op rather than a
+// arguments, so `lantern-cli get` with nothing is a friendly no-op rather than a
 // connection attempt.
 func TestRunGrammarLineEmptyArgsShowsHelp(t *testing.T) {
 	c := &cobra.Command{Use: "get"}

@@ -53,7 +53,7 @@ func (c *CLIService) Run(ctx context.Context, str string) error {
 
 // RunArgs dispatches an already-split token stream (verb + arguments)
 // through the same grammar the REPL parses from a raw line. The one-shot
-// verb-first CLI commands (`lantern get vertex <key>`, …) call this with
+// verb-first CLI commands (`lantern-cli get vertex <key>`, …) call this with
 // cobra's argv so the one-liner surface and the REPL share exactly one
 // grammar and one dispatcher (#672).
 func (c *CLIService) RunArgs(ctx context.Context, args []string) error {

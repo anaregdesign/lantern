@@ -95,29 +95,29 @@ NOTES
 
 EXAMPLES
   # raw 1-hop neighbourhood, top-10 by weight
-  lantern illuminate alice
+  lantern-cli illuminate alice
 
   # 2-hop reachability re-ranked by TF-IDF, top-5 per node
-  lantern illuminate alice --step 2 --k 5 --weighting tfidf
+  lantern-cli illuminate alice --step 2 --k 5 --weighting tfidf
 
   # 3-hop MST rooted at alice (smallest-weight connecting tree)
-  lantern illuminate alice --step 3 --k 20 --algorithm mst --objective min
+  lantern-cli illuminate alice --step 3 --k 20 --algorithm mst --objective min
 
   # 3-hop relevance-weighted SPT (formerly the "inverse-SPT" enum value)
-  lantern illuminate alice --step 3 --k 20 --algorithm spt --objective max
+  lantern-cli illuminate alice --step 3 --k 20 --algorithm spt --objective max
 
   # 2-hop walk restricted to the users/ keyspace (seed always kept)
-  lantern illuminate alice --step 2 --k 5 --prefix users/
+  lantern-cli illuminate alice --step 2 --k 5 --prefix users/
 
 REPL GRAMMAR (one-liner parity, #672)
   In addition to the flags above, illuminate accepts the REPL's positional
   form so the prompt and the shell share one grammar:
 
-    lantern illuminate <seed> <step> <k> [algorithm=none|mst|spt] \
+    lantern-cli illuminate <seed> <step> <k> [algorithm=none|mst|spt] \
             [objective=min|max] [weighting=raw|tfidf] [prefix=<string>]
 
-  e.g. "lantern illuminate alice 2 5 algorithm=spt objective=max" is
-  identical to typing it at "lantern repl". The positional form kicks in
+  e.g. "lantern-cli illuminate alice 2 5 algorithm=spt objective=max" is
+  identical to typing it at "lantern-cli repl". The positional form kicks in
   whenever more than the bare <seed> is supplied; a bare "lantern
   illuminate alice" uses the flag defaults (step=1, k=10).
 `,
@@ -125,7 +125,7 @@ REPL GRAMMAR (one-liner parity, #672)
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// REPL positional grammar: `illuminate <seed> <step> <k> [key=value …]`.
 		// When more than the bare seed is present, forward argv to the shared
-		// REPL dispatcher so `lantern illuminate alice 2 5 algorithm=spt`
+		// REPL dispatcher so `lantern-cli illuminate alice 2 5 algorithm=spt`
 		// behaves exactly like the prompt (#672). A bare seed keeps the
 		// flag-driven path below, which is the only form that supplies the
 		// step/k defaults.

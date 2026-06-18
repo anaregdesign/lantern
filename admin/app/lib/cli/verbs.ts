@@ -669,7 +669,7 @@ export const CLI_COMMAND_REFERENCE: readonly CliCommandDoc[] = [
     verb: "exit",
     signature: "exit",
     summary:
-      "No-op in the web CLI (close the tab to leave); ends the prompt in `lantern repl`.",
+      "No-op in the web CLI (close the tab to leave); ends the prompt in `lantern-cli repl`.",
     example: "exit",
   },
 ];

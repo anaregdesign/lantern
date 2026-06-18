@@ -351,35 +351,38 @@ Archive naming: `lantern-cli_<version>_<Linux|Darwin|Windows>_<x86_64|arm64>.tar
 Or build from source:
 
 ```shell
-go build -o lantern ./cli
-./lantern --help
+go build -o lantern-cli ./cli
+./lantern-cli --help
 ```
 
-The CLI gives you the same grammar three ways:
+The CLI gives you the same grammar two ways:
 
-- **`lantern repl`** — an interactive prompt; the fastest way to poke at a
+- **`lantern-cli repl`** — an interactive prompt; the fastest way to poke at a
   running server.
 - **Verb-first one-liners** — every line you can type at the prompt also works
-  as a single shell command: `lantern get vertex alice`,
-  `lantern put vertex alice "Alice" 3600`,
-  `lantern illuminate alice 2 5 algorithm=spt`. These share the exact parser
-  and dispatcher with the REPL ([#672](https://github.com/anaregdesign/lantern/issues/672)),
-  so the prompt and the shell never diverge.
-- **Noun-first subcommands** — `lantern vertex put`, `lantern edge add`,
-  `lantern vertex scan`, … — for everything the REPL grammar intentionally
-  does not cover: typed values, batch writes, cursor-paged prefix scans,
-  NDJSON bulk loads, gzip compression, and TLS flags.
+  as a single shell command: `lantern-cli get vertex alice`,
+  `lantern-cli put vertex alice "Alice" 3600`,
+  `lantern-cli scan vertices users/ all=true`,
+  `lantern-cli illuminate alice 2 5 algorithm=spt`. This is the one CLI grammar —
+  shared verbatim by the REPL prompt, these one-liners, and the admin web
+  `/cli` ([#672](https://github.com/anaregdesign/lantern/issues/672)), so the
+  surfaces never diverge.
+
+The grammar covers typed values (`type=`), variadic batch writes, prefix
+scans (`all=true`), `count`, `delete-prefix`, and `keys`. Two things sit
+outside it: `lantern-cli bulk vertices|edges` streams NDJSON from a file or
+stdin, and the global `--tls*` / `--compression` flags configure transport.
 
 Every subcommand has long-form, LLM-friendly help text
-(`lantern <cmd> --help`); read commands emit JSON on stdout and write
+(`lantern-cli <cmd> --help`); read commands emit JSON on stdout and write
 commands print `OK`. If you installed via Homebrew the client binary is
-`lantern-cli`; a from-source `go build -o lantern ./cli` names it `lantern`
-— the examples below use `lantern`, so substitute the name you have.
+`lantern-cli`; a from-source `go build -o lantern-cli ./cli` produces the same
+`lantern-cli` binary, so every example below uses `lantern-cli`.
 
 A REPL session that exercises the full vertex/edge/illuminate surface:
 
 ```text
-$ ./lantern repl
+$ ./lantern-cli repl
 > put vertex alice Alice                # value parsed as string
 OK (1.2ms)
 > put vertex bob Bob 3600               # third arg = TTL seconds
@@ -424,21 +427,23 @@ OK (0.6ms)
 > exit
 ```
 
-REPL grammar — works both at the `lantern repl` prompt and as a verb-first
-one-liner (prefix any line with `lantern`). Full reference in
-`lantern repl --help`, or type `help` inside the prompt to print it into the
+REPL grammar — works both at the `lantern-cli repl` prompt and as a verb-first
+one-liner (prefix any line with `lantern-cli`). Full reference in
+`lantern-cli repl --help`, or type `help` inside the prompt to print it into the
 scrollback:
 
 ```text
 get    vertex   <key>
-put    vertex   <key> <value> [ttl_seconds]
-delete vertex   <key>
+put    vertex   <key> <value> [ttl_seconds] [type=auto|string|int|float|bool|datetime|duration|json]
+delete vertex   <key> [<key> …]
 get    edge     <tail> <head>
 add    edge     <tail> <head> <weight> [ttl_seconds]
 put    edge     <tail> <head> <weight> [ttl_seconds]
-delete edge     <tail> <head>
-scan   vertices <prefix> [limit]
-scan   edges    <tail-prefix> [limit]
+delete edge     <tail> <head> [<tail> <head> …]
+scan   vertices <prefix> [limit] [all=true]
+scan   edges    <tail-prefix> [limit] [head=<prefix>] [all=true]
+count  vertices <prefix>
+delete-prefix vertices <prefix> [limit=<int>] [confirm=yes|dry_run=true]
 keys   <prefix> [limit]
 illuminate <seed> <step> <k> [algorithm=none|mst|spt] [objective=min|max] \
            [weighting=raw|tfidf] [prefix=<string>]
@@ -446,8 +451,8 @@ help
 exit
 ```
 
-For example, `lantern get vertex alice` run as a shell command is identical
-to typing `get vertex alice` at the prompt; `lantern add edge a b -1.5`
+For example, `lantern-cli get vertex alice` run as a shell command is identical
+to typing `get vertex alice` at the prompt; `lantern-cli add edge a b -1.5`
 passes the negative weight through verbatim (global connection flags such
 as `--address` go before the verb).
 
@@ -458,27 +463,29 @@ and objective tokens are matched case-insensitively (`Get VERTEX foo`
 works); positional arguments preserve case (`put vertex CamelKey
 CamelValue` stores `CamelKey` / `CamelValue`).
 
-For everything outside that grammar — batch writes, prefix scans, bulk
-loads, gzip/TLS, typed values — use the one-shot subcommands:
+The same grammar runs as one-liners — typed values, batch writes, prefix
+scans, count, and prefix-delete all live in the verb-first grammar:
 
 ```shell
-# typed values, explicit TTL
-./lantern vertex put alice '{"name":"Alice"}' --value-type json --ttl 1h
+# typed values
+./lantern-cli put vertex alice '{"name":"Alice"}' type=json
 
-# batched and streamed
-./lantern vertex delete alice bob carol            # batch DeleteVertices
-cat edges.ndjson | ./lantern bulk edges add -      # streamed AddEdges
+# batch delete (DeleteVertices)
+./lantern-cli delete vertex alice bob carol
 
-# prefix scan / count / bulk-delete
-./lantern vertex count  users/
-./lantern vertex scan   users/ --all > snap.ndjson
-./lantern vertex delete-prefix tmp/ --dry-run
+# prefix scan / count / prefix-delete
+./lantern-cli count vertices users/
+./lantern-cli scan vertices users/ all=true > snap.json
+./lantern-cli delete-prefix vertices tmp/ dry_run=true
 
-# edge scan
-./lantern edge scan --tail-prefix user: --head-prefix post:
+# edge scan, filtered by head
+./lantern-cli scan edges user: head=post:
 
-# TLS / mTLS
-./lantern --tls --tls-ca ./ca.pem -H lantern.example.com -p 443 vertex get alice
+# NDJSON bulk load (streamed — the one thing the grammar doesn't cover)
+cat edges.ndjson | ./lantern-cli bulk edges add -
+
+# TLS / mTLS (global flags precede the verb)
+./lantern-cli --tls --tls-ca ./ca.pem -H lantern.example.com -p 443 get vertex alice
 ```
 
 Global flags include `--host/--port` (or `--address`), `--timeout`, `--tls*`,
@@ -962,20 +969,25 @@ Required toolchain:
 
 ## CLI cheatsheet
 
-These commands are accepted by the interactive REPL (`./lantern repl`). The
-cobra subcommands (`./lantern vertex put …`, `./lantern edge add …`, etc.)
-shown earlier accept the same arguments.
+These commands are the one CLI grammar — accepted by the interactive REPL
+(`./lantern-cli repl`), the `lantern-cli <verb> …` one-liners, and the admin web
+`/cli`.
 
 ```shell
-put vertex <key:string> <value:string> [<ttl:int>]
+put vertex <key:string> <value:string> [<ttl:int>] [type=auto|string|int|float|bool|datetime|duration|json]
 put edge   <tail:string> <head:string> <weight:float> [<ttl:int>]
 add edge   <tail:string> <head:string> <weight:float> [<ttl:int>]
 get vertex <key:string>
 get edge   <tail:string> <head:string>
-delete vertex <key:string>
-delete edge   <tail:string> <head:string>
+delete vertex <key:string> [<key:string> …]
+delete edge   <tail:string> <head:string> [<tail:string> <head:string> …]
+scan vertices <prefix:string> [<limit:int>] [all=true]
+scan edges    <tail-prefix:string> [<limit:int>] [head=<prefix>] [all=true]
+count vertices <prefix:string>
+delete-prefix vertices <prefix:string> [limit=<int>] [confirm=yes|dry_run=true]
+keys <prefix:string> [<limit:int>]
 illuminate <seed:string> <step:int> <k:int> [algorithm=none|mst|spt] \
-           [objective=min|max] [weighting=raw|tfidf]
+           [objective=min|max] [weighting=raw|tfidf] [prefix=<string>]
 help
 exit
 ```

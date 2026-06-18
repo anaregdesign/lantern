@@ -70,7 +70,7 @@ strongest-edge behaviour (algorithm=none, objective=max, weighting=raw),
 so a bare illuminate keeps the top-k strongest neighbours (#560).
 
 EXAMPLE
-  $ lantern repl
+  $ lantern-cli repl
   > put vertex alice "Alice"
   put vertex "alice" (no ttl)
   OK (1.4ms)

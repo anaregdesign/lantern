@@ -182,8 +182,8 @@ kubectl -n default get pods -l app.kubernetes.io/name=lantern
 kubectl -n default get endpoints <release>-lantern-headless
 kubectl -n default port-forward svc/<release>-lantern 6380:6380
 # In another terminal:
-lantern put-vertex --addr localhost:6380 key1 value1
-lantern get-vertex --addr localhost:6380 key1
+lantern-cli --address localhost:6380 put vertex key1 value1
+lantern-cli --address localhost:6380 get vertex key1
 ```
 
 Then scale and observe convergence:
