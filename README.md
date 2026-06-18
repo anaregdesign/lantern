@@ -14,6 +14,10 @@ disk-backed graph database. It is the small, hot, online piece you put in front
 of those systems so request-path code can ask *"who is this user related to
 right now, and how strongly?"* in a single millisecond-scale RPC.
 
+> **Status: pre-1.0 — expect breaking changes.** Until `v1.0.0`, Lantern makes no
+> backward-compatibility guarantees: the proto/wire schema, SDK APIs, CLI grammar,
+> `LANTERN_*` env vars, and metric names can change between releases. Pin a version if
+> you need stability.
 
 ---
 

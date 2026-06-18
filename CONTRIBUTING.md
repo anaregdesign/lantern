@@ -9,6 +9,26 @@ is the always-on short subset.
 Each maintenance item below is **trigger → action**. Run the matching step before
 pushing or merging.
 
+## Versioning & compatibility (pre-v1.0.0)
+
+**Lantern is pre-v1.0.0 and makes _no_ backward-compatibility guarantees.** Until the
+first `v1.0.0`, prefer the cleanest design over compatibility — break freely across the
+whole surface and don't hedge for old clients:
+
+- **Proto / buf schema** — renumber, retype, or drop fields and RPCs freely. You do
+  **not** need to `reserved` retired field numbers/names purely for compatibility; add a
+  `reserved` only when it prevents a real decode hazard you actually care about. If a
+  `buf breaking` gate is ever added, treat it as waived until `v1.0.0`.
+- **SDK APIs (Go / Node), CLI / REPL grammar, the `LANTERN_*` env-var contract, and
+  metric names** — may change between releases. Update every call site in the same change.
+- **Still forbidden (unrelated to compatibility):** `buf generate --clean`. It deletes
+  `pb/go.mod` + `pb/doc.go` — a tooling footgun, not a compat concern — so the `--clean`
+  prohibition stays in force.
+
+At `v1.0.0` this is revisited and a real compatibility / deprecation policy is adopted.
+Until then, pre-existing `reserved` markers (e.g. `IlluminateRequest`'s `reserved 4, 5;`)
+may stay because they are harmless, but they are **not** required going forward.
+
 ## Issue triage — the `Lantern roadmap` project
 
 Cross-track triage lives in a single GitHub Project named `Lantern roadmap`. Issues
