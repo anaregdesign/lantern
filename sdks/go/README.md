@@ -213,15 +213,22 @@ design discussion.
 | Read   | `GetVertex` / `GetEdge` | `GetVertices` / `GetEdges` |
 | Write  | `PutVertex` / `PutVertexAt` / `AddEdge` / `AddEdgeAt` / `PutEdge` / `PutEdgeAt` | `PutVertices` / `AddEdges` / `PutEdges` |
 | Delete | `DeleteVertex` / `DeleteEdge` | `DeleteVertices` / `DeleteEdges` |
-| Scan   | — | `ScanVertices`, `ScanVerticesAll`, `ScanEdges`, `ScanEdgesAll`, `CountVerticesByPrefix`, `DeleteVerticesByPrefix` |
+| Scan   | — | `ScanVertices`, `ScanVerticesAll`, `ScanVertexKeys`, `ScanVertexKeysAll`, `ScanEdges`, `ScanEdgesAll`, `CountVerticesByPrefix`, `DeleteVerticesByPrefix` |
 | Graph  | `Illuminate` | — |
 | Replication | `Subscribe` (server-stream iter.Seq2) | — |
 | Status | `Ping`, `GetServerStatus`, `GetReplicationStatus` | — |
+| Backup | — | `Backup` / `Restore` |
 
 `AddEdge` is **additive** (multiple calls add weight, each contribution
 carries its own TTL); `PutEdge` is **idempotent replace** (single weight,
 single TTL). See the in-line discussion in `example/main.go` for the
 semantic difference.
+
+`Backup` streams a whole-graph, point-in-time dump (`FormatProto` by default,
+or human-readable `FormatNDJSON`; optionally scoped to a key prefix via
+`WithBackupPrefix`); `Restore` replays it through chunked `PutVertices` /
+`PutEdges`. Both work against a single node (no replication gate) — they back
+the `lantern-cli dump` / `restore` commands.
 
 ## Versioning
 
