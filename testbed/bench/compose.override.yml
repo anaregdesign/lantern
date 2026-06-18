@@ -39,6 +39,11 @@ x-lantern-bench-env: &lantern-bench-env
   # baseline during cooldown. See issue #711.
   LANTERN_DEFAULT_TTL_SECONDS: "${LANTERN_BENCH_DEFAULT_TTL_SECONDS:-3600}"
   LANTERN_GC_INTERVAL_SECONDS: "${LANTERN_BENCH_GC_INTERVAL_SECONDS:-60}"
+  # Optional per-scenario search toggle. Defaults to the server default (on).
+  # A leak scenario that exercises an unrelated structure under high-cardinality
+  # unique content (e.g. replication_apply_churn isolating vertexHLC) can turn
+  # search off so the InvertedIndex does not dominate the heap signal.
+  LANTERN_SEARCH_ENABLED: "${LANTERN_BENCH_SEARCH_ENABLED:-true}"
 
 services:
   lantern-0:

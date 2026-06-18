@@ -25,10 +25,12 @@ target:
   # the seed alive for the whole run.
   calls:
     # [0] working-set filler / seed — warmup replays this; keeps the k-*
-    #     vertex space populated for the scans and counts below.
+    #     vertex space populated for the scans and counts below. The value
+    #     vocabulary is bounded (mod 100) so the on-by-default search index
+    #     stays bounded rather than growing a term per unique value.
     - call: graph.v1.LanternService/PutVertex
       data_template: |
-        {"vertex":{"key":"k-{{mod .RequestNumber 2000}}","string":"val-{{.RequestNumber}}"}}
+        {"vertex":{"key":"k-{{mod .RequestNumber 2000}}","string":"val-{{mod .RequestNumber 100}}"}}
     # [1] keys-only scan: low-bandwidth, high-frequency; exercises
     #     ScanVertexKeys hot path (now tracked by lantern_scan_ops)
     - call: graph.v1.LanternService/ScanVertexKeys

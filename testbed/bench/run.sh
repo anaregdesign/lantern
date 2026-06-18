@@ -90,6 +90,14 @@ if [[ -n "$cluster_gc" && "$cluster_gc" != "null" ]]; then
   export LANTERN_BENCH_GC_INTERVAL_SECONDS="$cluster_gc"
   log "cluster override: LANTERN_GC_INTERVAL_SECONDS=${cluster_gc}"
 fi
+# NOTE: do not use `// ""` here — yq/jq treat a boolean `false` as empty, so
+# `.cluster.search_enabled // ""` would swallow an explicit `false`. Read the
+# raw value and test for the literal "null" (absent) instead.
+cluster_search="$(yq -r '.cluster.search_enabled' "$SCENARIO_FILE")"
+if [[ -n "$cluster_search" && "$cluster_search" != "null" ]]; then
+  export LANTERN_BENCH_SEARCH_ENABLED="$cluster_search"
+  log "cluster override: LANTERN_SEARCH_ENABLED=${cluster_search}"
+fi
 
 # ----- compose up ------------------------------------------------------------
 if [[ "${SKIP_UP:-0}" != "1" ]]; then

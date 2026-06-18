@@ -25,10 +25,11 @@ target:
   # Default 3600s TTL keeps the bounded bk-* graph populated for the run.
   calls:
     # [0] working-set filler / seed — warmup replays this; keeps bk-*
-    #     vertices churning while backups are in-flight.
+    #     vertices churning while backups are in-flight. Bounded value
+    #     vocabulary (mod 100) keeps the on-by-default search index bounded.
     - call: graph.v1.LanternService/PutVertex
       data_template: |
-        {"vertex":{"key":"bk-{{mod .RequestNumber 2000}}","string":"payload-{{.RequestNumber}}"}}
+        {"vertex":{"key":"bk-{{mod .RequestNumber 2000}}","string":"payload-{{mod .RequestNumber 100}}"}}
     # [1] additive edges so the snapshot has edge records to fold (weight
     #     summed across contributions, expiration = furthest contribution).
     - call: graph.v1.LanternService/AddEdge
