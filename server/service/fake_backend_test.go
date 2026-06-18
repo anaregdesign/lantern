@@ -342,6 +342,13 @@ func (f *fakeBackend) SnapshotVertices() []graphcache.SnapshotVertex[string, *pb
 	return out
 }
 
+func (f *fakeBackend) SnapshotGraph() graphcache.GraphSnapshot[string, *pb.Vertex] {
+	return graphcache.GraphSnapshot[string, *pb.Vertex]{
+		Vertices: f.SnapshotVertices(),
+		Edges:    f.SnapshotEdges(),
+	}
+}
+
 func (f *fakeBackend) SnapshotEdges() []graphcache.SnapshotEdge[string] {
 	var out []graphcache.SnapshotEdge[string]
 	for tail, heads := range f.edges {

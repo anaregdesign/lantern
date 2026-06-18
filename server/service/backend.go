@@ -123,6 +123,11 @@ type Backend interface {
 	SnapshotVertices() []graphcache.SnapshotVertex[string, *pb.Vertex]
 	SnapshotEdges() []graphcache.SnapshotEdge[string]
 
+	// SnapshotGraph materialises both vertices and edges under a SINGLE
+	// GraphCache lock (#689), so a whole-graph backup observes one
+	// point-in-time. Used by BackupSnapshot.
+	SnapshotGraph() graphcache.GraphSnapshot[string, *pb.Vertex]
+
 	// VertexCount and EdgeCount return the current number of live entries
 	// in the underlying graph cache. Backed by index sizes — O(1) and
 	// safe to call from any RPC. Returned values are eventually-consistent

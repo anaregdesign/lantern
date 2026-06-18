@@ -96,6 +96,9 @@ const (
 	// LanternServiceGetReplicationStatusProcedure is the fully-qualified name of the LanternService's
 	// GetReplicationStatus RPC.
 	LanternServiceGetReplicationStatusProcedure = "/graph.v1.LanternService/GetReplicationStatus"
+	// LanternServiceBackupSnapshotProcedure is the fully-qualified name of the LanternService's
+	// BackupSnapshot RPC.
+	LanternServiceBackupSnapshotProcedure = "/graph.v1.LanternService/BackupSnapshot"
 )
 
 // LanternServiceClient is a client for the graph.v1.LanternService service.
@@ -161,6 +164,14 @@ type LanternServiceClient interface {
 	// dashboard at any cadence the operator finds useful. On
 	// single-instance deployments enabled=false and peers is empty.
 	GetReplicationStatus(context.Context, *connect.Request[v1.GetReplicationStatusRequest]) (*connect.Response[v1.GetReplicationStatusResponse], error)
+	// BackupSnapshot streams a whole-graph, point-in-time backup: every
+	// live vertex and folded edge as a BackupRecord, materialised under a
+	// single GraphCache lock (SnapshotGraph). Unlike the replication
+	// Snapshot RPC it has NO replication gate — it works on a single node.
+	// vertex_prefix optionally scopes the backup to an induced subgraph.
+	// The restore side replays records through PutVertices / PutEdges, so
+	// there is no dedicated restore RPC.
+	BackupSnapshot(context.Context, *connect.Request[v1.BackupSnapshotRequest]) (*connect.ServerStreamForClient[v1.BackupSnapshotResponse], error)
 }
 
 // NewLanternServiceClient constructs a client for the graph.v1.LanternService service. By default,
@@ -312,6 +323,12 @@ func NewLanternServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(lanternServiceMethods.ByName("GetReplicationStatus")),
 			connect.WithClientOptions(opts...),
 		),
+		backupSnapshot: connect.NewClient[v1.BackupSnapshotRequest, v1.BackupSnapshotResponse](
+			httpClient,
+			baseURL+LanternServiceBackupSnapshotProcedure,
+			connect.WithSchema(lanternServiceMethods.ByName("BackupSnapshot")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -340,6 +357,7 @@ type lanternServiceClient struct {
 	scanEdges              *connect.Client[v1.ScanEdgesRequest, v1.ScanEdgesResponse]
 	getServerStatus        *connect.Client[v1.GetServerStatusRequest, v1.GetServerStatusResponse]
 	getReplicationStatus   *connect.Client[v1.GetReplicationStatusRequest, v1.GetReplicationStatusResponse]
+	backupSnapshot         *connect.Client[v1.BackupSnapshotRequest, v1.BackupSnapshotResponse]
 }
 
 // Illuminate calls graph.v1.LanternService.Illuminate.
@@ -457,6 +475,11 @@ func (c *lanternServiceClient) GetReplicationStatus(ctx context.Context, req *co
 	return c.getReplicationStatus.CallUnary(ctx, req)
 }
 
+// BackupSnapshot calls graph.v1.LanternService.BackupSnapshot.
+func (c *lanternServiceClient) BackupSnapshot(ctx context.Context, req *connect.Request[v1.BackupSnapshotRequest]) (*connect.ServerStreamForClient[v1.BackupSnapshotResponse], error) {
+	return c.backupSnapshot.CallServerStream(ctx, req)
+}
+
 // LanternServiceHandler is an implementation of the graph.v1.LanternService service.
 type LanternServiceHandler interface {
 	Illuminate(context.Context, *connect.Request[v1.IlluminateRequest]) (*connect.Response[v1.IlluminateResponse], error)
@@ -520,6 +543,14 @@ type LanternServiceHandler interface {
 	// dashboard at any cadence the operator finds useful. On
 	// single-instance deployments enabled=false and peers is empty.
 	GetReplicationStatus(context.Context, *connect.Request[v1.GetReplicationStatusRequest]) (*connect.Response[v1.GetReplicationStatusResponse], error)
+	// BackupSnapshot streams a whole-graph, point-in-time backup: every
+	// live vertex and folded edge as a BackupRecord, materialised under a
+	// single GraphCache lock (SnapshotGraph). Unlike the replication
+	// Snapshot RPC it has NO replication gate — it works on a single node.
+	// vertex_prefix optionally scopes the backup to an induced subgraph.
+	// The restore side replays records through PutVertices / PutEdges, so
+	// there is no dedicated restore RPC.
+	BackupSnapshot(context.Context, *connect.Request[v1.BackupSnapshotRequest], *connect.ServerStream[v1.BackupSnapshotResponse]) error
 }
 
 // NewLanternServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -667,6 +698,12 @@ func NewLanternServiceHandler(svc LanternServiceHandler, opts ...connect.Handler
 		connect.WithSchema(lanternServiceMethods.ByName("GetReplicationStatus")),
 		connect.WithHandlerOptions(opts...),
 	)
+	lanternServiceBackupSnapshotHandler := connect.NewServerStreamHandler(
+		LanternServiceBackupSnapshotProcedure,
+		svc.BackupSnapshot,
+		connect.WithSchema(lanternServiceMethods.ByName("BackupSnapshot")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/graph.v1.LanternService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case LanternServiceIlluminateProcedure:
@@ -715,6 +752,8 @@ func NewLanternServiceHandler(svc LanternServiceHandler, opts ...connect.Handler
 			lanternServiceGetServerStatusHandler.ServeHTTP(w, r)
 		case LanternServiceGetReplicationStatusProcedure:
 			lanternServiceGetReplicationStatusHandler.ServeHTTP(w, r)
+		case LanternServiceBackupSnapshotProcedure:
+			lanternServiceBackupSnapshotHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -814,4 +853,8 @@ func (UnimplementedLanternServiceHandler) GetServerStatus(context.Context, *conn
 
 func (UnimplementedLanternServiceHandler) GetReplicationStatus(context.Context, *connect.Request[v1.GetReplicationStatusRequest]) (*connect.Response[v1.GetReplicationStatusResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternService.GetReplicationStatus is not implemented"))
+}
+
+func (UnimplementedLanternServiceHandler) BackupSnapshot(context.Context, *connect.Request[v1.BackupSnapshotRequest], *connect.ServerStream[v1.BackupSnapshotResponse]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternService.BackupSnapshot is not implemented"))
 }
