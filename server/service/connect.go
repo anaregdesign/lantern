@@ -128,6 +128,10 @@ func (h *lanternServiceConnect) GetServerStatus(ctx context.Context, req *connec
 func (h *lanternServiceConnect) GetReplicationStatus(ctx context.Context, req *connect.Request[pb.GetReplicationStatusRequest]) (*connect.Response[pb.GetReplicationStatusResponse], error) {
 	return unary(ctx, req, h.svc.GetReplicationStatus)
 }
+func (h *lanternServiceConnect) BackupSnapshot(ctx context.Context, req *connect.Request[pb.BackupSnapshotRequest], stream *connect.ServerStream[pb.BackupSnapshotResponse]) error {
+	// *connect.ServerStream[T] satisfies service.Sender[T] directly.
+	return h.svc.BackupSnapshot(ctx, req.Msg, stream)
+}
 
 type lanternReplicationServiceConnect struct {
 	graphv1connect.UnimplementedLanternReplicationServiceHandler

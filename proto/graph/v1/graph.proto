@@ -566,6 +566,25 @@ message GetReplicationStatusResponse {
   repeated ReplicationPeer peers = 10;
 }
 
+// BackupSnapshotRequest parameterises a whole-graph backup stream.
+// vertex_prefix, when non-empty, restricts the backup to the induced
+// subgraph over vertices whose key has this prefix (an edge is included
+// only when BOTH endpoints match). Empty = the whole graph.
+message BackupSnapshotRequest {
+  string vertex_prefix = 1;
+}
+
+// BackupSnapshotResponse is one frame of the BackupSnapshot stream:
+// either a live vertex or a folded live edge (weight summed across
+// contributions, expiration = the furthest-future contribution). The two
+// kinds are interleaved; consumers route on the oneof.
+message BackupSnapshotResponse {
+  oneof record {
+    Vertex vertex = 1;
+    Edge edge = 2;
+  }
+}
+
 service LanternService {
   rpc Illuminate(IlluminateRequest) returns (IlluminateResponse);
 
@@ -650,4 +669,13 @@ service LanternService {
   // dashboard at any cadence the operator finds useful. On
   // single-instance deployments enabled=false and peers is empty.
   rpc GetReplicationStatus(GetReplicationStatusRequest) returns (GetReplicationStatusResponse);
+
+  // BackupSnapshot streams a whole-graph, point-in-time backup: every
+  // live vertex and folded edge as a BackupRecord, materialised under a
+  // single GraphCache lock (SnapshotGraph). Unlike the replication
+  // Snapshot RPC it has NO replication gate — it works on a single node.
+  // vertex_prefix optionally scopes the backup to an induced subgraph.
+  // The restore side replays records through PutVertices / PutEdges, so
+  // there is no dedicated restore RPC.
+  rpc BackupSnapshot(BackupSnapshotRequest) returns (stream BackupSnapshotResponse);
 }
