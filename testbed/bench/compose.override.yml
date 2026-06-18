@@ -29,6 +29,21 @@ x-lantern-bench-env: &lantern-bench-env
   # while keeping legitimate ring retention well under the leak_gate
   # heap budget. See issue #254.
   LANTERN_MUTATION_LOG_CAPACITY: "10000"
+  # Per-scenario cluster TTL / GC tick. run.sh exports the LANTERN_BENCH_*
+  # host vars from a scenario's optional `cluster:` block; both fall back to
+  # the canonical 3600/60 when unset, so scenarios without a `cluster:` block
+  # are unaffected. These override the canonical x-lantern-common values
+  # because the override file is merged last (per-key environment merge).
+  # Lets leak scenarios (search_churn, replication_apply_churn) drive prompt
+  # TTL eviction so the index / vertexHLC maps demonstrably shrink back to
+  # baseline during cooldown. See issue #711.
+  LANTERN_DEFAULT_TTL_SECONDS: "${LANTERN_BENCH_DEFAULT_TTL_SECONDS:-3600}"
+  LANTERN_GC_INTERVAL_SECONDS: "${LANTERN_BENCH_GC_INTERVAL_SECONDS:-60}"
+  # Optional per-scenario search toggle. Defaults to the server default (on).
+  # A leak scenario that exercises an unrelated structure under high-cardinality
+  # unique content (e.g. replication_apply_churn isolating vertexHLC) can turn
+  # search off so the InvertedIndex does not dominate the heap signal.
+  LANTERN_SEARCH_ENABLED: "${LANTERN_BENCH_SEARCH_ENABLED:-true}"
 
 services:
   lantern-0:

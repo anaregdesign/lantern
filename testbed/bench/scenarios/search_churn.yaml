@@ -12,9 +12,14 @@
 # Assert lantern_search_index_terms and lantern_search_index_docs return
 # to ~baseline after cooldown (the "index decays in lockstep" claim).
 #
-# No extra config: the bench cluster runs search on by default
-# (LANTERN_SEARCH_ENABLED=true).
+# The bench cluster runs search on by default (LANTERN_SEARCH_ENABLED=true).
+# The `cluster:` block (consumed by run.sh, see #711) shortens the cluster TTL
+# + GC tick so written vertices are indexed, then expire and are swept within
+# the run — driving the index lifecycle this scenario asserts.
 name: search_churn
+cluster:
+  default_ttl_seconds: 10
+  gc_interval_seconds: 10
 phases:
   warmup:   { duration: 30s, concurrency: 16, rps: 500 }
   steady:   { duration: 2m,  concurrency: 32, rps: 2000 }
@@ -28,7 +33,7 @@ target:
     #     churns the index continuously throughout the steady window.
     - call: graph.v1.LanternService/PutVertex
       data_template: |
-        {"vertex":{"key":"search-{{mod .RequestNumber 5000}}","string_":"topic {{mod .RequestNumber 100}}","expiration":"{{timeAfterSeconds 10}}"}}
+        {"vertex":{"key":"search-{{mod .RequestNumber 5000}}","string":"topic {{mod .RequestNumber 100}}"}}
     # [1] full-text query over the indexed content.
     - call: graph.v1.LanternService/SearchVertices
       data_template: |

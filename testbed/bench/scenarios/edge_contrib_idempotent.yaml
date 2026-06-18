@@ -8,10 +8,12 @@
 # - leak: the weight.values slice and the ContribID set must be bounded
 #   by the number of distinct ContribIDs, not the total call count.
 #
-# The hot keyspace is intentionally narrow (10 edges) so lock contention
-# and the at-most-once set grow together; the cooldown window lets the
-# TTL expiry clean up and the leak gate confirms the heap returns to
-# baseline.
+# The hot keyspace is intentionally narrow (a handful of edges) so lock
+# contention and the at-most-once ContribID set are exercised together.
+# Because every contribution carries a bounded, canonical 24-byte ContribID,
+# the set is capped by the number of distinct ids (not the call count), so
+# the heap stays flat across the steady window and the leak gate confirms it
+# never grows — the regression this scenario guards against (#706).
 name: edge_contrib_idempotent
 phases:
   warmup:
@@ -27,16 +29,25 @@ target:
   endpoints: ["localhost:6380", "localhost:6381", "localhost:6382"]
   calls:
     # [0] singular AddEdge with a stable ContribID derived from the request
-    #     number — so the same ID appears repeatedly at high RPS.  The
-    #     server must deduplicate correctly.
+    #     number — so the same ID appears repeatedly at high RPS and the
+    #     server must deduplicate (at-most-once) instead of double-counting.
+    #     contrib_id is request-level bytes (protojson base64). The server
+    #     ONLY honors a canonical 24-byte id (contribIDFromBytes: any other
+    #     length decodes to the zero "no identity" id and silently falls back
+    #     to the legacy additive path), so the template pads the bounded
+    #     200-value space to 24 ASCII bytes via `printf` before base64. The
+    #     format string is backtick-quoted because ghz parses the -d JSON
+    #     before templating — a double-quoted "%024d" would break that parse.
     - call: graph.v1.LanternService/AddEdge
       data_template: |
-        {"tail":"node-{{mod .RequestNumber 5}}","head":"node-{{mod (add .RequestNumber 1) 5}}","weight":1.0,"expiration":"{{timeAfterSeconds 120}}","contrib_id":"c-{{mod .RequestNumber 200}}"}
-    # [1] plural AddEdges fan-out: batches of 5 edges on the same hot pair
-    #     with the same ContribID — exercises the batch dedup path.
+        {"edge":{"tail":"node-{{mod .RequestNumber 5}}","head":"node-{{mod (add .RequestNumber 1) 5}}","weight":1.0},"contribId":"{{ printf `%024d` (mod .RequestNumber 200) | b64enc }}"}
+    # [1] plural AddEdges fan-out: a 3-edge batch with index-aligned
+    #     contrib_ids (request-level repeated bytes) — exercises the batch
+    #     dedup path. The same bounded, 24-byte-padded ContribID is reused
+    #     across retries so each (tail,head) records it at most once.
     - call: graph.v1.LanternService/AddEdges
       data_template: |
-        {"edges":[{"tail":"node-0","head":"node-1","weight":1.0,"expiration":"{{timeAfterSeconds 120}}","contrib_id":"batch-{{mod .RequestNumber 40}}"},{"tail":"node-1","head":"node-2","weight":1.0,"expiration":"{{timeAfterSeconds 120}}","contrib_id":"batch-{{mod .RequestNumber 40}}"},{"tail":"node-2","head":"node-3","weight":1.0,"expiration":"{{timeAfterSeconds 120}}","contrib_id":"batch-{{mod .RequestNumber 40}}"}]}
+        {"edges":[{"tail":"node-0","head":"node-1","weight":1.0},{"tail":"node-1","head":"node-2","weight":1.0},{"tail":"node-2","head":"node-3","weight":1.0}],"contribIds":["{{ printf `%024d` (mod .RequestNumber 40) | b64enc }}","{{ printf `%024d` (mod .RequestNumber 40) | b64enc }}","{{ printf `%024d` (mod .RequestNumber 40) | b64enc }}"]}
 leak_gate:
   goroutine_max_delta: 20
   heap_alloc_max_delta_mb: 24

@@ -76,18 +76,36 @@ target:
     # [9] edge scan — covers the ScanEdges path under the same write-filled graph.
     - call: graph.v1.LanternService/ScanEdges
       data_template: |
-        {"prefix":"k-","limit":128}
+        {"tailPrefix":"k-","limit":128}
     # [10] aggregate count — exercises CountVerticesByPrefix and its
     #      OnScan("CountVerticesByPrefix", ...) metric instrumentation (#704).
     - call: graph.v1.LanternService/CountVerticesByPrefix
       data_template: |
         {"prefix":"k-"}
-    # [11] idempotent AddEdge with ContribID — same (tail,head) retried repeatedly
-    #      at-most-once semantics; verifies the contrib_id dedup set stays bounded
-    #      (#706).  Uses a 200-value ContribID space to keep the set small.
+    # [11] idempotent AddEdge with ContribID — same (k-0,k-1) edge retried
+    #      repeatedly with at-most-once semantics; verifies the contrib_id
+    #      dedup set stays bounded (#706). The server only honors a canonical
+    #      24-byte id, so the bounded 200-value space is padded to 24 ASCII
+    #      bytes via backtick-quoted `printf` (a double-quoted "%024d" would
+    #      break ghz's pre-template JSON parse) before base64. Without the
+    #      pad the id decodes to zero and this silently joins call[4] on the
+    #      additive path, doubling the steady-state heap.
     - call: graph.v1.LanternService/AddEdge
       data_template: |
-        {"edge":{"tail":"k-0","head":"k-1","weight":1.0},"contrib_id":"rw-{{mod .RequestNumber 200}}"}
+        {"edge":{"tail":"k-0","head":"k-1","weight":1.0},"contribId":"{{ printf `%024d` (mod .RequestNumber 200) | b64enc }}"}
+# heap_alloc is dominated by the additive AddEdge path (call[4], no
+# contrib_id): each call appends a (weight, expiration) contribution that
+# lives until the default 3600s TTL, so over a 2m steady at 1000 AddEdge/s
+# ~120k contributions accumulate. The bench cluster replicates every write to
+# all three peers (LANTERN_PEER_DISCOVERY=dns), so each replica independently
+# holds that set — ~100–145 MiB per replica, measured across runs. This is a
+# bounded working set, not a leak: goroutines stay flat/negative and the set
+# is capped by steady-duration × per-call rps, not by total run length.
+# (call[11] carries a bounded 24-byte ContribID so its retries dedup and add
+# negligible heap; only the deliberately-additive call[4] grows.) The gate is
+# sized with headroom over the measured peak. #709 bumped steady rps to 12000
+# (still 1000 per call across 12 calls) and lengthened the window without
+# lifting this gate; 192 restores the lockstep (was 64). See #711.
 leak_gate:
   goroutine_max_delta: 30
-  heap_alloc_max_delta_mb: 64
+  heap_alloc_max_delta_mb: 192
