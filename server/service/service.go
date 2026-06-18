@@ -81,6 +81,7 @@ type LanternService struct {
 type HotPathMetrics interface {
 	OnIlluminate(algorithm, objective, weighting string, visitedVertices, visitedEdges int, traversal, optimize time.Duration)
 	OnScan(op string, results int, duration time.Duration)
+	OnSearch(results int, duration time.Duration)
 	OnBatch(op string, size int)
 	OnGetVertices(hits, misses int)
 	OnGetEdges(hits, misses int)
@@ -92,6 +93,7 @@ type noopHotPathMetrics struct{}
 func (noopHotPathMetrics) OnIlluminate(string, string, string, int, int, time.Duration, time.Duration) {
 }
 func (noopHotPathMetrics) OnScan(string, int, time.Duration) {}
+func (noopHotPathMetrics) OnSearch(int, time.Duration)       {}
 func (noopHotPathMetrics) OnBatch(string, int)               {}
 func (noopHotPathMetrics) OnGetVertices(int, int)            {}
 func (noopHotPathMetrics) OnGetEdges(int, int)               {}

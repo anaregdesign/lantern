@@ -13,6 +13,7 @@ import (
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
+	"github.com/anaregdesign/lantern/core/search"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
@@ -1029,6 +1030,7 @@ func itoa(i int) string {
 type fakeHotPathMetrics struct {
 	illuminate []illuminateObs
 	scan       []scanObs
+	search     []searchObs
 	batch      []batchObs
 	getVertex  []hitMissObs
 	getEdge    []hitMissObs
@@ -1043,6 +1045,11 @@ type illuminateObs struct {
 
 type scanObs struct {
 	op       string
+	results  int
+	duration time.Duration
+}
+
+type searchObs struct {
 	results  int
 	duration time.Duration
 }
@@ -1062,6 +1069,9 @@ func (f *fakeHotPathMetrics) OnIlluminate(algorithm, objective, weighting string
 }
 func (f *fakeHotPathMetrics) OnScan(op string, results int, d time.Duration) {
 	f.scan = append(f.scan, scanObs{op, results, d})
+}
+func (f *fakeHotPathMetrics) OnSearch(results int, d time.Duration) {
+	f.search = append(f.search, searchObs{results, d})
 }
 func (f *fakeHotPathMetrics) OnBatch(op string, size int) {
 	f.batch = append(f.batch, batchObs{op, size})
@@ -1148,16 +1158,22 @@ func TestLanternService_HotPathMetrics_EmitsOnScan(t *testing.T) {
 	if _, err := s.ScanVertices(ctx, &pb.ScanVerticesRequest{Prefix: "p:", Limit: 100}); err != nil {
 		t.Fatalf("ScanVertices: %v", err)
 	}
+	if _, err := s.ScanVertexKeys(ctx, &pb.ScanVertexKeysRequest{Prefix: "p:", Limit: 100}); err != nil {
+		t.Fatalf("ScanVertexKeys: %v", err)
+	}
 	if _, err := s.ScanEdges(ctx, &pb.ScanEdgesRequest{Limit: 100}); err != nil {
 		t.Fatalf("ScanEdges: %v", err)
+	}
+	if _, err := s.CountVerticesByPrefix(ctx, &pb.CountVerticesByPrefixRequest{Prefix: "p:"}); err != nil {
+		t.Fatalf("CountVerticesByPrefix: %v", err)
 	}
 	if _, err := s.DeleteVerticesByPrefix(ctx, &pb.DeleteVerticesByPrefixRequest{Prefix: "p:", Limit: 100}); err != nil {
 		t.Fatalf("DeleteVerticesByPrefix: %v", err)
 	}
-	if len(fm.scan) != 3 {
-		t.Fatalf("scan observations = %d, want 3", len(fm.scan))
+	if len(fm.scan) != 5 {
+		t.Fatalf("scan observations = %d, want 5", len(fm.scan))
 	}
-	wantOps := []string{"ScanVertices", "ScanEdges", "DeleteVerticesByPrefix"}
+	wantOps := []string{"ScanVertices", "ScanVertexKeys", "ScanEdges", "CountVerticesByPrefix", "DeleteVerticesByPrefix"}
 	for i, want := range wantOps {
 		if fm.scan[i].op != want {
 			t.Errorf("scan[%d].op = %q, want %q", i, fm.scan[i].op, want)
@@ -1166,8 +1182,36 @@ func TestLanternService_HotPathMetrics_EmitsOnScan(t *testing.T) {
 	if fm.scan[0].results != 2 {
 		t.Errorf("ScanVertices results = %d, want 2", fm.scan[0].results)
 	}
-	if fm.scan[2].results != 2 {
-		t.Errorf("DeleteVerticesByPrefix results = %d, want 2", fm.scan[2].results)
+	if fm.scan[4].results != 2 {
+		t.Errorf("DeleteVerticesByPrefix results = %d, want 2", fm.scan[4].results)
+	}
+}
+
+// TestLanternService_HotPathMetrics_EmitsOnSearch asserts that SearchVertices
+// fires OnSearch (not OnScan) with the result count and a positive duration.
+func TestLanternService_HotPathMetrics_EmitsOnSearch(t *testing.T) {
+	fm := &fakeHotPathMetrics{}
+	fb := newFakeBackend()
+	fb.searchResults = []search.Result[string]{{ID: "k:1", Score: 0.9}, {ID: "k:2", Score: 0.5}}
+	s := NewLanternService(fb).
+		WithSearchLimits(SearchLimits{Enabled: true, DefaultLimit: 10, MaxLimit: 100}).
+		WithHotPathMetrics(fm)
+	ctx := context.Background()
+
+	if _, err := s.SearchVertices(ctx, &pb.SearchVerticesRequest{Query: "hello"}); err != nil {
+		t.Fatalf("SearchVertices: %v", err)
+	}
+	if len(fm.scan) != 0 {
+		t.Errorf("OnScan called %d times during SearchVertices, want 0 (must use OnSearch instead)", len(fm.scan))
+	}
+	if len(fm.search) != 1 {
+		t.Fatalf("OnSearch observations = %d, want 1", len(fm.search))
+	}
+	if fm.search[0].results != 2 {
+		t.Errorf("OnSearch results = %d, want 2", fm.search[0].results)
+	}
+	if fm.search[0].duration <= 0 {
+		t.Errorf("OnSearch duration = %v, want > 0", fm.search[0].duration)
 	}
 }
 

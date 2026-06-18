@@ -1,0 +1,47 @@
+# backup_under_load — on-demand scenario (NOT included in the release
+# sweep; run manually before shipping a backup-related change).
+#
+# Calls BackupSnapshot concurrent with sustained PutVertex / AddEdge
+# writes to verify:
+# - no data races on the graph snapshot path (BackupSnapshot holds a
+#   read lock across the full streaming response).
+# - streaming latency and error-rate stay within SLOs under 2k writes/s.
+# - the heap does not grow proportionally to the number of backup calls
+#   (the snapshot serialiser must not accumulate pending writes).
+#
+# Usage (from testbed/):
+#   SCENARIO=backup_under_load make bench
+name: backup_under_load
+phases:
+  warmup:
+    duration: 30s
+    concurrency: 8
+    rps: 200
+    # seed: populate graph so the backup has non-trivial data to stream.
+    calls:
+      - call: graph.v1.LanternService/PutVertex
+        data_template: |
+          {"vertex":{"key":"bk-{{mod .RequestNumber 5000}}","string_":"payload-{{.RequestNumber}}","expiration":"{{timeAfterSeconds 600}}"}}
+      - call: graph.v1.LanternService/AddEdge
+        data_template: |
+          {"tail":"bk-{{mod .RequestNumber 5000}}","head":"bk-{{mod (add .RequestNumber 1) 5000}}","weight":1.0,"expiration":"{{timeAfterSeconds 600}}"}
+  steady:
+    duration: 2m
+    concurrency: 32
+    rps: 2000
+  cooldown: 30s
+target:
+  endpoints: ["localhost:6380"]
+  calls:
+    # [0] writes to keep the graph mutating while backups are in-flight
+    - call: graph.v1.LanternService/PutVertex
+      data_template: |
+        {"vertex":{"key":"bk-{{mod .RequestNumber 5000}}","string_":"payload-{{.RequestNumber}}","expiration":"{{timeAfterSeconds 300}}"}}
+    # [1] concurrent full-graph backup — issued at 1/100th the write rate
+    #     (≈ 20 rps) to avoid saturating the outbound bandwidth.
+    - call: graph.v1.LanternService/BackupSnapshot
+      data_template: |
+        {}
+leak_gate:
+  goroutine_max_delta: 40
+  heap_alloc_max_delta_mb: 128

@@ -82,9 +82,10 @@ type GraphCache[S comparable, T any] struct {
 	// (the LWW replication apply path; #182). It is only populated when
 	// a replicated write touches a vertex; the local non-replicated path
 	// never reads or writes this map, so the steady-state cost is one
-	// nil check per Put. The map is bounded by the set of vertices the
-	// replication apply path has ever touched — entries are deleted in
-	// lockstep with vertex eviction via the SetOnEvict hook.
+	// nil check per Put. The map is bounded by the set of currently live
+	// replicated vertices — stale entries are swept inside flush() under
+	// c.mu via sweepStaleVertexHLCLocked, which reconciles the map
+	// against the vertex cache after every GC tick (issue #700).
 	vertexHLC map[S]hlc.Timestamp
 
 	// vertexTombstones / edgeTombstones are the per-key deletion records
@@ -443,6 +444,7 @@ func (c *GraphCache[S, T]) flush() (zero, dangling int) {
 	defer c.mu.Unlock()
 
 	c.sweepExpiredTombstonesLocked(time.Now())
+	c.sweepStaleVertexHLCLocked()
 
 	return c.edges.flushFunc(func(tailID, headID vertexID) bool {
 		tail, ok := c.edges.resolveID(tailID)
@@ -471,6 +473,48 @@ func (c *GraphCache[S, T]) EdgeCount() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.edges.count()
+}
+
+// VertexHLCCount returns the number of entries in the per-key LWW watermark
+// map (vertexHLC). Under a healthy workload this equals the number of distinct
+// vertex keys ever touched by the replication apply path and should track the
+// live vertex count after a full GC sweep. A value that grows without bound
+// across GC ticks is a leak signal (see issue #700). Returns 0 when the map
+// has never been initialised (no replicated writes have arrived yet).
+func (c *GraphCache[S, T]) VertexHLCCount() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return len(c.vertexHLC)
+}
+
+// SearchIndexStats returns the current number of distinct terms and indexed
+// documents in the optional search index. Both values are 0 when the search
+// index is disabled. Safe for concurrent use; intended for Prometheus gauge
+// sampling.
+func (c *GraphCache[S, T]) SearchIndexStats() (terms, docs int) {
+	c.mu.RLock()
+	idx := c.searchIndex
+	c.mu.RUnlock()
+	if idx == nil {
+		return 0, 0
+	}
+	return idx.Stats()
+}
+
+// sweepStaleVertexHLCLocked removes vertexHLC entries whose corresponding
+// vertex is no longer live. It is called from flush() which already holds
+// c.mu.Lock(), so it is safe to mutate c.vertexHLC without an additional lock.
+// This bounds the map to the live replicated-key set rather than the all-time
+// set, fixing the leak described in issue #700.
+func (c *GraphCache[S, T]) sweepStaleVertexHLCLocked() {
+	if c.vertexHLC == nil {
+		return
+	}
+	for key := range c.vertexHLC {
+		if !c.vertices.Has(key) {
+			delete(c.vertexHLC, key)
+		}
+	}
 }
 
 // SetGCHooks installs optional observability callbacks invoked from Watch

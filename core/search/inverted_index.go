@@ -185,6 +185,17 @@ func (idx *InvertedIndex[S, D]) Search(query string) []Result[S] {
 	return results
 }
 
+// Stats returns the current number of distinct terms in the posting list and
+// the number of indexed documents. The counts are approximate under concurrent
+// load (a concurrent Index or Delete may be in progress), but are accurate
+// enough for a Prometheus gauge sampled on a regular cadence. The call does
+// not block writers.
+func (idx *InvertedIndex[S, D]) Stats() (terms, docs int) {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return len(idx.postings), len(idx.docs)
+}
+
 // Interface assertions: InvertedIndex is both an Indexer and a Searcher.
 var (
 	_ Indexer[string, Text] = (*InvertedIndex[string, Text])(nil)

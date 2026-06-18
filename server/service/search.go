@@ -49,6 +49,6 @@ func (s *LanternService) SearchVertices(ctx context.Context, in *pb.SearchVertic
 	for _, r := range ranked {
 		hits = append(hits, &pb.SearchHit{Key: r.ID, Score: r.Score})
 	}
-	s.metrics.OnScan("SearchVertices", len(hits), time.Since(start))
+	s.metrics.OnSearch(len(hits), time.Since(start))
 	return &pb.SearchVerticesResponse{Hits: hits}, nil
 }

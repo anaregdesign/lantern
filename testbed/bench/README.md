@@ -14,18 +14,22 @@ per-scenario leak gate, and renders a Markdown report.
 > **Release CI runs a compact canonical sweep.** On every `vX.Y.Z` tag
 > push, the `Release` workflow runs `./testbed/bench/release.sh` — a
 > driver that sweeps the scenarios listed in `release-scenarios.txt`. To
-> keep wall-time bounded without losing coverage, the sweep is four
+> keep wall-time bounded without losing coverage, the sweep is six
 > scenarios: two fan-out scenarios (`broad_rw`, `broad_illuminate`) that
 > exercise many call paths inside a single steady window (read / write /
-> batch / scan / edge / delete, and the Illuminate algorithm × objective ×
-> weighting axes) plus `ttl_churn` and `many_subscribers`. It produces a
+> batch / scan / edge / delete / ScanVertexKeys / CountVerticesByPrefix /
+> idempotent AddEdge, and the Illuminate algorithm × objective × weighting
+> axes) plus `ttl_churn`, `many_subscribers`, `search_churn` (index decay
+> / thread-safety under churn, #703), and `replication_apply_churn`
+> (vertexHLC map regression gate, #700 / #705). It produces a
 > fixed-format `bench-report.md` that is spliced into the GitHub Release
 > notes. The bench job is `continue-on-error`, so a noisy runner cannot
-> block a release. See issues [#256], [#262], [#573].
+> block a release. See issues [#256], [#262], [#573], [#708].
 
 [#256]: https://github.com/anaregdesign/lantern/issues/256
 [#262]: https://github.com/anaregdesign/lantern/issues/262
 [#573]: https://github.com/anaregdesign/lantern/issues/573
+[#708]: https://github.com/anaregdesign/lantern/issues/708
 
 ## Prerequisites
 
@@ -79,6 +83,11 @@ artifacts are written under
 | `replication_soak.yaml`   | producer on r0, `Subscribe` consumers on r1/r2 for 10m |
 | `chaos_kill_replica.yaml` | mid-load `docker kill` + restart of one replica |
 | `many_subscribers.yaml`   | N concurrent `Subscribe` streams across replicas (#240 pubsub probe) |
+| `search_churn.yaml`       | PutVertex (short TTL) + parallel SearchVertices; asserts search-index decays (#703) |
+| `prefix_surface.yaml`     | ScanVertexKeys + ScanEdges + CountVerticesByPrefix + DeleteVerticesByPrefix fan-out (#704) |
+| `replication_apply_churn.yaml` | replicated write churn; asserts `lantern_vertex_hlc_entries` returns to baseline (#700, #705) |
+| `edge_contrib_idempotent.yaml` | AddEdge/AddEdges with repeated ContribIDs; verifies at-most-once dedup stays bounded (#706) |
+| `backup_under_load.yaml`  | BackupSnapshot concurrent with sustained writes — on-demand only, not in release sweep (#707) |
 
 Each YAML declares the phases (`warmup`, `steady`, `cooldown`), the ghz
 target (`call` + `data_template`), optional `subscribe` and `chaos`

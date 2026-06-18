@@ -107,14 +107,14 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     continue-on-error: true
-    # The compact sweep is ~14 min of scenario loop (see release-scenarios.txt, #573).
-    # release.sh self-bounds via RELEASE_BENCH_BUDGET_SECONDS (default 18 min) and
+    # The compact sweep is ~20 min of scenario loop (see release-scenarios.txt, #573, #708).
+    # release.sh self-bounds via RELEASE_BENCH_BUDGET_SECONDS (default 23 min) and
     # always aggregates a report before returning, so this `timeout-minutes` is
     # only a hard backstop — sized above the budget plus one scenario's worst-case
     # overshoot plus job overhead (checkout + Go + ghz/yq + docker build + compose)
     # so the script's graceful cutoff fires first and the report is never discarded
-    # by a mid-loop cancellation. See issues #571 and #573.
-    timeout-minutes: 35
+    # by a mid-loop cancellation. See issues #571, #573, and #708.
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
