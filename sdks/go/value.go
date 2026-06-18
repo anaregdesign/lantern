@@ -1,9 +1,12 @@
 package client
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
+	"strconv"
 	"time"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -363,4 +366,195 @@ func MarshalVertexJSON(v *Vertex) ([]byte, error) {
 		out.Type, out.Value = "unset", nil
 	}
 	return json.Marshal(out)
+}
+
+// UnmarshalVertexJSON is the inverse of MarshalVertexJSON: it reconstructs
+// a *Vertex from the {key,type,value,expiration} shape. Numbers are decoded
+// via json.Number so int64/uint64 magnitudes above 2^53 survive without a
+// float64 intermediate. Any extra fields (e.g. the "kind" discriminator the
+// NDJSON backup codec adds) are ignored.
+//
+// Keep the type switch here in lockstep with MarshalVertexJSON's — the two
+// are a marshal/unmarshal pair.
+func UnmarshalVertexJSON(data []byte) (*Vertex, error) {
+	var raw struct {
+		Key        string          `json:"key"`
+		Type       string          `json:"type"`
+		Value      json.RawMessage `json:"value"`
+		Expiration string          `json:"expiration"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	v := &pb.Vertex{Key: raw.Key}
+	if raw.Expiration != "" {
+		t, err := time.Parse(time.RFC3339Nano, raw.Expiration)
+		if err != nil {
+			return nil, fmt.Errorf("vertex expiration: %w", err)
+		}
+		v.Expiration = timestamppb.New(t)
+	}
+	switch raw.Type {
+	case "float32":
+		f, err := jsonFloat(raw.Value)
+		if err != nil {
+			return nil, err
+		}
+		v.Value = &pb.Vertex_Float32{Float32: float32(f)}
+	case "float64":
+		f, err := jsonFloat(raw.Value)
+		if err != nil {
+			return nil, err
+		}
+		v.Value = &pb.Vertex_Float64{Float64: f}
+	case "int32":
+		n, err := jsonInt(raw.Value, 32)
+		if err != nil {
+			return nil, err
+		}
+		v.Value = &pb.Vertex_Int32{Int32: int32(n)}
+	case "int64":
+		n, err := jsonInt(raw.Value, 64)
+		if err != nil {
+			return nil, err
+		}
+		v.Value = &pb.Vertex_Int64{Int64: n}
+	case "uint32":
+		u, err := jsonUint(raw.Value, 32)
+		if err != nil {
+			return nil, err
+		}
+		v.Value = &pb.Vertex_Uint32{Uint32: uint32(u)}
+	case "uint64":
+		u, err := jsonUint(raw.Value, 64)
+		if err != nil {
+			return nil, err
+		}
+		v.Value = &pb.Vertex_Uint64{Uint64: u}
+	case "bool":
+		var b bool
+		if err := json.Unmarshal(raw.Value, &b); err != nil {
+			return nil, err
+		}
+		v.Value = &pb.Vertex_Bool{Bool: b}
+	case "string":
+		var s string
+		if err := json.Unmarshal(raw.Value, &s); err != nil {
+			return nil, err
+		}
+		v.Value = &pb.Vertex_String_{String_: s}
+	case "bytes":
+		var b []byte
+		if err := json.Unmarshal(raw.Value, &b); err != nil {
+			return nil, err
+		}
+		v.Value = &pb.Vertex_Bytes{Bytes: b}
+	case "timestamp":
+		var s string
+		if err := json.Unmarshal(raw.Value, &s); err != nil {
+			return nil, err
+		}
+		t, err := time.Parse(time.RFC3339Nano, s)
+		if err != nil {
+			return nil, fmt.Errorf("timestamp value: %w", err)
+		}
+		v.Value = &pb.Vertex_Timestamp{Timestamp: timestamppb.New(t)}
+	case "duration":
+		var s string
+		if err := json.Unmarshal(raw.Value, &s); err != nil {
+			return nil, err
+		}
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			return nil, fmt.Errorf("duration value: %w", err)
+		}
+		v.Value = &pb.Vertex_Duration{Duration: durationpb.New(d)}
+	case "nil":
+		v.Value = &pb.Vertex_Nil{Nil: true}
+	case "unset", "":
+		// no value variant
+	default:
+		return nil, fmt.Errorf("unknown vertex type %q", raw.Type)
+	}
+	return v, nil
+}
+
+// MarshalEdgeJSON renders an Edge as {tail,head,weight,expiration}, the
+// edge sibling of MarshalVertexJSON used by the NDJSON backup codec.
+// Expiration is RFC3339Nano and omitted when the edge is permanent.
+func MarshalEdgeJSON(e *Edge) ([]byte, error) {
+	out := struct {
+		Tail       string  `json:"tail"`
+		Head       string  `json:"head"`
+		Weight     float32 `json:"weight"`
+		Expiration string  `json:"expiration,omitempty"`
+	}{Tail: e.GetTail(), Head: e.GetHead(), Weight: e.GetWeight()}
+	if e.GetExpiration() != nil {
+		if t := e.GetExpiration().AsTime(); !t.IsZero() {
+			out.Expiration = t.Format(time.RFC3339Nano)
+		}
+	}
+	return json.Marshal(out)
+}
+
+// UnmarshalEdgeJSON is the inverse of MarshalEdgeJSON. Extra fields (e.g. a
+// "kind" discriminator) are ignored.
+func UnmarshalEdgeJSON(data []byte) (*Edge, error) {
+	var raw struct {
+		Tail       string  `json:"tail"`
+		Head       string  `json:"head"`
+		Weight     float32 `json:"weight"`
+		Expiration string  `json:"expiration"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	e := &pb.Edge{Tail: raw.Tail, Head: raw.Head, Weight: raw.Weight}
+	if raw.Expiration != "" {
+		t, err := time.Parse(time.RFC3339Nano, raw.Expiration)
+		if err != nil {
+			return nil, fmt.Errorf("edge expiration: %w", err)
+		}
+		e.Expiration = timestamppb.New(t)
+	}
+	return e, nil
+}
+
+// jsonInt / jsonUint / jsonFloat decode a JSON number through json.Number so
+// 64-bit integer magnitudes above 2^53 are not corrupted by a float64
+// intermediate (#685 backup/restore fidelity).
+func jsonInt(raw json.RawMessage, bits int) (int64, error) {
+	n, err := jsonNumber(raw)
+	if err != nil {
+		return 0, err
+	}
+	// ParseInt with an explicit bit size bounds-checks the value, so the
+	// int32 narrowing in UnmarshalVertexJSON cannot silently overflow.
+	return strconv.ParseInt(n.String(), 10, bits)
+}
+
+func jsonUint(raw json.RawMessage, bits int) (uint64, error) {
+	n, err := jsonNumber(raw)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.ParseUint(n.String(), 10, bits)
+}
+
+func jsonFloat(raw json.RawMessage) (float64, error) {
+	n, err := jsonNumber(raw)
+	if err != nil {
+		return 0, err
+	}
+	return n.Float64()
+}
+
+func jsonNumber(raw json.RawMessage) (json.Number, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var n json.Number
+	if err := dec.Decode(&n); err != nil {
+		return "", err
+	}
+	return n, nil
 }

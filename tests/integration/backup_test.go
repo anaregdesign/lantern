@@ -1,6 +1,7 @@
 package integration_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -121,4 +122,80 @@ func drainBackup(t *testing.T, ctx context.Context, raw graphv1connect.LanternSe
 		t.Fatalf("BackupSnapshot stream: %v", err)
 	}
 	return vertices, edges
+}
+
+// TestBackupRestore_E2E_SDK round-trips a graph through the SDK Backup
+// (dump) and Restore (load) helpers across both wire formats, into a fresh
+// server, and verifies values + an int64 above 2^53 survive (json.Number).
+func TestBackupRestore_E2E_SDK(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		format client.Format
+	}{
+		{"proto", client.FormatProto},
+		{"ndjson", client.FormatNDJSON},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src, _ := newInProcessClient(t)
+			dst, _ := newInProcessClient(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			const bigInt = int64(9007199254740993) // 2^53 + 1
+			if err := src.PutVertex(ctx, "alice", "Alice", time.Minute); err != nil {
+				t.Fatal(err)
+			}
+			if err := src.PutVertex(ctx, "num", bigInt, time.Minute); err != nil {
+				t.Fatal(err)
+			}
+			if err := src.PutVertex(ctx, "carol", "Carol", time.Minute); err != nil {
+				t.Fatal(err)
+			}
+			if err := src.AddEdge(ctx, "alice", "num", 1.5, time.Minute); err != nil {
+				t.Fatal(err)
+			}
+			if err := src.AddEdge(ctx, "num", "carol", 2.0, time.Minute); err != nil {
+				t.Fatal(err)
+			}
+
+			var buf bytes.Buffer
+			bstats, err := src.Backup(ctx, &buf, client.WithBackupFormat(tc.format))
+			if err != nil {
+				t.Fatalf("Backup: %v", err)
+			}
+			if bstats.Vertices != 3 || bstats.Edges != 2 {
+				t.Fatalf("backup stats = %+v, want {3,2}", bstats)
+			}
+
+			rstats, err := dst.Restore(ctx, &buf, client.WithRestoreFormat(tc.format))
+			if err != nil {
+				t.Fatalf("Restore: %v", err)
+			}
+			if rstats.Vertices != 3 || rstats.Edges != 2 {
+				t.Fatalf("restore stats = %+v, want {3,2}", rstats)
+			}
+
+			alice, err := dst.GetVertex(ctx, "alice")
+			if err != nil {
+				t.Fatalf("GetVertex alice: %v", err)
+			}
+			if got, err := client.StringValue(alice); err != nil || got != "Alice" {
+				t.Errorf("alice = %q (err %v), want Alice", got, err)
+			}
+			num, err := dst.GetVertex(ctx, "num")
+			if err != nil {
+				t.Fatalf("GetVertex num: %v", err)
+			}
+			if got, err := client.IntValue(num); err != nil || int64(got) != bigInt {
+				t.Errorf("num = %d (err %v), want %d (2^53+1 must survive)", got, err, bigInt)
+			}
+			edge, err := dst.GetEdge(ctx, "alice", "num")
+			if err != nil {
+				t.Fatalf("GetEdge alice->num: %v", err)
+			}
+			if edge.GetWeight() != 1.5 {
+				t.Errorf("edge alice->num weight = %v, want 1.5", edge.GetWeight())
+			}
+		})
+	}
 }
