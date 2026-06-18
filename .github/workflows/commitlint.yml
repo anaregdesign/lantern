@@ -17,10 +17,13 @@ on:
 permissions:
   pull-requests: read
 
-# Cancel superseded runs on the same PR — title edits can fire repeatedly.
+# Dedupe superseded *pending* runs on the same PR (title edits can fire
+# repeatedly), but do NOT cancel the in-progress / latest run. Cancelling it
+# leaves a `cancelled` check as the most recent "Validate PR title" result,
+# which surfaces the PR as failing even though the title is valid.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   pr-title:
