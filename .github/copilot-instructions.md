@@ -32,6 +32,10 @@ they must not conflict.
   `StringValue(v)`, etc. `client.Vertex`/`client.Edge` are true aliases of the `pb`
   types (one `Vertex` type, no boundary casts). Adding a value type updates three sites
   in `sdks/go/value.go`.
+- **Pre-v1.0.0: no backward-compatibility guarantees.** Break the proto/wire schema, SDK
+  APIs, CLI grammar, `LANTERN_*` env vars, and metric names freely — prefer the cleanest
+  design, don't hedge for old clients. Canonical home: CONTRIBUTING.md "Versioning &
+  compatibility". (Separate, still forbidden: `buf generate --clean`.)
 
 ## Go conventions
 

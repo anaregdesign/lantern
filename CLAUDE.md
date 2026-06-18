@@ -50,6 +50,7 @@ Multi-module Go workspace ([go.work](go.work)); dependency direction is a DAG wi
 - **SDK value accessors are free functions, not methods**: `Kind(v)`, `IntValue(v)`, `StringValue(v)`, etc. `client.Vertex`/`client.Edge` are true aliases of the `pb` types. Adding a value type updates three sites in [sdks/go/value.go](sdks/go/value.go).
 - Server tests needing the client SDK (full-stack round-trips) go in `tests/integration/`, never under `server/`.
 - HA/replication work implements against [docs/replication.md](docs/replication.md) (RFC); [docs/ha-runbook.md](docs/ha-runbook.md) is the operator playbook.
+- **Pre-v1.0.0: no backward-compat guarantees** — break the proto/wire schema, SDK APIs, CLI grammar, `LANTERN_*` env vars, and metric names freely; don't hedge for old clients. Canonical: CONTRIBUTING.md "Versioning & compatibility". Separate & still forbidden: `buf generate --clean`.
 
 ## Go conventions
 
