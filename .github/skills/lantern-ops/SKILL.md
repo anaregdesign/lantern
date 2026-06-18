@@ -1,6 +1,6 @@
 ---
 name: lantern-ops
-description: "Operate Lantern data through the `lantern-cli` CLI — read, write, delete, scan, count, bulk-load, and graph-walk vertices and edges from the command line. Use whenever the request involves manipulating data in a running Lantern server (get/put/delete a vertex or edge, prefix scan or count, bulk NDJSON load, prefix delete, or an illuminate graph walk), or driving Lantern from an interactive/agentic system. Do NOT use this skill for editing Lantern's own Go source, regenerating protobuf/wire code, server deployment/IaC, or the MCP decaying-memory tools."
+description: "Operate Lantern data through the `lantern-cli` CLI — read, write, delete, scan, count, bulk-load, back up/restore, and graph-walk vertices and edges from the command line. Use whenever the request involves manipulating data in a running Lantern server (get/put/delete a vertex or edge, prefix scan or count, bulk NDJSON load, whole-graph dump/restore backup, prefix delete, or an illuminate graph walk), or driving Lantern from an interactive/agentic system. Do NOT use this skill for editing Lantern's own Go source, regenerating protobuf/wire code, server deployment/IaC, or the MCP decaying-memory tools."
 ---
 
 # Lantern Ops — CLI command reference
@@ -297,6 +297,34 @@ cat edges.ndjson | lantern-cli bulk edges add -
 
 # edges put (idempotent)
 lantern-cli bulk edges put edges.ndjson --chunk-size 5000
+```
+
+## `dump` / `restore` — whole-graph backup
+
+Back up the whole graph and reload it. Unlike `bulk` (per-type NDJSON load),
+`dump` writes a **single consistent snapshot** of every live vertex **and**
+edge — taken under one server-side lock — and `restore` replays it. Like
+`bulk`, these are file-based commands (not part of the shared grammar).
+
+- **`dump <file|->`** — `-`/omitted = stdout. `--format proto` (default,
+  length-delimited protobuf, lossless) or `--format ndjson` (human-readable,
+  one `{"kind":"vertex|edge",…}` object per line). `--prefix <p>` restricts to
+  the induced subgraph over vertices with that key prefix (an edge is kept only
+  when both endpoints match). The summary (`dumped <V> vertices, <E> edges`)
+  prints to **stderr** so stdout can carry binary protobuf.
+- **`restore <file|->`** — `-`/omitted = stdin. `--format` must match the
+  dump. Records replay via `PutVertices`/`PutEdges` in `--chunk-size` batches;
+  Put is idempotent, so re-running a restore is safe. A malformed record aborts
+  (exit 1); **already-sent batches are not rolled back**. `OK <total>` prints to
+  stdout. Absolute expirations round-trip; an expiration beyond the target
+  server's `LANTERN_TOMBSTONE_TTL` cap is rejected (whole batch).
+
+```shell
+lantern-cli dump graph.lbk                  # whole graph -> file (protobuf)
+lantern-cli dump - --format ndjson > g.ndjson
+lantern-cli dump users.lbk --prefix user:   # partial backup
+lantern-cli restore graph.lbk               # reload
+cat g.ndjson | lantern-cli restore - --format ndjson
 ```
 
 ## Other commands

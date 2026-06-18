@@ -373,9 +373,11 @@ The CLI gives you the same grammar two ways:
   surfaces never diverge.
 
 The grammar covers typed values (`type=`), variadic batch writes, prefix
-scans (`all=true`), `count`, `delete-prefix`, and `keys`. Two things sit
+scans (`all=true`), `count`, `delete-prefix`, and `keys`. Three things sit
 outside it: `lantern-cli bulk vertices|edges` streams NDJSON from a file or
-stdin, and the global `--tls*` / `--compression` flags configure transport.
+stdin; `lantern-cli dump` / `restore` back up and reload the whole graph
+(a single consistent snapshot — protobuf, or `--format ndjson`); and the
+global `--tls*` / `--compression` flags configure transport.
 
 Every subcommand has long-form, LLM-friendly help text
 (`lantern-cli <cmd> --help`); read commands emit JSON on stdout and write
