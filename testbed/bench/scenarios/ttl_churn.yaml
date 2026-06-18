@@ -1,10 +1,16 @@
-# ttl_churn — short TTLs + steady writes → GC pressure.
-# Goal: catch leaks in expiration plumbing and timer wheels.
-# NOTE: ghz templates lack arithmetic, so we set `expiration` to `now`
-#       (via the built-in {{.Timestamp}} variable). Vertices expire
-#       immediately on insert, which exercises the eviction path on every
-#       write. The original intent (5 s sliding window) requires a server
-#       config knob; see follow-up.
+# ttl_churn — a flood of born-expired (dead-on-arrival) writes must not
+# accumulate memory.
+#
+# ghz templates lack arithmetic, so `expiration` is set to `now` (the
+# built-in {{.Timestamp}} variable); every PutVertex therefore arrives
+# already expired. Since #698 the server treats a write whose expiration is
+# already in the past as a no-op store (it is invisible to GetVertex the
+# instant it lands anyway), so a sustained born-expired write flood must
+# leave the vertex, dictionary, prefix-index and search-index high-water
+# flat. Before #698 those maps grew to the inter-sweep high-water
+# (~rps × GC interval ≈ 240k entries here) and never released that backing
+# capacity after the sweep drained them, tripping the leak gate with
+# tens of MiB retained against zero live vertices.
 name: ttl_churn
 phases:
   # steady is 2m so the post-warmup→post-cooldown leak window brackets the

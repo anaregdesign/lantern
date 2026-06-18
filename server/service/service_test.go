@@ -912,6 +912,100 @@ func TestLanternService_MutationLog_NotWired_NoOp(t *testing.T) {
 	}
 }
 
+// TestLanternService_PutVertices_BornExpiredNotReplicated pins #698: a
+// born-expired vertex (expiration already in the past) is dead on arrival —
+// the cache does not store it, and it must not be appended to the mutation
+// log either, so peers never apply (store + index + watermark) data that is
+// already gone. A mixed batch logs only its live subset; an all-live batch is
+// forwarded unchanged.
+func TestLanternService_PutVertices_BornExpiredNotReplicated(t *testing.T) {
+	newSvc := func(t *testing.T) (*LanternService, *mutationlog.Log, *int) {
+		t.Helper()
+		log := mutationlog.New(mutationlog.Options{Capacity: 64, SubscriberBuffer: 64})
+		t.Cleanup(func() { _ = log.Close() })
+		clock := hlc.New(hlc.NodeID{0x01}, hlc.Options{})
+		appendCount := 0
+		s := NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)).
+			WithReplication(log, clock, func() { appendCount++ })
+		return s, log, &appendCount
+	}
+	past := timestamppb.New(time.Now().Add(-time.Hour))
+	future := timestamppb.New(time.Now().Add(time.Hour))
+
+	t.Run("AllBornExpired_NotLogged", func(t *testing.T) {
+		s, log, appendCount := newSvc(t)
+		if _, err := s.PutVertices(context.Background(), &pb.PutVerticesRequest{
+			Vertices: []*pb.Vertex{{Key: "a", Expiration: past}, {Key: "b", Expiration: past}},
+		}); err != nil {
+			t.Fatalf("PutVertices: %v", err)
+		}
+		if *appendCount != 0 {
+			t.Fatalf("appendCount = %d, want 0 (born-expired must not replicate)", *appendCount)
+		}
+		if _, ok := log.LastSeq(); ok {
+			t.Fatal("mutation log has entries, want empty")
+		}
+	})
+
+	t.Run("Mixed_LogsOnlyLive", func(t *testing.T) {
+		s, log, appendCount := newSvc(t)
+		ch, cancel, err := log.Subscribe(0)
+		if err != nil {
+			t.Fatalf("Subscribe: %v", err)
+		}
+		t.Cleanup(func() { _ = cancel() })
+		if _, err := s.PutVertices(context.Background(), &pb.PutVerticesRequest{
+			Vertices: []*pb.Vertex{
+				{Key: "dead1", Expiration: past},
+				{Key: "live", Expiration: future},
+				{Key: "dead2", Expiration: past},
+			},
+		}); err != nil {
+			t.Fatalf("PutVertices: %v", err)
+		}
+		if *appendCount != 1 {
+			t.Fatalf("appendCount = %d, want 1 (one mutation for the live subset)", *appendCount)
+		}
+		select {
+		case e := <-ch:
+			mu := e.Op.(*pb.Mutation)
+			got := mu.GetOp().GetPutVertices().GetVertices()
+			if len(got) != 1 || got[0].GetKey() != "live" {
+				t.Fatalf("logged vertices = %v, want exactly [live]", got)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for the live mutation")
+		}
+	})
+
+	t.Run("AllLive_ForwardsRequestUnchanged", func(t *testing.T) {
+		s, log, appendCount := newSvc(t)
+		ch, cancel, err := log.Subscribe(0)
+		if err != nil {
+			t.Fatalf("Subscribe: %v", err)
+		}
+		t.Cleanup(func() { _ = cancel() })
+		// "y" has no expiration (zero = never expires = live).
+		if _, err := s.PutVertices(context.Background(), &pb.PutVerticesRequest{
+			Vertices: []*pb.Vertex{{Key: "x", Expiration: future}, {Key: "y"}},
+		}); err != nil {
+			t.Fatalf("PutVertices: %v", err)
+		}
+		if *appendCount != 1 {
+			t.Fatalf("appendCount = %d, want 1", *appendCount)
+		}
+		select {
+		case e := <-ch:
+			mu := e.Op.(*pb.Mutation)
+			if got := mu.GetOp().GetPutVertices().GetVertices(); len(got) != 2 {
+				t.Fatalf("logged %d vertices, want 2 (request forwarded unchanged)", len(got))
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out")
+		}
+	})
+}
+
 func keyFor(i int) string {
 	return "k-" + itoa(i)
 }

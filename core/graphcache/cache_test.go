@@ -15,6 +15,7 @@ import (
 	"github.com/anaregdesign/lantern/core/cache"
 	"github.com/anaregdesign/lantern/core/graph"
 	"github.com/anaregdesign/lantern/core/hlc"
+	"github.com/anaregdesign/lantern/core/search"
 )
 
 func TestGraph_AddEdge(t *testing.T) {
@@ -363,6 +364,74 @@ func TestGraphCache_PutVertexWithExpiration(t *testing.T) {
 			tt.c.PutVertexWithExpiration(tt.args.key, tt.args.value, tt.args.expiration)
 		})
 	}
+}
+
+// TestGraphCache_PutVertexWithExpiration_BornExpired pins #698: a client write
+// whose expiration is already in the past is dead on arrival and must not be
+// stored. Storing it would only inflate the vertex / dictionary / prefix /
+// search high-water until the next GC sweep, for zero observable benefit
+// (GetVertex already hides expired entries). An overwrite-to-expired must still
+// drop the existing live entry. The full secondary-index wiring is enabled so
+// the test catches a dead key leaking into the prefix or search index too.
+func TestGraphCache_PutVertexWithExpiration_BornExpired(t *testing.T) {
+	newCache := func() *GraphCache[string, string] {
+		c := NewGraphCache[string, string](time.Minute)
+		c.EnablePrefixIndex(func(s string) string { return s })
+		c.EnableSearchIndex(func(v string) search.Document { return search.Text(v) })
+		return c
+	}
+	past := time.Now().Add(-time.Hour)
+	future := time.Now().Add(time.Hour)
+
+	// assertNoTrace fails when any of the four structures still references key.
+	assertNoTrace := func(t *testing.T, c *GraphCache[string, string], key, term string) {
+		t.Helper()
+		if _, ok := c.GetVertex(key); ok {
+			t.Fatalf("GetVertex(%q) is visible, want absent", key)
+		}
+		if got := c.VertexCount(); got != 0 {
+			t.Fatalf("VertexCount() = %d, want 0", got)
+		}
+		if n := c.CountByPrefix(key); n != 0 {
+			t.Fatalf("CountByPrefix(%q) = %d, want 0 (prefix index retained dead key)", key, n)
+		}
+		if hits := c.SearchVertices(term, 10, ""); len(hits) != 0 {
+			t.Fatalf("SearchVertices(%q) = %d hits, want 0 (search index retained dead key)", term, len(hits))
+		}
+	}
+
+	t.Run("NewKeyNotStored", func(t *testing.T) {
+		c := newCache()
+		c.PutVertexWithExpiration("k", "alpha", past)
+		assertNoTrace(t, c, "k", "alpha")
+	})
+
+	t.Run("OverwriteExpiresExisting", func(t *testing.T) {
+		c := newCache()
+		c.PutVertexWithExpiration("k", "alpha", future)
+		if _, ok := c.GetVertex("k"); !ok {
+			t.Fatal("setup: live vertex was not stored")
+		}
+		c.PutVertexWithExpiration("k", "beta", past)
+		assertNoTrace(t, c, "k", "alpha")
+	})
+
+	t.Run("BatchSkipsBornExpiredOnly", func(t *testing.T) {
+		c := newCache()
+		c.PutVerticesWithExpiration([]VertexItem[string, string]{
+			{Key: "live", Value: "v", Expiration: future},
+			{Key: "dead", Value: "v", Expiration: past},
+		})
+		if got := c.VertexCount(); got != 1 {
+			t.Fatalf("VertexCount() = %d, want 1 (only the live item)", got)
+		}
+		if _, ok := c.GetVertex("dead"); ok {
+			t.Fatal("batch stored the born-expired item 'dead'")
+		}
+		if _, ok := c.GetVertex("live"); !ok {
+			t.Fatal("batch dropped the live item 'live'")
+		}
+	})
 }
 
 func TestGraphCache_PutVertexWithTTL(t *testing.T) {
