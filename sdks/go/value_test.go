@@ -8,6 +8,7 @@ import (
 	"time"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -511,5 +512,65 @@ func TestVertexExpiration(t *testing.T) {
 	}
 	if got := VertexExpiration(&Vertex{}); !got.IsZero() {
 		t.Errorf("empty expiration = %v, want zero", got)
+	}
+}
+
+// TestVertexJSON_RoundTrip exercises MarshalVertexJSON ↔ UnmarshalVertexJSON
+// across every value type, including int64/uint64 magnitudes above 2^53
+// (which would corrupt through a float64 intermediate) and a value-bearing
+// expiration.
+func TestVertexJSON_RoundTrip(t *testing.T) {
+	exp := time.Date(2026, 6, 18, 12, 30, 45, 123456789, time.UTC)
+	cases := []*Vertex{
+		{Key: "f32", Value: &pb.Vertex_Float32{Float32: 1.5}},
+		{Key: "f64", Value: &pb.Vertex_Float64{Float64: 3.141592653589793}},
+		{Key: "i32", Value: &pb.Vertex_Int32{Int32: -42}},
+		{Key: "i64max", Value: &pb.Vertex_Int64{Int64: math.MaxInt64}},
+		{Key: "i64min", Value: &pb.Vertex_Int64{Int64: math.MinInt64}},
+		{Key: "u32", Value: &pb.Vertex_Uint32{Uint32: 42}},
+		{Key: "u64max", Value: &pb.Vertex_Uint64{Uint64: math.MaxUint64}},
+		{Key: "bool", Value: &pb.Vertex_Bool{Bool: true}},
+		{Key: "str", Value: &pb.Vertex_String_{String_: "héllo \"world\"\n"}},
+		{Key: "bytes", Value: &pb.Vertex_Bytes{Bytes: []byte{0x00, 0x01, 0xff, 0x7f}}},
+		{Key: "ts", Value: &pb.Vertex_Timestamp{Timestamp: timestamppb.New(exp)}},
+		{Key: "dur", Value: &pb.Vertex_Duration{Duration: durationpb.New(90*time.Minute + 500*time.Millisecond)}},
+		{Key: "nilval", Value: &pb.Vertex_Nil{Nil: true}},
+		{Key: "noval"},
+		{Key: "withexp", Expiration: timestamppb.New(exp), Value: &pb.Vertex_String_{String_: "x"}},
+	}
+	for _, want := range cases {
+		b, err := MarshalVertexJSON(want)
+		if err != nil {
+			t.Fatalf("%s: marshal: %v", want.Key, err)
+		}
+		got, err := UnmarshalVertexJSON(b)
+		if err != nil {
+			t.Fatalf("%s: unmarshal: %v (json=%s)", want.Key, err, b)
+		}
+		if !proto.Equal(got, want) {
+			t.Errorf("%s round-trip mismatch:\n got=%v\nwant=%v\njson=%s", want.Key, got, want, b)
+		}
+	}
+}
+
+func TestEdgeJSON_RoundTrip(t *testing.T) {
+	exp := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
+	cases := []*Edge{
+		{Tail: "a", Head: "b", Weight: 1.5},
+		{Tail: "a", Head: "b", Weight: -2.25, Expiration: timestamppb.New(exp)},
+		{Tail: "x:1", Head: "x:2", Weight: 0},
+	}
+	for i, want := range cases {
+		b, err := MarshalEdgeJSON(want)
+		if err != nil {
+			t.Fatalf("[%d] marshal: %v", i, err)
+		}
+		got, err := UnmarshalEdgeJSON(b)
+		if err != nil {
+			t.Fatalf("[%d] unmarshal: %v", i, err)
+		}
+		if !proto.Equal(got, want) {
+			t.Errorf("[%d] round-trip mismatch: got=%v want=%v json=%s", i, got, want, b)
+		}
 	}
 }
