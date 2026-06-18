@@ -43,7 +43,7 @@ func (c *GraphCache[S, T]) PutVerticesWithExpiration(items []VertexItem[S, T]) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, it := range items {
-		c.putVertexLocked(it.Key, it.Value, it.Expiration)
+		c.putLocalVertexLocked(it.Key, it.Value, it.Expiration)
 	}
 }
 

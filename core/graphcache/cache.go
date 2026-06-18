@@ -182,6 +182,32 @@ func (c *GraphCache[S, T]) putVertexLocked(key S, value T, expiration time.Time)
 	}
 }
 
+// putLocalVertexLocked is the client-write entry that backs
+// PutVertexWithExpiration and the PutVerticesWithExpiration batch. It treats a
+// dead-on-arrival write — one whose expiration is already in the past — as an
+// expiry of the key rather than an insert. Storing an already-expired vertex
+// has no observable effect (GetVertex hides expired entries via
+// cache.IsLiveAt) and would only occupy a cache slot plus prefix- and
+// search-index postings until the next GC sweep, inflating the map high-water
+// under a churn of short-lived writes (#698). A born-expired write therefore
+// deletes any existing entry for the key and stores nothing.
+//
+// The replicated apply path (PutVertexWithExpirationHLC) deliberately does NOT
+// route through here: it must preserve LWW/HLC/tombstone causality and records
+// a per-key watermark after the store, so it keeps calling putVertexLocked
+// directly. Caller must hold c.mu.
+func (c *GraphCache[S, T]) putLocalVertexLocked(key S, value T, expiration time.Time) {
+	if !cache.IsLiveAt(expiration, time.Now()) {
+		// Dead on arrival. Delete is a cheap map-miss when the key is absent
+		// (the common churn case) and fires the eviction hook — releasing the
+		// dictionary reference and dropping prefix/search postings — when it is
+		// present, so an overwrite-to-expired still takes effect.
+		c.vertices.Delete(key)
+		return
+	}
+	c.putVertexLocked(key, value, expiration)
+}
+
 // ensureVertexLocked auto-creates an endpoint vertex (used by edge writes)
 // without overwriting an existing value. The dict reference is taken only
 // on the first insertion so refcount tracks the cache contents 1:1.
@@ -227,7 +253,7 @@ func (c *GraphCache[S, T]) PutVertexWithExpiration(key S, value T, expiration ti
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.putVertexLocked(key, value, expiration)
+	c.putLocalVertexLocked(key, value, expiration)
 }
 
 func (c *GraphCache[S, T]) PutVertexWithTTL(key S, value T, ttl time.Duration) {
