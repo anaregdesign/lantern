@@ -11,6 +11,7 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/anaregdesign/lantern/core/cache"
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
@@ -498,7 +499,9 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 	}
 	in := request.GetVertices()
 	s.metrics.OnBatch("PutVertices", len(in))
+	now := time.Now()
 	items := make([]graphcache.VertexItem[string, *pb.Vertex], 0, len(in))
+	liveCount := 0
 	for _, v := range in {
 		if err := s.validateExpiration(v.GetExpiration().AsTime()); err != nil {
 			return nil, err
@@ -508,9 +511,30 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 			Value:      v,
 			Expiration: v.GetExpiration().AsTime(),
 		})
+		if cache.IsLiveAt(v.GetExpiration().AsTime(), now) {
+			liveCount++
+		}
 	}
 	s.cache.PutVerticesWithExpiration(items)
-	s.logMutation(&pb.MutationOp{Op: &pb.MutationOp_PutVertices{PutVertices: request}})
+	// A born-expired write (expiration already in the past) is dead on arrival:
+	// the cache does not store it and it is invisible to GetVertex, so it must
+	// not be logged or replicated either — otherwise peers would apply, store
+	// and index (and watermark in vertexHLC) data that is already gone,
+	// inflating their high-water for zero benefit (#698). Replicate only the
+	// live subset; the all-live fast path forwards the original request
+	// unchanged so the steady-state cost is a single liveness check per vertex.
+	switch {
+	case liveCount == len(in):
+		s.logMutation(&pb.MutationOp{Op: &pb.MutationOp_PutVertices{PutVertices: request}})
+	case liveCount > 0:
+		live := make([]*pb.Vertex, 0, liveCount)
+		for _, v := range in {
+			if cache.IsLiveAt(v.GetExpiration().AsTime(), now) {
+				live = append(live, v)
+			}
+		}
+		s.logMutation(&pb.MutationOp{Op: &pb.MutationOp_PutVertices{PutVertices: &pb.PutVerticesRequest{Vertices: live}}})
+	}
 	return &pb.PutVerticesResponse{Written: int32(len(items))}, nil
 }
 
