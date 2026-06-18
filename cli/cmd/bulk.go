@@ -39,9 +39,9 @@ ERRORS
   batches are NOT rolled back — Lantern has no transactions.
 
 EXAMPLES
-  lantern bulk vertices vertices.ndjson
-  cat edges.ndjson | lantern bulk edges add -
-  lantern bulk edges put edges.ndjson --chunk-size 5000
+  lantern-cli bulk vertices vertices.ndjson
+  cat edges.ndjson | lantern-cli bulk edges add -
+  lantern-cli bulk edges put edges.ndjson --chunk-size 5000
 `,
 }
 

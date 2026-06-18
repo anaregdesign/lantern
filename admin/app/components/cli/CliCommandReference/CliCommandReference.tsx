@@ -90,8 +90,8 @@ export function CliCommandReference({
       <DrawerBody>
         <div className={styles.body} data-testid="cli-command-reference">
           <p className={styles.intro}>
-            The same grammar as <code>lantern repl</code>. Type a command and
-            press <kbd className={styles.kbd}>Enter</kbd>; press{" "}
+            The same grammar as <code>lantern-cli repl</code>. Type a command
+            and press <kbd className={styles.kbd}>Enter</kbd>; press{" "}
             <kbd className={styles.kbd}>Tab</kbd> to autocomplete.
           </p>
 
