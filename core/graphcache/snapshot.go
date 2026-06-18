@@ -41,6 +41,15 @@ type SnapshotEdge[S comparable] struct {
 	Contributions []SnapshotContribution
 }
 
+// GraphSnapshot is the result of GraphCache.SnapshotGraph: every live
+// vertex and edge materialised under a single lock acquisition, so the two
+// slices reflect one point-in-time. The type is named GraphSnapshot (not
+// SnapshotGraph) so the SnapshotGraph name is free for the method.
+type GraphSnapshot[S comparable, T any] struct {
+	Vertices []SnapshotVertex[S, T]
+	Edges    []SnapshotEdge[S]
+}
+
 // SnapshotVertices returns a materialised snapshot of every live vertex
 // in the cache. The snapshot is taken under a single write-lock pass; the
 // returned slice is independent of the cache and safe to iterate without
@@ -53,6 +62,14 @@ type SnapshotEdge[S comparable] struct {
 func (c *GraphCache[S, T]) SnapshotVertices() []SnapshotVertex[S, T] {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.snapshotVerticesLocked()
+}
+
+// snapshotVerticesLocked materialises every live vertex. The caller MUST
+// hold c.mu as a WRITE lock: it calls c.vertices.Flush(), which mutates the
+// cache, so a read lock is insufficient. Factored out so SnapshotGraph can
+// reuse it under a single lock acquisition.
+func (c *GraphCache[S, T]) snapshotVerticesLocked() []SnapshotVertex[S, T] {
 	c.vertices.Flush()
 	out := make([]SnapshotVertex[S, T], 0, c.vertices.Count())
 	c.vertices.Range(func(key S, value T, expiration time.Time) bool {
@@ -83,7 +100,13 @@ func (c *GraphCache[S, T]) SnapshotVertices() []SnapshotVertex[S, T] {
 func (c *GraphCache[S, T]) SnapshotEdges() []SnapshotEdge[S] {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	now := time.Now()
+	return c.snapshotEdgesLocked(time.Now())
+}
+
+// snapshotEdgesLocked materialises every live edge as of now. The caller
+// MUST hold c.mu (write lock — symmetric with snapshotVerticesLocked so
+// SnapshotGraph can take the lock once for both sides).
+func (c *GraphCache[S, T]) snapshotEdgesLocked(now time.Time) []SnapshotEdge[S] {
 	out := make([]SnapshotEdge[S], 0, c.edges.count())
 	c.edges.rangeBuckets(func(tail, head S, w *weight) bool {
 		contribs, ts, nonEmpty := w.snapshotEntry(now)
@@ -99,4 +122,26 @@ func (c *GraphCache[S, T]) SnapshotEdges() []SnapshotEdge[S] {
 		return true
 	})
 	return out
+}
+
+// SnapshotGraph returns a materialised whole-graph snapshot — every live
+// vertex and edge — taken under a SINGLE write-lock pass, so the vertex and
+// edge sides reflect the same instant. Calling SnapshotVertices and
+// SnapshotEdges separately locks twice and can observe a vertex/edge set
+// that never co-existed; SnapshotGraph closes that window, which is what a
+// whole-graph backup/restore needs.
+//
+// The returned slices are independent of the cache and safe to iterate
+// without further locking. Expired vertices and fully-decayed edges are
+// skipped, identical to the single-kind methods. Memory cost is O(live
+// vertices + live edges); like the single-kind snapshots it is intended for
+// bounded, infrequent operations (backup, replication bootstrap), not hot
+// read paths.
+func (c *GraphCache[S, T]) SnapshotGraph() GraphSnapshot[S, T] {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return GraphSnapshot[S, T]{
+		Vertices: c.snapshotVerticesLocked(),
+		Edges:    c.snapshotEdgesLocked(time.Now()),
+	}
 }
