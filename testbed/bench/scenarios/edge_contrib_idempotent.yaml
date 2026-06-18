@@ -28,15 +28,19 @@ target:
   calls:
     # [0] singular AddEdge with a stable ContribID derived from the request
     #     number — so the same ID appears repeatedly at high RPS.  The
-    #     server must deduplicate correctly.
+    #     server must deduplicate correctly. contrib_id is request-level
+    #     bytes (protojson base64); a bounded 200-value space keeps the
+    #     at-most-once set small.
     - call: graph.v1.LanternService/AddEdge
       data_template: |
-        {"tail":"node-{{mod .RequestNumber 5}}","head":"node-{{mod (add .RequestNumber 1) 5}}","weight":1.0,"expiration":"{{timeAfterSeconds 120}}","contrib_id":"c-{{mod .RequestNumber 200}}"}
-    # [1] plural AddEdges fan-out: batches of 5 edges on the same hot pair
-    #     with the same ContribID — exercises the batch dedup path.
+        {"edge":{"tail":"node-{{mod .RequestNumber 5}}","head":"node-{{mod (add .RequestNumber 1) 5}}","weight":1.0},"contribId":"{{ mod .RequestNumber 200 | toString | b64enc }}"}
+    # [1] plural AddEdges fan-out: a 3-edge batch with index-aligned
+    #     contrib_ids (request-level repeated bytes) — exercises the batch
+    #     dedup path. The same bounded ContribID is reused so retries are
+    #     at-most-once.
     - call: graph.v1.LanternService/AddEdges
       data_template: |
-        {"edges":[{"tail":"node-0","head":"node-1","weight":1.0,"expiration":"{{timeAfterSeconds 120}}","contrib_id":"batch-{{mod .RequestNumber 40}}"},{"tail":"node-1","head":"node-2","weight":1.0,"expiration":"{{timeAfterSeconds 120}}","contrib_id":"batch-{{mod .RequestNumber 40}}"},{"tail":"node-2","head":"node-3","weight":1.0,"expiration":"{{timeAfterSeconds 120}}","contrib_id":"batch-{{mod .RequestNumber 40}}"}]}
+        {"edges":[{"tail":"node-0","head":"node-1","weight":1.0},{"tail":"node-1","head":"node-2","weight":1.0},{"tail":"node-2","head":"node-3","weight":1.0}],"contribIds":["{{ mod .RequestNumber 40 | toString | b64enc }}","{{ mod .RequestNumber 40 | toString | b64enc }}","{{ mod .RequestNumber 40 | toString | b64enc }}"]}
 leak_gate:
   goroutine_max_delta: 20
   heap_alloc_max_delta_mb: 24

@@ -72,6 +72,25 @@ endpoints=( $(yq -r '.target.endpoints[]' "$SCENARIO_FILE") )
 # the harness keeps working unchanged against the Connect-only server.
 # See #383 for the empirical verification log.
 
+# ----- optional per-scenario cluster env overrides --------------------------
+# A scenario may shorten the cluster's default TTL and/or GC tick (via a
+# top-level `cluster:` block) so that TTL-eviction churn — and the resulting
+# search-index / vertexHLC shrink — happens within the run window. The values
+# are exported as LANTERN_BENCH_* host vars that compose.override.yml reads
+# with a 3600/60 fallback, so scenarios without a `cluster:` block are
+# unaffected. Only meaningful on a fresh `compose up` (ignored under SKIP_UP,
+# where the cluster TTL/GC were fixed at the earlier up). See issue #711.
+cluster_ttl="$(yq -r '.cluster.default_ttl_seconds // ""' "$SCENARIO_FILE")"
+cluster_gc="$(yq -r '.cluster.gc_interval_seconds // ""' "$SCENARIO_FILE")"
+if [[ -n "$cluster_ttl" && "$cluster_ttl" != "null" ]]; then
+  export LANTERN_BENCH_DEFAULT_TTL_SECONDS="$cluster_ttl"
+  log "cluster override: LANTERN_DEFAULT_TTL_SECONDS=${cluster_ttl}"
+fi
+if [[ -n "$cluster_gc" && "$cluster_gc" != "null" ]]; then
+  export LANTERN_BENCH_GC_INTERVAL_SECONDS="$cluster_gc"
+  log "cluster override: LANTERN_GC_INTERVAL_SECONDS=${cluster_gc}"
+fi
+
 # ----- compose up ------------------------------------------------------------
 if [[ "${SKIP_UP:-0}" != "1" ]]; then
   log "compose up (project=$COMPOSE_PROJECT_NAME)"

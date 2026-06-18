@@ -1,17 +1,25 @@
-# replication_apply_churn — drives the write-receiving replica with
-# high-cardinality replicated writes and short TTLs to reproduce the
-# vertexHLC map growth described in issue #700 (now fixed via
-# sweepStaleVertexHLCLocked in flush()).
+# replication_apply_churn — drives the leader (6380) with high-cardinality,
+# write-once replicated writes (short TTL) so each follower's apply path
+# populates its vertexHLC map. Reproduces the unbounded growth described in
+# issue #700 (now fixed via sweepStaleVertexHLCLocked in flush()): under the
+# fix the map tracks only the live replicated-key set and shrinks back to
+# baseline once writes stop and the TTL sweep runs during cooldown.
 #
-# This scenario targets the three-replica compose defined in
-# testbed/docker-compose.replicated.yml.  It writes to the leader (6380)
-# and reads from both followers (6381, 6382) to confirm replication
-# convergence.  The leak gate asserts that lantern_vertex_hlc_entries
-# returns to ~baseline after cooldown (i.e., the map does not grow
-# monotonically across flushes as it did before the fix).
+# The bench compose (deploy/compose) is already a 3-replica peer-discovery
+# cluster (LANTERN_PEER_DISCOVERY=dns), so writing to the leader alone makes
+# 6381/6382 pure followers that grow vertexHLC ONLY via the apply path —
+# exactly the surface #700 leaked on. snapshot_runtime samples all three
+# replicas, so the leak gate observes the follower heaps directly.
 #
-# Requires: LANTERN_REPLICATION_ENABLED=true, 3-replica compose.
+# The `cluster:` block (consumed by run.sh, see #711) shortens TTL + GC tick
+# so the write-once keys expire and are swept within the run window. Keys are
+# unbounded (`{{.RequestNumber}}`) so a regressed (non-sweeping) apply path
+# would accumulate every key ever applied, while the fixed path stays at the
+# live set.
 name: replication_apply_churn
+cluster:
+  default_ttl_seconds: 15
+  gc_interval_seconds: 10
 phases:
   warmup:   { duration: 30s, concurrency: 16, rps: 500 }
   steady:   { duration: 3m,  concurrency: 48, rps: 3000 }
@@ -19,16 +27,17 @@ phases:
 target:
   endpoints: ["localhost:6380"]
   calls:
-    # [0] PutVertex via the replicated-write path, short TTL so the GC
-    #     sweep fires repeatedly during the 3-minute steady window.
+    # [0] PutVertex via the replicated-write path. Write-once unbounded keys
+    #     so the follower apply path exercises vertexHLC growth + sweep.
     - call: graph.v1.LanternService/PutVertex
       data_template: |
-        {"vertex":{"key":"hlc-churn-{{mod .RequestNumber 10000}}","string_":"v{{.RequestNumber}}","expiration":"{{timeAfterSeconds 15}}"}}
-    # [1] GetVertex on a follower confirms replication convergence.
-    - call: graph.v1.LanternService/GetVertex
-      endpoint: "localhost:6381"
+        {"vertex":{"key":"hlc-churn-{{.RequestNumber}}","string":"v{{.RequestNumber}}"}}
+    # [1] Plural read over a bounded recent window — returns OK + `missing`
+    #     (never NotFound) so reads add load without inflating the non-OK
+    #     count as keys age out.
+    - call: graph.v1.LanternService/GetVertices
       data_template: |
-        {"key":"hlc-churn-{{mod .RequestNumber 10000}}"}
+        {"keys":["hlc-churn-{{mod .RequestNumber 50000}}"]}
 leak_gate:
   goroutine_max_delta: 30
   heap_alloc_max_delta_mb: 64

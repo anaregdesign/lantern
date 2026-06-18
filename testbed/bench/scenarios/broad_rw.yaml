@@ -76,7 +76,7 @@ target:
     # [9] edge scan — covers the ScanEdges path under the same write-filled graph.
     - call: graph.v1.LanternService/ScanEdges
       data_template: |
-        {"prefix":"k-","limit":128}
+        {"tailPrefix":"k-","limit":128}
     # [10] aggregate count — exercises CountVerticesByPrefix and its
     #      OnScan("CountVerticesByPrefix", ...) metric instrumentation (#704).
     - call: graph.v1.LanternService/CountVerticesByPrefix
@@ -87,7 +87,7 @@ target:
     #      (#706).  Uses a 200-value ContribID space to keep the set small.
     - call: graph.v1.LanternService/AddEdge
       data_template: |
-        {"edge":{"tail":"k-0","head":"k-1","weight":1.0},"contrib_id":"rw-{{mod .RequestNumber 200}}"}
+        {"edge":{"tail":"k-0","head":"k-1","weight":1.0},"contribId":"{{ mod .RequestNumber 200 | toString | b64enc }}"}
 leak_gate:
   goroutine_max_delta: 30
   heap_alloc_max_delta_mb: 64

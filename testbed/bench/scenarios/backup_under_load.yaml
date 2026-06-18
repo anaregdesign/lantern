@@ -13,32 +13,30 @@
 #   SCENARIO=backup_under_load make bench
 name: backup_under_load
 phases:
-  warmup:
-    duration: 30s
-    concurrency: 8
-    rps: 200
-    # seed: populate graph so the backup has non-trivial data to stream.
-    calls:
-      - call: graph.v1.LanternService/PutVertex
-        data_template: |
-          {"vertex":{"key":"bk-{{mod .RequestNumber 5000}}","string_":"payload-{{.RequestNumber}}","expiration":"{{timeAfterSeconds 600}}"}}
-      - call: graph.v1.LanternService/AddEdge
-        data_template: |
-          {"tail":"bk-{{mod .RequestNumber 5000}}","head":"bk-{{mod (add .RequestNumber 1) 5000}}","weight":1.0,"expiration":"{{timeAfterSeconds 600}}"}
-  steady:
-    duration: 2m
-    concurrency: 32
-    rps: 2000
+  warmup:   { duration: 30s, concurrency: 8,  rps: 200 }
+  steady:   { duration: 2m,  concurrency: 16, rps: 600 }
   cooldown: 30s
 target:
   endpoints: ["localhost:6380"]
+  # calls[0] (PutVertex over bk-*) is what run.sh's warmup replays, so it
+  # seeds the graph the backup streams. calls[1] (AddEdge) gives the snapshot
+  # edges to fold. The fan-out rule forks one ghz per call at steady.rps/3
+  # (~200 rps each), so BackupSnapshot runs concurrent with sustained writes.
+  # Default 3600s TTL keeps the bounded bk-* graph populated for the run.
   calls:
-    # [0] writes to keep the graph mutating while backups are in-flight
+    # [0] working-set filler / seed — warmup replays this; keeps bk-*
+    #     vertices churning while backups are in-flight.
     - call: graph.v1.LanternService/PutVertex
       data_template: |
-        {"vertex":{"key":"bk-{{mod .RequestNumber 5000}}","string_":"payload-{{.RequestNumber}}","expiration":"{{timeAfterSeconds 300}}"}}
-    # [1] concurrent full-graph backup — issued at 1/100th the write rate
-    #     (≈ 20 rps) to avoid saturating the outbound bandwidth.
+        {"vertex":{"key":"bk-{{mod .RequestNumber 2000}}","string":"payload-{{.RequestNumber}}"}}
+    # [1] additive edges so the snapshot has edge records to fold (weight
+    #     summed across contributions, expiration = furthest contribution).
+    - call: graph.v1.LanternService/AddEdge
+      data_template: |
+        {"edge":{"tail":"bk-{{mod .RequestNumber 2000}}","head":"bk-{{mod (add .RequestNumber 1) 2000}}","weight":1.0}}
+    # [2] concurrent full-graph backup — streams the whole bounded graph
+    #     while writes mutate it; the serialiser must not accumulate heap
+    #     proportional to the number of backup calls.
     - call: graph.v1.LanternService/BackupSnapshot
       data_template: |
         {}
