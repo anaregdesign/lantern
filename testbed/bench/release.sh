@@ -14,7 +14,7 @@
 #   RUNNER                       runner platform string (default: `uname -s/uname -m`, lowercased)
 #   LANTERN_IMAGE                image to run (default: lantern:local — must exist locally)
 #   KEEP_OUT=1                   do not delete the per-scenario `out/` tree afterwards
-#   RELEASE_BENCH_BUDGET_SECONDS wall-clock budget for the scenario sweep (default: 1080).
+#   RELEASE_BENCH_BUDGET_SECONDS wall-clock budget for the scenario sweep (default: 1620).
 #                                Once exhausted, the remaining scenarios are skipped, the
 #                                report is aggregated from whatever ran (with a `## Truncated`
 #                                note appended), and the script still exits 0. Set to 0 to
@@ -87,11 +87,13 @@ done < "$SCENARIO_LIST"
 # job via `timeout-minutes`; this budget is the *graceful* cutoff that lets us
 # aggregate a partial report and exit cleanly BEFORE the runner hard-kills the
 # job (which would discard the report entirely, leaving the release notes with a
-# placeholder). The default (1380s = 23 min) leaves the compact canonical sweep
-# (~20 min of scenario loop; see release-scenarios.txt, #573, #708) headroom to
-# finish, so it only trips when a runner is abnormally slow or the scenario set
-# grows. Set RELEASE_BENCH_BUDGET_SECONDS=0 to disable.
-BUDGET_SECONDS="${RELEASE_BENCH_BUDGET_SECONDS:-1380}"
+# placeholder). The default (1620s = 27 min) leaves the compact canonical sweep
+# (~23 min of scenario loop; see release-scenarios.txt, #573, #708, #716)
+# headroom to finish, so it only trips when a runner is abnormally slow or the
+# scenario set grows. Set RELEASE_BENCH_BUDGET_SECONDS=0 to disable (the nightly
+# blocking job in bench-nightly.yml does exactly that so no leak can hide behind
+# a truncated sweep).
+BUDGET_SECONDS="${RELEASE_BENCH_BUDGET_SECONDS:-1620}"
 
 log "release-bench: tag=$TAG commit=$COMMIT_SHORT runner=$RUNNER captured=$CAPTURED"
 log "release-bench: scenarios=${scenarios[*]}"

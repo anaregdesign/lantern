@@ -1,0 +1,122 @@
+# broad_mutate — sibling of broad_rw that fans out across the EDGE-mutation,
+# bulk-delete, prefix-delete, and backup call surface that broad_rw omits.
+# Together the two scenarios give the release sweep a leak gate over every
+# write RPC the server exposes (see issue #716).
+#
+# Why a separate scenario instead of more calls in broad_rw: broad_rw's
+# per-call rps (steady.rps / len(calls)) and its 192 MiB heap gate are tuned
+# in lockstep against a deliberately-additive AddEdge path (#709, #711). Adding
+# nine more calls there would re-split every call's rps and invalidate that
+# tuning. Keeping the new surface in its own scenario preserves broad_rw's
+# math and gives the edge/delete/backup paths their own, independently-sized
+# gate. The release driver reuses ONE compose stack across scenarios, so this
+# file is deliberately self-contained: it owns the `m-*` keyspace exclusively
+# (disjoint from broad_rw's `k-*`/`kb-*`/`del-*` and backup_under_load's
+# `bk-*`), every Delete* path targets a monotonic no-op space, and
+# DeleteVerticesByPrefix uses a per-request unique prefix so it can never wipe
+# another scenario's working set. See release-scenarios.txt's self-contained
+# rule.
+#
+# Coverage (9-way fan-out) — the RPCs broad_rw does NOT exercise:
+#   PutEdge, GetEdge, PutEdges, AddEdges, DeleteEdge, DeleteEdges,
+#   DeleteVertices, DeleteVerticesByPrefix, BackupSnapshot
+#
+# Ordering: calls[0] (PutEdge over m-*) is what run.sh's warmup replays — run.sh
+#           warms ONLY calls[0] — so it must seed the working set the reads and
+#           backup touch. PutEdge populates the m-{0..1999} -> m-h edge space
+#           that GetEdge reads back (keeping GetEdge's status codes OK rather
+#           than NotFound) and that BackupSnapshot streams. Keep it first.
+name: broad_mutate
+phases:
+  warmup:   { duration: 15s, concurrency: 16, rps: 1000 }
+  steady:   { duration: 2m,  concurrency: 16, rps: 3600 }
+  # 30s (vs broad_rw's 15s) gives the 16 concurrent BackupSnapshot streams time
+  # to fully unwind server-side before the post snapshot, so the goroutine gate
+  # measures steady state rather than in-flight streams — the same cooldown the
+  # backup_under_load streaming scenario uses.
+  cooldown: 30s
+target:
+  endpoints: ["localhost:6380", "localhost:6381", "localhost:6382"]
+  # 9 parallel ghz invocations (one per call), each at steady.rps/9 = 400 rps
+  # and the full steady.concurrency (16). BackupSnapshot is server-streaming;
+  # 400 rps over the bounded m-* subgraph keeps its per-call rate near the
+  # proven backup_under_load profile while the cheap SET/delete paths supply
+  # sustained churn that brackets the 60s GC sweep twice across the 2m window.
+  calls:
+    # [0] working-set seed / filler — also what warmup replays. Idempotent edge
+    #     SET over the bounded m-{0..1999} -> m-h space; keeps the edges GetEdge
+    #     reads and BackupSnapshot streams continuously refreshed. Both
+    #     endpoints carry the `m-` prefix so the prefix-scoped backup folds them.
+    - call: graph.v1.LanternService/PutEdge
+      data_template: |
+        {"edge":{"tail":"m-{{mod .RequestNumber 2000}}","head":"m-h","weight":1.0}}
+    # [1] singular edge read over the seeded space — returns OK (the edge exists
+    #     because warmup + call[0] keep m-{0..1999} -> m-h populated). The only
+    #     read path here without plural OK+missing semantics, so it is pointed at
+    #     the live working set on purpose.
+    - call: graph.v1.LanternService/GetEdge
+      data_template: |
+        {"tail":"m-{{mod .RequestNumber 2000}}","head":"m-h"}
+    # [2] plural idempotent edge SET — overwrites the m-* edge and a sibling
+    #     mb-* edge. No accumulation: SET replaces weight, so the working set
+    #     stays bounded at ~2000 + ~2000 edges.
+    - call: graph.v1.LanternService/PutEdges
+      data_template: |
+        {"edges":[
+          {"tail":"m-{{mod .RequestNumber 2000}}","head":"m-h","weight":1.0},
+          {"tail":"mb-{{mod .RequestNumber 2000}}","head":"m-h","weight":1.0}
+        ]}
+    # [3] plural ADDITIVE edge write with a bounded, index-aligned contrib id so
+    #     retries dedup at-most-once. The id space (mod 200) is padded to 24
+    #     ASCII bytes via backtick-quoted printf (a double-quoted "%024d" would
+    #     break ghz's pre-template JSON parse) before base64; without the pad it
+    #     decodes to all-zero and the contribution rejoins the legacy additive
+    #     path, growing the heap unboundedly. With the pad the dedup set stays
+    #     capped at 200 entries — the same guard broad_rw call[11] verifies for
+    #     the singular AddEdge.
+    - call: graph.v1.LanternService/AddEdges
+      data_template: |
+        {"edges":[{"tail":"m-0","head":"m-h","weight":1.0}],"contribIds":["{{ printf `%024d` (mod .RequestNumber 200) | b64enc }}"]}
+    # [4] singular edge delete over a monotonic mdel-* space — every (tail, head)
+    #     is unique, so the removal is a bounded no-op (existed=false is still
+    #     codes.OK) that exercises the DeleteEdge -> DeleteEdges facade without
+    #     churning the seeded m-* graph.
+    - call: graph.v1.LanternService/DeleteEdge
+      data_template: |
+        {"tail":"mdel-{{.RequestNumber}}","head":"m-h"}
+    # [5] plural edge delete over the same monotonic no-op space.
+    - call: graph.v1.LanternService/DeleteEdges
+      data_template: |
+        {"edges":[{"tail":"mdel-{{.RequestNumber}}","head":"m-h"}]}
+    # [6] plural vertex delete over a monotonic no-op space — exercises the
+    #     DeleteVertices batch path; bounded (each key unique, deleted count 0).
+    - call: graph.v1.LanternService/DeleteVertices
+      data_template: |
+        {"keys":["mdel-{{.RequestNumber}}"]}
+    # [7] prefix delete. The prefix is unique per request (mdpfx-<n>-), so it
+    #     matches zero keys and deletes nothing — a bounded no-op that still
+    #     drives the prefix scan + delete plumbing and its scan instrumentation
+    #     without ever touching another scenario's keyspace.
+    - call: graph.v1.LanternService/DeleteVerticesByPrefix
+      data_template: |
+        {"prefix":"mdpfx-{{.RequestNumber}}-","limit":128}
+    # [8] prefix-scoped whole-subgraph backup. vertexPrefix "m-" bounds the
+    #     stream to the m-* edges call[0] seeds (an edge is folded only when BOTH
+    #     endpoints match the prefix — hence head "m-h"). The streaming
+    #     serialiser must not accumulate heap proportional to the number of
+    #     backup calls; the leak gate below is the regression guard.
+    - call: graph.v1.LanternService/BackupSnapshot
+      data_template: |
+        {"vertexPrefix":"m-"}
+# Heap profile: every write path here is bounded. The edge SET paths (call[0],
+# [2]) overwrite a fixed ~4000-edge working set; the additive AddEdges (call[3])
+# carries a bounded contrib id so its retries dedup; the Delete* paths (call[4-7])
+# operate on monotonic no-op spaces that never materialise state; BackupSnapshot
+# (call[8]) streams a bounded subgraph and must release per-call buffers. With no
+# deliberately-additive path the steady-state heap is far smaller than broad_rw's
+# — a positive delta beyond the gate means a real leak (e.g. an un-released
+# snapshot buffer or a leaked stream goroutine). The 128 MiB / 40-goroutine gate
+# mirrors backup_under_load, the existing streaming-backup scenario.
+leak_gate:
+  goroutine_max_delta: 40
+  heap_alloc_max_delta_mb: 128

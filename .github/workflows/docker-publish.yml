@@ -101,14 +101,17 @@ jobs:
     # listed in testbed/bench/release-scenarios.txt against a freshly-built
     # local image and uploads a fixed-format bench-report.md for the release
     # job to splice into the release notes. Non-blocking: a leak-gate
-    # failure or harness hiccup must not prevent a release from shipping.
-    # See issue #256.
+    # failure or harness hiccup must not prevent a release from shipping
+    # (the deliberate design of #256, #394). Leak ENFORCEMENT instead lives in
+    # the nightly blocking run (.github/workflows/bench-nightly.yml), which
+    # runs this same sweep WITHOUT continue-on-error so a goroutine/heap-leak
+    # regression fails a required check rather than just warning here (#716).
     name: Release-time benchmark
     needs: verify
     runs-on: ubuntu-latest
     continue-on-error: true
     # The compact sweep is ~20 min of scenario loop (see release-scenarios.txt, #573, #708).
-    # release.sh self-bounds via RELEASE_BENCH_BUDGET_SECONDS (default 23 min) and
+    # release.sh self-bounds via RELEASE_BENCH_BUDGET_SECONDS (default 27 min) and
     # always aggregates a report before returning, so this `timeout-minutes` is
     # only a hard backstop — sized above the budget plus one scenario's worst-case
     # overshoot plus job overhead (checkout + Go + ghz/yq + docker build + compose)
