@@ -358,3 +358,26 @@ func BenchmarkPrefixScan(b *testing.B) {
 		})
 	}
 }
+
+// TestGraphCache_PutVertices_PrefixStableAcrossExpiredOverwrite confirms the
+// #739 physical-presence upsert keeps prefix membership correct (no leak, no
+// double count) when a batch overwrites a vertex whose slot expired but was not
+// yet flushed: the once-per-slot prefix insert is now keyed on physical
+// presence, so the overwrite neither re-inserts nor drops the radix entry.
+func TestGraphCache_PutVertices_PrefixStableAcrossExpiredOverwrite(t *testing.T) {
+	c := NewGraphCache[string, string](time.Minute)
+	c.EnablePrefixIndex(identityExtract)
+	// Seed an expired-but-not-flushed slot through the unconditional store path.
+	c.mu.Lock()
+	c.putVertexLocked("user:1", "v1", time.Now().Add(-time.Minute))
+	c.mu.Unlock()
+	if got := c.CountByPrefix("user:"); got != 1 {
+		t.Fatalf("CountByPrefix after seed = %d, want 1", got)
+	}
+	c.PutVerticesWithExpiration([]VertexItem[string, string]{
+		{Key: "user:1", Value: "v2", Expiration: time.Now().Add(time.Minute)},
+	})
+	if got := c.CountByPrefix("user:"); got != 1 {
+		t.Fatalf("CountByPrefix after overwrite = %d, want 1", got)
+	}
+}

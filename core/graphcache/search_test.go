@@ -299,3 +299,79 @@ func sameSet(got, want []string) bool {
 	}
 	return true
 }
+
+// TestGraphCache_PutVertices_SearchLifecycle verifies that moving search-document
+// analysis outside the aggregate write lock (#739) keeps the batch put path in
+// perfect lockstep with the search index: hits are visible synchronously after
+// the batch returns, an overwrite drops the stale document, duplicate keys in
+// one batch keep last-write semantics, and a born-expired item is neither stored
+// nor indexed. Test words have mutually disjoint bigrams so the NGram(2)
+// analyzer cannot produce spurious cross-matches.
+func TestGraphCache_PutVertices_SearchLifecycle(t *testing.T) {
+	future := func() time.Time { return time.Now().Add(time.Minute) }
+
+	t.Run("batch puts are searchable synchronously", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Minute)
+		c.EnableSearchIndex(textExtract)
+		c.PutVerticesWithExpiration([]VertexItem[string, string]{
+			{Key: "a", Value: "alpha", Expiration: future()},
+			{Key: "b", Value: "bravo", Expiration: future()},
+		})
+		if got := keys(c.SearchVertices("alpha", 10, "")); !equalKeys(got, []string{"a"}) {
+			t.Fatalf(`Search("alpha") = %v, want [a]`, got)
+		}
+		if got := keys(c.SearchVertices("bravo", 10, "")); !equalKeys(got, []string{"b"}) {
+			t.Fatalf(`Search("bravo") = %v, want [b]`, got)
+		}
+	})
+
+	t.Run("overwrite drops stale document", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Minute)
+		c.EnableSearchIndex(textExtract)
+		c.PutVerticesWithExpiration([]VertexItem[string, string]{
+			{Key: "a", Value: "alpha", Expiration: future()},
+		})
+		c.PutVerticesWithExpiration([]VertexItem[string, string]{
+			{Key: "a", Value: "zulu", Expiration: future()},
+		})
+		if got := c.SearchVertices("alpha", 10, ""); got != nil {
+			t.Fatalf(`Search("alpha") after overwrite = %v, want nil`, keys(got))
+		}
+		if got := keys(c.SearchVertices("zulu", 10, "")); !equalKeys(got, []string{"a"}) {
+			t.Fatalf(`Search("zulu") after overwrite = %v, want [a]`, got)
+		}
+	})
+
+	t.Run("duplicate keys in one batch keep last write", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Minute)
+		c.EnableSearchIndex(textExtract)
+		c.PutVerticesWithExpiration([]VertexItem[string, string]{
+			{Key: "a", Value: "alpha", Expiration: future()},
+			{Key: "a", Value: "zulu", Expiration: future()},
+		})
+		if got := c.SearchVertices("alpha", 10, ""); got != nil {
+			t.Fatalf(`Search("alpha") = %v, want nil (last write wins)`, keys(got))
+		}
+		if got := keys(c.SearchVertices("zulu", 10, "")); !equalKeys(got, []string{"a"}) {
+			t.Fatalf(`Search("zulu") = %v, want [a]`, got)
+		}
+	})
+
+	t.Run("born-expired item is neither stored nor indexed", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Minute)
+		c.EnableSearchIndex(textExtract)
+		c.PutVerticesWithExpiration([]VertexItem[string, string]{
+			{Key: "live", Value: "alpha", Expiration: future()},
+			{Key: "dead", Value: "bravo", Expiration: time.Now().Add(-time.Minute)},
+		})
+		if _, ok := c.GetVertex("dead"); ok {
+			t.Fatal("born-expired vertex was stored")
+		}
+		if got := c.SearchVertices("bravo", 10, ""); got != nil {
+			t.Fatalf(`Search("bravo") = %v, want nil (born-expired not indexed)`, keys(got))
+		}
+		if got := keys(c.SearchVertices("alpha", 10, "")); !equalKeys(got, []string{"live"}) {
+			t.Fatalf(`Search("alpha") = %v, want [live]`, got)
+		}
+	})
+}
