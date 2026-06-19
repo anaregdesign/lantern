@@ -51,6 +51,24 @@ type Backend interface {
 	PutVertexWithExpirationHLC(key string, value *pb.Vertex, expiration time.Time, ts hlc.Timestamp) bool
 	PutEdgeWithExpirationHLC(tail, head string, w float32, expiration time.Time, ts hlc.Timestamp) bool
 
+	// batch HLC siblings used by the LOCAL write path (PutVertices /
+	// PutEdges / AddEdges) when replication is enabled. They stamp every
+	// item in the batch with the SAME ts the originating mutation is logged
+	// under, so the origin's own writes participate in LWW (vertices, edges)
+	// or edge-tombstone fencing (additive contributions) on equal footing
+	// with the values its peers later apply from that log entry. Without the
+	// watermark a concurrently-written strictly-older Put replayed from a
+	// peer would clobber the origin's newer value on the origin alone while
+	// every other replica kept the newer one — permanent divergence. The
+	// local path keeps using the non-HLC PutVerticesWithExpiration /
+	// PutEdgesWithExpiration / AddEdgesWithExpirationContrib when replication
+	// is off (clock nil) so non-replicated workloads pay nothing.
+	// AddEdgesWithExpirationContribHLC returns the count of items that added
+	// no weight (tombstone-dropped or ContribID-deduped).
+	PutVerticesWithExpirationHLC(items []graphcache.VertexItem[string, *pb.Vertex], ts hlc.Timestamp)
+	PutEdgesWithExpirationHLC(items []graphcache.EdgeItem[string], ts hlc.Timestamp)
+	AddEdgesWithExpirationContribHLC(items []graphcache.EdgeItem[string], ts hlc.Timestamp) int
+
 	// tombstone-aware Delete*/Add* entry points used by ApplyMutation
 	// when LANTERN_TOMBSTONE_TTL is configured (#183). DeleteVertexHLC,
 	// DeleteVerticesHLC, DeleteEdgeHLC, DeleteEdgesHLC and

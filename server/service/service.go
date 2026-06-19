@@ -331,7 +331,23 @@ func (s *LanternService) logMutation(op *pb.MutationOp) {
 	if s.log == nil || s.clock == nil {
 		return
 	}
-	ts := s.clock.Now()
+	s.logMutationAt(op, s.clock.Now())
+}
+
+// logMutationAt is logMutation with the commit HLC supplied by the caller
+// instead of sampled here. Local write paths that ALSO stamp the cache with
+// an HLC watermark (so the origin's own writes participate in LWW on equal
+// footing with the values its peers later apply from this same log entry)
+// sample s.clock.Now() ONCE and hand that identical ts to both the cache
+// write and this call. Sharing the instant closes the window in which the
+// cache-side watermark and the logged mutation HLC could differ — a gap that
+// let a concurrent write slip between the two and resolve LWW one way on the
+// origin and the other way on its peers. Returns immediately when the log is
+// not wired (test path); callers may pass a zero ts in that case.
+func (s *LanternService) logMutationAt(op *pb.MutationOp, ts hlc.Timestamp) {
+	if s.log == nil || s.clock == nil {
+		return
+	}
 	mu := &pb.Mutation{
 		Hlc: &pb.HLCTimestamp{
 			WallNs:  ts.WallNs,
@@ -517,7 +533,16 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 			liveCount++
 		}
 	}
-	s.cache.PutVerticesWithExpiration(items)
+	// When replication is enabled (clock wired) every local write is stamped
+	// with the SAME HLC it is logged under, via the *HLC cache method, so the
+	// origin's own PutVertex participates in last-writer-wins on equal footing
+	// with the values its peers apply from this log entry. The non-HLC method
+	// stored a value WITHOUT a vertexHLC watermark, so a concurrently-written
+	// OLDER value replayed from a peer would clobber the origin's newer value
+	// on the origin alone while every other replica kept the newer one —
+	// permanent divergence (docs/replication.md "Higher HLC wins"). The
+	// non-replicated path (clock nil) keeps the cheaper watermark-free method.
+	//
 	// A born-expired write (expiration already in the past) is dead on arrival:
 	// the cache does not store it and it is invisible to GetVertex, so it must
 	// not be logged or replicated either — otherwise peers would apply, store
@@ -525,17 +550,23 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 	// inflating their high-water for zero benefit (#698). Replicate only the
 	// live subset; the all-live fast path forwards the original request
 	// unchanged so the steady-state cost is a single liveness check per vertex.
-	switch {
-	case liveCount == len(in):
-		s.logMutation(&pb.MutationOp{Op: &pb.MutationOp_PutVertices{PutVertices: request}})
-	case liveCount > 0:
-		live := make([]*pb.Vertex, 0, liveCount)
-		for _, v := range in {
-			if cache.IsLiveAt(v.GetExpiration().AsTime(), now) {
-				live = append(live, v)
+	if s.clock != nil {
+		ts := s.clock.Now()
+		s.cache.PutVerticesWithExpirationHLC(items, ts)
+		switch {
+		case liveCount == len(in):
+			s.logMutationAt(&pb.MutationOp{Op: &pb.MutationOp_PutVertices{PutVertices: request}}, ts)
+		case liveCount > 0:
+			live := make([]*pb.Vertex, 0, liveCount)
+			for _, v := range in {
+				if cache.IsLiveAt(v.GetExpiration().AsTime(), now) {
+					live = append(live, v)
+				}
 			}
+			s.logMutationAt(&pb.MutationOp{Op: &pb.MutationOp_PutVertices{PutVertices: &pb.PutVerticesRequest{Vertices: live}}}, ts)
 		}
-		s.logMutation(&pb.MutationOp{Op: &pb.MutationOp_PutVertices{PutVertices: &pb.PutVerticesRequest{Vertices: live}}})
+	} else {
+		s.cache.PutVerticesWithExpiration(items)
 	}
 	return &pb.PutVerticesResponse{Written: int32(len(items))}, nil
 }
@@ -557,13 +588,19 @@ func (s *LanternService) DeleteVertices(ctx context.Context, in *pb.DeleteVertic
 	s.metrics.OnBatch("DeleteVertices", len(in.GetKeys()))
 	var n int
 	if s.clock != nil && s.tombstoneTTL > 0 {
-		// Replicated path: stamp tombstones at clock.Now() so peers
-		// resolve LWW deterministically; local expiration is best-effort.
-		n = s.cache.DeleteVerticesHLC(in.GetKeys(), s.clock.Now(), s.tombstoneExpiration())
+		// Replicated path: sample the commit HLC ONCE and stamp BOTH the
+		// tombstone and the logged mutation with it. Sampling clock.Now()
+		// separately for each (as the cache call and logMutation used to)
+		// left a window where a concurrent Put with an HLC between the two
+		// would lose to the delete on peers but beat the tombstone on the
+		// origin — divergence. Local expiration is best-effort wall clock.
+		ts := s.clock.Now()
+		n = s.cache.DeleteVerticesHLC(in.GetKeys(), ts, s.tombstoneExpiration())
+		s.logMutationAt(&pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{DeleteVertices: in}}, ts)
 	} else {
 		n = s.cache.DeleteVertices(in.GetKeys())
+		s.logMutation(&pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{DeleteVertices: in}})
 	}
-	s.logMutation(&pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{DeleteVertices: in}})
 	return &pb.DeleteVerticesResponse{Deleted: int32(n)}, nil
 }
 
@@ -650,9 +687,22 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 		}
 		items = append(items, item)
 	}
-	deduped := s.cache.AddEdgesWithExpirationContrib(items)
-	s.metrics.OnEdgeContribDeduped(deduped)
-	s.logMutation(&pb.MutationOp{Op: &pb.MutationOp_AddEdges{AddEdges: request}})
+	// Additive merge converges via ContribID set semantics regardless of
+	// delivery order, but when replication is enabled the contribution must
+	// still be fenced by the edge tombstone at the SAME HLC it is logged
+	// under, so a contribution older than a concurrent DeleteEdge is dropped
+	// on the origin exactly as it is on every peer. The non-replicated path
+	// (clock nil) keeps the cheaper tombstone-free method.
+	var deduped int
+	if s.clock != nil {
+		ts := s.clock.Now()
+		deduped = s.cache.AddEdgesWithExpirationContribHLC(items, ts)
+		s.metrics.OnEdgeContribDeduped(deduped)
+		s.logMutationAt(&pb.MutationOp{Op: &pb.MutationOp_AddEdges{AddEdges: request}}, ts)
+	} else {
+		deduped = s.cache.AddEdgesWithExpirationContrib(items)
+		s.metrics.OnEdgeContribDeduped(deduped)
+	}
 	return &pb.AddEdgesResponse{Written: int32(len(items))}, nil
 }
 
@@ -681,11 +731,22 @@ func (s *LanternService) PutEdges(ctx context.Context, request *pb.PutEdgesReque
 			Expiration: e.GetExpiration().AsTime(),
 		})
 	}
-	// PutEdgesWithExpiration takes the cache write lock once for the whole
-	// batch, so concurrent GetEdge readers never observe a transient
-	// NotFound between the per-edge delete and add.
-	s.cache.PutEdgesWithExpiration(items)
-	s.logMutation(&pb.MutationOp{Op: &pb.MutationOp_PutEdges{PutEdges: request}})
+	// PutEdges*WithExpiration takes the cache write lock once for the whole
+	// batch, so concurrent GetEdge readers never observe a transient NotFound
+	// between the per-edge delete and add. When replication is enabled the
+	// *HLC method stamps every edge with the SAME HLC it is logged under so
+	// PutEdge resolves as an LWW-Register on (tail, head) across replicas —
+	// without the watermark a concurrently-written OLDER edge replayed from a
+	// peer would clobber the origin's newer weight on the origin alone
+	// (docs/replication.md "Higher HLC wins"). The non-replicated path (clock
+	// nil) keeps the cheaper watermark-free method.
+	if s.clock != nil {
+		ts := s.clock.Now()
+		s.cache.PutEdgesWithExpirationHLC(items, ts)
+		s.logMutationAt(&pb.MutationOp{Op: &pb.MutationOp_PutEdges{PutEdges: request}}, ts)
+	} else {
+		s.cache.PutEdgesWithExpiration(items)
+	}
 	return &pb.PutEdgesResponse{Written: int32(len(items))}, nil
 }
 
@@ -711,11 +772,15 @@ func (s *LanternService) DeleteEdges(ctx context.Context, in *pb.DeleteEdgesRequ
 	}
 	var n int
 	if s.clock != nil && s.tombstoneTTL > 0 {
-		n = s.cache.DeleteEdgesHLC(keys, s.clock.Now(), s.tombstoneExpiration())
+		// Share one commit HLC between the tombstone and the logged
+		// mutation (see DeleteVertices for the divergence this closes).
+		ts := s.clock.Now()
+		n = s.cache.DeleteEdgesHLC(keys, ts, s.tombstoneExpiration())
+		s.logMutationAt(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: in}}, ts)
 	} else {
 		n = s.cache.DeleteEdges(keys)
+		s.logMutation(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: in}})
 	}
-	s.logMutation(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: in}})
 	return &pb.DeleteEdgesResponse{Deleted: int32(n)}, nil
 }
 
