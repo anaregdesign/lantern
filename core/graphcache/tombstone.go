@@ -127,10 +127,7 @@ func (c *GraphCache[S, T]) DeleteVerticesHLC(keys []S, ts hlc.Timestamp, expirat
 func (c *GraphCache[S, T]) DeleteEdgeHLC(tail, head S, ts hlc.Timestamp, expiration time.Time) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	deleted, tailID, headID := c.edges.delete(tail, head)
-	if deleted {
-		c.onEdgeDeletedLocked(tailID, headID, head)
-	}
+	deleted := c.deleteEdgeLocked(tail, head)
 	c.setEdgeTombstoneLocked(tail, head, ts, expiration)
 	return deleted
 }
@@ -144,9 +141,7 @@ func (c *GraphCache[S, T]) DeleteEdgesHLC(keys []EdgeKey[S], ts hlc.Timestamp, e
 	defer c.mu.Unlock()
 	n := 0
 	for _, k := range keys {
-		deleted, tailID, headID := c.edges.delete(k.Tail, k.Head)
-		if deleted {
-			c.onEdgeDeletedLocked(tailID, headID, k.Head)
+		if c.deleteEdgeLocked(k.Tail, k.Head) {
 			n++
 		}
 		c.setEdgeTombstoneLocked(k.Tail, k.Head, ts, expiration)

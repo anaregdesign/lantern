@@ -100,6 +100,12 @@ name `heap_inuse_max_delta_mb` is still accepted for backward
 compatibility but produced false-positive verdicts under sustained
 churn — see issue #248.
 
+RPC benchmark payloads that omit `Vertex.expiration` / `Edge.expiration`
+write permanent entries. `cluster.default_ttl_seconds` configures the server's
+default TTL for cache-default paths; it does not rewrite explicit RPC payloads.
+Scenarios that need decay through `ghz` should include an `expiration` template
+in `data_template`.
+
 ## Output layout
 
 ```
