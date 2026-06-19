@@ -350,6 +350,265 @@ func TestApplyMutation_Convergence(t *testing.T) {
 	}
 }
 
+// TestApplyMutation_ConvergenceWithTombstones is the delete-inclusive
+// sibling of TestApplyMutation_Convergence (#718). It stresses the
+// steady-state guarantee that reordered + duplicated delivery of a
+// workload that ALSO contains Delete* mutations still converges to an
+// identical state on every replica.
+//
+// TestApplyMutation_Convergence deliberately excludes Delete* because,
+// without a tombstone TTL, a late Put re-inserts a deleted key on some
+// nodes but not others. Here every replica is built with
+// WithTombstoneTTL, so a Delete* installs an HLC-fenced tombstone and a
+// strictly-older Put/Add is clamped (LWW) instead of resurrecting the key.
+//
+// Order-independence is kept inside the documented convergence subset
+// (README "Conflict resolution"; docs/ha-runbook.md) by construction:
+//
+//   - Every mutation carries an EXPLICIT, globally-monotonic wall_ns, so
+//     the HLC total order is fixed regardless of delivery order (no ties,
+//     so no NodeID tiebreak is needed).
+//   - Every terminal Delete is emitted LAST, at a wall_ns strictly greater
+//     than every write to the same key, so the tombstone wins under every
+//     shuffle and a doomed key is absent on all replicas.
+//   - No Put is ever emitted NEWER than a key's Delete, so the test stays
+//     out of the resurrection case (a Put strictly newer than a tombstone),
+//     which is order-sensitive and a documented hazard, not a convergence
+//     guarantee.
+//
+// Each doomed key is force-written before its Delete so the tombstone
+// fences a real value rather than tombstoning an absent key. The trace
+// index seeds the PCG stream, so a failing case is reproducible from the
+// (trace, seedHi) pair printed on failure.
+//
+// Standalone vertices (v*) and edge endpoints (p*) live in DISJOINT key
+// namespaces on purpose: DeleteVertexHLC tombstones only the vertex, not
+// the edges that name it, and PutEdge/AddEdge auto-create their endpoints
+// via ensureVertexLocked. A doomed vertex that doubled as a live edge
+// endpoint would be resurrected order-dependently (the documented hazard
+// in core/graphcache/tombstone.go), which is outside the convergence
+// guarantee. Keeping the namespaces disjoint means nothing re-creates a
+// doomed vertex, so its tombstone wins under every delivery order.
+func TestApplyMutation_ConvergenceWithTombstones(t *testing.T) {
+	const (
+		traces       = 400
+		randWrites   = 14
+		numOrigins   = 3
+		numNodes     = 3
+		vertexPool   = 6
+		endpointPool = 5
+		edgePool     = 8
+		seedHi       = 0x70B5701E
+	)
+
+	for trace := 0; trace < traces; trace++ {
+		t.Run(fmt.Sprintf("trace=%04d", trace), func(t *testing.T) {
+			rng := rand.New(rand.NewPCG(uint64(trace), seedHi))
+
+			origins := make([][16]byte, numOrigins)
+			for i := range origins {
+				origins[i] = bytes16(fmt.Sprintf("origin-%d", i))
+			}
+
+			// Edge partition: each (tail, head) pair is Add-only or
+			// Put-only across the whole trace (mixing Add/Put on one edge is
+			// order-sensitive — same rule as TestApplyMutation_Convergence).
+			// Endpoints are drawn from the p* namespace, disjoint from the
+			// v* standalone vertices that get deleted (see test header).
+			edgeSet := map[[2]string]bool{}
+			for len(edgeSet) < edgePool {
+				key := [2]string{
+					fmt.Sprintf("p%d", rng.IntN(endpointPool)),
+					fmt.Sprintf("p%d", rng.IntN(endpointPool)),
+				}
+				if _, dup := edgeSet[key]; dup {
+					continue
+				}
+				edgeSet[key] = rng.IntN(2) == 0
+			}
+			edges := make([][2]string, 0, len(edgeSet))
+			for k := range edgeSet {
+				edges = append(edges, k)
+			}
+			sort.Slice(edges, func(i, j int) bool {
+				if edges[i][0] != edges[j][0] {
+					return edges[i][0] < edges[j][0]
+				}
+				return edges[i][1] < edges[j][1]
+			})
+			edgeIsPut := make([]bool, len(edges))
+			for i, k := range edges {
+				edgeIsPut[i] = edgeSet[k]
+			}
+
+			// Doom ~40% of vertices and edges. A doomed key receives a
+			// terminal Delete (phase 3) at the highest wall_ns in the trace.
+			doomedVertex := map[string]bool{}
+			for vi := 0; vi < vertexPool; vi++ {
+				if rng.IntN(10) < 4 {
+					doomedVertex[fmt.Sprintf("v%d", vi)] = true
+				}
+			}
+			doomedEdge := map[[2]string]bool{}
+			for _, e := range edges {
+				if rng.IntN(10) < 4 {
+					doomedEdge[e] = true
+				}
+			}
+
+			exp := timestamppb.New(time.Now().Add(time.Hour))
+
+			// A single global wall_ns counter gives every mutation a unique
+			// HLC, so the total order is fixed by wall_ns alone and is
+			// independent of delivery order. seqPerOrigin feeds the per-origin
+			// watermark and the synthesized AddEdge ContribID.
+			var wall int64
+			seqPerOrigin := make([]uint64, numOrigins)
+			var valSeed int64
+			tape := make([]*pb.Mutation, 0, randWrites+2*vertexPool+2*edgePool)
+			push := func(oi int, op *pb.MutationOp) {
+				wall++
+				seqPerOrigin[oi]++
+				tape = append(tape, &pb.Mutation{
+					Seq:    seqPerOrigin[oi],
+					Hlc:    newHLC(wall, origins[oi]),
+					Origin: origins[oi][:],
+					Op:     op,
+				})
+			}
+			putEdgeOp := func(e [2]string, w float32) *pb.MutationOp {
+				return &pb.MutationOp{Op: &pb.MutationOp_PutEdge{
+					PutEdge: &pb.PutEdgeRequest{Edge: &pb.Edge{Tail: e[0], Head: e[1], Weight: w, Expiration: exp}},
+				}}
+			}
+			addEdgeOp := func(e [2]string) *pb.MutationOp {
+				return &pb.MutationOp{Op: &pb.MutationOp_AddEdge{
+					AddEdge: &pb.AddEdgeRequest{Edge: &pb.Edge{Tail: e[0], Head: e[1], Weight: 1, Expiration: exp}},
+				}}
+			}
+
+			// Phase 1 — force one write to every doomed key so its terminal
+			// tombstone fences a real value (a non-vacuous fence).
+			for vi := 0; vi < vertexPool; vi++ {
+				k := fmt.Sprintf("v%d", vi)
+				if !doomedVertex[k] {
+					continue
+				}
+				oi := rng.IntN(numOrigins)
+				valSeed++
+				push(oi, &pb.MutationOp{Op: &pb.MutationOp_PutVertex{
+					PutVertex: &pb.PutVertexRequest{Vertex: vertexFor(k, oi, valSeed, exp)},
+				}})
+			}
+			for i, e := range edges {
+				if !doomedEdge[e] {
+					continue
+				}
+				oi := rng.IntN(numOrigins)
+				if edgeIsPut[i] {
+					valSeed++
+					push(oi, putEdgeOp(e, float32(2+(valSeed%7))))
+				} else {
+					push(oi, addEdgeOp(e))
+				}
+			}
+
+			// Phase 2 — a random Put/Add workload over the whole key space
+			// (survivors and doomed alike). randomOp never emits Delete*.
+			for i := 0; i < randWrites; i++ {
+				oi := rng.IntN(numOrigins)
+				valSeed++
+				push(oi, randomOp(rng, vertexPool, edges, edgeIsPut, oi, valSeed, exp))
+			}
+
+			// Phase 3 — terminal Delete* for every doomed key, emitted LAST
+			// so each carries a wall_ns greater than every write to that key.
+			// Singular and plural variants are chosen at random.
+			for vi := 0; vi < vertexPool; vi++ {
+				k := fmt.Sprintf("v%d", vi)
+				if !doomedVertex[k] {
+					continue
+				}
+				oi := rng.IntN(numOrigins)
+				if rng.IntN(2) == 0 {
+					push(oi, &pb.MutationOp{Op: &pb.MutationOp_DeleteVertex{
+						DeleteVertex: &pb.DeleteVertexRequest{Key: k},
+					}})
+				} else {
+					push(oi, &pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{
+						DeleteVertices: &pb.DeleteVerticesRequest{Keys: []string{k}},
+					}})
+				}
+			}
+			for _, e := range edges {
+				if !doomedEdge[e] {
+					continue
+				}
+				oi := rng.IntN(numOrigins)
+				if rng.IntN(2) == 0 {
+					push(oi, &pb.MutationOp{Op: &pb.MutationOp_DeleteEdge{
+						DeleteEdge: &pb.DeleteEdgeRequest{Tail: e[0], Head: e[1]},
+					}})
+				} else {
+					push(oi, &pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{
+						DeleteEdges: &pb.DeleteEdgesRequest{Edges: []*pb.EdgeKey{{Tail: e[0], Head: e[1]}}},
+					}})
+				}
+			}
+
+			// Deliver the tape to each node in a distinct shuffled order with
+			// random duplicates (at-least-once). Every replica enables the
+			// HLC-fenced tombstone path via WithTombstoneTTL.
+			states := make([]nodeSnapshot, numNodes)
+			for n := 0; n < numNodes; n++ {
+				cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+				svc := NewLanternService(cache).WithTombstoneTTL(time.Hour)
+
+				delivery := make([]*pb.Mutation, 0, len(tape)*2)
+				delivery = append(delivery, tape...)
+				for i := 0; i < len(tape)/3; i++ {
+					delivery = append(delivery, tape[rng.IntN(len(tape))])
+				}
+				rng.Shuffle(len(delivery), func(i, j int) {
+					delivery[i], delivery[j] = delivery[j], delivery[i]
+				})
+
+				for _, m := range delivery {
+					if err := svc.ApplyMutation(context.Background(), m); err != nil {
+						t.Fatalf("trace=%d seedHi=%#x: node %d ApplyMutation: %v", trace, seedHi, n, err)
+					}
+				}
+				states[n] = snapshotCache(cache, vertexPool, edges)
+			}
+
+			// (a) Order-independence: every node converges to node 0's state.
+			for n := 1; n < numNodes; n++ {
+				if diff := states[0].diff(states[n]); diff != "" {
+					t.Fatalf("trace=%d seedHi=%#x: node 0 vs node %d divergence:\n%s", trace, seedHi, n, diff)
+				}
+			}
+
+			// (b) Tombstone-wins: every doomed key is absent on the converged
+			// replica (node 0 stands in for all by the agreement just proven).
+			for vi := 0; vi < vertexPool; vi++ {
+				k := fmt.Sprintf("v%d", vi)
+				if doomedVertex[k] {
+					if _, ok := states[0].vertices[k]; ok {
+						t.Fatalf("trace=%d seedHi=%#x: doomed vertex %q survived its terminal delete (tombstone lost)", trace, seedHi, k)
+					}
+				}
+			}
+			for _, e := range edges {
+				if doomedEdge[e] {
+					if _, ok := states[0].weights[e]; ok {
+						t.Fatalf("trace=%d seedHi=%#x: doomed edge %v survived its terminal delete (tombstone lost)", trace, seedHi, e)
+					}
+				}
+			}
+		})
+	}
+}
+
 // TestApplyMutation_Idempotence applies the same mutation twice against
 // a single node and asserts the cache state matches a single application.
 // Covers every oneof variant including Delete (where idempotence is
