@@ -27,28 +27,88 @@ import (
 // is disabled. The two paths emit identical (tailProj, headProj) sets
 // for any given graph state.
 //
-// Locking contract is identical to ScanByPrefix: the walk holds
-// c.mu.RLock for its duration. Callers MUST NOT invoke any GraphCache
-// write method from inside fn. Long-running fn bodies starve writers;
-// callers that need to do non-trivial per-edge work should accumulate
-// into a slice and process after ScanEdgesByPrefix returns.
+// Locking contract mirrors ScanByPrefix (#742): the matching edge rows are
+// collected into a point-in-time snapshot under c.mu.RLock, the lock is
+// released, and only THEN is fn invoked per row. Because fn runs after the
+// lock is dropped, a slow visitor no longer starves writers for the whole
+// scan, and fn MAY call back into GraphCache (including write methods)
+// without risking sync.RWMutex reentrancy. The tradeoff is that fn observes
+// a consistent snapshot taken at collection time, not necessarily the latest
+// state after the lock was released, and an unbounded scan buffers one row
+// per matching edge — callers that need to bound memory should scope the
+// scan with prefixes or page at the service layer.
 //
-// Returns false when the prefix index is not enabled or fn requested an
-// early stop; true on a clean exhaustion of the matching set.
+// Returns false when the prefix index is not enabled, when ctx is cancelled,
+// or when fn requested an early stop; true on a clean exhaustion of the
+// matching set.
 func (c *GraphCache[S, T]) ScanEdgesByPrefix(
 	ctx context.Context,
 	tailPrefix, headPrefix string,
 	fn func(tailProjected string, tail S, headProjected string, head S, weight float32, expiration time.Time) bool,
 ) bool {
+	snapshot, enabled, collected := c.collectEdgeScanRows(ctx, tailPrefix, headPrefix)
+	if !enabled {
+		return false
+	}
+	// Collection was interrupted by ctx cancellation; report the walk as
+	// incomplete even if some rows were buffered.
+	if !collected {
+		return false
+	}
+	for i := range snapshot {
+		if err := ctx.Err(); err != nil {
+			return false
+		}
+		r := &snapshot[i]
+		if !fn(r.tailProj, r.tail, r.headProj, r.head, r.weight, r.expiration) {
+			return false
+		}
+	}
+	return true
+}
+
+// edgeScanRow is one matched (tail, head) edge captured during the locked
+// collection phase of ScanEdgesByPrefix so the visitor can run after the read
+// lock is released (#742).
+type edgeScanRow[S comparable] struct {
+	tailProj   string
+	tail       S
+	headProj   string
+	head       S
+	weight     float32
+	expiration time.Time
+}
+
+// collectEdgeScanRows gathers every matching edge into a snapshot under a
+// single c.mu.RLock, reusing the same fast/fallback head walk as the live
+// scan. enabled is false when the prefix index is disabled (the caller maps
+// this to a false return); collected is false when ctx was cancelled mid-walk.
+// The visitor is NOT called here — collection appends rows and always keeps
+// going, so early-stop is honoured later during replay, matching ScanByPrefix.
+func (c *GraphCache[S, T]) collectEdgeScanRows(
+	ctx context.Context,
+	tailPrefix, headPrefix string,
+) (snapshot []edgeScanRow[S], enabled, collected bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if c.prefixIndex == nil {
-		return false
+		return nil, false, false
 	}
-	completed := true
+	collected = true
+	collect := func(tailProj string, tail S, headProj string, head S, weight float32, expiration time.Time) bool {
+		snapshot = append(snapshot, edgeScanRow[S]{
+			tailProj:   tailProj,
+			tail:       tail,
+			headProj:   headProj,
+			head:       head,
+			weight:     weight,
+			expiration: expiration,
+		})
+		return true
+	}
 	c.prefixIndex.walkPrefix(tailPrefix, func(tailProj string) bool {
 		if err := ctx.Err(); err != nil {
-			completed = false
+			collected = false
 			return false
 		}
 		tail, ok := c.resolveProjected(tailProj)
@@ -59,19 +119,14 @@ func (c *GraphCache[S, T]) ScanEdgesByPrefix(
 		if !ok || len(heads) == 0 {
 			return true
 		}
-		var ok2 bool
 		if c.headByTail != nil {
-			ok2 = c.scanTailHeadsFast(tail, tailProj, headPrefix, heads, fn)
+			c.scanTailHeadsFast(tail, tailProj, headPrefix, heads, collect)
 		} else {
-			ok2 = c.scanTailHeadsFallback(tail, tailProj, headPrefix, heads, fn)
-		}
-		if !ok2 {
-			completed = false
-			return false
+			c.scanTailHeadsFallback(tail, tailProj, headPrefix, heads, collect)
 		}
 		return true
 	})
-	return completed
+	return snapshot, true, collected
 }
 
 // scanTailHeadsFast emits matching (tail, head) pairs for one tail using
