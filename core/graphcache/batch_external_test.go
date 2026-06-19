@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
+	"github.com/anaregdesign/lantern/core/hlc"
 )
 
 // TestAddEdgesWithExpiration_AtomicNeighborSnapshot verifies that a
@@ -328,4 +329,151 @@ func itoa(i int) string {
 		i /= 10
 	}
 	return string(buf[pos:])
+}
+
+// PutVerticesWithExpirationHLC stamps every item with the supplied HLC so the
+// LOCAL batch write path participates in last-writer-wins exactly like the
+// per-item apply path. A strictly-older batch is dropped per key, a brand-new
+// key in the same batch still applies, and a key under a newer tombstone is
+// not resurrected by an older batch put.
+func TestPutVerticesWithExpirationHLC_BatchLWW(t *testing.T) {
+	exp := time.Now().Add(time.Hour)
+	older := hlc.Timestamp{WallNs: 1000}
+	newer := hlc.Timestamp{WallNs: 2000}
+
+	t.Run("LWW", func(t *testing.T) {
+		c := graphcache.NewGraphCache[string, string](time.Minute)
+		c.PutVerticesWithExpirationHLC([]graphcache.VertexItem[string, string]{
+			{Key: "a", Value: "newA", Expiration: exp},
+			{Key: "b", Value: "newB", Expiration: exp},
+		}, newer)
+		c.PutVerticesWithExpirationHLC([]graphcache.VertexItem[string, string]{
+			{Key: "a", Value: "staleA", Expiration: exp}, // dropped: strictly older
+			{Key: "b", Value: "staleB", Expiration: exp}, // dropped: strictly older
+			{Key: "c", Value: "freshC", Expiration: exp}, // applied: brand-new key
+		}, older)
+		for _, tc := range []struct{ key, want string }{
+			{"a", "newA"}, {"b", "newB"}, {"c", "freshC"},
+		} {
+			if got, ok := c.GetVertex(tc.key); !ok || got != tc.want {
+				t.Errorf("%s: got (%q,%v), want (%q,true) — newer HLC must win", tc.key, got, ok, tc.want)
+			}
+		}
+	})
+
+	t.Run("TombstoneFencesOlder", func(t *testing.T) {
+		c := graphcache.NewGraphCache[string, string](time.Minute)
+		c.PutVerticesWithExpirationHLC([]graphcache.VertexItem[string, string]{
+			{Key: "d", Value: "live", Expiration: exp},
+		}, older)
+		if n := c.DeleteVerticesHLC([]string{"d"}, newer, exp); n != 1 {
+			t.Fatalf("delete: got %d, want 1", n)
+		}
+		c.PutVerticesWithExpirationHLC([]graphcache.VertexItem[string, string]{
+			{Key: "d", Value: "resurrect", Expiration: exp}, // dropped: older than tombstone
+		}, older)
+		if _, ok := c.GetVertex("d"); ok {
+			t.Errorf("older batch put resurrected a tombstoned key")
+		}
+	})
+}
+
+// PutEdgesWithExpirationHLC is the edge LWW sibling: a strictly-older batch is
+// dropped per (tail, head), a brand-new edge in the same batch applies, and a
+// newer edge tombstone fences an older batch put.
+func TestPutEdgesWithExpirationHLC_BatchLWW(t *testing.T) {
+	exp := time.Now().Add(time.Hour)
+	older := hlc.Timestamp{WallNs: 1000}
+	newer := hlc.Timestamp{WallNs: 2000}
+
+	t.Run("LWW", func(t *testing.T) {
+		c := graphcache.NewGraphCache[string, string](time.Minute)
+		c.PutEdgesWithExpirationHLC([]graphcache.EdgeItem[string]{
+			{Tail: "a", Head: "b", Weight: 2.5, Expiration: exp},
+		}, newer)
+		c.PutEdgesWithExpirationHLC([]graphcache.EdgeItem[string]{
+			{Tail: "a", Head: "b", Weight: 9.9, Expiration: exp}, // dropped: strictly older
+			{Tail: "x", Head: "y", Weight: 1.0, Expiration: exp}, // applied: brand-new edge
+		}, older)
+		if got, ok := c.GetWeight("a", "b"); !ok || got != 2.5 {
+			t.Errorf("a->b: got (%v,%v), want (2.5,true) — newer HLC must win", got, ok)
+		}
+		if got, ok := c.GetWeight("x", "y"); !ok || got != 1.0 {
+			t.Errorf("x->y: got (%v,%v), want (1.0,true)", got, ok)
+		}
+	})
+
+	t.Run("TombstoneFencesOlder", func(t *testing.T) {
+		c := graphcache.NewGraphCache[string, string](time.Minute)
+		c.PutEdgesWithExpirationHLC([]graphcache.EdgeItem[string]{
+			{Tail: "a", Head: "b", Weight: 1.0, Expiration: exp},
+		}, older)
+		if n := c.DeleteEdgesHLC([]graphcache.EdgeKey[string]{{Tail: "a", Head: "b"}}, newer, exp); n != 1 {
+			t.Fatalf("delete: got %d, want 1", n)
+		}
+		c.PutEdgesWithExpirationHLC([]graphcache.EdgeItem[string]{
+			{Tail: "a", Head: "b", Weight: 9.0, Expiration: exp}, // dropped: older than tombstone
+		}, older)
+		if _, ok := c.GetWeight("a", "b"); ok {
+			t.Errorf("older batch put resurrected a tombstoned edge")
+		}
+	})
+}
+
+// AddEdgesWithExpirationContribHLC keeps additive ContribID-set semantics but
+// fences each contribution by the edge tombstone at the supplied HLC: an
+// older-than-tombstone contribution adds nothing (and is counted as deduped),
+// an exact ContribID replay is idempotent, and two distinct contributions sum.
+func TestAddEdgesWithExpirationContribHLC_TombstoneFenced(t *testing.T) {
+	exp := time.Now().Add(time.Hour)
+	older := hlc.Timestamp{WallNs: 1000}
+	newer := hlc.Timestamp{WallNs: 2000}
+
+	t.Run("TombstoneDropsOlderContribution", func(t *testing.T) {
+		c := graphcache.NewGraphCache[string, string](time.Minute)
+		c.AddEdgesWithExpirationContribHLC([]graphcache.EdgeItem[string]{
+			{Tail: "a", Head: "b", Weight: 1.0, Expiration: exp, ContribID: graphcache.ContribID{0: 1}},
+		}, older)
+		if n := c.DeleteEdgesHLC([]graphcache.EdgeKey[string]{{Tail: "a", Head: "b"}}, newer, exp); n != 1 {
+			t.Fatalf("delete: got %d, want 1", n)
+		}
+		deduped := c.AddEdgesWithExpirationContribHLC([]graphcache.EdgeItem[string]{
+			{Tail: "a", Head: "b", Weight: 5.0, Expiration: exp, ContribID: graphcache.ContribID{0: 2}},
+		}, older)
+		if deduped != 1 {
+			t.Errorf("deduped: got %d, want 1 (tombstone-dropped)", deduped)
+		}
+		if _, ok := c.GetWeight("a", "b"); ok {
+			t.Errorf("older contribution resurrected a tombstoned edge")
+		}
+	})
+
+	t.Run("ContribIDDedup", func(t *testing.T) {
+		c := graphcache.NewGraphCache[string, string](time.Minute)
+		items := []graphcache.EdgeItem[string]{
+			{Tail: "a", Head: "b", Weight: 1.0, Expiration: exp, ContribID: graphcache.ContribID{0: 9}},
+		}
+		if d := c.AddEdgesWithExpirationContribHLC(items, older); d != 0 {
+			t.Errorf("first apply deduped: got %d, want 0", d)
+		}
+		if d := c.AddEdgesWithExpirationContribHLC(items, newer); d != 1 {
+			t.Errorf("replay deduped: got %d, want 1 (same ContribID is idempotent)", d)
+		}
+		if got, ok := c.GetWeight("a", "b"); !ok || got != 1.0 {
+			t.Errorf("a->b weight: got (%v,%v), want (1.0,true) — replay must not double-count", got, ok)
+		}
+	})
+
+	t.Run("AdditiveMerge", func(t *testing.T) {
+		c := graphcache.NewGraphCache[string, string](time.Minute)
+		c.AddEdgesWithExpirationContribHLC([]graphcache.EdgeItem[string]{
+			{Tail: "a", Head: "b", Weight: 1.0, Expiration: exp, ContribID: graphcache.ContribID{0: 1}},
+		}, older)
+		c.AddEdgesWithExpirationContribHLC([]graphcache.EdgeItem[string]{
+			{Tail: "a", Head: "b", Weight: 2.0, Expiration: exp, ContribID: graphcache.ContribID{0: 2}},
+		}, newer)
+		if got, ok := c.GetWeight("a", "b"); !ok || got != 3.0 {
+			t.Errorf("a->b weight: got (%v,%v), want (3.0,true) — distinct contributions must sum", got, ok)
+		}
+	})
 }

@@ -299,6 +299,24 @@ func (f *fakeBackend) PutEdgeWithExpirationHLC(tail, head string, w float32, _ t
 	return true
 }
 
+// batch HLC siblings driven by the LOCAL write path when replication is
+// enabled. The fake collapses the HLC bookkeeping into the non-HLC batch
+// siblings so the existing call counters and captured items stay observable
+// whether or not the service takes the replicated branch; real LWW / tombstone
+// convergence is covered by the core and integration tests against the real
+// backend.
+func (f *fakeBackend) PutVerticesWithExpirationHLC(items []graphcache.VertexItem[string, *pb.Vertex], _ hlc.Timestamp) {
+	f.PutVerticesWithExpiration(items)
+}
+
+func (f *fakeBackend) PutEdgesWithExpirationHLC(items []graphcache.EdgeItem[string], _ hlc.Timestamp) {
+	f.PutEdgesWithExpiration(items)
+}
+
+func (f *fakeBackend) AddEdgesWithExpirationContribHLC(items []graphcache.EdgeItem[string], _ hlc.Timestamp) int {
+	return f.AddEdgesWithExpirationContrib(items)
+}
+
 // Tombstone-aware entry points (#183). The fake intentionally collapses
 // the tombstone bookkeeping into the underlying delete; service-level
 // tests that exercise tombstone semantics use the real backend.
