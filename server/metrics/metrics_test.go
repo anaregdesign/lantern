@@ -226,6 +226,7 @@ func TestDomainMetrics_HotPathFamilies(t *testing.T) {
 		"lantern_search_index_terms",
 		"lantern_search_index_docs",
 		"lantern_vertex_hlc_entries",
+		"lantern_vertex_hlc_entries_high_water",
 	} {
 		if !names[want] {
 			t.Errorf("metric family %q not registered", want)
@@ -278,6 +279,46 @@ func TestDomainMetrics_HotPathFamilies(t *testing.T) {
 	}
 	if got := histSampleCount(t, m.searchDuration); got != 1 {
 		t.Errorf("search_duration sample count = %v, want 1", got)
+	}
+}
+
+// TestDomainMetrics_VertexHLCHighWaterGauge confirms the #727 confirm-the-
+// phenomenon gauge: lantern_vertex_hlc_entries_high_water registers and tick()
+// publishes the bound sampler's value independently of the post-sweep len
+// reported by lantern_vertex_hlc_entries. The pairing (low entries, high
+// high-water) is the fingerprint of born-expired LWW churn retaining heap.
+func TestDomainMetrics_VertexHLCHighWaterGauge(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := New(reg, Options{SampleInterval: time.Hour})
+
+	// Simulate a post-sweep state: the live count is drained low while the
+	// per-cycle peak stays high (Go never shrinks the map's bucket array).
+	m.BindVertexHLCSampler(func() int { return 7 })
+	m.BindVertexHLCHighWaterSampler(func() int { return 240_000 })
+	m.tick()
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	names := map[string]bool{}
+	for _, mf := range mfs {
+		names[mf.GetName()] = true
+	}
+	for _, want := range []string{
+		"lantern_vertex_hlc_entries",
+		"lantern_vertex_hlc_entries_high_water",
+	} {
+		if !names[want] {
+			t.Errorf("metric family %q not registered", want)
+		}
+	}
+
+	if got := testutil.ToFloat64(m.vertexHLCEntries); got != 7 {
+		t.Errorf("vertex_hlc_entries = %v, want 7 (post-sweep len)", got)
+	}
+	if got := testutil.ToFloat64(m.vertexHLCHighWater); got != 240_000 {
+		t.Errorf("vertex_hlc_entries_high_water = %v, want 240000 (per-cycle peak)", got)
 	}
 }
 

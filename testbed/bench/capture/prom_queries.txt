@@ -42,3 +42,16 @@ histogram_quantile(0.99, sum by (le) (rate(lantern_subscription_dispatch_duratio
 # from process start. Per-instance breakdown is what the many_subscribers
 # scenario specifically needs (see #260 acceptance + #392).
 sum by (instance, cause) (rate(lantern_mutationlog_subscriber_dropped_total[30s]))
+
+# --- vertexHLC LWW watermark map retention (#727) --------------------
+# lantern_vertex_hlc_entries{instance}            — gauge, post-sweep len
+#   (drained low after each GC tick).
+# lantern_vertex_hlc_entries_high_water{instance} — gauge, per-cycle peak
+#   len recorded before the sweep drains it (monotonic non-decreasing).
+# The high-water is the quantity that sizes the map's retained bucket array
+# (Go never shrinks a map after delete); a large high-water on the replica
+# that receives the direct ttl_churn firehose, paired with a low entries
+# floor, is the confirm-the-phenomenon signal for the born-expired retention
+# behind the ttl_churn leak gate (#700/#719).
+max by (instance) (lantern_vertex_hlc_entries)
+max by (instance) (lantern_vertex_hlc_entries_high_water)

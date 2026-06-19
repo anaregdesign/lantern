@@ -11,8 +11,11 @@ name: Bench (nightly leak gate)
 #
 # It also runs with RELEASE_BENCH_BUDGET_SECONDS=0 (the sweep's graceful
 # wall-clock cutoff disabled), so every scenario runs to completion and no leak
-# can hide behind a budget-truncated tail. The job `timeout-minutes` is the only
-# backstop.
+# can hide behind a budget-truncated tail. To keep that un-truncated sweep inside
+# a sane CI timeout it runs LEAK_GATE_ONLY=1, which drops the pprof + Prometheus
+# captures the leak verdict never reads (they, not the fixed phase durations, are
+# what made the sweep balloon past an hour — see #727). The job `timeout-minutes`
+# is the only backstop.
 
 on:
   schedule:
@@ -31,11 +34,16 @@ jobs:
   leak-gate:
     name: Nightly leak gate
     runs-on: ubuntu-latest
-    # Unbounded budget means the loop runs ~23 min (see release-scenarios.txt),
-    # plus image build + tool install + compose up + aggregation. 60 min leaves
-    # generous headroom on an abnormally slow runner without letting a wedged
-    # scenario hang the job indefinitely.
-    timeout-minutes: 60
+    # Sizing (see #727): with full pprof + Prometheus capture the un-truncated
+    # sweep ran ~55-65 min on current ubuntu-latest runners — ~2.5x the stale
+    # "~23 min" estimate — and the old 60 min cap cancelled run 27807832936
+    # mid-sweep before it could render a verdict. The fix is NOT a bigger cap but
+    # LEAK_GATE_ONLY=1 below, which drops the diagnostic captures the gate never
+    # reads (24 pprof + 12 prom curls per scenario); that returns the sweep to
+    # ~deterministic phase time (~23 min) + image build/setup, ~35-40 min total.
+    # 50 min leaves headroom for a slow cold build while still bounding a wedged
+    # scenario — and is well under the rejected 90 min.
+    timeout-minutes: 50
     permissions:
       contents: read
     steps:
@@ -72,6 +80,12 @@ jobs:
           COMMIT: ${{ github.sha }}
           RUNNER: linux/amd64 (ubuntu-latest)
           LANTERN_IMAGE: lantern:local
+          # Leak-gate-only: skip the pprof + Prometheus captures the leak verdict
+          # never reads (they dominate per-scenario wall-time). This is what lets
+          # the un-truncated sweep finish inside timeout-minutes. The advisory
+          # release-time bench omits this and keeps full capture for its
+          # throughput report. See #727.
+          LEAK_GATE_ONLY: "1"
           # Disable the graceful truncation budget so every scenario runs and a
           # leak in a tail scenario cannot be silently skipped. The job
           # timeout-minutes above is the hard backstop.

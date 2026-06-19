@@ -88,6 +88,17 @@ type GraphCache[S comparable, T any] struct {
 	// against the vertex cache after every GC tick (issue #700).
 	vertexHLC map[S]hlc.Timestamp
 
+	// vertexHLCHighWater records the largest len(vertexHLC) ever observed at
+	// the start of a sweep (sweepStaleVertexHLCLocked) — i.e. the per-GC-cycle
+	// peak before stale watermarks are drained. It is monotonic non-decreasing
+	// for the life of the cache and is the authoritative churn-peak signal for
+	// the born-expired LWW load behind the ttl_churn release-bench leak gate
+	// (#700/#719/#727). It used to also size the map's retained heap (Go never
+	// shrinks a map after delete), but the sweep now reallocates vertexHLC after
+	// a large drain (see vertexHLCShrinkFloor), so this is a historical peak for
+	// observability, not a live heap-size proxy. Guarded by c.mu like vertexHLC.
+	vertexHLCHighWater int
+
 	// vertexTombstones / edgeTombstones are the per-key deletion records
 	// produced by Delete*HLC (#183). They live outside the live cache so
 	// reads never accidentally surface a deleted key, and they fence
@@ -487,6 +498,23 @@ func (c *GraphCache[S, T]) VertexHLCCount() int {
 	return len(c.vertexHLC)
 }
 
+// VertexHLCHighWater returns the largest number of vertexHLC entries ever
+// observed at the start of a GC sweep — the per-cycle peak before stale
+// watermarks are drained. Unlike VertexHLCCount (which reports the current,
+// post-sweep len and therefore reads low right after a drain), this value is
+// monotonic non-decreasing and records the all-time churn peak. It used to also
+// proxy the map's retained bucket-array heap (Go never shrinks a map after
+// delete), but sweepStaleVertexHLCLocked now reallocates the map after a large
+// drain, so a high VertexHLCHighWater no longer implies pinned heap — it is a
+// historical confirm-the-phenomenon signal for the ttl_churn leak gate
+// (#700/#719/#727). Returns 0 when no sweep has run yet. Safe for concurrent
+// use; intended for Prometheus gauge sampling.
+func (c *GraphCache[S, T]) VertexHLCHighWater() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.vertexHLCHighWater
+}
+
 // SearchIndexStats returns the current number of distinct terms and indexed
 // documents in the optional search index. Both values are 0 when the search
 // index is disabled. Safe for concurrent use; intended for Prometheus gauge
@@ -501,19 +529,56 @@ func (c *GraphCache[S, T]) SearchIndexStats() (terms, docs int) {
 	return idx.Stats()
 }
 
+// vertexHLCShrinkFloor and vertexHLCShrinkDivisor govern when
+// sweepStaleVertexHLCLocked reallocates vertexHLC to release its bucket array.
+// Go never shrinks a map after delete, so a born-expired churn that peaks at
+// hundreds of thousands of entries (#719) and is then drained back to the live
+// set (#700) would otherwise leave the full-size backing store pinned on the
+// heap — the retention behind the ttl_churn release-bench leak gate (#727).
+// The sweep rebuilds the map only when the pre-sweep size cleared the floor and
+// the survivors are at most 1/divisor of it: the floor keeps negligible maps
+// off the copy path, and the ratio keeps a healthy steady-state workload —
+// whose live set tracks the vertex cache, so survivors ≈ pre-sweep size — from
+// ever rebuilding.
+const (
+	vertexHLCShrinkFloor   = 1024
+	vertexHLCShrinkDivisor = 4
+)
+
 // sweepStaleVertexHLCLocked removes vertexHLC entries whose corresponding
 // vertex is no longer live. It is called from flush() which already holds
 // c.mu.Lock(), so it is safe to mutate c.vertexHLC without an additional lock.
 // This bounds the map to the live replicated-key set rather than the all-time
-// set, fixing the leak described in issue #700.
+// set, fixing the leak described in issue #700. After a large drain it also
+// reallocates the map so Go can reclaim the oversized bucket array (#727).
 func (c *GraphCache[S, T]) sweepStaleVertexHLCLocked() {
 	if c.vertexHLC == nil {
 		return
+	}
+	// Record the pre-drain peak first: len(vertexHLC) here is the per-cycle
+	// high-water (writes only grow the map between GC ticks; this sweep is the
+	// only drain). This is the value that sizes the retained bucket array, so
+	// it must be captured before the delete loop below empties the map.
+	before := len(c.vertexHLC)
+	if before > c.vertexHLCHighWater {
+		c.vertexHLCHighWater = before
 	}
 	for key := range c.vertexHLC {
 		if !c.vertices.Has(key) {
 			delete(c.vertexHLC, key)
 		}
+	}
+	// Reclaim the oversized bucket array after a large drain. Go never shrinks a
+	// map after delete, so without this the map keeps the heap it sized for its
+	// high-water entry count even though len() has collapsed (#727). When the
+	// pre-sweep size cleared the floor and the survivors are at most 1/divisor of
+	// it, copy them into a right-sized map and drop the old one for the GC.
+	if after := len(c.vertexHLC); before >= vertexHLCShrinkFloor && after <= before/vertexHLCShrinkDivisor {
+		rebuilt := make(map[S]hlc.Timestamp, after)
+		for key, ts := range c.vertexHLC {
+			rebuilt[key] = ts
+		}
+		c.vertexHLC = rebuilt
 	}
 }
 

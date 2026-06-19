@@ -26,6 +26,8 @@ func TestRenderReport_AllSectionsAndVerdict(t *testing.T) {
 				HeapInusePreBytes: 10 << 20, HeapInusePostBytes: 15 << 20, HeapInuseDeltaBytes: 5 << 20,
 				HeapAllocPreBytes: 8 << 20, HeapAllocPostBytes: 9 << 20, HeapAllocDeltaBytes: 1 << 20,
 				HeapObjectsPre: 1000, HeapObjectsPost: 1100, HeapObjectsDelta: 100,
+				VertexHLCEntriesPre: 5, VertexHLCEntriesPost: 12,
+				VertexHLCHighWaterPre: 200_000, VertexHLCHighWaterPost: 240_000,
 			}},
 		},
 		GhzFiles: []GhzFile{{
@@ -57,7 +59,8 @@ func TestRenderReport_AllSectionsAndVerdict(t *testing.T) {
 		"heap_alloc_max_delta_mb=32",
 		"`localhost:9390`",
 		"**+10**",
-		"50.00", // p99 ms
+		"| 12 / 240000 |", // vertexHLC entries (drained) / high-water (peak)
+		"50.00",           // p99 ms
 		"`ghz_steady_localhost_6380.json`",
 		"| 10 |", // non-OK column
 		"`go_goroutines` → `prom/q_01.json`",

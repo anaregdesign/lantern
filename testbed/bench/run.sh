@@ -12,6 +12,13 @@
 #   SKIP_UP=1         assume the cluster is already running; skip compose up
 #   PPROF_CPU=1       also capture a 30s CPU profile per replica post-steady
 #   PROM_URL          override Prometheus URL (default http://localhost:9091)
+#   LEAK_GATE_ONLY=1  skip the pprof captures + Prometheus range queries and keep
+#                     only the runtime snapshots that feed the leak-gate verdict.
+#                     Those artifacts (24 pprof + 12 prom curls per scenario, up
+#                     to 60s/30s each) are throughput/diagnostic extras the gate
+#                     never reads, yet they dominate per-scenario wall-time. The
+#                     nightly leak gate sets this so the un-truncated sweep fits a
+#                     sane CI timeout; the advisory release bench leaves it unset.
 #
 # Exits 0 if leak gate verdict == "pass", 1 otherwise. Exits 2 on misuse.
 #
@@ -170,26 +177,58 @@ snapshot_runtime() {
   # live (post-GC) memory rather than transient allocation between cycles.
   # /debug/pprof/heap?gc=1 calls runtime.GC() before returning the profile —
   # we discard the body and just use the side effect.
-  local out="$1" port
-  for port in "${REPLICA_METRICS_PORTS[@]}"; do
-    curl -fsS --max-time 10 "http://localhost:${port}/debug/pprof/heap?gc=1" \
-      -o /dev/null || true
-  done
+  #
+  # A SINGLE post-GC sample can still read a transiently elevated heap (or
+  # goroutine count): allocations racing the scrape, or the GC not fully settled
+  # under CI-runner contention, briefly inflate the gauge. The leak gate's tight
+  # deltas (goroutine 15, heap 16 MiB) then trip where a calm local run is
+  # comfortably green (#727). So sample K rounds per replica — each its own
+  # forced GC + scrape — and keep the per-metric MINIMUM: the live-set floor.
+  # Transient spikes drop out, while a genuine leak raises the floor on every
+  # round and is still caught. K defaults to 3; override via SNAPSHOT_ROUNDS.
+  local out="$1" port round
+  local rounds="${SNAPSHOT_ROUNDS:-3}"
+  [[ "$rounds" -ge 1 ]] 2>/dev/null || rounds=1
   local -a samples=()
   for port in "${REPLICA_METRICS_PORTS[@]}"; do
-    local text
-    text="$(curl -fsS --max-time 5 "http://localhost:${port}/metrics" || true)"
-    local g h_inuse h_alloc h_objs
-    # Prom client formats large gauges in scientific notation (e.g. 1.949696e+07).
-    # Coerce to integer so downstream JSON consumers (jq + Go int64) don't choke.
-    g="$(printf '%.0f' "$(prom_scalar go_goroutines "$text")" 2>/dev/null)"; g="${g:-0}"
-    h_inuse="$(printf '%.0f' "$(prom_scalar go_memstats_heap_inuse_bytes "$text")" 2>/dev/null)"; h_inuse="${h_inuse:-0}"
-    h_alloc="$(printf '%.0f' "$(prom_scalar go_memstats_heap_alloc_bytes "$text")" 2>/dev/null)"; h_alloc="${h_alloc:-0}"
-    h_objs="$(printf '%.0f'  "$(prom_scalar go_memstats_heap_objects     "$text")" 2>/dev/null)"; h_objs="${h_objs:-0}"
+    local g="" h_inuse="" h_alloc="" h_objs="" vhe="" vhw=""
+    for (( round = 1; round <= rounds; round++ )); do
+      curl -fsS --max-time 10 "http://localhost:${port}/debug/pprof/heap?gc=1" \
+        -o /dev/null || true
+      local text
+      text="$(curl -fsS --max-time 5 "http://localhost:${port}/metrics" || true)"
+      local rg rhi rha rho rvhe rvhw
+      # Prom client formats large gauges in scientific notation (e.g. 1.949696e+07).
+      # Coerce to integer so downstream JSON consumers (jq + Go int64) don't choke.
+      rg="$(printf '%.0f' "$(prom_scalar go_goroutines "$text")" 2>/dev/null)"; rg="${rg:-0}"
+      rhi="$(printf '%.0f' "$(prom_scalar go_memstats_heap_inuse_bytes "$text")" 2>/dev/null)"; rhi="${rhi:-0}"
+      rha="$(printf '%.0f' "$(prom_scalar go_memstats_heap_alloc_bytes "$text")" 2>/dev/null)"; rha="${rha:-0}"
+      rho="$(printf '%.0f'  "$(prom_scalar go_memstats_heap_objects     "$text")" 2>/dev/null)"; rho="${rho:-0}"
+      # vertexHLC LWW watermark map (#727): the instantaneous entry count
+      # (lantern_vertex_hlc_entries — drained low right after a GC sweep) and
+      # its sticky per-cycle peak (lantern_vertex_hlc_entries_high_water).
+      # prom_scalar matches the full metric name, so the "_entries" query does
+      # NOT collide with the "_entries_high_water" line. A low entries floor
+      # paired with a large high-water is the born-expired ttl_churn retention
+      # fingerprint (Go never shrinks the map's bucket array after delete).
+      rvhe="$(printf '%.0f' "$(prom_scalar lantern_vertex_hlc_entries "$text")" 2>/dev/null)"; rvhe="${rvhe:-0}"
+      rvhw="$(printf '%.0f' "$(prom_scalar lantern_vertex_hlc_entries_high_water "$text")" 2>/dev/null)"; rvhw="${rvhw:-0}"
+      # Keep the running minimum (live-set floor) across rounds for the runtime
+      # gauges and the instantaneous HLC count; take the MAXIMUM for the
+      # high-water, which is monotonic and whose peak is the quantity of
+      # interest (a mid-snapshot sweep can only raise it).
+      if [[ -z "$g"       || "$rg"  -lt "$g"       ]]; then g="$rg"; fi
+      if [[ -z "$h_inuse" || "$rhi" -lt "$h_inuse" ]]; then h_inuse="$rhi"; fi
+      if [[ -z "$h_alloc" || "$rha" -lt "$h_alloc" ]]; then h_alloc="$rha"; fi
+      if [[ -z "$h_objs"  || "$rho" -lt "$h_objs"  ]]; then h_objs="$rho"; fi
+      if [[ -z "$vhe"     || "$rvhe" -lt "$vhe"    ]]; then vhe="$rvhe"; fi
+      if [[ -z "$vhw"     || "$rvhw" -gt "$vhw"    ]]; then vhw="$rvhw"; fi
+    done
     samples+=( "$(jq -nc --arg ep "localhost:${port}" \
         --argjson g "$g" \
         --argjson hi "$h_inuse" --argjson ha "$h_alloc" --argjson ho "$h_objs" \
-      '{endpoint: $ep, goroutines: $g, heap_inuse_bytes: $hi, heap_alloc_bytes: $ha, heap_objects: $ho}')" )
+        --argjson vhe "$vhe" --argjson vhw "$vhw" \
+      '{endpoint: $ep, goroutines: $g, heap_inuse_bytes: $hi, heap_alloc_bytes: $ha, heap_objects: $ho, vertex_hlc_entries: $vhe, vertex_hlc_high_water: $vhw}')" )
   done
   printf '%s\n' "${samples[@]}" | jq -s '.' > "$out"
 }
@@ -218,7 +257,9 @@ run_ghz warmup "${endpoints[0]}" "$warm_call" "$warm_data" "$warmup_conc" "$warm
 
 # ----- PRE snapshot (after warmup) -------------------------------------------
 snapshot_runtime "$OUTDIR/runtime_pre.json"
-"$CAPTURE_DIR/pprof.sh" "$OUTDIR/pprof" pre || log "pprof pre snapshot reported warnings"
+if [[ "${LEAK_GATE_ONLY:-0}" != "1" ]]; then
+  "$CAPTURE_DIR/pprof.sh" "$OUTDIR/pprof" pre || log "pprof pre snapshot reported warnings"
+fi
 
 # ----- STEADY ----------------------------------------------------------------
 steady_start_epoch="$(date -u +%s)"
@@ -316,25 +357,35 @@ sleep "${cooldown%s}"
 
 # ----- POST snapshot ---------------------------------------------------------
 snapshot_runtime "$OUTDIR/runtime_post.json"
-"$CAPTURE_DIR/pprof.sh" "$OUTDIR/pprof" post || log "pprof post snapshot reported warnings"
 
-# ----- Prom range queries ----------------------------------------------------
-log "capturing Prometheus range queries from $PROM_URL"
-i=0
-while IFS= read -r line; do
-  q="${line%%#*}"; q="${q#"${q%%[![:space:]]*}"}"; q="${q%"${q##*[![:space:]]}"}"
-  [[ -z "$q" ]] && continue
-  i=$(( i + 1 ))
-  out="$OUTDIR/prom/q_$(printf '%02d' "$i").json"
-  curl -fsS --max-time 30 -G "$PROM_URL/api/v1/query_range" \
-    --data-urlencode "query=$q" \
-    --data-urlencode "start=$steady_start_epoch" \
-    --data-urlencode "end=$steady_end_epoch" \
-    --data-urlencode "step=5s" \
-    > "$out" || log "prom query failed: $q"
-  jq -nc --arg q "$q" --arg f "$(basename "$out")" '{query:$q, file:$f}' \
-    >> "$OUTDIR/prom/_index.ndjson"
-done < "$CAPTURE_DIR/prom_queries.txt"
+# pprof captures + Prometheus range queries are throughput/diagnostic extras the
+# leak-gate verdict never consumes (it reads only runtime_pre/post.json), and
+# they are the dominant per-scenario overhead. LEAK_GATE_ONLY skips both; the
+# report renderer already degrades to "_no pprof profiles captured_" / "_no prom
+# queries captured_" when the artifacts are absent.
+if [[ "${LEAK_GATE_ONLY:-0}" == "1" ]]; then
+  log "LEAK_GATE_ONLY=1 — skipping pprof captures + Prometheus range queries"
+else
+  "$CAPTURE_DIR/pprof.sh" "$OUTDIR/pprof" post || log "pprof post snapshot reported warnings"
+
+  # ----- Prom range queries --------------------------------------------------
+  log "capturing Prometheus range queries from $PROM_URL"
+  i=0
+  while IFS= read -r line; do
+    q="${line%%#*}"; q="${q#"${q%%[![:space:]]*}"}"; q="${q%"${q##*[![:space:]]}"}"
+    [[ -z "$q" ]] && continue
+    i=$(( i + 1 ))
+    out="$OUTDIR/prom/q_$(printf '%02d' "$i").json"
+    curl -fsS --max-time 30 -G "$PROM_URL/api/v1/query_range" \
+      --data-urlencode "query=$q" \
+      --data-urlencode "start=$steady_start_epoch" \
+      --data-urlencode "end=$steady_end_epoch" \
+      --data-urlencode "step=5s" \
+      > "$out" || log "prom query failed: $q"
+    jq -nc --arg q "$q" --arg f "$(basename "$out")" '{query:$q, file:$f}' \
+      >> "$OUTDIR/prom/_index.ndjson"
+  done < "$CAPTURE_DIR/prom_queries.txt"
+fi
 
 # ----- Leak gate -------------------------------------------------------------
 g_thresh="$(yq -r '.leak_gate.goroutine_max_delta' "$SCENARIO_FILE")"
@@ -366,7 +417,11 @@ leak_json="$(jq -n \
       heap_alloc_delta_bytes:($post[$i].heap_alloc_bytes - $pre[$i].heap_alloc_bytes),
       heap_objects_pre:      $pre[$i].heap_objects,
       heap_objects_post:     $post[$i].heap_objects,
-      heap_objects_delta:   ($post[$i].heap_objects - $pre[$i].heap_objects)
+      heap_objects_delta:   ($post[$i].heap_objects - $pre[$i].heap_objects),
+      vertex_hlc_entries_pre:     $pre[$i].vertex_hlc_entries,
+      vertex_hlc_entries_post:    $post[$i].vertex_hlc_entries,
+      vertex_hlc_high_water_pre:  $pre[$i].vertex_hlc_high_water,
+      vertex_hlc_high_water_post: $post[$i].vertex_hlc_high_water
     }
   ] as $r |
   {
