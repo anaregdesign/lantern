@@ -62,6 +62,25 @@ type MutationApplier interface {
 type SnapshotApplier interface {
 	PutVertexWithExpirationHLC(key string, value *pb.Vertex, exp time.Time, ts hlc.Timestamp) bool
 	AddEdgeWithExpirationContribHLC(tail, head string, w float32, exp time.Time, cid graphcache.ContribID, ts hlc.Timestamp) bool
+	PutEdgeWithExpirationHLC(tail, head string, w float32, exp time.Time, ts hlc.Timestamp) bool
+}
+
+// applySnapshotEdge re-applies one snapshot edge contribution into the local
+// cache via snap. A Put-origin (LWW-Register) contribution carries a zero
+// ContribID: re-applying it through AddEdgeWithExpirationContribHLC hits the
+// dedup-disabled branch of addWithExpirationContrib (a zero cid disables dedup)
+// and G-Set-APPENDs a fresh weight value on every snapshot pass, so a node that
+// keeps re-snapshotting — e.g. anti-entropy re-syncs under sustained write load
+// — accumulates unbounded duplicate contributions and leaks heap (#735). Routing
+// zero-cid contributions through the LWW PutEdgeWithExpirationHLC makes the
+// re-apply an idempotent overwrite; non-zero (AddEdge-origin) contributions keep
+// their ContribID and the dedup-aware AddEdge path.
+func applySnapshotEdge(snap SnapshotApplier, tail, head string, weight float32, exp time.Time, cid graphcache.ContribID, ts hlc.Timestamp) {
+	if cid.IsZero() {
+		snap.PutEdgeWithExpirationHLC(tail, head, weight, exp, ts)
+		return
+	}
+	snap.AddEdgeWithExpirationContribHLC(tail, head, weight, exp, cid, ts)
 }
 
 // Metrics is the narrow surface the pump uses to publish per-peer
@@ -468,8 +487,8 @@ func (p *Pump) snapshot(ctx context.Context, cli graphv1connect.LanternReplicati
 			for _, c := range se.GetContributions() {
 				var cid graphcache.ContribID
 				copy(cid[:], c.GetContribId())
-				p.snap.AddEdgeWithExpirationContribHLC(
-					se.GetTail(), se.GetHead(), c.GetWeight(),
+				applySnapshotEdge(
+					p.snap, se.GetTail(), se.GetHead(), c.GetWeight(),
 					c.GetExpiration().AsTime(), cid, edgeHLC,
 				)
 			}

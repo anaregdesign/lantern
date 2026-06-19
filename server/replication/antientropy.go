@@ -37,6 +37,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
@@ -383,10 +384,10 @@ func (a *AntiEntropy) snapshotFrom(ctx context.Context, cli graphv1connect.Lante
 			se := e.Edge
 			edgeHLC := snapshotHLC(se.GetHlc())
 			for _, c := range se.GetContributions() {
-				var cid [24]byte
+				var cid graphcache.ContribID
 				copy(cid[:], c.GetContribId())
-				a.snap.AddEdgeWithExpirationContribHLC(
-					se.GetTail(), se.GetHead(), c.GetWeight(),
+				applySnapshotEdge(
+					a.snap, se.GetTail(), se.GetHead(), c.GetWeight(),
 					c.GetExpiration().AsTime(), cid, edgeHLC,
 				)
 			}
