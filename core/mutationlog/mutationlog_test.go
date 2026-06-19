@@ -414,3 +414,128 @@ func TestAppendDoesNotBlockOnSlowSubscriber(t *testing.T) {
 		t.Fatal("Append blocked despite dispatcher fan-out being decoupled")
 	}
 }
+
+// TestStatusReadsRaceFreeDuringAppend hammers the read-only status methods
+// (FirstSeq, LastSeq, Len, Evicted, Cap) from several goroutines while a
+// writer appends. It exercises the #745 RWMutex read path: the run must be
+// race-free under -race, and from any single reader's perspective LastSeq must
+// never move backwards (Append only ever increments it).
+func TestStatusReadsRaceFreeDuringAppend(t *testing.T) {
+	l := New(Options{Capacity: 256, SubscriberBuffer: 1024})
+	defer l.Close()
+
+	const appends = 2000
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 1; i <= appends; i++ {
+			if _, err := l.Append(i, ts(int64(i))); err != nil {
+				t.Errorf("append #%d: %v", i, err)
+				return
+			}
+		}
+	}()
+
+	for r := 0; r < 6; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var prevLast uint64
+			for i := 0; i < 5000; i++ {
+				if last, ok := l.LastSeq(); ok {
+					if last < prevLast {
+						t.Errorf("LastSeq went backwards: %d < %d", last, prevLast)
+						return
+					}
+					prevLast = last
+				}
+				_, _ = l.FirstSeq()
+				_ = l.Len()
+				_ = l.Evicted()
+				_ = l.Cap()
+			}
+		}()
+	}
+	wg.Wait()
+
+	if last, _ := l.LastSeq(); last != appends {
+		t.Fatalf("LastSeq = %d, want %d", last, appends)
+	}
+}
+
+// blockingWAL models a slow durability layer: every Write sleeps before
+// recording the entry. It records entries in call order so a test can assert
+// the WAL observed strictly increasing seqs.
+type blockingWAL struct {
+	mu      sync.Mutex
+	entries []Entry
+	delay   time.Duration
+}
+
+func (w *blockingWAL) Write(e Entry) error {
+	time.Sleep(w.delay)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.entries = append(w.entries, e)
+	return nil
+}
+
+// TestSlowWALKeepsOrderingAndStatusResponsive verifies that with a slow WAL
+// held under the Append write lock, (a) entries are persisted in strict Seq
+// order with no gaps across concurrent writers, and (b) concurrent read-only
+// status polling does not deadlock. This pins the current design choice for
+// #745: the WAL stays under the lock (the issue's lower-risk option), so a
+// slow WAL serializes appends but never corrupts ordering or wedges readers.
+func TestSlowWALKeepsOrderingAndStatusResponsive(t *testing.T) {
+	w := &blockingWAL{delay: time.Millisecond}
+	l := New(Options{Capacity: 1024, SubscriberBuffer: 1024, WAL: w})
+	defer l.Close()
+
+	const writers = 4
+	const perWriter = 25
+	var wg sync.WaitGroup
+	for x := 0; x < writers; x++ {
+		wg.Add(1)
+		go func(x int) {
+			defer wg.Done()
+			for i := 0; i < perWriter; i++ {
+				if _, err := l.Append(x*1000+i, ts(int64(x*1000+i))); err != nil {
+					t.Errorf("append: %v", err)
+					return
+				}
+			}
+		}(x)
+	}
+
+	stop := make(chan struct{})
+	pollDone := make(chan struct{})
+	go func() {
+		defer close(pollDone)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_, _ = l.LastSeq()
+			_ = l.Len()
+		}
+	}()
+
+	wg.Wait()
+	close(stop)
+	<-pollDone
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.entries) != writers*perWriter {
+		t.Fatalf("WAL saw %d entries, want %d", len(w.entries), writers*perWriter)
+	}
+	for i, e := range w.entries {
+		if e.Seq != uint64(i+1) {
+			t.Fatalf("WAL entry %d has Seq %d, want %d", i, e.Seq, i+1)
+		}
+	}
+}

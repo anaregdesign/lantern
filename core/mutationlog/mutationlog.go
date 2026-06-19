@@ -120,12 +120,16 @@ const (
 //
 // The zero value is not ready for use; construct with [New].
 //
-// Locking model (#260): two mutexes split the hot path so [Log.Append]
+// Locking model (#260, #745): two mutexes split the hot path so [Log.Append]
 // no longer iterates subscribers under its own critical section.
 //
-//   - mu  protects the ring buffer, sequence counters, and the closed flag.
-//     Held briefly by Append (WAL write + store + seq update + handoff
-//     to the dispatcher) and by Subscribe (replay + sub registration).
+//   - mu  is an RWMutex protecting the ring buffer, sequence counters, and
+//     the closed flag. The mutation paths take the write lock: Append (WAL
+//     write + store + seq update + handoff to the dispatcher), Subscribe
+//     (replay + sub registration), and Close. The pure-read status methods
+//     (FirstSeq, LastSeq, Len, Evicted) take only the read lock, so a burst
+//     of status polling no longer serializes against itself and proceeds
+//     concurrently whenever no append/subscribe is mid-flight (#745).
 //   - subsMu protects the subscribers map and per-subscriber state.
 //     Held by the dispatcher goroutine during fan-out and by cancel.
 //
@@ -133,7 +137,7 @@ const (
 // subsMu, and Append only takes mu (the channel send happens under mu to
 // preserve global Seq ordering), so the two paths cannot deadlock.
 type Log struct {
-	mu       sync.Mutex
+	mu       sync.RWMutex
 	capacity int
 	subBuf   int
 	wal      WAL
@@ -207,8 +211,8 @@ func New(opts Options) *Log {
 // FirstSeq returns the lowest Seq still resident in the ring buffer. It
 // returns 0 (and false) when the log is empty.
 func (l *Log) FirstSeq() (uint64, bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 	if !l.hasEntries {
 		return 0, false
 	}
@@ -218,8 +222,8 @@ func (l *Log) FirstSeq() (uint64, bool) {
 // LastSeq returns the Seq of the most recently appended entry. It returns
 // 0 (and false) when the log is empty.
 func (l *Log) LastSeq() (uint64, bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 	if !l.hasEntries {
 		return 0, false
 	}
@@ -235,8 +239,8 @@ func (l *Log) Cap() int {
 // Len returns the number of entries currently resident in the ring buffer.
 // 0 <= Len() <= Cap().
 func (l *Log) Len() int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 	return l.size
 }
 
@@ -244,8 +248,8 @@ func (l *Log) Len() int {
 // buffer because Append at full capacity displaced the oldest entry. The
 // counter is monotonic for the lifetime of the Log.
 func (l *Log) Evicted() uint64 {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 	return l.evicted
 }
 
