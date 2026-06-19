@@ -87,6 +87,47 @@ func TestInvertedIndexDelete(t *testing.T) {
 	}
 }
 
+// TestInvertedIndexDeleteMany verifies the batch delete removes every supplied
+// id under one lock, skips unknown ids, fully reclaims postings/forward
+// entries/length, and is a no-op for an empty input. It is the batch sibling
+// of Delete (#738).
+func TestInvertedIndexDeleteMany(t *testing.T) {
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil)
+	idx.Index("doc1", Text("alpha beta"))
+	idx.Index("doc2", Text("beta gamma"))
+	idx.Index("doc3", Text("gamma delta"))
+
+	idx.DeleteMany(nil) // no-op
+
+	idx.DeleteMany([]string{"doc1", "missing", "doc3"})
+
+	if got := idsOf(idx.Search("alpha")); len(got) != 0 {
+		t.Fatalf(`Search("alpha") after DeleteMany = %v, want none`, got)
+	}
+	if got := idsOf(idx.Search("delta")); len(got) != 0 {
+		t.Fatalf(`Search("delta") after DeleteMany = %v, want none`, got)
+	}
+	// doc2 still owns "beta" and "gamma".
+	if got := idsOf(idx.Search("beta")); !equalStrings(got, []string{"doc2"}) {
+		t.Fatalf(`Search("beta") after DeleteMany = %v, want [doc2]`, got)
+	}
+	if got := idsOf(idx.Search("gamma")); !equalStrings(got, []string{"doc2"}) {
+		t.Fatalf(`Search("gamma") after DeleteMany = %v, want [doc2]`, got)
+	}
+
+	// Removing the last remaining doc empties every internal map.
+	idx.DeleteMany([]string{"doc2"})
+	if len(idx.postings) != 0 {
+		t.Fatalf("postings not fully reclaimed: %v", idx.postings)
+	}
+	if len(idx.docs) != 0 {
+		t.Fatalf("forward docs not fully reclaimed: %v", idx.docs)
+	}
+	if idx.totalLen != 0 {
+		t.Fatalf("totalLen not reset: %d", idx.totalLen)
+	}
+}
+
 func TestInvertedIndexReindexReplaces(t *testing.T) {
 	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil)
 	idx.Index("doc1", Text("alpha beta"))

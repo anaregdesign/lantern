@@ -106,6 +106,22 @@ func (idx *InvertedIndex[S, D]) Delete(id S) {
 	idx.deleteLocked(id)
 }
 
+// DeleteMany removes every id in ids and its postings under a single write
+// lock. Ids that were never indexed are skipped. It is the batch sibling of
+// Delete used by GraphCache's batch eviction path so a namespace-wide or
+// TTL-flush delete pays one idx.mu acquisition instead of one per document
+// (#738).
+func (idx *InvertedIndex[S, D]) DeleteMany(ids []S) {
+	if len(ids) == 0 {
+		return
+	}
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	for _, id := range ids {
+		idx.deleteLocked(id)
+	}
+}
+
 // deleteLocked removes id and its postings; callers must hold idx.mu for
 // writing. It is shared by Delete and the replace step of Index, which already
 // holds the lock—sync.Mutex is not reentrant, so Index must not call Delete.

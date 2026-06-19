@@ -106,20 +106,16 @@ func (c *GraphCache[S, T]) PutEdgesWithExpiration(items []EdgeItem[S]) {
 // DeleteVertices removes every supplied vertex under a single write lock
 // and returns the count of keys that were actually present (and therefore
 // deleted). Concurrent readers observe either the pre-batch or the
-// post-batch state.
+// post-batch state. Vertex-owned side indexes (dict refs, prefix radix,
+// search postings) are cleaned in one pass via the batch eviction hook so a
+// large delete pays one acquisition per index instead of one per key (#738).
 func (c *GraphCache[S, T]) DeleteVertices(keys []S) int {
 	if len(keys) == 0 {
 		return 0
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var n int
-	for _, k := range keys {
-		if c.vertices.Delete(k) {
-			n++
-		}
-	}
-	return n
+	return len(c.vertices.DeleteMany(keys))
 }
 
 // DeleteEdges removes every supplied edge under a single write lock and

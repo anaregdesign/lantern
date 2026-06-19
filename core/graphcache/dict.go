@@ -167,7 +167,12 @@ func (d *dictionary[S]) resolve(id vertexID) (S, bool) {
 func (d *dictionary[S]) release(id vertexID) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	return d.releaseLocked(id)
+}
 
+// releaseLocked is release without acquiring d.mu; the caller must already
+// hold the write lock. It is shared by release and releaseKeys.
+func (d *dictionary[S]) releaseLocked(id vertexID) bool {
 	if int(id) >= len(d.refcount) || d.refcount[id] == 0 {
 		panic("dictionary: release of unallocated vertexID")
 	}
@@ -181,6 +186,26 @@ func (d *dictionary[S]) release(id vertexID) bool {
 	d.reverse[id] = zero // drop the string reference so the GC can reclaim it
 	d.free = append(d.free, id)
 	return true
+}
+
+// releaseKeys looks up each key and drops one reference to its id, all under a
+// single write-lock acquisition. Keys that are not currently interned are
+// skipped — mirroring the per-key lookup-then-release, which no-ops when
+// the key was never interned (e.g. an edge-only endpoint with no vertex ref).
+// It is the batch sibling of lookup+release used by GraphCache's batch
+// eviction path so a large delete pays one dict.mu acquisition instead of one
+// lookup plus one release per key (#738).
+func (d *dictionary[S]) releaseKeys(keys []S) {
+	if len(keys) == 0 {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, key := range keys {
+		if id, ok := d.forward[key]; ok {
+			d.releaseLocked(id)
+		}
+	}
 }
 
 // len returns the number of currently live vertexIDs (i.e. ids with a

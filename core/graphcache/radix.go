@@ -142,6 +142,27 @@ func (r *radix) delete(key string) bool {
 	return false
 }
 
+// deleteMany removes every supplied key under a single write-lock
+// acquisition, decrementing size once per key actually removed, and returns
+// the number removed. Keys absent from the radix are skipped. It is the batch
+// sibling of delete used by GraphCache's batch eviction path so a large delete
+// pays one radix.mu acquisition instead of one per key (#738).
+func (r *radix) deleteMany(keys []string) int {
+	if len(keys) == 0 {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var n int
+	for _, key := range keys {
+		if r.deleteAt(r.root, key) {
+			r.size--
+			n++
+		}
+	}
+	return n
+}
+
 func (r *radix) deleteAt(n *radixNode, key string) bool {
 	if key == "" {
 		if !n.terminal {

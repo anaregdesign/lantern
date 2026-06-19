@@ -55,8 +55,16 @@ type Cache[S comparable, T any] struct {
 	// the lock on c.mu has been released, so the callback may safely call
 	// back into the same Cache without deadlocking — but it must not block
 	// indefinitely (it runs inline on the caller's goroutine).
-	hookMu  sync.RWMutex
-	onEvict func(S)
+	//
+	// onEvictMany is the batch counterpart installed via SetOnEvictMany. When
+	// non-nil it TAKES PRECEDENCE over onEvict: a single removal fires it with
+	// a one-element slice and a batch removal (DeleteMany, Clear, Flush) fires
+	// it once with the whole evicted set, so a layered cache can amortize its
+	// per-key index cleanup over one pass and one set of inner-lock
+	// acquisitions (#738). Install exactly one of the two hooks.
+	hookMu      sync.RWMutex
+	onEvict     func(S)
+	onEvictMany func([]S)
 }
 
 func NewCache[S comparable, T any](defaultTTL time.Duration) *Cache[S, T] {
@@ -80,10 +88,44 @@ func (c *Cache[S, T]) SetOnEvict(fn func(S)) {
 	c.onEvict = fn
 }
 
-func (c *Cache[S, T]) snapshotOnEvict() func(S) {
+// SetOnEvictMany installs (or clears, when nil) a batch eviction callback
+// invoked once with the full slice of keys removed by a Delete, DeleteMany,
+// Clear, or Flush call. When installed it takes precedence over the per-key
+// SetOnEvict hook (the per-key hook is not also called), so install exactly
+// one of the two. Like the per-key hook it fires after c.mu has been released,
+// so it may re-enter the same Cache without deadlocking, and it must not
+// block. The slice is owned by the callback for the duration of the call only.
+func (c *Cache[S, T]) SetOnEvictMany(fn func([]S)) {
+	c.hookMu.Lock()
+	defer c.hookMu.Unlock()
+	c.onEvictMany = fn
+}
+
+// snapshotHooks returns both eviction hooks under a single hookMu read so a
+// caller observes a consistent (one, many) pair.
+func (c *Cache[S, T]) snapshotHooks() (one func(S), many func([]S)) {
 	c.hookMu.RLock()
 	defer c.hookMu.RUnlock()
-	return c.onEvict
+	return c.onEvict, c.onEvictMany
+}
+
+// fireEvicted invokes the eviction hooks for evicted after c.mu has been
+// released. The batch hook takes precedence over the per-key hook; when only
+// the per-key hook is installed it is called once per key. A nil/empty evicted
+// slice is a no-op.
+func (c *Cache[S, T]) fireEvicted(one func(S), many func([]S), evicted []S) {
+	if len(evicted) == 0 {
+		return
+	}
+	if many != nil {
+		many(evicted)
+		return
+	}
+	if one != nil {
+		for _, k := range evicted {
+			one(k)
+		}
+	}
 }
 
 func (c *Cache[S, T]) Get(key S) (T, bool) {
@@ -120,8 +162,9 @@ func (c *Cache[S, T]) Put(key S, value T) {
 
 // Delete removes the entry for key. It returns true if the key was
 // present (and therefore removed by this call), false otherwise. When the
-// key was present and an OnEvict callback is installed, the callback fires
-// once after c.mu is released.
+// key was present and an eviction callback is installed, it fires once
+// after c.mu is released (the batch hook with a one-element slice, else the
+// per-key hook).
 func (c *Cache[S, T]) Delete(key S) bool {
 	c.mu.Lock()
 	if _, ok := c.cache[key]; !ok {
@@ -129,12 +172,42 @@ func (c *Cache[S, T]) Delete(key S) bool {
 		return false
 	}
 	delete(c.cache, key)
+	one, many := c.snapshotHooks()
 	c.mu.Unlock()
 
-	if cb := c.snapshotOnEvict(); cb != nil {
-		cb(key)
+	switch {
+	case many != nil:
+		many([]S{key})
+	case one != nil:
+		one(key)
 	}
 	return true
+}
+
+// DeleteMany removes every supplied key that is present, under a single c.mu
+// critical section, and returns the keys actually removed (those present at
+// call time) in unspecified order. Absent keys are skipped and not reported;
+// duplicate keys are reported at most once. The eviction callback fires once
+// after c.mu is released — the batch hook with the whole evicted slice when
+// installed, else the per-key hook once per removed key — so a layered cache
+// amortizes its index cleanup over one pass (#738).
+func (c *Cache[S, T]) DeleteMany(keys []S) []S {
+	if len(keys) == 0 {
+		return nil
+	}
+	c.mu.Lock()
+	evicted := make([]S, 0, len(keys))
+	for _, k := range keys {
+		if _, ok := c.cache[k]; ok {
+			delete(c.cache, k)
+			evicted = append(evicted, k)
+		}
+	}
+	one, many := c.snapshotHooks()
+	c.mu.Unlock()
+
+	c.fireEvicted(one, many, evicted)
+	return evicted
 }
 
 func (c *Cache[S, T]) Has(key S) bool {
@@ -143,14 +216,16 @@ func (c *Cache[S, T]) Has(key S) bool {
 	return ok
 }
 
-// Clear removes every entry. When an OnEvict callback is installed it is
-// invoked once per removed key after c.mu has been released. Keys are
-// reported in unspecified order.
+// Clear removes every entry. When an eviction callback is installed it is
+// invoked once after c.mu has been released — the batch hook with all removed
+// keys, else the per-key hook once per key. Keys are reported in unspecified
+// order.
 func (c *Cache[S, T]) Clear() {
 	c.mu.Lock()
-	cb := c.snapshotOnEvict()
+	one, many := c.snapshotHooks()
+	hook := one != nil || many != nil
 	var evicted []S
-	if cb != nil {
+	if hook {
 		evicted = make([]S, 0, len(c.cache))
 		for k := range c.cache {
 			evicted = append(evicted, k)
@@ -159,11 +234,7 @@ func (c *Cache[S, T]) Clear() {
 	c.cache = make(map[S]volatile[T])
 	c.mu.Unlock()
 
-	if cb != nil {
-		for _, k := range evicted {
-			cb(k)
-		}
-	}
+	c.fireEvicted(one, many, evicted)
 }
 
 func (c *Cache[S, T]) Count() int {
@@ -196,17 +267,18 @@ func (c *Cache[S, T]) Range(fn func(key S, value T, expiration time.Time) bool) 
 
 // Flush evicts every entry whose TTL has passed. It returns the number of
 // entries removed so callers (e.g. server-side TTL metrics) can record
-// expiration counts without scanning the cache again. When an OnEvict
-// callback is installed it is invoked once per removed key after c.mu has
-// been released.
+// expiration counts without scanning the cache again. When an eviction
+// callback is installed it is invoked once after c.mu has been released —
+// the batch hook with the whole expired set, else the per-key hook once per
+// key — so a layered cache cleans its side indexes in one pass (#738).
 func (c *Cache[S, T]) Flush() int {
 	c.mu.Lock()
-	cb := c.snapshotOnEvict()
-	var evicted []S
-	if cb != nil {
+	one, many := c.snapshotHooks()
+	if one != nil || many != nil {
 		// Two-phase: collect keys under the lock, fire callbacks after release.
 		// maps.DeleteFunc cannot collect because the predicate's S is the live
 		// key but we need to defer the callback past Unlock.
+		var evicted []S
 		for k, v := range c.cache {
 			if v.IsExpired() {
 				evicted = append(evicted, k)
@@ -216,9 +288,7 @@ func (c *Cache[S, T]) Flush() int {
 			delete(c.cache, k)
 		}
 		c.mu.Unlock()
-		for _, k := range evicted {
-			cb(k)
-		}
+		c.fireEvicted(one, many, evicted)
 		return len(evicted)
 	}
 	before := len(c.cache)

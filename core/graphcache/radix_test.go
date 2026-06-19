@@ -141,6 +141,35 @@ func TestRadix_DeleteAndCompaction(t *testing.T) {
 	}
 }
 
+// TestRadix_DeleteMany verifies the batch delete removes every present key,
+// skips absent keys, decrements size only for keys actually removed, returns
+// that count, and is a no-op for an empty input (#738).
+func TestRadix_DeleteMany(t *testing.T) {
+	r := newRadix()
+	keys := []string{"alpha", "alphabet", "alpine", "alps", "beta"}
+	for _, k := range keys {
+		r.insert(k)
+	}
+
+	if got := r.deleteMany(nil); got != 0 {
+		t.Fatalf("deleteMany(nil) = %d, want 0", got)
+	}
+
+	// "ghost" is absent and must not be counted; "alpha" appears twice and
+	// must be counted once (the second pass is an absent-key no-op).
+	n := r.deleteMany([]string{"alpha", "alpine", "ghost", "alpha"})
+	if n != 2 {
+		t.Fatalf("deleteMany removed = %d, want 2", n)
+	}
+	want := []string{"alphabet", "alps", "beta"}
+	if got := collectAll(r); !equalSlices(got, want) {
+		t.Fatalf("after deleteMany:\n  got  %v\n  want %v", got, want)
+	}
+	if got := r.len(); got != 3 {
+		t.Fatalf("len after deleteMany: got %d want 3", got)
+	}
+}
+
 func TestRadix_EmptyKey(t *testing.T) {
 	r := newRadix()
 	if !r.insert("") {
