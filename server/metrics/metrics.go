@@ -145,13 +145,22 @@ type DomainMetrics struct {
 	// the vertexHLC leak (issue #700).
 	vertexHLCEntries prometheus.Gauge
 
-	sampleInterval    time.Duration
-	sample            Sampler
-	mlogSample        MutationLogSampler
-	originSample      OriginStatesSampler
-	searchIndexSample SearchIndexSampler
-	vertexHLCSample   VertexHLCSampler
-	lastEvicted       uint64 // last observed cumulative eviction count
+	// Companion high-water gauge for the LWW watermark map (#727). Sampled
+	// off GraphCache.VertexHLCHighWater(): the per-GC-cycle peak len(vertexHLC)
+	// before the sweep drains it. vertexHLCEntries reports the post-sweep len
+	// (which reads low right after a drain); this records the peak that sizes
+	// the map's retained bucket array, which Go never shrinks after delete. The
+	// pairing confirms the born-expired ttl_churn heap retention (#700/#719).
+	vertexHLCHighWater prometheus.Gauge
+
+	sampleInterval           time.Duration
+	sample                   Sampler
+	mlogSample               MutationLogSampler
+	originSample             OriginStatesSampler
+	searchIndexSample        SearchIndexSampler
+	vertexHLCSample          VertexHLCSampler
+	vertexHLCHighWaterSample VertexHLCSampler
+	lastEvicted              uint64 // last observed cumulative eviction count
 }
 
 // Hot-path label values. Exposed so the service layer can reference the
@@ -390,6 +399,10 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 			Name: "lantern_vertex_hlc_entries",
 			Help: "Current number of entries in the per-key LWW watermark map used by the replication apply path (#705). Tracks the live replicated-key set; a value growing monotonically across GC ticks signals the vertexHLC leak (issue #700). Always 0 on a single-node deployment.",
 		}),
+		vertexHLCHighWater: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "lantern_vertex_hlc_entries_high_water",
+			Help: "Per-GC-cycle peak number of entries in the per-key LWW watermark map (vertexHLC), recorded at the start of each sweep before stale entries are drained (#727). Unlike lantern_vertex_hlc_entries (the post-sweep len, which reads low right after a drain), this is monotonic non-decreasing and records the all-time churn peak. Born-expired LWW churn (#700/#719) used to retain the map's bucket array at this size (Go never shrinks a map after delete); the sweep now reallocates the map after a large drain, so a high value here is a historical churn signal, not pinned heap. Always 0 on a single-node deployment.",
+		}),
 		peerConnected: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "lantern_peer_connected",
 			Help: "1 when the local replication pump currently holds an open Subscribe (or Subscribe+Snapshot) session to the named peer; 0 otherwise. Updated on every pump connect/disconnect lifecycle event.",
@@ -458,7 +471,7 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		m.getVertexHits, m.getVertexMisses, m.getEdgeHits, m.getEdgeMisses,
 		m.edgeContribDeduped,
 		m.searchResults, m.searchDuration, m.searchIndexTerms, m.searchIndexDocs,
-		m.vertexHLCEntries,
+		m.vertexHLCEntries, m.vertexHLCHighWater,
 		m.peerConnected, m.replicationApplyTotal, m.snapshotReplayedTotal,
 		m.snapshotVertices, m.snapshotEdges, m.snapshotDuration,
 		m.mutationLogFillRatio, m.mutationLogEvicted, m.originStatesCount,
@@ -897,12 +910,22 @@ func (m *DomainMetrics) BindVertexHLCSampler(s VertexHLCSampler) {
 	m.vertexHLCSample = s
 }
 
+// BindVertexHLCHighWaterSampler installs the per-cycle peak LWW watermark
+// count callback (#727). Must be called before Run; safe to call exactly once
+// during wiring. A nil sampler leaves lantern_vertex_hlc_entries_high_water
+// unsampled (always 0 on a single-node deployment where no replicated writes
+// arrive).
+func (m *DomainMetrics) BindVertexHLCHighWaterSampler(s VertexHLCSampler) {
+	m.vertexHLCHighWaterSample = s
+}
+
 // Run drives the gauge sampler on the configured cadence until ctx is done.
 // Safe to launch as a goroutine. A nil sampler is treated as a no-op so
 // tests can construct the collectors without wiring a cache.
 func (m *DomainMetrics) Run(ctx context.Context) {
 	if m.sample == nil && m.mlogSample == nil && m.originSample == nil &&
-		m.searchIndexSample == nil && m.vertexHLCSample == nil {
+		m.searchIndexSample == nil && m.vertexHLCSample == nil &&
+		m.vertexHLCHighWaterSample == nil {
 		<-ctx.Done()
 		return
 	}
@@ -955,6 +978,9 @@ func (m *DomainMetrics) tick() {
 	}
 	if m.vertexHLCSample != nil {
 		m.vertexHLCEntries.Set(float64(m.vertexHLCSample()))
+	}
+	if m.vertexHLCHighWaterSample != nil {
+		m.vertexHLCHighWater.Set(float64(m.vertexHLCHighWaterSample()))
 	}
 }
 

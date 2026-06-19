@@ -59,6 +59,14 @@ type LeakGateReplica struct {
 	HeapObjectsPre      int64  `json:"heap_objects_pre"`
 	HeapObjectsPost     int64  `json:"heap_objects_post"`
 	HeapObjectsDelta    int64  `json:"heap_objects_delta"`
+	// vertexHLC LWW watermark map cardinality (#727). Entries is the
+	// post-sweep len (drained low after a GC tick); HighWater is the sticky
+	// per-cycle peak that sizes the map's retained bucket array. Zero on older
+	// leak_gate.json artifacts that predate these fields.
+	VertexHLCEntriesPre    int64 `json:"vertex_hlc_entries_pre"`
+	VertexHLCEntriesPost   int64 `json:"vertex_hlc_entries_post"`
+	VertexHLCHighWaterPre  int64 `json:"vertex_hlc_high_water_pre"`
+	VertexHLCHighWaterPost int64 `json:"vertex_hlc_high_water_post"`
 }
 
 // GhzSummary captures the subset of fields ghz writes that the report uses.
@@ -190,10 +198,10 @@ func RenderReport(w io.Writer, in Input) error {
 		bw.printf("Thresholds: goroutine_max_delta=%d, heap_alloc_max_delta_mb=%d\n\n",
 			in.LeakGate.Thresholds.GoroutineMaxDelta, hMB)
 		bw.printf("Gate evaluates against `heap_alloc` (post-GC live bytes); `heap_inuse` and `heap_objects` are shown for context only.\n\n")
-		bw.printf("| replica | goroutines (Δ) | heap_alloc MiB (pre → post = Δ) | heap_inuse MiB (pre → post = Δ) | heap_objects (Δ) |\n")
-		bw.printf("| --- | --- | --- | --- | --- |\n")
+		bw.printf("| replica | goroutines (Δ) | heap_alloc MiB (pre → post = Δ) | heap_inuse MiB (pre → post = Δ) | heap_objects (Δ) | vertex_hlc post (entries / high-water) |\n")
+		bw.printf("| --- | --- | --- | --- | --- | --- |\n")
 		for _, r := range in.LeakGate.Replicas {
-			bw.printf("| `%s` | %d → %d = **%+d** | %.1f → %.1f = **%+.1f** | %.1f → %.1f = **%+.1f** | %d → %d = **%+d** |\n",
+			bw.printf("| `%s` | %d → %d = **%+d** | %.1f → %.1f = **%+.1f** | %.1f → %.1f = **%+.1f** | %d → %d = **%+d** | %d / %d |\n",
 				r.Endpoint,
 				r.GoroutinesPre, r.GoroutinesPost, r.GoroutineDelta,
 				bytesToMiB(r.HeapAllocPreBytes),
@@ -203,6 +211,7 @@ func RenderReport(w io.Writer, in Input) error {
 				bytesToMiB(r.HeapInusePostBytes),
 				bytesToMiB(r.HeapInuseDeltaBytes),
 				r.HeapObjectsPre, r.HeapObjectsPost, r.HeapObjectsDelta,
+				r.VertexHLCEntriesPost, r.VertexHLCHighWaterPost,
 			)
 		}
 		bw.printf("\n")
