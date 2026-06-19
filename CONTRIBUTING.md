@@ -100,6 +100,42 @@ Per-module test runs are mandatory: the root `go test ./...` does **not** span
 submodules. `make lint` runs the same linter as the `Lint` job. The `Proto (buf)` check
 fails on any uncommitted codegen diff — regenerate locally first (below).
 
+## Coverage floor (ratchet)
+
+The `Build & Test` job measures per-module coverage (`-covermode=atomic`), merges the
+six profiles with `gocovmerge`, and then enforces a **per-module floor** in the
+`Enforce coverage floors` step. A PR that drops any module below its floor fails CI.
+
+The floors are a **ratchet, not an aspiration**: each sits just below that module's
+current measured baseline, so coverage can only hold or climb. They are per-module
+(not one workspace number) because module totals vary widely — generated `pb` and the
+CLI sit far below `core`/`mcp`, and a single merged floor would let a regression in a
+well-tested module hide behind the large low-coverage denominator.
+
+Current floors (baseline measured on `main`; **raise these in the same PR** whenever a
+module's coverage rises durably):
+
+| Module (profile slug) | Floor |
+| --- | --- |
+| `root` | 31% |
+| `core` | 84% |
+| `mcp` | 84% |
+| `pb` | 5% |
+| `sdks-go` | 37% |
+| `server` | 52% |
+
+The authoritative values live in the `floors=` line of the `Enforce coverage floors`
+step in [`.github/workflows/go.yml`](.github/workflows/go.yml); this table must be kept
+in sync with it. To reproduce a module's number locally:
+
+```bash
+(cd <module> && go test -covermode=atomic -coverprofile=/tmp/cov.out ./...)
+go tool cover -func=/tmp/cov.out | tail -1   # the `total:` line
+```
+
+If a PR legitimately lowers a floor (e.g. deleting a well-covered package), say so in
+the PR body and update both the workflow and this table together.
+
 ## Before merging a PR
 
 - Wait for **all required checks** green. Never use `--admin` or `--no-verify`. One PR
