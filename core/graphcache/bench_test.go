@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -432,4 +433,88 @@ func BenchmarkScanEdgesByPrefix(b *testing.B) {
 			}
 		})
 	}
+}
+
+// BenchmarkSearchVertices measures the read-side search path after the #741
+// lock-splitting refactor (query analysis + BM25 ranking + liveness/prefix
+// filtering run without GraphCache.mu). It covers a narrow query (few
+// matches), a broad query (many matches), a prefix-scoped query, and a broad
+// query under concurrent writer pressure — the contended case the refactor
+// targets, where searches previously serialized against writers on
+// GraphCache.mu. Run with -benchmem.
+func BenchmarkSearchVertices(b *testing.B) {
+	const n = 5000
+	newSeeded := func() *GraphCache[string, string] {
+		c := NewGraphCache[string, string](time.Hour)
+		c.EnableSearchIndex(func(v string) search.Document { return search.Text(v) })
+		c.EnablePrefixIndex(func(s string) string { return s })
+		exp := time.Now().Add(time.Hour)
+		for i := 0; i < n; i++ {
+			ns := "user:"
+			if i%2 == 1 {
+				ns = "session:"
+			}
+			// Every doc carries the broad term "payload"; only a few carry the
+			// rare term "unicorn" so the narrow query ranks a small candidate set.
+			val := benchSearchCorpus[i%len(benchSearchCorpus)] + " payload"
+			if i%1000 == 0 {
+				val += " unicorn"
+			}
+			c.PutVertexWithExpiration(fmt.Sprintf("%s%05d", ns, i), val, exp)
+		}
+		return c
+	}
+
+	b.Run("Narrow", func(b *testing.B) {
+		c := newSeeded()
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_ = c.SearchVertices("unicorn", 50, "")
+		}
+	})
+
+	b.Run("Broad", func(b *testing.B) {
+		c := newSeeded()
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_ = c.SearchVertices("payload", 50, "")
+		}
+	})
+
+	b.Run("PrefixScoped", func(b *testing.B) {
+		c := newSeeded()
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_ = c.SearchVertices("payload", 50, "user:")
+		}
+	})
+
+	b.Run("BroadConcurrentWriters", func(b *testing.B) {
+		c := newSeeded()
+		var stop atomic.Bool
+		var wg sync.WaitGroup
+		exp := time.Now().Add(time.Hour)
+		for w := 0; w < 4; w++ {
+			wg.Add(1)
+			go func(seed int) {
+				defer wg.Done()
+				i := seed
+				for !stop.Load() {
+					c.PutVertexWithExpiration(fmt.Sprintf("user:%05d", i%n), "churn payload", exp)
+					i += 7
+				}
+			}(w)
+		}
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_ = c.SearchVertices("payload", 50, "")
+		}
+		b.StopTimer()
+		stop.Store(true)
+		wg.Wait()
+	})
 }

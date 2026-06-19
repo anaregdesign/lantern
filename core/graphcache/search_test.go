@@ -1,6 +1,10 @@
 package graphcache
 
 import (
+	"fmt"
+	"math/rand"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -192,6 +196,76 @@ func TestGraphCache_SearchVertices(t *testing.T) {
 			t.Fatalf("SearchVertices(no-match) = %v, want nil", keys(got))
 		}
 	})
+}
+
+// TestGraphCache_SearchVertices_Concurrent exercises the #741 lock-splitting
+// refactor: SearchVertices runs query analysis, BM25 ranking, and
+// liveness/prefix filtering without holding GraphCache.mu. Concurrent
+// PutVertex / DeleteVertex / SearchVertices must therefore be free of data
+// races (run under -race) and every returned hit must be in scope at filter
+// time.
+func TestGraphCache_SearchVertices_Concurrent(t *testing.T) {
+	c := NewGraphCache[string, string](time.Minute)
+	c.EnableSearchIndex(textExtract)
+	c.EnablePrefixIndex(func(s string) string { return s })
+
+	const keysN = 200
+	// Seed so searches have something to match from the very first iteration.
+	for i := 0; i < keysN; i++ {
+		c.PutVertex(fmt.Sprintf("user:%03d", i), "common shared payload")
+	}
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+
+	// Writers churn the same key space with puts and deletes.
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func(seed int) {
+			defer wg.Done()
+			r := rand.New(rand.NewSource(int64(seed)))
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				k := fmt.Sprintf("user:%03d", r.Intn(keysN))
+				if r.Intn(2) == 0 {
+					c.PutVertex(k, "common shared payload")
+				} else {
+					c.DeleteVertex(k)
+				}
+			}
+		}(w)
+	}
+
+	// Searchers run a broad query, both unscoped and prefix-scoped. Every hit
+	// from the scoped search must be within the prefix at filter time.
+	for s := 0; s < 4; s++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 500; i++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				for _, r := range c.SearchVertices("payload", 50, "user:") {
+					if !strings.HasPrefix(r.ID, "user:") {
+						t.Errorf("scoped search returned out-of-prefix key %q", r.ID)
+						return
+					}
+				}
+				_ = c.SearchVertices("payload", 50, "")
+			}
+		}()
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	close(stop)
+	wg.Wait()
 }
 
 // equalKeys reports whether got equals want in the same order.
