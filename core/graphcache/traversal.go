@@ -1,0 +1,228 @@
+package graphcache
+
+import (
+	"context"
+	"math"
+	"runtime"
+	"sync"
+	"time"
+
+	"github.com/anaregdesign/lantern/core/collection/pq"
+	"github.com/anaregdesign/lantern/core/graph"
+)
+
+// Neighbor walks the graph from seed and returns the visited subgraph. The
+// per-hop top-k pruning keeps the k largest-weight edges when selectSmallest
+// is false and the k smallest-weight edges when it is true (#560) — the
+// caller picks the direction that matches its Objective so a cost-minimiser
+// is not handed the costliest edges. tfidf re-scores edge weights BEFORE the
+// directional top/bottom-k selection.
+//
+// keep is an optional frontier predicate (nil = accept all): a candidate head
+// is expanded into the result only when keep(head) is true. It is applied at
+// frontier materialisation, BEFORE scoring and the directional top/bottom-k
+// prune, so top-k selects the k best *accepted* neighbours per hop. The seed
+// is the anchor exemption — it is always retained and never passed through
+// keep. Because the next-hop frontier is derived from the surviving edges, a
+// matching vertex reachable only through a rejected "bridge" is not reached
+// (induced-subgraph semantics). core stays generic: keep is just a predicate
+// over S; the concrete prefix/string logic lives in the caller.
+func (c *GraphCache[S, T]) Neighbor(seed S, step int, k int, tfidf bool, selectSmallest bool, keep func(S) bool) *graph.Graph[S, T] {
+	g, _ := c.NeighborContext(context.Background(), seed, step, k, tfidf, selectSmallest, keep)
+	return g
+}
+
+// NeighborContext is the context-aware variant of Neighbor. It returns
+// ctx.Err() as soon as the context is cancelled or its deadline has expired
+// — checked between BFS expansion steps — so handlers can short-circuit
+// large traversals when the caller has given up. keep is the optional frontier
+// predicate documented on Neighbor (nil = accept all).
+func (c *GraphCache[S, T]) NeighborContext(ctx context.Context, seed S, step int, k int, tfidf bool, selectSmallest bool, keep func(S) bool) (*graph.Graph[S, T], error) {
+	g, _, err := c.neighborContext(ctx, seed, step, k, tfidf, selectSmallest, keep, false)
+	return g, err
+}
+
+// NeighborWithExpirationsContext returns the same subgraph as
+// NeighborContext together with a parallel expirations map keyed by
+// (tail, head). Both are computed under a single RLock so handlers can
+// compose responses without re-acquiring the cache lock per edge.
+//
+// The expirations map only contains entries for edges that ended up in
+// the returned graph; a missing or zero value means the edge has no
+// known expiration. keep is the optional frontier predicate documented on
+// Neighbor (nil = accept all).
+func (c *GraphCache[S, T]) NeighborWithExpirationsContext(ctx context.Context, seed S, step int, k int, tfidf bool, selectSmallest bool, keep func(S) bool) (*graph.Graph[S, T], map[S]map[S]time.Time, error) {
+	return c.neighborContext(ctx, seed, step, k, tfidf, selectSmallest, keep, true)
+}
+
+func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int, k int, tfidf bool, selectSmallest bool, keep func(S) bool, collectExpirations bool) (*graph.Graph[S, T], map[S]map[S]time.Time, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	g := graph.NewGraph[S, T]()
+
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	if v, ok := c.vertices.Get(seed); !ok {
+		return g, nil, nil
+	} else {
+		g.Vertices[seed] = v
+	}
+
+	var mu sync.Mutex
+	// targets / seen are accessed only from the main goroutine (between
+	// wg.Wait barriers), so plain maps suffice — no need for the locked
+	// set.Set wrapper. mu protects concurrent writes to g.Edges and
+	// (when requested) expirations.
+	targets := map[S]struct{}{seed: {}}
+	seen := make(map[S]struct{})
+	// expirations is allocated up front so per-tail goroutines can publish
+	// their surviving heads without an extra coordination pass.
+	var expirations map[S]map[S]time.Time
+	if collectExpirations {
+		expirations = make(map[S]map[S]time.Time)
+	}
+	// We deliberately do NOT clone the entire edge table here: with c.mu
+	// held read-locked, no writer can mutate c.edges.tf, so the per-tail
+	// edgeCache.headsOf / docFreq accessors are safe to call directly.
+	// This turns the per-call cost from O(V+E) (snapshotTF + snapshotDF)
+	// into O(sum of degrees of visited tails).
+
+	// processTail computes one tail's top-k neighbor edges and publishes
+	// them to g.Edges (and expirations, if requested) under mu. It is the
+	// shared body used by both the sequential and worker-pool paths.
+	processTail := func(t S) {
+		heads, ok := c.edges.headsOf(t)
+		if !ok || len(heads) == 0 {
+			return
+		}
+		edges := make(pq.SortableMap[S, float32], len(heads))
+		var expRow map[S]time.Time
+		if collectExpirations {
+			expRow = make(map[S]time.Time, len(heads))
+		}
+		for headID, w := range heads {
+			head, ok := c.edges.resolveID(headID)
+			if !ok {
+				continue
+			}
+			// Frontier predicate: reject non-matching heads here, BEFORE
+			// scoring and the Top(k)/Bottom(k) prune below, so top-k selects
+			// the k best *accepted* neighbours. The seed is set on g.Vertices
+			// before the walk and never reaches this loop, so it is exempt.
+			if keep != nil && !keep(head) {
+				continue
+			}
+			sum, latest, nonZero := w.snapshot()
+			if !nonZero {
+				continue
+			}
+			if tfidf {
+				edges[head] = sum / float32(math.Log2(float64(1+c.edges.docFreq(headID))))
+			} else {
+				edges[head] = sum
+			}
+			if expRow != nil {
+				expRow[head] = latest
+			}
+		}
+
+		// Prune to the k edges at the Objective-selected extreme — the k
+		// smallest weights when selectSmallest (MINIMIZE), the k largest
+		// otherwise (#560) — then trim expirations to the survivors.
+		if selectSmallest {
+			edges = edges.Bottom(k)
+		} else {
+			edges = edges.Top(k)
+		}
+		if expRow != nil {
+			filtered := make(map[S]time.Time, len(edges))
+			for head := range edges {
+				if exp, has := expRow[head]; has {
+					filtered[head] = exp
+				}
+			}
+			expRow = filtered
+		}
+
+		mu.Lock()
+		g.Edges[t] = edges
+		if expRow != nil {
+			expirations[t] = expRow
+		}
+		mu.Unlock()
+	}
+
+	for range step {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+
+		// Collect this step's frontier (targets not yet processed). Marking
+		// happens after wg.Wait so the goroutines need not touch `seen`.
+		frontier := make([]S, 0, len(targets))
+		for t := range targets {
+			if _, ok := seen[t]; ok {
+				continue
+			}
+			frontier = append(frontier, t)
+		}
+
+		// Small frontiers run sequentially: goroutine startup and the
+		// shared mu.Lock round-trip dominate per-tail sort work below the
+		// threshold. Larger frontiers fan out across a bounded worker pool
+		// (capped at GOMAXPROCS) so we keep parallelism without unbounded
+		// goroutine spawning.
+		if len(frontier) < neighborParallelThreshold {
+			for _, tail := range frontier {
+				processTail(tail)
+			}
+		} else {
+			workers := runtime.GOMAXPROCS(0)
+			if workers > len(frontier) {
+				workers = len(frontier)
+			}
+			tailCh := make(chan S, len(frontier))
+			for _, tail := range frontier {
+				tailCh <- tail
+			}
+			close(tailCh)
+			var wg sync.WaitGroup
+			wg.Add(workers)
+			for i := 0; i < workers; i++ {
+				go func() {
+					defer wg.Done()
+					for t := range tailCh {
+						processTail(t)
+					}
+				}()
+			}
+			wg.Wait()
+		}
+
+		// Mark this step's frontier as processed.
+		for _, t := range frontier {
+			seen[t] = struct{}{}
+		}
+
+		// Find all next targets
+		for _, heads := range g.Edges {
+			for head := range heads {
+				if _, ok := seen[head]; !ok {
+					targets[head] = struct{}{}
+				}
+			}
+		}
+	}
+
+	// Add vertices to the graph
+	for tail, heads := range g.Edges {
+		g.Vertices[tail], _ = c.vertices.Get(tail)
+		for head := range heads {
+			g.Vertices[head], _ = c.vertices.Get(head)
+		}
+	}
+
+	return g, expirations, nil
+}

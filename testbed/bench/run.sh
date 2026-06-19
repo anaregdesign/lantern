@@ -81,12 +81,14 @@ endpoints=( $(yq -r '.target.endpoints[]' "$SCENARIO_FILE") )
 
 # ----- optional per-scenario cluster env overrides --------------------------
 # A scenario may shorten the cluster's default TTL and/or GC tick (via a
-# top-level `cluster:` block) so that TTL-eviction churn — and the resulting
-# search-index / vertexHLC shrink — happens within the run window. The values
-# are exported as LANTERN_BENCH_* host vars that compose.override.yml reads
-# with a 3600/60 fallback, so scenarios without a `cluster:` block are
-# unaffected. Only meaningful on a fresh `compose up` (ignored under SKIP_UP,
-# where the cluster TTL/GC were fixed at the earlier up). See issue #711.
+# top-level `cluster:` block). The values are exported as LANTERN_BENCH_* host
+# vars that compose.override.yml reads with a 3600/60 fallback, so scenarios
+# without a `cluster:` block are unaffected. Note that RPC payloads with no
+# Vertex.expiration / Edge.expiration are permanent by wire contract; TTL-churn
+# scenarios that drive Put* through ghz must include an explicit future
+# expiration in their data_template. Only meaningful on a fresh `compose up`
+# (ignored under SKIP_UP, where the cluster TTL/GC were fixed at the earlier
+# up). See issue #711.
 cluster_ttl="$(yq -r '.cluster.default_ttl_seconds // ""' "$SCENARIO_FILE")"
 cluster_gc="$(yq -r '.cluster.gc_interval_seconds // ""' "$SCENARIO_FILE")"
 if [[ -n "$cluster_ttl" && "$cluster_ttl" != "null" ]]; then

@@ -8,17 +8,16 @@
 # - consistency: SearchVertices skips vertices whose TTL has expired but
 #   whose Flush has not yet run.
 #
-# steady ≥ 2m so the leak window brackets the 60s GC sweep twice.
+# steady >= 2m so the leak window brackets the GC sweep repeatedly.
 # Assert lantern_search_index_terms and lantern_search_index_docs return
 # to ~baseline after cooldown (the "index decays in lockstep" claim).
 #
 # The bench cluster runs search on by default (LANTERN_SEARCH_ENABLED=true).
-# The `cluster:` block (consumed by run.sh, see #711) shortens the cluster TTL
-# + GC tick so written vertices are indexed, then expire and are swept within
-# the run — driving the index lifecycle this scenario asserts.
+# The explicit expiration template below is required: omitting Vertex.expiration
+# is the permanent-wire sentinel, so LANTERN_DEFAULT_TTL_SECONDS does not make
+# RPC writes decay. The `cluster:` block shortens only the GC tick.
 name: search_churn
 cluster:
-  default_ttl_seconds: 10
   gc_interval_seconds: 10
 phases:
   warmup:   { duration: 30s, concurrency: 16, rps: 500 }
@@ -29,11 +28,12 @@ target:
   # Two parallel streams per fan-out rule: writes feed the index, reads
   # query it.  per_rps = steady.rps / 2 = 1000 rps each.
   calls:
-    # [0] short-TTL string vertex — expires after 10s so the GC sweep
-    #     churns the index continuously throughout the steady window.
+    # [0] short-TTL string vertex. The 50k key space is larger than the
+    #     ~15k live set at 1k writes/s with 15s expirations, so keys are not
+    #     refreshed before they age out and GC churns the index during steady.
     - call: graph.v1.LanternService/PutVertex
       data_template: |
-        {"vertex":{"key":"search-{{mod .RequestNumber 5000}}","string":"topic {{mod .RequestNumber 100}}"}}
+        {"vertex":{"key":"search-{{mod .RequestNumber 50000}}","string":"topic {{mod .RequestNumber 100}}","expiration":"{{ now | dateModify `15s` | date `2006-01-02T15:04:05.999999999Z07:00` }}"}}
     # [1] full-text query over the indexed content.
     - call: graph.v1.LanternService/SearchVertices
       data_template: |

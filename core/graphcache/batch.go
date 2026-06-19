@@ -81,19 +81,8 @@ func (c *GraphCache[S, T]) AddEdgesWithExpirationContrib(items []EdgeItem[S]) (d
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, it := range items {
-		c.ensureVertexLocked(it.Tail, it.Expiration)
-		c.ensureVertexLocked(it.Head, it.Expiration)
-		created, tailID, headID, applied := c.edges.addWithExpirationContrib(it.Tail, it.Head, it.Weight, it.Expiration, it.ContribID)
-		if applied {
-			c.onEdgeAddedLocked(created, tailID, headID, it.Head)
-			continue
-		}
-		deduped++
-		if created {
-			// Defensive: a dedup-skip cannot also create a fresh bucket
-			// (see AddEdgeWithExpirationContrib), but keep the side indexes
-			// consistent if that invariant ever changes.
-			c.onEdgeAddedLocked(created, tailID, headID, it.Head)
+		if !c.addEdgeContribLocked(it.Tail, it.Head, it.Weight, it.Expiration, it.ContribID) {
+			deduped++
 		}
 	}
 	return deduped
@@ -110,11 +99,7 @@ func (c *GraphCache[S, T]) PutEdgesWithExpiration(items []EdgeItem[S]) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, it := range items {
-		c.ensureVertexLocked(it.Tail, it.Expiration)
-		c.ensureVertexLocked(it.Head, it.Expiration)
-		c.edges.delete(it.Tail, it.Head)
-		created, tailID, headID := c.edges.addWithExpiration(it.Tail, it.Head, it.Weight, it.Expiration)
-		c.onEdgeAddedLocked(created, tailID, headID, it.Head)
+		c.putEdgeLocked(it.Tail, it.Head, it.Weight, it.Expiration)
 	}
 }
 
@@ -148,9 +133,7 @@ func (c *GraphCache[S, T]) DeleteEdges(keys []EdgeKey[S]) int {
 	defer c.mu.Unlock()
 	var n int
 	for _, k := range keys {
-		deleted, tailID, headID := c.edges.delete(k.Tail, k.Head)
-		if deleted {
-			c.onEdgeDeletedLocked(tailID, headID, k.Head)
+		if c.deleteEdgeLocked(k.Tail, k.Head) {
 			n++
 		}
 	}
@@ -186,20 +169,12 @@ func (c *GraphCache[S, T]) PutVerticesWithExpirationHLC(items []VertexItem[S, T]
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, it := range items {
-		if tombTs, ok := c.vertexTombstoneLocked(it.Key); ok && ts.Less(tombTs) {
-			continue
-		}
-		if existing, ok := c.vertexHLC[it.Key]; ok && ts.Less(existing) {
+		if !c.vertexWriteAllowedLocked(it.Key, ts) {
 			continue
 		}
 		c.putLocalVertexLocked(it.Key, it.Value, it.Expiration)
-		if c.vertexHLC == nil {
-			c.vertexHLC = make(map[S]hlc.Timestamp)
-		}
-		c.vertexHLC[it.Key] = ts
-		if c.vertexTombstones != nil {
-			delete(c.vertexTombstones, it.Key)
-		}
+		c.recordVertexHLCLocked(it.Key, ts)
+		c.clearVertexTombstoneLocked(it.Key)
 	}
 }
 
@@ -218,17 +193,11 @@ func (c *GraphCache[S, T]) PutEdgesWithExpirationHLC(items []EdgeItem[S], ts hlc
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, it := range items {
-		if tombTs, ok := c.edgeTombstoneLocked(it.Tail, it.Head); ok && ts.Less(tombTs) {
+		if !c.edgeWriteAllowedLocked(it.Tail, it.Head, ts) {
 			continue
 		}
-		c.ensureVertexLocked(it.Tail, it.Expiration)
-		c.ensureVertexLocked(it.Head, it.Expiration)
-		created, tailID, headID, applied := c.edges.putWithExpirationHLC(it.Tail, it.Head, it.Weight, it.Expiration, ts)
-		if created {
-			c.onEdgeAddedLocked(created, tailID, headID, it.Head)
-		}
-		if applied && c.edgeTombstones != nil {
-			delete(c.edgeTombstones, EdgeKey[S]{Tail: it.Tail, Head: it.Head})
+		if c.putEdgeHLCLocked(it.Tail, it.Head, it.Weight, it.Expiration, ts) {
+			c.clearEdgeTombstoneLocked(it.Tail, it.Head)
 		}
 	}
 }
@@ -250,24 +219,15 @@ func (c *GraphCache[S, T]) AddEdgesWithExpirationContribHLC(items []EdgeItem[S],
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, it := range items {
-		if tombTs, ok := c.edgeTombstoneLocked(it.Tail, it.Head); ok && ts.Less(tombTs) {
+		if !c.edgeWriteAllowedLocked(it.Tail, it.Head, ts) {
 			deduped++
 			continue
 		}
-		c.ensureVertexLocked(it.Tail, it.Expiration)
-		c.ensureVertexLocked(it.Head, it.Expiration)
-		created, tailID, headID, applied := c.edges.addWithExpirationContrib(it.Tail, it.Head, it.Weight, it.Expiration, it.ContribID)
-		if applied {
-			c.onEdgeAddedLocked(created, tailID, headID, it.Head)
-			if c.edgeTombstones != nil {
-				delete(c.edgeTombstones, EdgeKey[S]{Tail: it.Tail, Head: it.Head})
-			}
+		if c.addEdgeContribLocked(it.Tail, it.Head, it.Weight, it.Expiration, it.ContribID) {
+			c.clearEdgeTombstoneLocked(it.Tail, it.Head)
 			continue
 		}
 		deduped++
-		if created {
-			c.onEdgeAddedLocked(created, tailID, headID, it.Head)
-		}
 	}
 	return deduped
 }
