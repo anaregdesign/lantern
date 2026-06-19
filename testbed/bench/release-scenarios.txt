@@ -3,13 +3,19 @@
 # Lines starting with `#` and blank lines are ignored.
 #
 # This is the canonical release-time signal. The release bench job is
-# `continue-on-error` (non-blocking). Rather than run ~16 single-call
-# scenarios (which paid per-scenario fixed overhead — warmup + pre/post
-# runtime+pprof snapshots + cooldown + 12 Prometheus range queries + report
-# render — for each call path), the sweep is compacted to SIX scenarios, two
-# of which fan out across many call paths inside a single steady window (see
-# the `target.calls` fan-out rule in run.sh). This keeps broad coverage while
-# cutting wall-time roughly 5x vs individual scenarios. See issue #573.
+# `continue-on-error` (non-blocking) so a leak-gate hiccup or slow runner can
+# never block a release (the deliberate design of #256, #394). The SAME sweep
+# ALSO runs nightly via `.github/workflows/bench-nightly.yml` WITHOUT
+# continue-on-error and with RELEASE_BENCH_BUDGET_SECONDS=0 (no truncation), so
+# a goroutine/heap-leak regression fails a required check there rather than
+# merely warning in an advisory artifact (#716). Rather than run ~16
+# single-call scenarios (which paid per-scenario fixed overhead — warmup +
+# pre/post runtime+pprof snapshots + cooldown + 12 Prometheus range queries +
+# report render — for each call path), the sweep is compacted to SEVEN
+# scenarios, THREE of which fan out across many call paths inside a single
+# steady window (see the `target.calls` fan-out rule in run.sh). This keeps
+# broad coverage while cutting wall-time roughly 5x vs individual scenarios.
+# See issues #573 and #716.
 #
 # Why steady = 2m (and not shorter): Lantern is purely in-memory — no LSM
 # compaction / WAL replay / page-cache warmup — so throughput stabilizes in
@@ -24,13 +30,14 @@
 # broad_illuminate. Do not reorder.
 #
 # Wall-time on a fresh ubuntu-latest runner (single shared 3-replica compose,
-# sequential execution): ~20 min of scenario loop (broad_rw ~3m +
-# broad_illuminate ~3m + ttl_churn ~4m + many_subscribers ~3.5m +
-# search_churn ~3.5m + replication_apply_churn ~4.5m), ~22 min including
-# compose up + final aggregation. release.sh's RELEASE_BENCH_BUDGET_SECONDS
-# (default 1380s = 23 min) and the bench job's `timeout-minutes` (45) are
-# sized against this figure; see issues #571, #573, and #708. If you add or
-# lengthen scenarios, update those two knobs in lockstep.
+# sequential execution): ~23 min of scenario loop (broad_rw ~3m +
+# broad_mutate ~3m + broad_illuminate ~3m + ttl_churn ~4m +
+# many_subscribers ~3.5m + search_churn ~3.5m + replication_apply_churn
+# ~4.5m), ~25 min including compose up + final aggregation. release.sh's
+# RELEASE_BENCH_BUDGET_SECONDS (default 1620s = 27 min) and the bench job's
+# `timeout-minutes` (45) are sized against this figure; see issues #571,
+# #573, #708, and #716. If you add or lengthen scenarios, update those two
+# knobs in lockstep.
 #
 # release.sh self-bounds the sweep via RELEASE_BENCH_BUDGET_SECONDS and always
 # aggregates whatever ran (appending a `## Truncated` note), so an over-budget
@@ -53,6 +60,10 @@
 #   PutVertex, GetVertex, PutVertices, GetVertices, AddEdge, GetEdges,
 #   ScanVertices, DeleteVertex, ScanVertexKeys, ScanEdges,
 #   CountVerticesByPrefix, AddEdge(idempotent/ContribID)
+#
+# broad_mutate fan-out covers the remaining write surface (9-way, see #716):
+#   PutEdge, GetEdge, PutEdges, AddEdges, DeleteEdge, DeleteEdges,
+#   DeleteVertices, DeleteVerticesByPrefix, BackupSnapshot
 
 # read / write / scan / edge / delete call surface (12-way fan-out, #708)
 broad_rw
@@ -60,6 +71,11 @@ broad_rw
 # graph traversal across the orthogonal axes (4-way fan-out) — runs AFTER
 # broad_rw so the k-* graph it traverses is populated.
 broad_illuminate
+
+# edge SET / plural-add / delete / prefix-delete / backup surface (9-way
+# fan-out, #716) — the write RPCs broad_rw omits. Self-contained m-* keyspace
+# (disjoint from broad_rw), so its position in the sweep is not load-bearing.
+broad_mutate
 
 # TTL expiry / eviction plumbing under sustained write churn
 ttl_churn

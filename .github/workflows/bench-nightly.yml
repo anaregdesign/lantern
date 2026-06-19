@@ -1,0 +1,89 @@
+name: Bench (nightly leak gate)
+
+# Nightly BLOCKING leak gate. Runs the same compact scenario sweep as the
+# release-time bench (testbed/bench/release-scenarios.txt) against a
+# freshly-built lantern:local image, but — unlike the release bench, which is
+# deliberately `continue-on-error` so a hiccup can never block shipping
+# (#256, #394) — this job has NO continue-on-error. release.sh exits non-zero
+# when any scenario's goroutine/heap leak gate trips, so a leak regression
+# fails this required check rather than merely warning in an advisory artifact.
+# This is the enforcement half of #716.
+#
+# It also runs with RELEASE_BENCH_BUDGET_SECONDS=0 (the sweep's graceful
+# wall-clock cutoff disabled), so every scenario runs to completion and no leak
+# can hide behind a budget-truncated tail. The job `timeout-minutes` is the only
+# backstop.
+
+on:
+  schedule:
+    # 18:00 UTC daily — off-peak for the maintainers and well clear of the
+    # release pipeline. Scheduled runs always use the default branch (main).
+    - cron: '0 18 * * *'
+  workflow_dispatch: {}
+
+# A new nightly supersedes an in-flight one rather than queueing a second
+# 3-replica compose stack on a fresh runner.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  leak-gate:
+    name: Nightly leak gate
+    runs-on: ubuntu-latest
+    # Unbounded budget means the loop runs ~23 min (see release-scenarios.txt),
+    # plus image build + tool install + compose up + aggregation. 60 min leaves
+    # generous headroom on an abnormally slow runner without letting a wedged
+    # scenario hang the job indefinitely.
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.4'
+          check-latest: true
+      - name: Install bench prerequisites (ghz, yq)
+        run: |
+          set -euo pipefail
+          GHZ_VERSION="0.121.0"
+          curl -fsSL -o /tmp/ghz.tgz \
+            "https://github.com/bojand/ghz/releases/download/v${GHZ_VERSION}/ghz-linux-x86_64.tar.gz"
+          sudo tar -xzf /tmp/ghz.tgz -C /usr/local/bin ghz
+          sudo chmod +x /usr/local/bin/ghz
+          ghz --version
+          YQ_VERSION="v4.45.4"
+          sudo curl -fsSL -o /usr/local/bin/yq \
+            "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+      - name: Build lantern:local image
+        run: |
+          docker build \
+            --build-arg VERSION=nightly \
+            --build-arg COMMIT=${{ github.sha }} \
+            -t lantern:local .
+      - name: Run nightly leak-gate sweep (blocking)
+        env:
+          TAG: nightly
+          COMMIT: ${{ github.sha }}
+          RUNNER: linux/amd64 (ubuntu-latest)
+          LANTERN_IMAGE: lantern:local
+          # Disable the graceful truncation budget so every scenario runs and a
+          # leak in a tail scenario cannot be silently skipped. The job
+          # timeout-minutes above is the hard backstop.
+          RELEASE_BENCH_BUDGET_SECONDS: "0"
+        # No continue-on-error: a non-zero exit (any scenario's leak gate failed,
+        # or a harness/setup error) fails this required nightly check.
+        run: ./testbed/bench/release.sh --out bench-report.md
+      - name: Upload bench report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-report-nightly
+          path: bench-report.md
+          if-no-files-found: warn
+          retention-days: 30
