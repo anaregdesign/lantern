@@ -147,6 +147,27 @@ func (w *weight) isZero() bool {
 	return w.sum == 0
 }
 
+// replace atomically swaps all contributions for a single (value, expiration)
+// contribution under the weight's own lock. A concurrent lock-free reader
+// (snapshot) therefore observes either the pre-replace or the post-replace
+// value and never an empty bucket. This is what lets the local PutEdge path
+// replace an existing edge in place instead of delete+add, preserving the
+// atomic-replace contract (no transient NotFound) for point reads that no
+// longer hold GraphCache.mu (#740).
+//
+// lastHLC is reset to the zero value so the resulting state is identical to
+// the fresh newWeight()+single-add the old delete+add path produced; the
+// replicated LWW path uses putWithExpirationHLC, not this helper.
+func (w *weight) replace(value float32, expiration time.Time) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.values = w.values[:0]
+	w.values = append(w.values, weightValue{value: value, expiration: expiration})
+	w.sum = value
+	w.lastFlushLen = 1
+	w.lastHLC = hlc.Timestamp{}
+}
+
 // snapshot returns the cached sum, the furthest-future expiration among the
 // live contributions, and whether any live contributions remain — all under
 // a single lock acquisition and a single flush pass. Read-hot callers
@@ -261,11 +282,24 @@ func (c *edgeCache[S]) get(tail, head S) (float32, bool) {
 
 // getDetail returns the current weight and the latest contribution
 // expiration, so callers can surface the edge's effective deadline.
+//
+// getDetail is a point read that does NOT require the caller to hold
+// GraphCache.mu: it pins both endpoint ids (pinBoth) so a concurrent
+// delete/recreate cannot recycle an endpoint id to a different key between
+// resolution and the bucket lookup (the ABA hazard), and it reads the edge
+// map under the edgeCache's own RLock. The returned *weight pointer stays
+// valid even if a concurrent delete detaches it from c.tf — snapshot() takes
+// the weight's own mutex — so the read observes a consistent pre- or
+// post-delete value, matching the existing racy point-read contract.
 func (c *edgeCache[S]) getDetail(tail, head S) (float32, time.Time, bool) {
-	tailID, headID, ok := c.lookupIDs(tail, head)
+	if c.dict == nil {
+		return 0, time.Time{}, false
+	}
+	tailID, headID, release, ok := c.dict.pinBoth(tail, head)
 	if !ok {
 		return 0, time.Time{}, false
 	}
+	defer release()
 
 	c.mu.RLock()
 	heads, ok := c.tf[tailID]
@@ -502,6 +536,53 @@ func (c *edgeCache[S]) internEndpoints(tail, head S) (vertexID, vertexID) {
 		return 0, 0
 	}
 	return c.dict.intern(tail), c.dict.intern(head)
+}
+
+// putWithExpiration atomically replaces the (tail, head) edge weight with a
+// single contribution. When the bucket already exists the replacement happens
+// in place under the weight's own lock (edge.replace), so a lock-free reader
+// never observes a transient missing edge — this is the local PutEdge
+// atomic-replace contract, previously enforced by holding GraphCache.mu across
+// a delete+add. When the bucket is absent it is created exactly like
+// addWithExpiration. Returns created plus the endpoint ids so the caller can
+// maintain side indexes without re-entering the dict.
+func (c *edgeCache[S]) putWithExpiration(tail, head S, w float32, expiration time.Time) (created bool, tailID, headID vertexID) {
+	if c.dict != nil {
+		if tID, hID, okT, okH := c.dict.lookupBoth(tail, head); okT && okH {
+			c.mu.RLock()
+			if heads, ok := c.tf[tID]; ok {
+				if edge, ok := heads[hID]; ok {
+					c.mu.RUnlock()
+					edge.replace(w, expiration)
+					return false, tID, hID
+				}
+			}
+			c.mu.RUnlock()
+		}
+	}
+
+	tailID, headID = c.internEndpoints(tail, head)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	heads, ok := c.tf[tailID]
+	if !ok {
+		heads = make(map[vertexID]*weight)
+		c.tf[tailID] = heads
+	}
+	edge, existed := heads[headID]
+	if !existed {
+		edge = newWeight()
+		heads[headID] = edge
+		c.df[headID]++
+		created = true
+	} else if c.dict != nil {
+		c.dict.release(tailID)
+		c.dict.release(headID)
+	}
+	edge.replace(w, expiration)
+	return created, tailID, headID
 }
 
 // putWithExpirationHLC is the LWW-aware sibling of addWithExpiration used

@@ -114,6 +114,38 @@ func (d *dictionary[S]) lookupBoth(a, b S) (idA, idB vertexID, okA, okB bool) {
 	return
 }
 
+// pinBoth resolves both keys to vertexIDs and increments their refcounts
+// under a single write-lock cycle, returning a release func that drops the
+// two references again. While the pin is held the ids cannot reach refcount
+// zero, so they can neither be freed nor recycled to a different key — which
+// is exactly the ABA guarantee a lock-free point read needs: a reader that
+// pins (tail, head) before consulting the edge map cannot have its endpoint
+// ids reused out from under it between resolution and the bucket lookup.
+//
+// Returns ok=false (with a no-op release) when either key is absent, so the
+// caller can treat "endpoint unknown" identically to lookupBoth. release is
+// always non-nil and safe to call exactly once; it is idempotent only via the
+// caller's own discipline (call it once), mirroring release's contract.
+//
+// A self-pin (a == b) bumps the single shared id twice and the release drops
+// it twice, preserving the refcount invariant.
+func (d *dictionary[S]) pinBoth(a, b S) (idA, idB vertexID, release func(), ok bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	idA, okA := d.forward[a]
+	idB, okB := d.forward[b]
+	if !okA || !okB {
+		return 0, 0, func() {}, false
+	}
+	d.refcount[idA]++
+	d.refcount[idB]++
+	return idA, idB, func() {
+		d.release(idA)
+		d.release(idB)
+	}, true
+}
+
 // resolve returns the key for id. It returns the zero value of S and
 // false if id is not currently allocated (either never minted or already
 // freed).

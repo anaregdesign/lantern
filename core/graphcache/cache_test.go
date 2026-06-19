@@ -620,6 +620,131 @@ func TestGraphCache_DeleteVertex(t *testing.T) {
 	}
 }
 
+func TestGraphCache_PointReadsLockFree(t *testing.T) {
+	// GetVertex / GetWeight / GetEdgeDetail are lock-free point reads as of
+	// #740: they no longer take GraphCache.mu. These stress tests must be run
+	// under -race (the package suite is) to prove the lock removal is safe.
+
+	t.Run("GetVertex under concurrent Put/Delete/Flush returns only live values", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Minute)
+		const keys = 32
+		key := func(i int) string { return fmt.Sprintf("k-%d", i) }
+		// Invariant under test: a vertex's value, when present, always equals
+		// its key. A reader that observes any other (e.g. torn) value would
+		// indicate a data race the race detector might miss.
+		for i := 0; i < keys; i++ {
+			c.PutVertex(key(i), key(i))
+		}
+
+		var stop atomic.Bool
+		var wg sync.WaitGroup
+
+		writer := func(seed int) {
+			defer wg.Done()
+			rng := rand.New(rand.NewSource(int64(seed)))
+			for !stop.Load() {
+				i := rng.Intn(keys)
+				switch rng.Intn(3) {
+				case 0:
+					c.PutVertex(key(i), key(i))
+				case 1:
+					c.DeleteVertex(key(i))
+				default:
+					c.PutVertexWithTTL(key(i), key(i), time.Nanosecond) // born-expired churn
+				}
+			}
+		}
+		flusher := func() {
+			defer wg.Done()
+			for !stop.Load() {
+				c.vertices.Flush()
+				c.flush()
+			}
+		}
+		reader := func() {
+			defer wg.Done()
+			for !stop.Load() {
+				for i := 0; i < keys; i++ {
+					if v, ok := c.GetVertex(key(i)); ok && v != key(i) {
+						t.Errorf("GetVertex(%s) returned stale/torn value %q", key(i), v)
+						return
+					}
+				}
+			}
+		}
+
+		for w := 0; w < 4; w++ {
+			wg.Add(1)
+			go writer(w + 1)
+		}
+		wg.Add(1)
+		go flusher()
+		for r := 0; r < 4; r++ {
+			wg.Add(1)
+			go reader()
+		}
+		time.Sleep(150 * time.Millisecond)
+		stop.Store(true)
+		wg.Wait()
+	})
+
+	t.Run("edge point read never resolves a recycled endpoint id to a foreign edge", func(t *testing.T) {
+		// ABA hazard (#740): GetEdgeDetail resolves (tail,head) to dict ids,
+		// then reads the edge map. If a concurrent delete frees an endpoint id
+		// and a decoy edge recycles it, an unpinned read could surface the
+		// decoy's weight under the real edge's key. pinBoth must prevent that.
+		c := NewGraphCache[string, int](time.Minute)
+		const realWeight = 1
+		const decoyWeight = 99
+		exp := time.Now().Add(time.Hour)
+		c.AddEdgeWithExpiration("T", "H", realWeight, exp)
+
+		var stop atomic.Bool
+		var wg sync.WaitGroup
+
+		// Churner: repeatedly delete T/H and their edge (freeing their dict
+		// ids), create decoy vertices+edges (weight 99) to recycle the freed
+		// ids, then restore the real T->H edge.
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			i := 0
+			for !stop.Load() {
+				c.DeleteEdge("T", "H")
+				c.DeleteVertex("T")
+				c.DeleteVertex("H")
+				d1 := fmt.Sprintf("decoy-a-%d", i)
+				d2 := fmt.Sprintf("decoy-b-%d", i)
+				c.AddEdgeWithExpiration(d1, d2, decoyWeight, exp)
+				c.DeleteEdge(d1, d2)
+				c.DeleteVertex(d1)
+				c.DeleteVertex(d2)
+				c.AddEdgeWithExpiration("T", "H", realWeight, exp)
+				i++
+			}
+		}()
+
+		// Readers: a successful read of (T,H) must never report the decoy
+		// weight. Either the real weight or not-found is acceptable.
+		for r := 0; r < 4; r++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for !stop.Load() {
+					if w, _, ok := c.GetEdgeDetail("T", "H"); ok && w == decoyWeight {
+						t.Errorf("GetEdgeDetail(T,H) returned decoy weight %v from a recycled id", w)
+						return
+					}
+				}
+			}()
+		}
+
+		time.Sleep(200 * time.Millisecond)
+		stop.Store(true)
+		wg.Wait()
+	})
+}
+
 func TestGraphCache_DeleteEdge(t *testing.T) {
 	g := NewGraphCache[string, string](time.Minute)
 	g.AddEdgeWithTTL("a", "b", 3.14, 60*time.Second)

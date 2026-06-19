@@ -30,14 +30,16 @@ func (c *GraphCache[S, T]) addEdgeContribLocked(tail, head S, w float32, expirat
 }
 
 // putEdgeLocked atomically replaces one edge under the caller's aggregate
-// write lock. It intentionally does not call onEdgeDeletedLocked for the
-// temporary delete: the edge is immediately re-added with the same head key, so
-// the head-side prefix index is unchanged and its insert path is idempotent.
+// write lock. It replaces an existing edge's weight in place (edgeCache.
+// putWithExpiration → weight.replace) rather than delete+add, so a lock-free
+// point reader (GetWeight / GetEdgeDetail, which dropped GraphCache.mu in #740)
+// never observes a transient missing edge. It intentionally does not call
+// onEdgeDeletedLocked: the head key is unchanged, so the head-side prefix index
+// is untouched and its insert path is idempotent.
 func (c *GraphCache[S, T]) putEdgeLocked(tail, head S, w float32, expiration time.Time) {
 	c.ensureVertexLocked(tail, expiration)
 	c.ensureVertexLocked(head, expiration)
-	c.edges.delete(tail, head)
-	created, tailID, headID := c.edges.addWithExpiration(tail, head, w, expiration)
+	created, tailID, headID := c.edges.putWithExpiration(tail, head, w, expiration)
 	c.onEdgeAddedLocked(created, tailID, headID, head)
 }
 

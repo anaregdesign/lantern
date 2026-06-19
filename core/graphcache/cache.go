@@ -201,27 +201,35 @@ func (c *GraphCache[S, T]) ensureVertexLocked(key S, expiration time.Time) {
 	c.onEndpointVertexCreatedLocked(key)
 }
 
+// GetVertex returns the live value stored for key. It is a point read that
+// does not take GraphCache.mu: the inner vertex cache has its own RWMutex and
+// hides expired entries, so a point lookup needs no aggregate-lock
+// consistency with the prefix/search/edge indexes. Dropping c.mu here keeps
+// hot reads from serializing behind unrelated writes, long scans, and GC
+// (#740). A read may race a concurrent Put/Delete on the same key and observe
+// either the pre- or post-write state, which is the existing point-read
+// contract.
 func (c *GraphCache[S, T]) GetVertex(key S) (T, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
 	return c.vertices.Get(key)
 }
 
+// GetWeight returns the additive weight of the (tail, head) edge. Like
+// GetVertex it is a lock-free point read: edges.get pins both endpoint ids
+// (closing the dictionary ABA hazard) and reads the edge map under the
+// edgeCache's own lock, so GraphCache.mu is not required (#740).
 func (c *GraphCache[S, T]) GetWeight(tail, head S) (float32, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
 	return c.edges.get(tail, head)
 }
 
 // GetEdgeDetail returns the current edge weight together with the latest
 // contribution expiration. The expiration is the moment after which the edge
 // is guaranteed to have decayed to zero. When no edge exists, ok is false.
+//
+// Like GetWeight it is a lock-free point read (see edges.getDetail): it does
+// not take GraphCache.mu and may observe either the pre- or post-write state
+// under a concurrent edge mutation, but it never resolves a recycled endpoint
+// id to an unrelated edge.
 func (c *GraphCache[S, T]) GetEdgeDetail(tail, head S) (float32, time.Time, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
 	return c.edges.getDetail(tail, head)
 }
 

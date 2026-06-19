@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -166,6 +167,78 @@ func BenchmarkGraphCacheGetWeight(b *testing.B) {
 				head := keys[(i+1)%s.vertices]
 				_, _ = c.GetWeight(tail, head)
 			}
+		})
+	}
+}
+
+// BenchmarkGetVertex_Contended measures the GetVertex point read while a
+// background writer churns unrelated keys. Before #740 the read serialized
+// behind the writer on GraphCache.mu; afterwards it only contends on the inner
+// vertex-cache lock. Run before/after to capture the contention win.
+func BenchmarkGetVertex_Contended(b *testing.B) {
+	for _, s := range smallScales(testing.Short()) {
+		s := s
+		b.Run(s.name, func(b *testing.B) {
+			c := NewGraphCache[string, string](time.Hour)
+			keys := populate(b, c, s)
+			exp := time.Now().Add(time.Hour)
+			var stop atomic.Bool
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				i := 0
+				for !stop.Load() {
+					// Write churn on a disjoint key namespace so reads always hit.
+					wk := makeKey("writer", i%s.vertices, s.keyLen)
+					c.PutVertexWithExpiration(wk, "", exp)
+					c.DeleteVertex(wk)
+					i++
+				}
+			}()
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_, _ = c.GetVertex(keys[i%s.vertices])
+			}
+			b.StopTimer()
+			stop.Store(true)
+			<-done
+		})
+	}
+}
+
+// BenchmarkGetEdgeDetail_Contended measures the GetEdgeDetail point read on a
+// hot existing edge while a background writer adds unrelated edges. It captures
+// the #740 win of dropping GraphCache.mu from edge point reads (pinBoth closes
+// the dictionary ABA hazard instead).
+func BenchmarkGetEdgeDetail_Contended(b *testing.B) {
+	for _, s := range smallScales(testing.Short()) {
+		s := s
+		b.Run(s.name, func(b *testing.B) {
+			c := NewGraphCache[string, string](time.Hour)
+			keys := populate(b, c, s)
+			exp := time.Now().Add(time.Hour)
+			var stop atomic.Bool
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				i := 0
+				for !stop.Load() {
+					tail := keys[i%s.vertices]
+					head := keys[(i+2)%s.vertices]
+					c.AddEdgeWithExpiration(tail, head, 1, exp)
+					i++
+				}
+			}()
+			hotTail, hotHead := keys[0], keys[1%s.vertices]
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_, _, _ = c.GetEdgeDetail(hotTail, hotHead)
+			}
+			b.StopTimer()
+			stop.Store(true)
+			<-done
 		})
 	}
 }
