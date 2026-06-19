@@ -86,7 +86,48 @@ jobs:
           echo "Merged coverage line count:"
           wc -l coverage/merged.out
 
+      # Ratchet coverage gate. Each per-module floor sits just below that
+      # module's current measured baseline (documented in CONTRIBUTING.md ->
+      # "Coverage floor"); a PR that drops a module below its floor fails the
+      # build. Raise the floor in the same PR whenever coverage rises durably so
+      # the ratchet only moves up. Module totals vary widely (generated pb and
+      # the CLI sit far below core/mcp), so a single workspace number would let a
+      # regression in a well-tested module hide behind the large low-coverage
+      # denominator -- hence per-module floors over the merged total. Reuses the
+      # per-module profiles from the test step; no extra dependency. Refs #717.
+      - name: Enforce coverage floors
+        run: |
+          set -euo pipefail
+          # slug:floor% -- keep in sync with CONTRIBUTING.md "Coverage floor".
+          floors="root:31 core:84 mcp:84 pb:5 sdks-go:37 server:52"
+          fail=0
+          for entry in $floors; do
+            slug=${entry%%:*}
+            floor=${entry##*:}
+            prof="coverage/${slug}.out"
+            if [ ! -f "$prof" ]; then
+              echo "::error::coverage profile $prof is missing"
+              fail=1
+              continue
+            fi
+            total=$(go tool cover -func="$prof" | awk '/^total:/ {gsub(/%/,"",$3); print $3}')
+            if awk -v t="$total" -v f="$floor" 'BEGIN { exit !(t+0 < f+0) }'; then
+              echo "::error::coverage for '$slug' is ${total}%, below floor ${floor}%"
+              fail=1
+            else
+              echo "ok: ${slug} ${total}% >= ${floor}%"
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::coverage floor gate failed; raise coverage or, if this is a deliberate baseline change, adjust the floor + CONTRIBUTING.md"
+            exit 1
+          fi
+
+      # `if: always()` so the artifact survives a failing floor gate (or a test
+      # failure that still produced partial profiles) -- it is the primary
+      # debugging aid when the gate trips.
       - name: Upload coverage artifact
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: coverage
