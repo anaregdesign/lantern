@@ -344,9 +344,9 @@ func (s *LanternService) logMutation(op *pb.MutationOp) {
 // let a concurrent write slip between the two and resolve LWW one way on the
 // origin and the other way on its peers. Returns immediately when the log is
 // not wired (test path); callers may pass a zero ts in that case.
-func (s *LanternService) logMutationAt(op *pb.MutationOp, ts hlc.Timestamp) {
+func (s *LanternService) logMutationAt(op *pb.MutationOp, ts hlc.Timestamp) uint64 {
 	if s.log == nil || s.clock == nil {
-		return
+		return 0
 	}
 	mu := &pb.Mutation{
 		Hlc: &pb.HLCTimestamp{
@@ -374,7 +374,7 @@ func (s *LanternService) logMutationAt(op *pb.MutationOp, ts hlc.Timestamp) {
 			l = slog.Default()
 		}
 		l.Warn("mutation log append failed", slog.Any("err", err))
-		return
+		return 0
 	}
 	if s.origins != nil {
 		s.origins.Record(ts.NodeID, entry.Seq, ts)
@@ -382,6 +382,7 @@ func (s *LanternService) logMutationAt(op *pb.MutationOp, ts hlc.Timestamp) {
 	if s.onAppend != nil {
 		s.onAppend()
 	}
+	return entry.Seq
 }
 
 // Illuminate returns a subgraph rooted at the seed, optionally reduced via
@@ -696,9 +697,24 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 	var deduped int
 	if s.clock != nil {
 		ts := s.clock.Now()
+		// Log FIRST so the per-origin seq this mutation commits under is
+		// known, then synthesize a (origin, seq, idx) ContribID for every
+		// edge the client left unkeyed BEFORE applying it locally. This
+		// makes the origin's own graphcache carry the SAME ContribID a peer
+		// synthesizes in ApplyMutation (contribIDFor), so the contribution
+		// is a G-Set element (§4/§6 of docs/replication.md) on every
+		// replica. Without it the origin stores a zero ContribID, Snapshot
+		// emits it verbatim, and a re-pulled snapshot re-adds it additively
+		// — doubling edge weight without bound on a gapped follower (#733).
+		// Mirrors the once-sampled HLC discipline PutVertices uses for LWW.
+		seq := s.logMutationAt(&pb.MutationOp{Op: &pb.MutationOp_AddEdges{AddEdges: request}}, ts)
+		for i := range items {
+			if items[i].ContribID.IsZero() {
+				items[i].ContribID = contribIDFor(s.origin, seq, uint16(i))
+			}
+		}
 		deduped = s.cache.AddEdgesWithExpirationContribHLC(items, ts)
 		s.metrics.OnEdgeContribDeduped(deduped)
-		s.logMutationAt(&pb.MutationOp{Op: &pb.MutationOp_AddEdges{AddEdges: request}}, ts)
 	} else {
 		deduped = s.cache.AddEdgesWithExpirationContrib(items)
 		s.metrics.OnEdgeContribDeduped(deduped)

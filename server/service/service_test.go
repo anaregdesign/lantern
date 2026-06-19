@@ -232,6 +232,61 @@ func TestLanternService_AddEdges_ContribIDWiring(t *testing.T) {
 	})
 }
 
+// TestLanternService_LocalAddEdges_StampsSnapshotContribID is the #733
+// regression. A locally-originated AddEdges that carries no wire
+// contrib_ids (the ghz bench, and any client predating the optional #588
+// plumbing) must stamp the SAME synthesized (origin, seq, idx) ContribID
+// into the backend that a peer derives in ApplyMutation, so a re-pulled
+// snapshot frame is a G-Set no-op (docs/replication.md §4/§6) instead of
+// doubling edge weight without bound. Before the fix the origin stored a
+// zero ContribID, Snapshot emitted it verbatim, and a gapped follower
+// re-applying the snapshot double-counted every edge on each reconnect.
+func TestLanternService_LocalAddEdges_StampsSnapshotContribID(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+	log := mutationlog.New(mutationlog.Options{Capacity: 128, SubscriberBuffer: 128})
+	t.Cleanup(func() { _ = log.Close() })
+	origin := bytes16("origin-A")
+	clock := hlc.New(origin, hlc.Options{})
+	s := NewLanternService(cache).WithReplication(log, clock, nil)
+	ctx := context.Background()
+
+	if _, err := s.AddEdges(ctx, &pb.AddEdgesRequest{
+		Edges: []*pb.Edge{{Tail: "a", Head: "b", Weight: 2, Expiration: futureTs(time.Minute)}},
+		// no contrib_ids on the wire (ghz bench / optional #588 path)
+	}); err != nil {
+		t.Fatalf("AddEdges: %v", err)
+	}
+
+	// The single logged mutation commits under seq 1 on a fresh log, so the
+	// origin's own graphcache must carry contribIDFor(origin, 1, 0): the
+	// exact id ApplyMutation synthesizes for the same frame on a peer.
+	want := contribIDFor(origin[:], 1, 0)
+	edges := cache.SnapshotEdges()
+	if len(edges) != 1 {
+		t.Fatalf("snapshot edges = %d, want 1", len(edges))
+	}
+	contribs := edges[0].Contributions
+	if len(contribs) != 1 {
+		t.Fatalf("snapshot contributions = %d, want 1", len(contribs))
+	}
+	if got := contribs[0].ContribID; got.IsZero() || got != want {
+		t.Fatalf("snapshot contribID = %x, want %x (synthesized, non-zero)", got, want)
+	}
+
+	// Re-applying that snapshot contribution — the pump / anti-entropy
+	// bootstrap path — must dedup on the matching non-zero ContribID, so
+	// AddEdgeWithExpirationContribHLC reports applied=false and the stored
+	// weight stays at 2 instead of doubling (the exact #733 leak).
+	re := edges[0]
+	c := contribs[0]
+	if cache.AddEdgeWithExpirationContribHLC(re.Tail, re.Head, c.Weight, c.Expiration, c.ContribID, re.HLC) {
+		t.Errorf("re-apply of snapshot contribution was additive; want dedup no-op (#733)")
+	}
+	if w, ok := cache.GetWeight("a", "b"); !ok || w != 2 {
+		t.Fatalf("weight after snapshot re-apply = %v ok=%v, want 2 true (dedup, not double)", w, ok)
+	}
+}
+
 func TestLanternService_PutEdge_Replaces(t *testing.T) {
 	// PutEdge deletes-then-adds: repeated calls with the same weight stay at that weight.
 	s := newTestService(t)
