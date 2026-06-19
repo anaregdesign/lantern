@@ -574,3 +574,58 @@ func TestEdgeJSON_RoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// FuzzUnmarshalVertexJSON fuzzes the JSON→Vertex decode path used by the NDJSON
+// backup/restore codec. A clean decode must (a) survive every value accessor
+// without panicking, and (b) re-marshal via MarshalVertexJSON to bytes that
+// themselves decode again — the marshal/unmarshal pair must stay stable.
+// Inputs MarshalVertexJSON legitimately cannot re-encode are tolerated (it must
+// fail cleanly, not panic), keeping the fuzz focused on real defects.
+func FuzzUnmarshalVertexJSON(f *testing.F) {
+	seeds := []string{
+		`{"key":"a","type":"int64","value":42}`,
+		`{"key":"u","type":"uint64","value":18446744073709551615}`,
+		`{"key":"f","type":"float64","value":3.14}`,
+		`{"key":"s","type":"string","value":"hi"}`,
+		`{"key":"b","type":"bool","value":true}`,
+		`{"key":"by","type":"bytes","value":"aGVsbG8="}`,
+		`{"key":"t","type":"timestamp","value":"2020-01-01T00:00:00Z"}`,
+		`{"key":"d","type":"duration","value":"1h30m"}`,
+		`{"key":"n","type":"nil","value":null}`,
+		`{"key":"x","type":"int64","value":42,"expiration":"2030-01-01T00:00:00Z"}`,
+		`{`,
+		``,
+		`{"type":"bogus"}`,
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, data string) {
+		v, err := UnmarshalVertexJSON([]byte(data))
+		if err != nil {
+			return
+		}
+		// No accessor may panic on a successfully decoded vertex.
+		_ = Kind(v)
+		_, _ = IntValue(v)
+		_, _ = UIntValue(v)
+		_, _ = FloatValue(v)
+		_, _ = StringValue(v)
+		_, _ = BoolValue(v)
+		_, _ = BytesValue(v)
+		_, _ = TimeValue(v)
+		_, _ = DurationValue(v)
+		_ = IsNil(v)
+		_ = VertexExpiration(v)
+		// The marshal/unmarshal pair must stay stable: bytes produced by
+		// MarshalVertexJSON must decode again. Values it cannot re-encode are
+		// out of scope (it must error cleanly rather than panic).
+		b, err := MarshalVertexJSON(v)
+		if err != nil {
+			return
+		}
+		if _, err := UnmarshalVertexJSON(b); err != nil {
+			t.Fatalf("re-decode of MarshalVertexJSON output: %v", err)
+		}
+	})
+}
