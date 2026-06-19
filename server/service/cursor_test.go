@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestCursor_RoundTrip(t *testing.T) {
@@ -79,4 +80,47 @@ func TestCursor_RejectCrossRPC(t *testing.T) {
 	} else if !strings.Contains(err.Error(), "different Scan RPC") {
 		t.Errorf("decodeEdgesCursor(vertex cursor) error = %q, want 'different Scan RPC'", err)
 	}
+}
+
+// FuzzDecodeCursor feeds arbitrary bytes to all three Scan* cursor decoders.
+// None may panic on any input, and a cursor minted by one Scan RPC must never
+// be silently accepted by another (the #168 / #674 cross-RPC-reuse guard).
+// Only panic-freedom is asserted here; the precise cross-RPC rejection is
+// pinned by the unit tests above.
+func FuzzDecodeCursor(f *testing.F) {
+	f.Add(encodeCursor(scanCursor{LastKey: "alice"}))
+	f.Add(encodeEdgesCursor(scanEdgesCursor{LastTail: "a", LastHead: "b"}))
+	f.Add(encodeKeysCursor(scanKeysCursor{LastKey: "k"}))
+	f.Add([]byte(nil))
+	f.Add([]byte("!!!not base64!!!"))
+	f.Add([]byte("////"))
+	f.Fuzz(func(t *testing.T, b []byte) {
+		_, _ = decodeCursor(b)
+		_, _ = decodeEdgesCursor(b)
+		_, _ = decodeKeysCursor(b)
+	})
+}
+
+// FuzzCursorRoundTrip asserts the encode→decode identity for ScanVertices
+// cursors over arbitrary keys. JSON cannot carry invalid UTF-8 (it is replaced
+// with U+FFFD on the way through json.Marshal), and vertex keys are always
+// valid UTF-8 proto strings, so non-UTF-8 inputs are out of contract and
+// skipped rather than treated as failures.
+func FuzzCursorRoundTrip(f *testing.F) {
+	f.Add("")
+	f.Add("alice")
+	f.Add("users/42")
+	f.Add("emoji-✓-tab\tnewline\n")
+	f.Fuzz(func(t *testing.T, key string) {
+		if !utf8.ValidString(key) {
+			return
+		}
+		got, err := decodeCursor(encodeCursor(scanCursor{LastKey: key}))
+		if err != nil {
+			t.Fatalf("decode(encode(%q)): %v", key, err)
+		}
+		if got.LastKey != key {
+			t.Fatalf("round-trip key = %q, want %q", got.LastKey, key)
+		}
+	})
 }

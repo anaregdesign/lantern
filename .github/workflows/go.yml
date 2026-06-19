@@ -164,3 +164,36 @@ jobs:
             (cd "$mod" && govulncheck ./...)
             echo "::endgroup::"
           done
+
+  fuzz:
+    name: Fuzz (smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.4'
+          check-latest: true
+      # Active-mutation smoke run for every `func Fuzz*` target. The Build &
+      # Test job already replays the committed seed corpora under -race (Go
+      # runs FuzzXxx as ordinary tests when -fuzz is absent); this job adds a
+      # short bout of real mutation per target so malformed-input regressions
+      # surface on PRs. A crash writes a reproducer under the package's
+      # testdata/fuzz/ and fails the job. Per-module + per-target because
+      # `-fuzz` only accepts a single target in a single package. Refs #714.
+      - name: Fuzz each target (per module)
+        run: |
+          set -e
+          for mod in . core mcp pb sdks/go server; do
+            (cd "$mod"
+             dirs=$(grep -rl --include='*_test.go' --exclude-dir=node_modules -e 'func Fuzz' . 2>/dev/null \
+               | xargs -r -n1 dirname | sort -u)
+             for d in $dirs; do
+               pkg=$(go list "$d" 2>/dev/null) || continue
+               for t in $(go test -list='^Fuzz' "$pkg" 2>/dev/null | grep '^Fuzz' || true); do
+                 echo "::group::fuzz ${pkg} ${t}"
+                 go test -run='^$' -fuzz="^${t}$" -fuzztime=20s "$pkg"
+                 echo "::endgroup::"
+               done
+             done)
+          done

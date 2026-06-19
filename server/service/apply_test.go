@@ -790,3 +790,41 @@ func TestApplyMutation_TombstoneClampRejectHook(t *testing.T) {
 		}
 	})
 }
+
+// FuzzContribIDFromBytes fuzzes the wire→ContribID decode. Only the canonical
+// 24-byte length may yield a non-zero id; every other length must collapse to
+// the zero sentinel (the "no identity" marker that makes receivers skip
+// dedup). A non-zero decode must round-trip back through contribIDBytes
+// unchanged, and the decode must never panic. Guards the dedup-id boundary the
+// broad_rw bench comment flags as a silent zero-decode hazard.
+func FuzzContribIDFromBytes(f *testing.F) {
+	var full graphcache.ContribID
+	for i := range full {
+		full[i] = byte(i + 1)
+	}
+	f.Add([]byte(nil))
+	f.Add(make([]byte, 24)) // canonical length, all-zero -> zero sentinel
+	f.Add(full[:])          // canonical length, non-zero
+	f.Add([]byte{1, 2, 3})  // too short
+	f.Add(make([]byte, 25)) // too long
+	f.Fuzz(func(t *testing.T, b []byte) {
+		var zero graphcache.ContribID
+		got := contribIDFromBytes(b)
+		if len(b) != len(zero) {
+			if got != zero {
+				t.Fatalf("non-canonical %d-byte input decoded to a non-zero ContribID", len(b))
+			}
+			return
+		}
+		// Canonical length: the bytes must be copied verbatim.
+		if got != graphcache.ContribID(b) {
+			t.Fatalf("24-byte decode altered bytes: got %x, want %x", got, b)
+		}
+		// Non-zero ids must survive the encode→decode round-trip.
+		if got != zero {
+			if rt := contribIDFromBytes(contribIDBytes(got)); rt != got {
+				t.Fatalf("round-trip mismatch: %x -> %x", got, rt)
+			}
+		}
+	})
+}
