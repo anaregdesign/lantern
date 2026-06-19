@@ -227,10 +227,22 @@ jobs:
           set -e
           for mod in . core mcp pb sdks/go server; do
             (cd "$mod"
+             # `go list ./...` is module-scoped: it never descends into a nested
+             # module (core/, mcp/, pb/, sdks/go/, server/ each carry their own
+             # go.mod), so it is the authority on which packages belong to THIS
+             # module. The filesystem grep below happily recurses into sibling
+             # modules; without filtering through `own`, the root (.) iteration
+             # would resolve their fuzz targets via the active workspace and fuzz
+             # pb/graph/v1, sdks/go and server/service a SECOND time -- ~2x runner
+             # load that flaked the 20s-per-target budget (#725).
+             own=$(go list ./... 2>/dev/null)
              dirs=$(grep -rl --include='*_test.go' --exclude-dir=node_modules -e 'func Fuzz' . 2>/dev/null \
                | xargs -r -n1 dirname | sort -u)
              for d in $dirs; do
                pkg=$(go list "$d" 2>/dev/null) || continue
+               # Skip targets owned by a nested module; they fuzz in their own
+               # iteration. Keeps every target to exactly one run (#725).
+               printf '%s\n' "$own" | grep -qxF "$pkg" || continue
                for t in $(go test -list='^Fuzz' "$pkg" 2>/dev/null | grep '^Fuzz' || true); do
                  echo "::group::fuzz ${pkg} ${t}"
                  go test -run='^$' -fuzz="^${t}$" -fuzztime=20s "$pkg"
