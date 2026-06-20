@@ -206,6 +206,36 @@ func TestGraphCache_PrefixIndex_DroppedOnDeleteVertex(t *testing.T) {
 	}
 }
 
+// TestGraphCache_DeleteByPrefix_ClearsSearchIndex verifies the batched
+// DeleteByPrefix (#738) drops deleted vertices from the search index as well as
+// the prefix index, leaving keys outside the prefix searchable. Content words
+// are chosen to share no bigrams (the index uses an NGram{N:2} analyzer) so a
+// match is unambiguous.
+func TestGraphCache_DeleteByPrefix_ClearsSearchIndex(t *testing.T) {
+	c := NewGraphCache[string, string](time.Minute)
+	c.EnablePrefixIndex(identityExtract)
+	c.EnableSearchIndex(textExtract)
+	c.PutVertex("doc:1", "alpha")
+	c.PutVertex("doc:2", "bravo")
+	c.PutVertex("keep:1", "zulu")
+
+	if got := c.DeleteByPrefix(context.Background(), "doc:", 0); got != 2 {
+		t.Fatalf("DeleteByPrefix(doc:) = %d, want 2", got)
+	}
+
+	// Deleted docs are gone from the search index...
+	if got := c.SearchVertices("alpha", 10, ""); got != nil {
+		t.Fatalf(`SearchVertices("alpha") after DeleteByPrefix = %v, want nil`, keys(got))
+	}
+	if got := c.SearchVertices("bravo", 10, ""); got != nil {
+		t.Fatalf(`SearchVertices("bravo") after DeleteByPrefix = %v, want nil`, keys(got))
+	}
+	// ...but the surviving doc is still indexed.
+	if got := keys(c.SearchVertices("zulu", 10, "")); !equalKeys(got, []string{"keep:1"}) {
+		t.Fatalf(`SearchVertices("zulu") after DeleteByPrefix = %v, want [keep:1]`, got)
+	}
+}
+
 func TestGraphCache_PrefixIndex_NoDoubleInsertOnRefresh(t *testing.T) {
 	c := NewGraphCache[string, string](time.Minute)
 	c.EnablePrefixIndex(identityExtract)

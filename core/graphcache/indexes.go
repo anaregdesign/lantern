@@ -1,17 +1,22 @@
 package graphcache
 
-// onVertexEvicted keeps all vertex-owned side structures in sync with a
-// vertex cache eviction. It is installed as cache.Cache.SetOnEvict and may be
-// invoked by Delete, Clear, or Flush. Some callers hold GraphCache.mu when the
-// hook fires and some do not, so this helper must not assume the aggregate lock
-// is held.
-func (c *GraphCache[S, T]) onVertexEvicted(key S) {
-	if c.dict != nil {
-		if id, ok := c.dict.lookup(key); ok {
-			c.dict.release(id)
-		}
+// onVerticesEvicted keeps all vertex-owned side structures in sync with a batch
+// of vertex cache evictions. It is installed as cache.Cache.SetOnEvictMany and
+// may be invoked by Delete, DeleteMany, Clear, or Flush (a single-key Delete
+// arrives here as a one-element slice). Each underlying structure (dict, prefix
+// radix, search index) is updated under a single one of its own locks for the
+// whole batch, so a namespace-wide or TTL-flush delete pays one acquisition per
+// structure instead of one per key (#738). Some callers hold GraphCache.mu when
+// the hook fires and some do not, so this helper must not assume the aggregate
+// lock is held — it touches only the inner-locked structures, never c.mu.
+func (c *GraphCache[S, T]) onVerticesEvicted(keys []S) {
+	if len(keys) == 0 {
+		return
 	}
-	c.deleteVertexIndexes(key)
+	if c.dict != nil {
+		c.dict.releaseKeys(keys)
+	}
+	c.deleteVerticesIndexes(keys)
 }
 
 // onExplicitVertexStoredLocked updates vertex secondary indexes after a caller
@@ -41,12 +46,22 @@ func (c *GraphCache[S, T]) insertVertexPrefixLocked(key S) {
 	}
 }
 
-func (c *GraphCache[S, T]) deleteVertexIndexes(key S) {
+// deleteVerticesIndexes removes a batch of keys from the prefix radix and the
+// search index, each under one of its own write locks for the whole batch. It
+// is shared by onVerticesEvicted (#738).
+func (c *GraphCache[S, T]) deleteVerticesIndexes(keys []S) {
+	if len(keys) == 0 {
+		return
+	}
 	if c.prefixIndex != nil {
-		c.prefixIndex.delete(c.prefixExtract(key))
+		prefixes := make([]string, len(keys))
+		for i, key := range keys {
+			prefixes[i] = c.prefixExtract(key)
+		}
+		c.prefixIndex.deleteMany(prefixes)
 	}
 	if c.searchIndex != nil {
-		c.searchIndex.Delete(key)
+		c.searchIndex.DeleteMany(keys)
 	}
 }
 

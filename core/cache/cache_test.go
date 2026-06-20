@@ -489,3 +489,144 @@ func TestCache_PutWithExpiration_ZeroNeverExpires(t *testing.T) {
 		})
 	}
 }
+
+// TestCache_DeleteMany verifies the batch delete removes every present key,
+// skips absent keys, reports the removed set, and is a no-op for an empty
+// input.
+func TestCache_DeleteMany(t *testing.T) {
+	c := NewCache[string, int](time.Minute)
+	c.Put("a", 1)
+	c.Put("b", 2)
+	c.Put("c", 3)
+
+	if got := c.DeleteMany(nil); got != nil {
+		t.Fatalf("DeleteMany(nil) = %v, want nil", got)
+	}
+
+	evicted := c.DeleteMany([]string{"a", "missing", "c", "a"})
+	sort.Strings(evicted)
+	want := []string{"a", "c"}
+	if !reflect.DeepEqual(evicted, want) {
+		t.Fatalf("DeleteMany evicted = %v, want %v", evicted, want)
+	}
+	if c.Has("a") || c.Has("c") {
+		t.Fatalf("deleted keys still present")
+	}
+	if !c.Has("b") {
+		t.Fatalf("untouched key b was removed")
+	}
+}
+
+// TestCache_OnEvictMany_Batch verifies the batch hook fires exactly once with
+// the full set of removed keys for Delete (one-element slice), DeleteMany,
+// Clear, and Flush, and that it takes precedence over a per-key hook.
+func TestCache_OnEvictMany_Batch(t *testing.T) {
+	type batch []string
+	newWatched := func() (*[]batch, *sync.Mutex, *atomic.Int32) {
+		var batches []batch
+		var mu sync.Mutex
+		var perKey atomic.Int32
+		return &batches, &mu, &perKey
+	}
+
+	t.Run("DeleteSingleKeyArrivesAsBatch", func(t *testing.T) {
+		c := NewCache[string, int](time.Minute)
+		c.Put("a", 1)
+		batches, mu, perKey := newWatched()
+		c.SetOnEvict(func(string) { perKey.Add(1) })
+		c.SetOnEvictMany(func(keys []string) {
+			mu.Lock()
+			defer mu.Unlock()
+			*batches = append(*batches, append(batch(nil), keys...))
+		})
+		c.Delete("a")
+		mu.Lock()
+		defer mu.Unlock()
+		if len(*batches) != 1 || len((*batches)[0]) != 1 || (*batches)[0][0] != "a" {
+			t.Fatalf("batches = %v, want [[a]]", *batches)
+		}
+		if perKey.Load() != 0 {
+			t.Fatalf("per-key hook fired %d times; batch hook must take precedence", perKey.Load())
+		}
+	})
+
+	t.Run("DeleteMany", func(t *testing.T) {
+		c := NewCache[string, int](time.Minute)
+		c.Put("a", 1)
+		c.Put("b", 2)
+		c.Put("c", 3)
+		batches, mu, _ := newWatched()
+		c.SetOnEvictMany(func(keys []string) {
+			mu.Lock()
+			defer mu.Unlock()
+			*batches = append(*batches, append(batch(nil), keys...))
+		})
+		c.DeleteMany([]string{"a", "b", "missing"})
+		mu.Lock()
+		defer mu.Unlock()
+		if len(*batches) != 1 {
+			t.Fatalf("want exactly one batch, got %v", *batches)
+		}
+		got := append(batch(nil), (*batches)[0]...)
+		sort.Strings(got)
+		if !reflect.DeepEqual([]string(got), []string{"a", "b"}) {
+			t.Fatalf("batch = %v, want [a b]", got)
+		}
+	})
+
+	t.Run("Clear", func(t *testing.T) {
+		c := NewCache[string, int](time.Minute)
+		c.Put("a", 1)
+		c.Put("b", 2)
+		batches, mu, _ := newWatched()
+		c.SetOnEvictMany(func(keys []string) {
+			mu.Lock()
+			defer mu.Unlock()
+			*batches = append(*batches, append(batch(nil), keys...))
+		})
+		c.Clear()
+		mu.Lock()
+		defer mu.Unlock()
+		if len(*batches) != 1 || len((*batches)[0]) != 2 {
+			t.Fatalf("Clear batch = %v, want one batch of 2", *batches)
+		}
+	})
+
+	t.Run("Flush", func(t *testing.T) {
+		c := NewCache[string, int](time.Minute)
+		c.PutWithTTL("alive", 1, time.Hour)
+		c.PutWithExpiration("dead-1", 2, time.Now().Add(-time.Second))
+		c.PutWithExpiration("dead-2", 3, time.Now().Add(-time.Second))
+		batches, mu, _ := newWatched()
+		c.SetOnEvictMany(func(keys []string) {
+			mu.Lock()
+			defer mu.Unlock()
+			*batches = append(*batches, append(batch(nil), keys...))
+		})
+		if removed := c.Flush(); removed != 2 {
+			t.Fatalf("Flush() = %d, want 2", removed)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if len(*batches) != 1 {
+			t.Fatalf("want exactly one batch, got %v", *batches)
+		}
+		got := append(batch(nil), (*batches)[0]...)
+		sort.Strings(got)
+		if !reflect.DeepEqual([]string(got), []string{"dead-1", "dead-2"}) {
+			t.Fatalf("Flush batch = %v, want [dead-1 dead-2]", got)
+		}
+	})
+
+	t.Run("Clearing", func(t *testing.T) {
+		c := NewCache[string, int](time.Minute)
+		c.Put("a", 1)
+		var calls atomic.Int32
+		c.SetOnEvictMany(func([]string) { calls.Add(1) })
+		c.SetOnEvictMany(nil)
+		c.Delete("a")
+		if calls.Load() != 0 {
+			t.Fatalf("calls = %d, want 0 after SetOnEvictMany(nil)", calls.Load())
+		}
+	})
+}

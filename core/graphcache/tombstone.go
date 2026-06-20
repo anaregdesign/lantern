@@ -112,11 +112,12 @@ func (c *GraphCache[S, T]) DeleteVerticesHLC(keys []S, ts hlc.Timestamp, expirat
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	n := 0
+	// DeleteMany batches the vertex-index maintenance into one pass (#738);
+	// it returns only the keys that were present, which is exactly the count
+	// we report. Tombstones still go on EVERY key (including absent ones) so
+	// a Delete-before-Add race is resolved by LWW once the Add arrives.
+	n := len(c.vertices.DeleteMany(keys))
 	for _, k := range keys {
-		if c.vertices.Delete(k) {
-			n++
-		}
 		c.setVertexTombstoneLocked(k, ts, expiration)
 	}
 	return n
@@ -177,11 +178,11 @@ func (c *GraphCache[S, T]) DeleteByPrefixHLC(ctx context.Context, prefix string,
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	n := 0
+	// victims are all live (resolveProjected confirms via the vertex cache),
+	// so DeleteMany removes them all; batch it into one index-maintenance pass
+	// (#738) and tombstone each victim.
+	n := len(c.vertices.DeleteMany(victims))
 	for _, k := range victims {
-		if c.vertices.Delete(k) {
-			n++
-		}
 		c.setVertexTombstoneLocked(k, ts, expiration)
 	}
 	return n, nil

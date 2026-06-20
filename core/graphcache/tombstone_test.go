@@ -139,3 +139,50 @@ func TestDeleteByPrefixHLC_TombstonesPerVertex(t *testing.T) {
 		t.Fatalf("older put against tombstone: want applied=false")
 	}
 }
+
+// TestDeleteVerticesHLC_BatchTombstonesAllDeletesPresent verifies the batched
+// HLC delete (#738) still counts only keys that were present while stamping a
+// tombstone on EVERY supplied key — including absent ones — so a late
+// Delete-before-Add race is resolved by LWW once the Add arrives.
+func TestDeleteVerticesHLC_BatchTombstonesAllDeletesPresent(t *testing.T) {
+	c := NewGraphCache[string, string](time.Minute)
+	c.EnablePrefixIndex(identityExtract)
+	c.EnableSearchIndex(textExtract)
+	exp := time.Now().Add(time.Hour)
+	t0 := hlc.Timestamp{WallNs: 1000}
+	t1 := hlc.Timestamp{WallNs: 2000}
+
+	for _, k := range []string{"present:1", "present:2"} {
+		if !c.PutVertexWithExpirationHLC(k, "searchable payload", exp, t0) {
+			t.Fatalf("seed %q failed", k)
+		}
+	}
+
+	// "absent:1" was never stored; it must still receive a tombstone.
+	n := c.DeleteVerticesHLC([]string{"present:1", "present:2", "absent:1"}, t1, exp)
+	if n != 2 {
+		t.Fatalf("DeleteVerticesHLC count = %d, want 2 (only present keys)", n)
+	}
+
+	// Present keys gone from point reads and both side indexes.
+	for _, k := range []string{"present:1", "present:2"} {
+		if _, ok := c.GetVertex(k); ok {
+			t.Fatalf("%q still present after batch HLC delete", k)
+		}
+	}
+	if got := c.CountByPrefix("present:"); got != 0 {
+		t.Fatalf("CountByPrefix(present:) = %d, want 0", got)
+	}
+	if got := c.SearchVertices("searchable", 10, ""); got != nil {
+		t.Fatalf("SearchVertices after batch HLC delete = %v, want nil", keys(got))
+	}
+
+	// Tombstone fences an older Put on the absent key too.
+	if c.PutVertexWithExpirationHLC("absent:1", "late", exp, t0) {
+		t.Fatalf("older put against absent-key tombstone: want applied=false")
+	}
+	// A newer Put is still accepted (tombstone is LWW, not permanent).
+	if !c.PutVertexWithExpirationHLC("present:1", "revived", exp, hlc.Timestamp{WallNs: 3000}) {
+		t.Fatalf("newer put after tombstone: want applied=true")
+	}
+}

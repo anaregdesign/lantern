@@ -117,11 +117,11 @@ func (c *GraphCache[S, T]) CountByPrefix(prefix string) int {
 // delete the entire matching set. When the index has not been enabled,
 // DeleteByPrefix returns 0 without touching the cache.
 //
-// Deletion goes through DeleteVertex semantics for each matched key so
-// the standard OnEvict / refcount / radix-removal chain runs uniformly.
-// Edges incident to a deleted vertex are NOT removed eagerly here \u2014
-// they will be reclaimed by the next dangling-edge flush, matching the
-// existing DeleteVertex contract.
+// Deletion routes the whole matched set through a single vertices.DeleteMany,
+// so the OnEvict / refcount / radix-removal chain runs once for the batch
+// rather than once per key (#738). Edges incident to a deleted vertex are NOT
+// removed eagerly here — they will be reclaimed by the next dangling-edge
+// flush, matching the existing DeleteVertex contract.
 func (c *GraphCache[S, T]) DeleteByPrefix(ctx context.Context, prefix string, limit int) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -130,8 +130,8 @@ func (c *GraphCache[S, T]) DeleteByPrefix(ctx context.Context, prefix string, li
 	}
 	// Collect first, then delete. We cannot mutate the radix from inside
 	// its own walk (the walk holds radix.mu.RLock; delete needs the
-	// write lock), and even if we could, the vertex-cache OnEvict
-	// callback already calls radix.delete \u2014 which would deadlock.
+	// write lock), and even if we could, the vertex-cache eviction
+	// callback already calls radix.deleteMany — which would deadlock.
 	var victims []S
 	c.prefixIndex.walkPrefix(prefix, func(projected string) bool {
 		if err := ctx.Err(); err != nil {
@@ -147,12 +147,7 @@ func (c *GraphCache[S, T]) DeleteByPrefix(ctx context.Context, prefix string, li
 		victims = append(victims, key)
 		return true
 	})
-	deleted := 0
-	for _, k := range victims {
-		if c.vertices.Delete(k) {
-			deleted++
-		}
-	}
+	deleted := len(c.vertices.DeleteMany(victims))
 	return deleted
 }
 

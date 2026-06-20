@@ -23,8 +23,8 @@ type GraphCache[S comparable, T any] struct {
 	// dict is the shared vertex-id allocator. Both the vertex cache and the
 	// edge cache reference each key through this dictionary so the heavy
 	// edge maps can be keyed by uint32 instead of S. The vertex cache holds
-	// one reference per live entry (released via SetOnEvict); the edge cache
-	// holds one reference per endpoint per edge.
+	// one reference per live entry (released via the SetOnEvictMany batch
+	// eviction hook); the edge cache holds one reference per endpoint per edge.
 	dict *dictionary[S]
 
 	// GC observability hooks. Both are optional; the cache stays metrics-free
@@ -133,7 +133,7 @@ func NewGraphCache[S comparable, T any](defaultTTL time.Duration) *GraphCache[S,
 		edges:      newEdgeCache[S](defaultTTL, dict),
 		dict:       dict,
 	}
-	vertices.SetOnEvict(c.onVertexEvicted)
+	vertices.SetOnEvictMany(c.onVerticesEvicted)
 	return c
 }
 

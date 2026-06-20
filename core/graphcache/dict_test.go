@@ -70,6 +70,45 @@ func TestDictionary_RefcountAndRelease(t *testing.T) {
 	}
 }
 
+// TestDictionary_ReleaseKeys verifies the batch release drops exactly one
+// reference per supplied key under a single lock, frees ids whose refcount
+// reaches zero, and silently skips keys that are not interned (#738).
+func TestDictionary_ReleaseKeys(t *testing.T) {
+	d := newDictionary[string]()
+	a := d.intern("a") // refcount = 1
+	b := d.intern("b") // refcount = 1
+	c := d.intern("c")
+	d.acquire(c) // "c" refcount = 2
+
+	// Drop one ref each from a, b, c and ignore an absent key.
+	d.releaseKeys([]string{"a", "b", "c", "missing"})
+
+	// a and b hit zero -> freed; c had 2 refs -> still resolvable.
+	if _, ok := d.lookup("a"); ok {
+		t.Fatalf("a still resolvable after releaseKeys to zero")
+	}
+	if _, ok := d.lookup("b"); ok {
+		t.Fatalf("b still resolvable after releaseKeys to zero")
+	}
+	if _, ok := d.lookup("c"); !ok {
+		t.Fatalf("c dropped while refcount > 0")
+	}
+	if got := d.len(); got != 1 {
+		t.Fatalf("len=%d after releaseKeys, want 1 (only c remains)", got)
+	}
+	// A freed id (a's or b's) must be recycled rather than growing the space.
+	reused := d.intern("z")
+	if reused != a && reused != b {
+		t.Fatalf("freed id not recycled by releaseKeys: a=%d b=%d reused=%d", a, b, reused)
+	}
+
+	// Empty / nil input is a no-op.
+	d.releaseKeys(nil)
+	if got := d.len(); got != 2 {
+		t.Fatalf("len=%d after no-op releaseKeys, want 2", got)
+	}
+}
+
 func TestDictionary_FreelistReuse(t *testing.T) {
 	d := newDictionary[string]()
 	id1 := d.intern("a")

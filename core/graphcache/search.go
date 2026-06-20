@@ -41,8 +41,9 @@ func newSearchIndex[S comparable]() *search.InvertedIndex[S, search.Document] {
 //
 // Once enabled, the index is kept in perfect lockstep with the vertex
 // lifecycle: every put (including overwrites) re-indexes the value, and
-// eviction — Delete, Clear, and TTL Flush — drops the key through the shared
-// SetOnEvict hook, so entries decay together with the vertices they describe.
+// eviction — Delete, DeleteMany, Clear, and TTL Flush — drops the key through
+// the shared SetOnEvictMany hook, so entries decay together with the vertices
+// they describe.
 // The index is a third opt-in secondary structure alongside the prefix index;
 // when it is left disabled the put / evict hot paths pay only a nil check.
 func (c *GraphCache[S, T]) EnableSearchIndex(extract func(T) search.Document) {

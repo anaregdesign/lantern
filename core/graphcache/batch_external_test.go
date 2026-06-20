@@ -8,6 +8,7 @@ import (
 
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
+	"github.com/anaregdesign/lantern/core/search"
 )
 
 // TestAddEdgesWithExpiration_AtomicNeighborSnapshot verifies that a
@@ -209,6 +210,41 @@ func TestBatchAPIs_ReturnCounts(t *testing.T) {
 	})
 	if got != 1 {
 		t.Fatalf("DeleteEdges: got %d, want 1", got)
+	}
+}
+
+// TestDeleteVertices_ClearsPrefixAndSearchIndexes verifies the batched
+// DeleteVertices (#738) removes deleted keys from the prefix radix and the
+// search index in addition to the vertex cache, while leaving untouched keys
+// fully indexed. Content words share no bigrams (NGram{N:2} analyzer) so a
+// search match is unambiguous.
+func TestDeleteVertices_ClearsPrefixAndSearchIndexes(t *testing.T) {
+	c := graphcache.NewGraphCache[string, string](time.Minute)
+	c.EnablePrefixIndex(func(k string) string { return k })
+	c.EnableSearchIndex(func(v string) search.Document { return search.Text(v) })
+
+	c.PutVertex("ns:a", "alpha")
+	c.PutVertex("ns:b", "bravo")
+	c.PutVertex("keep:1", "zulu")
+
+	if n := c.DeleteVertices([]string{"ns:a", "ns:b", "missing"}); n != 2 {
+		t.Fatalf("DeleteVertices = %d, want 2", n)
+	}
+
+	if got := c.CountByPrefix("ns:"); got != 0 {
+		t.Fatalf("CountByPrefix(ns:) after DeleteVertices = %d, want 0", got)
+	}
+	if got := c.CountByPrefix("keep:"); got != 1 {
+		t.Fatalf("CountByPrefix(keep:) = %d, want 1", got)
+	}
+	for _, term := range []string{"alpha", "bravo"} {
+		if got := c.SearchVertices(term, 10, ""); got != nil {
+			t.Fatalf("SearchVertices(%q) after DeleteVertices = non-nil, want nil", term)
+		}
+	}
+	results := c.SearchVertices("zulu", 10, "")
+	if len(results) != 1 || results[0].ID != "keep:1" {
+		t.Fatalf(`SearchVertices("zulu") = %v, want [keep:1]`, results)
 	}
 }
 
