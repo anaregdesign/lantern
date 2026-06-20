@@ -168,15 +168,39 @@ func (c *GraphCache[S, T]) EnablePrefixIndex(extract func(S) string) {
 	c.headByTail = make(map[vertexID]*headIndex)
 }
 
-// putVertexLocked inserts (or refreshes) a vertex entry, interning the key
-// in the dictionary exactly once per net live entry. Caller must hold c.mu.
+// putVertexLocked inserts (or refreshes) a vertex entry with its search
+// document analyzed inline (under c.mu). It backs the replicated apply path
+// (PutVertexWithExpirationHLC) and the inline-analysis fallback for single
+// local writes; batch writers precompute the search document outside c.mu and
+// call upsertVertexLocked with it directly. Caller must hold c.mu.
 func (c *GraphCache[S, T]) putVertexLocked(key S, value T, expiration time.Time) {
-	firstInsert := !c.vertices.Has(key)
-	if c.dict != nil && firstInsert {
-		c.dict.intern(key)
+	c.upsertVertexLocked(key, value, expiration, nil)
+}
+
+// upsertVertexLocked stores/refreshes the vertex and updates its secondary
+// indexes in a single inner-cache lock cycle. physicallyExisted (true when a
+// slot for key was present even if already expired) drives the once-per-slot
+// side effects — dictionary interning and prefix insertion — so an
+// expired-but-not-yet-flushed overwrite neither re-interns the key (which would
+// inflate its dictionary refcount past the single live slot) nor re-inserts it
+// into the prefix index. When prepared is non-nil its pre-analyzed tokens are
+// applied to the search index — analysis having run outside c.mu — otherwise
+// the document is analyzed inline. Caller must hold c.mu (#739).
+func (c *GraphCache[S, T]) upsertVertexLocked(key S, value T, expiration time.Time, prepared *search.PreparedDocument) {
+	physicallyExisted := c.vertices.UpsertWithExpiration(key, value, expiration)
+	if !physicallyExisted {
+		if c.dict != nil {
+			c.dict.intern(key)
+		}
+		c.insertVertexPrefixLocked(key)
 	}
-	c.vertices.PutWithExpiration(key, value, expiration)
-	c.onExplicitVertexStoredLocked(key, value, firstInsert)
+	if c.searchIndex != nil {
+		if prepared != nil {
+			c.searchIndex.IndexPrepared(key, *prepared)
+		} else {
+			c.searchIndex.Index(key, c.searchExtract(value))
+		}
+	}
 }
 
 // putLocalVertexLocked is the client-write entry that backs
@@ -194,7 +218,17 @@ func (c *GraphCache[S, T]) putVertexLocked(key S, value T, expiration time.Time)
 // a per-key watermark after the store, so it keeps calling putVertexLocked
 // directly. Caller must hold c.mu.
 func (c *GraphCache[S, T]) putLocalVertexLocked(key S, value T, expiration time.Time) {
-	if !cache.IsLiveAt(expiration, time.Now()) {
+	c.putLocalVertexLockedAt(key, value, expiration, time.Now(), nil)
+}
+
+// putLocalVertexLockedAt is putLocalVertexLocked with the liveness clock and an
+// optional precomputed search document supplied by the caller. A batch writer
+// samples time.Now() once for the whole batch and analyzes every search
+// document outside c.mu (see prepareSearchDocs), then calls this per item so the
+// only work under c.mu is the cheap store + postings mutation. A nil prepared
+// falls back to inline analysis. Caller must hold c.mu (#739).
+func (c *GraphCache[S, T]) putLocalVertexLockedAt(key S, value T, expiration, now time.Time, prepared *search.PreparedDocument) {
+	if !cache.IsLiveAt(expiration, now) {
 		// Dead on arrival. Delete is a cheap map-miss when the key is absent
 		// (the common churn case) and fires the eviction hook — releasing the
 		// dictionary reference and dropping prefix/search postings — when it is
@@ -202,7 +236,7 @@ func (c *GraphCache[S, T]) putLocalVertexLocked(key S, value T, expiration time.
 		c.vertices.Delete(key)
 		return
 	}
-	c.putVertexLocked(key, value, expiration)
+	c.upsertVertexLocked(key, value, expiration, prepared)
 }
 
 // ensureVertexLocked auto-creates an endpoint vertex (used by edge writes)

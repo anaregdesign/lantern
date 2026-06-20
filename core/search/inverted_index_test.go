@@ -238,3 +238,69 @@ func TestInvertedIndexConcurrent(t *testing.T) {
 		t.Fatalf(`Search("beta") returned %d docs, want %d`, got, want)
 	}
 }
+
+// TestInvertedIndexPrepared covers the Prepare / IndexPrepared split that lets
+// callers analyze a document outside the index write lock (#739). The
+// analyze-then-index result must be byte-for-byte equivalent to Index, an empty
+// prepared document must remove the id like Index of an unanalyzable document,
+// and IndexManyPrepared must apply a batch under one lock with last-write
+// semantics.
+func TestInvertedIndexPrepared(t *testing.T) {
+	t.Run("IndexPrepared matches Index", func(t *testing.T) {
+		viaIndex := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil)
+		viaIndex.Index("doc1", Text("Alpha Beta"))
+		viaIndex.Index("doc2", Text("beta gamma"))
+
+		viaPrepared := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil)
+		viaPrepared.IndexPrepared("doc1", viaPrepared.Prepare(Text("Alpha Beta")))
+		viaPrepared.IndexPrepared("doc2", viaPrepared.Prepare(Text("beta gamma")))
+
+		for _, q := range []string{"alpha", "beta", "gamma", "alpha gamma"} {
+			a := idsOf(viaIndex.Search(q))
+			b := idsOf(viaPrepared.Search(q))
+			sort.Strings(a)
+			sort.Strings(b)
+			if !equalStrings(a, b) {
+				t.Fatalf("Search(%q): Index=%v IndexPrepared=%v", q, a, b)
+			}
+		}
+	})
+
+	t.Run("empty prepared removes id", func(t *testing.T) {
+		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil)
+		idx.IndexPrepared("doc1", idx.Prepare(Text("alpha beta")))
+		// Re-index doc1 with a document that analyzes to no terms: its postings
+		// must be dropped, matching Index's replace-with-empty behavior.
+		idx.IndexPrepared("doc1", idx.Prepare(Text("   ")))
+		if got := idsOf(idx.Search("alpha")); len(got) != 0 {
+			t.Fatalf(`Search("alpha") after empty re-index = %v, want none`, got)
+		}
+	})
+
+	t.Run("IndexManyPrepared applies batch last-write", func(t *testing.T) {
+		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil)
+		// doc1 appears twice; the later item must win (replace semantics in
+		// slice order). doc2's first document is later replaced by an empty one,
+		// so it must be absent at the end.
+		items := []PreparedItem[string]{
+			{ID: "doc1", Prepared: idx.Prepare(Text("alpha"))},
+			{ID: "doc2", Prepared: idx.Prepare(Text("beta"))},
+			{ID: "doc1", Prepared: idx.Prepare(Text("gamma"))},
+			{ID: "doc2", Prepared: idx.Prepare(Text("   "))},
+		}
+		idx.IndexManyPrepared(items)
+
+		if got := idsOf(idx.Search("alpha")); len(got) != 0 {
+			t.Fatalf(`Search("alpha") = %v, want none (replaced by gamma)`, got)
+		}
+		if got := idsOf(idx.Search("gamma")); !equalStrings(got, []string{"doc1"}) {
+			t.Fatalf(`Search("gamma") = %v, want [doc1]`, got)
+		}
+		if got := idsOf(idx.Search("beta")); len(got) != 0 {
+			t.Fatalf(`Search("beta") = %v, want none (doc2 emptied)`, got)
+		}
+
+		// Empty batch is a no-op and must not panic.
+		idx.IndexManyPrepared(nil)
+	})
+}

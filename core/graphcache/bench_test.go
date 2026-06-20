@@ -584,3 +584,64 @@ func BenchmarkDeleteByPrefix_Indexed(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkPutVerticesIndexed measures the batch vertex-write path with the
+// search index disabled vs enabled, and under concurrency. Since #739 the
+// per-document analysis (tokenization) runs BEFORE the aggregate write lock is
+// taken, so the Indexed arms hold the lock only for the cheap store + postings
+// mutation. The Parallel arm is the headline: multiple writers batch into the
+// same cache, where shrinking the locked critical section lifts throughput.
+// Run with -benchmem.
+func BenchmarkPutVerticesIndexed(b *testing.B) {
+	const batch = 256
+	exp := time.Now().Add(time.Hour)
+
+	makeBatch := func(prefix string) []VertexItem[string, string] {
+		items := make([]VertexItem[string, string], batch)
+		for i := range items {
+			items[i] = VertexItem[string, string]{
+				Key:        makeKey(prefix, i, 32),
+				Value:      benchSearchCorpus[i%len(benchSearchCorpus)],
+				Expiration: exp,
+			}
+		}
+		return items
+	}
+
+	b.Run("SearchDisabled", func(b *testing.B) {
+		c := NewGraphCache[string, string](time.Hour)
+		items := makeBatch("k")
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			c.PutVerticesWithExpiration(items)
+		}
+	})
+
+	b.Run("SearchEnabled", func(b *testing.B) {
+		c := NewGraphCache[string, string](time.Hour)
+		c.EnableSearchIndex(func(v string) search.Document { return search.Text(v) })
+		items := makeBatch("k")
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			c.PutVerticesWithExpiration(items)
+		}
+	})
+
+	b.Run("SearchEnabledParallel", func(b *testing.B) {
+		c := NewGraphCache[string, string](time.Hour)
+		c.EnableSearchIndex(func(v string) search.Document { return search.Text(v) })
+		var worker atomic.Int64
+		b.ReportAllocs()
+		b.ResetTimer()
+		b.RunParallel(func(pb *testing.PB) {
+			// Each goroutine writes into its own key namespace so the run
+			// exercises concurrent inserts rather than pure last-write churn.
+			items := makeBatch(fmt.Sprintf("w%d-", worker.Add(1)))
+			for pb.Next() {
+				c.PutVerticesWithExpiration(items)
+			}
+		})
+	})
+}

@@ -3,7 +3,9 @@ package graphcache
 import (
 	"time"
 
+	"github.com/anaregdesign/lantern/core/cache"
 	"github.com/anaregdesign/lantern/core/hlc"
+	"github.com/anaregdesign/lantern/core/search"
 )
 
 // VertexItem is a single (key, value, expiration) tuple supplied to
@@ -40,15 +42,55 @@ type EdgeKey[S comparable] struct {
 // write lock. Concurrent readers observe either the pre-batch or the
 // post-batch state — never an intermediate snapshot where some keys are
 // present and others are not.
+//
+// Search-document analysis (tokenization) for the whole batch runs BEFORE the
+// lock is taken (see prepareSearchDocs) so the expensive per-vertex work never
+// serializes other writers behind the aggregate graph lock; only the cheap
+// store + postings mutation happens under c.mu (#739).
 func (c *GraphCache[S, T]) PutVerticesWithExpiration(items []VertexItem[S, T]) {
 	if len(items) == 0 {
 		return
 	}
+	now := time.Now()
+	prepared := c.prepareSearchDocs(items, now)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, it := range items {
-		c.putLocalVertexLocked(it.Key, it.Value, it.Expiration)
+	for i := range items {
+		c.putLocalVertexLockedAt(items[i].Key, items[i].Value, items[i].Expiration, now, preparedAt(prepared, i))
 	}
+}
+
+// prepareSearchDocs analyzes the search document of every live item OUTSIDE
+// c.mu so the per-vertex tokenization never runs under the aggregate graph lock
+// (#739). It returns nil when no search index is installed — the overwhelmingly
+// common case pays a single nil check and no allocation — and otherwise a slice
+// aligned 1:1 with items. Born-expired items (which putLocalVertexLockedAt
+// deletes rather than stores) are left as the zero PreparedDocument and never
+// indexed, so their analysis is skipped. Safe to call without c.mu held:
+// c.searchIndex and c.searchExtract are installed once by EnableSearchIndex
+// before any vertex is stored and never mutated afterward.
+func (c *GraphCache[S, T]) prepareSearchDocs(items []VertexItem[S, T], now time.Time) []search.PreparedDocument {
+	if c.searchIndex == nil {
+		return nil
+	}
+	prepared := make([]search.PreparedDocument, len(items))
+	for i := range items {
+		if cache.IsLiveAt(items[i].Expiration, now) {
+			prepared[i] = c.searchIndex.Prepare(c.searchExtract(items[i].Value))
+		}
+	}
+	return prepared
+}
+
+// preparedAt returns a pointer to the i-th prepared document, or nil when no
+// search index produced a batch (prepared == nil) so the callee falls back to
+// inline analysis. The pointer is safe to take because prepared is a
+// fixed-size slice that is never appended to after prepareSearchDocs returns.
+func preparedAt(prepared []search.PreparedDocument, i int) *search.PreparedDocument {
+	if prepared == nil {
+		return nil
+	}
+	return &prepared[i]
 }
 
 // AddEdgesWithExpiration additively writes every supplied edge under a
@@ -162,13 +204,16 @@ func (c *GraphCache[S, T]) PutVerticesWithExpirationHLC(items []VertexItem[S, T]
 	if len(items) == 0 {
 		return
 	}
+	now := time.Now()
+	prepared := c.prepareSearchDocs(items, now)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, it := range items {
+	for i := range items {
+		it := items[i]
 		if !c.vertexWriteAllowedLocked(it.Key, ts) {
 			continue
 		}
-		c.putLocalVertexLocked(it.Key, it.Value, it.Expiration)
+		c.putLocalVertexLockedAt(it.Key, it.Value, it.Expiration, now, preparedAt(prepared, i))
 		c.recordVertexHLCLocked(it.Key, ts)
 		c.clearVertexTombstoneLocked(it.Key)
 	}

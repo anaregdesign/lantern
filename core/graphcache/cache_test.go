@@ -1419,3 +1419,56 @@ func TestSearchIndexStats(t *testing.T) {
 // ContribID.IsZero distinguishes the zero value (no identity) from a
 // populated one with a low byte — guards against accidental "all bytes
 // must be set" implementations.
+
+// TestGraphCache_DictRefcountStableAcrossExpiredOverwrite guards the #739 fix:
+// overwriting a vertex whose slot has expired but not yet been flushed must NOT
+// re-intern the key. The old !Has() probe reported the lingering expired slot as
+// absent, so the overwrite re-interned the key and inflated its dictionary
+// refcount past the single live slot it represents — a slow leak under a churn
+// of short-TTL keys rewritten before the GC sweep runs. The physical-presence
+// upsert keeps refcount pinned at one for both the single and batch put paths.
+func TestGraphCache_DictRefcountStableAcrossExpiredOverwrite(t *testing.T) {
+	setupExpiredSlot := func(t *testing.T, c *GraphCache[string, string]) vertexID {
+		// putVertexLocked stores unconditionally (no born-expired gate), so a
+		// past expiration yields exactly the lingering "expired, interned once,
+		// not yet flushed" state a live put reaches once its TTL elapses.
+		c.mu.Lock()
+		c.putVertexLocked("k", "v1", time.Now().Add(-time.Minute))
+		c.mu.Unlock()
+		id, ok := c.dict.lookup("k")
+		if !ok {
+			t.Fatal("setup: key not interned")
+		}
+		if got := c.dict.refcount[id]; got != 1 {
+			t.Fatalf("setup: refcount=%d, want 1", got)
+		}
+		return id
+	}
+	assertStable := func(t *testing.T, c *GraphCache[string, string], id vertexID) {
+		if got := c.dict.refcount[id]; got != 1 {
+			t.Fatalf("refcount after expired overwrite = %d, want 1", got)
+		}
+		if got := c.dict.len(); got != 1 {
+			t.Fatalf("dict.len after expired overwrite = %d, want 1", got)
+		}
+		if got, ok := c.GetVertex("k"); !ok || got != "v2" {
+			t.Fatalf("GetVertex after overwrite: got=%q ok=%v want v2 true", got, ok)
+		}
+	}
+
+	t.Run("single put", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Minute)
+		id := setupExpiredSlot(t, c)
+		c.PutVertexWithExpiration("k", "v2", time.Now().Add(time.Minute))
+		assertStable(t, c, id)
+	})
+
+	t.Run("batch put", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Minute)
+		id := setupExpiredSlot(t, c)
+		c.PutVerticesWithExpiration([]VertexItem[string, string]{
+			{Key: "k", Value: "v2", Expiration: time.Now().Add(time.Minute)},
+		})
+		assertStable(t, c, id)
+	})
+}

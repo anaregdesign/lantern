@@ -630,3 +630,41 @@ func TestCache_OnEvictMany_Batch(t *testing.T) {
 		}
 	})
 }
+
+// TestCache_UpsertWithExpiration covers the single-lock physical-presence probe
+// added for #739: it reports whether a slot for the key existed beforehand even
+// when that slot had already expired, which Has/Get (live checks) hide.
+func TestCache_UpsertWithExpiration(t *testing.T) {
+	t.Run("reports physical presence and overwrites", func(t *testing.T) {
+		c := NewCache[string, int](time.Minute)
+		if existed := c.UpsertWithExpiration("k", 1, time.Now().Add(time.Minute)); existed {
+			t.Fatal("first upsert: physicallyExisted=true, want false")
+		}
+		if existed := c.UpsertWithExpiration("k", 2, time.Now().Add(time.Minute)); !existed {
+			t.Fatal("second upsert: physicallyExisted=false, want true")
+		}
+		if got, ok := c.Get("k"); !ok || got != 2 {
+			t.Fatalf("Get after overwrite: got=%v ok=%v want=2 true", got, ok)
+		}
+	})
+
+	t.Run("expired-but-not-flushed slot counts as present", func(t *testing.T) {
+		c := NewCache[string, int](time.Minute)
+		// Store an already-expired entry and never flush it, so the physical
+		// slot lingers while the live checks report it absent.
+		c.UpsertWithExpiration("k", 1, time.Now().Add(-time.Minute))
+		if _, ok := c.Get("k"); ok {
+			t.Fatal("Get on expired slot: ok=true, want false")
+		}
+		if c.Has("k") {
+			t.Fatal("Has on expired slot: true, want false")
+		}
+		// Upsert, by contrast, must see the lingering physical slot.
+		if existed := c.UpsertWithExpiration("k", 2, time.Now().Add(time.Minute)); !existed {
+			t.Fatal("upsert over expired-not-flushed slot: physicallyExisted=false, want true")
+		}
+		if got, ok := c.Get("k"); !ok || got != 2 {
+			t.Fatalf("Get after reviving overwrite: got=%v ok=%v want=2 true", got, ok)
+		}
+	})
+}

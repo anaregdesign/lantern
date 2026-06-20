@@ -19,19 +19,6 @@ func (c *GraphCache[S, T]) onVerticesEvicted(keys []S) {
 	c.deleteVerticesIndexes(keys)
 }
 
-// onExplicitVertexStoredLocked updates vertex secondary indexes after a caller
-// has stored an explicit user value. Prefix membership changes only on first
-// insert, while search postings refresh on every put because overwrites can
-// change the indexed document. Caller must hold c.mu.
-func (c *GraphCache[S, T]) onExplicitVertexStoredLocked(key S, value T, firstInsert bool) {
-	if firstInsert {
-		c.insertVertexPrefixLocked(key)
-	}
-	if c.searchIndex != nil {
-		c.searchIndex.Index(key, c.searchExtract(value))
-	}
-}
-
 // onEndpointVertexCreatedLocked updates the vertex-side indexes for an
 // auto-created edge endpoint. Endpoint creation records key existence for
 // prefix scans but deliberately does not index search content: the zero T value

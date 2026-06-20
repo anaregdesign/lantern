@@ -69,14 +69,68 @@ func NewInvertedIndex[S comparable, D Document](analyzer Analyzer, scorer Scorer
 // postings, so re-indexing a mutated document leaves no stale terms behind;
 // Index therefore doubles as update. A document with no analyzable terms simply
 // removes id.
+//
+// Index is the analyze-then-write convenience wrapper over Prepare +
+// IndexPrepared: analysis runs outside idx.mu and only the cheap postings
+// mutation happens under it. Callers that want to keep analysis off a hotter
+// lock of their own (e.g. a layered cache writing under its aggregate lock)
+// should call Prepare before taking that lock and IndexPrepared after.
 func (idx *InvertedIndex[S, D]) Index(id S, doc D) {
-	// Analyze outside the lock: the analyzer is immutable and stateless, and
-	// tokenization is the expensive part we do not want under the write lock.
-	tokens := idx.analyzer.Analyze(doc.String())
+	idx.IndexPrepared(id, idx.Prepare(doc))
+}
 
+// PreparedDocument carries the analyzed tokens of a document so the expensive
+// analysis (doc.String() + tokenization) can run outside the index write lock.
+// Produce one with Prepare and apply it with IndexPrepared or IndexManyPrepared.
+// The zero value is a valid empty document: applying it removes the id, matching
+// Index of a document with no analyzable terms.
+type PreparedDocument struct {
+	tokens []Token
+}
+
+// PreparedItem pairs an id with its PreparedDocument for IndexManyPrepared.
+type PreparedItem[S comparable] struct {
+	ID       S
+	Prepared PreparedDocument
+}
+
+// Prepare analyzes doc.String() WITHOUT taking the index lock and returns the
+// tokens IndexPrepared needs. The analyzer is immutable and stateless, so
+// Prepare is safe to call concurrently and from outside any of the caller's
+// locks.
+func (idx *InvertedIndex[S, D]) Prepare(doc D) PreparedDocument {
+	return PreparedDocument{tokens: idx.analyzer.Analyze(doc.String())}
+}
+
+// IndexPrepared records id's postings from a PreparedDocument produced by
+// Prepare, taking idx.mu only for the postings mutation. Replace semantics match
+// Index: any previous postings for id are dropped first, and an empty prepared
+// document simply removes id.
+func (idx *InvertedIndex[S, D]) IndexPrepared(id S, prepared PreparedDocument) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
+	idx.indexPreparedLocked(id, prepared.tokens)
+}
 
+// IndexManyPrepared applies a batch of prepared documents under a SINGLE index
+// write lock. Items are applied in slice order, so a repeated id keeps
+// last-write semantics. It is the batch sibling of IndexPrepared for callers
+// (e.g. batch vertex writes) that have no other per-id work to interleave
+// between the postings updates (#739).
+func (idx *InvertedIndex[S, D]) IndexManyPrepared(items []PreparedItem[S]) {
+	if len(items) == 0 {
+		return
+	}
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	for _, it := range items {
+		idx.indexPreparedLocked(it.ID, it.Prepared.tokens)
+	}
+}
+
+// indexPreparedLocked is the shared postings-mutation core of IndexPrepared and
+// IndexManyPrepared; callers must hold idx.mu for writing.
+func (idx *InvertedIndex[S, D]) indexPreparedLocked(id S, tokens []Token) {
 	// Replace semantics: drop any postings from a previous Index(id, ...)
 	// before recording the new ones.
 	idx.deleteLocked(id)

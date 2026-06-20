@@ -152,6 +152,26 @@ func (c *Cache[S, T]) PutWithExpiration(key S, value T, expiration time.Time) {
 	}
 }
 
+// UpsertWithExpiration stores value for key like PutWithExpiration and reports
+// whether an entry for key was PHYSICALLY present beforehand, regardless of
+// whether that entry had already expired. It exists so layered callers can
+// detect a true first insert in a single lock cycle (vs. a Has()+Put pair, two
+// cycles) AND so an expired-but-not-yet-flushed slot is correctly treated as
+// "already present" — Has() reports such a slot as absent, which would make a
+// caller re-run first-insert side effects (e.g. interning the key again) on a
+// slot that was never released, inflating bookkeeping (#739).
+func (c *Cache[S, T]) UpsertWithExpiration(key S, value T, expiration time.Time) (physicallyExisted bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	_, physicallyExisted = c.cache[key]
+	c.cache[key] = volatile[T]{
+		value:      value,
+		expiration: expiration,
+	}
+	return physicallyExisted
+}
+
 func (c *Cache[S, T]) PutWithTTL(key S, value T, ttl time.Duration) {
 	c.PutWithExpiration(key, value, time.Now().Add(ttl))
 }
