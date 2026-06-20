@@ -9,6 +9,11 @@ import (
 	v1 "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
+// jsonStringValueNormalizer extracts only the string values from a JSON
+// object/array value, dropping field names and non-string scalars, and passes
+// non-JSON text through unchanged (#758). It is stateless and safe to share.
+var jsonStringValueNormalizer search.JSONStringValueNormalizer
+
 // vertexSearchDocument projects a vertex into the text that the full-text
 // index analyses (#624). It folds the key together with the value so a query
 // matches either the namespace path or the stored content — this mirrors the
@@ -20,6 +25,12 @@ import (
 // pass through, scalars are formatted decimally, timestamps use RFC3339 and
 // durations their Go form. The nil/unset variant contributes nothing, so an
 // existence-only vertex is still discoverable by its key alone.
+//
+// String values that hold a JSON object or array are projected to just their
+// string values (#758): JSONStringValueNormalizer drops the field names and
+// non-string scalars so a serialized document is searchable by its content,
+// not by its structure. A JSON document carrying no string content therefore
+// folds in nothing and the vertex is indexed by its key alone.
 func vertexSearchDocument(v *v1.Vertex) search.Document {
 	if v == nil {
 		return search.Text("")
@@ -39,7 +50,11 @@ func vertexSearchDocument(v *v1.Vertex) search.Document {
 func vertexValueText(v *v1.Vertex) (string, bool) {
 	switch val := v.GetValue().(type) {
 	case *v1.Vertex_String_:
-		return val.String_, true
+		// A string value is often a serialized JSON document; index only its
+		// string values, never the JSON field names or non-string scalars
+		// (#758). Non-JSON text passes through unchanged. An all-structure or
+		// empty result folds in nothing (the caller drops empty value text).
+		return jsonStringValueNormalizer.Normalize(val.String_), true
 	case *v1.Vertex_Bytes:
 		return string(val.Bytes), true
 	case *v1.Vertex_Float64:

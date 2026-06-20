@@ -1,6 +1,8 @@
 package search
 
 import (
+	"encoding/json"
+	"sort"
 	"strings"
 	"unicode"
 
@@ -99,6 +101,80 @@ type WidthNormalizer struct{}
 // Normalize folds full-width and half-width variants to their normal width.
 func (WidthNormalizer) Normalize(text string) string {
 	return width.Fold.String(text)
+}
+
+// JSONStringValueNormalizer rewrites text that is a JSON object or array into
+// just the text of its string values, dropping every object field name (key)
+// and every non-string scalar (number, boolean, null). Its purpose is to keep
+// a full-text index free of JSON structure: when a vertex stores a serialized
+// document such as {"role":"admin","score":9,"active":true}, only the human
+// content ("admin") becomes searchable — not the field names ("role", "score",
+// "active") and not the numeric or boolean scalars. String values are emitted
+// in object-key sorted order (arrays keep their order) so the output is
+// deterministic and re-indexing is idempotent.
+//
+// Text that is not a JSON object or array passes through unchanged: a fast path
+// returns the input verbatim when the first non-space byte is neither '{' nor
+// '[', and any string that starts that way but fails to parse as JSON is also
+// returned verbatim (so a value that merely looks like JSON is still indexed as
+// raw text). A JSON object/array carrying no string values normalizes to the
+// empty string.
+//
+// Unlike the other normalizers in this package, this one is meant to run on a
+// value in isolation — the document projection of a single stored value — not
+// on a composed document such as "key value", because a key concatenated with
+// a JSON blob is not itself valid JSON and the fast path would return it
+// unchanged. Place it at the projection step, not in a shared analyzer chain.
+type JSONStringValueNormalizer struct{}
+
+// Normalize returns the space-joined string values of a JSON object or array,
+// or the input unchanged when it is not such a document.
+func (JSONStringValueNormalizer) Normalize(text string) string {
+	trimmed := strings.TrimSpace(text)
+	// Only a JSON object or array is treated as structured JSON. Plain prose
+	// and bare scalars (including a quoted JSON string) are left untouched, so
+	// values like "true" or "42" stay searchable as their literal text.
+	if len(trimmed) == 0 || (trimmed[0] != '{' && trimmed[0] != '[') {
+		return text
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
+		return text // looked like JSON but is not: index the raw text as-is.
+	}
+	var b strings.Builder
+	appendJSONStringValues(&b, parsed)
+	return b.String()
+}
+
+// appendJSONStringValues walks a value decoded from JSON and appends every
+// string it contains to b, separated by single spaces. Object keys and
+// non-string scalars are skipped; objects are visited in sorted-key order for
+// deterministic output.
+func appendJSONStringValues(b *strings.Builder, v any) {
+	switch val := v.(type) {
+	case string:
+		if val == "" {
+			return
+		}
+		if b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(val)
+	case []any:
+		for _, e := range val {
+			appendJSONStringValues(b, e)
+		}
+	case map[string]any:
+		keys := make([]string, 0, len(val))
+		for k := range val {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			appendJSONStringValues(b, val[k])
+		}
+	}
+	// float64 (numbers), bool, and nil carry no searchable text: skipped.
 }
 
 // dropNonspacingMark returns r unless r is a Unicode nonspacing combining mark
