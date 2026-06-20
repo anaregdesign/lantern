@@ -2,8 +2,12 @@ package graphcache
 
 import (
 	"context"
+	"fmt"
 	"math"
+	"reflect"
 	"runtime"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -36,6 +40,11 @@ import (
 //	C2  ReadConsistency/NeighborStableUnderConcurrentWrites
 //	D1  Idempotence/PutVertexAndPutEdgeConverge
 //	T1  Topology/SelfLoopRoundTrips
+//	G1  LogicalConsistency/VertexVisibilityAgreesAcrossSurfaces  (#752)
+//	G2  LogicalConsistency/GCNonObservableForReads               (#752)
+//	G3  LogicalConsistency/NoResurrectionFromStaleIndexes        (#752)
+//	G4  LogicalConsistency/DerivedEdgeValueAgreesAcrossSurfaces  (#752)
+//	G5  LogicalConsistency/SnapshotSetConsistency                (#752)
 func TestProductionQualityGate(t *testing.T) {
 	t.Parallel()
 
@@ -55,6 +64,14 @@ func TestProductionQualityGate(t *testing.T) {
 	t.Run("Idempotence/PutVertexAndPutEdgeConverge", testIdempotenceConverge)
 
 	t.Run("Topology/SelfLoopRoundTrips", testTopologySelfLoop)
+
+	// Logical-vs-physical consistency (#752): public surfaces observe the live
+	// graph, never physical retention or GC timing.
+	t.Run("LogicalConsistency/VertexVisibilityAgreesAcrossSurfaces", testLogicalVertexVisibility)
+	t.Run("LogicalConsistency/GCNonObservableForReads", testLogicalGCNonObservable)
+	t.Run("LogicalConsistency/NoResurrectionFromStaleIndexes", testLogicalNoResurrection)
+	t.Run("LogicalConsistency/DerivedEdgeValueAgreesAcrossSurfaces", testLogicalDerivedEdgeValue)
+	t.Run("LogicalConsistency/SnapshotSetConsistency", testLogicalSnapshotSetConsistency)
 }
 
 // ---------------------------------------------------------------------------
@@ -466,5 +483,325 @@ func testTopologySelfLoop(t *testing.T) {
 	g := c.Neighbor("x", 1, 4, false, false, nil)
 	if _, ok := g.Edges["x"]["x"]; !ok {
 		t.Fatalf("T1: Neighbor lost the self-loop edge: %#v", g.Edges)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// G1–G5  Logical-vs-physical consistency (#752)
+//
+// These properties assert that every PUBLIC surface observes the live logical
+// graph. Physical retention (an expired-but-not-flushed vertex, a dangling edge
+// awaiting the GC sweep) and the timing of GC must be invisible to reads,
+// scans, search, traversal, and snapshots.
+// ---------------------------------------------------------------------------
+
+// searchSet runs SearchVertices and returns the matched keys as a set.
+func searchSet(c *GraphCache[string, string], query string, limit int) map[string]bool {
+	m := map[string]bool{}
+	for _, r := range c.SearchVertices(query, limit, "") {
+		m[r.ID] = true
+	}
+	return m
+}
+
+// sumContribs folds a snapshot edge's live contributions into a single weight,
+// matching the additive semantics GetWeight reports.
+func sumContribs(e SnapshotEdge[string]) float32 {
+	var s float32
+	for _, contrib := range e.Contributions {
+		s += contrib.Weight
+	}
+	return s
+}
+
+// floatNear is a tolerant float32 comparison for derived edge weights.
+func floatNear(a, b float32) bool {
+	return math.Abs(float64(a-b)) < 1e-4
+}
+
+// testLogicalVertexVisibility (G1): a vertex's visibility is identical across
+// GetVertex, ScanByPrefix, CountByPrefix, SearchVertices, SnapshotVertices, and
+// SnapshotGraph, through delete / overwrite / prefix-delete / expire-not-flush.
+func testLogicalVertexVisibility(t *testing.T) {
+	c := NewGraphCache[string, string](time.Hour)
+	c.EnablePrefixIndex(identityExtract)
+	c.EnableSearchIndex(textExtract)
+	live := time.Now().Add(time.Hour)
+
+	c.PutVertexWithExpiration("live:1", "rivers", live)
+	c.PutVertexWithExpiration("del:1", "deserts", live)
+	c.PutVertexWithExpiration("ow:1", "mountains", live)
+	c.PutVertexWithExpiration("pdel:1", "canyons", live)
+
+	c.DeleteVertex("del:1")
+	c.PutVertexWithExpiration("ow:1", "harbors", live) // overwrite, still live
+	c.DeleteByPrefix(context.Background(), "pdel:", 0)
+	c.mu.Lock()
+	c.putVertexLocked("exp:1", "glaciers", time.Now().Add(-time.Minute))
+	c.mu.Unlock()
+
+	wantLive := map[string]bool{"live:1": true, "ow:1": true}
+	wantDead := []string{"del:1", "exp:1", "pdel:1"}
+
+	for k := range wantLive {
+		if _, ok := c.GetVertex(k); !ok {
+			t.Errorf("G1 GetVertex(%q) = absent, want live", k)
+		}
+	}
+	for _, k := range wantDead {
+		if _, ok := c.GetVertex(k); ok {
+			t.Errorf("G1 GetVertex(%q) = live, want dead", k)
+		}
+	}
+
+	scanned := map[string]bool{}
+	c.ScanByPrefix(context.Background(), "", func(_, key string, _ string) bool {
+		scanned[key] = true
+		return true
+	})
+	if !reflect.DeepEqual(scanned, wantLive) {
+		t.Errorf("G1 ScanByPrefix live set = %v, want %v", scanned, wantLive)
+	}
+	if got := c.CountByPrefix(""); got != len(wantLive) {
+		t.Errorf("G1 CountByPrefix() = %d, want %d", got, len(wantLive))
+	}
+
+	snapV := map[string]bool{}
+	for _, v := range c.SnapshotVertices() {
+		snapV[v.Key] = true
+	}
+	if !reflect.DeepEqual(snapV, wantLive) {
+		t.Errorf("G1 SnapshotVertices live set = %v, want %v", snapV, wantLive)
+	}
+	graphV := map[string]bool{}
+	for _, v := range c.SnapshotGraph().Vertices {
+		graphV[v.Key] = true
+	}
+	if !reflect.DeepEqual(graphV, wantLive) {
+		t.Errorf("G1 SnapshotGraph vertices = %v, want %v", graphV, wantLive)
+	}
+
+	// Search agrees: live keys match their current term; dead and
+	// overwritten-away docs never surface.
+	if got := searchSet(c, "rivers", 50); !got["live:1"] {
+		t.Errorf("G1 Search(rivers) = %v, want to include live:1", got)
+	}
+	if got := searchSet(c, "harbors", 50); !got["ow:1"] {
+		t.Errorf("G1 Search(harbors) = %v, want to include ow:1", got)
+	}
+	if got := searchSet(c, "mountains", 50); got["ow:1"] {
+		t.Errorf("G1 Search(mountains) surfaced overwritten-away ow:1: %v", got)
+	}
+	for term, dead := range map[string]string{"deserts": "del:1", "glaciers": "exp:1", "canyons": "pdel:1"} {
+		if got := searchSet(c, term, 50); got[dead] {
+			t.Errorf("G1 Search(%q) surfaced dead key %q: %v", term, dead, got)
+		}
+	}
+}
+
+// testLogicalGCNonObservable (G2): running every GC path (vertices.Flush,
+// edges.flush, c.flush) does not change any public read result. The dangling
+// edge is physically present before the sweep and gone after; the expired
+// vertex likewise — yet reads, scans, search, and snapshots are identical.
+func testLogicalGCNonObservable(t *testing.T) {
+	c := NewGraphCache[string, string](time.Hour)
+	c.EnablePrefixIndex(identityExtract)
+	c.EnableSearchIndex(textExtract)
+	live := time.Now().Add(time.Hour)
+
+	c.PutVertexWithExpiration("k:live", "rivers", live)
+	c.PutVertexWithExpiration("k:tail", "tail", live)
+	c.PutVertexWithExpiration("k:head", "head", live)
+	c.AddEdgeWithExpiration("k:tail", "k:head", 4, live)
+	c.DeleteVertex("k:head") // makes k:tail->k:head dangling but physical
+	c.mu.Lock()
+	c.putVertexLocked("k:exp", "glaciers", time.Now().Add(-time.Minute))
+	c.mu.Unlock()
+
+	snapshot := func() string {
+		var b strings.Builder
+		var vs []string
+		c.ScanByPrefix(context.Background(), "", func(_, key string, _ string) bool {
+			vs = append(vs, key)
+			return true
+		})
+		sort.Strings(vs)
+		fmt.Fprintf(&b, "scan=%v;count=%d;", vs, c.CountByPrefix(""))
+		_, _, edgeOK := c.GetEdgeDetail("k:tail", "k:head")
+		fmt.Fprintf(&b, "edge=%v;scanedge=%v;", edgeOK, collectScan(c, "k:tail", "k:head"))
+		fmt.Fprintf(&b, "search=%v;", keys(c.SearchVertices("glaciers", 10, "")))
+		g := c.SnapshotGraph()
+		fmt.Fprintf(&b, "snapV=%d;snapE=%d", len(g.Vertices), len(g.Edges))
+		return b.String()
+	}
+
+	before := snapshot()
+	c.vertices.Flush()
+	c.edges.flush()
+	c.flush()
+	after := snapshot()
+
+	if before != after {
+		t.Errorf("G2 public reads changed across GC:\n before=%s\n after =%s", before, after)
+	}
+}
+
+// testLogicalNoResurrection (G3): a deleted / prefix-deleted / expired+flushed
+// key never reappears via a stale index posting, even when a different live key
+// later reuses the same search term or prefix.
+func testLogicalNoResurrection(t *testing.T) {
+	c := NewGraphCache[string, string](time.Hour)
+	c.EnablePrefixIndex(identityExtract)
+	c.EnableSearchIndex(textExtract)
+	live := time.Now().Add(time.Hour)
+
+	c.PutVertexWithExpiration("old:1", "phoenix", live)
+	c.DeleteVertex("old:1")
+	c.PutVertexWithExpiration("new:1", "phoenix", live)
+	if hits := searchSet(c, "phoenix", 50); hits["old:1"] || !hits["new:1"] {
+		t.Errorf("G3 deleted key resurrected via shared term: %v", hits)
+	}
+
+	c.PutVertexWithExpiration("tmp:1", "comet", live)
+	c.DeleteByPrefix(context.Background(), "tmp:", 0)
+	c.PutVertexWithExpiration("keep:1", "comet", live)
+	if got := c.CountByPrefix("tmp:"); got != 0 {
+		t.Errorf("G3 CountByPrefix(tmp:) = %d after prefix delete, want 0", got)
+	}
+	if hits := searchSet(c, "comet", 50); hits["tmp:1"] || !hits["keep:1"] {
+		t.Errorf("G3 prefix-deleted key resurrected: %v", hits)
+	}
+
+	c.PutVertexWithExpiration("gone:1", "tundra", live)
+	c.mu.Lock()
+	c.putVertexLocked("gone:1", "tundra", time.Now().Add(-time.Minute))
+	c.mu.Unlock()
+	c.vertices.Flush()
+	c.PutVertexWithExpiration("fresh:1", "tundra", live)
+	if hits := searchSet(c, "tundra", 50); hits["gone:1"] || !hits["fresh:1"] {
+		t.Errorf("G3 expired+flushed key resurrected: %v", hits)
+	}
+}
+
+// testLogicalDerivedEdgeValue (G4): for a live-endpoint edge, the effective
+// weight and existence agree across GetWeight, GetEdgeDetail, ScanEdgesByPrefix,
+// Neighbor, SnapshotEdges, and SnapshotGraph — through additive Add, replacing
+// Put, and Delete.
+func testLogicalDerivedEdgeValue(t *testing.T) {
+	c := NewGraphCache[string, string](time.Hour)
+	c.EnablePrefixIndex(identityExtract)
+	live := time.Now().Add(time.Hour)
+	c.PutVertexWithExpiration("t", "t", live)
+	c.PutVertexWithExpiration("h", "h", live)
+
+	assertAgree := func(t *testing.T, wantPresent bool, wantWeight float32) {
+		t.Helper()
+		type verdict struct {
+			name    string
+			weight  float32
+			present bool
+		}
+		var vs []verdict
+
+		w, ok := c.GetWeight("t", "h")
+		vs = append(vs, verdict{"GetWeight", w, ok})
+		wd, _, okd := c.GetEdgeDetail("t", "h")
+		vs = append(vs, verdict{"GetEdgeDetail", wd, okd})
+
+		var sw float32
+		spresent := false
+		c.ScanEdgesByPrefix(context.Background(), "t", "h", func(_ string, _ string, _ string, _ string, weight float32, _ time.Time) bool {
+			sw, spresent = weight, true
+			return true
+		})
+		vs = append(vs, verdict{"ScanEdgesByPrefix", sw, spresent})
+
+		g := c.Neighbor("t", 1, 8, false, false, nil)
+		nw, npresent := g.Edges["t"]["h"]
+		vs = append(vs, verdict{"Neighbor", nw, npresent})
+
+		var ew float32
+		epresent := false
+		for _, e := range c.SnapshotEdges() {
+			if e.Tail == "t" && e.Head == "h" {
+				ew, epresent = sumContribs(e), true
+			}
+		}
+		vs = append(vs, verdict{"SnapshotEdges", ew, epresent})
+
+		var gw float32
+		gpresent := false
+		for _, e := range c.SnapshotGraph().Edges {
+			if e.Tail == "t" && e.Head == "h" {
+				gw, gpresent = sumContribs(e), true
+			}
+		}
+		vs = append(vs, verdict{"SnapshotGraph", gw, gpresent})
+
+		for _, v := range vs {
+			if v.present != wantPresent {
+				t.Errorf("G4 %s present=%v, want %v", v.name, v.present, wantPresent)
+			}
+			if wantPresent && !floatNear(v.weight, wantWeight) {
+				t.Errorf("G4 %s weight=%v, want %v", v.name, v.weight, wantWeight)
+			}
+		}
+	}
+
+	c.AddEdgeWithExpiration("t", "h", 2, live)
+	c.AddEdgeWithExpiration("t", "h", 3, live) // additive => 5
+	assertAgree(t, true, 5)
+
+	c.PutEdgeWithExpiration("t", "h", 1.5, live) // replace => 1.5
+	assertAgree(t, true, 1.5)
+
+	c.DeleteEdge("t", "h")
+	assertAgree(t, false, 0)
+}
+
+// testLogicalSnapshotSetConsistency (G5): SnapshotVertices, SnapshotEdges, and
+// SnapshotGraph agree with each other and with GetVertex, and every snapshot
+// edge references a snapshot vertex (referential closure), after an endpoint is
+// deleted.
+func testLogicalSnapshotSetConsistency(t *testing.T) {
+	c := NewGraphCache[string, string](time.Hour)
+	live := time.Now().Add(time.Hour)
+	c.PutVerticesWithExpiration([]VertexItem[string, string]{
+		{Key: "a", Value: "A", Expiration: live},
+		{Key: "b", Value: "B", Expiration: live},
+		{Key: "c", Value: "C", Expiration: live},
+	})
+	c.PutEdgesWithExpiration([]EdgeItem[string]{
+		{Tail: "a", Head: "b", Weight: 1, Expiration: live},
+		{Tail: "b", Head: "c", Weight: 1, Expiration: live},
+	})
+	c.DeleteVertex("c") // makes b->c dangling
+
+	snapV := c.SnapshotVertices()
+	for _, v := range snapV {
+		if _, ok := c.GetVertex(v.Key); !ok {
+			t.Errorf("G5 SnapshotVertices key %q not visible via GetVertex", v.Key)
+		}
+	}
+
+	g := c.SnapshotGraph()
+	if !reflect.DeepEqual(vertexByKey(g.Vertices), vertexByKey(snapV)) {
+		t.Errorf("G5 SnapshotGraph vertices != SnapshotVertices")
+	}
+	if !reflect.DeepEqual(edgeByEndpoints(g.Edges), edgeByEndpoints(c.SnapshotEdges())) {
+		t.Errorf("G5 SnapshotGraph edges != SnapshotEdges")
+	}
+
+	liveKeys := map[string]bool{}
+	for _, v := range snapV {
+		liveKeys[v.Key] = true
+	}
+	for _, e := range g.Edges {
+		if !liveKeys[e.Tail] || !liveKeys[e.Head] {
+			t.Errorf("G5 snapshot edge %s->%s references a non-snapshot vertex", e.Tail, e.Head)
+		}
+	}
+	if _, ok := edgeByEndpoints(g.Edges)[EdgeKey[string]{Tail: "b", Head: "c"}]; ok {
+		t.Error("G5 dangling edge b->c present in snapshot")
 	}
 }

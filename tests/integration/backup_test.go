@@ -199,3 +199,51 @@ func TestBackupRestore_E2E_SDK(t *testing.T) {
 		})
 	}
 }
+
+// TestBackupSnapshot_ReferentialClosure_E2E proves the read/snapshot
+// referential-closure contract (#750) end-to-end: after a vertex is deleted via
+// the SDK, BackupSnapshot must not stream that vertex nor any edge incident to
+// it, even though the edge physically survives until the dangling-edge GC sweep.
+func TestBackupSnapshot_ReferentialClosure_E2E(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+	val := provider.NewValidationInterceptor(defaultIntegrationValidationLimits())
+	svc := service.NewLanternService(cache)
+	srv := newConnectTestServer(t, svc, nil, val.ConnectInterceptor())
+	sdk := newConnectClientFor(t, srv.url)
+	raw := graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	for _, k := range []string{"alice", "bob", "carol"} {
+		if err := sdk.PutVertex(ctx, k, k, time.Minute); err != nil {
+			t.Fatalf("PutVertex %s: %v", k, err)
+		}
+	}
+	if err := sdk.AddEdge(ctx, "alice", "bob", 1.5, time.Minute); err != nil {
+		t.Fatalf("AddEdge alice->bob: %v", err)
+	}
+	if err := sdk.AddEdge(ctx, "bob", "carol", 2.0, time.Minute); err != nil {
+		t.Fatalf("AddEdge bob->carol: %v", err)
+	}
+	if _, err := sdk.DeleteVertex(ctx, "bob"); err != nil {
+		t.Fatalf("DeleteVertex bob: %v", err)
+	}
+
+	vertices, edges := drainBackup(t, ctx, raw, &pb.BackupSnapshotRequest{})
+	if _, ok := vertices["bob"]; ok {
+		t.Errorf("backup streamed deleted vertex bob: %v", vertices)
+	}
+	if _, ok := edges["alice->bob"]; ok {
+		t.Errorf("backup streamed dangling edge alice->bob: %v", edges)
+	}
+	if _, ok := edges["bob->carol"]; ok {
+		t.Errorf("backup streamed dangling edge bob->carol: %v", edges)
+	}
+	// The surviving vertices are still streamed.
+	for _, k := range []string{"alice", "carol"} {
+		if _, ok := vertices[k]; !ok {
+			t.Errorf("backup dropped live vertex %q: %v", k, vertices)
+		}
+	}
+}

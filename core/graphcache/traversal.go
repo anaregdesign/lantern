@@ -93,6 +93,12 @@ func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int
 	// them to g.Edges (and expirations, if requested) under mu. It is the
 	// shared body used by both the sequential and worker-pool paths.
 	processTail := func(t S) {
+		// Referential closure (#750): a tail whose vertex is no longer live
+		// contributes no edges, even if its buckets survive until the next
+		// dangling-edge sweep.
+		if !c.vertices.Has(t) {
+			return
+		}
 		heads, ok := c.edges.headsOf(t)
 		if !ok || len(heads) == 0 {
 			return
@@ -105,6 +111,12 @@ func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int
 		for headID, w := range heads {
 			head, ok := c.edges.resolveID(headID)
 			if !ok {
+				continue
+			}
+			// Hide an edge to a head whose vertex is not live (deleted or
+			// expired-but-not-flushed) before it can be scored or selected by
+			// the top-k prune below (#750).
+			if !c.vertices.Has(head) {
 				continue
 			}
 			// Frontier predicate: reject non-matching heads here, BEFORE
@@ -216,11 +228,18 @@ func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int
 		}
 	}
 
-	// Add vertices to the graph
+	// Add vertices to the graph. Every endpoint reached here was gated on
+	// vertices.Has in processTail, so under the held RLock Get returns ok; the
+	// ok check is a defensive guard that keeps a dead endpoint out of the
+	// result rather than inserting a zero value (#750).
 	for tail, heads := range g.Edges {
-		g.Vertices[tail], _ = c.vertices.Get(tail)
+		if v, ok := c.vertices.Get(tail); ok {
+			g.Vertices[tail] = v
+		}
 		for head := range heads {
-			g.Vertices[head], _ = c.vertices.Get(head)
+			if v, ok := c.vertices.Get(head); ok {
+				g.Vertices[head] = v
+			}
 		}
 	}
 

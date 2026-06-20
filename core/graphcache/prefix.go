@@ -97,18 +97,30 @@ func (c *GraphCache[S, T]) ScanByPrefix(ctx context.Context, prefix string, fn f
 	return true
 }
 
-// CountByPrefix returns the number of indexed keys whose projection
-// starts with prefix. The count is taken from the prefix index, so it
-// reflects entries that may have expired but not yet been flushed; for
-// most workloads the skew is bounded by the Watch tick interval. Returns
-// 0 when the index has not been enabled.
+// CountByPrefix returns the number of LIVE vertices whose projected key starts
+// with prefix. It walks the prefix index and counts only keys the vertex cache
+// still resolves as live, so an entry that has expired but not yet been flushed
+// is excluded — the count therefore equals len(ScanByPrefix(prefix)) and the
+// number of live primary vertices matching prefix, independent of GC timing
+// (#752). Returns 0 when the index has not been enabled.
 func (c *GraphCache[S, T]) CountByPrefix(prefix string) int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if c.prefixIndex == nil {
 		return 0
 	}
-	return c.prefixIndex.countPrefix(prefix)
+	count := 0
+	c.prefixIndex.walkPrefix(prefix, func(projected string) bool {
+		// resolveProjected confirms the key against the live vertex cache
+		// (vertices.Has for the string instantiation), so a stale radix
+		// posting for an expired-but-not-flushed or already-deleted vertex is
+		// not counted — mirroring ScanByPrefix.
+		if _, ok := c.resolveProjected(projected); ok {
+			count++
+		}
+		return true
+	})
+	return count
 }
 
 // DeleteByPrefix removes every vertex whose projected key starts with

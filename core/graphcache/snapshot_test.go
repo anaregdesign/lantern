@@ -150,3 +150,65 @@ func TestGraphCache_SnapshotGraph(t *testing.T) {
 		}
 	})
 }
+
+// TestGraphCache_Snapshot_ReferentialClosure pins the snapshot half of the
+// referential-closure contract (#750): a LIVE edge whose endpoint vertex has
+// been deleted (or has expired but not yet been flushed) must not appear in
+// SnapshotGraph or SnapshotEdges, even before the dangling-edge GC sweep, so a
+// restored backup is always referentially closed.
+func TestGraphCache_Snapshot_ReferentialClosure(t *testing.T) {
+	live := time.Now().Add(time.Hour)
+	build := func() *GraphCache[string, string] {
+		c := NewGraphCache[string, string](time.Hour)
+		c.PutVerticesWithExpiration([]VertexItem[string, string]{
+			{Key: "a", Value: "A", Expiration: live},
+			{Key: "b", Value: "B", Expiration: live},
+		})
+		c.PutEdgesWithExpiration([]EdgeItem[string]{
+			{Tail: "a", Head: "b", Weight: 2, Expiration: live},
+		})
+		return c
+	}
+	danglingKey := EdgeKey[string]{Tail: "a", Head: "b"}
+
+	t.Run("SnapshotGraphHidesDanglingEdge", func(t *testing.T) {
+		c := build()
+		if !c.DeleteVertex("b") {
+			t.Fatal("DeleteVertex(b) reported false")
+		}
+		got := c.SnapshotGraph()
+		if _, ok := vertexByKey(got.Vertices)["b"]; ok {
+			t.Errorf("deleted vertex b present in SnapshotGraph: %v", got.Vertices)
+		}
+		if _, ok := edgeByEndpoints(got.Edges)[danglingKey]; ok {
+			t.Errorf("dangling edge a->b present in SnapshotGraph: %v", got.Edges)
+		}
+		if c.edges.count() != 1 {
+			t.Fatalf("edge bucket count = %d, want 1 (edge still physical before sweep)", c.edges.count())
+		}
+	})
+
+	t.Run("SnapshotEdgesHidesDanglingEdge", func(t *testing.T) {
+		c := build()
+		if !c.DeleteVertex("b") {
+			t.Fatal("DeleteVertex(b) reported false")
+		}
+		for _, e := range c.SnapshotEdges() {
+			if e.Tail == "a" && e.Head == "b" {
+				t.Fatalf("SnapshotEdges streamed dangling edge a->b: %+v", e)
+			}
+		}
+	})
+
+	t.Run("ExpiredNotFlushedEndpointHidden", func(t *testing.T) {
+		c := build()
+		// Make b expired-but-not-flushed without touching the edge bucket.
+		c.mu.Lock()
+		c.putVertexLocked("b", "B", time.Now().Add(-time.Minute))
+		c.mu.Unlock()
+		got := c.SnapshotGraph()
+		if _, ok := edgeByEndpoints(got.Edges)[danglingKey]; ok {
+			t.Errorf("snapshot kept edge to expired-not-flushed endpoint: %v", got.Edges)
+		}
+	})
+}

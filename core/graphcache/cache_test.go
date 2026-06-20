@@ -1591,3 +1591,69 @@ func TestGraphCache_DictRefcountStableAcrossExpiredOverwrite(t *testing.T) {
 		assertStable(t, c, id)
 	})
 }
+
+// TestGraph_EdgeReadsHideDeadEndpoints pins the point-read half of the
+// referential-closure contract (#750): GetWeight and GetEdgeDetail report an
+// edge as absent the instant either endpoint vertex stops being live — whether
+// it was deleted or merely expired-but-not-yet-swept — even though the edge
+// bucket physically survives until the dangling-edge GC sweep.
+func TestGraph_EdgeReadsHideDeadEndpoints(t *testing.T) {
+	live := time.Now().Add(time.Hour)
+	newGraph := func() *GraphCache[string, string] {
+		c := NewGraphCache[string, string](time.Hour)
+		c.PutVertexWithExpiration("tail", "t", live)
+		c.PutVertexWithExpiration("head", "h", live)
+		c.AddEdgeWithExpiration("tail", "head", 3, live)
+		return c
+	}
+
+	// Baseline: both endpoints live, so the edge is visible everywhere.
+	base := newGraph()
+	if w, ok := base.GetWeight("tail", "head"); !ok || w != 3 {
+		t.Fatalf("baseline GetWeight = (%v, %v), want (3, true)", w, ok)
+	}
+	if _, _, ok := base.GetEdgeDetail("tail", "head"); !ok {
+		t.Fatal("baseline GetEdgeDetail ok=false, want true")
+	}
+
+	assertHidden := func(t *testing.T, c *GraphCache[string, string]) {
+		t.Helper()
+		if w, ok := c.GetWeight("tail", "head"); ok {
+			t.Fatalf("GetWeight surfaced a dangling edge: weight=%v ok=%v", w, ok)
+		}
+		if _, _, ok := c.GetEdgeDetail("tail", "head"); ok {
+			t.Fatal("GetEdgeDetail surfaced a dangling edge")
+		}
+		// The edge bucket is still physically present — no GC sweep has run, so
+		// this proves the read paths filter on logical liveness rather than on
+		// physical retention.
+		if got := c.edges.count(); got != 1 {
+			t.Fatalf("edge bucket count = %d, want 1 (edge still physical before sweep)", got)
+		}
+	}
+
+	t.Run("HeadDeleted", func(t *testing.T) {
+		c := newGraph()
+		if !c.DeleteVertex("head") {
+			t.Fatal("DeleteVertex(head) reported false")
+		}
+		assertHidden(t, c)
+	})
+	t.Run("TailDeleted", func(t *testing.T) {
+		c := newGraph()
+		if !c.DeleteVertex("tail") {
+			t.Fatal("DeleteVertex(tail) reported false")
+		}
+		assertHidden(t, c)
+	})
+	t.Run("HeadExpiredNotFlushed", func(t *testing.T) {
+		c := newGraph()
+		// Overwrite head's slot with an already-past expiration through the
+		// unconditional store path so it is expired but still physically
+		// present (no flush), leaving the edge bucket untouched.
+		c.mu.Lock()
+		c.putVertexLocked("head", "h", time.Now().Add(-time.Minute))
+		c.mu.Unlock()
+		assertHidden(t, c)
+	})
+}

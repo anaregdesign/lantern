@@ -168,6 +168,12 @@ func (c *GraphCache[S, T]) scanTailHeadsFast(
 		if !nonZero {
 			return true
 		}
+		// Referential closure (#750): hide an edge whose tail or head vertex
+		// is no longer live, even if the dangling-edge GC sweep has not yet
+		// reclaimed it.
+		if !c.edgeEndpointsLive(tail, head) {
+			return true
+		}
 		if !fn(tailProj, tail, headProj, head, sum, latest) {
 			keepGoing = false
 			return false
@@ -212,6 +218,12 @@ func (c *GraphCache[S, T]) scanTailHeadsFallback(
 	for _, e := range entries {
 		sum, latest, nonZero := e.w.snapshot()
 		if !nonZero {
+			continue
+		}
+		// Referential closure (#750): hide an edge whose tail or head vertex
+		// is no longer live, even if the dangling-edge GC sweep has not yet
+		// reclaimed it.
+		if !c.edgeEndpointsLive(tail, e.head) {
 			continue
 		}
 		if !fn(tailProj, tail, e.proj, e.head, sum, latest) {

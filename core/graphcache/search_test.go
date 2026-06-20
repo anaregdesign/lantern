@@ -3,6 +3,7 @@ package graphcache
 import (
 	"fmt"
 	"math/rand"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -374,4 +375,47 @@ func TestGraphCache_PutVertices_SearchLifecycle(t *testing.T) {
 			t.Fatalf(`Search("alpha") = %v, want [live]`, got)
 		}
 	})
+}
+
+// TestGraphCache_SearchVertices_LifecycleIntersection pins the #752 search
+// agreement invariant: SearchVertices returns only keys that are simultaneously
+// (a) live in the vertex cache, (b) still carry the queried term after any
+// overwrite, and (c) inside the requested key prefix. Deleted, overwritten-away,
+// and expired-but-not-flushed documents never surface.
+func TestGraphCache_SearchVertices_LifecycleIntersection(t *testing.T) {
+	c := NewGraphCache[string, string](time.Hour)
+	c.EnablePrefixIndex(identityExtract)
+	c.EnableSearchIndex(textExtract)
+	live := time.Now().Add(time.Hour)
+
+	c.PutVertexWithExpiration("eu:1", "harbor", live)
+	c.PutVertexWithExpiration("us:1", "harbor", live)
+	c.PutVertexWithExpiration("eu:2", "harbor", live)
+	c.PutVertexWithExpiration("eu:2", "summit", live) // overwrite drops "harbor"
+	c.DeleteVertex("us:1")                            // delete removes the doc
+	// eu:3 is expired-but-not-flushed: a stale search posting.
+	c.mu.Lock()
+	c.putVertexLocked("eu:3", "harbor", time.Now().Add(-time.Minute))
+	c.mu.Unlock()
+
+	set := func(rs []search.Result[string]) map[string]bool {
+		m := make(map[string]bool, len(rs))
+		for _, r := range rs {
+			m[r.ID] = true
+		}
+		return m
+	}
+
+	// Only eu:1 is live AND still tagged "harbor".
+	if got := set(c.SearchVertices("harbor", 50, "")); !reflect.DeepEqual(got, map[string]bool{"eu:1": true}) {
+		t.Errorf("Search(harbor) = %v, want {eu:1} (us:1 deleted, eu:2 overwritten, eu:3 expired)", got)
+	}
+	// Prefix scoping intersects with liveness: us: has no live harbor doc.
+	if got := set(c.SearchVertices("harbor", 50, "us:")); len(got) != 0 {
+		t.Errorf("Search(harbor, us:) = %v, want empty (us:1 deleted)", got)
+	}
+	// The overwrite term is searchable on the surviving key only.
+	if got := set(c.SearchVertices("summit", 50, "")); !got["eu:2"] {
+		t.Errorf("Search(summit) = %v, want eu:2", got)
+	}
 }
