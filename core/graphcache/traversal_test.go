@@ -1,6 +1,7 @@
 package graphcache
 
 import (
+	"context"
 	"reflect"
 	"strings"
 	"testing"
@@ -230,6 +231,70 @@ func TestGraphCache_NeighborKeep(t *testing.T) {
 		}
 		if _, ok := g.Edges["bridge"]; ok {
 			t.Errorf("rejected bridge was expanded: %v", g.Edges["bridge"])
+		}
+	})
+}
+
+// TestGraphCache_Neighbor_HidesDeadEndpoints pins the traversal half of the
+// referential-closure contract (#750): neither Neighbor nor
+// NeighborWithExpirationsContext may surface an edge to (or a vertex that is) a
+// deleted/expired endpoint, and a dead intermediary must not be a path to
+// vertices beyond it.
+func TestGraphCache_Neighbor_HidesDeadEndpoints(t *testing.T) {
+	live := time.Now().Add(time.Hour)
+	build := func() *GraphCache[string, string] {
+		c := NewGraphCache[string, string](time.Hour)
+		c.PutVertexWithExpiration("a", "a", live)
+		c.PutVertexWithExpiration("b", "b", live)
+		c.PutVertexWithExpiration("c", "c", live)
+		c.AddEdgeWithExpiration("a", "b", 1, live)
+		c.AddEdgeWithExpiration("b", "c", 1, live)
+		return c
+	}
+
+	t.Run("DeletedHeadDropsEdgeAndVertex", func(t *testing.T) {
+		c := build()
+		if !c.DeleteVertex("b") {
+			t.Fatal("DeleteVertex(b) reported false")
+		}
+		g := c.Neighbor("a", 3, 8, false, false, nil)
+		if _, ok := g.Vertices["b"]; ok {
+			t.Errorf("Neighbor surfaced deleted vertex b: %v", g.Vertices)
+		}
+		if heads, ok := g.Edges["a"]; ok {
+			if _, ok := heads["b"]; ok {
+				t.Errorf("Neighbor surfaced dangling edge a->b: %v", g.Edges)
+			}
+		}
+		if _, ok := g.Edges["b"]; ok {
+			t.Errorf("Neighbor surfaced edges from deleted tail b: %v", g.Edges["b"])
+		}
+		if _, ok := g.Vertices["c"]; ok {
+			t.Errorf("Neighbor reached c through dead intermediary b: %v", g.Vertices)
+		}
+		if _, ok := g.Vertices["a"]; !ok {
+			t.Errorf("Neighbor dropped the live seed a: %v", g.Vertices)
+		}
+	})
+
+	t.Run("ExpirationsMapExcludesDeadEndpoints", func(t *testing.T) {
+		c := build()
+		if !c.DeleteVertex("b") {
+			t.Fatal("DeleteVertex(b) reported false")
+		}
+		g, exps, err := c.NeighborWithExpirationsContext(context.Background(), "a", 3, 8, false, false, nil)
+		if err != nil {
+			t.Fatalf("NeighborWithExpirationsContext: %v", err)
+		}
+		if heads, ok := exps["a"]; ok {
+			if _, ok := heads["b"]; ok {
+				t.Errorf("expirations map surfaced dangling edge a->b: %v", exps)
+			}
+		}
+		if heads, ok := g.Edges["a"]; ok {
+			if _, ok := heads["b"]; ok {
+				t.Errorf("graph surfaced dangling edge a->b: %v", g.Edges)
+			}
 		}
 	})
 }

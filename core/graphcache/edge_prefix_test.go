@@ -416,3 +416,70 @@ func TestGraphCache_ScanEdgesByPrefix_CallbackReentrant(t *testing.T) {
 		t.Fatal("reentrant PutVertex from visitor did not persist")
 	}
 }
+
+// TestGraphCache_ScanEdgesByPrefix_HidesDeadEndpoints pins the prefix-scan half
+// of the referential-closure contract (#750): a live edge whose head or tail
+// vertex has been deleted must not be emitted, on BOTH the head-index fast path
+// and the materialise-and-sort fallback. The edge stays physically present
+// (no GC sweep), so this proves the emit-site liveness filter, not GC timing.
+func TestGraphCache_ScanEdgesByPrefix_HidesDeadEndpoints(t *testing.T) {
+	live := time.Now().Add(time.Hour)
+	build := func() *GraphCache[string, string] {
+		c := NewGraphCache[string, string](time.Hour)
+		c.EnablePrefixIndex(identityExtract)
+		c.PutVertexWithExpiration("t:1", "t", live)
+		c.PutVertexWithExpiration("h:1", "h", live)
+		c.PutVertexWithExpiration("h:2", "h", live)
+		c.AddEdgeWithExpiration("t:1", "h:1", 1, live)
+		c.AddEdgeWithExpiration("t:1", "h:2", 1, live)
+		return c
+	}
+	asSet := func(rows []string) map[string]bool {
+		m := make(map[string]bool, len(rows))
+		for _, r := range rows {
+			m[r] = true
+		}
+		return m
+	}
+
+	for _, tc := range []struct {
+		name        string
+		disableHead bool
+	}{
+		{"FastPath", false},
+		{"FallbackPath", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := build()
+			if tc.disableHead {
+				c.disableHeadIndexForTesting()
+			}
+			if got := scanEdgesCollect(t, c, "t:", ""); len(got) != 2 {
+				t.Fatalf("baseline scan = %v, want 2 edges", got)
+			}
+
+			// Delete one head: only the edge to the surviving head remains.
+			if !c.DeleteVertex("h:1") {
+				t.Fatal("DeleteVertex(h:1) reported false")
+			}
+			got := asSet(scanEdgesCollect(t, c, "t:", ""))
+			if got["t:1->h:1=1"] {
+				t.Errorf("scan surfaced dangling edge t:1->h:1: %v", got)
+			}
+			if !got["t:1->h:2=1"] {
+				t.Errorf("scan dropped the live edge t:1->h:2: %v", got)
+			}
+			if c.edges.count() != 2 {
+				t.Fatalf("edge bucket count = %d, want 2 (both edges still physical)", c.edges.count())
+			}
+
+			// Delete the shared tail: every edge from it disappears.
+			if !c.DeleteVertex("t:1") {
+				t.Fatal("DeleteVertex(t:1) reported false")
+			}
+			if got := scanEdgesCollect(t, c, "t:", ""); len(got) != 0 {
+				t.Fatalf("scan after deleting tail = %v, want empty", got)
+			}
+		})
+	}
+}

@@ -24,8 +24,8 @@ func TestGraphCache_GCFlushMaintainsIndexesWatermarksAndDanglingEdges(t *testing
 	if got := c.VertexHLCCount(); got != 1 {
 		t.Fatalf("VertexHLCCount before flush = %d, want 1", got)
 	}
-	if got := c.CountByPrefix("expired:"); got != 1 {
-		t.Fatalf("CountByPrefix(expired:) before vertex flush = %d, want 1", got)
+	if got := c.CountByPrefix("expired:"); got != 0 {
+		t.Fatalf("CountByPrefix(expired:) before vertex flush = %d, want 0 because the liveness filter hides expired-but-not-flushed entries", got)
 	}
 	if got := c.SearchVertices("expired", 10, ""); got != nil {
 		t.Fatalf("SearchVertices(expired) before vertex flush = %v, want nil because liveness filter hides expired entries", keys(got))
@@ -37,8 +37,11 @@ func TestGraphCache_GCFlushMaintainsIndexesWatermarksAndDanglingEdges(t *testing
 	if !c.DeleteVertex("head") {
 		t.Fatal("DeleteVertex(head) reported false")
 	}
-	if got := collectScan(c, "tail", "head"); len(got) != 1 {
-		t.Fatalf("ScanEdgesByPrefix before dangling sweep = %v, want one dangling edge still present", got)
+	// The edge survives physically until the dangling sweep, but the public
+	// scan surface must hide it immediately because its head vertex is gone
+	// (#750).
+	if got := collectScan(c, "tail", "head"); len(got) != 0 {
+		t.Fatalf("ScanEdgesByPrefix before dangling sweep = %v, want empty because the head vertex was deleted", got)
 	}
 
 	c.DeleteVertexHLC("tombstone:old", hlc.Timestamp{WallNs: 2}, expired)

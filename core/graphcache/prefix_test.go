@@ -371,13 +371,55 @@ func TestGraphCache_PutVertices_PrefixStableAcrossExpiredOverwrite(t *testing.T)
 	c.mu.Lock()
 	c.putVertexLocked("user:1", "v1", time.Now().Add(-time.Minute))
 	c.mu.Unlock()
-	if got := c.CountByPrefix("user:"); got != 1 {
-		t.Fatalf("CountByPrefix after seed = %d, want 1", got)
+	// The slot is physically present in the radix but logically dead, so the
+	// liveness-filtered count hides it (#752).
+	if got := c.CountByPrefix("user:"); got != 0 {
+		t.Fatalf("CountByPrefix after seeding an expired slot = %d, want 0", got)
 	}
 	c.PutVerticesWithExpiration([]VertexItem[string, string]{
 		{Key: "user:1", Value: "v2", Expiration: time.Now().Add(time.Minute)},
 	})
+	// The live overwrite makes the single key visible again — exactly once, with
+	// no stale double-count from the expired posting.
 	if got := c.CountByPrefix("user:"); got != 1 {
 		t.Fatalf("CountByPrefix after overwrite = %d, want 1", got)
+	}
+}
+
+// TestGraphCache_CountByPrefix_EqualsLiveScan pins the #752 count/scan
+// agreement invariant: for every prefix, CountByPrefix returns exactly the
+// number of keys ScanByPrefix yields, after a mix of overwrite, delete,
+// prefix-delete, and expired-but-not-flushed mutations. Both surfaces must
+// observe the live logical set, not stale radix postings.
+func TestGraphCache_CountByPrefix_EqualsLiveScan(t *testing.T) {
+	c := NewGraphCache[string, string](time.Hour)
+	c.EnablePrefixIndex(identityExtract)
+	live := time.Now().Add(time.Hour)
+
+	for _, k := range []string{"u:1", "u:2", "u:3", "u:4", "other:1"} {
+		c.PutVertexWithExpiration(k, "v", live)
+	}
+	c.PutVertexWithExpiration("u:2", "v2", live)     // overwrite stays live
+	c.DeleteVertex("u:3")                            // delete
+	c.DeleteByPrefix(context.Background(), "u:4", 0) // prefix delete removes u:4
+	// u:5 is expired-but-not-flushed: a stale radix posting that neither
+	// surface may observe.
+	c.mu.Lock()
+	c.putVertexLocked("u:5", "v", time.Now().Add(-time.Minute))
+	c.mu.Unlock()
+
+	for _, prefix := range []string{"", "u:", "u:1", "other:", "zzz"} {
+		var scanned []string
+		c.ScanByPrefix(context.Background(), prefix, func(_, key string, _ string) bool {
+			scanned = append(scanned, key)
+			return true
+		})
+		if got := c.CountByPrefix(prefix); got != len(scanned) {
+			t.Errorf("CountByPrefix(%q) = %d, ScanByPrefix len = %d (%v)", prefix, got, len(scanned), scanned)
+		}
+	}
+	// Concrete check: the live u: set is exactly {u:1, u:2}.
+	if got := c.CountByPrefix("u:"); got != 2 {
+		t.Errorf("CountByPrefix(u:) = %d, want 2 (u:1, u:2)", got)
 	}
 }

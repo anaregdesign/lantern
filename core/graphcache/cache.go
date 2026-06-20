@@ -266,12 +266,41 @@ func (c *GraphCache[S, T]) GetVertex(key S) (T, bool) {
 	return c.vertices.Get(key)
 }
 
+// edgeEndpointsLive reports whether BOTH endpoint vertices of an edge are
+// currently live — present in the vertex cache and not past their TTL. It is
+// the single enforcement point for the read/snapshot referential-closure
+// contract (#750): an edge may physically outlive a deleted or expired endpoint
+// vertex until the dangling-edge GC sweep reclaims it, but no public read,
+// scan, traversal, or snapshot surface may expose such an edge. vertices.Has
+// hides expired-but-not-yet-flushed entries (it routes through Get), so the
+// check is correct even before GC runs.
+//
+// The vertex cache carries its own mutex, independent of GraphCache.mu, so this
+// is safe to call both from the lock-free point reads (GetWeight/GetEdgeDetail,
+// which hold no GraphCache.mu) and from the scan/traversal/snapshot paths that
+// hold GraphCache.mu (R or W). It is the same liveness primitive the additive
+// write fast path already uses to gate an in-place contribution (see
+// tryAddExistingEdgeContrib).
+func (c *GraphCache[S, T]) edgeEndpointsLive(tail, head S) bool {
+	return c.vertices.Has(tail) && c.vertices.Has(head)
+}
+
 // GetWeight returns the additive weight of the (tail, head) edge. Like
 // GetVertex it is a lock-free point read: edges.get pins both endpoint ids
 // (closing the dictionary ABA hazard) and reads the edge map under the
 // edgeCache's own lock, so GraphCache.mu is not required (#740).
+//
+// The edge is hidden (ok=false) unless both endpoint vertices are still live,
+// so a dangling edge whose tail or head was deleted or expired but not yet
+// swept is reported as absent (#750). The endpoint check reads the vertex
+// cache under its own lock, after the edge read, so GetWeight stays free of
+// GraphCache.mu.
 func (c *GraphCache[S, T]) GetWeight(tail, head S) (float32, bool) {
-	return c.edges.get(tail, head)
+	w, ok := c.edges.get(tail, head)
+	if !ok || !c.edgeEndpointsLive(tail, head) {
+		return 0, false
+	}
+	return w, true
 }
 
 // GetEdgeDetail returns the current edge weight together with the latest
@@ -281,9 +310,15 @@ func (c *GraphCache[S, T]) GetWeight(tail, head S) (float32, bool) {
 // Like GetWeight it is a lock-free point read (see edges.getDetail): it does
 // not take GraphCache.mu and may observe either the pre- or post-write state
 // under a concurrent edge mutation, but it never resolves a recycled endpoint
-// id to an unrelated edge.
+// id to an unrelated edge. The edge is hidden unless both endpoint vertices are
+// still live, so a dangling edge to a deleted or expired-but-not-flushed vertex
+// is reported as absent (#750).
 func (c *GraphCache[S, T]) GetEdgeDetail(tail, head S) (float32, time.Time, bool) {
-	return c.edges.getDetail(tail, head)
+	w, exp, ok := c.edges.getDetail(tail, head)
+	if !ok || !c.edgeEndpointsLive(tail, head) {
+		return 0, time.Time{}, false
+	}
+	return w, exp, true
 }
 
 func (c *GraphCache[S, T]) PutVertexWithExpiration(key S, value T, expiration time.Time) {

@@ -113,6 +113,15 @@ func (c *GraphCache[S, T]) snapshotEdgesLocked(now time.Time) []SnapshotEdge[S] 
 		if !nonEmpty {
 			return true
 		}
+		// Referential closure (#750): a snapshot must not stream an edge whose
+		// tail or head vertex is not live. SnapshotGraph flushes expired
+		// vertices before this runs; standalone SnapshotEdges relies on
+		// vertices.Has to hide expired-but-not-flushed endpoints without a
+		// prior flush, so neither path leaks a dangling edge to a deleted or
+		// expired vertex ahead of the GC sweep.
+		if !c.edgeEndpointsLive(tail, head) {
+			return true
+		}
 		out = append(out, SnapshotEdge[S]{
 			Tail:          tail,
 			Head:          head,
