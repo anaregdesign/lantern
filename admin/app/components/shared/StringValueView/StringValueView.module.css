@@ -19,12 +19,13 @@
   font-style: italic;
 }
 
-/* Shared box around both Raw and Markdown bodies: bounded height with
+/* Shared box around the Raw, Markdown, and JSON bodies: bounded height with
    vertical scroll so an oversized value scrolls inside the card instead of
    pushing the page. `min-width: 0` lets it shrink below intrinsic content
    width inside a grid/flex track. */
 .raw,
-.markdown {
+.markdown,
+.json {
   margin: 0;
   min-width: 0;
   max-height: 480px;
@@ -48,6 +49,48 @@
   font-size: var(--fontSizeBase300, 14px);
   line-height: 1.5;
   color: var(--colorNeutralForeground1, #242424);
+}
+
+/* JSON view — preserve the linted indentation exactly; scroll long lines
+   horizontally rather than wrapping so structure stays aligned. */
+.json {
+  white-space: pre;
+  font-family: var(
+    --fontFamilyMonospace,
+    ui-monospace,
+    SFMono-Regular,
+    monospace
+  );
+  font-size: var(--fontSizeBase300, 14px);
+  line-height: 1.5;
+  color: var(--colorNeutralForeground1, #242424);
+}
+
+.json code {
+  font: inherit;
+}
+
+/* Syntax-highlight token colours — Fluent palette tokens resolve to readable
+   values in both light and dark themes; the hex fallbacks track the light
+   theme for environments that have not injected the theme variables. */
+.jsonKey {
+  color: var(--colorPaletteBlueForeground2, #0f6cbd);
+}
+
+.jsonString {
+  color: var(--colorPaletteGreenForeground2, #0e700e);
+}
+
+.jsonNumber {
+  color: var(--colorPaletteBerryForeground2, #ad1457);
+}
+
+.jsonKeyword {
+  color: var(--colorPaletteDarkOrangeForeground2, #bc4b09);
+}
+
+.jsonPunct {
+  color: var(--colorNeutralForeground3, #616161);
 }
 
 /* Markdown view — readable prose, theme-aware. */

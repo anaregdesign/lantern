@@ -91,6 +91,49 @@ test.describe("vertex detail", () => {
     await expect(page.getByTestId("vertex-string-raw")).toHaveCount(0);
   });
 
+  test("JSON string values render linted and syntax-highlighted with a Raw tab (#759)", async ({
+    page,
+  }) => {
+    const key = `${VERTEX_KEY}:json`;
+    await putVertices([
+      {
+        key,
+        string: '{"role":"admin","name":"Alice","score":9,"active":true}',
+      },
+    ]);
+
+    await page.goto(`/vertices/${encodeURIComponent(key)}`);
+    await expect(page.getByTestId("vertex-detail-read")).toBeVisible();
+
+    const view = page.getByTestId("vertex-string-view");
+    await expect(view).toBeVisible();
+
+    // JSON is detected, so the prose Markdown Switch is replaced by a
+    // JSON ⇄ Raw TabList and the highlighted view leads by default.
+    await expect(page.getByTestId("vertex-string-markdown-toggle")).toHaveCount(
+      0,
+    );
+    const json = page.getByTestId("vertex-string-json");
+    await expect(json).toBeVisible();
+
+    // Linted: the compact input is pretty-printed with indentation.
+    await expect(json).toContainText('"role": "admin"');
+    await expect(json).toContainText('"score": 9');
+    // Syntax-highlighted: tokens are wrapped in coloured spans.
+    await expect(
+      json.locator("span").filter({ hasText: "admin" }).first(),
+    ).toBeVisible();
+
+    // The Raw tab reveals the original, unformatted string.
+    await page.getByTestId("vertex-string-raw-tab").click();
+    const raw = page.getByTestId("vertex-string-raw");
+    await expect(raw).toBeVisible();
+    await expect(raw).toContainText(
+      '{"role":"admin","name":"Alice","score":9,"active":true}',
+    );
+    await expect(page.getByTestId("vertex-string-json")).toHaveCount(0);
+  });
+
   test("loads the seeded vertex and switches kind via save round-trip", async ({
     page,
   }) => {
