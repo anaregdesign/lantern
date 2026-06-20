@@ -723,22 +723,69 @@ func (c *edgeCache[S]) flushFunc(keep func(tail, head vertexID) bool, onDelete f
 	defer c.mu.Unlock()
 
 	for tailID, heads := range c.tf {
-		for headID, w := range heads {
-			switch {
-			case w.isZero():
-				if onDelete != nil {
-					onDelete(tailID, headID)
-				}
-				if c.deleteLocked(tailID, headID) {
-					zero++
-				}
-			case keep != nil && !keep(tailID, headID):
-				if onDelete != nil {
-					onDelete(tailID, headID)
-				}
-				if c.deleteLocked(tailID, headID) {
-					dangling++
-				}
+		z, d := c.sweepHeadsLocked(tailID, heads, keep, onDelete)
+		zero += z
+		dangling += d
+	}
+	return
+}
+
+// tailIDs snapshots the current set of tail vertexIDs present in tf. It is the
+// plan source for the incremental GC sweep (#744): GraphCache walks the
+// returned IDs in bounded batches across ticks. Stale IDs (tails deleted before
+// they are visited) are tolerated by flushTails, and tails created after the
+// snapshot are swept in the next cycle.
+func (c *edgeCache[S]) tailIDs() []vertexID {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	ids := make([]vertexID, 0, len(c.tf))
+	for tailID := range c.tf {
+		ids = append(ids, tailID)
+	}
+	return ids
+}
+
+// flushTails is the bounded counterpart to flushFunc (#744): it applies the
+// same zero-weight + keep-predicate sweep, but only to the supplied tail
+// buckets. Tails absent from tf (deleted since the plan was built) are skipped.
+// Counts and onDelete semantics match flushFunc exactly.
+func (c *edgeCache[S]) flushTails(tailIDs []vertexID, keep func(tail, head vertexID) bool, onDelete func(tail, head vertexID)) (zero, dangling int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, tailID := range tailIDs {
+		heads, ok := c.tf[tailID]
+		if !ok {
+			continue
+		}
+		z, d := c.sweepHeadsLocked(tailID, heads, keep, onDelete)
+		zero += z
+		dangling += d
+	}
+	return
+}
+
+// sweepHeadsLocked removes zero-weight edges (counted in `zero`) and edges for
+// which keep returns false (counted in `dangling`) from one tail's head bucket.
+// onDelete, if non-nil, fires once per removal before the underlying delete.
+// Caller must hold c.mu write-locked. Shared by flushFunc (full walk) and
+// flushTails (bounded incremental walk).
+func (c *edgeCache[S]) sweepHeadsLocked(tailID vertexID, heads map[vertexID]*weight, keep func(tail, head vertexID) bool, onDelete func(tail, head vertexID)) (zero, dangling int) {
+	for headID, w := range heads {
+		switch {
+		case w.isZero():
+			if onDelete != nil {
+				onDelete(tailID, headID)
+			}
+			if c.deleteLocked(tailID, headID) {
+				zero++
+			}
+		case keep != nil && !keep(tailID, headID):
+			if onDelete != nil {
+				onDelete(tailID, headID)
+			}
+			if c.deleteLocked(tailID, headID) {
+				dangling++
 			}
 		}
 	}
