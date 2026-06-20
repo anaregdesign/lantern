@@ -78,24 +78,41 @@ func (c *GraphCache[S, T]) SearchVertices(query string, limit int, keyPrefix str
 	if limit <= 0 {
 		return nil
 	}
+	// Phase 1 — capture the immutable references the search path needs under a
+	// short RLock, then release c.mu before the expensive work. searchIndex and
+	// prefixExtract are both set once at Enable*Index time (before any vertex is
+	// stored) and never reassigned, so copying the pointers under the lock is
+	// sufficient; we do not need to hold c.mu while they are used.
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.searchIndex == nil {
+	index := c.searchIndex
+	prefixExtract := c.prefixExtract
+	c.mu.RUnlock()
+
+	if index == nil {
 		return nil
 	}
-	ranked := c.searchIndex.Search(query)
+	// Phase 2 — query analysis, BM25 ranking, and liveness/prefix filtering all
+	// run WITHOUT GraphCache.mu. The inverted index has its own RWMutex (Search
+	// takes RLock) and the vertex cache's Has is guarded by the inner cache
+	// lock, so writers and GC that need GraphCache.mu.Lock() are no longer
+	// blocked by a broad or expensive search (#741). Liveness is still checked
+	// at filter time via vertices.Has, so an expired-but-not-yet-flushed vertex
+	// is skipped exactly as before; the read may now race a concurrent
+	// Put/Delete on a given key and observe either side of it, which is the same
+	// racy point-read contract GetVertex provides (#740).
+	ranked := index.Search(query)
 	if len(ranked) == 0 {
 		return nil
 	}
 	out := make([]search.Result[S], 0, min(limit, len(ranked)))
 	for _, r := range ranked {
 		if !c.vertices.Has(r.ID) {
-			// Expired between the index write and this snapshot but the
-			// async Flush has not run yet; consistent with point-read
-			// semantics, treat as absent.
+			// Expired between the index write and this read but the async
+			// Flush has not run yet; consistent with point-read semantics,
+			// treat as absent.
 			continue
 		}
-		if keyPrefix != "" && !c.keyHasPrefix(r.ID, keyPrefix) {
+		if keyPrefix != "" && !keyHasPrefix(prefixExtract, r.ID, keyPrefix) {
 			continue
 		}
 		out = append(out, r)
@@ -110,14 +127,17 @@ func (c *GraphCache[S, T]) SearchVertices(query string, limit int, keyPrefix str
 }
 
 // keyHasPrefix reports whether key's string projection starts with prefix,
-// using the same projection the prefix index uses when it is enabled. When the
-// prefix index is disabled it falls back to the identity projection for the
-// string-keyed instantiation (Lantern's only production case); a non-string S
-// without a prefix projection cannot be scoped, so it never matches a
-// non-empty prefix. Callers must hold c.mu.
-func (c *GraphCache[S, T]) keyHasPrefix(key S, prefix string) bool {
-	if c.prefixExtract != nil {
-		return strings.HasPrefix(c.prefixExtract(key), prefix)
+// using the same projection the prefix index uses when it is enabled
+// (prefixExtract, which the caller captures under c.mu before releasing it).
+// When the prefix index is disabled (prefixExtract == nil) it falls back to the
+// identity projection for the string-keyed instantiation (Lantern's only
+// production case); a non-string S without a prefix projection cannot be
+// scoped, so it never matches a non-empty prefix. prefixExtract is set once at
+// EnablePrefixIndex time and never reassigned, so it is safe to read without
+// holding c.mu.
+func keyHasPrefix[S comparable](prefixExtract func(S) string, key S, prefix string) bool {
+	if prefixExtract != nil {
+		return strings.HasPrefix(prefixExtract(key), prefix)
 	}
 	if s, ok := any(key).(string); ok {
 		return strings.HasPrefix(s, prefix)
