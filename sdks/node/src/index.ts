@@ -50,6 +50,17 @@ export function connect(baseUrl: string, args: LanternArgs = {}): Lantern {
 
 export { Lantern } from "./client.js";
 export type { LanternArgs } from "./client.js";
+export {
+  createIncrementalSearch,
+  DEFAULT_DEBOUNCE_MS,
+  DEFAULT_MIN_QUERY_LENGTH,
+} from "./incremental-search.js";
+export type {
+  IncrementalSearch,
+  IncrementalSearchOptions,
+  SearchFn,
+  SearchUpdate,
+} from "./incremental-search.js";
 export { ReplicationPeer_State } from "./gen/graph/v1/graph_pb.js";
 export {
   BatchError,

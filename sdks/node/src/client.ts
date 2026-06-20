@@ -74,6 +74,11 @@ import {
   type ScanOptions,
   type SearchOptions,
 } from "./options.js";
+import {
+  createIncrementalSearch,
+  type IncrementalSearch,
+  type IncrementalSearchOptions,
+} from "./incremental-search.js";
 
 /**
  * Constructor arguments for `Lantern.connect` /
@@ -376,6 +381,26 @@ export class Lantern {
       );
       return resp.hits.map((h) => ({ key: h.key, score: h.score }));
     });
+  }
+
+  /**
+   * Opens a search-as-you-type driver over {@link searchVertices}: push a
+   * query with `search` on each keystroke, then receive ranked results via
+   * `subscribe` or by `for await`-ing the returned driver. It debounces rapid
+   * input, aborts the previous in-flight RPC when a newer query arrives, and
+   * drops a late reply from a superseded query, so a consumer only ever
+   * observes the latest query's result. Pure client-side orchestration over
+   * the existing RPC — no extra wire surface.
+   *
+   * Errors (including a `FailedPreconditionError` when the server-side index
+   * is disabled) arrive as `SearchUpdate.error` rather than rejecting. Call
+   * `close()` when done to stop the driver and abort any in-flight call.
+   */
+  incrementalSearch(opts: IncrementalSearchOptions = {}): IncrementalSearch {
+    return createIncrementalSearch(
+      (query, searchOpts, signal) => this.searchVertices(query, searchOpts, signal),
+      opts,
+    );
   }
 
   async countVerticesByPrefix(prefix: string, signal?: AbortSignal): Promise<bigint> {
