@@ -585,6 +585,37 @@ func (c *edgeCache[S]) putWithExpiration(tail, head S, w float32, expiration tim
 	return created, tailID, headID
 }
 
+// addExistingContribByID appends to the weight of an already-present
+// (tailID, headID) edge identified by pre-resolved ids, without interning,
+// creating buckets, or touching the dict. It returns ok=false when the
+// bucket is absent (the caller must then fall back to the slow path), and
+// applied to report whether the contribution changed the weight (mirrors
+// addWithExpirationContrib's dedup result).
+//
+// The caller MUST have pinned both ids (see dictionary.pinBoth) for the
+// duration of this call: addExistingContribByID does NOT hold GraphCache.mu,
+// so the pin is what prevents a concurrent DeleteEdge + vertex flush from
+// freeing and recycling an endpoint id mid-append. Structural reads of
+// c.tf are serialized against bucket create/delete by c.mu (the edgeCache
+// RWMutex); the subsequent weight append is serialized by the per-edge
+// weight lock. If the bucket is deleted between the RUnlock here and the
+// append, the append lands on a now-orphaned *weight and is harmlessly
+// discarded — the same benign race documented for addWithExpirationContrib.
+func (c *edgeCache[S]) addExistingContribByID(tailID, headID vertexID, w float32, expiration time.Time, contribID ContribID) (applied, ok bool) {
+	c.mu.RLock()
+	heads, hok := c.tf[tailID]
+	if !hok {
+		c.mu.RUnlock()
+		return false, false
+	}
+	edge, eok := heads[headID]
+	c.mu.RUnlock()
+	if !eok {
+		return false, false
+	}
+	return edge.addWithExpirationContrib(w, expiration, contribID), true
+}
+
 // putWithExpirationHLC is the LWW-aware sibling of addWithExpiration used
 // by the replication apply path (#182) for replicated Put-style writes.
 // It creates the (tail, head) bucket if absent (returning created=true)

@@ -348,11 +348,13 @@ func BenchmarkWeight_AddOnly(b *testing.B) {
 	}
 }
 
-// BenchmarkAddEdge_Existing measures the existing-edge fast path in
-// edgeCache.addWithExpiration. After warming up a single edge, every
-// iteration must hit the fast path: one dict RLock to resolve both ids,
-// one edgeCache RLock to find the *weight, then the leaf weight.mu
-// append. No dict writes, no edgeCache writes.
+// BenchmarkAddEdge_Existing measures the existing-edge fast path taken by
+// AddEdgeWithExpiration (#743). After warming up a single edge, every
+// iteration hits the lock-free path: a brief dict write-lock to pin both
+// endpoint ids (refcount++), two vertex liveness checks, one edgeCache
+// RLock to find the *weight, then the leaf weight.mu append. The giant
+// GraphCache.mu is never taken, so concurrent writers to the same hot edge
+// no longer serialize on it (see BenchmarkAddEdge_ExistingParallel).
 func BenchmarkAddEdge_Existing(b *testing.B) {
 	c := NewGraphCache[string, int](time.Minute)
 	exp := time.Now().Add(time.Hour)
@@ -362,6 +364,87 @@ func BenchmarkAddEdge_Existing(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		c.AddEdgeWithExpiration("hot-tail", "hot-head", 1, exp)
 	}
+}
+
+// BenchmarkAddEdge_ExistingParallel is the headline #743 measurement: many
+// goroutines additively writing the SAME already-present edge. Pre-#743 every
+// writer serialized on GraphCache.mu.Lock; the fast path drops that to a tiny
+// dict critical section plus the per-edge weight lock.
+func BenchmarkAddEdge_ExistingParallel(b *testing.B) {
+	c := NewGraphCache[string, int](time.Minute)
+	exp := time.Now().Add(time.Hour)
+	c.AddEdgeWithExpiration("hot-tail", "hot-head", 1, exp)
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			c.AddEdgeWithExpiration("hot-tail", "hot-head", 1, exp)
+		}
+	})
+}
+
+// BenchmarkAddEdges_ExistingBatch measures the batch fast path over a fan of
+// already-present edges. Every item resolves through tryAddExistingEdgeContrib
+// so the whole batch avoids GraphCache.mu entirely.
+func BenchmarkAddEdges_ExistingBatch(b *testing.B) {
+	const fan = 64
+	c := NewGraphCache[string, int](time.Minute)
+	exp := time.Now().Add(time.Hour)
+	batch := make([]EdgeItem[string], fan)
+	for i := 0; i < fan; i++ {
+		batch[i] = EdgeItem[string]{Tail: "s", Head: fmt.Sprintf("h%d", i), Weight: 1, Expiration: exp}
+	}
+	c.AddEdgesWithExpiration(batch) // warm: create all buckets
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		c.AddEdgesWithExpiration(batch)
+	}
+}
+
+// BenchmarkAddEdge_ExistingWithReaders is the workload #743 actually targets:
+// read throughput on a hot edge while a background goroutine continuously
+// writes it. Pre-#743 each write took GraphCache.mu.Lock and stalled every
+// reader's GraphCache.mu.RLock; the existing-edge fast path takes no
+// aggregate lock, so the GetWeight readers run concurrently with the writer.
+//
+// The background writer reuses a single ContribID so each post-first write is
+// a dedup no-op at the weight layer: it still pays the full fast-path locking
+// (pin both endpoints, two liveness checks, the edgeCache read lock, the
+// per-edge weight lock) but never grows the weight slice, isolating lock
+// contention from O(N) weight-flush cost.
+func BenchmarkAddEdge_ExistingWithReaders(b *testing.B) {
+	c := NewGraphCache[string, int](time.Minute)
+	exp := time.Now().Add(time.Hour)
+	var id ContribID
+	id[0] = 0x9E
+	c.AddEdgeWithExpirationContrib("hot-tail", "hot-head", 1, exp, id)
+
+	stop := make(chan struct{})
+	var writers sync.WaitGroup
+	writers.Add(1)
+	go func() {
+		defer writers.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				c.AddEdgeWithExpirationContrib("hot-tail", "hot-head", 1, exp, id)
+			}
+		}
+	}()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			c.GetWeight("hot-tail", "hot-head")
+		}
+	})
+	b.StopTimer()
+	close(stop)
+	writers.Wait()
 }
 
 // benchSearchCorpus is a small pool of realistic content strings the put

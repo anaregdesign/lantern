@@ -548,3 +548,47 @@ func Test_weight_amortizedCompaction(t *testing.T) {
 		t.Fatalf("sum mismatch after compaction: got %v, want %v", got, n)
 	}
 }
+
+// Test_edgeCache_addExistingContribByID covers the id-keyed existing-edge
+// append used by the GraphCache hot write path: it appends additively to a
+// present bucket, reports ok=false when the bucket is absent (so the caller
+// falls back to the locked slow path), and honors ContribID dedup.
+func Test_edgeCache_addExistingContribByID(t *testing.T) {
+	d := newDictionary[string]()
+	c := newEdgeCache[string](time.Minute, d)
+	exp := time.Now().Add(time.Minute)
+
+	created, tailID, headID, applied := c.addWithExpirationContrib("a", "b", 2, exp, ContribID{})
+	if !created || !applied {
+		t.Fatalf("setup add: created=%v applied=%v, want true true", created, applied)
+	}
+
+	t.Run("existing bucket appends additively", func(t *testing.T) {
+		applied, ok := c.addExistingContribByID(tailID, headID, 3, exp, ContribID{})
+		if !ok || !applied {
+			t.Fatalf("addExistingContribByID = (applied=%v ok=%v), want (true true)", applied, ok)
+		}
+		if w, present := c.get("a", "b"); !present || w != 5 {
+			t.Fatalf("weight after append = %v present=%v, want 5 true", w, present)
+		}
+	})
+
+	t.Run("missing bucket returns ok=false", func(t *testing.T) {
+		missing := d.intern("z")
+		applied, ok := c.addExistingContribByID(tailID, missing, 1, exp, ContribID{})
+		if ok || applied {
+			t.Fatalf("addExistingContribByID on missing bucket = (applied=%v ok=%v), want (false false)", applied, ok)
+		}
+	})
+
+	t.Run("contribID dedup at edge layer", func(t *testing.T) {
+		var id ContribID
+		id[0] = 0x42
+		if applied, ok := c.addExistingContribByID(tailID, headID, 1, exp, id); !ok || !applied {
+			t.Fatalf("first contrib = (applied=%v ok=%v), want (true true)", applied, ok)
+		}
+		if applied, ok := c.addExistingContribByID(tailID, headID, 1, exp, id); !ok || applied {
+			t.Fatalf("replay contrib = (applied=%v ok=%v), want (false true)", applied, ok)
+		}
+	})
+}

@@ -29,6 +29,44 @@ func (c *GraphCache[S, T]) addEdgeContribLocked(tail, head S, w float32, expirat
 	return applied
 }
 
+// tryAddExistingEdgeContrib is the lock-free hot path for additive writes to
+// an edge that ALREADY exists between two LIVE endpoints. On success it
+// appends to the edge weight without taking c.mu, returning ok=true and the
+// dedup result; on any miss it returns ok=false so the caller falls back to
+// the locked slow path (addEdgeContribLocked).
+//
+// It returns ok=false — deferring to the slow path — in every case that the
+// slow path handles differently:
+//   - dict is nil (test caches without interning),
+//   - either endpoint is absent or interned-but-not-both (pinBoth miss),
+//   - either endpoint is NOT live (expired-but-not-yet-flushed): the slow
+//     path must revive it via ensureVertexLocked, and only the slow path may
+//     mint the (tail, head) bucket,
+//   - the (tail, head) bucket does not yet exist (new edge needs interning,
+//     bucket creation, and onEdgeAddedLocked side-index maintenance).
+//
+// Restricting the fast path to existing edges between live endpoints is what
+// makes skipping ensureVertexLocked and onEdgeAddedLocked correct:
+// ensureVertexLocked is a no-op once an endpoint is live, and
+// onEdgeAddedLocked is a no-op when the bucket already exists (created=false).
+// pinBoth holds a refcount on each endpoint for the duration of the append so
+// a concurrent DeleteEdge + vertex flush cannot free and recycle an id under
+// us — see dictionary.pinBoth and edgeCache.addExistingContribByID.
+func (c *GraphCache[S, T]) tryAddExistingEdgeContrib(tail, head S, w float32, expiration time.Time, contribID ContribID) (applied, ok bool) {
+	if c.dict == nil {
+		return false, false
+	}
+	tailID, headID, release, pinned := c.dict.pinBoth(tail, head)
+	if !pinned {
+		return false, false
+	}
+	defer release()
+	if !c.vertices.Has(tail) || !c.vertices.Has(head) {
+		return false, false
+	}
+	return c.edges.addExistingContribByID(tailID, headID, w, expiration, contribID)
+}
+
 // putEdgeLocked atomically replaces one edge under the caller's aggregate
 // write lock. It replaces an existing edge's weight in place (edgeCache.
 // putWithExpiration → weight.replace) rather than delete+add, so a lock-free

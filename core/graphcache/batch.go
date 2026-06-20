@@ -120,9 +120,34 @@ func (c *GraphCache[S, T]) AddEdgesWithExpirationContrib(items []EdgeItem[S]) (d
 	if len(items) == 0 {
 		return 0
 	}
+	// Fast path: additive appends to edges that already exist between live
+	// endpoints take only the per-edge weight lock (see
+	// tryAddExistingEdgeContrib), so a batch of hot existing edges never
+	// serializes on c.mu. Items that miss the fast path — new edges, or
+	// endpoints needing revival — are collected and applied together under a
+	// single c.mu.Lock, which preserves bucket-creation atomicity for the
+	// edge SET a concurrent reader observes (the fast path only mutates
+	// already-present edge weights, never the bucket structure). Additive
+	// writes are commutative and ContribID dedup is per-edge, so applying the
+	// fast-path items before the collected misses changes no per-edge result
+	// (issue #743 item 5).
+	var misses []EdgeItem[S]
+	for _, it := range items {
+		applied, ok := c.tryAddExistingEdgeContrib(it.Tail, it.Head, it.Weight, it.Expiration, it.ContribID)
+		if !ok {
+			misses = append(misses, it)
+			continue
+		}
+		if !applied {
+			deduped++
+		}
+	}
+	if len(misses) == 0 {
+		return deduped
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, it := range items {
+	for _, it := range misses {
 		if !c.addEdgeContribLocked(it.Tail, it.Head, it.Weight, it.Expiration, it.ContribID) {
 			deduped++
 		}

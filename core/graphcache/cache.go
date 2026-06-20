@@ -302,6 +302,9 @@ func (c *GraphCache[S, T]) PutVertex(key S, value T) {
 }
 
 func (c *GraphCache[S, T]) AddEdgeWithExpiration(tail, head S, w float32, expiration time.Time) {
+	if _, ok := c.tryAddExistingEdgeContrib(tail, head, w, expiration, ContribID{}); ok {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.addEdgeLocked(tail, head, w, expiration)
@@ -337,6 +340,9 @@ func (c *GraphCache[S, T]) PutEdgeWithExpiration(tail, head S, w float32, expira
 // was recorded; false means dedup suppressed an already-stored
 // contribution with the same ID.
 func (c *GraphCache[S, T]) AddEdgeWithExpirationContrib(tail, head S, w float32, expiration time.Time, contribID ContribID) bool {
+	if applied, ok := c.tryAddExistingEdgeContrib(tail, head, w, expiration, contribID); ok {
+		return applied
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.addEdgeContribLocked(tail, head, w, expiration, contribID)

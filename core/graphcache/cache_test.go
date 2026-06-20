@@ -1416,6 +1416,125 @@ func TestSearchIndexStats(t *testing.T) {
 	}
 }
 
+// TestGraphCache_AddEdgeFastPath exercises the lock-free existing-edge write
+// path (#743): additive appends to an edge that already exists between two
+// live endpoints must take only the per-edge weight lock, stay additive,
+// honor ContribID dedup, not drift dict refcounts, and fall back to the
+// locked slow path whenever an endpoint is not live so it can be revived.
+func TestGraphCache_AddEdgeFastPath(t *testing.T) {
+	t.Run("existing edge append preserves expiration and is additive", func(t *testing.T) {
+		c := NewGraphCache[string, int](time.Minute)
+		exp := time.Now().Add(time.Hour)
+		c.AddEdgeWithExpiration("a", "b", 2, exp) // slow path: creates edge
+		c.AddEdgeWithExpiration("a", "b", 3, exp) // fast path: existing edge
+		w, latest, ok := c.GetEdgeDetail("a", "b")
+		if !ok {
+			t.Fatal("edge missing after fast-path append")
+		}
+		if w != 5 {
+			t.Fatalf("weight = %v, want 5 (additive fast path)", w)
+		}
+		if !latest.Equal(exp) {
+			t.Fatalf("latest expiration = %v, want %v", latest, exp)
+		}
+	})
+
+	t.Run("fast path honors contribID dedup", func(t *testing.T) {
+		c := NewGraphCache[string, int](time.Minute)
+		exp := time.Now().Add(time.Hour)
+		var id ContribID
+		id[0] = 0x5A
+		c.AddEdgeWithExpiration("a", "b", 1, exp) // create edge (slow path)
+		if applied := c.AddEdgeWithExpirationContrib("a", "b", 2, exp, id); !applied {
+			t.Fatal("first contrib via fast path not applied")
+		}
+		if applied := c.AddEdgeWithExpirationContrib("a", "b", 2, exp, id); applied {
+			t.Fatal("replayed contrib via fast path applied (dedup failed)")
+		}
+		if w, _ := c.GetWeight("a", "b"); w != 3 {
+			t.Fatalf("weight = %v, want 3 (1 + one applied contrib of 2)", w)
+		}
+	})
+
+	t.Run("refcounts stay flat across many fast-path writes", func(t *testing.T) {
+		c := NewGraphCache[string, int](time.Minute)
+		exp := time.Now().Add(time.Hour)
+		for i := 0; i < 64; i++ {
+			c.AddEdgeWithExpiration("x", "y", 1, exp)
+		}
+		if got := c.dict.len(); got != 2 {
+			t.Fatalf("dict.len = %d, want 2", got)
+		}
+		idx, _ := c.dict.lookup("x")
+		if got := c.dict.refcount[idx]; got != 2 {
+			t.Fatalf("refcount(x) = %d, want 2 (vertex slot + 1 edge endpoint, no fast-path drift)", got)
+		}
+	})
+
+	t.Run("expired-but-unflushed endpoint falls back and revives it", func(t *testing.T) {
+		c := NewGraphCache[string, int](time.Minute)
+		shortExp := time.Now().Add(40 * time.Millisecond)
+		c.AddEdgeWithExpiration("p", "q", 1, shortExp)
+		time.Sleep(80 * time.Millisecond) // endpoints expired, not yet flushed
+		if _, ok := c.GetVertex("p"); ok {
+			t.Fatal("precondition: endpoint p should read expired before re-add")
+		}
+		longExp := time.Now().Add(time.Hour)
+		c.AddEdgeWithExpiration("p", "q", 1, longExp) // must fall back, reviving p,q
+		if _, ok := c.GetVertex("p"); !ok {
+			t.Fatal("endpoint p not revived: fast path wrongly fired on an expired endpoint")
+		}
+		if _, ok := c.GetVertex("q"); !ok {
+			t.Fatal("endpoint q not revived")
+		}
+		if _, latest, ok := c.GetEdgeDetail("p", "q"); !ok || !latest.Equal(longExp) {
+			t.Fatalf("edge not refreshed to longExp: ok=%v latest=%v", ok, latest)
+		}
+	})
+
+	t.Run("concurrent delete and recreate never corrupts the hot edge", func(t *testing.T) {
+		c := NewGraphCache[string, int](time.Minute)
+		exp := time.Now().Add(time.Hour)
+		c.AddEdgeWithExpiration("a", "b", 1, exp)
+
+		churnDone := make(chan struct{})
+		go func() {
+			defer close(churnDone)
+			for i := 0; i < 2000; i++ {
+				c.DeleteEdge("a", "b")
+				c.DeleteVertex("a")
+				c.DeleteVertex("b")
+				// Recreate unrelated edges so freed dict ids get recycled
+				// onto different keys; a fast-path write that ignored its pin
+				// could then land on the wrong logical edge.
+				c.AddEdgeWithExpiration(fmt.Sprintf("c%d", i), fmt.Sprintf("d%d", i), 1, exp)
+				c.AddEdgeWithExpiration("a", "b", 1, exp)
+			}
+		}()
+
+		writerDone := make(chan struct{})
+		go func() {
+			defer close(writerDone)
+			for {
+				select {
+				case <-churnDone:
+					return
+				default:
+					c.AddEdgeWithExpiration("a", "b", 1, exp)
+				}
+			}
+		}()
+
+		<-churnDone
+		<-writerDone
+
+		// No concurrent writers remain; the hot edge must still be coherent.
+		if w, ok := c.GetWeight("a", "b"); !ok || w <= 0 {
+			t.Fatalf("hot edge corrupted after churn: w=%v ok=%v", w, ok)
+		}
+	})
+}
+
 // ContribID.IsZero distinguishes the zero value (no identity) from a
 // populated one with a low byte — guards against accidental "all bytes
 // must be set" implementations.
