@@ -88,3 +88,40 @@ func TestWidthNormalizer(t *testing.T) {
 		})
 	}
 }
+
+func TestJSONStringValueNormalizer(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		// Non-JSON text passes through untouched.
+		{"PlainProse", "calm and concise", "calm and concise"},
+		{"BareScalarWord", "true", "true"},
+		{"BareNumberWord", "42", "42"},
+		{"QuotedScalarLeftAsLiteral", `"hello"`, `"hello"`},
+		{"Empty", "", ""},
+		{"NotJSONButBrace", "{not valid json", "{not valid json"},
+		// Objects drop field names, keep string values in sorted-key order.
+		{"ObjectDropsKeys", `{"role":"admin","name":"Alice"}`, "Alice admin"},
+		// Non-string scalars are filtered out.
+		{"FiltersNonStrings", `{"role":"admin","score":9,"active":true,"note":null}`, "admin"},
+		{"OnlyNonStrings", `{"a":1,"b":false,"c":null}`, ""},
+		{"EmptyObject", "{}", ""},
+		{"EmptyStringValuesSkipped", `{"a":"","b":"x"}`, "x"},
+		// Arrays keep order; nested structures recurse.
+		{"ArrayOfStringsFiltersScalars", `["red","green",2,true]`, "red green"},
+		{"NestedObjectAndArray", `{"user":{"name":"Alice"},"tags":["go","db"],"n":5}`, "go db Alice"},
+		// Surrounding whitespace is tolerated before parsing.
+		{"LeadingWhitespace", `  {"x":"y"}  `, "y"},
+		// A top-level array of objects.
+		{"ArrayOfObjects", `[{"t":"hi"},{"t":"bye","skip":1}]`, "hi bye"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := (JSONStringValueNormalizer{}).Normalize(tc.in); got != tc.want {
+				t.Fatalf("Normalize(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}

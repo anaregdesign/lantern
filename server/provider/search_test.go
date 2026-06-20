@@ -49,6 +49,26 @@ func TestVertexSearchDocument(t *testing.T) {
 			want:   "flag true",
 		},
 		{
+			name:   "json object string value drops field names and non-strings",
+			vertex: &v1.Vertex{Key: "profile", Value: &v1.Vertex_String_{String_: `{"role":"admin","name":"Alice","score":9,"active":true}`}},
+			want:   "profile Alice admin",
+		},
+		{
+			name:   "json array string value keeps only strings",
+			vertex: &v1.Vertex{Key: "tags", Value: &v1.Vertex_String_{String_: `["go","db",2,true]`}},
+			want:   "tags go db",
+		},
+		{
+			name:   "json object with no string content indexes key only",
+			vertex: &v1.Vertex{Key: "counters", Value: &v1.Vertex_String_{String_: `{"a":1,"b":false,"c":null}`}},
+			want:   "counters",
+		},
+		{
+			name:   "plain string value is not treated as json",
+			vertex: &v1.Vertex{Key: "note", Value: &v1.Vertex_String_{String_: "calm and concise"}},
+			want:   "note calm and concise",
+		},
+		{
 			name:   "empty string value yields key only (no trailing space)",
 			vertex: &v1.Vertex{Key: "k", Value: &v1.Vertex_String_{String_: ""}},
 			want:   "k",
@@ -77,6 +97,38 @@ func TestNewGraphCache_SearchEnabledIndexesKeyAndValue(t *testing.T) {
 	// Match by key content (MCP search_facts parity: key words are searchable).
 	if hits := gc.SearchVertices("preferences", 10, ""); len(hits) == 0 {
 		t.Errorf("expected a hit searching key text 'preferences', got none")
+	}
+}
+
+func TestNewGraphCache_SearchJSONStringValueFiltersStructure(t *testing.T) {
+	gc := NewGraphCache(CacheConfig{TTL: time.Minute}, SearchConfig{Enabled: true})
+	gc.PutVertex("user.profile", &v1.Vertex{
+		Key:   "user.profile",
+		Value: &v1.Vertex_String_{String_: `{"role":"administrator","city":"Tokyo","score":9000,"active":true}`},
+	})
+
+	// String values are searchable.
+	if hits := gc.SearchVertices("administrator", 10, ""); len(hits) == 0 {
+		t.Errorf("expected a hit searching JSON string value 'administrator', got none")
+	}
+	if hits := gc.SearchVertices("Tokyo", 10, ""); len(hits) == 0 {
+		t.Errorf("expected a hit searching JSON string value 'Tokyo', got none")
+	}
+
+	// Field names and non-string scalars are excluded from the index. The
+	// exact projected text is asserted deterministically by
+	// TestVertexSearchDocument; an end-to-end negative is verified here with
+	// bigram-disjoint tokens so the n-gram analyzer cannot produce an
+	// incidental partial-overlap hit through the key or the string values.
+	gc.PutVertex("zzzz", &v1.Vertex{
+		Key:   "zzzz",
+		Value: &v1.Vertex_String_{String_: `{"qqqq":"hello","wwww":4242}`},
+	})
+	if hits := gc.SearchVertices("qqqq", 10, ""); len(hits) != 0 {
+		t.Errorf("expected no hit searching JSON field name 'qqqq', got %d", len(hits))
+	}
+	if hits := gc.SearchVertices("4242", 10, ""); len(hits) != 0 {
+		t.Errorf("expected no hit searching JSON numeric value '4242', got %d", len(hits))
 	}
 }
 
