@@ -103,6 +103,25 @@ type GraphCache[S comparable, T any] struct {
 	// for non-replicated workloads is one nil check per write.
 	vertexTombstones map[S]tombstoneEntry
 	edgeTombstones   map[EdgeKey[S]]tombstoneEntry
+
+	// gcEdgeBudget bounds the incremental GC edge sweep (#744). When it is
+	// <= 0 (the default) flush() performs a full O(E) sweep every tick — the
+	// historical behavior and the safety net. When set to a positive N via
+	// SetGCEdgeBudget, flush() walks at most N tail buckets per tick, carrying
+	// gcSweepPlan / gcSweepPos across ticks so every tail present when a cycle
+	// began is visited exactly once before the plan is rebuilt. All three are
+	// guarded by c.mu: flush mutates them under Lock; GCSweepBacklog reads them
+	// under RLock.
+	//
+	// Deferring physical edge reclamation never surfaces dead data through
+	// point reads: fully-decayed (zero-weight) edges are already hidden by the
+	// edge read path regardless of sweep timing, and dangling-edge logical
+	// visibility is tracked separately (see #744). The plan holds vertexIDs,
+	// not edges, so a delayed sweep re-resolves liveness at sweep time — an ID
+	// reused between plan build and visit is evaluated against current state.
+	gcEdgeBudget int
+	gcSweepPlan  []vertexID
+	gcSweepPos   int
 }
 
 func NewGraphCache[S comparable, T any](defaultTTL time.Duration) *GraphCache[S, T] {

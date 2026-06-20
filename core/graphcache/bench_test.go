@@ -230,7 +230,36 @@ func BenchmarkGCFlush(b *testing.B) {
 	}
 }
 
-// BenchmarkWeight_AddOnly exercises the amortized-compaction path: every add
+// BenchmarkGCFlushIncremental measures the worst per-tick pause of the bounded
+// edge sweep (#744): it times a single flush() that builds a fresh sweep plan
+// (the tailIDs snapshot) and processes one budget's worth of tails. Contrast
+// its ns/op with BenchmarkGCFlush — the unbounded O(E) sweep — to see the pause
+// the budget trades away for more ticks. The budget scales with the graph
+// (1/16 of the tail count) so the bound tracks graph size.
+func BenchmarkGCFlushIncremental(b *testing.B) {
+	for _, s := range smallScales(testing.Short()) {
+		s := s
+		budget := s.vertices / 16
+		if budget < 1 {
+			budget = 1
+		}
+		b.Run(s.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				b.StopTimer()
+				c := NewGraphCache[string, string](time.Hour)
+				keys := populate(b, c, s)
+				for j := 0; j < s.vertices; j += 4 {
+					c.DeleteVertex(keys[j])
+				}
+				c.SetGCEdgeBudget(budget)
+				b.StartTimer()
+				_, _ = c.flush() // first bounded tick: plan build + one batch
+			}
+		})
+	}
+}
+
 // targets a single weight with already-expired entries, forcing flushLocked
 // to fire at the trigger boundary. Cost must stay roughly O(1) per op rather
 // than blowing up as the slice grows.

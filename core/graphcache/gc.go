@@ -22,7 +22,7 @@ func (c *GraphCache[S, T]) flush() (zero, dangling int) {
 	c.sweepExpiredTombstonesLocked(time.Now())
 	c.sweepStaleVertexHLCLocked()
 
-	return c.edges.flushFunc(func(tailID, headID vertexID) bool {
+	keep := func(tailID, headID vertexID) bool {
 		tail, ok := c.edges.resolveID(tailID)
 		if !ok {
 			return false
@@ -32,7 +32,49 @@ func (c *GraphCache[S, T]) flush() (zero, dangling int) {
 			return false
 		}
 		return c.vertices.Has(tail) && c.vertices.Has(head)
-	}, c.headIndexOnFlushDeleteLocked())
+	}
+	onDelete := c.headIndexOnFlushDeleteLocked()
+
+	if c.gcEdgeBudget <= 0 {
+		// Full sweep (default): unchanged O(E) behavior and the safety net
+		// that guarantees every expired/dangling edge is reclaimed each tick.
+		c.gcSweepPlan = nil
+		c.gcSweepPos = 0
+		return c.edges.flushFunc(keep, onDelete)
+	}
+	return c.flushIncrementalLocked(keep, onDelete)
+}
+
+// flushIncrementalLocked sweeps at most c.gcEdgeBudget tail buckets per call,
+// advancing c.gcSweepPos across ticks (#744). When the cursor reaches the end
+// of the current plan (or no plan exists) it snapshots the live tail set and
+// starts a fresh cycle, so every tail present at cycle start is visited exactly
+// once before the plan is rebuilt; tails created mid-cycle are picked up by the
+// next cycle. This bounds the per-tick c.mu.Lock pause to O(budget × fan-out)
+// while preserving eventual cleanup: any expired/dangling edge is reclaimed
+// within at most two cycles. Caller must hold c.mu.Lock.
+func (c *GraphCache[S, T]) flushIncrementalLocked(
+	keep func(tailID, headID vertexID) bool,
+	onDelete func(tailID, headID vertexID),
+) (zero, dangling int) {
+	if c.gcSweepPos >= len(c.gcSweepPlan) {
+		c.gcSweepPlan = c.edges.tailIDs()
+		c.gcSweepPos = 0
+	}
+	end := c.gcSweepPos + c.gcEdgeBudget
+	if end > len(c.gcSweepPlan) {
+		end = len(c.gcSweepPlan)
+	}
+	batch := c.gcSweepPlan[c.gcSweepPos:end]
+	c.gcSweepPos = end
+	zero, dangling = c.edges.flushTails(batch, keep, onDelete)
+	if c.gcSweepPos >= len(c.gcSweepPlan) {
+		// Cycle consumed: drop the plan so its backing array can be GC'd and
+		// the next tick rebuilds the cursor against the current tail set.
+		c.gcSweepPlan = nil
+		c.gcSweepPos = 0
+	}
+	return zero, dangling
 }
 
 // vertexHLCShrinkFloor and vertexHLCShrinkDivisor govern when
@@ -96,6 +138,35 @@ func (c *GraphCache[S, T]) SetGCHooks(onExpire func(kind string, n int), onGCDur
 	defer c.hookMu.Unlock()
 	c.onExpire = onExpire
 	c.onGCDuration = onGCDuration
+}
+
+// SetGCEdgeBudget bounds how many tail buckets the GC edge sweep walks per
+// Watch tick (#744). A positive n caps each tick at n tails, spreading a large
+// O(E) sweep across multiple ticks to bound the c.mu.Lock pause; the sweep
+// carries a cursor across ticks so every tail is still reclaimed within bounded
+// time. n <= 0 (the default) restores the full single-tick sweep and clears any
+// in-flight cursor. Safe for concurrent use; takes effect on the next tick.
+func (c *GraphCache[S, T]) SetGCEdgeBudget(n int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if n < 0 {
+		n = 0
+	}
+	c.gcEdgeBudget = n
+	if n == 0 {
+		c.gcSweepPlan = nil
+		c.gcSweepPos = 0
+	}
+}
+
+// GCSweepBacklog reports how many tail buckets remain in the current
+// incremental sweep cycle (#744) — those not yet visited by flush(). It is 0
+// when the incremental sweep is disabled or a cycle has just completed, and
+// lets operators see when bounded cleanup is falling behind the write rate.
+func (c *GraphCache[S, T]) GCSweepBacklog() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return len(c.gcSweepPlan) - c.gcSweepPos
 }
 
 func (c *GraphCache[S, T]) snapshotHooks() (func(string, int), func(time.Duration)) {
