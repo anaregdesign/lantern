@@ -193,3 +193,80 @@ func TestDictionary_GenericNonStringKey(t *testing.T) {
 		t.Fatalf("distinct struct keys mapped to same id: %d", id1)
 	}
 }
+
+func TestDictionary_PinBoth(t *testing.T) {
+	t.Run("pins both refcounts and releases them", func(t *testing.T) {
+		d := newDictionary[string]()
+		tail := d.intern("tail") // refcount 1
+		head := d.intern("head") // refcount 1
+
+		idT, idH, release, ok := d.pinBoth("tail", "head")
+		if !ok {
+			t.Fatalf("pinBoth of present keys returned ok=false")
+		}
+		if idT != tail || idH != head {
+			t.Fatalf("pinBoth ids = (%d,%d), want (%d,%d)", idT, idH, tail, head)
+		}
+		// The pin added one reference to each id, so the original intern
+		// reference can be released without freeing the id.
+		if freed := d.release(tail); freed {
+			t.Fatalf("tail freed while pin still held")
+		}
+		if freed := d.release(head); freed {
+			t.Fatalf("head freed while pin still held")
+		}
+		if _, ok := d.lookup("tail"); !ok {
+			t.Fatalf("tail vanished while pinned")
+		}
+		// Dropping the pin frees both (their last reference).
+		release()
+		if _, ok := d.lookup("tail"); ok {
+			t.Fatalf("tail still resolvable after pin release + intern release")
+		}
+		if _, ok := d.lookup("head"); ok {
+			t.Fatalf("head still resolvable after pin release + intern release")
+		}
+		if got := d.len(); got != 0 {
+			t.Fatalf("len=%d after full release, want 0", got)
+		}
+	})
+
+	t.Run("missing endpoint returns ok=false and no-op release", func(t *testing.T) {
+		d := newDictionary[string]()
+		d.intern("tail")
+		idT, idH, release, ok := d.pinBoth("tail", "absent")
+		if ok {
+			t.Fatalf("pinBoth with missing head returned ok=true")
+		}
+		if idT != 0 || idH != 0 {
+			t.Fatalf("pinBoth miss returned ids (%d,%d), want (0,0)", idT, idH)
+		}
+		if release == nil {
+			t.Fatalf("pinBoth miss returned nil release")
+		}
+		release() // must not panic
+		// The present endpoint must not have been pinned.
+		if freed := d.release(idT); freed != true {
+			// tail had refcount 1; releasing it should free (proves pinBoth
+			// did not leak an extra reference on the miss path).
+			t.Fatalf("tail refcount drifted on pinBoth miss")
+		}
+	})
+
+	t.Run("self-pin balances", func(t *testing.T) {
+		d := newDictionary[string]()
+		self := d.intern("self") // refcount 1
+		idA, idB, release, ok := d.pinBoth("self", "self")
+		if !ok || idA != self || idB != self {
+			t.Fatalf("self pinBoth = (%d,%d,%v), want (%d,%d,true)", idA, idB, ok, self, self)
+		}
+		// Pin added two references (a == b bumped twice); release drops both.
+		release()
+		if freed := d.release(self); !freed {
+			t.Fatalf("self refcount unbalanced after self-pin: not freed at expected count")
+		}
+		if got := d.len(); got != 0 {
+			t.Fatalf("len=%d after self-pin balance, want 0", got)
+		}
+	})
+}

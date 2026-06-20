@@ -5,6 +5,8 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"github.com/anaregdesign/lantern/core/hlc"
 )
 
 func Test_newWeight(t *testing.T) {
@@ -446,6 +448,58 @@ func Test_edgeCache_getDetail_noGoroutineForExpired(t *testing.T) {
 	c.flush()
 	if got := c.count(); got != 0 {
 		t.Fatalf("flush should reclaim expired edge, count=%d", got)
+	}
+}
+
+// Test_edgeCache_putWithExpiration_inPlaceReplace verifies the local PutEdge
+// path replaces an existing edge in place (weight.replace) instead of
+// delete+add, so the dict refcounts and df stay stable across a replace and a
+// concurrent lock-free reader never sees the bucket vanish (#740).
+func Test_edgeCache_putWithExpiration_inPlaceReplace(t *testing.T) {
+	d := newDictionary[string]()
+	c := newEdgeCache[string](time.Minute, d)
+	exp := time.Now().Add(time.Hour)
+
+	created, tailID, headID := c.putWithExpiration("a", "b", 1, exp)
+	if !created {
+		t.Fatalf("first putWithExpiration created=false, want true")
+	}
+	// Replace the same edge: must reuse the bucket (created=false), the same
+	// ids, leave a single contribution, and not churn dict refcounts.
+	refTail := d.refcount[tailID]
+	refHead := d.refcount[headID]
+	created2, tailID2, headID2 := c.putWithExpiration("a", "b", 5, exp)
+	if created2 {
+		t.Fatalf("replace reported created=true, want false")
+	}
+	if tailID2 != tailID || headID2 != headID {
+		t.Fatalf("replace returned different ids: (%d,%d) vs (%d,%d)", tailID2, headID2, tailID, headID)
+	}
+	if d.refcount[tailID] != refTail || d.refcount[headID] != refHead {
+		t.Fatalf("replace churned dict refcounts: tail %d->%d head %d->%d",
+			refTail, d.refcount[tailID], refHead, d.refcount[headID])
+	}
+	if got, _, ok := c.getDetail("a", "b"); !ok || got != 5 {
+		t.Fatalf("after replace getDetail = (%v,%v), want (5,true)", got, ok)
+	}
+}
+
+// Test_weight_replace verifies replace swaps all contributions for a single
+// one, recomputes the cached sum, and resets lastHLC (matching fresh-weight
+// semantics).
+func Test_weight_replace(t *testing.T) {
+	w := newWeight()
+	w.addWithExpiration(1, time.Now().Add(time.Hour))
+	w.addWithExpiration(2, time.Now().Add(time.Hour))
+	w.replace(7, time.Now().Add(time.Hour))
+	if got := w.value(); got != 7 {
+		t.Fatalf("value after replace = %v, want 7", got)
+	}
+	if len(w.values) != 1 {
+		t.Fatalf("replace left %d contributions, want 1", len(w.values))
+	}
+	if !w.lastHLC.Equal(hlc.Timestamp{}) {
+		t.Fatalf("replace did not reset lastHLC")
 	}
 }
 
