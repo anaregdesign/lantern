@@ -1,6 +1,7 @@
 package graphcache
 
 import (
+	"context"
 	"fmt"
 	"runtime"
 	"strings"
@@ -298,4 +299,35 @@ func BenchmarkPutVertex_Search(b *testing.B) {
 			c.PutVertexWithExpiration(makeKey("k", i, 24), benchSearchCorpus[i%len(benchSearchCorpus)], exp)
 		}
 	})
+}
+
+// BenchmarkScanEdgesByPrefix measures the edge-prefix scan after #742 moved the
+// visitor out of the read lock: matching rows are snapshotted under c.mu.RLock
+// and the visitor replays after release. The headline cost surfaced here is the
+// snapshot allocation (one row per matched edge, visible under -benchmem); the
+// win it buys — a slow visitor no longer holding the lock against writers — is
+// asserted for correctness by TestGraphCache_ScanEdgesByPrefix_CallbackReentrant
+// rather than timed here.
+func BenchmarkScanEdgesByPrefix(b *testing.B) {
+	for _, s := range smallScales(testing.Short()) {
+		s := s
+		b.Run(s.name, func(b *testing.B) {
+			c := NewGraphCache[string, string](time.Hour)
+			c.EnablePrefixIndex(func(k string) string { return k })
+			populate(b, c, s)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				var n int
+				c.ScanEdgesByPrefix(context.Background(), "https://example.com", "",
+					func(_ string, _ string, _ string, _ string, _ float32, _ time.Time) bool {
+						n++
+						return true
+					})
+				if n == 0 {
+					b.Fatal("scan matched no edges")
+				}
+			}
+		})
+	}
 }

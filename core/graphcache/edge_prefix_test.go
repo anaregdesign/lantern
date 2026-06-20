@@ -372,3 +372,47 @@ func TestScanEdgesByPrefix_Atomic(t *testing.T) {
 		t.Fatalf("quiesce set empty — writers never won any insert?")
 	}
 }
+
+// TestGraphCache_ScanEdgesByPrefix_CallbackReentrant proves the #742 behavior
+// change: the visitor now runs AFTER the read lock is released, so it may call
+// back into GraphCache write methods. Under the old contract (callback invoked
+// while holding c.mu.RLock) any such write would self-deadlock because
+// sync.RWMutex is not reentrant. The scan is run in a goroutine with a timeout
+// so a regression fails loudly instead of hanging the suite.
+func TestGraphCache_ScanEdgesByPrefix_CallbackReentrant(t *testing.T) {
+	c := NewGraphCache[string, string](time.Minute)
+	c.EnablePrefixIndex(identityExtract)
+	exp := time.Now().Add(time.Minute)
+	for i := 0; i < 5; i++ {
+		c.PutEdgeWithExpiration(fmt.Sprintf("t%d", i), "h", 1.0, exp)
+	}
+
+	done := make(chan bool, 1)
+	go func() {
+		var visited int
+		ok := c.ScanEdgesByPrefix(context.Background(), "t", "",
+			func(_ string, tail string, _ string, _ string, _ float32, _ time.Time) bool {
+				visited++
+				// Reentrant writes from inside the visitor: an existing-edge
+				// append (takes c.mu.Lock) and a brand-new vertex.
+				c.AddEdgeWithExpiration(tail, "h", 1, exp)
+				c.PutVertexWithExpiration("side:"+tail, "v", exp)
+				return true
+			})
+		done <- ok && visited == 5
+	}()
+
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Fatal("reentrant ScanEdgesByPrefix did not complete cleanly")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("reentrant ScanEdgesByPrefix deadlocked (visitor ran under the read lock?)")
+	}
+
+	// The reentrant writes took effect after the scan released the lock.
+	if _, ok := c.GetVertex("side:t0"); !ok {
+		t.Fatal("reentrant PutVertex from visitor did not persist")
+	}
+}
