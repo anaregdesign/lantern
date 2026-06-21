@@ -13,6 +13,7 @@ import (
 
 	"github.com/anaregdesign/lantern/core/graphcache"
 	v1 "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 	"github.com/anaregdesign/lantern/server/readiness"
@@ -175,6 +176,7 @@ type Config struct {
 	AntiEntropy   AntiEntropyConfig
 	Readiness     ReadinessConfig
 	CORS          CORSConfig
+	Backup        backup.Config
 }
 
 func NewConfig() *Config {
@@ -183,6 +185,10 @@ func NewConfig() *Config {
 	if burst <= 0 && rps > 0 {
 		burst = int(2 * rps)
 	}
+	// Peers are loaded up front because the backup loader's
+	// restore-on-startup decision is peer-mode-aware (single-instance only
+	// by default, #770).
+	peer := loadPeerConfig()
 	return &Config{
 		Net: NetConfig{
 			Port:                 envconfig.Int("LANTERN_PORT", 6380),
@@ -239,9 +245,10 @@ func NewConfig() *Config {
 		MutationLog: loadMutationLogConfig(),
 		Replication: loadReplicationConfig(),
 		Readiness:   loadReadinessConfig(),
-		Peer:        loadPeerConfig(),
+		Peer:        peer,
 		AntiEntropy: loadAntiEntropyConfig(),
 		CORS:        loadCORSConfig(),
+		Backup:      loadBackupConfig(len(peer.Peers) > 0),
 	}
 }
 
