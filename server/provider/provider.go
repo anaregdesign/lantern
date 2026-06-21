@@ -185,9 +185,6 @@ func NewConfig() *Config {
 	if burst <= 0 && rps > 0 {
 		burst = int(2 * rps)
 	}
-	// Peers are loaded up front because the backup loader's
-	// restore-on-startup decision is peer-mode-aware (single-instance only
-	// by default, #770).
 	peer := loadPeerConfig()
 	return &Config{
 		Net: NetConfig{
@@ -248,7 +245,7 @@ func NewConfig() *Config {
 		Peer:        peer,
 		AntiEntropy: loadAntiEntropyConfig(),
 		CORS:        loadCORSConfig(),
-		Backup:      loadBackupConfig(len(peer.Peers) > 0),
+		Backup:      loadBackupConfig(),
 	}
 }
 

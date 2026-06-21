@@ -16,9 +16,10 @@
 #   docker compose -f docker-compose.backup.yml up -d   # restores on boot
 #   go run ../../cli get vertex hello               # still there
 #
-# Single instance ⇒ restore-on-start runs (no peers to bootstrap from). For
-# the 3-replica Tier-A HA stack use docker-compose.yml instead; there restore
-# is gated off because peer bootstrap is the recovery path.
+# Single instance ⇒ restore-on-start is the whole recovery path (no peers to
+# bootstrap from). The 3-replica Tier-A HA stack in docker-compose.yml also
+# restores on boot, but only as a baseline — peer bootstrap then overlays it
+# via HLC, so there replicas take priority and the dump just fills gaps.
 #
 # Override the image the same way as the HA stack:
 #   LANTERN_IMAGE=lantern:local docker compose -f docker-compose.backup.yml up -d

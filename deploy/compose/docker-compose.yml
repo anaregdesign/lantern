@@ -68,6 +68,22 @@ x-lantern-common: &lantern-common
     # admin container DOES optionally reverse-proxy Prometheus same-
     # origin under /api/prom — that path needs no gateway CORS.)
     LANTERN_CORS_ALLOWED_ORIGINS: "http://localhost:8080"
+    # Snapshot durability (#770, #779): each replica periodically dumps its
+    # whole graph to its own mounted volume (declared per-service below) and
+    # replays the newest dump on boot as a BASELINE. Peer bootstrap then
+    # overlays that baseline through the write path, so HLC ordering lets
+    # newer peer state win per key — replicas take priority, the dump only
+    # fills gaps, and a whole-cluster restart recovers from the dumps instead
+    # of coming up empty. Each replica's LANTERN_BACKUP_INSTANCE_ID defaults
+    # to its hostname, pinned per-service below so dumps never collide and
+    # retention prunes the right files across restarts. The default TTL
+    # (3600s) stays well above the 5m interval per the TTL-vs-interval caveat,
+    # so a restored dump is still live.
+    LANTERN_BACKUP_ENABLED: "true"
+    LANTERN_BACKUP_DIR: "/data"
+    LANTERN_BACKUP_INTERVAL: "5m"
+    LANTERN_BACKUP_RETAIN: "3"
+    LANTERN_BACKUP_RESTORE_ON_START: "true"
   networks:
     default:
       aliases:
@@ -82,18 +98,30 @@ x-lantern-common: &lantern-common
 services:
   lantern-0:
     <<: *lantern-common
+    # Pin the hostname so LANTERN_BACKUP_INSTANCE_ID (defaults to the
+    # hostname) is stable + distinct per replica across recreations; each
+    # replica owns one named volume mounted at LANTERN_BACKUP_DIR (/data).
+    hostname: lantern-0
     ports:
       - "6380:6380"
+    volumes:
+      - lantern-backup-0:/data
 
   lantern-1:
     <<: *lantern-common
+    hostname: lantern-1
     ports:
       - "6381:6380"
+    volumes:
+      - lantern-backup-1:/data
 
   lantern-2:
     <<: *lantern-common
+    hostname: lantern-2
     ports:
       - "6382:6380"
+    volumes:
+      - lantern-backup-2:/data
 
   admin:
     image: ${LANTERN_ADMIN_IMAGE:-ghcr.io/anaregdesign/lantern-admin:latest}
@@ -163,3 +191,12 @@ services:
         condition: service_healthy
       lantern-2:
         condition: service_healthy
+
+# Per-replica backup volumes (#770). Each lantern-N owns one named volume so
+# its snapshot dumps survive `docker compose down` (but are removed by
+# `down -v`, matching the experiment-stack teardown). Mirrors the Helm
+# StatefulSet's per-pod backup PVC (volumeClaimTemplate).
+volumes:
+  lantern-backup-0:
+  lantern-backup-1:
+  lantern-backup-2:
