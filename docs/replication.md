@@ -51,8 +51,10 @@ is required for either reads or writes.
    load balancer drains the instance. **Single-instance mode** (empty
    `LANTERN_PEERS`) bypasses this gate.
 5. **No leader, no Raft, no external storage.** v1 is intentionally
-   ephemeral. Single-pod loss recovers from peers. Total-cluster loss is
-   accepted data loss.
+   ephemeral. Single-pod loss recovers from peers; total-cluster loss is
+   accepted data loss **unless snapshot backups are configured**
+   (`LANTERN_BACKUP_*`, see [backup.md](backup.md)), in which case each
+   node restores its newest dump on boot.
 6. **Rolling update safe.** One pod down → remaining pods serve → new pod
    bootstraps → ready → next. This invariant is about **cluster
    availability** (the cluster keeps accepting requests throughout). **Zero
@@ -536,7 +538,7 @@ The [HA runbook](ha-runbook.md) describes detection (`lantern_replication_lag_se
 | Single pod crash | k8s probe / Compose healthcheck | k8s/Compose restarts pod → bootstraps from peers. |
 | Pod falls behind > buffer | `Subscribe` returns `OutOfRange` | Pump auto re-snapshots and resumes. |
 | All peers unreachable on boot | `Snapshot` fails on every peer | Pod stays `NOT_SERVING`; operator alert on readiness. |
-| Total-cluster loss | every replica down | **Accepted data loss** (D1). Bring the cluster back empty. |
+| Total-cluster loss | every replica down | **Accepted data loss** (D1) — bring the cluster back empty, *or* run snapshot backups (`LANTERN_BACKUP_*`, [backup.md](backup.md)) so each node restores its newest dump on boot. |
 | NTP skew > 500ms | `lantern_hlc_skew_clamped_total > 0` | Fix NTP. Mutations from the drifted peer keep applying (their HLC wall is clamped, §5.3); convergence is preserved but the drifted peer's stamps land behind real wall time until it heals. |
 | Network partition < tombstone TTL | `lantern_replication_lag_seq` spike | Auto-converges via anti-entropy (#186) when partition heals. |
 | Network partition > tombstone TTL | same | Resurrection possible (§10). Manual reconciliation or operator-driven re-snapshot of the winning side. |
@@ -560,7 +562,8 @@ For every "not supported" platform, the **single-instance** deploy is fully
 supported: leave `LANTERN_PEERS` empty, the server runs without a pump, the
 readiness gate is bypassed, and `Subscribe` still works as a CDC stream for
 downstream consumers. Cold-start data loss is expected on these platforms
-unless an external WAL consumer is in place.
+unless snapshot backups (`LANTERN_BACKUP_*`, [backup.md](backup.md)) or an
+external WAL consumer are in place.
 
 ## 13. Out of scope (v1)
 

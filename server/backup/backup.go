@@ -55,8 +55,8 @@ const (
 
 // Config is the resolved backup configuration. It lives in this package
 // (not provider) so the dependency direction stays provider → backup. The
-// provider's loader resolves RestoreOnStart against peer mode before
-// constructing the Backupper.
+// provider's loader resolves RestoreOnStart from the LANTERN_BACKUP_* env
+// before constructing the Backupper.
 type Config struct {
 	// Enabled gates the periodic dump loop. Resolved to false when
 	// LANTERN_BACKUP_DIR is empty even if LANTERN_BACKUP_ENABLED is set.
@@ -72,7 +72,8 @@ type Config struct {
 	// on shared storage). Defaults to the hostname.
 	InstanceID string
 	// RestoreOnStart is the resolved decision to restore the newest dump on
-	// boot (already factors enabled, dir, the env knob, and peer mode).
+	// boot as a baseline (already factors enabled, dir, and the env knob);
+	// peer bootstrap later overlays that baseline via HLC.
 	RestoreOnStart bool
 	// RestoreRequired makes a restore error fail boot instead of warning.
 	RestoreRequired bool

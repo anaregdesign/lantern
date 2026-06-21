@@ -56,8 +56,10 @@ is unset (or `static`). In this mode:
   gRPC listener is up.
 - `Subscribe` still works — external CDC consumers see every mutation
   in real time.
-- Cold start = empty cache. There is no persistence in v1
-  ([RFC D1](replication.md#3-binding-decisions-d1d7)).
+- Cold start = empty cache **unless snapshot backups are configured**
+  (`LANTERN_BACKUP_*`, see [backup.md](backup.md)): the replication layer
+  itself has no persistence ([RFC D1](replication.md#3-binding-decisions-d1d7)),
+  but the backup engine restores the newest dump on boot.
 
 This is the supported mode for every "❌ HA not supported" row in §1.
 
@@ -262,7 +264,8 @@ peer set.
 - Do **not** set `LANTERN_PEER_DISCOVERY` or `LANTERN_PEERS`.
 - Allocate enough memory for your working set (§5).
 - Treat the service as a fast in-memory KVS. Cold start = empty
-  cache.
+  cache unless snapshot backups are configured (`LANTERN_BACKUP_*`,
+  see [backup.md](backup.md)).
 - For CDC: open `Subscribe` from a long-lived consumer outside the
   PaaS (e.g., a worker on k8s or a VM) and persist downstream.
 
@@ -509,7 +512,8 @@ Helm chart when you need to scale past three.
 PDB still applies: on k8s, `kubectl scale` will block if going below
 `minAvailable`. Lower the PDB before scaling down hard. Going to
 zero = total-cluster loss = accepted data loss
-([RFC D1](replication.md#3-binding-decisions-d1d7)).
+([RFC D1](replication.md#3-binding-decisions-d1d7)) unless snapshot
+backups are configured ([§9.4](#94-total-cluster-loss)).
 
 ---
 
@@ -565,12 +569,19 @@ Walk the bootstrap flow:
 
 ### 9.4 Total-cluster loss
 
-Accepted ([RFC D1](replication.md#3-binding-decisions-d1d7)): v1 has
-no persistence. Re-deploy from your image; rehydrate from upstream
-sources via a fresh ingestion pass.
+Accepted ([RFC D1](replication.md#3-binding-decisions-d1d7)) by the
+**replication** layer — it has no persistence. Re-deploy from your image
+and rehydrate from upstream sources via a fresh ingestion pass.
 
-If you need crash-survival, the WAL hook exists in the apply path
-but is not wired to a writer in v1; that's a v2 conversation.
+**Unless you run snapshot backups** (`LANTERN_BACKUP_*`, see
+[backup.md](backup.md)): with a mounted dump volume each node restores its
+newest dump on boot, so the cluster comes back at roughly its last
+`LANTERN_BACKUP_INTERVAL` instead of empty. Peer bootstrap then reconciles
+any per-node differences via HLC.
+
+If you need finer-grained crash-survival than the snapshot interval, the
+WAL hook exists in the apply path but is not wired to a writer in v1;
+that's a v2 conversation.
 
 ---
 
@@ -619,7 +630,7 @@ operator actions.
 | Single pod crash | k8s probe / Compose healthcheck flips | Auto-restarts. Pod bootstraps from peers. No action unless it crashloops. |
 | Pod falls behind buffer | `subscribe_dropped_total{reason="out_of_range"}` increments | Pump auto re-snapshots. Chronic = bump capacity. |
 | All peers unreachable on boot | Pod `NOT_SERVING`, no `replication_applied` increments | Check discovery env (§9.3). |
-| Total-cluster loss | Every pod down | Accepted data loss. Rehydrate. |
+| Total-cluster loss | Every pod down | Accepted data loss; rehydrate — or restore from snapshot backups if configured ([§9.4](#94-total-cluster-loss)). |
 | NTP skew > 500 ms | `hlc_skew_clamped_total > 0` | Fix NTP. Convergence preserved, but the drifted peer's stamps land behind real wall time. |
 | Network partition < tombstone TTL | `replication_lag_seq` spike; `anti_entropy_gaps_found_total` non-zero after heal | Auto-converges. No action. |
 | Network partition > tombstone TTL | Same signals + possible resurrection | Force re-snapshot from the side you trust ([§9.1](#91-force-a-re-snapshot)). Consider extending tombstone TTL. |
