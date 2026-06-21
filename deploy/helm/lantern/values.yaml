@@ -30,6 +30,34 @@ podDisruptionBudget:
   enabled: true
   minAvailable: 2
 
+# Zero-drop rolling-update drain (#768). On SIGTERM the server flips
+# readiness to NOT_SERVING immediately (overall "" gRPC health + /readyz
+# return 503 so kube-proxy / load balancers deregister the pod) and then
+# keeps the listener serving for `drain.delaySeconds` so in-flight and
+# endpoint-propagation-window requests still complete — this is the primary
+# mechanism and needs no shell in the image (it is server-side, via
+# LANTERN_DRAIN_DELAY_SECONDS).
+#
+# `drain.preStop` is an OPTIONAL k8s-native belt: a `sleep delaySeconds`
+# preStop hook for operators who also want kubelet to pause before SIGTERM
+# (e.g. behind a mesh that drains on container lifecycle rather than
+# readiness). It is OFF by default because the server-side hold already
+# covers the propagation window, and it requires `/bin/sleep` in the image
+# (present on the alpine-based server image, absent on distroless).
+drain:
+  delaySeconds: 5
+  preStop: false
+
+# Pod termination grace. Must exceed drain.delaySeconds + the server
+# shutdown timeout (LANTERN_SHUTDOWN_TIMEOUT_SECONDS, default 30) so the
+# drain window and the in-flight flush both fit before SIGKILL.
+terminationGracePeriodSeconds: 45
+
+# minReadySeconds gates the rollout: a freshly-restarted pod must stay
+# Ready this long before the StatefulSet controller disrupts the next one,
+# so a pod whose readiness flaps right after restart doesn't cascade.
+minReadySeconds: 10
+
 service:
   # ClusterIP service exposes the Lantern wire port to clients
   # (Connect / gRPC / gRPC-Web multiplexed on h2c).

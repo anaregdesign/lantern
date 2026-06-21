@@ -803,6 +803,7 @@ The server is configured via environment variables, parsed in
 | `LANTERN_CORS_ALLOWED_ORIGINS` | _(empty)_ | Comma-separated CORS allow-list for the primary `:6380` listener (e.g. `http://localhost:5173,https://admin.example.com`). Empty disables CORS. `*` is honoured only when sole entry. |
 | `LANTERN_REFLECTION` | `true` | Register gRPC server reflection (useful for `grpcurl`) |
 | `LANTERN_SHUTDOWN_TIMEOUT_SECONDS` | `30` | Upper bound on graceful shutdown before forcing `http.Server.Close()` |
+| `LANTERN_DRAIN_DELAY_SECONDS` | `0` | Zero-drop rolling-update drain (#768). On `SIGTERM` the server flips readiness (`/readyz` + overall `""` health) to `NOT_SERVING` immediately, then keeps the listener serving for this long so load balancers deregister it before it stops accepting. `0` disables (no hold). Keep `terminationGracePeriodSeconds ≥` this `+ LANTERN_SHUTDOWN_TIMEOUT_SECONDS`. |
 | `LANTERN_MAX_RECV_MSG_BYTES` | `16777216` | Per-RPC inbound message limit (16 MiB default) |
 | `LANTERN_MAX_SEND_MSG_BYTES` | `16777216` | Per-RPC outbound message limit |
 | `LANTERN_MAX_CONCURRENT_STREAMS` | `1024` | Upper bound on concurrent streams per HTTP/2 connection |

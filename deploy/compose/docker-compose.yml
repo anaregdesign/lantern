@@ -38,6 +38,10 @@
 # colliding on globally-scoped container names.
 x-lantern-common: &lantern-common
   image: ${LANTERN_IMAGE:-ghcr.io/anaregdesign/lantern:latest}
+  # Zero-drop drain on recreate (#768): Docker SIGKILLs 10s after SIGTERM by
+  # default, which is shorter than LANTERN_DRAIN_DELAY_SECONDS (5) + the
+  # server shutdown timeout (30). Give the drain + in-flight flush room.
+  stop_grace_period: 45s
   environment:
     LANTERN_PORT: "6380"
     LANTERN_METRICS_ADDR: ":9090"
@@ -53,6 +57,10 @@ x-lantern-common: &lantern-common
     LANTERN_PEER_DISCOVERY_INTERVAL_MS: "10000"
     # Readiness gating (#188).
     LANTERN_MAX_REPLICATION_LAG: "10000"
+    # Zero-drop rolling-update drain (#768): on SIGTERM the server flips
+    # readiness to NOT_SERVING then keeps serving this long so clients /
+    # DNS round-robin stop hitting the dying replica before it closes.
+    LANTERN_DRAIN_DELAY_SECONDS: "5"
     # Allow the admin SPA to call this listener from the browser.
     # Lantern serves Connect / gRPC / gRPC-Web on the same h2c socket,
     # and the admin container does not proxy the gateway (the browser
