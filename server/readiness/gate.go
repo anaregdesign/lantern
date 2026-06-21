@@ -41,6 +41,10 @@ type HealthSetter interface {
 //     after MarkBootstrapped() has fired AND no observed (peer, origin)
 //     lag exceeds MaxLag. It flips back to NOT_SERVING whenever the lag
 //     constraint is violated again.
+//   - BeginDrain() forces NOT_SERVING permanently regardless of mode, lag,
+//     or bootstrap state (the graceful-shutdown drain signal, #768). It is
+//     one-way: once draining, no later SetLag / MarkBootstrapped can flip
+//     the Gate back to SERVING.
 type Gate struct {
 	maxLag   uint64
 	hasPeers bool
@@ -48,6 +52,7 @@ type Gate struct {
 
 	mu           sync.Mutex
 	bootstrapped bool
+	draining     bool
 	lags         map[string]uint64 // key = peer + "\x00" + origin
 	current      grpchealth.Status
 
@@ -98,6 +103,24 @@ func (g *Gate) MarkBootstrapped() {
 	g.evaluateLocked()
 }
 
+// BeginDrain flips the Gate to NOT_SERVING and latches it there for the
+// rest of the process lifetime (#768). It is the graceful-shutdown drain
+// signal: on SIGTERM the server calls BeginDrain so the overall ("")
+// gRPC health entry and the /readyz HTTP probe report NOT_SERVING
+// immediately — load balancers deregister the instance and stop routing
+// new requests — while the listener keeps serving for the drain window.
+// It applies in single-instance mode too (that node still has a /readyz)
+// and is idempotent.
+func (g *Gate) BeginDrain() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.draining {
+		return
+	}
+	g.draining = true
+	g.evaluateLocked()
+}
+
 // SetLag records the latest observed lag for a (peer, origin) row in
 // mutation-seq units. A value of 0 clears the row (caught up). In
 // single-instance mode this is a no-op.
@@ -127,6 +150,11 @@ func (g *Gate) SetLag(peer, origin string, gap uint64) {
 func (g *Gate) Ready() bool { return g.ready.Load() }
 
 func (g *Gate) readyLocked() bool {
+	// Draining wins over every other consideration, including
+	// single-instance mode's always-ready shortcut.
+	if g.draining {
+		return false
+	}
 	if !g.hasPeers {
 		return true
 	}

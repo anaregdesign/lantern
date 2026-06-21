@@ -13,6 +13,7 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 	"github.com/anaregdesign/lantern/server/provider"
+	"github.com/anaregdesign/lantern/server/readiness"
 	"github.com/anaregdesign/lantern/server/replication"
 	"github.com/anaregdesign/lantern/server/service"
 
@@ -31,6 +32,8 @@ type App struct {
 	tracing     *provider.Tracing
 	domain      *domainmetrics.DomainMetrics
 	health      *provider.HealthChecker
+	gate        *readiness.Gate
+	drainDelay  time.Duration
 	pump        *replication.Pump
 	antiEntropy *replication.AntiEntropy
 }
@@ -46,6 +49,8 @@ func newApp(
 	hc *provider.HealthChecker,
 	pump *replication.Pump,
 	antiEntropy *replication.AntiEntropy,
+	gate *readiness.Gate,
+	sc provider.ShutdownConfig,
 	pc provider.PeerConfig,
 	rc provider.ReplicationConfig,
 	_ provider.CacheGCHooksWired,
@@ -72,6 +77,8 @@ func newApp(
 		tracing:     tracing,
 		domain:      domain,
 		health:      hc,
+		gate:        gate,
+		drainDelay:  sc.DrainDelay,
 		pump:        pump,
 		antiEntropy: antiEntropy,
 	}
@@ -178,13 +185,30 @@ func (a *App) Run(ctx context.Context) error {
 	// (#188): in single-instance mode it is already SERVING; in
 	// multi-peer mode it stays NOT_SERVING until bootstrap completes
 	// and replication lag is within LANTERN_MAX_REPLICATION_LAG.
+	//
+	// Two-phase shutdown for zero-drop rolling updates (#768): the long-
+	// running servers serve on serveCtx, NOT the parent ctx. On SIGTERM the
+	// drain coordinator first flips readiness to NOT_SERVING (overall ""
+	// health + /readyz return 503 so load balancers deregister this
+	// instance), holds every listener up for LANTERN_DRAIN_DELAY_SECONDS so
+	// in-flight and endpoint-propagation-window requests still complete, and
+	// only then cancels serveCtx to begin the real graceful shutdown. With
+	// DrainDelay=0 the behaviour matches the historical path bar an
+	// immediate, harmless BeginDrain.
+	serveCtx, cancelServe := context.WithCancel(context.Background())
+	defer cancelServe()
 
-	g, gctx := errgroup.WithContext(ctx)
+	g, gctx := errgroup.WithContext(serveCtx)
 	g.Go(func() error { return a.server.Run(gctx) })
 	g.Go(func() error { return a.metrics.Run(gctx) })
 	g.Go(func() error { a.domain.Run(gctx); return nil })
 	g.Go(func() error { return a.pump.Run(gctx) })
 	g.Go(func() error { return a.antiEntropy.Run(gctx) })
+	g.Go(func() error {
+		drainPhase(ctx, gctx.Done(), a.drainDelay, a.beginDrain)
+		cancelServe()
+		return nil
+	})
 	g.Go(func() error {
 		<-gctx.Done()
 		a.health.SetServingStatus("", grpchealth.StatusNotServing)
@@ -197,6 +221,46 @@ func (a *App) Run(ctx context.Context) error {
 		return nil
 	})
 	return g.Wait()
+}
+
+// beginDrain latches the readiness Gate into NOT_SERVING (#768) so the
+// overall ("") gRPC health entry and /readyz report draining immediately.
+// nil-safe so an App constructed without a Gate (tests) is a no-op.
+func (a *App) beginDrain() {
+	if a.gate == nil {
+		return
+	}
+	a.logger.Info("draining: readiness NOT_SERVING, holding listeners for drain window",
+		slog.Duration("drain_delay", a.drainDelay))
+	a.gate.BeginDrain()
+}
+
+// drainPhase implements the graceful-drain window (#768). It blocks until
+// the parent context is cancelled (operator SIGTERM) or serveDone fires (a
+// server goroutine failed first). On parent cancellation it calls begin
+// once — the caller flips readiness to NOT_SERVING — then holds for
+// drainDelay (cut short if serveDone fires meanwhile) so the listeners keep
+// serving while load balancers deregister the endpoint. When serveDone
+// fires first it returns immediately without draining: an already-failing
+// server should shut down without an artificial delay.
+func drainPhase(parent context.Context, serveDone <-chan struct{}, drainDelay time.Duration, begin func()) {
+	select {
+	case <-parent.Done():
+	case <-serveDone:
+		return
+	}
+	if begin != nil {
+		begin()
+	}
+	if drainDelay <= 0 {
+		return
+	}
+	timer := time.NewTimer(drainDelay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-serveDone:
+	}
 }
 
 func main() {
