@@ -18,3 +18,6 @@ coverage.html
 
 # Bench harness output (testbed/bench/) — local-only run artifacts.
 testbed/bench/out/
+
+# Local snapshot-backup dumps from deploy/compose/docker-compose.backup.yml (#770)
+deploy/compose/backups/

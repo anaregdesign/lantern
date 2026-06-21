@@ -469,7 +469,8 @@ of termination** before the listener stops accepting.
 have no peer to fail over to, so the drain still flips `/readyz` (the
 platform shifts traffic to the new revision) but durability across the
 rotation comes from the snapshot backup/restore feature
-(`LANTERN_BACKUP_*`, #770), not replication.
+(`LANTERN_BACKUP_*`, #770) — see [docs/backup.md](backup.md) — not
+replication.
 
 **Backwards compatibility.** v1's Subscribe/Snapshot wire format is
 versioned at the proto level; minor version bumps within v1 are

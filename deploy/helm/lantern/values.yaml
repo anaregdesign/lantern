@@ -101,6 +101,30 @@ antiEntropy:
 cache:
   defaultTtlSeconds: 3600
 
+# Snapshot durability (#770): periodic whole-graph dumps to a mounted volume
+# + restore-on-startup. Disabled by default. This is primarily the Tier-B
+# (single-instance, replicaCount=1) rolling-update insurance — there
+# restore-on-start re-seeds the graph on boot. In a multi-replica StatefulSet
+# restore is gated off (peer bootstrap is the recovery path), so backups there
+# only serve whole-cluster-loss recovery; each pod writes its own dumps
+# (LANTERN_BACKUP_INSTANCE_ID = pod name).
+backup:
+  enabled: false
+  dir: /var/lib/lantern/backups
+  interval: 5m
+  retain: 3
+  restoreOnStart: true
+  restoreRequired: false
+  persistence:
+    # A real PVC is required for dumps to survive pod restarts (an emptyDir
+    # would not). When enabled and no existingClaim is set, the chart renders
+    # a per-pod volumeClaimTemplate mounted at `dir`.
+    enabled: true
+    existingClaim: ""
+    storageClass: ""
+    accessModes: ["ReadWriteOnce"]
+    size: 1Gi
+
 # Liveness/readiness probes.
 probes:
   liveness:
