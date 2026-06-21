@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"math"
 	"os"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
+	"github.com/anaregdesign/lantern/server/backup"
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/readiness"
@@ -34,6 +36,8 @@ type App struct {
 	health      *provider.HealthChecker
 	gate        *readiness.Gate
 	drainDelay  time.Duration
+	backupper   *backup.Backupper
+	restoreReq  bool
 	pump        *replication.Pump
 	antiEntropy *replication.AntiEntropy
 }
@@ -51,6 +55,8 @@ func newApp(
 	antiEntropy *replication.AntiEntropy,
 	gate *readiness.Gate,
 	sc provider.ShutdownConfig,
+	backupper *backup.Backupper,
+	bcfg backup.Config,
 	pc provider.PeerConfig,
 	rc provider.ReplicationConfig,
 	_ provider.CacheGCHooksWired,
@@ -79,6 +85,8 @@ func newApp(
 		health:      hc,
 		gate:        gate,
 		drainDelay:  sc.DrainDelay,
+		backupper:   backupper,
+		restoreReq:  bcfg.RestoreRequired,
 		pump:        pump,
 		antiEntropy: antiEntropy,
 	}
@@ -181,6 +189,19 @@ func newLanternReplicationService(
 }
 
 func (a *App) Run(ctx context.Context) error {
+	// Restore-on-startup (#770) runs BEFORE any listener serves, so a
+	// single-instance (Tier B) deploy recovers its in-memory graph from the
+	// newest mounted dump before accepting traffic. The Backupper no-ops
+	// when backups are disabled or restore is gated off (multi-peer mode
+	// relies on peer bootstrap instead). A restore failure fails boot only
+	// when LANTERN_BACKUP_RESTORE_REQUIRED is set.
+	if _, err := a.backupper.RestoreOnStartup(ctx); err != nil {
+		if a.restoreReq {
+			return fmt.Errorf("restore-on-startup: %w", err)
+		}
+		a.logger.Warn("restore-on-startup failed; starting with current state", slog.Any("err", err))
+	}
+
 	// The overall ("") gRPC health entry is owned by the readiness Gate
 	// (#188): in single-instance mode it is already SERVING; in
 	// multi-peer mode it stays NOT_SERVING until bootstrap completes
@@ -204,6 +225,7 @@ func (a *App) Run(ctx context.Context) error {
 	g.Go(func() error { a.domain.Run(gctx); return nil })
 	g.Go(func() error { return a.pump.Run(gctx) })
 	g.Go(func() error { return a.antiEntropy.Run(gctx) })
+	g.Go(func() error { return a.backupper.Run(gctx) })
 	g.Go(func() error {
 		drainPhase(ctx, gctx.Done(), a.drainDelay, a.beginDrain)
 		cancelServe()

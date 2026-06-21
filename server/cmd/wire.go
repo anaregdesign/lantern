@@ -50,6 +50,8 @@ func initializeApp() (*App, error) {
 		provider.NewMetricsServer,
 		provider.NewCORSConfig,
 		provider.NewLifecycleConfig,
+		provider.NewBackupConfig,
+		provider.NewBackupper,
 		newLanternService,
 		newLanternReplicationService,
 		provider.NewReplicationPump,

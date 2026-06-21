@@ -14,6 +14,7 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	client "github.com/anaregdesign/lantern/sdks/go"
+	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
 )
@@ -122,6 +123,70 @@ func drainBackup(t *testing.T, ctx context.Context, raw graphv1connect.LanternSe
 		t.Fatalf("BackupSnapshot stream: %v", err)
 	}
 	return vertices, edges
+}
+
+// TestBackupper_ServerInternal_RoundTrip_E2E drives the server-internal
+// snapshot engine (#770) end-to-end against real services + caches: seed a
+// graph, dump it to a temp dir via the Backupper's BackupNow (same path the
+// periodic loop uses), then RestoreOnStartup it into a FRESH service and
+// confirm every vertex value + edge weight survived. Proves the
+// server-internal proto dump interchanges with the BackupSnapshot surface
+// and that restore replays faithfully through PutVertices / PutEdges.
+func TestBackupper_ServerInternal_RoundTrip_E2E(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	dir := t.TempDir()
+	cfg := backup.Config{Enabled: true, Dir: dir, Interval: time.Hour, Retain: 3, InstanceID: "itest", RestoreOnStart: true}
+	val := provider.NewValidationInterceptor(defaultIntegrationValidationLimits())
+
+	// Source service, seeded via the SDK.
+	srcCache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+	srcSvc := service.NewLanternService(srcCache)
+	srcSrv := newConnectTestServer(t, srcSvc, nil, val.ConnectInterceptor())
+	srcSDK := newConnectClientFor(t, srcSrv.url)
+
+	const bigInt = int64(9007199254740993) // 2^53 + 1
+	if err := srcSDK.PutVertex(ctx, "alice", "Alice", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := srcSDK.PutVertex(ctx, "num", bigInt, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := srcSDK.AddEdge(ctx, "alice", "num", 1.5, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+
+	// Server-internal dump (same path as the periodic loop).
+	if _, err := backup.New(srcSvc, cfg, nil, nil).BackupNow(ctx); err != nil {
+		t.Fatalf("BackupNow: %v", err)
+	}
+
+	// Fresh service, restored on startup from the dump.
+	dstCache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+	dstSvc := service.NewLanternService(dstCache)
+	dstSrv := newConnectTestServer(t, dstSvc, nil, val.ConnectInterceptor())
+	dstRaw := graphv1connect.NewLanternServiceClient(h2cClient(), dstSrv.url)
+
+	stats, err := backup.New(dstSvc, cfg, nil, nil).RestoreOnStartup(ctx)
+	if err != nil {
+		t.Fatalf("RestoreOnStartup: %v", err)
+	}
+	if stats.Vertices != 2 || stats.Edges != 1 {
+		t.Fatalf("restore stats = %+v, want {2,1}", stats)
+	}
+
+	// Re-dump the restored service and confirm fidelity.
+	vs, es := drainBackup(t, ctx, dstRaw, &pb.BackupSnapshotRequest{})
+	if got, err := client.StringValue(vs["alice"]); err != nil || got != "Alice" {
+		t.Errorf("restored alice = %q (err %v), want Alice", got, err)
+	}
+	if got, err := client.IntValue(vs["num"]); err != nil || int64(got) != bigInt {
+		t.Errorf("restored num = %d (err %v), want %d", got, err, bigInt)
+	}
+	if e := es["alice->num"]; e == nil || e.GetWeight() != 1.5 {
+		t.Errorf("restored edge alice->num = %v, want weight 1.5", e)
+	}
 }
 
 // TestBackupRestore_E2E_SDK round-trips a graph through the SDK Backup
