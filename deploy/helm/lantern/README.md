@@ -67,6 +67,9 @@ HA runbook (#192) for the limits.
 | `replication.maxLag`                        | `10000`                | Per-(peer,origin) lag cap before readiness flips.  |
 | `antiEntropy.intervalMs`                    | `30000`                | Background reconciliation cadence.                 |
 | `podDisruptionBudget.minAvailable`          | `2`                    | Quorum-ish.                                        |
+| `backup.enabled`                            | `true`                 | Snapshot durability (#770/#779): per-pod dump PVC + restore-on-start baseline (peers overlay it via HLC). Needs a default StorageClass or `backup.persistence.storageClass`. |
+| `backup.interval`                           | `5m`                   | Dump cadence; keep `cache.defaultTtlSeconds` above it.             |
+| `backup.persistence.size`                   | `1Gi`                  | Per-pod PVC size for dumps.                        |
 | `metrics.serviceMonitor.enabled`            | `false`                | Requires the prometheus-operator CRD.              |
 | `admin.enabled`                             | `false`                | Render the `lantern-admin` SPA Deployment + Service. |
 | `admin.image.repository`                    | `ghcr.io/anaregdesign/lantern-admin` | Admin SPA image (Caddy serving the built bundle).     |
