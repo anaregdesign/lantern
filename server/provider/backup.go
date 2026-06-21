@@ -13,8 +13,16 @@ import (
 	"github.com/anaregdesign/lantern/server/service"
 )
 
-// loadBackupConfig reads the LANTERN_BACKUP_* contract and resolves the
-// restore-on-startup decision against peer mode (#770).
+// loadBackupConfig reads the LANTERN_BACKUP_* contract (#770, #779).
+//
+// Restore-on-start is unconditional: the newest valid dump is replayed on
+// boot as a baseline, independent of replication topology. When peers exist
+// the subsequent peer bootstrap overlays that baseline through the normal
+// write path, so HLC ordering lets newer peer state win per key (replica
+// priority); when no peer is reachable — a solo instance or a whole-cluster
+// cold start — the restored baseline IS the recovered state. This is the
+// most-stable arrangement: a restart never comes up with less than its own
+// last dump, and never serves an empty graph while it waits for peers.
 //
 //   - LANTERN_BACKUP_ENABLED          (default false) master switch for the
 //     periodic dump loop. Resolved to off when LANTERN_BACKUP_DIR is empty.
@@ -24,15 +32,12 @@ import (
 //     0 keeps all.
 //   - LANTERN_BACKUP_INSTANCE_ID      (default hostname) per-instance file
 //     token so shared-storage writes never collide.
-//   - LANTERN_BACKUP_RESTORE_ON_START (default true) restore the newest
-//     dump on boot. Restore is single-instance-gated: in multi-peer mode it
-//     is skipped (peer bootstrap is the recovery path) unless
-//     LANTERN_BACKUP_RESTORE_FORCE=true.
-//   - LANTERN_BACKUP_RESTORE_FORCE    (default false) restore even when
-//     peers are configured.
+//   - LANTERN_BACKUP_RESTORE_ON_START (default true) replay the newest dump
+//     on boot, before serving. Set false to skip restore (pure peer
+//     bootstrap / start empty).
 //   - LANTERN_BACKUP_RESTORE_REQUIRED (default false) fail boot when a
 //     restore errors instead of warning and continuing.
-func loadBackupConfig(hasPeers bool) backup.Config {
+func loadBackupConfig() backup.Config {
 	enabled := envconfig.Bool("LANTERN_BACKUP_ENABLED", false)
 	dir := strings.TrimSpace(envconfig.String("LANTERN_BACKUP_DIR", ""))
 	active := enabled && dir != ""
@@ -46,17 +51,13 @@ func loadBackupConfig(hasPeers bool) backup.Config {
 		}
 	}
 
-	restoreOnStart := active &&
-		envconfig.Bool("LANTERN_BACKUP_RESTORE_ON_START", true) &&
-		(!hasPeers || envconfig.Bool("LANTERN_BACKUP_RESTORE_FORCE", false))
-
 	return backup.Config{
 		Enabled:         active,
 		Dir:             dir,
 		Interval:        envconfig.Duration("LANTERN_BACKUP_INTERVAL", 5*time.Minute),
 		Retain:          envconfig.Int("LANTERN_BACKUP_RETAIN", 3),
 		InstanceID:      sanitizeInstanceID(instance),
-		RestoreOnStart:  restoreOnStart,
+		RestoreOnStart:  active && envconfig.Bool("LANTERN_BACKUP_RESTORE_ON_START", true),
 		RestoreRequired: envconfig.Bool("LANTERN_BACKUP_RESTORE_REQUIRED", false),
 	}
 }

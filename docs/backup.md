@@ -10,11 +10,14 @@ container revision. The snapshot-durability feature is the insurance for that:
 the server **periodically dumps the whole graph to a mounted volume** and
 **restores the newest dump on startup**, before it begins serving.
 
-This is the **Tier B** (single-instance) durability story — Cloud Run, Azure
-Container Apps, App Runner, or any single-container deploy. In a **Tier A**
-multi-replica cluster, a restarted pod recovers from its **peers** (snapshot +
-tail bootstrap, see [replication.md](replication.md)); there backups serve only
-whole-cluster-loss recovery and restore-on-start is gated off by default.
+This is primarily the **Tier B** (single-instance) durability story — Cloud
+Run, Azure Container Apps, App Runner, or any single-container deploy. In a
+**Tier A** multi-replica cluster restore still runs on boot as a **baseline**:
+the restarted pod replays its newest dump, then peer **bootstrap** (snapshot +
+tail, see [replication.md](replication.md)) overlays it through the write path,
+so HLC ordering lets newer peer state win per key — replicas take priority, the
+dump only fills gaps, and a whole-cluster cold start recovers from the dumps
+instead of coming up empty.
 
 It is **snapshot-based** durability — complementary to, and distinct from, the
 write-ahead-log hook deferred in the replication RFC (D1). It changes no
@@ -62,8 +65,7 @@ every backend, and degrade cleanly to the single-instance case.
 | `LANTERN_BACKUP_INTERVAL` | `5m` | Dump cadence (`time.ParseDuration`). |
 | `LANTERN_BACKUP_RETAIN` | `3` | Keep newest N own dumps; `0` keeps all. |
 | `LANTERN_BACKUP_INSTANCE_ID` | _(hostname)_ | Per-instance filename token. |
-| `LANTERN_BACKUP_RESTORE_ON_START` | `true` | Restore the newest dump on boot (before serving). |
-| `LANTERN_BACKUP_RESTORE_FORCE` | `false` | Restore even when peers are configured (multi-peer mode otherwise relies on peer bootstrap). |
+| `LANTERN_BACKUP_RESTORE_ON_START` | `true` | Replay the newest dump on boot, before serving, as a baseline (peers then overlay it via HLC). Set `false` to skip restore — pure peer bootstrap / start empty. |
 | `LANTERN_BACKUP_RESTORE_REQUIRED` | `false` | Fail boot when a restore errors (else warn + continue). |
 
 > **TTL-vs-interval caveat.** Entries decay, so a dump is only as useful as its
@@ -167,9 +169,9 @@ backup:
 ```
 
 In a multi-replica StatefulSet each pod's `LANTERN_BACKUP_INSTANCE_ID` is its
-stable pod name, so dumps never collide; restore-on-start stays gated off there
-(peer bootstrap is the recovery path) unless you also set
-`LANTERN_BACKUP_RESTORE_FORCE=true`.
+stable pod name, so dumps never collide. Restore-on-start still runs on each
+pod as a baseline; peer bootstrap then overlays newer cluster state via HLC, so
+replicas take priority while a whole-cluster cold start recovers from the dumps.
 
 ## See also
 

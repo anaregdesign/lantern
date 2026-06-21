@@ -101,13 +101,14 @@ antiEntropy:
 cache:
   defaultTtlSeconds: 3600
 
-# Snapshot durability (#770): periodic whole-graph dumps to a mounted volume
-# + restore-on-startup. Disabled by default. This is primarily the Tier-B
+# Snapshot durability (#770, #779): periodic whole-graph dumps to a mounted
+# volume + restore-on-startup. Disabled by default. Primarily the Tier-B
 # (single-instance, replicaCount=1) rolling-update insurance — there
 # restore-on-start re-seeds the graph on boot. In a multi-replica StatefulSet
-# restore is gated off (peer bootstrap is the recovery path), so backups there
-# only serve whole-cluster-loss recovery; each pod writes its own dumps
-# (LANTERN_BACKUP_INSTANCE_ID = pod name).
+# restore still runs on each pod as a BASELINE: peer bootstrap then overlays
+# it via HLC (newer peer state wins per key, so replicas take priority), while
+# a whole-cluster cold start recovers from the dumps instead of coming up
+# empty. Each pod writes its own dumps (LANTERN_BACKUP_INSTANCE_ID = pod name).
 backup:
   enabled: false
   dir: /var/lib/lantern/backups

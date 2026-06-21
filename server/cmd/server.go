@@ -189,12 +189,15 @@ func newLanternReplicationService(
 }
 
 func (a *App) Run(ctx context.Context) error {
-	// Restore-on-startup (#770) runs BEFORE any listener serves, so a
-	// single-instance (Tier B) deploy recovers its in-memory graph from the
-	// newest mounted dump before accepting traffic. The Backupper no-ops
-	// when backups are disabled or restore is gated off (multi-peer mode
-	// relies on peer bootstrap instead). A restore failure fails boot only
-	// when LANTERN_BACKUP_RESTORE_REQUIRED is set.
+	// Restore-on-startup (#770, #779) runs BEFORE any listener serves: the
+	// newest mounted dump is replayed as a baseline so the node never begins
+	// serving an empty graph. When peers exist the subsequent bootstrap
+	// overlays this baseline via HLC ordering (newer peer state wins per key,
+	// so replicas take priority); a solo instance or a whole-cluster cold
+	// start keeps the restored baseline as the recovered state. The Backupper
+	// no-ops when backups are disabled or LANTERN_BACKUP_RESTORE_ON_START is
+	// false. A restore failure fails boot only when
+	// LANTERN_BACKUP_RESTORE_REQUIRED is set.
 	if _, err := a.backupper.RestoreOnStartup(ctx); err != nil {
 		if a.restoreReq {
 			return fmt.Errorf("restore-on-startup: %w", err)

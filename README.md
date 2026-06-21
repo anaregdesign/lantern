@@ -809,8 +809,7 @@ The server is configured via environment variables, parsed in
 | `LANTERN_BACKUP_INTERVAL` | `5m` | Dump cadence (`time.ParseDuration`, e.g. `300s`, `5m`). |
 | `LANTERN_BACKUP_RETAIN` | `3` | Keep the newest N of this instance's own dumps; `0` keeps all. |
 | `LANTERN_BACKUP_INSTANCE_ID` | _(hostname)_ | Per-instance dump filename token, so replicas sharing a volume never collide or prune each other's dumps. |
-| `LANTERN_BACKUP_RESTORE_ON_START` | `true` | Restore the newest valid dump on boot, before serving. Single-instance-gated: skipped in multi-peer mode (peer bootstrap is the recovery path) unless `LANTERN_BACKUP_RESTORE_FORCE=true`. |
-| `LANTERN_BACKUP_RESTORE_FORCE` | `false` | Restore on boot even when peers are configured. |
+| `LANTERN_BACKUP_RESTORE_ON_START` | `true` | Replay the newest valid dump on boot, before serving, as a baseline. When peers exist, bootstrap then overlays it via HLC (newer peer state wins per key — replicas take priority); a solo instance or whole-cluster cold start keeps the dump as the recovered state. Set `false` to skip restore. |
 | `LANTERN_BACKUP_RESTORE_REQUIRED` | `false` | Fail boot if a restore errors (else warn and continue with the current/empty graph). |
 | `LANTERN_MAX_RECV_MSG_BYTES` | `16777216` | Per-RPC inbound message limit (16 MiB default) |
 | `LANTERN_MAX_SEND_MSG_BYTES` | `16777216` | Per-RPC outbound message limit |
