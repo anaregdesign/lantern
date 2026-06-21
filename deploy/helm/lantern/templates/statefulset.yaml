@@ -121,6 +121,26 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
+            {{- if .Values.backup.enabled }}
+            - name: LANTERN_BACKUP_ENABLED
+              value: "true"
+            - name: LANTERN_BACKUP_DIR
+              value: {{ .Values.backup.dir | quote }}
+            - name: LANTERN_BACKUP_INTERVAL
+              value: {{ .Values.backup.interval | quote }}
+            - name: LANTERN_BACKUP_RETAIN
+              value: {{ .Values.backup.retain | quote }}
+            - name: LANTERN_BACKUP_RESTORE_ON_START
+              value: {{ .Values.backup.restoreOnStart | quote }}
+            - name: LANTERN_BACKUP_RESTORE_REQUIRED
+              value: {{ .Values.backup.restoreRequired | quote }}
+            # Stable per-pod token so each replica's dumps are distinct on a
+            # shared volume (StatefulSet pod names are stable).
+            - name: LANTERN_BACKUP_INSTANCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -143,3 +163,28 @@ spec:
             successThreshold: {{ .Values.probes.readiness.successThreshold }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          {{- if .Values.backup.enabled }}
+          volumeMounts:
+            - name: backup
+              mountPath: {{ .Values.backup.dir }}
+          {{- end }}
+      {{- if and .Values.backup.enabled .Values.backup.persistence.existingClaim }}
+      volumes:
+        - name: backup
+          persistentVolumeClaim:
+            claimName: {{ .Values.backup.persistence.existingClaim }}
+      {{- end }}
+  {{- if and .Values.backup.enabled .Values.backup.persistence.enabled (not .Values.backup.persistence.existingClaim) }}
+  volumeClaimTemplates:
+    - metadata:
+        name: backup
+      spec:
+        accessModes:
+          {{- toYaml .Values.backup.persistence.accessModes | nindent 10 }}
+        {{- with .Values.backup.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.backup.persistence.size | quote }}
+  {{- end }}

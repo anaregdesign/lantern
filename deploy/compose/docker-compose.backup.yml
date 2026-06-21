@@ -1,0 +1,60 @@
+# Docker Compose: single-instance (Tier B) with snapshot durability (#770).
+#
+# This is the rolling-update / restart insurance for a single Lantern
+# instance — the Cloud Run / Azure Container Apps shape, run locally. Lantern
+# is in-memory, so without this a `docker compose down && up` (or a crash)
+# loses the whole graph. With a mounted volume + the LANTERN_BACKUP_* knobs,
+# the server periodically dumps the whole graph to ./backups and restores the
+# newest dump on the next boot, BEFORE it starts serving.
+#
+# Try it:
+#   cd deploy/compose
+#   docker compose -f docker-compose.backup.yml up -d
+#   go run ../../cli put vertex hello world         # write something
+#   # wait one LANTERN_BACKUP_INTERVAL (60s) for a dump to land in ./backups
+#   docker compose -f docker-compose.backup.yml down
+#   docker compose -f docker-compose.backup.yml up -d   # restores on boot
+#   go run ../../cli get vertex hello               # still there
+#
+# Single instance ⇒ restore-on-start runs (no peers to bootstrap from). For
+# the 3-replica Tier-A HA stack use docker-compose.yml instead; there restore
+# is gated off because peer bootstrap is the recovery path.
+#
+# Override the image the same way as the HA stack:
+#   LANTERN_IMAGE=lantern:local docker compose -f docker-compose.backup.yml up -d
+
+services:
+  lantern:
+    image: ${LANTERN_IMAGE:-ghcr.io/anaregdesign/lantern:latest}
+    ports:
+      - "6380:6380"
+      - "9090:9090"
+    # Cover the drain (#768) + shutdown timeout on `down`.
+    stop_grace_period: 45s
+    environment:
+      LANTERN_PORT: "6380"
+      LANTERN_METRICS_ADDR: ":9090"
+      LANTERN_LOG_FORMAT: "json"
+      LANTERN_LOG_LEVEL: "info"
+      # TTL-vs-interval caveat: entries decay, so a dump is only as useful as
+      # its data is still live at restore time. Keep the default TTL well above
+      # the backup interval (here 24h ≫ 60s) so a restart restores live data.
+      LANTERN_DEFAULT_TTL_SECONDS: "86400"
+      # Snapshot durability (#770).
+      LANTERN_BACKUP_ENABLED: "true"
+      LANTERN_BACKUP_DIR: "/data"
+      LANTERN_BACKUP_INTERVAL: "60s"
+      LANTERN_BACKUP_RETAIN: "5"
+      LANTERN_BACKUP_RESTORE_ON_START: "true"
+      # Flip readiness before the listener closes on `down` (#768).
+      LANTERN_DRAIN_DELAY_SECONDS: "5"
+    volumes:
+      # The mounted volume that survives container recreation. On Cloud Run
+      # this is a GCS-FUSE / Filestore mount; on ACA an Azure Files share.
+      - ./backups:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/readyz"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+      start_period: 5s
