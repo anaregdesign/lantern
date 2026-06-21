@@ -54,7 +54,13 @@ is required for either reads or writes.
    ephemeral. Single-pod loss recovers from peers. Total-cluster loss is
    accepted data loss.
 6. **Rolling update safe.** One pod down → remaining pods serve → new pod
-   bootstraps → ready → next.
+   bootstraps → ready → next. This invariant is about **cluster
+   availability** (the cluster keeps accepting requests throughout). **Zero
+   client-visible request drops** additionally require the graceful-drain
+   window (#768): on `SIGTERM` the rotating pod flips readiness to
+   `NOT_SERVING` immediately, then keeps its listener serving for
+   `LANTERN_DRAIN_DELAY_SECONDS` so kube-proxy / load balancers deregister
+   it before it stops accepting. See the runbook §7.
 
 ## 3. Binding decisions (D1–D7)
 

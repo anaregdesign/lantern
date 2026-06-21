@@ -430,6 +430,47 @@ in the protocol that *strictly* requires sequencing — but the PDB and
 the readiness gate are what make this safe; bypass them and you've
 created an unnecessary availability dip.
 
+### 7.1 Zero-drop drain (no client-visible request errors) (#768)
+
+The procedure above keeps the *cluster* available, but a rotating pod
+can still drop **in-flight / freshly-routed** client requests in the
+window between `SIGTERM` and the moment kube-proxy / the load balancer
+removes the pod's endpoint. The graceful-drain knobs close that window:
+
+- **`LANTERN_DRAIN_DELAY_SECONDS`** (server-side, the primary mechanism;
+  Helm `drain.delaySeconds`, Compose env, default 5). On `SIGTERM` the
+  server flips the overall `""` gRPC health entry and `/readyz` to
+  `NOT_SERVING` **immediately** (so probes/LBs deregister it) but keeps
+  the listener **serving** for this long, so requests routed during the
+  propagation window still succeed. It needs no shell in the image — the
+  drain is internal. Set it slightly above your platform's
+  endpoint-propagation lag (k8s: typically 1–5 s).
+- **`terminationGracePeriodSeconds`** (Helm `terminationGracePeriodSeconds`,
+  default 45; Compose `stop_grace_period: 45s`). Must be **≥
+  `drain.delaySeconds` + `LANTERN_SHUTDOWN_TIMEOUT_SECONDS`** (default 30)
+  so the drain window *and* the in-flight flush both finish before
+  `SIGKILL`. The old hard-coded 30 s left no headroom.
+- **`minReadySeconds`** (Helm, default 10). A freshly-restarted pod must
+  stay Ready this long before the controller disrupts the next one, so a
+  pod whose readiness flaps right after restart doesn't cascade.
+- **`drain.preStop`** (Helm, default **off**). An optional `sleep`
+  preStop hook for meshes that drain on container lifecycle rather than
+  readiness. Usually unnecessary because the server-side hold already
+  covers the propagation window; it requires `/bin/sleep` (present on the
+  alpine server image, absent on distroless).
+
+**Verify** a zero-drop rollout by driving steady SDK load across a
+`kubectl rollout restart statefulset/<release>` (or a Compose
+recreate-one-at-a-time loop) and confirming no `Unavailable` /
+connection-reset errors, and that `/readyz` returns **503 at the start
+of termination** before the listener stops accepting.
+
+**Single-instance (Tier B)** deploys (Cloud Run / ACA, `replicaCount: 1`)
+have no peer to fail over to, so the drain still flips `/readyz` (the
+platform shifts traffic to the new revision) but durability across the
+rotation comes from the snapshot backup/restore feature
+(`LANTERN_BACKUP_*`, #770), not replication.
+
 **Backwards compatibility.** v1's Subscribe/Snapshot wire format is
 versioned at the proto level; minor version bumps within v1 are
 wire-compatible. Cross-major upgrades (v1 → v2) are out of scope for
