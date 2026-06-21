@@ -149,3 +149,55 @@ func TestGate_MultiplePeersOriginsTracked(t *testing.T) {
 		t.Fatalf("expected SERVING after bad row clears")
 	}
 }
+
+func TestGate_BeginDrain_SingleInstance(t *testing.T) {
+	hs := &fakeHealth{}
+	g := NewGate(100, false, hs)
+	if !g.Ready() {
+		t.Fatalf("single-instance gate must start Ready")
+	}
+
+	g.BeginDrain()
+	if g.Ready() {
+		t.Fatalf("BeginDrain must flip a single-instance gate to NOT_SERVING")
+	}
+	latest, _ := hs.snapshot()
+	if latest != grpchealth.StatusNotServing {
+		t.Fatalf("expected NOT_SERVING health transition after BeginDrain, got %v", latest)
+	}
+
+	// Idempotent: a second BeginDrain emits nothing new.
+	_, before := hs.snapshot()
+	g.BeginDrain()
+	_, after := hs.snapshot()
+	if after != before {
+		t.Fatalf("BeginDrain must be idempotent, got %d → %d health calls", before, after)
+	}
+}
+
+func TestGate_BeginDrain_LatchesOverRecovery(t *testing.T) {
+	hs := &fakeHealth{}
+	g := NewGate(10, true, hs)
+	g.MarkBootstrapped()
+	if !g.Ready() {
+		t.Fatalf("expected SERVING after bootstrap")
+	}
+
+	g.BeginDrain()
+	if g.Ready() {
+		t.Fatalf("expected NOT_SERVING after BeginDrain")
+	}
+
+	// Once draining, no later signal may resurrect readiness.
+	g.MarkBootstrapped()
+	g.SetLag("peer-a", "o1", 0)
+	g.OnPumpConnect("peer-a")
+	g.OnAntiEntropyCaughtUp("peer-a", "o1", 1)
+	if g.Ready() {
+		t.Fatalf("draining gate must stay NOT_SERVING despite recovery signals")
+	}
+	latest, _ := hs.snapshot()
+	if latest != grpchealth.StatusNotServing {
+		t.Fatalf("expected latest health NOT_SERVING, got %v", latest)
+	}
+}
