@@ -26,10 +26,14 @@ type InvertedIndex[S comparable, D Document] struct {
 	scorer   Scorer
 
 	mu sync.RWMutex
-	// postings is the inverted index proper: term -> (document -> term
+	// dict assigns each distinct term a compact uint32 id so postings and the
+	// per-document forward lists key on the id instead of repeating the term
+	// string; the term itself is stored exactly once, in the dictionary.
+	dict *termDict
+	// postings is the inverted index proper: term id -> (document -> term
 	// frequency in that document). Search reads it, and the per-document count
 	// is what the Scorer needs to weight a match.
-	postings map[string]map[S]int
+	postings map[uint32]map[S]int
 	// docs is a forward index: document -> the stats needed to drop it in
 	// O(terms-in-doc) on delete or re-index and to length-normalize its score.
 	docs map[S]docStats
@@ -43,12 +47,12 @@ type docStats struct {
 	// length is the document's size in tokens, repeats included — the |d| that
 	// length normalization compares against the corpus average.
 	length int
-	// terms is the sorted, de-duplicated list of distinct terms the document was
-	// indexed under, used to find and drop its postings on delete or re-index. A
-	// slice rather than a map[string]struct{} keeps the per-document forward
-	// index compact: it is only ever range-iterated on delete, never probed by
-	// key, so it trades a map's bucket + per-entry overhead for a packed array.
-	terms []string
+	// terms is the de-duplicated list of distinct term ids the document was
+	// indexed under (see termDict), used to find and drop its postings on delete
+	// or re-index. A []uint32 rather than a map keeps the per-document forward
+	// index compact — it is only ever range-iterated on delete — and costs a
+	// 4-byte id rather than a string header per term.
+	terms []uint32
 }
 
 // NewInvertedIndex returns an empty index that analyzes both documents and
@@ -62,7 +66,8 @@ func NewInvertedIndex[S comparable, D Document](analyzer Analyzer, scorer Scorer
 	return &InvertedIndex[S, D]{
 		analyzer: analyzer,
 		scorer:   scorer,
-		postings: make(map[string]map[S]int),
+		dict:     newTermDict(),
+		postings: make(map[uint32]map[S]int),
 		docs:     make(map[S]docStats),
 	}
 }
@@ -158,20 +163,20 @@ func (idx *InvertedIndex[S, D]) indexPreparedLocked(id S, tokens []Token) {
 			distinct++
 		}
 	}
-	terms := make([]string, 0, distinct)
+	terms := make([]uint32, 0, distinct)
 	for i := 0; i < len(sorted); {
 		j := i + 1
 		for j < len(sorted) && sorted[j] == sorted[i] {
 			j++
 		}
-		term := sorted[i]
-		posting, ok := idx.postings[term]
+		tid := idx.dict.intern(sorted[i])
+		posting, ok := idx.postings[tid]
 		if !ok {
 			posting = make(map[S]int)
-			idx.postings[term] = posting
+			idx.postings[tid] = posting
 		}
 		posting[id] = j - i // term frequency = run length of this term
-		terms = append(terms, term)
+		terms = append(terms, tid)
 		i = j
 	}
 	idx.docs[id] = docStats{length: len(tokens), terms: terms}
@@ -211,11 +216,12 @@ func (idx *InvertedIndex[S, D]) deleteLocked(id S) {
 	if !ok {
 		return
 	}
-	for _, term := range stats.terms {
-		posting := idx.postings[term]
+	for _, tid := range stats.terms {
+		posting := idx.postings[tid]
 		delete(posting, id)
 		if len(posting) == 0 {
-			delete(idx.postings, term)
+			delete(idx.postings, tid)
+			idx.dict.release(tid)
 		}
 	}
 	idx.totalLen -= stats.length
@@ -253,7 +259,11 @@ func (idx *InvertedIndex[S, D]) Search(query string) []Result[S] {
 
 	scores := make(map[S]float64)
 	for term := range queryTerms {
-		posting, ok := idx.postings[term]
+		tid, ok := idx.dict.lookup(term)
+		if !ok {
+			continue
+		}
+		posting, ok := idx.postings[tid]
 		if !ok {
 			continue
 		}
