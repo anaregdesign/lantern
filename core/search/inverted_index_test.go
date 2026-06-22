@@ -1,6 +1,9 @@
 package search
 
 import (
+	"fmt"
+	"math/rand"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -303,4 +306,105 @@ func TestInvertedIndexPrepared(t *testing.T) {
 		// Empty batch is a no-op and must not panic.
 		idx.IndexManyPrepared(nil)
 	})
+}
+
+// --- Memory benchmarks (epic #782) -----------------------------------------
+//
+// These measure the inverted index's footprint and allocation behaviour for a
+// production-shaped bigram corpus, so each step of the index-memory work
+// (#783 -> #784 -> #785) can report its compression. bigramAnalyzer mirrors
+// the graphcache content-search pipeline (multilingual normalizers -> NGram
+// N=2 -> whitespace filter); makeBigramCorpus builds deterministic documents
+// whose ids mimic hierarchical vertex keys.
+
+func bigramAnalyzer() Analyzer {
+	return NewAnalyzer(
+		[]Normalizer{
+			WidthNormalizer{},
+			DiacriticNormalizer{},
+			LowercaseNormalizer{},
+			PunctuationNormalizer{},
+			SpaceNormalizer{},
+		},
+		NGramTokenizer{N: 2},
+		[]TokenFilter{WhitespaceFilter{}},
+	)
+}
+
+// benchVocab is a fixed word list; documents draw from it so the bigram
+// vocabulary and posting-list lengths stay stable across runs and steps.
+var benchVocab = []string{
+	"alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta",
+	"lantern", "vertex", "edge", "decay", "search", "index", "memory", "graph",
+	"replica", "cluster", "metric", "bigram", "posting", "token", "roaring",
+	"prometheus", "snapshot", "mutation", "namespace", "preference", "tone",
+	"summary", "context", "session", "agent", "fact", "relation", "recall",
+}
+
+func buildBigramIndex(corpus map[string]Text) *InvertedIndex[string, Text] {
+	idx := NewInvertedIndex[string, Text](bigramAnalyzer(), nil)
+	for id, doc := range corpus {
+		idx.Index(id, doc)
+	}
+	return idx
+}
+
+// makeBigramCorpus builds n deterministic documents whose ids mimic
+// hierarchical vertex keys and whose text draws from benchVocab, so the
+// resulting index resembles a production content index.
+func makeBigramCorpus(n int) map[string]Text {
+	rng := rand.New(rand.NewSource(1)) // fixed seed: deterministic corpus
+	corpus := make(map[string]Text, n)
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("user.notes.%06d", i) // hierarchical, vertex-key-shaped
+		words := 8 + rng.Intn(9)                // 8..16 words per document
+		terms := make([]string, words)
+		for w := range terms {
+			terms[w] = benchVocab[rng.Intn(len(benchVocab))]
+		}
+		corpus[id] = Text(strings.Join(terms, " "))
+	}
+	return corpus
+}
+
+// BenchmarkInvertedIndexBuild reports B/op and allocs/op for building the whole
+// index, so a step that cuts allocation churn or object count is visible.
+func BenchmarkInvertedIndexBuild(b *testing.B) {
+	corpus := makeBigramCorpus(1000)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		runtime.KeepAlive(buildBigramIndex(corpus))
+	}
+}
+
+// BenchmarkInvertedIndexFootprint reports the retained HeapInuse attributable
+// to the index (measured against a corpus-only baseline) plus live object
+// count, so each step's compression of the steady-state footprint is visible.
+// It is a benchmark (run under -bench) so plain `go test ./...` pays nothing.
+func BenchmarkInvertedIndexFootprint(b *testing.B) {
+	const docs = 4000
+	corpus := makeBigramCorpus(docs)
+
+	runtime.GC()
+	var base runtime.MemStats
+	runtime.ReadMemStats(&base)
+
+	var idx *InvertedIndex[string, Text]
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		idx = buildBigramIndex(corpus)
+	}
+	b.StopTimer()
+
+	runtime.GC()
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+	runtime.KeepAlive(idx)
+	runtime.KeepAlive(corpus)
+
+	delta := float64(after.HeapInuse) - float64(base.HeapInuse)
+	b.ReportMetric(delta/(1024*1024), "MiB/index")
+	b.ReportMetric(delta/float64(docs), "B/doc")
+	b.ReportMetric(float64(after.HeapObjects-base.HeapObjects), "objects")
 }

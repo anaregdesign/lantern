@@ -43,9 +43,12 @@ type docStats struct {
 	// length is the document's size in tokens, repeats included — the |d| that
 	// length normalization compares against the corpus average.
 	length int
-	// terms is the set of distinct terms the document was indexed under, used
-	// to find and drop its postings on delete or re-index.
-	terms map[string]struct{}
+	// terms is the sorted, de-duplicated list of distinct terms the document was
+	// indexed under, used to find and drop its postings on delete or re-index. A
+	// slice rather than a map[string]struct{} keeps the per-document forward
+	// index compact: it is only ever range-iterated on delete, never probed by
+	// key, so it trades a map's bucket + per-entry overhead for a packed array.
+	terms []string
 }
 
 // NewInvertedIndex returns an empty index that analyzes both documents and
@@ -137,15 +140,39 @@ func (idx *InvertedIndex[S, D]) indexPreparedLocked(id S, tokens []Token) {
 	if len(tokens) == 0 {
 		return
 	}
-	terms := make(map[string]struct{}, len(tokens))
-	for _, token := range tokens {
-		posting, ok := idx.postings[token.Term]
+	// Sort this document's terms so the distinct terms and their frequencies
+	// (the run length of each equal stretch) can be read in one linear pass.
+	// sorted is transient scratch; only the compact distinct-term slice is
+	// retained in docStats.
+	sorted := make([]string, len(tokens))
+	for i, token := range tokens {
+		sorted[i] = token.Term
+	}
+	sort.Strings(sorted)
+
+	// Count distinct terms up front so the retained forward-index slice is
+	// allocated at its exact length (no spare capacity held per document).
+	distinct := 1
+	for i := 1; i < len(sorted); i++ {
+		if sorted[i] != sorted[i-1] {
+			distinct++
+		}
+	}
+	terms := make([]string, 0, distinct)
+	for i := 0; i < len(sorted); {
+		j := i + 1
+		for j < len(sorted) && sorted[j] == sorted[i] {
+			j++
+		}
+		term := sorted[i]
+		posting, ok := idx.postings[term]
 		if !ok {
 			posting = make(map[S]int)
-			idx.postings[token.Term] = posting
+			idx.postings[term] = posting
 		}
-		posting[id]++ // accumulate this document's term frequency
-		terms[token.Term] = struct{}{}
+		posting[id] = j - i // term frequency = run length of this term
+		terms = append(terms, term)
+		i = j
 	}
 	idx.docs[id] = docStats{length: len(tokens), terms: terms}
 	idx.totalLen += len(tokens)
@@ -184,7 +211,7 @@ func (idx *InvertedIndex[S, D]) deleteLocked(id S) {
 	if !ok {
 		return
 	}
-	for term := range stats.terms {
+	for _, term := range stats.terms {
 		posting := idx.postings[term]
 		delete(posting, id)
 		if len(posting) == 0 {
