@@ -51,6 +51,16 @@ ENV LANTERN_DEFAULT_TTL_SECONDS=3600 \
 WORKDIR /app
 COPY --from=builder /out/lantern /app/lantern
 
+# Backup/snapshot mount point (#770), pre-owned by the non-root runtime user.
+# Docker copies this dir's owner+mode onto a freshly-created (empty) named
+# volume at first mount, so the periodic dump writes as uid lantern; without
+# it the volume root is root:root and every dump fails "permission denied".
+# Backups stay opt-in (LANTERN_BACKUP_ENABLED=false by default), so no VOLUME
+# is declared — this only prepares the conventional /data target as the right
+# owner (bind mounts on Linux still follow host ownership; Mac/Windows Docker
+# Desktop file sharing makes them writable regardless).
+RUN mkdir -p /data && chown lantern:lantern /data
+
 USER lantern
 # 6380 = gRPC, 9090 = Prometheus /metrics + /healthz + /readyz
 EXPOSE 6380 9090
