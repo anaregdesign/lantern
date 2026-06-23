@@ -21,11 +21,3 @@ testbed/bench/out/
 
 # Local snapshot-backup dumps from deploy/compose/docker-compose.backup.yml (#770)
 deploy/compose/backups/
-
-# Terraform (deploy/terraform/) — local init artifacts + state, never committed
-deploy/terraform/**/.terraform/
-deploy/terraform/**/.terraform.lock.hcl
-deploy/terraform/**/*.tfstate
-deploy/terraform/**/*.tfstate.*
-deploy/terraform/**/*.tfvars
-deploy/terraform/**/crash.log
