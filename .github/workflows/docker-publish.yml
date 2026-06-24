@@ -329,17 +329,28 @@ jobs:
     permissions:
       contents: read
       id-token: write   # mint the OIDC token google-github-actions/auth exchanges
-    # Cluster coordinates are non-secret; keep them in the workflow for
-    # readability (auth is gated by WIF, not by hiding these).
+    # Deployment target coordinates are non-secret but environment-specific;
+    # configure them as repository variables instead of baking one cluster into
+    # the reusable release workflow.
     env:
-      GKE_CLUSTER: lantern-cluster-01
-      GKE_LOCATION: asia-northeast1
-      GCP_PROJECT_ID: anaregdesign-455601
-      RELEASE: lantern
-      NAMESPACE: default
+      GKE_CLUSTER: ${{ vars['GKE_CLUSTER'] }}
+      GKE_LOCATION: ${{ vars['GKE_LOCATION'] }}
+      GCP_PROJECT_ID: ${{ vars['GCP_PROJECT_ID'] }}
+      RELEASE: ${{ vars['GKE_HELM_RELEASE'] }}
+      NAMESPACE: ${{ vars['GKE_NAMESPACE'] }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+
+      - name: Validate GKE deployment configuration
+        run: |
+          set -euo pipefail
+          for name in GKE_CLUSTER GKE_LOCATION GCP_PROJECT_ID RELEASE NAMESPACE; do
+            if [ -z "${!name}" ]; then
+              echo "Missing repository variable for $name" >&2
+              exit 1
+            fi
+          done
 
       - name: Authenticate to Google Cloud (WIF)
         uses: google-github-actions/auth@v2
