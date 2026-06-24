@@ -17,21 +17,33 @@ as a scriptable subcommand plus an interactive REPL.
 
 ## Invoking the CLI
 
-From inside this repo (no install needed):
+On **macOS** the lowest-friction path is the Homebrew cask — it installs a
+released, prebuilt `lantern-cli` binary with no Go toolchain or repo checkout
+required (first choice):
+
+```shell
+brew tap anaregdesign/tap
+brew install --cask lantern-cli    # installs the `lantern-cli` binary
+```
+
+On Linux/Windows, grab the `lantern-cli` binary attached to any GitHub Release.
+The Go-toolchain / in-repo routes below are the build-from-source fallback.
+
+From inside this repo (no install, but needs the Go toolchain):
 
 ```shell
 go run ./cli <args>                 # recompiles each call; fine for one-offs
 ```
 
-Build once, then reuse the binary (preferred for repeated calls):
+Build once, then reuse the binary (preferred for repeated calls from a checkout):
 
 ```shell
 go build -o lantern-cli ./cli
 ./lantern-cli <args>
 ```
 
-A released binary and the in-repo build above are both named `lantern-cli`.
-**All examples below use `lantern-cli <args>`** — substitute
+The Homebrew/release binary and the in-repo build above are all named
+`lantern-cli`. **All examples below use `lantern-cli <args>`** — substitute
 `go run ./cli <args>` or `./lantern-cli <args>` as appropriate.
 
 Default target is **`http://localhost:6380`** over plaintext h2c, which matches
