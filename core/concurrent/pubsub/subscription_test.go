@@ -82,6 +82,32 @@ func TestSubscription_Subscribe(t *testing.T) {
 			wg.Wait()
 		})
 	}
+
+	// Regression for #806: watch's ctx.Done path used to call s.wg.Wait(),
+	// which has no happens-before to Subscribe's per-worker s.wg.Add(1). An
+	// already-cancelled context lands watch on that path while Subscribe is
+	// still registering workers, so the Add raced the Wait under the race
+	// detector. With the vestigial Wait removed, Subscribe must still return
+	// promptly and cleanly. concurrency > 1 widens the worker-registration
+	// window the cancelled watch used to race against. Run under -race.
+	t.Run("CancelBeforeWorkerRegistration", func(t *testing.T) {
+		topic := NewTopic[int]("cancel-race")
+		sub := topic.NewSubscription("s", 8, time.Minute, time.Minute)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // Done before Subscribe runs: watch takes its ctx.Done path immediately.
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			sub.Subscribe(ctx, func(*Message[int]) {})
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("Subscribe did not return after an already-cancelled ctx")
+		}
+	})
 }
 
 func TestSubscription_Topic(t *testing.T) {
