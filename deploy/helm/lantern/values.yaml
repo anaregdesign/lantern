@@ -87,6 +87,18 @@ metrics:
     interval: 30s
     scrapeTimeout: 10s
     labels: {}
+  # Google Cloud Managed Service for Prometheus (GMP) PodMonitoring. On GKE
+  # (Autopilot has managed collection on by default) a PodMonitoring is the
+  # supported way to ingest a pod's /metrics — the serviceMonitor above is
+  # Prometheus-Operator-only and is IGNORED by GMP. Disabled by default; set
+  # podMonitoring.enabled=true on a GKE/GMP cluster. Requires the
+  # PodMonitoring CRD (monitoring.googleapis.com/v1), present by default on
+  # GKE. Mutually independent from serviceMonitor — enable whichever your
+  # monitoring backend consumes (or neither).
+  podMonitoring:
+    enabled: false
+    interval: 60s
+    labels: {}
 
 # Replication / peer discovery. See docs/replication.md §9.1.
 replication:

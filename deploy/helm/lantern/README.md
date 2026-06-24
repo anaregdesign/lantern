@@ -39,7 +39,8 @@ helm lint deploy/helm/lantern
 | `Service/<release>-lantern-headless`  | `clusterIP: None` — peer discovery DNS.                |
 | `PodDisruptionBudget/<release>-lantern` | `minAvailable: 1` keeps one replica up during a drain. |
 | `ServiceAccount/<release>-lantern`    | Workload identity (token-only by default).             |
-| `ServiceMonitor/<release>-lantern`    | Optional, when `metrics.serviceMonitor.enabled=true`.  |
+| `ServiceMonitor/<release>-lantern`    | Optional, when `metrics.serviceMonitor.enabled=true` (Prometheus Operator). |
+| `PodMonitoring/<release>-lantern`     | Optional, when `metrics.podMonitoring.enabled=true` (GKE Managed Prometheus). |
 
 The pump reads `LANTERN_PEER_DISCOVERY=dns` and resolves the headless
 `Service` FQDN to obtain peer IPs. `LocalIPSet()` in the server filters
@@ -75,6 +76,8 @@ can be disabled via `podDisruptionBudget.enabled=false`.
 | `backup.persistence.existingClaim`          | `""`                   | Set to a pre-provisioned RWX claim for a shared dump volume. |
 | `resources.requests` / `.limits`            | `250m` CPU / `512Mi`   | requests == limits (Autopilot Guaranteed QoS). 250m is the Autopilot min; 512Mi the server floor. |
 | `metrics.serviceMonitor.enabled`            | `false`                | Requires the prometheus-operator CRD.              |
+| `metrics.podMonitoring.enabled`             | `false`                | GKE Managed Service for Prometheus (GMP). Requires the `monitoring.googleapis.com/v1` PodMonitoring CRD (default on GKE). |
+| `metrics.podMonitoring.interval`            | `60s`                  | GMP scrape interval.                               |
 | `admin.enabled`                             | `false`                | Render the `lantern-admin` SPA Deployment + Service. |
 | `admin.image.repository`                    | `ghcr.io/anaregdesign/lantern-admin` | Admin SPA image (Caddy serving the built bundle).     |
 | `admin.image.tag`                           | `.Chart.AppVersion`    | Pin to an `admin/vX.Y.Z` tag in production.        |

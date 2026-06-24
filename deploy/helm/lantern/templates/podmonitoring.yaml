@@ -1,0 +1,20 @@
+{{- if .Values.metrics.podMonitoring.enabled -}}
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  name: {{ include "lantern.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lantern.labels" . | nindent 4 }}
+    {{- with .Values.metrics.podMonitoring.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "lantern.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.metrics.podMonitoring.interval }}
+{{- end }}
