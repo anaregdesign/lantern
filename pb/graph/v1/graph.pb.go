@@ -142,15 +142,20 @@ func (Objective) EnumDescriptor() ([]byte, []int) {
 // (and therefore before any Algorithm-driven reduction).
 //
 // UNSPECIFIED defaults to RAW server-side. RAW uses the stored
-// edge.weight verbatim. TFIDF re-scores edge weights using TF-IDF
-// over the per-vertex out-edge distribution; useful when raw weights
-// are noisy "hit counts" and the caller wants relevance ranking.
+// edge.weight verbatim. TFIDF re-scores edge weights using the crude
+// hub-suppressor w / log2(1 + df(head)); cheap but corpus-size-blind.
+// BM25 re-scores with Okapi BM25 over the per-vertex out-edge
+// distribution (TF = edge weight, DF = distinct tails into head,
+// N = #tails, DocLen = tail out-degree), adding TF saturation,
+// document-length normalization, and a real N-aware IDF — a principled
+// successor to TFIDF that is consistent with full-text SearchVertices.
 type Weighting int32
 
 const (
 	Weighting_WEIGHTING_UNSPECIFIED Weighting = 0
 	Weighting_WEIGHTING_RAW         Weighting = 1
 	Weighting_WEIGHTING_TFIDF       Weighting = 2
+	Weighting_WEIGHTING_BM25        Weighting = 3
 )
 
 // Enum value maps for Weighting.
@@ -159,11 +164,13 @@ var (
 		0: "WEIGHTING_UNSPECIFIED",
 		1: "WEIGHTING_RAW",
 		2: "WEIGHTING_TFIDF",
+		3: "WEIGHTING_BM25",
 	}
 	Weighting_value = map[string]int32{
 		"WEIGHTING_UNSPECIFIED": 0,
 		"WEIGHTING_RAW":         1,
 		"WEIGHTING_TFIDF":       2,
+		"WEIGHTING_BM25":        3,
 	}
 )
 
@@ -3685,11 +3692,12 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\tObjective\x12\x19\n" +
 	"\x15OBJECTIVE_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12OBJECTIVE_MINIMIZE\x10\x01\x12\x16\n" +
-	"\x12OBJECTIVE_MAXIMIZE\x10\x02*N\n" +
+	"\x12OBJECTIVE_MAXIMIZE\x10\x02*b\n" +
 	"\tWeighting\x12\x19\n" +
 	"\x15WEIGHTING_UNSPECIFIED\x10\x00\x12\x11\n" +
 	"\rWEIGHTING_RAW\x10\x01\x12\x13\n" +
-	"\x0fWEIGHTING_TFIDF\x10\x022\xeb\x0e\n" +
+	"\x0fWEIGHTING_TFIDF\x10\x02\x12\x12\n" +
+	"\x0eWEIGHTING_BM25\x10\x032\xeb\x0e\n" +
 	"\x0eLanternService\x12G\n" +
 	"\n" +
 	"Illuminate\x12\x1b.graph.v1.IlluminateRequest\x1a\x1c.graph.v1.IlluminateResponse\x12D\n" +

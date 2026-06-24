@@ -62,7 +62,7 @@ shape (#410):
 |---|---|---|
 | `algorithm` | `none` (default) — raw k-NN subgraph<br>`mst` — spanning tree<br>`spt` — shortest-path tree from seed | Picks the post-traversal subgraph reduction |
 | `objective` | `max` (default) — keeps strongest edges, largest-weight tree wins<br>`min` — keeps smallest edges, smallest-weight tree wins | Picks the direction of BOTH the per-hop top-k prune and the reduction (#560) |
-| `weighting` | `raw` (default) — edge.weight verbatim<br>`tfidf` — per-hop top-k weighted by `w / log2(1+df(head))` | Picks the edge-weight transform applied BEFORE the BFS walk |
+| `weighting` | `raw` (default) — edge.weight verbatim<br>`tfidf` — per-hop top-k weighted by `w / log2(1+df(head))`<br>`bm25` — per-hop top-k re-scored with Okapi BM25 (k1=1.2, b=0.75) over the out-edge distribution | Picks the edge-weight transform applied BEFORE the BFS walk |
 
 Examples:
 
@@ -71,6 +71,7 @@ Examples:
 - `algorithm=spt objective=min`  — low-cost reachability
 - `algorithm=spt objective=max`  — **most-relevant** path tree
 - `weighting=tfidf`              — suppress hub vertices like "popular" items
+- `weighting=bm25`              — same hub suppression with IDF saturation + out-degree length-normalisation (consistent with full-text `SearchVertices`)
 
 **Scoping the frontier** — `vertex_prefix` (when non-empty) restricts the walk
 to vertices whose key carries that prefix; the seed is always retained as the
@@ -452,7 +453,7 @@ count  vertices <prefix>
 delete-prefix vertices <prefix> [limit=<int>] [confirm=yes|dry_run=true]
 keys   <prefix> [limit]
 illuminate <seed> <step> <k> [algorithm=none|mst|spt] [objective=min|max] \
-           [weighting=raw|tfidf] [prefix=<string>]
+           [weighting=raw|tfidf|bm25] [prefix=<string>]
 help
 exit
 ```
@@ -630,7 +631,7 @@ MCP `tools/list` (see [mcp/server.go](mcp/server.go) for the source of truth).
 | `forget` | Delete a fact by exact key. Idempotent. Edges incident to the key are NOT cascade-deleted; they decay on their own. |
 | `list_under` | Enumerate facts whose key starts with a prefix, ascending. Defaults to 50, max 500. |
 | `remember_relation` | Add or **reinforce** a directed relation. Additive: same write twice = stronger relation. |
-| `recall_related` | Walk the graph from a seed with `step`, `k`, and the orthogonal axes `algorithm` (`none` / `mst` / `spt`), `objective` (`min` / `max`), and `weighting` (`raw` / `tfidf`) introduced in #410. |
+| `recall_related` | Walk the graph from a seed with `step`, `k`, and the orthogonal axes `algorithm` (`none` / `mst` / `spt`), `objective` (`min` / `max`), and `weighting` (`raw` / `tfidf` / `bm25`) introduced in #410. |
 
 A `ping` tool also exists so operators can sanity-check the wire without
 touching state.
@@ -770,7 +771,7 @@ whole subgraph, so there is no plural form.
 | `CountVerticesByPrefix` | Count live vertices under a prefix | Radix-only (cheap); not subject to `limit` |
 | `DeleteVerticesByPrefix` | Bulk-delete a namespace | Capped by server-configured `limit`; `dry_run` returns the count that *would* be deleted without mutating; edges incident to removed vertices are reaped on the next GC tick |
 | `ScanEdges` | Enumerate edges by `tail_prefix` AND `head_prefix` | Either prefix may be empty; head dimension is served by a per-tail head radix (not a post-filter); head-only scans still iterate every tail, so combining both prefixes is the most efficient shape; same opaque-cursor / cross-RPC rejection rules as `ScanVertices`; SDK helper `ScanEdgesAll` auto-paginates |
-| `Illuminate` | Walk the graph from a seed | `WithStep`, `WithK`, `WithAlgorithm` (none / MST / SPT), `WithObjective` (min / max), `WithWeighting` (raw / TF-IDF); honours `ctx` cancellation; `step`/`k` are clamped at `LANTERN_ILLUMINATE_MAX_STEP` / `LANTERN_ILLUMINATE_MAX_K`. See #410. |
+| `Illuminate` | Walk the graph from a seed | `WithStep`, `WithK`, `WithAlgorithm` (none / MST / SPT), `WithObjective` (min / max), `WithWeighting` (raw / TF-IDF / BM25); honours `ctx` cancellation; `step`/`k` are clamped at `LANTERN_ILLUMINATE_MAX_STEP` / `LANTERN_ILLUMINATE_MAX_K`. See #410. |
 
 Vertices auto-materialize on `AddEdge`/`PutEdge` if the endpoint key does not
 yet exist (they get the edge's expiration as their TTL). This keeps event-stream
@@ -1001,7 +1002,7 @@ count vertices <prefix:string>
 delete-prefix vertices <prefix:string> [limit=<int>] [confirm=yes|dry_run=true]
 keys <prefix:string> [<limit:int>]
 illuminate <seed:string> <step:int> <k:int> [algorithm=none|mst|spt] \
-           [objective=min|max] [weighting=raw|tfidf] [prefix=<string>]
+           [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>]
 help
 exit
 ```

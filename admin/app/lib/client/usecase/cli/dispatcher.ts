@@ -71,6 +71,7 @@ const OBJECTIVE_TO_API: Record<string, ApiObjective> = {
 const WEIGHTING_TO_API: Record<string, ApiWeighting> = {
   raw: "WEIGHTING_RAW",
   tfidf: "WEIGHTING_TFIDF",
+  bm25: "WEIGHTING_BM25",
 };
 
 /**

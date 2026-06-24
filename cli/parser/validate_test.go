@@ -26,6 +26,7 @@ func FuzzValidate(f *testing.F) {
 		"keys users/", "keys users/ 100",
 		"illuminate alice 2 5",
 		"illuminate alice 2 5 algorithm=spt objective=max weighting=tfidf",
+		"illuminate alice 2 5 weighting=bm25",
 		"illuminate alice 2 5 prefix=team:",
 		`put vertex greeting "hello world"`,
 		`put vertex code 'console.log("hi")'`,

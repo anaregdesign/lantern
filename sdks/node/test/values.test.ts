@@ -230,5 +230,6 @@ describe("Illuminate axis enums (#410)", () => {
     expect(Weighting.UNSPECIFIED).toBe(0);
     expect(Weighting.RAW).toBe(1);
     expect(Weighting.TFIDF).toBe(2);
+    expect(Weighting.BM25).toBe(3);
   });
 });

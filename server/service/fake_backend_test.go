@@ -24,7 +24,7 @@ type fakeBackend struct {
 	// onto the per-hop pruning direction (#560) and threads the optional
 	// frontier predicate (#601).
 	neighborCalls           int
-	lastNeighborTFIDF       bool
+	lastNeighborWeighting   graphcache.EdgeWeighting
 	lastNeighborSelectSmall bool
 	lastNeighborKeep        func(string) bool
 
@@ -148,12 +148,12 @@ func (f *fakeBackend) NeighborWithExpirationsContext(
 	ctx context.Context,
 	seed string,
 	step, k int,
-	tfidf bool,
+	weighting graphcache.EdgeWeighting,
 	selectSmallest bool,
 	keep func(string) bool,
 ) (*coregraph.Graph[string, *pb.Vertex], map[string]map[string]time.Time, error) {
 	f.neighborCalls++
-	f.lastNeighborTFIDF = tfidf
+	f.lastNeighborWeighting = weighting
 	f.lastNeighborSelectSmall = selectSmallest
 	f.lastNeighborKeep = keep
 	if f.neighborErr != nil {

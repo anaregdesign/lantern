@@ -227,6 +227,7 @@ describe("parseStored* helpers", () => {
 
     expect(parseStoredWeighting("raw")).toBe("raw");
     expect(parseStoredWeighting("tfidf")).toBe("tfidf");
+    expect(parseStoredWeighting("bm25")).toBe("bm25");
     expect(parseStoredWeighting("WEIGHTING_TFIDF")).toBeNull();
   });
 

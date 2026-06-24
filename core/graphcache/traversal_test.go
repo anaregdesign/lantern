@@ -2,6 +2,7 @@ package graphcache
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -15,7 +16,7 @@ func TestGraphCache_Neighbor(t *testing.T) {
 		seed           S
 		step           int
 		k              int
-		tfidf          bool
+		weighting      EdgeWeighting
 		selectSmallest bool
 	}
 	type testCase[S comparable, T any] struct {
@@ -30,7 +31,7 @@ func TestGraphCache_Neighbor(t *testing.T) {
 	for i := range tests {
 		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.c.Neighbor(tt.args.seed, tt.args.step, tt.args.k, tt.args.tfidf, tt.args.selectSmallest, nil); !reflect.DeepEqual(got, tt.want) {
+			if got := tt.c.Neighbor(tt.args.seed, tt.args.step, tt.args.k, tt.args.weighting, tt.args.selectSmallest, nil); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("Neighbor() = %v, want %v", got, tt.want)
 			}
 		})
@@ -97,7 +98,7 @@ func TestGraphCache_Neighbor_ObjectiveDirection(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := headSet(mk().Neighbor(seed, 1, tt.k, false, tt.selectSmallest, nil))
+			got := headSet(mk().Neighbor(seed, 1, tt.k, WeightingRaw, tt.selectSmallest, nil))
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("Neighbor(k=%d, selectSmallest=%v) heads = %v, want %v",
 					tt.k, tt.selectSmallest, got, tt.want)
@@ -124,8 +125,8 @@ func TestGraphCache_NeighborKeep(t *testing.T) {
 			c.AddEdge("a", "c", 1)
 			return c
 		}
-		gNil := mk().Neighbor("a", 2, 10, false, false, nil)
-		gAll := mk().Neighbor("a", 2, 10, false, false, func(string) bool { return true })
+		gNil := mk().Neighbor("a", 2, 10, WeightingRaw, false, nil)
+		gAll := mk().Neighbor("a", 2, 10, WeightingRaw, false, func(string) bool { return true })
 		if !reflect.DeepEqual(gNil, gAll) {
 			t.Errorf("nil predicate graph = %v, want identical to accept-all %v", gNil, gAll)
 		}
@@ -141,7 +142,7 @@ func TestGraphCache_NeighborKeep(t *testing.T) {
 		c.AddEdge("a", "keep1", 1)
 		c.AddEdge("a", "keep2", 1)
 		c.AddEdge("a", "drop1", 1)
-		g := c.Neighbor("a", 1, 10, false, false, func(s string) bool {
+		g := c.Neighbor("a", 1, 10, WeightingRaw, false, func(s string) bool {
 			return strings.HasPrefix(s, "keep")
 		})
 		if _, ok := g.Edges["a"]["drop1"]; ok {
@@ -168,7 +169,7 @@ func TestGraphCache_NeighborKeep(t *testing.T) {
 		if keep("seed") {
 			t.Fatal("test setup: seed must NOT match the predicate")
 		}
-		g := c.Neighbor("seed", 1, 10, false, false, keep)
+		g := c.Neighbor("seed", 1, 10, WeightingRaw, false, keep)
 		if _, ok := g.Vertices["seed"]; !ok {
 			t.Errorf("seed dropped despite anchor exemption: %v", g.Vertices)
 		}
@@ -194,7 +195,7 @@ func TestGraphCache_NeighborKeep(t *testing.T) {
 		c.AddEdge("a", "y3", 8)
 		// k=2, Top (selectSmallest=false): without the before-top-k ordering this
 		// would select x1,x2 then filter to empty.
-		g := c.Neighbor("a", 1, 2, false, false, func(s string) bool {
+		g := c.Neighbor("a", 1, 2, WeightingRaw, false, func(s string) bool {
 			return strings.HasPrefix(s, "y")
 		})
 		got := map[string]bool{}
@@ -217,7 +218,7 @@ func TestGraphCache_NeighborKeep(t *testing.T) {
 		c.AddEdge("m_seed", "bridge", 5)   // non-matching bridge
 		c.AddEdge("bridge", "m_target", 5) // matching, but only reachable via bridge
 		c.AddEdge("m_seed", "m_direct", 1) // matching, directly reachable
-		g := c.Neighbor("m_seed", 2, 10, false, false, func(s string) bool {
+		g := c.Neighbor("m_seed", 2, 10, WeightingRaw, false, func(s string) bool {
 			return strings.HasPrefix(s, "m")
 		})
 		if _, ok := g.Vertices["bridge"]; ok {
@@ -257,7 +258,7 @@ func TestGraphCache_Neighbor_HidesDeadEndpoints(t *testing.T) {
 		if !c.DeleteVertex("b") {
 			t.Fatal("DeleteVertex(b) reported false")
 		}
-		g := c.Neighbor("a", 3, 8, false, false, nil)
+		g := c.Neighbor("a", 3, 8, WeightingRaw, false, nil)
 		if _, ok := g.Vertices["b"]; ok {
 			t.Errorf("Neighbor surfaced deleted vertex b: %v", g.Vertices)
 		}
@@ -282,7 +283,7 @@ func TestGraphCache_Neighbor_HidesDeadEndpoints(t *testing.T) {
 		if !c.DeleteVertex("b") {
 			t.Fatal("DeleteVertex(b) reported false")
 		}
-		g, exps, err := c.NeighborWithExpirationsContext(context.Background(), "a", 3, 8, false, false, nil)
+		g, exps, err := c.NeighborWithExpirationsContext(context.Background(), "a", 3, 8, WeightingRaw, false, nil)
 		if err != nil {
 			t.Fatalf("NeighborWithExpirationsContext: %v", err)
 		}
@@ -295,6 +296,96 @@ func TestGraphCache_Neighbor_HidesDeadEndpoints(t *testing.T) {
 			if _, ok := heads["b"]; ok {
 				t.Errorf("graph surfaced dangling edge a->b: %v", g.Edges)
 			}
+		}
+	})
+}
+
+// TestGraphCache_NeighborBM25 pins the #800 BM25 edge weighting. Because the
+// per-hop scoring writes the transformed score back as the edge weight, the
+// returned subgraph's edge weights ARE the BM25 scores, so the assertions read
+// them directly off g.Edges.
+func TestGraphCache_NeighborBM25(t *testing.T) {
+	// HubDiscountVsRawAndTFIDF: a globally popular head (high df) is discounted
+	// relative to a niche head of equal raw weight. RAW keeps them equal; both
+	// TFIDF and BM25 rank the niche head above the hub; and BM25 is a DISTINCT
+	// transform from the crude TFIDF (different numeric score for the same edge).
+	t.Run("HubDiscountVsRawAndTFIDF", func(t *testing.T) {
+		mk := func() *GraphCache[string, string] {
+			c := NewGraphCache[string, string](time.Hour)
+			for _, v := range []string{"s", "popular", "niche"} {
+				c.PutVertex(v, v)
+			}
+			// Seed points at both heads with identical raw weight.
+			c.AddEdge("s", "popular", 1)
+			c.AddEdge("s", "niche", 1)
+			// Ten other tails also point at "popular", inflating df(popular)
+			// to 11 while df(niche) stays 1. These tails are never traversed
+			// (we walk from s, step 1) but still count toward document
+			// frequency, exactly the "popular item" the hub-suppressor targets.
+			for i := 0; i < 10; i++ {
+				c.AddEdge(fmt.Sprintf("hubtail%d", i), "popular", 1)
+			}
+			return c
+		}
+
+		raw := mk().Neighbor("s", 1, 10, WeightingRaw, false, nil)
+		if got := raw.Edges["s"]["popular"]; got != raw.Edges["s"]["niche"] {
+			t.Fatalf("RAW should weight equal-weight edges equally: popular=%v niche=%v",
+				got, raw.Edges["s"]["niche"])
+		}
+
+		tfidf := mk().Neighbor("s", 1, 10, WeightingTFIDF, false, nil)
+		if !(tfidf.Edges["s"]["niche"] > tfidf.Edges["s"]["popular"]) {
+			t.Fatalf("TFIDF should rank niche above the hub: niche=%v popular=%v",
+				tfidf.Edges["s"]["niche"], tfidf.Edges["s"]["popular"])
+		}
+
+		bm25 := mk().Neighbor("s", 1, 10, WeightingBM25, false, nil)
+		if !(bm25.Edges["s"]["niche"] > bm25.Edges["s"]["popular"]) {
+			t.Fatalf("BM25 should rank niche above the hub: niche=%v popular=%v",
+				bm25.Edges["s"]["niche"], bm25.Edges["s"]["popular"])
+		}
+		// BM25 is N-aware and saturating, so its score for the same edge must
+		// diverge from the crude TFIDF transform — proving it is not a relabel.
+		if bm25.Edges["s"]["niche"] == tfidf.Edges["s"]["niche"] {
+			t.Fatalf("BM25 should differ numerically from TFIDF for niche: both=%v",
+				bm25.Edges["s"]["niche"])
+		}
+	})
+
+	// DocumentLengthNormalization pins the BM25 `b` term: two tails point at the
+	// same head with identical raw weight, but one tail is verbose (large
+	// out-degree). BM25 damps the edge from the longer document; RAW does not.
+	t.Run("DocumentLengthNormalization", func(t *testing.T) {
+		mk := func() *GraphCache[string, string] {
+			c := NewGraphCache[string, string](time.Hour)
+			for _, v := range []string{"seed", "short", "long", "H", "x2", "x3", "x4"} {
+				c.PutVertex(v, v)
+			}
+			// Seed reaches both tails so a 2-hop walk visits each as a tail.
+			c.AddEdge("seed", "short", 1)
+			c.AddEdge("seed", "long", 1)
+			// Both tails point at H with the SAME raw weight...
+			c.AddEdge("short", "H", 1)
+			c.AddEdge("long", "H", 1)
+			// ...but "long" is verbose (out-degree 4 vs 1), so BM25 length-
+			// normalisation must damp its edge to H below "short"'s.
+			c.AddEdge("long", "x2", 1)
+			c.AddEdge("long", "x3", 1)
+			c.AddEdge("long", "x4", 1)
+			return c
+		}
+
+		raw := mk().Neighbor("seed", 2, 10, WeightingRaw, false, nil)
+		if raw.Edges["short"]["H"] != raw.Edges["long"]["H"] {
+			t.Fatalf("RAW should not length-normalise: short->H=%v long->H=%v",
+				raw.Edges["short"]["H"], raw.Edges["long"]["H"])
+		}
+
+		bm25 := mk().Neighbor("seed", 2, 10, WeightingBM25, false, nil)
+		if !(bm25.Edges["long"]["H"] < bm25.Edges["short"]["H"]) {
+			t.Fatalf("BM25 should damp the verbose tail's edge: long->H=%v short->H=%v",
+				bm25.Edges["long"]["H"], bm25.Edges["short"]["H"])
 		}
 	})
 }

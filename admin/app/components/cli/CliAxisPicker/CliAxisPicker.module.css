@@ -55,16 +55,12 @@
   min-width: 0;
 }
 
-/* Dropdowns for algorithm / objective. The descendant selector raises
- * specificity above Fluent UI's default 250px min-width so the controls
+/* Dropdowns for algorithm / objective / weighting. The descendant selector
+ * raises specificity above Fluent UI's default 250px min-width so the controls
  * can shrink and the strip never overflows a narrow canvas column. */
 .strip .dropdown {
   min-width: 0;
   max-width: 100%;
-}
-
-.tfidf {
-  /* Switch has its own internal label; no extra spacing needed. */
 }
 
 /* Live preview of the command the next click will write into the prompt.

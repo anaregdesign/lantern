@@ -368,7 +368,7 @@ test.describe("/cli", () => {
     );
     await expect(page.getByTestId("cli-axis-step")).toHaveValue("2");
     await expect(page.getByTestId("cli-axis-k")).toHaveValue("5");
-    await expect(page.getByTestId("cli-axis-tfidf")).not.toBeChecked();
+    await expect(page.getByTestId("cli-axis-weighting")).toBeVisible();
     // Canvas-header hint mirrors the picker.
     await expect(page.getByTestId("cli-click-hint")).toHaveText(
       "illuminate <key> 2 5",
@@ -408,15 +408,17 @@ test.describe("/cli", () => {
       "illuminate <key> 3 10 algorithm=spt objective=min",
     );
 
-    // Flip TF-IDF on. Token order must be algorithm → objective → weighting.
-    await page.getByTestId("cli-axis-tfidf").click();
+    // Pick weighting=bm25 via the Dropdown. Token order must be
+    // algorithm → objective → weighting.
+    await page.getByTestId("cli-axis-weighting").click();
+    await page.getByRole("option", { name: "BM25" }).click();
     await expect(preview).toHaveText(
-      "illuminate <key> 3 10 algorithm=spt objective=min weighting=tfidf",
+      "illuminate <key> 3 10 algorithm=spt objective=min weighting=bm25",
     );
 
     // The header hint tracks the picker.
     await expect(page.getByTestId("cli-click-hint")).toHaveText(
-      "illuminate <key> 3 10 algorithm=spt objective=min weighting=tfidf",
+      "illuminate <key> 3 10 algorithm=spt objective=min weighting=bm25",
     );
   });
 

@@ -124,6 +124,7 @@ const WEIGHTING_TO_PB: Record<number, PbWeighting> = {
   [Weighting.UNSPECIFIED]: PbWeighting.UNSPECIFIED,
   [Weighting.RAW]: PbWeighting.RAW,
   [Weighting.TFIDF]: PbWeighting.TFIDF,
+  [Weighting.BM25]: PbWeighting.BM25,
 };
 
 function normaliseBaseUrl(caller: string, baseUrl: string): string {

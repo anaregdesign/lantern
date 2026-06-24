@@ -781,7 +781,7 @@ func TestGraphCache_NeighborContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if _, err := c.NeighborContext(ctx, "a", 5, 10, false, false, nil); !errors.Is(err, context.Canceled) {
+	if _, err := c.NeighborContext(ctx, "a", 5, 10, WeightingRaw, false, nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("want context.Canceled, got %v", err)
 	}
 }
@@ -800,7 +800,7 @@ func TestGraphCache_NeighborWithExpirationsContext_ReturnsAlignedMap(t *testing.
 	c.AddEdgeWithExpiration("a", "b", 1.0, expAB)
 	c.AddEdgeWithExpiration("a", "c", 2.0, expAC)
 
-	g, exps, err := c.NeighborWithExpirationsContext(context.Background(), "a", 2, 10, false, false, nil)
+	g, exps, err := c.NeighborWithExpirationsContext(context.Background(), "a", 2, 10, WeightingRaw, false, nil)
 	if err != nil {
 		t.Fatalf("NeighborWithExpirationsContext: %v", err)
 	}
@@ -841,7 +841,7 @@ func TestGraphCache_NeighborContext_StillWorksAfterRefactor(t *testing.T) {
 	c.PutVertex("b", 2)
 	c.AddEdge("a", "b", 1.0)
 
-	g, err := c.NeighborContext(context.Background(), "a", 2, 10, false, false, nil)
+	g, err := c.NeighborContext(context.Background(), "a", 2, 10, WeightingRaw, false, nil)
 	if err != nil {
 		t.Fatalf("NeighborContext: %v", err)
 	}

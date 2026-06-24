@@ -97,7 +97,7 @@ type Backend interface {
 		ctx context.Context,
 		seed string,
 		step, k int,
-		tfidf bool,
+		weighting graphcache.EdgeWeighting,
 		selectSmallest bool,
 		keep func(string) bool,
 	) (*coregraph.Graph[string, *pb.Vertex], map[string]map[string]time.Time, error)

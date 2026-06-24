@@ -106,7 +106,7 @@ func testLivenessHeavyMix(t *testing.T) {
 					c.AddEdgeWithExpiration(tail, head, 1, exp)
 					c.PutEdgeWithExpiration(tail, head, 2, exp)
 					c.GetEdgeDetail(tail, head)
-					c.Neighbor(tail, 1, 4, false, false, nil)
+					c.Neighbor(tail, 1, 4, WeightingRaw, false, nil)
 					c.DeleteEdge(tail, head)
 					c.DeleteVertex(k)
 				}
@@ -311,8 +311,9 @@ func testInputNaNInf(t *testing.T) {
 	_, _, _ = c.GetEdgeDetail("a", "b")
 	_, _, _ = c.GetEdgeDetail("c", "d")
 	_, _, _ = c.GetEdgeDetail("e", "f")
-	_ = c.Neighbor("a", 1, 4, false, false, nil)
-	_ = c.Neighbor("c", 1, 4, true, false, nil) // also exercise the TF-IDF path
+	_ = c.Neighbor("a", 1, 4, WeightingRaw, false, nil)
+	_ = c.Neighbor("c", 1, 4, WeightingTFIDF, false, nil) // also exercise the TF-IDF path
+	_ = c.Neighbor("e", 1, 4, WeightingBM25, false, nil)  // and the BM25 path (#800)
 }
 
 // testInputDeleteMissing verifies idempotent delete: deleting an absent
@@ -368,7 +369,7 @@ func testReadConsistencyAfterExpiry(t *testing.T) {
 	if _, _, ok := c.GetEdgeDetail("a", "b"); ok {
 		t.Fatalf("C1: GetEdgeDetail still surfaces expired edge")
 	}
-	g := c.Neighbor("a", 2, 8, false, false, nil)
+	g := c.Neighbor("a", 2, 8, WeightingRaw, false, nil)
 	if len(g.Vertices) != 0 || len(g.Edges) != 0 {
 		t.Fatalf("C1: Neighbor returned %d vertices and %d edges from an all-expired seed",
 			len(g.Vertices), len(g.Edges))
@@ -423,7 +424,10 @@ func testReadConsistencyNeighborChurn(t *testing.T) {
 					return
 				default:
 				}
-				_ = c.Neighbor(keyFromInt(i%8), 2, 4, i%2 == 0, false, nil)
+				// Cycle through all three weightings so the concurrency
+				// stress also exercises the TF-IDF and BM25 scoring paths.
+				w := []EdgeWeighting{WeightingRaw, WeightingTFIDF, WeightingBM25}[i%3]
+				_ = c.Neighbor(keyFromInt(i%8), 2, 4, w, false, nil)
 			}
 		}()
 	}
@@ -480,7 +484,7 @@ func testTopologySelfLoop(t *testing.T) {
 	if !ok || w != 2.5 {
 		t.Fatalf("T1: self-loop weight wrong (got %v, ok=%v, want 2.5)", w, ok)
 	}
-	g := c.Neighbor("x", 1, 4, false, false, nil)
+	g := c.Neighbor("x", 1, 4, WeightingRaw, false, nil)
 	if _, ok := g.Edges["x"]["x"]; !ok {
 		t.Fatalf("T1: Neighbor lost the self-loop edge: %#v", g.Edges)
 	}
@@ -716,7 +720,7 @@ func testLogicalDerivedEdgeValue(t *testing.T) {
 		})
 		vs = append(vs, verdict{"ScanEdgesByPrefix", sw, spresent})
 
-		g := c.Neighbor("t", 1, 8, false, false, nil)
+		g := c.Neighbor("t", 1, 8, WeightingRaw, false, nil)
 		nw, npresent := g.Edges["t"]["h"]
 		vs = append(vs, verdict{"Neighbor", nw, npresent})
 

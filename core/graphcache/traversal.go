@@ -9,14 +9,39 @@ import (
 
 	"github.com/anaregdesign/lantern/core/collection/pq"
 	"github.com/anaregdesign/lantern/core/graph"
+	"github.com/anaregdesign/lantern/core/search"
+)
+
+// EdgeWeighting selects the transform applied to a raw edge weight BEFORE the
+// directional per-hop top/bottom-k prune (#410, #800). It replaces the
+// historical tfidf bool threaded through the Neighbor* surface so a third
+// strategy — and any future one — is a single enum arm rather than another
+// boolean parameter.
+type EdgeWeighting uint8
+
+const (
+	// WeightingRaw uses the live additive edge weight verbatim.
+	WeightingRaw EdgeWeighting = iota
+	// WeightingTFIDF applies the crude hub-suppressor w / log2(1 + df(head)).
+	// It is cheap and O(1) per edge but corpus-size-blind; kept alongside
+	// BM25 for its distinct, faster semantics.
+	WeightingTFIDF
+	// WeightingBM25 re-scores with Okapi BM25 over the per-vertex out-edge
+	// distribution: TF = the live edge weight, DF = df(head) (distinct tails
+	// into head), N = number of tails, DocLen = the tail's out-degree, and
+	// AvgLen = mean out-degree. It runs through the shared search.BM25Score
+	// kernel so graph edge weighting stays numerically identical to full-text
+	// SearchVertices ranking, adding TF saturation, document-length
+	// normalization, and a real N-aware IDF that TFIDF lacks.
+	WeightingBM25
 )
 
 // Neighbor walks the graph from seed and returns the visited subgraph. The
 // per-hop top-k pruning keeps the k largest-weight edges when selectSmallest
 // is false and the k smallest-weight edges when it is true (#560) — the
 // caller picks the direction that matches its Objective so a cost-minimiser
-// is not handed the costliest edges. tfidf re-scores edge weights BEFORE the
-// directional top/bottom-k selection.
+// is not handed the costliest edges. weighting re-scores edge weights BEFORE
+// the directional top/bottom-k selection (#800).
 //
 // keep is an optional frontier predicate (nil = accept all): a candidate head
 // is expanded into the result only when keep(head) is true. It is applied at
@@ -27,8 +52,8 @@ import (
 // matching vertex reachable only through a rejected "bridge" is not reached
 // (induced-subgraph semantics). core stays generic: keep is just a predicate
 // over S; the concrete prefix/string logic lives in the caller.
-func (c *GraphCache[S, T]) Neighbor(seed S, step int, k int, tfidf bool, selectSmallest bool, keep func(S) bool) *graph.Graph[S, T] {
-	g, _ := c.NeighborContext(context.Background(), seed, step, k, tfidf, selectSmallest, keep)
+func (c *GraphCache[S, T]) Neighbor(seed S, step int, k int, weighting EdgeWeighting, selectSmallest bool, keep func(S) bool) *graph.Graph[S, T] {
+	g, _ := c.NeighborContext(context.Background(), seed, step, k, weighting, selectSmallest, keep)
 	return g
 }
 
@@ -37,8 +62,8 @@ func (c *GraphCache[S, T]) Neighbor(seed S, step int, k int, tfidf bool, selectS
 // — checked between BFS expansion steps — so handlers can short-circuit
 // large traversals when the caller has given up. keep is the optional frontier
 // predicate documented on Neighbor (nil = accept all).
-func (c *GraphCache[S, T]) NeighborContext(ctx context.Context, seed S, step int, k int, tfidf bool, selectSmallest bool, keep func(S) bool) (*graph.Graph[S, T], error) {
-	g, _, err := c.neighborContext(ctx, seed, step, k, tfidf, selectSmallest, keep, false)
+func (c *GraphCache[S, T]) NeighborContext(ctx context.Context, seed S, step int, k int, weighting EdgeWeighting, selectSmallest bool, keep func(S) bool) (*graph.Graph[S, T], error) {
+	g, _, err := c.neighborContext(ctx, seed, step, k, weighting, selectSmallest, keep, false)
 	return g, err
 }
 
@@ -51,11 +76,11 @@ func (c *GraphCache[S, T]) NeighborContext(ctx context.Context, seed S, step int
 // the returned graph; a missing or zero value means the edge has no
 // known expiration. keep is the optional frontier predicate documented on
 // Neighbor (nil = accept all).
-func (c *GraphCache[S, T]) NeighborWithExpirationsContext(ctx context.Context, seed S, step int, k int, tfidf bool, selectSmallest bool, keep func(S) bool) (*graph.Graph[S, T], map[S]map[S]time.Time, error) {
-	return c.neighborContext(ctx, seed, step, k, tfidf, selectSmallest, keep, true)
+func (c *GraphCache[S, T]) NeighborWithExpirationsContext(ctx context.Context, seed S, step int, k int, weighting EdgeWeighting, selectSmallest bool, keep func(S) bool) (*graph.Graph[S, T], map[S]map[S]time.Time, error) {
+	return c.neighborContext(ctx, seed, step, k, weighting, selectSmallest, keep, true)
 }
 
-func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int, k int, tfidf bool, selectSmallest bool, keep func(S) bool, collectExpirations bool) (*graph.Graph[S, T], map[S]map[S]time.Time, error) {
+func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int, k int, weighting EdgeWeighting, selectSmallest bool, keep func(S) bool, collectExpirations bool) (*graph.Graph[S, T], map[S]map[S]time.Time, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	g := graph.NewGraph[S, T]()
@@ -89,6 +114,20 @@ func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int
 	// This turns the per-call cost from O(V+E) (snapshotTF + snapshotDF)
 	// into O(sum of degrees of visited tails).
 
+	// BM25 corpus statistics are read once here (O(#tails), and only for the
+	// BM25 weighting) under the same RLock the per-edge accessors rely on.
+	// N = number of tails (documents); avgLen = mean out-degree. Each tail's
+	// own out-degree is the per-document length, computed inside processTail.
+	var bm25N int
+	var bm25AvgLen float64
+	if weighting == WeightingBM25 {
+		tails, totalEdges := c.edges.corpusStats()
+		bm25N = tails
+		if tails > 0 {
+			bm25AvgLen = float64(totalEdges) / float64(tails)
+		}
+	}
+
 	// processTail computes one tail's top-k neighbor edges and publishes
 	// them to g.Edges (and expirations, if requested) under mu. It is the
 	// shared body used by both the sequential and worker-pool paths.
@@ -103,6 +142,10 @@ func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int
 		if !ok || len(heads) == 0 {
 			return
 		}
+		// docLen is this tail's out-degree — the BM25 document length. Read
+		// once here so BM25 length-normalises every edge of the tail against
+		// the corpus mean (bm25AvgLen).
+		docLen := len(heads)
 		edges := make(pq.SortableMap[S, float32], len(heads))
 		var expRow map[S]time.Time
 		if collectExpirations {
@@ -130,9 +173,16 @@ func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int
 			if !nonZero {
 				continue
 			}
-			if tfidf {
+			switch weighting {
+			case WeightingTFIDF:
 				edges[head] = sum / float32(math.Log2(float64(1+c.edges.docFreq(headID))))
-			} else {
+			case WeightingBM25:
+				edges[head] = float32(search.BM25Score(
+					float64(sum), bm25AvgLen,
+					c.edges.docFreq(headID), bm25N, docLen,
+					search.DefaultBM25K1, search.DefaultBM25B,
+				))
+			default: // WeightingRaw
 				edges[head] = sum
 			}
 			if expRow != nil {

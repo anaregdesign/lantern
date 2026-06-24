@@ -5,6 +5,7 @@ import (
 	"math"
 
 	coregraph "github.com/anaregdesign/lantern/core/graph"
+	"github.com/anaregdesign/lantern/core/graphcache"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
@@ -97,6 +98,23 @@ func weightingLabel(w pb.Weighting) string {
 		return "raw"
 	case pb.Weighting_WEIGHTING_TFIDF:
 		return "tfidf"
+	case pb.Weighting_WEIGHTING_BM25:
+		return "bm25"
 	}
 	return "unknown"
+}
+
+// weightingToCore maps the wire weighting axis to the core edge-weight
+// transform. UNSPECIFIED/RAW collapse to the verbatim weight; an unknown
+// future enum value also falls back to RAW so a proto-only addition never
+// silently mis-weights — it degrades to the raw graph until the core path
+// learns the new transform.
+func weightingToCore(w pb.Weighting) graphcache.EdgeWeighting {
+	switch w {
+	case pb.Weighting_WEIGHTING_TFIDF:
+		return graphcache.WeightingTFIDF
+	case pb.Weighting_WEIGHTING_BM25:
+		return graphcache.WeightingBM25
+	}
+	return graphcache.WeightingRaw
 }
