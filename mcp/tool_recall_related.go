@@ -24,6 +24,7 @@ const (
 	algorithmNone recallRelatedAlgorithm = "none"
 	algorithmMST  recallRelatedAlgorithm = "mst"
 	algorithmSPT  recallRelatedAlgorithm = "spt"
+	algorithmPPR  recallRelatedAlgorithm = "ppr"
 )
 
 type recallRelatedObjective string
@@ -92,9 +93,11 @@ type recallRelatedInput struct {
 	Step            uint32                 `json:"step,omitempty"      jsonschema:"BFS depth (default 2). Larger values explore further at quadratic cost. Server enforces a hard cap. Applies to the out-direction walk only."`
 	K               uint32                 `json:"k,omitempty"         jsonschema:"Per-hop fan-out: keep the top-k strongest outgoing edges at each step (default 8). Server enforces a hard cap. Applies to the out-direction walk only."`
 	Direction       recallRelatedDirection `json:"direction,omitempty" jsonschema:"Which edge direction to follow from the seed: out (default - forward BFS over out-edges, the historical behaviour), in (reverse - return the seed's direct predecessors, so seeding a pure sink is no longer empty), or both (union of the two). step/k/algorithm/objective/weighting shape the out walk; the in pass is a single bounded reverse-adjacency hop."`
-	Algorithm       recallRelatedAlgorithm `json:"algorithm,omitempty" jsonschema:"Post-traversal subgraph reduction: one of: none (default - raw BFS subgraph), mst (minimum/maximum spanning tree depending on objective), spt (shortest-path tree from seed)."`
-	Objective       recallRelatedObjective `json:"objective,omitempty" jsonschema:"Direction of edge selection AND any algorithm reduction: max (default - relevance-weighted, keeps the strongest edges per hop and the largest tree) or min (cost-weighted, keeps the smallest edges per hop and the smallest tree). Governs the per-hop top-k prune even when algorithm=none (see #560)."`
+	Algorithm       recallRelatedAlgorithm `json:"algorithm,omitempty" jsonschema:"Graph algorithm run from the seed: one of: none (default - raw BFS subgraph), mst (minimum/maximum spanning tree depending on objective), spt (shortest-path tree from seed), or ppr (Personalized PageRank - rank facts by random-walk-with-restart proximity to the seed, surfacing globally well-connected context rather than just direct neighbours; tuned by restart_prob/epsilon)."`
+	Objective       recallRelatedObjective `json:"objective,omitempty" jsonschema:"Direction of edge selection AND any algorithm reduction: max (default - relevance-weighted, keeps the strongest edges per hop and the largest tree) or min (cost-weighted, keeps the smallest edges per hop and the smallest tree). Governs the per-hop top-k prune even when algorithm=none (see #560). Ignored when algorithm=ppr (PPR is an intrinsic relevance maximiser)."`
 	Weighting       recallRelatedWeighting `json:"weighting,omitempty" jsonschema:"Edge-weight transform applied BEFORE the walk: raw (default - edge weights as stored), tfidf (re-score via TF-IDF over per-vertex out-edge distribution), or bm25 (re-score via Okapi BM25, k1=1.2/b=0.75, over the same distribution - adds IDF saturation and out-degree length-normalisation on top of tfidf)."`
+	RestartProb     float32                `json:"restart_prob,omitempty"     jsonschema:"Personalized PageRank restart (teleport-to-seed) probability α in (0,1); only used when algorithm=ppr. Higher α keeps mass nearer the seed (more local); lower α explores farther. 0 (default) lets the server pick 0.15. Ignored unless algorithm=ppr."`
+	Epsilon         float32                `json:"epsilon,omitempty"          jsonschema:"Personalized PageRank forward-push residual threshold ε > 0; only used when algorithm=ppr. Smaller ε means a more accurate, more expensive walk; larger ε is faster but coarser. 0 (default) lets the server pick 1e-4. Ignored unless algorithm=ppr."`
 	Reinforce       bool                   `json:"reinforce,omitempty"        jsonschema:"Opt in (default false) to strengthening the edges this walk actually traverses. Each traversed edge gains an additive weight pulse via the same additive model as remember_relation; recall stays read-only when false. This is the Hebbian use-strengthens-memory loop — the edge-side analog of touch and the one deliberate exception to 'recall does NOT refresh TTL'."`
 	ReinforceWeight float32                `json:"reinforce_weight,omitempty" jsonschema:"Weight added to each traversed edge when reinforce=true (default 1.0). Additive: the pulse stacks on the edge's existing weight. Ignored when reinforce=false."`
 	ReinforceTTL    string                 `json:"reinforce_ttl,omitempty"    jsonschema:"Decay horizon of the reinforcement pulse when reinforce=true (default conversation). The store keeps each contribution independently, so a short horizon NEVER shortens the edge's existing life — it adds a pulse that itself decays on this horizon; frequent use stacks pulses. One of: seconds, transient, turn, conversation, task, workday, day, week, sprint, month, quarter, durable. Ignored when reinforce=false."`
@@ -112,8 +115,13 @@ type recallRelatedOutput struct {
 	Algorithm string `json:"algorithm"`
 	Objective string `json:"objective"`
 	Weighting string `json:"weighting"`
-	Count     int    `json:"count"`
-	Truncated bool   `json:"truncated,omitempty"`
+	// RestartProb / Epsilon echo the PPR knobs that were actually sent to the
+	// server (omitted unless algorithm=ppr with a non-zero override). A zero
+	// value means the server applied its own default (α=0.15 / ε=1e-4).
+	RestartProb float32 `json:"restart_prob,omitempty"`
+	Epsilon     float32 `json:"epsilon,omitempty"`
+	Count       int     `json:"count"`
+	Truncated   bool    `json:"truncated,omitempty"`
 	// Reinforced is the number of traversed edges that received a weight
 	// pulse this call. Zero (and omitted) unless reinforce=true. It can be
 	// lower than the number of edges walked if some best-effort bump writes
@@ -125,7 +133,7 @@ type recallRelatedOutput struct {
 	Neighbors       []recallRelatedNeighbor `json:"neighbors"`
 }
 
-const recallRelatedDescription = "Walk Lantern's graph from a seed key, returning the related facts with their cumulative edge weights. Call this PROACTIVELY to pull in surrounding context before answering — start from the most relevant known key. Use step + k to bound exploration. Use algorithm + objective + weighting to control how the discovered subgraph is reduced and weighted (see #410). Use direction to choose which way edges are followed: out (default, forward), in (reverse — the seed's predecessors, so seeding a pure sink is no longer empty), or both. By default recall does NOT refresh TTL for any vertex or edge visited; weak relations will still decay on schedule. Set reinforce=true to OPT IN to strengthening the edges you actually traverse — each gains an additive, decaying weight pulse (the Hebbian use-strengthens-memory loop and the edge-side analog of touch); this is the one deliberate exception to the no-refresh rule, and because contributions stack independently it never shortens an edge's existing life."
+const recallRelatedDescription = "Walk Lantern's graph from a seed key, returning the related facts with their cumulative edge weights. Call this PROACTIVELY to pull in surrounding context before answering — start from the most relevant known key. Use step + k to bound exploration. Use algorithm + objective + weighting to control how the discovered subgraph is reduced and weighted (see #410); set algorithm=ppr for Personalized PageRank, which ranks facts by random-walk-with-restart proximity to the seed (tune locality with restart_prob/epsilon) instead of a plain BFS reduction. Use direction to choose which way edges are followed: out (default, forward), in (reverse — the seed's predecessors, so seeding a pure sink is no longer empty), or both. By default recall does NOT refresh TTL for any vertex or edge visited; weak relations will still decay on schedule. Set reinforce=true to OPT IN to strengthening the edges you actually traverse — each gains an additive, decaying weight pulse (the Hebbian use-strengthens-memory loop and the edge-side analog of touch); this is the one deliberate exception to the no-refresh rule, and because contributions stack independently it never shortens an edge's existing life."
 
 func registerRecallRelated(srv *mcp.Server, lc lanternClient, r *ttl.Resolver) {
 	mcp.AddTool(srv, &mcp.Tool{
@@ -158,6 +166,13 @@ func registerRecallRelated(srv *mcp.Server, lc lanternClient, r *ttl.Resolver) {
 		weighting := in.Weighting
 		if weighting == "" {
 			weighting = weightingRaw
+		}
+		// PPR knobs are only meaningful when algorithm=ppr; zero them out
+		// otherwise so a stray restart_prob/epsilon on a non-ppr call neither
+		// reaches the server nor shows up in the echoed output.
+		restartProb, epsilon := float32(0), float32(0)
+		if algorithm == algorithmPPR {
+			restartProb, epsilon = in.RestartProb, in.Epsilon
 		}
 		algo, err := mapAlgorithm(algorithm)
 		if err != nil {
@@ -201,6 +216,14 @@ func registerRecallRelated(srv *mcp.Server, lc lanternClient, r *ttl.Resolver) {
 			if in.K > 0 {
 				opts = append(opts, client.WithK(in.K))
 			}
+			// PPR knobs only matter when algorithm=ppr; forward any explicit
+			// override (>0) and let the server resolve 0 to its defaults.
+			if restartProb > 0 {
+				opts = append(opts, client.WithRestartProb(restartProb))
+			}
+			if epsilon > 0 {
+				opts = append(opts, client.WithEpsilon(epsilon))
+			}
 			g, err := lc.Illuminate(ctx, in.Seed, opts...)
 			if err != nil {
 				return nil, recallRelatedOutput{}, mapSDKError("recall_related", err)
@@ -223,14 +246,16 @@ func registerRecallRelated(srv *mcp.Server, lc lanternClient, r *ttl.Resolver) {
 
 		neighbors := acc.finalize(in.Seed)
 		out := recallRelatedOutput{
-			Seed:      in.Seed,
-			Direction: string(direction),
-			Algorithm: string(algorithm),
-			Objective: string(objective),
-			Weighting: string(weighting),
-			Count:     len(neighbors),
-			Truncated: truncated,
-			Neighbors: neighbors,
+			Seed:        in.Seed,
+			Direction:   string(direction),
+			Algorithm:   string(algorithm),
+			Objective:   string(objective),
+			Weighting:   string(weighting),
+			RestartProb: restartProb,
+			Epsilon:     epsilon,
+			Count:       len(neighbors),
+			Truncated:   truncated,
+			Neighbors:   neighbors,
 		}
 
 		// Reinforce-on-recall (#549): opt-in, default off. Replay each
@@ -299,8 +324,10 @@ func mapAlgorithm(a recallRelatedAlgorithm) (client.Algorithm, error) {
 		return client.AlgorithmMinimumSpanningTree, nil
 	case algorithmSPT:
 		return client.AlgorithmShortestPathTree, nil
+	case algorithmPPR:
+		return client.AlgorithmPersonalizedPageRank, nil
 	}
-	return client.AlgorithmUnspecified, fmt.Errorf("unknown algorithm %q (want one of: none, mst, spt)", string(a))
+	return client.AlgorithmUnspecified, fmt.Errorf("unknown algorithm %q (want one of: none, mst, spt, ppr)", string(a))
 }
 
 func mapObjective(o recallRelatedObjective) (client.Objective, error) {

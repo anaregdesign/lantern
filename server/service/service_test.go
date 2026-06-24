@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -386,6 +387,7 @@ func TestLanternService_Illuminate_AllAxisCombos(t *testing.T) {
 	algorithms := []pb.Algorithm{
 		pb.Algorithm_ALGORITHM_MINIMUM_SPANNING_TREE,
 		pb.Algorithm_ALGORITHM_SHORTEST_PATH_TREE,
+		pb.Algorithm_ALGORITHM_PERSONALIZED_PAGERANK,
 	}
 	objectives := []pb.Objective{
 		pb.Objective_OBJECTIVE_MINIMIZE,
@@ -767,6 +769,148 @@ func TestLanternService_FakeBackend_Illuminate_VertexPrefixBuildsKeep(t *testing
 		}
 		if keep("orgs/42") {
 			t.Error(`keep("orgs/42") = true, want false`)
+		}
+	})
+}
+
+// TestLanternService_FakeBackend_Illuminate_PPRRouting pins the #801 contract
+// at the service boundary: algorithm=ppr must route to the forward-push path
+// (PersonalizedPageRankContext), NOT the BFS+reduction path; the handler
+// resolves restart_prob/epsilon to the core defaults when unset or out of
+// range, passes explicit in-range values through, forwards k as the top-N cap,
+// threads weighting + the vertex_prefix keep predicate, and maps the returned
+// relevance star onto response edges.
+func TestLanternService_FakeBackend_Illuminate_PPRRouting(t *testing.T) {
+	newSeeded := func() *fakeBackend {
+		fb := newFakeBackend()
+		fb.vertices["s"] = &pb.Vertex{Key: "s", Value: &pb.Vertex_String_{String_: "S"}}
+		fb.vertices["users/1"] = &pb.Vertex{Key: "users/1", Value: &pb.Vertex_String_{String_: "U1"}}
+		fb.vertices["orgs/9"] = &pb.Vertex{Key: "orgs/9", Value: &pb.Vertex_String_{String_: "O9"}}
+		fb.edges["s"] = map[string]float32{"users/1": 0.7, "orgs/9": 0.3}
+		return fb
+	}
+
+	t.Run("routes to forward-push, not BFS", func(t *testing.T) {
+		fb := newSeeded()
+		svc := NewLanternService(fb)
+		resp, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{
+			Seed:      "s",
+			K:         5,
+			Algorithm: pb.Algorithm_ALGORITHM_PERSONALIZED_PAGERANK,
+		})
+		if err != nil {
+			t.Fatalf("Illuminate: %v", err)
+		}
+		if fb.pprCalls != 1 {
+			t.Errorf("pprCalls = %d, want 1", fb.pprCalls)
+		}
+		if fb.neighborCalls != 0 {
+			t.Errorf("neighborCalls = %d, want 0 (ppr must not take the BFS path)", fb.neighborCalls)
+		}
+		if fb.lastPPRTopN != 5 {
+			t.Errorf("lastPPRTopN = %d, want 5 (k forwarded as top-N)", fb.lastPPRTopN)
+		}
+		// The synthesised relevance star must surface as response edges.
+		var got float32
+		var found bool
+		for _, e := range resp.Graph.Edges {
+			if e.Tail == "s" && e.Head == "users/1" {
+				got, found = e.Weight, true
+			}
+		}
+		if !found {
+			t.Fatalf("response missing star edge s->users/1: %+v", resp.Graph.Edges)
+		}
+		if got != 0.7 {
+			t.Errorf("star edge s->users/1 weight = %v, want 0.7", got)
+		}
+	})
+
+	t.Run("unset restart_prob/epsilon resolve to core defaults", func(t *testing.T) {
+		fb := newSeeded()
+		svc := NewLanternService(fb)
+		if _, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{
+			Seed:      "s",
+			Algorithm: pb.Algorithm_ALGORITHM_PERSONALIZED_PAGERANK,
+		}); err != nil {
+			t.Fatalf("Illuminate: %v", err)
+		}
+		if fb.lastPPRAlpha != graphcache.DefaultPPRAlpha {
+			t.Errorf("lastPPRAlpha = %v, want default %v", fb.lastPPRAlpha, graphcache.DefaultPPRAlpha)
+		}
+		if fb.lastPPREpsilon != graphcache.DefaultPPREpsilon {
+			t.Errorf("lastPPREpsilon = %v, want default %v", fb.lastPPREpsilon, graphcache.DefaultPPREpsilon)
+		}
+	})
+
+	t.Run("in-range restart_prob/epsilon pass through", func(t *testing.T) {
+		fb := newSeeded()
+		svc := NewLanternService(fb)
+		if _, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{
+			Seed:        "s",
+			Algorithm:   pb.Algorithm_ALGORITHM_PERSONALIZED_PAGERANK,
+			RestartProb: 0.3,
+			Epsilon:     1e-3,
+		}); err != nil {
+			t.Fatalf("Illuminate: %v", err)
+		}
+		if math.Abs(fb.lastPPRAlpha-0.3) > 1e-6 {
+			t.Errorf("lastPPRAlpha = %v, want 0.3", fb.lastPPRAlpha)
+		}
+		if math.Abs(fb.lastPPREpsilon-1e-3) > 1e-9 {
+			t.Errorf("lastPPREpsilon = %v, want 1e-3", fb.lastPPREpsilon)
+		}
+	})
+
+	t.Run("out-of-range restart_prob falls back to default", func(t *testing.T) {
+		for _, rp := range []float32{0, 1, 1.5, -0.2} {
+			fb := newSeeded()
+			svc := NewLanternService(fb)
+			if _, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{
+				Seed:        "s",
+				Algorithm:   pb.Algorithm_ALGORITHM_PERSONALIZED_PAGERANK,
+				RestartProb: rp,
+			}); err != nil {
+				t.Fatalf("Illuminate(restart_prob=%v): %v", rp, err)
+			}
+			if fb.lastPPRAlpha != graphcache.DefaultPPRAlpha {
+				t.Errorf("restart_prob=%v: lastPPRAlpha = %v, want default %v", rp, fb.lastPPRAlpha, graphcache.DefaultPPRAlpha)
+			}
+		}
+	})
+
+	t.Run("threads weighting and vertex_prefix keep", func(t *testing.T) {
+		fb := newSeeded()
+		svc := NewLanternService(fb)
+		if _, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{
+			Seed:         "s",
+			Algorithm:    pb.Algorithm_ALGORITHM_PERSONALIZED_PAGERANK,
+			Weighting:    pb.Weighting_WEIGHTING_BM25,
+			VertexPrefix: "users/",
+		}); err != nil {
+			t.Fatalf("Illuminate: %v", err)
+		}
+		if fb.lastPPRWeighting != graphcache.WeightingBM25 {
+			t.Errorf("lastPPRWeighting = %v, want WeightingBM25", fb.lastPPRWeighting)
+		}
+		keep := fb.lastPPRKeep
+		if keep == nil {
+			t.Fatal("lastPPRKeep = nil, want non-nil for vertex_prefix=\"users/\"")
+		}
+		if !keep("users/42") || keep("orgs/9") {
+			t.Errorf(`keep mis-scoped: keep("users/42")=%v keep("orgs/9")=%v`, keep("users/42"), keep("orgs/9"))
+		}
+	})
+
+	t.Run("propagates backend error", func(t *testing.T) {
+		fb := newSeeded()
+		fb.pprErr = errors.New("simulated ppr failure")
+		svc := NewLanternService(fb)
+		if _, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{
+			Seed:      "s",
+			Algorithm: pb.Algorithm_ALGORITHM_PERSONALIZED_PAGERANK,
+		}); err == nil {
+			t.Fatal("expected error from PPR backend, got nil")
 		}
 	})
 }

@@ -16,6 +16,8 @@ var (
 	illuminateObjectiveStr string
 	illuminateWeightingStr string
 	illuminatePrefixStr    string
+	illuminateRestartProb  float32
+	illuminateEpsilon      float32
 )
 
 // algorithmByName, objectiveByName, weightingByName map human-friendly
@@ -26,6 +28,7 @@ var algorithmByName = map[string]client.Algorithm{
 	"":     client.AlgorithmUnspecified,
 	"mst":  client.AlgorithmMinimumSpanningTree,
 	"spt":  client.AlgorithmShortestPathTree,
+	"ppr":  client.AlgorithmPersonalizedPageRank,
 }
 
 var objectiveByName = map[string]client.Objective{
@@ -54,10 +57,15 @@ PARAMETERS
   --k <uint32>          max neighbours visited per node (default 10)
 
 ORTHOGONAL ILLUMINATE AXES (#410)
-  --algorithm <mode>    post-traversal subgraph reduction:
+  --algorithm <mode>    Illuminate algorithm:
                           none  (default) return the raw discovered subgraph
                           mst   minimum or maximum spanning tree
                           spt   shortest-path tree rooted at the seed
+                          ppr   Personalized PageRank from the seed (#801):
+                                a distinct traversal (NOT a reduction) that
+                                returns a relevance star (seed→v = v's PPR
+                                mass), capped at the top --k vertices; tuned
+                                by --restart-prob and --epsilon
   --objective <dir>     direction of the weight-sensitive optimisation;
                         governs BOTH the per-hop top-k pruning and the
                         algorithm-driven reduction (#560):
@@ -72,6 +80,14 @@ ORTHOGONAL ILLUMINATE AXES (#410)
                           bm25  re-score using Okapi BM25 (k1=1.2, b=0.75)
                                 over the same distribution; adds IDF
                                 saturation + out-degree length-normalisation
+
+PERSONALIZED PAGERANK KNOBS (#801, --algorithm ppr only)
+  --restart-prob <f>    restart (teleport-to-seed) probability α in (0,1).
+                        Higher α keeps relevance tighter around the seed;
+                        lower α wanders farther. 0 (default) = server's 0.15.
+  --epsilon <f>         forward-push residual threshold ε (> 0). Smaller ε
+                        reaches more vertices (higher recall, more work);
+                        larger ε stops sooner. 0 (default) = server's 1e-4.
 
 FRONTIER FILTER (#604)
   --prefix <string>     restrict the walk frontier to vertices whose key
@@ -113,6 +129,9 @@ EXAMPLES
   # 3-hop relevance-weighted SPT (formerly the "inverse-SPT" enum value)
   lantern-cli illuminate alice --step 3 --k 20 --algorithm spt --objective max
 
+  # Personalized PageRank from alice, top-15 by PPR mass, tighter locality
+  lantern-cli illuminate alice --k 15 --algorithm ppr --restart-prob 0.25
+
   # 2-hop walk restricted to the users/ keyspace (seed always kept)
   lantern-cli illuminate alice --step 2 --k 5 --prefix users/
 
@@ -120,8 +139,9 @@ REPL GRAMMAR (one-liner parity, #672)
   In addition to the flags above, illuminate accepts the REPL's positional
   form so the prompt and the shell share one grammar:
 
-    lantern-cli illuminate <seed> <step> <k> [algorithm=none|mst|spt] \
-            [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>]
+    lantern-cli illuminate <seed> <step> <k> [algorithm=none|mst|spt|ppr] \
+            [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>] \
+            [restart_prob=<float>] [epsilon=<float>]
 
   e.g. "lantern-cli illuminate alice 2 5 algorithm=spt objective=max" is
   identical to typing it at "lantern-cli repl". The positional form kicks in
@@ -147,7 +167,7 @@ REPL GRAMMAR (one-liner parity, #672)
 
 		algo, ok := algorithmByName[illuminateAlgorithmStr]
 		if !ok {
-			return fmt.Errorf("unknown --algorithm %q (want none|mst|spt)", illuminateAlgorithmStr)
+			return fmt.Errorf("unknown --algorithm %q (want none|mst|spt|ppr)", illuminateAlgorithmStr)
 		}
 		obj, ok := objectiveByName[illuminateObjectiveStr]
 		if !ok {
@@ -173,6 +193,12 @@ REPL GRAMMAR (one-liner parity, #672)
 		if illuminatePrefixStr != "" {
 			opts = append(opts, client.WithVertexPrefix(illuminatePrefixStr))
 		}
+		if illuminateRestartProb > 0 {
+			opts = append(opts, client.WithRestartProb(illuminateRestartProb))
+		}
+		if illuminateEpsilon > 0 {
+			opts = append(opts, client.WithEpsilon(illuminateEpsilon))
+		}
 		g, err := cli.Illuminate(cmd.Context(), args[0], opts...)
 		if err != nil {
 			return err
@@ -186,9 +212,11 @@ REPL GRAMMAR (one-liner parity, #672)
 func init() {
 	illuminateCmd.Flags().Uint32Var(&illuminateStep, "step", 1, "maximum walk depth from the seed")
 	illuminateCmd.Flags().Uint32Var(&illuminateK, "k", 10, "max neighbours visited per node")
-	illuminateCmd.Flags().StringVar(&illuminateAlgorithmStr, "algorithm", "none", "post-traversal reduction: none|mst|spt (#410)")
+	illuminateCmd.Flags().StringVar(&illuminateAlgorithmStr, "algorithm", "none", "Illuminate algorithm: none|mst|spt|ppr (#410, #801)")
 	illuminateCmd.Flags().StringVar(&illuminateObjectiveStr, "objective", "max", "optimisation direction: min|max; governs per-hop top-k pruning AND reduction (#560)")
 	illuminateCmd.Flags().StringVar(&illuminateWeightingStr, "weighting", "raw", "edge-weight transform before walk: raw|tfidf|bm25 (#410, #800)")
 	illuminateCmd.Flags().StringVar(&illuminatePrefixStr, "prefix", "", "restrict walk frontier to vertices with this key prefix; seed always kept, empty = no filter (#604)")
+	illuminateCmd.Flags().Float32Var(&illuminateRestartProb, "restart-prob", 0, "Personalized PageRank restart prob α in (0,1); --algorithm ppr only, 0 = server default 0.15 (#801)")
+	illuminateCmd.Flags().Float32Var(&illuminateEpsilon, "epsilon", 0, "Personalized PageRank residual threshold ε > 0; --algorithm ppr only, 0 = server default 1e-4 (#801)")
 	rootCmd.AddCommand(illuminateCmd)
 }

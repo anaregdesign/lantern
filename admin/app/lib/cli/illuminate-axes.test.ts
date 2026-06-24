@@ -22,7 +22,9 @@ import { parse } from "./parser";
 import {
   CLI_CLICK_AXIS_DEFAULTS,
   formatIlluminateClick,
+  formatStoredFloat,
   parseStoredAlgorithm,
+  parseStoredFloat,
   parseStoredK,
   parseStoredObjective,
   parseStoredPrefix,
@@ -104,6 +106,8 @@ describe("formatIlluminateClick", () => {
         objective: "min",
         weighting: "tfidf",
         vertexPrefix: "",
+        restartProb: 0,
+        epsilon: 0,
       }),
     ).toBe("illuminate alice 3 10 algorithm=spt objective=min weighting=tfidf");
   });
@@ -117,10 +121,46 @@ describe("formatIlluminateClick", () => {
         objective: "min",
         weighting: "tfidf",
         vertexPrefix: "svc:",
+        restartProb: 0,
+        epsilon: 0,
       }),
     ).toBe(
       "illuminate alice 3 10 algorithm=spt objective=min weighting=tfidf prefix=svc:",
     );
+  });
+
+  // #801: PPR knobs are gated on algorithm=ppr AND a non-zero value.
+  test("algorithm=ppr alone emits just the algorithm kwarg", () => {
+    expect(
+      formatIlluminateClick("alice", {
+        ...CLI_CLICK_AXIS_DEFAULTS,
+        algorithm: "ppr",
+      }),
+    ).toBe("illuminate alice 2 5 algorithm=ppr");
+  });
+
+  test("ppr knobs append after the algorithm kwarg in fixed order", () => {
+    expect(
+      formatIlluminateClick("alice", {
+        ...CLI_CLICK_AXIS_DEFAULTS,
+        algorithm: "ppr",
+        restartProb: 0.25,
+        epsilon: 0.001,
+      }),
+    ).toBe(
+      "illuminate alice 2 5 algorithm=ppr restart_prob=0.25 epsilon=0.001",
+    );
+  });
+
+  test("ppr knobs are suppressed unless algorithm=ppr", () => {
+    expect(
+      formatIlluminateClick("alice", {
+        ...CLI_CLICK_AXIS_DEFAULTS,
+        algorithm: "spt",
+        restartProb: 0.25,
+        epsilon: 0.001,
+      }),
+    ).toBe("illuminate alice 2 5 algorithm=spt");
   });
 
   test("seed containing a colon round-trips literally", () => {
@@ -170,6 +210,17 @@ describe("formatIlluminateClick ↔ parse round-trip", () => {
         objective: "min",
         weighting: "tfidf",
         vertexPrefix: "svc:",
+        restartProb: 0,
+        epsilon: 0,
+      },
+    },
+    {
+      name: "ppr with knobs",
+      axes: {
+        ...CLI_CLICK_AXIS_DEFAULTS,
+        algorithm: "ppr",
+        restartProb: 0.25,
+        epsilon: 0.001,
       },
     },
   ];
@@ -191,6 +242,16 @@ describe("formatIlluminateClick ↔ parse round-trip", () => {
     expect(result.command.objective).toBe(axes.objective);
     expect(result.command.weighting).toBe(axes.weighting);
     expect(result.command.vertexPrefix).toBe(axes.vertexPrefix);
+    // The PPR knobs only survive the round-trip for a ppr walk; for every
+    // other algorithm the formatter suppresses them and the parser defaults
+    // them back to 0 (#801).
+    if (axes.algorithm === "ppr") {
+      expect(result.command.restartProb).toBe(axes.restartProb);
+      expect(result.command.epsilon).toBe(axes.epsilon);
+    } else {
+      expect(result.command.restartProb).toBe(0);
+      expect(result.command.epsilon).toBe(0);
+    }
   });
 });
 
@@ -217,6 +278,7 @@ describe("parseStored* helpers", () => {
     expect(parseStoredAlgorithm("none")).toBe("none");
     expect(parseStoredAlgorithm("mst")).toBe("mst");
     expect(parseStoredAlgorithm("spt")).toBe("spt");
+    expect(parseStoredAlgorithm("ppr")).toBe("ppr");
     expect(parseStoredAlgorithm("SPT")).toBeNull();
     expect(parseStoredAlgorithm("ALGORITHM_SHORTEST_PATH_TREE")).toBeNull();
     expect(parseStoredAlgorithm(null)).toBeNull();
@@ -238,5 +300,23 @@ describe("parseStored* helpers", () => {
     // missing key (null), which falls back to the default.
     expect(parseStoredPrefix("")).toBe("");
     expect(parseStoredPrefix(null)).toBeNull();
+  });
+
+  test("PPR knobs accept finite non-negative floats and reject the rest", () => {
+    expect(parseStoredFloat("0")).toBe(0);
+    expect(parseStoredFloat("0.25")).toBe(0.25);
+    expect(parseStoredFloat("1e-4")).toBe(0.0001);
+    // 0 = "server default"; the picker stores it explicitly.
+    expect(parseStoredFloat("-0.1")).toBeNull();
+    expect(parseStoredFloat("NaN")).toBeNull();
+    expect(parseStoredFloat("Infinity")).toBeNull();
+    expect(parseStoredFloat("high")).toBeNull();
+    expect(parseStoredFloat(null)).toBeNull();
+  });
+
+  test("formatStoredFloat round-trips through parseStoredFloat", () => {
+    for (const value of [0, 0.15, 0.25, 0.0001]) {
+      expect(parseStoredFloat(formatStoredFloat(value))).toBe(value);
+    }
   });
 });

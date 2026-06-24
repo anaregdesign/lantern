@@ -29,12 +29,23 @@ const (
 // UNSPECIFIED returns the raw discovered subgraph (no reduction).
 // MINIMUM_SPANNING_TREE / SHORTEST_PATH_TREE pick the reduction; the
 // MIN/MAX direction is independent and carried by Objective.
+//
+// PERSONALIZED_PAGERANK is not a post-traversal reduction: it replaces the
+// greedy per-hop top-k walk with a single global, seed-relative relevance
+// score (Personalized PageRank / Random-Walk-with-Restart) computed by local
+// forward-push (Andersen–Chung–Lang). The result is a relevance star rooted at
+// the seed — seed→v edge weight = π[v], the PPR mass v accumulates for this
+// seed — capped at k vertices. restart_prob (α) and epsilon (ε) tune it; the
+// weighting axis still transforms transition affinities. It is intrinsically a
+// relevance MAXIMIZER, so Objective MINIMIZE has no clean random-walk meaning
+// and is ignored (#801).
 type Algorithm int32
 
 const (
 	Algorithm_ALGORITHM_UNSPECIFIED           Algorithm = 0
 	Algorithm_ALGORITHM_MINIMUM_SPANNING_TREE Algorithm = 1
 	Algorithm_ALGORITHM_SHORTEST_PATH_TREE    Algorithm = 2
+	Algorithm_ALGORITHM_PERSONALIZED_PAGERANK Algorithm = 3
 )
 
 // Enum value maps for Algorithm.
@@ -43,11 +54,13 @@ var (
 		0: "ALGORITHM_UNSPECIFIED",
 		1: "ALGORITHM_MINIMUM_SPANNING_TREE",
 		2: "ALGORITHM_SHORTEST_PATH_TREE",
+		3: "ALGORITHM_PERSONALIZED_PAGERANK",
 	}
 	Algorithm_value = map[string]int32{
 		"ALGORITHM_UNSPECIFIED":           0,
 		"ALGORITHM_MINIMUM_SPANNING_TREE": 1,
 		"ALGORITHM_SHORTEST_PATH_TREE":    2,
+		"ALGORITHM_PERSONALIZED_PAGERANK": 3,
 	}
 )
 
@@ -658,7 +671,18 @@ type IlluminateRequest struct {
 	// anchor even if it does not match. Empty = no filter. Applied BEFORE
 	// per-hop top-k and BEFORE the MST/SPT reduction (induced-subgraph
 	// semantics: non-matching vertices are not traversable bridges).
-	VertexPrefix  string `protobuf:"bytes,9,opt,name=vertex_prefix,json=vertexPrefix,proto3" json:"vertex_prefix,omitempty"`
+	VertexPrefix string `protobuf:"bytes,9,opt,name=vertex_prefix,json=vertexPrefix,proto3" json:"vertex_prefix,omitempty"`
+	// restart_prob (α) and epsilon (ε) tune ALGORITHM_PERSONALIZED_PAGERANK and
+	// are ignored by every other algorithm (#801). α is the teleport-to-seed
+	// probability — the locality knob: higher α (≈0.5) yields a tighter,
+	// seed-proximate set, lower α (≈0.15) a broader one. ε is the forward-push
+	// residual threshold: smaller ε is more accurate but touches more vertices
+	// (work is O(1/(α·ε)), independent of graph size). Both default server-side
+	// when ≤ 0 (α=0.15, ε=1e-4), so a caller may leave them unset. With
+	// forward-push ε drives the horizon; step is not used by PPR and k caps the
+	// number of ranked vertices returned.
+	RestartProb   float32 `protobuf:"fixed32,10,opt,name=restart_prob,json=restartProb,proto3" json:"restart_prob,omitempty"`
+	Epsilon       float32 `protobuf:"fixed32,11,opt,name=epsilon,proto3" json:"epsilon,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -740,6 +764,20 @@ func (x *IlluminateRequest) GetVertexPrefix() string {
 		return x.VertexPrefix
 	}
 	return ""
+}
+
+func (x *IlluminateRequest) GetRestartProb() float32 {
+	if x != nil {
+		return x.RestartProb
+	}
+	return 0
+}
+
+func (x *IlluminateRequest) GetEpsilon() float32 {
+	if x != nil {
+		return x.Epsilon
+	}
+	return 0
 }
 
 type IlluminateResponse struct {
@@ -3517,7 +3555,7 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"expiration\"[\n" +
 	"\x05Graph\x12,\n" +
 	"\bvertices\x18\x01 \x03(\v2\x10.graph.v1.VertexR\bvertices\x12$\n" +
-	"\x05edges\x18\x02 \x03(\v2\x0e.graph.v1.EdgeR\x05edges\"\xa8\x02\n" +
+	"\x05edges\x18\x02 \x03(\v2\x0e.graph.v1.EdgeR\x05edges\"\xe5\x02\n" +
 	"\x11IlluminateRequest\x12\x12\n" +
 	"\x04seed\x18\x01 \x01(\tR\x04seed\x12\x12\n" +
 	"\x04step\x18\x02 \x01(\rR\x04step\x12\f\n" +
@@ -3525,7 +3563,10 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\talgorithm\x18\x06 \x01(\x0e2\x13.graph.v1.AlgorithmR\talgorithm\x121\n" +
 	"\tobjective\x18\a \x01(\x0e2\x13.graph.v1.ObjectiveR\tobjective\x121\n" +
 	"\tweighting\x18\b \x01(\x0e2\x13.graph.v1.WeightingR\tweighting\x12#\n" +
-	"\rvertex_prefix\x18\t \x01(\tR\fvertexPrefixJ\x04\b\x04\x10\x05J\x04\b\x05\x10\x06R\x05tfidfR\foptimization\";\n" +
+	"\rvertex_prefix\x18\t \x01(\tR\fvertexPrefix\x12!\n" +
+	"\frestart_prob\x18\n" +
+	" \x01(\x02R\vrestartProb\x12\x18\n" +
+	"\aepsilon\x18\v \x01(\x02R\aepsilonJ\x04\b\x04\x10\x05J\x04\b\x05\x10\x06R\x05tfidfR\foptimization\";\n" +
 	"\x12IlluminateResponse\x12%\n" +
 	"\x05graph\x18\x01 \x01(\v2\x0f.graph.v1.GraphR\x05graph\"$\n" +
 	"\x10GetVertexRequest\x12\x10\n" +
@@ -3684,11 +3725,12 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x16BackupSnapshotResponse\x12*\n" +
 	"\x06vertex\x18\x01 \x01(\v2\x10.graph.v1.VertexH\x00R\x06vertex\x12$\n" +
 	"\x04edge\x18\x02 \x01(\v2\x0e.graph.v1.EdgeH\x00R\x04edgeB\b\n" +
-	"\x06record*m\n" +
+	"\x06record*\x92\x01\n" +
 	"\tAlgorithm\x12\x19\n" +
 	"\x15ALGORITHM_UNSPECIFIED\x10\x00\x12#\n" +
 	"\x1fALGORITHM_MINIMUM_SPANNING_TREE\x10\x01\x12 \n" +
-	"\x1cALGORITHM_SHORTEST_PATH_TREE\x10\x02*V\n" +
+	"\x1cALGORITHM_SHORTEST_PATH_TREE\x10\x02\x12#\n" +
+	"\x1fALGORITHM_PERSONALIZED_PAGERANK\x10\x03*V\n" +
 	"\tObjective\x12\x19\n" +
 	"\x15OBJECTIVE_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12OBJECTIVE_MINIMIZE\x10\x01\x12\x16\n" +

@@ -11,7 +11,7 @@ import type {
   WeightingName,
 } from "./types";
 
-const ILL_ALGORITHMS = new Set<AlgorithmName>(["none", "mst", "spt"]);
+const ILL_ALGORITHMS = new Set<AlgorithmName>(["none", "mst", "spt", "ppr"]);
 const ILL_OBJECTIVES = new Set<ObjectiveName>(["min", "max"]);
 const ILL_WEIGHTINGS = new Set<WeightingName>(["raw", "tfidf", "bm25"]);
 
@@ -410,7 +410,7 @@ export function parseDeletePrefix(rest: string[]): ParseResult {
 
 export function parseIlluminate(rest: string[]): ParseResult {
   const usage =
-    "usage: illuminate <key: string> <step: int> <k: int> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>]";
+    "usage: illuminate <key: string> <step: int> <k: int> [algorithm=none|mst|spt|ppr] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>] [restart_prob=<float>] [epsilon=<float>]";
   if (rest.length < 3) {
     return { ok: false, usage };
   }
@@ -436,6 +436,13 @@ export function parseIlluminate(rest: string[]): ParseResult {
   // "no filter"; an explicit empty `prefix=` is rejected, mirroring the Go
   // REPL. The value is matched against vertex keys verbatim (case-SENSITIVE).
   let vertexPrefix = "";
+  // #801: Personalized PageRank knobs. Free-text floats parsed leniently
+  // (1e-3 / .25 / 0 accepted; NaN/inf/garbage rejected). Both default to 0,
+  // which the server resolves to its own α=0.15 / ε=1e-4; ignored unless
+  // algorithm=ppr. A malformed value is a hard parse error, mirroring the Go
+  // REPL's strconv.ParseFloat rejection rather than silently dropping to 0.
+  let restartProb = 0;
+  let epsilon = 0;
   for (let i = 3; i < rest.length; i++) {
     const tok = rest[i];
     const eq = tok.indexOf("=");
@@ -470,6 +477,18 @@ export function parseIlluminate(rest: string[]): ParseResult {
         return { ok: false, usage };
       }
       vertexPrefix = value;
+    } else if (key === "restart_prob") {
+      const f = parseFloatStrict(value);
+      if (f === null) {
+        return { ok: false, usage };
+      }
+      restartProb = f;
+    } else if (key === "epsilon") {
+      const f = parseFloatStrict(value);
+      if (f === null) {
+        return { ok: false, usage };
+      }
+      epsilon = f;
     } else {
       return { ok: false, usage };
     }
@@ -485,6 +504,8 @@ export function parseIlluminate(rest: string[]): ParseResult {
       objective,
       weighting,
       vertexPrefix,
+      restartProb,
+      epsilon,
     },
   };
 }
@@ -516,10 +537,12 @@ export const HELP_TEXT = [
   "  delete-prefix vertices <prefix: string> [limit=<int>] [confirm=yes|dry_run=true]",
   "  keys   <prefix: string> [<limit: int>]",
   "  illuminate <seed: string> <step: int> <k: int>",
-  "             [algorithm={none|mst|spt}]  default=none",
+  "             [algorithm={none|mst|spt|ppr}] default=none",
   "             [objective={min|max}]       default=max",
   "             [weighting={raw|tfidf|bm25}] default=raw",
   "             [prefix=<string>]           default=all keys",
+  "             [restart_prob=<float>]      default=0 (ppr only; server α=0.15)",
+  "             [epsilon=<float>]           default=0 (ppr only; server ε=1e-4)",
   "  help",
   "  exit",
   "",
@@ -652,10 +675,10 @@ export const CLI_COMMAND_REFERENCE: readonly CliCommandDoc[] = [
     group: "Explore",
     verb: "illuminate",
     signature:
-      "illuminate <seed> <step> <k> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>]",
+      "illuminate <seed> <step> <k> [algorithm=none|mst|spt|ppr] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>] [restart_prob=<float>] [epsilon=<float>]",
     summary:
-      "Walk the graph from a seed (step hops, top-k per hop) and render the subgraph. Optional reduction axes.",
-    example: "illuminate alice 2 5 algorithm=spt",
+      "Walk the graph from a seed (step hops, top-k per hop) and render the subgraph. algorithm=ppr runs Personalized PageRank (tune locality with restart_prob/epsilon); the other axes reduce/weight the discovered subgraph.",
+    example: "illuminate alice 2 5 algorithm=ppr restart_prob=0.25",
   },
   {
     group: "Session",

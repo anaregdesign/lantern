@@ -265,10 +265,12 @@ idempotent. Flags:
 |---|---|---|
 | `--step <uint32>` | `1` | max walk depth from the seed |
 | `--k <uint32>` | `10` | max neighbours visited per node (top-k) |
-| `--algorithm <mode>` | `none` | post-traversal reduction: `none` (raw subgraph), `mst` (spanning tree), `spt` (shortest-path tree rooted at seed) |
-| `--objective <dir>` | `max` | optimisation direction; governs **both** per-hop top-k pruning and the reduction: `max` (largest-weight wins; weight = relevance) or `min` (smallest-weight wins; weight = cost) |
+| `--algorithm <mode>` | `none` | post-traversal reduction: `none` (raw subgraph), `mst` (spanning tree), `spt` (shortest-path tree rooted at seed), or `ppr` (Personalized PageRank ranking from the seed via ACL forward-push) |
+| `--objective <dir>` | `max` | optimisation direction; governs **both** per-hop top-k pruning and the reduction: `max` (largest-weight wins; weight = relevance) or `min` (smallest-weight wins; weight = cost). Ignored by `--algorithm ppr`, which always ranks by PPR mass |
 | `--weighting <mode>` | `raw` | edge-weight transform before the walk: `raw`, `tfidf` (re-score by TF-IDF over per-vertex out-edge distribution), or `bm25` (re-score by Okapi BM25, k1=1.2/b=0.75, over the same distribution — IDF saturation + out-degree length-normalisation, consistent with full-text search) |
 | `--prefix <string>` | — | restrict the walk **frontier** to vertices with this key prefix (case-sensitive); the seed is always kept as anchor. Applied server-side before top-k and any reduction, so `--prefix` + `mst`/`spt` yields a tree over the prefix-induced subgraph, not a path in the full graph |
+| `--restart-prob <float>` | `0` (server `α=0.15`) | **`ppr` only.** Teleport/restart probability α. Higher α keeps the ranking closer to the seed; `0` defers to the server default |
+| `--epsilon <float>` | `0` (server `ε=1e-4`) | **`ppr` only.** Forward-push residual threshold ε. Smaller ε pushes more nodes (higher recall, more work); `0` defers to the server default |
 
 ```shell
 lantern-cli illuminate alice                                   # raw 1-hop, top-10 by weight
@@ -276,6 +278,8 @@ lantern-cli illuminate alice --step 2 --k 5 --weighting tfidf  # 2-hop, TF-IDF r
 lantern-cli illuminate alice --step 2 --k 5 --weighting bm25   # 2-hop, Okapi BM25 re-rank
 lantern-cli illuminate alice --step 3 --k 20 --algorithm mst --objective min  # min-weight spanning tree
 lantern-cli illuminate alice --step 3 --k 20 --algorithm spt --objective max  # relevance-weighted SPT
+lantern-cli illuminate alice --step 2 --k 8 --algorithm ppr                    # PPR neighbourhood, server-default locality
+lantern-cli illuminate alice --step 2 --k 8 --algorithm ppr --restart-prob 0.25  # tighter, more seed-local PPR
 lantern-cli illuminate alice --step 2 --k 5 --prefix users/    # frontier restricted to users/
 ```
 

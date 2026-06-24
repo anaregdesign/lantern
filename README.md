@@ -60,9 +60,19 @@ shape (#410):
 
 | Axis | Values | What it does |
 |---|---|---|
-| `algorithm` | `none` (default) — raw k-NN subgraph<br>`mst` — spanning tree<br>`spt` — shortest-path tree from seed | Picks the post-traversal subgraph reduction |
-| `objective` | `max` (default) — keeps strongest edges, largest-weight tree wins<br>`min` — keeps smallest edges, smallest-weight tree wins | Picks the direction of BOTH the per-hop top-k prune and the reduction (#560) |
+| `algorithm` | `none` (default) — raw k-NN subgraph<br>`mst` — spanning tree<br>`spt` — shortest-path tree from seed<br>`ppr` — Personalized PageRank from seed (ACL forward-push) | Picks the post-traversal subgraph reduction (or, for `ppr`, the ranked neighbourhood) |
+| `objective` | `max` (default) — keeps strongest edges, largest-weight tree wins<br>`min` — keeps smallest edges, smallest-weight tree wins | Picks the direction of BOTH the per-hop top-k prune and the reduction (#560). Ignored by `algorithm=ppr`, which always ranks by mass. |
 | `weighting` | `raw` (default) — edge.weight verbatim<br>`tfidf` — per-hop top-k weighted by `w / log2(1+df(head))`<br>`bm25` — per-hop top-k re-scored with Okapi BM25 (k1=1.2, b=0.75) over the out-edge distribution | Picks the edge-weight transform applied BEFORE the BFS walk |
+
+`algorithm=ppr` runs Personalized PageRank by forward-push from the seed and
+returns the top-`k` highest-mass vertices (a relevance-ranked neighbourhood
+rather than a tree). Two **ppr-only** knobs tune locality; both default to `0`,
+meaning "use the server default":
+
+| Knob | Default | What it does |
+|---|---|---|
+| `restart_prob` | server `α=0.15` | Teleport/restart probability. Higher α keeps the walk closer to the seed (more local); lower α explores farther. |
+| `epsilon` | server `ε=1e-4` | Residual threshold for the forward-push frontier. Smaller ε pushes more nodes (higher recall, more work); larger ε stops earlier. |
 
 Examples:
 
@@ -70,6 +80,8 @@ Examples:
 - `algorithm=mst objective=max`  — strongest-relationship backbone
 - `algorithm=spt objective=min`  — low-cost reachability
 - `algorithm=spt objective=max`  — **most-relevant** path tree
+- `algorithm=ppr`                — relevance-ranked neighbourhood (PPR), server-default locality
+- `algorithm=ppr restart_prob=0.25` — tighter, more seed-local PPR ranking
 - `weighting=tfidf`              — suppress hub vertices like "popular" items
 - `weighting=bm25`              — same hub suppression with IDF saturation + out-degree length-normalisation (consistent with full-text `SearchVertices`)
 
@@ -113,8 +125,10 @@ the shape you asked for.
 - Anything that needs **durability** out of the box. Lantern is in-memory only
   — a restart loses the graph. Replay your event stream into it on boot, or
   put a queue in front.
-- Global graph analytics (PageRank over the whole graph, community detection
-  across billions of edges, etc.).
+- Global graph analytics (**whole-graph** PageRank, community detection
+  across billions of edges, etc.). Note this is distinct from the bounded,
+  seed-local Personalized PageRank that `illuminate algorithm=ppr` runs — that
+  is a supported online query (see §3 above), not whole-graph analytics.
 - Massive working sets that don't fit in one process's RAM. Lantern has
   built-in leaderless **replication** for HA (every replica holds the full
   graph — see [docs/replication.md](docs/replication.md)), but no sharding:
@@ -426,6 +440,10 @@ OK (3.1ms)
                                         # maximum spanning tree from the seed
 { ... }
 OK (2.7ms)
+> illuminate alice 3 8 algorithm=ppr restart_prob=0.25
+                                        # top-8 PPR neighbourhood, seed-local (α=0.25)
+{ ... }
+OK (3.4ms)
 
 > delete edge alice bob
 OK (0.7ms)
@@ -452,8 +470,9 @@ scan   edges    <tail-prefix> [limit] [head=<prefix>] [all=true]
 count  vertices <prefix>
 delete-prefix vertices <prefix> [limit=<int>] [confirm=yes|dry_run=true]
 keys   <prefix> [limit]
-illuminate <seed> <step> <k> [algorithm=none|mst|spt] [objective=min|max] \
-           [weighting=raw|tfidf|bm25] [prefix=<string>]
+illuminate <seed> <step> <k> [algorithm=none|mst|spt|ppr] [objective=min|max] \
+           [weighting=raw|tfidf|bm25] [prefix=<string>] \
+           [restart_prob=<float>] [epsilon=<float>]
 help
 exit
 ```
@@ -631,7 +650,7 @@ MCP `tools/list` (see [mcp/server.go](mcp/server.go) for the source of truth).
 | `forget` | Delete a fact by exact key. Idempotent. Edges incident to the key are NOT cascade-deleted; they decay on their own. |
 | `list_under` | Enumerate facts whose key starts with a prefix, ascending. Defaults to 50, max 500. |
 | `remember_relation` | Add or **reinforce** a directed relation. Additive: same write twice = stronger relation. |
-| `recall_related` | Walk the graph from a seed with `step`, `k`, and the orthogonal axes `algorithm` (`none` / `mst` / `spt`), `objective` (`min` / `max`), and `weighting` (`raw` / `tfidf` / `bm25`) introduced in #410. |
+| `recall_related` | Walk the graph from a seed with `step`, `k`, and the orthogonal axes `algorithm` (`none` / `mst` / `spt` / `ppr`), `objective` (`min` / `max`), and `weighting` (`raw` / `tfidf` / `bm25`). `algorithm=ppr` runs Personalized PageRank with optional `restart_prob` / `epsilon` knobs (#801). |
 
 A `ping` tool also exists so operators can sanity-check the wire without
 touching state.
@@ -721,6 +740,10 @@ remember_relation(tail="user:alice", head="topic:auth",     weight=0.4, bucket="
 #    a "most relevant" tree — exactly what you want for grounding context.
 recall_related(seed="user:alice", step=2, k=5, algorithm="spt", objective="max")
 # → [{key: "topic:payments", weight: 2.0}, {key: "topic:auth", weight: 0.4}, …]
+
+#    Or rank a seed-local neighbourhood by Personalized PageRank (#801).
+#    restart_prob/epsilon are optional; omit them to use the server defaults.
+recall_related(seed="user:alice", step=2, k=5, algorithm="ppr", restart_prob=0.25)
 ```
 
 Two recurring traps worth memorising:
@@ -1001,8 +1024,9 @@ scan edges    <tail-prefix:string> [<limit:int>] [head=<prefix>] [all=true]
 count vertices <prefix:string>
 delete-prefix vertices <prefix:string> [limit=<int>] [confirm=yes|dry_run=true]
 keys <prefix:string> [<limit:int>]
-illuminate <seed:string> <step:int> <k:int> [algorithm=none|mst|spt] \
-           [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>]
+illuminate <seed:string> <step:int> <k:int> [algorithm=none|mst|spt|ppr] \
+           [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>] \
+           [restart_prob=<float>] [epsilon=<float>]
 help
 exit
 ```

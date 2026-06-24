@@ -6,9 +6,11 @@ import {
 import {
   AXIS_STORAGE_KEYS,
   CLI_CLICK_AXIS_DEFAULTS,
+  formatStoredFloat,
   formatStoredK,
   formatStoredStep,
   parseStoredAlgorithm,
+  parseStoredFloat,
   parseStoredK,
   parseStoredObjective,
   parseStoredPrefix,
@@ -69,9 +71,15 @@ export function useCliAxisPicker(
     vertexPrefix:
       parseStoredPrefix(store.get(AXIS_STORAGE_KEYS.vertexPrefix)) ??
       CLI_CLICK_AXIS_DEFAULTS.vertexPrefix,
+    restartProb:
+      parseStoredFloat(store.get(AXIS_STORAGE_KEYS.restartProb)) ??
+      CLI_CLICK_AXIS_DEFAULTS.restartProb,
+    epsilon:
+      parseStoredFloat(store.get(AXIS_STORAGE_KEYS.epsilon)) ??
+      CLI_CLICK_AXIS_DEFAULTS.epsilon,
   }));
 
-  // Re-persist whenever the axes change. We persist all six every time
+  // Re-persist whenever the axes change. We persist all eight every time
   // rather than diffing because the picker fires at most once per user
   // gesture — a Dropdown selection, a Switch toggle, or a keystroke in the
   // prefix field — so the cost is negligible and avoids subtle bugs from
@@ -83,6 +91,11 @@ export function useCliAxisPicker(
     store.set(AXIS_STORAGE_KEYS.objective, axes.objective);
     store.set(AXIS_STORAGE_KEYS.weighting, axes.weighting);
     store.set(AXIS_STORAGE_KEYS.vertexPrefix, axes.vertexPrefix);
+    store.set(
+      AXIS_STORAGE_KEYS.restartProb,
+      formatStoredFloat(axes.restartProb),
+    );
+    store.set(AXIS_STORAGE_KEYS.epsilon, formatStoredFloat(axes.epsilon));
   }, [axes, store]);
 
   const setAxis = useCallback(

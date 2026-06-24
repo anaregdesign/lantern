@@ -51,6 +51,10 @@ const ILLUMINATE_OPTION_KEYS: readonly string[] = [
   // #606: free-text vertex-prefix filter. Surfaced as a completion key so
   // operators discover it, but it has no enum values to complete after `=`.
   "prefix",
+  // #801: Personalized PageRank knobs. Free-form floats (no enum values to
+  // complete after `=`), surfaced as keys so operators discover them.
+  "restart_prob",
+  "epsilon",
 ];
 
 /** Cap on how many key candidates we surface, so the hint stays compact. */
@@ -77,7 +81,8 @@ export interface Completion {
  *     for verbs that take one, or the seed key for `illuminate`
  *   - key slots → completed from {@link knownKeys}
  *   - `illuminate` slots ≥ 4 → option kwargs (`algorithm=` / `objective=`
- *     / `weighting=`, then their enum values once `=` is typed)
+ *     / `weighting=` / `prefix=` / `restart_prob=` / `epsilon=`, then the
+ *     closed-set enum values once `=` is typed)
  */
 export function completeCommandLine(
   input: string,

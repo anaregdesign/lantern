@@ -424,6 +424,12 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 		if p.Prefix != "" {
 			opts = append(opts, client.WithVertexPrefix(p.Prefix))
 		}
+		if p.RestartProb > 0 {
+			opts = append(opts, client.WithRestartProb(p.RestartProb))
+		}
+		if p.Epsilon > 0 {
+			opts = append(opts, client.WithEpsilon(p.Epsilon))
+		}
 		g, err := c.client.Illuminate(ctx, p.Seed, opts...)
 		if err != nil {
 			fmt.Printf("Error: %s\n", err)
@@ -459,6 +465,7 @@ var (
 		"none": client.AlgorithmUnspecified,
 		"mst":  client.AlgorithmMinimumSpanningTree,
 		"spt":  client.AlgorithmShortestPathTree,
+		"ppr":  client.AlgorithmPersonalizedPageRank,
 	}
 	objectiveByREPLName = map[string]client.Objective{
 		"min": client.ObjectiveMinimize,

@@ -85,6 +85,22 @@
       "comment": "keyword args may appear in any order"
     },
     {
+      "input": "illuminate alice 2 5 algorithm=ppr",
+      "comment": "#801: Personalized PageRank algorithm; knobs default to server values"
+    },
+    {
+      "input": "illuminate alice 2 5 algorithm=ppr restart_prob=0.25 epsilon=0.001",
+      "comment": "#801: ppr with explicit restart_prob / epsilon floats"
+    },
+    {
+      "input": "illuminate alice 2 5 algorithm=ppr weighting=bm25 restart_prob=0.2",
+      "comment": "#801: ppr composes with the weighting axis"
+    },
+    {
+      "input": "illuminate alice 2 5 algorithm=ppr epsilon=1e-4",
+      "comment": "#801: scientific-notation knob value (Go strconv.ParseFloat parity)"
+    },
+    {
       "input": "Get VERTEX alice",
       "comment": "#437: verb + objective case-insensitive"
     },
@@ -228,6 +244,14 @@
     {
       "input": "illuminate alice 2 5 weighting=bogus",
       "comment": "unknown weighting value"
+    },
+    {
+      "input": "illuminate alice 2 5 restart_prob=high",
+      "comment": "#801: non-numeric restart_prob is rejected"
+    },
+    {
+      "input": "illuminate alice 2 5 epsilon=tiny",
+      "comment": "#801: non-numeric epsilon is rejected"
     },
     {
       "input": "illuminate alice 2 5 unknown=foo",

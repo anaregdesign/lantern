@@ -46,10 +46,21 @@ message Graph {
 // UNSPECIFIED returns the raw discovered subgraph (no reduction).
 // MINIMUM_SPANNING_TREE / SHORTEST_PATH_TREE pick the reduction; the
 // MIN/MAX direction is independent and carried by Objective.
+//
+// PERSONALIZED_PAGERANK is not a post-traversal reduction: it replaces the
+// greedy per-hop top-k walk with a single global, seed-relative relevance
+// score (Personalized PageRank / Random-Walk-with-Restart) computed by local
+// forward-push (Andersen–Chung–Lang). The result is a relevance star rooted at
+// the seed — seed→v edge weight = π[v], the PPR mass v accumulates for this
+// seed — capped at k vertices. restart_prob (α) and epsilon (ε) tune it; the
+// weighting axis still transforms transition affinities. It is intrinsically a
+// relevance MAXIMIZER, so Objective MINIMIZE has no clean random-walk meaning
+// and is ignored (#801).
 enum Algorithm {
   ALGORITHM_UNSPECIFIED = 0;
   ALGORITHM_MINIMUM_SPANNING_TREE = 1;
   ALGORITHM_SHORTEST_PATH_TREE = 2;
+  ALGORITHM_PERSONALIZED_PAGERANK = 3;
 }
 
 // Objective is the direction of the weight-sensitive optimisation. It
@@ -106,6 +117,17 @@ message IlluminateRequest {
   // per-hop top-k and BEFORE the MST/SPT reduction (induced-subgraph
   // semantics: non-matching vertices are not traversable bridges).
   string vertex_prefix = 9;
+  // restart_prob (α) and epsilon (ε) tune ALGORITHM_PERSONALIZED_PAGERANK and
+  // are ignored by every other algorithm (#801). α is the teleport-to-seed
+  // probability — the locality knob: higher α (≈0.5) yields a tighter,
+  // seed-proximate set, lower α (≈0.15) a broader one. ε is the forward-push
+  // residual threshold: smaller ε is more accurate but touches more vertices
+  // (work is O(1/(α·ε)), independent of graph size). Both default server-side
+  // when ≤ 0 (α=0.15, ε=1e-4), so a caller may leave them unset. With
+  // forward-push ε drives the horizon; step is not used by PPR and k caps the
+  // number of ranked vertices returned.
+  float restart_prob = 10;
+  float epsilon = 11;
 }
 
 message IlluminateResponse {

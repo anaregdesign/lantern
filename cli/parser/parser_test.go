@@ -435,3 +435,65 @@ func TestIlluminateParam_Prefix(t *testing.T) {
 		}
 	})
 }
+
+// TestIlluminateParam_PPR covers the #801 Personalized PageRank grammar:
+// algorithm=ppr is accepted, restart_prob/epsilon parse as floats and default
+// to 0, and a non-numeric knob value is rejected.
+func TestIlluminateParam_PPR(t *testing.T) {
+	t.Run("algorithm=ppr accepted", func(t *testing.T) {
+		s, err := NewSource("alice 2 5 algorithm=ppr")
+		if err != nil {
+			t.Fatalf("NewSource: %v", err)
+		}
+		m, err := IlluminateParam(s)
+		if err != nil {
+			t.Fatalf("IlluminateParam: %v", err)
+		}
+		if m.Algorithm != "ppr" {
+			t.Fatalf("Algorithm = %q, want ppr", m.Algorithm)
+		}
+		if m.RestartProb != 0 || m.Epsilon != 0 {
+			t.Fatalf("defaults want 0/0, got restart_prob=%v epsilon=%v", m.RestartProb, m.Epsilon)
+		}
+	})
+
+	t.Run("restart_prob and epsilon parse as floats in any order", func(t *testing.T) {
+		s, err := NewSource("alice 1 10 epsilon=0.001 algorithm=ppr restart_prob=0.25")
+		if err != nil {
+			t.Fatalf("NewSource: %v", err)
+		}
+		m, err := IlluminateParam(s)
+		if err != nil {
+			t.Fatalf("IlluminateParam: %v", err)
+		}
+		if m.Algorithm != "ppr" {
+			t.Fatalf("Algorithm = %q, want ppr", m.Algorithm)
+		}
+		if m.RestartProb != 0.25 {
+			t.Fatalf("RestartProb = %v, want 0.25", m.RestartProb)
+		}
+		if m.Epsilon != 0.001 {
+			t.Fatalf("Epsilon = %v, want 0.001", m.Epsilon)
+		}
+	})
+
+	t.Run("non-numeric restart_prob rejected", func(t *testing.T) {
+		s, err := NewSource("alice 2 5 restart_prob=high")
+		if err != nil {
+			t.Fatalf("NewSource: %v", err)
+		}
+		if _, err := IlluminateParam(s); err == nil {
+			t.Fatal("IlluminateParam accepted restart_prob=high; want error")
+		}
+	})
+
+	t.Run("non-numeric epsilon rejected", func(t *testing.T) {
+		s, err := NewSource("alice 2 5 epsilon=tiny")
+		if err != nil {
+			t.Fatalf("NewSource: %v", err)
+		}
+		if _, err := IlluminateParam(s); err == nil {
+			t.Fatal("IlluminateParam accepted epsilon=tiny; want error")
+		}
+	})
+}

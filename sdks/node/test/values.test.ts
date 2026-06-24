@@ -220,6 +220,7 @@ describe("Illuminate axis enums (#410)", () => {
     expect(Algorithm.UNSPECIFIED).toBe(0);
     expect(Algorithm.MINIMUM_SPANNING_TREE).toBe(1);
     expect(Algorithm.SHORTEST_PATH_TREE).toBe(2);
+    expect(Algorithm.PERSONALIZED_PAGERANK).toBe(3);
   });
   test("Objective matches proto codes", () => {
     expect(Objective.UNSPECIFIED).toBe(0);

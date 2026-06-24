@@ -28,6 +28,8 @@ func FuzzValidate(f *testing.F) {
 		"illuminate alice 2 5 algorithm=spt objective=max weighting=tfidf",
 		"illuminate alice 2 5 weighting=bm25",
 		"illuminate alice 2 5 prefix=team:",
+		"illuminate alice 2 5 algorithm=ppr",
+		"illuminate alice 2 5 algorithm=ppr restart_prob=0.25 epsilon=0.001",
 		`put vertex greeting "hello world"`,
 		`put vertex code 'console.log("hi")'`,
 		`put vertex path "a\nb\tc"`,

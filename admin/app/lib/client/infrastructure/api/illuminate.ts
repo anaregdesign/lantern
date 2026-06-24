@@ -17,7 +17,8 @@ export type { Edge, Graph, IlluminateResponse, Vertex } from "./types";
 export type Algorithm =
   | "ALGORITHM_UNSPECIFIED"
   | "ALGORITHM_MINIMUM_SPANNING_TREE"
-  | "ALGORITHM_SHORTEST_PATH_TREE";
+  | "ALGORITHM_SHORTEST_PATH_TREE"
+  | "ALGORITHM_PERSONALIZED_PAGERANK";
 
 export type Objective =
   | "OBJECTIVE_UNSPECIFIED"
@@ -44,12 +45,22 @@ export interface IlluminateRequest {
    * top-k and before any MST/SPT reduction (induced-subgraph semantics).
    */
   vertexPrefix?: string;
+  /**
+   * Personalized PageRank knobs (#801), only consulted when
+   * `algorithm === "ALGORITHM_PERSONALIZED_PAGERANK"`. `restartProb` is the
+   * restart/teleport-to-seed probability α in (0,1); `epsilon` is the
+   * forward-push residual threshold ε > 0. 0/omitted lets the server apply
+   * its defaults (α=0.15 / ε=1e-4).
+   */
+  restartProb?: number;
+  epsilon?: number;
 }
 
 const ALGORITHM_TO_SDK: Record<Algorithm, SdkAlgorithm> = {
   ALGORITHM_UNSPECIFIED: SdkAlgorithm.UNSPECIFIED,
   ALGORITHM_MINIMUM_SPANNING_TREE: SdkAlgorithm.MINIMUM_SPANNING_TREE,
   ALGORITHM_SHORTEST_PATH_TREE: SdkAlgorithm.SHORTEST_PATH_TREE,
+  ALGORITHM_PERSONALIZED_PAGERANK: SdkAlgorithm.PERSONALIZED_PAGERANK,
 };
 const OBJECTIVE_TO_SDK: Record<Objective, SdkObjective> = {
   OBJECTIVE_UNSPECIFIED: SdkObjective.UNSPECIFIED,
@@ -67,11 +78,12 @@ const WEIGHTING_TO_SDK: Record<Weighting, SdkWeighting> = {
  * Calls `LanternService.Illuminate` via `lantern-sdk/web`.
  *
  * Runs a k-bounded BFS from the supplied seed. Optional knobs (step
- * / k / algorithm / objective / weighting) default server-side when
- * omitted. The SDK returns a rich-shape Graph with `Map<>` values;
- * this adapter flattens it back to admin's array-of-flat-JSON shape
- * so the existing canvas + table consumers keep working unchanged
- * (#409, #410).
+ * / k / algorithm / objective / weighting / prefix) default server-side
+ * when omitted; `algorithm=ALGORITHM_PERSONALIZED_PAGERANK` switches to a
+ * seed-anchored PPR walk tuned by restartProb / epsilon (#801). The SDK
+ * returns a rich-shape Graph with `Map<>` values; this adapter flattens
+ * it back to admin's array-of-flat-JSON shape so the existing canvas +
+ * table consumers keep working unchanged (#409, #410).
  */
 export async function illuminate(
   client: LanternClient,
@@ -100,6 +112,8 @@ export async function illuminate(
             ? WEIGHTING_TO_SDK[request.weighting]
             : undefined,
         vertexPrefix: request.vertexPrefix ?? "",
+        restartProb: request.restartProb ?? 0,
+        epsilon: request.epsilon ?? 0,
       },
       init?.signal,
     );

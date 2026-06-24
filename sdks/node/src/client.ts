@@ -114,6 +114,7 @@ const ALGORITHM_TO_PB: Record<number, PbAlgorithm> = {
   [Algorithm.UNSPECIFIED]: PbAlgorithm.UNSPECIFIED,
   [Algorithm.MINIMUM_SPANNING_TREE]: PbAlgorithm.MINIMUM_SPANNING_TREE,
   [Algorithm.SHORTEST_PATH_TREE]: PbAlgorithm.SHORTEST_PATH_TREE,
+  [Algorithm.PERSONALIZED_PAGERANK]: PbAlgorithm.PERSONALIZED_PAGERANK,
 };
 const OBJECTIVE_TO_PB: Record<number, PbObjective> = {
   [Objective.UNSPECIFIED]: PbObjective.UNSPECIFIED,
@@ -576,6 +577,8 @@ export class Lantern {
           weighting:
             WEIGHTING_TO_PB[opts.weighting ?? Weighting.UNSPECIFIED] ?? PbWeighting.UNSPECIFIED,
           vertexPrefix: opts.vertexPrefix ?? "",
+          restartProb: opts.restartProb ?? 0,
+          epsilon: opts.epsilon ?? 0,
         },
         this.callOpts(signal),
       );

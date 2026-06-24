@@ -60,6 +60,26 @@ func inverseCost(weight float32) float32 {
 	return 1 / weight
 }
 
+// resolvePPRParams resolves the Personalized PageRank restart probability
+// (alpha) and forward-push residual threshold (epsilon) from the wire request,
+// applying the core defaults when the caller leaves a knob unset or out of
+// range. The server owns the default policy here — referencing the single
+// source of truth in core — so the metric label space and the documented
+// behaviour agree; core's own clamping is a defensive backstop. restart_prob
+// must lie in (0,1) to be honoured (0/unset or >=1 → DefaultPPRAlpha=0.15);
+// epsilon must be positive (0/unset → DefaultPPREpsilon=1e-4).
+func resolvePPRParams(restartProb, epsilon float32) (alpha, eps float64) {
+	alpha = float64(restartProb)
+	if alpha <= 0 || alpha >= 1 {
+		alpha = graphcache.DefaultPPRAlpha
+	}
+	eps = float64(epsilon)
+	if eps <= 0 {
+		eps = graphcache.DefaultPPREpsilon
+	}
+	return alpha, eps
+}
+
 // algorithmLabel / objectiveLabel / weightingLabel produce the canonical
 // metric label string for each axis. UNSPECIFIED resolves to the same
 // label the server would resolve it to at execution time:
@@ -78,6 +98,8 @@ func algorithmLabel(a pb.Algorithm) string {
 		return "mst"
 	case pb.Algorithm_ALGORITHM_SHORTEST_PATH_TREE:
 		return "spt"
+	case pb.Algorithm_ALGORITHM_PERSONALIZED_PAGERANK:
+		return "ppr"
 	}
 	return "unknown"
 }

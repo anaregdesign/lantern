@@ -142,12 +142,15 @@ describe("HELP_TEXT (#436 — grammar contract)", () => {
     expect(HELP_TEXT).toContain("objective=");
     expect(HELP_TEXT).toContain("weighting=");
     expect(HELP_TEXT).toContain("prefix=");
+    expect(HELP_TEXT).toContain("restart_prob=");
+    expect(HELP_TEXT).toContain("epsilon=");
   });
 
   test("enumerates illuminate kwarg valid values", () => {
     expect(HELP_TEXT).toContain("none");
     expect(HELP_TEXT).toContain("mst");
     expect(HELP_TEXT).toContain("spt");
+    expect(HELP_TEXT).toContain("ppr");
     expect(HELP_TEXT).toContain("min");
     expect(HELP_TEXT).toContain("max");
     expect(HELP_TEXT).toContain("raw");
@@ -223,6 +226,61 @@ describe("parseIlluminate prefix= kwarg (#606)", () => {
 
   test("rejects an explicit empty prefix= value", () => {
     expect(parseIlluminate(["alice", "2", "5", "prefix="]).ok).toBe(false);
+  });
+});
+
+describe("parseIlluminate ppr knobs (#801)", () => {
+  function illuminate(rest: string[]) {
+    const r = parseIlluminate(rest);
+    if (!r.ok) {
+      throw new Error(`parse failed: ${r.usage}`);
+    }
+    if (r.command.verb !== "illuminate") {
+      throw new Error(`not an illuminate command: ${r.command.verb}`);
+    }
+    return r.command;
+  }
+
+  test("accepts algorithm=ppr and defaults the knobs to 0 (server defaults)", () => {
+    const cmd = illuminate(["alice", "2", "5", "algorithm=ppr"]);
+    expect(cmd.algorithm).toBe("ppr");
+    expect(cmd.restartProb).toBe(0);
+    expect(cmd.epsilon).toBe(0);
+  });
+
+  test("parses restart_prob= and epsilon= floats in any order", () => {
+    const cmd = illuminate([
+      "alice",
+      "2",
+      "5",
+      "epsilon=0.001",
+      "algorithm=ppr",
+      "restart_prob=0.25",
+    ]);
+    expect(cmd.algorithm).toBe("ppr");
+    expect(cmd.restartProb).toBeCloseTo(0.25);
+    expect(cmd.epsilon).toBeCloseTo(0.001);
+  });
+
+  test("accepts scientific-notation knob values (Go ParseFloat parity)", () => {
+    const cmd = illuminate([
+      "alice",
+      "2",
+      "5",
+      "algorithm=ppr",
+      "epsilon=1e-4",
+    ]);
+    expect(cmd.epsilon).toBeCloseTo(0.0001);
+  });
+
+  test("rejects a non-numeric restart_prob value", () => {
+    expect(parseIlluminate(["alice", "2", "5", "restart_prob=high"]).ok).toBe(
+      false,
+    );
+  });
+
+  test("rejects a non-numeric epsilon value", () => {
+    expect(parseIlluminate(["alice", "2", "5", "epsilon=tiny"]).ok).toBe(false);
   });
 });
 

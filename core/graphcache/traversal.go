@@ -36,6 +36,29 @@ const (
 	WeightingBM25
 )
 
+// scoreEdge applies the EdgeWeighting transform to one raw edge weight `sum`
+// for a tail→head edge. headID and docLen (the tail's raw out-degree) feed the
+// df- and length-dependent transforms; bm25N/bm25AvgLen are the corpus stats
+// consulted only for WeightingBM25. It is the single scoring kernel shared by
+// the per-hop Neighbor prune (neighborContext) and the PPR forward-push
+// (PersonalizedPageRankContext) so both paths weight edges identically. The
+// caller must hold GraphCache.mu — docFreq reads c.edges without taking its own
+// lock, under the same contract as headsOf.
+func (c *GraphCache[S, T]) scoreEdge(weighting EdgeWeighting, sum float32, headID vertexID, docLen, bm25N int, bm25AvgLen float64) float32 {
+	switch weighting {
+	case WeightingTFIDF:
+		return sum / float32(math.Log2(float64(1+c.edges.docFreq(headID))))
+	case WeightingBM25:
+		return float32(search.BM25Score(
+			float64(sum), bm25AvgLen,
+			c.edges.docFreq(headID), bm25N, docLen,
+			search.DefaultBM25K1, search.DefaultBM25B,
+		))
+	default: // WeightingRaw
+		return sum
+	}
+}
+
 // Neighbor walks the graph from seed and returns the visited subgraph. The
 // per-hop top-k pruning keeps the k largest-weight edges when selectSmallest
 // is false and the k smallest-weight edges when it is true (#560) — the
@@ -173,18 +196,7 @@ func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int
 			if !nonZero {
 				continue
 			}
-			switch weighting {
-			case WeightingTFIDF:
-				edges[head] = sum / float32(math.Log2(float64(1+c.edges.docFreq(headID))))
-			case WeightingBM25:
-				edges[head] = float32(search.BM25Score(
-					float64(sum), bm25AvgLen,
-					c.edges.docFreq(headID), bm25N, docLen,
-					search.DefaultBM25K1, search.DefaultBM25B,
-				))
-			default: // WeightingRaw
-				edges[head] = sum
-			}
+			edges[head] = c.scoreEdge(weighting, sum, headID, docLen, bm25N, bm25AvgLen)
 			if expRow != nil {
 				expRow[head] = latest
 			}
@@ -294,4 +306,227 @@ func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int
 	}
 
 	return g, expirations, nil
+}
+
+// PPR (Personalized PageRank) defaults and guards (#801).
+const (
+	// DefaultPPRAlpha is the restart/teleport-to-seed probability used when a
+	// caller passes a non-positive (or out-of-range) alpha. 0.15 is the
+	// canonical PageRank damping complement — a broad, well-behaved locality.
+	DefaultPPRAlpha = 0.15
+	// DefaultPPREpsilon is the forward-push residual threshold used when a
+	// caller passes a non-positive epsilon. 1e-4 keeps the push budget small
+	// (O(1/(alpha*eps))) while staying accurate enough for ranking.
+	DefaultPPREpsilon = 1e-4
+	// pprCtxCheckInterval is how often (in pushes) the forward-push loop polls
+	// ctx for cancellation, amortising the check off the hot path the same way
+	// neighborContext checks once per BFS step.
+	pprCtxCheckInterval = 1024
+)
+
+// pprMaxPushes is a hard guard on the forward-push budget against pathological
+// inputs (a tiny eps or alpha). The Andersen–Chung–Lang bound is ~1/(alpha*eps)
+// pushes; we allow a generous multiple plus a floor so a small graph with a
+// modest eps is never truncated before it converges, and clamp to a hard cap so
+// an adversarial request cannot spin indefinitely.
+func pprMaxPushes(alpha, epsilon float64) int {
+	const (
+		floor   = 1 << 16 // 65k — never truncate a small, well-behaved walk
+		hardCap = 1 << 27 // ~134M — absolute ceiling regardless of eps/alpha
+	)
+	if alpha <= 0 || epsilon <= 0 {
+		return floor
+	}
+	bound := 8.0 / (alpha * epsilon)
+	if bound >= hardCap {
+		return hardCap
+	}
+	n := int(bound) + floor
+	if n > hardCap {
+		return hardCap
+	}
+	return n
+}
+
+// PersonalizedPageRank is the context-free convenience wrapper over
+// PersonalizedPageRankContext using context.Background(). See that method for
+// the full contract.
+func (c *GraphCache[S, T]) PersonalizedPageRank(seed S, topN int, alpha, epsilon float64, weighting EdgeWeighting, keep func(S) bool) *graph.Graph[S, T] {
+	g, _ := c.PersonalizedPageRankContext(context.Background(), seed, topN, alpha, epsilon, weighting, keep)
+	return g
+}
+
+// PersonalizedPageRankContext ranks vertices by their Personalized PageRank
+// (a.k.a. Random-Walk-with-Restart) relevance to seed and returns a relevance
+// star: a graph whose seed→v edge weight is π[v], the stationary mass a
+// seed-anchored random surfer accumulates on v. It replaces the greedy,
+// per-hop Top(k) walk of Neighbor* with a single global, seed-relative score
+// (#801), so a vertex reached via many paths outranks one reached via a single
+// weak path, and a globally popular hub is discounted relative to this seed.
+//
+// It is computed by local forward-push (Andersen–Chung–Lang): residual mass is
+// pushed only through vertices whose residual exceeds eps·deg, touching
+// O(1/(alpha·eps)) vertices independent of |V|/|E|. alpha is the restart
+// probability (locality knob: higher = tighter, seed-proximate); epsilon the
+// residual threshold (smaller = more accurate, more work). Non-positive or
+// out-of-range alpha/epsilon fall back to DefaultPPRAlpha / DefaultPPREpsilon.
+//
+// weighting transforms each transition affinity BEFORE row-normalization
+// (raw / tfidf / bm25, via the shared scoreEdge kernel) so BM25-weighted PPR
+// composes for free. keep is the optional frontier predicate (#601): a head is
+// only walked into (and ranked) when keep(head) is true; the seed is the
+// anchor exemption. ctx is polled every pprCtxCheckInterval pushes and returns
+// ctx.Err() when cancelled. topN caps the ranked vertices returned (the request
+// k); topN <= 0 returns every vertex with positive mass. An unknown seed yields
+// an empty graph (the seed vertex alone is never emitted without neighbours).
+func (c *GraphCache[S, T]) PersonalizedPageRankContext(ctx context.Context, seed S, topN int, alpha, epsilon float64, weighting EdgeWeighting, keep func(S) bool) (*graph.Graph[S, T], error) {
+	if alpha <= 0 || alpha >= 1 {
+		alpha = DefaultPPRAlpha
+	}
+	if epsilon <= 0 {
+		epsilon = DefaultPPREpsilon
+	}
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	g := graph.NewGraph[S, T]()
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	sv, ok := c.vertices.Get(seed)
+	if !ok {
+		return g, nil
+	}
+	g.Vertices[seed] = sv
+
+	// BM25 corpus statistics are read once, only for the BM25 weighting, under
+	// the same RLock the per-edge accessors rely on — identical to
+	// neighborContext so PPR transitions and the BFS prune weight edges alike.
+	var bm25N int
+	var bm25AvgLen float64
+	if weighting == WeightingBM25 {
+		tails, totalEdges := c.edges.corpusStats()
+		bm25N = tails
+		if tails > 0 {
+			bm25AvgLen = float64(totalEdges) / float64(tails)
+		}
+	}
+
+	// Local forward-push. p is the approximate PPR vector, r the residual.
+	// We drain each vertex's residual into p (the alpha share) and across its
+	// weighting-transformed, row-normalized out-edges (the 1-alpha share)
+	// until every residual falls below eps·deg.
+	type scoredEdge struct {
+		head S
+		a    float64
+	}
+	p := make(map[S]float64)
+	r := map[S]float64{seed: 1}
+	queue := []S{seed}
+	inQueue := map[S]bool{seed: true}
+	maxPushes := pprMaxPushes(alpha, epsilon)
+
+	pushes := 0
+	for len(queue) > 0 {
+		u := queue[0]
+		queue = queue[1:]
+		inQueue[u] = false
+		ru := r[u]
+
+		// Gather u's live, kept, weighting-transformed out-edges and their
+		// affinity sum wu. A tail whose vertex is no longer live contributes
+		// nothing (referential closure, #750), exactly as in neighborContext.
+		var outs []scoredEdge
+		var wu float64
+		var docLen int
+		if c.vertices.Has(u) {
+			if heads, ok := c.edges.headsOf(u); ok {
+				docLen = len(heads) // BM25 document length = raw out-degree
+				outs = make([]scoredEdge, 0, len(heads))
+				for headID, w := range heads {
+					head, ok := c.edges.resolveID(headID)
+					if !ok {
+						continue
+					}
+					if !c.vertices.Has(head) {
+						continue
+					}
+					if keep != nil && !keep(head) {
+						continue
+					}
+					sum, _, nonZero := w.snapshot()
+					if !nonZero {
+						continue
+					}
+					a := float64(c.scoreEdge(weighting, sum, headID, docLen, bm25N, bm25AvgLen))
+					if a <= 0 {
+						continue
+					}
+					outs = append(outs, scoredEdge{head: head, a: a})
+					wu += a
+				}
+			}
+		}
+
+		// ACL stopping rule: skip vertices whose residual is too small to
+		// matter. A sink (no live kept out-edges) is still drained once — its
+		// alpha share is absorbed into p and the remaining mass leaks — using a
+		// degree floor of 1 so a non-trivial residual is not stranded forever.
+		if ru < epsilon*float64(max(len(outs), 1)) {
+			continue
+		}
+
+		r[u] = 0
+		p[u] += alpha * ru
+		if wu > 0 {
+			spread := (1 - alpha) * ru
+			for _, e := range outs {
+				r[e.head] += spread * (e.a / wu)
+				if !inQueue[e.head] {
+					queue = append(queue, e.head)
+					inQueue[e.head] = true
+				}
+			}
+		}
+
+		pushes++
+		if pushes >= maxPushes {
+			break
+		}
+		if pushes%pprCtxCheckInterval == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	// Rank by PPR mass, excluding the seed, and keep the top-N. Reusing
+	// pq.SortableMap.Top mirrors the per-hop prune in neighborContext so the
+	// tie-breaking semantics are identical across both traversal paths.
+	scores := make(pq.SortableMap[S, float32], len(p))
+	for key, mass := range p {
+		if key == seed || mass <= 0 {
+			continue
+		}
+		scores[key] = float32(mass)
+	}
+	if topN > 0 {
+		scores = scores.Top(topN)
+	}
+	if len(scores) > 0 {
+		row := make(map[S]float32, len(scores))
+		for key, mass := range scores {
+			if v, ok := c.vertices.Get(key); ok {
+				g.Vertices[key] = v
+				row[key] = mass
+			}
+		}
+		if len(row) > 0 {
+			g.Edges[seed] = row
+		}
+	}
+
+	return g, nil
 }

@@ -13,7 +13,7 @@ import (
 // every verb in the dispatch table must appear in the text.
 
 func TestHelpText_EnumeratesIlluminateKwargs(t *testing.T) {
-	for _, kw := range []string{"algorithm=", "objective=", "weighting=", "prefix="} {
+	for _, kw := range []string{"algorithm=", "objective=", "weighting=", "prefix=", "restart_prob=", "epsilon="} {
 		if !strings.Contains(HelpText, kw) {
 			t.Errorf("HelpText missing illuminate kwarg %q", kw)
 		}
@@ -21,7 +21,7 @@ func TestHelpText_EnumeratesIlluminateKwargs(t *testing.T) {
 }
 
 func TestHelpText_EnumeratesIlluminateKwargValues(t *testing.T) {
-	for _, v := range []string{"none", "mst", "spt", "min", "max", "raw", "tfidf", "bm25"} {
+	for _, v := range []string{"none", "mst", "spt", "ppr", "min", "max", "raw", "tfidf", "bm25"} {
 		if !strings.Contains(HelpText, v) {
 			t.Errorf("HelpText missing illuminate kwarg value %q", v)
 		}

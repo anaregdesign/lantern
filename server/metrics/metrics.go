@@ -167,18 +167,20 @@ type DomainMetrics struct {
 // canonical string set without importing prometheus.
 //
 // Illuminate metrics carry three orthogonal labels (#410):
-//   - algorithm ∈ {none, mst, spt}     — post-traversal reduction
+//   - algorithm ∈ {none, mst, spt, ppr} — post-traversal reduction (mst/spt)
+//     or a distinct traversal path (ppr, #801)
 //   - objective ∈ {minimize, maximize} — direction for mst/spt; harmless
-//     when algorithm=none (still recorded for label-symmetric scraping)
+//     when algorithm=none or algorithm=ppr (still recorded for
+//     label-symmetric scraping)
 //   - weighting ∈ {raw, tfidf, bm25}   — edge-weight transform before BFS
 //
 // Service code resolves enum UNSPECIFIED values to their canonical
 // defaults BEFORE calling OnIlluminate so the label space stays bounded
-// at 3 × 2 × 3 = 18 combinations. Unknown enum values (a future axis
+// at 4 × 2 × 3 = 24 combinations. Unknown enum values (a future axis
 // added in proto without a metrics update) fall through to "unknown"
 // so a new variant cannot break label pre-warming on existing dashboards.
 var (
-	algorithmLabels  = []string{"none", "mst", "spt"}
+	algorithmLabels  = []string{"none", "mst", "spt", "ppr"}
 	objectiveLabels  = []string{"minimize", "maximize"}
 	weightingLabels  = []string{"raw", "tfidf", "bm25"}
 	illuminatePhases = []string{"traversal", "optimize"}
@@ -499,8 +501,8 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 	// Pre-create hot-path histogram label rows so /metrics renders the
 	// full variant set on a fresh process. Histograms emit count/sum/
 	// bucket families lazily per label; observing a no-op is the
-	// idiomatic way to materialise the row. Per #410 the Illuminate
-	// label space is 3 × 2 × 3 = 18 combinations (algorithm × objective
+	// idiomatic way to materialise the row. Per #410/#801 the Illuminate
+	// label space is 4 × 2 × 3 = 24 combinations (algorithm × objective
 	// × weighting), well below Prometheus cardinality concerns.
 	for _, algo := range algorithmLabels {
 		for _, obj := range objectiveLabels {

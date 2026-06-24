@@ -137,10 +137,17 @@ describe("completeCommandLine — key slots", () => {
 });
 
 describe("completeCommandLine — illuminate option kwargs (slot ≥ 4)", () => {
-  test("offers the four option keys with a trailing =", () => {
+  test("offers every option key with a trailing =", () => {
     expect(
       completeCommandLine("illuminate alice 2 5 ", KEYS).candidates,
-    ).toEqual(["algorithm=", "objective=", "weighting=", "prefix="]);
+    ).toEqual([
+      "algorithm=",
+      "objective=",
+      "weighting=",
+      "prefix=",
+      "restart_prob=",
+      "epsilon=",
+    ]);
   });
 
   test("filters option keys by prefix", () => {
@@ -153,13 +160,24 @@ describe("completeCommandLine — illuminate option kwargs (slot ≥ 4)", () => 
     expect(
       completeCommandLine("illuminate alice 2 5 algorithm=spt ", KEYS)
         .candidates,
-    ).toEqual(["objective=", "weighting=", "prefix="]);
+    ).toEqual([
+      "objective=",
+      "weighting=",
+      "prefix=",
+      "restart_prob=",
+      "epsilon=",
+    ]);
   });
 
   test("completes enum values once = is typed", () => {
     expect(
       completeCommandLine("illuminate alice 2 5 algorithm=", KEYS).candidates,
-    ).toEqual(["algorithm=none", "algorithm=mst", "algorithm=spt"]);
+    ).toEqual([
+      "algorithm=none",
+      "algorithm=mst",
+      "algorithm=spt",
+      "algorithm=ppr",
+    ]);
   });
 
   test("filters enum values by their prefix", () => {
@@ -189,6 +207,16 @@ describe("completeCommandLine — illuminate option kwargs (slot ≥ 4)", () => 
   test("free-text prefix= yields no value candidates (#606)", () => {
     expect(
       completeCommandLine("illuminate alice 2 5 prefix=", KEYS).candidates,
+    ).toEqual([]);
+  });
+
+  test("free-form ppr knobs yield no value candidates (#801)", () => {
+    expect(
+      completeCommandLine("illuminate alice 2 5 restart_prob=", KEYS)
+        .candidates,
+    ).toEqual([]);
+    expect(
+      completeCommandLine("illuminate alice 2 5 epsilon=", KEYS).candidates,
     ).toEqual([]);
   });
 

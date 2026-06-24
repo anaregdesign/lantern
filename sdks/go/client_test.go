@@ -331,3 +331,54 @@ func TestWithWeightingWiring(t *testing.T) {
 		})
 	}
 }
+
+// TestWithPPROptionsWiring verifies the #801 Personalized PageRank knobs
+// round-trip onto the emitted IlluminateRequest: WithAlgorithm selects the PPR
+// algorithm, and WithRestartProb / WithEpsilon set restart_prob / epsilon.
+// Omitting the knobs leaves them at the proto zero value, which the server
+// resolves to its α=0.15 / ε=1e-4 defaults.
+func TestWithPPROptionsWiring(t *testing.T) {
+	newClient := func(t *testing.T) (*Lantern, *captureIlluminate) {
+		t.Helper()
+		l := mustLantern(t)
+		capt := &captureIlluminate{}
+		l.client = capt
+		return l, capt
+	}
+
+	t.Run("default leaves ppr knobs zero", func(t *testing.T) {
+		l, capt := newClient(t)
+		if _, err := l.Illuminate(context.Background(), "seed"); err != nil {
+			t.Fatalf("Illuminate: %v", err)
+		}
+		if got := capt.reqs[0].GetAlgorithm(); got != AlgorithmUnspecified {
+			t.Fatalf("default algorithm want UNSPECIFIED, got %v", got)
+		}
+		if got := capt.reqs[0].GetRestartProb(); got != 0 {
+			t.Fatalf("default restart_prob want 0, got %v", got)
+		}
+		if got := capt.reqs[0].GetEpsilon(); got != 0 {
+			t.Fatalf("default epsilon want 0, got %v", got)
+		}
+	})
+
+	t.Run("WithAlgorithm/RestartProb/Epsilon set the fields", func(t *testing.T) {
+		l, capt := newClient(t)
+		if _, err := l.Illuminate(context.Background(), "seed",
+			WithAlgorithm(AlgorithmPersonalizedPageRank),
+			WithRestartProb(0.25),
+			WithEpsilon(1e-3),
+		); err != nil {
+			t.Fatalf("Illuminate: %v", err)
+		}
+		if got := capt.reqs[0].GetAlgorithm(); got != AlgorithmPersonalizedPageRank {
+			t.Fatalf("algorithm want PERSONALIZED_PAGERANK got %v", got)
+		}
+		if got := capt.reqs[0].GetRestartProb(); got != 0.25 {
+			t.Fatalf("restart_prob want 0.25 got %v", got)
+		}
+		if got := capt.reqs[0].GetEpsilon(); got != 1e-3 {
+			t.Fatalf("epsilon want 1e-3 got %v", got)
+		}
+	})
+}
