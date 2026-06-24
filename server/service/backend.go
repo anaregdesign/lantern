@@ -102,6 +102,29 @@ type Backend interface {
 		keep func(string) bool,
 	) (*coregraph.Graph[string, *pb.Vertex], map[string]map[string]time.Time, error)
 
+	// PersonalizedPageRankContext computes the seed-anchored Personalized
+	// PageRank vector via Andersen–Chung–Lang forward-push (#801) and returns
+	// it as a one-hop "relevance star": g.Edges[seed][v] carries v's PPR mass
+	// pi[v] for the topN highest-mass vertices (topN <= 0 means every
+	// positive-mass vertex), with the seed excluded from its own star. This is
+	// a distinct traversal path, NOT a post-traversal reduction of the BFS
+	// neighbourhood — alpha is the restart/teleport-to-seed probability and
+	// epsilon the residual threshold; out-of-range alpha (<=0 or >=1) and
+	// non-positive epsilon fall back to the core defaults. weighting transforms
+	// each out-edge BEFORE row-normalisation (so BM25-weighted PPR composes for
+	// free, #800); keep is the same optional frontier predicate as the BFS path
+	// (a non-matching head never accrues mass; the seed is exempt; nil accepts
+	// every head). There is no expirations map — the star edges are synthetic
+	// relevance weights, not stored edges.
+	PersonalizedPageRankContext(
+		ctx context.Context,
+		seed string,
+		topN int,
+		alpha, epsilon float64,
+		weighting graphcache.EdgeWeighting,
+		keep func(string) bool,
+	) (*coregraph.Graph[string, *pb.Vertex], error)
+
 	// prefix scan / count / delete. ScanByPrefix invokes fn for each live
 	// vertex whose key starts with prefix, in lexicographic order; fn
 	// returns false to stop early. CountByPrefix is an index-side count

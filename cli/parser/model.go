@@ -56,13 +56,15 @@ type DeleteEdge struct {
 }
 
 type Illuminate struct {
-	Seed      string
-	Step      int
-	K         int
-	Algorithm string // "none" | "mst" | "spt" (default: "none")
-	Objective string // "min" | "max"           (default: "max")
-	Weighting string // "raw" | "tfidf" | "bm25" (default: "raw")
-	Prefix    string // vertex-key prefix filter; "" (default) = no filter (#604)
+	Seed        string
+	Step        int
+	K           int
+	Algorithm   string  // "none" | "mst" | "spt" | "ppr" (default: "none")
+	Objective   string  // "min" | "max"                  (default: "max")
+	Weighting   string  // "raw" | "tfidf" | "bm25"        (default: "raw")
+	Prefix      string  // vertex-key prefix filter; "" (default) = no filter (#604)
+	RestartProb float32 // PPR restart prob α; 0 (default) = server default 0.15 (#801)
+	Epsilon     float32 // PPR residual threshold ε; 0 (default) = server default 1e-4 (#801)
 }
 
 // ScanVertices backs `scan vertices <prefix> [limit] [all=true]` (#411,

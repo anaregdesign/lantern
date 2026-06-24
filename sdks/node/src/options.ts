@@ -10,13 +10,16 @@ export interface IlluminateOptions {
   /** Per-hop fan-out, top-k neighbours kept at each frontier (0 = unlimited). */
   k?: number;
   /**
-   * Post-traversal subgraph reduction. Defaults to UNSPECIFIED (raw
-   * discovered subgraph). See #410 for the orthogonal-axes design.
+   * Illuminate algorithm. Defaults to UNSPECIFIED (raw discovered subgraph).
+   * MST/SPT are post-traversal reductions; PERSONALIZED_PAGERANK (#801) is a
+   * distinct traversal returning a relevance star tuned by `restartProb` /
+   * `epsilon` and sized by `k`. See #410 for the orthogonal-axes design.
    */
   algorithm?: Algorithm;
   /**
-   * Reduction direction. Ignored when `algorithm === Algorithm.UNSPECIFIED`.
-   * Server resolves UNSPECIFIED to MINIMIZE.
+   * Reduction direction. Ignored when `algorithm === Algorithm.UNSPECIFIED`
+   * or `Algorithm.PERSONALIZED_PAGERANK`. Server resolves UNSPECIFIED to
+   * MINIMIZE.
    */
   objective?: Objective;
   /**
@@ -31,6 +34,21 @@ export interface IlluminateOptions {
    * before any MST/SPT reduction (induced-subgraph semantics).
    */
   vertexPrefix?: string;
+  /**
+   * Personalized PageRank restart (teleport-to-seed) probability α. Higher α
+   * keeps relevance tighter around the seed; lower α wanders farther. Only
+   * meaningful with `algorithm === Algorithm.PERSONALIZED_PAGERANK`. Must lie
+   * in (0,1) — 0/omitted or out-of-range falls back to the server default
+   * (0.15).
+   */
+  restartProb?: number;
+  /**
+   * Personalized PageRank forward-push residual threshold ε. Smaller ε pushes
+   * mass to more vertices (higher recall, more work); larger ε stops sooner.
+   * Only meaningful with `algorithm === Algorithm.PERSONALIZED_PAGERANK`. Must
+   * be positive — 0/omitted falls back to the server default (1e-4).
+   */
+  epsilon?: number;
 }
 
 export interface ScanOptions {

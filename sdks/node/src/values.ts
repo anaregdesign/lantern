@@ -152,15 +152,18 @@ export type VertexKind =
   | "nil";
 
 /**
- * Post-traversal subgraph reduction for Lantern.illuminate (#410). The
+ * Illuminate algorithm axes for Lantern.illuminate (#410, #801). The
  * orthogonal triple `Algorithm × Objective × Weighting` replaces the
  * legacy flat `Optimization` enum.
  *
- *   - `Algorithm`  selects the reduction: NONE (raw subgraph), MST,
- *                  or SPT (shortest-path tree from the seed).
+ *   - `Algorithm`  selects the algorithm: NONE (raw subgraph), MST,
+ *                  SPT (shortest-path tree from the seed), or
+ *                  PERSONALIZED_PAGERANK (#801 — seed-anchored PPR via
+ *                  forward-push, returning a relevance star; a distinct
+ *                  traversal, NOT a post-traversal reduction).
  *   - `Objective`  selects the direction: MINIMIZE (cost-weighted) or
  *                  MAXIMIZE (relevance-weighted). Ignored when
- *                  algorithm = UNSPECIFIED.
+ *                  algorithm = UNSPECIFIED or PERSONALIZED_PAGERANK.
  *   - `Weighting`  selects the edge-weight transform applied BEFORE
  *                  the BFS walk: RAW (edge.weight verbatim), TFIDF
  *                  (re-score over per-vertex out-edge distribution),
@@ -174,6 +177,7 @@ export const Algorithm = {
   UNSPECIFIED: 0,
   MINIMUM_SPANNING_TREE: 1,
   SHORTEST_PATH_TREE: 2,
+  PERSONALIZED_PAGERANK: 3,
 } as const;
 export type Algorithm = (typeof Algorithm)[keyof typeof Algorithm];
 

@@ -63,6 +63,7 @@ const ALGORITHM_TO_API: Record<string, ApiAlgorithm> = {
   none: "ALGORITHM_UNSPECIFIED",
   mst: "ALGORITHM_MINIMUM_SPANNING_TREE",
   spt: "ALGORITHM_SHORTEST_PATH_TREE",
+  ppr: "ALGORITHM_PERSONALIZED_PAGERANK",
 };
 const OBJECTIVE_TO_API: Record<string, ApiObjective> = {
   min: "OBJECTIVE_MINIMIZE",
@@ -256,6 +257,8 @@ export async function dispatch(input: DispatchInput): Promise<unknown> {
           objective: OBJECTIVE_TO_API[command.objective],
           weighting: WEIGHTING_TO_API[command.weighting],
           vertexPrefix: command.vertexPrefix,
+          restartProb: command.restartProb,
+          epsilon: command.epsilon,
         },
         { signal },
       );

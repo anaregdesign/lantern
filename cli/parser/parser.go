@@ -42,7 +42,7 @@ var (
 	// are the canonical sets the REPL accepts for the keyword arguments of
 	// the modernised illuminate verb (#410). The keyword form replaces the
 	// legacy positional grammar (neighbor / spt_* / mst_*) entirely.
-	IlluminateAlgorithms = []string{"none", "mst", "spt"}
+	IlluminateAlgorithms = []string{"none", "mst", "spt", "ppr"}
 	IlluminateObjectives = []string{"min", "max"}
 	IlluminateWeightings = []string{"raw", "tfidf", "bm25"}
 
@@ -435,19 +435,22 @@ func DeleteEdgeParam(s *Source) (*DeleteEdge, error) {
 	return m, nil
 }
 
-// IlluminateParam parses the modernised illuminate grammar (#410, #604):
+// IlluminateParam parses the modernised illuminate grammar (#410, #604, #801):
 //
-//	illuminate <seed> <step> <k> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>]
+//	illuminate <seed> <step> <k> [algorithm=none|mst|spt|ppr] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>] [restart_prob=<float>] [epsilon=<float>]
 //
 // The keyword arguments may appear in any order and any subset. The three
 // closed-set axes default to the strongest-edge behaviour (algorithm=none,
 // objective=max, weighting=raw); objective defaults to max so a bare
 // illuminate keeps the top-k strongest neighbours and the per-hop
 // pruning matches the reduction direction (#560). prefix is free-text and
-// defaults to empty (no frontier filter; #604).
+// defaults to empty (no frontier filter; #604). restart_prob and epsilon tune
+// the Personalized PageRank algorithm (#801) and default to 0, which the
+// server resolves to α=0.15 / ε=1e-4; they are ignored unless algorithm=ppr.
 // Unknown keyword names, malformed `key=value` tokens, closed-set values
-// outside the canonical set above, or an empty prefix= value are rejected
-// with a descriptive error so the REPL can surface a usage hint.
+// outside the canonical set above, an empty prefix= value, or a non-float
+// restart_prob=/epsilon= value are rejected with a descriptive error so the
+// REPL can surface a usage hint.
 func IlluminateParam(s *Source) (*Illuminate, error) {
 	var err error
 	m := &Illuminate{Algorithm: "none", Objective: "max", Weighting: "raw"}
@@ -478,7 +481,7 @@ func IlluminateParam(s *Source) (*Illuminate, error) {
 		switch key {
 		case "algorithm":
 			if !contains(IlluminateAlgorithms, lvalue) {
-				return nil, errors.New("illuminate: algorithm=" + value + " (want none|mst|spt)")
+				return nil, errors.New("illuminate: algorithm=" + value + " (want none|mst|spt|ppr)")
 			}
 			m.Algorithm = lvalue
 		case "objective":
@@ -496,8 +499,20 @@ func IlluminateParam(s *Source) (*Illuminate, error) {
 				return nil, errors.New("illuminate: prefix= requires a non-empty value")
 			}
 			m.Prefix = value
+		case "restart_prob":
+			rp, perr := strconv.ParseFloat(value, 32)
+			if perr != nil {
+				return nil, errors.New("illuminate: restart_prob=" + value + " (want a float in (0,1))")
+			}
+			m.RestartProb = float32(rp)
+		case "epsilon":
+			eps, perr := strconv.ParseFloat(value, 32)
+			if perr != nil {
+				return nil, errors.New("illuminate: epsilon=" + value + " (want a positive float)")
+			}
+			m.Epsilon = float32(eps)
 		default:
-			return nil, errors.New("illuminate: unknown key " + key + " (want algorithm|objective|weighting|prefix)")
+			return nil, errors.New("illuminate: unknown key " + key + " (want algorithm|objective|weighting|prefix|restart_prob|epsilon)")
 		}
 	}
 	return m, nil
@@ -730,10 +745,12 @@ const HelpText = `Lantern CLI grammar:
   delete-prefix vertices <prefix: string> [limit=<int>] [confirm=yes|dry_run=true]
   keys   <prefix: string> [<limit: int>]
   illuminate <seed: string> <step: int> <k: int>
-             [algorithm={none|mst|spt}]  default=none
+             [algorithm={none|mst|spt|ppr}] default=none
              [objective={min|max}]       default=max
              [weighting={raw|tfidf|bm25}] default=raw
              [prefix=<string>]           default=all keys
+             [restart_prob=<float>]      default=0 (ppr only; server α=0.15)
+             [epsilon=<float>]           default=0 (ppr only; server ε=1e-4)
   help
   exit
 

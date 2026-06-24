@@ -13,8 +13,8 @@
  * Why CLI vocabulary and not the wire `ALGORITHM_*` enums?
  * The picker writes a *command string* into the CLI input buffer; the
  * same string a user could have typed. The Go REPL parser and the
- * TypeScript parser in `./verbs.ts` both accept `none|mst|spt` /
- * `min|max` / `raw|tfidf`. Using the wire enums here would mean the
+ * TypeScript parser in `./verbs.ts` both accept `none|mst|spt|ppr` /
+ * `min|max` / `raw|tfidf|bm25`. Using the wire enums here would mean the
  * picker echoes something the parsers reject, breaking the "every
  * command echoed is something I could have typed" invariant the /cli
  * page is built on.
@@ -48,6 +48,16 @@ export interface CliClickAxes {
    * axes above.
    */
   vertexPrefix: string;
+  /**
+   * Personalized PageRank knobs (#801), only meaningful when
+   * `algorithm === "ppr"`. `restartProb` is the restart/teleport-to-seed
+   * probability α in (0,1); `epsilon` is the forward-push residual threshold
+   * ε > 0. 0 means "leave to the server default" (α=0.15 / ε=1e-4) and is the
+   * value that keeps the bare click byte-for-byte the canonical short form —
+   * {@link formatIlluminateClick} only emits these for a non-zero ppr walk.
+   */
+  restartProb: number;
+  epsilon: number;
 }
 
 /**
@@ -69,6 +79,11 @@ export const CLI_CLICK_AXIS_DEFAULTS: CliClickAxes = {
   // Empty = no prefix filter, so the bare click stays byte-for-byte the
   // canonical short form `illuminate <seed> 2 5` (the #439 regression guard).
   vertexPrefix: "",
+  // 0 = "use the server default" for both PPR knobs; the formatter omits them
+  // unless algorithm=ppr AND the value is non-zero, so the bare click is
+  // unaffected (#439 / #801).
+  restartProb: 0,
+  epsilon: 0,
 };
 
 export const CLI_ALGORITHMS: ReadonlyArray<{
@@ -78,6 +93,7 @@ export const CLI_ALGORITHMS: ReadonlyArray<{
   { value: "none", label: "None (raw subgraph)" },
   { value: "mst", label: "Spanning tree" },
   { value: "spt", label: "Shortest-path tree" },
+  { value: "ppr", label: "Personalized PageRank" },
 ];
 
 export const CLI_OBJECTIVES: ReadonlyArray<{
@@ -102,9 +118,11 @@ export const CLI_WEIGHTINGS: ReadonlyArray<{
  *
  * Emits the short form `illuminate <seed> <step> <k>` when every axis
  * matches {@link CLI_CLICK_AXIS_DEFAULTS}. Appends the optional kwargs
- * in fixed order (`algorithm=` → `objective=` → `weighting=` → `prefix=`)
- * only for axes that diverge from the default; the fixed order keeps
- * scrollback snapshots deterministic and matches the parser's usage string.
+ * in fixed order (`algorithm=` → `objective=` → `weighting=` → `prefix=`
+ * → `restart_prob=` → `epsilon=`) only for axes that diverge from the
+ * default; the fixed order keeps scrollback snapshots deterministic and
+ * matches the parser's usage string. The two PPR knobs are emitted only
+ * when `algorithm=ppr` and the value is non-zero (#801).
  *
  * The function is intentionally pure so `bun:test` can round-trip it
  * through {@link parse} without a DOM.
@@ -137,6 +155,17 @@ export function formatIlluminateClick(
   if (axes.vertexPrefix !== "") {
     tokens.push(`prefix=${axes.vertexPrefix}`);
   }
+  // #801: PPR knobs are only meaningful for algorithm=ppr and only when the
+  // operator has overridden the server default (0). Gating on both keeps the
+  // bare click byte-stable (#439) and never emits a knob the server ignores.
+  if (axes.algorithm === "ppr") {
+    if (axes.restartProb > 0) {
+      tokens.push(`restart_prob=${axes.restartProb}`);
+    }
+    if (axes.epsilon > 0) {
+      tokens.push(`epsilon=${axes.epsilon}`);
+    }
+  }
   return tokens.join(" ");
 }
 
@@ -151,6 +180,8 @@ export const AXIS_STORAGE_KEYS = {
   objective: "cli.click.objective",
   weighting: "cli.click.weighting",
   vertexPrefix: "cli.click.prefix",
+  restartProb: "cli.click.restart_prob",
+  epsilon: "cli.click.epsilon",
 } as const;
 
 /**
@@ -180,6 +211,21 @@ export function parseStoredWeighting(raw: string | null): WeightingName | null {
 }
 
 /**
+ * Parse a stored PPR knob (restart_prob / epsilon). Accepts any finite,
+ * non-negative number — 0 means "use the server default". Returns null for
+ * missing / malformed / negative values so the caller falls back to the
+ * documented default (0). Kept lenient (the server is the final authority on
+ * the (0,1) / >0 bounds) but never resurrects a NaN or a negative knob (#801).
+ */
+export function parseStoredFloat(raw: string | null): number | null {
+  if (raw === null) return null;
+  const n = Number.parseFloat(raw);
+  if (!Number.isFinite(n)) return null;
+  if (n < 0) return null;
+  return n;
+}
+
+/**
  * Parse a stored vertex prefix. Prefix is free text, so every non-null
  * string is valid (including ""); only a missing key returns null, letting
  * the caller fall back to {@link CLI_CLICK_AXIS_DEFAULTS}.vertexPrefix.
@@ -194,6 +240,11 @@ export function formatStoredStep(value: number): string {
 }
 
 export function formatStoredK(value: number): string {
+  return String(value);
+}
+
+/** Serialise a PPR knob for localStorage; base-10, mirrors {@link parseStoredFloat}. */
+export function formatStoredFloat(value: number): string {
   return String(value);
 }
 

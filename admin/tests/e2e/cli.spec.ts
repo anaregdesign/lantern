@@ -422,6 +422,57 @@ test.describe("/cli", () => {
     );
   });
 
+  // #801 — Personalized PageRank knobs (restart_prob / epsilon) only
+  // surface when algorithm=ppr is selected, and feed the same single
+  // source of truth (`formatIlluminateClick`) as every other axis.
+  test("ppr knobs appear only for algorithm=ppr and tune the preview (#801)", async ({
+    page,
+  }) => {
+    await page.goto("/cli");
+    // Render a graph first so the canvas panel — and the picker inside
+    // it — mounts (#512).
+    const input = page.getByTestId("cli-input");
+    await input.fill("get vertex cli:alpha");
+    await input.press("Enter");
+    await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
+    const preview = page.getByTestId("cli-axis-preview");
+    await expect(preview).toHaveText("illuminate <key> 2 5");
+
+    // The knobs are hidden until ppr is the active algorithm.
+    await expect(page.getByTestId("cli-axis-restart-prob")).toHaveCount(0);
+    await expect(page.getByTestId("cli-axis-epsilon")).toHaveCount(0);
+
+    // Select algorithm=ppr — the two knob inputs appear and the preview
+    // gains the algorithm token (knobs default to 0 = server default, so
+    // they are omitted from the click string until set).
+    await page.getByTestId("cli-axis-algorithm").click();
+    await page.getByRole("option", { name: "Personalized PageRank" }).click();
+    await expect(preview).toHaveText("illuminate <key> 2 5 algorithm=ppr");
+    const restartProb = page.getByTestId("cli-axis-restart-prob");
+    const epsilon = page.getByTestId("cli-axis-epsilon");
+    await expect(restartProb).toBeVisible();
+    await expect(epsilon).toBeVisible();
+
+    // Tuning a knob appends it after the algorithm token, in fixed order
+    // restart_prob → epsilon.
+    await restartProb.fill("0.25");
+    await expect(preview).toHaveText(
+      "illuminate <key> 2 5 algorithm=ppr restart_prob=0.25",
+    );
+    await epsilon.fill("0.001");
+    await expect(preview).toHaveText(
+      "illuminate <key> 2 5 algorithm=ppr restart_prob=0.25 epsilon=0.001",
+    );
+
+    // Switching away from ppr hides the knobs again and drops them from
+    // the click string (the stored values are simply not echoed).
+    await page.getByTestId("cli-axis-algorithm").click();
+    await page.getByRole("option", { name: "None (raw subgraph)" }).click();
+    await expect(page.getByTestId("cli-axis-restart-prob")).toHaveCount(0);
+    await expect(page.getByTestId("cli-axis-epsilon")).toHaveCount(0);
+    await expect(preview).toHaveText("illuminate <key> 2 5");
+  });
+
   test("picker state persists across a reload (#464)", async ({ page }) => {
     await page.goto("/cli");
     // Render a graph so the picker mounts (#512).

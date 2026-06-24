@@ -40,7 +40,10 @@ export interface CliAxisPickerProps {
  * Renders a single-line strip of Fluent UI primitives that map 1:1 to
  * the optional kwargs of the long-form illuminate verb (post-#410):
  * step, k, algorithm, objective, and a raw/TF-IDF/BM25 weighting
- * Dropdown. Wraps on narrow viewports without horizontal scroll, per the
+ * Dropdown, plus a free-text prefix filter. When algorithm=ppr is
+ * selected, two extra numeric inputs (restart_prob / epsilon) appear for
+ * the Personalized PageRank knobs (#801); a blank knob means "server
+ * default". Wraps on narrow viewports without horizontal scroll, per the
  * architecture skill's responsive guidance.
  *
  * The component owns no business state — every change goes through
@@ -76,6 +79,35 @@ export function CliAxisPicker({ axes, setAxis, disabled }: CliAxisPickerProps) {
   const onPrefixChange = useCallback<NonNullable<InputProps["onChange"]>>(
     (_, data) => {
       setAxis("vertexPrefix", data.value);
+    },
+    [setAxis],
+  );
+
+  // #801: PPR knobs are non-negative floats; an empty field means "0 = server
+  // default". Reject NaN / negative entries (the server owns the (0,1) / >0
+  // bounds) so a stray keystroke never persists a nonsensical knob.
+  const onRestartProbChange = useCallback<NonNullable<InputProps["onChange"]>>(
+    (_, data) => {
+      if (data.value === "") {
+        setAxis("restartProb", 0);
+        return;
+      }
+      const n = Number.parseFloat(data.value);
+      if (!Number.isFinite(n) || n < 0) return;
+      setAxis("restartProb", n);
+    },
+    [setAxis],
+  );
+
+  const onEpsilonChange = useCallback<NonNullable<InputProps["onChange"]>>(
+    (_, data) => {
+      if (data.value === "") {
+        setAxis("epsilon", 0);
+        return;
+      }
+      const n = Number.parseFloat(data.value);
+      if (!Number.isFinite(n) || n < 0) return;
+      setAxis("epsilon", n);
     },
     [setAxis],
   );
@@ -199,6 +231,43 @@ export function CliAxisPicker({ axes, setAxis, disabled }: CliAxisPickerProps) {
           aria-label="Vertex prefix (optional)"
         />
       </label>
+
+      {axes.algorithm === "ppr" && (
+        <>
+          <label className={styles.field}>
+            <span className={styles.label}>restart_prob</span>
+            <Input
+              className={styles.numberInput}
+              type="number"
+              min={0}
+              max={1}
+              step="any"
+              value={axes.restartProb > 0 ? String(axes.restartProb) : ""}
+              onChange={onRestartProbChange}
+              disabled={disabled}
+              placeholder="0.15"
+              data-testid="cli-axis-restart-prob"
+              aria-label="PPR restart probability α (0–1; blank = server default)"
+            />
+          </label>
+
+          <label className={styles.field}>
+            <span className={styles.label}>epsilon</span>
+            <Input
+              className={styles.numberInput}
+              type="number"
+              min={0}
+              step="any"
+              value={axes.epsilon > 0 ? String(axes.epsilon) : ""}
+              onChange={onEpsilonChange}
+              disabled={disabled}
+              placeholder="1e-4"
+              data-testid="cli-axis-epsilon"
+              aria-label="PPR residual threshold ε (> 0; blank = server default)"
+            />
+          </label>
+        </>
+      )}
 
       <code
         id="cli-axis-picker-preview"

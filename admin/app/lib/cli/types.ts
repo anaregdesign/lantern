@@ -14,7 +14,7 @@
  * Tokenisation matches the Go side: lower-cased, whitespace-split.
  */
 
-export type AlgorithmName = "none" | "mst" | "spt";
+export type AlgorithmName = "none" | "mst" | "spt" | "ppr";
 export type ObjectiveName = "min" | "max";
 export type WeightingName = "raw" | "tfidf" | "bm25";
 
@@ -87,6 +87,15 @@ export type Command =
       objective: ObjectiveName;
       weighting: WeightingName;
       vertexPrefix: string;
+      /**
+       * Personalized PageRank knobs (#801), only meaningful when
+       * `algorithm === "ppr"`. `restartProb` is the restart/teleport-to-seed
+       * probability α in (0,1); `epsilon` is the forward-push residual
+       * threshold ε > 0. Both default to 0, which the server resolves to its
+       * own defaults (α=0.15 / ε=1e-4); they are ignored for other algorithms.
+       */
+      restartProb: number;
+      epsilon: number;
     };
 
 export type ParseResult =

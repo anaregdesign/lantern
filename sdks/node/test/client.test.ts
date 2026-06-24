@@ -25,13 +25,27 @@ import { Code, ConnectError, type ConnectRouter } from "@connectrpc/connect";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
 import { create } from "@bufbuild/protobuf";
 
-import { Lantern, FailedPreconditionError, NotFoundError, connect } from "../src/index.js";
+import {
+  Lantern,
+  FailedPreconditionError,
+  NotFoundError,
+  connect,
+  Algorithm,
+} from "../src/index.js";
 import { LanternService, VertexSchema } from "../src/gen/graph/v1/graph_pb.js";
 
 interface StubState {
   vertices: Map<string, ReturnType<typeof create<typeof VertexSchema>>>;
-  /** Last IlluminateRequest the stub observed, for request-building assertions (#605). */
-  lastIlluminate?: { seed: string; step: number; k: number; vertexPrefix: string };
+  /** Last IlluminateRequest the stub observed, for request-building assertions (#605, #801). */
+  lastIlluminate?: {
+    seed: string;
+    step: number;
+    k: number;
+    vertexPrefix: string;
+    algorithm: number;
+    restartProb: number;
+    epsilon: number;
+  };
   /** Last SearchVerticesRequest the stub observed, for request-building assertions (#639). */
   lastSearch?: { query: string; limit: number; prefix: string };
   /** Ranked hits the searchVertices stub returns (descending relevance). */
@@ -79,6 +93,9 @@ function newStubRoutes(state: StubState) {
           step: req.step,
           k: req.k,
           vertexPrefix: req.vertexPrefix,
+          algorithm: req.algorithm,
+          restartProb: req.restartProb,
+          epsilon: req.epsilon,
         };
         return {};
       },
@@ -259,6 +276,35 @@ describe("illuminate request building (#605)", () => {
     try {
       await c.illuminate("alice", { step: 1 });
       expect(state.lastIlluminate?.vertexPrefix).toBe("");
+    } finally {
+      c.close();
+    }
+  });
+
+  test("forwards Personalized PageRank knobs onto the request (#801)", async () => {
+    const c = newClient();
+    try {
+      await c.illuminate("alice", {
+        k: 8,
+        algorithm: Algorithm.PERSONALIZED_PAGERANK,
+        restartProb: 0.25,
+        epsilon: 1e-3,
+      });
+      expect(state.lastIlluminate?.algorithm).toBe(Algorithm.PERSONALIZED_PAGERANK);
+      expect(state.lastIlluminate?.k).toBe(8);
+      expect(state.lastIlluminate?.restartProb).toBeCloseTo(0.25, 6);
+      expect(state.lastIlluminate?.epsilon).toBeCloseTo(1e-3, 9);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("omitting PPR knobs yields proto zero values (server defaults)", async () => {
+    const c = newClient();
+    try {
+      await c.illuminate("alice", { algorithm: Algorithm.PERSONALIZED_PAGERANK });
+      expect(state.lastIlluminate?.restartProb).toBe(0);
+      expect(state.lastIlluminate?.epsilon).toBe(0);
     } finally {
       c.close();
     }

@@ -77,16 +77,20 @@ func EdgeExpiration(e *Edge) time.Time {
 	return e.Expiration.AsTime()
 }
 
-// Algorithm re-exports the server-side post-traversal reduction enum so SDK
+// Algorithm re-exports the server-side Illuminate algorithm enum so SDK
 // callers do not need to import the generated proto package directly. See
 // #410 for the orthogonal-axes redesign that replaced the legacy
-// Optimization enum with (Algorithm, Objective, Weighting).
+// Optimization enum with (Algorithm, Objective, Weighting). MST and SPT are
+// post-traversal reductions of the BFS neighbourhood; AlgorithmPersonalizedPageRank
+// (#801) is instead a distinct traversal — seed-anchored Personalized PageRank
+// via forward-push — returning a relevance star (seed→v carries v's PPR mass).
 type Algorithm = pb.Algorithm
 
 const (
-	AlgorithmUnspecified         = pb.Algorithm_ALGORITHM_UNSPECIFIED
-	AlgorithmMinimumSpanningTree = pb.Algorithm_ALGORITHM_MINIMUM_SPANNING_TREE
-	AlgorithmShortestPathTree    = pb.Algorithm_ALGORITHM_SHORTEST_PATH_TREE
+	AlgorithmUnspecified          = pb.Algorithm_ALGORITHM_UNSPECIFIED
+	AlgorithmMinimumSpanningTree  = pb.Algorithm_ALGORITHM_MINIMUM_SPANNING_TREE
+	AlgorithmShortestPathTree     = pb.Algorithm_ALGORITHM_SHORTEST_PATH_TREE
+	AlgorithmPersonalizedPageRank = pb.Algorithm_ALGORITHM_PERSONALIZED_PAGERANK
 )
 
 // Objective is the direction of the weight-sensitive optimisation. It
@@ -601,8 +605,9 @@ func NewGraph() *Graph {
 }
 
 // IlluminateOption configures a single Illuminate call. Pass any combination
-// of WithStep, WithK, WithAlgorithm, WithObjective, WithWeighting, and
-// WithVertexPrefix to Illuminate. See #410 for the orthogonal-axes design.
+// of WithStep, WithK, WithAlgorithm, WithObjective, WithWeighting,
+// WithVertexPrefix, WithRestartProb, and WithEpsilon to Illuminate. See #410
+// for the orthogonal-axes design and #801 for the Personalized PageRank knobs.
 type IlluminateOption func(*illuminateConfig)
 
 type illuminateConfig struct {
@@ -612,6 +617,8 @@ type illuminateConfig struct {
 	objective    Objective
 	weighting    Weighting
 	vertexPrefix string
+	restartProb  float32
+	epsilon      float32
 }
 
 // WithStep sets the BFS depth for an Illuminate call.
@@ -624,9 +631,13 @@ func WithK(k uint32) IlluminateOption {
 	return func(c *illuminateConfig) { c.k = k }
 }
 
-// WithAlgorithm selects the post-traversal subgraph reduction applied to
-// the illuminated subgraph. Pass AlgorithmUnspecified to disable the
-// reduction (the server returns the raw discovered subgraph).
+// WithAlgorithm selects the Illuminate algorithm. AlgorithmMinimumSpanningTree
+// and AlgorithmShortestPathTree are post-traversal reductions of the BFS
+// neighbourhood; AlgorithmPersonalizedPageRank (#801) instead runs seed-anchored
+// Personalized PageRank over the weighted graph and returns a relevance star
+// (seed→v carries v's PPR mass), tuned by WithRestartProb / WithEpsilon and
+// sized by WithK. Pass AlgorithmUnspecified to disable any reduction (the
+// server returns the raw discovered subgraph).
 func WithAlgorithm(a Algorithm) IlluminateOption {
 	return func(c *illuminateConfig) { c.algorithm = a }
 }
@@ -648,6 +659,26 @@ func WithWeighting(w Weighting) IlluminateOption {
 	return func(c *illuminateConfig) { c.weighting = w }
 }
 
+// WithRestartProb sets the Personalized PageRank restart (teleport-to-seed)
+// probability α, the share of mass each step that returns to the seed. Higher
+// α keeps the random surfer closer to the seed (tighter, more local relevance);
+// lower α lets it wander farther. Only meaningful with
+// WithAlgorithm(AlgorithmPersonalizedPageRank); ignored otherwise. Must lie in
+// (0,1) to be honoured — 0/unset or out-of-range falls back to the server
+// default (0.15).
+func WithRestartProb(p float32) IlluminateOption {
+	return func(c *illuminateConfig) { c.restartProb = p }
+}
+
+// WithEpsilon sets the Personalized PageRank forward-push residual threshold ε.
+// Smaller ε pushes mass to more vertices (higher recall, more work); larger ε
+// stops sooner (sparser star, faster). Only meaningful with
+// WithAlgorithm(AlgorithmPersonalizedPageRank); ignored otherwise. Must be
+// positive to be honoured — 0/unset falls back to the server default (1e-4).
+func WithEpsilon(e float32) IlluminateOption {
+	return func(c *illuminateConfig) { c.epsilon = e }
+}
+
 // WithVertexPrefix restricts the Illuminate traversal frontier to vertices
 // whose key has the given prefix. The seed is always retained as the anchor
 // even if it does not match. Empty (the default) = no filter. The filter is
@@ -661,10 +692,11 @@ func WithVertexPrefix(prefix string) IlluminateOption {
 }
 
 // Illuminate runs a k-bounded BFS from seed, returning the resulting subgraph.
-// Configure step, k, algorithm, objective, weighting, and vertex prefix via
-// IlluminateOption values; any option omitted defaults to its zero value, which
-// the server resolves to (step=0, k=0, no reduction, RAW weighting, no prefix
-// filter). See #410.
+// Configure step, k, algorithm, objective, weighting, vertex prefix, and (for
+// Personalized PageRank) restart probability and epsilon via IlluminateOption
+// values; any option omitted defaults to its zero value, which the server
+// resolves to (step=0, k=0, no reduction, RAW weighting, no prefix filter,
+// α=0.15, ε=1e-4). See #410 and #801.
 func (l *Lantern) Illuminate(ctx context.Context, seed string, opts ...IlluminateOption) (*Graph, error) {
 	var cfg illuminateConfig
 	for _, opt := range opts {
@@ -680,6 +712,8 @@ func (l *Lantern) Illuminate(ctx context.Context, seed string, opts ...Illuminat
 		Objective:    cfg.objective,
 		Weighting:    cfg.weighting,
 		VertexPrefix: cfg.vertexPrefix,
+		RestartProb:  cfg.restartProb,
+		Epsilon:      cfg.epsilon,
 	}, l.client.Illuminate)
 	if err != nil {
 		return nil, err

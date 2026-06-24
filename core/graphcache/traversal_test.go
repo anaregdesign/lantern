@@ -3,6 +3,7 @@ package graphcache
 import (
 	"context"
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -386,6 +387,215 @@ func TestGraphCache_NeighborBM25(t *testing.T) {
 		if !(bm25.Edges["long"]["H"] < bm25.Edges["short"]["H"]) {
 			t.Fatalf("BM25 should damp the verbose tail's edge: long->H=%v short->H=%v",
 				bm25.Edges["long"]["H"], bm25.Edges["short"]["H"])
+		}
+	})
+}
+
+// TestGraphCache_PersonalizedPageRank pins the #801 forward-push (ACL) PPR
+// path: parity with an independent power-iteration reference, the seed-relative
+// hub-discount property, top-N capping, the keep frontier predicate, context
+// cancellation, and the unknown-seed degenerate case.
+func TestGraphCache_PersonalizedPageRank(t *testing.T) {
+	// powerIterationPPR is an independent reference for the PPR vector over a
+	// row-normalized weighted transition matrix: pi = alpha*e_seed +
+	// (1-alpha)*P^T*pi, iterated to convergence. It deliberately shares no code
+	// with the forward-push under test.
+	powerIterationPPR := func(adj map[string]map[string]float64, seed string, alpha float64) map[string]float64 {
+		nodes := map[string]struct{}{seed: {}}
+		for u, heads := range adj {
+			nodes[u] = struct{}{}
+			for v := range heads {
+				nodes[v] = struct{}{}
+			}
+		}
+		wsum := make(map[string]float64, len(adj))
+		for u, heads := range adj {
+			for _, w := range heads {
+				wsum[u] += w
+			}
+		}
+		pi := map[string]float64{seed: 1}
+		for iter := 0; iter < 100000; iter++ {
+			next := make(map[string]float64, len(nodes))
+			for v := range nodes {
+				next[v] = 0
+			}
+			next[seed] += alpha
+			for u := range nodes {
+				mass := pi[u]
+				if mass == 0 || wsum[u] == 0 {
+					continue
+				}
+				for v, w := range adj[u] {
+					next[v] += (1 - alpha) * mass * (w / wsum[u])
+				}
+			}
+			var diff float64
+			for v := range nodes {
+				d := next[v] - pi[v]
+				if d < 0 {
+					d = -d
+				}
+				diff += d
+			}
+			pi = next
+			if diff < 1e-15 {
+				break
+			}
+		}
+		return pi
+	}
+
+	t.Run("PowerIterationParity", func(t *testing.T) {
+		// A small sink-free strongly connected graph so the reference
+		// distribution conserves mass and converges cleanly.
+		adj := map[string]map[string]float64{
+			"seed": {"a": 1, "b": 2},
+			"a":    {"b": 1, "seed": 1},
+			"b":    {"seed": 1, "a": 3},
+		}
+		c := NewGraphCache[string, int](time.Minute)
+		for u, heads := range adj {
+			for v, w := range heads {
+				c.AddEdge(u, v, float32(w))
+			}
+		}
+
+		const alpha = 0.2
+		want := powerIterationPPR(adj, "seed", alpha)
+
+		g, err := c.PersonalizedPageRankContext(context.Background(), "seed", 0, alpha, 1e-7, WeightingRaw, nil)
+		if err != nil {
+			t.Fatalf("PersonalizedPageRankContext: %v", err)
+		}
+		star := g.Edges["seed"]
+		if star == nil {
+			t.Fatalf("no relevance star produced: %+v", g.Edges)
+		}
+		for _, v := range []string{"a", "b"} {
+			got := float64(star[v])
+			if diff := math.Abs(got - want[v]); diff > 1e-3 {
+				t.Errorf("pi[%s]: forward-push=%.6f power-iteration=%.6f (diff %.6f > 1e-3)", v, got, want[v], diff)
+			}
+		}
+		// The seed is never emitted in its own star.
+		if _, ok := star["seed"]; ok {
+			t.Errorf("seed must be excluded from its own relevance star: %+v", star)
+		}
+	})
+
+	t.Run("HubDiscountVsGlobalPopularity", func(t *testing.T) {
+		// near sits in a tight near<->near2 loop one hop from the seed, so a
+		// seed-anchored surfer re-visits it many times. hub is globally
+		// popular — 20 seed-irrelevant vertices point at it with heavy weight,
+		// giving it by far the largest in-degree — but the seed reaches it only
+		// directly, and its mass disperses across 20 sinks that never return.
+		// PPR must therefore rank near ABOVE hub even though a global
+		// popularity / in-degree view would crown hub.
+		c := NewGraphCache[string, int](time.Minute)
+		c.AddEdge("seed", "near", 1)
+		c.AddEdge("near", "near2", 1)
+		c.AddEdge("near2", "near", 1)
+		c.AddEdge("seed", "hub", 1)
+		for i := 0; i < 20; i++ {
+			c.AddEdge("hub", fmt.Sprintf("o%d", i), 1)   // hub fans out (disperses mass)
+			c.AddEdge(fmt.Sprintf("p%d", i), "hub", 100) // hub globally popular (heavy in-edges)
+		}
+
+		// Sanity: hub really is the globally popular vertex (largest in-degree).
+		hubIn := 0
+		nearIn := 0
+		dump := c.SnapshotEdges()
+		for _, e := range dump {
+			switch e.Head {
+			case "hub":
+				hubIn++
+			case "near":
+				nearIn++
+			}
+		}
+		if !(hubIn > nearIn) {
+			t.Fatalf("fixture invalid: hub in-degree %d should exceed near in-degree %d", hubIn, nearIn)
+		}
+
+		g := c.PersonalizedPageRank("seed", 0, 0.15, 1e-7, WeightingRaw, nil)
+		star := g.Edges["seed"]
+		if star == nil {
+			t.Fatalf("no relevance star produced")
+		}
+		if !(star["near"] > star["hub"]) {
+			t.Errorf("hub discount failed: near=%.6f should outrank globally popular hub=%.6f", star["near"], star["hub"])
+		}
+		// The discount is decisive, not marginal.
+		if star["hub"] > 0 && star["near"] < 2*star["hub"] {
+			t.Errorf("expected near to dominate hub by a wide margin: near=%.6f hub=%.6f", star["near"], star["hub"])
+		}
+	})
+
+	t.Run("TopNCap", func(t *testing.T) {
+		c := NewGraphCache[string, int](time.Minute)
+		for i := 0; i < 10; i++ {
+			c.AddEdge("seed", fmt.Sprintf("v%d", i), float32(i+1))
+		}
+		g := c.PersonalizedPageRank("seed", 3, 0.15, 1e-6, WeightingRaw, nil)
+		if got := len(g.Edges["seed"]); got != 3 {
+			t.Errorf("topN=3 should cap the star to 3 vertices, got %d: %+v", got, g.Edges["seed"])
+		}
+		// The retained vertices are the heaviest-weight (highest-mass) heads.
+		for _, v := range []string{"v9", "v8", "v7"} {
+			if _, ok := g.Edges["seed"][v]; !ok {
+				t.Errorf("top-3 by mass should retain %s: %+v", v, g.Edges["seed"])
+			}
+		}
+	})
+
+	t.Run("KeepFrontierPredicate", func(t *testing.T) {
+		c := NewGraphCache[string, int](time.Minute)
+		c.AddEdge("seed", "keep/a", 1)
+		c.AddEdge("seed", "drop/b", 1)
+		c.AddEdge("keep/a", "keep/c", 1)
+		c.AddEdge("keep/a", "drop/d", 1)
+		keep := func(s string) bool { return strings.HasPrefix(s, "keep/") }
+		g := c.PersonalizedPageRank("seed", 0, 0.15, 1e-6, WeightingRaw, keep)
+		for v := range g.Edges["seed"] {
+			if !strings.HasPrefix(v, "keep/") {
+				t.Errorf("keep predicate breached: %q ranked despite not matching", v)
+			}
+		}
+		if _, ok := g.Edges["seed"]["keep/a"]; !ok {
+			t.Errorf("matching vertex keep/a should be ranked: %+v", g.Edges["seed"])
+		}
+	})
+
+	t.Run("ContextCancelled", func(t *testing.T) {
+		c := NewGraphCache[string, int](time.Minute)
+		c.AddEdge("seed", "a", 1)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := c.PersonalizedPageRankContext(ctx, "seed", 0, 0.15, 1e-6, WeightingRaw, nil); err == nil {
+			t.Errorf("a cancelled context must surface its error")
+		}
+	})
+
+	t.Run("UnknownSeed", func(t *testing.T) {
+		c := NewGraphCache[string, int](time.Minute)
+		c.AddEdge("seed", "a", 1)
+		g := c.PersonalizedPageRank("ghost", 0, 0.15, 1e-6, WeightingRaw, nil)
+		if len(g.Vertices) != 0 || len(g.Edges) != 0 {
+			t.Errorf("unknown seed must yield an empty graph, got vertices=%v edges=%v", g.Vertices, g.Edges)
+		}
+	})
+
+	t.Run("DefaultsOnNonPositiveParams", func(t *testing.T) {
+		// alpha out of range and epsilon <= 0 must fall back to the documented
+		// defaults rather than diverging or spinning.
+		c := NewGraphCache[string, int](time.Minute)
+		c.AddEdge("seed", "a", 2)
+		c.AddEdge("seed", "b", 1)
+		g := c.PersonalizedPageRank("seed", 0, 0 /*alpha*/, 0 /*eps*/, WeightingRaw, nil)
+		star := g.Edges["seed"]
+		if star == nil || !(star["a"] > star["b"]) {
+			t.Errorf("defaulted PPR should still rank the heavier head first: %+v", star)
 		}
 	})
 }

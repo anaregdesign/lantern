@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/anaregdesign/lantern/core/cache"
+	coregraph "github.com/anaregdesign/lantern/core/graph"
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
@@ -417,21 +418,48 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 	if p := request.GetVertexPrefix(); p != "" {
 		keep = func(s string) bool { return strings.HasPrefix(s, p) }
 	}
-	traversalStart := time.Now()
-	g, expirations, err := s.cache.NeighborWithExpirationsContext(ctx, request.GetSeed(), int(request.GetStep()), int(request.GetK()), coreWeighting, selectSmallest, keep)
-	traversalDur := time.Since(traversalStart)
-	if err != nil {
-		return nil, ctxToConnect(err)
-	}
 
 	algorithm := request.GetAlgorithm()
-	var optimizeDur time.Duration
-	if opt := resolveOptimizer(algorithm, objective); opt != nil {
-		optStart := time.Now()
-		g, err = opt(ctx, g, request.GetSeed())
-		optimizeDur = time.Since(optStart)
+
+	var (
+		g            *coregraph.Graph[string, *pb.Vertex]
+		expirations  map[string]map[string]time.Time
+		traversalDur time.Duration
+		optimizeDur  time.Duration
+		err          error
+	)
+
+	if algorithm == pb.Algorithm_ALGORITHM_PERSONALIZED_PAGERANK {
+		// Personalized PageRank is a distinct traversal path, not a
+		// post-traversal reduction (#801): it row-normalises the weighted
+		// out-edges into a transition matrix and runs ACL forward-push from the
+		// seed, returning a one-hop relevance star (seed→v carries pi[v]). It
+		// has no per-hop step/objective semantics — step and objective=min are
+		// intentionally ignored (PPR is intrinsically a relevance maximiser);
+		// k caps the star to the top-k vertices by mass. There is no
+		// expirations map because the star edges are synthetic.
+		alpha, epsilon := resolvePPRParams(request.GetRestartProb(), request.GetEpsilon())
+		traversalStart := time.Now()
+		g, err = s.cache.PersonalizedPageRankContext(ctx, request.GetSeed(), int(request.GetK()), alpha, epsilon, coreWeighting, keep)
+		traversalDur = time.Since(traversalStart)
 		if err != nil {
 			return nil, ctxToConnect(err)
+		}
+	} else {
+		traversalStart := time.Now()
+		g, expirations, err = s.cache.NeighborWithExpirationsContext(ctx, request.GetSeed(), int(request.GetStep()), int(request.GetK()), coreWeighting, selectSmallest, keep)
+		traversalDur = time.Since(traversalStart)
+		if err != nil {
+			return nil, ctxToConnect(err)
+		}
+
+		if opt := resolveOptimizer(algorithm, objective); opt != nil {
+			optStart := time.Now()
+			g, err = opt(ctx, g, request.GetSeed())
+			optimizeDur = time.Since(optStart)
+			if err != nil {
+				return nil, ctxToConnect(err)
+			}
 		}
 	}
 

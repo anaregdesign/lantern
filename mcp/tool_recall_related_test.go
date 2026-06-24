@@ -117,6 +117,81 @@ func TestRecallRelated_RejectsUnknownWeighting(t *testing.T) {
 	})
 }
 
+// TestRecallRelated_AcceptsPPRAlgorithm pins the #801 Personalized PageRank
+// axis on the MCP surface: algorithm=ppr must be accepted, forwarded to
+// Illuminate, and echoed back in the structured output.
+func TestRecallRelated_AcceptsPPRAlgorithm(t *testing.T) {
+	h := newTestHarness(t)
+	called := false
+	h.fake.illuminateFn = func(_ context.Context, _ string, _ ...client.IlluminateOption) (*client.Graph, error) {
+		called = true
+		return &client.Graph{Vertices: map[string]*client.Vertex{"x": {Key: "x"}}}, nil
+	}
+	res := h.call(t, "recall_related", map[string]any{
+		"seed":      "x",
+		"algorithm": "ppr",
+	})
+	if !called {
+		t.Fatal("algorithm=ppr must reach Illuminate, not be rejected")
+	}
+	var out recallRelatedOutput
+	structuredAs(t, res, &out)
+	if out.Algorithm != "ppr" {
+		t.Fatalf("Algorithm = %q, want ppr", out.Algorithm)
+	}
+}
+
+// TestRecallRelated_ForwardsPPRKnobs verifies that restart_prob and epsilon
+// are forwarded as extra Illuminate options (and echoed) when algorithm=ppr.
+func TestRecallRelated_ForwardsPPRKnobs(t *testing.T) {
+	h := newTestHarness(t)
+	h.fake.illuminateFn = func(_ context.Context, _ string, opts ...client.IlluminateOption) (*client.Graph, error) {
+		// algorithm + objective + weighting (3 base) + restart_prob + epsilon.
+		if len(opts) != 5 {
+			t.Errorf("Illuminate option count = %d, want 5", len(opts))
+		}
+		return &client.Graph{Vertices: map[string]*client.Vertex{"x": {Key: "x"}}}, nil
+	}
+	res := h.call(t, "recall_related", map[string]any{
+		"seed":         "x",
+		"algorithm":    "ppr",
+		"restart_prob": 0.25,
+		"epsilon":      0.001,
+	})
+	var out recallRelatedOutput
+	structuredAs(t, res, &out)
+	if out.RestartProb != 0.25 {
+		t.Fatalf("RestartProb echo = %v, want 0.25", out.RestartProb)
+	}
+	if out.Epsilon != 0.001 {
+		t.Fatalf("Epsilon echo = %v, want 0.001", out.Epsilon)
+	}
+}
+
+// TestRecallRelated_IgnoresPPRKnobsForNonPPR guards the gate: restart_prob and
+// epsilon must NOT reach Illuminate (nor be echoed) unless algorithm=ppr, so a
+// stray knob on a plain BFS recall is a no-op rather than a silent mis-config.
+func TestRecallRelated_IgnoresPPRKnobsForNonPPR(t *testing.T) {
+	h := newTestHarness(t)
+	h.fake.illuminateFn = func(_ context.Context, _ string, opts ...client.IlluminateOption) (*client.Graph, error) {
+		// Only the 3 base axes; the PPR knobs are gated out for algorithm=none.
+		if len(opts) != 3 {
+			t.Errorf("Illuminate option count = %d, want 3 (knobs gated out)", len(opts))
+		}
+		return &client.Graph{Vertices: map[string]*client.Vertex{"x": {Key: "x"}}}, nil
+	}
+	res := h.call(t, "recall_related", map[string]any{
+		"seed":         "x",
+		"restart_prob": 0.25,
+		"epsilon":      0.001,
+	})
+	var out recallRelatedOutput
+	structuredAs(t, res, &out)
+	if out.RestartProb != 0 || out.Epsilon != 0 {
+		t.Fatalf("PPR knobs must not echo for non-ppr; got restart_prob=%v epsilon=%v", out.RestartProb, out.Epsilon)
+	}
+}
+
 // TestRecallRelatedDescription_IsProactive guards the recall-before-
 // answering framing while keeping the no-refresh invariant (#528).
 func TestRecallRelatedDescription_IsProactive(t *testing.T) {

@@ -28,6 +28,20 @@ type fakeBackend struct {
 	lastNeighborSelectSmall bool
 	lastNeighborKeep        func(string) bool
 
+	// captured args from the most recent PersonalizedPageRankContext call
+	// (#801), so tests can assert the Illuminate handler routes algorithm=ppr
+	// to the forward-push path (not the BFS+reduction one), resolves the
+	// restart_prob/epsilon defaults, threads weighting + keep, and passes k
+	// through as the top-N cap.
+	pprCalls         int
+	lastPPRSeed      string
+	lastPPRTopN      int
+	lastPPRAlpha     float64
+	lastPPREpsilon   float64
+	lastPPRWeighting graphcache.EdgeWeighting
+	lastPPRKeep      func(string) bool
+	pprErr           error
+
 	putVerticesCalls int
 	deleteVertices   int
 	addEdgesCalls    int
@@ -164,6 +178,49 @@ func (f *fakeBackend) NeighborWithExpirationsContext(
 		g.Vertices[seed] = v
 	}
 	return g, map[string]map[string]time.Time{}, nil
+}
+
+func (f *fakeBackend) PersonalizedPageRankContext(
+	ctx context.Context,
+	seed string,
+	topN int,
+	alpha, epsilon float64,
+	weighting graphcache.EdgeWeighting,
+	keep func(string) bool,
+) (*coregraph.Graph[string, *pb.Vertex], error) {
+	f.pprCalls++
+	f.lastPPRSeed = seed
+	f.lastPPRTopN = topN
+	f.lastPPRAlpha = alpha
+	f.lastPPREpsilon = epsilon
+	f.lastPPRWeighting = weighting
+	f.lastPPRKeep = keep
+	if f.pprErr != nil {
+		return nil, f.pprErr
+	}
+	g := coregraph.NewGraph[string, *pb.Vertex]()
+	if v, ok := f.vertices[seed]; ok {
+		g.Vertices[seed] = v
+	}
+	// Synthesise a relevance star over the seed's stored out-edges (honouring
+	// the keep frontier predicate) so handler tests can assert the g.Edges →
+	// pb.Edge mapping without running a real forward-push.
+	if heads := f.edges[seed]; len(heads) > 0 {
+		star := make(map[string]float32, len(heads))
+		for head, w := range heads {
+			if keep != nil && !keep(head) {
+				continue
+			}
+			star[head] = w
+			if v, ok := f.vertices[head]; ok {
+				g.Vertices[head] = v
+			}
+		}
+		if len(star) > 0 {
+			g.Edges[seed] = star
+		}
+	}
+	return g, nil
 }
 
 func (f *fakeBackend) Watch(ctx context.Context, interval time.Duration) {
