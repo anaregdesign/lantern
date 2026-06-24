@@ -61,7 +61,7 @@ type Illuminate struct {
 	K         int
 	Algorithm string // "none" | "mst" | "spt" (default: "none")
 	Objective string // "min" | "max"           (default: "max")
-	Weighting string // "raw" | "tfidf"         (default: "raw")
+	Weighting string // "raw" | "tfidf" | "bm25" (default: "raw")
 	Prefix    string // vertex-key prefix filter; "" (default) = no filter (#604)
 }
 

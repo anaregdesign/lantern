@@ -162,8 +162,10 @@ export type VertexKind =
  *                  MAXIMIZE (relevance-weighted). Ignored when
  *                  algorithm = UNSPECIFIED.
  *   - `Weighting`  selects the edge-weight transform applied BEFORE
- *                  the BFS walk: RAW (edge.weight verbatim) or TFIDF
- *                  (re-score over per-vertex out-edge distribution).
+ *                  the BFS walk: RAW (edge.weight verbatim), TFIDF
+ *                  (re-score over per-vertex out-edge distribution),
+ *                  or BM25 (Okapi BM25, k1=1.2/b=0.75, over the same
+ *                  distribution).
  *
  * Values match the proto enum exactly; the server resolves UNSPECIFIED
  * to (algorithm=NONE, objective=MINIMIZE, weighting=RAW).
@@ -186,6 +188,7 @@ export const Weighting = {
   UNSPECIFIED: 0,
   RAW: 1,
   TFIDF: 2,
+  BM25: 3,
 } as const;
 export type Weighting = (typeof Weighting)[keyof typeof Weighting];
 

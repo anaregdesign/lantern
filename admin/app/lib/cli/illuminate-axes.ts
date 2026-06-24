@@ -94,6 +94,7 @@ export const CLI_WEIGHTINGS: ReadonlyArray<{
 }> = [
   { value: "raw", label: "Raw" },
   { value: "tfidf", label: "TF-IDF" },
+  { value: "bm25", label: "BM25" },
 ];
 
 /**

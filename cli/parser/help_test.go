@@ -21,7 +21,7 @@ func TestHelpText_EnumeratesIlluminateKwargs(t *testing.T) {
 }
 
 func TestHelpText_EnumeratesIlluminateKwargValues(t *testing.T) {
-	for _, v := range []string{"none", "mst", "spt", "min", "max", "raw", "tfidf"} {
+	for _, v := range []string{"none", "mst", "spt", "min", "max", "raw", "tfidf", "bm25"} {
 		if !strings.Contains(HelpText, v) {
 			t.Errorf("HelpText missing illuminate kwarg value %q", v)
 		}

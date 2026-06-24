@@ -40,6 +40,7 @@ var weightingByName = map[string]client.Weighting{
 	"":      client.WeightingUnspecified,
 	"raw":   client.WeightingRaw,
 	"tfidf": client.WeightingTFIDF,
+	"bm25":  client.WeightingBM25,
 }
 
 var illuminateCmd = &cobra.Command{
@@ -68,6 +69,9 @@ ORTHOGONAL ILLUMINATE AXES (#410)
                           raw   (default) edge.weight as stored
                           tfidf re-score using TF-IDF over the per-vertex
                                 out-edge distribution
+                          bm25  re-score using Okapi BM25 (k1=1.2, b=0.75)
+                                over the same distribution; adds IDF
+                                saturation + out-degree length-normalisation
 
 FRONTIER FILTER (#604)
   --prefix <string>     restrict the walk frontier to vertices whose key
@@ -100,6 +104,9 @@ EXAMPLES
   # 2-hop reachability re-ranked by TF-IDF, top-5 per node
   lantern-cli illuminate alice --step 2 --k 5 --weighting tfidf
 
+  # 2-hop reachability re-ranked by Okapi BM25, top-5 per node
+  lantern-cli illuminate alice --step 2 --k 5 --weighting bm25
+
   # 3-hop MST rooted at alice (smallest-weight connecting tree)
   lantern-cli illuminate alice --step 3 --k 20 --algorithm mst --objective min
 
@@ -114,7 +121,7 @@ REPL GRAMMAR (one-liner parity, #672)
   form so the prompt and the shell share one grammar:
 
     lantern-cli illuminate <seed> <step> <k> [algorithm=none|mst|spt] \
-            [objective=min|max] [weighting=raw|tfidf] [prefix=<string>]
+            [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>]
 
   e.g. "lantern-cli illuminate alice 2 5 algorithm=spt objective=max" is
   identical to typing it at "lantern-cli repl". The positional form kicks in
@@ -148,7 +155,7 @@ REPL GRAMMAR (one-liner parity, #672)
 		}
 		w, ok := weightingByName[illuminateWeightingStr]
 		if !ok {
-			return fmt.Errorf("unknown --weighting %q (want raw|tfidf)", illuminateWeightingStr)
+			return fmt.Errorf("unknown --weighting %q (want raw|tfidf|bm25)", illuminateWeightingStr)
 		}
 		cli, err := dial()
 		if err != nil {
@@ -181,7 +188,7 @@ func init() {
 	illuminateCmd.Flags().Uint32Var(&illuminateK, "k", 10, "max neighbours visited per node")
 	illuminateCmd.Flags().StringVar(&illuminateAlgorithmStr, "algorithm", "none", "post-traversal reduction: none|mst|spt (#410)")
 	illuminateCmd.Flags().StringVar(&illuminateObjectiveStr, "objective", "max", "optimisation direction: min|max; governs per-hop top-k pruning AND reduction (#560)")
-	illuminateCmd.Flags().StringVar(&illuminateWeightingStr, "weighting", "raw", "edge-weight transform before walk: raw|tfidf (#410)")
+	illuminateCmd.Flags().StringVar(&illuminateWeightingStr, "weighting", "raw", "edge-weight transform before walk: raw|tfidf|bm25 (#410, #800)")
 	illuminateCmd.Flags().StringVar(&illuminatePrefixStr, "prefix", "", "restrict walk frontier to vertices with this key prefix; seed always kept, empty = no filter (#604)")
 	rootCmd.AddCommand(illuminateCmd)
 }

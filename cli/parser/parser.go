@@ -44,7 +44,7 @@ var (
 	// legacy positional grammar (neighbor / spt_* / mst_*) entirely.
 	IlluminateAlgorithms = []string{"none", "mst", "spt"}
 	IlluminateObjectives = []string{"min", "max"}
-	IlluminateWeightings = []string{"raw", "tfidf"}
+	IlluminateWeightings = []string{"raw", "tfidf", "bm25"}
 
 	ErrNotFound = errors.New("not found")
 	ErrNotEOF   = errors.New("not EOF")
@@ -437,7 +437,7 @@ func DeleteEdgeParam(s *Source) (*DeleteEdge, error) {
 
 // IlluminateParam parses the modernised illuminate grammar (#410, #604):
 //
-//	illuminate <seed> <step> <k> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf] [prefix=<string>]
+//	illuminate <seed> <step> <k> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>]
 //
 // The keyword arguments may appear in any order and any subset. The three
 // closed-set axes default to the strongest-edge behaviour (algorithm=none,
@@ -488,7 +488,7 @@ func IlluminateParam(s *Source) (*Illuminate, error) {
 			m.Objective = lvalue
 		case "weighting":
 			if !contains(IlluminateWeightings, lvalue) {
-				return nil, errors.New("illuminate: weighting=" + value + " (want raw|tfidf)")
+				return nil, errors.New("illuminate: weighting=" + value + " (want raw|tfidf|bm25)")
 			}
 			m.Weighting = lvalue
 		case "prefix":
@@ -732,7 +732,7 @@ const HelpText = `Lantern CLI grammar:
   illuminate <seed: string> <step: int> <k: int>
              [algorithm={none|mst|spt}]  default=none
              [objective={min|max}]       default=max
-             [weighting={raw|tfidf}]     default=raw
+             [weighting={raw|tfidf|bm25}] default=raw
              [prefix=<string>]           default=all keys
   help
   exit

@@ -105,7 +105,9 @@ const (
 
 // Weighting is the edge-weight transform applied BEFORE the BFS walk.
 // RAW uses the stored edge.weight verbatim; TFIDF re-scores using TF-IDF
-// over the per-vertex out-edge distribution. Server resolves
+// over the per-vertex out-edge distribution; BM25 re-scores using Okapi
+// BM25 (k1=1.2, b=0.75) over the same distribution, adding IDF saturation
+// and out-degree length-normalisation on top of TF-IDF. Server resolves
 // WeightingUnspecified to WeightingRaw.
 type Weighting = pb.Weighting
 
@@ -113,6 +115,7 @@ const (
 	WeightingUnspecified = pb.Weighting_WEIGHTING_UNSPECIFIED
 	WeightingRaw         = pb.Weighting_WEIGHTING_RAW
 	WeightingTFIDF       = pb.Weighting_WEIGHTING_TFIDF
+	WeightingBM25        = pb.Weighting_WEIGHTING_BM25
 )
 
 // VertexInput describes one vertex for the batch PutVertices API.
@@ -638,7 +641,9 @@ func WithObjective(o Objective) IlluminateOption {
 // WithWeighting toggles the edge-weight transform applied BEFORE the
 // BFS walk. WeightingRaw (the default) uses edge.weight verbatim;
 // WeightingTFIDF re-scores edges using TF-IDF over the per-vertex
-// out-edge distribution.
+// out-edge distribution; WeightingBM25 re-scores using Okapi BM25
+// (k1=1.2, b=0.75), adding IDF saturation and out-degree length-
+// normalisation on top of TF-IDF.
 func WithWeighting(w Weighting) IlluminateOption {
 	return func(c *illuminateConfig) { c.weighting = w }
 }

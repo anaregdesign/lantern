@@ -68,7 +68,7 @@ type docEntry[S comparable] struct {
 // document type it accepts; use Text to index plain strings.
 func NewInvertedIndex[S comparable, D Document](analyzer Analyzer, scorer Scorer) *InvertedIndex[S, D] {
 	if scorer == nil {
-		scorer = BM25{K1: defaultBM25K1, B: defaultBM25B}
+		scorer = BM25{K1: DefaultBM25K1, B: DefaultBM25B}
 	}
 	return &InvertedIndex[S, D]{
 		analyzer: analyzer,

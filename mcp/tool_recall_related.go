@@ -38,6 +38,7 @@ type recallRelatedWeighting string
 const (
 	weightingRaw   recallRelatedWeighting = "raw"
 	weightingTFIDF recallRelatedWeighting = "tfidf"
+	weightingBM25  recallRelatedWeighting = "bm25"
 )
 
 // recall_related can walk the graph in either edge direction. The default
@@ -93,7 +94,7 @@ type recallRelatedInput struct {
 	Direction       recallRelatedDirection `json:"direction,omitempty" jsonschema:"Which edge direction to follow from the seed: out (default - forward BFS over out-edges, the historical behaviour), in (reverse - return the seed's direct predecessors, so seeding a pure sink is no longer empty), or both (union of the two). step/k/algorithm/objective/weighting shape the out walk; the in pass is a single bounded reverse-adjacency hop."`
 	Algorithm       recallRelatedAlgorithm `json:"algorithm,omitempty" jsonschema:"Post-traversal subgraph reduction: one of: none (default - raw BFS subgraph), mst (minimum/maximum spanning tree depending on objective), spt (shortest-path tree from seed)."`
 	Objective       recallRelatedObjective `json:"objective,omitempty" jsonschema:"Direction of edge selection AND any algorithm reduction: max (default - relevance-weighted, keeps the strongest edges per hop and the largest tree) or min (cost-weighted, keeps the smallest edges per hop and the smallest tree). Governs the per-hop top-k prune even when algorithm=none (see #560)."`
-	Weighting       recallRelatedWeighting `json:"weighting,omitempty" jsonschema:"Edge-weight transform applied BEFORE the walk: raw (default - edge weights as stored) or tfidf (re-score via TF-IDF over per-vertex out-edge distribution)."`
+	Weighting       recallRelatedWeighting `json:"weighting,omitempty" jsonschema:"Edge-weight transform applied BEFORE the walk: raw (default - edge weights as stored), tfidf (re-score via TF-IDF over per-vertex out-edge distribution), or bm25 (re-score via Okapi BM25, k1=1.2/b=0.75, over the same distribution - adds IDF saturation and out-degree length-normalisation on top of tfidf)."`
 	Reinforce       bool                   `json:"reinforce,omitempty"        jsonschema:"Opt in (default false) to strengthening the edges this walk actually traverses. Each traversed edge gains an additive weight pulse via the same additive model as remember_relation; recall stays read-only when false. This is the Hebbian use-strengthens-memory loop — the edge-side analog of touch and the one deliberate exception to 'recall does NOT refresh TTL'."`
 	ReinforceWeight float32                `json:"reinforce_weight,omitempty" jsonschema:"Weight added to each traversed edge when reinforce=true (default 1.0). Additive: the pulse stacks on the edge's existing weight. Ignored when reinforce=false."`
 	ReinforceTTL    string                 `json:"reinforce_ttl,omitempty"    jsonschema:"Decay horizon of the reinforcement pulse when reinforce=true (default conversation). The store keeps each contribution independently, so a short horizon NEVER shortens the edge's existing life — it adds a pulse that itself decays on this horizon; frequent use stacks pulses. One of: seconds, transient, turn, conversation, task, workday, day, week, sprint, month, quarter, durable. Ignored when reinforce=false."`
@@ -318,8 +319,10 @@ func mapWeighting(w recallRelatedWeighting) (client.Weighting, error) {
 		return client.WeightingRaw, nil
 	case weightingTFIDF:
 		return client.WeightingTFIDF, nil
+	case weightingBM25:
+		return client.WeightingBM25, nil
 	}
-	return client.WeightingUnspecified, fmt.Errorf("unknown weighting %q (want one of: raw, tfidf)", string(w))
+	return client.WeightingUnspecified, fmt.Errorf("unknown weighting %q (want one of: raw, tfidf, bm25)", string(w))
 }
 
 // validateDirection rejects an unrecognised direction. The jsonschema enum

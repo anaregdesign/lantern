@@ -152,6 +152,7 @@ describe("HELP_TEXT (#436 — grammar contract)", () => {
     expect(HELP_TEXT).toContain("max");
     expect(HELP_TEXT).toContain("raw");
     expect(HELP_TEXT).toContain("tfidf");
+    expect(HELP_TEXT).toContain("bm25");
   });
 
   test("documents illuminate kwarg defaults", () => {

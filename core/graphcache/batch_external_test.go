@@ -43,7 +43,7 @@ func TestAddEdgesWithExpiration_AtomicNeighborSnapshot(t *testing.T) {
 		go func() {
 			defer readerWG.Done()
 			for !stop.Load() {
-				g := c.Neighbor("s", 1, fanOut+1, false, false, nil)
+				g := c.Neighbor("s", 1, fanOut+1, graphcache.WeightingRaw, false, nil)
 				reads.Add(1)
 				if g == nil {
 					continue
@@ -104,7 +104,7 @@ func TestDeleteEdges_AtomicNeighborSnapshot(t *testing.T) {
 		go func() {
 			defer readerWG.Done()
 			for !stop.Load() {
-				g := c.Neighbor("s", 1, fanOut+1, false, false, nil)
+				g := c.Neighbor("s", 1, fanOut+1, graphcache.WeightingRaw, false, nil)
 				reads.Add(1)
 				if g == nil {
 					continue

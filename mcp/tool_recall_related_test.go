@@ -87,6 +87,36 @@ func TestRecallRelated_RejectsEmptySeed(t *testing.T) {
 	h.callExpectError(t, "recall_related", map[string]any{"seed": ""})
 }
 
+// TestRecallRelated_AcceptsBM25Weighting pins the #800 BM25 axis on the MCP
+// surface: weighting=bm25 must be accepted and forwarded as an Illuminate
+// option rather than rejected as an unknown value.
+func TestRecallRelated_AcceptsBM25Weighting(t *testing.T) {
+	h := newTestHarness(t)
+	called := false
+	h.fake.illuminateFn = func(_ context.Context, _ string, opts ...client.IlluminateOption) (*client.Graph, error) {
+		called = true
+		return &client.Graph{Vertices: map[string]*client.Vertex{"x": {Key: "x"}}}, nil
+	}
+	h.call(t, "recall_related", map[string]any{
+		"seed":      "x",
+		"weighting": "bm25",
+	})
+	if !called {
+		t.Fatal("weighting=bm25 must reach Illuminate, not be rejected")
+	}
+}
+
+// TestRecallRelated_RejectsUnknownWeighting guards the friendly-name
+// allow-list so a typo surfaces as a tool error instead of silently
+// degrading to raw.
+func TestRecallRelated_RejectsUnknownWeighting(t *testing.T) {
+	h := newTestHarness(t)
+	h.callExpectError(t, "recall_related", map[string]any{
+		"seed":      "x",
+		"weighting": "not-a-real-weighting",
+	})
+}
+
 // TestRecallRelatedDescription_IsProactive guards the recall-before-
 // answering framing while keeping the no-refresh invariant (#528).
 func TestRecallRelatedDescription_IsProactive(t *testing.T) {

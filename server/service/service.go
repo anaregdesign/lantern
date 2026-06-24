@@ -395,7 +395,11 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 	}
 
 	weighting := request.GetWeighting()
-	useTFIDF := weighting == pb.Weighting_WEIGHTING_TFIDF
+	// Map the wire weighting axis to the core edge-weight transform applied
+	// BEFORE the per-hop top-k prune. RAW/UNSPECIFIED → verbatim weight, TFIDF
+	// → the crude hub-suppressor, BM25 → Okapi BM25 over the out-edge
+	// distribution (#800).
+	coreWeighting := weightingToCore(weighting)
 	// Objective steers the per-hop top-k pruning as well as the post-traversal
 	// reduction (#560): a MINIMIZE caller keeps the k smallest-weight edges at
 	// each hop so the cost-minimiser is not handed a candidate set pruned to
@@ -414,7 +418,7 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 		keep = func(s string) bool { return strings.HasPrefix(s, p) }
 	}
 	traversalStart := time.Now()
-	g, expirations, err := s.cache.NeighborWithExpirationsContext(ctx, request.GetSeed(), int(request.GetStep()), int(request.GetK()), useTFIDF, selectSmallest, keep)
+	g, expirations, err := s.cache.NeighborWithExpirationsContext(ctx, request.GetSeed(), int(request.GetStep()), int(request.GetK()), coreWeighting, selectSmallest, keep)
 	traversalDur := time.Since(traversalStart)
 	if err != nil {
 		return nil, ctxToConnect(err)

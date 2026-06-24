@@ -467,6 +467,7 @@ var (
 	weightingByREPLName = map[string]client.Weighting{
 		"raw":   client.WeightingRaw,
 		"tfidf": client.WeightingTFIDF,
+		"bm25":  client.WeightingBM25,
 	}
 )
 

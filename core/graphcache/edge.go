@@ -347,6 +347,21 @@ func (c *edgeCache[S]) docFreq(head vertexID) int {
 	return c.df[head]
 }
 
+// corpusStats returns the number of tails (documents) and the total number
+// of (tail, head) edges held in tf, WITHOUT locking the edgeCache. Same lock
+// contract as headsOf: the caller must hold the surrounding GraphCache.mu.
+// The BM25 edge weighting derives its corpus terms from these once per
+// traversal: N = tails and AvgLen = edges / tails (mean out-degree). Unlike
+// count() it takes no edgeCache lock, so it composes inside the Neighbor read
+// path which already holds GraphCache.mu read-locked.
+func (c *edgeCache[S]) corpusStats() (tails, edges int) {
+	tails = len(c.tf)
+	for _, heads := range c.tf {
+		edges += len(heads)
+	}
+	return tails, edges
+}
+
 // resolveID resolves a vertexID back to S without locking the edgeCache.
 // Same lock contract as headsOf.
 func (c *edgeCache[S]) resolveID(id vertexID) (S, bool) {

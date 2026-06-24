@@ -169,6 +169,15 @@ describe("completeCommandLine — illuminate option kwargs (slot ≥ 4)", () => 
     expect(
       completeCommandLine("illuminate alice 2 5 weighting=tf", KEYS).candidates,
     ).toEqual(["weighting=tfidf"]);
+    expect(
+      completeCommandLine("illuminate alice 2 5 weighting=b", KEYS).candidates,
+    ).toEqual(["weighting=bm25"]);
+  });
+
+  test("enumerates every weighting value once = is typed", () => {
+    expect(
+      completeCommandLine("illuminate alice 2 5 weighting=", KEYS).candidates,
+    ).toEqual(["weighting=raw", "weighting=tfidf", "weighting=bm25"]);
   });
 
   test("unknown option keyword yields no value candidates", () => {

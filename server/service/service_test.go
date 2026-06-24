@@ -394,6 +394,7 @@ func TestLanternService_Illuminate_AllAxisCombos(t *testing.T) {
 	weightings := []pb.Weighting{
 		pb.Weighting_WEIGHTING_RAW,
 		pb.Weighting_WEIGHTING_TFIDF,
+		pb.Weighting_WEIGHTING_BM25,
 	}
 	for _, algo := range algorithms {
 		for _, obj := range objectives {

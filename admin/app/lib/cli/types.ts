@@ -16,7 +16,7 @@
 
 export type AlgorithmName = "none" | "mst" | "spt";
 export type ObjectiveName = "min" | "max";
-export type WeightingName = "raw" | "tfidf";
+export type WeightingName = "raw" | "tfidf" | "bm25";
 
 export type Command =
   | { verb: "exit" }

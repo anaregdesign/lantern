@@ -170,17 +170,17 @@ type DomainMetrics struct {
 //   - algorithm ∈ {none, mst, spt}     — post-traversal reduction
 //   - objective ∈ {minimize, maximize} — direction for mst/spt; harmless
 //     when algorithm=none (still recorded for label-symmetric scraping)
-//   - weighting ∈ {raw, tfidf}         — edge-weight transform before BFS
+//   - weighting ∈ {raw, tfidf, bm25}   — edge-weight transform before BFS
 //
 // Service code resolves enum UNSPECIFIED values to their canonical
 // defaults BEFORE calling OnIlluminate so the label space stays bounded
-// at 3 × 2 × 2 = 12 combinations. Unknown enum values (a future axis
+// at 3 × 2 × 3 = 18 combinations. Unknown enum values (a future axis
 // added in proto without a metrics update) fall through to "unknown"
 // so a new variant cannot break label pre-warming on existing dashboards.
 var (
 	algorithmLabels  = []string{"none", "mst", "spt"}
 	objectiveLabels  = []string{"minimize", "maximize"}
-	weightingLabels  = []string{"raw", "tfidf"}
+	weightingLabels  = []string{"raw", "tfidf", "bm25"}
 	illuminatePhases = []string{"traversal", "optimize"}
 	scanOps          = []string{
 		"ScanVertices",
@@ -500,7 +500,7 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 	// full variant set on a fresh process. Histograms emit count/sum/
 	// bucket families lazily per label; observing a no-op is the
 	// idiomatic way to materialise the row. Per #410 the Illuminate
-	// label space is 3 × 2 × 2 = 12 combinations (algorithm × objective
+	// label space is 3 × 2 × 3 = 18 combinations (algorithm × objective
 	// × weighting), well below Prometheus cardinality concerns.
 	for _, algo := range algorithmLabels {
 		for _, obj := range objectiveLabels {

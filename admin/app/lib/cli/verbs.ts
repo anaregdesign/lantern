@@ -13,7 +13,7 @@ import type {
 
 const ILL_ALGORITHMS = new Set<AlgorithmName>(["none", "mst", "spt"]);
 const ILL_OBJECTIVES = new Set<ObjectiveName>(["min", "max"]);
-const ILL_WEIGHTINGS = new Set<WeightingName>(["raw", "tfidf"]);
+const ILL_WEIGHTINGS = new Set<WeightingName>(["raw", "tfidf", "bm25"]);
 
 // The value-type overrides accepted by `put vertex … type=` (migrated from
 // the noun-first `vertex put --value-type`). The grammar validates the type
@@ -410,7 +410,7 @@ export function parseDeletePrefix(rest: string[]): ParseResult {
 
 export function parseIlluminate(rest: string[]): ParseResult {
   const usage =
-    "usage: illuminate <key: string> <step: int> <k: int> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf] [prefix=<string>]";
+    "usage: illuminate <key: string> <step: int> <k: int> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>]";
   if (rest.length < 3) {
     return { ok: false, usage };
   }
@@ -518,7 +518,7 @@ export const HELP_TEXT = [
   "  illuminate <seed: string> <step: int> <k: int>",
   "             [algorithm={none|mst|spt}]  default=none",
   "             [objective={min|max}]       default=max",
-  "             [weighting={raw|tfidf}]     default=raw",
+  "             [weighting={raw|tfidf|bm25}] default=raw",
   "             [prefix=<string>]           default=all keys",
   "  help",
   "  exit",
@@ -652,7 +652,7 @@ export const CLI_COMMAND_REFERENCE: readonly CliCommandDoc[] = [
     group: "Explore",
     verb: "illuminate",
     signature:
-      "illuminate <seed> <step> <k> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf] [prefix=<string>]",
+      "illuminate <seed> <step> <k> [algorithm=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>]",
     summary:
       "Walk the graph from a seed (step hops, top-k per hop) and render the subgraph. Optional reduction axes.",
     example: "illuminate alice 2 5 algorithm=spt",

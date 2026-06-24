@@ -2,7 +2,6 @@ import {
   Dropdown,
   Input,
   Option,
-  Switch,
   type InputProps,
 } from "@fluentui/react-components";
 import { useCallback } from "react";
@@ -13,6 +12,7 @@ import {
   CLI_CLICK_STEP_MAX,
   CLI_CLICK_STEP_MIN,
   CLI_OBJECTIVES,
+  CLI_WEIGHTINGS,
   formatIlluminateClick,
   type CliClickAxes,
 } from "~/lib/cli/illuminate-axes";
@@ -39,9 +39,9 @@ export interface CliAxisPickerProps {
  *
  * Renders a single-line strip of Fluent UI primitives that map 1:1 to
  * the optional kwargs of the long-form illuminate verb (post-#410):
- * step, k, algorithm, objective, and a Raw/TF-IDF Switch. Wraps on
- * narrow viewports without horizontal scroll, per the architecture
- * skill's responsive guidance.
+ * step, k, algorithm, objective, and a raw/TF-IDF/BM25 weighting
+ * Dropdown. Wraps on narrow viewports without horizontal scroll, per the
+ * architecture skill's responsive guidance.
  *
  * The component owns no business state — every change goes through
  * {@link CliAxisPickerProps.setAxis}, which the parent hook
@@ -164,19 +164,27 @@ export function CliAxisPicker({ axes, setAxis, disabled }: CliAxisPickerProps) {
         </Dropdown>
       </label>
 
-      <Switch
-        className={styles.tfidf}
-        label="TF-IDF"
-        checked={axes.weighting === "tfidf"}
-        disabled={disabled}
-        onChange={(_, data) =>
-          setAxis<"weighting">(
-            "weighting",
-            data.checked ? "tfidf" : ("raw" as WeightingName),
-          )
-        }
-        data-testid="cli-axis-tfidf"
-      />
+      <label className={styles.field}>
+        <span className={styles.label}>weighting</span>
+        <Dropdown
+          className={styles.dropdown}
+          value={labelFor(CLI_WEIGHTINGS, axes.weighting)}
+          selectedOptions={[axes.weighting]}
+          disabled={disabled}
+          onOptionSelect={(_, data) => {
+            if (!data.optionValue) return;
+            setAxis("weighting", data.optionValue as WeightingName);
+          }}
+          data-testid="cli-axis-weighting"
+          aria-label="Weighting"
+        >
+          {CLI_WEIGHTINGS.map((opt) => (
+            <Option key={opt.value} value={opt.value}>
+              {opt.label}
+            </Option>
+          ))}
+        </Dropdown>
+      </label>
 
       <label className={styles.field}>
         <span className={styles.label}>prefix</span>

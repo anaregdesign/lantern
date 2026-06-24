@@ -27,7 +27,8 @@ export type Objective =
 export type Weighting =
   | "WEIGHTING_UNSPECIFIED"
   | "WEIGHTING_RAW"
-  | "WEIGHTING_TFIDF";
+  | "WEIGHTING_TFIDF"
+  | "WEIGHTING_BM25";
 
 export interface IlluminateRequest {
   seed: string;
@@ -59,6 +60,7 @@ const WEIGHTING_TO_SDK: Record<Weighting, SdkWeighting> = {
   WEIGHTING_UNSPECIFIED: SdkWeighting.UNSPECIFIED,
   WEIGHTING_RAW: SdkWeighting.RAW,
   WEIGHTING_TFIDF: SdkWeighting.TFIDF,
+  WEIGHTING_BM25: SdkWeighting.BM25,
 };
 
 /**

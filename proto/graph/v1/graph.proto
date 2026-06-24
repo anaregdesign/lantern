@@ -73,13 +73,18 @@ enum Objective {
 // (and therefore before any Algorithm-driven reduction).
 //
 // UNSPECIFIED defaults to RAW server-side. RAW uses the stored
-// edge.weight verbatim. TFIDF re-scores edge weights using TF-IDF
-// over the per-vertex out-edge distribution; useful when raw weights
-// are noisy "hit counts" and the caller wants relevance ranking.
+// edge.weight verbatim. TFIDF re-scores edge weights using the crude
+// hub-suppressor w / log2(1 + df(head)); cheap but corpus-size-blind.
+// BM25 re-scores with Okapi BM25 over the per-vertex out-edge
+// distribution (TF = edge weight, DF = distinct tails into head,
+// N = #tails, DocLen = tail out-degree), adding TF saturation,
+// document-length normalization, and a real N-aware IDF — a principled
+// successor to TFIDF that is consistent with full-text SearchVertices.
 enum Weighting {
   WEIGHTING_UNSPECIFIED = 0;
   WEIGHTING_RAW = 1;
   WEIGHTING_TFIDF = 2;
+  WEIGHTING_BM25 = 3;
 }
 
 message IlluminateRequest {

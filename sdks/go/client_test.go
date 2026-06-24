@@ -295,3 +295,39 @@ func TestWithVertexPrefixWiring(t *testing.T) {
 		}
 	})
 }
+
+// TestWithWeightingWiring verifies WithWeighting round-trips the edge-weight
+// transform axis onto the emitted IlluminateRequest — including the BM25
+// variant added in #800 — and that omitting it leaves the field at the
+// proto zero value (UNSPECIFIED → server-side RAW).
+func TestWithWeightingWiring(t *testing.T) {
+	newClient := func(t *testing.T) (*Lantern, *captureIlluminate) {
+		t.Helper()
+		l := mustLantern(t)
+		capt := &captureIlluminate{}
+		l.client = capt
+		return l, capt
+	}
+
+	t.Run("default leaves weighting unspecified", func(t *testing.T) {
+		l, capt := newClient(t)
+		if _, err := l.Illuminate(context.Background(), "seed"); err != nil {
+			t.Fatalf("Illuminate: %v", err)
+		}
+		if got := capt.reqs[0].GetWeighting(); got != WeightingUnspecified {
+			t.Fatalf("default weighting want UNSPECIFIED, got %v", got)
+		}
+	})
+
+	for _, w := range []Weighting{WeightingRaw, WeightingTFIDF, WeightingBM25} {
+		t.Run(w.String(), func(t *testing.T) {
+			l, capt := newClient(t)
+			if _, err := l.Illuminate(context.Background(), "seed", WithWeighting(w)); err != nil {
+				t.Fatalf("Illuminate: %v", err)
+			}
+			if got := capt.reqs[0].GetWeighting(); got != w {
+				t.Fatalf("weighting want %v got %v", w, got)
+			}
+		})
+	}
+}

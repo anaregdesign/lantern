@@ -258,7 +258,7 @@ func BenchmarkNeighbor_Small(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				_ = c.Neighbor(keys[i%s.vertices], 1, 10, false, false, nil)
+				_ = c.Neighbor(keys[i%s.vertices], 1, 10, WeightingRaw, false, nil)
 			}
 		})
 	}
@@ -276,7 +276,7 @@ func BenchmarkNeighbor_Large(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				_ = c.Neighbor(keys[i%s.vertices], 3, 10, false, false, nil)
+				_ = c.Neighbor(keys[i%s.vertices], 3, 10, WeightingRaw, false, nil)
 			}
 		})
 	}

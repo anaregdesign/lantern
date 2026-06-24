@@ -4,12 +4,12 @@ import "math"
 
 // Default BM25 parameters, matching the values most search engines ship with.
 const (
-	// defaultBM25K1 controls term-frequency saturation: how quickly extra
+	// DefaultBM25K1 controls term-frequency saturation: how quickly extra
 	// occurrences of a term stop adding to the score.
-	defaultBM25K1 = 1.2
-	// defaultBM25B controls document-length normalization, from 0 (off) to 1
+	DefaultBM25K1 = 1.2
+	// DefaultBM25B controls document-length normalization, from 0 (off) to 1
 	// (full): how strongly a long document is penalized for diluting a term.
-	defaultBM25B = 0.75
+	DefaultBM25B = 0.75
 )
 
 // TermStats carries the corpus statistics a Scorer needs to weight one
@@ -72,15 +72,30 @@ type BM25 struct {
 // document. It is 0 when the term matches nothing useful (DF or N non-positive)
 // so unmatched or empty corpora contribute no weight.
 func (s BM25) Score(stats TermStats) float64 {
-	if stats.DF <= 0 || stats.N <= 0 || stats.TF <= 0 {
+	return BM25Score(float64(stats.TF), stats.AvgLen, stats.DF, stats.N, stats.DocLen, s.K1, s.B)
+}
+
+// BM25Score is the Okapi BM25 ranking kernel shared by every BM25 surface in
+// the codebase: the full-text Scorer above (integer term frequencies via
+// BM25.Score) and the graph edge-weighting path in core/graphcache (float term
+// frequencies, since additive decaying edge weights are routinely < 1). Keeping
+// the formula in exactly one place guarantees the two ranking surfaces stay
+// numerically identical.
+//
+// tf is the term frequency (the live edge weight for the graph path); avgLen is
+// the mean document length; df, n, and docLen are the document frequency, corpus
+// size, and this document's length. k1 tunes TF saturation (a non-positive value
+// falls back to DefaultBM25K1) and b tunes length normalization (clamped to
+// [0, 1]). It returns 0 whenever the term matches nothing useful (df, n, or tf
+// non-positive), so empty or unmatched corpora contribute no weight.
+func BM25Score(tf, avgLen float64, df, n, docLen int, k1, b float64) float64 {
+	if df <= 0 || n <= 0 || tf <= 0 {
 		return 0
 	}
 
-	k1 := s.K1
 	if k1 <= 0 {
-		k1 = defaultBM25K1
+		k1 = DefaultBM25K1
 	}
-	b := s.B
 	switch {
 	case b < 0:
 		b = 0
@@ -90,17 +105,16 @@ func (s BM25) Score(stats TermStats) float64 {
 
 	// IDF in the ln(1 + (N - df + 0.5)/(df + 0.5)) form, which stays
 	// non-negative even for terms that appear in more than half the corpus.
-	idf := math.Log(1 + (float64(stats.N)-float64(stats.DF)+0.5)/(float64(stats.DF)+0.5))
+	idf := math.Log(1 + (float64(n)-float64(df)+0.5)/(float64(df)+0.5))
 
 	// Length normalization: a document longer than average inflates the
-	// denominator, damping its score. Guard AvgLen so direct callers passing
-	// an empty corpus do not divide by zero.
+	// denominator, damping its score. Guard avgLen so callers passing an
+	// empty corpus do not divide by zero.
 	lengthRatio := 1.0
-	if stats.AvgLen > 0 {
-		lengthRatio = float64(stats.DocLen) / stats.AvgLen
+	if avgLen > 0 {
+		lengthRatio = float64(docLen) / avgLen
 	}
 
-	tf := float64(stats.TF)
 	denom := tf + k1*(1-b+b*lengthRatio)
 	if denom == 0 {
 		return 0
