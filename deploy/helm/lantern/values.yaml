@@ -1,7 +1,14 @@
 # Default values for lantern.
-# Tier-A HA topology: 3-replica StatefulSet + headless Service + PDB.
-# Per RFC #175 D7. Set replicaCount=1 to fall back to single-instance
-# mode (no peer pump, no readiness gating).
+# Minimal, cost-optimised profile for GKE Autopilot: a 2-replica
+# StatefulSet + headless Service (peer DNS) + ClusterIP Service (in-cluster
+# clients) + PDB. Lantern is a full-replica store, so 2 replicas give
+# rolling-update / single-node-drain survival at the lowest footprint.
+# The Service is ClusterIP-only — Lantern is never exposed outside the
+# cluster; reach it from other pods via its Service FQDN, or from a laptop
+# with `kubectl port-forward` for verification. Admin, MCP and Prometheus
+# are expected to run locally and are NOT deployed by this profile. Set
+# replicaCount=1 to fall back to single-instance mode (no peer pump, no
+# readiness gating).
 
 image:
   repository: ghcr.io/anaregdesign/lantern
@@ -13,10 +20,12 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
-# Number of lantern pods. 3 is the recommended Tier-A default.
-# Use 1 for single-instance / dev (peer pump becomes a no-op when only
-# the local pod resolves).
-replicaCount: 3
+# Number of lantern pods. 2 is the minimal HA default for this profile:
+# a full-replica store means each pod holds the whole graph, so 2 replicas
+# survive a rolling update / single-node drain at the lowest cost. Use 1
+# for single-instance / dev (peer pump becomes a no-op when only the local
+# pod resolves).
+replicaCount: 2
 
 # StatefulSet update strategy. RollingUpdate is required for the PDB
 # minAvailable guarantee to hold during upgrades.
@@ -24,11 +33,12 @@ updateStrategy:
   type: RollingUpdate
 
 # PodDisruptionBudget for voluntary disruption (node drains, upgrades).
-# minAvailable: 2 keeps quorum-style availability with 3 replicas.
-# Set enabled: false for single-instance deployments.
+# minAvailable: 1 keeps one replica serving while the other is drained —
+# the correct setting for 2 replicas (minAvailable: 2 would deadlock every
+# voluntary disruption). Set enabled: false for single-instance deployments.
 podDisruptionBudget:
   enabled: true
-  minAvailable: 2
+  minAvailable: 1
 
 # Zero-drop rolling-update drain (#768). On SIGTERM the server flips
 # readiness to NOT_SERVING immediately (overall "" gRPC health + /readyz
@@ -103,16 +113,17 @@ cache:
 
 # Snapshot durability (#770, #779): periodic whole-graph dumps to a mounted
 # volume + restore-on-startup. ENABLED by default — the stable durability
-# baseline. Primarily the Tier-B (single-instance, replicaCount=1)
-# rolling-update insurance, where restore-on-start re-seeds the graph on boot.
-# In a multi-replica StatefulSet restore still runs on each pod as a BASELINE:
+# baseline. In this 2-replica profile restore runs on each pod as a BASELINE:
 # peer bootstrap then overlays it via HLC (newer peer state wins per key, so
 # replicas take priority), while a whole-cluster cold start recovers from the
-# dumps instead of coming up empty. Each pod writes its own dumps
-# (LANTERN_BACKUP_INSTANCE_ID = pod name). persistence below renders a per-pod
-# PVC, so the cluster needs a default StorageClass (or set
-# persistence.storageClass / persistence.existingClaim); set enabled: false to
-# opt out.
+# dumps instead of coming up empty. It is also the single-instance
+# (replicaCount=1) rolling-update insurance, where restore-on-start re-seeds
+# the graph on boot. Each pod writes its own dumps (LANTERN_BACKUP_INSTANCE_ID
+# = pod name). persistence below renders a per-pod ReadWriteOnce PVC, which on
+# GKE Autopilot binds the default `standard-rwo` StorageClass — cost-minimal
+# and the recommended default. For a shared dump volume instead, point
+# persistence.existingClaim at a pre-provisioned RWX claim; set enabled: false
+# to opt out.
 backup:
   enabled: true
   dir: /var/lib/lantern/backups
@@ -144,14 +155,19 @@ probes:
     failureThreshold: 3
     successThreshold: 1
 
-# Resource requests/limits.
+# Resource requests/limits. On GKE Autopilot you pay for requests and an
+# unset limit is clamped to the request, so requests == limits here for
+# Guaranteed QoS and predictable cost. 250m CPU is the Autopilot per-pod
+# minimum; 512Mi memory is the server's working-set floor (the 250m:512Mi
+# CPU:memory ratio sits inside Autopilot's allowed 1:1–1:6.5 band). Raise
+# both together for larger graphs.
 resources:
   requests:
-    cpu: 100m
-    memory: 256Mi
+    cpu: 250m
+    memory: 512Mi
   limits:
-    cpu: "2"
-    memory: 2Gi
+    cpu: 250m
+    memory: 512Mi
 
 # Extra environment variables (raw env list, appended after the
 # templated ones). Useful for TLS_* / RATE_LIMIT_* / LOG_* tweaks.

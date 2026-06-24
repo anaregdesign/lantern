@@ -1,9 +1,16 @@
 # lantern (Helm chart)
 
-Tier-A HA deployment of [lantern](https://github.com/anaregdesign/lantern)
-on Kubernetes: a `StatefulSet` of 3 pods behind a headless `Service` for
+Minimal, cost-optimised deployment of
+[lantern](https://github.com/anaregdesign/lantern) on Kubernetes — tuned for
+**GKE Autopilot**: a `StatefulSet` of 2 pods behind a headless `Service` for
 DNS-based peer discovery (see [docs/replication.md §9.1](../../../docs/replication.md))
-plus a `ClusterIP` `Service` for clients, guarded by a `PodDisruptionBudget`.
+plus a `ClusterIP` `Service` for in-cluster clients, guarded by a
+`PodDisruptionBudget`. Lantern is a full-replica store, so 2 replicas give
+rolling-update / single-node-drain survival at the lowest footprint. The
+Service is ClusterIP-only — Lantern is never exposed outside the cluster;
+reach it from other pods via its Service FQDN, or from a laptop with
+`kubectl port-forward` for verification. Admin, MCP and Prometheus are
+expected to run locally and are **not** deployed by this profile.
 
 ## Quick install
 
@@ -27,10 +34,10 @@ helm lint deploy/helm/lantern
 
 | Object                                | Purpose                                                |
 | ------------------------------------- | ------------------------------------------------------ |
-| `StatefulSet/<release>-lantern`       | 3 lantern pods (default), `RollingUpdate` strategy.    |
+| `StatefulSet/<release>-lantern`       | 2 lantern pods (default), `RollingUpdate` strategy.    |
 | `Service/<release>-lantern`           | `ClusterIP` — client gRPC + scrapeable `/metrics`.     |
 | `Service/<release>-lantern-headless`  | `clusterIP: None` — peer discovery DNS.                |
-| `PodDisruptionBudget/<release>-lantern` | `minAvailable: 2` to keep quorum during drains.      |
+| `PodDisruptionBudget/<release>-lantern` | `minAvailable: 1` keeps one replica up during a drain. |
 | `ServiceAccount/<release>-lantern`    | Workload identity (token-only by default).             |
 | `ServiceMonitor/<release>-lantern`    | Optional, when `metrics.serviceMonitor.enabled=true`.  |
 
@@ -46,16 +53,11 @@ just the local pod and filter it out — pump becomes a no-op) or set
 `replication.discovery.mode=static` with `replication.peers=[]`. PDB
 can be disabled via `podDisruptionBudget.enabled=false`.
 
-For serverless container PaaS (Cloud Run / Azure Container Apps /
-App Runner) there is no peer topology — do **not** use this chart;
-deploy the container directly without `LANTERN_PEER_*` env. See the
-HA runbook (#192) for the limits.
-
 ## Tuning
 
 | Value                                       | Default                | Notes                                              |
 | ------------------------------------------- | ---------------------- | -------------------------------------------------- |
-| `replicaCount`                              | `3`                    | Tier-A HA default.                                 |
+| `replicaCount`                              | `2`                    | Minimal HA default (full-replica store).           |
 | `image.repository`                          | `ghcr.io/anaregdesign/lantern` | Override for private mirrors.              |
 | `image.tag`                                 | `.Chart.AppVersion`    | Pin to a specific release tag in production.       |
 | `service.port`                              | `6380`                 | gRPC.                                              |
@@ -66,10 +68,12 @@ HA runbook (#192) for the limits.
 | `replication.discovery.intervalMs`          | `10000`                | `0` = resolve once at startup.                     |
 | `replication.maxLag`                        | `10000`                | Per-(peer,origin) lag cap before readiness flips.  |
 | `antiEntropy.intervalMs`                    | `30000`                | Background reconciliation cadence.                 |
-| `podDisruptionBudget.minAvailable`          | `2`                    | Quorum-ish.                                        |
+| `podDisruptionBudget.minAvailable`          | `1`                    | Keep one replica up while the other drains (correct for 2 replicas). |
 | `backup.enabled`                            | `true`                 | Snapshot durability (#770/#779): per-pod dump PVC + restore-on-start baseline (peers overlay it via HLC). Needs a default StorageClass or `backup.persistence.storageClass`. |
 | `backup.interval`                           | `5m`                   | Dump cadence; keep `cache.defaultTtlSeconds` above it.             |
 | `backup.persistence.size`                   | `1Gi`                  | Per-pod PVC size for dumps.                        |
+| `backup.persistence.existingClaim`          | `""`                   | Set to a pre-provisioned RWX claim for a shared dump volume. |
+| `resources.requests` / `.limits`            | `250m` CPU / `512Mi`   | requests == limits (Autopilot Guaranteed QoS). 250m is the Autopilot min; 512Mi the server floor. |
 | `metrics.serviceMonitor.enabled`            | `false`                | Requires the prometheus-operator CRD.              |
 | `admin.enabled`                             | `false`                | Render the `lantern-admin` SPA Deployment + Service. |
 | `admin.image.repository`                    | `ghcr.io/anaregdesign/lantern-admin` | Admin SPA image (Caddy serving the built bundle).     |
