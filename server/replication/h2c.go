@@ -4,7 +4,7 @@
 // AntiEntropyConfig.HTTPClient.
 //
 // The default speaks HTTP/2 over plaintext (h2c) so the cluster-internal
-// replication path (Tier-A topology) works without TLS plumbing.
+// replication path (HA topology) works without TLS plumbing.
 // Operators that need TLS supply their own http.Client backed by an
 // http2.Transport with a real *tls.Config.
 //

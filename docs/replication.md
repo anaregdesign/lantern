@@ -74,7 +74,7 @@ is required for either reads or writes.
 | D4 | Tombstone TTL | **Cluster-wide config, default 1 year (8760h).** Any `Add*` / `Put*` whose TTL would exceed tombstone TTL is **rejected** with `InvalidArgument`. | Resurrection-proof deletes require tombstones to outlive every live contribution. This is a real backwards-incompatible constraint. |
 | D5 | Workload kind (k8s reference impl) | **StatefulSet** (not Deployment). | Stable pod identity simplifies peer discovery; leaves room for an optional WAL PVC later. The *user experience* is Deployment-like; the *resource kind* is `StatefulSet`. |
 | D6 | Cluster membership v1 | **Static `LANTERN_PEERS` env var.** v2 adds DNS-based discovery (#190). | Smallest surface that ships. Any DNS-routable platform (k8s headless Service, Compose service name, Nomad, plain DNS A-records) can populate it trivially. |
-| D7 | Supported deployment topologies | **Tier A (full HA):** k8s StatefulSet, Nomad, plain VMs, Docker Compose with stable peer hostnames. **Tier B (single-instance, no HA):** any container PaaS — Docker Compose single service, Cloud Run, Azure Container Apps, App Runner. **Not supported:** running multiple Cloud Run / ACA *instances* as a replicated cluster. | Leaderless P2P needs **stable inter-instance addressing** and **long-lived inbound gRPC streams between peers**. Serverless container platforms intentionally hide instance addresses and recycle instances; they fit single-instance deploys (still useful as a fast in-memory KVS) but not the replicated topology. |
+| D7 | Supported deployment topologies | **Full HA:** k8s StatefulSet, Nomad, plain VMs, Docker Compose with stable peer hostnames. **Single-instance (no HA):** any platform without stable per-instance addressing — Docker Compose single service, or any container runtime that hides/recycles instance addresses. **Not supported:** running multiple address-hidden instances as a replicated cluster. | Leaderless P2P needs **stable inter-instance addressing** and **long-lived inbound gRPC streams between peers**. Platforms that intentionally hide instance addresses and recycle instances fit single-instance deploys (still useful as a fast in-memory KVS) but not the replicated topology. |
 
 ## 4. CRDT semantics per RPC
 
@@ -554,9 +554,7 @@ carries the full per-platform instructions; this is the summary.
 | Docker Compose (explicit `lantern-N` services + shared DNS alias) | ✅ | ✅ | Example in `deploy/compose/` (#191, #435). Best for local dev / single-host. |
 | Nomad + Consul DNS | ✅ | ✅ | User-configured; same `LANTERN_PEER_DISCOVERY=dns` works. |
 | Plain VMs / bare metal | ✅ | ✅ | Static `LANTERN_PEERS` CSV or DNS round-robin. |
-| Google Cloud Run | ❌ HA not supported | ✅ | Instance-level addressing hidden; long-lived peer streams incompatible with the request-scoped lifecycle. Use as a fast in-memory KVS with CDC via `Subscribe`. |
-| Azure Container Apps | ❌ HA not supported | ✅ | Same reason as Cloud Run. Single-revision, single-replica works fine. |
-| AWS App Runner / Fly Machines (autoscale) | ❌ HA not supported | ✅ | Same reason. |
+| Platforms that hide per-instance addresses (autoscaled, request-scoped runtimes) | ❌ HA not supported | ✅ | Instance-level addressing hidden; long-lived peer streams incompatible with the request-scoped lifecycle. Use as a fast in-memory KVS with CDC via `Subscribe`. |
 
 For every "not supported" platform, the **single-instance** deploy is fully
 supported: leave `LANTERN_PEERS` empty, the server runs without a pump, the
@@ -571,8 +569,8 @@ external WAL consumer are in place.
 - Cross-DC replication (D3).
 - ACL-gated `Subscribe` for external CDC consumers (D2 ships the unified RPC;
   policy is layered later).
-- Multi-instance Cloud Run / ACA support (D7 — fundamental platform
-  incompatibility, not a v2 backlog item).
+- Multi-instance support on platforms that hide per-instance addressing
+  (D7 — fundamental platform incompatibility, not a v2 backlog item).
 
 ---
 

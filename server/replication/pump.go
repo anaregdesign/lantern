@@ -25,9 +25,8 @@
 // must filter their own writes back out.
 //
 // LANTERN_PEERS="" (the default) yields a no-op pump: Run returns
-// immediately and no goroutines are spawned. This is the
-// single-instance mode used on serverless PaaS (Cloud Run / ACA);
-// the rest of the server behaves identically.
+// immediately and no goroutines are spawned. This is single-instance
+// mode; the rest of the server behaves identically.
 package replication
 
 import (
@@ -141,7 +140,7 @@ type Config struct {
 	// HTTPClient is the http.Client used to open Connect-Go streams
 	// against each peer. When nil, defaultH2CClient() is used so the
 	// pump talks plain HTTP/2 over the cluster network — sufficient
-	// for the Tier-A topology where peers are only reachable via the
+	// for the HA topology where peers are only reachable via the
 	// cluster network. For TLS, supply an http.Client backed by an
 	// http2.Transport with a real *tls.Config.
 	HTTPClient *http.Client

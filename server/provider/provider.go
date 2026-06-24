@@ -465,10 +465,10 @@ func newMetricsMux(reg *prometheus.Registry, gate *readiness.Gate, enablePprof b
 		_, _ = w.Write([]byte("ok"))
 	})
 	// /readyz and /healthz/ready both consult the readiness Gate so HTTP
-	// probes (k8s httpGet, Cloud Run / ACA startup probes, plain LB
+	// probes (k8s httpGet, container-platform startup probes, plain LB
 	// health probes) see the same drain signal as the `grpc.health.v1`
 	// overall ("") entry served on the primary listener. Single-instance
-	// mode returns 200 immediately — PaaS startup behaviour is unchanged.
+	// mode returns 200 immediately — platform startup behaviour is unchanged.
 	readyHandler := func(w http.ResponseWriter, _ *http.Request) {
 		if gate == nil || gate.Ready() {
 			w.WriteHeader(http.StatusOK)

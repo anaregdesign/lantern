@@ -1,6 +1,6 @@
 # Docker Compose: HA lantern cluster
 
-3-replica peer-discovery cluster (Tier-A) on a single Docker host. Mirrors
+3-replica peer-discovery cluster on a single Docker host. Mirrors
 the Helm chart in [`../helm/lantern/`](../helm/lantern/) for local dev and
 single-host HA experiments.
 

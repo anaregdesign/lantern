@@ -25,19 +25,15 @@ Start here. Pick a row, then jump to the corresponding section.
 | Docker Compose (explicit `lantern-N` services + DNS alias) | ✅ | ✅ | [§3.2](#32-docker-compose) |
 | HashiCorp Nomad + Consul DNS | ✅ user-configured | ✅ | [§3.3](#33-nomad) |
 | Plain VMs / bare metal | ✅ static or DNS | ✅ | [§3.4](#34-plain-vms) |
-| Google Cloud Run | ❌ HA not supported | ✅ | [§3.5](#35-serverless-paas-single-instance-only) |
-| Azure Container Apps | ❌ HA not supported | ✅ | [§3.5](#35-serverless-paas-single-instance-only) |
-| AWS App Runner / Fly Machines (autoscale) | ❌ HA not supported | ✅ | [§3.5](#35-serverless-paas-single-instance-only) |
 
-**Why some PaaS platforms can't do HA.** Lantern's leaderless P2P
-needs (a) stable per-instance addressing for peer discovery and
-(b) long-lived inbound gRPC streams between every pair of instances.
-Cloud Run / ACA / App Runner deliberately hide instance addresses,
-route every request through a load balancer, and recycle instances
-on the request lifecycle. Single instance always works — and is
-genuinely useful as a fast in-memory KVS with CDC via `Subscribe` —
-but multiple instances cannot form a cluster on those platforms.
-See RFC [D7](replication.md#3-binding-decisions-d1d7).
+**Why some platforms can't do HA.** Lantern's leaderless P2P needs
+(a) stable per-instance addressing for peer discovery and (b)
+long-lived inbound gRPC streams between every pair of instances.
+Platforms that hide instance addresses behind a load balancer and
+recycle instances on the request lifecycle cannot satisfy these, so
+only single-instance mode works there — still genuinely useful as a
+fast in-memory KVS with CDC via `Subscribe`. See RFC
+[D7](replication.md#3-binding-decisions-d1d7).
 
 ---
 
@@ -256,29 +252,6 @@ export LANTERN_PEER_DISCOVERY_INTERVAL_MS=10000
 The pump re-resolves the DNS name every interval and reconciles its
 peer set.
 
-### 3.5 Serverless PaaS (single-instance only)
-
-**Cloud Run / Azure Container Apps / AWS App Runner / Fly Machines:**
-
-- Set instance count / max replicas / scale = 1.
-- Do **not** set `LANTERN_PEER_DISCOVERY` or `LANTERN_PEERS`.
-- Allocate enough memory for your working set (§5).
-- Treat the service as a fast in-memory KVS. Cold start = empty
-  cache unless snapshot backups are configured (`LANTERN_BACKUP_*`,
-  see [backup.md](backup.md)).
-- For CDC: open `Subscribe` from a long-lived consumer outside the
-  PaaS (e.g., a worker on k8s or a VM) and persist downstream.
-
-The single-instance gating ([§2.1](#21-single-instance-mode-no-ha))
-keeps `/readyz` returning `SERVING` immediately after the gRPC port
-opens, so the platform's health-check happy-path works unchanged.
-
-Why not just run more instances? Because the platforms (deliberately)
-won't let those instances see each other on stable per-instance
-addresses, and the request lifecycle is request-scoped — long-lived
-peer streams are torn down. Set scale=1 and stop fighting the
-platform.
-
 ---
 
 ## 4. What to watch (signals)
@@ -468,10 +441,10 @@ recreate-one-at-a-time loop) and confirming no `Unavailable` /
 connection-reset errors, and that `/readyz` returns **503 at the start
 of termination** before the listener stops accepting.
 
-**Single-instance (Tier B)** deploys (Cloud Run / ACA, `replicaCount: 1`)
-have no peer to fail over to, so the drain still flips `/readyz` (the
-platform shifts traffic to the new revision) but durability across the
-rotation comes from the snapshot backup/restore feature
+**Single-instance** deploys (`replicaCount: 1`) have no peer to fail over
+to, so the drain still flips `/readyz` (the platform shifts traffic to the
+new instance) but durability across the rotation comes from the snapshot
+backup/restore feature
 (`LANTERN_BACKUP_*`, #770) — see [docs/backup.md](backup.md) — not
 replication.
 
@@ -612,8 +585,9 @@ A short checklist to walk before opening an incident:
       single-instance mode, not "no readiness gating please". If you
       want HA, set discovery to `dns` (or put hosts in
       `LANTERN_PEERS`).
-- [ ] **Scaling a serverless PaaS to > 1 replica.** It won't work
-      and there's no warning. See [§3.5](#35-serverless-paas-single-instance-only).
+- [ ] **Scaling a single-instance deploy to > 1 replica expecting HA.**
+      On a platform that hides per-instance addresses it won't form a
+      cluster, and there's no warning. See [§2.1](#21-single-instance-mode-no-ha).
 - [ ] **NTP drift > 500 ms.** RFC D3. Watch
       `lantern_hlc_skew_clamped_total` if/when present, or just keep
       NTP healthy.

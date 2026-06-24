@@ -1,18 +1,18 @@
-# Snapshot backup & restore (Tier-B durability)
+# Snapshot backup & restore
 
 > Tracking: [#769](https://github.com/anaregdesign/lantern/issues/769) (epic),
 > [#770](https://github.com/anaregdesign/lantern/issues/770) (engine),
 > [#771](https://github.com/anaregdesign/lantern/issues/771) (this doc).
 
 Lantern is an **in-memory** store, so a single instance loses its whole graph
-on any restart — including the routine **rolling update** of a serverless
-container revision. The snapshot-durability feature is the insurance for that:
+on any restart — including a routine **rolling update** or pod restart. The
+snapshot-durability feature is the insurance for that:
 the server **periodically dumps the whole graph to a mounted volume** and
 **restores the newest dump on startup**, before it begins serving.
 
-This is primarily the **Tier B** (single-instance) durability story — Cloud
-Run, Azure Container Apps, App Runner, or any single-container deploy. In a
-**Tier A** multi-replica cluster restore still runs on boot as a **baseline**:
+This is primarily the **single-instance** durability story — any single-pod
+or single-container deploy. In a **multi-replica** cluster restore still runs
+on boot as a **baseline**:
 the restarted pod replays its newest dump, then peer **bootstrap** (snapshot +
 tail, see [replication.md](replication.md)) overlays it through the write path,
 so HLC ordering lets newer peer state win per key — replicas take priority, the
@@ -47,10 +47,10 @@ offer safe concurrent-write coordination:
 
 | Backend | Shared? | Concurrent-write safety |
 |---|---|---|
-| Cloud Run — Cloud Storage (GCS FUSE) | yes | **no file locking**, last-write-wins, not POSIX; mount must finish < 30 s or boot fails |
-| Cloud Run — NFS (Filestore) | yes | mounted **no-lock** |
-| ACA — Azure Files (SMB/NFS) | yes (across replicas/revisions) | multi-writer coordination is the app's job |
-| ACA — EmptyDir | no (replica-scoped, ephemeral) | n/a |
+| Object storage via FUSE (e.g. GCS, S3) | yes | **no file locking**, last-write-wins, not POSIX; mount latency can stall boot |
+| Network file share (NFS / SMB) | yes | mounted **no-lock**; multi-writer coordination is the app's job |
+| Per-pod block volume (RWO) | no (pod-scoped) | not shared — safe by construction |
+| EmptyDir / tmpfs | no (pod-scoped, ephemeral) | n/a |
 
 So Lantern **never** writes a shared single file and **never** does leader
 election — per-instance filenames make concurrent writes collision-free on
@@ -73,67 +73,35 @@ every backend, and degrade cleanly to the single-instance case.
 > comfortably **above** `LANTERN_BACKUP_INTERVAL` (and above your expected
 > restart gap) or much of a restored graph may already be expired.
 
-## Cloud Run
+## Durability via a mounted volume
 
-Mount a Cloud Storage bucket (GCS FUSE) — or a Filestore NFS share — at
-`LANTERN_BACKUP_DIR`, single instance:
-
-```bash
-gcloud run deploy lantern \
-  --image ghcr.io/anaregdesign/lantern:latest \
-  --port 6380 --use-http2 \
-  --min-instances 1 --max-instances 1 \
-  --add-volume name=backups,type=cloud-storage,bucket=YOUR_BUCKET \
-  --add-volume-mount volume=backups,mount-path=/data \
-  --set-env-vars LANTERN_BACKUP_ENABLED=true,LANTERN_BACKUP_DIR=/data,LANTERN_BACKUP_INTERVAL=5m,LANTERN_DEFAULT_TTL_SECONDS=86400,LANTERN_DRAIN_DELAY_SECONDS=5
-```
-
-Notes: `--use-http2` is required for Lantern's h2c (Connect / gRPC) surface;
-GCS FUSE provides **no locking** (per-instance files handle it); the volume
-mount must complete within Cloud Run's 30 s startup budget. For lower-latency
-durability use a Filestore NFS volume (`type=cloud-storage` → an NFS volume)
-instead of GCS.
-
-## Azure Container Apps
-
-Define an Azure Files (SMB) share on the environment, then mount it at
-`LANTERN_BACKUP_DIR`:
+The feature works on any platform that can mount a directory which survives
+container/pod restarts at `LANTERN_BACKUP_DIR`. Point the env vars above at
+that path — the server then dumps periodically and restores the newest dump
+on boot:
 
 ```bash
-az containerapp env storage set -n my-env -g my-rg \
-  --storage-name backups --storage-type AzureFile \
-  --azure-file-account-name STORAGE --azure-file-account-key KEY \
-  --azure-file-share-name SHARE --access-mode ReadWrite
+LANTERN_BACKUP_ENABLED=true
+LANTERN_BACKUP_DIR=/data
+LANTERN_BACKUP_INTERVAL=5m
+LANTERN_DEFAULT_TTL_SECONDS=86400
 ```
 
-```yaml
-# app.yaml — properties.template excerpt
-template:
-  containers:
-    - name: lantern
-      image: ghcr.io/anaregdesign/lantern:latest
-      env:
-        - name: LANTERN_BACKUP_ENABLED
-          value: "true"
-        - name: LANTERN_BACKUP_DIR
-          value: /data
-        - name: LANTERN_BACKUP_INTERVAL
-          value: 5m
-        - name: LANTERN_DEFAULT_TTL_SECONDS
-          value: "86400"
-      volumeMounts:
-        - volumeName: backups
-          mountPath: /data
-  scale:
-    minReplicas: 1
-    maxReplicas: 1
-  volumes:
-    - name: backups
-      storageType: AzureFile
-      storageName: backups
-```
+- **Kubernetes** — the [Helm chart](../deploy/helm/lantern/) renders a per-pod
+  `ReadWriteOnce` PVC mounted at `LANTERN_BACKUP_DIR` (`backup.persistence`, on
+  by default). On GKE Autopilot this binds the default `standard-rwo`
+  StorageClass. Each pod keeps its own dumps; for a single shared dump volume
+  point `backup.persistence.existingClaim` at a pre-provisioned RWX claim.
+- **Docker Compose / single host** — bind-mount a host directory (see the
+  runnable example below).
+- **Shared / networked volumes** (NFS, SMB, object-storage FUSE) also work:
+  per-instance filenames keep concurrent writers collision-free, but such
+  backends offer **no file locking**, so never rely on cross-writer
+  coordination, and high mount latency can stall boot — prefer a local/block
+  volume when restore time matters.
 
-`EmptyDir` is replica-scoped and ephemeral — **don't** use it for durability.
+`EmptyDir` / `tmpfs` are pod-scoped and ephemeral — **don't** use them for
+durability.
 
 ## Docker Compose (local)
 
@@ -176,7 +144,7 @@ replicas take priority while a whole-cluster cold start recovers from the dumps.
 ## See also
 
 - [docs/ha-runbook.md](ha-runbook.md) — rolling-upgrade drain (§7) and HA ops.
-- [docs/replication.md](replication.md) — the Tier-A peer-bootstrap recovery
+- [docs/replication.md](replication.md) — the multi-replica peer-bootstrap recovery
   path and the deployment-topology matrix (D7).
 - `lantern-cli dump` / `lantern-cli restore` — the on-demand, file-compatible
   CLI half of the same format.

@@ -235,7 +235,7 @@ go run ./server/cmd          # listens on :6380
 
 ### Run on Kubernetes (HA mode)
 
-For Tier-A HA (3 replicas with DNS-based peer discovery, anti-entropy
+For HA (3 replicas with DNS-based peer discovery, anti-entropy
 reconciliation, and a `PodDisruptionBudget`) install the bundled Helm
 chart:
 
@@ -299,15 +299,16 @@ discovery and Compose-side round-robin still work unchanged. Prometheus on
 table and client LB options, and the [Helm chart](deploy/helm/lantern/) when
 you need more than three replicas.
 
-### Run on serverless container PaaS
+### Run as a single instance
 
-For Cloud Run / Azure Container Apps / AWS App Runner / Fly Machines /
-any platform without stable pod identities, deploy a **single
-instance** (or independent shards) without setting any `LANTERN_PEER_*`
-env. Peer discovery requires a stable in-cluster DNS that resolves to
-per-pod IPs, which these platforms do not provide. See the
-[HA runbook](docs/ha-runbook.md) for the per-platform topology matrix,
-signals to watch, partition behaviour, and recovery procedures.
+To run Lantern without peer replication — as a fast in-memory KVS on a
+single pod / container — deploy one instance and leave every
+`LANTERN_PEER_*` env unset. The peer pump becomes a no-op, the readiness
+gate is bypassed, and `Subscribe` still works as a CDC stream. Pair it
+with the snapshot-backup feature ([docs/backup.md](docs/backup.md)) so a
+restart re-seeds the graph. See the [HA runbook](docs/ha-runbook.md) for
+the deployment-topology matrix, signals to watch, partition behaviour,
+and recovery procedures.
 
 ### Install via Homebrew (macOS)
 
@@ -804,7 +805,7 @@ The server is configured via environment variables, parsed in
 | `LANTERN_REFLECTION` | `true` | Register gRPC server reflection (useful for `grpcurl`) |
 | `LANTERN_SHUTDOWN_TIMEOUT_SECONDS` | `30` | Upper bound on graceful shutdown before forcing `http.Server.Close()` |
 | `LANTERN_DRAIN_DELAY_SECONDS` | `0` | Zero-drop rolling-update drain (#768). On `SIGTERM` the server flips readiness (`/readyz` + overall `""` health) to `NOT_SERVING` immediately, then keeps the listener serving for this long so load balancers deregister it before it stops accepting. `0` disables (no hold). Keep `terminationGracePeriodSeconds ≥` this `+ LANTERN_SHUTDOWN_TIMEOUT_SECONDS`. |
-| `LANTERN_BACKUP_ENABLED` | `false` | Enable the periodic whole-graph snapshot backup loop (#770). Requires `LANTERN_BACKUP_DIR`. Rolling-update insurance for single-instance (Tier B) Cloud Run / ACA deploys — see [docs/backup.md](docs/backup.md). |
+| `LANTERN_BACKUP_ENABLED` | `false` | Enable the periodic whole-graph snapshot backup loop (#770). Requires `LANTERN_BACKUP_DIR`. Rolling-update insurance for single-instance deploys — see [docs/backup.md](docs/backup.md). |
 | `LANTERN_BACKUP_DIR` | _(empty)_ | Mounted directory the server writes/reads whole-graph dumps in. |
 | `LANTERN_BACKUP_INTERVAL` | `5m` | Dump cadence (`time.ParseDuration`, e.g. `300s`, `5m`). |
 | `LANTERN_BACKUP_RETAIN` | `3` | Keep the newest N of this instance's own dumps; `0` keeps all. |

@@ -10,7 +10,7 @@
 //
 // Single-instance mode (no peers configured) bypasses gating entirely: the
 // Gate is born already-ready and any subsequent SetLag calls are no-ops.
-// This preserves the PaaS startup contract — empty LANTERN_PEERS means the
+// This preserves the platform startup contract — empty LANTERN_PEERS means the
 // readiness probe goes green as soon as the server is up.
 package readiness
 
