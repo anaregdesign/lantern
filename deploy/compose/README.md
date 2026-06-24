@@ -145,12 +145,13 @@ networks, or put your own ingress-level auth proxy in front.
 ## Verifying peer discovery
 
 ```shell
-# Each replica should log "peer_discovery" lines with the other 2 IPs.
-docker compose logs lantern-0 lantern-1 lantern-2 | grep peer_discovery
+# Each replica logs a "replication pump: peer transition" line
+# (transition=connect, peer=<addr>) for each of the other 2 peers.
+docker compose logs lantern-0 lantern-1 lantern-2 | grep "peer transition"
 
 # Prometheus (http://localhost:9091):
-#   lantern_replication_peer_up         — 1 gauge per active peer link
-#   lantern_replication_lag             — per (peer, origin) lag
+#   lantern_peer_connected              — 1 gauge per active peer link
+#   lantern_replication_lag_seq         — per (peer, origin) lag
 ```
 
 ## Single-instance fallback

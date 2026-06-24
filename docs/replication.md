@@ -142,10 +142,11 @@ remote `nodeID` is only used by the comparator in §5.4.
 
 If `r.wallNs > now + MaxSkew` (default `MaxSkew = 500ms`, per D3), the wall
 component is **clamped** to `now + MaxSkew` and an `OnSkewExceeded` callback
-fires (default wiring: increment `lantern_hlc_skew_clamped_total`). The
-remote timestamp is never rejected — replication keeps making progress even
-when peers drift, and operators observe the drift through the counter and
-are expected to fix NTP. (Earlier drafts of this RFC rejected with
+fires. The intended default wiring increments `lantern_hlc_skew_clamped_total`,
+but that counter is **not yet wired** (the provider leaves `OnSkewExceeded`
+nil — see #180 and #182); until then, monitor NTP directly. The remote
+timestamp is never rejected — replication keeps making progress even when
+peers drift, and operators are expected to fix NTP. (Earlier drafts of this RFC rejected with
 `OutOfRange`; that was changed during #176 implementation because rejecting
 risks a cascading replication stall while the clock heals.)
 
@@ -489,7 +490,7 @@ spec:
 ```
 
 Scale the StatefulSet up/down and observe
-`lantern_replication_peer_up{peer=...}` add/remove series within one
+`lantern_peer_connected{peer=...}` add/remove series within one
 discovery interval.
 
 **Manual verification recipe (Docker Compose).**
@@ -536,10 +537,10 @@ The [HA runbook](ha-runbook.md) describes detection (`lantern_replication_lag_se
 | Failure | Detection | Recovery |
 |---|---|---|
 | Single pod crash | k8s probe / Compose healthcheck | k8s/Compose restarts pod → bootstraps from peers. |
-| Pod falls behind > buffer | `Subscribe` returns `OutOfRange` | Pump auto re-snapshots and resumes. |
+| Pod falls behind > buffer | `Subscribe` returns `FailedPrecondition` (reason `gapped`) | Pump auto re-snapshots and resumes. |
 | All peers unreachable on boot | `Snapshot` fails on every peer | Pod stays `NOT_SERVING`; operator alert on readiness. |
 | Total-cluster loss | every replica down | **Accepted data loss** (D1) — bring the cluster back empty, *or* run snapshot backups (`LANTERN_BACKUP_*`, [backup.md](backup.md)) so each node restores its newest dump on boot. |
-| NTP skew > 500ms | `lantern_hlc_skew_clamped_total > 0` | Fix NTP. Mutations from the drifted peer keep applying (their HLC wall is clamped, §5.3); convergence is preserved but the drifted peer's stamps land behind real wall time until it heals. |
+| NTP skew > 500ms | `lantern_hlc_skew_clamped_total > 0` (planned — #180/#182) | Fix NTP. Mutations from the drifted peer keep applying (their HLC wall is clamped, §5.3); convergence is preserved but the drifted peer's stamps land behind real wall time until it heals. |
 | Network partition < tombstone TTL | `lantern_replication_lag_seq` spike | Auto-converges via anti-entropy (#186) when partition heals. |
 | Network partition > tombstone TTL | same | Resurrection possible (§10). Manual reconciliation or operator-driven re-snapshot of the winning side. |
 

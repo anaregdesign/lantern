@@ -264,15 +264,15 @@ exact Prometheus series.
 
 | Metric | Type | What it tells you |
 |---|---|---|
-| `lantern_replication_lag_seq{peer}` | gauge | How many mutation log entries this pod is behind `peer`. **The single most important HA signal.** |
-| `lantern_replication_applied_total{peer,origin}` | counter | Mutations from `peer` that landed in the local cache. `rate()` ≈ steady-state replication throughput per peer. |
-| `lantern_replication_dropped_total{peer,reason}` | counter | Mutations rejected at apply. `reason` is `tombstone` / `older_hlc` / `self_echo` etc. Persistent non-zero rate signals real conflict or a stuck peer. |
+| `lantern_replication_lag_seq{peer,origin}` | gauge | How many mutation log entries this pod is behind `peer` for that `origin`. **The single most important HA signal.** |
+| `lantern_replication_applied_total{origin}` | counter | Remote mutations from `origin` (the originating writer node) that landed in the local cache. `rate()` ≈ steady-state replication throughput per origin. |
+| `lantern_replication_dropped_total{peer,reason}` | counter | Replication frames or peer interactions dropped. `reason` is `self_echo` / `subscribe_failed` / `snapshot_failed` / `dial_failed` / `peerstatus_failed` / `catchup_failed` / `clean` / `ctx_cancel`. A persistent non-zero rate (excluding `self_echo` / `clean`) signals an unreachable or stuck peer. |
 | `lantern_anti_entropy_cycles_total` | counter | Anti-entropy ticks. Should advance at `LANTERN_ANTI_ENTROPY_INTERVAL_MS` cadence. |
 | `lantern_anti_entropy_gaps_found_total{peer,origin}` | counter | Non-zero = real divergence detected and being repaired. Spiking after a partition heal = expected. Persistently incrementing in steady state = open a bug. |
 | `lantern_mutation_log_entries_total` | counter | Total mutations ever logged on this pod. |
 | `lantern_mutation_log_capacity` | gauge | Ring buffer capacity. If sustained `rate(mutation_log_entries) × subscribe_lag_seconds > capacity`, slow peers will fall off and re-snapshot. |
 | `lantern_subscribe_active_streams` | gauge | Inbound subscribers (peers + external CDC). Drop = peer disconnect or CDC consumer crash. |
-| `lantern_subscribe_dropped_total{reason}` | counter | `reason=out_of_range` ≥ 1 means a peer's `from_seq` fell off the ring buffer; the pump will re-snapshot automatically. |
+| `lantern_subscribe_dropped_total{reason}` | counter | `reason=gapped` means a peer's `from_seq` fell off the ring buffer (the pump re-snapshots automatically); `reason=send_failed` is a broken outbound stream. |
 
 ### 4.2 Resource / cache health
 
@@ -281,13 +281,13 @@ exact Prometheus series.
 | `lantern_vertices`, `lantern_edges` | Current working-set size. Must agree (within `lantern_replication_lag_seq`) across peers. |
 | `lantern_ttl_expirations_total{kind}` | TTL-driven evictions. |
 | `lantern_gc_duration_seconds` | GC sweep latency histogram. |
-| `lantern_build_info{version,commit}` | Version pinning for cross-checks during upgrade. |
+| `lantern_build_info{version,commit,go_version}` | Version pinning for cross-checks during upgrade. |
 
 ### 4.3 RPC layer
 
 The in-house Connect interceptor in
 `server/provider/connect_middleware.go` exposes the canonical
-`grpc_server_*` metric names (handled / handling time / received / sent).
+`grpc_server_*` metric names (started / handled / handling time).
 The names are intentionally retained for operator-dashboard continuity
 after the gRPC middleware was deleted in #337/#352; the wire protocol is
 Connect. Use them for per-RPC latency SLOs.
@@ -508,14 +508,15 @@ The new pod starts in `NOT_SERVING` until snapshot+tail completes.
 
 ### 9.2 Subscribe ring buffer overflow
 
-Symptom: `lantern_subscribe_dropped_total{reason="out_of_range"}`
-increments; the affected peer logs `OutOfRange` and re-snapshots on
-its own. No manual action needed.
+Symptom: `lantern_subscribe_dropped_total{reason="gapped"}`
+increments; the server replies `FailedPrecondition` (reason
+`gapped`) and the affected peer logs a `replication pump: peer
+transition` line with `transition="snapshot_start" reason="gapped"`,
+then re-snapshots on its own. No manual action needed.
 
 If overflow is **chronic**, write rate has outgrown
 `mutation_log_capacity`. Bump
-`LANTERN_MUTATION_LOG_CAPACITY` (if/when the env knob exists) or
-add cluster capacity.
+`LANTERN_MUTATION_LOG_CAPACITY` or add cluster capacity.
 
 ### 9.3 Pod stuck `NOT_SERVING` after restart
 
@@ -602,10 +603,10 @@ operator actions.
 | Failure | Signal | What to do |
 |---|---|---|
 | Single pod crash | k8s probe / Compose healthcheck flips | Auto-restarts. Pod bootstraps from peers. No action unless it crashloops. |
-| Pod falls behind buffer | `subscribe_dropped_total{reason="out_of_range"}` increments | Pump auto re-snapshots. Chronic = bump capacity. |
+| Pod falls behind buffer | `subscribe_dropped_total{reason="gapped"}` increments | Pump auto re-snapshots. Chronic = bump capacity. |
 | All peers unreachable on boot | Pod `NOT_SERVING`, no `replication_applied` increments | Check discovery env (§9.3). |
 | Total-cluster loss | Every pod down | Accepted data loss; rehydrate — or restore from snapshot backups if configured ([§9.4](#94-total-cluster-loss)). |
-| NTP skew > 500 ms | `hlc_skew_clamped_total > 0` | Fix NTP. Convergence preserved, but the drifted peer's stamps land behind real wall time. |
+| NTP skew > 500 ms | `lantern_hlc_skew_clamped_total` (planned — #180/#182; until then watch NTP) | Fix NTP. Convergence preserved, but the drifted peer's stamps land behind real wall time. |
 | Network partition < tombstone TTL | `replication_lag_seq` spike; `anti_entropy_gaps_found_total` non-zero after heal | Auto-converges. No action. |
 | Network partition > tombstone TTL | Same signals + possible resurrection | Force re-snapshot from the side you trust ([§9.1](#91-force-a-re-snapshot)). Consider extending tombstone TTL. |
 

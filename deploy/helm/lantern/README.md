@@ -207,10 +207,11 @@ kubectl -n default scale statefulset <release>-lantern --replicas=5
 ## Verifying peer discovery
 
 ```shell
-# All pods should see N-1 peer addresses in their logs.
-kubectl -n default logs <release>-lantern-0 | grep peer_discovery
+# Each pod logs a "replication pump: peer transition" line (transition=connect,
+# peer=<addr>) for each of the other N-1 peers as streams open.
+kubectl -n default logs <release>-lantern-0 | grep "peer transition"
 
-# Prometheus: lantern_replication_peer_up{peer="..."} gauge series
+# Prometheus: lantern_peer_connected{peer="..."} gauge series
 # should show one per resolved peer, transitioning 0→1 on stream open.
 ```
 
@@ -219,4 +220,4 @@ kubectl -n default logs <release>-lantern-0 | grep peer_discovery
 - RFC: [docs/replication.md](../../../docs/replication.md)
 - Discovery spec: [docs/replication.md §9.1](../../../docs/replication.md#91-peer-discovery-190)
 - Docker Compose alternative: [`deploy/compose/`](../../compose/)
-- HA runbook: see issue #192 (in flight).
+- HA runbook: [docs/ha-runbook.md](../../../docs/ha-runbook.md)
