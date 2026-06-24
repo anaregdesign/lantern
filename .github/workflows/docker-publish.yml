@@ -315,3 +315,62 @@ jobs:
               --verify-tag \
               "${assets[@]}"
           fi
+
+  # Continuous deployment: roll the freshly-pushed server image onto the live
+  # GKE Autopilot cluster. Gated on `build` so we only deploy an image that was
+  # actually pushed + signed; the workflow's `tags: [ 'v*.*.*' ]` trigger keeps
+  # this tag-push-only. Auth is keyless via Workload Identity Federation — the
+  # repo-scoped OIDC provider + deploy SA are provisioned out-of-band and wired
+  # through the GCP_WIF_PROVIDER / GCP_DEPLOY_SA secrets. See #809.
+  deploy-gke:
+    name: Deploy to GKE Autopilot
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # mint the OIDC token google-github-actions/auth exchanges
+    # Cluster coordinates are non-secret; keep them in the workflow for
+    # readability (auth is gated by WIF, not by hiding these).
+    env:
+      GKE_CLUSTER: lantern-cluster-01
+      GKE_LOCATION: asia-northeast1
+      GCP_PROJECT_ID: anaregdesign-455601
+      RELEASE: lantern
+      NAMESPACE: default
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Get GKE credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ env.GKE_CLUSTER }}
+          location: ${{ env.GKE_LOCATION }}
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Roll the new image onto the StatefulSet
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # The published GHCR tag is SemVer-pure (no leading v).
+          helm upgrade --install "$RELEASE" deploy/helm/lantern \
+            --namespace "$NAMESPACE" \
+            --set image.tag="${TAG#v}" \
+            --wait --timeout 10m
+          kubectl rollout status "statefulset/$RELEASE" \
+            --namespace "$NAMESPACE" --timeout=10m
