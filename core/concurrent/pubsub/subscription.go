@@ -338,7 +338,18 @@ func (s *Subscription[T]) watch(ctx context.Context, interval time.Duration, ttl
 		case <-ticker.C:
 			s.salvage(interval, ttl)
 		case <-ctx.Done():
-			s.wg.Wait()
+			// Do NOT wait on s.wg here. s.wg counts the worker pool, and its
+			// Add(1) calls run in Subscribe's worker loop *after* this
+			// goroutine was spawned (the `go s.watch(...)` happens-before edge
+			// only covers code before the spawn). A Wait from this goroutine
+			// therefore has no happens-before to the first worker Add(1); an
+			// early ctx cancellation that lands here before worker
+			// registration finishes is a WaitGroup Add-concurrent-with-Wait
+			// misuse the race detector flags (#806). Subscribe already joins
+			// the workers via its own s.wg.Wait() before unregistering, so
+			// this Wait was both redundant and racy — vestigial from the
+			// pre-#231 one-goroutine-per-message model where s.wg counted
+			// in-flight handlers.
 			return
 		}
 	}
