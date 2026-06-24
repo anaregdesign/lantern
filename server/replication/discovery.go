@@ -65,10 +65,9 @@ type HostLookup interface {
 // replica), HashiCorp Nomad service discovery via Consul DNS, or any
 // plain DNS round-robin A-record list.
 //
-// Serverless container PaaS that do not expose per-instance DNS
-// (Cloud Run, ACA, App Runner) remain explicitly unsupported as
-// multi-instance topologies — see RFC #175 §D7. Those deployments
-// keep using single-instance mode (empty peer list).
+// Platforms that do not expose per-instance DNS remain explicitly
+// unsupported as multi-instance topologies — see RFC #175 §D7. Those
+// deployments keep using single-instance mode (empty peer list).
 type DNSSource struct {
 	// Name is the DNS hostname to resolve (no port). Example:
 	// "lantern-headless.default.svc.cluster.local".

@@ -3,9 +3,8 @@
 // plus restore-on-startup that re-seeds the in-memory graph from the newest
 // dump before the server begins serving. It is the automation layer on top
 // of the on-demand backup/restore primitives shipped in #685 — the
-// rolling-update insurance for single-instance (Tier B) Cloud Run / ACA
-// deploys where the in-memory graph would otherwise be lost on every
-// revision rotation.
+// rolling-update insurance for single-instance deploys where the
+// in-memory graph would otherwise be lost on every restart.
 //
 // Reuse, not reinvention: the periodic dump drives the existing
 // LanternService.BackupSnapshot RPC verbatim through a file-backed Sender,
@@ -15,9 +14,9 @@
 // apply automatically — an entry whose TTL already elapsed since the dump
 // is correctly NOT resurrected.
 //
-// Shared storage is never assumed safe for concurrent writes (Cloud Run
-// GCS FUSE / NFS have no file locking; ACA Azure Files leaves multi-writer
-// coordination to the app), so every writer owns a per-instance file
+// Shared storage is never assumed safe for concurrent writes (networked
+// or FUSE-backed filesystems generally have no reliable file locking), so
+// every writer owns a per-instance file
 // (name carries InstanceID) and restore selects the newest valid file.
 // Writes are atomic via a temp file + rename; a half-written file is never
 // a restore candidate.

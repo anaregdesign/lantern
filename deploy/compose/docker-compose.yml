@@ -1,6 +1,6 @@
 # Docker Compose: HA topology (3-replica peer-discovery cluster).
 #
-# Mirrors the Helm chart's Tier-A topology for local development and
+# Mirrors the Helm chart's HA topology for local development and
 # single-host HA experiments. Each replica is its own service
 # (`lantern-0`, `lantern-1`, `lantern-2`) with a pinned host port
 # (`6380`, `6381`, `6382` respectively), so the admin SPA's default

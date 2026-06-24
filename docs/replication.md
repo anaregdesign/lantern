@@ -74,7 +74,7 @@ is required for either reads or writes.
 | D4 | Tombstone TTL | **Cluster-wide config, default 1 year (8760h).** Any `Add*` / `Put*` whose TTL would exceed tombstone TTL is **rejected** with `InvalidArgument`. | Resurrection-proof deletes require tombstones to outlive every live contribution. This is a real backwards-incompatible constraint. |
 | D5 | Workload kind (k8s reference impl) | **StatefulSet** (not Deployment). | Stable pod identity simplifies peer discovery; leaves room for an optional WAL PVC later. The *user experience* is Deployment-like; the *resource kind* is `StatefulSet`. |
 | D6 | Cluster membership v1 | **Static `LANTERN_PEERS` env var.** v2 adds DNS-based discovery (#190). | Smallest surface that ships. Any DNS-routable platform (k8s headless Service, Compose service name, Nomad, plain DNS A-records) can populate it trivially. |
-| D7 | Supported deployment topologies | **Tier A (full HA):** k8s StatefulSet, Nomad, plain VMs, Docker Compose with stable peer hostnames. **Tier B (single-instance, no HA):** any container PaaS — Docker Compose single service, Cloud Run, Azure Container Apps, App Runner. **Not supported:** running multiple Cloud Run / ACA *instances* as a replicated cluster. | Leaderless P2P needs **stable inter-instance addressing** and **long-lived inbound gRPC streams between peers**. Serverless container platforms intentionally hide instance addresses and recycle instances; they fit single-instance deploys (still useful as a fast in-memory KVS) but not the replicated topology. |
+| D7 | Supported deployment topologies | **Full HA:** k8s StatefulSet, Nomad, plain VMs, Docker Compose with stable peer hostnames. **Single-instance (no HA):** any platform without stable per-instance addressing — Docker Compose single service, or any container runtime that hides/recycles instance addresses. **Not supported:** running multiple address-hidden instances as a replicated cluster. | Leaderless P2P needs **stable inter-instance addressing** and **long-lived inbound gRPC streams between peers**. Platforms that intentionally hide instance addresses and recycle instances fit single-instance deploys (still useful as a fast in-memory KVS) but not the replicated topology. |
 
 ## 4. CRDT semantics per RPC
 
@@ -142,10 +142,11 @@ remote `nodeID` is only used by the comparator in §5.4.
 
 If `r.wallNs > now + MaxSkew` (default `MaxSkew = 500ms`, per D3), the wall
 component is **clamped** to `now + MaxSkew` and an `OnSkewExceeded` callback
-fires (default wiring: increment `lantern_hlc_skew_clamped_total`). The
-remote timestamp is never rejected — replication keeps making progress even
-when peers drift, and operators observe the drift through the counter and
-are expected to fix NTP. (Earlier drafts of this RFC rejected with
+fires. The intended default wiring increments `lantern_hlc_skew_clamped_total`,
+but that counter is **not yet wired** (the provider leaves `OnSkewExceeded`
+nil — see #180 and #182); until then, monitor NTP directly. The remote
+timestamp is never rejected — replication keeps making progress even when
+peers drift, and operators are expected to fix NTP. (Earlier drafts of this RFC rejected with
 `OutOfRange`; that was changed during #176 implementation because rejecting
 risks a cascading replication stall while the clock heals.)
 
@@ -489,7 +490,7 @@ spec:
 ```
 
 Scale the StatefulSet up/down and observe
-`lantern_replication_peer_up{peer=...}` add/remove series within one
+`lantern_peer_connected{peer=...}` add/remove series within one
 discovery interval.
 
 **Manual verification recipe (Docker Compose).**
@@ -536,10 +537,10 @@ The [HA runbook](ha-runbook.md) describes detection (`lantern_replication_lag_se
 | Failure | Detection | Recovery |
 |---|---|---|
 | Single pod crash | k8s probe / Compose healthcheck | k8s/Compose restarts pod → bootstraps from peers. |
-| Pod falls behind > buffer | `Subscribe` returns `OutOfRange` | Pump auto re-snapshots and resumes. |
+| Pod falls behind > buffer | `Subscribe` returns `FailedPrecondition` (reason `gapped`) | Pump auto re-snapshots and resumes. |
 | All peers unreachable on boot | `Snapshot` fails on every peer | Pod stays `NOT_SERVING`; operator alert on readiness. |
 | Total-cluster loss | every replica down | **Accepted data loss** (D1) — bring the cluster back empty, *or* run snapshot backups (`LANTERN_BACKUP_*`, [backup.md](backup.md)) so each node restores its newest dump on boot. |
-| NTP skew > 500ms | `lantern_hlc_skew_clamped_total > 0` | Fix NTP. Mutations from the drifted peer keep applying (their HLC wall is clamped, §5.3); convergence is preserved but the drifted peer's stamps land behind real wall time until it heals. |
+| NTP skew > 500ms | `lantern_hlc_skew_clamped_total > 0` (planned — #180/#182) | Fix NTP. Mutations from the drifted peer keep applying (their HLC wall is clamped, §5.3); convergence is preserved but the drifted peer's stamps land behind real wall time until it heals. |
 | Network partition < tombstone TTL | `lantern_replication_lag_seq` spike | Auto-converges via anti-entropy (#186) when partition heals. |
 | Network partition > tombstone TTL | same | Resurrection possible (§10). Manual reconciliation or operator-driven re-snapshot of the winning side. |
 
@@ -554,9 +555,7 @@ carries the full per-platform instructions; this is the summary.
 | Docker Compose (explicit `lantern-N` services + shared DNS alias) | ✅ | ✅ | Example in `deploy/compose/` (#191, #435). Best for local dev / single-host. |
 | Nomad + Consul DNS | ✅ | ✅ | User-configured; same `LANTERN_PEER_DISCOVERY=dns` works. |
 | Plain VMs / bare metal | ✅ | ✅ | Static `LANTERN_PEERS` CSV or DNS round-robin. |
-| Google Cloud Run | ❌ HA not supported | ✅ | Instance-level addressing hidden; long-lived peer streams incompatible with the request-scoped lifecycle. Use as a fast in-memory KVS with CDC via `Subscribe`. |
-| Azure Container Apps | ❌ HA not supported | ✅ | Same reason as Cloud Run. Single-revision, single-replica works fine. |
-| AWS App Runner / Fly Machines (autoscale) | ❌ HA not supported | ✅ | Same reason. |
+| Platforms that hide per-instance addresses (autoscaled, request-scoped runtimes) | ❌ HA not supported | ✅ | Instance-level addressing hidden; long-lived peer streams incompatible with the request-scoped lifecycle. Use as a fast in-memory KVS with CDC via `Subscribe`. |
 
 For every "not supported" platform, the **single-instance** deploy is fully
 supported: leave `LANTERN_PEERS` empty, the server runs without a pump, the
@@ -571,8 +570,8 @@ external WAL consumer are in place.
 - Cross-DC replication (D3).
 - ACL-gated `Subscribe` for external CDC consumers (D2 ships the unified RPC;
   policy is layered later).
-- Multi-instance Cloud Run / ACA support (D7 — fundamental platform
-  incompatibility, not a v2 backlog item).
+- Multi-instance support on platforms that hide per-instance addressing
+  (D7 — fundamental platform incompatibility, not a v2 backlog item).
 
 ---
 

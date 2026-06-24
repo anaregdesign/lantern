@@ -25,19 +25,15 @@ Start here. Pick a row, then jump to the corresponding section.
 | Docker Compose (explicit `lantern-N` services + DNS alias) | ✅ | ✅ | [§3.2](#32-docker-compose) |
 | HashiCorp Nomad + Consul DNS | ✅ user-configured | ✅ | [§3.3](#33-nomad) |
 | Plain VMs / bare metal | ✅ static or DNS | ✅ | [§3.4](#34-plain-vms) |
-| Google Cloud Run | ❌ HA not supported | ✅ | [§3.5](#35-serverless-paas-single-instance-only) |
-| Azure Container Apps | ❌ HA not supported | ✅ | [§3.5](#35-serverless-paas-single-instance-only) |
-| AWS App Runner / Fly Machines (autoscale) | ❌ HA not supported | ✅ | [§3.5](#35-serverless-paas-single-instance-only) |
 
-**Why some PaaS platforms can't do HA.** Lantern's leaderless P2P
-needs (a) stable per-instance addressing for peer discovery and
-(b) long-lived inbound gRPC streams between every pair of instances.
-Cloud Run / ACA / App Runner deliberately hide instance addresses,
-route every request through a load balancer, and recycle instances
-on the request lifecycle. Single instance always works — and is
-genuinely useful as a fast in-memory KVS with CDC via `Subscribe` —
-but multiple instances cannot form a cluster on those platforms.
-See RFC [D7](replication.md#3-binding-decisions-d1d7).
+**Why some platforms can't do HA.** Lantern's leaderless P2P needs
+(a) stable per-instance addressing for peer discovery and (b)
+long-lived inbound gRPC streams between every pair of instances.
+Platforms that hide instance addresses behind a load balancer and
+recycle instances on the request lifecycle cannot satisfy these, so
+only single-instance mode works there — still genuinely useful as a
+fast in-memory KVS with CDC via `Subscribe`. See RFC
+[D7](replication.md#3-binding-decisions-d1d7).
 
 ---
 
@@ -256,29 +252,6 @@ export LANTERN_PEER_DISCOVERY_INTERVAL_MS=10000
 The pump re-resolves the DNS name every interval and reconciles its
 peer set.
 
-### 3.5 Serverless PaaS (single-instance only)
-
-**Cloud Run / Azure Container Apps / AWS App Runner / Fly Machines:**
-
-- Set instance count / max replicas / scale = 1.
-- Do **not** set `LANTERN_PEER_DISCOVERY` or `LANTERN_PEERS`.
-- Allocate enough memory for your working set (§5).
-- Treat the service as a fast in-memory KVS. Cold start = empty
-  cache unless snapshot backups are configured (`LANTERN_BACKUP_*`,
-  see [backup.md](backup.md)).
-- For CDC: open `Subscribe` from a long-lived consumer outside the
-  PaaS (e.g., a worker on k8s or a VM) and persist downstream.
-
-The single-instance gating ([§2.1](#21-single-instance-mode-no-ha))
-keeps `/readyz` returning `SERVING` immediately after the gRPC port
-opens, so the platform's health-check happy-path works unchanged.
-
-Why not just run more instances? Because the platforms (deliberately)
-won't let those instances see each other on stable per-instance
-addresses, and the request lifecycle is request-scoped — long-lived
-peer streams are torn down. Set scale=1 and stop fighting the
-platform.
-
 ---
 
 ## 4. What to watch (signals)
@@ -291,15 +264,15 @@ exact Prometheus series.
 
 | Metric | Type | What it tells you |
 |---|---|---|
-| `lantern_replication_lag_seq{peer}` | gauge | How many mutation log entries this pod is behind `peer`. **The single most important HA signal.** |
-| `lantern_replication_applied_total{peer,origin}` | counter | Mutations from `peer` that landed in the local cache. `rate()` ≈ steady-state replication throughput per peer. |
-| `lantern_replication_dropped_total{peer,reason}` | counter | Mutations rejected at apply. `reason` is `tombstone` / `older_hlc` / `self_echo` etc. Persistent non-zero rate signals real conflict or a stuck peer. |
+| `lantern_replication_lag_seq{peer,origin}` | gauge | How many mutation log entries this pod is behind `peer` for that `origin`. **The single most important HA signal.** |
+| `lantern_replication_applied_total{origin}` | counter | Remote mutations from `origin` (the originating writer node) that landed in the local cache. `rate()` ≈ steady-state replication throughput per origin. |
+| `lantern_replication_dropped_total{peer,reason}` | counter | Replication frames or peer interactions dropped. `reason` is `self_echo` / `subscribe_failed` / `snapshot_failed` / `dial_failed` / `peerstatus_failed` / `catchup_failed` / `clean` / `ctx_cancel`. A persistent non-zero rate (excluding `self_echo` / `clean`) signals an unreachable or stuck peer. |
 | `lantern_anti_entropy_cycles_total` | counter | Anti-entropy ticks. Should advance at `LANTERN_ANTI_ENTROPY_INTERVAL_MS` cadence. |
 | `lantern_anti_entropy_gaps_found_total{peer,origin}` | counter | Non-zero = real divergence detected and being repaired. Spiking after a partition heal = expected. Persistently incrementing in steady state = open a bug. |
 | `lantern_mutation_log_entries_total` | counter | Total mutations ever logged on this pod. |
 | `lantern_mutation_log_capacity` | gauge | Ring buffer capacity. If sustained `rate(mutation_log_entries) × subscribe_lag_seconds > capacity`, slow peers will fall off and re-snapshot. |
 | `lantern_subscribe_active_streams` | gauge | Inbound subscribers (peers + external CDC). Drop = peer disconnect or CDC consumer crash. |
-| `lantern_subscribe_dropped_total{reason}` | counter | `reason=out_of_range` ≥ 1 means a peer's `from_seq` fell off the ring buffer; the pump will re-snapshot automatically. |
+| `lantern_subscribe_dropped_total{reason}` | counter | `reason=gapped` means a peer's `from_seq` fell off the ring buffer (the pump re-snapshots automatically); `reason=send_failed` is a broken outbound stream. |
 
 ### 4.2 Resource / cache health
 
@@ -308,13 +281,13 @@ exact Prometheus series.
 | `lantern_vertices`, `lantern_edges` | Current working-set size. Must agree (within `lantern_replication_lag_seq`) across peers. |
 | `lantern_ttl_expirations_total{kind}` | TTL-driven evictions. |
 | `lantern_gc_duration_seconds` | GC sweep latency histogram. |
-| `lantern_build_info{version,commit}` | Version pinning for cross-checks during upgrade. |
+| `lantern_build_info{version,commit,go_version}` | Version pinning for cross-checks during upgrade. |
 
 ### 4.3 RPC layer
 
 The in-house Connect interceptor in
 `server/provider/connect_middleware.go` exposes the canonical
-`grpc_server_*` metric names (handled / handling time / received / sent).
+`grpc_server_*` metric names (started / handled / handling time).
 The names are intentionally retained for operator-dashboard continuity
 after the gRPC middleware was deleted in #337/#352; the wire protocol is
 Connect. Use them for per-RPC latency SLOs.
@@ -468,10 +441,10 @@ recreate-one-at-a-time loop) and confirming no `Unavailable` /
 connection-reset errors, and that `/readyz` returns **503 at the start
 of termination** before the listener stops accepting.
 
-**Single-instance (Tier B)** deploys (Cloud Run / ACA, `replicaCount: 1`)
-have no peer to fail over to, so the drain still flips `/readyz` (the
-platform shifts traffic to the new revision) but durability across the
-rotation comes from the snapshot backup/restore feature
+**Single-instance** deploys (`replicaCount: 1`) have no peer to fail over
+to, so the drain still flips `/readyz` (the platform shifts traffic to the
+new instance) but durability across the rotation comes from the snapshot
+backup/restore feature
 (`LANTERN_BACKUP_*`, #770) — see [docs/backup.md](backup.md) — not
 replication.
 
@@ -535,14 +508,15 @@ The new pod starts in `NOT_SERVING` until snapshot+tail completes.
 
 ### 9.2 Subscribe ring buffer overflow
 
-Symptom: `lantern_subscribe_dropped_total{reason="out_of_range"}`
-increments; the affected peer logs `OutOfRange` and re-snapshots on
-its own. No manual action needed.
+Symptom: `lantern_subscribe_dropped_total{reason="gapped"}`
+increments; the server replies `FailedPrecondition` (reason
+`gapped`) and the affected peer logs a `replication pump: peer
+transition` line with `transition="snapshot_start" reason="gapped"`,
+then re-snapshots on its own. No manual action needed.
 
 If overflow is **chronic**, write rate has outgrown
 `mutation_log_capacity`. Bump
-`LANTERN_MUTATION_LOG_CAPACITY` (if/when the env knob exists) or
-add cluster capacity.
+`LANTERN_MUTATION_LOG_CAPACITY` or add cluster capacity.
 
 ### 9.3 Pod stuck `NOT_SERVING` after restart
 
@@ -612,8 +586,9 @@ A short checklist to walk before opening an incident:
       single-instance mode, not "no readiness gating please". If you
       want HA, set discovery to `dns` (or put hosts in
       `LANTERN_PEERS`).
-- [ ] **Scaling a serverless PaaS to > 1 replica.** It won't work
-      and there's no warning. See [§3.5](#35-serverless-paas-single-instance-only).
+- [ ] **Scaling a single-instance deploy to > 1 replica expecting HA.**
+      On a platform that hides per-instance addresses it won't form a
+      cluster, and there's no warning. See [§2.1](#21-single-instance-mode-no-ha).
 - [ ] **NTP drift > 500 ms.** RFC D3. Watch
       `lantern_hlc_skew_clamped_total` if/when present, or just keep
       NTP healthy.
@@ -628,10 +603,10 @@ operator actions.
 | Failure | Signal | What to do |
 |---|---|---|
 | Single pod crash | k8s probe / Compose healthcheck flips | Auto-restarts. Pod bootstraps from peers. No action unless it crashloops. |
-| Pod falls behind buffer | `subscribe_dropped_total{reason="out_of_range"}` increments | Pump auto re-snapshots. Chronic = bump capacity. |
+| Pod falls behind buffer | `subscribe_dropped_total{reason="gapped"}` increments | Pump auto re-snapshots. Chronic = bump capacity. |
 | All peers unreachable on boot | Pod `NOT_SERVING`, no `replication_applied` increments | Check discovery env (§9.3). |
 | Total-cluster loss | Every pod down | Accepted data loss; rehydrate — or restore from snapshot backups if configured ([§9.4](#94-total-cluster-loss)). |
-| NTP skew > 500 ms | `hlc_skew_clamped_total > 0` | Fix NTP. Convergence preserved, but the drifted peer's stamps land behind real wall time. |
+| NTP skew > 500 ms | `lantern_hlc_skew_clamped_total` (planned — #180/#182; until then watch NTP) | Fix NTP. Convergence preserved, but the drifted peer's stamps land behind real wall time. |
 | Network partition < tombstone TTL | `replication_lag_seq` spike; `anti_entropy_gaps_found_total` non-zero after heal | Auto-converges. No action. |
 | Network partition > tombstone TTL | Same signals + possible resurrection | Force re-snapshot from the side you trust ([§9.1](#91-force-a-re-snapshot)). Consider extending tombstone TTL. |
 

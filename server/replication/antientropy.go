@@ -109,7 +109,7 @@ type AntiEntropyConfig struct {
 
 	// HTTPClient is the http.Client used to open Connect-Go streams
 	// against each peer. Defaults to defaultH2CClient() (plaintext
-	// HTTP/2 for the in-cluster Tier-A topology).
+	// HTTP/2 for the in-cluster HA topology).
 	HTTPClient *http.Client
 
 	// Logger receives lifecycle events. slog.Default() when nil.

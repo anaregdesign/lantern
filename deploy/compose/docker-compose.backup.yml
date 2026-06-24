@@ -1,7 +1,7 @@
-# Docker Compose: single-instance (Tier B) with snapshot durability (#770).
+# Docker Compose: single-instance with snapshot durability (#770).
 #
 # This is the rolling-update / restart insurance for a single Lantern
-# instance — the Cloud Run / Azure Container Apps shape, run locally. Lantern
+# instance, run locally. Lantern
 # is in-memory, so without this a `docker compose down && up` (or a crash)
 # loses the whole graph. With a mounted volume + the LANTERN_BACKUP_* knobs,
 # the server periodically dumps the whole graph to ./backups and restores the
@@ -17,7 +17,7 @@
 #   go run ../../cli get vertex hello               # still there
 #
 # Single instance ⇒ restore-on-start is the whole recovery path (no peers to
-# bootstrap from). The 3-replica Tier-A HA stack in docker-compose.yml also
+# bootstrap from). The 3-replica HA stack in docker-compose.yml also
 # restores on boot, but only as a baseline — peer bootstrap then overlays it
 # via HLC, so there replicas take priority and the dump just fills gaps.
 #
@@ -50,8 +50,8 @@ services:
       # Flip readiness before the listener closes on `down` (#768).
       LANTERN_DRAIN_DELAY_SECONDS: "5"
     volumes:
-      # The mounted volume that survives container recreation. On Cloud Run
-      # this is a GCS-FUSE / Filestore mount; on ACA an Azure Files share.
+      # The mounted volume that survives container recreation. In production
+      # this is a network or persistent block-volume mount.
       - ./backups:/data
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:9090/readyz"]
