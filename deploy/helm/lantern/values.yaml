@@ -99,6 +99,20 @@ metrics:
     enabled: false
     interval: 60s
     labels: {}
+    # GMP metricRelabeling applied to scraped samples (Prometheus
+    # metric_relabel_configs semantics). The default keeps the signals this
+    # deployment actually consumes — every lantern_* family, the grpc_server_*
+    # RPC RED metrics (rate/errors/latency; emitted lazily on the first unary
+    # call), and a minimal runtime set (scrape up, goroutines, heap-in-use,
+    # RSS, CPU) — and drops the generic go_*/process_*/promhttp_* collectors
+    # that carry no Lantern-specific signal. This is signal curation, not a
+    # major cost lever: lantern_* (its illuminate/scan histograms) is ~95% of
+    # the live series count, so the dropped collectors are only a small slice.
+    # Set to [] to ingest every scraped series.
+    metricRelabeling:
+      - action: keep
+        sourceLabels: [__name__]
+        regex: lantern_.*|grpc_server_.*|up|go_goroutines|go_memstats_heap_inuse_bytes|process_resident_memory_bytes|process_cpu_seconds_total
 
 # Replication / peer discovery. See docs/replication.md §9.1.
 replication:
