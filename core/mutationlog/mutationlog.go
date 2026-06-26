@@ -10,11 +10,14 @@
 // external CDC (#180) without a circular dependency on pb/.
 //
 // A bounded number of entries are retained for replay. When a subscriber
-// requests a Seq older than [Log.FirstSeq] the channel is closed and
-// [ErrGapped] is reported via the cancel func's returned error; the caller
-// is then expected to snapshot and resubscribe (RFC §7). Live subscribers
-// share a bounded outbound channel — slow consumers exert back-pressure on
-// [Log.Append] rather than allowing the log to drift forward without them.
+// requests a Seq older than [Log.FirstSeq] that entry has already been
+// evicted, so [Log.Subscribe] returns [ErrGapped] and the caller is then
+// expected to snapshot and resubscribe (RFC §7). The replay window is
+// delivered ahead of live traffic without being bounded by the subscriber
+// buffer; only the live tail shares a bounded outbound channel, so a slow
+// consumer of *live* entries exerts back-pressure rather than allowing the
+// log to drift forward without it (see [Log.Subscribe] for the #812
+// rationale).
 //
 // A [WAL] hook lets a future durability layer (RFC D1) intercept appends
 // before they fan out. The default [NopWAL] is a no-op, matching today's
@@ -396,77 +399,118 @@ func (l *Log) fanout(entry Entry) {
 
 // Subscribe returns a channel that receives entries starting at fromSeq.
 // Any entries with Seq >= fromSeq still resident in the ring buffer are
-// replayed immediately; subsequent entries are delivered live.
+// replayed first, in order, followed by live entries.
 //
-// If fromSeq is older than [Log.FirstSeq] the returned channel is closed
-// immediately and the cancel func reports [ErrGapped] when invoked.
+// If fromSeq is older than [Log.FirstSeq] the entry has already been
+// evicted and Subscribe returns [ErrGapped]; the caller must snapshot and
+// resubscribe from a fresh sequence number.
 //
 // The returned cancel func unregisters the subscriber and closes the
 // channel. It is safe to call cancel more than once; subsequent calls
 // return nil.
 //
-// Slow subscribers exert back-pressure: each subscriber has a bounded
-// outbound channel (see [Options.SubscriberBuffer]). When that channel
-// fills, the subscriber is marked gapped, its channel is closed, and the
-// caller must snapshot and resubscribe from a fresh Seq.
+// Replay vs. back-pressure (#812): the replay window is delivered by a
+// dedicated forwarder goroutine with a blocking send, so a catch-up larger
+// than [Options.SubscriberBuffer] is NOT mistaken for a slow subscriber —
+// it merely back-pressures the producer until the consumer drains it.
+// SubscriberBuffer continues to bound only the *live* tail: once caught up,
+// a consumer that then falls behind by more than SubscriberBuffer entries
+// is marked gapped, its channel is closed, and it must snapshot and
+// resubscribe. Before #812 the replay was loaded straight into the
+// SubscriberBuffer-bounded channel and Subscribe returned ErrGapped the
+// instant the retained ring exceeded SubscriberBuffer, which
+// deterministically broke replication to any peer whose log had grown past
+// that bound.
 func (l *Log) Subscribe(fromSeq uint64) (<-chan Entry, func() error, error) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	if l.closed {
+		l.mu.Unlock()
 		return nil, nil, ErrClosed
 	}
 	if l.hasEntries && fromSeq < l.firstSeq {
+		l.mu.Unlock()
 		return nil, nil, ErrGapped
 	}
-	// startSeq pins the boundary between replay (loaded synchronously
-	// into sub.ch below) and live delivery (handed in by the
-	// dispatcher). It is captured under l.mu so it cannot tear against
-	// concurrent Append calls (#260).
-	sub := &subscription{
-		ch:       make(chan Entry, l.subBuf),
-		startSeq: l.lastSeq + 1,
-	}
-	// Replay any in-buffer entries with Seq >= fromSeq. Entries are stored
-	// in the circular ring at positions [head, head+size); iterate that
-	// active window rather than ranging over the backing slice (which
-	// contains stale slots past size).
+	// Snapshot the replay window [fromSeq, lastSeq] out of the ring under
+	// l.mu so it cannot tear against a concurrent Append/eviction. Entries
+	// occupy ring positions [head, head+size); iterate that active window
+	// rather than ranging over the backing slice (which holds stale slots
+	// past size). The forwarder goroutine below delivers this snapshot with
+	// a blocking send, so a replay larger than subBuf does not gap (#812).
+	var replay []Entry
 	for i := 0; i < l.size; i++ {
 		e := l.ring[(l.head+i)%l.capacity]
 		if e.Seq < fromSeq {
 			continue
 		}
-		select {
-		case sub.ch <- e:
-		default:
-			// Backlog already exceeds the subscriber buffer at registration
-			// time: caller asked us to replay more history than they can
-			// drain, so surface as a gap and refuse the subscription.
-			close(sub.ch)
-			return nil, nil, ErrGapped
-		}
+		replay = append(replay, e)
+	}
+	// startSeq pins the boundary between replay (the snapshot above) and
+	// live delivery (handed in by the dispatcher). It is captured under
+	// l.mu so it cannot tear against concurrent Append calls (#260), and the
+	// subscriber is registered before mu is released so the dispatcher
+	// cannot deliver a Seq >= startSeq entry that the snapshot missed.
+	live := &subscription{
+		ch:       make(chan Entry, l.subBuf),
+		startSeq: l.lastSeq + 1,
 	}
 	// Register the subscriber under subsMu (lock order: mu → subsMu).
-	// Holding mu here ensures the dispatcher cannot deliver an entry
-	// with Seq >= startSeq before the subscriber is visible, because the
-	// dispatcher needs subsMu and Append needs mu to enqueue further
-	// entries.
 	l.subsMu.Lock()
-	l.subscribers[sub] = struct{}{}
+	l.subscribers[live] = struct{}{}
 	l.subsMu.Unlock()
+	l.mu.Unlock()
+
+	// out carries replay-then-live to the caller. A single forwarder
+	// goroutine drains the snapshot first (blocking, so a large catch-up
+	// back-pressures the producer instead of gapping), then mirrors the
+	// bounded live channel. The slow-subscriber protection is preserved: the
+	// dispatcher still fills and closes live.ch on overflow, which the
+	// forwarder surfaces by returning and closing out.
+	out := make(chan Entry)
+	done := make(chan struct{})
+	go func() {
+		defer close(out)
+		for _, e := range replay {
+			select {
+			case out <- e:
+			case <-done:
+				return
+			}
+		}
+		for {
+			select {
+			case e, ok := <-live.ch:
+				if !ok {
+					return
+				}
+				select {
+				case out <- e:
+				case <-done:
+					return
+				}
+			case <-done:
+				return
+			}
+		}
+	}()
 
 	var cancelOnce sync.Once
 	cancel := func() error {
 		cancelOnce.Do(func() {
+			// Stop the forwarder even if it is blocked on out <- e, then
+			// unregister + close the live channel (guarded by membership so
+			// we never double-close against a concurrent dispatcher gap).
+			close(done)
 			l.subsMu.Lock()
 			defer l.subsMu.Unlock()
-			if _, ok := l.subscribers[sub]; ok {
-				delete(l.subscribers, sub)
-				close(sub.ch)
+			if _, ok := l.subscribers[live]; ok {
+				delete(l.subscribers, live)
+				close(live.ch)
 			}
 		})
 		return nil
 	}
-	return sub.ch, cancel, nil
+	return out, cancel, nil
 }
 
 // Close stops accepting appends, signals the dispatcher to drain, and

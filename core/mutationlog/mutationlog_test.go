@@ -72,6 +72,64 @@ func TestSubscribeReplaysAndStreams(t *testing.T) {
 	}
 }
 
+// TestSubscribeReplayExceedsBufferDoesNotGap is the regression test for #812.
+// A replay window larger than SubscriberBuffer must not be mistaken for a
+// slow subscriber: before the fix, Subscribe loaded the replay straight into
+// the SubscriberBuffer-bounded channel and returned ErrGapped the instant the
+// retained (un-evicted) ring exceeded the buffer, which permanently broke
+// replication to any peer whose log had grown past SubscriberBuffer entries.
+func TestSubscribeReplayExceedsBufferDoesNotGap(t *testing.T) {
+	const (
+		n      = 100 // retained entries to replay — far above subBuf
+		subBuf = 4
+	)
+	l := New(Options{Capacity: 256, SubscriberBuffer: subBuf})
+	for i := 1; i <= n; i++ {
+		if _, err := l.Append(i, ts(int64(i))); err != nil {
+			t.Fatalf("append #%d: %v", i, err)
+		}
+	}
+	// Capacity (256) > n, so nothing was evicted: a from-seq-1 subscribe must
+	// replay all n entries instead of gapping.
+	if first, _ := l.FirstSeq(); first != 1 {
+		t.Fatalf("FirstSeq = %d, want 1 (no eviction expected)", first)
+	}
+	ch, cancel, err := l.Subscribe(1)
+	if err != nil {
+		t.Fatalf("subscribe: %v (replay larger than SubscriberBuffer must not gap)", err)
+	}
+	defer cancel()
+	// Drain the entire replay window, in order, without a spurious close.
+	for i := 1; i <= n; i++ {
+		select {
+		case e, ok := <-ch:
+			if !ok {
+				t.Fatalf("channel closed mid-replay at #%d (spurious gap)", i)
+			}
+			if e.Seq != uint64(i) {
+				t.Fatalf("replay seq = %d, want %d", e.Seq, i)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timeout draining replay #%d", i)
+		}
+	}
+	// Live delivery continues past the replay window.
+	if _, err := l.Append(n+1, ts(int64(n+1))); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case e, ok := <-ch:
+		if !ok {
+			t.Fatal("channel closed before live entry")
+		}
+		if e.Seq != uint64(n+1) {
+			t.Fatalf("live seq = %d, want %d", e.Seq, n+1)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout on live entry after large replay")
+	}
+}
+
 func TestSubscribeRequestsBelowFirstSeqReportsGap(t *testing.T) {
 	l := New(Options{Capacity: 2})
 	for i := 1; i <= 5; i++ {
