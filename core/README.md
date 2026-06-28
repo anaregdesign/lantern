@@ -13,6 +13,7 @@ specific to the gRPC/transport layer.
 | `concurrent/` | Concurrency primitives, including a typed pub/sub (`concurrent/pubsub`). |
 | `graph/` | In-memory graph model and traversal/scoring helpers. |
 | `graphcache/` | Graph-specialized cache: TTL'd vertices and additive decaying edges, with an optional prefix index. The server's primary store. |
+| `llm/` | Backend-agnostic abstractions for single-shot, structured-output language models. |
 | `model/function/` | Functional-style type aliases used across the other packages. |
 | `nlp/` | Lightweight NLP helpers. |
 
