@@ -30,6 +30,19 @@ const DefaultBaseURL = "https://generativelanguage.googleapis.com"
 // filter and no usable output is produced.
 var ErrBlocked = errors.New("gemini: response blocked")
 
+// Effort selects the thinking level for thinking-capable models. The empty value
+// lets the server decide and omits the parameter entirely.
+type Effort string
+
+const (
+	// EffortLow requests low thinking.
+	EffortLow Effort = "low"
+	// EffortMedium requests medium thinking.
+	EffortMedium Effort = "medium"
+	// EffortHigh requests high thinking.
+	EffortHigh Effort = "high"
+)
+
 // Client is a non-generic, reusable handle to the Gemini generateContent API. It
 // is safe for concurrent use. Bind a structured-output type with New.
 type Client struct {
@@ -87,28 +100,30 @@ func NewClient(apiKey, model string, opts ...Option) *Client {
 	return c
 }
 
-// New binds output type T and a fixed system instruction to client, yielding an
-// llm.Model[T]. The JSON schema is derived from T once; each Generate sends the
-// instruction plus the call's input. The model is reusable and concurrent-safe.
-func New[T any](client *Client, instruction string) (llm.Model[T], error) {
+// New binds output type T, a fixed system instruction, and a thinking effort to
+// client, yielding an llm.Model[T]. The JSON schema is derived from T once; each
+// Generate sends the instruction plus the call's input. An empty effort lets the
+// server decide. The model is reusable and concurrent-safe.
+func New[T any](client *Client, instruction string, effort Effort) (llm.Model[T], error) {
 	schema, err := llm.SchemaFor[T]()
 	if err != nil {
 		return nil, err
 	}
-	return &model[T]{client: client, instruction: instruction, schema: schema.Definition}, nil
+	return &model[T]{client: client, instruction: instruction, schema: schema.Definition, effort: effort}, nil
 }
 
-// model binds an output type T, a fixed instruction, and the derived JSON schema
-// to a Client. It satisfies llm.Model[T].
+// model binds an output type T, a fixed instruction, the derived JSON schema, and
+// a thinking effort to a Client. It satisfies llm.Model[T].
 type model[T any] struct {
 	client      *Client
 	instruction string
 	schema      json.RawMessage
+	effort      Effort
 }
 
 // Generate sends the instruction plus input, then decodes the response JSON into T.
 func (m *model[T]) Generate(ctx context.Context, input string) (llm.Response[T], error) {
-	r, err := m.client.generate(ctx, m.instruction, input, m.schema)
+	r, err := m.client.generate(ctx, m.instruction, input, m.schema, m.effort)
 	if err != nil {
 		return llm.Response[T]{}, err
 	}
@@ -138,6 +153,11 @@ type generationConfig struct {
 	ResponseMimeType string          `json:"responseMimeType"`
 	ResponseSchema   json.RawMessage `json:"responseSchema"`
 	MaxOutputTokens  int             `json:"maxOutputTokens,omitempty"`
+	ThinkingConfig   *thinkingConfig `json:"thinkingConfig,omitempty"`
+}
+
+type thinkingConfig struct {
+	ThinkingLevel string `json:"thinkingLevel"`
 }
 
 type response struct {
@@ -162,7 +182,11 @@ type result struct {
 	model  string
 }
 
-func (c *Client) generate(ctx context.Context, instruction, input string, schema json.RawMessage) (result, error) {
+func (c *Client) generate(ctx context.Context, instruction, input string, schema json.RawMessage, effort Effort) (result, error) {
+	var thinking *thinkingConfig
+	if effort != "" {
+		thinking = &thinkingConfig{ThinkingLevel: string(effort)}
+	}
 	body, err := json.Marshal(request{
 		SystemInstruction: &content{Parts: []part{{Text: instruction}}},
 		Contents:          []content{{Role: "user", Parts: []part{{Text: input}}}},
@@ -170,6 +194,7 @@ func (c *Client) generate(ctx context.Context, instruction, input string, schema
 			ResponseMimeType: "application/json",
 			ResponseSchema:   schema,
 			MaxOutputTokens:  c.maxTokens,
+			ThinkingConfig:   thinking,
 		},
 	})
 	if err != nil {

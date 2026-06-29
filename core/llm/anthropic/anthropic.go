@@ -36,6 +36,19 @@ const DefaultMaxTokens = 1024
 // ErrRefusal is returned when the model declines to answer.
 var ErrRefusal = errors.New("anthropic: model refused to answer")
 
+// Effort selects the extended-thinking effort for thinking-capable models. The
+// empty value disables extended thinking and omits the parameter entirely.
+type Effort string
+
+const (
+	// EffortLow requests low thinking effort.
+	EffortLow Effort = "low"
+	// EffortMedium requests medium thinking effort.
+	EffortMedium Effort = "medium"
+	// EffortHigh requests high thinking effort.
+	EffortHigh Effort = "high"
+)
+
 // Client is a non-generic, reusable handle to the Anthropic Messages API. It is
 // safe for concurrent use. Bind a structured-output type with New.
 type Client struct {
@@ -106,28 +119,30 @@ func NewClient(apiKey, model string, opts ...Option) *Client {
 	return c
 }
 
-// New binds output type T and a fixed system instruction to client, yielding an
-// llm.Model[T]. The JSON schema is derived from T once; each Generate sends the
-// instruction plus the call's input. The model is reusable and concurrent-safe.
-func New[T any](client *Client, instruction string) (llm.Model[T], error) {
+// New binds output type T, a fixed system instruction, and a thinking effort to
+// client, yielding an llm.Model[T]. The JSON schema is derived from T once; each
+// Generate sends the instruction plus the call's input. An empty effort omits
+// extended thinking. The model is reusable and concurrent-safe.
+func New[T any](client *Client, instruction string, effort Effort) (llm.Model[T], error) {
 	schema, err := llm.SchemaFor[T]()
 	if err != nil {
 		return nil, err
 	}
-	return &model[T]{client: client, instruction: instruction, schema: schema.Definition}, nil
+	return &model[T]{client: client, instruction: instruction, schema: schema.Definition, effort: effort}, nil
 }
 
-// model binds an output type T, a fixed instruction, and the derived JSON schema
-// to a Client. It satisfies llm.Model[T].
+// model binds an output type T, a fixed instruction, the derived JSON schema, and
+// a thinking effort to a Client. It satisfies llm.Model[T].
 type model[T any] struct {
 	client      *Client
 	instruction string
 	schema      json.RawMessage
+	effort      Effort
 }
 
 // Generate sends the instruction plus input, then decodes the response JSON into T.
 func (m *model[T]) Generate(ctx context.Context, input string) (llm.Response[T], error) {
-	r, err := m.client.generate(ctx, m.instruction, input, m.schema)
+	r, err := m.client.generate(ctx, m.instruction, input, m.schema, m.effort)
 	if err != nil {
 		return llm.Response[T]{}, err
 	}
@@ -139,11 +154,17 @@ func (m *model[T]) Generate(ctx context.Context, input string) (llm.Response[T],
 }
 
 type request struct {
-	Model        string        `json:"model"`
-	MaxTokens    int           `json:"max_tokens"`
-	System       string        `json:"system,omitempty"`
-	Messages     []message     `json:"messages"`
-	OutputConfig *outputConfig `json:"output_config,omitempty"`
+	Model        string          `json:"model"`
+	MaxTokens    int             `json:"max_tokens"`
+	System       string          `json:"system,omitempty"`
+	Messages     []message       `json:"messages"`
+	OutputConfig *outputConfig   `json:"output_config,omitempty"`
+	Thinking     *thinkingConfig `json:"thinking,omitempty"`
+}
+
+type thinkingConfig struct {
+	Type   string `json:"type"`
+	Effort string `json:"effort"`
 }
 
 type message struct {
@@ -182,7 +203,11 @@ type result struct {
 	model  string
 }
 
-func (c *Client) generate(ctx context.Context, instruction, input string, schema json.RawMessage) (result, error) {
+func (c *Client) generate(ctx context.Context, instruction, input string, schema json.RawMessage, effort Effort) (result, error) {
+	var thinking *thinkingConfig
+	if effort != "" {
+		thinking = &thinkingConfig{Type: "enabled", Effort: string(effort)}
+	}
 	body, err := json.Marshal(request{
 		Model:     c.model,
 		MaxTokens: c.maxTokens,
@@ -192,6 +217,7 @@ func (c *Client) generate(ctx context.Context, instruction, input string, schema
 			Type:   "json_schema",
 			Schema: schema,
 		}},
+		Thinking: thinking,
 	})
 	if err != nil {
 		return result{}, fmt.Errorf("anthropic: marshal request: %w", err)
