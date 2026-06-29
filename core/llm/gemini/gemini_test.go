@@ -18,6 +18,12 @@ type weather struct {
 	High int    `json:"high"`
 }
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
 func TestGenerate(t *testing.T) {
 	var gotPath, gotKey string
 	var gotBody request
@@ -69,6 +75,40 @@ func TestGenerate(t *testing.T) {
 	}
 	if gotBody.GenerationConfig.ThinkingConfig == nil || gotBody.GenerationConfig.ThinkingConfig.ThinkingLevel != "high" {
 		t.Errorf("thinkingConfig = %+v, want level high", gotBody.GenerationConfig.ThinkingConfig)
+	}
+}
+
+func TestGenerateWithInjectedAuthTransport(t *testing.T) {
+	var gotAPIKey, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAPIKey = r.Header.Get("x-goog-api-key")
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"modelVersion":"gemini-3","candidates":[{"content":{"parts":[`+
+			`{"text":"{\"city\":\"Tokyo\",\"high\":31}"}]},"finishReason":"STOP"}],`+
+			`"usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":7,"totalTokenCount":19}}`)
+	}))
+	defer srv.Close()
+
+	h := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if got := r.Header.Get("x-goog-api-key"); got != "" {
+			t.Errorf("pre-injected x-goog-api-key = %q, want empty", got)
+		}
+		r.Header.Set("Authorization", "******")
+		return http.DefaultTransport.RoundTrip(r)
+	})}
+	m, err := New[weather](NewClient("", "gemini-3", WithBaseURL(srv.URL), WithHTTPClient(h)), "report weather", "")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := m.Generate(context.Background(), "Tokyo"); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if gotAPIKey != "" {
+		t.Errorf("x-goog-api-key = %q, want empty", gotAPIKey)
+	}
+	if gotAuth != "******" {
+		t.Errorf("Authorization = %q, want injected transport value", gotAuth)
 	}
 }
 
