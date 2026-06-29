@@ -33,7 +33,7 @@ func TestGenerate(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	m, err := New[weather](NewClient("sk-test", "gpt-5.5", WithBaseURL(srv.URL)), "report weather")
+	m, err := New[weather](NewClient("sk-test", "gpt-5.5", WithBaseURL(srv.URL)), "report weather", EffortHigh)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -63,6 +63,9 @@ func TestGenerate(t *testing.T) {
 	if gotBody.Model != "gpt-5.5" || gotBody.Instructions != "report weather" || !gotBody.Text.Format.Strict {
 		t.Errorf("request = %+v", gotBody)
 	}
+	if gotBody.Reasoning == nil || gotBody.Reasoning.Effort != "high" {
+		t.Errorf("reasoning = %+v, want effort high", gotBody.Reasoning)
+	}
 }
 
 func TestGenerateRefusal(t *testing.T) {
@@ -71,7 +74,7 @@ func TestGenerateRefusal(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	m, _ := New[weather](NewClient("k", "m", WithBaseURL(srv.URL)), "x")
+	m, _ := New[weather](NewClient("k", "m", WithBaseURL(srv.URL)), "x", "")
 	if _, err := m.Generate(context.Background(), "y"); !errors.Is(err, ErrRefusal) {
 		t.Fatalf("err = %v, want ErrRefusal", err)
 	}
@@ -84,7 +87,7 @@ func TestGenerateLength(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	m, _ := New[weather](NewClient("k", "m", WithBaseURL(srv.URL)), "x")
+	m, _ := New[weather](NewClient("k", "m", WithBaseURL(srv.URL)), "x", "")
 	resp, err := m.Generate(context.Background(), "y")
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
@@ -101,7 +104,7 @@ func TestGenerateHTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	m, _ := New[weather](NewClient("k", "m", WithBaseURL(srv.URL)), "x")
+	m, _ := New[weather](NewClient("k", "m", WithBaseURL(srv.URL)), "x", "")
 	_, err := m.Generate(context.Background(), "y")
 	if err == nil || !strings.Contains(err.Error(), "401") {
 		t.Fatalf("err = %v, want 401", err)

@@ -29,6 +29,21 @@ const DefaultBaseURL = "https://api.openai.com"
 // is wrapped for context.
 var ErrRefusal = errors.New("openai: model refused to answer")
 
+// Effort selects the reasoning effort for reasoning-capable models. The empty
+// value lets the server decide and omits the parameter entirely.
+type Effort string
+
+const (
+	// EffortMinimal requests the least reasoning.
+	EffortMinimal Effort = "minimal"
+	// EffortLow requests low reasoning.
+	EffortLow Effort = "low"
+	// EffortMedium requests medium reasoning.
+	EffortMedium Effort = "medium"
+	// EffortHigh requests high reasoning.
+	EffortHigh Effort = "high"
+)
+
 // Client is a non-generic, reusable handle to the OpenAI Responses API. It is
 // safe for concurrent use. Bind a structured-output type with New.
 type Client struct {
@@ -86,10 +101,11 @@ func NewClient(apiKey, model string, opts ...Option) *Client {
 	return c
 }
 
-// New binds output type T and a fixed system instruction to client, yielding an
-// llm.Model[T]. The JSON schema is derived from T once; each Generate sends the
-// instruction plus the call's input. The model is reusable and concurrent-safe.
-func New[T any](client *Client, instruction string) (llm.Model[T], error) {
+// New binds output type T, a fixed system instruction, and a reasoning effort to
+// client, yielding an llm.Model[T]. The JSON schema is derived from T once; each
+// Generate sends the instruction plus the call's input. An empty effort omits
+// the reasoning parameter. The model is reusable and concurrent-safe.
+func New[T any](client *Client, instruction string, effort Effort) (llm.Model[T], error) {
 	schema, err := llm.SchemaFor[T]()
 	if err != nil {
 		return nil, err
@@ -98,21 +114,22 @@ func New[T any](client *Client, instruction string) (llm.Model[T], error) {
 	if name == "" {
 		name = "output"
 	}
-	return &model[T]{client: client, instruction: instruction, name: name, schema: schema.Definition}, nil
+	return &model[T]{client: client, instruction: instruction, name: name, schema: schema.Definition, effort: effort}, nil
 }
 
-// model binds an output type T, a fixed instruction, and the derived JSON schema
-// to a Client. It satisfies llm.Model[T].
+// model binds an output type T, a fixed instruction, the derived JSON schema, and
+// a reasoning effort to a Client. It satisfies llm.Model[T].
 type model[T any] struct {
 	client      *Client
 	instruction string
 	name        string
 	schema      json.RawMessage
+	effort      Effort
 }
 
 // Generate sends the instruction plus input, then decodes the response JSON into T.
 func (m *model[T]) Generate(ctx context.Context, input string) (llm.Response[T], error) {
-	r, err := m.client.generate(ctx, m.instruction, input, m.name, m.schema)
+	r, err := m.client.generate(ctx, m.instruction, input, m.name, m.schema, m.effort)
 	if err != nil {
 		return llm.Response[T]{}, err
 	}
@@ -124,11 +141,16 @@ func (m *model[T]) Generate(ctx context.Context, input string) (llm.Response[T],
 }
 
 type request struct {
-	Model           string     `json:"model"`
-	Instructions    string     `json:"instructions,omitempty"`
-	Input           string     `json:"input"`
-	Text            textConfig `json:"text"`
-	MaxOutputTokens int        `json:"max_output_tokens,omitempty"`
+	Model           string           `json:"model"`
+	Instructions    string           `json:"instructions,omitempty"`
+	Input           string           `json:"input"`
+	Text            textConfig       `json:"text"`
+	MaxOutputTokens int              `json:"max_output_tokens,omitempty"`
+	Reasoning       *reasoningConfig `json:"reasoning,omitempty"`
+}
+
+type reasoningConfig struct {
+	Effort string `json:"effort"`
 }
 
 type textConfig struct {
@@ -171,7 +193,11 @@ type result struct {
 	model  string
 }
 
-func (c *Client) generate(ctx context.Context, instruction, input, name string, schema json.RawMessage) (result, error) {
+func (c *Client) generate(ctx context.Context, instruction, input, name string, schema json.RawMessage, effort Effort) (result, error) {
+	var reasoning *reasoningConfig
+	if effort != "" {
+		reasoning = &reasoningConfig{Effort: string(effort)}
+	}
 	body, err := json.Marshal(request{
 		Model:        c.model,
 		Instructions: instruction,
@@ -183,6 +209,7 @@ func (c *Client) generate(ctx context.Context, instruction, input, name string, 
 			Schema: schema,
 		}},
 		MaxOutputTokens: c.maxTokens,
+		Reasoning:       reasoning,
 	})
 	if err != nil {
 		return result{}, fmt.Errorf("openai: marshal request: %w", err)

@@ -49,7 +49,7 @@ func main() {
 
 	// New binds output type T plus a fixed instruction into an llm.Model[T].
 	// Reuse one Client across many models with different instructions/types.
-	m, err := anthropic.New[weather](client, "Report the weather as structured data.")
+	m, err := anthropic.New[weather](client, "Report the weather as structured data.", anthropic.EffortMedium)
 	if err != nil {
 		log.Fatalf("New: %v", err)
 	}

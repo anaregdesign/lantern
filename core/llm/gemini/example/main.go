@@ -50,7 +50,7 @@ func main() {
 
 	// New binds output type T plus a fixed instruction into an llm.Model[T].
 	// Reuse one Client across many models with different instructions/types.
-	m, err := gemini.New[weather](client, "Report the weather as structured data.")
+	m, err := gemini.New[weather](client, "Report the weather as structured data.", gemini.EffortMedium)
 	if err != nil {
 		log.Fatalf("New: %v", err)
 	}
