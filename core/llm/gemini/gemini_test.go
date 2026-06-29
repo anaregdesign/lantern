@@ -114,3 +114,25 @@ func TestGenerateHTTPError(t *testing.T) {
 		t.Fatalf("err = %v, want 401", err)
 	}
 }
+
+func TestResponseSchemaStripsAdditionalProperties(t *testing.T) {
+	var gotBody request
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotBody)
+		_, _ = io.WriteString(w, `{"candidates":[{"content":{"parts":[`+
+			`{"text":"{\"city\":\"Tokyo\",\"high\":1}"}]},"finishReason":"STOP"}]}`)
+	}))
+	defer srv.Close()
+
+	m, err := New[weather](NewClient("k", "m", WithBaseURL(srv.URL)), "x", "")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := m.Generate(context.Background(), "y"); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if strings.Contains(string(gotBody.GenerationConfig.ResponseSchema), "additionalProperties") {
+		t.Errorf("responseSchema must not contain additionalProperties: %s", gotBody.GenerationConfig.ResponseSchema)
+	}
+}

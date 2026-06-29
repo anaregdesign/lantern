@@ -109,7 +109,38 @@ func New[T any](client *Client, instruction string, effort Effort) (llm.Model[T]
 	if err != nil {
 		return nil, err
 	}
-	return &model[T]{client: client, instruction: instruction, schema: schema.Definition, effort: effort}, nil
+	def, err := sanitizeSchema(schema.Definition)
+	if err != nil {
+		return nil, fmt.Errorf("gemini: sanitize schema: %w", err)
+	}
+	return &model[T]{client: client, instruction: instruction, schema: def, effort: effort}, nil
+}
+
+// sanitizeSchema rewrites the canonical JSON Schema produced by llm.SchemaFor
+// into the subset Gemini's responseSchema accepts. Gemini follows an OpenAPI 3.0
+// subset that rejects "additionalProperties", so it is stripped recursively.
+func sanitizeSchema(raw json.RawMessage) (json.RawMessage, error) {
+	var doc any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, err
+	}
+	stripUnsupported(doc)
+	return json.Marshal(doc)
+}
+
+// stripUnsupported walks a decoded JSON document and removes keys Gemini rejects.
+func stripUnsupported(node any) {
+	switch v := node.(type) {
+	case map[string]any:
+		delete(v, "additionalProperties")
+		for _, child := range v {
+			stripUnsupported(child)
+		}
+	case []any:
+		for _, child := range v {
+			stripUnsupported(child)
+		}
+	}
 }
 
 // model binds an output type T, a fixed instruction, the derived JSON schema, and
