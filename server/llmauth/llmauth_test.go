@@ -79,6 +79,27 @@ func TestConstructorsRejectNilAuthSources(t *testing.T) {
 	}
 }
 
+func TestAzureClientSecretHTTPClientBuilds(t *testing.T) {
+	client, err := NewAzureClientSecretHTTPClient(
+		"00000000-0000-0000-0000-000000000000",
+		"11111111-1111-1111-1111-111111111111",
+		"secret",
+	)
+	if err != nil {
+		t.Fatalf("NewAzureClientSecretHTTPClient: %v", err)
+	}
+	if client == nil {
+		t.Fatal("nil client")
+	}
+	if _, ok := client.Transport.(azureBearerTransport); !ok {
+		t.Errorf("transport = %T, want azureBearerTransport", client.Transport)
+	}
+	// An invalid (empty) tenant ID must surface as a construction error.
+	if _, err := NewAzureClientSecretHTTPClient("", "client", "secret"); err == nil {
+		t.Error("empty tenant ID: got nil err, want error")
+	}
+}
+
 func TestAuthTransportReturnsTokenErrors(t *testing.T) {
 	want := errors.New("no token")
 	client, err := NewAzureCredentialHTTPClient(&fakeAzureCredential{err: want}, "scope", WithBaseTransport(roundTripFunc(func(r *http.Request) (*http.Response, error) {

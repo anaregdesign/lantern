@@ -68,6 +68,18 @@ func NewAzureManagedIdentityHTTPClient(opts ...Option) (*http.Client, error) {
 	return NewAzureCredentialHTTPClient(cred, AzureOpenAIScope, opts...)
 }
 
+// NewAzureClientSecretHTTPClient returns an HTTP client that authenticates
+// requests with an Entra ID service-principal (client-secret) token for Azure
+// OpenAI. It is a convenience wrapper over NewAzureCredentialHTTPClient so
+// callers need not import azidentity directly.
+func NewAzureClientSecretHTTPClient(tenantID, clientID, clientSecret string, opts ...Option) (*http.Client, error) {
+	cred, err := azidentity.NewClientSecretCredential(tenantID, clientID, clientSecret, nil)
+	if err != nil {
+		return nil, fmt.Errorf("llmauth: azure client secret credential: %w", err)
+	}
+	return NewAzureCredentialHTTPClient(cred, AzureOpenAIScope, opts...)
+}
+
 // NewAzureCredentialHTTPClient returns an HTTP client that injects bearer tokens
 // acquired from cred. An empty scope defaults to AzureOpenAIScope.
 func NewAzureCredentialHTTPClient(cred azcore.TokenCredential, scope string, opts ...Option) (*http.Client, error) {

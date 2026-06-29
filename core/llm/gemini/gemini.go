@@ -9,6 +9,11 @@
 // fixed at construction by New rather than per call. Passing an empty API key
 // omits the static x-goog-api-key header so an injected HTTP client's transport
 // can provide cloud-identity authentication.
+//
+// WithVertex retargets the client at Vertex AI's generateContent endpoint
+// (projects/{project}/locations/{location}/publishers/google/...), whose request
+// and response bodies match the Gemini Developer API; combine it with an injected
+// Google-credential transport for service-account or ADC authentication.
 package gemini
 
 import (
@@ -48,24 +53,56 @@ const (
 // Client is a non-generic, reusable handle to the Gemini generateContent API. It
 // is safe for concurrent use. Bind a structured-output type with New.
 type Client struct {
-	apiKey    string
-	model     string
-	baseURL   string
-	maxTokens int
-	http      *http.Client
+	apiKey         string
+	model          string
+	baseURL        string
+	vertexProject  string
+	vertexLocation string
+	maxTokens      int
+	http           *http.Client
 }
 
 // Option configures a Client.
 type Option func(*Client)
 
-// WithBaseURL overrides the API root (e.g. a proxy). An empty string is ignored.
-// The path "/v1beta/models/{model}:generateContent" is always appended.
+// WithBaseURL overrides the API root (e.g. a proxy or the Vertex AI host). An
+// empty string is ignored. The Developer API path
+// "/v1beta/models/{model}:generateContent" is appended unless WithVertex selects
+// the Vertex publisher-model path.
 func WithBaseURL(u string) Option {
 	return func(c *Client) {
 		if u != "" {
 			c.baseURL = strings.TrimRight(u, "/")
 		}
 	}
+}
+
+// WithVertex retargets the client at Vertex AI's generateContent endpoint for the
+// given Google Cloud project and location (e.g. "us-central1" or "global"). The
+// request and response bodies are identical to the Developer API; only the URL
+// changes to projects/{project}/locations/{location}/publishers/google/models/
+// {model}:generateContent. Unless WithBaseURL is also set, the API root defaults
+// to the regional Vertex host. Empty project or location is ignored.
+func WithVertex(project, location string) Option {
+	return func(c *Client) {
+		if project == "" || location == "" {
+			return
+		}
+		c.vertexProject = project
+		c.vertexLocation = location
+		if c.baseURL == DefaultBaseURL {
+			c.baseURL = vertexHost(location)
+		}
+	}
+}
+
+// vertexHost returns the Vertex AI API root for a location. The "global" location
+// uses the location-less host; every other location uses a regional host.
+func vertexHost(location string) string {
+	if location == "global" {
+		return "https://aiplatform.googleapis.com"
+	}
+	return "https://" + location + "-aiplatform.googleapis.com"
 }
 
 // WithHTTPClient sets the HTTP client used for requests. A nil client is ignored.
@@ -217,6 +254,17 @@ type result struct {
 	model  string
 }
 
+// endpoint returns the generateContent URL for the configured mode. Vertex mode
+// (set by WithVertex) targets the publisher-model path; otherwise the Gemini
+// Developer API path is used.
+func (c *Client) endpoint() string {
+	if c.vertexProject != "" {
+		return c.baseURL + "/v1/projects/" + c.vertexProject + "/locations/" + c.vertexLocation +
+			"/publishers/google/models/" + c.model + ":generateContent"
+	}
+	return c.baseURL + "/v1beta/models/" + c.model + ":generateContent"
+}
+
 func (c *Client) generate(ctx context.Context, instruction, input string, schema json.RawMessage, effort Effort) (result, error) {
 	var thinking *thinkingConfig
 	if effort != "" {
@@ -236,8 +284,7 @@ func (c *Client) generate(ctx context.Context, instruction, input string, schema
 		return result{}, fmt.Errorf("gemini: marshal request: %w", err)
 	}
 
-	url := c.baseURL + "/v1beta/models/" + c.model + ":generateContent"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint(), bytes.NewReader(body))
 	if err != nil {
 		return result{}, fmt.Errorf("gemini: build request: %w", err)
 	}
