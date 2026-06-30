@@ -10,7 +10,7 @@
 // omits the static x-api-key header so an injected HTTP client's transport can
 // provide cloud-identity authentication.
 //
-// WithVertex retargets the client at Vertex AI's rawPredict endpoint
+// WithVertexAI retargets the client at Vertex AI's rawPredict endpoint
 // (projects/{project}/locations/{location}/publishers/anthropic/...), which
 // carries the model in the URL and the API version in the body's
 // anthropic_version field; combine it with an injected Google-credential
@@ -41,10 +41,10 @@ const DefaultVersion = "2023-06-01"
 // requires max_tokens, so unlike OpenAI it cannot be left to the server.
 const DefaultMaxTokens = 1024
 
-// vertexAnthropicVersion is the anthropic_version body value required by Vertex
-// AI's rawPredict endpoint. Vertex carries the API version in the body rather
+// vertexAIAnthropicVersion is the anthropic_version body value required by Vertex
+// AI's rawPredict endpoint. Vertex AI carries the API version in the body rather
 // than the anthropic-version header.
-const vertexAnthropicVersion = "vertex-2023-10-16"
+const vertexAIAnthropicVersion = "vertex-2023-10-16"
 
 // ErrRefusal is returned when the model declines to answer.
 var ErrRefusal = errors.New("anthropic: model refused to answer")
@@ -65,14 +65,14 @@ const (
 // Client is a non-generic, reusable handle to the Anthropic Messages API. It is
 // safe for concurrent use. Bind a structured-output type with New.
 type Client struct {
-	apiKey         string
-	model          string
-	baseURL        string
-	version        string
-	vertexProject  string
-	vertexLocation string
-	maxTokens      int
-	http           *http.Client
+	apiKey           string
+	model            string
+	baseURL          string
+	version          string
+	vertexAIProject  string
+	vertexAILocation string
+	maxTokens        int
+	http             *http.Client
 }
 
 // Option configures a Client.
@@ -80,7 +80,7 @@ type Option func(*Client)
 
 // WithBaseURL overrides the API root (e.g. a proxy or the Vertex AI host). An
 // empty string is ignored. The native path "/v1/messages" is appended unless
-// WithVertex selects the Vertex publisher-model rawPredict path.
+// WithVertexAI selects the Vertex AI publisher-model rawPredict path.
 func WithBaseURL(u string) Option {
 	return func(c *Client) {
 		if u != "" {
@@ -89,28 +89,28 @@ func WithBaseURL(u string) Option {
 	}
 }
 
-// WithVertex retargets the client at Vertex AI's rawPredict endpoint for the
+// WithVertexAI retargets the client at Vertex AI's rawPredict endpoint for the
 // given Google Cloud project and location (e.g. "us-east5" or "global"). The
 // model is carried in the URL and the API version in the body's anthropic_version
 // field, so the top-level model field and anthropic-version header are omitted.
-// Unless WithBaseURL is also set, the API root defaults to the regional Vertex
+// Unless WithBaseURL is also set, the API root defaults to the regional Vertex AI
 // host. Empty project or location is ignored.
-func WithVertex(project, location string) Option {
+func WithVertexAI(project, location string) Option {
 	return func(c *Client) {
 		if project == "" || location == "" {
 			return
 		}
-		c.vertexProject = project
-		c.vertexLocation = location
+		c.vertexAIProject = project
+		c.vertexAILocation = location
 		if c.baseURL == DefaultBaseURL {
-			c.baseURL = vertexHost(location)
+			c.baseURL = vertexAIHost(location)
 		}
 	}
 }
 
-// vertexHost returns the Vertex AI API root for a location. The "global" location
+// vertexAIHost returns the Vertex AI API root for a location. The "global" location
 // uses the location-less host; every other location uses a regional host.
-func vertexHost(location string) string {
+func vertexAIHost(location string) string {
 	if location == "global" {
 		return "https://aiplatform.googleapis.com"
 	}
@@ -249,12 +249,12 @@ type result struct {
 	model  string
 }
 
-// endpoint returns the Messages URL for the configured mode. Vertex mode (set by
-// WithVertex) targets the publisher-model rawPredict path; otherwise the native
+// endpoint returns the Messages URL for the configured mode. Vertex AI mode (set by
+// WithVertexAI) targets the publisher-model rawPredict path; otherwise the native
 // Anthropic Messages path is used.
 func (c *Client) endpoint() string {
-	if c.vertexProject != "" {
-		return c.baseURL + "/v1/projects/" + c.vertexProject + "/locations/" + c.vertexLocation +
+	if c.vertexAIProject != "" {
+		return c.baseURL + "/v1/projects/" + c.vertexAIProject + "/locations/" + c.vertexAILocation +
 			"/publishers/anthropic/models/" + c.model + ":rawPredict"
 	}
 	return c.baseURL + "/v1/messages"
@@ -275,8 +275,8 @@ func (c *Client) generate(ctx context.Context, instruction, input string, schema
 		}},
 		Thinking: thinking,
 	}
-	if c.vertexProject != "" {
-		req.AnthropicVersion = vertexAnthropicVersion
+	if c.vertexAIProject != "" {
+		req.AnthropicVersion = vertexAIAnthropicVersion
 	} else {
 		req.Model = c.model
 	}
@@ -292,7 +292,7 @@ func (c *Client) generate(ctx context.Context, instruction, input string, schema
 	if c.apiKey != "" {
 		httpReq.Header.Set("x-api-key", c.apiKey)
 	}
-	if c.vertexProject == "" {
+	if c.vertexAIProject == "" {
 		httpReq.Header.Set("anthropic-version", c.version)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")

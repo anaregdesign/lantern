@@ -10,7 +10,7 @@
 // omits the static x-goog-api-key header so an injected HTTP client's transport
 // can provide cloud-identity authentication.
 //
-// WithVertex retargets the client at Vertex AI's generateContent endpoint
+// WithVertexAI retargets the client at Vertex AI's generateContent endpoint
 // (projects/{project}/locations/{location}/publishers/google/...), whose request
 // and response bodies match the Gemini Developer API; combine it with an injected
 // Google-credential transport for service-account or ADC authentication.
@@ -53,13 +53,13 @@ const (
 // Client is a non-generic, reusable handle to the Gemini generateContent API. It
 // is safe for concurrent use. Bind a structured-output type with New.
 type Client struct {
-	apiKey         string
-	model          string
-	baseURL        string
-	vertexProject  string
-	vertexLocation string
-	maxTokens      int
-	http           *http.Client
+	apiKey           string
+	model            string
+	baseURL          string
+	vertexAIProject  string
+	vertexAILocation string
+	maxTokens        int
+	http             *http.Client
 }
 
 // Option configures a Client.
@@ -67,8 +67,8 @@ type Option func(*Client)
 
 // WithBaseURL overrides the API root (e.g. a proxy or the Vertex AI host). An
 // empty string is ignored. The Developer API path
-// "/v1beta/models/{model}:generateContent" is appended unless WithVertex selects
-// the Vertex publisher-model path.
+// "/v1beta/models/{model}:generateContent" is appended unless WithVertexAI selects
+// the Vertex AI publisher-model path.
 func WithBaseURL(u string) Option {
 	return func(c *Client) {
 		if u != "" {
@@ -77,28 +77,28 @@ func WithBaseURL(u string) Option {
 	}
 }
 
-// WithVertex retargets the client at Vertex AI's generateContent endpoint for the
+// WithVertexAI retargets the client at Vertex AI's generateContent endpoint for the
 // given Google Cloud project and location (e.g. "us-central1" or "global"). The
 // request and response bodies are identical to the Developer API; only the URL
 // changes to projects/{project}/locations/{location}/publishers/google/models/
 // {model}:generateContent. Unless WithBaseURL is also set, the API root defaults
-// to the regional Vertex host. Empty project or location is ignored.
-func WithVertex(project, location string) Option {
+// to the regional Vertex AI host. Empty project or location is ignored.
+func WithVertexAI(project, location string) Option {
 	return func(c *Client) {
 		if project == "" || location == "" {
 			return
 		}
-		c.vertexProject = project
-		c.vertexLocation = location
+		c.vertexAIProject = project
+		c.vertexAILocation = location
 		if c.baseURL == DefaultBaseURL {
-			c.baseURL = vertexHost(location)
+			c.baseURL = vertexAIHost(location)
 		}
 	}
 }
 
-// vertexHost returns the Vertex AI API root for a location. The "global" location
+// vertexAIHost returns the Vertex AI API root for a location. The "global" location
 // uses the location-less host; every other location uses a regional host.
-func vertexHost(location string) string {
+func vertexAIHost(location string) string {
 	if location == "global" {
 		return "https://aiplatform.googleapis.com"
 	}
@@ -254,12 +254,12 @@ type result struct {
 	model  string
 }
 
-// endpoint returns the generateContent URL for the configured mode. Vertex mode
-// (set by WithVertex) targets the publisher-model path; otherwise the Gemini
+// endpoint returns the generateContent URL for the configured mode. Vertex AI mode
+// (set by WithVertexAI) targets the publisher-model path; otherwise the Gemini
 // Developer API path is used.
 func (c *Client) endpoint() string {
-	if c.vertexProject != "" {
-		return c.baseURL + "/v1/projects/" + c.vertexProject + "/locations/" + c.vertexLocation +
+	if c.vertexAIProject != "" {
+		return c.baseURL + "/v1/projects/" + c.vertexAIProject + "/locations/" + c.vertexAILocation +
 			"/publishers/google/models/" + c.model + ":generateContent"
 	}
 	return c.baseURL + "/v1beta/models/" + c.model + ":generateContent"

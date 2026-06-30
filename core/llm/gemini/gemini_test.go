@@ -112,7 +112,7 @@ func TestGenerateWithInjectedAuthTransport(t *testing.T) {
 	}
 }
 
-func TestGenerateVertex(t *testing.T) {
+func TestGenerateVertexAI(t *testing.T) {
 	var gotPath, gotKey, gotAuth string
 	var gotBody request
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -138,7 +138,7 @@ func TestGenerateVertex(t *testing.T) {
 		return http.DefaultTransport.RoundTrip(r)
 	})}
 	m, err := New[weather](NewClient("", "gemini-2.5-flash",
-		WithVertex("my-proj", "us-central1"), WithBaseURL(srv.URL), WithHTTPClient(h)), "report weather", "")
+		WithVertexAI("my-proj", "us-central1"), WithBaseURL(srv.URL), WithHTTPClient(h)), "report weather", "")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -164,22 +164,22 @@ func TestGenerateVertex(t *testing.T) {
 	}
 }
 
-func TestVertexHost(t *testing.T) {
+func TestVertexAIHost(t *testing.T) {
 	cases := map[string]string{
 		"global":          "https://aiplatform.googleapis.com",
 		"us-central1":     "https://us-central1-aiplatform.googleapis.com",
 		"asia-northeast1": "https://asia-northeast1-aiplatform.googleapis.com",
 	}
 	for loc, want := range cases {
-		if got := vertexHost(loc); got != want {
-			t.Errorf("vertexHost(%q) = %q, want %q", loc, got, want)
+		if got := vertexAIHost(loc); got != want {
+			t.Errorf("vertexAIHost(%q) = %q, want %q", loc, got, want)
 		}
 	}
-	// WithVertex alone derives the regional host; WithBaseURL still overrides it.
-	if c := NewClient("", "gemini-2.5-flash", WithVertex("p", "us-central1")); c.baseURL != "https://us-central1-aiplatform.googleapis.com" {
-		t.Errorf("baseURL = %q, want regional vertex host", c.baseURL)
+	// WithVertexAI alone derives the regional host; WithBaseURL still overrides it.
+	if c := NewClient("", "gemini-2.5-flash", WithVertexAI("p", "us-central1")); c.baseURL != "https://us-central1-aiplatform.googleapis.com" {
+		t.Errorf("baseURL = %q, want regional Vertex AI host", c.baseURL)
 	}
-	if c := NewClient("", "gemini-2.5-flash", WithVertex("p", "us-central1"), WithBaseURL("https://proxy.example")); c.baseURL != "https://proxy.example" {
+	if c := NewClient("", "gemini-2.5-flash", WithVertexAI("p", "us-central1"), WithBaseURL("https://proxy.example")); c.baseURL != "https://proxy.example" {
 		t.Errorf("baseURL = %q, want proxy override", c.baseURL)
 	}
 }

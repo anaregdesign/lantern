@@ -28,26 +28,26 @@ type cloudAuthAnswer struct {
 
 const cloudAuthInstruction = `Reply with a JSON object whose "reply" field is the word "pong".`
 
-// TestVertexGeminiGoogleCredential drives the Service Account / ADC → Vertex
+// TestVertexAIGeminiGoogleCredential drives the Service Account / ADC → Vertex AI
 // Gemini path: llmauth builds a Google-credential HTTP client whose transport
 // supplies the OAuth bearer token, and the gemini provider (empty API key,
-// WithVertex) targets the Vertex generateContent endpoint.
+// WithVertexAI) targets the Vertex AI generateContent endpoint.
 //
 // Env:
 //
-//	LANTERN_IT_VERTEX_PROJECT      (required) Google Cloud project ID — gates the test
-//	LANTERN_IT_VERTEX_LOCATION     (optional) Vertex location, default "global"
-//	LANTERN_IT_VERTEX_MODEL        (optional) model ID, default "gemini-2.5-flash"
+//	LANTERN_IT_VERTEXAI_PROJECT    (required) Google Cloud project ID — gates the test
+//	LANTERN_IT_VERTEXAI_LOCATION   (optional) Vertex AI location, default "global"
+//	LANTERN_IT_VERTEXAI_MODEL      (optional) model ID, default "gemini-2.5-flash"
 //	GOOGLE_APPLICATION_CREDENTIALS (optional) path to a service-account key JSON;
 //	                               when set the test uses the service-account
 //	                               transport, otherwise it falls back to ADC.
-func TestVertexGeminiGoogleCredential(t *testing.T) {
-	project := os.Getenv("LANTERN_IT_VERTEX_PROJECT")
+func TestVertexAIGeminiGoogleCredential(t *testing.T) {
+	project := os.Getenv("LANTERN_IT_VERTEXAI_PROJECT")
 	if project == "" {
-		t.Skip("set LANTERN_IT_VERTEX_PROJECT to run the Vertex Gemini cloud-auth test")
+		t.Skip("set LANTERN_IT_VERTEXAI_PROJECT to run the Vertex AI Gemini cloud-auth test")
 	}
-	location := envOrDefault("LANTERN_IT_VERTEX_LOCATION", "global")
-	modelID := envOrDefault("LANTERN_IT_VERTEX_MODEL", "gemini-2.5-flash")
+	location := envOrDefault("LANTERN_IT_VERTEXAI_LOCATION", "global")
+	modelID := envOrDefault("LANTERN_IT_VERTEXAI_MODEL", "gemini-2.5-flash")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -58,7 +58,7 @@ func TestVertexGeminiGoogleCredential(t *testing.T) {
 	}
 
 	client := gemini.NewClient("", modelID,
-		gemini.WithVertex(project, location),
+		gemini.WithVertexAI(project, location),
 		gemini.WithHTTPClient(authClient),
 		gemini.WithMaxTokens(64),
 	)
@@ -74,7 +74,7 @@ func TestVertexGeminiGoogleCredential(t *testing.T) {
 	if resp.Output.Reply == "" {
 		t.Errorf("empty reply, want non-empty; response = %+v", resp.Output)
 	}
-	t.Logf("vertex gemini ok: reply=%q model=%q usage=%+v", resp.Output.Reply, resp.Model, resp.Usage)
+	t.Logf("vertexai gemini ok: reply=%q model=%q usage=%+v", resp.Output.Reply, resp.Model, resp.Usage)
 }
 
 // TestAzureOpenAIServicePrincipal drives the Azure Service Principal → Azure
@@ -131,7 +131,7 @@ func TestAzureOpenAIServicePrincipal(t *testing.T) {
 	t.Logf("azure openai ok: reply=%q model=%q usage=%+v", resp.Output.Reply, resp.Model, resp.Usage)
 }
 
-// googleAuthClient builds the Google-credential HTTP client used by the Vertex
+// googleAuthClient builds the Google-credential HTTP client used by the Vertex AI
 // test: a service-account transport when GOOGLE_APPLICATION_CREDENTIALS points at
 // a key file, otherwise Application Default Credentials.
 func googleAuthClient(ctx context.Context, t *testing.T) (*http.Client, error) {

@@ -115,7 +115,7 @@ func TestGenerateWithInjectedAuthTransport(t *testing.T) {
 	}
 }
 
-func TestGenerateVertex(t *testing.T) {
+func TestGenerateVertexAI(t *testing.T) {
 	var gotPath, gotKey, gotVersion, gotAuth string
 	var raw map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -142,7 +142,7 @@ func TestGenerateVertex(t *testing.T) {
 		return http.DefaultTransport.RoundTrip(r)
 	})}
 	m, err := New[weather](NewClient("", "claude-sonnet-4@20250514",
-		WithVertex("my-proj", "us-east5"), WithBaseURL(srv.URL), WithHTTPClient(h)), "report weather", "")
+		WithVertexAI("my-proj", "us-east5"), WithBaseURL(srv.URL), WithHTTPClient(h)), "report weather", "")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestGenerateVertex(t *testing.T) {
 		t.Errorf("x-api-key = %q, want empty", gotKey)
 	}
 	if gotVersion != "" {
-		t.Errorf("anthropic-version header = %q, want empty (Vertex uses body field)", gotVersion)
+		t.Errorf("anthropic-version header = %q, want empty (Vertex AI uses body field)", gotVersion)
 	}
 	if gotAuth != "Bearer ya29.token" {
 		t.Errorf("Authorization = %q, want injected bearer", gotAuth)
@@ -170,25 +170,25 @@ func TestGenerateVertex(t *testing.T) {
 		t.Errorf("anthropic_version body field = %v, want vertex-2023-10-16", raw["anthropic_version"])
 	}
 	if _, ok := raw["model"]; ok {
-		t.Errorf("body contains model field, want omitted for Vertex")
+		t.Errorf("body contains model field, want omitted for Vertex AI")
 	}
 }
 
-func TestVertexHost(t *testing.T) {
+func TestVertexAIHost(t *testing.T) {
 	cases := map[string]string{
 		"global":   "https://aiplatform.googleapis.com",
 		"us-east5": "https://us-east5-aiplatform.googleapis.com",
 	}
 	for loc, want := range cases {
-		if got := vertexHost(loc); got != want {
-			t.Errorf("vertexHost(%q) = %q, want %q", loc, got, want)
+		if got := vertexAIHost(loc); got != want {
+			t.Errorf("vertexAIHost(%q) = %q, want %q", loc, got, want)
 		}
 	}
-	// WithVertex alone derives the regional host; WithBaseURL still overrides it.
-	if c := NewClient("", "claude-sonnet-4@20250514", WithVertex("p", "us-east5")); c.baseURL != "https://us-east5-aiplatform.googleapis.com" {
-		t.Errorf("baseURL = %q, want regional vertex host", c.baseURL)
+	// WithVertexAI alone derives the regional host; WithBaseURL still overrides it.
+	if c := NewClient("", "claude-sonnet-4@20250514", WithVertexAI("p", "us-east5")); c.baseURL != "https://us-east5-aiplatform.googleapis.com" {
+		t.Errorf("baseURL = %q, want regional Vertex AI host", c.baseURL)
 	}
-	if c := NewClient("", "claude-sonnet-4@20250514", WithVertex("p", "us-east5"), WithBaseURL("https://proxy.example")); c.baseURL != "https://proxy.example" {
+	if c := NewClient("", "claude-sonnet-4@20250514", WithVertexAI("p", "us-east5"), WithBaseURL("https://proxy.example")); c.baseURL != "https://proxy.example" {
 		t.Errorf("baseURL = %q, want proxy override", c.baseURL)
 	}
 }

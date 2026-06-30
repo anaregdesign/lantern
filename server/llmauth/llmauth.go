@@ -19,7 +19,7 @@ import (
 // AzureOpenAIScope is the Entra ID scope for Azure OpenAI data-plane calls.
 const AzureOpenAIScope = "https://cognitiveservices.azure.com/.default"
 
-// GoogleCloudPlatformScope is the OAuth scope used by Vertex/Gemini APIs.
+// GoogleCloudPlatformScope is the OAuth scope used by Vertex AI / Gemini APIs.
 const GoogleCloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform"
 
 // Option configures a credential-bearing HTTP client.
@@ -113,7 +113,7 @@ func (t azureBearerTransport) RoundTrip(req *http.Request) (*http.Response, erro
 }
 
 // NewGoogleDefaultHTTPClient returns an HTTP client that authenticates requests
-// with Google Application Default Credentials for Vertex/Gemini.
+// with Google Application Default Credentials for Vertex AI / Gemini.
 func NewGoogleDefaultHTTPClient(ctx context.Context, opts ...Option) (*http.Client, error) {
 	source, err := google.DefaultTokenSource(ctx, GoogleCloudPlatformScope)
 	if err != nil {
@@ -123,7 +123,7 @@ func NewGoogleDefaultHTTPClient(ctx context.Context, opts ...Option) (*http.Clie
 }
 
 // NewGoogleServiceAccountHTTPClient returns an HTTP client that authenticates
-// requests with the provided Google service-account JSON for Vertex/Gemini.
+// requests with the provided Google service-account JSON for Vertex AI / Gemini.
 func NewGoogleServiceAccountHTTPClient(ctx context.Context, credentialsJSON []byte, opts ...Option) (*http.Client, error) {
 	creds, err := google.CredentialsFromJSON(ctx, credentialsJSON, GoogleCloudPlatformScope)
 	if err != nil {
