@@ -6,7 +6,14 @@
 // A non-generic Client captures the endpoint, key, model, and HTTP client; the
 // generic New binds a structured-output type T and a fixed system instruction
 // into an llm.Model[T]. Go methods cannot take type parameters, so the schema is
-// fixed at construction by New rather than per call.
+// fixed at construction by New rather than per call. Passing an empty API key
+// omits the static x-goog-api-key header so an injected HTTP client's transport
+// can provide cloud-identity authentication.
+//
+// WithVertexAI retargets the client at Vertex AI's generateContent endpoint
+// (projects/{project}/locations/{location}/publishers/google/...), whose request
+// and response bodies match the Gemini Developer API; combine it with an injected
+// Google-credential transport for service-account or ADC authentication.
 package gemini
 
 import (
@@ -46,24 +53,56 @@ const (
 // Client is a non-generic, reusable handle to the Gemini generateContent API. It
 // is safe for concurrent use. Bind a structured-output type with New.
 type Client struct {
-	apiKey    string
-	model     string
-	baseURL   string
-	maxTokens int
-	http      *http.Client
+	apiKey           string
+	model            string
+	baseURL          string
+	vertexAIProject  string
+	vertexAILocation string
+	maxTokens        int
+	http             *http.Client
 }
 
 // Option configures a Client.
 type Option func(*Client)
 
-// WithBaseURL overrides the API root (e.g. a proxy). An empty string is ignored.
-// The path "/v1beta/models/{model}:generateContent" is always appended.
+// WithBaseURL overrides the API root (e.g. a proxy or the Vertex AI host). An
+// empty string is ignored. The Developer API path
+// "/v1beta/models/{model}:generateContent" is appended unless WithVertexAI selects
+// the Vertex AI publisher-model path.
 func WithBaseURL(u string) Option {
 	return func(c *Client) {
 		if u != "" {
 			c.baseURL = strings.TrimRight(u, "/")
 		}
 	}
+}
+
+// WithVertexAI retargets the client at Vertex AI's generateContent endpoint for the
+// given Google Cloud project and location (e.g. "us-central1" or "global"). The
+// request and response bodies are identical to the Developer API; only the URL
+// changes to projects/{project}/locations/{location}/publishers/google/models/
+// {model}:generateContent. Unless WithBaseURL is also set, the API root defaults
+// to the regional Vertex AI host. Empty project or location is ignored.
+func WithVertexAI(project, location string) Option {
+	return func(c *Client) {
+		if project == "" || location == "" {
+			return
+		}
+		c.vertexAIProject = project
+		c.vertexAILocation = location
+		if c.baseURL == DefaultBaseURL {
+			c.baseURL = vertexAIHost(location)
+		}
+	}
+}
+
+// vertexAIHost returns the Vertex AI API root for a location. The "global" location
+// uses the location-less host; every other location uses a regional host.
+func vertexAIHost(location string) string {
+	if location == "global" {
+		return "https://aiplatform.googleapis.com"
+	}
+	return "https://" + location + "-aiplatform.googleapis.com"
 }
 
 // WithHTTPClient sets the HTTP client used for requests. A nil client is ignored.
@@ -84,9 +123,11 @@ func WithMaxTokens(n int) Option {
 	}
 }
 
-// NewClient builds a Client for the given model. apiKey authenticates via the
-// x-goog-api-key header; model is the provider model identifier (caller-supplied,
-// never hard-coded). Defaults: DefaultBaseURL and a 60s-timeout http.Client.
+// NewClient builds a Client for the given model. A non-empty apiKey
+// authenticates via the x-goog-api-key header; an empty apiKey omits that header
+// so a WithHTTPClient-injected transport can own auth. model is the provider
+// model identifier (caller-supplied, never hard-coded). Defaults: DefaultBaseURL
+// and a 60s-timeout http.Client.
 func NewClient(apiKey, model string, opts ...Option) *Client {
 	c := &Client{
 		apiKey:  apiKey,
@@ -213,6 +254,17 @@ type result struct {
 	model  string
 }
 
+// endpoint returns the generateContent URL for the configured mode. Vertex AI mode
+// (set by WithVertexAI) targets the publisher-model path; otherwise the Gemini
+// Developer API path is used.
+func (c *Client) endpoint() string {
+	if c.vertexAIProject != "" {
+		return c.baseURL + "/v1/projects/" + c.vertexAIProject + "/locations/" + c.vertexAILocation +
+			"/publishers/google/models/" + c.model + ":generateContent"
+	}
+	return c.baseURL + "/v1beta/models/" + c.model + ":generateContent"
+}
+
 func (c *Client) generate(ctx context.Context, instruction, input string, schema json.RawMessage, effort Effort) (result, error) {
 	var thinking *thinkingConfig
 	if effort != "" {
@@ -232,12 +284,13 @@ func (c *Client) generate(ctx context.Context, instruction, input string, schema
 		return result{}, fmt.Errorf("gemini: marshal request: %w", err)
 	}
 
-	url := c.baseURL + "/v1beta/models/" + c.model + ":generateContent"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint(), bytes.NewReader(body))
 	if err != nil {
 		return result{}, fmt.Errorf("gemini: build request: %w", err)
 	}
-	httpReq.Header.Set("x-goog-api-key", c.apiKey)
+	if c.apiKey != "" {
+		httpReq.Header.Set("x-goog-api-key", c.apiKey)
+	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	httpResp, err := c.http.Do(httpReq)

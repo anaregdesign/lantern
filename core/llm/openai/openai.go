@@ -5,7 +5,9 @@
 // A non-generic Client captures the endpoint, key, model, and HTTP client; the
 // generic New binds a structured-output type T and a fixed system instruction
 // into an llm.Model[T]. Go methods cannot take type parameters, so the schema is
-// fixed at construction by New rather than per call.
+// fixed at construction by New rather than per call. Passing an empty API key
+// omits the static Authorization header so an injected HTTP client's transport
+// can provide cloud-identity authentication.
 package openai
 
 import (
@@ -85,9 +87,11 @@ func WithMaxTokens(n int) Option {
 	}
 }
 
-// NewClient builds a Client for the given model. apiKey authenticates as a
-// bearer token; model is the provider model identifier (caller-supplied, never
-// hard-coded). Defaults: DefaultBaseURL and a 60s-timeout http.Client.
+// NewClient builds a Client for the given model. A non-empty apiKey
+// authenticates as a bearer token; an empty apiKey omits Authorization so a
+// WithHTTPClient-injected transport can own auth. model is the provider model
+// identifier (caller-supplied, never hard-coded). Defaults: DefaultBaseURL and a
+// 60s-timeout http.Client.
 func NewClient(apiKey, model string, opts ...Option) *Client {
 	c := &Client{
 		apiKey:  apiKey,
@@ -219,7 +223,9 @@ func (c *Client) generate(ctx context.Context, instruction, input, name string, 
 	if err != nil {
 		return result{}, fmt.Errorf("openai: build request: %w", err)
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	if c.apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	httpResp, err := c.http.Do(httpReq)

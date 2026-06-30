@@ -18,6 +18,12 @@ type weather struct {
 	High int    `json:"high"`
 }
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
 func TestGenerate(t *testing.T) {
 	var gotPath, gotAuth string
 	var gotBody request
@@ -65,6 +71,36 @@ func TestGenerate(t *testing.T) {
 	}
 	if gotBody.Reasoning == nil || gotBody.Reasoning.Effort != "high" {
 		t.Errorf("reasoning = %+v, want effort high", gotBody.Reasoning)
+	}
+}
+
+func TestGenerateWithInjectedAuthTransport(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"model":"gpt-5.5","status":"completed",`+
+			`"output":[{"content":[{"type":"output_text","text":"{\"city\":\"Tokyo\",\"high\":31}"}]}],`+
+			`"usage":{"input_tokens":12,"output_tokens":7,"total_tokens":19}}`)
+	}))
+	defer srv.Close()
+
+	h := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("pre-injected Authorization = %q, want empty", got)
+		}
+		r.Header.Set("Authorization", "******")
+		return http.DefaultTransport.RoundTrip(r)
+	})}
+	m, err := New[weather](NewClient("", "gpt-5.5", WithBaseURL(srv.URL), WithHTTPClient(h)), "report weather", "")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := m.Generate(context.Background(), "Tokyo"); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if gotAuth != "******" {
+		t.Errorf("Authorization = %q, want injected transport value", gotAuth)
 	}
 }
 

@@ -6,7 +6,15 @@
 // A non-generic Client captures the endpoint, key, model, and HTTP client; the
 // generic New binds a structured-output type T and a fixed system instruction
 // into an llm.Model[T]. Go methods cannot take type parameters, so the schema is
-// fixed at construction by New rather than per call.
+// fixed at construction by New rather than per call. Passing an empty API key
+// omits the static x-api-key header so an injected HTTP client's transport can
+// provide cloud-identity authentication.
+//
+// WithVertexAI retargets the client at Vertex AI's rawPredict endpoint
+// (projects/{project}/locations/{location}/publishers/anthropic/...), which
+// carries the model in the URL and the API version in the body's
+// anthropic_version field; combine it with an injected Google-credential
+// transport for service-account or ADC authentication.
 package anthropic
 
 import (
@@ -33,6 +41,11 @@ const DefaultVersion = "2023-06-01"
 // requires max_tokens, so unlike OpenAI it cannot be left to the server.
 const DefaultMaxTokens = 1024
 
+// vertexAIAnthropicVersion is the anthropic_version body value required by Vertex
+// AI's rawPredict endpoint. Vertex AI carries the API version in the body rather
+// than the anthropic-version header.
+const vertexAIAnthropicVersion = "vertex-2023-10-16"
+
 // ErrRefusal is returned when the model declines to answer.
 var ErrRefusal = errors.New("anthropic: model refused to answer")
 
@@ -52,25 +65,56 @@ const (
 // Client is a non-generic, reusable handle to the Anthropic Messages API. It is
 // safe for concurrent use. Bind a structured-output type with New.
 type Client struct {
-	apiKey    string
-	model     string
-	baseURL   string
-	version   string
-	maxTokens int
-	http      *http.Client
+	apiKey           string
+	model            string
+	baseURL          string
+	version          string
+	vertexAIProject  string
+	vertexAILocation string
+	maxTokens        int
+	http             *http.Client
 }
 
 // Option configures a Client.
 type Option func(*Client)
 
-// WithBaseURL overrides the API root (e.g. a proxy). An empty string is ignored.
-// The path "/v1/messages" is always appended.
+// WithBaseURL overrides the API root (e.g. a proxy or the Vertex AI host). An
+// empty string is ignored. The native path "/v1/messages" is appended unless
+// WithVertexAI selects the Vertex AI publisher-model rawPredict path.
 func WithBaseURL(u string) Option {
 	return func(c *Client) {
 		if u != "" {
 			c.baseURL = strings.TrimRight(u, "/")
 		}
 	}
+}
+
+// WithVertexAI retargets the client at Vertex AI's rawPredict endpoint for the
+// given Google Cloud project and location (e.g. "us-east5" or "global"). The
+// model is carried in the URL and the API version in the body's anthropic_version
+// field, so the top-level model field and anthropic-version header are omitted.
+// Unless WithBaseURL is also set, the API root defaults to the regional Vertex AI
+// host. Empty project or location is ignored.
+func WithVertexAI(project, location string) Option {
+	return func(c *Client) {
+		if project == "" || location == "" {
+			return
+		}
+		c.vertexAIProject = project
+		c.vertexAILocation = location
+		if c.baseURL == DefaultBaseURL {
+			c.baseURL = vertexAIHost(location)
+		}
+	}
+}
+
+// vertexAIHost returns the Vertex AI API root for a location. The "global" location
+// uses the location-less host; every other location uses a regional host.
+func vertexAIHost(location string) string {
+	if location == "global" {
+		return "https://aiplatform.googleapis.com"
+	}
+	return "https://" + location + "-aiplatform.googleapis.com"
 }
 
 // WithVersion overrides the anthropic-version header. An empty string is ignored.
@@ -100,10 +144,11 @@ func WithMaxTokens(n int) Option {
 	}
 }
 
-// NewClient builds a Client for the given model. apiKey authenticates via the
-// x-api-key header; model is the provider model identifier (caller-supplied,
-// never hard-coded). Defaults: DefaultBaseURL, DefaultVersion, DefaultMaxTokens,
-// and a 60s-timeout http.Client.
+// NewClient builds a Client for the given model. A non-empty apiKey
+// authenticates via the x-api-key header; an empty apiKey omits that header so a
+// WithHTTPClient-injected transport can own auth. model is the provider model
+// identifier (caller-supplied, never hard-coded). Defaults: DefaultBaseURL,
+// DefaultVersion, DefaultMaxTokens, and a 60s-timeout http.Client.
 func NewClient(apiKey, model string, opts ...Option) *Client {
 	c := &Client{
 		apiKey:    apiKey,
@@ -154,12 +199,13 @@ func (m *model[T]) Generate(ctx context.Context, input string) (llm.Response[T],
 }
 
 type request struct {
-	Model        string          `json:"model"`
-	MaxTokens    int             `json:"max_tokens"`
-	System       string          `json:"system,omitempty"`
-	Messages     []message       `json:"messages"`
-	OutputConfig *outputConfig   `json:"output_config,omitempty"`
-	Thinking     *thinkingConfig `json:"thinking,omitempty"`
+	Model            string          `json:"model,omitempty"`
+	AnthropicVersion string          `json:"anthropic_version,omitempty"`
+	MaxTokens        int             `json:"max_tokens"`
+	System           string          `json:"system,omitempty"`
+	Messages         []message       `json:"messages"`
+	OutputConfig     *outputConfig   `json:"output_config,omitempty"`
+	Thinking         *thinkingConfig `json:"thinking,omitempty"`
 }
 
 type thinkingConfig struct {
@@ -203,13 +249,23 @@ type result struct {
 	model  string
 }
 
+// endpoint returns the Messages URL for the configured mode. Vertex AI mode (set by
+// WithVertexAI) targets the publisher-model rawPredict path; otherwise the native
+// Anthropic Messages path is used.
+func (c *Client) endpoint() string {
+	if c.vertexAIProject != "" {
+		return c.baseURL + "/v1/projects/" + c.vertexAIProject + "/locations/" + c.vertexAILocation +
+			"/publishers/anthropic/models/" + c.model + ":rawPredict"
+	}
+	return c.baseURL + "/v1/messages"
+}
+
 func (c *Client) generate(ctx context.Context, instruction, input string, schema json.RawMessage, effort Effort) (result, error) {
 	var thinking *thinkingConfig
 	if effort != "" {
 		thinking = &thinkingConfig{Type: "enabled", Effort: string(effort)}
 	}
-	body, err := json.Marshal(request{
-		Model:     c.model,
+	req := request{
 		MaxTokens: c.maxTokens,
 		System:    instruction,
 		Messages:  []message{{Role: "user", Content: input}},
@@ -218,17 +274,27 @@ func (c *Client) generate(ctx context.Context, instruction, input string, schema
 			Schema: schema,
 		}},
 		Thinking: thinking,
-	})
+	}
+	if c.vertexAIProject != "" {
+		req.AnthropicVersion = vertexAIAnthropicVersion
+	} else {
+		req.Model = c.model
+	}
+	body, err := json.Marshal(req)
 	if err != nil {
 		return result{}, fmt.Errorf("anthropic: marshal request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/messages", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint(), bytes.NewReader(body))
 	if err != nil {
 		return result{}, fmt.Errorf("anthropic: build request: %w", err)
 	}
-	httpReq.Header.Set("x-api-key", c.apiKey)
-	httpReq.Header.Set("anthropic-version", c.version)
+	if c.apiKey != "" {
+		httpReq.Header.Set("x-api-key", c.apiKey)
+	}
+	if c.vertexAIProject == "" {
+		httpReq.Header.Set("anthropic-version", c.version)
+	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	httpResp, err := c.http.Do(httpReq)
