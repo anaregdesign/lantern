@@ -56,6 +56,7 @@ type LanternService struct {
 	onTombstoneClampReject func()
 	metrics                HotPathMetrics
 	traversalTimeout       time.Duration
+	capacity               CapacityLimits
 
 	// statusInfo + startedAt + startedAtOnce back GetServerStatus
 	// (#314). Populated by WithStatusInfo / MarkStarted from the
@@ -162,6 +163,68 @@ func (s *LanternService) WithScanLimits(l ScanLimits) *LanternService {
 func (s *LanternService) WithSearchLimits(l SearchLimits) *LanternService {
 	s.search = l
 	return s
+}
+
+// CapacityLimits carries the aggregate soft caps (#848). Zero (the default)
+// means unlimited. Enforced only at the local write-RPC boundary — see
+// checkVertexCapacity / checkEdgeCapacity for the conservative formulas and
+// the deliberate slack in both directions. ApplyMutation and backup restore
+// bypass the caps: rejecting writes peers already committed would break
+// convergence, so the caps bound locally-originated growth and every HA node
+// applies its own cap at its own RPC boundary.
+type CapacityLimits struct {
+	MaxVertices int
+	MaxEdges    int
+}
+
+// WithCapacityLimits returns s with its aggregate capacity caps replaced.
+// Intended for the wire provider to thread provider.CacheConfig into the
+// service.
+func (s *LanternService) WithCapacityLimits(l CapacityLimits) *LanternService {
+	s.capacity = l
+	return s
+}
+
+// checkVertexCapacity rejects a local write that could push the live vertex
+// count past the cap. newVertices is the worst-case number of NEW vertices
+// the batch can create: len(items) for PutVertices, 2*len(items) for edge
+// writes (every edge auto-creates up to two endpoint vertices).
+//
+// The check is deliberately approximate in both directions (soft cap): a
+// batch whose keys mostly already exist can be over-rejected near the cap,
+// and concurrent in-flight batches that each passed the check can overshoot
+// by their combined size. Neither is an invariant violation — the cap exists
+// to fail fast instead of growing until the kernel OOM-kills the process.
+func (s *LanternService) checkVertexCapacity(newVertices int) error {
+	if s.capacity.MaxVertices <= 0 {
+		return nil
+	}
+	if s.cache.VertexCount()+newVertices <= s.capacity.MaxVertices {
+		return nil
+	}
+	if s.onValidationReject != nil {
+		s.onValidationReject("capacity")
+	}
+	return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf(
+		"vertex capacity: %d live + up to %d new would exceed LANTERN_MAX_VERTICES=%d (soft cap, counted conservatively); retry after TTL decay or deletes free capacity",
+		s.cache.VertexCount(), newVertices, s.capacity.MaxVertices))
+}
+
+// checkEdgeCapacity is the edge-side sibling of checkVertexCapacity;
+// newEdges is len(items) (each item writes exactly one (tail, head) bucket).
+func (s *LanternService) checkEdgeCapacity(newEdges int) error {
+	if s.capacity.MaxEdges <= 0 {
+		return nil
+	}
+	if s.cache.EdgeCount()+newEdges <= s.capacity.MaxEdges {
+		return nil
+	}
+	if s.onValidationReject != nil {
+		s.onValidationReject("capacity")
+	}
+	return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf(
+		"edge capacity: %d live + up to %d new would exceed LANTERN_MAX_EDGES=%d (soft cap, counted conservatively); retry after TTL decay or deletes free capacity",
+		s.cache.EdgeCount(), newEdges, s.capacity.MaxEdges))
 }
 
 // WithReplication attaches the mutation log, hybrid logical clock, and an
@@ -589,6 +652,11 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 			liveCount++
 		}
 	}
+	// Aggregate capacity soft cap (#848): fail fast BEFORE any cache or log
+	// mutation so a rejected batch is all-or-nothing.
+	if err := s.checkVertexCapacity(len(items)); err != nil {
+		return nil, err
+	}
 	// When replication is enabled (clock wired) every local write is stamped
 	// with the SAME HLC it is logged under, via the *HLC cache method, so the
 	// origin's own PutVertex participates in last-writer-wins on equal footing
@@ -743,6 +811,15 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 		}
 		items = append(items, item)
 	}
+	// Aggregate capacity soft caps (#848): every edge item writes one bucket
+	// and can auto-create up to two endpoint vertices, so both caps are
+	// consulted with conservative worst-case deltas.
+	if err := s.checkVertexCapacity(2 * len(items)); err != nil {
+		return nil, err
+	}
+	if err := s.checkEdgeCapacity(len(items)); err != nil {
+		return nil, err
+	}
 	// Additive merge converges via ContribID set semantics regardless of
 	// delivery order, but when replication is enabled the contribution must
 	// still be fenced by the edge tombstone at the SAME HLC it is logged
@@ -801,6 +878,14 @@ func (s *LanternService) PutEdges(ctx context.Context, request *pb.PutEdgesReque
 			Weight:     e.GetWeight(),
 			Expiration: e.GetExpiration().AsTime(),
 		})
+	}
+	// Aggregate capacity soft caps (#848) — same conservative deltas as
+	// AddEdges: one bucket per item, up to two auto-created endpoints.
+	if err := s.checkVertexCapacity(2 * len(items)); err != nil {
+		return nil, err
+	}
+	if err := s.checkEdgeCapacity(len(items)); err != nil {
+		return nil, err
 	}
 	// PutEdges*WithExpiration takes the cache write lock once for the whole
 	// batch, so concurrent GetEdge readers never observe a transient NotFound

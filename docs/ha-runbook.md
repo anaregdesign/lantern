@@ -351,6 +351,31 @@ Two truisms:
   accumulate during one snapshot pause. Default `10000` (entries)
   works for write rates up to a few thousand mut/s.
 
+**Saturation guard (`LANTERN_MAX_VERTICES` / `LANTERN_MAX_EDGES`, #848):**
+
+For an in-memory store the kernel OOM kill is the worst failure mode — it
+takes down *all* data on the pod (and forces a re-bootstrap from peers),
+instead of degrading the one misbehaving writer. Cap the entry counts so a
+write burst faster than TTL decay fails fast instead:
+
+- Set both caps from the sizing estimate above: divide the memory budget
+  you allocated to graph data by your measured per-entry heap cost and
+  leave slack for the soft-cap overshoot (concurrent in-flight batches).
+- The caps are enforced at the **local write-RPC boundary only**. At
+  capacity, `PutVertices` / `AddEdges` / `PutEdges` return
+  `RESOURCE_EXHAUSTED` naming the knob; reads, deletes, replication apply
+  and backup restore always proceed (rejecting writes peers already
+  committed would break convergence). In HA every node applies its own
+  cap at its own boundary, which bounds the cluster.
+- There is **no eviction policy**: a rejected writer must wait for TTL
+  decay, GC, or deletes to free capacity, then retry. This is decay-first
+  by design.
+- Alert on fill ratio: `lantern_vertices / lantern_capacity_limit{kind="vertex"} > 0.8`
+  (same for edges). `lantern_validation_rejected_total{reason="capacity"}`
+  counts rejected writes.
+- Keep `GOMEMLIMIT` (set below `resources.limits.memory`) as the second
+  line of defense — the caps bound entry counts, not bytes.
+
 ---
 
 ## 6. Partition behaviour & split-brain

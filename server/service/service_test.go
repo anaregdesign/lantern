@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -1594,6 +1595,130 @@ func TestLanternService_Illuminate_TraversalBudget(t *testing.T) {
 		}
 		if elapsed := time.Since(start); elapsed > 5*time.Second {
 			t.Fatalf("client deadline did not win: took %v", elapsed)
+		}
+	})
+}
+
+// TestLanternService_CapacityCaps pins the #848 soft-cap contract at the
+// write-RPC boundary: caps unset leave behavior unchanged; a batch that
+// exactly reaches the cap succeeds while the next single-item write fails
+// with RESOURCE_EXHAUSTED naming the env knob; deletes free capacity; edge
+// writes consult BOTH caps with the conservative 2-endpoints-per-item vertex
+// delta (over-rejection near the cap for existing keys is the documented
+// soft-cap slack, not a bug); ApplyMutation bypasses the caps entirely; and
+// each rejection fires the validation-reject hook with reason "capacity".
+func TestLanternService_CapacityCaps(t *testing.T) {
+	ctx := context.Background()
+	exp := timestamppb.New(time.Now().Add(time.Hour))
+	vertex := func(key string) *pb.Vertex {
+		return &pb.Vertex{Key: key, Value: &pb.Vertex_Nil{Nil: true}, Expiration: exp}
+	}
+	newSvc := func(l CapacityLimits, rejects *[]string) *LanternService {
+		cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+		svc := NewLanternService(cache).WithCapacityLimits(l)
+		if rejects != nil {
+			svc = svc.WithValidationRejectHook(func(reason string) { *rejects = append(*rejects, reason) })
+		}
+		return svc
+	}
+	isExhausted := func(t *testing.T, err error, knob string) {
+		t.Helper()
+		if connect.CodeOf(err) != connect.CodeResourceExhausted {
+			t.Fatalf("code = %v (err=%v), want ResourceExhausted", connect.CodeOf(err), err)
+		}
+		if !strings.Contains(err.Error(), knob) {
+			t.Fatalf("error %q does not name the knob %s", err.Error(), knob)
+		}
+	}
+
+	t.Run("UnsetCapsUnchanged", func(t *testing.T) {
+		svc := newSvc(CapacityLimits{}, nil)
+		for i := 0; i < 50; i++ {
+			if _, err := svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: vertex(fmt.Sprintf("k%02d", i))}); err != nil {
+				t.Fatalf("put %d with caps unset: %v", i, err)
+			}
+		}
+	})
+
+	t.Run("VertexBoundary", func(t *testing.T) {
+		var rejects []string
+		svc := newSvc(CapacityLimits{MaxVertices: 3}, &rejects)
+		// A batch that exactly reaches the cap succeeds.
+		if _, err := svc.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{
+			vertex("a"), vertex("b"), vertex("c"),
+		}}); err != nil {
+			t.Fatalf("exact-fit batch: %v", err)
+		}
+		// The next single-item write fails, naming the knob.
+		_, err := svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: vertex("d")})
+		isExhausted(t, err, "LANTERN_MAX_VERTICES")
+		// Over-rejection slack: re-putting an EXISTING key at the cap is
+		// rejected too — the pre-check cannot know the key already exists.
+		// This is the documented conservative behavior, not a bug.
+		_, err = svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: vertex("a")})
+		isExhausted(t, err, "LANTERN_MAX_VERTICES")
+		// Deletes free capacity.
+		if _, err := svc.DeleteVertex(ctx, &pb.DeleteVertexRequest{Key: "a"}); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		if _, err := svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: vertex("d")}); err != nil {
+			t.Fatalf("put after delete freed capacity: %v", err)
+		}
+		for i, r := range rejects {
+			if r != "capacity" {
+				t.Fatalf("reject %d reason = %q, want capacity", i, r)
+			}
+		}
+		if len(rejects) != 2 {
+			t.Fatalf("hook fired %d times, want 2", len(rejects))
+		}
+	})
+
+	t.Run("EdgeCapsBothSides", func(t *testing.T) {
+		var rejects []string
+		svc := newSvc(CapacityLimits{MaxVertices: 4, MaxEdges: 1}, &rejects)
+		// One edge: 2 potential endpoints <= 4, 1 edge <= 1 — fits.
+		if _, err := svc.AddEdge(ctx, &pb.AddEdgeRequest{Edge: &pb.Edge{Tail: "t", Head: "h", Weight: 1, Expiration: exp}}); err != nil {
+			t.Fatalf("first edge: %v", err)
+		}
+		// Second edge trips the EDGE cap.
+		_, err := svc.AddEdge(ctx, &pb.AddEdgeRequest{Edge: &pb.Edge{Tail: "t", Head: "h2", Weight: 1, Expiration: exp}})
+		isExhausted(t, err, "LANTERN_MAX_EDGES")
+		// Vertex cap via the conservative 2-per-item delta: 2 live + 2*2 > 4.
+		svc2 := newSvc(CapacityLimits{MaxVertices: 4}, nil)
+		if _, err := svc2.AddEdge(ctx, &pb.AddEdgeRequest{Edge: &pb.Edge{Tail: "t", Head: "h", Weight: 1, Expiration: exp}}); err != nil {
+			t.Fatalf("edge within vertex cap: %v", err)
+		}
+		_, err = svc2.AddEdges(ctx, &pb.AddEdgesRequest{Edges: []*pb.Edge{
+			{Tail: "x1", Head: "y1", Weight: 1, Expiration: exp},
+			{Tail: "x2", Head: "y2", Weight: 1, Expiration: exp},
+		}})
+		isExhausted(t, err, "LANTERN_MAX_VERTICES")
+		// PutEdges shares the same guards.
+		_, err = svc.PutEdges(ctx, &pb.PutEdgesRequest{Edges: []*pb.Edge{{Tail: "p", Head: "q", Weight: 1, Expiration: exp}}})
+		isExhausted(t, err, "LANTERN_MAX_EDGES")
+	})
+
+	t.Run("ApplyMutationBypasses", func(t *testing.T) {
+		svc := newSvc(CapacityLimits{MaxVertices: 1, MaxEdges: 1}, nil)
+		origin := bytes16("origin-A")
+		m := &pb.Mutation{Seq: 1, Hlc: newHLC(1, origin), Origin: origin[:], Op: &pb.MutationOp{Op: &pb.MutationOp_PutVertices{
+			PutVertices: &pb.PutVerticesRequest{Vertices: []*pb.Vertex{vertex("r1"), vertex("r2"), vertex("r3")}},
+		}}}
+		if err := svc.ApplyMutation(ctx, m); err != nil {
+			t.Fatalf("replicated apply must bypass the cap: %v", err)
+		}
+		if got := svc.cache.VertexCount(); got != 3 {
+			t.Fatalf("VertexCount = %d, want 3 (apply ignores the cap)", got)
+		}
+		m2 := &pb.Mutation{Seq: 2, Hlc: newHLC(2, origin), Origin: origin[:], Op: &pb.MutationOp{Op: &pb.MutationOp_AddEdges{
+			AddEdges: &pb.AddEdgesRequest{Edges: []*pb.Edge{
+				{Tail: "r1", Head: "r2", Weight: 1, Expiration: exp},
+				{Tail: "r2", Head: "r3", Weight: 1, Expiration: exp},
+			}},
+		}}}
+		if err := svc.ApplyMutation(ctx, m2); err != nil {
+			t.Fatalf("replicated edge apply must bypass the cap: %v", err)
 		}
 	})
 }
