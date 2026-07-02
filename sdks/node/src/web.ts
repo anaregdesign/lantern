@@ -20,7 +20,7 @@
  * @packageDocumentation
  */
 
-import { Lantern, normaliseBaseUrl, type LanternArgs } from "./client.js";
+import { Lantern, normaliseBaseUrl, withTokenInterceptors, type LanternArgs } from "./client.js";
 import { makeWebTransport } from "./transport-web.js";
 
 /**
@@ -37,7 +37,7 @@ import { makeWebTransport } from "./transport-web.js";
 export function connectWeb(baseUrl: string, args: LanternArgs = {}): Lantern {
   const normalised = normaliseBaseUrl("connectWeb", baseUrl);
   return Lantern.withTransport(
-    makeWebTransport(normalised, args.interceptors, args.transportOptions),
+    makeWebTransport(normalised, withTokenInterceptors(args), args.transportOptions),
     args.options,
   );
 }

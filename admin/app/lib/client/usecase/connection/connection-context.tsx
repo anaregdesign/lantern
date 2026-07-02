@@ -10,16 +10,23 @@ import {
 import {
   browserStorage,
   connectionStorageKey,
+  connectionTokenStorageKey,
 } from "~/lib/client/infrastructure/browser/storage";
 import { DEFAULT_BASE_URL, normaliseBaseUrl } from "./base-url";
 
 export interface Connection {
   baseUrl: string;
+  /**
+   * Optional bearer token for servers running with LANTERN_AUTH_TOKENS
+   * (#850). Empty string = no auth header.
+   */
+  token: string;
 }
 
 export interface ConnectionContextValue {
   connection: Connection;
   setBaseUrl: (input: string) => boolean;
+  setToken: (input: string) => void;
   reset: () => void;
 }
 
@@ -48,9 +55,21 @@ export function ConnectionProvider({ children }: ConnectionProviderProps) {
     return DEFAULT_BASE_URL;
   });
 
+  const [token, setTokenState] = useState<string>(
+    () => storage.get(connectionTokenStorageKey) ?? "",
+  );
+
   useEffect(() => {
     storage.set(connectionStorageKey, baseUrl);
   }, [baseUrl, storage]);
+
+  useEffect(() => {
+    if (token) {
+      storage.set(connectionTokenStorageKey, token);
+    } else {
+      storage.remove(connectionTokenStorageKey);
+    }
+  }, [token, storage]);
 
   const setBaseUrl = useCallback((input: string) => {
     const normalised = normaliseBaseUrl(input);
@@ -61,17 +80,23 @@ export function ConnectionProvider({ children }: ConnectionProviderProps) {
     return true;
   }, []);
 
+  const setToken = useCallback((input: string) => {
+    setTokenState(input.trim());
+  }, []);
+
   const reset = useCallback(() => {
     setBaseUrlState(DEFAULT_BASE_URL);
+    setTokenState("");
   }, []);
 
   const value = useMemo<ConnectionContextValue>(
     () => ({
-      connection: { baseUrl },
+      connection: { baseUrl, token },
       setBaseUrl,
+      setToken,
       reset,
     }),
-    [baseUrl, setBaseUrl, reset],
+    [baseUrl, token, setBaseUrl, setToken, reset],
   );
 
   return (

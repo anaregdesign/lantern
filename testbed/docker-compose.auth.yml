@@ -1,0 +1,21 @@
+# Auth-on overlay (#850): run the testbed with bearer-token auth armed.
+#
+# Usage:
+#   cd testbed
+#   docker compose -f docker-compose.yml -f docker-compose.auth.yml up -d
+#   LANTERN_TOKEN=testbed-secret lantern-cli get vertex alice     # env form
+#   lantern-cli --token testbed-secret get vertex alice           # flag form
+#
+# Notes:
+#   - LANTERN_AUTH_TOKENS carries two entries to exercise the documented
+#     zero-downtime rotation shape (clients may present either).
+#   - The healthcheck needs no token: /readyz lives on the metrics
+#     listener (bind-scoped, no auth by design) and grpc.health.v1 is
+#     always exempt.
+#   - Bearer tokens over plaintext h2c are sniffable; this overlay is for
+#     LOCAL testbed exercise only — see docs/ha-runbook.md "Securing the
+#     cluster" for the token+TLS guidance.
+services:
+  lantern:
+    environment:
+      LANTERN_AUTH_TOKENS: "testbed-secret,testbed-secret-rotating"

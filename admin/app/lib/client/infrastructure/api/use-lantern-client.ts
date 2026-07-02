@@ -10,7 +10,11 @@ import { useConnection } from "~/lib/client/usecase/connection/connection-contex
 export function useLanternClient(): LanternClient {
   const { connection } = useConnection();
   return useMemo(
-    () => createLanternClient({ baseUrl: connection.baseUrl }),
-    [connection.baseUrl],
+    () =>
+      createLanternClient({
+        baseUrl: connection.baseUrl,
+        token: connection.token,
+      }),
+    [connection.baseUrl, connection.token],
   );
 }

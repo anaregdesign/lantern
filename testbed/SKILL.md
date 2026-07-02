@@ -17,6 +17,7 @@ the running server while capturing logs + metrics. Used to validate releases
 ```
 testbed/
 ├── docker-compose.yml      # lantern + prom/prometheus
+├── docker-compose.auth.yml # overlay: bearer-token auth armed (#850)
 ├── prometheus.yml          # 5s scrape against lantern:9090
 ├── scripts/
 │   ├── exercise-cli.sh     # 28 CLI scenarios; per-step rc + log capture
@@ -27,7 +28,9 @@ testbed/
 
 The `lantern` service in compose defaults to `image: ${LANTERN_IMAGE:-lantern:local}`
 so you can flip between a locally-built image and a pinned release with
-`LANTERN_IMAGE=ghcr.io/anaregdesign/lantern:v0.7.1 docker compose up -d`.
+`LANTERN_IMAGE=ghcr.io/anaregdesign/lantern:v0.7.1 docker compose up -d
+# auth-on variant (#850): clients then need --token testbed-secret / LANTERN_TOKEN
+# docker compose -f docker-compose.yml -f docker-compose.auth.yml up -d`.
 
 ## End-to-end procedure
 
