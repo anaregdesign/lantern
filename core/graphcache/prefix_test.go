@@ -3,6 +3,8 @@ package graphcache
 import (
 	"context"
 	"fmt"
+	"math/rand"
+	"reflect"
 	"sort"
 	"sync"
 	"testing"
@@ -421,5 +423,65 @@ func TestGraphCache_CountByPrefix_EqualsLiveScan(t *testing.T) {
 	// Concrete check: the live u: set is exactly {u:1, u:2}.
 	if got := c.CountByPrefix("u:"); got != 2 {
 		t.Errorf("CountByPrefix(u:) = %d, want 2 (u:1, u:2)", got)
+	}
+}
+
+// TestScanByPrefixPage property-checks the paged scan (#836) against the
+// unpaged walk: for random keyspaces and every page size, stitching pages
+// together via (after, limit) must reproduce the unpaged sequence exactly —
+// no duplicates, no gaps — with `more` true on every page except the last.
+func TestScanByPrefixPage(t *testing.T) {
+	c := NewGraphCache[string, string](time.Hour)
+	c.EnablePrefixIndex(func(s string) string { return s })
+	exp := time.Now().Add(time.Hour)
+	rng := rand.New(rand.NewSource(836))
+	for i := 0; i < 200; i++ {
+		c.PutVertexWithExpiration(fmt.Sprintf("ns%d:key%04d", rng.Intn(3), rng.Intn(500)), "v", exp)
+	}
+	// A sprinkle of expired-but-unflushed entries that every page must skip.
+	for i := 0; i < 20; i++ {
+		c.PutVertexWithExpiration(fmt.Sprintf("ns1:dead%03d", i), "v", time.Now().Add(-time.Minute))
+	}
+
+	for _, prefix := range []string{"", "ns1:", "ns1:key02", "missing:"} {
+		var want []string
+		if !c.ScanByPrefix(context.Background(), prefix, func(_ string, key string, _ string) bool {
+			want = append(want, key)
+			return true
+		}) {
+			t.Fatalf("unpaged scan reported early stop")
+		}
+
+		for _, limit := range []int{1, 3, 7, len(want) + 5} {
+			var got []string
+			after := ""
+			for page := 0; ; page++ {
+				var pageKeys []string
+				more, ok := c.ScanByPrefixPage(context.Background(), prefix, after, limit, func(_ string, key string, _ string) bool {
+					pageKeys = append(pageKeys, key)
+					return true
+				})
+				if !ok {
+					t.Fatalf("prefix=%q limit=%d page=%d not ok", prefix, limit, page)
+				}
+				if len(pageKeys) > limit {
+					t.Fatalf("prefix=%q limit=%d page=%d overflowed: %d rows", prefix, limit, page, len(pageKeys))
+				}
+				got = append(got, pageKeys...)
+				if !more {
+					break
+				}
+				if len(pageKeys) == 0 {
+					t.Fatalf("prefix=%q limit=%d: more=true with empty page", prefix, limit)
+				}
+				after = pageKeys[len(pageKeys)-1]
+				if page > len(want)+2 {
+					t.Fatalf("prefix=%q limit=%d: pagination did not terminate", prefix, limit)
+				}
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("prefix=%q limit=%d:\n got  %v\n want %v", prefix, limit, got, want)
+			}
+		}
 	}
 }

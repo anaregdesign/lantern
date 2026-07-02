@@ -46,25 +46,53 @@ func (c *GraphCache[S, T]) ScanEdgesByPrefix(
 	tailPrefix, headPrefix string,
 	fn func(tailProjected string, tail S, headProjected string, head S, weight float32, expiration time.Time) bool,
 ) bool {
-	snapshot, enabled, collected := c.collectEdgeScanRows(ctx, tailPrefix, headPrefix)
+	_, ok := c.ScanEdgesByPrefixPage(ctx, tailPrefix, headPrefix, "", "", 0, fn)
+	return ok
+}
+
+// ScanEdgesByPrefixPage is the paged form of ScanEdgesByPrefix (#836): it
+// resumes strictly after the (afterTail, afterHead) pair — seeking the tail
+// radix to afterTail (inclusive, because that tail's remaining heads may
+// still qualify) and, WITHIN the resume tail only, seeking heads strictly
+// past afterHead — and buffers at most limit rows plus one sentinel
+// (limit <= 0 means unbounded, i.e. exactly ScanEdgesByPrefix). A resumed
+// page therefore costs O(depth + page) instead of O(every matching edge),
+// and per-call buffering is bounded by the page size instead of the whole
+// matching set.
+//
+// more reports whether at least one further matching edge exists past the
+// returned page; ok mirrors ScanEdgesByPrefix (false on disabled index, ctx
+// cancellation, or fn early-stop). Locking/consistency semantics are
+// unchanged: rows are collected under one c.mu.RLock, fn runs off-lock.
+func (c *GraphCache[S, T]) ScanEdgesByPrefixPage(
+	ctx context.Context,
+	tailPrefix, headPrefix, afterTail, afterHead string,
+	limit int,
+	fn func(tailProjected string, tail S, headProjected string, head S, weight float32, expiration time.Time) bool,
+) (more, ok bool) {
+	snapshot, enabled, collected := c.collectEdgeScanRows(ctx, tailPrefix, headPrefix, afterTail, afterHead, limit)
 	if !enabled {
-		return false
+		return false, false
 	}
 	// Collection was interrupted by ctx cancellation; report the walk as
 	// incomplete even if some rows were buffered.
 	if !collected {
-		return false
+		return false, false
+	}
+	if limit > 0 && len(snapshot) > limit {
+		more = true
+		snapshot = snapshot[:limit]
 	}
 	for i := range snapshot {
 		if err := ctx.Err(); err != nil {
-			return false
+			return more, false
 		}
 		r := &snapshot[i]
 		if !fn(r.tailProj, r.tail, r.headProj, r.head, r.weight, r.expiration) {
-			return false
+			return more, false
 		}
 	}
-	return true
+	return more, true
 }
 
 // edgeScanRow is one matched (tail, head) edge captured during the locked
@@ -79,15 +107,22 @@ type edgeScanRow[S comparable] struct {
 	expiration time.Time
 }
 
-// collectEdgeScanRows gathers every matching edge into a snapshot under a
-// single c.mu.RLock, reusing the same fast/fallback head walk as the live
-// scan. enabled is false when the prefix index is disabled (the caller maps
-// this to a false return); collected is false when ctx was cancelled mid-walk.
-// The visitor is NOT called here — collection appends rows and always keeps
-// going, so early-stop is honoured later during replay, matching ScanByPrefix.
+// collectEdgeScanRows gathers matching edges into a snapshot under a single
+// c.mu.RLock, reusing the same fast/fallback head walk as the live scan.
+// enabled is false when the prefix index is disabled (the caller maps this
+// to a false return); collected is false when ctx was cancelled mid-walk.
+// The visitor is NOT called here — collection appends rows (stopping one
+// row past limit when limit > 0, so the caller can answer `more`), and
+// fn early-stop is honoured later during replay, matching ScanByPrefix.
+//
+// The (afterTail, afterHead) resume point (#836) seeks the tail walk to
+// afterTail INCLUSIVE — the cursor tail's remaining heads may still qualify
+// — and applies afterHead as a strictly-greater head bound on that one
+// resume tail only; every later tail walks its full matching head set.
 func (c *GraphCache[S, T]) collectEdgeScanRows(
 	ctx context.Context,
-	tailPrefix, headPrefix string,
+	tailPrefix, headPrefix, afterTail, afterHead string,
+	limit int,
 ) (snapshot []edgeScanRow[S], enabled, collected bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -95,6 +130,7 @@ func (c *GraphCache[S, T]) collectEdgeScanRows(
 		return nil, false, false
 	}
 	collected = true
+	full := func() bool { return limit > 0 && len(snapshot) > limit }
 	collect := func(tailProj string, tail S, headProj string, head S, weight float32, expiration time.Time) bool {
 		snapshot = append(snapshot, edgeScanRow[S]{
 			tailProj:   tailProj,
@@ -104,11 +140,21 @@ func (c *GraphCache[S, T]) collectEdgeScanRows(
 			weight:     weight,
 			expiration: expiration,
 		})
-		return true
+		return !full()
 	}
-	c.prefixIndex.walkPrefix(tailPrefix, func(tailProj string) bool {
+	tailWalk := func(visit func(string) bool) {
+		if afterTail == "" && afterHead == "" {
+			c.prefixIndex.walkPrefix(tailPrefix, visit)
+			return
+		}
+		c.prefixIndex.walkPrefixBound(tailPrefix, afterTail, true, visit)
+	}
+	tailWalk(func(tailProj string) bool {
 		if err := ctx.Err(); err != nil {
 			collected = false
+			return false
+		}
+		if full() {
 			return false
 		}
 		tail, ok := c.resolveProjected(tailProj)
@@ -119,12 +165,16 @@ func (c *GraphCache[S, T]) collectEdgeScanRows(
 		if !ok || len(heads) == 0 {
 			return true
 		}
-		if c.headByTail != nil {
-			c.scanTailHeadsFast(tail, tailProj, headPrefix, heads, collect)
-		} else {
-			c.scanTailHeadsFallback(tail, tailProj, headPrefix, heads, collect)
+		headAfter := ""
+		if tailProj == afterTail {
+			headAfter = afterHead
 		}
-		return true
+		if c.headByTail != nil {
+			c.scanTailHeadsFast(tail, tailProj, headPrefix, headAfter, heads, collect)
+		} else {
+			c.scanTailHeadsFallback(tail, tailProj, headPrefix, headAfter, heads, collect)
+		}
+		return !full()
 	})
 	return snapshot, true, collected
 }
@@ -137,22 +187,22 @@ func (c *GraphCache[S, T]) collectEdgeScanRows(
 func (c *GraphCache[S, T]) scanTailHeadsFast(
 	tail S,
 	tailProj string,
-	headPrefix string,
+	headPrefix, headAfter string,
 	heads map[vertexID]*weight,
 	fn func(tailProjected string, tail S, headProjected string, head S, weight float32, expiration time.Time) bool,
 ) bool {
 	tailID, ok := c.edges.dict.lookup(tail)
 	if !ok {
-		return c.scanTailHeadsFallback(tail, tailProj, headPrefix, heads, fn)
+		return c.scanTailHeadsFallback(tail, tailProj, headPrefix, headAfter, heads, fn)
 	}
 	hi, ok := c.headByTail[tailID]
 	if !ok || hi == nil {
 		// No per-tail index yet (or out of sync). Fall back to the safe
 		// path so we never silently under-report.
-		return c.scanTailHeadsFallback(tail, tailProj, headPrefix, heads, fn)
+		return c.scanTailHeadsFallback(tail, tailProj, headPrefix, headAfter, heads, fn)
 	}
 	keepGoing := true
-	hi.walkPrefix(headPrefix, func(headProj string, headID vertexID) bool {
+	hi.walkPrefixBound(headPrefix, headAfter, func(headProj string, headID vertexID) bool {
 		w, ok := heads[headID]
 		if !ok {
 			// Index/edge drift: skip rather than crash. This window is
@@ -190,7 +240,7 @@ func (c *GraphCache[S, T]) scanTailHeadsFast(
 func (c *GraphCache[S, T]) scanTailHeadsFallback(
 	tail S,
 	tailProj string,
-	headPrefix string,
+	headPrefix, headAfter string,
 	heads map[vertexID]*weight,
 	fn func(tailProjected string, tail S, headProjected string, head S, weight float32, expiration time.Time) bool,
 ) bool {
@@ -207,6 +257,11 @@ func (c *GraphCache[S, T]) scanTailHeadsFallback(
 		}
 		proj := c.prefixExtract(head)
 		if headPrefix != "" && !strings.HasPrefix(proj, headPrefix) {
+			continue
+		}
+		// Resume-tail head bound (#836): only heads strictly past the
+		// cursor's last emitted head qualify.
+		if headAfter != "" && proj <= headAfter {
 			continue
 		}
 		entries = append(entries, headEntry{proj: proj, head: head, w: w})

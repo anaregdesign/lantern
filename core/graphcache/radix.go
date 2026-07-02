@@ -1,6 +1,9 @@
 package graphcache
 
-import "sync"
+import (
+	"strings"
+	"sync"
+)
 
 // radix is a minimal, concurrency-safe Patricia (compressed) trie over
 // byte strings. It is the secondary index that powers prefix-keyed
@@ -208,7 +211,133 @@ func (r *radix) walkPrefix(prefix string, fn func(key string) bool) {
 	if !ok {
 		return
 	}
-	walkAll(node, accumulated, fn)
+	buf := append(make([]byte, 0, len(accumulated)+16), accumulated...)
+	walkAll(node, &buf, fn)
+}
+
+// walkPrefixBound is the seek-aware sibling of walkPrefix (#836): it visits,
+// in lexicographic order, every stored key that has prefix as a prefix AND
+// sits past bound — strictly greater when inclusive is false (the resume-
+// after-cursor case), or >= bound when inclusive is true (the resume-AT case
+// the edge scan needs for its partially-consumed tail). Children are sorted,
+// so whole subtrees on the wrong side of bound are skipped without being
+// visited — a resumed page costs O(depth + page), not O(everything before
+// the cursor). A bound lexicographically below the prefix subtree degrades
+// to a plain walkPrefix; an empty bound with inclusive=false is exactly
+// walkPrefix.
+func (r *radix) walkPrefixBound(prefix, bound string, inclusive bool, fn func(key string) bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	node, accumulated, ok := r.descend(prefix)
+	if !ok {
+		return
+	}
+	buf := append(make([]byte, 0, len(accumulated)+16), accumulated...)
+	walkBound(node, &buf, bound, inclusive, fn)
+}
+
+// walkBound visits the terminals under n (whose accumulated path is *buf)
+// that satisfy the bound, pruning subtrees that provably cannot. The three
+// path-vs-bound relationships drive it:
+//
+//   - path > bound: every key below starts with path, so all qualify —
+//     degrade to the plain walkAll.
+//   - path is not a prefix of bound (and path <= bound): every key below
+//     shares path's divergence point with bound, so all compare < bound —
+//     skip the whole subtree.
+//   - path is a (possibly equal) prefix of bound: the boundary chain. The
+//     terminal at exactly bound is emitted only when inclusive; children are
+//     binary-searched so subtrees entirely below the bound's next byte are
+//     skipped, the one straddling it recurses, and everything after it walks
+//     freely.
+func walkBound(n *radixNode, buf *[]byte, bound string, inclusive bool, fn func(string) bool) bool {
+	path := string(*buf)
+	if path > bound {
+		return walkAll(n, buf, fn)
+	}
+	if !strings.HasPrefix(bound, path) {
+		// path <= bound and diverges from it: everything below is < bound.
+		return true
+	}
+	rest := bound[len(path):]
+	if rest == "" {
+		// path == bound: emit the exact-match terminal only when inclusive;
+		// every child subtree is strictly greater and walks freely.
+		if n.terminal && inclusive {
+			if !fn(path) {
+				return false
+			}
+		}
+		for _, c := range n.children {
+			*buf = append(*buf, c.label...)
+			ok := walkAll(c, buf, fn)
+			*buf = (*buf)[:len(*buf)-len(c.label)]
+			if !ok {
+				return false
+			}
+		}
+		return true
+	}
+	// path is a proper prefix of bound: the terminal here is < bound (skip).
+	// Find the first child that could reach the bound: children with a first
+	// byte below rest[0] are entirely < bound.
+	idx, exact := n.findChild(rest[0])
+	if exact == nil {
+		// No child straddles the boundary byte; children from idx on are
+		// strictly greater.
+	} else {
+		c := exact
+		m := len(c.label)
+		if len(rest) < m {
+			m = len(rest)
+		}
+		switch {
+		case c.label[:m] < rest[:m]:
+			// Entire child subtree < bound (diverges below) — skip it and
+			// continue with the strictly-greater children after it.
+			idx++
+		case c.label[:m] > rest[:m]:
+			// Entire child subtree > bound (diverges above while sharing the
+			// boundary byte) — walk it freely here; the tail loop below skips
+			// the boundary byte and would otherwise drop it.
+			*buf = append(*buf, c.label...)
+			ok := walkAll(c, buf, fn)
+			*buf = (*buf)[:len(*buf)-len(c.label)]
+			if !ok {
+				return false
+			}
+			idx++
+		default:
+			// Shared prefix for the full overlap: the child either still
+			// tracks the bound (label consumed by rest → recurse) or has
+			// already overrun it (label longer than rest → path+label starts
+			// with bound and is longer, i.e. strictly greater → walk freely;
+			// walkBound's path>bound arm handles that uniformly).
+			*buf = append(*buf, c.label...)
+			ok := walkBound(c, buf, bound, inclusive, fn)
+			*buf = (*buf)[:len(*buf)-len(c.label)]
+			if !ok {
+				return false
+			}
+			idx++
+		}
+	}
+	for _, c := range n.children[idx:] {
+		if c.label[0] < rest[0] {
+			continue
+		}
+		if c.label[0] == rest[0] {
+			// Only reachable when exact was handled above; skip defensively.
+			continue
+		}
+		*buf = append(*buf, c.label...)
+		ok := walkAll(c, buf, fn)
+		*buf = (*buf)[:len(*buf)-len(c.label)]
+		if !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // countPrefix returns the number of stored keys with prefix as a prefix.
@@ -262,17 +391,22 @@ func (r *radix) descend(prefix string) (*radixNode, string, bool) {
 	}
 }
 
-// walkAll visits every terminal in the subtree rooted at n, prepending
-// the path label accumulated to reach n. fn returning false aborts the
-// walk; the boolean propagates up so iteration stops promptly.
-func walkAll(n *radixNode, path string, fn func(string) bool) bool {
+// walkAll visits every terminal in the subtree rooted at n. The accumulated
+// path lives in a single shared byte buffer that is appended on descent and
+// truncated on ascent (#836), so a walk allocates one string per EMITTED
+// terminal instead of one per visited node edge. fn returning false aborts
+// the walk; the boolean propagates up so iteration stops promptly.
+func walkAll(n *radixNode, buf *[]byte, fn func(string) bool) bool {
 	if n.terminal {
-		if !fn(path) {
+		if !fn(string(*buf)) {
 			return false
 		}
 	}
 	for _, c := range n.children {
-		if !walkAll(c, path+c.label, fn) {
+		*buf = append(*buf, c.label...)
+		ok := walkAll(c, buf, fn)
+		*buf = (*buf)[:len(*buf)-len(c.label)]
+		if !ok {
 			return false
 		}
 	}

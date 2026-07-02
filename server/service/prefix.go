@@ -37,26 +37,12 @@ func (s *LanternService) ScanVertices(ctx context.Context, in *pb.ScanVerticesRe
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	// Pre-allocate one extra slot so the callback can land the (limit+1)-th
-	// hit, see it overshoot, and stop without a reallocation. We trim back
-	// to limit before returning.
+	// The cursor seek and page limit are pushed into the index walk (#836):
+	// the backend resumes strictly after cursor.LastKey and buffers at most
+	// one page, so a resumed page costs O(page), not O(matching set).
 	vertices := make([]*pb.Vertex, 0, limit)
 	var lastKey string
-	hitLimit := false
-	s.cache.ScanByPrefix(ctx, in.GetPrefix(), func(_ string, key string, v *pb.Vertex) bool {
-		// Cursor skip: drop everything <= cursor.LastKey. ScanByPrefix
-		// walks in lexicographic order, so once we cross the cursor we
-		// will never see a <= key again — no need for a sorted-set
-		// state machine. This is O(cursor-page-size) overhead per
-		// resumed scan; if it ever shows up in profiles, push the seek
-		// into the radix walk.
-		if cursor.LastKey != "" && key <= cursor.LastKey {
-			return true
-		}
-		if uint32(len(vertices)) >= limit {
-			hitLimit = true
-			return false
-		}
+	more, _ := s.cache.ScanByPrefixPage(ctx, in.GetPrefix(), cursor.LastKey, int(limit), func(_ string, key string, v *pb.Vertex) bool {
 		// Normalise nil-valued vertices the same way GetVertex does so
 		// callers see a uniform shape.
 		if v == nil {
@@ -69,7 +55,7 @@ func (s *LanternService) ScanVertices(ctx context.Context, in *pb.ScanVerticesRe
 	})
 
 	resp := &pb.ScanVerticesResponse{Vertices: vertices}
-	if hitLimit && lastKey != "" {
+	if more && lastKey != "" {
 		resp.NextCursor = encodeCursor(scanCursor{LastKey: lastKey})
 	}
 	s.metrics.OnScan("ScanVertices", len(vertices), time.Since(start))
@@ -111,22 +97,14 @@ func (s *LanternService) ScanVertexKeys(ctx context.Context, in *pb.ScanVertexKe
 
 	keys := make([]string, 0, limit)
 	var lastKey string
-	hitLimit := false
-	s.cache.ScanByPrefix(ctx, in.GetPrefix(), func(_ string, key string, _ *pb.Vertex) bool {
-		if cursor.LastKey != "" && key <= cursor.LastKey {
-			return true
-		}
-		if uint32(len(keys)) >= limit {
-			hitLimit = true
-			return false
-		}
+	more, _ := s.cache.ScanByPrefixPage(ctx, in.GetPrefix(), cursor.LastKey, int(limit), func(_ string, key string, _ *pb.Vertex) bool {
 		keys = append(keys, key)
 		lastKey = key
 		return true
 	})
 
 	resp := &pb.ScanVertexKeysResponse{Keys: keys}
-	if hitLimit && lastKey != "" {
+	if more && lastKey != "" {
 		resp.NextCursor = encodeKeysCursor(scanKeysCursor{LastKey: lastKey})
 	}
 	s.metrics.OnScan("ScanVertexKeys", len(keys), time.Since(start))
@@ -226,25 +204,13 @@ func (s *LanternService) ScanEdges(ctx context.Context, in *pb.ScanEdgesRequest)
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
+	// Cursor resume and page limit are pushed into the index walk (#836):
+	// the backend seeks the tail radix to the cursor tail and, within it,
+	// past the cursor head, buffering at most one page.
 	edges := make([]*pb.Edge, 0, limit)
 	var lastTail, lastHead string
-	hitLimit := false
-	s.cache.ScanEdgesByPrefix(ctx, in.GetTailPrefix(), in.GetHeadPrefix(),
+	more, _ := s.cache.ScanEdgesByPrefixPage(ctx, in.GetTailPrefix(), in.GetHeadPrefix(), cursor.LastTail, cursor.LastHead, int(limit),
 		func(_ string, tail string, _ string, head string, weight float32, exp time.Time) bool {
-			// Cursor skip: drop everything whose (tail, head) is <=
-			// cursor's last emitted pair. The walk is in ascending
-			// (tail, head) order so once we cross the cursor we never
-			// revisit a smaller pair.
-			if cursor.LastTail != "" || cursor.LastHead != "" {
-				if tail < cursor.LastTail ||
-					(tail == cursor.LastTail && head <= cursor.LastHead) {
-					return true
-				}
-			}
-			if uint32(len(edges)) >= limit {
-				hitLimit = true
-				return false
-			}
 			edge := &pb.Edge{Tail: tail, Head: head, Weight: weight}
 			if !exp.IsZero() {
 				edge.Expiration = timestamppb.New(exp)
@@ -255,7 +221,7 @@ func (s *LanternService) ScanEdges(ctx context.Context, in *pb.ScanEdgesRequest)
 		})
 
 	resp := &pb.ScanEdgesResponse{Edges: edges}
-	if hitLimit && (lastTail != "" || lastHead != "") {
+	if more && (lastTail != "" || lastHead != "") {
 		resp.NextCursor = encodeEdgesCursor(scanEdgesCursor{LastTail: lastTail, LastHead: lastHead})
 	}
 	s.metrics.OnScan("ScanEdges", len(edges), time.Since(start))

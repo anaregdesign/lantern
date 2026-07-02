@@ -3,6 +3,8 @@ package graphcache
 import (
 	"context"
 	"fmt"
+	"math/rand"
+	"reflect"
 	"runtime"
 	"sort"
 	"sync"
@@ -479,6 +481,82 @@ func TestGraphCache_ScanEdgesByPrefix_HidesDeadEndpoints(t *testing.T) {
 			}
 			if got := scanEdgesCollect(t, c, "t:", ""); len(got) != 0 {
 				t.Fatalf("scan after deleting tail = %v, want empty", got)
+			}
+		})
+	}
+}
+
+// TestScanEdgesByPrefixPage property-checks the paged edge scan (#836):
+// stitching (afterTail, afterHead, limit) pages must reproduce the unpaged
+// (tail, head) sequence exactly for both the fast per-tail head index and
+// the disabled-index fallback, including pages that split a tail's head set
+// (the inclusive-tail resume).
+func TestScanEdgesByPrefixPage(t *testing.T) {
+	build := func(t *testing.T, disableHeadIndex bool) *GraphCache[string, string] {
+		c := NewGraphCache[string, string](time.Hour)
+		c.EnablePrefixIndex(func(s string) string { return s })
+		exp := time.Now().Add(time.Hour)
+		rng := rand.New(rand.NewSource(167))
+		for i := 0; i < 60; i++ {
+			tail := fmt.Sprintf("t%d", rng.Intn(8))
+			head := fmt.Sprintf("h%02d", rng.Intn(30))
+			c.AddEdgeWithExpiration(tail, head, 1, exp)
+		}
+		if disableHeadIndex {
+			c.disableHeadIndexForTesting()
+		}
+		return c
+	}
+
+	type pair struct{ tail, head string }
+	for _, mode := range []struct {
+		name    string
+		disable bool
+	}{{"fast head index", false}, {"fallback", true}} {
+		t.Run(mode.name, func(t *testing.T) {
+			c := build(t, mode.disable)
+			for _, tp := range []struct{ tailPrefix, headPrefix string }{
+				{"", ""}, {"t1", ""}, {"", "h1"}, {"t", "h0"},
+			} {
+				var want []pair
+				if !c.ScanEdgesByPrefix(context.Background(), tp.tailPrefix, tp.headPrefix,
+					func(_ string, tail string, _ string, head string, _ float32, _ time.Time) bool {
+						want = append(want, pair{tail, head})
+						return true
+					}) {
+					t.Fatal("unpaged edge scan reported early stop")
+				}
+
+				for _, limit := range []int{1, 2, 5, len(want) + 3} {
+					var got []pair
+					afterTail, afterHead := "", ""
+					for page := 0; ; page++ {
+						var rows []pair
+						more, ok := c.ScanEdgesByPrefixPage(context.Background(), tp.tailPrefix, tp.headPrefix, afterTail, afterHead, limit,
+							func(_ string, tail string, _ string, head string, _ float32, _ time.Time) bool {
+								rows = append(rows, pair{tail, head})
+								return true
+							})
+						if !ok {
+							t.Fatalf("%+v limit=%d page=%d not ok", tp, limit, page)
+						}
+						if len(rows) > limit {
+							t.Fatalf("%+v limit=%d page=%d overflowed", tp, limit, page)
+						}
+						got = append(got, rows...)
+						if !more {
+							break
+						}
+						last := rows[len(rows)-1]
+						afterTail, afterHead = last.tail, last.head
+						if page > len(want)+2 {
+							t.Fatalf("%+v limit=%d: pagination did not terminate", tp, limit)
+						}
+					}
+					if !reflect.DeepEqual(got, want) {
+						t.Fatalf("%s %+v limit=%d:\n got  %v\n want %v", mode.name, tp, limit, got, want)
+					}
+				}
 			}
 		})
 	}
