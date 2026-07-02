@@ -371,22 +371,19 @@ func run() error {
 	})
 	for _, c := range []struct {
 		name string
-		algo client.Algorithm
+		red  client.Reduction
 		obj  client.Objective
 	}{
-		{"none", client.AlgorithmUnspecified, client.ObjectiveUnspecified},
-		{"mst/min", client.AlgorithmMinimumSpanningTree, client.ObjectiveMinimize},
-		{"mst/max", client.AlgorithmMinimumSpanningTree, client.ObjectiveMaximize},
-		{"spt/min", client.AlgorithmShortestPathTree, client.ObjectiveMinimize},
-		{"spt/max", client.AlgorithmShortestPathTree, client.ObjectiveMaximize},
+		{"none", client.ReductionNone, client.ObjectiveUnspecified},
+		{"mst/min", client.ReductionMinimumSpanningTree, client.ObjectiveMinimize},
+		{"mst/max", client.ReductionMinimumSpanningTree, client.ObjectiveMaximize},
+		{"spt/min", client.ReductionShortestPathTree, client.ObjectiveMinimize},
+		{"spt/max", client.ReductionShortestPathTree, client.ObjectiveMaximize},
 	} {
 		c := c
 		step("Illuminate "+c.name, func() error {
 			g, err := lc.Illuminate(ctx, "ill:alice",
-				client.WithStep(3),
-				client.WithK(10),
-				client.WithAlgorithm(c.algo),
-				client.WithObjective(c.obj),
+				client.WithBFS(client.BFSOpts{Step: 3, FanOut: 10, Objective: c.obj, Reduction: c.red}),
 			)
 			if err != nil {
 				return err
@@ -399,7 +396,7 @@ func run() error {
 	}
 	step("Illuminate TFIDF", func() error {
 		g, err := lc.Illuminate(ctx, "ill:alice",
-			client.WithStep(2), client.WithK(5), client.WithWeighting(client.WeightingTFIDF),
+			client.WithBFS(client.BFSOpts{Step: 2, FanOut: 5}), client.WithWeighting(client.WeightingTFIDF),
 		)
 		if err != nil {
 			return err

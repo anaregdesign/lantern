@@ -24,7 +24,7 @@ and gRPC-Web on the same h2c socket, so this client points at the
 server URL with an `http://` (or `https://` for TLS) scheme.
 
 ```ts
-import { Algorithm, connect } from "lantern-sdk";
+import { connect } from "lantern-sdk";
 
 const client = connect("http://localhost:6380");
 try {
@@ -36,9 +36,7 @@ try {
   await client.addEdge({ tail: "hello", head: "world", weight: 1.0, ttlSeconds: 60 });
 
   const graph = await client.illuminate("hello", {
-    step: 2,
-    k: 16,
-    algorithm: Algorithm.UNSPECIFIED,
+    bfs: { step: 2, fanOut: 16 },
   });
   console.log(`vertices=${graph.vertices.size}`);
 } finally {
@@ -169,10 +167,12 @@ map (Vite, Webpack 5+, Rollup, esbuild) will route
 test in `test/bundle-isolation.test.ts`.
 
 ```ts
-import { connectWeb, Algorithm } from "lantern-sdk/web";
+import { connectWeb, Reduction } from "lantern-sdk/web";
 
 const client = connectWeb("https://lantern.example.com:6380");
-const graph = await client.illuminate("hello", { algorithm: Algorithm.SHORTEST_PATH_TREE });
+const graph = await client.illuminate("hello", {
+  bfs: { reduction: Reduction.SHORTEST_PATH_TREE },
+});
 console.log(`vertices=${graph.vertices.size}`);
 ```
 

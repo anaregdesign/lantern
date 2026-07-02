@@ -2,53 +2,79 @@
  * Per-call and per-client options.
  */
 
-import { Algorithm, Objective, Weighting } from "./values.js";
+import { Objective, Reduction, Weighting } from "./values.js";
 
-export interface IlluminateOptions {
+/**
+ * BFS-family knobs (#846): the greedy per-hop top-k walk and its optional
+ * post-traversal tree reduction.
+ */
+export interface BfsOptions {
   /** BFS depth limit (0 = server default; treated as "no expansion"). */
   step?: number;
-  /** Per-hop fan-out, top-k neighbours kept at each frontier (0 = unlimited). */
-  k?: number;
   /**
-   * Illuminate algorithm. Defaults to UNSPECIFIED (raw discovered subgraph).
-   * MST/SPT are post-traversal reductions; PERSONALIZED_PAGERANK (#801) is a
-   * distinct traversal returning a relevance star tuned by `restartProb` /
-   * `epsilon` and sized by `k`. See #410 for the orthogonal-axes design.
+   * Per-hop fan-out: top-k neighbours kept at each frontier (0 = unlimited).
+   * Formerly the overloaded `k`.
    */
-  algorithm?: Algorithm;
+  fanOut?: number;
   /**
-   * Reduction direction. Ignored when `algorithm === Algorithm.UNSPECIFIED`
-   * or `Algorithm.PERSONALIZED_PAGERANK`. Server resolves UNSPECIFIED to
-   * MINIMIZE.
+   * Direction for both the per-hop pruning and the reduction (#560).
+   * Server resolves UNSPECIFIED to MAXIMIZE.
    */
   objective?: Objective;
   /**
-   * Edge-weight transform applied BEFORE the BFS walk. Server resolves
-   * UNSPECIFIED to RAW.
+   * Optional tree view of the discovered neighbourhood (MST / SPT rooted at
+   * the seed). UNSPECIFIED = raw subgraph.
+   */
+  reduction?: Reduction;
+}
+
+/**
+ * PPR-family knobs (#801/#846): seed-anchored Personalized PageRank via
+ * forward-push, returning a relevance star. PPR is intrinsically a relevance
+ * maximiser with no per-hop step semantics — which is why neither knob
+ * exists here.
+ */
+export interface PprOptions {
+  /**
+   * Cap the star to the top-N vertices by mass (0 = every positive-mass
+   * vertex). Formerly the overloaded `k`.
+   */
+  topN?: number;
+  /**
+   * Restart (teleport-to-seed) probability α. Higher α keeps relevance
+   * tighter around the seed. Must lie in (0,1) — 0/omitted or out-of-range
+   * falls back to the server default (0.15).
+   */
+  restartProb?: number;
+  /**
+   * Forward-push residual threshold ε. Smaller ε pushes mass to more
+   * vertices (higher recall, more work). Must be positive — 0/omitted falls
+   * back to the server default (1e-4).
+   */
+  epsilon?: number;
+}
+
+export interface IlluminateOptions {
+  /**
+   * Select the BFS traversal family with its knobs (#846). Mutually
+   * exclusive with `ppr` — supplying both is an InvalidArgumentError.
+   * Omitting both runs BFS with server defaults (the bare illuminate).
+   */
+  bfs?: BfsOptions;
+  /** Select the Personalized PageRank family. Mutually exclusive with `bfs`. */
+  ppr?: PprOptions;
+  /**
+   * Edge-weight transform applied BEFORE the walk (any family). Server
+   * resolves UNSPECIFIED to RAW.
    */
   weighting?: Weighting;
   /**
    * Restrict the traversal frontier to vertices whose key has this prefix.
    * The seed is always retained as the anchor even if it does not match.
    * Empty/omitted = no filter. Applied server-side BEFORE per-hop top-k and
-   * before any MST/SPT reduction (induced-subgraph semantics).
+   * before any reduction (induced-subgraph semantics).
    */
   vertexPrefix?: string;
-  /**
-   * Personalized PageRank restart (teleport-to-seed) probability α. Higher α
-   * keeps relevance tighter around the seed; lower α wanders farther. Only
-   * meaningful with `algorithm === Algorithm.PERSONALIZED_PAGERANK`. Must lie
-   * in (0,1) — 0/omitted or out-of-range falls back to the server default
-   * (0.15).
-   */
-  restartProb?: number;
-  /**
-   * Personalized PageRank forward-push residual threshold ε. Smaller ε pushes
-   * mass to more vertices (higher recall, more work); larger ε stops sooner.
-   * Only meaningful with `algorithm === Algorithm.PERSONALIZED_PAGERANK`. Must
-   * be positive — 0/omitted falls back to the server default (1e-4).
-   */
-  epsilon?: number;
 }
 
 export interface ScanOptions {

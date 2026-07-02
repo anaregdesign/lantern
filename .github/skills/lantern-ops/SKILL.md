@@ -275,9 +275,9 @@ idempotent. Flags:
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--step <uint32>` | `1` | max walk depth from the seed |
-| `--k <uint32>` | `10` | max neighbours visited per node (top-k) |
-| `--algorithm <mode>` | `none` | post-traversal reduction: `none` (raw subgraph), `mst` (spanning tree), `spt` (shortest-path tree rooted at seed), or `ppr` (Personalized PageRank ranking from the seed via ACL forward-push) |
+| `--step <uint32>` | `1` | max walk depth from the seed. BFS-family only — ignored (has no meaning) under `--algorithm ppr` |
+| `--k <uint32>` | `10` | max neighbours visited per node. On the wire (#846) this maps to `bfs.fan_out` (per-hop top-k) for `none`/`mst`/`spt`, or `ppr.top_n` (total ranked vertices) for `ppr` |
+| `--algorithm <mode>` | `none` | traversal family + reduction. On the wire (#846) `none`/`mst`/`spt` select the BFS family (`mst`/`spt` are its post-traversal tree *reductions*), while `ppr` selects the separate Personalized PageRank family (seed-anchored ranking via ACL forward-push). The CLI keeps the single friendly flag; the typed split is server-side |
 | `--objective <dir>` | `max` | optimisation direction; governs **both** per-hop top-k pruning and the reduction: `max` (largest-weight wins; weight = relevance) or `min` (smallest-weight wins; weight = cost). Ignored by `--algorithm ppr`, which always ranks by PPR mass |
 | `--weighting <mode>` | `raw` | edge-weight transform before the walk: `raw`, `tfidf` (re-score by TF-IDF over per-vertex out-edge distribution), or `bm25` (re-score by Okapi BM25, k1=1.2/b=0.75, over the same distribution — IDF saturation + out-degree length-normalisation, consistent with full-text search) |
 | `--prefix <string>` | — | restrict the walk **frontier** to vertices with this key prefix (case-sensitive); the seed is always kept as anchor. Applied server-side before top-k and any reduction, so `--prefix` + `mst`/`spt` yields a tree over the prefix-induced subgraph, not a path in the full graph |

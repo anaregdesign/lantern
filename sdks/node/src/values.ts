@@ -152,34 +152,32 @@ export type VertexKind =
   | "nil";
 
 /**
- * Illuminate algorithm axes for Lantern.illuminate (#410, #801). The
- * orthogonal triple `Algorithm × Objective × Weighting` replaces the
- * legacy flat `Optimization` enum.
+ * Illuminate axes for Lantern.illuminate (#846). The traversal family is
+ * selected by the per-family options object (`bfs` or `ppr` on
+ * IlluminateOptions — the wire oneof); the enums below are the shared and
+ * BFS-family axes.
  *
- *   - `Algorithm`  selects the algorithm: NONE (raw subgraph), MST,
- *                  SPT (shortest-path tree from the seed), or
- *                  PERSONALIZED_PAGERANK (#801 — seed-anchored PPR via
- *                  forward-push, returning a relevance star; a distinct
- *                  traversal, NOT a post-traversal reduction).
+ *   - `Reduction`  optional post-traversal tree view of the BFS-discovered
+ *                  neighbourhood: UNSPECIFIED (raw subgraph), MST, or SPT
+ *                  (tree rooted at the seed). A BFS-family knob — PPR is a
+ *                  different family, not a reduction.
  *   - `Objective`  selects the direction: MINIMIZE (cost-weighted) or
- *                  MAXIMIZE (relevance-weighted). Ignored when
- *                  algorithm = UNSPECIFIED or PERSONALIZED_PAGERANK.
- *   - `Weighting`  selects the edge-weight transform applied BEFORE
- *                  the BFS walk: RAW (edge.weight verbatim), TFIDF
- *                  (re-score over per-vertex out-edge distribution),
- *                  or BM25 (Okapi BM25, k1=1.2/b=0.75, over the same
- *                  distribution).
+ *                  MAXIMIZE (relevance-weighted). Governs both the per-hop
+ *                  pruning and the reduction (#560).
+ *   - `Weighting`  selects the edge-weight transform applied BEFORE the
+ *                  walk: RAW (edge.weight verbatim), TFIDF (re-score over
+ *                  per-vertex out-edge distribution), or BM25 (Okapi BM25,
+ *                  k1=1.2/b=0.75, over the same distribution).
  *
- * Values match the proto enum exactly; the server resolves UNSPECIFIED
- * to (algorithm=NONE, objective=MINIMIZE, weighting=RAW).
+ * Values match the proto enums exactly; the server resolves UNSPECIFIED
+ * to (reduction=NONE, objective=MAXIMIZE, weighting=RAW).
  */
-export const Algorithm = {
+export const Reduction = {
   UNSPECIFIED: 0,
   MINIMUM_SPANNING_TREE: 1,
   SHORTEST_PATH_TREE: 2,
-  PERSONALIZED_PAGERANK: 3,
 } as const;
-export type Algorithm = (typeof Algorithm)[keyof typeof Algorithm];
+export type Reduction = (typeof Reduction)[keyof typeof Reduction];
 
 export const Objective = {
   UNSPECIFIED: 0,

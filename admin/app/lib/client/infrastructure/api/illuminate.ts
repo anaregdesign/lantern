@@ -3,17 +3,21 @@ import { LanternApiError } from "./error";
 import { sdkEdgeToFlat, sdkVertexToFlat } from "./to-flat";
 import type { Graph, IlluminateResponse } from "./types";
 import {
-  Algorithm as SdkAlgorithm,
   Objective as SdkObjective,
+  Reduction as SdkReduction,
   Weighting as SdkWeighting,
+  type IlluminateOptions as SdkIlluminateOptions,
 } from "lantern-sdk/web";
 
 export type { Edge, Graph, IlluminateResponse, Vertex } from "./types";
 
-// Per #410 the wire schema carries three orthogonal axes (algorithm
-// × objective × weighting); the admin UI tracks each as a stable
-// string so router serialisation and Playwright fixtures keep one
-// human-readable vocabulary across surfaces.
+// The admin UI tracks each axis as a stable string so router
+// serialisation and Playwright fixtures keep one human-readable
+// vocabulary across surfaces. Since #846 the wire request is a params
+// ONEOF (bfs | ppr); this adapter owns the translation from admin's flat
+// axis vocabulary to the typed per-family SDK options — mst/spt select
+// the BFS family's Reduction, ppr selects the PPR family (step has no
+// PPR meaning and is dropped; k becomes topN).
 export type Algorithm =
   | "ALGORITHM_UNSPECIFIED"
   | "ALGORITHM_MINIMUM_SPANNING_TREE"
@@ -56,11 +60,12 @@ export interface IlluminateRequest {
   epsilon?: number;
 }
 
-const ALGORITHM_TO_SDK: Record<Algorithm, SdkAlgorithm> = {
-  ALGORITHM_UNSPECIFIED: SdkAlgorithm.UNSPECIFIED,
-  ALGORITHM_MINIMUM_SPANNING_TREE: SdkAlgorithm.MINIMUM_SPANNING_TREE,
-  ALGORITHM_SHORTEST_PATH_TREE: SdkAlgorithm.SHORTEST_PATH_TREE,
-  ALGORITHM_PERSONALIZED_PAGERANK: SdkAlgorithm.PERSONALIZED_PAGERANK,
+const ALGORITHM_TO_REDUCTION: Record<Algorithm, SdkReduction> = {
+  ALGORITHM_UNSPECIFIED: SdkReduction.UNSPECIFIED,
+  ALGORITHM_MINIMUM_SPANNING_TREE: SdkReduction.MINIMUM_SPANNING_TREE,
+  ALGORITHM_SHORTEST_PATH_TREE: SdkReduction.SHORTEST_PATH_TREE,
+  // PPR is handled as its own oneof family, never as a reduction.
+  ALGORITHM_PERSONALIZED_PAGERANK: SdkReduction.UNSPECIFIED,
 };
 const OBJECTIVE_TO_SDK: Record<Objective, SdkObjective> = {
   OBJECTIVE_UNSPECIFIED: SdkObjective.UNSPECIFIED,
@@ -94,29 +99,32 @@ export async function illuminate(
     throw new Error("illuminate: seed must be non-empty");
   }
   try {
-    const sdkGraph = await client.illuminate(
-      request.seed,
-      {
+    const opts: SdkIlluminateOptions = {
+      weighting:
+        request.weighting !== undefined
+          ? WEIGHTING_TO_SDK[request.weighting]
+          : undefined,
+      vertexPrefix: request.vertexPrefix ?? "",
+    };
+    if (request.algorithm === "ALGORITHM_PERSONALIZED_PAGERANK") {
+      opts.ppr = {
+        topN: request.k ?? 0,
+        restartProb: request.restartProb ?? 0,
+        epsilon: request.epsilon ?? 0,
+      };
+    } else {
+      opts.bfs = {
         step: request.step ?? 0,
-        k: request.k ?? 0,
-        algorithm:
-          request.algorithm !== undefined
-            ? ALGORITHM_TO_SDK[request.algorithm]
-            : undefined,
+        fanOut: request.k ?? 0,
         objective:
           request.objective !== undefined
             ? OBJECTIVE_TO_SDK[request.objective]
             : undefined,
-        weighting:
-          request.weighting !== undefined
-            ? WEIGHTING_TO_SDK[request.weighting]
-            : undefined,
-        vertexPrefix: request.vertexPrefix ?? "",
-        restartProb: request.restartProb ?? 0,
-        epsilon: request.epsilon ?? 0,
-      },
-      init?.signal,
-    );
+        reduction:
+          ALGORITHM_TO_REDUCTION[request.algorithm ?? "ALGORITHM_UNSPECIFIED"],
+      };
+    }
+    const sdkGraph = await client.illuminate(request.seed, opts, init?.signal);
     const graph: Graph = {
       vertices: Array.from(sdkGraph.vertices.values()).map(sdkVertexToFlat),
       edges: [],

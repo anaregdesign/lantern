@@ -20,17 +20,9 @@ var (
 	illuminateEpsilon      float32
 )
 
-// algorithmByName, objectiveByName, weightingByName map human-friendly
-// flag values to the SDK enums. The Illuminate API is the orthogonal
-// (algorithm, objective, weighting) triple introduced in #410.
-var algorithmByName = map[string]client.Algorithm{
-	"none": client.AlgorithmUnspecified,
-	"":     client.AlgorithmUnspecified,
-	"mst":  client.AlgorithmMinimumSpanningTree,
-	"spt":  client.AlgorithmShortestPathTree,
-	"ppr":  client.AlgorithmPersonalizedPageRank,
-}
-
+// objectiveByName, weightingByName map human-friendly flag values to the
+// SDK enums. The algorithm flag is translated by
+// service.IlluminateFamilyOption into the typed per-family option (#846).
 var objectiveByName = map[string]client.Objective{
 	"":         client.ObjectiveUnspecified,
 	"min":      client.ObjectiveMinimize,
@@ -165,10 +157,6 @@ REPL GRAMMAR (one-liner parity, #672)
 			return service.NewCLIService(cli).RunArgs(cmd.Context(), append([]string{"illuminate"}, args...))
 		}
 
-		algo, ok := algorithmByName[illuminateAlgorithmStr]
-		if !ok {
-			return fmt.Errorf("unknown --algorithm %q (want none|mst|spt|ppr)", illuminateAlgorithmStr)
-		}
 		obj, ok := objectiveByName[illuminateObjectiveStr]
 		if !ok {
 			return fmt.Errorf("unknown --objective %q (want min|max)", illuminateObjectiveStr)
@@ -183,21 +171,16 @@ REPL GRAMMAR (one-liner parity, #672)
 		}
 		defer func() { _ = cli.Close() }()
 
+		famOpt, ok := service.IlluminateFamilyOption(illuminateAlgorithmStr, illuminateStep, illuminateK, obj, illuminateRestartProb, illuminateEpsilon)
+		if !ok {
+			return fmt.Errorf("unknown --algorithm %q (want none|mst|spt|ppr)", illuminateAlgorithmStr)
+		}
 		opts := []client.IlluminateOption{
-			client.WithStep(illuminateStep),
-			client.WithK(illuminateK),
-			client.WithAlgorithm(algo),
-			client.WithObjective(obj),
+			famOpt,
 			client.WithWeighting(w),
 		}
 		if illuminatePrefixStr != "" {
 			opts = append(opts, client.WithVertexPrefix(illuminatePrefixStr))
-		}
-		if illuminateRestartProb > 0 {
-			opts = append(opts, client.WithRestartProb(illuminateRestartProb))
-		}
-		if illuminateEpsilon > 0 {
-			opts = append(opts, client.WithEpsilon(illuminateEpsilon))
 		}
 		g, err := cli.Illuminate(cmd.Context(), args[0], opts...)
 		if err != nil {

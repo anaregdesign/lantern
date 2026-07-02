@@ -220,12 +220,15 @@ func main() {
 	/*
 		Illuminate:
 			Illuminate returns a subgraph rooted at `seed`. The walk runs
-			server-side and returns the subgraph already shaped for the
-			caller via three orthogonal axes introduced in #410:
+			server-side; select the traversal family with a typed per-family
+			option (#846) and combine with the shared axes:
 
-				- WithAlgorithm: AlgorithmUnspecified | AlgorithmMinimumSpanningTree | AlgorithmShortestPathTree
-				- WithObjective: ObjectiveMinimize | ObjectiveMaximize
-				- WithWeighting: WeightingRaw | WeightingTFIDF
+				- WithBFS(client.BFSOpts{Step, FanOut, Objective, Reduction})
+				  Reduction: ReductionNone | ReductionMinimumSpanningTree | ReductionShortestPathTree
+				  Objective: ObjectiveMinimize | ObjectiveMaximize
+				- WithPPR(client.PPROpts{TopN, RestartProb, Epsilon})
+				- WithWeighting: WeightingRaw | WeightingTFIDF | WeightingBM25
+				- WithVertexPrefix: frontier prefix filter
 
 			ex)
 			a -> b -> c -> d
@@ -314,8 +317,8 @@ func main() {
 		log.Printf("deleted %d orders/ vertices\n", deleted)
 	}
 
-	// illuminate from a with step 2 and k 2
-	if graph, err := cli.Illuminate(ctx, "a", client.WithStep(2), client.WithK(2)); err == nil {
+	// illuminate from a with step 2 and fan-out 2
+	if graph, err := cli.Illuminate(ctx, "a", client.WithBFS(client.BFSOpts{Step: 2, FanOut: 2})); err == nil {
 		if jsonString, err := json.MarshalIndent(graph, "", "\t"); err == nil {
 			log.Printf("%s\n", jsonString)
 			/*

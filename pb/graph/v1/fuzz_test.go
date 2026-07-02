@@ -91,13 +91,20 @@ func FuzzEdgeUnmarshal(f *testing.F) {
 // richest decode in the RPC set.
 func FuzzIlluminateRequestUnmarshal(f *testing.F) {
 	addProtoSeeds(f,
-		&pb.IlluminateRequest{Seed: "alice", Step: 2, K: 5},
+		&pb.IlluminateRequest{Seed: "alice"},
 		&pb.IlluminateRequest{
-			Seed: "alice", Step: 2, K: 5,
-			Algorithm:    pb.Algorithm_ALGORITHM_SHORTEST_PATH_TREE,
-			Objective:    pb.Objective_OBJECTIVE_MAXIMIZE,
+			Seed:         "alice",
 			Weighting:    pb.Weighting_WEIGHTING_TFIDF,
 			VertexPrefix: "users/",
+			Params: &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{
+				Step: 2, FanOut: 5,
+				Objective: pb.Objective_OBJECTIVE_MAXIMIZE,
+				Reduction: pb.Reduction_REDUCTION_SHORTEST_PATH_TREE,
+			}},
+		},
+		&pb.IlluminateRequest{
+			Seed:   "alice",
+			Params: &pb.IlluminateRequest_Ppr{Ppr: &pb.PprParams{TopN: 5, RestartProb: 0.2, Epsilon: 1e-3}},
 		},
 	)
 	f.Fuzz(func(t *testing.T, data []byte) {

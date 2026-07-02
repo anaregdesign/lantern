@@ -171,11 +171,23 @@ func (v *ValidationInterceptor) validate(req any) error {
 		if err := v.checkKey("seed", r.GetSeed()); err != nil {
 			return err
 		}
-		if v.limits.IlluminateMaxStep > 0 && int(r.GetStep()) > v.limits.IlluminateMaxStep {
-			return v.reject("step_too_large", "step %d exceeds max %d", r.GetStep(), v.limits.IlluminateMaxStep)
-		}
-		if v.limits.IlluminateMaxK > 0 && int(r.GetK()) > v.limits.IlluminateMaxK {
-			return v.reject("k_too_large", "k %d exceeds max %d", r.GetK(), v.limits.IlluminateMaxK)
+		// Per-arm caps (#846): the oneof moved the traversal knobs into
+		// per-family messages, so the limits are enforced on whichever arm
+		// is selected. IlluminateMaxK caps every "how much comes back /
+		// survives per hop" knob: bfs.fan_out and ppr.top_n. An unset oneof
+		// carries no knobs to cap.
+		switch params := r.GetParams().(type) {
+		case *pb.IlluminateRequest_Bfs:
+			if v.limits.IlluminateMaxStep > 0 && int(params.Bfs.GetStep()) > v.limits.IlluminateMaxStep {
+				return v.reject("step_too_large", "bfs.step %d exceeds max %d", params.Bfs.GetStep(), v.limits.IlluminateMaxStep)
+			}
+			if v.limits.IlluminateMaxK > 0 && int(params.Bfs.GetFanOut()) > v.limits.IlluminateMaxK {
+				return v.reject("k_too_large", "bfs.fan_out %d exceeds max %d", params.Bfs.GetFanOut(), v.limits.IlluminateMaxK)
+			}
+		case *pb.IlluminateRequest_Ppr:
+			if v.limits.IlluminateMaxK > 0 && int(params.Ppr.GetTopN()) > v.limits.IlluminateMaxK {
+				return v.reject("k_too_large", "ppr.top_n %d exceeds max %d", params.Ppr.GetTopN(), v.limits.IlluminateMaxK)
+			}
 		}
 	}
 	return nil

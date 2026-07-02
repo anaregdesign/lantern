@@ -93,10 +93,17 @@ func TestValidationInterceptor_RejectHookFiresPerReason(t *testing.T) {
 			}})
 		}},
 		{"step_too_large", "step_too_large", func(t *testing.T, v *ValidationInterceptor) error {
-			return connectCallValidator(t, v, &pb.IlluminateRequest{Seed: "s", Step: 99}) // > IlluminateMaxStep=3
+			return connectCallValidator(t, v, &pb.IlluminateRequest{Seed: "s",
+				Params: &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{Step: 99}}}) // > IlluminateMaxStep=3
 		}},
 		{"k_too_large", "k_too_large", func(t *testing.T, v *ValidationInterceptor) error {
-			return connectCallValidator(t, v, &pb.IlluminateRequest{Seed: "s", Step: 1, K: 99}) // > IlluminateMaxK=5
+			return connectCallValidator(t, v, &pb.IlluminateRequest{Seed: "s",
+				Params: &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{Step: 1, FanOut: 99}}}) // > IlluminateMaxK=5
+		}},
+		{"ppr_top_n_too_large", "k_too_large", func(t *testing.T, v *ValidationInterceptor) error {
+			// IlluminateMaxK caps ppr.top_n on the PPR arm too (#846).
+			return connectCallValidator(t, v, &pb.IlluminateRequest{Seed: "s",
+				Params: &pb.IlluminateRequest_Ppr{Ppr: &pb.PprParams{TopN: 99}}}) // > IlluminateMaxK=5
 		}},
 	}
 	for _, tc := range cases {

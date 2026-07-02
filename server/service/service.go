@@ -487,12 +487,6 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 	// → the crude hub-suppressor, BM25 → Okapi BM25 over the out-edge
 	// distribution (#800).
 	coreWeighting := weightingToCore(weighting)
-	// Objective steers the per-hop top-k pruning as well as the post-traversal
-	// reduction (#560): a MINIMIZE caller keeps the k smallest-weight edges at
-	// each hop so the cost-minimiser is not handed a candidate set pruned to
-	// the costliest edges. UNSPECIFIED resolves to MAXIMIZE (strongest edges).
-	objective := request.GetObjective()
-	selectSmallest := objective == pb.Objective_OBJECTIVE_MINIMIZE
 	// vertex_prefix (#602) scopes the traversal frontier to vertices whose key
 	// carries the prefix. The server owns the concrete predicate (S = string
 	// here); core only ever sees keep func(string) bool (#601). An empty prefix
@@ -505,41 +499,59 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 		keep = func(s string) bool { return strings.HasPrefix(s, p) }
 	}
 
-	algorithm := request.GetAlgorithm()
-
 	var (
 		g            *coregraph.Graph[string, *pb.Vertex]
 		expirations  map[string]map[string]time.Time
 		traversalDur time.Duration
 		optimizeDur  time.Duration
 		err          error
+		paramsLabel  string
+		objLabel     string
 	)
 
-	if algorithm == pb.Algorithm_ALGORITHM_PERSONALIZED_PAGERANK {
+	// Dispatch on the params oneof (#846): the selected case IS the traversal
+	// family, and each arm reads only the knobs its family understands —
+	// cross-algorithm misconfiguration is unrepresentable on the wire. An
+	// unset oneof is the historical bare illuminate: BFS with server defaults.
+	// A stale pre-#846 client emitting the retired flat field numbers decodes
+	// as exactly that (the numbers are reserved), never as a different arm.
+	switch params := request.GetParams().(type) {
+	case *pb.IlluminateRequest_Ppr:
 		// Personalized PageRank is a distinct traversal path, not a
 		// post-traversal reduction (#801): it row-normalises the weighted
 		// out-edges into a transition matrix and runs ACL forward-push from the
 		// seed, returning a one-hop relevance star (seed→v carries pi[v]). It
-		// has no per-hop step/objective semantics — step and objective=min are
-		// intentionally ignored (PPR is intrinsically a relevance maximiser);
-		// k caps the star to the top-k vertices by mass. There is no
-		// expirations map because the star edges are synthetic.
-		alpha, epsilon := resolvePPRParams(request.GetRestartProb(), request.GetEpsilon())
+		// is intrinsically a relevance maximiser with no per-hop step
+		// semantics — which is why PprParams carries neither knob; top_n caps
+		// the star by mass. There is no expirations map because the star
+		// edges are synthetic.
+		ppr := params.Ppr
+		alpha, epsilon := resolvePPRParams(ppr.GetRestartProb(), ppr.GetEpsilon())
 		traversalStart := time.Now()
-		g, err = s.cache.PersonalizedPageRankContext(ctx, request.GetSeed(), int(request.GetK()), alpha, epsilon, coreWeighting, keep)
+		g, err = s.cache.PersonalizedPageRankContext(ctx, request.GetSeed(), int(ppr.GetTopN()), alpha, epsilon, coreWeighting, keep)
 		traversalDur = time.Since(traversalStart)
 		if err != nil {
 			return nil, ctxToConnect(err)
 		}
-	} else {
+		paramsLabel, objLabel = "ppr", "maximize"
+
+	default: // *pb.IlluminateRequest_Bfs or unset — the BFS family.
+		bfs := request.GetBfs() // nil-safe: getters yield zero values on an unset oneof
+		// Objective steers the per-hop top-k pruning as well as the
+		// post-traversal reduction (#560): a MINIMIZE caller keeps the
+		// fan_out smallest-weight edges at each hop so the cost-minimiser is
+		// not handed a candidate set pruned to the costliest edges.
+		// UNSPECIFIED resolves to MAXIMIZE (strongest edges).
+		objective := bfs.GetObjective()
+		selectSmallest := objective == pb.Objective_OBJECTIVE_MINIMIZE
 		traversalStart := time.Now()
-		g, expirations, err = s.cache.NeighborWithExpirationsContext(ctx, request.GetSeed(), int(request.GetStep()), int(request.GetK()), coreWeighting, selectSmallest, keep)
+		g, expirations, err = s.cache.NeighborWithExpirationsContext(ctx, request.GetSeed(), int(bfs.GetStep()), int(bfs.GetFanOut()), coreWeighting, selectSmallest, keep)
 		traversalDur = time.Since(traversalStart)
 		if err != nil {
 			return nil, ctxToConnect(err)
 		}
 
-		if opt := resolveOptimizer(algorithm, objective); opt != nil {
+		if opt := resolveOptimizer(bfs.GetReduction(), objective); opt != nil {
 			optStart := time.Now()
 			g, err = opt(ctx, g, request.GetSeed())
 			optimizeDur = time.Since(optStart)
@@ -547,6 +559,7 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 				return nil, ctxToConnect(err)
 			}
 		}
+		paramsLabel, objLabel = reductionLabel(bfs.GetReduction()), objectiveLabel(objective)
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -576,7 +589,7 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 		}
 	}
 
-	s.metrics.OnIlluminate(algorithmLabel(algorithm), objectiveLabel(objective), weightingLabel(weighting), len(vertices), edgeCount, traversalDur, optimizeDur)
+	s.metrics.OnIlluminate(paramsLabel, objLabel, weightingLabel(weighting), len(vertices), edgeCount, traversalDur, optimizeDur)
 
 	return &pb.IlluminateResponse{
 		Graph: &pb.Graph{Vertices: vertices, Edges: edges},

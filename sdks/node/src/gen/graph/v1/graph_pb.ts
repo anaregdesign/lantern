@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file graph/v1/graph.proto.
  */
 export const file_graph_v1_graph: GenFile = /*@__PURE__*/
-  fileDesc("ChRncmFwaC92MS9ncmFwaC5wcm90bxIIZ3JhcGgudjEi3AIKBlZlcnRleBILCgNrZXkYASABKAkSLgoKZXhwaXJhdGlvbhgCIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASEQoHZmxvYXQ2NBgKIAEoAUgAEhEKB2Zsb2F0MzIYCyABKAJIABIPCgVpbnQzMhgMIAEoBUgAEg8KBWludDY0GA0gASgDSAASEAoGdWludDMyGA4gASgNSAASEAoGdWludDY0GA8gASgESAASDgoEYm9vbBgQIAEoCEgAEhAKBnN0cmluZxgRIAEoCUgAEg8KBWJ5dGVzGBIgASgMSAASLwoJdGltZXN0YW1wGBMgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcEgAEi0KCGR1cmF0aW9uGBQgASgLMhkuZ29vZ2xlLnByb3RvYnVmLkR1cmF0aW9uSAASDQoDbmlsGB4gASgISABCBwoFdmFsdWUiYgoERWRnZRIMCgR0YWlsGAEgASgJEgwKBGhlYWQYAiABKAkSDgoGd2VpZ2h0GAMgASgCEi4KCmV4cGlyYXRpb24YBCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wIkoKBUdyYXBoEiIKCHZlcnRpY2VzGAEgAygLMhAuZ3JhcGgudjEuVmVydGV4Eh0KBWVkZ2VzGAIgAygLMg4uZ3JhcGgudjEuRWRnZSKRAgoRSWxsdW1pbmF0ZVJlcXVlc3QSDAoEc2VlZBgBIAEoCRIMCgRzdGVwGAIgASgNEgkKAWsYAyABKA0SJgoJYWxnb3JpdGhtGAYgASgOMhMuZ3JhcGgudjEuQWxnb3JpdGhtEiYKCW9iamVjdGl2ZRgHIAEoDjITLmdyYXBoLnYxLk9iamVjdGl2ZRImCgl3ZWlnaHRpbmcYCCABKA4yEy5ncmFwaC52MS5XZWlnaHRpbmcSFQoNdmVydGV4X3ByZWZpeBgJIAEoCRIUCgxyZXN0YXJ0X3Byb2IYCiABKAISDwoHZXBzaWxvbhgLIAEoAkoECAQQBUoECAUQBlIFdGZpZGZSDG9wdGltaXphdGlvbiI0ChJJbGx1bWluYXRlUmVzcG9uc2USHgoFZ3JhcGgYASABKAsyDy5ncmFwaC52MS5HcmFwaCIfChBHZXRWZXJ0ZXhSZXF1ZXN0EgsKA2tleRgBIAEoCSI1ChFHZXRWZXJ0ZXhSZXNwb25zZRIgCgZ2ZXJ0ZXgYASABKAsyEC5ncmFwaC52MS5WZXJ0ZXgiIgoSR2V0VmVydGljZXNSZXF1ZXN0EgwKBGtleXMYASADKAkiSgoTR2V0VmVydGljZXNSZXNwb25zZRIiCgh2ZXJ0aWNlcxgBIAMoCzIQLmdyYXBoLnYxLlZlcnRleBIPCgdtaXNzaW5nGAIgAygJIjQKEFB1dFZlcnRleFJlcXVlc3QSIAoGdmVydGV4GAEgASgLMhAuZ3JhcGgudjEuVmVydGV4IhMKEVB1dFZlcnRleFJlc3BvbnNlIjgKElB1dFZlcnRpY2VzUmVxdWVzdBIiCgh2ZXJ0aWNlcxgBIAMoCzIQLmdyYXBoLnYxLlZlcnRleCImChNQdXRWZXJ0aWNlc1Jlc3BvbnNlEg8KB3dyaXR0ZW4YASABKAUiIgoTRGVsZXRlVmVydGV4UmVxdWVzdBILCgNrZXkYASABKAkiJwoURGVsZXRlVmVydGV4UmVzcG9uc2USDwoHZXhpc3RlZBgBIAEoCCIlChVEZWxldGVWZXJ0aWNlc1JlcXVlc3QSDAoEa2V5cxgBIAMoCSIpChZEZWxldGVWZXJ0aWNlc1Jlc3BvbnNlEg8KB2RlbGV0ZWQYASABKAUiRAoTU2NhblZlcnRpY2VzUmVxdWVzdBIOCgZwcmVmaXgYASABKAkSDQoFbGltaXQYAiABKA0SDgoGY3Vyc29yGAMgASgMIk8KFFNjYW5WZXJ0aWNlc1Jlc3BvbnNlEiIKCHZlcnRpY2VzGAEgAygLMhAuZ3JhcGgudjEuVmVydGV4EhMKC25leHRfY3Vyc29yGAIgASgMIkYKFVNjYW5WZXJ0ZXhLZXlzUmVxdWVzdBIOCgZwcmVmaXgYASABKAkSDQoFbGltaXQYAiABKA0SDgoGY3Vyc29yGAMgASgMIjsKFlNjYW5WZXJ0ZXhLZXlzUmVzcG9uc2USDAoEa2V5cxgBIAMoCRITCgtuZXh0X2N1cnNvchgCIAEoDCJFChVTZWFyY2hWZXJ0aWNlc1JlcXVlc3QSDQoFcXVlcnkYASABKAkSDQoFbGltaXQYAiABKA0SDgoGcHJlZml4GAMgASgJIjsKFlNlYXJjaFZlcnRpY2VzUmVzcG9uc2USIQoEaGl0cxgBIAMoCzITLmdyYXBoLnYxLlNlYXJjaEhpdCInCglTZWFyY2hIaXQSCwoDa2V5GAEgASgJEg0KBXNjb3JlGAIgASgBIi4KHENvdW50VmVydGljZXNCeVByZWZpeFJlcXVlc3QSDgoGcHJlZml4GAEgASgJIi4KHUNvdW50VmVydGljZXNCeVByZWZpeFJlc3BvbnNlEg0KBWNvdW50GAEgASgEIk8KHURlbGV0ZVZlcnRpY2VzQnlQcmVmaXhSZXF1ZXN0Eg4KBnByZWZpeBgBIAEoCRINCgVsaW1pdBgCIAEoDRIPCgdkcnlfcnVuGAMgASgIIjEKHkRlbGV0ZVZlcnRpY2VzQnlQcmVmaXhSZXNwb25zZRIPCgdkZWxldGVkGAEgASgEIiwKDkdldEVkZ2VSZXF1ZXN0EgwKBHRhaWwYASABKAkSDAoEaGVhZBgCIAEoCSIvCg9HZXRFZGdlUmVzcG9uc2USHAoEZWRnZRgBIAEoCzIOLmdyYXBoLnYxLkVkZ2UiMwoPR2V0RWRnZXNSZXF1ZXN0EiAKBWVkZ2VzGAEgAygLMhEuZ3JhcGgudjEuRWRnZUtleSJVChBHZXRFZGdlc1Jlc3BvbnNlEh0KBWVkZ2VzGAEgAygLMg4uZ3JhcGgudjEuRWRnZRIiCgdtaXNzaW5nGAIgAygLMhEuZ3JhcGgudjEuRWRnZUtleSIvChFEZWxldGVFZGdlUmVxdWVzdBIMCgR0YWlsGAEgASgJEgwKBGhlYWQYAiABKAkiJQoSRGVsZXRlRWRnZVJlc3BvbnNlEg8KB2V4aXN0ZWQYASABKAgiJQoHRWRnZUtleRIMCgR0YWlsGAEgASgJEgwKBGhlYWQYAiABKAkiWwoQU2NhbkVkZ2VzUmVxdWVzdBITCgt0YWlsX3ByZWZpeBgBIAEoCRITCgtoZWFkX3ByZWZpeBgCIAEoCRINCgVsaW1pdBgDIAEoDRIOCgZjdXJzb3IYBCABKAwiRwoRU2NhbkVkZ2VzUmVzcG9uc2USHQoFZWRnZXMYASADKAsyDi5ncmFwaC52MS5FZGdlEhMKC25leHRfY3Vyc29yGAIgASgMIjYKEkRlbGV0ZUVkZ2VzUmVxdWVzdBIgCgVlZGdlcxgBIAMoCzIRLmdyYXBoLnYxLkVkZ2VLZXkiJgoTRGVsZXRlRWRnZXNSZXNwb25zZRIPCgdkZWxldGVkGAEgASgFIkIKDkFkZEVkZ2VSZXF1ZXN0EhwKBGVkZ2UYASABKAsyDi5ncmFwaC52MS5FZGdlEhIKCmNvbnRyaWJfaWQYAiABKAwiEQoPQWRkRWRnZVJlc3BvbnNlIkUKD0FkZEVkZ2VzUmVxdWVzdBIdCgVlZGdlcxgBIAMoCzIOLmdyYXBoLnYxLkVkZ2USEwoLY29udHJpYl9pZHMYAiADKAwiIwoQQWRkRWRnZXNSZXNwb25zZRIPCgd3cml0dGVuGAEgASgFIi4KDlB1dEVkZ2VSZXF1ZXN0EhwKBGVkZ2UYASABKAsyDi5ncmFwaC52MS5FZGdlIhEKD1B1dEVkZ2VSZXNwb25zZSIwCg9QdXRFZGdlc1JlcXVlc3QSHQoFZWRnZXMYASADKAsyDi5ncmFwaC52MS5FZGdlIiMKEFB1dEVkZ2VzUmVzcG9uc2USDwoHd3JpdHRlbhgBIAEoBSIYChZHZXRTZXJ2ZXJTdGF0dXNSZXF1ZXN0IogDChdHZXRTZXJ2ZXJTdGF0dXNSZXNwb25zZRIPCgd2ZXJzaW9uGAEgASgJEhIKCmdvX3ZlcnNpb24YAiABKAkSLgoKc3RhcnRlZF9hdBgDIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASKQoGdXB0aW1lGAQgASgLMhkuZ29vZ2xlLnByb3RvYnVmLkR1cmF0aW9uEi4KC2RlZmF1bHRfdHRsGAUgASgLMhkuZ29vZ2xlLnByb3RvYnVmLkR1cmF0aW9uEhYKDm1heF9iYXRjaF9zaXplGAYgASgNEhUKDW1heF9rZXlfYnl0ZXMYByABKA0SGgoSc2Nhbl9kZWZhdWx0X2xpbWl0GAggASgNEhYKDnNjYW5fbWF4X2xpbWl0GAkgASgNEhMKC3Rsc19lbmFibGVkGAogASgIEhsKE3JlcGxpY2F0aW9uX2VuYWJsZWQYCyABKAgSFAoMdmVydGV4X2NvdW50GAwgASgEEhIKCmVkZ2VfY291bnQYDSABKAQimQIKD1JlcGxpY2F0aW9uUGVlchIPCgdhZGRyZXNzGAEgASgJEi4KBXN0YXRlGAIgASgOMh8uZ3JhcGgudjEuUmVwbGljYXRpb25QZWVyLlN0YXRlEjEKDWxhc3RfZXZlbnRfYXQYAyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhMKC2FwcGxpZWRfc2VxGAQgASgEEg0KBWVycm9yGAUgASgJIm4KBVN0YXRlEhUKEVNUQVRFX1VOU1BFQ0lGSUVEEAASFAoQU1RBVEVfQ09OTkVDVElORxABEhMKD1NUQVRFX1NUUkVBTUlORxACEhEKDVNUQVRFX0JBQ0tPRkYQAxIQCgxTVEFURV9DTE9TRUQQBCIdChtHZXRSZXBsaWNhdGlvblN0YXR1c1JlcXVlc3QimQEKHEdldFJlcGxpY2F0aW9uU3RhdHVzUmVzcG9uc2USDwoHbm9kZV9pZBgBIAEoCRItCglsb2NhbF9ub3cYAiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEg8KB2VuYWJsZWQYAyABKAgSKAoFcGVlcnMYCiADKAsyGS5ncmFwaC52MS5SZXBsaWNhdGlvblBlZXIiLgoVQmFja3VwU25hcHNob3RSZXF1ZXN0EhUKDXZlcnRleF9wcmVmaXgYASABKAkiZgoWQmFja3VwU25hcHNob3RSZXNwb25zZRIiCgZ2ZXJ0ZXgYASABKAsyEC5ncmFwaC52MS5WZXJ0ZXhIABIeCgRlZGdlGAIgASgLMg4uZ3JhcGgudjEuRWRnZUgAQggKBnJlY29yZCqSAQoJQWxnb3JpdGhtEhkKFUFMR09SSVRITV9VTlNQRUNJRklFRBAAEiMKH0FMR09SSVRITV9NSU5JTVVNX1NQQU5OSU5HX1RSRUUQARIgChxBTEdPUklUSE1fU0hPUlRFU1RfUEFUSF9UUkVFEAISIwofQUxHT1JJVEhNX1BFUlNPTkFMSVpFRF9QQUdFUkFOSxADKlYKCU9iamVjdGl2ZRIZChVPQkpFQ1RJVkVfVU5TUEVDSUZJRUQQABIWChJPQkpFQ1RJVkVfTUlOSU1JWkUQARIWChJPQkpFQ1RJVkVfTUFYSU1JWkUQAipiCglXZWlnaHRpbmcSGQoVV0VJR0hUSU5HX1VOU1BFQ0lGSUVEEAASEQoNV0VJR0hUSU5HX1JBVxABEhMKD1dFSUdIVElOR19URklERhACEhIKDldFSUdIVElOR19CTTI1EAMy6w4KDkxhbnRlcm5TZXJ2aWNlEkcKCklsbHVtaW5hdGUSGy5ncmFwaC52MS5JbGx1bWluYXRlUmVxdWVzdBocLmdyYXBoLnYxLklsbHVtaW5hdGVSZXNwb25zZRJECglHZXRWZXJ0ZXgSGi5ncmFwaC52MS5HZXRWZXJ0ZXhSZXF1ZXN0GhsuZ3JhcGgudjEuR2V0VmVydGV4UmVzcG9uc2USSgoLR2V0VmVydGljZXMSHC5ncmFwaC52MS5HZXRWZXJ0aWNlc1JlcXVlc3QaHS5ncmFwaC52MS5HZXRWZXJ0aWNlc1Jlc3BvbnNlEkQKCVB1dFZlcnRleBIaLmdyYXBoLnYxLlB1dFZlcnRleFJlcXVlc3QaGy5ncmFwaC52MS5QdXRWZXJ0ZXhSZXNwb25zZRJKCgtQdXRWZXJ0aWNlcxIcLmdyYXBoLnYxLlB1dFZlcnRpY2VzUmVxdWVzdBodLmdyYXBoLnYxLlB1dFZlcnRpY2VzUmVzcG9uc2USTQoMRGVsZXRlVmVydGV4Eh0uZ3JhcGgudjEuRGVsZXRlVmVydGV4UmVxdWVzdBoeLmdyYXBoLnYxLkRlbGV0ZVZlcnRleFJlc3BvbnNlElMKDkRlbGV0ZVZlcnRpY2VzEh8uZ3JhcGgudjEuRGVsZXRlVmVydGljZXNSZXF1ZXN0GiAuZ3JhcGgudjEuRGVsZXRlVmVydGljZXNSZXNwb25zZRJNCgxTY2FuVmVydGljZXMSHS5ncmFwaC52MS5TY2FuVmVydGljZXNSZXF1ZXN0Gh4uZ3JhcGgudjEuU2NhblZlcnRpY2VzUmVzcG9uc2USUwoOU2NhblZlcnRleEtleXMSHy5ncmFwaC52MS5TY2FuVmVydGV4S2V5c1JlcXVlc3QaIC5ncmFwaC52MS5TY2FuVmVydGV4S2V5c1Jlc3BvbnNlElMKDlNlYXJjaFZlcnRpY2VzEh8uZ3JhcGgudjEuU2VhcmNoVmVydGljZXNSZXF1ZXN0GiAuZ3JhcGgudjEuU2VhcmNoVmVydGljZXNSZXNwb25zZRJoChVDb3VudFZlcnRpY2VzQnlQcmVmaXgSJi5ncmFwaC52MS5Db3VudFZlcnRpY2VzQnlQcmVmaXhSZXF1ZXN0GicuZ3JhcGgudjEuQ291bnRWZXJ0aWNlc0J5UHJlZml4UmVzcG9uc2USawoWRGVsZXRlVmVydGljZXNCeVByZWZpeBInLmdyYXBoLnYxLkRlbGV0ZVZlcnRpY2VzQnlQcmVmaXhSZXF1ZXN0GiguZ3JhcGgudjEuRGVsZXRlVmVydGljZXNCeVByZWZpeFJlc3BvbnNlEj4KB0dldEVkZ2USGC5ncmFwaC52MS5HZXRFZGdlUmVxdWVzdBoZLmdyYXBoLnYxLkdldEVkZ2VSZXNwb25zZRJBCghHZXRFZGdlcxIZLmdyYXBoLnYxLkdldEVkZ2VzUmVxdWVzdBoaLmdyYXBoLnYxLkdldEVkZ2VzUmVzcG9uc2USPgoHQWRkRWRnZRIYLmdyYXBoLnYxLkFkZEVkZ2VSZXF1ZXN0GhkuZ3JhcGgudjEuQWRkRWRnZVJlc3BvbnNlEkEKCEFkZEVkZ2VzEhkuZ3JhcGgudjEuQWRkRWRnZXNSZXF1ZXN0GhouZ3JhcGgudjEuQWRkRWRnZXNSZXNwb25zZRI+CgdQdXRFZGdlEhguZ3JhcGgudjEuUHV0RWRnZVJlcXVlc3QaGS5ncmFwaC52MS5QdXRFZGdlUmVzcG9uc2USQQoIUHV0RWRnZXMSGS5ncmFwaC52MS5QdXRFZGdlc1JlcXVlc3QaGi5ncmFwaC52MS5QdXRFZGdlc1Jlc3BvbnNlEkcKCkRlbGV0ZUVkZ2USGy5ncmFwaC52MS5EZWxldGVFZGdlUmVxdWVzdBocLmdyYXBoLnYxLkRlbGV0ZUVkZ2VSZXNwb25zZRJKCgtEZWxldGVFZGdlcxIcLmdyYXBoLnYxLkRlbGV0ZUVkZ2VzUmVxdWVzdBodLmdyYXBoLnYxLkRlbGV0ZUVkZ2VzUmVzcG9uc2USRAoJU2NhbkVkZ2VzEhouZ3JhcGgudjEuU2NhbkVkZ2VzUmVxdWVzdBobLmdyYXBoLnYxLlNjYW5FZGdlc1Jlc3BvbnNlElYKD0dldFNlcnZlclN0YXR1cxIgLmdyYXBoLnYxLkdldFNlcnZlclN0YXR1c1JlcXVlc3QaIS5ncmFwaC52MS5HZXRTZXJ2ZXJTdGF0dXNSZXNwb25zZRJlChRHZXRSZXBsaWNhdGlvblN0YXR1cxIlLmdyYXBoLnYxLkdldFJlcGxpY2F0aW9uU3RhdHVzUmVxdWVzdBomLmdyYXBoLnYxLkdldFJlcGxpY2F0aW9uU3RhdHVzUmVzcG9uc2USVQoOQmFja3VwU25hcHNob3QSHy5ncmFwaC52MS5CYWNrdXBTbmFwc2hvdFJlcXVlc3QaIC5ncmFwaC52MS5CYWNrdXBTbmFwc2hvdFJlc3BvbnNlMAFCWwoMY29tLmdyYXBoLnYxQgpHcmFwaFByb3RvUAGiAgNHWFiqAghHcmFwaC5WMcoCCEdyYXBoXFYx4gIUR3JhcGhcVjFcR1BCTWV0YWRhdGHqAglHcmFwaDo6VjFiBnByb3RvMw", [file_google_protobuf_duration, file_google_protobuf_timestamp]);
+  fileDesc("ChRncmFwaC92MS9ncmFwaC5wcm90bxIIZ3JhcGgudjEi3AIKBlZlcnRleBILCgNrZXkYASABKAkSLgoKZXhwaXJhdGlvbhgCIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASEQoHZmxvYXQ2NBgKIAEoAUgAEhEKB2Zsb2F0MzIYCyABKAJIABIPCgVpbnQzMhgMIAEoBUgAEg8KBWludDY0GA0gASgDSAASEAoGdWludDMyGA4gASgNSAASEAoGdWludDY0GA8gASgESAASDgoEYm9vbBgQIAEoCEgAEhAKBnN0cmluZxgRIAEoCUgAEg8KBWJ5dGVzGBIgASgMSAASLwoJdGltZXN0YW1wGBMgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcEgAEi0KCGR1cmF0aW9uGBQgASgLMhkuZ29vZ2xlLnByb3RvYnVmLkR1cmF0aW9uSAASDQoDbmlsGB4gASgISABCBwoFdmFsdWUiYgoERWRnZRIMCgR0YWlsGAEgASgJEgwKBGhlYWQYAiABKAkSDgoGd2VpZ2h0GAMgASgCEi4KCmV4cGlyYXRpb24YBCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wIkoKBUdyYXBoEiIKCHZlcnRpY2VzGAEgAygLMhAuZ3JhcGgudjEuVmVydGV4Eh0KBWVkZ2VzGAIgAygLMg4uZ3JhcGgudjEuRWRnZSKtAgoRSWxsdW1pbmF0ZVJlcXVlc3QSDAoEc2VlZBgBIAEoCRImCgl3ZWlnaHRpbmcYCCABKA4yEy5ncmFwaC52MS5XZWlnaHRpbmcSFQoNdmVydGV4X3ByZWZpeBgJIAEoCRIiCgNiZnMYDCABKAsyEy5ncmFwaC52MS5CZnNQYXJhbXNIABIiCgNwcHIYDSABKAsyEy5ncmFwaC52MS5QcHJQYXJhbXNIAEIICgZwYXJhbXNKBAgCEANKBAgDEARKBAgEEAVKBAgFEAZKBAgGEAdKBAgHEAhKBAgKEAtKBAgLEAxSBHN0ZXBSAWtSBXRmaWRmUgxvcHRpbWl6YXRpb25SCWFsZ29yaXRobVIJb2JqZWN0aXZlUgxyZXN0YXJ0X3Byb2JSB2Vwc2lsb24iegoJQmZzUGFyYW1zEgwKBHN0ZXAYASABKA0SDwoHZmFuX291dBgCIAEoDRImCglvYmplY3RpdmUYAyABKA4yEy5ncmFwaC52MS5PYmplY3RpdmUSJgoJcmVkdWN0aW9uGAQgASgOMhMuZ3JhcGgudjEuUmVkdWN0aW9uIkEKCVBwclBhcmFtcxINCgV0b3BfbhgBIAEoDRIUCgxyZXN0YXJ0X3Byb2IYAiABKAISDwoHZXBzaWxvbhgDIAEoAiI0ChJJbGx1bWluYXRlUmVzcG9uc2USHgoFZ3JhcGgYASABKAsyDy5ncmFwaC52MS5HcmFwaCIfChBHZXRWZXJ0ZXhSZXF1ZXN0EgsKA2tleRgBIAEoCSI1ChFHZXRWZXJ0ZXhSZXNwb25zZRIgCgZ2ZXJ0ZXgYASABKAsyEC5ncmFwaC52MS5WZXJ0ZXgiIgoSR2V0VmVydGljZXNSZXF1ZXN0EgwKBGtleXMYASADKAkiSgoTR2V0VmVydGljZXNSZXNwb25zZRIiCgh2ZXJ0aWNlcxgBIAMoCzIQLmdyYXBoLnYxLlZlcnRleBIPCgdtaXNzaW5nGAIgAygJIjQKEFB1dFZlcnRleFJlcXVlc3QSIAoGdmVydGV4GAEgASgLMhAuZ3JhcGgudjEuVmVydGV4IhMKEVB1dFZlcnRleFJlc3BvbnNlIjgKElB1dFZlcnRpY2VzUmVxdWVzdBIiCgh2ZXJ0aWNlcxgBIAMoCzIQLmdyYXBoLnYxLlZlcnRleCImChNQdXRWZXJ0aWNlc1Jlc3BvbnNlEg8KB3dyaXR0ZW4YASABKAUiIgoTRGVsZXRlVmVydGV4UmVxdWVzdBILCgNrZXkYASABKAkiJwoURGVsZXRlVmVydGV4UmVzcG9uc2USDwoHZXhpc3RlZBgBIAEoCCIlChVEZWxldGVWZXJ0aWNlc1JlcXVlc3QSDAoEa2V5cxgBIAMoCSIpChZEZWxldGVWZXJ0aWNlc1Jlc3BvbnNlEg8KB2RlbGV0ZWQYASABKAUiRAoTU2NhblZlcnRpY2VzUmVxdWVzdBIOCgZwcmVmaXgYASABKAkSDQoFbGltaXQYAiABKA0SDgoGY3Vyc29yGAMgASgMIk8KFFNjYW5WZXJ0aWNlc1Jlc3BvbnNlEiIKCHZlcnRpY2VzGAEgAygLMhAuZ3JhcGgudjEuVmVydGV4EhMKC25leHRfY3Vyc29yGAIgASgMIkYKFVNjYW5WZXJ0ZXhLZXlzUmVxdWVzdBIOCgZwcmVmaXgYASABKAkSDQoFbGltaXQYAiABKA0SDgoGY3Vyc29yGAMgASgMIjsKFlNjYW5WZXJ0ZXhLZXlzUmVzcG9uc2USDAoEa2V5cxgBIAMoCRITCgtuZXh0X2N1cnNvchgCIAEoDCJFChVTZWFyY2hWZXJ0aWNlc1JlcXVlc3QSDQoFcXVlcnkYASABKAkSDQoFbGltaXQYAiABKA0SDgoGcHJlZml4GAMgASgJIjsKFlNlYXJjaFZlcnRpY2VzUmVzcG9uc2USIQoEaGl0cxgBIAMoCzITLmdyYXBoLnYxLlNlYXJjaEhpdCInCglTZWFyY2hIaXQSCwoDa2V5GAEgASgJEg0KBXNjb3JlGAIgASgBIi4KHENvdW50VmVydGljZXNCeVByZWZpeFJlcXVlc3QSDgoGcHJlZml4GAEgASgJIi4KHUNvdW50VmVydGljZXNCeVByZWZpeFJlc3BvbnNlEg0KBWNvdW50GAEgASgEIk8KHURlbGV0ZVZlcnRpY2VzQnlQcmVmaXhSZXF1ZXN0Eg4KBnByZWZpeBgBIAEoCRINCgVsaW1pdBgCIAEoDRIPCgdkcnlfcnVuGAMgASgIIjEKHkRlbGV0ZVZlcnRpY2VzQnlQcmVmaXhSZXNwb25zZRIPCgdkZWxldGVkGAEgASgEIiwKDkdldEVkZ2VSZXF1ZXN0EgwKBHRhaWwYASABKAkSDAoEaGVhZBgCIAEoCSIvCg9HZXRFZGdlUmVzcG9uc2USHAoEZWRnZRgBIAEoCzIOLmdyYXBoLnYxLkVkZ2UiMwoPR2V0RWRnZXNSZXF1ZXN0EiAKBWVkZ2VzGAEgAygLMhEuZ3JhcGgudjEuRWRnZUtleSJVChBHZXRFZGdlc1Jlc3BvbnNlEh0KBWVkZ2VzGAEgAygLMg4uZ3JhcGgudjEuRWRnZRIiCgdtaXNzaW5nGAIgAygLMhEuZ3JhcGgudjEuRWRnZUtleSIvChFEZWxldGVFZGdlUmVxdWVzdBIMCgR0YWlsGAEgASgJEgwKBGhlYWQYAiABKAkiJQoSRGVsZXRlRWRnZVJlc3BvbnNlEg8KB2V4aXN0ZWQYASABKAgiJQoHRWRnZUtleRIMCgR0YWlsGAEgASgJEgwKBGhlYWQYAiABKAkiWwoQU2NhbkVkZ2VzUmVxdWVzdBITCgt0YWlsX3ByZWZpeBgBIAEoCRITCgtoZWFkX3ByZWZpeBgCIAEoCRINCgVsaW1pdBgDIAEoDRIOCgZjdXJzb3IYBCABKAwiRwoRU2NhbkVkZ2VzUmVzcG9uc2USHQoFZWRnZXMYASADKAsyDi5ncmFwaC52MS5FZGdlEhMKC25leHRfY3Vyc29yGAIgASgMIjYKEkRlbGV0ZUVkZ2VzUmVxdWVzdBIgCgVlZGdlcxgBIAMoCzIRLmdyYXBoLnYxLkVkZ2VLZXkiJgoTRGVsZXRlRWRnZXNSZXNwb25zZRIPCgdkZWxldGVkGAEgASgFIkIKDkFkZEVkZ2VSZXF1ZXN0EhwKBGVkZ2UYASABKAsyDi5ncmFwaC52MS5FZGdlEhIKCmNvbnRyaWJfaWQYAiABKAwiEQoPQWRkRWRnZVJlc3BvbnNlIkUKD0FkZEVkZ2VzUmVxdWVzdBIdCgVlZGdlcxgBIAMoCzIOLmdyYXBoLnYxLkVkZ2USEwoLY29udHJpYl9pZHMYAiADKAwiIwoQQWRkRWRnZXNSZXNwb25zZRIPCgd3cml0dGVuGAEgASgFIi4KDlB1dEVkZ2VSZXF1ZXN0EhwKBGVkZ2UYASABKAsyDi5ncmFwaC52MS5FZGdlIhEKD1B1dEVkZ2VSZXNwb25zZSIwCg9QdXRFZGdlc1JlcXVlc3QSHQoFZWRnZXMYASADKAsyDi5ncmFwaC52MS5FZGdlIiMKEFB1dEVkZ2VzUmVzcG9uc2USDwoHd3JpdHRlbhgBIAEoBSIYChZHZXRTZXJ2ZXJTdGF0dXNSZXF1ZXN0IogDChdHZXRTZXJ2ZXJTdGF0dXNSZXNwb25zZRIPCgd2ZXJzaW9uGAEgASgJEhIKCmdvX3ZlcnNpb24YAiABKAkSLgoKc3RhcnRlZF9hdBgDIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASKQoGdXB0aW1lGAQgASgLMhkuZ29vZ2xlLnByb3RvYnVmLkR1cmF0aW9uEi4KC2RlZmF1bHRfdHRsGAUgASgLMhkuZ29vZ2xlLnByb3RvYnVmLkR1cmF0aW9uEhYKDm1heF9iYXRjaF9zaXplGAYgASgNEhUKDW1heF9rZXlfYnl0ZXMYByABKA0SGgoSc2Nhbl9kZWZhdWx0X2xpbWl0GAggASgNEhYKDnNjYW5fbWF4X2xpbWl0GAkgASgNEhMKC3Rsc19lbmFibGVkGAogASgIEhsKE3JlcGxpY2F0aW9uX2VuYWJsZWQYCyABKAgSFAoMdmVydGV4X2NvdW50GAwgASgEEhIKCmVkZ2VfY291bnQYDSABKAQimQIKD1JlcGxpY2F0aW9uUGVlchIPCgdhZGRyZXNzGAEgASgJEi4KBXN0YXRlGAIgASgOMh8uZ3JhcGgudjEuUmVwbGljYXRpb25QZWVyLlN0YXRlEjEKDWxhc3RfZXZlbnRfYXQYAyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhMKC2FwcGxpZWRfc2VxGAQgASgEEg0KBWVycm9yGAUgASgJIm4KBVN0YXRlEhUKEVNUQVRFX1VOU1BFQ0lGSUVEEAASFAoQU1RBVEVfQ09OTkVDVElORxABEhMKD1NUQVRFX1NUUkVBTUlORxACEhEKDVNUQVRFX0JBQ0tPRkYQAxIQCgxTVEFURV9DTE9TRUQQBCIdChtHZXRSZXBsaWNhdGlvblN0YXR1c1JlcXVlc3QimQEKHEdldFJlcGxpY2F0aW9uU3RhdHVzUmVzcG9uc2USDwoHbm9kZV9pZBgBIAEoCRItCglsb2NhbF9ub3cYAiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEg8KB2VuYWJsZWQYAyABKAgSKAoFcGVlcnMYCiADKAsyGS5ncmFwaC52MS5SZXBsaWNhdGlvblBlZXIiLgoVQmFja3VwU25hcHNob3RSZXF1ZXN0EhUKDXZlcnRleF9wcmVmaXgYASABKAkiZgoWQmFja3VwU25hcHNob3RSZXNwb25zZRIiCgZ2ZXJ0ZXgYASABKAsyEC5ncmFwaC52MS5WZXJ0ZXhIABIeCgRlZGdlGAIgASgLMg4uZ3JhcGgudjEuRWRnZUgAQggKBnJlY29yZCptCglSZWR1Y3Rpb24SGQoVUkVEVUNUSU9OX1VOU1BFQ0lGSUVEEAASIwofUkVEVUNUSU9OX01JTklNVU1fU1BBTk5JTkdfVFJFRRABEiAKHFJFRFVDVElPTl9TSE9SVEVTVF9QQVRIX1RSRUUQAipWCglPYmplY3RpdmUSGQoVT0JKRUNUSVZFX1VOU1BFQ0lGSUVEEAASFgoST0JKRUNUSVZFX01JTklNSVpFEAESFgoST0JKRUNUSVZFX01BWElNSVpFEAIqYgoJV2VpZ2h0aW5nEhkKFVdFSUdIVElOR19VTlNQRUNJRklFRBAAEhEKDVdFSUdIVElOR19SQVcQARITCg9XRUlHSFRJTkdfVEZJREYQAhISCg5XRUlHSFRJTkdfQk0yNRADMusOCg5MYW50ZXJuU2VydmljZRJHCgpJbGx1bWluYXRlEhsuZ3JhcGgudjEuSWxsdW1pbmF0ZVJlcXVlc3QaHC5ncmFwaC52MS5JbGx1bWluYXRlUmVzcG9uc2USRAoJR2V0VmVydGV4EhouZ3JhcGgudjEuR2V0VmVydGV4UmVxdWVzdBobLmdyYXBoLnYxLkdldFZlcnRleFJlc3BvbnNlEkoKC0dldFZlcnRpY2VzEhwuZ3JhcGgudjEuR2V0VmVydGljZXNSZXF1ZXN0Gh0uZ3JhcGgudjEuR2V0VmVydGljZXNSZXNwb25zZRJECglQdXRWZXJ0ZXgSGi5ncmFwaC52MS5QdXRWZXJ0ZXhSZXF1ZXN0GhsuZ3JhcGgudjEuUHV0VmVydGV4UmVzcG9uc2USSgoLUHV0VmVydGljZXMSHC5ncmFwaC52MS5QdXRWZXJ0aWNlc1JlcXVlc3QaHS5ncmFwaC52MS5QdXRWZXJ0aWNlc1Jlc3BvbnNlEk0KDERlbGV0ZVZlcnRleBIdLmdyYXBoLnYxLkRlbGV0ZVZlcnRleFJlcXVlc3QaHi5ncmFwaC52MS5EZWxldGVWZXJ0ZXhSZXNwb25zZRJTCg5EZWxldGVWZXJ0aWNlcxIfLmdyYXBoLnYxLkRlbGV0ZVZlcnRpY2VzUmVxdWVzdBogLmdyYXBoLnYxLkRlbGV0ZVZlcnRpY2VzUmVzcG9uc2USTQoMU2NhblZlcnRpY2VzEh0uZ3JhcGgudjEuU2NhblZlcnRpY2VzUmVxdWVzdBoeLmdyYXBoLnYxLlNjYW5WZXJ0aWNlc1Jlc3BvbnNlElMKDlNjYW5WZXJ0ZXhLZXlzEh8uZ3JhcGgudjEuU2NhblZlcnRleEtleXNSZXF1ZXN0GiAuZ3JhcGgudjEuU2NhblZlcnRleEtleXNSZXNwb25zZRJTCg5TZWFyY2hWZXJ0aWNlcxIfLmdyYXBoLnYxLlNlYXJjaFZlcnRpY2VzUmVxdWVzdBogLmdyYXBoLnYxLlNlYXJjaFZlcnRpY2VzUmVzcG9uc2USaAoVQ291bnRWZXJ0aWNlc0J5UHJlZml4EiYuZ3JhcGgudjEuQ291bnRWZXJ0aWNlc0J5UHJlZml4UmVxdWVzdBonLmdyYXBoLnYxLkNvdW50VmVydGljZXNCeVByZWZpeFJlc3BvbnNlEmsKFkRlbGV0ZVZlcnRpY2VzQnlQcmVmaXgSJy5ncmFwaC52MS5EZWxldGVWZXJ0aWNlc0J5UHJlZml4UmVxdWVzdBooLmdyYXBoLnYxLkRlbGV0ZVZlcnRpY2VzQnlQcmVmaXhSZXNwb25zZRI+CgdHZXRFZGdlEhguZ3JhcGgudjEuR2V0RWRnZVJlcXVlc3QaGS5ncmFwaC52MS5HZXRFZGdlUmVzcG9uc2USQQoIR2V0RWRnZXMSGS5ncmFwaC52MS5HZXRFZGdlc1JlcXVlc3QaGi5ncmFwaC52MS5HZXRFZGdlc1Jlc3BvbnNlEj4KB0FkZEVkZ2USGC5ncmFwaC52MS5BZGRFZGdlUmVxdWVzdBoZLmdyYXBoLnYxLkFkZEVkZ2VSZXNwb25zZRJBCghBZGRFZGdlcxIZLmdyYXBoLnYxLkFkZEVkZ2VzUmVxdWVzdBoaLmdyYXBoLnYxLkFkZEVkZ2VzUmVzcG9uc2USPgoHUHV0RWRnZRIYLmdyYXBoLnYxLlB1dEVkZ2VSZXF1ZXN0GhkuZ3JhcGgudjEuUHV0RWRnZVJlc3BvbnNlEkEKCFB1dEVkZ2VzEhkuZ3JhcGgudjEuUHV0RWRnZXNSZXF1ZXN0GhouZ3JhcGgudjEuUHV0RWRnZXNSZXNwb25zZRJHCgpEZWxldGVFZGdlEhsuZ3JhcGgudjEuRGVsZXRlRWRnZVJlcXVlc3QaHC5ncmFwaC52MS5EZWxldGVFZGdlUmVzcG9uc2USSgoLRGVsZXRlRWRnZXMSHC5ncmFwaC52MS5EZWxldGVFZGdlc1JlcXVlc3QaHS5ncmFwaC52MS5EZWxldGVFZGdlc1Jlc3BvbnNlEkQKCVNjYW5FZGdlcxIaLmdyYXBoLnYxLlNjYW5FZGdlc1JlcXVlc3QaGy5ncmFwaC52MS5TY2FuRWRnZXNSZXNwb25zZRJWCg9HZXRTZXJ2ZXJTdGF0dXMSIC5ncmFwaC52MS5HZXRTZXJ2ZXJTdGF0dXNSZXF1ZXN0GiEuZ3JhcGgudjEuR2V0U2VydmVyU3RhdHVzUmVzcG9uc2USZQoUR2V0UmVwbGljYXRpb25TdGF0dXMSJS5ncmFwaC52MS5HZXRSZXBsaWNhdGlvblN0YXR1c1JlcXVlc3QaJi5ncmFwaC52MS5HZXRSZXBsaWNhdGlvblN0YXR1c1Jlc3BvbnNlElUKDkJhY2t1cFNuYXBzaG90Eh8uZ3JhcGgudjEuQmFja3VwU25hcHNob3RSZXF1ZXN0GiAuZ3JhcGgudjEuQmFja3VwU25hcHNob3RSZXNwb25zZTABQlsKDGNvbS5ncmFwaC52MUIKR3JhcGhQcm90b1ABogIDR1hYqgIIR3JhcGguVjHKAghHcmFwaFxWMeICFEdyYXBoXFYxXEdQQk1ldGFkYXRh6gIJR3JhcGg6OlYxYgZwcm90bzM", [file_google_protobuf_duration, file_google_protobuf_timestamp]);
 
 /**
  * @generated from message graph.v1.Vertex
@@ -181,60 +181,45 @@ export type IlluminateRequest = Message<"graph.v1.IlluminateRequest"> & {
   seed: string;
 
   /**
-   * @generated from field: uint32 step = 2;
-   */
-  step: number;
-
-  /**
-   * @generated from field: uint32 k = 3;
-   */
-  k: number;
-
-  /**
-   * @generated from field: graph.v1.Algorithm algorithm = 6;
-   */
-  algorithm: Algorithm;
-
-  /**
-   * @generated from field: graph.v1.Objective objective = 7;
-   */
-  objective: Objective;
-
-  /**
+   * weighting and vertex_prefix are the axes genuinely shared by every
+   * traversal family, so they stay top-level.
+   *
    * @generated from field: graph.v1.Weighting weighting = 8;
    */
   weighting: Weighting;
 
   /**
-   * vertex_prefix, when non-empty, restricts the traversal frontier to
+   * vertex_prefix, when non-empty, restricts the traversal frontier to the
    * vertices whose key has this prefix. The seed is always retained as the
    * anchor even if it does not match. Empty = no filter. Applied BEFORE
-   * per-hop top-k and BEFORE the MST/SPT reduction (induced-subgraph
-   * semantics: non-matching vertices are not traversable bridges).
+   * per-hop top-k and BEFORE any reduction (induced-subgraph semantics:
+   * non-matching vertices are not traversable bridges).
    *
    * @generated from field: string vertex_prefix = 9;
    */
   vertexPrefix: string;
 
   /**
-   * restart_prob (α) and epsilon (ε) tune ALGORITHM_PERSONALIZED_PAGERANK and
-   * are ignored by every other algorithm (#801). α is the teleport-to-seed
-   * probability — the locality knob: higher α (≈0.5) yields a tighter,
-   * seed-proximate set, lower α (≈0.15) a broader one. ε is the forward-push
-   * residual threshold: smaller ε is more accurate but touches more vertices
-   * (work is O(1/(α·ε)), independent of graph size). Both default server-side
-   * when ≤ 0 (α=0.15, ε=1e-4), so a caller may leave them unset. With
-   * forward-push ε drives the horizon; step is not used by PPR and k caps the
-   * number of ranked vertices returned.
+   * params selects the traversal family AND carries only the knobs that
+   * family understands (#846) — cross-algorithm misconfiguration (PPR with
+   * step, MST with epsilon, …) is structurally unrepresentable. Unset params
+   * means BfsParams with server defaults: the historical bare illuminate.
    *
-   * @generated from field: float restart_prob = 10;
+   * @generated from oneof graph.v1.IlluminateRequest.params
    */
-  restartProb: number;
-
-  /**
-   * @generated from field: float epsilon = 11;
-   */
-  epsilon: number;
+  params: {
+    /**
+     * @generated from field: graph.v1.BfsParams bfs = 12;
+     */
+    value: BfsParams;
+    case: "bfs";
+  } | {
+    /**
+     * @generated from field: graph.v1.PprParams ppr = 13;
+     */
+    value: PprParams;
+    case: "ppr";
+  } | { case: undefined; value?: undefined };
 };
 
 /**
@@ -243,6 +228,101 @@ export type IlluminateRequest = Message<"graph.v1.IlluminateRequest"> & {
  */
 export const IlluminateRequestSchema: GenMessage<IlluminateRequest> = /*@__PURE__*/
   messageDesc(file_graph_v1_graph, 3);
+
+/**
+ * BfsParams tunes the greedy per-hop top-k BFS walk (the default traversal
+ * family) and its optional post-traversal tree reduction.
+ *
+ * @generated from message graph.v1.BfsParams
+ */
+export type BfsParams = Message<"graph.v1.BfsParams"> & {
+  /**
+   * step is the BFS depth. 0 = server default.
+   *
+   * @generated from field: uint32 step = 1;
+   */
+  step: number;
+
+  /**
+   * fan_out is the per-hop top-k prune: at each hop only the fan_out
+   * strongest (or cheapest, under OBJECTIVE_MINIMIZE) edges survive.
+   * 0 = server default. (Formerly the overloaded "k".)
+   *
+   * @generated from field: uint32 fan_out = 2;
+   */
+  fanOut: number;
+
+  /**
+   * objective governs BOTH the per-hop pruning and the reduction direction
+   * (#560), so a cost-minimiser is never handed a candidate set already
+   * pruned to the costliest edges. UNSPECIFIED = MAXIMIZE.
+   *
+   * @generated from field: graph.v1.Objective objective = 3;
+   */
+  objective: Objective;
+
+  /**
+   * reduction optionally reduces the discovered neighbourhood to a tree
+   * rooted at the seed. UNSPECIFIED = no reduction (raw subgraph).
+   *
+   * @generated from field: graph.v1.Reduction reduction = 4;
+   */
+  reduction: Reduction;
+};
+
+/**
+ * Describes the message graph.v1.BfsParams.
+ * Use `create(BfsParamsSchema)` to create a new message.
+ */
+export const BfsParamsSchema: GenMessage<BfsParams> = /*@__PURE__*/
+  messageDesc(file_graph_v1_graph, 4);
+
+/**
+ * PprParams runs seed-anchored Personalized PageRank (Random-Walk-with-
+ * Restart) by local forward-push (Andersen–Chung–Lang) instead of the BFS
+ * walk (#801). The result is a relevance star rooted at the seed — the
+ * seed→v edge weight is π[v], the PPR mass v accumulates for this seed.
+ * PPR is intrinsically a relevance maximiser and has no per-hop step
+ * semantics, which is why neither knob exists here.
+ *
+ * @generated from message graph.v1.PprParams
+ */
+export type PprParams = Message<"graph.v1.PprParams"> & {
+  /**
+   * top_n caps the star to the top-N vertices by mass. 0 = every
+   * positive-mass vertex. (Formerly the overloaded "k".)
+   *
+   * @generated from field: uint32 top_n = 1;
+   */
+  topN: number;
+
+  /**
+   * restart_prob (α) is the teleport-to-seed probability — the locality
+   * knob: higher α (≈0.5) yields a tighter, seed-proximate set, lower α
+   * (≈0.15) a broader one. Honoured only in (0,1); unset/out-of-range
+   * falls back to the server default 0.15.
+   *
+   * @generated from field: float restart_prob = 2;
+   */
+  restartProb: number;
+
+  /**
+   * epsilon (ε) is the forward-push residual threshold: smaller ε is more
+   * accurate but touches more vertices (work is O(1/(α·ε)), independent of
+   * graph size). Honoured only when > 0; unset falls back to the server
+   * default 1e-4.
+   *
+   * @generated from field: float epsilon = 3;
+   */
+  epsilon: number;
+};
+
+/**
+ * Describes the message graph.v1.PprParams.
+ * Use `create(PprParamsSchema)` to create a new message.
+ */
+export const PprParamsSchema: GenMessage<PprParams> = /*@__PURE__*/
+  messageDesc(file_graph_v1_graph, 5);
 
 /**
  * @generated from message graph.v1.IlluminateResponse
@@ -259,7 +339,7 @@ export type IlluminateResponse = Message<"graph.v1.IlluminateResponse"> & {
  * Use `create(IlluminateResponseSchema)` to create a new message.
  */
 export const IlluminateResponseSchema: GenMessage<IlluminateResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 4);
+  messageDesc(file_graph_v1_graph, 6);
 
 /**
  * @generated from message graph.v1.GetVertexRequest
@@ -276,7 +356,7 @@ export type GetVertexRequest = Message<"graph.v1.GetVertexRequest"> & {
  * Use `create(GetVertexRequestSchema)` to create a new message.
  */
 export const GetVertexRequestSchema: GenMessage<GetVertexRequest> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 5);
+  messageDesc(file_graph_v1_graph, 7);
 
 /**
  * @generated from message graph.v1.GetVertexResponse
@@ -293,7 +373,7 @@ export type GetVertexResponse = Message<"graph.v1.GetVertexResponse"> & {
  * Use `create(GetVertexResponseSchema)` to create a new message.
  */
 export const GetVertexResponseSchema: GenMessage<GetVertexResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 6);
+  messageDesc(file_graph_v1_graph, 8);
 
 /**
  * GetVerticesRequest reads several vertices in one round trip. Subject to
@@ -313,7 +393,7 @@ export type GetVerticesRequest = Message<"graph.v1.GetVerticesRequest"> & {
  * Use `create(GetVerticesRequestSchema)` to create a new message.
  */
 export const GetVerticesRequestSchema: GenMessage<GetVerticesRequest> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 7);
+  messageDesc(file_graph_v1_graph, 9);
 
 /**
  * @generated from message graph.v1.GetVerticesResponse
@@ -340,7 +420,7 @@ export type GetVerticesResponse = Message<"graph.v1.GetVerticesResponse"> & {
  * Use `create(GetVerticesResponseSchema)` to create a new message.
  */
 export const GetVerticesResponseSchema: GenMessage<GetVerticesResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 8);
+  messageDesc(file_graph_v1_graph, 10);
 
 /**
  * PutVertexRequest writes a single vertex with upsert semantics. The
@@ -362,7 +442,7 @@ export type PutVertexRequest = Message<"graph.v1.PutVertexRequest"> & {
  * Use `create(PutVertexRequestSchema)` to create a new message.
  */
 export const PutVertexRequestSchema: GenMessage<PutVertexRequest> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 9);
+  messageDesc(file_graph_v1_graph, 11);
 
 /**
  * @generated from message graph.v1.PutVertexResponse
@@ -375,7 +455,7 @@ export type PutVertexResponse = Message<"graph.v1.PutVertexResponse"> & {
  * Use `create(PutVertexResponseSchema)` to create a new message.
  */
 export const PutVertexResponseSchema: GenMessage<PutVertexResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 10);
+  messageDesc(file_graph_v1_graph, 12);
 
 /**
  * PutVerticesRequest writes vertices with upsert semantics: each Vertex.key
@@ -396,7 +476,7 @@ export type PutVerticesRequest = Message<"graph.v1.PutVerticesRequest"> & {
  * Use `create(PutVerticesRequestSchema)` to create a new message.
  */
 export const PutVerticesRequestSchema: GenMessage<PutVerticesRequest> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 11);
+  messageDesc(file_graph_v1_graph, 13);
 
 /**
  * @generated from message graph.v1.PutVerticesResponse
@@ -417,7 +497,7 @@ export type PutVerticesResponse = Message<"graph.v1.PutVerticesResponse"> & {
  * Use `create(PutVerticesResponseSchema)` to create a new message.
  */
 export const PutVerticesResponseSchema: GenMessage<PutVerticesResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 12);
+  messageDesc(file_graph_v1_graph, 14);
 
 /**
  * DeleteVertexRequest removes the vertex at `key`. Edges incident to the
@@ -439,7 +519,7 @@ export type DeleteVertexRequest = Message<"graph.v1.DeleteVertexRequest"> & {
  * Use `create(DeleteVertexRequestSchema)` to create a new message.
  */
 export const DeleteVertexRequestSchema: GenMessage<DeleteVertexRequest> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 13);
+  messageDesc(file_graph_v1_graph, 15);
 
 /**
  * @generated from message graph.v1.DeleteVertexResponse
@@ -458,7 +538,7 @@ export type DeleteVertexResponse = Message<"graph.v1.DeleteVertexResponse"> & {
  * Use `create(DeleteVertexResponseSchema)` to create a new message.
  */
 export const DeleteVertexResponseSchema: GenMessage<DeleteVertexResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 14);
+  messageDesc(file_graph_v1_graph, 16);
 
 /**
  * DeleteVerticesRequest removes several vertices in one round trip. Same
@@ -479,7 +559,7 @@ export type DeleteVerticesRequest = Message<"graph.v1.DeleteVerticesRequest"> & 
  * Use `create(DeleteVerticesRequestSchema)` to create a new message.
  */
 export const DeleteVerticesRequestSchema: GenMessage<DeleteVerticesRequest> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 15);
+  messageDesc(file_graph_v1_graph, 17);
 
 /**
  * @generated from message graph.v1.DeleteVerticesResponse
@@ -498,7 +578,7 @@ export type DeleteVerticesResponse = Message<"graph.v1.DeleteVerticesResponse"> 
  * Use `create(DeleteVerticesResponseSchema)` to create a new message.
  */
 export const DeleteVerticesResponseSchema: GenMessage<DeleteVerticesResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 16);
+  messageDesc(file_graph_v1_graph, 18);
 
 /**
  * ScanVerticesRequest streams vertices whose key starts with `prefix` in
@@ -536,7 +616,7 @@ export type ScanVerticesRequest = Message<"graph.v1.ScanVerticesRequest"> & {
  * Use `create(ScanVerticesRequestSchema)` to create a new message.
  */
 export const ScanVerticesRequestSchema: GenMessage<ScanVerticesRequest> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 17);
+  messageDesc(file_graph_v1_graph, 19);
 
 /**
  * @generated from message graph.v1.ScanVerticesResponse
@@ -564,7 +644,7 @@ export type ScanVerticesResponse = Message<"graph.v1.ScanVerticesResponse"> & {
  * Use `create(ScanVerticesResponseSchema)` to create a new message.
  */
 export const ScanVerticesResponseSchema: GenMessage<ScanVerticesResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 18);
+  messageDesc(file_graph_v1_graph, 20);
 
 /**
  * ScanVertexKeysRequest streams vertex KEYS (no values) whose key starts
@@ -612,7 +692,7 @@ export type ScanVertexKeysRequest = Message<"graph.v1.ScanVertexKeysRequest"> & 
  * Use `create(ScanVertexKeysRequestSchema)` to create a new message.
  */
 export const ScanVertexKeysRequestSchema: GenMessage<ScanVertexKeysRequest> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 19);
+  messageDesc(file_graph_v1_graph, 21);
 
 /**
  * @generated from message graph.v1.ScanVertexKeysResponse
@@ -640,7 +720,7 @@ export type ScanVertexKeysResponse = Message<"graph.v1.ScanVertexKeysResponse"> 
  * Use `create(ScanVertexKeysResponseSchema)` to create a new message.
  */
 export const ScanVertexKeysResponseSchema: GenMessage<ScanVertexKeysResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 20);
+  messageDesc(file_graph_v1_graph, 22);
 
 /**
  * SearchVerticesRequest runs a relevance-ranked full-text search over vertex
@@ -682,7 +762,7 @@ export type SearchVerticesRequest = Message<"graph.v1.SearchVerticesRequest"> & 
  * Use `create(SearchVerticesRequestSchema)` to create a new message.
  */
 export const SearchVerticesRequestSchema: GenMessage<SearchVerticesRequest> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 21);
+  messageDesc(file_graph_v1_graph, 23);
 
 /**
  * @generated from message graph.v1.SearchVerticesResponse
@@ -702,7 +782,7 @@ export type SearchVerticesResponse = Message<"graph.v1.SearchVerticesResponse"> 
  * Use `create(SearchVerticesResponseSchema)` to create a new message.
  */
 export const SearchVerticesResponseSchema: GenMessage<SearchVerticesResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 22);
+  messageDesc(file_graph_v1_graph, 24);
 
 /**
  * SearchHit pairs a matching vertex key with the relevance score the index
@@ -729,7 +809,7 @@ export type SearchHit = Message<"graph.v1.SearchHit"> & {
  * Use `create(SearchHitSchema)` to create a new message.
  */
 export const SearchHitSchema: GenMessage<SearchHit> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 23);
+  messageDesc(file_graph_v1_graph, 25);
 
 /**
  * CountVerticesByPrefixRequest returns the number of live vertex keys with
@@ -749,7 +829,7 @@ export type CountVerticesByPrefixRequest = Message<"graph.v1.CountVerticesByPref
  * Use `create(CountVerticesByPrefixRequestSchema)` to create a new message.
  */
 export const CountVerticesByPrefixRequestSchema: GenMessage<CountVerticesByPrefixRequest> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 24);
+  messageDesc(file_graph_v1_graph, 26);
 
 /**
  * @generated from message graph.v1.CountVerticesByPrefixResponse
@@ -766,7 +846,7 @@ export type CountVerticesByPrefixResponse = Message<"graph.v1.CountVerticesByPre
  * Use `create(CountVerticesByPrefixResponseSchema)` to create a new message.
  */
 export const CountVerticesByPrefixResponseSchema: GenMessage<CountVerticesByPrefixResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 25);
+  messageDesc(file_graph_v1_graph, 27);
 
 /**
  * DeleteVerticesByPrefixRequest deletes up to `limit` vertices whose key
@@ -799,7 +879,7 @@ export type DeleteVerticesByPrefixRequest = Message<"graph.v1.DeleteVerticesByPr
  * Use `create(DeleteVerticesByPrefixRequestSchema)` to create a new message.
  */
 export const DeleteVerticesByPrefixRequestSchema: GenMessage<DeleteVerticesByPrefixRequest> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 26);
+  messageDesc(file_graph_v1_graph, 28);
 
 /**
  * @generated from message graph.v1.DeleteVerticesByPrefixResponse
@@ -816,7 +896,7 @@ export type DeleteVerticesByPrefixResponse = Message<"graph.v1.DeleteVerticesByP
  * Use `create(DeleteVerticesByPrefixResponseSchema)` to create a new message.
  */
 export const DeleteVerticesByPrefixResponseSchema: GenMessage<DeleteVerticesByPrefixResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 27);
+  messageDesc(file_graph_v1_graph, 29);
 
 /**
  * @generated from message graph.v1.GetEdgeRequest
@@ -838,7 +918,7 @@ export type GetEdgeRequest = Message<"graph.v1.GetEdgeRequest"> & {
  * Use `create(GetEdgeRequestSchema)` to create a new message.
  */
 export const GetEdgeRequestSchema: GenMessage<GetEdgeRequest> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 28);
+  messageDesc(file_graph_v1_graph, 30);
 
 /**
  * @generated from message graph.v1.GetEdgeResponse
@@ -855,7 +935,7 @@ export type GetEdgeResponse = Message<"graph.v1.GetEdgeResponse"> & {
  * Use `create(GetEdgeResponseSchema)` to create a new message.
  */
 export const GetEdgeResponseSchema: GenMessage<GetEdgeResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 29);
+  messageDesc(file_graph_v1_graph, 31);
 
 /**
  * GetEdgesRequest reads several edges in one round trip. Subject to the
@@ -875,7 +955,7 @@ export type GetEdgesRequest = Message<"graph.v1.GetEdgesRequest"> & {
  * Use `create(GetEdgesRequestSchema)` to create a new message.
  */
 export const GetEdgesRequestSchema: GenMessage<GetEdgesRequest> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 30);
+  messageDesc(file_graph_v1_graph, 32);
 
 /**
  * @generated from message graph.v1.GetEdgesResponse
@@ -904,7 +984,7 @@ export type GetEdgesResponse = Message<"graph.v1.GetEdgesResponse"> & {
  * Use `create(GetEdgesResponseSchema)` to create a new message.
  */
 export const GetEdgesResponseSchema: GenMessage<GetEdgesResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 31);
+  messageDesc(file_graph_v1_graph, 33);
 
 /**
  * @generated from message graph.v1.DeleteEdgeRequest
@@ -926,7 +1006,7 @@ export type DeleteEdgeRequest = Message<"graph.v1.DeleteEdgeRequest"> & {
  * Use `create(DeleteEdgeRequestSchema)` to create a new message.
  */
 export const DeleteEdgeRequestSchema: GenMessage<DeleteEdgeRequest> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 32);
+  messageDesc(file_graph_v1_graph, 34);
 
 /**
  * @generated from message graph.v1.DeleteEdgeResponse
@@ -945,7 +1025,7 @@ export type DeleteEdgeResponse = Message<"graph.v1.DeleteEdgeResponse"> & {
  * Use `create(DeleteEdgeResponseSchema)` to create a new message.
  */
 export const DeleteEdgeResponseSchema: GenMessage<DeleteEdgeResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 33);
+  messageDesc(file_graph_v1_graph, 35);
 
 /**
  * EdgeKey identifies an edge by its (tail, head) pair without weight.
@@ -969,7 +1049,7 @@ export type EdgeKey = Message<"graph.v1.EdgeKey"> & {
  * Use `create(EdgeKeySchema)` to create a new message.
  */
 export const EdgeKeySchema: GenMessage<EdgeKey> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 34);
+  messageDesc(file_graph_v1_graph, 36);
 
 /**
  * ScanEdgesRequest streams edges whose tail key starts with `tail_prefix`
@@ -1020,7 +1100,7 @@ export type ScanEdgesRequest = Message<"graph.v1.ScanEdgesRequest"> & {
  * Use `create(ScanEdgesRequestSchema)` to create a new message.
  */
 export const ScanEdgesRequestSchema: GenMessage<ScanEdgesRequest> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 35);
+  messageDesc(file_graph_v1_graph, 37);
 
 /**
  * @generated from message graph.v1.ScanEdgesResponse
@@ -1048,7 +1128,7 @@ export type ScanEdgesResponse = Message<"graph.v1.ScanEdgesResponse"> & {
  * Use `create(ScanEdgesResponseSchema)` to create a new message.
  */
 export const ScanEdgesResponseSchema: GenMessage<ScanEdgesResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 36);
+  messageDesc(file_graph_v1_graph, 38);
 
 /**
  * DeleteEdgesRequest removes several edges in one round trip. Subject to the
@@ -1068,7 +1148,7 @@ export type DeleteEdgesRequest = Message<"graph.v1.DeleteEdgesRequest"> & {
  * Use `create(DeleteEdgesRequestSchema)` to create a new message.
  */
 export const DeleteEdgesRequestSchema: GenMessage<DeleteEdgesRequest> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 37);
+  messageDesc(file_graph_v1_graph, 39);
 
 /**
  * @generated from message graph.v1.DeleteEdgesResponse
@@ -1087,7 +1167,7 @@ export type DeleteEdgesResponse = Message<"graph.v1.DeleteEdgesResponse"> & {
  * Use `create(DeleteEdgesResponseSchema)` to create a new message.
  */
 export const DeleteEdgesResponseSchema: GenMessage<DeleteEdgesResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 38);
+  messageDesc(file_graph_v1_graph, 40);
 
 /**
  * AddEdgeRequest accumulates weight onto a single (tail, head) pair: repeated
@@ -1123,7 +1203,7 @@ export type AddEdgeRequest = Message<"graph.v1.AddEdgeRequest"> & {
  * Use `create(AddEdgeRequestSchema)` to create a new message.
  */
 export const AddEdgeRequestSchema: GenMessage<AddEdgeRequest> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 39);
+  messageDesc(file_graph_v1_graph, 41);
 
 /**
  * @generated from message graph.v1.AddEdgeResponse
@@ -1136,7 +1216,7 @@ export type AddEdgeResponse = Message<"graph.v1.AddEdgeResponse"> & {
  * Use `create(AddEdgeResponseSchema)` to create a new message.
  */
 export const AddEdgeResponseSchema: GenMessage<AddEdgeResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 40);
+  messageDesc(file_graph_v1_graph, 42);
 
 /**
  * AddEdgesRequest accumulates weight onto each (tail, head) pair: repeated
@@ -1170,7 +1250,7 @@ export type AddEdgesRequest = Message<"graph.v1.AddEdgesRequest"> & {
  * Use `create(AddEdgesRequestSchema)` to create a new message.
  */
 export const AddEdgesRequestSchema: GenMessage<AddEdgesRequest> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 41);
+  messageDesc(file_graph_v1_graph, 43);
 
 /**
  * @generated from message graph.v1.AddEdgesResponse
@@ -1189,7 +1269,7 @@ export type AddEdgesResponse = Message<"graph.v1.AddEdgesResponse"> & {
  * Use `create(AddEdgesResponseSchema)` to create a new message.
  */
 export const AddEdgesResponseSchema: GenMessage<AddEdgesResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 42);
+  messageDesc(file_graph_v1_graph, 44);
 
 /**
  * PutEdgeRequest overwrites a single (tail, head) pair, replacing any
@@ -1210,7 +1290,7 @@ export type PutEdgeRequest = Message<"graph.v1.PutEdgeRequest"> & {
  * Use `create(PutEdgeRequestSchema)` to create a new message.
  */
 export const PutEdgeRequestSchema: GenMessage<PutEdgeRequest> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 43);
+  messageDesc(file_graph_v1_graph, 45);
 
 /**
  * @generated from message graph.v1.PutEdgeResponse
@@ -1223,7 +1303,7 @@ export type PutEdgeResponse = Message<"graph.v1.PutEdgeResponse"> & {
  * Use `create(PutEdgeResponseSchema)` to create a new message.
  */
 export const PutEdgeResponseSchema: GenMessage<PutEdgeResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 44);
+  messageDesc(file_graph_v1_graph, 46);
 
 /**
  * PutEdgesRequest overwrites each (tail, head) pair, replacing any existing
@@ -1243,7 +1323,7 @@ export type PutEdgesRequest = Message<"graph.v1.PutEdgesRequest"> & {
  * Use `create(PutEdgesRequestSchema)` to create a new message.
  */
 export const PutEdgesRequestSchema: GenMessage<PutEdgesRequest> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 45);
+  messageDesc(file_graph_v1_graph, 47);
 
 /**
  * @generated from message graph.v1.PutEdgesResponse
@@ -1262,7 +1342,7 @@ export type PutEdgesResponse = Message<"graph.v1.PutEdgesResponse"> & {
  * Use `create(PutEdgesResponseSchema)` to create a new message.
  */
 export const PutEdgesResponseSchema: GenMessage<PutEdgesResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 46);
+  messageDesc(file_graph_v1_graph, 48);
 
 /**
  * GetServerStatusRequest carries no parameters — the response is a flat
@@ -1281,7 +1361,7 @@ export type GetServerStatusRequest = Message<"graph.v1.GetServerStatusRequest"> 
  * Use `create(GetServerStatusRequestSchema)` to create a new message.
  */
 export const GetServerStatusRequestSchema: GenMessage<GetServerStatusRequest> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 47);
+  messageDesc(file_graph_v1_graph, 49);
 
 /**
  * @generated from message graph.v1.GetServerStatusResponse
@@ -1393,7 +1473,7 @@ export type GetServerStatusResponse = Message<"graph.v1.GetServerStatusResponse"
  * Use `create(GetServerStatusResponseSchema)` to create a new message.
  */
 export const GetServerStatusResponseSchema: GenMessage<GetServerStatusResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 48);
+  messageDesc(file_graph_v1_graph, 50);
 
 /**
  * ReplicationPeer is one row of the GetReplicationStatus snapshot.
@@ -1452,7 +1532,7 @@ export type ReplicationPeer = Message<"graph.v1.ReplicationPeer"> & {
  * Use `create(ReplicationPeerSchema)` to create a new message.
  */
 export const ReplicationPeerSchema: GenMessage<ReplicationPeer> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 49);
+  messageDesc(file_graph_v1_graph, 51);
 
 /**
  * @generated from enum graph.v1.ReplicationPeer.State
@@ -1500,7 +1580,7 @@ export enum ReplicationPeer_State {
  * Describes the enum graph.v1.ReplicationPeer.State.
  */
 export const ReplicationPeer_StateSchema: GenEnum<ReplicationPeer_State> = /*@__PURE__*/
-  enumDesc(file_graph_v1_graph, 49, 0);
+  enumDesc(file_graph_v1_graph, 51, 0);
 
 /**
  * GetReplicationStatusRequest carries no parameters. The response is a
@@ -1516,7 +1596,7 @@ export type GetReplicationStatusRequest = Message<"graph.v1.GetReplicationStatus
  * Use `create(GetReplicationStatusRequestSchema)` to create a new message.
  */
 export const GetReplicationStatusRequestSchema: GenMessage<GetReplicationStatusRequest> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 50);
+  messageDesc(file_graph_v1_graph, 52);
 
 /**
  * @generated from message graph.v1.GetReplicationStatusResponse
@@ -1565,7 +1645,7 @@ export type GetReplicationStatusResponse = Message<"graph.v1.GetReplicationStatu
  * Use `create(GetReplicationStatusResponseSchema)` to create a new message.
  */
 export const GetReplicationStatusResponseSchema: GenMessage<GetReplicationStatusResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 51);
+  messageDesc(file_graph_v1_graph, 53);
 
 /**
  * BackupSnapshotRequest parameterises a whole-graph backup stream.
@@ -1587,7 +1667,7 @@ export type BackupSnapshotRequest = Message<"graph.v1.BackupSnapshotRequest"> & 
  * Use `create(BackupSnapshotRequestSchema)` to create a new message.
  */
 export const BackupSnapshotRequestSchema: GenMessage<BackupSnapshotRequest> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 52);
+  messageDesc(file_graph_v1_graph, 54);
 
 /**
  * BackupSnapshotResponse is one frame of the BackupSnapshot stream:
@@ -1621,54 +1701,40 @@ export type BackupSnapshotResponse = Message<"graph.v1.BackupSnapshotResponse"> 
  * Use `create(BackupSnapshotResponseSchema)` to create a new message.
  */
 export const BackupSnapshotResponseSchema: GenMessage<BackupSnapshotResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_graph, 53);
+  messageDesc(file_graph_v1_graph, 55);
 
 /**
- * Algorithm selects the subgraph reduction strategy applied AFTER the
- * BFS walk has discovered the neighbourhood around the seed.
+ * Reduction is the optional post-traversal tree view applied to a
+ * BFS-discovered neighbourhood (#846). UNSPECIFIED returns the raw
+ * discovered subgraph; MINIMUM_SPANNING_TREE / SHORTEST_PATH_TREE reduce it
+ * to a tree rooted at the seed. The MIN/MAX direction is independent and
+ * carried by Objective. Reductions are a BfsParams knob — not sibling
+ * traversals — which is why the former Algorithm enum (which conflated the
+ * two; see #410/#801 history) left the request in the oneof redesign.
  *
- * UNSPECIFIED returns the raw discovered subgraph (no reduction).
- * MINIMUM_SPANNING_TREE / SHORTEST_PATH_TREE pick the reduction; the
- * MIN/MAX direction is independent and carried by Objective.
- *
- * PERSONALIZED_PAGERANK is not a post-traversal reduction: it replaces the
- * greedy per-hop top-k walk with a single global, seed-relative relevance
- * score (Personalized PageRank / Random-Walk-with-Restart) computed by local
- * forward-push (Andersen–Chung–Lang). The result is a relevance star rooted at
- * the seed — seed→v edge weight = π[v], the PPR mass v accumulates for this
- * seed — capped at k vertices. restart_prob (α) and epsilon (ε) tune it; the
- * weighting axis still transforms transition affinities. It is intrinsically a
- * relevance MAXIMIZER, so Objective MINIMIZE has no clean random-walk meaning
- * and is ignored (#801).
- *
- * @generated from enum graph.v1.Algorithm
+ * @generated from enum graph.v1.Reduction
  */
-export enum Algorithm {
+export enum Reduction {
   /**
-   * @generated from enum value: ALGORITHM_UNSPECIFIED = 0;
+   * @generated from enum value: REDUCTION_UNSPECIFIED = 0;
    */
   UNSPECIFIED = 0,
 
   /**
-   * @generated from enum value: ALGORITHM_MINIMUM_SPANNING_TREE = 1;
+   * @generated from enum value: REDUCTION_MINIMUM_SPANNING_TREE = 1;
    */
   MINIMUM_SPANNING_TREE = 1,
 
   /**
-   * @generated from enum value: ALGORITHM_SHORTEST_PATH_TREE = 2;
+   * @generated from enum value: REDUCTION_SHORTEST_PATH_TREE = 2;
    */
   SHORTEST_PATH_TREE = 2,
-
-  /**
-   * @generated from enum value: ALGORITHM_PERSONALIZED_PAGERANK = 3;
-   */
-  PERSONALIZED_PAGERANK = 3,
 }
 
 /**
- * Describes the enum graph.v1.Algorithm.
+ * Describes the enum graph.v1.Reduction.
  */
-export const AlgorithmSchema: GenEnum<Algorithm> = /*@__PURE__*/
+export const ReductionSchema: GenEnum<Reduction> = /*@__PURE__*/
   enumDesc(file_graph_v1_graph, 0);
 
 /**

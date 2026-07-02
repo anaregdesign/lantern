@@ -63,7 +63,7 @@ export type {
   SearchOptions,
 } from "./options.js";
 export {
-  Algorithm,
+  Reduction,
   Duration,
   Float32,
   Int32,

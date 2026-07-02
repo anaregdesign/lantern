@@ -174,10 +174,6 @@ func registerRecallRelated(srv *mcp.Server, lc lanternClient, r *ttl.Resolver) {
 		if algorithm == algorithmPPR {
 			restartProb, epsilon = in.RestartProb, in.Epsilon
 		}
-		algo, err := mapAlgorithm(algorithm)
-		if err != nil {
-			return nil, recallRelatedOutput{}, fmt.Errorf("recall_related: %w", err)
-		}
 		obj, err := mapObjective(objective)
 		if err != nil {
 			return nil, recallRelatedOutput{}, fmt.Errorf("recall_related: %w", err)
@@ -205,24 +201,16 @@ func registerRecallRelated(srv *mcp.Server, lc lanternClient, r *ttl.Resolver) {
 		// historical behaviour). step/k/algorithm/objective/weighting
 		// shape this walk.
 		if direction == directionOut || direction == directionBoth {
+			// The typed family option (#846) carries every per-family knob;
+			// zero values (step/k/α/ε unset) are resolved server-side to the
+			// documented defaults exactly as the flat fields were.
+			famOpt, err := mapFamilyOption(algorithm, in.Step, in.K, obj, restartProb, epsilon)
+			if err != nil {
+				return nil, recallRelatedOutput{}, fmt.Errorf("recall_related: %w", err)
+			}
 			opts := []client.IlluminateOption{
-				client.WithAlgorithm(algo),
-				client.WithObjective(obj),
+				famOpt,
 				client.WithWeighting(w),
-			}
-			if in.Step > 0 {
-				opts = append(opts, client.WithStep(in.Step))
-			}
-			if in.K > 0 {
-				opts = append(opts, client.WithK(in.K))
-			}
-			// PPR knobs only matter when algorithm=ppr; forward any explicit
-			// override (>0) and let the server resolve 0 to its defaults.
-			if restartProb > 0 {
-				opts = append(opts, client.WithRestartProb(restartProb))
-			}
-			if epsilon > 0 {
-				opts = append(opts, client.WithEpsilon(epsilon))
 			}
 			g, err := lc.Illuminate(ctx, in.Seed, opts...)
 			if err != nil {
@@ -316,18 +304,23 @@ func registerRecallRelated(srv *mcp.Server, lc lanternClient, r *ttl.Resolver) {
 // MCP-input string enums into the SDK enums. Unknown values return an
 // InvalidArgument-style error so the LLM gets actionable feedback.
 
-func mapAlgorithm(a recallRelatedAlgorithm) (client.Algorithm, error) {
+// mapFamilyOption translates the tool's single algorithm axis into the typed
+// per-family SDK option (#846): none/mst/spt select the BFS family (step/k
+// become Step/FanOut, mst/spt the Reduction); ppr selects the PPR family
+// (k becomes TopN; step has no PPR meaning and is dropped, matching the
+// server's historical behaviour).
+func mapFamilyOption(a recallRelatedAlgorithm, step, k uint32, obj client.Objective, restartProb, epsilon float32) (client.IlluminateOption, error) {
 	switch a {
 	case algorithmNone:
-		return client.AlgorithmUnspecified, nil
+		return client.WithBFS(client.BFSOpts{Step: step, FanOut: k, Objective: obj}), nil
 	case algorithmMST:
-		return client.AlgorithmMinimumSpanningTree, nil
+		return client.WithBFS(client.BFSOpts{Step: step, FanOut: k, Objective: obj, Reduction: client.ReductionMinimumSpanningTree}), nil
 	case algorithmSPT:
-		return client.AlgorithmShortestPathTree, nil
+		return client.WithBFS(client.BFSOpts{Step: step, FanOut: k, Objective: obj, Reduction: client.ReductionShortestPathTree}), nil
 	case algorithmPPR:
-		return client.AlgorithmPersonalizedPageRank, nil
+		return client.WithPPR(client.PPROpts{TopN: k, RestartProb: restartProb, Epsilon: epsilon}), nil
 	}
-	return client.AlgorithmUnspecified, fmt.Errorf("unknown algorithm %q (want one of: none, mst, spt, ppr)", string(a))
+	return nil, fmt.Errorf("unknown algorithm %q (want one of: none, mst, spt, ppr)", string(a))
 }
 
 func mapObjective(o recallRelatedObjective) (client.Objective, error) {

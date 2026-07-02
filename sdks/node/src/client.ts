@@ -35,8 +35,8 @@ import { fromJson, toJson, type JsonValue } from "@bufbuild/protobuf";
 import {
   EdgeSchema,
   LanternService,
-  Algorithm as PbAlgorithm,
   Objective as PbObjective,
+  Reduction as PbReduction,
   Weighting as PbWeighting,
   VertexSchema,
   type GetReplicationStatusResponse,
@@ -51,7 +51,7 @@ import {
   wrapConnectError,
 } from "./errors.js";
 import {
-  Algorithm,
+  Reduction,
   Objective,
   Weighting,
   fromEdgeJson,
@@ -107,14 +107,13 @@ export interface LanternArgs {
 }
 
 // Connect-es v2 enum values match the proto numeric IDs verbatim — no
-// translation needed beyond the type cast. Per #410 the Illuminate
-// request carries three orthogonal axes; each is a flat numeric enum on
-// the wire so a single Number(...) coercion is sufficient.
-const ALGORITHM_TO_PB: Record<number, PbAlgorithm> = {
-  [Algorithm.UNSPECIFIED]: PbAlgorithm.UNSPECIFIED,
-  [Algorithm.MINIMUM_SPANNING_TREE]: PbAlgorithm.MINIMUM_SPANNING_TREE,
-  [Algorithm.SHORTEST_PATH_TREE]: PbAlgorithm.SHORTEST_PATH_TREE,
-  [Algorithm.PERSONALIZED_PAGERANK]: PbAlgorithm.PERSONALIZED_PAGERANK,
+// translation needed beyond the type cast. Per #846 the traversal family
+// is a oneof selected by the options object shape; the enums below are
+// flat numeric axes.
+const REDUCTION_TO_PB: Record<number, PbReduction> = {
+  [Reduction.UNSPECIFIED]: PbReduction.UNSPECIFIED,
+  [Reduction.MINIMUM_SPANNING_TREE]: PbReduction.MINIMUM_SPANNING_TREE,
+  [Reduction.SHORTEST_PATH_TREE]: PbReduction.SHORTEST_PATH_TREE,
 };
 const OBJECTIVE_TO_PB: Record<number, PbObjective> = {
   [Objective.UNSPECIFIED]: PbObjective.UNSPECIFIED,
@@ -564,21 +563,43 @@ export class Lantern {
     signal?: AbortSignal,
   ): Promise<Graph> {
     if (!seed) throw new InvalidArgumentError("illuminate: seed is required");
+    if (opts.bfs && opts.ppr) {
+      throw new InvalidArgumentError(
+        "illuminate: bfs and ppr are mutually exclusive (the traversal family is a wire oneof)",
+      );
+    }
     return this.invoke(async () => {
+      const params = opts.ppr
+        ? ({
+            case: "ppr" as const,
+            value: {
+              topN: opts.ppr.topN ?? 0,
+              restartProb: opts.ppr.restartProb ?? 0,
+              epsilon: opts.ppr.epsilon ?? 0,
+            },
+          } as const)
+        : opts.bfs
+          ? ({
+              case: "bfs" as const,
+              value: {
+                step: opts.bfs.step ?? 0,
+                fanOut: opts.bfs.fanOut ?? 0,
+                objective:
+                  OBJECTIVE_TO_PB[opts.bfs.objective ?? Objective.UNSPECIFIED] ??
+                  PbObjective.UNSPECIFIED,
+                reduction:
+                  REDUCTION_TO_PB[opts.bfs.reduction ?? Reduction.UNSPECIFIED] ??
+                  PbReduction.UNSPECIFIED,
+              },
+            } as const)
+          : undefined;
       const resp = await this.client.illuminate(
         {
           seed,
-          step: opts.step ?? 0,
-          k: opts.k ?? 0,
-          algorithm:
-            ALGORITHM_TO_PB[opts.algorithm ?? Algorithm.UNSPECIFIED] ?? PbAlgorithm.UNSPECIFIED,
-          objective:
-            OBJECTIVE_TO_PB[opts.objective ?? Objective.UNSPECIFIED] ?? PbObjective.UNSPECIFIED,
           weighting:
             WEIGHTING_TO_PB[opts.weighting ?? Weighting.UNSPECIFIED] ?? PbWeighting.UNSPECIFIED,
           vertexPrefix: opts.vertexPrefix ?? "",
-          restartProb: opts.restartProb ?? 0,
-          epsilon: opts.epsilon ?? 0,
+          ...(params ? { params } : {}),
         },
         this.callOpts(signal),
       );

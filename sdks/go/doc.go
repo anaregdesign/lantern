@@ -46,7 +46,7 @@
 //
 //   - Vertex       = pb.Vertex       (see value.go)
 //   - Edge         = pb.Edge         (see client.go)
-//   - Algorithm    = pb.Algorithm    (see client.go)
+//   - Reduction    = pb.Reduction    (see client.go)
 //   - Objective    = pb.Objective    (see client.go)
 //   - Weighting    = pb.Weighting    (see client.go)
 //

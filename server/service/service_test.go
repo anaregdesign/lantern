@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
@@ -366,10 +368,8 @@ func TestLanternService_Illuminate_NoAlgorithm(t *testing.T) {
 	seedTriangle(t, s)
 
 	resp, err := s.Illuminate(context.Background(), &pb.IlluminateRequest{
-		Seed:      "a",
-		Step:      3,
-		K:         10,
-		Algorithm: pb.Algorithm_ALGORITHM_UNSPECIFIED,
+		Seed:   "a",
+		Params: &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{Step: 3, FanOut: 10}},
 	})
 	if err != nil {
 		t.Fatalf("Illuminate: %v", err)
@@ -379,16 +379,16 @@ func TestLanternService_Illuminate_NoAlgorithm(t *testing.T) {
 	}
 }
 
-// TestLanternService_Illuminate_AllAxisCombos exercises the orthogonal
-// axes introduced in #410: every algorithm × objective × weighting tuple
+// TestLanternService_Illuminate_AllAxisCombos exercises every params-oneof
+// arm (#846) against every shared axis: the BFS family across reduction ×
+// objective × weighting, and the PPR family across weighting. Every tuple
 // must run to completion and return at least one vertex against the
-// triangle seed. The (UNSPECIFIED algorithm, UNSPECIFIED objective)
-// combos are covered separately by the _NoAlgorithm test above.
+// triangle seed. The params-unset default is covered separately by the
+// _NoAlgorithm test above.
 func TestLanternService_Illuminate_AllAxisCombos(t *testing.T) {
-	algorithms := []pb.Algorithm{
-		pb.Algorithm_ALGORITHM_MINIMUM_SPANNING_TREE,
-		pb.Algorithm_ALGORITHM_SHORTEST_PATH_TREE,
-		pb.Algorithm_ALGORITHM_PERSONALIZED_PAGERANK,
+	reductions := []pb.Reduction{
+		pb.Reduction_REDUCTION_MINIMUM_SPANNING_TREE,
+		pb.Reduction_REDUCTION_SHORTEST_PATH_TREE,
 	}
 	objectives := []pb.Objective{
 		pb.Objective_OBJECTIVE_MINIMIZE,
@@ -399,29 +399,52 @@ func TestLanternService_Illuminate_AllAxisCombos(t *testing.T) {
 		pb.Weighting_WEIGHTING_TFIDF,
 		pb.Weighting_WEIGHTING_BM25,
 	}
-	for _, algo := range algorithms {
+	// The oneof wrapper interface is unexported in pb, so each arm carries a
+	// request factory instead of the params value itself.
+	type arm struct {
+		name string
+		req  func(w pb.Weighting) *pb.IlluminateRequest
+	}
+	var arms []arm
+	for _, red := range reductions {
 		for _, obj := range objectives {
-			for _, w := range weightings {
-				name := algo.String() + "/" + obj.String() + "/" + w.String()
-				t.Run(name, func(t *testing.T) {
-					s := newTestService(t)
-					seedTriangle(t, s)
-					resp, err := s.Illuminate(context.Background(), &pb.IlluminateRequest{
+			red, obj := red, obj
+			arms = append(arms, arm{
+				name: red.String() + "/" + obj.String(),
+				req: func(w pb.Weighting) *pb.IlluminateRequest {
+					return &pb.IlluminateRequest{
 						Seed:      "a",
-						Step:      3,
-						K:         10,
-						Algorithm: algo,
-						Objective: obj,
 						Weighting: w,
-					})
-					if err != nil {
-						t.Fatalf("Illuminate(%s): %v", name, err)
+						Params:    &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{Step: 3, FanOut: 10, Objective: obj, Reduction: red}},
 					}
-					if len(resp.Graph.Vertices) == 0 {
-						t.Errorf("Illuminate(%s) returned empty vertices", name)
-					}
-				})
+				},
+			})
+		}
+	}
+	arms = append(arms, arm{
+		name: "PPR",
+		req: func(w pb.Weighting) *pb.IlluminateRequest {
+			return &pb.IlluminateRequest{
+				Seed:      "a",
+				Weighting: w,
+				Params:    &pb.IlluminateRequest_Ppr{Ppr: &pb.PprParams{TopN: 10}},
 			}
+		},
+	})
+	for _, a := range arms {
+		for _, w := range weightings {
+			name := a.name + "/" + w.String()
+			t.Run(name, func(t *testing.T) {
+				s := newTestService(t)
+				seedTriangle(t, s)
+				resp, err := s.Illuminate(context.Background(), a.req(w))
+				if err != nil {
+					t.Fatalf("Illuminate(%s): %v", name, err)
+				}
+				if len(resp.Graph.Vertices) == 0 {
+					t.Errorf("Illuminate(%s) returned empty vertices", name)
+				}
+			})
 		}
 	}
 }
@@ -665,7 +688,7 @@ func TestLanternService_FakeBackend_Illuminate_PropagatesError(t *testing.T) {
 	fb.neighborErr = errors.New("simulated cache failure")
 	svc := NewLanternService(fb)
 
-	_, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{Seed: "a", Step: 1, K: 1})
+	_, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{Seed: "a", Params: &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{Step: 1, FanOut: 1}}})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -709,10 +732,8 @@ func TestLanternService_FakeBackend_Illuminate_ObjectiveSteersPruning(t *testing
 			fb := newFakeBackend()
 			svc := NewLanternService(fb)
 			if _, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{
-				Seed:      "a",
-				Step:      1,
-				K:         3,
-				Objective: tt.objective,
+				Seed:   "a",
+				Params: &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{Step: 1, FanOut: 3, Objective: tt.objective}},
 			}); err != nil {
 				t.Fatalf("Illuminate: %v", err)
 			}
@@ -738,7 +759,7 @@ func TestLanternService_FakeBackend_Illuminate_VertexPrefixBuildsKeep(t *testing
 		fb := newFakeBackend()
 		svc := NewLanternService(fb)
 		if _, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{
-			Seed: "a", Step: 1, K: 3,
+			Seed: "a", Params: &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{Step: 1, FanOut: 3}},
 		}); err != nil {
 			t.Fatalf("Illuminate: %v", err)
 		}
@@ -754,7 +775,8 @@ func TestLanternService_FakeBackend_Illuminate_VertexPrefixBuildsKeep(t *testing
 		fb := newFakeBackend()
 		svc := NewLanternService(fb)
 		if _, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{
-			Seed: "users/1", Step: 1, K: 3, VertexPrefix: "users/",
+			Seed: "users/1", VertexPrefix: "users/",
+			Params: &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{Step: 1, FanOut: 3}},
 		}); err != nil {
 			t.Fatalf("Illuminate: %v", err)
 		}
@@ -795,9 +817,8 @@ func TestLanternService_FakeBackend_Illuminate_PPRRouting(t *testing.T) {
 		fb := newSeeded()
 		svc := NewLanternService(fb)
 		resp, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{
-			Seed:      "s",
-			K:         5,
-			Algorithm: pb.Algorithm_ALGORITHM_PERSONALIZED_PAGERANK,
+			Seed:   "s",
+			Params: &pb.IlluminateRequest_Ppr{Ppr: &pb.PprParams{TopN: 5}},
 		})
 		if err != nil {
 			t.Fatalf("Illuminate: %v", err)
@@ -831,8 +852,8 @@ func TestLanternService_FakeBackend_Illuminate_PPRRouting(t *testing.T) {
 		fb := newSeeded()
 		svc := NewLanternService(fb)
 		if _, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{
-			Seed:      "s",
-			Algorithm: pb.Algorithm_ALGORITHM_PERSONALIZED_PAGERANK,
+			Seed:   "s",
+			Params: &pb.IlluminateRequest_Ppr{Ppr: &pb.PprParams{}},
 		}); err != nil {
 			t.Fatalf("Illuminate: %v", err)
 		}
@@ -848,10 +869,8 @@ func TestLanternService_FakeBackend_Illuminate_PPRRouting(t *testing.T) {
 		fb := newSeeded()
 		svc := NewLanternService(fb)
 		if _, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{
-			Seed:        "s",
-			Algorithm:   pb.Algorithm_ALGORITHM_PERSONALIZED_PAGERANK,
-			RestartProb: 0.3,
-			Epsilon:     1e-3,
+			Seed:   "s",
+			Params: &pb.IlluminateRequest_Ppr{Ppr: &pb.PprParams{RestartProb: 0.3, Epsilon: 1e-3}},
 		}); err != nil {
 			t.Fatalf("Illuminate: %v", err)
 		}
@@ -868,9 +887,8 @@ func TestLanternService_FakeBackend_Illuminate_PPRRouting(t *testing.T) {
 			fb := newSeeded()
 			svc := NewLanternService(fb)
 			if _, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{
-				Seed:        "s",
-				Algorithm:   pb.Algorithm_ALGORITHM_PERSONALIZED_PAGERANK,
-				RestartProb: rp,
+				Seed:   "s",
+				Params: &pb.IlluminateRequest_Ppr{Ppr: &pb.PprParams{RestartProb: rp}},
 			}); err != nil {
 				t.Fatalf("Illuminate(restart_prob=%v): %v", rp, err)
 			}
@@ -885,9 +903,9 @@ func TestLanternService_FakeBackend_Illuminate_PPRRouting(t *testing.T) {
 		svc := NewLanternService(fb)
 		if _, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{
 			Seed:         "s",
-			Algorithm:    pb.Algorithm_ALGORITHM_PERSONALIZED_PAGERANK,
 			Weighting:    pb.Weighting_WEIGHTING_BM25,
 			VertexPrefix: "users/",
+			Params:       &pb.IlluminateRequest_Ppr{Ppr: &pb.PprParams{}},
 		}); err != nil {
 			t.Fatalf("Illuminate: %v", err)
 		}
@@ -908,8 +926,8 @@ func TestLanternService_FakeBackend_Illuminate_PPRRouting(t *testing.T) {
 		fb.pprErr = errors.New("simulated ppr failure")
 		svc := NewLanternService(fb)
 		if _, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{
-			Seed:      "s",
-			Algorithm: pb.Algorithm_ALGORITHM_PERSONALIZED_PAGERANK,
+			Seed:   "s",
+			Params: &pb.IlluminateRequest_Ppr{Ppr: &pb.PprParams{}},
 		}); err == nil {
 			t.Fatal("expected error from PPR backend, got nil")
 		}
@@ -980,10 +998,8 @@ func TestLanternService_Illuminate_ObjectiveSelectsPrunedNeighbors(t *testing.T)
 			s := newTestService(t)
 			seedStar(t, s)
 			resp, err := s.Illuminate(context.Background(), &pb.IlluminateRequest{
-				Seed:      "s",
-				Step:      1,
-				K:         2,
-				Objective: tt.objective,
+				Seed:   "s",
+				Params: &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{Step: 1, FanOut: 2, Objective: tt.objective}},
 			})
 			if err != nil {
 				t.Fatalf("Illuminate: %v", err)
@@ -1323,11 +1339,13 @@ func TestLanternService_HotPathMetrics_EmitsOnceForBatchAndIlluminate(t *testing
 	// explicit and independent of the UNSPECIFIED default (which is MAXIMIZE
 	// since #560).
 	if _, err := s.Illuminate(ctx, &pb.IlluminateRequest{
-		Seed:      "a",
-		Step:      2,
-		K:         10,
-		Algorithm: pb.Algorithm_ALGORITHM_MINIMUM_SPANNING_TREE,
-		Objective: pb.Objective_OBJECTIVE_MINIMIZE,
+		Seed: "a",
+		Params: &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{
+			Step:      2,
+			FanOut:    10,
+			Reduction: pb.Reduction_REDUCTION_MINIMUM_SPANNING_TREE,
+			Objective: pb.Objective_OBJECTIVE_MINIMIZE,
+		}},
 	}); err != nil {
 		t.Fatalf("Illuminate: %v", err)
 	}
@@ -1721,4 +1739,62 @@ func TestLanternService_CapacityCaps(t *testing.T) {
 			t.Fatalf("replicated edge apply must bypass the cap: %v", err)
 		}
 	})
+}
+
+// TestIlluminate_FlatFieldGhost is the #846 reserved-range regression: a
+// stale pre-oneof client whose binary still emits the retired FLAT field
+// numbers (2 step, 3 k, 6 algorithm, 7 objective, 10 restart_prob,
+// 11 epsilon) must decode as params-unset — the BFS-defaults bare
+// illuminate — never alias onto the new oneof arms (12/13) or steer the
+// dispatch. Proves the `reserved` ranges actually shield against stale
+// clients rather than just documenting intent.
+func TestIlluminate_FlatFieldGhost(t *testing.T) {
+	var raw []byte
+	raw = protowire.AppendTag(raw, 1, protowire.BytesType) // seed = "a"
+	raw = protowire.AppendString(raw, "a")
+	raw = protowire.AppendTag(raw, 2, protowire.VarintType) // retired step = 9
+	raw = protowire.AppendVarint(raw, 9)
+	raw = protowire.AppendTag(raw, 3, protowire.VarintType) // retired k = 7
+	raw = protowire.AppendVarint(raw, 7)
+	raw = protowire.AppendTag(raw, 6, protowire.VarintType) // retired algorithm = PPR(3)
+	raw = protowire.AppendVarint(raw, 3)
+	raw = protowire.AppendTag(raw, 7, protowire.VarintType) // retired objective = MINIMIZE(1)
+	raw = protowire.AppendVarint(raw, 1)
+	raw = protowire.AppendTag(raw, 10, protowire.Fixed32Type) // retired restart_prob = 0.5
+	raw = protowire.AppendFixed32(raw, math.Float32bits(0.5))
+	raw = protowire.AppendTag(raw, 11, protowire.Fixed32Type) // retired epsilon = 0.001
+	raw = protowire.AppendFixed32(raw, math.Float32bits(0.001))
+
+	var req pb.IlluminateRequest
+	if err := proto.Unmarshal(raw, &req); err != nil {
+		t.Fatalf("Unmarshal ghost request: %v", err)
+	}
+	if req.GetSeed() != "a" {
+		t.Fatalf("seed = %q, want a", req.GetSeed())
+	}
+	if req.GetParams() != nil {
+		t.Fatalf("ghost flat fields decoded into params oneof: %T", req.GetParams())
+	}
+
+	// End-to-end through the dispatcher: the ghost must run the BFS-defaults
+	// arm (Neighbor with step=0, fanOut=0, strongest-first), NOT the PPR arm
+	// the stale algorithm=3 byte asked for.
+	fb := newFakeBackend()
+	svc := NewLanternService(fb)
+	if _, err := svc.Illuminate(context.Background(), &req); err != nil {
+		t.Fatalf("Illuminate(ghost): %v", err)
+	}
+	if fb.pprCalls != 0 {
+		t.Fatalf("pprCalls = %d, want 0 — retired algorithm byte steered the dispatch", fb.pprCalls)
+	}
+	if fb.neighborCalls != 1 {
+		t.Fatalf("neighborCalls = %d, want 1 (BFS defaults arm)", fb.neighborCalls)
+	}
+	if fb.lastNeighborStep != 0 || fb.lastNeighborK != 0 {
+		t.Fatalf("ghost step/k leaked into the walk: step=%d k=%d, want 0/0",
+			fb.lastNeighborStep, fb.lastNeighborK)
+	}
+	if fb.lastNeighborSelectSmall {
+		t.Fatal("ghost objective byte flipped pruning to smallest; want strongest-first default")
+	}
 }
