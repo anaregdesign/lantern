@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,6 +19,11 @@ import (
 // the whole stack — schema inference, argument validation, SDK
 // round-trip, and result shape — agrees end-to-end.
 func TestMCP_EndToEnd(t *testing.T) {
+	// This suite exercises the LEGACY memory verbs, which live behind
+	// LANTERN_MCP_PROFILE=memory since the #851 working-context retarget
+	// (context is the default). TestMCP_ContextProfile_EndToEnd below is
+	// the default-profile sibling.
+	t.Setenv("LANTERN_MCP_PROFILE", lmcp.ProfileMemory)
 	lan, cleanup := newInProcessClientWithPrefix(t)
 	defer cleanup()
 
@@ -140,5 +146,87 @@ func TestMCP_EndToEnd(t *testing.T) {
 	decode(listRes, &list)
 	if list.Count < 2 {
 		t.Fatalf("expected at least 2 entries under fact.; got %d", list.Count)
+	}
+}
+
+// TestMCP_ContextProfile_EndToEnd is the #851 walkthrough over a real
+// Lantern service: agent A announces + tracks + claims; the shared board
+// (list_agents / whats_happening / list_claims) sees it; a note posted
+// against a resource surfaces in its context; release clears the lease.
+func TestMCP_ContextProfile_EndToEnd(t *testing.T) {
+	t.Setenv("LANTERN_MCP_PROFILE", lmcp.ProfileContext)
+	t.Setenv("LANTERN_MCP_AGENT_ID", "") // process identity is memoised; accept whatever it is
+	lan, cleanup := newInProcessClientWithPrefix(t)
+	defer cleanup()
+
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	srv, err := lmcp.NewServer(lan, logger)
+	if err != nil {
+		t.Fatalf("lmcp.NewServer: %v", err)
+	}
+
+	serverT, clientT := mcp.NewInMemoryTransports()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	serverSession, err := srv.Connect(ctx, serverT, nil)
+	if err != nil {
+		t.Fatalf("server.Connect: %v", err)
+	}
+	defer func() { _ = serverSession.Close() }()
+	c := mcp.NewClient(&mcp.Implementation{Name: "integration-ctx", Version: "test"}, nil)
+	cs, err := c.Connect(ctx, clientT, nil)
+	if err != nil {
+		t.Fatalf("client.Connect: %v", err)
+	}
+	defer func() { _ = cs.Close() }()
+
+	call := func(name string, args map[string]any) *mcp.CallToolResult {
+		t.Helper()
+		res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if res.IsError {
+			t.Fatalf("%s returned tool error: %+v", name, res.Content)
+		}
+		return res
+	}
+	textOf := func(res *mcp.CallToolResult) string {
+		t.Helper()
+		for _, content := range res.Content {
+			if tc, ok := content.(*mcp.TextContent); ok {
+				return tc.Text
+			}
+		}
+		return ""
+	}
+
+	// A announces and works.
+	call("announce", map[string]any{"task": "refactoring auth middleware"})
+	call("track", map[string]any{"resources": []string{"repo.api.middleware.auth", "ticket.API-17"}})
+	call("claim", map[string]any{"resource": "repo.api.middleware.auth", "note": "rewriting"})
+	call("post_note", map[string]any{
+		"text": "auth middleware API changed", "severity": "warn",
+		"links": []string{"repo.api.middleware.auth"}, "ttl": "turn",
+	})
+
+	// The board sees all of it.
+	if got := textOf(call("list_agents", map[string]any{})); !strings.Contains(got, "refactoring auth middleware") {
+		t.Fatalf("list_agents missing the announced task: %q", got)
+	}
+	if got := textOf(call("list_claims", map[string]any{})); !strings.Contains(got, "repo.api.middleware.auth") {
+		t.Fatalf("list_claims missing the lease: %q", got)
+	}
+	happening := textOf(call("whats_happening", map[string]any{"key": "repo.api.middleware.auth"}))
+	for _, want := range []string{"refactoring auth middleware", "auth middleware API changed"} {
+		if !strings.Contains(happening, want) {
+			t.Fatalf("whats_happening missing %q:\n%s", want, happening)
+		}
+	}
+
+	// Release clears the lease.
+	call("release", map[string]any{"resource": "repo.api.middleware.auth"})
+	if got := textOf(call("list_claims", map[string]any{})); strings.Contains(got, "repo.api.middleware.auth") {
+		t.Fatalf("lease survived release: %q", got)
 	}
 }
