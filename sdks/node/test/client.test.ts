@@ -395,3 +395,44 @@ describe("searchVertices request building (#639)", () => {
     }
   });
 });
+
+describe("bearer token option (#850)", () => {
+  test("token attaches Authorization on every call", async () => {
+    let seen: string | null = null;
+    const c = connect(baseUrl, {
+      token: "n0de-s3cret",
+      transportOptions: { httpVersion: "1.1" },
+      interceptors: [
+        (next) => (req) => {
+          seen = req.header.get("Authorization");
+          return next(req);
+        },
+      ],
+    });
+    try {
+      await c.getVertex("nope").catch(() => undefined);
+      expect(seen).toBe("Bearer n0de-s3cret");
+    } finally {
+      c.close();
+    }
+  });
+
+  test("no token leaves the header absent", async () => {
+    let seen: string | null = "sentinel";
+    const c = connect(baseUrl, {
+      transportOptions: { httpVersion: "1.1" },
+      interceptors: [
+        (next) => (req) => {
+          seen = req.header.get("Authorization");
+          return next(req);
+        },
+      ],
+    });
+    try {
+      await c.getVertex("nope").catch(() => undefined);
+      expect(seen).toBeNull();
+    } finally {
+      c.close();
+    }
+  });
+});

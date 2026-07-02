@@ -10,6 +10,8 @@ export type LanternClient = Lantern;
 
 export interface LanternClientOptions {
   baseUrl: string;
+  /** Optional bearer token for LANTERN_AUTH_TOKENS servers (#850). */
+  token?: string;
 }
 
 /**
@@ -25,5 +27,7 @@ export interface LanternClientOptions {
  * fewer adapter layer to maintain.
  */
 export function createLanternClient(opts: LanternClientOptions): LanternClient {
-  return connectWeb(opts.baseUrl.replace(/\/$/, ""));
+  return connectWeb(opts.baseUrl.replace(/\/$/, ""), {
+    token: opts.token || undefined,
+  });
 }

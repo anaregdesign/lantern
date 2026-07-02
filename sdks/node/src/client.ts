@@ -89,6 +89,14 @@ import {
 export interface LanternArgs {
   options?: ConnectOptions;
   /**
+   * Bearer token for servers running with LANTERN_AUTH_TOKENS (#850).
+   * Attached as `Authorization: Bearer <token>` on every call via a
+   * Connect interceptor prepended ahead of `interceptors`. Bearer tokens
+   * over plaintext h2c are sniffable — use an https:// baseUrl outside
+   * trusted networks.
+   */
+  token?: string;
+  /**
    * Optional list of Connect interceptors run on every unary call.
    * The order matches @connectrpc/connect's `Interceptor[]` chain —
    * the first entry sees outgoing requests first and responses last.
@@ -126,6 +134,24 @@ const WEIGHTING_TO_PB: Record<number, PbWeighting> = {
   [Weighting.TFIDF]: PbWeighting.TFIDF,
   [Weighting.BM25]: PbWeighting.BM25,
 };
+
+/**
+ * Build the client-side bearer interceptor behind `LanternArgs.token`
+ * (#850). Exported for the entrypoints; not part of the public API
+ * surface beyond them.
+ */
+export function authTokenInterceptor(token: string): Interceptor {
+  return (next) => (req) => {
+    req.header.set("Authorization", `Bearer ${token}`);
+    return next(req);
+  };
+}
+
+/** Prepend the token interceptor (when configured) ahead of user interceptors. */
+export function withTokenInterceptors(args: LanternArgs): Interceptor[] | undefined {
+  if (!args.token) return args.interceptors;
+  return [authTokenInterceptor(args.token), ...(args.interceptors ?? [])];
+}
 
 function normaliseBaseUrl(caller: string, baseUrl: string): string {
   if (!baseUrl) {

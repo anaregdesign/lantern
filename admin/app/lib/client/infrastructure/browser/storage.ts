@@ -1,4 +1,5 @@
 const STORAGE_KEY = "lantern.admin.baseUrl";
+const TOKEN_STORAGE_KEY = "lantern.admin.authToken";
 const PROMETHEUS_STORAGE_KEY = "lantern.admin.prometheusUrl";
 const METRICS_RANGE_STORAGE_KEY = "lantern.admin.metricsRange";
 const METRICS_AGG_MODE_STORAGE_KEY = "lantern.admin.metricsAggMode";
@@ -39,6 +40,13 @@ function memoryStorage(): BrowserStorage {
 }
 
 export const connectionStorageKey = STORAGE_KEY;
+
+/**
+ * localStorage key for the optional bearer token sent as
+ * `Authorization: Bearer` when the server runs with LANTERN_AUTH_TOKENS
+ * (#850). Empty/absent = no auth header (the default open behaviour).
+ */
+export const connectionTokenStorageKey = TOKEN_STORAGE_KEY;
 
 /**
  * localStorage key the admin SPA stores the Prometheus query base URL
