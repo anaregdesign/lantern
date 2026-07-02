@@ -85,6 +85,7 @@ type DomainMetrics struct {
 	// (tombstone clamp). Pre-warmed so dashboards render the full reason
 	// set as 0 from process start.
 	validationRejected     *prometheus.CounterVec
+	capacityLimit          *prometheus.GaugeVec
 	rateLimitRejected      prometheus.Counter
 	tombstoneClampRejected prometheus.Counter
 
@@ -237,6 +238,7 @@ var (
 		"k_too_large",
 		"bad_ttl",
 		"bad_cursor",
+		"capacity",
 	}
 )
 
@@ -448,6 +450,10 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 			Name: "lantern_validation_rejected_total",
 			Help: "Total requests rejected by server-side input validation, partitioned by reason (empty_key, key_too_long, empty_batch, batch_too_large, nil_item, bad_weight, step_too_large, k_too_large, bad_ttl, bad_cursor). Counted before the handler runs (ValidationInterceptor) or during validateExpiration / cursor decode in the service layer.",
 		}, []string{"reason"}),
+		capacityLimit: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "lantern_capacity_limit",
+			Help: "Configured soft capacity cap per kind (vertex, edge) from LANTERN_MAX_VERTICES / LANTERN_MAX_EDGES (#848). 0 = unlimited. Divide lantern_vertices / lantern_edges by this for a fill ratio; alert above 0.8.",
+		}, []string{"kind"}),
 		rateLimitRejected: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "lantern_rate_limit_rejected_total",
 			Help: "Total RPCs rejected by the process-wide token-bucket rate limiter (codes.ResourceExhausted). Registered at 0 even when LANTERN_RATE_LIMIT_RPS=0 so dashboards can compare deployments uniformly.",
@@ -478,7 +484,7 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		m.snapshotVertices, m.snapshotEdges, m.snapshotDuration,
 		m.mutationLogFillRatio, m.mutationLogEvicted, m.originStatesCount,
 		m.validationRejected, m.rateLimitRejected, m.tombstoneClampRejected,
-		m.mutationLogSubscriberDropped)
+		m.mutationLogSubscriberDropped, m.capacityLimit)
 
 	// Pre-create label rows so empty counters scrape as 0.
 	for _, r := range []string{"gapped", "send_failed"} {
@@ -745,6 +751,15 @@ func (m *DomainMetrics) OnReplicationApply(op string) {
 func (m *DomainMetrics) OnValidationRejected(reason string) {
 	r := sanitizeLabel(reason, validationRejectReasons, "unknown")
 	m.validationRejected.WithLabelValues(r).Inc()
+}
+
+// SetCapacityLimits publishes the configured aggregate soft caps (#848) as
+// lantern_capacity_limit{kind}. Called once at wiring time; 0 means the cap
+// is disabled. Exposing the limit (not just the counts) lets dashboards
+// compute a fill ratio without knowing the deployment's env configuration.
+func (m *DomainMetrics) SetCapacityLimits(maxVertices, maxEdges int) {
+	m.capacityLimit.WithLabelValues("vertex").Set(float64(maxVertices))
+	m.capacityLimit.WithLabelValues("edge").Set(float64(maxEdges))
 }
 
 // OnRateLimitRejected increments lantern_rate_limit_rejected_total when

@@ -94,13 +94,29 @@ type ObservabilityConfig struct {
 	BlockProfileRate     int
 }
 
-// CacheConfig sizes the GraphCache TTL and its GC tick.
+// CacheConfig sizes the GraphCache TTL and its GC tick, plus the optional
+// aggregate capacity caps (#848).
 //
 //   - LANTERN_DEFAULT_TTL_SECONDS        (default 60)
 //   - LANTERN_GC_INTERVAL_SECONDS        (default 60) — GraphCache.Watch tick
+//   - LANTERN_MAX_VERTICES               (default 0 = unlimited)
+//   - LANTERN_MAX_EDGES                  (default 0 = unlimited)
+//
+// The caps are SOFT, enforced at the local write-RPC boundary only: when a
+// batch would push the live count past the cap the RPC fails fast with
+// RESOURCE_EXHAUSTED instead of growing until the kernel OOM-kills the
+// process (which loses ALL data, not just the misbehaving writer's).
+// Replication apply and backup restore bypass the caps — rejecting writes
+// peers already committed would break convergence — so the caps bound
+// locally-originated growth; in HA every node applies its own cap at its
+// own RPC boundary. Deletes and TTL decay free capacity naturally; there
+// is deliberately no eviction policy. Pair with GOMEMLIMIT as the second
+// line of defense.
 type CacheConfig struct {
-	TTL        time.Duration
-	GCInterval time.Duration
+	TTL         time.Duration
+	GCInterval  time.Duration
+	MaxVertices int
+	MaxEdges    int
 }
 
 // ShutdownConfig is the graceful-shutdown timing.
@@ -235,8 +251,10 @@ func NewConfig() (*Config, error) {
 			BlockProfileRate:     envconfig.Int("LANTERN_BLOCK_PROFILE_RATE", 0),
 		},
 		Cache: CacheConfig{
-			TTL:        time.Duration(envconfig.Int("LANTERN_DEFAULT_TTL_SECONDS", 60)) * time.Second,
-			GCInterval: time.Duration(envconfig.Int("LANTERN_GC_INTERVAL_SECONDS", 60)) * time.Second,
+			TTL:         time.Duration(envconfig.Int("LANTERN_DEFAULT_TTL_SECONDS", 60)) * time.Second,
+			GCInterval:  time.Duration(envconfig.Int("LANTERN_GC_INTERVAL_SECONDS", 60)) * time.Second,
+			MaxVertices: envconfig.Int("LANTERN_MAX_VERTICES", 0),
+			MaxEdges:    envconfig.Int("LANTERN_MAX_EDGES", 0),
 		},
 		Shutdown: ShutdownConfig{
 			Timeout:    time.Duration(envconfig.Int("LANTERN_SHUTDOWN_TIMEOUT_SECONDS", 30)) * time.Second,

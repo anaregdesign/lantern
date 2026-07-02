@@ -35,10 +35,12 @@ value is treated as unset for the non-string kinds. The MCP server's
 | `LANTERN_LOG_LEVEL` | level | `info` | Structured-log level: debug, info, warn, or error. |
 | `LANTERN_MAX_BATCH_SIZE` | int | `10000` | Maximum items accepted per batch RPC (Put/Get/Add/Delete plural forms). |
 | `LANTERN_MAX_CONCURRENT_STREAMS` | uint32 | `1024` | HTTP/2 max concurrent streams per connection (0 = unlimited). |
+| `LANTERN_MAX_EDGES` | int | `0` | Soft cap on live edges (0 = unlimited). Local write RPCs that would exceed it fail with RESOURCE_EXHAUSTED; replication apply and backup restore bypass the cap. |
 | `LANTERN_MAX_KEY_LEN` | int | `1024` | Maximum accepted vertex-key length in bytes. |
 | `LANTERN_MAX_RECV_MSG_BYTES` | int | `16777216` | Maximum accepted request message size in bytes. |
 | `LANTERN_MAX_REPLICATION_LAG` | int | `10000` | Readiness gate: maximum tolerated replication lag (entries) before /readyz reports not ready. |
 | `LANTERN_MAX_SEND_MSG_BYTES` | int | `16777216` | Maximum produced response message size in bytes. |
+| `LANTERN_MAX_VERTICES` | int | `0` | Soft cap on live vertices (0 = unlimited). Local write RPCs that would exceed it fail with RESOURCE_EXHAUSTED; replication apply and backup restore bypass the cap. Conservative pre-check: edge writes count both endpoints as potentially new. |
 | `LANTERN_METRICS_ADDR` | string | `:9090` | host:port for the /metrics + /healthz + /readyz HTTP listener (empty disables it). |
 | `LANTERN_MUTATION_LOG_CAPACITY` | int | `100000` | Replication mutation-log ring capacity in entries; size for peak_cluster_rps x retention_seconds. |
 | `LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER` | int | `512` | Per-subscriber outbound channel depth; a subscriber that falls further behind is gapped. |

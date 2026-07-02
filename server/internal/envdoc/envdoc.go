@@ -49,6 +49,8 @@ var descriptions = map[string]string{
 
 	"LANTERN_MAX_KEY_LEN":         "Maximum accepted vertex-key length in bytes.",
 	"LANTERN_MAX_BATCH_SIZE":      "Maximum items accepted per batch RPC (Put/Get/Add/Delete plural forms).",
+	"LANTERN_MAX_VERTICES":        "Soft cap on live vertices (0 = unlimited). Local write RPCs that would exceed it fail with RESOURCE_EXHAUSTED; replication apply and backup restore bypass the cap. Conservative pre-check: edge writes count both endpoints as potentially new.",
+	"LANTERN_MAX_EDGES":           "Soft cap on live edges (0 = unlimited). Local write RPCs that would exceed it fail with RESOURCE_EXHAUSTED; replication apply and backup restore bypass the cap.",
 	"LANTERN_ILLUMINATE_MAX_STEP": "Upper bound on the Illuminate BFS step parameter.",
 	"LANTERN_ILLUMINATE_MAX_K":    "Upper bound on the Illuminate k parameter.",
 

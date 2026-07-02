@@ -126,6 +126,7 @@ func newLanternService(
 	clock *hlc.Clock,
 	dm *domainmetrics.DomainMetrics,
 ) *service.LanternService {
+	dm.SetCapacityLimits(cc.MaxVertices, cc.MaxEdges)
 	svc := service.NewLanternService(backend).
 		WithScanLimits(service.ScanLimits{
 			ScanDefaultLimit:           sc.ScanDefaultLimit,
@@ -142,6 +143,10 @@ func newLanternService(
 		WithAppliedHook(dm.OnReplicationApplied).
 		WithReplicationApplyHook(dm.OnReplicationApply).
 		WithValidationRejectHook(dm.OnValidationRejected).
+		WithCapacityLimits(service.CapacityLimits{
+			MaxVertices: cc.MaxVertices,
+			MaxEdges:    cc.MaxEdges,
+		}).
 		WithTombstoneClampRejectHook(dm.OnTombstoneClampRejected).
 		WithTombstoneTTL(rc.TombstoneTTL).
 		WithTraversalTimeout(trc.Timeout).
