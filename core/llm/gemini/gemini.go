@@ -158,30 +158,83 @@ func New[T any](client *Client, instruction string, effort Effort) (llm.Model[T]
 }
 
 // sanitizeSchema rewrites the canonical JSON Schema produced by llm.SchemaFor
-// into the subset Gemini's responseSchema accepts. Gemini follows an OpenAPI 3.0
-// subset that rejects "additionalProperties", so it is stripped recursively.
+// into Gemini's OpenAPI-3.0-subset responseSchema via an ALLOWLIST walk
+// (#853): only the fields Gemini documents survive, everything else is
+// dropped or translated. The previous one-key blocklist
+// (delete "additionalProperties") rotted every time SchemaFor learned a new
+// keyword — a []byte field's contentEncoding:base64 already produced a
+// schema Gemini rejected with a remote 400. The allowlist fails closed:
+// an unknown keyword can never reach the wire.
 func sanitizeSchema(raw json.RawMessage) (json.RawMessage, error) {
 	var doc any
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return nil, err
 	}
-	stripUnsupported(doc)
-	return json.Marshal(doc)
+	return json.Marshal(sanitizeNode(doc))
 }
 
-// stripUnsupported walks a decoded JSON document and removes keys Gemini rejects.
-func stripUnsupported(node any) {
-	switch v := node.(type) {
-	case map[string]any:
-		delete(v, "additionalProperties")
-		for _, child := range v {
-			stripUnsupported(child)
-		}
-	case []any:
-		for _, child := range v {
-			stripUnsupported(child)
+// geminiFormats is the per-type format allowlist: Gemini accepts only these
+// format values; anything else (e.g. "uri", "email") is dropped rather than
+// forwarded — a missing format is valid, a foreign one is a 400.
+var geminiFormats = map[string]map[string]bool{
+	"string":  {"date-time": true, "enum": true},
+	"integer": {"int32": true, "int64": true},
+	"number":  {"float": true, "double": true},
+}
+
+// sanitizeNode rewrites one schema node (and its children) into the Gemini
+// subset. Non-object nodes pass through (enum value arrays, bools, ...).
+func sanitizeNode(node any) any {
+	obj, ok := node.(map[string]any)
+	if !ok {
+		return node
+	}
+
+	// []byte translation: SchemaFor emits {"type":"string",
+	// "contentEncoding":"base64"} — Gemini rejects the keyword, but a plain
+	// string still round-trips (encoding/json decodes base64 strings into
+	// []byte), so preserve the field and move the encoding note into the
+	// description instead of erroring.
+	if enc, ok := obj["contentEncoding"].(string); ok {
+		note := "content encoding: " + enc
+		if desc, ok := obj["description"].(string); ok && desc != "" {
+			obj["description"] = desc + " (" + note + ")"
+		} else {
+			obj["description"] = note
 		}
 	}
+
+	out := make(map[string]any, len(obj))
+	typ, _ := obj["type"].(string)
+	for key, val := range obj {
+		switch key {
+		case "type", "description", "nullable", "enum", "required",
+			"minItems", "maxItems", "propertyOrdering":
+			out[key] = sanitizeNode(val)
+		case "format":
+			// Constrain format per type: forward only the values Gemini
+			// documents for the node's declared type.
+			if f, ok := val.(string); ok && geminiFormats[typ][f] {
+				out[key] = f
+			}
+		case "items":
+			out[key] = sanitizeNode(val)
+		case "properties":
+			props, ok := val.(map[string]any)
+			if !ok {
+				continue
+			}
+			sanitized := make(map[string]any, len(props))
+			for name, sub := range props {
+				sanitized[name] = sanitizeNode(sub)
+			}
+			out[key] = sanitized
+		default:
+			// Unknown keyword (additionalProperties, contentEncoding, $schema,
+			// pattern, ...): dropped. The allowlist fails closed by design.
+		}
+	}
+	return out
 }
 
 // model binds an output type T, a fixed instruction, the derived JSON schema, and
