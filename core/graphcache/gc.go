@@ -22,16 +22,30 @@ func (c *GraphCache[S, T]) flush() (zero, dangling int) {
 	c.sweepExpiredTombstonesLocked(time.Now())
 	c.sweepStaleVertexHLCLocked()
 
+	// Per-flush endpoint-liveness memo (#839). The sweep consults keep once
+	// per EDGE, which used to cost two dict resolves plus two vertex-cache
+	// probes each — four lock round-trips per edge inside the most global
+	// critical section the server has, with the tail re-paying them for
+	// every head in its bucket and popular heads re-paying across tails.
+	// Memoizing per distinct endpoint collapses that to one resolve+probe
+	// per endpoint per tick.
+	//
+	// Scope: exactly this flush call. A budgeted sweep (#744) processes one
+	// batch per flush call, so the memo never outlives a tick — a vertex
+	// deleted between ticks is re-evaluated by the next tick's fresh memo,
+	// and an ID recycled between ticks resolves against current state.
+	liveByID := make(map[vertexID]bool)
+	liveID := func(id vertexID) bool {
+		if live, ok := liveByID[id]; ok {
+			return live
+		}
+		key, ok := c.edges.resolveID(id)
+		live := ok && c.vertices.Has(key)
+		liveByID[id] = live
+		return live
+	}
 	keep := func(tailID, headID vertexID) bool {
-		tail, ok := c.edges.resolveID(tailID)
-		if !ok {
-			return false
-		}
-		head, ok := c.edges.resolveID(headID)
-		if !ok {
-			return false
-		}
-		return c.vertices.Has(tail) && c.vertices.Has(head)
+		return liveID(tailID) && liveID(headID)
 	}
 	onDelete := c.headIndexOnFlushDeleteLocked()
 

@@ -3,6 +3,7 @@ package graphcache
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"testing"
 	"time"
 
@@ -246,4 +247,88 @@ func TestGraphCache_GCIncrementalEdgeSweep(t *testing.T) {
 			t.Fatalf("full sweep left %d edges (removed %d this tick)", c.edges.count(), z)
 		}
 	})
+}
+
+// TestGraphCache_GCLivenessMemoScope pins the #839 contract that the
+// endpoint-liveness memo lives for exactly ONE flush call: a vertex deleted
+// between budgeted ticks must be seen as dead by the next tick's sweep, and
+// a full (unbudgeted) sweep after a delete reclaims every dangling edge in a
+// single call — including edges into a shared, formerly-memoized head.
+func TestGraphCache_GCLivenessMemoScope(t *testing.T) {
+	t.Run("full sweep after delete reclaims shared-head fan-in at once", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Minute)
+		exp := time.Now().Add(time.Minute)
+		for _, tail := range []string{"a", "b", "c"} {
+			c.AddEdgeWithExpiration(tail, "hub", 1, exp)
+		}
+		if !c.DeleteVertex("hub") {
+			t.Fatal("DeleteVertex(hub) = false")
+		}
+		zero, dangling := c.flush()
+		if zero != 0 || dangling != 3 {
+			t.Fatalf("flush = (%d, %d), want (0, 3)", zero, dangling)
+		}
+		if got := c.EdgeCount(); got != 0 {
+			t.Fatalf("EdgeCount = %d, want 0", got)
+		}
+	})
+
+	t.Run("budgeted ticks never keep a mid-cycle delete alive", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Minute)
+		exp := time.Now().Add(time.Minute)
+		c.AddEdgeWithExpiration("a", "hub", 1, exp)
+		c.AddEdgeWithExpiration("b", "hub", 1, exp)
+		c.SetGCEdgeBudget(1)
+
+		// Tick 1 sweeps one tail while hub is live: nothing is reclaimed.
+		if zero, dangling := c.flush(); zero != 0 || dangling != 0 {
+			t.Fatalf("tick1 = (%d, %d), want (0, 0)", zero, dangling)
+		}
+
+		if !c.DeleteVertex("hub") {
+			t.Fatal("DeleteVertex(hub) = false")
+		}
+
+		// The remaining ticks — finishing this cycle and running the next
+		// full cycle — must reclaim BOTH dangling edges. A memo leaking
+		// across flush calls would keep hub "live" and strand them.
+		removed := 0
+		for i := 0; i < 4; i++ {
+			_, dangling := c.flush()
+			removed += dangling
+		}
+		if removed != 2 {
+			t.Fatalf("dangling reclaimed across ticks = %d, want 2", removed)
+		}
+		if got := c.EdgeCount(); got != 0 {
+			t.Fatalf("EdgeCount = %d, want 0", got)
+		}
+	})
+}
+
+// BenchmarkGCFlushDanglingSweep measures one full GC edge sweep over a graph
+// whose hub endpoints were just deleted — the workload #839's per-flush
+// liveness memo targets (high fan-out tails plus popular shared heads).
+func BenchmarkGCFlushDanglingSweep(b *testing.B) {
+	const tails, headsPerTail = 500, 20
+	exp := time.Now().Add(time.Hour)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		c := NewGraphCache[string, string](time.Hour)
+		for t := 0; t < tails; t++ {
+			tail := "tail-" + strconv.Itoa(t)
+			for h := 0; h < headsPerTail; h++ {
+				c.AddEdgeWithExpiration(tail, "head-"+strconv.Itoa(h), 1, exp)
+			}
+		}
+		// Delete every shared head so the sweep reclaims all edges.
+		for h := 0; h < headsPerTail; h++ {
+			c.DeleteVertex("head-" + strconv.Itoa(h))
+		}
+		b.StartTimer()
+		if _, dangling := c.flush(); dangling != tails*headsPerTail {
+			b.Fatalf("dangling = %d, want %d", dangling, tails*headsPerTail)
+		}
+	}
 }
