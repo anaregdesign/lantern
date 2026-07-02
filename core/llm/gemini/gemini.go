@@ -201,7 +201,7 @@ func (m *model[T]) Generate(ctx context.Context, input string) (llm.Response[T],
 	}
 	var out T
 	if err := json.Unmarshal([]byte(r.text), &out); err != nil {
-		return llm.Response[T]{}, fmt.Errorf("gemini: decode output: %w", err)
+		return llm.Response[T]{}, llm.DecodeFailure("gemini", r.finish, err)
 	}
 	return llm.Response[T]{Output: out, Usage: r.usage, FinishReason: r.finish, Model: r.model}, nil
 }
@@ -238,6 +238,13 @@ type response struct {
 		Content      content `json:"content"`
 		FinishReason string  `json:"finishReason"`
 	} `json:"candidates"`
+	// PromptFeedback carries prompt-level (pre-generation) blocking: when the
+	// PROMPT itself is rejected, candidates is empty and blockReason names the
+	// filter — the only signal distinguishing a block from an empty response
+	// (#852).
+	PromptFeedback struct {
+		BlockReason string `json:"blockReason"`
+	} `json:"promptFeedback"`
 	UsageMetadata struct {
 		PromptTokenCount     int `json:"promptTokenCount"`
 		CandidatesTokenCount int `json:"candidatesTokenCount"`
@@ -299,12 +306,16 @@ func (c *Client) generate(ctx context.Context, instruction, input string, schema
 	}
 	defer httpResp.Body.Close()
 
+	// Classify failures BEFORE reading an unbounded body: the error path
+	// reads at most llm.ErrBodyLimit bytes and maps the status onto the
+	// shared retryability taxonomy (#852).
+	if httpResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(httpResp.Body, llm.ErrBodyLimit))
+		return result{}, llm.ClassifyHTTP("gemini", httpResp.StatusCode, httpResp.Header, bytes.TrimSpace(body))
+	}
 	payload, err := io.ReadAll(httpResp.Body)
 	if err != nil {
 		return result{}, fmt.Errorf("gemini: read response: %w", err)
-	}
-	if httpResp.StatusCode != http.StatusOK {
-		return result{}, fmt.Errorf("gemini: status %d: %s", httpResp.StatusCode, strings.TrimSpace(string(payload)))
 	}
 
 	var r response
@@ -325,6 +336,11 @@ func (c *Client) generate(ctx context.Context, instruction, input string, schema
 		if cand.FinishReason == "SAFETY" || cand.FinishReason == "RECITATION" {
 			return result{}, fmt.Errorf("%w: %s", ErrBlocked, cand.FinishReason)
 		}
+	}
+	// A blocked PROMPT produces no candidates at all; surface it as the same
+	// typed ErrBlocked instead of the generic no-content error (#852).
+	if r.PromptFeedback.BlockReason != "" {
+		return result{}, fmt.Errorf("%w: prompt blocked: %s", ErrBlocked, r.PromptFeedback.BlockReason)
 	}
 	return result{}, errors.New("gemini: no content in response")
 }

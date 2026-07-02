@@ -7,8 +7,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/anaregdesign/lantern/core/llm"
 )
@@ -214,16 +216,82 @@ func TestGenerateLength(t *testing.T) {
 }
 
 func TestGenerateHTTPError(t *testing.T) {
+	cases := []struct {
+		name       string
+		status     int
+		retryAfter string
+		sentinel   error
+	}{
+		{"401 unauthorized", http.StatusUnauthorized, "", llm.ErrUnauthorized},
+		{"429 rate limited with Retry-After", http.StatusTooManyRequests, "7", llm.ErrRateLimited},
+		{"503 unavailable", http.StatusServiceUnavailable, "", llm.ErrUnavailable},
+		{"400 bad request", http.StatusBadRequest, "", llm.ErrBadRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tc.retryAfter != "" {
+					w.Header().Set("Retry-After", tc.retryAfter)
+				}
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, `{"error":{}}`)
+			}))
+			defer srv.Close()
+
+			m, _ := New[weather](NewClient("k", "m", WithBaseURL(srv.URL)), "x", "")
+			_, err := m.Generate(context.Background(), "y")
+			if !errors.Is(err, tc.sentinel) {
+				t.Fatalf("err = %v, want sentinel for status %d", err, tc.status)
+			}
+			var api *llm.APIError
+			if !errors.As(err, &api) {
+				t.Fatalf("err = %v, want APIError", err)
+			}
+			if api.Provider != "gemini" || api.StatusCode != tc.status {
+				t.Fatalf("APIError = %+v", api)
+			}
+			if tc.retryAfter != "" && api.RetryAfter != 7*time.Second {
+				t.Fatalf("RetryAfter = %v, want 7s", api.RetryAfter)
+			}
+			if !strings.Contains(err.Error(), strconv.Itoa(tc.status)) {
+				t.Fatalf("Error() = %q, want status in message", err.Error())
+			}
+		})
+	}
+}
+
+func TestGeneratePromptBlocked(t *testing.T) {
+	// A blocked PROMPT yields no candidates at all; the reason lives only in
+	// promptFeedback.blockReason and must surface as ErrBlocked, not the
+	// generic no-content error (#852).
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = io.WriteString(w, "bad key")
+		_, _ = io.WriteString(w, `{"promptFeedback":{"blockReason":"PROHIBITED_CONTENT"}}`)
 	}))
 	defer srv.Close()
 
 	m, _ := New[weather](NewClient("k", "m", WithBaseURL(srv.URL)), "x", "")
 	_, err := m.Generate(context.Background(), "y")
-	if err == nil || !strings.Contains(err.Error(), "401") {
-		t.Fatalf("err = %v, want 401", err)
+	if !errors.Is(err, ErrBlocked) {
+		t.Fatalf("err = %v, want ErrBlocked", err)
+	}
+	if !strings.Contains(err.Error(), "PROHIBITED_CONTENT") {
+		t.Fatalf("err = %v, want block reason in message", err)
+	}
+}
+
+func TestGenerateTruncated(t *testing.T) {
+	// MAX_TOKENS cut generation mid-JSON: the decode failure must be
+	// diagnosed as ErrTruncated with the WithMaxTokens remedy (#852).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"candidates":[{"content":{"parts":[{"text":"{\"city\":\"Tok"}]},`+
+			`"finishReason":"MAX_TOKENS"}]}`)
+	}))
+	defer srv.Close()
+
+	m, _ := New[weather](NewClient("k", "m", WithBaseURL(srv.URL)), "x", "")
+	_, err := m.Generate(context.Background(), "y")
+	if !errors.Is(err, llm.ErrTruncated) {
+		t.Fatalf("err = %v, want ErrTruncated", err)
 	}
 }
 

@@ -139,7 +139,7 @@ func (m *model[T]) Generate(ctx context.Context, input string) (llm.Response[T],
 	}
 	var out T
 	if err := json.Unmarshal([]byte(r.text), &out); err != nil {
-		return llm.Response[T]{}, fmt.Errorf("openai: decode output: %w", err)
+		return llm.Response[T]{}, llm.DecodeFailure("openai", r.finish, err)
 	}
 	return llm.Response[T]{Output: out, Usage: r.usage, FinishReason: r.finish, Model: r.model}, nil
 }
@@ -234,12 +234,16 @@ func (c *Client) generate(ctx context.Context, instruction, input, name string, 
 	}
 	defer httpResp.Body.Close()
 
+	// Classify failures BEFORE reading an unbounded body: the error path
+	// reads at most llm.ErrBodyLimit bytes and maps the status onto the
+	// shared retryability taxonomy (#852).
+	if httpResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(httpResp.Body, llm.ErrBodyLimit))
+		return result{}, llm.ClassifyHTTP("openai", httpResp.StatusCode, httpResp.Header, bytes.TrimSpace(body))
+	}
 	payload, err := io.ReadAll(httpResp.Body)
 	if err != nil {
 		return result{}, fmt.Errorf("openai: read response: %w", err)
-	}
-	if httpResp.StatusCode != http.StatusOK {
-		return result{}, fmt.Errorf("openai: status %d: %s", httpResp.StatusCode, strings.TrimSpace(string(payload)))
 	}
 
 	var r response
