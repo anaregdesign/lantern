@@ -1,6 +1,9 @@
 package graphcache
 
-import "sync"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 // vertexID is the internal handle used to refer to a vertex key without
 // keeping a copy of its (potentially large) underlying string. It is
@@ -13,6 +16,14 @@ import "sync"
 // demands more, widen this single typedef.
 type vertexID uint32
 
+// freedRefcount is the tombstone value a refcount is CAS'd to at the moment
+// its id is freed (#837). It closes the free/resurrect race: exactly one
+// goroutine wins the 0→freedRefcount transition and performs the free, while
+// a concurrent intern that resurrected the id (0→1 under d.mu.Lock) makes
+// that CAS fail so the loser backs off. allocateLocked resets the slot to 1
+// when the id is handed out again.
+const freedRefcount = ^uint32(0)
+
 // dictionary[S] is a bidirectional, refcounted key↔id table shared by the
 // vertex cache and the edge cache inside a single GraphCache. Centralising
 // the table guarantees that "the vertex with key K" and "the edge endpoint
@@ -20,12 +31,22 @@ type vertexID uint32
 // edges store endpoints as 4 B integers without losing the auto-create
 // invariant.
 //
-// Concurrency: dictionary uses a single sync.RWMutex. Refcount mutations
-// (intern / acquire / release) take the write lock; resolve / lookup take
-// the read lock. The expected workload is read-dominated (every edge
-// lookup resolves both endpoints), so RWMutex is the right primitive for
-// the initial implementation. Sharding can be layered on later without
-// changing the public API of this type if profiling shows contention.
+// Concurrency (#837): the RWMutex protects the STRUCTURE — the forward map,
+// the reverse/refcount slice headers, and the freelist. Refcounts themselves
+// are mutated with atomics, so the hot pin/release cycle used by every
+// lock-free point read (GetWeight / GetEdgeDetail) and every hot-edge
+// additive write runs under the READ lock and no longer serializes the
+// whole process on a single exclusive mutex:
+//
+//   - pinBoth / acquire: RLock + CAS-increment-from-nonzero. Observing 0 or
+//     freedRefcount means a concurrent release is freeing the id — the pin
+//     misses and the caller falls back to its slow path.
+//   - release: RLock + CAS decrement. Only the goroutine whose decrement
+//     produced 0 escalates to the write lock, where CAS(0→freedRefcount)
+//     decides between "really free it" and "an intern resurrected it first".
+//   - intern / allocate / releaseKeys: write lock, as before (map and slice
+//     structure changes). The write lock excludes all RLock holders, and
+//     slice growth in allocateLocked therefore never races an atomic access.
 //
 // vertexID lifecycle:
 //
@@ -58,12 +79,19 @@ func newDictionary[S comparable]() *dictionary[S] {
 // intern returns the vertexID for key, allocating a new one if necessary,
 // and increments its refcount by one. Callers MUST pair every intern with
 // exactly one release once they stop referring to the key.
+//
+// Holding d.mu for writing excludes every RLock-side atomic mutator, so the
+// increment cannot race a concurrent pin or release. It CAN observe a
+// refcount of 0: a releaser may have decremented to 0 under the read lock
+// and not yet reached its write-locked free step. Bumping 0→1 here is the
+// resurrection path — the releaser's CAS(0→freedRefcount) then fails and
+// the id stays live under the same key.
 func (d *dictionary[S]) intern(key S) vertexID {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	if id, ok := d.forward[key]; ok {
-		d.refcount[id]++
+		atomic.AddUint32(&d.refcount[id], 1)
 		return id
 	}
 	return d.allocateLocked(key)
@@ -75,13 +103,28 @@ func (d *dictionary[S]) intern(key S) vertexID {
 // caller the first reference), and the only legitimate use for acquire is
 // to add a second reference to an id the caller already holds.
 func (d *dictionary[S]) acquire(id vertexID) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.mu.RLock()
+	defer d.mu.RUnlock()
 
-	if int(id) >= len(d.refcount) || d.refcount[id] == 0 {
+	if int(id) >= len(d.refcount) || !pinRef(&d.refcount[id]) {
 		panic("dictionary: acquire of unallocated vertexID")
 	}
-	d.refcount[id]++
+}
+
+// pinRef CAS-increments *rc if and only if it currently holds a live count
+// (neither 0 nor the freed tombstone). Returns false on a dying/freed slot.
+// Caller must hold d.mu (read lock suffices) so the slice cannot be
+// reallocated under the pointer.
+func pinRef(rc *uint32) bool {
+	for {
+		cur := atomic.LoadUint32(rc)
+		if cur == 0 || cur == freedRefcount {
+			return false
+		}
+		if atomic.CompareAndSwapUint32(rc, cur, cur+1) {
+			return true
+		}
+	}
 }
 
 // lookup returns the id for key without changing its refcount. Useful for
@@ -114,32 +157,47 @@ func (d *dictionary[S]) lookupBoth(a, b S) (idA, idB vertexID, okA, okB bool) {
 	return
 }
 
-// pinBoth resolves both keys to vertexIDs and increments their refcounts
-// under a single write-lock cycle, returning a release func that drops the
-// two references again. While the pin is held the ids cannot reach refcount
-// zero, so they can neither be freed nor recycled to a different key — which
-// is exactly the ABA guarantee a lock-free point read needs: a reader that
-// pins (tail, head) before consulting the edge map cannot have its endpoint
-// ids reused out from under it between resolution and the bucket lookup.
+// pinBoth resolves both keys to vertexIDs and increments their refcounts,
+// returning a release func that drops the two references again. While the
+// pin is held the ids cannot reach refcount zero, so they can neither be
+// freed nor recycled to a different key — which is exactly the ABA
+// guarantee a lock-free point read needs: a reader that pins (tail, head)
+// before consulting the edge map cannot have its endpoint ids reused out
+// from under it between resolution and the bucket lookup.
 //
-// Returns ok=false (with a no-op release) when either key is absent, so the
-// caller can treat "endpoint unknown" identically to lookupBoth. release is
-// always non-nil and safe to call exactly once; it is idempotent only via the
-// caller's own discipline (call it once), mirroring release's contract.
+// Since #837 the pin itself runs under the READ lock with CAS increments,
+// so concurrent point reads and hot-edge writes no longer serialize on the
+// dict's write lock. A pin can now additionally miss when it observes a
+// refcount mid-free (0 or the freed tombstone) — the caller treats that
+// exactly like an absent key and falls back to its locked slow path.
 //
-// A self-pin (a == b) bumps the single shared id twice and the release drops
-// it twice, preserving the refcount invariant.
+// Returns ok=false (with a no-op release) when either key is absent or
+// dying. release is always non-nil and safe to call exactly once; it is
+// idempotent only via the caller's own discipline (call it once),
+// mirroring release's contract.
+//
+// A self-pin (a == b) bumps the single shared id twice and the release
+// drops it twice, preserving the refcount invariant.
 func (d *dictionary[S]) pinBoth(a, b S) (idA, idB vertexID, release func(), ok bool) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
+	d.mu.RLock()
 	idA, okA := d.forward[a]
 	idB, okB := d.forward[b]
 	if !okA || !okB {
+		d.mu.RUnlock()
 		return 0, 0, func() {}, false
 	}
-	d.refcount[idA]++
-	d.refcount[idB]++
+	if !pinRef(&d.refcount[idA]) {
+		d.mu.RUnlock()
+		return 0, 0, func() {}, false
+	}
+	if !pinRef(&d.refcount[idB]) {
+		// Undo the first pin OUTSIDE the read lock: release may need the
+		// write lock to free the id, and RWMutex is not upgradable.
+		d.mu.RUnlock()
+		d.release(idA)
+		return 0, 0, func() {}, false
+	}
+	d.mu.RUnlock()
 	return idA, idB, func() {
 		d.release(idA)
 		d.release(idB)
@@ -153,7 +211,11 @@ func (d *dictionary[S]) resolve(id vertexID) (S, bool) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	if int(id) >= len(d.refcount) || d.refcount[id] == 0 {
+	if int(id) >= len(d.refcount) {
+		var zero S
+		return zero, false
+	}
+	if rc := atomic.LoadUint32(&d.refcount[id]); rc == 0 || rc == freedRefcount {
 		var zero S
 		return zero, false
 	}
@@ -164,20 +226,49 @@ func (d *dictionary[S]) resolve(id vertexID) (S, bool) {
 // count reaches zero. It returns true iff the id was freed by this call.
 // It panics if id is not currently allocated, because over-release is a
 // caller bug that silently corrupts the refcount accounting.
+//
+// The decrement itself happens under the read lock; only the goroutine
+// whose decrement produced 0 escalates to the write lock, where the
+// 0→freedRefcount CAS arbitrates against a concurrent intern that may have
+// resurrected the id in the window between the two locks.
 func (d *dictionary[S]) release(id vertexID) bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.releaseLocked(id)
-}
-
-// releaseLocked is release without acquiring d.mu; the caller must already
-// hold the write lock. It is shared by release and releaseKeys.
-func (d *dictionary[S]) releaseLocked(id vertexID) bool {
-	if int(id) >= len(d.refcount) || d.refcount[id] == 0 {
+	d.mu.RLock()
+	if int(id) >= len(d.refcount) {
+		d.mu.RUnlock()
 		panic("dictionary: release of unallocated vertexID")
 	}
-	d.refcount[id]--
-	if d.refcount[id] > 0 {
+	newv := decRef(&d.refcount[id])
+	d.mu.RUnlock()
+	if newv != 0 {
+		return false
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.freeIfDeadLocked(id)
+}
+
+// decRef CAS-decrements *rc, panicking on an over-release (0 or freed slot).
+// Returns the post-decrement count. Caller must hold d.mu (read suffices).
+func decRef(rc *uint32) uint32 {
+	for {
+		cur := atomic.LoadUint32(rc)
+		if cur == 0 || cur == freedRefcount {
+			panic("dictionary: release of unallocated vertexID")
+		}
+		if atomic.CompareAndSwapUint32(rc, cur, cur-1) {
+			return cur - 1
+		}
+	}
+}
+
+// freeIfDeadLocked finalises a release that decremented the count to 0. The
+// CAS to the freed tombstone elects exactly one freeer: it fails when a
+// concurrent intern resurrected the id (count is no longer 0) or when the
+// other branch of a free/resurrect/free cycle already claimed it. Caller
+// must hold d.mu for writing.
+func (d *dictionary[S]) freeIfDeadLocked(id vertexID) bool {
+	if !atomic.CompareAndSwapUint32(&d.refcount[id], 0, freedRefcount) {
 		return false
 	}
 	key := d.reverse[id]
@@ -203,7 +294,9 @@ func (d *dictionary[S]) releaseKeys(keys []S) {
 	defer d.mu.Unlock()
 	for _, key := range keys {
 		if id, ok := d.forward[key]; ok {
-			d.releaseLocked(id)
+			if decRef(&d.refcount[id]) == 0 {
+				d.freeIfDeadLocked(id)
+			}
 		}
 	}
 }
@@ -223,7 +316,7 @@ func (d *dictionary[S]) len() int {
 // instantiation never reaches this path.
 //
 // O(N) in the live key count. Intentionally not exposed beyond the
-// graph package \u2014 callers should rely on the string fast path.
+// graph package — callers should rely on the string fast path.
 func (d *dictionary[S]) findByProjection(extract func(S) string, projected string) (S, bool) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -238,14 +331,16 @@ func (d *dictionary[S]) findByProjection(extract func(S) string, projected strin
 
 // allocateLocked mints a fresh id (or recycles one from the freelist),
 // records the forward/reverse mapping, and sets refcount to 1. The
-// caller MUST hold d.mu for writing.
+// caller MUST hold d.mu for writing. Recycled slots hold the freed
+// tombstone; atomic stores keep the access model uniform even though the
+// write lock already excludes every reader.
 func (d *dictionary[S]) allocateLocked(key S) vertexID {
 	if n := len(d.free); n > 0 {
 		id := d.free[n-1]
 		d.free = d.free[:n-1]
 		d.forward[key] = id
 		d.reverse[id] = key
-		d.refcount[id] = 1
+		atomic.StoreUint32(&d.refcount[id], 1)
 		return id
 	}
 	id := vertexID(len(d.reverse))
