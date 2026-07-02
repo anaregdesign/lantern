@@ -22,4 +22,22 @@
 // concrete backends (which need provider SDKs or HTTP clients) belong in their
 // own subpackages or modules that import this one, keeping the abstraction
 // dependency-free.
+//
+// # Error handling
+//
+// Provider HTTP failures carry a shared, errors.Is-able taxonomy (#852) so
+// callers can build retry loops and circuit breakers without string-matching
+// provider text:
+//
+//	ErrRateLimited   429; retry after backing off (APIError.RetryAfter when sent)
+//	ErrUnavailable   5xx (incl. Anthropic 529), 408, 409; transient, retry
+//	ErrUnauthorized  401/403; credential problem, do not retry
+//	ErrBadRequest    other 4xx; deterministic request problem, do not retry
+//
+// errors.As(&APIError{}) recovers the provider name, status code, Retry-After
+// hint, and a body excerpt bounded by ErrBodyLimit. Separately, ErrTruncated
+// marks a Generate whose structured output was cut by the max-token cap —
+// raise the cap rather than retrying. Refusals and safety blocks remain
+// provider-typed (anthropic.ErrRefusal, openai.ErrRefusal, gemini.ErrBlocked)
+// because their semantics differ per provider.
 package llm
