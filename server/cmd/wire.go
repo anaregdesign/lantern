@@ -20,6 +20,8 @@ func initializeApp() (*App, error) {
 		provider.NewObservabilityConfig,
 		provider.NewCacheConfig,
 		provider.NewAuthConfig,
+		provider.NewLLMConfig,
+		provider.NewLLMEngine,
 		provider.NewShutdownConfig,
 		provider.NewValidationLimits,
 		provider.NewTraversalConfig,
