@@ -27,8 +27,22 @@ func newTestHarness(t *testing.T) *testHarness {
 // environment.
 func newTestHarnessWith(t *testing.T, r *ttl.Resolver) *testHarness {
 	t.Helper()
+	// The legacy tool tests exercise the memory profile; context-profile
+	// tests use newContextHarness below.
+	return newProfileHarness(t, r, ProfileMemory)
+}
+
+// newContextHarness is the working-context-profile (#851) sibling of
+// newTestHarness.
+func newContextHarness(t *testing.T) *testHarness {
+	t.Helper()
+	return newProfileHarness(t, mustDefaultResolver(t), ProfileContext)
+}
+
+func newProfileHarness(t *testing.T, r *ttl.Resolver, profile string) *testHarness {
+	t.Helper()
 	fake := &fakeLantern{}
-	srv := newServer(fake, r, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	srv := newServer(fake, r, slog.New(slog.NewJSONHandler(io.Discard, nil)), profile)
 
 	serverT, clientT := mcp.NewInMemoryTransports()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -137,4 +151,10 @@ func structuredAs(t *testing.T, res *mcp.CallToolResult, v any) {
 	if err := json.Unmarshal(b, v); err != nil {
 		t.Fatalf("unmarshal into %T: %v (raw=%s)", v, err, b)
 	}
+}
+
+// decodePayload unmarshals a JSON payload string captured by the fake
+// client into out — the raw-string sibling of decodeRecord for tests.
+func decodePayload(payload string, out any) error {
+	return json.Unmarshal([]byte(payload), out)
 }
