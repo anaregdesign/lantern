@@ -55,6 +55,7 @@ type LanternService struct {
 	onValidationReject     func(reason string)
 	onTombstoneClampReject func()
 	metrics                HotPathMetrics
+	traversalTimeout       time.Duration
 
 	// statusInfo + startedAt + startedAtOnce back GetServerStatus
 	// (#314). Populated by WithStatusInfo / MarkStarted from the
@@ -257,6 +258,19 @@ func (s *LanternService) WithTombstoneClampRejectHook(f func()) *LanternService 
 	return s
 }
 
+// WithTraversalTimeout installs the server-side wall-clock budget for the
+// traversal-heavy Illuminate RPC (#842). When d > 0 every Illuminate runs
+// under context.WithTimeout(ctx, d), so a deadline-less client cannot hold
+// the graph read lock indefinitely with an expensive PPR or deep BFS; expiry
+// surfaces as CodeDeadlineExceeded via the existing ctx polling inside the
+// walks. d <= 0 (the default) keeps deadlines client-owned. The budget only
+// tightens: a shorter client deadline still wins. Streaming RPCs and scans
+// are deliberately NOT covered — scans are collection-bounded by ScanLimits.
+func (s *LanternService) WithTraversalTimeout(d time.Duration) *LanternService {
+	s.traversalTimeout = d
+	return s
+}
+
 // validateExpiration enforces the LANTERN_TOMBSTONE_TTL clamp on
 // caller-supplied per-entry expirations. A zero expiration (the proto
 // default — "no expiration") is always accepted; otherwise the
@@ -393,6 +407,15 @@ func (s *LanternService) logMutationAt(op *pb.MutationOp, ts hlc.Timestamp) uint
 func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateRequest) (*pb.IlluminateResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
+	}
+	// Server-side traversal budget (#842). Applied to BOTH arms (BFS and
+	// PPR) at the top so the whole handler — walk plus any post-traversal
+	// reduction — shares one deadline. WithTimeout only ever tightens, so a
+	// client deadline shorter than the budget is unaffected.
+	if s.traversalTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.traversalTimeout)
+		defer cancel()
 	}
 
 	weighting := request.GetWeighting()

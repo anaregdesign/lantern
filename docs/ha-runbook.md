@@ -315,6 +315,12 @@ Tune thresholds to your write rate; the qualitative shape — lag and
 dropped should be ~0, anti-entropy ticks should be non-zero — is the
 load-bearing part.
 
+One traversal-specific signal: with `LANTERN_TRAVERSAL_TIMEOUT_MS` set
+(#842), an `Illuminate` returning `DEADLINE_EXCEEDED` means the SERVER's
+traversal budget expired — an expensive PPR / deep BFS was cut to protect
+writers and the GC tick — not a network problem. Raise the budget or narrow
+the request (smaller k/step, larger epsilon) rather than retrying as-is.
+
 ---
 
 ## 5. Capacity planning

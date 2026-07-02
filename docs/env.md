@@ -68,4 +68,5 @@ value is treated as unset for the non-string kinds. The MCP server's
 | `LANTERN_TLS_CLIENT_CA_FILE` | string | (empty) | PEM client-CA bundle path; setting it additionally enables mTLS client verification. |
 | `LANTERN_TLS_KEY_FILE` | string | (empty) | PEM private-key path; pairs with LANTERN_TLS_CERT_FILE. |
 | `LANTERN_TOMBSTONE_TTL` | duration | `8760h0m0s` | Delete-tombstone retention window and the upper bound on caller-supplied expirations. |
+| `LANTERN_TRAVERSAL_TIMEOUT_MS` | int | `0` | Server-side wall-clock budget for Illuminate traversals in milliseconds (0 = client-owned deadlines only); expiry surfaces as DEADLINE_EXCEEDED. |
 | `LANTERN_VERSION` | string | (empty) | Overrides the version label reported in lantern_build_info and GetServerStatus. |

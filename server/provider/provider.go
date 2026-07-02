@@ -121,6 +121,19 @@ type ShutdownConfig struct {
 	DrainDelay time.Duration
 }
 
+// TraversalConfig bounds the wall-clock budget of the traversal-heavy
+// Illuminate RPC (#842). A deadline-less client running an expensive PPR or
+// deep BFS holds GraphCache.mu.RLock for the whole walk, stalling every
+// writer and the GC tick; this knob lets the SERVER cap that hold time
+// regardless of client behaviour. 0 (the default) preserves the historical
+// client-owned-deadline behaviour. The budget only ever tightens: a client
+// deadline shorter than the budget still wins.
+//
+//   - LANTERN_TRAVERSAL_TIMEOUT_MS      (default 0 = disabled)
+type TraversalConfig struct {
+	Timeout time.Duration
+}
+
 // ScanConfig caps the per-call pagination knobs for the prefix RPCs.
 // Defaults aim at "safe to leave unconfigured": small enough that a buggy
 // client cannot trivially exhaust the server, large enough to make a
@@ -169,6 +182,7 @@ type Config struct {
 	Cache         CacheConfig
 	Shutdown      ShutdownConfig
 	Validation    ValidationLimits
+	Traversal     TraversalConfig
 	Scan          ScanConfig
 	Search        SearchConfig
 	MutationLog   MutationLogConfig
@@ -233,6 +247,9 @@ func NewConfig() (*Config, error) {
 			MaxBatchSize:      envconfig.Int("LANTERN_MAX_BATCH_SIZE", 10000),
 			IlluminateMaxStep: envconfig.Int("LANTERN_ILLUMINATE_MAX_STEP", 16),
 			IlluminateMaxK:    envconfig.Int("LANTERN_ILLUMINATE_MAX_K", 1024),
+		},
+		Traversal: TraversalConfig{
+			Timeout: time.Duration(envconfig.Int("LANTERN_TRAVERSAL_TIMEOUT_MS", 0)) * time.Millisecond,
 		},
 		Scan: ScanConfig{
 			ScanDefaultLimit:           envconfig.Uint32("LANTERN_SCAN_DEFAULT_LIMIT", 1000),
@@ -326,6 +343,7 @@ func NewObservabilityConfig(c *Config) ObservabilityConfig { return c.Observabil
 func NewCacheConfig(c *Config) CacheConfig                 { return c.Cache }
 func NewShutdownConfig(c *Config) ShutdownConfig           { return c.Shutdown }
 func NewValidationLimits(c *Config) ValidationLimits       { return c.Validation }
+func NewTraversalConfig(c *Config) TraversalConfig         { return c.Traversal }
 func NewScanConfig(c *Config) ScanConfig                   { return c.Scan }
 func NewSearchConfig(c *Config) SearchConfig               { return c.Search }
 

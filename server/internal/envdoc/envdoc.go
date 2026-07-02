@@ -91,6 +91,8 @@ var descriptions = map[string]string{
 	"LANTERN_BACKUP_RESTORE_REQUIRED": "Fail boot when restore-on-startup errors instead of starting with current state.",
 
 	"LANTERN_STRICT_CONFIG": "Refuse to boot when any LANTERN_* value is malformed or an unknown LANTERN_* variable is set.",
+
+	"LANTERN_TRAVERSAL_TIMEOUT_MS": "Server-side wall-clock budget for Illuminate traversals in milliseconds (0 = client-owned deadlines only); expiry surfaces as DEADLINE_EXCEEDED.",
 }
 
 // Render produces the docs/env.md markdown for the given registry specs. It

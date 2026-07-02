@@ -117,6 +117,7 @@ func newLanternService(
 	src provider.SearchConfig,
 	rc provider.ReplicationConfig,
 	vc provider.ValidationLimits,
+	trc provider.TraversalConfig,
 	tc provider.TLSConfig,
 	cc provider.CacheConfig,
 	obs provider.ObservabilityConfig,
@@ -143,6 +144,7 @@ func newLanternService(
 		WithValidationRejectHook(dm.OnValidationRejected).
 		WithTombstoneClampRejectHook(dm.OnTombstoneClampRejected).
 		WithTombstoneTTL(rc.TombstoneTTL).
+		WithTraversalTimeout(trc.Timeout).
 		WithHotPathMetrics(dm).
 		WithLogger(logger).
 		WithStatusInfo(service.StatusInfo{
