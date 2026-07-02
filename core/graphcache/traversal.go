@@ -119,12 +119,15 @@ func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int
 	}
 
 	var mu sync.Mutex
-	// targets / seen are accessed only from the main goroutine (between
-	// wg.Wait barriers), so plain maps suffice — no need for the locked
-	// set.Set wrapper. mu protects concurrent writes to g.Edges and
-	// (when requested) expirations.
-	targets := map[S]struct{}{seed: {}}
-	seen := make(map[S]struct{})
+	// seen marks every vertex ever queued into a frontier so each vertex is
+	// expanded at most once; the frontier slices below replace the historical
+	// grow-only targets map, whose full rescan each step cost
+	// O(steps x discovered) (#838). Both are accessed only from the main
+	// goroutine (between wg.Wait barriers), so plain structures suffice.
+	// mu protects concurrent writes to g.Edges and (when requested)
+	// expirations.
+	seen := map[S]struct{}{seed: {}}
+	frontier := []S{seed}
 	// expirations is allocated up front so per-tail goroutines can publish
 	// their surviving heads without an extra coordination pass.
 	var expirations map[S]map[S]time.Time
@@ -136,6 +139,10 @@ func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int
 	// edgeCache.headsOf / docFreq accessors are safe to call directly.
 	// This turns the per-call cost from O(V+E) (snapshotTF + snapshotDF)
 	// into O(sum of degrees of visited tails).
+
+	// One liveness instant for the whole walk (#838): every edge snapshot in
+	// this traversal decides expiration against the same clock reading.
+	now := time.Now()
 
 	// BM25 corpus statistics are read once here (O(#tails), and only for the
 	// BM25 weighting) under the same RLock the per-edge accessors rely on.
@@ -192,7 +199,7 @@ func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int
 			if keep != nil && !keep(head) {
 				continue
 			}
-			sum, latest, nonZero := w.snapshot()
+			sum, latest, nonZero := w.snapshotAt(now)
 			if !nonZero {
 				continue
 			}
@@ -232,15 +239,8 @@ func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
 		}
-
-		// Collect this step's frontier (targets not yet processed). Marking
-		// happens after wg.Wait so the goroutines need not touch `seen`.
-		frontier := make([]S, 0, len(targets))
-		for t := range targets {
-			if _, ok := seen[t]; ok {
-				continue
-			}
-			frontier = append(frontier, t)
+		if len(frontier) == 0 {
+			break
 		}
 
 		// Small frontiers run sequentially: goroutine startup and the
@@ -275,19 +275,19 @@ func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int
 			wg.Wait()
 		}
 
-		// Mark this step's frontier as processed.
-		for _, t := range frontier {
-			seen[t] = struct{}{}
-		}
-
-		// Find all next targets
-		for _, heads := range g.Edges {
-			for head := range heads {
+		// The next frontier is exactly the surviving heads of the tails just
+		// processed that have never been queued before — no rescan of the
+		// whole discovered graph per step (#838).
+		var next []S
+		for _, tail := range frontier {
+			for head := range g.Edges[tail] {
 				if _, ok := seen[head]; !ok {
-					targets[head] = struct{}{}
+					seen[head] = struct{}{}
+					next = append(next, head)
 				}
 			}
 		}
+		frontier = next
 	}
 
 	// Add vertices to the graph. Every endpoint reached here was gated on
@@ -428,10 +428,13 @@ func (c *GraphCache[S, T]) PersonalizedPageRankContext(ctx context.Context, seed
 	inQueue := map[S]bool{seed: true}
 	maxPushes := pprMaxPushes(alpha, epsilon)
 
+	// One liveness instant for the whole push (#838), mirroring
+	// neighborContext; and an index cursor instead of queue = queue[1:], so
+	// the loop does not re-slice while retaining the consumed backing head.
+	now := time.Now()
 	pushes := 0
-	for len(queue) > 0 {
-		u := queue[0]
-		queue = queue[1:]
+	for qi := 0; qi < len(queue); qi++ {
+		u := queue[qi]
 		inQueue[u] = false
 		ru := r[u]
 
@@ -456,7 +459,7 @@ func (c *GraphCache[S, T]) PersonalizedPageRankContext(ctx context.Context, seed
 					if keep != nil && !keep(head) {
 						continue
 					}
-					sum, _, nonZero := w.snapshot()
+					sum, _, nonZero := w.snapshotAt(now)
 					if !nonZero {
 						continue
 					}

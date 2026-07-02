@@ -592,3 +592,117 @@ func Test_edgeCache_addExistingContribByID(t *testing.T) {
 		}
 	})
 }
+
+// Test_weight_snapshotAt pins the caller-supplied-clock contract (#838): the
+// SAME bucket answers differently depending only on the instant passed in,
+// so a traversal that samples time.Now() once observes consistent liveness
+// across every edge it visits.
+func Test_weight_snapshotAt(t *testing.T) {
+	base := time.Now()
+	w := newWeight()
+	w.addWithExpiration(2, base.Add(50*time.Millisecond))
+	w.addWithExpiration(3, base.Add(200*time.Millisecond))
+
+	if sum, latest, nonZero := w.snapshotAt(base); !nonZero || sum != 5 || !latest.Equal(base.Add(200*time.Millisecond)) {
+		t.Fatalf("snapshotAt(base) = (%v, %v, %v), want (5, +200ms, true)", sum, latest, nonZero)
+	}
+	// Between the two expirations only the later contribution survives.
+	if sum, _, nonZero := w.snapshotAt(base.Add(100 * time.Millisecond)); !nonZero || sum != 3 {
+		t.Fatalf("snapshotAt(+100ms) sum = %v, want 3", sum)
+	}
+	// Past both expirations the bucket is fully decayed.
+	if _, _, nonZero := w.snapshotAt(base.Add(300 * time.Millisecond)); nonZero {
+		t.Fatal("snapshotAt(+300ms) still nonZero, want decayed")
+	}
+}
+
+// Test_edgeCache_edgeCount is the parity property for the O(1) bucket
+// counter (#838): after every mutation mix — additive creates (with and
+// without dict, with and without ContribID), LWW puts, in-place put
+// replaces, deletes, zero-weight flushes, and keep-predicate sweeps — the
+// counter must equal a fresh O(E) walk of tf.
+func Test_edgeCache_edgeCount(t *testing.T) {
+	walk := func(c *edgeCache[string]) int {
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+		n := 0
+		for _, heads := range c.tf {
+			n += len(heads)
+		}
+		return n
+	}
+	check := func(t *testing.T, c *edgeCache[string], want int) {
+		t.Helper()
+		if got := c.count(); got != want {
+			t.Fatalf("count() = %d, want %d", got, want)
+		}
+		if got := walk(c); got != c.edgeCount {
+			t.Fatalf("edgeCount = %d, walk = %d", c.edgeCount, got)
+		}
+		tails, edges := c.corpusStats()
+		if edges != want || tails != len(c.tf) {
+			t.Fatalf("corpusStats = (%d, %d), want (%d, %d)", tails, edges, len(c.tf), want)
+		}
+	}
+
+	t.Run("create paths and deletes agree with the walk", func(t *testing.T) {
+		c := newEdgeCache[string](time.Minute, newDictionary[string]())
+		exp := time.Now().Add(time.Minute)
+
+		c.addWithExpiration("a", "b", 1, exp) // additive create
+		c.addWithExpiration("a", "b", 1, exp) // existing bucket: no change
+		c.putWithExpiration("a", "c", 1, exp) // put create
+		c.putWithExpiration("a", "c", 2, exp) // in-place replace: no change
+		c.addWithExpirationContrib("b", "c", 1, exp, ContribID{1})
+		c.addWithExpirationContrib("b", "c", 1, exp, ContribID{1}) // deduped: no change
+		c.putWithExpirationHLC("c", "a", 1, exp, hlc.Timestamp{WallNs: 1})
+		check(t, c, 4)
+
+		if deleted, _, _ := c.delete("a", "b"); !deleted {
+			t.Fatal("delete(a,b) = false")
+		}
+		if deleted, _, _ := c.delete("a", "b"); deleted {
+			t.Fatal("double delete(a,b) = true")
+		}
+		check(t, c, 3)
+	})
+
+	t.Run("dict-nil test caches keep parity", func(t *testing.T) {
+		// Without a dict every endpoint resolves to vertexID 0, so all edges
+		// collapse into the single (0, 0) bucket — the pre-existing dict-nil
+		// degenerate shape. The counter must track that reality (one bucket),
+		// not the logical key pairs.
+		c := newEdgeCache[string](time.Minute, nil)
+		exp := time.Now().Add(time.Minute)
+		c.addWithExpiration("a", "b", 1, exp)
+		c.addWithExpiration("a", "c", 1, exp)
+		check(t, c, 1)
+	})
+
+	t.Run("zero-weight flush and keep-predicate sweep decrement", func(t *testing.T) {
+		c := newEdgeCache[string](time.Minute, newDictionary[string]())
+		live := time.Now().Add(time.Minute)
+		dead := time.Now().Add(-time.Minute)
+
+		c.addWithExpiration("a", "b", 1, dead) // fully decayed
+		c.addWithExpiration("a", "c", 1, live)
+		c.addWithExpiration("d", "e", 1, live)
+		check(t, c, 3)
+
+		if removed := c.flush(); removed != 1 {
+			t.Fatalf("flush removed %d, want 1", removed)
+		}
+		check(t, c, 2)
+
+		// Sweep away everything whose tail is "d" via the keep predicate.
+		dID, ok := c.dict.lookup("d")
+		if !ok {
+			t.Fatal("dict.lookup(d) miss")
+		}
+		zero, dangling := c.flushFunc(func(tail, _ vertexID) bool { return tail != dID }, nil)
+		if zero != 0 || dangling != 1 {
+			t.Fatalf("flushFunc = (%d, %d), want (0, 1)", zero, dangling)
+		}
+		check(t, c, 1)
+	})
+}

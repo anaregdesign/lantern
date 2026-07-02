@@ -174,9 +174,18 @@ func (w *weight) replace(value float32, expiration time.Time) {
 // (getDetail) should prefer this over chaining isZero / value /
 // latestExpiration, which triple-lock and triple-scan.
 func (w *weight) snapshot() (sum float32, latest time.Time, nonZero bool) {
+	return w.snapshotAt(time.Now())
+}
+
+// snapshotAt is snapshot with the liveness clock supplied by the caller
+// (#838). A traversal samples time.Now() ONCE and passes the same instant to
+// every visited edge, so (a) a walk over E' edges performs one clock read
+// instead of E', and (b) every edge in one walk decides liveness against the
+// same reference time instead of instants that drift as the walk progresses.
+func (w *weight) snapshotAt(now time.Time) (sum float32, latest time.Time, nonZero bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.flushLocked()
+	w.flushLockedAt(now)
 	for _, v := range w.values {
 		if v.expiration.After(latest) {
 			latest = v.expiration
@@ -216,7 +225,12 @@ func (w *weight) snapshotEntry(now time.Time) ([]SnapshotContribution, hlc.Times
 // flushLocked compacts expired entries in place and recomputes the cached sum.
 // Caller must hold w.mu.
 func (w *weight) flushLocked() {
-	now := time.Now()
+	w.flushLockedAt(time.Now())
+}
+
+// flushLockedAt is flushLocked against a caller-supplied instant (#838).
+// Caller must hold w.mu.
+func (w *weight) flushLockedAt(now time.Time) {
 	write := 0
 	var sum float32
 	for _, v := range w.values {
@@ -247,6 +261,15 @@ type edgeCache[S comparable] struct {
 	dict       *dictionary[S]
 	tf         map[vertexID]map[vertexID]*weight
 	df         map[vertexID]int
+	// edgeCount tracks the number of (tail, head) buckets held in tf,
+	// incremented at every bucket creation and decremented in deleteLocked
+	// (#838). It makes count() and corpusStats O(1) instead of an O(#tails)
+	// walk — count() is sampled by Prometheus on every scrape and
+	// corpusStats runs once per BM25-weighted traversal. Bucket create and
+	// delete both happen under c.mu.Lock, so the counter shares tf's
+	// locking contract (including the lock-free corpusStats read, which the
+	// caller serializes via GraphCache.mu exactly as for len(c.tf)).
+	edgeCount int
 }
 
 func newEdgeCache[S comparable](defaultTTL time.Duration, dict *dictionary[S]) *edgeCache[S] {
@@ -355,11 +378,7 @@ func (c *edgeCache[S]) docFreq(head vertexID) int {
 // count() it takes no edgeCache lock, so it composes inside the Neighbor read
 // path which already holds GraphCache.mu read-locked.
 func (c *edgeCache[S]) corpusStats() (tails, edges int) {
-	tails = len(c.tf)
-	for _, heads := range c.tf {
-		edges += len(heads)
-	}
-	return tails, edges
+	return len(c.tf), c.edgeCount
 }
 
 // resolveID resolves a vertexID back to S without locking the edgeCache.
@@ -531,6 +550,7 @@ func (c *edgeCache[S]) addWithExpirationContrib(tail, head S, w float32, expirat
 		edge = newWeight()
 		heads[headID] = edge
 		c.df[headID]++
+		c.edgeCount++
 		created = true
 	} else if c.dict != nil {
 		// Edge already present: revert the intern bumps to keep the
@@ -591,6 +611,7 @@ func (c *edgeCache[S]) putWithExpiration(tail, head S, w float32, expiration tim
 		edge = newWeight()
 		heads[headID] = edge
 		c.df[headID]++
+		c.edgeCount++
 		created = true
 	} else if c.dict != nil {
 		c.dict.release(tailID)
@@ -669,6 +690,7 @@ func (c *edgeCache[S]) putWithExpirationHLC(tail, head S, w float32, expiration 
 		edge = newWeight()
 		heads[headID] = edge
 		c.df[headID]++
+		c.edgeCount++
 		created = true
 	} else if c.dict != nil {
 		c.dict.release(tailID)
@@ -721,6 +743,7 @@ func (c *edgeCache[S]) deleteLocked(tailID, headID vertexID) bool {
 	if c.df[headID] <= 0 {
 		delete(c.df, headID)
 	}
+	c.edgeCount--
 	if len(heads) == 0 {
 		delete(c.tf, tailID)
 	}
@@ -843,9 +866,5 @@ func (c *edgeCache[S]) sweepHeadsLocked(tailID vertexID, heads map[vertexID]*wei
 func (c *edgeCache[S]) count() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	n := 0
-	for _, heads := range c.tf {
-		n += len(heads)
-	}
-	return n
+	return c.edgeCount
 }
