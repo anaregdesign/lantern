@@ -8,6 +8,18 @@
 //	export OPENAI_API_KEY=sk-...        # your key
 //	export OPENAI_MODEL=gpt-5.5         # any model id (never hard-coded)
 //	go run ./llm/openai/example
+//
+// Cloud-credential recipe (#854 auth matrix — Azure OpenAI): the server
+// module's llmauth package builds the credentialed client (core cannot
+// import it; module DAG):
+//
+//	hc, _ := llmauth.NewAzureManagedIdentityHTTPClient()        // or NewAzureClientSecretHTTPClient
+//	c := openai.NewClient("", model,                            // empty key: transport owns auth
+//		openai.WithBaseURL("https://<resource>.openai.azure.com/openai/v1"),
+//		openai.WithHTTPClient(hc))
+//
+// Classic static-key Azure uses WithAPIKeyHeader("api-key") instead of an
+// injected client.
 package main
 
 import (

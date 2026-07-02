@@ -3,9 +3,12 @@ package llmauth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -136,4 +139,193 @@ func textResponse(status int, body string) *http.Response {
 		Body:       io.NopCloser(strings.NewReader(body)),
 		Header:     make(http.Header),
 	}
+}
+
+// countingCredential is a fake azcore.TokenCredential that counts GetToken
+// calls and can be scripted to fail — the #854 cache-contract probe.
+type countingCredential struct {
+	mu      sync.Mutex
+	calls   int
+	expires time.Time
+	fail    error
+	block   chan struct{} // when non-nil, GetToken waits here (concurrency tests)
+}
+
+func (c *countingCredential) GetToken(ctx context.Context, _ policy.TokenRequestOptions) (azcore.AccessToken, error) {
+	c.mu.Lock()
+	c.calls++
+	n := c.calls
+	fail := c.fail
+	expires := c.expires
+	block := c.block
+	c.mu.Unlock()
+	if block != nil {
+		select {
+		case <-block:
+		case <-ctx.Done():
+			return azcore.AccessToken{}, ctx.Err()
+		}
+	}
+	if fail != nil {
+		return azcore.AccessToken{}, fail
+	}
+	return azcore.AccessToken{Token: fmt.Sprintf("tok-%d", n), ExpiresOn: expires}, nil
+}
+
+func (c *countingCredential) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
+
+// TestCachedTokenCredential pins the #854 token-cache contract so
+// correctness never again depends on MSAL internals: (a) N concurrent
+// cold-start requests coalesce into exactly one GetToken (singleflight),
+// (b) passage of the expiry margin triggers exactly one refresh, (c) a
+// failed flight delivers the error to every waiter WITHOUT poisoning the
+// cache — the next request starts a fresh flight.
+func TestCachedTokenCredential(t *testing.T) {
+	ctx := context.Background()
+	opts := policy.TokenRequestOptions{Scopes: []string{AzureOpenAIScope}}
+
+	t.Run("concurrent cold start coalesces to one GetToken", func(t *testing.T) {
+		block := make(chan struct{})
+		inner := &countingCredential{expires: time.Now().Add(time.Hour), block: block}
+		cache := &cachedTokenCredential{inner: inner}
+
+		const n = 16
+		var wg sync.WaitGroup
+		tokens := make([]string, n)
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				tok, err := cache.GetToken(ctx, opts)
+				if err != nil {
+					t.Errorf("GetToken %d: %v", i, err)
+					return
+				}
+				tokens[i] = tok.Token
+			}(i)
+		}
+		// Give the herd time to pile onto the single flight, then release.
+		time.Sleep(20 * time.Millisecond)
+		close(block)
+		wg.Wait()
+		if got := inner.count(); got != 1 {
+			t.Fatalf("GetToken calls = %d, want 1 (singleflight)", got)
+		}
+		for i, tok := range tokens {
+			if tok != "tok-1" {
+				t.Fatalf("waiter %d got %q, want the shared tok-1", i, tok)
+			}
+		}
+	})
+
+	t.Run("fresh token served from cache; margin passage refreshes once", func(t *testing.T) {
+		inner := &countingCredential{expires: time.Now().Add(time.Hour)}
+		cache := &cachedTokenCredential{inner: inner}
+		for i := 0; i < 5; i++ {
+			if _, err := cache.GetToken(ctx, opts); err != nil {
+				t.Fatalf("GetToken: %v", err)
+			}
+		}
+		if got := inner.count(); got != 1 {
+			t.Fatalf("calls = %d, want 1 (cache hit)", got)
+		}
+		// Age the cached token into the refresh margin.
+		cache.mu.Lock()
+		cache.token.ExpiresOn = time.Now().Add(tokenRefreshMargin / 2)
+		cache.mu.Unlock()
+		for i := 0; i < 5; i++ {
+			if _, err := cache.GetToken(ctx, opts); err != nil {
+				t.Fatalf("GetToken after aging: %v", err)
+			}
+		}
+		if got := inner.count(); got != 2 {
+			t.Fatalf("calls = %d, want 2 (exactly one refresh)", got)
+		}
+	})
+
+	t.Run("failed flight surfaces to all waiters and does not poison", func(t *testing.T) {
+		boom := errors.New("aad down")
+		block := make(chan struct{})
+		inner := &countingCredential{expires: time.Now().Add(time.Hour), fail: boom, block: block}
+		cache := &cachedTokenCredential{inner: inner}
+
+		const n = 8
+		var wg sync.WaitGroup
+		errs := make([]error, n)
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				_, errs[i] = cache.GetToken(ctx, opts)
+			}(i)
+		}
+		time.Sleep(20 * time.Millisecond)
+		close(block)
+		wg.Wait()
+		if got := inner.count(); got != 1 {
+			t.Fatalf("calls = %d, want 1", got)
+		}
+		for i, err := range errs {
+			if !errors.Is(err, boom) {
+				t.Fatalf("waiter %d err = %v, want the flight error", i, err)
+			}
+		}
+		// Not poisoned: the next request starts a fresh (now succeeding) flight.
+		inner.mu.Lock()
+		inner.fail = nil
+		inner.block = nil
+		inner.mu.Unlock()
+		if _, err := cache.GetToken(ctx, opts); err != nil {
+			t.Fatalf("retry after failed flight: %v", err)
+		}
+		if got := inner.count(); got != 2 {
+			t.Fatalf("calls = %d, want 2 (one retry flight)", got)
+		}
+	})
+}
+
+// TestGoogleTransport_ReusesToken is the Google-side counting twin: the
+// oauth2.ReuseTokenSource wrapper must serve repeated requests from one
+// underlying token fetch.
+func TestGoogleTransport_ReusesToken(t *testing.T) {
+	var fetches int
+	source := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "g-tok", Expiry: time.Now().Add(time.Hour)})
+	counting := oauth2.TokenSource(countingTokenSource{inner: source, calls: &fetches})
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer g-tok" {
+			t.Errorf("Authorization = %q", got)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	client, err := NewGoogleTokenSourceHTTPClient(counting)
+	if err != nil {
+		t.Fatalf("NewGoogleTokenSourceHTTPClient: %v", err)
+	}
+	for i := 0; i < 5; i++ {
+		resp, err := client.Get(backend.URL)
+		if err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+		_ = resp.Body.Close()
+	}
+	if fetches != 1 {
+		t.Fatalf("token fetches = %d, want 1 (ReuseTokenSource)", fetches)
+	}
+}
+
+type countingTokenSource struct {
+	inner oauth2.TokenSource
+	calls *int
+}
+
+func (c countingTokenSource) Token() (*oauth2.Token, error) {
+	*c.calls++
+	return c.inner.Token()
 }
