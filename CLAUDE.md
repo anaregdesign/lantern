@@ -29,7 +29,11 @@ go test ./...                    # then repeat in EACH submodule:
 (cd sdks/go && go test ./...); (cd server && go vet ./... && go test ./...)
 ```
 
+CI additionally enforces **per-module coverage floors** (a ratchet — table in CONTRIBUTING.md "Coverage floor"; raise the floor in the same PR when coverage rises durably) and fails the `Proto (buf)` check on any uncommitted codegen diff — regenerate and commit before pushing.
+
 Admin SPA (`admin/`, Bun-managed, outside `go.work`): `bun run format && bun run lint && bun run typecheck && bun run test && bun run build` (use package scripts, never bare `bun test`). See [admin/AGENTS.md](admin/AGENTS.md).
+
+Node SDK (`sdks/node/`, Bun-managed, outside `go.work`, npm `lantern-sdk`): from `sdks/node/` run `bun run codegen` (must leave `src/generated` clean — CI fails otherwise), then `bun run lint && bun run format:check && bun run typecheck && bun test && bun run build`. Single-endpoint only — no counterpart to the Go SDK's failover.
 
 ## Architecture
 
@@ -50,6 +54,7 @@ Multi-module Go workspace ([go.work](go.work)); dependency direction is a DAG wi
 - **SDK value accessors are free functions, not methods**: `Kind(v)`, `IntValue(v)`, `StringValue(v)`, etc. `client.Vertex`/`client.Edge` are true aliases of the `pb` types. Adding a value type updates three sites in [sdks/go/value.go](sdks/go/value.go).
 - Server tests needing the client SDK (full-stack round-trips) go in `tests/integration/`, never under `server/`.
 - HA/replication work implements against [docs/replication.md](docs/replication.md) (RFC); [docs/ha-runbook.md](docs/ha-runbook.md) is the operator playbook.
+- `testbed/` is the release-QA harness (docker-compose Lantern+Prometheus, exhaustive CLI/SDK sweeps, HA smoke/recovery) — procedure in [testbed/SKILL.md](testbed/SKILL.md). `.github/skills/lantern-ops` is the canonical `lantern-cli` data-operations reference; `.github/skills/react-router-app-architecture` governs admin SPA work.
 - **Pre-v1.0.0: no backward-compat guarantees** — break the proto/wire schema, SDK APIs, CLI grammar, `LANTERN_*` env vars, and metric names freely; don't hedge for old clients. Canonical: CONTRIBUTING.md "Versioning & compatibility". Separate & still forbidden: `buf generate --clean`.
 
 ## Go conventions
