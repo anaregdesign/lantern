@@ -456,10 +456,11 @@ func clampUint32(v int) uint32 {
 	if v < 0 {
 		return 0
 	}
-	if uint64(v) > math.MaxUint32 {
+	u := uint64(v)
+	if u > math.MaxUint32 {
 		return math.MaxUint32
 	}
-	return uint32(v)
+	return uint32(u)
 }
 
 // IlluminateFamilyOption maps the CLI algorithm token to the typed
