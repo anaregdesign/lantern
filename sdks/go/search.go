@@ -65,7 +65,7 @@ func (l *Lantern) SearchVertices(ctx context.Context, query string, opts ...Sear
 	}
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	resp, err := unary(ctx, &pb.SearchVerticesRequest{
+	resp, err := unary(ctx, l, &pb.SearchVerticesRequest{
 		Query:  query,
 		Limit:  o.limit,
 		Prefix: o.prefix,

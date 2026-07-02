@@ -70,7 +70,7 @@ func (l *Lantern) ScanVertices(ctx context.Context, prefix string, opts ...ScanO
 	}
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	resp, err := unary(ctx, &pb.ScanVerticesRequest{
+	resp, err := unary(ctx, l, &pb.ScanVerticesRequest{
 		Prefix: prefix,
 		Limit:  o.limit,
 		Cursor: o.cursor,
@@ -89,7 +89,7 @@ func (l *Lantern) ScanVertices(ctx context.Context, prefix string, opts ...ScanO
 func (l *Lantern) CountVerticesByPrefix(ctx context.Context, prefix string) (uint64, error) {
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	resp, err := unary(ctx, &pb.CountVerticesByPrefixRequest{Prefix: prefix}, l.client.CountVerticesByPrefix)
+	resp, err := unary(ctx, l, &pb.CountVerticesByPrefixRequest{Prefix: prefix}, l.client.CountVerticesByPrefix)
 	if err != nil {
 		return 0, err
 	}
@@ -117,7 +117,7 @@ func (l *Lantern) DeleteVerticesByPrefix(ctx context.Context, prefix string, opt
 	}
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	resp, err := unary(ctx, &pb.DeleteVerticesByPrefixRequest{
+	resp, err := unary(ctx, l, &pb.DeleteVerticesByPrefixRequest{
 		Prefix: prefix,
 		Limit:  o.limit,
 		DryRun: o.dryRun,
@@ -187,7 +187,7 @@ func (l *Lantern) ScanVertexKeys(ctx context.Context, prefix string, opts ...Sca
 	}
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	resp, err := unary(ctx, &pb.ScanVertexKeysRequest{
+	resp, err := unary(ctx, l, &pb.ScanVertexKeysRequest{
 		Prefix: prefix,
 		Limit:  o.limit,
 		Cursor: o.cursor,
