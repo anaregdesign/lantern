@@ -11,7 +11,13 @@ import type {
   WeightingName,
 } from "./types";
 
-const ILL_ALGORITHMS = new Set<AlgorithmName>(["none", "mst", "spt", "ppr", "community"]);
+const ILL_ALGORITHMS = new Set<AlgorithmName>([
+  "none",
+  "mst",
+  "spt",
+  "ppr",
+  "community",
+]);
 const ILL_OBJECTIVES = new Set<ObjectiveName>(["min", "max"]);
 const ILL_WEIGHTINGS = new Set<WeightingName>(["raw", "tfidf", "bm25"]);
 
