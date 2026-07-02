@@ -11,7 +11,7 @@
 #
 # The lantern service uses the locally-built `lantern:local` tag (built via
 # `docker build -t lantern:local .` from the repo root). Override LANTERN_IMAGE
-# to pin a released image, e.g. LANTERN_IMAGE=ghcr.io/anaregdesign/lantern:v0.7.1.
+# to pin a released image, e.g. LANTERN_IMAGE=ghcr.io/anaregdesign/lantern:v0.27.0.
 services:
   lantern:
     image: ${LANTERN_IMAGE:-lantern:local}

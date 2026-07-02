@@ -12,11 +12,13 @@ share the same shape — a single `url` pointing at the running endpoint.
 | [`vscode-mcp.json`](vscode-mcp.json) | `.vscode/mcp.json` in your workspace, or `~/.config/Code/User/mcp.json` for user scope |
 | [`cursor-mcp.json`](cursor-mcp.json) | `~/.cursor/mcp.json` |
 
-> These three files only **connect** the agent to Lantern. To make the agent
-> actually *use* it — recall before answering, capture durable facts after —
-> without being asked, also install the
+> These three files only **connect** the agent to Lantern. Since #851 the
+> default tool surface is the **shared working context** (announce / track /
+> claim / whats_happening — the server's session-open instructions already
+> drive the coordination loop). The
 > [ambient-memory instruction profile](#make-the-agent-use-lantern-automatically)
-> below.
+> below applies to the **legacy memory profile**
+> (`LANTERN_MCP_PROFILE=memory`) only.
 
 ## Start the server first
 
@@ -101,7 +103,13 @@ single line on stderr identifying the address that failed — so a failing
 Connecting the server (above) only makes the tools *available*. The server
 already advertises a system-prompt-style nudge at session-open, but the host
 agent ultimately decides when to call tools — so for reliably always-on
-behaviour, also install a client-side instruction profile:
+behaviour, also install a client-side instruction profile.
+
+> **Profile note (#851):** the instruction file below targets the legacy
+> decaying-memory verbs and is only useful when the server runs with
+> `LANTERN_MCP_PROFILE=memory`. The default **context** profile ships its
+> coordination loop in the server-side session instructions and needs no
+> client-side profile.
 
 **→ [`ambient-memory.instructions.md`](ambient-memory.instructions.md)**
 

@@ -192,7 +192,7 @@ shape of work:
 - **On-disk graphs.** The index-free-adjacency win assumes the adjacency map is
   in memory. A disk-resident graph reintroduces page I/O on the neighbor hop.
 
-The takeaway is narrow and load-bearing: **for decaying-memory, multi-hop
+The takeaway is narrow and load-bearing: **for decaying, multi-hop
 neighborhood queries — exactly Lantern's workload — index-free adjacency removes
 the $\log E$ factor a B-tree self-join cannot avoid.**
 

@@ -246,8 +246,9 @@ func mcpHTTPHandler(srv *mcp.Server, logger *slog.Logger) http.Handler {
 }
 
 // NewServer constructs an MCP server bound to an already-dialled Lantern
-// client. It registers the full tool set (ping + the six fact/relation
-// tools) and returns the *mcp.Server so callers can drive it over any
+// client. It registers the tool surface selected by LANTERN_MCP_PROFILE
+// (context — the default working-context tools — or the legacy memory
+// verbs, #851) and returns the *mcp.Server so callers can drive it over any
 // transport — production uses Run, tests can use mcp.NewInMemoryTransports.
 //
 // The TTL ladder is loaded from environment variables (LANTERN_MCP_TTL_*);

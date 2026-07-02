@@ -3,6 +3,12 @@ description: 'Ambient memory policy for agents connected to the Lantern MCP serv
 applyTo: '**'
 ---
 
+> **Legacy profile only (#851).** These instructions drive the
+> `remember_*` / `recall_*` decaying-memory verbs, which are served only
+> when the MCP server runs with `LANTERN_MCP_PROFILE=memory`. The default
+> `context` profile (multi-agent shared working context) carries its own
+> session-open instructions and does not use this file.
+
 # Ambient memory (Lantern MCP)
 
 > **What this is.** A ready-to-use instruction profile that turns the Lantern

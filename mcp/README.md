@@ -69,7 +69,7 @@ MCP endpoint at `/mcp`, and answers a plain `/healthz` probe with
 docker run --rm \
   -p 6390:6390 \
   -e LANTERN_ADDR=host.docker.internal:6380 \
-  ghcr.io/anaregdesign/lantern-mcp:v0.4.0
+  ghcr.io/anaregdesign/lantern-mcp:v0.10.0
 ```
 
 Point your agent at `http://localhost:6390/mcp`. The image sets
