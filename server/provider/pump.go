@@ -85,6 +85,7 @@ func loadPeerConfig() PeerConfig {
 func NewReplicationPump(
 	pc PeerConfig,
 	rc ReplicationConfig,
+	ac AuthConfig,
 	svc *service.LanternService,
 	cache *graphcache.GraphCache[string, *v1.Vertex],
 	m replication.Metrics,
@@ -98,6 +99,7 @@ func NewReplicationPump(
 		Logger:            logger,
 		Metrics:           m,
 		DiscoveryInterval: pc.DiscoveryInterval,
+		AuthToken:         firstToken(ac.Tokens),
 	}
 	if pc.Discovery == "dns" && pc.DNSName != "" {
 		selfIPs, err := replication.LocalIPSet()
@@ -117,4 +119,14 @@ func NewReplicationPump(
 			slog.Duration("interval", pc.DiscoveryInterval))
 	}
 	return replication.NewPump(cfg, svc, cache)
+}
+
+// firstToken picks the client-side token when auth is enabled (#850):
+// clients send tokens[0]; the server accepts any configured token, which is
+// what makes {old,new} rotation zero-downtime.
+func firstToken(tokens []string) string {
+	if len(tokens) == 0 {
+		return ""
+	}
+	return tokens[0]
 }

@@ -199,6 +199,7 @@ type Config struct {
 	Shutdown      ShutdownConfig
 	Validation    ValidationLimits
 	Traversal     TraversalConfig
+	Auth          AuthConfig
 	Scan          ScanConfig
 	Search        SearchConfig
 	MutationLog   MutationLogConfig
@@ -269,6 +270,10 @@ func NewConfig() (*Config, error) {
 		Traversal: TraversalConfig{
 			Timeout: time.Duration(envconfig.Int("LANTERN_TRAVERSAL_TIMEOUT_MS", 0)) * time.Millisecond,
 		},
+		Auth: AuthConfig{
+			Tokens:           splitTokens(envconfig.String("LANTERN_AUTH_TOKENS", "")),
+			ExemptReflection: envconfig.Bool("LANTERN_AUTH_EXEMPT_REFLECTION", true),
+		},
 		Scan: ScanConfig{
 			ScanDefaultLimit:           envconfig.Uint32("LANTERN_SCAN_DEFAULT_LIMIT", 1000),
 			ScanMaxLimit:               envconfig.Uint32("LANTERN_SCAN_MAX_LIMIT", 10000),
@@ -294,8 +299,10 @@ func NewConfig() (*Config, error) {
 // foreignEnvPrefixes names LANTERN_*-prefixed namespaces owned by sibling
 // processes that legitimately share an env file with the server, so the
 // unknown-variable sweep does not flag them (#847). The MCP server reads
-// LANTERN_MCP_* in its own process; it never registers here.
-var foreignEnvPrefixes = []string{"LANTERN_MCP_"}
+// LANTERN_MCP_* in its own process; LANTERN_TOKEN is the CLIENT-side auth
+// token consumed by lantern-cli and the MCP server (#850) — a compose file
+// commonly sets it alongside the server's LANTERN_AUTH_TOKENS.
+var foreignEnvPrefixes = []string{"LANTERN_MCP_", "LANTERN_TOKEN"}
 
 // validateEnv is the boot-time config validation pass (#847). It runs after
 // every loader has registered its variables, so the envconfig registry is
@@ -359,6 +366,7 @@ func NewTLSConfig(c *Config) TLSConfig                     { return c.TLS }
 func NewRateLimitConfig(c *Config) RateLimitConfig         { return c.RateLimit }
 func NewObservabilityConfig(c *Config) ObservabilityConfig { return c.Observability }
 func NewCacheConfig(c *Config) CacheConfig                 { return c.Cache }
+func NewAuthConfig(c *Config) AuthConfig                   { return c.Auth }
 func NewShutdownConfig(c *Config) ShutdownConfig           { return c.Shutdown }
 func NewValidationLimits(c *Config) ValidationLimits       { return c.Validation }
 func NewTraversalConfig(c *Config) TraversalConfig         { return c.Traversal }
@@ -606,3 +614,20 @@ func (m *httpMetricsServer) Run(ctx context.Context) error {
 // NewLanternListener via connectrpc.com/grpchealth and
 // connectrpc.com/grpcreflect; the env-var contract (LANTERN_REFLECTION)
 // is unchanged.
+
+// splitTokens parses the comma-separated LANTERN_AUTH_TOKENS value (#850).
+// Entries are trimmed and empties dropped so "old,new," cannot admit the
+// empty token.
+func splitTokens(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}

@@ -44,11 +44,13 @@ func initializeApp() (*App, error) {
 	validationInterceptor := provider.NewValidationInterceptorProvider(validationLimits, domainMetrics, logger)
 	rateLimitConfig := provider.NewRateLimitConfig(config)
 	rateLimitInterceptor := provider.NewRateLimitInterceptorProvider(rateLimitConfig, domainMetrics)
+	authConfig := provider.NewAuthConfig(config)
+	authInterceptor := provider.NewAuthInterceptorProvider(authConfig, domainMetrics)
 	loggingInterceptor := provider.NewLoggingInterceptor(logger)
 	prometheusInterceptor := provider.NewPrometheusInterceptor(registry)
 	slowRPCInterceptor := provider.NewSlowRPCInterceptorProvider(observabilityConfig, logger)
 	healthChecker := provider.NewHealthChecker()
-	lanternListener, err := provider.NewLanternListener(listener, netConfig, tlsConfig, observabilityConfig, corsConfig, lanternService, lanternReplicationService, validationInterceptor, rateLimitInterceptor, loggingInterceptor, prometheusInterceptor, slowRPCInterceptor, healthChecker, logger)
+	lanternListener, err := provider.NewLanternListener(listener, netConfig, tlsConfig, observabilityConfig, corsConfig, lanternService, lanternReplicationService, validationInterceptor, rateLimitInterceptor, authInterceptor, loggingInterceptor, prometheusInterceptor, slowRPCInterceptor, healthChecker, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -64,10 +66,10 @@ func initializeApp() (*App, error) {
 		return nil, err
 	}
 	metrics := provider.NewPumpMetrics(domainMetrics, gate)
-	pump := provider.NewReplicationPump(peerConfig, replicationConfig, lanternService, graphCache, metrics, logger)
+	pump := provider.NewReplicationPump(peerConfig, replicationConfig, authConfig, lanternService, graphCache, metrics, logger)
 	antiEntropyConfig := provider.NewAntiEntropyConfig(config)
 	antiEntropyMetrics := provider.NewAntiEntropyMetrics(domainMetrics, gate)
-	antiEntropy := provider.NewAntiEntropyDriver(peerConfig, replicationConfig, antiEntropyConfig, lanternService, graphCache, pump, antiEntropyMetrics, logger)
+	antiEntropy := provider.NewAntiEntropyDriver(peerConfig, replicationConfig, antiEntropyConfig, authConfig, lanternService, graphCache, pump, antiEntropyMetrics, logger)
 	backupConfig := provider.NewBackupConfig(config)
 	backupper := provider.NewBackupper(backupConfig, lanternService, registry, logger)
 	cacheGCHooksWired := provider.WireCacheGCHooks(graphCache, domainMetrics, logger)

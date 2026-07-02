@@ -53,3 +53,34 @@ func peerBaseURL(addr string) string {
 	}
 	return "http://" + addr
 }
+
+// authTransport injects the shared cluster bearer token on every outbound
+// replication request (#850). Peers share LANTERN_AUTH_TOKENS; rotation
+// order is: add the new token on all servers, switch clients (this
+// transport sends tokens[0]), then drop the old token.
+type authTransport struct {
+	base  http.RoundTripper
+	token string
+}
+
+func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req = req.Clone(req.Context())
+	req.Header.Set("Authorization", "Bearer "+t.token)
+	return t.base.RoundTrip(req)
+}
+
+// withAuthToken returns a copy of c whose transport attaches the bearer
+// token; c itself is untouched. A blank token returns c unchanged so the
+// auth-disabled path costs nothing.
+func withAuthToken(c *http.Client, token string) *http.Client {
+	if token == "" {
+		return c
+	}
+	base := c.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	clone := *c
+	clone.Transport = &authTransport{base: base, token: token}
+	return &clone
+}

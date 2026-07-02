@@ -60,6 +60,11 @@ var ErrUnavailable = errors.New("unavailable")
 // retrying.
 var ErrFailedPrecondition = errors.New("failed precondition")
 
+// ErrUnauthenticated wraps connect.CodeUnauthenticated responses — the
+// server has LANTERN_AUTH_TOKENS armed and the request carried no (or a
+// stale) bearer token (#850). Configure the client with WithAuthToken.
+var ErrUnauthenticated = errors.New("unauthenticated")
+
 // Edge re-exports the generated protobuf Edge type so SDK callers do not
 // need to import the pb package directly. It is a true Go type alias, not a
 // parallel struct: client.Edge and pb.Edge are the same type, freely
@@ -255,6 +260,8 @@ func wrapConnectErr(err error) error {
 		return errors.Join(ErrUnavailable, err)
 	case connect.CodeFailedPrecondition:
 		return errors.Join(ErrFailedPrecondition, err)
+	case connect.CodeUnauthenticated:
+		return errors.Join(ErrUnauthenticated, err)
 	}
 	return err
 }

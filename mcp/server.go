@@ -141,7 +141,13 @@ func Run(ctx context.Context, cfg Config) error {
 		slog.Int("nodes", len(addrs)),
 		slog.String("version", Version),
 	)
-	lantern, err := client.NewLanternFailover(addrs)
+	// LANTERN_TOKEN authenticates against servers running with
+	// LANTERN_AUTH_TOKENS (#850); unset keeps the open-cluster behaviour.
+	var cliOpts []client.Option
+	if tok := os.Getenv("LANTERN_TOKEN"); tok != "" {
+		cliOpts = append(cliOpts, client.WithAuthToken(tok))
+	}
+	lantern, err := client.NewLanternFailover(addrs, cliOpts...)
 	if err != nil {
 		return fmt.Errorf("mcp: dial lantern: %w", err)
 	}

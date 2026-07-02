@@ -376,6 +376,29 @@ write burst faster than TTL decay fails fast instead:
 - Keep `GOMEMLIMIT` (set below `resources.limits.memory`) as the second
   line of defense — the caps bound entry counts, not bytes.
 
+**Securing the cluster (#850) — decision table:**
+
+| Tier | When | How |
+|---|---|---|
+| Open | isolated network, single-tenant dev | default (no `LANTERN_AUTH_TOKENS`, no TLS) |
+| Bearer token | shared dev cluster, managed platform where client certs are friction — `requirepass`-tier | `LANTERN_AUTH_TOKENS=<token>` on every node; clients use `WithAuthToken` / `--token` / `LANTERN_TOKEN` |
+| Token + TLS | anything crossing an untrusted network | the above plus `LANTERN_TLS_*` — **bearer tokens over plaintext h2c are sniffable**; token-only auth is NOT transport security |
+| mTLS | zero-trust | `LANTERN_TLS_CLIENT_CA_FILE` (unchanged; the strong option) |
+
+Operational notes:
+
+- All nodes in a cluster share the token set; the pump and anti-entropy
+  clients send `tokens[0]`. **Rotation order:** add the new token to
+  `LANTERN_AUTH_TOKENS` on every server (old,new) → switch clients and
+  restart nodes so peers pick the new `tokens[0]` → drop the old token.
+- `grpc.health.v1.Health` is always exempt (Kubernetes gRPC probes cannot
+  attach headers). Reflection is exempt by default; set
+  `LANTERN_AUTH_EXEMPT_REFLECTION=false` to require the token there too.
+- The metrics listener is bind-address-scoped and carries no auth — keep
+  it off public interfaces.
+- Watch `lantern_auth_rejected_total`: a non-zero steady rate after a
+  rotation usually means a client is still on the dropped token.
+
 ---
 
 ## 6. Partition behaviour & split-brain
