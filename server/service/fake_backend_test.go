@@ -19,6 +19,14 @@ type fakeBackend struct {
 	edges       map[string]map[string]float32
 	neighborErr error
 
+	// neighborBlockUntilCtxDone makes NeighborWithExpirationsContext park on
+	// <-ctx.Done() and return ctx.Err(), simulating a traversal that outlives
+	// its budget so handler tests can pin the #842 server-side timeout.
+	// lastNeighborHadDeadline records whether the handler-supplied ctx
+	// carried a deadline at all (the budget-disabled assertion).
+	neighborBlockUntilCtxDone bool
+	lastNeighborHadDeadline   bool
+
 	// captured args from the most recent NeighborWithExpirationsContext
 	// call, so tests can assert how the Illuminate handler maps Objective
 	// onto the per-hop pruning direction (#560) and threads the optional
@@ -170,6 +178,11 @@ func (f *fakeBackend) NeighborWithExpirationsContext(
 	f.lastNeighborWeighting = weighting
 	f.lastNeighborSelectSmall = selectSmallest
 	f.lastNeighborKeep = keep
+	_, f.lastNeighborHadDeadline = ctx.Deadline()
+	if f.neighborBlockUntilCtxDone {
+		<-ctx.Done()
+		return nil, nil, ctx.Err()
+	}
 	if f.neighborErr != nil {
 		return nil, nil, f.neighborErr
 	}

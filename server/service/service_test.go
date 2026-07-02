@@ -1538,3 +1538,62 @@ func TestExpirationClamp_FiresValidationRejectHook(t *testing.T) {
 		t.Fatalf("reject hook fired on success path: %v", got)
 	}
 }
+
+// TestLanternService_Illuminate_TraversalBudget pins the #842 server-side
+// wall-clock budget: a traversal that outlives LANTERN_TRAVERSAL_TIMEOUT_MS
+// is cancelled and surfaces as CodeDeadlineExceeded, while the disabled
+// default injects no deadline at all (client-owned behaviour unchanged), and
+// an already-shorter client deadline still wins.
+func TestLanternService_Illuminate_TraversalBudget(t *testing.T) {
+	t.Run("budget cancels an over-long traversal as DeadlineExceeded", func(t *testing.T) {
+		fb := newFakeBackend()
+		fb.neighborBlockUntilCtxDone = true
+		svc := NewLanternService(fb).WithTraversalTimeout(20 * time.Millisecond)
+
+		_, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{Seed: "a"})
+		if connect.CodeOf(err) != connect.CodeDeadlineExceeded {
+			t.Fatalf("err = %v, want CodeDeadlineExceeded", err)
+		}
+	})
+
+	t.Run("disabled budget injects no deadline", func(t *testing.T) {
+		fb := newFakeBackend()
+		svc := NewLanternService(fb)
+
+		if _, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{Seed: "a"}); err != nil {
+			t.Fatalf("Illuminate: %v", err)
+		}
+		if fb.lastNeighborHadDeadline {
+			t.Fatal("backend ctx carried a deadline with the budget disabled")
+		}
+	})
+
+	t.Run("enabled budget reaches the backend as a deadline", func(t *testing.T) {
+		fb := newFakeBackend()
+		svc := NewLanternService(fb).WithTraversalTimeout(time.Hour)
+
+		if _, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{Seed: "a"}); err != nil {
+			t.Fatalf("Illuminate: %v", err)
+		}
+		if !fb.lastNeighborHadDeadline {
+			t.Fatal("backend ctx carried no deadline with the budget enabled")
+		}
+	})
+
+	t.Run("shorter client deadline still wins over a long budget", func(t *testing.T) {
+		fb := newFakeBackend()
+		fb.neighborBlockUntilCtxDone = true
+		svc := NewLanternService(fb).WithTraversalTimeout(time.Hour)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
+		start := time.Now()
+		_, err := svc.Illuminate(ctx, &pb.IlluminateRequest{Seed: "a"})
+		if connect.CodeOf(err) != connect.CodeDeadlineExceeded {
+			t.Fatalf("err = %v, want CodeDeadlineExceeded", err)
+		}
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
+			t.Fatalf("client deadline did not win: took %v", elapsed)
+		}
+	})
+}
