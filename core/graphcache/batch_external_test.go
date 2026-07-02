@@ -412,6 +412,27 @@ func TestPutVerticesWithExpirationHLC_BatchLWW(t *testing.T) {
 			t.Errorf("older batch put resurrected a tombstoned key")
 		}
 	})
+
+	// The rejected return (#840) counts exactly the tombstone/LWW-skipped
+	// items — never applied items, and never born-expired items (those are
+	// applied dead-on-arrival with their watermark recorded).
+	t.Run("RejectedCount", func(t *testing.T) {
+		c := graphcache.NewGraphCache[string, string](time.Minute)
+		if got := c.PutVerticesWithExpirationHLC([]graphcache.VertexItem[string, string]{
+			{Key: "a", Value: "v", Expiration: exp},
+			{Key: "b", Value: "v", Expiration: exp},
+		}, newer); got != 0 {
+			t.Fatalf("first batch rejected = %d, want 0", got)
+		}
+		if got := c.PutVerticesWithExpirationHLC([]graphcache.VertexItem[string, string]{
+			{Key: "a", Value: "stale", Expiration: exp},                       // rejected: LWW
+			{Key: "b", Value: "stale", Expiration: exp},                       // rejected: LWW
+			{Key: "c", Value: "fresh", Expiration: exp},                       // applied
+			{Key: "x", Value: "dead", Expiration: time.Now().Add(-time.Hour)}, // applied dead-on-arrival, NOT rejected
+		}, older); got != 2 {
+			t.Fatalf("mixed batch rejected = %d, want 2 (LWW losers only)", got)
+		}
+	})
 }
 
 // PutEdgesWithExpirationHLC is the edge LWW sibling: a strictly-older batch is
@@ -452,6 +473,32 @@ func TestPutEdgesWithExpirationHLC_BatchLWW(t *testing.T) {
 		}, older)
 		if _, ok := c.GetWeight("a", "b"); ok {
 			t.Errorf("older batch put resurrected a tombstoned edge")
+		}
+	})
+
+	// The rejected return (#840) counts tombstone-fenced and per-edge
+	// LWW-lost items — the same set the singular PutEdgeWithExpirationHLC
+	// reports as applied=false — and nothing else.
+	t.Run("RejectedCount", func(t *testing.T) {
+		c := graphcache.NewGraphCache[string, string](time.Minute)
+		if got := c.PutEdgesWithExpirationHLC([]graphcache.EdgeItem[string]{
+			{Tail: "a", Head: "b", Weight: 1.0, Expiration: exp},
+		}, newer); got != 0 {
+			t.Fatalf("first batch rejected = %d, want 0", got)
+		}
+		if got := c.PutEdgesWithExpirationHLC([]graphcache.EdgeItem[string]{
+			{Tail: "a", Head: "b", Weight: 9.9, Expiration: exp}, // rejected: LWW watermark
+			{Tail: "x", Head: "y", Weight: 1.0, Expiration: exp}, // applied: brand-new edge
+		}, older); got != 1 {
+			t.Fatalf("mixed batch rejected = %d, want 1 (LWW loser only)", got)
+		}
+		if n := c.DeleteEdgesHLC([]graphcache.EdgeKey[string]{{Tail: "x", Head: "y"}}, newer, exp); n != 1 {
+			t.Fatalf("delete: got %d, want 1", n)
+		}
+		if got := c.PutEdgesWithExpirationHLC([]graphcache.EdgeItem[string]{
+			{Tail: "x", Head: "y", Weight: 2.0, Expiration: exp}, // rejected: tombstone fence
+		}, older); got != 1 {
+			t.Fatalf("tombstone-fenced batch rejected = %d, want 1", got)
 		}
 	})
 }

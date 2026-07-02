@@ -116,12 +116,28 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		opName = "PutVertex"
 
 	case *pb.MutationOp_PutVertices:
-		for _, v := range op.PutVertices.GetVertices() {
+		// Route the whole batch through the single-lock batch method (#840):
+		// one GraphCache.mu cycle instead of N, and search documents are
+		// analyzed OUTSIDE the lock (#739). Born-expired items follow the
+		// batch dead-on-arrival semantics (#698): nothing is stored, but the
+		// HLC watermark is still recorded so a later strictly-older write
+		// cannot resurrect the key — the singular path physically stored such
+		// entries until GC, which only inflated replica high-water.
+		vs := op.PutVertices.GetVertices()
+		items := make([]graphcache.VertexItem[string, *pb.Vertex], 0, len(vs))
+		for _, v := range vs {
 			if v == nil {
 				continue
 			}
-			applied := s.cache.PutVertexWithExpirationHLC(v.GetKey(), v, v.GetExpiration().AsTime(), ts)
-			if !applied && useTomb && s.onTombstoneClampReject != nil {
+			items = append(items, graphcache.VertexItem[string, *pb.Vertex]{
+				Key:        v.GetKey(),
+				Value:      v,
+				Expiration: v.GetExpiration().AsTime(),
+			})
+		}
+		rejected := s.cache.PutVerticesWithExpirationHLC(items, ts)
+		if useTomb && s.onTombstoneClampReject != nil {
+			for i := 0; i < rejected; i++ {
 				s.onTombstoneClampReject()
 			}
 		}
@@ -178,8 +194,13 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		opName = "AddEdge"
 
 	case *pb.MutationOp_AddEdges:
+		// Batch-routed (#840): one lock cycle for the whole mutation. The
+		// ContribID synthesis fallback keys on the WIRE index (including nil
+		// slots) so a mutation with a nil edge in the middle produces the
+		// same per-edge dedup ids the singular loop did.
 		edges := op.AddEdges.GetEdges()
 		contribIDs := op.AddEdges.GetContribIds()
+		items := make([]graphcache.EdgeItem[string], 0, len(edges))
 		for i, e := range edges {
 			if e == nil {
 				continue
@@ -194,16 +215,26 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 			if cID.IsZero() {
 				cID = contribIDFor(origin, seq, uint16(i))
 			}
-			if useTomb {
-				applied := s.cache.AddEdgeWithExpirationContribHLC(e.GetTail(), e.GetHead(), e.GetWeight(),
-					e.GetExpiration().AsTime(), cID, ts)
-				if !applied && s.onTombstoneClampReject != nil {
+			items = append(items, graphcache.EdgeItem[string]{
+				Tail:       e.GetTail(),
+				Head:       e.GetHead(),
+				Weight:     e.GetWeight(),
+				Expiration: e.GetExpiration().AsTime(),
+				ContribID:  cID,
+			})
+		}
+		if useTomb {
+			// The batch return counts every item that added no weight —
+			// tombstone-dropped or ContribID-deduped — which is exactly the
+			// per-item applied=false set the singular loop fed the hook.
+			noWeight := s.cache.AddEdgesWithExpirationContribHLC(items, ts)
+			if s.onTombstoneClampReject != nil {
+				for i := 0; i < noWeight; i++ {
 					s.onTombstoneClampReject()
 				}
-			} else {
-				s.cache.AddEdgeWithExpirationContrib(e.GetTail(), e.GetHead(), e.GetWeight(),
-					e.GetExpiration().AsTime(), cID)
 			}
+		} else {
+			s.cache.AddEdgesWithExpirationContrib(items)
 		}
 		opName = "AddEdges"
 
@@ -220,13 +251,24 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		opName = "PutEdge"
 
 	case *pb.MutationOp_PutEdges:
-		for _, e := range op.PutEdges.GetEdges() {
+		// Batch-routed (#840): one lock cycle; rejected counts tombstone-
+		// fenced and LWW-lost items, matching the singular applied=false set.
+		in := op.PutEdges.GetEdges()
+		items := make([]graphcache.EdgeItem[string], 0, len(in))
+		for _, e := range in {
 			if e == nil {
 				continue
 			}
-			applied := s.cache.PutEdgeWithExpirationHLC(e.GetTail(), e.GetHead(), e.GetWeight(),
-				e.GetExpiration().AsTime(), ts)
-			if !applied && useTomb && s.onTombstoneClampReject != nil {
+			items = append(items, graphcache.EdgeItem[string]{
+				Tail:       e.GetTail(),
+				Head:       e.GetHead(),
+				Weight:     e.GetWeight(),
+				Expiration: e.GetExpiration().AsTime(),
+			})
+		}
+		rejected := s.cache.PutEdgesWithExpirationHLC(items, ts)
+		if useTomb && s.onTombstoneClampReject != nil {
+			for i := 0; i < rejected; i++ {
 				s.onTombstoneClampReject()
 			}
 		}

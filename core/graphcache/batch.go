@@ -225,9 +225,16 @@ func (c *GraphCache[S, T]) DeleteEdges(keys []EdgeKey[S]) int {
 // PutVerticesWithExpiration (the entry is removed, not stored) so the #698
 // high-water optimisation is preserved; the watermark is still recorded so a
 // later strictly-older write cannot resurrect the key.
-func (c *GraphCache[S, T]) PutVerticesWithExpirationHLC(items []VertexItem[S, T], ts hlc.Timestamp) {
+//
+// Returns the number of items REJECTED by those guards — tombstone fence or
+// LWW watermark — exactly the set the singular PutVertexWithExpirationHLC
+// reports as applied=false. Born-expired items are applied (dead on arrival,
+// watermark recorded) and are NOT counted, and nothing else contributes, so
+// the replication apply path (#840) can fire its clamp-reject metric once per
+// rejected item with the same meaning the per-item loop had.
+func (c *GraphCache[S, T]) PutVerticesWithExpirationHLC(items []VertexItem[S, T], ts hlc.Timestamp) (rejected int) {
 	if len(items) == 0 {
-		return
+		return 0
 	}
 	now := time.Now()
 	prepared := c.prepareSearchDocs(items, now)
@@ -236,12 +243,14 @@ func (c *GraphCache[S, T]) PutVerticesWithExpirationHLC(items []VertexItem[S, T]
 	for i := range items {
 		it := items[i]
 		if !c.vertexWriteAllowedLocked(it.Key, ts) {
+			rejected++
 			continue
 		}
 		c.putLocalVertexLockedAt(it.Key, it.Value, it.Expiration, now, preparedAt(prepared, i))
 		c.recordVertexHLCLocked(it.Key, ts)
 		c.clearVertexTombstoneLocked(it.Key)
 	}
+	return rejected
 }
 
 // PutEdgesWithExpirationHLC is the LWW-aware, single-lock batch sibling of
@@ -252,20 +261,31 @@ func (c *GraphCache[S, T]) PutVerticesWithExpirationHLC(items []VertexItem[S, T]
 // the same edge concurrently. Endpoint vertices are auto-created regardless of
 // the per-edge LWW outcome (matching PutEdgeWithExpirationHLC) so traversal
 // always sees the endpoints.
-func (c *GraphCache[S, T]) PutEdgesWithExpirationHLC(items []EdgeItem[S], ts hlc.Timestamp) {
+//
+// Returns the number of items REJECTED by the tombstone fence or by the
+// per-edge LWW watermark inside the storage layer — exactly the set the
+// singular PutEdgeWithExpirationHLC reports as applied=false — so the
+// replication apply path (#840) can fire its clamp-reject metric once per
+// rejected item with unchanged meaning. ContribID dedup never contributes
+// here (that is AddEdgesWithExpirationContribHLC's separate count).
+func (c *GraphCache[S, T]) PutEdgesWithExpirationHLC(items []EdgeItem[S], ts hlc.Timestamp) (rejected int) {
 	if len(items) == 0 {
-		return
+		return 0
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, it := range items {
 		if !c.edgeWriteAllowedLocked(it.Tail, it.Head, ts) {
+			rejected++
 			continue
 		}
 		if c.putEdgeHLCLocked(it.Tail, it.Head, it.Weight, it.Expiration, ts) {
 			c.clearEdgeTombstoneLocked(it.Tail, it.Head)
+		} else {
+			rejected++
 		}
 	}
+	return rejected
 }
 
 // AddEdgesWithExpirationContribHLC is the tombstone-aware, single-lock batch

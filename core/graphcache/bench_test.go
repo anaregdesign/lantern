@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/search"
 )
 
@@ -727,4 +728,78 @@ func BenchmarkPutVerticesIndexed(b *testing.B) {
 			}
 		})
 	})
+}
+
+// BenchmarkApplyPutVerticesHLC contrasts the two ways the replication apply
+// path can replay a 1k-vertex MutationOp_PutVertices with the search index
+// enabled (#840): the pre-#840 loop of singular PutVertexWithExpirationHLC
+// calls (N lock cycles, tokenization under GraphCache.mu) against one
+// PutVerticesWithExpirationHLC batch (one lock cycle, analysis off-lock).
+func BenchmarkApplyPutVerticesHLC(b *testing.B) {
+	const n = 1000
+	value := "the quick brown fox jumps over the lazy dog and keeps running through the forest"
+	exp := time.Now().Add(time.Hour)
+	items := make([]VertexItem[string, string], n)
+	for i := range items {
+		items[i] = VertexItem[string, string]{Key: makeKey("bench://apply", i, 40), Value: value, Expiration: exp}
+	}
+	newCache := func() *GraphCache[string, string] {
+		c := NewGraphCache[string, string](time.Hour)
+		c.EnableSearchIndex(func(v string) search.Document { return search.Text(v) })
+		return c
+	}
+	ts := hlc.Timestamp{WallNs: 1}
+
+	b.Run("SingularLoop", func(b *testing.B) {
+		c := newCache()
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			for j := range items {
+				c.PutVertexWithExpirationHLC(items[j].Key, items[j].Value, items[j].Expiration, ts)
+			}
+		}
+	})
+	b.Run("Batch", func(b *testing.B) {
+		c := newCache()
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			c.PutVerticesWithExpirationHLC(items, ts)
+		}
+	})
+
+	// The contended pair measures what the receiving replica's local READS
+	// experience while catch-up replay hammers the apply path — the singular
+	// loop tokenizes all N documents under GraphCache.mu, the batch analyzes
+	// off-lock and holds the write lock only for the map/index writes.
+	for _, mode := range []string{"SingularLoop", "Batch"} {
+		mode := mode
+		b.Run("GetVertexUnder/"+mode, func(b *testing.B) {
+			c := newCache()
+			c.PutVerticesWithExpirationHLC(items, ts)
+			var stop atomic.Bool
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				for !stop.Load() {
+					if mode == "Batch" {
+						c.PutVerticesWithExpirationHLC(items, ts)
+					} else {
+						for j := range items {
+							c.PutVertexWithExpirationHLC(items[j].Key, items[j].Value, items[j].Expiration, ts)
+						}
+					}
+				}
+			}()
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_, _ = c.GetVertex(items[i%n].Key)
+			}
+			b.StopTimer()
+			stop.Store(true)
+			<-done
+		})
+	}
 }
