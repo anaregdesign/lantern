@@ -2,6 +2,7 @@ package graphcache
 
 import (
 	"reflect"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -210,5 +211,89 @@ func TestGraphCache_Snapshot_ReferentialClosure(t *testing.T) {
 		if _, ok := edgeByEndpoints(got.Edges)[danglingKey]; ok {
 			t.Errorf("snapshot kept edge to expired-not-flushed endpoint: %v", got.Edges)
 		}
+	})
+}
+
+// TestSnapshotRLockContract pins the #843 lock downgrade: snapshots must be
+// takeable while another goroutine holds the aggregate READ lock (a write
+// lock would deadlock this test), must FILTER expired-but-unflushed entries
+// without physically removing them (reclamation belongs to the GC tick),
+// and must keep set-level vertex/edge co-existence under concurrent writers.
+func TestSnapshotRLockContract(t *testing.T) {
+	t.Run("snapshots proceed under a held read lock", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Minute)
+		c.PutVertexWithExpiration("a", "va", time.Now().Add(time.Minute))
+
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+		done := make(chan GraphSnapshot[string, string], 1)
+		go func() { done <- c.SnapshotGraph() }()
+		select {
+		case snap := <-done:
+			if len(snap.Vertices) != 1 {
+				t.Fatalf("Vertices = %d, want 1", len(snap.Vertices))
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("SnapshotGraph blocked behind a concurrent RLock — write lock regression")
+		}
+	})
+
+	t.Run("expired entries are filtered, not flushed", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Minute)
+		c.PutVertexWithExpiration("live", "v", time.Now().Add(time.Minute))
+		c.PutVertexWithExpiration("dead", "v", time.Now().Add(20*time.Millisecond))
+		time.Sleep(30 * time.Millisecond)
+
+		snap := c.SnapshotGraph()
+		if len(snap.Vertices) != 1 || snap.Vertices[0].Key != "live" {
+			t.Fatalf("snapshot vertices = %+v, want only live", snap.Vertices)
+		}
+		// The expired slot must still be physically present afterwards —
+		// the snapshot pass no longer mutates; only the GC tick reclaims.
+		if got := c.vertices.Count(); got != 2 {
+			t.Fatalf("physical vertex count after snapshot = %d, want 2 (no flush side effect)", got)
+		}
+		if _, ok := c.GetVertex("dead"); ok {
+			t.Fatal("expired vertex visible to point reads")
+		}
+	})
+
+	t.Run("vertex-edge co-existence holds under concurrent writers", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Minute)
+		exp := time.Now().Add(time.Minute)
+		stop := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; ; i++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				k := "w" + strconv.Itoa(i%64)
+				c.PutVertexWithExpiration(k, "v", exp)
+				c.AddEdgeWithExpiration(k, "hub-"+strconv.Itoa(i%8), 1, exp)
+				if i%16 == 0 {
+					c.DeleteVertex(k)
+				}
+			}
+		}()
+
+		for i := 0; i < 50; i++ {
+			snap := c.SnapshotGraph()
+			present := make(map[string]bool, len(snap.Vertices))
+			for _, v := range snap.Vertices {
+				present[v.Key] = true
+			}
+			for _, e := range snap.Edges {
+				if !present[e.Tail] || !present[e.Head] {
+					t.Fatalf("snapshot %d: edge %s->%s references a vertex absent from the SAME snapshot", i, e.Tail, e.Head)
+				}
+			}
+		}
+		close(stop)
+		wg.Wait()
 	})
 }

@@ -51,26 +51,29 @@ type GraphSnapshot[S comparable, T any] struct {
 }
 
 // SnapshotVertices returns a materialised snapshot of every live vertex
-// in the cache. The snapshot is taken under a single write-lock pass; the
-// returned slice is independent of the cache and safe to iterate without
-// further locking. Expired vertices (those past Expiration at snapshot
-// time) are skipped.
+// in the cache. Since #843 the snapshot is taken under a READ lock:
+// expired-but-unflushed entries are FILTERED (Range skips them) rather than
+// physically flushed, so concurrent readers — point reads, scans,
+// traversals — keep making progress while a backup or replication
+// bootstrap materialises the graph. Physical reclamation of expired
+// entries belongs solely to the GC tick. The returned slice is independent
+// of the cache and safe to iterate without further locking.
 //
 // Memory cost is O(N) in the live vertex count — the API is intended for
 // replication bootstrap (#184), which is a bounded, infrequent operation.
 // Hot read paths should keep using GetVertex.
 func (c *GraphCache[S, T]) SnapshotVertices() []SnapshotVertex[S, T] {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.snapshotVerticesLocked()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.snapshotVerticesRLocked()
 }
 
-// snapshotVerticesLocked materialises every live vertex. The caller MUST
-// hold c.mu as a WRITE lock: it calls c.vertices.Flush(), which mutates the
-// cache, so a read lock is insufficient. Factored out so SnapshotGraph can
+// snapshotVerticesRLocked materialises every live vertex. The caller must
+// hold c.mu (read lock suffices since #843 — the pass only filters expired
+// entries, never mutates). vertexHLC is safe to read here because every
+// writer of that map holds c.mu.Lock. Factored out so SnapshotGraph can
 // reuse it under a single lock acquisition.
-func (c *GraphCache[S, T]) snapshotVerticesLocked() []SnapshotVertex[S, T] {
-	c.vertices.Flush()
+func (c *GraphCache[S, T]) snapshotVerticesRLocked() []SnapshotVertex[S, T] {
 	out := make([]SnapshotVertex[S, T], 0, c.vertices.Count())
 	c.vertices.Range(func(key S, value T, expiration time.Time) bool {
 		var ts hlc.Timestamp
@@ -89,8 +92,8 @@ func (c *GraphCache[S, T]) snapshotVerticesLocked() []SnapshotVertex[S, T] {
 }
 
 // SnapshotEdges returns a materialised snapshot of every live edge in the
-// cache, preserving the per-contribution weight decomposition. The
-// snapshot is taken under a single write-lock pass; the returned slice is
+// cache, preserving the per-contribution weight decomposition. Taken under
+// a READ lock since #843 (see SnapshotVertices); the returned slice is
 // independent of the cache. Edges whose every contribution has decayed
 // are skipped (they would otherwise show up as ghost entries with zero
 // total weight).
@@ -98,15 +101,16 @@ func (c *GraphCache[S, T]) snapshotVerticesLocked() []SnapshotVertex[S, T] {
 // Memory cost is O(E + sum of bucket sizes); same scope rationale as
 // SnapshotVertices.
 func (c *GraphCache[S, T]) SnapshotEdges() []SnapshotEdge[S] {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.snapshotEdgesLocked(time.Now())
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.snapshotEdgesRLocked(time.Now())
 }
 
-// snapshotEdgesLocked materialises every live edge as of now. The caller
-// MUST hold c.mu (write lock — symmetric with snapshotVerticesLocked so
-// SnapshotGraph can take the lock once for both sides).
-func (c *GraphCache[S, T]) snapshotEdgesLocked(now time.Time) []SnapshotEdge[S] {
+// snapshotEdgesRLocked materialises every live edge as of now. The caller
+// must hold c.mu (read lock suffices — rangeBuckets takes the edgeCache
+// RLock, snapshotEntry the per-weight mutex, and edgeEndpointsLive the
+// inner vertex-cache lock; nothing here mutates).
+func (c *GraphCache[S, T]) snapshotEdgesRLocked(now time.Time) []SnapshotEdge[S] {
 	out := make([]SnapshotEdge[S], 0, c.edges.count())
 	c.edges.rangeBuckets(func(tail, head S, w *weight) bool {
 		contribs, ts, nonEmpty := w.snapshotEntry(now)
@@ -114,11 +118,10 @@ func (c *GraphCache[S, T]) snapshotEdgesLocked(now time.Time) []SnapshotEdge[S] 
 			return true
 		}
 		// Referential closure (#750): a snapshot must not stream an edge whose
-		// tail or head vertex is not live. SnapshotGraph flushes expired
-		// vertices before this runs; standalone SnapshotEdges relies on
-		// vertices.Has to hide expired-but-not-flushed endpoints without a
-		// prior flush, so neither path leaks a dangling edge to a deleted or
-		// expired vertex ahead of the GC sweep.
+		// tail or head vertex is not live. vertices.Has hides
+		// expired-but-not-flushed endpoints without any prior flush (#843), so
+		// no path leaks a dangling edge to a deleted or expired vertex ahead
+		// of the GC sweep.
 		if !c.edgeEndpointsLive(tail, head) {
 			return true
 		}
@@ -134,11 +137,20 @@ func (c *GraphCache[S, T]) snapshotEdgesLocked(now time.Time) []SnapshotEdge[S] 
 }
 
 // SnapshotGraph returns a materialised whole-graph snapshot — every live
-// vertex and edge — taken under a SINGLE write-lock pass, so the vertex and
-// edge sides reflect the same instant. Calling SnapshotVertices and
-// SnapshotEdges separately locks twice and can observe a vertex/edge set
-// that never co-existed; SnapshotGraph closes that window, which is what a
-// whole-graph backup/restore needs.
+// vertex and edge — taken under a SINGLE continuous lock pass, so the
+// vertex and edge sides reflect the same instant. Calling SnapshotVertices
+// and SnapshotEdges separately locks twice and can observe a vertex/edge
+// set that never co-existed; SnapshotGraph closes that window, which is
+// what a whole-graph backup/restore needs.
+//
+// Since #843 the pass holds c.mu as a READ lock: every mutator that can
+// change the vertex or edge SETS takes c.mu.Lock, so set-level
+// point-in-time consistency is identical to the historical write-lock pass
+// — while concurrent readers keep serving. The one non-excluded writer is
+// the lock-free hot-edge weight append (tryAddExistingEdgeContrib), which
+// never held c.mu under the old write lock either: it cannot change the
+// edge set, and per-bucket atomicity is provided by the weight's own mutex,
+// so the race surface is unchanged.
 //
 // The returned slices are independent of the cache and safe to iterate
 // without further locking. Expired vertices and fully-decayed edges are
@@ -147,10 +159,10 @@ func (c *GraphCache[S, T]) snapshotEdgesLocked(now time.Time) []SnapshotEdge[S] 
 // bounded, infrequent operations (backup, replication bootstrap), not hot
 // read paths.
 func (c *GraphCache[S, T]) SnapshotGraph() GraphSnapshot[S, T] {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return GraphSnapshot[S, T]{
-		Vertices: c.snapshotVerticesLocked(),
-		Edges:    c.snapshotEdgesLocked(time.Now()),
+		Vertices: c.snapshotVerticesRLocked(),
+		Edges:    c.snapshotEdgesRLocked(time.Now()),
 	}
 }
