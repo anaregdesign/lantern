@@ -1,19 +1,59 @@
 # lantern-mcp
 
 A [Model Context Protocol](https://modelcontextprotocol.io) server that
-exposes a remote [Lantern](https://github.com/anaregdesign/lantern) gRPC
-endpoint as **decaying graph memory** for LLM agents.
+exposes a remote [Lantern](https://github.com/anaregdesign/lantern)
+endpoint as a **shared working context for multi-agent fleets** —
+presence, advisory claims, activity heat, and a blackboard, all built on
+decaying state (#851).
 
-The pitch: **facts decay on a TTL ladder; relations are additive and
-decay independently**. Treating Lantern as a Redis-style KV with TTLs
-misses the point — the value lives in the graph that emerges when you
-let an agent reinforce useful relations and let weak ones die on their
-own schedule.
+The pitch: Lantern's primitive — additive TTL edges + decaying vertices —
+models **activity, not knowledge**. Expiry is semantically *correct*
+here: a stale claim SHOULD vanish, last hour's activity SHOULD outweigh
+last week's, a crashed agent's presence SHOULD evaporate. TTL is the
+lease/heartbeat mechanism; additive edges are who-touches-what heat that
+strengthens with repetition and fades with neglect; Illuminate answers
+"what is happening around X right now". One Lantern instance per
+team/fleet is the unit of shared context — pair it with bearer-token
+auth (`LANTERN_AUTH_TOKENS` server-side, `LANTERN_TOKEN` here, #850).
 
-For the end-user docs (Claude Desktop / VS Code / Cursor configs, agent
-session walkthrough), see the **"Use as an MCP server"** section in the
-[root README](../README.md#use-as-an-mcp-server). This file is the
-reference for operators and contributors.
+Two profiles exist behind `LANTERN_MCP_PROFILE`:
+
+- **`context` (default)** — the working-context surface documented below.
+- **`memory`** — the legacy decaying-memory verbs (`remember_*` /
+  `recall_*`), kept for one `mcp/vX` release for existing deployments,
+  then retired. See [Legacy memory profile](#legacy-memory-profile).
+
+Both profiles share one keyspace on the server; switching does NOT
+migrate or clean the other profile's data — TTL decay handles it.
+
+## Two-agent walkthrough
+
+Agent A (id `builder-1`) and agent B (id `reviewer-2`) share one Lantern:
+
+1. **A announces + works**: `announce {task:"refactoring auth middleware"}`
+   → visible in `list_agents`. As it edits, it calls
+   `track {resources:["repo.api.middleware.auth","ticket.API-17"]}` —
+   each call adds a decaying edge; repetition strengthens it.
+2. **A claims before the risky part**: `claim {resource:"repo.api.middleware.auth",
+   note:"rewriting, ~20min"}` → granted, ~10-minute lease, renewed by
+   re-claiming.
+3. **B looks before touching**: `whats_happening {key:"repo.api.middleware.auth"}`
+   → sees builder-1 (task line), the live claim (holder + expiry), and
+   builder-1's co-active resources. B works elsewhere.
+4. **B hits the conflict anyway**: `claim` on the same key returns
+   `{granted:false, holder:"builder-1", expires_at:…}` — a structured
+   result, not an error. B waits or coordinates; `force:true` steals
+   only after coordinating.
+5. **A signals**: `post_note {text:"auth middleware API changed, rebase
+   before touching", severity:"warn", links:["repo.api.middleware.auth"],
+   ttl:"task"}` → B's next `whats_happening` on that resource surfaces it.
+6. **A finishes**: `release` the claim. Then A crashes mid-session —
+   nothing to clean up: its presence (~2m) and any remaining leases
+   (~10m) expire on their own. The board never lies about the present.
+
+For MCP client configs (Claude Desktop / VS Code / Cursor), see
+[examples/](examples/). This file is the reference for operators and
+contributors.
 
 ## Run
 
@@ -63,11 +103,45 @@ The MCP endpoint is **unauthenticated**. The defaults are conservative:
 `SIGINT`/`SIGTERM` triggers a graceful drain (5s) of in-flight requests
 before exit.
 
-## Tools
+## Tools (context profile — the default)
 
-The tool set below is advertised at session-open via the server-instructions
-string in [`server.go`](server.go). Descriptions are reproduced verbatim
-from the source so the LLM and the human reader see the same contract.
+The tool set is advertised at session-open via the instructions string in
+[`server.go`](server.go); summaries below paraphrase the source
+descriptions.
+
+| Tool | Purpose |
+|---|---|
+| `announce` | "I am here, working on T" — presence heartbeat + task line at `agents.<id>` (TTL ≈ 2m, the `transient` bucket). Re-call to refresh; go silent and you disappear from the board. |
+| `list_agents` | Who is active right now. Expired presences are already gone, so the listing is always live. |
+| `track` | "I touched R" — adds a decaying `agents.<id>` → `R` edge (~1h, `conversation`). Repetition strengthens, silence fades; this feeds `whats_happening` for everyone. |
+| `claim` | Advisory lease on a resource at `claims.<resource>` (~10m, `turn`). A live foreign holder returns `{granted:false, holder, expires_at}` — a structured result, not an error; `force:true` steals. Re-claim to renew. The read-check-write window is documented and accepted (agents are slow writers); a server-side CAS RPC is the noted follow-up if contention materialises. |
+| `release` | Drop your lease. Non-holder release is refused with the holder reported; expired/never-claimed is idempotent success. |
+| `list_claims` | Live leases, optionally under a resource-key prefix. |
+| `post_note` | Blackboard signal at `notes.<id>` (`severity` ∈ info/warn/blocker; explicit TTL bucket), linked note→resources + author→note so it surfaces in `whats_happening` nearby. |
+| `whats_happening` | **The flagship read**: active neighborhood of a resource/agent/note — agents on it (with task lines), co-active resources (activity-weighted), live notes, live claims. A never-touched key returns a well-formed empty context. |
+| `context_stats` | Fleet glance: live agents / claims / notes / tracked resources, four numbers. |
+
+A `ping` tool also exists so operators can sanity-check the wire without
+mutating state.
+
+**Identity**: every call is attributed to `LANTERN_MCP_AGENT_ID` when
+set, else a stable per-process fallback `<hostname>-<pid>-<rand4>`.
+Fleet operators own id uniqueness — two sessions sharing an id
+last-writer-win on the presence vertex. There is deliberately no
+per-call id parameter (it would be spoofable and weaker than env-level).
+
+**Key scheme**: `agents.<id>`, `claims.<resource>`, `notes.<id>` are
+reserved; everything else is a resource, named by fleet convention with
+dotted keys (`repo.<name>.<path>`, `ticket.<id>`, `dataset.<name>`).
+Prefix scans give every listing for free; expiry makes them self-cleaning.
+
+## Legacy memory profile
+
+`LANTERN_MCP_PROFILE=memory` restores the decaying-memory verbs below for
+one release cycle. The framing fought the engine — knowledge should not
+decay, and single-agent memory never got dense enough for the graph to
+earn its keep — which is exactly why the context profile replaced it
+(#851 has the full decision record).
 
 | Tool | Purpose |
 |---|---|
@@ -89,7 +163,7 @@ from the source so the LLM and the human reader see the same contract.
 A `ping` tool also exists so operators can sanity-check the wire without
 mutating state.
 
-### TTL buckets (required parameter for every `remember_*` tool)
+### TTL buckets (used by `post_note`, and every `remember_*` tool in the memory profile)
 
 Twelve enum horizons. Picking a shorter bucket is almost always the
 right call ("when will this stop being true?"); writing again is cheap.
@@ -248,6 +322,9 @@ for `in`, and the union for `both`.
 | `LANTERN_MCP_PING_TIMEOUT` | `5s` | Bounds the startup health probe. A failed probe aborts startup with a non-zero exit so MCP clients surface a clear error. |
 | `LANTERN_MCP_TTL_<BUCKET>` | see table above | Per-bucket TTL override. |
 | `LANTERN_MCP_MAX_TTL` | unset (no cap) | Clamp every resolved bucket to at most this duration, matching a low upstream `LANTERN_TOMBSTONE_TTL`. Clamped writes report `"capped": true`. `time.ParseDuration` syntax. |
+| `LANTERN_MCP_PROFILE` | `context` | Tool surface: `context` (working context, #851) or `memory` (legacy decaying-memory verbs, one-release deprecation window). |
+| `LANTERN_MCP_AGENT_ID` | auto (`<hostname>-<pid>-<rand4>`) | Identity every context-profile call is attributed to. Fleet operators own uniqueness. |
+| `LANTERN_TOKEN` | unset | Bearer token sent to a Lantern running with `LANTERN_AUTH_TOKENS` (#850). |
 
 Logging is structured JSON via `log/slog` to stderr at `INFO` level;
 there is no log-level or format knob today.

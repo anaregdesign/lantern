@@ -63,6 +63,14 @@ type Config struct {
 	// remember_* tools. If nil, Run loads it from environment via
 	// ttl.LoadFromEnv() on startup.
 	Resolver *ttl.Resolver
+	// Profile selects the registered tool surface (#851):
+	// "context" (default) — the multi-agent shared working context
+	// (announce / track / claim / whats_happening / ...);
+	// "memory" — the legacy decaying-memory verbs (remember_* / recall_*),
+	// kept for one mcp/vX release before retirement.
+	// Both profiles share one keyspace on the server; switching does NOT
+	// migrate or clean the other profile's data — TTL decay handles it.
+	Profile string
 }
 
 // DefaultConfig reads the standard env vars and returns a Config suitable
@@ -91,11 +99,19 @@ func DefaultConfig() (Config, error) {
 	if httpAddr == "" {
 		httpAddr = defaultHTTPAddr
 	}
+	profile := os.Getenv("LANTERN_MCP_PROFILE")
+	if profile == "" {
+		profile = ProfileContext
+	}
+	if profile != ProfileContext && profile != ProfileMemory {
+		return Config{}, fmt.Errorf("LANTERN_MCP_PROFILE=%q: must be %q or %q", profile, ProfileContext, ProfileMemory)
+	}
 	return Config{
 		LanternAddr: addr,
 		PingTimeout: timeout,
 		HTTPAddr:    httpAddr,
 		Logger:      slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})),
+		Profile:     profile,
 	}, nil
 }
 
@@ -164,7 +180,11 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	logger.Info("mcp: lantern reachable, registering tools")
 
-	srv := newServer(lantern, resolver, logger)
+	profile := cfg.Profile
+	if profile == "" {
+		profile = ProfileContext
+	}
+	srv := newServer(lantern, resolver, logger, profile)
 	httpSrv := &http.Server{
 		Addr:              httpAddr,
 		Handler:           mcpHTTPHandler(srv, logger),
@@ -241,21 +261,41 @@ func NewServer(lantern *client.Lantern, logger *slog.Logger) (*mcp.Server, error
 	if err != nil {
 		return nil, fmt.Errorf("mcp: load ttl config: %w", err)
 	}
-	return newServer(lantern, resolver, logger), nil
+	profile := os.Getenv("LANTERN_MCP_PROFILE")
+	if profile == "" {
+		profile = ProfileContext
+	}
+	return newServer(lantern, resolver, logger, profile), nil
 }
 
-// newServer constructs the MCP server and registers the full tool set
-// (ping + the six fact/relation tools). Tests pass a fake lanternClient
-// and an in-memory resolver to exercise handlers without dialing the
-// Lantern server.
-func newServer(lc lanternClient, resolver *ttl.Resolver, logger *slog.Logger) *mcp.Server {
+// Profile names for Config.Profile / LANTERN_MCP_PROFILE (#851).
+const (
+	// ProfileContext is the default: the multi-agent shared working
+	// context (presence / claims / activity / blackboard).
+	ProfileContext = "context"
+	// ProfileMemory is the legacy decaying-memory surface, available for
+	// one mcp/vX release for existing deployments, then retired.
+	ProfileMemory = "memory"
+)
+
+// newServer constructs the MCP server and registers the tool set the
+// selected profile advertises (#851). Tests pass a fake lanternClient and
+// an in-memory resolver to exercise handlers without dialing the Lantern
+// server.
+func newServer(lc lanternClient, resolver *ttl.Resolver, logger *slog.Logger, profile string) *mcp.Server {
+	title := "Lantern shared working-context MCP server"
+	instructions := contextInstructions
+	if profile == ProfileMemory {
+		title = "Lantern decaying-memory MCP server"
+		instructions = serverInstructions
+	}
 	srv := mcp.NewServer(&mcp.Implementation{
 		Name:    "lantern-mcp",
-		Title:   "Lantern decaying-memory MCP server",
+		Title:   title,
 		Version: Version,
 	}, &mcp.ServerOptions{
 		Logger:       logger,
-		Instructions: serverInstructions,
+		Instructions: instructions,
 	})
 
 	// The ping tool exists so operators can sanity-check the wire to
@@ -273,23 +313,46 @@ func newServer(lc lanternClient, resolver *ttl.Resolver, logger *slog.Logger) *m
 		}, nil, nil
 	})
 
-	registerRememberFact(srv, lc, resolver)
-	registerRememberFacts(srv, lc, resolver)
-	registerRecallFact(srv, lc)
-	registerSearchFacts(srv, lc)
-	registerTouch(srv, lc, resolver)
-	registerForget(srv, lc)
-	registerForgetUnder(srv, lc)
-	registerListUnder(srv, lc)
-	registerListNamespaces(srv, lc)
-	registerMemoryStats(srv, lc, resolver)
-	registerRememberRelation(srv, lc, resolver)
-	registerRememberRelations(srv, lc, resolver)
-	registerRecallRelated(srv, lc, resolver)
-	registerRecallRelation(srv, lc)
+	if profile == ProfileMemory {
+		registerRememberFact(srv, lc, resolver)
+		registerRememberFacts(srv, lc, resolver)
+		registerRecallFact(srv, lc)
+		registerSearchFacts(srv, lc)
+		registerTouch(srv, lc, resolver)
+		registerForget(srv, lc)
+		registerForgetUnder(srv, lc)
+		registerListUnder(srv, lc)
+		registerListNamespaces(srv, lc)
+		registerMemoryStats(srv, lc, resolver)
+		registerRememberRelation(srv, lc, resolver)
+		registerRememberRelations(srv, lc, resolver)
+		registerRecallRelated(srv, lc, resolver)
+		registerRecallRelation(srv, lc)
+		return srv
+	}
+
+	// Context profile (#851): the multi-agent shared working context.
+	registerAnnounce(srv, lc, resolver)
+	registerListAgents(srv, lc)
+	registerTrack(srv, lc, resolver)
+	registerWhatsHappening(srv, lc)
+	registerClaim(srv, lc, resolver)
+	registerRelease(srv, lc)
+	registerListClaims(srv, lc)
+	registerPostNote(srv, lc, resolver)
+	registerContextStats(srv, lc)
 
 	return srv
 }
+
+// contextInstructions is the session-open guidance for the working-context
+// profile (#851). Same care as serverInstructions: this text shapes LLM
+// behaviour — treat changes like prompt updates and call them out in
+// release notes.
+const contextInstructions = "Lantern is the fleet's shared working context — a live board of who is doing what RIGHT NOW, built on decaying state: presence, claims, notes, and activity all expire on their own, so everything you read is current by construction. It is NOT long-term memory; never store durable knowledge here. " +
+	"Run this loop: (1) ON SESSION START: announce yourself (your task line), then context_stats or whats_happening on the resources you are about to touch to see who else is around. (2) WHILE WORKING: track the resources you touch as you touch them (repetition strengthens the signal); re-announce when your task changes and periodically as a heartbeat (~every minute — presence lives ~2m); claim a resource before making changes siblings could collide with, re-claim to renew (~10m lease), release when done; a claim conflict is a structured {granted:false, holder} result — coordinate, wait for expiry, or force only after coordinating. (3) SIGNAL: post_note for anything the whole fleet should know (build broken, API flaky, migration in progress), linked to the resource keys it concerns, with the SHORTEST plausible TTL bucket. (4) BEFORE TOUCHING anything contested: whats_happening on the key — who is on it, live claims, live notes; an empty context means the coast is clear. " +
+	"Key conventions: resources are dotted keys shared by convention across the fleet (repo.<name>.<path>, ticket.<id>, dataset.<name>) — use the SAME keys your siblings use or the coordination protects nothing. agents.*, claims.*, and notes.* are reserved for the tools. " +
+	"Everything here is expendable by design: a crashed agent's presence and claims evaporate on their own; silence is self-cleaning. If you need durable memory, use a different store."
 
 // serverInstructions is the system-prompt-style guidance the MCP server
 // advertises to the LLM at session-open. The wording is deliberate and

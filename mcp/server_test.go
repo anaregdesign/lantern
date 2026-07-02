@@ -80,7 +80,7 @@ func newHandlerTestServer(t *testing.T) string {
 	t.Helper()
 	fake := &fakeLantern{}
 	r := mustDefaultResolver(t)
-	srv := newServer(fake, r, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	srv := newServer(fake, r, slog.New(slog.NewJSONHandler(io.Discard, nil)), ProfileMemory)
 	ts := httptest.NewServer(mcpHTTPHandler(srv, nil))
 	t.Cleanup(ts.Close)
 	return ts.URL
@@ -169,5 +169,65 @@ func TestServerInstructions_DefinesCaptureRecallLoop(t *testing.T) {
 		if !strings.Contains(serverInstructions, tool) {
 			t.Errorf("serverInstructions does not mention tool %q", tool)
 		}
+	}
+}
+
+// TestProfileToolMatrix pins the #851 cutover contract: each profile
+// registers exactly its own tool surface (plus the shared ping), so a
+// deployment can never see a mixed or missing verb set.
+func TestProfileToolMatrix(t *testing.T) {
+	contextTools := []string{
+		"ping", "announce", "list_agents", "track", "whats_happening",
+		"claim", "release", "list_claims", "post_note", "context_stats",
+	}
+	memoryTools := []string{
+		"ping", "remember_fact", "remember_facts", "recall_fact", "search_facts",
+		"touch", "forget", "forget_under", "list_under", "list_namespaces",
+		"memory_stats", "remember_relation", "remember_relations",
+		"recall_related", "recall_relation",
+	}
+	for _, tc := range []struct {
+		profile string
+		want    []string
+	}{
+		{ProfileContext, contextTools},
+		{ProfileMemory, memoryTools},
+	} {
+		t.Run(tc.profile, func(t *testing.T) {
+			fake := &fakeLantern{}
+			r := mustDefaultResolver(t)
+			srv := newServer(fake, r, slog.New(slog.NewJSONHandler(io.Discard, nil)), tc.profile)
+
+			serverT, clientT := mcp.NewInMemoryTransports()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			ss, err := srv.Connect(ctx, serverT, nil)
+			if err != nil {
+				t.Fatalf("server connect: %v", err)
+			}
+			defer func() { _ = ss.Close() }()
+			cs, err := mcp.NewClient(&mcp.Implementation{Name: "matrix-test"}, nil).Connect(ctx, clientT, nil)
+			if err != nil {
+				t.Fatalf("client connect: %v", err)
+			}
+			defer func() { _ = cs.Close() }()
+
+			listed, err := cs.ListTools(ctx, &mcp.ListToolsParams{})
+			if err != nil {
+				t.Fatalf("ListTools: %v", err)
+			}
+			got := map[string]bool{}
+			for _, tool := range listed.Tools {
+				got[tool.Name] = true
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("profile %s registered %d tools, want %d: %v", tc.profile, len(got), len(tc.want), got)
+			}
+			for _, name := range tc.want {
+				if !got[name] {
+					t.Fatalf("profile %s missing tool %q (got %v)", tc.profile, name, got)
+				}
+			}
+		})
 	}
 }
