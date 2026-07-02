@@ -1,7 +1,10 @@
 package graphcache
 
 import (
+	"math/rand"
+	"reflect"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -214,4 +217,75 @@ func equalSlices(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestRadixWalkPrefixBound property-checks the seek walker (#836) against a
+// naive filter over every stored key, across randomized key sets and
+// boundary shapes: bounds landing mid-edge-label, exactly on stored keys,
+// below the prefix subtree, past its end, and the empty bound.
+func TestRadixWalkPrefixBound(t *testing.T) {
+	rng := rand.New(rand.NewSource(836))
+	alphabet := []string{"a", "b", "ab", "ba", "session:", "msg:", ":", "0", "1"}
+	randKey := func() string {
+		n := 1 + rng.Intn(4)
+		var sb strings.Builder
+		for i := 0; i < n; i++ {
+			sb.WriteString(alphabet[rng.Intn(len(alphabet))])
+		}
+		return sb.String()
+	}
+
+	for trial := 0; trial < 200; trial++ {
+		r := newRadix()
+		keys := map[string]bool{}
+		for i := 0; i < 30; i++ {
+			k := randKey()
+			keys[k] = true
+			r.insert(k)
+		}
+		sorted := make([]string, 0, len(keys))
+		for k := range keys {
+			sorted = append(sorted, k)
+		}
+		sort.Strings(sorted)
+
+		prefixes := []string{"", "a", "ab", "session:", "zzz", sorted[rng.Intn(len(sorted))]}
+		bounds := []string{"", "a", sorted[rng.Intn(len(sorted))], sorted[rng.Intn(len(sorted))] + "x", "zzzz", "\x00"}
+		for _, prefix := range prefixes {
+			for _, bound := range bounds {
+				for _, inclusive := range []bool{false, true} {
+					var want []string
+					for _, k := range sorted {
+						if !strings.HasPrefix(k, prefix) {
+							continue
+						}
+						if k > bound || (inclusive && k == bound) {
+							want = append(want, k)
+						}
+					}
+					var got []string
+					r.walkPrefixBound(prefix, bound, inclusive, func(k string) bool {
+						got = append(got, k)
+						return true
+					})
+					if !reflect.DeepEqual(got, want) {
+						t.Fatalf("trial %d prefix=%q bound=%q incl=%v:\n got  %v\n want %v\n keys %v",
+							trial, prefix, bound, inclusive, got, want, sorted)
+					}
+				}
+			}
+		}
+
+		// Early stop must truncate, not skip.
+		if len(sorted) > 2 {
+			var got []string
+			r.walkPrefixBound("", sorted[0], false, func(k string) bool {
+				got = append(got, k)
+				return len(got) < 2
+			})
+			if len(got) != 2 || got[0] != sorted[1] {
+				t.Fatalf("early stop got %v, want first two after %q of %v", got, sorted[0], sorted)
+			}
+		}
+	}
 }

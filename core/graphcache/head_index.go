@@ -72,8 +72,15 @@ func (h *headIndex) delete(headID vertexID, projected string) (empty bool) {
 // Locking: walkPrefix takes the underlying radix's RLock for the whole
 // traversal, so fn must not call insert or delete on this headIndex.
 func (h *headIndex) walkPrefix(prefix string, fn func(projected string, headID vertexID) bool) {
+	h.walkPrefixBound(prefix, "", fn)
+}
+
+// walkPrefixBound is walkPrefix restricted to projected keys strictly
+// greater than after (#836) — the resume seek for a partially-consumed tail
+// in ScanEdgesByPrefixPage. An empty after is exactly walkPrefix.
+func (h *headIndex) walkPrefixBound(prefix, after string, fn func(projected string, headID vertexID) bool) {
 	stopped := false
-	h.radix.walkPrefix(prefix, func(projected string) bool {
+	visit := func(projected string) bool {
 		if stopped {
 			return false
 		}
@@ -84,5 +91,10 @@ func (h *headIndex) walkPrefix(prefix string, fn func(projected string, headID v
 			}
 		}
 		return true
-	})
+	}
+	if after == "" {
+		h.radix.walkPrefix(prefix, visit)
+		return
+	}
+	h.radix.walkPrefixBound(prefix, after, false, visit)
 }

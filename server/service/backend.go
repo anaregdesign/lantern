@@ -125,13 +125,15 @@ type Backend interface {
 		keep func(string) bool,
 	) (*coregraph.Graph[string, *pb.Vertex], error)
 
-	// prefix scan / count / delete. ScanByPrefix invokes fn for each live
-	// vertex whose key starts with prefix, in lexicographic order; fn
-	// returns false to stop early. CountByPrefix is an index-side count
-	// (may include not-yet-flushed expired entries; bounded by the GC
-	// tick). DeleteByPrefix removes matching vertices up to limit (limit
-	// <= 0 means unlimited) and returns how many were deleted.
-	ScanByPrefix(ctx context.Context, prefix string, fn func(projected string, key string, value *pb.Vertex) bool) bool
+	// prefix scan / count / delete. ScanByPrefixPage (#836) invokes fn for
+	// each live vertex whose key starts with prefix AND sorts strictly
+	// after `after`, in lexicographic order, up to limit rows (limit <= 0
+	// = unbounded); fn returns false to stop early. more reports whether
+	// further matches exist past the page — the handler's next-cursor
+	// signal. CountByPrefix counts only live matching vertices.
+	// DeleteByPrefix removes matching vertices up to limit (limit <= 0
+	// means unlimited) and returns how many were deleted.
+	ScanByPrefixPage(ctx context.Context, prefix, after string, limit int, fn func(projected string, key string, value *pb.Vertex) bool) (more, ok bool)
 	CountByPrefix(prefix string) int
 	DeleteByPrefix(ctx context.Context, prefix string, limit int) int
 
@@ -144,13 +146,15 @@ type Backend interface {
 	// from its own SearchConfig.Enabled flag, not this return value (#624).
 	SearchVertices(query string, limit int, keyPrefix string) []search.Result[string]
 
-	// edge-side prefix scan. ScanEdgesByPrefix invokes fn for each live
-	// edge whose tail starts with tailPrefix AND whose head starts with
-	// headPrefix, in ascending (tail, head) order. Either prefix may be
-	// empty to disable the corresponding filter. fn returns false to
-	// stop early. Plural-only on the wire (no CountEdges /
+	// edge-side prefix scan. ScanEdgesByPrefixPage (#836) invokes fn for
+	// each live edge whose tail starts with tailPrefix AND whose head
+	// starts with headPrefix, in ascending (tail, head) order, resuming
+	// strictly after the (afterTail, afterHead) pair and collecting at
+	// most limit rows (limit <= 0 = unbounded). Either prefix may be
+	// empty to disable the corresponding filter. more mirrors
+	// ScanByPrefixPage. Plural-only on the wire (no CountEdges /
 	// DeleteEdgesByPrefix in this phase).
-	ScanEdgesByPrefix(ctx context.Context, tailPrefix, headPrefix string, fn func(tailProjected string, tail string, headProjected string, head string, weight float32, expiration time.Time) bool) bool
+	ScanEdgesByPrefixPage(ctx context.Context, tailPrefix, headPrefix, afterTail, afterHead string, limit int, fn func(tailProjected string, tail string, headProjected string, head string, weight float32, expiration time.Time) bool) (more, ok bool)
 
 	// background GC loop driven by LanternServer.
 	Watch(ctx context.Context, interval time.Duration)

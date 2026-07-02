@@ -244,12 +244,16 @@ func (f *fakeBackend) Watch(ctx context.Context, interval time.Duration) {
 // GraphCache via the bufconn harness; the fake just walks its in-memory
 // map in lexicographic order so unit tests can still hit the wrappers
 // without standing up the cache.
-func (f *fakeBackend) ScanByPrefix(_ context.Context, prefix string, fn func(string, string, *pb.Vertex) bool) bool {
+func (f *fakeBackend) ScanByPrefixPage(_ context.Context, prefix, after string, limit int, fn func(string, string, *pb.Vertex) bool) (bool, bool) {
 	keys := make([]string, 0, len(f.vertices))
 	for k := range f.vertices {
-		if prefix == "" || (len(k) >= len(prefix) && k[:len(prefix)] == prefix) {
-			keys = append(keys, k)
+		if prefix != "" && !(len(k) >= len(prefix) && k[:len(prefix)] == prefix) {
+			continue
 		}
+		if after != "" && k <= after {
+			continue
+		}
+		keys = append(keys, k)
 	}
 	// Sort to match the radix index's lexicographic walk order.
 	for i := 1; i < len(keys); i++ {
@@ -257,12 +261,17 @@ func (f *fakeBackend) ScanByPrefix(_ context.Context, prefix string, fn func(str
 			keys[j-1], keys[j] = keys[j], keys[j-1]
 		}
 	}
+	more := false
+	if limit > 0 && len(keys) > limit {
+		more = true
+		keys = keys[:limit]
+	}
 	for _, k := range keys {
 		if !fn(k, k, f.vertices[k]) {
-			return false
+			return more, false
 		}
 	}
-	return true
+	return more, true
 }
 
 func (f *fakeBackend) CountByPrefix(prefix string) int {
@@ -304,40 +313,43 @@ func (f *fakeBackend) DeleteByPrefix(_ context.Context, prefix string, limit int
 	return len(victims)
 }
 
-func (f *fakeBackend) ScanEdgesByPrefix(_ context.Context, tailPrefix, headPrefix string,
+func (f *fakeBackend) ScanEdgesByPrefixPage(_ context.Context, tailPrefix, headPrefix, afterTail, afterHead string, limit int,
 	fn func(string, string, string, string, float32, time.Time) bool,
-) bool {
-	tails := make([]string, 0, len(f.edges))
-	for t := range f.edges {
-		if tailPrefix == "" || (len(t) >= len(tailPrefix) && t[:len(tailPrefix)] == tailPrefix) {
-			tails = append(tails, t)
+) (bool, bool) {
+	type row struct{ t, h string }
+	var rows []row
+	for t, hs := range f.edges {
+		if tailPrefix != "" && !(len(t) >= len(tailPrefix) && t[:len(tailPrefix)] == tailPrefix) {
+			continue
+		}
+		for h := range hs {
+			if headPrefix != "" && !(len(h) >= len(headPrefix) && h[:len(headPrefix)] == headPrefix) {
+				continue
+			}
+			if afterTail != "" || afterHead != "" {
+				if t < afterTail || (t == afterTail && h <= afterHead) {
+					continue
+				}
+			}
+			rows = append(rows, row{t, h})
 		}
 	}
-	for i := 1; i < len(tails); i++ {
-		for j := i; j > 0 && tails[j-1] > tails[j]; j-- {
-			tails[j-1], tails[j] = tails[j], tails[j-1]
+	for i := 1; i < len(rows); i++ {
+		for j := i; j > 0 && (rows[j-1].t > rows[j].t || (rows[j-1].t == rows[j].t && rows[j-1].h > rows[j].h)); j-- {
+			rows[j-1], rows[j] = rows[j], rows[j-1]
 		}
 	}
-	for _, t := range tails {
-		row := f.edges[t]
-		heads := make([]string, 0, len(row))
-		for h := range row {
-			if headPrefix == "" || (len(h) >= len(headPrefix) && h[:len(headPrefix)] == headPrefix) {
-				heads = append(heads, h)
-			}
-		}
-		for i := 1; i < len(heads); i++ {
-			for j := i; j > 0 && heads[j-1] > heads[j]; j-- {
-				heads[j-1], heads[j] = heads[j], heads[j-1]
-			}
-		}
-		for _, h := range heads {
-			if !fn(t, t, h, h, row[h], time.Time{}) {
-				return false
-			}
+	more := false
+	if limit > 0 && len(rows) > limit {
+		more = true
+		rows = rows[:limit]
+	}
+	for _, r := range rows {
+		if !fn(r.t, r.t, r.h, r.h, f.edges[r.t][r.h], time.Time{}) {
+			return more, false
 		}
 	}
-	return true
+	return more, true
 }
 
 // Compile-time check that fakeBackend really satisfies Backend.

@@ -39,6 +39,27 @@ import "context"
 // other S the projection is intentionally lossy and the original key is
 // the one suitable for downstream GraphCache calls.
 func (c *GraphCache[S, T]) ScanByPrefix(ctx context.Context, prefix string, fn func(projected string, key S, value T) bool) bool {
+	_, ok := c.ScanByPrefixPage(ctx, prefix, "", 0, fn)
+	return ok
+}
+
+// ScanByPrefixPage is the paged form of ScanByPrefix (#836): it visits only
+// live vertices whose projected key starts with prefix AND sorts strictly
+// after `after`, and collects at most limit of them (limit <= 0 means
+// unbounded, i.e. exactly ScanByPrefix). The radix walk SEEKS past `after`
+// instead of re-walking and discarding everything before the cursor, and
+// collection stops one row past the page boundary, so a resumed page costs
+// O(depth + page) instead of O(everything matching prefix) in both time and
+// buffered memory.
+//
+// more reports whether at least one further matching key exists beyond the
+// returned page — the signal a paginating caller uses to mint a next cursor
+// without a second walk. ok mirrors ScanByPrefix's return: false when the
+// prefix index is disabled, ctx was cancelled, or fn stopped early. Locking
+// and consistency semantics are unchanged from ScanByPrefix: rows are
+// collected into a point-in-time snapshot under c.mu.RLock and fn runs
+// after the lock is released.
+func (c *GraphCache[S, T]) ScanByPrefixPage(ctx context.Context, prefix, after string, limit int, fn func(projected string, key S, value T) bool) (more, ok bool) {
 	type entry struct {
 		projected string
 		key       S
@@ -55,7 +76,7 @@ func (c *GraphCache[S, T]) ScanByPrefix(ctx context.Context, prefix string, fn f
 		// cannot mutate the cache here \u2014 the visitor runs AFTER the
 		// lock is released to avoid sync.RWMutex reentrancy deadlocks
 		// (see method doc and #202).
-		c.prefixIndex.walkPrefix(prefix, func(projected string) bool {
+		collect := func(projected string) bool {
 			if err := ctx.Err(); err != nil {
 				return false
 			}
@@ -74,27 +95,38 @@ func (c *GraphCache[S, T]) ScanByPrefix(ctx context.Context, prefix string, fn f
 				return true
 			}
 			snapshot = append(snapshot, entry{projected: projected, key: key, value: value})
-			return true
-		})
+			// Collect one row PAST the page so `more` is answered by this
+			// same walk; the sentinel row is never replayed to fn.
+			return limit <= 0 || len(snapshot) <= limit
+		}
+		if after == "" {
+			c.prefixIndex.walkPrefix(prefix, collect)
+		} else {
+			c.prefixIndex.walkPrefixBound(prefix, after, false, collect)
+		}
 		return true
 	}()
 	if !enabled {
-		return false
+		return false, false
 	}
 	// If snapshot collection was interrupted by ctx cancellation, report
 	// the walk as incomplete even when the visitor never ran.
 	if err := ctx.Err(); err != nil {
-		return false
+		return false, false
+	}
+	if limit > 0 && len(snapshot) > limit {
+		more = true
+		snapshot = snapshot[:limit]
 	}
 	for _, e := range snapshot {
 		if err := ctx.Err(); err != nil {
-			return false
+			return more, false
 		}
 		if !fn(e.projected, e.key, e.value) {
-			return false
+			return more, false
 		}
 	}
-	return true
+	return more, true
 }
 
 // CountByPrefix returns the number of LIVE vertices whose projected key starts
