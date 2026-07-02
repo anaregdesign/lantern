@@ -51,13 +51,19 @@ func loadBackupConfig() backup.Config {
 		}
 	}
 
+	// Read unconditionally (not short-circuited behind `active &&`) so the
+	// variable always lands in the envconfig registry — the generated env
+	// reference and the unknown-variable sweep depend on every loader
+	// registering its keys on every boot (#847).
+	restoreOnStart := envconfig.Bool("LANTERN_BACKUP_RESTORE_ON_START", true)
+
 	return backup.Config{
 		Enabled:         active,
 		Dir:             dir,
 		Interval:        envconfig.Duration("LANTERN_BACKUP_INTERVAL", 5*time.Minute),
 		Retain:          envconfig.Int("LANTERN_BACKUP_RETAIN", 3),
 		InstanceID:      sanitizeInstanceID(instance),
-		RestoreOnStart:  active && envconfig.Bool("LANTERN_BACKUP_RESTORE_ON_START", true),
+		RestoreOnStart:  active && restoreOnStart,
 		RestoreRequired: envconfig.Bool("LANTERN_BACKUP_RESTORE_REQUIRED", false),
 	}
 }

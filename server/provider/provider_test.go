@@ -7,11 +7,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
 	v1 "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 	"github.com/anaregdesign/lantern/server/readiness"
 	"github.com/prometheus/client_golang/prometheus"
@@ -60,6 +62,77 @@ func TestWireCacheGCHooks_EmitsTickSummary(t *testing.T) {
 			t.Errorf("missing field %q in record: %v", k, rec)
 		}
 	}
+}
+
+// TestNewConfigValidation covers the #847 boot-time validation pass: a
+// malformed value or an unknown LANTERN_* variable is tolerated (warn +
+// default) by default and fatal under LANTERN_STRICT_CONFIG. The strict
+// failure happens inside NewConfig — the first provider wire constructs — so
+// a refused boot never reaches listener construction.
+func TestNewConfigValidation(t *testing.T) {
+	t.Run("defaults survive a malformed value without strict", func(t *testing.T) {
+		envconfig.ResetForTesting()
+		t.Setenv("LANTERN_STRICT_CONFIG", "false")
+		t.Setenv("LANTERN_PORT", "not-a-number")
+		cfg, err := NewConfig()
+		if err != nil {
+			t.Fatalf("NewConfig: %v", err)
+		}
+		if cfg.Net.Port != 6380 {
+			t.Fatalf("Port = %d, want default 6380", cfg.Net.Port)
+		}
+	})
+
+	t.Run("strict mode rejects a malformed value", func(t *testing.T) {
+		envconfig.ResetForTesting()
+		t.Setenv("LANTERN_STRICT_CONFIG", "true")
+		t.Setenv("LANTERN_PORT", "not-a-number")
+		_, err := NewConfig()
+		if err == nil {
+			t.Fatal("NewConfig accepted a malformed value under strict mode")
+		}
+		if !strings.Contains(err.Error(), "LANTERN_PORT") || !strings.Contains(err.Error(), "not-a-number") {
+			t.Fatalf("error does not name the offending variable: %v", err)
+		}
+	})
+
+	t.Run("strict mode rejects an unknown variable with a suggestion", func(t *testing.T) {
+		envconfig.ResetForTesting()
+		t.Setenv("LANTERN_STRICT_CONFIG", "true")
+		t.Setenv("LANTERN_PROT", "6381") // typo of LANTERN_PORT
+		_, err := NewConfig()
+		if err == nil {
+			t.Fatal("NewConfig accepted an unknown LANTERN_* variable under strict mode")
+		}
+		if !strings.Contains(err.Error(), "LANTERN_PROT") {
+			t.Fatalf("error does not name the unknown variable: %v", err)
+		}
+		if !strings.Contains(err.Error(), "LANTERN_PORT") {
+			t.Fatalf("error does not carry the did-you-mean suggestion: %v", err)
+		}
+	})
+
+	t.Run("foreign namespaces are exempt from the sweep", func(t *testing.T) {
+		envconfig.ResetForTesting()
+		t.Setenv("LANTERN_STRICT_CONFIG", "true")
+		t.Setenv("LANTERN_MCP_AGENT_ID", "agent-a")
+		if _, err := NewConfig(); err != nil {
+			t.Fatalf("NewConfig rejected a foreign-namespace variable: %v", err)
+		}
+	})
+
+	t.Run("malformed NodeID reaches the strict gate via Malformed", func(t *testing.T) {
+		envconfig.ResetForTesting()
+		t.Setenv("LANTERN_STRICT_CONFIG", "true")
+		t.Setenv("LANTERN_NODE_ID", "zz-not-hex")
+		_, err := NewConfig()
+		if err == nil {
+			t.Fatal("NewConfig accepted a malformed LANTERN_NODE_ID under strict mode")
+		}
+		if !strings.Contains(err.Error(), "LANTERN_NODE_ID") {
+			t.Fatalf("error does not name LANTERN_NODE_ID: %v", err)
+		}
+	})
 }
 
 // TestMetricsMux groups the HTTP-shim tests for newMetricsMux. The

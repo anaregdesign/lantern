@@ -170,13 +170,17 @@ jobs:
         run: buf format -d --exit-code
       - name: buf lint
         run: buf lint
-      - name: Generated code is up to date (wire + buf)
+      - name: Generated code is up to date (wire + buf + envdoc)
         env:
           GOWORK: 'off'
         run: |
           go generate ./...
+          # docs/env.md is generated from the server module's envconfig
+          # registry (#847); go generate from the repo root does not descend
+          # into the nested module, so regenerate it explicitly.
+          (cd server && go run ./internal/envdoc/cmd -out ../docs/env.md)
           if ! git diff --exit-code; then
-            echo "::error::generated files are stale; run 'go generate ./...' and commit the result"
+            echo "::error::generated files are stale; run 'go generate ./...' and 'make envdoc', then commit the result"
             exit 1
           fi
 

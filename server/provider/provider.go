@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -179,36 +180,41 @@ type Config struct {
 	Backup        backup.Config
 }
 
-func NewConfig() *Config {
+// NewConfig loads every sub-config from the environment, then validates the
+// load (#847): set-but-malformed values and unknown LANTERN_* names are
+// logged as warnings, and — when LANTERN_STRICT_CONFIG=true — turned into a
+// boot failure so a typo is caught in staging instead of silently running on
+// defaults. The returned error is non-nil only in strict mode.
+func NewConfig() (*Config, error) {
 	rps := envconfig.Float("LANTERN_RATE_LIMIT_RPS", 0)
 	burst := envconfig.Int("LANTERN_RATE_LIMIT_BURST", int(2*rps))
 	if burst <= 0 && rps > 0 {
 		burst = int(2 * rps)
 	}
 	peer := loadPeerConfig()
-	return &Config{
+	cfg := &Config{
 		Net: NetConfig{
 			Port:                 envconfig.Int("LANTERN_PORT", 6380),
 			MaxRecvMsgBytes:      envconfig.Int("LANTERN_MAX_RECV_MSG_BYTES", 16*1024*1024),
 			MaxSendMsgBytes:      envconfig.Int("LANTERN_MAX_SEND_MSG_BYTES", 16*1024*1024),
-			MaxConcurrentStreams: uint32(envconfig.Int("LANTERN_MAX_CONCURRENT_STREAMS", 1024)),
+			MaxConcurrentStreams: envconfig.Uint32("LANTERN_MAX_CONCURRENT_STREAMS", 1024),
 		},
 		TLS: TLSConfig{
-			CertFile:     os.Getenv("LANTERN_TLS_CERT_FILE"),
-			KeyFile:      os.Getenv("LANTERN_TLS_KEY_FILE"),
-			ClientCAFile: os.Getenv("LANTERN_TLS_CLIENT_CA_FILE"),
+			CertFile:     envconfig.String("LANTERN_TLS_CERT_FILE", ""),
+			KeyFile:      envconfig.String("LANTERN_TLS_KEY_FILE", ""),
+			ClientCAFile: envconfig.String("LANTERN_TLS_CLIENT_CA_FILE", ""),
 		},
 		RateLimit: RateLimitConfig{
 			RPS:   rps,
 			Burst: burst,
 		},
 		Observability: ObservabilityConfig{
-			LogLevel:             envconfig.LogLevel(os.Getenv("LANTERN_LOG_LEVEL")),
+			LogLevel:             envconfig.Level("LANTERN_LOG_LEVEL", slog.LevelInfo),
 			LogFormat:            envconfig.String("LANTERN_LOG_FORMAT", "json"),
 			MetricsAddr:          envconfig.String("LANTERN_METRICS_ADDR", ":9090"),
 			EnableReflection:     envconfig.Bool("LANTERN_REFLECTION", true),
-			Version:              os.Getenv("LANTERN_VERSION"),
-			Commit:               os.Getenv("LANTERN_COMMIT"),
+			Version:              envconfig.String("LANTERN_VERSION", ""),
+			Commit:               envconfig.String("LANTERN_COMMIT", ""),
 			SlowRPCThreshold:     time.Duration(envconfig.Int("LANTERN_SLOW_RPC_THRESHOLD_MS", 500)) * time.Millisecond,
 			EnablePprof:          envconfig.Bool("LANTERN_PPROF_ENABLED", false),
 			MutexProfileFraction: envconfig.Int("LANTERN_MUTEX_PROFILE_FRACTION", 0),
@@ -229,10 +235,10 @@ func NewConfig() *Config {
 			IlluminateMaxK:    envconfig.Int("LANTERN_ILLUMINATE_MAX_K", 1024),
 		},
 		Scan: ScanConfig{
-			ScanDefaultLimit:           uint32(envconfig.Int("LANTERN_SCAN_DEFAULT_LIMIT", 1000)),
-			ScanMaxLimit:               uint32(envconfig.Int("LANTERN_SCAN_MAX_LIMIT", 10000)),
-			DeleteByPrefixDefaultLimit: uint32(envconfig.Int("LANTERN_DELETE_BY_PREFIX_DEFAULT_LIMIT", 10000)),
-			DeleteByPrefixMaxLimit:     uint32(envconfig.Int("LANTERN_DELETE_BY_PREFIX_MAX_LIMIT", 100000)),
+			ScanDefaultLimit:           envconfig.Uint32("LANTERN_SCAN_DEFAULT_LIMIT", 1000),
+			ScanMaxLimit:               envconfig.Uint32("LANTERN_SCAN_MAX_LIMIT", 10000),
+			DeleteByPrefixDefaultLimit: envconfig.Uint32("LANTERN_DELETE_BY_PREFIX_DEFAULT_LIMIT", 10000),
+			DeleteByPrefixMaxLimit:     envconfig.Uint32("LANTERN_DELETE_BY_PREFIX_MAX_LIMIT", 100000),
 		},
 		Search: SearchConfig{
 			Enabled:      envconfig.Bool("LANTERN_SEARCH_ENABLED", true),
@@ -247,6 +253,66 @@ func NewConfig() *Config {
 		CORS:        loadCORSConfig(),
 		Backup:      loadBackupConfig(),
 	}
+	return cfg, validateEnv(os.Environ())
+}
+
+// foreignEnvPrefixes names LANTERN_*-prefixed namespaces owned by sibling
+// processes that legitimately share an env file with the server, so the
+// unknown-variable sweep does not flag them (#847). The MCP server reads
+// LANTERN_MCP_* in its own process; it never registers here.
+var foreignEnvPrefixes = []string{"LANTERN_MCP_"}
+
+// validateEnv is the boot-time config validation pass (#847). It runs after
+// every loader has registered its variables, so the envconfig registry is
+// the complete env contract at this point. It reports through slog.Default()
+// (the structured logger replaces the default later in the wire graph; these
+// lines still land on stderr) and fails only under LANTERN_STRICT_CONFIG.
+func validateEnv(environ []string) error {
+	strict := envconfig.Bool("LANTERN_STRICT_CONFIG", false)
+	log := slog.Default()
+
+	findings := envconfig.Findings()
+	for _, f := range findings {
+		log.Warn("config: malformed value, using default",
+			slog.String("key", f.Key),
+			slog.String("value", f.Raw),
+			slog.String("reason", f.Reason))
+	}
+
+	unknown := envconfig.UnknownLanternVars(environ, foreignEnvPrefixes...)
+	for _, u := range unknown {
+		if u.Suggestion != "" {
+			log.Warn("config: unknown LANTERN_* variable (typo?)",
+				slog.String("key", u.Key),
+				slog.String("did_you_mean", u.Suggestion))
+		} else {
+			log.Warn("config: unknown LANTERN_* variable",
+				slog.String("key", u.Key))
+		}
+	}
+
+	// One summary line naming which knobs are set (keys only — values are
+	// deliberately withheld so a future secret-bearing variable can never
+	// leak into the boot log).
+	if set := envconfig.SetKeys(); len(set) > 0 {
+		log.Info("config: environment overrides active", slog.Any("keys", set))
+	}
+
+	if strict && (len(findings) > 0 || len(unknown) > 0) {
+		var parts []string
+		for _, f := range findings {
+			parts = append(parts, fmt.Sprintf("malformed %s=%q (%s)", f.Key, f.Raw, f.Reason))
+		}
+		for _, u := range unknown {
+			if u.Suggestion != "" {
+				parts = append(parts, fmt.Sprintf("unknown %s (did you mean %s?)", u.Key, u.Suggestion))
+			} else {
+				parts = append(parts, fmt.Sprintf("unknown %s", u.Key))
+			}
+		}
+		return fmt.Errorf("LANTERN_STRICT_CONFIG: refusing to boot: %s", strings.Join(parts, "; "))
+	}
+	return nil
 }
 
 // Sub-config selectors. Wire uses these to inject each focused struct into

@@ -7,3 +7,4 @@
 package server
 
 //go:generate go tool wire ./cmd
+//go:generate go run ./internal/envdoc/cmd -out ../docs/env.md
