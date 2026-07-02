@@ -188,6 +188,10 @@ func (v *ValidationInterceptor) validate(req any) error {
 			if v.limits.IlluminateMaxK > 0 && int(params.Ppr.GetTopN()) > v.limits.IlluminateMaxK {
 				return v.reject("k_too_large", "ppr.top_n %d exceeds max %d", params.Ppr.GetTopN(), v.limits.IlluminateMaxK)
 			}
+		case *pb.IlluminateRequest_Community:
+			if v.limits.IlluminateMaxK > 0 && int(params.Community.GetMaxSize()) > v.limits.IlluminateMaxK {
+				return v.reject("k_too_large", "community.max_size %d exceeds max %d", params.Community.GetMaxSize(), v.limits.IlluminateMaxK)
+			}
 		}
 	}
 	return nil

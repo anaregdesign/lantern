@@ -475,6 +475,10 @@ func IlluminateFamilyOption(algo string, step, k uint32, obj client.Objective, r
 	switch algo {
 	case "ppr":
 		return client.WithPPR(client.PPROpts{TopN: k, RestartProb: restartProb, Epsilon: epsilon}), true
+	case "community":
+		// Local community extraction (#845): k is the max_size UPPER BOUND
+		// (the sweep may stop earlier); step has no meaning here.
+		return client.WithLocalCommunity(client.LocalCommunityOpts{MaxSize: k, RestartProb: restartProb, Epsilon: epsilon}), true
 	case "", "none":
 		return client.WithBFS(client.BFSOpts{Step: step, FanOut: k, Objective: obj}), true
 	case "mst":

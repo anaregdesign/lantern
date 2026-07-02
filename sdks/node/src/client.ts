@@ -563,36 +563,52 @@ export class Lantern {
     signal?: AbortSignal,
   ): Promise<Graph> {
     if (!seed) throw new InvalidArgumentError("illuminate: seed is required");
-    if (opts.bfs && opts.ppr) {
+    const families = [opts.bfs, opts.ppr, opts.community].filter((f) => f !== undefined).length;
+    if (families > 1) {
       throw new InvalidArgumentError(
-        "illuminate: bfs and ppr are mutually exclusive (the traversal family is a wire oneof)",
+        "illuminate: bfs, ppr and community are mutually exclusive (the traversal family is a wire oneof)",
       );
     }
     return this.invoke(async () => {
-      const params = opts.ppr
+      const params = opts.community
         ? ({
-            case: "ppr" as const,
+            case: "community" as const,
             value: {
-              topN: opts.ppr.topN ?? 0,
-              restartProb: opts.ppr.restartProb ?? 0,
-              epsilon: opts.ppr.epsilon ?? 0,
+              maxSize: opts.community.maxSize ?? 0,
+              restartProb: opts.community.restartProb ?? 0,
+              epsilon: opts.community.epsilon ?? 0,
+              reduction:
+                REDUCTION_TO_PB[opts.community.reduction ?? Reduction.UNSPECIFIED] ??
+                PbReduction.UNSPECIFIED,
+              objective:
+                OBJECTIVE_TO_PB[opts.community.objective ?? Objective.UNSPECIFIED] ??
+                PbObjective.UNSPECIFIED,
             },
           } as const)
-        : opts.bfs
+        : opts.ppr
           ? ({
-              case: "bfs" as const,
+              case: "ppr" as const,
               value: {
-                step: opts.bfs.step ?? 0,
-                fanOut: opts.bfs.fanOut ?? 0,
-                objective:
-                  OBJECTIVE_TO_PB[opts.bfs.objective ?? Objective.UNSPECIFIED] ??
-                  PbObjective.UNSPECIFIED,
-                reduction:
-                  REDUCTION_TO_PB[opts.bfs.reduction ?? Reduction.UNSPECIFIED] ??
-                  PbReduction.UNSPECIFIED,
+                topN: opts.ppr.topN ?? 0,
+                restartProb: opts.ppr.restartProb ?? 0,
+                epsilon: opts.ppr.epsilon ?? 0,
               },
             } as const)
-          : undefined;
+          : opts.bfs
+            ? ({
+                case: "bfs" as const,
+                value: {
+                  step: opts.bfs.step ?? 0,
+                  fanOut: opts.bfs.fanOut ?? 0,
+                  objective:
+                    OBJECTIVE_TO_PB[opts.bfs.objective ?? Objective.UNSPECIFIED] ??
+                    PbObjective.UNSPECIFIED,
+                  reduction:
+                    REDUCTION_TO_PB[opts.bfs.reduction ?? Reduction.UNSPECIFIED] ??
+                    PbReduction.UNSPECIFIED,
+                },
+              } as const)
+            : undefined;
       const resp = await this.client.illuminate(
         {
           seed,

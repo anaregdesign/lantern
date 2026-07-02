@@ -38,6 +38,17 @@ type fakeBackend struct {
 	lastNeighborStep        int
 	lastNeighborK           int
 
+	// LocalCommunityContext bookkeeping (#845).
+	communityCalls       int
+	lastCommunityMaxSize int
+	lastCommunityAlpha   float64
+	lastCommunityEpsilon float64
+	lastCommunityWeight  graphcache.EdgeWeighting
+	lastCommunityKeep    func(string) bool
+	communityGraph       *coregraph.Graph[string, *pb.Vertex]
+	communityExpirations map[string]map[string]time.Time
+	communityErr         error
+
 	// captured args from the most recent PersonalizedPageRankContext call
 	// (#801), so tests can assert the Illuminate handler routes algorithm=ppr
 	// to the forward-push path (not the BFS+reduction one), resolves the
@@ -194,6 +205,31 @@ func (f *fakeBackend) NeighborWithExpirationsContext(
 		g.Vertices[seed] = v
 	}
 	return g, map[string]map[string]time.Time{}, nil
+}
+
+func (f *fakeBackend) LocalCommunityContext(
+	_ context.Context,
+	seed string,
+	maxSize int,
+	alpha, epsilon float64,
+	weighting graphcache.EdgeWeighting,
+	keep func(string) bool,
+) (*coregraph.Graph[string, *pb.Vertex], map[string]map[string]time.Time, error) {
+	f.communityCalls++
+	f.lastCommunityMaxSize = maxSize
+	f.lastCommunityAlpha = alpha
+	f.lastCommunityEpsilon = epsilon
+	f.lastCommunityWeight = weighting
+	f.lastCommunityKeep = keep
+	if f.communityErr != nil {
+		return nil, nil, f.communityErr
+	}
+	if f.communityGraph != nil {
+		return f.communityGraph, f.communityExpirations, nil
+	}
+	g := coregraph.NewGraph[string, *pb.Vertex]()
+	g.Vertices[seed] = &pb.Vertex{Key: seed}
+	return g, nil, nil
 }
 
 func (f *fakeBackend) PersonalizedPageRankContext(

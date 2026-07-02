@@ -11,7 +11,7 @@ import type {
   WeightingName,
 } from "./types";
 
-const ILL_ALGORITHMS = new Set<AlgorithmName>(["none", "mst", "spt", "ppr"]);
+const ILL_ALGORITHMS = new Set<AlgorithmName>(["none", "mst", "spt", "ppr", "community"]);
 const ILL_OBJECTIVES = new Set<ObjectiveName>(["min", "max"]);
 const ILL_WEIGHTINGS = new Set<WeightingName>(["raw", "tfidf", "bm25"]);
 
@@ -410,7 +410,7 @@ export function parseDeletePrefix(rest: string[]): ParseResult {
 
 export function parseIlluminate(rest: string[]): ParseResult {
   const usage =
-    "usage: illuminate <key: string> <step: int> <k: int> [algorithm=none|mst|spt|ppr] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>] [restart_prob=<float>] [epsilon=<float>]";
+    "usage: illuminate <key: string> <step: int> <k: int> [algorithm=none|mst|spt|ppr|community] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>] [restart_prob=<float>] [epsilon=<float>]";
   if (rest.length < 3) {
     return { ok: false, usage };
   }
@@ -537,7 +537,7 @@ export const HELP_TEXT = [
   "  delete-prefix vertices <prefix: string> [limit=<int>] [confirm=yes|dry_run=true]",
   "  keys   <prefix: string> [<limit: int>]",
   "  illuminate <seed: string> <step: int> <k: int>",
-  "             [algorithm={none|mst|spt|ppr}] default=none",
+  "             [algorithm={none|mst|spt|ppr|community}] default=none",
   "             [objective={min|max}]       default=max",
   "             [weighting={raw|tfidf|bm25}] default=raw",
   "             [prefix=<string>]           default=all keys",
@@ -675,7 +675,7 @@ export const CLI_COMMAND_REFERENCE: readonly CliCommandDoc[] = [
     group: "Explore",
     verb: "illuminate",
     signature:
-      "illuminate <seed> <step> <k> [algorithm=none|mst|spt|ppr] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>] [restart_prob=<float>] [epsilon=<float>]",
+      "illuminate <seed> <step> <k> [algorithm=none|mst|spt|ppr|community] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>] [restart_prob=<float>] [epsilon=<float>]",
     summary:
       "Walk the graph from a seed (step hops, top-k per hop) and render the subgraph. algorithm=ppr runs Personalized PageRank (tune locality with restart_prob/epsilon); the other axes reduce/weight the discovered subgraph.",
     example: "illuminate alice 2 5 algorithm=ppr restart_prob=0.25",

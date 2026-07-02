@@ -535,6 +535,57 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 		}
 		paramsLabel, objLabel = "ppr", "maximize"
 
+	case *pb.IlluminateRequest_Community:
+		// Local community extraction (#845): PageRank-Nibble sweep cut over
+		// the shared push. Membership is decided by conductance (max_size is
+		// an upper bound, not a count) and the result is the induced
+		// subgraph — real edges with real weights and expirations, unlike
+		// the PPR star. An optional Reduction renders a tree VIEW rooted at
+		// the seed; sweep prefixes need not be connected, so members
+		// unreachable from the seed within the community stay as ISOLATED
+		// vertices rather than being dropped or wired up artificially.
+		comm := params.Community
+		alpha, epsilon := resolvePPRParams(comm.GetRestartProb(), comm.GetEpsilon())
+		traversalStart := time.Now()
+		g, expirations, err = s.cache.LocalCommunityContext(ctx, request.GetSeed(), int(comm.GetMaxSize()), alpha, epsilon, coreWeighting, keep)
+		traversalDur = time.Since(traversalStart)
+		if err != nil {
+			return nil, ctxToConnect(err)
+		}
+		if opt := resolveOptimizer(comm.GetReduction(), comm.GetObjective()); opt != nil {
+			optStart := time.Now()
+			reduced, rerr := opt(ctx, g, request.GetSeed())
+			if rerr != nil {
+				return nil, ctxToConnect(rerr)
+			}
+			// Membership is preserved: re-add community members the tree
+			// could not reach as isolated vertices, then trim expirations to
+			// the surviving tree edges.
+			for k, v := range g.Vertices {
+				if _, ok := reduced.Vertices[k]; !ok {
+					reduced.Vertices[k] = v
+				}
+			}
+			g = reduced
+			trimmed := make(map[string]map[string]time.Time, len(g.Edges))
+			for tail, heads := range g.Edges {
+				if expRow, ok := expirations[tail]; ok {
+					row := make(map[string]time.Time, len(heads))
+					for head := range heads {
+						if exp, has := expRow[head]; has {
+							row[head] = exp
+						}
+					}
+					if len(row) > 0 {
+						trimmed[tail] = row
+					}
+				}
+			}
+			expirations = trimmed
+			optimizeDur = time.Since(optStart)
+		}
+		paramsLabel, objLabel = "community", objectiveLabel(comm.GetObjective())
+
 	default: // *pb.IlluminateRequest_Bfs or unset — the BFS family.
 		bfs := request.GetBfs() // nil-safe: getters yield zero values on an unset oneof
 		// Objective steers the per-hop top-k pruning as well as the

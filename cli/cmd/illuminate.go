@@ -131,7 +131,7 @@ REPL GRAMMAR (one-liner parity, #672)
   In addition to the flags above, illuminate accepts the REPL's positional
   form so the prompt and the shell share one grammar:
 
-    lantern-cli illuminate <seed> <step> <k> [algorithm=none|mst|spt|ppr] \
+    lantern-cli illuminate <seed> <step> <k> [algorithm=none|mst|spt|ppr|community] \
             [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>] \
             [restart_prob=<float>] [epsilon=<float>]
 
@@ -173,7 +173,7 @@ REPL GRAMMAR (one-liner parity, #672)
 
 		famOpt, ok := service.IlluminateFamilyOption(illuminateAlgorithmStr, illuminateStep, illuminateK, obj, illuminateRestartProb, illuminateEpsilon)
 		if !ok {
-			return fmt.Errorf("unknown --algorithm %q (want none|mst|spt|ppr)", illuminateAlgorithmStr)
+			return fmt.Errorf("unknown --algorithm %q (want none|mst|spt|ppr|community)", illuminateAlgorithmStr)
 		}
 		opts := []client.IlluminateOption{
 			famOpt,
@@ -195,7 +195,7 @@ REPL GRAMMAR (one-liner parity, #672)
 func init() {
 	illuminateCmd.Flags().Uint32Var(&illuminateStep, "step", 1, "maximum walk depth from the seed")
 	illuminateCmd.Flags().Uint32Var(&illuminateK, "k", 10, "max neighbours visited per node")
-	illuminateCmd.Flags().StringVar(&illuminateAlgorithmStr, "algorithm", "none", "Illuminate algorithm: none|mst|spt|ppr (#410, #801)")
+	illuminateCmd.Flags().StringVar(&illuminateAlgorithmStr, "algorithm", "none", "Illuminate algorithm: none|mst|spt|ppr|community (#410, #801, #845)")
 	illuminateCmd.Flags().StringVar(&illuminateObjectiveStr, "objective", "max", "optimisation direction: min|max; governs per-hop top-k pruning AND reduction (#560)")
 	illuminateCmd.Flags().StringVar(&illuminateWeightingStr, "weighting", "raw", "edge-weight transform before walk: raw|tfidf|bm25 (#410, #800)")
 	illuminateCmd.Flags().StringVar(&illuminatePrefixStr, "prefix", "", "restrict walk frontier to vertices with this key prefix; seed always kept, empty = no filter (#604)")

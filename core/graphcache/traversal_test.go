@@ -599,3 +599,187 @@ func TestGraphCache_PersonalizedPageRank(t *testing.T) {
 		}
 	})
 }
+
+// TestGraphCache_LocalCommunity pins the #845 PageRank-Nibble contract:
+// sweep-cut boundary detection over the shared push, deterministic ordering,
+// the maxSize cap, keep scoping, liveness, the degenerate fallback, and the
+// induced-subgraph output shape (real edges + expirations, not a star).
+func TestGraphCache_LocalCommunity(t *testing.T) {
+	exp := time.Now().Add(time.Hour)
+
+	// clique wires every ordered pair inside members with weight w.
+	buildClique := func(c *GraphCache[string, string], members []string, w float32) {
+		for _, u := range members {
+			c.PutVertexWithExpiration(u, "v", exp)
+		}
+		for _, u := range members {
+			for _, v := range members {
+				if u != v {
+					c.PutEdgeWithExpiration(u, v, w, exp)
+				}
+			}
+		}
+	}
+
+	t.Run("two cliques with weak bridge: community is exactly the seed clique", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Hour)
+		a := []string{"a1", "a2", "a3", "a4"}
+		b := []string{"b1", "b2", "b3", "b4"}
+		buildClique(c, a, 1.0)
+		buildClique(c, b, 1.0)
+		// One weak directed bridge each way so mass can leak but the cut is cheap.
+		c.PutEdgeWithExpiration("a1", "b1", 0.05, exp)
+		c.PutEdgeWithExpiration("b1", "a1", 0.05, exp)
+
+		g, expirations, err := c.LocalCommunityContext(context.Background(), "a2", 0, 0.15, 1e-6, WeightingRaw, nil)
+		if err != nil {
+			t.Fatalf("LocalCommunityContext: %v", err)
+		}
+		got := make(map[string]bool, len(g.Vertices))
+		for k := range g.Vertices {
+			got[k] = true
+		}
+		for _, m := range a {
+			if !got[m] {
+				t.Errorf("clique member %s missing from community: %v", m, got)
+			}
+		}
+		for _, m := range b {
+			if got[m] {
+				t.Errorf("cross-bridge vertex %s leaked into the community: %v", m, got)
+			}
+		}
+		// Induced subgraph, not a star: intra-clique edges must be present
+		// with their REAL stored weights, from tails other than the seed.
+		if w, ok := g.Edges["a1"]["a3"]; !ok || w != 1.0 {
+			t.Errorf("induced edge a1->a3 = (%v,%v), want (1.0,true)", w, ok)
+		}
+		if len(expirations["a1"]) == 0 {
+			t.Errorf("expirations missing for member tail a1")
+		}
+		// The weak bridge edge to the excluded clique must NOT be present.
+		if _, ok := g.Edges["a1"]["b1"]; ok {
+			t.Errorf("edge to excluded vertex b1 leaked into the induced subgraph")
+		}
+	})
+
+	t.Run("maxSize caps the community", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Hour)
+		a := []string{"a1", "a2", "a3", "a4", "a5", "a6"}
+		buildClique(c, a, 1.0)
+		g, _, err := c.LocalCommunityContext(context.Background(), "a1", 3, 0.15, 1e-6, WeightingRaw, nil)
+		if err != nil {
+			t.Fatalf("LocalCommunityContext: %v", err)
+		}
+		if len(g.Vertices) > 3 {
+			t.Errorf("community size %d exceeds maxSize=3: %v", len(g.Vertices), g.Vertices)
+		}
+		if _, ok := g.Vertices["a1"]; !ok {
+			t.Errorf("seed evicted by the cap")
+		}
+	})
+
+	t.Run("keep predicate scopes the community", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Hour)
+		buildClique(c, []string{"p:1", "p:2", "p:3"}, 1.0)
+		c.PutVertexWithExpiration("q:x", "v", exp)
+		c.PutEdgeWithExpiration("p:1", "q:x", 5.0, exp) // strong but out-of-scope
+		g, _, err := c.LocalCommunityContext(context.Background(), "p:1", 0, 0.15, 1e-6, WeightingRaw,
+			func(s string) bool { return strings.HasPrefix(s, "p:") })
+		if err != nil {
+			t.Fatalf("LocalCommunityContext: %v", err)
+		}
+		if _, ok := g.Vertices["q:x"]; ok {
+			t.Errorf("keep-rejected vertex q:x entered the community")
+		}
+		if len(g.Vertices) < 3 {
+			t.Errorf("scoped community lost members: %v", g.Vertices)
+		}
+	})
+
+	t.Run("deterministic under ties", func(t *testing.T) {
+		// A symmetric star: every satellite has identical mass and degree, so
+		// the sweep ordering beyond the seed is decided purely by the
+		// (p/deg desc, key asc) tie-breaker. Repeated runs must agree exactly.
+		c := NewGraphCache[string, string](time.Hour)
+		sat := []string{"s1", "s2", "s3", "s4", "s5"}
+		c.PutVertexWithExpiration("hub", "v", exp)
+		for _, s := range sat {
+			c.PutVertexWithExpiration(s, "v", exp)
+			c.PutEdgeWithExpiration("hub", s, 1.0, exp)
+			c.PutEdgeWithExpiration(s, "hub", 1.0, exp)
+		}
+		var first map[string]bool
+		for i := 0; i < 10; i++ {
+			g, _, err := c.LocalCommunityContext(context.Background(), "hub", 3, 0.15, 1e-6, WeightingRaw, nil)
+			if err != nil {
+				t.Fatalf("run %d: %v", i, err)
+			}
+			got := make(map[string]bool, len(g.Vertices))
+			for k := range g.Vertices {
+				got[k] = true
+			}
+			if first == nil {
+				first = got
+				continue
+			}
+			if !reflect.DeepEqual(first, got) {
+				t.Fatalf("membership not deterministic: run 0 %v vs run %d %v", first, i, got)
+			}
+		}
+	})
+
+	t.Run("expired member never selected (#750)", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Hour)
+		buildClique(c, []string{"a1", "a2", "a3"}, 1.0)
+		c.PutVertexWithExpiration("dead", "v", time.Now().Add(20*time.Millisecond))
+		c.PutEdgeWithExpiration("a1", "dead", 10.0, exp)
+		c.PutEdgeWithExpiration("dead", "a1", 10.0, exp)
+		time.Sleep(30 * time.Millisecond)
+		g, _, err := c.LocalCommunityContext(context.Background(), "a1", 0, 0.15, 1e-6, WeightingRaw, nil)
+		if err != nil {
+			t.Fatalf("LocalCommunityContext: %v", err)
+		}
+		if _, ok := g.Vertices["dead"]; ok {
+			t.Errorf("expired vertex entered the community")
+		}
+	})
+
+	t.Run("degenerate touched set falls back to mass ranking", func(t *testing.T) {
+		// Seed with a single neighbour: touched < 3, so the sweep is
+		// undefined and the fallback must return the seed + its neighbour —
+		// the same set top-k-by-mass selects.
+		c := NewGraphCache[string, string](time.Hour)
+		c.PutVertexWithExpiration("a", "v", exp)
+		c.PutVertexWithExpiration("b", "v", exp)
+		c.PutEdgeWithExpiration("a", "b", 1.0, exp)
+		g, _, err := c.LocalCommunityContext(context.Background(), "a", 0, 0.15, 1e-6, WeightingRaw, nil)
+		if err != nil {
+			t.Fatalf("LocalCommunityContext: %v", err)
+		}
+		if _, ok := g.Vertices["a"]; !ok {
+			t.Errorf("seed missing")
+		}
+		if _, ok := g.Vertices["b"]; !ok {
+			t.Errorf("fallback dropped the only neighbour: %v", g.Vertices)
+		}
+	})
+
+	t.Run("unknown seed yields empty graph", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Hour)
+		g, _, err := c.LocalCommunityContext(context.Background(), "ghost", 0, 0, 0, WeightingRaw, nil)
+		if err != nil || len(g.Vertices) != 0 {
+			t.Fatalf("unknown seed: g=%v err=%v", g.Vertices, err)
+		}
+	})
+
+	t.Run("ctx cancel propagates", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Hour)
+		buildClique(c, []string{"a1", "a2", "a3"}, 1.0)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, _, err := c.LocalCommunityContext(ctx, "a1", 0, 0, 0, WeightingRaw, nil); err == nil {
+			t.Fatal("cancelled ctx must surface an error")
+		}
+	})
+}

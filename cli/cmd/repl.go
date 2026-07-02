@@ -40,7 +40,7 @@ The REPL accepts whitespace-delimited verbs:
   scan vertices <prefix> [limit]
   scan edges <tail-prefix> [limit]
   keys <prefix> [limit]
-  illuminate <seed> <step> <k> [algorithm=none|mst|spt|ppr] [objective=min|max] [weighting=raw|tfidf|bm25] [restart_prob=<float>] [epsilon=<float>]
+  illuminate <seed> <step> <k> [algorithm=none|mst|spt|ppr|community] [objective=min|max] [weighting=raw|tfidf|bm25] [restart_prob=<float>] [epsilon=<float>]
   help
   exit
 
@@ -151,7 +151,7 @@ EXAMPLE
 			case service.ErrKeys:
 				fmt.Println("Usage: keys <prefix: string> [<limit: int>]")
 			case service.ErrIlluminate:
-				fmt.Println("Usage: illuminate <seed: string> <step: int> <k: int> [algorithm=none|mst|spt|ppr] [objective=min|max] [weighting=raw|tfidf|bm25] [restart_prob=<float>] [epsilon=<float>]")
+				fmt.Println("Usage: illuminate <seed: string> <step: int> <k: int> [algorithm=none|mst|spt|ppr|community] [objective=min|max] [weighting=raw|tfidf|bm25] [restart_prob=<float>] [epsilon=<float>]")
 			case service.ErrInvalidVerb:
 				fmt.Println("Usage: { get | put | delete | add | scan | illuminate | help | exit } ...")
 			case service.ErrInvalidObjective:
