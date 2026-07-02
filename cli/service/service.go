@@ -409,7 +409,7 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 			fmt.Printf("Error: illuminate: unknown weighting %q\n", p.Weighting)
 			return ErrIlluminate
 		}
-		famOpt, ok := IlluminateFamilyOption(p.Algorithm, uint32(p.Step), uint32(p.K), obj, p.RestartProb, p.Epsilon)
+		famOpt, ok := IlluminateFamilyOption(p.Algorithm, clampUint32(p.Step), clampUint32(p.K), obj, p.RestartProb, p.Epsilon)
 		if !ok {
 			fmt.Printf("Error: illuminate: unknown algorithm %q\n", p.Algorithm)
 			return ErrIlluminate
@@ -446,6 +446,20 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 		return ErrInvalidVerb
 	}
 	return nil
+}
+
+// clampUint32 saturates an int into uint32 range. The REPL parser produces
+// plain ints from strconv.Atoi; a negative or >32-bit value must not wrap
+// through the conversion into a huge step/k (CodeQL
+// go/incorrect-integer-conversion).
+func clampUint32(v int) uint32 {
+	if v < 0 {
+		return 0
+	}
+	if uint64(v) > math.MaxUint32 {
+		return math.MaxUint32
+	}
+	return uint32(v)
 }
 
 // IlluminateFamilyOption maps the CLI algorithm token to the typed
