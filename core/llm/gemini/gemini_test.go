@@ -316,3 +316,115 @@ func TestResponseSchemaStripsAdditionalProperties(t *testing.T) {
 		t.Errorf("responseSchema must not contain additionalProperties: %s", gotBody.GenerationConfig.ResponseSchema)
 	}
 }
+
+// TestSanitizeSchema_Allowlist pins the #853 allowlist rewrite over a
+// struct exercising the SchemaFor surface: []byte (contentEncoding
+// translation), time.Time (date-time format retained), nested struct,
+// slice of struct, map[string]T, pointer-optional, and plain string.
+func TestSanitizeSchema_Allowlist(t *testing.T) {
+	type inner struct {
+		Label string  `json:"label"`
+		Score float64 `json:"score"`
+	}
+	type doc struct {
+		Blob    []byte         `json:"blob"`
+		When    time.Time      `json:"when"`
+		Nested  inner          `json:"nested"`
+		Items   []inner        `json:"items"`
+		Tags    map[string]int `json:"tags"`
+		Maybe   *string        `json:"maybe,omitempty"`
+		Comment string         `json:"comment"`
+	}
+
+	schema, err := llm.SchemaFor[doc]()
+	if err != nil {
+		t.Fatalf("SchemaFor: %v", err)
+	}
+	sanitized, err := sanitizeSchema(schema.Definition)
+	if err != nil {
+		t.Fatalf("sanitizeSchema: %v", err)
+	}
+	text := string(sanitized)
+
+	for _, banned := range []string{"contentEncoding", "additionalProperties", "$schema", "patternProperties"} {
+		if strings.Contains(text, banned) {
+			t.Errorf("sanitized schema still carries rejected keyword %q:\n%s", banned, text)
+		}
+	}
+	if !strings.Contains(text, `"date-time"`) {
+		t.Errorf("date-time format for time.Time must survive:\n%s", text)
+	}
+	if !strings.Contains(text, `"blob"`) {
+		t.Errorf("[]byte field must be preserved as a plain string, not dropped:\n%s", text)
+	}
+	if !strings.Contains(text, "content encoding: base64") {
+		t.Errorf("base64 note must move into the description:\n%s", text)
+	}
+
+	// Unknown formats are dropped rather than forwarded.
+	raw := json.RawMessage(`{"type":"string","format":"email"}`)
+	out, err := sanitizeSchema(raw)
+	if err != nil {
+		t.Fatalf("sanitizeSchema(email): %v", err)
+	}
+	if strings.Contains(string(out), "email") {
+		t.Errorf("foreign format leaked: %s", out)
+	}
+	// Type-scoped: int64 survives on integer, not on string.
+	raw = json.RawMessage(`{"type":"integer","format":"int64"}`)
+	out, _ = sanitizeSchema(raw)
+	if !strings.Contains(string(out), "int64") {
+		t.Errorf("int64 on integer must survive: %s", out)
+	}
+	raw = json.RawMessage(`{"type":"string","format":"int64"}`)
+	out, _ = sanitizeSchema(raw)
+	if strings.Contains(string(out), "int64") {
+		t.Errorf("int64 on string must be dropped: %s", out)
+	}
+}
+
+// TestNew_ByteFieldWireSchema is the construction-time regression from the
+// #853 sequencing note: binding a T that contains []byte must succeed via
+// New[T], and the schema that actually reaches the wire must carry no
+// keyword Gemini rejects.
+func TestNew_ByteFieldWireSchema(t *testing.T) {
+	type payload struct {
+		Data []byte `json:"data"`
+		Name string `json:"name"`
+	}
+	var wireSchema string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(body, &req)
+		if gc, ok := req["generationConfig"].(map[string]any); ok {
+			raw, _ := json.Marshal(gc["responseSchema"])
+			wireSchema = string(raw)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"modelVersion":"gemini-2.5-pro","candidates":[{"finishReason":"STOP",`+
+			`"content":{"parts":[{"text":"{\"data\":\"aGk=\",\"name\":\"x\"}"}]}}],`+
+			`"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`)
+	}))
+	defer srv.Close()
+
+	m, err := New[payload](NewClient("key", "gemini-2.5-pro", WithBaseURL(srv.URL)), "decode", EffortLow)
+	if err != nil {
+		t.Fatalf("New[T] with []byte must construct: %v", err)
+	}
+	resp, err := m.Generate(context.Background(), "input")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if string(resp.Output.Data) != "hi" {
+		t.Errorf("base64 string did not round-trip into []byte: %q", resp.Output.Data)
+	}
+	for _, banned := range []string{"contentEncoding", "additionalProperties"} {
+		if strings.Contains(wireSchema, banned) {
+			t.Errorf("wire schema carries rejected keyword %q:\n%s", banned, wireSchema)
+		}
+	}
+	if wireSchema == "" {
+		t.Fatal("wire schema not captured")
+	}
+}
