@@ -219,24 +219,49 @@ func (l *Lantern) applyTimeout(ctx context.Context) (context.Context, context.Ca
 	return context.WithTimeout(ctx, l.opts.defaultTimeout)
 }
 
-// unary is the one-line forwarding helper every *Lantern RPC method
-// uses. It boxes req via connect.NewRequest, runs the typed Connect-Go
-// method, lifts errors through wrapConnectErr so the SDK sentinels
-// (ErrNotFound, etc.) match, and returns the unwrapped response.
+// unary is the forwarding helper every *Lantern RPC method uses. It boxes
+// req via connect.NewRequest, runs the typed Connect-Go method, lifts
+// errors through wrapConnectErr so the SDK sentinels (ErrNotFound, etc.)
+// match, and returns the unwrapped response.
+//
+// When WithRetry is armed (#849) and the request is retry-eligible
+// (requestRetryable — the code-enforced idempotency matrix), the call is
+// driven through the policy's bounded backoff loop. The request message is
+// built once and re-sent verbatim, so a retried AddEdges carries the SAME
+// ContribIDs on every attempt — the exactly-once property
+// WithIdempotentAdds provides.
 //
 // Callers are responsible for applyTimeout — unary leaves ctx alone so
 // batch helpers can drive a single outer deadline across multiple
 // chunks.
 func unary[Req, Resp any](
 	ctx context.Context,
+	l *Lantern,
 	req *Req,
 	fn func(context.Context, *connect.Request[Req]) (*connect.Response[Resp], error),
 ) (*Resp, error) {
-	resp, err := fn(ctx, connect.NewRequest(req))
-	if err != nil {
-		return nil, wrapConnectErr(err)
+	do := func() (*Resp, error) {
+		resp, err := fn(ctx, connect.NewRequest(req))
+		if err != nil {
+			return nil, wrapConnectErr(err)
+		}
+		return resp.Msg, nil
 	}
-	return resp.Msg, nil
+	if l == nil || l.opts.retry == nil || !requestRetryable(req) {
+		return do()
+	}
+	var out *Resp
+	err := l.opts.retry.run(ctx, func() error {
+		r, e := do()
+		if e == nil {
+			out = r
+		}
+		return e
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // wrapConnectErr lifts a *connect.Error into a joined error that
@@ -279,7 +304,7 @@ func wrapConnectErr(err error) error {
 func (l *Lantern) GetVertex(ctx context.Context, key string) (*Vertex, error) {
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	resp, err := unary(ctx, &pb.GetVertexRequest{Key: key}, l.client.GetVertex)
+	resp, err := unary(ctx, l, &pb.GetVertexRequest{Key: key}, l.client.GetVertex)
 	if err != nil {
 		return nil, err
 	}
@@ -314,7 +339,7 @@ func (l *Lantern) PutVertexAt(ctx context.Context, key string, value any, expira
 	}
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	_, err = unary(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{v}}, l.client.PutVertices)
+	_, err = unary(ctx, l, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{v}}, l.client.PutVertices)
 	return err
 }
 
@@ -340,7 +365,7 @@ func (l *Lantern) PutVertices(ctx context.Context, inputs []VertexInput) error {
 		vs = append(vs, v)
 	}
 	_, err := runBatchWrite(ctx, l, vs, func(ctx context.Context, chunk []*pb.Vertex) (int32, error) {
-		_, err := unary(ctx, &pb.PutVerticesRequest{Vertices: chunk}, l.client.PutVertices)
+		_, err := unary(ctx, l, &pb.PutVerticesRequest{Vertices: chunk}, l.client.PutVertices)
 		return 0, err
 	})
 	return err
@@ -352,7 +377,7 @@ func (l *Lantern) PutVertices(ctx context.Context, inputs []VertexInput) error {
 func (l *Lantern) DeleteVertex(ctx context.Context, key string) (bool, error) {
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	resp, err := unary(ctx, &pb.DeleteVertexRequest{Key: key}, l.client.DeleteVertex)
+	resp, err := unary(ctx, l, &pb.DeleteVertexRequest{Key: key}, l.client.DeleteVertex)
 	if err != nil {
 		return false, err
 	}
@@ -372,7 +397,7 @@ func (l *Lantern) DeleteVertex(ctx context.Context, key string) (bool, error) {
 // keys already deleted, so callers can resume with keys[err.Written:].
 func (l *Lantern) DeleteVertices(ctx context.Context, keys []string) (int, error) {
 	return runBatchWrite(ctx, l, keys, func(ctx context.Context, chunk []string) (int32, error) {
-		resp, err := unary(ctx, &pb.DeleteVerticesRequest{Keys: chunk}, l.client.DeleteVertices)
+		resp, err := unary(ctx, l, &pb.DeleteVerticesRequest{Keys: chunk}, l.client.DeleteVertices)
 		if err != nil {
 			return 0, err
 		}
@@ -387,7 +412,7 @@ func (l *Lantern) DeleteVertices(ctx context.Context, keys []string) (int, error
 // server's MaxBatchSize cap.
 func (l *Lantern) GetVertices(ctx context.Context, keys []string) (found []*Vertex, missing []string, err error) {
 	err = runBatchRead(ctx, l, keys, func(ctx context.Context, chunk []string) error {
-		resp, rerr := unary(ctx, &pb.GetVerticesRequest{Keys: chunk}, l.client.GetVertices)
+		resp, rerr := unary(ctx, l, &pb.GetVerticesRequest{Keys: chunk}, l.client.GetVertices)
 		if rerr != nil {
 			return rerr
 		}
@@ -405,7 +430,7 @@ func (l *Lantern) GetVertices(ctx context.Context, keys []string) (found []*Vert
 func (l *Lantern) GetEdge(ctx context.Context, tail string, head string) (*Edge, error) {
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	resp, err := unary(ctx, &pb.GetEdgeRequest{Tail: tail, Head: head}, l.client.GetEdge)
+	resp, err := unary(ctx, l, &pb.GetEdgeRequest{Tail: tail, Head: head}, l.client.GetEdge)
 	if err != nil {
 		return nil, err
 	}
@@ -428,7 +453,7 @@ func (l *Lantern) AddEdge(ctx context.Context, tail string, head string, weight 
 func (l *Lantern) AddEdgeAt(ctx context.Context, tail string, head string, weight float32, expiration time.Time) error {
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	_, err := unary(ctx, &pb.AddEdgesRequest{
+	_, err := unary(ctx, l, &pb.AddEdgesRequest{
 		Edges:      []*pb.Edge{{Tail: tail, Head: head, Weight: weight, Expiration: timestamppb.New(expiration)}},
 		ContribIds: l.nextContribIDs(1),
 	}, l.client.AddEdges)
@@ -453,7 +478,7 @@ func (l *Lantern) AddEdges(ctx context.Context, inputs []EdgeInput) error {
 		return nil
 	}
 	_, err := runBatchWrite(ctx, l, edgesFrom(inputs), func(ctx context.Context, chunk []*pb.Edge) (int32, error) {
-		_, err := unary(ctx, &pb.AddEdgesRequest{Edges: chunk, ContribIds: l.nextContribIDs(len(chunk))}, l.client.AddEdges)
+		_, err := unary(ctx, l, &pb.AddEdgesRequest{Edges: chunk, ContribIds: l.nextContribIDs(len(chunk))}, l.client.AddEdges)
 		return 0, err
 	})
 	return err
@@ -492,7 +517,7 @@ func (l *Lantern) PutEdge(ctx context.Context, tail string, head string, weight 
 func (l *Lantern) PutEdgeAt(ctx context.Context, tail string, head string, weight float32, expiration time.Time) error {
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	_, err := unary(ctx, &pb.PutEdgesRequest{
+	_, err := unary(ctx, l, &pb.PutEdgesRequest{
 		Edges: []*pb.Edge{{Tail: tail, Head: head, Weight: weight, Expiration: timestamppb.New(expiration)}},
 	}, l.client.PutEdges)
 	return err
@@ -510,7 +535,7 @@ func (l *Lantern) PutEdges(ctx context.Context, inputs []EdgeInput) error {
 		return nil
 	}
 	_, err := runBatchWrite(ctx, l, edgesFrom(inputs), func(ctx context.Context, chunk []*pb.Edge) (int32, error) {
-		_, err := unary(ctx, &pb.PutEdgesRequest{Edges: chunk}, l.client.PutEdges)
+		_, err := unary(ctx, l, &pb.PutEdgesRequest{Edges: chunk}, l.client.PutEdges)
 		return 0, err
 	})
 	return err
@@ -521,7 +546,7 @@ func (l *Lantern) PutEdges(ctx context.Context, inputs []EdgeInput) error {
 func (l *Lantern) DeleteEdge(ctx context.Context, tail string, head string) (bool, error) {
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	resp, err := unary(ctx, &pb.DeleteEdgeRequest{Tail: tail, Head: head}, l.client.DeleteEdge)
+	resp, err := unary(ctx, l, &pb.DeleteEdgeRequest{Tail: tail, Head: head}, l.client.DeleteEdge)
 	if err != nil {
 		return false, err
 	}
@@ -553,7 +578,7 @@ func (l *Lantern) DeleteEdges(ctx context.Context, refs []EdgeRef) (int, error) 
 		keys = append(keys, &pb.EdgeKey{Tail: r.Tail, Head: r.Head})
 	}
 	return runBatchWrite(ctx, l, keys, func(ctx context.Context, chunk []*pb.EdgeKey) (int32, error) {
-		resp, err := unary(ctx, &pb.DeleteEdgesRequest{Edges: chunk}, l.client.DeleteEdges)
+		resp, err := unary(ctx, l, &pb.DeleteEdgesRequest{Edges: chunk}, l.client.DeleteEdges)
 		if err != nil {
 			return 0, err
 		}
@@ -575,7 +600,7 @@ func (l *Lantern) GetEdges(ctx context.Context, refs []EdgeRef) (found []*Edge, 
 		keys = append(keys, &pb.EdgeKey{Tail: r.Tail, Head: r.Head})
 	}
 	err = runBatchRead(ctx, l, keys, func(ctx context.Context, chunk []*pb.EdgeKey) error {
-		resp, rerr := unary(ctx, &pb.GetEdgesRequest{Edges: chunk}, l.client.GetEdges)
+		resp, rerr := unary(ctx, l, &pb.GetEdgesRequest{Edges: chunk}, l.client.GetEdges)
 		if rerr != nil {
 			return rerr
 		}
@@ -771,7 +796,7 @@ func (l *Lantern) Illuminate(ctx context.Context, seed string, opts ...Illuminat
 			Reduction: cfg.bfs.Reduction,
 		}}
 	}
-	resp, err := unary(ctx, req, l.client.Illuminate)
+	resp, err := unary(ctx, l, req, l.client.Illuminate)
 	if err != nil {
 		return nil, err
 	}

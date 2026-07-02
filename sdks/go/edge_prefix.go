@@ -64,7 +64,7 @@ func (l *Lantern) ScanEdges(ctx context.Context, opts ...EdgeScanOption) (edges 
 	}
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	resp, err := unary(ctx, &pb.ScanEdgesRequest{
+	resp, err := unary(ctx, l, &pb.ScanEdgesRequest{
 		TailPrefix: o.tailPrefix,
 		HeadPrefix: o.headPrefix,
 		Limit:      o.limit,

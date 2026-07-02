@@ -17,6 +17,9 @@ func main() {
 		panic(err)
 	}
 
+	// Opt-in retry + static-endpoint failover + idempotent adds (#849).
+	retryAndFailoverExample(ctx)
+
 	/*
 		PutVertex:
 		    Value can be string, int, float, bool, time.Time, []byte or nil
@@ -372,4 +375,60 @@ func main() {
 			*/
 		}
 	}
+}
+
+// retryAndFailoverExample shows the opt-in retry policy (#849) composed with
+// static-endpoint failover and idempotent adds. Retries are OFF unless
+// WithRetry is passed, and even then apply ONLY to RPCs that are idempotent
+// under the client's configuration: reads, Put*/Delete*, and — because
+// WithIdempotentAdds stamps a stable per-edge ContribID — AddEdge(s). A
+// deterministic error (NotFound, InvalidArgument) or an exhausted deadline is
+// never retried.
+func retryAndFailoverExample(ctx context.Context) {
+	// Single endpoint with a bounded, full-jitter exponential backoff. A
+	// transient Unavailable (rolling update, load-balancer flap) is retried
+	// transparently up to MaxAttempts; anything deterministic surfaces at once.
+	retrying, err := client.NewLantern(
+		"http://localhost:6380",
+		client.WithIdempotentAdds(),
+		client.WithRetry(client.RetryPolicy{
+			MaxAttempts: 4,
+			BaseDelay:   50 * time.Millisecond,
+			MaxDelay:    2 * time.Second,
+		}),
+	)
+	if err != nil {
+		log.Printf("retry example: dial: %v", err)
+		return
+	}
+	defer func() { _ = retrying.Close() }()
+
+	// AddEdges is retried safely: WithIdempotentAdds stamps a stable ContribID
+	// per edge, so a re-sent chunk records each weight exactly once. (Distinct
+	// keys keep this demo out of the Illuminate graph printed above.)
+	if err := retrying.AddEdges(ctx, []client.EdgeInput{
+		{Tail: "retry-demo:a", Head: "retry-demo:b", Weight: 1},
+		{Tail: "retry-demo:b", Head: "retry-demo:c", Weight: 1},
+	}); err != nil {
+		log.Printf("retry example: AddEdges: %v", err)
+	}
+
+	// Failover across a fixed replica set. The retry loop drives the ring
+	// walk: an Unavailable endpoint is retried against its siblings with
+	// backoff, so MaxAttempts is the cross-replica budget — no second rotation
+	// mechanism. Construction is lazy (no dial here); swap in real replicas.
+	failover, err := client.NewLanternFailover(
+		[]string{
+			"http://localhost:6380",
+			"http://localhost:6381",
+			"http://localhost:6382",
+		},
+		client.WithIdempotentAdds(),
+		client.WithRetry(client.RetryPolicy{MaxAttempts: 6}),
+	)
+	if err != nil {
+		log.Printf("retry example: failover: %v", err)
+		return
+	}
+	defer func() { _ = failover.Close() }()
 }

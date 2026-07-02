@@ -23,6 +23,7 @@ type options struct {
 	defaultTimeout time.Duration
 	batchChunkSize int
 	idempotentAdds bool
+	retry          *RetryPolicy
 }
 
 // Option configures a Lantern client built via NewLantern.
@@ -91,6 +92,20 @@ func (t authTokenInterceptor) WrapStreamingClient(next connect.StreamingClientFu
 
 func (t authTokenInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return next // client-side only
+}
+
+// WithRetry arms the opt-in retry policy (#849): bounded attempts with
+// full-jitter exponential backoff, applied ONLY to RPCs that are
+// idempotent under the client's configuration (see the eligibility matrix
+// in retry.go / doc.go). Zero-config clients behave exactly as before.
+// Under NewLanternFailover the retry loop drives the endpoint rotation:
+// an Unavailable attempt advances the sticky endpoint, so MaxAttempts
+// doubles as the cross-replica budget.
+func WithRetry(p RetryPolicy) Option {
+	return func(o *options) {
+		n := p.normalized()
+		o.retry = &n
+	}
 }
 
 // WithDefaultTimeout applies a per-call timeout to every RPC whose

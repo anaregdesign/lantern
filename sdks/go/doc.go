@@ -37,6 +37,37 @@
 // injects a hidden default expiration — an omitted/zero TTL is honoured
 // as permanent end to end (see #523).
 //
+// # Retry policy
+//
+// Retries are opt-in and off by default — a zero-config client behaves
+// exactly as before. WithRetry(RetryPolicy{...}) arms a bounded,
+// context-aware backoff loop with full-jitter exponential delays, applied
+// ONLY to RPCs that are idempotent under the client's configuration. The
+// eligibility matrix is enforced in code (see retry.go), not documentation:
+//
+//	RPC family                                   Retried?
+//	-------------------------------------------  ------------------------------
+//	Get*/Scan*/Count*/Search*/Illuminate/status  yes (reads are idempotent)
+//	Put*/Delete*/DeleteVerticesByPrefix          yes (idempotent by semantics)
+//	AddEdge/AddEdgeAt/AddEdges                    only under WithIdempotentAdds
+//	                                             (or explicit ContribIDs): the
+//	                                             per-edge keys let a retry record
+//	                                             each contribution exactly once
+//	Subscribe/Backup/Restore                     no (streaming / io, excluded v1)
+//
+// Never retried regardless of policy: deterministic outcomes (NotFound,
+// InvalidArgument, FailedPrecondition) and DeadlineExceeded/Canceled (the
+// caller's budget is already spent). The default retryable code is
+// Unavailable; add ResourceExhausted via RetryPolicy.RetryableCodes to retry
+// through the server-side capacity cap / rate limiter.
+//
+// Under NewLanternFailover the policy drives the ring walk: each retry
+// attempt re-runs the failover rotation, so a persistently-unavailable
+// endpoint is retried against its siblings with backoff and MaxAttempts is
+// the cross-replica budget — there is no second rotation mechanism. The
+// per-endpoint clients' own retry is neutralised so the attempt budget is
+// never squared.
+//
 // # Model definition policy
 //
 // This SDK follows a strict "no parallel models" rule: wherever a

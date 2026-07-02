@@ -45,7 +45,7 @@ func ServerUptime(s *ServerStatus) time.Duration {
 func (l *Lantern) GetServerStatus(ctx context.Context) (*ServerStatus, error) {
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	resp, err := unary(ctx, &pb.GetServerStatusRequest{}, l.client.GetServerStatus)
+	resp, err := unary(ctx, l, &pb.GetServerStatusRequest{}, l.client.GetServerStatus)
 	if err != nil {
 		return nil, err
 	}
