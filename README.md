@@ -60,7 +60,7 @@ shape (#410):
 
 | Axis | Values | What it does |
 |---|---|---|
-| `algorithm` | `none` (default) — raw k-NN subgraph<br>`mst` — spanning tree<br>`spt` — shortest-path tree from seed<br>`ppr` — Personalized PageRank from seed (ACL forward-push) | Picks the post-traversal subgraph reduction (or, for `ppr`, the ranked neighbourhood) |
+| `algorithm` | `none` (default) — raw k-NN subgraph<br>`mst` — spanning tree<br>`spt` — shortest-path tree from seed<br>`ppr` — Personalized PageRank from seed (ACL forward-push)<br>`community` — conductance-cut local community (PageRank-Nibble sweep over the PPR push, #845) | Picks the traversal family / reduction. `community` returns the **real induced subgraph** of the natural community around the seed (`k` is an upper bound — the sweep may stop earlier), unlike `ppr`'s relevance star. On the wire these are a per-family `oneof` since #846 (`bfs` / `ppr` / `community` params); the single `algorithm` axis is the CLI/tooling convenience view. |
 | `objective` | `max` (default) — keeps strongest edges, largest-weight tree wins<br>`min` — keeps smallest edges, smallest-weight tree wins | Picks the direction of BOTH the per-hop top-k prune and the reduction (#560). Ignored by `algorithm=ppr`, which always ranks by mass. |
 | `weighting` | `raw` (default) — edge.weight verbatim<br>`tfidf` — per-hop top-k weighted by `w / log2(1+df(head))`<br>`bm25` — per-hop top-k re-scored with Okapi BM25 (k1=1.2, b=0.75) over the out-edge distribution | Picks the edge-weight transform applied BEFORE the BFS walk |
 
@@ -82,6 +82,7 @@ Examples:
 - `algorithm=spt objective=max`  — **most-relevant** path tree
 - `algorithm=ppr`                — relevance-ranked neighbourhood (PPR), server-default locality
 - `algorithm=ppr restart_prob=0.25` — tighter, more seed-local PPR ranking
+- `algorithm=community` — the natural community around the seed as a real subgraph (conductance decides the boundary; `k` only caps it, #845)
 - `weighting=tfidf`              — suppress hub vertices like "popular" items
 - `weighting=bm25`              — same hub suppression with IDF saturation + out-degree length-normalisation (consistent with full-text `SearchVertices`)
 
@@ -471,7 +472,7 @@ scan   edges    <tail-prefix> [limit] [head=<prefix>] [all=true]
 count  vertices <prefix>
 delete-prefix vertices <prefix> [limit=<int>] [confirm=yes|dry_run=true]
 keys   <prefix> [limit]
-illuminate <seed> <step> <k> [algorithm=none|mst|spt|ppr] [objective=min|max] \
+illuminate <seed> <step> <k> [algorithm=none|mst|spt|ppr|community] [objective=min|max] \
            [weighting=raw|tfidf|bm25] [prefix=<string>] \
            [restart_prob=<float>] [epsilon=<float>]
 help
@@ -516,8 +517,10 @@ cat edges.ndjson | ./lantern-cli bulk edges add -
 ```
 
 Global flags include `--host/--port` (or `--address`), `--timeout`, `--tls*`,
-`--compression {none|gzip}`, and `--chunk-size`. Exit code `0` is success,
-`1` is a local / parse error, `2` is an RPC error from the server.
+`--token` (bearer token for servers running `LANTERN_AUTH_TOKENS`; falls back
+to the `LANTERN_TOKEN` env var), `--compression {none|gzip}`, and
+`--chunk-size`. Exit code `0` is success, `1` is a local / parse error, `2`
+is an RPC error from the server.
 
 ### Use it from Go
 
@@ -566,6 +569,15 @@ edges, _, _ := cli.ScanEdges(ctx,
     client.WithEdgeScanLimit(100))
 _ = edges
 ```
+
+Constructor options cover the operational tiers too: `client.WithAuthToken`
+sends the bearer token for `LANTERN_AUTH_TOKENS` servers (#850), and
+`client.WithRetry(client.RetryPolicy{…})` arms opt-in full-jitter retries
+that apply only to RPCs that are idempotent under your configuration —
+additive `AddEdge(s)` is retried only when `client.WithIdempotentAdds` (or
+explicit ContribIDs) makes it exactly-once safe (#849). Both compose with
+`client.NewLanternFailover`, whose sticky-cursor rotation the retry loop
+drives across replicas.
 
 The full multi-type, additive-edge, and `Illuminate` example lives in
 [sdks/go/example/main.go](sdks/go/example/main.go).
@@ -625,52 +637,45 @@ three protocols works without a sidecar.
 
 The [`mcp/`](mcp/) module ships **`lantern-mcp`**, a
 [Model Context Protocol](https://modelcontextprotocol.io) server that turns
-a running Lantern endpoint into **decaying graph memory** for LLM agents
-(Claude Desktop, VS Code / Copilot, Cursor, …).
+a running Lantern endpoint into a **shared working context for multi-agent
+fleets** (#851): presence, advisory claims, activity heat, and a blackboard,
+all built on decaying state.
 
-The pitch in one line: **facts decay on a TTL ladder; relations are additive
-and decay independently**. Treating Lantern as a Redis-style KV with TTLs
-misses the point — `recall_*` deliberately does NOT refresh TTL, and
-`remember_relation` is Hebbian (writing the same relation twice strengthens
-it). The agent learns which facts and relations are worth keeping by
-reinforcing them; everything else dies on schedule.
+The pitch in one line: Lantern's primitive — additive TTL edges + decaying
+vertices — models **activity, not knowledge**. Expiry is semantically
+*correct* here: a stale claim SHOULD vanish, last hour's activity SHOULD
+outweigh last week's, and a crashed agent's presence SHOULD evaporate on its
+own. One Lantern instance per team/fleet is the unit of shared context;
+pair it with bearer-token auth (`LANTERN_AUTH_TOKENS` on the server,
+`LANTERN_TOKEN` on the MCP side).
 
 `lantern-mcp` is **not** a replacement for the Go SDK, the gRPC surface, or
 the CLI — it is the LLM-facing facade. Under the hood it dials Lantern with
 the same SDK any other client uses; it never imports `server/` or `core/`.
 
-### Tools
-
-Six tools, advertised at session-open. Descriptions match those exposed via
-MCP `tools/list` (see [mcp/server.go](mcp/server.go) for the source of truth).
+### Tools (context profile — the default)
 
 | Tool | Purpose |
 |---|---|
-| `remember_fact` | Store a fact with a **required TTL bucket**. Re-writing the same key overwrites + resets TTL — the canonical way to refresh. |
-| `recall_fact` | Look up a single fact. Returns `{found=false}` for misses (structured, not a tool error). Does NOT refresh TTL. |
-| `forget` | Delete a fact by exact key. Idempotent. Edges incident to the key are NOT cascade-deleted; they decay on their own. |
-| `list_under` | Enumerate facts whose key starts with a prefix, ascending. Defaults to 50, max 500. |
-| `remember_relation` | Add or **reinforce** a directed relation. Additive: same write twice = stronger relation. |
-| `recall_related` | Walk the graph from a seed with `step`, `k`, and the orthogonal axes `algorithm` (`none` / `mst` / `spt` / `ppr`), `objective` (`min` / `max`), and `weighting` (`raw` / `tfidf` / `bm25`). `algorithm=ppr` runs Personalized PageRank with optional `restart_prob` / `epsilon` knobs (#801). |
+| `announce` | "I am here, working on T" — presence heartbeat + task line (TTL ≈ 2 min; re-announce to stay visible, go silent to disappear). |
+| `list_agents` | Who is active right now. Expired presences are already gone — the list is always live. |
+| `track` | "I touched R" — adds a decaying agent→resource edge (~1 h). Repetition strengthens, silence fades. |
+| `claim` / `release` / `list_claims` | Advisory leases (~10 min, renew by re-claiming). A conflict returns `{granted:false, holder, expires_at}` — a structured result, not an error; `force:true` steals after coordinating. |
+| `post_note` | Blackboard signal (`info`/`warn`/`blocker`, explicit TTL bucket), linked to the resource keys it concerns. |
+| `whats_happening` | **The flagship read**: the active neighborhood of a resource/agent — who is on it, co-active resources, live notes, live claims. An untouched key returns an empty context: the coast is clear. |
+| `context_stats` | Fleet glance: live agents / claims / notes / tracked resources. |
 
 A `ping` tool also exists so operators can sanity-check the wire without
-touching state.
+touching state. Identity comes from `LANTERN_MCP_AGENT_ID` (or a stable
+per-process fallback); resource keys are dotted fleet conventions
+(`repo.<name>.<path>`, `ticket.<id>`, …).
 
-### TTL buckets
-
-Every `remember_*` tool takes a **required** bucket parameter. Twelve enum
-horizons covering "next breath" through "next quarter":
-
-```
-seconds → transient → turn → conversation → task → workday → day →
-  week → sprint → month → quarter → durable
-```
-
-Defaults run from 30s to 180d and are all overridable via
-`LANTERN_MCP_TTL_<BUCKET>` environment variables (see
-[mcp/README.md](mcp/README.md#ttl-buckets-required-parameter-for-every-remember_-tool)
-for the full table). When in doubt about which bucket to pick, choose the
-shorter one — re-writing is cheap.
+The pre-#851 **decaying-memory verbs** (`remember_*` / `recall_*` /
+`forget*` / `touch` / `memory_stats`) remain available for one release
+behind `LANTERN_MCP_PROFILE=memory` — see
+[mcp/README.md](mcp/README.md#legacy-memory-profile) for that surface and
+the full TTL-bucket table (`seconds` … `durable`, overridable via
+`LANTERN_MCP_TTL_<BUCKET>`).
 
 ### Run the container
 
@@ -682,14 +687,16 @@ process, then point your agent at `http://localhost:6390/mcp`.
 docker run --rm \
   -p 6390:6390 \
   -e LANTERN_ADDR=host.docker.internal:6380 \
-  ghcr.io/anaregdesign/lantern-mcp:v0.4.0
+  ghcr.io/anaregdesign/lantern-mcp:v0.10.0
 ```
 
 The container binds `0.0.0.0:6390` internally so the published port is
-reachable; the endpoint is **unauthenticated**, so only publish it on
-trusted networks (the handler still applies cross-origin / DNS-rebinding
-protection, and the bare binary defaults to loopback only). A `GET
-/healthz` returns `200 ok` for liveness probes.
+reachable; the MCP endpoint itself is **unauthenticated**, so only publish
+it on trusted networks (the handler still applies cross-origin /
+DNS-rebinding protection, and the bare binary defaults to loopback only).
+Set `LANTERN_TOKEN` when the upstream Lantern runs with
+`LANTERN_AUTH_TOKENS`. A `GET /healthz` returns `200 ok` for liveness
+probes.
 
 Images are published to `ghcr.io/anaregdesign/lantern-mcp` on every
 `mcp/vX.Y.Z` git tag (independent of the server's release cadence). Both
@@ -719,53 +726,47 @@ stdio can bridge via `mcp-remote` — see
 [mcp/examples/README.md](mcp/examples/README.md) for file locations, the
 `mcp-remote` fallback, and `LANTERN_ADDR` tweaks for Linux / remote setups.
 
-### Worked example: agent memory session
-
-The interaction pattern that exercises Lantern's strengths is
-**reinforce-then-recall** — short-TTL writes that accumulate into a
-useful neighborhood:
+### Worked example: two agents, one board
 
 ```text
-# 1. Capture facts as they arise. Bucket is required; prefer SHORTER.
-remember_fact(key="user:alice/role",      value="staff eng",     bucket="quarter")
-remember_fact(key="user:alice/team",      value="payments",      bucket="month")
-remember_fact(key="topic:payments/owner", value="alice",         bucket="month")
+# Agent A announces, works, and stakes out the risky part.
+announce(task="refactoring auth middleware")
+track(resources=["repo.api.middleware.auth", "ticket.API-17"])
+claim(resource="repo.api.middleware.auth", note="rewriting, ~20min")
+post_note(text="auth middleware API changed, rebase before touching",
+          severity="warn", links=["repo.api.middleware.auth"], ttl="task")
 
-# 2. Reinforce relations every time they show up in the conversation.
-#    Each call APPENDS a contribution — repeated co-occurrence builds weight.
-remember_relation(tail="user:alice", head="topic:payments", weight=1.0, bucket="day")
-remember_relation(tail="user:alice", head="topic:payments", weight=1.0, bucket="day")
-remember_relation(tail="user:alice", head="topic:auth",     weight=0.4, bucket="day")
+# Agent B looks before touching.
+whats_happening(key="repo.api.middleware.auth")
+# → agents: [A: "refactoring auth middleware"]
+#   claims: [repo.api.middleware.auth ← A, expires ≈10min]
+#   notes:  [[warn] auth middleware API changed …]
 
-# 3. Later in the session, walk the live graph. SPT-max-weight returns
-#    a "most relevant" tree — exactly what you want for grounding context.
-recall_related(seed="user:alice", step=2, k=5, algorithm="spt", objective="max")
-# → [{key: "topic:payments", weight: 2.0}, {key: "topic:auth", weight: 0.4}, …]
+# B collides anyway → structured conflict, not an error.
+claim(resource="repo.api.middleware.auth")
+# → {granted: false, holder: "A", expires_at: …}
 
-#    Or rank a seed-local neighbourhood by Personalized PageRank (#801).
-#    restart_prob/epsilon are optional; omit them to use the server defaults.
-recall_related(seed="user:alice", step=2, k=5, algorithm="ppr", restart_prob=0.25)
+# A finishes and releases; if A had crashed instead, the presence (~2m)
+# and lease (~10m) would simply have expired — nothing to clean up.
+release(resource="repo.api.middleware.auth")
 ```
 
-Two recurring traps worth memorising:
-
-- **`recall_*` does NOT refresh TTL.** A frequently-read but never-rewritten
-  fact will still decay. The canonical idiom is *"recall, then if you want
-  it to stick around, `remember_fact` again with the same key."*
-- **`remember_relation` is additive, not idempotent.** Re-writing the same
-  edge strengthens it; that is the design. Use the relation's TTL bucket as
-  a half-life knob — short buckets give you a "what's hot right now" view,
-  long buckets give you "what has this user historically cared about."
+The recurring principle: **everything you read is current by
+construction** — there are no tombstones and no stale entries, because
+decay is the cleanup mechanism, not a bug to work around.
 
 ### Docs and references
 
-- Operator / contributor reference: [mcp/README.md](mcp/README.md).
-- Server-instructions string the LLM sees at session-open:
-  [mcp/server.go](mcp/server.go) (`serverInstructions` constant).
+- Operator / contributor reference: [mcp/README.md](mcp/README.md)
+  (includes the two-agent walkthrough and the legacy memory profile).
+- Session-open instructions the LLM sees:
+  [mcp/server.go](mcp/server.go) (`contextInstructions` /
+  `serverInstructions` constants, per profile).
 - Container build + publish pipeline:
   [.github/workflows/mcp-publish.yml](.github/workflows/mcp-publish.yml).
-- Integration test that wires the MCP server against an in-process Lantern:
-  [tests/integration/mcp_test.go](tests/integration/mcp_test.go).
+- Integration tests wiring the MCP server against an in-process Lantern:
+  [tests/integration/mcp_test.go](tests/integration/mcp_test.go) (one per
+  profile).
 - **Custom Agents:** [.github/agents/](/.github/agents/) — role-specific agents (e.g. `User` for UX/UI review)
 
 ---
@@ -815,7 +816,9 @@ same `:6380` listener — no separate HTTP/JSON gateway is involved. See the
 ## Configuration
 
 The server is configured via environment variables, parsed in
-[server/provider/provider.go](server/provider/provider.go):
+[server/provider/provider.go](server/provider/provider.go). The exhaustive,
+**generated** reference is [docs/env.md](docs/env.md) (regenerated by
+`make envdoc`; CI fails on drift) — the highlights:
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -847,6 +850,12 @@ The server is configured via environment variables, parsed in
 | `LANTERN_DELETE_BY_PREFIX_DEFAULT_LIMIT` / `LANTERN_DELETE_BY_PREFIX_MAX_LIMIT` | `10000` / `100000` | Default and hard cap for `DeleteVerticesByPrefix` per call |
 | `LANTERN_ILLUMINATE_MAX_STEP` | `16` | Cap on BFS depth accepted by `Illuminate` |
 | `LANTERN_ILLUMINATE_MAX_K` | `1024` | Cap on neighbours-per-step accepted by `Illuminate` |
+| `LANTERN_TRAVERSAL_TIMEOUT_MS` | `0` | Server-side wall-clock budget for `Illuminate` (#842); `0` keeps the client-owned deadline. A client deadline shorter than the budget still wins. |
+| `LANTERN_MAX_VERTICES` / `LANTERN_MAX_EDGES` | `0` / `0` | Aggregate capacity **soft caps** (#848); `0` = unlimited. At capacity, local write RPCs fail fast with `RESOURCE_EXHAUSTED`; reads, deletes, replication apply, and restore always proceed. Pair with `GOMEMLIMIT`. |
+| `LANTERN_AUTH_TOKENS` | _(unset)_ | Comma-separated bearer tokens arming data-plane auth (#850); requests need `Authorization: Bearer <token>`. Multiple entries allow zero-downtime rotation; health checks are always exempt. Pair with TLS on untrusted networks. |
+| `LANTERN_AUTH_EXEMPT_REFLECTION` | `true` | Keep gRPC reflection reachable without a token when auth is on. |
+| `LANTERN_STRICT_CONFIG` | `false` | Turn malformed values / unknown `LANTERN_*` names into boot failures instead of warnings (#847). |
+| `LANTERN_LLM_*` | `PROVIDER=disabled` | Optional LLM backend wiring (#828): `LANTERN_LLM_PROVIDER=openai\|anthropic\|gemini` + model/key/base-URL/auth-mode knobs — see [docs/env.md](docs/env.md). |
 | `LANTERN_TLS_CERT_FILE` | _(unset)_ | Server certificate; enables TLS when set with key |
 | `LANTERN_TLS_KEY_FILE` | _(unset)_ | Server private key |
 | `LANTERN_TLS_CLIENT_CA_FILE` | _(unset)_ | Client CA bundle; enables mTLS (`RequireAndVerifyClientCert`) when set |
@@ -916,7 +925,7 @@ This is a monorepo consolidating four formerly separate repositories (Go) plus a
 | `sdks/go/` | `github.com/anaregdesign/lantern/sdks/go` | Go client SDK — depends on `pb/` only. |
 | `sdks/node/` | `lantern-sdk` (npm) | Node.js / TypeScript client built on `@connectrpc/connect-node`. Not a Go module; Bun-managed (same version pin as `admin/`). |
 | `server/` | `github.com/anaregdesign/lantern/server` | gRPC server (DI via google/wire) — depends on `pb/` + `core/`, **not** on the client SDK. |
-| `mcp/` | `github.com/anaregdesign/lantern/mcp` | MCP server binary that exposes Lantern as decaying graph memory to LLM agents. Depends on `pb/` + `sdks/go/` only; ships as the `ghcr.io/anaregdesign/lantern-mcp` container on `mcp/vX.Y.Z` tags. |
+| `mcp/` | `github.com/anaregdesign/lantern/mcp` | MCP server binary that exposes Lantern as a multi-agent shared working context (#851; legacy memory verbs behind `LANTERN_MCP_PROFILE=memory`). Depends on `pb/` + `sdks/go/` only; ships as the `ghcr.io/anaregdesign/lantern-mcp` container on `mcp/vX.Y.Z` tags. |
 | `admin/` | (TypeScript) | Browser-only React Router / Fluent UI / Sigma.js control surface. Not a Go module and not part of `go.work`; talks Connect-Web straight to the server. Ships as the `ghcr.io/anaregdesign/lantern-admin` container on `admin/vX.Y.Z` tags. |
 | `.` (root) | `github.com/anaregdesign/lantern` | Umbrella module hosting `cli/` (cobra + promptui) and `tests/integration/` (cross-module bufconn tests). |
 | `proto/` | (no Go module) | `.proto` sources — formerly `lantern-proto`. |
@@ -1025,7 +1034,7 @@ scan edges    <tail-prefix:string> [<limit:int>] [head=<prefix>] [all=true]
 count vertices <prefix:string>
 delete-prefix vertices <prefix:string> [limit=<int>] [confirm=yes|dry_run=true]
 keys <prefix:string> [<limit:int>]
-illuminate <seed:string> <step:int> <k:int> [algorithm=none|mst|spt|ppr] \
+illuminate <seed:string> <step:int> <k:int> [algorithm=none|mst|spt|ppr|community] \
            [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>] \
            [restart_prob=<float>] [epsilon=<float>]
 help
@@ -1142,16 +1151,20 @@ graph LR
 
 ## Roadmap & limitations
 
-- **In-memory only.** Snapshots / WAL aren't built in — production
-  deployments typically replay events from a durable log (Kafka, etc.) into
-  Lantern on boot. Multi-replica HA *is* built in (every node holds the full
-  graph, leaderless replication via mutation-log streaming + anti-entropy;
-  see [docs/replication.md](docs/replication.md)), but **sharding is not**:
-  the working set must fit in one process.
-- **No authn / authz built in.** TLS and mTLS *are* supported out of the
-  box via the `LANTERN_TLS_*` env vars (and the matching `--tls*` client
-  flags), but per-RPC authentication is not — front it with a service mesh
-  or envoy-style sidecar if you need identity-based access control.
+- **In-memory first.** A periodic whole-graph snapshot backup loop *is*
+  built in (`LANTERN_BACKUP_*`, #770 — restore-on-boot included), but there
+  is no WAL: writes between snapshots are lost on crash (decision record:
+  #844). Production deployments that need stronger durability replay events
+  from a durable log (Kafka, etc.) on boot. Multi-replica HA *is* built in
+  (every node holds the full graph, leaderless replication via mutation-log
+  streaming + anti-entropy; see [docs/replication.md](docs/replication.md)),
+  but **sharding is not**: the working set must fit in one process.
+- **Authentication is `requirepass`-tier, not identity-based.** Opt-in
+  static bearer tokens (`LANTERN_AUTH_TOKENS`, #850) guard the data plane,
+  and TLS / mTLS are supported via the `LANTERN_TLS_*` env vars — but there
+  are no users, ACLs, scopes, or per-namespace authorization. Front it with
+  a service mesh or envoy-style sidecar if you need identity-based access
+  control.
 - **Single global `sync.RWMutex` on the graph cache** plus per-edge mutexes on
   weight aggregation. Read-heavy workloads scale well; write-very-hot keys
   serialize.

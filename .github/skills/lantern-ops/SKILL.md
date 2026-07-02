@@ -1,6 +1,6 @@
 ---
 name: lantern-ops
-description: "Operate Lantern data through the `lantern-cli` CLI — read, write, delete, scan, count, bulk-load, back up/restore, and graph-walk vertices and edges from the command line. Use whenever the request involves manipulating data in a running Lantern server (get/put/delete a vertex or edge, prefix scan or count, bulk NDJSON load, whole-graph dump/restore backup, prefix delete, or an illuminate graph walk), or driving Lantern from an interactive/agentic system. Do NOT use this skill for editing Lantern's own Go source, regenerating protobuf/wire code, server deployment/IaC, or the MCP decaying-memory tools."
+description: "Operate Lantern data through the `lantern-cli` CLI — read, write, delete, scan, count, bulk-load, back up/restore, and graph-walk vertices and edges from the command line. Use whenever the request involves manipulating data in a running Lantern server (get/put/delete a vertex or edge, prefix scan or count, bulk NDJSON load, whole-graph dump/restore backup, prefix delete, or an illuminate graph walk), or driving Lantern from an interactive/agentic system. Do NOT use this skill for editing Lantern's own Go source, regenerating protobuf/wire code, server deployment/IaC, or the MCP working-context tools."
 ---
 
 # Lantern Ops — CLI command reference

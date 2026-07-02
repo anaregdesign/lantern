@@ -45,7 +45,7 @@ Multi-module Go workspace ([go.work](go.work)); dependency direction is a DAG wi
 | `core/` | Reusable graph/cache/collections/concurrency/NLP building blocks | (leaf) |
 | `sdks/go/` | Go client SDK (package name `client`) | `pb` only — never `core`/`server` |
 | `server/` | Connect server, DI via google/wire | `pb` + `core` only — **never the client SDK** |
-| `mcp/` | MCP server exposing Lantern as decaying memory (Streamable HTTP, `:6390/mcp`) | `pb` + `sdks/go` |
+| `mcp/` | MCP server exposing Lantern as a multi-agent shared working context (#851; legacy memory verbs behind `LANTERN_MCP_PROFILE=memory`) — Streamable HTTP, `:6390/mcp` | `pb` + `sdks/go` |
 | `.` (root) | CLI (`cli/`) + cross-module tests (`tests/integration/`) | everything |
 
 - **Plural-first RPC surface** ([server/service/service.go](server/service/service.go)): every read/write/delete has singular + plural forms; the plural is the canonical implementation and the singular forwards a one-element batch to it. New write surface: implement plural first, singular as thin facade.
