@@ -65,8 +65,15 @@ type Backend interface {
 	// is off (clock nil) so non-replicated workloads pay nothing.
 	// AddEdgesWithExpirationContribHLC returns the count of items that added
 	// no weight (tombstone-dropped or ContribID-deduped).
-	PutVerticesWithExpirationHLC(items []graphcache.VertexItem[string, *pb.Vertex], ts hlc.Timestamp)
-	PutEdgesWithExpirationHLC(items []graphcache.EdgeItem[string], ts hlc.Timestamp)
+	//
+	// Since #840 these batch methods also serve the replication apply path
+	// (ApplyMutation), which previously looped the singular HLC methods. The
+	// Put* variants return the number of items rejected by the tombstone
+	// fence or LWW watermark — the same set the singular methods report as
+	// applied=false — so the apply path fires its clamp-reject metric once
+	// per rejected item with unchanged meaning.
+	PutVerticesWithExpirationHLC(items []graphcache.VertexItem[string, *pb.Vertex], ts hlc.Timestamp) int
+	PutEdgesWithExpirationHLC(items []graphcache.EdgeItem[string], ts hlc.Timestamp) int
 	AddEdgesWithExpirationContribHLC(items []graphcache.EdgeItem[string], ts hlc.Timestamp) int
 
 	// tombstone-aware Delete*/Add* entry points used by ApplyMutation

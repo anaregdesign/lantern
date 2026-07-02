@@ -953,6 +953,69 @@ func mustMarshal(v *pb.Vertex) []byte {
 // Each scenario applies a "winner" mutation at a high HLC first, then
 // a strictly-older "loser" mutation for the same key/edge and asserts
 // the hook count.
+// TestApplyMutation_BatchBornExpiredAlignment pins the deliberate behavior
+// change of routing MutationOp_PutVertices through the batch HLC method
+// (#840): a born-expired item is now dead on arrival — NOTHING is stored
+// physically (the singular path stored it until GC, inflating replica
+// high-water) — but its HLC watermark IS recorded, so a later strictly-older
+// write for the same key still loses LWW and cannot resurrect it. Live items
+// in the same mixed batch apply normally, and nil entries are skipped.
+func TestApplyMutation_BatchBornExpiredAlignment(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+	svc := NewLanternService(cache)
+	ctx := context.Background()
+	origin := bytes16("origin-A")
+
+	apply := func(t *testing.T, seq uint64, op *pb.MutationOp) {
+		t.Helper()
+		m := &pb.Mutation{Seq: seq, Hlc: newHLC(int64(seq), origin), Origin: origin[:], Op: op}
+		if err := svc.ApplyMutation(ctx, m); err != nil {
+			t.Fatalf("ApplyMutation seq=%d: %v", seq, err)
+		}
+	}
+
+	liveExp := timestamppb.New(time.Now().Add(time.Hour))
+	deadExp := timestamppb.New(time.Now().Add(-time.Hour))
+	apply(t, 5, &pb.MutationOp{Op: &pb.MutationOp_PutVertices{
+		PutVertices: &pb.PutVerticesRequest{Vertices: []*pb.Vertex{
+			{Key: "dead", Value: &pb.Vertex_Nil{Nil: true}, Expiration: deadExp},
+			nil, // wire nils are skipped, not applied
+			{Key: "live", Value: &pb.Vertex_Nil{Nil: true}, Expiration: liveExp},
+		}},
+	}})
+
+	// The born-expired key is not stored: invisible to reads AND absent from
+	// the physical count (no GC tick has run — the singular path would still
+	// hold it here).
+	if _, ok := cache.GetVertex("dead"); ok {
+		t.Fatalf("born-expired vertex is readable")
+	}
+	if got := cache.VertexCount(); got != 1 {
+		t.Fatalf("VertexCount = %d, want 1 (live only; born-expired must not be stored)", got)
+	}
+
+	// The watermark WAS recorded: a strictly-older replay for the same key is
+	// rejected, so it cannot resurrect the dead key with stale data.
+	apply(t, 1, &pb.MutationOp{Op: &pb.MutationOp_PutVertices{
+		PutVertices: &pb.PutVerticesRequest{Vertices: []*pb.Vertex{
+			{Key: "dead", Value: &pb.Vertex_Nil{Nil: true}, Expiration: liveExp},
+		}},
+	}})
+	if _, ok := cache.GetVertex("dead"); ok {
+		t.Fatalf("strictly-older put resurrected the born-expired key — watermark was not recorded")
+	}
+
+	// A strictly-newer put for the same key applies normally.
+	apply(t, 9, &pb.MutationOp{Op: &pb.MutationOp_PutVertices{
+		PutVertices: &pb.PutVerticesRequest{Vertices: []*pb.Vertex{
+			{Key: "dead", Value: &pb.Vertex_Nil{Nil: true}, Expiration: liveExp},
+		}},
+	}})
+	if _, ok := cache.GetVertex("dead"); !ok {
+		t.Fatalf("strictly-newer put after the born-expired watermark did not apply")
+	}
+}
+
 func TestApplyMutation_TombstoneClampRejectHook(t *testing.T) {
 	exp := timestamppb.New(time.Now().Add(time.Hour))
 	origin := bytes16("origin-A")

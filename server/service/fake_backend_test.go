@@ -387,12 +387,14 @@ func (f *fakeBackend) PutEdgeWithExpirationHLC(tail, head string, w float32, _ t
 // whether or not the service takes the replicated branch; real LWW / tombstone
 // convergence is covered by the core and integration tests against the real
 // backend.
-func (f *fakeBackend) PutVerticesWithExpirationHLC(items []graphcache.VertexItem[string, *pb.Vertex], _ hlc.Timestamp) {
+func (f *fakeBackend) PutVerticesWithExpirationHLC(items []graphcache.VertexItem[string, *pb.Vertex], _ hlc.Timestamp) int {
 	f.PutVerticesWithExpiration(items)
+	return 0
 }
 
-func (f *fakeBackend) PutEdgesWithExpirationHLC(items []graphcache.EdgeItem[string], _ hlc.Timestamp) {
+func (f *fakeBackend) PutEdgesWithExpirationHLC(items []graphcache.EdgeItem[string], _ hlc.Timestamp) int {
 	f.PutEdgesWithExpiration(items)
+	return 0
 }
 
 func (f *fakeBackend) AddEdgesWithExpirationContribHLC(items []graphcache.EdgeItem[string], _ hlc.Timestamp) int {
