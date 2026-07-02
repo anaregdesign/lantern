@@ -106,6 +106,7 @@ message IlluminateRequest {
   oneof params {
     BfsParams bfs = 12;
     PprParams ppr = 13;
+    LocalCommunityParams community = 14;
   }
   // Field numbers 4/5 ("tfidf", "optimization") were retired by the
   // orthogonal-axes redesign (#410); 2/3/6/7/10/11 ("step", "k",
@@ -133,6 +134,44 @@ message BfsParams {
   // reduction optionally reduces the discovered neighbourhood to a tree
   // rooted at the seed. UNSPECIFIED = no reduction (raw subgraph).
   Reduction reduction = 4;
+}
+
+// LocalCommunityParams extracts the conductance-optimal local community
+// around the seed (#845): PageRank-Nibble — the same ACL forward-push the
+// PPR family runs, followed by a sweep cut that orders touched vertices by
+// p(v)/deg(v) and takes the prefix minimising directed weighted
+// conductance. Unlike the PPR relevance star, the response preserves
+// structure: it is the INDUCED SUBGRAPH on the selected members — the real
+// live edges among them with actual stored weights and expirations, in the
+// same response shape as the BFS family.
+message LocalCommunityParams {
+  // max_size is an UPPER BOUND on community size — NOT an exact count. The
+  // sweep stops at the conductance minimum, which may come before max_size.
+  // 0 = unbounded (the sweep alone decides). (The PPR family's top_n by
+  // contrast always returns exactly N regardless of the natural boundary.)
+  uint32 max_size = 1;
+  // restart_prob (α) — locality knob, same semantics and defaults as
+  // PprParams.restart_prob: higher α → tighter, more seed-proximate
+  // community. Honoured only in (0,1); unset falls back to 0.15.
+  float restart_prob = 2;
+  // epsilon (ε) — push accuracy / work budget, same semantics and defaults
+  // as PprParams.epsilon: smaller ε → more accurate mass and a larger
+  // touched set. Honoured only when > 0; unset falls back to 1e-4.
+  float epsilon = 3;
+  // reduction optionally reduces the community to a tree VIEW rooted at the
+  // seed (for visualization, explanation paths, token-bounded consumption).
+  // The induced subgraph stays the source of truth — density is exactly
+  // what the sweep selected for. Sweep prefixes need not be connected, so
+  // the tree spans only the seed's reachable component within the
+  // community; unreachable members are still returned as ISOLATED vertices
+  // (membership preserved, no edges fabricated). UNSPECIFIED = the full
+  // induced subgraph (the default).
+  Reduction reduction = 4;
+  // objective sets the direction/cost mapping for the reduction ONLY
+  // (membership is decided by PPR mass, not by this): MINIMIZE → identity
+  // cost, MAXIMIZE/UNSPECIFIED → inverse cost, exactly as the BFS family.
+  // Ignored when reduction is UNSPECIFIED.
+  Objective objective = 5;
 }
 
 // PprParams runs seed-anchored Personalized PageRank (Random-Walk-with-

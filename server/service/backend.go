@@ -109,6 +109,23 @@ type Backend interface {
 		keep func(string) bool,
 	) (*coregraph.Graph[string, *pb.Vertex], map[string]map[string]time.Time, error)
 
+	// LocalCommunityContext extracts the conductance-optimal local
+	// community around seed (#845): the shared PPR forward-push followed by
+	// a sweep cut (PageRank-Nibble). maxSize is an UPPER BOUND (0 =
+	// unbounded); alpha/epsilon follow the PPR defaults; weighting steers
+	// the walk and the sweep only — the returned graph is the INDUCED
+	// SUBGRAPH on the selected members with actual stored edge weights and
+	// expirations, in the same (graph, expirations) shape as the BFS path.
+	// keep scopes both the walk and the community (seed exempt).
+	LocalCommunityContext(
+		ctx context.Context,
+		seed string,
+		maxSize int,
+		alpha, epsilon float64,
+		weighting graphcache.EdgeWeighting,
+		keep func(string) bool,
+	) (*coregraph.Graph[string, *pb.Vertex], map[string]map[string]time.Time, error)
+
 	// PersonalizedPageRankContext computes the seed-anchored Personalized
 	// PageRank vector via Andersen–Chung–Lang forward-push (#801) and returns
 	// it as a one-hop "relevance star": g.Edges[seed][v] carries v's PPR mass

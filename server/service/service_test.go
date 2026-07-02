@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	coregraph "github.com/anaregdesign/lantern/core/graph"
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
@@ -1797,4 +1798,134 @@ func TestIlluminate_FlatFieldGhost(t *testing.T) {
 	if fb.lastNeighborSelectSmall {
 		t.Fatal("ghost objective byte flipped pruning to smallest; want strongest-first default")
 	}
+}
+
+// TestLanternService_Illuminate_LocalCommunity pins the #845 wire arm:
+// dispatch to LocalCommunityContext with max_size/α/ε plumbing, the
+// "community" metric label, a response carrying real induced edges (not a
+// star), the optional tree reduction with the isolated-vertex membership
+// contract, and reduction-unset output identical to the raw arm.
+func TestLanternService_Illuminate_LocalCommunity(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("dispatch and knob plumbing", func(t *testing.T) {
+		fb := newFakeBackend()
+		svc := NewLanternService(fb)
+		if _, err := svc.Illuminate(ctx, &pb.IlluminateRequest{
+			Seed: "s",
+			Params: &pb.IlluminateRequest_Community{Community: &pb.LocalCommunityParams{
+				MaxSize: 7, RestartProb: 0.3, Epsilon: 1e-3,
+			}},
+		}); err != nil {
+			t.Fatalf("Illuminate: %v", err)
+		}
+		if fb.communityCalls != 1 || fb.pprCalls != 0 || fb.neighborCalls != 0 {
+			t.Fatalf("dispatch: community=%d ppr=%d neighbor=%d, want 1/0/0",
+				fb.communityCalls, fb.pprCalls, fb.neighborCalls)
+		}
+		if fb.lastCommunityMaxSize != 7 {
+			t.Errorf("maxSize = %d, want 7", fb.lastCommunityMaxSize)
+		}
+		if math.Abs(fb.lastCommunityAlpha-0.3) > 1e-6 || math.Abs(fb.lastCommunityEpsilon-1e-3) > 1e-9 {
+			t.Errorf("alpha/epsilon = %v/%v, want 0.3/1e-3", fb.lastCommunityAlpha, fb.lastCommunityEpsilon)
+		}
+	})
+
+	t.Run("unset knobs resolve to PPR defaults", func(t *testing.T) {
+		fb := newFakeBackend()
+		svc := NewLanternService(fb)
+		if _, err := svc.Illuminate(ctx, &pb.IlluminateRequest{
+			Seed:   "s",
+			Params: &pb.IlluminateRequest_Community{Community: &pb.LocalCommunityParams{}},
+		}); err != nil {
+			t.Fatalf("Illuminate: %v", err)
+		}
+		if fb.lastCommunityAlpha != graphcache.DefaultPPRAlpha || fb.lastCommunityEpsilon != graphcache.DefaultPPREpsilon {
+			t.Errorf("defaults = %v/%v, want %v/%v", fb.lastCommunityAlpha, fb.lastCommunityEpsilon,
+				graphcache.DefaultPPRAlpha, graphcache.DefaultPPREpsilon)
+		}
+	})
+
+	t.Run("real induced edges end to end, not a star", func(t *testing.T) {
+		s := newTestService(t)
+		seedTriangle(t, s)
+		resp, err := s.Illuminate(ctx, &pb.IlluminateRequest{
+			Seed:   "a",
+			Params: &pb.IlluminateRequest_Community{Community: &pb.LocalCommunityParams{}},
+		})
+		if err != nil {
+			t.Fatalf("Illuminate: %v", err)
+		}
+		// The triangle's non-seed-tail edges must survive — a star would
+		// only ever emit edges with tail == seed.
+		nonSeedTail := false
+		for _, e := range resp.Graph.Edges {
+			if e.Tail != "a" {
+				nonSeedTail = true
+			}
+			if e.Expiration == nil {
+				t.Errorf("induced edge %s->%s missing expiration", e.Tail, e.Head)
+			}
+		}
+		if !nonSeedTail {
+			t.Fatalf("no non-seed-tail edge in response — looks like a star: %+v", resp.Graph.Edges)
+		}
+	})
+
+	t.Run("reduction keeps unreachable members as isolated vertices", func(t *testing.T) {
+		// Fake community {s, m, island}: island is a member but has no edge
+		// from s's reachable component. The SPT view must keep island as an
+		// isolated vertex, and tree edges must not exceed |reachable|-1.
+		fb := newFakeBackend()
+		g := coregraph.NewGraph[string, *pb.Vertex]()
+		for _, k := range []string{"s", "m", "island"} {
+			g.Vertices[k] = &pb.Vertex{Key: k, Value: &pb.Vertex_Nil{Nil: true}}
+		}
+		g.Edges["s"] = map[string]float32{"m": 1}
+		fb.communityGraph = g
+		fb.communityExpirations = map[string]map[string]time.Time{
+			"s": {"m": time.Now().Add(time.Hour)},
+		}
+		svc := NewLanternService(fb)
+		resp, err := svc.Illuminate(ctx, &pb.IlluminateRequest{
+			Seed: "s",
+			Params: &pb.IlluminateRequest_Community{Community: &pb.LocalCommunityParams{
+				Reduction: pb.Reduction_REDUCTION_SHORTEST_PATH_TREE,
+			}},
+		})
+		if err != nil {
+			t.Fatalf("Illuminate: %v", err)
+		}
+		keys := map[string]bool{}
+		for _, v := range resp.Graph.Vertices {
+			keys[v.GetKey()] = true
+		}
+		if !keys["island"] {
+			t.Fatalf("unreachable member dropped by the reduction: %v", keys)
+		}
+		if len(resp.Graph.Edges) > 1 {
+			t.Fatalf("tree has %d edges, want <= |reachable|-1 = 1", len(resp.Graph.Edges))
+		}
+	})
+
+	t.Run("reduction unset equals raw induced output", func(t *testing.T) {
+		build := func(red pb.Reduction) *pb.IlluminateResponse {
+			s := newTestService(t)
+			seedTriangle(t, s)
+			resp, err := s.Illuminate(ctx, &pb.IlluminateRequest{
+				Seed:   "a",
+				Params: &pb.IlluminateRequest_Community{Community: &pb.LocalCommunityParams{Reduction: red}},
+			})
+			if err != nil {
+				t.Fatalf("Illuminate: %v", err)
+			}
+			return resp
+		}
+		raw := build(pb.Reduction_REDUCTION_UNSPECIFIED)
+		again := build(pb.Reduction_REDUCTION_UNSPECIFIED)
+		if len(raw.Graph.Vertices) != len(again.Graph.Vertices) || len(raw.Graph.Edges) != len(again.Graph.Edges) {
+			t.Fatalf("reduction-unset output not stable: %d/%d vs %d/%d vertices/edges",
+				len(raw.Graph.Vertices), len(raw.Graph.Edges), len(again.Graph.Vertices), len(again.Graph.Edges))
+		}
+	})
 }

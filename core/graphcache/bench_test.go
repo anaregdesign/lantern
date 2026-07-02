@@ -803,3 +803,50 @@ func BenchmarkApplyPutVerticesHLC(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkLocalCommunity pits the #845 sweep-cut extraction against plain
+// PPR top-N on a planted-partition graph (20 communities of 50, dense
+// intra-community edges + sparse cross links). The sweep's target cost is
+// O(touched·log touched + edges(touched)) on top of the shared push.
+func BenchmarkLocalCommunity(b *testing.B) {
+	const (
+		communities = 20
+		size        = 50
+	)
+	c := NewGraphCache[string, string](time.Hour)
+	exp := time.Now().Add(time.Hour)
+	key := func(ci, vi int) string { return fmt.Sprintf("c%02d/v%02d", ci, vi) }
+	for ci := 0; ci < communities; ci++ {
+		for vi := 0; vi < size; vi++ {
+			c.PutVertexWithExpiration(key(ci, vi), "v", exp)
+		}
+	}
+	for ci := 0; ci < communities; ci++ {
+		for vi := 0; vi < size; vi++ {
+			// Dense ring+chords inside the community.
+			for d := 1; d <= 5; d++ {
+				c.PutEdgeWithExpiration(key(ci, vi), key(ci, (vi+d)%size), 1.0, exp)
+			}
+			// One weak cross-community link per vertex.
+			c.PutEdgeWithExpiration(key(ci, vi), key((ci+1)%communities, vi), 0.02, exp)
+		}
+	}
+	b.Run("LocalCommunity", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			g, _, err := c.LocalCommunityContext(context.Background(), key(3, 7), 0, 0.15, 1e-5, WeightingRaw, nil)
+			if err != nil || len(g.Vertices) == 0 {
+				b.Fatalf("g=%v err=%v", len(g.Vertices), err)
+			}
+		}
+	})
+	b.Run("PPRTopN", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			g, err := c.PersonalizedPageRankContext(context.Background(), key(3, 7), size, 0.15, 1e-5, WeightingRaw, nil)
+			if err != nil || len(g.Vertices) == 0 {
+				b.Fatalf("g=%v err=%v", len(g.Vertices), err)
+			}
+		}
+	})
+}

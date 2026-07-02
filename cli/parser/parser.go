@@ -42,7 +42,7 @@ var (
 	// are the canonical sets the REPL accepts for the keyword arguments of
 	// the modernised illuminate verb (#410). The keyword form replaces the
 	// legacy positional grammar (neighbor / spt_* / mst_*) entirely.
-	IlluminateAlgorithms = []string{"none", "mst", "spt", "ppr"}
+	IlluminateAlgorithms = []string{"none", "mst", "spt", "ppr", "community"}
 	IlluminateObjectives = []string{"min", "max"}
 	IlluminateWeightings = []string{"raw", "tfidf", "bm25"}
 
@@ -437,7 +437,7 @@ func DeleteEdgeParam(s *Source) (*DeleteEdge, error) {
 
 // IlluminateParam parses the modernised illuminate grammar (#410, #604, #801):
 //
-//	illuminate <seed> <step> <k> [algorithm=none|mst|spt|ppr] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>] [restart_prob=<float>] [epsilon=<float>]
+//	illuminate <seed> <step> <k> [algorithm=none|mst|spt|ppr|community] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>] [restart_prob=<float>] [epsilon=<float>]
 //
 // The keyword arguments may appear in any order and any subset. The three
 // closed-set axes default to the strongest-edge behaviour (algorithm=none,
@@ -481,7 +481,7 @@ func IlluminateParam(s *Source) (*Illuminate, error) {
 		switch key {
 		case "algorithm":
 			if !contains(IlluminateAlgorithms, lvalue) {
-				return nil, errors.New("illuminate: algorithm=" + value + " (want none|mst|spt|ppr)")
+				return nil, errors.New("illuminate: algorithm=" + value + " (want none|mst|spt|ppr|community)")
 			}
 			m.Algorithm = lvalue
 		case "objective":
@@ -745,7 +745,7 @@ const HelpText = `Lantern CLI grammar:
   delete-prefix vertices <prefix: string> [limit=<int>] [confirm=yes|dry_run=true]
   keys   <prefix: string> [<limit: int>]
   illuminate <seed: string> <step: int> <k: int>
-             [algorithm={none|mst|spt|ppr}] default=none
+             [algorithm={none|mst|spt|ppr|community}] default=none
              [objective={min|max}]       default=max
              [weighting={raw|tfidf|bm25}] default=raw
              [prefix=<string>]           default=all keys

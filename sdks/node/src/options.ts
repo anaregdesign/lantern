@@ -54,15 +54,45 @@ export interface PprOptions {
   epsilon?: number;
 }
 
+/**
+ * Local-community-family knobs (#845): PageRank-Nibble — the PPR push
+ * followed by a conductance sweep cut. Unlike the PPR relevance star the
+ * response preserves structure: the induced subgraph on the selected
+ * members with actual stored edge weights and expirations.
+ */
+export interface LocalCommunityOptions {
+  /**
+   * UPPER BOUND on community size — not an exact count; the sweep stops at
+   * the conductance minimum, which may come earlier. 0 = unbounded.
+   */
+  maxSize?: number;
+  /** Locality knob α, same semantics/defaults as PprOptions.restartProb. */
+  restartProb?: number;
+  /** Push accuracy ε, same semantics/defaults as PprOptions.epsilon. */
+  epsilon?: number;
+  /**
+   * Optional tree VIEW of the community rooted at the seed. Members
+   * unreachable from the seed within the community are returned as
+   * isolated vertices (membership preserved). UNSPECIFIED = the full
+   * induced subgraph.
+   */
+  reduction?: Reduction;
+  /** Direction/cost mapping for `reduction` only; ignored without one. */
+  objective?: Objective;
+}
+
 export interface IlluminateOptions {
   /**
-   * Select the BFS traversal family with its knobs (#846). Mutually
-   * exclusive with `ppr` — supplying both is an InvalidArgumentError.
-   * Omitting both runs BFS with server defaults (the bare illuminate).
+   * Select the BFS traversal family with its knobs (#846). The family
+   * options are mutually exclusive — supplying more than one is an
+   * InvalidArgumentError. Omitting all runs BFS with server defaults (the
+   * bare illuminate).
    */
   bfs?: BfsOptions;
-  /** Select the Personalized PageRank family. Mutually exclusive with `bfs`. */
+  /** Select the Personalized PageRank family. Mutually exclusive. */
   ppr?: PprOptions;
+  /** Select the local community extraction family (#845). Mutually exclusive. */
+  community?: LocalCommunityOptions;
   /**
    * Edge-weight transform applied BEFORE the walk (any family). Server
    * resolves UNSPECIFIED to RAW.

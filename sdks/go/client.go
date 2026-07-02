@@ -614,6 +614,7 @@ type illuminateConfig struct {
 	vertexPrefix string
 	bfs          *BFSOpts
 	ppr          *PPROpts
+	community    *LocalCommunityOpts
 }
 
 // BFSOpts tunes the greedy per-hop top-k BFS walk and its optional
@@ -654,16 +655,50 @@ type PPROpts struct {
 	Epsilon float32
 }
 
+// LocalCommunityOpts extracts the conductance-optimal local community
+// around the seed (#845): PageRank-Nibble — the PPR forward-push followed
+// by a sweep cut. Unlike WithPPR's relevance star, the response preserves
+// structure: it is the induced subgraph on the selected members, with
+// actual stored edge weights and expirations.
+type LocalCommunityOpts struct {
+	// MaxSize is an UPPER BOUND on community size — not an exact count.
+	// The sweep stops at the conductance minimum, which may come earlier.
+	// 0 = unbounded (the sweep alone decides).
+	MaxSize uint32
+	// RestartProb is the locality knob α, same semantics/defaults as
+	// PPROpts.RestartProb.
+	RestartProb float32
+	// Epsilon is the push accuracy/work budget ε, same semantics/defaults
+	// as PPROpts.Epsilon.
+	Epsilon float32
+	// Reduction optionally renders a tree VIEW of the community rooted at
+	// the seed. Members unreachable from the seed within the community are
+	// returned as isolated vertices (membership preserved). ReductionNone
+	// (default) returns the full induced subgraph.
+	Reduction Reduction
+	// Objective sets the direction/cost mapping for the Reduction only;
+	// ignored when Reduction is ReductionNone.
+	Objective Objective
+}
+
 // WithBFS selects the BFS traversal family with the supplied knobs.
-// Mutually exclusive with WithPPR (last option wins).
+// Mutually exclusive with the other family options (last option wins).
 func WithBFS(o BFSOpts) IlluminateOption {
-	return func(c *illuminateConfig) { c.bfs, c.ppr = &o, nil }
+	return func(c *illuminateConfig) { c.bfs, c.ppr, c.community = &o, nil, nil }
 }
 
 // WithPPR selects the Personalized PageRank traversal family with the
-// supplied knobs. Mutually exclusive with WithBFS (last option wins).
+// supplied knobs. Mutually exclusive with the other family options (last
+// option wins).
 func WithPPR(o PPROpts) IlluminateOption {
-	return func(c *illuminateConfig) { c.ppr, c.bfs = &o, nil }
+	return func(c *illuminateConfig) { c.ppr, c.bfs, c.community = &o, nil, nil }
+}
+
+// WithLocalCommunity selects the local community extraction family (#845)
+// with the supplied knobs. Mutually exclusive with the other family options
+// (last option wins).
+func WithLocalCommunity(o LocalCommunityOpts) IlluminateOption {
+	return func(c *illuminateConfig) { c.community, c.bfs, c.ppr = &o, nil, nil }
 }
 
 // WithWeighting toggles the edge-weight transform applied BEFORE the
@@ -707,6 +742,14 @@ func (l *Lantern) Illuminate(ctx context.Context, seed string, opts ...Illuminat
 		VertexPrefix: cfg.vertexPrefix,
 	}
 	switch {
+	case cfg.community != nil:
+		req.Params = &pb.IlluminateRequest_Community{Community: &pb.LocalCommunityParams{
+			MaxSize:     cfg.community.MaxSize,
+			RestartProb: cfg.community.RestartProb,
+			Epsilon:     cfg.community.Epsilon,
+			Reduction:   cfg.community.Reduction,
+			Objective:   cfg.community.Objective,
+		}}
 	case cfg.ppr != nil:
 		req.Params = &pb.IlluminateRequest_Ppr{Ppr: &pb.PprParams{
 			TopN:        cfg.ppr.TopN,

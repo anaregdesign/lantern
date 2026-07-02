@@ -181,7 +181,7 @@ type DomainMetrics struct {
 // added in proto without a metrics update) fall through to "unknown"
 // so a new variant cannot break label pre-warming on existing dashboards.
 var (
-	algorithmLabels  = []string{"none", "mst", "spt", "ppr"}
+	algorithmLabels  = []string{"none", "mst", "spt", "ppr", "community"}
 	objectiveLabels  = []string{"minimize", "maximize"}
 	weightingLabels  = []string{"raw", "tfidf", "bm25"}
 	illuminatePhases = []string{"traversal", "optimize"}

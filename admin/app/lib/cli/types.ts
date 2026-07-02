@@ -14,7 +14,7 @@
  * Tokenisation matches the Go side: lower-cased, whitespace-split.
  */
 
-export type AlgorithmName = "none" | "mst" | "spt" | "ppr";
+export type AlgorithmName = "none" | "mst" | "spt" | "ppr" | "community";
 export type ObjectiveName = "min" | "max";
 export type WeightingName = "raw" | "tfidf" | "bm25";
 

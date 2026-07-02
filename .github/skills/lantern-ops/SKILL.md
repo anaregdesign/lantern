@@ -277,7 +277,7 @@ idempotent. Flags:
 |---|---|---|
 | `--step <uint32>` | `1` | max walk depth from the seed. BFS-family only — ignored (has no meaning) under `--algorithm ppr` |
 | `--k <uint32>` | `10` | max neighbours visited per node. On the wire (#846) this maps to `bfs.fan_out` (per-hop top-k) for `none`/`mst`/`spt`, or `ppr.top_n` (total ranked vertices) for `ppr` |
-| `--algorithm <mode>` | `none` | traversal family + reduction. On the wire (#846) `none`/`mst`/`spt` select the BFS family (`mst`/`spt` are its post-traversal tree *reductions*), while `ppr` selects the separate Personalized PageRank family (seed-anchored ranking via ACL forward-push). The CLI keeps the single friendly flag; the typed split is server-side |
+| `--algorithm <mode>` | `none` | traversal family + reduction. On the wire (#846) `none`/`mst`/`spt` select the BFS family (`mst`/`spt` are its post-traversal tree *reductions*), `ppr` selects the Personalized PageRank family (seed-anchored ranking via ACL forward-push), and `community` (#845) selects conductance-based local community extraction (PageRank-Nibble sweep cut over the PPR push; `--k` is then an UPPER bound — the sweep may stop earlier — and the result is the real induced subgraph, not a relevance star). The CLI keeps the single friendly flag; the typed split is server-side |
 | `--objective <dir>` | `max` | optimisation direction; governs **both** per-hop top-k pruning and the reduction: `max` (largest-weight wins; weight = relevance) or `min` (smallest-weight wins; weight = cost). Ignored by `--algorithm ppr`, which always ranks by PPR mass |
 | `--weighting <mode>` | `raw` | edge-weight transform before the walk: `raw`, `tfidf` (re-score by TF-IDF over per-vertex out-edge distribution), or `bm25` (re-score by Okapi BM25, k1=1.2/b=0.75, over the same distribution — IDF saturation + out-degree length-normalisation, consistent with full-text search) |
 | `--prefix <string>` | — | restrict the walk **frontier** to vertices with this key prefix (case-sensitive); the seed is always kept as anchor. Applied server-side before top-k and any reduction, so `--prefix` + `mst`/`spt` yields a tree over the prefix-induced subgraph, not a path in the full graph |
@@ -292,6 +292,7 @@ lantern-cli illuminate alice --step 3 --k 20 --algorithm mst --objective min  # 
 lantern-cli illuminate alice --step 3 --k 20 --algorithm spt --objective max  # relevance-weighted SPT
 lantern-cli illuminate alice --step 2 --k 8 --algorithm ppr                    # PPR neighbourhood, server-default locality
 lantern-cli illuminate alice --step 2 --k 8 --algorithm ppr --restart-prob 0.25  # tighter, more seed-local PPR
+lantern-cli illuminate alice --k 30 --algorithm community                        # conductance-cut community (k = upper bound)
 lantern-cli illuminate alice --step 2 --k 5 --prefix users/    # frontier restricted to users/
 ```
 

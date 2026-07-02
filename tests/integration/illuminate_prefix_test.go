@@ -232,6 +232,8 @@ func TestIlluminate_OneofArmRoundTrips(t *testing.T) {
 				Reduction: pb.Reduction_REDUCTION_SHORTEST_PATH_TREE, Objective: pb.Objective_OBJECTIVE_MINIMIZE}}}, false},
 		{"ppr arm", &pb.IlluminateRequest{Seed: "s",
 			Params: &pb.IlluminateRequest_Ppr{Ppr: &pb.PprParams{TopN: 5, RestartProb: 0.2, Epsilon: 1e-3}}}, false},
+		{"community arm", &pb.IlluminateRequest{Seed: "s",
+			Params: &pb.IlluminateRequest_Community{Community: &pb.LocalCommunityParams{MaxSize: 5, Epsilon: 1e-5}}}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -105,6 +105,11 @@ func TestValidationInterceptor_RejectHookFiresPerReason(t *testing.T) {
 			return connectCallValidator(t, v, &pb.IlluminateRequest{Seed: "s",
 				Params: &pb.IlluminateRequest_Ppr{Ppr: &pb.PprParams{TopN: 99}}}) // > IlluminateMaxK=5
 		}},
+		{"community_max_size_too_large", "k_too_large", func(t *testing.T, v *ValidationInterceptor) error {
+			// IlluminateMaxK caps community.max_size on the community arm (#845).
+			return connectCallValidator(t, v, &pb.IlluminateRequest{Seed: "s",
+				Params: &pb.IlluminateRequest_Community{Community: &pb.LocalCommunityParams{MaxSize: 99}}}) // > IlluminateMaxK=5
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

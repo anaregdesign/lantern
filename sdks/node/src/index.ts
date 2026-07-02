@@ -77,6 +77,7 @@ export type {
   EdgeScanOptions,
   BfsOptions,
   IlluminateOptions,
+  LocalCommunityOptions,
   PprOptions,
   ScanOptions,
   SearchOptions,
