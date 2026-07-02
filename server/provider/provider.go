@@ -197,7 +197,7 @@ func NewConfig() (*Config, error) {
 			Port:                 envconfig.Int("LANTERN_PORT", 6380),
 			MaxRecvMsgBytes:      envconfig.Int("LANTERN_MAX_RECV_MSG_BYTES", 16*1024*1024),
 			MaxSendMsgBytes:      envconfig.Int("LANTERN_MAX_SEND_MSG_BYTES", 16*1024*1024),
-			MaxConcurrentStreams: uint32(envconfig.Int("LANTERN_MAX_CONCURRENT_STREAMS", 1024)),
+			MaxConcurrentStreams: envconfig.Uint32("LANTERN_MAX_CONCURRENT_STREAMS", 1024),
 		},
 		TLS: TLSConfig{
 			CertFile:     envconfig.String("LANTERN_TLS_CERT_FILE", ""),
@@ -235,10 +235,10 @@ func NewConfig() (*Config, error) {
 			IlluminateMaxK:    envconfig.Int("LANTERN_ILLUMINATE_MAX_K", 1024),
 		},
 		Scan: ScanConfig{
-			ScanDefaultLimit:           uint32(envconfig.Int("LANTERN_SCAN_DEFAULT_LIMIT", 1000)),
-			ScanMaxLimit:               uint32(envconfig.Int("LANTERN_SCAN_MAX_LIMIT", 10000)),
-			DeleteByPrefixDefaultLimit: uint32(envconfig.Int("LANTERN_DELETE_BY_PREFIX_DEFAULT_LIMIT", 10000)),
-			DeleteByPrefixMaxLimit:     uint32(envconfig.Int("LANTERN_DELETE_BY_PREFIX_MAX_LIMIT", 100000)),
+			ScanDefaultLimit:           envconfig.Uint32("LANTERN_SCAN_DEFAULT_LIMIT", 1000),
+			ScanMaxLimit:               envconfig.Uint32("LANTERN_SCAN_MAX_LIMIT", 10000),
+			DeleteByPrefixDefaultLimit: envconfig.Uint32("LANTERN_DELETE_BY_PREFIX_DEFAULT_LIMIT", 10000),
+			DeleteByPrefixMaxLimit:     envconfig.Uint32("LANTERN_DELETE_BY_PREFIX_MAX_LIMIT", 100000),
 		},
 		Search: SearchConfig{
 			Enabled:      envconfig.Bool("LANTERN_SEARCH_ENABLED", true),

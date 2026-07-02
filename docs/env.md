@@ -25,8 +25,8 @@ value is treated as unset for the non-string kinds. The MCP server's
 | `LANTERN_COMMIT` | string | (empty) | Overrides the commit label reported in lantern_build_info. |
 | `LANTERN_CORS_ALLOWED_ORIGINS` | string | (empty) | Comma-separated browser origins allowed by CORS (e.g. the admin SPA origin); empty disables CORS. |
 | `LANTERN_DEFAULT_TTL_SECONDS` | int | `60` | Reported in GetServerStatus and startup logs only; RPC writes without an expiration are permanent (decay is opt-in per write, #523). |
-| `LANTERN_DELETE_BY_PREFIX_DEFAULT_LIMIT` | int | `10000` | Deletion cap used when DeleteVerticesByPrefix leaves limit unset. |
-| `LANTERN_DELETE_BY_PREFIX_MAX_LIMIT` | int | `100000` | Ceiling DeleteVerticesByPrefix's limit is clamped to. |
+| `LANTERN_DELETE_BY_PREFIX_DEFAULT_LIMIT` | uint32 | `10000` | Deletion cap used when DeleteVerticesByPrefix leaves limit unset. |
+| `LANTERN_DELETE_BY_PREFIX_MAX_LIMIT` | uint32 | `100000` | Ceiling DeleteVerticesByPrefix's limit is clamped to. |
 | `LANTERN_DRAIN_DELAY_SECONDS` | int | `0` | Zero-drop rolling-update window: keep serving this long after readiness flips NOT_SERVING (0 = disabled). |
 | `LANTERN_GC_INTERVAL_SECONDS` | int | `60` | Graph-cache GC tick interval in seconds (expired vertex/edge sweep). |
 | `LANTERN_ILLUMINATE_MAX_K` | int | `1024` | Upper bound on the Illuminate k parameter. |
@@ -34,7 +34,7 @@ value is treated as unset for the non-string kinds. The MCP server's
 | `LANTERN_LOG_FORMAT` | string | `json` | Log output format: json or text. |
 | `LANTERN_LOG_LEVEL` | level | `info` | Structured-log level: debug, info, warn, or error. |
 | `LANTERN_MAX_BATCH_SIZE` | int | `10000` | Maximum items accepted per batch RPC (Put/Get/Add/Delete plural forms). |
-| `LANTERN_MAX_CONCURRENT_STREAMS` | int | `1024` | HTTP/2 max concurrent streams per connection (0 = unlimited). |
+| `LANTERN_MAX_CONCURRENT_STREAMS` | uint32 | `1024` | HTTP/2 max concurrent streams per connection (0 = unlimited). |
 | `LANTERN_MAX_KEY_LEN` | int | `1024` | Maximum accepted vertex-key length in bytes. |
 | `LANTERN_MAX_RECV_MSG_BYTES` | int | `16777216` | Maximum accepted request message size in bytes. |
 | `LANTERN_MAX_REPLICATION_LAG` | int | `10000` | Readiness gate: maximum tolerated replication lag (entries) before /readyz reports not ready. |
@@ -56,8 +56,8 @@ value is treated as unset for the non-string kinds. The MCP server's
 | `LANTERN_RATE_LIMIT_BURST` | int | `0` | Token-bucket burst size; when unset or <= 0 it resolves to 2x LANTERN_RATE_LIMIT_RPS. |
 | `LANTERN_RATE_LIMIT_RPS` | float | `0` | Process-wide token-bucket refill rate in requests/second (0 disables rate limiting). |
 | `LANTERN_REFLECTION` | bool | `true` | Serve gRPC server reflection on the primary listener. |
-| `LANTERN_SCAN_DEFAULT_LIMIT` | int | `1000` | Page size used when a Scan* request leaves limit unset. |
-| `LANTERN_SCAN_MAX_LIMIT` | int | `10000` | Ceiling a Scan* request's limit is clamped to. |
+| `LANTERN_SCAN_DEFAULT_LIMIT` | uint32 | `1000` | Page size used when a Scan* request leaves limit unset. |
+| `LANTERN_SCAN_MAX_LIMIT` | uint32 | `10000` | Ceiling a Scan* request's limit is clamped to. |
 | `LANTERN_SEARCH_DEFAULT_LIMIT` | uint32 | `100` | Ranked-hit count used when SearchVertices leaves limit unset. |
 | `LANTERN_SEARCH_ENABLED` | bool | `true` | Build the full-text search index and serve SearchVertices (off = FAILED_PRECONDITION). |
 | `LANTERN_SEARCH_MAX_LIMIT` | uint32 | `1000` | Ceiling SearchVertices' limit is clamped to. |
