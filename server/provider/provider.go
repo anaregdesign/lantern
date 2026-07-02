@@ -200,6 +200,7 @@ type Config struct {
 	Validation    ValidationLimits
 	Traversal     TraversalConfig
 	Auth          AuthConfig
+	LLM           LLMConfig
 	Scan          ScanConfig
 	Search        SearchConfig
 	MutationLog   MutationLogConfig
@@ -274,6 +275,7 @@ func NewConfig() (*Config, error) {
 			Tokens:           splitTokens(envconfig.String("LANTERN_AUTH_TOKENS", "")),
 			ExemptReflection: envconfig.Bool("LANTERN_AUTH_EXEMPT_REFLECTION", true),
 		},
+		LLM: loadLLMConfig(),
 		Scan: ScanConfig{
 			ScanDefaultLimit:           envconfig.Uint32("LANTERN_SCAN_DEFAULT_LIMIT", 1000),
 			ScanMaxLimit:               envconfig.Uint32("LANTERN_SCAN_MAX_LIMIT", 10000),

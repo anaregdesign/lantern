@@ -33,6 +33,16 @@ value is treated as unset for the non-string kinds. The MCP server's
 | `LANTERN_GC_INTERVAL_SECONDS` | int | `60` | Graph-cache GC tick interval in seconds (expired vertex/edge sweep). |
 | `LANTERN_ILLUMINATE_MAX_K` | int | `1024` | Upper bound on the Illuminate k parameter. |
 | `LANTERN_ILLUMINATE_MAX_STEP` | int | `16` | Upper bound on the Illuminate BFS step parameter. |
+| `LANTERN_LLM_API_KEY` | string | (empty) | Secret for LANTERN_LLM_AUTH=api-key; leave empty for the token auth modes. |
+| `LANTERN_LLM_AUTH` | string | `api-key` | Credential mode (#826/#854): api-key (default) | azure-managed-identity | azure-client-secret | google-adc | google-service-account. Token modes inject a credentialed HTTP client and run with an empty API key. |
+| `LANTERN_LLM_AZURE_CLIENT_ID` | string | (empty) | Entra application (client) id for auth=azure-client-secret. |
+| `LANTERN_LLM_AZURE_CLIENT_SECRET` | string | (empty) | Entra client secret for auth=azure-client-secret. |
+| `LANTERN_LLM_AZURE_TENANT_ID` | string | (empty) | Entra tenant for auth=azure-client-secret. |
+| `LANTERN_LLM_BASE_URL` | string | (empty) | Endpoint override: Azure OpenAI resource URL, OpenAI-compatible gateway, region-pinned Gemini, etc. |
+| `LANTERN_LLM_GOOGLE_CREDENTIALS_FILE` | string | (empty) | Service-account key file path for auth=google-service-account (google-adc reads the ambient environment instead). |
+| `LANTERN_LLM_MAX_TOKENS` | int | `0` | Max output tokens per generation (0 = provider default). |
+| `LANTERN_LLM_MODEL` | string | (empty) | Provider model id (required unless provider=disabled). |
+| `LANTERN_LLM_PROVIDER` | string | `disabled` | LLM backend for server-side features (#828): disabled (default) | openai | anthropic | gemini. disabled composes the server without any LLM. |
 | `LANTERN_LOG_FORMAT` | string | `json` | Log output format: json or text. |
 | `LANTERN_LOG_LEVEL` | level | `info` | Structured-log level: debug, info, warn, or error. |
 | `LANTERN_MAX_BATCH_SIZE` | int | `10000` | Maximum items accepted per batch RPC (Put/Get/Add/Delete plural forms). |

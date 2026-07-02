@@ -72,7 +72,12 @@ func initializeApp() (*App, error) {
 	antiEntropy := provider.NewAntiEntropyDriver(peerConfig, replicationConfig, antiEntropyConfig, authConfig, lanternService, graphCache, pump, antiEntropyMetrics, logger)
 	backupConfig := provider.NewBackupConfig(config)
 	backupper := provider.NewBackupper(backupConfig, lanternService, registry, logger)
+	llmConfig := provider.NewLLMConfig(config)
+	llmEngine, err := provider.NewLLMEngine(llmConfig)
+	if err != nil {
+		return nil, err
+	}
 	cacheGCHooksWired := provider.WireCacheGCHooks(graphCache, domainMetrics, logger)
-	app := newApp(config, logger, lanternService, lanternServer, metricsServer, tracing, domainMetrics, healthChecker, pump, antiEntropy, gate, shutdownConfig, backupper, backupConfig, peerConfig, replicationConfig, cacheGCHooksWired)
+	app := newApp(config, logger, lanternService, lanternServer, metricsServer, tracing, domainMetrics, healthChecker, pump, antiEntropy, gate, shutdownConfig, backupper, backupConfig, peerConfig, replicationConfig, llmEngine, cacheGCHooksWired)
 	return app, nil
 }

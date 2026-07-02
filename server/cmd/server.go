@@ -39,6 +39,7 @@ type App struct {
 	backupper   *backup.Backupper
 	restoreReq  bool
 	pump        *replication.Pump
+	llm         *provider.LLMEngine
 	antiEntropy *replication.AntiEntropy
 }
 
@@ -59,6 +60,7 @@ func newApp(
 	bcfg backup.Config,
 	pc provider.PeerConfig,
 	rc provider.ReplicationConfig,
+	engine *provider.LLMEngine,
 	_ provider.CacheGCHooksWired,
 ) *App {
 	// Wire the replication snapshotter onto svc here (rather than inside
@@ -75,9 +77,15 @@ func newApp(
 		Enabled: enabled,
 	})
 
+	// The LLM engine has no service consumer yet (#828 is wiring only) —
+	// holding it here keeps it in the wire graph and gives operators a
+	// boot-time signal that their LANTERN_LLM_* config parsed.
+	logger.Info("llm engine", slog.String("provider", engine.Provider()))
+
 	return &App{
 		cfg:         cfg,
 		logger:      logger,
+		llm:         engine,
 		server:      server,
 		metrics:     metricsServer,
 		tracing:     tracing,
