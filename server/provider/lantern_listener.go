@@ -36,15 +36,24 @@ import (
 )
 
 // connectHandlerOptions assembles the connect.HandlerOption chain
-// shared by every mounted Connect handler. Order matters: validation
-// runs before rate-limit so a malformed request never burns a token;
-// logging wraps everything so even rejected calls are observable;
-// slow-rpc fires last so the duration captures the full interceptor
-// chain.
+// shared by every mounted Connect handler. Order matters (#850):
+// logging and metrics wrap everything so even rejected calls are
+// observable; the rate limiter runs BEFORE auth so an unauthenticated
+// flood is shed by the cheaper token-bucket check before paying even a
+// constant-time compare; auth runs before validation so no validation
+// CPU (batch walks, key checks) is spent on unauthenticated requests;
+// slow-rpc fires last so the duration captures the full chain.
+// (Pre-#850 the chain ran validation before rate-limit so a malformed
+// request never burned a token; with auth in the middle the
+// security-first ordering wins — a malformed request from an
+// AUTHENTICATED client now consumes a token, which is the cheaper
+// trade.)
 //
 // Nil entries are skipped so call sites with a disabled component
 // (e.g. RateLimitConfig.RPS<=0 → rl.lim==nil; SlowRPCThreshold==0 →
-// slow.Enabled()==false) don't need to special-case construction.
+// slow.Enabled()==false; auth.Enabled()==false when
+// LANTERN_AUTH_TOKENS is unset) don't need to special-case
+// construction.
 //
 // connect.WithRecover catches panics in handlers and returns
 // CodeInternal — the equivalent of the grpc-middleware recovery
@@ -52,6 +61,7 @@ import (
 func connectHandlerOptions(
 	val *ValidationInterceptor,
 	rl *RateLimitInterceptor,
+	auth *AuthInterceptor,
 	log *LoggingInterceptor,
 	met *PrometheusInterceptor,
 	slow *SlowRPCInterceptor,
@@ -64,11 +74,14 @@ func connectHandlerOptions(
 	if met != nil {
 		ints = append(ints, met.ConnectInterceptor())
 	}
-	if val != nil {
-		ints = append(ints, val.ConnectInterceptor())
-	}
 	if rl != nil && rl.lim != nil {
 		ints = append(ints, rl.ConnectInterceptor())
+	}
+	if auth != nil && auth.Enabled() {
+		ints = append(ints, auth)
+	}
+	if val != nil {
+		ints = append(ints, val.ConnectInterceptor())
 	}
 	if slow.Enabled() {
 		ints = append(ints, slow.ConnectInterceptor())
@@ -158,13 +171,14 @@ func NewLanternListener(
 	rep *service.LanternReplicationService,
 	val *ValidationInterceptor,
 	rl *RateLimitInterceptor,
+	auth *AuthInterceptor,
 	logInt *LoggingInterceptor,
 	met *PrometheusInterceptor,
 	slow *SlowRPCInterceptor,
 	hc *HealthChecker,
 	logger *slog.Logger,
 ) (*LanternListener, error) {
-	handlerOpts := connectHandlerOptions(val, rl, logInt, met, slow, logger)
+	handlerOpts := connectHandlerOptions(val, rl, auth, logInt, met, slow, logger)
 
 	mux := http.NewServeMux()
 	mux.Handle(graphv1connect.NewLanternServiceHandler(
@@ -192,8 +206,20 @@ func NewLanternListener(
 			graphv1connect.LanternReplicationServiceName,
 			grpchealth.HealthV1ServiceName,
 		)
-		mux.Handle(grpcreflect.NewHandlerV1(reflector))
-		mux.Handle(grpcreflect.NewHandlerV1Alpha(reflector))
+		// Reflection is mounted OUTSIDE the Lantern interceptor chain, so
+		// with auth enabled it stays reachable by default (schema discovery
+		// is not data access). LANTERN_AUTH_EXEMPT_REFLECTION=false wraps
+		// both mounts with the same bearer check for locked-down deploys.
+		// grpc.health.v1 below is ALWAYS exempt: Kubernetes gRPC probes
+		// cannot attach headers.
+		v1path, v1h := grpcreflect.NewHandlerV1(reflector)
+		v1apath, v1ah := grpcreflect.NewHandlerV1Alpha(reflector)
+		if auth != nil && auth.Enabled() && !auth.ExemptReflection() {
+			v1h = auth.RequireHTTP(v1h)
+			v1ah = auth.RequireHTTP(v1ah)
+		}
+		mux.Handle(v1path, v1h)
+		mux.Handle(v1apath, v1ah)
 	}
 
 	// CORS sits outside the mux so preflight responses (OPTIONS +

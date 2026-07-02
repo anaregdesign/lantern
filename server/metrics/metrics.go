@@ -86,6 +86,7 @@ type DomainMetrics struct {
 	// set as 0 from process start.
 	validationRejected     *prometheus.CounterVec
 	capacityLimit          *prometheus.GaugeVec
+	authRejected           prometheus.Counter
 	rateLimitRejected      prometheus.Counter
 	tombstoneClampRejected prometheus.Counter
 
@@ -454,6 +455,10 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 			Name: "lantern_capacity_limit",
 			Help: "Configured soft capacity cap per kind (vertex, edge) from LANTERN_MAX_VERTICES / LANTERN_MAX_EDGES (#848). 0 = unlimited. Divide lantern_vertices / lantern_edges by this for a fill ratio; alert above 0.8.",
 		}, []string{"kind"}),
+		authRejected: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "lantern_auth_rejected_total",
+			Help: "Requests rejected by the bearer-token auth interceptor (#850). Registered even when LANTERN_AUTH_TOKENS is unset so dashboards compare deployments uniformly.",
+		}),
 		rateLimitRejected: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "lantern_rate_limit_rejected_total",
 			Help: "Total RPCs rejected by the process-wide token-bucket rate limiter (codes.ResourceExhausted). Registered at 0 even when LANTERN_RATE_LIMIT_RPS=0 so dashboards can compare deployments uniformly.",
@@ -484,7 +489,7 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		m.snapshotVertices, m.snapshotEdges, m.snapshotDuration,
 		m.mutationLogFillRatio, m.mutationLogEvicted, m.originStatesCount,
 		m.validationRejected, m.rateLimitRejected, m.tombstoneClampRejected,
-		m.mutationLogSubscriberDropped, m.capacityLimit)
+		m.mutationLogSubscriberDropped, m.capacityLimit, m.authRejected)
 
 	// Pre-create label rows so empty counters scrape as 0.
 	for _, r := range []string{"gapped", "send_failed"} {
@@ -751,6 +756,12 @@ func (m *DomainMetrics) OnReplicationApply(op string) {
 func (m *DomainMetrics) OnValidationRejected(reason string) {
 	r := sanitizeLabel(reason, validationRejectReasons, "unknown")
 	m.validationRejected.WithLabelValues(r).Inc()
+}
+
+// OnAuthRejected increments lantern_auth_rejected_total when the bearer
+// token interceptor rejects a request (#850).
+func (m *DomainMetrics) OnAuthRejected() {
+	m.authRejected.Inc()
 }
 
 // SetCapacityLimits publishes the configured aggregate soft caps (#848) as

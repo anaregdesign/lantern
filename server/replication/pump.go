@@ -137,6 +137,11 @@ type Config struct {
 	// failure does not tear down established subscriptions.
 	DiscoveryInterval time.Duration
 
+	// AuthToken, when non-empty, is attached as "Authorization: Bearer"
+	// to every outbound Subscribe/Snapshot call so the pump can replicate
+	// against peers running with LANTERN_AUTH_TOKENS (#850).
+	AuthToken string
+
 	// HTTPClient is the http.Client used to open Connect-Go streams
 	// against each peer. When nil, defaultH2CClient() is used so the
 	// pump talks plain HTTP/2 over the cluster network — sufficient
@@ -194,6 +199,7 @@ func NewPump(cfg Config, apply MutationApplier, snap SnapshotApplier) *Pump {
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = defaultH2CClient()
 	}
+	cfg.HTTPClient = withAuthToken(cfg.HTTPClient, cfg.AuthToken)
 	return &Pump{cfg: cfg, apply: apply, snap: snap, tracker: newPeerTracker()}
 }
 

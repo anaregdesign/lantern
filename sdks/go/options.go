@@ -2,6 +2,7 @@
 package client
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -50,6 +51,46 @@ func WithHTTPClient(c *http.Client) Option {
 //   - otelconnect.NewInterceptor()          — OTel instrumentation
 func WithConnectClientOption(opts ...connect.ClientOption) Option {
 	return func(o *options) { o.clientOptions = append(o.clientOptions, opts...) }
+}
+
+// WithAuthToken attaches "Authorization: Bearer <token>" to every RPC —
+// unary and streaming — matching the server's LANTERN_AUTH_TOKENS bearer
+// auth (#850). An empty token is a no-op. Works unchanged through
+// NewLanternFailover (each endpoint client inherits the option).
+//
+// Bearer tokens over plaintext h2c are sniffable: pair with
+// WithHTTPClient(TLS-configured client) outside trusted networks.
+func WithAuthToken(token string) Option {
+	return func(o *options) {
+		if token == "" {
+			return
+		}
+		o.clientOptions = append(o.clientOptions, connect.WithInterceptors(authTokenInterceptor(token)))
+	}
+}
+
+// authTokenInterceptor is the client-side bearer injector behind
+// WithAuthToken. It implements all three connect.Interceptor hooks so
+// streaming RPCs (Subscribe-style) carry the header too.
+type authTokenInterceptor string
+
+func (t authTokenInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
+	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		req.Header().Set("Authorization", "Bearer "+string(t))
+		return next(ctx, req)
+	}
+}
+
+func (t authTokenInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
+	return func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
+		conn := next(ctx, spec)
+		conn.RequestHeader().Set("Authorization", "Bearer "+string(t))
+		return conn
+	}
+}
+
+func (t authTokenInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
+	return next // client-side only
 }
 
 // WithDefaultTimeout applies a per-call timeout to every RPC whose

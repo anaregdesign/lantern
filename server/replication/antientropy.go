@@ -107,6 +107,11 @@ type AntiEntropyConfig struct {
 	// always emitted regardless of this knob.
 	GapWarnThreshold uint64
 
+	// AuthToken, when non-empty, is attached as "Authorization: Bearer"
+	// to every outbound anti-entropy call so gap repair works against
+	// peers running with LANTERN_AUTH_TOKENS (#850).
+	AuthToken string
+
 	// HTTPClient is the http.Client used to open Connect-Go streams
 	// against each peer. Defaults to defaultH2CClient() (plaintext
 	// HTTP/2 for the in-cluster HA topology).
@@ -151,6 +156,7 @@ func NewAntiEntropy(cfg AntiEntropyConfig, local LocalStateProvider, apply Mutat
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = defaultH2CClient()
 	}
+	cfg.HTTPClient = withAuthToken(cfg.HTTPClient, cfg.AuthToken)
 	return &AntiEntropy{cfg: cfg, local: local, apply: apply, snap: snap}
 }
 

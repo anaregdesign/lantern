@@ -55,6 +55,7 @@ func NewAntiEntropyDriver(
 	pc PeerConfig,
 	rc ReplicationConfig,
 	ac AntiEntropyConfig,
+	auth AuthConfig,
 	svc *service.LanternService,
 	cache *graphcache.GraphCache[string, *v1.Vertex],
 	pump *replication.Pump,
@@ -70,5 +71,6 @@ func NewAntiEntropyDriver(
 		GapWarnThreshold: ac.GapWarnThreshold,
 		Logger:           logger,
 		Metrics:          m,
+		AuthToken:        firstToken(auth.Tokens),
 	}, svc, svc, cache)
 }
