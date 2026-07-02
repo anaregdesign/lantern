@@ -14,7 +14,10 @@ import (
 // Injectors from wire.go:
 
 func initializeApp() (*App, error) {
-	config := provider.NewConfig()
+	config, err := provider.NewConfig()
+	if err != nil {
+		return nil, err
+	}
 	observabilityConfig := provider.NewObservabilityConfig(config)
 	logger := provider.NewLogger(observabilityConfig)
 	cacheConfig := provider.NewCacheConfig(config)

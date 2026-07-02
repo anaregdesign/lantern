@@ -86,8 +86,12 @@ aggregate `*Config` because they need multiple slices at once.
 
 ## Environment variables
 
-The exhaustive list lives in [`internal/envconfig`](internal/envconfig); the
-most common knobs:
+The exhaustive, generated reference is [`docs/env.md`](../docs/env.md)
+(regenerate with `make envdoc`; the parsing helpers live in
+[`internal/envconfig`](internal/envconfig)). A set-but-malformed value warns
+and falls back to its default, an unknown `LANTERN_*` name warns as a
+probable typo, and `LANTERN_STRICT_CONFIG=true` turns either into a boot
+failure (#847). The most common knobs:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |

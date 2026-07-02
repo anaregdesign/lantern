@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"os"
 	"testing"
+	"time"
 )
 
 func TestInt(t *testing.T) {
@@ -173,6 +174,142 @@ func TestLogLevel(t *testing.T) {
 				t.Fatalf("LogLevel(%q)=%v, want %v", tc.in, got, tc.expect)
 			}
 		})
+	}
+}
+
+func TestDuration(t *testing.T) {
+	const key = "LANTERN_TEST_DURATION"
+	cases := []struct {
+		name   string
+		set    bool
+		value  string
+		def    time.Duration
+		expect time.Duration
+	}{
+		{"unset returns default", false, "", time.Minute, time.Minute},
+		{"valid value", true, "90s", time.Minute, 90 * time.Second},
+		{"empty value falls back", true, "", time.Minute, time.Minute},
+		{"garbage falls back", true, "soon", time.Minute, time.Minute},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.set {
+				t.Setenv(key, tc.value)
+			} else {
+				unset(t, key)
+			}
+			if got := Duration(key, tc.def); got != tc.expect {
+				t.Fatalf("Duration(%q)=%v, want %v", tc.value, got, tc.expect)
+			}
+		})
+	}
+}
+
+func TestLevel(t *testing.T) {
+	const key = "LANTERN_TEST_LEVEL"
+	t.Run("unset returns default", func(t *testing.T) {
+		unset(t, key)
+		if got := Level(key, slog.LevelWarn); got != slog.LevelWarn {
+			t.Fatalf("got %v, want warn", got)
+		}
+	})
+	t.Run("valid value", func(t *testing.T) {
+		t.Setenv(key, "debug")
+		if got := Level(key, slog.LevelInfo); got != slog.LevelDebug {
+			t.Fatalf("got %v, want debug", got)
+		}
+	})
+	t.Run("garbage falls back and records a finding", func(t *testing.T) {
+		ResetForTesting()
+		t.Setenv(key, "verbose")
+		if got := Level(key, slog.LevelInfo); got != slog.LevelInfo {
+			t.Fatalf("got %v, want info", got)
+		}
+		fs := Findings()
+		if len(fs) != 1 || fs[0].Key != key || fs[0].Raw != "verbose" {
+			t.Fatalf("findings = %+v, want one for %s", fs, key)
+		}
+	})
+}
+
+func TestRegistryAndFindings(t *testing.T) {
+	t.Run("registry captures key, kind, and default", func(t *testing.T) {
+		ResetForTesting()
+		unset(t, "LANTERN_TEST_REG_INT")
+		unset(t, "LANTERN_TEST_REG_DUR")
+		_ = Int("LANTERN_TEST_REG_INT", 42)
+		_ = Duration("LANTERN_TEST_REG_DUR", 5*time.Minute)
+		specs := Known()
+		if len(specs) != 2 {
+			t.Fatalf("Known() = %+v, want 2 specs", specs)
+		}
+		// Known() sorts by key: DUR < INT.
+		if specs[0].Key != "LANTERN_TEST_REG_DUR" || specs[0].Kind != "duration" || specs[0].Default != "5m0s" {
+			t.Fatalf("spec[0] = %+v", specs[0])
+		}
+		if specs[1].Key != "LANTERN_TEST_REG_INT" || specs[1].Kind != "int" || specs[1].Default != "42" {
+			t.Fatalf("spec[1] = %+v", specs[1])
+		}
+	})
+
+	t.Run("malformed set values are recorded, unset and empty are not", func(t *testing.T) {
+		ResetForTesting()
+		unset(t, "LANTERN_TEST_F_UNSET")
+		_ = Int("LANTERN_TEST_F_UNSET", 1)
+		t.Setenv("LANTERN_TEST_F_EMPTY", "  ")
+		_ = Int("LANTERN_TEST_F_EMPTY", 1)
+		t.Setenv("LANTERN_TEST_F_BAD", "abc")
+		_ = Int("LANTERN_TEST_F_BAD", 1)
+		fs := Findings()
+		if len(fs) != 1 || fs[0].Key != "LANTERN_TEST_F_BAD" || fs[0].Raw != "abc" {
+			t.Fatalf("findings = %+v, want exactly the malformed set value", fs)
+		}
+	})
+
+	t.Run("SetKeys reports set variables without values", func(t *testing.T) {
+		ResetForTesting()
+		t.Setenv("LANTERN_TEST_SET", "9")
+		unset(t, "LANTERN_TEST_UNSET")
+		_ = Int("LANTERN_TEST_SET", 1)
+		_ = Int("LANTERN_TEST_UNSET", 1)
+		keys := SetKeys()
+		if len(keys) != 1 || keys[0] != "LANTERN_TEST_SET" {
+			t.Fatalf("SetKeys() = %v", keys)
+		}
+	})
+
+	t.Run("Malformed records custom-parser failures", func(t *testing.T) {
+		ResetForTesting()
+		Malformed("LANTERN_TEST_CUSTOM", "zz", "not hex")
+		fs := Findings()
+		if len(fs) != 1 || fs[0].Reason != "not hex" {
+			t.Fatalf("findings = %+v", fs)
+		}
+	})
+}
+
+func TestUnknownLanternVars(t *testing.T) {
+	ResetForTesting()
+	unset(t, "LANTERN_TEST_PORT")
+	_ = Int("LANTERN_TEST_PORT", 6380)
+
+	environ := []string{
+		"PATH=/usr/bin",               // non-LANTERN: ignored
+		"LANTERN_TEST_PORT=6380",      // registered: ignored
+		"LANTERN_TEST_PROT=6380",      // typo of a registered key: flagged with suggestion
+		"LANTERN_TOTALLY_DIFFERENT=1", // unknown, nothing close: flagged without suggestion
+		"LANTERN_MCP_AGENT_ID=foo",    // foreign namespace: ignored
+		"MALFORMED-NO-EQUALS",         // not KEY=value: ignored
+	}
+	got := UnknownLanternVars(environ, "LANTERN_MCP_")
+	if len(got) != 2 {
+		t.Fatalf("UnknownLanternVars = %+v, want 2 entries", got)
+	}
+	if got[0].Key != "LANTERN_TEST_PROT" || got[0].Suggestion != "LANTERN_TEST_PORT" {
+		t.Fatalf("typo entry = %+v, want suggestion LANTERN_TEST_PORT", got[0])
+	}
+	if got[1].Key != "LANTERN_TOTALLY_DIFFERENT" || got[1].Suggestion != "" {
+		t.Fatalf("unrelated entry = %+v, want no suggestion", got[1])
 	}
 }
 

@@ -9,7 +9,7 @@ ifeq ($(BUF),)
 BUF := go run github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
 endif
 
-.PHONY: all generate wire proto proto-lint proto-format proto-breaking proto-deps \
+.PHONY: all generate wire envdoc proto proto-lint proto-format proto-breaking proto-deps \
         build test test-race fmt vet lint tidy vuln clean
 
 # `go generate ./...` is the single source of truth: it runs `go tool wire`
@@ -23,6 +23,11 @@ generate:
 # Backwards-compatible aliases for muscle memory.
 wire:
 	cd server && go tool wire ./cmd
+
+# Regenerate the operator-facing env-var reference (docs/env.md) from the
+# envconfig registry (#847). Also runs as part of `go generate ./...`.
+envdoc:
+	cd server && go run ./internal/envdoc/cmd -out ../docs/env.md
 
 proto:
 	$(BUF) generate
