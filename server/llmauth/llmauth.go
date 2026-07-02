@@ -1,5 +1,14 @@
 // Package llmauth builds credential-bearing HTTP clients for core/llm provider
 // clients. It lives in server so cloud SDK dependencies do not leak into core.
+//
+// The full provider x endpoint x credential support matrix lives in
+// core/llm/doc.go ("Auth matrix"); every row is pinned by a request-shape
+// test. Token acquisition is cached on both cloud paths (#854): Azure
+// credentials behind an explicit expiry-aware singleflight cache (see
+// cachedTokenCredential — correctness does not depend on MSAL internals),
+// Google token sources behind oauth2.ReuseTokenSource. No combination pays
+// a token round-trip per LLM request, and a cold-start burst coalesces
+// into one token fetch.
 package llmauth
 
 import (
@@ -7,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
@@ -90,10 +100,77 @@ func NewAzureCredentialHTTPClient(cred azcore.TokenCredential, scope string, opt
 		scope = AzureOpenAIScope
 	}
 	o := resolveOptions(opts)
+	// The credential is wrapped in an explicit expiry-aware cache with
+	// singleflight (#854): correctness no longer depends on the MSAL
+	// in-memory cache being an azidentity implementation detail, a custom
+	// azcore.TokenCredential without caching cannot make every LLM call
+	// pay an AAD round-trip, and a cold-start burst coalesces into one
+	// token request — mirroring what oauth2.ReuseTokenSource already gives
+	// the Google path.
 	return &http.Client{
-		Transport: azureBearerTransport{credential: cred, scope: scope, base: o.base},
+		Transport: azureBearerTransport{credential: &cachedTokenCredential{inner: cred}, scope: scope, base: o.base},
 		Timeout:   o.timeout,
 	}, nil
+}
+
+// tokenRefreshMargin renews a cached Azure token this long before its
+// ExpiresOn so a request never rides a token that dies mid-flight.
+const tokenRefreshMargin = 2 * time.Minute
+
+// cachedTokenCredential is an expiry-aware, singleflight token cache over
+// an azcore.TokenCredential (#854). Hand-rolled (mutex + per-flight
+// channel) rather than pulling golang.org/x/sync — per the workspace
+// dependency rule the module gets no new dep for twenty lines.
+//
+// Failure contract: every waiter of a failed flight receives that
+// flight's error (never a poisoned cache entry), and the NEXT GetToken
+// starts a fresh flight.
+type cachedTokenCredential struct {
+	inner azcore.TokenCredential
+
+	mu     sync.Mutex
+	token  azcore.AccessToken
+	valid  bool
+	flight *tokenFlight
+}
+
+type tokenFlight struct {
+	done  chan struct{}
+	token azcore.AccessToken
+	err   error
+}
+
+func (c *cachedTokenCredential) GetToken(ctx context.Context, opts policy.TokenRequestOptions) (azcore.AccessToken, error) {
+	c.mu.Lock()
+	if c.valid && time.Until(c.token.ExpiresOn) > tokenRefreshMargin {
+		t := c.token
+		c.mu.Unlock()
+		return t, nil
+	}
+	if f := c.flight; f != nil {
+		c.mu.Unlock()
+		select {
+		case <-f.done:
+			return f.token, f.err
+		case <-ctx.Done():
+			return azcore.AccessToken{}, ctx.Err()
+		}
+	}
+	f := &tokenFlight{done: make(chan struct{})}
+	c.flight = f
+	c.mu.Unlock()
+
+	tok, err := c.inner.GetToken(ctx, opts)
+
+	c.mu.Lock()
+	c.flight = nil
+	if err == nil {
+		c.token, c.valid = tok, true
+	}
+	f.token, f.err = tok, err
+	close(f.done)
+	c.mu.Unlock()
+	return tok, err
 }
 
 type azureBearerTransport struct {

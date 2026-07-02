@@ -8,6 +8,13 @@
 //	export GEMINI_API_KEY=...           # your key
 //	export GEMINI_MODEL=gemini-3        # any model id (never hard-coded)
 //	go run ./llm/gemini/example
+//
+// Cloud-credential recipe (#854 auth matrix — Gemini on Vertex AI):
+//
+//	hc, _ := llmauth.NewGoogleDefaultHTTPClient(ctx)            // ADC; or NewGoogleServiceAccountHTTPClient
+//	c := gemini.NewClient("", model,                            // empty key: transport owns auth
+//		gemini.WithVertexAI(project, location),
+//		gemini.WithHTTPClient(hc))
 package main
 
 import (

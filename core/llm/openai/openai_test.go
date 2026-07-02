@@ -195,3 +195,41 @@ func TestGenerateTruncated(t *testing.T) {
 		t.Fatalf("err = %v, want ErrTruncated", err)
 	}
 }
+
+// TestGenerateAzureAPIKeyHeader pins the classic Azure OpenAI static-key
+// row of the #854 auth matrix: WithAPIKeyHeader("api-key") sends the key
+// in that header (no Authorization), and WithBaseURL carries the Azure
+// resource path so the request lands on <resource>/openai/v1/responses.
+func TestGenerateAzureAPIKeyHeader(t *testing.T) {
+	var gotPath, gotAPIKey, gotAuthz string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAPIKey = r.Header.Get("api-key")
+		gotAuthz = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"model":"gpt-5.5","status":"completed",`+
+			`"output":[{"content":[{"type":"output_text","text":"{\"city\":\"Tokyo\",\"high\":31}"}]}],`+
+			`"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`)
+	}))
+	defer srv.Close()
+
+	m, err := New[weather](NewClient("azure-key", "gpt-5.5",
+		WithBaseURL(srv.URL+"/openai"),
+		WithAPIKeyHeader("api-key"),
+	), "weather", EffortLow)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := m.Generate(context.Background(), "Tokyo"); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if gotPath != "/openai/v1/responses" {
+		t.Errorf("path = %q, want /openai/v1/responses", gotPath)
+	}
+	if gotAPIKey != "azure-key" {
+		t.Errorf("api-key header = %q, want azure-key", gotAPIKey)
+	}
+	if gotAuthz != "" {
+		t.Errorf("Authorization must be absent in api-key-header mode; got %q", gotAuthz)
+	}
+}

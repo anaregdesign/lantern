@@ -8,6 +8,13 @@
 //	export ANTHROPIC_API_KEY=sk-ant-...   # your key
 //	export ANTHROPIC_MODEL=claude-opus    # any model id (never hard-coded)
 //	go run ./llm/anthropic/example
+//
+// Cloud-credential recipe (#854 auth matrix — Anthropic on Vertex AI):
+//
+//	hc, _ := llmauth.NewGoogleDefaultHTTPClient(ctx)            // ADC; or NewGoogleServiceAccountHTTPClient
+//	c := anthropic.NewClient("", model,                         // empty key: transport owns auth
+//		anthropic.WithVertexAI(project, location),
+//		anthropic.WithHTTPClient(hc))
 package main
 
 import (

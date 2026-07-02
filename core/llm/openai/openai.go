@@ -49,11 +49,12 @@ const (
 // Client is a non-generic, reusable handle to the OpenAI Responses API. It is
 // safe for concurrent use. Bind a structured-output type with New.
 type Client struct {
-	apiKey    string
-	model     string
-	baseURL   string
-	maxTokens int
-	http      *http.Client
+	apiKey       string
+	apiKeyHeader string
+	model        string
+	baseURL      string
+	maxTokens    int
+	http         *http.Client
 }
 
 // Option configures a Client.
@@ -66,6 +67,19 @@ func WithBaseURL(u string) Option {
 		if u != "" {
 			c.baseURL = strings.TrimRight(u, "/")
 		}
+	}
+}
+
+// WithAPIKeyHeader sends the API key in the named request header instead
+// of "Authorization: Bearer" (#854). The classic Azure OpenAI data plane
+// authenticates with "api-key: <key>"; pass "api-key" here together with
+// WithBaseURL("https://<resource>.openai.azure.com/openai/v1") to use a
+// static Azure key. Entra-credentialed access keeps using an empty key +
+// WithHTTPClient (see server/llmauth). An empty name keeps the Bearer
+// default.
+func WithAPIKeyHeader(name string) Option {
+	return func(c *Client) {
+		c.apiKeyHeader = name
 	}
 }
 
@@ -224,7 +238,11 @@ func (c *Client) generate(ctx context.Context, instruction, input, name string, 
 		return result{}, fmt.Errorf("openai: build request: %w", err)
 	}
 	if c.apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+		if c.apiKeyHeader != "" {
+			httpReq.Header.Set(c.apiKeyHeader, c.apiKey)
+		} else {
+			httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+		}
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 

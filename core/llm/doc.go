@@ -40,4 +40,30 @@
 // raise the cap rather than retrying. Refusals and safety blocks remain
 // provider-typed (anthropic.ErrRefusal, openai.ErrRefusal, gemini.ErrBlocked)
 // because their semantics differ per provider.
+//
+// # Auth matrix (#854)
+//
+// The supported provider x endpoint x credential combinations, each pinned
+// by a request-shape test in the provider package (URL path + auth header),
+// so a broken combination fails CI instead of a user:
+//
+//	Provider   Endpoint          Credential            Recipe
+//	---------  ----------------  --------------------  ------------------------------------------
+//	openai     native            API key (Bearer)      NewClient(key, model)
+//	openai     Azure OpenAI      Entra (MI/secret)     NewClient("", model, WithBaseURL(resource),
+//	                                                     WithHTTPClient(llmauth.NewAzure*HTTPClient(...)))
+//	openai     Azure OpenAI      static api-key        NewClient(key, model, WithBaseURL(resource+"/openai"),
+//	                                                     WithAPIKeyHeader("api-key"))
+//	anthropic  native            API key (x-api-key)   NewClient(key, model)
+//	anthropic  Vertex AI         ADC / service acct    NewClient("", model, WithVertexAI(project, location),
+//	                                                     WithHTTPClient(llmauth.NewGoogle*HTTPClient(...)))
+//	gemini     native            API key (x-goog-...)  NewClient(key, model)
+//	gemini     Vertex AI         ADC / service acct    NewClient("", model, WithVertexAI(project, location),
+//	                                                     WithHTTPClient(llmauth.NewGoogle*HTTPClient(...)))
+//
+// llmauth (server/llmauth) builds the credentialed http.Client for the
+// token rows: Azure credentials sit behind an explicit expiry-aware
+// singleflight cache, and Google token sources behind
+// oauth2.ReuseTokenSource, so no combination pays a token round-trip per
+// request.
 package llm
