@@ -2,6 +2,7 @@ package graphcache
 
 import (
 	"fmt"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -307,5 +308,155 @@ func TestDictionary_PinBoth(t *testing.T) {
 		if got := d.len(); got != 0 {
 			t.Fatalf("len=%d after self-pin balance, want 0", got)
 		}
+	})
+}
+
+// TestDictionary_PinBothConcurrencyContract pins the #837 atomic-refcount
+// design: pins run under the read lock via CAS, a held pin keeps an id
+// alive against the release of its base reference, a freed key misses, and
+// the ledger reconciles exactly after a concurrent pin/release/intern storm.
+func TestDictionary_PinBothConcurrencyContract(t *testing.T) {
+	t.Run("held pin outlives the base reference", func(t *testing.T) {
+		d := newDictionary[string]()
+		id := d.intern("k") // rc 1
+
+		pa, pb, unpin, ok := d.pinBoth("k", "k") // self-pin: rc 3
+		if !ok || pa != id || pb != id {
+			t.Fatalf("pinBoth = (%v, %v, ok=%v), want (%v, %v, true)", pa, pb, ok, id, id)
+		}
+		if freed := d.release(id); freed { // base ref: rc 2
+			t.Fatal("release of base ref freed a pinned id")
+		}
+		if got, ok := d.resolve(id); !ok || got != "k" {
+			t.Fatalf("resolve while pinned = (%q, %v), want (k, true)", got, ok)
+		}
+		unpin() // rc 0 -> freed
+		if _, ok := d.resolve(id); ok {
+			t.Fatal("resolve after final unpin still succeeds")
+		}
+		if d.len() != 0 {
+			t.Fatalf("len = %d, want 0", d.len())
+		}
+	})
+
+	t.Run("freed key misses instead of resurrecting", func(t *testing.T) {
+		d := newDictionary[string]()
+		id := d.intern("gone")
+		if !d.release(id) {
+			t.Fatal("release did not free")
+		}
+		if _, _, _, ok := d.pinBoth("gone", "gone"); ok {
+			t.Fatal("pinBoth succeeded on a freed key")
+		}
+	})
+
+	t.Run("partial pin failure releases the first pin", func(t *testing.T) {
+		d := newDictionary[string]()
+		id := d.intern("a") // rc 1
+		if _, _, _, ok := d.pinBoth("a", "missing"); ok {
+			t.Fatal("pinBoth succeeded with an absent second key")
+		}
+		// The failed attempt must have undone its provisional pin on "a".
+		d.mu.RLock()
+		rc := d.refcount[id]
+		d.mu.RUnlock()
+		if rc != 1 {
+			t.Fatalf("refcount after partial pin failure = %d, want 1", rc)
+		}
+	})
+
+	t.Run("storm reconciles the ledger exactly", func(t *testing.T) {
+		const (
+			workers = 8
+			iters   = 2000
+		)
+		d := newDictionary[string]()
+		base := []string{"t0", "t1", "t2", "t3"}
+		for _, k := range base {
+			d.intern(k) // one durable ref each
+		}
+
+		var wg sync.WaitGroup
+		for w := 0; w < workers; w++ {
+			wg.Add(1)
+			go func(w int) {
+				defer wg.Done()
+				churnKey := "churn-" + strconv.Itoa(w)
+				for i := 0; i < iters; i++ {
+					a := base[i%len(base)]
+					b := base[(i+w)%len(base)]
+					if _, _, unpin, ok := d.pinBoth(a, b); ok {
+						unpin()
+					}
+					// Interleave full alloc/free cycles so ids recycle
+					// through the freelist while pins are in flight.
+					id := d.intern(churnKey)
+					d.release(id)
+				}
+			}(w)
+		}
+		wg.Wait()
+
+		if got := d.len(); got != len(base) {
+			t.Fatalf("live keys after storm = %d, want %d", got, len(base))
+		}
+		for _, k := range base {
+			id, ok := d.lookup(k)
+			if !ok {
+				t.Fatalf("base key %q lost", k)
+			}
+			d.mu.RLock()
+			rc := d.refcount[id]
+			d.mu.RUnlock()
+			if rc != 1 {
+				t.Fatalf("refcount(%q) = %d, want exactly the durable ref", k, rc)
+			}
+		}
+	})
+}
+
+// BenchmarkDictionaryPinBothParallel exercises the #837 hot path: the
+// pin/release cycle every lock-free point read and hot-edge write performs.
+// Before the atomic-refcount change every pin serialized on the dict's
+// write lock regardless of which keys it touched.
+//
+// Spread is the representative case (readers touch many distinct edges, so
+// their CAS targets are disjoint words); SamePair is the adversarial
+// worst case where every core hammers one refcount word and CAS retry
+// contention shows — kept so the tradeoff stays measured.
+func BenchmarkDictionaryPinBothParallel(b *testing.B) {
+	const spreadKeys = 1024
+	b.Run("Spread", func(b *testing.B) {
+		d := newDictionary[string]()
+		keys := make([]string, spreadKeys)
+		for i := range keys {
+			keys[i] = "k" + strconv.Itoa(i)
+			d.intern(keys[i])
+		}
+		b.ReportAllocs()
+		b.RunParallel(func(pb *testing.PB) {
+			i := 0
+			for pb.Next() {
+				a := keys[i%spreadKeys]
+				bk := keys[(i*7+13)%spreadKeys]
+				if _, _, unpin, ok := d.pinBoth(a, bk); ok {
+					unpin()
+				}
+				i++
+			}
+		})
+	})
+	b.Run("SamePair", func(b *testing.B) {
+		d := newDictionary[string]()
+		d.intern("tail")
+		d.intern("head")
+		b.ReportAllocs()
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				if _, _, unpin, ok := d.pinBoth("tail", "head"); ok {
+					unpin()
+				}
+			}
+		})
 	})
 }
