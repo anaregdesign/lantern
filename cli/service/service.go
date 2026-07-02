@@ -399,11 +399,6 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 			fmt.Printf("Error: %s\n", err)
 			return ErrIlluminate
 		}
-		algo, ok := algorithmByREPLName[p.Algorithm]
-		if !ok {
-			fmt.Printf("Error: illuminate: unknown algorithm %q\n", p.Algorithm)
-			return ErrIlluminate
-		}
 		obj, ok := objectiveByREPLName[p.Objective]
 		if !ok {
 			fmt.Printf("Error: illuminate: unknown objective %q\n", p.Objective)
@@ -414,21 +409,17 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 			fmt.Printf("Error: illuminate: unknown weighting %q\n", p.Weighting)
 			return ErrIlluminate
 		}
+		famOpt, ok := IlluminateFamilyOption(p.Algorithm, uint32(p.Step), uint32(p.K), obj, p.RestartProb, p.Epsilon)
+		if !ok {
+			fmt.Printf("Error: illuminate: unknown algorithm %q\n", p.Algorithm)
+			return ErrIlluminate
+		}
 		opts := []client.IlluminateOption{
-			client.WithStep(uint32(p.Step)),
-			client.WithK(uint32(p.K)),
-			client.WithAlgorithm(algo),
-			client.WithObjective(obj),
+			famOpt,
 			client.WithWeighting(w),
 		}
 		if p.Prefix != "" {
 			opts = append(opts, client.WithVertexPrefix(p.Prefix))
-		}
-		if p.RestartProb > 0 {
-			opts = append(opts, client.WithRestartProb(p.RestartProb))
-		}
-		if p.Epsilon > 0 {
-			opts = append(opts, client.WithEpsilon(p.Epsilon))
 		}
 		g, err := c.client.Illuminate(ctx, p.Seed, opts...)
 		if err != nil {
@@ -457,16 +448,32 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 	return nil
 }
 
-// algorithmByREPLName / objectiveByREPLName / weightingByREPLName mirror
-// the friendly names accepted by the REPL grammar (parser.Illuminate{...})
-// and translate to the SDK enums. Kept private to the REPL handler.
-var (
-	algorithmByREPLName = map[string]client.Algorithm{
-		"none": client.AlgorithmUnspecified,
-		"mst":  client.AlgorithmMinimumSpanningTree,
-		"spt":  client.AlgorithmShortestPathTree,
-		"ppr":  client.AlgorithmPersonalizedPageRank,
+// IlluminateFamilyOption maps the CLI algorithm token to the typed
+// per-family SDK option introduced by the #846 oneof redesign. The CLI
+// grammar keeps its friendly single "algorithm=" axis (none|mst|spt|ppr);
+// this helper owns the translation: none/mst/spt select the BFS family
+// (step/k become BFSOpts.Step/FanOut, mst/spt become the Reduction),
+// ppr selects the PPR family (k becomes PPROpts.TopN; step has no PPR
+// meaning and is dropped). Shared by the REPL dispatcher and the cobra
+// `illuminate` flag path so both surfaces translate identically.
+func IlluminateFamilyOption(algo string, step, k uint32, obj client.Objective, restartProb, epsilon float32) (client.IlluminateOption, bool) {
+	switch algo {
+	case "ppr":
+		return client.WithPPR(client.PPROpts{TopN: k, RestartProb: restartProb, Epsilon: epsilon}), true
+	case "", "none":
+		return client.WithBFS(client.BFSOpts{Step: step, FanOut: k, Objective: obj}), true
+	case "mst":
+		return client.WithBFS(client.BFSOpts{Step: step, FanOut: k, Objective: obj, Reduction: client.ReductionMinimumSpanningTree}), true
+	case "spt":
+		return client.WithBFS(client.BFSOpts{Step: step, FanOut: k, Objective: obj, Reduction: client.ReductionShortestPathTree}), true
 	}
+	return nil, false
+}
+
+// objectiveByREPLName / weightingByREPLName mirror the friendly names
+// accepted by the REPL grammar (parser.Illuminate{...}) and translate to
+// the SDK enums. Kept private to the REPL handler.
+var (
 	objectiveByREPLName = map[string]client.Objective{
 		"min": client.ObjectiveMinimize,
 		"max": client.ObjectiveMaximize,

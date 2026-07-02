@@ -332,12 +332,12 @@ func TestWithWeightingWiring(t *testing.T) {
 	}
 }
 
-// TestWithPPROptionsWiring verifies the #801 Personalized PageRank knobs
-// round-trip onto the emitted IlluminateRequest: WithAlgorithm selects the PPR
-// algorithm, and WithRestartProb / WithEpsilon set restart_prob / epsilon.
-// Omitting the knobs leaves them at the proto zero value, which the server
-// resolves to its α=0.15 / ε=1e-4 defaults.
-func TestWithPPROptionsWiring(t *testing.T) {
+// TestIlluminateParamsWiring verifies the #846 typed per-family options
+// marshal to the intended oneof arm: no family option ⇒ params unset (the
+// bare illuminate); WithBFS ⇒ the bfs arm with its four knobs; WithPPR ⇒
+// the ppr arm with its three knobs; and the last family option wins,
+// mirroring the wire oneof.
+func TestIlluminateParamsWiring(t *testing.T) {
 	newClient := func(t *testing.T) (*Lantern, *captureIlluminate) {
 		t.Helper()
 		l := mustLantern(t)
@@ -346,39 +346,66 @@ func TestWithPPROptionsWiring(t *testing.T) {
 		return l, capt
 	}
 
-	t.Run("default leaves ppr knobs zero", func(t *testing.T) {
+	t.Run("no family option leaves params unset", func(t *testing.T) {
 		l, capt := newClient(t)
 		if _, err := l.Illuminate(context.Background(), "seed"); err != nil {
 			t.Fatalf("Illuminate: %v", err)
 		}
-		if got := capt.reqs[0].GetAlgorithm(); got != AlgorithmUnspecified {
-			t.Fatalf("default algorithm want UNSPECIFIED, got %v", got)
-		}
-		if got := capt.reqs[0].GetRestartProb(); got != 0 {
-			t.Fatalf("default restart_prob want 0, got %v", got)
-		}
-		if got := capt.reqs[0].GetEpsilon(); got != 0 {
-			t.Fatalf("default epsilon want 0, got %v", got)
+		if capt.reqs[0].GetParams() != nil {
+			t.Fatalf("default params want unset, got %T", capt.reqs[0].GetParams())
 		}
 	})
 
-	t.Run("WithAlgorithm/RestartProb/Epsilon set the fields", func(t *testing.T) {
+	t.Run("WithBFS marshals the bfs arm", func(t *testing.T) {
+		l, capt := newClient(t)
+		if _, err := l.Illuminate(context.Background(), "seed", WithBFS(BFSOpts{
+			Step:      3,
+			FanOut:    7,
+			Objective: ObjectiveMinimize,
+			Reduction: ReductionShortestPathTree,
+		})); err != nil {
+			t.Fatalf("Illuminate: %v", err)
+		}
+		bfs := capt.reqs[0].GetBfs()
+		if bfs == nil {
+			t.Fatalf("bfs arm not set; params = %T", capt.reqs[0].GetParams())
+		}
+		if bfs.GetStep() != 3 || bfs.GetFanOut() != 7 {
+			t.Fatalf("bfs knobs = (%d,%d), want (3,7)", bfs.GetStep(), bfs.GetFanOut())
+		}
+		if bfs.GetObjective() != ObjectiveMinimize || bfs.GetReduction() != ReductionShortestPathTree {
+			t.Fatalf("bfs objective/reduction = (%v,%v)", bfs.GetObjective(), bfs.GetReduction())
+		}
+	})
+
+	t.Run("WithPPR marshals the ppr arm", func(t *testing.T) {
+		l, capt := newClient(t)
+		if _, err := l.Illuminate(context.Background(), "seed", WithPPR(PPROpts{
+			TopN:        10,
+			RestartProb: 0.25,
+			Epsilon:     1e-3,
+		})); err != nil {
+			t.Fatalf("Illuminate: %v", err)
+		}
+		ppr := capt.reqs[0].GetPpr()
+		if ppr == nil {
+			t.Fatalf("ppr arm not set; params = %T", capt.reqs[0].GetParams())
+		}
+		if ppr.GetTopN() != 10 || ppr.GetRestartProb() != 0.25 || ppr.GetEpsilon() != 1e-3 {
+			t.Fatalf("ppr knobs = (%d,%v,%v), want (10,0.25,1e-3)", ppr.GetTopN(), ppr.GetRestartProb(), ppr.GetEpsilon())
+		}
+	})
+
+	t.Run("last family option wins", func(t *testing.T) {
 		l, capt := newClient(t)
 		if _, err := l.Illuminate(context.Background(), "seed",
-			WithAlgorithm(AlgorithmPersonalizedPageRank),
-			WithRestartProb(0.25),
-			WithEpsilon(1e-3),
+			WithPPR(PPROpts{TopN: 5}),
+			WithBFS(BFSOpts{Step: 1}),
 		); err != nil {
 			t.Fatalf("Illuminate: %v", err)
 		}
-		if got := capt.reqs[0].GetAlgorithm(); got != AlgorithmPersonalizedPageRank {
-			t.Fatalf("algorithm want PERSONALIZED_PAGERANK got %v", got)
-		}
-		if got := capt.reqs[0].GetRestartProb(); got != 0.25 {
-			t.Fatalf("restart_prob want 0.25 got %v", got)
-		}
-		if got := capt.reqs[0].GetEpsilon(); got != 1e-3 {
-			t.Fatalf("epsilon want 1e-3 got %v", got)
+		if capt.reqs[0].GetBfs() == nil || capt.reqs[0].GetPpr() != nil {
+			t.Fatalf("want bfs arm to win, got params = %T", capt.reqs[0].GetParams())
 		}
 	})
 }

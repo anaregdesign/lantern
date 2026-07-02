@@ -40,27 +40,17 @@ message Graph {
   repeated Edge edges = 2;
 }
 
-// Algorithm selects the subgraph reduction strategy applied AFTER the
-// BFS walk has discovered the neighbourhood around the seed.
-//
-// UNSPECIFIED returns the raw discovered subgraph (no reduction).
-// MINIMUM_SPANNING_TREE / SHORTEST_PATH_TREE pick the reduction; the
-// MIN/MAX direction is independent and carried by Objective.
-//
-// PERSONALIZED_PAGERANK is not a post-traversal reduction: it replaces the
-// greedy per-hop top-k walk with a single global, seed-relative relevance
-// score (Personalized PageRank / Random-Walk-with-Restart) computed by local
-// forward-push (Andersen–Chung–Lang). The result is a relevance star rooted at
-// the seed — seed→v edge weight = π[v], the PPR mass v accumulates for this
-// seed — capped at k vertices. restart_prob (α) and epsilon (ε) tune it; the
-// weighting axis still transforms transition affinities. It is intrinsically a
-// relevance MAXIMIZER, so Objective MINIMIZE has no clean random-walk meaning
-// and is ignored (#801).
-enum Algorithm {
-  ALGORITHM_UNSPECIFIED = 0;
-  ALGORITHM_MINIMUM_SPANNING_TREE = 1;
-  ALGORITHM_SHORTEST_PATH_TREE = 2;
-  ALGORITHM_PERSONALIZED_PAGERANK = 3;
+// Reduction is the optional post-traversal tree view applied to a
+// BFS-discovered neighbourhood (#846). UNSPECIFIED returns the raw
+// discovered subgraph; MINIMUM_SPANNING_TREE / SHORTEST_PATH_TREE reduce it
+// to a tree rooted at the seed. The MIN/MAX direction is independent and
+// carried by Objective. Reductions are a BfsParams knob — not sibling
+// traversals — which is why the former Algorithm enum (which conflated the
+// two; see #410/#801 history) left the request in the oneof redesign.
+enum Reduction {
+  REDUCTION_UNSPECIFIED = 0;
+  REDUCTION_MINIMUM_SPANNING_TREE = 1;
+  REDUCTION_SHORTEST_PATH_TREE = 2;
 }
 
 // Objective is the direction of the weight-sensitive optimisation. It
@@ -100,34 +90,71 @@ enum Weighting {
 
 message IlluminateRequest {
   string seed = 1;
-  uint32 step = 2;
-  uint32 k = 3;
-  // Field numbers 4 ("tfidf") and 5 ("optimization") were retired in the
-  // orthogonal-axes redesign (closes #410) — kept reserved so a stale
-  // client whose binary still emits the old field numbers cannot silently
-  // alias the new typed fields below.
-  reserved 4, 5;
-  reserved "tfidf", "optimization";
-  Algorithm algorithm = 6;
-  Objective objective = 7;
+  // weighting and vertex_prefix are the axes genuinely shared by every
+  // traversal family, so they stay top-level.
   Weighting weighting = 8;
-  // vertex_prefix, when non-empty, restricts the traversal frontier to
+  // vertex_prefix, when non-empty, restricts the traversal frontier to the
   // vertices whose key has this prefix. The seed is always retained as the
   // anchor even if it does not match. Empty = no filter. Applied BEFORE
-  // per-hop top-k and BEFORE the MST/SPT reduction (induced-subgraph
-  // semantics: non-matching vertices are not traversable bridges).
+  // per-hop top-k and BEFORE any reduction (induced-subgraph semantics:
+  // non-matching vertices are not traversable bridges).
   string vertex_prefix = 9;
-  // restart_prob (α) and epsilon (ε) tune ALGORITHM_PERSONALIZED_PAGERANK and
-  // are ignored by every other algorithm (#801). α is the teleport-to-seed
-  // probability — the locality knob: higher α (≈0.5) yields a tighter,
-  // seed-proximate set, lower α (≈0.15) a broader one. ε is the forward-push
-  // residual threshold: smaller ε is more accurate but touches more vertices
-  // (work is O(1/(α·ε)), independent of graph size). Both default server-side
-  // when ≤ 0 (α=0.15, ε=1e-4), so a caller may leave them unset. With
-  // forward-push ε drives the horizon; step is not used by PPR and k caps the
-  // number of ranked vertices returned.
-  float restart_prob = 10;
-  float epsilon = 11;
+  // params selects the traversal family AND carries only the knobs that
+  // family understands (#846) — cross-algorithm misconfiguration (PPR with
+  // step, MST with epsilon, …) is structurally unrepresentable. Unset params
+  // means BfsParams with server defaults: the historical bare illuminate.
+  oneof params {
+    BfsParams bfs = 12;
+    PprParams ppr = 13;
+  }
+  // Field numbers 4/5 ("tfidf", "optimization") were retired by the
+  // orthogonal-axes redesign (#410); 2/3/6/7/10/11 ("step", "k",
+  // "algorithm", "objective", "restart_prob", "epsilon") by the per-family
+  // params redesign (#846). All stay reserved so a stale client whose
+  // binary still emits the old flat field numbers cannot silently alias
+  // newer fields — such a request decodes as params-unset (BFS defaults).
+  reserved 2, 3, 4, 5, 6, 7, 10, 11;
+  reserved "step", "k", "tfidf", "optimization", "algorithm", "objective", "restart_prob", "epsilon";
+}
+
+// BfsParams tunes the greedy per-hop top-k BFS walk (the default traversal
+// family) and its optional post-traversal tree reduction.
+message BfsParams {
+  // step is the BFS depth. 0 = server default.
+  uint32 step = 1;
+  // fan_out is the per-hop top-k prune: at each hop only the fan_out
+  // strongest (or cheapest, under OBJECTIVE_MINIMIZE) edges survive.
+  // 0 = server default. (Formerly the overloaded "k".)
+  uint32 fan_out = 2;
+  // objective governs BOTH the per-hop pruning and the reduction direction
+  // (#560), so a cost-minimiser is never handed a candidate set already
+  // pruned to the costliest edges. UNSPECIFIED = MAXIMIZE.
+  Objective objective = 3;
+  // reduction optionally reduces the discovered neighbourhood to a tree
+  // rooted at the seed. UNSPECIFIED = no reduction (raw subgraph).
+  Reduction reduction = 4;
+}
+
+// PprParams runs seed-anchored Personalized PageRank (Random-Walk-with-
+// Restart) by local forward-push (Andersen–Chung–Lang) instead of the BFS
+// walk (#801). The result is a relevance star rooted at the seed — the
+// seed→v edge weight is π[v], the PPR mass v accumulates for this seed.
+// PPR is intrinsically a relevance maximiser and has no per-hop step
+// semantics, which is why neither knob exists here.
+message PprParams {
+  // top_n caps the star to the top-N vertices by mass. 0 = every
+  // positive-mass vertex. (Formerly the overloaded "k".)
+  uint32 top_n = 1;
+  // restart_prob (α) is the teleport-to-seed probability — the locality
+  // knob: higher α (≈0.5) yields a tighter, seed-proximate set, lower α
+  // (≈0.15) a broader one. Honoured only in (0,1); unset/out-of-range
+  // falls back to the server default 0.15.
+  float restart_prob = 2;
+  // epsilon (ε) is the forward-push residual threshold: smaller ε is more
+  // accurate but touches more vertices (work is O(1/(α·ε)), independent of
+  // graph size). Honoured only when > 0; unset falls back to the server
+  // default 1e-4.
+  float epsilon = 3;
 }
 
 message IlluminateResponse {

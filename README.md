@@ -547,7 +547,7 @@ _ = cli.AddEdge(ctx, "user:42", "item:7", 1.0, 30*time.Minute)
 
 // Walk: 2 hops, top-3 per hop, TF-IDF weighted.
 g, _ := cli.Illuminate(ctx, "user:42",
-    client.WithStep(2), client.WithK(3), client.WithWeighting(client.WeightingTFIDF))
+    client.WithBFS(client.BFSOpts{Step: 2, FanOut: 3}), client.WithWeighting(client.WeightingTFIDF))
 
 // Prefix scan: enumerate every vertex under a namespace, auto-paginated.
 for batch, err := range cli.ScanVerticesAll(ctx, "user:", 100) {
@@ -795,7 +795,7 @@ whole subgraph, so there is no plural form.
 | `CountVerticesByPrefix` | Count live vertices under a prefix | Radix-only (cheap); not subject to `limit` |
 | `DeleteVerticesByPrefix` | Bulk-delete a namespace | Capped by server-configured `limit`; `dry_run` returns the count that *would* be deleted without mutating; edges incident to removed vertices are reaped on the next GC tick |
 | `ScanEdges` | Enumerate edges by `tail_prefix` AND `head_prefix` | Either prefix may be empty; head dimension is served by a per-tail head radix (not a post-filter); head-only scans still iterate every tail, so combining both prefixes is the most efficient shape; same opaque-cursor / cross-RPC rejection rules as `ScanVertices`; SDK helper `ScanEdgesAll` auto-paginates |
-| `Illuminate` | Walk the graph from a seed | `WithStep`, `WithK`, `WithAlgorithm` (none / MST / SPT), `WithObjective` (min / max), `WithWeighting` (raw / TF-IDF / BM25); honours `ctx` cancellation; `step`/`k` are clamped at `LANTERN_ILLUMINATE_MAX_STEP` / `LANTERN_ILLUMINATE_MAX_K`. See #410. |
+| `Illuminate` | Walk the graph from a seed | Typed per-family options (#846): `WithBFS(BFSOpts{Step, FanOut, Objective, Reduction})` for the BFS walk (Reduction = none / MST / SPT), `WithPPR(PPROpts{TopN, RestartProb, Epsilon})` for Personalized PageRank, plus shared `WithWeighting` (raw / TF-IDF / BM25) and `WithVertexPrefix`; honours `ctx` cancellation; `bfs.step`/`bfs.fan_out`/`ppr.top_n` are clamped at `LANTERN_ILLUMINATE_MAX_STEP` / `LANTERN_ILLUMINATE_MAX_K`. |
 
 Vertices auto-materialize on `AddEdge`/`PutEdge` if the endpoint key does not
 yet exist (they get the edge's expiration as their TTL). This keeps event-stream

@@ -79,7 +79,7 @@ func main() {
 	fmt.Printf("✓ GetVertex str = hello\n")
 
 	// 5) Illuminate from A — should walk A,B,C.
-	g, err := rr.Illuminate(ctx, "A", client.WithStep(5), client.WithK(100))
+	g, err := rr.Illuminate(ctx, "A", client.WithBFS(client.BFSOpts{Step: 5, FanOut: 100}))
 	if err != nil {
 		log.Fatalf("Illuminate: %v", err)
 	}
@@ -108,7 +108,7 @@ func main() {
 		s, _ := client.StringValue(v)
 
 		// Illuminate from A and assert A,B,C reachable + A->B weight is additive.
-		g, err := direct.Illuminate(ctx, "A", client.WithStep(5), client.WithK(100))
+		g, err := direct.Illuminate(ctx, "A", client.WithBFS(client.BFSOpts{Step: 5, FanOut: 100}))
 		if err != nil {
 			log.Fatalf("[%s] Illuminate: %v", ep, err)
 		}

@@ -77,20 +77,17 @@ func EdgeExpiration(e *Edge) time.Time {
 	return e.Expiration.AsTime()
 }
 
-// Algorithm re-exports the server-side Illuminate algorithm enum so SDK
-// callers do not need to import the generated proto package directly. See
-// #410 for the orthogonal-axes redesign that replaced the legacy
-// Optimization enum with (Algorithm, Objective, Weighting). MST and SPT are
-// post-traversal reductions of the BFS neighbourhood; AlgorithmPersonalizedPageRank
-// (#801) is instead a distinct traversal — seed-anchored Personalized PageRank
-// via forward-push — returning a relevance star (seed→v carries v's PPR mass).
-type Algorithm = pb.Algorithm
+// Reduction re-exports the server-side post-traversal tree-view enum so SDK
+// callers do not need to import the generated proto package directly. Per
+// the #846 oneof redesign, MST/SPT are a knob of the BFS family
+// (BFSOpts.Reduction) — not sibling algorithms — and Personalized PageRank
+// is selected by passing WithPPR instead.
+type Reduction = pb.Reduction
 
 const (
-	AlgorithmUnspecified          = pb.Algorithm_ALGORITHM_UNSPECIFIED
-	AlgorithmMinimumSpanningTree  = pb.Algorithm_ALGORITHM_MINIMUM_SPANNING_TREE
-	AlgorithmShortestPathTree     = pb.Algorithm_ALGORITHM_SHORTEST_PATH_TREE
-	AlgorithmPersonalizedPageRank = pb.Algorithm_ALGORITHM_PERSONALIZED_PAGERANK
+	ReductionNone                = pb.Reduction_REDUCTION_UNSPECIFIED
+	ReductionMinimumSpanningTree = pb.Reduction_REDUCTION_MINIMUM_SPANNING_TREE
+	ReductionShortestPathTree    = pb.Reduction_REDUCTION_SHORTEST_PATH_TREE
 )
 
 // Objective is the direction of the weight-sensitive optimisation. It
@@ -604,53 +601,73 @@ func NewGraph() *Graph {
 	}
 }
 
-// IlluminateOption configures a single Illuminate call. Pass any combination
-// of WithStep, WithK, WithAlgorithm, WithObjective, WithWeighting,
-// WithVertexPrefix, WithRestartProb, and WithEpsilon to Illuminate. See #410
-// for the orthogonal-axes design and #801 for the Personalized PageRank knobs.
+// IlluminateOption configures a single Illuminate call. Select the traversal
+// family with at most one of WithBFS / WithPPR (the last one passed wins,
+// mirroring the wire oneof; omitting both runs BFS with server defaults —
+// the bare illuminate), and combine it with the shared axes WithWeighting /
+// WithVertexPrefix. Per-family knobs live on BFSOpts / PPROpts, so a knob
+// that another family would ignore is not expressible (#846).
 type IlluminateOption func(*illuminateConfig)
 
 type illuminateConfig struct {
-	step         uint32
-	k            uint32
-	algorithm    Algorithm
-	objective    Objective
 	weighting    Weighting
 	vertexPrefix string
-	restartProb  float32
-	epsilon      float32
+	bfs          *BFSOpts
+	ppr          *PPROpts
 }
 
-// WithStep sets the BFS depth for an Illuminate call.
-func WithStep(step uint32) IlluminateOption {
-	return func(c *illuminateConfig) { c.step = step }
+// BFSOpts tunes the greedy per-hop top-k BFS walk and its optional
+// post-traversal tree reduction. The zero value is the server-default walk.
+type BFSOpts struct {
+	// Step is the BFS depth. 0 = server default.
+	Step uint32
+	// FanOut is the per-hop top-k prune: at each hop only the FanOut
+	// strongest (or cheapest, under ObjectiveMinimize) edges survive.
+	// 0 = server default. (Formerly the overloaded "k".)
+	FanOut uint32
+	// Objective governs both the per-hop pruning and the Reduction
+	// direction (#560). Unspecified = ObjectiveMaximize.
+	Objective Objective
+	// Reduction optionally reduces the discovered neighbourhood to a tree
+	// rooted at the seed (ReductionMinimumSpanningTree /
+	// ReductionShortestPathTree). ReductionNone = raw subgraph.
+	Reduction Reduction
 }
 
-// WithK sets the per-hop fan-out (top-k neighbours) for an Illuminate call.
-func WithK(k uint32) IlluminateOption {
-	return func(c *illuminateConfig) { c.k = k }
+// PPROpts runs seed-anchored Personalized PageRank (#801) instead of the
+// BFS walk, returning a relevance star (seed→v carries v's PPR mass). PPR
+// is intrinsically a relevance maximiser with no per-hop step semantics,
+// which is why neither knob exists here.
+type PPROpts struct {
+	// TopN caps the star to the top-N vertices by mass. 0 = every
+	// positive-mass vertex. (Formerly the overloaded "k".)
+	TopN uint32
+	// RestartProb is the teleport-to-seed probability α — the locality
+	// knob: higher α (≈0.5) yields a tighter, seed-proximate set, lower α
+	// (≈0.15) a broader one. Honoured only in (0,1); 0/unset or
+	// out-of-range falls back to the server default (0.15).
+	RestartProb float32
+	// Epsilon is the forward-push residual threshold ε. Smaller ε pushes
+	// mass to more vertices (higher recall, more work); larger ε stops
+	// sooner (sparser star, faster). Honoured only when > 0; 0/unset falls
+	// back to the server default (1e-4).
+	Epsilon float32
 }
 
-// WithAlgorithm selects the Illuminate algorithm. AlgorithmMinimumSpanningTree
-// and AlgorithmShortestPathTree are post-traversal reductions of the BFS
-// neighbourhood; AlgorithmPersonalizedPageRank (#801) instead runs seed-anchored
-// Personalized PageRank over the weighted graph and returns a relevance star
-// (seed→v carries v's PPR mass), tuned by WithRestartProb / WithEpsilon and
-// sized by WithK. Pass AlgorithmUnspecified to disable any reduction (the
-// server returns the raw discovered subgraph).
-func WithAlgorithm(a Algorithm) IlluminateOption {
-	return func(c *illuminateConfig) { c.algorithm = a }
+// WithBFS selects the BFS traversal family with the supplied knobs.
+// Mutually exclusive with WithPPR (last option wins).
+func WithBFS(o BFSOpts) IlluminateOption {
+	return func(c *illuminateConfig) { c.bfs, c.ppr = &o, nil }
 }
 
-// WithObjective sets the direction of the Algorithm-driven reduction
-// (MINIMIZE for cost-weighted trees, MAXIMIZE for relevance-weighted
-// trees). Ignored when Algorithm == AlgorithmUnspecified.
-func WithObjective(o Objective) IlluminateOption {
-	return func(c *illuminateConfig) { c.objective = o }
+// WithPPR selects the Personalized PageRank traversal family with the
+// supplied knobs. Mutually exclusive with WithBFS (last option wins).
+func WithPPR(o PPROpts) IlluminateOption {
+	return func(c *illuminateConfig) { c.ppr, c.bfs = &o, nil }
 }
 
 // WithWeighting toggles the edge-weight transform applied BEFORE the
-// BFS walk. WeightingRaw (the default) uses edge.weight verbatim;
+// walk (any family). WeightingRaw (the default) uses edge.weight verbatim;
 // WeightingTFIDF re-scores edges using TF-IDF over the per-vertex
 // out-edge distribution; WeightingBM25 re-scores using Okapi BM25
 // (k1=1.2, b=0.75), adding IDF saturation and out-degree length-
@@ -659,44 +676,24 @@ func WithWeighting(w Weighting) IlluminateOption {
 	return func(c *illuminateConfig) { c.weighting = w }
 }
 
-// WithRestartProb sets the Personalized PageRank restart (teleport-to-seed)
-// probability α, the share of mass each step that returns to the seed. Higher
-// α keeps the random surfer closer to the seed (tighter, more local relevance);
-// lower α lets it wander farther. Only meaningful with
-// WithAlgorithm(AlgorithmPersonalizedPageRank); ignored otherwise. Must lie in
-// (0,1) to be honoured — 0/unset or out-of-range falls back to the server
-// default (0.15).
-func WithRestartProb(p float32) IlluminateOption {
-	return func(c *illuminateConfig) { c.restartProb = p }
-}
-
-// WithEpsilon sets the Personalized PageRank forward-push residual threshold ε.
-// Smaller ε pushes mass to more vertices (higher recall, more work); larger ε
-// stops sooner (sparser star, faster). Only meaningful with
-// WithAlgorithm(AlgorithmPersonalizedPageRank); ignored otherwise. Must be
-// positive to be honoured — 0/unset falls back to the server default (1e-4).
-func WithEpsilon(e float32) IlluminateOption {
-	return func(c *illuminateConfig) { c.epsilon = e }
-}
-
 // WithVertexPrefix restricts the Illuminate traversal frontier to vertices
-// whose key has the given prefix. The seed is always retained as the anchor
-// even if it does not match. Empty (the default) = no filter. The filter is
-// applied server-side BEFORE per-hop top-k and before any Algorithm-driven
-// MST/SPT reduction: the result is the prefix-induced subgraph. Note that
-// WithVertexPrefix together with WithAlgorithm(MST|SPT) yields a tree over
+// whose key has the given prefix (any family). The seed is always retained
+// as the anchor even if it does not match. Empty (the default) = no filter.
+// The filter is applied server-side BEFORE per-hop top-k and before any
+// reduction: the result is the prefix-induced subgraph. Note that
+// WithVertexPrefix together with an MST/SPT reduction yields a tree over
 // that induced subgraph, NOT a true shortest path in the full graph — a
-// matching vertex reachable only via a non-matching bridge vertex is excluded.
+// matching vertex reachable only via a non-matching bridge vertex is
+// excluded.
 func WithVertexPrefix(prefix string) IlluminateOption {
 	return func(c *illuminateConfig) { c.vertexPrefix = prefix }
 }
 
-// Illuminate runs a k-bounded BFS from seed, returning the resulting subgraph.
-// Configure step, k, algorithm, objective, weighting, vertex prefix, and (for
-// Personalized PageRank) restart probability and epsilon via IlluminateOption
-// values; any option omitted defaults to its zero value, which the server
-// resolves to (step=0, k=0, no reduction, RAW weighting, no prefix filter,
-// α=0.15, ε=1e-4). See #410 and #801.
+// Illuminate cuts the neighbourhood subgraph around seed. Select the
+// traversal family with WithBFS / WithPPR (omitting both runs BFS with
+// server defaults — the bare illuminate) and the shared axes with
+// WithWeighting / WithVertexPrefix. See #846 for the per-family design and
+// #801 for the Personalized PageRank semantics.
 func (l *Lantern) Illuminate(ctx context.Context, seed string, opts ...IlluminateOption) (*Graph, error) {
 	var cfg illuminateConfig
 	for _, opt := range opts {
@@ -704,17 +701,27 @@ func (l *Lantern) Illuminate(ctx context.Context, seed string, opts ...Illuminat
 	}
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	resp, err := unary(ctx, &pb.IlluminateRequest{
+	req := &pb.IlluminateRequest{
 		Seed:         seed,
-		Step:         cfg.step,
-		K:            cfg.k,
-		Algorithm:    cfg.algorithm,
-		Objective:    cfg.objective,
 		Weighting:    cfg.weighting,
 		VertexPrefix: cfg.vertexPrefix,
-		RestartProb:  cfg.restartProb,
-		Epsilon:      cfg.epsilon,
-	}, l.client.Illuminate)
+	}
+	switch {
+	case cfg.ppr != nil:
+		req.Params = &pb.IlluminateRequest_Ppr{Ppr: &pb.PprParams{
+			TopN:        cfg.ppr.TopN,
+			RestartProb: cfg.ppr.RestartProb,
+			Epsilon:     cfg.ppr.Epsilon,
+		}}
+	case cfg.bfs != nil:
+		req.Params = &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{
+			Step:      cfg.bfs.Step,
+			FanOut:    cfg.bfs.FanOut,
+			Objective: cfg.bfs.Objective,
+			Reduction: cfg.bfs.Reduction,
+		}}
+	}
+	resp, err := unary(ctx, req, l.client.Illuminate)
 	if err != nil {
 		return nil, err
 	}

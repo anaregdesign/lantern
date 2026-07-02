@@ -14,22 +14,18 @@ import (
 // trees) and must honour ctx for cancellation.
 type optimizer func(ctx context.Context, g *coregraph.Graph[string, *pb.Vertex], seed string) (*coregraph.Graph[string, *pb.Vertex], error)
 
-// resolveOptimizer returns the post-traversal reduction for an
-// (algorithm, objective) pair. Returns nil when no reduction is needed
-// — the caller treats nil as "return the raw discovered subgraph".
+// resolveOptimizer returns the post-traversal reduction for a
+// (reduction, objective) pair (#846: reductions are a BfsParams knob, not
+// sibling traversals). Returns nil when no reduction is needed — the caller
+// treats nil as "return the raw discovered subgraph".
 //
-// Adding a new algorithm × objective combination is now a single switch
-// arm; no service-handler edit required. Per #410 the dispatch surface
-// is the orthogonal three-axes design (algorithm, objective, weighting)
-// and the historical flat Optimization enum is gone.
-//
-// Note: objective ALGORITHM_UNSPECIFIED → nil (no reduction). Objective
+// Note: Reduction UNSPECIFIED → nil (no reduction). Objective
 // OBJECTIVE_UNSPECIFIED resolves to MAXIMIZE per the proto-level default
 // (#560): a bare illuminate keeps the strongest edges both when pruning the
 // per-hop top-k and when reducing the discovered subgraph.
-func resolveOptimizer(algo pb.Algorithm, obj pb.Objective) optimizer {
-	switch algo {
-	case pb.Algorithm_ALGORITHM_MINIMUM_SPANNING_TREE:
+func resolveOptimizer(red pb.Reduction, obj pb.Objective) optimizer {
+	switch red {
+	case pb.Reduction_REDUCTION_MINIMUM_SPANNING_TREE:
 		if obj == pb.Objective_OBJECTIVE_MINIMIZE {
 			return func(ctx context.Context, g *coregraph.Graph[string, *pb.Vertex], seed string) (*coregraph.Graph[string, *pb.Vertex], error) {
 				return g.MinimumSpanningTreeContext(ctx, seed)
@@ -38,7 +34,7 @@ func resolveOptimizer(algo pb.Algorithm, obj pb.Objective) optimizer {
 		return func(ctx context.Context, g *coregraph.Graph[string, *pb.Vertex], seed string) (*coregraph.Graph[string, *pb.Vertex], error) {
 			return g.MaximumSpanningTreeContext(ctx, seed)
 		}
-	case pb.Algorithm_ALGORITHM_SHORTEST_PATH_TREE:
+	case pb.Reduction_REDUCTION_SHORTEST_PATH_TREE:
 		if obj == pb.Objective_OBJECTIVE_MINIMIZE {
 			return func(ctx context.Context, g *coregraph.Graph[string, *pb.Vertex], seed string) (*coregraph.Graph[string, *pb.Vertex], error) {
 				return g.ShortestPathTreeContext(ctx, seed, identityCost)
@@ -80,26 +76,27 @@ func resolvePPRParams(restartProb, epsilon float32) (alpha, eps float64) {
 	return alpha, eps
 }
 
-// algorithmLabel / objectiveLabel / weightingLabel produce the canonical
-// metric label string for each axis. UNSPECIFIED resolves to the same
-// label the server would resolve it to at execution time:
-//   - Algorithm UNSPECIFIED → "none"  (no reduction)
+// reductionLabel / objectiveLabel / weightingLabel produce the canonical
+// metric label string for each axis. The label VALUES predate the #846
+// oneof redesign (they were derived from the retired Algorithm enum) and
+// are kept verbatim so dashboards survive: "none"/"mst"/"spt" for the BFS
+// family by reduction, "ppr" emitted directly by the PPR arm. UNSPECIFIED
+// resolves to the same label the server resolves it to at execution time:
+//   - Reduction UNSPECIFIED → "none"  (no reduction)
 //   - Objective UNSPECIFIED → "maximize"
 //   - Weighting UNSPECIFIED → "raw"
 //
 // Unknown enum values (a future axis added in proto without a metrics
 // update) fall through to a synthetic "unknown" bucket so dashboards
 // still surface them instead of crashing the pre-warm step.
-func algorithmLabel(a pb.Algorithm) string {
-	switch a {
-	case pb.Algorithm_ALGORITHM_UNSPECIFIED:
+func reductionLabel(r pb.Reduction) string {
+	switch r {
+	case pb.Reduction_REDUCTION_UNSPECIFIED:
 		return "none"
-	case pb.Algorithm_ALGORITHM_MINIMUM_SPANNING_TREE:
+	case pb.Reduction_REDUCTION_MINIMUM_SPANNING_TREE:
 		return "mst"
-	case pb.Algorithm_ALGORITHM_SHORTEST_PATH_TREE:
+	case pb.Reduction_REDUCTION_SHORTEST_PATH_TREE:
 		return "spt"
-	case pb.Algorithm_ALGORITHM_PERSONALIZED_PAGERANK:
-		return "ppr"
 	}
 	return "unknown"
 }

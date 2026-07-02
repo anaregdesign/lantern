@@ -30,19 +30,21 @@ import {
   FailedPreconditionError,
   NotFoundError,
   connect,
-  Algorithm,
+  Reduction,
 } from "../src/index.js";
 import { LanternService, VertexSchema } from "../src/gen/graph/v1/graph_pb.js";
 
 interface StubState {
   vertices: Map<string, ReturnType<typeof create<typeof VertexSchema>>>;
-  /** Last IlluminateRequest the stub observed, for request-building assertions (#605, #801). */
+  /** Last IlluminateRequest the stub observed, for request-building assertions (#605, #846). */
   lastIlluminate?: {
     seed: string;
-    step: number;
-    k: number;
     vertexPrefix: string;
-    algorithm: number;
+    paramsCase: string | undefined;
+    step: number;
+    fanOut: number;
+    reduction: number;
+    topN: number;
     restartProb: number;
     epsilon: number;
   };
@@ -88,14 +90,18 @@ function newStubRoutes(state: StubState) {
       // empty graph — the round-trip semantics of the result are out of
       // scope here.
       async illuminate(req) {
+        const bfs = req.params.case === "bfs" ? req.params.value : undefined;
+        const ppr = req.params.case === "ppr" ? req.params.value : undefined;
         state.lastIlluminate = {
           seed: req.seed,
-          step: req.step,
-          k: req.k,
           vertexPrefix: req.vertexPrefix,
-          algorithm: req.algorithm,
-          restartProb: req.restartProb,
-          epsilon: req.epsilon,
+          paramsCase: req.params.case,
+          step: bfs?.step ?? 0,
+          fanOut: bfs?.fanOut ?? 0,
+          reduction: bfs?.reduction ?? 0,
+          topN: ppr?.topN ?? 0,
+          restartProb: ppr?.restartProb ?? 0,
+          epsilon: ppr?.epsilon ?? 0,
         };
         return {};
       },
@@ -258,40 +264,39 @@ describe("Lantern client", () => {
 });
 
 describe("illuminate request building (#605)", () => {
-  test("forwards vertexPrefix onto the request", async () => {
+  test("forwards vertexPrefix and the bfs arm onto the request", async () => {
     const c = newClient();
     try {
-      await c.illuminate("alice", { step: 2, k: 5, vertexPrefix: "users/" });
+      await c.illuminate("alice", { bfs: { step: 2, fanOut: 5 }, vertexPrefix: "users/" });
       expect(state.lastIlluminate?.seed).toBe("alice");
+      expect(state.lastIlluminate?.paramsCase).toBe("bfs");
       expect(state.lastIlluminate?.step).toBe(2);
-      expect(state.lastIlluminate?.k).toBe(5);
+      expect(state.lastIlluminate?.fanOut).toBe(5);
       expect(state.lastIlluminate?.vertexPrefix).toBe("users/");
     } finally {
       c.close();
     }
   });
 
-  test("omitting vertexPrefix yields an empty string (no filter)", async () => {
+  test("omitting both families leaves the params oneof unset (bare illuminate)", async () => {
     const c = newClient();
     try {
-      await c.illuminate("alice", { step: 1 });
+      await c.illuminate("alice", {});
+      expect(state.lastIlluminate?.paramsCase).toBeUndefined();
       expect(state.lastIlluminate?.vertexPrefix).toBe("");
     } finally {
       c.close();
     }
   });
 
-  test("forwards Personalized PageRank knobs onto the request (#801)", async () => {
+  test("forwards the ppr arm with its knobs (#801/#846)", async () => {
     const c = newClient();
     try {
       await c.illuminate("alice", {
-        k: 8,
-        algorithm: Algorithm.PERSONALIZED_PAGERANK,
-        restartProb: 0.25,
-        epsilon: 1e-3,
+        ppr: { topN: 8, restartProb: 0.25, epsilon: 1e-3 },
       });
-      expect(state.lastIlluminate?.algorithm).toBe(Algorithm.PERSONALIZED_PAGERANK);
-      expect(state.lastIlluminate?.k).toBe(8);
+      expect(state.lastIlluminate?.paramsCase).toBe("ppr");
+      expect(state.lastIlluminate?.topN).toBe(8);
       expect(state.lastIlluminate?.restartProb).toBeCloseTo(0.25, 6);
       expect(state.lastIlluminate?.epsilon).toBeCloseTo(1e-3, 9);
     } finally {
@@ -302,9 +307,32 @@ describe("illuminate request building (#605)", () => {
   test("omitting PPR knobs yields proto zero values (server defaults)", async () => {
     const c = newClient();
     try {
-      await c.illuminate("alice", { algorithm: Algorithm.PERSONALIZED_PAGERANK });
+      await c.illuminate("alice", { ppr: {} });
+      expect(state.lastIlluminate?.paramsCase).toBe("ppr");
       expect(state.lastIlluminate?.restartProb).toBe(0);
       expect(state.lastIlluminate?.epsilon).toBe(0);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("supplying both bfs and ppr is an InvalidArgumentError", async () => {
+    const c = newClient();
+    try {
+      await expect(c.illuminate("alice", { bfs: {}, ppr: {} })).rejects.toThrow(
+        /mutually exclusive/,
+      );
+    } finally {
+      c.close();
+    }
+  });
+
+  test("forwards the reduction on the bfs arm", async () => {
+    const c = newClient();
+    try {
+      await c.illuminate("alice", { bfs: { reduction: Reduction.SHORTEST_PATH_TREE } });
+      expect(state.lastIlluminate?.paramsCase).toBe("bfs");
+      expect(state.lastIlluminate?.reduction).toBe(Reduction.SHORTEST_PATH_TREE);
     } finally {
       c.close();
     }

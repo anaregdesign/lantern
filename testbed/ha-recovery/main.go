@@ -135,7 +135,7 @@ func assertHasAll(ep string, vertices []string) {
 		log.Fatalf("[%s] v1 = %q, want %q (mutation did not converge)", ep, s, "v1-mutated")
 	}
 	// Check edge weight.
-	g, err := cli.Illuminate(ctx, "v1", client.WithStep(5), client.WithK(100))
+	g, err := cli.Illuminate(ctx, "v1", client.WithBFS(client.BFSOpts{Step: 5, FanOut: 100}))
 	if err != nil {
 		log.Fatalf("[%s] Illuminate: %v", ep, err)
 	}

@@ -97,7 +97,7 @@ func TestLantern_Illuminate(t *testing.T) {
 		t.Fatalf("PutEdge b->c: %v", err)
 	}
 
-	g, err := l.Illuminate(ctx, "a", client.WithStep(3), client.WithK(10))
+	g, err := l.Illuminate(ctx, "a", client.WithBFS(client.BFSOpts{Step: 3, FanOut: 10}))
 	if err != nil {
 		t.Fatalf("Illuminate: %v", err)
 	}

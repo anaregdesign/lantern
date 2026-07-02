@@ -35,6 +35,8 @@ type fakeBackend struct {
 	lastNeighborWeighting   graphcache.EdgeWeighting
 	lastNeighborSelectSmall bool
 	lastNeighborKeep        func(string) bool
+	lastNeighborStep        int
+	lastNeighborK           int
 
 	// captured args from the most recent PersonalizedPageRankContext call
 	// (#801), so tests can assert the Illuminate handler routes algorithm=ppr
@@ -178,6 +180,7 @@ func (f *fakeBackend) NeighborWithExpirationsContext(
 	f.lastNeighborWeighting = weighting
 	f.lastNeighborSelectSmall = selectSmallest
 	f.lastNeighborKeep = keep
+	f.lastNeighborStep, f.lastNeighborK = step, k
 	_, f.lastNeighborHadDeadline = ctx.Deadline()
 	if f.neighborBlockUntilCtxDone {
 		<-ctx.Done()

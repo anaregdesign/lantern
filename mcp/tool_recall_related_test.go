@@ -66,9 +66,10 @@ func TestRecallRelated_RejectsUnknownAlgorithm(t *testing.T) {
 func TestRecallRelated_PropagatesIlluminateOptions(t *testing.T) {
 	h := newTestHarness(t)
 	h.fake.illuminateFn = func(_ context.Context, _ string, opts ...client.IlluminateOption) (*client.Graph, error) {
-		// Five options expected: algorithm + objective + weighting + step + k.
-		if len(opts) != 5 {
-			t.Errorf("Illuminate option count = %d, want 5", len(opts))
+		// Two options since #846: the typed family option (carrying
+		// step/k/objective/reduction) + the shared weighting axis.
+		if len(opts) != 2 {
+			t.Errorf("Illuminate option count = %d, want 2", len(opts))
 		}
 		return &client.Graph{Vertices: map[string]*client.Vertex{"x": {Key: "x"}}}, nil
 	}
@@ -146,9 +147,10 @@ func TestRecallRelated_AcceptsPPRAlgorithm(t *testing.T) {
 func TestRecallRelated_ForwardsPPRKnobs(t *testing.T) {
 	h := newTestHarness(t)
 	h.fake.illuminateFn = func(_ context.Context, _ string, opts ...client.IlluminateOption) (*client.Graph, error) {
-		// algorithm + objective + weighting (3 base) + restart_prob + epsilon.
-		if len(opts) != 5 {
-			t.Errorf("Illuminate option count = %d, want 5", len(opts))
+		// The PPR family option (carrying top_n/restart_prob/epsilon) + the
+		// shared weighting axis (#846).
+		if len(opts) != 2 {
+			t.Errorf("Illuminate option count = %d, want 2", len(opts))
 		}
 		return &client.Graph{Vertices: map[string]*client.Vertex{"x": {Key: "x"}}}, nil
 	}
@@ -174,9 +176,11 @@ func TestRecallRelated_ForwardsPPRKnobs(t *testing.T) {
 func TestRecallRelated_IgnoresPPRKnobsForNonPPR(t *testing.T) {
 	h := newTestHarness(t)
 	h.fake.illuminateFn = func(_ context.Context, _ string, opts ...client.IlluminateOption) (*client.Graph, error) {
-		// Only the 3 base axes; the PPR knobs are gated out for algorithm=none.
-		if len(opts) != 3 {
-			t.Errorf("Illuminate option count = %d, want 3 (knobs gated out)", len(opts))
+		// The BFS family option + weighting. The PPR knobs cannot ride along
+		// structurally (#846): BFSOpts has no α/ε fields, so the gate is now
+		// the type system rather than an option-count check.
+		if len(opts) != 2 {
+			t.Errorf("Illuminate option count = %d, want 2", len(opts))
 		}
 		return &client.Graph{Vertices: map[string]*client.Vertex{"x": {Key: "x"}}}, nil
 	}
