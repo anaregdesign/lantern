@@ -93,34 +93,30 @@ func (c *GraphCache[S, T]) SearchVertices(query string, limit int, keyPrefix str
 		return nil
 	}
 	// Phase 2 — query analysis, BM25 ranking, and liveness/prefix filtering all
-	// run WITHOUT GraphCache.mu. The inverted index has its own RWMutex (Search
-	// takes RLock) and the vertex cache's Has is guarded by the inner cache
-	// lock, so writers and GC that need GraphCache.mu.Lock() are no longer
-	// blocked by a broad or expensive search (#741). Liveness is still checked
-	// at filter time via vertices.Has, so an expired-but-not-yet-flushed vertex
-	// is skipped exactly as before; the read may now race a concurrent
-	// Put/Delete on a given key and observe either side of it, which is the same
-	// racy point-read contract GetVertex provides (#740).
-	ranked := index.Search(query)
-	if len(ranked) == 0 {
-		return nil
-	}
-	out := make([]search.Result[S], 0, min(limit, len(ranked)))
-	for _, r := range ranked {
-		if !c.vertices.Has(r.ID) {
+	// run WITHOUT GraphCache.mu. Since #841 the liveness and prefix filters are
+	// pushed INTO the index's bounded top-k selection as the accept callback,
+	// so a broad query (the bigram analyzer makes a two-character query match
+	// most of the corpus) no longer materialises and fully sorts every match
+	// just to keep `limit` of them: SearchTopK selects in O(M log k) with O(k)
+	// result memory, and rejected documents never consume the page budget.
+	//
+	// Lock order: accept runs under the index's RLock and probes only the
+	// vertex cache's inner mutex (which never acquires the index lock), an
+	// order already established by index writes running under GraphCache.mu —
+	// documented on SearchTopK. Liveness is checked via vertices.Has exactly as
+	// before, so an expired-but-not-yet-flushed vertex is skipped; the read may
+	// race a concurrent Put/Delete on a given key and observe either side of
+	// it, which is the same racy point-read contract GetVertex provides (#740).
+	accept := func(id S) bool {
+		if !c.vertices.Has(id) {
 			// Expired between the index write and this read but the async
 			// Flush has not run yet; consistent with point-read semantics,
 			// treat as absent.
-			continue
+			return false
 		}
-		if keyPrefix != "" && !keyHasPrefix(prefixExtract, r.ID, keyPrefix) {
-			continue
-		}
-		out = append(out, r)
-		if len(out) == limit {
-			break
-		}
+		return keyPrefix == "" || keyHasPrefix(prefixExtract, id, keyPrefix)
 	}
+	out := index.SearchTopK(query, limit, accept)
 	if len(out) == 0 {
 		return nil
 	}

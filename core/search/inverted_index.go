@@ -1,6 +1,7 @@
 package search
 
 import (
+	"container/heap"
 	"sort"
 	"sync"
 )
@@ -300,6 +301,128 @@ func (idx *InvertedIndex[S, D]) Search(query string) []Result[S] {
 		return results[i].Score > results[j].Score
 	})
 	return results
+}
+
+// SearchTopK is the bounded-selection sibling of Search (#841): it computes
+// the same OR-union BM25 scores but returns only the k highest-scoring
+// documents that satisfy accept, without materialising or fully sorting the
+// complete match set. With the bigram analyzer a short query can match most
+// of the corpus, so Search's O(M log M) sort over all M matches dominates
+// broad queries; SearchTopK selects with a size-k bounded heap in
+// O(M log k) time and O(k) result memory instead.
+//
+// accept gates a document BEFORE it can occupy one of the k slots, so
+// filtered-out documents (dead vertices, out-of-scope keys) never consume
+// the page budget — a full page of accepted hits is returned whenever one
+// exists. accept may be nil (accept everything). To keep accept calls off
+// the O(M) score loop it is consulted lazily, only when a candidate's score
+// qualifies it for the heap.
+//
+// LOCK ORDER: accept runs while idx.mu is held for reading. The established
+// order is GraphCache.mu → idx.mu → (vertex-cache inner mutex): index writes
+// already run under GraphCache.mu, and accept's typical body (a vertex-cache
+// liveness probe) takes only the inner cache mutex, which never acquires
+// idx.mu — so no cycle is possible. accept must not call back into this
+// index's write methods.
+//
+// Results are ordered by descending score; ties at the k-th boundary keep an
+// unspecified subset, matching Search's unspecified tie order. k <= 0, an
+// unanalyzable query, or zero accepted matches return nil.
+func (idx *InvertedIndex[S, D]) SearchTopK(query string, k int, accept func(id S) bool) []Result[S] {
+	if k <= 0 {
+		return nil
+	}
+	tokens := idx.analyzer.Analyze(query)
+	if len(tokens) == 0 {
+		return nil
+	}
+	queryTerms := make(map[string]struct{}, len(tokens))
+	for _, token := range tokens {
+		queryTerms[token.Term] = struct{}{}
+	}
+
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	n := len(idx.docs)
+	if n == 0 {
+		return nil
+	}
+	avgLen := float64(idx.totalLen) / float64(n)
+
+	// Phase 1 — identical union scoring to Search: every matching document's
+	// full score must exist before selection, because a document's rank is
+	// the SUM over query terms.
+	scores := make(map[uint32]float64)
+	for term := range queryTerms {
+		tid, ok := idx.dict.lookup(term)
+		if !ok {
+			continue
+		}
+		pl, ok := idx.postings[tid]
+		if !ok {
+			continue
+		}
+		df := pl.cardinality()
+		for it := pl.docs.Iterator(); it.HasNext(); {
+			ord := it.Next()
+			scores[ord] += idx.scorer.Score(TermStats{
+				TF:     pl.tf(ord),
+				DF:     df,
+				N:      n,
+				DocLen: idx.docs[ord].length,
+				AvgLen: avgLen,
+			})
+		}
+	}
+	if len(scores) == 0 {
+		return nil
+	}
+
+	// Phase 2 — bounded selection. A min-heap of size k holds the current
+	// best accepted documents; a candidate consults accept only once its
+	// score beats the boundary, so rejection work never scales with the
+	// match set beyond the heap-qualified candidates.
+	h := topKHeap[S]{entries: make([]Result[S], 0, k)}
+	for ord, score := range scores {
+		if len(h.entries) == k && score <= h.entries[0].Score {
+			continue
+		}
+		id := idx.docs[ord].id
+		if accept != nil && !accept(id) {
+			continue
+		}
+		if len(h.entries) < k {
+			heap.Push(&h, Result[S]{ID: id, Score: score})
+			continue
+		}
+		h.entries[0] = Result[S]{ID: id, Score: score}
+		heap.Fix(&h, 0)
+	}
+	if len(h.entries) == 0 {
+		return nil
+	}
+	out := h.entries
+	sort.Slice(out, func(i, j int) bool { return out[i].Score > out[j].Score })
+	return out
+}
+
+// topKHeap is the size-k min-heap behind SearchTopK: the root is the weakest
+// retained hit, evicted whenever a stronger accepted candidate arrives.
+type topKHeap[S comparable] struct {
+	entries []Result[S]
+}
+
+func (h topKHeap[S]) Len() int           { return len(h.entries) }
+func (h topKHeap[S]) Less(i, j int) bool { return h.entries[i].Score < h.entries[j].Score }
+func (h topKHeap[S]) Swap(i, j int)      { h.entries[i], h.entries[j] = h.entries[j], h.entries[i] }
+func (h *topKHeap[S]) Push(x any)        { h.entries = append(h.entries, x.(Result[S])) }
+func (h *topKHeap[S]) Pop() any {
+	old := h.entries
+	n := len(old)
+	x := old[n-1]
+	h.entries = old[:n-1]
+	return x
 }
 
 // Stats returns the current number of distinct terms in the posting list and

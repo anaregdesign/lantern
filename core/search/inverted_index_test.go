@@ -2,6 +2,7 @@ package search
 
 import (
 	"fmt"
+	"math"
 	"math/rand"
 	"runtime"
 	"sort"
@@ -407,4 +408,121 @@ func BenchmarkInvertedIndexFootprint(b *testing.B) {
 	b.ReportMetric(delta/(1024*1024), "MiB/index")
 	b.ReportMetric(delta/float64(docs), "B/doc")
 	b.ReportMetric(float64(after.HeapObjects-base.HeapObjects), "objects")
+}
+
+// TestSearchTopK property-checks the bounded selection (#841) against the
+// reference pipeline "full Search → filter by accept → truncate to k":
+// result length, membership, per-id scores, and the descending score
+// multiset must all agree (tie order at the k-th boundary is free).
+func TestSearchTopK(t *testing.T) {
+	idx := NewInvertedIndex[string, Text](NewAnalyzer(
+		[]Normalizer{LowercaseNormalizer{}},
+		NGramTokenizer{N: 2},
+		nil,
+	), nil)
+	rng := rand.New(rand.NewSource(841))
+	// Search and SearchTopK both accumulate BM25 contributions while iterating
+	// the distinct-term set (a Go map), so the floating-point addition order —
+	// and therefore the last ULP of a multi-term score — can differ between
+	// any two calls. Compare scores with a relative tolerance, not bitwise.
+	closeEnough := func(a, b float64) bool {
+		diff := math.Abs(a - b)
+		return diff <= 1e-9*math.Max(math.Abs(a), math.Abs(b))
+	}
+	words := []string{"alpha", "alps", "altitude", "beta", "bethel", "gamma", "gambit", "delta"}
+	docs := make(map[string]string, 120)
+	for i := 0; i < 120; i++ {
+		id := fmt.Sprintf("doc-%03d", i)
+		body := words[rng.Intn(len(words))] + " " + words[rng.Intn(len(words))] + " " + words[rng.Intn(len(words))]
+		docs[id] = body
+		idx.Index(id, Text(body))
+	}
+
+	accepts := map[string]func(string) bool{
+		"all":        nil,
+		"evens only": func(id string) bool { return (id[len(id)-1]-'0')%2 == 0 },
+		"none":       func(string) bool { return false },
+	}
+	for _, query := range []string{"al", "alpha", "ga", "zz"} {
+		full := idx.Search(query)
+		for name, accept := range accepts {
+			for _, k := range []int{1, 3, 10, 500} {
+				var want []Result[string]
+				for _, r := range full {
+					if accept == nil || accept(r.ID) {
+						want = append(want, r)
+					}
+				}
+				sort.SliceStable(want, func(i, j int) bool { return want[i].Score > want[j].Score })
+				if len(want) > k {
+					want = want[:k]
+				}
+
+				got := idx.SearchTopK(query, k, accept)
+				if len(got) != len(want) {
+					t.Fatalf("q=%q accept=%s k=%d: len=%d, want %d", query, name, k, len(got), len(want))
+				}
+				fullScore := make(map[string]float64, len(full))
+				for _, r := range full {
+					fullScore[r.ID] = r.Score
+				}
+				for i, r := range got {
+					if i > 0 && got[i-1].Score < r.Score {
+						t.Fatalf("q=%q accept=%s k=%d: not descending at %d: %v", query, name, k, i, got)
+					}
+					if s, ok := fullScore[r.ID]; !ok || !closeEnough(s, r.Score) {
+						t.Fatalf("q=%q accept=%s k=%d: id %s score %v disagrees with full search (%v, %v)", query, name, k, r.ID, r.Score, s, ok)
+					}
+					if accept != nil && !accept(r.ID) {
+						t.Fatalf("q=%q accept=%s k=%d: rejected id %s returned", query, name, k, r.ID)
+					}
+				}
+				for i := range got {
+					if !closeEnough(got[i].Score, want[i].Score) {
+						t.Fatalf("q=%q accept=%s k=%d: score multiset diverges at %d: got %v want %v", query, name, k, i, got, want)
+					}
+				}
+			}
+		}
+	}
+
+	t.Run("k<=0 and empty query return nil", func(t *testing.T) {
+		if got := idx.SearchTopK("al", 0, nil); got != nil {
+			t.Fatalf("k=0 got %v", got)
+		}
+		if got := idx.SearchTopK("", 5, nil); got != nil {
+			t.Fatalf("empty query got %v", got)
+		}
+	})
+}
+
+// BenchmarkSearchTopKBroadQuery pits the bounded selection against the full
+// sort on the workload #841 targets: a two-character query over a large
+// corpus (the bigram analyzer makes it match nearly everything), keeping
+// only a small page.
+func BenchmarkSearchTopKBroadQuery(b *testing.B) {
+	idx := NewInvertedIndex[string, Text](NewAnalyzer(
+		[]Normalizer{LowercaseNormalizer{}},
+		NGramTokenizer{N: 2},
+		nil,
+	), nil)
+	for i := 0; i < 20000; i++ {
+		idx.Index(fmt.Sprintf("doc-%05d", i), Text(fmt.Sprintf("alpha beta gamma delta %05d", i)))
+	}
+	b.Run("SearchTopK-10", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if got := idx.SearchTopK("alpha", 10, nil); len(got) != 10 {
+				b.Fatalf("len=%d", len(got))
+			}
+		}
+	})
+	b.Run("FullSearch", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if got := idx.Search("alpha"); len(got) < 10 {
+				b.Fatalf("len=%d", len(got))
+			}
+		}
+	})
 }
