@@ -28,11 +28,12 @@ import { create } from "@bufbuild/protobuf";
 import {
   Lantern,
   FailedPreconditionError,
+  InvalidArgumentError,
   NotFoundError,
   connect,
   Reduction,
 } from "../src/index.js";
-import { LanternService, VertexSchema } from "../src/gen/graph/v1/graph_pb.js";
+import { LanternService, VertexSchema, ScanOrder } from "../src/gen/graph/v1/graph_pb.js";
 
 interface StubState {
   vertices: Map<string, ReturnType<typeof create<typeof VertexSchema>>>;
@@ -54,6 +55,21 @@ interface StubState {
   searchHits?: { key: string; score: number }[];
   /** When true, searchVertices rejects with FAILED_PRECONDITION (index disabled). */
   searchDisabled?: boolean;
+  /** Last AddEdgeRequest the stub observed, for contrib-id assertions (#895). */
+  lastAddEdge?: { contribId: Uint8Array };
+  /** Every AddEdgesRequest the stub observed, in order, for chunk-alignment assertions (#895). */
+  addEdgesCalls: { contribIds: Uint8Array[]; tails: string[] }[];
+  /** Edge weights keyed tail → head → weight, seeded by DeleteEdgesByPrefix tests (#899). */
+  edges: Map<string, Map<string, number>>;
+  /** Last DeleteEdgesByPrefixRequest the stub observed, for request-building assertions (#899). */
+  lastDeleteEdgesByPrefix?: {
+    tailPrefix: string;
+    headPrefix: string;
+    limit: number;
+    dryRun: boolean;
+  };
+  /** ScanOrder of the last scanVertices / scanVertexKeys request (#898). */
+  lastScanOrder?: number;
 }
 
 function newStubRoutes(state: StubState) {
@@ -68,15 +84,45 @@ function newStubRoutes(state: StubState) {
       },
       async putVertex(req) {
         if (req.vertex) {
+          if (req.ifAbsent && state.vertices.has(req.vertex.key)) {
+            return { written: false };
+          }
           state.vertices.set(req.vertex.key, req.vertex);
         }
-        return {};
+        return { written: true };
       },
       async putVertices(req) {
+        if (req.ifAbsent) {
+          let written = 0;
+          const skippedKeys: string[] = [];
+          for (const v of req.vertices) {
+            if (state.vertices.has(v.key)) {
+              skippedKeys.push(v.key);
+              continue;
+            }
+            state.vertices.set(v.key, v);
+            written++;
+          }
+          return { written, skippedKeys };
+        }
         for (const v of req.vertices) {
           state.vertices.set(v.key, v);
         }
-        return {};
+        return { written: req.vertices.length, skippedKeys: [] };
+      },
+      // Capture Add requests so #895 tests can assert how the SDK wires
+      // contrib_ids (singular forwards into contrib_id; plural is
+      // index-aligned with edges across chunks).
+      async addEdge(req) {
+        state.lastAddEdge = { contribId: req.contribId };
+        return { effectiveWeight: req.edge?.weight ?? 0 };
+      },
+      async addEdges(req) {
+        state.addEdgesCalls.push({
+          contribIds: req.contribIds,
+          tails: req.edges.map((e) => e.tail),
+        });
+        return { effectiveWeights: req.edges.map((e) => e.weight) };
       },
       async deleteVertex(req) {
         const existed = state.vertices.delete(req.key);
@@ -115,13 +161,19 @@ function newStubRoutes(state: StubState) {
         }
         return { hits: state.searchHits ?? [] };
       },
-      // Keys-only prefix scan (#674): returns sorted matching keys with an
-      // opaque last-key cursor so pagination round-trips. The cursor shape
-      // here is a stub (raw last-key bytes); the SDK treats it as opaque.
+      // Keys-only prefix scan (#674): returns matching keys in the
+      // requested order (ascending default, descending when
+      // ScanOrder.DESC — #898) with an opaque last-key cursor so
+      // pagination round-trips. The cursor shape here is a stub (raw
+      // last-key bytes); the SDK treats it as opaque.
       async scanVertexKeys(req) {
-        const all = [...state.vertices.keys()].filter((k) => k.startsWith(req.prefix)).sort();
+        state.lastScanOrder = req.order;
+        const desc = req.order === ScanOrder.DESC;
+        const all = [...state.vertices.keys()]
+          .filter((k) => k.startsWith(req.prefix))
+          .sort((a, b) => (desc ? (a < b ? 1 : a > b ? -1 : 0) : a < b ? -1 : a > b ? 1 : 0));
         const after = req.cursor.length > 0 ? new TextDecoder().decode(req.cursor) : "";
-        const remaining = after ? all.filter((k) => k > after) : all;
+        const remaining = after ? all.filter((k) => (desc ? k < after : k > after)) : all;
         const limit = req.limit > 0 ? req.limit : 100;
         const page = remaining.slice(0, limit);
         const hitLimit = remaining.length > limit;
@@ -133,6 +185,66 @@ function newStubRoutes(state: StubState) {
               : new Uint8Array(),
         };
       },
+      // Vertex prefix scan (#836) mirroring scanVertexKeys' ordering /
+      // pagination but returning whole vertices, so the #898 descending
+      // path is exercised on the values-carrying RPC too.
+      async scanVertices(req) {
+        state.lastScanOrder = req.order;
+        const desc = req.order === ScanOrder.DESC;
+        const all = [...state.vertices.keys()]
+          .filter((k) => k.startsWith(req.prefix))
+          .sort((a, b) => (desc ? (a < b ? 1 : a > b ? -1 : 0) : a < b ? -1 : a > b ? 1 : 0));
+        const after = req.cursor.length > 0 ? new TextDecoder().decode(req.cursor) : "";
+        const remaining = after ? all.filter((k) => (desc ? k < after : k > after)) : all;
+        const limit = req.limit > 0 ? req.limit : 100;
+        const pageKeys = remaining.slice(0, limit);
+        const hitLimit = remaining.length > limit;
+        return {
+          vertices: pageKeys.map((k) => state.vertices.get(k)!),
+          nextCursor:
+            hitLimit && pageKeys.length > 0
+              ? new TextEncoder().encode(pageKeys[pageKeys.length - 1])
+              : new Uint8Array(),
+        };
+      },
+      // Edge-prefix bulk delete (#899): mirrors the server's validation
+      // (at least one prefix non-empty → InvalidArgument) and the
+      // intersection-of-prefixes delete semantics, honoring `limit` and
+      // `dryRun` (dry-run counts without mutating). Captures the request
+      // so tests can assert the SDK's option wiring.
+      async deleteEdgesByPrefix(req) {
+        state.lastDeleteEdgesByPrefix = {
+          tailPrefix: req.tailPrefix,
+          headPrefix: req.headPrefix,
+          limit: req.limit,
+          dryRun: req.dryRun,
+        };
+        if (req.tailPrefix === "" && req.headPrefix === "") {
+          throw new ConnectError(
+            "at least one of tail_prefix / head_prefix must be non-empty",
+            Code.InvalidArgument,
+          );
+        }
+        const cap = req.limit > 0 ? req.limit : Number.MAX_SAFE_INTEGER;
+        const victims: { tail: string; head: string }[] = [];
+        for (const [tail, heads] of state.edges) {
+          if (!tail.startsWith(req.tailPrefix)) continue;
+          for (const head of heads.keys()) {
+            if (!head.startsWith(req.headPrefix)) continue;
+            if (victims.length >= cap) break;
+            victims.push({ tail, head });
+          }
+          if (victims.length >= cap) break;
+        }
+        if (!req.dryRun) {
+          for (const { tail, head } of victims) {
+            const heads = state.edges.get(tail);
+            heads?.delete(head);
+            if (heads && heads.size === 0) state.edges.delete(tail);
+          }
+        }
+        return { deleted: BigInt(victims.length) };
+      },
       // Remaining methods are intentionally absent — the connect-node
       // adapter rejects them with Code.Unimplemented, which the SDK
       // surfaces as the generic LanternError. Tests that need these
@@ -143,7 +255,7 @@ function newStubRoutes(state: StubState) {
 
 let server: http.Server;
 let baseUrl: string;
-const state: StubState = { vertices: new Map() };
+const state: StubState = { vertices: new Map(), addEdgesCalls: [], edges: new Map() };
 
 beforeAll(async () => {
   // HTTP/1.1 server (not http2) — Bun's test runner has rough edges
@@ -257,6 +369,393 @@ describe("Lantern client", () => {
       expect(c2.kind).toBe("bool");
       const d = await c.getVertex("batch/d");
       expect(d.kind).toBe("nil");
+    } finally {
+      c.close();
+    }
+  });
+
+  test("putVertexIfAbsent writes when absent and skips a live key (#896)", async () => {
+    const c = newClient();
+    try {
+      await expect(c.putVertexIfAbsent({ key: "nx/k", value: "one" })).resolves.toBe(true);
+      // Second attempt over a now-live key is a no-op.
+      await expect(c.putVertexIfAbsent({ key: "nx/k", value: "two" })).resolves.toBe(false);
+      const v = await c.getVertex("nx/k");
+      expect(v.value).toBe("one"); // untouched by the skipped write
+    } finally {
+      c.close();
+    }
+  });
+
+  test("putVerticesIfAbsent reports written count and skipped keys (#896)", async () => {
+    const c = newClient();
+    try {
+      await c.putVertex({ key: "nx/live", value: "old" });
+      const { written, skippedKeys } = await c.putVerticesIfAbsent([
+        { key: "nx/fresh", value: "a" },
+        { key: "nx/live", value: "b" }, // skipped: already live
+      ]);
+      expect(written).toBe(1);
+      expect(skippedKeys).toEqual(["nx/live"]);
+      const live = await c.getVertex("nx/live");
+      expect(live.value).toBe("old"); // untouched
+    } finally {
+      c.close();
+    }
+  });
+});
+
+describe("AddEdge contrib IDs (#895)", () => {
+  function idempotentClient(): Lantern {
+    return connect(baseUrl, {
+      options: { idempotentAdds: true },
+      transportOptions: { httpVersion: "1.1" },
+    });
+  }
+
+  test("addEdge omits contrib_id by default (legacy additive path)", async () => {
+    const c = newClient();
+    try {
+      state.lastAddEdge = undefined;
+      await c.addEdge({ tail: "a", head: "b", weight: 1 });
+      expect(state.lastAddEdge?.contribId.length).toBe(0);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("addEdge mints a 24-byte contrib_id when idempotentAdds is on", async () => {
+    const c = idempotentClient();
+    try {
+      state.lastAddEdge = undefined;
+      await c.addEdge({ tail: "a", head: "b", weight: 1 });
+      expect(state.lastAddEdge?.contribId.length).toBe(24);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("addEdge forwards a caller-supplied contrib_id verbatim", async () => {
+    const c = newClient();
+    const id = new Uint8Array(24).fill(7);
+    try {
+      state.lastAddEdge = undefined;
+      await c.addEdge({ tail: "a", head: "b", weight: 1, contribId: id });
+      expect(state.lastAddEdge?.contribId).toEqual(id);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("addEdge rejects a wrong-length contrib_id before hitting the wire", async () => {
+    const c = newClient();
+    try {
+      state.lastAddEdge = undefined;
+      await expect(
+        c.addEdge({ tail: "a", head: "b", weight: 1, contribId: new Uint8Array(16) }),
+      ).rejects.toThrow(InvalidArgumentError);
+      expect(state.lastAddEdge).toBeUndefined();
+    } finally {
+      c.close();
+    }
+  });
+
+  test("addEdges with idempotentAdds mints index-aligned, per-index-distinct ids", async () => {
+    const c = idempotentClient();
+    try {
+      state.addEdgesCalls = [];
+      await c.addEdges([
+        { tail: "a", head: "b", weight: 1 },
+        { tail: "a", head: "c", weight: 1 },
+        { tail: "a", head: "d", weight: 1 },
+      ]);
+      expect(state.addEdgesCalls.length).toBe(1);
+      const { contribIds } = state.addEdgesCalls[0];
+      expect(contribIds.length).toBe(3);
+      for (const id of contribIds) expect(id.length).toBe(24);
+      // Shared nonce (bytes 0..15), distinct low bytes (16..23) per index.
+      const lows = contribIds.map((id) => [...id.slice(16)].join(","));
+      expect(new Set(lows).size).toBe(3);
+      const nonce0 = [...contribIds[0].slice(0, 16)].join(",");
+      const nonce1 = [...contribIds[1].slice(0, 16)].join(",");
+      expect(nonce1).toBe(nonce0);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("addEdges omits contrib_ids entirely when neither option nor caller ids apply", async () => {
+    const c = newClient();
+    try {
+      state.addEdgesCalls = [];
+      await c.addEdges([
+        { tail: "a", head: "b", weight: 1 },
+        { tail: "a", head: "c", weight: 1 },
+      ]);
+      expect(state.addEdgesCalls[0].contribIds.length).toBe(0);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("addEdges fills empty slots around a caller-supplied id (mixed batch)", async () => {
+    const c = newClient();
+    const id = new Uint8Array(24).fill(9);
+    try {
+      state.addEdgesCalls = [];
+      await c.addEdges([
+        { tail: "a", head: "b", weight: 1 },
+        { tail: "a", head: "c", weight: 1, contribId: id },
+      ]);
+      const { contribIds } = state.addEdgesCalls[0];
+      expect(contribIds.length).toBe(2);
+      expect(contribIds[0].length).toBe(0);
+      expect(contribIds[1]).toEqual(id);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("addEdges keeps caller ids aligned with edges across chunk boundaries", async () => {
+    // batchChunkSize 2 splits 3 edges into [0,1] and [2]; each caller id must
+    // stay paired with its edge in whichever chunk it lands.
+    const c = connect(baseUrl, {
+      options: { batchChunkSize: 2 },
+      transportOptions: { httpVersion: "1.1" },
+    });
+    const ids = [
+      new Uint8Array(24).fill(1),
+      new Uint8Array(24).fill(2),
+      new Uint8Array(24).fill(3),
+    ];
+    try {
+      state.addEdgesCalls = [];
+      await c.addEdges([
+        { tail: "a", head: "b", weight: 1, contribId: ids[0] },
+        { tail: "a", head: "c", weight: 1, contribId: ids[1] },
+        { tail: "a", head: "d", weight: 1, contribId: ids[2] },
+      ]);
+      expect(state.addEdgesCalls.length).toBe(2);
+      expect(state.addEdgesCalls[0].tails.length).toBe(2);
+      expect(state.addEdgesCalls[0].contribIds[0]).toEqual(ids[0]);
+      expect(state.addEdgesCalls[0].contribIds[1]).toEqual(ids[1]);
+      expect(state.addEdgesCalls[1].contribIds[0]).toEqual(ids[2]);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("successive idempotent addEdges calls advance the sequence (distinct ids)", async () => {
+    const c = idempotentClient();
+    try {
+      state.addEdgesCalls = [];
+      await c.addEdges([{ tail: "a", head: "b", weight: 1 }]);
+      await c.addEdges([{ tail: "a", head: "b", weight: 1 }]);
+      expect(state.addEdgesCalls.length).toBe(2);
+      const first = [...state.addEdgesCalls[0].contribIds[0]].join(",");
+      const second = [...state.addEdgesCalls[1].contribIds[0]].join(",");
+      expect(second).not.toBe(first);
+    } finally {
+      c.close();
+    }
+  });
+
+  // #897: Add returns the post-accumulation effective weight so callers can
+  // implement counters without a follow-up read.
+  test("addEdge returns the effective weight", async () => {
+    const c = newClient();
+    try {
+      const effective = await c.addEdge({ tail: "a", head: "b", weight: 2.5 });
+      expect(effective).toBe(2.5);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("addEdges returns index-aligned effective weights across chunk boundaries", async () => {
+    // batchChunkSize 2 splits 3 edges into [0,1] and [2]; the returned slice
+    // must stay index-aligned with the inputs across both chunks.
+    const c = connect(baseUrl, {
+      options: { batchChunkSize: 2 },
+      transportOptions: { httpVersion: "1.1" },
+    });
+    try {
+      const effective = await c.addEdges([
+        { tail: "a", head: "b", weight: 1 },
+        { tail: "a", head: "c", weight: 2 },
+        { tail: "a", head: "d", weight: 3 },
+      ]);
+      expect(effective).toEqual([1, 2, 3]);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("addEdges returns an empty slice for an empty input", async () => {
+    const c = newClient();
+    try {
+      expect(await c.addEdges([])).toEqual([]);
+    } finally {
+      c.close();
+    }
+  });
+});
+
+describe("deleteEdgesByPrefix (#899)", () => {
+  function seedEdges(pairs: readonly [string, string][]): void {
+    state.edges = new Map();
+    for (const [tail, head] of pairs) {
+      let heads = state.edges.get(tail);
+      if (!heads) {
+        heads = new Map();
+        state.edges.set(tail, heads);
+      }
+      heads.set(head, 1);
+    }
+  }
+
+  test("forwards both prefixes, limit and dryRun onto the request", async () => {
+    const c = newClient();
+    try {
+      seedEdges([["users/a", "posts/1"]]);
+      await c.deleteEdgesByPrefix({
+        tailPrefix: "users/",
+        headPrefix: "posts/",
+        limit: 7,
+        dryRun: true,
+      });
+      expect(state.lastDeleteEdgesByPrefix?.tailPrefix).toBe("users/");
+      expect(state.lastDeleteEdgesByPrefix?.headPrefix).toBe("posts/");
+      expect(state.lastDeleteEdgesByPrefix?.limit).toBe(7);
+      expect(state.lastDeleteEdgesByPrefix?.dryRun).toBe(true);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("defaults omitted options to empty prefixes, limit 0 and dryRun false", async () => {
+    const c = newClient();
+    try {
+      seedEdges([["users/a", "posts/1"]]);
+      await c.deleteEdgesByPrefix({ tailPrefix: "users/" });
+      expect(state.lastDeleteEdgesByPrefix?.headPrefix).toBe("");
+      expect(state.lastDeleteEdgesByPrefix?.limit).toBe(0);
+      expect(state.lastDeleteEdgesByPrefix?.dryRun).toBe(false);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("deletes the tail∩head intersection and returns the count", async () => {
+    const c = newClient();
+    try {
+      seedEdges([
+        ["users/a", "posts/1"],
+        ["users/a", "logs/9"],
+        ["orgs/x", "posts/2"],
+      ]);
+      const deleted = await c.deleteEdgesByPrefix({
+        tailPrefix: "users/",
+        headPrefix: "posts/",
+      });
+      expect(deleted).toBe(1n);
+      expect(state.edges.get("users/a")?.has("posts/1")).toBeFalsy();
+      expect(state.edges.get("users/a")?.has("logs/9")).toBe(true);
+      expect(state.edges.get("orgs/x")?.has("posts/2")).toBe(true);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("dryRun reports the count without mutating", async () => {
+    const c = newClient();
+    try {
+      seedEdges([
+        ["users/a", "posts/1"],
+        ["users/b", "posts/2"],
+      ]);
+      const would = await c.deleteEdgesByPrefix({ tailPrefix: "users/", dryRun: true });
+      expect(would).toBe(2n);
+      expect(state.edges.get("users/a")?.has("posts/1")).toBe(true);
+      expect(state.edges.get("users/b")?.has("posts/2")).toBe(true);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("a both-empty request is rejected as InvalidArgumentError", async () => {
+    const c = newClient();
+    try {
+      seedEdges([["users/a", "posts/1"]]);
+      await expect(c.deleteEdgesByPrefix({})).rejects.toBeInstanceOf(InvalidArgumentError);
+    } finally {
+      c.close();
+    }
+  });
+});
+
+describe("scan order (#898)", () => {
+  test("default and explicit asc send SCAN_ORDER_ASC", async () => {
+    const c = newClient();
+    try {
+      await c.putVertices([
+        { key: "so:1", value: "a" },
+        { key: "so:2", value: "b" },
+      ]);
+
+      state.lastScanOrder = undefined;
+      await c.scanVertexKeys("so:", { limit: 10 });
+      expect(state.lastScanOrder).toBe(ScanOrder.ASC);
+
+      state.lastScanOrder = undefined;
+      await c.scanVertexKeys("so:", { limit: 10, order: "asc" });
+      expect(state.lastScanOrder).toBe(ScanOrder.ASC);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("descending keys scan walks high-to-low and paginates", async () => {
+    const c = newClient();
+    try {
+      await c.putVertices([
+        { key: "sd:1", value: "a" },
+        { key: "sd:2", value: "b" },
+        { key: "sd:3", value: "c" },
+      ]);
+
+      const p1 = await c.scanVertexKeys("sd:", { limit: 2, order: "desc" });
+      expect(state.lastScanOrder).toBe(ScanOrder.DESC);
+      expect(p1.keys).toEqual(["sd:3", "sd:2"]);
+      expect(p1.nextCursor.length).toBeGreaterThan(0);
+
+      const p2 = await c.scanVertexKeys("sd:", { limit: 2, order: "desc", cursor: p1.nextCursor });
+      expect(p2.keys).toEqual(["sd:1"]);
+      expect(p2.nextCursor.length).toBe(0);
+
+      const all: string[] = [];
+      for await (const page of c.scanVertexKeysAll("sd:", 2, undefined, "desc")) all.push(...page);
+      expect(all).toEqual(["sd:3", "sd:2", "sd:1"]);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("descending vertices scan returns whole vertices high-to-low", async () => {
+    const c = newClient();
+    try {
+      await c.putVertices([
+        { key: "sv:1", value: "a" },
+        { key: "sv:2", value: "b" },
+        { key: "sv:3", value: "c" },
+      ]);
+
+      const all: string[] = [];
+      for await (const page of c.scanVerticesAll("sv:", 2, undefined, "desc")) {
+        for (const v of page) all.push(v.key);
+      }
+      expect(state.lastScanOrder).toBe(ScanOrder.DESC);
+      expect(all).toEqual(["sv:3", "sv:2", "sv:1"]);
     } finally {
       c.close();
     }

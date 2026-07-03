@@ -78,7 +78,7 @@ func registerPostNote(srv *mcp.Server, lc lanternClient, r *ttl.Resolver) {
 			edges = append(edges, client.EdgeInput{Tail: key, Head: res, Weight: 1, Expiration: expirationIn(d)})
 		}
 		edges = append(edges, client.EdgeInput{Tail: agentKey(author), Head: key, Weight: 1, Expiration: expirationIn(d)})
-		if err := lc.AddEdges(ctx, edges); err != nil {
+		if _, err := lc.AddEdges(ctx, edges); err != nil {
 			return nil, postNoteOutput{}, mapSDKError("post_note", err)
 		}
 

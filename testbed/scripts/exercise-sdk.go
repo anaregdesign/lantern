@@ -246,11 +246,15 @@ func run() error {
 
 	// ---- edges -----------------------------------------------------
 	step("AddEdge then AddEdge (additive)", func() error {
-		if err := lc.AddEdge(ctx, "sdk:a", "sdk:b", 1.0, 5*time.Minute); err != nil {
+		if _, err := lc.AddEdge(ctx, "sdk:a", "sdk:b", 1.0, 5*time.Minute); err != nil {
 			return err
 		}
-		if err := lc.AddEdge(ctx, "sdk:a", "sdk:b", 0.5, 5*time.Minute); err != nil {
+		effective, err := lc.AddEdge(ctx, "sdk:a", "sdk:b", 0.5, 5*time.Minute)
+		if err != nil {
 			return err
+		}
+		if effective < 1.49 || effective > 1.51 {
+			return fmt.Errorf("AddEdge effective weight: want ~1.5, got %v", effective)
 		}
 		e, err := lc.GetEdge(ctx, "sdk:a", "sdk:b")
 		if err != nil {
@@ -278,7 +282,8 @@ func run() error {
 		return lc.PutEdgeAt(ctx, "sdk:a", "sdk:c", 0.7, time.Now().Add(2*time.Minute))
 	})
 	step("AddEdgeAt", func() error {
-		return lc.AddEdgeAt(ctx, "sdk:a", "sdk:d", 0.3, time.Now().Add(2*time.Minute))
+		_, err := lc.AddEdgeAt(ctx, "sdk:a", "sdk:d", 0.3, time.Now().Add(2*time.Minute))
+		return err
 	})
 	step("GetEdge missing → ErrNotFound", func() error {
 		_, err := lc.GetEdge(ctx, "sdk:a", "sdk:nobody")
@@ -299,7 +304,8 @@ func run() error {
 				Expiration: time.Now().Add(5 * time.Minute),
 			})
 		}
-		return lc.AddEdges(ctx, in)
+		_, err := lc.AddEdges(ctx, in)
+		return err
 	})
 	step("PutEdges batch (chunked)", func() error {
 		var in []client.EdgeInput

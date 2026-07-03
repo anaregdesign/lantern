@@ -62,6 +62,7 @@ export type {
   SearchUpdate,
 } from "./incremental-search.js";
 export { ReplicationPeer_State } from "./gen/graph/v1/graph_pb.js";
+export { CONTRIB_ID_BYTES } from "./contrib.js";
 export {
   BatchError,
   FailedPreconditionError,
@@ -74,6 +75,7 @@ export {
 export type {
   ConnectOptions,
   DeleteByPrefixOptions,
+  DeleteEdgesByPrefixOptions,
   EdgeScanOptions,
   BfsOptions,
   IlluminateOptions,

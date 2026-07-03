@@ -313,8 +313,8 @@ ctx := context.Background()
 _ = cli.PutVertex(ctx, "user:42", "alice", 1*time.Hour)
 _ = cli.PutVertex(ctx, "item:7",  "lamp",  1*time.Hour)
 
-// Each AddEdge appends a contribution with its own TTL.
-_ = cli.AddEdge(ctx, "user:42", "item:7", 1.0, 30*time.Minute)
+// Each AddEdge appends a contribution with its own TTL and returns the live sum.
+_, _ = cli.AddEdge(ctx, "user:42", "item:7", 1.0, 30*time.Minute)
 
 // Walk: 2 hops, top-3 per hop, TF-IDF weighted.
 g, _ := cli.Illuminate(ctx, "user:42",
@@ -491,14 +491,15 @@ whichever reads better at the call site.
 | RPC | Purpose |
 |---|---|
 | `GetVertex` / `GetVertices` | Fetch by key; plural reports gaps in `Missing` instead of erroring |
-| `PutVertex` / `PutVertices` | Upsert with TTL; last write wins |
+| `PutVertex` / `PutVertices` | Upsert with TTL; last write wins, or conditional insert with `if_absent` (SET NX) |
 | `DeleteVertex` / `DeleteVertices` | Remove vertices; incident edges reaped on the next GC tick |
 | `GetEdge` / `GetEdges` | Current live weight — the sum of unexpired contributions |
-| `AddEdge` / `AddEdges` | **Append** weighted contributions (the additive model above) |
+| `AddEdge` / `AddEdges` | **Append** weighted contributions (the additive model above); returns the post-accumulation live weight |
 | `PutEdge` / `PutEdges` | Idempotent replace under one write lock |
 | `DeleteEdge` / `DeleteEdges` | Remove edges outright |
-| `ScanVertices` / `ScanVertexKeys` / `ScanEdges` | Cursor-paginated prefix enumeration (keys-only variant is wire-efficient; edge scans filter on tail and/or head prefix) |
-| `CountVerticesByPrefix` / `DeleteVerticesByPrefix` | Namespace count / capped bulk delete with `dry_run` |
+| `ScanVertices` / `ScanVertexKeys` / `ScanEdges` | Cursor-paginated prefix enumeration, ascending or descending via `order` (keys-only variant is wire-efficient; edge scans filter on tail and/or head prefix) |
+| `CountVerticesByPrefix` / `DeleteVerticesByPrefix` / `DeleteEdgesByPrefix` | Namespace count / capped bulk delete with `dry_run` (the edge variant removes the tail∩head intersection) |
+| `TopVerticesByDegree` | Rank the most-connected live vertices under a key prefix (out / in / both, optional `weighted`) — a read-only, point-in-time aggregate |
 | `SearchVertices` | BM25-ranked full-text over vertex content, with match-mode / phrase / fuzzy / prefix-term options |
 | `Illuminate` | Walk the graph from a seed — the shaped-subgraph query described above |
 

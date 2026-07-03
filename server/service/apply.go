@@ -226,8 +226,9 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		if useTomb {
 			// The batch return counts every item that added no weight —
 			// tombstone-dropped or ContribID-deduped — which is exactly the
-			// per-item applied=false set the singular loop fed the hook.
-			noWeight := s.cache.AddEdgesWithExpirationContribHLC(items, ts)
+			// per-item applied=false set the singular loop fed the hook. The
+			// effective-weight slice (#897) is irrelevant on the apply path.
+			_, noWeight := s.cache.AddEdgesWithExpirationContribHLC(items, ts)
 			if s.onTombstoneClampReject != nil {
 				for i := 0; i < noWeight; i++ {
 					s.onTombstoneClampReject()
@@ -295,6 +296,22 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 			s.cache.DeleteEdges(keys)
 		}
 		opName = "DeleteEdges"
+
+	case *pb.MutationOp_DeleteEdgesByPrefix:
+		// Apply the prefix delete to completion on the replica (limit 0):
+		// the origin loops its bounded calls until the matching set drains,
+		// so applying unbounded here converges both sides regardless of the
+		// origin's per-call limit — the same choice DeleteVerticesByPrefix
+		// makes above.
+		p := op.DeleteEdgesByPrefix
+		if useTomb {
+			if _, err := s.cache.DeleteEdgesByPrefixHLC(ctx, p.GetTailPrefix(), p.GetHeadPrefix(), 0, ts, tombExp); err != nil {
+				return ctxToConnect(err)
+			}
+		} else {
+			s.cache.DeleteEdgesByPrefix(ctx, p.GetTailPrefix(), p.GetHeadPrefix(), 0)
+		}
+		opName = "DeleteEdgesByPrefix"
 	}
 
 	if opName != "" && s.onReplicationApply != nil {

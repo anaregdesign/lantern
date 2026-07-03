@@ -455,7 +455,7 @@ func TestUnaryRetry_SingleEndpoint(t *testing.T) {
 		l := mustLantern(t, WithIdempotentAdds(), WithRetry(RetryPolicy{MaxAttempts: 3, sleepFn: noSleep}))
 		capt := &scriptedClient{addEdgesErrs: []error{unavailable, nil}}
 		l.client = capt
-		if err := l.AddEdges(context.Background(), []EdgeInput{{Tail: "a", Head: "b", Weight: 1}}); err != nil {
+		if _, err := l.AddEdges(context.Background(), []EdgeInput{{Tail: "a", Head: "b", Weight: 1}}); err != nil {
 			t.Fatalf("AddEdges: %v", err)
 		}
 		if capt.addEdgesN != 2 {
@@ -477,7 +477,7 @@ func TestUnaryRetry_SingleEndpoint(t *testing.T) {
 		l := mustLantern(t, WithRetry(RetryPolicy{MaxAttempts: 5, sleepFn: noSleep})) // no WithIdempotentAdds
 		capt := &scriptedClient{addEdgesErrs: []error{unavailable, nil}}
 		l.client = capt
-		err := l.AddEdges(context.Background(), []EdgeInput{{Tail: "a", Head: "b", Weight: 1}})
+		_, err := l.AddEdges(context.Background(), []EdgeInput{{Tail: "a", Head: "b", Weight: 1}})
 		if !errors.Is(err, ErrUnavailable) {
 			t.Fatalf("err = %v, want ErrUnavailable (additive write not retried)", err)
 		}

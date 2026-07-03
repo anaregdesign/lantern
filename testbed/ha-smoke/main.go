@@ -57,13 +57,13 @@ func main() {
 			log.Fatalf("PutVertex %q: %v", k, err)
 		}
 	}
-	if err := rr.AddEdge(ctx, "A", "B", 1.0, 1*time.Minute); err != nil {
+	if _, err := rr.AddEdge(ctx, "A", "B", 1.0, 1*time.Minute); err != nil {
 		log.Fatalf("AddEdge A->B: %v", err)
 	}
-	if err := rr.AddEdge(ctx, "A", "B", 1.0, 1*time.Minute); err != nil {
+	if _, err := rr.AddEdge(ctx, "A", "B", 1.0, 1*time.Minute); err != nil {
 		log.Fatalf("AddEdge A->B (2): %v", err)
 	}
-	if err := rr.AddEdge(ctx, "B", "C", 2.5, 1*time.Minute); err != nil {
+	if _, err := rr.AddEdge(ctx, "B", "C", 2.5, 1*time.Minute); err != nil {
 		log.Fatalf("AddEdge B->C: %v", err)
 	}
 	fmt.Printf("✓ AddEdge A->B (×2 additive) + B->C\n")

@@ -75,10 +75,10 @@ func seedBaseline(ctx context.Context, c *client.Lantern) {
 			log.Fatalf("seed PutVertex %q: %v", k, err)
 		}
 	}
-	if err := c.AddEdge(ctx, "v1", "v2", 1.0, 5*time.Minute); err != nil {
+	if _, err := c.AddEdge(ctx, "v1", "v2", 1.0, 5*time.Minute); err != nil {
 		log.Fatalf("seed AddEdge v1->v2: %v", err)
 	}
-	if err := c.AddEdge(ctx, "v2", "v3", 2.0, 5*time.Minute); err != nil {
+	if _, err := c.AddEdge(ctx, "v2", "v3", 2.0, 5*time.Minute); err != nil {
 		log.Fatalf("seed AddEdge v2->v3: %v", err)
 	}
 }
@@ -98,10 +98,10 @@ func writeDuringOutage(ctx context.Context, eps []string) {
 			log.Fatalf("outage-write PutVertex %q: %v", k, err)
 		}
 	}
-	if err := cli.AddEdge(ctx, "v3", "new1", 3.0, 5*time.Minute); err != nil {
+	if _, err := cli.AddEdge(ctx, "v3", "new1", 3.0, 5*time.Minute); err != nil {
 		log.Fatalf("outage-write AddEdge v3->new1: %v", err)
 	}
-	if err := cli.AddEdge(ctx, "new1", "new2", 4.0, 5*time.Minute); err != nil {
+	if _, err := cli.AddEdge(ctx, "new1", "new2", 4.0, 5*time.Minute); err != nil {
 		log.Fatalf("outage-write AddEdge new1->new2: %v", err)
 	}
 	// Mutate a baseline vertex during outage to check converging replace.

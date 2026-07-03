@@ -95,6 +95,9 @@ func (h *lanternServiceConnect) CountVerticesByPrefix(ctx context.Context, req *
 func (h *lanternServiceConnect) DeleteVerticesByPrefix(ctx context.Context, req *connect.Request[pb.DeleteVerticesByPrefixRequest]) (*connect.Response[pb.DeleteVerticesByPrefixResponse], error) {
 	return unary(ctx, req, h.svc.DeleteVerticesByPrefix)
 }
+func (h *lanternServiceConnect) TopVerticesByDegree(ctx context.Context, req *connect.Request[pb.TopVerticesByDegreeRequest]) (*connect.Response[pb.TopVerticesByDegreeResponse], error) {
+	return unary(ctx, req, h.svc.TopVerticesByDegree)
+}
 func (h *lanternServiceConnect) GetEdge(ctx context.Context, req *connect.Request[pb.GetEdgeRequest]) (*connect.Response[pb.GetEdgeResponse], error) {
 	return unary(ctx, req, h.svc.GetEdge)
 }
@@ -118,6 +121,9 @@ func (h *lanternServiceConnect) DeleteEdge(ctx context.Context, req *connect.Req
 }
 func (h *lanternServiceConnect) DeleteEdges(ctx context.Context, req *connect.Request[pb.DeleteEdgesRequest]) (*connect.Response[pb.DeleteEdgesResponse], error) {
 	return unary(ctx, req, h.svc.DeleteEdges)
+}
+func (h *lanternServiceConnect) DeleteEdgesByPrefix(ctx context.Context, req *connect.Request[pb.DeleteEdgesByPrefixRequest]) (*connect.Response[pb.DeleteEdgesByPrefixResponse], error) {
+	return unary(ctx, req, h.svc.DeleteEdgesByPrefix)
 }
 func (h *lanternServiceConnect) ScanEdges(ctx context.Context, req *connect.Request[pb.ScanEdgesRequest]) (*connect.Response[pb.ScanEdgesResponse], error) {
 	return unary(ctx, req, h.svc.ScanEdges)

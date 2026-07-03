@@ -114,6 +114,7 @@ type MutationOp struct {
 	//	*MutationOp_PutEdges
 	//	*MutationOp_DeleteEdge
 	//	*MutationOp_DeleteEdges
+	//	*MutationOp_DeleteEdgesByPrefix
 	Op            isMutationOp_Op `protobuf_oneof:"op"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -255,6 +256,15 @@ func (x *MutationOp) GetDeleteEdges() *DeleteEdgesRequest {
 	return nil
 }
 
+func (x *MutationOp) GetDeleteEdgesByPrefix() *DeleteEdgesByPrefixRequest {
+	if x != nil {
+		if x, ok := x.Op.(*MutationOp_DeleteEdgesByPrefix); ok {
+			return x.DeleteEdgesByPrefix
+		}
+	}
+	return nil
+}
+
 type isMutationOp_Op interface {
 	isMutationOp_Op()
 }
@@ -303,6 +313,10 @@ type MutationOp_DeleteEdges struct {
 	DeleteEdges *DeleteEdgesRequest `protobuf:"bytes,11,opt,name=delete_edges,json=deleteEdges,proto3,oneof"`
 }
 
+type MutationOp_DeleteEdgesByPrefix struct {
+	DeleteEdgesByPrefix *DeleteEdgesByPrefixRequest `protobuf:"bytes,12,opt,name=delete_edges_by_prefix,json=deleteEdgesByPrefix,proto3,oneof"`
+}
+
 func (*MutationOp_PutVertex) isMutationOp_Op() {}
 
 func (*MutationOp_PutVertices) isMutationOp_Op() {}
@@ -324,6 +338,8 @@ func (*MutationOp_PutEdges) isMutationOp_Op() {}
 func (*MutationOp_DeleteEdge) isMutationOp_Op() {}
 
 func (*MutationOp_DeleteEdges) isMutationOp_Op() {}
+
+func (*MutationOp_DeleteEdgesByPrefix) isMutationOp_Op() {}
 
 // Mutation is the unit of replication: a sequenced, HLC-stamped,
 // origin-tagged graph write. `seq` is assigned by the originating node's
@@ -1179,7 +1195,7 @@ const file_graph_v1_replication_proto_rawDesc = "" +
 	"\fHLCTimestamp\x12\x17\n" +
 	"\awall_ns\x18\x01 \x01(\x03R\x06wallNs\x12\x18\n" +
 	"\alogical\x18\x02 \x01(\rR\alogical\x12\x17\n" +
-	"\anode_id\x18\x03 \x01(\fR\x06nodeId\"\xef\x05\n" +
+	"\anode_id\x18\x03 \x01(\fR\x06nodeId\"\xcc\x06\n" +
 	"\n" +
 	"MutationOp\x12;\n" +
 	"\n" +
@@ -1195,7 +1211,8 @@ const file_graph_v1_replication_proto_rawDesc = "" +
 	"\vdelete_edge\x18\n" +
 	" \x01(\v2\x1b.graph.v1.DeleteEdgeRequestH\x00R\n" +
 	"deleteEdge\x12A\n" +
-	"\fdelete_edges\x18\v \x01(\v2\x1c.graph.v1.DeleteEdgesRequestH\x00R\vdeleteEdgesB\x04\n" +
+	"\fdelete_edges\x18\v \x01(\v2\x1c.graph.v1.DeleteEdgesRequestH\x00R\vdeleteEdges\x12[\n" +
+	"\x16delete_edges_by_prefix\x18\f \x01(\v2$.graph.v1.DeleteEdgesByPrefixRequestH\x00R\x13deleteEdgesByPrefixB\x04\n" +
 	"\x02op\"\x84\x01\n" +
 	"\bMutation\x12\x10\n" +
 	"\x03seq\x18\x01 \x01(\x04R\x03seq\x12(\n" +
@@ -1300,8 +1317,9 @@ var file_graph_v1_replication_proto_goTypes = []any{
 	(*PutEdgesRequest)(nil),               // 25: graph.v1.PutEdgesRequest
 	(*DeleteEdgeRequest)(nil),             // 26: graph.v1.DeleteEdgeRequest
 	(*DeleteEdgesRequest)(nil),            // 27: graph.v1.DeleteEdgesRequest
-	(*Vertex)(nil),                        // 28: graph.v1.Vertex
-	(*timestamppb.Timestamp)(nil),         // 29: google.protobuf.Timestamp
+	(*DeleteEdgesByPrefixRequest)(nil),    // 28: graph.v1.DeleteEdgesByPrefixRequest
+	(*Vertex)(nil),                        // 29: graph.v1.Vertex
+	(*timestamppb.Timestamp)(nil),         // 30: google.protobuf.Timestamp
 }
 var file_graph_v1_replication_proto_depIdxs = []int32{
 	17, // 0: graph.v1.MutationOp.put_vertex:type_name -> graph.v1.PutVertexRequest
@@ -1315,34 +1333,35 @@ var file_graph_v1_replication_proto_depIdxs = []int32{
 	25, // 8: graph.v1.MutationOp.put_edges:type_name -> graph.v1.PutEdgesRequest
 	26, // 9: graph.v1.MutationOp.delete_edge:type_name -> graph.v1.DeleteEdgeRequest
 	27, // 10: graph.v1.MutationOp.delete_edges:type_name -> graph.v1.DeleteEdgesRequest
-	0,  // 11: graph.v1.Mutation.hlc:type_name -> graph.v1.HLCTimestamp
-	1,  // 12: graph.v1.Mutation.op:type_name -> graph.v1.MutationOp
-	15, // 13: graph.v1.SubscribeRequest.from_seq_per_origin:type_name -> graph.v1.SubscribeRequest.FromSeqPerOriginEntry
-	2,  // 14: graph.v1.SubscribeResponse.mutation:type_name -> graph.v1.Mutation
-	16, // 15: graph.v1.SnapshotHeader.cutoff_seq_per_origin:type_name -> graph.v1.SnapshotHeader.CutoffSeqPerOriginEntry
-	0,  // 16: graph.v1.SnapshotHeader.cutoff_hlc:type_name -> graph.v1.HLCTimestamp
-	28, // 17: graph.v1.SnapshotVertex.vertex:type_name -> graph.v1.Vertex
-	0,  // 18: graph.v1.SnapshotVertex.hlc:type_name -> graph.v1.HLCTimestamp
-	29, // 19: graph.v1.SnapshotEdgeContribution.expiration:type_name -> google.protobuf.Timestamp
-	0,  // 20: graph.v1.SnapshotEdge.hlc:type_name -> graph.v1.HLCTimestamp
-	9,  // 21: graph.v1.SnapshotEdge.contributions:type_name -> graph.v1.SnapshotEdgeContribution
-	6,  // 22: graph.v1.SnapshotResponse.header:type_name -> graph.v1.SnapshotHeader
-	8,  // 23: graph.v1.SnapshotResponse.vertex:type_name -> graph.v1.SnapshotVertex
-	10, // 24: graph.v1.SnapshotResponse.edge:type_name -> graph.v1.SnapshotEdge
-	7,  // 25: graph.v1.SnapshotResponse.footer:type_name -> graph.v1.SnapshotFooter
-	0,  // 26: graph.v1.OriginState.last_hlc:type_name -> graph.v1.HLCTimestamp
-	13, // 27: graph.v1.PeerStatusResponse.origins:type_name -> graph.v1.OriginState
-	3,  // 28: graph.v1.LanternReplicationService.Subscribe:input_type -> graph.v1.SubscribeRequest
-	5,  // 29: graph.v1.LanternReplicationService.Snapshot:input_type -> graph.v1.SnapshotRequest
-	12, // 30: graph.v1.LanternReplicationService.PeerStatus:input_type -> graph.v1.PeerStatusRequest
-	4,  // 31: graph.v1.LanternReplicationService.Subscribe:output_type -> graph.v1.SubscribeResponse
-	11, // 32: graph.v1.LanternReplicationService.Snapshot:output_type -> graph.v1.SnapshotResponse
-	14, // 33: graph.v1.LanternReplicationService.PeerStatus:output_type -> graph.v1.PeerStatusResponse
-	31, // [31:34] is the sub-list for method output_type
-	28, // [28:31] is the sub-list for method input_type
-	28, // [28:28] is the sub-list for extension type_name
-	28, // [28:28] is the sub-list for extension extendee
-	0,  // [0:28] is the sub-list for field type_name
+	28, // 11: graph.v1.MutationOp.delete_edges_by_prefix:type_name -> graph.v1.DeleteEdgesByPrefixRequest
+	0,  // 12: graph.v1.Mutation.hlc:type_name -> graph.v1.HLCTimestamp
+	1,  // 13: graph.v1.Mutation.op:type_name -> graph.v1.MutationOp
+	15, // 14: graph.v1.SubscribeRequest.from_seq_per_origin:type_name -> graph.v1.SubscribeRequest.FromSeqPerOriginEntry
+	2,  // 15: graph.v1.SubscribeResponse.mutation:type_name -> graph.v1.Mutation
+	16, // 16: graph.v1.SnapshotHeader.cutoff_seq_per_origin:type_name -> graph.v1.SnapshotHeader.CutoffSeqPerOriginEntry
+	0,  // 17: graph.v1.SnapshotHeader.cutoff_hlc:type_name -> graph.v1.HLCTimestamp
+	29, // 18: graph.v1.SnapshotVertex.vertex:type_name -> graph.v1.Vertex
+	0,  // 19: graph.v1.SnapshotVertex.hlc:type_name -> graph.v1.HLCTimestamp
+	30, // 20: graph.v1.SnapshotEdgeContribution.expiration:type_name -> google.protobuf.Timestamp
+	0,  // 21: graph.v1.SnapshotEdge.hlc:type_name -> graph.v1.HLCTimestamp
+	9,  // 22: graph.v1.SnapshotEdge.contributions:type_name -> graph.v1.SnapshotEdgeContribution
+	6,  // 23: graph.v1.SnapshotResponse.header:type_name -> graph.v1.SnapshotHeader
+	8,  // 24: graph.v1.SnapshotResponse.vertex:type_name -> graph.v1.SnapshotVertex
+	10, // 25: graph.v1.SnapshotResponse.edge:type_name -> graph.v1.SnapshotEdge
+	7,  // 26: graph.v1.SnapshotResponse.footer:type_name -> graph.v1.SnapshotFooter
+	0,  // 27: graph.v1.OriginState.last_hlc:type_name -> graph.v1.HLCTimestamp
+	13, // 28: graph.v1.PeerStatusResponse.origins:type_name -> graph.v1.OriginState
+	3,  // 29: graph.v1.LanternReplicationService.Subscribe:input_type -> graph.v1.SubscribeRequest
+	5,  // 30: graph.v1.LanternReplicationService.Snapshot:input_type -> graph.v1.SnapshotRequest
+	12, // 31: graph.v1.LanternReplicationService.PeerStatus:input_type -> graph.v1.PeerStatusRequest
+	4,  // 32: graph.v1.LanternReplicationService.Subscribe:output_type -> graph.v1.SubscribeResponse
+	11, // 33: graph.v1.LanternReplicationService.Snapshot:output_type -> graph.v1.SnapshotResponse
+	14, // 34: graph.v1.LanternReplicationService.PeerStatus:output_type -> graph.v1.PeerStatusResponse
+	32, // [32:35] is the sub-list for method output_type
+	29, // [29:32] is the sub-list for method input_type
+	29, // [29:29] is the sub-list for extension type_name
+	29, // [29:29] is the sub-list for extension extendee
+	0,  // [0:29] is the sub-list for field type_name
 }
 
 func init() { file_graph_v1_replication_proto_init() }
@@ -1363,6 +1382,7 @@ func file_graph_v1_replication_proto_init() {
 		(*MutationOp_PutEdges)(nil),
 		(*MutationOp_DeleteEdge)(nil),
 		(*MutationOp_DeleteEdges)(nil),
+		(*MutationOp_DeleteEdgesByPrefix)(nil),
 	}
 	file_graph_v1_replication_proto_msgTypes[11].OneofWrappers = []any{
 		(*SnapshotResponse_Header)(nil),

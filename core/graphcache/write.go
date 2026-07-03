@@ -18,15 +18,17 @@ func (c *GraphCache[S, T]) addEdgeLocked(tail, head S, w float32, expiration tim
 // addEdgeContribLocked applies additive edge semantics with optional
 // contribution dedup. The defensive created-without-applied branch preserves
 // side-index correctness if edgeCache's current "new bucket always applies"
-// invariant ever changes. Caller must hold c.mu.
-func (c *GraphCache[S, T]) addEdgeContribLocked(tail, head S, w float32, expiration time.Time, contribID ContribID) bool {
+// invariant ever changes. It returns the dedup result plus the post-apply live
+// weight sum (#897; on a dedup no-op, the current live sum). `now` supplies the
+// liveness clock. Caller must hold c.mu.
+func (c *GraphCache[S, T]) addEdgeContribLocked(tail, head S, w float32, expiration time.Time, contribID ContribID, now time.Time) (applied bool, effective float32) {
 	c.ensureVertexLocked(tail, expiration)
 	c.ensureVertexLocked(head, expiration)
-	created, tailID, headID, applied := c.edges.addWithExpirationContrib(tail, head, w, expiration, contribID)
+	created, tailID, headID, applied, effective := c.edges.addWithExpirationContribAt(tail, head, w, expiration, contribID, now)
 	if applied || created {
 		c.onEdgeAddedLocked(created, tailID, headID, head)
 	}
-	return applied
+	return applied, effective
 }
 
 // tryAddExistingEdgeContrib is the lock-free hot path for additive writes to
@@ -51,20 +53,23 @@ func (c *GraphCache[S, T]) addEdgeContribLocked(tail, head S, w float32, expirat
 // onEdgeAddedLocked is a no-op when the bucket already exists (created=false).
 // pinBoth holds a refcount on each endpoint for the duration of the append so
 // a concurrent DeleteEdge + vertex flush cannot free and recycle an id under
-// us — see dictionary.pinBoth and edgeCache.addExistingContribByID.
-func (c *GraphCache[S, T]) tryAddExistingEdgeContrib(tail, head S, w float32, expiration time.Time, contribID ContribID) (applied, ok bool) {
+// us — see dictionary.pinBoth and edgeCache.addExistingContribByIDAt.
+//
+// `now` supplies the liveness clock and effective returns the post-apply live
+// weight sum (#897).
+func (c *GraphCache[S, T]) tryAddExistingEdgeContrib(tail, head S, w float32, expiration time.Time, contribID ContribID, now time.Time) (applied bool, effective float32, ok bool) {
 	if c.dict == nil {
-		return false, false
+		return false, 0, false
 	}
 	tailID, headID, release, pinned := c.dict.pinBoth(tail, head)
 	if !pinned {
-		return false, false
+		return false, 0, false
 	}
 	defer release()
 	if !c.vertices.Has(tail) || !c.vertices.Has(head) {
-		return false, false
+		return false, 0, false
 	}
-	return c.edges.addExistingContribByID(tailID, headID, w, expiration, contribID)
+	return c.edges.addExistingContribByIDAt(tailID, headID, w, expiration, contribID, now)
 }
 
 // putEdgeLocked atomically replaces one edge under the caller's aggregate

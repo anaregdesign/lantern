@@ -82,6 +82,78 @@ func TestScanVertices_RejectsBadCursor(t *testing.T) {
 	}
 }
 
+// TestScanVertices_DescendingOrder pins descending scans (#898): results come
+// back high-to-low and pagination walks the range from the top, with the
+// concatenated pages equal to the ascending set reversed.
+func TestScanVertices_DescendingOrder(t *testing.T) {
+	fb := newFakeBackend()
+	for _, k := range []string{"users/1", "users/2", "users/3", "orders/1"} {
+		fb.vertices[k] = &pb.Vertex{Key: k, Value: &pb.Vertex_String_{String_: k}}
+	}
+	svc := NewLanternService(fb)
+	ctx := context.Background()
+
+	r1, err := svc.ScanVertices(ctx, &pb.ScanVerticesRequest{Prefix: "users/", Limit: 2, Order: pb.ScanOrder_SCAN_ORDER_DESC})
+	if err != nil {
+		t.Fatalf("ScanVertices desc: %v", err)
+	}
+	if got := []string{r1.Vertices[0].Key, r1.Vertices[1].Key}; got[0] != "users/3" || got[1] != "users/2" {
+		t.Fatalf("desc page1 = %v, want [users/3 users/2]", got)
+	}
+	if len(r1.NextCursor) == 0 {
+		t.Fatalf("expected next_cursor on descending page1")
+	}
+	r2, err := svc.ScanVertices(ctx, &pb.ScanVerticesRequest{Prefix: "users/", Limit: 2, Order: pb.ScanOrder_SCAN_ORDER_DESC, Cursor: r1.NextCursor})
+	if err != nil {
+		t.Fatalf("ScanVertices desc page2: %v", err)
+	}
+	if len(r2.Vertices) != 1 || r2.Vertices[0].Key != "users/1" {
+		t.Fatalf("desc page2 = %v, want [users/1]", r2.Vertices)
+	}
+	if len(r2.NextCursor) != 0 {
+		t.Errorf("expected empty next_cursor on final descending page, got %q", r2.NextCursor)
+	}
+}
+
+// TestScanVertices_OrderBoundCursor pins the order-binding rule (#898): a
+// cursor minted by an ascending scan is rejected when replayed under a
+// descending scan and vice versa, since its resume key means opposite things
+// in the two directions.
+func TestScanVertices_OrderBoundCursor(t *testing.T) {
+	fb := newFakeBackend()
+	for _, k := range []string{"users/1", "users/2", "users/3", "users/4"} {
+		fb.vertices[k] = &pb.Vertex{Key: k, Value: &pb.Vertex_String_{String_: k}}
+	}
+	svc := NewLanternService(fb)
+	ctx := context.Background()
+
+	asc, err := svc.ScanVertices(ctx, &pb.ScanVerticesRequest{Prefix: "users/", Limit: 2})
+	if err != nil || len(asc.NextCursor) == 0 {
+		t.Fatalf("setup asc scan: err=%v cursor=%d", err, len(asc.NextCursor))
+	}
+	if _, err := svc.ScanVertices(ctx, &pb.ScanVerticesRequest{Prefix: "users/", Limit: 2, Order: pb.ScanOrder_SCAN_ORDER_DESC, Cursor: asc.NextCursor}); err == nil {
+		t.Errorf("descending scan accepted an ascending cursor; want InvalidArgument")
+	} else if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Errorf("order mismatch code = %v, want InvalidArgument", connect.CodeOf(err))
+	}
+
+	desc, err := svc.ScanVertices(ctx, &pb.ScanVerticesRequest{Prefix: "users/", Limit: 2, Order: pb.ScanOrder_SCAN_ORDER_DESC})
+	if err != nil || len(desc.NextCursor) == 0 {
+		t.Fatalf("setup desc scan: err=%v cursor=%d", err, len(desc.NextCursor))
+	}
+	if _, err := svc.ScanVertices(ctx, &pb.ScanVerticesRequest{Prefix: "users/", Limit: 2, Cursor: desc.NextCursor}); err == nil {
+		t.Errorf("ascending scan accepted a descending cursor; want InvalidArgument")
+	} else if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Errorf("order mismatch code = %v, want InvalidArgument", connect.CodeOf(err))
+	}
+
+	// An explicit SCAN_ORDER_ASC request must still accept a default
+	// (unspecified-order) cursor — both normalise to ascending.
+	if _, err := svc.ScanVertices(ctx, &pb.ScanVerticesRequest{Prefix: "users/", Limit: 2, Order: pb.ScanOrder_SCAN_ORDER_ASC, Cursor: asc.NextCursor}); err != nil {
+		t.Errorf("explicit-ASC scan rejected a default-order cursor: %v", err)
+	}
+}
+
 // TestScanVertexKeys pins the keys-only prefix scan (#674): keys-only
 // pagination, the mandatory non-empty prefix, and the independent cursor
 // kind that must NOT interchange with ScanVertices in either direction.
@@ -142,6 +214,38 @@ func TestScanVertexKeys(t *testing.T) {
 		}
 		if _, err := svc.ScanVertices(ctx, &pb.ScanVerticesRequest{Prefix: "users/", Limit: 1, Cursor: rk.NextCursor}); err == nil {
 			t.Errorf("ScanVertices accepted a ScanVertexKeys cursor; want rejection")
+		}
+	})
+
+	t.Run("DescendingOrder", func(t *testing.T) {
+		r1, err := svc.ScanVertexKeys(ctx, &pb.ScanVertexKeysRequest{Prefix: "users/", Limit: 2, Order: pb.ScanOrder_SCAN_ORDER_DESC})
+		if err != nil {
+			t.Fatalf("ScanVertexKeys desc: %v", err)
+		}
+		if want := []string{"users/3", "users/2"}; !slices.Equal(r1.Keys, want) {
+			t.Fatalf("desc page1 = %v, want %v", r1.Keys, want)
+		}
+		if len(r1.NextCursor) == 0 {
+			t.Fatalf("expected next_cursor on descending page1")
+		}
+		r2, err := svc.ScanVertexKeys(ctx, &pb.ScanVertexKeysRequest{Prefix: "users/", Limit: 2, Order: pb.ScanOrder_SCAN_ORDER_DESC, Cursor: r1.NextCursor})
+		if err != nil {
+			t.Fatalf("ScanVertexKeys desc page2: %v", err)
+		}
+		if want := []string{"users/1"}; !slices.Equal(r2.Keys, want) {
+			t.Errorf("desc page2 = %v, want %v", r2.Keys, want)
+		}
+	})
+
+	t.Run("OrderBoundCursor", func(t *testing.T) {
+		asc, err := svc.ScanVertexKeys(ctx, &pb.ScanVertexKeysRequest{Prefix: "users/", Limit: 1})
+		if err != nil || len(asc.NextCursor) == 0 {
+			t.Fatalf("setup asc: err=%v cursor=%d", err, len(asc.NextCursor))
+		}
+		if _, err := svc.ScanVertexKeys(ctx, &pb.ScanVertexKeysRequest{Prefix: "users/", Limit: 1, Order: pb.ScanOrder_SCAN_ORDER_DESC, Cursor: asc.NextCursor}); err == nil {
+			t.Errorf("descending keys scan accepted an ascending cursor; want InvalidArgument")
+		} else if connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Errorf("order mismatch code = %v, want InvalidArgument", connect.CodeOf(err))
 		}
 	})
 }
@@ -205,9 +309,98 @@ func TestDeleteVerticesByPrefix_DryRunAndReal(t *testing.T) {
 	}
 }
 
+// TestDeleteEdgesByPrefix_ValidationDryRunAndReal covers the #899 handler:
+// the whole-graph-wipe guard (both prefixes empty -> InvalidArgument + reject
+// hook), the non-mutating dry run (count only, capped by limit), and the real
+// delete (mutates and reports the count).
+func TestDeleteEdgesByPrefix_ValidationDryRunAndReal(t *testing.T) {
+	seed := func() *fakeBackend {
+		fb := newFakeBackend()
+		fb.edges = map[string]map[string]float32{
+			"user:1":  {"post:10": 1, "post:11": 1, "session:a": 1},
+			"user:2":  {"post:20": 1, "session:b": 1},
+			"admin:1": {"post:99": 1},
+		}
+		return fb
+	}
+	limits := ScanLimits{
+		DeleteByPrefixDefaultLimit: 100, DeleteByPrefixMaxLimit: 1000,
+		ScanDefaultLimit: 100, ScanMaxLimit: 100,
+	}
+	ctx := context.Background()
+
+	// Both prefixes empty is rejected and fires the validation hook.
+	{
+		var reasons []string
+		svc := NewLanternService(seed()).
+			WithScanLimits(limits).
+			WithValidationRejectHook(func(r string) { reasons = append(reasons, r) })
+		_, err := svc.DeleteEdgesByPrefix(ctx, &pb.DeleteEdgesByPrefixRequest{})
+		if err == nil {
+			t.Fatal("both-empty prefix: expected error")
+		}
+		if connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Fatalf("both-empty prefix: code = %v, want InvalidArgument", connect.CodeOf(err))
+		}
+		if len(reasons) != 1 || reasons[0] != "empty_edge_prefix" {
+			t.Fatalf("reject hook = %v, want [empty_edge_prefix]", reasons)
+		}
+	}
+
+	// Dry run counts the tail-scoped matches without mutating.
+	{
+		fb := seed()
+		svc := NewLanternService(fb).WithScanLimits(limits)
+		dr, err := svc.DeleteEdgesByPrefix(ctx, &pb.DeleteEdgesByPrefixRequest{TailPrefix: "user:", DryRun: true})
+		if err != nil {
+			t.Fatalf("dry run: %v", err)
+		}
+		if dr.Deleted != 5 {
+			t.Errorf("dry deleted = %d, want 5", dr.Deleted)
+		}
+		total := 0
+		for _, hs := range fb.edges {
+			total += len(hs)
+		}
+		if total != 6 {
+			t.Errorf("dry run mutated edges: %d remain, want 6", total)
+		}
+	}
+
+	// Dry run is capped by limit.
+	{
+		svc := NewLanternService(seed()).WithScanLimits(limits)
+		dr, err := svc.DeleteEdgesByPrefix(ctx, &pb.DeleteEdgesByPrefixRequest{TailPrefix: "user:", DryRun: true, Limit: 2})
+		if err != nil {
+			t.Fatalf("dry run capped: %v", err)
+		}
+		if dr.Deleted != 2 {
+			t.Errorf("dry capped deleted = %d, want 2", dr.Deleted)
+		}
+	}
+
+	// Real delete with tail+head intersection removes exactly the matches.
+	{
+		fb := seed()
+		svc := NewLanternService(fb).WithScanLimits(limits)
+		r, err := svc.DeleteEdgesByPrefix(ctx, &pb.DeleteEdgesByPrefixRequest{TailPrefix: "user:", HeadPrefix: "post:"})
+		if err != nil {
+			t.Fatalf("real delete: %v", err)
+		}
+		if r.Deleted != 3 {
+			t.Errorf("deleted = %d, want 3", r.Deleted)
+		}
+		total := 0
+		for _, hs := range fb.edges {
+			total += len(hs)
+		}
+		if total != 3 {
+			t.Errorf("after delete: %d edges remain, want 3", total)
+		}
+	}
+}
+
 // TestScan_BadCursorFiresValidationRejectHook covers the #222
-// bad_cursor hook fires from both ScanVertices and ScanEdges when the
-// caller passes a malformed cursor.
 func TestScan_BadCursorFiresValidationRejectHook(t *testing.T) {
 	fb := newFakeBackend()
 	var got []string

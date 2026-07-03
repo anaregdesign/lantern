@@ -163,24 +163,35 @@ func (f *fakeLantern) PutVertices(ctx context.Context, inputs []client.VertexInp
 	return nil
 }
 
-func (f *fakeLantern) AddEdges(ctx context.Context, inputs []client.EdgeInput) error {
+func (f *fakeLantern) AddEdges(ctx context.Context, inputs []client.EdgeInput) ([]float32, error) {
 	f.lastAddEdges = inputs
 	if f.addEdgesFn != nil {
-		return f.addEdgesFn(ctx, inputs)
+		if err := f.addEdgesFn(ctx, inputs); err != nil {
+			return nil, err
+		}
 	}
-	return nil
+	eff := make([]float32, len(inputs))
+	for i, in := range inputs {
+		eff[i] = in.Weight
+	}
+	return eff, nil
 }
 
-func (f *fakeLantern) AddEdge(ctx context.Context, tail, head string, weight float32, ttl time.Duration) error {
+func (f *fakeLantern) AddEdge(ctx context.Context, tail, head string, weight float32, ttl time.Duration) (float32, error) {
 	f.addEdgeCalls++
 	f.lastEdgeTail = tail
 	f.lastEdgeHead = head
 	f.lastEdgeWeight = weight
 	f.lastEdgeTTL = ttl
 	if f.addEdgeFn != nil {
-		return f.addEdgeFn(ctx, tail, head, weight, ttl)
+		if err := f.addEdgeFn(ctx, tail, head, weight, ttl); err != nil {
+			return 0, err
+		}
 	}
-	return f.addEdgeErr
+	if f.addEdgeErr != nil {
+		return 0, f.addEdgeErr
+	}
+	return weight, nil
 }
 
 func (f *fakeLantern) GetEdge(ctx context.Context, tail, head string) (*client.Edge, error) {

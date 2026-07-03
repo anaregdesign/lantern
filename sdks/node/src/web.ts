@@ -57,6 +57,7 @@ export {
 export type {
   ConnectOptions,
   DeleteByPrefixOptions,
+  DeleteEdgesByPrefixOptions,
   EdgeScanOptions,
   IlluminateOptions,
   MatchMode,

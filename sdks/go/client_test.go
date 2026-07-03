@@ -180,7 +180,7 @@ func TestAddContribIDWiring(t *testing.T) {
 
 	t.Run("default sends no contrib_ids (AddEdge)", func(t *testing.T) {
 		l, capt := newClient(t)
-		if err := l.AddEdge(context.Background(), "a", "b", 1, 0); err != nil {
+		if _, err := l.AddEdge(context.Background(), "a", "b", 1, 0); err != nil {
 			t.Fatalf("AddEdge: %v", err)
 		}
 		if len(capt.reqs) != 1 {
@@ -193,7 +193,7 @@ func TestAddContribIDWiring(t *testing.T) {
 
 	t.Run("WithIdempotentAdds stamps one key (AddEdge)", func(t *testing.T) {
 		l, capt := newClient(t, WithIdempotentAdds())
-		if err := l.AddEdge(context.Background(), "a", "b", 1, 0); err != nil {
+		if _, err := l.AddEdge(context.Background(), "a", "b", 1, 0); err != nil {
 			t.Fatalf("AddEdge: %v", err)
 		}
 		ids := capt.reqs[0].GetContribIds()
@@ -212,7 +212,7 @@ func TestAddContribIDWiring(t *testing.T) {
 			{Tail: "c", Head: "d", Weight: 1},
 			{Tail: "e", Head: "f", Weight: 1},
 		}
-		if err := l.AddEdges(context.Background(), inputs); err != nil {
+		if _, err := l.AddEdges(context.Background(), inputs); err != nil {
 			t.Fatalf("AddEdges: %v", err)
 		}
 		if len(capt.reqs) != 2 {
@@ -238,7 +238,7 @@ func TestAddContribIDWiring(t *testing.T) {
 
 	t.Run("default sends no contrib_ids (AddEdges)", func(t *testing.T) {
 		l, capt := newClient(t)
-		if err := l.AddEdges(context.Background(), []EdgeInput{{Tail: "a", Head: "b", Weight: 1}}); err != nil {
+		if _, err := l.AddEdges(context.Background(), []EdgeInput{{Tail: "a", Head: "b", Weight: 1}}); err != nil {
 			t.Fatalf("AddEdges: %v", err)
 		}
 		if got := capt.reqs[0].GetContribIds(); got != nil {

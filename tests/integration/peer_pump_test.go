@@ -146,7 +146,7 @@ func TestPeerPump_E2E_ThreeNodeConvergence(t *testing.T) {
 	if err := a.sdk.PutVertex(ctx, "from-a", "va", time.Minute); err != nil {
 		t.Fatalf("a.PutVertex: %v", err)
 	}
-	if err := a.sdk.AddEdge(ctx, "from-a", "target", 1.5, time.Minute); err != nil {
+	if _, err := a.sdk.AddEdge(ctx, "from-a", "target", 1.5, time.Minute); err != nil {
 		t.Fatalf("a.AddEdge: %v", err)
 	}
 

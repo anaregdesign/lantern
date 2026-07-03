@@ -22,6 +22,17 @@ type Backend interface {
 	// vertex reads/writes
 	GetVertex(key string) (*pb.Vertex, bool)
 	PutVerticesWithExpiration(items []graphcache.VertexItem[string, *pb.Vertex])
+	// PutVerticesWithExpirationIfAbsent writes each vertex only when no live
+	// vertex exists at its key (SET NX, #896). It returns the number written
+	// and the keys skipped because a live vertex already existed. Used by the
+	// LOCAL write path when replication is off (clock nil).
+	PutVerticesWithExpirationIfAbsent(items []graphcache.VertexItem[string, *pb.Vertex]) (written int, skipped []string)
+	// PutVerticesWithExpirationIfAbsentHLC is the replication-aware sibling:
+	// it stamps each accepted write with ts so the origin participates in LWW,
+	// and returns the request-order indices of items that passed the absence
+	// check (so the caller can replicate only that subset) plus the skipped
+	// keys. Used when replication is enabled (clock non-nil).
+	PutVerticesWithExpirationIfAbsentHLC(items []graphcache.VertexItem[string, *pb.Vertex], ts hlc.Timestamp) (writtenIdx []int, skipped []string)
 	DeleteVertices(keys []string) int
 
 	// edge reads/writes
@@ -29,10 +40,11 @@ type Backend interface {
 	AddEdgesWithExpiration(items []graphcache.EdgeItem[string])
 	// AddEdgesWithExpirationContrib is the dedup-aware batch sibling of
 	// AddEdgesWithExpiration: a per-item non-zero ContribID makes that
-	// contribution idempotent (a retried batch is an exact no-op). Returns
-	// the count of items suppressed by a matching live ContribID. Items
-	// with a zero ContribID keep legacy additive semantics.
-	AddEdgesWithExpirationContrib(items []graphcache.EdgeItem[string]) int
+	// contribution idempotent (a retried batch is an exact no-op). It
+	// returns, index-aligned with items, the post-apply LIVE weight sum for
+	// each edge (#897) plus the count of items suppressed by a matching live
+	// ContribID. Items with a zero ContribID keep legacy additive semantics.
+	AddEdgesWithExpirationContrib(items []graphcache.EdgeItem[string]) (effective []float32, deduped int)
 	PutEdgesWithExpiration(items []graphcache.EdgeItem[string])
 	DeleteEdges(keys []graphcache.EdgeKey[string]) int
 
@@ -63,8 +75,9 @@ type Backend interface {
 	// local path keeps using the non-HLC PutVerticesWithExpiration /
 	// PutEdgesWithExpiration / AddEdgesWithExpirationContrib when replication
 	// is off (clock nil) so non-replicated workloads pay nothing.
-	// AddEdgesWithExpirationContribHLC returns the count of items that added
-	// no weight (tombstone-dropped or ContribID-deduped).
+	// AddEdgesWithExpirationContribHLC returns, index-aligned with items, the
+	// post-apply LIVE weight sum for each edge (#897) plus the count of items
+	// that added no weight (tombstone-dropped or ContribID-deduped).
 	//
 	// Since #840 these batch methods also serve the replication apply path
 	// (ApplyMutation), which previously looped the singular HLC methods. The
@@ -74,7 +87,7 @@ type Backend interface {
 	// per rejected item with unchanged meaning.
 	PutVerticesWithExpirationHLC(items []graphcache.VertexItem[string, *pb.Vertex], ts hlc.Timestamp) int
 	PutEdgesWithExpirationHLC(items []graphcache.EdgeItem[string], ts hlc.Timestamp) int
-	AddEdgesWithExpirationContribHLC(items []graphcache.EdgeItem[string], ts hlc.Timestamp) int
+	AddEdgesWithExpirationContribHLC(items []graphcache.EdgeItem[string], ts hlc.Timestamp) (effective []float32, deduped int)
 
 	// tombstone-aware Delete*/Add* entry points used by ApplyMutation
 	// when LANTERN_TOMBSTONE_TTL is configured (#183). DeleteVertexHLC,
@@ -90,6 +103,7 @@ type Backend interface {
 	DeleteEdgeHLC(tail, head string, ts hlc.Timestamp, expiration time.Time) bool
 	DeleteEdgesHLC(keys []graphcache.EdgeKey[string], ts hlc.Timestamp, expiration time.Time) int
 	DeleteByPrefixHLC(ctx context.Context, prefix string, limit uint32, ts hlc.Timestamp, expiration time.Time) (int, error)
+	DeleteEdgesByPrefixHLC(ctx context.Context, tailPrefix, headPrefix string, limit int, ts hlc.Timestamp, expiration time.Time) (int, error)
 
 	// neighborhood traversal. selectSmallest steers the per-hop top-k
 	// pruning: the k smallest-weight edges are kept when true, the k
@@ -151,15 +165,27 @@ type Backend interface {
 
 	// prefix scan / count / delete. ScanByPrefixPage (#836) invokes fn for
 	// each live vertex whose key starts with prefix AND sorts strictly
-	// after `after`, in lexicographic order, up to limit rows (limit <= 0
-	// = unbounded); fn returns false to stop early. more reports whether
-	// further matches exist past the page — the handler's next-cursor
-	// signal. CountByPrefix counts only live matching vertices.
+	// after `after` (ascending) or strictly before it (descending, #898),
+	// in the requested key order, up to limit rows (limit <= 0
+	// = unbounded); fn returns false to stop early. desc selects reverse
+	// lexicographic order; in descending mode `after` is the previous
+	// page's smallest key and the walk resumes strictly below it. more
+	// reports whether further matches exist past the page — the handler's
+	// next-cursor signal. CountByPrefix counts only live matching vertices.
 	// DeleteByPrefix removes matching vertices up to limit (limit <= 0
 	// means unlimited) and returns how many were deleted.
-	ScanByPrefixPage(ctx context.Context, prefix, after string, limit int, fn func(projected string, key string, value *pb.Vertex) bool) (more, ok bool)
+	ScanByPrefixPage(ctx context.Context, prefix, after string, limit int, desc bool, fn func(projected string, key string, value *pb.Vertex) bool) (more, ok bool)
 	CountByPrefix(prefix string) int
 	DeleteByPrefix(ctx context.Context, prefix string, limit int) int
+
+	// TopVerticesByDegree ranks the live vertices whose key starts with
+	// prefix by their degree in dir and returns the top k in descending
+	// order of the ranking metric (weighted edge-weight sum when weighted,
+	// else live edge count). k <= 0 returns nil. Counts honour the
+	// live-visibility rule (#750) and are point-in-time best-effort (#900).
+	// The handler enforces the non-empty-prefix guard and the k clamp; this
+	// method imposes neither.
+	TopVerticesByDegree(prefix string, k int, dir graphcache.DegreeDirection, weighted bool) []graphcache.DegreeEntry[string]
 
 	// SearchVertices returns vertices ranked by full-text relevance over
 	// their indexed content, optionally scoped to keyPrefix, capped at
@@ -177,9 +203,12 @@ type Backend interface {
 	// strictly after the (afterTail, afterHead) pair and collecting at
 	// most limit rows (limit <= 0 = unbounded). Either prefix may be
 	// empty to disable the corresponding filter. more mirrors
-	// ScanByPrefixPage. Plural-only on the wire (no CountEdges /
-	// DeleteEdgesByPrefix in this phase).
+	// ScanByPrefixPage. DeleteEdgesByPrefix (#899) removes matching edges
+	// up to limit (limit <= 0 = unbounded) and returns how many were
+	// deleted; the whole-graph-wipe guard (at least one prefix non-empty)
+	// is enforced by the handler, not here.
 	ScanEdgesByPrefixPage(ctx context.Context, tailPrefix, headPrefix, afterTail, afterHead string, limit int, fn func(tailProjected string, tail string, headProjected string, head string, weight float32, expiration time.Time) bool) (more, ok bool)
+	DeleteEdgesByPrefix(ctx context.Context, tailPrefix, headPrefix string, limit int) int
 
 	// background GC loop driven by LanternServer.
 	Watch(ctx context.Context, interval time.Duration)

@@ -228,22 +228,34 @@ message GetVerticesResponse {
 // PutVertices and shares its guard rails.
 message PutVertexRequest {
   Vertex vertex = 1;
+  // When true, the write applies only if no live vertex exists at the key.
+  // An existing live vertex leaves value and expiration untouched (SET NX).
+  bool if_absent = 2;
 }
 
-message PutVertexResponse {}
+message PutVertexResponse {
+  // True when the write was applied; false when if_absent skipped it because
+  // a live vertex already existed. Always true for an unconditional put.
+  bool written = 1;
+}
 
 // PutVerticesRequest writes vertices with upsert semantics: each Vertex.key
 // replaces any existing value at that key. Use the Vertex.expiration field
 // (absolute time) to control TTL.
 message PutVerticesRequest {
   repeated Vertex vertices = 1;
+  // When true, each write applies only if no live vertex exists at its key;
+  // keys with a live vertex are left untouched and reported in
+  // PutVerticesResponse.skipped_keys.
+  bool if_absent = 2;
 }
 
 message PutVerticesResponse {
-  // Number of vertices accepted by the server. Currently always equals the
-  // request size on success; reserved for future per-item validation that may
-  // report partial writes.
+  // Number of vertices actually written. For an unconditional put this equals
+  // the request size on success; under if_absent it excludes skipped keys.
   int32 written = 1;
+  // Keys skipped because a live vertex already existed (if_absent only).
+  repeated string skipped_keys = 2;
 }
 
 // DeleteVertexRequest removes the vertex at `key`. Edges incident to the
@@ -271,6 +283,17 @@ message DeleteVerticesResponse {
   int32 deleted = 1;
 }
 
+// ScanOrder selects the key order a ScanVertices / ScanVertexKeys page walks
+// (#898). SCAN_ORDER_UNSPECIFIED preserves the historical behavior (ascending)
+// so an unset field is a no-op. DESC walks the same prefix range from the high
+// end, so "give me the newest N" on a timestamp-ordered keyspace is a single
+// bounded page instead of a full-prefix scan-then-sort.
+enum ScanOrder {
+  SCAN_ORDER_UNSPECIFIED = 0; // = ASC (historical default)
+  SCAN_ORDER_ASC = 1;
+  SCAN_ORDER_DESC = 2;
+}
+
 // ScanVerticesRequest streams vertices whose key starts with `prefix` in
 // lexicographic order. `limit` caps the number returned in one call; the
 // server enforces a default when `limit == 0` and a hard maximum (see
@@ -284,10 +307,16 @@ message ScanVerticesRequest {
   // other Scan* RPCs (e.g. ScanEdges). Cross-feeding is rejected with
   // INVALID_ARGUMENT rather than silently restarting the scan.
   bytes cursor = 3;
+  // order selects ascending (default) or descending key order. The cursor
+  // is order-bound: a next_cursor minted by an ascending page is rejected
+  // with INVALID_ARGUMENT if fed back into a descending scan (and vice
+  // versa), matching the cross-RPC cursor-rejection precedent.
+  ScanOrder order = 4;
 }
 
 message ScanVerticesResponse {
-  // vertices returned in ascending key order. May be shorter than `limit`
+  // vertices returned in the requested key order (ascending by default,
+  // descending when order = SCAN_ORDER_DESC). May be shorter than `limit`
   // when the underlying range is exhausted.
   repeated Vertex vertices = 1;
   // next_cursor is non-empty when more results are available. An empty
@@ -316,11 +345,15 @@ message ScanVertexKeysRequest {
   // Cross-feeding is rejected with INVALID_ARGUMENT. An empty cursor starts
   // from the beginning.
   bytes cursor = 3;
+  // order selects ascending (default) or descending key order, with the
+  // same order-bound cursor rule as ScanVertices.
+  ScanOrder order = 4;
 }
 
 message ScanVertexKeysResponse {
-  // keys returned in ascending lexicographic order. May be shorter than
-  // `limit` when the underlying range is exhausted.
+  // keys returned in the requested order (ascending by default, descending
+  // when order = SCAN_ORDER_DESC). May be shorter than `limit` when the
+  // underlying range is exhausted.
   repeated string keys = 1;
   // next_cursor is non-empty when more results are available. An empty
   // value signals end of stream.
@@ -432,6 +465,56 @@ message DeleteVerticesByPrefixResponse {
   uint64 deleted = 1;
 }
 
+// TopVerticesByDegreeRequest ranks the most-connected vertices under a key
+// prefix by their (weighted) degree — the seed-selection question a cold-start
+// visualization or recommendation front end hits when it has no better anchor
+// (#900). It exposes the degree index the store already maintains for BM25
+// edge weighting rather than shipping the whole subgraph over the wire.
+message TopVerticesByDegreeRequest {
+  // prefix is required and must be non-empty: there is no whole-graph ranking
+  // (an empty prefix is rejected with INVALID_ARGUMENT). Only vertices whose
+  // key starts with prefix are candidates.
+  string prefix = 1;
+  // k caps the number of ranked entries returned. 0 lets the server apply its
+  // configured default; the server also clamps k to a hard cap (see
+  // ScanConfig), mirroring the scan `limit` knobs.
+  uint32 k = 2;
+
+  // Direction selects which incident edges count toward a vertex's degree.
+  enum Direction {
+    // DIRECTION_UNSPECIFIED defaults to out-degree server-side.
+    DIRECTION_UNSPECIFIED = 0;
+    // DIRECTION_OUT counts edges leaving the vertex (the vertex as tail).
+    DIRECTION_OUT = 1;
+    // DIRECTION_IN counts edges entering the vertex (the vertex as head).
+    DIRECTION_IN = 2;
+    // DIRECTION_BOTH counts edges in either direction (out-degree +
+    // in-degree; a self-loop counts twice).
+    DIRECTION_BOTH = 3;
+  }
+  Direction direction = 3;
+
+  // weighted ranks by the summed live edge weight in the chosen direction
+  // instead of the raw live edge count.
+  bool weighted = 4;
+}
+
+// TopVerticesByDegreeResponse lists the ranked vertices in descending order of
+// the chosen metric (weighted_degree when the request set `weighted`, else
+// degree). Counts follow the live-visibility rule (#750): expired vertices and
+// fully decayed edges do not contribute. Results are point-in-time
+// best-effort, like GetServerStatus counts.
+message TopVerticesByDegreeResponse {
+  message Entry {
+    string key = 1;
+    // degree is the live edge count in the chosen direction.
+    uint64 degree = 2;
+    // weighted_degree is the summed live edge weight in the chosen direction.
+    double weighted_degree = 3;
+  }
+  repeated Entry entries = 1;
+}
+
 message GetEdgeRequest {
   string tail = 1;
   string head = 2;
@@ -517,6 +600,32 @@ message DeleteEdgesResponse {
   int32 deleted = 1;
 }
 
+// DeleteEdgesByPrefixRequest deletes up to `limit` live edges whose tail key
+// starts with `tail_prefix` AND whose head key starts with `head_prefix`.
+// Either prefix may be empty to disable the corresponding filter, but at
+// least one MUST be non-empty — an all-empty request is rejected with
+// INVALID_ARGUMENT so a bulk edge wipe is always explicitly scoped. `limit ==
+// 0` lets the server apply its configured default (see ScanConfig); callers
+// loop on the returned `deleted` count until it reaches zero to drain a large
+// matching set. When `dry_run` is true, no deletion is performed and the
+// response reports the number that *would* be deleted (capped at the same
+// effective limit).
+//
+// Implementation note: like ScanEdges, v1 walks the tail-side prefix index
+// and applies `head_prefix` as a post-filter; a highly selective
+// `head_prefix` may visit many tails to reach `limit`. Latency is reported in
+// the standard scan histogram so operators can spot pathological filters.
+message DeleteEdgesByPrefixRequest {
+  string tail_prefix = 1;
+  string head_prefix = 2;
+  uint32 limit = 3;
+  bool dry_run = 4;
+}
+
+message DeleteEdgesByPrefixResponse {
+  uint64 deleted = 1;
+}
+
 // AddEdgeRequest accumulates weight onto a single (tail, head) pair: repeated
 // calls with the same endpoints sum their weights. This is the singular
 // convenience wrapper over AddEdges and shares its semantics.
@@ -534,7 +643,18 @@ message AddEdgeRequest {
   bytes contrib_id = 2;
 }
 
-message AddEdgeResponse {}
+message AddEdgeResponse {
+  // effective_weight is the sum of live contributions on (tail, head)
+  // immediately after applying (or, when contrib_id dedupes a replay, after
+  // observing) this request, as seen by the serving node. This turns AddEdge
+  // into a race-free increment-then-check counter: a caller writing
+  // weight=1 with a TTL reads back the rolling-window count in one round trip
+  // and can enforce a cap without a separate GetEdge. When contrib_id makes
+  // the add a no-op, this is the current live sum (the value a retry wants).
+  // Note: with replication enabled the value is the serving node's local view
+  // at apply time — the same async-replica caveat as a Redis INCR read.
+  float effective_weight = 1;
+}
 
 // AddEdgesRequest accumulates weight onto each (tail, head) pair: repeated
 // calls with the same endpoints sum their weights. Additive writes are
@@ -554,6 +674,12 @@ message AddEdgesRequest {
 message AddEdgesResponse {
   // Number of edges whose weight contributions were accepted.
   int32 written = 1;
+  // effective_weights is index-aligned with the request edges: entry i is the
+  // sum of live contributions on edges[i]'s (tail, head) immediately after
+  // applying (or deduping) it, as seen by the serving node. Empty only for an
+  // empty request. See AddEdgeResponse.effective_weight for the counter
+  // semantics and the replication caveat.
+  repeated float effective_weights = 2;
 }
 
 // PutEdgeRequest overwrites a single (tail, head) pair, replacing any
@@ -767,6 +893,12 @@ service LanternService {
   // without mutating state.
   rpc DeleteVerticesByPrefix(DeleteVerticesByPrefixRequest) returns (DeleteVerticesByPrefixResponse);
 
+  // TopVerticesByDegree ranks the most-connected live vertices under a key
+  // prefix by their (weighted) out/in/both degree. Read-only aggregate; a
+  // non-empty prefix is REQUIRED (empty → INVALID_ARGUMENT). Results are
+  // point-in-time best-effort and honour the live-visibility rule (#750).
+  rpc TopVerticesByDegree(TopVerticesByDegreeRequest) returns (TopVerticesByDegreeResponse);
+
   rpc GetEdge(GetEdgeRequest) returns (GetEdgeResponse);
 
   // GetEdges reads several edges in one round trip.
@@ -788,6 +920,13 @@ service LanternService {
 
   // DeleteEdges removes several edges in one round trip.
   rpc DeleteEdges(DeleteEdgesRequest) returns (DeleteEdgesResponse);
+
+  // DeleteEdgesByPrefix deletes up to `limit` live edges whose tail key
+  // starts with `tail_prefix` AND whose head key starts with `head_prefix`.
+  // At least one prefix must be non-empty. Pass `dry_run = true` to preview
+  // the count without mutating state. Plural-only — prefix delete is
+  // inherently plural.
+  rpc DeleteEdgesByPrefix(DeleteEdgesByPrefixRequest) returns (DeleteEdgesByPrefixResponse);
 
   // ScanEdges streams edges whose tail key starts with `tail_prefix` AND
   // whose head key starts with `head_prefix`, in ascending (tail, head)

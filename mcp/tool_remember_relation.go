@@ -55,7 +55,7 @@ func registerRememberRelation(srv *mcp.Server, lc lanternClient, r *ttl.Resolver
 			weight = 1
 		}
 		d, capped := r.ResolveCapped(bucket)
-		if err := lc.AddEdge(ctx, in.From, in.To, weight, d); err != nil {
+		if _, err := lc.AddEdge(ctx, in.From, in.To, weight, d); err != nil {
 			return nil, rememberRelationOutput{}, mapSDKError("remember_relation", err)
 		}
 		// Read the edge back so the agent sees the ACCUMULATED weight, not just

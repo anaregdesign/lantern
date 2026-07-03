@@ -19,7 +19,7 @@ func (c *GraphCache[S, T]) AddEdgeWithExpirationContribHLC(tail, head S, w float
 	if !c.edgeWriteAllowedLocked(tail, head, ts) {
 		return false
 	}
-	applied := c.addEdgeContribLocked(tail, head, w, expiration, contribID)
+	applied, _ := c.addEdgeContribLocked(tail, head, w, expiration, contribID, time.Now())
 	if applied {
 		c.clearEdgeTombstoneLocked(tail, head)
 	}

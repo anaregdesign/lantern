@@ -38,6 +38,7 @@ import {
   MatchMode as PbMatchMode,
   Objective as PbObjective,
   Reduction as PbReduction,
+  ScanOrder as PbScanOrder,
   Weighting as PbWeighting,
   VertexSchema,
   type GetReplicationStatusResponse,
@@ -70,6 +71,7 @@ import {
   type ConnectOptions,
   DEFAULT_BATCH_CHUNK_SIZE,
   type DeleteByPrefixOptions,
+  type DeleteEdgesByPrefixOptions,
   type EdgeScanOptions,
   type IlluminateOptions,
   type MatchMode,
@@ -81,6 +83,7 @@ import {
   type IncrementalSearch,
   type IncrementalSearchOptions,
 } from "./incremental-search.js";
+import { contribIdFrom, makeNonce, validateContribId } from "./contrib.js";
 
 /** Maps the SDK's string match mode onto the wire enum. */
 function toPbMatchMode(m: MatchMode | undefined): PbMatchMode {
@@ -92,6 +95,16 @@ function toPbMatchMode(m: MatchMode | undefined): PbMatchMode {
     default:
       return PbMatchMode.ANY;
   }
+}
+
+/**
+ * Maps the SDK scan order ("asc" | "desc" | undefined) to the wire ScanOrder
+ * enum (#898). Undefined and "asc" both send SCAN_ORDER_ASC so a paginated
+ * scan's order is explicit on every page and the server's order-bound cursor
+ * check has a concrete value to compare against.
+ */
+function toPbScanOrder(order: "asc" | "desc" | undefined): PbScanOrder {
+  return order === "desc" ? PbScanOrder.DESC : PbScanOrder.ASC;
 }
 
 /**
@@ -217,6 +230,10 @@ export { normaliseBaseUrl };
 export class Lantern {
   private readonly client: Client<typeof LanternService>;
   private readonly options: ConnectOptions;
+  /** Lazily-minted per-client nonce seeding automatic contrib IDs (#895). */
+  private nonce: Uint8Array | null = null;
+  /** Monotonic per-call sequence folded into automatic contrib IDs (#895). */
+  private callSeq = 0n;
 
   private constructor(client: Client<typeof LanternService>, options: ConnectOptions) {
     this.client = client;
@@ -277,6 +294,23 @@ export class Lantern {
     });
   }
 
+  /**
+   * Conditionally upserts a single vertex, applying the write only when no
+   * live vertex already exists at its key (SET NX, #896). Resolves to `true`
+   * when the write landed and `false` when an existing live vertex left the
+   * stored value and expiration untouched. "Live" follows the server's #750
+   * visibility rule, so an expired-but-uncollected vertex does not block the
+   * write. The server performs the existence check and the store atomically,
+   * closing the check-then-act race a getVertex-then-putVertex sequence has.
+   */
+  async putVertexIfAbsent(input: VertexInput, signal?: AbortSignal): Promise<boolean> {
+    const vertex = fromJson(VertexSchema, toVertexJson(input) as JsonValue);
+    return this.invoke(async () => {
+      const resp = await this.client.putVertex({ vertex, ifAbsent: true }, this.callOpts(signal));
+      return resp.written;
+    });
+  }
+
   async deleteVertex(key: string, signal?: AbortSignal): Promise<boolean> {
     return this.invoke(async () => {
       const resp = await this.client.deleteVertex({ key }, this.callOpts(signal));
@@ -309,6 +343,38 @@ export class Lantern {
     });
   }
 
+  /**
+   * Conditionally upserts a batch of vertices, applying each write only when
+   * no live vertex already exists at its key (SET NX, #896). Large batches are
+   * automatically chunked according to the client's batch-chunk size.
+   *
+   * Resolves to `written` — the number of vertices actually stored — and
+   * `skippedKeys` — the keys left untouched because a live vertex already
+   * existed there (summed/collected across chunks). "Live" follows the
+   * server's #750 visibility rule. Each key's existence check and store happen
+   * atomically server-side. On partial failure it throws a `BatchError` whose
+   * `written` field records the number of inputs in the fully committed
+   * chunks, so callers can resume with `inputs.slice(err.written)`.
+   */
+  async putVerticesIfAbsent(
+    inputs: readonly VertexInput[],
+    signal?: AbortSignal,
+  ): Promise<{ written: number; skippedKeys: string[] }> {
+    if (inputs.length === 0) return { written: 0, skippedKeys: [] };
+    let written = 0;
+    const skippedKeys: string[] = [];
+    await this.runBatchWrite(inputs, async (chunk) => {
+      const vertices = chunk.map((vi) => fromJson(VertexSchema, toVertexJson(vi) as JsonValue));
+      const resp = await this.client.putVertices(
+        { vertices, ifAbsent: true },
+        this.callOpts(signal),
+      );
+      written += resp.written;
+      for (const k of resp.skippedKeys) skippedKeys.push(k);
+    });
+    return { written, skippedKeys };
+  }
+
   async deleteVertices(keys: readonly string[], signal?: AbortSignal): Promise<number> {
     if (keys.length === 0) return 0;
     let total = 0;
@@ -330,6 +396,7 @@ export class Lantern {
           prefix,
           limit: opts.limit ?? 0,
           cursor: opts.cursor ?? new Uint8Array(),
+          order: toPbScanOrder(opts.order),
         },
         this.callOpts(signal),
       );
@@ -342,15 +409,26 @@ export class Lantern {
     });
   }
 
+  /**
+   * Async-iterable form of {@link scanVertices} that pages through the whole
+   * prefix range. `batchSize` is the per-call limit (0 = server default). Pass
+   * `order` ("asc" default, "desc" for high-to-low) to iterate the range in
+   * either direction (#898).
+   */
   async *scanVerticesAll(
     prefix: string,
     batchSize?: number,
     signal?: AbortSignal,
+    order?: "asc" | "desc",
   ): AsyncIterable<Vertex[]> {
     let cursor: Uint8Array = new Uint8Array();
     while (true) {
       if (signal?.aborted) throw new LanternError("scanVerticesAll aborted");
-      const page = await this.scanVertices(prefix, { limit: batchSize ?? 0, cursor }, signal);
+      const page = await this.scanVertices(
+        prefix,
+        { limit: batchSize ?? 0, cursor, order },
+        signal,
+      );
       yield page.vertices;
       if (page.nextCursor.length === 0) return;
       cursor = page.nextCursor;
@@ -378,6 +456,7 @@ export class Lantern {
           prefix,
           limit: opts.limit ?? 0,
           cursor: opts.cursor ?? new Uint8Array(),
+          order: toPbScanOrder(opts.order),
         },
         this.callOpts(signal),
       );
@@ -388,17 +467,23 @@ export class Lantern {
   /**
    * Async-iterable form of {@link scanVertexKeys} that pages through the
    * whole prefix range. `batchSize` is the per-call limit (0 = server
-   * default). A non-empty `prefix` is REQUIRED.
+   * default). A non-empty `prefix` is REQUIRED. Pass `order` ("asc" default,
+   * "desc" for high-to-low) to iterate the range in either direction (#898).
    */
   async *scanVertexKeysAll(
     prefix: string,
     batchSize?: number,
     signal?: AbortSignal,
+    order?: "asc" | "desc",
   ): AsyncIterable<string[]> {
     let cursor: Uint8Array = new Uint8Array();
     while (true) {
       if (signal?.aborted) throw new LanternError("scanVertexKeysAll aborted");
-      const page = await this.scanVertexKeys(prefix, { limit: batchSize ?? 0, cursor }, signal);
+      const page = await this.scanVertexKeys(
+        prefix,
+        { limit: batchSize ?? 0, cursor, order },
+        signal,
+      );
       yield page.keys;
       if (page.nextCursor.length === 0) return;
       cursor = page.nextCursor;
@@ -504,10 +589,15 @@ export class Lantern {
     });
   }
 
-  async addEdge(input: EdgeInput, signal?: AbortSignal): Promise<void> {
+  async addEdge(input: EdgeInput, signal?: AbortSignal): Promise<number> {
     const edge = fromJson(EdgeSchema, toEdgeJson(input) as JsonValue);
+    const contribId = this.singleContribId(input);
     return this.invoke(async () => {
-      await this.client.addEdge({ edge }, this.callOpts(signal));
+      const resp = await this.client.addEdge(
+        contribId ? { edge, contribId } : { edge },
+        this.callOpts(signal),
+      );
+      return resp.effectiveWeight;
     });
   }
 
@@ -547,12 +637,21 @@ export class Lantern {
     return { found, missing };
   }
 
-  async addEdges(inputs: readonly EdgeInput[], signal?: AbortSignal): Promise<void> {
-    if (inputs.length === 0) return;
+  async addEdges(inputs: readonly EdgeInput[], signal?: AbortSignal): Promise<number[]> {
+    if (inputs.length === 0) return [];
+    const effective: number[] = [];
     await this.runBatchWrite(inputs, async (chunk) => {
       const edges = chunk.map((e) => fromJson(EdgeSchema, toEdgeJson(e) as JsonValue));
-      await this.client.addEdges({ edges }, this.callOpts(signal));
+      const contribIds = this.chunkContribIds(chunk);
+      const resp = await this.client.addEdges(
+        contribIds ? { edges, contribIds } : { edges },
+        this.callOpts(signal),
+      );
+      for (const w of resp.effectiveWeights) {
+        effective.push(w);
+      }
     });
+    return effective;
   }
 
   async putEdges(inputs: readonly EdgeInput[], signal?: AbortSignal): Promise<void> {
@@ -618,6 +717,37 @@ export class Lantern {
       if (page.nextCursor.length === 0) return;
       cursor = page.nextCursor;
     }
+  }
+
+  /**
+   * Bulk-deletes edges whose tail and/or head key carries the given prefix,
+   * the edge-shaped sibling of {@link deleteVerticesByPrefix}. At least one of
+   * `tailPrefix` / `headPrefix` must be non-empty; a both-empty request is
+   * rejected with `InvalidArgumentError` to prevent a whole-graph edge wipe.
+   * An empty prefix on one axis matches any key on that axis, so the deleted
+   * set is the intersection of the two prefix filters. `limit` caps how many
+   * matching edges are removed in one call (0 = server default); loop until the
+   * returned count is below `limit` to drain a large namespace. Pass
+   * `dryRun: true` to learn the count that *would* be deleted without mutating.
+   * Returns the number of edges deleted (or that would be deleted under
+   * `dryRun`).
+   */
+  async deleteEdgesByPrefix(
+    opts: DeleteEdgesByPrefixOptions = {},
+    signal?: AbortSignal,
+  ): Promise<bigint> {
+    return this.invoke(async () => {
+      const resp = await this.client.deleteEdgesByPrefix(
+        {
+          tailPrefix: opts.tailPrefix ?? "",
+          headPrefix: opts.headPrefix ?? "",
+          limit: opts.limit ?? 0,
+          dryRun: opts.dryRun ?? false,
+        },
+        this.callOpts(signal),
+      );
+      return resp.deleted;
+    });
   }
 
   async illuminate(
@@ -749,6 +879,62 @@ export class Lantern {
   private chunkSize(): number {
     const n = this.options.batchChunkSize ?? DEFAULT_BATCH_CHUNK_SIZE;
     return n > 0 ? n : DEFAULT_BATCH_CHUNK_SIZE;
+  }
+
+  /** Whether automatic contrib IDs are enabled for Add calls (#895). */
+  private get autoContrib(): boolean {
+    return this.options.idempotentAdds === true;
+  }
+
+  /** Bump and return the monotonic per-call contrib sequence (#895). */
+  private nextSeq(): bigint {
+    this.callSeq += 1n;
+    return this.callSeq;
+  }
+
+  /** Lazily mint the per-client nonce that seeds automatic contrib IDs (#895). */
+  private getNonce(): Uint8Array {
+    if (!this.nonce) {
+      this.nonce = makeNonce();
+    }
+    return this.nonce;
+  }
+
+  /**
+   * Resolve the contrib ID for a singular `addEdge` (#895): a caller-supplied
+   * id (validated) wins; otherwise an automatic id when `idempotentAdds` is
+   * on; otherwise undefined (the field stays absent → legacy additive path).
+   */
+  private singleContribId(input: EdgeInput): Uint8Array | undefined {
+    if (input.contribId !== undefined) {
+      return validateContribId(input.contribId);
+    }
+    if (this.autoContrib) {
+      return contribIdFrom(this.getNonce(), this.nextSeq(), 0);
+    }
+    return undefined;
+  }
+
+  /**
+   * Build the index-aligned `contrib_ids` for one `addEdges` chunk (#895).
+   * Returns undefined when neither automatic ids nor any caller-supplied id
+   * applies (so the wire field stays absent → legacy). Otherwise every edge
+   * gets a slot: a caller id (validated) wins, else an automatic id when
+   * enabled, else an empty slot the server reads as absent. One sequence is
+   * consumed per chunk so a retried chunk re-sends identical bytes and the
+   * ids stay aligned with `edges` regardless of how the batch was chunked.
+   */
+  private chunkContribIds(chunk: readonly EdgeInput[]): Uint8Array[] | undefined {
+    const auto = this.autoContrib;
+    const anyCaller = chunk.some((e) => e.contribId !== undefined);
+    if (!auto && !anyCaller) return undefined;
+    const seq = auto ? this.nextSeq() : 0n;
+    const nonce = auto ? this.getNonce() : null;
+    return chunk.map((e, i) => {
+      if (e.contribId !== undefined) return validateContribId(e.contribId);
+      if (auto && nonce) return contribIdFrom(nonce, seq, i);
+      return new Uint8Array();
+    });
   }
 
   private async runBatchWrite<T>(

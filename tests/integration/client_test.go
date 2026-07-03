@@ -40,6 +40,57 @@ func TestLantern_PutGetDeleteVertex(t *testing.T) {
 	}
 }
 
+// TestLantern_PutVertexIfAbsent exercises the SET NX surface (#896) end to end
+// through the SDK: PutVertexIfAbsent reports written via a bool, a second
+// attempt over a live key is a no-op leaving the value untouched, and the
+// plural PutVerticesIfAbsent reports the written count plus the skipped keys.
+func TestLantern_PutVertexIfAbsent(t *testing.T) {
+	l, cleanup := newInProcessClient(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	written, err := l.PutVertexIfAbsent(ctx, "k", "one", time.Minute)
+	if err != nil {
+		t.Fatalf("PutVertexIfAbsent: %v", err)
+	}
+	if !written {
+		t.Fatal("first PutVertexIfAbsent written = false, want true")
+	}
+
+	written, err = l.PutVertexIfAbsent(ctx, "k", "two", time.Minute)
+	if err != nil {
+		t.Fatalf("PutVertexIfAbsent(repeat): %v", err)
+	}
+	if written {
+		t.Fatal("second PutVertexIfAbsent written = true, want false (key already live)")
+	}
+
+	v, err := l.GetVertex(ctx, "k")
+	if err != nil {
+		t.Fatalf("GetVertex: %v", err)
+	}
+	if got, _ := client.StringValue(v); got != "one" {
+		t.Errorf("value = %q, want \"one\" (skipped write must not overwrite)", got)
+	}
+
+	// Plural: "k" is live (skipped), "fresh" is new (written).
+	n, skipped, err := l.PutVerticesIfAbsent(ctx, []client.VertexInput{
+		{Key: "fresh", Value: "a", Expiration: time.Now().Add(time.Minute)},
+		{Key: "k", Value: "b", Expiration: time.Now().Add(time.Minute)},
+	})
+	if err != nil {
+		t.Fatalf("PutVerticesIfAbsent: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("PutVerticesIfAbsent written = %d, want 1", n)
+	}
+	if len(skipped) != 1 || skipped[0] != "k" {
+		t.Errorf("PutVerticesIfAbsent skipped = %v, want [k]", skipped)
+	}
+}
+
 func TestLantern_AddPutDeleteEdge(t *testing.T) {
 	l, cleanup := newInProcessClient(t)
 	defer cleanup()
@@ -47,8 +98,12 @@ func TestLantern_AddPutDeleteEdge(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := l.AddEdge(ctx, "a", "b", 1.5, time.Minute); err != nil {
+	effective, err := l.AddEdge(ctx, "a", "b", 1.5, time.Minute)
+	if err != nil {
 		t.Fatalf("AddEdge: %v", err)
+	}
+	if effective != 1.5 {
+		t.Errorf("AddEdge effective weight = %v, want 1.5", effective)
 	}
 	e, err := l.GetEdge(ctx, "a", "b")
 	if err != nil {
@@ -144,7 +199,7 @@ func TestLantern_GetEdges_BatchPartialMiss(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := l.AddEdge(ctx, "a", "b", 1.5, time.Minute); err != nil {
+	if _, err := l.AddEdge(ctx, "a", "b", 1.5, time.Minute); err != nil {
 		t.Fatalf("AddEdge: %v", err)
 	}
 

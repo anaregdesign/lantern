@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"sort"
 	"time"
 
 	coregraph "github.com/anaregdesign/lantern/core/graph"
@@ -108,6 +109,36 @@ func (f *fakeBackend) PutVerticesWithExpiration(items []graphcache.VertexItem[st
 	}
 }
 
+func (f *fakeBackend) PutVerticesWithExpirationIfAbsent(items []graphcache.VertexItem[string, *pb.Vertex]) (int, []string) {
+	f.putVerticesCalls++
+	written := 0
+	var skipped []string
+	for _, it := range items {
+		if _, ok := f.vertices[it.Key]; ok {
+			skipped = append(skipped, it.Key)
+			continue
+		}
+		f.vertices[it.Key] = it.Value
+		written++
+	}
+	return written, skipped
+}
+
+func (f *fakeBackend) PutVerticesWithExpirationIfAbsentHLC(items []graphcache.VertexItem[string, *pb.Vertex], _ hlc.Timestamp) ([]int, []string) {
+	f.putVerticesCalls++
+	var writtenIdx []int
+	var skipped []string
+	for i, it := range items {
+		if _, ok := f.vertices[it.Key]; ok {
+			skipped = append(skipped, it.Key)
+			continue
+		}
+		f.vertices[it.Key] = it.Value
+		writtenIdx = append(writtenIdx, i)
+	}
+	return writtenIdx, skipped
+}
+
 func (f *fakeBackend) DeleteVertices(keys []string) int {
 	n := 0
 	for _, k := range keys {
@@ -145,16 +176,18 @@ func (f *fakeBackend) AddEdgesWithExpiration(items []graphcache.EdgeItem[string]
 // contrib_id mapping, and returns the configurable dedupReturn so the
 // OnEdgeContribDeduped metric wiring is observable. Real dedup convergence
 // is covered by the core tests and tests/integration.
-func (f *fakeBackend) AddEdgesWithExpirationContrib(items []graphcache.EdgeItem[string]) int {
+func (f *fakeBackend) AddEdgesWithExpirationContrib(items []graphcache.EdgeItem[string]) ([]float32, int) {
 	f.addEdgesContribCalls++
 	f.lastAddEdgesItems = items
-	for _, it := range items {
+	effective := make([]float32, len(items))
+	for i, it := range items {
 		if f.edges[it.Tail] == nil {
 			f.edges[it.Tail] = map[string]float32{}
 		}
 		f.edges[it.Tail][it.Head] += it.Weight
+		effective[i] = f.edges[it.Tail][it.Head]
 	}
-	return f.dedupReturn
+	return effective, f.dedupReturn
 }
 
 func (f *fakeBackend) PutEdgesWithExpiration(items []graphcache.EdgeItem[string]) {
@@ -285,20 +318,35 @@ func (f *fakeBackend) Watch(ctx context.Context, interval time.Duration) {
 // GraphCache via the bufconn harness; the fake just walks its in-memory
 // map in lexicographic order so unit tests can still hit the wrappers
 // without standing up the cache.
-func (f *fakeBackend) ScanByPrefixPage(_ context.Context, prefix, after string, limit int, fn func(string, string, *pb.Vertex) bool) (bool, bool) {
+func (f *fakeBackend) ScanByPrefixPage(_ context.Context, prefix, after string, limit int, desc bool, fn func(string, string, *pb.Vertex) bool) (bool, bool) {
 	keys := make([]string, 0, len(f.vertices))
 	for k := range f.vertices {
 		if prefix != "" && !(len(k) >= len(prefix) && k[:len(prefix)] == prefix) {
 			continue
 		}
-		if after != "" && k <= after {
-			continue
+		if after != "" {
+			// Ascending resumes strictly after the cursor; descending
+			// (#898) resumes strictly before it.
+			if desc {
+				if k >= after {
+					continue
+				}
+			} else if k <= after {
+				continue
+			}
 		}
 		keys = append(keys, k)
 	}
-	// Sort to match the radix index's lexicographic walk order.
+	// Sort to match the radix index's walk order for the requested direction.
 	for i := 1; i < len(keys); i++ {
-		for j := i; j > 0 && keys[j-1] > keys[j]; j-- {
+		for j := i; j > 0; j-- {
+			swap := keys[j-1] > keys[j]
+			if desc {
+				swap = keys[j-1] < keys[j]
+			}
+			if !swap {
+				break
+			}
 			keys[j-1], keys[j] = keys[j], keys[j-1]
 		}
 	}
@@ -323,6 +371,71 @@ func (f *fakeBackend) CountByPrefix(prefix string) int {
 		}
 	}
 	return n
+}
+
+// TopVerticesByDegree mirrors the real cache's live-visibility degree ranking
+// (#900) over the fake's in-memory maps so handler tests can assert the
+// direction mapping, k clamp, and descending order without a real GraphCache.
+func (f *fakeBackend) TopVerticesByDegree(prefix string, k int, dir graphcache.DegreeDirection, weighted bool) []graphcache.DegreeEntry[string] {
+	if k <= 0 {
+		return nil
+	}
+	hasPrefix := func(s string) bool {
+		return prefix == "" || (len(s) >= len(prefix) && s[:len(prefix)] == prefix)
+	}
+	live := func(key string) bool { _, ok := f.vertices[key]; return ok }
+	type acc struct {
+		count  uint64
+		weight float64
+	}
+	accum := map[string]*acc{}
+	for key := range f.vertices {
+		if hasPrefix(key) {
+			accum[key] = &acc{}
+		}
+	}
+	countOut := dir == graphcache.DegreeOut || dir == graphcache.DegreeBoth
+	countIn := dir == graphcache.DegreeIn || dir == graphcache.DegreeBoth
+	for tail, heads := range f.edges {
+		if !live(tail) {
+			continue
+		}
+		aTail, tailIn := accum[tail]
+		for head, w := range heads {
+			if w == 0 || !live(head) {
+				continue
+			}
+			aHead, headIn := accum[head]
+			if countOut && tailIn {
+				aTail.count++
+				aTail.weight += float64(w)
+			}
+			if countIn && headIn {
+				aHead.count++
+				aHead.weight += float64(w)
+			}
+		}
+	}
+	entries := make([]graphcache.DegreeEntry[string], 0, len(accum))
+	for key, a := range accum {
+		entries = append(entries, graphcache.DegreeEntry[string]{Key: key, Degree: a.count, WeightedDegree: a.weight})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		var mi, mj float64
+		if weighted {
+			mi, mj = entries[i].WeightedDegree, entries[j].WeightedDegree
+		} else {
+			mi, mj = float64(entries[i].Degree), float64(entries[j].Degree)
+		}
+		if mi != mj {
+			return mi > mj
+		}
+		return entries[i].Key < entries[j].Key
+	})
+	if len(entries) > k {
+		entries = entries[:k]
+	}
+	return entries
 }
 
 // SearchVertices returns the pre-seeded searchResults verbatim and records
@@ -402,6 +515,39 @@ func (f *fakeBackend) ScanEdgesByPrefixPage(_ context.Context, tailPrefix, headP
 	return more, true
 }
 
+func (f *fakeBackend) DeleteEdgesByPrefix(_ context.Context, tailPrefix, headPrefix string, limit int) int {
+	type key struct{ t, h string }
+	var victims []key
+	for t, hs := range f.edges {
+		if tailPrefix != "" && !(len(t) >= len(tailPrefix) && t[:len(tailPrefix)] == tailPrefix) {
+			continue
+		}
+		for h := range hs {
+			if headPrefix != "" && !(len(h) >= len(headPrefix) && h[:len(headPrefix)] == headPrefix) {
+				continue
+			}
+			victims = append(victims, key{t, h})
+			if limit > 0 && len(victims) >= limit {
+				break
+			}
+		}
+		if limit > 0 && len(victims) >= limit {
+			break
+		}
+	}
+	n := 0
+	for _, v := range victims {
+		if row, ok := f.edges[v.t]; ok {
+			if _, ok := row[v.h]; ok {
+				delete(row, v.h)
+				n++
+			}
+		}
+	}
+	f.deleteEdges += n
+	return n
+}
+
 // Compile-time check that fakeBackend really satisfies Backend.
 var _ Backend = (*fakeBackend)(nil)
 
@@ -447,7 +593,7 @@ func (f *fakeBackend) PutEdgesWithExpirationHLC(items []graphcache.EdgeItem[stri
 	return 0
 }
 
-func (f *fakeBackend) AddEdgesWithExpirationContribHLC(items []graphcache.EdgeItem[string], _ hlc.Timestamp) int {
+func (f *fakeBackend) AddEdgesWithExpirationContribHLC(items []graphcache.EdgeItem[string], _ hlc.Timestamp) ([]float32, int) {
 	return f.AddEdgesWithExpirationContrib(items)
 }
 
@@ -480,6 +626,10 @@ func (f *fakeBackend) DeleteByPrefixHLC(ctx context.Context, prefix string, limi
 		lim = int(limit)
 	}
 	return f.DeleteByPrefix(ctx, prefix, lim), nil
+}
+
+func (f *fakeBackend) DeleteEdgesByPrefixHLC(ctx context.Context, tailPrefix, headPrefix string, limit int, _ hlc.Timestamp, _ time.Time) (int, error) {
+	return f.DeleteEdgesByPrefix(ctx, tailPrefix, headPrefix, limit), nil
 }
 
 // Snapshot* implement the bootstrap surface (#184). The fake backend

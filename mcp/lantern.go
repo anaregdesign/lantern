@@ -29,8 +29,8 @@ type lanternClient interface {
 	CountVerticesByPrefix(ctx context.Context, prefix string) (uint64, error)
 	DeleteVerticesByPrefix(ctx context.Context, prefix string, opts ...client.DeleteByPrefixOption) (uint64, error)
 	PutVertices(ctx context.Context, inputs []client.VertexInput) error
-	AddEdge(ctx context.Context, tail, head string, weight float32, ttl time.Duration) error
-	AddEdges(ctx context.Context, inputs []client.EdgeInput) error
+	AddEdge(ctx context.Context, tail, head string, weight float32, ttl time.Duration) (float32, error)
+	AddEdges(ctx context.Context, inputs []client.EdgeInput) ([]float32, error)
 	GetEdge(ctx context.Context, tail, head string) (*client.Edge, error)
 	ScanEdges(ctx context.Context, opts ...client.EdgeScanOption) (edges []*client.Edge, nextCursor []byte, err error)
 	Illuminate(ctx context.Context, seed string, opts ...client.IlluminateOption) (*client.Graph, error)

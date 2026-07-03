@@ -192,6 +192,8 @@ var (
 		"ScanEdges",
 		"CountVerticesByPrefix",
 		"DeleteVerticesByPrefix",
+		"DeleteEdgesByPrefix",
+		"TopVerticesByDegree",
 	}
 	batchOps = []string{
 		"GetVertices",
@@ -219,6 +221,7 @@ var (
 		"PutEdges",
 		"DeleteEdge",
 		"DeleteEdges",
+		"DeleteEdgesByPrefix",
 	}
 	// validationRejectReasons is the bounded reason set bumped on
 	// lantern_validation_rejected_total. Sources:
@@ -227,6 +230,7 @@ var (
 	//     bad_weight, step_too_large, k_too_large
 	//   - service.LanternService.validateExpiration: bad_ttl
 	//   - service prefix-scan cursor decode: bad_cursor
+	//   - service prefix-scan order-bound cursor check: order_mismatch
 	// Unknown labels fall through to "unknown" via sanitizeLabel.
 	validationRejectReasons = []string{
 		"empty_key",
@@ -240,6 +244,8 @@ var (
 		"bad_ttl",
 		"bad_cursor",
 		"capacity",
+		"empty_edge_prefix",
+		"order_mismatch",
 	}
 )
 
@@ -349,7 +355,7 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		}, []string{"algorithm", "objective", "weighting", "phase"}),
 		scanResults: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "lantern_scan_results",
-			Help:    "Number of results returned by a prefix scan or count RPC, partitioned by op (ScanVertices | ScanVertexKeys | ScanEdges | CountVerticesByPrefix | DeleteVerticesByPrefix).",
+			Help:    "Number of results returned by a prefix scan or count RPC, partitioned by op (ScanVertices | ScanVertexKeys | ScanEdges | CountVerticesByPrefix | DeleteVerticesByPrefix | DeleteEdgesByPrefix).",
 			Buckets: prometheus.ExponentialBuckets(1, 4, 10),
 		}, []string{"op"}),
 		scanDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
@@ -449,7 +455,7 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		}),
 		validationRejected: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "lantern_validation_rejected_total",
-			Help: "Total requests rejected by server-side input validation, partitioned by reason (empty_key, key_too_long, empty_batch, batch_too_large, nil_item, bad_weight, step_too_large, k_too_large, bad_ttl, bad_cursor). Counted before the handler runs (ValidationInterceptor) or during validateExpiration / cursor decode in the service layer.",
+			Help: "Total requests rejected by server-side input validation, partitioned by reason (empty_key, key_too_long, empty_batch, batch_too_large, nil_item, bad_weight, step_too_large, k_too_large, bad_ttl, bad_cursor, order_mismatch). Counted before the handler runs (ValidationInterceptor) or during validateExpiration / cursor decode in the service layer.",
 		}, []string{"reason"}),
 		capacityLimit: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "lantern_capacity_limit",

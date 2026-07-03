@@ -142,16 +142,20 @@ func main() {
 	*/
 
 	// add edge a->b with a weight 1 and TTL 3 seconds
-	if err := cli.AddEdge(ctx, "a", "b", 1, 3*time.Second); err != nil {
+	if _, err := cli.AddEdge(ctx, "a", "b", 1, 3*time.Second); err != nil {
 		log.Fatal(err)
 	}
 
 	// 1 second later
 	time.Sleep(1 * time.Second)
 
-	// add edge a->b with a weight 1 and TTL 3 seconds
-	if err := cli.AddEdge(ctx, "a", "b", 1, 3*time.Second); err != nil {
+	// add edge a->b again; AddEdge returns the post-accumulation effective
+	// weight (#897), so we can read back the running total (2) without a
+	// separate GetEdge round-trip.
+	if effective, err := cli.AddEdge(ctx, "a", "b", 1, 3*time.Second); err != nil {
 		log.Fatal(err)
+	} else {
+		log.Printf("effective weight of a->b after second add: %f\n", effective)
 	}
 
 	// weight of edge a->b is 2
@@ -180,7 +184,7 @@ func main() {
 			DeleteEdge deletes an edge between two head and tail.
 	*/
 
-	if err := cli.AddEdge(ctx, "a", "b", 1, 1*time.Minute); err != nil {
+	if _, err := cli.AddEdge(ctx, "a", "b", 1, 1*time.Minute); err != nil {
 		log.Fatal(err)
 	}
 
@@ -250,22 +254,22 @@ func main() {
 
 	*/
 	// Add edges
-	if err := cli.AddEdge(ctx, "a", "b", 1, 1*time.Minute); err != nil {
+	if _, err := cli.AddEdge(ctx, "a", "b", 1, 1*time.Minute); err != nil {
 		log.Fatal(err)
 	}
-	if err := cli.AddEdge(ctx, "b", "c", 1, 1*time.Minute); err != nil {
+	if _, err := cli.AddEdge(ctx, "b", "c", 1, 1*time.Minute); err != nil {
 		log.Fatal(err)
 	}
-	if err := cli.AddEdge(ctx, "c", "d", 1, 1*time.Minute); err != nil {
+	if _, err := cli.AddEdge(ctx, "c", "d", 1, 1*time.Minute); err != nil {
 		log.Fatal(err)
 	}
-	if err := cli.AddEdge(ctx, "b", "e", 1, 1*time.Minute); err != nil {
+	if _, err := cli.AddEdge(ctx, "b", "e", 1, 1*time.Minute); err != nil {
 		log.Fatal(err)
 	}
-	if err := cli.AddEdge(ctx, "a", "f", 1, 1*time.Minute); err != nil {
+	if _, err := cli.AddEdge(ctx, "a", "f", 1, 1*time.Minute); err != nil {
 		log.Fatal(err)
 	}
-	if err := cli.AddEdge(ctx, "f", "g", 1, 1*time.Minute); err != nil {
+	if _, err := cli.AddEdge(ctx, "f", "g", 1, 1*time.Minute); err != nil {
 		log.Fatal(err)
 	}
 
@@ -406,7 +410,7 @@ func retryAndFailoverExample(ctx context.Context) {
 	// AddEdges is retried safely: WithIdempotentAdds stamps a stable ContribID
 	// per edge, so a re-sent chunk records each weight exactly once. (Distinct
 	// keys keep this demo out of the Illuminate graph printed above.)
-	if err := retrying.AddEdges(ctx, []client.EdgeInput{
+	if _, err := retrying.AddEdges(ctx, []client.EdgeInput{
 		{Tail: "retry-demo:a", Head: "retry-demo:b", Weight: 1},
 		{Tail: "retry-demo:b", Head: "retry-demo:c", Weight: 1},
 	}); err != nil {

@@ -264,12 +264,21 @@ func TestAddEdgesWithExpirationContrib_Dedup(t *testing.T) {
 		batch := []graphcache.EdgeItem[string]{
 			{Tail: "s", Head: "h", Weight: 2.5, Expiration: exp, ContribID: id},
 		}
-		if deduped := c.AddEdgesWithExpirationContrib(batch); deduped != 0 {
+		effective, deduped := c.AddEdgesWithExpirationContrib(batch)
+		if deduped != 0 {
 			t.Fatalf("first apply: deduped = %d, want 0", deduped)
 		}
-		// Replay the identical batch: must be an exact no-op.
-		if deduped := c.AddEdgesWithExpirationContrib(batch); deduped != 1 {
+		if len(effective) != 1 || effective[0] != 2.5 {
+			t.Fatalf("first apply: effective = %v, want [2.5]", effective)
+		}
+		// Replay the identical batch: must be an exact no-op, but the
+		// effective weight still reports the current live sum (#897).
+		effective, deduped = c.AddEdgesWithExpirationContrib(batch)
+		if deduped != 1 {
 			t.Fatalf("replay: deduped = %d, want 1", deduped)
+		}
+		if len(effective) != 1 || effective[0] != 2.5 {
+			t.Fatalf("replay: effective = %v, want [2.5] (live sum on dedup no-op)", effective)
 		}
 		w, ok := c.GetWeight("s", "h")
 		if !ok {
@@ -285,11 +294,19 @@ func TestAddEdgesWithExpirationContrib_Dedup(t *testing.T) {
 		batch := []graphcache.EdgeItem[string]{
 			{Tail: "s", Head: "h", Weight: 2, Expiration: exp}, // ContribID zero
 		}
-		if deduped := c.AddEdgesWithExpirationContrib(batch); deduped != 0 {
+		effective, deduped := c.AddEdgesWithExpirationContrib(batch)
+		if deduped != 0 {
 			t.Fatalf("first apply: deduped = %d, want 0", deduped)
 		}
-		if deduped := c.AddEdgesWithExpirationContrib(batch); deduped != 0 {
+		if effective[0] != 2 {
+			t.Fatalf("first apply: effective = %v, want [2]", effective)
+		}
+		effective, deduped = c.AddEdgesWithExpirationContrib(batch)
+		if deduped != 0 {
 			t.Fatalf("replay: deduped = %d, want 0 (zero id must not dedup)", deduped)
+		}
+		if effective[0] != 4 {
+			t.Fatalf("replay: effective = %v, want [4] (accumulated sum)", effective)
 		}
 		if w, _ := c.GetWeight("s", "h"); w != 4 {
 			t.Fatalf("weight = %v, want 4 (zero id must sum on replay)", w)
@@ -304,11 +321,14 @@ func TestAddEdgesWithExpirationContrib_Dedup(t *testing.T) {
 		c.AddEdgesWithExpirationContrib([]graphcache.EdgeItem[string]{
 			{Tail: "s", Head: "h", Weight: 1, Expiration: exp, ContribID: id1},
 		})
-		deduped := c.AddEdgesWithExpirationContrib([]graphcache.EdgeItem[string]{
+		effective, deduped := c.AddEdgesWithExpirationContrib([]graphcache.EdgeItem[string]{
 			{Tail: "s", Head: "h", Weight: 1, Expiration: exp, ContribID: id2},
 		})
 		if deduped != 0 {
 			t.Fatalf("distinct id: deduped = %d, want 0", deduped)
+		}
+		if effective[0] != 2 {
+			t.Fatalf("distinct id: effective = %v, want [2] (post-accumulation sum)", effective)
 		}
 		if w, _ := c.GetWeight("s", "h"); w != 2 {
 			t.Fatalf("weight = %v, want 2 (distinct ids both contribute)", w)
@@ -323,12 +343,17 @@ func TestAddEdgesWithExpirationContrib_Dedup(t *testing.T) {
 			{Tail: "s", Head: "a", Weight: 1, Expiration: exp, ContribID: id},
 		})
 		// Mix the already-seen id (deduped) with a fresh zero-id edge (applies).
-		deduped := c.AddEdgesWithExpirationContrib([]graphcache.EdgeItem[string]{
+		effective, deduped := c.AddEdgesWithExpirationContrib([]graphcache.EdgeItem[string]{
 			{Tail: "s", Head: "a", Weight: 1, Expiration: exp, ContribID: id},
 			{Tail: "s", Head: "b", Weight: 1, Expiration: exp},
 		})
 		if deduped != 1 {
 			t.Fatalf("mixed batch: deduped = %d, want 1", deduped)
+		}
+		// effective is index-aligned: [0] is the deduped edge's live sum, [1]
+		// is the freshly-applied edge's live sum.
+		if len(effective) != 2 || effective[0] != 1 || effective[1] != 1 {
+			t.Fatalf("mixed batch: effective = %v, want [1 1]", effective)
 		}
 		if w, _ := c.GetWeight("s", "a"); w != 1 {
 			t.Fatalf("weight s->a = %v, want 1 (deduped)", w)
@@ -520,11 +545,16 @@ func TestAddEdgesWithExpirationContribHLC_TombstoneFenced(t *testing.T) {
 		if n := c.DeleteEdgesHLC([]graphcache.EdgeKey[string]{{Tail: "a", Head: "b"}}, newer, exp); n != 1 {
 			t.Fatalf("delete: got %d, want 1", n)
 		}
-		deduped := c.AddEdgesWithExpirationContribHLC([]graphcache.EdgeItem[string]{
+		effective, deduped := c.AddEdgesWithExpirationContribHLC([]graphcache.EdgeItem[string]{
 			{Tail: "a", Head: "b", Weight: 5.0, Expiration: exp, ContribID: graphcache.ContribID{0: 2}},
 		}, older)
 		if deduped != 1 {
 			t.Errorf("deduped: got %d, want 1 (tombstone-dropped)", deduped)
+		}
+		// A tombstone-dropped item applied nothing, so its effective entry is
+		// left at 0 (#897).
+		if len(effective) != 1 || effective[0] != 0 {
+			t.Errorf("effective: got %v, want [0] (tombstone-dropped adds nothing)", effective)
 		}
 		if _, ok := c.GetWeight("a", "b"); ok {
 			t.Errorf("older contribution resurrected a tombstoned edge")
@@ -536,11 +566,15 @@ func TestAddEdgesWithExpirationContribHLC_TombstoneFenced(t *testing.T) {
 		items := []graphcache.EdgeItem[string]{
 			{Tail: "a", Head: "b", Weight: 1.0, Expiration: exp, ContribID: graphcache.ContribID{0: 9}},
 		}
-		if d := c.AddEdgesWithExpirationContribHLC(items, older); d != 0 {
+		if effective, d := c.AddEdgesWithExpirationContribHLC(items, older); d != 0 {
 			t.Errorf("first apply deduped: got %d, want 0", d)
+		} else if effective[0] != 1.0 {
+			t.Errorf("first apply effective: got %v, want [1]", effective)
 		}
-		if d := c.AddEdgesWithExpirationContribHLC(items, newer); d != 1 {
+		if effective, d := c.AddEdgesWithExpirationContribHLC(items, newer); d != 1 {
 			t.Errorf("replay deduped: got %d, want 1 (same ContribID is idempotent)", d)
+		} else if effective[0] != 1.0 {
+			t.Errorf("replay effective: got %v, want [1] (live sum on dedup no-op)", effective)
 		}
 		if got, ok := c.GetWeight("a", "b"); !ok || got != 1.0 {
 			t.Errorf("a->b weight: got (%v,%v), want (1.0,true) — replay must not double-count", got, ok)
@@ -557,6 +591,118 @@ func TestAddEdgesWithExpirationContribHLC_TombstoneFenced(t *testing.T) {
 		}, newer)
 		if got, ok := c.GetWeight("a", "b"); !ok || got != 3.0 {
 			t.Errorf("a->b weight: got (%v,%v), want (3.0,true) — distinct contributions must sum", got, ok)
+		}
+	})
+}
+
+// TestPutVerticesWithExpirationIfAbsent pins the batched SET NX contract
+// (#896): only keys with no live vertex are written, live keys are reported in
+// skipped (request order), a key that becomes live earlier in the same batch
+// fences its own later duplicate, and an expired-but-uncollected vertex does
+// not block its write (#750 live-visibility).
+func TestPutVerticesWithExpirationIfAbsent(t *testing.T) {
+	future := time.Now().Add(time.Hour)
+	past := time.Now().Add(-time.Hour)
+
+	t.Run("WritesAbsentSkipsLive", func(t *testing.T) {
+		c := graphcache.NewGraphCache[string, string](time.Minute)
+		c.PutVertexWithExpiration("live", "old", future)
+		written, skipped := c.PutVerticesWithExpirationIfAbsent([]graphcache.VertexItem[string, string]{
+			{Key: "fresh", Value: "a", Expiration: future},
+			{Key: "live", Value: "b", Expiration: future}, // skipped: already live
+		})
+		if written != 1 {
+			t.Fatalf("written = %d, want 1", written)
+		}
+		if len(skipped) != 1 || skipped[0] != "live" {
+			t.Fatalf("skipped = %v, want [live]", skipped)
+		}
+		if v, _ := c.GetVertex("live"); v != "old" {
+			t.Fatalf("live value = %q, want \"old\" (must be untouched)", v)
+		}
+		if v, ok := c.GetVertex("fresh"); !ok || v != "a" {
+			t.Fatalf("fresh = (%q,%v), want (\"a\",true)", v, ok)
+		}
+	})
+
+	t.Run("IntraBatchDuplicateSkipped", func(t *testing.T) {
+		c := graphcache.NewGraphCache[string, string](time.Minute)
+		written, skipped := c.PutVerticesWithExpirationIfAbsent([]graphcache.VertexItem[string, string]{
+			{Key: "dup", Value: "first", Expiration: future},
+			{Key: "dup", Value: "second", Expiration: future}, // skipped: first made it live
+		})
+		if written != 1 {
+			t.Fatalf("written = %d, want 1", written)
+		}
+		if len(skipped) != 1 || skipped[0] != "dup" {
+			t.Fatalf("skipped = %v, want [dup]", skipped)
+		}
+		if v, _ := c.GetVertex("dup"); v != "first" {
+			t.Fatalf("dup value = %q, want \"first\"", v)
+		}
+	})
+
+	t.Run("ExpiredDoesNotBlock", func(t *testing.T) {
+		c := graphcache.NewGraphCache[string, string](time.Minute)
+		c.PutVertexWithExpiration("k", "stale", past)
+		written, skipped := c.PutVerticesWithExpirationIfAbsent([]graphcache.VertexItem[string, string]{
+			{Key: "k", Value: "fresh", Expiration: future},
+		})
+		if written != 1 || len(skipped) != 0 {
+			t.Fatalf("written=%d skipped=%v, want written=1 skipped=[]", written, skipped)
+		}
+		if v, _ := c.GetVertex("k"); v != "fresh" {
+			t.Fatalf("value = %q, want \"fresh\"", v)
+		}
+	})
+}
+
+// TestPutVerticesWithExpirationIfAbsentHLC pins the replication-aware SET NX
+// path (#896): it returns the request-order indices of the accepted subset so
+// the server can replicate only those as unconditional LWW puts, skips keys
+// that are already live, and refuses to resurrect a key fenced by a strictly
+// newer tombstone (reporting it as skipped rather than written).
+func TestPutVerticesWithExpirationIfAbsentHLC(t *testing.T) {
+	exp := time.Now().Add(time.Hour)
+	older := hlc.Timestamp{WallNs: 1000}
+	newer := hlc.Timestamp{WallNs: 2000}
+
+	t.Run("WrittenIndicesAndLiveSkip", func(t *testing.T) {
+		c := graphcache.NewGraphCache[string, string](time.Minute)
+		c.PutVerticesWithExpirationHLC([]graphcache.VertexItem[string, string]{
+			{Key: "live", Value: "old", Expiration: exp},
+		}, older)
+		writtenIdx, skipped := c.PutVerticesWithExpirationIfAbsentHLC([]graphcache.VertexItem[string, string]{
+			{Key: "live", Value: "b", Expiration: exp},  // idx 0: skipped (live)
+			{Key: "fresh", Value: "c", Expiration: exp}, // idx 1: written
+		}, newer)
+		if len(writtenIdx) != 1 || writtenIdx[0] != 1 {
+			t.Fatalf("writtenIdx = %v, want [1]", writtenIdx)
+		}
+		if len(skipped) != 1 || skipped[0] != "live" {
+			t.Fatalf("skipped = %v, want [live]", skipped)
+		}
+		if v, _ := c.GetVertex("live"); v != "old" {
+			t.Fatalf("live value = %q, want \"old\"", v)
+		}
+	})
+
+	t.Run("NewerTombstoneNotResurrected", func(t *testing.T) {
+		c := graphcache.NewGraphCache[string, string](time.Minute)
+		// Delete an absent key with a newer HLC: it removes nothing (returns 0)
+		// but still records the tombstone watermark that fences older writes.
+		c.DeleteVerticesHLC([]string{"d"}, newer, exp)
+		writtenIdx, skipped := c.PutVerticesWithExpirationIfAbsentHLC([]graphcache.VertexItem[string, string]{
+			{Key: "d", Value: "resurrect", Expiration: exp}, // older than tombstone: fenced
+		}, older)
+		if len(writtenIdx) != 0 {
+			t.Fatalf("writtenIdx = %v, want [] (fence must block)", writtenIdx)
+		}
+		if len(skipped) != 1 || skipped[0] != "d" {
+			t.Fatalf("skipped = %v, want [d]", skipped)
+		}
+		if _, ok := c.GetVertex("d"); ok {
+			t.Fatal("older if-absent put resurrected a tombstoned key")
 		}
 	})
 }

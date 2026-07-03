@@ -203,6 +203,8 @@ func TestDomainMetrics_HotPathFamilies(t *testing.T) {
 	m.OnScan("ScanEdges", 128, time.Millisecond)
 	m.OnScan("CountVerticesByPrefix", 10, 100*time.Microsecond)
 	m.OnScan("DeleteVerticesByPrefix", 32, 200*time.Microsecond)
+	m.OnScan("DeleteEdgesByPrefix", 16, 150*time.Microsecond)
+	m.OnScan("TopVerticesByDegree", 8, 250*time.Microsecond)
 	m.OnBatch("PutVertices", 8)
 	m.OnBatch("AddEdges", 4)
 
@@ -433,7 +435,7 @@ func TestDomainMetrics_ReplicationObservabilityFamilies(t *testing.T) {
 		t.Errorf("snapshot_duration_seconds{peer-a} sample count = %v, want 1", got)
 	}
 
-	// Per-MutationOp counter: pre-warmed for all 11 variants and the
+	// Per-MutationOp counter: pre-warmed for all 12 variants and the
 	// observed ones incremented exactly once.
 	for _, op := range replicationApplyOps {
 		if testutil.ToFloat64(m.replicationApplyTotal.WithLabelValues(op)) < 0 {

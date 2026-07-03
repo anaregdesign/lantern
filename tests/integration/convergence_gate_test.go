@@ -161,10 +161,10 @@ func TestConvergence_PartitionHealReconverges(t *testing.T) {
 	}
 	// Additive merge: A and B each contribute 1.0 to the same edge from
 	// distinct origins, so the contributions sum to 2.0 cluster-wide.
-	if err := a.sdk.AddEdge(ctx, "m-t", "m-h", 1.0, writeTTL); err != nil {
+	if _, err := a.sdk.AddEdge(ctx, "m-t", "m-h", 1.0, writeTTL); err != nil {
 		t.Fatalf("a.AddEdge: %v", err)
 	}
-	if err := b.sdk.AddEdge(ctx, "m-t", "m-h", 1.0, writeTTL); err != nil {
+	if _, err := b.sdk.AddEdge(ctx, "m-t", "m-h", 1.0, writeTTL); err != nil {
 		t.Fatalf("b.AddEdge: %v", err)
 	}
 	if err := c.sdk.PutVertex(ctx, "only-c", "only-on-C", writeTTL); err != nil {

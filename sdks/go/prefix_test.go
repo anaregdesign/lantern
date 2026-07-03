@@ -12,6 +12,9 @@ func TestScanOptions_Defaults(t *testing.T) {
 	if o.cursor != nil {
 		t.Errorf("default cursor = %v, want nil", o.cursor)
 	}
+	if o.order != ScanOrderUnspecified {
+		t.Errorf("default order = %v, want unspecified", o.order)
+	}
 }
 
 func TestScanOptions_Apply(t *testing.T) {
@@ -19,6 +22,7 @@ func TestScanOptions_Apply(t *testing.T) {
 	for _, apply := range []ScanOption{
 		WithScanLimit(42),
 		WithScanCursor([]byte("opaque")),
+		WithScanOrder(ScanOrderDesc),
 	} {
 		apply(&o)
 	}
@@ -27,6 +31,9 @@ func TestScanOptions_Apply(t *testing.T) {
 	}
 	if string(o.cursor) != "opaque" {
 		t.Errorf("cursor = %q, want %q", o.cursor, "opaque")
+	}
+	if o.order != ScanOrderDesc {
+		t.Errorf("order = %v, want descending", o.order)
 	}
 }
 

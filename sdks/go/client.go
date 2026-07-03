@@ -343,6 +343,33 @@ func (l *Lantern) PutVertexAt(ctx context.Context, key string, value any, expira
 	return err
 }
 
+// PutVertexIfAbsent conditionally upserts a single vertex with a relative TTL,
+// applying the write only when no live vertex already exists at key (SET NX,
+// #896). It returns true when the write landed and false when an existing live
+// vertex left the stored value and expiration untouched. "Live" follows the
+// server's #750 visibility rule, so an expired-but-uncollected vertex does not
+// block the write. Because the server performs the existence check and the
+// store atomically, this closes the check-then-act race that a
+// GetVertex-then-PutVertex sequence has.
+func (l *Lantern) PutVertexIfAbsent(ctx context.Context, key string, value any, ttl time.Duration) (bool, error) {
+	return l.PutVertexIfAbsentAt(ctx, key, value, expirationFromTTL(ttl))
+}
+
+// PutVertexIfAbsentAt is PutVertexIfAbsent with an absolute expiration time.
+func (l *Lantern) PutVertexIfAbsentAt(ctx context.Context, key string, value any, expiration time.Time) (bool, error) {
+	v, err := nativeVertex{key: key, value: value, expiration: expiration}.asVertex()
+	if err != nil {
+		return false, err
+	}
+	ctx, cancel := l.applyTimeout(ctx)
+	defer cancel()
+	resp, err := unary(ctx, l, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{v}, IfAbsent: true}, l.client.PutVertices)
+	if err != nil {
+		return false, err
+	}
+	return resp.GetWritten() >= 1, nil
+}
+
 // PutVertices upserts a batch of vertices. Large batches are automatically
 // chunked according to WithBatchChunkSize (default 1000).
 //
@@ -369,6 +396,44 @@ func (l *Lantern) PutVertices(ctx context.Context, inputs []VertexInput) error {
 		return 0, err
 	})
 	return err
+}
+
+// PutVerticesIfAbsent conditionally upserts a batch of vertices, applying each
+// write only when no live vertex already exists at its key (SET NX, #896).
+// Large batches are automatically chunked according to WithBatchChunkSize.
+//
+// It returns written — the number of vertices that were actually stored — and
+// skipped — the keys left untouched because a live vertex already existed
+// there (summed/collected across chunks). "Live" follows the server's #750
+// visibility rule, so expired-but-uncollected vertices do not block writes.
+// Each key's existence check and store happen atomically server-side, closing
+// the check-then-act race of a GetVertices-then-PutVertices sequence.
+//
+// Partial-write semantics match PutVertices: chunks are sent sequentially and
+// on failure the returned error is a *BatchError whose Written field records
+// the number of inputs in the fully committed chunks, so callers can resume
+// with inputs[err.Written:].
+func (l *Lantern) PutVerticesIfAbsent(ctx context.Context, inputs []VertexInput) (written int, skipped []string, err error) {
+	if len(inputs) == 0 {
+		return 0, nil, nil
+	}
+	vs := make([]*pb.Vertex, 0, len(inputs))
+	for _, in := range inputs {
+		v, verr := nativeVertex{key: in.Key, value: in.Value, expiration: in.Expiration}.asVertex()
+		if verr != nil {
+			return 0, nil, verr
+		}
+		vs = append(vs, v)
+	}
+	written, err = runBatchWrite(ctx, l, vs, func(ctx context.Context, chunk []*pb.Vertex) (int32, error) {
+		resp, rerr := unary(ctx, l, &pb.PutVerticesRequest{Vertices: chunk, IfAbsent: true}, l.client.PutVertices)
+		if rerr != nil {
+			return 0, rerr
+		}
+		skipped = append(skipped, resp.GetSkippedKeys()...)
+		return resp.GetWritten(), nil
+	})
+	return written, skipped, err
 }
 
 // DeleteVertex removes the vertex identified by key. The returned
@@ -441,26 +506,46 @@ func (l *Lantern) GetEdge(ctx context.Context, tail string, head string) (*Edge,
 // the same endpoints sum their weights. A non-positive ttl stores the edge
 // permanently (no decay); see expirationFromTTL.
 //
+// It returns the edge's post-accumulation effective weight (#897): the live
+// weight sum after this contribution was folded in, so an additive write can
+// read back its own running total without a follow-up GetEdge. This is a
+// serving-node local view — under active replication a peer may hold
+// contributions not yet streamed in — so treat it as a fast local estimate,
+// not a cluster-wide total.
+//
 // When the client was built WithIdempotentAdds, a transport-level retry of a
 // single AddEdge/AddEdgeAt call records the weight once (the SDK attaches a
 // stable per-call idempotency key); calling AddEdge twice yourself still
-// sums, as documented above.
-func (l *Lantern) AddEdge(ctx context.Context, tail string, head string, weight float32, ttl time.Duration) error {
+// sums, as documented above. On a dedup no-op the returned weight is the
+// current live sum.
+func (l *Lantern) AddEdge(ctx context.Context, tail string, head string, weight float32, ttl time.Duration) (float32, error) {
 	return l.AddEdgeAt(ctx, tail, head, weight, expirationFromTTL(ttl))
 }
 
 // AddEdgeAt is AddEdge with an absolute expiration.
-func (l *Lantern) AddEdgeAt(ctx context.Context, tail string, head string, weight float32, expiration time.Time) error {
+func (l *Lantern) AddEdgeAt(ctx context.Context, tail string, head string, weight float32, expiration time.Time) (float32, error) {
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	_, err := unary(ctx, l, &pb.AddEdgesRequest{
+	resp, err := unary(ctx, l, &pb.AddEdgesRequest{
 		Edges:      []*pb.Edge{{Tail: tail, Head: head, Weight: weight, Expiration: timestamppb.New(expiration)}},
 		ContribIds: l.nextContribIDs(1),
 	}, l.client.AddEdges)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	if ew := resp.GetEffectiveWeights(); len(ew) > 0 {
+		return ew[0], nil
+	}
+	return 0, nil
 }
 
 // AddEdges accumulates weight onto a batch of edges. Automatically chunked.
+//
+// It returns the per-edge post-accumulation effective weights (#897),
+// index-aligned with inputs — the live weight sum of each edge after its
+// contribution was applied. As with AddEdge this is a serving-node local
+// view. On error the slice is nil; use the *BatchError's Written field to
+// resume (see below).
 //
 // Partial-write semantics: chunks are sent sequentially. On failure the
 // returned error is a *BatchError whose Written field records the number of
@@ -473,15 +558,25 @@ func (l *Lantern) AddEdgeAt(ctx context.Context, tail string, head string, weigh
 // exactly once. That key is regenerated on each AddEdges invocation, so it
 // does not make an application-level resume/retry from index 0 idempotent —
 // use err.Written to resume, as above.
-func (l *Lantern) AddEdges(ctx context.Context, inputs []EdgeInput) error {
+func (l *Lantern) AddEdges(ctx context.Context, inputs []EdgeInput) ([]float32, error) {
 	if len(inputs) == 0 {
-		return nil
+		return nil, nil
 	}
+	effective := make([]float32, 0, len(inputs))
 	_, err := runBatchWrite(ctx, l, edgesFrom(inputs), func(ctx context.Context, chunk []*pb.Edge) (int32, error) {
-		_, err := unary(ctx, l, &pb.AddEdgesRequest{Edges: chunk, ContribIds: l.nextContribIDs(len(chunk))}, l.client.AddEdges)
-		return 0, err
+		resp, err := unary(ctx, l, &pb.AddEdgesRequest{Edges: chunk, ContribIds: l.nextContribIDs(len(chunk))}, l.client.AddEdges)
+		if err != nil {
+			return 0, err
+		}
+		// effective_weights is index-aligned per chunk; appending in chunk
+		// order keeps the aggregate aligned with inputs.
+		effective = append(effective, resp.GetEffectiveWeights()...)
+		return 0, nil
 	})
-	return err
+	if err != nil {
+		return nil, err
+	}
+	return effective, nil
 }
 
 // nextContribIDs returns n per-edge idempotency keys for one Add* request,

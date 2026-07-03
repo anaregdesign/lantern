@@ -215,6 +215,43 @@ func (r *radix) walkPrefix(prefix string, fn func(key string) bool) {
 	walkAll(node, &buf, fn)
 }
 
+// walkPrefixDesc is the descending-order sibling of walkPrefix (#898): it
+// visits every stored key that has prefix as a prefix in REVERSE lexicographic
+// order. Children are stored sorted, so descending order is a post-order walk
+// that recurses children high-to-low and emits a node's own terminal LAST —
+// the terminal is the shortest key in its subtree (a prefix sorts before its
+// extensions), so it is the smallest and therefore comes last descending.
+func (r *radix) walkPrefixDesc(prefix string, fn func(key string) bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	node, accumulated, ok := r.descend(prefix)
+	if !ok {
+		return
+	}
+	buf := append(make([]byte, 0, len(accumulated)+16), accumulated...)
+	walkAllDesc(node, &buf, fn)
+}
+
+// walkPrefixBoundDesc is the descending-order, seek-aware sibling of
+// walkPrefixBound (#898): it visits, in REVERSE lexicographic order, every
+// stored key that has prefix as a prefix AND sits below bound — strictly less
+// than bound when inclusive is false (the resume-after-cursor case a
+// descending page needs), or <= bound when inclusive is true. Children are
+// sorted, so whole subtrees above bound are skipped without being visited — a
+// resumed descending page costs O(depth + page), not O(everything above the
+// cursor). Descending callers pass the previous page's last (smallest) key as
+// bound; an empty bound matches nothing (every key is >= the empty string).
+func (r *radix) walkPrefixBoundDesc(prefix, bound string, inclusive bool, fn func(key string) bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	node, accumulated, ok := r.descend(prefix)
+	if !ok {
+		return
+	}
+	buf := append(make([]byte, 0, len(accumulated)+16), accumulated...)
+	walkBoundDesc(node, &buf, bound, inclusive, fn)
+}
+
 // walkPrefixBound is the seek-aware sibling of walkPrefix (#836): it visits,
 // in lexicographic order, every stored key that has prefix as a prefix AND
 // sits past bound — strictly greater when inclusive is false (the resume-
@@ -407,6 +444,110 @@ func walkAll(n *radixNode, buf *[]byte, fn func(string) bool) bool {
 		ok := walkAll(c, buf, fn)
 		*buf = (*buf)[:len(*buf)-len(c.label)]
 		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// walkAllDesc visits every terminal in the subtree rooted at n in REVERSE
+// lexicographic order (#898): the mirror of walkAll. It recurses the sorted
+// children high-to-low and emits n's own terminal LAST, since n's path is a
+// prefix of every child key and a prefix sorts before its extensions (so the
+// terminal is the smallest key in the subtree). Shared-buffer append/truncate
+// discipline and the false-aborts-the-walk contract are identical to walkAll.
+func walkAllDesc(n *radixNode, buf *[]byte, fn func(string) bool) bool {
+	for i := len(n.children) - 1; i >= 0; i-- {
+		c := n.children[i]
+		*buf = append(*buf, c.label...)
+		ok := walkAllDesc(c, buf, fn)
+		*buf = (*buf)[:len(*buf)-len(c.label)]
+		if !ok {
+			return false
+		}
+	}
+	if n.terminal {
+		if !fn(string(*buf)) {
+			return false
+		}
+	}
+	return true
+}
+
+// walkBoundDesc is the descending mirror of walkBound (#898): it visits, in
+// REVERSE lexicographic order, the terminals under n that satisfy the upper
+// bound (< bound, or <= bound when inclusive), pruning subtrees that provably
+// cannot. Every key below n starts with path = string(*buf) and is therefore
+// >= path, which drives the three path-vs-bound relationships:
+//
+//   - path > bound: every key below is >= path > bound, so none qualify —
+//     skip the whole subtree.
+//   - path is not a prefix of bound (and path <= bound): path diverges below
+//     bound, so every key below is < bound — walk it all descending.
+//   - path is a (possibly equal) prefix of bound: the boundary chain. When
+//     path == bound only the exact-match terminal qualifies, and only when
+//     inclusive (all children are strictly greater — skip them). Otherwise
+//     children are visited high-to-low; those above the boundary byte are
+//     skipped, the one straddling it recurses, those below it walk freely,
+//     and n's own terminal (a proper prefix of bound, hence < bound) is
+//     emitted LAST.
+func walkBoundDesc(n *radixNode, buf *[]byte, bound string, inclusive bool, fn func(string) bool) bool {
+	path := string(*buf)
+	if path > bound {
+		return true
+	}
+	if !strings.HasPrefix(bound, path) {
+		// path <= bound and diverges from it: everything below is < bound.
+		return walkAllDesc(n, buf, fn)
+	}
+	rest := bound[len(path):]
+	if rest == "" {
+		// path == bound: every child subtree is strictly greater (skip);
+		// the exact-match terminal qualifies only when inclusive.
+		if n.terminal && inclusive {
+			if !fn(path) {
+				return false
+			}
+		}
+		return true
+	}
+	// path is a proper prefix of bound. Iterate children high-to-low so the
+	// walk stays descending: children above the boundary byte are > bound
+	// (skip), the one at the boundary byte straddles (recurse), and children
+	// below it are entirely < bound (walk freely). Exactly one child can
+	// carry the boundary byte, since children are keyed by distinct first
+	// bytes.
+	for i := len(n.children) - 1; i >= 0; i-- {
+		c := n.children[i]
+		switch {
+		case c.label[0] > rest[0]:
+			// Subtree diverges above bound — every key > bound, skip.
+			continue
+		case c.label[0] == rest[0]:
+			// Straddling child — recurse; walkBoundDesc's own cases resolve
+			// whether the child's extended path lands above, below, or on
+			// the bound.
+			*buf = append(*buf, c.label...)
+			ok := walkBoundDesc(c, buf, bound, inclusive, fn)
+			*buf = (*buf)[:len(*buf)-len(c.label)]
+			if !ok {
+				return false
+			}
+		default:
+			// c.label[0] < rest[0]: subtree diverges below bound — every key
+			// < bound, walk it all descending.
+			*buf = append(*buf, c.label...)
+			ok := walkAllDesc(c, buf, fn)
+			*buf = (*buf)[:len(*buf)-len(c.label)]
+			if !ok {
+				return false
+			}
+		}
+	}
+	// n's terminal is a proper prefix of bound, hence strictly < bound — it is
+	// the smallest key in this subtree, so descending order emits it last.
+	if n.terminal {
+		if !fn(path) {
 			return false
 		}
 	}

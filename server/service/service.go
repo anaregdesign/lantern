@@ -695,10 +695,15 @@ func (s *LanternService) GetVertices(ctx context.Context, request *pb.GetVertice
 }
 
 func (s *LanternService) PutVertex(ctx context.Context, request *pb.PutVertexRequest) (*pb.PutVertexResponse, error) {
-	if _, err := s.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{request.GetVertex()}}); err != nil {
+	resp, err := s.PutVertices(ctx, &pb.PutVerticesRequest{
+		Vertices: []*pb.Vertex{request.GetVertex()},
+		IfAbsent: request.GetIfAbsent(),
+	})
+	if err != nil {
 		return nil, err
 	}
-	return &pb.PutVertexResponse{}, nil
+	// Unconditional puts always write; if_absent writes 0 or 1.
+	return &pb.PutVertexResponse{Written: resp.GetWritten() >= 1}, nil
 }
 
 func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVerticesRequest) (*pb.PutVerticesResponse, error) {
@@ -727,6 +732,31 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 	// mutation so a rejected batch is all-or-nothing.
 	if err := s.checkVertexCapacity(len(items)); err != nil {
 		return nil, err
+	}
+	// Conditional put (#896): write only keys with no live vertex. "Live"
+	// follows the #750 visibility rule, so an expired-but-uncollected vertex
+	// does not block the write. Under replication we stamp the accepted writes
+	// with the mutation's HLC and replicate only that subset as an
+	// unconditional LWW put — two concurrent if_absent writers both win
+	// locally, then converge via higher-HLC-wins (documented best-effort,
+	// like Redis SETNX with async replicas).
+	if request.GetIfAbsent() {
+		if s.clock != nil {
+			ts := s.clock.Now()
+			writtenIdx, skipped := s.cache.PutVerticesWithExpirationIfAbsentHLC(items, ts)
+			live := make([]*pb.Vertex, 0, len(writtenIdx))
+			for _, i := range writtenIdx {
+				if cache.IsLiveAt(items[i].Expiration, now) {
+					live = append(live, in[i])
+				}
+			}
+			if len(live) > 0 {
+				s.logMutationAt(&pb.MutationOp{Op: &pb.MutationOp_PutVertices{PutVertices: &pb.PutVerticesRequest{Vertices: live}}}, ts)
+			}
+			return &pb.PutVerticesResponse{Written: int32(len(writtenIdx)), SkippedKeys: skipped}, nil
+		}
+		written, skipped := s.cache.PutVerticesWithExpirationIfAbsent(items)
+		return &pb.PutVerticesResponse{Written: int32(written), SkippedKeys: skipped}, nil
 	}
 	// When replication is enabled (clock wired) every local write is stamped
 	// with the SAME HLC it is logged under, via the *HLC cache method, so the
@@ -848,10 +878,17 @@ func (s *LanternService) AddEdge(ctx context.Context, request *pb.AddEdgeRequest
 	if cid := request.GetContribId(); len(cid) > 0 {
 		batch.ContribIds = [][]byte{cid}
 	}
-	if _, err := s.AddEdges(ctx, batch); err != nil {
+	resp, err := s.AddEdges(ctx, batch)
+	if err != nil {
 		return nil, err
 	}
-	return &pb.AddEdgeResponse{}, nil
+	// Surface the single edge's post-accumulation live weight (#897) from the
+	// canonical plural response's index-aligned slice.
+	out := &pb.AddEdgeResponse{}
+	if ew := resp.GetEffectiveWeights(); len(ew) > 0 {
+		out.EffectiveWeight = ew[0]
+	}
+	return out, nil
 }
 
 func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesRequest) (*pb.AddEdgesResponse, error) {
@@ -898,6 +935,7 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 	// on the origin exactly as it is on every peer. The non-replicated path
 	// (clock nil) keeps the cheaper tombstone-free method.
 	var deduped int
+	var effective []float32
 	if s.clock != nil {
 		ts := s.clock.Now()
 		// Log FIRST so the per-origin seq this mutation commits under is
@@ -916,13 +954,17 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 				items[i].ContribID = contribIDFor(s.origin, seq, uint16(i))
 			}
 		}
-		deduped = s.cache.AddEdgesWithExpirationContribHLC(items, ts)
+		effective, deduped = s.cache.AddEdgesWithExpirationContribHLC(items, ts)
 		s.metrics.OnEdgeContribDeduped(deduped)
 	} else {
-		deduped = s.cache.AddEdgesWithExpirationContrib(items)
+		effective, deduped = s.cache.AddEdgesWithExpirationContrib(items)
 		s.metrics.OnEdgeContribDeduped(deduped)
 	}
-	return &pb.AddEdgesResponse{Written: int32(len(items))}, nil
+	// effective is the index-aligned post-accumulation live weight of each
+	// edge (#897), a serving-node local view (a replication peer may hold
+	// contributions not yet streamed in). It lets a client read back the
+	// running total of a windowed counter without a second GetEdge.
+	return &pb.AddEdgesResponse{Written: int32(len(items)), EffectiveWeights: effective}, nil
 }
 
 func (s *LanternService) PutEdge(ctx context.Context, request *pb.PutEdgeRequest) (*pb.PutEdgeResponse, error) {

@@ -202,6 +202,60 @@ func (Weighting) EnumDescriptor() ([]byte, []int) {
 	return file_graph_v1_graph_proto_rawDescGZIP(), []int{2}
 }
 
+// ScanOrder selects the key order a ScanVertices / ScanVertexKeys page walks
+// (#898). SCAN_ORDER_UNSPECIFIED preserves the historical behavior (ascending)
+// so an unset field is a no-op. DESC walks the same prefix range from the high
+// end, so "give me the newest N" on a timestamp-ordered keyspace is a single
+// bounded page instead of a full-prefix scan-then-sort.
+type ScanOrder int32
+
+const (
+	ScanOrder_SCAN_ORDER_UNSPECIFIED ScanOrder = 0 // = ASC (historical default)
+	ScanOrder_SCAN_ORDER_ASC         ScanOrder = 1
+	ScanOrder_SCAN_ORDER_DESC        ScanOrder = 2
+)
+
+// Enum value maps for ScanOrder.
+var (
+	ScanOrder_name = map[int32]string{
+		0: "SCAN_ORDER_UNSPECIFIED",
+		1: "SCAN_ORDER_ASC",
+		2: "SCAN_ORDER_DESC",
+	}
+	ScanOrder_value = map[string]int32{
+		"SCAN_ORDER_UNSPECIFIED": 0,
+		"SCAN_ORDER_ASC":         1,
+		"SCAN_ORDER_DESC":        2,
+	}
+)
+
+func (x ScanOrder) Enum() *ScanOrder {
+	p := new(ScanOrder)
+	*p = x
+	return p
+}
+
+func (x ScanOrder) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ScanOrder) Descriptor() protoreflect.EnumDescriptor {
+	return file_graph_v1_graph_proto_enumTypes[3].Descriptor()
+}
+
+func (ScanOrder) Type() protoreflect.EnumType {
+	return &file_graph_v1_graph_proto_enumTypes[3]
+}
+
+func (x ScanOrder) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ScanOrder.Descriptor instead.
+func (ScanOrder) EnumDescriptor() ([]byte, []int) {
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{3}
+}
+
 // MatchMode selects how a multi-word query's terms combine when choosing which
 // vertices match (#890). It governs membership only; BM25 still ranks whatever
 // matches. Coverage counts word-channel terms, so requiring "all" of a CJK run
@@ -249,11 +303,11 @@ func (x MatchMode) String() string {
 }
 
 func (MatchMode) Descriptor() protoreflect.EnumDescriptor {
-	return file_graph_v1_graph_proto_enumTypes[3].Descriptor()
+	return file_graph_v1_graph_proto_enumTypes[4].Descriptor()
 }
 
 func (MatchMode) Type() protoreflect.EnumType {
-	return &file_graph_v1_graph_proto_enumTypes[3]
+	return &file_graph_v1_graph_proto_enumTypes[4]
 }
 
 func (x MatchMode) Number() protoreflect.EnumNumber {
@@ -262,7 +316,65 @@ func (x MatchMode) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use MatchMode.Descriptor instead.
 func (MatchMode) EnumDescriptor() ([]byte, []int) {
-	return file_graph_v1_graph_proto_rawDescGZIP(), []int{3}
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{4}
+}
+
+// Direction selects which incident edges count toward a vertex's degree.
+type TopVerticesByDegreeRequest_Direction int32
+
+const (
+	// DIRECTION_UNSPECIFIED defaults to out-degree server-side.
+	TopVerticesByDegreeRequest_DIRECTION_UNSPECIFIED TopVerticesByDegreeRequest_Direction = 0
+	// DIRECTION_OUT counts edges leaving the vertex (the vertex as tail).
+	TopVerticesByDegreeRequest_DIRECTION_OUT TopVerticesByDegreeRequest_Direction = 1
+	// DIRECTION_IN counts edges entering the vertex (the vertex as head).
+	TopVerticesByDegreeRequest_DIRECTION_IN TopVerticesByDegreeRequest_Direction = 2
+	// DIRECTION_BOTH counts edges in either direction (out-degree +
+	// in-degree; a self-loop counts twice).
+	TopVerticesByDegreeRequest_DIRECTION_BOTH TopVerticesByDegreeRequest_Direction = 3
+)
+
+// Enum value maps for TopVerticesByDegreeRequest_Direction.
+var (
+	TopVerticesByDegreeRequest_Direction_name = map[int32]string{
+		0: "DIRECTION_UNSPECIFIED",
+		1: "DIRECTION_OUT",
+		2: "DIRECTION_IN",
+		3: "DIRECTION_BOTH",
+	}
+	TopVerticesByDegreeRequest_Direction_value = map[string]int32{
+		"DIRECTION_UNSPECIFIED": 0,
+		"DIRECTION_OUT":         1,
+		"DIRECTION_IN":          2,
+		"DIRECTION_BOTH":        3,
+	}
+)
+
+func (x TopVerticesByDegreeRequest_Direction) Enum() *TopVerticesByDegreeRequest_Direction {
+	p := new(TopVerticesByDegreeRequest_Direction)
+	*p = x
+	return p
+}
+
+func (x TopVerticesByDegreeRequest_Direction) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (TopVerticesByDegreeRequest_Direction) Descriptor() protoreflect.EnumDescriptor {
+	return file_graph_v1_graph_proto_enumTypes[5].Descriptor()
+}
+
+func (TopVerticesByDegreeRequest_Direction) Type() protoreflect.EnumType {
+	return &file_graph_v1_graph_proto_enumTypes[5]
+}
+
+func (x TopVerticesByDegreeRequest_Direction) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use TopVerticesByDegreeRequest_Direction.Descriptor instead.
+func (TopVerticesByDegreeRequest_Direction) EnumDescriptor() ([]byte, []int) {
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{32, 0}
 }
 
 type ReplicationPeer_State int32
@@ -312,11 +424,11 @@ func (x ReplicationPeer_State) String() string {
 }
 
 func (ReplicationPeer_State) Descriptor() protoreflect.EnumDescriptor {
-	return file_graph_v1_graph_proto_enumTypes[4].Descriptor()
+	return file_graph_v1_graph_proto_enumTypes[6].Descriptor()
 }
 
 func (ReplicationPeer_State) Type() protoreflect.EnumType {
-	return &file_graph_v1_graph_proto_enumTypes[4]
+	return &file_graph_v1_graph_proto_enumTypes[6]
 }
 
 func (x ReplicationPeer_State) Number() protoreflect.EnumNumber {
@@ -325,7 +437,7 @@ func (x ReplicationPeer_State) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ReplicationPeer_State.Descriptor instead.
 func (ReplicationPeer_State) EnumDescriptor() ([]byte, []int) {
-	return file_graph_v1_graph_proto_rawDescGZIP(), []int{53, 0}
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{57, 0}
 }
 
 type Vertex struct {
@@ -1342,8 +1454,11 @@ func (x *GetVerticesResponse) GetMissing() []string {
 // the TTL (absolute time). This is the singular convenience wrapper over
 // PutVertices and shares its guard rails.
 type PutVertexRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Vertex        *Vertex                `protobuf:"bytes,1,opt,name=vertex,proto3" json:"vertex,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Vertex *Vertex                `protobuf:"bytes,1,opt,name=vertex,proto3" json:"vertex,omitempty"`
+	// When true, the write applies only if no live vertex exists at the key.
+	// An existing live vertex leaves value and expiration untouched (SET NX).
+	IfAbsent      bool `protobuf:"varint,2,opt,name=if_absent,json=ifAbsent,proto3" json:"if_absent,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1385,8 +1500,18 @@ func (x *PutVertexRequest) GetVertex() *Vertex {
 	return nil
 }
 
+func (x *PutVertexRequest) GetIfAbsent() bool {
+	if x != nil {
+		return x.IfAbsent
+	}
+	return false
+}
+
 type PutVertexResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// True when the write was applied; false when if_absent skipped it because
+	// a live vertex already existed. Always true for an unconditional put.
+	Written       bool `protobuf:"varint,1,opt,name=written,proto3" json:"written,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1421,12 +1546,23 @@ func (*PutVertexResponse) Descriptor() ([]byte, []int) {
 	return file_graph_v1_graph_proto_rawDescGZIP(), []int{13}
 }
 
+func (x *PutVertexResponse) GetWritten() bool {
+	if x != nil {
+		return x.Written
+	}
+	return false
+}
+
 // PutVerticesRequest writes vertices with upsert semantics: each Vertex.key
 // replaces any existing value at that key. Use the Vertex.expiration field
 // (absolute time) to control TTL.
 type PutVerticesRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Vertices      []*Vertex              `protobuf:"bytes,1,rep,name=vertices,proto3" json:"vertices,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Vertices []*Vertex              `protobuf:"bytes,1,rep,name=vertices,proto3" json:"vertices,omitempty"`
+	// When true, each write applies only if no live vertex exists at its key;
+	// keys with a live vertex are left untouched and reported in
+	// PutVerticesResponse.skipped_keys.
+	IfAbsent      bool `protobuf:"varint,2,opt,name=if_absent,json=ifAbsent,proto3" json:"if_absent,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1468,12 +1604,20 @@ func (x *PutVerticesRequest) GetVertices() []*Vertex {
 	return nil
 }
 
+func (x *PutVerticesRequest) GetIfAbsent() bool {
+	if x != nil {
+		return x.IfAbsent
+	}
+	return false
+}
+
 type PutVerticesResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Number of vertices accepted by the server. Currently always equals the
-	// request size on success; reserved for future per-item validation that may
-	// report partial writes.
-	Written       int32 `protobuf:"varint,1,opt,name=written,proto3" json:"written,omitempty"`
+	// Number of vertices actually written. For an unconditional put this equals
+	// the request size on success; under if_absent it excludes skipped keys.
+	Written int32 `protobuf:"varint,1,opt,name=written,proto3" json:"written,omitempty"`
+	// Keys skipped because a live vertex already existed (if_absent only).
+	SkippedKeys   []string `protobuf:"bytes,2,rep,name=skipped_keys,json=skippedKeys,proto3" json:"skipped_keys,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1513,6 +1657,13 @@ func (x *PutVerticesResponse) GetWritten() int32 {
 		return x.Written
 	}
 	return 0
+}
+
+func (x *PutVerticesResponse) GetSkippedKeys() []string {
+	if x != nil {
+		return x.SkippedKeys
+	}
+	return nil
 }
 
 // DeleteVertexRequest removes the vertex at `key`. Edges incident to the
@@ -1713,7 +1864,12 @@ type ScanVerticesRequest struct {
 	// NOTE: opaque to the caller; not interchangeable with cursors from
 	// other Scan* RPCs (e.g. ScanEdges). Cross-feeding is rejected with
 	// INVALID_ARGUMENT rather than silently restarting the scan.
-	Cursor        []byte `protobuf:"bytes,3,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	Cursor []byte `protobuf:"bytes,3,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	// order selects ascending (default) or descending key order. The cursor
+	// is order-bound: a next_cursor minted by an ascending page is rejected
+	// with INVALID_ARGUMENT if fed back into a descending scan (and vice
+	// versa), matching the cross-RPC cursor-rejection precedent.
+	Order         ScanOrder `protobuf:"varint,4,opt,name=order,proto3,enum=graph.v1.ScanOrder" json:"order,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1769,9 +1925,17 @@ func (x *ScanVerticesRequest) GetCursor() []byte {
 	return nil
 }
 
+func (x *ScanVerticesRequest) GetOrder() ScanOrder {
+	if x != nil {
+		return x.Order
+	}
+	return ScanOrder_SCAN_ORDER_UNSPECIFIED
+}
+
 type ScanVerticesResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// vertices returned in ascending key order. May be shorter than `limit`
+	// vertices returned in the requested key order (ascending by default,
+	// descending when order = SCAN_ORDER_DESC). May be shorter than `limit`
 	// when the underlying range is exhausted.
 	Vertices []*Vertex `protobuf:"bytes,1,rep,name=vertices,proto3" json:"vertices,omitempty"`
 	// next_cursor is non-empty when more results are available. An empty
@@ -1846,7 +2010,10 @@ type ScanVertexKeysRequest struct {
 	// with cursors from other Scan* RPCs (ScanVertices / ScanEdges).
 	// Cross-feeding is rejected with INVALID_ARGUMENT. An empty cursor starts
 	// from the beginning.
-	Cursor        []byte `protobuf:"bytes,3,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	Cursor []byte `protobuf:"bytes,3,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	// order selects ascending (default) or descending key order, with the
+	// same order-bound cursor rule as ScanVertices.
+	Order         ScanOrder `protobuf:"varint,4,opt,name=order,proto3,enum=graph.v1.ScanOrder" json:"order,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1902,10 +2069,18 @@ func (x *ScanVertexKeysRequest) GetCursor() []byte {
 	return nil
 }
 
+func (x *ScanVertexKeysRequest) GetOrder() ScanOrder {
+	if x != nil {
+		return x.Order
+	}
+	return ScanOrder_SCAN_ORDER_UNSPECIFIED
+}
+
 type ScanVertexKeysResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// keys returned in ascending lexicographic order. May be shorter than
-	// `limit` when the underlying range is exhausted.
+	// keys returned in the requested order (ascending by default, descending
+	// when order = SCAN_ORDER_DESC). May be shorter than `limit` when the
+	// underlying range is exhausted.
 	Keys []string `protobuf:"bytes,1,rep,name=keys,proto3" json:"keys,omitempty"`
 	// next_cursor is non-empty when more results are available. An empty
 	// value signals end of stream.
@@ -2435,6 +2610,136 @@ func (x *DeleteVerticesByPrefixResponse) GetDeleted() uint64 {
 	return 0
 }
 
+// TopVerticesByDegreeRequest ranks the most-connected vertices under a key
+// prefix by their (weighted) degree — the seed-selection question a cold-start
+// visualization or recommendation front end hits when it has no better anchor
+// (#900). It exposes the degree index the store already maintains for BM25
+// edge weighting rather than shipping the whole subgraph over the wire.
+type TopVerticesByDegreeRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// prefix is required and must be non-empty: there is no whole-graph ranking
+	// (an empty prefix is rejected with INVALID_ARGUMENT). Only vertices whose
+	// key starts with prefix are candidates.
+	Prefix string `protobuf:"bytes,1,opt,name=prefix,proto3" json:"prefix,omitempty"`
+	// k caps the number of ranked entries returned. 0 lets the server apply its
+	// configured default; the server also clamps k to a hard cap (see
+	// ScanConfig), mirroring the scan `limit` knobs.
+	K         uint32                               `protobuf:"varint,2,opt,name=k,proto3" json:"k,omitempty"`
+	Direction TopVerticesByDegreeRequest_Direction `protobuf:"varint,3,opt,name=direction,proto3,enum=graph.v1.TopVerticesByDegreeRequest_Direction" json:"direction,omitempty"`
+	// weighted ranks by the summed live edge weight in the chosen direction
+	// instead of the raw live edge count.
+	Weighted      bool `protobuf:"varint,4,opt,name=weighted,proto3" json:"weighted,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TopVerticesByDegreeRequest) Reset() {
+	*x = TopVerticesByDegreeRequest{}
+	mi := &file_graph_v1_graph_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TopVerticesByDegreeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TopVerticesByDegreeRequest) ProtoMessage() {}
+
+func (x *TopVerticesByDegreeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_graph_v1_graph_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TopVerticesByDegreeRequest.ProtoReflect.Descriptor instead.
+func (*TopVerticesByDegreeRequest) Descriptor() ([]byte, []int) {
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *TopVerticesByDegreeRequest) GetPrefix() string {
+	if x != nil {
+		return x.Prefix
+	}
+	return ""
+}
+
+func (x *TopVerticesByDegreeRequest) GetK() uint32 {
+	if x != nil {
+		return x.K
+	}
+	return 0
+}
+
+func (x *TopVerticesByDegreeRequest) GetDirection() TopVerticesByDegreeRequest_Direction {
+	if x != nil {
+		return x.Direction
+	}
+	return TopVerticesByDegreeRequest_DIRECTION_UNSPECIFIED
+}
+
+func (x *TopVerticesByDegreeRequest) GetWeighted() bool {
+	if x != nil {
+		return x.Weighted
+	}
+	return false
+}
+
+// TopVerticesByDegreeResponse lists the ranked vertices in descending order of
+// the chosen metric (weighted_degree when the request set `weighted`, else
+// degree). Counts follow the live-visibility rule (#750): expired vertices and
+// fully decayed edges do not contribute. Results are point-in-time
+// best-effort, like GetServerStatus counts.
+type TopVerticesByDegreeResponse struct {
+	state         protoimpl.MessageState               `protogen:"open.v1"`
+	Entries       []*TopVerticesByDegreeResponse_Entry `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TopVerticesByDegreeResponse) Reset() {
+	*x = TopVerticesByDegreeResponse{}
+	mi := &file_graph_v1_graph_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TopVerticesByDegreeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TopVerticesByDegreeResponse) ProtoMessage() {}
+
+func (x *TopVerticesByDegreeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_graph_v1_graph_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TopVerticesByDegreeResponse.ProtoReflect.Descriptor instead.
+func (*TopVerticesByDegreeResponse) Descriptor() ([]byte, []int) {
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *TopVerticesByDegreeResponse) GetEntries() []*TopVerticesByDegreeResponse_Entry {
+	if x != nil {
+		return x.Entries
+	}
+	return nil
+}
+
 type GetEdgeRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Tail          string                 `protobuf:"bytes,1,opt,name=tail,proto3" json:"tail,omitempty"`
@@ -2445,7 +2750,7 @@ type GetEdgeRequest struct {
 
 func (x *GetEdgeRequest) Reset() {
 	*x = GetEdgeRequest{}
-	mi := &file_graph_v1_graph_proto_msgTypes[32]
+	mi := &file_graph_v1_graph_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2457,7 +2762,7 @@ func (x *GetEdgeRequest) String() string {
 func (*GetEdgeRequest) ProtoMessage() {}
 
 func (x *GetEdgeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_graph_proto_msgTypes[32]
+	mi := &file_graph_v1_graph_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2470,7 +2775,7 @@ func (x *GetEdgeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetEdgeRequest.ProtoReflect.Descriptor instead.
 func (*GetEdgeRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_graph_proto_rawDescGZIP(), []int{32}
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *GetEdgeRequest) GetTail() string {
@@ -2496,7 +2801,7 @@ type GetEdgeResponse struct {
 
 func (x *GetEdgeResponse) Reset() {
 	*x = GetEdgeResponse{}
-	mi := &file_graph_v1_graph_proto_msgTypes[33]
+	mi := &file_graph_v1_graph_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2508,7 +2813,7 @@ func (x *GetEdgeResponse) String() string {
 func (*GetEdgeResponse) ProtoMessage() {}
 
 func (x *GetEdgeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_graph_proto_msgTypes[33]
+	mi := &file_graph_v1_graph_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2521,7 +2826,7 @@ func (x *GetEdgeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetEdgeResponse.ProtoReflect.Descriptor instead.
 func (*GetEdgeResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_graph_proto_rawDescGZIP(), []int{33}
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *GetEdgeResponse) GetEdge() *Edge {
@@ -2542,7 +2847,7 @@ type GetEdgesRequest struct {
 
 func (x *GetEdgesRequest) Reset() {
 	*x = GetEdgesRequest{}
-	mi := &file_graph_v1_graph_proto_msgTypes[34]
+	mi := &file_graph_v1_graph_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2554,7 +2859,7 @@ func (x *GetEdgesRequest) String() string {
 func (*GetEdgesRequest) ProtoMessage() {}
 
 func (x *GetEdgesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_graph_proto_msgTypes[34]
+	mi := &file_graph_v1_graph_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2567,7 +2872,7 @@ func (x *GetEdgesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetEdgesRequest.ProtoReflect.Descriptor instead.
 func (*GetEdgesRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_graph_proto_rawDescGZIP(), []int{34}
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *GetEdgesRequest) GetEdges() []*EdgeKey {
@@ -2592,7 +2897,7 @@ type GetEdgesResponse struct {
 
 func (x *GetEdgesResponse) Reset() {
 	*x = GetEdgesResponse{}
-	mi := &file_graph_v1_graph_proto_msgTypes[35]
+	mi := &file_graph_v1_graph_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2604,7 +2909,7 @@ func (x *GetEdgesResponse) String() string {
 func (*GetEdgesResponse) ProtoMessage() {}
 
 func (x *GetEdgesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_graph_proto_msgTypes[35]
+	mi := &file_graph_v1_graph_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2617,7 +2922,7 @@ func (x *GetEdgesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetEdgesResponse.ProtoReflect.Descriptor instead.
 func (*GetEdgesResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_graph_proto_rawDescGZIP(), []int{35}
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *GetEdgesResponse) GetEdges() []*Edge {
@@ -2644,7 +2949,7 @@ type DeleteEdgeRequest struct {
 
 func (x *DeleteEdgeRequest) Reset() {
 	*x = DeleteEdgeRequest{}
-	mi := &file_graph_v1_graph_proto_msgTypes[36]
+	mi := &file_graph_v1_graph_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2656,7 +2961,7 @@ func (x *DeleteEdgeRequest) String() string {
 func (*DeleteEdgeRequest) ProtoMessage() {}
 
 func (x *DeleteEdgeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_graph_proto_msgTypes[36]
+	mi := &file_graph_v1_graph_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2669,7 +2974,7 @@ func (x *DeleteEdgeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteEdgeRequest.ProtoReflect.Descriptor instead.
 func (*DeleteEdgeRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_graph_proto_rawDescGZIP(), []int{36}
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *DeleteEdgeRequest) GetTail() string {
@@ -2696,7 +3001,7 @@ type DeleteEdgeResponse struct {
 
 func (x *DeleteEdgeResponse) Reset() {
 	*x = DeleteEdgeResponse{}
-	mi := &file_graph_v1_graph_proto_msgTypes[37]
+	mi := &file_graph_v1_graph_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2708,7 +3013,7 @@ func (x *DeleteEdgeResponse) String() string {
 func (*DeleteEdgeResponse) ProtoMessage() {}
 
 func (x *DeleteEdgeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_graph_proto_msgTypes[37]
+	mi := &file_graph_v1_graph_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2721,7 +3026,7 @@ func (x *DeleteEdgeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteEdgeResponse.ProtoReflect.Descriptor instead.
 func (*DeleteEdgeResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_graph_proto_rawDescGZIP(), []int{37}
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *DeleteEdgeResponse) GetExisted() bool {
@@ -2742,7 +3047,7 @@ type EdgeKey struct {
 
 func (x *EdgeKey) Reset() {
 	*x = EdgeKey{}
-	mi := &file_graph_v1_graph_proto_msgTypes[38]
+	mi := &file_graph_v1_graph_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2754,7 +3059,7 @@ func (x *EdgeKey) String() string {
 func (*EdgeKey) ProtoMessage() {}
 
 func (x *EdgeKey) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_graph_proto_msgTypes[38]
+	mi := &file_graph_v1_graph_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2767,7 +3072,7 @@ func (x *EdgeKey) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EdgeKey.ProtoReflect.Descriptor instead.
 func (*EdgeKey) Descriptor() ([]byte, []int) {
-	return file_graph_v1_graph_proto_rawDescGZIP(), []int{38}
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *EdgeKey) GetTail() string {
@@ -2813,7 +3118,7 @@ type ScanEdgesRequest struct {
 
 func (x *ScanEdgesRequest) Reset() {
 	*x = ScanEdgesRequest{}
-	mi := &file_graph_v1_graph_proto_msgTypes[39]
+	mi := &file_graph_v1_graph_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2825,7 +3130,7 @@ func (x *ScanEdgesRequest) String() string {
 func (*ScanEdgesRequest) ProtoMessage() {}
 
 func (x *ScanEdgesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_graph_proto_msgTypes[39]
+	mi := &file_graph_v1_graph_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2838,7 +3143,7 @@ func (x *ScanEdgesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScanEdgesRequest.ProtoReflect.Descriptor instead.
 func (*ScanEdgesRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_graph_proto_rawDescGZIP(), []int{39}
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *ScanEdgesRequest) GetTailPrefix() string {
@@ -2883,7 +3188,7 @@ type ScanEdgesResponse struct {
 
 func (x *ScanEdgesResponse) Reset() {
 	*x = ScanEdgesResponse{}
-	mi := &file_graph_v1_graph_proto_msgTypes[40]
+	mi := &file_graph_v1_graph_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2895,7 +3200,7 @@ func (x *ScanEdgesResponse) String() string {
 func (*ScanEdgesResponse) ProtoMessage() {}
 
 func (x *ScanEdgesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_graph_proto_msgTypes[40]
+	mi := &file_graph_v1_graph_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2908,7 +3213,7 @@ func (x *ScanEdgesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScanEdgesResponse.ProtoReflect.Descriptor instead.
 func (*ScanEdgesResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_graph_proto_rawDescGZIP(), []int{40}
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *ScanEdgesResponse) GetEdges() []*Edge {
@@ -2936,7 +3241,7 @@ type DeleteEdgesRequest struct {
 
 func (x *DeleteEdgesRequest) Reset() {
 	*x = DeleteEdgesRequest{}
-	mi := &file_graph_v1_graph_proto_msgTypes[41]
+	mi := &file_graph_v1_graph_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2948,7 +3253,7 @@ func (x *DeleteEdgesRequest) String() string {
 func (*DeleteEdgesRequest) ProtoMessage() {}
 
 func (x *DeleteEdgesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_graph_proto_msgTypes[41]
+	mi := &file_graph_v1_graph_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2961,7 +3266,7 @@ func (x *DeleteEdgesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteEdgesRequest.ProtoReflect.Descriptor instead.
 func (*DeleteEdgesRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_graph_proto_rawDescGZIP(), []int{41}
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *DeleteEdgesRequest) GetEdges() []*EdgeKey {
@@ -2981,7 +3286,7 @@ type DeleteEdgesResponse struct {
 
 func (x *DeleteEdgesResponse) Reset() {
 	*x = DeleteEdgesResponse{}
-	mi := &file_graph_v1_graph_proto_msgTypes[42]
+	mi := &file_graph_v1_graph_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2993,7 +3298,7 @@ func (x *DeleteEdgesResponse) String() string {
 func (*DeleteEdgesResponse) ProtoMessage() {}
 
 func (x *DeleteEdgesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_graph_proto_msgTypes[42]
+	mi := &file_graph_v1_graph_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3006,10 +3311,137 @@ func (x *DeleteEdgesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteEdgesResponse.ProtoReflect.Descriptor instead.
 func (*DeleteEdgesResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_graph_proto_rawDescGZIP(), []int{42}
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *DeleteEdgesResponse) GetDeleted() int32 {
+	if x != nil {
+		return x.Deleted
+	}
+	return 0
+}
+
+// DeleteEdgesByPrefixRequest deletes up to `limit` live edges whose tail key
+// starts with `tail_prefix` AND whose head key starts with `head_prefix`.
+// Either prefix may be empty to disable the corresponding filter, but at
+// least one MUST be non-empty — an all-empty request is rejected with
+// INVALID_ARGUMENT so a bulk edge wipe is always explicitly scoped. `limit ==
+// 0` lets the server apply its configured default (see ScanConfig); callers
+// loop on the returned `deleted` count until it reaches zero to drain a large
+// matching set. When `dry_run` is true, no deletion is performed and the
+// response reports the number that *would* be deleted (capped at the same
+// effective limit).
+//
+// Implementation note: like ScanEdges, v1 walks the tail-side prefix index
+// and applies `head_prefix` as a post-filter; a highly selective
+// `head_prefix` may visit many tails to reach `limit`. Latency is reported in
+// the standard scan histogram so operators can spot pathological filters.
+type DeleteEdgesByPrefixRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TailPrefix    string                 `protobuf:"bytes,1,opt,name=tail_prefix,json=tailPrefix,proto3" json:"tail_prefix,omitempty"`
+	HeadPrefix    string                 `protobuf:"bytes,2,opt,name=head_prefix,json=headPrefix,proto3" json:"head_prefix,omitempty"`
+	Limit         uint32                 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
+	DryRun        bool                   `protobuf:"varint,4,opt,name=dry_run,json=dryRun,proto3" json:"dry_run,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteEdgesByPrefixRequest) Reset() {
+	*x = DeleteEdgesByPrefixRequest{}
+	mi := &file_graph_v1_graph_proto_msgTypes[45]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteEdgesByPrefixRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteEdgesByPrefixRequest) ProtoMessage() {}
+
+func (x *DeleteEdgesByPrefixRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_graph_v1_graph_proto_msgTypes[45]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteEdgesByPrefixRequest.ProtoReflect.Descriptor instead.
+func (*DeleteEdgesByPrefixRequest) Descriptor() ([]byte, []int) {
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{45}
+}
+
+func (x *DeleteEdgesByPrefixRequest) GetTailPrefix() string {
+	if x != nil {
+		return x.TailPrefix
+	}
+	return ""
+}
+
+func (x *DeleteEdgesByPrefixRequest) GetHeadPrefix() string {
+	if x != nil {
+		return x.HeadPrefix
+	}
+	return ""
+}
+
+func (x *DeleteEdgesByPrefixRequest) GetLimit() uint32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+func (x *DeleteEdgesByPrefixRequest) GetDryRun() bool {
+	if x != nil {
+		return x.DryRun
+	}
+	return false
+}
+
+type DeleteEdgesByPrefixResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Deleted       uint64                 `protobuf:"varint,1,opt,name=deleted,proto3" json:"deleted,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteEdgesByPrefixResponse) Reset() {
+	*x = DeleteEdgesByPrefixResponse{}
+	mi := &file_graph_v1_graph_proto_msgTypes[46]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteEdgesByPrefixResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteEdgesByPrefixResponse) ProtoMessage() {}
+
+func (x *DeleteEdgesByPrefixResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_graph_v1_graph_proto_msgTypes[46]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteEdgesByPrefixResponse.ProtoReflect.Descriptor instead.
+func (*DeleteEdgesByPrefixResponse) Descriptor() ([]byte, []int) {
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{46}
+}
+
+func (x *DeleteEdgesByPrefixResponse) GetDeleted() uint64 {
 	if x != nil {
 		return x.Deleted
 	}
@@ -3038,7 +3470,7 @@ type AddEdgeRequest struct {
 
 func (x *AddEdgeRequest) Reset() {
 	*x = AddEdgeRequest{}
-	mi := &file_graph_v1_graph_proto_msgTypes[43]
+	mi := &file_graph_v1_graph_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3050,7 +3482,7 @@ func (x *AddEdgeRequest) String() string {
 func (*AddEdgeRequest) ProtoMessage() {}
 
 func (x *AddEdgeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_graph_proto_msgTypes[43]
+	mi := &file_graph_v1_graph_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3063,7 +3495,7 @@ func (x *AddEdgeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddEdgeRequest.ProtoReflect.Descriptor instead.
 func (*AddEdgeRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_graph_proto_rawDescGZIP(), []int{43}
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *AddEdgeRequest) GetEdge() *Edge {
@@ -3081,14 +3513,24 @@ func (x *AddEdgeRequest) GetContribId() []byte {
 }
 
 type AddEdgeResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// effective_weight is the sum of live contributions on (tail, head)
+	// immediately after applying (or, when contrib_id dedupes a replay, after
+	// observing) this request, as seen by the serving node. This turns AddEdge
+	// into a race-free increment-then-check counter: a caller writing
+	// weight=1 with a TTL reads back the rolling-window count in one round trip
+	// and can enforce a cap without a separate GetEdge. When contrib_id makes
+	// the add a no-op, this is the current live sum (the value a retry wants).
+	// Note: with replication enabled the value is the serving node's local view
+	// at apply time — the same async-replica caveat as a Redis INCR read.
+	EffectiveWeight float32 `protobuf:"fixed32,1,opt,name=effective_weight,json=effectiveWeight,proto3" json:"effective_weight,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *AddEdgeResponse) Reset() {
 	*x = AddEdgeResponse{}
-	mi := &file_graph_v1_graph_proto_msgTypes[44]
+	mi := &file_graph_v1_graph_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3100,7 +3542,7 @@ func (x *AddEdgeResponse) String() string {
 func (*AddEdgeResponse) ProtoMessage() {}
 
 func (x *AddEdgeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_graph_proto_msgTypes[44]
+	mi := &file_graph_v1_graph_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3113,7 +3555,14 @@ func (x *AddEdgeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddEdgeResponse.ProtoReflect.Descriptor instead.
 func (*AddEdgeResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_graph_proto_rawDescGZIP(), []int{44}
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{48}
+}
+
+func (x *AddEdgeResponse) GetEffectiveWeight() float32 {
+	if x != nil {
+		return x.EffectiveWeight
+	}
+	return 0
 }
 
 // AddEdgesRequest accumulates weight onto each (tail, head) pair: repeated
@@ -3136,7 +3585,7 @@ type AddEdgesRequest struct {
 
 func (x *AddEdgesRequest) Reset() {
 	*x = AddEdgesRequest{}
-	mi := &file_graph_v1_graph_proto_msgTypes[45]
+	mi := &file_graph_v1_graph_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3148,7 +3597,7 @@ func (x *AddEdgesRequest) String() string {
 func (*AddEdgesRequest) ProtoMessage() {}
 
 func (x *AddEdgesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_graph_proto_msgTypes[45]
+	mi := &file_graph_v1_graph_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3161,7 +3610,7 @@ func (x *AddEdgesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddEdgesRequest.ProtoReflect.Descriptor instead.
 func (*AddEdgesRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_graph_proto_rawDescGZIP(), []int{45}
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *AddEdgesRequest) GetEdges() []*Edge {
@@ -3181,14 +3630,20 @@ func (x *AddEdgesRequest) GetContribIds() [][]byte {
 type AddEdgesResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Number of edges whose weight contributions were accepted.
-	Written       int32 `protobuf:"varint,1,opt,name=written,proto3" json:"written,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Written int32 `protobuf:"varint,1,opt,name=written,proto3" json:"written,omitempty"`
+	// effective_weights is index-aligned with the request edges: entry i is the
+	// sum of live contributions on edges[i]'s (tail, head) immediately after
+	// applying (or deduping) it, as seen by the serving node. Empty only for an
+	// empty request. See AddEdgeResponse.effective_weight for the counter
+	// semantics and the replication caveat.
+	EffectiveWeights []float32 `protobuf:"fixed32,2,rep,packed,name=effective_weights,json=effectiveWeights,proto3" json:"effective_weights,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *AddEdgesResponse) Reset() {
 	*x = AddEdgesResponse{}
-	mi := &file_graph_v1_graph_proto_msgTypes[46]
+	mi := &file_graph_v1_graph_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3200,7 +3655,7 @@ func (x *AddEdgesResponse) String() string {
 func (*AddEdgesResponse) ProtoMessage() {}
 
 func (x *AddEdgesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_graph_proto_msgTypes[46]
+	mi := &file_graph_v1_graph_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3213,7 +3668,7 @@ func (x *AddEdgesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddEdgesResponse.ProtoReflect.Descriptor instead.
 func (*AddEdgesResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_graph_proto_rawDescGZIP(), []int{46}
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *AddEdgesResponse) GetWritten() int32 {
@@ -3221,6 +3676,13 @@ func (x *AddEdgesResponse) GetWritten() int32 {
 		return x.Written
 	}
 	return 0
+}
+
+func (x *AddEdgesResponse) GetEffectiveWeights() []float32 {
+	if x != nil {
+		return x.EffectiveWeights
+	}
+	return nil
 }
 
 // PutEdgeRequest overwrites a single (tail, head) pair, replacing any
@@ -3235,7 +3697,7 @@ type PutEdgeRequest struct {
 
 func (x *PutEdgeRequest) Reset() {
 	*x = PutEdgeRequest{}
-	mi := &file_graph_v1_graph_proto_msgTypes[47]
+	mi := &file_graph_v1_graph_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3247,7 +3709,7 @@ func (x *PutEdgeRequest) String() string {
 func (*PutEdgeRequest) ProtoMessage() {}
 
 func (x *PutEdgeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_graph_proto_msgTypes[47]
+	mi := &file_graph_v1_graph_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3260,7 +3722,7 @@ func (x *PutEdgeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutEdgeRequest.ProtoReflect.Descriptor instead.
 func (*PutEdgeRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_graph_proto_rawDescGZIP(), []int{47}
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *PutEdgeRequest) GetEdge() *Edge {
@@ -3278,7 +3740,7 @@ type PutEdgeResponse struct {
 
 func (x *PutEdgeResponse) Reset() {
 	*x = PutEdgeResponse{}
-	mi := &file_graph_v1_graph_proto_msgTypes[48]
+	mi := &file_graph_v1_graph_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3290,7 +3752,7 @@ func (x *PutEdgeResponse) String() string {
 func (*PutEdgeResponse) ProtoMessage() {}
 
 func (x *PutEdgeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_graph_proto_msgTypes[48]
+	mi := &file_graph_v1_graph_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3303,7 +3765,7 @@ func (x *PutEdgeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutEdgeResponse.ProtoReflect.Descriptor instead.
 func (*PutEdgeResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_graph_proto_rawDescGZIP(), []int{48}
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{52}
 }
 
 // PutEdgesRequest overwrites each (tail, head) pair, replacing any existing
@@ -3317,7 +3779,7 @@ type PutEdgesRequest struct {
 
 func (x *PutEdgesRequest) Reset() {
 	*x = PutEdgesRequest{}
-	mi := &file_graph_v1_graph_proto_msgTypes[49]
+	mi := &file_graph_v1_graph_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3329,7 +3791,7 @@ func (x *PutEdgesRequest) String() string {
 func (*PutEdgesRequest) ProtoMessage() {}
 
 func (x *PutEdgesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_graph_proto_msgTypes[49]
+	mi := &file_graph_v1_graph_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3342,7 +3804,7 @@ func (x *PutEdgesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutEdgesRequest.ProtoReflect.Descriptor instead.
 func (*PutEdgesRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_graph_proto_rawDescGZIP(), []int{49}
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *PutEdgesRequest) GetEdges() []*Edge {
@@ -3362,7 +3824,7 @@ type PutEdgesResponse struct {
 
 func (x *PutEdgesResponse) Reset() {
 	*x = PutEdgesResponse{}
-	mi := &file_graph_v1_graph_proto_msgTypes[50]
+	mi := &file_graph_v1_graph_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3374,7 +3836,7 @@ func (x *PutEdgesResponse) String() string {
 func (*PutEdgesResponse) ProtoMessage() {}
 
 func (x *PutEdgesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_graph_proto_msgTypes[50]
+	mi := &file_graph_v1_graph_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3387,7 +3849,7 @@ func (x *PutEdgesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutEdgesResponse.ProtoReflect.Descriptor instead.
 func (*PutEdgesResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_graph_proto_rawDescGZIP(), []int{50}
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *PutEdgesResponse) GetWritten() int32 {
@@ -3410,7 +3872,7 @@ type GetServerStatusRequest struct {
 
 func (x *GetServerStatusRequest) Reset() {
 	*x = GetServerStatusRequest{}
-	mi := &file_graph_v1_graph_proto_msgTypes[51]
+	mi := &file_graph_v1_graph_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3422,7 +3884,7 @@ func (x *GetServerStatusRequest) String() string {
 func (*GetServerStatusRequest) ProtoMessage() {}
 
 func (x *GetServerStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_graph_proto_msgTypes[51]
+	mi := &file_graph_v1_graph_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3435,7 +3897,7 @@ func (x *GetServerStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetServerStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetServerStatusRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_graph_proto_rawDescGZIP(), []int{51}
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{55}
 }
 
 type GetServerStatusResponse struct {
@@ -3483,7 +3945,7 @@ type GetServerStatusResponse struct {
 
 func (x *GetServerStatusResponse) Reset() {
 	*x = GetServerStatusResponse{}
-	mi := &file_graph_v1_graph_proto_msgTypes[52]
+	mi := &file_graph_v1_graph_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3495,7 +3957,7 @@ func (x *GetServerStatusResponse) String() string {
 func (*GetServerStatusResponse) ProtoMessage() {}
 
 func (x *GetServerStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_graph_proto_msgTypes[52]
+	mi := &file_graph_v1_graph_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3508,7 +3970,7 @@ func (x *GetServerStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetServerStatusResponse.ProtoReflect.Descriptor instead.
 func (*GetServerStatusResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_graph_proto_rawDescGZIP(), []int{52}
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *GetServerStatusResponse) GetVersion() string {
@@ -3632,7 +4094,7 @@ type ReplicationPeer struct {
 
 func (x *ReplicationPeer) Reset() {
 	*x = ReplicationPeer{}
-	mi := &file_graph_v1_graph_proto_msgTypes[53]
+	mi := &file_graph_v1_graph_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3644,7 +4106,7 @@ func (x *ReplicationPeer) String() string {
 func (*ReplicationPeer) ProtoMessage() {}
 
 func (x *ReplicationPeer) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_graph_proto_msgTypes[53]
+	mi := &file_graph_v1_graph_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3657,7 +4119,7 @@ func (x *ReplicationPeer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReplicationPeer.ProtoReflect.Descriptor instead.
 func (*ReplicationPeer) Descriptor() ([]byte, []int) {
-	return file_graph_v1_graph_proto_rawDescGZIP(), []int{53}
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *ReplicationPeer) GetAddress() string {
@@ -3705,7 +4167,7 @@ type GetReplicationStatusRequest struct {
 
 func (x *GetReplicationStatusRequest) Reset() {
 	*x = GetReplicationStatusRequest{}
-	mi := &file_graph_v1_graph_proto_msgTypes[54]
+	mi := &file_graph_v1_graph_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3717,7 +4179,7 @@ func (x *GetReplicationStatusRequest) String() string {
 func (*GetReplicationStatusRequest) ProtoMessage() {}
 
 func (x *GetReplicationStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_graph_proto_msgTypes[54]
+	mi := &file_graph_v1_graph_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3730,7 +4192,7 @@ func (x *GetReplicationStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetReplicationStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetReplicationStatusRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_graph_proto_rawDescGZIP(), []int{54}
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{58}
 }
 
 type GetReplicationStatusResponse struct {
@@ -3758,7 +4220,7 @@ type GetReplicationStatusResponse struct {
 
 func (x *GetReplicationStatusResponse) Reset() {
 	*x = GetReplicationStatusResponse{}
-	mi := &file_graph_v1_graph_proto_msgTypes[55]
+	mi := &file_graph_v1_graph_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3770,7 +4232,7 @@ func (x *GetReplicationStatusResponse) String() string {
 func (*GetReplicationStatusResponse) ProtoMessage() {}
 
 func (x *GetReplicationStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_graph_proto_msgTypes[55]
+	mi := &file_graph_v1_graph_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3783,7 +4245,7 @@ func (x *GetReplicationStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetReplicationStatusResponse.ProtoReflect.Descriptor instead.
 func (*GetReplicationStatusResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_graph_proto_rawDescGZIP(), []int{55}
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *GetReplicationStatusResponse) GetNodeId() string {
@@ -3827,7 +4289,7 @@ type BackupSnapshotRequest struct {
 
 func (x *BackupSnapshotRequest) Reset() {
 	*x = BackupSnapshotRequest{}
-	mi := &file_graph_v1_graph_proto_msgTypes[56]
+	mi := &file_graph_v1_graph_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3839,7 +4301,7 @@ func (x *BackupSnapshotRequest) String() string {
 func (*BackupSnapshotRequest) ProtoMessage() {}
 
 func (x *BackupSnapshotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_graph_proto_msgTypes[56]
+	mi := &file_graph_v1_graph_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3852,7 +4314,7 @@ func (x *BackupSnapshotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupSnapshotRequest.ProtoReflect.Descriptor instead.
 func (*BackupSnapshotRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_graph_proto_rawDescGZIP(), []int{56}
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *BackupSnapshotRequest) GetVertexPrefix() string {
@@ -3879,7 +4341,7 @@ type BackupSnapshotResponse struct {
 
 func (x *BackupSnapshotResponse) Reset() {
 	*x = BackupSnapshotResponse{}
-	mi := &file_graph_v1_graph_proto_msgTypes[57]
+	mi := &file_graph_v1_graph_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3891,7 +4353,7 @@ func (x *BackupSnapshotResponse) String() string {
 func (*BackupSnapshotResponse) ProtoMessage() {}
 
 func (x *BackupSnapshotResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_graph_proto_msgTypes[57]
+	mi := &file_graph_v1_graph_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3904,7 +4366,7 @@ func (x *BackupSnapshotResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupSnapshotResponse.ProtoReflect.Descriptor instead.
 func (*BackupSnapshotResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_graph_proto_rawDescGZIP(), []int{57}
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *BackupSnapshotResponse) GetRecord() isBackupSnapshotResponse_Record {
@@ -3947,6 +4409,68 @@ type BackupSnapshotResponse_Edge struct {
 func (*BackupSnapshotResponse_Vertex) isBackupSnapshotResponse_Record() {}
 
 func (*BackupSnapshotResponse_Edge) isBackupSnapshotResponse_Record() {}
+
+type TopVerticesByDegreeResponse_Entry struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Key   string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	// degree is the live edge count in the chosen direction.
+	Degree uint64 `protobuf:"varint,2,opt,name=degree,proto3" json:"degree,omitempty"`
+	// weighted_degree is the summed live edge weight in the chosen direction.
+	WeightedDegree float64 `protobuf:"fixed64,3,opt,name=weighted_degree,json=weightedDegree,proto3" json:"weighted_degree,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *TopVerticesByDegreeResponse_Entry) Reset() {
+	*x = TopVerticesByDegreeResponse_Entry{}
+	mi := &file_graph_v1_graph_proto_msgTypes[62]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TopVerticesByDegreeResponse_Entry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TopVerticesByDegreeResponse_Entry) ProtoMessage() {}
+
+func (x *TopVerticesByDegreeResponse_Entry) ProtoReflect() protoreflect.Message {
+	mi := &file_graph_v1_graph_proto_msgTypes[62]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TopVerticesByDegreeResponse_Entry.ProtoReflect.Descriptor instead.
+func (*TopVerticesByDegreeResponse_Entry) Descriptor() ([]byte, []int) {
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{33, 0}
+}
+
+func (x *TopVerticesByDegreeResponse_Entry) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *TopVerticesByDegreeResponse_Entry) GetDegree() uint64 {
+	if x != nil {
+		return x.Degree
+	}
+	return 0
+}
+
+func (x *TopVerticesByDegreeResponse_Entry) GetWeightedDegree() float64 {
+	if x != nil {
+		return x.WeightedDegree
+	}
+	return 0
+}
 
 var File_graph_v1_graph_proto protoreflect.FileDescriptor
 
@@ -4016,14 +4540,18 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x04keys\x18\x01 \x03(\tR\x04keys\"]\n" +
 	"\x13GetVerticesResponse\x12,\n" +
 	"\bvertices\x18\x01 \x03(\v2\x10.graph.v1.VertexR\bvertices\x12\x18\n" +
-	"\amissing\x18\x02 \x03(\tR\amissing\"<\n" +
+	"\amissing\x18\x02 \x03(\tR\amissing\"Y\n" +
 	"\x10PutVertexRequest\x12(\n" +
-	"\x06vertex\x18\x01 \x01(\v2\x10.graph.v1.VertexR\x06vertex\"\x13\n" +
-	"\x11PutVertexResponse\"B\n" +
+	"\x06vertex\x18\x01 \x01(\v2\x10.graph.v1.VertexR\x06vertex\x12\x1b\n" +
+	"\tif_absent\x18\x02 \x01(\bR\bifAbsent\"-\n" +
+	"\x11PutVertexResponse\x12\x18\n" +
+	"\awritten\x18\x01 \x01(\bR\awritten\"_\n" +
 	"\x12PutVerticesRequest\x12,\n" +
-	"\bvertices\x18\x01 \x03(\v2\x10.graph.v1.VertexR\bvertices\"/\n" +
+	"\bvertices\x18\x01 \x03(\v2\x10.graph.v1.VertexR\bvertices\x12\x1b\n" +
+	"\tif_absent\x18\x02 \x01(\bR\bifAbsent\"R\n" +
 	"\x13PutVerticesResponse\x12\x18\n" +
-	"\awritten\x18\x01 \x01(\x05R\awritten\"'\n" +
+	"\awritten\x18\x01 \x01(\x05R\awritten\x12!\n" +
+	"\fskipped_keys\x18\x02 \x03(\tR\vskippedKeys\"'\n" +
 	"\x13DeleteVertexRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\"0\n" +
 	"\x14DeleteVertexResponse\x12\x18\n" +
@@ -4031,19 +4559,21 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x15DeleteVerticesRequest\x12\x12\n" +
 	"\x04keys\x18\x01 \x03(\tR\x04keys\"2\n" +
 	"\x16DeleteVerticesResponse\x12\x18\n" +
-	"\adeleted\x18\x01 \x01(\x05R\adeleted\"[\n" +
+	"\adeleted\x18\x01 \x01(\x05R\adeleted\"\x86\x01\n" +
 	"\x13ScanVerticesRequest\x12\x16\n" +
 	"\x06prefix\x18\x01 \x01(\tR\x06prefix\x12\x14\n" +
 	"\x05limit\x18\x02 \x01(\rR\x05limit\x12\x16\n" +
-	"\x06cursor\x18\x03 \x01(\fR\x06cursor\"e\n" +
+	"\x06cursor\x18\x03 \x01(\fR\x06cursor\x12)\n" +
+	"\x05order\x18\x04 \x01(\x0e2\x13.graph.v1.ScanOrderR\x05order\"e\n" +
 	"\x14ScanVerticesResponse\x12,\n" +
 	"\bvertices\x18\x01 \x03(\v2\x10.graph.v1.VertexR\bvertices\x12\x1f\n" +
 	"\vnext_cursor\x18\x02 \x01(\fR\n" +
-	"nextCursor\"]\n" +
+	"nextCursor\"\x88\x01\n" +
 	"\x15ScanVertexKeysRequest\x12\x16\n" +
 	"\x06prefix\x18\x01 \x01(\tR\x06prefix\x12\x14\n" +
 	"\x05limit\x18\x02 \x01(\rR\x05limit\x12\x16\n" +
-	"\x06cursor\x18\x03 \x01(\fR\x06cursor\"M\n" +
+	"\x06cursor\x18\x03 \x01(\fR\x06cursor\x12)\n" +
+	"\x05order\x18\x04 \x01(\x0e2\x13.graph.v1.ScanOrderR\x05order\"M\n" +
 	"\x16ScanVertexKeysResponse\x12\x12\n" +
 	"\x04keys\x18\x01 \x03(\tR\x04keys\x12\x1f\n" +
 	"\vnext_cursor\x18\x02 \x01(\fR\n" +
@@ -4074,7 +4604,23 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x05limit\x18\x02 \x01(\rR\x05limit\x12\x17\n" +
 	"\adry_run\x18\x03 \x01(\bR\x06dryRun\":\n" +
 	"\x1eDeleteVerticesByPrefixResponse\x12\x18\n" +
-	"\adeleted\x18\x01 \x01(\x04R\adeleted\"8\n" +
+	"\adeleted\x18\x01 \x01(\x04R\adeleted\"\x8d\x02\n" +
+	"\x1aTopVerticesByDegreeRequest\x12\x16\n" +
+	"\x06prefix\x18\x01 \x01(\tR\x06prefix\x12\f\n" +
+	"\x01k\x18\x02 \x01(\rR\x01k\x12L\n" +
+	"\tdirection\x18\x03 \x01(\x0e2..graph.v1.TopVerticesByDegreeRequest.DirectionR\tdirection\x12\x1a\n" +
+	"\bweighted\x18\x04 \x01(\bR\bweighted\"_\n" +
+	"\tDirection\x12\x19\n" +
+	"\x15DIRECTION_UNSPECIFIED\x10\x00\x12\x11\n" +
+	"\rDIRECTION_OUT\x10\x01\x12\x10\n" +
+	"\fDIRECTION_IN\x10\x02\x12\x12\n" +
+	"\x0eDIRECTION_BOTH\x10\x03\"\xc0\x01\n" +
+	"\x1bTopVerticesByDegreeResponse\x12E\n" +
+	"\aentries\x18\x01 \x03(\v2+.graph.v1.TopVerticesByDegreeResponse.EntryR\aentries\x1aZ\n" +
+	"\x05Entry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x16\n" +
+	"\x06degree\x18\x02 \x01(\x04R\x06degree\x12'\n" +
+	"\x0fweighted_degree\x18\x03 \x01(\x01R\x0eweightedDegree\"8\n" +
 	"\x0eGetEdgeRequest\x12\x12\n" +
 	"\x04tail\x18\x01 \x01(\tR\x04tail\x12\x12\n" +
 	"\x04head\x18\x02 \x01(\tR\x04head\"5\n" +
@@ -4107,18 +4653,29 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x12DeleteEdgesRequest\x12'\n" +
 	"\x05edges\x18\x01 \x03(\v2\x11.graph.v1.EdgeKeyR\x05edges\"/\n" +
 	"\x13DeleteEdgesResponse\x12\x18\n" +
-	"\adeleted\x18\x01 \x01(\x05R\adeleted\"S\n" +
+	"\adeleted\x18\x01 \x01(\x05R\adeleted\"\x8d\x01\n" +
+	"\x1aDeleteEdgesByPrefixRequest\x12\x1f\n" +
+	"\vtail_prefix\x18\x01 \x01(\tR\n" +
+	"tailPrefix\x12\x1f\n" +
+	"\vhead_prefix\x18\x02 \x01(\tR\n" +
+	"headPrefix\x12\x14\n" +
+	"\x05limit\x18\x03 \x01(\rR\x05limit\x12\x17\n" +
+	"\adry_run\x18\x04 \x01(\bR\x06dryRun\"7\n" +
+	"\x1bDeleteEdgesByPrefixResponse\x12\x18\n" +
+	"\adeleted\x18\x01 \x01(\x04R\adeleted\"S\n" +
 	"\x0eAddEdgeRequest\x12\"\n" +
 	"\x04edge\x18\x01 \x01(\v2\x0e.graph.v1.EdgeR\x04edge\x12\x1d\n" +
 	"\n" +
-	"contrib_id\x18\x02 \x01(\fR\tcontribId\"\x11\n" +
-	"\x0fAddEdgeResponse\"X\n" +
+	"contrib_id\x18\x02 \x01(\fR\tcontribId\"<\n" +
+	"\x0fAddEdgeResponse\x12)\n" +
+	"\x10effective_weight\x18\x01 \x01(\x02R\x0feffectiveWeight\"X\n" +
 	"\x0fAddEdgesRequest\x12$\n" +
 	"\x05edges\x18\x01 \x03(\v2\x0e.graph.v1.EdgeR\x05edges\x12\x1f\n" +
 	"\vcontrib_ids\x18\x02 \x03(\fR\n" +
-	"contribIds\",\n" +
+	"contribIds\"Y\n" +
 	"\x10AddEdgesResponse\x12\x18\n" +
-	"\awritten\x18\x01 \x01(\x05R\awritten\"4\n" +
+	"\awritten\x18\x01 \x01(\x05R\awritten\x12+\n" +
+	"\x11effective_weights\x18\x02 \x03(\x02R\x10effectiveWeights\"4\n" +
 	"\x0ePutEdgeRequest\x12\"\n" +
 	"\x04edge\x18\x01 \x01(\v2\x0e.graph.v1.EdgeR\x04edge\"\x11\n" +
 	"\x0fPutEdgeResponse\"7\n" +
@@ -4185,12 +4742,16 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x15WEIGHTING_UNSPECIFIED\x10\x00\x12\x11\n" +
 	"\rWEIGHTING_RAW\x10\x01\x12\x13\n" +
 	"\x0fWEIGHTING_TFIDF\x10\x02\x12\x12\n" +
-	"\x0eWEIGHTING_BM25\x10\x03*j\n" +
+	"\x0eWEIGHTING_BM25\x10\x03*P\n" +
+	"\tScanOrder\x12\x1a\n" +
+	"\x16SCAN_ORDER_UNSPECIFIED\x10\x00\x12\x12\n" +
+	"\x0eSCAN_ORDER_ASC\x10\x01\x12\x13\n" +
+	"\x0fSCAN_ORDER_DESC\x10\x02*j\n" +
 	"\tMatchMode\x12\x1a\n" +
 	"\x16MATCH_MODE_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eMATCH_MODE_ANY\x10\x01\x12\x12\n" +
 	"\x0eMATCH_MODE_ALL\x10\x02\x12\x19\n" +
-	"\x15MATCH_MODE_MIN_SHOULD\x10\x032\xeb\x0e\n" +
+	"\x15MATCH_MODE_MIN_SHOULD\x10\x032\xb3\x10\n" +
 	"\x0eLanternService\x12G\n" +
 	"\n" +
 	"Illuminate\x12\x1b.graph.v1.IlluminateRequest\x1a\x1c.graph.v1.IlluminateResponse\x12D\n" +
@@ -4204,7 +4765,8 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x0eScanVertexKeys\x12\x1f.graph.v1.ScanVertexKeysRequest\x1a .graph.v1.ScanVertexKeysResponse\x12S\n" +
 	"\x0eSearchVertices\x12\x1f.graph.v1.SearchVerticesRequest\x1a .graph.v1.SearchVerticesResponse\x12h\n" +
 	"\x15CountVerticesByPrefix\x12&.graph.v1.CountVerticesByPrefixRequest\x1a'.graph.v1.CountVerticesByPrefixResponse\x12k\n" +
-	"\x16DeleteVerticesByPrefix\x12'.graph.v1.DeleteVerticesByPrefixRequest\x1a(.graph.v1.DeleteVerticesByPrefixResponse\x12>\n" +
+	"\x16DeleteVerticesByPrefix\x12'.graph.v1.DeleteVerticesByPrefixRequest\x1a(.graph.v1.DeleteVerticesByPrefixResponse\x12b\n" +
+	"\x13TopVerticesByDegree\x12$.graph.v1.TopVerticesByDegreeRequest\x1a%.graph.v1.TopVerticesByDegreeResponse\x12>\n" +
 	"\aGetEdge\x12\x18.graph.v1.GetEdgeRequest\x1a\x19.graph.v1.GetEdgeResponse\x12A\n" +
 	"\bGetEdges\x12\x19.graph.v1.GetEdgesRequest\x1a\x1a.graph.v1.GetEdgesResponse\x12>\n" +
 	"\aAddEdge\x12\x18.graph.v1.AddEdgeRequest\x1a\x19.graph.v1.AddEdgeResponse\x12A\n" +
@@ -4213,7 +4775,8 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\bPutEdges\x12\x19.graph.v1.PutEdgesRequest\x1a\x1a.graph.v1.PutEdgesResponse\x12G\n" +
 	"\n" +
 	"DeleteEdge\x12\x1b.graph.v1.DeleteEdgeRequest\x1a\x1c.graph.v1.DeleteEdgeResponse\x12J\n" +
-	"\vDeleteEdges\x12\x1c.graph.v1.DeleteEdgesRequest\x1a\x1d.graph.v1.DeleteEdgesResponse\x12D\n" +
+	"\vDeleteEdges\x12\x1c.graph.v1.DeleteEdgesRequest\x1a\x1d.graph.v1.DeleteEdgesResponse\x12b\n" +
+	"\x13DeleteEdgesByPrefix\x12$.graph.v1.DeleteEdgesByPrefixRequest\x1a%.graph.v1.DeleteEdgesByPrefixResponse\x12D\n" +
 	"\tScanEdges\x12\x1a.graph.v1.ScanEdgesRequest\x1a\x1b.graph.v1.ScanEdgesResponse\x12V\n" +
 	"\x0fGetServerStatus\x12 .graph.v1.GetServerStatusRequest\x1a!.graph.v1.GetServerStatusResponse\x12e\n" +
 	"\x14GetReplicationStatus\x12%.graph.v1.GetReplicationStatusRequest\x1a&.graph.v1.GetReplicationStatusResponse\x12U\n" +
@@ -4233,171 +4796,186 @@ func file_graph_v1_graph_proto_rawDescGZIP() []byte {
 	return file_graph_v1_graph_proto_rawDescData
 }
 
-var file_graph_v1_graph_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_graph_v1_graph_proto_msgTypes = make([]protoimpl.MessageInfo, 58)
+var file_graph_v1_graph_proto_enumTypes = make([]protoimpl.EnumInfo, 7)
+var file_graph_v1_graph_proto_msgTypes = make([]protoimpl.MessageInfo, 63)
 var file_graph_v1_graph_proto_goTypes = []any{
-	(Reduction)(0),                         // 0: graph.v1.Reduction
-	(Objective)(0),                         // 1: graph.v1.Objective
-	(Weighting)(0),                         // 2: graph.v1.Weighting
-	(MatchMode)(0),                         // 3: graph.v1.MatchMode
-	(ReplicationPeer_State)(0),             // 4: graph.v1.ReplicationPeer.State
-	(*Vertex)(nil),                         // 5: graph.v1.Vertex
-	(*Edge)(nil),                           // 6: graph.v1.Edge
-	(*Graph)(nil),                          // 7: graph.v1.Graph
-	(*IlluminateRequest)(nil),              // 8: graph.v1.IlluminateRequest
-	(*BfsParams)(nil),                      // 9: graph.v1.BfsParams
-	(*LocalCommunityParams)(nil),           // 10: graph.v1.LocalCommunityParams
-	(*PprParams)(nil),                      // 11: graph.v1.PprParams
-	(*IlluminateResponse)(nil),             // 12: graph.v1.IlluminateResponse
-	(*GetVertexRequest)(nil),               // 13: graph.v1.GetVertexRequest
-	(*GetVertexResponse)(nil),              // 14: graph.v1.GetVertexResponse
-	(*GetVerticesRequest)(nil),             // 15: graph.v1.GetVerticesRequest
-	(*GetVerticesResponse)(nil),            // 16: graph.v1.GetVerticesResponse
-	(*PutVertexRequest)(nil),               // 17: graph.v1.PutVertexRequest
-	(*PutVertexResponse)(nil),              // 18: graph.v1.PutVertexResponse
-	(*PutVerticesRequest)(nil),             // 19: graph.v1.PutVerticesRequest
-	(*PutVerticesResponse)(nil),            // 20: graph.v1.PutVerticesResponse
-	(*DeleteVertexRequest)(nil),            // 21: graph.v1.DeleteVertexRequest
-	(*DeleteVertexResponse)(nil),           // 22: graph.v1.DeleteVertexResponse
-	(*DeleteVerticesRequest)(nil),          // 23: graph.v1.DeleteVerticesRequest
-	(*DeleteVerticesResponse)(nil),         // 24: graph.v1.DeleteVerticesResponse
-	(*ScanVerticesRequest)(nil),            // 25: graph.v1.ScanVerticesRequest
-	(*ScanVerticesResponse)(nil),           // 26: graph.v1.ScanVerticesResponse
-	(*ScanVertexKeysRequest)(nil),          // 27: graph.v1.ScanVertexKeysRequest
-	(*ScanVertexKeysResponse)(nil),         // 28: graph.v1.ScanVertexKeysResponse
-	(*SearchOptions)(nil),                  // 29: graph.v1.SearchOptions
-	(*SearchVerticesRequest)(nil),          // 30: graph.v1.SearchVerticesRequest
-	(*SearchVerticesResponse)(nil),         // 31: graph.v1.SearchVerticesResponse
-	(*SearchHit)(nil),                      // 32: graph.v1.SearchHit
-	(*CountVerticesByPrefixRequest)(nil),   // 33: graph.v1.CountVerticesByPrefixRequest
-	(*CountVerticesByPrefixResponse)(nil),  // 34: graph.v1.CountVerticesByPrefixResponse
-	(*DeleteVerticesByPrefixRequest)(nil),  // 35: graph.v1.DeleteVerticesByPrefixRequest
-	(*DeleteVerticesByPrefixResponse)(nil), // 36: graph.v1.DeleteVerticesByPrefixResponse
-	(*GetEdgeRequest)(nil),                 // 37: graph.v1.GetEdgeRequest
-	(*GetEdgeResponse)(nil),                // 38: graph.v1.GetEdgeResponse
-	(*GetEdgesRequest)(nil),                // 39: graph.v1.GetEdgesRequest
-	(*GetEdgesResponse)(nil),               // 40: graph.v1.GetEdgesResponse
-	(*DeleteEdgeRequest)(nil),              // 41: graph.v1.DeleteEdgeRequest
-	(*DeleteEdgeResponse)(nil),             // 42: graph.v1.DeleteEdgeResponse
-	(*EdgeKey)(nil),                        // 43: graph.v1.EdgeKey
-	(*ScanEdgesRequest)(nil),               // 44: graph.v1.ScanEdgesRequest
-	(*ScanEdgesResponse)(nil),              // 45: graph.v1.ScanEdgesResponse
-	(*DeleteEdgesRequest)(nil),             // 46: graph.v1.DeleteEdgesRequest
-	(*DeleteEdgesResponse)(nil),            // 47: graph.v1.DeleteEdgesResponse
-	(*AddEdgeRequest)(nil),                 // 48: graph.v1.AddEdgeRequest
-	(*AddEdgeResponse)(nil),                // 49: graph.v1.AddEdgeResponse
-	(*AddEdgesRequest)(nil),                // 50: graph.v1.AddEdgesRequest
-	(*AddEdgesResponse)(nil),               // 51: graph.v1.AddEdgesResponse
-	(*PutEdgeRequest)(nil),                 // 52: graph.v1.PutEdgeRequest
-	(*PutEdgeResponse)(nil),                // 53: graph.v1.PutEdgeResponse
-	(*PutEdgesRequest)(nil),                // 54: graph.v1.PutEdgesRequest
-	(*PutEdgesResponse)(nil),               // 55: graph.v1.PutEdgesResponse
-	(*GetServerStatusRequest)(nil),         // 56: graph.v1.GetServerStatusRequest
-	(*GetServerStatusResponse)(nil),        // 57: graph.v1.GetServerStatusResponse
-	(*ReplicationPeer)(nil),                // 58: graph.v1.ReplicationPeer
-	(*GetReplicationStatusRequest)(nil),    // 59: graph.v1.GetReplicationStatusRequest
-	(*GetReplicationStatusResponse)(nil),   // 60: graph.v1.GetReplicationStatusResponse
-	(*BackupSnapshotRequest)(nil),          // 61: graph.v1.BackupSnapshotRequest
-	(*BackupSnapshotResponse)(nil),         // 62: graph.v1.BackupSnapshotResponse
-	(*timestamppb.Timestamp)(nil),          // 63: google.protobuf.Timestamp
-	(*durationpb.Duration)(nil),            // 64: google.protobuf.Duration
+	(Reduction)(0), // 0: graph.v1.Reduction
+	(Objective)(0), // 1: graph.v1.Objective
+	(Weighting)(0), // 2: graph.v1.Weighting
+	(ScanOrder)(0), // 3: graph.v1.ScanOrder
+	(MatchMode)(0), // 4: graph.v1.MatchMode
+	(TopVerticesByDegreeRequest_Direction)(0), // 5: graph.v1.TopVerticesByDegreeRequest.Direction
+	(ReplicationPeer_State)(0),                // 6: graph.v1.ReplicationPeer.State
+	(*Vertex)(nil),                            // 7: graph.v1.Vertex
+	(*Edge)(nil),                              // 8: graph.v1.Edge
+	(*Graph)(nil),                             // 9: graph.v1.Graph
+	(*IlluminateRequest)(nil),                 // 10: graph.v1.IlluminateRequest
+	(*BfsParams)(nil),                         // 11: graph.v1.BfsParams
+	(*LocalCommunityParams)(nil),              // 12: graph.v1.LocalCommunityParams
+	(*PprParams)(nil),                         // 13: graph.v1.PprParams
+	(*IlluminateResponse)(nil),                // 14: graph.v1.IlluminateResponse
+	(*GetVertexRequest)(nil),                  // 15: graph.v1.GetVertexRequest
+	(*GetVertexResponse)(nil),                 // 16: graph.v1.GetVertexResponse
+	(*GetVerticesRequest)(nil),                // 17: graph.v1.GetVerticesRequest
+	(*GetVerticesResponse)(nil),               // 18: graph.v1.GetVerticesResponse
+	(*PutVertexRequest)(nil),                  // 19: graph.v1.PutVertexRequest
+	(*PutVertexResponse)(nil),                 // 20: graph.v1.PutVertexResponse
+	(*PutVerticesRequest)(nil),                // 21: graph.v1.PutVerticesRequest
+	(*PutVerticesResponse)(nil),               // 22: graph.v1.PutVerticesResponse
+	(*DeleteVertexRequest)(nil),               // 23: graph.v1.DeleteVertexRequest
+	(*DeleteVertexResponse)(nil),              // 24: graph.v1.DeleteVertexResponse
+	(*DeleteVerticesRequest)(nil),             // 25: graph.v1.DeleteVerticesRequest
+	(*DeleteVerticesResponse)(nil),            // 26: graph.v1.DeleteVerticesResponse
+	(*ScanVerticesRequest)(nil),               // 27: graph.v1.ScanVerticesRequest
+	(*ScanVerticesResponse)(nil),              // 28: graph.v1.ScanVerticesResponse
+	(*ScanVertexKeysRequest)(nil),             // 29: graph.v1.ScanVertexKeysRequest
+	(*ScanVertexKeysResponse)(nil),            // 30: graph.v1.ScanVertexKeysResponse
+	(*SearchOptions)(nil),                     // 31: graph.v1.SearchOptions
+	(*SearchVerticesRequest)(nil),             // 32: graph.v1.SearchVerticesRequest
+	(*SearchVerticesResponse)(nil),            // 33: graph.v1.SearchVerticesResponse
+	(*SearchHit)(nil),                         // 34: graph.v1.SearchHit
+	(*CountVerticesByPrefixRequest)(nil),      // 35: graph.v1.CountVerticesByPrefixRequest
+	(*CountVerticesByPrefixResponse)(nil),     // 36: graph.v1.CountVerticesByPrefixResponse
+	(*DeleteVerticesByPrefixRequest)(nil),     // 37: graph.v1.DeleteVerticesByPrefixRequest
+	(*DeleteVerticesByPrefixResponse)(nil),    // 38: graph.v1.DeleteVerticesByPrefixResponse
+	(*TopVerticesByDegreeRequest)(nil),        // 39: graph.v1.TopVerticesByDegreeRequest
+	(*TopVerticesByDegreeResponse)(nil),       // 40: graph.v1.TopVerticesByDegreeResponse
+	(*GetEdgeRequest)(nil),                    // 41: graph.v1.GetEdgeRequest
+	(*GetEdgeResponse)(nil),                   // 42: graph.v1.GetEdgeResponse
+	(*GetEdgesRequest)(nil),                   // 43: graph.v1.GetEdgesRequest
+	(*GetEdgesResponse)(nil),                  // 44: graph.v1.GetEdgesResponse
+	(*DeleteEdgeRequest)(nil),                 // 45: graph.v1.DeleteEdgeRequest
+	(*DeleteEdgeResponse)(nil),                // 46: graph.v1.DeleteEdgeResponse
+	(*EdgeKey)(nil),                           // 47: graph.v1.EdgeKey
+	(*ScanEdgesRequest)(nil),                  // 48: graph.v1.ScanEdgesRequest
+	(*ScanEdgesResponse)(nil),                 // 49: graph.v1.ScanEdgesResponse
+	(*DeleteEdgesRequest)(nil),                // 50: graph.v1.DeleteEdgesRequest
+	(*DeleteEdgesResponse)(nil),               // 51: graph.v1.DeleteEdgesResponse
+	(*DeleteEdgesByPrefixRequest)(nil),        // 52: graph.v1.DeleteEdgesByPrefixRequest
+	(*DeleteEdgesByPrefixResponse)(nil),       // 53: graph.v1.DeleteEdgesByPrefixResponse
+	(*AddEdgeRequest)(nil),                    // 54: graph.v1.AddEdgeRequest
+	(*AddEdgeResponse)(nil),                   // 55: graph.v1.AddEdgeResponse
+	(*AddEdgesRequest)(nil),                   // 56: graph.v1.AddEdgesRequest
+	(*AddEdgesResponse)(nil),                  // 57: graph.v1.AddEdgesResponse
+	(*PutEdgeRequest)(nil),                    // 58: graph.v1.PutEdgeRequest
+	(*PutEdgeResponse)(nil),                   // 59: graph.v1.PutEdgeResponse
+	(*PutEdgesRequest)(nil),                   // 60: graph.v1.PutEdgesRequest
+	(*PutEdgesResponse)(nil),                  // 61: graph.v1.PutEdgesResponse
+	(*GetServerStatusRequest)(nil),            // 62: graph.v1.GetServerStatusRequest
+	(*GetServerStatusResponse)(nil),           // 63: graph.v1.GetServerStatusResponse
+	(*ReplicationPeer)(nil),                   // 64: graph.v1.ReplicationPeer
+	(*GetReplicationStatusRequest)(nil),       // 65: graph.v1.GetReplicationStatusRequest
+	(*GetReplicationStatusResponse)(nil),      // 66: graph.v1.GetReplicationStatusResponse
+	(*BackupSnapshotRequest)(nil),             // 67: graph.v1.BackupSnapshotRequest
+	(*BackupSnapshotResponse)(nil),            // 68: graph.v1.BackupSnapshotResponse
+	(*TopVerticesByDegreeResponse_Entry)(nil), // 69: graph.v1.TopVerticesByDegreeResponse.Entry
+	(*timestamppb.Timestamp)(nil),             // 70: google.protobuf.Timestamp
+	(*durationpb.Duration)(nil),               // 71: google.protobuf.Duration
 }
 var file_graph_v1_graph_proto_depIdxs = []int32{
-	63, // 0: graph.v1.Vertex.expiration:type_name -> google.protobuf.Timestamp
-	63, // 1: graph.v1.Vertex.timestamp:type_name -> google.protobuf.Timestamp
-	64, // 2: graph.v1.Vertex.duration:type_name -> google.protobuf.Duration
-	63, // 3: graph.v1.Edge.expiration:type_name -> google.protobuf.Timestamp
-	5,  // 4: graph.v1.Graph.vertices:type_name -> graph.v1.Vertex
-	6,  // 5: graph.v1.Graph.edges:type_name -> graph.v1.Edge
+	70, // 0: graph.v1.Vertex.expiration:type_name -> google.protobuf.Timestamp
+	70, // 1: graph.v1.Vertex.timestamp:type_name -> google.protobuf.Timestamp
+	71, // 2: graph.v1.Vertex.duration:type_name -> google.protobuf.Duration
+	70, // 3: graph.v1.Edge.expiration:type_name -> google.protobuf.Timestamp
+	7,  // 4: graph.v1.Graph.vertices:type_name -> graph.v1.Vertex
+	8,  // 5: graph.v1.Graph.edges:type_name -> graph.v1.Edge
 	2,  // 6: graph.v1.IlluminateRequest.weighting:type_name -> graph.v1.Weighting
-	9,  // 7: graph.v1.IlluminateRequest.bfs:type_name -> graph.v1.BfsParams
-	11, // 8: graph.v1.IlluminateRequest.ppr:type_name -> graph.v1.PprParams
-	10, // 9: graph.v1.IlluminateRequest.community:type_name -> graph.v1.LocalCommunityParams
+	11, // 7: graph.v1.IlluminateRequest.bfs:type_name -> graph.v1.BfsParams
+	13, // 8: graph.v1.IlluminateRequest.ppr:type_name -> graph.v1.PprParams
+	12, // 9: graph.v1.IlluminateRequest.community:type_name -> graph.v1.LocalCommunityParams
 	1,  // 10: graph.v1.BfsParams.objective:type_name -> graph.v1.Objective
 	0,  // 11: graph.v1.BfsParams.reduction:type_name -> graph.v1.Reduction
 	0,  // 12: graph.v1.LocalCommunityParams.reduction:type_name -> graph.v1.Reduction
 	1,  // 13: graph.v1.LocalCommunityParams.objective:type_name -> graph.v1.Objective
-	7,  // 14: graph.v1.IlluminateResponse.graph:type_name -> graph.v1.Graph
-	5,  // 15: graph.v1.GetVertexResponse.vertex:type_name -> graph.v1.Vertex
-	5,  // 16: graph.v1.GetVerticesResponse.vertices:type_name -> graph.v1.Vertex
-	5,  // 17: graph.v1.PutVertexRequest.vertex:type_name -> graph.v1.Vertex
-	5,  // 18: graph.v1.PutVerticesRequest.vertices:type_name -> graph.v1.Vertex
-	5,  // 19: graph.v1.ScanVerticesResponse.vertices:type_name -> graph.v1.Vertex
-	3,  // 20: graph.v1.SearchOptions.match_mode:type_name -> graph.v1.MatchMode
-	29, // 21: graph.v1.SearchVerticesRequest.options:type_name -> graph.v1.SearchOptions
-	32, // 22: graph.v1.SearchVerticesResponse.hits:type_name -> graph.v1.SearchHit
-	6,  // 23: graph.v1.GetEdgeResponse.edge:type_name -> graph.v1.Edge
-	43, // 24: graph.v1.GetEdgesRequest.edges:type_name -> graph.v1.EdgeKey
-	6,  // 25: graph.v1.GetEdgesResponse.edges:type_name -> graph.v1.Edge
-	43, // 26: graph.v1.GetEdgesResponse.missing:type_name -> graph.v1.EdgeKey
-	6,  // 27: graph.v1.ScanEdgesResponse.edges:type_name -> graph.v1.Edge
-	43, // 28: graph.v1.DeleteEdgesRequest.edges:type_name -> graph.v1.EdgeKey
-	6,  // 29: graph.v1.AddEdgeRequest.edge:type_name -> graph.v1.Edge
-	6,  // 30: graph.v1.AddEdgesRequest.edges:type_name -> graph.v1.Edge
-	6,  // 31: graph.v1.PutEdgeRequest.edge:type_name -> graph.v1.Edge
-	6,  // 32: graph.v1.PutEdgesRequest.edges:type_name -> graph.v1.Edge
-	63, // 33: graph.v1.GetServerStatusResponse.started_at:type_name -> google.protobuf.Timestamp
-	64, // 34: graph.v1.GetServerStatusResponse.uptime:type_name -> google.protobuf.Duration
-	64, // 35: graph.v1.GetServerStatusResponse.default_ttl:type_name -> google.protobuf.Duration
-	4,  // 36: graph.v1.ReplicationPeer.state:type_name -> graph.v1.ReplicationPeer.State
-	63, // 37: graph.v1.ReplicationPeer.last_event_at:type_name -> google.protobuf.Timestamp
-	63, // 38: graph.v1.GetReplicationStatusResponse.local_now:type_name -> google.protobuf.Timestamp
-	58, // 39: graph.v1.GetReplicationStatusResponse.peers:type_name -> graph.v1.ReplicationPeer
-	5,  // 40: graph.v1.BackupSnapshotResponse.vertex:type_name -> graph.v1.Vertex
-	6,  // 41: graph.v1.BackupSnapshotResponse.edge:type_name -> graph.v1.Edge
-	8,  // 42: graph.v1.LanternService.Illuminate:input_type -> graph.v1.IlluminateRequest
-	13, // 43: graph.v1.LanternService.GetVertex:input_type -> graph.v1.GetVertexRequest
-	15, // 44: graph.v1.LanternService.GetVertices:input_type -> graph.v1.GetVerticesRequest
-	17, // 45: graph.v1.LanternService.PutVertex:input_type -> graph.v1.PutVertexRequest
-	19, // 46: graph.v1.LanternService.PutVertices:input_type -> graph.v1.PutVerticesRequest
-	21, // 47: graph.v1.LanternService.DeleteVertex:input_type -> graph.v1.DeleteVertexRequest
-	23, // 48: graph.v1.LanternService.DeleteVertices:input_type -> graph.v1.DeleteVerticesRequest
-	25, // 49: graph.v1.LanternService.ScanVertices:input_type -> graph.v1.ScanVerticesRequest
-	27, // 50: graph.v1.LanternService.ScanVertexKeys:input_type -> graph.v1.ScanVertexKeysRequest
-	30, // 51: graph.v1.LanternService.SearchVertices:input_type -> graph.v1.SearchVerticesRequest
-	33, // 52: graph.v1.LanternService.CountVerticesByPrefix:input_type -> graph.v1.CountVerticesByPrefixRequest
-	35, // 53: graph.v1.LanternService.DeleteVerticesByPrefix:input_type -> graph.v1.DeleteVerticesByPrefixRequest
-	37, // 54: graph.v1.LanternService.GetEdge:input_type -> graph.v1.GetEdgeRequest
-	39, // 55: graph.v1.LanternService.GetEdges:input_type -> graph.v1.GetEdgesRequest
-	48, // 56: graph.v1.LanternService.AddEdge:input_type -> graph.v1.AddEdgeRequest
-	50, // 57: graph.v1.LanternService.AddEdges:input_type -> graph.v1.AddEdgesRequest
-	52, // 58: graph.v1.LanternService.PutEdge:input_type -> graph.v1.PutEdgeRequest
-	54, // 59: graph.v1.LanternService.PutEdges:input_type -> graph.v1.PutEdgesRequest
-	41, // 60: graph.v1.LanternService.DeleteEdge:input_type -> graph.v1.DeleteEdgeRequest
-	46, // 61: graph.v1.LanternService.DeleteEdges:input_type -> graph.v1.DeleteEdgesRequest
-	44, // 62: graph.v1.LanternService.ScanEdges:input_type -> graph.v1.ScanEdgesRequest
-	56, // 63: graph.v1.LanternService.GetServerStatus:input_type -> graph.v1.GetServerStatusRequest
-	59, // 64: graph.v1.LanternService.GetReplicationStatus:input_type -> graph.v1.GetReplicationStatusRequest
-	61, // 65: graph.v1.LanternService.BackupSnapshot:input_type -> graph.v1.BackupSnapshotRequest
-	12, // 66: graph.v1.LanternService.Illuminate:output_type -> graph.v1.IlluminateResponse
-	14, // 67: graph.v1.LanternService.GetVertex:output_type -> graph.v1.GetVertexResponse
-	16, // 68: graph.v1.LanternService.GetVertices:output_type -> graph.v1.GetVerticesResponse
-	18, // 69: graph.v1.LanternService.PutVertex:output_type -> graph.v1.PutVertexResponse
-	20, // 70: graph.v1.LanternService.PutVertices:output_type -> graph.v1.PutVerticesResponse
-	22, // 71: graph.v1.LanternService.DeleteVertex:output_type -> graph.v1.DeleteVertexResponse
-	24, // 72: graph.v1.LanternService.DeleteVertices:output_type -> graph.v1.DeleteVerticesResponse
-	26, // 73: graph.v1.LanternService.ScanVertices:output_type -> graph.v1.ScanVerticesResponse
-	28, // 74: graph.v1.LanternService.ScanVertexKeys:output_type -> graph.v1.ScanVertexKeysResponse
-	31, // 75: graph.v1.LanternService.SearchVertices:output_type -> graph.v1.SearchVerticesResponse
-	34, // 76: graph.v1.LanternService.CountVerticesByPrefix:output_type -> graph.v1.CountVerticesByPrefixResponse
-	36, // 77: graph.v1.LanternService.DeleteVerticesByPrefix:output_type -> graph.v1.DeleteVerticesByPrefixResponse
-	38, // 78: graph.v1.LanternService.GetEdge:output_type -> graph.v1.GetEdgeResponse
-	40, // 79: graph.v1.LanternService.GetEdges:output_type -> graph.v1.GetEdgesResponse
-	49, // 80: graph.v1.LanternService.AddEdge:output_type -> graph.v1.AddEdgeResponse
-	51, // 81: graph.v1.LanternService.AddEdges:output_type -> graph.v1.AddEdgesResponse
-	53, // 82: graph.v1.LanternService.PutEdge:output_type -> graph.v1.PutEdgeResponse
-	55, // 83: graph.v1.LanternService.PutEdges:output_type -> graph.v1.PutEdgesResponse
-	42, // 84: graph.v1.LanternService.DeleteEdge:output_type -> graph.v1.DeleteEdgeResponse
-	47, // 85: graph.v1.LanternService.DeleteEdges:output_type -> graph.v1.DeleteEdgesResponse
-	45, // 86: graph.v1.LanternService.ScanEdges:output_type -> graph.v1.ScanEdgesResponse
-	57, // 87: graph.v1.LanternService.GetServerStatus:output_type -> graph.v1.GetServerStatusResponse
-	60, // 88: graph.v1.LanternService.GetReplicationStatus:output_type -> graph.v1.GetReplicationStatusResponse
-	62, // 89: graph.v1.LanternService.BackupSnapshot:output_type -> graph.v1.BackupSnapshotResponse
-	66, // [66:90] is the sub-list for method output_type
-	42, // [42:66] is the sub-list for method input_type
-	42, // [42:42] is the sub-list for extension type_name
-	42, // [42:42] is the sub-list for extension extendee
-	0,  // [0:42] is the sub-list for field type_name
+	9,  // 14: graph.v1.IlluminateResponse.graph:type_name -> graph.v1.Graph
+	7,  // 15: graph.v1.GetVertexResponse.vertex:type_name -> graph.v1.Vertex
+	7,  // 16: graph.v1.GetVerticesResponse.vertices:type_name -> graph.v1.Vertex
+	7,  // 17: graph.v1.PutVertexRequest.vertex:type_name -> graph.v1.Vertex
+	7,  // 18: graph.v1.PutVerticesRequest.vertices:type_name -> graph.v1.Vertex
+	3,  // 19: graph.v1.ScanVerticesRequest.order:type_name -> graph.v1.ScanOrder
+	7,  // 20: graph.v1.ScanVerticesResponse.vertices:type_name -> graph.v1.Vertex
+	3,  // 21: graph.v1.ScanVertexKeysRequest.order:type_name -> graph.v1.ScanOrder
+	4,  // 22: graph.v1.SearchOptions.match_mode:type_name -> graph.v1.MatchMode
+	31, // 23: graph.v1.SearchVerticesRequest.options:type_name -> graph.v1.SearchOptions
+	34, // 24: graph.v1.SearchVerticesResponse.hits:type_name -> graph.v1.SearchHit
+	5,  // 25: graph.v1.TopVerticesByDegreeRequest.direction:type_name -> graph.v1.TopVerticesByDegreeRequest.Direction
+	69, // 26: graph.v1.TopVerticesByDegreeResponse.entries:type_name -> graph.v1.TopVerticesByDegreeResponse.Entry
+	8,  // 27: graph.v1.GetEdgeResponse.edge:type_name -> graph.v1.Edge
+	47, // 28: graph.v1.GetEdgesRequest.edges:type_name -> graph.v1.EdgeKey
+	8,  // 29: graph.v1.GetEdgesResponse.edges:type_name -> graph.v1.Edge
+	47, // 30: graph.v1.GetEdgesResponse.missing:type_name -> graph.v1.EdgeKey
+	8,  // 31: graph.v1.ScanEdgesResponse.edges:type_name -> graph.v1.Edge
+	47, // 32: graph.v1.DeleteEdgesRequest.edges:type_name -> graph.v1.EdgeKey
+	8,  // 33: graph.v1.AddEdgeRequest.edge:type_name -> graph.v1.Edge
+	8,  // 34: graph.v1.AddEdgesRequest.edges:type_name -> graph.v1.Edge
+	8,  // 35: graph.v1.PutEdgeRequest.edge:type_name -> graph.v1.Edge
+	8,  // 36: graph.v1.PutEdgesRequest.edges:type_name -> graph.v1.Edge
+	70, // 37: graph.v1.GetServerStatusResponse.started_at:type_name -> google.protobuf.Timestamp
+	71, // 38: graph.v1.GetServerStatusResponse.uptime:type_name -> google.protobuf.Duration
+	71, // 39: graph.v1.GetServerStatusResponse.default_ttl:type_name -> google.protobuf.Duration
+	6,  // 40: graph.v1.ReplicationPeer.state:type_name -> graph.v1.ReplicationPeer.State
+	70, // 41: graph.v1.ReplicationPeer.last_event_at:type_name -> google.protobuf.Timestamp
+	70, // 42: graph.v1.GetReplicationStatusResponse.local_now:type_name -> google.protobuf.Timestamp
+	64, // 43: graph.v1.GetReplicationStatusResponse.peers:type_name -> graph.v1.ReplicationPeer
+	7,  // 44: graph.v1.BackupSnapshotResponse.vertex:type_name -> graph.v1.Vertex
+	8,  // 45: graph.v1.BackupSnapshotResponse.edge:type_name -> graph.v1.Edge
+	10, // 46: graph.v1.LanternService.Illuminate:input_type -> graph.v1.IlluminateRequest
+	15, // 47: graph.v1.LanternService.GetVertex:input_type -> graph.v1.GetVertexRequest
+	17, // 48: graph.v1.LanternService.GetVertices:input_type -> graph.v1.GetVerticesRequest
+	19, // 49: graph.v1.LanternService.PutVertex:input_type -> graph.v1.PutVertexRequest
+	21, // 50: graph.v1.LanternService.PutVertices:input_type -> graph.v1.PutVerticesRequest
+	23, // 51: graph.v1.LanternService.DeleteVertex:input_type -> graph.v1.DeleteVertexRequest
+	25, // 52: graph.v1.LanternService.DeleteVertices:input_type -> graph.v1.DeleteVerticesRequest
+	27, // 53: graph.v1.LanternService.ScanVertices:input_type -> graph.v1.ScanVerticesRequest
+	29, // 54: graph.v1.LanternService.ScanVertexKeys:input_type -> graph.v1.ScanVertexKeysRequest
+	32, // 55: graph.v1.LanternService.SearchVertices:input_type -> graph.v1.SearchVerticesRequest
+	35, // 56: graph.v1.LanternService.CountVerticesByPrefix:input_type -> graph.v1.CountVerticesByPrefixRequest
+	37, // 57: graph.v1.LanternService.DeleteVerticesByPrefix:input_type -> graph.v1.DeleteVerticesByPrefixRequest
+	39, // 58: graph.v1.LanternService.TopVerticesByDegree:input_type -> graph.v1.TopVerticesByDegreeRequest
+	41, // 59: graph.v1.LanternService.GetEdge:input_type -> graph.v1.GetEdgeRequest
+	43, // 60: graph.v1.LanternService.GetEdges:input_type -> graph.v1.GetEdgesRequest
+	54, // 61: graph.v1.LanternService.AddEdge:input_type -> graph.v1.AddEdgeRequest
+	56, // 62: graph.v1.LanternService.AddEdges:input_type -> graph.v1.AddEdgesRequest
+	58, // 63: graph.v1.LanternService.PutEdge:input_type -> graph.v1.PutEdgeRequest
+	60, // 64: graph.v1.LanternService.PutEdges:input_type -> graph.v1.PutEdgesRequest
+	45, // 65: graph.v1.LanternService.DeleteEdge:input_type -> graph.v1.DeleteEdgeRequest
+	50, // 66: graph.v1.LanternService.DeleteEdges:input_type -> graph.v1.DeleteEdgesRequest
+	52, // 67: graph.v1.LanternService.DeleteEdgesByPrefix:input_type -> graph.v1.DeleteEdgesByPrefixRequest
+	48, // 68: graph.v1.LanternService.ScanEdges:input_type -> graph.v1.ScanEdgesRequest
+	62, // 69: graph.v1.LanternService.GetServerStatus:input_type -> graph.v1.GetServerStatusRequest
+	65, // 70: graph.v1.LanternService.GetReplicationStatus:input_type -> graph.v1.GetReplicationStatusRequest
+	67, // 71: graph.v1.LanternService.BackupSnapshot:input_type -> graph.v1.BackupSnapshotRequest
+	14, // 72: graph.v1.LanternService.Illuminate:output_type -> graph.v1.IlluminateResponse
+	16, // 73: graph.v1.LanternService.GetVertex:output_type -> graph.v1.GetVertexResponse
+	18, // 74: graph.v1.LanternService.GetVertices:output_type -> graph.v1.GetVerticesResponse
+	20, // 75: graph.v1.LanternService.PutVertex:output_type -> graph.v1.PutVertexResponse
+	22, // 76: graph.v1.LanternService.PutVertices:output_type -> graph.v1.PutVerticesResponse
+	24, // 77: graph.v1.LanternService.DeleteVertex:output_type -> graph.v1.DeleteVertexResponse
+	26, // 78: graph.v1.LanternService.DeleteVertices:output_type -> graph.v1.DeleteVerticesResponse
+	28, // 79: graph.v1.LanternService.ScanVertices:output_type -> graph.v1.ScanVerticesResponse
+	30, // 80: graph.v1.LanternService.ScanVertexKeys:output_type -> graph.v1.ScanVertexKeysResponse
+	33, // 81: graph.v1.LanternService.SearchVertices:output_type -> graph.v1.SearchVerticesResponse
+	36, // 82: graph.v1.LanternService.CountVerticesByPrefix:output_type -> graph.v1.CountVerticesByPrefixResponse
+	38, // 83: graph.v1.LanternService.DeleteVerticesByPrefix:output_type -> graph.v1.DeleteVerticesByPrefixResponse
+	40, // 84: graph.v1.LanternService.TopVerticesByDegree:output_type -> graph.v1.TopVerticesByDegreeResponse
+	42, // 85: graph.v1.LanternService.GetEdge:output_type -> graph.v1.GetEdgeResponse
+	44, // 86: graph.v1.LanternService.GetEdges:output_type -> graph.v1.GetEdgesResponse
+	55, // 87: graph.v1.LanternService.AddEdge:output_type -> graph.v1.AddEdgeResponse
+	57, // 88: graph.v1.LanternService.AddEdges:output_type -> graph.v1.AddEdgesResponse
+	59, // 89: graph.v1.LanternService.PutEdge:output_type -> graph.v1.PutEdgeResponse
+	61, // 90: graph.v1.LanternService.PutEdges:output_type -> graph.v1.PutEdgesResponse
+	46, // 91: graph.v1.LanternService.DeleteEdge:output_type -> graph.v1.DeleteEdgeResponse
+	51, // 92: graph.v1.LanternService.DeleteEdges:output_type -> graph.v1.DeleteEdgesResponse
+	53, // 93: graph.v1.LanternService.DeleteEdgesByPrefix:output_type -> graph.v1.DeleteEdgesByPrefixResponse
+	49, // 94: graph.v1.LanternService.ScanEdges:output_type -> graph.v1.ScanEdgesResponse
+	63, // 95: graph.v1.LanternService.GetServerStatus:output_type -> graph.v1.GetServerStatusResponse
+	66, // 96: graph.v1.LanternService.GetReplicationStatus:output_type -> graph.v1.GetReplicationStatusResponse
+	68, // 97: graph.v1.LanternService.BackupSnapshot:output_type -> graph.v1.BackupSnapshotResponse
+	72, // [72:98] is the sub-list for method output_type
+	46, // [46:72] is the sub-list for method input_type
+	46, // [46:46] is the sub-list for extension type_name
+	46, // [46:46] is the sub-list for extension extendee
+	0,  // [0:46] is the sub-list for field type_name
 }
 
 func init() { file_graph_v1_graph_proto_init() }
@@ -4424,7 +5002,7 @@ func file_graph_v1_graph_proto_init() {
 		(*IlluminateRequest_Ppr)(nil),
 		(*IlluminateRequest_Community)(nil),
 	}
-	file_graph_v1_graph_proto_msgTypes[57].OneofWrappers = []any{
+	file_graph_v1_graph_proto_msgTypes[61].OneofWrappers = []any{
 		(*BackupSnapshotResponse_Vertex)(nil),
 		(*BackupSnapshotResponse_Edge)(nil),
 	}
@@ -4433,8 +5011,8 @@ func file_graph_v1_graph_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_graph_v1_graph_proto_rawDesc), len(file_graph_v1_graph_proto_rawDesc)),
-			NumEnums:      5,
-			NumMessages:   58,
+			NumEnums:      7,
+			NumMessages:   63,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

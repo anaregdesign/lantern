@@ -39,18 +39,24 @@ import "context"
 // other S the projection is intentionally lossy and the original key is
 // the one suitable for downstream GraphCache calls.
 func (c *GraphCache[S, T]) ScanByPrefix(ctx context.Context, prefix string, fn func(projected string, key S, value T) bool) bool {
-	_, ok := c.ScanByPrefixPage(ctx, prefix, "", 0, fn)
+	_, ok := c.ScanByPrefixPage(ctx, prefix, "", 0, false, fn)
 	return ok
 }
 
 // ScanByPrefixPage is the paged form of ScanByPrefix (#836): it visits only
 // live vertices whose projected key starts with prefix AND sorts strictly
-// after `after`, and collects at most limit of them (limit <= 0 means
-// unbounded, i.e. exactly ScanByPrefix). The radix walk SEEKS past `after`
-// instead of re-walking and discarding everything before the cursor, and
-// collection stops one row past the page boundary, so a resumed page costs
-// O(depth + page) instead of O(everything matching prefix) in both time and
-// buffered memory.
+// after `after` (ascending) or strictly before it (descending, #898), and
+// collects at most limit of them (limit <= 0 means unbounded, i.e. exactly
+// ScanByPrefix). The radix walk SEEKS past `after` instead of re-walking and
+// discarding everything before the cursor, and collection stops one row past
+// the page boundary, so a resumed page costs O(depth + page) instead of
+// O(everything matching prefix) in both time and buffered memory.
+//
+// desc selects the key order: false walks ascending (the historical default),
+// true walks descending so a caller can read the newest N of a
+// timestamp-ordered keyspace as one bounded page. In descending mode `after`
+// is the previous page's last (smallest) key and the walk resumes strictly
+// below it; an empty `after` starts from the high end of the prefix range.
 //
 // more reports whether at least one further matching key exists beyond the
 // returned page — the signal a paginating caller uses to mint a next cursor
@@ -59,7 +65,7 @@ func (c *GraphCache[S, T]) ScanByPrefix(ctx context.Context, prefix string, fn f
 // and consistency semantics are unchanged from ScanByPrefix: rows are
 // collected into a point-in-time snapshot under c.mu.RLock and fn runs
 // after the lock is released.
-func (c *GraphCache[S, T]) ScanByPrefixPage(ctx context.Context, prefix, after string, limit int, fn func(projected string, key S, value T) bool) (more, ok bool) {
+func (c *GraphCache[S, T]) ScanByPrefixPage(ctx context.Context, prefix, after string, limit int, desc bool, fn func(projected string, key S, value T) bool) (more, ok bool) {
 	type entry struct {
 		projected string
 		key       S
@@ -100,7 +106,13 @@ func (c *GraphCache[S, T]) ScanByPrefixPage(ctx context.Context, prefix, after s
 			return limit <= 0 || len(snapshot) <= limit
 		}
 		if after == "" {
-			c.prefixIndex.walkPrefix(prefix, collect)
+			if desc {
+				c.prefixIndex.walkPrefixDesc(prefix, collect)
+			} else {
+				c.prefixIndex.walkPrefix(prefix, collect)
+			}
+		} else if desc {
+			c.prefixIndex.walkPrefixBoundDesc(prefix, after, false, collect)
 		} else {
 			c.prefixIndex.walkPrefixBound(prefix, after, false, collect)
 		}

@@ -72,7 +72,13 @@ type than `number` / `bigint` would infer.
 split inputs into chunks (default 1000, override via
 `ConnectOptions.batchChunkSize`). On a chunk failure the call throws
 `BatchError`, which carries `.written` — the count of items successfully
-committed before the error — and the underlying `cause`.
+committed before the error — and the underlying `cause`. Resume with
+`inputs.slice(err.written)`. A full retry from index 0 is safe for the
+idempotent batch ops (`putVertices`, `putEdges`, `deleteVertices`,
+`deleteEdges`) but **not** for a plain `addEdges`, whose already-applied
+prefix would be double-counted — attach contrib ids (see
+[Idempotent additive edges](#idempotent-additive-edges)) to make `addEdges`
+retries safe too.
 
 ```ts
 import { BatchError } from "lantern-sdk";
@@ -88,7 +94,85 @@ try {
 }
 ```
 
-## Streaming-like pagination
+## Conditional writes (SET NX)
+
+`putVertexIfAbsent` / `putVerticesIfAbsent` apply a write only when **no live
+vertex already exists** at the key — the Redis `SET NX` pattern (#896). They
+close the check-then-act race of a `getVertex` → `putVertex` sequence: the
+server performs the existence check and the store atomically, so two callers
+racing to create the same marker can't both win.
+
+`putVertexIfAbsent` resolves to a `boolean` (`true` when the write landed,
+`false` when a live vertex was already there and left untouched).
+`putVerticesIfAbsent` resolves to `{ written, skippedKeys }`, where `written`
+counts the vertices actually stored and `skippedKeys` lists the keys skipped
+because a live vertex already existed.
+
+```ts
+// Enqueue-dedup marker: only the first caller proceeds.
+const first = await client.putVertexIfAbsent({
+  key: "job:discover:user42",
+  value: true,
+  ttlSeconds: 300,
+});
+if (first) {
+  // we own the marker — enqueue the background job
+}
+
+const { written, skippedKeys } = await client.putVerticesIfAbsent([
+  { key: "settings:a", value: "default-a" },
+  { key: "settings:b", value: "default-b" },
+]);
+```
+
+"Live" follows the server's live-visibility rule, so an expired-but-uncollected
+vertex does not block the write. Under leaderless replication two concurrent
+`ifAbsent` writes on different nodes can both report success locally before
+converging (the same caveat as Redis `SETNX` with async replicas).
+
+## Idempotent additive edges
+
+`addEdge` / `addEdges` are **additive** — the server sums each contribution
+into the edge's weight — so a transport retry that re-sends the same edge
+double-counts its weight. Attach a 24-byte **contrib ID** to make a
+contribution idempotent: while that contribution is live, re-adding it with
+the same id is a no-op instead of adding weight again.
+
+Both resolve to the **post-accumulation effective weight**: `addEdge` returns
+the edge's new live total and `addEdges` returns an index-aligned `number[]`,
+so you can keep a running counter (an additive `+1` write, then read back the
+total) without a follow-up `getEdge`. The value is the serving node's live
+view; a replication peer holding un-streamed contributions may differ briefly.
+
+```ts
+const total = await client.addEdge({ tail: "a", head: "b", weight: 1 });
+// total is the accumulated weight after this contribution landed.
+```
+
+Two ways to get an id onto the wire:
+
+```ts
+// 1. Opt-in automatic ids: the client mints one per contribution from a
+//    per-client random nonce + a monotonic sequence, so a retried call
+//    re-sends identical bytes.
+const client = connect("http://localhost:6380", {
+  options: { idempotentAdds: true },
+});
+await client.addEdge({ tail: "a", head: "b", weight: 1 });
+
+// 2. Caller-supplied deterministic ids: control the dedup key yourself.
+//    Must be exactly CONTRIB_ID_BYTES (24) bytes; a caller id always wins
+//    over the automatic one.
+import { CONTRIB_ID_BYTES } from "lantern-sdk";
+const contribId = new Uint8Array(CONTRIB_ID_BYTES); // fill deterministically
+await client.addEdge({ tail: "a", head: "b", weight: 1, contribId });
+```
+
+For `addEdges`, ids stay index-aligned with `edges` even when the batch is
+split across chunks. **Dedup horizon:** dedup only holds while the
+contribution is live — once the edge decays past its TTL (or is deleted) the
+id is forgotten, so a later add with the same id contributes weight again.
+Contrib IDs guard retries within a contribution's lifetime, not for all time.
 
 `scanVerticesAll`, `scanEdgesAll`, and `scanVertexKeysAll` are async iterables
 that page through results until the server returns an empty cursor.
@@ -103,6 +187,38 @@ for await (const page of client.scanVerticesAll("user:", 500)) {
 counterparts to `scanVertices` — they return just the matching vertex keys
 (no values), backing the Redis-familiar `keys` CLI verb. A non-empty prefix
 is required.
+
+All four scans walk a prefix ascending by default; pass `order: "desc"` in the
+scan options to walk it descending (#898). The order is bound into the cursor,
+so replaying a cursor under the opposite order is rejected with
+`invalid_argument` — carry the same `order` through a paginated loop. The
+`*All` async iterables take `order` as a trailing argument, e.g.
+`client.scanVerticesAll("user:", 500, undefined, "desc")`.
+
+### Prefix bulk-delete
+
+`deleteVerticesByPrefix(prefix, opts?)` and `deleteEdgesByPrefix(opts?)` remove
+a whole namespace in one call, returning the count deleted as a `bigint`. Both
+accept `dryRun: true` to preview the count without mutating, and a `limit` that
+caps a single call (loop until the returned count drops below `limit` to drain
+a set larger than the server's per-call cap).
+
+`deleteEdgesByPrefix` matches the tail∩head intersection of `tailPrefix` and
+`headPrefix` (the edge-shaped sibling of the scan filter). At least one prefix
+must be non-empty — a both-empty request rejects with `InvalidArgumentError`,
+so a whole-graph edge wipe is always explicitly scoped.
+
+```ts
+// Preview, then delete every edge from a user into the session namespace.
+const would = await client.deleteEdgesByPrefix({
+  tailPrefix: "user:",
+  headPrefix: "session:",
+  dryRun: true,
+});
+if (would > 0n) {
+  await client.deleteEdgesByPrefix({ tailPrefix: "user:", headPrefix: "session:" });
+}
+```
 
 ## Content search
 

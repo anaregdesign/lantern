@@ -112,6 +112,15 @@ export interface ScanOptions {
   limit?: number;
   /** Opaque cursor returned by the previous scan; empty starts a fresh scan. */
   cursor?: Uint8Array;
+  /**
+   * Key order of the scan (#898): "asc" (the default) walks low-to-high,
+   * "desc" walks high-to-low — e.g. to read the newest N of a
+   * timestamp-ordered keyspace as one bounded page. The cursor is
+   * order-bound: replaying an "asc" cursor under a "desc" scan (or vice
+   * versa) is rejected with InvalidArgument, so every page must use the
+   * same order.
+   */
+  order?: "asc" | "desc";
 }
 
 export interface EdgeScanOptions extends ScanOptions {
@@ -149,6 +158,23 @@ export interface DeleteByPrefixOptions {
   dryRun?: boolean;
 }
 
+/**
+ * Options for {@link LanternClient.deleteEdgesByPrefix}. At least one of
+ * `tailPrefix` / `headPrefix` must be non-empty — the server rejects a
+ * both-empty request with `InvalidArgumentError` to prevent a whole-graph
+ * edge wipe. An empty prefix on one axis means "any" on that axis.
+ */
+export interface DeleteEdgesByPrefixOptions {
+  /** Match edges whose tail (source) key carries this prefix (empty = any tail). */
+  tailPrefix?: string;
+  /** Match edges whose head (destination) key carries this prefix (empty = any head). */
+  headPrefix?: string;
+  /** Caps how many matching edges are deleted in one call (0 = server default). */
+  limit?: number;
+  /** When true, the server reports the count that *would* be deleted without mutating. */
+  dryRun?: boolean;
+}
+
 export interface ConnectOptions {
   /** Per-call deadline (ms) applied when the caller did not set one. */
   defaultTimeoutMs?: number;
@@ -158,6 +184,16 @@ export interface ConnectOptions {
   serviceConfigJson?: string;
   /** Optional Connect user-agent string appended to the default. */
   userAgent?: string;
+  /**
+   * Opt in to automatic idempotency keys for `addEdge` / `addEdges` (#895).
+   * When true, the client mints a 24-byte contrib ID per contribution from a
+   * per-client random nonce and a monotonic per-call sequence, so a transport
+   * retry re-sends the same bytes and the additive contribution is applied
+   * exactly once (while it is live). A caller-supplied `EdgeInput.contribId`
+   * always takes precedence over the automatic id. Default false (the legacy
+   * additive path, where a retry double-counts weight).
+   */
+  idempotentAdds?: boolean;
 }
 
 export const DEFAULT_BATCH_CHUNK_SIZE = 1000;

@@ -95,7 +95,7 @@ func TestSnapshot_E2E_PrimaryToFollower(t *testing.T) {
 		{"v-3", "v-4", 1.0}, // second contribution to (v-3,v-4)
 	}
 	for i, e := range edgeWrites {
-		if err := primary.sdk.AddEdge(ctx, e.tail, e.head, e.w, time.Minute); err != nil {
+		if _, err := primary.sdk.AddEdge(ctx, e.tail, e.head, e.w, time.Minute); err != nil {
 			t.Fatalf("primary AddEdge[%d]: %v", i, err)
 		}
 	}

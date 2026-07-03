@@ -63,7 +63,7 @@ func TestAddEdge_IdempotentRetry_SingleContribution(t *testing.T) {
 			client.WithIdempotentAdds(),
 			client.WithConnectClientOption(connect.WithInterceptors(doubleSendInterceptor{})),
 		)
-		if err := l.AddEdge(ctx, "a", "b", 2, time.Minute); err != nil {
+		if _, err := l.AddEdge(ctx, "a", "b", 2, time.Minute); err != nil {
 			t.Fatalf("AddEdge: %v", err)
 		}
 		e, err := l.GetEdge(ctx, "a", "b")
@@ -79,7 +79,7 @@ func TestAddEdge_IdempotentRetry_SingleContribution(t *testing.T) {
 		l := newIdempotencyHarness(t,
 			client.WithConnectClientOption(connect.WithInterceptors(doubleSendInterceptor{})),
 		)
-		if err := l.AddEdge(ctx, "a", "b", 2, time.Minute); err != nil {
+		if _, err := l.AddEdge(ctx, "a", "b", 2, time.Minute); err != nil {
 			t.Fatalf("AddEdge: %v", err)
 		}
 		e, err := l.GetEdge(ctx, "a", "b")
@@ -93,10 +93,16 @@ func TestAddEdge_IdempotentRetry_SingleContribution(t *testing.T) {
 
 	t.Run("distinct calls still sum under WithIdempotentAdds", func(t *testing.T) {
 		l := newIdempotencyHarness(t, client.WithIdempotentAdds())
+		var lastEffective float32
 		for i := 0; i < 2; i++ {
-			if err := l.AddEdge(ctx, "a", "b", 2, time.Minute); err != nil {
+			eff, err := l.AddEdge(ctx, "a", "b", 2, time.Minute)
+			if err != nil {
 				t.Fatalf("AddEdge #%d: %v", i, err)
 			}
+			lastEffective = eff
+		}
+		if lastEffective != 4 {
+			t.Fatalf("second distinct AddEdge must report accumulated effective weight = 4, got %v", lastEffective)
 		}
 		e, err := l.GetEdge(ctx, "a", "b")
 		if err != nil {

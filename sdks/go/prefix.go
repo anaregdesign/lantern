@@ -8,13 +8,30 @@ import (
 )
 
 // ScanOption configures Lantern.ScanVertices. Use WithScanLimit /
-// WithScanCursor to page through a large prefix range.
+// WithScanCursor to page through a large prefix range, and WithScanOrder to
+// choose ascending (default) or descending key order.
 type ScanOption func(*scanOptions)
 
 type scanOptions struct {
 	limit  uint32
 	cursor []byte
+	order  ScanOrder
 }
+
+// ScanOrder selects the key order of a prefix scan (#898). It aliases the
+// generated proto enum so callers can pass client.ScanOrderDesc without
+// importing the pb package directly.
+type ScanOrder = pb.ScanOrder
+
+const (
+	// ScanOrderUnspecified lets the server apply its default (ascending).
+	ScanOrderUnspecified = pb.ScanOrder_SCAN_ORDER_UNSPECIFIED
+	// ScanOrderAsc walks keys low-to-high (the historical default).
+	ScanOrderAsc = pb.ScanOrder_SCAN_ORDER_ASC
+	// ScanOrderDesc walks keys high-to-low — e.g. to read the newest N of a
+	// timestamp-ordered keyspace as one bounded page.
+	ScanOrderDesc = pb.ScanOrder_SCAN_ORDER_DESC
+)
 
 // WithScanLimit caps the number of vertices the server returns in one
 // ScanVertices response. 0 (the default) lets the server apply its
@@ -27,9 +44,18 @@ func WithScanLimit(n uint32) ScanOption {
 // WithScanCursor resumes a paginated scan from the cursor returned by a
 // previous ScanVertices call. Treat the cursor as opaque bytes — do not
 // inspect or modify it. An empty cursor (the default) starts from the
-// beginning of the prefix range.
+// beginning of the prefix range. The cursor is order-bound: a cursor minted
+// by an ascending scan is rejected (InvalidArgument) when replayed under a
+// descending scan and vice versa (#898).
 func WithScanCursor(c []byte) ScanOption {
 	return func(o *scanOptions) { o.cursor = c }
+}
+
+// WithScanOrder selects the key order of the scan (#898): ScanOrderAsc (the
+// default) walks low-to-high, ScanOrderDesc walks high-to-low. All pages of a
+// paginated scan must use the same order — the returned cursor is order-bound.
+func WithScanOrder(order ScanOrder) ScanOption {
+	return func(o *scanOptions) { o.order = order }
 }
 
 // DeleteByPrefixOption configures Lantern.DeleteVerticesByPrefix.
@@ -56,9 +82,11 @@ func WithDryRun() DeleteByPrefixOption {
 }
 
 // ScanVertices returns one page of vertices whose key starts with prefix, in
-// ascending key order. nextCursor is non-empty when more pages are available;
-// pass it via WithScanCursor on the next call to continue. An empty
-// nextCursor signals end of stream.
+// ascending key order by default (pass WithScanOrder(ScanOrderDesc) for
+// descending). nextCursor is non-empty when more pages are available; pass it
+// via WithScanCursor on the next call to continue. An empty nextCursor signals
+// end of stream. The cursor is order-bound — every page must use the same
+// order.
 //
 // For most callers, ScanVerticesAll is the more ergonomic API — use this
 // method only when you need explicit control over a single page (e.g. for
@@ -74,6 +102,7 @@ func (l *Lantern) ScanVertices(ctx context.Context, prefix string, opts ...ScanO
 		Prefix: prefix,
 		Limit:  o.limit,
 		Cursor: o.cursor,
+		Order:  o.order,
 	}, l.client.ScanVertices)
 	if err != nil {
 		return nil, nil, err
@@ -133,7 +162,9 @@ func (l *Lantern) DeleteVerticesByPrefix(ctx context.Context, prefix string, opt
 // cancelled. Each yielded value is one server response's vertex slice (never
 // nil, but possibly empty on the final page); errors short-circuit
 // iteration. batchSize is forwarded to the server as the per-call limit
-// (0 = server default).
+// (0 = server default). Extra opts are applied to every page — pass
+// WithScanOrder(ScanOrderDesc) to iterate high-to-low (#898); WithScanLimit /
+// WithScanCursor are ignored here since the iterator manages both.
 //
 // Typical use:
 //
@@ -145,7 +176,7 @@ func (l *Lantern) DeleteVerticesByPrefix(ctx context.Context, prefix string, opt
 // Stop conditions: empty next_cursor from the server (clean end of stream),
 // any error from the server, or the consumer returning false from yield
 // (i.e. `break` out of the for-range).
-func (l *Lantern) ScanVerticesAll(ctx context.Context, prefix string, batchSize uint32) iter.Seq2[[]*Vertex, error] {
+func (l *Lantern) ScanVerticesAll(ctx context.Context, prefix string, batchSize uint32, opts ...ScanOption) iter.Seq2[[]*Vertex, error] {
 	return func(yield func([]*Vertex, error) bool) {
 		var cursor []byte
 		for {
@@ -153,7 +184,10 @@ func (l *Lantern) ScanVerticesAll(ctx context.Context, prefix string, batchSize 
 				yield(nil, ctx.Err())
 				return
 			}
-			vs, next, err := l.ScanVertices(ctx, prefix, WithScanLimit(batchSize), WithScanCursor(cursor))
+			// Caller opts first so WithScanOrder is honoured; the fixed
+			// limit/cursor come last so the iterator always controls paging.
+			page := append(append([]ScanOption{}, opts...), WithScanLimit(batchSize), WithScanCursor(cursor))
+			vs, next, err := l.ScanVertices(ctx, prefix, page...)
 			if err != nil {
 				yield(nil, err)
 				return
@@ -170,9 +204,10 @@ func (l *Lantern) ScanVerticesAll(ctx context.Context, prefix string, batchSize 
 }
 
 // ScanVertexKeys returns one page of vertex KEYS whose key starts with prefix,
-// in ascending order — the keys-only, wire-efficient counterpart to
-// ScanVertices (no vertex values are transferred). nextCursor is non-empty
-// when more pages are available; pass it via WithScanCursor on the next call.
+// in ascending order by default (pass WithScanOrder(ScanOrderDesc) for
+// descending) — the keys-only, wire-efficient counterpart to ScanVertices (no
+// vertex values are transferred). nextCursor is non-empty when more pages are
+// available; pass it via WithScanCursor on the next call.
 //
 // Unlike ScanVertices, a non-empty prefix is REQUIRED — the server rejects an
 // empty prefix with InvalidArgument. The returned cursor is its own opaque
@@ -191,6 +226,7 @@ func (l *Lantern) ScanVertexKeys(ctx context.Context, prefix string, opts ...Sca
 		Prefix: prefix,
 		Limit:  o.limit,
 		Cursor: o.cursor,
+		Order:  o.order,
 	}, l.client.ScanVertexKeys)
 	if err != nil {
 		return nil, nil, err
@@ -209,7 +245,7 @@ func (l *Lantern) ScanVertexKeys(ctx context.Context, prefix string, opts ...Sca
 //	    if err != nil { return err }
 //	    for _, k := range batch { ... }
 //	}
-func (l *Lantern) ScanVertexKeysAll(ctx context.Context, prefix string, batchSize uint32) iter.Seq2[[]string, error] {
+func (l *Lantern) ScanVertexKeysAll(ctx context.Context, prefix string, batchSize uint32, opts ...ScanOption) iter.Seq2[[]string, error] {
 	return func(yield func([]string, error) bool) {
 		var cursor []byte
 		for {
@@ -217,7 +253,8 @@ func (l *Lantern) ScanVertexKeysAll(ctx context.Context, prefix string, batchSiz
 				yield(nil, ctx.Err())
 				return
 			}
-			ks, next, err := l.ScanVertexKeys(ctx, prefix, WithScanLimit(batchSize), WithScanCursor(cursor))
+			page := append(append([]ScanOption{}, opts...), WithScanLimit(batchSize), WithScanCursor(cursor))
+			ks, next, err := l.ScanVertexKeys(ctx, prefix, page...)
 			if err != nil {
 				yield(nil, err)
 				return

@@ -70,6 +70,9 @@ func TestApplyMutation_BasicOps(t *testing.T) {
 	mustApply(t, "DeleteVerticesByPrefix", &pb.MutationOp{Op: &pb.MutationOp_DeleteVerticesByPrefix{
 		DeleteVerticesByPrefix: &pb.DeleteVerticesByPrefixRequest{Prefix: "x"},
 	}})
+	mustApply(t, "DeleteEdgesByPrefix", &pb.MutationOp{Op: &pb.MutationOp_DeleteEdgesByPrefix{
+		DeleteEdgesByPrefix: &pb.DeleteEdgesByPrefixRequest{TailPrefix: "v1"},
+	}})
 
 	// Nil-safety: empty mutation, nil op, nil request all return nil err.
 	if err := svc.ApplyMutation(ctx, nil); err != nil {
@@ -119,6 +122,7 @@ func TestApplyMutation_ReplicationApplyHook(t *testing.T) {
 		{"DeleteVertex", &pb.MutationOp{Op: &pb.MutationOp_DeleteVertex{DeleteVertex: &pb.DeleteVertexRequest{Key: "v1"}}}},
 		{"DeleteVertices", &pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{DeleteVertices: &pb.DeleteVerticesRequest{Keys: []string{"v2"}}}}},
 		{"DeleteVerticesByPrefix", &pb.MutationOp{Op: &pb.MutationOp_DeleteVerticesByPrefix{DeleteVerticesByPrefix: &pb.DeleteVerticesByPrefixRequest{Prefix: "x"}}}},
+		{"DeleteEdgesByPrefix", &pb.MutationOp{Op: &pb.MutationOp_DeleteEdgesByPrefix{DeleteEdgesByPrefix: &pb.DeleteEdgesByPrefixRequest{TailPrefix: "v1"}}}},
 	}
 	for _, c := range cases {
 		mustApply(t, c.op)

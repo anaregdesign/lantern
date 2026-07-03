@@ -78,7 +78,12 @@ export class OverflowError extends LanternError {
  *
  * Full retry from index 0 is safe for idempotent operations
  * (putVertices, putEdges, deleteVertices, deleteEdges) but NOT for
- * addEdges — the already-applied prefix would be double-counted.
+ * a plain addEdges — the already-applied prefix would be double-counted.
+ * Attaching contrib ids to the edges (an automatic id via
+ * `ConnectOptions.idempotentAdds`, or a deterministic `EdgeInput.contribId`)
+ * makes both a resumed retry (`inputs.slice(err.written)`) and a full retry
+ * from index 0 safe, because the server dedups each contribution while it is
+ * live (#895).
  */
 export class BatchError extends LanternError {
   readonly written: number;

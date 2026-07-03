@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/anaregdesign/lantern/core/hlc"
 )
 
 // ScanEdgesByPrefix iterates every live edge whose tail projected key
@@ -126,6 +128,18 @@ func (c *GraphCache[S, T]) collectEdgeScanRows(
 ) (snapshot []edgeScanRow[S], enabled, collected bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+	return c.collectEdgeScanRowsLocked(ctx, tailPrefix, headPrefix, afterTail, afterHead, limit)
+}
+
+// collectEdgeScanRowsLocked is the lock-agnostic body of collectEdgeScanRows:
+// it assumes the caller already holds c.mu (RLock for the scan path,
+// full Lock for DeleteEdgesByPrefix, which collects victims and deletes them
+// under one exclusive lock). It never takes c.mu itself.
+func (c *GraphCache[S, T]) collectEdgeScanRowsLocked(
+	ctx context.Context,
+	tailPrefix, headPrefix, afterTail, afterHead string,
+	limit int,
+) (snapshot []edgeScanRow[S], enabled, collected bool) {
 	if c.prefixIndex == nil {
 		return nil, false, false
 	}
@@ -286,4 +300,67 @@ func (c *GraphCache[S, T]) scanTailHeadsFallback(
 		}
 	}
 	return true
+}
+
+// DeleteEdgesByPrefix removes every live edge whose tail projected key starts
+// with tailPrefix AND whose head projected key starts with headPrefix, up to
+// limit edges (limit <= 0 means unbounded), and returns the number of edges
+// actually deleted.
+//
+// The matching (tail, head) pairs are collected into a snapshot and deleted
+// under a single c.mu.Lock, so concurrent readers observe either the pre- or
+// post-batch state. Victims are gathered BEFORE any deletion so the walk never
+// mutates the structures it is iterating — the same collect-then-delete
+// discipline DeleteByPrefix uses on the vertex side.
+//
+// The core method imposes no "at least one prefix non-empty" rule: both empty
+// deletes every edge up to limit, which direct core callers may legitimately
+// want. The service layer rejects the whole-graph wipe before calling in.
+func (c *GraphCache[S, T]) DeleteEdgesByPrefix(ctx context.Context, tailPrefix, headPrefix string, limit int) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	victims, enabled, collected := c.collectEdgeScanRowsLocked(ctx, tailPrefix, headPrefix, "", "", limit)
+	if !enabled || !collected {
+		return 0
+	}
+	if limit > 0 && len(victims) > limit {
+		victims = victims[:limit]
+	}
+	n := 0
+	for i := range victims {
+		if c.deleteEdgeLocked(victims[i].tail, victims[i].head) {
+			n++
+		}
+	}
+	return n
+}
+
+// DeleteEdgesByPrefixHLC is the tombstone-aware sibling of DeleteEdgesByPrefix
+// used by the LOCAL write path when replication is enabled: every matching
+// edge receives a tombstone stamped at ts/expiration so a late-replayed Add
+// from a peer is resolved by last-writer-wins rather than silently
+// resurrecting the edge (mirrors DeleteEdgesHLC / DeleteByPrefixHLC). Returns
+// the number of edges actually deleted, matching DeleteEdgesByPrefix, and any
+// ctx error observed mid-collection.
+func (c *GraphCache[S, T]) DeleteEdgesByPrefixHLC(ctx context.Context, tailPrefix, headPrefix string, limit int, ts hlc.Timestamp, expiration time.Time) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	victims, enabled, collected := c.collectEdgeScanRowsLocked(ctx, tailPrefix, headPrefix, "", "", limit)
+	if !enabled {
+		return 0, nil
+	}
+	if !collected {
+		return 0, ctx.Err()
+	}
+	if limit > 0 && len(victims) > limit {
+		victims = victims[:limit]
+	}
+	n := 0
+	for i := range victims {
+		if c.deleteEdgeLocked(victims[i].tail, victims[i].head) {
+			n++
+		}
+		c.setEdgeTombstoneLocked(victims[i].tail, victims[i].head, ts, expiration)
+	}
+	return n, nil
 }
