@@ -161,19 +161,7 @@ func corpusHasQuery(c Corpus, id string) bool {
 // pipeline — the shared setup for the phrase and match-mode precision gates.
 func indexedEnCorpus(t *testing.T) (Corpus, *search.InvertedIndex[string, search.Text]) {
 	t.Helper()
-	corpora, err := Corpora()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var en Corpus
-	for _, c := range corpora {
-		if c.Name == "en" {
-			en = c
-		}
-	}
-	if en.Name == "" {
-		t.Fatal("en corpus not found")
-	}
+	en := enCorpus(t)
 	idx := productionIndex()
 	en.IndexDocs(idx)
 	return en, idx
@@ -290,4 +278,73 @@ func rankResults(results []search.Result[string]) []string {
 		ids[i] = r.ID
 	}
 	return ids
+}
+
+// typoQueries maps a misspelled query (one edit from a real query word) to the
+// en query ID whose judgments it shares — same intent, one typo away.
+var typoQueries = map[string]string{
+	"expresso":   "q01", // espresso
+	"kubernets":  "q02", // kubernetes
+	"carbonarra": "q07", // carbonara
+}
+
+// TestFuzzyRecoversTypos is the #891 yardstick. It indexes the en corpus with a
+// word-only analyzer — deliberately without the bigram channel that already
+// gives the production pipeline some typo tolerance — so the measurement
+// isolates fuzzy term expansion: an exact search for a misspelled query recovers
+// little, and Fuzziness=1 recovers the relevant documents, so recall rises. It
+// also checks a clean query keeps its top hit under fuzzy, i.e. no precision
+// cost when there is no typo.
+func TestFuzzyRecoversTypos(t *testing.T) {
+	en := enCorpus(t)
+	idx := search.NewInvertedIndex[string, search.Text](
+		search.NewAnalyzer([]search.Normalizer{search.LowercaseNormalizer{}}, search.UnicodeTokenizer{}, nil),
+		nil,
+	)
+	en.IndexDocs(idx)
+	byID := queryByID(en)
+
+	improved := false
+	for typo, qid := range typoQueries {
+		q, ok := byID[qid]
+		if !ok {
+			t.Fatalf("typo subset references unknown query %q", qid)
+		}
+		exact := RecallAt(EvalDepth, rankResults(idx.Search(typo)), q.Qrels)
+		fuzzy := RecallAt(EvalDepth, rankResults(idx.SearchMatch(typo, search.MatchOptions{Fuzziness: 1})), q.Qrels)
+		if fuzzy < exact {
+			t.Errorf("typo %q (%s): fuzzy recall %.3f below exact %.3f", typo, qid, fuzzy, exact)
+		}
+		if fuzzy > exact {
+			improved = true
+		}
+		t.Logf("typo %q (%s): exact recall %.3f -> fuzzy %.3f", typo, qid, exact, fuzzy)
+	}
+	if !improved {
+		t.Error("fuzzy expansion did not improve recall on any typo query")
+	}
+
+	// No precision cost on a clean query: fuzzy must not displace its top hit.
+	clean := byID["q01"]
+	exactTop := rankResults(idx.Search(clean.Text))
+	fuzzyTop := rankResults(idx.SearchMatch(clean.Text, search.MatchOptions{Fuzziness: 1}))
+	if len(exactTop) == 0 || len(fuzzyTop) == 0 || exactTop[0] != fuzzyTop[0] {
+		t.Errorf("clean query %q: fuzzy changed the top hit", clean.Text)
+	}
+}
+
+// enCorpus returns the en golden corpus, failing the test if it is missing.
+func enCorpus(t *testing.T) Corpus {
+	t.Helper()
+	corpora, err := Corpora()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range corpora {
+		if c.Name == "en" {
+			return c
+		}
+	}
+	t.Fatal("en corpus not found")
+	return Corpus{}
 }
