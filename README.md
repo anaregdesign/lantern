@@ -95,6 +95,24 @@ That's the entire vocabulary you need:
   sum of decaying contributions, so recent events count more than old ones.
 - **TTL** — everything above expires on its own; nothing needs a cleanup job.
 
+That austerity is deliberate — label-free edges are what keep the rest of
+Lantern simple and fast:
+
+- **Every event can pile onto the same edge.** The additive, decaying
+  weight model works because merging contributions is just addition —
+  there are no per-type aggregation rules to define.
+- **Every algorithm works on every edge.** `illuminate`'s MST / SPT /
+  PageRank / community walks and the TF-IDF / BM25 hub-damping all compare
+  edges by one uniform number. There is no "which relationship types does
+  this traversal follow?" configuration, and no schema the server has to
+  know about.
+- **Nothing to design up front, nothing to migrate.** A new kind of event
+  starts flowing into the graph the moment you write it — cache semantics
+  extend to the data model itself.
+- **Edges stay tiny.** A contribution is a weight and an expiration, which
+  is why a large working set fits in one process's memory in the first
+  place.
+
 The payoff: questions like *"what has this user interacted with lately, and
 how strongly?"* stop being JOINs over event logs in your warehouse and
 become a one-RPC lookup against the cache.
