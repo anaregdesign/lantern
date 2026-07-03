@@ -231,6 +231,14 @@ singular returns a `bool` (`true` when the write landed); the plural returns
 `(written int, skipped []string)`. An expired-but-uncollected vertex does not
 block the write.
 
+`ScanVertices` / `ScanVertexKeys` iterate a prefix ascending by default;
+`WithScanOrder(ScanOrderDesc)` walks it descending (#898). The order is bound
+into the returned cursor, so replaying a cursor under the opposite order is
+rejected with `InvalidArgument` — always carry the same `WithScanOrder` value
+through a paginated loop. `ScanVerticesAll` / `ScanVertexKeysAll` accept the
+same scan options after `batchSize`, e.g.
+`ScanVerticesAll(ctx, "user:", 100, client.WithScanOrder(client.ScanOrderDesc))`.
+
 `Backup` streams a whole-graph, point-in-time dump (`FormatProto` by default,
 or human-readable `FormatNDJSON`; optionally scoped to a key prefix via
 `WithBackupPrefix`); `Restore` replays it through chunked `PutVertices` /

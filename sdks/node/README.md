@@ -188,6 +188,13 @@ counterparts to `scanVertices` — they return just the matching vertex keys
 (no values), backing the Redis-familiar `keys` CLI verb. A non-empty prefix
 is required.
 
+All four scans walk a prefix ascending by default; pass `order: "desc"` in the
+scan options to walk it descending (#898). The order is bound into the cursor,
+so replaying a cursor under the opposite order is rejected with
+`invalid_argument` — carry the same `order` through a paginated loop. The
+`*All` async iterables take `order` as a trailing argument, e.g.
+`client.scanVerticesAll("user:", 500, undefined, "desc")`.
+
 ### Prefix bulk-delete
 
 `deleteVerticesByPrefix(prefix, opts?)` and `deleteEdgesByPrefix(opts?)` remove

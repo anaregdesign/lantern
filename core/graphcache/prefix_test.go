@@ -457,7 +457,7 @@ func TestScanByPrefixPage(t *testing.T) {
 			after := ""
 			for page := 0; ; page++ {
 				var pageKeys []string
-				more, ok := c.ScanByPrefixPage(context.Background(), prefix, after, limit, func(_ string, key string, _ string) bool {
+				more, ok := c.ScanByPrefixPage(context.Background(), prefix, after, limit, false, func(_ string, key string, _ string) bool {
 					pageKeys = append(pageKeys, key)
 					return true
 				})
@@ -481,6 +481,78 @@ func TestScanByPrefixPage(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("prefix=%q limit=%d:\n got  %v\n want %v", prefix, limit, got, want)
+			}
+		}
+	}
+}
+
+// TestScanByPrefixPageDesc exercises descending-order paged scans (#898):
+// every page walks the prefix range from the high end, cursors resume
+// strictly below the previous page's smallest key, and the concatenated
+// result equals the ascending set reversed — independent of page size.
+func TestScanByPrefixPageDesc(t *testing.T) {
+	c := NewGraphCache[string, string](time.Hour)
+	c.EnablePrefixIndex(func(s string) string { return s })
+	exp := time.Now().Add(time.Hour)
+	rng := rand.New(rand.NewSource(898))
+	for i := 0; i < 200; i++ {
+		c.PutVertexWithExpiration(fmt.Sprintf("ns%d:key%04d", rng.Intn(3), rng.Intn(500)), "v", exp)
+	}
+	// Expired-but-unflushed entries every page must skip, same as ascending.
+	for i := 0; i < 20; i++ {
+		c.PutVertexWithExpiration(fmt.Sprintf("ns1:dead%03d", i), "v", time.Now().Add(-time.Minute))
+	}
+
+	for _, prefix := range []string{"", "ns1:", "ns1:key02", "missing:"} {
+		// Ground truth: ascending set, then reversed.
+		var asc []string
+		if !c.ScanByPrefix(context.Background(), prefix, func(_ string, key string, _ string) bool {
+			asc = append(asc, key)
+			return true
+		}) {
+			t.Fatalf("unpaged scan reported early stop")
+		}
+		want := make([]string, 0, len(asc))
+		for i := len(asc) - 1; i >= 0; i-- {
+			want = append(want, asc[i])
+		}
+		if len(want) == 0 {
+			want = nil
+		}
+
+		for _, limit := range []int{1, 3, 7, len(want) + 5} {
+			var got []string
+			after := ""
+			for page := 0; ; page++ {
+				var pageKeys []string
+				more, ok := c.ScanByPrefixPage(context.Background(), prefix, after, limit, true, func(_ string, key string, _ string) bool {
+					pageKeys = append(pageKeys, key)
+					return true
+				})
+				if !ok {
+					t.Fatalf("prefix=%q limit=%d page=%d not ok", prefix, limit, page)
+				}
+				if len(pageKeys) > limit {
+					t.Fatalf("prefix=%q limit=%d page=%d overflowed: %d rows", prefix, limit, page, len(pageKeys))
+				}
+				// Each page must itself be descending.
+				if !sort.SliceIsSorted(pageKeys, func(i, j int) bool { return pageKeys[i] > pageKeys[j] }) {
+					t.Fatalf("prefix=%q limit=%d page=%d not descending: %v", prefix, limit, page, pageKeys)
+				}
+				got = append(got, pageKeys...)
+				if !more {
+					break
+				}
+				if len(pageKeys) == 0 {
+					t.Fatalf("prefix=%q limit=%d: more=true with empty page", prefix, limit)
+				}
+				after = pageKeys[len(pageKeys)-1]
+				if page > len(want)+2 {
+					t.Fatalf("prefix=%q limit=%d: pagination did not terminate", prefix, limit)
+				}
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("prefix=%q limit=%d descending:\n got  %v\n want %v", prefix, limit, got, want)
 			}
 		}
 	}

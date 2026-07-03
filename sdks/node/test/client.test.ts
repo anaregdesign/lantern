@@ -33,7 +33,7 @@ import {
   connect,
   Reduction,
 } from "../src/index.js";
-import { LanternService, VertexSchema } from "../src/gen/graph/v1/graph_pb.js";
+import { LanternService, VertexSchema, ScanOrder } from "../src/gen/graph/v1/graph_pb.js";
 
 interface StubState {
   vertices: Map<string, ReturnType<typeof create<typeof VertexSchema>>>;
@@ -68,6 +68,8 @@ interface StubState {
     limit: number;
     dryRun: boolean;
   };
+  /** ScanOrder of the last scanVertices / scanVertexKeys request (#898). */
+  lastScanOrder?: number;
 }
 
 function newStubRoutes(state: StubState) {
@@ -159,13 +161,19 @@ function newStubRoutes(state: StubState) {
         }
         return { hits: state.searchHits ?? [] };
       },
-      // Keys-only prefix scan (#674): returns sorted matching keys with an
-      // opaque last-key cursor so pagination round-trips. The cursor shape
-      // here is a stub (raw last-key bytes); the SDK treats it as opaque.
+      // Keys-only prefix scan (#674): returns matching keys in the
+      // requested order (ascending default, descending when
+      // ScanOrder.DESC — #898) with an opaque last-key cursor so
+      // pagination round-trips. The cursor shape here is a stub (raw
+      // last-key bytes); the SDK treats it as opaque.
       async scanVertexKeys(req) {
-        const all = [...state.vertices.keys()].filter((k) => k.startsWith(req.prefix)).sort();
+        state.lastScanOrder = req.order;
+        const desc = req.order === ScanOrder.DESC;
+        const all = [...state.vertices.keys()]
+          .filter((k) => k.startsWith(req.prefix))
+          .sort((a, b) => (desc ? (a < b ? 1 : a > b ? -1 : 0) : a < b ? -1 : a > b ? 1 : 0));
         const after = req.cursor.length > 0 ? new TextDecoder().decode(req.cursor) : "";
-        const remaining = after ? all.filter((k) => k > after) : all;
+        const remaining = after ? all.filter((k) => (desc ? k < after : k > after)) : all;
         const limit = req.limit > 0 ? req.limit : 100;
         const page = remaining.slice(0, limit);
         const hitLimit = remaining.length > limit;
@@ -174,6 +182,28 @@ function newStubRoutes(state: StubState) {
           nextCursor:
             hitLimit && page.length > 0
               ? new TextEncoder().encode(page[page.length - 1])
+              : new Uint8Array(),
+        };
+      },
+      // Vertex prefix scan (#836) mirroring scanVertexKeys' ordering /
+      // pagination but returning whole vertices, so the #898 descending
+      // path is exercised on the values-carrying RPC too.
+      async scanVertices(req) {
+        state.lastScanOrder = req.order;
+        const desc = req.order === ScanOrder.DESC;
+        const all = [...state.vertices.keys()]
+          .filter((k) => k.startsWith(req.prefix))
+          .sort((a, b) => (desc ? (a < b ? 1 : a > b ? -1 : 0) : a < b ? -1 : a > b ? 1 : 0));
+        const after = req.cursor.length > 0 ? new TextDecoder().decode(req.cursor) : "";
+        const remaining = after ? all.filter((k) => (desc ? k < after : k > after)) : all;
+        const limit = req.limit > 0 ? req.limit : 100;
+        const pageKeys = remaining.slice(0, limit);
+        const hitLimit = remaining.length > limit;
+        return {
+          vertices: pageKeys.map((k) => state.vertices.get(k)!),
+          nextCursor:
+            hitLimit && pageKeys.length > 0
+              ? new TextEncoder().encode(pageKeys[pageKeys.length - 1])
               : new Uint8Array(),
         };
       },
@@ -658,6 +688,74 @@ describe("deleteEdgesByPrefix (#899)", () => {
     try {
       seedEdges([["users/a", "posts/1"]]);
       await expect(c.deleteEdgesByPrefix({})).rejects.toBeInstanceOf(InvalidArgumentError);
+    } finally {
+      c.close();
+    }
+  });
+});
+
+describe("scan order (#898)", () => {
+  test("default and explicit asc send SCAN_ORDER_ASC", async () => {
+    const c = newClient();
+    try {
+      await c.putVertices([
+        { key: "so:1", value: "a" },
+        { key: "so:2", value: "b" },
+      ]);
+
+      state.lastScanOrder = undefined;
+      await c.scanVertexKeys("so:", { limit: 10 });
+      expect(state.lastScanOrder).toBe(ScanOrder.ASC);
+
+      state.lastScanOrder = undefined;
+      await c.scanVertexKeys("so:", { limit: 10, order: "asc" });
+      expect(state.lastScanOrder).toBe(ScanOrder.ASC);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("descending keys scan walks high-to-low and paginates", async () => {
+    const c = newClient();
+    try {
+      await c.putVertices([
+        { key: "sd:1", value: "a" },
+        { key: "sd:2", value: "b" },
+        { key: "sd:3", value: "c" },
+      ]);
+
+      const p1 = await c.scanVertexKeys("sd:", { limit: 2, order: "desc" });
+      expect(state.lastScanOrder).toBe(ScanOrder.DESC);
+      expect(p1.keys).toEqual(["sd:3", "sd:2"]);
+      expect(p1.nextCursor.length).toBeGreaterThan(0);
+
+      const p2 = await c.scanVertexKeys("sd:", { limit: 2, order: "desc", cursor: p1.nextCursor });
+      expect(p2.keys).toEqual(["sd:1"]);
+      expect(p2.nextCursor.length).toBe(0);
+
+      const all: string[] = [];
+      for await (const page of c.scanVertexKeysAll("sd:", 2, undefined, "desc")) all.push(...page);
+      expect(all).toEqual(["sd:3", "sd:2", "sd:1"]);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("descending vertices scan returns whole vertices high-to-low", async () => {
+    const c = newClient();
+    try {
+      await c.putVertices([
+        { key: "sv:1", value: "a" },
+        { key: "sv:2", value: "b" },
+        { key: "sv:3", value: "c" },
+      ]);
+
+      const all: string[] = [];
+      for await (const page of c.scanVerticesAll("sv:", 2, undefined, "desc")) {
+        for (const v of page) all.push(v.key);
+      }
+      expect(state.lastScanOrder).toBe(ScanOrder.DESC);
+      expect(all).toEqual(["sv:3", "sv:2", "sv:1"]);
     } finally {
       c.close();
     }

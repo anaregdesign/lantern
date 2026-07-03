@@ -165,13 +165,16 @@ type Backend interface {
 
 	// prefix scan / count / delete. ScanByPrefixPage (#836) invokes fn for
 	// each live vertex whose key starts with prefix AND sorts strictly
-	// after `after`, in lexicographic order, up to limit rows (limit <= 0
-	// = unbounded); fn returns false to stop early. more reports whether
-	// further matches exist past the page — the handler's next-cursor
-	// signal. CountByPrefix counts only live matching vertices.
+	// after `after` (ascending) or strictly before it (descending, #898),
+	// in the requested key order, up to limit rows (limit <= 0
+	// = unbounded); fn returns false to stop early. desc selects reverse
+	// lexicographic order; in descending mode `after` is the previous
+	// page's smallest key and the walk resumes strictly below it. more
+	// reports whether further matches exist past the page — the handler's
+	// next-cursor signal. CountByPrefix counts only live matching vertices.
 	// DeleteByPrefix removes matching vertices up to limit (limit <= 0
 	// means unlimited) and returns how many were deleted.
-	ScanByPrefixPage(ctx context.Context, prefix, after string, limit int, fn func(projected string, key string, value *pb.Vertex) bool) (more, ok bool)
+	ScanByPrefixPage(ctx context.Context, prefix, after string, limit int, desc bool, fn func(projected string, key string, value *pb.Vertex) bool) (more, ok bool)
 	CountByPrefix(prefix string) int
 	DeleteByPrefix(ctx context.Context, prefix string, limit int) int
 

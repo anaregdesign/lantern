@@ -20,10 +20,18 @@ const cursorVersion uint8 = 1
 //
 // LastKey holds the last vertex key returned in the previous page. The next
 // page resumes with the first key strictly greater than LastKey within the
-// same prefix.
+// same prefix (ascending) or strictly less (descending, #898).
+//
+// Order records the scan direction the cursor was minted under (1 = ascending,
+// 2 = descending; see prefix.go's scanOrder* codes). It is order-bound: a
+// cursor issued by an ascending scan fed back into a descending scan (or vice
+// versa) is rejected with InvalidArgument, because LastKey means "resume above"
+// in one direction and "resume below" in the other. A zero/omitted Order
+// decodes as ascending so pre-#898 cursors keep working.
 type scanCursor struct {
 	Version uint8  `json:"v"`
 	LastKey string `json:"k"`
+	Order   uint8  `json:"o,omitempty"`
 }
 
 // encodeCursor packs a scanCursor into the opaque bytes returned to clients.
@@ -62,6 +70,7 @@ type cursorEnvelope struct {
 	LastTail      string `json:"t,omitempty"`
 	LastHead      string `json:"h,omitempty"`
 	LastVertexKey string `json:"vk,omitempty"`
+	Order         uint8  `json:"o,omitempty"`
 }
 
 // decodeEnvelope is the shared base64+JSON+version unwrapper used by both
@@ -99,7 +108,7 @@ func decodeCursor(b []byte) (scanCursor, error) {
 	if env.LastTail != "" || env.LastHead != "" || env.LastVertexKey != "" {
 		return scanCursor{}, fmt.Errorf("decode cursor: cursor was issued by a different Scan RPC (expected ScanVertices cursor)")
 	}
-	return scanCursor{Version: env.Version, LastKey: env.LastKey}, nil
+	return scanCursor{Version: env.Version, LastKey: env.LastKey, Order: env.Order}, nil
 }
 
 // scanEdgesCursor pages ScanEdges by the last (tail, head) pair returned.
@@ -146,6 +155,7 @@ func decodeEdgesCursor(b []byte) (scanEdgesCursor, error) {
 type scanKeysCursor struct {
 	Version uint8  `json:"v"`
 	LastKey string `json:"vk"`
+	Order   uint8  `json:"o,omitempty"`
 }
 
 func encodeKeysCursor(c scanKeysCursor) []byte {
@@ -170,5 +180,5 @@ func decodeKeysCursor(b []byte) (scanKeysCursor, error) {
 	if env.LastKey != "" || env.LastTail != "" || env.LastHead != "" {
 		return scanKeysCursor{}, fmt.Errorf("decode cursor: cursor was issued by a different Scan RPC (expected ScanVertexKeys cursor)")
 	}
-	return scanKeysCursor{Version: env.Version, LastKey: env.LastVertexKey}, nil
+	return scanKeysCursor{Version: env.Version, LastKey: env.LastVertexKey, Order: env.Order}, nil
 }

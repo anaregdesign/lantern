@@ -11,17 +11,20 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
-// ScanVertices walks the vertex keyspace in lexicographic order, returning a
+// ScanVertices walks the vertex keyspace in the requested key order (ascending
+// by default, descending when Order is SCAN_ORDER_DESC — #898), returning a
 // single page of vertices whose keys start with the request prefix. Empty
 // prefix scans the whole keyspace.
 //
 // Pagination: the request limit is clamped to (0, ScanMaxLimit]; a zero or
 // negative value falls back to ScanDefaultLimit. The opaque cursor is
 // encoded once at the boundary so clients only ever round-trip bytes; see
-// cursor.go. NextCursor is empty on the final page.
+// cursor.go. NextCursor is empty on the final page. The cursor is order-bound:
+// replaying an ascending cursor under a descending scan (or vice versa) is
+// rejected with InvalidArgument.
 //
-// The vertices slice preserves the cache's lexicographic order — clients
-// that need a different order must sort downstream.
+// The vertices slice preserves the requested order — clients that need a
+// different order must sort downstream.
 func (s *LanternService) ScanVertices(ctx context.Context, in *pb.ScanVerticesRequest) (*pb.ScanVerticesResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
@@ -36,13 +39,26 @@ func (s *LanternService) ScanVertices(ctx context.Context, in *pb.ScanVerticesRe
 		}
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
+	// The cursor is order-bound (#898): its LastKey means "resume above" for
+	// an ascending scan and "resume below" for a descending one, so replaying
+	// it under the other order would silently skip or repeat rows. Reject the
+	// mismatch instead.
+	order := normalizeScanOrder(in.GetOrder())
+	if len(in.GetCursor()) > 0 && cursorOrder(cursor.Order) != order {
+		if s.onValidationReject != nil {
+			s.onValidationReject("order_mismatch")
+		}
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			errors.New("scan vertices: cursor order does not match request order"))
+	}
+	desc := order == scanOrderDesc
 
 	// The cursor seek and page limit are pushed into the index walk (#836):
 	// the backend resumes strictly after cursor.LastKey and buffers at most
 	// one page, so a resumed page costs O(page), not O(matching set).
 	vertices := make([]*pb.Vertex, 0, limit)
 	var lastKey string
-	more, _ := s.cache.ScanByPrefixPage(ctx, in.GetPrefix(), cursor.LastKey, int(limit), func(_ string, key string, v *pb.Vertex) bool {
+	more, _ := s.cache.ScanByPrefixPage(ctx, in.GetPrefix(), cursor.LastKey, int(limit), desc, func(_ string, key string, v *pb.Vertex) bool {
 		// Normalise nil-valued vertices the same way GetVertex does so
 		// callers see a uniform shape.
 		if v == nil {
@@ -56,14 +72,15 @@ func (s *LanternService) ScanVertices(ctx context.Context, in *pb.ScanVerticesRe
 
 	resp := &pb.ScanVerticesResponse{Vertices: vertices}
 	if more && lastKey != "" {
-		resp.NextCursor = encodeCursor(scanCursor{LastKey: lastKey})
+		resp.NextCursor = encodeCursor(scanCursor{LastKey: lastKey, Order: order})
 	}
 	s.metrics.OnScan("ScanVertices", len(vertices), time.Since(start))
 	return resp, nil
 }
 
 // ScanVertexKeys streams just the KEYS of vertices whose key starts with the
-// request prefix, in lexicographic order — the wire-efficient backing for the
+// request prefix, in the requested key order (ascending by default, descending
+// when Order is SCAN_ORDER_DESC — #898) — the wire-efficient backing for the
 // `keys` CLI verb (#674). It differs from ScanVertices in two ways:
 //
 //   - a non-empty prefix is REQUIRED (empty prefix → InvalidArgument), so
@@ -94,10 +111,19 @@ func (s *LanternService) ScanVertexKeys(ctx context.Context, in *pb.ScanVertexKe
 		}
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
+	order := normalizeScanOrder(in.GetOrder())
+	if len(in.GetCursor()) > 0 && cursorOrder(cursor.Order) != order {
+		if s.onValidationReject != nil {
+			s.onValidationReject("order_mismatch")
+		}
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			errors.New("scan vertex keys: cursor order does not match request order"))
+	}
+	desc := order == scanOrderDesc
 
 	keys := make([]string, 0, limit)
 	var lastKey string
-	more, _ := s.cache.ScanByPrefixPage(ctx, in.GetPrefix(), cursor.LastKey, int(limit), func(_ string, key string, _ *pb.Vertex) bool {
+	more, _ := s.cache.ScanByPrefixPage(ctx, in.GetPrefix(), cursor.LastKey, int(limit), desc, func(_ string, key string, _ *pb.Vertex) bool {
 		keys = append(keys, key)
 		lastKey = key
 		return true
@@ -105,7 +131,7 @@ func (s *LanternService) ScanVertexKeys(ctx context.Context, in *pb.ScanVertexKe
 
 	resp := &pb.ScanVertexKeysResponse{Keys: keys}
 	if more && lastKey != "" {
-		resp.NextCursor = encodeKeysCursor(scanKeysCursor{LastKey: lastKey})
+		resp.NextCursor = encodeKeysCursor(scanKeysCursor{LastKey: lastKey, Order: order})
 	}
 	s.metrics.OnScan("ScanVertexKeys", len(keys), time.Since(start))
 	return resp, nil
@@ -233,6 +259,34 @@ func clampLimit(requested, def, max uint32) uint32 {
 		requested = max
 	}
 	return requested
+}
+
+// scanOrder* are the compact order codes stored in a scan cursor (#898).
+// They are deliberately non-zero so an omitted cursor field (zero) is
+// distinguishable and can be normalised to ascending for legacy cursors.
+const (
+	scanOrderAsc  uint8 = 1
+	scanOrderDesc uint8 = 2
+)
+
+// normalizeScanOrder maps the request's ScanOrder enum to a compact order
+// code, treating SCAN_ORDER_UNSPECIFIED as ascending — the historical
+// default — so a client that never sets the field keeps ascending scans.
+func normalizeScanOrder(o pb.ScanOrder) uint8 {
+	if o == pb.ScanOrder_SCAN_ORDER_DESC {
+		return scanOrderDesc
+	}
+	return scanOrderAsc
+}
+
+// cursorOrder normalises a cursor's stored order code, mapping the zero value
+// (a pre-#898 cursor that predates the field) to ascending so old cursors are
+// treated as the ascending scans that minted them.
+func cursorOrder(o uint8) uint8 {
+	if o == scanOrderDesc {
+		return scanOrderDesc
+	}
+	return scanOrderAsc
 }
 
 // ScanEdges walks the edge keyspace in ascending (tail, head) order,

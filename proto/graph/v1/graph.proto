@@ -283,6 +283,17 @@ message DeleteVerticesResponse {
   int32 deleted = 1;
 }
 
+// ScanOrder selects the key order a ScanVertices / ScanVertexKeys page walks
+// (#898). SCAN_ORDER_UNSPECIFIED preserves the historical behavior (ascending)
+// so an unset field is a no-op. DESC walks the same prefix range from the high
+// end, so "give me the newest N" on a timestamp-ordered keyspace is a single
+// bounded page instead of a full-prefix scan-then-sort.
+enum ScanOrder {
+  SCAN_ORDER_UNSPECIFIED = 0; // = ASC (historical default)
+  SCAN_ORDER_ASC = 1;
+  SCAN_ORDER_DESC = 2;
+}
+
 // ScanVerticesRequest streams vertices whose key starts with `prefix` in
 // lexicographic order. `limit` caps the number returned in one call; the
 // server enforces a default when `limit == 0` and a hard maximum (see
@@ -296,10 +307,16 @@ message ScanVerticesRequest {
   // other Scan* RPCs (e.g. ScanEdges). Cross-feeding is rejected with
   // INVALID_ARGUMENT rather than silently restarting the scan.
   bytes cursor = 3;
+  // order selects ascending (default) or descending key order. The cursor
+  // is order-bound: a next_cursor minted by an ascending page is rejected
+  // with INVALID_ARGUMENT if fed back into a descending scan (and vice
+  // versa), matching the cross-RPC cursor-rejection precedent.
+  ScanOrder order = 4;
 }
 
 message ScanVerticesResponse {
-  // vertices returned in ascending key order. May be shorter than `limit`
+  // vertices returned in the requested key order (ascending by default,
+  // descending when order = SCAN_ORDER_DESC). May be shorter than `limit`
   // when the underlying range is exhausted.
   repeated Vertex vertices = 1;
   // next_cursor is non-empty when more results are available. An empty
@@ -328,11 +345,15 @@ message ScanVertexKeysRequest {
   // Cross-feeding is rejected with INVALID_ARGUMENT. An empty cursor starts
   // from the beginning.
   bytes cursor = 3;
+  // order selects ascending (default) or descending key order, with the
+  // same order-bound cursor rule as ScanVertices.
+  ScanOrder order = 4;
 }
 
 message ScanVertexKeysResponse {
-  // keys returned in ascending lexicographic order. May be shorter than
-  // `limit` when the underlying range is exhausted.
+  // keys returned in the requested order (ascending by default, descending
+  // when order = SCAN_ORDER_DESC). May be shorter than `limit` when the
+  // underlying range is exhausted.
   repeated string keys = 1;
   // next_cursor is non-empty when more results are available. An empty
   // value signals end of stream.

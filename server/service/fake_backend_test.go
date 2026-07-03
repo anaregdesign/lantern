@@ -317,20 +317,35 @@ func (f *fakeBackend) Watch(ctx context.Context, interval time.Duration) {
 // GraphCache via the bufconn harness; the fake just walks its in-memory
 // map in lexicographic order so unit tests can still hit the wrappers
 // without standing up the cache.
-func (f *fakeBackend) ScanByPrefixPage(_ context.Context, prefix, after string, limit int, fn func(string, string, *pb.Vertex) bool) (bool, bool) {
+func (f *fakeBackend) ScanByPrefixPage(_ context.Context, prefix, after string, limit int, desc bool, fn func(string, string, *pb.Vertex) bool) (bool, bool) {
 	keys := make([]string, 0, len(f.vertices))
 	for k := range f.vertices {
 		if prefix != "" && !(len(k) >= len(prefix) && k[:len(prefix)] == prefix) {
 			continue
 		}
-		if after != "" && k <= after {
-			continue
+		if after != "" {
+			// Ascending resumes strictly after the cursor; descending
+			// (#898) resumes strictly before it.
+			if desc {
+				if k >= after {
+					continue
+				}
+			} else if k <= after {
+				continue
+			}
 		}
 		keys = append(keys, k)
 	}
-	// Sort to match the radix index's lexicographic walk order.
+	// Sort to match the radix index's walk order for the requested direction.
 	for i := 1; i < len(keys); i++ {
-		for j := i; j > 0 && keys[j-1] > keys[j]; j-- {
+		for j := i; j > 0; j-- {
+			swap := keys[j-1] > keys[j]
+			if desc {
+				swap = keys[j-1] < keys[j]
+			}
+			if !swap {
+				break
+			}
 			keys[j-1], keys[j] = keys[j], keys[j-1]
 		}
 	}

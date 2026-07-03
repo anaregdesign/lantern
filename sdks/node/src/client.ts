@@ -38,6 +38,7 @@ import {
   MatchMode as PbMatchMode,
   Objective as PbObjective,
   Reduction as PbReduction,
+  ScanOrder as PbScanOrder,
   Weighting as PbWeighting,
   VertexSchema,
   type GetReplicationStatusResponse,
@@ -94,6 +95,16 @@ function toPbMatchMode(m: MatchMode | undefined): PbMatchMode {
     default:
       return PbMatchMode.ANY;
   }
+}
+
+/**
+ * Maps the SDK scan order ("asc" | "desc" | undefined) to the wire ScanOrder
+ * enum (#898). Undefined and "asc" both send SCAN_ORDER_ASC so a paginated
+ * scan's order is explicit on every page and the server's order-bound cursor
+ * check has a concrete value to compare against.
+ */
+function toPbScanOrder(order: "asc" | "desc" | undefined): PbScanOrder {
+  return order === "desc" ? PbScanOrder.DESC : PbScanOrder.ASC;
 }
 
 /**
@@ -385,6 +396,7 @@ export class Lantern {
           prefix,
           limit: opts.limit ?? 0,
           cursor: opts.cursor ?? new Uint8Array(),
+          order: toPbScanOrder(opts.order),
         },
         this.callOpts(signal),
       );
@@ -397,15 +409,26 @@ export class Lantern {
     });
   }
 
+  /**
+   * Async-iterable form of {@link scanVertices} that pages through the whole
+   * prefix range. `batchSize` is the per-call limit (0 = server default). Pass
+   * `order` ("asc" default, "desc" for high-to-low) to iterate the range in
+   * either direction (#898).
+   */
   async *scanVerticesAll(
     prefix: string,
     batchSize?: number,
     signal?: AbortSignal,
+    order?: "asc" | "desc",
   ): AsyncIterable<Vertex[]> {
     let cursor: Uint8Array = new Uint8Array();
     while (true) {
       if (signal?.aborted) throw new LanternError("scanVerticesAll aborted");
-      const page = await this.scanVertices(prefix, { limit: batchSize ?? 0, cursor }, signal);
+      const page = await this.scanVertices(
+        prefix,
+        { limit: batchSize ?? 0, cursor, order },
+        signal,
+      );
       yield page.vertices;
       if (page.nextCursor.length === 0) return;
       cursor = page.nextCursor;
@@ -433,6 +456,7 @@ export class Lantern {
           prefix,
           limit: opts.limit ?? 0,
           cursor: opts.cursor ?? new Uint8Array(),
+          order: toPbScanOrder(opts.order),
         },
         this.callOpts(signal),
       );
@@ -443,17 +467,23 @@ export class Lantern {
   /**
    * Async-iterable form of {@link scanVertexKeys} that pages through the
    * whole prefix range. `batchSize` is the per-call limit (0 = server
-   * default). A non-empty `prefix` is REQUIRED.
+   * default). A non-empty `prefix` is REQUIRED. Pass `order` ("asc" default,
+   * "desc" for high-to-low) to iterate the range in either direction (#898).
    */
   async *scanVertexKeysAll(
     prefix: string,
     batchSize?: number,
     signal?: AbortSignal,
+    order?: "asc" | "desc",
   ): AsyncIterable<string[]> {
     let cursor: Uint8Array = new Uint8Array();
     while (true) {
       if (signal?.aborted) throw new LanternError("scanVertexKeysAll aborted");
-      const page = await this.scanVertexKeys(prefix, { limit: batchSize ?? 0, cursor }, signal);
+      const page = await this.scanVertexKeys(
+        prefix,
+        { limit: batchSize ?? 0, cursor, order },
+        signal,
+      );
       yield page.keys;
       if (page.nextCursor.length === 0) return;
       cursor = page.nextCursor;

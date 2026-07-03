@@ -289,3 +289,122 @@ func TestRadixWalkPrefixBound(t *testing.T) {
 		}
 	}
 }
+
+// TestRadix_WalkPrefixDescLexOrder asserts walkPrefixDesc yields exactly the
+// reverse of walkPrefix for every prefix (#898).
+func TestRadix_WalkPrefixDescLexOrder(t *testing.T) {
+	r := newRadix()
+	keys := []string{"a", "ab", "abc", "abd", "b", "ba", "session:1", "session:2", "session:10", ""}
+	for _, k := range keys {
+		r.insert(k)
+	}
+	for _, prefix := range []string{"", "a", "ab", "session:", "b", "zzz"} {
+		var asc []string
+		r.walkPrefix(prefix, func(k string) bool {
+			asc = append(asc, k)
+			return true
+		})
+		var want []string
+		for i := len(asc) - 1; i >= 0; i-- {
+			want = append(want, asc[i])
+		}
+		var got []string
+		r.walkPrefixDesc(prefix, func(k string) bool {
+			got = append(got, k)
+			return true
+		})
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("walkPrefixDesc(%q):\n  got  %v\n  want %v", prefix, got, want)
+		}
+	}
+}
+
+// TestRadix_WalkPrefixDescEarlyExit asserts a false return truncates the
+// descending walk promptly (#898).
+func TestRadix_WalkPrefixDescEarlyExit(t *testing.T) {
+	r := newRadix()
+	for _, k := range []string{"a1", "a2", "a3", "a4"} {
+		r.insert(k)
+	}
+	var got []string
+	r.walkPrefixDesc("a", func(k string) bool {
+		got = append(got, k)
+		return len(got) < 2
+	})
+	if !reflect.DeepEqual(got, []string{"a4", "a3"}) {
+		t.Fatalf("descending early exit got %v, want [a4 a3]", got)
+	}
+}
+
+// TestRadixWalkPrefixBoundDesc is the descending mirror of
+// TestRadixWalkPrefixBound (#898): bound is an UPPER bound, so want holds keys
+// < bound (or <= bound when inclusive), in reverse lexicographic order.
+func TestRadixWalkPrefixBoundDesc(t *testing.T) {
+	rng := rand.New(rand.NewSource(898))
+	alphabet := []string{"a", "b", "ab", "ba", "session:", "msg:", ":", "0", "1"}
+	randKey := func() string {
+		n := 1 + rng.Intn(4)
+		var sb strings.Builder
+		for i := 0; i < n; i++ {
+			sb.WriteString(alphabet[rng.Intn(len(alphabet))])
+		}
+		return sb.String()
+	}
+
+	for trial := 0; trial < 200; trial++ {
+		r := newRadix()
+		keys := map[string]bool{}
+		for i := 0; i < 30; i++ {
+			k := randKey()
+			keys[k] = true
+			r.insert(k)
+		}
+		sorted := make([]string, 0, len(keys))
+		for k := range keys {
+			sorted = append(sorted, k)
+		}
+		sort.Strings(sorted)
+
+		prefixes := []string{"", "a", "ab", "session:", "zzz", sorted[rng.Intn(len(sorted))]}
+		bounds := []string{"", "a", sorted[rng.Intn(len(sorted))], sorted[rng.Intn(len(sorted))] + "x", "zzzz", "\x00"}
+		for _, prefix := range prefixes {
+			for _, bound := range bounds {
+				for _, inclusive := range []bool{false, true} {
+					var want []string
+					for i := len(sorted) - 1; i >= 0; i-- {
+						k := sorted[i]
+						if !strings.HasPrefix(k, prefix) {
+							continue
+						}
+						if k < bound || (inclusive && k == bound) {
+							want = append(want, k)
+						}
+					}
+					var got []string
+					r.walkPrefixBoundDesc(prefix, bound, inclusive, func(k string) bool {
+						got = append(got, k)
+						return true
+					})
+					if !reflect.DeepEqual(got, want) {
+						t.Fatalf("trial %d prefix=%q bound=%q incl=%v:\n got  %v\n want %v\n keys %v",
+							trial, prefix, bound, inclusive, got, want, sorted)
+					}
+				}
+			}
+		}
+
+		// Early stop must truncate, not skip.
+		if len(sorted) > 2 {
+			last := sorted[len(sorted)-1]
+			var got []string
+			r.walkPrefixBoundDesc("", last, false, func(k string) bool {
+				got = append(got, k)
+				return len(got) < 2
+			})
+			// Keys strictly below `last`, descending, first two.
+			if len(got) != 2 || got[0] != sorted[len(sorted)-2] {
+				t.Fatalf("early stop got %v, want first two below %q of %v", got, last, sorted)
+			}
+		}
+	}
+}

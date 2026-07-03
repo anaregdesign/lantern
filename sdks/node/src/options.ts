@@ -112,6 +112,15 @@ export interface ScanOptions {
   limit?: number;
   /** Opaque cursor returned by the previous scan; empty starts a fresh scan. */
   cursor?: Uint8Array;
+  /**
+   * Key order of the scan (#898): "asc" (the default) walks low-to-high,
+   * "desc" walks high-to-low — e.g. to read the newest N of a
+   * timestamp-ordered keyspace as one bounded page. The cursor is
+   * order-bound: replaying an "asc" cursor under a "desc" scan (or vice
+   * versa) is rejected with InvalidArgument, so every page must use the
+   * same order.
+   */
+  order?: "asc" | "desc";
 }
 
 export interface EdgeScanOptions extends ScanOptions {
