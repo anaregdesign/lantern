@@ -120,6 +120,32 @@ docker compose logs lantern --no-color \
   later ones. Value accessors (`StringValue`, `IntValue`, …) return
   `(T, error)` — always destructure.
 
+## Lucene relevance baseline (#887)
+
+`lucene-baseline/` regenerates the pinned Lucene rankings the search-relevance
+harness compares against (`core/search/relevance`, gate
+`TestLuceneBaselineComparison`). CI never runs a JVM: the runner executes
+offline here, and only its output — `core/search/relevance/testdata/lucene_runs.json`
+— is committed.
+
+```bash
+testbed/lucene-baseline/run.sh   # docker build + run; rewrites lucene_runs.json
+(cd core && go test ./search/relevance/ -v -run TestLuceneBaselineComparison)
+```
+
+Rules:
+
+- **Regenerate whenever a corpus fixture changes** (`testdata/{en,ja,mixed}.json`)
+  and commit the refreshed runs file in the same PR — the gate fails on runs
+  that rank a query the fixtures no longer define, but it cannot detect a
+  stale ranking for an *edited* document text.
+- The engine config is deliberately stock (BM25 defaults, escaped plain-text
+  queries, default-OR QueryParser, StandardAnalyzer / EnglishAnalyzer /
+  CJKAnalyzer / kuromoji per corpus) — #886's definition of done is measured
+  against these runs, so do not "tune" the baseline.
+- Rankings only, no metrics, live in the JSON: the Go side computes both
+  engines' metrics with the same functions, so the formulas cannot drift.
+
 ## Reporting an issue from a sweep
 
 1. Snapshot the offending state under `out/` (metrics JSON + relevant
