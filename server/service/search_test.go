@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -123,4 +124,50 @@ func TestSearchVertices_CanceledContext(t *testing.T) {
 	if fb.searchCalls != 0 {
 		t.Errorf("backend called despite canceled context")
 	}
+}
+
+func TestParseMatchMode(t *testing.T) {
+	tests := []struct {
+		in   string
+		want search.MatchMode
+	}{
+		{"", search.MatchAny},
+		{"any", search.MatchAny},
+		{"ANY", search.MatchAny},
+		{"  all  ", search.MatchAll},
+		{"min-should", search.MatchMinShould},
+		{"minshould", search.MatchMinShould},
+		{"min_should", search.MatchMinShould},
+		// Unrecognised launders to MatchAny — a dead path in a booted server
+		// because the provider rejects the value at startup, but kept tolerant
+		// so the wire seam never has to handle an error.
+		{"min_shold", search.MatchAny},
+		{"or", search.MatchAny},
+	}
+	for _, tc := range tests {
+		if got := ParseMatchMode(tc.in); got != tc.want {
+			t.Errorf("ParseMatchMode(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestValidateMatchMode(t *testing.T) {
+	t.Run("accepts canonical, aliases, and empty", func(t *testing.T) {
+		for _, in := range []string{"", "any", "all", "min-should", "minshould", "min_should", "  ALL  "} {
+			if err := ValidateMatchMode(in); err != nil {
+				t.Errorf("ValidateMatchMode(%q) = %v, want nil", in, err)
+			}
+		}
+	})
+	t.Run("rejects a typo naming the value and allowed set", func(t *testing.T) {
+		err := ValidateMatchMode("min_shold")
+		if err == nil {
+			t.Fatal("ValidateMatchMode accepted a typo")
+		}
+		for _, want := range []string{"min_shold", "any|all|min-should"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error %q does not contain %q", err, want)
+			}
+		}
+	})
 }

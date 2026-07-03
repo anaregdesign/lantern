@@ -63,6 +63,44 @@ func TestGraphCache_EnableSearchIndex_Idempotent(t *testing.T) {
 	c.EnableSearchIndex(textExtract) // must not panic
 }
 
+// TestGraphCache_EnableSearchIndex_WithoutPositions covers the #908 opt-out:
+// a position-free index answers phrase queries by the AND-intersection (both
+// query words present, adjacency unverified), while the default position-
+// tracking index verifies adjacency. Doc "adj" carries the words adjacently and
+// matches either way; doc "split" scatters them and matches only when positions
+// are dropped.
+func TestGraphCache_EnableSearchIndex_WithoutPositions(t *testing.T) {
+	seed := func(c *GraphCache[string, string]) {
+		c.PutVertex("adj", "alpha beta gamma")   // "alpha beta" adjacent, in order
+		c.PutVertex("split", "alpha gamma beta") // same words, not adjacent
+	}
+	phraseHits := func(c *GraphCache[string, string]) map[string]bool {
+		got := map[string]bool{}
+		for _, r := range c.SearchVerticesMatch("alpha beta", 50, "", search.MatchOptions{}, true) {
+			got[r.ID] = true
+		}
+		return got
+	}
+
+	t.Run("positions on verifies adjacency", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Minute)
+		c.EnableSearchIndex(textExtract) // default: positions on
+		seed(c)
+		if got := phraseHits(c); !reflect.DeepEqual(got, map[string]bool{"adj": true}) {
+			t.Fatalf("phrase hits = %v, want only {adj} (split's words are not adjacent)", got)
+		}
+	})
+
+	t.Run("positions off degrades to AND-intersection", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Minute)
+		c.EnableSearchIndex(textExtract, WithoutSearchPositions())
+		seed(c)
+		if got := phraseHits(c); !reflect.DeepEqual(got, map[string]bool{"adj": true, "split": true}) {
+			t.Fatalf("phrase hits = %v, want {adj, split} (positions off => AND-intersection)", got)
+		}
+	})
+}
+
 func TestGraphCache_SearchVertices(t *testing.T) {
 	t.Run("Ranking", func(t *testing.T) {
 		c := NewGraphCache[string, string](time.Minute)

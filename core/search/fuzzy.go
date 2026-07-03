@@ -2,6 +2,7 @@ package search
 
 import (
 	"strings"
+	"unicode/utf8"
 
 	"github.com/RoaringBitmap/roaring/v2"
 )
@@ -164,16 +165,44 @@ func (d *termDict) expand(term string, prefix bool, maxEdits, limit int) []uint3
 	if !prefix && maxEdits <= 0 {
 		return out
 	}
+	// Fuzzy matching converts each length-compatible candidate to runes and runs
+	// a two-row Levenshtein DP. Both the rune slice and the DP rows are sized at
+	// most len(qr)+maxEdits (the rune-length gate rejects anything longer), so a
+	// single scratch trio, allocated once here, serves the whole scan instead of
+	// a per-candidate allocation — the dominant cost of a fuzzy expansion over a
+	// large dictionary (#909). The scan still visits terms in id order, so the
+	// cap survivors are unchanged.
 	qr := []rune(term)
+	var candRunes []rune
+	var dpPrev, dpCurr []int
+	if maxEdits > 0 {
+		candRunes = make([]rune, 0, len(qr)+maxEdits)
+		dpPrev = make([]int, len(qr)+maxEdits+1)
+		dpCurr = make([]int, len(qr)+maxEdits+1)
+	}
 	for id, cand := range d.terms {
 		if cand == "" || cand == term {
 			continue // released slot, or the exact term already added
 		}
 		matched := prefix && strings.HasPrefix(cand, term)
 		if !matched && maxEdits > 0 {
-			cr := []rune(cand)
-			if dl := len(cr) - len(qr); dl <= maxEdits && -dl <= maxEdits && withinEdits(qr, cr, maxEdits) {
-				matched = true
+			// Rune-length gate before the O(len) rune conversion and DP: edit
+			// distance is at least the rune-length difference, so a candidate
+			// whose length is more than maxEdits from the query cannot match.
+			// utf8.RuneCountInString allocates nothing, so the rune decode and
+			// Levenshtein run only for the few length-compatible candidates while
+			// the rest of the scan stays a cheap length count. A skipped candidate
+			// would have failed withinEdits anyway (it bails on that same length
+			// difference), so the match set — and thus which terms survive the
+			// cap — is byte-for-byte the pre-gate result.
+			if cl := utf8.RuneCountInString(cand); cl-len(qr) <= maxEdits && len(qr)-cl <= maxEdits {
+				candRunes = candRunes[:0]
+				for _, r := range cand {
+					candRunes = append(candRunes, r)
+				}
+				if withinEditsRows(qr, candRunes, maxEdits, dpPrev, dpCurr) {
+					matched = true
+				}
 			}
 		}
 		if matched {
@@ -186,16 +215,29 @@ func (d *termDict) expand(term string, prefix bool, maxEdits, limit int) []uint3
 }
 
 // withinEdits reports whether the Levenshtein edit distance between rune slices
-// a and b is at most maxEdits. It runs the classic two-row DP and bails as soon
-// as every cell in a row exceeds maxEdits, so a bounded distance check over a
-// large dictionary stays cheap.
+// a and b is at most maxEdits. It allocates a fresh DP row pair; the hot
+// dictionary scan uses withinEditsRows with reusable buffers instead.
 func withinEdits(a, b []rune, maxEdits int) bool {
+	if len(a)-len(b) > maxEdits || len(b)-len(a) > maxEdits {
+		return false
+	}
+	n := len(b) + 1
+	return withinEditsRows(a, b, maxEdits, make([]int, n), make([]int, n))
+}
+
+// withinEditsRows is withinEdits over caller-provided scratch rows so a large
+// fuzzy scan reuses two buffers instead of allocating a DP pair per candidate.
+// prev and curr must each be at least len(b)+1 long (the fuzzy scan sizes them
+// to len(query)+maxEdits+1, which the rune-length gate guarantees is enough).
+// It runs the classic two-row DP and bails as soon as every cell in a row
+// exceeds maxEdits, so a bounded distance check over a large dictionary stays
+// cheap. Contents are fully overwritten each call, so stale scratch is fine.
+func withinEditsRows(a, b []rune, maxEdits int, prev, curr []int) bool {
 	la, lb := len(a), len(b)
 	if la-lb > maxEdits || lb-la > maxEdits {
 		return false
 	}
-	prev := make([]int, lb+1)
-	curr := make([]int, lb+1)
+	prev, curr = prev[:lb+1], curr[:lb+1]
 	for j := 0; j <= lb; j++ {
 		prev[j] = j
 	}

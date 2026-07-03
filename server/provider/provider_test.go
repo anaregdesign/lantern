@@ -133,6 +133,35 @@ func TestNewConfigValidation(t *testing.T) {
 			t.Fatalf("error does not name LANTERN_NODE_ID: %v", err)
 		}
 	})
+
+	// #911: an unrecognised LANTERN_SEARCH_DEFAULT_MODE always fails boot,
+	// independent of LANTERN_STRICT_CONFIG — the value parses as a string but a
+	// typo would silently rewrite server-wide default ranking semantics.
+	t.Run("invalid DEFAULT_MODE fails boot even without strict", func(t *testing.T) {
+		envconfig.ResetForTesting()
+		t.Setenv("LANTERN_STRICT_CONFIG", "false")
+		t.Setenv("LANTERN_SEARCH_DEFAULT_MODE", "min_shold") // typo of min-should
+		_, err := NewConfig()
+		if err == nil {
+			t.Fatal("NewConfig accepted an unrecognised LANTERN_SEARCH_DEFAULT_MODE")
+		}
+		if !strings.Contains(err.Error(), "LANTERN_SEARCH_DEFAULT_MODE") || !strings.Contains(err.Error(), "min_shold") {
+			t.Fatalf("error does not name the offending value: %v", err)
+		}
+		if !strings.Contains(err.Error(), "any|all|min-should") {
+			t.Fatalf("error does not list the allowed values: %v", err)
+		}
+	})
+
+	t.Run("canonical and alias DEFAULT_MODE spellings boot", func(t *testing.T) {
+		for _, mode := range []string{"any", "all", "min-should", "minshould", "min_should", "ALL", ""} {
+			envconfig.ResetForTesting()
+			t.Setenv("LANTERN_SEARCH_DEFAULT_MODE", mode)
+			if _, err := NewConfig(); err != nil {
+				t.Fatalf("NewConfig rejected DEFAULT_MODE=%q: %v", mode, err)
+			}
+		}
+	})
 }
 
 // TestMetricsMux groups the HTTP-shim tests for newMetricsMux. The

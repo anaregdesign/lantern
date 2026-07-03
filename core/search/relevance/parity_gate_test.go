@@ -27,13 +27,23 @@ import (
 // sibling under search) states the pipeline explicitly, and this comment plus
 // the one on newSearchIndex keep the two in sync.
 func productionIndex() *search.InvertedIndex[string, search.Text] {
+	return productionIndexWith()
+}
+
+// productionIndexWith builds the production pipeline with extra index options
+// appended after the fixed WithPositions — the seam the #910 proximity harness
+// uses to sweep WithProximityWeight without duplicating the analyzer/scorer
+// wiring. With no options it is byte-for-byte productionIndex (default
+// proximity weight), so the floors and Lucene gates keep measuring the shipped
+// pipeline.
+func productionIndexWith(opts ...search.IndexOption) *search.InvertedIndex[string, search.Text] {
 	return search.NewInvertedIndex[string, search.Text](
 		search.NewScriptAwareAnalyzer(),
 		search.ClassWeighted{
 			Base:       search.BM25{K1: search.DefaultBM25K1, B: search.DefaultBM25B},
 			GramWeight: search.DefaultGramWeight,
 		},
-		search.WithPositions(),
+		append([]search.IndexOption{search.WithPositions()}, opts...)...,
 	)
 }
 
@@ -43,15 +53,16 @@ func productionIndex() *search.InvertedIndex[string, search.Text] {
 // breaks score ties deterministically, so these numbers are exact and stable;
 // any drop below a floor is a real ranking change, not jitter.
 var productionFloors = map[string]Metrics{
-	// Re-pinned for #888's script-aware pipeline. Versus the pure-bigram
-	// floors it replaced: en nDCG@10 0.894 -> 0.927 and MRR 0.980 -> 1.0
-	// (whole-word evidence now dominates fragments), en Recall@50 gave back
-	// 0.958 -> 0.951 (an accepted trade: still far above Lucene's 0.828),
-	// ja unchanged (the CJK path is the same bigram strategy), mixed nDCG@10
-	// 0.947 -> 0.953.
-	"en":    {NDCG10: 0.927, MRR: 1.000, Recall50: 0.951},
+	// Re-pinned for #910's proximity qrels: the en and mixed corpora each gained
+	// a proximity-sensitive query (q27 "zephyr quokka", mq16 "marimba gable")
+	// whose two documents are exact word-multiset permutations — identical BM25,
+	// so the proximity boost is the sole tie-breaker. Under the boost the tight
+	// document ranks first (nDCG 1.0), lifting en nDCG@10 0.927 -> 0.930 and
+	// Recall@50 0.951 -> 0.953, and mixed nDCG@10 0.953 -> 0.956 and Recall@50
+	// 0.777 -> 0.791. ja is untouched by the new fixtures.
+	"en":    {NDCG10: 0.930, MRR: 1.000, Recall50: 0.953},
 	"ja":    {NDCG10: 0.911, MRR: 1.000, Recall50: 0.728},
-	"mixed": {NDCG10: 0.953, MRR: 1.000, Recall50: 0.777},
+	"mixed": {NDCG10: 0.956, MRR: 1.000, Recall50: 0.791},
 }
 
 func TestProductionPipelineRelevanceFloors(t *testing.T) {
@@ -347,4 +358,173 @@ func enCorpus(t *testing.T) Corpus {
 	}
 	t.Fatal("en corpus not found")
 	return Corpus{}
+}
+
+// corporaByName loads and indexes the golden corpora by name.
+func corporaByName(t *testing.T) map[string]Corpus {
+	t.Helper()
+	corpora, err := Corpora()
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := make(map[string]Corpus, len(corpora))
+	for _, c := range corpora {
+		byName[c.Name] = c
+	}
+	return byName
+}
+
+// proximityQueries are the queries #910 added to give the proximity boost a
+// yardstick. Each judges two documents that are exact word-multiset
+// permutations of each other — identical term frequencies and length, so BM25
+// ties them exactly — differing only in how close the query's two words sit.
+// The grade-3 document places them adjacent, the grade-1 one scatters them to
+// opposite ends; the scattered document sorts first by ID, so without the boost
+// the deterministic tie-break ranks it above the tight match (nDCG 0.71), and
+// only the proximity boost lifts the tight match to the top (nDCG 1.0). The
+// text is pinned so a fixture rename fails loudly.
+var proximityQueries = []struct{ corpus, id, text string }{
+	{"en", "q27", "zephyr quokka"},
+	{"mixed", "mq16", "marimba gable"},
+}
+
+// proximityNDCG indexes corpus c into a production pipeline whose proximity
+// weight is w and returns nDCG@10 for query q.
+func proximityNDCG(c Corpus, q Query, w float64) float64 {
+	idx := productionIndexWith(search.WithProximityWeight(w))
+	c.IndexDocs(idx)
+	return NDCGAt(NDCGDepth, RankSearcher(idx)(q), q.Qrels)
+}
+
+// TestProximityBoostImprovesRanking is the #910 yardstick that answers the
+// prove-or-retire question: on the permutation-pair queries the proximity boost
+// is the only signal that can separate the two documents, so turning it off
+// (WithProximityWeight(0)) drops the tight match below the scattered one and
+// turning it on at the shipped default lifts it to the ideal ranking. It also
+// pins that the boosted result is deterministic.
+func TestProximityBoostImprovesRanking(t *testing.T) {
+	byName := corporaByName(t)
+	for _, pq := range proximityQueries {
+		t.Run(pq.corpus+"/"+pq.id, func(t *testing.T) {
+			c, ok := byName[pq.corpus]
+			if !ok {
+				t.Fatalf("corpus %q not found", pq.corpus)
+			}
+			q, ok := queryByID(c)[pq.id]
+			if !ok {
+				t.Fatalf("proximity query %q missing from %s — fixtures stale", pq.id, pq.corpus)
+			}
+			if q.Text != pq.text {
+				t.Fatalf("proximity query %q text = %q, want %q — fixtures stale", pq.id, q.Text, pq.text)
+			}
+			if len(q.Qrels) != 2 {
+				t.Fatalf("proximity query %q should judge exactly 2 permutation docs, got %d", pq.id, len(q.Qrels))
+			}
+
+			off := proximityNDCG(c, q, 0)                       // boost disabled: permutations tie, ID order wins
+			on := NDCGAt(NDCGDepth, defaultRank(c, q), q.Qrels) // shipped default weight
+
+			if !(on > off) {
+				t.Errorf("proximity boost did not improve %s/%s: nDCG off=%.4f on=%.4f", pq.corpus, pq.id, off, on)
+			}
+			if on < 1.0-1e-9 {
+				t.Errorf("%s/%s: boosted nDCG@10 = %.4f, want ideal 1.0 (tight match first)", pq.corpus, pq.id, on)
+			}
+			if again := NDCGAt(NDCGDepth, defaultRank(c, q), q.Qrels); again != on {
+				t.Errorf("%s/%s: boosted nDCG not deterministic: %.6f vs %.6f", pq.corpus, pq.id, on, again)
+			}
+			t.Logf("%s/%s: nDCG@10 boost-off=%.4f -> default=%.4f", pq.corpus, pq.id, off, on)
+		})
+	}
+}
+
+// defaultRank ranks q through the shipped production pipeline (default proximity
+// weight), the exact index the floors and Lucene gates measure.
+func defaultRank(c Corpus, q Query) []string {
+	idx := productionIndex()
+	c.IndexDocs(idx)
+	return RankSearcher(idx)(q)
+}
+
+// proximitySweepWeights is the weight ladder TestProximityWeightSweep walks. It
+// spans zero (off) through the shipped 0.3 to deliberately excessive values, so
+// the recorded curve shows both that the boost earns its place and that pushing
+// the weight higher buys no further ranking gain.
+var proximitySweepWeights = []float64{0, 0.1, 0.3, 0.5, 1.0, 3.0}
+
+// TestProximityWeightSweep sweeps the proximity weight and records the curve,
+// the measurement that justifies the shipped 0.3 (#910). Per proximity query,
+// nDCG@10 climbs from the boost-off tie-break (0.71) to the ideal (1.0) as soon
+// as the weight is positive and then plateaus, so 0.3 sits safely on the
+// plateau while staying modest enough that the BM25-dominated floors gate (which
+// runs at 0.3) still holds. It asserts the plateau shape and logs the numbers
+// for the issue record; it does not re-pin anything.
+func TestProximityWeightSweep(t *testing.T) {
+	byName := corporaByName(t)
+	for _, pq := range proximityQueries {
+		t.Run(pq.corpus+"/"+pq.id, func(t *testing.T) {
+			c := byName[pq.corpus]
+			q := queryByID(c)[pq.id]
+
+			got := make([]float64, len(proximitySweepWeights))
+			prev := -1.0
+			for i, w := range proximitySweepWeights {
+				got[i] = proximityNDCG(c, q, w)
+				if got[i] < prev-1e-9 {
+					t.Errorf("nDCG@10 not monotonic in weight: w=%.2f nDCG=%.4f < previous %.4f", w, got[i], prev)
+				}
+				prev = got[i]
+			}
+			t.Logf("%s/%s weight sweep %v -> nDCG@10 %v", pq.corpus, pq.id, proximitySweepWeights, got)
+
+			off := got[0]
+			for i, w := range proximitySweepWeights {
+				if w == 0 {
+					continue
+				}
+				if !(got[i] > off) {
+					t.Errorf("weight %.2f did not beat boost-off nDCG %.4f (got %.4f)", w, off, got[i])
+				}
+				if got[i] < 1.0-1e-9 {
+					t.Errorf("weight %.2f nDCG@10 %.4f below the 1.0 plateau", w, got[i])
+				}
+			}
+		})
+	}
+}
+
+// proximityCorpusWeights is the wider ladder TestProximityWeightEarnsItsPlace
+// walks at the corpus level, reaching a deliberately excessive 10.0 so the
+// recorded curve shows the boost turning from help to harm.
+var proximityCorpusWeights = []float64{0, 0.3, 1.0, 3.0, 10.0}
+
+// TestProximityWeightEarnsItsPlace is the corpus-level half of the #910
+// prove-or-retire answer: it sweeps the whole en and mixed corpora (not just the
+// permutation query) and asserts the boost is a net win at the shipped 0.3 —
+// corpus nDCG@10 strictly above the boost-off baseline — which is what "earns
+// its weight" means. It also records the far end of the ladder, where an
+// oversized weight starts overturning BM25 (mixed MRR falls from 1.0 at 10.0),
+// the evidence that the constant must stay modest rather than be maximized.
+func TestProximityWeightEarnsItsPlace(t *testing.T) {
+	byName := corporaByName(t)
+	for _, name := range []string{"en", "mixed"} {
+		t.Run(name, func(t *testing.T) {
+			c := byName[name]
+			metrics := make([]Metrics, len(proximityCorpusWeights))
+			for i, w := range proximityCorpusWeights {
+				idx := productionIndexWith(search.WithProximityWeight(w))
+				c.IndexDocs(idx)
+				metrics[i] = Evaluate(c, RankSearcher(idx))
+				t.Logf("%-5s w=%5.2f nDCG@10=%.5f MRR=%.5f Recall@50=%.5f", name, w, metrics[i].NDCG10, metrics[i].MRR, metrics[i].Recall50)
+			}
+			off := metrics[0]     // weight 0: boost disabled
+			shipped := metrics[1] // weight 0.3: the shipped default
+			if !(shipped.NDCG10 > off.NDCG10) {
+				t.Errorf("%s: proximity boost is not a net win at 0.3: nDCG@10 off=%.5f shipped=%.5f", name, off.NDCG10, shipped.NDCG10)
+			}
+			if shipped.MRR < off.MRR-1e-9 {
+				t.Errorf("%s: proximity boost hurt MRR at 0.3: off=%.5f shipped=%.5f", name, off.MRR, shipped.MRR)
+			}
+		})
+	}
 }

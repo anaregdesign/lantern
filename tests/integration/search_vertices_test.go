@@ -291,6 +291,55 @@ func TestSearchVertices_Options(t *testing.T) {
 	})
 }
 
+// TestSearchVertices_PositionsOff verifies the #908 opt-out end to end through
+// the RPC: with LANTERN_SEARCH_POSITIONS=false the index keeps no positions, so
+// a phrase query degrades to the AND-intersection (every word present, adjacency
+// unverified) instead of failing — the scattered doc that a position-tracking
+// index would drop is now kept.
+func TestSearchVertices_PositionsOff(t *testing.T) {
+	// Build a search-enabled service whose cache index tracks no positions.
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+	cache.EnablePrefixIndex(func(k string) string { return k })
+	cache.EnableSearchIndex(searchVertexDocument, graphcache.WithoutSearchPositions())
+	svc := service.NewLanternService(cache).WithSearchLimits(service.SearchLimits{
+		Enabled:      true,
+		DefaultLimit: 100,
+		MaxLimit:     1000,
+	})
+	srv := newConnectTestServer(t, svc, nil)
+	c := graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	exp := timestamppb.New(time.Now().Add(time.Hour))
+	seed := []*pb.Vertex{
+		{Key: "doc.phrase", Value: &pb.Vertex_String_{String_: "the alpha beta end"}, Expiration: exp},
+		{Key: "doc.split", Value: &pb.Vertex_String_{String_: "beta stands well before the word alpha"}, Expiration: exp},
+	}
+	if _, err := c.PutVertices(ctx, connect.NewRequest(&pb.PutVerticesRequest{Vertices: seed})); err != nil {
+		t.Fatalf("PutVertices: %v", err)
+	}
+
+	resp, err := c.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{
+		Query:   "alpha beta",
+		Options: &pb.SearchOptions{Phrase: true},
+	}))
+	if err != nil {
+		t.Fatalf("SearchVertices phrase: %v", err)
+	}
+	got := map[string]bool{}
+	for _, h := range resp.Msg.GetHits() {
+		got[h.GetKey()] = true
+	}
+	// Positions off: the phrase query is the AND-intersection, so BOTH the
+	// adjacent doc and the scattered doc come back (a position-tracking index
+	// would drop doc.split — asserted in TestSearchVertices_Options).
+	if !got["doc.phrase"] || !got["doc.split"] {
+		t.Errorf("positions-off phrase = %v, want both {doc.phrase, doc.split} (AND-intersection)", got)
+	}
+}
+
 // TestSearchVertices_SDKOptions drives the #892 options through the high-level
 // SDK: WithMatchMode(MatchAll) narrows the OR-union to the document holding
 // every term.

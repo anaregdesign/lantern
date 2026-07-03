@@ -1,6 +1,10 @@
 package search
 
-import "github.com/RoaringBitmap/roaring/v2"
+import (
+	"encoding/binary"
+
+	"github.com/RoaringBitmap/roaring/v2"
+)
 
 // postingList is one term's posting set: which document ordinals contain the
 // term, plus their term frequencies and — when the index tracks positions —
@@ -13,11 +17,13 @@ import "github.com/RoaringBitmap/roaring/v2"
 // storage at all. positions is nil unless the index was built WithPositions
 // and the term carries at least one position in the document, so an index that
 // serves only OR-union ranking pays nothing for phrase/proximity support
-// (#889).
+// (#889). Each document's positions are stored delta+varint packed (#908): the
+// ascending token positions become a compact []byte instead of a []uint32, so
+// the store costs ~1 byte per position (short vertex values) rather than 4.
 type postingList struct {
-	docs      *roaring.Bitmap     // document ordinals containing this term
-	tfHi      map[uint32]uint16   // ordinal -> term frequency, recorded only when tf > 1
-	positions map[uint32][]uint32 // ordinal -> ascending token positions, only when the index tracks positions
+	docs      *roaring.Bitmap   // document ordinals containing this term
+	tfHi      map[uint32]uint16 // ordinal -> term frequency, recorded only when tf > 1
+	positions map[uint32][]byte // ordinal -> delta+varint packed ascending positions, only when the index tracks positions
 }
 
 // newPostingList returns an empty posting list ready to record documents.
@@ -30,8 +36,9 @@ func newPostingList() *postingList {
 // non-empty, are the term's ascending token positions in the document; they
 // are stored only when the index tracks positions (WithPositions) and only for
 // the primary word channel, so an OR-union-only index passes nil and pays
-// nothing. The slice is retained as-is (not copied): callers build a fresh
-// per-document slice, so no two posting lists alias it.
+// nothing. They are delta+varint packed into a fresh []byte, so the caller's
+// transient position slice is not retained and the store holds only the
+// compact bytes.
 func (p *postingList) set(ord uint32, tf int, positions []uint32) {
 	p.docs.Add(ord)
 	if tf > 1 {
@@ -42,9 +49,9 @@ func (p *postingList) set(ord uint32, tf int, positions []uint32) {
 	}
 	if len(positions) > 0 {
 		if p.positions == nil {
-			p.positions = make(map[uint32][]uint32)
+			p.positions = make(map[uint32][]byte)
 		}
-		p.positions[ord] = positions
+		p.positions[ord] = packPositions(positions)
 	}
 }
 
@@ -82,12 +89,54 @@ func (p *postingList) tf(ord uint32) int {
 
 // positionsOf returns document ord's ascending token positions for this term,
 // or nil when the index does not track positions (or ord carries none). The
-// slice is owned by the posting list; callers must not mutate it.
+// packed bytes are decoded into a fresh []uint32 on each call, so the returned
+// slice is owned by the caller and safe to mutate; it is not shared with the
+// posting list.
 func (p *postingList) positionsOf(ord uint32) []uint32 {
 	if p.positions == nil {
 		return nil
 	}
-	return p.positions[ord]
+	return unpackPositions(p.positions[ord])
+}
+
+// packPositions delta+varint encodes an ascending position slice: the first
+// value is emitted as-is (its delta from 0) and each subsequent value as the
+// gap from its predecessor, then each gap is written as an unsigned varint.
+// Positions in a document are strictly increasing (each word token advances the
+// counter), so gaps are small and pack into a single byte for the short vertex
+// values Lantern indexes — a ~4x shrink over the raw []uint32. positions must
+// be ascending; the indexer builds it that way.
+func packPositions(positions []uint32) []byte {
+	// One byte per position is the common case, so size the buffer for it.
+	buf := make([]byte, 0, len(positions))
+	var prev uint32
+	for _, pos := range positions {
+		buf = binary.AppendUvarint(buf, uint64(pos-prev))
+		prev = pos
+	}
+	return buf
+}
+
+// unpackPositions reverses packPositions, decoding the delta+varint bytes back
+// into the ascending absolute positions. It returns nil for empty input (a
+// document that carries no positions for the term).
+func unpackPositions(b []byte) []uint32 {
+	if len(b) == 0 {
+		return nil
+	}
+	// Each position occupies at least one byte, so len(b) bounds the count.
+	out := make([]uint32, 0, len(b))
+	var acc uint32
+	for i := 0; i < len(b); {
+		delta, n := binary.Uvarint(b[i:])
+		if n <= 0 {
+			break // malformed; only reachable on a corrupted buffer
+		}
+		acc += uint32(delta)
+		out = append(out, acc)
+		i += n
+	}
+	return out
 }
 
 // cardinality is the document frequency (DF): how many documents hold the term.

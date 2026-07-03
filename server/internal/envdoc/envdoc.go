@@ -72,9 +72,10 @@ var descriptions = map[string]string{
 	"LANTERN_DELETE_BY_PREFIX_MAX_LIMIT":     "Ceiling DeleteVerticesByPrefix's limit is clamped to.",
 
 	"LANTERN_SEARCH_ENABLED":            "Build the full-text search index and serve SearchVertices (off = FAILED_PRECONDITION).",
+	"LANTERN_SEARCH_POSITIONS":          "Record positional postings so phrase queries verify adjacency and the proximity boost ranks tight matches higher. Off drops the per-(word term, vertex) position store: phrase degrades to the AND-intersection and the boost goes inert, shrinking the index on large corpora.",
 	"LANTERN_SEARCH_DEFAULT_LIMIT":      "Ranked-hit count used when SearchVertices leaves limit unset.",
 	"LANTERN_SEARCH_MAX_LIMIT":          "Ceiling SearchVertices' limit is clamped to.",
-	"LANTERN_SEARCH_DEFAULT_MODE":       "Match mode applied when a SearchVertices request omits it: any (OR), all (AND), or min-should.",
+	"LANTERN_SEARCH_DEFAULT_MODE":       "Match mode applied when a SearchVertices request omits it: any (OR), all (AND), or min-should. Validated at startup — an unrecognised value fails boot.",
 	"LANTERN_SEARCH_DEFAULT_MIN_SHOULD": "Minimum-should-match count applied when the mode resolves to min-should but the request leaves it 0.",
 
 	"LANTERN_MUTATION_LOG_CAPACITY":          "Replication mutation-log ring capacity in entries; size for peak_cluster_rps x retention_seconds.",

@@ -43,7 +43,9 @@
     {"id": "mfood-05", "text": "タピオカミルクティーの再ブームが来ている。"},
     {"id": "mmisc-01", "text": "ＴＯＫＹＯマラソンの抽選倍率は十倍を超える。"},
     {"id": "mmisc-02", "text": "ｷｬｯｼｭﾚｽ決済のポイント還元が今月で終了する。"},
-    {"id": "mmisc-03", "text": "Wi-Fiルーターの設置場所は家の中心が理想。"}
+    {"id": "mmisc-03", "text": "Wi-Fiルーターの設置場所は家の中心が理想。"},
+    {"id": "mprox-scatter", "text": "marimba cinder plinth obsidian gable"},
+    {"id": "mprox-tight", "text": "cinder plinth obsidian marimba gable"}
   ],
   "queries": [
     {"id": "mq01", "text": "ローリングアップデート", "qrels": {"mk8s-01": 3, "mk8s-03": 1, "mk8s-02": 1}},
@@ -60,6 +62,7 @@
     {"id": "mq12", "text": "カフェラテ", "qrels": {"mfood-04": 3, "mfood-01": 2}},
     {"id": "mq13", "text": "ＴＯＫＹＯ", "qrels": {"mmisc-01": 3, "mtrv-01": 2, "mtrv-04": 1}},
     {"id": "mq14", "text": "ｷｬｯｼｭﾚｽ", "qrels": {"mmisc-02": 3}},
-    {"id": "mq15", "text": "電動自転車 バッテリー", "qrels": {"prod-04": 3, "prod-01": 1}}
+    {"id": "mq15", "text": "電動自転車 バッテリー", "qrels": {"prod-04": 3, "prod-01": 1}},
+    {"id": "mq16", "text": "marimba gable", "qrels": {"mprox-tight": 3, "mprox-scatter": 1}}
   ]
 }
