@@ -40,14 +40,23 @@ type DegreeEntry[S comparable] struct {
 //
 // Live-visibility (#750): only live vertices are candidates, and an edge counts
 // only when BOTH endpoints are live and the edge has not fully decayed to zero.
-// Counts are read under a single point-in-time snapshot (one clock reading for
-// the whole walk); like GetServerStatus counts they are best-effort — an edge
-// whose endpoint expired but has not yet been swept is already hidden, but the
-// snapshot may otherwise race an in-flight writer.
+//
+// Consistency (#920): the OUT-only walk visits just the candidates' out-edges
+// and runs entirely under the read lock, so it observes a point-in-time
+// snapshot. IN/BOTH has no reverse (head->tails) index and must consider every
+// edge bucket; to avoid holding the aggregate read lock for that O(E) pass — and
+// stalling every writer for its duration — it collects the candidate-incident
+// bucket references under the lock, releases it, and reads the weights
+// afterwards. The IN/BOTH result is therefore a best-effort snapshot: an edge
+// added or deleted while the weights are being read may be partially reflected.
+// Like GetServerStatus counts these are advisory, not transactional.
 //
 // Selection uses a size-k bounded min-heap (pq.SortableMap.Top, the #127
 // pattern), so peak memory over the ranking metric is O(k) rather than
-// O(candidates). k <= 0 returns nil. Candidates with a zero degree remain
+// O(candidates). Accumulation working memory is O(candidates) — one value-typed
+// accumulator per candidate, no per-candidate heap allocation — plus, for
+// IN/BOTH, O(candidate-incident edges) transient bucket references held across
+// the unlocked read. k <= 0 returns nil. Candidates with a zero degree remain
 // eligible, so they surface only when fewer than k vertices under the prefix
 // carry any live incident edge. Ties at the k-th boundary are broken
 // arbitrarily; the returned slice is otherwise sorted by the ranking metric
@@ -60,12 +69,27 @@ func (c *GraphCache[S, T]) TopVerticesByDegree(prefix string, k int, dir DegreeD
 		return nil
 	}
 
+	// A value-typed accumulator carries both metrics (the DegreeEntry result
+	// always reports Degree and WeightedDegree regardless of the ranking axis),
+	// while avoiding the per-candidate pointer allocation of a map[S]*degreeAcc.
 	type degreeAcc struct {
 		count  uint64
 		weight float64
 	}
-	accum := make(map[S]*degreeAcc)
+	accum := make(map[S]degreeAcc)
 	now := time.Now()
+
+	countOut := dir == DegreeOut || dir == DegreeBoth
+	countIn := dir == DegreeIn || dir == DegreeBoth
+
+	// A candidate-incident edge bucket captured under the read lock but read
+	// (snapshotAt) after it is released. The *weight is individually
+	// mutex-guarded, so reading it outside c.mu is safe.
+	type bucketRef struct {
+		tail, head S
+		w          *weight
+	}
+	var buckets []bucketRef
 
 	c.mu.RLock()
 	if c.prefixIndex == nil {
@@ -79,7 +103,7 @@ func (c *GraphCache[S, T]) TopVerticesByDegree(prefix string, k int, dir DegreeD
 	c.prefixIndex.walkPrefix(prefix, func(projected string) bool {
 		if key, ok := c.resolveProjected(projected); ok {
 			if _, seen := accum[key]; !seen {
-				accum[key] = &degreeAcc{}
+				accum[key] = degreeAcc{}
 			}
 		}
 		return true
@@ -89,18 +113,17 @@ func (c *GraphCache[S, T]) TopVerticesByDegree(prefix string, k int, dir DegreeD
 		return nil
 	}
 
-	// 2. Accumulate live degree per candidate. For OUT-only we walk just the
-	// candidates' out-edges (O(sum of candidate out-degrees)); IN and BOTH
-	// need a single full pass over the edge table because the store keeps no
-	// reverse (head->tails) adjacency to enumerate a head's in-edges.
-	countOut := dir == DegreeOut || dir == DegreeBoth
-	countIn := dir == DegreeIn || dir == DegreeBoth
+	// 2. Accumulate live degree per candidate.
 	if dir == DegreeOut {
-		for tail, a := range accum {
+		// OUT-only walks just the candidates' out-edges (O(sum of candidate
+		// out-degrees)) — cheap and already scoped — so it stays under the read
+		// lock and snapshots the weights in place.
+		for tail := range accum {
 			heads, ok := c.edges.headsOf(tail)
 			if !ok {
 				continue
 			}
+			a := accum[tail]
 			for headID, w := range heads {
 				head, ok := c.edges.resolveID(headID)
 				if !ok || !c.vertices.Has(head) {
@@ -113,37 +136,57 @@ func (c *GraphCache[S, T]) TopVerticesByDegree(prefix string, k int, dir DegreeD
 				a.count++
 				a.weight += float64(sum)
 			}
+			accum[tail] = a
 		}
+		c.mu.RUnlock()
 	} else {
+		// IN/BOTH must scan every bucket (no reverse index). Capture only the
+		// candidate-incident bucket references here — a cheap membership test,
+		// no weight snapshot — then release the lock so the O(E) weight reads do
+		// not stall writers waiting on c.mu.
 		c.edges.rangeBuckets(func(tail, head S, w *weight) bool {
-			aTail, tailIn := accum[tail]
-			aHead, headIn := accum[head]
-			if !tailIn && !headIn {
-				return true
-			}
-			if !c.vertices.Has(tail) || !c.vertices.Has(head) {
-				return true
-			}
-			sum, _, nonZero := w.snapshotAt(now)
-			if !nonZero {
-				return true
-			}
-			if countOut && tailIn {
-				aTail.count++
-				aTail.weight += float64(sum)
-			}
-			if countIn && headIn {
-				aHead.count++
-				aHead.weight += float64(sum)
+			_, tailIn := accum[tail]
+			_, headIn := accum[head]
+			if tailIn || headIn {
+				buckets = append(buckets, bucketRef{tail: tail, head: head, w: w})
 			}
 			return true
 		})
+		c.mu.RUnlock()
+
+		// Unlocked accumulation over the captured references. Endpoint liveness
+		// is re-checked against the independently-locked vertex cache; each
+		// weight snapshot takes only its own mutex. A self-loop under DegreeBoth
+		// contributes twice (out and in) to one candidate, so each branch
+		// re-reads the accumulator before mutating it.
+		for _, b := range buckets {
+			if !c.vertices.Has(b.tail) || !c.vertices.Has(b.head) {
+				continue
+			}
+			sum, _, nonZero := b.w.snapshotAt(now)
+			if !nonZero {
+				continue
+			}
+			if countOut {
+				if a, ok := accum[b.tail]; ok {
+					a.count++
+					a.weight += float64(sum)
+					accum[b.tail] = a
+				}
+			}
+			if countIn {
+				if a, ok := accum[b.head]; ok {
+					a.count++
+					a.weight += float64(sum)
+					accum[b.head] = a
+				}
+			}
+		}
 	}
-	c.mu.RUnlock()
 
 	// 3. Size-k selection over the ranking metric, then order the survivors
 	// descending. Both steps are pure post-processing over plain numbers — no
-	// cache lock and no *weight pointers survive the critical section.
+	// cache lock and no *weight pointers survive into the sort.
 	scores := pq.NewSortableMap[S, float64]()
 	for key, a := range accum {
 		if weighted {

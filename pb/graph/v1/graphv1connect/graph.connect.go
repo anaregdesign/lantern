@@ -144,6 +144,13 @@ type LanternServiceClient interface {
 	// prefix by their (weighted) out/in/both degree. Read-only aggregate; a
 	// non-empty prefix is REQUIRED (empty → INVALID_ARGUMENT). Results are
 	// point-in-time best-effort and honour the live-visibility rule (#750).
+	//
+	// Cost model (#920): OUT-degree is scoped to the candidates' own out-edges,
+	// but IN and BOTH scan every edge bucket in the graph — O(E_total),
+	// independent of prefix narrowness, because no reverse (head->tails) index
+	// exists. That scan runs without holding the write-blocking aggregate lock
+	// for its full duration, so an IN/BOTH result on a large, actively-written
+	// graph is a best-effort snapshot rather than a single point-in-time view.
 	TopVerticesByDegree(context.Context, *connect.Request[v1.TopVerticesByDegreeRequest]) (*connect.Response[v1.TopVerticesByDegreeResponse], error)
 	GetEdge(context.Context, *connect.Request[v1.GetEdgeRequest]) (*connect.Response[v1.GetEdgeResponse], error)
 	// GetEdges reads several edges in one round trip.
@@ -558,6 +565,13 @@ type LanternServiceHandler interface {
 	// prefix by their (weighted) out/in/both degree. Read-only aggregate; a
 	// non-empty prefix is REQUIRED (empty → INVALID_ARGUMENT). Results are
 	// point-in-time best-effort and honour the live-visibility rule (#750).
+	//
+	// Cost model (#920): OUT-degree is scoped to the candidates' own out-edges,
+	// but IN and BOTH scan every edge bucket in the graph — O(E_total),
+	// independent of prefix narrowness, because no reverse (head->tails) index
+	// exists. That scan runs without holding the write-blocking aggregate lock
+	// for its full duration, so an IN/BOTH result on a large, actively-written
+	// graph is a best-effort snapshot rather than a single point-in-time view.
 	TopVerticesByDegree(context.Context, *connect.Request[v1.TopVerticesByDegreeRequest]) (*connect.Response[v1.TopVerticesByDegreeResponse], error)
 	GetEdge(context.Context, *connect.Request[v1.GetEdgeRequest]) (*connect.Response[v1.GetEdgeResponse], error)
 	// GetEdges reads several edges in one round trip.

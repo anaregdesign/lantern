@@ -28,6 +28,15 @@ import (
 // decayed edges do not contribute. The result is point-in-time best-effort,
 // like GetServerStatus counts. This is a read-only aggregate — it logs no
 // mutation and is not replicated.
+//
+// Cost model (#920): OUT-degree is walked per candidate (O(sum of candidate
+// out-degrees)). IN and BOTH have no reverse (head->tails) index, so they scan
+// every edge bucket in the graph — O(E_total), independent of how narrow the
+// prefix is. To keep that scan from stalling writers, the IN/BOTH path captures
+// the candidate-incident buckets under the read lock and reads their weights
+// after releasing it, so an edge added or deleted mid-scan may be partially
+// reflected: prefer a narrow prefix and treat IN/BOTH totals on a large,
+// actively-written graph as advisory.
 func (s *LanternService) TopVerticesByDegree(ctx context.Context, in *pb.TopVerticesByDegreeRequest) (*pb.TopVerticesByDegreeResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)

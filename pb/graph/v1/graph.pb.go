@@ -2700,7 +2700,9 @@ func (x *TopVerticesByDegreeRequest) GetWeighted() bool {
 // the chosen metric (weighted_degree when the request set `weighted`, else
 // degree). Counts follow the live-visibility rule (#750): expired vertices and
 // fully decayed edges do not contribute. Results are point-in-time
-// best-effort, like GetServerStatus counts.
+// best-effort, like GetServerStatus counts; for DIRECTION_IN / DIRECTION_BOTH
+// the edge scan reads weights outside the write-blocking lock (#920), so an
+// edge added or deleted mid-scan may be only partially reflected.
 type TopVerticesByDegreeResponse struct {
 	state         protoimpl.MessageState               `protogen:"open.v1"`
 	Entries       []*TopVerticesByDegreeResponse_Entry `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
