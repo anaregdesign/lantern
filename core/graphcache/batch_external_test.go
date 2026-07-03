@@ -264,12 +264,21 @@ func TestAddEdgesWithExpirationContrib_Dedup(t *testing.T) {
 		batch := []graphcache.EdgeItem[string]{
 			{Tail: "s", Head: "h", Weight: 2.5, Expiration: exp, ContribID: id},
 		}
-		if deduped := c.AddEdgesWithExpirationContrib(batch); deduped != 0 {
+		effective, deduped := c.AddEdgesWithExpirationContrib(batch)
+		if deduped != 0 {
 			t.Fatalf("first apply: deduped = %d, want 0", deduped)
 		}
-		// Replay the identical batch: must be an exact no-op.
-		if deduped := c.AddEdgesWithExpirationContrib(batch); deduped != 1 {
+		if len(effective) != 1 || effective[0] != 2.5 {
+			t.Fatalf("first apply: effective = %v, want [2.5]", effective)
+		}
+		// Replay the identical batch: must be an exact no-op, but the
+		// effective weight still reports the current live sum (#897).
+		effective, deduped = c.AddEdgesWithExpirationContrib(batch)
+		if deduped != 1 {
 			t.Fatalf("replay: deduped = %d, want 1", deduped)
+		}
+		if len(effective) != 1 || effective[0] != 2.5 {
+			t.Fatalf("replay: effective = %v, want [2.5] (live sum on dedup no-op)", effective)
 		}
 		w, ok := c.GetWeight("s", "h")
 		if !ok {
@@ -285,11 +294,19 @@ func TestAddEdgesWithExpirationContrib_Dedup(t *testing.T) {
 		batch := []graphcache.EdgeItem[string]{
 			{Tail: "s", Head: "h", Weight: 2, Expiration: exp}, // ContribID zero
 		}
-		if deduped := c.AddEdgesWithExpirationContrib(batch); deduped != 0 {
+		effective, deduped := c.AddEdgesWithExpirationContrib(batch)
+		if deduped != 0 {
 			t.Fatalf("first apply: deduped = %d, want 0", deduped)
 		}
-		if deduped := c.AddEdgesWithExpirationContrib(batch); deduped != 0 {
+		if effective[0] != 2 {
+			t.Fatalf("first apply: effective = %v, want [2]", effective)
+		}
+		effective, deduped = c.AddEdgesWithExpirationContrib(batch)
+		if deduped != 0 {
 			t.Fatalf("replay: deduped = %d, want 0 (zero id must not dedup)", deduped)
+		}
+		if effective[0] != 4 {
+			t.Fatalf("replay: effective = %v, want [4] (accumulated sum)", effective)
 		}
 		if w, _ := c.GetWeight("s", "h"); w != 4 {
 			t.Fatalf("weight = %v, want 4 (zero id must sum on replay)", w)
@@ -304,11 +321,14 @@ func TestAddEdgesWithExpirationContrib_Dedup(t *testing.T) {
 		c.AddEdgesWithExpirationContrib([]graphcache.EdgeItem[string]{
 			{Tail: "s", Head: "h", Weight: 1, Expiration: exp, ContribID: id1},
 		})
-		deduped := c.AddEdgesWithExpirationContrib([]graphcache.EdgeItem[string]{
+		effective, deduped := c.AddEdgesWithExpirationContrib([]graphcache.EdgeItem[string]{
 			{Tail: "s", Head: "h", Weight: 1, Expiration: exp, ContribID: id2},
 		})
 		if deduped != 0 {
 			t.Fatalf("distinct id: deduped = %d, want 0", deduped)
+		}
+		if effective[0] != 2 {
+			t.Fatalf("distinct id: effective = %v, want [2] (post-accumulation sum)", effective)
 		}
 		if w, _ := c.GetWeight("s", "h"); w != 2 {
 			t.Fatalf("weight = %v, want 2 (distinct ids both contribute)", w)
@@ -323,12 +343,17 @@ func TestAddEdgesWithExpirationContrib_Dedup(t *testing.T) {
 			{Tail: "s", Head: "a", Weight: 1, Expiration: exp, ContribID: id},
 		})
 		// Mix the already-seen id (deduped) with a fresh zero-id edge (applies).
-		deduped := c.AddEdgesWithExpirationContrib([]graphcache.EdgeItem[string]{
+		effective, deduped := c.AddEdgesWithExpirationContrib([]graphcache.EdgeItem[string]{
 			{Tail: "s", Head: "a", Weight: 1, Expiration: exp, ContribID: id},
 			{Tail: "s", Head: "b", Weight: 1, Expiration: exp},
 		})
 		if deduped != 1 {
 			t.Fatalf("mixed batch: deduped = %d, want 1", deduped)
+		}
+		// effective is index-aligned: [0] is the deduped edge's live sum, [1]
+		// is the freshly-applied edge's live sum.
+		if len(effective) != 2 || effective[0] != 1 || effective[1] != 1 {
+			t.Fatalf("mixed batch: effective = %v, want [1 1]", effective)
 		}
 		if w, _ := c.GetWeight("s", "a"); w != 1 {
 			t.Fatalf("weight s->a = %v, want 1 (deduped)", w)
@@ -520,11 +545,16 @@ func TestAddEdgesWithExpirationContribHLC_TombstoneFenced(t *testing.T) {
 		if n := c.DeleteEdgesHLC([]graphcache.EdgeKey[string]{{Tail: "a", Head: "b"}}, newer, exp); n != 1 {
 			t.Fatalf("delete: got %d, want 1", n)
 		}
-		deduped := c.AddEdgesWithExpirationContribHLC([]graphcache.EdgeItem[string]{
+		effective, deduped := c.AddEdgesWithExpirationContribHLC([]graphcache.EdgeItem[string]{
 			{Tail: "a", Head: "b", Weight: 5.0, Expiration: exp, ContribID: graphcache.ContribID{0: 2}},
 		}, older)
 		if deduped != 1 {
 			t.Errorf("deduped: got %d, want 1 (tombstone-dropped)", deduped)
+		}
+		// A tombstone-dropped item applied nothing, so its effective entry is
+		// left at 0 (#897).
+		if len(effective) != 1 || effective[0] != 0 {
+			t.Errorf("effective: got %v, want [0] (tombstone-dropped adds nothing)", effective)
 		}
 		if _, ok := c.GetWeight("a", "b"); ok {
 			t.Errorf("older contribution resurrected a tombstoned edge")
@@ -536,11 +566,15 @@ func TestAddEdgesWithExpirationContribHLC_TombstoneFenced(t *testing.T) {
 		items := []graphcache.EdgeItem[string]{
 			{Tail: "a", Head: "b", Weight: 1.0, Expiration: exp, ContribID: graphcache.ContribID{0: 9}},
 		}
-		if d := c.AddEdgesWithExpirationContribHLC(items, older); d != 0 {
+		if effective, d := c.AddEdgesWithExpirationContribHLC(items, older); d != 0 {
 			t.Errorf("first apply deduped: got %d, want 0", d)
+		} else if effective[0] != 1.0 {
+			t.Errorf("first apply effective: got %v, want [1]", effective)
 		}
-		if d := c.AddEdgesWithExpirationContribHLC(items, newer); d != 1 {
+		if effective, d := c.AddEdgesWithExpirationContribHLC(items, newer); d != 1 {
 			t.Errorf("replay deduped: got %d, want 1 (same ContribID is idempotent)", d)
+		} else if effective[0] != 1.0 {
+			t.Errorf("replay effective: got %v, want [1] (live sum on dedup no-op)", effective)
 		}
 		if got, ok := c.GetWeight("a", "b"); !ok || got != 1.0 {
 			t.Errorf("a->b weight: got (%v,%v), want (1.0,true) — replay must not double-count", got, ok)

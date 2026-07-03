@@ -534,7 +534,18 @@ message AddEdgeRequest {
   bytes contrib_id = 2;
 }
 
-message AddEdgeResponse {}
+message AddEdgeResponse {
+  // effective_weight is the sum of live contributions on (tail, head)
+  // immediately after applying (or, when contrib_id dedupes a replay, after
+  // observing) this request, as seen by the serving node. This turns AddEdge
+  // into a race-free increment-then-check counter: a caller writing
+  // weight=1 with a TTL reads back the rolling-window count in one round trip
+  // and can enforce a cap without a separate GetEdge. When contrib_id makes
+  // the add a no-op, this is the current live sum (the value a retry wants).
+  // Note: with replication enabled the value is the serving node's local view
+  // at apply time — the same async-replica caveat as a Redis INCR read.
+  float effective_weight = 1;
+}
 
 // AddEdgesRequest accumulates weight onto each (tail, head) pair: repeated
 // calls with the same endpoints sum their weights. Additive writes are
@@ -554,6 +565,12 @@ message AddEdgesRequest {
 message AddEdgesResponse {
   // Number of edges whose weight contributions were accepted.
   int32 written = 1;
+  // effective_weights is index-aligned with the request edges: entry i is the
+  // sum of live contributions on edges[i]'s (tail, head) immediately after
+  // applying (or deduping) it, as seen by the serving node. Empty only for an
+  // empty request. See AddEdgeResponse.effective_weight for the counter
+  // semantics and the replication caveat.
+  repeated float effective_weights = 2;
 }
 
 // PutEdgeRequest overwrites a single (tail, head) pair, replacing any

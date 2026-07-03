@@ -145,16 +145,18 @@ func (f *fakeBackend) AddEdgesWithExpiration(items []graphcache.EdgeItem[string]
 // contrib_id mapping, and returns the configurable dedupReturn so the
 // OnEdgeContribDeduped metric wiring is observable. Real dedup convergence
 // is covered by the core tests and tests/integration.
-func (f *fakeBackend) AddEdgesWithExpirationContrib(items []graphcache.EdgeItem[string]) int {
+func (f *fakeBackend) AddEdgesWithExpirationContrib(items []graphcache.EdgeItem[string]) ([]float32, int) {
 	f.addEdgesContribCalls++
 	f.lastAddEdgesItems = items
-	for _, it := range items {
+	effective := make([]float32, len(items))
+	for i, it := range items {
 		if f.edges[it.Tail] == nil {
 			f.edges[it.Tail] = map[string]float32{}
 		}
 		f.edges[it.Tail][it.Head] += it.Weight
+		effective[i] = f.edges[it.Tail][it.Head]
 	}
-	return f.dedupReturn
+	return effective, f.dedupReturn
 }
 
 func (f *fakeBackend) PutEdgesWithExpiration(items []graphcache.EdgeItem[string]) {
@@ -447,7 +449,7 @@ func (f *fakeBackend) PutEdgesWithExpirationHLC(items []graphcache.EdgeItem[stri
 	return 0
 }
 
-func (f *fakeBackend) AddEdgesWithExpirationContribHLC(items []graphcache.EdgeItem[string], _ hlc.Timestamp) int {
+func (f *fakeBackend) AddEdgesWithExpirationContribHLC(items []graphcache.EdgeItem[string], _ hlc.Timestamp) ([]float32, int) {
 	return f.AddEdgesWithExpirationContrib(items)
 }
 

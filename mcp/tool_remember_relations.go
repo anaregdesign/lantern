@@ -106,7 +106,8 @@ func registerRememberRelations(srv *mcp.Server, lc lanternClient, r *ttl.Resolve
 				len(verrs), strings.Join(verrs, "; "))
 		}
 
-		written, cause := batchWritten(len(inputs), lc.AddEdges(ctx, inputs))
+		_, addErr := lc.AddEdges(ctx, inputs)
+		written, cause := batchWritten(len(inputs), addErr)
 		if written == 0 {
 			// Total failure: nothing committed. Surface as a hard error so the
 			// caller retries the whole batch — safe because no edge landed.

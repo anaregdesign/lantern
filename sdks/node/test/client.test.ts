@@ -88,14 +88,14 @@ function newStubRoutes(state: StubState) {
       // index-aligned with edges across chunks).
       async addEdge(req) {
         state.lastAddEdge = { contribId: req.contribId };
-        return {};
+        return { effectiveWeight: req.edge?.weight ?? 0 };
       },
       async addEdges(req) {
         state.addEdgesCalls.push({
           contribIds: req.contribIds,
           tails: req.edges.map((e) => e.tail),
         });
-        return {};
+        return { effectiveWeights: req.edges.map((e) => e.weight) };
       },
       async deleteVertex(req) {
         const existed = state.vertices.delete(req.key);
@@ -432,6 +432,46 @@ describe("AddEdge contrib IDs (#895)", () => {
       const first = [...state.addEdgesCalls[0].contribIds[0]].join(",");
       const second = [...state.addEdgesCalls[1].contribIds[0]].join(",");
       expect(second).not.toBe(first);
+    } finally {
+      c.close();
+    }
+  });
+
+  // #897: Add returns the post-accumulation effective weight so callers can
+  // implement counters without a follow-up read.
+  test("addEdge returns the effective weight", async () => {
+    const c = newClient();
+    try {
+      const effective = await c.addEdge({ tail: "a", head: "b", weight: 2.5 });
+      expect(effective).toBe(2.5);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("addEdges returns index-aligned effective weights across chunk boundaries", async () => {
+    // batchChunkSize 2 splits 3 edges into [0,1] and [2]; the returned slice
+    // must stay index-aligned with the inputs across both chunks.
+    const c = connect(baseUrl, {
+      options: { batchChunkSize: 2 },
+      transportOptions: { httpVersion: "1.1" },
+    });
+    try {
+      const effective = await c.addEdges([
+        { tail: "a", head: "b", weight: 1 },
+        { tail: "a", head: "c", weight: 2 },
+        { tail: "a", head: "d", weight: 3 },
+      ]);
+      expect(effective).toEqual([1, 2, 3]);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("addEdges returns an empty slice for an empty input", async () => {
+    const c = newClient();
+    try {
+      expect(await c.addEdges([])).toEqual([]);
     } finally {
       c.close();
     }

@@ -23,7 +23,7 @@ func TestLantern_GetServerStatus_EndToEnd(t *testing.T) {
 	if err := l.PutVertex(ctx, "b", "bravo", time.Minute); err != nil {
 		t.Fatalf("PutVertex b: %v", err)
 	}
-	if err := l.AddEdge(ctx, "a", "b", 1.0, time.Minute); err != nil {
+	if _, err := l.AddEdge(ctx, "a", "b", 1.0, time.Minute); err != nil {
 		t.Fatalf("AddEdge: %v", err)
 	}
 

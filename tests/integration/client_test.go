@@ -47,8 +47,12 @@ func TestLantern_AddPutDeleteEdge(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := l.AddEdge(ctx, "a", "b", 1.5, time.Minute); err != nil {
+	effective, err := l.AddEdge(ctx, "a", "b", 1.5, time.Minute)
+	if err != nil {
 		t.Fatalf("AddEdge: %v", err)
+	}
+	if effective != 1.5 {
+		t.Errorf("AddEdge effective weight = %v, want 1.5", effective)
 	}
 	e, err := l.GetEdge(ctx, "a", "b")
 	if err != nil {
@@ -144,7 +148,7 @@ func TestLantern_GetEdges_BatchPartialMiss(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := l.AddEdge(ctx, "a", "b", 1.5, time.Minute); err != nil {
+	if _, err := l.AddEdge(ctx, "a", "b", 1.5, time.Minute); err != nil {
 		t.Fatalf("AddEdge: %v", err)
 	}
 

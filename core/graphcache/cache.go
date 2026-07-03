@@ -337,7 +337,8 @@ func (c *GraphCache[S, T]) PutVertex(key S, value T) {
 }
 
 func (c *GraphCache[S, T]) AddEdgeWithExpiration(tail, head S, w float32, expiration time.Time) {
-	if _, ok := c.tryAddExistingEdgeContrib(tail, head, w, expiration, ContribID{}); ok {
+	now := time.Now()
+	if _, _, ok := c.tryAddExistingEdgeContrib(tail, head, w, expiration, ContribID{}, now); ok {
 		return
 	}
 	c.mu.Lock()
@@ -375,12 +376,14 @@ func (c *GraphCache[S, T]) PutEdgeWithExpiration(tail, head S, w float32, expira
 // was recorded; false means dedup suppressed an already-stored
 // contribution with the same ID.
 func (c *GraphCache[S, T]) AddEdgeWithExpirationContrib(tail, head S, w float32, expiration time.Time, contribID ContribID) bool {
-	if applied, ok := c.tryAddExistingEdgeContrib(tail, head, w, expiration, contribID); ok {
+	now := time.Now()
+	if applied, _, ok := c.tryAddExistingEdgeContrib(tail, head, w, expiration, contribID, now); ok {
 		return applied
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.addEdgeContribLocked(tail, head, w, expiration, contribID)
+	applied, _ := c.addEdgeContribLocked(tail, head, w, expiration, contribID, now)
+	return applied
 }
 
 // DeleteVertex removes the vertex (by key) and returns whether it was present.

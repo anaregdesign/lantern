@@ -3081,9 +3081,19 @@ func (x *AddEdgeRequest) GetContribId() []byte {
 }
 
 type AddEdgeResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// effective_weight is the sum of live contributions on (tail, head)
+	// immediately after applying (or, when contrib_id dedupes a replay, after
+	// observing) this request, as seen by the serving node. This turns AddEdge
+	// into a race-free increment-then-check counter: a caller writing
+	// weight=1 with a TTL reads back the rolling-window count in one round trip
+	// and can enforce a cap without a separate GetEdge. When contrib_id makes
+	// the add a no-op, this is the current live sum (the value a retry wants).
+	// Note: with replication enabled the value is the serving node's local view
+	// at apply time — the same async-replica caveat as a Redis INCR read.
+	EffectiveWeight float32 `protobuf:"fixed32,1,opt,name=effective_weight,json=effectiveWeight,proto3" json:"effective_weight,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *AddEdgeResponse) Reset() {
@@ -3114,6 +3124,13 @@ func (x *AddEdgeResponse) ProtoReflect() protoreflect.Message {
 // Deprecated: Use AddEdgeResponse.ProtoReflect.Descriptor instead.
 func (*AddEdgeResponse) Descriptor() ([]byte, []int) {
 	return file_graph_v1_graph_proto_rawDescGZIP(), []int{44}
+}
+
+func (x *AddEdgeResponse) GetEffectiveWeight() float32 {
+	if x != nil {
+		return x.EffectiveWeight
+	}
+	return 0
 }
 
 // AddEdgesRequest accumulates weight onto each (tail, head) pair: repeated
@@ -3181,9 +3198,15 @@ func (x *AddEdgesRequest) GetContribIds() [][]byte {
 type AddEdgesResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Number of edges whose weight contributions were accepted.
-	Written       int32 `protobuf:"varint,1,opt,name=written,proto3" json:"written,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Written int32 `protobuf:"varint,1,opt,name=written,proto3" json:"written,omitempty"`
+	// effective_weights is index-aligned with the request edges: entry i is the
+	// sum of live contributions on edges[i]'s (tail, head) immediately after
+	// applying (or deduping) it, as seen by the serving node. Empty only for an
+	// empty request. See AddEdgeResponse.effective_weight for the counter
+	// semantics and the replication caveat.
+	EffectiveWeights []float32 `protobuf:"fixed32,2,rep,packed,name=effective_weights,json=effectiveWeights,proto3" json:"effective_weights,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *AddEdgesResponse) Reset() {
@@ -3221,6 +3244,13 @@ func (x *AddEdgesResponse) GetWritten() int32 {
 		return x.Written
 	}
 	return 0
+}
+
+func (x *AddEdgesResponse) GetEffectiveWeights() []float32 {
+	if x != nil {
+		return x.EffectiveWeights
+	}
+	return nil
 }
 
 // PutEdgeRequest overwrites a single (tail, head) pair, replacing any
@@ -4111,14 +4141,16 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x0eAddEdgeRequest\x12\"\n" +
 	"\x04edge\x18\x01 \x01(\v2\x0e.graph.v1.EdgeR\x04edge\x12\x1d\n" +
 	"\n" +
-	"contrib_id\x18\x02 \x01(\fR\tcontribId\"\x11\n" +
-	"\x0fAddEdgeResponse\"X\n" +
+	"contrib_id\x18\x02 \x01(\fR\tcontribId\"<\n" +
+	"\x0fAddEdgeResponse\x12)\n" +
+	"\x10effective_weight\x18\x01 \x01(\x02R\x0feffectiveWeight\"X\n" +
 	"\x0fAddEdgesRequest\x12$\n" +
 	"\x05edges\x18\x01 \x03(\v2\x0e.graph.v1.EdgeR\x05edges\x12\x1f\n" +
 	"\vcontrib_ids\x18\x02 \x03(\fR\n" +
-	"contribIds\",\n" +
+	"contribIds\"Y\n" +
 	"\x10AddEdgesResponse\x12\x18\n" +
-	"\awritten\x18\x01 \x01(\x05R\awritten\"4\n" +
+	"\awritten\x18\x01 \x01(\x05R\awritten\x12+\n" +
+	"\x11effective_weights\x18\x02 \x03(\x02R\x10effectiveWeights\"4\n" +
 	"\x0ePutEdgeRequest\x12\"\n" +
 	"\x04edge\x18\x01 \x01(\v2\x0e.graph.v1.EdgeR\x04edge\"\x11\n" +
 	"\x0fPutEdgeResponse\"7\n" +

@@ -848,10 +848,17 @@ func (s *LanternService) AddEdge(ctx context.Context, request *pb.AddEdgeRequest
 	if cid := request.GetContribId(); len(cid) > 0 {
 		batch.ContribIds = [][]byte{cid}
 	}
-	if _, err := s.AddEdges(ctx, batch); err != nil {
+	resp, err := s.AddEdges(ctx, batch)
+	if err != nil {
 		return nil, err
 	}
-	return &pb.AddEdgeResponse{}, nil
+	// Surface the single edge's post-accumulation live weight (#897) from the
+	// canonical plural response's index-aligned slice.
+	out := &pb.AddEdgeResponse{}
+	if ew := resp.GetEffectiveWeights(); len(ew) > 0 {
+		out.EffectiveWeight = ew[0]
+	}
+	return out, nil
 }
 
 func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesRequest) (*pb.AddEdgesResponse, error) {
@@ -898,6 +905,7 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 	// on the origin exactly as it is on every peer. The non-replicated path
 	// (clock nil) keeps the cheaper tombstone-free method.
 	var deduped int
+	var effective []float32
 	if s.clock != nil {
 		ts := s.clock.Now()
 		// Log FIRST so the per-origin seq this mutation commits under is
@@ -916,13 +924,17 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 				items[i].ContribID = contribIDFor(s.origin, seq, uint16(i))
 			}
 		}
-		deduped = s.cache.AddEdgesWithExpirationContribHLC(items, ts)
+		effective, deduped = s.cache.AddEdgesWithExpirationContribHLC(items, ts)
 		s.metrics.OnEdgeContribDeduped(deduped)
 	} else {
-		deduped = s.cache.AddEdgesWithExpirationContrib(items)
+		effective, deduped = s.cache.AddEdgesWithExpirationContrib(items)
 		s.metrics.OnEdgeContribDeduped(deduped)
 	}
-	return &pb.AddEdgesResponse{Written: int32(len(items))}, nil
+	// effective is the index-aligned post-accumulation live weight of each
+	// edge (#897), a serving-node local view (a replication peer may hold
+	// contributions not yet streamed in). It lets a client read back the
+	// running total of a windowed counter without a second GetEdge.
+	return &pb.AddEdgesResponse{Written: int32(len(items)), EffectiveWeights: effective}, nil
 }
 
 func (s *LanternService) PutEdge(ctx context.Context, request *pb.PutEdgeRequest) (*pb.PutEdgeResponse, error) {

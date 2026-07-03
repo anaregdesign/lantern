@@ -124,11 +124,12 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 				fmt.Printf("Error: %s\n", err)
 				return ErrAddEdge
 			}
-			if err := c.client.AddEdge(ctx, p.Tail, p.Head, p.Weight, p.TTL); err != nil {
+			effective, err := c.client.AddEdge(ctx, p.Tail, p.Head, p.Weight, p.TTL)
+			if err != nil {
 				fmt.Printf("Error: %s\n", err)
 				return ErrConnection
 			}
-			fmt.Println(formatWriteEcho(fmt.Sprintf("add edge %q -> %q (weight %g)", p.Tail, p.Head, p.Weight), p.TTL, time.Now()))
+			fmt.Println(formatWriteEcho(fmt.Sprintf("add edge %q -> %q (weight %g, total %g)", p.Tail, p.Head, p.Weight, effective), p.TTL, time.Now()))
 			return nil
 		default:
 			return ErrInvalidObjective

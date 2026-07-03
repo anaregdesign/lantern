@@ -120,21 +120,39 @@ func TestLanternService_GetEdge_NotFound(t *testing.T) {
 
 func TestLanternService_AddEdge_Additive(t *testing.T) {
 	// AddEdge is additive: two adds of weight 2 each should accumulate to 4.
+	// Each AddEdges response also reports the post-accumulation effective
+	// weight (#897), index-aligned with the request edges.
 	s := newTestService(t)
 	ctx := context.Background()
 	e := &pb.Edge{Tail: "a", Head: "b", Weight: 2, Expiration: futureTs(time.Minute)}
-	if _, err := s.AddEdges(ctx, &pb.AddEdgesRequest{Edges: []*pb.Edge{e}}); err != nil {
+	resp1, err := s.AddEdges(ctx, &pb.AddEdgesRequest{Edges: []*pb.Edge{e}})
+	if err != nil {
 		t.Fatalf("AddEdge: %v", err)
 	}
-	if _, err := s.AddEdges(ctx, &pb.AddEdgesRequest{Edges: []*pb.Edge{e}}); err != nil {
+	if got := resp1.GetEffectiveWeights(); len(got) != 1 || got[0] != 2 {
+		t.Errorf("effective_weights after first add = %v, want [2]", got)
+	}
+	resp2, err := s.AddEdges(ctx, &pb.AddEdgesRequest{Edges: []*pb.Edge{e}})
+	if err != nil {
 		t.Fatalf("AddEdge2: %v", err)
+	}
+	if got := resp2.GetEffectiveWeights(); len(got) != 1 || got[0] != 4 {
+		t.Errorf("effective_weights after second add = %v, want [4]", got)
+	}
+	// Singular AddEdge surfaces the same running total from plural[0] (#897).
+	single, err := s.AddEdge(ctx, &pb.AddEdgeRequest{Edge: e})
+	if err != nil {
+		t.Fatalf("AddEdge single: %v", err)
+	}
+	if single.GetEffectiveWeight() != 6 {
+		t.Errorf("singular effective_weight = %v, want 6", single.GetEffectiveWeight())
 	}
 	resp, err := s.GetEdge(ctx, &pb.GetEdgeRequest{Tail: "a", Head: "b"})
 	if err != nil {
 		t.Fatalf("GetEdge: %v", err)
 	}
-	if resp.Edge.Weight != 4 {
-		t.Errorf("Weight = %v, want 4 (additive)", resp.Edge.Weight)
+	if resp.Edge.Weight != 6 {
+		t.Errorf("Weight = %v, want 6 (additive)", resp.Edge.Weight)
 	}
 }
 

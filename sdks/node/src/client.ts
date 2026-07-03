@@ -509,11 +509,15 @@ export class Lantern {
     });
   }
 
-  async addEdge(input: EdgeInput, signal?: AbortSignal): Promise<void> {
+  async addEdge(input: EdgeInput, signal?: AbortSignal): Promise<number> {
     const edge = fromJson(EdgeSchema, toEdgeJson(input) as JsonValue);
     const contribId = this.singleContribId(input);
     return this.invoke(async () => {
-      await this.client.addEdge(contribId ? { edge, contribId } : { edge }, this.callOpts(signal));
+      const resp = await this.client.addEdge(
+        contribId ? { edge, contribId } : { edge },
+        this.callOpts(signal),
+      );
+      return resp.effectiveWeight;
     });
   }
 
@@ -553,16 +557,21 @@ export class Lantern {
     return { found, missing };
   }
 
-  async addEdges(inputs: readonly EdgeInput[], signal?: AbortSignal): Promise<void> {
-    if (inputs.length === 0) return;
+  async addEdges(inputs: readonly EdgeInput[], signal?: AbortSignal): Promise<number[]> {
+    if (inputs.length === 0) return [];
+    const effective: number[] = [];
     await this.runBatchWrite(inputs, async (chunk) => {
       const edges = chunk.map((e) => fromJson(EdgeSchema, toEdgeJson(e) as JsonValue));
       const contribIds = this.chunkContribIds(chunk);
-      await this.client.addEdges(
+      const resp = await this.client.addEdges(
         contribIds ? { edges, contribIds } : { edges },
         this.callOpts(signal),
       );
+      for (const w of resp.effectiveWeights) {
+        effective.push(w);
+      }
     });
+    return effective;
   }
 
   async putEdges(inputs: readonly EdgeInput[], signal?: AbortSignal): Promise<void> {

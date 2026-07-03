@@ -83,9 +83,9 @@ type failoverNode interface {
 	SearchVertices(ctx context.Context, query string, opts ...SearchOption) (hits []SearchHit, err error)
 	CountVerticesByPrefix(ctx context.Context, prefix string) (uint64, error)
 	DeleteVerticesByPrefix(ctx context.Context, prefix string, opts ...DeleteByPrefixOption) (uint64, error)
-	AddEdge(ctx context.Context, tail, head string, weight float32, ttl time.Duration) error
-	AddEdgeAt(ctx context.Context, tail, head string, weight float32, expiration time.Time) error
-	AddEdges(ctx context.Context, inputs []EdgeInput) error
+	AddEdge(ctx context.Context, tail, head string, weight float32, ttl time.Duration) (float32, error)
+	AddEdgeAt(ctx context.Context, tail, head string, weight float32, expiration time.Time) (float32, error)
+	AddEdges(ctx context.Context, inputs []EdgeInput) ([]float32, error)
 	PutEdge(ctx context.Context, tail, head string, weight float32, ttl time.Duration) error
 	PutEdgeAt(ctx context.Context, tail, head string, weight float32, expiration time.Time) error
 	PutEdges(ctx context.Context, inputs []EdgeInput) error
@@ -324,21 +324,41 @@ func (f *Failover) DeleteVerticesByPrefix(ctx context.Context, prefix string, op
 // AddEdge forwards to the current endpoint's AddEdge, failing over on
 // ErrUnavailable. Because an Unavailable result means the dead node
 // committed nothing, the additive contribution is retried on a sibling
-// replica without risk of double-counting.
-func (f *Failover) AddEdge(ctx context.Context, tail, head string, weight float32, ttl time.Duration) error {
-	return f.call(ctx, "AddEdge", func(l failoverNode) error { return l.AddEdge(ctx, tail, head, weight, ttl) })
+// replica without risk of double-counting. It returns the post-accumulation
+// effective weight reported by the serving node (#897).
+func (f *Failover) AddEdge(ctx context.Context, tail, head string, weight float32, ttl time.Duration) (float32, error) {
+	var effective float32
+	err := f.call(ctx, "AddEdge", func(l failoverNode) error {
+		w, e := l.AddEdge(ctx, tail, head, weight, ttl)
+		effective = w
+		return e
+	})
+	return effective, err
 }
 
 // AddEdgeAt forwards to the current endpoint's AddEdgeAt, failing over on
-// ErrUnavailable.
-func (f *Failover) AddEdgeAt(ctx context.Context, tail, head string, weight float32, expiration time.Time) error {
-	return f.call(ctx, "AddEdgeAt", func(l failoverNode) error { return l.AddEdgeAt(ctx, tail, head, weight, expiration) })
+// ErrUnavailable. It returns the post-accumulation effective weight (#897).
+func (f *Failover) AddEdgeAt(ctx context.Context, tail, head string, weight float32, expiration time.Time) (float32, error) {
+	var effective float32
+	err := f.call(ctx, "AddEdgeAt", func(l failoverNode) error {
+		w, e := l.AddEdgeAt(ctx, tail, head, weight, expiration)
+		effective = w
+		return e
+	})
+	return effective, err
 }
 
 // AddEdges forwards to the current endpoint's AddEdges, failing over on
-// ErrUnavailable.
-func (f *Failover) AddEdges(ctx context.Context, inputs []EdgeInput) error {
-	return f.call(ctx, "AddEdges", func(l failoverNode) error { return l.AddEdges(ctx, inputs) })
+// ErrUnavailable. It returns the per-edge post-accumulation effective
+// weights (#897), index-aligned with inputs.
+func (f *Failover) AddEdges(ctx context.Context, inputs []EdgeInput) ([]float32, error) {
+	var effective []float32
+	err := f.call(ctx, "AddEdges", func(l failoverNode) error {
+		w, e := l.AddEdges(ctx, inputs)
+		effective = w
+		return e
+	})
+	return effective, err
 }
 
 // PutEdge forwards to the current endpoint's PutEdge, failing over on

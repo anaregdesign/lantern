@@ -112,6 +112,37 @@ func (w *weight) addWithExpirationContrib(value float32, expiration time.Time, c
 	return true
 }
 
+// addWithExpirationContribAt is addWithExpirationContrib with a caller-supplied
+// liveness clock, additionally returning the post-apply LIVE weight sum (#897)
+// so an additive write reads back its own effect atomically — the building
+// block for a race-free increment-then-check counter. The values are compacted
+// against `now` before the sum is read, so the returned weight excludes
+// expired-but-unflushed contributions (the true rolling-window value), matching
+// what a subsequent value() read would report. On a contrib_id dedup no-op it
+// returns applied=false and the current live sum. Because it flushes on every
+// call the amortized-compaction trigger is moot on this path; the cost is the
+// same O(live) a paired GetEdge would have paid, folded into the one write.
+func (w *weight) addWithExpirationContribAt(value float32, expiration time.Time, contribID ContribID, now time.Time) (applied bool, effective float32) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !contribID.IsZero() {
+		for _, v := range w.values {
+			if v.contribID == contribID && cache.IsLiveAt(v.expiration, now) {
+				w.flushLockedAt(now)
+				return false, w.sum
+			}
+		}
+	}
+	w.values = append(w.values, weightValue{
+		value:      value,
+		expiration: expiration,
+		contribID:  contribID,
+	})
+	w.sum += value
+	w.flushLockedAt(now)
+	return true, w.sum
+}
+
 func (w *weight) addWithTTL(value float32, ttl time.Duration) {
 	w.addWithExpiration(value, time.Now().Add(ttl))
 }
@@ -500,7 +531,7 @@ func (c *edgeCache[S]) resolve(id vertexID) (S, bool) {
 // same edge" are already racy under the slow path; the fast path
 // preserves that contract without introducing new visibility issues.
 func (c *edgeCache[S]) addWithExpiration(tail, head S, w float32, expiration time.Time) (created bool, tailID, headID vertexID) {
-	created, tailID, headID, _ = c.addWithExpirationContrib(tail, head, w, expiration, ContribID{})
+	created, tailID, headID, _, _ = c.addWithExpirationContribAt(tail, head, w, expiration, ContribID{}, time.Now())
 	return
 }
 
@@ -515,15 +546,18 @@ func (c *edgeCache[S]) addWithExpiration(tail, head S, w float32, expiration tim
 // so callers can drive both helpers through onEdgeAddedLocked without
 // branching on the dedup outcome — applied=false simply means "skip
 // downstream side indexes too".
-func (c *edgeCache[S]) addWithExpirationContrib(tail, head S, w float32, expiration time.Time, contribID ContribID) (created bool, tailID, headID vertexID, applied bool) {
+//
+// `now` supplies the liveness clock and `effective` returns the post-apply
+// live weight sum for the edge (#897); see weight.addWithExpirationContribAt.
+func (c *edgeCache[S]) addWithExpirationContribAt(tail, head S, w float32, expiration time.Time, contribID ContribID, now time.Time) (created bool, tailID, headID vertexID, applied bool, effective float32) {
 	if c.dict != nil {
 		if tID, hID, okT, okH := c.dict.lookupBoth(tail, head); okT && okH {
 			c.mu.RLock()
 			if heads, ok := c.tf[tID]; ok {
 				if edge, ok := heads[hID]; ok {
 					c.mu.RUnlock()
-					applied = edge.addWithExpirationContrib(w, expiration, contribID)
-					return false, tID, hID, applied
+					applied, effective = edge.addWithExpirationContribAt(w, expiration, contribID, now)
+					return false, tID, hID, applied, effective
 				}
 			}
 			c.mu.RUnlock()
@@ -562,8 +596,8 @@ func (c *edgeCache[S]) addWithExpirationContrib(tail, head S, w float32, expirat
 		c.dict.release(headID)
 	}
 
-	applied = edge.addWithExpirationContrib(w, expiration, contribID)
-	return created, tailID, headID, applied
+	applied, effective = edge.addWithExpirationContribAt(w, expiration, contribID, now)
+	return created, tailID, headID, applied, effective
 }
 
 func (c *edgeCache[S]) internEndpoints(tail, head S) (vertexID, vertexID) {
@@ -621,12 +655,13 @@ func (c *edgeCache[S]) putWithExpiration(tail, head S, w float32, expiration tim
 	return created, tailID, headID
 }
 
-// addExistingContribByID appends to the weight of an already-present
+// addExistingContribByIDAt appends to the weight of an already-present
 // (tailID, headID) edge identified by pre-resolved ids, without interning,
 // creating buckets, or touching the dict. It returns ok=false when the
-// bucket is absent (the caller must then fall back to the slow path), and
+// bucket is absent (the caller must then fall back to the slow path),
 // applied to report whether the contribution changed the weight (mirrors
-// addWithExpirationContrib's dedup result).
+// addWithExpirationContribAt's dedup result), and effective as the post-apply
+// live weight sum (#897; see weight.addWithExpirationContribAt).
 //
 // The caller MUST have pinned both ids (see dictionary.pinBoth) for the
 // duration of this call: addExistingContribByID does NOT hold GraphCache.mu,
@@ -637,19 +672,20 @@ func (c *edgeCache[S]) putWithExpiration(tail, head S, w float32, expiration tim
 // weight lock. If the bucket is deleted between the RUnlock here and the
 // append, the append lands on a now-orphaned *weight and is harmlessly
 // discarded — the same benign race documented for addWithExpirationContrib.
-func (c *edgeCache[S]) addExistingContribByID(tailID, headID vertexID, w float32, expiration time.Time, contribID ContribID) (applied, ok bool) {
+func (c *edgeCache[S]) addExistingContribByIDAt(tailID, headID vertexID, w float32, expiration time.Time, contribID ContribID, now time.Time) (applied bool, effective float32, ok bool) {
 	c.mu.RLock()
 	heads, hok := c.tf[tailID]
 	if !hok {
 		c.mu.RUnlock()
-		return false, false
+		return false, 0, false
 	}
 	edge, eok := heads[headID]
 	c.mu.RUnlock()
 	if !eok {
-		return false, false
+		return false, 0, false
 	}
-	return edge.addWithExpirationContrib(w, expiration, contribID), true
+	applied, effective = edge.addWithExpirationContribAt(w, expiration, contribID, now)
+	return applied, effective, true
 }
 
 // putWithExpirationHLC is the LWW-aware sibling of addWithExpiration used

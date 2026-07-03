@@ -90,7 +90,7 @@ func registerClaim(srv *mcp.Server, lc lanternClient, r *ttl.Resolver) {
 		}
 		// The activity edge makes the lease visible in whats_happening's
 		// neighborhood, not just under the claims. prefix.
-		_ = lc.AddEdge(ctx, agentKey(id), in.Resource, 1, d)
+		_, _ = lc.AddEdge(ctx, agentKey(id), in.Resource, 1, d)
 
 		out := claimOutput{
 			Granted:   true,

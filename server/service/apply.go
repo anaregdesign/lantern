@@ -226,8 +226,9 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		if useTomb {
 			// The batch return counts every item that added no weight —
 			// tombstone-dropped or ContribID-deduped — which is exactly the
-			// per-item applied=false set the singular loop fed the hook.
-			noWeight := s.cache.AddEdgesWithExpirationContribHLC(items, ts)
+			// per-item applied=false set the singular loop fed the hook. The
+			// effective-weight slice (#897) is irrelevant on the apply path.
+			_, noWeight := s.cache.AddEdgesWithExpirationContribHLC(items, ts)
 			if s.onTombstoneClampReject != nil {
 				for i := 0; i < noWeight; i++ {
 					s.onTombstoneClampReject()

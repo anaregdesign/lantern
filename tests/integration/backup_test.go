@@ -44,10 +44,10 @@ func TestBackupSnapshot_E2E(t *testing.T) {
 	if err := sdk.PutVertex(ctx, "carol", "Carol", time.Minute); err != nil {
 		t.Fatalf("PutVertex carol: %v", err)
 	}
-	if err := sdk.AddEdge(ctx, "alice", "bob", 1.5, time.Minute); err != nil {
+	if _, err := sdk.AddEdge(ctx, "alice", "bob", 1.5, time.Minute); err != nil {
 		t.Fatalf("AddEdge alice->bob: %v", err)
 	}
-	if err := sdk.AddEdge(ctx, "bob", "carol", 2.0, time.Minute); err != nil {
+	if _, err := sdk.AddEdge(ctx, "bob", "carol", 2.0, time.Minute); err != nil {
 		t.Fatalf("AddEdge bob->carol: %v", err)
 	}
 
@@ -83,7 +83,7 @@ func TestBackupSnapshot_E2E(t *testing.T) {
 		if err := sdk.PutVertex(ctx, "x:2", "two", time.Minute); err != nil {
 			t.Fatalf("PutVertex x:2: %v", err)
 		}
-		if err := sdk.AddEdge(ctx, "x:1", "x:2", 1.0, time.Minute); err != nil {
+		if _, err := sdk.AddEdge(ctx, "x:1", "x:2", 1.0, time.Minute); err != nil {
 			t.Fatalf("AddEdge x:1->x:2: %v", err)
 		}
 		vs, es := drainBackup(t, ctx, raw, &pb.BackupSnapshotRequest{VertexPrefix: "x:"})
@@ -153,7 +153,7 @@ func TestBackupper_ServerInternal_RoundTrip_E2E(t *testing.T) {
 	if err := srcSDK.PutVertex(ctx, "num", bigInt, time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	if err := srcSDK.AddEdge(ctx, "alice", "num", 1.5, time.Minute); err != nil {
+	if _, err := srcSDK.AddEdge(ctx, "alice", "num", 1.5, time.Minute); err != nil {
 		t.Fatal(err)
 	}
 
@@ -216,10 +216,10 @@ func TestBackupRestore_E2E_SDK(t *testing.T) {
 			if err := src.PutVertex(ctx, "carol", "Carol", time.Minute); err != nil {
 				t.Fatal(err)
 			}
-			if err := src.AddEdge(ctx, "alice", "num", 1.5, time.Minute); err != nil {
+			if _, err := src.AddEdge(ctx, "alice", "num", 1.5, time.Minute); err != nil {
 				t.Fatal(err)
 			}
-			if err := src.AddEdge(ctx, "num", "carol", 2.0, time.Minute); err != nil {
+			if _, err := src.AddEdge(ctx, "num", "carol", 2.0, time.Minute); err != nil {
 				t.Fatal(err)
 			}
 
@@ -285,10 +285,10 @@ func TestBackupSnapshot_ReferentialClosure_E2E(t *testing.T) {
 			t.Fatalf("PutVertex %s: %v", k, err)
 		}
 	}
-	if err := sdk.AddEdge(ctx, "alice", "bob", 1.5, time.Minute); err != nil {
+	if _, err := sdk.AddEdge(ctx, "alice", "bob", 1.5, time.Minute); err != nil {
 		t.Fatalf("AddEdge alice->bob: %v", err)
 	}
-	if err := sdk.AddEdge(ctx, "bob", "carol", 2.0, time.Minute); err != nil {
+	if _, err := sdk.AddEdge(ctx, "bob", "carol", 2.0, time.Minute); err != nil {
 		t.Fatalf("AddEdge bob->carol: %v", err)
 	}
 	if _, err := sdk.DeleteVertex(ctx, "bob"); err != nil {

@@ -107,52 +107,71 @@ func (c *GraphCache[S, T]) AddEdgesWithExpiration(items []EdgeItem[S]) {
 
 // AddEdgesWithExpirationContrib is the dedup-aware batch sibling of
 // AddEdgesWithExpiration. It applies the whole batch under a single write
-// lock and returns the number of items that were deduplicated — i.e. whose
-// non-zero ContribID matched a live contribution already stored on the
-// (tail, head) edge, so no weight was added. Items with a zero ContribID
-// always apply (legacy additive semantics) and never count as deduped.
+// lock and returns, index-aligned with items, the post-apply LIVE weight
+// sum for each edge (#897), plus the number of items that were
+// deduplicated — i.e. whose non-zero ContribID matched a live contribution
+// already stored on the (tail, head) edge, so no weight was added. Items
+// with a zero ContribID always apply (legacy additive semantics) and never
+// count as deduped.
+//
+// effective[i] is the edge's live weight sum after this batch's contribution
+// was folded in, compacted against a single `now` sampled once for the whole
+// batch (matching #838's single-clock-read pattern). On a dedup no-op it is
+// the current live sum, so a client can read back the running total of a
+// windowed counter without a second round-trip. It is a serving-node local
+// view: under active replication a peer may hold contributions not yet
+// streamed in, so treat it as a fast local estimate, not a cluster-wide total.
 //
 // The dedup guarantee mirrors the per-edge AddEdgeWithExpirationContrib used
 // by the replication apply path (#182): replaying a batch with the same
 // ContribIDs leaves the stored weights unchanged. This is what lets a
 // client-supplied idempotency key make AddEdge(s) safe to retry (#588).
-func (c *GraphCache[S, T]) AddEdgesWithExpirationContrib(items []EdgeItem[S]) (deduped int) {
+func (c *GraphCache[S, T]) AddEdgesWithExpirationContrib(items []EdgeItem[S]) (effective []float32, deduped int) {
 	if len(items) == 0 {
-		return 0
+		return nil, 0
 	}
+	// now is sampled once for the whole batch so every item's live-sum
+	// compaction shares one clock read (issue #838 single-clock pattern).
+	now := time.Now()
+	effective = make([]float32, len(items))
 	// Fast path: additive appends to edges that already exist between live
 	// endpoints take only the per-edge weight lock (see
 	// tryAddExistingEdgeContrib), so a batch of hot existing edges never
 	// serializes on c.mu. Items that miss the fast path — new edges, or
-	// endpoints needing revival — are collected and applied together under a
-	// single c.mu.Lock, which preserves bucket-creation atomicity for the
-	// edge SET a concurrent reader observes (the fast path only mutates
-	// already-present edge weights, never the bucket structure). Additive
-	// writes are commutative and ContribID dedup is per-edge, so applying the
-	// fast-path items before the collected misses changes no per-edge result
-	// (issue #743 item 5).
-	var misses []EdgeItem[S]
-	for _, it := range items {
-		applied, ok := c.tryAddExistingEdgeContrib(it.Tail, it.Head, it.Weight, it.Expiration, it.ContribID)
+	// endpoints needing revival — are collected by index and applied together
+	// under a single c.mu.Lock, which preserves bucket-creation atomicity for
+	// the edge SET a concurrent reader observes (the fast path only mutates
+	// already-present edge weights, never the bucket structure). Tracking miss
+	// INDICES (not a copy of the items) keeps effective[] index-aligned across
+	// the fast/slow split. Additive writes are commutative and ContribID dedup
+	// is per-edge, so applying the fast-path items before the collected misses
+	// changes no per-edge result (issue #743 item 5).
+	var missIdx []int
+	for i, it := range items {
+		applied, eff, ok := c.tryAddExistingEdgeContrib(it.Tail, it.Head, it.Weight, it.Expiration, it.ContribID, now)
 		if !ok {
-			misses = append(misses, it)
+			missIdx = append(missIdx, i)
 			continue
 		}
+		effective[i] = eff
 		if !applied {
 			deduped++
 		}
 	}
-	if len(misses) == 0 {
-		return deduped
+	if len(missIdx) == 0 {
+		return effective, deduped
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, it := range misses {
-		if !c.addEdgeContribLocked(it.Tail, it.Head, it.Weight, it.Expiration, it.ContribID) {
+	for _, i := range missIdx {
+		it := items[i]
+		applied, eff := c.addEdgeContribLocked(it.Tail, it.Head, it.Weight, it.Expiration, it.ContribID, now)
+		effective[i] = eff
+		if !applied {
 			deduped++
 		}
 	}
-	return deduped
+	return effective, deduped
 }
 
 // PutEdgesWithExpiration replaces every supplied edge atomically under a
@@ -296,24 +315,32 @@ func (c *GraphCache[S, T]) PutEdgesWithExpirationHLC(items []EdgeItem[S], ts hlc
 // a contribution whose ts is strictly older than a delete is dropped on the
 // origin exactly as it is on every peer. Items whose ts loses to the tombstone
 // are skipped and counted as deduped=false (they applied nothing); items with
-// a matching live ContribID are deduped as in the non-HLC variant. Returns the
-// number of items that added no weight (tombstone-dropped or ContribID-deduped).
-func (c *GraphCache[S, T]) AddEdgesWithExpirationContribHLC(items []EdgeItem[S], ts hlc.Timestamp) (deduped int) {
+// a matching live ContribID are deduped as in the non-HLC variant. Returns,
+// index-aligned with items, the post-apply LIVE weight sum for each edge
+// (#897) plus the number of items that added no weight (tombstone-dropped or
+// ContribID-deduped). A tombstone-dropped item applied nothing, so its
+// effective entry is left at 0 rather than paying an extra read for its live
+// sum; ContribID-deduped items still report the current live sum.
+func (c *GraphCache[S, T]) AddEdgesWithExpirationContribHLC(items []EdgeItem[S], ts hlc.Timestamp) (effective []float32, deduped int) {
 	if len(items) == 0 {
-		return 0
+		return nil, 0
 	}
+	now := time.Now()
+	effective = make([]float32, len(items))
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, it := range items {
+	for i, it := range items {
 		if !c.edgeWriteAllowedLocked(it.Tail, it.Head, ts) {
 			deduped++
 			continue
 		}
-		if c.addEdgeContribLocked(it.Tail, it.Head, it.Weight, it.Expiration, it.ContribID) {
+		applied, eff := c.addEdgeContribLocked(it.Tail, it.Head, it.Weight, it.Expiration, it.ContribID, now)
+		effective[i] = eff
+		if applied {
 			c.clearEdgeTombstoneLocked(it.Tail, it.Head)
 			continue
 		}
 		deduped++
 	}
-	return deduped
+	return effective, deduped
 }

@@ -99,7 +99,7 @@ func TestAntiEntropy_DriverConvergesWithoutPump(t *testing.T) {
 	if err := b.sdk.PutVertex(ctx, "ae-key", "ae-val", time.Minute); err != nil {
 		t.Fatalf("b.PutVertex: %v", err)
 	}
-	if err := b.sdk.AddEdge(ctx, "ae-key", "ae-head", 2.5, time.Minute); err != nil {
+	if _, err := b.sdk.AddEdge(ctx, "ae-key", "ae-head", 2.5, time.Minute); err != nil {
 		t.Fatalf("b.AddEdge: %v", err)
 	}
 

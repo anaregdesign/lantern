@@ -15,7 +15,7 @@ import (
 // failover tests before the logic moved into the SDK (#592).
 type fakeNode struct {
 	getVertexFn func(ctx context.Context, key string) (*Vertex, error)
-	addEdgeFn   func(ctx context.Context, tail, head string, weight float32, ttl time.Duration) error
+	addEdgeFn   func(ctx context.Context, tail, head string, weight float32, ttl time.Duration) (float32, error)
 	pingErr     error
 	closed      int
 }
@@ -47,14 +47,16 @@ func (f *fakeNode) CountVerticesByPrefix(context.Context, string) (uint64, error
 func (f *fakeNode) DeleteVerticesByPrefix(context.Context, string, ...DeleteByPrefixOption) (uint64, error) {
 	return 0, nil
 }
-func (f *fakeNode) AddEdge(ctx context.Context, tail, head string, weight float32, ttl time.Duration) error {
+func (f *fakeNode) AddEdge(ctx context.Context, tail, head string, weight float32, ttl time.Duration) (float32, error) {
 	if f.addEdgeFn != nil {
 		return f.addEdgeFn(ctx, tail, head, weight, ttl)
 	}
-	return nil
+	return 0, nil
 }
-func (f *fakeNode) AddEdgeAt(context.Context, string, string, float32, time.Time) error { return nil }
-func (f *fakeNode) AddEdges(context.Context, []EdgeInput) error                         { return nil }
+func (f *fakeNode) AddEdgeAt(context.Context, string, string, float32, time.Time) (float32, error) {
+	return 0, nil
+}
+func (f *fakeNode) AddEdges(context.Context, []EdgeInput) ([]float32, error) { return nil, nil }
 func (f *fakeNode) PutEdge(context.Context, string, string, float32, time.Duration) error {
 	return nil
 }
@@ -228,17 +230,17 @@ func TestFailover_PingAllNodesFailReturnsError(t *testing.T) {
 
 func TestFailover_AdditiveWriteRotatesOnUnavailable(t *testing.T) {
 	var n0, n1 int
-	node0 := &fakeNode{addEdgeFn: func(context.Context, string, string, float32, time.Duration) error {
+	node0 := &fakeNode{addEdgeFn: func(context.Context, string, string, float32, time.Duration) (float32, error) {
 		n0++
-		return unavailableErr()
+		return 0, unavailableErr()
 	}}
-	node1 := &fakeNode{addEdgeFn: func(context.Context, string, string, float32, time.Duration) error {
+	node1 := &fakeNode{addEdgeFn: func(context.Context, string, string, float32, time.Duration) (float32, error) {
 		n1++
-		return nil
+		return 0, nil
 	}}
 	f := &Failover{nodes: []failoverNode{node0, node1}}
 
-	if err := f.AddEdge(context.Background(), "a", "b", 1.0, time.Minute); err != nil {
+	if _, err := f.AddEdge(context.Background(), "a", "b", 1.0, time.Minute); err != nil {
 		t.Fatalf("AddEdge err = %v", err)
 	}
 	if n0 != 1 || n1 != 1 {
@@ -339,16 +341,16 @@ func TestFailover_RetryAlwaysReadIgnoresIdempotencySetting(t *testing.T) {
 
 func TestFailover_RetryGatesAdditiveWritesByIdempotency(t *testing.T) {
 	mk := func(c *int) *fakeNode {
-		return &fakeNode{addEdgeFn: func(context.Context, string, string, float32, time.Duration) error {
+		return &fakeNode{addEdgeFn: func(context.Context, string, string, float32, time.Duration) (float32, error) {
 			*c++
-			return unavailableErr()
+			return 0, unavailableErr()
 		}}
 	}
 
 	t.Run("without idempotent adds a single ring walk, no backoff-retry", func(t *testing.T) {
 		var a, b int
 		f := &Failover{nodes: []failoverNode{mk(&a), mk(&b)}, retry: testRetryPolicy(3), idempotentAdds: false}
-		if err := f.AddEdge(context.Background(), "a", "b", 1, time.Minute); !errors.Is(err, ErrUnavailable) {
+		if _, err := f.AddEdge(context.Background(), "a", "b", 1, time.Minute); !errors.Is(err, ErrUnavailable) {
 			t.Fatalf("err = %v, want ErrUnavailable", err)
 		}
 		if a != 1 || b != 1 {
@@ -359,7 +361,7 @@ func TestFailover_RetryGatesAdditiveWritesByIdempotency(t *testing.T) {
 	t.Run("with idempotent adds the ring walk repeats MaxAttempts times", func(t *testing.T) {
 		var a, b int
 		f := &Failover{nodes: []failoverNode{mk(&a), mk(&b)}, retry: testRetryPolicy(3), idempotentAdds: true}
-		if err := f.AddEdge(context.Background(), "a", "b", 1, time.Minute); !errors.Is(err, ErrUnavailable) {
+		if _, err := f.AddEdge(context.Background(), "a", "b", 1, time.Minute); !errors.Is(err, ErrUnavailable) {
 			t.Fatalf("err = %v, want ErrUnavailable", err)
 		}
 		if a != 3 || b != 3 {

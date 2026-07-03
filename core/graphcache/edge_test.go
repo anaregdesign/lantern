@@ -549,24 +549,32 @@ func Test_weight_amortizedCompaction(t *testing.T) {
 	}
 }
 
-// Test_edgeCache_addExistingContribByID covers the id-keyed existing-edge
+// Test_edgeCache_addExistingContribByIDAt covers the id-keyed existing-edge
 // append used by the GraphCache hot write path: it appends additively to a
 // present bucket, reports ok=false when the bucket is absent (so the caller
-// falls back to the locked slow path), and honors ContribID dedup.
-func Test_edgeCache_addExistingContribByID(t *testing.T) {
+// falls back to the locked slow path), honors ContribID dedup, and returns
+// the post-apply live weight sum (#897).
+func Test_edgeCache_addExistingContribByIDAt(t *testing.T) {
 	d := newDictionary[string]()
 	c := newEdgeCache[string](time.Minute, d)
 	exp := time.Now().Add(time.Minute)
+	now := time.Now()
 
-	created, tailID, headID, applied := c.addWithExpirationContrib("a", "b", 2, exp, ContribID{})
+	created, tailID, headID, applied, effective := c.addWithExpirationContribAt("a", "b", 2, exp, ContribID{}, now)
 	if !created || !applied {
 		t.Fatalf("setup add: created=%v applied=%v, want true true", created, applied)
 	}
+	if effective != 2 {
+		t.Fatalf("setup effective = %v, want 2", effective)
+	}
 
 	t.Run("existing bucket appends additively", func(t *testing.T) {
-		applied, ok := c.addExistingContribByID(tailID, headID, 3, exp, ContribID{})
+		applied, effective, ok := c.addExistingContribByIDAt(tailID, headID, 3, exp, ContribID{}, now)
 		if !ok || !applied {
-			t.Fatalf("addExistingContribByID = (applied=%v ok=%v), want (true true)", applied, ok)
+			t.Fatalf("addExistingContribByIDAt = (applied=%v ok=%v), want (true true)", applied, ok)
+		}
+		if effective != 5 {
+			t.Fatalf("effective = %v, want 5", effective)
 		}
 		if w, present := c.get("a", "b"); !present || w != 5 {
 			t.Fatalf("weight after append = %v present=%v, want 5 true", w, present)
@@ -575,20 +583,22 @@ func Test_edgeCache_addExistingContribByID(t *testing.T) {
 
 	t.Run("missing bucket returns ok=false", func(t *testing.T) {
 		missing := d.intern("z")
-		applied, ok := c.addExistingContribByID(tailID, missing, 1, exp, ContribID{})
+		applied, _, ok := c.addExistingContribByIDAt(tailID, missing, 1, exp, ContribID{}, now)
 		if ok || applied {
-			t.Fatalf("addExistingContribByID on missing bucket = (applied=%v ok=%v), want (false false)", applied, ok)
+			t.Fatalf("addExistingContribByIDAt on missing bucket = (applied=%v ok=%v), want (false false)", applied, ok)
 		}
 	})
 
-	t.Run("contribID dedup at edge layer", func(t *testing.T) {
+	t.Run("contribID dedup at edge layer reports live sum", func(t *testing.T) {
 		var id ContribID
 		id[0] = 0x42
-		if applied, ok := c.addExistingContribByID(tailID, headID, 1, exp, id); !ok || !applied {
-			t.Fatalf("first contrib = (applied=%v ok=%v), want (true true)", applied, ok)
+		if applied, effective, ok := c.addExistingContribByIDAt(tailID, headID, 1, exp, id, now); !ok || !applied || effective != 6 {
+			t.Fatalf("first contrib = (applied=%v ok=%v effective=%v), want (true true 6)", applied, ok, effective)
 		}
-		if applied, ok := c.addExistingContribByID(tailID, headID, 1, exp, id); !ok || applied {
-			t.Fatalf("replay contrib = (applied=%v ok=%v), want (false true)", applied, ok)
+		// Replay: deduped no-op still returns the current live sum, not a
+		// stale or double-counted value.
+		if applied, effective, ok := c.addExistingContribByIDAt(tailID, headID, 1, exp, id, now); !ok || applied || effective != 6 {
+			t.Fatalf("replay contrib = (applied=%v ok=%v effective=%v), want (false true 6)", applied, ok, effective)
 		}
 	})
 }
@@ -653,8 +663,8 @@ func Test_edgeCache_edgeCount(t *testing.T) {
 		c.addWithExpiration("a", "b", 1, exp) // existing bucket: no change
 		c.putWithExpiration("a", "c", 1, exp) // put create
 		c.putWithExpiration("a", "c", 2, exp) // in-place replace: no change
-		c.addWithExpirationContrib("b", "c", 1, exp, ContribID{1})
-		c.addWithExpirationContrib("b", "c", 1, exp, ContribID{1}) // deduped: no change
+		c.addWithExpirationContribAt("b", "c", 1, exp, ContribID{1}, time.Now())
+		c.addWithExpirationContribAt("b", "c", 1, exp, ContribID{1}, time.Now()) // deduped: no change
 		c.putWithExpirationHLC("c", "a", 1, exp, hlc.Timestamp{WallNs: 1})
 		check(t, c, 4)
 

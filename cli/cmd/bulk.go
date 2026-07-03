@@ -215,7 +215,7 @@ Recall the semantic difference: ` + "`add`" + ` SUMS weight onto existing edges
 				}
 				var err error
 				if verb == "add" {
-					err = cli.AddEdges(cmd.Context(), batch)
+					_, err = cli.AddEdges(cmd.Context(), batch)
 				} else {
 					err = cli.PutEdges(cmd.Context(), batch)
 				}

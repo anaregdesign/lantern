@@ -29,10 +29,11 @@ type Backend interface {
 	AddEdgesWithExpiration(items []graphcache.EdgeItem[string])
 	// AddEdgesWithExpirationContrib is the dedup-aware batch sibling of
 	// AddEdgesWithExpiration: a per-item non-zero ContribID makes that
-	// contribution idempotent (a retried batch is an exact no-op). Returns
-	// the count of items suppressed by a matching live ContribID. Items
-	// with a zero ContribID keep legacy additive semantics.
-	AddEdgesWithExpirationContrib(items []graphcache.EdgeItem[string]) int
+	// contribution idempotent (a retried batch is an exact no-op). It
+	// returns, index-aligned with items, the post-apply LIVE weight sum for
+	// each edge (#897) plus the count of items suppressed by a matching live
+	// ContribID. Items with a zero ContribID keep legacy additive semantics.
+	AddEdgesWithExpirationContrib(items []graphcache.EdgeItem[string]) (effective []float32, deduped int)
 	PutEdgesWithExpiration(items []graphcache.EdgeItem[string])
 	DeleteEdges(keys []graphcache.EdgeKey[string]) int
 
@@ -63,8 +64,9 @@ type Backend interface {
 	// local path keeps using the non-HLC PutVerticesWithExpiration /
 	// PutEdgesWithExpiration / AddEdgesWithExpirationContrib when replication
 	// is off (clock nil) so non-replicated workloads pay nothing.
-	// AddEdgesWithExpirationContribHLC returns the count of items that added
-	// no weight (tombstone-dropped or ContribID-deduped).
+	// AddEdgesWithExpirationContribHLC returns, index-aligned with items, the
+	// post-apply LIVE weight sum for each edge (#897) plus the count of items
+	// that added no weight (tombstone-dropped or ContribID-deduped).
 	//
 	// Since #840 these batch methods also serve the replication apply path
 	// (ApplyMutation), which previously looped the singular HLC methods. The
@@ -74,7 +76,7 @@ type Backend interface {
 	// per rejected item with unchanged meaning.
 	PutVerticesWithExpirationHLC(items []graphcache.VertexItem[string, *pb.Vertex], ts hlc.Timestamp) int
 	PutEdgesWithExpirationHLC(items []graphcache.EdgeItem[string], ts hlc.Timestamp) int
-	AddEdgesWithExpirationContribHLC(items []graphcache.EdgeItem[string], ts hlc.Timestamp) int
+	AddEdgesWithExpirationContribHLC(items []graphcache.EdgeItem[string], ts hlc.Timestamp) (effective []float32, deduped int)
 
 	// tombstone-aware Delete*/Add* entry points used by ApplyMutation
 	// when LANTERN_TOMBSTONE_TTL is configured (#183). DeleteVertexHLC,

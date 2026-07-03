@@ -47,7 +47,7 @@ func registerTrack(srv *mcp.Server, lc lanternClient, r *ttl.Resolver) {
 				Expiration: expirationIn(d),
 			})
 		}
-		if err := lc.AddEdges(ctx, edges); err != nil {
+		if _, err := lc.AddEdges(ctx, edges); err != nil {
 			return nil, trackOutput{}, mapSDKError("track", err)
 		}
 		out := trackOutput{AgentID: id, Resources: in.Resources, Tracked: len(edges)}

@@ -38,7 +38,9 @@ and small.
 
 Edges are not single scalars — each `AddEdge(tail, head, w, ttl)` call appends
 **another contribution** with its own TTL. The reported weight is the live sum
-of contributions that have not yet expired.
+of contributions that have not yet expired. `AddEdge`/`AddEdges` return that
+post-accumulation weight directly (the right-hand side of the diagram below),
+so a "+1 then read the running total" counter needs no follow-up `GetEdge`.
 
 ```text
 t=0   AddEdge(a, b, 1.0, 3s)   →  weight(a,b) = 1
@@ -545,8 +547,10 @@ ctx := context.Background()
 _ = cli.PutVertex(ctx, "user:42", "alice", 1*time.Hour)
 _ = cli.PutVertex(ctx, "item:7",  "lamp",  1*time.Hour)
 
-// Each AddEdge appends a contribution with its own TTL.
-_ = cli.AddEdge(ctx, "user:42", "item:7", 1.0, 30*time.Minute)
+// Each AddEdge appends a contribution with its own TTL and returns the
+// live accumulated weight.
+weight, _ := cli.AddEdge(ctx, "user:42", "item:7", 1.0, 30*time.Minute)
+_ = weight
 
 // Walk: 2 hops, top-3 per hop, TF-IDF weighted.
 g, _ := cli.Illuminate(ctx, "user:42",

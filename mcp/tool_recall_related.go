@@ -270,7 +270,7 @@ func registerRecallRelated(srv *mcp.Server, lc lanternClient, r *ttl.Resolver) {
 			reinforceAttempted = len(visited)
 			reinforced := 0
 			for _, e := range visited {
-				if err := lc.AddEdge(ctx, e.tail, e.head, reinforceBump, d); err != nil {
+				if _, err := lc.AddEdge(ctx, e.tail, e.head, reinforceBump, d); err != nil {
 					continue // best-effort: the recall already succeeded
 				}
 				reinforced++

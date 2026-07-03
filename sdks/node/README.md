@@ -102,6 +102,17 @@ double-counts its weight. Attach a 24-byte **contrib ID** to make a
 contribution idempotent: while that contribution is live, re-adding it with
 the same id is a no-op instead of adding weight again.
 
+Both resolve to the **post-accumulation effective weight**: `addEdge` returns
+the edge's new live total and `addEdges` returns an index-aligned `number[]`,
+so you can keep a running counter (an additive `+1` write, then read back the
+total) without a follow-up `getEdge`. The value is the serving node's live
+view; a replication peer holding un-streamed contributions may differ briefly.
+
+```ts
+const total = await client.addEdge({ tail: "a", head: "b", weight: 1 });
+// total is the accumulated weight after this contribution landed.
+```
+
 Two ways to get an id onto the wire:
 
 ```ts
