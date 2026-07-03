@@ -327,6 +327,48 @@ message ScanVertexKeysResponse {
   bytes next_cursor = 2;
 }
 
+// MatchMode selects how a multi-word query's terms combine when choosing which
+// vertices match (#890). It governs membership only; BM25 still ranks whatever
+// matches. Coverage counts word-channel terms, so requiring "all" of a CJK run
+// means all of its bigrams.
+enum MatchMode {
+  // MATCH_MODE_UNSPECIFIED defers to the server default
+  // (LANTERN_SEARCH_DEFAULT_MODE, itself defaulting to ANY), so an unset field
+  // keeps the OR-union behavior.
+  MATCH_MODE_UNSPECIFIED = 0;
+  // MATCH_MODE_ANY keeps every vertex sharing at least one query term (OR).
+  MATCH_MODE_ANY = 1;
+  // MATCH_MODE_ALL keeps only vertices carrying every query word term (AND).
+  MATCH_MODE_ALL = 2;
+  // MATCH_MODE_MIN_SHOULD keeps vertices carrying at least min_should_match
+  // distinct query word terms.
+  MATCH_MODE_MIN_SHOULD = 3;
+}
+
+// SearchOptions carries the optional relevance controls for SearchVertices
+// (#892): match mode, phrase adjacency, and prefix/fuzzy term expansion. Every
+// field is optional and the zero value reproduces the default OR-union search,
+// so leaving options unset is identical to the pre-#892 request.
+message SearchOptions {
+  // match_mode selects AND / OR / minimum-should-match membership (#890).
+  MatchMode match_mode = 1;
+  // min_should_match is the minimum number of distinct query word terms a
+  // vertex must carry when match_mode is MATCH_MODE_MIN_SHOULD; clamped to
+  // [1, number of query word terms]. Ignored for other modes.
+  uint32 min_should_match = 2;
+  // phrase requires the query's word terms to occur adjacently, in order
+  // (#889) — the precision counterpart to the OR-union. It takes precedence
+  // over match_mode.
+  bool phrase = 3;
+  // fuzziness is the maximum edit distance (0, 1, or 2) at which a query word
+  // also matches dictionary terms, so a typo still finds the term (#891). 0
+  // disables fuzzy matching.
+  uint32 fuzziness = 4;
+  // prefix_terms also matches dictionary terms that extend a query word, so
+  // "lan" finds "lantern" (#891).
+  bool prefix_terms = 5;
+}
+
 // SearchVerticesRequest runs a relevance-ranked full-text search over vertex
 // *content* (key + value), as opposed to ScanVertices' lexicographic
 // key-prefix walk. `query` is analysed with the same pipeline used to build
@@ -345,6 +387,9 @@ message SearchVerticesRequest {
   string query = 1;
   uint32 limit = 2;
   string prefix = 3;
+  // options carries the optional match-mode / phrase / fuzzy controls (#892);
+  // unset means the default OR-union search.
+  SearchOptions options = 4;
 }
 
 message SearchVerticesResponse {
