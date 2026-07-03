@@ -25,7 +25,8 @@ const (
 )
 
 // MatchOptions configures document membership for a query. The zero value is
-// MatchAny, so an empty MatchOptions reproduces Search's OR-union exactly.
+// MatchAny with no term expansion, so an empty MatchOptions reproduces Search's
+// OR-union exactly.
 type MatchOptions struct {
 	// Mode selects the boolean combination of the query's word terms.
 	Mode MatchMode
@@ -33,6 +34,15 @@ type MatchOptions struct {
 	// document must contain when Mode is MatchMinShould. It is clamped to
 	// [1, number of distinct query word terms]; other modes ignore it.
 	MinShouldMatch int
+	// Fuzziness is the maximum edit distance (0, 1, or 2) at which a word-channel
+	// query term also matches dictionary terms, so a typo like "serach" still
+	// finds "search". 0 (the default) disables fuzzy matching. CJK grams are
+	// exempt. Expansion per query term is capped at MaxTermExpansions.
+	Fuzziness int
+	// PrefixTerms, when set, also matches dictionary terms that extend a
+	// word-channel query term, so "lan" finds "lantern" (a prefix query). CJK
+	// grams are exempt; expansion is capped at MaxTermExpansions.
+	PrefixTerms bool
 }
 
 // SearchMatch is Search with an explicit match mode: it ranks the documents
@@ -93,16 +103,23 @@ func (idx *InvertedIndex[S, D]) SearchMatchTopK(query string, k int, accept func
 
 // scoredMatchesLocked builds the final score map for a query under opts: the
 // OR-union BM25 scores, narrowed by the match mode's word-coverage filter when
-// the mode is not MatchAny, then lifted by the proximity boost. Callers must
-// hold idx.mu. Keeping the three steps in one place is what lets Search,
-// SearchTopK, and their match-mode siblings share one scoring path.
+// the mode is not MatchAny, then lifted by the proximity boost. When opts request
+// prefix or fuzzy expansion it runs the clause-based path instead (which folds
+// expansion into both scoring and coverage); the exact-term default keeps using
+// scoreLocked + filterByCoverageLocked so it is byte-for-byte unchanged. Callers
+// must hold idx.mu.
 func (idx *InvertedIndex[S, D]) scoredMatchesLocked(queryTerms map[Token]struct{}, opts MatchOptions) map[uint32]float64 {
-	scores := idx.scoreLocked(queryTerms)
+	var scores map[uint32]float64
+	if opts.expandsTerms() {
+		scores = idx.scoreClausesLocked(idx.buildClausesLocked(queryTerms, opts), opts)
+	} else {
+		scores = idx.scoreLocked(queryTerms)
+		if opts.Mode != MatchAny {
+			idx.filterByCoverageLocked(scores, queryTerms, opts)
+		}
+	}
 	if len(scores) == 0 {
 		return scores
-	}
-	if opts.Mode != MatchAny {
-		idx.filterByCoverageLocked(scores, queryTerms, opts)
 	}
 	idx.applyProximityLocked(scores, queryTerms)
 	return scores
