@@ -38,6 +38,11 @@ type InvertedIndex[S comparable, D Document] struct {
 	// scattered matches. Read without the lock — it never changes after
 	// construction.
 	positions bool
+	// proximityWeight scales the proximity boost (see proximity.go); it
+	// defaults to proximityBoostWeight and is overridable with
+	// WithProximityWeight so the relevance harness can sweep it. 0 disables the
+	// boost. Read without the lock — it never changes after construction.
+	proximityWeight float64
 
 	mu sync.RWMutex
 	// classes holds one posting table per token class; a term's class is part
@@ -97,7 +102,8 @@ type IndexOption func(*indexConfig)
 
 // indexConfig holds the resolved construction options.
 type indexConfig struct {
-	positions bool
+	positions       bool
+	proximityWeight float64
 }
 
 // WithPositions makes the index record each term's token positions on the
@@ -112,6 +118,17 @@ func WithPositions() IndexOption {
 	return func(c *indexConfig) { c.positions = true }
 }
 
+// WithProximityWeight overrides the multiplier the proximity boost applies to a
+// multi-term query's OR-union scores (default proximityBoostWeight). It is the
+// injection point the relevance harness sweeps to justify the shipped value:
+// with it the boost's contribution is a measured number, not an unguarded
+// constant (#910). A weight of 0 disables the boost, making ranking pure
+// OR-union BM25 even under WithPositions; it is only meaningful together with
+// WithPositions, since the boost needs the positional postings.
+func WithProximityWeight(w float64) IndexOption {
+	return func(c *indexConfig) { c.proximityWeight = w }
+}
+
 // NewInvertedIndex returns an empty index that analyzes both documents and
 // queries with analyzer and ranks matches with scorer. Passing a nil scorer
 // installs BM25 with the standard parameters (K1 = 1.2, B = 0.75). D is the
@@ -122,15 +139,17 @@ func NewInvertedIndex[S comparable, D Document](analyzer Analyzer, scorer Scorer
 		scorer = BM25{K1: DefaultBM25K1, B: DefaultBM25B}
 	}
 	var cfg indexConfig
+	cfg.proximityWeight = proximityBoostWeight
 	for _, opt := range opts {
 		opt(&cfg)
 	}
 	idx := &InvertedIndex[S, D]{
-		analyzer:  analyzer,
-		scorer:    scorer,
-		positions: cfg.positions,
-		ords:      newOrdinals[S](),
-		docs:      make(map[uint32]docEntry[S]),
+		analyzer:        analyzer,
+		scorer:          scorer,
+		positions:       cfg.positions,
+		proximityWeight: cfg.proximityWeight,
+		ords:            newOrdinals[S](),
+		docs:            make(map[uint32]docEntry[S]),
 	}
 	for class := range idx.classes {
 		idx.classes[class] = classPostings{

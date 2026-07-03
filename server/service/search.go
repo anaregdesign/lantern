@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -93,16 +94,46 @@ func matchModeFromPB(m pb.MatchMode, fallback search.MatchMode) search.MatchMode
 	}
 }
 
-// ParseMatchMode maps a LANTERN_SEARCH_DEFAULT_MODE value to a core match mode;
-// an empty or unrecognised value is MatchAny. Exported for the wire seam in
-// package main, which converts provider config to service config.
-func ParseMatchMode(s string) search.MatchMode {
+// parseMatchMode maps a LANTERN_SEARCH_DEFAULT_MODE value to a core match mode
+// and reports whether the spelling was recognised. The empty string is
+// recognised as the default (MatchAny), so a bare `LANTERN_SEARCH_DEFAULT_MODE=`
+// still means "use the default"; any other unrecognised value reports ok ==
+// false so the caller can reject it (ValidateMatchMode) instead of laundering a
+// typo into MatchAny. It is the single source of truth for the accepted
+// spellings, shared by ParseMatchMode and ValidateMatchMode.
+func parseMatchMode(s string) (search.MatchMode, bool) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "any":
+		return search.MatchAny, true
 	case "all":
-		return search.MatchAll
+		return search.MatchAll, true
 	case "min-should", "minshould", "min_should":
-		return search.MatchMinShould
+		return search.MatchMinShould, true
 	default:
-		return search.MatchAny
+		return search.MatchAny, false
 	}
+}
+
+// ParseMatchMode maps a LANTERN_SEARCH_DEFAULT_MODE value to a core match mode.
+// It is deliberately tolerant — the empty string and any unrecognised value
+// resolve to MatchAny — because the provider validates the value at startup
+// (ValidateMatchMode) before this wire seam converts provider config to service
+// config, so an unrecognised value can no longer reach it in a booted server.
+// Exported for that seam in package main.
+func ParseMatchMode(s string) search.MatchMode {
+	mode, _ := parseMatchMode(s)
+	return mode
+}
+
+// ValidateMatchMode reports an error when s is not an accepted
+// LANTERN_SEARCH_DEFAULT_MODE spelling — the canonical any|all|min-should, their
+// documented aliases (minshould, min_should), or the empty string for "use the
+// default". The provider calls it at startup so a typo (min_shold, AND, or)
+// fails boot with the allowed values listed, rather than silently defaulting to
+// "any" and changing server-wide ranking semantics (#911).
+func ValidateMatchMode(s string) error {
+	if _, ok := parseMatchMode(s); !ok {
+		return fmt.Errorf("LANTERN_SEARCH_DEFAULT_MODE=%q: must be one of any|all|min-should", s)
+	}
+	return nil
 }

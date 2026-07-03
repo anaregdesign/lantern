@@ -91,7 +91,9 @@
     {"id": "misc-02", "text": "Architecture reviews happen every Thursday afternoon."},
     {"id": "misc-03", "text": "Monarch butterflies migrate thousands of kilometers each autumn."},
     {"id": "misc-04", "text": "user:profile:9f2c settings cached at edge nodes"},
-    {"id": "misc-05", "text": "TOKYO office headcount grows to forty this quarter."}
+    {"id": "misc-05", "text": "TOKYO office headcount grows to forty this quarter."},
+    {"id": "en-prox-scatter", "text": "zephyr marlin pewter granite quokka"},
+    {"id": "en-prox-tight", "text": "marlin pewter granite zephyr quokka"}
   ],
   "queries": [
     {"id": "q01", "text": "espresso", "qrels": {"coffee-01": 3, "coffee-05": 2, "coffee-07": 2, "coffee-08": 2, "coffee-06": 1}},
@@ -119,6 +121,7 @@
     {"id": "q23", "text": "al dente spaghetti", "qrels": {"pasta-05": 3, "pasta-02": 1}},
     {"id": "q24", "text": "priority pass lounge", "qrels": {"travel-08": 3}},
     {"id": "q25", "text": "ttl expiration decay", "qrels": {"db-07": 3, "db-06": 1}},
-    {"id": "q26", "text": "ethiopia single origin", "qrels": {"coffee-05": 3, "coffee-07": 2}}
+    {"id": "q26", "text": "ethiopia single origin", "qrels": {"coffee-05": 3, "coffee-07": 2}},
+    {"id": "q27", "text": "zephyr quokka", "qrels": {"en-prox-tight": 3, "en-prox-scatter": 1}}
   ]
 }

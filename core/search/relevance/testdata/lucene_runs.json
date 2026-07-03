@@ -1,6 +1,6 @@
 {
   "engine": "lucene-9.11.1",
-  "generated": "2026-07-03T00:29:48.414269134Z",
+  "generated": "2026-07-03T11:45:23.842077045Z",
   "runs": {
     "en-standard": {
       "corpus": "en",
@@ -127,6 +127,10 @@
           "coffee-07",
           "coffee-05",
           "auth-09"
+        ],
+        "q27": [
+          "en-prox-scatter",
+          "en-prox-tight"
         ]
       }
     },
@@ -260,6 +264,10 @@
           "coffee-07",
           "coffee-05",
           "auth-09"
+        ],
+        "q27": [
+          "en-prox-scatter",
+          "en-prox-tight"
         ]
       }
     },
@@ -563,6 +571,10 @@
           "prod-04",
           "mdb-02",
           "mdev-03"
+        ],
+        "mq16": [
+          "mprox-scatter",
+          "mprox-tight"
         ]
       }
     },
@@ -620,6 +632,10 @@
         ],
         "mq15": [
           "prod-04"
+        ],
+        "mq16": [
+          "mprox-scatter",
+          "mprox-tight"
         ]
       }
     }

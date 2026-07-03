@@ -1,6 +1,10 @@
 package search
 
-import "testing"
+import (
+	"math/rand"
+	"slices"
+	"testing"
+)
 
 func TestPostingList(t *testing.T) {
 	p := newPostingList()
@@ -61,6 +65,47 @@ func TestPostingListClampsTF(t *testing.T) {
 	}
 }
 
+// TestPackPositions proves the delta+varint position encoding (#908) is
+// lossless: unpack(pack(x)) reproduces the original ascending positions for
+// edge cases and for randomized sequences with wide, multi-byte-varint gaps.
+// This is the equivalence reference for the phrase/proximity readers, which now
+// consume the packed store via positionsOf.
+func TestPackPositions(t *testing.T) {
+	t.Run("edge cases round-trip; empty packs to no bytes", func(t *testing.T) {
+		cases := [][]uint32{
+			nil,
+			{0},
+			{5},
+			{0, 1, 2, 3},
+			{3, 7, 100, 128, 300},
+			{0, 1 << 7, 1 << 14, 1 << 21, 1 << 28}, // each gap crosses a varint width boundary
+			{1<<16 + 1, 1<<20 + 5},                 // beyond the uint16 fast-path ceiling
+		}
+		for _, in := range cases {
+			if got := unpackPositions(packPositions(in)); !slices.Equal(got, in) {
+				t.Fatalf("round-trip %v = %v", in, got)
+			}
+		}
+		if packed := packPositions(nil); len(packed) != 0 {
+			t.Fatalf("packPositions(nil) = %v, want no bytes", packed)
+		}
+	})
+
+	t.Run("randomized ascending sequences round-trip", func(t *testing.T) {
+		rng := rand.New(rand.NewSource(1))
+		for iter := 0; iter < 2000; iter++ {
+			seq := make([]uint32, rng.Intn(64))
+			var acc uint32
+			for i := range seq {
+				acc += uint32(rng.Intn(1<<20) + 1) // strictly ascending, wide gaps
+				seq[i] = acc
+			}
+			if got := unpackPositions(packPositions(seq)); !slices.Equal(got, seq) {
+				t.Fatalf("iter %d round-trip mismatch:\n in=%v\nout=%v", iter, seq, got)
+			}
+		}
+	})
+}
 func TestOrdinals(t *testing.T) {
 	o := newOrdinals[string]()
 
