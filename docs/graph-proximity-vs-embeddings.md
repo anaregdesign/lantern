@@ -1,6 +1,8 @@
 # One Kernel, Two Readers: Graph-Native Proximity Search as Direct Evaluation of the Kernel that Embeddings Factorize
 
 > Status: reference material — there is no behavioral contract here.
+> GitHub's markdown math rendering is unreliable for this document — read the
+> typeset **[PDF version](graph-proximity-vs-embeddings.pdf)** instead.
 > Companion note: [illuminate-complexity.md](illuminate-complexity.md) compares the same
 > traversal against B-tree self-joins; this note compares it against
 > embedding + approximate-nearest-neighbor (ANN) retrieval.

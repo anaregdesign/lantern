@@ -1,6 +1,8 @@
 # Direct Evaluation of Time-Decaying Walk Kernels for Music Recommendation: Complexity, Cold Start, and Non-Stationarity versus Embedding-Based Retrieval
 
 > Status: paper-style reference material — there is no behavioral contract here.
+> GitHub's markdown math rendering is unreliable for this document — read the
+> typeset **[PDF version](music-recommendation-walk-kernels.pdf)** instead.
 > This is the information-recommendation (music) framing of the argument;
 > the companion note [graph-proximity-vs-embeddings.md](graph-proximity-vs-embeddings.md)
 > develops the same mathematics in a retrieval-systems framing, and
