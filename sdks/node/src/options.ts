@@ -158,6 +158,16 @@ export interface ConnectOptions {
   serviceConfigJson?: string;
   /** Optional Connect user-agent string appended to the default. */
   userAgent?: string;
+  /**
+   * Opt in to automatic idempotency keys for `addEdge` / `addEdges` (#895).
+   * When true, the client mints a 24-byte contrib ID per contribution from a
+   * per-client random nonce and a monotonic per-call sequence, so a transport
+   * retry re-sends the same bytes and the additive contribution is applied
+   * exactly once (while it is live). A caller-supplied `EdgeInput.contribId`
+   * always takes precedence over the automatic id. Default false (the legacy
+   * additive path, where a retry double-counts weight).
+   */
+  idempotentAdds?: boolean;
 }
 
 export const DEFAULT_BATCH_CHUNK_SIZE = 1000;

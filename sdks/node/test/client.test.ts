@@ -28,6 +28,7 @@ import { create } from "@bufbuild/protobuf";
 import {
   Lantern,
   FailedPreconditionError,
+  InvalidArgumentError,
   NotFoundError,
   connect,
   Reduction,
@@ -54,6 +55,10 @@ interface StubState {
   searchHits?: { key: string; score: number }[];
   /** When true, searchVertices rejects with FAILED_PRECONDITION (index disabled). */
   searchDisabled?: boolean;
+  /** Last AddEdgeRequest the stub observed, for contrib-id assertions (#895). */
+  lastAddEdge?: { contribId: Uint8Array };
+  /** Every AddEdgesRequest the stub observed, in order, for chunk-alignment assertions (#895). */
+  addEdgesCalls: { contribIds: Uint8Array[]; tails: string[] }[];
 }
 
 function newStubRoutes(state: StubState) {
@@ -76,6 +81,20 @@ function newStubRoutes(state: StubState) {
         for (const v of req.vertices) {
           state.vertices.set(v.key, v);
         }
+        return {};
+      },
+      // Capture Add requests so #895 tests can assert how the SDK wires
+      // contrib_ids (singular forwards into contrib_id; plural is
+      // index-aligned with edges across chunks).
+      async addEdge(req) {
+        state.lastAddEdge = { contribId: req.contribId };
+        return {};
+      },
+      async addEdges(req) {
+        state.addEdgesCalls.push({
+          contribIds: req.contribIds,
+          tails: req.edges.map((e) => e.tail),
+        });
         return {};
       },
       async deleteVertex(req) {
@@ -143,7 +162,7 @@ function newStubRoutes(state: StubState) {
 
 let server: http.Server;
 let baseUrl: string;
-const state: StubState = { vertices: new Map() };
+const state: StubState = { vertices: new Map(), addEdgesCalls: [] };
 
 beforeAll(async () => {
   // HTTP/1.1 server (not http2) — Bun's test runner has rough edges
@@ -257,6 +276,162 @@ describe("Lantern client", () => {
       expect(c2.kind).toBe("bool");
       const d = await c.getVertex("batch/d");
       expect(d.kind).toBe("nil");
+    } finally {
+      c.close();
+    }
+  });
+});
+
+describe("AddEdge contrib IDs (#895)", () => {
+  function idempotentClient(): Lantern {
+    return connect(baseUrl, {
+      options: { idempotentAdds: true },
+      transportOptions: { httpVersion: "1.1" },
+    });
+  }
+
+  test("addEdge omits contrib_id by default (legacy additive path)", async () => {
+    const c = newClient();
+    try {
+      state.lastAddEdge = undefined;
+      await c.addEdge({ tail: "a", head: "b", weight: 1 });
+      expect(state.lastAddEdge?.contribId.length).toBe(0);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("addEdge mints a 24-byte contrib_id when idempotentAdds is on", async () => {
+    const c = idempotentClient();
+    try {
+      state.lastAddEdge = undefined;
+      await c.addEdge({ tail: "a", head: "b", weight: 1 });
+      expect(state.lastAddEdge?.contribId.length).toBe(24);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("addEdge forwards a caller-supplied contrib_id verbatim", async () => {
+    const c = newClient();
+    const id = new Uint8Array(24).fill(7);
+    try {
+      state.lastAddEdge = undefined;
+      await c.addEdge({ tail: "a", head: "b", weight: 1, contribId: id });
+      expect(state.lastAddEdge?.contribId).toEqual(id);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("addEdge rejects a wrong-length contrib_id before hitting the wire", async () => {
+    const c = newClient();
+    try {
+      state.lastAddEdge = undefined;
+      await expect(
+        c.addEdge({ tail: "a", head: "b", weight: 1, contribId: new Uint8Array(16) }),
+      ).rejects.toThrow(InvalidArgumentError);
+      expect(state.lastAddEdge).toBeUndefined();
+    } finally {
+      c.close();
+    }
+  });
+
+  test("addEdges with idempotentAdds mints index-aligned, per-index-distinct ids", async () => {
+    const c = idempotentClient();
+    try {
+      state.addEdgesCalls = [];
+      await c.addEdges([
+        { tail: "a", head: "b", weight: 1 },
+        { tail: "a", head: "c", weight: 1 },
+        { tail: "a", head: "d", weight: 1 },
+      ]);
+      expect(state.addEdgesCalls.length).toBe(1);
+      const { contribIds } = state.addEdgesCalls[0];
+      expect(contribIds.length).toBe(3);
+      for (const id of contribIds) expect(id.length).toBe(24);
+      // Shared nonce (bytes 0..15), distinct low bytes (16..23) per index.
+      const lows = contribIds.map((id) => [...id.slice(16)].join(","));
+      expect(new Set(lows).size).toBe(3);
+      const nonce0 = [...contribIds[0].slice(0, 16)].join(",");
+      const nonce1 = [...contribIds[1].slice(0, 16)].join(",");
+      expect(nonce1).toBe(nonce0);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("addEdges omits contrib_ids entirely when neither option nor caller ids apply", async () => {
+    const c = newClient();
+    try {
+      state.addEdgesCalls = [];
+      await c.addEdges([
+        { tail: "a", head: "b", weight: 1 },
+        { tail: "a", head: "c", weight: 1 },
+      ]);
+      expect(state.addEdgesCalls[0].contribIds.length).toBe(0);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("addEdges fills empty slots around a caller-supplied id (mixed batch)", async () => {
+    const c = newClient();
+    const id = new Uint8Array(24).fill(9);
+    try {
+      state.addEdgesCalls = [];
+      await c.addEdges([
+        { tail: "a", head: "b", weight: 1 },
+        { tail: "a", head: "c", weight: 1, contribId: id },
+      ]);
+      const { contribIds } = state.addEdgesCalls[0];
+      expect(contribIds.length).toBe(2);
+      expect(contribIds[0].length).toBe(0);
+      expect(contribIds[1]).toEqual(id);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("addEdges keeps caller ids aligned with edges across chunk boundaries", async () => {
+    // batchChunkSize 2 splits 3 edges into [0,1] and [2]; each caller id must
+    // stay paired with its edge in whichever chunk it lands.
+    const c = connect(baseUrl, {
+      options: { batchChunkSize: 2 },
+      transportOptions: { httpVersion: "1.1" },
+    });
+    const ids = [
+      new Uint8Array(24).fill(1),
+      new Uint8Array(24).fill(2),
+      new Uint8Array(24).fill(3),
+    ];
+    try {
+      state.addEdgesCalls = [];
+      await c.addEdges([
+        { tail: "a", head: "b", weight: 1, contribId: ids[0] },
+        { tail: "a", head: "c", weight: 1, contribId: ids[1] },
+        { tail: "a", head: "d", weight: 1, contribId: ids[2] },
+      ]);
+      expect(state.addEdgesCalls.length).toBe(2);
+      expect(state.addEdgesCalls[0].tails.length).toBe(2);
+      expect(state.addEdgesCalls[0].contribIds[0]).toEqual(ids[0]);
+      expect(state.addEdgesCalls[0].contribIds[1]).toEqual(ids[1]);
+      expect(state.addEdgesCalls[1].contribIds[0]).toEqual(ids[2]);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("successive idempotent addEdges calls advance the sequence (distinct ids)", async () => {
+    const c = idempotentClient();
+    try {
+      state.addEdgesCalls = [];
+      await c.addEdges([{ tail: "a", head: "b", weight: 1 }]);
+      await c.addEdges([{ tail: "a", head: "b", weight: 1 }]);
+      expect(state.addEdgesCalls.length).toBe(2);
+      const first = [...state.addEdgesCalls[0].contribIds[0]].join(",");
+      const second = [...state.addEdgesCalls[1].contribIds[0]].join(",");
+      expect(second).not.toBe(first);
     } finally {
       c.close();
     }

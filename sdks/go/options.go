@@ -139,6 +139,14 @@ func WithBatchChunkSize(n int) Option {
 // those same bytes. Calling AddEdge twice yourself is still two distinct
 // contributions (their keys differ), preserving the additive semantics of
 // the API. Off by default; opt in per client.
+//
+// Dedup horizon: the server records each ContribID on the contribution it
+// belongs to (weightValue{value, expiration, contribID}), not in a separate
+// dedup cache, so the no-op-on-replay guarantee lasts exactly as long as that
+// contribution is live. A contribution with no TTL is deduped forever; a
+// TTL'd one is deduped for precisely the window in which a replay could
+// double-count. Once it decays (or the edge is deleted) the id is forgotten
+// and a later add with the same id contributes weight again.
 func WithIdempotentAdds() Option {
 	return func(o *options) { o.idempotentAdds = true }
 }

@@ -81,6 +81,7 @@ import {
   type IncrementalSearch,
   type IncrementalSearchOptions,
 } from "./incremental-search.js";
+import { contribIdFrom, makeNonce, validateContribId } from "./contrib.js";
 
 /** Maps the SDK's string match mode onto the wire enum. */
 function toPbMatchMode(m: MatchMode | undefined): PbMatchMode {
@@ -217,6 +218,10 @@ export { normaliseBaseUrl };
 export class Lantern {
   private readonly client: Client<typeof LanternService>;
   private readonly options: ConnectOptions;
+  /** Lazily-minted per-client nonce seeding automatic contrib IDs (#895). */
+  private nonce: Uint8Array | null = null;
+  /** Monotonic per-call sequence folded into automatic contrib IDs (#895). */
+  private callSeq = 0n;
 
   private constructor(client: Client<typeof LanternService>, options: ConnectOptions) {
     this.client = client;
@@ -506,8 +511,9 @@ export class Lantern {
 
   async addEdge(input: EdgeInput, signal?: AbortSignal): Promise<void> {
     const edge = fromJson(EdgeSchema, toEdgeJson(input) as JsonValue);
+    const contribId = this.singleContribId(input);
     return this.invoke(async () => {
-      await this.client.addEdge({ edge }, this.callOpts(signal));
+      await this.client.addEdge(contribId ? { edge, contribId } : { edge }, this.callOpts(signal));
     });
   }
 
@@ -551,7 +557,11 @@ export class Lantern {
     if (inputs.length === 0) return;
     await this.runBatchWrite(inputs, async (chunk) => {
       const edges = chunk.map((e) => fromJson(EdgeSchema, toEdgeJson(e) as JsonValue));
-      await this.client.addEdges({ edges }, this.callOpts(signal));
+      const contribIds = this.chunkContribIds(chunk);
+      await this.client.addEdges(
+        contribIds ? { edges, contribIds } : { edges },
+        this.callOpts(signal),
+      );
     });
   }
 
@@ -749,6 +759,62 @@ export class Lantern {
   private chunkSize(): number {
     const n = this.options.batchChunkSize ?? DEFAULT_BATCH_CHUNK_SIZE;
     return n > 0 ? n : DEFAULT_BATCH_CHUNK_SIZE;
+  }
+
+  /** Whether automatic contrib IDs are enabled for Add calls (#895). */
+  private get autoContrib(): boolean {
+    return this.options.idempotentAdds === true;
+  }
+
+  /** Bump and return the monotonic per-call contrib sequence (#895). */
+  private nextSeq(): bigint {
+    this.callSeq += 1n;
+    return this.callSeq;
+  }
+
+  /** Lazily mint the per-client nonce that seeds automatic contrib IDs (#895). */
+  private getNonce(): Uint8Array {
+    if (!this.nonce) {
+      this.nonce = makeNonce();
+    }
+    return this.nonce;
+  }
+
+  /**
+   * Resolve the contrib ID for a singular `addEdge` (#895): a caller-supplied
+   * id (validated) wins; otherwise an automatic id when `idempotentAdds` is
+   * on; otherwise undefined (the field stays absent → legacy additive path).
+   */
+  private singleContribId(input: EdgeInput): Uint8Array | undefined {
+    if (input.contribId !== undefined) {
+      return validateContribId(input.contribId);
+    }
+    if (this.autoContrib) {
+      return contribIdFrom(this.getNonce(), this.nextSeq(), 0);
+    }
+    return undefined;
+  }
+
+  /**
+   * Build the index-aligned `contrib_ids` for one `addEdges` chunk (#895).
+   * Returns undefined when neither automatic ids nor any caller-supplied id
+   * applies (so the wire field stays absent → legacy). Otherwise every edge
+   * gets a slot: a caller id (validated) wins, else an automatic id when
+   * enabled, else an empty slot the server reads as absent. One sequence is
+   * consumed per chunk so a retried chunk re-sends identical bytes and the
+   * ids stay aligned with `edges` regardless of how the batch was chunked.
+   */
+  private chunkContribIds(chunk: readonly EdgeInput[]): Uint8Array[] | undefined {
+    const auto = this.autoContrib;
+    const anyCaller = chunk.some((e) => e.contribId !== undefined);
+    if (!auto && !anyCaller) return undefined;
+    const seq = auto ? this.nextSeq() : 0n;
+    const nonce = auto ? this.getNonce() : null;
+    return chunk.map((e, i) => {
+      if (e.contribId !== undefined) return validateContribId(e.contribId);
+      if (auto && nonce) return contribIdFrom(nonce, seq, i);
+      return new Uint8Array();
+    });
   }
 
   private async runBatchWrite<T>(
