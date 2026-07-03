@@ -6,8 +6,8 @@ func TestPostingList(t *testing.T) {
 	p := newPostingList()
 
 	t.Run("set records membership; tf defaults to 1, overrides above it", func(t *testing.T) {
-		p.set(10, 1)
-		p.set(20, 3) // tf > 1 is recorded in tfHi
+		p.set(10, 1, nil)
+		p.set(20, 3, nil) // tf > 1 is recorded in tfHi
 		if got := p.cardinality(); got != 2 {
 			t.Fatalf("cardinality = %d, want 2", got)
 		}
@@ -33,11 +33,29 @@ func TestPostingList(t *testing.T) {
 			t.Fatalf("cardinality after emptying = %d, want 0", got)
 		}
 	})
+
+	t.Run("positions are recorded, read back, and dropped on remove", func(t *testing.T) {
+		q := newPostingList()
+		q.set(1, 2, []uint32{3, 7}) // two occurrences at positions 3 and 7
+		q.set(2, 1, nil)            // present, but no positions tracked
+		if got := q.positionsOf(1); len(got) != 2 || got[0] != 3 || got[1] != 7 {
+			t.Fatalf("positionsOf(1) = %v, want [3 7]", got)
+		}
+		if got := q.positionsOf(2); got != nil {
+			t.Fatalf("positionsOf(2) = %v, want nil (set with nil positions)", got)
+		}
+		if empty := q.remove(1); empty {
+			t.Fatal("remove(1) reported empty while ord 2 remains")
+		}
+		if got := q.positionsOf(1); got != nil {
+			t.Fatalf("positionsOf(1) after remove = %v, want nil (positions dropped)", got)
+		}
+	})
 }
 
 func TestPostingListClampsTF(t *testing.T) {
 	p := newPostingList()
-	p.set(1, 1<<20) // far above the uint16 ceiling
+	p.set(1, 1<<20, nil) // far above the uint16 ceiling
 	if got, want := p.tf(1), int(^uint16(0)); got != want {
 		t.Fatalf("tf clamp = %d, want %d", got, want)
 	}

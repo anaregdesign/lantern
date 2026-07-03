@@ -18,6 +18,11 @@ import (
 // same analyzer runs over both stored values and queries, so index-time and
 // query-time terms stay symmetric.
 //
+// Since #889 the index also records positional postings (WithPositions): the
+// token positions of each primary-channel term, so the search layer can tell
+// an exact phrase or a near match from scattered term hits. The cost is one
+// ascending position slice per (word term, vertex).
+//
 // The relevance gate (core/search/relevance, parity_gate_test.go) replicates
 // exactly this pipeline and ratchets its measured metrics against the pinned
 // Lucene baseline — change the two in lockstep.
@@ -27,7 +32,7 @@ func newSearchIndex[S comparable]() *search.InvertedIndex[S, search.Document] {
 		Base:       search.BM25{K1: search.DefaultBM25K1, B: search.DefaultBM25B},
 		GramWeight: search.DefaultGramWeight,
 	}
-	return search.NewInvertedIndex[S, search.Document](analyzer, scorer)
+	return search.NewInvertedIndex[S, search.Document](analyzer, scorer, search.WithPositions())
 }
 
 // EnableSearchIndex turns on the optional content-search index, projecting each

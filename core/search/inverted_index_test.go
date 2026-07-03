@@ -350,6 +350,18 @@ func buildBigramIndex(corpus map[string]Text) *InvertedIndex[string, Text] {
 	return idx
 }
 
+// buildBigramIndexWithPositions is buildBigramIndex built WithPositions, for
+// the #889 benchmarks that measure the positional postings' build and steady-
+// state overhead. The bigram analyzer emits every term on the primary channel,
+// so every term carries positions — the worst case for the position store.
+func buildBigramIndexWithPositions(corpus map[string]Text) *InvertedIndex[string, Text] {
+	idx := NewInvertedIndex[string, Text](bigramAnalyzer(), nil, WithPositions())
+	for id, doc := range corpus {
+		idx.Index(id, doc)
+	}
+	return idx
+}
+
 // makeBigramCorpus builds n deterministic documents whose ids mimic
 // hierarchical vertex keys and whose text draws from benchVocab, so the
 // resulting index resembles a production content index.
@@ -408,6 +420,90 @@ func BenchmarkInvertedIndexFootprint(b *testing.B) {
 	b.ReportMetric(delta/(1024*1024), "MiB/index")
 	b.ReportMetric(delta/float64(docs), "B/doc")
 	b.ReportMetric(float64(after.HeapObjects-base.HeapObjects), "objects")
+}
+
+// BenchmarkInvertedIndexBuildWithPositions is the WithPositions counterpart of
+// BenchmarkInvertedIndexBuild: -benchmem against it reports the build-time
+// allocation cost of the positional postings (#889).
+func BenchmarkInvertedIndexBuildWithPositions(b *testing.B) {
+	corpus := makeBigramCorpus(1000)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		runtime.KeepAlive(buildBigramIndexWithPositions(corpus))
+	}
+}
+
+// BenchmarkInvertedIndexFootprintWithPositions is the WithPositions counterpart
+// of BenchmarkInvertedIndexFootprint: the retained-heap delta against the
+// positions-off footprint is the steady-state cost of the position slices.
+func BenchmarkInvertedIndexFootprintWithPositions(b *testing.B) {
+	const docs = 4000
+	corpus := makeBigramCorpus(docs)
+
+	runtime.GC()
+	var base runtime.MemStats
+	runtime.ReadMemStats(&base)
+
+	var idx *InvertedIndex[string, Text]
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		idx = buildBigramIndexWithPositions(corpus)
+	}
+	b.StopTimer()
+
+	runtime.GC()
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+	runtime.KeepAlive(idx)
+	runtime.KeepAlive(corpus)
+
+	delta := float64(after.HeapInuse) - float64(base.HeapInuse)
+	b.ReportMetric(delta/(1024*1024), "MiB/index")
+	b.ReportMetric(delta/float64(docs), "B/doc")
+	b.ReportMetric(float64(after.HeapObjects-base.HeapObjects), "objects")
+}
+
+// BenchmarkSearchProximity measures multi-term query latency with and without
+// the proximity boost, which runs only when the index tracks positions. Both
+// sub-benchmarks share the corpus and query set so -benchmem/ns compares the
+// boost's per-query cost directly (#889).
+func BenchmarkSearchProximity(b *testing.B) {
+	const docs = 4000
+	corpus := makeBigramCorpus(docs)
+	queries := []string{"al", "search index", "alpha beta gamma"}
+
+	b.Run("WithoutPositions", func(b *testing.B) {
+		idx := buildBigramIndex(corpus)
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			idx.Search(queries[i%len(queries)])
+		}
+	})
+	b.Run("WithPositions", func(b *testing.B) {
+		idx := buildBigramIndexWithPositions(corpus)
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			idx.Search(queries[i%len(queries)])
+		}
+	})
+}
+
+// BenchmarkSearchPhrase measures phrase-query latency (AND-intersection plus
+// positional adjacency verification) on the positions-enabled bigram index.
+func BenchmarkSearchPhrase(b *testing.B) {
+	const docs = 4000
+	corpus := makeBigramCorpus(docs)
+	idx := buildBigramIndexWithPositions(corpus)
+	queries := []string{"search index", "alpha beta", "vertex edge decay"}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		idx.SearchPhrase(queries[i%len(queries)])
+	}
 }
 
 // TestSearchTopK property-checks the bounded selection (#841) against the

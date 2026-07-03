@@ -3,15 +3,21 @@ package search
 import "github.com/RoaringBitmap/roaring/v2"
 
 // postingList is one term's posting set: which document ordinals contain the
-// term, plus their term frequencies. Membership lives in a Roaring bitmap —
-// compressed and mutable, so it fits the decaying workload's constant add /
-// remove without the per-entry overhead of a map keyed by the document id.
-// Frequencies default to 1 and only the comparatively rare term that occurs
-// more than once in a document is recorded in tfHi, so the common case carries
-// no per-(term, document) frequency storage at all.
+// term, plus their term frequencies and — when the index tracks positions —
+// the token positions the term occupies in each document. Membership lives in
+// a Roaring bitmap — compressed and mutable, so it fits the decaying
+// workload's constant add / remove without the per-entry overhead of a map
+// keyed by the document id. Frequencies default to 1 and only the
+// comparatively rare term that occurs more than once in a document is recorded
+// in tfHi, so the common case carries no per-(term, document) frequency
+// storage at all. positions is nil unless the index was built WithPositions
+// and the term carries at least one position in the document, so an index that
+// serves only OR-union ranking pays nothing for phrase/proximity support
+// (#889).
 type postingList struct {
-	docs *roaring.Bitmap   // document ordinals containing this term
-	tfHi map[uint32]uint16 // ordinal -> term frequency, recorded only when tf > 1
+	docs      *roaring.Bitmap     // document ordinals containing this term
+	tfHi      map[uint32]uint16   // ordinal -> term frequency, recorded only when tf > 1
+	positions map[uint32][]uint32 // ordinal -> ascending token positions, only when the index tracks positions
 }
 
 // newPostingList returns an empty posting list ready to record documents.
@@ -20,8 +26,13 @@ func newPostingList() *postingList {
 }
 
 // set records that document ord contains the term tf times (tf >= 1). A tf of 1
-// — the common case — costs only the bitmap membership bit.
-func (p *postingList) set(ord uint32, tf int) {
+// — the common case — costs only the bitmap membership bit. positions, when
+// non-empty, are the term's ascending token positions in the document; they
+// are stored only when the index tracks positions (WithPositions) and only for
+// the primary word channel, so an OR-union-only index passes nil and pays
+// nothing. The slice is retained as-is (not copied): callers build a fresh
+// per-document slice, so no two posting lists alias it.
+func (p *postingList) set(ord uint32, tf int, positions []uint32) {
 	p.docs.Add(ord)
 	if tf > 1 {
 		if p.tfHi == nil {
@@ -29,16 +40,30 @@ func (p *postingList) set(ord uint32, tf int) {
 		}
 		p.tfHi[ord] = clampTF(tf)
 	}
+	if len(positions) > 0 {
+		if p.positions == nil {
+			p.positions = make(map[uint32][]uint32)
+		}
+		p.positions[ord] = positions
+	}
 }
 
 // remove drops document ord and reports whether the list is now empty, so the
-// caller can delete it and release the term id in lockstep.
+// caller can delete it and release the term id in lockstep. Positions are
+// dropped in the same step, so the decaying delete path never leaks a
+// document's position slice.
 func (p *postingList) remove(ord uint32) (empty bool) {
 	p.docs.Remove(ord)
 	if p.tfHi != nil {
 		delete(p.tfHi, ord)
 		if len(p.tfHi) == 0 {
 			p.tfHi = nil
+		}
+	}
+	if p.positions != nil {
+		delete(p.positions, ord)
+		if len(p.positions) == 0 {
+			p.positions = nil
 		}
 	}
 	return p.docs.IsEmpty()
@@ -53,6 +78,16 @@ func (p *postingList) tf(ord uint32) int {
 		}
 	}
 	return 1
+}
+
+// positionsOf returns document ord's ascending token positions for this term,
+// or nil when the index does not track positions (or ord carries none). The
+// slice is owned by the posting list; callers must not mutate it.
+func (p *postingList) positionsOf(ord uint32) []uint32 {
+	if p.positions == nil {
+		return nil
+	}
+	return p.positions[ord]
 }
 
 // cardinality is the document frequency (DF): how many documents hold the term.
