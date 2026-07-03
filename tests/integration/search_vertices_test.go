@@ -209,3 +209,121 @@ func TestSearchVertices_SDKForwarder(t *testing.T) {
 		}
 	})
 }
+
+// TestSearchVertices_Options drives the #892 SearchOptions end to end through
+// the raw Connect handler: match mode, phrase adjacency, fuzzy/prefix term
+// expansion, and minimum-should-match, each over a live index.
+func TestSearchVertices_Options(t *testing.T) {
+	c := newSearchRawClient(t, true)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	exp := timestamppb.New(time.Now().Add(time.Hour))
+	seed := []*pb.Vertex{
+		{Key: "doc.both", Value: &pb.Vertex_String_{String_: "alpha beta gamma"}, Expiration: exp},
+		{Key: "doc.alpha", Value: &pb.Vertex_String_{String_: "alpha delta"}, Expiration: exp},
+		{Key: "doc.beta", Value: &pb.Vertex_String_{String_: "beta epsilon"}, Expiration: exp},
+		{Key: "doc.phrase", Value: &pb.Vertex_String_{String_: "the alpha beta end"}, Expiration: exp},
+		{Key: "doc.split", Value: &pb.Vertex_String_{String_: "beta stands well before the word alpha"}, Expiration: exp},
+	}
+	if _, err := c.PutVertices(ctx, connect.NewRequest(&pb.PutVerticesRequest{Vertices: seed})); err != nil {
+		t.Fatalf("PutVertices: %v", err)
+	}
+	keys := func(q string, o *pb.SearchOptions) map[string]bool {
+		resp, err := c.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{Query: q, Options: o}))
+		if err != nil {
+			t.Fatalf("SearchVertices(%q): %v", q, err)
+		}
+		got := map[string]bool{}
+		for _, h := range resp.Msg.GetHits() {
+			got[h.GetKey()] = true
+		}
+		return got
+	}
+
+	t.Run("match_mode ALL requires every term", func(t *testing.T) {
+		all := keys("alpha beta", &pb.SearchOptions{MatchMode: pb.MatchMode_MATCH_MODE_ALL})
+		if all["doc.alpha"] || all["doc.beta"] {
+			t.Errorf("MatchAll kept a single-term doc: %v", all)
+		}
+		for _, k := range []string{"doc.both", "doc.phrase", "doc.split"} {
+			if !all[k] {
+				t.Errorf("MatchAll dropped %q which has both terms: %v", k, all)
+			}
+		}
+	})
+
+	t.Run("phrase requires adjacency", func(t *testing.T) {
+		got := keys("alpha beta", &pb.SearchOptions{Phrase: true})
+		if !got["doc.both"] || !got["doc.phrase"] {
+			t.Errorf("phrase dropped an adjacent doc: %v", got)
+		}
+		if got["doc.split"] {
+			t.Errorf("phrase kept the scattered doc.split: %v", got)
+		}
+	})
+
+	t.Run("fuzziness tolerates a typo", func(t *testing.T) {
+		got := keys("alpga beta", &pb.SearchOptions{Fuzziness: 1}) // alpga is one edit from alpha
+		if !got["doc.both"] {
+			t.Errorf("fuzzy query did not reach doc.both: %v", got)
+		}
+	})
+
+	t.Run("prefix_terms match an extending word", func(t *testing.T) {
+		got := keys("gam", &pb.SearchOptions{PrefixTerms: true}) // gam -> gamma
+		if !got["doc.both"] {
+			t.Errorf("prefix_terms did not reach doc.both (gamma): %v", got)
+		}
+	})
+
+	t.Run("min_should_match tunes coverage", func(t *testing.T) {
+		msm := keys("alpha beta gamma", &pb.SearchOptions{
+			MatchMode:      pb.MatchMode_MATCH_MODE_MIN_SHOULD,
+			MinShouldMatch: 2,
+		})
+		if !msm["doc.both"] {
+			t.Errorf("msm(2) dropped doc.both (has all three terms): %v", msm)
+		}
+		if msm["doc.alpha"] || msm["doc.beta"] {
+			t.Errorf("msm(2) kept a single-term doc: %v", msm)
+		}
+	})
+}
+
+// TestSearchVertices_SDKOptions drives the #892 options through the high-level
+// SDK: WithMatchMode(MatchAll) narrows the OR-union to the document holding
+// every term.
+func TestSearchVertices_SDKOptions(t *testing.T) {
+	l := newSearchSDKClient(t, true)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	seed := []client.VertexInput{
+		{Key: "doc.both", Value: "alpha beta gamma", Expiration: time.Now().Add(time.Hour)},
+		{Key: "doc.alpha", Value: "alpha delta", Expiration: time.Now().Add(time.Hour)},
+		{Key: "doc.beta", Value: "beta epsilon", Expiration: time.Now().Add(time.Hour)},
+	}
+	if err := l.PutVertices(ctx, seed); err != nil {
+		t.Fatalf("PutVertices: %v", err)
+	}
+
+	any, err := l.SearchVertices(ctx, "alpha beta")
+	if err != nil {
+		t.Fatalf("SearchVertices any: %v", err)
+	}
+	all, err := l.SearchVertices(ctx, "alpha beta", client.WithMatchMode(client.MatchAll))
+	if err != nil {
+		t.Fatalf("SearchVertices all: %v", err)
+	}
+	if len(all) >= len(any) {
+		t.Errorf("WithMatchMode(MatchAll) should narrow: any=%d all=%d", len(any), len(all))
+	}
+	got := map[string]bool{}
+	for _, h := range all {
+		got[h.Key] = true
+	}
+	if !got["doc.both"] || got["doc.alpha"] || got["doc.beta"] {
+		t.Errorf("MatchAll hits = %v, want only doc.both", got)
+	}
+}

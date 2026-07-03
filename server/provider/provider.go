@@ -176,13 +176,22 @@ type ScanConfig struct {
 // FAILED_PRECONDITION. DefaultLimit / MaxLimit cap the per-call ranked-hit
 // count the same way ScanConfig caps the prefix RPCs.
 //
-//   - LANTERN_SEARCH_ENABLED         (default true)
-//   - LANTERN_SEARCH_DEFAULT_LIMIT   (default 100)
-//   - LANTERN_SEARCH_MAX_LIMIT       (default 1000)
+//   - LANTERN_SEARCH_ENABLED           (default true)
+//   - LANTERN_SEARCH_DEFAULT_LIMIT     (default 100)
+//   - LANTERN_SEARCH_MAX_LIMIT         (default 1000)
+//   - LANTERN_SEARCH_DEFAULT_MODE      (default "any": any|all|min-should)
+//   - LANTERN_SEARCH_DEFAULT_MIN_SHOULD (default 1)
 type SearchConfig struct {
 	Enabled      bool
 	DefaultLimit uint32
 	MaxLimit     uint32
+	// DefaultMode is the match mode applied when a SearchVertices request omits
+	// options or leaves match_mode unspecified: "any" (OR), "all" (AND), or
+	// "min-should". An unrecognised value falls back to "any".
+	DefaultMode string
+	// DefaultMinShould is the minimum-should-match count applied when the mode
+	// resolves to min-should but the request leaves min_should_match at 0.
+	DefaultMinShould uint32
 }
 
 // Config aggregates every focused sub-config. It is constructed once at
@@ -283,9 +292,11 @@ func NewConfig() (*Config, error) {
 			DeleteByPrefixMaxLimit:     envconfig.Uint32("LANTERN_DELETE_BY_PREFIX_MAX_LIMIT", 100000),
 		},
 		Search: SearchConfig{
-			Enabled:      envconfig.Bool("LANTERN_SEARCH_ENABLED", true),
-			DefaultLimit: envconfig.Uint32("LANTERN_SEARCH_DEFAULT_LIMIT", 100),
-			MaxLimit:     envconfig.Uint32("LANTERN_SEARCH_MAX_LIMIT", 1000),
+			Enabled:          envconfig.Bool("LANTERN_SEARCH_ENABLED", true),
+			DefaultLimit:     envconfig.Uint32("LANTERN_SEARCH_DEFAULT_LIMIT", 100),
+			MaxLimit:         envconfig.Uint32("LANTERN_SEARCH_MAX_LIMIT", 1000),
+			DefaultMode:      envconfig.String("LANTERN_SEARCH_DEFAULT_MODE", "any"),
+			DefaultMinShould: envconfig.Uint32("LANTERN_SEARCH_DEFAULT_MIN_SHOULD", 1),
 		},
 		MutationLog: loadMutationLogConfig(),
 		Replication: loadReplicationConfig(),

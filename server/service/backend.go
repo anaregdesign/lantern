@@ -169,6 +169,7 @@ type Backend interface {
 	// are indistinguishable here, so the handler decides FAILED_PRECONDITION
 	// from its own SearchConfig.Enabled flag, not this return value (#624).
 	SearchVertices(query string, limit int, keyPrefix string) []search.Result[string]
+	SearchVerticesMatch(query string, limit int, keyPrefix string, opts search.MatchOptions, phrase bool) []search.Result[string]
 
 	// edge-side prefix scan. ScanEdgesByPrefixPage (#836) invokes fn for
 	// each live edge whose tail starts with tailPrefix AND whose head

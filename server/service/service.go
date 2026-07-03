@@ -16,6 +16,7 @@ import (
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
+	"github.com/anaregdesign/lantern/core/search"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
@@ -133,6 +134,12 @@ type SearchLimits struct {
 	Enabled      bool
 	DefaultLimit uint32
 	MaxLimit     uint32
+	// DefaultMode is the match mode applied when a request leaves match_mode
+	// unspecified (#892); the zero value is MatchAny (the OR-union default).
+	DefaultMode search.MatchMode
+	// DefaultMinShould is the minimum-should-match count applied when the mode
+	// is MatchMinShould but the request leaves min_should_match at 0.
+	DefaultMinShould uint32
 }
 
 func defaultSearchLimits() SearchLimits {

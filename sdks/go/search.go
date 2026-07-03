@@ -16,13 +16,35 @@ type SearchHit struct {
 	Score float64
 }
 
-// SearchOption configures Lantern.SearchVertices. Use WithSearchLimit /
-// WithSearchPrefix to cap the result count or scope hits to a key prefix.
+// MatchMode selects how SearchVertices combines a multi-word query's terms:
+// MatchAny (OR, the server default), MatchAll (AND), or MatchMinShould (at
+// least WithMinShouldMatch terms). It is a thin alias of the wire enum.
+type MatchMode = pb.MatchMode
+
+const (
+	// MatchAny keeps vertices sharing at least one query term (OR-union).
+	MatchAny = pb.MatchMode_MATCH_MODE_ANY
+	// MatchAll keeps vertices carrying every query word term (AND).
+	MatchAll = pb.MatchMode_MATCH_MODE_ALL
+	// MatchMinShould keeps vertices carrying at least WithMinShouldMatch terms.
+	MatchMinShould = pb.MatchMode_MATCH_MODE_MIN_SHOULD
+)
+
+// SearchOption configures Lantern.SearchVertices: WithSearchLimit /
+// WithSearchPrefix cap the result count or scope hits to a key prefix, and
+// WithMatchMode / WithMinShouldMatch / WithPhrase / WithFuzziness /
+// WithPrefixTerms tune relevance (#892). Leaving all of the relevance options
+// unset sends no SearchOptions, so the server applies its configured defaults.
 type SearchOption func(*searchOptions)
 
 type searchOptions struct {
-	limit  uint32
-	prefix string
+	limit          uint32
+	prefix         string
+	matchMode      pb.MatchMode
+	minShouldMatch uint32
+	fuzziness      uint32
+	prefixTerms    bool
+	phrase         bool
 }
 
 // WithSearchLimit caps the number of hits the server returns from one
@@ -39,6 +61,40 @@ func WithSearchLimit(n uint32) SearchOption {
 // namespace. An empty prefix (the default) searches every live vertex.
 func WithSearchPrefix(p string) SearchOption {
 	return func(o *searchOptions) { o.prefix = p }
+}
+
+// WithMatchMode selects how a multi-word query's terms combine: MatchAny (OR),
+// MatchAll (AND), or MatchMinShould (see WithMinShouldMatch). The default lets
+// the server decide (LANTERN_SEARCH_DEFAULT_MODE, itself MatchAny) (#890).
+func WithMatchMode(m MatchMode) SearchOption {
+	return func(o *searchOptions) { o.matchMode = m }
+}
+
+// WithMinShouldMatch requires a hit to carry at least n distinct query word
+// terms; it takes effect with WithMatchMode(MatchMinShould). 0 leaves the
+// server default (#890).
+func WithMinShouldMatch(n uint32) SearchOption {
+	return func(o *searchOptions) { o.minShouldMatch = n }
+}
+
+// WithPhrase requires the query's word terms to occur adjacently, in order —
+// the precision counterpart to the default OR-union. It takes precedence over
+// WithMatchMode (#889).
+func WithPhrase() SearchOption {
+	return func(o *searchOptions) { o.phrase = true }
+}
+
+// WithFuzziness also matches dictionary terms within edits edit distance (0, 1,
+// or 2) of a query word, so a typo still finds the term. 0 (the default)
+// disables fuzzy matching (#891).
+func WithFuzziness(edits uint32) SearchOption {
+	return func(o *searchOptions) { o.fuzziness = edits }
+}
+
+// WithPrefixTerms also matches dictionary terms that extend a query word, so
+// "lan" finds "lantern" (#891).
+func WithPrefixTerms() SearchOption {
+	return func(o *searchOptions) { o.prefixTerms = true }
 }
 
 // SearchVertices returns vertices ranked by full-text relevance over their
@@ -65,11 +121,21 @@ func (l *Lantern) SearchVertices(ctx context.Context, query string, opts ...Sear
 	}
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	resp, err := unary(ctx, l, &pb.SearchVerticesRequest{
+	req := &pb.SearchVerticesRequest{
 		Query:  query,
 		Limit:  o.limit,
 		Prefix: o.prefix,
-	}, l.client.SearchVertices)
+	}
+	if o.matchMode != pb.MatchMode_MATCH_MODE_UNSPECIFIED || o.minShouldMatch != 0 || o.fuzziness != 0 || o.prefixTerms || o.phrase {
+		req.Options = &pb.SearchOptions{
+			MatchMode:      o.matchMode,
+			MinShouldMatch: o.minShouldMatch,
+			Phrase:         o.phrase,
+			Fuzziness:      o.fuzziness,
+			PrefixTerms:    o.prefixTerms,
+		}
+	}
+	resp, err := unary(ctx, l, req, l.client.SearchVertices)
 	if err != nil {
 		return nil, err
 	}

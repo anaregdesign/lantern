@@ -73,6 +73,8 @@ value is treated as unset for the non-string kinds. The MCP server's
 | `LANTERN_SCAN_DEFAULT_LIMIT` | uint32 | `1000` | Page size used when a Scan* request leaves limit unset. |
 | `LANTERN_SCAN_MAX_LIMIT` | uint32 | `10000` | Ceiling a Scan* request's limit is clamped to. |
 | `LANTERN_SEARCH_DEFAULT_LIMIT` | uint32 | `100` | Ranked-hit count used when SearchVertices leaves limit unset. |
+| `LANTERN_SEARCH_DEFAULT_MIN_SHOULD` | uint32 | `1` | Minimum-should-match count applied when the mode resolves to min-should but the request leaves it 0. |
+| `LANTERN_SEARCH_DEFAULT_MODE` | string | `any` | Match mode applied when a SearchVertices request omits it: any (OR), all (AND), or min-should. |
 | `LANTERN_SEARCH_ENABLED` | bool | `true` | Build the full-text search index and serve SearchVertices (off = FAILED_PRECONDITION). |
 | `LANTERN_SEARCH_MAX_LIMIT` | uint32 | `1000` | Ceiling SearchVertices' limit is clamped to. |
 | `LANTERN_SHUTDOWN_TIMEOUT_SECONDS` | int | `30` | Graceful-shutdown drain budget for in-flight requests before a hard close. |

@@ -143,9 +143,11 @@ func newLanternService(
 			DeleteByPrefixMaxLimit:     sc.DeleteByPrefixMaxLimit,
 		}).
 		WithSearchLimits(service.SearchLimits{
-			Enabled:      src.Enabled,
-			DefaultLimit: src.DefaultLimit,
-			MaxLimit:     src.MaxLimit,
+			Enabled:          src.Enabled,
+			DefaultLimit:     src.DefaultLimit,
+			MaxLimit:         src.MaxLimit,
+			DefaultMode:      service.ParseMatchMode(src.DefaultMode),
+			DefaultMinShould: src.DefaultMinShould,
 		}).
 		WithReplication(log, clock, dm.OnMutationLogAppend).
 		WithAppliedHook(dm.OnReplicationApplied).

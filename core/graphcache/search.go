@@ -79,6 +79,18 @@ func (c *GraphCache[S, T]) EnableSearchIndex(extract func(T) search.Document) {
 // liveness and prefix filters so a full page of live, in-scope hits is
 // returned whenever one exists.
 func (c *GraphCache[S, T]) SearchVertices(query string, limit int, keyPrefix string) []search.Result[S] {
+	return c.SearchVerticesMatch(query, limit, keyPrefix, search.MatchOptions{}, false)
+}
+
+// SearchVerticesMatch is SearchVertices with explicit relevance options (#892):
+// opts selects the match mode and prefix/fuzzy term expansion, and phrase
+// requires the query's word terms to occur adjacently, in order. phrase takes
+// precedence over opts.Mode — a phrase query is served by the index's phrase
+// search. SearchVertices is exactly SearchVerticesMatch with the zero
+// MatchOptions and phrase == false (the default OR-union). Liveness and prefix
+// scoping are identical, and the bounded top-k selection still pushes them into
+// the accept callback so a broad query never materialises its whole match set.
+func (c *GraphCache[S, T]) SearchVerticesMatch(query string, limit int, keyPrefix string, opts search.MatchOptions, phrase bool) []search.Result[S] {
 	if limit <= 0 {
 		return nil
 	}
@@ -96,30 +108,31 @@ func (c *GraphCache[S, T]) SearchVertices(query string, limit int, keyPrefix str
 		return nil
 	}
 	// Phase 2 — query analysis, BM25 ranking, and liveness/prefix filtering all
-	// run WITHOUT GraphCache.mu. Since #841 the liveness and prefix filters are
-	// pushed INTO the index's bounded top-k selection as the accept callback,
-	// so a broad query (the bigram analyzer makes a two-character query match
-	// most of the corpus) no longer materialises and fully sorts every match
-	// just to keep `limit` of them: SearchTopK selects in O(M log k) with O(k)
-	// result memory, and rejected documents never consume the page budget.
+	// run WITHOUT GraphCache.mu. The liveness and prefix filters are pushed INTO
+	// the index's bounded top-k selection as the accept callback (#841), so a
+	// broad query (the bigram analyzer makes a two-character query match most of
+	// the corpus) never materialises and fully sorts its whole match set.
 	//
-	// Lock order: accept runs under the index's RLock and probes only the
-	// vertex cache's inner mutex (which never acquires the index lock), an
-	// order already established by index writes running under GraphCache.mu —
-	// documented on SearchTopK. Liveness is checked via vertices.Has exactly as
-	// before, so an expired-but-not-yet-flushed vertex is skipped; the read may
-	// race a concurrent Put/Delete on a given key and observe either side of
-	// it, which is the same racy point-read contract GetVertex provides (#740).
+	// Lock order: accept runs under the index's RLock and probes only the vertex
+	// cache's inner mutex (which never acquires the index lock), an order already
+	// established by index writes running under GraphCache.mu. Liveness is
+	// checked via vertices.Has, so an expired-but-not-yet-flushed vertex is
+	// skipped; the read may race a concurrent Put/Delete and observe either side
+	// of it, the same racy point-read contract GetVertex provides (#740).
 	accept := func(id S) bool {
 		if !c.vertices.Has(id) {
-			// Expired between the index write and this read but the async
-			// Flush has not run yet; consistent with point-read semantics,
-			// treat as absent.
+			// Expired between the index write and this read but the async Flush
+			// has not run yet; consistent with point-read semantics, absent.
 			return false
 		}
 		return keyPrefix == "" || keyHasPrefix(prefixExtract, id, keyPrefix)
 	}
-	out := index.SearchTopK(query, limit, accept)
+	var out []search.Result[S]
+	if phrase {
+		out = index.SearchPhraseTopK(query, limit, accept)
+	} else {
+		out = index.SearchMatchTopK(query, limit, accept, opts)
+	}
 	if len(out) == 0 {
 		return nil
 	}

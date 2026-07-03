@@ -23,6 +23,8 @@ type searchFactsInput struct {
 	Query  string `json:"query" jsonschema:"Words or a phrase to search for. Matched against BOTH each fact's key AND its value through a relevance-ranked full-text index, so you can search by topic words you remember even when you have forgotten the exact key. Matches come back most-relevant-first. Must not be empty."`
 	Prefix string `json:"prefix,omitempty" jsonschema:"Optional key prefix to restrict the search to one namespace (e.g. user. or project.lantern.). Empty (the default) searches the entire keyspace. Supplying a prefix when you know the rough namespace makes the search both faster and more precise."`
 	Limit  uint32 `json:"limit,omitempty" jsonschema:"Maximum number of matching facts to return (default 20, capped at 100). Results are compact previews, not full values."`
+	Phrase bool   `json:"phrase,omitempty" jsonschema:"When true, require the query's words to appear together as an exact phrase, in order — higher precision when you remember an exact multi-word name. Default false (any word matches)."`
+	Fuzzy  bool   `json:"fuzzy,omitempty" jsonschema:"When true, tolerate typos and match on word prefixes, so a slightly misremembered or partial word still finds the fact. Default false (exact terms only)."`
 }
 
 // searchFactsMatch is one hit. It mirrors the {key, snippet, expires_at}
@@ -59,9 +61,18 @@ func registerSearchFacts(srv *mcp.Server, lc lanternClient) {
 			limit = searchFactsMaxLimit
 		}
 
-		hits, err := lc.SearchVertices(ctx, in.Query,
+		searchOpts := []client.SearchOption{
 			client.WithSearchLimit(limit),
-			client.WithSearchPrefix(in.Prefix))
+			client.WithSearchPrefix(in.Prefix),
+		}
+		if in.Phrase {
+			searchOpts = append(searchOpts, client.WithPhrase())
+		}
+		if in.Fuzzy {
+			// Typo + partial-word tolerance: one edit of slack plus prefix terms.
+			searchOpts = append(searchOpts, client.WithFuzziness(1), client.WithPrefixTerms())
+		}
+		hits, err := lc.SearchVertices(ctx, in.Query, searchOpts...)
 		if err != nil {
 			if errors.Is(err, client.ErrFailedPrecondition) {
 				return nil, searchFactsOutput{}, fmt.Errorf("search_facts: the server's search index is disabled; set LANTERN_SEARCH_ENABLED=true on the Lantern server to enable search_facts: %w", err)
