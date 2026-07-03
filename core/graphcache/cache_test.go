@@ -473,6 +473,18 @@ func TestGraphCache_PutVertexWithExpirationIfAbsent(t *testing.T) {
 			t.Fatalf("value = %q, want \"fresh\" (expired vertex must not block)", v)
 		}
 	})
+
+	t.Run("BornExpiredReportsNotWritten", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Minute)
+		// An absent key with an already-past expiration is discarded on arrival:
+		// nothing is stored, so the accepted flag must be false (#918).
+		if got := c.PutVertexWithExpirationIfAbsent("k", "dead", past); got {
+			t.Fatal("PutVertexWithExpirationIfAbsent = true for a born-expired vertex, want false")
+		}
+		if _, ok := c.GetVertex("k"); ok {
+			t.Fatal("born-expired vertex was stored, want miss")
+		}
+	})
 }
 
 func TestGraphCache_PutVertexWithTTL(t *testing.T) {

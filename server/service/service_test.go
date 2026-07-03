@@ -134,6 +134,25 @@ func TestLanternService_PutVertexIfAbsent(t *testing.T) {
 			t.Errorf("value = %q, want \"two\" (unconditional put must overwrite)", got)
 		}
 	})
+
+	t.Run("BornExpiredReportsNotWritten", func(t *testing.T) {
+		s := newTestService(t)
+		dead := &pb.Vertex{
+			Key:        "k",
+			Value:      &pb.Vertex_String_{String_: "dead"},
+			Expiration: timestamppb.New(time.Now().Add(-time.Hour)),
+		}
+		resp, err := s.PutVertex(ctx, &pb.PutVertexRequest{Vertex: dead, IfAbsent: true})
+		if err != nil {
+			t.Fatalf("PutVertex: %v", err)
+		}
+		if resp.GetWritten() {
+			t.Fatal("born-expired if_absent PutVertex Written = true, want false")
+		}
+		if _, err := s.GetVertex(ctx, &pb.GetVertexRequest{Key: "k"}); connect.CodeOf(err) != connect.CodeNotFound {
+			t.Fatalf("GetVertex after born-expired put: code = %v, want NotFound", connect.CodeOf(err))
+		}
+	})
 }
 
 func TestLanternService_GetVertex_NotFound(t *testing.T) {
@@ -1322,6 +1341,29 @@ func TestLanternService_PutVertices_BornExpiredNotReplicated(t *testing.T) {
 			}
 		case <-time.After(2 * time.Second):
 			t.Fatal("timed out")
+		}
+	})
+
+	t.Run("IfAbsent_WrittenExcludesBornExpired", func(t *testing.T) {
+		s, _, appendCount := newSvc(t)
+		resp, err := s.PutVertices(context.Background(), &pb.PutVerticesRequest{
+			Vertices: []*pb.Vertex{
+				{Key: "dead", Expiration: past},    // discarded: born expired
+				{Key: "fresh", Expiration: future}, // written
+			},
+			IfAbsent: true,
+		})
+		if err != nil {
+			t.Fatalf("PutVertices(if_absent): %v", err)
+		}
+		if resp.GetWritten() != 1 {
+			t.Fatalf("Written = %d, want 1 (born-expired must not count)", resp.GetWritten())
+		}
+		if got := resp.GetSkippedKeys(); len(got) != 0 {
+			t.Fatalf("SkippedKeys = %v, want [] (born-expired is discarded, not skipped)", got)
+		}
+		if *appendCount != 1 {
+			t.Fatalf("appendCount = %d, want 1 (only the live if-absent write replicates)", *appendCount)
 		}
 	})
 }

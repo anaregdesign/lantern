@@ -536,8 +536,10 @@ export const PutVertexRequestSchema: GenMessage<PutVertexRequest> = /*@__PURE__*
  */
 export type PutVertexResponse = Message<"graph.v1.PutVertexResponse"> & {
   /**
-   * True when the write was applied; false when if_absent skipped it because
-   * a live vertex already existed. Always true for an unconditional put.
+   * True when the write was applied; false when it was skipped — either
+   * because if_absent found a live vertex already at the key, or because the
+   * vertex was born expired (expiration already past) and discarded. Always
+   * true for an unconditional put with a live expiration.
    *
    * @generated from field: bool written = 1;
    */
@@ -587,14 +589,17 @@ export const PutVerticesRequestSchema: GenMessage<PutVerticesRequest> = /*@__PUR
 export type PutVerticesResponse = Message<"graph.v1.PutVerticesResponse"> & {
   /**
    * Number of vertices actually written. For an unconditional put this equals
-   * the request size on success; under if_absent it excludes skipped keys.
+   * the request size on success; under if_absent it excludes skipped keys. A
+   * vertex whose expiration is already past is discarded and counts as neither
+   * written nor skipped (it appears in neither this count nor skipped_keys).
    *
    * @generated from field: int32 written = 1;
    */
   written: number;
 
   /**
-   * Keys skipped because a live vertex already existed (if_absent only).
+   * Keys skipped because a live vertex already existed (if_absent only). A
+   * born-expired vertex is NOT reported here — it is silently discarded.
    *
    * @generated from field: repeated string skipped_keys = 2;
    */

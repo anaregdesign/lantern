@@ -578,13 +578,39 @@ func TestAddEdgesWithExpirationContribHLC_TombstoneFenced(t *testing.T) {
 		if deduped != 1 {
 			t.Errorf("deduped: got %d, want 1 (tombstone-dropped)", deduped)
 		}
-		// A tombstone-dropped item applied nothing, so its effective entry is
-		// left at 0 (#897).
+		// A tombstone-dropped item applied nothing; its effective entry reports
+		// the current live sum, which is 0 here because the edge is deleted (#918).
 		if len(effective) != 1 || effective[0] != 0 {
 			t.Errorf("effective: got %v, want [0] (tombstone-dropped adds nothing)", effective)
 		}
 		if _, ok := c.GetWeight("a", "b"); ok {
 			t.Errorf("older contribution resurrected a tombstoned edge")
+		}
+	})
+
+	t.Run("FencedItemReportsCurrentLiveSum", func(t *testing.T) {
+		c := graphcache.NewGraphCache[string, string](time.Minute)
+		// Record a newer tombstone, then rebuild live weight via the non-HLC
+		// contrib path (which does not consult the tombstone fence).
+		if n := c.DeleteEdgesHLC([]graphcache.EdgeKey[string]{{Tail: "a", Head: "b"}}, newer, exp); n != 0 {
+			t.Fatalf("delete of absent edge: got %d, want 0", n)
+		}
+		c.AddEdgesWithExpirationContrib([]graphcache.EdgeItem[string]{
+			{Tail: "a", Head: "b", Weight: 5.0, Expiration: exp, ContribID: graphcache.ContribID{0: 1}},
+		})
+		// An older HLC contribution is fenced by the tombstone: it adds nothing,
+		// but its effective entry must report the current live sum (5), not 0 (#918).
+		effective, deduped := c.AddEdgesWithExpirationContribHLC([]graphcache.EdgeItem[string]{
+			{Tail: "a", Head: "b", Weight: 7.0, Expiration: exp, ContribID: graphcache.ContribID{0: 2}},
+		}, older)
+		if deduped != 1 {
+			t.Errorf("deduped: got %d, want 1 (tombstone-fenced)", deduped)
+		}
+		if len(effective) != 1 || effective[0] != 5.0 {
+			t.Errorf("effective: got %v, want [5] (fenced item reports current live sum)", effective)
+		}
+		if got, ok := c.GetWeight("a", "b"); !ok || got != 5.0 {
+			t.Errorf("a->b weight: got (%v,%v), want (5.0,true) — fenced contribution must not add", got, ok)
 		}
 	})
 
@@ -682,6 +708,26 @@ func TestPutVerticesWithExpirationIfAbsent(t *testing.T) {
 			t.Fatalf("value = %q, want \"fresh\"", v)
 		}
 	})
+
+	t.Run("BornExpiredNeitherWrittenNorSkipped", func(t *testing.T) {
+		c := graphcache.NewGraphCache[string, string](time.Minute)
+		written, skipped := c.PutVerticesWithExpirationIfAbsent([]graphcache.VertexItem[string, string]{
+			{Key: "dead", Value: "x", Expiration: past}, // discarded: born expired
+			{Key: "fresh", Value: "y", Expiration: future},
+		})
+		if written != 1 {
+			t.Fatalf("written = %d, want 1 (born-expired must not count)", written)
+		}
+		if len(skipped) != 0 {
+			t.Fatalf("skipped = %v, want [] (born-expired is discarded, not skipped)", skipped)
+		}
+		if _, ok := c.GetVertex("dead"); ok {
+			t.Fatal("born-expired vertex was stored, want miss")
+		}
+		if v, ok := c.GetVertex("fresh"); !ok || v != "y" {
+			t.Fatalf("fresh = (%q,%v), want (\"y\",true)", v, ok)
+		}
+	})
 }
 
 // TestPutVerticesWithExpirationIfAbsentHLC pins the replication-aware SET NX
@@ -730,6 +776,24 @@ func TestPutVerticesWithExpirationIfAbsentHLC(t *testing.T) {
 		}
 		if _, ok := c.GetVertex("d"); ok {
 			t.Fatal("older if-absent put resurrected a tombstoned key")
+		}
+	})
+
+	t.Run("BornExpiredExcludedFromWrittenIdx", func(t *testing.T) {
+		c := graphcache.NewGraphCache[string, string](time.Minute)
+		past := time.Now().Add(-time.Hour)
+		writtenIdx, skipped := c.PutVerticesWithExpirationIfAbsentHLC([]graphcache.VertexItem[string, string]{
+			{Key: "dead", Value: "x", Expiration: past}, // idx 0: discarded (born expired)
+			{Key: "fresh", Value: "y", Expiration: exp}, // idx 1: written
+		}, newer)
+		if len(writtenIdx) != 1 || writtenIdx[0] != 1 {
+			t.Fatalf("writtenIdx = %v, want [1] (born-expired must be excluded)", writtenIdx)
+		}
+		if len(skipped) != 0 {
+			t.Fatalf("skipped = %v, want [] (born-expired is discarded, not skipped)", skipped)
+		}
+		if _, ok := c.GetVertex("dead"); ok {
+			t.Fatal("born-expired vertex was stored, want miss")
 		}
 	})
 }

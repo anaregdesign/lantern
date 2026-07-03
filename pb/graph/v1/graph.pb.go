@@ -1509,8 +1509,10 @@ func (x *PutVertexRequest) GetIfAbsent() bool {
 
 type PutVertexResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// True when the write was applied; false when if_absent skipped it because
-	// a live vertex already existed. Always true for an unconditional put.
+	// True when the write was applied; false when it was skipped — either
+	// because if_absent found a live vertex already at the key, or because the
+	// vertex was born expired (expiration already past) and discarded. Always
+	// true for an unconditional put with a live expiration.
 	Written       bool `protobuf:"varint,1,opt,name=written,proto3" json:"written,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1614,9 +1616,12 @@ func (x *PutVerticesRequest) GetIfAbsent() bool {
 type PutVerticesResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Number of vertices actually written. For an unconditional put this equals
-	// the request size on success; under if_absent it excludes skipped keys.
+	// the request size on success; under if_absent it excludes skipped keys. A
+	// vertex whose expiration is already past is discarded and counts as neither
+	// written nor skipped (it appears in neither this count nor skipped_keys).
 	Written int32 `protobuf:"varint,1,opt,name=written,proto3" json:"written,omitempty"`
-	// Keys skipped because a live vertex already existed (if_absent only).
+	// Keys skipped because a live vertex already existed (if_absent only). A
+	// born-expired vertex is NOT reported here — it is silently discarded.
 	SkippedKeys   []string `protobuf:"bytes,2,rep,name=skipped_keys,json=skippedKeys,proto3" json:"skipped_keys,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

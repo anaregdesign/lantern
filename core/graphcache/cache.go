@@ -217,8 +217,8 @@ func (c *GraphCache[S, T]) upsertVertexLocked(key S, value T, expiration time.Ti
 // route through here: it must preserve LWW/HLC/tombstone causality and records
 // a per-key watermark after the store, so it keeps calling putVertexLocked
 // directly. Caller must hold c.mu.
-func (c *GraphCache[S, T]) putLocalVertexLocked(key S, value T, expiration time.Time) {
-	c.putLocalVertexLockedAt(key, value, expiration, time.Now(), nil)
+func (c *GraphCache[S, T]) putLocalVertexLocked(key S, value T, expiration time.Time) bool {
+	return c.putLocalVertexLockedAt(key, value, expiration, time.Now(), nil)
 }
 
 // putLocalVertexLockedAt is putLocalVertexLocked with the liveness clock and an
@@ -227,16 +227,23 @@ func (c *GraphCache[S, T]) putLocalVertexLocked(key S, value T, expiration time.
 // document outside c.mu (see prepareSearchDocs), then calls this per item so the
 // only work under c.mu is the cheap store + postings mutation. A nil prepared
 // falls back to inline analysis. Caller must hold c.mu (#739).
-func (c *GraphCache[S, T]) putLocalVertexLockedAt(key S, value T, expiration, now time.Time, prepared *search.PreparedDocument) {
+//
+// It returns stored=false when the write was discarded because its expiration
+// was already past (dead on arrival), and true when the value was upserted.
+// The if-absent write paths use this to count only writes that actually landed
+// so a born-expired item is reported as neither written nor skipped (#918);
+// unconditional callers may ignore the return.
+func (c *GraphCache[S, T]) putLocalVertexLockedAt(key S, value T, expiration, now time.Time, prepared *search.PreparedDocument) (stored bool) {
 	if !cache.IsLiveAt(expiration, now) {
 		// Dead on arrival. Delete is a cheap map-miss when the key is absent
 		// (the common churn case) and fires the eviction hook — releasing the
 		// dictionary reference and dropping prefix/search postings — when it is
 		// present, so an overwrite-to-expired still takes effect.
 		c.vertices.Delete(key)
-		return
+		return false
 	}
 	c.upsertVertexLocked(key, value, expiration, prepared)
+	return true
 }
 
 // ensureVertexLocked auto-creates an endpoint vertex (used by edge writes)
@@ -330,11 +337,12 @@ func (c *GraphCache[S, T]) PutVertexWithExpiration(key S, value T, expiration ti
 
 // PutVertexWithExpirationIfAbsent writes the vertex only when no live vertex
 // exists at key (SET NX, #896). It returns true when the write was applied and
-// false when an existing live vertex caused it to be skipped, in which case the
-// stored value and expiration are left untouched. Liveness follows the
-// live-visibility rule (#750): an expired-but-uncollected vertex does not block
-// the write. The existence check and the store happen under the same write lock,
-// so two racing if-absent writers cannot both observe "absent" and both write.
+// false when it was skipped — either because an existing live vertex blocked it
+// (the stored value and expiration are left untouched) or because the vertex was
+// born expired and discarded (#918). Liveness follows the live-visibility rule
+// (#750): an expired-but-uncollected vertex does not block the write. The
+// existence check and the store happen under the same write lock, so two racing
+// if-absent writers cannot both observe "absent" and both write.
 func (c *GraphCache[S, T]) PutVertexWithExpirationIfAbsent(key S, value T, expiration time.Time) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -342,8 +350,7 @@ func (c *GraphCache[S, T]) PutVertexWithExpirationIfAbsent(key S, value T, expir
 	if c.vertices.Has(key) {
 		return false
 	}
-	c.putLocalVertexLocked(key, value, expiration)
-	return true
+	return c.putLocalVertexLocked(key, value, expiration)
 }
 
 func (c *GraphCache[S, T]) PutVertexWithTTL(key S, value T, ttl time.Duration) {
