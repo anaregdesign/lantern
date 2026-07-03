@@ -7,28 +7,26 @@ import (
 )
 
 // newSearchIndex builds the inverted index used by the optional content-search
-// feature. It installs the multilingual bigram pipeline documented in
-// core/search/example as the best general-purpose setup: width / diacritic /
-// lowercase / punctuation / space normalizers feed an NGramTokenizer{N: 2}
-// whose grams keep two-character (e.g. CJK) words indexable while still
-// matching infixes, and a single WhitespaceFilter drops the grams that straddle
-// a word boundary. Matches are ranked by Okapi BM25 with the standard
-// parameters. The same analyzer runs over both stored values and queries, so
-// index-time and query-time terms stay symmetric.
+// feature. Since #888 it installs the script-aware dual-channel pipeline
+// (search.NewScriptAwareAnalyzer): width / diacritic / lowercase / punctuation
+// / space normalizers feed a ScriptAwareTokenizer whose word runs index whole
+// words (primary) plus intra-word bigrams (auxiliary, for infix and typo
+// recall) and whose unbounded-script (CJK-like) runs index bigrams as the
+// word-level unit. Matches are ranked by Okapi BM25 with the standard
+// parameters, wrapped in ClassWeighted so auxiliary gram evidence counts at
+// DefaultGramWeight and a whole-word match dominates fragment matches. The
+// same analyzer runs over both stored values and queries, so index-time and
+// query-time terms stay symmetric.
+//
+// The relevance gate (core/search/relevance, parity_gate_test.go) replicates
+// exactly this pipeline and ratchets its measured metrics against the pinned
+// Lucene baseline — change the two in lockstep.
 func newSearchIndex[S comparable]() *search.InvertedIndex[S, search.Document] {
-	normalizers := []search.Normalizer{
-		search.WidthNormalizer{},
-		search.DiacriticNormalizer{},
-		search.LowercaseNormalizer{},
-		search.PunctuationNormalizer{},
-		search.SpaceNormalizer{},
+	analyzer := search.NewScriptAwareAnalyzer()
+	scorer := search.ClassWeighted{
+		Base:       search.BM25{K1: search.DefaultBM25K1, B: search.DefaultBM25B},
+		GramWeight: search.DefaultGramWeight,
 	}
-	analyzer := search.NewAnalyzer(
-		normalizers,
-		search.NGramTokenizer{N: 2},
-		[]search.TokenFilter{search.WhitespaceFilter{}},
-	)
-	scorer := search.BM25{K1: 1.2, B: 0.75}
 	return search.NewInvertedIndex[S, search.Document](analyzer, scorer)
 }
 

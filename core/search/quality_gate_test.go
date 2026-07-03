@@ -382,3 +382,109 @@ func approxEqual(a, b float64) bool {
 	}
 	return d <= eps
 }
+
+// scriptAwareIndex builds a fresh index wired exactly like the production
+// content-search index since #888 (graphcache.newSearchIndex): the
+// script-aware dual-channel analyzer with class-weighted BM25.
+func scriptAwareIndex() *InvertedIndex[string, Text] {
+	return NewInvertedIndex[string, Text](
+		NewScriptAwareAnalyzer(),
+		ClassWeighted{Base: BM25{K1: DefaultBM25K1, B: DefaultBM25B}, GramWeight: DefaultGramWeight},
+	)
+}
+
+// TestSearchQualityGateScriptAware gates the #888 pipeline end to end on the
+// behaviors the dual-channel design promises beyond the bigram pipeline:
+// whole-word matches dominate infix fragments while infix recall survives,
+// single-character words become searchable, folding still applies, and CJK
+// behavior matches the bigram strategy it kept.
+func TestSearchQualityGateScriptAware(t *testing.T) {
+	cases := []struct {
+		name     string
+		docs     map[string]string
+		query    string
+		wantTop  string
+		wantHits []string
+	}{
+		{
+			// The bigram gate above pins "arch" ranking by fragment strength;
+			// here the whole word must win while fragments still surface.
+			name:     "WholeWordBeatsInfix",
+			docs:     map[string]string{"search": "Full-text search.", "research": "Academic  research", "arch": "A stone arch", "panda": "A giant panda"},
+			query:    "arch",
+			wantTop:  "arch",
+			wantHits: []string{"arch", "research", "search"},
+		},
+		{
+			name:     "SingleLetterWordSearchable",
+			docs:     map[string]string{"unit": "vitamin b complex", "other": "vitamin c serum"},
+			query:    "b",
+			wantTop:  "unit",
+			wantHits: []string{"unit"},
+		},
+		{
+			name:     "TypoStillRecalls",
+			docs:     map[string]string{"k8s": "kubernetes deployment guide", "cook": "carbonara recipe"},
+			query:    "kubernets",
+			wantTop:  "k8s",
+			wantHits: []string{"k8s"},
+		},
+		{
+			// kyoto also surfaces — "tokyo" and "kyoto" share the grams
+			// to/ky/yo on the auxiliary channel — but the whole-word match
+			// must stay on top.
+			name:     "WidthAndCaseFoldAcrossChannels",
+			docs:     map[string]string{"tokyo": "ＴＯＫＹＯ tower", "kyoto": "Kyoto station"},
+			query:    "tokyo",
+			wantTop:  "tokyo",
+			wantHits: []string{"kyoto", "tokyo"},
+		},
+		{
+			name:     "CJKBigramMatching",
+			docs:     map[string]string{"ramen": "東京の醤油ラーメン", "sushi": "銀座の寿司職人"},
+			query:    "ラーメン",
+			wantTop:  "ramen",
+			wantHits: []string{"ramen"},
+		},
+		{
+			name:     "LoneIdeographSearchable",
+			docs:     map[string]string{"noodle": "麺", "rice": "米"},
+			query:    "麺",
+			wantTop:  "noodle",
+			wantHits: []string{"noodle"},
+		},
+		{
+			// backup also surfaces — アップデート and バックアップ share the
+			// CJK grams アッ/ップ under the OR union — but the document
+			// matching both query halves must stay on top.
+			name:     "MixedScriptValue",
+			docs:     map[string]string{"deploy": "Kubernetesのローリングアップデート", "backup": "PostgreSQLのバックアップ"},
+			query:    "kubernetes アップデート",
+			wantTop:  "deploy",
+			wantHits: []string{"backup", "deploy"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			idx := scriptAwareIndex()
+			for id, text := range tc.docs {
+				idx.Index(id, Text(text))
+			}
+			results := idx.Search(tc.query)
+			if len(results) == 0 {
+				t.Fatalf("Search(%q) returned nothing", tc.query)
+			}
+			if results[0].ID != tc.wantTop {
+				t.Fatalf("Search(%q) top = %q, want %q (results %v)", tc.query, results[0].ID, tc.wantTop, results)
+			}
+			got := idsOf(results)
+			sort.Strings(got)
+			want := append([]string(nil), tc.wantHits...)
+			sort.Strings(want)
+			if !equalStrings(got, want) {
+				t.Fatalf("Search(%q) hits = %v, want %v", tc.query, got, want)
+			}
+		})
+	}
+}

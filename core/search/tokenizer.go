@@ -11,7 +11,36 @@ import (
 type Token struct {
 	// Term is the analyzed text of this token.
 	Term string
+	// Class labels the matching channel the token belongs to; the zero value
+	// (ClassWord) is the primary channel, so tokenizers that predate classes
+	// keep their exact behavior.
+	Class TokenClass
 }
+
+// TokenClass separates a token's matching channel (#888). The inverted index
+// keys terms, corpus statistics (document frequency, document length, corpus
+// size), and postings per class, so the two channels never share BM25
+// statistics, and a class-aware Scorer (ClassWeighted) can weight them apart.
+// Only the constants below are valid: indexing a token with an undefined
+// class panics, and a query token with an undefined class simply matches
+// nothing.
+type TokenClass uint8
+
+const (
+	// ClassWord is the primary channel: whole words of space-delimited
+	// scripts, the n-grams of unbounded (CJK-like) script runs — where the
+	// gram is the word-level unit — and every token of a single-channel
+	// pipeline such as NewNGramAnalyzer. It is deliberately the zero value.
+	ClassWord TokenClass = iota
+	// ClassGram is the auxiliary channel: intra-word n-gram fragments emitted
+	// alongside the word they came from (ScriptAwareTokenizer) so infix and
+	// typo-tolerant matching keeps working. Pair with ClassWeighted so this
+	// redundant evidence never outranks a whole-word match.
+	ClassGram
+
+	// numTokenClasses sizes the index's per-class tables.
+	numTokenClasses = int(ClassGram) + 1
+)
 
 // Tokenizer splits text into tokens. Implementations in this package are
 // stateless and therefore safe for concurrent use by multiple goroutines.

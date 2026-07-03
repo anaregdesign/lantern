@@ -143,3 +143,41 @@ func TestScorerFunc(t *testing.T) {
 		t.Fatalf("Score = %v, want 4.2", got)
 	}
 }
+
+func TestClassWeighted(t *testing.T) {
+	stats := func(class TokenClass) TermStats {
+		return TermStats{TF: 2, DF: 1, N: 10, DocLen: 5, AvgLen: 5, Class: class}
+	}
+	base := BM25{K1: DefaultBM25K1, B: DefaultBM25B}
+
+	t.Run("WordPassesThrough", func(t *testing.T) {
+		s := ClassWeighted{Base: base, GramWeight: 0.2}
+		if got, want := s.Score(stats(ClassWord)), base.Score(stats(ClassWord)); got != want {
+			t.Fatalf("word score = %v, want base %v", got, want)
+		}
+	})
+
+	t.Run("GramScaled", func(t *testing.T) {
+		s := ClassWeighted{Base: base, GramWeight: 0.2}
+		if got, want := s.Score(stats(ClassGram)), 0.2*base.Score(stats(ClassGram)); got != want {
+			t.Fatalf("gram score = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("WeightClamped", func(t *testing.T) {
+		if got := (ClassWeighted{Base: base, GramWeight: -1}).Score(stats(ClassGram)); got != 0 {
+			t.Fatalf("negative weight score = %v, want 0", got)
+		}
+		over := ClassWeighted{Base: base, GramWeight: 7}
+		if got, want := over.Score(stats(ClassGram)), base.Score(stats(ClassGram)); got != want {
+			t.Fatalf("over-1 weight score = %v, want unscaled %v", got, want)
+		}
+	})
+
+	t.Run("NilBaseIsStandardBM25", func(t *testing.T) {
+		s := ClassWeighted{GramWeight: 1}
+		if got, want := s.Score(stats(ClassWord)), base.Score(stats(ClassWord)); got != want {
+			t.Fatalf("nil base score = %v, want BM25 default %v", got, want)
+		}
+	})
+}

@@ -48,7 +48,7 @@ func (PunctuationFilter) Filter(tokens []Token) []Token {
 		if trimmed == "" {
 			continue
 		}
-		out = append(out, Token{Term: trimmed})
+		out = append(out, Token{Term: trimmed, Class: t.Class})
 	}
 	return out
 }

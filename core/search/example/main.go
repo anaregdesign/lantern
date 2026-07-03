@@ -17,11 +17,15 @@ func main() {
 	log.SetFlags(0)
 
 	// An InvertedIndex is the default Indexer + Searcher. The Analyzer below is
-	// the *highest-quality general-purpose setup for n-gram search* — the lineup
-	// of normalizers and the single filter that, with NGramTokenizer{N: 2}, give
-	// the best recall and precision when one index must serve *many languages*
-	// and still match *infixes* (a query found inside a longer word, which a
-	// word-splitting tokenizer can never surface). Four stages:
+	// the *highest-quality setup for pure n-gram search* — the lineup of
+	// normalizers and the single filter that, with NGramTokenizer{N: 2}, give
+	// the best recall and precision when every match must come from grams:
+	// one index serving *many languages* and still matching *infixes* (a query
+	// found inside a longer word). Since #888 production content search goes
+	// one step further — NewScriptAwareAnalyzer indexes whole words alongside
+	// these grams so a whole-word match outranks a fragment; this example
+	// stays on the single-channel pipeline because it is the clearest way to
+	// see each analysis stage at work. Four stages:
 	//   1. Normalizers clean and fold the raw text before tokenization, and their
 	//      order matters — each step assumes the earlier ones ran. This weighs on
 	//      n-grams more than on word tokens: NGramTokenizer slides its window over

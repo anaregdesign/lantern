@@ -58,6 +58,32 @@ func NewNGramAnalyzer(n int) Analyzer {
 	return NewAnalyzer([]Normalizer{LowercaseNormalizer{}}, NGramTokenizer{N: n}, nil)
 }
 
+// NewScriptAwareAnalyzer returns the production analyzer for mixed-script
+// content search (#888): the full folding pipeline — width, diacritic,
+// lowercase, punctuation, and space normalizers — feeding a
+// ScriptAwareTokenizer at N = 2. Space-delimited scripts index whole words as
+// primary tokens plus intra-word bigrams as auxiliary tokens, and unbounded
+// (CJK-like) scripts index bigrams as primary tokens, so one analyzer serves
+// word-precise ranking for languages with word boundaries and Lucene
+// CJKAnalyzer-style recall for those without. Pair the index with a
+// ClassWeighted scorer so the auxiliary grams keep infix and typo recall
+// without outranking whole-word matches. No token filter is needed: the
+// tokenizer already drops delimiters and never emits a gram across a word
+// boundary.
+func NewScriptAwareAnalyzer() Analyzer {
+	return NewAnalyzer(
+		[]Normalizer{
+			WidthNormalizer{},
+			DiacriticNormalizer{},
+			LowercaseNormalizer{},
+			PunctuationNormalizer{},
+			SpaceNormalizer{},
+		},
+		ScriptAwareTokenizer{N: 2},
+		nil,
+	)
+}
+
 // Analyze runs text through the normalizers, tokenizer, and filter chain.
 func (a *pipelineAnalyzer) Analyze(text string) []Token {
 	for _, n := range a.normalizers {

@@ -33,3 +33,24 @@ func idsOf[S comparable](results []Result[S]) []S {
 	}
 	return out
 }
+
+// postingsCount sums the live posting lists across the index's token classes,
+// so reclamation tests can assert "everything released" without caring which
+// channel a term lived on.
+func postingsCount[S comparable, D Document](idx *InvertedIndex[S, D]) int {
+	n := 0
+	for class := range idx.classes {
+		n += len(idx.classes[class].postings)
+	}
+	return n
+}
+
+// totalLenSum sums the per-class document-length totals, the cross-class
+// equivalent of the old single totalLen counter.
+func totalLenSum[S comparable, D Document](idx *InvertedIndex[S, D]) int {
+	n := 0
+	for class := range idx.classes {
+		n += idx.classes[class].totalLen
+	}
+	return n
+}
