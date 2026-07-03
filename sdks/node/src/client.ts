@@ -35,6 +35,7 @@ import { fromJson, toJson, type JsonValue } from "@bufbuild/protobuf";
 import {
   EdgeSchema,
   LanternService,
+  MatchMode as PbMatchMode,
   Objective as PbObjective,
   Reduction as PbReduction,
   Weighting as PbWeighting,
@@ -71,6 +72,7 @@ import {
   type DeleteByPrefixOptions,
   type EdgeScanOptions,
   type IlluminateOptions,
+  type MatchMode,
   type ScanOptions,
   type SearchOptions,
 } from "./options.js";
@@ -79,6 +81,40 @@ import {
   type IncrementalSearch,
   type IncrementalSearchOptions,
 } from "./incremental-search.js";
+
+/** Maps the SDK's string match mode onto the wire enum. */
+function toPbMatchMode(m: MatchMode | undefined): PbMatchMode {
+  switch (m) {
+    case "all":
+      return PbMatchMode.ALL;
+    case "min-should":
+      return PbMatchMode.MIN_SHOULD;
+    default:
+      return PbMatchMode.ANY;
+  }
+}
+
+/**
+ * Builds the wire SearchOptions from the SDK options, returning undefined when
+ * no relevance option is set so the server applies its configured defaults
+ * (matching the Go SDK: an explicit matchMode — even "any" — is sent literally).
+ */
+function buildSearchOptions(opts: SearchOptions) {
+  const advanced =
+    opts.matchMode !== undefined ||
+    (opts.minShouldMatch ?? 0) > 0 ||
+    (opts.fuzziness ?? 0) > 0 ||
+    opts.prefixTerms === true ||
+    opts.phrase === true;
+  if (!advanced) return undefined;
+  return {
+    matchMode: toPbMatchMode(opts.matchMode),
+    minShouldMatch: opts.minShouldMatch ?? 0,
+    phrase: opts.phrase ?? false,
+    fuzziness: opts.fuzziness ?? 0,
+    prefixTerms: opts.prefixTerms ?? false,
+  };
+}
 
 /**
  * Constructor arguments for `Lantern.connect` /
@@ -403,6 +439,7 @@ export class Lantern {
           query,
           limit: opts.limit ?? 0,
           prefix: opts.prefix ?? "",
+          options: buildSearchOptions(opts),
         },
         this.callOpts(signal),
       );
