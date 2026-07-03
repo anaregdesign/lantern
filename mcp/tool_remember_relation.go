@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/anaregdesign/lantern/mcp/internal/ttl"
-	client "github.com/anaregdesign/lantern/sdks/go"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -23,13 +22,16 @@ type rememberRelationOutput struct {
 	Bucket string `json:"bucket"`
 	// Increment is the weight this single additive write contributed.
 	Increment float32 `json:"increment"`
-	// AccumulatedWeight is the edge's resulting weight after the write, read
-	// back from the store. Because writes are additive, repeating a relation
-	// makes this grow — it is the signal that distinguishes a strong
-	// association from a weak one. Falls back to Increment when the post-write
-	// read-back is unavailable.
+	// AccumulatedWeight is the edge's live weight after this write, reported
+	// by the serving node in AddEdgeResponse.effective_weight (#897) — the
+	// atomic post-own-write sum, with no follow-up read. Because writes are
+	// additive, repeating a relation makes this grow; it is the signal that
+	// distinguishes a strong association from a weak one.
 	AccumulatedWeight float32 `json:"accumulated_weight"`
-	ExpiresAt         string  `json:"expires_at"`
+	// ExpiresAt is when THIS write's contribution decays (now + resolved TTL).
+	// It is this contribution's own horizon, not necessarily the edge's latest
+	// expiration across other concurrent contributions.
+	ExpiresAt string `json:"expires_at"`
 	// Capped is true when the bucket's nominal horizon was clamped down to
 	// LANTERN_MCP_MAX_TTL before writing, so the caller knows the stored
 	// expiry is shorter than the bucket label implies.
@@ -55,24 +57,16 @@ func registerRememberRelation(srv *mcp.Server, lc lanternClient, r *ttl.Resolver
 			weight = 1
 		}
 		d, capped := r.ResolveCapped(bucket)
-		if _, err := lc.AddEdge(ctx, in.From, in.To, weight, d); err != nil {
+		// AddEdge returns the live accumulated weight after applying this
+		// contribution (AddEdgeResponse.effective_weight, #897), so the agent
+		// sees the ACCUMULATED total — the whole point of the additive model —
+		// without a follow-up GetEdge (which reopened a TOCTOU window and could
+		// attribute a concurrent writer's weight to this call).
+		accumulated, err := lc.AddEdge(ctx, in.From, in.To, weight, d)
+		if err != nil {
 			return nil, rememberRelationOutput{}, mapSDKError("remember_relation", err)
 		}
-		// Read the edge back so the agent sees the ACCUMULATED weight, not just
-		// the increment it wrote — that read-back is the whole point of the
-		// additive model. It is best-effort: the write already succeeded, so a
-		// transient read failure must not fail the tool; fall back to reporting
-		// this write's increment and the computed expiry.
-		accumulated := weight
 		expiresAt := time.Now().Add(d).UTC().Format(time.RFC3339)
-		readBack := false
-		if e, gerr := lc.GetEdge(ctx, in.From, in.To); gerr == nil && e != nil {
-			accumulated = e.GetWeight()
-			readBack = true
-			if exp := client.EdgeExpiration(e); !exp.IsZero() {
-				expiresAt = exp.UTC().Format(time.RFC3339)
-			}
-		}
 		out := rememberRelationOutput{
 			From:              in.From,
 			To:                in.To,
@@ -82,12 +76,7 @@ func registerRememberRelation(srv *mcp.Server, lc lanternClient, r *ttl.Resolver
 			ExpiresAt:         expiresAt,
 			Capped:            capped,
 		}
-		var text string
-		if readBack {
-			text = fmt.Sprintf("Remembered relation %q -> %q (+%.2f, now %.2f total; bucket=%s, expires≈%s). Writes are additive — repeat to strengthen.", in.From, in.To, weight, accumulated, out.Bucket, out.ExpiresAt)
-		} else {
-			text = fmt.Sprintf("Remembered relation %q -> %q (+%.2f; bucket=%s, expires≈%s). Writes are additive — repeat to strengthen. (Could not read back the accumulated weight.)", in.From, in.To, weight, out.Bucket, out.ExpiresAt)
-		}
+		text := fmt.Sprintf("Remembered relation %q -> %q (+%.2f, now %.2f total; bucket=%s, expires≈%s). Writes are additive — repeat to strengthen.", in.From, in.To, weight, accumulated, out.Bucket, out.ExpiresAt)
 		if capped {
 			text += fmt.Sprintf(" Note: TTL clamped to the server cap (%s); re-remember before it expires to keep the relation alive.", d)
 		}

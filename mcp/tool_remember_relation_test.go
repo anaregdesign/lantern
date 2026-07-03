@@ -8,7 +8,6 @@ import (
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	client "github.com/anaregdesign/lantern/sdks/go"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestRememberRelation_DefaultWeight(t *testing.T) {
@@ -24,10 +23,10 @@ func TestRememberRelation_DefaultWeight(t *testing.T) {
 	if out.Increment != 1 {
 		t.Fatalf("default increment = %v, want 1", out.Increment)
 	}
-	// With no edge to read back (default fake), the accumulated weight falls
-	// back to this write's increment.
+	// AccumulatedWeight now comes from AddEdge's effective_weight (#897); the
+	// default fake echoes the increment, so a single +1 write reports 1.
 	if out.AccumulatedWeight != 1 {
-		t.Fatalf("accumulated weight fallback = %v, want 1", out.AccumulatedWeight)
+		t.Fatalf("accumulated weight = %v, want 1", out.AccumulatedWeight)
 	}
 	if h.fake.lastEdgeTail != "a" || h.fake.lastEdgeHead != "b" {
 		t.Fatalf("edge args = (%s, %s)", h.fake.lastEdgeTail, h.fake.lastEdgeHead)
@@ -35,9 +34,9 @@ func TestRememberRelation_DefaultWeight(t *testing.T) {
 	if h.fake.lastEdgeTTL != 24*time.Hour {
 		t.Fatalf("TTL = %v, want 24h", h.fake.lastEdgeTTL)
 	}
-	// The handler must read the edge back by the exact endpoints it wrote.
-	if h.fake.lastGetEdgeTail != "a" || h.fake.lastGetEdgeHead != "b" {
-		t.Fatalf("GetEdge args = (%s, %s), want (a, b)", h.fake.lastGetEdgeTail, h.fake.lastGetEdgeHead)
+	// The obsolete GetEdge read-back (#897) must be gone — no TOCTOU window.
+	if h.fake.lastGetEdgeTail != "" || h.fake.lastGetEdgeHead != "" {
+		t.Fatalf("GetEdge was called (%s, %s) — the read-back is obsolete", h.fake.lastGetEdgeTail, h.fake.lastGetEdgeHead)
 	}
 }
 
@@ -105,17 +104,21 @@ func TestRememberRelation_TTLCappedToMaxTTL(t *testing.T) {
 	}
 }
 
-// TestRememberRelation_ReturnsAccumulatedWeight is the core #547 guard: after N
-// additive +1 writes the tool must report accumulated_weight = N (read back via
-// GetEdge), while increment stays at the per-write amount.
+// TestRememberRelation_ReturnsAccumulatedWeight is the core #547 guard, now
+// sourced from AddEdgeResponse.effective_weight (#897): after N additive +1
+// writes the tool must report accumulated_weight = N from AddEdge's return,
+// with NO GetEdge read-back (which reopened the TOCTOU window #897 closed).
 func TestRememberRelation_ReturnsAccumulatedWeight(t *testing.T) {
 	h := newTestHarness(t)
-	// Model additive accumulation: each remember_relation(+1) triggers exactly
-	// one GetEdge read-back, so the running total observed grows by 1 per call.
+	// Server-side accumulation arrives in AddEdgeResponse.effective_weight.
 	var total float32
+	h.fake.addEdgeEffectiveFn = func(_, _ string, weight float32) float32 {
+		total += weight
+		return total
+	}
+	// If the tool still read back via GetEdge it would see this poisoned value.
 	h.fake.getEdgeFn = func(_ context.Context, tail, head string) (*client.Edge, error) {
-		total++
-		return &pb.Edge{Tail: tail, Head: head, Weight: total}, nil
+		return &pb.Edge{Tail: tail, Head: head, Weight: 999}, nil
 	}
 	var lastText string
 	for i := 1; i <= 3; i++ {
@@ -131,30 +134,27 @@ func TestRememberRelation_ReturnsAccumulatedWeight(t *testing.T) {
 			t.Fatalf("write %d: increment = %v, want 1", i, out.Increment)
 		}
 		if out.AccumulatedWeight != float32(i) {
-			t.Fatalf("write %d: accumulated_weight = %v, want %d", i, out.AccumulatedWeight, i)
+			t.Fatalf("write %d: accumulated_weight = %v, want %d — must come from AddEdge's return, not a GetEdge read-back (999)", i, out.AccumulatedWeight, i)
 		}
 		lastText = contentText(res)
 	}
-	// The read-back must target the exact endpoints just written.
-	if h.fake.lastGetEdgeTail != "a" || h.fake.lastGetEdgeHead != "b" {
-		t.Fatalf("GetEdge args = (%s, %s), want (a, b)", h.fake.lastGetEdgeTail, h.fake.lastGetEdgeHead)
+	if h.fake.lastGetEdgeTail != "" || h.fake.lastGetEdgeHead != "" {
+		t.Fatalf("GetEdge was called (args %s,%s) — #897 made the read-back obsolete; the TOCTOU window is back", h.fake.lastGetEdgeTail, h.fake.lastGetEdgeHead)
 	}
-	// The accumulation read-back must surface in the human-readable text too.
 	if !strings.Contains(lastText, "now 3.00 total") {
 		t.Fatalf("text should report the accumulated total; got %q", lastText)
 	}
 }
 
-// TestRememberRelation_ReadBackUsesEdgeExpiry verifies the reported expires_at
-// reflects the stored edge's own expiration when the read-back succeeds.
-func TestRememberRelation_ReadBackUsesEdgeExpiry(t *testing.T) {
+// TestRememberRelation_ReportsOwnAtomicTotal is the concurrent-attribution
+// guard: AddEdge returns this call's own post-write live sum (3), while a
+// concurrent writer has since pushed the stored edge to 5. The tool must
+// report 3 — its own atomic total — never the poisoned read-back value.
+func TestRememberRelation_ReportsOwnAtomicTotal(t *testing.T) {
 	h := newTestHarness(t)
-	exp, err := time.Parse(time.RFC3339, "2031-02-03T04:05:06Z")
-	if err != nil {
-		t.Fatalf("parse time: %v", err)
-	}
+	h.fake.addEdgeEffectiveFn = func(_, _ string, _ float32) float32 { return 3 }
 	h.fake.getEdgeFn = func(_ context.Context, tail, head string) (*client.Edge, error) {
-		return &pb.Edge{Tail: tail, Head: head, Weight: 5, Expiration: timestamppb.New(exp)}, nil
+		return &pb.Edge{Tail: tail, Head: head, Weight: 5}, nil
 	}
 	res := h.call(t, "remember_relation", map[string]any{
 		"from": "a", "to": "b", "ttl": "day",
@@ -164,38 +164,32 @@ func TestRememberRelation_ReadBackUsesEdgeExpiry(t *testing.T) {
 	}
 	var out rememberRelationOutput
 	structuredAs(t, res, &out)
-	if out.AccumulatedWeight != 5 {
-		t.Fatalf("accumulated_weight = %v, want 5", out.AccumulatedWeight)
-	}
-	if out.ExpiresAt != "2031-02-03T04:05:06Z" {
-		t.Fatalf("expires_at = %q, want the edge's own expiry", out.ExpiresAt)
+	if out.AccumulatedWeight != 3 {
+		t.Fatalf("accumulated_weight = %v, want 3 (own atomic total, not the concurrent writer's 5)", out.AccumulatedWeight)
 	}
 }
 
-// TestRememberRelation_ReadBackFailureDegrades guards that a failed read-back
-// after a successful additive write does NOT fail the tool: the write already
-// landed, so the tool reports the increment as a best-effort accumulated value
-// and notes the read-back was unavailable.
-func TestRememberRelation_ReadBackFailureDegrades(t *testing.T) {
+// TestRememberRelation_ExpiresAtIsOwnHorizon pins the contract change from
+// #897: without the GetEdge read-back, expires_at is this write's own
+// now+TTL horizon (a "day" bucket → ~24h out), not the edge's latest
+// cross-contribution expiration. Tolerance-based; no exact clock match.
+func TestRememberRelation_ExpiresAtIsOwnHorizon(t *testing.T) {
 	h := newTestHarness(t)
-	h.fake.getEdgeFn = func(_ context.Context, _, _ string) (*client.Edge, error) {
-		return nil, client.ErrNotFound
-	}
+	before := time.Now()
 	res := h.call(t, "remember_relation", map[string]any{
-		"from": "a", "to": "b", "ttl": "day", "weight": 2,
+		"from": "a", "to": "b", "ttl": "day",
 	})
 	if res.IsError {
-		t.Fatalf("a failed read-back must not fail the write: text=%q", contentText(res))
+		t.Fatalf("IsError = true, text=%q", contentText(res))
 	}
 	var out rememberRelationOutput
 	structuredAs(t, res, &out)
-	if out.Increment != 2 {
-		t.Fatalf("increment = %v, want 2", out.Increment)
+	got, err := time.Parse(time.RFC3339, out.ExpiresAt)
+	if err != nil {
+		t.Fatalf("expires_at %q is not RFC3339: %v", out.ExpiresAt, err)
 	}
-	if out.AccumulatedWeight != 2 {
-		t.Fatalf("accumulated_weight fallback = %v, want 2 (the increment)", out.AccumulatedWeight)
-	}
-	if !strings.Contains(contentText(res), "Could not read back") {
-		t.Fatalf("text should note the read-back was unavailable; got %q", contentText(res))
+	want := before.Add(24 * time.Hour)
+	if diff := got.Sub(want); diff < -time.Minute || diff > time.Minute {
+		t.Fatalf("expires_at = %v, want ≈ now+24h (%v); off by %v", got, want, diff)
 	}
 }
