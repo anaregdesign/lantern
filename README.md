@@ -63,9 +63,13 @@ Most caches flatten relationships away entirely. Lantern sits in the gap:
 
 ### Never used a graph? It's just entries + connections
 
-A key-value cache stores isolated entries. A **graph** adds exactly one
-concept on top: *edges* — directed, weighted connections between entries.
-The entries themselves become *vertices*. Same data, one new dimension:
+A key-value cache stores isolated entries. Lantern turns those entries into
+a **graph in the mathematical sense** — the weighted directed graph of
+graph theory, *G = (V, E, w)*: vertices, directed edges between them, a
+real-valued weight on each edge, and (Lantern's cache-native twist) a TTL
+on all of it. Not the *property graph* of graph databases, with typed,
+attribute-laden edges — the plain mathematical object. Same data, one new
+dimension:
 
 ```mermaid
 flowchart TB
@@ -87,25 +91,27 @@ flowchart TB
 That's the entire vocabulary you need:
 
 - **Vertex** — one cache entry: a key and its value (`user:42 = alice`), with a TTL.
-- **Edge** — a directed link between two keys. It carries exactly two things:
-  a weight and a TTL — no type, label, or property bag. If you need
-  relationship kinds ("clicked" vs "bought"), encode them in your key design
-  or weight conventions.
+- **Edge** — an ordered pair of keys with a weight and a TTL: one element
+  of *E*, nothing more — no type, label, or property bag. If you need
+  relationship kinds ("clicked" vs "bought"), encode them in your key
+  design or weight conventions.
 - **Weight** — how strong that link is right now. In Lantern it's the live
   sum of decaying contributions, so recent events count more than old ones.
 - **TTL** — everything above expires on its own; nothing needs a cleanup job.
 
-That austerity is deliberate — label-free edges are what keep the rest of
-Lantern simple and fast:
+Staying with the mathematical object is deliberate — it is what keeps the
+rest of Lantern simple and fast:
 
+- **The classic algorithms apply directly.** Spanning trees, shortest
+  paths, PageRank, community detection — graph theory defines them on
+  exactly this object, a weighted directed graph. `illuminate` runs them
+  natively over every edge, with no "which relationship types does this
+  walk follow?" configuration and no schema the server has to know about;
+  a property graph has to be flattened down to weights before any of that
+  theory applies.
 - **Every event can pile onto the same edge.** The additive, decaying
   weight model works because merging contributions is just addition —
   there are no per-type aggregation rules to define.
-- **Every algorithm works on every edge.** `illuminate`'s MST / SPT /
-  PageRank / community walks and the TF-IDF / BM25 hub-damping all compare
-  edges by one uniform number. There is no "which relationship types does
-  this traversal follow?" configuration, and no schema the server has to
-  know about.
 - **Nothing to design up front, nothing to migrate.** A new kind of event
   starts flowing into the graph the moment you write it — cache semantics
   extend to the data model itself.
