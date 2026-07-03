@@ -545,6 +545,37 @@ describe("AddEdge contrib IDs (#895)", () => {
     }
   });
 
+  test("batchChunkSize above 65536 is clamped — no contrib-id collision inside one chunk", async () => {
+    // A chunk larger than the uint16 index space would wrap index 65536 back
+    // to 0 and collide two ids under one seq (#919). Clamp splits at 65536 so
+    // the 65537th edge lands in a second chunk under a fresh seq.
+    const c = connect(baseUrl, {
+      options: { idempotentAdds: true, batchChunkSize: 70000 },
+      transportOptions: { httpVersion: "1.1" },
+    });
+    try {
+      state.addEdgesCalls = [];
+      const edges = Array.from({ length: 65537 }, (_, i) => ({
+        tail: "t",
+        head: "h" + i,
+        weight: 1,
+      }));
+      await c.addEdges(edges);
+
+      // Unfixed code sends ONE 65537-edge chunk; fixed code splits at the clamp.
+      expect(state.addEdgesCalls.map((call) => call.tails.length)).toEqual([65536, 1]);
+
+      // The item that previously wrapped (index 65536 & 0xffff === 0) now lives
+      // in a second chunk under a FRESH seq, so its id differs from chunk 0,
+      // index 0.
+      const first = state.addEdgesCalls[0].contribIds[0];
+      const boundary = state.addEdgesCalls[1].contribIds[0];
+      expect([...boundary]).not.toEqual([...first]);
+    } finally {
+      c.close();
+    }
+  });
+
   test("successive idempotent addEdges calls advance the sequence (distinct ids)", async () => {
     const c = idempotentClient();
     try {

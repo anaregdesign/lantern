@@ -178,7 +178,13 @@ export interface DeleteEdgesByPrefixOptions {
 export interface ConnectOptions {
   /** Per-call deadline (ms) applied when the caller did not set one. */
   defaultTimeoutMs?: number;
-  /** Auto-chunk size for putVertices / addEdges / putEdges / delete* (default 1000). */
+  /**
+   * Auto-chunk size for putVertices / addEdges / putEdges / delete* (default
+   * 1000). Values above 65536 are clamped to 65536, because the additive
+   * write surface stamps a uint16 per-chunk index onto each contrib-ID
+   * idempotency key (#895) — a larger chunk would wrap that index and collide
+   * two contributions.
+   */
   batchChunkSize?: number;
   /** Override the built-in retry + round_robin Connect service config. */
   serviceConfigJson?: string;

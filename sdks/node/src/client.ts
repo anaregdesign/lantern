@@ -85,6 +85,15 @@ import {
 } from "./incremental-search.js";
 import { contribIdFrom, makeNonce, validateContribId } from "./contrib.js";
 
+/**
+ * Upper bound for the auto-chunk size. Contrib-ID idempotency keys (#895)
+ * pack a uint16 per-chunk index into their low bytes, so a chunk larger than
+ * 65536 edges would wrap index 65536 back to 0 and collide two contributions
+ * under one sequence — silently dropping a weight. chunkSize() clamps to this
+ * (mirrors the Go SDK's maxBatchChunkSize).
+ */
+const MAX_BATCH_CHUNK_SIZE = 1 << 16;
+
 /** Maps the SDK's string match mode onto the wire enum. */
 function toPbMatchMode(m: MatchMode | undefined): PbMatchMode {
   switch (m) {
@@ -878,7 +887,8 @@ export class Lantern {
 
   private chunkSize(): number {
     const n = this.options.batchChunkSize ?? DEFAULT_BATCH_CHUNK_SIZE;
-    return n > 0 ? n : DEFAULT_BATCH_CHUNK_SIZE;
+    const positive = n > 0 ? n : DEFAULT_BATCH_CHUNK_SIZE;
+    return Math.min(positive, MAX_BATCH_CHUNK_SIZE);
   }
 
   /** Whether automatic contrib IDs are enabled for Add calls (#895). */
