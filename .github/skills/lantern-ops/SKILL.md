@@ -199,6 +199,37 @@ lantern-cli keys users/ 100
 lantern-cli keys users/ | xargs -n1 lantern-cli get vertex   # hydrate values
 ```
 
+### `search <query>` — content relevance (BM25)
+Full-text search over vertex **content** (key + value), ranked by BM25 — the
+content counterpart to `scan vertices`' lexicographic key walk. Hits print one
+per line as `<key>` and `<score>` (tab-separated), most relevant first. Requires
+the server's search index (`LANTERN_SEARCH_ENABLED`, on by default; off ⇒
+`FAILED_PRECONDITION`).
+
+The default is an OR-union over the query words. Flags tune relevance (#892):
+
+| flag | meaning |
+|---|---|
+| `--mode any\|all\|min-should` | term combination: OR (default), AND, or minimum-should-match |
+| `--min-should <n>` | with `--mode min-should`, require at least `n` distinct query words |
+| `--phrase` | require the words adjacent, in order (highest precision) |
+| `--fuzziness 1\|2` | also match terms within that edit distance (typo tolerance) |
+| `--prefix-terms` | also match terms that extend a query word (`lan` → `lantern`) |
+| `--prefix <p>` | scope hits to a key namespace |
+| `--limit <n>` | cap the ranked-hit count (`0` = server default) |
+
+```shell
+lantern-cli search "calm concise"
+lantern-cli search "rolling update" --mode all
+lantern-cli search "rolling update" --phrase
+lantern-cli search serach --fuzziness 1          # finds "search"
+lantern-cli search lan --prefix-terms            # finds "lantern"
+lantern-cli search espresso --prefix user. --limit 20
+```
+
+Unlike `get` / `scan` / `keys`, `search` is a flag-based command (not part of the
+shared REPL grammar), because its many relevance controls read better as flags.
+
 ### `delete-prefix vertices <prefix>` (DESTRUCTIVE)
 Bulk-delete every live vertex under `<prefix>`, up to `limit=<n>` per call.
 **Safety gate:** running without `dry_run=true` or `confirm=yes` is **refused**
