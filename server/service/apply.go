@@ -296,6 +296,22 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 			s.cache.DeleteEdges(keys)
 		}
 		opName = "DeleteEdges"
+
+	case *pb.MutationOp_DeleteEdgesByPrefix:
+		// Apply the prefix delete to completion on the replica (limit 0):
+		// the origin loops its bounded calls until the matching set drains,
+		// so applying unbounded here converges both sides regardless of the
+		// origin's per-call limit — the same choice DeleteVerticesByPrefix
+		// makes above.
+		p := op.DeleteEdgesByPrefix
+		if useTomb {
+			if _, err := s.cache.DeleteEdgesByPrefixHLC(ctx, p.GetTailPrefix(), p.GetHeadPrefix(), 0, ts, tombExp); err != nil {
+				return ctxToConnect(err)
+			}
+		} else {
+			s.cache.DeleteEdgesByPrefix(ctx, p.GetTailPrefix(), p.GetHeadPrefix(), 0)
+		}
+		opName = "DeleteEdgesByPrefix"
 	}
 
 	if opName != "" && s.onReplicationApply != nil {

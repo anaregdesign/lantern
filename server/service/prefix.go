@@ -163,6 +163,65 @@ func (s *LanternService) DeleteVerticesByPrefix(ctx context.Context, in *pb.Dele
 	return &pb.DeleteVerticesByPrefixResponse{Deleted: uint64(deleted)}, nil
 }
 
+// DeleteEdgesByPrefix removes live edges whose tail key starts with
+// TailPrefix AND whose head key starts with HeadPrefix, up to limit
+// (clamped to DeleteByPrefixMaxLimit; zero falls back to
+// DeleteByPrefixDefaultLimit). At least one prefix must be non-empty — an
+// all-empty request is rejected with InvalidArgument so a bulk edge wipe is
+// always explicitly scoped. Callers loop on the returned count until it
+// reaches zero to drain a large matching set.
+//
+// When DryRun is set, no deletion happens — the response reports how many
+// edges *would* be deleted, bounded by the same effective limit and the same
+// live-visibility rules as the real delete.
+func (s *LanternService) DeleteEdgesByPrefix(ctx context.Context, in *pb.DeleteEdgesByPrefixRequest) (*pb.DeleteEdgesByPrefixResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, ctxToConnect(err)
+	}
+	start := time.Now()
+	if in.GetTailPrefix() == "" && in.GetHeadPrefix() == "" {
+		if s.onValidationReject != nil {
+			s.onValidationReject("empty_edge_prefix")
+		}
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			errors.New("delete edges by prefix: at least one of tail_prefix / head_prefix must be non-empty"))
+	}
+	limit := clampLimit(in.GetLimit(), s.scan.DeleteByPrefixDefaultLimit, s.scan.DeleteByPrefixMaxLimit)
+
+	if in.GetDryRun() {
+		// Count would-be deletions by walking the same bounded edge scan
+		// without mutating state; the page collector caps the count at the
+		// effective limit and applies the identical live-visibility filter.
+		n := 0
+		s.cache.ScanEdgesByPrefixPage(ctx, in.GetTailPrefix(), in.GetHeadPrefix(), "", "", int(limit),
+			func(string, string, string, string, float32, time.Time) bool {
+				n++
+				return true
+			})
+		s.metrics.OnScan("DeleteEdgesByPrefix", n, time.Since(start))
+		return &pb.DeleteEdgesByPrefixResponse{Deleted: uint64(n)}, nil
+	}
+
+	var deleted int
+	if s.clock != nil && s.tombstoneTTL > 0 {
+		// Share one commit HLC between the edge tombstones and the logged
+		// mutation so a peer replaying this delete stamps the same watermark
+		// the origin did (see DeleteEdges for the divergence this closes).
+		ts := s.clock.Now()
+		var err error
+		deleted, err = s.cache.DeleteEdgesByPrefixHLC(ctx, in.GetTailPrefix(), in.GetHeadPrefix(), int(limit), ts, s.tombstoneExpiration())
+		if err != nil {
+			return nil, ctxToConnect(err)
+		}
+		s.logMutationAt(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdgesByPrefix{DeleteEdgesByPrefix: in}}, ts)
+	} else {
+		deleted = s.cache.DeleteEdgesByPrefix(ctx, in.GetTailPrefix(), in.GetHeadPrefix(), int(limit))
+		s.logMutation(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdgesByPrefix{DeleteEdgesByPrefix: in}})
+	}
+	s.metrics.OnScan("DeleteEdgesByPrefix", deleted, time.Since(start))
+	return &pb.DeleteEdgesByPrefixResponse{Deleted: uint64(deleted)}, nil
+}
+
 // clampLimit applies the standard "0 means default, otherwise cap at max"
 // rule used by the prefix RPCs. Centralising it keeps the three handlers
 // readable and the rule trivially unit-testable.

@@ -75,6 +75,7 @@ export {
 export type {
   ConnectOptions,
   DeleteByPrefixOptions,
+  DeleteEdgesByPrefixOptions,
   EdgeScanOptions,
   BfsOptions,
   IlluminateOptions,

@@ -41,6 +41,7 @@ message MutationOp {
     PutEdgesRequest put_edges = 9;
     DeleteEdgeRequest delete_edge = 10;
     DeleteEdgesRequest delete_edges = 11;
+    DeleteEdgesByPrefixRequest delete_edges_by_prefix = 12;
   }
 }
 

@@ -529,6 +529,32 @@ message DeleteEdgesResponse {
   int32 deleted = 1;
 }
 
+// DeleteEdgesByPrefixRequest deletes up to `limit` live edges whose tail key
+// starts with `tail_prefix` AND whose head key starts with `head_prefix`.
+// Either prefix may be empty to disable the corresponding filter, but at
+// least one MUST be non-empty — an all-empty request is rejected with
+// INVALID_ARGUMENT so a bulk edge wipe is always explicitly scoped. `limit ==
+// 0` lets the server apply its configured default (see ScanConfig); callers
+// loop on the returned `deleted` count until it reaches zero to drain a large
+// matching set. When `dry_run` is true, no deletion is performed and the
+// response reports the number that *would* be deleted (capped at the same
+// effective limit).
+//
+// Implementation note: like ScanEdges, v1 walks the tail-side prefix index
+// and applies `head_prefix` as a post-filter; a highly selective
+// `head_prefix` may visit many tails to reach `limit`. Latency is reported in
+// the standard scan histogram so operators can spot pathological filters.
+message DeleteEdgesByPrefixRequest {
+  string tail_prefix = 1;
+  string head_prefix = 2;
+  uint32 limit = 3;
+  bool dry_run = 4;
+}
+
+message DeleteEdgesByPrefixResponse {
+  uint64 deleted = 1;
+}
+
 // AddEdgeRequest accumulates weight onto a single (tail, head) pair: repeated
 // calls with the same endpoints sum their weights. This is the singular
 // convenience wrapper over AddEdges and shares its semantics.
@@ -817,6 +843,13 @@ service LanternService {
 
   // DeleteEdges removes several edges in one round trip.
   rpc DeleteEdges(DeleteEdgesRequest) returns (DeleteEdgesResponse);
+
+  // DeleteEdgesByPrefix deletes up to `limit` live edges whose tail key
+  // starts with `tail_prefix` AND whose head key starts with `head_prefix`.
+  // At least one prefix must be non-empty. Pass `dry_run = true` to preview
+  // the count without mutating state. Plural-only — prefix delete is
+  // inherently plural.
+  rpc DeleteEdgesByPrefix(DeleteEdgesByPrefixRequest) returns (DeleteEdgesByPrefixResponse);
 
   // ScanEdges streams edges whose tail key starts with `tail_prefix` AND
   // whose head key starts with `head_prefix`, in ascending (tail, head)

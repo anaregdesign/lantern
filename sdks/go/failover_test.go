@@ -78,6 +78,9 @@ func (f *fakeNode) GetEdges(context.Context, []EdgeRef) ([]*Edge, []EdgeRef, err
 func (f *fakeNode) ScanEdges(context.Context, ...EdgeScanOption) ([]*Edge, []byte, error) {
 	return nil, nil, nil
 }
+func (f *fakeNode) DeleteEdgesByPrefix(context.Context, ...DeleteEdgesByPrefixOption) (uint64, error) {
+	return 0, nil
+}
 func (f *fakeNode) DeleteEdge(context.Context, string, string) (bool, error) { return false, nil }
 func (f *fakeNode) DeleteEdges(context.Context, []EdgeRef) (int, error)      { return 0, nil }
 func (f *fakeNode) Illuminate(context.Context, string, ...IlluminateOption) (*Graph, error) {

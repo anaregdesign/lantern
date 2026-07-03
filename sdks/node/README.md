@@ -188,6 +188,31 @@ counterparts to `scanVertices` — they return just the matching vertex keys
 (no values), backing the Redis-familiar `keys` CLI verb. A non-empty prefix
 is required.
 
+### Prefix bulk-delete
+
+`deleteVerticesByPrefix(prefix, opts?)` and `deleteEdgesByPrefix(opts?)` remove
+a whole namespace in one call, returning the count deleted as a `bigint`. Both
+accept `dryRun: true` to preview the count without mutating, and a `limit` that
+caps a single call (loop until the returned count drops below `limit` to drain
+a set larger than the server's per-call cap).
+
+`deleteEdgesByPrefix` matches the tail∩head intersection of `tailPrefix` and
+`headPrefix` (the edge-shaped sibling of the scan filter). At least one prefix
+must be non-empty — a both-empty request rejects with `InvalidArgumentError`,
+so a whole-graph edge wipe is always explicitly scoped.
+
+```ts
+// Preview, then delete every edge from a user into the session namespace.
+const would = await client.deleteEdgesByPrefix({
+  tailPrefix: "user:",
+  headPrefix: "session:",
+  dryRun: true,
+});
+if (would > 0n) {
+  await client.deleteEdgesByPrefix({ tailPrefix: "user:", headPrefix: "session:" });
+}
+```
+
 ## Content search
 
 `searchVertices` runs a relevance-ranked full-text query over vertex

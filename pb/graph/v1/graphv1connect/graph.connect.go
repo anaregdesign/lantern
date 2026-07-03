@@ -87,6 +87,9 @@ const (
 	// LanternServiceDeleteEdgesProcedure is the fully-qualified name of the LanternService's
 	// DeleteEdges RPC.
 	LanternServiceDeleteEdgesProcedure = "/graph.v1.LanternService/DeleteEdges"
+	// LanternServiceDeleteEdgesByPrefixProcedure is the fully-qualified name of the LanternService's
+	// DeleteEdgesByPrefix RPC.
+	LanternServiceDeleteEdgesByPrefixProcedure = "/graph.v1.LanternService/DeleteEdgesByPrefix"
 	// LanternServiceScanEdgesProcedure is the fully-qualified name of the LanternService's ScanEdges
 	// RPC.
 	LanternServiceScanEdgesProcedure = "/graph.v1.LanternService/ScanEdges"
@@ -148,6 +151,12 @@ type LanternServiceClient interface {
 	DeleteEdge(context.Context, *connect.Request[v1.DeleteEdgeRequest]) (*connect.Response[v1.DeleteEdgeResponse], error)
 	// DeleteEdges removes several edges in one round trip.
 	DeleteEdges(context.Context, *connect.Request[v1.DeleteEdgesRequest]) (*connect.Response[v1.DeleteEdgesResponse], error)
+	// DeleteEdgesByPrefix deletes up to `limit` live edges whose tail key
+	// starts with `tail_prefix` AND whose head key starts with `head_prefix`.
+	// At least one prefix must be non-empty. Pass `dry_run = true` to preview
+	// the count without mutating state. Plural-only — prefix delete is
+	// inherently plural.
+	DeleteEdgesByPrefix(context.Context, *connect.Request[v1.DeleteEdgesByPrefixRequest]) (*connect.Response[v1.DeleteEdgesByPrefixResponse], error)
 	// ScanEdges streams edges whose tail key starts with `tail_prefix` AND
 	// whose head key starts with `head_prefix`, in ascending (tail, head)
 	// order, page by page. Plural-only — prefix scan is inherently plural.
@@ -305,6 +314,12 @@ func NewLanternServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(lanternServiceMethods.ByName("DeleteEdges")),
 			connect.WithClientOptions(opts...),
 		),
+		deleteEdgesByPrefix: connect.NewClient[v1.DeleteEdgesByPrefixRequest, v1.DeleteEdgesByPrefixResponse](
+			httpClient,
+			baseURL+LanternServiceDeleteEdgesByPrefixProcedure,
+			connect.WithSchema(lanternServiceMethods.ByName("DeleteEdgesByPrefix")),
+			connect.WithClientOptions(opts...),
+		),
 		scanEdges: connect.NewClient[v1.ScanEdgesRequest, v1.ScanEdgesResponse](
 			httpClient,
 			baseURL+LanternServiceScanEdgesProcedure,
@@ -354,6 +369,7 @@ type lanternServiceClient struct {
 	putEdges               *connect.Client[v1.PutEdgesRequest, v1.PutEdgesResponse]
 	deleteEdge             *connect.Client[v1.DeleteEdgeRequest, v1.DeleteEdgeResponse]
 	deleteEdges            *connect.Client[v1.DeleteEdgesRequest, v1.DeleteEdgesResponse]
+	deleteEdgesByPrefix    *connect.Client[v1.DeleteEdgesByPrefixRequest, v1.DeleteEdgesByPrefixResponse]
 	scanEdges              *connect.Client[v1.ScanEdgesRequest, v1.ScanEdgesResponse]
 	getServerStatus        *connect.Client[v1.GetServerStatusRequest, v1.GetServerStatusResponse]
 	getReplicationStatus   *connect.Client[v1.GetReplicationStatusRequest, v1.GetReplicationStatusResponse]
@@ -460,6 +476,11 @@ func (c *lanternServiceClient) DeleteEdges(ctx context.Context, req *connect.Req
 	return c.deleteEdges.CallUnary(ctx, req)
 }
 
+// DeleteEdgesByPrefix calls graph.v1.LanternService.DeleteEdgesByPrefix.
+func (c *lanternServiceClient) DeleteEdgesByPrefix(ctx context.Context, req *connect.Request[v1.DeleteEdgesByPrefixRequest]) (*connect.Response[v1.DeleteEdgesByPrefixResponse], error) {
+	return c.deleteEdgesByPrefix.CallUnary(ctx, req)
+}
+
 // ScanEdges calls graph.v1.LanternService.ScanEdges.
 func (c *lanternServiceClient) ScanEdges(ctx context.Context, req *connect.Request[v1.ScanEdgesRequest]) (*connect.Response[v1.ScanEdgesResponse], error) {
 	return c.scanEdges.CallUnary(ctx, req)
@@ -527,6 +548,12 @@ type LanternServiceHandler interface {
 	DeleteEdge(context.Context, *connect.Request[v1.DeleteEdgeRequest]) (*connect.Response[v1.DeleteEdgeResponse], error)
 	// DeleteEdges removes several edges in one round trip.
 	DeleteEdges(context.Context, *connect.Request[v1.DeleteEdgesRequest]) (*connect.Response[v1.DeleteEdgesResponse], error)
+	// DeleteEdgesByPrefix deletes up to `limit` live edges whose tail key
+	// starts with `tail_prefix` AND whose head key starts with `head_prefix`.
+	// At least one prefix must be non-empty. Pass `dry_run = true` to preview
+	// the count without mutating state. Plural-only — prefix delete is
+	// inherently plural.
+	DeleteEdgesByPrefix(context.Context, *connect.Request[v1.DeleteEdgesByPrefixRequest]) (*connect.Response[v1.DeleteEdgesByPrefixResponse], error)
 	// ScanEdges streams edges whose tail key starts with `tail_prefix` AND
 	// whose head key starts with `head_prefix`, in ascending (tail, head)
 	// order, page by page. Plural-only — prefix scan is inherently plural.
@@ -680,6 +707,12 @@ func NewLanternServiceHandler(svc LanternServiceHandler, opts ...connect.Handler
 		connect.WithSchema(lanternServiceMethods.ByName("DeleteEdges")),
 		connect.WithHandlerOptions(opts...),
 	)
+	lanternServiceDeleteEdgesByPrefixHandler := connect.NewUnaryHandler(
+		LanternServiceDeleteEdgesByPrefixProcedure,
+		svc.DeleteEdgesByPrefix,
+		connect.WithSchema(lanternServiceMethods.ByName("DeleteEdgesByPrefix")),
+		connect.WithHandlerOptions(opts...),
+	)
 	lanternServiceScanEdgesHandler := connect.NewUnaryHandler(
 		LanternServiceScanEdgesProcedure,
 		svc.ScanEdges,
@@ -746,6 +779,8 @@ func NewLanternServiceHandler(svc LanternServiceHandler, opts ...connect.Handler
 			lanternServiceDeleteEdgeHandler.ServeHTTP(w, r)
 		case LanternServiceDeleteEdgesProcedure:
 			lanternServiceDeleteEdgesHandler.ServeHTTP(w, r)
+		case LanternServiceDeleteEdgesByPrefixProcedure:
+			lanternServiceDeleteEdgesByPrefixHandler.ServeHTTP(w, r)
 		case LanternServiceScanEdgesProcedure:
 			lanternServiceScanEdgesHandler.ServeHTTP(w, r)
 		case LanternServiceGetServerStatusProcedure:
@@ -841,6 +876,10 @@ func (UnimplementedLanternServiceHandler) DeleteEdge(context.Context, *connect.R
 
 func (UnimplementedLanternServiceHandler) DeleteEdges(context.Context, *connect.Request[v1.DeleteEdgesRequest]) (*connect.Response[v1.DeleteEdgesResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternService.DeleteEdges is not implemented"))
+}
+
+func (UnimplementedLanternServiceHandler) DeleteEdgesByPrefix(context.Context, *connect.Request[v1.DeleteEdgesByPrefixRequest]) (*connect.Response[v1.DeleteEdgesByPrefixResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternService.DeleteEdgesByPrefix is not implemented"))
 }
 
 func (UnimplementedLanternServiceHandler) ScanEdges(context.Context, *connect.Request[v1.ScanEdgesRequest]) (*connect.Response[v1.ScanEdgesResponse], error) {

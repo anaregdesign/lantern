@@ -103,6 +103,7 @@ type Backend interface {
 	DeleteEdgeHLC(tail, head string, ts hlc.Timestamp, expiration time.Time) bool
 	DeleteEdgesHLC(keys []graphcache.EdgeKey[string], ts hlc.Timestamp, expiration time.Time) int
 	DeleteByPrefixHLC(ctx context.Context, prefix string, limit uint32, ts hlc.Timestamp, expiration time.Time) (int, error)
+	DeleteEdgesByPrefixHLC(ctx context.Context, tailPrefix, headPrefix string, limit int, ts hlc.Timestamp, expiration time.Time) (int, error)
 
 	// neighborhood traversal. selectSmallest steers the per-hop top-k
 	// pruning: the k smallest-weight edges are kept when true, the k
@@ -190,9 +191,12 @@ type Backend interface {
 	// strictly after the (afterTail, afterHead) pair and collecting at
 	// most limit rows (limit <= 0 = unbounded). Either prefix may be
 	// empty to disable the corresponding filter. more mirrors
-	// ScanByPrefixPage. Plural-only on the wire (no CountEdges /
-	// DeleteEdgesByPrefix in this phase).
+	// ScanByPrefixPage. DeleteEdgesByPrefix (#899) removes matching edges
+	// up to limit (limit <= 0 = unbounded) and returns how many were
+	// deleted; the whole-graph-wipe guard (at least one prefix non-empty)
+	// is enforced by the handler, not here.
 	ScanEdgesByPrefixPage(ctx context.Context, tailPrefix, headPrefix, afterTail, afterHead string, limit int, fn func(tailProjected string, tail string, headProjected string, head string, weight float32, expiration time.Time) bool) (more, ok bool)
+	DeleteEdgesByPrefix(ctx context.Context, tailPrefix, headPrefix string, limit int) int
 
 	// background GC loop driven by LanternServer.
 	Watch(ctx context.Context, interval time.Duration)

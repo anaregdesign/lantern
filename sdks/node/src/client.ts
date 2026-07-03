@@ -70,6 +70,7 @@ import {
   type ConnectOptions,
   DEFAULT_BATCH_CHUNK_SIZE,
   type DeleteByPrefixOptions,
+  type DeleteEdgesByPrefixOptions,
   type EdgeScanOptions,
   type IlluminateOptions,
   type MatchMode,
@@ -686,6 +687,37 @@ export class Lantern {
       if (page.nextCursor.length === 0) return;
       cursor = page.nextCursor;
     }
+  }
+
+  /**
+   * Bulk-deletes edges whose tail and/or head key carries the given prefix,
+   * the edge-shaped sibling of {@link deleteVerticesByPrefix}. At least one of
+   * `tailPrefix` / `headPrefix` must be non-empty; a both-empty request is
+   * rejected with `InvalidArgumentError` to prevent a whole-graph edge wipe.
+   * An empty prefix on one axis matches any key on that axis, so the deleted
+   * set is the intersection of the two prefix filters. `limit` caps how many
+   * matching edges are removed in one call (0 = server default); loop until the
+   * returned count is below `limit` to drain a large namespace. Pass
+   * `dryRun: true` to learn the count that *would* be deleted without mutating.
+   * Returns the number of edges deleted (or that would be deleted under
+   * `dryRun`).
+   */
+  async deleteEdgesByPrefix(
+    opts: DeleteEdgesByPrefixOptions = {},
+    signal?: AbortSignal,
+  ): Promise<bigint> {
+    return this.invoke(async () => {
+      const resp = await this.client.deleteEdgesByPrefix(
+        {
+          tailPrefix: opts.tailPrefix ?? "",
+          headPrefix: opts.headPrefix ?? "",
+          limit: opts.limit ?? 0,
+          dryRun: opts.dryRun ?? false,
+        },
+        this.callOpts(signal),
+      );
+      return resp.deleted;
+    });
   }
 
   async illuminate(

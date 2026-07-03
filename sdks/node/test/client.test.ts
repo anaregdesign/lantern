@@ -59,6 +59,15 @@ interface StubState {
   lastAddEdge?: { contribId: Uint8Array };
   /** Every AddEdgesRequest the stub observed, in order, for chunk-alignment assertions (#895). */
   addEdgesCalls: { contribIds: Uint8Array[]; tails: string[] }[];
+  /** Edge weights keyed tail → head → weight, seeded by DeleteEdgesByPrefix tests (#899). */
+  edges: Map<string, Map<string, number>>;
+  /** Last DeleteEdgesByPrefixRequest the stub observed, for request-building assertions (#899). */
+  lastDeleteEdgesByPrefix?: {
+    tailPrefix: string;
+    headPrefix: string;
+    limit: number;
+    dryRun: boolean;
+  };
 }
 
 function newStubRoutes(state: StubState) {
@@ -168,6 +177,44 @@ function newStubRoutes(state: StubState) {
               : new Uint8Array(),
         };
       },
+      // Edge-prefix bulk delete (#899): mirrors the server's validation
+      // (at least one prefix non-empty → InvalidArgument) and the
+      // intersection-of-prefixes delete semantics, honoring `limit` and
+      // `dryRun` (dry-run counts without mutating). Captures the request
+      // so tests can assert the SDK's option wiring.
+      async deleteEdgesByPrefix(req) {
+        state.lastDeleteEdgesByPrefix = {
+          tailPrefix: req.tailPrefix,
+          headPrefix: req.headPrefix,
+          limit: req.limit,
+          dryRun: req.dryRun,
+        };
+        if (req.tailPrefix === "" && req.headPrefix === "") {
+          throw new ConnectError(
+            "at least one of tail_prefix / head_prefix must be non-empty",
+            Code.InvalidArgument,
+          );
+        }
+        const cap = req.limit > 0 ? req.limit : Number.MAX_SAFE_INTEGER;
+        const victims: { tail: string; head: string }[] = [];
+        for (const [tail, heads] of state.edges) {
+          if (!tail.startsWith(req.tailPrefix)) continue;
+          for (const head of heads.keys()) {
+            if (!head.startsWith(req.headPrefix)) continue;
+            if (victims.length >= cap) break;
+            victims.push({ tail, head });
+          }
+          if (victims.length >= cap) break;
+        }
+        if (!req.dryRun) {
+          for (const { tail, head } of victims) {
+            const heads = state.edges.get(tail);
+            heads?.delete(head);
+            if (heads && heads.size === 0) state.edges.delete(tail);
+          }
+        }
+        return { deleted: BigInt(victims.length) };
+      },
       // Remaining methods are intentionally absent — the connect-node
       // adapter rejects them with Code.Unimplemented, which the SDK
       // surfaces as the generic LanternError. Tests that need these
@@ -178,7 +225,7 @@ function newStubRoutes(state: StubState) {
 
 let server: http.Server;
 let baseUrl: string;
-const state: StubState = { vertices: new Map(), addEdgesCalls: [] };
+const state: StubState = { vertices: new Map(), addEdgesCalls: [], edges: new Map() };
 
 beforeAll(async () => {
   // HTTP/1.1 server (not http2) — Bun's test runner has rough edges
@@ -518,6 +565,99 @@ describe("AddEdge contrib IDs (#895)", () => {
     const c = newClient();
     try {
       expect(await c.addEdges([])).toEqual([]);
+    } finally {
+      c.close();
+    }
+  });
+});
+
+describe("deleteEdgesByPrefix (#899)", () => {
+  function seedEdges(pairs: readonly [string, string][]): void {
+    state.edges = new Map();
+    for (const [tail, head] of pairs) {
+      let heads = state.edges.get(tail);
+      if (!heads) {
+        heads = new Map();
+        state.edges.set(tail, heads);
+      }
+      heads.set(head, 1);
+    }
+  }
+
+  test("forwards both prefixes, limit and dryRun onto the request", async () => {
+    const c = newClient();
+    try {
+      seedEdges([["users/a", "posts/1"]]);
+      await c.deleteEdgesByPrefix({
+        tailPrefix: "users/",
+        headPrefix: "posts/",
+        limit: 7,
+        dryRun: true,
+      });
+      expect(state.lastDeleteEdgesByPrefix?.tailPrefix).toBe("users/");
+      expect(state.lastDeleteEdgesByPrefix?.headPrefix).toBe("posts/");
+      expect(state.lastDeleteEdgesByPrefix?.limit).toBe(7);
+      expect(state.lastDeleteEdgesByPrefix?.dryRun).toBe(true);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("defaults omitted options to empty prefixes, limit 0 and dryRun false", async () => {
+    const c = newClient();
+    try {
+      seedEdges([["users/a", "posts/1"]]);
+      await c.deleteEdgesByPrefix({ tailPrefix: "users/" });
+      expect(state.lastDeleteEdgesByPrefix?.headPrefix).toBe("");
+      expect(state.lastDeleteEdgesByPrefix?.limit).toBe(0);
+      expect(state.lastDeleteEdgesByPrefix?.dryRun).toBe(false);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("deletes the tail∩head intersection and returns the count", async () => {
+    const c = newClient();
+    try {
+      seedEdges([
+        ["users/a", "posts/1"],
+        ["users/a", "logs/9"],
+        ["orgs/x", "posts/2"],
+      ]);
+      const deleted = await c.deleteEdgesByPrefix({
+        tailPrefix: "users/",
+        headPrefix: "posts/",
+      });
+      expect(deleted).toBe(1n);
+      expect(state.edges.get("users/a")?.has("posts/1")).toBeFalsy();
+      expect(state.edges.get("users/a")?.has("logs/9")).toBe(true);
+      expect(state.edges.get("orgs/x")?.has("posts/2")).toBe(true);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("dryRun reports the count without mutating", async () => {
+    const c = newClient();
+    try {
+      seedEdges([
+        ["users/a", "posts/1"],
+        ["users/b", "posts/2"],
+      ]);
+      const would = await c.deleteEdgesByPrefix({ tailPrefix: "users/", dryRun: true });
+      expect(would).toBe(2n);
+      expect(state.edges.get("users/a")?.has("posts/1")).toBe(true);
+      expect(state.edges.get("users/b")?.has("posts/2")).toBe(true);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("a both-empty request is rejected as InvalidArgumentError", async () => {
+    const c = newClient();
+    try {
+      seedEdges([["users/a", "posts/1"]]);
+      await expect(c.deleteEdgesByPrefix({})).rejects.toBeInstanceOf(InvalidArgumentError);
     } finally {
       c.close();
     }

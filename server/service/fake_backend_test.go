@@ -434,6 +434,39 @@ func (f *fakeBackend) ScanEdgesByPrefixPage(_ context.Context, tailPrefix, headP
 	return more, true
 }
 
+func (f *fakeBackend) DeleteEdgesByPrefix(_ context.Context, tailPrefix, headPrefix string, limit int) int {
+	type key struct{ t, h string }
+	var victims []key
+	for t, hs := range f.edges {
+		if tailPrefix != "" && !(len(t) >= len(tailPrefix) && t[:len(tailPrefix)] == tailPrefix) {
+			continue
+		}
+		for h := range hs {
+			if headPrefix != "" && !(len(h) >= len(headPrefix) && h[:len(headPrefix)] == headPrefix) {
+				continue
+			}
+			victims = append(victims, key{t, h})
+			if limit > 0 && len(victims) >= limit {
+				break
+			}
+		}
+		if limit > 0 && len(victims) >= limit {
+			break
+		}
+	}
+	n := 0
+	for _, v := range victims {
+		if row, ok := f.edges[v.t]; ok {
+			if _, ok := row[v.h]; ok {
+				delete(row, v.h)
+				n++
+			}
+		}
+	}
+	f.deleteEdges += n
+	return n
+}
+
 // Compile-time check that fakeBackend really satisfies Backend.
 var _ Backend = (*fakeBackend)(nil)
 
@@ -512,6 +545,10 @@ func (f *fakeBackend) DeleteByPrefixHLC(ctx context.Context, prefix string, limi
 		lim = int(limit)
 	}
 	return f.DeleteByPrefix(ctx, prefix, lim), nil
+}
+
+func (f *fakeBackend) DeleteEdgesByPrefixHLC(ctx context.Context, tailPrefix, headPrefix string, limit int, _ hlc.Timestamp, _ time.Time) (int, error) {
+	return f.DeleteEdgesByPrefix(ctx, tailPrefix, headPrefix, limit), nil
 }
 
 // Snapshot* implement the bootstrap surface (#184). The fake backend

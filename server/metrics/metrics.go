@@ -192,6 +192,7 @@ var (
 		"ScanEdges",
 		"CountVerticesByPrefix",
 		"DeleteVerticesByPrefix",
+		"DeleteEdgesByPrefix",
 	}
 	batchOps = []string{
 		"GetVertices",
@@ -219,6 +220,7 @@ var (
 		"PutEdges",
 		"DeleteEdge",
 		"DeleteEdges",
+		"DeleteEdgesByPrefix",
 	}
 	// validationRejectReasons is the bounded reason set bumped on
 	// lantern_validation_rejected_total. Sources:
@@ -240,6 +242,7 @@ var (
 		"bad_ttl",
 		"bad_cursor",
 		"capacity",
+		"empty_edge_prefix",
 	}
 )
 
@@ -349,7 +352,7 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		}, []string{"algorithm", "objective", "weighting", "phase"}),
 		scanResults: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "lantern_scan_results",
-			Help:    "Number of results returned by a prefix scan or count RPC, partitioned by op (ScanVertices | ScanVertexKeys | ScanEdges | CountVerticesByPrefix | DeleteVerticesByPrefix).",
+			Help:    "Number of results returned by a prefix scan or count RPC, partitioned by op (ScanVertices | ScanVertexKeys | ScanEdges | CountVerticesByPrefix | DeleteVerticesByPrefix | DeleteEdgesByPrefix).",
 			Buckets: prometheus.ExponentialBuckets(1, 4, 10),
 		}, []string{"op"}),
 		scanDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{

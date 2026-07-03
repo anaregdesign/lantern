@@ -149,6 +149,23 @@ export interface DeleteByPrefixOptions {
   dryRun?: boolean;
 }
 
+/**
+ * Options for {@link LanternClient.deleteEdgesByPrefix}. At least one of
+ * `tailPrefix` / `headPrefix` must be non-empty — the server rejects a
+ * both-empty request with `InvalidArgumentError` to prevent a whole-graph
+ * edge wipe. An empty prefix on one axis means "any" on that axis.
+ */
+export interface DeleteEdgesByPrefixOptions {
+  /** Match edges whose tail (source) key carries this prefix (empty = any tail). */
+  tailPrefix?: string;
+  /** Match edges whose head (destination) key carries this prefix (empty = any head). */
+  headPrefix?: string;
+  /** Caps how many matching edges are deleted in one call (0 = server default). */
+  limit?: number;
+  /** When true, the server reports the count that *would* be deleted without mutating. */
+  dryRun?: boolean;
+}
+
 export interface ConnectOptions {
   /** Per-call deadline (ms) applied when the caller did not set one. */
   defaultTimeoutMs?: number;

@@ -95,6 +95,7 @@ type failoverNode interface {
 	GetEdge(ctx context.Context, tail, head string) (*Edge, error)
 	GetEdges(ctx context.Context, refs []EdgeRef) (found []*Edge, missing []EdgeRef, err error)
 	ScanEdges(ctx context.Context, opts ...EdgeScanOption) (edges []*Edge, nextCursor []byte, err error)
+	DeleteEdgesByPrefix(ctx context.Context, opts ...DeleteEdgesByPrefixOption) (uint64, error)
 	DeleteEdge(ctx context.Context, tail, head string) (bool, error)
 	DeleteEdges(ctx context.Context, refs []EdgeRef) (int, error)
 	Illuminate(ctx context.Context, seed string, opts ...IlluminateOption) (*Graph, error)
@@ -454,6 +455,18 @@ func (f *Failover) ScanEdges(ctx context.Context, opts ...EdgeScanOption) (edges
 		return ie
 	})
 	return edges, nextCursor, e
+}
+
+// DeleteEdgesByPrefix forwards to the current endpoint's
+// DeleteEdgesByPrefix, failing over on ErrUnavailable.
+func (f *Failover) DeleteEdgesByPrefix(ctx context.Context, opts ...DeleteEdgesByPrefixOption) (uint64, error) {
+	var deleted uint64
+	err := f.call(ctx, "DeleteEdgesByPrefix", func(l failoverNode) error {
+		d, e := l.DeleteEdgesByPrefix(ctx, opts...)
+		deleted = d
+		return e
+	})
+	return deleted, err
 }
 
 // DeleteEdge forwards to the current endpoint's DeleteEdge, failing over on

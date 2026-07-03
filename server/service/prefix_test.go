@@ -205,9 +205,98 @@ func TestDeleteVerticesByPrefix_DryRunAndReal(t *testing.T) {
 	}
 }
 
+// TestDeleteEdgesByPrefix_ValidationDryRunAndReal covers the #899 handler:
+// the whole-graph-wipe guard (both prefixes empty -> InvalidArgument + reject
+// hook), the non-mutating dry run (count only, capped by limit), and the real
+// delete (mutates and reports the count).
+func TestDeleteEdgesByPrefix_ValidationDryRunAndReal(t *testing.T) {
+	seed := func() *fakeBackend {
+		fb := newFakeBackend()
+		fb.edges = map[string]map[string]float32{
+			"user:1":  {"post:10": 1, "post:11": 1, "session:a": 1},
+			"user:2":  {"post:20": 1, "session:b": 1},
+			"admin:1": {"post:99": 1},
+		}
+		return fb
+	}
+	limits := ScanLimits{
+		DeleteByPrefixDefaultLimit: 100, DeleteByPrefixMaxLimit: 1000,
+		ScanDefaultLimit: 100, ScanMaxLimit: 100,
+	}
+	ctx := context.Background()
+
+	// Both prefixes empty is rejected and fires the validation hook.
+	{
+		var reasons []string
+		svc := NewLanternService(seed()).
+			WithScanLimits(limits).
+			WithValidationRejectHook(func(r string) { reasons = append(reasons, r) })
+		_, err := svc.DeleteEdgesByPrefix(ctx, &pb.DeleteEdgesByPrefixRequest{})
+		if err == nil {
+			t.Fatal("both-empty prefix: expected error")
+		}
+		if connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Fatalf("both-empty prefix: code = %v, want InvalidArgument", connect.CodeOf(err))
+		}
+		if len(reasons) != 1 || reasons[0] != "empty_edge_prefix" {
+			t.Fatalf("reject hook = %v, want [empty_edge_prefix]", reasons)
+		}
+	}
+
+	// Dry run counts the tail-scoped matches without mutating.
+	{
+		fb := seed()
+		svc := NewLanternService(fb).WithScanLimits(limits)
+		dr, err := svc.DeleteEdgesByPrefix(ctx, &pb.DeleteEdgesByPrefixRequest{TailPrefix: "user:", DryRun: true})
+		if err != nil {
+			t.Fatalf("dry run: %v", err)
+		}
+		if dr.Deleted != 5 {
+			t.Errorf("dry deleted = %d, want 5", dr.Deleted)
+		}
+		total := 0
+		for _, hs := range fb.edges {
+			total += len(hs)
+		}
+		if total != 6 {
+			t.Errorf("dry run mutated edges: %d remain, want 6", total)
+		}
+	}
+
+	// Dry run is capped by limit.
+	{
+		svc := NewLanternService(seed()).WithScanLimits(limits)
+		dr, err := svc.DeleteEdgesByPrefix(ctx, &pb.DeleteEdgesByPrefixRequest{TailPrefix: "user:", DryRun: true, Limit: 2})
+		if err != nil {
+			t.Fatalf("dry run capped: %v", err)
+		}
+		if dr.Deleted != 2 {
+			t.Errorf("dry capped deleted = %d, want 2", dr.Deleted)
+		}
+	}
+
+	// Real delete with tail+head intersection removes exactly the matches.
+	{
+		fb := seed()
+		svc := NewLanternService(fb).WithScanLimits(limits)
+		r, err := svc.DeleteEdgesByPrefix(ctx, &pb.DeleteEdgesByPrefixRequest{TailPrefix: "user:", HeadPrefix: "post:"})
+		if err != nil {
+			t.Fatalf("real delete: %v", err)
+		}
+		if r.Deleted != 3 {
+			t.Errorf("deleted = %d, want 3", r.Deleted)
+		}
+		total := 0
+		for _, hs := range fb.edges {
+			total += len(hs)
+		}
+		if total != 3 {
+			t.Errorf("after delete: %d edges remain, want 3", total)
+		}
+	}
+}
+
 // TestScan_BadCursorFiresValidationRejectHook covers the #222
-// bad_cursor hook fires from both ScanVertices and ScanEdges when the
-// caller passes a malformed cursor.
 func TestScan_BadCursorFiresValidationRejectHook(t *testing.T) {
 	fb := newFakeBackend()
 	var got []string

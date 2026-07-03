@@ -119,6 +119,9 @@ func (h *lanternServiceConnect) DeleteEdge(ctx context.Context, req *connect.Req
 func (h *lanternServiceConnect) DeleteEdges(ctx context.Context, req *connect.Request[pb.DeleteEdgesRequest]) (*connect.Response[pb.DeleteEdgesResponse], error) {
 	return unary(ctx, req, h.svc.DeleteEdges)
 }
+func (h *lanternServiceConnect) DeleteEdgesByPrefix(ctx context.Context, req *connect.Request[pb.DeleteEdgesByPrefixRequest]) (*connect.Response[pb.DeleteEdgesByPrefixResponse], error) {
+	return unary(ctx, req, h.svc.DeleteEdgesByPrefix)
+}
 func (h *lanternServiceConnect) ScanEdges(ctx context.Context, req *connect.Request[pb.ScanEdgesRequest]) (*connect.Response[pb.ScanEdgesResponse], error) {
 	return unary(ctx, req, h.svc.ScanEdges)
 }

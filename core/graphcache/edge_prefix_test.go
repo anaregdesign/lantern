@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/anaregdesign/lantern/core/hlc"
 )
 
 // scanEdgesCollect drains ScanEdgesByPrefix into a sorted []string of
@@ -560,4 +562,153 @@ func TestScanEdgesByPrefixPage(t *testing.T) {
 			}
 		})
 	}
+}
+
+// seedDeleteEdges populates a small fixed edge set shared by the
+// DeleteEdgesByPrefix tests. Returns the cache with the prefix index
+// enabled on the identity extractor.
+func seedDeleteEdges(t *testing.T) *GraphCache[string, string] {
+	t.Helper()
+	c := NewGraphCache[string, string](time.Minute)
+	c.EnablePrefixIndex(identityExtract)
+	exp := time.Now().Add(time.Minute)
+	for _, e := range []struct{ t, h string }{
+		{"user:1", "post:10"},
+		{"user:1", "post:11"},
+		{"user:1", "session:a"},
+		{"user:2", "post:20"},
+		{"user:2", "session:b"},
+		{"admin:1", "post:99"},
+	} {
+		c.PutEdgeWithExpiration(e.t, e.h, 1.0, exp)
+	}
+	return c
+}
+
+func TestGraphCache_DeleteEdgesByPrefix(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("Disabled", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Minute) // no prefix index
+		if n := c.DeleteEdgesByPrefix(ctx, "user:", "", 0); n != 0 {
+			t.Fatalf("disabled index: got %d want 0", n)
+		}
+	})
+
+	t.Run("TailOnly", func(t *testing.T) {
+		c := seedDeleteEdges(t)
+		if n := c.DeleteEdgesByPrefix(ctx, "user:", "", 0); n != 5 {
+			t.Fatalf("tail-only delete: got %d want 5", n)
+		}
+		got := scanEdgesCollect(t, c, "", "")
+		want := []string{"admin:1->post:99=1"}
+		if !equalSlices(got, want) {
+			t.Fatalf("remaining after tail-only: got %v want %v", got, want)
+		}
+	})
+
+	t.Run("HeadOnly", func(t *testing.T) {
+		c := seedDeleteEdges(t)
+		if n := c.DeleteEdgesByPrefix(ctx, "", "post:", 0); n != 4 {
+			t.Fatalf("head-only delete: got %d want 4", n)
+		}
+		got := scanEdgesCollect(t, c, "", "")
+		sort.Strings(got)
+		want := []string{"user:1->session:a=1", "user:2->session:b=1"}
+		sort.Strings(want)
+		if !equalSlices(got, want) {
+			t.Fatalf("remaining after head-only: got %v want %v", got, want)
+		}
+	})
+
+	t.Run("Intersection", func(t *testing.T) {
+		c := seedDeleteEdges(t)
+		if n := c.DeleteEdgesByPrefix(ctx, "user:", "post:", 0); n != 3 {
+			t.Fatalf("intersection delete: got %d want 3", n)
+		}
+		// session edges under user: survive; admin:1->post:99 survives.
+		got := scanEdgesCollect(t, c, "", "")
+		sort.Strings(got)
+		want := []string{"admin:1->post:99=1", "user:1->session:a=1", "user:2->session:b=1"}
+		sort.Strings(want)
+		if !equalSlices(got, want) {
+			t.Fatalf("remaining after intersection: got %v want %v", got, want)
+		}
+	})
+
+	t.Run("LimitBounds", func(t *testing.T) {
+		c := seedDeleteEdges(t)
+		// limit 2 removes exactly two matching edges; the rest survive for a
+		// follow-up call (drain-to-zero loop semantics).
+		if n := c.DeleteEdgesByPrefix(ctx, "user:", "", 2); n != 2 {
+			t.Fatalf("limited delete: got %d want 2", n)
+		}
+		if remaining := len(scanEdgesCollect(t, c, "user:", "")); remaining != 3 {
+			t.Fatalf("after limited delete: %d user: edges remain, want 3", remaining)
+		}
+	})
+
+	t.Run("BothEmptyDeletesAll", func(t *testing.T) {
+		// The core method imposes no whole-graph-wipe guard (the service layer
+		// does); both-empty deletes every edge up to limit.
+		c := seedDeleteEdges(t)
+		if n := c.DeleteEdgesByPrefix(ctx, "", "", 0); n != 6 {
+			t.Fatalf("both-empty delete: got %d want 6", n)
+		}
+		if remaining := len(scanEdgesCollect(t, c, "", "")); remaining != 0 {
+			t.Fatalf("both-empty left %d edges, want 0", remaining)
+		}
+	})
+
+	t.Run("NoMatch", func(t *testing.T) {
+		c := seedDeleteEdges(t)
+		if n := c.DeleteEdgesByPrefix(ctx, "nobody:", "", 0); n != 0 {
+			t.Fatalf("no-match delete: got %d want 0", n)
+		}
+		if remaining := len(scanEdgesCollect(t, c, "", "")); remaining != 6 {
+			t.Fatalf("no-match mutated the graph: %d edges remain, want 6", remaining)
+		}
+	})
+}
+
+func TestGraphCache_DeleteEdgesByPrefixHLC(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("DeletesAndCounts", func(t *testing.T) {
+		c := seedDeleteEdges(t)
+		exp := time.Now().Add(time.Hour)
+		n, err := c.DeleteEdgesByPrefixHLC(ctx, "user:", "post:", 0, hlc.Timestamp{WallNs: 2000}, exp)
+		if err != nil {
+			t.Fatalf("HLC delete err: %v", err)
+		}
+		if n != 3 {
+			t.Fatalf("HLC delete: got %d want 3", n)
+		}
+	})
+
+	t.Run("TombstonesFenceOlderAdd", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Minute)
+		c.EnablePrefixIndex(identityExtract)
+		exp := time.Now().Add(time.Hour)
+		t0 := hlc.Timestamp{WallNs: 1000}
+		t1 := hlc.Timestamp{WallNs: 2000}
+		cID := ContribID{0: 1}
+		if !c.AddEdgeWithExpirationContribHLC("user:1", "post:10", 1.0, exp, cID, t0) {
+			t.Fatalf("seed add failed")
+		}
+		n, err := c.DeleteEdgesByPrefixHLC(ctx, "user:", "post:", 0, t1, exp)
+		if err != nil || n != 1 {
+			t.Fatalf("HLC prefix delete: n=%d err=%v want n=1 err=nil", n, err)
+		}
+		if _, ok := c.GetWeight("user:1", "post:10"); ok {
+			t.Fatalf("edge present after HLC prefix delete")
+		}
+		// A strictly-older Add must be fenced by the per-edge tombstone.
+		if c.AddEdgeWithExpirationContribHLC("user:1", "post:10", 9.0, exp, cID, t0) {
+			t.Fatalf("older add: want applied=false (tombstone)")
+		}
+		if _, ok := c.GetWeight("user:1", "post:10"); ok {
+			t.Fatalf("older add resurrected a prefix-deleted edge")
+		}
+	})
 }

@@ -167,3 +167,110 @@ func TestSDK_ScanEdges_Pagination(t *testing.T) {
 		}
 	}
 }
+
+// TestSDK_DeleteEdgesByPrefix exercises the full DeleteEdgesByPrefix
+// round-trip (#899): the tail∩head intersection is deleted, dry-run
+// reports the matched count without mutating, limit caps a single call,
+// and an all-empty request is rejected with InvalidArgument so a bulk
+// edge wipe is always explicitly scoped.
+func TestSDK_DeleteEdgesByPrefix(t *testing.T) {
+	l, cleanup := newPrefixSDKClient(t)
+	defer cleanup()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	seed := func() {
+		seedPrefixEdges(t, ctx, l, [][2]string{
+			{"user:1", "post:1"},
+			{"user:1", "post:2"},
+			{"user:2", "post:3"},
+			{"user:2", "session:1"},
+			{"admin:1", "post:9"},
+		})
+	}
+
+	t.Run("all-empty request is rejected", func(t *testing.T) {
+		seed()
+		if _, err := l.DeleteEdgesByPrefix(ctx); err == nil {
+			t.Fatal("DeleteEdgesByPrefix with no prefix: want InvalidArgument, got nil")
+		}
+		// Nothing was deleted.
+		if got := collectEdges(t, ctx, l); len(got) != 5 {
+			t.Fatalf("after rejected delete, edges = %v (want 5)", got)
+		}
+	})
+
+	t.Run("dry-run reports the count without mutating", func(t *testing.T) {
+		seed()
+		n, err := l.DeleteEdgesByPrefix(ctx,
+			client.WithEdgeDeleteTailPrefix("user:"),
+			client.WithEdgeDeleteHeadPrefix("post:"),
+			client.WithEdgeDeleteDryRun(),
+		)
+		if err != nil {
+			t.Fatalf("DeleteEdgesByPrefix dry-run: %v", err)
+		}
+		if n != 3 {
+			t.Fatalf("dry-run count = %d, want 3", n)
+		}
+		if got := collectEdges(t, ctx, l); len(got) != 5 {
+			t.Fatalf("after dry-run, edges = %v (want 5 — dry-run must not mutate)", got)
+		}
+	})
+
+	t.Run("deletes only the tail and head intersection", func(t *testing.T) {
+		seed()
+		n, err := l.DeleteEdgesByPrefix(ctx,
+			client.WithEdgeDeleteTailPrefix("user:"),
+			client.WithEdgeDeleteHeadPrefix("post:"),
+		)
+		if err != nil {
+			t.Fatalf("DeleteEdgesByPrefix: %v", err)
+		}
+		if n != 3 {
+			t.Fatalf("deleted = %d, want 3", n)
+		}
+		got := collectEdges(t, ctx, l)
+		want := []string{
+			"admin:1->post:9",
+			"user:2->session:1",
+		}
+		if len(got) != len(want) {
+			t.Fatalf("surviving edges = %v, want %v", got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("surviving edges = %v, want %v", got, want)
+			}
+		}
+	})
+
+	t.Run("limit caps a single call and repeated calls drain", func(t *testing.T) {
+		seed()
+		total := uint64(0)
+		for {
+			n, err := l.DeleteEdgesByPrefix(ctx,
+				client.WithEdgeDeleteTailPrefix("user:"),
+				client.WithEdgeDeleteLimit(1),
+			)
+			if err != nil {
+				t.Fatalf("DeleteEdgesByPrefix limited: %v", err)
+			}
+			if n > 1 {
+				t.Fatalf("limited delete removed %d, want ≤1", n)
+			}
+			total += n
+			if n == 0 {
+				break
+			}
+		}
+		// user:1 has 2 post edges, user:2 has post:3 + session:1 → 4 user: edges.
+		if total != 4 {
+			t.Fatalf("drained total = %d, want 4", total)
+		}
+		got := collectEdges(t, ctx, l)
+		if len(got) != 1 || got[0] != "admin:1->post:9" {
+			t.Fatalf("surviving edges = %v, want [admin:1->post:9]", got)
+		}
+	})
+}

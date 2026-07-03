@@ -572,6 +572,12 @@ edges, _, _ := cli.ScanEdges(ctx,
     client.WithEdgeScanHeadPrefix("post:"),
     client.WithEdgeScanLimit(100))
 _ = edges
+
+// Edge prefix bulk-delete: the tail∩head intersection (DeleteEdgesByPrefix
+// supports WithEdgeDeleteDryRun; at least one prefix must be non-empty).
+_, _ = cli.DeleteEdgesByPrefix(ctx,
+    client.WithEdgeDeleteTailPrefix("user:"),
+    client.WithEdgeDeleteHeadPrefix("session:"))
 ```
 
 Constructor options cover the operational tiers too: `client.WithAuthToken`
@@ -799,6 +805,7 @@ whole subgraph, so there is no plural form.
 | `ScanVertexKeys` | Enumerate vertex **keys** (no values) by prefix, page-by-page | Keys-only, wire-efficient backing for the `keys` CLI verb; a non-empty `prefix` is REQUIRED (empty → `InvalidArgument`); its own opaque cursor kind (not interchangeable with other `Scan*`); reuses the `LANTERN_SCAN_*` clamps; SDK helper `ScanVertexKeysAll` auto-paginates |
 | `CountVerticesByPrefix` | Count live vertices under a prefix | Radix-only (cheap); not subject to `limit` |
 | `DeleteVerticesByPrefix` | Bulk-delete a namespace | Capped by server-configured `limit`; `dry_run` returns the count that *would* be deleted without mutating; edges incident to removed vertices are reaped on the next GC tick |
+| `DeleteEdgesByPrefix` | Bulk-delete edges by `tail_prefix` AND `head_prefix` | The edge-shaped sibling of `DeleteVerticesByPrefix`: removes the tail∩head intersection. At least one prefix must be non-empty (all-empty → `InvalidArgument`, so a whole-graph edge wipe is always explicitly scoped); shares the `LANTERN_DELETE_BY_PREFIX_*` limits; `dry_run` returns the count that *would* be deleted without mutating; call repeatedly until the returned count is below `limit` to drain a set larger than the per-call cap |
 | `ScanEdges` | Enumerate edges by `tail_prefix` AND `head_prefix` | Either prefix may be empty; head dimension is served by a per-tail head radix (not a post-filter); head-only scans still iterate every tail, so combining both prefixes is the most efficient shape; same opaque-cursor / cross-RPC rejection rules as `ScanVertices`; SDK helper `ScanEdgesAll` auto-paginates |
 | `Illuminate` | Walk the graph from a seed | Typed per-family options (#846): `WithBFS(BFSOpts{Step, FanOut, Objective, Reduction})` for the BFS walk (Reduction = none / MST / SPT), `WithPPR(PPROpts{TopN, RestartProb, Epsilon})` for Personalized PageRank, plus shared `WithWeighting` (raw / TF-IDF / BM25) and `WithVertexPrefix`; honours `ctx` cancellation; `bfs.step`/`bfs.fan_out`/`ppr.top_n` are clamped at `LANTERN_ILLUMINATE_MAX_STEP` / `LANTERN_ILLUMINATE_MAX_K`. |
 
@@ -851,7 +858,7 @@ The server is configured via environment variables, parsed in
 | `LANTERN_MAX_KEY_LEN` | `1024` | Reject vertex/edge keys longer than this (validation interceptor) |
 | `LANTERN_MAX_BATCH_SIZE` | `10000` | Reject batch Put/Add requests over this size |
 | `LANTERN_SCAN_DEFAULT_LIMIT` / `LANTERN_SCAN_MAX_LIMIT` | `1000` / `10000` | Default page size and hard cap for `ScanVertices` / `ScanVertexKeys` / `ScanEdges` |
-| `LANTERN_DELETE_BY_PREFIX_DEFAULT_LIMIT` / `LANTERN_DELETE_BY_PREFIX_MAX_LIMIT` | `10000` / `100000` | Default and hard cap for `DeleteVerticesByPrefix` per call |
+| `LANTERN_DELETE_BY_PREFIX_DEFAULT_LIMIT` / `LANTERN_DELETE_BY_PREFIX_MAX_LIMIT` | `10000` / `100000` | Default and hard cap for `DeleteVerticesByPrefix` and `DeleteEdgesByPrefix` per call |
 | `LANTERN_ILLUMINATE_MAX_STEP` | `16` | Cap on BFS depth accepted by `Illuminate` |
 | `LANTERN_ILLUMINATE_MAX_K` | `1024` | Cap on neighbours-per-step accepted by `Illuminate` |
 | `LANTERN_TRAVERSAL_TIMEOUT_MS` | `0` | Server-side wall-clock budget for `Illuminate` (#842); `0` keeps the client-owned deadline. A client deadline shorter than the budget still wins. |
