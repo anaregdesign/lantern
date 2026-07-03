@@ -1,11 +1,13 @@
 import {
   INITIAL_SEARCH_VERTICES_STATE,
+  type SearchQueryOptions,
   type SearchResultRow,
   type SearchVerticesState,
 } from "./state";
 
 export type SearchVerticesAction =
   | { type: "QUERY_CHANGED"; query: string }
+  | { type: "OPTIONS_CHANGED"; options: SearchQueryOptions }
   | { type: "SEARCH_REQUESTED"; epoch: number }
   | { type: "SEARCH_RECEIVED"; epoch: number; results: SearchResultRow[] }
   | { type: "SEARCH_FAILED"; epoch: number; error: string }
@@ -31,8 +33,13 @@ export function searchVerticesReducer(
       const queryEpoch = state.queryEpoch + 1;
       if (action.query.length === 0) {
         // Empty query shows no results and issues no request, but the
-        // epoch still advances so any in-flight reply is discarded.
-        return { ...INITIAL_SEARCH_VERTICES_STATE, queryEpoch };
+        // epoch still advances so any in-flight reply is discarded. The
+        // operator's chosen options survive the clear.
+        return {
+          ...INITIAL_SEARCH_VERTICES_STATE,
+          options: state.options,
+          queryEpoch,
+        };
       }
       return {
         ...state,
@@ -74,8 +81,36 @@ export function searchVerticesReducer(
       // outcome (opt-out), not a failure. Clear any prior error.
       return { ...state, status: "disabled", results: [], error: null };
     }
+    case "OPTIONS_CHANGED": {
+      if (sameOptions(action.options, state.options)) {
+        return state;
+      }
+      // A changed relevance control re-runs the live query under a fresh
+      // epoch, exactly like a keystroke. An empty query stays inert (the
+      // effect skips the fetch), but the epoch still advances so a slow
+      // reply from the previous options cannot land.
+      const queryEpoch = state.queryEpoch + 1;
+      if (state.query.length === 0) {
+        return { ...state, options: action.options, queryEpoch };
+      }
+      return {
+        ...state,
+        options: action.options,
+        queryEpoch,
+        status: "idle",
+        results: [],
+        error: null,
+      };
+    }
     default: {
       return state;
     }
   }
+}
+
+/** Structural equality for the relevance controls, used to drop no-op changes. */
+function sameOptions(a: SearchQueryOptions, b: SearchQueryOptions): boolean {
+  return (
+    a.matchMode === b.matchMode && a.phrase === b.phrase && a.fuzzy === b.fuzzy
+  );
 }

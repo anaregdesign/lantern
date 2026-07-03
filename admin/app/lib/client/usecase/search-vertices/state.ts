@@ -38,10 +38,29 @@ export interface SearchResultRow {
   vertex: Vertex | null;
 }
 
+/** How a multi-word content-search query's words combine. */
+export type SearchMatchMode = "any" | "all" | "min-should";
+
+/** The relevance controls the search box exposes (#892). */
+export interface SearchQueryOptions {
+  /** Word combination: "any" (OR, default), "all" (AND), or "min-should". */
+  matchMode: SearchMatchMode;
+  /** Require the query's words to occur adjacently, in order. */
+  phrase: boolean;
+  /** Tolerate typos and match word prefixes. */
+  fuzzy: boolean;
+}
+
+export const DEFAULT_SEARCH_QUERY_OPTIONS: SearchQueryOptions = {
+  matchMode: "any",
+  phrase: false,
+  fuzzy: false,
+};
+
 export interface SearchVerticesState {
   /** The debounced query currently being searched. */
   query: string;
-  /** Monotonic counter bumped on every query change. */
+  /** Monotonic counter bumped on every query or option change. */
   queryEpoch: number;
   /** Lifecycle of the in-flight (or last completed) search. */
   status: SearchVerticesStatus;
@@ -49,6 +68,8 @@ export interface SearchVerticesState {
   results: SearchResultRow[];
   /** Human-readable error from the last failed search, if any. */
   error: string | null;
+  /** The relevance controls applied to `query`. */
+  options: SearchQueryOptions;
 }
 
 export const INITIAL_SEARCH_VERTICES_STATE: SearchVerticesState = {
@@ -57,4 +78,5 @@ export const INITIAL_SEARCH_VERTICES_STATE: SearchVerticesState = {
   status: "idle",
   results: [],
   error: null,
+  options: DEFAULT_SEARCH_QUERY_OPTIONS,
 };

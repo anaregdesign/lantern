@@ -102,10 +102,19 @@ export interface ScanVerticesResponse {
 // `{ key, score }` hits — the admin search usecase hydrates the keys back
 // into full vertices via GetVertices, preserving rank order.
 
+/** How a multi-word content-search query's words combine (#892). */
+export type SearchMatchMode = "any" | "all" | "min-should";
+
 export interface SearchVerticesRequest {
   query: string;
   limit?: number;
   prefix?: string;
+  /** Word combination: "any" (OR, default), "all" (AND), or "min-should". */
+  matchMode?: SearchMatchMode;
+  /** Require the query's words to occur adjacently, in order. */
+  phrase?: boolean;
+  /** Tolerate typos and match word prefixes (edit distance 1 + prefix terms). */
+  fuzzy?: boolean;
 }
 
 export interface SearchHit {

@@ -4,6 +4,7 @@ import { fetchSearchResults } from "./handlers";
 import { searchVerticesReducer, type SearchVerticesAction } from "./reducer";
 import {
   INITIAL_SEARCH_VERTICES_STATE,
+  type SearchMatchMode,
   type SearchVerticesState,
 } from "./state";
 
@@ -26,6 +27,12 @@ export interface UseSearchVerticesOptions {
   /** Optional key-prefix filter applied to the ranked hits server-side. */
   prefix?: string;
   debounceMs?: number;
+  /** Word combination: "any" (OR, default), "all" (AND), or "min-should". */
+  matchMode?: SearchMatchMode;
+  /** Require the query's words to occur adjacently, in order. */
+  phrase?: boolean;
+  /** Tolerate typos and match word prefixes. */
+  fuzzy?: boolean;
 }
 
 export interface UseSearchVerticesResult {
@@ -47,6 +54,9 @@ export function useSearchVertices(
   const limit = options.limit ?? DEFAULT_SEARCH_LIMIT;
   const prefix = options.prefix;
   const debounceMs = options.debounceMs ?? SEARCH_DEBOUNCE_MS;
+  const matchMode = options.matchMode ?? "any";
+  const phrase = options.phrase ?? false;
+  const fuzzy = options.fuzzy ?? false;
   const client = useLanternClient();
   const [state, dispatch] = useReducer(
     searchVerticesReducer,
@@ -60,6 +70,16 @@ export function useSearchVertices(
     }, debounceMs);
     return () => window.clearTimeout(handle);
   }, [rawQuery, debounceMs]);
+
+  // Fold option changes into the reducer immediately: toggling a control is
+  // a deliberate act, not a per-keystroke storm, so it needs no debounce.
+  // The reducer bumps the epoch, which re-runs the live query below.
+  useEffect(() => {
+    dispatch({
+      type: "OPTIONS_CHANGED",
+      options: { matchMode, phrase, fuzzy },
+    });
+  }, [matchMode, phrase, fuzzy]);
 
   // On every query change, search + hydrate under a fresh AbortController.
   const lastEpochRef = useRef<number>(-1);
@@ -79,13 +99,14 @@ export function useSearchVertices(
         query: state.query,
         limit,
         prefix,
+        options: state.options,
         epoch: state.queryEpoch,
         signal: controller.signal,
       },
       dispatch as (action: SearchVerticesAction) => void,
     );
     return () => controller.abort();
-  }, [client, state.query, state.queryEpoch, limit, prefix]);
+  }, [client, state.query, state.queryEpoch, state.options, limit, prefix]);
 
   const retry = useCallback(() => {
     if (state.query.length === 0) {
@@ -99,11 +120,12 @@ export function useSearchVertices(
         query: state.query,
         limit,
         prefix,
+        options: state.options,
         epoch: state.queryEpoch,
       },
       dispatch as (action: SearchVerticesAction) => void,
     );
-  }, [client, state.query, state.queryEpoch, limit, prefix]);
+  }, [client, state.query, state.queryEpoch, state.options, limit, prefix]);
 
   return useMemo<UseSearchVerticesResult>(
     () => ({ state, retry }),

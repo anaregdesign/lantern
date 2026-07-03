@@ -2,12 +2,15 @@ import { useState } from "react";
 import {
   Badge,
   Button,
+  Dropdown,
   Field,
   Input,
   MessageBar,
   MessageBarBody,
   MessageBarTitle,
+  Option,
   Spinner,
+  Switch,
   Tab,
   TabList,
   Table,
@@ -34,6 +37,7 @@ import {
   formatScore,
   selectCaption,
 } from "~/lib/client/usecase/search-vertices/selectors";
+import type { SearchMatchMode } from "~/lib/client/usecase/search-vertices/state";
 import type { Vertex } from "~/lib/client/infrastructure/api/types";
 import { ValueCell } from "../ValueCell/ValueCell";
 import { ExpirationCell } from "../ExpirationCell/ExpirationCell";
@@ -48,6 +52,13 @@ import styles from "./BrowseVerticesPage.module.css";
  *    a prefix scan and a content query land in the same table.
  */
 type FindMode = "prefix" | "search";
+
+/** Human labels for the content-search match modes (#892). */
+const MATCH_MODE_LABELS: Record<SearchMatchMode, string> = {
+  any: "Any word (OR)",
+  all: "All words (AND)",
+  "min-should": "Most words",
+};
 
 /** A vertex row normalised across both find modes. */
 interface VertexRow {
@@ -68,10 +79,13 @@ export function BrowseVerticesPage() {
   const [mode, setMode] = useState<FindMode>("prefix");
   const [prefix, setPrefix] = useState("");
   const [query, setQuery] = useState("");
+  const [matchMode, setMatchMode] = useState<SearchMatchMode>("any");
+  const [phrase, setPhrase] = useState(false);
+  const [fuzzy, setFuzzy] = useState(false);
   const browse = useBrowseVertices(prefix, {
     pageSize: DEFAULT_VERTEX_PAGE_SIZE,
   });
-  const search = useSearchVertices(query);
+  const search = useSearchVertices(query, { matchMode, phrase, fuzzy });
   const navigate = useNavigate();
 
   const searching = mode === "search";
@@ -197,6 +211,44 @@ export function BrowseVerticesPage() {
           )}
         </div>
       </section>
+
+      {searching ? (
+        <section className={styles.searchOptions} data-testid="search-options">
+          <Field label="Match">
+            <Dropdown
+              className={styles.searchOptionsMode}
+              selectedOptions={[matchMode]}
+              value={MATCH_MODE_LABELS[matchMode]}
+              onOptionSelect={(_, data) =>
+                setMatchMode((data.optionValue as SearchMatchMode) ?? "any")
+              }
+              data-testid="search-mode"
+            >
+              <Option value="any" text="Any word (OR)">
+                Any word (OR)
+              </Option>
+              <Option value="all" text="All words (AND)">
+                All words (AND)
+              </Option>
+              <Option value="min-should" text="Most words">
+                Most words
+              </Option>
+            </Dropdown>
+          </Field>
+          <Switch
+            label="Phrase"
+            checked={phrase}
+            onChange={(_, data) => setPhrase(data.checked)}
+            data-testid="search-phrase"
+          />
+          <Switch
+            label="Fuzzy"
+            checked={fuzzy}
+            onChange={(_, data) => setFuzzy(data.checked)}
+            data-testid="search-fuzzy"
+          />
+        </section>
+      ) : null}
 
       {searching ? (
         <p className={styles.caption} data-testid="search-caption">

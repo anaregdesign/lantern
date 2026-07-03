@@ -2,7 +2,7 @@ import { LanternApiError } from "~/lib/client/infrastructure/api/error";
 import { getVertices } from "~/lib/client/infrastructure/api/get-vertices";
 import type { LanternClient } from "~/lib/client/infrastructure/api/lantern-client";
 import { searchVertices } from "~/lib/client/infrastructure/api/search-vertices";
-import type { SearchResultRow } from "./state";
+import type { SearchQueryOptions, SearchResultRow } from "./state";
 import type { SearchVerticesAction } from "./reducer";
 
 export interface FetchSearchResultsInput {
@@ -10,6 +10,7 @@ export interface FetchSearchResultsInput {
   query: string;
   limit: number;
   prefix?: string;
+  options: SearchQueryOptions;
   epoch: number;
   signal?: AbortSignal;
 }
@@ -36,7 +37,14 @@ export async function fetchSearchResults(
   try {
     const { hits } = await searchVertices(
       input.client,
-      { query: input.query, limit: input.limit, prefix: input.prefix },
+      {
+        query: input.query,
+        limit: input.limit,
+        prefix: input.prefix,
+        matchMode: input.options.matchMode,
+        phrase: input.options.phrase,
+        fuzzy: input.options.fuzzy,
+      },
       { signal: input.signal },
     );
     if (hits.length === 0) {
