@@ -13,6 +13,7 @@ package relevance
 
 import (
 	"os"
+	"sort"
 	"testing"
 
 	"github.com/anaregdesign/lantern/core/search"
@@ -154,4 +155,139 @@ func corpusHasQuery(c Corpus, id string) bool {
 		}
 	}
 	return false
+}
+
+// indexedEnCorpus loads the en corpus and indexes it into a fresh production
+// pipeline — the shared setup for the phrase and match-mode precision gates.
+func indexedEnCorpus(t *testing.T) (Corpus, *search.InvertedIndex[string, search.Text]) {
+	t.Helper()
+	corpora, err := Corpora()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var en Corpus
+	for _, c := range corpora {
+		if c.Name == "en" {
+			en = c
+		}
+	}
+	if en.Name == "" {
+		t.Fatal("en corpus not found")
+	}
+	idx := productionIndex()
+	en.IndexDocs(idx)
+	return en, idx
+}
+
+// queryByID indexes the corpus queries by ID.
+func queryByID(c Corpus) map[string]Query {
+	byID := make(map[string]Query, len(c.Queries))
+	for _, q := range c.Queries {
+		byID[q.ID] = q
+	}
+	return byID
+}
+
+// phraseQueries are the en-corpus queries whose intent is a contiguous phrase.
+// The value is the expected text so a fixture rename fails loudly.
+var phraseQueries = map[string]string{
+	"q02": "kubernetes rolling update",
+	"q05": "data set",
+}
+
+// TestPhraseSearchPrecision is the #889 phrase yardstick: on the phrase-query
+// subset of the en corpus, phrase search drops the documents that merely
+// scatter the query words and keeps only the contiguous match, so every
+// returned document is relevant and the top one is a direct hit — a precision
+// the recall-oriented OR-union term search cannot match. The metric is
+// precision, not nDCG: on a corpus this small requiring adjacency trades recall
+// for precision so nDCG@10 is a wash (the proximity boost carries the nDCG
+// side, guarded by the floors gate).
+func TestPhraseSearchPrecision(t *testing.T) {
+	en, idx := indexedEnCorpus(t)
+	byID := queryByID(en)
+	for id, wantText := range phraseQueries {
+		q, ok := byID[id]
+		if !ok {
+			t.Fatalf("phrase query %q is not in the en corpus — subset is stale", id)
+		}
+		if q.Text != wantText {
+			t.Fatalf("phrase query %q text = %q, want %q — subset is stale", id, q.Text, wantText)
+		}
+		phrase := rankResults(idx.SearchPhrase(q.Text))
+		term := idx.Search(q.Text)
+		if len(phrase) == 0 {
+			t.Errorf("%s %q: phrase search returned nothing", id, q.Text)
+			continue
+		}
+		if len(phrase) > len(term) {
+			t.Errorf("%s %q: phrase results %d exceed term results %d", id, q.Text, len(phrase), len(term))
+		}
+		for _, docID := range phrase {
+			if q.Qrels[docID] == 0 {
+				t.Errorf("%s %q: phrase hit %q is not relevant (grade 0)", id, q.Text, docID)
+			}
+		}
+		if g := q.Qrels[phrase[0]]; g != 3 {
+			t.Errorf("%s %q: top phrase hit %q graded %d, want 3", id, q.Text, phrase[0], g)
+		}
+		t.Logf("%s %q: phrase kept %d of %d term hits, all relevant, top=%s", id, q.Text, len(phrase), len(term), phrase[0])
+	}
+}
+
+// matchAllQueries are the en-corpus multi-word queries used by
+// TestMatchAllPrecision.
+var matchAllQueries = []string{"q02", "q05"}
+
+// TestMatchAllPrecision is the #890 yardstick: on multi-word queries, MatchAll
+// narrows the OR-union to documents covering every query word, raising
+// precision (every returned document is relevant) without collapsing recall
+// (the grade-3 document survives). It runs on the production pipeline.
+func TestMatchAllPrecision(t *testing.T) {
+	en, idx := indexedEnCorpus(t)
+	byID := queryByID(en)
+	for _, id := range matchAllQueries {
+		q, ok := byID[id]
+		if !ok {
+			t.Fatalf("match-mode query %q is not in the en corpus — subset is stale", id)
+		}
+		any := idx.SearchMatch(q.Text, search.MatchOptions{Mode: search.MatchAny})
+		all := idx.SearchMatch(q.Text, search.MatchOptions{Mode: search.MatchAll})
+		if len(all) == 0 {
+			t.Errorf("%s %q: MatchAll returned nothing (recall collapse)", id, q.Text)
+			continue
+		}
+		if len(all) > len(any) {
+			t.Errorf("%s %q: MatchAll %d exceeds MatchAny %d", id, q.Text, len(all), len(any))
+		}
+		hasTop := false
+		for _, r := range all {
+			if q.Qrels[r.ID] == 0 {
+				t.Errorf("%s %q: MatchAll hit %q is not relevant (grade 0)", id, q.Text, r.ID)
+			}
+			if q.Qrels[r.ID] == 3 {
+				hasTop = true
+			}
+		}
+		if !hasTop {
+			t.Errorf("%s %q: MatchAll dropped the grade-3 document (recall collapse)", id, q.Text)
+		}
+		t.Logf("%s %q: MatchAll kept %d of %d MatchAny hits, all relevant", id, q.Text, len(all), len(any))
+	}
+}
+
+// rankResults orders search results most-relevant first, breaking score ties by
+// ID, matching RankSearcher's deterministic order.
+func rankResults(results []search.Result[string]) []string {
+	sort.SliceStable(results, func(i, j int) bool {
+		if results[i].Score != results[j].Score {
+			return results[i].Score > results[j].Score
+		}
+		return results[i].ID < results[j].ID
+	})
+	ids := make([]string, len(results))
+	for i, r := range results {
+		ids[i] = r.ID
+	}
+	return ids
 }

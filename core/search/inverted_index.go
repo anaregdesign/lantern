@@ -346,30 +346,11 @@ func (idx *InvertedIndex[S, D]) deleteLocked(id S) {
 // classes counts once per class, since the channels carry distinct evidence.
 // A query with no analyzable terms, or one that matches nothing, returns nil;
 // ties in score have an unspecified order.
+//
+// Search is the MatchAny case of SearchMatch; pass a MatchOptions to require
+// every query term (MatchAll) or a minimum number of them (MatchMinShould).
 func (idx *InvertedIndex[S, D]) Search(query string) []Result[S] {
-	queryTerms := idx.queryTerms(query)
-	if len(queryTerms) == 0 {
-		return nil
-	}
-
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
-
-	scores := idx.scoreLocked(queryTerms)
-	if len(scores) == 0 {
-		return nil
-	}
-	// Lift documents whose query terms cluster tightly (positions permitting).
-	idx.applyProximityLocked(scores, queryTerms)
-	results := make([]Result[S], 0, len(scores))
-	for ord, score := range scores {
-		results = append(results, Result[S]{ID: idx.docs[ord].id, Score: score})
-	}
-	// Rank by descending score; ties keep an unspecified relative order.
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Score > results[j].Score
-	})
-	return results
+	return idx.SearchMatch(query, MatchOptions{})
 }
 
 // queryTerms analyzes query and collapses the tokens to the distinct
@@ -451,29 +432,10 @@ func (idx *InvertedIndex[S, D]) scoreLocked(queryTerms map[Token]struct{}) map[u
 // Results are ordered by descending score; ties at the k-th boundary keep an
 // unspecified subset, matching Search's unspecified tie order. k <= 0, an
 // unanalyzable query, or zero accepted matches return nil.
+//
+// SearchTopK is the MatchAny case of SearchMatchTopK.
 func (idx *InvertedIndex[S, D]) SearchTopK(query string, k int, accept func(id S) bool) []Result[S] {
-	if k <= 0 {
-		return nil
-	}
-	queryTerms := idx.queryTerms(query)
-	if len(queryTerms) == 0 {
-		return nil
-	}
-
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
-
-	// Phase 1 — union scoring identical to Search, then the same proximity
-	// boost, so a document's full score exists before selection: its rank is
-	// the SUM over query terms, adjusted for how tightly they cluster.
-	scores := idx.scoreLocked(queryTerms)
-	if len(scores) == 0 {
-		return nil
-	}
-	idx.applyProximityLocked(scores, queryTerms)
-
-	// Phase 2 — bounded selection, shared with SearchPhraseTopK.
-	return idx.selectTopKLocked(scores, k, accept)
+	return idx.SearchMatchTopK(query, k, accept, MatchOptions{})
 }
 
 // selectTopKLocked returns the k highest-scoring documents in scores that pass
