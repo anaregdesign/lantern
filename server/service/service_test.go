@@ -53,6 +53,89 @@ func TestLanternService_PutAndGetVertex(t *testing.T) {
 	}
 }
 
+// TestLanternService_PutVertexIfAbsent pins the SET NX surface (#896): the
+// singular PutVertex reports written via a bool, the plural PutVertices reports
+// the written count plus the skipped keys, and an unconditional put still
+// overwrites. Uses the default (non-replicated) service so the clock==nil
+// branch is exercised.
+func TestLanternService_PutVertexIfAbsent(t *testing.T) {
+	ctx := context.Background()
+
+	mkVertex := func(key, val string) *pb.Vertex {
+		return &pb.Vertex{
+			Key:        key,
+			Value:      &pb.Vertex_String_{String_: val},
+			Expiration: futureTs(time.Minute),
+		}
+	}
+	valueOf := func(t *testing.T, s *LanternService, key string) string {
+		t.Helper()
+		r, err := s.GetVertex(ctx, &pb.GetVertexRequest{Key: key})
+		if err != nil {
+			t.Fatalf("GetVertex(%q): %v", key, err)
+		}
+		return r.Vertex.GetString_()
+	}
+
+	t.Run("SingularWritesThenSkips", func(t *testing.T) {
+		s := newTestService(t)
+		first, err := s.PutVertex(ctx, &pb.PutVertexRequest{Vertex: mkVertex("k", "one"), IfAbsent: true})
+		if err != nil {
+			t.Fatalf("PutVertex: %v", err)
+		}
+		if !first.GetWritten() {
+			t.Fatal("first if_absent PutVertex Written = false, want true")
+		}
+		second, err := s.PutVertex(ctx, &pb.PutVertexRequest{Vertex: mkVertex("k", "two"), IfAbsent: true})
+		if err != nil {
+			t.Fatalf("PutVertex(repeat): %v", err)
+		}
+		if second.GetWritten() {
+			t.Fatal("second if_absent PutVertex Written = true, want false (key already live)")
+		}
+		if got := valueOf(t, s, "k"); got != "one" {
+			t.Errorf("value = %q, want \"one\" (skipped write must not overwrite)", got)
+		}
+	})
+
+	t.Run("PluralReportsWrittenAndSkipped", func(t *testing.T) {
+		s := newTestService(t)
+		if _, err := s.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{mkVertex("live", "old")}}); err != nil {
+			t.Fatalf("seed PutVertices: %v", err)
+		}
+		resp, err := s.PutVertices(ctx, &pb.PutVerticesRequest{
+			Vertices: []*pb.Vertex{mkVertex("fresh", "a"), mkVertex("live", "b")},
+			IfAbsent: true,
+		})
+		if err != nil {
+			t.Fatalf("PutVertices(if_absent): %v", err)
+		}
+		if resp.GetWritten() != 1 {
+			t.Errorf("Written = %d, want 1", resp.GetWritten())
+		}
+		if got := resp.GetSkippedKeys(); len(got) != 1 || got[0] != "live" {
+			t.Errorf("SkippedKeys = %v, want [live]", got)
+		}
+		if got := valueOf(t, s, "live"); got != "old" {
+			t.Errorf("live value = %q, want \"old\"", got)
+		}
+	})
+
+	t.Run("UnconditionalStillOverwrites", func(t *testing.T) {
+		s := newTestService(t)
+		if _, err := s.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{mkVertex("k", "one")}}); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		// if_absent defaults false → ordinary LWW upsert.
+		if _, err := s.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{mkVertex("k", "two")}}); err != nil {
+			t.Fatalf("overwrite: %v", err)
+		}
+		if got := valueOf(t, s, "k"); got != "two" {
+			t.Errorf("value = %q, want \"two\" (unconditional put must overwrite)", got)
+		}
+	})
+}
+
 func TestLanternService_GetVertex_NotFound(t *testing.T) {
 	s := newTestService(t)
 	_, err := s.GetVertex(context.Background(), &pb.GetVertexRequest{Key: "missing"})

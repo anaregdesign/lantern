@@ -60,6 +60,33 @@ func (c *GraphCache[S, T]) PutVerticesWithExpiration(items []VertexItem[S, T]) {
 	}
 }
 
+// PutVerticesWithExpirationIfAbsent writes each vertex only when no live vertex
+// exists at its key (SET NX semantics, #896). It returns the number of vertices
+// actually written and, in request order, the keys skipped because a live
+// vertex already existed. Liveness follows the live-visibility rule (#750): an
+// expired-but-uncollected vertex does not block its write. The whole batch
+// commits under a single write lock, so the existence check and store are
+// atomic per key; within one batch a key's first accepted write makes it live,
+// so a later duplicate of that key is reported as skipped.
+func (c *GraphCache[S, T]) PutVerticesWithExpirationIfAbsent(items []VertexItem[S, T]) (written int, skipped []S) {
+	if len(items) == 0 {
+		return 0, nil
+	}
+	now := time.Now()
+	prepared := c.prepareSearchDocs(items, now)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range items {
+		if c.vertices.Has(items[i].Key) {
+			skipped = append(skipped, items[i].Key)
+			continue
+		}
+		c.putLocalVertexLockedAt(items[i].Key, items[i].Value, items[i].Expiration, now, preparedAt(prepared, i))
+		written++
+	}
+	return written, skipped
+}
+
 // prepareSearchDocs analyzes the search document of every live item OUTSIDE
 // c.mu so the per-vertex tokenization never runs under the aggregate graph lock
 // (#739). It returns nil when no search index is installed — the overwhelmingly
@@ -272,7 +299,49 @@ func (c *GraphCache[S, T]) PutVerticesWithExpirationHLC(items []VertexItem[S, T]
 	return rejected
 }
 
-// PutEdgesWithExpirationHLC is the LWW-aware, single-lock batch sibling of
+// PutVerticesWithExpirationIfAbsentHLC is the replication-aware sibling of
+// PutVerticesWithExpirationIfAbsent used by the LOCAL write path when
+// replication is enabled (#896). Like the non-HLC variant it writes each key
+// only when no live vertex exists there, but it additionally stamps every
+// accepted write with the originating mutation's ts (and clears any tombstone)
+// so the origin participates in last-writer-wins on equal footing with peers —
+// the same discipline PutVerticesWithExpirationHLC uses. A key whose write is
+// forbidden by the causal fence (a strictly newer delete/put watermark) is
+// reported as skipped rather than resurrected.
+//
+// It returns the indices of items that passed the absence check (in request
+// order) so the caller can both count them and replicate only that live subset
+// as an unconditional LWW put, and the keys skipped because a live vertex
+// already existed. Two concurrent if-absent writers on different nodes can both
+// report their write as accepted locally; the replicated unconditional puts
+// then converge via higher-HLC-wins (documented best-effort, like Redis SETNX
+// with async replicas).
+func (c *GraphCache[S, T]) PutVerticesWithExpirationIfAbsentHLC(items []VertexItem[S, T], ts hlc.Timestamp) (writtenIdx []int, skipped []S) {
+	if len(items) == 0 {
+		return nil, nil
+	}
+	now := time.Now()
+	prepared := c.prepareSearchDocs(items, now)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range items {
+		it := items[i]
+		if c.vertices.Has(it.Key) {
+			skipped = append(skipped, it.Key)
+			continue
+		}
+		if !c.vertexWriteAllowedLocked(it.Key, ts) {
+			skipped = append(skipped, it.Key)
+			continue
+		}
+		c.putLocalVertexLockedAt(it.Key, it.Value, it.Expiration, now, preparedAt(prepared, i))
+		c.recordVertexHLCLocked(it.Key, ts)
+		c.clearVertexTombstoneLocked(it.Key)
+		writtenIdx = append(writtenIdx, i)
+	}
+	return writtenIdx, skipped
+}
+
 // PutEdgesWithExpiration used by the LOCAL write path when replication is
 // enabled. Like PutVerticesWithExpirationHLC it stamps every edge with the
 // originating mutation's ts so PutEdge resolves as an LWW-Register on

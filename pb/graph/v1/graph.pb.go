@@ -1342,8 +1342,11 @@ func (x *GetVerticesResponse) GetMissing() []string {
 // the TTL (absolute time). This is the singular convenience wrapper over
 // PutVertices and shares its guard rails.
 type PutVertexRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Vertex        *Vertex                `protobuf:"bytes,1,opt,name=vertex,proto3" json:"vertex,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Vertex *Vertex                `protobuf:"bytes,1,opt,name=vertex,proto3" json:"vertex,omitempty"`
+	// When true, the write applies only if no live vertex exists at the key.
+	// An existing live vertex leaves value and expiration untouched (SET NX).
+	IfAbsent      bool `protobuf:"varint,2,opt,name=if_absent,json=ifAbsent,proto3" json:"if_absent,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1385,8 +1388,18 @@ func (x *PutVertexRequest) GetVertex() *Vertex {
 	return nil
 }
 
+func (x *PutVertexRequest) GetIfAbsent() bool {
+	if x != nil {
+		return x.IfAbsent
+	}
+	return false
+}
+
 type PutVertexResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// True when the write was applied; false when if_absent skipped it because
+	// a live vertex already existed. Always true for an unconditional put.
+	Written       bool `protobuf:"varint,1,opt,name=written,proto3" json:"written,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1421,12 +1434,23 @@ func (*PutVertexResponse) Descriptor() ([]byte, []int) {
 	return file_graph_v1_graph_proto_rawDescGZIP(), []int{13}
 }
 
+func (x *PutVertexResponse) GetWritten() bool {
+	if x != nil {
+		return x.Written
+	}
+	return false
+}
+
 // PutVerticesRequest writes vertices with upsert semantics: each Vertex.key
 // replaces any existing value at that key. Use the Vertex.expiration field
 // (absolute time) to control TTL.
 type PutVerticesRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Vertices      []*Vertex              `protobuf:"bytes,1,rep,name=vertices,proto3" json:"vertices,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Vertices []*Vertex              `protobuf:"bytes,1,rep,name=vertices,proto3" json:"vertices,omitempty"`
+	// When true, each write applies only if no live vertex exists at its key;
+	// keys with a live vertex are left untouched and reported in
+	// PutVerticesResponse.skipped_keys.
+	IfAbsent      bool `protobuf:"varint,2,opt,name=if_absent,json=ifAbsent,proto3" json:"if_absent,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1468,12 +1492,20 @@ func (x *PutVerticesRequest) GetVertices() []*Vertex {
 	return nil
 }
 
+func (x *PutVerticesRequest) GetIfAbsent() bool {
+	if x != nil {
+		return x.IfAbsent
+	}
+	return false
+}
+
 type PutVerticesResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Number of vertices accepted by the server. Currently always equals the
-	// request size on success; reserved for future per-item validation that may
-	// report partial writes.
-	Written       int32 `protobuf:"varint,1,opt,name=written,proto3" json:"written,omitempty"`
+	// Number of vertices actually written. For an unconditional put this equals
+	// the request size on success; under if_absent it excludes skipped keys.
+	Written int32 `protobuf:"varint,1,opt,name=written,proto3" json:"written,omitempty"`
+	// Keys skipped because a live vertex already existed (if_absent only).
+	SkippedKeys   []string `protobuf:"bytes,2,rep,name=skipped_keys,json=skippedKeys,proto3" json:"skipped_keys,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1513,6 +1545,13 @@ func (x *PutVerticesResponse) GetWritten() int32 {
 		return x.Written
 	}
 	return 0
+}
+
+func (x *PutVerticesResponse) GetSkippedKeys() []string {
+	if x != nil {
+		return x.SkippedKeys
+	}
+	return nil
 }
 
 // DeleteVertexRequest removes the vertex at `key`. Edges incident to the
@@ -4046,14 +4085,18 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x04keys\x18\x01 \x03(\tR\x04keys\"]\n" +
 	"\x13GetVerticesResponse\x12,\n" +
 	"\bvertices\x18\x01 \x03(\v2\x10.graph.v1.VertexR\bvertices\x12\x18\n" +
-	"\amissing\x18\x02 \x03(\tR\amissing\"<\n" +
+	"\amissing\x18\x02 \x03(\tR\amissing\"Y\n" +
 	"\x10PutVertexRequest\x12(\n" +
-	"\x06vertex\x18\x01 \x01(\v2\x10.graph.v1.VertexR\x06vertex\"\x13\n" +
-	"\x11PutVertexResponse\"B\n" +
+	"\x06vertex\x18\x01 \x01(\v2\x10.graph.v1.VertexR\x06vertex\x12\x1b\n" +
+	"\tif_absent\x18\x02 \x01(\bR\bifAbsent\"-\n" +
+	"\x11PutVertexResponse\x12\x18\n" +
+	"\awritten\x18\x01 \x01(\bR\awritten\"_\n" +
 	"\x12PutVerticesRequest\x12,\n" +
-	"\bvertices\x18\x01 \x03(\v2\x10.graph.v1.VertexR\bvertices\"/\n" +
+	"\bvertices\x18\x01 \x03(\v2\x10.graph.v1.VertexR\bvertices\x12\x1b\n" +
+	"\tif_absent\x18\x02 \x01(\bR\bifAbsent\"R\n" +
 	"\x13PutVerticesResponse\x12\x18\n" +
-	"\awritten\x18\x01 \x01(\x05R\awritten\"'\n" +
+	"\awritten\x18\x01 \x01(\x05R\awritten\x12!\n" +
+	"\fskipped_keys\x18\x02 \x03(\tR\vskippedKeys\"'\n" +
 	"\x13DeleteVertexRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\"0\n" +
 	"\x14DeleteVertexResponse\x12\x18\n" +

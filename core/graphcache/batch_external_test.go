@@ -594,3 +594,115 @@ func TestAddEdgesWithExpirationContribHLC_TombstoneFenced(t *testing.T) {
 		}
 	})
 }
+
+// TestPutVerticesWithExpirationIfAbsent pins the batched SET NX contract
+// (#896): only keys with no live vertex are written, live keys are reported in
+// skipped (request order), a key that becomes live earlier in the same batch
+// fences its own later duplicate, and an expired-but-uncollected vertex does
+// not block its write (#750 live-visibility).
+func TestPutVerticesWithExpirationIfAbsent(t *testing.T) {
+	future := time.Now().Add(time.Hour)
+	past := time.Now().Add(-time.Hour)
+
+	t.Run("WritesAbsentSkipsLive", func(t *testing.T) {
+		c := graphcache.NewGraphCache[string, string](time.Minute)
+		c.PutVertexWithExpiration("live", "old", future)
+		written, skipped := c.PutVerticesWithExpirationIfAbsent([]graphcache.VertexItem[string, string]{
+			{Key: "fresh", Value: "a", Expiration: future},
+			{Key: "live", Value: "b", Expiration: future}, // skipped: already live
+		})
+		if written != 1 {
+			t.Fatalf("written = %d, want 1", written)
+		}
+		if len(skipped) != 1 || skipped[0] != "live" {
+			t.Fatalf("skipped = %v, want [live]", skipped)
+		}
+		if v, _ := c.GetVertex("live"); v != "old" {
+			t.Fatalf("live value = %q, want \"old\" (must be untouched)", v)
+		}
+		if v, ok := c.GetVertex("fresh"); !ok || v != "a" {
+			t.Fatalf("fresh = (%q,%v), want (\"a\",true)", v, ok)
+		}
+	})
+
+	t.Run("IntraBatchDuplicateSkipped", func(t *testing.T) {
+		c := graphcache.NewGraphCache[string, string](time.Minute)
+		written, skipped := c.PutVerticesWithExpirationIfAbsent([]graphcache.VertexItem[string, string]{
+			{Key: "dup", Value: "first", Expiration: future},
+			{Key: "dup", Value: "second", Expiration: future}, // skipped: first made it live
+		})
+		if written != 1 {
+			t.Fatalf("written = %d, want 1", written)
+		}
+		if len(skipped) != 1 || skipped[0] != "dup" {
+			t.Fatalf("skipped = %v, want [dup]", skipped)
+		}
+		if v, _ := c.GetVertex("dup"); v != "first" {
+			t.Fatalf("dup value = %q, want \"first\"", v)
+		}
+	})
+
+	t.Run("ExpiredDoesNotBlock", func(t *testing.T) {
+		c := graphcache.NewGraphCache[string, string](time.Minute)
+		c.PutVertexWithExpiration("k", "stale", past)
+		written, skipped := c.PutVerticesWithExpirationIfAbsent([]graphcache.VertexItem[string, string]{
+			{Key: "k", Value: "fresh", Expiration: future},
+		})
+		if written != 1 || len(skipped) != 0 {
+			t.Fatalf("written=%d skipped=%v, want written=1 skipped=[]", written, skipped)
+		}
+		if v, _ := c.GetVertex("k"); v != "fresh" {
+			t.Fatalf("value = %q, want \"fresh\"", v)
+		}
+	})
+}
+
+// TestPutVerticesWithExpirationIfAbsentHLC pins the replication-aware SET NX
+// path (#896): it returns the request-order indices of the accepted subset so
+// the server can replicate only those as unconditional LWW puts, skips keys
+// that are already live, and refuses to resurrect a key fenced by a strictly
+// newer tombstone (reporting it as skipped rather than written).
+func TestPutVerticesWithExpirationIfAbsentHLC(t *testing.T) {
+	exp := time.Now().Add(time.Hour)
+	older := hlc.Timestamp{WallNs: 1000}
+	newer := hlc.Timestamp{WallNs: 2000}
+
+	t.Run("WrittenIndicesAndLiveSkip", func(t *testing.T) {
+		c := graphcache.NewGraphCache[string, string](time.Minute)
+		c.PutVerticesWithExpirationHLC([]graphcache.VertexItem[string, string]{
+			{Key: "live", Value: "old", Expiration: exp},
+		}, older)
+		writtenIdx, skipped := c.PutVerticesWithExpirationIfAbsentHLC([]graphcache.VertexItem[string, string]{
+			{Key: "live", Value: "b", Expiration: exp},  // idx 0: skipped (live)
+			{Key: "fresh", Value: "c", Expiration: exp}, // idx 1: written
+		}, newer)
+		if len(writtenIdx) != 1 || writtenIdx[0] != 1 {
+			t.Fatalf("writtenIdx = %v, want [1]", writtenIdx)
+		}
+		if len(skipped) != 1 || skipped[0] != "live" {
+			t.Fatalf("skipped = %v, want [live]", skipped)
+		}
+		if v, _ := c.GetVertex("live"); v != "old" {
+			t.Fatalf("live value = %q, want \"old\"", v)
+		}
+	})
+
+	t.Run("NewerTombstoneNotResurrected", func(t *testing.T) {
+		c := graphcache.NewGraphCache[string, string](time.Minute)
+		// Delete an absent key with a newer HLC: it removes nothing (returns 0)
+		// but still records the tombstone watermark that fences older writes.
+		c.DeleteVerticesHLC([]string{"d"}, newer, exp)
+		writtenIdx, skipped := c.PutVerticesWithExpirationIfAbsentHLC([]graphcache.VertexItem[string, string]{
+			{Key: "d", Value: "resurrect", Expiration: exp}, // older than tombstone: fenced
+		}, older)
+		if len(writtenIdx) != 0 {
+			t.Fatalf("writtenIdx = %v, want [] (fence must block)", writtenIdx)
+		}
+		if len(skipped) != 1 || skipped[0] != "d" {
+			t.Fatalf("skipped = %v, want [d]", skipped)
+		}
+		if _, ok := c.GetVertex("d"); ok {
+			t.Fatal("older if-absent put resurrected a tombstoned key")
+		}
+	})
+}

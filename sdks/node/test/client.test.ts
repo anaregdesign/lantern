@@ -73,15 +73,31 @@ function newStubRoutes(state: StubState) {
       },
       async putVertex(req) {
         if (req.vertex) {
+          if (req.ifAbsent && state.vertices.has(req.vertex.key)) {
+            return { written: false };
+          }
           state.vertices.set(req.vertex.key, req.vertex);
         }
-        return {};
+        return { written: true };
       },
       async putVertices(req) {
+        if (req.ifAbsent) {
+          let written = 0;
+          const skippedKeys: string[] = [];
+          for (const v of req.vertices) {
+            if (state.vertices.has(v.key)) {
+              skippedKeys.push(v.key);
+              continue;
+            }
+            state.vertices.set(v.key, v);
+            written++;
+          }
+          return { written, skippedKeys };
+        }
         for (const v of req.vertices) {
           state.vertices.set(v.key, v);
         }
-        return {};
+        return { written: req.vertices.length, skippedKeys: [] };
       },
       // Capture Add requests so #895 tests can assert how the SDK wires
       // contrib_ids (singular forwards into contrib_id; plural is
@@ -276,6 +292,36 @@ describe("Lantern client", () => {
       expect(c2.kind).toBe("bool");
       const d = await c.getVertex("batch/d");
       expect(d.kind).toBe("nil");
+    } finally {
+      c.close();
+    }
+  });
+
+  test("putVertexIfAbsent writes when absent and skips a live key (#896)", async () => {
+    const c = newClient();
+    try {
+      await expect(c.putVertexIfAbsent({ key: "nx/k", value: "one" })).resolves.toBe(true);
+      // Second attempt over a now-live key is a no-op.
+      await expect(c.putVertexIfAbsent({ key: "nx/k", value: "two" })).resolves.toBe(false);
+      const v = await c.getVertex("nx/k");
+      expect(v.value).toBe("one"); // untouched by the skipped write
+    } finally {
+      c.close();
+    }
+  });
+
+  test("putVerticesIfAbsent reports written count and skipped keys (#896)", async () => {
+    const c = newClient();
+    try {
+      await c.putVertex({ key: "nx/live", value: "old" });
+      const { written, skippedKeys } = await c.putVerticesIfAbsent([
+        { key: "nx/fresh", value: "a" },
+        { key: "nx/live", value: "b" }, // skipped: already live
+      ]);
+      expect(written).toBe(1);
+      expect(skippedKeys).toEqual(["nx/live"]);
+      const live = await c.getVertex("nx/live");
+      expect(live.value).toBe("old"); // untouched
     } finally {
       c.close();
     }

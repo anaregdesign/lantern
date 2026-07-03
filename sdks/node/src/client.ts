@@ -282,6 +282,23 @@ export class Lantern {
     });
   }
 
+  /**
+   * Conditionally upserts a single vertex, applying the write only when no
+   * live vertex already exists at its key (SET NX, #896). Resolves to `true`
+   * when the write landed and `false` when an existing live vertex left the
+   * stored value and expiration untouched. "Live" follows the server's #750
+   * visibility rule, so an expired-but-uncollected vertex does not block the
+   * write. The server performs the existence check and the store atomically,
+   * closing the check-then-act race a getVertex-then-putVertex sequence has.
+   */
+  async putVertexIfAbsent(input: VertexInput, signal?: AbortSignal): Promise<boolean> {
+    const vertex = fromJson(VertexSchema, toVertexJson(input) as JsonValue);
+    return this.invoke(async () => {
+      const resp = await this.client.putVertex({ vertex, ifAbsent: true }, this.callOpts(signal));
+      return resp.written;
+    });
+  }
+
   async deleteVertex(key: string, signal?: AbortSignal): Promise<boolean> {
     return this.invoke(async () => {
       const resp = await this.client.deleteVertex({ key }, this.callOpts(signal));
@@ -312,6 +329,38 @@ export class Lantern {
       const vertices = chunk.map((vi) => fromJson(VertexSchema, toVertexJson(vi) as JsonValue));
       await this.client.putVertices({ vertices }, this.callOpts(signal));
     });
+  }
+
+  /**
+   * Conditionally upserts a batch of vertices, applying each write only when
+   * no live vertex already exists at its key (SET NX, #896). Large batches are
+   * automatically chunked according to the client's batch-chunk size.
+   *
+   * Resolves to `written` — the number of vertices actually stored — and
+   * `skippedKeys` — the keys left untouched because a live vertex already
+   * existed there (summed/collected across chunks). "Live" follows the
+   * server's #750 visibility rule. Each key's existence check and store happen
+   * atomically server-side. On partial failure it throws a `BatchError` whose
+   * `written` field records the number of inputs in the fully committed
+   * chunks, so callers can resume with `inputs.slice(err.written)`.
+   */
+  async putVerticesIfAbsent(
+    inputs: readonly VertexInput[],
+    signal?: AbortSignal,
+  ): Promise<{ written: number; skippedKeys: string[] }> {
+    if (inputs.length === 0) return { written: 0, skippedKeys: [] };
+    let written = 0;
+    const skippedKeys: string[] = [];
+    await this.runBatchWrite(inputs, async (chunk) => {
+      const vertices = chunk.map((vi) => fromJson(VertexSchema, toVertexJson(vi) as JsonValue));
+      const resp = await this.client.putVertices(
+        { vertices, ifAbsent: true },
+        this.callOpts(signal),
+      );
+      written += resp.written;
+      for (const k of resp.skippedKeys) skippedKeys.push(k);
+    });
+    return { written, skippedKeys };
   }
 
   async deleteVertices(keys: readonly string[], signal?: AbortSignal): Promise<number> {

@@ -328,6 +328,24 @@ func (c *GraphCache[S, T]) PutVertexWithExpiration(key S, value T, expiration ti
 	c.putLocalVertexLocked(key, value, expiration)
 }
 
+// PutVertexWithExpirationIfAbsent writes the vertex only when no live vertex
+// exists at key (SET NX, #896). It returns true when the write was applied and
+// false when an existing live vertex caused it to be skipped, in which case the
+// stored value and expiration are left untouched. Liveness follows the
+// live-visibility rule (#750): an expired-but-uncollected vertex does not block
+// the write. The existence check and the store happen under the same write lock,
+// so two racing if-absent writers cannot both observe "absent" and both write.
+func (c *GraphCache[S, T]) PutVertexWithExpirationIfAbsent(key S, value T, expiration time.Time) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.vertices.Has(key) {
+		return false
+	}
+	c.putLocalVertexLocked(key, value, expiration)
+	return true
+}
+
 func (c *GraphCache[S, T]) PutVertexWithTTL(key S, value T, ttl time.Duration) {
 	c.PutVertexWithExpiration(key, value, time.Now().Add(ttl))
 }

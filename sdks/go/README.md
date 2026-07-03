@@ -211,7 +211,7 @@ design discussion.
 | Category | Singular | Plural |
 | --- | --- | --- |
 | Read   | `GetVertex` / `GetEdge` | `GetVertices` / `GetEdges` |
-| Write  | `PutVertex` / `PutVertexAt` / `AddEdge` / `AddEdgeAt` / `PutEdge` / `PutEdgeAt` | `PutVertices` / `AddEdges` / `PutEdges` |
+| Write  | `PutVertex` / `PutVertexAt` / `PutVertexIfAbsent` / `PutVertexIfAbsentAt` / `AddEdge` / `AddEdgeAt` / `PutEdge` / `PutEdgeAt` | `PutVertices` / `PutVerticesIfAbsent` / `AddEdges` / `PutEdges` |
 | Delete | `DeleteVertex` / `DeleteEdge` | `DeleteVertices` / `DeleteEdges` |
 | Scan   | — | `ScanVertices`, `ScanVerticesAll`, `ScanVertexKeys`, `ScanVertexKeysAll`, `ScanEdges`, `ScanEdgesAll`, `CountVerticesByPrefix`, `DeleteVerticesByPrefix` |
 | Graph  | `Illuminate` | — |
@@ -223,6 +223,13 @@ design discussion.
 carries its own TTL); `PutEdge` is **idempotent replace** (single weight,
 single TTL). See the in-line discussion in `example/main.go` for the
 semantic difference.
+
+`PutVertexIfAbsent` / `PutVerticesIfAbsent` are conditional writes (SET NX,
+#896): each applies only when no **live** vertex already exists at the key,
+closing the check-then-act race of a `GetVertex` → `PutVertex` sequence. The
+singular returns a `bool` (`true` when the write landed); the plural returns
+`(written int, skipped []string)`. An expired-but-uncollected vertex does not
+block the write.
 
 `Backup` streams a whole-graph, point-in-time dump (`FormatProto` by default,
 or human-readable `FormatNDJSON`; optionally scoped to a key prefix via

@@ -695,10 +695,15 @@ func (s *LanternService) GetVertices(ctx context.Context, request *pb.GetVertice
 }
 
 func (s *LanternService) PutVertex(ctx context.Context, request *pb.PutVertexRequest) (*pb.PutVertexResponse, error) {
-	if _, err := s.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{request.GetVertex()}}); err != nil {
+	resp, err := s.PutVertices(ctx, &pb.PutVerticesRequest{
+		Vertices: []*pb.Vertex{request.GetVertex()},
+		IfAbsent: request.GetIfAbsent(),
+	})
+	if err != nil {
 		return nil, err
 	}
-	return &pb.PutVertexResponse{}, nil
+	// Unconditional puts always write; if_absent writes 0 or 1.
+	return &pb.PutVertexResponse{Written: resp.GetWritten() >= 1}, nil
 }
 
 func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVerticesRequest) (*pb.PutVerticesResponse, error) {
@@ -727,6 +732,31 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 	// mutation so a rejected batch is all-or-nothing.
 	if err := s.checkVertexCapacity(len(items)); err != nil {
 		return nil, err
+	}
+	// Conditional put (#896): write only keys with no live vertex. "Live"
+	// follows the #750 visibility rule, so an expired-but-uncollected vertex
+	// does not block the write. Under replication we stamp the accepted writes
+	// with the mutation's HLC and replicate only that subset as an
+	// unconditional LWW put — two concurrent if_absent writers both win
+	// locally, then converge via higher-HLC-wins (documented best-effort,
+	// like Redis SETNX with async replicas).
+	if request.GetIfAbsent() {
+		if s.clock != nil {
+			ts := s.clock.Now()
+			writtenIdx, skipped := s.cache.PutVerticesWithExpirationIfAbsentHLC(items, ts)
+			live := make([]*pb.Vertex, 0, len(writtenIdx))
+			for _, i := range writtenIdx {
+				if cache.IsLiveAt(items[i].Expiration, now) {
+					live = append(live, in[i])
+				}
+			}
+			if len(live) > 0 {
+				s.logMutationAt(&pb.MutationOp{Op: &pb.MutationOp_PutVertices{PutVertices: &pb.PutVerticesRequest{Vertices: live}}}, ts)
+			}
+			return &pb.PutVerticesResponse{Written: int32(len(writtenIdx)), SkippedKeys: skipped}, nil
+		}
+		written, skipped := s.cache.PutVerticesWithExpirationIfAbsent(items)
+		return &pb.PutVerticesResponse{Written: int32(written), SkippedKeys: skipped}, nil
 	}
 	// When replication is enabled (clock wired) every local write is stamped
 	// with the SAME HLC it is logged under, via the *HLC cache method, so the

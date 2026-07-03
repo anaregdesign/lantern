@@ -432,6 +432,49 @@ func TestGraphCache_PutVertexWithExpiration_BornExpired(t *testing.T) {
 	})
 }
 
+// TestGraphCache_PutVertexWithExpirationIfAbsent pins the SET NX contract
+// (#896): the write lands only when no live vertex exists at the key, and an
+// expired-but-uncollected vertex does not block it (#750 live-visibility).
+func TestGraphCache_PutVertexWithExpirationIfAbsent(t *testing.T) {
+	future := time.Now().Add(time.Hour)
+	past := time.Now().Add(-time.Hour)
+
+	t.Run("WritesWhenAbsent", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Minute)
+		if got := c.PutVertexWithExpirationIfAbsent("k", "alpha", future); !got {
+			t.Fatal("PutVertexWithExpirationIfAbsent = false on absent key, want true")
+		}
+		v, ok := c.GetVertex("k")
+		if !ok || v != "alpha" {
+			t.Fatalf("GetVertex = (%q, %v), want (\"alpha\", true)", v, ok)
+		}
+	})
+
+	t.Run("SkipsWhenLive", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Minute)
+		c.PutVertexWithExpiration("k", "alpha", future)
+		if got := c.PutVertexWithExpirationIfAbsent("k", "beta", future); got {
+			t.Fatal("PutVertexWithExpirationIfAbsent = true over a live key, want false")
+		}
+		v, _ := c.GetVertex("k")
+		if v != "alpha" {
+			t.Fatalf("value = %q after skipped write, want \"alpha\" (must be untouched)", v)
+		}
+	})
+
+	t.Run("ExpiredDoesNotBlock", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Minute)
+		c.PutVertexWithExpiration("k", "stale", past) // dead on arrival
+		if got := c.PutVertexWithExpirationIfAbsent("k", "fresh", future); !got {
+			t.Fatal("PutVertexWithExpirationIfAbsent = false over an expired key, want true")
+		}
+		v, _ := c.GetVertex("k")
+		if v != "fresh" {
+			t.Fatalf("value = %q, want \"fresh\" (expired vertex must not block)", v)
+		}
+	})
+}
+
 func TestGraphCache_PutVertexWithTTL(t *testing.T) {
 	type args[S comparable, T any] struct {
 		key   S

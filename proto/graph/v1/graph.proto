@@ -228,22 +228,34 @@ message GetVerticesResponse {
 // PutVertices and shares its guard rails.
 message PutVertexRequest {
   Vertex vertex = 1;
+  // When true, the write applies only if no live vertex exists at the key.
+  // An existing live vertex leaves value and expiration untouched (SET NX).
+  bool if_absent = 2;
 }
 
-message PutVertexResponse {}
+message PutVertexResponse {
+  // True when the write was applied; false when if_absent skipped it because
+  // a live vertex already existed. Always true for an unconditional put.
+  bool written = 1;
+}
 
 // PutVerticesRequest writes vertices with upsert semantics: each Vertex.key
 // replaces any existing value at that key. Use the Vertex.expiration field
 // (absolute time) to control TTL.
 message PutVerticesRequest {
   repeated Vertex vertices = 1;
+  // When true, each write applies only if no live vertex exists at its key;
+  // keys with a live vertex are left untouched and reported in
+  // PutVerticesResponse.skipped_keys.
+  bool if_absent = 2;
 }
 
 message PutVerticesResponse {
-  // Number of vertices accepted by the server. Currently always equals the
-  // request size on success; reserved for future per-item validation that may
-  // report partial writes.
+  // Number of vertices actually written. For an unconditional put this equals
+  // the request size on success; under if_absent it excludes skipped keys.
   int32 written = 1;
+  // Keys skipped because a live vertex already existed (if_absent only).
+  repeated string skipped_keys = 2;
 }
 
 // DeleteVertexRequest removes the vertex at `key`. Edges incident to the

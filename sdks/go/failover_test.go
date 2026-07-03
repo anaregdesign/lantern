@@ -23,6 +23,15 @@ type fakeNode struct {
 func (f *fakeNode) PutVertex(context.Context, string, any, time.Duration) error { return nil }
 func (f *fakeNode) PutVertexAt(context.Context, string, any, time.Time) error   { return nil }
 func (f *fakeNode) PutVertices(context.Context, []VertexInput) error            { return nil }
+func (f *fakeNode) PutVertexIfAbsent(context.Context, string, any, time.Duration) (bool, error) {
+	return true, nil
+}
+func (f *fakeNode) PutVertexIfAbsentAt(context.Context, string, any, time.Time) (bool, error) {
+	return true, nil
+}
+func (f *fakeNode) PutVerticesIfAbsent(context.Context, []VertexInput) (int, []string, error) {
+	return 0, nil, nil
+}
 func (f *fakeNode) GetVertex(ctx context.Context, key string) (*Vertex, error) {
 	if f.getVertexFn != nil {
 		return f.getVertexFn(ctx, key)

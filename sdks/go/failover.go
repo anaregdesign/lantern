@@ -74,6 +74,9 @@ type failoverNode interface {
 	PutVertex(ctx context.Context, key string, value any, ttl time.Duration) error
 	PutVertexAt(ctx context.Context, key string, value any, expiration time.Time) error
 	PutVertices(ctx context.Context, inputs []VertexInput) error
+	PutVertexIfAbsent(ctx context.Context, key string, value any, ttl time.Duration) (bool, error)
+	PutVertexIfAbsentAt(ctx context.Context, key string, value any, expiration time.Time) (bool, error)
+	PutVerticesIfAbsent(ctx context.Context, inputs []VertexInput) (int, []string, error)
 	GetVertex(ctx context.Context, key string) (*Vertex, error)
 	GetVertices(ctx context.Context, keys []string) (found []*Vertex, missing []string, err error)
 	DeleteVertex(ctx context.Context, key string) (bool, error)
@@ -210,6 +213,45 @@ func (f *Failover) PutVertexAt(ctx context.Context, key string, value any, expir
 // on ErrUnavailable.
 func (f *Failover) PutVertices(ctx context.Context, inputs []VertexInput) error {
 	return f.call(ctx, "PutVertices", func(l failoverNode) error { return l.PutVertices(ctx, inputs) })
+}
+
+// PutVertexIfAbsent forwards to the current endpoint's PutVertexIfAbsent,
+// failing over on ErrUnavailable. A retry after a partial success reports
+// written=false because the vertex is already present — the value is stored
+// either way, matching SET NX semantics over an unreliable transport.
+func (f *Failover) PutVertexIfAbsent(ctx context.Context, key string, value any, ttl time.Duration) (bool, error) {
+	var written bool
+	err := f.call(ctx, "PutVertexIfAbsent", func(l failoverNode) error {
+		w, e := l.PutVertexIfAbsent(ctx, key, value, ttl)
+		written = w
+		return e
+	})
+	return written, err
+}
+
+// PutVertexIfAbsentAt forwards to the current endpoint's PutVertexIfAbsentAt,
+// failing over on ErrUnavailable.
+func (f *Failover) PutVertexIfAbsentAt(ctx context.Context, key string, value any, expiration time.Time) (bool, error) {
+	var written bool
+	err := f.call(ctx, "PutVertexIfAbsentAt", func(l failoverNode) error {
+		w, e := l.PutVertexIfAbsentAt(ctx, key, value, expiration)
+		written = w
+		return e
+	})
+	return written, err
+}
+
+// PutVerticesIfAbsent forwards to the current endpoint's PutVerticesIfAbsent,
+// failing over on ErrUnavailable.
+func (f *Failover) PutVerticesIfAbsent(ctx context.Context, inputs []VertexInput) (int, []string, error) {
+	var written int
+	var skipped []string
+	err := f.call(ctx, "PutVerticesIfAbsent", func(l failoverNode) error {
+		w, s, e := l.PutVerticesIfAbsent(ctx, inputs)
+		written, skipped = w, s
+		return e
+	})
+	return written, skipped, err
 }
 
 // GetVertex forwards to the current endpoint's GetVertex, failing over on

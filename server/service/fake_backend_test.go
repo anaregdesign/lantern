@@ -108,6 +108,36 @@ func (f *fakeBackend) PutVerticesWithExpiration(items []graphcache.VertexItem[st
 	}
 }
 
+func (f *fakeBackend) PutVerticesWithExpirationIfAbsent(items []graphcache.VertexItem[string, *pb.Vertex]) (int, []string) {
+	f.putVerticesCalls++
+	written := 0
+	var skipped []string
+	for _, it := range items {
+		if _, ok := f.vertices[it.Key]; ok {
+			skipped = append(skipped, it.Key)
+			continue
+		}
+		f.vertices[it.Key] = it.Value
+		written++
+	}
+	return written, skipped
+}
+
+func (f *fakeBackend) PutVerticesWithExpirationIfAbsentHLC(items []graphcache.VertexItem[string, *pb.Vertex], _ hlc.Timestamp) ([]int, []string) {
+	f.putVerticesCalls++
+	var writtenIdx []int
+	var skipped []string
+	for i, it := range items {
+		if _, ok := f.vertices[it.Key]; ok {
+			skipped = append(skipped, it.Key)
+			continue
+		}
+		f.vertices[it.Key] = it.Value
+		writtenIdx = append(writtenIdx, i)
+	}
+	return writtenIdx, skipped
+}
+
 func (f *fakeBackend) DeleteVertices(keys []string) int {
 	n := 0
 	for _, k := range keys {

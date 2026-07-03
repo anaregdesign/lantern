@@ -94,6 +94,42 @@ try {
 }
 ```
 
+## Conditional writes (SET NX)
+
+`putVertexIfAbsent` / `putVerticesIfAbsent` apply a write only when **no live
+vertex already exists** at the key — the Redis `SET NX` pattern (#896). They
+close the check-then-act race of a `getVertex` → `putVertex` sequence: the
+server performs the existence check and the store atomically, so two callers
+racing to create the same marker can't both win.
+
+`putVertexIfAbsent` resolves to a `boolean` (`true` when the write landed,
+`false` when a live vertex was already there and left untouched).
+`putVerticesIfAbsent` resolves to `{ written, skippedKeys }`, where `written`
+counts the vertices actually stored and `skippedKeys` lists the keys skipped
+because a live vertex already existed.
+
+```ts
+// Enqueue-dedup marker: only the first caller proceeds.
+const first = await client.putVertexIfAbsent({
+  key: "job:discover:user42",
+  value: true,
+  ttlSeconds: 300,
+});
+if (first) {
+  // we own the marker — enqueue the background job
+}
+
+const { written, skippedKeys } = await client.putVerticesIfAbsent([
+  { key: "settings:a", value: "default-a" },
+  { key: "settings:b", value: "default-b" },
+]);
+```
+
+"Live" follows the server's live-visibility rule, so an expired-but-uncollected
+vertex does not block the write. Under leaderless replication two concurrent
+`ifAbsent` writes on different nodes can both report success locally before
+converging (the same caveat as Redis `SETNX` with async replicas).
+
 ## Idempotent additive edges
 
 `addEdge` / `addEdges` are **additive** — the server sums each contribution

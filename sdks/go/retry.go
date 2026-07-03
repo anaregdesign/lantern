@@ -215,6 +215,9 @@ var methodRetryClasses = map[string]methodRetryClass{
 	"PutVertex":              retryAlways,
 	"PutVertexAt":            retryAlways,
 	"PutVertices":            retryAlways,
+	"PutVertexIfAbsent":      retryAlways, // #896: idempotent from the caller's view (converges to "key exists")
+	"PutVertexIfAbsentAt":    retryAlways,
+	"PutVerticesIfAbsent":    retryAlways,
 	"PutEdge":                retryAlways,
 	"PutEdgeAt":              retryAlways,
 	"PutEdges":               retryAlways,

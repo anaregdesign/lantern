@@ -22,6 +22,17 @@ type Backend interface {
 	// vertex reads/writes
 	GetVertex(key string) (*pb.Vertex, bool)
 	PutVerticesWithExpiration(items []graphcache.VertexItem[string, *pb.Vertex])
+	// PutVerticesWithExpirationIfAbsent writes each vertex only when no live
+	// vertex exists at its key (SET NX, #896). It returns the number written
+	// and the keys skipped because a live vertex already existed. Used by the
+	// LOCAL write path when replication is off (clock nil).
+	PutVerticesWithExpirationIfAbsent(items []graphcache.VertexItem[string, *pb.Vertex]) (written int, skipped []string)
+	// PutVerticesWithExpirationIfAbsentHLC is the replication-aware sibling:
+	// it stamps each accepted write with ts so the origin participates in LWW,
+	// and returns the request-order indices of items that passed the absence
+	// check (so the caller can replicate only that subset) plus the skipped
+	// keys. Used when replication is enabled (clock non-nil).
+	PutVerticesWithExpirationIfAbsentHLC(items []graphcache.VertexItem[string, *pb.Vertex], ts hlc.Timestamp) (writtenIdx []int, skipped []string)
 	DeleteVertices(keys []string) int
 
 	// edge reads/writes
