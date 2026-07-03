@@ -1,0 +1,627 @@
+{
+  "engine": "lucene-9.11.1",
+  "generated": "2026-07-03T00:29:48.414269134Z",
+  "runs": {
+    "en-standard": {
+      "corpus": "en",
+      "analyzer": "StandardAnalyzer",
+      "results": {
+        "q01": [
+          "coffee-07",
+          "coffee-05",
+          "coffee-08",
+          "coffee-01"
+        ],
+        "q02": [
+          "k8s-01",
+          "k8s-02",
+          "pasta-03"
+        ],
+        "q03": [
+          "db-03",
+          "db-06"
+        ],
+        "q04": [
+          "coffee-05"
+        ],
+        "q05": [
+          "ir-09",
+          "ir-03",
+          "k8s-01",
+          "bike-08"
+        ],
+        "q06": [
+          "bike-02",
+          "bike-01"
+        ],
+        "q07": [
+          "pasta-08",
+          "pasta-01"
+        ],
+        "q08": [
+          "astro-01"
+        ],
+        "q09": [
+          "auth-03",
+          "travel-05",
+          "misc-01",
+          "k8s-03",
+          "travel-06"
+        ],
+        "q10": [
+          "garden-02",
+          "garden-06",
+          "garden-07"
+        ],
+        "q11": [
+          "travel-05",
+          "travel-01"
+        ],
+        "q12": [
+          "misc-01"
+        ],
+        "q13": [
+          "misc-05",
+          "travel-01"
+        ],
+        "q14": [
+          "db-04",
+          "db-09"
+        ],
+        "q15": [
+          "k8s-08",
+          "k8s-10",
+          "k8s-05"
+        ],
+        "q16": [
+          "astro-02",
+          "astro-01",
+          "astro-07"
+        ],
+        "q17": [
+          "auth-05",
+          "db-07",
+          "auth-01"
+        ],
+        "q18": [
+          "coffee-02",
+          "coffee-03",
+          "coffee-05",
+          "coffee-04",
+          "misc-04",
+          "auth-08",
+          "travel-08",
+          "k8s-03",
+          "db-02",
+          "coffee-01"
+        ],
+        "q19": [
+          "k8s-07",
+          "k8s-02",
+          "k8s-03"
+        ],
+        "q20": [
+          "db-05",
+          "ir-02",
+          "db-02",
+          "ir-06"
+        ],
+        "q21": [
+          "bike-06",
+          "garden-04"
+        ],
+        "q22": [
+          "ir-08",
+          "ir-03"
+        ],
+        "q23": [
+          "pasta-05"
+        ],
+        "q24": [
+          "travel-08"
+        ],
+        "q25": [
+          "db-07"
+        ],
+        "q26": [
+          "coffee-07",
+          "coffee-05",
+          "auth-09"
+        ]
+      }
+    },
+    "en-english": {
+      "corpus": "en",
+      "analyzer": "EnglishAnalyzer",
+      "results": {
+        "q01": [
+          "coffee-07",
+          "coffee-08",
+          "coffee-05",
+          "coffee-01"
+        ],
+        "q02": [
+          "k8s-01",
+          "k8s-02",
+          "pasta-03"
+        ],
+        "q03": [
+          "db-03",
+          "misc-04",
+          "db-07",
+          "db-06"
+        ],
+        "q04": [
+          "coffee-05"
+        ],
+        "q05": [
+          "ir-09",
+          "ir-03",
+          "misc-04",
+          "k8s-01",
+          "bike-08"
+        ],
+        "q06": [
+          "bike-02",
+          "bike-04",
+          "bike-01"
+        ],
+        "q07": [
+          "pasta-08",
+          "pasta-01"
+        ],
+        "q08": [
+          "astro-01"
+        ],
+        "q09": [
+          "auth-03",
+          "auth-06",
+          "misc-01",
+          "k8s-03",
+          "travel-05",
+          "travel-06"
+        ],
+        "q10": [
+          "garden-02",
+          "garden-06",
+          "garden-07"
+        ],
+        "q11": [
+          "travel-05",
+          "travel-01"
+        ],
+        "q12": [
+          "misc-01"
+        ],
+        "q13": [
+          "misc-05",
+          "travel-01"
+        ],
+        "q14": [
+          "db-04",
+          "db-09"
+        ],
+        "q15": [
+          "k8s-05",
+          "k8s-08",
+          "k8s-10"
+        ],
+        "q16": [
+          "astro-02",
+          "astro-01",
+          "astro-07"
+        ],
+        "q17": [
+          "auth-05",
+          "db-07",
+          "ir-05",
+          "auth-02",
+          "auth-01"
+        ],
+        "q18": [
+          "coffee-05",
+          "coffee-02",
+          "coffee-03",
+          "coffee-04"
+        ],
+        "q19": [
+          "k8s-01",
+          "k8s-07",
+          "k8s-02",
+          "k8s-03"
+        ],
+        "q20": [
+          "db-05",
+          "ir-05",
+          "ir-06",
+          "ir-02",
+          "db-02"
+        ],
+        "q21": [
+          "bike-06",
+          "garden-04"
+        ],
+        "q22": [
+          "ir-08",
+          "ir-01",
+          "ir-03"
+        ],
+        "q23": [
+          "pasta-05"
+        ],
+        "q24": [
+          "travel-08"
+        ],
+        "q25": [
+          "db-07",
+          "auth-05"
+        ],
+        "q26": [
+          "coffee-07",
+          "coffee-05",
+          "auth-09"
+        ]
+      }
+    },
+    "ja-cjk": {
+      "corpus": "ja",
+      "analyzer": "CJKAnalyzer",
+      "results": {
+        "jq01": [
+          "ramen-07",
+          "ramen-03",
+          "ramen-01",
+          "ramen-08",
+          "ramen-05",
+          "ramen-02",
+          "ramen-06"
+        ],
+        "jq02": [
+          "ramen-01",
+          "ramen-07",
+          "ramen-03",
+          "ramen-08",
+          "ramen-05",
+          "ramen-02",
+          "ramen-06",
+          "washoku-05"
+        ],
+        "jq03": [
+          "ramen-03",
+          "ramen-04"
+        ],
+        "jq04": [
+          "onsen-02",
+          "onsen-07",
+          "onsen-06",
+          "onsen-03",
+          "onsen-01",
+          "onsen-04"
+        ],
+        "jq05": [
+          "onsen-02"
+        ],
+        "jq06": [
+          "ml-01",
+          "ml-08",
+          "ml-03",
+          "ml-02"
+        ],
+        "jq07": [
+          "ml-06"
+        ],
+        "jq08": [
+          "train-01"
+        ],
+        "jq09": [
+          "train-04",
+          "train-02"
+        ],
+        "jq10": [
+          "washoku-02",
+          "washoku-01"
+        ],
+        "jq11": [
+          "washoku-07",
+          "washoku-02",
+          "ramen-02"
+        ],
+        "jq12": [
+          "soccer-02"
+        ],
+        "jq13": [
+          "soccer-01",
+          "onsen-03",
+          "soccer-07",
+          "ml-02"
+        ],
+        "jq14": [
+          "book-01"
+        ],
+        "jq15": [
+          "book-03"
+        ],
+        "jq16": [
+          "phone-01",
+          "soccer-04"
+        ],
+        "jq17": [
+          "phone-04"
+        ],
+        "jq18": [
+          "weather-01"
+        ],
+        "jq19": [
+          "niwa-04"
+        ],
+        "jq20": [
+          "niwa-02"
+        ],
+        "jq21": [
+          "ramen-07",
+          "ramen-03",
+          "ramen-01",
+          "ramen-08",
+          "ramen-05",
+          "ramen-02",
+          "ramen-06"
+        ]
+      }
+    },
+    "ja-kuromoji": {
+      "corpus": "ja",
+      "analyzer": "JapaneseAnalyzer",
+      "results": {
+        "jq01": [
+          "ramen-01",
+          "ramen-05",
+          "ramen-03",
+          "ramen-06",
+          "ramen-08",
+          "ramen-02",
+          "ramen-07"
+        ],
+        "jq02": [
+          "ramen-01",
+          "washoku-05",
+          "ramen-05",
+          "ramen-03",
+          "ramen-06",
+          "ramen-08",
+          "ramen-02",
+          "ramen-07"
+        ],
+        "jq03": [
+          "ramen-03",
+          "ramen-04"
+        ],
+        "jq04": [
+          "onsen-02",
+          "onsen-06",
+          "onsen-03",
+          "onsen-01",
+          "onsen-07",
+          "onsen-04"
+        ],
+        "jq05": [
+          "onsen-02"
+        ],
+        "jq06": [
+          "ml-01",
+          "ml-03",
+          "ml-08",
+          "ml-02"
+        ],
+        "jq07": [
+          "ml-06"
+        ],
+        "jq08": [
+          "train-01"
+        ],
+        "jq09": [
+          "train-04",
+          "train-02"
+        ],
+        "jq10": [
+          "washoku-01"
+        ],
+        "jq11": [
+          "washoku-02",
+          "ramen-02"
+        ],
+        "jq12": [
+          "soccer-02"
+        ],
+        "jq13": [
+          "soccer-01"
+        ],
+        "jq14": [
+          "book-01"
+        ],
+        "jq15": [
+          "book-03"
+        ],
+        "jq16": [
+          "phone-01"
+        ],
+        "jq17": [
+          "phone-04"
+        ],
+        "jq18": [
+          "weather-01"
+        ],
+        "jq19": [
+          "niwa-04",
+          "phone-06",
+          "onsen-02"
+        ],
+        "jq20": [
+          "niwa-02"
+        ],
+        "jq21": [
+          "ramen-07",
+          "ramen-01",
+          "ramen-05",
+          "ramen-03",
+          "ramen-06",
+          "ramen-08",
+          "ramen-02"
+        ]
+      }
+    },
+    "mixed-cjk": {
+      "corpus": "mixed",
+      "analyzer": "CJKAnalyzer",
+      "results": {
+        "mq01": [
+          "mk8s-01",
+          "prod-05",
+          "mdb-02",
+          "mk8s-04",
+          "mfood-02",
+          "mdb-07",
+          "mdb-06",
+          "mdb-01",
+          "mdev-03",
+          "mdev-07",
+          "prod-07",
+          "mdb-04"
+        ],
+        "mq02": [
+          "mk8s-06",
+          "mk8s-01"
+        ],
+        "mq03": [
+          "mdb-02",
+          "mk8s-01",
+          "mdb-05",
+          "mdev-04",
+          "mfood-02",
+          "prod-04",
+          "mdb-06"
+        ],
+        "mq04": [
+          "mdb-03",
+          "mmisc-02"
+        ],
+        "mq05": [
+          "mdb-07",
+          "mdev-03",
+          "mfood-02",
+          "mmisc-03",
+          "mk8s-01"
+        ],
+        "mq06": [
+          "prod-01",
+          "mtrv-07",
+          "mmisc-02"
+        ],
+        "mq07": [
+          "prod-03",
+          "mtrv-02",
+          "mmisc-03"
+        ],
+        "mq08": [
+          "mtrv-02"
+        ],
+        "mq09": [
+          "mtrv-06",
+          "mk8s-04",
+          "mdev-06",
+          "mdb-05",
+          "mdb-01"
+        ],
+        "mq10": [
+          "mdev-01",
+          "mfood-03"
+        ],
+        "mq11": [
+          "mdev-07",
+          "mfood-03",
+          "mdev-03",
+          "prod-07",
+          "mk8s-04",
+          "mk8s-01",
+          "mdb-04"
+        ],
+        "mq12": [
+          "mfood-04",
+          "mk8s-02",
+          "mfood-01"
+        ],
+        "mq13": [
+          "mmisc-01",
+          "mtrv-01"
+        ],
+        "mq14": [
+          "mmisc-02",
+          "mdb-03",
+          "mtrv-07",
+          "prod-01"
+        ],
+        "mq15": [
+          "prod-04",
+          "mdb-02",
+          "mdev-03"
+        ]
+      }
+    },
+    "mixed-kuromoji": {
+      "corpus": "mixed",
+      "analyzer": "JapaneseAnalyzer",
+      "results": {
+        "mq01": [
+          "mk8s-01"
+        ],
+        "mq02": [
+          "mk8s-06",
+          "mk8s-01",
+          "mfood-05"
+        ],
+        "mq03": [
+          "mdb-02",
+          "mdb-05"
+        ],
+        "mq04": [
+          "mdb-03",
+          "mmisc-02"
+        ],
+        "mq05": [
+          "mdb-07"
+        ],
+        "mq06": [
+          "prod-01"
+        ],
+        "mq07": [
+          "prod-03"
+        ],
+        "mq08": [
+          "mtrv-02"
+        ],
+        "mq09": [
+          "mtrv-06"
+        ],
+        "mq10": [
+          "mdev-01"
+        ],
+        "mq11": [
+          "mdev-07"
+        ],
+        "mq12": [
+          "mfood-04"
+        ],
+        "mq13": [
+          "mmisc-01",
+          "mtrv-01"
+        ],
+        "mq14": [
+          "mmisc-02",
+          "mdb-03"
+        ],
+        "mq15": [
+          "prod-04"
+        ]
+      }
+    }
+  }
+}
