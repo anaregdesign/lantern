@@ -178,6 +178,15 @@ type Backend interface {
 	CountByPrefix(prefix string) int
 	DeleteByPrefix(ctx context.Context, prefix string, limit int) int
 
+	// TopVerticesByDegree ranks the live vertices whose key starts with
+	// prefix by their degree in dir and returns the top k in descending
+	// order of the ranking metric (weighted edge-weight sum when weighted,
+	// else live edge count). k <= 0 returns nil. Counts honour the
+	// live-visibility rule (#750) and are point-in-time best-effort (#900).
+	// The handler enforces the non-empty-prefix guard and the k clamp; this
+	// method imposes neither.
+	TopVerticesByDegree(prefix string, k int, dir graphcache.DegreeDirection, weighted bool) []graphcache.DegreeEntry[string]
+
 	// SearchVertices returns vertices ranked by full-text relevance over
 	// their indexed content, optionally scoped to keyPrefix, capped at
 	// limit (limit <= 0 returns nil). The returned slice is ordered by

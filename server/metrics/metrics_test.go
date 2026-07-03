@@ -204,6 +204,7 @@ func TestDomainMetrics_HotPathFamilies(t *testing.T) {
 	m.OnScan("CountVerticesByPrefix", 10, 100*time.Microsecond)
 	m.OnScan("DeleteVerticesByPrefix", 32, 200*time.Microsecond)
 	m.OnScan("DeleteEdgesByPrefix", 16, 150*time.Microsecond)
+	m.OnScan("TopVerticesByDegree", 8, 250*time.Microsecond)
 	m.OnBatch("PutVertices", 8)
 	m.OnBatch("AddEdges", 4)
 

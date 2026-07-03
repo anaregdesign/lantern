@@ -95,6 +95,9 @@ func (h *lanternServiceConnect) CountVerticesByPrefix(ctx context.Context, req *
 func (h *lanternServiceConnect) DeleteVerticesByPrefix(ctx context.Context, req *connect.Request[pb.DeleteVerticesByPrefixRequest]) (*connect.Response[pb.DeleteVerticesByPrefixResponse], error) {
 	return unary(ctx, req, h.svc.DeleteVerticesByPrefix)
 }
+func (h *lanternServiceConnect) TopVerticesByDegree(ctx context.Context, req *connect.Request[pb.TopVerticesByDegreeRequest]) (*connect.Response[pb.TopVerticesByDegreeResponse], error) {
+	return unary(ctx, req, h.svc.TopVerticesByDegree)
+}
 func (h *lanternServiceConnect) GetEdge(ctx context.Context, req *connect.Request[pb.GetEdgeRequest]) (*connect.Response[pb.GetEdgeResponse], error) {
 	return unary(ctx, req, h.svc.GetEdge)
 }

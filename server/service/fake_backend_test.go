@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"sort"
 	"time"
 
 	coregraph "github.com/anaregdesign/lantern/core/graph"
@@ -370,6 +371,71 @@ func (f *fakeBackend) CountByPrefix(prefix string) int {
 		}
 	}
 	return n
+}
+
+// TopVerticesByDegree mirrors the real cache's live-visibility degree ranking
+// (#900) over the fake's in-memory maps so handler tests can assert the
+// direction mapping, k clamp, and descending order without a real GraphCache.
+func (f *fakeBackend) TopVerticesByDegree(prefix string, k int, dir graphcache.DegreeDirection, weighted bool) []graphcache.DegreeEntry[string] {
+	if k <= 0 {
+		return nil
+	}
+	hasPrefix := func(s string) bool {
+		return prefix == "" || (len(s) >= len(prefix) && s[:len(prefix)] == prefix)
+	}
+	live := func(key string) bool { _, ok := f.vertices[key]; return ok }
+	type acc struct {
+		count  uint64
+		weight float64
+	}
+	accum := map[string]*acc{}
+	for key := range f.vertices {
+		if hasPrefix(key) {
+			accum[key] = &acc{}
+		}
+	}
+	countOut := dir == graphcache.DegreeOut || dir == graphcache.DegreeBoth
+	countIn := dir == graphcache.DegreeIn || dir == graphcache.DegreeBoth
+	for tail, heads := range f.edges {
+		if !live(tail) {
+			continue
+		}
+		aTail, tailIn := accum[tail]
+		for head, w := range heads {
+			if w == 0 || !live(head) {
+				continue
+			}
+			aHead, headIn := accum[head]
+			if countOut && tailIn {
+				aTail.count++
+				aTail.weight += float64(w)
+			}
+			if countIn && headIn {
+				aHead.count++
+				aHead.weight += float64(w)
+			}
+		}
+	}
+	entries := make([]graphcache.DegreeEntry[string], 0, len(accum))
+	for key, a := range accum {
+		entries = append(entries, graphcache.DegreeEntry[string]{Key: key, Degree: a.count, WeightedDegree: a.weight})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		var mi, mj float64
+		if weighted {
+			mi, mj = entries[i].WeightedDegree, entries[j].WeightedDegree
+		} else {
+			mi, mj = float64(entries[i].Degree), float64(entries[j].Degree)
+		}
+		if mi != mj {
+			return mi > mj
+		}
+		return entries[i].Key < entries[j].Key
+	})
+	if len(entries) > k {
+		entries = entries[:k]
+	}
+	return entries
 }
 
 // SearchVertices returns the pre-seeded searchResults verbatim and records

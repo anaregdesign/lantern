@@ -69,6 +69,9 @@ const (
 	// LanternServiceDeleteVerticesByPrefixProcedure is the fully-qualified name of the LanternService's
 	// DeleteVerticesByPrefix RPC.
 	LanternServiceDeleteVerticesByPrefixProcedure = "/graph.v1.LanternService/DeleteVerticesByPrefix"
+	// LanternServiceTopVerticesByDegreeProcedure is the fully-qualified name of the LanternService's
+	// TopVerticesByDegree RPC.
+	LanternServiceTopVerticesByDegreeProcedure = "/graph.v1.LanternService/TopVerticesByDegree"
 	// LanternServiceGetEdgeProcedure is the fully-qualified name of the LanternService's GetEdge RPC.
 	LanternServiceGetEdgeProcedure = "/graph.v1.LanternService/GetEdge"
 	// LanternServiceGetEdgesProcedure is the fully-qualified name of the LanternService's GetEdges RPC.
@@ -137,6 +140,11 @@ type LanternServiceClient interface {
 	// with the given prefix. Pass `dry_run = true` to preview the count
 	// without mutating state.
 	DeleteVerticesByPrefix(context.Context, *connect.Request[v1.DeleteVerticesByPrefixRequest]) (*connect.Response[v1.DeleteVerticesByPrefixResponse], error)
+	// TopVerticesByDegree ranks the most-connected live vertices under a key
+	// prefix by their (weighted) out/in/both degree. Read-only aggregate; a
+	// non-empty prefix is REQUIRED (empty → INVALID_ARGUMENT). Results are
+	// point-in-time best-effort and honour the live-visibility rule (#750).
+	TopVerticesByDegree(context.Context, *connect.Request[v1.TopVerticesByDegreeRequest]) (*connect.Response[v1.TopVerticesByDegreeResponse], error)
 	GetEdge(context.Context, *connect.Request[v1.GetEdgeRequest]) (*connect.Response[v1.GetEdgeResponse], error)
 	// GetEdges reads several edges in one round trip.
 	GetEdges(context.Context, *connect.Request[v1.GetEdgesRequest]) (*connect.Response[v1.GetEdgesResponse], error)
@@ -266,6 +274,12 @@ func NewLanternServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(lanternServiceMethods.ByName("DeleteVerticesByPrefix")),
 			connect.WithClientOptions(opts...),
 		),
+		topVerticesByDegree: connect.NewClient[v1.TopVerticesByDegreeRequest, v1.TopVerticesByDegreeResponse](
+			httpClient,
+			baseURL+LanternServiceTopVerticesByDegreeProcedure,
+			connect.WithSchema(lanternServiceMethods.ByName("TopVerticesByDegree")),
+			connect.WithClientOptions(opts...),
+		),
 		getEdge: connect.NewClient[v1.GetEdgeRequest, v1.GetEdgeResponse](
 			httpClient,
 			baseURL+LanternServiceGetEdgeProcedure,
@@ -361,6 +375,7 @@ type lanternServiceClient struct {
 	searchVertices         *connect.Client[v1.SearchVerticesRequest, v1.SearchVerticesResponse]
 	countVerticesByPrefix  *connect.Client[v1.CountVerticesByPrefixRequest, v1.CountVerticesByPrefixResponse]
 	deleteVerticesByPrefix *connect.Client[v1.DeleteVerticesByPrefixRequest, v1.DeleteVerticesByPrefixResponse]
+	topVerticesByDegree    *connect.Client[v1.TopVerticesByDegreeRequest, v1.TopVerticesByDegreeResponse]
 	getEdge                *connect.Client[v1.GetEdgeRequest, v1.GetEdgeResponse]
 	getEdges               *connect.Client[v1.GetEdgesRequest, v1.GetEdgesResponse]
 	addEdge                *connect.Client[v1.AddEdgeRequest, v1.AddEdgeResponse]
@@ -434,6 +449,11 @@ func (c *lanternServiceClient) CountVerticesByPrefix(ctx context.Context, req *c
 // DeleteVerticesByPrefix calls graph.v1.LanternService.DeleteVerticesByPrefix.
 func (c *lanternServiceClient) DeleteVerticesByPrefix(ctx context.Context, req *connect.Request[v1.DeleteVerticesByPrefixRequest]) (*connect.Response[v1.DeleteVerticesByPrefixResponse], error) {
 	return c.deleteVerticesByPrefix.CallUnary(ctx, req)
+}
+
+// TopVerticesByDegree calls graph.v1.LanternService.TopVerticesByDegree.
+func (c *lanternServiceClient) TopVerticesByDegree(ctx context.Context, req *connect.Request[v1.TopVerticesByDegreeRequest]) (*connect.Response[v1.TopVerticesByDegreeResponse], error) {
+	return c.topVerticesByDegree.CallUnary(ctx, req)
 }
 
 // GetEdge calls graph.v1.LanternService.GetEdge.
@@ -534,6 +554,11 @@ type LanternServiceHandler interface {
 	// with the given prefix. Pass `dry_run = true` to preview the count
 	// without mutating state.
 	DeleteVerticesByPrefix(context.Context, *connect.Request[v1.DeleteVerticesByPrefixRequest]) (*connect.Response[v1.DeleteVerticesByPrefixResponse], error)
+	// TopVerticesByDegree ranks the most-connected live vertices under a key
+	// prefix by their (weighted) out/in/both degree. Read-only aggregate; a
+	// non-empty prefix is REQUIRED (empty → INVALID_ARGUMENT). Results are
+	// point-in-time best-effort and honour the live-visibility rule (#750).
+	TopVerticesByDegree(context.Context, *connect.Request[v1.TopVerticesByDegreeRequest]) (*connect.Response[v1.TopVerticesByDegreeResponse], error)
 	GetEdge(context.Context, *connect.Request[v1.GetEdgeRequest]) (*connect.Response[v1.GetEdgeResponse], error)
 	// GetEdges reads several edges in one round trip.
 	GetEdges(context.Context, *connect.Request[v1.GetEdgesRequest]) (*connect.Response[v1.GetEdgesResponse], error)
@@ -659,6 +684,12 @@ func NewLanternServiceHandler(svc LanternServiceHandler, opts ...connect.Handler
 		connect.WithSchema(lanternServiceMethods.ByName("DeleteVerticesByPrefix")),
 		connect.WithHandlerOptions(opts...),
 	)
+	lanternServiceTopVerticesByDegreeHandler := connect.NewUnaryHandler(
+		LanternServiceTopVerticesByDegreeProcedure,
+		svc.TopVerticesByDegree,
+		connect.WithSchema(lanternServiceMethods.ByName("TopVerticesByDegree")),
+		connect.WithHandlerOptions(opts...),
+	)
 	lanternServiceGetEdgeHandler := connect.NewUnaryHandler(
 		LanternServiceGetEdgeProcedure,
 		svc.GetEdge,
@@ -763,6 +794,8 @@ func NewLanternServiceHandler(svc LanternServiceHandler, opts ...connect.Handler
 			lanternServiceCountVerticesByPrefixHandler.ServeHTTP(w, r)
 		case LanternServiceDeleteVerticesByPrefixProcedure:
 			lanternServiceDeleteVerticesByPrefixHandler.ServeHTTP(w, r)
+		case LanternServiceTopVerticesByDegreeProcedure:
+			lanternServiceTopVerticesByDegreeHandler.ServeHTTP(w, r)
 		case LanternServiceGetEdgeProcedure:
 			lanternServiceGetEdgeHandler.ServeHTTP(w, r)
 		case LanternServiceGetEdgesProcedure:
@@ -844,6 +877,10 @@ func (UnimplementedLanternServiceHandler) CountVerticesByPrefix(context.Context,
 
 func (UnimplementedLanternServiceHandler) DeleteVerticesByPrefix(context.Context, *connect.Request[v1.DeleteVerticesByPrefixRequest]) (*connect.Response[v1.DeleteVerticesByPrefixResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternService.DeleteVerticesByPrefix is not implemented"))
+}
+
+func (UnimplementedLanternServiceHandler) TopVerticesByDegree(context.Context, *connect.Request[v1.TopVerticesByDegreeRequest]) (*connect.Response[v1.TopVerticesByDegreeResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternService.TopVerticesByDegree is not implemented"))
 }
 
 func (UnimplementedLanternServiceHandler) GetEdge(context.Context, *connect.Request[v1.GetEdgeRequest]) (*connect.Response[v1.GetEdgeResponse], error) {

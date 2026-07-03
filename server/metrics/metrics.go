@@ -193,6 +193,7 @@ var (
 		"CountVerticesByPrefix",
 		"DeleteVerticesByPrefix",
 		"DeleteEdgesByPrefix",
+		"TopVerticesByDegree",
 	}
 	batchOps = []string{
 		"GetVertices",

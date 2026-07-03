@@ -465,6 +465,56 @@ message DeleteVerticesByPrefixResponse {
   uint64 deleted = 1;
 }
 
+// TopVerticesByDegreeRequest ranks the most-connected vertices under a key
+// prefix by their (weighted) degree — the seed-selection question a cold-start
+// visualization or recommendation front end hits when it has no better anchor
+// (#900). It exposes the degree index the store already maintains for BM25
+// edge weighting rather than shipping the whole subgraph over the wire.
+message TopVerticesByDegreeRequest {
+  // prefix is required and must be non-empty: there is no whole-graph ranking
+  // (an empty prefix is rejected with INVALID_ARGUMENT). Only vertices whose
+  // key starts with prefix are candidates.
+  string prefix = 1;
+  // k caps the number of ranked entries returned. 0 lets the server apply its
+  // configured default; the server also clamps k to a hard cap (see
+  // ScanConfig), mirroring the scan `limit` knobs.
+  uint32 k = 2;
+
+  // Direction selects which incident edges count toward a vertex's degree.
+  enum Direction {
+    // DIRECTION_UNSPECIFIED defaults to OUT (out-degree) server-side.
+    DIRECTION_UNSPECIFIED = 0;
+    // OUT counts edges leaving the vertex (the vertex as tail).
+    OUT = 1;
+    // IN counts edges entering the vertex (the vertex as head).
+    IN = 2;
+    // BOTH counts edges in either direction (out-degree + in-degree; a
+    // self-loop counts twice).
+    BOTH = 3;
+  }
+  Direction direction = 3;
+
+  // weighted ranks by the summed live edge weight in the chosen direction
+  // instead of the raw live edge count.
+  bool weighted = 4;
+}
+
+// TopVerticesByDegreeResponse lists the ranked vertices in descending order of
+// the chosen metric (weighted_degree when the request set `weighted`, else
+// degree). Counts follow the live-visibility rule (#750): expired vertices and
+// fully decayed edges do not contribute. Results are point-in-time
+// best-effort, like GetServerStatus counts.
+message TopVerticesByDegreeResponse {
+  message Entry {
+    string key = 1;
+    // degree is the live edge count in the chosen direction.
+    uint64 degree = 2;
+    // weighted_degree is the summed live edge weight in the chosen direction.
+    double weighted_degree = 3;
+  }
+  repeated Entry entries = 1;
+}
+
 message GetEdgeRequest {
   string tail = 1;
   string head = 2;
@@ -842,6 +892,12 @@ service LanternService {
   // with the given prefix. Pass `dry_run = true` to preview the count
   // without mutating state.
   rpc DeleteVerticesByPrefix(DeleteVerticesByPrefixRequest) returns (DeleteVerticesByPrefixResponse);
+
+  // TopVerticesByDegree ranks the most-connected live vertices under a key
+  // prefix by their (weighted) out/in/both degree. Read-only aggregate; a
+  // non-empty prefix is REQUIRED (empty → INVALID_ARGUMENT). Results are
+  // point-in-time best-effort and honour the live-visibility rule (#750).
+  rpc TopVerticesByDegree(TopVerticesByDegreeRequest) returns (TopVerticesByDegreeResponse);
 
   rpc GetEdge(GetEdgeRequest) returns (GetEdgeResponse);
 
