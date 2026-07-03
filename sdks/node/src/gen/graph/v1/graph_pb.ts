@@ -1665,6 +1665,17 @@ export type AddEdgesRequest = Message<"graph.v1.AddEdgesRequest"> & {
    * corresponding edge on the legacy non-idempotent additive path. Each id is
    * opaque to the server.
    *
+   * Canonical 24-byte layout (the one spec; drift breaks cross-SDK dedup):
+   *   bytes [0:16] = client nonce / origin NodeID
+   *   bytes [16:24] = big-endian uint64 (seq<<16)|idx
+   * where seq is a per-client/per-mutation monotonic counter and idx is the
+   * edge's position within its batch (folding idx into the low 16 bits lets
+   * one batch carry up to 65 536 distinct ids under a single seq). Three
+   * hand-written encoders must stay byte-identical: sdks/go/client.go
+   * nextContribIDs, sdks/node/src/contrib.ts contribIdFrom, and
+   * server/service/apply.go contribIDFor. Golden-vector tests in all three
+   * suites (#922) fail CI on any unilateral change.
+   *
    * @generated from field: repeated bytes contrib_ids = 2;
    */
   contribIds: Uint8Array[];

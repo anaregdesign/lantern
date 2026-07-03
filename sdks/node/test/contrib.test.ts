@@ -63,4 +63,28 @@ describe("contrib IDs (#895)", () => {
     expect(() => validateContribId(new Uint8Array(25))).toThrow(InvalidArgumentError);
     expect(() => validateContribId(new Uint8Array(0))).toThrow(InvalidArgumentError);
   });
+
+  test("golden vectors — byte-for-byte identical to the Go SDK and server (#922)", () => {
+    // SAME literals as sdks/go/client_test.go TestContribIDGoldenVectors and
+    // server/service/apply_test.go TestContribIDForGoldenVectors. Never edit
+    // one copy alone: a unilateral change here breaks idempotency dedup against
+    // clients on the other implementation. Unlike the tests above, these do NOT
+    // re-derive (seq<<16)|index — they are written out literally so a
+    // coordinated shift/endianness/nonce-length refactor fails CI.
+    const nonce = new Uint8Array([
+      0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+      0x0f,
+    ]);
+    const v = (low8: number[]) => [...nonce, ...low8];
+
+    expect([...contribIdFrom(nonce, 1n, 0)]).toEqual(
+      v([0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00]),
+    );
+    expect([...contribIdFrom(nonce, 1n, 1)]).toEqual(
+      v([0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01]),
+    );
+    expect([...contribIdFrom(nonce, 0xabcdn, 0xffff)]).toEqual(
+      v([0x00, 0x00, 0x00, 0x00, 0xab, 0xcd, 0xff, 0xff]),
+    );
+  });
 });
