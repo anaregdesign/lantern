@@ -323,30 +323,30 @@ func (MatchMode) EnumDescriptor() ([]byte, []int) {
 type TopVerticesByDegreeRequest_Direction int32
 
 const (
-	// DIRECTION_UNSPECIFIED defaults to OUT (out-degree) server-side.
+	// DIRECTION_UNSPECIFIED defaults to out-degree server-side.
 	TopVerticesByDegreeRequest_DIRECTION_UNSPECIFIED TopVerticesByDegreeRequest_Direction = 0
-	// OUT counts edges leaving the vertex (the vertex as tail).
-	TopVerticesByDegreeRequest_OUT TopVerticesByDegreeRequest_Direction = 1
-	// IN counts edges entering the vertex (the vertex as head).
-	TopVerticesByDegreeRequest_IN TopVerticesByDegreeRequest_Direction = 2
-	// BOTH counts edges in either direction (out-degree + in-degree; a
-	// self-loop counts twice).
-	TopVerticesByDegreeRequest_BOTH TopVerticesByDegreeRequest_Direction = 3
+	// DIRECTION_OUT counts edges leaving the vertex (the vertex as tail).
+	TopVerticesByDegreeRequest_DIRECTION_OUT TopVerticesByDegreeRequest_Direction = 1
+	// DIRECTION_IN counts edges entering the vertex (the vertex as head).
+	TopVerticesByDegreeRequest_DIRECTION_IN TopVerticesByDegreeRequest_Direction = 2
+	// DIRECTION_BOTH counts edges in either direction (out-degree +
+	// in-degree; a self-loop counts twice).
+	TopVerticesByDegreeRequest_DIRECTION_BOTH TopVerticesByDegreeRequest_Direction = 3
 )
 
 // Enum value maps for TopVerticesByDegreeRequest_Direction.
 var (
 	TopVerticesByDegreeRequest_Direction_name = map[int32]string{
 		0: "DIRECTION_UNSPECIFIED",
-		1: "OUT",
-		2: "IN",
-		3: "BOTH",
+		1: "DIRECTION_OUT",
+		2: "DIRECTION_IN",
+		3: "DIRECTION_BOTH",
 	}
 	TopVerticesByDegreeRequest_Direction_value = map[string]int32{
 		"DIRECTION_UNSPECIFIED": 0,
-		"OUT":                   1,
-		"IN":                    2,
-		"BOTH":                  3,
+		"DIRECTION_OUT":         1,
+		"DIRECTION_IN":          2,
+		"DIRECTION_BOTH":        3,
 	}
 )
 
@@ -4604,17 +4604,17 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x05limit\x18\x02 \x01(\rR\x05limit\x12\x17\n" +
 	"\adry_run\x18\x03 \x01(\bR\x06dryRun\":\n" +
 	"\x1eDeleteVerticesByPrefixResponse\x12\x18\n" +
-	"\adeleted\x18\x01 \x01(\x04R\adeleted\"\xef\x01\n" +
+	"\adeleted\x18\x01 \x01(\x04R\adeleted\"\x8d\x02\n" +
 	"\x1aTopVerticesByDegreeRequest\x12\x16\n" +
 	"\x06prefix\x18\x01 \x01(\tR\x06prefix\x12\f\n" +
 	"\x01k\x18\x02 \x01(\rR\x01k\x12L\n" +
 	"\tdirection\x18\x03 \x01(\x0e2..graph.v1.TopVerticesByDegreeRequest.DirectionR\tdirection\x12\x1a\n" +
-	"\bweighted\x18\x04 \x01(\bR\bweighted\"A\n" +
+	"\bweighted\x18\x04 \x01(\bR\bweighted\"_\n" +
 	"\tDirection\x12\x19\n" +
-	"\x15DIRECTION_UNSPECIFIED\x10\x00\x12\a\n" +
-	"\x03OUT\x10\x01\x12\x06\n" +
-	"\x02IN\x10\x02\x12\b\n" +
-	"\x04BOTH\x10\x03\"\xc0\x01\n" +
+	"\x15DIRECTION_UNSPECIFIED\x10\x00\x12\x11\n" +
+	"\rDIRECTION_OUT\x10\x01\x12\x10\n" +
+	"\fDIRECTION_IN\x10\x02\x12\x12\n" +
+	"\x0eDIRECTION_BOTH\x10\x03\"\xc0\x01\n" +
 	"\x1bTopVerticesByDegreeResponse\x12E\n" +
 	"\aentries\x18\x01 \x03(\v2+.graph.v1.TopVerticesByDegreeResponse.EntryR\aentries\x1aZ\n" +
 	"\x05Entry\x12\x10\n" +

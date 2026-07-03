@@ -42,7 +42,7 @@ func TestTopVerticesByDegree(t *testing.T) {
 	t.Run("OutByCount", func(t *testing.T) {
 		svc := newDegreeFakeService(t)
 		resp, err := svc.TopVerticesByDegree(ctx, &pb.TopVerticesByDegreeRequest{
-			Prefix: "n:", K: 2, Direction: pb.TopVerticesByDegreeRequest_OUT,
+			Prefix: "n:", K: 2, Direction: pb.TopVerticesByDegreeRequest_DIRECTION_OUT,
 		})
 		if err != nil {
 			t.Fatalf("TopVerticesByDegree: %v", err)
@@ -61,7 +61,7 @@ func TestTopVerticesByDegree(t *testing.T) {
 	t.Run("InByWeight", func(t *testing.T) {
 		svc := newDegreeFakeService(t)
 		resp, err := svc.TopVerticesByDegree(ctx, &pb.TopVerticesByDegreeRequest{
-			Prefix: "n:", K: 1, Direction: pb.TopVerticesByDegreeRequest_IN, Weighted: true,
+			Prefix: "n:", K: 1, Direction: pb.TopVerticesByDegreeRequest_DIRECTION_IN, Weighted: true,
 		})
 		if err != nil {
 			t.Fatalf("TopVerticesByDegree: %v", err)
@@ -77,7 +77,7 @@ func TestTopVerticesByDegree(t *testing.T) {
 	t.Run("BothByCount", func(t *testing.T) {
 		svc := newDegreeFakeService(t)
 		resp, err := svc.TopVerticesByDegree(ctx, &pb.TopVerticesByDegreeRequest{
-			Prefix: "n:", K: 3, Direction: pb.TopVerticesByDegreeRequest_BOTH,
+			Prefix: "n:", K: 3, Direction: pb.TopVerticesByDegreeRequest_DIRECTION_BOTH,
 		})
 		if err != nil {
 			t.Fatalf("TopVerticesByDegree: %v", err)
@@ -127,7 +127,7 @@ func TestTopVerticesByDegree(t *testing.T) {
 
 		// k == 0 falls back to ScanDefaultLimit (2).
 		def, err := svc.TopVerticesByDegree(ctx, &pb.TopVerticesByDegreeRequest{
-			Prefix: "n:", K: 0, Direction: pb.TopVerticesByDegreeRequest_BOTH,
+			Prefix: "n:", K: 0, Direction: pb.TopVerticesByDegreeRequest_DIRECTION_BOTH,
 		})
 		if err != nil {
 			t.Fatalf("k=0: %v", err)
@@ -138,7 +138,7 @@ func TestTopVerticesByDegree(t *testing.T) {
 
 		// An oversized k is capped at ScanMaxLimit (3).
 		capped, err := svc.TopVerticesByDegree(ctx, &pb.TopVerticesByDegreeRequest{
-			Prefix: "n:", K: 100, Direction: pb.TopVerticesByDegreeRequest_BOTH,
+			Prefix: "n:", K: 100, Direction: pb.TopVerticesByDegreeRequest_DIRECTION_BOTH,
 		})
 		if err != nil {
 			t.Fatalf("k=100: %v", err)

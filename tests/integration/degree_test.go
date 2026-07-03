@@ -58,7 +58,7 @@ func TestTopVerticesByDegree_E2E(t *testing.T) {
 
 	t.Run("OutByCount", func(t *testing.T) {
 		got := top(t, &pb.TopVerticesByDegreeRequest{
-			Prefix: "n:", K: 2, Direction: pb.TopVerticesByDegreeRequest_OUT,
+			Prefix: "n:", K: 2, Direction: pb.TopVerticesByDegreeRequest_DIRECTION_OUT,
 		})
 		if len(got) != 2 {
 			t.Fatalf("entries = %d, want 2: %v", len(got), got)
@@ -73,7 +73,7 @@ func TestTopVerticesByDegree_E2E(t *testing.T) {
 
 	t.Run("InByWeight", func(t *testing.T) {
 		got := top(t, &pb.TopVerticesByDegreeRequest{
-			Prefix: "n:", K: 1, Direction: pb.TopVerticesByDegreeRequest_IN, Weighted: true,
+			Prefix: "n:", K: 1, Direction: pb.TopVerticesByDegreeRequest_DIRECTION_IN, Weighted: true,
 		})
 		if len(got) != 1 || got[0].GetKey() != "n:c" || got[0].GetWeightedDegree() != 11 || got[0].GetDegree() != 3 {
 			t.Fatalf("in-by-weight top1 = %v, want n:c 3/11", got)
@@ -82,7 +82,7 @@ func TestTopVerticesByDegree_E2E(t *testing.T) {
 
 	t.Run("BothByCount", func(t *testing.T) {
 		got := top(t, &pb.TopVerticesByDegreeRequest{
-			Prefix: "n:", K: 3, Direction: pb.TopVerticesByDegreeRequest_BOTH,
+			Prefix: "n:", K: 3, Direction: pb.TopVerticesByDegreeRequest_DIRECTION_BOTH,
 		})
 		if len(got) != 3 {
 			t.Fatalf("entries = %d, want 3: %v", len(got), got)
@@ -111,7 +111,7 @@ func TestTopVerticesByDegree_E2E(t *testing.T) {
 			t.Fatalf("DeleteVertex n:b: %v", err)
 		}
 		got := top(t, &pb.TopVerticesByDegreeRequest{
-			Prefix: "n:", K: 5, Direction: pb.TopVerticesByDegreeRequest_OUT,
+			Prefix: "n:", K: 5, Direction: pb.TopVerticesByDegreeRequest_DIRECTION_OUT,
 		})
 		// n:b is gone as a candidate, and n:a's edge into the now-dead n:b no
 		// longer counts, so n:a's out-degree drops 3->2 (n:c + x:1) / weight 7->6.

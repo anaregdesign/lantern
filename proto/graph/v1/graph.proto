@@ -482,15 +482,15 @@ message TopVerticesByDegreeRequest {
 
   // Direction selects which incident edges count toward a vertex's degree.
   enum Direction {
-    // DIRECTION_UNSPECIFIED defaults to OUT (out-degree) server-side.
+    // DIRECTION_UNSPECIFIED defaults to out-degree server-side.
     DIRECTION_UNSPECIFIED = 0;
-    // OUT counts edges leaving the vertex (the vertex as tail).
-    OUT = 1;
-    // IN counts edges entering the vertex (the vertex as head).
-    IN = 2;
-    // BOTH counts edges in either direction (out-degree + in-degree; a
-    // self-loop counts twice).
-    BOTH = 3;
+    // DIRECTION_OUT counts edges leaving the vertex (the vertex as tail).
+    DIRECTION_OUT = 1;
+    // DIRECTION_IN counts edges entering the vertex (the vertex as head).
+    DIRECTION_IN = 2;
+    // DIRECTION_BOTH counts edges in either direction (out-degree +
+    // in-degree; a self-loop counts twice).
+    DIRECTION_BOTH = 3;
   }
   Direction direction = 3;
 

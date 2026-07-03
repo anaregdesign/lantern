@@ -78,9 +78,9 @@ func (s *LanternService) TopVerticesByDegree(ctx context.Context, in *pb.TopVert
 // default and the one the store's DocLen counter is framed around.
 func degreeDirection(d pb.TopVerticesByDegreeRequest_Direction) graphcache.DegreeDirection {
 	switch d {
-	case pb.TopVerticesByDegreeRequest_IN:
+	case pb.TopVerticesByDegreeRequest_DIRECTION_IN:
 		return graphcache.DegreeIn
-	case pb.TopVerticesByDegreeRequest_BOTH:
+	case pb.TopVerticesByDegreeRequest_DIRECTION_BOTH:
 		return graphcache.DegreeBoth
 	default:
 		return graphcache.DegreeOut
