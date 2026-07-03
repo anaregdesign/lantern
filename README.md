@@ -77,9 +77,9 @@ flowchart TB
     end
     subgraph after["A Key-Vertex-Store — the same entries, connected"]
         direction LR
-        u42(("user:42<br/>alice")) -- "clicked · 1.5" --> i7(("item:7<br/>lamp"))
-        u42 -- "viewed · 0.3" --> i9(("item:9<br/>desk"))
-        u99(("user:99<br/>bob")) -- "bought · 2.0" --> i7
+        u42(("user:42<br/>alice")) -- "1.5" --> i7(("item:7<br/>lamp"))
+        u42 -- "0.3" --> i9(("item:9<br/>desk"))
+        u99(("user:99<br/>bob")) -- "2.0" --> i7
     end
     before -->|"add edge …"| after
 ```
@@ -87,7 +87,10 @@ flowchart TB
 That's the entire vocabulary you need:
 
 - **Vertex** — one cache entry: a key and its value (`user:42 = alice`), with a TTL.
-- **Edge** — a directed link between two keys: *"user:42 did something to item:7"*.
+- **Edge** — a directed link between two keys. It carries exactly two things:
+  a weight and a TTL — no type, label, or property bag. If you need
+  relationship kinds ("clicked" vs "bought"), encode them in your key design
+  or weight conventions.
 - **Weight** — how strong that link is right now. In Lantern it's the live
   sum of decaying contributions, so recent events count more than old ones.
 - **TTL** — everything above expires on its own; nothing needs a cleanup job.
