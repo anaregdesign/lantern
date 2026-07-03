@@ -147,12 +147,12 @@ type Lantern struct {
 	httpClient *http.Client
 	baseURL    string
 
-	// nonce + callSeq generate per-call ContribID idempotency keys when
-	// WithIdempotentAdds is set (#588). nonce is a per-client 128-bit random
-	// prefix that namespaces this client's keys; callSeq is bumped once per
-	// Add* request build. See nextContribIDs.
-	nonce   [16]byte
-	callSeq atomic.Uint64
+	// contribIDs mints the per-call ContribID idempotency keys when
+	// WithIdempotentAdds is set (#588). It is always non-nil after
+	// NewLantern (seeded with a per-client random nonce) but only consulted
+	// on the additive write surface when l.opts.idempotentAdds is set. See
+	// nextContribIDs and contribIDGen.
+	contribIDs *contribIDGen
 }
 
 // NewLantern dials the Lantern server at baseURL and returns a
@@ -189,10 +189,12 @@ func NewLantern(baseURL string, opts ...Option) (*Lantern, error) {
 	// A per-client random nonce namespaces this client's ContribIDs so two
 	// processes (or two NewLantern calls) never collide their idempotency
 	// keys. Only consulted when WithIdempotentAdds is set, but seeded
-	// unconditionally so the field is always valid.
-	if _, err := rand.Read(l.nonce[:]); err != nil {
-		return nil, fmt.Errorf("client: NewLantern could not seed idempotency nonce: %w", err)
+	// unconditionally so the generator is always valid.
+	gen, err := newContribIDGen()
+	if err != nil {
+		return nil, err
 	}
+	l.contribIDs = gen
 	return l, nil
 }
 
@@ -524,11 +526,19 @@ func (l *Lantern) AddEdge(ctx context.Context, tail string, head string, weight 
 
 // AddEdgeAt is AddEdge with an absolute expiration.
 func (l *Lantern) AddEdgeAt(ctx context.Context, tail string, head string, weight float32, expiration time.Time) (float32, error) {
+	return l.addEdgeAtWithIDs(ctx, tail, head, weight, expiration, l.nextContribIDs(1))
+}
+
+// addEdgeAtWithIDs is AddEdgeAt with caller-supplied contrib ids (or nil for
+// the legacy additive path). Splitting the id source out of the request
+// builder lets the failover ring mint the ids once and reuse them across
+// retry attempts, instead of re-minting a fresh key per attempt (#916).
+func (l *Lantern) addEdgeAtWithIDs(ctx context.Context, tail string, head string, weight float32, expiration time.Time, ids [][]byte) (float32, error) {
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
 	resp, err := unary(ctx, l, &pb.AddEdgesRequest{
 		Edges:      []*pb.Edge{{Tail: tail, Head: head, Weight: weight, Expiration: timestamppb.New(expiration)}},
-		ContribIds: l.nextContribIDs(1),
+		ContribIds: ids,
 	}, l.client.AddEdges)
 	if err != nil {
 		return 0, err
@@ -555,22 +565,39 @@ func (l *Lantern) AddEdgeAt(ctx context.Context, tail string, head string, weigh
 //
 // With WithIdempotentAdds the SDK stamps each contribution with a per-call
 // idempotency key, so a transport-level retry of a chunk records its weight
-// exactly once. That key is regenerated on each AddEdges invocation, so it
-// does not make an application-level resume/retry from index 0 idempotent —
-// use err.Written to resume, as above.
+// exactly once. The keys are minted once for the whole call (one contiguous
+// id space across chunks), so they are regenerated on each AddEdges
+// invocation — this does not make an application-level resume/retry from
+// index 0 idempotent; use err.Written to resume, as above.
 func (l *Lantern) AddEdges(ctx context.Context, inputs []EdgeInput) ([]float32, error) {
+	return l.addEdgesWithIDs(ctx, inputs, l.nextContribIDs(len(inputs)))
+}
+
+// addEdgesWithIDs is AddEdges with caller-supplied contrib ids (or nil for
+// the legacy additive path). When ids is non-nil it must be index-aligned
+// with inputs; each chunk receives its contiguous sub-slice. Minting the ids
+// once here — rather than per attempt inside the request builder — is what
+// lets the failover ring reuse the same ids across retries and across a node
+// switch, so a mid-flight Unavailable retry cannot double-count (#916).
+func (l *Lantern) addEdgesWithIDs(ctx context.Context, inputs []EdgeInput, ids [][]byte) ([]float32, error) {
 	if len(inputs) == 0 {
 		return nil, nil
 	}
 	effective := make([]float32, 0, len(inputs))
+	sent := 0
 	_, err := runBatchWrite(ctx, l, edgesFrom(inputs), func(ctx context.Context, chunk []*pb.Edge) (int32, error) {
-		resp, err := unary(ctx, l, &pb.AddEdgesRequest{Edges: chunk, ContribIds: l.nextContribIDs(len(chunk))}, l.client.AddEdges)
+		var chunkIDs [][]byte
+		if ids != nil {
+			chunkIDs = ids[sent : sent+len(chunk)]
+		}
+		resp, err := unary(ctx, l, &pb.AddEdgesRequest{Edges: chunk, ContribIds: chunkIDs}, l.client.AddEdges)
 		if err != nil {
 			return 0, err
 		}
 		// effective_weights is index-aligned per chunk; appending in chunk
 		// order keeps the aggregate aligned with inputs.
 		effective = append(effective, resp.GetEffectiveWeights()...)
+		sent += len(chunk)
 		return 0, nil
 	})
 	if err != nil {
@@ -581,21 +608,61 @@ func (l *Lantern) AddEdges(ctx context.Context, inputs []EdgeInput) ([]float32, 
 
 // nextContribIDs returns n per-edge idempotency keys for one Add* request,
 // or nil when WithIdempotentAdds is not set (nil → the wire carries no
-// contrib_ids, i.e. the legacy additive path). It bumps callSeq exactly once
-// per call; key i packs the client nonce into bytes [0:16] and the
-// big-endian (seq<<16)|i into bytes [16:24], matching the server's ContribID
-// layout. Because the keys are baked into the request when it is built, a
-// transport retry that re-sends the same request re-sends the same keys, so
-// the contribution is recorded exactly once.
+// contrib_ids, i.e. the legacy additive path). It delegates to the client's
+// contribIDGen, whose byte layout is pinned by #922's golden vectors.
 func (l *Lantern) nextContribIDs(n int) [][]byte {
-	if !l.opts.idempotentAdds || n <= 0 {
+	if !l.opts.idempotentAdds {
 		return nil
 	}
-	seq := l.callSeq.Add(1)
+	return l.contribIDs.next(n)
+}
+
+// contribIDGen mints the 24-byte per-edge idempotency keys the additive
+// write surface stamps onto contributions when WithIdempotentAdds is set
+// (#588). A per-generator random nonce namespaces the keys; callSeq is a
+// monotonic counter advanced once per logical call. Its byte layout —
+// id[0:16] = nonce, big-endian (seq<<16)|idx in id[16:24] — is byte-for-byte
+// pinned by #922's golden vectors and must stay identical to the server's
+// contribIDFor and the Node SDK's contribIdFrom.
+//
+// One generator is shared per logical call site: each *Lantern holds its own,
+// and (crucially for #916) a *Failover holds a single generator so ids minted
+// for one logical call are reused verbatim across every retry attempt and
+// every node in the ring — a re-mint per attempt is exactly the double-count
+// bug this guards against.
+type contribIDGen struct {
+	nonce   [16]byte
+	callSeq atomic.Uint64
+}
+
+// newContribIDGen returns a generator seeded with a fresh random nonce.
+func newContribIDGen() (*contribIDGen, error) {
+	g := &contribIDGen{}
+	if _, err := rand.Read(g.nonce[:]); err != nil {
+		return nil, fmt.Errorf("client: could not seed idempotency nonce: %w", err)
+	}
+	return g, nil
+}
+
+// next returns n contiguous 24-byte contrib ids, or nil for n <= 0. It
+// reserves ceil(n/65536) sequence numbers atomically and advances the packed
+// seq every 65536 ids, so the low-16-bit idx field never aliases even when a
+// single logical call spans more than 65536 edges (the failover batch path
+// mints once for the whole request, unchipped by the per-chunk size). Within
+// one 65536-block the ids share a seq and differ only in idx.
+func (g *contribIDGen) next(n int) [][]byte {
+	if n <= 0 {
+		return nil
+	}
+	const block = 1 << 16
+	blocks := uint64((n + block - 1) / block) // ceil(n / 65536)
+	last := g.callSeq.Add(blocks)
+	base := last - blocks + 1
 	ids := make([][]byte, n)
 	for i := 0; i < n; i++ {
 		id := make([]byte, 24)
-		copy(id[:16], l.nonce[:])
+		copy(id[:16], g.nonce[:])
+		seq := base + uint64(i/block)
 		binary.BigEndian.PutUint64(id[16:], (seq<<16)|uint64(uint16(i)))
 		ids[i] = id
 	}
