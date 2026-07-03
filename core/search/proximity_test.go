@@ -41,6 +41,52 @@ func TestProximityBoostInertWithoutPositions(t *testing.T) {
 	}
 }
 
+// TestProximityWeightScalesBoost pins WithProximityWeight to the boost formula:
+// weight 0 makes the boost inert even under WithPositions (the two docs tie on
+// pure BM25), and the bonus the adjacent document earns is exactly linear in the
+// weight, so the harness can read the ranking off a swept weight. The adjacent
+// doc's window is 1 (span 0) and the scattered doc's is 5 (span 4), so at weight
+// w the bonuses are w/(0+1) and w/(4+1) and the tie-break gap is w - w/5 =
+// 0.8*w — measured here at two weights to fix the slope.
+func TestProximityWeightScalesBoost(t *testing.T) {
+	build := func(w float64) []Result[string] {
+		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, WithPositions(), WithProximityWeight(w))
+		idx.Index("adjacent", Text("alpha quick fox beta gamma delta"))  // quick@1 fox@2
+		idx.Index("scattered", Text("quick alpha beta gamma delta fox")) // quick@0 fox@5
+		return idx.Search("quick fox")
+	}
+
+	t.Run("ZeroDisables", func(t *testing.T) {
+		res := build(0)
+		if len(res) != 2 {
+			t.Fatalf("want 2 results, got %d", len(res))
+		}
+		if res[0].Score != res[1].Score {
+			t.Fatalf("weight 0 must tie like no boost, got %+v", res)
+		}
+	})
+
+	t.Run("LinearInWeight", func(t *testing.T) {
+		gap := func(res []Result[string]) float64 {
+			byID := map[string]float64{res[0].ID: res[0].Score, res[1].ID: res[1].Score}
+			return byID["adjacent"] - byID["scattered"]
+		}
+		g1 := gap(build(0.3))
+		g2 := gap(build(0.6))
+		if g1 <= 0 {
+			t.Fatalf("adjacent not boosted above scattered at weight 0.3: gap %.4f", g1)
+		}
+		// The bonus is linear in the weight, so doubling it doubles the gap.
+		if diff := g2 - 2*g1; diff > 1e-9 || diff < -1e-9 {
+			t.Fatalf("gap not linear in weight: g(0.3)=%.6f g(0.6)=%.6f", g1, g2)
+		}
+		// Slope check: the gap is 0.8*w by construction (windows 1 vs 5).
+		if diff := g1 - 0.8*0.3; diff > 1e-9 || diff < -1e-9 {
+			t.Fatalf("gap %.6f at weight 0.3 not 0.8*w = %.6f", g1, 0.8*0.3)
+		}
+	})
+}
+
 // TestProximityBoostSingleTermNoOp verifies a single-term query has no pair to
 // measure, so the boost is a no-op and ranking stays pure BM25 (the shorter,
 // denser document still wins on its own merits).

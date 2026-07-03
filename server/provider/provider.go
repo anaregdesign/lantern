@@ -18,6 +18,7 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 	"github.com/anaregdesign/lantern/server/readiness"
+	"github.com/anaregdesign/lantern/server/service"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -177,6 +178,7 @@ type ScanConfig struct {
 // count the same way ScanConfig caps the prefix RPCs.
 //
 //   - LANTERN_SEARCH_ENABLED           (default true)
+//   - LANTERN_SEARCH_POSITIONS         (default true)
 //   - LANTERN_SEARCH_DEFAULT_LIMIT     (default 100)
 //   - LANTERN_SEARCH_MAX_LIMIT         (default 1000)
 //   - LANTERN_SEARCH_DEFAULT_MODE      (default "any": any|all|min-should)
@@ -185,9 +187,18 @@ type SearchConfig struct {
 	Enabled      bool
 	DefaultLimit uint32
 	MaxLimit     uint32
+	// Positions is opt-out (LANTERN_SEARCH_POSITIONS, default true): when true
+	// the search index records positional postings so phrase queries verify
+	// adjacency and the proximity boost ranks tight matches higher. Setting it
+	// false drops the per-(word term, vertex) position store — phrase queries
+	// degrade to the AND-intersection and the proximity boost goes inert —
+	// trading phrase/proximity fidelity for a smaller index on large corpora
+	// (#908). Ignored when Enabled is false.
+	Positions bool
 	// DefaultMode is the match mode applied when a SearchVertices request omits
 	// options or leaves match_mode unspecified: "any" (OR), "all" (AND), or
-	// "min-should". An unrecognised value falls back to "any".
+	// "min-should". The value is validated at startup (service.ValidateMatchMode);
+	// an unrecognised spelling fails boot rather than silently defaulting (#911).
 	DefaultMode string
 	// DefaultMinShould is the minimum-should-match count applied when the mode
 	// resolves to min-should but the request leaves min_should_match at 0.
@@ -293,6 +304,7 @@ func NewConfig() (*Config, error) {
 		},
 		Search: SearchConfig{
 			Enabled:          envconfig.Bool("LANTERN_SEARCH_ENABLED", true),
+			Positions:        envconfig.Bool("LANTERN_SEARCH_POSITIONS", true),
 			DefaultLimit:     envconfig.Uint32("LANTERN_SEARCH_DEFAULT_LIMIT", 100),
 			MaxLimit:         envconfig.Uint32("LANTERN_SEARCH_MAX_LIMIT", 1000),
 			DefaultMode:      envconfig.String("LANTERN_SEARCH_DEFAULT_MODE", "any"),
@@ -306,7 +318,18 @@ func NewConfig() (*Config, error) {
 		CORS:        loadCORSConfig(),
 		Backup:      loadBackupConfig(),
 	}
-	return cfg, validateEnv(os.Environ())
+	if err := validateEnv(os.Environ()); err != nil {
+		return nil, err
+	}
+	// Unlike the malformed/unknown-variable findings (warn, and only fail under
+	// LANTERN_STRICT_CONFIG), an unrecognised LANTERN_SEARCH_DEFAULT_MODE always
+	// fails boot: the value is a valid string, so it slips past parsing, but a
+	// typo silently rewrites server-wide default ranking semantics — an operator
+	// must learn about it at startup, not from confusing search results (#911).
+	if err := service.ValidateMatchMode(cfg.Search.DefaultMode); err != nil {
+		return nil, err
+	}
+	return cfg, nil
 }
 
 // foreignEnvPrefixes names LANTERN_*-prefixed namespaces owned by sibling
@@ -411,9 +434,15 @@ func NewGraphCache(c CacheConfig, sc SearchConfig) *graphcache.GraphCache[string
 	// Content search (#624) is opt-out. EnableSearchIndex carries the same
 	// "before any insert" contract as EnablePrefixIndex, so it must also be
 	// called here; gating on sc.Enabled keeps the put hot path free of the
-	// inverted-index cost when an operator turns the feature off.
+	// inverted-index cost when an operator turns the feature off. Positional
+	// postings are a second opt-out (LANTERN_SEARCH_POSITIONS, #908): dropping
+	// them shrinks the index at the cost of phrase/proximity fidelity.
 	if sc.Enabled {
-		gc.EnableSearchIndex(vertexSearchDocument)
+		var opts []graphcache.SearchIndexOption
+		if !sc.Positions {
+			opts = append(opts, graphcache.WithoutSearchPositions())
+		}
+		gc.EnableSearchIndex(vertexSearchDocument, opts...)
 	}
 	return gc
 }

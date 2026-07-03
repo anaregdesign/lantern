@@ -21,18 +21,49 @@ import (
 // Since #889 the index also records positional postings (WithPositions): the
 // token positions of each primary-channel term, so the search layer can tell
 // an exact phrase or a near match from scattered term hits. The cost is one
-// ascending position slice per (word term, vertex).
+// position store per (word term, vertex). positions is opt-out
+// (LANTERN_SEARCH_POSITIONS, #908): when false the index skips the position
+// store entirely — SearchPhrase degrades to the AND-intersection and the
+// proximity boost is inert, so an operator with a large corpus can trade
+// phrase/proximity support for the memory.
 //
 // The relevance gate (core/search/relevance, parity_gate_test.go) replicates
-// exactly this pipeline and ratchets its measured metrics against the pinned
-// Lucene baseline — change the two in lockstep.
-func newSearchIndex[S comparable]() *search.InvertedIndex[S, search.Document] {
+// exactly this pipeline (with positions on) and ratchets its measured metrics
+// against the pinned Lucene baseline — change the two in lockstep.
+func newSearchIndex[S comparable](positions bool) *search.InvertedIndex[S, search.Document] {
 	analyzer := search.NewScriptAwareAnalyzer()
 	scorer := search.ClassWeighted{
 		Base:       search.BM25{K1: search.DefaultBM25K1, B: search.DefaultBM25B},
 		GramWeight: search.DefaultGramWeight,
 	}
-	return search.NewInvertedIndex[S, search.Document](analyzer, scorer, search.WithPositions())
+	var opts []search.IndexOption
+	if positions {
+		opts = append(opts, search.WithPositions())
+	}
+	return search.NewInvertedIndex[S, search.Document](analyzer, scorer, opts...)
+}
+
+// SearchIndexOption configures the optional content-search index at
+// EnableSearchIndex time. The zero configuration records positional postings;
+// options only pare it back.
+type SearchIndexOption func(*searchIndexConfig)
+
+// searchIndexConfig is the resolved EnableSearchIndex configuration. positions
+// defaults to true so the common call — EnableSearchIndex(extract) with no
+// options — keeps recording positions exactly as before #908.
+type searchIndexConfig struct {
+	positions bool
+}
+
+// WithoutSearchPositions builds the search index without positional postings
+// (the LANTERN_SEARCH_POSITIONS=false path, #908). The index then pays nothing
+// for the per-(word term, vertex) position store; in exchange SearchPhrase
+// degrades to the AND-intersection (word terms all present, order/adjacency
+// unverified) and the proximity boost is inert. The SearchVertices RPC keeps
+// working — a phrase query simply widens to the AND-intersection rather than
+// failing.
+func WithoutSearchPositions() SearchIndexOption {
+	return func(c *searchIndexConfig) { c.positions = false }
 }
 
 // EnableSearchIndex turns on the optional content-search index, projecting each
@@ -40,7 +71,9 @@ func newSearchIndex[S comparable]() *search.InvertedIndex[S, search.Document] {
 // vertex's string value). Like EnablePrefixIndex it must be called before any
 // vertex is stored, is idempotent, and panics on a non-empty cache so the
 // caller cannot silently observe an index that disagrees with point reads.
-// extract must not be nil.
+// extract must not be nil. By default the index records positional postings for
+// phrase and proximity queries; pass WithoutSearchPositions to build the leaner
+// position-free index (#908).
 //
 // Once enabled, the index is kept in perfect lockstep with the vertex
 // lifecycle: every put (including overwrites) re-indexes the value, and
@@ -49,9 +82,13 @@ func newSearchIndex[S comparable]() *search.InvertedIndex[S, search.Document] {
 // they describe.
 // The index is a third opt-in secondary structure alongside the prefix index;
 // when it is left disabled the put / evict hot paths pay only a nil check.
-func (c *GraphCache[S, T]) EnableSearchIndex(extract func(T) search.Document) {
+func (c *GraphCache[S, T]) EnableSearchIndex(extract func(T) search.Document, opts ...SearchIndexOption) {
 	if extract == nil {
 		panic("graphcache: EnableSearchIndex extract must not be nil")
+	}
+	cfg := searchIndexConfig{positions: true}
+	for _, opt := range opts {
+		opt(&cfg)
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -62,7 +99,7 @@ func (c *GraphCache[S, T]) EnableSearchIndex(extract func(T) search.Document) {
 		panic("graphcache: EnableSearchIndex must be called before any vertex is stored")
 	}
 	c.searchExtract = extract
-	c.searchIndex = newSearchIndex[S]()
+	c.searchIndex = newSearchIndex[S](cfg.positions)
 }
 
 // SearchVertices returns up to limit keys whose indexed content matches query,
