@@ -32,6 +32,12 @@ import (
 type InvertedIndex[S comparable, D Document] struct {
 	analyzer Analyzer
 	scorer   Scorer
+	// positions is fixed at construction (WithPositions): when set, Index
+	// records each primary-channel (ClassWord) term's token positions so
+	// SearchPhrase and the proximity boost can tell an exact phrase from
+	// scattered matches. Read without the lock — it never changes after
+	// construction.
+	positions bool
 
 	mu sync.RWMutex
 	// classes holds one posting table per token class; a term's class is part
@@ -86,19 +92,45 @@ type docEntry[S comparable] struct {
 	terms [numTokenClasses][]uint32
 }
 
+// IndexOption configures an InvertedIndex at construction time.
+type IndexOption func(*indexConfig)
+
+// indexConfig holds the resolved construction options.
+type indexConfig struct {
+	positions bool
+}
+
+// WithPositions makes the index record each term's token positions on the
+// primary word channel (ClassWord), which SearchPhrase and the proximity boost
+// need to tell an exact phrase from scattered term matches. It costs one
+// ascending []uint32 per (word term, document); an index left without it ranks
+// by the OR-union BM25 alone and stores no positions. The auxiliary gram
+// channel never carries positions: phrase and proximity are word-level, and a
+// CJK run's adjacency is already encoded by its overlapping bigrams on the
+// word channel, so pos+1 verification works there too (#889).
+func WithPositions() IndexOption {
+	return func(c *indexConfig) { c.positions = true }
+}
+
 // NewInvertedIndex returns an empty index that analyzes both documents and
 // queries with analyzer and ranks matches with scorer. Passing a nil scorer
 // installs BM25 with the standard parameters (K1 = 1.2, B = 0.75). D is the
-// document type it accepts; use Text to index plain strings.
-func NewInvertedIndex[S comparable, D Document](analyzer Analyzer, scorer Scorer) *InvertedIndex[S, D] {
+// document type it accepts; use Text to index plain strings. Pass
+// WithPositions to enable phrase and proximity queries (SearchPhrase).
+func NewInvertedIndex[S comparable, D Document](analyzer Analyzer, scorer Scorer, opts ...IndexOption) *InvertedIndex[S, D] {
 	if scorer == nil {
 		scorer = BM25{K1: DefaultBM25K1, B: DefaultBM25B}
 	}
+	var cfg indexConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 	idx := &InvertedIndex[S, D]{
-		analyzer: analyzer,
-		scorer:   scorer,
-		ords:     newOrdinals[S](),
-		docs:     make(map[uint32]docEntry[S]),
+		analyzer:  analyzer,
+		scorer:    scorer,
+		positions: cfg.positions,
+		ords:      newOrdinals[S](),
+		docs:      make(map[uint32]docEntry[S]),
 	}
 	for class := range idx.classes {
 		idx.classes[class] = classPostings{
@@ -187,11 +219,25 @@ func (idx *InvertedIndex[S, D]) indexPreparedLocked(id S, tokens []Token) {
 	// statistics are recorded independently. perClass slices are transient
 	// scratch; only the compact distinct-term slices are retained.
 	var perClass [numTokenClasses][]string
+	// wordPositions maps each primary (ClassWord) term to its ascending token
+	// positions in this document, recorded only when the index tracks positions.
+	// Position counts word tokens only (auxiliary grams are skipped), so
+	// "data set" yields data@0 set@1 and a CJK run's consecutive bigrams get
+	// consecutive positions — both let SearchPhrase verify adjacency with pos+1.
+	var wordPositions map[string][]uint32
+	if idx.positions {
+		wordPositions = make(map[string][]uint32)
+	}
+	var wordPos uint32
 	for _, token := range tokens {
 		if int(token.Class) >= numTokenClasses {
 			panic("search: token with undefined TokenClass")
 		}
 		perClass[token.Class] = append(perClass[token.Class], token.Term)
+		if wordPositions != nil && token.Class == ClassWord {
+			wordPositions[token.Term] = append(wordPositions[token.Term], wordPos)
+			wordPos++
+		}
 	}
 	ord := idx.ords.assign(id)
 	entry := docEntry[S]{id: id}
@@ -224,7 +270,11 @@ func (idx *InvertedIndex[S, D]) indexPreparedLocked(id S, tokens []Token) {
 				pl = newPostingList()
 				cp.postings[tid] = pl
 			}
-			pl.set(ord, j-i) // term frequency = run length of this term
+			var pos []uint32
+			if wordPositions != nil && class == int(ClassWord) {
+				pos = wordPositions[sorted[i]]
+			}
+			pl.set(ord, j-i, pos) // term frequency = run length of this term
 			terms = append(terms, tid)
 			i = j
 		}
@@ -309,6 +359,8 @@ func (idx *InvertedIndex[S, D]) Search(query string) []Result[S] {
 	if len(scores) == 0 {
 		return nil
 	}
+	// Lift documents whose query terms cluster tightly (positions permitting).
+	idx.applyProximityLocked(scores, queryTerms)
 	results := make([]Result[S], 0, len(scores))
 	for ord, score := range scores {
 		results = append(results, Result[S]{ID: idx.docs[ord].id, Score: score})
@@ -411,18 +463,27 @@ func (idx *InvertedIndex[S, D]) SearchTopK(query string, k int, accept func(id S
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
-	// Phase 1 — identical union scoring to Search: every matching document's
-	// full score must exist before selection, because a document's rank is
-	// the SUM over query terms.
+	// Phase 1 — union scoring identical to Search, then the same proximity
+	// boost, so a document's full score exists before selection: its rank is
+	// the SUM over query terms, adjusted for how tightly they cluster.
 	scores := idx.scoreLocked(queryTerms)
 	if len(scores) == 0 {
 		return nil
 	}
+	idx.applyProximityLocked(scores, queryTerms)
 
-	// Phase 2 — bounded selection. A min-heap of size k holds the current
-	// best accepted documents; a candidate consults accept only once its
-	// score beats the boundary, so rejection work never scales with the
-	// match set beyond the heap-qualified candidates.
+	// Phase 2 — bounded selection, shared with SearchPhraseTopK.
+	return idx.selectTopKLocked(scores, k, accept)
+}
+
+// selectTopKLocked returns the k highest-scoring documents in scores that pass
+// accept, as a descending-ranked slice. It is the bounded-selection phase
+// shared by SearchTopK and SearchPhraseTopK: a size-k min-heap holds the
+// current best, accept is consulted lazily (only once a candidate's score
+// clears the heap boundary) so rejection never scales with the match set, and
+// ties at the k-th boundary keep an unspecified subset. Callers must hold
+// idx.mu; k > 0 is the caller's precondition.
+func (idx *InvertedIndex[S, D]) selectTopKLocked(scores map[uint32]float64, k int, accept func(id S) bool) []Result[S] {
 	h := topKHeap[S]{entries: make([]Result[S], 0, k)}
 	for ord, score := range scores {
 		if len(h.entries) == k && score <= h.entries[0].Score {

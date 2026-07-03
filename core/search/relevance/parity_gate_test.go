@@ -20,10 +20,11 @@ import (
 
 // productionIndex replicates the exact index core/graphcache.newSearchIndex
 // builds for SearchVertices — since #888 the script-aware dual-channel
-// analyzer with class-weighted BM25. It is intentionally a replica, not an
-// import: graphcache depends on search, so this package (a sibling under
-// search) states the pipeline explicitly, and this comment plus the one on
-// newSearchIndex keep the two in sync.
+// analyzer with class-weighted BM25, and since #889 with positional postings
+// (WithPositions) for phrase and proximity ranking. It is intentionally a
+// replica, not an import: graphcache depends on search, so this package (a
+// sibling under search) states the pipeline explicitly, and this comment plus
+// the one on newSearchIndex keep the two in sync.
 func productionIndex() *search.InvertedIndex[string, search.Text] {
 	return search.NewInvertedIndex[string, search.Text](
 		search.NewScriptAwareAnalyzer(),
@@ -31,6 +32,7 @@ func productionIndex() *search.InvertedIndex[string, search.Text] {
 			Base:       search.BM25{K1: search.DefaultBM25K1, B: search.DefaultBM25B},
 			GramWeight: search.DefaultGramWeight,
 		},
+		search.WithPositions(),
 	)
 }
 
