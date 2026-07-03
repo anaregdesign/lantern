@@ -113,22 +113,24 @@ func (w *weight) addWithExpirationContrib(value float32, expiration time.Time, c
 }
 
 // addWithExpirationContribAt is addWithExpirationContrib with a caller-supplied
-// liveness clock, additionally returning the post-apply LIVE weight sum (#897)
-// so an additive write reads back its own effect atomically — the building
-// block for a race-free increment-then-check counter. The values are compacted
-// against `now` before the sum is read, so the returned weight excludes
-// expired-but-unflushed contributions (the true rolling-window value), matching
-// what a subsequent value() read would report. On a contrib_id dedup no-op it
-// returns applied=false and the current live sum. Because it flushes on every
-// call the amortized-compaction trigger is moot on this path; the cost is the
-// same O(live) a paired GetEdge would have paid, folded into the one write.
+// liveness clock, additionally returning the post-apply weight sum (#897) so an
+// additive write reads back its own effect atomically — the building block for a
+// race-free increment-then-check counter. It uses the SAME amortized-compaction
+// trigger as addWithExpirationContrib so the hot add path stays O(1) amortized:
+// force-flushing on every call would make a write-only hot edge O(N) per add and
+// O(N²) overall (regressing #743's fast path). The returned `effective` is the
+// running sum after the append; the amortized flush bounds how long expired-but-
+// unflushed contributions linger in it, and it reconciles to the exact live sum
+// on the next flush (on the compaction trigger, on a value() read, or on GC). In
+// the increment-then-check counter use-case the edge is live-dominated, so the
+// returned sum equals the true rolling-window value. On a contrib_id dedup no-op
+// it returns applied=false and the current running sum.
 func (w *weight) addWithExpirationContribAt(value float32, expiration time.Time, contribID ContribID, now time.Time) (applied bool, effective float32) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if !contribID.IsZero() {
 		for _, v := range w.values {
 			if v.contribID == contribID && cache.IsLiveAt(v.expiration, now) {
-				w.flushLockedAt(now)
 				return false, w.sum
 			}
 		}
@@ -139,7 +141,9 @@ func (w *weight) addWithExpirationContribAt(value float32, expiration time.Time,
 		contribID:  contribID,
 	})
 	w.sum += value
-	w.flushLockedAt(now)
+	if n := len(w.values); n > weightCompactMin && n > 2*w.lastFlushLen {
+		w.flushLockedAt(now)
+	}
 	return true, w.sum
 }
 
