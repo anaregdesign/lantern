@@ -174,6 +174,43 @@ test.describe("/vertices — content search (#650)", () => {
     ).toBeVisible();
   });
 
+  test("match-mode control narrows a multi-word query from OR to AND (#892)", async ({
+    page,
+  }) => {
+    await page.goto("/vertices");
+    await page.getByRole("tab", { name: "Content search" }).click();
+
+    // The relevance controls appear alongside the query box.
+    await expect(page.getByTestId("search-options")).toBeVisible();
+    await expect(page.getByTestId("search-mode")).toBeVisible();
+    await expect(page.getByTestId("search-phrase")).toBeVisible();
+    await expect(page.getByTestId("search-fuzzy")).toBeVisible();
+
+    // "zorptangle consensus": only doc1 carries both words; doc2 has
+    // "zorptangle" but not "consensus".
+    await page.getByTestId("search-query-input").fill("zorptangle consensus");
+
+    const table = page.getByTestId("search-results-table");
+    await expect(table).toBeVisible();
+    // Any-word (default OR): doc2 rides in on the shared "zorptangle".
+    await expect(
+      table.getByRole("link", { name: "e2e:search:doc2" }),
+    ).toBeVisible();
+
+    // Switch to All-words (AND): doc2, missing "consensus", drops out while
+    // doc1 (both words) stays. This proves the mode flows through to the
+    // server and re-runs the query.
+    await page.getByTestId("search-mode").click();
+    await page.getByRole("option", { name: "All words (AND)" }).click();
+
+    await expect(
+      table.getByRole("link", { name: "e2e:search:doc1" }),
+    ).toBeVisible();
+    await expect(
+      table.getByRole("link", { name: "e2e:search:doc2" }),
+    ).toHaveCount(0);
+  });
+
   test("Illuminate action seeds the CLI explorer with the hit key", async ({
     page,
   }) => {

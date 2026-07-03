@@ -34,7 +34,14 @@ export async function searchVertices(
   try {
     const hits: SearchHit[] = await client.searchVertices(
       request.query,
-      { limit: request.limit ?? 0, prefix: request.prefix ?? "" },
+      {
+        limit: request.limit ?? 0,
+        prefix: request.prefix ?? "",
+        matchMode: request.matchMode,
+        phrase: request.phrase,
+        // The admin exposes fuzzy as one toggle: one edit of slack + prefix terms.
+        ...(request.fuzzy ? { fuzziness: 1, prefixTerms: true } : {}),
+      },
       init?.signal,
     );
     return { hits };

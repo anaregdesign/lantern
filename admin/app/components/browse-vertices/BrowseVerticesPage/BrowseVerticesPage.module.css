@@ -75,6 +75,17 @@
   gap: var(--spacingHorizontalM, 12px);
 }
 
+.searchOptions {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--spacingHorizontalL, 16px);
+  flex-wrap: wrap;
+}
+
+.searchOptionsMode {
+  min-width: 180px;
+}
+
 .alert {
   margin: 0;
 }
