@@ -10,25 +10,41 @@ const (
 	// DefaultBM25B controls document-length normalization, from 0 (off) to 1
 	// (full): how strongly a long document is penalized for diluting a term.
 	DefaultBM25B = 0.75
+	// DefaultGramWeight is the production ClassWeighted.GramWeight: how much
+	// a match on the auxiliary intra-word gram channel counts relative to a
+	// whole-word match. 0.2 sits in the middle of the plateau the relevance
+	// harness measured for #888 — every weight in [0.1, 0.3] beat the pinned
+	// Lucene baselines on all corpora, with the extremes offering no durable
+	// advantage over this midpoint.
+	DefaultGramWeight = 0.2
 )
 
 // TermStats carries the corpus statistics a Scorer needs to weight one
 // (query term, matching document) pairing. The Searcher fills it in from the
 // index while computing a result; a Scorer treats it as read-only input and
 // holds no state of its own, so a single Scorer is safe for concurrent use.
+//
+// Every count is scoped to the term's token class (#888): the index keeps
+// separate postings and statistics per class, so DF, N, DocLen, and AvgLen
+// describe only the channel the term matched on. For a single-channel
+// pipeline that scoping is invisible — the class's corpus is the corpus.
 type TermStats struct {
 	// TF is how many times the term occurs in this document (term frequency).
 	TF int
 	// DF is how many documents in the corpus contain the term (document
 	// frequency); it drives the inverse-document-frequency weight.
 	DF int
-	// N is the total number of documents in the corpus.
+	// N is the number of documents carrying at least one token of the term's
+	// class — the corpus size of the term's channel.
 	N int
-	// DocLen is the length, in tokens, of this document.
+	// DocLen is the length of this document in tokens of the term's class.
 	DocLen int
-	// AvgLen is the mean document length across the corpus, used to normalize
-	// DocLen so long and short documents compete fairly.
+	// AvgLen is the mean DocLen across the class's N documents, used to
+	// normalize DocLen so long and short documents compete fairly.
 	AvgLen float64
+	// Class is the matching channel the term belongs to, so a class-aware
+	// Scorer (ClassWeighted) can weight primary and auxiliary evidence apart.
+	Class TokenClass
 }
 
 // Scorer assigns a relevance weight to a single (query term, document)
@@ -122,5 +138,50 @@ func BM25Score(tf, avgLen float64, df, n, docLen int, k1, b float64) float64 {
 	return idf * (tf * (k1 + 1)) / denom
 }
 
-// Interface assertion: BM25 is a Scorer.
-var _ Scorer = BM25{}
+// ClassWeighted layers per-class weighting over a base Scorer (#888): a match
+// on the auxiliary gram channel (ClassGram) is multiplied by GramWeight while
+// primary evidence (ClassWord) passes through unchanged. With the dual-class
+// ScriptAwareTokenizer this is what makes a whole-word match dominate the
+// redundant intra-word fragments that only exist to keep infix recall: the
+// fragments still surface a document, but at a fraction of the weight, so
+// "arch" ranks the document containing the word above the ones merely
+// containing the substring.
+//
+// GramWeight is clamped to [0, 1]; 0 silences the auxiliary channel entirely
+// and 1 restores unweighted scoring. A nil Base falls back to BM25 with the
+// standard parameters, so the zero value scores like the default scorer with
+// the gram channel muted. ClassWeighted holds no mutable state and is safe
+// for concurrent use.
+type ClassWeighted struct {
+	// Base scores each pairing before weighting; nil means standard BM25.
+	Base Scorer
+	// GramWeight multiplies ClassGram matches, clamped to [0, 1].
+	GramWeight float64
+}
+
+// Score returns the base score, scaled by GramWeight for auxiliary-channel
+// matches.
+func (s ClassWeighted) Score(stats TermStats) float64 {
+	base := s.Base
+	if base == nil {
+		base = BM25{K1: DefaultBM25K1, B: DefaultBM25B}
+	}
+	score := base.Score(stats)
+	if stats.Class == ClassGram {
+		w := s.GramWeight
+		switch {
+		case w < 0:
+			w = 0
+		case w > 1:
+			w = 1
+		}
+		score *= w
+	}
+	return score
+}
+
+// Interface assertions: BM25 and ClassWeighted are Scorers.
+var (
+	_ Scorer = BM25{}
+	_ Scorer = ClassWeighted{}
+)

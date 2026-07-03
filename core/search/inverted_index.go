@@ -18,6 +18,13 @@ import (
 // statistics into the ranking. Search returns hits ordered by descending
 // score.
 //
+// Terms live in per-class tables (#888): each TokenClass has its own term
+// dictionary, postings, and corpus statistics, so a dual-channel analyzer
+// (ScriptAwareTokenizer's whole words + auxiliary intra-word grams) never
+// mixes the two channels' document frequencies or lengths, and a class-aware
+// Scorer (ClassWeighted) can weight them apart. A single-channel pipeline
+// simply leaves the other class empty at zero cost.
+//
 // InvertedIndex is safe for concurrent use by multiple goroutines: reads
 // (Search) take a shared lock and writes (Index, Delete) take an exclusive
 // one, and text analysis runs outside the lock to keep the critical section
@@ -27,25 +34,39 @@ type InvertedIndex[S comparable, D Document] struct {
 	scorer   Scorer
 
 	mu sync.RWMutex
-	// dict assigns each distinct term a compact uint32 id so postings and the
-	// per-document forward lists key on the id instead of repeating the term
-	// string; the term itself is stored exactly once, in the dictionary.
-	dict *termDict
+	// classes holds one posting table per token class; a term's class is part
+	// of its identity, so the same spelling on two channels never collides.
+	classes [numTokenClasses]classPostings
 	// ords assigns each distinct document a compact uint32 ordinal so postings
 	// address documents by integer (a Roaring bitmap member) instead of
 	// repeating the caller's id (typically a string vertex key) in every posting
 	// the document appears in.
 	ords *ordinals[S]
-	// postings is the inverted index proper: term id -> the document ordinals
-	// carrying the term and their frequencies. Search reads it; the per-document
-	// frequency is what the Scorer needs to weight a match.
-	postings map[uint32]*postingList
-	// docs is the forward index: document ordinal -> the id, length, and term ids
-	// needed to score, return, and drop the document in O(terms-in-doc).
+	// docs is the forward index: document ordinal -> the id, per-class lengths,
+	// and term ids needed to score, return, and drop the document in
+	// O(terms-in-doc).
 	docs map[uint32]docEntry[S]
-	// totalLen is the sum of every document's length, so the mean document
-	// length (for length normalization) is totalLen/len(docs) without a scan.
+}
+
+// classPostings is one token class's slice of the index: its term dictionary,
+// its postings, and the class-scoped corpus statistics BM25 length
+// normalization and IDF need. Keeping them per class is what stops auxiliary
+// gram evidence from inflating the word channel's document lengths (and vice
+// versa) when one document feeds both channels.
+type classPostings struct {
+	// dict assigns each distinct term of this class a compact uint32 id so
+	// postings and the per-document forward lists key on the id instead of
+	// repeating the term string; the term itself is stored exactly once.
+	dict *termDict
+	// postings is the inverted index proper: term id -> the document ordinals
+	// carrying the term and their frequencies.
+	postings map[uint32]*postingList
+	// totalLen is the sum of this class's per-document token counts, so the
+	// class's mean document length is totalLen/docCount without a scan.
 	totalLen int
+	// docCount is how many documents carry at least one token of this class —
+	// the class's corpus size, the N of its TermStats.
+	docCount int
 }
 
 // docEntry is the forward-index entry recorded for each indexed document, keyed
@@ -54,13 +75,15 @@ type docEntry[S comparable] struct {
 	// id is the caller's document identifier, returned in search results and used
 	// to resolve a delete (id -> ordinal -> entry).
 	id S
-	// length is the document's size in tokens, repeats included — the |d| that
-	// length normalization compares against the corpus average.
-	length int
+	// lengths is the document's size in tokens per class, repeats included —
+	// the |d| that each class's length normalization compares against the
+	// class average.
+	lengths [numTokenClasses]int
 	// terms is the de-duplicated list of distinct term ids the document was
-	// indexed under (see termDict), used to drop its postings on delete or
-	// re-index. A []uint32 keeps the per-document forward index compact.
-	terms []uint32
+	// indexed under, per class (see termDict), used to drop its postings on
+	// delete or re-index. A []uint32 keeps the per-document forward index
+	// compact.
+	terms [numTokenClasses][]uint32
 }
 
 // NewInvertedIndex returns an empty index that analyzes both documents and
@@ -71,14 +94,19 @@ func NewInvertedIndex[S comparable, D Document](analyzer Analyzer, scorer Scorer
 	if scorer == nil {
 		scorer = BM25{K1: DefaultBM25K1, B: DefaultBM25B}
 	}
-	return &InvertedIndex[S, D]{
+	idx := &InvertedIndex[S, D]{
 		analyzer: analyzer,
 		scorer:   scorer,
-		dict:     newTermDict(),
 		ords:     newOrdinals[S](),
-		postings: make(map[uint32]*postingList),
 		docs:     make(map[uint32]docEntry[S]),
 	}
+	for class := range idx.classes {
+		idx.classes[class] = classPostings{
+			dict:     newTermDict(),
+			postings: make(map[uint32]*postingList),
+		}
+	}
+	return idx
 }
 
 // Index makes id discoverable under every term the Analyzer extracts from
@@ -146,7 +174,8 @@ func (idx *InvertedIndex[S, D]) IndexManyPrepared(items []PreparedItem[S]) {
 }
 
 // indexPreparedLocked is the shared postings-mutation core of IndexPrepared and
-// IndexManyPrepared; callers must hold idx.mu for writing.
+// IndexManyPrepared; callers must hold idx.mu for writing. A token with an
+// undefined class panics: that is a broken analyzer, not a malformed document.
 func (idx *InvertedIndex[S, D]) indexPreparedLocked(id S, tokens []Token) {
 	// Replace semantics: drop any postings from a previous Index(id, ...)
 	// before recording the new ones.
@@ -154,43 +183,57 @@ func (idx *InvertedIndex[S, D]) indexPreparedLocked(id S, tokens []Token) {
 	if len(tokens) == 0 {
 		return
 	}
-	// Sort this document's terms so the distinct terms and their frequencies
-	// (the run length of each equal stretch) can be read in one linear pass.
-	// sorted is transient scratch; only the compact distinct-term slice is
-	// retained in docStats.
-	sorted := make([]string, len(tokens))
-	for i, token := range tokens {
-		sorted[i] = token.Term
-	}
-	sort.Strings(sorted)
-
-	// Count distinct terms up front so the retained forward-index slice is
-	// allocated at its exact length (no spare capacity held per document).
-	distinct := 1
-	for i := 1; i < len(sorted); i++ {
-		if sorted[i] != sorted[i-1] {
-			distinct++
+	// Partition the document's terms by class; each class's postings and
+	// statistics are recorded independently. perClass slices are transient
+	// scratch; only the compact distinct-term slices are retained.
+	var perClass [numTokenClasses][]string
+	for _, token := range tokens {
+		if int(token.Class) >= numTokenClasses {
+			panic("search: token with undefined TokenClass")
 		}
+		perClass[token.Class] = append(perClass[token.Class], token.Term)
 	}
 	ord := idx.ords.assign(id)
-	terms := make([]uint32, 0, distinct)
-	for i := 0; i < len(sorted); {
-		j := i + 1
-		for j < len(sorted) && sorted[j] == sorted[i] {
-			j++
+	entry := docEntry[S]{id: id}
+	for class, sorted := range perClass {
+		if len(sorted) == 0 {
+			continue
 		}
-		tid := idx.dict.intern(sorted[i])
-		pl, ok := idx.postings[tid]
-		if !ok {
-			pl = newPostingList()
-			idx.postings[tid] = pl
+		// Sort this class's terms so the distinct terms and their frequencies
+		// (the run length of each equal stretch) can be read in one linear pass.
+		sort.Strings(sorted)
+
+		// Count distinct terms up front so the retained forward-index slice is
+		// allocated at its exact length (no spare capacity held per document).
+		distinct := 1
+		for i := 1; i < len(sorted); i++ {
+			if sorted[i] != sorted[i-1] {
+				distinct++
+			}
 		}
-		pl.set(ord, j-i) // term frequency = run length of this term
-		terms = append(terms, tid)
-		i = j
+		cp := &idx.classes[class]
+		terms := make([]uint32, 0, distinct)
+		for i := 0; i < len(sorted); {
+			j := i + 1
+			for j < len(sorted) && sorted[j] == sorted[i] {
+				j++
+			}
+			tid := cp.dict.intern(sorted[i])
+			pl, ok := cp.postings[tid]
+			if !ok {
+				pl = newPostingList()
+				cp.postings[tid] = pl
+			}
+			pl.set(ord, j-i) // term frequency = run length of this term
+			terms = append(terms, tid)
+			i = j
+		}
+		entry.lengths[class] = len(sorted)
+		entry.terms[class] = terms
+		cp.totalLen += len(sorted)
+		cp.docCount++
 	}
-	idx.docs[ord] = docEntry[S]{id: id, length: len(tokens), terms: terms}
-	idx.totalLen += len(tokens)
+	idx.docs[ord] = entry
 }
 
 // Delete removes id and all of its postings from the index. It is a no-op when
@@ -227,13 +270,19 @@ func (idx *InvertedIndex[S, D]) deleteLocked(id S) {
 		return
 	}
 	entry := idx.docs[ord]
-	for _, tid := range entry.terms {
-		if idx.postings[tid].remove(ord) {
-			delete(idx.postings, tid)
-			idx.dict.release(tid)
+	for class := range entry.terms {
+		cp := &idx.classes[class]
+		for _, tid := range entry.terms[class] {
+			if cp.postings[tid].remove(ord) {
+				delete(cp.postings, tid)
+				cp.dict.release(tid)
+			}
+		}
+		if entry.lengths[class] > 0 {
+			cp.totalLen -= entry.lengths[class]
+			cp.docCount--
 		}
 	}
-	idx.totalLen -= entry.length
 	delete(idx.docs, ord)
 	idx.ords.release(id, ord)
 }
@@ -243,52 +292,20 @@ func (idx *InvertedIndex[S, D]) deleteLocked(id S) {
 // relevant. The set of matches is the union (OR) of the query's terms, which
 // maximizes recall for seeding a wider traversal, while the Scorer (BM25 by
 // default) ranks that set so the strongest seeds come first. A term repeated
-// in the query weights a document only once. A query with no analyzable terms,
-// or one that matches nothing, returns nil; ties in score have an unspecified
-// order.
+// in the query weights a document only once; the same spelling on two token
+// classes counts once per class, since the channels carry distinct evidence.
+// A query with no analyzable terms, or one that matches nothing, returns nil;
+// ties in score have an unspecified order.
 func (idx *InvertedIndex[S, D]) Search(query string) []Result[S] {
-	tokens := idx.analyzer.Analyze(query)
-	if len(tokens) == 0 {
+	queryTerms := idx.queryTerms(query)
+	if len(queryTerms) == 0 {
 		return nil
-	}
-	// Collapse the query to its distinct terms so a term repeated in the query
-	// contributes a document's weight once, matching the boolean union.
-	queryTerms := make(map[string]struct{}, len(tokens))
-	for _, token := range tokens {
-		queryTerms[token.Term] = struct{}{}
 	}
 
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
-	n := len(idx.docs)
-	if n == 0 {
-		return nil
-	}
-	avgLen := float64(idx.totalLen) / float64(n)
-
-	scores := make(map[uint32]float64)
-	for term := range queryTerms {
-		tid, ok := idx.dict.lookup(term)
-		if !ok {
-			continue
-		}
-		pl, ok := idx.postings[tid]
-		if !ok {
-			continue
-		}
-		df := pl.cardinality()
-		for it := pl.docs.Iterator(); it.HasNext(); {
-			ord := it.Next()
-			scores[ord] += idx.scorer.Score(TermStats{
-				TF:     pl.tf(ord),
-				DF:     df,
-				N:      n,
-				DocLen: idx.docs[ord].length,
-				AvgLen: avgLen,
-			})
-		}
-	}
+	scores := idx.scoreLocked(queryTerms)
 	if len(scores) == 0 {
 		return nil
 	}
@@ -303,10 +320,64 @@ func (idx *InvertedIndex[S, D]) Search(query string) []Result[S] {
 	return results
 }
 
+// queryTerms analyzes query and collapses the tokens to the distinct
+// (class, term) set, so a term repeated in the query contributes a document's
+// weight once per channel, matching the boolean union.
+func (idx *InvertedIndex[S, D]) queryTerms(query string) map[Token]struct{} {
+	tokens := idx.analyzer.Analyze(query)
+	if len(tokens) == 0 {
+		return nil
+	}
+	queryTerms := make(map[Token]struct{}, len(tokens))
+	for _, token := range tokens {
+		queryTerms[token] = struct{}{}
+	}
+	return queryTerms
+}
+
+// scoreLocked computes the OR-union score map for a distinct query-term set;
+// callers must hold idx.mu (read or write). A query token with an undefined
+// class matches nothing — the write side panics on such tokens, so no posting
+// can exist for one.
+func (idx *InvertedIndex[S, D]) scoreLocked(queryTerms map[Token]struct{}) map[uint32]float64 {
+	scores := make(map[uint32]float64)
+	for token := range queryTerms {
+		if int(token.Class) >= numTokenClasses {
+			continue
+		}
+		cp := &idx.classes[token.Class]
+		if cp.docCount == 0 {
+			continue
+		}
+		tid, ok := cp.dict.lookup(token.Term)
+		if !ok {
+			continue
+		}
+		pl, ok := cp.postings[tid]
+		if !ok {
+			continue
+		}
+		df := pl.cardinality()
+		avgLen := float64(cp.totalLen) / float64(cp.docCount)
+		for it := pl.docs.Iterator(); it.HasNext(); {
+			ord := it.Next()
+			scores[ord] += idx.scorer.Score(TermStats{
+				TF:     pl.tf(ord),
+				DF:     df,
+				N:      cp.docCount,
+				DocLen: idx.docs[ord].lengths[token.Class],
+				AvgLen: avgLen,
+				Class:  token.Class,
+			})
+		}
+	}
+	return scores
+}
+
 // SearchTopK is the bounded-selection sibling of Search (#841): it computes
 // the same OR-union BM25 scores but returns only the k highest-scoring
 // documents that satisfy accept, without materialising or fully sorting the
-// complete match set. With the bigram analyzer a short query can match most
+// complete match set. With a bigram analyzer a short query can match most
 // of the corpus, so Search's O(M log M) sort over all M matches dominates
 // broad queries; SearchTopK selects with a size-k bounded heap in
 // O(M log k) time and O(k) result memory instead.
@@ -332,49 +403,18 @@ func (idx *InvertedIndex[S, D]) SearchTopK(query string, k int, accept func(id S
 	if k <= 0 {
 		return nil
 	}
-	tokens := idx.analyzer.Analyze(query)
-	if len(tokens) == 0 {
+	queryTerms := idx.queryTerms(query)
+	if len(queryTerms) == 0 {
 		return nil
-	}
-	queryTerms := make(map[string]struct{}, len(tokens))
-	for _, token := range tokens {
-		queryTerms[token.Term] = struct{}{}
 	}
 
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
-	n := len(idx.docs)
-	if n == 0 {
-		return nil
-	}
-	avgLen := float64(idx.totalLen) / float64(n)
-
 	// Phase 1 — identical union scoring to Search: every matching document's
 	// full score must exist before selection, because a document's rank is
 	// the SUM over query terms.
-	scores := make(map[uint32]float64)
-	for term := range queryTerms {
-		tid, ok := idx.dict.lookup(term)
-		if !ok {
-			continue
-		}
-		pl, ok := idx.postings[tid]
-		if !ok {
-			continue
-		}
-		df := pl.cardinality()
-		for it := pl.docs.Iterator(); it.HasNext(); {
-			ord := it.Next()
-			scores[ord] += idx.scorer.Score(TermStats{
-				TF:     pl.tf(ord),
-				DF:     df,
-				N:      n,
-				DocLen: idx.docs[ord].length,
-				AvgLen: avgLen,
-			})
-		}
-	}
+	scores := idx.scoreLocked(queryTerms)
 	if len(scores) == 0 {
 		return nil
 	}
@@ -425,15 +465,18 @@ func (h *topKHeap[S]) Pop() any {
 	return x
 }
 
-// Stats returns the current number of distinct terms in the posting list and
-// the number of indexed documents. The counts are approximate under concurrent
-// load (a concurrent Index or Delete may be in progress), but are accurate
-// enough for a Prometheus gauge sampled on a regular cadence. The call does
-// not block writers.
+// Stats returns the current number of distinct terms in the posting lists
+// (summed across token classes) and the number of indexed documents. The
+// counts are approximate under concurrent load (a concurrent Index or Delete
+// may be in progress), but are accurate enough for a Prometheus gauge sampled
+// on a regular cadence. The call does not block writers.
 func (idx *InvertedIndex[S, D]) Stats() (terms, docs int) {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
-	return len(idx.postings), len(idx.docs)
+	for class := range idx.classes {
+		terms += len(idx.classes[class].postings)
+	}
+	return terms, len(idx.docs)
 }
 
 // Interface assertions: InvertedIndex is both an Indexer and a Searcher.

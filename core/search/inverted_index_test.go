@@ -80,14 +80,14 @@ func TestInvertedIndexDelete(t *testing.T) {
 	}
 	// Empty posting sets, forward entries, and the length total must be
 	// reclaimed, not leaked.
-	if len(idx.postings) != 0 {
-		t.Fatalf("postings not fully reclaimed: %v", idx.postings)
+	if n := postingsCount(idx); n != 0 {
+		t.Fatalf("postings not fully reclaimed: %d live terms", n)
 	}
 	if len(idx.docs) != 0 {
 		t.Fatalf("forward docs not fully reclaimed: %v", idx.docs)
 	}
-	if idx.totalLen != 0 {
-		t.Fatalf("totalLen not reset: %d", idx.totalLen)
+	if n := totalLenSum(idx); n != 0 {
+		t.Fatalf("totalLen not reset: %d", n)
 	}
 }
 
@@ -121,14 +121,14 @@ func TestInvertedIndexDeleteMany(t *testing.T) {
 
 	// Removing the last remaining doc empties every internal map.
 	idx.DeleteMany([]string{"doc2"})
-	if len(idx.postings) != 0 {
-		t.Fatalf("postings not fully reclaimed: %v", idx.postings)
+	if n := postingsCount(idx); n != 0 {
+		t.Fatalf("postings not fully reclaimed: %d live terms", n)
 	}
 	if len(idx.docs) != 0 {
 		t.Fatalf("forward docs not fully reclaimed: %v", idx.docs)
 	}
-	if idx.totalLen != 0 {
-		t.Fatalf("totalLen not reset: %d", idx.totalLen)
+	if n := totalLenSum(idx); n != 0 {
+		t.Fatalf("totalLen not reset: %d", n)
 	}
 }
 
@@ -153,8 +153,8 @@ func TestInvertedIndexReindexReplaces(t *testing.T) {
 	if got := idx.Search("gamma"); got != nil {
 		t.Fatalf(`Search("gamma") after empty re-index = %v, want nil`, got)
 	}
-	if idx.totalLen != 0 {
-		t.Fatalf("totalLen not reset after removing last doc: %d", idx.totalLen)
+	if n := totalLenSum(idx); n != 0 {
+		t.Fatalf("totalLen not reset after removing last doc: %d", n)
 	}
 }
 
@@ -523,6 +523,88 @@ func BenchmarkSearchTopKBroadQuery(b *testing.B) {
 			if got := idx.Search("alpha"); len(got) < 10 {
 				b.Fatalf("len=%d", len(got))
 			}
+		}
+	})
+}
+
+// TestInvertedIndexDualClass covers the per-class posting tables (#888): the
+// two channels keep separate statistics and identities, a class-aware scorer
+// ranks whole-word evidence above fragment evidence, and deletes reclaim both
+// channels.
+func TestInvertedIndexDualClass(t *testing.T) {
+	newIdx := func() *InvertedIndex[string, Text] {
+		return NewInvertedIndex[string, Text](
+			NewScriptAwareAnalyzer(),
+			ClassWeighted{Base: BM25{K1: DefaultBM25K1, B: DefaultBM25B}, GramWeight: DefaultGramWeight},
+		)
+	}
+
+	t.Run("whole word outranks infix fragment", func(t *testing.T) {
+		idx := newIdx()
+		idx.Index("exact", Text("a stone arch"))
+		idx.Index("infix", Text("full text search"))
+		idx.Index("infix2", Text("academic research"))
+		res := idx.Search("arch")
+		if len(res) != 3 {
+			t.Fatalf("Search(arch) returned %d results, want 3 (infix recall preserved)", len(res))
+		}
+		if res[0].ID != "exact" {
+			t.Fatalf("ranked %q first, want \"exact\" (word evidence dominates)", res[0].ID)
+		}
+	})
+
+	t.Run("same spelling on both channels does not collide", func(t *testing.T) {
+		// "se" exists as a whole word in doc1 and as an intra-word gram of
+		// "sea" in doc2. A word query for "se" must rank the word carrier
+		// first even though the gram channel also knows the spelling.
+		idx := newIdx()
+		idx.Index("word", Text("se"))
+		idx.Index("gram", Text("sea"))
+		res := idx.Search("se")
+		if len(res) == 0 || res[0].ID != "word" {
+			t.Fatalf("Search(se) = %+v, want \"word\" first", res)
+		}
+	})
+
+	t.Run("delete reclaims both channels", func(t *testing.T) {
+		idx := newIdx()
+		idx.Index("doc", Text("search 東京"))
+		idx.Delete("doc")
+		if n := postingsCount(idx); n != 0 {
+			t.Fatalf("postings not fully reclaimed: %d live terms", n)
+		}
+		if n := totalLenSum(idx); n != 0 {
+			t.Fatalf("totalLen not reset: %d", n)
+		}
+		for class := range idx.classes {
+			if idx.classes[class].docCount != 0 {
+				t.Fatalf("class %d docCount not reset: %d", class, idx.classes[class].docCount)
+			}
+		}
+	})
+
+	t.Run("undefined class panics on index", func(t *testing.T) {
+		bad := AnalyzerFunc(func(text string) []Token {
+			return []Token{{Term: text, Class: TokenClass(9)}}
+		})
+		idx := NewInvertedIndex[string, Text](bad, nil)
+		defer func() {
+			if recover() == nil {
+				t.Fatal("indexing an undefined TokenClass did not panic")
+			}
+		}()
+		idx.Index("doc", Text("boom"))
+	})
+
+	t.Run("cjk stays searchable alongside words", func(t *testing.T) {
+		idx := newIdx()
+		idx.Index("ja", Text("東京の醤油ラーメン"))
+		idx.Index("en", Text("tokyo ramen guide"))
+		if res := idx.Search("ラーメン"); len(res) != 1 || res[0].ID != "ja" {
+			t.Fatalf("Search(ラーメン) = %+v, want just ja", res)
+		}
+		if res := idx.Search("ramen"); len(res) != 1 || res[0].ID != "en" {
+			t.Fatalf("Search(ramen) = %+v, want just en", res)
 		}
 	})
 }

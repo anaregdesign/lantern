@@ -19,24 +19,19 @@ import (
 )
 
 // productionIndex replicates the exact index core/graphcache.newSearchIndex
-// builds for SearchVertices — the multilingual bigram pipeline plus BM25. It
-// is intentionally a replica, not an import: graphcache depends on search, so
-// this package (a sibling under search) states the pipeline explicitly, and
-// this comment plus the one on newSearchIndex keep the two in sync.
+// builds for SearchVertices — since #888 the script-aware dual-channel
+// analyzer with class-weighted BM25. It is intentionally a replica, not an
+// import: graphcache depends on search, so this package (a sibling under
+// search) states the pipeline explicitly, and this comment plus the one on
+// newSearchIndex keep the two in sync.
 func productionIndex() *search.InvertedIndex[string, search.Text] {
-	normalizers := []search.Normalizer{
-		search.WidthNormalizer{},
-		search.DiacriticNormalizer{},
-		search.LowercaseNormalizer{},
-		search.PunctuationNormalizer{},
-		search.SpaceNormalizer{},
-	}
-	analyzer := search.NewAnalyzer(
-		normalizers,
-		search.NGramTokenizer{N: 2},
-		[]search.TokenFilter{search.WhitespaceFilter{}},
+	return search.NewInvertedIndex[string, search.Text](
+		search.NewScriptAwareAnalyzer(),
+		search.ClassWeighted{
+			Base:       search.BM25{K1: search.DefaultBM25K1, B: search.DefaultBM25B},
+			GramWeight: search.DefaultGramWeight,
+		},
 	)
-	return search.NewInvertedIndex[string, search.Text](analyzer, search.BM25{K1: search.DefaultBM25K1, B: search.DefaultBM25B})
 }
 
 // productionFloors are the ratcheted minima per corpus, pinned from a measured
@@ -45,9 +40,15 @@ func productionIndex() *search.InvertedIndex[string, search.Text] {
 // breaks score ties deterministically, so these numbers are exact and stable;
 // any drop below a floor is a real ranking change, not jitter.
 var productionFloors = map[string]Metrics{
-	"en":    {NDCG10: 0.894, MRR: 0.980, Recall50: 0.958},
+	// Re-pinned for #888's script-aware pipeline. Versus the pure-bigram
+	// floors it replaced: en nDCG@10 0.894 -> 0.927 and MRR 0.980 -> 1.0
+	// (whole-word evidence now dominates fragments), en Recall@50 gave back
+	// 0.958 -> 0.951 (an accepted trade: still far above Lucene's 0.828),
+	// ja unchanged (the CJK path is the same bigram strategy), mixed nDCG@10
+	// 0.947 -> 0.953.
+	"en":    {NDCG10: 0.927, MRR: 1.000, Recall50: 0.951},
 	"ja":    {NDCG10: 0.911, MRR: 1.000, Recall50: 0.728},
-	"mixed": {NDCG10: 0.947, MRR: 1.000, Recall50: 0.777},
+	"mixed": {NDCG10: 0.953, MRR: 1.000, Recall50: 0.777},
 }
 
 func TestProductionPipelineRelevanceFloors(t *testing.T) {
@@ -81,9 +82,11 @@ func TestProductionPipelineRelevanceFloors(t *testing.T) {
 
 // TestLuceneBaselineComparison replays the pinned Lucene rankings (produced
 // offline by testbed/lucene-baseline; CI never runs a JVM) through the same
-// metric functions and logs Lantern's delta per corpus. It reports rather than
-// asserts: the epic's definition of done (#886) — Lantern >= Lucene on every
-// corpus — becomes an assertion only once the gap-closing issues land.
+// metric functions and ASSERTS the epic's definition of done (#886): the
+// production pipeline scores at least as high as every pinned Lucene run on
+// every metric of every corpus. #888 (script-aware analyzer) is what made
+// this hold; keeping it as an assertion means later ranking work (#889,
+// #890, #891) may reshuffle results but never below Lucene.
 func TestLuceneBaselineComparison(t *testing.T) {
 	runs, err := LoadBaselineRuns(BaselineRunsFile)
 	if os.IsNotExist(err) {
@@ -123,6 +126,20 @@ func TestLuceneBaselineComparison(t *testing.T) {
 				run.Corpus, runs.Engine, run.Analyzer,
 				lucene.NDCG10, lucene.MRR, lucene.Recall50,
 				lantern.NDCG10, lantern.MRR, lantern.Recall50)
+
+			// Both sides are deterministic; the epsilon only forgives the
+			// float-summation ULPs of a legitimate exact tie (ja matches
+			// Lucene's CJK bigrams ranking-for-ranking).
+			const eps = 1e-9
+			if lantern.NDCG10 < lucene.NDCG10-eps {
+				t.Errorf("nDCG@10 %.4f below Lucene %s %.4f", lantern.NDCG10, run.Analyzer, lucene.NDCG10)
+			}
+			if lantern.MRR < lucene.MRR-eps {
+				t.Errorf("MRR %.4f below Lucene %s %.4f", lantern.MRR, run.Analyzer, lucene.MRR)
+			}
+			if lantern.Recall50 < lucene.Recall50-eps {
+				t.Errorf("Recall@50 %.4f below Lucene %s %.4f", lantern.Recall50, run.Analyzer, lucene.Recall50)
+			}
 		})
 	}
 }

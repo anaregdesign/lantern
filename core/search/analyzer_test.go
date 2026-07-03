@@ -72,3 +72,54 @@ func TestAnalyzerFunc(t *testing.T) {
 		t.Fatalf("Analyze = %v, want [x]", got)
 	}
 }
+
+func TestNewScriptAwareAnalyzer(t *testing.T) {
+	a := NewScriptAwareAnalyzer()
+
+	t.Run("FoldsWidthDiacriticsCaseAndPunctuation", func(t *testing.T) {
+		// Full-width "ＴＯＫＹＯ!" folds to "tokyo" with the "!" becoming a
+		// boundary, then tokenizes as one word plus its auxiliary bigrams.
+		got := a.Analyze("ＴＯＫＹＯ! Café")
+		want := []Token{
+			{Term: "tokyo", Class: ClassWord},
+			{Term: "to", Class: ClassGram},
+			{Term: "ok", Class: ClassGram},
+			{Term: "ky", Class: ClassGram},
+			{Term: "yo", Class: ClassGram},
+			{Term: "cafe", Class: ClassWord},
+			{Term: "ca", Class: ClassGram},
+			{Term: "af", Class: ClassGram},
+			{Term: "fe", Class: ClassGram},
+		}
+		if !tokensEqual(got, want) {
+			t.Fatalf("Analyze = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("HalfWidthKatakanaJoinsKatakanaRun", func(t *testing.T) {
+		// WidthNormalizer runs before tokenization, so ﾗｰﾒﾝ folds to ラーメン
+		// and bigrams as one run.
+		got := a.Analyze("ﾗｰﾒﾝ")
+		want := []Token{
+			{Term: "ラー", Class: ClassWord},
+			{Term: "ーメ", Class: ClassWord},
+			{Term: "メン", Class: ClassWord},
+		}
+		if !tokensEqual(got, want) {
+			t.Fatalf("Analyze = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("NoTokenBridgesAWordBoundary", func(t *testing.T) {
+		for _, tok := range a.Analyze("data set 東京 タワー") {
+			if len(tok.Term) == 0 {
+				t.Fatal("empty term emitted")
+			}
+			for _, r := range tok.Term {
+				if r == ' ' {
+					t.Fatalf("token %q bridges a word boundary", tok.Term)
+				}
+			}
+		}
+	})
+}
