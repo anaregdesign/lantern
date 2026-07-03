@@ -79,6 +79,7 @@ export type {
   IlluminateOptions,
   LocalCommunityOptions,
   PprOptions,
+  MatchMode,
   ScanOptions,
   SearchOptions,
 } from "./options.js";

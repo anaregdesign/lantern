@@ -119,11 +119,28 @@ export interface EdgeScanOptions extends ScanOptions {
   headPrefix?: string;
 }
 
+/**
+ * How a multi-word query's terms combine when choosing which vertices match
+ * (see {@link SearchOptions.matchMode}): "any" (OR-union, the default), "all"
+ * (AND), or "min-should" (at least {@link SearchOptions.minShouldMatch} terms).
+ */
+export type MatchMode = "any" | "all" | "min-should";
+
 export interface SearchOptions {
   /** Caps the number of ranked hits returned (0 = server default; the server also enforces a hard max). */
   limit?: number;
   /** Restrict hits to vertices whose key carries this prefix (empty/omitted = no namespace scope). */
   prefix?: string;
+  /** How the query's words combine: "any" (OR, default), "all" (AND), or "min-should". */
+  matchMode?: MatchMode;
+  /** With matchMode "min-should", the minimum distinct query words a hit must carry (0 = server default). */
+  minShouldMatch?: number;
+  /** Require the query's words to occur adjacently, in order — the highest-precision mode. */
+  phrase?: boolean;
+  /** Maximum edit distance (0, 1, or 2) for fuzzy term matching, so a typo still finds the term. */
+  fuzziness?: number;
+  /** Also match dictionary terms that extend a query word, so "lan" finds "lantern". */
+  prefixTerms?: boolean;
 }
 
 export interface DeleteByPrefixOptions {
