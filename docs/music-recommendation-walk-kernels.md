@@ -37,7 +37,13 @@ factorization models under proper tuning [50, 51, 64], nearest-neighbor and
 co-occurrence methods remain state-of-the-art for playlist continuation and
 session-based music recommendation [57, 58, 60, 62], and constant-time random
 walks serve real-time recommendation at three-billion-node scale in
-production [52]. We also state the honest converses: low-rank completion is a
+production [52]. We add one controlled replication (§8.1): under the exact
+Mult-VAE/EASE evaluation protocol on the Million Song Dataset [77, 47],
+tuned discounted walk readers reach NDCG@100 $= 0.323$ versus Mult-VAE's
+published $0.316$ (Recall@20 $0.262$ vs $0.266$) — parity with the neural
+state of the art of that comparison, from a reader with no training stage at
+all — while full-rank EASE remains ahead at $0.389$, consistent with our
+rank-obstruction analysis. We also state the honest converses: low-rank completion is a
 generalization capability that direct evaluation deliberately lacks (§6.5),
 and audio-content encoders solve the *zero*-interaction cold start that no
 interaction graph can (§7.2).
@@ -114,12 +120,15 @@ together, and to give each its precise mathematical form:
   again — a serious constraint in a domain governed by release cycles,
   charts, and virality [66, 67, 70].
 
-We present no new experiments. Instead §8 assembles the empirical record the
-recommender-systems community has already produced — reproducibility studies
-[64, 65], session-based evaluations on music corpora [56, 57, 58], the ACM
-RecSys Challenge 2018 on playlist continuation [61, 62, 63], full-rank versus
-low-rank linear models [46, 47], and the Pixie production system [52] — and
-shows that it is consilient with C1–C3. Throughout, mathematics is kept at
+§8 assembles the empirical record the recommender-systems community has
+already produced — reproducibility studies [64, 65], session-based
+evaluations on music corpora [56, 57, 58], the ACM RecSys Challenge 2018 on
+playlist continuation [61, 62, 63], full-rank versus low-rank linear models
+[46, 47], and the Pixie production system [52] — and shows that it is
+consilient with C1–C3. We contribute one new data point ourselves: a
+replication of the Liang et al. protocol on the Million Song Dataset with
+the graph readers of §4–§5 (§8.1), calibrated against the published
+baselines on the identical split. Throughout, mathematics is kept at
 the level of precise statements with short proofs where they are genuinely
 short, and citations where they are not.
 
@@ -675,8 +684,92 @@ zero-shot. The two readers are optimized for different stationarity regimes;
 
 ## 8. Evidence from the recommendation literature
 
-This paper reports no new experiments; the claims of §6–§7 are, however,
-consilient with an unusually broad empirical record.
+The claims of §6–§7 are consilient with an unusually broad published record
+(§8.2); we first add one controlled measurement of our own (§8.1).
+
+### 8.1 A replication on the Million Song Dataset
+
+We reproduce the evaluation protocol of Liang et al. [77] on the Million
+Song Dataset taste-profile subset — the split on which Mult-VAE [77] and
+EASE [47] publish their music-domain numbers — and evaluate the direct
+readers of §4 with the §5 discounts on it. Protocol, faithful to the
+reference implementation (including its random seeds): songs with $\ge 200$
+listeners, then users with $\ge 20$ songs, giving $571{,}355$ users,
+$41{,}140$ items, $33.6$M interactions ($0.14\%$ dense — our filtered
+statistics match [77, Table 1] exactly); $50{,}000$ validation and
+$50{,}000$ test users held out entirely from training (strong
+generalization); per heldout user, $80\%$ of items form the fold-in query
+profile and metrics are computed on the remaining $20\%$; Recall@20/50
+(normalized by $\min(K, |\text{heldout}|)$) and NDCG@100, averaged over
+users. All hyperparameters are selected on the validation users only; test
+users are scored once. Scripts:
+[experiments/msd-walk-kernels](experiments/msd-walk-kernels/README.md).
+
+The graph readers are built from the training matrix alone: the $P^3$
+projection kernel $W = P_{iu}P_{ui}$ (top-$1000$ per row), its RP$^3_\beta$
+column discount $\mathrm{pop}^{-\beta}$, item-kNN cosine, and the truncated
+PPR mixture $\sum_{k\le 3} a(1-a)^{k-1}\, \hat{x} P_1^{k}$ on the
+row-normalized kernel with the same $\mathrm{pop}^{-\beta}$ discount — the
+§4 direct reader with the §5 correction. Our popularity baseline reproduces
+the published one to three decimals ($0.043/0.068/0.058$), calibrating the
+pipeline before any comparison is made.
+
+| Reader | Recall@20 | Recall@50 | NDCG@100 |
+|---|---|---|---|
+| *published on the identical split* [77, 47] | | | |
+| Popularity | 0.043 | 0.068 | 0.058 |
+| CDAE | 0.188 | 0.283 | 0.237 |
+| WMF (low-rank MF) | 0.211 | 0.312 | 0.257 |
+| SLIM | — did not finish — | | |
+| Mult-DAE | 0.266 | 0.363 | 0.313 |
+| Mult-VAE$^{\mathrm{PR}}$ | 0.266 | **0.364** | 0.316 |
+| EASE (full-rank item-item) | **0.333** | **0.428** | **0.389** |
+| *measured, this work (graph readers)* | | | |
+| Popularity (calibration) | 0.043 | 0.068 | 0.058 |
+| $P^3$ ($\alpha{=}1$, $K{=}200$) | 0.176 | 0.269 | 0.227 |
+| item-kNN cosine ($K{=}1000$) | 0.236 | 0.319 | 0.291 |
+| RP$^3_\beta$ ($\beta{=}0.4$) | 0.262 | 0.362 | 0.323 |
+| PPR, discounted ($a{=}0.9$, $\beta{=}0.4$, $k\le3$) | 0.262 | 0.362 | **0.323** |
+
+Four readings, in decreasing order of confidence:
+
+1. **The discounted walk readers match the neural state of the art of this
+   comparison.** RP$^3_\beta$ and the discounted PPR reader sit at
+   NDCG@100 $= 0.323$ against Mult-VAE's $0.316$ and Mult-DAE's $0.313$,
+   with Recall@20/50 within $0.004$/$0.002$ of Mult-VAE — from a reader with
+   no training stage, no encoder, $O(1)$ event ingestion, and a kernel that
+   §7.3's argument keeps live under drift. They exceed the low-rank
+   factorization WMF by $+26\%$ NDCG@100 and CDAE by $+36\%$ — on the very
+   protocol those models were tuned for, in the data-rich regime most
+   favorable to factorization (the average heldout user folds in
+   ${\approx}48$ items; cold start and drift, where §7 predicts the gap
+   widens, are not probed here at all).
+2. **Hub suppression is worth $+42\%$ NDCG@100** ($0.227 \to 0.323$): the
+   $\beta$ discount, not walk depth, separates a mediocre graph reader from
+   a state-of-the-art-matching one — §5 measured. Undiscounted multi-hop
+   mixtures *degrade* with depth (popularity contamination compounds per
+   hop), while after the discount the $k\le3$ mixture at $a=0.9$ edges the
+   one-hop reader by a hair on validation and ties it on test: with
+   $\sim\!48$ fold-in seeds per user, one discounted hop already spans the
+   relevant neighborhood. Multi-hop locality should matter precisely where
+   this protocol has no coverage — few-seed (cold-start) queries.
+3. **EASE's lead ($0.389$) is the rank story, not the factorization story.**
+   EASE is itself a one-hop item-item kernel — full-rank, with the
+   reweighting *learned* by a global ridge solve rather than fixed
+   heuristically as in §2.3/§5 — and it beats every low-rank model by a
+   larger margin than it beats our fixed-$\psi$ readers. That is §6.2's
+   prediction (the rank-$d$ bottleneck costs accuracy) read empirically. The
+   gap between EASE and RP$^3_\beta$ prices exactly one thing: learning the
+   reweighting. It costs EASE the full factorized pipeline operationally — a
+   global $O(|V|^{2.376})$-ish solve as the refresh stage, a frozen
+   snapshot under drift, and the unlearning problem on deletion — so C1–C3
+   apply to it unchanged; a learned-yet-locally-updatable $\psi$ is an open
+   direction (§10).
+4. The absolute numbers carry the usual caveat of a single dataset and our
+   own hyperparameter grid; the *relative* placement is protected by the
+   exact protocol match and the popularity calibration.
+
+### 8.2 The published record
 
 **Random-walk readers match or beat factorizations.** $P^3_\alpha$ and
 $\mathrm{RP}^3_\beta$ — three-hop walk scores with the §5 discounts —
@@ -763,6 +856,11 @@ liveness instant, realizing "read $M(t)$ at the query's own $t$".
   traverses with certified local readers; the RecSys Challenge winner [63]
   is precisely a factorized-recall / neighborhood-precision hybrid. Nothing
   in §2 distinguishes an asserted edge from a proposed one but its TTL.
+- **Learning the reweighting locally is open.** §8.1 prices the gap between
+  a fixed hub discount and EASE's globally learned one at roughly
+  $0.323 \to 0.389$ NDCG@100 on MSD. A reweighting with EASE-like accuracy
+  that admits $O(1)$ local updates — keeping C1–C3 — would close the last
+  accuracy argument for the factorized pipeline on interaction data.
 
 ## 11. Conclusion
 
@@ -939,3 +1037,5 @@ already are compositions.
 [75] Y. Hu, Y. Koren, C. Volinsky. *Collaborative filtering for implicit feedback datasets.* ICDM 2008.
 
 [76] S. Rendle, C. Freudenthaler, Z. Gantner, L. Schmidt-Thieme. *BPR: Bayesian personalized ranking from implicit feedback.* UAI 2009.
+
+[77] D. Liang, R. G. Krishnan, M. D. Hoffman, T. Jebara. *Variational autoencoders for collaborative filtering.* WWW 2018. [arXiv:1802.05814](https://arxiv.org/abs/1802.05814)
