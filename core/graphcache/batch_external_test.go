@@ -374,6 +374,33 @@ func TestAddEdgesWithExpirationContrib_Dedup(t *testing.T) {
 			t.Fatalf("facade weight = %v, want 6 (AddEdgesWithExpiration stays additive)", w)
 		}
 	})
+
+	// #917: the effective weight returned by the add path must agree with the
+	// read path once contributions expire below the compaction floor. Guards
+	// the wiring up to AddEdgesWithExpirationContrib, not just the weight unit.
+	t.Run("effective agrees with GetWeight after contributions expire", func(t *testing.T) {
+		c := graphcache.NewGraphCache[string, int](time.Minute)
+		shortExp := time.Now().Add(40 * time.Millisecond)
+		for i := 0; i < 50; i++ { // below the compaction floor: no structural flush
+			c.AddEdgesWithExpirationContrib([]graphcache.EdgeItem[string]{
+				{Tail: "s", Head: "h", Weight: 1, Expiration: shortExp},
+			})
+		}
+		time.Sleep(60 * time.Millisecond) // let them expire
+		effective, _ := c.AddEdgesWithExpirationContrib([]graphcache.EdgeItem[string]{
+			{Tail: "s", Head: "h", Weight: 1, Expiration: time.Now().Add(time.Hour)},
+		})
+		w, ok := c.GetWeight("s", "h")
+		if !ok {
+			t.Fatal("edge missing")
+		}
+		if len(effective) != 1 || effective[0] != w {
+			t.Fatalf("AddEdges effective = %v but GetWeight = %v — #917: the add path leaked expired weight", effective, w)
+		}
+		if effective[0] != 1 {
+			t.Fatalf("effective = %v, want 1 (unfixed code reports 51)", effective[0])
+		}
+	})
 }
 
 // itoa avoids pulling in strconv just to label test keys.
