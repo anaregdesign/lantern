@@ -1195,7 +1195,9 @@ export const TopVerticesByDegreeRequest_DirectionSchema: GenEnum<TopVerticesByDe
  * the chosen metric (weighted_degree when the request set `weighted`, else
  * degree). Counts follow the live-visibility rule (#750): expired vertices and
  * fully decayed edges do not contribute. Results are point-in-time
- * best-effort, like GetServerStatus counts.
+ * best-effort, like GetServerStatus counts; for DIRECTION_IN / DIRECTION_BOTH
+ * the edge scan reads weights outside the write-blocking lock (#920), so an
+ * edge added or deleted mid-scan may be only partially reflected.
  *
  * @generated from message graph.v1.TopVerticesByDegreeResponse
  */
@@ -2478,6 +2480,13 @@ export const LanternService: GenService<{
    * prefix by their (weighted) out/in/both degree. Read-only aggregate; a
    * non-empty prefix is REQUIRED (empty → INVALID_ARGUMENT). Results are
    * point-in-time best-effort and honour the live-visibility rule (#750).
+   *
+   * Cost model (#920): OUT-degree is scoped to the candidates' own out-edges,
+   * but IN and BOTH scan every edge bucket in the graph — O(E_total),
+   * independent of prefix narrowness, because no reverse (head->tails) index
+   * exists. That scan runs without holding the write-blocking aggregate lock
+   * for its full duration, so an IN/BOTH result on a large, actively-written
+   * graph is a best-effort snapshot rather than a single point-in-time view.
    *
    * @generated from rpc graph.v1.LanternService.TopVerticesByDegree
    */

@@ -2,6 +2,10 @@ package graphcache
 
 import (
 	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -202,5 +206,84 @@ func TestGraphCache_TopVerticesByDegree_LiveVisibility(t *testing.T) {
 		if e.Key == "n:b" {
 			t.Errorf("deleted vertex n:b is still a ranking candidate")
 		}
+	}
+}
+
+// TestGraphCache_TopVerticesByDegree_ConcurrentWrites guards the two-phase
+// IN/BOTH walk (#920): degree accumulation runs outside c.mu, so it must be
+// race-free against concurrent edge writes/deletes and always return a
+// well-formed bounded result. On the pre-#920 single-lock implementation this
+// test passes trivially (writers just stall); after #920 it is the -race guard
+// for the unlocked accumulation phase, where the captured *weight pointers are
+// read while a concurrent mutator may be adding or deleting the same buckets.
+func TestGraphCache_TopVerticesByDegree_ConcurrentWrites(t *testing.T) {
+	c := NewGraphCache[string, string](time.Minute)
+	c.EnablePrefixIndex(identityExtract)
+	exp := time.Now().Add(time.Hour)
+	for i := 0; i < 64; i++ {
+		c.PutVertexWithExpiration("user:"+strconv.Itoa(i), "v", exp)
+	}
+	c.PutVertexWithExpiration("hub", "v", exp)
+
+	var stop atomic.Bool
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { // writer: churn edges into the candidates
+		defer wg.Done()
+		for i := 0; !stop.Load(); i++ {
+			head := "user:" + strconv.Itoa(i%64)
+			c.AddEdgesWithExpiration([]EdgeItem[string]{{Tail: "hub", Head: head, Weight: 1, Expiration: exp}})
+		}
+	}()
+	go func() { // deleter
+		defer wg.Done()
+		for i := 0; !stop.Load(); i++ {
+			c.DeleteEdge("hub", "user:"+strconv.Itoa(i%64))
+		}
+	}()
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		for _, dir := range []DegreeDirection{DegreeOut, DegreeIn, DegreeBoth} {
+			got := c.TopVerticesByDegree("user:", 10, dir, true)
+			if len(got) > 10 {
+				t.Errorf("dir %v: %d entries, want <= 10", dir, len(got))
+			}
+			for _, e := range got {
+				if !strings.HasPrefix(e.Key, "user:") {
+					t.Errorf("dir %v: entry %q escaped the prefix", dir, e.Key)
+				}
+			}
+		}
+	}
+	stop.Store(true)
+	wg.Wait()
+}
+
+// BenchmarkTopVerticesByDegree_InNarrowPrefix measures the IN walk (#920) over a
+// wide graph whose bulk of edges do NOT touch the ranked prefix. It is the
+// allocation-profile evidence for the two-phase refactor: the per-candidate
+// value-typed accumulator drops the per-candidate pointer allocation, and only
+// the candidate-incident buckets are captured across the unlocked phase (not the
+// whole edge table). ns/op stays O(E) — every bucket is still visited under the
+// lock to test candidacy — but that walk no longer holds c.mu during the
+// weight snapshots. Record allocs/op before/after in the PR body.
+func BenchmarkTopVerticesByDegree_InNarrowPrefix(b *testing.B) {
+	c := NewGraphCache[string, string](time.Minute)
+	c.EnablePrefixIndex(identityExtract)
+	exp := time.Now().Add(time.Hour)
+	// 100k edges NOT touching the ranked prefix + a 50-vertex target namespace.
+	for i := 0; i < 100_000; i++ {
+		c.AddEdgesWithExpiration([]EdgeItem[string]{{Tail: "noise:" + strconv.Itoa(i), Head: "sink", Weight: 1, Expiration: exp}})
+	}
+	for i := 0; i < 50; i++ {
+		k := "user:" + strconv.Itoa(i)
+		c.PutVertexWithExpiration(k, "v", exp)
+		c.AddEdgesWithExpiration([]EdgeItem[string]{{Tail: "seed", Head: k, Weight: 1, Expiration: exp}})
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		c.TopVerticesByDegree("user:", 10, DegreeIn, true)
 	}
 }
