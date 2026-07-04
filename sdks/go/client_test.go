@@ -123,7 +123,7 @@ func TestNextContribIDs(t *testing.T) {
 		}
 		var seq0 uint64
 		for i, id := range ids {
-			if !bytes.Equal(id[:16], l.nonce[:]) {
+			if !bytes.Equal(id[:16], l.contribIDs.nonce[:]) {
 				t.Fatalf("id %d prefix must equal the client nonce", i)
 			}
 			seq, idx := decodeContribID(t, id)
@@ -159,16 +159,16 @@ func TestNextContribIDs(t *testing.T) {
 // must change in the same commit or cross-SDK idempotency dedup interop breaks.
 // Unlike the decodeContribID-based tests above, it does NOT re-derive the
 // formula: a self-consistent shift/endianness/nonce-length refactor of
-// nextContribIDs turns this red while the tautological tests stay green.
+// contribIDGen.next turns this red while the tautological tests stay green.
+// It drives the extracted contribIDGen directly (post-#916) so it pins the
+// generator regardless of which caller — *Lantern or *Failover — mints ids.
 func TestContribIDGoldenVectors(t *testing.T) {
 	nonce := [16]byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f}
 	want := func(low8 ...byte) []byte { return append(append([]byte(nil), nonce[:]...), low8...) }
 
-	l := &Lantern{}
-	l.opts.idempotentAdds = true
-	l.nonce = nonce // zero-valued callSeq: the first nextContribIDs call uses seq=1
+	gen := &contribIDGen{nonce: nonce} // zero-valued callSeq: the first next call uses seq=1
 
-	ids := l.nextContribIDs(2)
+	ids := gen.next(2)
 	if got := want(0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00); !bytes.Equal(ids[0], got) {
 		t.Fatalf("V1 (seq=1, idx=0):\n  got  %x\n  want %x", ids[0], got)
 	}
@@ -176,17 +176,63 @@ func TestContribIDGoldenVectors(t *testing.T) {
 		t.Fatalf("V2 (seq=1, idx=1):\n  got  %x\n  want %x", ids[1], got)
 	}
 
-	l.callSeq.Store(0xABCC) // next call → seq=0xABCD
-	ids = l.nextContribIDs(1 << 16)
+	gen.callSeq.Store(0xABCC) // next call → seq=0xABCD
+	ids = gen.next(1 << 16)
 	if got := want(0x00, 0x00, 0x00, 0x00, 0xab, 0xcd, 0xff, 0xff); !bytes.Equal(ids[0xFFFF], got) {
 		t.Fatalf("V3 (seq=0xABCD, idx=0xFFFF):\n  got  %x\n  want %x", ids[0xFFFF], got)
 	}
 }
 
-// captureAddEdges is a fake LanternServiceClient that records every
-// AddEdgesRequest it receives. It embeds the interface (left nil) so it
-// satisfies the full surface while only overriding AddEdges — the single
-// method the Add* helpers route through.
+// TestContribIDGenNext pins contribIDGen.next's block-advancing contract
+// (#916): a single call that spans more than 65536 ids must keep every id
+// unique by rolling the packed seq once per 65536-id block (the low 16 bits
+// alias otherwise), and it must reserve ceil(n/65536) sequence numbers
+// atomically so a following call never reuses a seq the big call already
+// handed out.
+func TestContribIDGenNext(t *testing.T) {
+	t.Run("nil for non-positive n", func(t *testing.T) {
+		g := &contribIDGen{}
+		if g.next(0) != nil || g.next(-1) != nil {
+			t.Fatal("next(<=0) must return nil")
+		}
+	})
+
+	t.Run("ids unique across a 65536 block boundary", func(t *testing.T) {
+		g := &contribIDGen{}
+		const n = (1 << 16) + 5 // spans two blocks
+		ids := g.next(n)
+		if len(ids) != n {
+			t.Fatalf("want %d ids, got %d", n, len(ids))
+		}
+		seen := make(map[string]struct{}, n)
+		for i, id := range ids {
+			if _, dup := seen[string(id)]; dup {
+				t.Fatalf("id %d duplicates an earlier id: %x", i, id)
+			}
+			seen[string(id)] = struct{}{}
+		}
+		// idx wraps at the block boundary; seq bumps by exactly one there.
+		seqFirst, idxFirst := decodeContribID(t, ids[0])
+		seqWrap, idxWrap := decodeContribID(t, ids[1<<16])
+		if idxFirst != 0 || idxWrap != 0 {
+			t.Fatalf("idx at block starts want 0,0 got %d,%d", idxFirst, idxWrap)
+		}
+		if seqWrap != seqFirst+1 {
+			t.Fatalf("seq must bump by 1 at the block boundary: %d then %d", seqFirst, seqWrap)
+		}
+	})
+
+	t.Run("reserves ceil(n/65536) seqs atomically", func(t *testing.T) {
+		g := &contribIDGen{}
+		g.next((1 << 16) + 1) // two blocks: reserves seq 1 and 2
+		next := g.next(1)     // must land on seq 3, not 2
+		seq, _ := decodeContribID(t, next[0])
+		if seq != 3 {
+			t.Fatalf("next call after a 2-block mint must use seq 3, got %d", seq)
+		}
+	})
+}
+
 type captureAddEdges struct {
 	graphv1connect.LanternServiceClient
 	reqs []*pb.AddEdgesRequest
@@ -199,7 +245,9 @@ func (c *captureAddEdges) AddEdges(_ context.Context, req *connect.Request[pb.Ad
 
 // TestAddContribIDWiring verifies the SDK attaches contrib_ids only when
 // WithIdempotentAdds is set, that AddEdge stamps exactly one key, and that
-// AddEdges stamps index-aligned keys per chunk with a fresh seq per chunk.
+// AddEdges mints keys once for the whole batch (#916) — one contiguous id
+// space (shared seq, index-aligned idx) sliced across chunks, not a fresh
+// seq per chunk.
 func TestAddContribIDWiring(t *testing.T) {
 	newClient := func(t *testing.T, opts ...Option) (*Lantern, *captureAddEdges) {
 		t.Helper()
@@ -231,12 +279,12 @@ func TestAddContribIDWiring(t *testing.T) {
 		if len(ids) != 1 {
 			t.Fatalf("want 1 contrib_id, got %d", len(ids))
 		}
-		if !bytes.Equal(ids[0][:16], l.nonce[:]) {
+		if !bytes.Equal(ids[0][:16], l.contribIDs.nonce[:]) {
 			t.Fatalf("contrib_id prefix must be the client nonce")
 		}
 	})
 
-	t.Run("WithIdempotentAdds stamps index-aligned keys per chunk (AddEdges)", func(t *testing.T) {
+	t.Run("WithIdempotentAdds mints one contiguous id space across chunks (AddEdges)", func(t *testing.T) {
 		l, capt := newClient(t, WithIdempotentAdds(), WithBatchChunkSize(2))
 		inputs := []EdgeInput{
 			{Tail: "a", Head: "b", Weight: 1},
@@ -253,17 +301,19 @@ func TestAddContribIDWiring(t *testing.T) {
 		if len(c0) != 2 || len(c1) != 1 {
 			t.Fatalf("chunk key counts want 2,1 got %d,%d", len(c0), len(c1))
 		}
+		// Ids are minted once for the whole batch: idx is contiguous across
+		// chunk boundaries (0,1 | 2) and every chunk shares one seq.
 		seq0, idx00 := decodeContribID(t, c0[0])
 		_, idx01 := decodeContribID(t, c0[1])
 		if idx00 != 0 || idx01 != 1 {
 			t.Fatalf("chunk 0 indices want 0,1 got %d,%d", idx00, idx01)
 		}
 		seq1, idx10 := decodeContribID(t, c1[0])
-		if idx10 != 0 {
-			t.Fatalf("chunk 1 index want 0 got %d", idx10)
+		if idx10 != 2 {
+			t.Fatalf("chunk 1 index want 2 (contiguous), got %d", idx10)
 		}
-		if seq1 == seq0 {
-			t.Fatalf("each chunk must use a distinct seq; got %d twice", seq0)
+		if seq1 != seq0 {
+			t.Fatalf("one batch shares a single seq; got %d then %d", seq0, seq1)
 		}
 	})
 

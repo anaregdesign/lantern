@@ -29,7 +29,13 @@
 // Unavailable error means the request was actually processed (and rejected
 // or not-found) somewhere — failing over would be wrong, so we surface it
 // verbatim. Combined with WithIdempotentAdds (#588), even the residual
-// at-least-once window of a mid-flight Unavailable retry is dedup-safe.
+// at-least-once window of a mid-flight Unavailable retry is dedup-safe:
+// Failover mints the per-edge contrib ids ONCE per logical call (from its
+// own failover-level generator) and reuses those exact bytes across every
+// retry attempt AND every node it rotates through. Minting per attempt —
+// or per node — would re-count, because the replicas converge via
+// replication, so a re-mint through node B lands as a distinct contribution
+// just like a re-mint through node A (#916).
 package client
 
 import (
@@ -63,6 +69,12 @@ type Failover struct {
 	// write surface (AddEdge/AddEdgeAt/AddEdges) — retried only when the nodes
 	// stamp per-edge ContribIDs.
 	idempotentAdds bool
+	// contribIDs is the single failover-level ContribID generator. Non-nil
+	// only when idempotentAdds is set. Minting ids here — once per logical
+	// AddEdge/AddEdges call, before the retry loop — and reusing them across
+	// every attempt and every node is what makes a mid-flight Unavailable
+	// retry dedup-safe; a fresh id per attempt would double-count (#916).
+	contribIDs *contribIDGen
 }
 
 // failoverNode is the unexported endpoint contract the ring walk delegates
@@ -89,6 +101,12 @@ type failoverNode interface {
 	AddEdge(ctx context.Context, tail, head string, weight float32, ttl time.Duration) (float32, error)
 	AddEdgeAt(ctx context.Context, tail, head string, weight float32, expiration time.Time) (float32, error)
 	AddEdges(ctx context.Context, inputs []EdgeInput) ([]float32, error)
+	// addEdgeAtWithIDs / addEdgesWithIDs are the id-accepting seams the
+	// failover ring drives so it can mint contrib ids once per logical call
+	// and reuse them across retry attempts (#916). Unexported: they are an
+	// internal contract between *Failover and *Lantern, not client API.
+	addEdgeAtWithIDs(ctx context.Context, tail, head string, weight float32, expiration time.Time, ids [][]byte) (float32, error)
+	addEdgesWithIDs(ctx context.Context, inputs []EdgeInput, ids [][]byte) ([]float32, error)
 	PutEdge(ctx context.Context, tail, head string, weight float32, ttl time.Duration) error
 	PutEdgeAt(ctx context.Context, tail, head string, weight float32, expiration time.Time) error
 	PutEdges(ctx context.Context, inputs []EdgeInput) error
@@ -132,6 +150,18 @@ func NewLanternFailover(addrs []string, opts ...Option) (*Failover, error) {
 	for _, apply := range opts {
 		apply(&probe)
 	}
+	// Seed a single failover-level ContribID generator when idempotent adds
+	// are enabled, so every AddEdge/AddEdges call mints its ids once and
+	// reuses them across retries and node switches (#916). Done before
+	// dialing so a seed failure leaks no connections.
+	var contribIDs *contribIDGen
+	if probe.idempotentAdds {
+		g, err := newContribIDGen()
+		if err != nil {
+			return nil, err
+		}
+		contribIDs = g
+	}
 	nodeOpts := make([]Option, 0, len(opts)+1)
 	nodeOpts = append(nodeOpts, opts...)
 	nodeOpts = append(nodeOpts, clearNodeRetry)
@@ -147,7 +177,7 @@ func NewLanternFailover(addrs []string, opts ...Option) (*Failover, error) {
 		}
 		nodes = append(nodes, l)
 	}
-	return &Failover{nodes: nodes, retry: probe.retry, idempotentAdds: probe.idempotentAdds}, nil
+	return &Failover{nodes: nodes, retry: probe.retry, idempotentAdds: probe.idempotentAdds, contribIDs: contribIDs}, nil
 }
 
 // clearNodeRetry is an internal Option that NewLanternFailover appends to
@@ -367,24 +397,23 @@ func (f *Failover) DeleteVerticesByPrefix(ctx context.Context, prefix string, op
 // AddEdge forwards to the current endpoint's AddEdge, failing over on
 // ErrUnavailable. Because an Unavailable result means the dead node
 // committed nothing, the additive contribution is retried on a sibling
-// replica without risk of double-counting. It returns the post-accumulation
-// effective weight reported by the serving node (#897).
+// replica; with WithIdempotentAdds the contrib ids are minted once (below,
+// via AddEdgeAt) and reused across every attempt, so even the residual
+// at-least-once window of a mid-flight Unavailable retry cannot double-count
+// (#916). It returns the post-accumulation effective weight (#897).
 func (f *Failover) AddEdge(ctx context.Context, tail, head string, weight float32, ttl time.Duration) (float32, error) {
-	var effective float32
-	err := f.call(ctx, "AddEdge", func(l failoverNode) error {
-		w, e := l.AddEdge(ctx, tail, head, weight, ttl)
-		effective = w
-		return e
-	})
-	return effective, err
+	return f.AddEdgeAt(ctx, tail, head, weight, expirationFromTTL(ttl))
 }
 
 // AddEdgeAt forwards to the current endpoint's AddEdgeAt, failing over on
-// ErrUnavailable. It returns the post-accumulation effective weight (#897).
+// ErrUnavailable. It mints the contrib id ONCE, before the retry loop, and
+// reuses it across every attempt and node (#916). It returns the
+// post-accumulation effective weight (#897).
 func (f *Failover) AddEdgeAt(ctx context.Context, tail, head string, weight float32, expiration time.Time) (float32, error) {
+	ids := f.nextContribIDs(1)
 	var effective float32
 	err := f.call(ctx, "AddEdgeAt", func(l failoverNode) error {
-		w, e := l.AddEdgeAt(ctx, tail, head, weight, expiration)
+		w, e := l.addEdgeAtWithIDs(ctx, tail, head, weight, expiration, ids)
 		effective = w
 		return e
 	})
@@ -392,16 +421,32 @@ func (f *Failover) AddEdgeAt(ctx context.Context, tail, head string, weight floa
 }
 
 // AddEdges forwards to the current endpoint's AddEdges, failing over on
-// ErrUnavailable. It returns the per-edge post-accumulation effective
-// weights (#897), index-aligned with inputs.
+// ErrUnavailable. The per-edge contrib ids are minted ONCE for the whole
+// batch, before the retry loop, and reused across every attempt and node so a
+// retry cannot double-count (#916). It returns the per-edge post-accumulation
+// effective weights (#897), index-aligned with inputs.
 func (f *Failover) AddEdges(ctx context.Context, inputs []EdgeInput) ([]float32, error) {
+	ids := f.nextContribIDs(len(inputs))
 	var effective []float32
 	err := f.call(ctx, "AddEdges", func(l failoverNode) error {
-		w, e := l.AddEdges(ctx, inputs)
+		w, e := l.addEdgesWithIDs(ctx, inputs, ids)
 		effective = w
 		return e
 	})
 	return effective, err
+}
+
+// nextContribIDs mints n contrib ids from the failover-level generator, or
+// nil when idempotent adds are disabled (contribIDs is nil) — the legacy
+// non-idempotent additive path. Minting at the failover layer (not per node)
+// is deliberate: both replicas converge via replication, so re-minting
+// through a sibling on failover double-counts exactly like re-minting through
+// the same node (#916).
+func (f *Failover) nextContribIDs(n int) [][]byte {
+	if f.contribIDs == nil {
+		return nil
+	}
+	return f.contribIDs.next(n)
 }
 
 // PutEdge forwards to the current endpoint's PutEdge, failing over on

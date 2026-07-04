@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -15,9 +16,14 @@ import (
 // failover tests before the logic moved into the SDK (#592).
 type fakeNode struct {
 	getVertexFn func(ctx context.Context, key string) (*Vertex, error)
-	addEdgeFn   func(ctx context.Context, tail, head string, weight float32, ttl time.Duration) (float32, error)
-	pingErr     error
-	closed      int
+	// addEdgeAtWithIDsFn / addEdgesWithIDsFn drive the id-accepting seams the
+	// failover ring actually calls for additive writes (#916); the failover
+	// AddEdge/AddEdgeAt/AddEdges methods route through these, so tests wire
+	// them to observe the contrib ids passed down.
+	addEdgeAtWithIDsFn func(ctx context.Context, tail, head string, weight float32, expiration time.Time, ids [][]byte) (float32, error)
+	addEdgesWithIDsFn  func(ctx context.Context, inputs []EdgeInput, ids [][]byte) ([]float32, error)
+	pingErr            error
+	closed             int
 }
 
 func (f *fakeNode) PutVertex(context.Context, string, any, time.Duration) error { return nil }
@@ -56,16 +62,25 @@ func (f *fakeNode) CountVerticesByPrefix(context.Context, string) (uint64, error
 func (f *fakeNode) DeleteVerticesByPrefix(context.Context, string, ...DeleteByPrefixOption) (uint64, error) {
 	return 0, nil
 }
-func (f *fakeNode) AddEdge(ctx context.Context, tail, head string, weight float32, ttl time.Duration) (float32, error) {
-	if f.addEdgeFn != nil {
-		return f.addEdgeFn(ctx, tail, head, weight, ttl)
-	}
+func (f *fakeNode) AddEdge(context.Context, string, string, float32, time.Duration) (float32, error) {
 	return 0, nil
 }
 func (f *fakeNode) AddEdgeAt(context.Context, string, string, float32, time.Time) (float32, error) {
 	return 0, nil
 }
 func (f *fakeNode) AddEdges(context.Context, []EdgeInput) ([]float32, error) { return nil, nil }
+func (f *fakeNode) addEdgeAtWithIDs(ctx context.Context, tail, head string, weight float32, expiration time.Time, ids [][]byte) (float32, error) {
+	if f.addEdgeAtWithIDsFn != nil {
+		return f.addEdgeAtWithIDsFn(ctx, tail, head, weight, expiration, ids)
+	}
+	return 0, nil
+}
+func (f *fakeNode) addEdgesWithIDs(ctx context.Context, inputs []EdgeInput, ids [][]byte) ([]float32, error) {
+	if f.addEdgesWithIDsFn != nil {
+		return f.addEdgesWithIDsFn(ctx, inputs, ids)
+	}
+	return nil, nil
+}
 func (f *fakeNode) PutEdge(context.Context, string, string, float32, time.Duration) error {
 	return nil
 }
@@ -242,11 +257,11 @@ func TestFailover_PingAllNodesFailReturnsError(t *testing.T) {
 
 func TestFailover_AdditiveWriteRotatesOnUnavailable(t *testing.T) {
 	var n0, n1 int
-	node0 := &fakeNode{addEdgeFn: func(context.Context, string, string, float32, time.Duration) (float32, error) {
+	node0 := &fakeNode{addEdgeAtWithIDsFn: func(context.Context, string, string, float32, time.Time, [][]byte) (float32, error) {
 		n0++
 		return 0, unavailableErr()
 	}}
-	node1 := &fakeNode{addEdgeFn: func(context.Context, string, string, float32, time.Duration) (float32, error) {
+	node1 := &fakeNode{addEdgeAtWithIDsFn: func(context.Context, string, string, float32, time.Time, [][]byte) (float32, error) {
 		n1++
 		return 0, nil
 	}}
@@ -352,8 +367,10 @@ func TestFailover_RetryAlwaysReadIgnoresIdempotencySetting(t *testing.T) {
 }
 
 func TestFailover_RetryGatesAdditiveWritesByIdempotency(t *testing.T) {
+	// Failover.AddEdge routes through AddEdgeAt → node.addEdgeAtWithIDs, so the
+	// counting fakes wire the addEdgeAtWithIDs seam.
 	mk := func(c *int) *fakeNode {
-		return &fakeNode{addEdgeFn: func(context.Context, string, string, float32, time.Duration) (float32, error) {
+		return &fakeNode{addEdgeAtWithIDsFn: func(context.Context, string, string, float32, time.Time, [][]byte) (float32, error) {
 			*c++
 			return 0, unavailableErr()
 		}}
@@ -372,12 +389,89 @@ func TestFailover_RetryGatesAdditiveWritesByIdempotency(t *testing.T) {
 
 	t.Run("with idempotent adds the ring walk repeats MaxAttempts times", func(t *testing.T) {
 		var a, b int
-		f := &Failover{nodes: []failoverNode{mk(&a), mk(&b)}, retry: testRetryPolicy(3), idempotentAdds: true}
+		f := &Failover{nodes: []failoverNode{mk(&a), mk(&b)}, retry: testRetryPolicy(3), idempotentAdds: true, contribIDs: &contribIDGen{}}
 		if _, err := f.AddEdge(context.Background(), "a", "b", 1, time.Minute); !errors.Is(err, ErrUnavailable) {
 			t.Fatalf("err = %v, want ErrUnavailable", err)
 		}
 		if a != 3 || b != 3 {
 			t.Fatalf("counts a=%d b=%d, want 3 and 3 (retry armed for idempotent adds)", a, b)
+		}
+	})
+
+	t.Run("every retry attempt carries the SAME contrib ids", func(t *testing.T) {
+		// got collects the ids observed per attempt, across BOTH ring nodes —
+		// so this also pins id reuse across a node switch (a re-mint through
+		// node B double-counts exactly like a re-mint through node A: the two
+		// replicas converge via replication).
+		var got [][][]byte
+		record := func() *fakeNode {
+			return &fakeNode{addEdgeAtWithIDsFn: func(_ context.Context, _, _ string, _ float32, _ time.Time, ids [][]byte) (float32, error) {
+				cp := make([][]byte, len(ids))
+				for i, id := range ids {
+					cp[i] = append([]byte(nil), id...)
+				}
+				got = append(got, cp)
+				return 0, unavailableErr()
+			}}
+		}
+		f := &Failover{
+			nodes:          []failoverNode{record(), record()},
+			retry:          testRetryPolicy(3),
+			idempotentAdds: true,
+			contribIDs:     &contribIDGen{},
+		}
+		if _, err := f.AddEdge(context.Background(), "a", "b", 1, time.Minute); !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("err = %v, want ErrUnavailable", err)
+		}
+		if len(got) < 4 {
+			t.Fatalf("attempts observed = %d, want >= 4 (retry × ring walk must have fired)", len(got))
+		}
+		first := got[0]
+		if len(first) != 1 || len(first[0]) != 24 {
+			t.Fatalf("attempt 0 ids = %v, want exactly one 24-byte id", first)
+		}
+		for i, ids := range got[1:] {
+			if len(ids) != 1 || !bytes.Equal(ids[0], first[0]) {
+				t.Fatalf("attempt %d re-minted its contrib id:\n  got  %x\n  want %x\n(a fresh id per attempt is exactly the double-count bug)", i+1, ids, first[0])
+			}
+		}
+	})
+
+	t.Run("AddEdges pre-mints one id per input, index-aligned, reused across attempts", func(t *testing.T) {
+		var calls [][][]byte
+		fake := &fakeNode{addEdgesWithIDsFn: func(_ context.Context, inputs []EdgeInput, ids [][]byte) ([]float32, error) {
+			if len(ids) != len(inputs) {
+				t.Fatalf("ids/inputs misaligned: %d ids for %d inputs", len(ids), len(inputs))
+			}
+			cp := make([][]byte, len(ids))
+			for i, id := range ids {
+				cp[i] = append([]byte(nil), id...)
+			}
+			calls = append(calls, cp)
+			return nil, unavailableErr()
+		}}
+		f := &Failover{nodes: []failoverNode{fake}, retry: testRetryPolicy(2), idempotentAdds: true, contribIDs: &contribIDGen{}}
+		inputs := []EdgeInput{
+			{Tail: "a", Head: "x", Weight: 1, Expiration: time.Now().Add(time.Minute)},
+			{Tail: "a", Head: "y", Weight: 1, Expiration: time.Now().Add(time.Minute)},
+			{Tail: "a", Head: "z", Weight: 1, Expiration: time.Now().Add(time.Minute)},
+		}
+		if _, err := f.AddEdges(context.Background(), inputs); !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("err = %v, want ErrUnavailable", err)
+		}
+		if len(calls) < 2 {
+			t.Fatalf("attempts = %d, want >= 2", len(calls))
+		}
+		for atI := 1; atI < len(calls); atI++ {
+			for i := range calls[0] {
+				if !bytes.Equal(calls[atI][i], calls[0][i]) {
+					t.Fatalf("attempt %d id[%d] differs from attempt 0 — batch retry re-minted", atI, i)
+				}
+			}
+		}
+		// Distinctness within one call still holds (per-index packing).
+		if bytes.Equal(calls[0][0], calls[0][1]) || bytes.Equal(calls[0][1], calls[0][2]) {
+			t.Fatal("ids within one batch must be pairwise distinct")
 		}
 	})
 }
@@ -418,6 +512,13 @@ func TestNewLanternFailover_RetryExtractedAndNodesNeutralised(t *testing.T) {
 	}
 	if !f.idempotentAdds {
 		t.Fatal("failover idempotentAdds not extracted from opts")
+	}
+	// The failover-level ContribID generator must be armed when idempotent
+	// adds are on, so ids are minted once per call and reused across retries
+	// and node switches (#916). Without it every attempt would re-mint and
+	// double-count.
+	if f.contribIDs == nil {
+		t.Fatal("failover contribIDs generator not seeded under WithIdempotentAdds")
 	}
 	for i, n := range f.nodes {
 		l, ok := n.(*Lantern)
