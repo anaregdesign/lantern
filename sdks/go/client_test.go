@@ -152,6 +152,37 @@ func TestNextContribIDs(t *testing.T) {
 	})
 }
 
+// TestContribIDGoldenVectors pins the 24-byte wire layout byte-for-byte:
+// [0:16] client nonce/origin ‖ [16:24] big-endian uint64 (seq<<16)|idx. The
+// SAME literals live in sdks/node/test/contrib.test.ts and
+// server/service/apply_test.go (#922) — if this test needs editing, those two
+// must change in the same commit or cross-SDK idempotency dedup interop breaks.
+// Unlike the decodeContribID-based tests above, it does NOT re-derive the
+// formula: a self-consistent shift/endianness/nonce-length refactor of
+// nextContribIDs turns this red while the tautological tests stay green.
+func TestContribIDGoldenVectors(t *testing.T) {
+	nonce := [16]byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f}
+	want := func(low8 ...byte) []byte { return append(append([]byte(nil), nonce[:]...), low8...) }
+
+	l := &Lantern{}
+	l.opts.idempotentAdds = true
+	l.nonce = nonce // zero-valued callSeq: the first nextContribIDs call uses seq=1
+
+	ids := l.nextContribIDs(2)
+	if got := want(0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00); !bytes.Equal(ids[0], got) {
+		t.Fatalf("V1 (seq=1, idx=0):\n  got  %x\n  want %x", ids[0], got)
+	}
+	if got := want(0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01); !bytes.Equal(ids[1], got) {
+		t.Fatalf("V2 (seq=1, idx=1):\n  got  %x\n  want %x", ids[1], got)
+	}
+
+	l.callSeq.Store(0xABCC) // next call → seq=0xABCD
+	ids = l.nextContribIDs(1 << 16)
+	if got := want(0x00, 0x00, 0x00, 0x00, 0xab, 0xcd, 0xff, 0xff); !bytes.Equal(ids[0xFFFF], got) {
+		t.Fatalf("V3 (seq=0xABCD, idx=0xFFFF):\n  got  %x\n  want %x", ids[0xFFFF], got)
+	}
+}
+
 // captureAddEdges is a fake LanternServiceClient that records every
 // AddEdgesRequest it receives. It embeds the interface (left nil) so it
 // satisfies the full surface while only overriding AddEdges — the single

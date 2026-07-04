@@ -1154,3 +1154,32 @@ func FuzzContribIDFromBytes(f *testing.F) {
 		}
 	})
 }
+
+// TestContribIDForGoldenVectors pins the 24-byte wire layout byte-for-byte:
+// [0:16] origin nonce ‖ [16:24] big-endian uint64 (seq<<16)|idx. The SAME
+// literals live in sdks/go/client_test.go TestContribIDGoldenVectors and
+// sdks/node/test/contrib.test.ts (#922) — a unilateral change to any one
+// implementation's shift width, endianness, or nonce length turns exactly this
+// suite red while the dedup-behavior tests above stay green, catching the
+// coordinated-drift refactor that would silently break cross-SDK idempotency.
+func TestContribIDForGoldenVectors(t *testing.T) {
+	origin := []byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f}
+	cases := []struct {
+		seq  uint64
+		idx  uint16
+		low8 [8]byte
+	}{
+		{1, 0, [8]byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00}},
+		{1, 1, [8]byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01}},
+		{0xABCD, 0xFFFF, [8]byte{0x00, 0x00, 0x00, 0x00, 0xab, 0xcd, 0xff, 0xff}},
+	}
+	for _, tc := range cases {
+		got := contribIDFor(origin, tc.seq, tc.idx)
+		var wantID graphcache.ContribID
+		copy(wantID[:16], origin)
+		copy(wantID[16:], tc.low8[:])
+		if got != wantID {
+			t.Fatalf("contribIDFor(origin, %#x, %#x):\n  got  %x\n  want %x", tc.seq, tc.idx, got[:], wantID[:])
+		}
+	}
+}
