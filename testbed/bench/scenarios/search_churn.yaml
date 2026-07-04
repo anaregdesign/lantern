@@ -41,3 +41,10 @@ target:
 leak_gate:
   goroutine_max_delta: 20
   heap_alloc_max_delta_mb: 32
+# Floors from the 2026-06-29 → 2026-07-03 nightly baselines: aggregate steady
+# rps 1614–1843 (offered 2000), worst-producer p99 149–248 ms (the
+# SearchVertices leg dominates), non-OK 25–64 of ~380k.
+perf_gate:
+  min_steady_rps_total: 800
+  max_p99_ms: 1250
+  max_non_ok_ratio: 0.02

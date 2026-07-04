@@ -30,6 +30,18 @@ func TestRenderReport_AllSectionsAndVerdict(t *testing.T) {
 				VertexHLCHighWaterPre: 200_000, VertexHLCHighWaterPost: 240_000,
 			}},
 		},
+		PerfGate: func() *PerfGate {
+			pg := &PerfGate{Verdict: "pass"}
+			minRps := 50.0
+			pg.Thresholds.MinSteadyRpsTotal = &minRps // p99 / non-OK deliberately un-gated
+			pg.Observed.Producers = 1
+			pg.Observed.SteadyRpsTotal = 100.5
+			pg.Observed.P99WorstMs = 50
+			pg.Observed.CountTotal = 1000
+			pg.Observed.NonOKTotal = 10
+			pg.Observed.NonOKRatio = 0.01
+			return pg
+		}(),
 		GhzFiles: []GhzFile{{
 			Name: "ghz_steady_localhost_6380.json",
 			Summary: GhzSummary{
@@ -54,7 +66,12 @@ func TestRenderReport_AllSectionsAndVerdict(t *testing.T) {
 	mustContain := []string{
 		"# Bench report — `write_heavy` @ `20250101T000000Z`",
 		"**Leak gate verdict:** `pass`",
+		"**Perf gate verdict:** `pass`",
 		"## Leak gate",
+		"## Perf gate",
+		"| steady rps (total, floor) | 50.0 | 100.5 |",
+		"| p99 ms (worst, ceiling) | — | 50.00 |", // un-gated metric renders "—"
+		"| non-OK ratio (ceiling) | — | 0.01000 |",
 		"goroutine_max_delta=20",
 		"heap_alloc_max_delta_mb=32",
 		"`localhost:9390`",
@@ -122,7 +139,9 @@ func TestRenderReport_HandlesMissingArtifactsGracefully(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"**Leak gate verdict:** `(no leak gate captured)`",
+		"**Perf gate verdict:** `(no perf gate configured)`",
 		"_not captured_",
+		"_not configured_",
 		"_no ghz artifacts found_",
 		"_no prom queries captured_",
 		"_no pprof profiles captured_",
@@ -141,6 +160,12 @@ func TestLoadInput_AssemblesFromDisk(t *testing.T) {
 	lg.Thresholds.HeapAllocMaxDeltaMB = 16
 	lg.Replicas = []LeakGateReplica{{Endpoint: "x", GoroutineDelta: 9, HeapAllocDeltaBytes: 1 << 20}}
 	mustWriteJSON(t, filepath.Join(dir, "leak_gate.json"), lg)
+
+	pg := PerfGate{Verdict: "fail"}
+	maxP99 := 250.0
+	pg.Thresholds.MaxP99Ms = &maxP99
+	pg.Observed.P99WorstMs = 900
+	mustWriteJSON(t, filepath.Join(dir, "perf_gate.json"), pg)
 
 	gh := GhzSummary{Count: 42, Rps: 1, Average: 1_000_000,
 		StatusCodeDistribution: map[string]int{"OK": 42},
@@ -171,6 +196,11 @@ func TestLoadInput_AssemblesFromDisk(t *testing.T) {
 	}
 	if in.LeakGate == nil || in.LeakGate.Verdict != "fail" {
 		t.Errorf("leak gate not loaded: %+v", in.LeakGate)
+	}
+	if in.PerfGate == nil || in.PerfGate.Verdict != "fail" ||
+		in.PerfGate.Thresholds.MaxP99Ms == nil || *in.PerfGate.Thresholds.MaxP99Ms != 250 ||
+		in.PerfGate.Thresholds.MinSteadyRpsTotal != nil {
+		t.Errorf("perf gate not loaded: %+v", in.PerfGate)
 	}
 	if len(in.GhzFiles) != 1 || in.GhzFiles[0].Summary.Count != 42 {
 		t.Errorf("ghz files: %+v", in.GhzFiles)

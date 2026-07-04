@@ -44,3 +44,12 @@ leak_gate:
   # cover the working set across all three replicas. See #258 item 2
   # for the rationale and #419 for the Reading B capacity discussion.
   heap_alloc_max_delta_mb: 512
+# Floors from the 2026-06-29 → 2026-07-03 nightly baselines: the single
+# pinned-replica producer delivers 366–500 rps under the 64-stream fan-out
+# (offered 2000 — contention-bound by design) with p99 208–293 ms and non-OK
+# 20–32. The gate only reads the producer's ghz report; stream health is
+# assessed via lantern_subscription_* series (see #258 item 4).
+perf_gate:
+  min_steady_rps_total: 180
+  max_p99_ms: 1500
+  max_non_ok_ratio: 0.02

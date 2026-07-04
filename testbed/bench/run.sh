@@ -20,7 +20,9 @@
 #                     nightly leak gate sets this so the un-truncated sweep fits a
 #                     sane CI timeout; the advisory release bench leaves it unset.
 #
-# Exits 0 if leak gate verdict == "pass", 1 otherwise. Exits 2 on misuse.
+# Exits 0 if the leak gate verdict is "pass" AND the perf gate (when the
+# scenario declares a `perf_gate:` block — see below) did not fail; exits 1
+# otherwise. Exits 2 on misuse.
 #
 # Prerequisites: bash 4+, docker, docker compose v2, ghz, yq (v4+), jq, curl,
 #                go (for the report renderer).
@@ -436,6 +438,56 @@ printf '%s\n' "$leak_json" > "$OUTDIR/leak_gate.json"
 verdict="$(jq -r '.verdict' "$OUTDIR/leak_gate.json")"
 log "leak gate verdict: $verdict"
 
+# ----- Perf gate --------------------------------------------------------------
+# Optional per-scenario floors over the steady-phase producers (#935). Same
+# enforcement model as the leak gate: a scenario without a `perf_gate:` block
+# is skipped; when present, the verdict lands in perf_gate.json and folds into
+# the exit code — the blocking nightly (bench-nightly.yml) thereby enforces it
+# while the release-time bench stays advisory (continue-on-error, #256/#394).
+#
+# Aggregation matches the release summary table (testbed/bench/release):
+# rps = SUM over steady producers, p99 = worst producer (MAX), non-OK ratio =
+# Σnon-OK / Σcount. Every key is individually optional — gate only the metrics
+# that are stable for the scenario (deliberately saturated fan-outs have
+# queue-depth p99, i.e. noise; see testbed/bench/README.md). Floors are
+# "ratchet floors" sized from nightly baselines with ≥2x headroom: they catch
+# step-change regressions (accidental O(n²), lock convoy, a dropped fan-out),
+# not single-digit-% drift, which shared runners cannot resolve.
+perf_min_rps="$(yq -r '.perf_gate.min_steady_rps_total // ""' "$SCENARIO_FILE")"
+perf_max_p99="$(yq -r '.perf_gate.max_p99_ms // ""' "$SCENARIO_FILE")"
+perf_max_non_ok="$(yq -r '.perf_gate.max_non_ok_ratio // ""' "$SCENARIO_FILE")"
+perf_verdict="skipped"
+if [[ -n "${perf_min_rps}${perf_max_p99}${perf_max_non_ok}" ]]; then
+  perf_json="$(jq -s \
+    --arg min_rps "$perf_min_rps" \
+    --arg max_p99 "$perf_max_p99" \
+    --arg max_non_ok "$perf_max_non_ok" '
+    {
+      producers: length,
+      steady_rps_total: (map(.rps) | add),
+      p99_worst_ms: ((map(((.latencyDistribution // []) | map(select(.percentage == 99)) | .[0].latency) // 0) | max) / 1e6),
+      count_total: (map(.count) | add),
+      non_ok_total: (map((.statusCodeDistribution // {}) | to_entries | map(select(.key != "OK") | .value) | add // 0) | add)
+    } as $o |
+    ($o + {non_ok_ratio: (if $o.count_total > 0 then ($o.non_ok_total / $o.count_total) else 0 end)}) as $obs |
+    {
+      thresholds: {
+        min_steady_rps_total: (if $min_rps == "" then null else ($min_rps | tonumber) end),
+        max_p99_ms: (if $max_p99 == "" then null else ($max_p99 | tonumber) end),
+        max_non_ok_ratio: (if $max_non_ok == "" then null else ($max_non_ok | tonumber) end)
+      },
+      observed: $obs
+    } |
+    . + {verdict: (
+      if   (.thresholds.min_steady_rps_total != null and $obs.steady_rps_total < .thresholds.min_steady_rps_total) then "fail"
+      elif (.thresholds.max_p99_ms != null and $obs.p99_worst_ms > .thresholds.max_p99_ms) then "fail"
+      elif (.thresholds.max_non_ok_ratio != null and $obs.non_ok_ratio > .thresholds.max_non_ok_ratio) then "fail"
+      else "pass" end)}' "${prod_files[@]}")"
+  printf '%s\n' "$perf_json" > "$OUTDIR/perf_gate.json"
+  perf_verdict="$(jq -r '.verdict' "$OUTDIR/perf_gate.json")"
+fi
+log "perf gate verdict: $perf_verdict"
+
 # ----- Render report ---------------------------------------------------------
 (
   cd "$REPO_ROOT"
@@ -449,4 +501,4 @@ if [[ "${KEEP_UP:-0}" != "1" ]]; then
   docker compose "${COMPOSE_FILES[@]}" down -v >/dev/null
 fi
 
-if [[ "$verdict" == "pass" ]]; then exit 0; else exit 1; fi
+if [[ "$verdict" == "pass" && "$perf_verdict" != "fail" ]]; then exit 0; else exit 1; fi

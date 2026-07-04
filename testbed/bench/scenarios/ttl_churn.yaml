@@ -27,3 +27,11 @@ leak_gate:
   # cooldown is long enough that expirations have drained; tighter bounds.
   goroutine_max_delta: 15
   heap_alloc_max_delta_mb: 16
+# Floors from the 2026-06-29 → 2026-07-03 nightly baselines: the single
+# producer sustains the offered 4000 rps essentially exactly (3999.6–4000.0)
+# with p99 12–27 ms and non-OK 2–12 of ~480k — the most stable scenario in
+# the sweep, so all three metrics are gated.
+perf_gate:
+  min_steady_rps_total: 2000
+  max_p99_ms: 150
+  max_non_ok_ratio: 0.02

@@ -113,3 +113,118 @@ func TestAddEdge_IdempotentRetry_SingleContribution(t *testing.T) {
 		}
 	})
 }
+
+// TestAddEdges_BatchSemantics covers the canonical plural additive write over
+// the real Connect/h2c wire — the AddEdges surface previously had no
+// integration coverage at all (#935): accumulation across calls, the
+// index-aligned effective-weights contract (#897), chunked delivery
+// (WithBatchChunkSize), and at-least-once re-delivery dedup for the batch
+// path under WithIdempotentAdds.
+func TestAddEdges_BatchSemantics(t *testing.T) {
+	ctx := context.Background()
+	exp := time.Now().Add(time.Hour) // EdgeInput carries an absolute expiration; zero would be born-expired
+
+	inputs := func(w0, w1, w2 float32) []client.EdgeInput {
+		return []client.EdgeInput{
+			{Tail: "a", Head: "b", Weight: w0, Expiration: exp},
+			{Tail: "a", Head: "c", Weight: w1, Expiration: exp},
+			{Tail: "b", Head: "c", Weight: w2, Expiration: exp},
+		}
+	}
+
+	t.Run("accumulates and returns index-aligned effective weights", func(t *testing.T) {
+		l := newIdempotencyHarness(t)
+		eff, err := l.AddEdges(ctx, inputs(1, 2, 3))
+		if err != nil {
+			t.Fatalf("AddEdges #1: %v", err)
+		}
+		if len(eff) != 3 || eff[0] != 1 || eff[1] != 2 || eff[2] != 3 {
+			t.Fatalf("first AddEdges effective weights = %v, want [1 2 3]", eff)
+		}
+		eff, err = l.AddEdges(ctx, inputs(1, 2, 3))
+		if err != nil {
+			t.Fatalf("AddEdges #2: %v", err)
+		}
+		if len(eff) != 3 || eff[0] != 2 || eff[1] != 4 || eff[2] != 6 {
+			t.Fatalf("second AddEdges must report accumulated weights [2 4 6], got %v", eff)
+		}
+		e, err := l.GetEdge(ctx, "a", "c")
+		if err != nil {
+			t.Fatalf("GetEdge: %v", err)
+		}
+		if e.Weight != 4 {
+			t.Fatalf("stored weight after two additive batches = %v, want 4", e.Weight)
+		}
+	})
+
+	t.Run("chunked batch applies every input and stitches effective weights", func(t *testing.T) {
+		l := newIdempotencyHarness(t, client.WithBatchChunkSize(2))
+		batch := make([]client.EdgeInput, 5)
+		for i := range batch {
+			batch[i] = client.EdgeInput{
+				Tail:       "hub",
+				Head:       string(rune('p' + i)),
+				Weight:     float32(i + 1),
+				Expiration: exp,
+			}
+		}
+		eff, err := l.AddEdges(ctx, batch) // 5 inputs / chunk size 2 → 3 RPCs
+		if err != nil {
+			t.Fatalf("AddEdges: %v", err)
+		}
+		if len(eff) != len(batch) {
+			t.Fatalf("effective weights len = %d, want %d (must span chunks)", len(eff), len(batch))
+		}
+		for i, in := range batch {
+			if eff[i] != in.Weight {
+				t.Errorf("eff[%d] = %v, want %v", i, eff[i], in.Weight)
+			}
+			e, err := l.GetEdge(ctx, in.Tail, in.Head)
+			if err != nil {
+				t.Fatalf("GetEdge(%s→%s): %v", in.Tail, in.Head, err)
+			}
+			if e.Weight != in.Weight {
+				t.Errorf("stored weight %s→%s = %v, want %v", in.Tail, in.Head, e.Weight, in.Weight)
+			}
+		}
+	})
+
+	t.Run("WithIdempotentAdds dedups a re-delivered batch", func(t *testing.T) {
+		l := newIdempotencyHarness(t,
+			client.WithIdempotentAdds(),
+			client.WithConnectClientOption(connect.WithInterceptors(doubleSendInterceptor{})),
+		)
+		if _, err := l.AddEdges(ctx, inputs(1, 2, 3)); err != nil {
+			t.Fatalf("AddEdges: %v", err)
+		}
+		for _, tc := range inputs(1, 2, 3) {
+			e, err := l.GetEdge(ctx, tc.Tail, tc.Head)
+			if err != nil {
+				t.Fatalf("GetEdge(%s→%s): %v", tc.Tail, tc.Head, err)
+			}
+			if e.Weight != tc.Weight {
+				t.Errorf("re-delivered batch must contribute once: %s→%s weight = %v, want %v",
+					tc.Tail, tc.Head, e.Weight, tc.Weight)
+			}
+		}
+	})
+
+	t.Run("legacy batch path double-counts a re-delivered batch", func(t *testing.T) {
+		l := newIdempotencyHarness(t,
+			client.WithConnectClientOption(connect.WithInterceptors(doubleSendInterceptor{})),
+		)
+		if _, err := l.AddEdges(ctx, inputs(1, 2, 3)); err != nil {
+			t.Fatalf("AddEdges: %v", err)
+		}
+		for _, tc := range inputs(1, 2, 3) {
+			e, err := l.GetEdge(ctx, tc.Tail, tc.Head)
+			if err != nil {
+				t.Fatalf("GetEdge(%s→%s): %v", tc.Tail, tc.Head, err)
+			}
+			if e.Weight != 2*tc.Weight {
+				t.Errorf("default path is additive on re-delivery: %s→%s weight = %v, want %v",
+					tc.Tail, tc.Head, e.Weight, 2*tc.Weight)
+			}
+		}
+	})
+}

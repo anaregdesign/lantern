@@ -114,7 +114,20 @@ CI: [.github/workflows/go.yml](.github/workflows/go.yml) runs `go build` + `go t
 - **wire and generics**: as the `// Avoiding bug of 'wire'. Generic type is not supported.` comment in `service.go` notes, wire cannot handle generic type arguments, so the provider returns the concrete `GraphCache[string, *Vertex]`. Re-check this constraint before trying to introduce generics there.
 - **Regenerating proto**: `go_package_prefix` in `buf.gen.yaml` is `github.com/anaregdesign/lantern/pb`, so the generated files land **inside the standalone `pb/` module** at `pb/graph/v1`. `go generate ./...` (or `make proto`) runs `buf generate` and rebuilds everything under `pb/`. **Do NOT pass `--clean`** — `buf`'s output root is `pb/`, and `--clean` would delete `pb/go.mod` and `pb/doc.go` along with the stubs. `buf.yaml` (v2 workspace) and `buf.gen.yaml` live at the repo root. `buf` does not need to be installed locally — the directive in [generate.go](generate.go) falls back to running buf via `go run` at the version pinned there (mirrored as `BUF_VERSION` in the Makefile — bump both together). Treat `pb/` as generated-only — never hand-edit, never add domain code there.
 - **Multi-module layout**: the workspace modules are stitched together for local dev via [go.work](go.work) and via `replace` directives in each importing module's `go.mod`. When adding a dep, place it in the module that actually uses it (e.g. server-only middleware → `server/go.mod`; client transport → `sdks/go/go.mod`; cli/integration-test only → root `go.mod`). After dependency changes run `go mod tidy` in **every** affected module. The `tool github.com/google/wire/cmd/wire` directive lives in `server/go.mod` (not root), so wire regen must be run from `server/`.
-- **Test gaps**: there are no tests for the server/service layer, wire wiring, or client transport paths. For non-trivial changes, **add at least a minimal table test in the same PR**.
+- **External-surface testing policy (Definition of Done)** — canonical text in
+  [CONTRIBUTING.md](CONTRIBUTING.md) "External-surface testing policy". The always-on
+  summary: every PR that adds or changes externally observable behaviour (RPC surface,
+  SDKs, CLI grammar, MCP tools, `LANTERN_*` env contract, TTL/decay semantics) ships —
+  in the same PR — an integration test in `tests/integration/` over the real
+  Connect/h2c wire path covering the happy path plus at least one failure/edge
+  contract; perf-relevant hot paths also join a bench scenario in
+  `testbed/bench/scenarios/` (the release-sweep scenarios carry `perf_gate:`
+  throughput/latency floors enforced by the blocking nightly — sizing and
+  re-baselining rules in [testbed/bench/README.md](testbed/bench/README.md)). Bench
+  scenario templates are schema-checked against the proto surface by
+  `testbed/bench/scenarios_gate_test.go` at ordinary root `go test ./...` time, so a
+  wire-schema change must migrate the scenarios that send retired fields in the same
+  PR (#934).
 
 ## Docs / Links
 

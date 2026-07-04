@@ -109,3 +109,12 @@ target:
 leak_gate:
   goroutine_max_delta: 30
   heap_alloc_max_delta_mb: 192
+# Floors from the 2026-06-29 → 2026-07-03 nightly baselines: aggregate steady
+# rps 2683–3552 (offered 12000 — the fan-out saturates a shared runner by
+# design, so delivered throughput, not offered, is the signal), non-OK
+# 98–171 of ~510k calls. p99 is deliberately ungated: with the offered load
+# above capacity, tail latency is queue depth (observed 0.46–3.3 s
+# night-over-night) — pure runner noise.
+perf_gate:
+  min_steady_rps_total: 1300
+  max_non_ok_ratio: 0.02
