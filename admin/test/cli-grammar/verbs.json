@@ -165,7 +165,15 @@
       "input": "put edge alice bob notafloat",
       "comment": "non-numeric weight"
     },
+    {
+      "input": "put edge alice bob 1.5 60 extra",
+      "comment": "#932: trailing token after ttl_seconds"
+    },
     { "input": "add", "comment": "missing objective" },
+    {
+      "input": "add edge alice bob 1.0 60 extra",
+      "comment": "#932: trailing token after ttl_seconds"
+    },
     { "input": "add vertex alice", "comment": "add only supports edge" },
     { "input": "delete", "comment": "missing objective" },
     { "input": "delete edge alice", "comment": "missing head" },
