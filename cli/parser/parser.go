@@ -141,7 +141,10 @@ func Value(s *Source) (any, error) {
 }
 
 func Duration(s *Source) (time.Duration, error) {
-	defer s.Next()
+	// Delegate cleanly to Integer, which already advances the source via its
+	// own `defer s.Next()`. An extra `defer s.Next()` here would double-advance
+	// and defeat the trailing EOF check in PutEdgeParam / AddEdgeParam (#932) —
+	// mirror the Float32 → Float delegation, which adds no extra advance.
 	i, err := Integer(s)
 	if err != nil {
 		return 0, err
