@@ -743,14 +743,16 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 	if request.GetIfAbsent() {
 		if s.clock != nil {
 			ts := s.clock.Now()
+			// Core returns only indices that were actually stored — a
+			// born-expired item is discarded and excluded (#918), so
+			// writtenIdx is all-live by construction and needs no second
+			// liveness filter before replication.
 			writtenIdx, skipped := s.cache.PutVerticesWithExpirationIfAbsentHLC(items, ts)
-			live := make([]*pb.Vertex, 0, len(writtenIdx))
-			for _, i := range writtenIdx {
-				if cache.IsLiveAt(items[i].Expiration, now) {
+			if len(writtenIdx) > 0 {
+				live := make([]*pb.Vertex, 0, len(writtenIdx))
+				for _, i := range writtenIdx {
 					live = append(live, in[i])
 				}
-			}
-			if len(live) > 0 {
 				s.logMutationAt(&pb.MutationOp{Op: &pb.MutationOp_PutVertices{PutVertices: &pb.PutVerticesRequest{Vertices: live}}}, ts)
 			}
 			return &pb.PutVerticesResponse{Written: int32(len(writtenIdx)), SkippedKeys: skipped}, nil

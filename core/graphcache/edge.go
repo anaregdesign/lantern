@@ -369,6 +369,32 @@ func (c *edgeCache[S]) get(tail, head S) (float32, bool) {
 	return v, ok
 }
 
+// liveSumAt returns the current live weight sum for (tail, head) at now, or 0
+// when the edge is absent. Unlike get/getDetail it does not gate on endpoint
+// liveness or the nonZero flag — it reports exactly what the weight bucket
+// holds, matching the sum the ContribID-dedup no-op path returns. Intended for
+// callers already holding GraphCache.mu (the locked write path): it resolves
+// ids without pinning (safe under the aggregate lock, where tf/dict are
+// stable) and reads the weight under its own mutex, the same nesting the
+// locked add path uses (#918).
+func (c *edgeCache[S]) liveSumAt(tail, head S, now time.Time) float32 {
+	tailID, headID, ok := c.lookupIDs(tail, head)
+	if !ok {
+		return 0
+	}
+	c.mu.RLock()
+	var w *weight
+	if heads, ok := c.tf[tailID]; ok {
+		w = heads[headID]
+	}
+	c.mu.RUnlock()
+	if w == nil {
+		return 0
+	}
+	sum, _, _ := w.snapshotAt(now)
+	return sum
+}
+
 // getDetail returns the current weight and the latest contribution
 // expiration, so callers can surface the edge's effective deadline.
 //

@@ -63,11 +63,12 @@ func (c *GraphCache[S, T]) PutVerticesWithExpiration(items []VertexItem[S, T]) {
 // PutVerticesWithExpirationIfAbsent writes each vertex only when no live vertex
 // exists at its key (SET NX semantics, #896). It returns the number of vertices
 // actually written and, in request order, the keys skipped because a live
-// vertex already existed. Liveness follows the live-visibility rule (#750): an
-// expired-but-uncollected vertex does not block its write. The whole batch
-// commits under a single write lock, so the existence check and store are
-// atomic per key; within one batch a key's first accepted write makes it live,
-// so a later duplicate of that key is reported as skipped.
+// vertex already existed. A vertex whose expiration is already past is discarded
+// and counted as neither written nor skipped (#918). Liveness follows the
+// live-visibility rule (#750): an expired-but-uncollected vertex does not block
+// its write. The whole batch commits under a single write lock, so the existence
+// check and store are atomic per key; within one batch a key's first accepted
+// write makes it live, so a later duplicate of that key is reported as skipped.
 func (c *GraphCache[S, T]) PutVerticesWithExpirationIfAbsent(items []VertexItem[S, T]) (written int, skipped []S) {
 	if len(items) == 0 {
 		return 0, nil
@@ -81,8 +82,9 @@ func (c *GraphCache[S, T]) PutVerticesWithExpirationIfAbsent(items []VertexItem[
 			skipped = append(skipped, items[i].Key)
 			continue
 		}
-		c.putLocalVertexLockedAt(items[i].Key, items[i].Value, items[i].Expiration, now, preparedAt(prepared, i))
-		written++
+		if c.putLocalVertexLockedAt(items[i].Key, items[i].Value, items[i].Expiration, now, preparedAt(prepared, i)) {
+			written++
+		}
 	}
 	return written, skipped
 }
@@ -309,13 +311,14 @@ func (c *GraphCache[S, T]) PutVerticesWithExpirationHLC(items []VertexItem[S, T]
 // forbidden by the causal fence (a strictly newer delete/put watermark) is
 // reported as skipped rather than resurrected.
 //
-// It returns the indices of items that passed the absence check (in request
-// order) so the caller can both count them and replicate only that live subset
-// as an unconditional LWW put, and the keys skipped because a live vertex
-// already existed. Two concurrent if-absent writers on different nodes can both
-// report their write as accepted locally; the replicated unconditional puts
-// then converge via higher-HLC-wins (documented best-effort, like Redis SETNX
-// with async replicas).
+// It returns the indices of items that passed the absence check AND were
+// actually stored (in request order) so the caller can both count them and
+// replicate only that live subset as an unconditional LWW put, and the keys
+// skipped because a live vertex already existed. A born-expired item is
+// discarded and appears in neither slice (#918). Two concurrent if-absent
+// writers on different nodes can both report their write as accepted locally;
+// the replicated unconditional puts then converge via higher-HLC-wins
+// (documented best-effort, like Redis SETNX with async replicas).
 func (c *GraphCache[S, T]) PutVerticesWithExpirationIfAbsentHLC(items []VertexItem[S, T], ts hlc.Timestamp) (writtenIdx []int, skipped []S) {
 	if len(items) == 0 {
 		return nil, nil
@@ -334,7 +337,13 @@ func (c *GraphCache[S, T]) PutVerticesWithExpirationIfAbsentHLC(items []VertexIt
 			skipped = append(skipped, it.Key)
 			continue
 		}
-		c.putLocalVertexLockedAt(it.Key, it.Value, it.Expiration, now, preparedAt(prepared, i))
+		if !c.putLocalVertexLockedAt(it.Key, it.Value, it.Expiration, now, preparedAt(prepared, i)) {
+			// Born expired: nothing stored, so it is neither written nor
+			// skipped. Deliberately do NOT stamp an HLC watermark or clear a
+			// tombstone for a non-write — that would fence later valid writes
+			// to this key behind a watermark for a value that never existed.
+			continue
+		}
 		c.recordVertexHLCLocked(it.Key, ts)
 		c.clearVertexTombstoneLocked(it.Key)
 		writtenIdx = append(writtenIdx, i)
@@ -387,9 +396,10 @@ func (c *GraphCache[S, T]) PutEdgesWithExpirationHLC(items []EdgeItem[S], ts hlc
 // a matching live ContribID are deduped as in the non-HLC variant. Returns,
 // index-aligned with items, the post-apply LIVE weight sum for each edge
 // (#897) plus the number of items that added no weight (tombstone-dropped or
-// ContribID-deduped). A tombstone-dropped item applied nothing, so its
-// effective entry is left at 0 rather than paying an extra read for its live
-// sum; ContribID-deduped items still report the current live sum.
+// ContribID-deduped). A tombstone-dropped item applied nothing, but its
+// effective entry still reports the edge's current live sum — matching the
+// ContribID-deduped path — so a genuinely nonzero live weight (e.g. from a
+// newer contribution that re-created the edge) is never misreported as 0 (#918).
 func (c *GraphCache[S, T]) AddEdgesWithExpirationContribHLC(items []EdgeItem[S], ts hlc.Timestamp) (effective []float32, deduped int) {
 	if len(items) == 0 {
 		return nil, 0
@@ -400,6 +410,10 @@ func (c *GraphCache[S, T]) AddEdgesWithExpirationContribHLC(items []EdgeItem[S],
 	defer c.mu.Unlock()
 	for i, it := range items {
 		if !c.edgeWriteAllowedLocked(it.Tail, it.Head, ts) {
+			// Fenced by a newer tombstone: this item applies nothing, but the
+			// edge may still hold live weight from another contribution. Report
+			// that real live sum, the same value the dedup no-op path returns.
+			effective[i] = c.edges.liveSumAt(it.Tail, it.Head, now)
 			deduped++
 			continue
 		}
