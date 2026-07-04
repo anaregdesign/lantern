@@ -62,6 +62,11 @@ type fakeLantern struct {
 	lastEdgeWeight float32
 	lastEdgeTTL    time.Duration
 	addEdgeCalls   int
+	// addEdgeEffectiveFn, when set, supplies the effective (live accumulated)
+	// weight AddEdge returns — modeling the serving node's
+	// AddEdgeResponse.effective_weight (#897). Unset → AddEdge echoes the
+	// increment, the legacy single-writer behavior.
+	addEdgeEffectiveFn func(tail, head string, weight float32) float32
 
 	// AddEdges
 	addEdgesFn   func(ctx context.Context, inputs []client.EdgeInput) error
@@ -190,6 +195,9 @@ func (f *fakeLantern) AddEdge(ctx context.Context, tail, head string, weight flo
 	}
 	if f.addEdgeErr != nil {
 		return 0, f.addEdgeErr
+	}
+	if f.addEdgeEffectiveFn != nil {
+		return f.addEdgeEffectiveFn(tail, head, weight), nil
 	}
 	return weight, nil
 }
