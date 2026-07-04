@@ -15,6 +15,14 @@ import (
 // leave headroom for per-message overhead.
 const defaultBatchChunkSize = 1000
 
+// maxBatchChunkSize caps WithBatchChunkSize. Contrib-ID idempotency keys
+// (#588) pack a uint16 per-chunk index into their low bytes, so a single
+// chunk of more than 65536 edges would wrap index 65536 back to 0 and
+// collide two contributions under one seq — silently dropping a weight. We
+// clamp rather than error, matching the existing non-positive normalization
+// (and the Node SDK's MAX_BATCH_CHUNK_SIZE).
+const maxBatchChunkSize = 1 << 16
+
 // options collects the knobs a Connect-backed Lantern client accepts.
 // Callers configure them via the WithXxx helpers below.
 type options struct {
@@ -118,11 +126,14 @@ func WithDefaultTimeout(d time.Duration) Option {
 // WithBatchChunkSize overrides the auto-chunk size used by
 // PutVertices, AddEdges, PutEdges, DeleteVertices, DeleteEdges,
 // GetVertices, and GetEdges. Must be > 0; otherwise the default
-// (1000) is kept.
+// (1000) is kept. Values above 65536 are clamped to 65536, because the
+// additive write surface stamps a uint16 per-chunk index onto each
+// contrib-ID idempotency key (#588) — a larger chunk would wrap that index
+// and collide two contributions.
 func WithBatchChunkSize(n int) Option {
 	return func(o *options) {
 		if n > 0 {
-			o.batchChunkSize = n
+			o.batchChunkSize = min(n, maxBatchChunkSize)
 		}
 	}
 }
