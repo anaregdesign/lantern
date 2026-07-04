@@ -363,6 +363,50 @@ func TestParam_OmittedTTLIsPermanent(t *testing.T) {
 	})
 }
 
+// TestEdgeParam_TrailingToken pins the #932 regression: Duration must advance
+// the source exactly once, so a token after ttl_seconds is rejected by the
+// final EOF check instead of being silently discarded. Mirrors the
+// TestCountVerticesParam "trailing token is error" case.
+func TestEdgeParam_TrailingToken(t *testing.T) {
+	t.Run("put edge", func(t *testing.T) {
+		t.Run("valid ttl parses", func(t *testing.T) {
+			s, _ := NewSource("a b 1.5 60")
+			m, err := PutEdgeParam(s)
+			if err != nil {
+				t.Fatalf("PutEdgeParam(a b 1.5 60): %v", err)
+			}
+			if m.TTL != 60*time.Second {
+				t.Errorf("TTL = %v, want 1m0s", m.TTL)
+			}
+		})
+		t.Run("trailing token is error", func(t *testing.T) {
+			s, _ := NewSource("a b 1.5 60 extra")
+			if _, err := PutEdgeParam(s); err == nil {
+				t.Errorf("PutEdgeParam(a b 1.5 60 extra) = nil, want error")
+			}
+		})
+	})
+
+	t.Run("add edge", func(t *testing.T) {
+		t.Run("valid ttl parses", func(t *testing.T) {
+			s, _ := NewSource("a b 1.5 60")
+			m, err := AddEdgeParam(s)
+			if err != nil {
+				t.Fatalf("AddEdgeParam(a b 1.5 60): %v", err)
+			}
+			if m.TTL != 60*time.Second {
+				t.Errorf("TTL = %v, want 1m0s", m.TTL)
+			}
+		})
+		t.Run("trailing token is error", func(t *testing.T) {
+			s, _ := NewSource("a b 1.5 60 extra")
+			if _, err := AddEdgeParam(s); err == nil {
+				t.Errorf("AddEdgeParam(a b 1.5 60 extra) = nil, want error")
+			}
+		})
+	})
+}
+
 // TestIlluminateParam_Prefix pins the #604 vertex-prefix kwarg. Unlike the
 // closed-set axes, prefix= is free-text: the key is case-insensitive but the
 // value is preserved verbatim (it matches vertex keys), it composes with the
