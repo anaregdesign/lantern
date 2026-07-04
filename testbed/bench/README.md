@@ -64,8 +64,9 @@ SKIP_UP=1 KEEP_UP=1 ./testbed/bench/run.sh mixed_rw
 PPROF_CPU=1 ./testbed/bench/run.sh addedge_contention
 ```
 
-The exit code mirrors the leak-gate verdict (`0`=pass, `1`=fail). Run
-artifacts are written under
+The exit code folds together the leak-gate verdict and — when the
+scenario declares a `perf_gate:` block — the perf-gate verdict
+(`0` = both pass, `1` = either failed). Run artifacts are written under
 `testbed/bench/out/<scenario>/<UTC-timestamp>/`.
 
 ## Scenarios
@@ -106,12 +107,59 @@ default TTL for cache-default paths; it does not rewrite explicit RPC payloads.
 Scenarios that need decay through `ghz` should include an `expiration` template
 in `data_template`.
 
+Every `data_template` is schema-checked at ordinary `go test ./...` time by
+`testbed/bench/scenarios_gate_test.go`: it renders each template with
+ghz-style data and protojson-unmarshals the result against the request
+message resolved from the `call` name, so a proto change that orphans a
+scenario fails the schema PR instead of the next nightly (#934). If you
+retire or rename a wire field, migrate every scenario that sends it in the
+same PR.
+
+### Perf gate (`perf_gate:` block)
+
+A scenario MAY additionally declare throughput/latency floors over its
+steady-phase producers (#935):
+
+```yaml
+perf_gate:
+  min_steady_rps_total: 1500   # floor on SUM of producer rps
+  max_p99_ms: 500              # ceiling on the WORST producer p99
+  max_non_ok_ratio: 0.02       # ceiling on Σnon-OK / Σcount
+```
+
+Every key is individually optional — gate only the metrics that are stable
+for the scenario. The aggregation matches the release summary table
+(`testbed/bench/release`), the verdict lands in `perf_gate.json`, and a
+`fail` folds into run.sh's exit code exactly like the leak gate: the
+blocking nightly (`bench-nightly.yml`) enforces it, the release-time bench
+stays advisory (`continue-on-error`, #256/#394).
+
+Sizing rules (all seven release scenarios carry a block sized this way):
+
+- Floors are **ratchet floors with ≥2x headroom** over the worst nightly
+  baseline — they exist to catch step-change regressions (accidental O(n²),
+  lock convoy, a dropped fan-out), NOT single-digit-% drift, which shared
+  `ubuntu-latest` runners cannot resolve. Do not tighten them to "just below
+  last night's number".
+- **Gate p99 only where it is stable.** Scenarios whose offered load
+  deliberately saturates the runner (`broad_rw`, `broad_mutate`) have
+  queue-depth p99 — observed varying 7x night-over-night — so they gate rps
+  and non-OK only.
+- **Re-baseline after changing a scenario's mix.** Adding/removing a
+  `target.calls` entry re-splits per-call rps and shifts every observed
+  metric; drop the affected ceilings in the same PR and restore them (from
+  fresh nightly numbers, with headroom) after a few green nightlies.
+- When a perf floor legitimately moves (accepted throughput/latency
+  trade-off), adjust it **in the same PR** and say so in the PR body — same
+  contract as the coverage-floor ratchet in CONTRIBUTING.md.
+
 ## Output layout
 
 ```
 testbed/bench/out/<scenario>/<ts>/
 ├── report.md                       # rendered summary (start here)
 ├── leak_gate.json                  # verdict + per-replica deltas + thresholds
+├── perf_gate.json                  # perf verdict + thresholds + observed (only when perf_gate: declared)
 ├── runtime_pre.json                # per-replica go_goroutines + heap_alloc/heap_inuse/heap_objects, after warmup
 ├── runtime_post.json               # same, after cooldown
 ├── ghz_warmup_<endpoint>.json      # raw ghz results, one per invocation

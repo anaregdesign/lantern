@@ -1,13 +1,15 @@
 name: Bench (nightly leak gate)
 
-# Nightly BLOCKING leak gate. Runs the same compact scenario sweep as the
-# release-time bench (testbed/bench/release-scenarios.txt) against a
+# Nightly BLOCKING leak + perf gate. Runs the same compact scenario sweep as
+# the release-time bench (testbed/bench/release-scenarios.txt) against a
 # freshly-built lantern:local image, but — unlike the release bench, which is
 # deliberately `continue-on-error` so a hiccup can never block shipping
 # (#256, #394) — this job has NO continue-on-error. release.sh exits non-zero
-# when any scenario's goroutine/heap leak gate trips, so a leak regression
-# fails this required check rather than merely warning in an advisory artifact.
-# This is the enforcement half of #716.
+# when any scenario's goroutine/heap leak gate trips OR any scenario's
+# perf_gate floors (min steady rps / max p99 / max non-OK ratio, #935) are
+# breached, so a leak or step-change performance regression fails this
+# nightly check rather than merely warning in an advisory artifact.
+# This is the enforcement half of #716 (leaks) and #935 (perf floors).
 #
 # It also runs with RELEASE_BENCH_BUDGET_SECONDS=0 (the sweep's graceful
 # wall-clock cutoff disabled), so every scenario runs to completion and no leak

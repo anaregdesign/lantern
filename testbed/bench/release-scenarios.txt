@@ -7,8 +7,9 @@
 # never block a release (the deliberate design of #256, #394). The SAME sweep
 # ALSO runs nightly via `.github/workflows/bench-nightly.yml` WITHOUT
 # continue-on-error and with RELEASE_BENCH_BUDGET_SECONDS=0 (no truncation), so
-# a goroutine/heap-leak regression fails a required check there rather than
-# merely warning in an advisory artifact (#716). Rather than run ~16
+# a goroutine/heap-leak regression (#716) or a perf-floor breach (each scenario
+# below carries a `perf_gate:` block — see testbed/bench/README.md, #935) fails
+# a nightly check there rather than merely warning in an advisory artifact. Rather than run ~16
 # single-call scenarios (which paid per-scenario fixed overhead — warmup +
 # pre/post runtime+pprof snapshots + cooldown + 12 Prometheus range queries +
 # report render — for each call path), the sweep is compacted to SEVEN
@@ -81,8 +82,9 @@
 # read / write / scan / edge / delete call surface (12-way fan-out, #708)
 broad_rw
 
-# graph traversal across the orthogonal axes (4-way fan-out) — runs AFTER
-# broad_rw so the k-* graph it traverses is populated.
+# graph traversal across the params-oneof families (BFS variants + PPR +
+# local community; 6-way fan-out) — runs AFTER broad_rw so the k-* graph it
+# traverses is populated.
 broad_illuminate
 
 # edge SET / plural-add / delete / prefix-delete / backup surface (9-way

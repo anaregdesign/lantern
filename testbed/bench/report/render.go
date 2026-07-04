@@ -69,6 +69,28 @@ type LeakGateReplica struct {
 	VertexHLCHighWaterPost int64 `json:"vertex_hlc_high_water_post"`
 }
 
+// PerfGate mirrors the schema written by run.sh's perf gate (#935): optional
+// per-scenario floors over the steady-phase producers. Thresholds are
+// pointers because every key is individually optional — nil means the metric
+// is not gated for this scenario (e.g. p99 on deliberately saturated
+// fan-outs).
+type PerfGate struct {
+	Thresholds struct {
+		MinSteadyRpsTotal *float64 `json:"min_steady_rps_total"`
+		MaxP99Ms          *float64 `json:"max_p99_ms"`
+		MaxNonOKRatio     *float64 `json:"max_non_ok_ratio"`
+	} `json:"thresholds"`
+	Observed struct {
+		Producers      int     `json:"producers"`
+		SteadyRpsTotal float64 `json:"steady_rps_total"`
+		P99WorstMs     float64 `json:"p99_worst_ms"`
+		CountTotal     int64   `json:"count_total"`
+		NonOKTotal     int64   `json:"non_ok_total"`
+		NonOKRatio     float64 `json:"non_ok_ratio"`
+	} `json:"observed"`
+	Verdict string `json:"verdict"`
+}
+
 // GhzSummary captures the subset of fields ghz writes that the report uses.
 // All durations are nanoseconds as serialised by ghz --format json.
 type GhzSummary struct {
@@ -98,6 +120,7 @@ type Input struct {
 	Scenario  string
 	Timestamp string
 	LeakGate  *LeakGate
+	PerfGate  *PerfGate
 	GhzFiles  []GhzFile
 	PromIndex []PromIndexEntry
 	PprofList []string
@@ -121,6 +144,16 @@ func LoadInput(dir, scenario, ts string) (Input, error) {
 			return in, fmt.Errorf("parse leak_gate.json: %w", err)
 		}
 		in.LeakGate = &lg
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return in, err
+	}
+
+	if b, err := os.ReadFile(filepath.Join(dir, "perf_gate.json")); err == nil {
+		var pg PerfGate
+		if err := json.Unmarshal(b, &pg); err != nil {
+			return in, fmt.Errorf("parse perf_gate.json: %w", err)
+		}
+		in.PerfGate = &pg
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return in, err
 	}
@@ -184,8 +217,13 @@ func RenderReport(w io.Writer, in Input) error {
 	if in.LeakGate != nil {
 		verdict = in.LeakGate.Verdict
 	}
+	perfVerdict := "(no perf gate configured)"
+	if in.PerfGate != nil {
+		perfVerdict = in.PerfGate.Verdict
+	}
 	bw.printf("# Bench report — `%s` @ `%s`\n\n", in.Scenario, in.Timestamp)
 	bw.printf("**Leak gate verdict:** `%s`\n\n", verdict)
+	bw.printf("**Perf gate verdict:** `%s`\n\n", perfVerdict)
 
 	bw.printf("## Leak gate\n\n")
 	if in.LeakGate == nil {
@@ -214,6 +252,23 @@ func RenderReport(w io.Writer, in Input) error {
 				r.VertexHLCEntriesPost, r.VertexHLCHighWaterPost,
 			)
 		}
+		bw.printf("\n")
+	}
+
+	bw.printf("## Perf gate\n\n")
+	if in.PerfGate == nil {
+		bw.printf("_not configured_\n\n")
+	} else {
+		pg := in.PerfGate
+		bw.printf("Aggregation over %d steady producer(s): rps = sum, p99 = worst producer, non-OK ratio = Σnon-OK / Σcount. `—` = metric not gated for this scenario.\n\n", pg.Observed.Producers)
+		bw.printf("| metric | threshold | observed |\n")
+		bw.printf("| --- | ---: | ---: |\n")
+		bw.printf("| steady rps (total, floor) | %s | %.1f |\n",
+			perfThreshold(pg.Thresholds.MinSteadyRpsTotal, "%.1f"), pg.Observed.SteadyRpsTotal)
+		bw.printf("| p99 ms (worst, ceiling) | %s | %.2f |\n",
+			perfThreshold(pg.Thresholds.MaxP99Ms, "%.2f"), pg.Observed.P99WorstMs)
+		bw.printf("| non-OK ratio (ceiling) | %s | %.5f |\n",
+			perfThreshold(pg.Thresholds.MaxNonOKRatio, "%.5f"), pg.Observed.NonOKRatio)
 		bw.printf("\n")
 	}
 
@@ -289,6 +344,15 @@ func RenderReport(w io.Writer, in Input) error {
 	bw.printf("   `go tool pprof -http=:0 -base <pre> <post>`\n")
 	bw.printf("3. For elevated tail latency, cross-reference the matching Prom histogram query with `<replica>__post__goroutine.pb.gz` (look for blocked stacks).\n")
 	return bw.err
+}
+
+// perfThreshold renders an optional perf-gate threshold: nil (metric not
+// gated) becomes "—".
+func perfThreshold(v *float64, format string) string {
+	if v == nil {
+		return "—"
+	}
+	return fmt.Sprintf(format, *v)
 }
 
 func percentileNs(s GhzSummary, pct int) int64 {

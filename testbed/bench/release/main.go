@@ -55,6 +55,13 @@ type leakGate struct {
 	Verdict string `json:"verdict"`
 }
 
+// perfGate mirrors the subset of testbed/bench/report.PerfGate the summary
+// table needs (run.sh only writes perf_gate.json when the scenario declares
+// a `perf_gate:` block — absent file renders as "—").
+type perfGate struct {
+	Verdict string `json:"verdict"`
+}
+
 // ghzSummary mirrors the subset of testbed/bench/report.GhzSummary that
 // the summary table needs.
 type ghzSummary struct {
@@ -77,10 +84,11 @@ type scenarioInput struct {
 
 // summaryRow is the rendered values for one row in the Summary table.
 type summaryRow struct {
-	Verdict string // "pass", "fail", or "(failed)" if artifacts are missing
-	Rps     string // pre-formatted, e.g. "5000.0" or "—"
-	P99ms   string // pre-formatted, e.g. "0.89" or "—"
-	NonOK   string // pre-formatted, e.g. "0" or "—"
+	Verdict     string // "pass", "fail", or "(failed)" if artifacts are missing
+	PerfVerdict string // "pass", "fail", or "—" when the scenario gates no perf metric
+	Rps         string // pre-formatted, e.g. "5000.0" or "—"
+	P99ms       string // pre-formatted, e.g. "0.89" or "—"
+	NonOK       string // pre-formatted, e.g. "0" or "—"
 }
 
 // Header carries the fixed-format report header fields.
@@ -92,7 +100,7 @@ type Header struct {
 }
 
 func loadScenario(name, dir string) scenarioInput {
-	in := scenarioInput{Name: name, Dir: dir, Row: summaryRow{Verdict: "(failed)", Rps: "—", P99ms: "—", NonOK: "—"}}
+	in := scenarioInput{Name: name, Dir: dir, Row: summaryRow{Verdict: "(failed)", PerfVerdict: "—", Rps: "—", P99ms: "—", NonOK: "—"}}
 	if dir == "" {
 		return in
 	}
@@ -102,6 +110,14 @@ func loadScenario(name, dir string) scenarioInput {
 		var lg leakGate
 		if err := json.Unmarshal(b, &lg); err == nil && lg.Verdict != "" {
 			in.Row.Verdict = lg.Verdict
+		}
+	}
+
+	// Perf-gate verdict (optional artifact — see run.sh).
+	if b, err := os.ReadFile(filepath.Join(dir, "perf_gate.json")); err == nil {
+		var pg perfGate
+		if err := json.Unmarshal(b, &pg); err == nil && pg.Verdict != "" {
+			in.Row.PerfVerdict = pg.Verdict
 		}
 	}
 
@@ -195,11 +211,11 @@ func Render(w io.Writer, h Header, scenarios []scenarioInput) error {
 	bw.printf("- Captured: `%s`\n\n", h.Captured)
 
 	bw.printf("## Summary\n\n")
-	bw.printf("| scenario | leak gate | rps | p99 (ms) | non-OK |\n")
-	bw.printf("| --- | --- | ---: | ---: | ---: |\n")
+	bw.printf("| scenario | leak gate | perf gate | rps | p99 (ms) | non-OK |\n")
+	bw.printf("| --- | --- | --- | ---: | ---: | ---: |\n")
 	for _, s := range scenarios {
-		bw.printf("| `%s` | `%s` | %s | %s | %s |\n",
-			s.Name, s.Row.Verdict, s.Row.Rps, s.Row.P99ms, s.Row.NonOK)
+		bw.printf("| `%s` | `%s` | `%s` | %s | %s | %s |\n",
+			s.Name, s.Row.Verdict, s.Row.PerfVerdict, s.Row.Rps, s.Row.P99ms, s.Row.NonOK)
 	}
 	bw.printf("\n")
 

@@ -66,6 +66,7 @@ Multi-module Go workspace ([go.work](go.work)); dependency direction is a DAG wi
 ## Workflow (hard rules)
 
 - **File a GitHub Issue before any non-trivial change** (exceptions: doc-only edits, in-flight PR-review follow-ups, one-line obvious fixes). PR closes it with one keyword per issue: `Closes #1, closes #2`.
+- **External-surface Definition of Done**: a PR that adds/changes the RPC surface, SDKs, CLI grammar, MCP tools, `LANTERN_*` env contract, or TTL/decay semantics ships an integration test in `tests/integration/` (real wire path; happy + failure/edge case) in the same PR; perf-relevant hot paths also join a bench scenario (`testbed/bench/scenarios/` — release-sweep scenarios carry `perf_gate:` floors gating the nightly). Wire-schema changes must migrate the bench scenario templates in the same PR (`testbed/bench/scenarios_gate_test.go` enforces this in root `go test ./...`). Canonical: CONTRIBUTING.md "External-surface testing policy".
 - **PR titles must be Conventional Commits** (`feat`/`fix`/`docs`/`chore`/`ci`/`refactor`/`perf`/`test`/`build`/`revert`) — a required check rejects others.
 - Wait for all required CI checks; never `--admin`/`--no-verify`; merge `--squash --delete-branch`; never push to `main` directly.
 - When work surfaces a fact another open Issue needs, comment it on that Issue in the same session (format in CONTRIBUTING.md).

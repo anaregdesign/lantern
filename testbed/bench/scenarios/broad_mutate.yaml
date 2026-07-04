@@ -120,3 +120,12 @@ target:
 leak_gate:
   goroutine_max_delta: 40
   heap_alloc_max_delta_mb: 128
+# Floors from the 2026-06-29 → 2026-07-03 nightly baselines: aggregate steady
+# rps 3067–3202, non-OK 5–5528 of ~528k calls (the BackupSnapshot stream's
+# iteration accounting makes the non-OK count spiky — hence the looser ratio
+# than broad_rw's). p99 is deliberately ungated: the fan-out saturates the
+# runner (observed p99 9.6–19.8 s night-over-night — queue depth, not server
+# latency).
+perf_gate:
+  min_steady_rps_total: 1500
+  max_non_ok_ratio: 0.05

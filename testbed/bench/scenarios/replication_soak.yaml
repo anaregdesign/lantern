@@ -16,12 +16,15 @@ target:
     {"vertex":{"key":"soak-{{.RequestNumber}}","int64":"{{.RequestNumber}}"}}
 subscribe:
   consumers:
+    # Empty from_seq_per_origin = cold-start: deliver every retained entry
+    # from every origin (#415 leaderless Subscribe — the flat `from_seq`
+    # cursor this scenario predates no longer exists).
     - endpoint: localhost:6381
       call: graph.v1.LanternReplicationService/Subscribe
-      data_template: '{"fromSeq":"1"}'
+      data_template: '{}'
     - endpoint: localhost:6382
       call: graph.v1.LanternReplicationService/Subscribe
-      data_template: '{"fromSeq":"1"}'
+      data_template: '{}'
 leak_gate:
   goroutine_max_delta: 30
   heap_alloc_max_delta_mb: 64

@@ -136,6 +136,43 @@ go tool cover -func=/tmp/cov.out | tail -1   # the `total:` line
 If a PR legitimately lowers a floor (e.g. deleting a well-covered package), say so in
 the PR body and update both the workflow and this table together.
 
+## External-surface testing policy (Definition of Done)
+
+Lantern is a database; its externally observable behaviour — the RPC surface, the
+Go/Node SDKs, the CLI grammar, the MCP tools, the `LANTERN_*` env contract, and the
+TTL/decay semantics — must not regress silently. Every PR that adds or changes any
+of that surface ships, **in the same PR**:
+
+1. **An integration test over the real wire path.** New or changed RPCs, SDK
+   methods, CLI verbs, and MCP tools get coverage in `tests/integration/` — a
+   Connect/h2c round-trip through the SDK, or the raw generated client for surface
+   the SDK does not wrap — asserting the happy path AND at least one failure/edge
+   contract (NotFound sentinel, batch partial-miss, chunking, TTL expiry,
+   idempotent retry, ...). Unit tests in the owning module complement but do not
+   replace this: the wire path is where the singular→plural facades, validation
+   interceptors, and codec behaviour actually live.
+2. **Bench coverage for perf-relevant paths.** A change on a hot path (reads,
+   writes, scans, traversals, streams) joins an existing scenario fan-out in
+   `testbed/bench/scenarios/` or gets a new scenario. The release-sweep scenarios
+   carry `perf_gate:` floors (min steady rps / max p99 / max non-OK ratio) enforced
+   by the blocking nightly (`bench-nightly.yml`); sizing and re-baselining rules
+   live in [testbed/bench/README.md](testbed/bench/README.md). Perf floors are a
+   ratchet like the coverage floors: when a PR legitimately moves one (an accepted
+   performance trade-off), adjust the floor in the same PR and say so in the PR
+   body.
+3. **Wire-schema changes keep the bench templates green.** The root
+   `go test ./...` includes `testbed/bench/scenarios_gate_test.go`, which renders
+   every scenario `data_template` and validates it against the current proto
+   schema. If you retire or rename a wire field, migrate every scenario that sends
+   it in the same PR (#934 — six Illuminate scenarios silently broke and the
+   nightly went red — is the cautionary tale).
+4. **Coverage floors hold** (previous section) and the pre-push quality gate
+   passes.
+
+Exemptions: doc-only changes, and pure refactors with no wire-visible behaviour
+change (still subject to the coverage ratchet). When in doubt, add the integration
+test.
+
 ## Before merging a PR
 
 - Wait for **all required checks** green. Never use `--admin` or `--no-verify`. One PR
