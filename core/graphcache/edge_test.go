@@ -716,3 +716,69 @@ func Test_edgeCache_edgeCount(t *testing.T) {
 		check(t, c, 1)
 	})
 }
+
+// Test_weight_effectiveExcludesExpired pins #917: the effective weight returned
+// by the contrib add path must equal the LIVE sum (what snapshot()/GetEdge
+// reports), even when expired entries sit below the amortized compaction floor
+// and no structural flush has fired. It also guards the perf intent of the
+// 4f5d67f amortized trigger: a live-dominated run must not flush.
+func Test_weight_effectiveExcludesExpired(t *testing.T) {
+	base := time.Now()
+
+	t.Run("expired below the compaction floor are excluded", func(t *testing.T) {
+		w := newWeight()
+		shortExp := base.Add(50 * time.Millisecond)
+		for i := 0; i < 50; i++ { // 50 < weightCompactMin(64): the 2x trigger never fires
+			if applied, _ := w.addWithExpirationContribAt(1, shortExp, ContribID{}, base); !applied {
+				t.Fatalf("add %d not applied", i)
+			}
+		}
+		now2 := base.Add(time.Second) // all 50 are now expired, none flushed
+		_, effective := w.addWithExpirationContribAt(1, now2.Add(time.Hour), ContribID{}, now2)
+		if effective != 1 {
+			t.Fatalf("effective = %v, want 1 — must exclude the 50 expired contributions (unfixed code returns 51)", effective)
+		}
+		sum, _, _ := w.snapshot()
+		if sum != effective {
+			t.Fatalf("snapshot sum %v != add-path effective %v — write and read paths must agree", sum, effective)
+		}
+	})
+
+	t.Run("ContribID dedup no-op also reports the live sum", func(t *testing.T) {
+		w := newWeight()
+		id := ContribID{0: 7}
+		w.addWithExpirationContribAt(2, base.Add(time.Hour), id, base)                    // live, deduplicable
+		w.addWithExpirationContribAt(5, base.Add(50*time.Millisecond), ContribID{}, base) // will expire
+		now2 := base.Add(time.Second)
+		applied, effective := w.addWithExpirationContribAt(2, now2.Add(time.Hour), id, now2) // replay
+		if applied {
+			t.Fatal("replay of a live ContribID must dedup")
+		}
+		if effective != 2 {
+			t.Fatalf("dedup effective = %v, want 2 (unfixed code returns 7: 2 live + 5 expired-unflushed)", effective)
+		}
+	})
+
+	t.Run("permanent contributions are never flushed away", func(t *testing.T) {
+		w := newWeight()
+		w.addWithExpirationContribAt(3, time.Time{}, ContribID{}, base) // zero expiration = permanent
+		_, effective := w.addWithExpirationContribAt(1, base.Add(time.Hour), ContribID{}, base.Add(time.Minute))
+		if effective != 4 {
+			t.Fatalf("effective = %v, want 4 (permanent entry must survive the minExp reconcile)", effective)
+		}
+	})
+
+	t.Run("all-live adds below the trigger do not flush", func(t *testing.T) {
+		w := newWeight()
+		exp := base.Add(time.Hour)
+		for i := 0; i < 60; i++ { // 60 < weightCompactMin(64)
+			w.addWithExpirationContribAt(1, exp, ContribID{}, base)
+		}
+		w.mu.Lock()
+		n, flushed := len(w.values), w.lastFlushLen
+		w.mu.Unlock()
+		if n != 60 || flushed != 0 {
+			t.Fatalf("values=%d lastFlushLen=%d — live-dominated adds must stay O(1), no flush (minExp trigger must not fire when nothing expired)", n, flushed)
+		}
+	})
+}

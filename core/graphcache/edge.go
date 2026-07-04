@@ -32,11 +32,31 @@ type weight struct {
 	// ~2× the working set even on write-only hot edges that no reader
 	// touches between GC ticks, while keeping the amortized add cost O(1).
 	lastFlushLen int
+	// minExp is the earliest expiration among the *expiring* contributions
+	// currently in values (permanent contributions — zero or ≤epoch
+	// expiration, which cache.IsLiveAt treats as never-expiring — are
+	// excluded). The zero value means "nothing here can expire". It gates
+	// the reconcile-at-read in addWithExpirationContribAt (#917): the moment
+	// now reaches minExp at least one contribution has decayed, so the
+	// cached sum must be flushed before it is returned as effective. When
+	// now is still before minExp, sum is already exact and the read stays
+	// O(1). The invariant that keeps this correct is minExp must never be
+	// *later* than the true earliest expiration: stale-early costs one
+	// wasted flush, stale-late would leak expired weight back into the sum.
+	minExp time.Time
 	// lastHLC is the most recent HLC timestamp accepted by a Put-style
 	// (LWW) write. Zero value means "no LWW write has happened yet" — in
 	// that case the next Put-with-HLC always wins. Used only by the
 	// replication apply path; local writers do not touch it.
 	lastHLC hlc.Timestamp
+}
+
+// expires reports whether an expiration can actually decay (i.e. it is a real
+// positive deadline). It mirrors the "no expiration" sentinels honored by
+// cache.IsLiveAt — Go zero time and any instant at or before the Unix epoch
+// are permanent and never contribute to minExp.
+func expires(expiration time.Time) bool {
+	return !expiration.IsZero() && expiration.Unix() > 0
 }
 
 // weightCompactMin is the floor under the 2× growth trigger. Below this we
@@ -46,6 +66,18 @@ const weightCompactMin = 64
 
 func newWeight() *weight {
 	return &weight{}
+}
+
+// noteExpirationLocked folds a newly-appended contribution's expiration into
+// minExp. Caller must hold w.mu. Permanent contributions are ignored so they
+// never trip the reconcile-at-read trigger.
+func (w *weight) noteExpirationLocked(expiration time.Time) {
+	if !expires(expiration) {
+		return
+	}
+	if w.minExp.IsZero() || expiration.Before(w.minExp) {
+		w.minExp = expiration
+	}
 }
 
 func (w *weight) value() float32 {
@@ -82,34 +114,12 @@ func (w *weight) addWithExpiration(value float32, expiration time.Time) {
 // needs when a peer re-delivers a mutation. A zero contribID disables
 // dedup and behaves exactly like addWithExpiration; this is the local
 // (non-replicated) write path.
+//
+// It is a thin facade over addWithExpirationContribAt with now = time.Now();
+// the two must not drift, so the whole body lives in the *At form (#917).
 func (w *weight) addWithExpirationContrib(value float32, expiration time.Time, contribID ContribID) bool {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if !contribID.IsZero() {
-		now := time.Now()
-		for _, v := range w.values {
-			if v.contribID == contribID && cache.IsLiveAt(v.expiration, now) {
-				return false
-			}
-		}
-	}
-	w.values = append(w.values, weightValue{
-		value:      value,
-		expiration: expiration,
-		contribID:  contribID,
-	})
-	w.sum += value
-
-	// Amortized compaction: a write-only hot edge that no reader visits
-	// between GC ticks would otherwise grow without bound, and the eventual
-	// flush (on read or on GC) would be O(N) over a giant slice. Trigger
-	// compaction once the slice has doubled past its last post-flush size,
-	// with a small floor so we skip the work on tiny edges. Cost stays O(1)
-	// amortized; worst-case write latency variance rises but is bounded.
-	if n := len(w.values); n > weightCompactMin && n > 2*w.lastFlushLen {
-		w.flushLocked()
-	}
-	return true
+	applied, _ := w.addWithExpirationContribAt(value, expiration, contribID, time.Now())
+	return applied
 }
 
 // addWithExpirationContribAt is addWithExpirationContrib with a caller-supplied
@@ -118,16 +128,26 @@ func (w *weight) addWithExpirationContrib(value float32, expiration time.Time, c
 // race-free increment-then-check counter. It uses the SAME amortized-compaction
 // trigger as addWithExpirationContrib so the hot add path stays O(1) amortized:
 // force-flushing on every call would make a write-only hot edge O(N) per add and
-// O(N²) overall (regressing #743's fast path). The returned `effective` is the
-// running sum after the append; the amortized flush bounds how long expired-but-
-// unflushed contributions linger in it, and it reconciles to the exact live sum
-// on the next flush (on the compaction trigger, on a value() read, or on GC). In
-// the increment-then-check counter use-case the edge is live-dominated, so the
-// returned sum equals the true rolling-window value. On a contrib_id dedup no-op
-// it returns applied=false and the current running sum.
+// O(N²) overall (regressing #743's fast path).
+//
+// The returned `effective` is always the exact live sum (#917). Before reading
+// sum back, the method reconciles expired-but-unflushed contributions, but only
+// when minExp shows something has actually decayed — so the live-dominated hot
+// path (nothing expired) still returns in O(1) with no flush, while the
+// short-TTL rolling-window counter no longer reports a sum inflated by expired
+// contributions lingering below the compaction floor. Both return paths are
+// exact: the applied path (`true, w.sum`) and the ContribID-dedup no-op path
+// (`false, w.sum`).
 func (w *weight) addWithExpirationContribAt(value float32, expiration time.Time, contribID ContribID, now time.Time) (applied bool, effective float32) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	// Reconcile before we read sum back: once now reaches the earliest
+	// expiration, at least one contribution has decayed and sum is stale.
+	// This is a single compare when nothing has expired (minExp in the
+	// future or absent), and a bounded flush exactly when staleness exists.
+	if !w.minExp.IsZero() && !now.Before(w.minExp) {
+		w.flushLockedAt(now)
+	}
 	if !contribID.IsZero() {
 		for _, v := range w.values {
 			if v.contribID == contribID && cache.IsLiveAt(v.expiration, now) {
@@ -141,6 +161,7 @@ func (w *weight) addWithExpirationContribAt(value float32, expiration time.Time,
 		contribID:  contribID,
 	})
 	w.sum += value
+	w.noteExpirationLocked(expiration)
 	if n := len(w.values); n > weightCompactMin && n > 2*w.lastFlushLen {
 		w.flushLockedAt(now)
 	}
@@ -171,6 +192,8 @@ func (w *weight) putWithExpirationHLC(value float32, expiration time.Time, ts hl
 	w.values = append(w.values, weightValue{value: value, expiration: expiration})
 	w.sum = value
 	w.lastFlushLen = 1
+	w.minExp = time.Time{}
+	w.noteExpirationLocked(expiration)
 	w.lastHLC = ts
 	return true
 }
@@ -200,6 +223,8 @@ func (w *weight) replace(value float32, expiration time.Time) {
 	w.values = append(w.values, weightValue{value: value, expiration: expiration})
 	w.sum = value
 	w.lastFlushLen = 1
+	w.minExp = time.Time{}
+	w.noteExpirationLocked(expiration)
 	w.lastHLC = hlc.Timestamp{}
 }
 
@@ -264,20 +289,26 @@ func (w *weight) flushLocked() {
 }
 
 // flushLockedAt is flushLocked against a caller-supplied instant (#838).
-// Caller must hold w.mu.
+// Caller must hold w.mu. It also recomputes minExp over the survivors so the
+// reconcile-at-read trigger (#917) tracks the new earliest expiration.
 func (w *weight) flushLockedAt(now time.Time) {
 	write := 0
 	var sum float32
+	var minExp time.Time
 	for _, v := range w.values {
 		if cache.IsLiveAt(v.expiration, now) {
 			w.values[write] = v
 			write++
 			sum += v.value
+			if expires(v.expiration) && (minExp.IsZero() || v.expiration.Before(minExp)) {
+				minExp = v.expiration
+			}
 		}
 	}
 	w.values = w.values[:write]
 	w.sum = sum
 	w.lastFlushLen = write
+	w.minExp = minExp
 }
 
 // edgeCache stores directed weighted edges using compact vertexID keys
