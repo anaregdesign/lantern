@@ -267,8 +267,9 @@ test.describe("/cli", () => {
     const input = page.getByTestId("cli-input");
     await input.fill("get vertex cli:alpha");
     await input.press("Enter");
-    // Input disables while busy; Cancel button appears.
-    await expect(input).toBeDisabled();
+    // The prompt stays editable while busy (#945) — only the Cancel
+    // button appears to mark the in-flight dispatch.
+    await expect(input).toBeEnabled();
     await expect(page.getByTestId("cli-cancel")).toBeVisible();
     await page.getByTestId("cli-cancel").click();
     // The dispatch unwinds and the scrollback gains an info chip
@@ -293,8 +294,8 @@ test.describe("/cli", () => {
     await input.fill("get vertex cli:alpha");
     await input.press("Enter");
     await expect(page.getByTestId("cli-cancel")).toBeVisible();
-    // Input is disabled while busy, but it still owns focus and
-    // receives keypresses, so Esc reaches the onKeyDown handler.
+    // The prompt stays enabled and focused while busy (#945), so Esc
+    // reaches the window-level onKeyDown handler either way.
     await input.press("Escape");
     await expect(page.getByTestId("cli-entry-info").last()).toContainText(
       "aborted",
@@ -614,13 +615,13 @@ test.describe("/cli", () => {
     await expect(input).toBeFocused();
   });
 
-  // #520 — Enter submits a command, which disables the prompt while the
-  // dispatch is in flight. The browser blurs a disabled element, so the
-  // component must restore focus when the input re-enables; otherwise the
-  // operator is ejected to <body> after every command and has to click
-  // back in. Slow-route the RPC so the disabled→blurred window is
-  // observable, then assert focus returns to the prompt once it settles.
-  test("prompt regains focus after an Enter-submitted command settles (#520)", async ({
+  // #520 / #945 — Enter submits a command and the dispatch goes in flight.
+  // The prompt used to be `disabled` while busy, which blurred it to <body>
+  // and forced a focus-restore workaround. Since #945 the prompt is never
+  // disabled, so it must simply keep focus (and stay editable) for the whole
+  // dispatch — no eject-then-restore round trip. Slow-route the RPC so the
+  // in-flight window is observable, then assert focus never leaves the prompt.
+  test("prompt stays enabled and focused while a command is in flight (#520, #945)", async ({
     page,
   }) => {
     await page.route("**/graph.v1.LanternService/**", async (route) => {
@@ -632,15 +633,17 @@ test.describe("/cli", () => {
     await input.click();
     await input.fill("get vertex cli:alpha");
     await input.press("Enter");
-    // While in flight the prompt is disabled and the browser has moved
-    // focus off it (to <body>) — this is the regression's trigger.
-    await expect(input).toBeDisabled();
-    await expect(input).not.toBeFocused();
-    // Once the command settles the component restores focus to the prompt
-    // so the next command can be typed without a click.
+    // In flight: the Cancel affordance is up, but the prompt is still
+    // enabled and still owns focus — no ejection to <body>.
+    await expect(page.getByTestId("cli-cancel")).toBeVisible();
+    await expect(input).toBeEnabled();
+    await expect(input).toBeFocused();
+    // After settle the prompt is unchanged — still editable, still focused,
+    // ready for the next command without a click.
     await expect(page.getByTestId("cli-entry-ok").last()).toContainText(
       "first",
     );
+    await expect(page.getByTestId("cli-cancel")).toHaveCount(0);
     await expect(input).toBeEnabled();
     await expect(input).toBeFocused();
   });
@@ -671,5 +674,86 @@ test.describe("/cli", () => {
     // The dismiss button closes it again.
     await page.getByTestId("cli-command-reference-close").click();
     await expect(page.getByTestId("cli-command-reference")).toHaveCount(0);
+  });
+
+  // #945 — pasting a multi-line script into the prompt runs each line in
+  // order through the pending-command queue instead of flattening the
+  // newlines into one uneditable line. Synthesize a real paste event (with
+  // multi-line clipboard data) so React's onPaste fires the way a Cmd/Ctrl+V
+  // would. Every line lands as an ok chip in submission order, and the canvas
+  // reflects the last graph-carrying command.
+  test("pasting a multi-line script runs each line in order (#945)", async ({
+    page,
+  }) => {
+    await page.goto("/cli");
+    const input = page.getByTestId("cli-input");
+    await input.click();
+    const script = [
+      "get vertex cli:alpha",
+      "get vertex cli:beta",
+      "illuminate cli:alpha 2 5",
+    ].join("\n");
+    // Dispatch a paste event carrying the script as text/plain. `bubbles`
+    // lets it reach React's root-level paste listener; the DataTransfer is
+    // what `e.clipboardData.getData("text")` reads in the handler.
+    await input.evaluate((el, text) => {
+      const dt = new DataTransfer();
+      dt.setData("text/plain", text);
+      el.dispatchEvent(
+        new ClipboardEvent("paste", {
+          clipboardData: dt,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    }, script);
+    // All three lines drain in order — three ok chips, none dropped.
+    const ok = page.getByTestId("cli-entry-ok");
+    await expect(ok).toHaveCount(3);
+    await expect(ok.nth(0)).toContainText("get vertex cli:alpha");
+    await expect(ok.nth(0)).toContainText("first");
+    await expect(ok.nth(1)).toContainText("get vertex cli:beta");
+    await expect(ok.nth(1)).toContainText("second");
+    await expect(ok.nth(2)).toContainText("illuminate cli:alpha 2 5");
+    // The canvas reflects the last graph-carrying command in the script.
+    await expect(page.getByTestId("cli-canvas-panel")).toContainText(
+      "illuminate cli:alpha 2 5",
+    );
+    // The paste never leaked into the editable prompt (preventDefault held).
+    await expect(input).toHaveValue("");
+  });
+
+  // #945 — the core regression: keystrokes typed while a command is in
+  // flight must not be dropped. The prompt used to be `disabled` while busy,
+  // so the browser silently discarded keys. Slow-route the RPC, submit a
+  // command, then type the next one character-by-character while it's still
+  // running and assert every character survived once the dispatch settles.
+  test("keystrokes typed while a command is in flight are not dropped (#945)", async ({
+    page,
+  }) => {
+    await page.route("**/graph.v1.LanternService/**", async (route) => {
+      await new Promise((r) => setTimeout(r, 1200));
+      await route.continue();
+    });
+    await page.goto("/cli");
+    const input = page.getByTestId("cli-input");
+    await input.click();
+    await input.fill("get vertex cli:alpha");
+    await input.press("Enter");
+    // In flight — Enter cleared the prompt but it stays editable (#945).
+    await expect(page.getByTestId("cli-cancel")).toBeVisible();
+    await expect(input).toHaveValue("");
+    // Type the next command while the first is still running. Real
+    // per-key events, the exact path that used to lose characters.
+    await input.pressSequentially("get vertex cli:beta");
+    // The characters buffer live in the prompt, none lost.
+    await expect(input).toHaveValue("get vertex cli:beta");
+    // After the first command settles the typed text is still intact and
+    // was NOT auto-submitted (typing never enqueues — only Enter does).
+    await expect(page.getByTestId("cli-entry-ok").last()).toContainText(
+      "first",
+    );
+    await expect(page.getByTestId("cli-cancel")).toHaveCount(0);
+    await expect(input).toHaveValue("get vertex cli:beta");
   });
 });

@@ -13,8 +13,30 @@ export type CliAction =
   | { type: "HISTORY_PREV" }
   /** Arrow-down: move toward the newest history entry / empty prompt. */
   | { type: "HISTORY_NEXT" }
-  /** A raw line was submitted: push to history and clear the prompt. */
-  | { type: "COMMAND_SUBMITTED"; raw: string }
+  /**
+   * A raw line was accepted for execution: push it to `history` (at run
+   * time, so history order === execution order — queued lines join here
+   * when they drain, not when they were typed). Does NOT touch the prompt.
+   */
+  | { type: "HISTORY_APPENDED"; raw: string }
+  /** The prompt was submitted (Enter): clear the input box + history cursor. */
+  | { type: "PROMPT_CLEARED" }
+  /**
+   * A line was submitted while a dispatch was in flight (#945): append it
+   * to the pending-command queue instead of dropping the keystrokes. No
+   * scrollback echo yet — the echo happens when the command actually runs
+   * (see `HISTORY_APPENDED`/`ENTRY_APPENDED`), so scrollback order stays
+   * execution order.
+   */
+  | { type: "ENQUEUE"; input: string }
+  /** Drop the head of the pending-command queue (the drain step ran it). */
+  | { type: "DEQUEUE" }
+  /**
+   * Discard every pending command (#945). Wired to cancellation (Esc /
+   * Cancel): hitting Esc mid-script means "stop the script", not "skip one
+   * line". No scrollback entry — the `aborted` line already explains it.
+   */
+  | { type: "QUEUE_CLEARED" }
   /** Append a scrollback line (auto-assigns the next id). */
   | { type: "ENTRY_APPENDED"; entry: Omit<ScrollbackEntry, "id"> }
   /** Reset the scrollback to just the banner (Clear / Ctrl+L). */
@@ -23,6 +45,16 @@ export type CliAction =
   | { type: "RUN_STARTED" }
   /** A dispatch settled (ok, error, or abort): return to `idle`. */
   | { type: "RUN_SETTLED" }
+  /**
+   * A command errored (#945). Clears the remaining queue so a fail-fast
+   * halt keeps a typo'd or rejected line from letting the rest of a pasted
+   * script mutate the graph, and — when there were pending commands —
+   * appends an info line naming how many were dropped. The red error chip
+   * itself is a separate `ENTRY_APPENDED`; this action only owns the
+   * queue-clear + the "dropped N" notice. Phase returns to idle via the
+   * always-run `RUN_SETTLED`.
+   */
+  | { type: "RUN_FAILED" }
   /** A graph-producing verb landed: replace the canvas view. */
   | { type: "GRAPH_UPDATED"; graph: LatestGraph }
   /**
@@ -60,13 +92,30 @@ export function cliReducer(state: CliState, action: CliAction): CliState {
       }
       return { ...state, historyIndex: next, input: state.history[next] };
     }
-    case "COMMAND_SUBMITTED": {
+    case "HISTORY_APPENDED": {
       return {
         ...state,
         history: [...state.history, action.raw],
         historyIndex: null,
-        input: "",
       };
+    }
+    case "PROMPT_CLEARED": {
+      return { ...state, historyIndex: null, input: "" };
+    }
+    case "ENQUEUE": {
+      return { ...state, queue: [...state.queue, action.input] };
+    }
+    case "DEQUEUE": {
+      if (state.queue.length === 0) {
+        return state;
+      }
+      return { ...state, queue: state.queue.slice(1) };
+    }
+    case "QUEUE_CLEARED": {
+      if (state.queue.length === 0) {
+        return state;
+      }
+      return { ...state, queue: [] };
     }
     case "ENTRY_APPENDED": {
       return {
@@ -86,6 +135,34 @@ export function cliReducer(state: CliState, action: CliAction): CliState {
     }
     case "RUN_SETTLED": {
       return { ...state, phase: "idle" };
+    }
+    case "RUN_FAILED": {
+      // Fail-fast (#945): drop the rest of a pasted/queued script the
+      // moment one line errors, so a mistyped or server-rejected command
+      // can't let the lines after it keep mutating the graph. The operator
+      // re-issues from a known-good point instead of chasing a half-applied
+      // batch. Only annotate the drop when commands were actually pending —
+      // a lone failing command (queue empty) just shows its red error chip.
+      const pending = state.queue.length;
+      if (pending === 0) {
+        return state;
+      }
+      return {
+        ...state,
+        queue: [],
+        scrollback: [
+          ...state.scrollback,
+          {
+            id: state.nextEntryId,
+            input: "",
+            kind: "info",
+            text: `queue cleared after error (${pending} pending command${
+              pending === 1 ? "" : "s"
+            } dropped)`,
+          },
+        ],
+        nextEntryId: state.nextEntryId + 1,
+      };
     }
     case "GRAPH_UPDATED": {
       return { ...state, latestGraph: action.graph };

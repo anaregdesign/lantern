@@ -23,12 +23,25 @@ import {
   type ScrollbackEntry,
 } from "./state";
 
+/**
+ * Upper bound on the number of commands a single paste may enqueue (#945).
+ * A batch larger than this is refused wholesale with a scrollback error so a
+ * mispaste (e.g. dropping a whole file onto the prompt) can't flood the
+ * server with hundreds of RPCs. Generous enough for the seed scripts the
+ * page is meant to run — the #942 barbell script is 14 lines.
+ */
+const MAX_PASTE_LINES = 100;
+
 export interface UseCliResult {
   /** Durable scrollback log, ready to render. */
   scrollback: ScrollbackEntry[];
   /** Current prompt text. */
   input: string;
-  /** True while a dispatch is in flight (drives `Cancel` + disabled prompt). */
+  /**
+   * True while a dispatch is in flight. Drives the `Cancel` control and the
+   * busy spinner; the prompt itself stays editable so keystrokes buffer
+   * instead of dropping (#945).
+   */
   busy: boolean;
   /** Most recent graph-producing command's view, or null. */
   latestGraph: LatestGraph | null;
@@ -39,10 +52,15 @@ export interface UseCliResult {
   knownKeys: string[];
   /** Update the prompt text. */
   setInput: (value: string) => void;
-  /** Run the current prompt text (Enter). */
+  /** Submit the current prompt text (Enter): enqueue it and clear the box. */
   submit: () => void;
-  /** Run an arbitrary raw line (click-to-illuminate). */
+  /** Enqueue an arbitrary raw line (click-to-illuminate / seed handoff). */
   runRaw: (raw: string) => void;
+  /**
+   * Enqueue a pasted multi-line script (#945): each non-blank line becomes a
+   * queued command, run in order. Over-cap batches are refused.
+   */
+  enqueueScript: (lines: string[]) => void;
   /** Recall an older history entry (ArrowUp). */
   historyPrev: () => void;
   /** Move toward the newest history entry (ArrowDown). */
@@ -165,6 +183,9 @@ export function useCli(): UseCliResult {
               durationMs: elapsed,
             },
           });
+          // Esc / Cancel mid-script stops the whole batch, not just this
+          // line — discard anything still queued behind it (#945).
+          dispatch({ type: "QUEUE_CLEARED" });
         } else {
           dispatch({
             type: "ENTRY_APPENDED",
@@ -175,6 +196,9 @@ export function useCli(): UseCliResult {
               durationMs: elapsed,
             },
           });
+          // Fail-fast: a server-rejected line drops the rest of the queued
+          // script so it can't keep mutating the graph (#945).
+          dispatch({ type: "RUN_FAILED" });
         }
       } finally {
         abortRef.current = null;
@@ -184,16 +208,25 @@ export function useCli(): UseCliResult {
     [client],
   );
 
-  const runRaw = useCallback(
+  // Executes one accepted line end-to-end: records it in `history` (at run
+  // time, so history order === execution order — queued lines join when they
+  // drain, not when they were typed), then either renders a local response
+  // (exit / help / parse error) or dispatches the parsed verb through the RPC
+  // path. This is the queue's single execution site — only the drain effect
+  // below calls it, so there is exactly one place a command actually runs.
+  const execute = useCallback(
     async (raw: string) => {
       if (raw.trim() === "") return;
-      dispatch({ type: "COMMAND_SUBMITTED", raw });
+      dispatch({ type: "HISTORY_APPENDED", raw });
       const result: ParseResult = parse(raw);
       if (!result.ok) {
         dispatch({
           type: "ENTRY_APPENDED",
           entry: { input: raw, kind: "error", text: result.usage },
         });
+        // A parse error is an error too: fail-fast so a typo'd line 3 can't
+        // let lines 4-14 of a pasted script run (#945).
+        dispatch({ type: "RUN_FAILED" });
         return;
       }
       if (result.command.verb === "exit") {
@@ -219,9 +252,67 @@ export function useCli(): UseCliResult {
     [runCommand],
   );
 
+  // Drain loop (#945): the sole driver of the pending-command queue.
+  // Whenever the dispatch loop is idle and a command is waiting, pull the
+  // head and run it — exactly one RPC in flight at a time, in FIFO order.
+  // A successful run leaves the tail intact so the next commit drains the
+  // next line; a cancel (QUEUE_CLEARED) or error (RUN_FAILED) empties the
+  // queue, so the loop stops without any separate "keep going?" flag.
+  // Routing every submission through enqueue → this effect (rather than
+  // running the first line inline) keeps a synchronous paste loop race-free:
+  // the effect always observes committed state, never a stale closure.
+  useEffect(() => {
+    if (state.phase !== "idle") return;
+    if (state.queue.length === 0) return;
+    const head = state.queue[0];
+    dispatch({ type: "DEQUEUE" });
+    void execute(head);
+  }, [state.phase, state.queue, execute]);
+
+  // Enter on the prompt. The line is queued (not run inline) so pressing
+  // Enter while a command is in flight buffers it instead of dropping the
+  // keystrokes — the prompt is no longer `disabled` while busy (#945). The
+  // prompt clears now (the Enter affordance); the queued line re-enters
+  // history when it actually runs, so the operator can keep typing the next
+  // command without losing either one.
   const submit = useCallback(() => {
-    void runRaw(state.input);
-  }, [runRaw, state.input]);
+    if (state.input.trim() === "") return;
+    dispatch({ type: "ENQUEUE", input: state.input });
+    dispatch({ type: "PROMPT_CLEARED" });
+  }, [state.input]);
+
+  // Enqueue an arbitrary raw line without touching the prompt: click-to-
+  // illuminate (#439), the `?seed=` handoff (#651), and each pasted script
+  // line. Same buffering as `submit`, minus the prompt clear.
+  const runRaw = useCallback((raw: string) => {
+    if (raw.trim() === "") return;
+    dispatch({ type: "ENQUEUE", input: raw });
+  }, []);
+
+  // Paste-as-script (#945): enqueue a batch of lines in order. Blank lines
+  // are dropped; a batch over the cap is refused wholesale with a scrollback
+  // error so a mispaste can't hammer the server. The first line runs as soon
+  // as the drain effect sees the idle prompt; the rest follow in FIFO order.
+  const enqueueScript = useCallback((lines: string[]) => {
+    const cleaned = lines
+      .map((line) => line.trim())
+      .filter((line) => line !== "");
+    if (cleaned.length === 0) return;
+    if (cleaned.length > MAX_PASTE_LINES) {
+      dispatch({
+        type: "ENTRY_APPENDED",
+        entry: {
+          input: "",
+          kind: "error",
+          text: `paste rejected: ${cleaned.length} lines exceeds the ${MAX_PASTE_LINES}-line limit`,
+        },
+      });
+      return;
+    }
+    for (const line of cleaned) {
+      dispatch({ type: "ENQUEUE", input: line });
+    }
+  }, []);
 
   const setInput = useCallback((value: string) => {
     dispatch({ type: "INPUT_CHANGED", value });
@@ -255,10 +346,13 @@ export function useCli(): UseCliResult {
   }, []);
 
   // Window-level keyboard shortcuts (#433):
-  //   - Esc while a command is in flight aborts the dispatch. The prompt
-  //     `<Input>` is `disabled` while busy and so cannot receive its own
-  //     keydown events; binding at window scope is the only way to make
-  //     Esc reach `cancelInFlight`.
+  //   - Esc while a command is in flight aborts the dispatch. Bound at
+  //     window scope so it fires regardless of where focus sits (the prompt,
+  //     the axis picker, or nowhere) — and, historically, so it worked even
+  //     while the prompt was `disabled`. The prompt is now always editable
+  //     (#945), but the window binding stays: it's still the simplest way to
+  //     reach `cancelInFlight` no matter the focus target, and it clears the
+  //     pending-command queue via the abort path.
   //   - Ctrl+L / Cmd+L clears the scrollback. Bound globally so it works
   //     whether the prompt has focus or not (matches xterm / bash).
   useEffect(() => {
@@ -297,7 +391,8 @@ export function useCli(): UseCliResult {
       knownKeys,
       setInput,
       submit,
-      runRaw: (raw: string) => void runRaw(raw),
+      runRaw,
+      enqueueScript,
       historyPrev,
       historyNext,
       clearScrollback,
@@ -312,6 +407,7 @@ export function useCli(): UseCliResult {
       setInput,
       submit,
       runRaw,
+      enqueueScript,
       historyPrev,
       historyNext,
       clearScrollback,
