@@ -94,7 +94,13 @@ export function serverCardSummary(s: ServerStatus): Array<[string, string]> {
   return [
     ["Version", s.version || "(dev)"],
     ["Go runtime", s.goVersion || "(unknown)"],
-    ["Uptime", formatUptime(s.uptimeSeconds)],
+    // startedAtMs === 0 means the wire response carried no started_at
+    // field (an older/pre-#943 server, or one that never marked itself
+    // started), so uptime is unknown — render "—" rather than a
+    // misleading "0s". A genuinely just-started server sends started_at
+    // WITH uptimeSeconds === 0 and still renders "0s"; discriminate on
+    // startedAtMs, never on uptimeSeconds.
+    ["Uptime", s.startedAtMs === 0 ? "—" : formatUptime(s.uptimeSeconds)],
     ["Default TTL", formatDuration(s.defaultTtlSeconds)],
     ["Max batch size", formatCount(s.maxBatchSize)],
     ["Max key bytes", formatCount(s.maxKeyBytes)],

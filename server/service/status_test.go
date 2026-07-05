@@ -117,6 +117,31 @@ func TestLanternService_GetServerStatus(t *testing.T) {
 		}
 	})
 
+	t.Run("RecentBootReportsUptime", func(t *testing.T) {
+		// #943 regression at the service layer: once App.Run marks the
+		// server started at the ready-to-serve edge, GetServerStatus must
+		// surface a non-nil StartedAt and a positive Uptime. A server that
+		// booted one second ago reports StartedAt at that instant and an
+		// Uptime of at least ~1s — never the absent fields that make the
+		// admin Ops card fall back to "—".
+		fb := newFakeBackend()
+		svc := NewLanternService(fb)
+
+		bootedAt := time.Now().Add(-time.Second)
+		svc.MarkStarted(bootedAt)
+
+		resp, err := svc.GetServerStatus(context.Background(), &pb.GetServerStatusRequest{})
+		if err != nil {
+			t.Fatalf("GetServerStatus: %v", err)
+		}
+		if resp.GetStartedAt() == nil || !resp.GetStartedAt().AsTime().Equal(bootedAt) {
+			t.Errorf("StartedAt: got %v want %v", resp.GetStartedAt(), bootedAt)
+		}
+		if resp.GetUptime() == nil || resp.GetUptime().AsDuration() < time.Second {
+			t.Errorf("Uptime: got %v want >= 1s for a server booted 1s ago", resp.GetUptime())
+		}
+	})
+
 	t.Run("HonorsCanceledContext", func(t *testing.T) {
 		fb := newFakeBackend()
 		svc := NewLanternService(fb)

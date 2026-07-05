@@ -54,3 +54,35 @@ func TestLantern_GetServerStatus_EndToEnd(t *testing.T) {
 		t.Errorf("ServerUptime: got %v, want 0 in this test (MarkStarted unwired)", got)
 	}
 }
+
+// TestLantern_GetServerStatus_Started_EndToEnd is the #943 regression: a
+// freshly booted server — one that marked itself started at the
+// ready-to-serve edge, exactly as App.Run now does — must report a
+// StartedAt near the boot instant and a strictly positive Uptime over the
+// real Connect/h2c wire path. The shipped bug slipped through because the
+// trigger (MarkStarted) was never called in production while the unit
+// tests called it themselves; this asserts the RPC surface actually
+// returns both fields when the server has been marked started.
+func TestLantern_GetServerStatus_Started_EndToEnd(t *testing.T) {
+	l, startedAt, cleanup := newInProcessClientStarted(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	st, err := l.GetServerStatus(ctx)
+	if err != nil {
+		t.Fatalf("GetServerStatus: %v", err)
+	}
+
+	got := client.ServerStartedAt(st)
+	if got.IsZero() {
+		t.Fatal("ServerStartedAt: got zero, want the marked boot instant on the wire")
+	}
+	if !got.Equal(startedAt) {
+		t.Errorf("ServerStartedAt: got %v, want %v (the instant MarkStarted recorded)", got, startedAt)
+	}
+	if up := client.ServerUptime(st); up <= 0 {
+		t.Errorf("ServerUptime: got %v, want > 0 for a freshly booted server", up)
+	}
+}

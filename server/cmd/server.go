@@ -29,6 +29,7 @@ import (
 type App struct {
 	cfg         *provider.Config
 	logger      *slog.Logger
+	svc         *service.LanternService
 	server      *service.LanternServer
 	metrics     provider.MetricsServer
 	tracing     *provider.Tracing
@@ -86,6 +87,7 @@ func newApp(
 		cfg:         cfg,
 		logger:      logger,
 		llm:         engine,
+		svc:         svc,
 		server:      server,
 		metrics:     metricsServer,
 		tracing:     tracing,
@@ -240,6 +242,12 @@ func (a *App) Run(ctx context.Context) error {
 	defer cancelServe()
 
 	g, gctx := errgroup.WithContext(serveCtx)
+	// Ready-to-serve instant for GetServerStatus.started_at/uptime (#943).
+	// Called AFTER RestoreOnStartup (which can take arbitrarily long) and
+	// right before the Connect listener starts accepting, so uptime reflects
+	// "ready to serve" rather than wire-init time. MarkStarted is
+	// sync.Once-guarded, so a hot-reload that re-enters Run does not reset it.
+	a.svc.MarkStarted(time.Now())
 	g.Go(func() error { return a.server.Run(gctx) })
 	g.Go(func() error { return a.metrics.Run(gctx) })
 	g.Go(func() error { a.domain.Run(gctx); return nil })

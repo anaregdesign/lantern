@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
+import type { ServerStatus } from "~/lib/client/infrastructure/api/get-server-status";
 import {
   formatCount,
   formatDuration,
@@ -9,6 +10,29 @@ import {
   replicationCardSummary,
   serverCardSummary,
 } from "./selectors";
+
+/**
+ * makeStatus builds a complete ServerStatus fixture with sensible
+ * defaults so each test only spells out the fields it cares about.
+ */
+function makeStatus(overrides: Partial<ServerStatus> = {}): ServerStatus {
+  return {
+    version: "v1.0.0",
+    goVersion: "go1.26.4",
+    startedAtMs: 1_700_000_000_000,
+    uptimeSeconds: 3600,
+    defaultTtlSeconds: 60,
+    maxBatchSize: 10_000,
+    maxKeyBytes: 1024,
+    scanDefaultLimit: 1000,
+    scanMaxLimit: 10_000,
+    tlsEnabled: true,
+    replicationEnabled: false,
+    vertexCount: 42,
+    edgeCount: 17,
+    ...overrides,
+  };
+}
 
 describe("formatUptime", () => {
   it("returns 0s for zero or negative input", () => {
@@ -80,23 +104,17 @@ describe("peerStatePillIntent", () => {
 
 describe("serverCardSummary", () => {
   it("emits a stable ordered list of (label, value) pairs", () => {
-    const rows = serverCardSummary({
-      version: "v1.0.0",
-      goVersion: "go1.26.4",
-      startedAtMs: 0,
-      uptimeSeconds: 3600,
-      defaultTtlSeconds: 60,
-      maxBatchSize: 10_000,
-      maxKeyBytes: 1024,
-      scanDefaultLimit: 1000,
-      scanMaxLimit: 10_000,
-      tlsEnabled: true,
-      replicationEnabled: false,
-      vertexCount: 42,
-      edgeCount: 17,
-    });
+    const rows = serverCardSummary(
+      makeStatus({
+        uptimeSeconds: 3600,
+        tlsEnabled: true,
+        replicationEnabled: false,
+      }),
+    );
     // First row is always Version.
     expect(rows[0]).toEqual(["Version", "v1.0.0"]);
+    // A server with a known start instant renders its formatted uptime.
+    expect(rows.find(([label]) => label === "Uptime")?.[1]).toBe("1h 0m");
     // Replication label flips based on the bool input.
     expect(rows.find(([label]) => label === "Replication")?.[1]).toBe(
       "disabled",
@@ -105,22 +123,43 @@ describe("serverCardSummary", () => {
   });
 
   it("substitutes (dev) when version is empty", () => {
-    const rows = serverCardSummary({
-      version: "",
-      goVersion: "",
-      startedAtMs: 0,
-      uptimeSeconds: 0,
-      defaultTtlSeconds: 0,
-      maxBatchSize: 0,
-      maxKeyBytes: 0,
-      scanDefaultLimit: 0,
-      scanMaxLimit: 0,
-      tlsEnabled: false,
-      replicationEnabled: false,
-      vertexCount: 0,
-      edgeCount: 0,
-    });
+    const rows = serverCardSummary(
+      makeStatus({
+        version: "",
+        goVersion: "",
+        startedAtMs: 0,
+        uptimeSeconds: 0,
+        defaultTtlSeconds: 0,
+        maxBatchSize: 0,
+        maxKeyBytes: 0,
+        scanDefaultLimit: 0,
+        scanMaxLimit: 0,
+        tlsEnabled: false,
+        vertexCount: 0,
+        edgeCount: 0,
+      }),
+    );
     expect(rows[0][1]).toBe("(dev)");
+  });
+
+  it("renders — for Uptime when started_at is absent on the wire (#943)", () => {
+    // startedAtMs === 0 means the server sent no started_at field (a
+    // stale/older server, or MarkStarted never fired). Uptime is unknown
+    // and must not masquerade as a fresh "0s".
+    const rows = serverCardSummary(
+      makeStatus({ startedAtMs: 0, uptimeSeconds: 0 }),
+    );
+    expect(rows.find(([label]) => label === "Uptime")?.[1]).toBe("—");
+  });
+
+  it("still renders 0s for a genuinely just-started server (#943)", () => {
+    // A server that started this instant reports started_at WITH
+    // uptimeSeconds === 0 — that is a legitimate "0s", discriminated from
+    // the absent-field case by startedAtMs being set.
+    const rows = serverCardSummary(
+      makeStatus({ startedAtMs: 1_700_000_000_000, uptimeSeconds: 0 }),
+    );
+    expect(rows.find(([label]) => label === "Uptime")?.[1]).toBe("0s");
   });
 });
 

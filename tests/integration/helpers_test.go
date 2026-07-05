@@ -155,6 +155,25 @@ func newInProcessClient(t *testing.T) (*client.Lantern, func()) {
 	return newConnectClientFor(t, srv.url), func() {}
 }
 
+// newInProcessClientStarted mirrors newInProcessClient but calls
+// svc.MarkStarted(now) right before the listener is mounted — exactly
+// what App.Run does at the ready-to-serve edge (#943). It returns the
+// instant passed to MarkStarted so callers can assert the StartedAt the
+// server reports on the wire matches, and prove GetServerStatus surfaces
+// a positive uptime once the server has been marked started (the
+// regression that shipped: the trigger was dead code, so both fields
+// were always absent on the wire).
+func newInProcessClientStarted(t *testing.T) (*client.Lantern, time.Time, func()) {
+	t.Helper()
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+	svc := service.NewLanternService(cache)
+	startedAt := time.Now()
+	svc.MarkStarted(startedAt)
+	val := provider.NewValidationInterceptor(defaultIntegrationValidationLimits())
+	srv := newConnectTestServer(t, svc, nil, val.ConnectInterceptor())
+	return newConnectClientFor(t, srv.url), startedAt, func() {}
+}
+
 // newInProcessClientChunked mirrors newInProcessClient but with a
 // custom batch chunk size. Used by batch_error_test.go to deliberately
 // trip mid-batch failures.
