@@ -14,6 +14,7 @@ import (
 //	lantern-cli delete vertex <key>
 //	lantern-cli get    edge   <tail> <head>
 //	lantern-cli add    edge   <tail> <head> <weight> [ttl_seconds]
+//	lantern-cli add    decaying-edge <tail> <head> <initial_weight> <ratio> <steps> <interval_seconds>
 //	lantern-cli put    edge   <tail> <head> <weight> [ttl_seconds]
 //	lantern-cli delete edge   <tail> <head>
 //	lantern-cli scan   vertices <prefix> [limit]
@@ -83,18 +84,28 @@ put edge REPLACES the weight (idempotent); use "add edge" to accumulate.`,
 }
 
 var grammarAddCmd = &cobra.Command{
-	Use:   "add edge <tail> <head> <weight> [ttl_seconds]",
-	Short: "Additive edge write: sum weight onto (tail,head) (REPL grammar)",
+	Use:   "add { edge <tail> <head> <weight> [ttl_seconds] | decaying-edge <tail> <head> <initial_weight> <ratio> <steps> <interval_seconds> }",
+	Short: "Additive edge write: sum weight onto (tail,head), optionally decaying (REPL grammar)",
 	Long: `Accumulate an edge weight using the same verb-first grammar as the REPL:
 
   lantern-cli add edge <tail> <head> <weight> [ttl_seconds]
+  lantern-cli add decaying-edge <tail> <head> <initial_weight> <ratio> <steps> <interval_seconds>
 
 add edge is ADDITIVE: repeated calls on the same (tail, head) pair sum their
 weights server-side ("add edge a b 1.5" then "add edge a b 0.5" leaves 2.0).
 Use "put edge" when the weight is a measured property to replace wholesale.
 
 The optional trailing ttl_seconds is a positional integer (the REPL form);
-omit it for a permanent (no-decay) edge.`,
+omit it for a permanent (no-decay) edge.
+
+add decaying-edge writes a geometric decay staircase entirely client-side (no
+server support): the edge's contributed weight starts at <initial_weight> and
+is multiplied by <ratio> (0 < ratio < 1) every <interval_seconds>, reaching
+zero after <steps> intervals. It expands into <steps> additive contributions
+with staggered TTLs in one AddEdges batch, so "add decaying-edge a b 16 0.5 5 1"
+makes the live weight fall 16 → 8 → 4 → 2 → 1 → 0 over five seconds. steps is
+capped (see the SDK's MaxDecaySteps) and steps×interval must fit the server's
+tombstone-TTL horizon or the whole write is rejected.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runGrammarLine(cmd, "add", args)
 	},

@@ -24,6 +24,7 @@ var (
 	ErrDeleteVertex     = errors.New("delete vertex error")
 	ErrDeleteEdge       = errors.New("delete edge error")
 	ErrAddEdge          = errors.New("add edge error")
+	ErrAddDecayingEdge  = errors.New("add decaying-edge error")
 	ErrScan             = errors.New("scan error")
 	ErrCount            = errors.New("count error")
 	ErrDeletePrefix     = errors.New("delete-prefix error")
@@ -112,7 +113,7 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 			return ErrInvalidObjective
 		}
 	case "add":
-		obj, err := parser.Objective(s)
+		obj, err := parser.AddObjective(s)
 		if err != nil {
 			fmt.Printf("Error: %s\n", err)
 			return ErrInvalidObjective
@@ -130,6 +131,37 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 				return ErrConnection
 			}
 			fmt.Println(formatWriteEcho(fmt.Sprintf("add edge %q -> %q (weight %g, total %g)", p.Tail, p.Head, p.Weight, effective), p.TTL, time.Now()))
+			return nil
+		case "decaying-edge":
+			p, err := parser.AddDecayingEdgeParam(s)
+			if err != nil {
+				fmt.Printf("Error: %s\n", err)
+				return ErrAddDecayingEdge
+			}
+			opts := client.DecayOpts{
+				InitialWeight: p.InitialWeight,
+				Ratio:         p.Ratio,
+				Steps:         p.Steps,
+				Interval:      p.Interval,
+			}
+			effective, err := c.client.AddDecayingEdge(ctx, p.Tail, p.Head, opts)
+			if err != nil {
+				fmt.Printf("Error: %s\n", err)
+				// A rejected DecayOpts (ratio/steps/interval out of range,
+				// underflowing curve) is a client-side usage error, not a
+				// transport failure; only genuine wire faults are ErrConnection.
+				if errors.Is(err, client.ErrInvalidArgument) {
+					return ErrAddDecayingEdge
+				}
+				return ErrConnection
+			}
+			// Echo the full decay horizon (Steps×Interval) as the effective
+			// TTL so the operator sees when the edge fully decays to zero.
+			horizon := time.Duration(p.Steps) * p.Interval
+			fmt.Println(formatWriteEcho(
+				fmt.Sprintf("add decaying-edge %q -> %q (initial %g, ratio %g, steps %d, total %g)",
+					p.Tail, p.Head, p.InitialWeight, p.Ratio, p.Steps, effective),
+				horizon, time.Now()))
 			return nil
 		default:
 			return ErrInvalidObjective

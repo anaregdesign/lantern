@@ -35,6 +35,7 @@ The REPL accepts whitespace-delimited verbs:
   delete vertex <key>
   get edge <tail> <head>
   add edge <tail> <head> <weight> [ttl_seconds]
+  add decaying-edge <tail> <head> <initial_weight> <ratio> <steps> <interval_seconds>
   put edge <tail> <head> <weight> [ttl_seconds]
   delete edge <tail> <head>
   scan vertices <prefix> [limit]
@@ -146,6 +147,8 @@ EXAMPLE
 				fmt.Println("Usage: delete edge <tail: string> <head: string>")
 			case service.ErrAddEdge:
 				fmt.Println("Usage: add edge <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]")
+			case service.ErrAddDecayingEdge:
+				fmt.Println("Usage: add decaying-edge <tail: string> <head: string> <initial_weight: float> <ratio: float> <steps: int> <interval_seconds: int>")
 			case service.ErrScan:
 				fmt.Println("Usage: scan { vertices <prefix: string> [<limit: int>] | edges <tail-prefix: string> [<limit: int>] }")
 			case service.ErrKeys:
@@ -155,7 +158,7 @@ EXAMPLE
 			case service.ErrInvalidVerb:
 				fmt.Println("Usage: { get | put | delete | add | scan | illuminate | help | exit } ...")
 			case service.ErrInvalidObjective:
-				fmt.Println("{ get { vertex | edge } | put { vertex | edge } | delete { vertex | edge } | add edge | scan { vertices | edges } | illuminate {...} } ...")
+				fmt.Println("{ get { vertex | edge } | put { vertex | edge } | delete { vertex | edge } | add { edge | decaying-edge } | scan { vertices | edges } | illuminate {...} } ...")
 			case service.ErrConnection:
 				fmt.Println("server error")
 			default:

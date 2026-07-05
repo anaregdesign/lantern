@@ -264,6 +264,20 @@ lantern-cli add edge alice bob 0.5            # weight now 2.0
 lantern-cli add edge alice bob 0.1 1800       # weight 2.1, TTL reset to 30m
 ```
 
+### `add decaying-edge <tail> <head> <initial_weight> <ratio> <steps> <interval_seconds>`
+Client-side sugar (no dedicated RPC — it fans out into one additive `AddEdges`
+batch) that lays down a **geometrically decaying** weight curve on `(tail, head)`.
+The live weight starts at `<initial_weight>` and is multiplied by `<ratio>` (open
+interval `0 < ratio < 1`) every `<interval_seconds>`, reaching zero after
+`<steps>` intervals. All six arguments are **required**; `<steps>` is capped at
+16. The contributions telescope, so they sum to `<initial_weight>` (a
+`16 → 8 → 4 → 2 → 1 → 0` staircase is written as `{8,4,2,1,1}`, not `{16,…}`).
+The echo reports the full decay horizon (`steps × interval`) as the TTL.
+```shell
+# weight 16 now, halving every 60s: 16 → 8 → 4 → 2 → 1 → 0 over 5 minutes
+lantern-cli add decaying-edge alice bob 16 0.5 5 60
+```
+
 ### `put edge <tail> <head> <weight> [ttl_seconds]`  (idempotent)
 Replace the `(tail, head)` weight. Optional trailing `ttl_seconds`
 (default permanent). Prints `OK`.

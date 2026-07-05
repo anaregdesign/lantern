@@ -225,6 +225,37 @@ func main() {
 	time.Sleep(1 * time.Second)
 
 	/*
+		AddDecayingEdge:
+			AddDecayingEdge is a client-side helper (no new RPC) that shapes a
+			geometrically decaying weight curve out of the additive edge model.
+			It expands one DecayOpts into several contributions with staggered
+			TTLs and sends them as a single AddEdges batch, so the live weight
+			starts at InitialWeight and steps down by Ratio each Interval until
+			it vanishes.
+
+			The contributions telescope: a 16 -> 8 -> 4 -> 2 -> 1 -> 0 staircase
+			is written as weights {8,4,2,1,1}, which SUM to 16 (not 31). The
+			return value is the immediate post-add live weight (≈ InitialWeight).
+	*/
+	if live, err := cli.AddDecayingEdge(ctx, "p", "q", client.DecayOpts{
+		InitialWeight: 16,
+		Ratio:         0.5,         // halve every step
+		Steps:         5,           // capped at client.MaxDecaySteps
+		Interval:      time.Second, // one step per second
+	}); err != nil {
+		log.Fatal(err)
+	} else {
+		log.Printf("decaying p->q live weight right after add: %f\n", live) // ≈ 16
+	}
+
+	// HalfLifeDecay is a convenience constructor: pick a half-life and a horizon
+	// and it derives Ratio/Steps for you.
+	if _, err := cli.AddDecayingEdge(ctx, "p", "q2",
+		client.HalfLifeDecay(10, 2*time.Second, time.Second, 8*time.Second)); err != nil {
+		log.Fatal(err)
+	}
+
+	/*
 		Illuminate:
 			Illuminate returns a subgraph rooted at `seed`. The walk runs
 			server-side; select the traversal family with a typed per-family

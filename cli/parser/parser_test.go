@@ -407,6 +407,51 @@ func TestEdgeParam_TrailingToken(t *testing.T) {
 	})
 }
 
+// TestAddDecayingEdgeParam pins the six-positional decay grammar (#952):
+// tail, head, initial_weight, ratio, steps, interval_seconds — all required —
+// plus the trailing-token EOF guard. Numeric-range validation (ratio in
+// (0,1), steps ≤ MaxDecaySteps) is the SDK's job, so out-of-range values parse
+// cleanly here.
+func TestAddDecayingEdgeParam(t *testing.T) {
+	t.Run("full form parses", func(t *testing.T) {
+		s, _ := NewSource("a b 16 0.5 5 1")
+		m, err := AddDecayingEdgeParam(s)
+		if err != nil {
+			t.Fatalf("AddDecayingEdgeParam(a b 16 0.5 5 1): %v", err)
+		}
+		if m.Tail != "a" || m.Head != "b" {
+			t.Fatalf("endpoints = (%q,%q), want (a,b)", m.Tail, m.Head)
+		}
+		if m.InitialWeight != 16 || m.Ratio != 0.5 || m.Steps != 5 {
+			t.Fatalf("got initial=%v ratio=%v steps=%d, want 16 0.5 5", m.InitialWeight, m.Ratio, m.Steps)
+		}
+		if m.Interval != time.Second {
+			t.Fatalf("interval = %v, want 1s", m.Interval)
+		}
+	})
+
+	t.Run("out-of-range values still parse (SDK validates)", func(t *testing.T) {
+		s, _ := NewSource("a b 16 2 99 1")
+		if _, err := AddDecayingEdgeParam(s); err != nil {
+			t.Fatalf("parser must defer range checks to the SDK, got %v", err)
+		}
+	})
+
+	t.Run("missing or trailing tokens are errors", func(t *testing.T) {
+		for _, in := range []string{
+			"a b 16 0.5 5",         // missing interval
+			"a b 16 0.5",           // missing steps + interval
+			"a b",                  // missing all numerics
+			"a b 16 0.5 5 1 extra", // trailing token
+		} {
+			s, _ := NewSource(in)
+			if _, err := AddDecayingEdgeParam(s); err == nil {
+				t.Errorf("AddDecayingEdgeParam(%q) = nil, want error", in)
+			}
+		}
+	})
+}
+
 // TestIlluminateParam_Prefix pins the #604 vertex-prefix kwarg. Unlike the
 // closed-set axes, prefix= is free-text: the key is case-insensitive but the
 // value is preserved verbatim (it matches vertex keys), it composes with the
