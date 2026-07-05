@@ -156,6 +156,16 @@ co-occurrence is one append, and *"how strong is this relationship right
 now"* falls out of the math — no batch job. Need classic idempotent
 replace instead? That's `put edge`.
 
+**Want a smooth geometric decay instead of a flat TTL cliff?** The Go SDK's
+`AddDecayingEdge` is a client-side helper (no extra RPC — the server stays a
+dumb additive store) that expands one
+`DecayOpts{InitialWeight, Ratio, Steps, Interval}` into a handful of
+staggered-TTL contributions and ships them as a single `AddEdges` batch, so
+the live weight steps down geometrically (e.g. `16 → 8 → 4 → 2 → 1 → 0`)
+rather than disappearing all at once. The contributions telescope, so they
+sum to `InitialWeight` (writing `{8,4,2,1,1}`, not `{16,8,4,2,1}`). CLI:
+`add decaying-edge <tail> <head> <initial_weight> <ratio> <steps> <interval_seconds>`.
+
 Vertices also auto-materialize on edge writes (inheriting the edge's TTL),
 so ingesting an event stream is just a stream of edge writes.
 
@@ -315,6 +325,10 @@ _ = cli.PutVertex(ctx, "item:7",  "lamp",  1*time.Hour)
 
 // Each AddEdge appends a contribution with its own TTL and returns the live sum.
 _, _ = cli.AddEdge(ctx, "user:42", "item:7", 1.0, 30*time.Minute)
+
+// One call → a geometric decay curve (client-side fan-out over AddEdges, no new RPC).
+_, _ = cli.AddDecayingEdge(ctx, "user:42", "item:7",
+    client.DecayOpts{InitialWeight: 16, Ratio: 0.5, Steps: 5, Interval: time.Minute})
 
 // Walk: 2 hops, top-3 per hop, TF-IDF weighted.
 g, _ := cli.Illuminate(ctx, "user:42",

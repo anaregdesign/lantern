@@ -17,6 +17,7 @@ func FuzzValidate(f *testing.F) {
 		"put vertex price 1234 type=int", "put vertex name 007 type=string",
 		"put edge alice bob 1.5", "put edge alice bob 1.5 60",
 		"add edge alice bob 1.0",
+		"add decaying-edge alice bob 16 0.5 5 1",
 		"delete vertex alice", "delete vertex alice bob carol",
 		"delete edge alice bob", "delete edge alice bob carol dave",
 		"scan vertices users/", "scan vertices users/ 100 all=true",
@@ -53,4 +54,32 @@ func FuzzValidate(f *testing.F) {
 			_, _ = Verb(s)
 		}
 	})
+}
+
+// TestValidate_AddDecayingEdge covers the #952 decay verb through the
+// dispatcher: the full six-arg form validates, while short/trailing forms and
+// `add vertex` (which the add verb never accepted) are rejected. The shared
+// grammar fixture deliberately omits this verb (Go-only until the TS parser
+// gains parity), so its Validate coverage lives here.
+func TestValidate_AddDecayingEdge(t *testing.T) {
+	valid := []string{
+		"add decaying-edge alice bob 16 0.5 5 1",
+		"add decaying-edge a b -8 0.9 16 3",
+	}
+	for _, in := range valid {
+		if err := Validate(in); err != nil {
+			t.Errorf("Validate(%q) = %v, want nil", in, err)
+		}
+	}
+	invalid := []string{
+		"add decaying-edge alice bob",          // missing numerics
+		"add decaying-edge alice bob 16 0.5 5", // missing interval
+		"add decaying-edge a b 16 0.5 5 1 x",   // trailing token
+		"add vertex alice",                     // add never took vertex
+	}
+	for _, in := range invalid {
+		if err := Validate(in); err == nil {
+			t.Errorf("Validate(%q) = nil, want error", in)
+		}
+	}
 }

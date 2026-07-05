@@ -537,3 +537,88 @@ func TestNewLanternFailover_RetryExtractedAndNodesNeutralised(t *testing.T) {
 		}
 	}
 }
+
+// TestFailover_AddDecayingEdge covers the decay staircase over the ring: it
+// rotates to a healthy replica on Unavailable and reports the post-add live
+// weight, and it expands the curve exactly once — every attempt and node sees
+// byte-identical contributions (weights + expirations) and contrib ids, so a
+// mid-flight retry can neither double-count nor skew the schedule (#916).
+func TestFailover_AddDecayingEdge(t *testing.T) {
+	opts := DecayOpts{InitialWeight: 16, Ratio: 0.5, Steps: 5, Interval: time.Second}
+
+	t.Run("rotates on unavailable and returns post-add live weight", func(t *testing.T) {
+		var n0, n1 int
+		node0 := &fakeNode{addEdgesWithIDsFn: func(context.Context, []EdgeInput, [][]byte) ([]float32, error) {
+			n0++
+			return nil, unavailableErr()
+		}}
+		node1 := &fakeNode{addEdgesWithIDsFn: func(_ context.Context, inputs []EdgeInput, _ [][]byte) ([]float32, error) {
+			n1++
+			eff := make([]float32, len(inputs))
+			var running float32
+			for i, in := range inputs {
+				running += in.Weight
+				eff[i] = running
+			}
+			return eff, nil
+		}}
+		f := &Failover{nodes: []failoverNode{node0, node1}}
+
+		got, err := f.AddDecayingEdge(context.Background(), "a", "b", opts)
+		if err != nil {
+			t.Fatalf("AddDecayingEdge err = %v", err)
+		}
+		if n0 != 1 || n1 != 1 {
+			t.Fatalf("call counts n0=%d n1=%d, want 1 and 1 (rotate on unavailable)", n0, n1)
+		}
+		if d := got - 16; d < -1e-4 || d > 1e-4 {
+			t.Fatalf("post-add live weight = %v, want 16", got)
+		}
+	})
+
+	t.Run("expands once — identical contributions and ids across attempts", func(t *testing.T) {
+		type attempt struct {
+			inputs []EdgeInput
+			ids    [][]byte
+		}
+		var seen []attempt
+		record := func() *fakeNode {
+			return &fakeNode{addEdgesWithIDsFn: func(_ context.Context, inputs []EdgeInput, ids [][]byte) ([]float32, error) {
+				ic := append([]EdgeInput(nil), inputs...)
+				idc := make([][]byte, len(ids))
+				for i, id := range ids {
+					idc[i] = append([]byte(nil), id...)
+				}
+				seen = append(seen, attempt{inputs: ic, ids: idc})
+				return nil, unavailableErr()
+			}}
+		}
+		f := &Failover{
+			nodes:          []failoverNode{record(), record()},
+			retry:          testRetryPolicy(3),
+			idempotentAdds: true,
+			contribIDs:     &contribIDGen{},
+		}
+		if _, err := f.AddDecayingEdge(context.Background(), "a", "b", opts); !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("err = %v, want ErrUnavailable", err)
+		}
+		if len(seen) < 4 {
+			t.Fatalf("attempts observed = %d, want >= 4 (retry × ring walk)", len(seen))
+		}
+		first := seen[0]
+		if len(first.inputs) != 5 || len(first.ids) != 5 {
+			t.Fatalf("attempt 0 = %d inputs / %d ids, want 5 and 5", len(first.inputs), len(first.ids))
+		}
+		for ai, at := range seen[1:] {
+			for i := range first.inputs {
+				if at.inputs[i].Weight != first.inputs[i].Weight ||
+					!at.inputs[i].Expiration.Equal(first.inputs[i].Expiration) {
+					t.Fatalf("attempt %d contribution %d differs — curve re-expanded per attempt", ai+1, i)
+				}
+				if !bytes.Equal(at.ids[i], first.ids[i]) {
+					t.Fatalf("attempt %d id[%d] re-minted — double-count risk", ai+1, i)
+				}
+			}
+		}
+	})
+}

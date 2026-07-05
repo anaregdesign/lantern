@@ -93,3 +93,28 @@ func TestRunArgs(t *testing.T) {
 		}
 	})
 }
+
+// TestRunArgs_AddDecayingEdge exercises the decay verb's dispatch branches
+// that do not touch the client (#952): a malformed decay line fails at parse
+// time and returns ErrAddDecayingEdge, and a bad add-objective returns
+// ErrInvalidObjective — both before any RPC, so a nil-client service proves
+// the parse guards fire ahead of the client dereference. The happy-path
+// round-trip lives in tests/integration.
+func TestRunArgs_AddDecayingEdge(t *testing.T) {
+	svc := NewCLIService(nil)
+	ctx := context.Background()
+
+	t.Run("MalformedDecayLineReturnsErrAddDecayingEdge", func(t *testing.T) {
+		// Missing steps + interval — parse fails before c.client is used.
+		err := svc.RunArgs(ctx, []string{"add", "decaying-edge", "a", "b", "16", "0.5"})
+		if err != ErrAddDecayingEdge {
+			t.Errorf("RunArgs(add decaying-edge a b 16 0.5) = %v, want ErrAddDecayingEdge", err)
+		}
+	})
+
+	t.Run("UnknownAddObjectiveReturnsErrInvalidObjective", func(t *testing.T) {
+		if err := svc.RunArgs(ctx, []string{"add", "bogus", "a", "b"}); err != ErrInvalidObjective {
+			t.Errorf("RunArgs(add bogus ...) = %v, want ErrInvalidObjective", err)
+		}
+	})
+}

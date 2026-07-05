@@ -70,17 +70,21 @@ func Validate(input string) error {
 			return errors.New("usage: delete { vertex | edge }")
 		}
 	case "add":
-		o, err := Objective(s)
+		o, err := AddObjective(s)
 		if err != nil {
-			return errors.New("usage: add edge ... ")
+			return errors.New("usage: add { edge | decaying-edge } ... ")
 		}
 		switch o {
 		case "edge":
 			if _, err := AddEdgeParam(s); err != nil {
 				return errors.New("usage: add edge <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]")
 			}
+		case "decaying-edge":
+			if _, err := AddDecayingEdgeParam(s); err != nil {
+				return errors.New("usage: add decaying-edge <tail: string> <head: string> <initial_weight: float> <ratio: float> <steps: int> <interval_seconds: int>")
+			}
 		default:
-			return errors.New("usage: add edge ... ")
+			return errors.New("usage: add { edge | decaying-edge } ... ")
 		}
 	case "scan":
 		o, err := ScanObjective(s)

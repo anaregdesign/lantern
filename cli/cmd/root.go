@@ -107,6 +107,7 @@ EXAMPLES
   lantern-cli put vertex alice "Alice" 3600        # value + TTL seconds
   lantern-cli put vertex cfg '{"a":1}' type=json   # forced value type
   lantern-cli add edge alice bob 1.5 3600          # additive edge write
+  lantern-cli add decaying-edge alice bob 16 0.5 5 1  # 16→8→4→2→1→0 over 5s
   lantern-cli scan vertices users/ 100 all=true    # paged prefix scan
   lantern-cli count vertices users/                # prefix cardinality
   lantern-cli delete vertex alice bob carol        # variadic batch delete

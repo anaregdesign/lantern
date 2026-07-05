@@ -242,10 +242,12 @@ var methodRetryClasses = map[string]methodRetryClass{
 	"AddEdge":                retryIfIdempotentAdds,
 	"AddEdgeAt":              retryIfIdempotentAdds,
 	"AddEdges":               retryIfIdempotentAdds,
-	"Backup":                 retryNever, // whole-graph stream dump — excluded in v1
-	"Restore":                retryNever, // stream restore — excluded in v1
-	"Subscribe":              retryNever, // server-streaming replication feed
-	"NewIncrementalSearch":   retryNever, // session constructor; per-query retries ride unary
+	"AddDecayingEdge":        retryIfIdempotentAdds, // fans out into an AddEdges batch
+
+	"Backup":               retryNever, // whole-graph stream dump — excluded in v1
+	"Restore":              retryNever, // stream restore — excluded in v1
+	"Subscribe":            retryNever, // server-streaming replication feed
+	"NewIncrementalSearch": retryNever, // session constructor; per-query retries ride unary
 }
 
 // retryableMethod is the method-name counterpart to requestRetryable,

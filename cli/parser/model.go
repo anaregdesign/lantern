@@ -36,6 +36,24 @@ type AddEdge struct {
 	TTL    time.Duration
 }
 
+// AddDecayingEdge backs
+// `add decaying-edge <tail> <head> <initial_weight> <ratio> <steps> <interval_seconds>`.
+// The fields map 1:1 onto client.DecayOpts: the edge's contributed live weight
+// starts at InitialWeight and is multiplied by Ratio every Interval, reaching
+// zero after Steps intervals. The dispatcher expands it client-side into an
+// AddEdges batch of staggered-TTL contributions — no server support required
+// (#952). Numeric-range validation (Ratio in (0,1), Steps in
+// [1, client.MaxDecaySteps], Interval > 0) is deferred to the SDK, which owns
+// the DecayOpts contract.
+type AddDecayingEdge struct {
+	Tail          string
+	Head          string
+	InitialWeight float32
+	Ratio         float32
+	Steps         int
+	Interval      time.Duration
+}
+
 // DeleteVertex backs `delete vertex <key> [<key> …]`. Keys holds one or
 // more keys; the dispatcher forwards a one-element batch to DeleteVertex
 // and a multi-element batch to DeleteVertices.

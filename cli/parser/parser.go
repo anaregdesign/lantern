@@ -38,6 +38,16 @@ var (
 		"edges",
 	}
 
+	// AddObjectives are the objectives accepted by the `add` verb. Unlike
+	// the shared Objectives (vertex/edge, used by get/put/delete), `add`
+	// takes only edge forms: the plain additive edge and the client-expanded
+	// decaying edge (#952). A dedicated set keeps `add vertex` a clean parse
+	// error and stops the decay sugar leaking into get/put/delete grammar.
+	AddObjectives = []string{
+		"edge",
+		"decaying-edge",
+	}
+
 	// IlluminateAlgorithms / IlluminateObjectives / IlluminateWeightings
 	// are the canonical sets the REPL accepts for the keyword arguments of
 	// the modernised illuminate verb (#410). The keyword form replaces the
@@ -191,6 +201,10 @@ func Objective(s *Source) (string, error) {
 
 func ScanObjective(s *Source) (string, error) {
 	return AnyOf(s, ScanObjectives)
+}
+
+func AddObjective(s *Source) (string, error) {
+	return AnyOf(s, AddObjectives)
 }
 
 func GetVertexParam(s *Source) (*GetVertex, error) {
@@ -392,7 +406,40 @@ func AddEdgeParam(s *Source) (*AddEdge, error) {
 	return m, nil
 }
 
-// DeleteVertexParam parses `delete vertex <key> [<key> …]` — one or more
+// AddDecayingEdgeParam parses
+// `add decaying-edge <tail> <head> <initial_weight> <ratio> <steps> <interval_seconds>`.
+// All six positional arguments are required (unlike AddEdgeParam's optional
+// trailing ttl_seconds) because the decay curve is meaningless without every
+// parameter. Numeric-range checks are the SDK's job — this only enforces
+// shape and token types, then EOF so a stray trailing token is a usage error
+// (mirrors AddEdgeParam's #932 trailing-token guard).
+func AddDecayingEdgeParam(s *Source) (*AddDecayingEdge, error) {
+	var err error
+	m := &AddDecayingEdge{}
+	if m.Tail, err = String(s); err != nil {
+		return nil, err
+	}
+	if m.Head, err = String(s); err != nil {
+		return nil, err
+	}
+	if m.InitialWeight, err = Float32(s); err != nil {
+		return nil, err
+	}
+	if m.Ratio, err = Float32(s); err != nil {
+		return nil, err
+	}
+	if m.Steps, err = Integer(s); err != nil {
+		return nil, err
+	}
+	if m.Interval, err = Duration(s); err != nil {
+		return nil, err
+	}
+	if err := EOF(s); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
 // keys. A one-element batch deletes a single vertex; more than one routes
 // to DeleteVertices in the dispatcher.
 func DeleteVertexParam(s *Source) (*DeleteVertex, error) {
@@ -740,6 +787,7 @@ const HelpText = `Lantern CLI grammar:
   put    vertex <key: string> <value: string|int|float|bool|datetime> [<ttl_seconds: int>] [type=auto|string|int|float|bool|datetime|duration|json]
   put    edge   <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]
   add    edge   <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]
+  add    decaying-edge <tail: string> <head: string> <initial_weight: float> <ratio: float> <steps: int> <interval_seconds: int>
   delete vertex <key: string> [<key: string> ...]
   delete edge   <tail: string> <head: string> [<tail: string> <head: string> ...]
   scan   vertices <prefix: string> [<limit: int>] [all=true]

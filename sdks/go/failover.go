@@ -436,6 +436,34 @@ func (f *Failover) AddEdges(ctx context.Context, inputs []EdgeInput) ([]float32,
 	return effective, err
 }
 
+// AddDecayingEdge forwards the geometric decay staircase (see the *Lantern
+// method of the same name) through the failover ring. The curve is expanded
+// ONCE — a single base time and a single mint of the per-contribution ids,
+// both captured before the retry loop — so every attempt and every node
+// replays byte-identical contributions and ids and a mid-flight Unavailable
+// retry cannot double-count or skew the schedule (#916). It returns the edge's
+// post-add effective (live-sum) weight.
+func (f *Failover) AddDecayingEdge(ctx context.Context, tail, head string, opts DecayOpts) (float32, error) {
+	inputs, err := DecayContributions(tail, head, opts, time.Now())
+	if err != nil {
+		return 0, err
+	}
+	ids := f.nextContribIDs(len(inputs))
+	var effective []float32
+	err = f.call(ctx, "AddDecayingEdge", func(l failoverNode) error {
+		w, e := l.addEdgesWithIDs(ctx, inputs, ids)
+		effective = w
+		return e
+	})
+	if err != nil {
+		return 0, err
+	}
+	if len(effective) == 0 {
+		return 0, nil
+	}
+	return effective[len(effective)-1], nil
+}
+
 // nextContribIDs mints n contrib ids from the failover-level generator, or
 // nil when idempotent adds are disabled (contribIDs is nil) — the legacy
 // non-idempotent additive path. Minting at the failover layer (not per node)
