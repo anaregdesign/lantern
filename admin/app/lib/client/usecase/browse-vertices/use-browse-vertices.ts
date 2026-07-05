@@ -35,6 +35,9 @@ export interface UseBrowseVerticesResult {
   state: BrowseVerticesState;
   prefix: string;
   pageNumber: number;
+  /** Page size in effect for this scan — the single source of truth for
+   * page-count math (see `selectTotalPages`). */
+  pageSize: number;
   vertices: ReturnType<typeof selectVisibleVertices>;
   count: number | null;
   canGoPrevious: boolean;
@@ -159,6 +162,7 @@ export function useBrowseVertices(
       state,
       prefix: state.prefix,
       pageNumber: selectPageNumber(state),
+      pageSize,
       vertices: selectVisibleVertices(state),
       count: state.count,
       canGoPrevious: selectCanGoPrevious(state),
@@ -168,6 +172,6 @@ export function useBrowseVertices(
       goNext,
       retry,
     }),
-    [state, setPrefix, goPrevious, goNext, retry],
+    [state, pageSize, setPrefix, goPrevious, goNext, retry],
   );
 }

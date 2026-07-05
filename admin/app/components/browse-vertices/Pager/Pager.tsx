@@ -7,6 +7,15 @@ import styles from "./Pager.module.css";
 
 export interface PagerProps {
   pageNumber: number;
+  /**
+   * Total page count for the active prefix, derived from
+   * `CountVerticesByPrefix` (see `selectTotalPages`). When present the
+   * indicator reads "Page N of M"; when `null`/`undefined` (no fresh count)
+   * it falls back to the bare "Page N". Display-only — navigability stays
+   * cursor-driven via `canGoNext`, since the count is approximate under
+   * concurrent writes.
+   */
+  totalPages?: number | null;
   canGoPrevious: boolean;
   canGoNext: boolean;
   loading: boolean;
@@ -22,6 +31,7 @@ export interface PagerProps {
  */
 export function Pager({
   pageNumber,
+  totalPages,
   canGoPrevious,
   canGoNext,
   loading,
@@ -40,7 +50,9 @@ export function Pager({
         Previous
       </Button>
       <span className={styles.indicator} data-testid="pager-page">
-        Page {pageNumber}
+        {totalPages != null
+          ? `Page ${pageNumber} of ${totalPages}`
+          : `Page ${pageNumber}`}
       </span>
       <Button
         appearance="subtle"

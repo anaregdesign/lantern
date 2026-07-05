@@ -33,6 +33,7 @@ import {
   DEFAULT_VERTEX_PAGE_SIZE,
 } from "~/lib/client/usecase/browse-vertices/use-browse-vertices";
 import { useSearchVertices } from "~/lib/client/usecase/search-vertices/use-search-vertices";
+import { selectTotalPages } from "~/lib/client/usecase/browse-vertices/selectors";
 import {
   formatScore,
   selectCaption,
@@ -410,6 +411,7 @@ export function BrowseVerticesPage() {
       {!searching ? (
         <Pager
           pageNumber={browse.pageNumber}
+          totalPages={selectTotalPages(browse.state, browse.pageSize)}
           canGoPrevious={browse.canGoPrevious}
           canGoNext={browse.canGoNext}
           loading={browse.state.status === "loading"}
