@@ -1,6 +1,13 @@
 import { expect, test } from "@playwright/test";
 
-import { CONNECT_URL, STORAGE_KEY, putEdges, putVertices } from "./helpers";
+import {
+  CONNECT_URL,
+  STORAGE_KEY,
+  connectCall,
+  deleteVerticesByPrefix,
+  putEdges,
+  putVertices,
+} from "./helpers";
 
 /**
  * Seeds a small graph for the Browse screen:
@@ -267,6 +274,66 @@ test.describe("/edges", () => {
     await expect(table.getByRole("link", { name: "e2e:vertex:c" })).toHaveCount(
       0,
     );
+  });
+});
+
+// #944: with realistic key lengths (spotify-style keys run ~45+ chars) an
+// un-clamped Tail cell paints its text straight across the Head column and
+// Head bleeds into Weight. The key cells must truncate with an ellipsis and
+// keep the full key reachable via a native `title` tooltip.
+test.describe("/edges — long keys truncate instead of overlapping (#944)", () => {
+  // Both endpoints are well past any column budget. If the fix regresses, the
+  // tail text overflows into the Head column and the bounding-box assertion
+  // below trips.
+  const longTail = `e2e-long:tail:${"t".repeat(60)}`;
+  const longHead = `e2e-long:head:${"h".repeat(60)}`;
+
+  test.beforeAll(async () => {
+    // Idempotent seed so a re-run (or a prior crash) can't leave a duplicate
+    // e2e-long row that would break the single-row locators.
+    await connectCall("DeleteEdge", { tail: longTail, head: longHead }).catch(
+      () => undefined,
+    );
+    await putEdges([{ tail: longTail, head: longHead, weight: 1 }]);
+  });
+
+  test.afterAll(async () => {
+    await connectCall("DeleteEdge", { tail: longTail, head: longHead }).catch(
+      () => undefined,
+    );
+    // PutEdges may materialise the endpoint vertices; clear the whole prefix.
+    await deleteVerticesByPrefix("e2e-long:").catch(() => undefined);
+  });
+
+  test("clamps the tail/head cells and exposes the full key via title", async ({
+    page,
+  }) => {
+    await page.goto("/edges");
+    await page.getByTestId("edge-tail-prefix-input").fill("e2e-long:");
+
+    const table = page.getByTestId("edges-table");
+    await expect(table).toBeVisible();
+
+    const tailLink = table.getByRole("link", { name: longTail });
+    const headLink = table.getByRole("link", { name: longHead });
+    await expect(tailLink).toBeVisible();
+    await expect(headLink).toBeVisible();
+
+    // The full key is truncated on screen but stays reachable on hover — the
+    // detail page remains the canonical full view.
+    await expect(tailLink).toHaveAttribute("title", longTail);
+    await expect(headLink).toHaveAttribute("title", longHead);
+
+    // No horizontal overlap: the rendered Tail link must end before the Head
+    // link begins (+1px slack for sub-pixel rounding). Without the ellipsis
+    // clamp the tail text runs across the Head column and this fails.
+    const tailBox = await tailLink.boundingBox();
+    const headBox = await headLink.boundingBox();
+    expect(tailBox).not.toBeNull();
+    expect(headBox).not.toBeNull();
+    if (tailBox && headBox) {
+      expect(tailBox.x + tailBox.width).toBeLessThanOrEqual(headBox.x + 1);
+    }
   });
 });
 

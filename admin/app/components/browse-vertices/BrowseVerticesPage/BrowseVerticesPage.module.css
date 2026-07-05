@@ -144,10 +144,27 @@
      without clipping (#657, #652). Matches the Edges table floor now that
      both Browse surfaces carry the same two-button Actions cell. */
   min-width: 680px;
+  /* Turn the percentage column widths into hard budgets so a long key
+     truncates inside its own cell instead of bleeding into the Value column
+     (#944). Fluent's native Table already applies this, but pin it here so the
+     Browse tables don't rely on that default. */
+  table-layout: fixed;
 }
 
 .colKey {
   width: 32%;
+  /* Clip an over-long key at the column edge; the ellipsis on .keyLink is the
+     visible truncation and this is the backstop (#944). */
+  overflow: hidden;
+}
+
+/* Fluent's TableCellLayout nests the key Link inside flex containers whose
+   items default to min-width:auto and so refuse to shrink below the (long)
+   key, which defeats the ellipsis. Let them shrink so .keyLink's
+   max-width:100% clamps to the fixed column width (#944). */
+.colKey :global(.fui-TableCellLayout__content),
+.colKey :global(.fui-TableCellLayout__main) {
+  min-width: 0;
 }
 
 .colExp {
@@ -157,6 +174,8 @@
 .colActions {
   width: 16%;
   text-align: right;
+  /* Keep the Edit + Illuminate pair on a single line (#944). */
+  white-space: nowrap;
 }
 
 .colScore {
@@ -172,6 +191,15 @@
     SFMono-Regular,
     monospace
   );
+  /* Truncate an over-long key with an ellipsis instead of overflowing into the
+     Value column; the full key stays reachable via the row's title tooltip and
+     the vertex detail page (#944). */
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
 }
 
 .keyLink:hover {

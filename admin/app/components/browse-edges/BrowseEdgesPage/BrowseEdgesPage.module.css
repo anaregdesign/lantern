@@ -126,10 +126,27 @@
      Illuminate action pair and the Expires header render at full width
      without clipping (#657). */
   min-width: 680px;
+  /* Turn the percentage column widths into hard budgets so a long tail/head
+     key truncates inside its own cell instead of painting across the
+     neighbouring columns (#944). Fluent's native Table already applies this,
+     but pin it here so the Browse tables don't rely on that default. */
+  table-layout: fixed;
 }
 
 .colKey {
-  width: 30%;
+  width: 28%;
+  /* Clip an over-long key at the column edge; the ellipsis on .keyLink is the
+     visible truncation and this is the backstop (#944). */
+  overflow: hidden;
+}
+
+/* Fluent's TableCellLayout nests the key Link inside flex containers whose
+   items default to min-width:auto and so refuse to shrink below the (long)
+   key, which defeats the ellipsis. Let them shrink so .keyLink's
+   max-width:100% clamps to the fixed column width (#944). */
+.colKey :global(.fui-TableCellLayout__content),
+.colKey :global(.fui-TableCellLayout__main) {
+  min-width: 0;
 }
 
 .colWeight {
@@ -142,8 +159,13 @@
 }
 
 .colActions {
-  width: 12%;
+  width: 16%;
   text-align: right;
+  /* Keep the Edit + Illuminate pair on a single line (#944). Widened from 12%
+     to 16% — matching the Vertices table — so that single line does not clip
+     the Illuminate label; the 4% comes off the two 30%→28% key columns, which
+     now truncate anyway (#944). */
+  white-space: nowrap;
 }
 
 .keyLink {
@@ -155,6 +177,15 @@
     SFMono-Regular,
     monospace
   );
+  /* Truncate an over-long key with an ellipsis instead of overflowing into the
+     Head/Weight columns; the full key stays reachable via the row's title
+     tooltip and the vertex detail page (#944). */
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
 }
 
 .keyLink:hover {

@@ -133,6 +133,7 @@ export function BrowseEdgesPage() {
                       <Link
                         to={`/vertices/${encodeURIComponent(tail)}`}
                         className={styles.keyLink}
+                        title={tail}
                       >
                         {tail || "—"}
                       </Link>
@@ -143,6 +144,7 @@ export function BrowseEdgesPage() {
                       <Link
                         to={`/vertices/${encodeURIComponent(head)}`}
                         className={styles.keyLink}
+                        title={head}
                       >
                         {head || "—"}
                       </Link>
