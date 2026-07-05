@@ -59,11 +59,18 @@ target:
 leak_gate:
   goroutine_max_delta: 25
   heap_alloc_max_delta_mb: 64
-# Floors sized from the 2026-06-29 → 2026-07-03 nightly baselines (4-way BFS
-# fan-out: rps 3998–4000 of 4000 offered, worst p99 39.77ms). The 2026-07 fan-out
-# widened to 6 calls (PPR + community), so p99 is deliberately NOT gated until a
-# few nightlies re-baseline the new mix — add `max_p99_ms` once observed p99 is
-# stable (see the perf-gate re-baselining rule in testbed/bench/README.md).
+# Floors sized from the nightly baselines. rps and non-OK were sized off the
+# 2026-06-29 → 2026-07-03 4-way runs (rps 3998–4000 of 4000 offered, a handful
+# of non-OK per ~480k) and still hold for the wider mix. The 2026-07 fan-out
+# widened to 6 calls (added PPR + community — #936), so p99 shipped ungated
+# pending a re-baseline (#939): the first green nightly on the new mix
+# (2026-07-04) held worst-producer p99 at 47.75ms with all six producers
+# clustered 46–48ms, so max_p99_ms is restored at 250ms — ~5x headroom,
+# deliberately generous off a single re-baseline sample and matching the
+# ttl_churn/many_subscribers multiplier band. It gates a step-change traversal
+# regression in the BFS/PPR/community families, not night-over-night drift (see
+# the perf-gate sizing rule in testbed/bench/README.md).
 perf_gate:
   min_steady_rps_total: 2000
+  max_p99_ms: 250
   max_non_ok_ratio: 0.02
