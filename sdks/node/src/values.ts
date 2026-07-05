@@ -308,6 +308,73 @@ export function fromEdgeJson(json: Record<string, unknown>): Edge {
   };
 }
 
+/**
+ * Re-encode a decoded {@link Vertex} back into its protobuf JSON shape — the
+ * inverse of {@link fromVertexJson}, keyed on the vertex's `kind`. Unlike
+ * {@link toVertexJson} (which infers the wire type from a JS value and so
+ * collapses the narrow numeric kinds — int32/uint32/uint64/float32/duration —
+ * onto int64/float64), this preserves the exact kind, making a
+ * backup→restore round-trip lossless. Feeds `fromJson(VertexSchema, ...)`.
+ */
+export function vertexRecordToJson(v: Vertex): Record<string, unknown> {
+  const out: Record<string, unknown> = { key: v.key };
+  if (v.expiration) out.expiration = v.expiration.toISOString();
+  switch (v.kind) {
+    case "float64":
+      out.float64 = v.value as number;
+      break;
+    case "float32":
+      out.float32 = v.value as number;
+      break;
+    case "int32":
+      out.int32 = v.value as number;
+      break;
+    case "int64":
+      out.int64 = String(v.value);
+      break;
+    case "uint32":
+      out.uint32 = v.value as number;
+      break;
+    case "uint64":
+      out.uint64 = String(v.value);
+      break;
+    case "bool":
+      out.bool = v.value as boolean;
+      break;
+    case "string":
+      out.string = v.value as string;
+      break;
+    case "bytes":
+      out.bytes = bytesToBase64(v.value as Uint8Array);
+      break;
+    case "timestamp":
+      out.timestamp = (v.value as Date).toISOString();
+      break;
+    case "duration":
+      out.duration = (v.value as Duration).toString();
+      break;
+    case "nil":
+      // Existence-only marker: the proto `nil` field is a bool, always true
+      // when present.
+      out.nil = true;
+      break;
+    case "unset":
+      // No value oneof set — emit no value field.
+      break;
+  }
+  return out;
+}
+
+/**
+ * Re-encode a decoded {@link Edge} into its protobuf JSON shape (inverse of
+ * {@link fromEdgeJson}). Feeds `fromJson(EdgeSchema, ...)`.
+ */
+export function edgeRecordToJson(e: Edge): Record<string, unknown> {
+  const out: Record<string, unknown> = { tail: e.tail, head: e.head, weight: e.weight };
+  if (e.expiration) out.expiration = e.expiration.toISOString();
+  return out;
+}
+
 // ----------------------------------------------------------------------------
 // Internals
 // ----------------------------------------------------------------------------

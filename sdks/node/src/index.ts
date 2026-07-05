@@ -45,6 +45,7 @@ export function connect(baseUrl: string, args: LanternArgs = {}): Lantern {
   return Lantern.withTransport(
     makeNodeTransport(normalised, withTokenInterceptors(args), args.transportOptions),
     args.options,
+    normalised,
   );
 }
 
@@ -63,6 +64,16 @@ export type {
 } from "./incremental-search.js";
 export { ReplicationPeer_State } from "./gen/graph/v1/graph_pb.js";
 export { CONTRIB_ID_BYTES } from "./contrib.js";
+export { MAX_DECAY_STEPS, decayContributions, halfLifeDecay } from "./decay.js";
+export type { DecayOptions } from "./decay.js";
+export {
+  DEFAULT_RESTORE_CHUNK_SIZE,
+  backupRecordFromNdjson,
+  backupRecordToNdjson,
+} from "./backup.js";
+export type { BackupRecord, RestoreSource, RestoreStats } from "./backup.js";
+export { HEALTH_CHECK_PROCEDURE, HealthStatusError, servingStatusOk } from "./health.js";
+export type { PingOptions } from "./health.js";
 export {
   BatchError,
   FailedPreconditionError,

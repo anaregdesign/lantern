@@ -220,6 +220,45 @@ if (would > 0n) {
 }
 ```
 
+## Decaying edges
+
+`addDecayingEdge(tail, head, opts)` accumulates a single edge whose **live
+(summed) weight decays geometrically over time** — starting at
+`opts.initialWeight`, multiplied by `opts.ratio` every `opts.intervalSeconds`,
+reaching zero after `opts.steps` intervals. It expands the curve into a
+telescoping set of additive contributions with staggered absolute expirations
+and applies them in one `addEdges` batch (so it inherits contrib-id dedup when
+`idempotentAdds` is on), returning the edge's effective weight right after the
+add.
+
+```ts
+// weight ≈ 16 now, ~8 after 1h, ~4 after 2h, … gone after 5h.
+const live = await client.addDecayingEdge("user:42", "topic:ml", {
+  initialWeight: 16,
+  ratio: 0.5,
+  steps: 5,
+  intervalSeconds: 3600,
+});
+```
+
+Prefer a half-life to hand-tuned steps? `halfLifeDecay(initialWeight,
+halfLifeSeconds, intervalSeconds, horizonSeconds)` builds the `DecayOptions` for
+you (clamped to `MAX_DECAY_STEPS` = 16):
+
+```ts
+import { halfLifeDecay } from "lantern-sdk";
+// Halve every 24h, sampled hourly, out to a 7-day horizon.
+const opts = halfLifeDecay(10, 86_400, 3_600, 604_800);
+await client.addDecayingEdge("a", "b", opts);
+```
+
+The whole curve is one `addEdges` request, so the server validates every
+contribution's expiration before applying any: a horizon longer than the
+server's `LANTERN_TOMBSTONE_TTL` rejects the entire add. A curve that underflows
+float32 to zero, or ill-formed `opts`, rejects with `InvalidArgumentError`. The
+pure `decayContributions(tail, head, opts, baseMs)` helper is exported too, if
+you want the `EdgeInput[]` without sending it.
+
 ## Content search
 
 `searchVertices` runs a relevance-ranked full-text query over vertex
@@ -238,6 +277,64 @@ An empty or unmatched query resolves to `[]` (not an error). When the
 server's index is disabled (`LANTERN_SEARCH_ENABLED=false`) the call rejects
 with `FailedPreconditionError`, so callers can render a calm "search not
 enabled" state instead of treating it as a hard failure.
+
+## Backup & restore
+
+`backup(opts?)` streams a whole-graph, point-in-time dump as an **async
+iterable** of `BackupRecord`s — every live vertex, then every folded live edge.
+Each record is decoded kind-preservingly, so narrow numeric value types
+(int32/uint32/uint64/float32/duration) round-trip through `restore` exactly.
+`restore(source, opts?)` replays any (sync or async) iterable of records back
+through the batch `putVertices` / `putEdges` surface and returns the counts
+loaded.
+
+```ts
+// Dump → NDJSON file.
+import { createWriteStream } from "node:fs";
+const out = createWriteStream("graph.ndjson");
+for await (const rec of client.backup()) {
+  out.write(backupRecordToNdjson(rec) + "\n");
+}
+
+// NDJSON file → restore.
+import { createReadStream } from "node:fs";
+import { createInterface } from "node:readline";
+async function* records() {
+  const rl = createInterface({ input: createReadStream("graph.ndjson") });
+  for await (const line of rl) if (line) yield backupRecordFromNdjson(line);
+}
+const stats = await client.restore(records()); // { vertices, edges }
+```
+
+Pass `{ prefix }` to scope a backup to a key namespace, and `{ chunkSize }`
+(default 1000) to tune restore batch size. The `backupRecordToNdjson` /
+`backupRecordFromNdjson` line codec is a **Node-native** format (a
+`"kind"`-discriminated JSON object per line; int64/uint64 magnitudes as strings
+so values above 2^53 survive) — it is safe and lossless for Node→Node dumps,
+but is not interchangeable with the Go SDK's `FormatNDJSON`. Restore is not
+transactional — a mid-stream failure leaves already-flushed batches in place;
+re-running is safe because `Put` is idempotent.
+
+## Ping / health check
+
+`ping(signal?)` probes server readiness via the gRPC-Health-v1 `Health/Check`
+that rides the primary listener. It resolves when the server reports SERVING,
+throws `HealthStatusError` (with the reported `.status`) on any other status,
+and a generic `LanternError` on transport / non-200 / decode failure.
+
+```ts
+try {
+  await client.ping();
+} catch (err) {
+  if (err instanceof HealthStatusError) console.warn("not serving:", err.status);
+  else throw err;
+}
+```
+
+`ping` needs the server's base URL, so it works on clients built via `connect()`
+/ `connectWeb()` (or a `withTransport` client given a `baseUrl`); a
+transport-only client rejects with `InvalidArgumentError`. The client's
+`defaultTimeoutMs`, if set, bounds the probe.
 
 ## Cancellation
 
