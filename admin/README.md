@@ -48,6 +48,7 @@ the top-right header. The choice is persisted to `localStorage`.
 | `bun run typecheck` | `react-router typegen` then `tsc -b`. |
 | `bun run lint`      | ESLint (flat config).                 |
 | `bun run format`    | Prettier write.                       |
+| `bun run test`      | Unit tests (Bun test runner).         |
 | `bun run test:e2e`  | Playwright smoke tests.               |
 
 ## Project layout
