@@ -326,6 +326,7 @@ export function BrowseVerticesPage() {
                       <Link
                         to={`/vertices/${encodeURIComponent(row.key)}`}
                         className={styles.keyLink}
+                        title={row.key}
                       >
                         {row.key || "—"}
                       </Link>
