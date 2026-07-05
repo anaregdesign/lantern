@@ -15,6 +15,41 @@ test.beforeAll(async () => {
   // Edge so illuminate / get edge happy-paths in the canvas spec
   // below have something to render.
   await putEdges([{ tail: "cli:alpha", head: "cli:beta", weight: 2 }]);
+
+  // #942 — a barbell so `illuminate <seed> algorithm=community` has a
+  // clean cluster to extract. Two tight triangles (internal weight 5,
+  // bidirectional) joined by a single weak bridge (weight 0.1). A
+  // LocalCommunity (#845) sweep from a1 cuts the bridge and returns
+  // exactly {a1,a2,a3}; a plain BFS walk (the pre-fix regression) would
+  // instead cross the bridge and pull in b1 at hop 1. `cli:cmty:` prefix
+  // isolates the subgraph from the other seeds sharing this gateway.
+  await putVertices([
+    { key: "cli:cmty:a1", string: "a1" },
+    { key: "cli:cmty:a2", string: "a2" },
+    { key: "cli:cmty:a3", string: "a3" },
+    { key: "cli:cmty:b1", string: "b1" },
+    { key: "cli:cmty:b2", string: "b2" },
+    { key: "cli:cmty:b3", string: "b3" },
+  ]);
+  await putEdges([
+    // Triangle A (tight).
+    { tail: "cli:cmty:a1", head: "cli:cmty:a2", weight: 5 },
+    { tail: "cli:cmty:a2", head: "cli:cmty:a1", weight: 5 },
+    { tail: "cli:cmty:a2", head: "cli:cmty:a3", weight: 5 },
+    { tail: "cli:cmty:a3", head: "cli:cmty:a2", weight: 5 },
+    { tail: "cli:cmty:a1", head: "cli:cmty:a3", weight: 5 },
+    { tail: "cli:cmty:a3", head: "cli:cmty:a1", weight: 5 },
+    // Triangle B (tight).
+    { tail: "cli:cmty:b1", head: "cli:cmty:b2", weight: 5 },
+    { tail: "cli:cmty:b2", head: "cli:cmty:b1", weight: 5 },
+    { tail: "cli:cmty:b2", head: "cli:cmty:b3", weight: 5 },
+    { tail: "cli:cmty:b3", head: "cli:cmty:b2", weight: 5 },
+    { tail: "cli:cmty:b1", head: "cli:cmty:b3", weight: 5 },
+    { tail: "cli:cmty:b3", head: "cli:cmty:b1", weight: 5 },
+    // Weak bridge joining the two triangles.
+    { tail: "cli:cmty:a1", head: "cli:cmty:b1", weight: 0.1 },
+    { tail: "cli:cmty:b1", head: "cli:cmty:a1", weight: 0.1 },
+  ]);
 });
 
 test.beforeEach(async ({ page }) => {
@@ -106,6 +141,58 @@ test.describe("/cli", () => {
     await expect(page.getByTestId("cli-canvas-panel")).toContainText(
       "illuminate cli:alpha 2 5",
     );
+  });
+
+  // #942 — `algorithm=community` must reach the LocalCommunity (#845)
+  // family, not silently fall back to a BFS walk. Regression guard: before
+  // the fix, dispatcher.ts's `ALGORITHM_TO_API` lacked a `community` entry
+  // (typed `Record<string, …>`, so the miss was invisible) and the wire
+  // adapter built `opts.bfs` instead of `opts.community`. On the barbell
+  // seeded above, that BFS walk from a1 crosses the weak bridge and pulls in
+  // b1 at hop 1; the real community extraction cuts the bridge and returns
+  // exactly the seed's triangle {a1,a2,a3}. We assert on the rendered canvas
+  // membership via the test bridge (present/absent), which the CLI reconcile
+  // overwrites per frame (graph-view.ts), so stale nodes cannot leak in.
+  test("illuminate algorithm=community extracts the seed cluster, not a BFS frontier (#942)", async ({
+    page,
+  }) => {
+    await page.goto("/cli");
+    const input = page.getByTestId("cli-input");
+    await input.fill("illuminate cli:cmty:a1 2 5 algorithm=community");
+    await input.press("Enter");
+    await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
+    await expect(page.getByTestId("cli-canvas-panel")).toContainText(
+      "illuminate cli:cmty:a1 2 5 algorithm=community",
+    );
+
+    // Wait for the canvas bridge, then the post-commit graphology reconcile
+    // (the useEffect that adds/drops nodes runs after the label commit above).
+    await page.waitForFunction(() => {
+      const win = window as Window & {
+        __illuminateCanvas?: { getNodePosition: (k: string) => unknown };
+      };
+      return !!win.__illuminateCanvas?.getNodePosition;
+    });
+    const present = (key: string): Promise<boolean> =>
+      page.evaluate((k) => {
+        const win = window as Window & {
+          __illuminateCanvas?: { getNodePosition: (key: string) => unknown };
+        };
+        return win.__illuminateCanvas?.getNodePosition(k) != null;
+      }, key);
+
+    // The seed's tight triangle IS the community. Poll a2 to let the
+    // reconcile land, then assert the rest of the triangle is present.
+    await expect.poll(() => present("cli:cmty:a2")).toBe(true);
+    expect(await present("cli:cmty:a1")).toBe(true);
+    expect(await present("cli:cmty:a3")).toBe(true);
+
+    // The far triangle across the weak bridge is NOT in the community.
+    // `b1` is the load-bearing discriminator: a plain BFS walk (the pre-fix
+    // behaviour) would render it at hop 1.
+    expect(await present("cli:cmty:b1")).toBe(false);
+    expect(await present("cli:cmty:b2")).toBe(false);
+    expect(await present("cli:cmty:b3")).toBe(false);
   });
 
   // #518 — a mutating verb (put/add) folds the new element onto the

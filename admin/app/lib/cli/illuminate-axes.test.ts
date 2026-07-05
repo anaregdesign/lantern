@@ -163,6 +163,30 @@ describe("formatIlluminateClick", () => {
     ).toBe("illuminate alice 2 5 algorithm=spt");
   });
 
+  // #942: the community family shares the ppr α/ε knobs and the same
+  // non-zero emission gate, so the click formatter must reach it too.
+  test("algorithm=community alone emits just the algorithm kwarg", () => {
+    expect(
+      formatIlluminateClick("alice", {
+        ...CLI_CLICK_AXIS_DEFAULTS,
+        algorithm: "community",
+      }),
+    ).toBe("illuminate alice 2 5 algorithm=community");
+  });
+
+  test("community knobs append after the algorithm kwarg in fixed order", () => {
+    expect(
+      formatIlluminateClick("alice", {
+        ...CLI_CLICK_AXIS_DEFAULTS,
+        algorithm: "community",
+        restartProb: 0.25,
+        epsilon: 0.001,
+      }),
+    ).toBe(
+      "illuminate alice 2 5 algorithm=community restart_prob=0.25 epsilon=0.001",
+    );
+  });
+
   test("seed containing a colon round-trips literally", () => {
     expect(formatIlluminateClick("user:alice", CLI_CLICK_AXIS_DEFAULTS)).toBe(
       "illuminate user:alice 2 5",
@@ -223,6 +247,15 @@ describe("formatIlluminateClick ↔ parse round-trip", () => {
         epsilon: 0.001,
       },
     },
+    {
+      name: "community with knobs",
+      axes: {
+        ...CLI_CLICK_AXIS_DEFAULTS,
+        algorithm: "community",
+        restartProb: 0.3,
+        epsilon: 0.002,
+      },
+    },
   ];
 
   test.each(matrix)("$name parses back to the same axes", ({ axes }) => {
@@ -242,10 +275,10 @@ describe("formatIlluminateClick ↔ parse round-trip", () => {
     expect(result.command.objective).toBe(axes.objective);
     expect(result.command.weighting).toBe(axes.weighting);
     expect(result.command.vertexPrefix).toBe(axes.vertexPrefix);
-    // The PPR knobs only survive the round-trip for a ppr walk; for every
-    // other algorithm the formatter suppresses them and the parser defaults
-    // them back to 0 (#801).
-    if (axes.algorithm === "ppr") {
+    // The push-family knobs only survive the round-trip for a ppr or
+    // community walk; for every other algorithm the formatter suppresses
+    // them and the parser defaults them back to 0 (#801 / #942).
+    if (axes.algorithm === "ppr" || axes.algorithm === "community") {
       expect(result.command.restartProb).toBe(axes.restartProb);
       expect(result.command.epsilon).toBe(axes.epsilon);
     } else {
@@ -279,6 +312,7 @@ describe("parseStored* helpers", () => {
     expect(parseStoredAlgorithm("mst")).toBe("mst");
     expect(parseStoredAlgorithm("spt")).toBe("spt");
     expect(parseStoredAlgorithm("ppr")).toBe("ppr");
+    expect(parseStoredAlgorithm("community")).toBe("community");
     expect(parseStoredAlgorithm("SPT")).toBeNull();
     expect(parseStoredAlgorithm("ALGORITHM_SHORTEST_PATH_TREE")).toBeNull();
     expect(parseStoredAlgorithm(null)).toBeNull();

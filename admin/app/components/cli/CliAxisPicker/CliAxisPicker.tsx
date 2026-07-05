@@ -40,11 +40,13 @@ export interface CliAxisPickerProps {
  * Renders a single-line strip of Fluent UI primitives that map 1:1 to
  * the optional kwargs of the long-form illuminate verb (post-#410):
  * step, k, algorithm, objective, and a raw/TF-IDF/BM25 weighting
- * Dropdown, plus a free-text prefix filter. When algorithm=ppr is
- * selected, two extra numeric inputs (restart_prob / epsilon) appear for
- * the Personalized PageRank knobs (#801); a blank knob means "server
- * default". Wraps on narrow viewports without horizontal scroll, per the
- * architecture skill's responsive guidance.
+ * Dropdown, plus a free-text prefix filter. When a push-based family is
+ * selected (algorithm=ppr or algorithm=community), two extra numeric
+ * inputs (restart_prob / epsilon) appear for the shared locality knobs
+ * (#801/#942); a blank knob means "server default", and the step input is
+ * disabled because neither family gives it a wire meaning. Wraps on narrow
+ * viewports without horizontal scroll, per the architecture skill's
+ * responsive guidance.
  *
  * The component owns no business state — every change goes through
  * {@link CliAxisPickerProps.setAxis}, which the parent hook
@@ -114,6 +116,17 @@ export function CliAxisPicker({ axes, setAxis, disabled }: CliAxisPickerProps) {
 
   const preview = formatIlluminateClick("<key>", axes);
 
+  // #801/#942: ppr and community are the two push-based families that carry
+  // the α/ε locality knobs; they also give the `step` axis no wire meaning.
+  const isPushFamily =
+    axes.algorithm === "ppr" || axes.algorithm === "community";
+  // #942: for the community family `k` is the max_size UPPER BOUND (the
+  // conductance sweep may stop earlier), not an exact neighbour count.
+  const kTitle =
+    axes.algorithm === "community"
+      ? "k: max community size (upper bound; the sweep may stop earlier)"
+      : "k: top-k neighbours kept per hop";
+
   return (
     <div
       className={styles.strip}
@@ -131,9 +144,14 @@ export function CliAxisPicker({ axes, setAxis, disabled }: CliAxisPickerProps) {
           max={CLI_CLICK_STEP_MAX}
           value={String(axes.step)}
           onChange={onStepChange}
-          disabled={disabled}
+          disabled={disabled || isPushFamily}
           data-testid="cli-axis-step"
           aria-label={`Step (${CLI_CLICK_STEP_MIN}–${CLI_CLICK_STEP_MAX})`}
+          title={
+            isPushFamily
+              ? "step has no meaning for the ppr / community families"
+              : undefined
+          }
         />
       </label>
 
@@ -149,6 +167,7 @@ export function CliAxisPicker({ axes, setAxis, disabled }: CliAxisPickerProps) {
           disabled={disabled}
           data-testid="cli-axis-k"
           aria-label={`K (${CLI_CLICK_K_MIN}–${CLI_CLICK_K_MAX})`}
+          title={kTitle}
         />
       </label>
 
@@ -232,7 +251,7 @@ export function CliAxisPicker({ axes, setAxis, disabled }: CliAxisPickerProps) {
         />
       </label>
 
-      {axes.algorithm === "ppr" && (
+      {isPushFamily && (
         <>
           <label className={styles.field}>
             <span className={styles.label}>restart_prob</span>
@@ -247,7 +266,7 @@ export function CliAxisPicker({ axes, setAxis, disabled }: CliAxisPickerProps) {
               disabled={disabled}
               placeholder="0.15"
               data-testid="cli-axis-restart-prob"
-              aria-label="PPR restart probability α (0–1; blank = server default)"
+              aria-label="Restart probability α (0–1; blank = server default)"
             />
           </label>
 
@@ -263,7 +282,7 @@ export function CliAxisPicker({ axes, setAxis, disabled }: CliAxisPickerProps) {
               disabled={disabled}
               placeholder="1e-4"
               data-testid="cli-axis-epsilon"
-              aria-label="PPR residual threshold ε (> 0; blank = server default)"
+              aria-label="Residual threshold ε (> 0; blank = server default)"
             />
           </label>
         </>

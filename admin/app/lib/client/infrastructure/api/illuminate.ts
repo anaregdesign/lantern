@@ -14,15 +14,18 @@ export type { Edge, Graph, IlluminateResponse, Vertex } from "./types";
 // The admin UI tracks each axis as a stable string so router
 // serialisation and Playwright fixtures keep one human-readable
 // vocabulary across surfaces. Since #846 the wire request is a params
-// ONEOF (bfs | ppr); this adapter owns the translation from admin's flat
-// axis vocabulary to the typed per-family SDK options — mst/spt select
-// the BFS family's Reduction, ppr selects the PPR family (step has no
-// PPR meaning and is dropped; k becomes topN).
+// ONEOF (bfs | ppr | community); this adapter owns the translation from
+// admin's flat axis vocabulary to the typed per-family SDK options —
+// mst/spt select the BFS family's Reduction, ppr selects the PPR family
+// (step has no PPR meaning and is dropped; k becomes topN), and
+// community selects the local-community family (#845; step dropped, k
+// becomes the max_size upper bound).
 export type Algorithm =
   | "ALGORITHM_UNSPECIFIED"
   | "ALGORITHM_MINIMUM_SPANNING_TREE"
   | "ALGORITHM_SHORTEST_PATH_TREE"
-  | "ALGORITHM_PERSONALIZED_PAGERANK";
+  | "ALGORITHM_PERSONALIZED_PAGERANK"
+  | "ALGORITHM_LOCAL_COMMUNITY";
 
 export type Objective =
   | "OBJECTIVE_UNSPECIFIED"
@@ -50,8 +53,10 @@ export interface IlluminateRequest {
    */
   vertexPrefix?: string;
   /**
-   * Personalized PageRank knobs (#801), only consulted when
-   * `algorithm === "ALGORITHM_PERSONALIZED_PAGERANK"`. `restartProb` is the
+   * Personalized PageRank / local-community knobs, consulted when
+   * `algorithm === "ALGORITHM_PERSONALIZED_PAGERANK"` (#801) or
+   * `algorithm === "ALGORITHM_LOCAL_COMMUNITY"` (#845) — both families
+   * share the same α/ε locality knobs. `restartProb` is the
    * restart/teleport-to-seed probability α in (0,1); `epsilon` is the
    * forward-push residual threshold ε > 0. 0/omitted lets the server apply
    * its defaults (α=0.15 / ε=1e-4).
@@ -66,6 +71,9 @@ const ALGORITHM_TO_REDUCTION: Record<Algorithm, SdkReduction> = {
   ALGORITHM_SHORTEST_PATH_TREE: SdkReduction.SHORTEST_PATH_TREE,
   // PPR is handled as its own oneof family, never as a reduction.
   ALGORITHM_PERSONALIZED_PAGERANK: SdkReduction.UNSPECIFIED,
+  // Local community (#845) is likewise its own oneof family, never a
+  // BFS reduction.
+  ALGORITHM_LOCAL_COMMUNITY: SdkReduction.UNSPECIFIED,
 };
 const OBJECTIVE_TO_SDK: Record<Objective, SdkObjective> = {
   OBJECTIVE_UNSPECIFIED: SdkObjective.UNSPECIFIED,
@@ -85,10 +93,12 @@ const WEIGHTING_TO_SDK: Record<Weighting, SdkWeighting> = {
  * Runs a k-bounded BFS from the supplied seed. Optional knobs (step
  * / k / algorithm / objective / weighting / prefix) default server-side
  * when omitted; `algorithm=ALGORITHM_PERSONALIZED_PAGERANK` switches to a
- * seed-anchored PPR walk tuned by restartProb / epsilon (#801). The SDK
- * returns a rich-shape Graph with `Map<>` values; this adapter flattens
- * it back to admin's array-of-flat-JSON shape so the existing canvas +
- * table consumers keep working unchanged (#409, #410).
+ * seed-anchored PPR walk tuned by restartProb / epsilon (#801), and
+ * `algorithm=ALGORITHM_LOCAL_COMMUNITY` switches to PageRank-Nibble local
+ * community extraction (#845; k is the max_size upper bound, α/ε tune the
+ * push). The SDK returns a rich-shape Graph with `Map<>` values; this
+ * adapter flattens it back to admin's array-of-flat-JSON shape so the
+ * existing canvas + table consumers keep working unchanged (#409, #410).
  */
 export async function illuminate(
   client: LanternClient,
@@ -109,6 +119,17 @@ export async function illuminate(
     if (request.algorithm === "ALGORITHM_PERSONALIZED_PAGERANK") {
       opts.ppr = {
         topN: request.k ?? 0,
+        restartProb: request.restartProb ?? 0,
+        epsilon: request.epsilon ?? 0,
+      };
+    } else if (request.algorithm === "ALGORITHM_LOCAL_COMMUNITY") {
+      // Local community extraction (#845): PageRank-Nibble. Mirrors the Go
+      // CLI translation (`cli/service/service.go` `IlluminateFamilyOption`,
+      // `case "community"`): k is the max_size UPPER BOUND (the conductance
+      // sweep may stop earlier), step has no meaning here and is dropped,
+      // and α/ε pass through (0 = server default, α=0.15 / ε=1e-4).
+      opts.community = {
+        maxSize: request.k ?? 0,
         restartProb: request.restartProb ?? 0,
         epsilon: request.epsilon ?? 0,
       };

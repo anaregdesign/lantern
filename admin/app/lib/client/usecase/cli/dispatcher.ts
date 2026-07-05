@@ -51,7 +51,12 @@ import { scanEdges } from "~/lib/client/infrastructure/api/scan-edges";
 import { scanVertexKeys } from "~/lib/client/infrastructure/api/scan-vertex-keys";
 import { scanVertices } from "~/lib/client/infrastructure/api/scan-vertices";
 import type { Edge, Vertex } from "~/lib/client/infrastructure/api/types";
-import type { Command } from "~/lib/cli/types";
+import type {
+  AlgorithmName,
+  Command,
+  ObjectiveName,
+  WeightingName,
+} from "~/lib/cli/types";
 
 export interface DispatchInput {
   client: LanternClient;
@@ -59,17 +64,26 @@ export interface DispatchInput {
   signal?: AbortSignal;
 }
 
-const ALGORITHM_TO_API: Record<string, ApiAlgorithm> = {
+// Translate the CLI's friendly axis vocabulary to the wire enum the
+// illuminate adapter consumes. Keyed by the CLOSED axis unions from
+// `~/lib/cli/types` (not `string`) so that adding a token to
+// `AlgorithmName` / `ObjectiveName` / `WeightingName` without a matching
+// entry here is a `tsc` error, not a silent `undefined` that degrades to
+// the default family. This exhaustiveness guard is the root-cause fix for
+// #942, where `community` parsed but had no `ALGORITHM_TO_API` entry and
+// fell back to a BFS walk.
+const ALGORITHM_TO_API: Record<AlgorithmName, ApiAlgorithm> = {
   none: "ALGORITHM_UNSPECIFIED",
   mst: "ALGORITHM_MINIMUM_SPANNING_TREE",
   spt: "ALGORITHM_SHORTEST_PATH_TREE",
   ppr: "ALGORITHM_PERSONALIZED_PAGERANK",
+  community: "ALGORITHM_LOCAL_COMMUNITY",
 };
-const OBJECTIVE_TO_API: Record<string, ApiObjective> = {
+const OBJECTIVE_TO_API: Record<ObjectiveName, ApiObjective> = {
   min: "OBJECTIVE_MINIMIZE",
   max: "OBJECTIVE_MAXIMIZE",
 };
-const WEIGHTING_TO_API: Record<string, ApiWeighting> = {
+const WEIGHTING_TO_API: Record<WeightingName, ApiWeighting> = {
   raw: "WEIGHTING_RAW",
   tfidf: "WEIGHTING_TFIDF",
   bm25: "WEIGHTING_BM25",

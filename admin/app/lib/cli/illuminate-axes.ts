@@ -49,12 +49,13 @@ export interface CliClickAxes {
    */
   vertexPrefix: string;
   /**
-   * Personalized PageRank knobs (#801), only meaningful when
-   * `algorithm === "ppr"`. `restartProb` is the restart/teleport-to-seed
-   * probability α in (0,1); `epsilon` is the forward-push residual threshold
-   * ε > 0. 0 means "leave to the server default" (α=0.15 / ε=1e-4) and is the
-   * value that keeps the bare click byte-for-byte the canonical short form —
-   * {@link formatIlluminateClick} only emits these for a non-zero ppr walk.
+   * Push-family locality knobs (#801/#942), meaningful when
+   * `algorithm === "ppr"` or `algorithm === "community"`. `restartProb` is
+   * the restart/teleport-to-seed probability α in (0,1); `epsilon` is the
+   * forward-push residual threshold ε > 0. 0 means "leave to the server
+   * default" (α=0.15 / ε=1e-4) and is the value that keeps the bare click
+   * byte-for-byte the canonical short form — {@link formatIlluminateClick}
+   * only emits these for a non-zero ppr/community walk.
    */
   restartProb: number;
   epsilon: number;
@@ -79,9 +80,9 @@ export const CLI_CLICK_AXIS_DEFAULTS: CliClickAxes = {
   // Empty = no prefix filter, so the bare click stays byte-for-byte the
   // canonical short form `illuminate <seed> 2 5` (the #439 regression guard).
   vertexPrefix: "",
-  // 0 = "use the server default" for both PPR knobs; the formatter omits them
-  // unless algorithm=ppr AND the value is non-zero, so the bare click is
-  // unaffected (#439 / #801).
+  // 0 = "use the server default" for both push knobs; the formatter omits
+  // them unless algorithm=ppr|community AND the value is non-zero, so the
+  // bare click is unaffected (#439 / #801 / #942).
   restartProb: 0,
   epsilon: 0,
 };
@@ -94,6 +95,7 @@ export const CLI_ALGORITHMS: ReadonlyArray<{
   { value: "mst", label: "Spanning tree" },
   { value: "spt", label: "Shortest-path tree" },
   { value: "ppr", label: "Personalized PageRank" },
+  { value: "community", label: "Local community" },
 ];
 
 export const CLI_OBJECTIVES: ReadonlyArray<{
@@ -121,8 +123,9 @@ export const CLI_WEIGHTINGS: ReadonlyArray<{
  * in fixed order (`algorithm=` → `objective=` → `weighting=` → `prefix=`
  * → `restart_prob=` → `epsilon=`) only for axes that diverge from the
  * default; the fixed order keeps scrollback snapshots deterministic and
- * matches the parser's usage string. The two PPR knobs are emitted only
- * when `algorithm=ppr` and the value is non-zero (#801).
+ * matches the parser's usage string. The two push knobs are emitted only
+ * when `algorithm=ppr` or `algorithm=community` and the value is non-zero
+ * (#801/#942).
  *
  * The function is intentionally pure so `bun:test` can round-trip it
  * through {@link parse} without a DOM.
@@ -155,10 +158,12 @@ export function formatIlluminateClick(
   if (axes.vertexPrefix !== "") {
     tokens.push(`prefix=${axes.vertexPrefix}`);
   }
-  // #801: PPR knobs are only meaningful for algorithm=ppr and only when the
-  // operator has overridden the server default (0). Gating on both keeps the
-  // bare click byte-stable (#439) and never emits a knob the server ignores.
-  if (axes.algorithm === "ppr") {
+  // #801/#942: the α/ε knobs are meaningful for the two push-based families
+  // (ppr and community — both carry the same `restart_prob`/`epsilon`
+  // locality knobs) and only when the operator has overridden the server
+  // default (0). Gating on both keeps the bare click byte-stable (#439) and
+  // never emits a knob the server ignores for the BFS families.
+  if (axes.algorithm === "ppr" || axes.algorithm === "community") {
     if (axes.restartProb > 0) {
       tokens.push(`restart_prob=${axes.restartProb}`);
     }

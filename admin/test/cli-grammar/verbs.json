@@ -101,6 +101,14 @@
       "comment": "#801: scientific-notation knob value (Go strconv.ParseFloat parity)"
     },
     {
+      "input": "illuminate alice 2 5 algorithm=community",
+      "comment": "#942: local community (#845) family; knobs default to server values"
+    },
+    {
+      "input": "illuminate alice 2 5 algorithm=community restart_prob=0.25 epsilon=1e-3",
+      "comment": "#942: community shares the ppr restart_prob / epsilon locality knobs"
+    },
+    {
       "input": "Get VERTEX alice",
       "comment": "#437: verb + objective case-insensitive"
     },

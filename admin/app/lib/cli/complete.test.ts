@@ -177,6 +177,7 @@ describe("completeCommandLine — illuminate option kwargs (slot ≥ 4)", () => 
       "algorithm=mst",
       "algorithm=spt",
       "algorithm=ppr",
+      "algorithm=community",
     ]);
   });
 
