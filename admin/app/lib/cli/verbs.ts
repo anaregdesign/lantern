@@ -683,8 +683,8 @@ export const CLI_COMMAND_REFERENCE: readonly CliCommandDoc[] = [
     signature:
       "illuminate <seed> <step> <k> [algorithm=none|mst|spt|ppr|community] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>] [restart_prob=<float>] [epsilon=<float>]",
     summary:
-      "Walk the graph from a seed (step hops, top-k per hop) and render the subgraph. algorithm=ppr runs Personalized PageRank (tune locality with restart_prob/epsilon); the other axes reduce/weight the discovered subgraph.",
-    example: "illuminate alice 2 5 algorithm=ppr restart_prob=0.25",
+      "Walk the graph from a seed (step hops, top-k per hop) and render the subgraph. algorithm=ppr runs Personalized PageRank and algorithm=community extracts the seed's local community (#845) — both tune locality with restart_prob/epsilon; the other axes reduce/weight the discovered subgraph.",
+    example: "illuminate alice 2 5 algorithm=community",
   },
   {
     group: "Session",

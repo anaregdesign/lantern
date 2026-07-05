@@ -21,6 +21,7 @@ import {
   writeEcho,
 } from "./dispatcher";
 import type { Command } from "~/lib/cli/types";
+import { parse } from "~/lib/cli/parser";
 
 // ----------------------------------------------------------------------------
 // FakeLanternClient
@@ -571,5 +572,65 @@ describe("dispatch keys (#674)", () => {
     expect(prefix).toBe("user:");
     expect(opts.limit).toBe(50);
     expect((result as { keys: string[] }).keys).toEqual(["user:1", "user:2"]);
+  });
+});
+
+describe("dispatch illuminate maps the algorithm axis to the family oneof (#942)", () => {
+  // The bug: `algorithm=community` parsed fine but `ALGORITHM_TO_API` had no
+  // `community` entry, so the request silently fell back to a BFS walk. These
+  // tests drive the full parser → dispatcher → adapter seam and assert the
+  // community oneof reaches the SDK — and that neither BFS nor PPR does.
+  const emptyGraph = () => ({ vertices: new Map(), edges: new Map() });
+
+  test("algorithm=community builds the community oneof, not bfs/ppr", async () => {
+    const fake = new FakeLanternClient();
+    fake.stub("illuminate", emptyGraph);
+    const parsed = parse("illuminate a1 2 5 algorithm=community");
+    if (!parsed.ok) {
+      throw new Error(`fixture did not parse: ${parsed.usage}`);
+    }
+    await dispatch({ client: asClient(fake), command: parsed.command });
+
+    expect(fake.calls.map((c) => c.method)).toEqual(["illuminate"]);
+    const [seed, opts] = fake.calls[0].args as [
+      string,
+      { community?: unknown; bfs?: unknown; ppr?: unknown },
+    ];
+    expect(seed).toBe("a1");
+    // k (5) becomes the max_size UPPER BOUND; step (2) has no meaning here
+    // and is dropped; the α/ε knobs default to 0 = "server default". Mirrors
+    // the Go CLI `IlluminateFamilyOption` `case "community"`.
+    expect(opts.community).toEqual({
+      maxSize: 5,
+      restartProb: 0,
+      epsilon: 0,
+    });
+    // The #942 regression guard: the seam must NOT degrade to a BFS/PPR walk.
+    expect(opts.bfs).toBeUndefined();
+    expect(opts.ppr).toBeUndefined();
+  });
+
+  test("community passes restart_prob / epsilon through unchanged", async () => {
+    const fake = new FakeLanternClient();
+    fake.stub("illuminate", emptyGraph);
+    const parsed = parse(
+      "illuminate a1 2 5 algorithm=community restart_prob=0.25 epsilon=0.001",
+    );
+    if (!parsed.ok) {
+      throw new Error(`fixture did not parse: ${parsed.usage}`);
+    }
+    await dispatch({ client: asClient(fake), command: parsed.command });
+
+    const [, opts] = fake.calls[0].args as [
+      string,
+      { community?: unknown; bfs?: unknown; ppr?: unknown },
+    ];
+    expect(opts.community).toEqual({
+      maxSize: 5,
+      restartProb: 0.25,
+      epsilon: 0.001,
+    });
+    expect(opts.bfs).toBeUndefined();
+    expect(opts.ppr).toBeUndefined();
   });
 });
