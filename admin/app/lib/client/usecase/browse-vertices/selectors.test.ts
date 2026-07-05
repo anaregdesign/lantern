@@ -4,6 +4,7 @@ import {
   selectCanGoPrevious,
   selectCurrentPage,
   selectPageNumber,
+  selectTotalPages,
   selectVisibleVertices,
 } from "./selectors";
 import {
@@ -66,5 +67,36 @@ describe("browse-vertices selectors", () => {
     const state = stateWithPages([PAGE_A, PAGE_B], 1);
     expect(selectCanGoNext(state)).toBe(false);
     expect(selectCanGoPrevious(state)).toBe(true);
+  });
+});
+
+describe("selectTotalPages", () => {
+  function stateWithCount(count: number | null): BrowseVerticesState {
+    return { ...INITIAL_BROWSE_VERTICES_STATE, count };
+  }
+
+  it("divides an exact multiple", () => {
+    expect(selectTotalPages(stateWithCount(100), 50)).toBe(2);
+  });
+
+  it("rounds a remainder up to the next page", () => {
+    expect(selectTotalPages(stateWithCount(101), 50)).toBe(3);
+  });
+
+  it("returns a single page when the count fits exactly on one page", () => {
+    expect(selectTotalPages(stateWithCount(50), 50)).toBe(1);
+  });
+
+  it("returns 1 for an empty prefix so the pager reads 'Page 1 of 1'", () => {
+    expect(selectTotalPages(stateWithCount(0), 50)).toBe(1);
+  });
+
+  it("returns null when the count is not yet known (fresh-count guard)", () => {
+    expect(selectTotalPages(stateWithCount(null), 50)).toBeNull();
+  });
+
+  it("returns null for a non-positive page size", () => {
+    expect(selectTotalPages(stateWithCount(100), 0)).toBeNull();
+    expect(selectTotalPages(stateWithCount(100), -50)).toBeNull();
   });
 });

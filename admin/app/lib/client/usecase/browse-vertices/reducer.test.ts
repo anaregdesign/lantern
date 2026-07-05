@@ -32,7 +32,7 @@ describe("browseVerticesReducer", () => {
   });
 
   it("resets state and bumps epoch on PREFIX_CHANGED", () => {
-    const base = withEpoch(INITIAL_BROWSE_VERTICES_STATE, 3);
+    const base = { ...withEpoch(INITIAL_BROWSE_VERTICES_STATE, 3), count: 99 };
     const next = browseVerticesReducer(base, {
       type: "PREFIX_CHANGED",
       prefix: "user:",
@@ -42,6 +42,9 @@ describe("browseVerticesReducer", () => {
     expect(next.pages).toEqual([]);
     expect(next.currentPageIndex).toBe(-1);
     expect(next.status).toBe("idle");
+    // A stale count must be cleared so `selectTotalPages` never renders a wrong
+    // total while the operator retypes the prefix (#946).
+    expect(next.count).toBeNull();
   });
 
   it("ignores PAGE_REQUESTED from a stale epoch", () => {
