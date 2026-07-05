@@ -41,8 +41,10 @@ import {
   ScanOrder as PbScanOrder,
   Weighting as PbWeighting,
   VertexSchema,
+  type Edge as PbEdge,
   type GetReplicationStatusResponse,
   type GetServerStatusResponse,
+  type Vertex as PbVertex,
 } from "./gen/graph/v1/graph_pb.js";
 
 import {
@@ -60,6 +62,8 @@ import {
   fromVertexJson,
   toEdgeJson,
   toVertexJson,
+  edgeRecordToJson,
+  vertexRecordToJson,
   type Edge,
   type EdgeInput,
   type Graph,
@@ -84,6 +88,14 @@ import {
   type IncrementalSearchOptions,
 } from "./incremental-search.js";
 import { contribIdFrom, makeNonce, validateContribId } from "./contrib.js";
+import { decayContributions, type DecayOptions } from "./decay.js";
+import {
+  DEFAULT_RESTORE_CHUNK_SIZE,
+  type BackupRecord,
+  type RestoreSource,
+  type RestoreStats,
+} from "./backup.js";
+import { pingHealth, type PingOptions } from "./health.js";
 
 /**
  * Upper bound for the auto-chunk size. Contrib-ID idempotency keys (#895)
@@ -239,14 +251,27 @@ export { normaliseBaseUrl };
 export class Lantern {
   private readonly client: Client<typeof LanternService>;
   private readonly options: ConnectOptions;
+  /**
+   * The normalised base URL (`http(s)://host:port`, no trailing slash) the
+   * client was built with, or undefined when constructed via
+   * {@link Lantern.withTransport} without one. Only `ping()` needs it — it
+   * POSTs a Connect+JSON Health/Check to the gRPC-Health-v1 endpoint that
+   * rides the same listener, which the typed `client` does not expose.
+   */
+  private readonly baseUrl?: string;
   /** Lazily-minted per-client nonce seeding automatic contrib IDs (#895). */
   private nonce: Uint8Array | null = null;
   /** Monotonic per-call sequence folded into automatic contrib IDs (#895). */
   private callSeq = 0n;
 
-  private constructor(client: Client<typeof LanternService>, options: ConnectOptions) {
+  private constructor(
+    client: Client<typeof LanternService>,
+    options: ConnectOptions,
+    baseUrl?: string,
+  ) {
     this.client = client;
     this.options = options;
+    this.baseUrl = baseUrl;
   }
 
   /**
@@ -263,12 +288,26 @@ export class Lantern {
    *     transport, …),
    *   - the test injects a mock transport,
    *   - the runtime is unsupported by the bundled transport helpers.
+   *
+   * `baseUrl` is optional and used only by `ping()`, which POSTs a
+   * Connect+JSON Health/Check outside the typed transport (the
+   * gRPC-Health-v1 surface is not part of `LanternService`). The
+   * `connect()` / `connectWeb()` helpers fill it in automatically;
+   * a `withTransport` client built without one throws from `ping()`.
    */
-  static withTransport(transport: Transport, options: ConnectOptions = {}): Lantern {
-    return new Lantern(createClient(LanternService, transport), {
-      batchChunkSize: DEFAULT_BATCH_CHUNK_SIZE,
-      ...options,
-    });
+  static withTransport(
+    transport: Transport,
+    options: ConnectOptions = {},
+    baseUrl?: string,
+  ): Lantern {
+    return new Lantern(
+      createClient(LanternService, transport),
+      {
+        batchChunkSize: DEFAULT_BATCH_CHUNK_SIZE,
+        ...options,
+      },
+      baseUrl,
+    );
   }
 
   /**
@@ -663,6 +702,43 @@ export class Lantern {
     return effective;
   }
 
+  /**
+   * Accumulates a single edge whose contributed live weight follows the
+   * geometric decay staircase described by `opts`, using `Date.now()` as the
+   * t=0 reference (#953, parity with the Go SDK's `AddDecayingEdge`). It
+   * expands `opts` (see {@link decayContributions}) into up to `opts.steps`
+   * additive contributions and applies them in one `addEdges` batch, so it
+   * inherits that path's automatic chunking, contrib-id dedup (when
+   * `idempotentAdds` is on), and post-accumulation effective-weight
+   * reporting.
+   *
+   * Returns the edge's effective (live-sum) weight immediately after the add
+   * — any preexisting live weight on `(tail, head)` plus `opts.initialWeight`.
+   *
+   * The whole curve is a single `addEdges` request (steps <=
+   * MAX_DECAY_STEPS is far below the batch chunk size), so the server
+   * validates every contribution's expiration before applying any: a horizon
+   * longer than the server's `LANTERN_TOMBSTONE_TTL` rejects the entire add
+   * rather than writing a truncated staircase. A later `putEdge` or
+   * `deleteEdge` on the same endpoints replaces or removes every
+   * contribution, discarding whatever remains of the schedule.
+   *
+   * @throws {InvalidArgumentError} synchronously (as a rejected promise) when
+   * `opts` is ill-formed or its curve underflows float32 to zero.
+   */
+  async addDecayingEdge(
+    tail: string,
+    head: string,
+    opts: DecayOptions,
+    signal?: AbortSignal,
+  ): Promise<number> {
+    const inputs = decayContributions(tail, head, opts, Date.now());
+    const effective = await this.addEdges(inputs, signal);
+    // The contributions share (tail, head) and are applied in order, so the
+    // last entry's effective weight is the full post-add live sum.
+    return effective[effective.length - 1] ?? 0;
+  }
+
   async putEdges(inputs: readonly EdgeInput[], signal?: AbortSignal): Promise<void> {
     if (inputs.length === 0) return;
     await this.runBatchWrite(inputs, async (chunk) => {
@@ -861,6 +937,129 @@ export class Lantern {
    */
   async getReplicationStatus(signal?: AbortSignal): Promise<GetReplicationStatusResponse> {
     return this.invoke(() => this.client.getReplicationStatus({}, this.callOpts(signal)));
+  }
+
+  // --- Backup / restore (#685) ---
+
+  /**
+   * Stream a whole-graph, point-in-time dump as an async iterable of
+   * {@link BackupRecord}s — every live vertex followed by every folded live
+   * edge. Consumes the server-streaming `BackupSnapshot` RPC and decodes each
+   * frame **kind-preservingly**, so narrow numeric value types survive to
+   * {@link restore} losslessly.
+   *
+   * `opts.prefix` scopes the dump to vertices whose key begins with the given
+   * prefix (and edges incident to them); omit it to dump the whole graph.
+   * Pass a `signal` to abort mid-stream. Serialise the records yourself, or
+   * pipe them through {@link backupRecordToNdjson} for a Node-native NDJSON
+   * file you can later feed back to {@link restore}.
+   *
+   * @example
+   * for await (const rec of client.backup()) {
+   *   process.stdout.write(backupRecordToNdjson(rec) + "\n");
+   * }
+   */
+  async *backup(opts: { prefix?: string } = {}, signal?: AbortSignal): AsyncIterable<BackupRecord> {
+    const stream = this.client.backupSnapshot(
+      { vertexPrefix: opts.prefix ?? "" },
+      this.callOpts(signal),
+    );
+    try {
+      for await (const frame of stream) {
+        if (frame.record.case === "vertex") {
+          const flat = toJson(VertexSchema, frame.record.value) as Record<string, unknown>;
+          yield { kind: "vertex", vertex: fromVertexJson(flat) };
+        } else if (frame.record.case === "edge") {
+          const flat = toJson(EdgeSchema, frame.record.value) as Record<string, unknown>;
+          yield { kind: "edge", edge: fromEdgeJson(flat) };
+        }
+      }
+    } catch (err) {
+      throw wrapConnectError(err);
+    }
+  }
+
+  /**
+   * Replay a dump — the output of {@link backup}, a decoded NDJSON file, or
+   * any (async) iterable of {@link BackupRecord}s — back into the graph via
+   * the batch `putVertices` / `putEdges` surface (there is no dedicated
+   * restore RPC). Records are re-encoded kind-preservingly, so the load is
+   * lossless. Batches flush every `opts.chunkSize` records
+   * (default {@link DEFAULT_RESTORE_CHUNK_SIZE}); a final flush writes any
+   * remainder **vertices before edges**, so real vertex values land before
+   * `PutEdges` would otherwise auto-create bare endpoints.
+   *
+   * Returns the number of vertices and edges written. Restore is **not**
+   * transactional — a mid-stream error leaves already-flushed batches in
+   * place.
+   */
+  async restore(
+    source: RestoreSource,
+    opts: { chunkSize?: number } = {},
+    signal?: AbortSignal,
+  ): Promise<RestoreStats> {
+    const chunkSize =
+      opts.chunkSize && opts.chunkSize > 0 ? opts.chunkSize : DEFAULT_RESTORE_CHUNK_SIZE;
+    const stats: RestoreStats = { vertices: 0, edges: 0 };
+    let vbatch: PbVertex[] = [];
+    let ebatch: PbEdge[] = [];
+
+    const flushVertices = async (): Promise<void> => {
+      if (vbatch.length === 0) return;
+      const vertices = vbatch;
+      vbatch = [];
+      await this.invoke(() => this.client.putVertices({ vertices }, this.callOpts(signal)));
+      stats.vertices += vertices.length;
+    };
+    const flushEdges = async (): Promise<void> => {
+      if (ebatch.length === 0) return;
+      const edges = ebatch;
+      ebatch = [];
+      await this.invoke(() => this.client.putEdges({ edges }, this.callOpts(signal)));
+      stats.edges += edges.length;
+    };
+
+    for await (const rec of source) {
+      if (rec.kind === "vertex") {
+        vbatch.push(fromJson(VertexSchema, vertexRecordToJson(rec.vertex) as JsonValue));
+        if (vbatch.length >= chunkSize) await flushVertices();
+      } else {
+        ebatch.push(fromJson(EdgeSchema, edgeRecordToJson(rec.edge) as JsonValue));
+        if (ebatch.length >= chunkSize) await flushEdges();
+      }
+    }
+    await flushVertices();
+    await flushEdges();
+    return stats;
+  }
+
+  // --- Health ---
+
+  /**
+   * Probe server readiness via the gRPC-Health-v1 `Health/Check` that rides
+   * the primary listener (auth-exempt). Resolves when the server reports
+   * SERVING; throws {@link HealthStatusError} on any other status, or a
+   * generic {@link LanternError} on transport / non-200 / decode failure. A
+   * `signal` (and the client's `defaultTimeoutMs`, if set) bound the call.
+   *
+   * Only available on clients built through `connect()` / `connectWeb()` — or
+   * a `withTransport` client given a `baseUrl` — since the probe POSTs outside
+   * the typed transport. A transport-only client has no URL and throws
+   * {@link InvalidArgumentError}.
+   */
+  async ping(signal?: AbortSignal): Promise<void> {
+    if (!this.baseUrl) {
+      throw new InvalidArgumentError(
+        "ping requires a base URL; build the client via connect()/connectWeb(), " +
+          "or pass baseUrl to withTransport()",
+      );
+    }
+    const opts: PingOptions = {};
+    if (signal) opts.signal = signal;
+    if (this.options.defaultTimeoutMs && this.options.defaultTimeoutMs > 0) {
+      opts.timeoutMs = this.options.defaultTimeoutMs;
+    }
+    await pingHealth(this.baseUrl, opts);
   }
 
   // --- internals ---

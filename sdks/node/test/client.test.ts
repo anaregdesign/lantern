@@ -22,7 +22,7 @@ import * as http from "node:http";
 import { type AddressInfo } from "node:net";
 
 import { Code, ConnectError, type ConnectRouter } from "@connectrpc/connect";
-import { connectNodeAdapter } from "@connectrpc/connect-node";
+import { connectNodeAdapter, createConnectTransport } from "@connectrpc/connect-node";
 import { create } from "@bufbuild/protobuf";
 
 import {
@@ -32,8 +32,20 @@ import {
   NotFoundError,
   connect,
   Reduction,
+  Int32,
+  Uint64,
+  Float32,
+  backupRecordToNdjson,
+  backupRecordFromNdjson,
+  HealthStatusError,
+  type BackupRecord,
 } from "../src/index.js";
-import { LanternService, VertexSchema, ScanOrder } from "../src/gen/graph/v1/graph_pb.js";
+import {
+  LanternService,
+  VertexSchema,
+  EdgeSchema,
+  ScanOrder,
+} from "../src/gen/graph/v1/graph_pb.js";
 
 interface StubState {
   vertices: Map<string, ReturnType<typeof create<typeof VertexSchema>>>;
@@ -58,7 +70,7 @@ interface StubState {
   /** Last AddEdgeRequest the stub observed, for contrib-id assertions (#895). */
   lastAddEdge?: { contribId: Uint8Array };
   /** Every AddEdgesRequest the stub observed, in order, for chunk-alignment assertions (#895). */
-  addEdgesCalls: { contribIds: Uint8Array[]; tails: string[] }[];
+  addEdgesCalls: { contribIds: Uint8Array[]; tails: string[]; weights: number[] }[];
   /** Edge weights keyed tail → head → weight, seeded by DeleteEdgesByPrefix tests (#899). */
   edges: Map<string, Map<string, number>>;
   /** Last DeleteEdgesByPrefixRequest the stub observed, for request-building assertions (#899). */
@@ -70,6 +82,17 @@ interface StubState {
   };
   /** ScanOrder of the last scanVertices / scanVertexKeys request (#898). */
   lastScanOrder?: number;
+  /**
+   * Ordered log of putVertices / putEdges batch sizes, for restore
+   * ordering + chunking assertions (#685). Reset per restore test.
+   */
+  writeLog: { kind: "vertices" | "edges"; count: number }[];
+  /**
+   * Controls the stub gRPC-Health-v1 endpoint for ping() tests (#685-adjacent
+   * parity work). `status` is the JSON `status` string returned on a 200;
+   * `httpStatus`, when set to non-200, drives the transport-error branch.
+   */
+  health?: { status?: string; httpStatus?: number };
 }
 
 function newStubRoutes(state: StubState) {
@@ -105,6 +128,7 @@ function newStubRoutes(state: StubState) {
           }
           return { written, skippedKeys };
         }
+        state.writeLog.push({ kind: "vertices", count: req.vertices.length });
         for (const v of req.vertices) {
           state.vertices.set(v.key, v);
         }
@@ -121,8 +145,22 @@ function newStubRoutes(state: StubState) {
         state.addEdgesCalls.push({
           contribIds: req.contribIds,
           tails: req.edges.map((e) => e.tail),
+          weights: req.edges.map((e) => e.weight),
         });
-        return { effectiveWeights: req.edges.map((e) => e.weight) };
+        // Model the server's additive accumulation: the effective weight
+        // reported for each edge is the running live sum over its (tail,head)
+        // seen so far within this request. Distinct endpoints therefore echo
+        // their own weight; repeated endpoints (e.g. a decay staircase on one
+        // pair) return the telescoped cumulative sum, whose last entry is the
+        // full post-add live weight.
+        const running = new Map<string, number>();
+        const effectiveWeights = req.edges.map((e) => {
+          const key = `${e.tail}\u0000${e.head}`;
+          const sum = (running.get(key) ?? 0) + e.weight;
+          running.set(key, sum);
+          return sum;
+        });
+        return { effectiveWeights };
       },
       async deleteVertex(req) {
         const existed = state.vertices.delete(req.key);
@@ -245,6 +283,37 @@ function newStubRoutes(state: StubState) {
         }
         return { deleted: BigInt(victims.length) };
       },
+      // Batch edge upsert (#685 restore path): records batch size for
+      // ordering/chunking assertions and stores weights into state.edges so
+      // a subsequent backup reflects them.
+      async putEdges(req) {
+        state.writeLog.push({ kind: "edges", count: req.edges.length });
+        for (const e of req.edges) {
+          if (!state.edges.has(e.tail)) state.edges.set(e.tail, new Map());
+          state.edges.get(e.tail)!.set(e.head, e.weight);
+        }
+        return { written: req.edges.length };
+      },
+      // Whole-graph point-in-time stream (#685 backup path): emits every
+      // vertex (as the `vertex` oneof arm) followed by every edge (as the
+      // `edge` arm), honoring the vertexPrefix filter. Server-streaming, so
+      // the handler is an async generator.
+      async *backupSnapshot(req) {
+        for (const [key, v] of state.vertices) {
+          if (req.vertexPrefix && !key.startsWith(req.vertexPrefix)) continue;
+          yield { record: { case: "vertex" as const, value: v } };
+        }
+        for (const [tail, heads] of state.edges) {
+          for (const [head, weight] of heads) {
+            yield {
+              record: {
+                case: "edge" as const,
+                value: create(EdgeSchema, { tail, head, weight }),
+              },
+            };
+          }
+        }
+      },
       // Remaining methods are intentionally absent — the connect-node
       // adapter rejects them with Code.Unimplemented, which the SDK
       // surfaces as the generic LanternError. Tests that need these
@@ -255,7 +324,7 @@ function newStubRoutes(state: StubState) {
 
 let server: http.Server;
 let baseUrl: string;
-const state: StubState = { vertices: new Map(), addEdgesCalls: [], edges: new Map() };
+const state: StubState = { vertices: new Map(), addEdgesCalls: [], edges: new Map(), writeLog: [] };
 
 beforeAll(async () => {
   // HTTP/1.1 server (not http2) — Bun's test runner has rough edges
@@ -263,7 +332,23 @@ beforeAll(async () => {
   // "Premature close" errors on the second call. HTTP/1.1 is plenty
   // for the round-trip semantics this test covers, and connect-node
   // negotiates the Connect protocol over both transports identically.
-  server = http.createServer(connectNodeAdapter({ routes: newStubRoutes(state) }));
+  //
+  // The gRPC-Health-v1 surface (which ping() probes) rides the same listener
+  // on the real server; here we mount a hand-rolled JSON responder for
+  // `/grpc.health.v1.Health/Check` in front of the Connect adapter so ping()
+  // has an endpoint to hit. Everything else falls through to the adapter.
+  const adapter = connectNodeAdapter({ routes: newStubRoutes(state) });
+  server = http.createServer((req, res) => {
+    if (req.url === "/grpc.health.v1.Health/Check") {
+      const httpStatus = state.health?.httpStatus ?? 200;
+      res.writeHead(httpStatus, { "Content-Type": "application/json" });
+      res.end(
+        httpStatus === 200 ? JSON.stringify({ status: state.health?.status ?? "SERVING" }) : "{}",
+      );
+      return;
+    }
+    adapter(req, res);
+  });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const addr = server.address() as AddressInfo;
   baseUrl = `http://127.0.0.1:${addr.port}`;
@@ -626,6 +711,281 @@ describe("AddEdge contrib IDs (#895)", () => {
     const c = newClient();
     try {
       expect(await c.addEdges([])).toEqual([]);
+    } finally {
+      c.close();
+    }
+  });
+});
+
+describe("addDecayingEdge (#953)", () => {
+  test("sends one expanded staircase batch and returns the post-add live weight", async () => {
+    const c = newClient();
+    try {
+      state.addEdgesCalls = [];
+      const live = await c.addDecayingEdge("a", "b", {
+        initialWeight: 16,
+        ratio: 0.5,
+        steps: 5,
+        intervalSeconds: 1,
+      });
+      // One AddEdges batch carrying the 8,4,2,1,1 drops...
+      expect(state.addEdgesCalls.length).toBe(1);
+      const call = state.addEdgesCalls[0];
+      expect(call.tails).toEqual(["a", "a", "a", "a", "a"]);
+      call.weights.forEach((w, i) => expect(w).toBeCloseTo([8, 4, 2, 1, 1][i], 4));
+      // ...and the returned live weight is initialWeight (16), not the raw
+      // 16,8,4,2,1 schedule's sum (31) — the telescoping check at the wire.
+      expect(live).toBeCloseTo(16, 4);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("invalid opts short-circuit before any RPC", async () => {
+    const c = newClient();
+    try {
+      state.addEdgesCalls = [];
+      await expect(
+        c.addDecayingEdge("a", "b", { initialWeight: 16, ratio: 2, steps: 5, intervalSeconds: 1 }),
+      ).rejects.toThrow(InvalidArgumentError);
+      expect(state.addEdgesCalls.length).toBe(0);
+    } finally {
+      c.close();
+    }
+  });
+});
+
+describe("backup / restore (#685)", () => {
+  test("backup streams every vertex then every edge, decoded", async () => {
+    const c = newClient();
+    try {
+      state.vertices.clear();
+      state.edges.clear();
+      await c.putVertex({ key: "bk/v/1", value: "alice" });
+      await c.putVertex({ key: "bk/v/2", value: 42 });
+      // Seed an edge directly (no AddEdge stub state coupling).
+      state.edges.set("bk/v/1", new Map([["bk/v/2", 3.5]]));
+
+      const records: BackupRecord[] = [];
+      for await (const rec of c.backup()) records.push(rec);
+
+      const verts = records.filter((r) => r.kind === "vertex");
+      const edges = records.filter((r) => r.kind === "edge");
+      expect(verts.length).toBe(2);
+      expect(edges.length).toBe(1);
+      // Vertices precede edges in the stream.
+      expect(records.findIndex((r) => r.kind === "edge")).toBe(2);
+
+      const v1 = verts.find((r) => r.kind === "vertex" && r.vertex.key === "bk/v/1");
+      expect(v1?.kind === "vertex" && v1.vertex.value).toBe("alice");
+      const e = edges[0];
+      expect(e.kind === "edge" && e.edge.tail).toBe("bk/v/1");
+      expect(e.kind === "edge" && e.edge.head).toBe("bk/v/2");
+      expect(e.kind === "edge" && e.edge.weight).toBeCloseTo(3.5, 5);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("backup honors the vertex prefix filter", async () => {
+    const c = newClient();
+    try {
+      state.vertices.clear();
+      state.edges.clear();
+      await c.putVertex({ key: "keep/1", value: 1 });
+      await c.putVertex({ key: "drop/1", value: 2 });
+
+      const keys: string[] = [];
+      for await (const rec of c.backup({ prefix: "keep/" })) {
+        if (rec.kind === "vertex") keys.push(rec.vertex.key);
+      }
+      expect(keys).toEqual(["keep/1"]);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("restore flushes remaining vertices before edges and reports counts", async () => {
+    const c = newClient();
+    try {
+      state.vertices.clear();
+      state.edges.clear();
+      state.writeLog = [];
+      // Interleaved input under a large chunk size: nothing flushes mid-stream,
+      // so the final flush ordering is observed in isolation — the remaining
+      // vertices must be written before the remaining edges (real vertex values
+      // stay authoritative over PutEdges' auto-created bare endpoints).
+      const records: BackupRecord[] = [
+        { kind: "vertex", vertex: { key: "r/v/1", value: "x", kind: "string", expiration: null } },
+        { kind: "edge", edge: { tail: "r/v/1", head: "r/v/2", weight: 1, expiration: null } },
+        { kind: "vertex", vertex: { key: "r/v/2", value: "y", kind: "string", expiration: null } },
+        { kind: "edge", edge: { tail: "r/v/2", head: "r/v/3", weight: 2, expiration: null } },
+      ];
+
+      const stats = await c.restore(records);
+      expect(stats).toEqual({ vertices: 2, edges: 2 });
+      expect(state.writeLog).toEqual([
+        { kind: "vertices", count: 2 },
+        { kind: "edges", count: 2 },
+      ]);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("restore chunks batches at chunkSize", async () => {
+    const c = newClient();
+    try {
+      state.vertices.clear();
+      state.edges.clear();
+      state.writeLog = [];
+      // Five vertices then two edges — the real backup ordering. chunkSize 2
+      // flushes vertices in [2,2] mid-stream, leaving a trailing [1]; the two
+      // edges flush once at the end.
+      const records: BackupRecord[] = [
+        { kind: "vertex", vertex: { key: "c/v/1", value: 1, kind: "int64", expiration: null } },
+        { kind: "vertex", vertex: { key: "c/v/2", value: 2, kind: "int64", expiration: null } },
+        { kind: "vertex", vertex: { key: "c/v/3", value: 3, kind: "int64", expiration: null } },
+        { kind: "vertex", vertex: { key: "c/v/4", value: 4, kind: "int64", expiration: null } },
+        { kind: "vertex", vertex: { key: "c/v/5", value: 5, kind: "int64", expiration: null } },
+        { kind: "edge", edge: { tail: "c/v/1", head: "c/v/2", weight: 1, expiration: null } },
+        { kind: "edge", edge: { tail: "c/v/2", head: "c/v/3", weight: 1, expiration: null } },
+      ];
+
+      const stats = await c.restore(records, { chunkSize: 2 });
+      expect(stats).toEqual({ vertices: 5, edges: 2 });
+      expect(state.writeLog.filter((w) => w.kind === "vertices").map((w) => w.count)).toEqual([
+        2, 2, 1,
+      ]);
+      expect(state.writeLog.filter((w) => w.kind === "edges").map((w) => w.count)).toEqual([2]);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("backup → restore preserves narrow numeric + bytes kinds losslessly", async () => {
+    const c = newClient();
+    try {
+      state.vertices.clear();
+      state.edges.clear();
+      await c.putVertex({ key: "orig/i32", value: new Int32(-5) });
+      await c.putVertex({ key: "orig/u64", value: new Uint64(2n ** 63n + 7n) });
+      await c.putVertex({ key: "orig/f32", value: new Float32(1.5) });
+      await c.putVertex({ key: "orig/bytes", value: new Uint8Array([1, 2, 3]) });
+
+      // Dump, re-key under a fresh prefix, replay, then read back — the whole
+      // decode → re-encode → putVertices → getVertex path must not widen kinds.
+      const dumped: BackupRecord[] = [];
+      for await (const rec of c.backup({ prefix: "orig/" })) dumped.push(rec);
+      const rekeyed: BackupRecord[] = dumped.map((r) =>
+        r.kind === "vertex"
+          ? { kind: "vertex", vertex: { ...r.vertex, key: r.vertex.key.replace("orig/", "rest/") } }
+          : r,
+      );
+      await c.restore(rekeyed);
+
+      const i32 = await c.getVertex("rest/i32");
+      expect(i32.kind).toBe("int32");
+      expect(i32.value).toBe(-5);
+      const u64 = await c.getVertex("rest/u64");
+      expect(u64.kind).toBe("uint64");
+      expect(u64.value).toBe(2n ** 63n + 7n);
+      const f32 = await c.getVertex("rest/f32");
+      expect(f32.kind).toBe("float32");
+      expect(f32.value).toBeCloseTo(1.5, 6);
+      const b = await c.getVertex("rest/bytes");
+      expect(b.kind).toBe("bytes");
+      expect(Array.from(b.value as Uint8Array)).toEqual([1, 2, 3]);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("NDJSON line codec round-trips records and is stable", () => {
+    const recs: BackupRecord[] = [
+      { kind: "vertex", vertex: { key: "n/i32", value: -5, kind: "int32", expiration: null } },
+      {
+        kind: "vertex",
+        vertex: { key: "n/u64", value: 2n ** 63n + 7n, kind: "uint64", expiration: null },
+      },
+      {
+        kind: "vertex",
+        vertex: {
+          key: "n/bytes",
+          value: new Uint8Array([9, 8, 7]),
+          kind: "bytes",
+          expiration: null,
+        },
+      },
+      { kind: "edge", edge: { tail: "n/i32", head: "n/u64", weight: 2.5, expiration: null } },
+    ];
+    for (const rec of recs) {
+      const line = backupRecordToNdjson(rec);
+      expect(line).not.toContain("\n");
+      const back = backupRecordFromNdjson(line);
+      // Re-serialising the decoded record must be byte-identical (stable codec).
+      expect(backupRecordToNdjson(back)).toBe(line);
+    }
+    // uint64 magnitude is carried as a string, not a lossy JS number.
+    expect(backupRecordToNdjson(recs[1])).toContain(`"uint64":"${2n ** 63n + 7n}"`);
+  });
+
+  test("backupRecordFromNdjson rejects an unknown record kind", () => {
+    expect(() => backupRecordFromNdjson(JSON.stringify({ kind: "bogus", key: "x" }))).toThrow(
+      InvalidArgumentError,
+    );
+  });
+});
+
+describe("ping (health check)", () => {
+  test("resolves when the server reports SERVING", async () => {
+    const c = newClient();
+    try {
+      state.health = { status: "SERVING" };
+      await expect(c.ping()).resolves.toBeUndefined();
+    } finally {
+      c.close();
+    }
+  });
+
+  test("accepts the connectrpc-prefixed SERVING_STATUS_SERVING enum name", async () => {
+    const c = newClient();
+    try {
+      state.health = { status: "SERVING_STATUS_SERVING" };
+      await expect(c.ping()).resolves.toBeUndefined();
+    } finally {
+      c.close();
+    }
+  });
+
+  test("throws HealthStatusError on a non-SERVING status", async () => {
+    const c = newClient();
+    try {
+      state.health = { status: "NOT_SERVING" };
+      await expect(c.ping()).rejects.toBeInstanceOf(HealthStatusError);
+      await expect(c.ping()).rejects.toMatchObject({ status: "NOT_SERVING" });
+    } finally {
+      state.health = { status: "SERVING" };
+      c.close();
+    }
+  });
+
+  test("throws a generic LanternError on a non-200 health response", async () => {
+    const c = newClient();
+    try {
+      state.health = { httpStatus: 503 };
+      await expect(c.ping()).rejects.toThrow(/HTTP 503/);
+    } finally {
+      state.health = { status: "SERVING" };
+      c.close();
+    }
+  });
+
+  test("a withTransport client built without a baseUrl rejects ping", async () => {
+    const transport = createConnectTransport({ baseUrl, httpVersion: "1.1" });
+    const c = Lantern.withTransport(transport);
+    try {
+      await expect(c.ping()).rejects.toBeInstanceOf(InvalidArgumentError);
     } finally {
       c.close();
     }
