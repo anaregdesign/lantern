@@ -104,40 +104,30 @@ export function CliPage() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [cli.scrollback]);
 
-  // The prompt is `disabled` while a dispatch is in flight (busy) — that
-  // preserves the `Cancel`/busy semantics and lets the window-level Esc
-  // handler own cancellation. But the browser blurs a disabled element and
-  // never restores focus when it re-enables, so after every Enter-submitted
-  // command the caret would be ejected to <body> and the operator would
-  // have to click back in (#520). Refocus the prompt + park the caret at
-  // the end on the disabled→enabled edge. This is the Enter counterpart
-  // to the Tab refocus in `onKeyDown` (#519); here the cause is the
-  // disabled→blur edge (not Tabster), so no rAF deferral is needed. Only
-  // reclaim focus if the disable left it on <body> — respect a deliberate
-  // focus move (e.g. into the axis picker) the operator made mid-command.
-  const promptDisabled = cli.busy;
-  const wasPromptDisabled = useRef(promptDisabled);
-  useEffect(() => {
-    const justEnabled = wasPromptDisabled.current && !promptDisabled;
-    wasPromptDisabled.current = promptDisabled;
-    if (!justEnabled) return;
-    const active = document.activeElement;
-    if (active !== null && active !== document.body) return;
-    const node = inputRef.current;
-    if (!node) return;
-    node.focus();
-    const end = node.value.length;
-    node.setSelectionRange(end, end);
-  }, [promptDisabled]);
+  // Multi-line paste is a script (#945): each line runs as its own command
+  // via the controller's pending-command queue, so pasting a seed script
+  // from a doc or an issue reproduces a graph state instead of the newlines
+  // flattening into the single-line input. A single-line paste keeps the
+  // browser default (drop the text into the prompt for the operator to edit).
+  const onPaste = useCallback(
+    (e: React.ClipboardEvent<HTMLInputElement>) => {
+      const text = e.clipboardData.getData("text");
+      if (!text.includes("\n")) return;
+      e.preventDefault();
+      cli.enqueueScript(text.split("\n"));
+    },
+    [cli],
+  );
 
   // Click-to-illuminate (#439, #464). Writes the picker-formatted
   // illuminate command into the prompt and submits it through the same
   // parser path the user would hit by typing it. With the picker at its
   // defaults the formatter emits the canonical short form
-  // `illuminate <key> 2 5` (regression guard).
+  // `illuminate <key> 2 5` (regression guard). A click while a command is
+  // in flight enqueues (#945) rather than being swallowed, so the walk runs
+  // as soon as the current dispatch settles.
   const onNodeClick = useCallback(
     (key: string) => {
-      if (cli.busy) return;
       cli.runRaw(formatIlluminateClick(key, axisPicker.axes));
     },
     [cli, axisPicker.axes],
@@ -145,10 +135,12 @@ export function CliPage() {
 
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
-      // Esc / Ctrl+L are owned by the window-level handler in `useCli`
-      // so they work even while the input is `disabled` (busy state) or
-      // without focus. Enter / ArrowUp / ArrowDown stay local because
-      // they read and write input state.
+      // Esc / Ctrl+L are owned by the window-level handler in `useCli` so
+      // they work without focus (and, historically, while the input was
+      // `disabled`). The prompt is always editable now (#945), but keeping
+      // them at window scope means they still fire from anywhere. Enter /
+      // ArrowUp / ArrowDown stay local because they read and write input
+      // state.
       if (e.key === "Tab") {
         // Terminal-style completion (#515). Resolve the active token,
         // then either apply the sole candidate, advance to the longest
@@ -302,8 +294,10 @@ export function CliPage() {
           {renderedScrollback}
 
           {/* Live prompt — an inline terminal line that scrolls with the
-              output, not a detached form (#515). Always rendered so the
-              `cli-input` testid and disabled-while-busy semantics hold. */}
+              output, not a detached form (#515). Always editable, even
+              while a command is in flight: Enter buffers into the
+              controller's pending-command queue instead of dropping the
+              keystrokes into a `disabled` input (#945). */}
           <div className={styles.promptRow}>
             <span className={styles.prompt} aria-hidden="true">
               ❯
@@ -317,8 +311,8 @@ export function CliPage() {
                 cli.setInput(e.target.value);
               }}
               onKeyDown={onKeyDown}
+              onPaste={onPaste}
               placeholder="get vertex alice    |    illuminate alice 2 5 algorithm=spt"
-              disabled={promptDisabled}
               data-testid="cli-input"
               aria-label="CLI command input"
               autoComplete="off"

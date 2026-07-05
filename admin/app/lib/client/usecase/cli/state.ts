@@ -37,6 +37,15 @@ export interface CliState {
   /** Dispatch lifecycle phase. */
   phase: CliPhase;
   /**
+   * Pending-command FIFO (#945). Raw input strings waiting to run while a
+   * dispatch is in flight. `submit`/paste enqueue here instead of dropping
+   * keystrokes into a `disabled` prompt; the controller drains the head on
+   * each successful settle so exactly one RPC is ever in flight. Cleared
+   * wholesale on cancel (Esc = "stop the script") and on any command error
+   * (fail-fast). Session-local — never persisted.
+   */
+  queue: string[];
+  /**
    * Most recent canvas frame. Read verbs replace it; mutating verbs
    * (`put`/`add`) fold the new element onto it (#518) so the operator
    * keeps their exploration context after a write. Null until the first
@@ -70,6 +79,7 @@ export const INITIAL_CLI_STATE: CliState = {
   history: [],
   historyIndex: null,
   phase: "idle",
+  queue: [],
   latestGraph: null,
   nextEntryId: 2,
 };
