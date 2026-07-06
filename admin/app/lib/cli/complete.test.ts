@@ -151,6 +151,7 @@ describe("completeCommandLine — illuminate option kwargs (slot ≥ 4)", () => 
       completeCommandLine("illuminate alice 2 5 ", KEYS).candidates,
     ).toEqual([
       "algorithm=",
+      "reduction=",
       "objective=",
       "weighting=",
       "prefix=",
@@ -167,9 +168,10 @@ describe("completeCommandLine — illuminate option kwargs (slot ≥ 4)", () => 
 
   test("drops option keys already present on the line", () => {
     expect(
-      completeCommandLine("illuminate alice 2 5 algorithm=spt ", KEYS)
+      completeCommandLine("illuminate alice 2 5 algorithm=community ", KEYS)
         .candidates,
     ).toEqual([
+      "reduction=",
       "objective=",
       "weighting=",
       "prefix=",
@@ -178,16 +180,16 @@ describe("completeCommandLine — illuminate option kwargs (slot ≥ 4)", () => 
     ]);
   });
 
-  test("completes enum values once = is typed", () => {
+  test("completes algorithm (family) values once = is typed", () => {
     expect(
       completeCommandLine("illuminate alice 2 5 algorithm=", KEYS).candidates,
-    ).toEqual([
-      "algorithm=none",
-      "algorithm=mst",
-      "algorithm=spt",
-      "algorithm=ppr",
-      "algorithm=community",
-    ]);
+    ).toEqual(["algorithm=bfs", "algorithm=ppr", "algorithm=community"]);
+  });
+
+  test("completes reduction values once = is typed", () => {
+    expect(
+      completeCommandLine("illuminate alice 2 5 reduction=", KEYS).candidates,
+    ).toEqual(["reduction=none", "reduction=mst", "reduction=spt"]);
   });
 
   test("filters enum values by their prefix", () => {

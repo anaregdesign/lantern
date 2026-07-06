@@ -259,8 +259,9 @@ so dashboards render the full variant set from process start:
 
 - **Illuminate** (graph walk): `lantern_illuminate_visited_vertices` /
   `_visited_edges` / `_duration_seconds`, labelled by the orthogonal axes
-  `algorithm × objective × weighting` (12 combos, #410) plus a `phase`
-  (`traversal` | `optimize`) on duration.
+  `algorithm × reduction × objective × weighting` (54 combos, #410/#963 —
+  `algorithm` is the traversal family, `reduction` the post-traversal tree
+  reduction) plus a `phase` (`traversal` | `optimize`) on duration.
 - **Scan / count**: `lantern_scan_results{op}`, `lantern_scan_duration_seconds{op}`.
 - **Search** (optional index): `lantern_search_results`,
   `lantern_search_duration_seconds`, and the index-size gauges

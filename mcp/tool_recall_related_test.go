@@ -77,7 +77,8 @@ func TestRecallRelated_PropagatesIlluminateOptions(t *testing.T) {
 		"seed":      "x",
 		"step":      3,
 		"k":         5,
-		"algorithm": "mst",
+		"algorithm": "bfs",
+		"reduction": "mst",
 		"objective": "max",
 		"weighting": "tfidf",
 	})
@@ -193,6 +194,134 @@ func TestRecallRelated_IgnoresPPRKnobsForNonPPR(t *testing.T) {
 	structuredAs(t, res, &out)
 	if out.RestartProb != 0 || out.Epsilon != 0 {
 		t.Fatalf("PPR knobs must not echo for non-ppr; got restart_prob=%v epsilon=%v", out.RestartProb, out.Epsilon)
+	}
+}
+
+// TestRecallRelated_AcceptsCommunityAlgorithm is the crux of #961 on the MCP
+// surface: algorithm=community was previously REJECTED entirely (the tool
+// only knew none/mst/spt/ppr). It must now be accepted, reach Illuminate as
+// the local-community family, and echo back.
+func TestRecallRelated_AcceptsCommunityAlgorithm(t *testing.T) {
+	h := newTestHarness(t)
+	called := false
+	h.fake.illuminateFn = func(_ context.Context, _ string, opts ...client.IlluminateOption) (*client.Graph, error) {
+		called = true
+		// The community family option + the shared weighting axis.
+		if len(opts) != 2 {
+			t.Errorf("Illuminate option count = %d, want 2", len(opts))
+		}
+		return &client.Graph{Vertices: map[string]*client.Vertex{"x": {Key: "x"}}}, nil
+	}
+	res := h.call(t, "recall_related", map[string]any{
+		"seed":      "x",
+		"algorithm": "community",
+	})
+	if !called {
+		t.Fatal("algorithm=community must reach Illuminate, not be rejected")
+	}
+	var out recallRelatedOutput
+	structuredAs(t, res, &out)
+	if out.Algorithm != "community" {
+		t.Fatalf("Algorithm = %q, want community", out.Algorithm)
+	}
+	if out.Reduction != "none" {
+		t.Fatalf("Reduction = %q, want none (default)", out.Reduction)
+	}
+}
+
+// TestRecallRelated_ForwardsCommunityReduction pins the orthogonal reduction
+// axis for the community family: algorithm=community reduction=mst objective=min
+// must reach Illuminate and echo both axes — the exact capability the user
+// reported missing (a community handed back as an MST backbone).
+func TestRecallRelated_ForwardsCommunityReduction(t *testing.T) {
+	h := newTestHarness(t)
+	called := false
+	h.fake.illuminateFn = func(_ context.Context, _ string, opts ...client.IlluminateOption) (*client.Graph, error) {
+		called = true
+		if len(opts) != 2 {
+			t.Errorf("Illuminate option count = %d, want 2", len(opts))
+		}
+		return &client.Graph{Vertices: map[string]*client.Vertex{"x": {Key: "x"}}}, nil
+	}
+	res := h.call(t, "recall_related", map[string]any{
+		"seed":      "x",
+		"algorithm": "community",
+		"reduction": "mst",
+		"objective": "min",
+	})
+	if !called {
+		t.Fatal("community+reduction must reach Illuminate")
+	}
+	var out recallRelatedOutput
+	structuredAs(t, res, &out)
+	if out.Algorithm != "community" || out.Reduction != "mst" || out.Objective != "min" {
+		t.Fatalf("echo mismatch: algorithm=%q reduction=%q objective=%q; want community/mst/min", out.Algorithm, out.Reduction, out.Objective)
+	}
+}
+
+// TestRecallRelated_ForwardsCommunityKnobs verifies the α/ε locality knobs
+// (shared with PPR) are forwarded and echoed for the community family too.
+func TestRecallRelated_ForwardsCommunityKnobs(t *testing.T) {
+	h := newTestHarness(t)
+	h.fake.illuminateFn = func(_ context.Context, _ string, _ ...client.IlluminateOption) (*client.Graph, error) {
+		return &client.Graph{Vertices: map[string]*client.Vertex{"x": {Key: "x"}}}, nil
+	}
+	res := h.call(t, "recall_related", map[string]any{
+		"seed":         "x",
+		"algorithm":    "community",
+		"restart_prob": 0.3,
+		"epsilon":      0.002,
+	})
+	var out recallRelatedOutput
+	structuredAs(t, res, &out)
+	if out.RestartProb != 0.3 || out.Epsilon != 0.002 {
+		t.Fatalf("community knobs must echo; got restart_prob=%v epsilon=%v", out.RestartProb, out.Epsilon)
+	}
+}
+
+// TestRecallRelated_RejectsUnknownReduction guards the reduction allow-list so
+// a typo surfaces as a tool error instead of silently degrading to none.
+func TestRecallRelated_RejectsUnknownReduction(t *testing.T) {
+	h := newTestHarness(t)
+	h.callExpectError(t, "recall_related", map[string]any{
+		"seed":      "x",
+		"reduction": "not-a-real-reduction",
+	})
+}
+
+// TestRecallRelated_IgnoresReductionForPPR pins the #961 gate: PPR returns a
+// ranked star with no subgraph to reduce, so a stray reduction on a ppr recall
+// is forced back to none in the echo rather than pretending it was applied.
+func TestRecallRelated_IgnoresReductionForPPR(t *testing.T) {
+	h := newTestHarness(t)
+	h.fake.illuminateFn = func(_ context.Context, _ string, _ ...client.IlluminateOption) (*client.Graph, error) {
+		return &client.Graph{Vertices: map[string]*client.Vertex{"x": {Key: "x"}}}, nil
+	}
+	res := h.call(t, "recall_related", map[string]any{
+		"seed":      "x",
+		"algorithm": "ppr",
+		"reduction": "mst",
+	})
+	var out recallRelatedOutput
+	structuredAs(t, res, &out)
+	if out.Reduction != "none" {
+		t.Fatalf("reduction must be ignored (echoed none) for ppr; got %q", out.Reduction)
+	}
+}
+
+// TestRecallRelated_DefaultsToBFSNoReduction confirms an axis-free call echoes
+// the new defaults (algorithm=bfs, reduction=none) — the historical raw-BFS
+// behaviour under the orthogonalised grammar (#961).
+func TestRecallRelated_DefaultsToBFSNoReduction(t *testing.T) {
+	h := newTestHarness(t)
+	h.fake.illuminateFn = func(_ context.Context, _ string, _ ...client.IlluminateOption) (*client.Graph, error) {
+		return &client.Graph{Vertices: map[string]*client.Vertex{"x": {Key: "x"}}}, nil
+	}
+	res := h.call(t, "recall_related", map[string]any{"seed": "x"})
+	var out recallRelatedOutput
+	structuredAs(t, res, &out)
+	if out.Algorithm != "bfs" || out.Reduction != "none" {
+		t.Fatalf("defaults = algorithm=%q reduction=%q; want bfs/none", out.Algorithm, out.Reduction)
 	}
 }
 

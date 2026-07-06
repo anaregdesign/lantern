@@ -437,12 +437,17 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 			fmt.Printf("Error: illuminate: unknown objective %q\n", p.Objective)
 			return ErrIlluminate
 		}
+		red, ok := reductionByREPLName[p.Reduction]
+		if !ok {
+			fmt.Printf("Error: illuminate: unknown reduction %q\n", p.Reduction)
+			return ErrIlluminate
+		}
 		w, ok := weightingByREPLName[p.Weighting]
 		if !ok {
 			fmt.Printf("Error: illuminate: unknown weighting %q\n", p.Weighting)
 			return ErrIlluminate
 		}
-		famOpt, ok := IlluminateFamilyOption(p.Algorithm, clampUint32(p.Step), clampUint32(p.K), obj, p.RestartProb, p.Epsilon)
+		famOpt, ok := IlluminateFamilyOption(p.Algorithm, red, clampUint32(p.Step), clampUint32(p.K), obj, p.RestartProb, p.Epsilon)
 		if !ok {
 			fmt.Printf("Error: illuminate: unknown algorithm %q\n", p.Algorithm)
 			return ErrIlluminate
@@ -497,38 +502,43 @@ func clampUint32(v int) uint32 {
 }
 
 // IlluminateFamilyOption maps the CLI algorithm token to the typed
-// per-family SDK option introduced by the #846 oneof redesign. The CLI
-// grammar keeps its friendly single "algorithm=" axis (none|mst|spt|ppr);
-// this helper owns the translation: none/mst/spt select the BFS family
-// (step/k become BFSOpts.Step/FanOut, mst/spt become the Reduction),
-// ppr selects the PPR family (k becomes PPROpts.TopN; step has no PPR
-// meaning and is dropped). Shared by the REPL dispatcher and the cobra
-// `illuminate` flag path so both surfaces translate identically.
-func IlluminateFamilyOption(algo string, step, k uint32, obj client.Objective, restartProb, epsilon float32) (client.IlluminateOption, bool) {
+// per-family SDK option introduced by the #846 oneof redesign. Since #961
+// the CLI grammar exposes the traversal FAMILY (algorithm=bfs|ppr|community)
+// and the post-traversal tree REDUCTION (reduction=none|mst|spt) as
+// orthogonal axes — this helper owns the translation: bfs selects the BFS
+// family (step/k become BFSOpts.Step/FanOut, red becomes the Reduction),
+// ppr selects the PPR family (k becomes PPROpts.TopN; step and reduction
+// have no PPR meaning and are dropped), and community selects the local
+// community family (k becomes the max_size upper bound; red/obj drive the
+// optional tree reduction, #845). Shared by the REPL dispatcher and the
+// cobra `illuminate` flag path so both surfaces translate identically.
+func IlluminateFamilyOption(algo string, red client.Reduction, step, k uint32, obj client.Objective, restartProb, epsilon float32) (client.IlluminateOption, bool) {
 	switch algo {
+	case "", "bfs":
+		return client.WithBFS(client.BFSOpts{Step: step, FanOut: k, Objective: obj, Reduction: red}), true
 	case "ppr":
 		return client.WithPPR(client.PPROpts{TopN: k, RestartProb: restartProb, Epsilon: epsilon}), true
 	case "community":
 		// Local community extraction (#845): k is the max_size UPPER BOUND
-		// (the sweep may stop earlier); step has no meaning here.
-		return client.WithLocalCommunity(client.LocalCommunityOpts{MaxSize: k, RestartProb: restartProb, Epsilon: epsilon}), true
-	case "", "none":
-		return client.WithBFS(client.BFSOpts{Step: step, FanOut: k, Objective: obj}), true
-	case "mst":
-		return client.WithBFS(client.BFSOpts{Step: step, FanOut: k, Objective: obj, Reduction: client.ReductionMinimumSpanningTree}), true
-	case "spt":
-		return client.WithBFS(client.BFSOpts{Step: step, FanOut: k, Objective: obj, Reduction: client.ReductionShortestPathTree}), true
+		// (the sweep may stop earlier); step has no meaning here. red/obj
+		// drive the optional post-traversal tree reduction (#961).
+		return client.WithLocalCommunity(client.LocalCommunityOpts{MaxSize: k, RestartProb: restartProb, Epsilon: epsilon, Reduction: red, Objective: obj}), true
 	}
 	return nil, false
 }
 
-// objectiveByREPLName / weightingByREPLName mirror the friendly names
-// accepted by the REPL grammar (parser.Illuminate{...}) and translate to
-// the SDK enums. Kept private to the REPL handler.
+// objectiveByREPLName / reductionByREPLName / weightingByREPLName mirror
+// the friendly names accepted by the REPL grammar (parser.Illuminate{...})
+// and translate to the SDK enums. Kept private to the REPL handler.
 var (
 	objectiveByREPLName = map[string]client.Objective{
 		"min": client.ObjectiveMinimize,
 		"max": client.ObjectiveMaximize,
+	}
+	reductionByREPLName = map[string]client.Reduction{
+		"none": client.ReductionNone,
+		"mst":  client.ReductionMinimumSpanningTree,
+		"spt":  client.ReductionShortestPathTree,
 	}
 	weightingByREPLName = map[string]client.Weighting{
 		"raw":   client.WeightingRaw,

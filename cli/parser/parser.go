@@ -48,11 +48,16 @@ var (
 		"decaying-edge",
 	}
 
-	// IlluminateAlgorithms / IlluminateObjectives / IlluminateWeightings
-	// are the canonical sets the REPL accepts for the keyword arguments of
-	// the modernised illuminate verb (#410). The keyword form replaces the
-	// legacy positional grammar (neighbor / spt_* / mst_*) entirely.
-	IlluminateAlgorithms = []string{"none", "mst", "spt", "ppr", "community"}
+	// IlluminateAlgorithms / IlluminateReductions / IlluminateObjectives /
+	// IlluminateWeightings are the canonical sets the REPL accepts for the
+	// keyword arguments of the illuminate verb. Since #961 the traversal
+	// FAMILY (algorithm=) and the post-traversal tree REDUCTION (reduction=)
+	// are orthogonal axes — mirroring the wire oneof (#846) where a
+	// Reduction is a per-family knob on bfs/community, not a sibling
+	// traversal. The keyword form replaced the legacy positional grammar
+	// (neighbor / spt_* / mst_*) entirely (#410).
+	IlluminateAlgorithms = []string{"bfs", "ppr", "community"}
+	IlluminateReductions = []string{"none", "mst", "spt"}
 	IlluminateObjectives = []string{"min", "max"}
 	IlluminateWeightings = []string{"raw", "tfidf", "bm25"}
 
@@ -485,25 +490,27 @@ func DeleteEdgeParam(s *Source) (*DeleteEdge, error) {
 	return m, nil
 }
 
-// IlluminateParam parses the modernised illuminate grammar (#410, #604, #801):
+// IlluminateParam parses the modernised illuminate grammar (#410, #604, #801, #961):
 //
-//	illuminate <seed> <step> <k> [algorithm=none|mst|spt|ppr|community] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>] [restart_prob=<float>] [epsilon=<float>]
+//	illuminate <seed> <step> <k> [algorithm=bfs|ppr|community] [reduction=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>] [restart_prob=<float>] [epsilon=<float>]
 //
-// The keyword arguments may appear in any order and any subset. The three
-// closed-set axes default to the strongest-edge behaviour (algorithm=none,
-// objective=max, weighting=raw); objective defaults to max so a bare
-// illuminate keeps the top-k strongest neighbours and the per-hop
-// pruning matches the reduction direction (#560). prefix is free-text and
-// defaults to empty (no frontier filter; #604). restart_prob and epsilon tune
-// the Personalized PageRank algorithm (#801) and default to 0, which the
-// server resolves to α=0.15 / ε=1e-4; they are ignored unless algorithm=ppr.
+// The keyword arguments may appear in any order and any subset. The closed-set
+// axes default to the strongest-edge behaviour (algorithm=bfs, reduction=none,
+// objective=max, weighting=raw); objective defaults to max so a bare illuminate
+// keeps the top-k strongest neighbours and the per-hop pruning matches the
+// reduction direction (#560). Since #961 the traversal FAMILY (algorithm) and
+// the post-traversal tree REDUCTION are orthogonal axes: reduction=mst|spt
+// applies to the bfs and community families and is ignored for ppr. prefix is
+// free-text and defaults to empty (no frontier filter; #604). restart_prob and
+// epsilon tune the push-based families (ppr #801, community #845) and default
+// to 0, which the server resolves to α=0.15 / ε=1e-4; they are ignored for bfs.
 // Unknown keyword names, malformed `key=value` tokens, closed-set values
 // outside the canonical set above, an empty prefix= value, or a non-float
 // restart_prob=/epsilon= value are rejected with a descriptive error so the
 // REPL can surface a usage hint.
 func IlluminateParam(s *Source) (*Illuminate, error) {
 	var err error
-	m := &Illuminate{Algorithm: "none", Objective: "max", Weighting: "raw"}
+	m := &Illuminate{Algorithm: "bfs", Reduction: "none", Objective: "max", Weighting: "raw"}
 	if m.Seed, err = String(s); err != nil {
 		return nil, err
 	}
@@ -531,9 +538,14 @@ func IlluminateParam(s *Source) (*Illuminate, error) {
 		switch key {
 		case "algorithm":
 			if !contains(IlluminateAlgorithms, lvalue) {
-				return nil, errors.New("illuminate: algorithm=" + value + " (want none|mst|spt|ppr|community)")
+				return nil, errors.New("illuminate: algorithm=" + value + " (want bfs|ppr|community)")
 			}
 			m.Algorithm = lvalue
+		case "reduction":
+			if !contains(IlluminateReductions, lvalue) {
+				return nil, errors.New("illuminate: reduction=" + value + " (want none|mst|spt)")
+			}
+			m.Reduction = lvalue
 		case "objective":
 			if !contains(IlluminateObjectives, lvalue) {
 				return nil, errors.New("illuminate: objective=" + value + " (want min|max)")
@@ -562,7 +574,7 @@ func IlluminateParam(s *Source) (*Illuminate, error) {
 			}
 			m.Epsilon = float32(eps)
 		default:
-			return nil, errors.New("illuminate: unknown key " + key + " (want algorithm|objective|weighting|prefix|restart_prob|epsilon)")
+			return nil, errors.New("illuminate: unknown key " + key + " (want algorithm|reduction|objective|weighting|prefix|restart_prob|epsilon)")
 		}
 	}
 	return m, nil
@@ -778,8 +790,9 @@ func DeletePrefixVerticesParam(s *Source) (*DeletePrefixVertices, error) {
 // parsers against the bare `help` verb.
 //
 // The kwarg enums and defaults below MUST stay in lockstep with
-// `IlluminateParam`'s `IlluminateAlgorithms` / `IlluminateObjectives` /
-// `IlluminateWeightings` sets and the corresponding TS parser.
+// `IlluminateParam`'s `IlluminateAlgorithms` / `IlluminateReductions` /
+// `IlluminateObjectives` / `IlluminateWeightings` sets and the
+// corresponding TS parser.
 const HelpText = `Lantern CLI grammar:
 
   get    vertex <key: string>
@@ -796,12 +809,13 @@ const HelpText = `Lantern CLI grammar:
   delete-prefix vertices <prefix: string> [limit=<int>] [confirm=yes|dry_run=true]
   keys   <prefix: string> [<limit: int>]
   illuminate <seed: string> <step: int> <k: int>
-             [algorithm={none|mst|spt|ppr|community}] default=none
+             [algorithm={bfs|ppr|community}] default=bfs
+             [reduction={none|mst|spt}]  default=none (bfs/community only)
              [objective={min|max}]       default=max
              [weighting={raw|tfidf|bm25}] default=raw
              [prefix=<string>]           default=all keys
-             [restart_prob=<float>]      default=0 (ppr only; server α=0.15)
-             [epsilon=<float>]           default=0 (ppr only; server ε=1e-4)
+             [restart_prob=<float>]      default=0 (ppr/community; server α=0.15)
+             [epsilon=<float>]           default=0 (ppr/community; server ε=1e-4)
   help
   exit
 

@@ -83,7 +83,7 @@ type LanternService struct {
 //
 // Implementations must be safe for concurrent use.
 type HotPathMetrics interface {
-	OnIlluminate(algorithm, objective, weighting string, visitedVertices, visitedEdges int, traversal, optimize time.Duration)
+	OnIlluminate(algorithm, reduction, objective, weighting string, visitedVertices, visitedEdges int, traversal, optimize time.Duration)
 	OnScan(op string, results int, duration time.Duration)
 	OnSearch(results int, duration time.Duration)
 	OnBatch(op string, size int)
@@ -94,7 +94,7 @@ type HotPathMetrics interface {
 
 type noopHotPathMetrics struct{}
 
-func (noopHotPathMetrics) OnIlluminate(string, string, string, int, int, time.Duration, time.Duration) {
+func (noopHotPathMetrics) OnIlluminate(string, string, string, string, int, int, time.Duration, time.Duration) {
 }
 func (noopHotPathMetrics) OnScan(string, int, time.Duration) {}
 func (noopHotPathMetrics) OnSearch(int, time.Duration)       {}
@@ -471,9 +471,10 @@ func (s *LanternService) logMutationAt(op *pb.MutationOp, ts hlc.Timestamp) uint
 }
 
 // Illuminate returns a subgraph rooted at the seed, optionally reduced via
-// an (algorithm, objective) pair after the BFS walk. Edge weighting (RAW vs
-// TF-IDF) is applied BEFORE the walk and therefore feeds into both the BFS
-// frontier ranking and any subsequent algorithm reduction. See #410.
+// an (algorithm family, reduction, objective) triple after the traversal
+// walk. Edge weighting (RAW vs TF-IDF) is applied BEFORE the walk and
+// therefore feeds into both the frontier ranking and any subsequent
+// reduction. See #410, #963.
 func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateRequest) (*pb.IlluminateResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
@@ -512,7 +513,8 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 		traversalDur time.Duration
 		optimizeDur  time.Duration
 		err          error
-		paramsLabel  string
+		algoLabel    string
+		redLabel     string
 		objLabel     string
 	)
 
@@ -540,7 +542,7 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 		if err != nil {
 			return nil, ctxToConnect(err)
 		}
-		paramsLabel, objLabel = "ppr", "maximize"
+		algoLabel, redLabel, objLabel = "ppr", "none", "maximize"
 
 	case *pb.IlluminateRequest_Community:
 		// Local community extraction (#845): PageRank-Nibble sweep cut over
@@ -591,7 +593,7 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 			expirations = trimmed
 			optimizeDur = time.Since(optStart)
 		}
-		paramsLabel, objLabel = "community", objectiveLabel(comm.GetObjective())
+		algoLabel, redLabel, objLabel = "community", reductionLabel(comm.GetReduction()), objectiveLabel(comm.GetObjective())
 
 	default: // *pb.IlluminateRequest_Bfs or unset — the BFS family.
 		bfs := request.GetBfs() // nil-safe: getters yield zero values on an unset oneof
@@ -617,7 +619,7 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 				return nil, ctxToConnect(err)
 			}
 		}
-		paramsLabel, objLabel = reductionLabel(bfs.GetReduction()), objectiveLabel(objective)
+		algoLabel, redLabel, objLabel = "bfs", reductionLabel(bfs.GetReduction()), objectiveLabel(objective)
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -647,7 +649,7 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 		}
 	}
 
-	s.metrics.OnIlluminate(paramsLabel, objLabel, weightingLabel(weighting), len(vertices), edgeCount, traversalDur, optimizeDur)
+	s.metrics.OnIlluminate(algoLabel, redLabel, objLabel, weightingLabel(weighting), len(vertices), edgeCount, traversalDur, optimizeDur)
 
 	return &pb.IlluminateResponse{
 		Graph: &pb.Graph{Vertices: vertices, Edges: edges},

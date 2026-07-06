@@ -192,7 +192,7 @@ graph LR
     c -- 4 --> f((f))
 ```
 
-`illuminate a 2 2 algorithm=spt objective=max` treats heavy edges as cheap
+`illuminate a 2 2 reduction=spt objective=max` treats heavy edges as cheap
 (cost = 1/weight), so one RPC hands back the **strongest-relationship
 tree** — no client-side post-processing:
 
@@ -220,12 +220,20 @@ A few more combinations and what they buy you:
 
 ```text
 illuminate user:42 2 10                              # raw 2-hop neighbourhood
-illuminate user:42 3 8 algorithm=spt objective=max   # most-relevant path tree
-illuminate user:42 3 8 algorithm=mst objective=min   # clustering / dedup backbone
+illuminate user:42 3 8 reduction=spt objective=max   # most-relevant path tree (BFS)
+illuminate user:42 3 8 reduction=mst objective=min   # clustering / dedup backbone (BFS)
 illuminate user:42 2 10 algorithm=ppr                # PageRank-ranked neighbourhood
 illuminate user:42 2 10 algorithm=community          # the seed's natural community
+illuminate user:42 2 10 algorithm=community reduction=mst objective=min
+                                                     # …that community, as a spanning-tree backbone
 illuminate user:42 2 10 weighting=tfidf              # suppress hub items
 ```
+
+The `algorithm` axis picks the traversal **family** (`bfs` default, `ppr`,
+`community`) and the orthogonal `reduction` axis (`none` default, `mst`, `spt`)
+renders the `bfs`/`community` result as a tree rooted at the seed — so a local
+community can be handed back as its own minimum-spanning-tree backbone in one
+RPC. `reduction` is ignored for `ppr`, which returns a ranked star.
 
 PPR takes two locality knobs (`restart_prob`, `epsilon` — higher restart
 keeps the walk closer to the seed; smaller epsilon pushes further for more
@@ -541,7 +549,7 @@ scan   edges    <tail-prefix> [limit] [head=<prefix>] [all=true]
 count  vertices <prefix>
 delete-prefix vertices <prefix> [limit=<int>] [confirm=yes|dry_run=true]
 keys   <prefix> [limit]
-illuminate <seed> <step> <k> [algorithm=none|mst|spt|ppr|community] [objective=min|max] \
+illuminate <seed> <step> <k> [algorithm=bfs|ppr|community] [reduction=none|mst|spt] [objective=min|max] \
            [weighting=raw|tfidf|bm25] [prefix=<string>] \
            [restart_prob=<float>] [epsilon=<float>]
 help

@@ -12,19 +12,31 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// recall_related accepts three string-enum inputs that map 1:1 to the
-// Illuminate proto axes introduced in #410: algorithm × objective ×
-// weighting. The friendly names match the CLI/REPL grammar so an LLM
-// (and a human operator) see one consistent vocabulary across all
-// surfaces.
+// recall_related accepts string-enum inputs that map to the Illuminate
+// proto axes: algorithm (traversal FAMILY) × reduction (post-traversal
+// tree) × objective × weighting. Since #961 the family and the tree
+// reduction are ORTHOGONAL axes — algorithm picks bfs/ppr/community and
+// reduction picks none/mst/spt — instead of the old flat axis that
+// conflated the two (and could not select community at all). The friendly
+// names match the CLI/REPL grammar so an LLM (and a human operator) see one
+// consistent vocabulary across all surfaces.
 
 type recallRelatedAlgorithm string
 
 const (
-	algorithmNone recallRelatedAlgorithm = "none"
-	algorithmMST  recallRelatedAlgorithm = "mst"
-	algorithmSPT  recallRelatedAlgorithm = "spt"
-	algorithmPPR  recallRelatedAlgorithm = "ppr"
+	algorithmBFS       recallRelatedAlgorithm = "bfs"
+	algorithmPPR       recallRelatedAlgorithm = "ppr"
+	algorithmCommunity recallRelatedAlgorithm = "community"
+)
+
+// reduction is the orthogonal post-traversal tree axis (#961). It renders a
+// tree VIEW of the bfs/community result rooted at the seed; ignored for ppr.
+type recallRelatedReduction string
+
+const (
+	reductionNone recallRelatedReduction = "none"
+	reductionMST  recallRelatedReduction = "mst"
+	reductionSPT  recallRelatedReduction = "spt"
 )
 
 type recallRelatedObjective string
@@ -92,12 +104,13 @@ type recallRelatedInput struct {
 	Seed            string                 `json:"seed"                jsonschema:"Starting fact key for the walk. The seed itself is returned at depth 0."`
 	Step            uint32                 `json:"step,omitempty"      jsonschema:"BFS depth (default 2). Larger values explore further at quadratic cost. Server enforces a hard cap. Applies to the out-direction walk only."`
 	K               uint32                 `json:"k,omitempty"         jsonschema:"Per-hop fan-out: keep the top-k strongest outgoing edges at each step (default 8). Server enforces a hard cap. Applies to the out-direction walk only."`
-	Direction       recallRelatedDirection `json:"direction,omitempty" jsonschema:"Which edge direction to follow from the seed: out (default - forward BFS over out-edges, the historical behaviour), in (reverse - return the seed's direct predecessors, so seeding a pure sink is no longer empty), or both (union of the two). step/k/algorithm/objective/weighting shape the out walk; the in pass is a single bounded reverse-adjacency hop."`
-	Algorithm       recallRelatedAlgorithm `json:"algorithm,omitempty" jsonschema:"Graph algorithm run from the seed: one of: none (default - raw BFS subgraph), mst (minimum/maximum spanning tree depending on objective), spt (shortest-path tree from seed), or ppr (Personalized PageRank - rank facts by random-walk-with-restart proximity to the seed, surfacing globally well-connected context rather than just direct neighbours; tuned by restart_prob/epsilon)."`
-	Objective       recallRelatedObjective `json:"objective,omitempty" jsonschema:"Direction of edge selection AND any algorithm reduction: max (default - relevance-weighted, keeps the strongest edges per hop and the largest tree) or min (cost-weighted, keeps the smallest edges per hop and the smallest tree). Governs the per-hop top-k prune even when algorithm=none (see #560). Ignored when algorithm=ppr (PPR is an intrinsic relevance maximiser)."`
+	Direction       recallRelatedDirection `json:"direction,omitempty" jsonschema:"Which edge direction to follow from the seed: out (default - forward BFS over out-edges, the historical behaviour), in (reverse - return the seed's direct predecessors, so seeding a pure sink is no longer empty), or both (union of the two). step/k/algorithm/reduction/objective/weighting shape the out walk; the in pass is a single bounded reverse-adjacency hop."`
+	Algorithm       recallRelatedAlgorithm `json:"algorithm,omitempty" jsonschema:"Traversal FAMILY run from the seed: one of: bfs (default - breadth-first walk over the top-k strongest edges per hop), ppr (Personalized PageRank - rank facts by random-walk-with-restart proximity to the seed, surfacing globally well-connected context rather than just direct neighbours; tuned by restart_prob/epsilon), or community (local community extraction - return the seed's natural cluster by a sweep over a Personalized PageRank vector; k caps the community size, tuned by restart_prob/epsilon). Orthogonal to reduction."`
+	Reduction       recallRelatedReduction `json:"reduction,omitempty" jsonschema:"Post-traversal tree REDUCTION applied to the bfs/community subgraph, rooted at the seed: one of: none (default - the raw subgraph), mst (minimum/maximum spanning-tree backbone depending on objective), or spt (shortest-path tree from the seed). Orthogonal to algorithm: e.g. algorithm=community reduction=mst returns the seed's community as a spanning-tree backbone. Ignored when algorithm=ppr (PPR returns a ranked star, not a subgraph)."`
+	Objective       recallRelatedObjective `json:"objective,omitempty" jsonschema:"Direction of edge selection AND any reduction: max (default - relevance-weighted, keeps the strongest edges per hop and the largest tree) or min (cost-weighted, keeps the smallest edges per hop and the smallest tree). Governs the per-hop top-k prune even when reduction=none (see #560), and the reduction direction for bfs/community. Ignored when algorithm=ppr (PPR is an intrinsic relevance maximiser)."`
 	Weighting       recallRelatedWeighting `json:"weighting,omitempty" jsonschema:"Edge-weight transform applied BEFORE the walk: raw (default - edge weights as stored), tfidf (re-score via TF-IDF over per-vertex out-edge distribution), or bm25 (re-score via Okapi BM25, k1=1.2/b=0.75, over the same distribution - adds IDF saturation and out-degree length-normalisation on top of tfidf)."`
-	RestartProb     float32                `json:"restart_prob,omitempty"     jsonschema:"Personalized PageRank restart (teleport-to-seed) probability α in (0,1); only used when algorithm=ppr. Higher α keeps mass nearer the seed (more local); lower α explores farther. 0 (default) lets the server pick 0.15. Ignored unless algorithm=ppr."`
-	Epsilon         float32                `json:"epsilon,omitempty"          jsonschema:"Personalized PageRank forward-push residual threshold ε > 0; only used when algorithm=ppr. Smaller ε means a more accurate, more expensive walk; larger ε is faster but coarser. 0 (default) lets the server pick 1e-4. Ignored unless algorithm=ppr."`
+	RestartProb     float32                `json:"restart_prob,omitempty"     jsonschema:"Random-walk restart (teleport-to-seed) probability α in (0,1); only used when algorithm=ppr or algorithm=community. Higher α keeps mass nearer the seed (more local); lower α explores farther. 0 (default) lets the server pick 0.15. Ignored for algorithm=bfs."`
+	Epsilon         float32                `json:"epsilon,omitempty"          jsonschema:"Forward-push residual threshold ε > 0; only used when algorithm=ppr or algorithm=community. Smaller ε means a more accurate, more expensive walk; larger ε is faster but coarser. 0 (default) lets the server pick 1e-4. Ignored for algorithm=bfs."`
 	Reinforce       bool                   `json:"reinforce,omitempty"        jsonschema:"Opt in (default false) to strengthening the edges this walk actually traverses. Each traversed edge gains an additive weight pulse via the same additive model as remember_relation; recall stays read-only when false. This is the Hebbian use-strengthens-memory loop — the edge-side analog of touch and the one deliberate exception to 'recall does NOT refresh TTL'."`
 	ReinforceWeight float32                `json:"reinforce_weight,omitempty" jsonschema:"Weight added to each traversed edge when reinforce=true (default 1.0). Additive: the pulse stacks on the edge's existing weight. Ignored when reinforce=false."`
 	ReinforceTTL    string                 `json:"reinforce_ttl,omitempty"    jsonschema:"Decay horizon of the reinforcement pulse when reinforce=true (default conversation). The store keeps each contribution independently, so a short horizon NEVER shortens the edge's existing life — it adds a pulse that itself decays on this horizon; frequent use stacks pulses. One of: seconds, transient, turn, conversation, task, workday, day, week, sprint, month, quarter, durable. Ignored when reinforce=false."`
@@ -113,6 +126,7 @@ type recallRelatedOutput struct {
 	Seed      string `json:"seed"`
 	Direction string `json:"direction"`
 	Algorithm string `json:"algorithm"`
+	Reduction string `json:"reduction"`
 	Objective string `json:"objective"`
 	Weighting string `json:"weighting"`
 	// RestartProb / Epsilon echo the PPR knobs that were actually sent to the
@@ -133,7 +147,7 @@ type recallRelatedOutput struct {
 	Neighbors       []recallRelatedNeighbor `json:"neighbors"`
 }
 
-const recallRelatedDescription = "Walk Lantern's graph from a seed key, returning the related facts with their cumulative edge weights. Call this PROACTIVELY to pull in surrounding context before answering — start from the most relevant known key. Use step + k to bound exploration. Use algorithm + objective + weighting to control how the discovered subgraph is reduced and weighted (see #410); set algorithm=ppr for Personalized PageRank, which ranks facts by random-walk-with-restart proximity to the seed (tune locality with restart_prob/epsilon) instead of a plain BFS reduction. Use direction to choose which way edges are followed: out (default, forward), in (reverse — the seed's predecessors, so seeding a pure sink is no longer empty), or both. By default recall does NOT refresh TTL for any vertex or edge visited; weak relations will still decay on schedule. Set reinforce=true to OPT IN to strengthening the edges you actually traverse — each gains an additive, decaying weight pulse (the Hebbian use-strengthens-memory loop and the edge-side analog of touch); this is the one deliberate exception to the no-refresh rule, and because contributions stack independently it never shortens an edge's existing life."
+const recallRelatedDescription = "Walk Lantern's graph from a seed key, returning the related facts with their cumulative edge weights. Call this PROACTIVELY to pull in surrounding context before answering — start from the most relevant known key. Use step + k to bound exploration. Use algorithm to pick the traversal family: bfs (default), ppr (Personalized PageRank — ranks facts by random-walk-with-restart proximity to the seed; tune locality with restart_prob/epsilon), or community (the seed's natural local cluster). Use the orthogonal reduction axis (none default, mst, spt) to hand the bfs/community subgraph back as a tree rooted at the seed — e.g. algorithm=community reduction=mst returns the community as a spanning-tree backbone; objective (max/min) sets the reduction direction. Use direction to choose which way edges are followed: out (default, forward), in (reverse — the seed's predecessors, so seeding a pure sink is no longer empty), or both. By default recall does NOT refresh TTL for any vertex or edge visited; weak relations will still decay on schedule. Set reinforce=true to OPT IN to strengthening the edges you actually traverse — each gains an additive, decaying weight pulse (the Hebbian use-strengthens-memory loop and the edge-side analog of touch); this is the one deliberate exception to the no-refresh rule, and because contributions stack independently it never shortens an edge's existing life."
 
 func registerRecallRelated(srv *mcp.Server, lc lanternClient, r *ttl.Resolver) {
 	mcp.AddTool(srv, &mcp.Tool{
@@ -152,29 +166,45 @@ func registerRecallRelated(srv *mcp.Server, lc lanternClient, r *ttl.Resolver) {
 		}
 		algorithm := in.Algorithm
 		if algorithm == "" {
-			algorithm = algorithmNone
+			algorithm = algorithmBFS
+		}
+		reduction := in.Reduction
+		if reduction == "" {
+			reduction = reductionNone
 		}
 		objective := in.Objective
 		if objective == "" {
 			// #560: default to max so the per-hop top-k prune keeps the
 			// STRONGEST edges (the historical de-facto behaviour). Objective
-			// now steers the pruning direction, not just the algorithm
-			// reduction, so an unspecified objective must resolve to max to
-			// keep recall_related returning the strongest neighbours.
+			// now steers the pruning direction, not just the reduction, so an
+			// unspecified objective must resolve to max to keep recall_related
+			// returning the strongest neighbours.
 			objective = objectiveMax
 		}
 		weighting := in.Weighting
 		if weighting == "" {
 			weighting = weightingRaw
 		}
-		// PPR knobs are only meaningful when algorithm=ppr; zero them out
-		// otherwise so a stray restart_prob/epsilon on a non-ppr call neither
-		// reaches the server nor shows up in the echoed output.
-		restartProb, epsilon := float32(0), float32(0)
+		// reduction is a BFS/community concept only; ppr returns a ranked
+		// star with no subgraph to reduce, so force it to none there (mirrors
+		// the restart_prob/epsilon zeroing below) — the echoed value then
+		// reflects what was actually applied.
 		if algorithm == algorithmPPR {
+			reduction = reductionNone
+		}
+		// The α/ε locality knobs are meaningful for the two random-walk
+		// families (ppr, community); zero them out otherwise so a stray knob
+		// on a plain BFS recall neither reaches the server nor shows up in the
+		// echoed output.
+		restartProb, epsilon := float32(0), float32(0)
+		if algorithm == algorithmPPR || algorithm == algorithmCommunity {
 			restartProb, epsilon = in.RestartProb, in.Epsilon
 		}
 		obj, err := mapObjective(objective)
+		if err != nil {
+			return nil, recallRelatedOutput{}, fmt.Errorf("recall_related: %w", err)
+		}
+		red, err := mapReduction(reduction)
 		if err != nil {
 			return nil, recallRelatedOutput{}, fmt.Errorf("recall_related: %w", err)
 		}
@@ -204,7 +234,7 @@ func registerRecallRelated(srv *mcp.Server, lc lanternClient, r *ttl.Resolver) {
 			// The typed family option (#846) carries every per-family knob;
 			// zero values (step/k/α/ε unset) are resolved server-side to the
 			// documented defaults exactly as the flat fields were.
-			famOpt, err := mapFamilyOption(algorithm, in.Step, in.K, obj, restartProb, epsilon)
+			famOpt, err := mapFamilyOption(algorithm, red, in.Step, in.K, obj, restartProb, epsilon)
 			if err != nil {
 				return nil, recallRelatedOutput{}, fmt.Errorf("recall_related: %w", err)
 			}
@@ -237,6 +267,7 @@ func registerRecallRelated(srv *mcp.Server, lc lanternClient, r *ttl.Resolver) {
 			Seed:        in.Seed,
 			Direction:   string(direction),
 			Algorithm:   string(algorithm),
+			Reduction:   string(reduction),
 			Objective:   string(objective),
 			Weighting:   string(weighting),
 			RestartProb: restartProb,
@@ -279,7 +310,7 @@ func registerRecallRelated(srv *mcp.Server, lc lanternClient, r *ttl.Resolver) {
 			out.ReinforceCapped = capped
 		}
 
-		text := fmt.Sprintf("Recalled %d related facts for seed %q (direction=%s, algorithm=%s, objective=%s, weighting=%s).", out.Count, in.Seed, out.Direction, out.Algorithm, out.Objective, out.Weighting)
+		text := fmt.Sprintf("Recalled %d related facts for seed %q (direction=%s, algorithm=%s, reduction=%s, objective=%s, weighting=%s).", out.Count, in.Seed, out.Direction, out.Algorithm, out.Reduction, out.Objective, out.Weighting)
 		if in.Reinforce {
 			text += fmt.Sprintf(" Reinforced %d of %d traversed edge(s) with a +%.2f weight pulse (bucket=%s); this never shortens existing edge life.", out.Reinforced, reinforceAttempted, reinforceBump, reinforceBucket.String())
 			if out.Reinforced < reinforceAttempted {
@@ -300,27 +331,42 @@ func registerRecallRelated(srv *mcp.Server, lc lanternClient, r *ttl.Resolver) {
 	})
 }
 
-// mapAlgorithm / mapObjective / mapWeighting translate the friendly
-// MCP-input string enums into the SDK enums. Unknown values return an
-// InvalidArgument-style error so the LLM gets actionable feedback.
+// mapFamilyOption / mapReduction / mapObjective / mapWeighting translate the
+// friendly MCP-input string enums into the SDK enums / options. Unknown
+// values return an InvalidArgument-style error so the LLM gets actionable
+// feedback.
 
-// mapFamilyOption translates the tool's single algorithm axis into the typed
-// per-family SDK option (#846): none/mst/spt select the BFS family (step/k
-// become Step/FanOut, mst/spt the Reduction); ppr selects the PPR family
-// (k becomes TopN; step has no PPR meaning and is dropped, matching the
-// server's historical behaviour).
-func mapFamilyOption(a recallRelatedAlgorithm, step, k uint32, obj client.Objective, restartProb, epsilon float32) (client.IlluminateOption, error) {
+// mapFamilyOption translates the tool's orthogonal algorithm × reduction
+// axes (#961) into the typed per-family SDK option (#846). bfs selects the
+// BFS family (step/k become Step/FanOut, red becomes the Reduction); ppr
+// selects the PPR family (k becomes TopN; step and reduction have no PPR
+// meaning and are dropped); community selects the local community family
+// (#845 — k becomes the max_size upper bound; step has no meaning; red/obj
+// drive the optional post-traversal tree reduction). The caller has already
+// mapped the friendly reduction string to the SDK enum and zeroed it for
+// ppr, so this helper just wires the knobs.
+func mapFamilyOption(a recallRelatedAlgorithm, red client.Reduction, step, k uint32, obj client.Objective, restartProb, epsilon float32) (client.IlluminateOption, error) {
 	switch a {
-	case algorithmNone:
-		return client.WithBFS(client.BFSOpts{Step: step, FanOut: k, Objective: obj}), nil
-	case algorithmMST:
-		return client.WithBFS(client.BFSOpts{Step: step, FanOut: k, Objective: obj, Reduction: client.ReductionMinimumSpanningTree}), nil
-	case algorithmSPT:
-		return client.WithBFS(client.BFSOpts{Step: step, FanOut: k, Objective: obj, Reduction: client.ReductionShortestPathTree}), nil
+	case algorithmBFS:
+		return client.WithBFS(client.BFSOpts{Step: step, FanOut: k, Objective: obj, Reduction: red}), nil
 	case algorithmPPR:
 		return client.WithPPR(client.PPROpts{TopN: k, RestartProb: restartProb, Epsilon: epsilon}), nil
+	case algorithmCommunity:
+		return client.WithLocalCommunity(client.LocalCommunityOpts{MaxSize: k, RestartProb: restartProb, Epsilon: epsilon, Reduction: red, Objective: obj}), nil
 	}
-	return nil, fmt.Errorf("unknown algorithm %q (want one of: none, mst, spt, ppr)", string(a))
+	return nil, fmt.Errorf("unknown algorithm %q (want one of: bfs, ppr, community)", string(a))
+}
+
+func mapReduction(r recallRelatedReduction) (client.Reduction, error) {
+	switch r {
+	case reductionNone:
+		return client.ReductionNone, nil
+	case reductionMST:
+		return client.ReductionMinimumSpanningTree, nil
+	case reductionSPT:
+		return client.ReductionShortestPathTree, nil
+	}
+	return client.ReductionNone, fmt.Errorf("unknown reduction %q (want one of: none, mst, spt)", string(r))
 }
 
 func mapObjective(o recallRelatedObjective) (client.Objective, error) {

@@ -12,6 +12,7 @@ import {
   CLI_CLICK_STEP_MAX,
   CLI_CLICK_STEP_MIN,
   CLI_OBJECTIVES,
+  CLI_REDUCTIONS,
   CLI_WEIGHTINGS,
   formatIlluminateClick,
   type CliClickAxes,
@@ -19,6 +20,7 @@ import {
 import type {
   AlgorithmName,
   ObjectiveName,
+  ReductionName,
   WeightingName,
 } from "~/lib/cli/types";
 import styles from "./CliAxisPicker.module.css";
@@ -39,8 +41,10 @@ export interface CliAxisPickerProps {
  *
  * Renders a single-line strip of Fluent UI primitives that map 1:1 to
  * the optional kwargs of the long-form illuminate verb (post-#410):
- * step, k, algorithm, objective, and a raw/TF-IDF/BM25 weighting
- * Dropdown, plus a free-text prefix filter. When a push-based family is
+ * step, k, algorithm (family), reduction, objective, and a
+ * raw/TF-IDF/BM25 weighting Dropdown, plus a free-text prefix filter.
+ * The reduction Dropdown (#961) is hidden for the ppr family, which
+ * returns a relevance star with no tree view. When a push-based family is
  * selected (algorithm=ppr or algorithm=community), two extra numeric
  * inputs (restart_prob / epsilon) appear for the shared locality knobs
  * (#801/#942); a blank knob means "server default", and the step input is
@@ -120,6 +124,10 @@ export function CliAxisPicker({ axes, setAxis, disabled }: CliAxisPickerProps) {
   // the α/ε locality knobs; they also give the `step` axis no wire meaning.
   const isPushFamily =
     axes.algorithm === "ppr" || axes.algorithm === "community";
+  // #961: the tree reduction is honoured for the bfs and community families
+  // and ignored for ppr (a relevance star has no tree view), so the Dropdown
+  // is hidden for ppr rather than echoing a knob the server drops.
+  const showsReduction = axes.algorithm !== "ppr";
   // #942: for the community family `k` is the max_size UPPER BOUND (the
   // conductance sweep may stop earlier), not an exact neighbour count.
   const kTitle =
@@ -192,6 +200,30 @@ export function CliAxisPicker({ axes, setAxis, disabled }: CliAxisPickerProps) {
           ))}
         </Dropdown>
       </label>
+
+      {showsReduction && (
+        <label className={styles.field}>
+          <span className={styles.label}>reduction</span>
+          <Dropdown
+            className={styles.dropdown}
+            value={labelFor(CLI_REDUCTIONS, axes.reduction)}
+            selectedOptions={[axes.reduction]}
+            disabled={disabled}
+            onOptionSelect={(_, data) => {
+              if (!data.optionValue) return;
+              setAxis("reduction", data.optionValue as ReductionName);
+            }}
+            data-testid="cli-axis-reduction"
+            aria-label="Reduction"
+          >
+            {CLI_REDUCTIONS.map((opt) => (
+              <Option key={opt.value} value={opt.value}>
+                {opt.label}
+              </Option>
+            ))}
+          </Dropdown>
+        </label>
+      )}
 
       <label className={styles.field}>
         <span className={styles.label}>objective</span>

@@ -137,6 +137,31 @@ func TestMCP_EndToEnd(t *testing.T) {
 		t.Fatalf("fact.b missing from neighbours: %+v", rel.Neighbors)
 	}
 
+	// #961: the community family + orthogonal reduction axis must survive the
+	// full MCP → SDK → server wire path — the capability the user reported
+	// missing. algorithm=community reduction=mst asks for the seed's local
+	// cluster handed back as a minimum-spanning-tree backbone; assert the
+	// server accepts it and the echoed axes round-trip.
+	commRes := call("recall_related", map[string]any{
+		"seed":      "fact.a",
+		"step":      1,
+		"k":         8,
+		"algorithm": "community",
+		"reduction": "mst",
+		"objective": "min",
+	})
+	var comm struct {
+		Seed      string `json:"seed"`
+		Algorithm string `json:"algorithm"`
+		Reduction string `json:"reduction"`
+		Objective string `json:"objective"`
+	}
+	decode(commRes, &comm)
+	if comm.Algorithm != "community" || comm.Reduction != "mst" || comm.Objective != "min" {
+		t.Fatalf("community+reduction echo mismatch over the wire: algorithm=%q reduction=%q objective=%q; want community/mst/min",
+			comm.Algorithm, comm.Reduction, comm.Objective)
+	}
+
 	// list_under should see fact.a + fact.b.
 	listRes := call("list_under", map[string]any{"prefix": "fact."})
 	var list struct {

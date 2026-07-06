@@ -475,8 +475,8 @@ test.describe("/cli", () => {
     await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
     const picker = page.getByTestId("cli-axis-picker");
     await expect(picker).toBeVisible();
-    // Defaults: step=2, k=5, algorithm=none, objective=max, weighting=raw
-    // → short form `illuminate <key> 2 5`.
+    // Defaults: step=2, k=5, algorithm=bfs, reduction=none, objective=max,
+    // weighting=raw → short form `illuminate <key> 2 5`.
     await expect(page.getByTestId("cli-axis-preview")).toHaveText(
       "illuminate <key> 2 5",
     );
@@ -510,29 +510,40 @@ test.describe("/cli", () => {
     await k.fill("10");
     await expect(preview).toHaveText("illuminate <key> 3 10");
 
-    // Pick algorithm=spt via the Dropdown.
+    // Pick algorithm=community (the Local Community family) via the Dropdown.
     await page.getByTestId("cli-axis-algorithm").click();
-    await page.getByRole("option", { name: "Shortest-path tree" }).click();
-    await expect(preview).toHaveText("illuminate <key> 3 10 algorithm=spt");
+    await page.getByRole("option", { name: "Local community" }).click();
+    await expect(preview).toHaveText(
+      "illuminate <key> 3 10 algorithm=community",
+    );
 
-    // Pick objective=min (max is the default, so it would be omitted).
+    // Pick reduction=spt via the reduction Dropdown (#961). The reduction
+    // axis is orthogonal to the family and slots in right after algorithm=.
+    await page.getByTestId("cli-axis-reduction").click();
+    await page.getByRole("option", { name: "Shortest-path tree" }).click();
+    await expect(preview).toHaveText(
+      "illuminate <key> 3 10 algorithm=community reduction=spt",
+    );
+
+    // Pick objective=min (max is the default, so it would be omitted). For a
+    // reduction this steers the tree direction (#961).
     await page.getByTestId("cli-axis-objective").click();
     await page.getByRole("option", { name: /Minimize/ }).click();
     await expect(preview).toHaveText(
-      "illuminate <key> 3 10 algorithm=spt objective=min",
+      "illuminate <key> 3 10 algorithm=community reduction=spt objective=min",
     );
 
     // Pick weighting=bm25 via the Dropdown. Token order must be
-    // algorithm → objective → weighting.
+    // algorithm → reduction → objective → weighting.
     await page.getByTestId("cli-axis-weighting").click();
     await page.getByRole("option", { name: "BM25" }).click();
     await expect(preview).toHaveText(
-      "illuminate <key> 3 10 algorithm=spt objective=min weighting=bm25",
+      "illuminate <key> 3 10 algorithm=community reduction=spt objective=min weighting=bm25",
     );
 
     // The header hint tracks the picker.
     await expect(page.getByTestId("cli-click-hint")).toHaveText(
-      "illuminate <key> 3 10 algorithm=spt objective=min weighting=bm25",
+      "illuminate <key> 3 10 algorithm=community reduction=spt objective=min weighting=bm25",
     );
   });
 
@@ -555,6 +566,9 @@ test.describe("/cli", () => {
     // The knobs are hidden until ppr is the active algorithm.
     await expect(page.getByTestId("cli-axis-restart-prob")).toHaveCount(0);
     await expect(page.getByTestId("cli-axis-epsilon")).toHaveCount(0);
+    // The reduction axis is shown for the tree-producing families (#961);
+    // bfs is the default so it is visible here.
+    await expect(page.getByTestId("cli-axis-reduction")).toBeVisible();
 
     // Select algorithm=ppr — the two knob inputs appear and the preview
     // gains the algorithm token (knobs default to 0 = server default, so
@@ -566,6 +580,9 @@ test.describe("/cli", () => {
     const epsilon = page.getByTestId("cli-axis-epsilon");
     await expect(restartProb).toBeVisible();
     await expect(epsilon).toBeVisible();
+    // ppr renders a ranked vertex set, not a tree, so the reduction axis is
+    // hidden while it is active (#961).
+    await expect(page.getByTestId("cli-axis-reduction")).toHaveCount(0);
 
     // Tuning a knob appends it after the algorithm token, in fixed order
     // restart_prob → epsilon.
@@ -578,12 +595,14 @@ test.describe("/cli", () => {
       "illuminate <key> 2 5 algorithm=ppr restart_prob=0.25 epsilon=0.001",
     );
 
-    // Switching away from ppr hides the knobs again and drops them from
-    // the click string (the stored values are simply not echoed).
+    // Switching back to the default bfs family hides the knobs again and
+    // drops them from the click string (the stored values are simply not
+    // echoed), and the reduction axis reappears.
     await page.getByTestId("cli-axis-algorithm").click();
-    await page.getByRole("option", { name: "None (raw subgraph)" }).click();
+    await page.getByRole("option", { name: "BFS (per-hop top-k)" }).click();
     await expect(page.getByTestId("cli-axis-restart-prob")).toHaveCount(0);
     await expect(page.getByTestId("cli-axis-epsilon")).toHaveCount(0);
+    await expect(page.getByTestId("cli-axis-reduction")).toBeVisible();
     await expect(preview).toHaveText("illuminate <key> 2 5");
   });
 
@@ -596,10 +615,10 @@ test.describe("/cli", () => {
     await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
     await page.getByTestId("cli-axis-step").fill("4");
     await page.getByTestId("cli-axis-k").fill("12");
-    await page.getByTestId("cli-axis-algorithm").click();
+    await page.getByTestId("cli-axis-reduction").click();
     await page.getByRole("option", { name: "Spanning tree" }).click();
     await expect(page.getByTestId("cli-axis-preview")).toHaveText(
-      "illuminate <key> 4 12 algorithm=mst",
+      "illuminate <key> 4 12 reduction=mst",
     );
     // Reload — picker should hydrate from localStorage on mount. Re-run
     // a graph command so the canvas panel (and picker) mount again.
@@ -610,7 +629,7 @@ test.describe("/cli", () => {
     await expect(page.getByTestId("cli-axis-step")).toHaveValue("4");
     await expect(page.getByTestId("cli-axis-k")).toHaveValue("12");
     await expect(page.getByTestId("cli-axis-preview")).toHaveText(
-      "illuminate <key> 4 12 algorithm=mst",
+      "illuminate <key> 4 12 reduction=mst",
     );
   });
 

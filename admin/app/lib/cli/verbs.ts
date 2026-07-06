@@ -8,16 +8,12 @@ import type {
   AlgorithmName,
   ObjectiveName,
   ParseResult,
+  ReductionName,
   WeightingName,
 } from "./types";
 
-const ILL_ALGORITHMS = new Set<AlgorithmName>([
-  "none",
-  "mst",
-  "spt",
-  "ppr",
-  "community",
-]);
+const ILL_ALGORITHMS = new Set<AlgorithmName>(["bfs", "ppr", "community"]);
+const ILL_REDUCTIONS = new Set<ReductionName>(["none", "mst", "spt"]);
 const ILL_OBJECTIVES = new Set<ObjectiveName>(["min", "max"]);
 const ILL_WEIGHTINGS = new Set<WeightingName>(["raw", "tfidf", "bm25"]);
 
@@ -456,7 +452,7 @@ export function parseDeletePrefix(rest: string[]): ParseResult {
 
 export function parseIlluminate(rest: string[]): ParseResult {
   const usage =
-    "usage: illuminate <key: string> <step: int> <k: int> [algorithm=none|mst|spt|ppr|community] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>] [restart_prob=<float>] [epsilon=<float>]";
+    "usage: illuminate <key: string> <step: int> <k: int> [algorithm=bfs|ppr|community] [reduction=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>] [restart_prob=<float>] [epsilon=<float>]";
   if (rest.length < 3) {
     return { ok: false, usage };
   }
@@ -472,7 +468,11 @@ export function parseIlluminate(rest: string[]): ParseResult {
   if (k === null) {
     return { ok: false, usage };
   }
-  let algorithm: AlgorithmName = "none";
+  // #961: the traversal FAMILY (algorithm) and the post-traversal tree
+  // REDUCTION are orthogonal axes. Family defaults to `bfs`, reduction to
+  // `none` — a bare illuminate is the greedy per-hop top-k walk.
+  let algorithm: AlgorithmName = "bfs";
+  let reduction: ReductionName = "none";
   // #560: defaults to `max` so a long-form command that omits the objective
   // kwarg matches the server's MAXIMIZE default and the click picker's
   // default — keeping the strongest-neighbour behaviour byte-for-byte.
@@ -485,8 +485,8 @@ export function parseIlluminate(rest: string[]): ParseResult {
   // #801: Personalized PageRank knobs. Free-text floats parsed leniently
   // (1e-3 / .25 / 0 accepted; NaN/inf/garbage rejected). Both default to 0,
   // which the server resolves to its own α=0.15 / ε=1e-4; ignored unless
-  // algorithm=ppr. A malformed value is a hard parse error, mirroring the Go
-  // REPL's strconv.ParseFloat rejection rather than silently dropping to 0.
+  // algorithm=ppr|community. A malformed value is a hard parse error, mirroring
+  // the Go REPL's strconv.ParseFloat rejection rather than silently dropping to 0.
   let restartProb = 0;
   let epsilon = 0;
   for (let i = 3; i < rest.length; i++) {
@@ -495,8 +495,8 @@ export function parseIlluminate(rest: string[]): ParseResult {
     if (eq < 0) {
       return { ok: false, usage };
     }
-    // The keyword KEY is always case-insensitive. The three closed-set
-    // axes (algorithm / objective / weighting) also fold their VALUE
+    // The keyword KEY is always case-insensitive. The closed-set axes
+    // (algorithm / reduction / objective / weighting) also fold their VALUE
     // because they only ever take a small fixed enum the Go REPL matches
     // case-insensitively (#437). The free-text `prefix` VALUE is matched
     // against vertex keys verbatim, so it stays case-SENSITIVE (#604).
@@ -508,6 +508,11 @@ export function parseIlluminate(rest: string[]): ParseResult {
         return { ok: false, usage };
       }
       algorithm = lvalue as AlgorithmName;
+    } else if (key === "reduction") {
+      if (!ILL_REDUCTIONS.has(lvalue as ReductionName)) {
+        return { ok: false, usage };
+      }
+      reduction = lvalue as ReductionName;
     } else if (key === "objective") {
       if (!ILL_OBJECTIVES.has(lvalue as ObjectiveName)) {
         return { ok: false, usage };
@@ -547,6 +552,7 @@ export function parseIlluminate(rest: string[]): ParseResult {
       step,
       k,
       algorithm,
+      reduction,
       objective,
       weighting,
       vertexPrefix,
@@ -564,8 +570,8 @@ export function parseIlluminate(rest: string[]): ParseResult {
  * parsers against the bare `help` verb.
  *
  * The kwarg enums and defaults below MUST stay in lockstep with
- * `parseIlluminate`'s `ILL_ALGORITHMS` / `ILL_OBJECTIVES` /
- * `ILL_WEIGHTINGS` sets and the corresponding Go REPL parser.
+ * `parseIlluminate`'s `ILL_ALGORITHMS` / `ILL_REDUCTIONS` / `ILL_OBJECTIVES`
+ * / `ILL_WEIGHTINGS` sets and the corresponding Go REPL parser.
  */
 export const HELP_TEXT = [
   "Lantern CLI grammar:",
@@ -584,12 +590,13 @@ export const HELP_TEXT = [
   "  delete-prefix vertices <prefix: string> [limit=<int>] [confirm=yes|dry_run=true]",
   "  keys   <prefix: string> [<limit: int>]",
   "  illuminate <seed: string> <step: int> <k: int>",
-  "             [algorithm={none|mst|spt|ppr|community}] default=none",
+  "             [algorithm={bfs|ppr|community}] default=bfs",
+  "             [reduction={none|mst|spt}]  default=none (bfs/community only)",
   "             [objective={min|max}]       default=max",
   "             [weighting={raw|tfidf|bm25}] default=raw",
   "             [prefix=<string>]           default=all keys",
-  "             [restart_prob=<float>]      default=0 (ppr only; server α=0.15)",
-  "             [epsilon=<float>]           default=0 (ppr only; server ε=1e-4)",
+  "             [restart_prob=<float>]      default=0 (ppr/community; server α=0.15)",
+  "             [epsilon=<float>]           default=0 (ppr/community; server ε=1e-4)",
   "  help",
   "  exit",
   "",
@@ -731,10 +738,10 @@ export const CLI_COMMAND_REFERENCE: readonly CliCommandDoc[] = [
     group: "Explore",
     verb: "illuminate",
     signature:
-      "illuminate <seed> <step> <k> [algorithm=none|mst|spt|ppr|community] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>] [restart_prob=<float>] [epsilon=<float>]",
+      "illuminate <seed> <step> <k> [algorithm=bfs|ppr|community] [reduction=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>] [restart_prob=<float>] [epsilon=<float>]",
     summary:
-      "Walk the graph from a seed (step hops, top-k per hop) and render the subgraph. algorithm=ppr runs Personalized PageRank and algorithm=community extracts the seed's local community (#845) — both tune locality with restart_prob/epsilon; the other axes reduce/weight the discovered subgraph.",
-    example: "illuminate alice 2 5 algorithm=community",
+      "Walk the graph from a seed (step hops, top-k per hop) and render the subgraph. algorithm picks the family — bfs (default), ppr (Personalized PageRank), or community (local community, #845); ppr/community tune locality with restart_prob/epsilon. reduction=mst|spt renders the discovered neighbourhood as a spanning / shortest-path tree (bfs & community; #961); the other axes weight the subgraph.",
+    example: "illuminate alice 2 5 algorithm=community reduction=mst",
   },
   {
     group: "Session",

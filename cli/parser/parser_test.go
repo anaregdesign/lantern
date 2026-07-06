@@ -473,7 +473,7 @@ func TestIlluminateParam_Prefix(t *testing.T) {
 	})
 
 	t.Run("omitted leaves prefix empty", func(t *testing.T) {
-		s, err := NewSource("alice 2 5 algorithm=mst")
+		s, err := NewSource("alice 2 5 reduction=mst")
 		if err != nil {
 			t.Fatalf("NewSource: %v", err)
 		}
@@ -501,7 +501,7 @@ func TestIlluminateParam_Prefix(t *testing.T) {
 	})
 
 	t.Run("composes with axis kwargs in any order", func(t *testing.T) {
-		s, err := NewSource("alice 2 5 prefix=users/ algorithm=spt objective=min")
+		s, err := NewSource("alice 2 5 prefix=users/ reduction=spt objective=min")
 		if err != nil {
 			t.Fatalf("NewSource: %v", err)
 		}
@@ -509,8 +509,8 @@ func TestIlluminateParam_Prefix(t *testing.T) {
 		if err != nil {
 			t.Fatalf("IlluminateParam: %v", err)
 		}
-		if m.Prefix != "users/" || m.Algorithm != "spt" || m.Objective != "min" {
-			t.Fatalf("got prefix=%q algorithm=%q objective=%q", m.Prefix, m.Algorithm, m.Objective)
+		if m.Prefix != "users/" || m.Reduction != "spt" || m.Objective != "min" {
+			t.Fatalf("got prefix=%q reduction=%q objective=%q", m.Prefix, m.Reduction, m.Objective)
 		}
 	})
 
@@ -583,6 +583,65 @@ func TestIlluminateParam_PPR(t *testing.T) {
 		}
 		if _, err := IlluminateParam(s); err == nil {
 			t.Fatal("IlluminateParam accepted epsilon=tiny; want error")
+		}
+	})
+}
+
+// TestIlluminateParam_Reduction covers the #961 orthogonal split: the
+// traversal FAMILY (algorithm=bfs|ppr|community) and the post-traversal tree
+// REDUCTION (reduction=none|mst|spt) are independent axes. A bare illuminate
+// defaults to algorithm=bfs / reduction=none; reduction composes with the bfs
+// and community families; mst/spt are no longer accepted as algorithm values;
+// and an unknown reduction value is rejected.
+func TestIlluminateParam_Reduction(t *testing.T) {
+	t.Run("defaults are bfs family, no reduction", func(t *testing.T) {
+		s, _ := NewSource("alice 2 5")
+		m, err := IlluminateParam(s)
+		if err != nil {
+			t.Fatalf("IlluminateParam: %v", err)
+		}
+		if m.Algorithm != "bfs" || m.Reduction != "none" {
+			t.Fatalf("defaults got algorithm=%q reduction=%q, want bfs/none", m.Algorithm, m.Reduction)
+		}
+	})
+
+	t.Run("reduction axis parses independently of family", func(t *testing.T) {
+		for _, red := range []string{"none", "mst", "spt"} {
+			s, _ := NewSource("alice 2 5 reduction=" + red)
+			m, err := IlluminateParam(s)
+			if err != nil {
+				t.Fatalf("IlluminateParam(reduction=%s): %v", red, err)
+			}
+			if m.Algorithm != "bfs" || m.Reduction != red {
+				t.Fatalf("got algorithm=%q reduction=%q, want bfs/%s", m.Algorithm, m.Reduction, red)
+			}
+		}
+	})
+
+	t.Run("community family composes with reduction and objective", func(t *testing.T) {
+		s, _ := NewSource("alice 2 5 algorithm=community reduction=mst objective=min")
+		m, err := IlluminateParam(s)
+		if err != nil {
+			t.Fatalf("IlluminateParam: %v", err)
+		}
+		if m.Algorithm != "community" || m.Reduction != "mst" || m.Objective != "min" {
+			t.Fatalf("got algorithm=%q reduction=%q objective=%q, want community/mst/min", m.Algorithm, m.Reduction, m.Objective)
+		}
+	})
+
+	t.Run("mst and spt are no longer algorithm families", func(t *testing.T) {
+		for _, bad := range []string{"algorithm=mst", "algorithm=spt", "algorithm=none"} {
+			s, _ := NewSource("alice 2 5 " + bad)
+			if _, err := IlluminateParam(s); err == nil {
+				t.Errorf("IlluminateParam(%q) = nil, want error", bad)
+			}
+		}
+	})
+
+	t.Run("unknown reduction value rejected", func(t *testing.T) {
+		s, _ := NewSource("alice 2 5 reduction=bogus")
+		if _, err := IlluminateParam(s); err == nil {
+			t.Fatal("IlluminateParam accepted reduction=bogus; want error")
 		}
 	})
 }

@@ -12,6 +12,7 @@ require (
 	github.com/anaregdesign/lantern/server v0.0.0-00010101000000-000000000000
 	github.com/manifoldco/promptui v0.9.0
 	github.com/modelcontextprotocol/go-sdk v1.6.1
+	github.com/prometheus/client_golang v1.23.2
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/net v0.56.0
 	google.golang.org/protobuf v1.36.11
@@ -43,7 +44,6 @@ require (
 	github.com/mschoch/smat v0.2.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
-	github.com/prometheus/client_golang v1.23.2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.66.1 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
