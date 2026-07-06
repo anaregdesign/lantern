@@ -5,7 +5,7 @@ go 1.26
 require (
 	connectrpc.com/connect v1.20.0
 	connectrpc.com/grpchealth v1.5.0
-	github.com/anaregdesign/lantern/core v0.16.0
+	github.com/anaregdesign/lantern/core v0.17.0
 	github.com/anaregdesign/lantern/mcp v0.0.0-00010101000000-000000000000
 	github.com/anaregdesign/lantern/pb v0.11.0
 	github.com/anaregdesign/lantern/sdks/go v0.22.0
