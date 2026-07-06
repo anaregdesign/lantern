@@ -606,6 +606,48 @@ test.describe("/cli", () => {
     await expect(preview).toHaveText("illuminate <key> 2 5");
   });
 
+  // #964 — the α/ε knobs must accept floats typed a keystroke at a time, not
+  // just Playwright's atomic .fill(). The pre-fix inputs were `type="number"`
+  // whose `.value` goes empty for an in-progress "0." / "1e-", and the field
+  // was re-derived from the numeric axis (0 → blank), so a human typing "0.15"
+  // saw every keystroke erased and could only enter integers.
+  test("ppr knobs accept floats typed character-by-character (#964)", async ({
+    page,
+  }) => {
+    await page.goto("/cli");
+    const input = page.getByTestId("cli-input");
+    await input.fill("get vertex cli:alpha");
+    await input.press("Enter");
+    await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
+    const preview = page.getByTestId("cli-axis-preview");
+
+    await page.getByTestId("cli-axis-algorithm").click();
+    await page.getByRole("option", { name: "Personalized PageRank" }).click();
+    await expect(preview).toHaveText("illuminate <key> 2 5 algorithm=ppr");
+
+    // Type a leading-zero decimal one key at a time: the field must retain each
+    // keystroke (no blanking on the intermediate "0" / "0.") and the preview
+    // must build up the full float.
+    const restartProb = page.getByTestId("cli-axis-restart-prob");
+    await restartProb.click();
+    await restartProb.pressSequentially("0.15");
+    await expect(restartProb).toHaveValue("0.15");
+    await expect(preview).toHaveText(
+      "illuminate <key> 2 5 algorithm=ppr restart_prob=0.15",
+    );
+
+    // Scientific notation must survive too — a `type="number"` field reports an
+    // empty value for the intermediate "1e" / "1e-". The raw text is echoed
+    // verbatim while the committed number normalises to decimal in the command.
+    const epsilon = page.getByTestId("cli-axis-epsilon");
+    await epsilon.click();
+    await epsilon.pressSequentially("1e-4");
+    await expect(epsilon).toHaveValue("1e-4");
+    await expect(preview).toHaveText(
+      "illuminate <key> 2 5 algorithm=ppr restart_prob=0.15 epsilon=0.0001",
+    );
+  });
+
   test("picker state persists across a reload (#464)", async ({ page }) => {
     await page.goto("/cli");
     // Render a graph so the picker mounts (#512).

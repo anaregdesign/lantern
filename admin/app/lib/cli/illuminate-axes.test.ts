@@ -24,6 +24,7 @@ import {
   CLI_CLICK_AXIS_DEFAULTS,
   formatIlluminateClick,
   formatStoredFloat,
+  interpretPushKnobInput,
   parseStoredAlgorithm,
   parseStoredFloat,
   parseStoredK,
@@ -423,5 +424,36 @@ describe("parseStored* helpers", () => {
     for (const value of [0, 0.15, 0.25, 0.0001]) {
       expect(parseStoredFloat(formatStoredFloat(value))).toBe(value);
     }
+  });
+});
+
+describe("interpretPushKnobInput (live α/ε knob editing)", () => {
+  test("blank or whitespace commits 0 (= server default)", () => {
+    expect(interpretPushKnobInput("")).toBe(0);
+    expect(interpretPushKnobInput("   ")).toBe(0);
+  });
+
+  test("commits finite non-negative decimals and scientific notation", () => {
+    expect(interpretPushKnobInput("0")).toBe(0);
+    expect(interpretPushKnobInput("0.15")).toBe(0.15);
+    expect(interpretPushKnobInput("0.001")).toBe(0.001);
+    expect(interpretPushKnobInput("1e-4")).toBe(0.0001);
+  });
+
+  test("keeps a value for in-progress decimals so the field is never erased", () => {
+    // The regression this guards: typing "0.15" a key at a time used to pass
+    // through "0." → commit 0 → re-derive display from the numeric axis → blank,
+    // so a leading-zero decimal could never be built up. "0." / "0.0" must
+    // resolve to a committable 0 (the component keeps the raw text), not null.
+    expect(interpretPushKnobInput("0.")).toBe(0);
+    expect(interpretPushKnobInput("0.0")).toBe(0);
+  });
+
+  test("rejects garbage / negatives so a good knob is never destroyed", () => {
+    expect(interpretPushKnobInput("-0.1")).toBeNull();
+    expect(interpretPushKnobInput("-")).toBeNull();
+    expect(interpretPushKnobInput("abc")).toBeNull();
+    expect(interpretPushKnobInput("NaN")).toBeNull();
+    expect(interpretPushKnobInput("Infinity")).toBeNull();
   });
 });

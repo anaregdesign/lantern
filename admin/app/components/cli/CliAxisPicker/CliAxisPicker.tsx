@@ -4,7 +4,7 @@ import {
   Option,
   type InputProps,
 } from "@fluentui/react-components";
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import {
   CLI_ALGORITHMS,
   CLI_CLICK_K_MAX,
@@ -15,6 +15,7 @@ import {
   CLI_REDUCTIONS,
   CLI_WEIGHTINGS,
   formatIlluminateClick,
+  interpretPushKnobInput,
   type CliClickAxes,
 } from "~/lib/cli/illuminate-axes";
 import type {
@@ -89,31 +90,39 @@ export function CliAxisPicker({ axes, setAxis, disabled }: CliAxisPickerProps) {
     [setAxis],
   );
 
-  // #801: PPR knobs are non-negative floats; an empty field means "0 = server
-  // default". Reject NaN / negative entries (the server owns the (0,1) / >0
-  // bounds) so a stray keystroke never persists a nonsensical knob.
+  // #801/#964: the α/ε knobs are non-negative floats, but they were built as
+  // native `type="number"` inputs whose `.value` goes empty for a syntactically
+  // in-progress entry ("0.", "1e-"), and whose displayed value was re-derived
+  // from the numeric axis every render (where 0 = "server default" renders
+  // blank). Together that erased the field on any keystroke that transiently
+  // parsed to 0, so decimals in (0,1) and scientific ε were literally
+  // un-typeable — the picker behaved as if only integers were allowed. Fix:
+  // hold the operator's RAW text as local state (displayed verbatim) and commit
+  // only a valid parse to the axis, so "0.15" / "1e-4" survive keystroke by
+  // keystroke. Seeded once from the already-hydrated axes; these two handlers
+  // are the sole writers of the knobs, so the text and the numeric axis never
+  // diverge without passing through here.
+  const [restartProbText, setRestartProbText] = useState(
+    axes.restartProb > 0 ? String(axes.restartProb) : "",
+  );
+  const [epsilonText, setEpsilonText] = useState(
+    axes.epsilon > 0 ? String(axes.epsilon) : "",
+  );
+
   const onRestartProbChange = useCallback<NonNullable<InputProps["onChange"]>>(
     (_, data) => {
-      if (data.value === "") {
-        setAxis("restartProb", 0);
-        return;
-      }
-      const n = Number.parseFloat(data.value);
-      if (!Number.isFinite(n) || n < 0) return;
-      setAxis("restartProb", n);
+      setRestartProbText(data.value);
+      const n = interpretPushKnobInput(data.value);
+      if (n !== null) setAxis("restartProb", n);
     },
     [setAxis],
   );
 
   const onEpsilonChange = useCallback<NonNullable<InputProps["onChange"]>>(
     (_, data) => {
-      if (data.value === "") {
-        setAxis("epsilon", 0);
-        return;
-      }
-      const n = Number.parseFloat(data.value);
-      if (!Number.isFinite(n) || n < 0) return;
-      setAxis("epsilon", n);
+      setEpsilonText(data.value);
+      const n = interpretPushKnobInput(data.value);
+      if (n !== null) setAxis("epsilon", n);
     },
     [setAxis],
   );
@@ -289,11 +298,9 @@ export function CliAxisPicker({ axes, setAxis, disabled }: CliAxisPickerProps) {
             <span className={styles.label}>restart_prob</span>
             <Input
               className={styles.numberInput}
-              type="number"
-              min={0}
-              max={1}
-              step="any"
-              value={axes.restartProb > 0 ? String(axes.restartProb) : ""}
+              type="text"
+              inputMode="decimal"
+              value={restartProbText}
               onChange={onRestartProbChange}
               disabled={disabled}
               placeholder="0.15"
@@ -306,10 +313,9 @@ export function CliAxisPicker({ axes, setAxis, disabled }: CliAxisPickerProps) {
             <span className={styles.label}>epsilon</span>
             <Input
               className={styles.numberInput}
-              type="number"
-              min={0}
-              step="any"
-              value={axes.epsilon > 0 ? String(axes.epsilon) : ""}
+              type="text"
+              inputMode="decimal"
+              value={epsilonText}
               onChange={onEpsilonChange}
               disabled={disabled}
               placeholder="1e-4"
