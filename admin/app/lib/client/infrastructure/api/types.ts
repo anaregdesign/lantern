@@ -134,6 +134,22 @@ export interface AddEdgeResponse {
   edge?: Edge;
 }
 
+export interface AddDecayingEdgeBody {
+  initialWeight: number;
+  ratio: number;
+  steps: number;
+  intervalSeconds: number;
+}
+
+export interface AddDecayingEdgeResponse {
+  /**
+   * Effective (live-sum) weight on (tail, head) immediately after the
+   * decaying add — any preexisting live weight plus `initialWeight`.
+   * Returned by the SDK's `addDecayingEdge` and surfaced in the echo.
+   */
+  effectiveWeight: number;
+}
+
 export interface PutEdgeBody {
   edge?: Edge;
 }

@@ -54,6 +54,25 @@ export type Command =
       ttlSeconds: number | null;
     }
   | {
+      /**
+       * `add decaying-edge <tail> <head> <initial_weight> <ratio> <steps>
+       * <interval_seconds>` (#953). Client-side geometric decay: the SDK
+       * (`addDecayingEdge`) expands it into one staggered-TTL `AddEdges`
+       * batch. The parser validates operand *types* only — numeric-range
+       * checks (`ratio` in (0,1), `steps` in [1, MAX_DECAY_STEPS],
+       * `intervalSeconds` > 0) are deferred to the SDK's `DecayOptions`
+       * contract, mirroring the Go parser which defers to `client.DecayOpts`.
+       */
+      verb: "add";
+      objective: "decaying-edge";
+      tail: string;
+      head: string;
+      initialWeight: number;
+      ratio: number;
+      steps: number;
+      intervalSeconds: number;
+    }
+  | {
       verb: "scan";
       objective: "vertices";
       prefix: string;

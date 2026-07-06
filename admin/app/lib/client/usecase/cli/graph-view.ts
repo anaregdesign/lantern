@@ -406,6 +406,37 @@ export function commandResultToGraphMerge(command: Command): GraphMerge | null {
       focus: command.tail,
     };
   }
+  if (command.verb === "add" && command.objective === "decaying-edge") {
+    // Render the staircase as a single additive edge at its S(0) live weight
+    // (`initialWeight`), decaying over the full horizon (steps × interval).
+    // The canvas shows one edge per (tail, head); the per-step contributions
+    // are an SDK/server implementation detail, so the initial live sum is the
+    // faithful visual weight.
+    const horizonSeconds = command.steps * command.intervalSeconds;
+    const edge: Edge = {
+      tail: command.tail,
+      head: command.head,
+      weight: command.initialWeight,
+      expiration: ttlSecondsToExpiration(horizonSeconds),
+    };
+    return {
+      nodes: [
+        mergeNode(command.tail, { key: command.tail }),
+        mergeNode(command.head, { key: command.head }),
+      ],
+      edges: [
+        {
+          id: `${command.tail}→${command.head}`,
+          source: command.tail,
+          target: command.head,
+          weight: command.initialWeight,
+          edge,
+        },
+      ],
+      additive: true,
+      focus: command.tail,
+    };
+  }
   return null;
 }
 

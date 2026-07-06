@@ -118,6 +118,106 @@ describe("parseAdd / parsePut weight uses parseFloatStrict (#434)", () => {
   });
 });
 
+describe("parseAdd decaying-edge (#953 — client-side decay staircase)", () => {
+  test("accepts the canonical 6-operand form", () => {
+    const r = parseAdd([
+      "decaying-edge",
+      "alice",
+      "bob",
+      "16",
+      "0.5",
+      "5",
+      "1",
+    ]);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.command).toEqual({
+        verb: "add",
+        objective: "decaying-edge",
+        tail: "alice",
+        head: "bob",
+        initialWeight: 16,
+        ratio: 0.5,
+        steps: 5,
+        intervalSeconds: 1,
+      });
+    }
+  });
+
+  test("validates operand types only — an out-of-range ratio still parses", () => {
+    // Range enforcement (ratio ∈ (0,1), steps ∈ [1,MAX], interval > 0) is the
+    // SDK's job; the parser must not reject a well-typed but out-of-range curve,
+    // matching the Go parser which defers to client.DecayOpts.
+    const r = parseAdd(["decaying-edge", "alice", "bob", "16", "2", "5", "1"]);
+    expect(r.ok).toBe(true);
+    if (
+      r.ok &&
+      r.command.verb === "add" &&
+      r.command.objective === "decaying-edge"
+    ) {
+      expect(r.command.ratio).toBe(2);
+    }
+  });
+
+  test("rejects a missing interval_seconds (5 operands)", () => {
+    const r = parseAdd(["decaying-edge", "alice", "bob", "16", "0.5", "5"]);
+    expect(r.ok).toBe(false);
+  });
+
+  test("rejects a trailing token after interval_seconds (7 operands)", () => {
+    const r = parseAdd([
+      "decaying-edge",
+      "alice",
+      "bob",
+      "16",
+      "0.5",
+      "5",
+      "1",
+      "extra",
+    ]);
+    expect(r.ok).toBe(false);
+  });
+
+  test("rejects a non-numeric initial_weight", () => {
+    const r = parseAdd([
+      "decaying-edge",
+      "alice",
+      "bob",
+      "notafloat",
+      "0.5",
+      "5",
+      "1",
+    ]);
+    expect(r.ok).toBe(false);
+  });
+
+  test("rejects non-integer steps", () => {
+    const r = parseAdd([
+      "decaying-edge",
+      "alice",
+      "bob",
+      "16",
+      "0.5",
+      "2.5",
+      "1",
+    ]);
+    expect(r.ok).toBe(false);
+  });
+
+  test("rejects a fractional interval_seconds (bare integer of seconds)", () => {
+    const r = parseAdd([
+      "decaying-edge",
+      "alice",
+      "bob",
+      "16",
+      "0.5",
+      "5",
+      "1.5",
+    ]);
+    expect(r.ok).toBe(false);
+  });
+});
+
 describe("parseHelp (#436 — help verb)", () => {
   test("bare `help` returns a help command", () => {
     const r = parseHelp([]);
