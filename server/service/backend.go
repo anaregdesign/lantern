@@ -127,10 +127,11 @@ type Backend interface {
 	// community around seed (#845): the shared PPR forward-push followed by
 	// a sweep cut (PageRank-Nibble). maxSize is an UPPER BOUND (0 =
 	// unbounded); alpha/epsilon follow the PPR defaults; weighting steers
-	// the walk and the sweep only — the returned graph is the INDUCED
-	// SUBGRAPH on the selected members with actual stored edge weights and
-	// expirations, in the same (graph, expirations) shape as the BFS path.
-	// keep scopes both the walk and the community (seed exempt).
+	// the walk and the sweep AND is applied to the returned edge weights
+	// (WeightingRaw = the verbatim stored weight) — the returned graph is
+	// the INDUCED SUBGRAPH on the selected members with those weights and
+	// their expirations, in the same (graph, expirations) shape as the BFS
+	// path. keep scopes both the walk and the community (seed exempt).
 	LocalCommunityContext(
 		ctx context.Context,
 		seed string,

@@ -58,7 +58,8 @@ export interface PprOptions {
  * Local-community-family knobs (#845): PageRank-Nibble — the PPR push
  * followed by a conductance sweep cut. Unlike the PPR relevance star the
  * response preserves structure: the induced subgraph on the selected
- * members with actual stored edge weights and expirations.
+ * members, with weighting-transformed edge weights (RAW/UNSPECIFIED = the
+ * verbatim stored weight) and expirations.
  */
 export interface LocalCommunityOptions {
   /**

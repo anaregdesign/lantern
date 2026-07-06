@@ -548,11 +548,13 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 		// Local community extraction (#845): PageRank-Nibble sweep cut over
 		// the shared push. Membership is decided by conductance (max_size is
 		// an upper bound, not a count) and the result is the induced
-		// subgraph — real edges with real weights and expirations, unlike
-		// the PPR star. An optional Reduction renders a tree VIEW rooted at
-		// the seed; sweep prefixes need not be connected, so members
-		// unreachable from the seed within the community stay as ISOLATED
-		// vertices rather than being dropped or wired up artificially.
+		// subgraph — real edges (weighting-transformed weights; RAW = the
+		// verbatim stored weight) with their expirations, unlike the PPR
+		// star. An optional Reduction renders a tree VIEW rooted at the
+		// seed, reducing over those weighting-transformed weights; sweep
+		// prefixes need not be connected, so members unreachable from the
+		// seed within the community stay as ISOLATED vertices rather than
+		// being dropped or wired up artificially.
 		comm := params.Community
 		alpha, epsilon := resolvePPRParams(comm.GetRestartProb(), comm.GetEpsilon())
 		traversalStart := time.Now()

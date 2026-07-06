@@ -782,4 +782,66 @@ func TestGraphCache_LocalCommunity(t *testing.T) {
 			t.Fatal("cancelled ctx must surface an error")
 		}
 	})
+
+	t.Run("output edge weights carry the weighting transform (#966)", func(t *testing.T) {
+		// Two cliques joined by a weak bridge (as in the first sub-test) so
+		// the seed community is the FULL seed clique A. Every member of A
+		// also receives the SAME number of external in-edges, so TF-IDF/BM25
+		// down-weight the intra-A edges by an identical factor: membership
+		// stays A under all three weightings, but the RETURNED weights
+		// differ. Raw = verbatim 1; TF-IDF/BM25 = the re-scored value. Pins
+		// that the induced-subgraph output is no longer weighting-neutral —
+		// it applies the same scoreEdge transform the BFS family does, so a
+		// subsequent Reduction honours weighting.
+		A := []string{"s", "a", "b", "c"}
+		B := []string{"x", "y", "z", "w"}
+		mk := func() *GraphCache[string, string] {
+			c := NewGraphCache[string, string](time.Hour)
+			buildClique(c, A, 1.0)
+			buildClique(c, B, 1.0)
+			c.PutEdgeWithExpiration("s", "x", 0.05, exp) // weak bridge each way
+			c.PutEdgeWithExpiration("x", "s", 0.05, exp)
+			for _, m := range A {
+				for i := 0; i < 4; i++ {
+					ext := fmt.Sprintf("%s_ext%d", m, i)
+					c.PutVertexWithExpiration(ext, "v", exp)
+					c.PutEdgeWithExpiration(ext, m, 1.0, exp) // in-edge only: skews docFreq, never joins the community
+				}
+			}
+			return c
+		}
+
+		raw, _, err := mk().LocalCommunityContext(context.Background(), "s", 0, 0.15, 1e-6, WeightingRaw, nil)
+		if err != nil {
+			t.Fatalf("Raw: %v", err)
+		}
+		wr, ok := raw.Edges["a"]["b"]
+		if !ok || wr != 1.0 {
+			t.Fatalf("Raw induced edge a->b = (%v,%v), want (1,true) — verbatim stored weight; community=%v", wr, ok, raw.Vertices)
+		}
+
+		tfidf, _, err := mk().LocalCommunityContext(context.Background(), "s", 0, 0.15, 1e-6, WeightingTFIDF, nil)
+		if err != nil {
+			t.Fatalf("TFIDF: %v", err)
+		}
+		wt, ok := tfidf.Edges["a"]["b"]
+		if !ok {
+			t.Fatalf("TFIDF induced edge a->b missing (community=%v)", tfidf.Vertices)
+		}
+		if !(wt > 0 && wt < wr) {
+			t.Errorf("TFIDF edge a->b = %v, want 0 < w < raw(%v) — idf must down-weight the popular head", wt, wr)
+		}
+
+		bm25, _, err := mk().LocalCommunityContext(context.Background(), "s", 0, 0.15, 1e-6, WeightingBM25, nil)
+		if err != nil {
+			t.Fatalf("BM25: %v", err)
+		}
+		wb, ok := bm25.Edges["a"]["b"]
+		if !ok {
+			t.Fatalf("BM25 induced edge a->b missing (community=%v)", bm25.Vertices)
+		}
+		if wb == wr {
+			t.Errorf("BM25 edge a->b = %v, want != raw(%v) — transform not applied", wb, wr)
+		}
+	})
 }
