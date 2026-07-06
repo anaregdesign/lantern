@@ -275,6 +275,33 @@ export function parseStoredFloat(raw: string | null): number | null {
 }
 
 /**
+ * Interpret a raw push-knob (restart_prob / epsilon) input string into the
+ * number to COMMIT to the axis during live editing (#801).
+ *
+ * The CliAxisPicker knob fields keep the operator's raw keystrokes as the
+ * displayed value — so a half-typed "0." or "1e-" survives instead of being
+ * round-tripped through the numeric axis (where 0 = "server default" renders
+ * blank) and erased mid-edit — and feed every keystroke through this helper to
+ * decide what, if anything, to persist:
+ *   - blank / whitespace → 0, i.e. "leave the knob at the server default";
+ *   - a finite, non-negative parse (incl. "0", "0.", "0.15", "1e-4") → that
+ *     number, committed so the live preview updates;
+ *   - anything else (negative, NaN, "abc", a lone "-") → null, meaning "keep the
+ *     previously committed value" so a stray keystroke never destroys a good knob.
+ *
+ * This is the live-edit sibling of {@link parseStoredFloat} (which guards
+ * localStorage hydration). Both stay lenient about the (0,1) / >0 bounds — the
+ * server remains the final authority — but neither ever resurrects a NaN or a
+ * negative knob.
+ */
+export function interpretPushKnobInput(raw: string): number | null {
+  if (raw.trim() === "") return 0;
+  const n = Number.parseFloat(raw);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return n;
+}
+
+/**
  * Parse a stored vertex prefix. Prefix is free text, so every non-null
  * string is valid (including ""); only a missing key returns null, letting
  * the caller fall back to {@link CLI_CLICK_AXIS_DEFAULTS}.vertexPrefix.
