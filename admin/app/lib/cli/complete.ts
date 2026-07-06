@@ -159,7 +159,7 @@ function objectivesFor(verb: string): readonly string[] | null {
     case "delete":
       return ["vertex", "edge"];
     case "add":
-      return ["edge"];
+      return ["edge", "decaying-edge"];
     case "scan":
       return ["vertices", "edges"];
     case "count":

@@ -344,6 +344,31 @@ describe("commandResultToGraphMerge", () => {
     expect(merge.focus).toBe("alice");
   });
 
+  it("projects an add decaying-edge as an additive edge at its S(0) weight", () => {
+    const cmd: Command = {
+      verb: "add",
+      objective: "decaying-edge",
+      tail: "alice",
+      head: "bob",
+      initialWeight: 16,
+      ratio: 0.5,
+      steps: 5,
+      intervalSeconds: 1,
+    };
+    const merge = commandResultToGraphMerge(cmd)!;
+    expect(merge.nodes.map((n) => n.id).sort()).toEqual(["alice", "bob"]);
+    expect(merge.edges).toHaveLength(1);
+    expect(merge.edges[0].id).toBe("alice→bob");
+    // The canvas shows the initial live weight (S(0)); per-step contributions
+    // are an SDK/server detail.
+    expect(merge.edges[0].weight).toBe(16);
+    expect(merge.edges[0].edge.weight).toBe(16);
+    // Expiry is the full decay horizon (steps × interval = 5s).
+    expect(typeof merge.edges[0].edge.expiration).toBe("string");
+    expect(merge.additive).toBe(true);
+    expect(merge.focus).toBe("alice");
+  });
+
   it("returns null for verbs that carry no mergeable element", () => {
     expect(
       commandResultToGraphMerge({

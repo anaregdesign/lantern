@@ -196,26 +196,31 @@ export function parseDelete(rest: string[]): ParseResult {
   return { ok: false, usage: "usage: delete { vertex | edge }" };
 }
 
+const ADD_EDGE_USAGE =
+  "usage: add edge <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]";
+const ADD_DECAYING_EDGE_USAGE =
+  "usage: add decaying-edge <tail: string> <head: string> <initial_weight: float> <ratio: float> <steps: int> <interval_seconds: int>";
+
 export function parseAdd(rest: string[]): ParseResult {
   const [obj, ...args] = rest;
-  if (obj?.toLowerCase() !== "edge") {
-    return { ok: false, usage: "usage: add edge ... " };
+  const o = obj?.toLowerCase();
+  if (o === "edge") {
+    return parseAddEdge(args);
   }
+  if (o === "decaying-edge") {
+    return parseAddDecayingEdge(args);
+  }
+  return { ok: false, usage: "usage: add { edge | decaying-edge } ... " };
+}
+
+function parseAddEdge(args: string[]): ParseResult {
   if (args.length < 3 || args.length > 4) {
-    return {
-      ok: false,
-      usage:
-        "usage: add edge <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]",
-    };
+    return { ok: false, usage: ADD_EDGE_USAGE };
   }
   const [tail, head, weightTok, ttlTok] = args;
   const weight = parseFloatStrict(weightTok);
   if (weight === null) {
-    return {
-      ok: false,
-      usage:
-        "usage: add edge <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]",
-    };
+    return { ok: false, usage: ADD_EDGE_USAGE };
   }
   // Omitted ttl_seconds ⇒ permanent (no decay); only an explicit but
   // malformed token is a usage error (#523).
@@ -223,11 +228,7 @@ export function parseAdd(rest: string[]): ParseResult {
   if (ttlTok !== undefined) {
     ttlSeconds = parseInt10(ttlTok);
     if (ttlSeconds === null) {
-      return {
-        ok: false,
-        usage:
-          "usage: add edge <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]",
-      };
+      return { ok: false, usage: ADD_EDGE_USAGE };
     }
   }
   return {
@@ -239,6 +240,45 @@ export function parseAdd(rest: string[]): ParseResult {
       head,
       weight,
       ttlSeconds,
+    },
+  };
+}
+
+// `add decaying-edge <tail> <head> <initial_weight> <ratio> <steps>
+// <interval_seconds>` (#953). Mirrors the Go parser's `AddDecayingEdgeParam`:
+// exactly six operands, validated for *type* only. Numeric-range checks
+// (ratio in (0,1), steps in [1, MAX_DECAY_STEPS], interval > 0) are deferred
+// to the SDK's `DecayOptions` contract, so a grammatically well-formed but
+// out-of-range command parses here and fails at execution with the SDK's
+// error, exactly as the Go CLI defers to `client.DecayOpts`.
+function parseAddDecayingEdge(args: string[]): ParseResult {
+  if (args.length !== 6) {
+    return { ok: false, usage: ADD_DECAYING_EDGE_USAGE };
+  }
+  const [tail, head, initialTok, ratioTok, stepsTok, intervalTok] = args;
+  const initialWeight = parseFloatStrict(initialTok);
+  const ratio = parseFloatStrict(ratioTok);
+  const steps = parseInt10(stepsTok);
+  const intervalSeconds = parseInt10(intervalTok);
+  if (
+    initialWeight === null ||
+    ratio === null ||
+    steps === null ||
+    intervalSeconds === null
+  ) {
+    return { ok: false, usage: ADD_DECAYING_EDGE_USAGE };
+  }
+  return {
+    ok: true,
+    command: {
+      verb: "add",
+      objective: "decaying-edge",
+      tail,
+      head,
+      initialWeight,
+      ratio,
+      steps,
+      intervalSeconds,
     },
   };
 }
@@ -535,6 +575,7 @@ export const HELP_TEXT = [
   "  put    vertex <key: string> <value: string|int|float|bool|datetime> [<ttl_seconds: int>] [type=auto|string|int|float|bool|datetime|duration|json]",
   "  put    edge   <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]",
   "  add    edge   <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]",
+  "  add    decaying-edge <tail: string> <head: string> <initial_weight: float> <ratio: float> <steps: int> <interval_seconds: int>",
   "  delete vertex <key: string> [<key: string> ...]",
   "  delete edge   <tail: string> <head: string> [<tail: string> <head: string> ...]",
   "  scan   vertices <prefix: string> [<limit: int>] [all=true]",
@@ -638,6 +679,15 @@ export const CLI_COMMAND_REFERENCE: readonly CliCommandDoc[] = [
     summary:
       "Add weight onto an edge (additive); creates it if absent. TTL seconds optional.",
     example: "add edge alice bob 0.5",
+  },
+  {
+    group: "Edges",
+    verb: "add",
+    signature:
+      "add decaying-edge <tail> <head> <initial_weight> <ratio> <steps> <interval_seconds>",
+    summary:
+      "Add a geometric decay staircase: the edge starts at initial_weight and decays by ratio each step, one contribution per interval_seconds. Client-side only; range checks apply at execution.",
+    example: "add decaying-edge alice bob 16 0.5 5 1",
   },
   {
     group: "Edges",

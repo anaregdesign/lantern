@@ -220,6 +220,32 @@ test.describe("/cli", () => {
     );
   });
 
+  // #953 — `add decaying-edge` runs the geometric decay staircase entirely
+  // through the workspace-linked lantern-sdk (one staggered-TTL AddEdges
+  // batch). The echo surfaces the SDK's returned live-sum total, and the
+  // additive edge lands on the canvas at its initial weight.
+  test("add decaying-edge writes an additive edge and echoes its total (#953)", async ({
+    page,
+  }) => {
+    await page.goto("/cli");
+    await expect(page.getByTestId("cli-canvas-panel")).toHaveCount(0);
+    const input = page.getByTestId("cli-input");
+    await input.fill("add decaying-edge cli:dk-a cli:dk-b 16 0.5 5 1");
+    await input.press("Enter");
+    // The write dispatches straight through and echoes an ok chip carrying
+    // the decay params and the returned live-sum total.
+    const ok = page.getByTestId("cli-entry-ok").last();
+    await expect(ok).toBeVisible();
+    await expect(ok).toContainText("total");
+    await expect(ok).toContainText("16");
+    // The canvas opens with the command as its source label and the edge
+    // between the two endpoints.
+    await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
+    await expect(page.getByTestId("cli-canvas-panel")).toContainText(
+      "add decaying-edge cli:dk-a cli:dk-b 16 0.5 5 1",
+    );
+  });
+
   // #433 — Ctrl+L is the editor-conventional clear-screen binding and
   // the only way to clear the scrollback now that the Clear button has
   // been removed (#512). It empties the scrollback in place, leaving the
@@ -670,6 +696,7 @@ test.describe("/cli", () => {
     const drawer = page.getByTestId("cli-command-reference");
     await expect(drawer).toBeVisible();
     await expect(drawer).toContainText("illuminate");
+    await expect(drawer).toContainText("add decaying-edge");
     await expect(page.getByTestId("cli-command-row").first()).toBeVisible();
     // The dismiss button closes it again.
     await page.getByTestId("cli-command-reference-close").click();

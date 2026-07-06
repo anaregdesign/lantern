@@ -81,6 +81,14 @@ class FakeLanternClient {
   addEdge(input: unknown, signal?: AbortSignal): unknown {
     return this.invoke("addEdge", [input, signal]);
   }
+  addDecayingEdge(
+    tail: string,
+    head: string,
+    opts: unknown,
+    signal?: AbortSignal,
+  ): unknown {
+    return this.invoke("addDecayingEdge", [tail, head, opts, signal]);
+  }
   deleteEdge(tail: string, head: string, signal?: AbortSignal): unknown {
     return this.invoke("deleteEdge", [tail, head, signal]);
   }
@@ -443,6 +451,72 @@ describe("dispatch write echo surfaces the applied TTL/expiry (#653)", () => {
     const ms = new Date(out.expiresAt!).getTime();
     expect(ms).toBeGreaterThanOrEqual(before + 30_000);
     expect(ms).toBeLessThanOrEqual(after + 30_000);
+  });
+});
+
+describe("dispatch add decaying-edge (#953)", () => {
+  test("calls addDecayingEdge with the parsed DecayOptions", async () => {
+    const fake = new FakeLanternClient();
+    fake.stub("addDecayingEdge", () => 31);
+    const cmd: Command = {
+      verb: "add",
+      objective: "decaying-edge",
+      tail: "x",
+      head: "y",
+      initialWeight: 16,
+      ratio: 0.5,
+      steps: 5,
+      intervalSeconds: 1,
+    };
+    await dispatch({ client: asClient(fake), command: cmd });
+    const call = fake.calls.find((c) => c.method === "addDecayingEdge");
+    expect(call).toBeDefined();
+    expect(call!.args[0]).toBe("x");
+    expect(call!.args[1]).toBe("y");
+    expect(call!.args[2]).toEqual({
+      initialWeight: 16,
+      ratio: 0.5,
+      steps: 5,
+      intervalSeconds: 1,
+    });
+  });
+
+  test("echoes the decay params, returned total, and full-horizon expiry", async () => {
+    const fake = new FakeLanternClient();
+    fake.stub("addDecayingEdge", () => 31);
+    const cmd: Command = {
+      verb: "add",
+      objective: "decaying-edge",
+      tail: "x",
+      head: "y",
+      initialWeight: 16,
+      ratio: 0.5,
+      steps: 5,
+      intervalSeconds: 1,
+    };
+    const before = Date.now();
+    const out = (await dispatch({ client: asClient(fake), command: cmd })) as {
+      tail: string;
+      head: string;
+      initialWeight: number;
+      ratio: number;
+      steps: number;
+      total: number;
+      ttlSeconds: number | null;
+      expiresAt: string | null;
+    };
+    const after = Date.now();
+    expect(out.tail).toBe("x");
+    expect(out.head).toBe("y");
+    expect(out.initialWeight).toBe(16);
+    expect(out.ratio).toBe(0.5);
+    expect(out.steps).toBe(5);
+    expect(out.total).toBe(31);
+    // Horizon = steps × intervalSeconds = 5 × 1 = 5s.
+    expect(out.ttlSeconds).toBe(5);
+    const ms = new Date(out.expiresAt!).getTime();
+    expect(ms).toBeGreaterThanOrEqual(before + 5_000);
+    expect(ms).toBeLessThanOrEqual(after + 5_000);
   });
 });
 

@@ -29,6 +29,7 @@
  */
 
 import type { LanternClient } from "~/lib/client/infrastructure/api/lantern-client";
+import { addDecayingEdge } from "~/lib/client/infrastructure/api/add-decaying-edge";
 import { addEdge } from "~/lib/client/infrastructure/api/add-edge";
 import { countVerticesByPrefix } from "~/lib/client/infrastructure/api/count-vertices-by-prefix";
 import { deleteEdge } from "~/lib/client/infrastructure/api/delete-edge";
@@ -188,6 +189,38 @@ export async function dispatch(input: DispatchInput): Promise<unknown> {
       }
       return { deleted: await deleteEdges(client, command.pairs, { signal }) };
     case "add": {
+      if (command.objective === "decaying-edge") {
+        // The staircase has staggered per-step TTLs, so there is no single
+        // applied TTL; echo the full decay horizon (steps × interval) as the
+        // effective expiry — when the edge decays to zero — mirroring the Go
+        // REPL's `add decaying-edge` echo.
+        const horizonSeconds = command.steps * command.intervalSeconds;
+        const expiration = ttlSecondsToExpiration(horizonSeconds);
+        const { effectiveWeight } = await addDecayingEdge(
+          client,
+          command.tail,
+          command.head,
+          {
+            initialWeight: command.initialWeight,
+            ratio: command.ratio,
+            steps: command.steps,
+            intervalSeconds: command.intervalSeconds,
+          },
+          { signal },
+        );
+        return writeEcho(
+          {
+            tail: command.tail,
+            head: command.head,
+            initialWeight: command.initialWeight,
+            ratio: command.ratio,
+            steps: command.steps,
+            total: effectiveWeight,
+          },
+          horizonSeconds,
+          expiration,
+        );
+      }
       const expiration = ttlSecondsToExpiration(command.ttlSeconds);
       await addEdge(
         client,

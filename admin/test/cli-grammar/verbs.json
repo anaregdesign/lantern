@@ -23,6 +23,18 @@
     { "input": "put edge alice bob 1.5 60" },
     { "input": "add edge alice bob 1.0" },
     { "input": "add edge alice bob 1.0 60" },
+    {
+      "input": "add decaying-edge alice bob 16 0.5 5 1",
+      "comment": "#953: geometric decay staircase (16→8→4→2→1→0 over 5s)"
+    },
+    {
+      "input": "add decaying-edge alice bob 1.5 0.9 16 5",
+      "comment": "#953: steps at MAX_DECAY_STEPS (16)"
+    },
+    {
+      "input": "add decaying-edge alice bob 16 2 5 1",
+      "comment": "#953: the parser validates operand types only — an out-of-range ratio (2 ∉ (0,1)) parses here and is rejected by the SDK at execution, matching the Go parser which defers to client.DecayOpts"
+    },
     { "input": "delete vertex alice" },
     { "input": "delete edge alice bob" },
     { "input": "scan vertices users/" },
@@ -182,7 +194,30 @@
       "input": "add edge alice bob 1.0 60 extra",
       "comment": "#932: trailing token after ttl_seconds"
     },
-    { "input": "add vertex alice", "comment": "add only supports edge" },
+    {
+      "input": "add vertex alice",
+      "comment": "add only supports edge and decaying-edge"
+    },
+    {
+      "input": "add decaying-edge alice bob 16 0.5 5",
+      "comment": "#953: missing interval_seconds (5 operands, needs 6)"
+    },
+    {
+      "input": "add decaying-edge alice bob 16 0.5 5 1 extra",
+      "comment": "#953: trailing token after interval_seconds"
+    },
+    {
+      "input": "add decaying-edge alice bob notafloat 0.5 5 1",
+      "comment": "#953: non-numeric initial_weight"
+    },
+    {
+      "input": "add decaying-edge alice bob 16 0.5 2.5 1",
+      "comment": "#953: non-integer steps"
+    },
+    {
+      "input": "add decaying-edge alice bob 16 0.5 5 1.5",
+      "comment": "#953: interval_seconds is a bare integer of seconds, not a float"
+    },
     { "input": "delete", "comment": "missing objective" },
     { "input": "delete edge alice", "comment": "missing head" },
     { "input": "scan", "comment": "missing objective" },

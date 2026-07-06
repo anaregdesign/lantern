@@ -54,8 +54,17 @@ describe("completeCommandLine — objectives (slot 1)", () => {
     ]);
   });
 
-  test("add offers only edge", () => {
-    expect(completeCommandLine("add ", KEYS).candidates).toEqual(["edge"]);
+  test("add offers edge and decaying-edge", () => {
+    expect(completeCommandLine("add ", KEYS).candidates).toEqual([
+      "edge",
+      "decaying-edge",
+    ]);
+  });
+
+  test("add filters to decaying-edge by prefix", () => {
+    expect(completeCommandLine("add d", KEYS).candidates).toEqual([
+      "decaying-edge",
+    ]);
   });
 
   test("scan offers the plural objectives", () => {
