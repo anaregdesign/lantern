@@ -11,7 +11,12 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { InvalidArgumentError, NotFoundError } from "lantern-sdk/web";
+import {
+  InvalidArgumentError,
+  NotFoundError,
+  Objective as SdkObjective,
+  Reduction as SdkReduction,
+} from "lantern-sdk/web";
 import { LanternApiError } from "~/lib/client/infrastructure/api/error";
 import type { LanternClient } from "~/lib/client/infrastructure/api/lantern-client";
 import {
@@ -649,11 +654,13 @@ describe("dispatch keys (#674)", () => {
   });
 });
 
-describe("dispatch illuminate maps the algorithm axis to the family oneof (#942)", () => {
-  // The bug: `algorithm=community` parsed fine but `ALGORITHM_TO_API` had no
-  // `community` entry, so the request silently fell back to a BFS walk. These
-  // tests drive the full parser → dispatcher → adapter seam and assert the
-  // community oneof reaches the SDK — and that neither BFS nor PPR does.
+describe("dispatch illuminate maps the axes to the family + reduction oneofs", () => {
+  // #942: `algorithm=community` parsed fine but the old `ALGORITHM_TO_API`
+  // had no `community` entry, so the request silently fell back to a BFS
+  // walk. #961 then split the flat algorithm axis into orthogonal
+  // family (algorithm=) + reduction (reduction=) axes. These tests drive the
+  // full parser → dispatcher → adapter seam and assert the community oneof
+  // reaches the SDK — and that the reduction/objective knobs ride along.
   const emptyGraph = () => ({ vertices: new Map(), edges: new Map() });
 
   test("algorithm=community builds the community oneof, not bfs/ppr", async () => {
@@ -673,11 +680,15 @@ describe("dispatch illuminate maps the algorithm axis to the family oneof (#942)
     expect(seed).toBe("a1");
     // k (5) becomes the max_size UPPER BOUND; step (2) has no meaning here
     // and is dropped; the α/ε knobs default to 0 = "server default". Mirrors
-    // the Go CLI `IlluminateFamilyOption` `case "community"`.
+    // the Go CLI `IlluminateFamilyOption` `case "community"`. The reduction
+    // defaults to UNSPECIFIED (no tree) and objective to the axis default
+    // (max) — harmless without a reduction (#961).
     expect(opts.community).toEqual({
       maxSize: 5,
       restartProb: 0,
       epsilon: 0,
+      reduction: SdkReduction.UNSPECIFIED,
+      objective: SdkObjective.MAXIMIZE,
     });
     // The #942 regression guard: the seam must NOT degrade to a BFS/PPR walk.
     expect(opts.bfs).toBeUndefined();
@@ -703,8 +714,69 @@ describe("dispatch illuminate maps the algorithm axis to the family oneof (#942)
       maxSize: 5,
       restartProb: 0.25,
       epsilon: 0.001,
+      reduction: SdkReduction.UNSPECIFIED,
+      objective: SdkObjective.MAXIMIZE,
     });
     expect(opts.bfs).toBeUndefined();
+    expect(opts.ppr).toBeUndefined();
+  });
+
+  // #961: the reduction axis rides on the community oneof and its direction
+  // is steered by objective — an MST rooted at the seed, minimised.
+  test("community + reduction=mst objective=min carries the tree knobs", async () => {
+    const fake = new FakeLanternClient();
+    fake.stub("illuminate", emptyGraph);
+    const parsed = parse(
+      "illuminate a1 2 5 algorithm=community reduction=mst objective=min",
+    );
+    if (!parsed.ok) {
+      throw new Error(`fixture did not parse: ${parsed.usage}`);
+    }
+    await dispatch({ client: asClient(fake), command: parsed.command });
+
+    const [, opts] = fake.calls[0].args as [
+      string,
+      { community?: unknown; bfs?: unknown; ppr?: unknown },
+    ];
+    expect(opts.community).toEqual({
+      maxSize: 5,
+      restartProb: 0,
+      epsilon: 0,
+      reduction: SdkReduction.MINIMUM_SPANNING_TREE,
+      objective: SdkObjective.MINIMIZE,
+    });
+  });
+
+  // #961: the same reduction axis also feeds the default bfs family.
+  test("bfs (default family) + reduction=spt carries the tree knob", async () => {
+    const fake = new FakeLanternClient();
+    fake.stub("illuminate", emptyGraph);
+    const parsed = parse("illuminate a1 2 5 reduction=spt objective=min");
+    if (!parsed.ok) {
+      throw new Error(`fixture did not parse: ${parsed.usage}`);
+    }
+    await dispatch({ client: asClient(fake), command: parsed.command });
+
+    const [, opts] = fake.calls[0].args as [
+      string,
+      {
+        community?: unknown;
+        ppr?: unknown;
+        bfs?: {
+          step: number;
+          fanOut: number;
+          reduction: number;
+          objective: number;
+        };
+      },
+    ];
+    expect(opts.bfs).toEqual({
+      step: 2,
+      fanOut: 5,
+      objective: SdkObjective.MINIMIZE,
+      reduction: SdkReduction.SHORTEST_PATH_TREE,
+    });
+    expect(opts.community).toBeUndefined();
     expect(opts.ppr).toBeUndefined();
   });
 });

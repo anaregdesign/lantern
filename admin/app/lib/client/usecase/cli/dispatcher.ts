@@ -42,8 +42,9 @@ import { getEdge } from "~/lib/client/infrastructure/api/get-edge";
 import { getVertex } from "~/lib/client/infrastructure/api/get-vertex";
 import {
   illuminate,
-  type Algorithm as ApiAlgorithm,
+  type Family as ApiFamily,
   type Objective as ApiObjective,
+  type Reduction as ApiReduction,
   type Weighting as ApiWeighting,
 } from "~/lib/client/infrastructure/api/illuminate";
 import { putEdge } from "~/lib/client/infrastructure/api/put-edge";
@@ -56,6 +57,7 @@ import type {
   AlgorithmName,
   Command,
   ObjectiveName,
+  ReductionName,
   WeightingName,
 } from "~/lib/cli/types";
 
@@ -68,17 +70,22 @@ export interface DispatchInput {
 // Translate the CLI's friendly axis vocabulary to the wire enum the
 // illuminate adapter consumes. Keyed by the CLOSED axis unions from
 // `~/lib/cli/types` (not `string`) so that adding a token to
-// `AlgorithmName` / `ObjectiveName` / `WeightingName` without a matching
-// entry here is a `tsc` error, not a silent `undefined` that degrades to
-// the default family. This exhaustiveness guard is the root-cause fix for
-// #942, where `community` parsed but had no `ALGORITHM_TO_API` entry and
-// fell back to a BFS walk.
-const ALGORITHM_TO_API: Record<AlgorithmName, ApiAlgorithm> = {
-  none: "ALGORITHM_UNSPECIFIED",
-  mst: "ALGORITHM_MINIMUM_SPANNING_TREE",
-  spt: "ALGORITHM_SHORTEST_PATH_TREE",
-  ppr: "ALGORITHM_PERSONALIZED_PAGERANK",
-  community: "ALGORITHM_LOCAL_COMMUNITY",
+// `AlgorithmName` / `ReductionName` / `ObjectiveName` / `WeightingName`
+// without a matching entry here is a `tsc` error, not a silent `undefined`
+// that degrades to the default family. This exhaustiveness guard is the
+// root-cause fix for #942, where `community` parsed but had no
+// `ALGORITHM_TO_API` entry and fell back to a BFS walk. Since #961 the
+// traversal FAMILY (algorithm) and the tree REDUCTION are separate axes,
+// so each gets its own exhaustive map.
+const FAMILY_TO_API: Record<AlgorithmName, ApiFamily> = {
+  bfs: "FAMILY_BFS",
+  ppr: "FAMILY_PERSONALIZED_PAGERANK",
+  community: "FAMILY_LOCAL_COMMUNITY",
+};
+const REDUCTION_TO_API: Record<ReductionName, ApiReduction> = {
+  none: "REDUCTION_UNSPECIFIED",
+  mst: "REDUCTION_MINIMUM_SPANNING_TREE",
+  spt: "REDUCTION_SHORTEST_PATH_TREE",
 };
 const OBJECTIVE_TO_API: Record<ObjectiveName, ApiObjective> = {
   min: "OBJECTIVE_MINIMIZE",
@@ -300,7 +307,8 @@ export async function dispatch(input: DispatchInput): Promise<unknown> {
           seed: command.seed,
           step: command.step,
           k: command.k,
-          algorithm: ALGORITHM_TO_API[command.algorithm],
+          family: FAMILY_TO_API[command.algorithm],
+          reduction: REDUCTION_TO_API[command.reduction],
           objective: OBJECTIVE_TO_API[command.objective],
           weighting: WEIGHTING_TO_API[command.weighting],
           vertexPrefix: command.vertexPrefix,

@@ -10,14 +10,15 @@
  * that turns the picker state into the exact text that will be echoed
  * into the scrollback.
  *
- * Why CLI vocabulary and not the wire `ALGORITHM_*` enums?
+ * Why CLI vocabulary and not the wire enums?
  * The picker writes a *command string* into the CLI input buffer; the
  * same string a user could have typed. The Go REPL parser and the
- * TypeScript parser in `./verbs.ts` both accept `none|mst|spt|ppr` /
- * `min|max` / `raw|tfidf|bm25`. Using the wire enums here would mean the
- * picker echoes something the parsers reject, breaking the "every
- * command echoed is something I could have typed" invariant the /cli
- * page is built on.
+ * TypeScript parser in `./verbs.ts` both accept the family axis
+ * `bfs|ppr|community`, the orthogonal reduction axis `none|mst|spt`
+ * (#961), plus `min|max` / `raw|tfidf|bm25`. Using the wire enums here
+ * would mean the picker echoes something the parsers reject, breaking the
+ * "every command echoed is something I could have typed" invariant the
+ * /cli page is built on.
  *
  * Defaults match `parseIlluminate` in `./verbs.ts` so that an
  * untouched picker formats to the canonical short form
@@ -25,7 +26,12 @@
  * (default click must remain stable byte-for-byte).
  */
 
-import type { AlgorithmName, ObjectiveName, WeightingName } from "./types";
+import type {
+  AlgorithmName,
+  ObjectiveName,
+  ReductionName,
+  WeightingName,
+} from "./types";
 
 /** Bounds for the step axis. Matches the Illuminate wire toolbar. */
 export const CLI_CLICK_STEP_MIN = 1;
@@ -37,7 +43,17 @@ export const CLI_CLICK_K_MAX = 32;
 export interface CliClickAxes {
   step: number;
   k: number;
+  /**
+   * Traversal FAMILY (#961): `bfs` (default), `ppr`, or `community`.
+   * Orthogonal to {@link reduction}.
+   */
   algorithm: AlgorithmName;
+  /**
+   * Post-traversal tree REDUCTION (#961): `none` (default), `mst`, or `spt`.
+   * Honoured for the `bfs` and `community` families and ignored for `ppr`;
+   * {@link formatIlluminateClick} only echoes it for a family that uses it.
+   */
+  reduction: ReductionName;
   objective: ObjectiveName;
   weighting: WeightingName;
   /**
@@ -69,7 +85,10 @@ export interface CliClickAxes {
 export const CLI_CLICK_AXIS_DEFAULTS: CliClickAxes = {
   step: 2,
   k: 5,
-  algorithm: "none",
+  algorithm: "bfs",
+  // #961: no tree reduction by default — the bare click renders the raw
+  // discovered subgraph. Kept in lockstep with `parseIlluminate`.
+  reduction: "none",
   // #560: the server resolves an unspecified objective to MAXIMIZE, and the
   // objective now also steers the per-hop top-k pruning. Defaulting the
   // picker to `max` keeps the bare click on the strongest neighbours
@@ -91,11 +110,18 @@ export const CLI_ALGORITHMS: ReadonlyArray<{
   value: AlgorithmName;
   label: string;
 }> = [
+  { value: "bfs", label: "BFS (per-hop top-k)" },
+  { value: "ppr", label: "Personalized PageRank" },
+  { value: "community", label: "Local community" },
+];
+
+export const CLI_REDUCTIONS: ReadonlyArray<{
+  value: ReductionName;
+  label: string;
+}> = [
   { value: "none", label: "None (raw subgraph)" },
   { value: "mst", label: "Spanning tree" },
   { value: "spt", label: "Shortest-path tree" },
-  { value: "ppr", label: "Personalized PageRank" },
-  { value: "community", label: "Local community" },
 ];
 
 export const CLI_OBJECTIVES: ReadonlyArray<{
@@ -120,11 +146,13 @@ export const CLI_WEIGHTINGS: ReadonlyArray<{
  *
  * Emits the short form `illuminate <seed> <step> <k>` when every axis
  * matches {@link CLI_CLICK_AXIS_DEFAULTS}. Appends the optional kwargs
- * in fixed order (`algorithm=` → `objective=` → `weighting=` → `prefix=`
- * → `restart_prob=` → `epsilon=`) only for axes that diverge from the
- * default; the fixed order keeps scrollback snapshots deterministic and
- * matches the parser's usage string. The two push knobs are emitted only
- * when `algorithm=ppr` or `algorithm=community` and the value is non-zero
+ * in fixed order (`algorithm=` → `reduction=` → `objective=` →
+ * `weighting=` → `prefix=` → `restart_prob=` → `epsilon=`) only for axes
+ * that diverge from the default; the fixed order keeps scrollback
+ * snapshots deterministic and matches the parser's usage string.
+ * `reduction=` is emitted only for a family that honours it (bfs /
+ * community — never ppr, #961), and the two push knobs only when
+ * `algorithm=ppr` or `algorithm=community` and the value is non-zero
  * (#801/#942).
  *
  * The function is intentionally pure so `bun:test` can round-trip it
@@ -142,6 +170,17 @@ export function formatIlluminateClick(
   ];
   if (axes.algorithm !== CLI_CLICK_AXIS_DEFAULTS.algorithm) {
     tokens.push(`algorithm=${axes.algorithm}`);
+  }
+  // #961: the tree reduction is orthogonal to the family but only meaningful
+  // for the bfs and community families — ppr returns a relevance star with no
+  // tree view. Emit it only when the operator picked a non-default reduction
+  // AND the current family honours it, so a bare click stays byte-stable (#439)
+  // and we never echo a knob the server ignores for ppr.
+  if (
+    axes.reduction !== CLI_CLICK_AXIS_DEFAULTS.reduction &&
+    axes.algorithm !== "ppr"
+  ) {
+    tokens.push(`reduction=${axes.reduction}`);
   }
   if (axes.objective !== CLI_CLICK_AXIS_DEFAULTS.objective) {
     tokens.push(`objective=${axes.objective}`);
@@ -182,6 +221,7 @@ export const AXIS_STORAGE_KEYS = {
   step: "cli.click.step",
   k: "cli.click.k",
   algorithm: "cli.click.algorithm",
+  reduction: "cli.click.reduction",
   objective: "cli.click.objective",
   weighting: "cli.click.weighting",
   vertexPrefix: "cli.click.prefix",
@@ -205,6 +245,10 @@ export function parseStoredK(raw: string | null): number | null {
 
 export function parseStoredAlgorithm(raw: string | null): AlgorithmName | null {
   return matchOption(raw, CLI_ALGORITHMS);
+}
+
+export function parseStoredReduction(raw: string | null): ReductionName | null {
+  return matchOption(raw, CLI_REDUCTIONS);
 }
 
 export function parseStoredObjective(raw: string | null): ObjectiveName | null {

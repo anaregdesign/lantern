@@ -14,6 +14,7 @@ import {
   parseStoredK,
   parseStoredObjective,
   parseStoredPrefix,
+  parseStoredReduction,
   parseStoredStep,
   parseStoredWeighting,
   type CliClickAxes,
@@ -62,6 +63,9 @@ export function useCliAxisPicker(
     algorithm:
       parseStoredAlgorithm(store.get(AXIS_STORAGE_KEYS.algorithm)) ??
       CLI_CLICK_AXIS_DEFAULTS.algorithm,
+    reduction:
+      parseStoredReduction(store.get(AXIS_STORAGE_KEYS.reduction)) ??
+      CLI_CLICK_AXIS_DEFAULTS.reduction,
     objective:
       parseStoredObjective(store.get(AXIS_STORAGE_KEYS.objective)) ??
       CLI_CLICK_AXIS_DEFAULTS.objective,
@@ -79,7 +83,7 @@ export function useCliAxisPicker(
       CLI_CLICK_AXIS_DEFAULTS.epsilon,
   }));
 
-  // Re-persist whenever the axes change. We persist all eight every time
+  // Re-persist whenever the axes change. We persist all nine every time
   // rather than diffing because the picker fires at most once per user
   // gesture — a Dropdown selection, a Switch toggle, or a keystroke in the
   // prefix field — so the cost is negligible and avoids subtle bugs from
@@ -88,6 +92,7 @@ export function useCliAxisPicker(
     store.set(AXIS_STORAGE_KEYS.step, formatStoredStep(axes.step));
     store.set(AXIS_STORAGE_KEYS.k, formatStoredK(axes.k));
     store.set(AXIS_STORAGE_KEYS.algorithm, axes.algorithm);
+    store.set(AXIS_STORAGE_KEYS.reduction, axes.reduction);
     store.set(AXIS_STORAGE_KEYS.objective, axes.objective);
     store.set(AXIS_STORAGE_KEYS.weighting, axes.weighting);
     store.set(AXIS_STORAGE_KEYS.vertexPrefix, axes.vertexPrefix);

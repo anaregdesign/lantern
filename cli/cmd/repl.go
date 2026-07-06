@@ -41,7 +41,7 @@ The REPL accepts whitespace-delimited verbs:
   scan vertices <prefix> [limit]
   scan edges <tail-prefix> [limit]
   keys <prefix> [limit]
-  illuminate <seed> <step> <k> [algorithm=none|mst|spt|ppr|community] [objective=min|max] [weighting=raw|tfidf|bm25] [restart_prob=<float>] [epsilon=<float>]
+  illuminate <seed> <step> <k> [algorithm=bfs|ppr|community] [reduction=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [restart_prob=<float>] [epsilon=<float>]
   help
   exit
 
@@ -62,16 +62,19 @@ CASE (#437)
   ('Get VERTEX foo' works). Arguments preserve case verbatim
   ('put vertex CamelKey CamelValue' stores CamelKey / CamelValue).
 
-The illuminate verb exposes the orthogonal axes introduced in #410:
-algorithm selects the algorithm, objective picks the direction
-(minimise/maximise) for BOTH the per-hop top-k pruning and any reduction,
-and weighting toggles RAW vs TF-IDF vs BM25 edge weights. The keyword
-arguments may appear in any order; each closed-set axis defaults to the
-strongest-edge behaviour (algorithm=none, objective=max, weighting=raw),
-so a bare illuminate keeps the top-k strongest neighbours (#560). When
-algorithm=ppr (Personalized PageRank, #801) the restart_prob (α) and
-epsilon (ε) knobs tune locality and recall; both default to 0, which the
-server resolves to α=0.15 / ε=1e-4.
+The illuminate verb exposes orthogonal axes (#410, #961): algorithm selects
+the traversal family (bfs greedy per-hop top-k, ppr Personalized PageRank, or
+community local-community extraction), reduction optionally renders the result
+as an MST/SPT tree rooted at the seed (honoured for bfs and community, ignored
+for ppr), objective picks the direction (minimise/maximise) for BOTH the
+per-hop top-k pruning and the reduction, and weighting toggles RAW vs TF-IDF
+vs BM25 edge weights. The keyword arguments may appear in any order; each
+closed-set axis defaults to the strongest-edge behaviour (algorithm=bfs,
+reduction=none, objective=max, weighting=raw), so a bare illuminate keeps the
+top-k strongest neighbours (#560). When algorithm=ppr (Personalized PageRank,
+#801) or algorithm=community (#845) the restart_prob (α) and epsilon (ε) knobs
+tune locality and recall; both default to 0, which the server resolves to
+α=0.15 / ε=1e-4.
 
 EXAMPLE
   $ lantern-cli repl
@@ -84,7 +87,7 @@ EXAMPLE
   > get vertex alice
   "Alice"
   OK (0.8ms)
-  > illuminate alice 2 5 algorithm=spt objective=max weighting=tfidf
+  > illuminate alice 2 5 reduction=spt objective=max weighting=tfidf
   { ... }
   OK (3.2ms)
   > exit
@@ -154,7 +157,7 @@ EXAMPLE
 			case service.ErrKeys:
 				fmt.Println("Usage: keys <prefix: string> [<limit: int>]")
 			case service.ErrIlluminate:
-				fmt.Println("Usage: illuminate <seed: string> <step: int> <k: int> [algorithm=none|mst|spt|ppr|community] [objective=min|max] [weighting=raw|tfidf|bm25] [restart_prob=<float>] [epsilon=<float>]")
+				fmt.Println("Usage: illuminate <seed: string> <step: int> <k: int> [algorithm=bfs|ppr|community] [reduction=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [restart_prob=<float>] [epsilon=<float>]")
 			case service.ErrInvalidVerb:
 				fmt.Println("Usage: { get | put | delete | add | scan | illuminate | help | exit } ...")
 			case service.ErrInvalidObjective:

@@ -239,6 +239,7 @@ describe("parseHelp (#436 — help verb)", () => {
 describe("HELP_TEXT (#436 — grammar contract)", () => {
   test("enumerates illuminate kwarg names", () => {
     expect(HELP_TEXT).toContain("algorithm=");
+    expect(HELP_TEXT).toContain("reduction=");
     expect(HELP_TEXT).toContain("objective=");
     expect(HELP_TEXT).toContain("weighting=");
     expect(HELP_TEXT).toContain("prefix=");
@@ -247,10 +248,12 @@ describe("HELP_TEXT (#436 — grammar contract)", () => {
   });
 
   test("enumerates illuminate kwarg valid values", () => {
+    expect(HELP_TEXT).toContain("bfs");
+    expect(HELP_TEXT).toContain("ppr");
+    expect(HELP_TEXT).toContain("community");
     expect(HELP_TEXT).toContain("none");
     expect(HELP_TEXT).toContain("mst");
     expect(HELP_TEXT).toContain("spt");
-    expect(HELP_TEXT).toContain("ppr");
     expect(HELP_TEXT).toContain("min");
     expect(HELP_TEXT).toContain("max");
     expect(HELP_TEXT).toContain("raw");
@@ -259,6 +262,7 @@ describe("HELP_TEXT (#436 — grammar contract)", () => {
   });
 
   test("documents illuminate kwarg defaults", () => {
+    expect(HELP_TEXT).toContain("default=bfs");
     expect(HELP_TEXT).toContain("default=none");
     expect(HELP_TEXT).toContain("default=max");
     expect(HELP_TEXT).toContain("default=raw");
@@ -316,11 +320,11 @@ describe("parseIlluminate prefix= kwarg (#606)", () => {
       "2",
       "5",
       "prefix=users/",
-      "algorithm=spt",
+      "reduction=spt",
       "objective=min",
     ]);
     expect(cmd.vertexPrefix).toBe("users/");
-    expect(cmd.algorithm).toBe("spt");
+    expect(cmd.reduction).toBe("spt");
     expect(cmd.objective).toBe("min");
   });
 

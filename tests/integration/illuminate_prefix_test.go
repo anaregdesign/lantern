@@ -186,9 +186,11 @@ func TestLantern_Illuminate_VertexPrefix(t *testing.T) {
 }
 
 // TestIlluminate_OneofArmRoundTrips drives one round-trip per params arm
-// (#846) through the wire: params-unset (bare illuminate), the bfs arm, and
-// the ppr arm must each reach the server, dispatch to their family, and
-// return a graph rooted at the seed.
+// (#846) through the wire: params-unset (bare illuminate), the bfs arm (with
+// and without an MST/SPT reduction), the ppr arm, and the community arm (with
+// and without a reduction, #961) must each reach the server, dispatch to
+// their family, apply any post-traversal tree reduction, and return a graph
+// rooted at the seed.
 func TestIlluminate_OneofArmRoundTrips(t *testing.T) {
 	exp := timestamppb.New(time.Now().Add(time.Hour))
 	c, _ := newRawConnectClient(t, false)
@@ -234,6 +236,9 @@ func TestIlluminate_OneofArmRoundTrips(t *testing.T) {
 			Params: &pb.IlluminateRequest_Ppr{Ppr: &pb.PprParams{TopN: 5, RestartProb: 0.2, Epsilon: 1e-3}}}, false},
 		{"community arm", &pb.IlluminateRequest{Seed: "s",
 			Params: &pb.IlluminateRequest_Community{Community: &pb.LocalCommunityParams{MaxSize: 5, Epsilon: 1e-5}}}, false},
+		{"community arm with reduction", &pb.IlluminateRequest{Seed: "s",
+			Params: &pb.IlluminateRequest_Community{Community: &pb.LocalCommunityParams{MaxSize: 5, Epsilon: 1e-5,
+				Reduction: pb.Reduction_REDUCTION_MINIMUM_SPANNING_TREE, Objective: pb.Objective_OBJECTIVE_MINIMIZE}}}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

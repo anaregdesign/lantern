@@ -6,9 +6,10 @@
  * 1. `formatIlluminateClick` emits the short form when every axis
  *    matches {@link CLI_CLICK_AXIS_DEFAULTS} and only appends the
  *    diverging kwargs, in the fixed order
- *    `algorithm=` → `objective=` → `weighting=` → `prefix=`. The
- *    default-short-form case is the regression guard for #439 — the
- *    byte-for-byte stable click string the canvas snapshot test depends on.
+ *    `algorithm=` → `reduction=` → `objective=` → `weighting=` →
+ *    `prefix=`. The default-short-form case is the regression guard for
+ *    #439 — the byte-for-byte stable click string the canvas snapshot test
+ *    depends on.
  *
  * 2. Every shape this formatter can produce is parseable by the
  *    shared CLI parser in `./parser`, and round-trips to the same
@@ -28,6 +29,7 @@ import {
   parseStoredK,
   parseStoredObjective,
   parseStoredPrefix,
+  parseStoredReduction,
   parseStoredStep,
   parseStoredWeighting,
   type CliClickAxes,
@@ -52,13 +54,22 @@ describe("formatIlluminateClick", () => {
     ).toBe("illuminate alice 2 10");
   });
 
+  test("only reduction off-default → single kwarg", () => {
+    expect(
+      formatIlluminateClick("alice", {
+        ...CLI_CLICK_AXIS_DEFAULTS,
+        reduction: "spt",
+      }),
+    ).toBe("illuminate alice 2 5 reduction=spt");
+  });
+
   test("only algorithm off-default → single kwarg", () => {
     expect(
       formatIlluminateClick("alice", {
         ...CLI_CLICK_AXIS_DEFAULTS,
-        algorithm: "spt",
+        algorithm: "community",
       }),
-    ).toBe("illuminate alice 2 5 algorithm=spt");
+    ).toBe("illuminate alice 2 5 algorithm=community");
   });
 
   test("only objective off-default → single kwarg", () => {
@@ -102,14 +113,17 @@ describe("formatIlluminateClick", () => {
       formatIlluminateClick("alice", {
         step: 3,
         k: 10,
-        algorithm: "spt",
+        algorithm: "community",
+        reduction: "spt",
         objective: "min",
         weighting: "tfidf",
         vertexPrefix: "",
         restartProb: 0,
         epsilon: 0,
       }),
-    ).toBe("illuminate alice 3 10 algorithm=spt objective=min weighting=tfidf");
+    ).toBe(
+      "illuminate alice 3 10 algorithm=community reduction=spt objective=min weighting=tfidf",
+    );
   });
 
   test("all axes off-default → fixed token order ending in prefix=", () => {
@@ -117,7 +131,8 @@ describe("formatIlluminateClick", () => {
       formatIlluminateClick("alice", {
         step: 3,
         k: 10,
-        algorithm: "spt",
+        algorithm: "community",
+        reduction: "spt",
         objective: "min",
         weighting: "tfidf",
         vertexPrefix: "svc:",
@@ -125,7 +140,7 @@ describe("formatIlluminateClick", () => {
         epsilon: 0,
       }),
     ).toBe(
-      "illuminate alice 3 10 algorithm=spt objective=min weighting=tfidf prefix=svc:",
+      "illuminate alice 3 10 algorithm=community reduction=spt objective=min weighting=tfidf prefix=svc:",
     );
   });
 
@@ -156,11 +171,11 @@ describe("formatIlluminateClick", () => {
     expect(
       formatIlluminateClick("alice", {
         ...CLI_CLICK_AXIS_DEFAULTS,
-        algorithm: "spt",
+        reduction: "spt",
         restartProb: 0.25,
         epsilon: 0.001,
       }),
-    ).toBe("illuminate alice 2 5 algorithm=spt");
+    ).toBe("illuminate alice 2 5 reduction=spt");
   });
 
   // #942: the community family shares the ppr α/ε knobs and the same
@@ -187,6 +202,32 @@ describe("formatIlluminateClick", () => {
     );
   });
 
+  // #961: the reduction axis is honoured for the community family (an MST /
+  // SPT tree rooted at the seed) and slots in right after algorithm=.
+  test("community + reduction emits both, reduction after algorithm", () => {
+    expect(
+      formatIlluminateClick("alice", {
+        ...CLI_CLICK_AXIS_DEFAULTS,
+        algorithm: "community",
+        reduction: "mst",
+      }),
+    ).toBe("illuminate alice 2 5 algorithm=community reduction=mst");
+  });
+
+  // #961: ppr renders a ranked vertex set, not a tree, so the reduction axis
+  // is meaningless there and the formatter suppresses it (mirrors how the
+  // server ignores LocalCommunityParams.reduction only for the push families
+  // that produce trees — ppr never does).
+  test("reduction is suppressed when algorithm=ppr", () => {
+    expect(
+      formatIlluminateClick("alice", {
+        ...CLI_CLICK_AXIS_DEFAULTS,
+        algorithm: "ppr",
+        reduction: "spt",
+      }),
+    ).toBe("illuminate alice 2 5 algorithm=ppr");
+  });
+
   test("seed containing a colon round-trips literally", () => {
     expect(formatIlluminateClick("user:alice", CLI_CLICK_AXIS_DEFAULTS)).toBe(
       "illuminate user:alice 2 5",
@@ -206,12 +247,16 @@ describe("formatIlluminateClick ↔ parse round-trip", () => {
       axes: { ...CLI_CLICK_AXIS_DEFAULTS, k: 16 },
     },
     {
-      name: "only algorithm=mst",
-      axes: { ...CLI_CLICK_AXIS_DEFAULTS, algorithm: "mst" },
+      name: "only reduction=mst",
+      axes: { ...CLI_CLICK_AXIS_DEFAULTS, reduction: "mst" },
     },
     {
-      name: "only algorithm=spt",
-      axes: { ...CLI_CLICK_AXIS_DEFAULTS, algorithm: "spt" },
+      name: "only reduction=spt",
+      axes: { ...CLI_CLICK_AXIS_DEFAULTS, reduction: "spt" },
+    },
+    {
+      name: "only algorithm=community",
+      axes: { ...CLI_CLICK_AXIS_DEFAULTS, algorithm: "community" },
     },
     {
       name: "only objective=min",
@@ -230,12 +275,13 @@ describe("formatIlluminateClick ↔ parse round-trip", () => {
       axes: {
         step: 3,
         k: 10,
-        algorithm: "spt",
+        algorithm: "community",
+        reduction: "spt",
         objective: "min",
         weighting: "tfidf",
         vertexPrefix: "svc:",
-        restartProb: 0,
-        epsilon: 0,
+        restartProb: 0.3,
+        epsilon: 0.002,
       },
     },
     {
@@ -256,6 +302,10 @@ describe("formatIlluminateClick ↔ parse round-trip", () => {
         epsilon: 0.002,
       },
     },
+    {
+      name: "bfs with reduction",
+      axes: { ...CLI_CLICK_AXIS_DEFAULTS, reduction: "mst", objective: "min" },
+    },
   ];
 
   test.each(matrix)("$name parses back to the same axes", ({ axes }) => {
@@ -275,6 +325,14 @@ describe("formatIlluminateClick ↔ parse round-trip", () => {
     expect(result.command.objective).toBe(axes.objective);
     expect(result.command.weighting).toBe(axes.weighting);
     expect(result.command.vertexPrefix).toBe(axes.vertexPrefix);
+    // The reduction axis renders a tree, which ppr never produces, so the
+    // formatter suppresses it for ppr and the parser defaults it back to
+    // "none"; for every other family it survives the round-trip (#961).
+    if (axes.algorithm === "ppr") {
+      expect(result.command.reduction).toBe("none");
+    } else {
+      expect(result.command.reduction).toBe(axes.reduction);
+    }
     // The push-family knobs only survive the round-trip for a ppr or
     // community walk; for every other algorithm the formatter suppresses
     // them and the parser defaults them back to 0 (#801 / #942).
@@ -308,14 +366,27 @@ describe("parseStored* helpers", () => {
   });
 
   test("axis enums only accept canonical lower-case CLI vocabulary", () => {
-    expect(parseStoredAlgorithm("none")).toBe("none");
-    expect(parseStoredAlgorithm("mst")).toBe("mst");
-    expect(parseStoredAlgorithm("spt")).toBe("spt");
+    expect(parseStoredAlgorithm("bfs")).toBe("bfs");
     expect(parseStoredAlgorithm("ppr")).toBe("ppr");
     expect(parseStoredAlgorithm("community")).toBe("community");
-    expect(parseStoredAlgorithm("SPT")).toBeNull();
+    // The reduction values are no longer part of the algorithm axis (#961).
+    expect(parseStoredAlgorithm("none")).toBeNull();
+    expect(parseStoredAlgorithm("mst")).toBeNull();
+    expect(parseStoredAlgorithm("spt")).toBeNull();
+    expect(parseStoredAlgorithm("BFS")).toBeNull();
     expect(parseStoredAlgorithm("ALGORITHM_SHORTEST_PATH_TREE")).toBeNull();
     expect(parseStoredAlgorithm(null)).toBeNull();
+
+    expect(parseStoredReduction("none")).toBe("none");
+    expect(parseStoredReduction("mst")).toBe("mst");
+    expect(parseStoredReduction("spt")).toBe("spt");
+    // The family values are not reductions.
+    expect(parseStoredReduction("bfs")).toBeNull();
+    expect(parseStoredReduction("ppr")).toBeNull();
+    expect(parseStoredReduction("community")).toBeNull();
+    expect(parseStoredReduction("SPT")).toBeNull();
+    expect(parseStoredReduction("REDUCTION_SHORTEST_PATH_TREE")).toBeNull();
+    expect(parseStoredReduction(null)).toBeNull();
 
     expect(parseStoredObjective("min")).toBe("min");
     expect(parseStoredObjective("max")).toBe("max");

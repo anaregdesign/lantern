@@ -135,7 +135,7 @@ func Validate(input string) error {
 		}
 	case "illuminate":
 		if _, err := IlluminateParam(s); err != nil {
-			return errors.New("usage: illuminate <key: string> <step: int> <k: int> [algorithm=none|mst|spt|ppr|community] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>] [restart_prob=<float>] [epsilon=<float>]")
+			return errors.New("usage: illuminate <key: string> <step: int> <k: int> [algorithm=bfs|ppr|community] [reduction=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>] [restart_prob=<float>] [epsilon=<float>]")
 		}
 
 	case "help":

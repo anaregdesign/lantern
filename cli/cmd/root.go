@@ -113,7 +113,7 @@ EXAMPLES
   lantern-cli delete vertex alice bob carol        # variadic batch delete
   lantern-cli delete-prefix vertices tmp/ dry_run=true
   lantern-cli keys user: 100                       # Redis-style KEYS (vertex keys under a prefix)
-  lantern-cli illuminate alice 2 5 algorithm=spt objective=max
+  lantern-cli illuminate alice 2 5 reduction=spt objective=max
 
   # NDJSON bulk load (streamed)
   cat vertices.ndjson | lantern-cli bulk vertices -

@@ -21,6 +21,7 @@
 import {
   CLI_ALGORITHMS,
   CLI_OBJECTIVES,
+  CLI_REDUCTIONS,
   CLI_WEIGHTINGS,
 } from "./illuminate-axes";
 
@@ -46,6 +47,7 @@ const VERBS: readonly string[] = [
 /** The illuminate option kwargs, in the parser's fixed order. */
 const ILLUMINATE_OPTION_KEYS: readonly string[] = [
   "algorithm",
+  "reduction",
   "objective",
   "weighting",
   // #606: free-text vertex-prefix filter. Surfaced as a completion key so
@@ -80,9 +82,9 @@ export interface Completion {
  *   - slot 1 → the verb's objective (`vertex`/`edge`/`vertices`/`edges`)
  *     for verbs that take one, or the seed key for `illuminate`
  *   - key slots → completed from {@link knownKeys}
- *   - `illuminate` slots ≥ 4 → option kwargs (`algorithm=` / `objective=`
- *     / `weighting=` / `prefix=` / `restart_prob=` / `epsilon=`, then the
- *     closed-set enum values once `=` is typed)
+ *   - `illuminate` slots ≥ 4 → option kwargs (`algorithm=` / `reduction=`
+ *     / `objective=` / `weighting=` / `prefix=` / `restart_prob=` /
+ *     `epsilon=`, then the closed-set enum values once `=` is typed)
  */
 export function completeCommandLine(
   input: string,
@@ -246,6 +248,8 @@ function optionValues(keyword: string): readonly string[] | null {
   switch (keyword) {
     case "algorithm":
       return CLI_ALGORITHMS.map((a) => a.value);
+    case "reduction":
+      return CLI_REDUCTIONS.map((r) => r.value);
     case "objective":
       return CLI_OBJECTIVES.map((o) => o.value);
     case "weighting":

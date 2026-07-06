@@ -168,17 +168,21 @@ type DomainMetrics struct {
 // Hot-path label values. Exposed so the service layer can reference the
 // canonical string set without importing prometheus.
 //
-// Illuminate metrics carry three orthogonal labels (#410):
-//   - algorithm ∈ {none, mst, spt, ppr} — post-traversal reduction (mst/spt)
-//     or a distinct traversal path (ppr, #801)
-//   - objective ∈ {minimize, maximize} — direction for mst/spt; harmless
-//     when algorithm=none or algorithm=ppr (still recorded for
-//     label-symmetric scraping)
+// Illuminate metrics carry three orthogonal labels (#410, #846, #961):
+//   - algorithm ∈ {none, mst, spt, ppr, community} — for the BFS family this
+//     is the post-traversal reduction (none/mst/spt); for the non-BFS
+//     families it is the traversal family itself (ppr #801, community #845).
+//     A community walk's own reduction is not (yet) broken out here — it is
+//     summarised as "community".
+//   - objective ∈ {minimize, maximize} — direction for a mst/spt reduction
+//     and the BFS per-hop pruning; constant/harmless when no reduction
+//     applies (label value "none", or the ppr family, a fixed maximiser)
+//     but still recorded for label-symmetric scraping
 //   - weighting ∈ {raw, tfidf, bm25}   — edge-weight transform before BFS
 //
 // Service code resolves enum UNSPECIFIED values to their canonical
 // defaults BEFORE calling OnIlluminate so the label space stays bounded
-// at 4 × 2 × 3 = 24 combinations. Unknown enum values (a future axis
+// at 5 × 2 × 3 = 30 combinations. Unknown enum values (a future axis
 // added in proto without a metrics update) fall through to "unknown"
 // so a new variant cannot break label pre-warming on existing dashboards.
 var (
