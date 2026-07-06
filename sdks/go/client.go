@@ -853,7 +853,8 @@ type PPROpts struct {
 // around the seed (#845): PageRank-Nibble — the PPR forward-push followed
 // by a sweep cut. Unlike WithPPR's relevance star, the response preserves
 // structure: it is the induced subgraph on the selected members, with
-// actual stored edge weights and expirations.
+// weighting-transformed edge weights (WeightingRaw, the default, returns
+// the verbatim stored weight) and expirations.
 type LocalCommunityOpts struct {
 	// MaxSize is an UPPER BOUND on community size — not an exact count.
 	// The sweep stops at the conductance minimum, which may come earlier.

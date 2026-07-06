@@ -1040,8 +1040,11 @@ func (x *BfsParams) GetReduction() Reduction {
 // p(v)/deg(v) and takes the prefix minimising directed weighted
 // conductance. Unlike the PPR relevance star, the response preserves
 // structure: it is the INDUCED SUBGRAPH on the selected members — the real
-// live edges among them with actual stored weights and expirations, in the
-// same response shape as the BFS family.
+// live edges among them with their expirations and weighting-transformed
+// weights (weighting RAW/UNSPECIFIED = the verbatim stored weight), in the
+// same response shape as the BFS family. Because the returned weights carry
+// the weighting transform, a reduction over the community honours weighting
+// too.
 type LocalCommunityParams struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// max_size is an UPPER BOUND on community size — NOT an exact count. The

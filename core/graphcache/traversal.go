@@ -583,10 +583,15 @@ func (c *GraphCache[S, T]) LocalCommunity(seed S, maxSize int, alpha, epsilon fl
 //
 // Output contract — unlike the PPR relevance star, structure is preserved:
 // the result is the INDUCED SUBGRAPH on the selected set: every member's
-// live value plus every live edge among members with its actual stored
-// weight (weighting-neutral — the transform steers membership, not the
-// returned weights) and expiration, in the same (graph, expirations) shape
-// as NeighborWithExpirationsContext. An unknown seed yields an empty graph.
+// live value plus every live edge among members with its weight and
+// expiration, in the same (graph, expirations) shape as
+// NeighborWithExpirationsContext. Edge weights carry the SAME weighting
+// transform the sweep used, consistent with the BFS family: WeightingRaw
+// (the default) returns the verbatim stored weight, so the structure-
+// preserving view is unchanged; WeightingTFIDF/WeightingBM25 return the
+// re-scored weight — which is also what a subsequent Reduction reduces
+// over, so the tree honours the weighting. An unknown seed yields an empty
+// graph.
 func (c *GraphCache[S, T]) LocalCommunityContext(ctx context.Context, seed S, maxSize int, alpha, epsilon float64, weighting EdgeWeighting, keep func(S) bool) (*graph.Graph[S, T], map[S]map[S]time.Time, error) {
 	if alpha <= 0 || alpha >= 1 {
 		alpha = DefaultPPRAlpha
@@ -774,9 +779,12 @@ func (c *GraphCache[S, T]) LocalCommunityContext(ctx context.Context, seed S, ma
 	}
 
 	// Materialize the induced subgraph on the selected set: live member
-	// values, and every live edge among members with its actual stored
-	// weight and expiration — the same response shape as
-	// NeighborWithExpirationsContext.
+	// values, and every live edge among members with its expiration and its
+	// weighting-transformed weight (WeightingRaw = the verbatim stored
+	// weight) — the same response shape, and the same scoreEdge transform,
+	// the BFS family uses. Applying the transform here keeps the returned
+	// weights consistent with the sweep's own d_w and makes any subsequent
+	// Reduction reduce over the weighted graph.
 	inS := make(map[S]bool, len(selected))
 	for _, v := range selected {
 		inS[v] = true
@@ -795,6 +803,9 @@ func (c *GraphCache[S, T]) LocalCommunityContext(ctx context.Context, seed S, ma
 		if !ok {
 			continue
 		}
+		// docLen is v's full out-degree — the BM25 document length, read the
+		// same way the sweep's adjacency pass and the BFS walk read it.
+		docLen := len(heads)
 		row := make(map[S]float32)
 		expRow := make(map[S]time.Time)
 		for headID, w := range heads {
@@ -809,7 +820,11 @@ func (c *GraphCache[S, T]) LocalCommunityContext(ctx context.Context, seed S, ma
 			if !nonZero {
 				continue
 			}
-			row[head] = sum
+			a := c.scoreEdge(weighting, sum, headID, docLen, bm25N, bm25AvgLen)
+			if a <= 0 {
+				continue
+			}
+			row[head] = a
 			expRow[head] = latest
 		}
 		if len(row) > 0 {
