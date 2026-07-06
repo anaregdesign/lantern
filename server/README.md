@@ -161,9 +161,9 @@ runtime, process, and `grpc_server_*` collectors):
 | `lantern_mutation_log_fill_ratio` | gauge | — | `len(log) / cap(log)` in `[0, 1]`. ≥ 0.8 sustained means peers risk needing a Snapshot reseed. |
 | `lantern_mutation_log_evicted_total` | counter | — | Ring-buffer evictions since process start. Monotonic; sampler resets are tolerated. |
 | `lantern_origin_states_count` | gauge | — | Distinct origins tracked in `originStateTracker` (1 per writer ever observed). Steady-state ≈ peer-set size. |
-| `lantern_illuminate_visited_vertices` | histogram | `algorithm`, `objective`, `weighting` | Vertices visited per `Illuminate` call. Per #410 the labels are the orthogonal axes (algorithm × objective × weighting). |
-| `lantern_illuminate_visited_edges` | histogram | `algorithm`, `objective`, `weighting` | Edges visited per `Illuminate` call. Same labels as above. |
-| `lantern_illuminate_duration_seconds` | histogram | `algorithm`, `objective`, `weighting`, `phase` | Per-phase (`traversal`, `optimize`) wall-clock; `optimize` only emitted when an algorithm reduction actually ran (i.e. `algorithm != none`). |
+| `lantern_illuminate_visited_vertices` | histogram | `algorithm`, `reduction`, `objective`, `weighting` | Vertices visited per `Illuminate` call. Per #410/#963 the labels are the orthogonal axes: `algorithm` is the traversal family (`bfs`/`ppr`/`community`) and `reduction` is the post-traversal tree reduction (`none`/`mst`/`spt`). |
+| `lantern_illuminate_visited_edges` | histogram | `algorithm`, `reduction`, `objective`, `weighting` | Edges visited per `Illuminate` call. Same labels as above. |
+| `lantern_illuminate_duration_seconds` | histogram | `algorithm`, `reduction`, `objective`, `weighting`, `phase` | Per-phase (`traversal`, `optimize`) wall-clock; `optimize` only emitted when a reduction actually ran (i.e. `reduction != none`, for the `bfs` and `community` families). |
 | `lantern_scan_results` | histogram | `op` | Result counts for prefix scans (`ScanVertices`, `ScanEdges`, `DeleteVerticesByPrefix`). |
 | `lantern_scan_duration_seconds` | histogram | `op` | Wall-clock for the same scan ops. |
 | `lantern_batch_size` | histogram | `op` | Batch size for plural RPCs (`GetVertices`, `PutVertices`, `DeleteVertices`, `GetEdges`, `AddEdges`, `PutEdges`, `DeleteEdges`). Singular forwarders are NOT instrumented to avoid double-counting. |

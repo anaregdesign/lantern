@@ -18,8 +18,8 @@ per-scenario leak gate, and renders a Markdown report.
 > scenarios: two fan-out scenarios (`broad_rw`, `broad_illuminate`) that
 > exercise many call paths inside a single steady window (read / write /
 > batch / scan / edge / delete / ScanVertexKeys / CountVerticesByPrefix /
-> idempotent AddEdge, and the Illuminate algorithm × objective × weighting
-> axes) plus `ttl_churn`, `many_subscribers`, `search_churn` (index decay
+> idempotent AddEdge, and the Illuminate algorithm/reduction × objective ×
+> weighting axes) plus `ttl_churn`, `many_subscribers`, `search_churn` (index decay
 > / thread-safety under churn, #703), and `replication_apply_churn`
 > (vertexHLC map regression gate, #700 / #705). It produces a
 > fixed-format `bench-report.md` that is spliced into the GitHub Release

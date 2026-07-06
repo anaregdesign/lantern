@@ -1399,9 +1399,9 @@ type fakeHotPathMetrics struct {
 }
 
 type illuminateObs struct {
-	algorithm, objective, weighting string
-	visitedVertices, visitedEdges   int
-	traversal, optimize             time.Duration
+	algorithm, reduction, objective, weighting string
+	visitedVertices, visitedEdges              int
+	traversal, optimize                        time.Duration
 }
 
 type scanObs struct {
@@ -1425,8 +1425,8 @@ type hitMissObs struct {
 	misses int
 }
 
-func (f *fakeHotPathMetrics) OnIlluminate(algorithm, objective, weighting string, vV, vE int, traversal, optimize time.Duration) {
-	f.illuminate = append(f.illuminate, illuminateObs{algorithm, objective, weighting, vV, vE, traversal, optimize})
+func (f *fakeHotPathMetrics) OnIlluminate(algorithm, reduction, objective, weighting string, vV, vE int, traversal, optimize time.Duration) {
+	f.illuminate = append(f.illuminate, illuminateObs{algorithm, reduction, objective, weighting, vV, vE, traversal, optimize})
 }
 func (f *fakeHotPathMetrics) OnScan(op string, results int, d time.Duration) {
 	f.scan = append(f.scan, scanObs{op, results, d})
@@ -1496,8 +1496,8 @@ func TestLanternService_HotPathMetrics_EmitsOnceForBatchAndIlluminate(t *testing
 	if len(fm.illuminate) != 1 {
 		t.Fatalf("illuminate observations = %d, want 1", len(fm.illuminate))
 	}
-	if got := fm.illuminate[0]; got.algorithm != "mst" || got.objective != "minimize" || got.weighting != "raw" || got.visitedVertices < 1 {
-		t.Errorf("illuminate[0] = %+v, want algorithm=mst objective=minimize weighting=raw visitedVertices≥1", got)
+	if got := fm.illuminate[0]; got.algorithm != "bfs" || got.reduction != "mst" || got.objective != "minimize" || got.weighting != "raw" || got.visitedVertices < 1 {
+		t.Errorf("illuminate[0] = %+v, want algorithm=bfs reduction=mst objective=minimize weighting=raw visitedVertices≥1", got)
 	}
 
 	// Singular forwarders must NOT double-instrument: GetVertex forwards

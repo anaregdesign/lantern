@@ -71,7 +71,7 @@ Examples worth reading before first use:
 ```shell
 lantern-cli put --help               # vertex/edge writes: value typing (type=) + ttl_seconds
 lantern-cli add --help               # additive vs idempotent edge write semantics
-lantern-cli illuminate --help        # the algorithm × objective × weighting axes
+lantern-cli illuminate --help        # the algorithm × reduction × objective × weighting axes
 lantern-cli delete-prefix --help     # the destructive-delete safety gate
 ```
 

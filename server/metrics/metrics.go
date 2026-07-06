@@ -168,25 +168,27 @@ type DomainMetrics struct {
 // Hot-path label values. Exposed so the service layer can reference the
 // canonical string set without importing prometheus.
 //
-// Illuminate metrics carry three orthogonal labels (#410, #846, #961):
-//   - algorithm ∈ {none, mst, spt, ppr, community} — for the BFS family this
-//     is the post-traversal reduction (none/mst/spt); for the non-BFS
-//     families it is the traversal family itself (ppr #801, community #845).
-//     A community walk's own reduction is not (yet) broken out here — it is
-//     summarised as "community".
+// Illuminate metrics carry four orthogonal labels (#410, #846, #961, #963):
+//   - algorithm ∈ {bfs, ppr, community} — the traversal FAMILY (#801, #845).
+//   - reduction ∈ {none, mst, spt} — the post-traversal tree reduction,
+//     applied to the bfs and community families (a community walk's own
+//     reduction is now broken out here rather than collapsed into the
+//     family label — #963); "none" for the ppr family, which returns a
+//     ranked star with no subgraph to reduce.
 //   - objective ∈ {minimize, maximize} — direction for a mst/spt reduction
-//     and the BFS per-hop pruning; constant/harmless when no reduction
-//     applies (label value "none", or the ppr family, a fixed maximiser)
+//     and the bfs per-hop pruning; constant/harmless when no reduction
+//     applies (reduction "none", or the ppr family, a fixed maximiser)
 //     but still recorded for label-symmetric scraping
-//   - weighting ∈ {raw, tfidf, bm25}   — edge-weight transform before BFS
+//   - weighting ∈ {raw, tfidf, bm25}   — edge-weight transform before the walk
 //
 // Service code resolves enum UNSPECIFIED values to their canonical
 // defaults BEFORE calling OnIlluminate so the label space stays bounded
-// at 5 × 2 × 3 = 30 combinations. Unknown enum values (a future axis
+// at 3 × 3 × 2 × 3 = 54 combinations. Unknown enum values (a future axis
 // added in proto without a metrics update) fall through to "unknown"
 // so a new variant cannot break label pre-warming on existing dashboards.
 var (
-	algorithmLabels  = []string{"none", "mst", "spt", "ppr", "community"}
+	algorithmLabels  = []string{"bfs", "ppr", "community"}
+	reductionLabels  = []string{"none", "mst", "spt"}
 	objectiveLabels  = []string{"minimize", "maximize"}
 	weightingLabels  = []string{"raw", "tfidf", "bm25"}
 	illuminatePhases = []string{"traversal", "optimize"}
@@ -344,19 +346,19 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		}, []string{"peer", "origin"}),
 		illuminateVisitedVertices: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "lantern_illuminate_visited_vertices",
-			Help:    "Vertices in the subgraph returned by Illuminate, partitioned by post-traversal algorithm + objective + edge weighting (#410).",
+			Help:    "Vertices in the subgraph returned by Illuminate, partitioned by traversal family (algorithm) + post-traversal reduction + objective + edge weighting (#410, #963).",
 			Buckets: prometheus.ExponentialBuckets(1, 4, 10), // 1 .. ~262K
-		}, []string{"algorithm", "objective", "weighting"}),
+		}, []string{"algorithm", "reduction", "objective", "weighting"}),
 		illuminateVisitedEdges: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "lantern_illuminate_visited_edges",
-			Help:    "Edges in the subgraph returned by Illuminate, partitioned by post-traversal algorithm + objective + edge weighting (#410).",
+			Help:    "Edges in the subgraph returned by Illuminate, partitioned by traversal family (algorithm) + post-traversal reduction + objective + edge weighting (#410, #963).",
 			Buckets: prometheus.ExponentialBuckets(1, 4, 10),
-		}, []string{"algorithm", "objective", "weighting"}),
+		}, []string{"algorithm", "reduction", "objective", "weighting"}),
 		illuminateDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "lantern_illuminate_duration_seconds",
-			Help:    "Wall-clock duration of Illuminate, partitioned by algorithm + objective + edge weighting and phase (traversal | optimize). #410.",
+			Help:    "Wall-clock duration of Illuminate, partitioned by traversal family (algorithm) + reduction + objective + edge weighting and phase (traversal | optimize). #410, #963.",
 			Buckets: prometheus.ExponentialBuckets(0.0001, 4, 8), // 0.1ms .. ~1.6s
-		}, []string{"algorithm", "objective", "weighting", "phase"}),
+		}, []string{"algorithm", "reduction", "objective", "weighting", "phase"}),
 		scanResults: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "lantern_scan_results",
 			Help:    "Number of results returned by a prefix scan or count RPC, partitioned by op (ScanVertices | ScanVertexKeys | ScanEdges | CountVerticesByPrefix | DeleteVerticesByPrefix | DeleteEdgesByPrefix).",
@@ -522,16 +524,19 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 	// Pre-create hot-path histogram label rows so /metrics renders the
 	// full variant set on a fresh process. Histograms emit count/sum/
 	// bucket families lazily per label; observing a no-op is the
-	// idiomatic way to materialise the row. Per #410/#801 the Illuminate
-	// label space is 4 × 2 × 3 = 24 combinations (algorithm × objective
-	// × weighting), well below Prometheus cardinality concerns.
+	// idiomatic way to materialise the row. Per #410/#801/#963 the
+	// Illuminate label space is 3 × 3 × 2 × 3 = 54 combinations
+	// (algorithm × reduction × objective × weighting), well below
+	// Prometheus cardinality concerns.
 	for _, algo := range algorithmLabels {
-		for _, obj := range objectiveLabels {
-			for _, w := range weightingLabels {
-				m.illuminateVisitedVertices.WithLabelValues(algo, obj, w)
-				m.illuminateVisitedEdges.WithLabelValues(algo, obj, w)
-				for _, ph := range illuminatePhases {
-					m.illuminateDuration.WithLabelValues(algo, obj, w, ph)
+		for _, red := range reductionLabels {
+			for _, obj := range objectiveLabels {
+				for _, w := range weightingLabels {
+					m.illuminateVisitedVertices.WithLabelValues(algo, red, obj, w)
+					m.illuminateVisitedEdges.WithLabelValues(algo, red, obj, w)
+					for _, ph := range illuminatePhases {
+						m.illuminateDuration.WithLabelValues(algo, red, obj, w, ph)
+					}
 				}
 			}
 		}
@@ -830,18 +835,20 @@ func sanitizeLabel(v string, allowed []string, fallback string) string {
 // OnIlluminate records one Illuminate RPC: visited vertex/edge counts and
 // the wall-clock duration of the two phases (traversal: neighbour walk;
 // optimize: post-processing such as spanning trees). optimize may be 0
-// when no algorithm was requested. Per #410 the labels are the three
-// orthogonal axes; service code is expected to have resolved UNSPECIFIED
-// values to their canonical defaults already.
-func (m *DomainMetrics) OnIlluminate(algorithm, objective, weighting string, visitedVertices, visitedEdges int, traversal, optimize time.Duration) {
+// when no reduction was requested. Per #410/#963 the labels are the four
+// orthogonal axes (family algorithm, reduction, objective, weighting);
+// service code is expected to have resolved UNSPECIFIED values to their
+// canonical defaults already.
+func (m *DomainMetrics) OnIlluminate(algorithm, reduction, objective, weighting string, visitedVertices, visitedEdges int, traversal, optimize time.Duration) {
 	a := sanitizeLabel(algorithm, algorithmLabels, "unknown")
+	r := sanitizeLabel(reduction, reductionLabels, "unknown")
 	o := sanitizeLabel(objective, objectiveLabels, "unknown")
 	w := sanitizeLabel(weighting, weightingLabels, "unknown")
-	m.illuminateVisitedVertices.WithLabelValues(a, o, w).Observe(float64(visitedVertices))
-	m.illuminateVisitedEdges.WithLabelValues(a, o, w).Observe(float64(visitedEdges))
-	m.illuminateDuration.WithLabelValues(a, o, w, "traversal").Observe(traversal.Seconds())
+	m.illuminateVisitedVertices.WithLabelValues(a, r, o, w).Observe(float64(visitedVertices))
+	m.illuminateVisitedEdges.WithLabelValues(a, r, o, w).Observe(float64(visitedEdges))
+	m.illuminateDuration.WithLabelValues(a, r, o, w, "traversal").Observe(traversal.Seconds())
 	if optimize > 0 {
-		m.illuminateDuration.WithLabelValues(a, o, w, "optimize").Observe(optimize.Seconds())
+		m.illuminateDuration.WithLabelValues(a, r, o, w, "optimize").Observe(optimize.Seconds())
 	}
 }
 

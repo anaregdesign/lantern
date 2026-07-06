@@ -190,14 +190,14 @@ func TestDomainMetrics_ReplicationFamilies(t *testing.T) {
 // register with the expected family names, that the label set is
 // pre-warmed (so dashboards render the full variant set from process
 // start), and that the OnIlluminate / OnScan / OnBatch adapters emit on
-// the right histograms. Per #410 the Illuminate label space is the
-// orthogonal triple (algorithm, objective, weighting).
+// the right histograms. Per #410/#963 the Illuminate label space is the
+// orthogonal quad (algorithm, reduction, objective, weighting).
 func TestDomainMetrics_HotPathFamilies(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := New(reg, Options{SampleInterval: time.Hour})
 
-	m.OnIlluminate("mst", "minimize", "raw", 17, 42, 5*time.Millisecond, 2*time.Millisecond)
-	m.OnIlluminate("none", "minimize", "raw", 1, 0, 100*time.Microsecond, 0) // optimize=0 → no observation on optimize phase
+	m.OnIlluminate("bfs", "mst", "minimize", "raw", 17, 42, 5*time.Millisecond, 2*time.Millisecond)
+	m.OnIlluminate("bfs", "none", "minimize", "raw", 1, 0, 100*time.Microsecond, 0) // optimize=0 → no observation on optimize phase
 	m.OnScan("ScanVertices", 64, 750*time.Microsecond)
 	m.OnScan("ScanVertexKeys", 32, 500*time.Microsecond)
 	m.OnScan("ScanEdges", 128, time.Millisecond)
@@ -235,30 +235,33 @@ func TestDomainMetrics_HotPathFamilies(t *testing.T) {
 		}
 	}
 
-	// Pre-warming: every (algorithm × objective × weighting) tuple
-	// should have a histogram row for the traversal phase even though
-	// only "mst/minimize/raw" and "none/minimize/raw" have observations.
+	// Pre-warming: every (algorithm × reduction × objective × weighting)
+	// tuple should have a histogram row for the traversal phase even
+	// though only "bfs/mst/minimize/raw" and "bfs/none/minimize/raw" have
+	// observations.
 	for _, algo := range algorithmLabels {
-		for _, obj := range objectiveLabels {
-			for _, w := range weightingLabels {
-				if got := testutil.CollectAndCount(m.illuminateDuration.WithLabelValues(algo, obj, w, "traversal").(prometheus.Histogram)); got == 0 {
-					t.Errorf("illuminate_duration{algorithm=%q,objective=%q,weighting=%q,phase=traversal} row not pre-warmed", algo, obj, w)
+		for _, red := range reductionLabels {
+			for _, obj := range objectiveLabels {
+				for _, w := range weightingLabels {
+					if got := testutil.CollectAndCount(m.illuminateDuration.WithLabelValues(algo, red, obj, w, "traversal").(prometheus.Histogram)); got == 0 {
+						t.Errorf("illuminate_duration{algorithm=%q,reduction=%q,objective=%q,weighting=%q,phase=traversal} row not pre-warmed", algo, red, obj, w)
+					}
 				}
 			}
 		}
 	}
 
 	// Observed values land on the right rows.
-	if got := histSampleCount(t, m.illuminateVisitedVertices.WithLabelValues("mst", "minimize", "raw")); got != 1 {
-		t.Errorf("illuminate_visited_vertices{mst,minimize,raw} sample count = %v, want 1", got)
+	if got := histSampleCount(t, m.illuminateVisitedVertices.WithLabelValues("bfs", "mst", "minimize", "raw")); got != 1 {
+		t.Errorf("illuminate_visited_vertices{bfs,mst,minimize,raw} sample count = %v, want 1", got)
 	}
-	if got := histSampleCount(t, m.illuminateDuration.WithLabelValues("mst", "minimize", "raw", "optimize")); got != 1 {
-		t.Errorf("illuminate_duration{mst,minimize,raw,optimize} sample count = %v, want 1", got)
+	if got := histSampleCount(t, m.illuminateDuration.WithLabelValues("bfs", "mst", "minimize", "raw", "optimize")); got != 1 {
+		t.Errorf("illuminate_duration{bfs,mst,minimize,raw,optimize} sample count = %v, want 1", got)
 	}
 	// optimize=0 must NOT record on the optimize phase (it would skew
 	// p99 toward zero on RPCs that didn't run an algorithm).
-	if got := histSampleCount(t, m.illuminateDuration.WithLabelValues("none", "minimize", "raw", "optimize")); got != 0 {
-		t.Errorf("illuminate_duration{none,minimize,raw,optimize} sample count = %v, want 0 (optimize=0 must not observe)", got)
+	if got := histSampleCount(t, m.illuminateDuration.WithLabelValues("bfs", "none", "minimize", "raw", "optimize")); got != 0 {
+		t.Errorf("illuminate_duration{bfs,none,minimize,raw,optimize} sample count = %v, want 0 (optimize=0 must not observe)", got)
 	}
 
 	for _, op := range scanOps {
@@ -352,11 +355,11 @@ func TestDomainMetrics_HotPathSanitizesUnknownAxes(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := New(reg, Options{SampleInterval: time.Hour})
 
-	m.OnIlluminate("bogus", "minimize", "raw", 1, 1, time.Microsecond, 0)
-	if got := histSampleCount(t, m.illuminateVisitedVertices.WithLabelValues("unknown", "minimize", "raw")); got != 1 {
-		t.Errorf("unknown algorithm should fall back to \"unknown\"; sample count = %v, want 1", got)
+	m.OnIlluminate("bogus", "alsobogus", "minimize", "raw", 1, 1, time.Microsecond, 0)
+	if got := histSampleCount(t, m.illuminateVisitedVertices.WithLabelValues("unknown", "unknown", "minimize", "raw")); got != 1 {
+		t.Errorf("unknown algorithm+reduction should fall back to \"unknown\"; sample count = %v, want 1", got)
 	}
-	if got := histSampleCount(t, m.illuminateVisitedVertices.WithLabelValues("bogus", "minimize", "raw")); got != 0 {
+	if got := histSampleCount(t, m.illuminateVisitedVertices.WithLabelValues("bogus", "alsobogus", "minimize", "raw")); got != 0 {
 		t.Errorf("unknown algorithm must NOT route observations to its own row; sample count = %v, want 0", got)
 	}
 }
