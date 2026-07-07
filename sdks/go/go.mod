@@ -10,6 +10,6 @@ require (
 	google.golang.org/protobuf v1.36.11
 )
 
-require golang.org/x/text v0.38.0 // indirect
+require golang.org/x/text v0.39.0 // indirect
 
 replace github.com/anaregdesign/lantern/pb => ../../pb
