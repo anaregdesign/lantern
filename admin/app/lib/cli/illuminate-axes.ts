@@ -51,7 +51,7 @@ export interface CliClickAxes {
   /**
    * Post-traversal tree REDUCTION (#961): `none` (default), `mst`, or `spt`.
    * Honoured for the `bfs` and `community` families and ignored for `ppr`;
-   * {@link formatIlluminateClick} only echoes it for a family that uses it.
+   * {@link formatFamilyClick} only echoes it for a family that uses it.
    */
   reduction: ReductionName;
   objective: ObjectiveName;
@@ -70,7 +70,7 @@ export interface CliClickAxes {
    * the restart/teleport-to-seed probability α in (0,1); `epsilon` is the
    * forward-push residual threshold ε > 0. 0 means "leave to the server
    * default" (α=0.15 / ε=1e-4) and is the value that keeps the bare click
-   * byte-for-byte the canonical short form — {@link formatIlluminateClick}
+   * byte-for-byte the canonical short form — {@link formatFamilyClick}
    * only emits these for a non-zero ppr/community walk.
    */
   restartProb: number;
@@ -111,7 +111,7 @@ export const CLI_ALGORITHMS: ReadonlyArray<{
   label: string;
 }> = [
   { value: "bfs", label: "BFS (per-hop top-k)" },
-  { value: "ppr", label: "Personalized PageRank" },
+  { value: "pagerank", label: "Personalized PageRank" },
   { value: "community", label: "Local community" },
 ];
 
@@ -142,67 +142,57 @@ export const CLI_WEIGHTINGS: ReadonlyArray<{
 ];
 
 /**
- * Format a click-to-illuminate command for {@link seed}.
+ * Format a click-to-illuminate command for {@link seed} as a family verb
+ * (#975). The verb is `axes.algorithm` (bfs / pagerank / community): bfs emits
+ * positional `<step> <fan_out>`, while pagerank / community emit a single
+ * positional count (top_n / max_size), all sourced from `axes.k` (the shared
+ * "count" axis). Optional kwargs are appended in fixed order only when they
+ * diverge from {@link CLI_CLICK_AXIS_DEFAULTS}: `reduction=` / `objective=`
+ * (bfs & community only — pagerank's relevance star is already a tree),
+ * `weighting=`, `prefix=`, then the α/ε push knobs (pagerank / community only,
+ * and only when non-zero). The fixed order keeps scrollback snapshots
+ * deterministic and every echoed line is one the parser accepts.
  *
- * Emits the short form `illuminate <seed> <step> <k>` when every axis
- * matches {@link CLI_CLICK_AXIS_DEFAULTS}. Appends the optional kwargs
- * in fixed order (`algorithm=` → `reduction=` → `objective=` →
- * `weighting=` → `prefix=` → `restart_prob=` → `epsilon=`) only for axes
- * that diverge from the default; the fixed order keeps scrollback
- * snapshots deterministic and matches the parser's usage string.
- * `reduction=` is emitted only for a family that honours it (bfs /
- * community — never ppr, #961), and the two push knobs only when
- * `algorithm=ppr` or `algorithm=community` and the value is non-zero
- * (#801/#942).
- *
- * The function is intentionally pure so `bun:test` can round-trip it
- * through {@link parse} without a DOM.
+ * The function is intentionally pure so `bun:test` can round-trip it through
+ * {@link parse} without a DOM.
  */
-export function formatIlluminateClick(
-  seed: string,
-  axes: CliClickAxes,
-): string {
-  const tokens: string[] = [
-    "illuminate",
-    seed,
-    String(axes.step),
-    String(axes.k),
-  ];
-  if (axes.algorithm !== CLI_CLICK_AXIS_DEFAULTS.algorithm) {
-    tokens.push(`algorithm=${axes.algorithm}`);
+export function formatFamilyClick(seed: string, axes: CliClickAxes): string {
+  const verb = axes.algorithm;
+  const tokens: string[] = [verb, seed];
+  // Positional walk-size args: bfs takes step + fan_out; pagerank / community
+  // take a single count (top_n / max_size). `axes.k` is the shared count axis.
+  if (verb === "bfs") {
+    tokens.push(String(axes.step), String(axes.k));
+  } else {
+    tokens.push(String(axes.k));
   }
-  // #961: the tree reduction is orthogonal to the family but only meaningful
-  // for the bfs and community families — ppr returns a relevance star with no
-  // tree view. Emit it only when the operator picked a non-default reduction
-  // AND the current family honours it, so a bare click stays byte-stable (#439)
-  // and we never echo a knob the server ignores for ppr.
-  if (
-    axes.reduction !== CLI_CLICK_AXIS_DEFAULTS.reduction &&
-    axes.algorithm !== "ppr"
-  ) {
-    tokens.push(`reduction=${axes.reduction}`);
-  }
-  if (axes.objective !== CLI_CLICK_AXIS_DEFAULTS.objective) {
-    tokens.push(`objective=${axes.objective}`);
+  // reduction / objective apply to bfs and community (pagerank returns a
+  // relevance star with no tree view). Emit only when non-default so a bare
+  // click stays byte-stable (#439) and we never echo a knob pagerank ignores.
+  if (verb !== "pagerank") {
+    if (axes.reduction !== CLI_CLICK_AXIS_DEFAULTS.reduction) {
+      tokens.push(`reduction=${axes.reduction}`);
+    }
+    if (axes.objective !== CLI_CLICK_AXIS_DEFAULTS.objective) {
+      tokens.push(`objective=${axes.objective}`);
+    }
   }
   if (axes.weighting !== CLI_CLICK_AXIS_DEFAULTS.weighting) {
     tokens.push(`weighting=${axes.weighting}`);
   }
-  // #617: prefix is a FREE-TEXT axis, not a closed enum. Emit `prefix=<value>`
-  // only when non-empty — the parser (and the Go REPL) reject an explicit empty
-  // `prefix=`, and an empty prefix means "no filter" anyway, so the bare click
-  // stays the canonical short form. The value is echoed verbatim (case-
-  // SENSITIVE, #604); it carries no spaces because the CLI tokeniser splits on
-  // whitespace.
+  // #617: prefix is a FREE-TEXT axis. Emit `prefix=<value>` only when non-empty
+  // — the parser rejects an explicit empty `prefix=`, and an empty prefix means
+  // "no filter" anyway, so the bare click stays the canonical short form. The
+  // value is echoed verbatim (case-SENSITIVE, #604).
   if (axes.vertexPrefix !== "") {
     tokens.push(`prefix=${axes.vertexPrefix}`);
   }
   // #801/#942: the α/ε knobs are meaningful for the two push-based families
-  // (ppr and community — both carry the same `restart_prob`/`epsilon`
+  // (pagerank and community — both carry the same `restart_prob`/`epsilon`
   // locality knobs) and only when the operator has overridden the server
   // default (0). Gating on both keeps the bare click byte-stable (#439) and
-  // never emits a knob the server ignores for the BFS families.
-  if (axes.algorithm === "ppr" || axes.algorithm === "community") {
+  // never emits a knob the server ignores for the bfs family.
+  if (verb === "pagerank" || verb === "community") {
     if (axes.restartProb > 0) {
       tokens.push(`restart_prob=${axes.restartProb}`);
     }

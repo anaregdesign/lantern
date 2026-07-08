@@ -452,196 +452,217 @@ func TestAddDecayingEdgeParam(t *testing.T) {
 	})
 }
 
-// TestIlluminateParam_Prefix pins the #604 vertex-prefix kwarg. Unlike the
-// closed-set axes, prefix= is free-text: the key is case-insensitive but the
-// value is preserved verbatim (it matches vertex keys), it composes with the
-// axis kwargs in any order, an omitted prefix leaves the field empty (no
-// filter), and an explicit prefix= with no value is rejected.
-func TestIlluminateParam_Prefix(t *testing.T) {
-	t.Run("parses value verbatim", func(t *testing.T) {
-		s, err := NewSource("alice 2 5 prefix=team:")
+// TestBfsParam covers the bfs family grammar (#975): only <seed> is required
+// (defaults step=5, fan_out=3, reduction=none, objective=max, weighting=raw),
+// step/fan_out are optional positional ints that may also be given as kwargs,
+// the closed-set axes and the free-text prefix compose in any order, and
+// unknown keys / a third bare positional / an empty prefix= are rejected.
+func TestBfsParam(t *testing.T) {
+	t.Run("bare seed uses defaults", func(t *testing.T) {
+		s, _ := NewSource("alice")
+		m, err := BfsParam(s)
 		if err != nil {
-			t.Fatalf("NewSource: %v", err)
+			t.Fatalf("BfsParam: %v", err)
 		}
-		m, err := IlluminateParam(s)
-		if err != nil {
-			t.Fatalf("IlluminateParam: %v", err)
+		if m.Seed != "alice" || m.Step != 5 || m.FanOut != 3 {
+			t.Fatalf("got seed=%q step=%d fan_out=%d, want alice/5/3", m.Seed, m.Step, m.FanOut)
 		}
-		if m.Prefix != "team:" {
-			t.Fatalf("Prefix = %q, want %q", m.Prefix, "team:")
+		if m.Reduction != "none" || m.Objective != "max" || m.Weighting != "raw" {
+			t.Fatalf("got reduction=%q objective=%q weighting=%q, want none/max/raw", m.Reduction, m.Objective, m.Weighting)
 		}
 	})
 
-	t.Run("omitted leaves prefix empty", func(t *testing.T) {
-		s, err := NewSource("alice 2 5 reduction=mst")
+	t.Run("positional step and fan_out", func(t *testing.T) {
+		s, _ := NewSource("alice 2 7")
+		m, err := BfsParam(s)
 		if err != nil {
-			t.Fatalf("NewSource: %v", err)
+			t.Fatalf("BfsParam: %v", err)
 		}
-		m, err := IlluminateParam(s)
-		if err != nil {
-			t.Fatalf("IlluminateParam: %v", err)
-		}
-		if m.Prefix != "" {
-			t.Fatalf("Prefix = %q, want empty", m.Prefix)
+		if m.Step != 2 || m.FanOut != 7 {
+			t.Fatalf("got step=%d fan_out=%d, want 2/7", m.Step, m.FanOut)
 		}
 	})
 
-	t.Run("key case-insensitive, value case-sensitive", func(t *testing.T) {
-		s, err := NewSource("alice 2 5 PREFIX=Users/Alice")
+	t.Run("step and fan_out as kwargs", func(t *testing.T) {
+		s, _ := NewSource("alice fan_out=9 step=4")
+		m, err := BfsParam(s)
 		if err != nil {
-			t.Fatalf("NewSource: %v", err)
+			t.Fatalf("BfsParam: %v", err)
 		}
-		m, err := IlluminateParam(s)
+		if m.Step != 4 || m.FanOut != 9 {
+			t.Fatalf("got step=%d fan_out=%d, want 4/9", m.Step, m.FanOut)
+		}
+	})
+
+	t.Run("reduction/objective/weighting compose in any order", func(t *testing.T) {
+		s, _ := NewSource("alice 3 5 weighting=tfidf objective=min reduction=spt")
+		m, err := BfsParam(s)
 		if err != nil {
-			t.Fatalf("IlluminateParam: %v", err)
+			t.Fatalf("BfsParam: %v", err)
+		}
+		if m.Reduction != "spt" || m.Objective != "min" || m.Weighting != "tfidf" {
+			t.Fatalf("got reduction=%q objective=%q weighting=%q, want spt/min/tfidf", m.Reduction, m.Objective, m.Weighting)
+		}
+	})
+
+	t.Run("prefix key case-insensitive, value verbatim", func(t *testing.T) {
+		s, _ := NewSource("alice PREFIX=Users/Alice")
+		m, err := BfsParam(s)
+		if err != nil {
+			t.Fatalf("BfsParam: %v", err)
 		}
 		if m.Prefix != "Users/Alice" {
 			t.Fatalf("Prefix = %q, want %q", m.Prefix, "Users/Alice")
 		}
 	})
 
-	t.Run("composes with axis kwargs in any order", func(t *testing.T) {
-		s, err := NewSource("alice 2 5 prefix=users/ reduction=spt objective=min")
-		if err != nil {
-			t.Fatalf("NewSource: %v", err)
-		}
-		m, err := IlluminateParam(s)
-		if err != nil {
-			t.Fatalf("IlluminateParam: %v", err)
-		}
-		if m.Prefix != "users/" || m.Reduction != "spt" || m.Objective != "min" {
-			t.Fatalf("got prefix=%q reduction=%q objective=%q", m.Prefix, m.Reduction, m.Objective)
-		}
-	})
-
-	t.Run("empty value rejected", func(t *testing.T) {
-		s, err := NewSource("alice 2 5 prefix=")
-		if err != nil {
-			t.Fatalf("NewSource: %v", err)
-		}
-		if _, err := IlluminateParam(s); err == nil {
-			t.Fatal("IlluminateParam accepted empty prefix=; want error")
+	t.Run("rejects unknown keys, empty prefix, third positional, non-int", func(t *testing.T) {
+		for _, in := range []string{
+			"alice algorithm=ppr", // the family is the verb now; no algorithm kwarg
+			"alice reduction=bogus",
+			"alice objective=bogus",
+			"alice weighting=bogus",
+			"alice prefix=",
+			"alice 1 2 3",    // third bare positional
+			"alice notanint", // non-integer step
+			"alice top_n=5",  // pagerank kwarg not valid on bfs
+		} {
+			s, _ := NewSource(in)
+			if _, err := BfsParam(s); err == nil {
+				t.Errorf("BfsParam(%q) = nil, want error", in)
+			}
 		}
 	})
 }
 
-// TestIlluminateParam_PPR covers the #801 Personalized PageRank grammar:
-// algorithm=ppr is accepted, restart_prob/epsilon parse as floats and default
-// to 0, and a non-numeric knob value is rejected.
-func TestIlluminateParam_PPR(t *testing.T) {
-	t.Run("algorithm=ppr accepted", func(t *testing.T) {
-		s, err := NewSource("alice 2 5 algorithm=ppr")
+// TestPagerankParam covers the pagerank family grammar (#975): only <seed> is
+// required (default top_n=10, restart_prob/epsilon 0 → server α=0.15 / ε=1e-4),
+// top_n is an optional positional or kwarg, restart_prob/epsilon parse as
+// floats (incl. scientific notation), and reduction/objective (which pagerank
+// has no meaning for) plus non-numeric knobs are rejected.
+func TestPagerankParam(t *testing.T) {
+	t.Run("bare seed uses defaults", func(t *testing.T) {
+		s, _ := NewSource("alice")
+		m, err := PagerankParam(s)
 		if err != nil {
-			t.Fatalf("NewSource: %v", err)
+			t.Fatalf("PagerankParam: %v", err)
 		}
-		m, err := IlluminateParam(s)
-		if err != nil {
-			t.Fatalf("IlluminateParam: %v", err)
+		if m.Seed != "alice" || m.TopN != 10 {
+			t.Fatalf("got seed=%q top_n=%d, want alice/10", m.Seed, m.TopN)
 		}
-		if m.Algorithm != "ppr" {
-			t.Fatalf("Algorithm = %q, want ppr", m.Algorithm)
-		}
-		if m.RestartProb != 0 || m.Epsilon != 0 {
-			t.Fatalf("defaults want 0/0, got restart_prob=%v epsilon=%v", m.RestartProb, m.Epsilon)
+		if m.RestartProb != 0 || m.Epsilon != 0 || m.Weighting != "raw" {
+			t.Fatalf("got restart_prob=%v epsilon=%v weighting=%q, want 0/0/raw", m.RestartProb, m.Epsilon, m.Weighting)
 		}
 	})
 
-	t.Run("restart_prob and epsilon parse as floats in any order", func(t *testing.T) {
-		s, err := NewSource("alice 1 10 epsilon=0.001 algorithm=ppr restart_prob=0.25")
+	t.Run("positional top_n", func(t *testing.T) {
+		s, _ := NewSource("alice 25")
+		m, err := PagerankParam(s)
 		if err != nil {
-			t.Fatalf("NewSource: %v", err)
+			t.Fatalf("PagerankParam: %v", err)
 		}
-		m, err := IlluminateParam(s)
-		if err != nil {
-			t.Fatalf("IlluminateParam: %v", err)
-		}
-		if m.Algorithm != "ppr" {
-			t.Fatalf("Algorithm = %q, want ppr", m.Algorithm)
-		}
-		if m.RestartProb != 0.25 {
-			t.Fatalf("RestartProb = %v, want 0.25", m.RestartProb)
-		}
-		if m.Epsilon != 0.001 {
-			t.Fatalf("Epsilon = %v, want 0.001", m.Epsilon)
+		if m.TopN != 25 {
+			t.Fatalf("TopN = %d, want 25", m.TopN)
 		}
 	})
 
-	t.Run("non-numeric restart_prob rejected", func(t *testing.T) {
-		s, err := NewSource("alice 2 5 restart_prob=high")
+	t.Run("top_n/restart_prob/epsilon in any order", func(t *testing.T) {
+		s, _ := NewSource("alice epsilon=0.001 restart_prob=0.25 top_n=15")
+		m, err := PagerankParam(s)
 		if err != nil {
-			t.Fatalf("NewSource: %v", err)
+			t.Fatalf("PagerankParam: %v", err)
 		}
-		if _, err := IlluminateParam(s); err == nil {
-			t.Fatal("IlluminateParam accepted restart_prob=high; want error")
+		if m.TopN != 15 || m.RestartProb != 0.25 || m.Epsilon != 0.001 {
+			t.Fatalf("got top_n=%d restart_prob=%v epsilon=%v, want 15/0.25/0.001", m.TopN, m.RestartProb, m.Epsilon)
 		}
 	})
 
-	t.Run("non-numeric epsilon rejected", func(t *testing.T) {
-		s, err := NewSource("alice 2 5 epsilon=tiny")
+	t.Run("scientific-notation epsilon", func(t *testing.T) {
+		s, _ := NewSource("alice epsilon=1e-4")
+		m, err := PagerankParam(s)
 		if err != nil {
-			t.Fatalf("NewSource: %v", err)
+			t.Fatalf("PagerankParam: %v", err)
 		}
-		if _, err := IlluminateParam(s); err == nil {
-			t.Fatal("IlluminateParam accepted epsilon=tiny; want error")
+		if m.Epsilon != 1e-4 {
+			t.Fatalf("Epsilon = %v, want 1e-4", m.Epsilon)
+		}
+	})
+
+	t.Run("rejects reduction/objective and non-numeric knobs", func(t *testing.T) {
+		for _, in := range []string{
+			"alice reduction=mst", // pagerank has no reduction
+			"alice objective=max", // pagerank has no objective
+			"alice restart_prob=high",
+			"alice epsilon=tiny",
+			"alice prefix=",
+			"alice 1 2", // second bare positional
+		} {
+			s, _ := NewSource(in)
+			if _, err := PagerankParam(s); err == nil {
+				t.Errorf("PagerankParam(%q) = nil, want error", in)
+			}
 		}
 	})
 }
 
-// TestIlluminateParam_Reduction covers the #961 orthogonal split: the
-// traversal FAMILY (algorithm=bfs|ppr|community) and the post-traversal tree
-// REDUCTION (reduction=none|mst|spt) are independent axes. A bare illuminate
-// defaults to algorithm=bfs / reduction=none; reduction composes with the bfs
-// and community families; mst/spt are no longer accepted as algorithm values;
-// and an unknown reduction value is rejected.
-func TestIlluminateParam_Reduction(t *testing.T) {
-	t.Run("defaults are bfs family, no reduction", func(t *testing.T) {
-		s, _ := NewSource("alice 2 5")
-		m, err := IlluminateParam(s)
+// TestCommunityParam covers the community family grammar (#975): only <seed> is
+// required (default max_size=0 = the sweep decides, reduction=none,
+// objective=max), max_size is an optional positional or kwarg, restart_prob/
+// epsilon and the reduction/objective tree-view axes compose in any order, and
+// unknown keys / non-numeric knobs / a second bare positional are rejected.
+func TestCommunityParam(t *testing.T) {
+	t.Run("bare seed uses defaults", func(t *testing.T) {
+		s, _ := NewSource("alice")
+		m, err := CommunityParam(s)
 		if err != nil {
-			t.Fatalf("IlluminateParam: %v", err)
+			t.Fatalf("CommunityParam: %v", err)
 		}
-		if m.Algorithm != "bfs" || m.Reduction != "none" {
-			t.Fatalf("defaults got algorithm=%q reduction=%q, want bfs/none", m.Algorithm, m.Reduction)
+		if m.Seed != "alice" || m.MaxSize != 0 {
+			t.Fatalf("got seed=%q max_size=%d, want alice/0", m.Seed, m.MaxSize)
 		}
-	})
-
-	t.Run("reduction axis parses independently of family", func(t *testing.T) {
-		for _, red := range []string{"none", "mst", "spt"} {
-			s, _ := NewSource("alice 2 5 reduction=" + red)
-			m, err := IlluminateParam(s)
-			if err != nil {
-				t.Fatalf("IlluminateParam(reduction=%s): %v", red, err)
-			}
-			if m.Algorithm != "bfs" || m.Reduction != red {
-				t.Fatalf("got algorithm=%q reduction=%q, want bfs/%s", m.Algorithm, m.Reduction, red)
-			}
+		if m.Reduction != "none" || m.Objective != "max" || m.Weighting != "raw" {
+			t.Fatalf("got reduction=%q objective=%q weighting=%q, want none/max/raw", m.Reduction, m.Objective, m.Weighting)
 		}
 	})
 
-	t.Run("community family composes with reduction and objective", func(t *testing.T) {
-		s, _ := NewSource("alice 2 5 algorithm=community reduction=mst objective=min")
-		m, err := IlluminateParam(s)
+	t.Run("positional max_size", func(t *testing.T) {
+		s, _ := NewSource("alice 20")
+		m, err := CommunityParam(s)
 		if err != nil {
-			t.Fatalf("IlluminateParam: %v", err)
+			t.Fatalf("CommunityParam: %v", err)
 		}
-		if m.Algorithm != "community" || m.Reduction != "mst" || m.Objective != "min" {
-			t.Fatalf("got algorithm=%q reduction=%q objective=%q, want community/mst/min", m.Algorithm, m.Reduction, m.Objective)
+		if m.MaxSize != 20 {
+			t.Fatalf("MaxSize = %d, want 20", m.MaxSize)
 		}
 	})
 
-	t.Run("mst and spt are no longer algorithm families", func(t *testing.T) {
-		for _, bad := range []string{"algorithm=mst", "algorithm=spt", "algorithm=none"} {
-			s, _ := NewSource("alice 2 5 " + bad)
-			if _, err := IlluminateParam(s); err == nil {
-				t.Errorf("IlluminateParam(%q) = nil, want error", bad)
+	t.Run("reduction/objective/knobs compose in any order", func(t *testing.T) {
+		s, _ := NewSource("alice max_size=20 reduction=mst objective=min restart_prob=0.25 epsilon=1e-3")
+		m, err := CommunityParam(s)
+		if err != nil {
+			t.Fatalf("CommunityParam: %v", err)
+		}
+		if m.MaxSize != 20 || m.Reduction != "mst" || m.Objective != "min" {
+			t.Fatalf("got max_size=%d reduction=%q objective=%q, want 20/mst/min", m.MaxSize, m.Reduction, m.Objective)
+		}
+		if m.RestartProb != 0.25 || m.Epsilon != 1e-3 {
+			t.Fatalf("got restart_prob=%v epsilon=%v, want 0.25/1e-3", m.RestartProb, m.Epsilon)
+		}
+	})
+
+	t.Run("rejects unknown key, non-numeric knobs, second positional", func(t *testing.T) {
+		for _, in := range []string{
+			"alice reduction=bogus",
+			"alice objective=bogus",
+			"alice top_n=5", // pagerank kwarg not valid on community
+			"alice restart_prob=high",
+			"alice prefix=",
+			"alice 1 2", // second bare positional
+		} {
+			s, _ := NewSource(in)
+			if _, err := CommunityParam(s); err == nil {
+				t.Errorf("CommunityParam(%q) = nil, want error", in)
 			}
-		}
-	})
-
-	t.Run("unknown reduction value rejected", func(t *testing.T) {
-		s, _ := NewSource("alice 2 5 reduction=bogus")
-		if _, err := IlluminateParam(s); err == nil {
-			t.Fatal("IlluminateParam accepted reduction=bogus; want error")
 		}
 	})
 }

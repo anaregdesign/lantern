@@ -24,7 +24,9 @@ describe("completeCommandLine — verbs (slot 0)", () => {
       "scan",
       "count",
       "keys",
-      "illuminate",
+      "bfs",
+      "pagerank",
+      "community",
       "help",
       "exit",
     ]);
@@ -32,7 +34,7 @@ describe("completeCommandLine — verbs (slot 0)", () => {
 
   test("filters verbs by prefix", () => {
     expect(completeCommandLine("ge", KEYS).candidates).toEqual(["get"]);
-    expect(completeCommandLine("i", KEYS).candidates).toEqual(["illuminate"]);
+    expect(completeCommandLine("b", KEYS).candidates).toEqual(["bfs"]);
   });
 
   test("is case-insensitive on the verb", () => {
@@ -131,8 +133,8 @@ describe("completeCommandLine — key slots", () => {
     );
   });
 
-  test("illuminate seed (slot 1) completes from known keys", () => {
-    expect(completeCommandLine("illuminate al", KEYS).candidates).toEqual([
+  test("bfs seed (slot 1) completes from known keys", () => {
+    expect(completeCommandLine("bfs al", KEYS).candidates).toEqual([
       "alice",
       "alaska",
     ]);
@@ -145,107 +147,116 @@ describe("completeCommandLine — key slots", () => {
   });
 });
 
-describe("completeCommandLine — illuminate option kwargs (slot ≥ 4)", () => {
-  test("offers every option key with a trailing =", () => {
-    expect(
-      completeCommandLine("illuminate alice 2 5 ", KEYS).candidates,
-    ).toEqual([
-      "algorithm=",
+describe("completeCommandLine — family option kwargs (slot ≥ 2)", () => {
+  test("bfs offers its option keys right after the seed", () => {
+    expect(completeCommandLine("bfs alice ", KEYS).candidates).toEqual([
+      "step=",
+      "fan_out=",
       "reduction=",
       "objective=",
       "weighting=",
       "prefix=",
+    ]);
+  });
+
+  test("pagerank offers its own option keys", () => {
+    expect(completeCommandLine("pagerank alice ", KEYS).candidates).toEqual([
+      "top_n=",
       "restart_prob=",
       "epsilon=",
+      "weighting=",
+      "prefix=",
+    ]);
+  });
+
+  test("community offers its own option keys", () => {
+    expect(completeCommandLine("community alice ", KEYS).candidates).toEqual([
+      "max_size=",
+      "restart_prob=",
+      "epsilon=",
+      "reduction=",
+      "objective=",
+      "weighting=",
+      "prefix=",
+    ]);
+  });
+
+  test("a positional walk-size arg still surfaces the kwarg keys", () => {
+    // step/fan_out are positional too, but the completer offers the whole
+    // kwarg namespace for discoverability (#975); a bare int removes no key
+    // because it never matches a key name.
+    expect(completeCommandLine("bfs alice 2 ", KEYS).candidates).toEqual([
+      "step=",
+      "fan_out=",
+      "reduction=",
+      "objective=",
+      "weighting=",
+      "prefix=",
     ]);
   });
 
   test("filters option keys by prefix", () => {
-    expect(
-      completeCommandLine("illuminate alice 2 5 a", KEYS).candidates,
-    ).toEqual(["algorithm="]);
+    expect(completeCommandLine("bfs alice re", KEYS).candidates).toEqual([
+      "reduction=",
+    ]);
   });
 
   test("drops option keys already present on the line", () => {
     expect(
-      completeCommandLine("illuminate alice 2 5 algorithm=community ", KEYS)
-        .candidates,
-    ).toEqual([
-      "reduction=",
-      "objective=",
-      "weighting=",
-      "prefix=",
-      "restart_prob=",
-      "epsilon=",
-    ]);
-  });
-
-  test("completes algorithm (family) values once = is typed", () => {
-    expect(
-      completeCommandLine("illuminate alice 2 5 algorithm=", KEYS).candidates,
-    ).toEqual(["algorithm=bfs", "algorithm=ppr", "algorithm=community"]);
+      completeCommandLine("bfs alice reduction=mst ", KEYS).candidates,
+    ).toEqual(["step=", "fan_out=", "objective=", "weighting=", "prefix="]);
   });
 
   test("completes reduction values once = is typed", () => {
     expect(
-      completeCommandLine("illuminate alice 2 5 reduction=", KEYS).candidates,
+      completeCommandLine("bfs alice reduction=", KEYS).candidates,
     ).toEqual(["reduction=none", "reduction=mst", "reduction=spt"]);
   });
 
   test("filters enum values by their prefix", () => {
     expect(
-      completeCommandLine("illuminate alice 2 5 objective=m", KEYS).candidates,
+      completeCommandLine("bfs alice objective=m", KEYS).candidates,
     ).toEqual(["objective=min", "objective=max"]);
     expect(
-      completeCommandLine("illuminate alice 2 5 weighting=tf", KEYS).candidates,
+      completeCommandLine("bfs alice weighting=tf", KEYS).candidates,
     ).toEqual(["weighting=tfidf"]);
     expect(
-      completeCommandLine("illuminate alice 2 5 weighting=b", KEYS).candidates,
+      completeCommandLine("bfs alice weighting=b", KEYS).candidates,
     ).toEqual(["weighting=bm25"]);
   });
 
   test("enumerates every weighting value once = is typed", () => {
     expect(
-      completeCommandLine("illuminate alice 2 5 weighting=", KEYS).candidates,
+      completeCommandLine("bfs alice weighting=", KEYS).candidates,
     ).toEqual(["weighting=raw", "weighting=tfidf", "weighting=bm25"]);
   });
 
   test("unknown option keyword yields no value candidates", () => {
-    expect(
-      completeCommandLine("illuminate alice 2 5 bogus=", KEYS).candidates,
-    ).toEqual([]);
+    expect(completeCommandLine("bfs alice bogus=", KEYS).candidates).toEqual(
+      [],
+    );
   });
 
   test("free-text prefix= yields no value candidates (#606)", () => {
-    expect(
-      completeCommandLine("illuminate alice 2 5 prefix=", KEYS).candidates,
-    ).toEqual([]);
-  });
-
-  test("free-form ppr knobs yield no value candidates (#801)", () => {
-    expect(
-      completeCommandLine("illuminate alice 2 5 restart_prob=", KEYS)
-        .candidates,
-    ).toEqual([]);
-    expect(
-      completeCommandLine("illuminate alice 2 5 epsilon=", KEYS).candidates,
-    ).toEqual([]);
-  });
-
-  test("illuminate step/k slots offer nothing", () => {
-    expect(completeCommandLine("illuminate alice ", KEYS).candidates).toEqual(
+    expect(completeCommandLine("bfs alice prefix=", KEYS).candidates).toEqual(
       [],
     );
-    expect(completeCommandLine("illuminate alice 2 ", KEYS).candidates).toEqual(
-      [],
-    );
+  });
+
+  test("free-form push knobs yield no value candidates (#801)", () => {
+    expect(
+      completeCommandLine("pagerank alice restart_prob=", KEYS).candidates,
+    ).toEqual([]);
+    expect(
+      completeCommandLine("community alice epsilon=", KEYS).candidates,
+    ).toEqual([]);
   });
 });
 
 describe("longestCommonPrefix", () => {
   test("returns the shared lead of the candidates", () => {
     expect(longestCommonPrefix(["alice", "alaska"])).toBe("al");
-    expect(longestCommonPrefix(["algorithm=", "objective="])).toBe("");
+    expect(longestCommonPrefix(["reduction=", "objective="])).toBe("");
   });
 
   test("returns the single value unchanged", () => {

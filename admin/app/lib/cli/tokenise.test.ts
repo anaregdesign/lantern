@@ -45,13 +45,13 @@ describe("tokenise — happy path (#437 case preservation)", () => {
     expect(ok("Get VERTEX CamelKey")).toEqual(["Get", "VERTEX", "CamelKey"]);
   });
 
-  test("does not lowercase illuminate keyword args", () => {
-    expect(ok("illuminate Alice 2 5 Algorithm=SPT")).toEqual([
-      "illuminate",
+  test("does not lowercase family-verb keyword args", () => {
+    expect(ok("bfs Alice 2 5 Reduction=SPT")).toEqual([
+      "bfs",
       "Alice",
       "2",
       "5",
-      "Algorithm=SPT",
+      "Reduction=SPT",
     ]);
   });
 

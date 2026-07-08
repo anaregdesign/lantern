@@ -73,17 +73,49 @@ type DeleteEdge struct {
 	Pairs []EdgePair
 }
 
-type Illuminate struct {
+// Bfs backs the bfs family verb (#975):
+// `bfs <seed> [step] [fan_out] [reduction=…] [objective=…] [weighting=…] [prefix=…]`.
+// Step/FanOut are optional positional ints (defaults 5/3) and may also be given
+// as step=/fan_out= kwargs. bfs is the only family with step and reduction knobs.
+type Bfs struct {
+	Seed      string
+	Step      int    // walk depth (default 5)
+	FanOut    int    // per-hop top-k prune (default 3)
+	Reduction string // "none" | "mst" | "spt" (default: "none")
+	Objective string // "min" | "max"          (default: "max")
+	Weighting string // "raw" | "tfidf" | "bm25" (default: "raw")
+	Prefix    string // vertex-key prefix filter; "" (default) = no filter (#604)
+}
+
+// Pagerank backs the pagerank family verb (#975):
+// `pagerank <seed> [top_n] [restart_prob=…] [epsilon=…] [weighting=…] [prefix=…]`.
+// TopN is an optional positional int (default 10; 0 = every positive-mass
+// vertex). RestartProb/Epsilon default to 0, which the server resolves to
+// α=0.15 / ε=1e-4. Personalized PageRank returns a relevance star, so it has no
+// reduction/objective knob.
+type Pagerank struct {
 	Seed        string
-	Step        int
-	K           int
-	Algorithm   string  // traversal family: "bfs" | "ppr" | "community" (default: "bfs")
-	Reduction   string  // post-traversal tree view: "none" | "mst" | "spt" (default: "none"); bfs+community only
-	Objective   string  // "min" | "max"                  (default: "max")
-	Weighting   string  // "raw" | "tfidf" | "bm25"        (default: "raw")
+	TopN        int     // cap the star to the top-N by mass (default 10; 0 = all)
+	RestartProb float32 // restart prob α; 0 (default) = server default 0.15 (#801)
+	Epsilon     float32 // residual threshold ε; 0 (default) = server default 1e-4 (#801)
+	Weighting   string  // "raw" | "tfidf" | "bm25" (default: "raw")
 	Prefix      string  // vertex-key prefix filter; "" (default) = no filter (#604)
-	RestartProb float32 // PPR/community restart prob α; 0 (default) = server default 0.15 (#801, #845)
-	Epsilon     float32 // PPR/community residual threshold ε; 0 (default) = server default 1e-4 (#801, #845)
+}
+
+// Community backs the community family verb (#975):
+// `community <seed> [max_size] [restart_prob=…] [epsilon=…] [reduction=…] [objective=…] [weighting=…] [prefix=…]`.
+// MaxSize is an optional positional int (default 0 = the conductance sweep alone
+// decides the size). RestartProb/Epsilon share PPR's semantics/defaults;
+// reduction/objective render an optional tree view of the community (#845).
+type Community struct {
+	Seed        string
+	MaxSize     int     // size upper bound (default 0 = sweep decides)
+	RestartProb float32 // restart prob α; 0 (default) = server default 0.15 (#845)
+	Epsilon     float32 // residual threshold ε; 0 (default) = server default 1e-4 (#845)
+	Reduction   string  // "none" | "mst" | "spt" (default: "none")
+	Objective   string  // "min" | "max"          (default: "max")
+	Weighting   string  // "raw" | "tfidf" | "bm25" (default: "raw")
+	Prefix      string  // vertex-key prefix filter; "" (default) = no filter (#604)
 }
 
 // ScanVertices backs `scan vertices <prefix> [limit] [all=true]` (#411,

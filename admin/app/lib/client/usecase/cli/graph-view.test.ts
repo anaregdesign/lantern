@@ -13,19 +13,16 @@ import type {
   Vertex,
 } from "~/lib/client/infrastructure/api/types";
 
-describe("commandResultToGraphView — illuminate", () => {
+describe("commandResultToGraphView — family verbs (bfs / pagerank / community)", () => {
   const cmd: Command = {
-    verb: "illuminate",
+    verb: "bfs",
     seed: "a",
     step: 2,
-    k: 5,
-    algorithm: "bfs",
+    fanOut: 5,
     reduction: "none",
     objective: "min",
     weighting: "raw",
     vertexPrefix: "",
-    restartProb: 0,
-    epsilon: 0,
   };
 
   it("marks the seed and renders all returned vertices + edges", () => {
@@ -63,6 +60,41 @@ describe("commandResultToGraphView — illuminate", () => {
     const view = commandResultToGraphView(cmd, {} as IlluminateResponse)!;
     expect(view.nodes).toEqual([]);
     expect(view.edges).toEqual([]);
+  });
+
+  it("projects the pagerank and community families identically to bfs", () => {
+    const response: IlluminateResponse = {
+      graph: {
+        vertices: [{ key: "a" }, { key: "b" }],
+        edges: [{ tail: "a", head: "b", weight: 1 }],
+      },
+    };
+    const pagerank: Command = {
+      verb: "pagerank",
+      seed: "a",
+      topN: 10,
+      restartProb: 0,
+      epsilon: 0,
+      weighting: "raw",
+      vertexPrefix: "",
+    };
+    const community: Command = {
+      verb: "community",
+      seed: "a",
+      maxSize: 0,
+      restartProb: 0,
+      epsilon: 0,
+      reduction: "none",
+      objective: "max",
+      weighting: "raw",
+      vertexPrefix: "",
+    };
+    for (const c of [pagerank, community]) {
+      const view = commandResultToGraphView(c, response)!;
+      expect(view.nodes.map((n) => n.id).sort()).toEqual(["a", "b"]);
+      expect(view.nodes.find((n) => n.id === "a")!.isInitialSeed).toBe(true);
+      expect(view.edges.map((e) => e.id)).toEqual(["a→b"]);
+    }
   });
 });
 
@@ -396,17 +428,14 @@ describe("mergeGraphView", () => {
   /** A two-node illuminate frame (seed `a` → `b`, origin `a`). */
   function illuminateBase() {
     const cmd: Command = {
-      verb: "illuminate",
+      verb: "bfs",
       seed: "a",
       step: 2,
-      k: 5,
-      algorithm: "bfs",
+      fanOut: 5,
       reduction: "none",
       objective: "min",
       weighting: "raw",
       vertexPrefix: "",
-      restartProb: 0,
-      epsilon: 0,
     };
     const response: IlluminateResponse = {
       graph: {

@@ -13,7 +13,7 @@ import { CONNECT_URL, STORAGE_KEY, putEdges, putVertices } from "./helpers";
  *
  * This file used to be `illuminate.spec.ts`; its accumulator-UI tests were
  * removed and the canvas-only guards that survive the model change were
- * re-pointed at the CLI bootstrap. `illuminate <hub> 2 5` reproduces the exact
+ * re-pointed at the CLI bootstrap. `bfs <hub> 2 5` reproduces the exact
  * 2-hop frontier the old `/illuminate?seed=hub` initial render produced, so the
  * ported guards assert the same initial canvas frame.
  *
@@ -22,7 +22,7 @@ import { CONNECT_URL, STORAGE_KEY, putEdges, putVertices } from "./helpers";
  * (#460), directed arrows (#485), and label-chip contrast (#484). The two guards
  * that were coupled to the multi-source accumulator model — "deletes nodes/edges
  * outside the latest result" (#491) and "no positional snap, then gradual
- * easing" (#483) — are re-expressed by running a SECOND `illuminate` (the
+ * easing" (#483) — are re-expressed by running a SECOND `bfs` (the
  * deterministic analog of a canvas click): the stateless CLI canvas overwrites
  * the frame, so the new walk's result is the whole canvas and the prior frame's
  * extras are dropped. `cli.spec.ts` already covers canvas mount, persistence,
@@ -36,7 +36,7 @@ import { CONNECT_URL, STORAGE_KEY, putEdges, putVertices } from "./helpers";
  *    hub --(1)--> left --(1)--> leftleft --(1)--> leftleftleft
  *    hub --(3)--> right --(2)--> rightright
  *
- * `illuminate e2e:illum:hub 2 5` (step 2, k 5 — the canonical click form)
+ * `bfs e2e:illum:hub 2 5` (step 2, k 5 — the canonical click form)
  * brings in the full 2-hop frontier — {hub, left, right, leftleft, rightright}
  * + 4 edges — which is exactly what the canvas-only guards below assert on.
  */
@@ -80,20 +80,20 @@ test.beforeEach(async ({ page }) => {
 async function renderHub(page: Page): Promise<void> {
   await page.goto("/cli");
   const input = page.getByTestId("cli-input");
-  await input.fill("illuminate e2e:illum:hub 2 5");
+  await input.fill("bfs e2e:illum:hub 2 5");
   await input.press("Enter");
   await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
   await expect(page.getByTestId("illuminate-canvas")).toBeVisible();
 }
 
 /**
- * Runs a second `illuminate <seed> 2 5` — byte-for-byte the command a
- * canvas node-click dispatches (`onNodeClick → runRaw(formatIlluminateClick)`
+ * Runs a second `bfs <seed> 2 5` — byte-for-byte the command a
+ * canvas node-click dispatches (`onNodeClick → runRaw(formatFamilyClick)`
  * at the picker's default axes) — to drive the CLI's per-frame reconcile.
  *
  * This is how the model-changed guards re-express the retired accumulator
  * UI's "Expand from <key>" button. The CLI canvas is stateless: each
- * `illuminate` OVERWRITES the rendered frame with exactly that walk's result
+ * `bfs` OVERWRITES the rendered frame with exactly that walk's result
  * (the view carries empty `latestResult*` sets, so no result filter is
  * applied — see graph-view.ts), so a second walk DROPS the prior frame's
  * extras instead of accumulating them.
@@ -108,10 +108,10 @@ async function renderHub(page: Page): Promise<void> {
  */
 async function reilluminate(page: Page, seed: string): Promise<void> {
   const input = page.getByTestId("cli-input");
-  await input.fill(`illuminate ${seed} 2 5`);
+  await input.fill(`bfs ${seed} 2 5`);
   await input.press("Enter");
   await expect(page.getByTestId("cli-canvas-panel")).toContainText(
-    `illuminate ${seed} 2 5`,
+    `bfs ${seed} 2 5`,
   );
 }
 
@@ -286,7 +286,7 @@ test.describe("/cli canvas", () => {
     expect(before).not.toBeNull();
     expect(await isFixed(targetKey)).toBe(false);
 
-    // #651: on /cli a node click dispatches `illuminate <key> 2 5` into the
+    // #651: on /cli a node click dispatches `bfs <key> 2 5` into the
     // scrollback (onNodeClick → runRaw), so a stray click would grow the
     // OK-entry count. Capture it now to prove the drag below is NOT misread
     // as a click — the CLI analog of the old accumulator counter holding at
@@ -368,7 +368,7 @@ test.describe("/cli canvas", () => {
 
     // The drag must NOT have been interpreted as a click — if a future
     // refactor accidentally routed finishDrag through onNodeClick, a new
-    // `illuminate …` command would have landed in the scrollback. Asserted
+    // `bfs …` command would have landed in the scrollback. Asserted
     // last, after several async bridge round-trips, so any stray click's
     // dispatch has had time to surface. The canvas also still shows the hub
     // command as its source (a click would re-source it to `left`).
@@ -376,7 +376,7 @@ test.describe("/cli canvas", () => {
       okEntriesBefore,
     );
     await expect(page.getByTestId("cli-canvas-panel")).toContainText(
-      "illuminate e2e:illum:hub 2 5",
+      "bfs e2e:illum:hub 2 5",
     );
   });
 
@@ -438,7 +438,7 @@ test.describe("/cli canvas", () => {
         return win.__illuminateCanvas?.settleLayout() ?? 0;
       });
 
-    // `illuminate e2e:illum:hub 2 5` made `hub` the latest expansion
+    // `bfs e2e:illum:hub 2 5` made `hub` the latest expansion
     // origin, so it is THE seed anchor. These fixtures carry no TTL and we
     // never hover, so the node reducer is an identity pass-through —
     // `getRenderedNodeColor` returns the stamped colour verbatim.
@@ -512,7 +512,7 @@ test.describe("/cli canvas", () => {
       "2",
     );
 
-    // Features A + B in motion. A second `illuminate e2e:illum:left 2 5`
+    // Features A + B in motion. A second `bfs e2e:illum:left 2 5`
     // (the click analog) makes `left` the new seed; its 2-hop result is
     // {left, leftleft, leftleftleft}. `leftleft` SURVIVES the frame but is
     // NOT the new seed, so it is free to move (Feature A — existing nodes
@@ -746,12 +746,12 @@ test.describe("/cli canvas", () => {
       },
     ]);
 
-    // CLI bootstrap onto the TTL graph: `illuminate <ttlSeed> 2 5` brings
+    // CLI bootstrap onto the TTL graph: `bfs <ttlSeed> 2 5` brings
     // in {ttl-seed, ttl-edge} (the retired Illuminate page's
     // `/illuminate?seed=ttlSeed` equivalent).
     await page.goto("/cli");
     const input = page.getByTestId("cli-input");
-    await input.fill(`illuminate ${ttlSeed} 2 5`);
+    await input.fill(`bfs ${ttlSeed} 2 5`);
     await input.press("Enter");
     await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
     await expect(page.getByTestId("illuminate-canvas")).toBeVisible();
@@ -981,7 +981,7 @@ test.describe("/cli canvas", () => {
     expect(colors?.background).not.toBe(colors?.text);
   });
 
-  test("Hop-distance colouring separates each ring, then recolours to the latest result after a second illuminate (#460)", async ({
+  test("Hop-distance colouring separates each ring, then recolours to the latest result after a second bfs (#460)", async ({
     page,
   }) => {
     await renderHub(page);
@@ -1052,8 +1052,8 @@ test.describe("/cli canvas", () => {
       0,
     );
 
-    // === Phase 2: second illuminate from leftleft — overwrite the frame ==
-    // The CLI canvas is stateless: `illuminate e2e:illum:leftleft 2 5`
+    // === Phase 2: second bfs from leftleft — overwrite the frame ==
+    // The CLI canvas is stateless: `bfs e2e:illum:leftleft 2 5`
     // OVERWRITES the rendered frame with that walk's result
     // {leftleft, leftleftleft}; the previous hub/left/right/rightright are
     // dropped from graphology. Single-source hop distances over the new
@@ -1097,7 +1097,7 @@ test.describe("/cli canvas", () => {
     );
   });
 
-  test("A second illuminate deletes nodes and edges outside the latest result (#491)", async ({
+  test("A second bfs deletes nodes and edges outside the latest result (#491)", async ({
     page,
   }) => {
     await renderHub(page);
@@ -1138,7 +1138,7 @@ test.describe("/cli canvas", () => {
       ).not.toBeNull();
     }
 
-    // A second `illuminate e2e:illum:leftleft 2 5` overwrites the frame
+    // A second `bfs e2e:illum:leftleft 2 5` overwrites the frame
     // with the leftleft neighbourhood {leftleft, leftleftleft}, so every
     // node outside it — hub, left, right, rightright — is DELETED (#491),
     // while the freshly illuminated leftleftleft and its origin leftleft
@@ -1178,7 +1178,7 @@ test.describe("/cli canvas", () => {
     expect(await hasEdge("e2e:illum:right→e2e:illum:rightright")).toBe(false);
   });
 
-  test("No positional snap at t=0 after a second illuminate, then gradual non-overlapping easing (#483)", async ({
+  test("No positional snap at t=0 after a second bfs, then gradual non-overlapping easing (#483)", async ({
     page,
   }) => {
     await renderHub(page);
@@ -1261,7 +1261,7 @@ test.describe("/cli canvas", () => {
     }
 
     // Requirement A (no snap): pause the continuous layout BEFORE the
-    // second illuminate so the reconcile builds the simulation but never
+    // second bfs so the reconcile builds the simulation but never
     // ticks it. The node that SURVIVES into the latest result (leftleft,
     // the new origin) must hold its EXACT pre-walk coordinates at t=0 (the
     // first rendered frame); the brand-new node lands at fresh

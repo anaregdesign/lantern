@@ -70,8 +70,10 @@ COMMAND LAYOUT
     get / put / add / delete / scan / count / delete-prefix / keys
       e.g. "lantern-cli get vertex alice", "lantern-cli scan vertices users/ all=true",
       "lantern-cli count vertices users/", "lantern-cli keys user:" (Redis-style KEYS)
-  illuminate  walk the graph from a seed; accepts flags OR the REPL
-              positional grammar (illuminate <seed> <step> <k> [key=value …])
+  bfs         greedy per-hop top-k BFS walk from a seed
+              (bfs <seed> [step] [fan_out] [reduction=…] [objective=…] …)
+  pagerank    Personalized PageRank relevance star (pagerank <seed> [top_n] …)
+  community   conductance-optimal local community (community <seed> [max_size] …)
   bulk        stream NDJSON from a file or stdin (bulk load)
   repl        interactive prompt
   version     print client version
@@ -113,13 +115,13 @@ EXAMPLES
   lantern-cli delete vertex alice bob carol        # variadic batch delete
   lantern-cli delete-prefix vertices tmp/ dry_run=true
   lantern-cli keys user: 100                       # Redis-style KEYS (vertex keys under a prefix)
-  lantern-cli illuminate alice 2 5 reduction=spt objective=max
+  lantern-cli bfs alice 2 5 reduction=spt objective=max
 
   # NDJSON bulk load (streamed)
   cat vertices.ndjson | lantern-cli bulk vertices -
 
   # walk from a seed and emit the 1-hop neighborhood as JSON
-  lantern-cli illuminate alice --step 1 --k 10
+  lantern-cli bfs alice --step 1 --fan-out 10
 
   # against a TLS server
   lantern-cli --tls --tls-ca ./ca.pem -H lantern.example.com -p 443 get vertex alice

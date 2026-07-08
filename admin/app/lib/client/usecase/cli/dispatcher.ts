@@ -42,7 +42,6 @@ import { getEdge } from "~/lib/client/infrastructure/api/get-edge";
 import { getVertex } from "~/lib/client/infrastructure/api/get-vertex";
 import {
   illuminate,
-  type Family as ApiFamily,
   type Objective as ApiObjective,
   type Reduction as ApiReduction,
   type Weighting as ApiWeighting,
@@ -54,7 +53,6 @@ import { scanVertexKeys } from "~/lib/client/infrastructure/api/scan-vertex-keys
 import { scanVertices } from "~/lib/client/infrastructure/api/scan-vertices";
 import type { Edge, Vertex } from "~/lib/client/infrastructure/api/types";
 import type {
-  AlgorithmName,
   Command,
   ObjectiveName,
   ReductionName,
@@ -69,19 +67,12 @@ export interface DispatchInput {
 
 // Translate the CLI's friendly axis vocabulary to the wire enum the
 // illuminate adapter consumes. Keyed by the CLOSED axis unions from
-// `~/lib/cli/types` (not `string`) so that adding a token to
-// `AlgorithmName` / `ReductionName` / `ObjectiveName` / `WeightingName`
-// without a matching entry here is a `tsc` error, not a silent `undefined`
-// that degrades to the default family. This exhaustiveness guard is the
-// root-cause fix for #942, where `community` parsed but had no
-// `ALGORITHM_TO_API` entry and fell back to a BFS walk. Since #961 the
-// traversal FAMILY (algorithm) and the tree REDUCTION are separate axes,
-// so each gets its own exhaustive map.
-const FAMILY_TO_API: Record<AlgorithmName, ApiFamily> = {
-  bfs: "FAMILY_BFS",
-  ppr: "FAMILY_PERSONALIZED_PAGERANK",
-  community: "FAMILY_LOCAL_COMMUNITY",
-};
+// `~/lib/cli/types` (not `string`) so that adding a token to `ReductionName`
+// / `ObjectiveName` / `WeightingName` without a matching entry here is a `tsc`
+// error, not a silent `undefined` that degrades to a default. Since #975 the
+// traversal FAMILY is the verb itself (bfs / pagerank / community), so the
+// family wire enum is chosen directly in each dispatch case rather than mapped
+// from an axis.
 const REDUCTION_TO_API: Record<ReductionName, ApiReduction> = {
   none: "REDUCTION_UNSPECIFIED",
   mst: "REDUCTION_MINIMUM_SPANNING_TREE",
@@ -300,14 +291,42 @@ export async function dispatch(input: DispatchInput): Promise<unknown> {
         { prefix: command.prefix, limit: command.limit },
         { signal },
       );
-    case "illuminate":
+    case "bfs":
       return illuminate(
         client,
         {
           seed: command.seed,
           step: command.step,
-          k: command.k,
-          family: FAMILY_TO_API[command.algorithm],
+          k: command.fanOut,
+          family: "FAMILY_BFS",
+          reduction: REDUCTION_TO_API[command.reduction],
+          objective: OBJECTIVE_TO_API[command.objective],
+          weighting: WEIGHTING_TO_API[command.weighting],
+          vertexPrefix: command.vertexPrefix,
+        },
+        { signal },
+      );
+    case "pagerank":
+      return illuminate(
+        client,
+        {
+          seed: command.seed,
+          k: command.topN,
+          family: "FAMILY_PERSONALIZED_PAGERANK",
+          weighting: WEIGHTING_TO_API[command.weighting],
+          vertexPrefix: command.vertexPrefix,
+          restartProb: command.restartProb,
+          epsilon: command.epsilon,
+        },
+        { signal },
+      );
+    case "community":
+      return illuminate(
+        client,
+        {
+          seed: command.seed,
+          k: command.maxSize,
+          family: "FAMILY_LOCAL_COMMUNITY",
           reduction: REDUCTION_TO_API[command.reduction],
           objective: OBJECTIVE_TO_API[command.objective],
           weighting: WEIGHTING_TO_API[command.weighting],

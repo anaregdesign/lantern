@@ -12,11 +12,11 @@ test.beforeAll(async () => {
     { key: "cli:alpha", string: "first" },
     { key: "cli:beta", string: "second" },
   ]);
-  // Edge so illuminate / get edge happy-paths in the canvas spec
+  // Edge so bfs / get edge happy-paths in the canvas spec
   // below have something to render.
   await putEdges([{ tail: "cli:alpha", head: "cli:beta", weight: 2 }]);
 
-  // #942 — a barbell so `illuminate <seed> algorithm=community` has a
+  // #942 — a barbell so `community <seed>` has a
   // clean cluster to extract. Two tight triangles (internal weight 5,
   // bidirectional) joined by a single weak bridge (weight 0.1). A
   // LocalCommunity (#845) sweep from a1 cuts the bridge and returns
@@ -120,15 +120,15 @@ test.describe("/cli", () => {
     );
   });
 
-  test("illuminate persists across non-graph commands", async ({ page }) => {
+  test("bfs persists across non-graph commands", async ({ page }) => {
     await page.goto("/cli");
     const input = page.getByTestId("cli-input");
     // Render a graph first.
-    await input.fill("illuminate cli:alpha 2 5");
+    await input.fill("bfs cli:alpha 2 5");
     await input.press("Enter");
     await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
     await expect(page.getByTestId("cli-canvas-panel")).toContainText(
-      "illuminate cli:alpha 2 5",
+      "bfs cli:alpha 2 5",
     );
     // A non-graph command (parser usage hint here) must NOT clear the
     // canvas \u2014 the operator's exploration context survives mistakes.
@@ -139,11 +139,11 @@ test.describe("/cli", () => {
     );
     await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
     await expect(page.getByTestId("cli-canvas-panel")).toContainText(
-      "illuminate cli:alpha 2 5",
+      "bfs cli:alpha 2 5",
     );
   });
 
-  // #942 — `algorithm=community` must reach the LocalCommunity (#845)
+  // #942 — the `community` verb must reach the LocalCommunity (#845)
   // family, not silently fall back to a BFS walk. Regression guard: before
   // the fix, dispatcher.ts's `ALGORITHM_TO_API` lacked a `community` entry
   // (typed `Record<string, …>`, so the miss was invisible) and the wire
@@ -153,16 +153,16 @@ test.describe("/cli", () => {
   // exactly the seed's triangle {a1,a2,a3}. We assert on the rendered canvas
   // membership via the test bridge (present/absent), which the CLI reconcile
   // overwrites per frame (graph-view.ts), so stale nodes cannot leak in.
-  test("illuminate algorithm=community extracts the seed cluster, not a BFS frontier (#942)", async ({
+  test("community extracts the seed cluster, not a BFS frontier (#942)", async ({
     page,
   }) => {
     await page.goto("/cli");
     const input = page.getByTestId("cli-input");
-    await input.fill("illuminate cli:cmty:a1 2 5 algorithm=community");
+    await input.fill("community cli:cmty:a1 5");
     await input.press("Enter");
     await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
     await expect(page.getByTestId("cli-canvas-panel")).toContainText(
-      "illuminate cli:cmty:a1 2 5 algorithm=community",
+      "community cli:cmty:a1 5",
     );
 
     // Wait for the canvas bridge, then the post-commit graphology reconcile
@@ -460,7 +460,7 @@ test.describe("/cli", () => {
   //      (regression guard for #439).
   //   2. Tweaking controls updates the preview deterministically and
   //      the canvas-header hint mirrors the picker (single source of
-  //      truth via `formatIlluminateClick`).
+  //      truth via `formatFamilyClick`).
   //   3. localStorage round-trips axes across a reload so a tuned
   //      exploration session survives a refresh.
   test("default picker state previews the canonical short-form click (#464)", async ({
@@ -476,16 +476,16 @@ test.describe("/cli", () => {
     const picker = page.getByTestId("cli-axis-picker");
     await expect(picker).toBeVisible();
     // Defaults: step=2, k=5, algorithm=bfs, reduction=none, objective=max,
-    // weighting=raw → short form `illuminate <key> 2 5`.
+    // weighting=raw → short form `bfs <key> 2 5`.
     await expect(page.getByTestId("cli-axis-preview")).toHaveText(
-      "illuminate <key> 2 5",
+      "bfs <key> 2 5",
     );
     await expect(page.getByTestId("cli-axis-step")).toHaveValue("2");
     await expect(page.getByTestId("cli-axis-k")).toHaveValue("5");
     await expect(page.getByTestId("cli-axis-weighting")).toBeVisible();
     // Canvas-header hint mirrors the picker.
     await expect(page.getByTestId("cli-click-hint")).toHaveText(
-      "illuminate <key> 2 5",
+      "bfs <key> 2 5",
     );
   });
 
@@ -500,57 +500,56 @@ test.describe("/cli", () => {
     await input.press("Enter");
     await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
     const preview = page.getByTestId("cli-axis-preview");
-    await expect(preview).toHaveText("illuminate <key> 2 5");
+    await expect(preview).toHaveText("bfs <key> 2 5");
 
     // Bump step and k to long-form values.
     const step = page.getByTestId("cli-axis-step");
     await step.fill("3");
-    await expect(preview).toHaveText("illuminate <key> 3 5");
+    await expect(preview).toHaveText("bfs <key> 3 5");
     const k = page.getByTestId("cli-axis-k");
     await k.fill("10");
-    await expect(preview).toHaveText("illuminate <key> 3 10");
+    await expect(preview).toHaveText("bfs <key> 3 10");
 
-    // Pick algorithm=community (the Local Community family) via the Dropdown.
+    // Pick the Local Community family via the algorithm Dropdown. community
+    // takes no step — the single positional after the seed is max_size, so
+    // the preview drops the step and echoes `community <key> <max_size>`.
     await page.getByTestId("cli-axis-algorithm").click();
     await page.getByRole("option", { name: "Local community" }).click();
-    await expect(preview).toHaveText(
-      "illuminate <key> 3 10 algorithm=community",
-    );
+    await expect(preview).toHaveText("community <key> 10");
 
     // Pick reduction=spt via the reduction Dropdown (#961). The reduction
-    // axis is orthogonal to the family and slots in right after algorithm=.
+    // axis is orthogonal to the family and slots in right after the
+    // max_size positional.
     await page.getByTestId("cli-axis-reduction").click();
     await page.getByRole("option", { name: "Shortest-path tree" }).click();
-    await expect(preview).toHaveText(
-      "illuminate <key> 3 10 algorithm=community reduction=spt",
-    );
+    await expect(preview).toHaveText("community <key> 10 reduction=spt");
 
     // Pick objective=min (max is the default, so it would be omitted). For a
     // reduction this steers the tree direction (#961).
     await page.getByTestId("cli-axis-objective").click();
     await page.getByRole("option", { name: /Minimize/ }).click();
     await expect(preview).toHaveText(
-      "illuminate <key> 3 10 algorithm=community reduction=spt objective=min",
+      "community <key> 10 reduction=spt objective=min",
     );
 
     // Pick weighting=bm25 via the Dropdown. Token order must be
-    // algorithm → reduction → objective → weighting.
+    // reduction → objective → weighting.
     await page.getByTestId("cli-axis-weighting").click();
     await page.getByRole("option", { name: "BM25" }).click();
     await expect(preview).toHaveText(
-      "illuminate <key> 3 10 algorithm=community reduction=spt objective=min weighting=bm25",
+      "community <key> 10 reduction=spt objective=min weighting=bm25",
     );
 
     // The header hint tracks the picker.
     await expect(page.getByTestId("cli-click-hint")).toHaveText(
-      "illuminate <key> 3 10 algorithm=community reduction=spt objective=min weighting=bm25",
+      "community <key> 10 reduction=spt objective=min weighting=bm25",
     );
   });
 
   // #801 — Personalized PageRank knobs (restart_prob / epsilon) only
-  // surface when algorithm=ppr is selected, and feed the same single
-  // source of truth (`formatIlluminateClick`) as every other axis.
-  test("ppr knobs appear only for algorithm=ppr and tune the preview (#801)", async ({
+  // surface when the pagerank family is selected, and feed the same single
+  // source of truth (`formatFamilyClick`) as every other axis.
+  test("pagerank knobs appear only for the pagerank family and tune the preview (#801)", async ({
     page,
   }) => {
     await page.goto("/cli");
@@ -561,38 +560,37 @@ test.describe("/cli", () => {
     await input.press("Enter");
     await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
     const preview = page.getByTestId("cli-axis-preview");
-    await expect(preview).toHaveText("illuminate <key> 2 5");
+    await expect(preview).toHaveText("bfs <key> 2 5");
 
-    // The knobs are hidden until ppr is the active algorithm.
+    // The knobs are hidden until the pagerank family is active.
     await expect(page.getByTestId("cli-axis-restart-prob")).toHaveCount(0);
     await expect(page.getByTestId("cli-axis-epsilon")).toHaveCount(0);
     // The reduction axis is shown for the tree-producing families (#961);
     // bfs is the default so it is visible here.
     await expect(page.getByTestId("cli-axis-reduction")).toBeVisible();
 
-    // Select algorithm=ppr — the two knob inputs appear and the preview
-    // gains the algorithm token (knobs default to 0 = server default, so
-    // they are omitted from the click string until set).
+    // Select the pagerank family — the two knob inputs appear. pagerank takes
+    // no step, so the preview drops it and the single positional becomes
+    // top_n; the knobs default to 0 = server default, so they are omitted
+    // from the click string until set.
     await page.getByTestId("cli-axis-algorithm").click();
     await page.getByRole("option", { name: "Personalized PageRank" }).click();
-    await expect(preview).toHaveText("illuminate <key> 2 5 algorithm=ppr");
+    await expect(preview).toHaveText("pagerank <key> 5");
     const restartProb = page.getByTestId("cli-axis-restart-prob");
     const epsilon = page.getByTestId("cli-axis-epsilon");
     await expect(restartProb).toBeVisible();
     await expect(epsilon).toBeVisible();
-    // ppr renders a ranked vertex set, not a tree, so the reduction axis is
-    // hidden while it is active (#961).
+    // pagerank renders a ranked vertex set, not a tree, so the reduction axis
+    // is hidden while it is active (#961).
     await expect(page.getByTestId("cli-axis-reduction")).toHaveCount(0);
 
-    // Tuning a knob appends it after the algorithm token, in fixed order
+    // Tuning a knob appends it after the positional, in fixed order
     // restart_prob → epsilon.
     await restartProb.fill("0.25");
-    await expect(preview).toHaveText(
-      "illuminate <key> 2 5 algorithm=ppr restart_prob=0.25",
-    );
+    await expect(preview).toHaveText("pagerank <key> 5 restart_prob=0.25");
     await epsilon.fill("0.001");
     await expect(preview).toHaveText(
-      "illuminate <key> 2 5 algorithm=ppr restart_prob=0.25 epsilon=0.001",
+      "pagerank <key> 5 restart_prob=0.25 epsilon=0.001",
     );
 
     // Switching back to the default bfs family hides the knobs again and
@@ -603,7 +601,7 @@ test.describe("/cli", () => {
     await expect(page.getByTestId("cli-axis-restart-prob")).toHaveCount(0);
     await expect(page.getByTestId("cli-axis-epsilon")).toHaveCount(0);
     await expect(page.getByTestId("cli-axis-reduction")).toBeVisible();
-    await expect(preview).toHaveText("illuminate <key> 2 5");
+    await expect(preview).toHaveText("bfs <key> 2 5");
   });
 
   // #964 — the α/ε knobs must accept floats typed a keystroke at a time, not
@@ -611,7 +609,7 @@ test.describe("/cli", () => {
   // whose `.value` goes empty for an in-progress "0." / "1e-", and the field
   // was re-derived from the numeric axis (0 → blank), so a human typing "0.15"
   // saw every keystroke erased and could only enter integers.
-  test("ppr knobs accept floats typed character-by-character (#964)", async ({
+  test("pagerank knobs accept floats typed character-by-character (#964)", async ({
     page,
   }) => {
     await page.goto("/cli");
@@ -623,7 +621,7 @@ test.describe("/cli", () => {
 
     await page.getByTestId("cli-axis-algorithm").click();
     await page.getByRole("option", { name: "Personalized PageRank" }).click();
-    await expect(preview).toHaveText("illuminate <key> 2 5 algorithm=ppr");
+    await expect(preview).toHaveText("pagerank <key> 5");
 
     // Type a leading-zero decimal one key at a time: the field must retain each
     // keystroke (no blanking on the intermediate "0" / "0.") and the preview
@@ -632,9 +630,7 @@ test.describe("/cli", () => {
     await restartProb.click();
     await restartProb.pressSequentially("0.15");
     await expect(restartProb).toHaveValue("0.15");
-    await expect(preview).toHaveText(
-      "illuminate <key> 2 5 algorithm=ppr restart_prob=0.15",
-    );
+    await expect(preview).toHaveText("pagerank <key> 5 restart_prob=0.15");
 
     // Scientific notation must survive too — a `type="number"` field reports an
     // empty value for the intermediate "1e" / "1e-". The raw text is echoed
@@ -644,7 +640,7 @@ test.describe("/cli", () => {
     await epsilon.pressSequentially("1e-4");
     await expect(epsilon).toHaveValue("1e-4");
     await expect(preview).toHaveText(
-      "illuminate <key> 2 5 algorithm=ppr restart_prob=0.15 epsilon=0.0001",
+      "pagerank <key> 5 restart_prob=0.15 epsilon=0.0001",
     );
   });
 
@@ -660,7 +656,7 @@ test.describe("/cli", () => {
     await page.getByTestId("cli-axis-reduction").click();
     await page.getByRole("option", { name: "Spanning tree" }).click();
     await expect(page.getByTestId("cli-axis-preview")).toHaveText(
-      "illuminate <key> 4 12 reduction=mst",
+      "bfs <key> 4 12 reduction=mst",
     );
     // Reload — picker should hydrate from localStorage on mount. Re-run
     // a graph command so the canvas panel (and picker) mount again.
@@ -671,7 +667,7 @@ test.describe("/cli", () => {
     await expect(page.getByTestId("cli-axis-step")).toHaveValue("4");
     await expect(page.getByTestId("cli-axis-k")).toHaveValue("12");
     await expect(page.getByTestId("cli-axis-preview")).toHaveText(
-      "illuminate <key> 4 12 reduction=mst",
+      "bfs <key> 4 12 reduction=mst",
     );
   });
 
@@ -684,16 +680,16 @@ test.describe("/cli", () => {
   test("Tab completion keeps focus in the prompt (#519)", async ({ page }) => {
     await page.goto("/cli");
     const input = page.getByTestId("cli-input");
-    // Single-candidate completion: `illumi` → `illuminate `.
+    // Single-candidate completion: `commu` → `community `.
     await input.click();
-    await input.fill("illumi");
+    await input.fill("commu");
     await input.press("Tab");
-    await expect(input).toHaveValue("illuminate ");
+    await expect(input).toHaveValue("community ");
     await expect(input).toBeFocused();
     // Caret sits at the end of the completed token, ready for the key.
     expect(
       await input.evaluate((el: HTMLInputElement) => el.selectionStart),
-    ).toBe("illuminate ".length);
+    ).toBe("community ".length);
 
     // Ambiguous completion keeps focus while surfacing the hint row.
     await input.fill("get ");
@@ -752,11 +748,11 @@ test.describe("/cli", () => {
     // keeps its content out of the DOM while closed).
     await expect(page.getByTestId("cli-command-reference")).toHaveCount(0);
     await toggle.click();
-    // It opens with the grouped reference, including the illuminate verb
+    // It opens with the grouped reference, including the bfs verb
     // and at least one runnable example row.
     const drawer = page.getByTestId("cli-command-reference");
     await expect(drawer).toBeVisible();
-    await expect(drawer).toContainText("illuminate");
+    await expect(drawer).toContainText("bfs");
     await expect(drawer).toContainText("add decaying-edge");
     await expect(page.getByTestId("cli-command-row").first()).toBeVisible();
     // The dismiss button closes it again.
@@ -779,7 +775,7 @@ test.describe("/cli", () => {
     const script = [
       "get vertex cli:alpha",
       "get vertex cli:beta",
-      "illuminate cli:alpha 2 5",
+      "bfs cli:alpha 2 5",
     ].join("\n");
     // Dispatch a paste event carrying the script as text/plain. `bubbles`
     // lets it reach React's root-level paste listener; the DataTransfer is
@@ -802,10 +798,10 @@ test.describe("/cli", () => {
     await expect(ok.nth(0)).toContainText("first");
     await expect(ok.nth(1)).toContainText("get vertex cli:beta");
     await expect(ok.nth(1)).toContainText("second");
-    await expect(ok.nth(2)).toContainText("illuminate cli:alpha 2 5");
+    await expect(ok.nth(2)).toContainText("bfs cli:alpha 2 5");
     // The canvas reflects the last graph-carrying command in the script.
     await expect(page.getByTestId("cli-canvas-panel")).toContainText(
-      "illuminate cli:alpha 2 5",
+      "bfs cli:alpha 2 5",
     );
     // The paste never leaked into the editable prompt (preventDefault held).
     await expect(input).toHaveValue("");

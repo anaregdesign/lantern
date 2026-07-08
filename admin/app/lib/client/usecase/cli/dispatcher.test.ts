@@ -654,19 +654,18 @@ describe("dispatch keys (#674)", () => {
   });
 });
 
-describe("dispatch illuminate maps the axes to the family + reduction oneofs", () => {
-  // #942: `algorithm=community` parsed fine but the old `ALGORITHM_TO_API`
-  // had no `community` entry, so the request silently fell back to a BFS
-  // walk. #961 then split the flat algorithm axis into orthogonal
-  // family (algorithm=) + reduction (reduction=) axes. These tests drive the
-  // full parser → dispatcher → adapter seam and assert the community oneof
-  // reaches the SDK — and that the reduction/objective knobs ride along.
+describe("dispatch family verbs map to the per-family oneofs (#975)", () => {
+  // Since #975 the traversal family is the verb itself (bfs / pagerank /
+  // community). These tests drive the full parser → dispatcher → adapter
+  // seam and assert the right oneof reaches the SDK — and that the
+  // reduction / objective / α / ε knobs ride along on the family that owns
+  // them.
   const emptyGraph = () => ({ vertices: new Map(), edges: new Map() });
 
-  test("algorithm=community builds the community oneof, not bfs/ppr", async () => {
+  test("community builds the community oneof, not bfs/ppr", async () => {
     const fake = new FakeLanternClient();
     fake.stub("illuminate", emptyGraph);
-    const parsed = parse("illuminate a1 2 5 algorithm=community");
+    const parsed = parse("community a1 5");
     if (!parsed.ok) {
       throw new Error(`fixture did not parse: ${parsed.usage}`);
     }
@@ -678,11 +677,10 @@ describe("dispatch illuminate maps the axes to the family + reduction oneofs", (
       { community?: unknown; bfs?: unknown; ppr?: unknown },
     ];
     expect(seed).toBe("a1");
-    // k (5) becomes the max_size UPPER BOUND; step (2) has no meaning here
-    // and is dropped; the α/ε knobs default to 0 = "server default". Mirrors
-    // the Go CLI `IlluminateFamilyOption` `case "community"`. The reduction
-    // defaults to UNSPECIFIED (no tree) and objective to the axis default
-    // (max) — harmless without a reduction (#961).
+    // The positional (5) becomes the max_size UPPER BOUND; the α/ε knobs
+    // default to 0 = "server default". Mirrors the Go CLI `case "community"`.
+    // reduction defaults to UNSPECIFIED (no tree) and objective to the axis
+    // default (max) — harmless without a reduction (#961).
     expect(opts.community).toEqual({
       maxSize: 5,
       restartProb: 0,
@@ -698,9 +696,7 @@ describe("dispatch illuminate maps the axes to the family + reduction oneofs", (
   test("community passes restart_prob / epsilon through unchanged", async () => {
     const fake = new FakeLanternClient();
     fake.stub("illuminate", emptyGraph);
-    const parsed = parse(
-      "illuminate a1 2 5 algorithm=community restart_prob=0.25 epsilon=0.001",
-    );
+    const parsed = parse("community a1 5 restart_prob=0.25 epsilon=0.001");
     if (!parsed.ok) {
       throw new Error(`fixture did not parse: ${parsed.usage}`);
     }
@@ -726,9 +722,7 @@ describe("dispatch illuminate maps the axes to the family + reduction oneofs", (
   test("community + reduction=mst objective=min carries the tree knobs", async () => {
     const fake = new FakeLanternClient();
     fake.stub("illuminate", emptyGraph);
-    const parsed = parse(
-      "illuminate a1 2 5 algorithm=community reduction=mst objective=min",
-    );
+    const parsed = parse("community a1 5 reduction=mst objective=min");
     if (!parsed.ok) {
       throw new Error(`fixture did not parse: ${parsed.usage}`);
     }
@@ -747,11 +741,36 @@ describe("dispatch illuminate maps the axes to the family + reduction oneofs", (
     });
   });
 
-  // #961: the same reduction axis also feeds the default bfs family.
-  test("bfs (default family) + reduction=spt carries the tree knob", async () => {
+  test("pagerank builds the ppr oneof with top_n + α/ε", async () => {
     const fake = new FakeLanternClient();
     fake.stub("illuminate", emptyGraph);
-    const parsed = parse("illuminate a1 2 5 reduction=spt objective=min");
+    const parsed = parse("pagerank a1 15 restart_prob=0.25 epsilon=0.001");
+    if (!parsed.ok) {
+      throw new Error(`fixture did not parse: ${parsed.usage}`);
+    }
+    await dispatch({ client: asClient(fake), command: parsed.command });
+
+    const [seed, opts] = fake.calls[0].args as [
+      string,
+      { community?: unknown; bfs?: unknown; ppr?: unknown },
+    ];
+    expect(seed).toBe("a1");
+    // The positional (15) becomes top_n; pagerank carries no reduction /
+    // objective (its relevance star is already a tree).
+    expect(opts.ppr).toEqual({
+      topN: 15,
+      restartProb: 0.25,
+      epsilon: 0.001,
+    });
+    expect(opts.bfs).toBeUndefined();
+    expect(opts.community).toBeUndefined();
+  });
+
+  // #961: the reduction axis also feeds the bfs family.
+  test("bfs + reduction=spt carries the tree knob", async () => {
+    const fake = new FakeLanternClient();
+    fake.stub("illuminate", emptyGraph);
+    const parsed = parse("bfs a1 2 5 reduction=spt objective=min");
     if (!parsed.ok) {
       throw new Error(`fixture did not parse: ${parsed.usage}`);
     }
