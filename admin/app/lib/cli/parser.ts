@@ -16,19 +16,21 @@ import type { ParseResult } from "./types";
 import { tokenise } from "./tokenise";
 import {
   parseAdd,
+  parseBfs,
+  parseCommunity,
   parseCount,
   parseDelete,
   parseDeletePrefix,
   parseGet,
   parseHelp,
-  parseIlluminate,
   parseKeys,
+  parsePagerank,
   parsePut,
   parseScan,
 } from "./verbs";
 
 const VERB_LIST_USAGE =
-  "usage: { get | put | delete | delete-prefix | add | scan | count | keys | illuminate | help | exit } ...";
+  "usage: { get | put | delete | delete-prefix | add | scan | count | keys | bfs | pagerank | community | help | exit } ...";
 
 const VERBS = new Set([
   "exit",
@@ -41,7 +43,9 @@ const VERBS = new Set([
   "scan",
   "count",
   "keys",
-  "illuminate",
+  "bfs",
+  "pagerank",
+  "community",
 ]);
 
 export function parse(input: string): ParseResult {
@@ -82,8 +86,12 @@ export function parse(input: string): ParseResult {
       return parseDeletePrefix(rest);
     case "keys":
       return parseKeys(rest);
-    case "illuminate":
-      return parseIlluminate(rest);
+    case "bfs":
+      return parseBfs(rest);
+    case "pagerank":
+      return parsePagerank(rest);
+    case "community":
+      return parseCommunity(rest);
   }
   return { ok: false, usage: VERB_LIST_USAGE };
 }

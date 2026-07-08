@@ -19,7 +19,9 @@ var (
 		"count",
 		"delete-prefix",
 		"keys",
-		"illuminate",
+		"bfs",
+		"pagerank",
+		"community",
 		"help",
 		"exit",
 	}
@@ -48,18 +50,15 @@ var (
 		"decaying-edge",
 	}
 
-	// IlluminateAlgorithms / IlluminateReductions / IlluminateObjectives /
-	// IlluminateWeightings are the canonical sets the REPL accepts for the
-	// keyword arguments of the illuminate verb. Since #961 the traversal
-	// FAMILY (algorithm=) and the post-traversal tree REDUCTION (reduction=)
-	// are orthogonal axes — mirroring the wire oneof (#846) where a
-	// Reduction is a per-family knob on bfs/community, not a sibling
-	// traversal. The keyword form replaced the legacy positional grammar
-	// (neighbor / spt_* / mst_*) entirely (#410).
-	IlluminateAlgorithms = []string{"bfs", "ppr", "community"}
-	IlluminateReductions = []string{"none", "mst", "spt"}
-	IlluminateObjectives = []string{"min", "max"}
-	IlluminateWeightings = []string{"raw", "tfidf", "bm25"}
+	// TraversalReductions / TraversalObjectives / TraversalWeightings are the
+	// canonical closed sets the family verbs (bfs / pagerank / community) accept
+	// for their keyword arguments (#975). The traversal FAMILY is now the verb
+	// itself, not an algorithm= kwarg; the reduction is a per-family knob on
+	// bfs/community (never pagerank, whose relevance star is already a tree),
+	// mirroring the wire oneof (#846).
+	TraversalReductions = []string{"none", "mst", "spt"}
+	TraversalObjectives = []string{"min", "max"}
+	TraversalWeightings = []string{"raw", "tfidf", "bm25"}
 
 	ErrNotFound = errors.New("not found")
 	ErrNotEOF   = errors.New("not EOF")
@@ -490,92 +489,249 @@ func DeleteEdgeParam(s *Source) (*DeleteEdge, error) {
 	return m, nil
 }
 
-// IlluminateParam parses the modernised illuminate grammar (#410, #604, #801, #961):
+// BfsParam parses the bfs family verb (#975):
 //
-//	illuminate <seed> <step> <k> [algorithm=bfs|ppr|community] [reduction=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>] [restart_prob=<float>] [epsilon=<float>]
+//	bfs <seed> [step] [fan_out] [reduction=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>]
 //
-// The keyword arguments may appear in any order and any subset. The closed-set
-// axes default to the strongest-edge behaviour (algorithm=bfs, reduction=none,
-// objective=max, weighting=raw); objective defaults to max so a bare illuminate
-// keeps the top-k strongest neighbours and the per-hop pruning matches the
-// reduction direction (#560). Since #961 the traversal FAMILY (algorithm) and
-// the post-traversal tree REDUCTION are orthogonal axes: reduction=mst|spt
-// applies to the bfs and community families and is ignored for ppr. prefix is
-// free-text and defaults to empty (no frontier filter; #604). restart_prob and
-// epsilon tune the push-based families (ppr #801, community #845) and default
-// to 0, which the server resolves to α=0.15 / ε=1e-4; they are ignored for bfs.
-// Unknown keyword names, malformed `key=value` tokens, closed-set values
-// outside the canonical set above, an empty prefix= value, or a non-float
-// restart_prob=/epsilon= value are rejected with a descriptive error so the
-// REPL can surface a usage hint.
-func IlluminateParam(s *Source) (*Illuminate, error) {
+// Only <seed> is required. step and fan_out are optional positional integers
+// (defaults 5 and 3) that may also be supplied as step=/fan_out= kwargs; a bare
+// integer fills the next positional slot (step then fan_out). The closed-set
+// kwargs default to reduction=none, objective=max, weighting=raw, and prefix is
+// free-text (empty = no frontier filter, #604). objective steers both the
+// per-hop top-k pruning and the reduction direction (#560). Unknown keywords, a
+// non-integer step/fan_out, out-of-set closed values, an empty prefix=, or a
+// third bare positional are rejected with a descriptive usage hint.
+func BfsParam(s *Source) (*Bfs, error) {
 	var err error
-	m := &Illuminate{Algorithm: "bfs", Reduction: "none", Objective: "max", Weighting: "raw"}
+	m := &Bfs{Step: 5, FanOut: 3, Reduction: "none", Objective: "max", Weighting: "raw"}
 	if m.Seed, err = String(s); err != nil {
 		return nil, err
 	}
-	if m.Step, err = Integer(s); err != nil {
-		return nil, err
-	}
-	if m.K, err = Integer(s); err != nil {
-		return nil, err
-	}
+	pos := 0
 	for s.HasNext() {
 		tok, err := String(s)
 		if err != nil {
 			return nil, err
 		}
-		key, value, ok := splitKeyValue(tok)
-		if !ok {
-			return nil, errors.New("illuminate: expected key=value token, got " + tok)
+		if key, value, ok := splitKeyValue(tok); ok {
+			// The keyword KEY is always case-insensitive; the closed-set axes
+			// fold their VALUE too (#437), while the free-text prefix VALUE is
+			// matched against vertex keys verbatim (case-SENSITIVE, #604).
+			key = strings.ToLower(key)
+			lvalue := strings.ToLower(value)
+			switch key {
+			case "step":
+				n, perr := strconv.Atoi(value)
+				if perr != nil {
+					return nil, errors.New("bfs: step=" + value + " (want an integer)")
+				}
+				m.Step = n
+			case "fan_out":
+				n, perr := strconv.Atoi(value)
+				if perr != nil {
+					return nil, errors.New("bfs: fan_out=" + value + " (want an integer)")
+				}
+				m.FanOut = n
+			case "reduction":
+				if !contains(TraversalReductions, lvalue) {
+					return nil, errors.New("bfs: reduction=" + value + " (want none|mst|spt)")
+				}
+				m.Reduction = lvalue
+			case "objective":
+				if !contains(TraversalObjectives, lvalue) {
+					return nil, errors.New("bfs: objective=" + value + " (want min|max)")
+				}
+				m.Objective = lvalue
+			case "weighting":
+				if !contains(TraversalWeightings, lvalue) {
+					return nil, errors.New("bfs: weighting=" + value + " (want raw|tfidf|bm25)")
+				}
+				m.Weighting = lvalue
+			case "prefix":
+				if value == "" {
+					return nil, errors.New("bfs: prefix= requires a non-empty value")
+				}
+				m.Prefix = value
+			default:
+				return nil, errors.New("bfs: unknown key " + key + " (want step|fan_out|reduction|objective|weighting|prefix)")
+			}
+			continue
 		}
-		// The keyword KEY is always case-insensitive. The three closed-set
-		// axes also fold their VALUE because they only ever take a small
-		// fixed enum (#437); the free-text prefix VALUE is matched against
-		// vertex keys verbatim, so it stays case-SENSITIVE (#604).
-		key = strings.ToLower(key)
-		lvalue := strings.ToLower(value)
-		switch key {
-		case "algorithm":
-			if !contains(IlluminateAlgorithms, lvalue) {
-				return nil, errors.New("illuminate: algorithm=" + value + " (want bfs|ppr|community)")
-			}
-			m.Algorithm = lvalue
-		case "reduction":
-			if !contains(IlluminateReductions, lvalue) {
-				return nil, errors.New("illuminate: reduction=" + value + " (want none|mst|spt)")
-			}
-			m.Reduction = lvalue
-		case "objective":
-			if !contains(IlluminateObjectives, lvalue) {
-				return nil, errors.New("illuminate: objective=" + value + " (want min|max)")
-			}
-			m.Objective = lvalue
-		case "weighting":
-			if !contains(IlluminateWeightings, lvalue) {
-				return nil, errors.New("illuminate: weighting=" + value + " (want raw|tfidf|bm25)")
-			}
-			m.Weighting = lvalue
-		case "prefix":
-			if value == "" {
-				return nil, errors.New("illuminate: prefix= requires a non-empty value")
-			}
-			m.Prefix = value
-		case "restart_prob":
-			rp, perr := strconv.ParseFloat(value, 32)
+		switch pos {
+		case 0:
+			n, perr := strconv.Atoi(tok)
 			if perr != nil {
-				return nil, errors.New("illuminate: restart_prob=" + value + " (want a float in (0,1))")
+				return nil, errors.New("bfs: step " + tok + " (want an integer)")
 			}
-			m.RestartProb = float32(rp)
-		case "epsilon":
-			eps, perr := strconv.ParseFloat(value, 32)
+			m.Step = n
+		case 1:
+			n, perr := strconv.Atoi(tok)
 			if perr != nil {
-				return nil, errors.New("illuminate: epsilon=" + value + " (want a positive float)")
+				return nil, errors.New("bfs: fan_out " + tok + " (want an integer)")
 			}
-			m.Epsilon = float32(eps)
+			m.FanOut = n
 		default:
-			return nil, errors.New("illuminate: unknown key " + key + " (want algorithm|reduction|objective|weighting|prefix|restart_prob|epsilon)")
+			return nil, errors.New("bfs: unexpected token " + tok)
 		}
+		pos++
+	}
+	return m, nil
+}
+
+// PagerankParam parses the pagerank family verb (#975):
+//
+//	pagerank <seed> [top_n] [restart_prob=<float>] [epsilon=<float>] [weighting=raw|tfidf|bm25] [prefix=<string>]
+//
+// Only <seed> is required. top_n is an optional positional integer (default 10;
+// 0 = every positive-mass vertex) that may also be supplied as top_n=. The
+// locality knobs restart_prob (α) and epsilon (ε) default to 0, which the server
+// resolves to α=0.15 / ε=1e-4. Personalized PageRank returns a relevance star,
+// so it has NO reduction or objective knob — passing either is an unknown-key
+// error. weighting defaults to raw; prefix is free-text (empty = no filter).
+func PagerankParam(s *Source) (*Pagerank, error) {
+	var err error
+	m := &Pagerank{TopN: 10, Weighting: "raw"}
+	if m.Seed, err = String(s); err != nil {
+		return nil, err
+	}
+	pos := 0
+	for s.HasNext() {
+		tok, err := String(s)
+		if err != nil {
+			return nil, err
+		}
+		if key, value, ok := splitKeyValue(tok); ok {
+			key = strings.ToLower(key)
+			lvalue := strings.ToLower(value)
+			switch key {
+			case "top_n":
+				n, perr := strconv.Atoi(value)
+				if perr != nil {
+					return nil, errors.New("pagerank: top_n=" + value + " (want an integer)")
+				}
+				m.TopN = n
+			case "restart_prob":
+				rp, perr := strconv.ParseFloat(value, 32)
+				if perr != nil {
+					return nil, errors.New("pagerank: restart_prob=" + value + " (want a float in (0,1))")
+				}
+				m.RestartProb = float32(rp)
+			case "epsilon":
+				eps, perr := strconv.ParseFloat(value, 32)
+				if perr != nil {
+					return nil, errors.New("pagerank: epsilon=" + value + " (want a positive float)")
+				}
+				m.Epsilon = float32(eps)
+			case "weighting":
+				if !contains(TraversalWeightings, lvalue) {
+					return nil, errors.New("pagerank: weighting=" + value + " (want raw|tfidf|bm25)")
+				}
+				m.Weighting = lvalue
+			case "prefix":
+				if value == "" {
+					return nil, errors.New("pagerank: prefix= requires a non-empty value")
+				}
+				m.Prefix = value
+			default:
+				return nil, errors.New("pagerank: unknown key " + key + " (want top_n|restart_prob|epsilon|weighting|prefix)")
+			}
+			continue
+		}
+		switch pos {
+		case 0:
+			n, perr := strconv.Atoi(tok)
+			if perr != nil {
+				return nil, errors.New("pagerank: top_n " + tok + " (want an integer)")
+			}
+			m.TopN = n
+		default:
+			return nil, errors.New("pagerank: unexpected token " + tok)
+		}
+		pos++
+	}
+	return m, nil
+}
+
+// CommunityParam parses the community family verb (#975):
+//
+//	community <seed> [max_size] [restart_prob=<float>] [epsilon=<float>] [reduction=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>]
+//
+// Only <seed> is required. max_size is an optional positional integer (default
+// 0 = the conductance sweep alone decides the size) that may also be supplied as
+// max_size=. restart_prob (α) and epsilon (ε) share PPR's semantics and defaults
+// (0 → server α=0.15 / ε=1e-4). reduction/objective render an optional tree view
+// of the community (default reduction=none, objective=max). weighting defaults
+// to raw; prefix is free-text (empty = no filter).
+func CommunityParam(s *Source) (*Community, error) {
+	var err error
+	m := &Community{Reduction: "none", Objective: "max", Weighting: "raw"}
+	if m.Seed, err = String(s); err != nil {
+		return nil, err
+	}
+	pos := 0
+	for s.HasNext() {
+		tok, err := String(s)
+		if err != nil {
+			return nil, err
+		}
+		if key, value, ok := splitKeyValue(tok); ok {
+			key = strings.ToLower(key)
+			lvalue := strings.ToLower(value)
+			switch key {
+			case "max_size":
+				n, perr := strconv.Atoi(value)
+				if perr != nil {
+					return nil, errors.New("community: max_size=" + value + " (want an integer)")
+				}
+				m.MaxSize = n
+			case "restart_prob":
+				rp, perr := strconv.ParseFloat(value, 32)
+				if perr != nil {
+					return nil, errors.New("community: restart_prob=" + value + " (want a float in (0,1))")
+				}
+				m.RestartProb = float32(rp)
+			case "epsilon":
+				eps, perr := strconv.ParseFloat(value, 32)
+				if perr != nil {
+					return nil, errors.New("community: epsilon=" + value + " (want a positive float)")
+				}
+				m.Epsilon = float32(eps)
+			case "reduction":
+				if !contains(TraversalReductions, lvalue) {
+					return nil, errors.New("community: reduction=" + value + " (want none|mst|spt)")
+				}
+				m.Reduction = lvalue
+			case "objective":
+				if !contains(TraversalObjectives, lvalue) {
+					return nil, errors.New("community: objective=" + value + " (want min|max)")
+				}
+				m.Objective = lvalue
+			case "weighting":
+				if !contains(TraversalWeightings, lvalue) {
+					return nil, errors.New("community: weighting=" + value + " (want raw|tfidf|bm25)")
+				}
+				m.Weighting = lvalue
+			case "prefix":
+				if value == "" {
+					return nil, errors.New("community: prefix= requires a non-empty value")
+				}
+				m.Prefix = value
+			default:
+				return nil, errors.New("community: unknown key " + key + " (want max_size|restart_prob|epsilon|reduction|objective|weighting|prefix)")
+			}
+			continue
+		}
+		switch pos {
+		case 0:
+			n, perr := strconv.Atoi(tok)
+			if perr != nil {
+				return nil, errors.New("community: max_size " + tok + " (want an integer)")
+			}
+			m.MaxSize = n
+		default:
+			return nil, errors.New("community: unexpected token " + tok)
+		}
+		pos++
 	}
 	return m, nil
 }
@@ -808,14 +964,26 @@ const HelpText = `Lantern CLI grammar:
   count  vertices <prefix: string>
   delete-prefix vertices <prefix: string> [limit=<int>] [confirm=yes|dry_run=true]
   keys   <prefix: string> [<limit: int>]
-  illuminate <seed: string> <step: int> <k: int>
-             [algorithm={bfs|ppr|community}] default=bfs
-             [reduction={none|mst|spt}]  default=none (bfs/community only)
+  bfs        <seed: string> [step: int] [fan_out: int]
+             [reduction={none|mst|spt}]  default=none
              [objective={min|max}]       default=max
              [weighting={raw|tfidf|bm25}] default=raw
              [prefix=<string>]           default=all keys
-             [restart_prob=<float>]      default=0 (ppr/community; server α=0.15)
-             [epsilon=<float>]           default=0 (ppr/community; server ε=1e-4)
+             defaults: step=5 fan_out=3
+  pagerank   <seed: string> [top_n: int]
+             [restart_prob=<float>]      default=0 (server α=0.15)
+             [epsilon=<float>]           default=0 (server ε=1e-4)
+             [weighting={raw|tfidf|bm25}] default=raw
+             [prefix=<string>]           default=all keys
+             defaults: top_n=10
+  community  <seed: string> [max_size: int]
+             [restart_prob=<float>]      default=0 (server α=0.15)
+             [epsilon=<float>]           default=0 (server ε=1e-4)
+             [reduction={none|mst|spt}]  default=none
+             [objective={min|max}]       default=max
+             [weighting={raw|tfidf|bm25}] default=raw
+             [prefix=<string>]           default=all keys
+             defaults: max_size=0 (sweep decides)
   help
   exit
 

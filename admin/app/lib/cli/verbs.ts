@@ -5,14 +5,12 @@
  */
 
 import type {
-  AlgorithmName,
   ObjectiveName,
   ParseResult,
   ReductionName,
   WeightingName,
 } from "./types";
 
-const ILL_ALGORITHMS = new Set<AlgorithmName>(["bfs", "ppr", "community"]);
 const ILL_REDUCTIONS = new Set<ReductionName>(["none", "mst", "spt"]);
 const ILL_OBJECTIVES = new Set<ObjectiveName>(["min", "max"]);
 const ILL_WEIGHTINGS = new Set<WeightingName>(["raw", "tfidf", "bm25"]);
@@ -450,114 +448,238 @@ export function parseDeletePrefix(rest: string[]): ParseResult {
   };
 }
 
-export function parseIlluminate(rest: string[]): ParseResult {
+export function parseBfs(rest: string[]): ParseResult {
   const usage =
-    "usage: illuminate <key: string> <step: int> <k: int> [algorithm=bfs|ppr|community] [reduction=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>] [restart_prob=<float>] [epsilon=<float>]";
-  if (rest.length < 3) {
+    "usage: bfs <seed: string> [step: int] [fan_out: int] [reduction=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>]";
+  if (rest.length < 1 || rest[0] === "") {
     return { ok: false, usage };
   }
   const seed = rest[0];
-  if (seed === "") {
-    return { ok: false, usage };
-  }
-  const step = parseInt10(rest[1]);
-  if (step === null) {
-    return { ok: false, usage };
-  }
-  const k = parseInt10(rest[2]);
-  if (k === null) {
-    return { ok: false, usage };
-  }
-  // #961: the traversal FAMILY (algorithm) and the post-traversal tree
-  // REDUCTION are orthogonal axes. Family defaults to `bfs`, reduction to
-  // `none` — a bare illuminate is the greedy per-hop top-k walk.
-  let algorithm: AlgorithmName = "bfs";
+  // Only <seed> is required (#975); step/fan_out are optional positional ints
+  // (defaults 5/3) or step=/fan_out= kwargs. A bare integer fills the next
+  // positional slot (step then fan_out). objective steers BOTH the per-hop
+  // top-k pruning and the reduction direction (#560).
+  let step = 5;
+  let fanOut = 3;
   let reduction: ReductionName = "none";
-  // #560: defaults to `max` so a long-form command that omits the objective
-  // kwarg matches the server's MAXIMIZE default and the click picker's
-  // default — keeping the strongest-neighbour behaviour byte-for-byte.
   let objective: ObjectiveName = "max";
   let weighting: WeightingName = "raw";
-  // #606: prefix is a FREE-TEXT kwarg (not a closed-set axis). Empty means
-  // "no filter"; an explicit empty `prefix=` is rejected, mirroring the Go
-  // REPL. The value is matched against vertex keys verbatim (case-SENSITIVE).
   let vertexPrefix = "";
-  // #801: Personalized PageRank knobs. Free-text floats parsed leniently
-  // (1e-3 / .25 / 0 accepted; NaN/inf/garbage rejected). Both default to 0,
-  // which the server resolves to its own α=0.15 / ε=1e-4; ignored unless
-  // algorithm=ppr|community. A malformed value is a hard parse error, mirroring
-  // the Go REPL's strconv.ParseFloat rejection rather than silently dropping to 0.
-  let restartProb = 0;
-  let epsilon = 0;
-  for (let i = 3; i < rest.length; i++) {
+  let pos = 0;
+  for (let i = 1; i < rest.length; i++) {
     const tok = rest[i];
     const eq = tok.indexOf("=");
-    if (eq < 0) {
-      return { ok: false, usage };
+    if (eq >= 0) {
+      const key = tok.slice(0, eq).toLowerCase();
+      const value = tok.slice(eq + 1);
+      const lvalue = value.toLowerCase();
+      if (key === "step") {
+        const n = parseInt10(value);
+        if (n === null) return { ok: false, usage };
+        step = n;
+      } else if (key === "fan_out") {
+        const n = parseInt10(value);
+        if (n === null) return { ok: false, usage };
+        fanOut = n;
+      } else if (key === "reduction") {
+        if (!ILL_REDUCTIONS.has(lvalue as ReductionName))
+          return { ok: false, usage };
+        reduction = lvalue as ReductionName;
+      } else if (key === "objective") {
+        if (!ILL_OBJECTIVES.has(lvalue as ObjectiveName))
+          return { ok: false, usage };
+        objective = lvalue as ObjectiveName;
+      } else if (key === "weighting") {
+        if (!ILL_WEIGHTINGS.has(lvalue as WeightingName))
+          return { ok: false, usage };
+        weighting = lvalue as WeightingName;
+      } else if (key === "prefix") {
+        if (value === "") return { ok: false, usage };
+        vertexPrefix = value;
+      } else {
+        return { ok: false, usage };
+      }
+      continue;
     }
-    // The keyword KEY is always case-insensitive. The closed-set axes
-    // (algorithm / reduction / objective / weighting) also fold their VALUE
-    // because they only ever take a small fixed enum the Go REPL matches
-    // case-insensitively (#437). The free-text `prefix` VALUE is matched
-    // against vertex keys verbatim, so it stays case-SENSITIVE (#604).
-    const key = tok.slice(0, eq).toLowerCase();
-    const value = tok.slice(eq + 1);
-    const lvalue = value.toLowerCase();
-    if (key === "algorithm") {
-      if (!ILL_ALGORITHMS.has(lvalue as AlgorithmName)) {
-        return { ok: false, usage };
-      }
-      algorithm = lvalue as AlgorithmName;
-    } else if (key === "reduction") {
-      if (!ILL_REDUCTIONS.has(lvalue as ReductionName)) {
-        return { ok: false, usage };
-      }
-      reduction = lvalue as ReductionName;
-    } else if (key === "objective") {
-      if (!ILL_OBJECTIVES.has(lvalue as ObjectiveName)) {
-        return { ok: false, usage };
-      }
-      objective = lvalue as ObjectiveName;
-    } else if (key === "weighting") {
-      if (!ILL_WEIGHTINGS.has(lvalue as WeightingName)) {
-        return { ok: false, usage };
-      }
-      weighting = lvalue as WeightingName;
-    } else if (key === "prefix") {
-      if (value === "") {
-        return { ok: false, usage };
-      }
-      vertexPrefix = value;
-    } else if (key === "restart_prob") {
-      const f = parseFloatStrict(value);
-      if (f === null) {
-        return { ok: false, usage };
-      }
-      restartProb = f;
-    } else if (key === "epsilon") {
-      const f = parseFloatStrict(value);
-      if (f === null) {
-        return { ok: false, usage };
-      }
-      epsilon = f;
+    if (pos === 0) {
+      const n = parseInt10(tok);
+      if (n === null) return { ok: false, usage };
+      step = n;
+    } else if (pos === 1) {
+      const n = parseInt10(tok);
+      if (n === null) return { ok: false, usage };
+      fanOut = n;
     } else {
       return { ok: false, usage };
     }
+    pos++;
   }
   return {
     ok: true,
     command: {
-      verb: "illuminate",
+      verb: "bfs",
       seed,
       step,
-      k,
-      algorithm,
+      fanOut,
       reduction,
       objective,
       weighting,
       vertexPrefix,
+    },
+  };
+}
+
+export function parsePagerank(rest: string[]): ParseResult {
+  const usage =
+    "usage: pagerank <seed: string> [top_n: int] [restart_prob=<float>] [epsilon=<float>] [weighting=raw|tfidf|bm25] [prefix=<string>]";
+  if (rest.length < 1 || rest[0] === "") {
+    return { ok: false, usage };
+  }
+  const seed = rest[0];
+  // Only <seed> is required (#975); top_n is an optional positional int
+  // (default 10; 0 = every positive-mass vertex) or top_n= kwarg. Personalized
+  // PageRank returns a relevance star (already a tree), so there is no
+  // reduction/objective knob. restart_prob (α) / epsilon (ε) default to 0,
+  // which the server resolves to α=0.15 / ε=1e-4.
+  let topN = 10;
+  let restartProb = 0;
+  let epsilon = 0;
+  let weighting: WeightingName = "raw";
+  let vertexPrefix = "";
+  let pos = 0;
+  for (let i = 1; i < rest.length; i++) {
+    const tok = rest[i];
+    const eq = tok.indexOf("=");
+    if (eq >= 0) {
+      const key = tok.slice(0, eq).toLowerCase();
+      const value = tok.slice(eq + 1);
+      const lvalue = value.toLowerCase();
+      if (key === "top_n") {
+        const n = parseInt10(value);
+        if (n === null) return { ok: false, usage };
+        topN = n;
+      } else if (key === "restart_prob") {
+        const f = parseFloatStrict(value);
+        if (f === null) return { ok: false, usage };
+        restartProb = f;
+      } else if (key === "epsilon") {
+        const f = parseFloatStrict(value);
+        if (f === null) return { ok: false, usage };
+        epsilon = f;
+      } else if (key === "weighting") {
+        if (!ILL_WEIGHTINGS.has(lvalue as WeightingName))
+          return { ok: false, usage };
+        weighting = lvalue as WeightingName;
+      } else if (key === "prefix") {
+        if (value === "") return { ok: false, usage };
+        vertexPrefix = value;
+      } else {
+        return { ok: false, usage };
+      }
+      continue;
+    }
+    if (pos === 0) {
+      const n = parseInt10(tok);
+      if (n === null) return { ok: false, usage };
+      topN = n;
+    } else {
+      return { ok: false, usage };
+    }
+    pos++;
+  }
+  return {
+    ok: true,
+    command: {
+      verb: "pagerank",
+      seed,
+      topN,
       restartProb,
       epsilon,
+      weighting,
+      vertexPrefix,
+    },
+  };
+}
+
+export function parseCommunity(rest: string[]): ParseResult {
+  const usage =
+    "usage: community <seed: string> [max_size: int] [restart_prob=<float>] [epsilon=<float>] [reduction=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>]";
+  if (rest.length < 1 || rest[0] === "") {
+    return { ok: false, usage };
+  }
+  const seed = rest[0];
+  // Only <seed> is required (#975); max_size is an optional positional int
+  // (default 0 = the conductance sweep decides) or max_size= kwarg.
+  // restart_prob/epsilon share PPR's defaults; reduction/objective render an
+  // optional tree view of the community (#845).
+  let maxSize = 0;
+  let restartProb = 0;
+  let epsilon = 0;
+  let reduction: ReductionName = "none";
+  let objective: ObjectiveName = "max";
+  let weighting: WeightingName = "raw";
+  let vertexPrefix = "";
+  let pos = 0;
+  for (let i = 1; i < rest.length; i++) {
+    const tok = rest[i];
+    const eq = tok.indexOf("=");
+    if (eq >= 0) {
+      const key = tok.slice(0, eq).toLowerCase();
+      const value = tok.slice(eq + 1);
+      const lvalue = value.toLowerCase();
+      if (key === "max_size") {
+        const n = parseInt10(value);
+        if (n === null) return { ok: false, usage };
+        maxSize = n;
+      } else if (key === "restart_prob") {
+        const f = parseFloatStrict(value);
+        if (f === null) return { ok: false, usage };
+        restartProb = f;
+      } else if (key === "epsilon") {
+        const f = parseFloatStrict(value);
+        if (f === null) return { ok: false, usage };
+        epsilon = f;
+      } else if (key === "reduction") {
+        if (!ILL_REDUCTIONS.has(lvalue as ReductionName))
+          return { ok: false, usage };
+        reduction = lvalue as ReductionName;
+      } else if (key === "objective") {
+        if (!ILL_OBJECTIVES.has(lvalue as ObjectiveName))
+          return { ok: false, usage };
+        objective = lvalue as ObjectiveName;
+      } else if (key === "weighting") {
+        if (!ILL_WEIGHTINGS.has(lvalue as WeightingName))
+          return { ok: false, usage };
+        weighting = lvalue as WeightingName;
+      } else if (key === "prefix") {
+        if (value === "") return { ok: false, usage };
+        vertexPrefix = value;
+      } else {
+        return { ok: false, usage };
+      }
+      continue;
+    }
+    if (pos === 0) {
+      const n = parseInt10(tok);
+      if (n === null) return { ok: false, usage };
+      maxSize = n;
+    } else {
+      return { ok: false, usage };
+    }
+    pos++;
+  }
+  return {
+    ok: true,
+    command: {
+      verb: "community",
+      seed,
+      maxSize,
+      restartProb,
+      epsilon,
+      reduction,
+      objective,
+      weighting,
+      vertexPrefix,
     },
   };
 }
@@ -589,14 +711,26 @@ export const HELP_TEXT = [
   "  count  vertices <prefix: string>",
   "  delete-prefix vertices <prefix: string> [limit=<int>] [confirm=yes|dry_run=true]",
   "  keys   <prefix: string> [<limit: int>]",
-  "  illuminate <seed: string> <step: int> <k: int>",
-  "             [algorithm={bfs|ppr|community}] default=bfs",
-  "             [reduction={none|mst|spt}]  default=none (bfs/community only)",
+  "  bfs        <seed: string> [step: int] [fan_out: int]",
+  "             [reduction={none|mst|spt}]  default=none",
   "             [objective={min|max}]       default=max",
   "             [weighting={raw|tfidf|bm25}] default=raw",
   "             [prefix=<string>]           default=all keys",
-  "             [restart_prob=<float>]      default=0 (ppr/community; server α=0.15)",
-  "             [epsilon=<float>]           default=0 (ppr/community; server ε=1e-4)",
+  "             defaults: step=5 fan_out=3",
+  "  pagerank   <seed: string> [top_n: int]",
+  "             [restart_prob=<float>]      default=0 (server α=0.15)",
+  "             [epsilon=<float>]           default=0 (server ε=1e-4)",
+  "             [weighting={raw|tfidf|bm25}] default=raw",
+  "             [prefix=<string>]           default=all keys",
+  "             defaults: top_n=10",
+  "  community  <seed: string> [max_size: int]",
+  "             [restart_prob=<float>]      default=0 (server α=0.15)",
+  "             [epsilon=<float>]           default=0 (server ε=1e-4)",
+  "             [reduction={none|mst|spt}]  default=none",
+  "             [objective={min|max}]       default=max",
+  "             [weighting={raw|tfidf|bm25}] default=raw",
+  "             [prefix=<string>]           default=all keys",
+  "             defaults: max_size=0 (sweep decides)",
   "  help",
   "  exit",
   "",
@@ -736,12 +870,30 @@ export const CLI_COMMAND_REFERENCE: readonly CliCommandDoc[] = [
   },
   {
     group: "Explore",
-    verb: "illuminate",
+    verb: "bfs",
     signature:
-      "illuminate <seed> <step> <k> [algorithm=bfs|ppr|community] [reduction=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>] [restart_prob=<float>] [epsilon=<float>]",
+      "bfs <seed> [step] [fan_out] [reduction=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>]",
     summary:
-      "Walk the graph from a seed (step hops, top-k per hop) and render the subgraph. algorithm picks the family — bfs (default), ppr (Personalized PageRank), or community (local community, #845); ppr/community tune locality with restart_prob/epsilon. reduction=mst|spt renders the discovered neighbourhood as a spanning / shortest-path tree (bfs & community; #961); the other axes weight the subgraph.",
-    example: "illuminate alice 2 5 algorithm=community reduction=mst",
+      "Greedy per-hop top-k breadth-first walk from a seed (step hops, fan_out neighbours per hop; defaults 5/3). reduction=mst|spt renders the neighbourhood as a spanning / shortest-path tree (#961); objective steers the pruning and reduction direction.",
+    example: "bfs alice 2 5 reduction=mst",
+  },
+  {
+    group: "Explore",
+    verb: "pagerank",
+    signature:
+      "pagerank <seed> [top_n] [restart_prob=<float>] [epsilon=<float>] [weighting=raw|tfidf|bm25] [prefix=<string>]",
+    summary:
+      "Personalized PageRank relevance star from a seed (top_n by mass, default 10). restart_prob (α) and epsilon (ε) tune locality; both default to the server's 0.15 / 1e-4.",
+    example: "pagerank alice 15 restart_prob=0.25",
+  },
+  {
+    group: "Explore",
+    verb: "community",
+    signature:
+      "community <seed> [max_size] [restart_prob=<float>] [epsilon=<float>] [reduction=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>]",
+    summary:
+      "Conductance-optimal local community around a seed (#845; max_size upper bound, default 0 = the sweep decides). restart_prob/epsilon tune locality; reduction renders a tree view.",
+    example: "community alice 20 reduction=mst",
   },
   {
     group: "Session",

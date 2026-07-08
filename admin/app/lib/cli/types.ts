@@ -14,7 +14,10 @@
  * Tokenisation matches the Go side: lower-cased, whitespace-split.
  */
 
-export type AlgorithmName = "bfs" | "ppr" | "community";
+// AlgorithmName is the traversal FAMILY selector used by the click-to-illuminate
+// axis picker (#464, #975). Since #975 the family is a first-class verb, so these
+// are the verb names (`ppr` was renamed to `pagerank` per the user's preference).
+export type AlgorithmName = "bfs" | "pagerank" | "community";
 export type ReductionName = "none" | "mst" | "spt";
 export type ObjectiveName = "min" | "max";
 export type WeightingName = "raw" | "tfidf" | "bm25";
@@ -99,37 +102,55 @@ export type Command =
       confirm: boolean;
     }
   | {
-      verb: "illuminate";
+      /**
+       * bfs family verb (#975): a greedy per-hop top-k breadth-first walk.
+       * Only `seed` is required; `step` (walk depth, default 5) and `fanOut`
+       * (per-hop top-k prune, default 3) are optional positional ints or
+       * `step=`/`fan_out=` kwargs. `reduction` renders the result as an
+       * MST/SPT tree rooted at the seed (default none); `objective` steers
+       * BOTH the per-hop pruning and the reduction direction (default max).
+       */
+      verb: "bfs";
       seed: string;
       step: number;
-      k: number;
-      /**
-       * Traversal FAMILY (#961): `bfs` (greedy per-hop top-k walk, the
-       * default), `ppr` (Personalized PageRank), or `community` (local
-       * community extraction, #845). Orthogonal to {@link reduction}.
-       */
-      algorithm: AlgorithmName;
-      /**
-       * Post-traversal tree REDUCTION (#961): `none` (raw subgraph, the
-       * default), `mst` (minimum spanning tree), or `spt` (shortest-path
-       * tree), rooted at the seed. Honoured for the `bfs` and `community`
-       * families and ignored for `ppr` (which returns a relevance star).
-       * The {@link objective} steers the reduction direction.
-       */
+      fanOut: number;
       reduction: ReductionName;
       objective: ObjectiveName;
       weighting: WeightingName;
       vertexPrefix: string;
+    }
+  | {
       /**
-       * Push-family locality knobs (#801/#942), only meaningful when
-       * `algorithm === "ppr"` or `algorithm === "community"`. `restartProb`
-       * is the restart/teleport-to-seed probability α in (0,1); `epsilon` is
-       * the forward-push residual threshold ε > 0. Both default to 0, which
-       * the server resolves to its own defaults (α=0.15 / ε=1e-4); they are
-       * ignored for the bfs family.
+       * pagerank family verb (#975): Personalized PageRank from the seed,
+       * returning a relevance star (which is already a tree, so pagerank has
+       * no reduction/objective). `topN` caps the star (default 10; 0 = every
+       * positive-mass vertex). `restartProb` (α) and `epsilon` (ε) default to
+       * 0, which the server resolves to α=0.15 / ε=1e-4.
        */
+      verb: "pagerank";
+      seed: string;
+      topN: number;
       restartProb: number;
       epsilon: number;
+      weighting: WeightingName;
+      vertexPrefix: string;
+    }
+  | {
+      /**
+       * community family verb (#975): conductance-optimal local community
+       * extraction (#845). `maxSize` is an UPPER BOUND (default 0 = the sweep
+       * decides). `restartProb`/`epsilon` share PPR's semantics/defaults;
+       * `reduction`/`objective` render an optional tree view of the community.
+       */
+      verb: "community";
+      seed: string;
+      maxSize: number;
+      restartProb: number;
+      epsilon: number;
+      reduction: ReductionName;
+      objective: ObjectiveName;
+      weighting: WeightingName;
+      vertexPrefix: string;
     };
 
 export type ParseResult =

@@ -14,7 +14,7 @@ import {
   CLI_OBJECTIVES,
   CLI_REDUCTIONS,
   CLI_WEIGHTINGS,
-  formatIlluminateClick,
+  formatFamilyClick,
   interpretPushKnobInput,
   type CliClickAxes,
 } from "~/lib/cli/illuminate-axes";
@@ -127,16 +127,18 @@ export function CliAxisPicker({ axes, setAxis, disabled }: CliAxisPickerProps) {
     [setAxis],
   );
 
-  const preview = formatIlluminateClick("<key>", axes);
+  const preview = formatFamilyClick("<key>", axes);
 
-  // #801/#942: ppr and community are the two push-based families that carry
-  // the α/ε locality knobs; they also give the `step` axis no wire meaning.
+  // #801/#942: pagerank and community are the two push-based families that
+  // carry the α/ε locality knobs; they also give the `step` axis no wire
+  // meaning.
   const isPushFamily =
-    axes.algorithm === "ppr" || axes.algorithm === "community";
+    axes.algorithm === "pagerank" || axes.algorithm === "community";
   // #961: the tree reduction is honoured for the bfs and community families
-  // and ignored for ppr (a relevance star has no tree view), so the Dropdown
-  // is hidden for ppr rather than echoing a knob the server drops.
-  const showsReduction = axes.algorithm !== "ppr";
+  // and ignored for pagerank (a relevance star has no tree view), so the
+  // Dropdown is hidden for pagerank rather than echoing a knob the server
+  // drops.
+  const showsReduction = axes.algorithm !== "pagerank";
   // #942: for the community family `k` is the max_size UPPER BOUND (the
   // conductance sweep may stop earlier), not an exact neighbour count.
   const kTitle =

@@ -17,8 +17,10 @@ import {
   CLI_COMMAND_REFERENCE,
   HELP_TEXT,
   parseAdd,
+  parseBfs,
+  parseCommunity,
   parseHelp,
-  parseIlluminate,
+  parsePagerank,
   parsePut,
   parseFloatStrict,
 } from "./verbs";
@@ -38,7 +40,9 @@ const CANONICAL_VERBS = [
   "scan",
   "count",
   "keys",
-  "illuminate",
+  "bfs",
+  "pagerank",
+  "community",
   "help",
   "exit",
 ] as const;
@@ -236,9 +240,8 @@ describe("parseHelp (#436 — help verb)", () => {
   });
 });
 
-describe("HELP_TEXT (#436 — grammar contract)", () => {
-  test("enumerates illuminate kwarg names", () => {
-    expect(HELP_TEXT).toContain("algorithm=");
+describe("HELP_TEXT (#436 / #975 — grammar contract)", () => {
+  test("enumerates the family verb kwarg names", () => {
     expect(HELP_TEXT).toContain("reduction=");
     expect(HELP_TEXT).toContain("objective=");
     expect(HELP_TEXT).toContain("weighting=");
@@ -247,9 +250,9 @@ describe("HELP_TEXT (#436 — grammar contract)", () => {
     expect(HELP_TEXT).toContain("epsilon=");
   });
 
-  test("enumerates illuminate kwarg valid values", () => {
+  test("enumerates the family verb kwarg valid values", () => {
     expect(HELP_TEXT).toContain("bfs");
-    expect(HELP_TEXT).toContain("ppr");
+    expect(HELP_TEXT).toContain("pagerank");
     expect(HELP_TEXT).toContain("community");
     expect(HELP_TEXT).toContain("none");
     expect(HELP_TEXT).toContain("mst");
@@ -261,12 +264,16 @@ describe("HELP_TEXT (#436 — grammar contract)", () => {
     expect(HELP_TEXT).toContain("bm25");
   });
 
-  test("documents illuminate kwarg defaults", () => {
-    expect(HELP_TEXT).toContain("default=bfs");
+  test("documents the family verb kwarg + positional defaults", () => {
     expect(HELP_TEXT).toContain("default=none");
     expect(HELP_TEXT).toContain("default=max");
     expect(HELP_TEXT).toContain("default=raw");
     expect(HELP_TEXT).toContain("default=all keys");
+    // Per-verb positional defaults (#975).
+    expect(HELP_TEXT).toContain("step=5");
+    expect(HELP_TEXT).toContain("fan_out=3");
+    expect(HELP_TEXT).toContain("top_n=10");
+    expect(HELP_TEXT).toContain("max_size=0");
   });
 
   test("lists every verb (including help and exit)", () => {
@@ -277,7 +284,9 @@ describe("HELP_TEXT (#436 — grammar contract)", () => {
       "delete",
       "scan",
       "keys",
-      "illuminate",
+      "bfs",
+      "pagerank",
+      "community",
       "help",
       "exit",
     ]) {
@@ -286,36 +295,34 @@ describe("HELP_TEXT (#436 — grammar contract)", () => {
   });
 });
 
-describe("parseIlluminate prefix= kwarg (#606)", () => {
-  function illuminate(rest: string[]) {
-    const r = parseIlluminate(rest);
+describe("parseBfs prefix= kwarg (#606 / #975)", () => {
+  function bfs(rest: string[]) {
+    const r = parseBfs(rest);
     if (!r.ok) {
       throw new Error(`parse failed: ${r.usage}`);
     }
-    if (r.command.verb !== "illuminate") {
-      throw new Error(`not an illuminate command: ${r.command.verb}`);
+    if (r.command.verb !== "bfs") {
+      throw new Error(`not a bfs command: ${r.command.verb}`);
     }
     return r.command;
   }
 
-  test("captures a free-text prefix value verbatim", () => {
-    expect(illuminate(["alice", "2", "5", "prefix=team:"]).vertexPrefix).toBe(
-      "team:",
-    );
+  test("captures a free-text prefix value verbatim (seed-only positional)", () => {
+    expect(bfs(["alice", "prefix=team:"]).vertexPrefix).toBe("team:");
   });
 
   test("keeps the prefix value case (key folds, value is case-sensitive)", () => {
-    expect(
-      illuminate(["alice", "2", "5", "PREFIX=Users/Alice"]).vertexPrefix,
-    ).toBe("Users/Alice");
+    expect(bfs(["alice", "2", "5", "PREFIX=Users/Alice"]).vertexPrefix).toBe(
+      "Users/Alice",
+    );
   });
 
   test("omitting prefix leaves it empty (no filter)", () => {
-    expect(illuminate(["alice", "2", "5"]).vertexPrefix).toBe("");
+    expect(bfs(["alice", "2", "5"]).vertexPrefix).toBe("");
   });
 
   test("parses prefix= alongside the closed-set axes in any order", () => {
-    const cmd = illuminate([
+    const cmd = bfs([
       "alice",
       "2",
       "5",
@@ -329,62 +336,95 @@ describe("parseIlluminate prefix= kwarg (#606)", () => {
   });
 
   test("rejects an explicit empty prefix= value", () => {
-    expect(parseIlluminate(["alice", "2", "5", "prefix="]).ok).toBe(false);
+    expect(parseBfs(["alice", "2", "5", "prefix="]).ok).toBe(false);
   });
 });
 
-describe("parseIlluminate ppr knobs (#801)", () => {
-  function illuminate(rest: string[]) {
-    const r = parseIlluminate(rest);
+describe("parsePagerank knobs (#801 / #975)", () => {
+  function pagerank(rest: string[]) {
+    const r = parsePagerank(rest);
     if (!r.ok) {
       throw new Error(`parse failed: ${r.usage}`);
     }
-    if (r.command.verb !== "illuminate") {
-      throw new Error(`not an illuminate command: ${r.command.verb}`);
+    if (r.command.verb !== "pagerank") {
+      throw new Error(`not a pagerank command: ${r.command.verb}`);
     }
     return r.command;
   }
 
-  test("accepts algorithm=ppr and defaults the knobs to 0 (server defaults)", () => {
-    const cmd = illuminate(["alice", "2", "5", "algorithm=ppr"]);
-    expect(cmd.algorithm).toBe("ppr");
+  test("defaults top_n to 10 and the knobs to 0 (server defaults)", () => {
+    const cmd = pagerank(["alice"]);
+    expect(cmd.topN).toBe(10);
     expect(cmd.restartProb).toBe(0);
     expect(cmd.epsilon).toBe(0);
   });
 
   test("parses restart_prob= and epsilon= floats in any order", () => {
-    const cmd = illuminate([
-      "alice",
-      "2",
-      "5",
-      "epsilon=0.001",
-      "algorithm=ppr",
-      "restart_prob=0.25",
-    ]);
-    expect(cmd.algorithm).toBe("ppr");
+    const cmd = pagerank(["alice", "5", "epsilon=0.001", "restart_prob=0.25"]);
+    expect(cmd.topN).toBe(5);
     expect(cmd.restartProb).toBeCloseTo(0.25);
     expect(cmd.epsilon).toBeCloseTo(0.001);
   });
 
   test("accepts scientific-notation knob values (Go ParseFloat parity)", () => {
-    const cmd = illuminate([
-      "alice",
-      "2",
-      "5",
-      "algorithm=ppr",
-      "epsilon=1e-4",
-    ]);
+    const cmd = pagerank(["alice", "5", "epsilon=1e-4"]);
     expect(cmd.epsilon).toBeCloseTo(0.0001);
   });
 
   test("rejects a non-numeric restart_prob value", () => {
-    expect(parseIlluminate(["alice", "2", "5", "restart_prob=high"]).ok).toBe(
-      false,
-    );
+    expect(parsePagerank(["alice", "5", "restart_prob=high"]).ok).toBe(false);
   });
 
   test("rejects a non-numeric epsilon value", () => {
-    expect(parseIlluminate(["alice", "2", "5", "epsilon=tiny"]).ok).toBe(false);
+    expect(parsePagerank(["alice", "5", "epsilon=tiny"]).ok).toBe(false);
+  });
+
+  test("rejects reduction= / objective= (the relevance star is already a tree)", () => {
+    expect(parsePagerank(["alice", "5", "reduction=mst"]).ok).toBe(false);
+    expect(parsePagerank(["alice", "5", "objective=min"]).ok).toBe(false);
+  });
+});
+
+describe("parseCommunity (#845 / #975)", () => {
+  function community(rest: string[]) {
+    const r = parseCommunity(rest);
+    if (!r.ok) {
+      throw new Error(`parse failed: ${r.usage}`);
+    }
+    if (r.command.verb !== "community") {
+      throw new Error(`not a community command: ${r.command.verb}`);
+    }
+    return r.command;
+  }
+
+  test("defaults max_size to 0 (sweep decides) and the knobs to 0", () => {
+    const cmd = community(["alice"]);
+    expect(cmd.maxSize).toBe(0);
+    expect(cmd.restartProb).toBe(0);
+    expect(cmd.epsilon).toBe(0);
+    expect(cmd.reduction).toBe("none");
+    expect(cmd.objective).toBe("max");
+  });
+
+  test("captures the positional max_size plus the push + tree knobs", () => {
+    const cmd = community([
+      "alice",
+      "20",
+      "restart_prob=0.25",
+      "epsilon=1e-4",
+      "reduction=mst",
+      "objective=min",
+    ]);
+    expect(cmd.maxSize).toBe(20);
+    expect(cmd.restartProb).toBeCloseTo(0.25);
+    expect(cmd.epsilon).toBeCloseTo(0.0001);
+    expect(cmd.reduction).toBe("mst");
+    expect(cmd.objective).toBe("min");
+  });
+
+  test("rejects an unknown kwarg (top_n=) and a second bare positional", () => {
+    expect(parseCommunity(["alice", "20", "top_n=5"]).ok).toBe(false);
+    expect(parseCommunity(["alice", "20", "30"]).ok).toBe(false);
   });
 });
 

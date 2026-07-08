@@ -44,7 +44,9 @@ export function commandResultToGraphView(
   result: unknown,
 ): GraphView | null {
   switch (command.verb) {
-    case "illuminate":
+    case "bfs":
+    case "pagerank":
+    case "community":
       return illuminateView(command.seed, result as IlluminateResponse);
     case "get":
       if (command.objective === "vertex") {

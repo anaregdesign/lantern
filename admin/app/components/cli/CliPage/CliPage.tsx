@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 import {
   CLI_CLICK_AXIS_DEFAULTS,
-  formatIlluminateClick,
+  formatFamilyClick,
 } from "~/lib/cli/illuminate-axes";
 import { completeCommandLine, longestCommonPrefix } from "~/lib/cli/complete";
 import { useCli } from "~/lib/client/usecase/cli/use-cli";
@@ -71,7 +71,7 @@ export function CliPage() {
   // #651 deep-link handoff: a `/cli?seed=<key>` URL (from the Vertices /
   // Edges Browse rows and the Vertex-detail toolbar) auto-fires one
   // illuminate walk for that key — the same command a canvas click emits.
-  // The walk uses the canonical default axes (`illuminate <seed> 2 5`) so a
+  // The walk uses the canonical default axes (`bfs <seed> 2 5`) so a
   // cross-surface deep link is deterministic; the operator can re-tune and
   // re-click from the canvas afterwards. `runRaw` is captured in a ref so the
   // one-shot effect depends only on the seed string and never re-fires when
@@ -92,7 +92,7 @@ export function CliPage() {
     // no-op (mirrors the retired Illuminate page's lastSeedRef).
     if (seedHandoffRef.current === seed) return;
     seedHandoffRef.current = seed;
-    runRawRef.current(formatIlluminateClick(seed, CLI_CLICK_AXIS_DEFAULTS));
+    runRawRef.current(formatFamilyClick(seed, CLI_CLICK_AXIS_DEFAULTS));
   }, [seedParam]);
 
   // Auto-scroll the scrollback to the bottom on every new entry so the
@@ -123,12 +123,12 @@ export function CliPage() {
   // illuminate command into the prompt and submits it through the same
   // parser path the user would hit by typing it. With the picker at its
   // defaults the formatter emits the canonical short form
-  // `illuminate <key> 2 5` (regression guard). A click while a command is
+  // `bfs <key> 2 5` (regression guard). A click while a command is
   // in flight enqueues (#945) rather than being swallowed, so the walk runs
   // as soon as the current dispatch settles.
   const onNodeClick = useCallback(
     (key: string) => {
-      cli.runRaw(formatIlluminateClick(key, axisPicker.axes));
+      cli.runRaw(formatFamilyClick(key, axisPicker.axes));
     },
     [cli, axisPicker.axes],
   );
@@ -367,7 +367,7 @@ export function CliPage() {
               <span className={styles.canvasMetaHint}>
                 click a node →{" "}
                 <code data-testid="cli-click-hint">
-                  {formatIlluminateClick("<key>", axisPicker.axes)}
+                  {formatFamilyClick("<key>", axisPicker.axes)}
                 </code>
               </span>
             </div>

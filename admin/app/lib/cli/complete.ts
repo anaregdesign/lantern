@@ -19,7 +19,6 @@
  */
 
 import {
-  CLI_ALGORITHMS,
   CLI_OBJECTIVES,
   CLI_REDUCTIONS,
   CLI_WEIGHTINGS,
@@ -39,25 +38,33 @@ const VERBS: readonly string[] = [
   "scan",
   "count",
   "keys",
-  "illuminate",
+  "bfs",
+  "pagerank",
+  "community",
   "help",
   "exit",
 ];
 
-/** The illuminate option kwargs, in the parser's fixed order. */
-const ILLUMINATE_OPTION_KEYS: readonly string[] = [
-  "algorithm",
-  "reduction",
-  "objective",
-  "weighting",
-  // #606: free-text vertex-prefix filter. Surfaced as a completion key so
-  // operators discover it, but it has no enum values to complete after `=`.
-  "prefix",
-  // #801: Personalized PageRank knobs. Free-form floats (no enum values to
-  // complete after `=`), surfaced as keys so operators discover them.
-  "restart_prob",
-  "epsilon",
-];
+/**
+ * The option kwargs each family verb accepts, in the parser's fixed order
+ * (#975). step/fan_out/top_n/max_size are positional too, but the completer
+ * offers them in kwarg form for discoverability. Free-form floats
+ * (restart_prob / epsilon) and the free-text prefix have no enum values to
+ * complete after `=`, but are surfaced as keys so operators discover them.
+ */
+const FAMILY_OPTION_KEYS: Record<string, readonly string[]> = {
+  bfs: ["step", "fan_out", "reduction", "objective", "weighting", "prefix"],
+  pagerank: ["top_n", "restart_prob", "epsilon", "weighting", "prefix"],
+  community: [
+    "max_size",
+    "restart_prob",
+    "epsilon",
+    "reduction",
+    "objective",
+    "weighting",
+    "prefix",
+  ],
+};
 
 /** Cap on how many key candidates we surface, so the hint stays compact. */
 const MAX_KEY_CANDIDATES = 50;
@@ -105,11 +112,15 @@ export function completeCommandLine(
     return { candidates: filterByPrefix(VERBS, token), start, token };
   }
 
-  // illuminate option kwargs come before the generic slot handling so a
-  // long illuminate line (slot ≥ 4) is routed to the axis vocabulary.
-  if (verb === "illuminate" && slotIndex >= 4) {
+  // family option kwargs come before the generic slot handling so a long
+  // family line (slot ≥ 2, i.e. after the seed) is routed to the axis
+  // vocabulary. step/fan_out/top_n/max_size are positional too, but the
+  // completer offers them in kwarg form for discoverability (#975).
+  const isFamilyVerb =
+    verb === "bfs" || verb === "pagerank" || verb === "community";
+  if (isFamilyVerb && slotIndex >= 2) {
     return {
-      candidates: completeIlluminateOption(tokens, token),
+      candidates: completeFamilyOption(verb, tokens, token),
       start,
       token,
     };
@@ -121,7 +132,7 @@ export function completeCommandLine(
     if (objectives) {
       return { candidates: filterByPrefix(objectives, token), start, token };
     }
-    if (verb === "illuminate" || verb === "keys") {
+    if (isFamilyVerb || verb === "keys") {
       return { candidates: completeKeys(knownKeys, token), start, token };
     }
     return none;
@@ -220,19 +231,28 @@ function completeKeys(knownKeys: readonly string[], token: string): string[] {
  * `=` is typed, suggests the matching enum values as full `key=value`
  * tokens.
  */
-function completeIlluminateOption(
+/**
+ * Complete a family-verb option token. With no `=` yet, suggests the option
+ * keys not already present on the line (`step=` / `reduction=` etc., which
+ * keep the trailing `=` so the caller knows not to append a space). Once `=`
+ * is typed, suggests the matching enum values as full `key=value` tokens. The
+ * available keys depend on the family verb (#975).
+ */
+function completeFamilyOption(
+  verb: string,
   tokens: readonly string[],
   token: string,
 ): string[] {
+  const keys = FAMILY_OPTION_KEYS[verb] ?? [];
   const eq = token.indexOf("=");
   if (eq === -1) {
+    // Positional step/fan_out/top_n/max_size (slots 2/3) share the option
+    // namespace, so treat every token after the seed as a used kwarg key.
     const used = new Set(
-      tokens.slice(4).map((t) => t.split("=")[0].toLowerCase()),
+      tokens.slice(2).map((t) => t.split("=")[0].toLowerCase()),
     );
-    const keys = ILLUMINATE_OPTION_KEYS.filter((k) => !used.has(k)).map(
-      (k) => `${k}=`,
-    );
-    return filterByPrefix(keys, token);
+    const avail = keys.filter((k) => !used.has(k)).map((k) => `${k}=`);
+    return filterByPrefix(avail, token);
   }
   const kw = token.slice(0, eq).toLowerCase();
   const valuePrefix = token.slice(eq + 1).toLowerCase();
@@ -243,11 +263,9 @@ function completeIlluminateOption(
     .map((v) => `${kw}=${v}`);
 }
 
-/** The enum values for an illuminate option keyword, or null if unknown. */
+/** The enum values for a family option keyword, or null if unknown. */
 function optionValues(keyword: string): readonly string[] | null {
   switch (keyword) {
-    case "algorithm":
-      return CLI_ALGORITHMS.map((a) => a.value);
     case "reduction":
       return CLI_REDUCTIONS.map((r) => r.value);
     case "objective":

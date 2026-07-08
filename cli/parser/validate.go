@@ -14,7 +14,7 @@ func Validate(input string) error {
 	}
 	v, err := Verb(s)
 	if err != nil {
-		return errors.New("usage: { get | put | delete | add | scan | keys | illuminate | help | exit } ... ")
+		return errors.New("usage: { get | put | delete | add | scan | keys | bfs | pagerank | community | help | exit } ... ")
 	}
 
 	switch v {
@@ -133,9 +133,17 @@ func Validate(input string) error {
 		if _, err := KeysParam(s); err != nil {
 			return errors.New("usage: keys <prefix: string> [<limit: int>]")
 		}
-	case "illuminate":
-		if _, err := IlluminateParam(s); err != nil {
-			return errors.New("usage: illuminate <key: string> <step: int> <k: int> [algorithm=bfs|ppr|community] [reduction=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>] [restart_prob=<float>] [epsilon=<float>]")
+	case "bfs":
+		if _, err := BfsParam(s); err != nil {
+			return errors.New("usage: bfs <seed: string> [step: int] [fan_out: int] [reduction=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>]")
+		}
+	case "pagerank":
+		if _, err := PagerankParam(s); err != nil {
+			return errors.New("usage: pagerank <seed: string> [top_n: int] [restart_prob=<float>] [epsilon=<float>] [weighting=raw|tfidf|bm25] [prefix=<string>]")
+		}
+	case "community":
+		if _, err := CommunityParam(s); err != nil {
+			return errors.New("usage: community <seed: string> [max_size: int] [restart_prob=<float>] [epsilon=<float>] [reduction=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>]")
 		}
 
 	case "help":
@@ -147,7 +155,7 @@ func Validate(input string) error {
 	case "exit":
 
 	default:
-		return errors.New("usage: { get | put | delete | add | scan | keys | illuminate | help | exit } ... ")
+		return errors.New("usage: { get | put | delete | add | scan | keys | bfs | pagerank | community | help | exit } ... ")
 	}
 	return nil
 }

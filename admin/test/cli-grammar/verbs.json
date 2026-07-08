@@ -86,54 +86,72 @@
       "comment": "#674: keys lists vertex keys under a prefix"
     },
     { "input": "keys users/ 100", "comment": "#674: keys with optional limit" },
-    { "input": "illuminate alice 2 5" },
     {
-      "input": "illuminate alice 2 5 algorithm=bfs",
-      "comment": "#961: explicit bfs family (the default) parses"
-    },
-    { "input": "illuminate alice 2 5 reduction=mst" },
-    { "input": "illuminate alice 2 5 reduction=spt objective=max" },
-    {
-      "input": "illuminate alice 2 5 reduction=spt objective=max weighting=tfidf"
+      "input": "bfs alice",
+      "comment": "#975: bare seed uses defaults step=5 fan_out=3"
     },
     {
-      "input": "illuminate alice 2 5 weighting=tfidf objective=max reduction=spt",
+      "input": "bfs alice 2 5",
+      "comment": "#975: positional step and fan_out"
+    },
+    {
+      "input": "bfs alice step=2 fan_out=5",
+      "comment": "#975: step and fan_out as kwargs"
+    },
+    {
+      "input": "bfs alice fan_out=5",
+      "comment": "#975: step defaults, fan_out kwarg"
+    },
+    { "input": "bfs alice 2 5 reduction=mst" },
+    { "input": "bfs alice 2 5 reduction=spt objective=max" },
+    {
+      "input": "bfs alice 2 5 reduction=spt objective=max weighting=tfidf"
+    },
+    {
+      "input": "bfs alice 2 5 weighting=tfidf objective=max reduction=spt",
       "comment": "keyword args may appear in any order"
     },
     {
-      "input": "illuminate alice 2 5 algorithm=bfs reduction=spt objective=min",
-      "comment": "#961: family and reduction are orthogonal axes on bfs"
+      "input": "bfs alice 2 5 reduction=spt objective=min prefix=team:",
+      "comment": "#975: bfs closed-set axes and the free-text prefix compose"
     },
     {
-      "input": "illuminate alice 2 5 algorithm=ppr",
-      "comment": "#801: Personalized PageRank family; knobs default to server values"
+      "input": "pagerank alice",
+      "comment": "#975: bare seed uses default top_n=10; α/ε server-resolved"
+    },
+    { "input": "pagerank alice 15", "comment": "#975: positional top_n" },
+    { "input": "pagerank alice top_n=15", "comment": "#975: top_n kwarg" },
+    {
+      "input": "pagerank alice 15 restart_prob=0.25 epsilon=0.001",
+      "comment": "#801: pagerank with explicit restart_prob / epsilon floats"
     },
     {
-      "input": "illuminate alice 2 5 algorithm=ppr restart_prob=0.25 epsilon=0.001",
-      "comment": "#801: ppr with explicit restart_prob / epsilon floats"
+      "input": "pagerank alice weighting=bm25 restart_prob=0.2",
+      "comment": "#801: pagerank composes with the weighting axis"
     },
     {
-      "input": "illuminate alice 2 5 algorithm=ppr weighting=bm25 restart_prob=0.2",
-      "comment": "#801: ppr composes with the weighting axis"
-    },
-    {
-      "input": "illuminate alice 2 5 algorithm=ppr epsilon=1e-4",
+      "input": "pagerank alice epsilon=1e-4",
       "comment": "#801: scientific-notation knob value (Go strconv.ParseFloat parity)"
     },
     {
-      "input": "illuminate alice 2 5 algorithm=community",
-      "comment": "#942: local community (#845) family; knobs default to server values"
+      "input": "community alice",
+      "comment": "#975: bare seed; the conductance sweep decides the size (max_size=0)"
+    },
+    { "input": "community alice 20", "comment": "#975: positional max_size" },
+    {
+      "input": "community alice max_size=20",
+      "comment": "#975: max_size kwarg"
     },
     {
-      "input": "illuminate alice 2 5 algorithm=community restart_prob=0.25 epsilon=1e-3",
-      "comment": "#942: community shares the ppr restart_prob / epsilon locality knobs"
+      "input": "community alice 20 restart_prob=0.25 epsilon=1e-3",
+      "comment": "#942: community shares the pagerank restart_prob / epsilon locality knobs"
     },
     {
-      "input": "illuminate alice 2 5 algorithm=community reduction=mst",
+      "input": "community alice 20 reduction=mst",
       "comment": "#961: local community rendered as an MST tree view"
     },
     {
-      "input": "illuminate alice 2 5 algorithm=community reduction=spt objective=min",
+      "input": "community alice 20 reduction=spt objective=min",
       "comment": "#961: community reduction direction set by objective"
     },
     {
@@ -145,19 +163,19 @@
       "comment": "#437: verb + objective case-insensitive; key/value preserve case downstream"
     },
     {
-      "input": "illuminate alice 2 5 Reduction=SPT Objective=Max Weighting=TFIDF",
-      "comment": "#437: illuminate keyword key + closed-set value case-insensitive"
+      "input": "bfs alice 2 5 Reduction=SPT Objective=Max Weighting=TFIDF",
+      "comment": "#437: family kwarg key + closed-set value case-insensitive"
     },
     {
-      "input": "illuminate alice 2 5 prefix=team:",
+      "input": "bfs alice prefix=team:",
       "comment": "#606: free-text vertex-prefix kwarg"
     },
     {
-      "input": "illuminate alice 2 5 prefix=users/ reduction=spt objective=min",
+      "input": "bfs alice prefix=users/ reduction=spt objective=min",
       "comment": "#606: prefix mixes with the closed-set axes in any order"
     },
     {
-      "input": "illuminate alice 2 5 PREFIX=Users/Alice",
+      "input": "bfs alice PREFIX=Users/Alice",
       "comment": "#606: prefix key case-insensitive, value case-sensitive (verbatim)"
     },
     {
@@ -296,65 +314,69 @@
       "input": "keys users/ notanint",
       "comment": "#674: non-numeric keys limit"
     },
-    { "input": "illuminate", "comment": "missing seed" },
-    { "input": "illuminate alice", "comment": "missing step" },
-    { "input": "illuminate alice 2", "comment": "missing k" },
-    { "input": "illuminate alice notanint 5", "comment": "non-numeric step" },
+    { "input": "bfs", "comment": "#975: bfs missing seed" },
+    { "input": "pagerank", "comment": "#975: pagerank missing seed" },
+    { "input": "community", "comment": "#975: community missing seed" },
+    { "input": "bfs alice notanint", "comment": "#975: non-numeric step" },
     {
-      "input": "illuminate alice 2 5 algorithm=bogus",
-      "comment": "unknown algorithm value"
+      "input": "bfs alice 1 2 3",
+      "comment": "#975: a third bare positional is rejected"
     },
     {
-      "input": "illuminate alice 2 5 algorithm=mst",
-      "comment": "#961: mst is a reduction, not an algorithm family"
+      "input": "bfs alice algorithm=ppr",
+      "comment": "#975: the family is the verb now; there is no algorithm kwarg"
     },
     {
-      "input": "illuminate alice 2 5 algorithm=spt",
-      "comment": "#961: spt is a reduction, not an algorithm family"
+      "input": "bfs alice top_n=5",
+      "comment": "#975: top_n is a pagerank knob, not valid on bfs"
     },
     {
-      "input": "illuminate alice 2 5 algorithm=none",
-      "comment": "#961: none is a reduction value, not an algorithm family"
-    },
-    {
-      "input": "illuminate alice 2 5 reduction=bogus",
+      "input": "bfs alice reduction=bogus",
       "comment": "#961: unknown reduction value"
     },
     {
-      "input": "illuminate alice 2 5 reduction=ppr",
-      "comment": "#961: ppr is a family, not a reduction value"
-    },
-    {
-      "input": "illuminate alice 2 5 objective=bogus",
+      "input": "bfs alice objective=bogus",
       "comment": "unknown objective value"
     },
     {
-      "input": "illuminate alice 2 5 weighting=bogus",
+      "input": "bfs alice weighting=bogus",
       "comment": "unknown weighting value"
     },
     {
-      "input": "illuminate alice 2 5 restart_prob=high",
-      "comment": "#801: non-numeric restart_prob is rejected"
-    },
-    {
-      "input": "illuminate alice 2 5 epsilon=tiny",
-      "comment": "#801: non-numeric epsilon is rejected"
-    },
-    {
-      "input": "illuminate alice 2 5 unknown=foo",
+      "input": "bfs alice unknown=foo",
       "comment": "unknown keyword"
     },
     {
-      "input": "illuminate alice 2 5 prefix=",
+      "input": "bfs alice prefix=",
       "comment": "#606: explicit empty prefix= value is rejected"
     },
     {
-      "input": "illuminate alice 2 5 algorithm",
-      "comment": "keyword without value"
+      "input": "bfs alice reduction",
+      "comment": "#975: reduction keyword without value"
     },
     {
-      "input": "illuminate alice 2 5 reduction",
-      "comment": "#961: reduction keyword without value"
+      "input": "pagerank alice reduction=mst",
+      "comment": "#975: pagerank has no reduction axis"
+    },
+    {
+      "input": "pagerank alice objective=max",
+      "comment": "#975: pagerank has no objective axis"
+    },
+    {
+      "input": "pagerank alice restart_prob=high",
+      "comment": "#801: non-numeric restart_prob is rejected"
+    },
+    {
+      "input": "pagerank alice epsilon=tiny",
+      "comment": "#801: non-numeric epsilon is rejected"
+    },
+    {
+      "input": "community alice reduction=bogus",
+      "comment": "#961: unknown reduction value"
+    },
+    {
+      "input": "community alice top_n=5",
+      "comment": "#975: top_n is a pagerank knob, not valid on community"
     },
     {
       "input": "put vertex greeting \"hello world",

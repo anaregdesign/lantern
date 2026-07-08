@@ -426,52 +426,83 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 		}
 		return nil
 
-	case "illuminate":
-		p, err := parser.IlluminateParam(s)
+	case "bfs":
+		p, err := parser.BfsParam(s)
 		if err != nil {
 			fmt.Printf("Error: %s\n", err)
 			return ErrIlluminate
 		}
 		obj, ok := objectiveByREPLName[p.Objective]
 		if !ok {
-			fmt.Printf("Error: illuminate: unknown objective %q\n", p.Objective)
+			fmt.Printf("Error: bfs: unknown objective %q\n", p.Objective)
 			return ErrIlluminate
 		}
 		red, ok := reductionByREPLName[p.Reduction]
 		if !ok {
-			fmt.Printf("Error: illuminate: unknown reduction %q\n", p.Reduction)
+			fmt.Printf("Error: bfs: unknown reduction %q\n", p.Reduction)
 			return ErrIlluminate
 		}
 		w, ok := weightingByREPLName[p.Weighting]
 		if !ok {
-			fmt.Printf("Error: illuminate: unknown weighting %q\n", p.Weighting)
-			return ErrIlluminate
-		}
-		famOpt, ok := IlluminateFamilyOption(p.Algorithm, red, clampUint32(p.Step), clampUint32(p.K), obj, p.RestartProb, p.Epsilon)
-		if !ok {
-			fmt.Printf("Error: illuminate: unknown algorithm %q\n", p.Algorithm)
+			fmt.Printf("Error: bfs: unknown weighting %q\n", p.Weighting)
 			return ErrIlluminate
 		}
 		opts := []client.IlluminateOption{
-			famOpt,
+			BfsOption(clampUint32(p.Step), clampUint32(p.FanOut), red, obj),
 			client.WithWeighting(w),
 		}
 		if p.Prefix != "" {
 			opts = append(opts, client.WithVertexPrefix(p.Prefix))
 		}
-		g, err := c.client.Illuminate(ctx, p.Seed, opts...)
+		return c.runIlluminate(ctx, p.Seed, opts)
+	case "pagerank":
+		p, err := parser.PagerankParam(s)
 		if err != nil {
 			fmt.Printf("Error: %s\n", err)
-			return ErrConnection
+			return ErrIlluminate
 		}
-		// Server now owns the post-traversal reduction (#410); the REPL
-		// just renders the resulting subgraph.
-		jsonString, err := json.MarshalIndent(g, "", "\t")
+		w, ok := weightingByREPLName[p.Weighting]
+		if !ok {
+			fmt.Printf("Error: pagerank: unknown weighting %q\n", p.Weighting)
+			return ErrIlluminate
+		}
+		opts := []client.IlluminateOption{
+			PagerankOption(clampUint32(p.TopN), p.RestartProb, p.Epsilon),
+			client.WithWeighting(w),
+		}
+		if p.Prefix != "" {
+			opts = append(opts, client.WithVertexPrefix(p.Prefix))
+		}
+		return c.runIlluminate(ctx, p.Seed, opts)
+	case "community":
+		p, err := parser.CommunityParam(s)
 		if err != nil {
-			return err
+			fmt.Printf("Error: %s\n", err)
+			return ErrIlluminate
 		}
-		fmt.Println(string(jsonString))
-		return nil
+		obj, ok := objectiveByREPLName[p.Objective]
+		if !ok {
+			fmt.Printf("Error: community: unknown objective %q\n", p.Objective)
+			return ErrIlluminate
+		}
+		red, ok := reductionByREPLName[p.Reduction]
+		if !ok {
+			fmt.Printf("Error: community: unknown reduction %q\n", p.Reduction)
+			return ErrIlluminate
+		}
+		w, ok := weightingByREPLName[p.Weighting]
+		if !ok {
+			fmt.Printf("Error: community: unknown weighting %q\n", p.Weighting)
+			return ErrIlluminate
+		}
+		opts := []client.IlluminateOption{
+			CommunityOption(clampUint32(p.MaxSize), red, obj, p.RestartProb, p.Epsilon),
+			client.WithWeighting(w),
+		}
+		if p.Prefix != "" {
+			opts = append(opts, client.WithVertexPrefix(p.Prefix))
+		}
+		return c.runIlluminate(ctx, p.Seed, opts)
 	case "help":
 		// Help prints the per-verb grammar reference (#436). Single
 		// source of truth lives in `parser.HelpText`; the TS port keeps
@@ -501,34 +532,46 @@ func clampUint32(v int) uint32 {
 	return uint32(u)
 }
 
-// IlluminateFamilyOption maps the CLI algorithm token to the typed
-// per-family SDK option introduced by the #846 oneof redesign. Since #961
-// the CLI grammar exposes the traversal FAMILY (algorithm=bfs|ppr|community)
-// and the post-traversal tree REDUCTION (reduction=none|mst|spt) as
-// orthogonal axes — this helper owns the translation: bfs selects the BFS
-// family (step/k become BFSOpts.Step/FanOut, red becomes the Reduction),
-// ppr selects the PPR family (k becomes PPROpts.TopN; step and reduction
-// have no PPR meaning and are dropped), and community selects the local
-// community family (k becomes the max_size upper bound; red/obj drive the
-// optional tree reduction, #845). Shared by the REPL dispatcher and the
-// cobra `illuminate` flag path so both surfaces translate identically.
-func IlluminateFamilyOption(algo string, red client.Reduction, step, k uint32, obj client.Objective, restartProb, epsilon float32) (client.IlluminateOption, bool) {
-	switch algo {
-	case "", "bfs":
-		return client.WithBFS(client.BFSOpts{Step: step, FanOut: k, Objective: obj, Reduction: red}), true
-	case "ppr":
-		return client.WithPPR(client.PPROpts{TopN: k, RestartProb: restartProb, Epsilon: epsilon}), true
-	case "community":
-		// Local community extraction (#845): k is the max_size UPPER BOUND
-		// (the sweep may stop earlier); step has no meaning here. red/obj
-		// drive the optional post-traversal tree reduction (#961).
-		return client.WithLocalCommunity(client.LocalCommunityOpts{MaxSize: k, RestartProb: restartProb, Epsilon: epsilon, Reduction: red, Objective: obj}), true
-	}
-	return nil, false
+// BfsOption / PagerankOption / CommunityOption build the typed per-family SDK
+// option from CLI-resolved knobs (#846 oneof, #975 verb split). Each family
+// verb owns exactly the knobs its wire arm understands: bfs carries step/fan_out
+// plus the tree reduction, pagerank carries top_n plus the α/ε push knobs (no
+// reduction — its relevance star is already a tree), and community carries
+// max_size plus α/ε and an optional tree reduction (#845). Shared by the REPL
+// dispatcher and the cobra family subcommands so both surfaces translate
+// identically.
+func BfsOption(step, fanOut uint32, red client.Reduction, obj client.Objective) client.IlluminateOption {
+	return client.WithBFS(client.BFSOpts{Step: step, FanOut: fanOut, Objective: obj, Reduction: red})
 }
 
-// objectiveByREPLName / reductionByREPLName / weightingByREPLName mirror
-// the friendly names accepted by the REPL grammar (parser.Illuminate{...})
+func PagerankOption(topN uint32, restartProb, epsilon float32) client.IlluminateOption {
+	return client.WithPPR(client.PPROpts{TopN: topN, RestartProb: restartProb, Epsilon: epsilon})
+}
+
+func CommunityOption(maxSize uint32, red client.Reduction, obj client.Objective, restartProb, epsilon float32) client.IlluminateOption {
+	return client.WithLocalCommunity(client.LocalCommunityOpts{MaxSize: maxSize, RestartProb: restartProb, Epsilon: epsilon, Reduction: red, Objective: obj})
+}
+
+// runIlluminate executes a family walk and renders the resulting subgraph as
+// indented JSON. The server owns the traversal and any post-traversal reduction
+// (#410); the REPL/one-liner just prints what comes back. Shared by the three
+// family dispatch cases.
+func (c *CLIService) runIlluminate(ctx context.Context, seed string, opts []client.IlluminateOption) error {
+	g, err := c.client.Illuminate(ctx, seed, opts...)
+	if err != nil {
+		fmt.Printf("Error: %s\n", err)
+		return ErrConnection
+	}
+	jsonString, err := json.MarshalIndent(g, "", "\t")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(jsonString))
+	return nil
+}
+
+// objectiveByREPLName / reductionByREPLName / weightingByREPLName mirror the
+// friendly names accepted by the family verbs (parser.Bfs / parser.Community)
 // and translate to the SDK enums. Kept private to the REPL handler.
 var (
 	objectiveByREPLName = map[string]client.Objective{
