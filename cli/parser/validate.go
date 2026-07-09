@@ -14,7 +14,7 @@ func Validate(input string) error {
 	}
 	v, err := Verb(s)
 	if err != nil {
-		return errors.New("usage: { get | put | delete | add | scan | keys | bfs | pagerank | community | help | exit } ... ")
+		return errors.New("usage: { get | put | delete | add | scan | count | delete-prefix | keys | bfs | pagerank | community | help | exit } ... ")
 	}
 
 	switch v {
@@ -155,7 +155,7 @@ func Validate(input string) error {
 	case "exit":
 
 	default:
-		return errors.New("usage: { get | put | delete | add | scan | keys | bfs | pagerank | community | help | exit } ... ")
+		return errors.New("usage: { get | put | delete | add | scan | count | delete-prefix | keys | bfs | pagerank | community | help | exit } ... ")
 	}
 	return nil
 }

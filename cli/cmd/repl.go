@@ -156,12 +156,16 @@ EXAMPLE
 				fmt.Println("Usage: scan { vertices <prefix: string> [<limit: int>] | edges <tail-prefix: string> [<limit: int>] }")
 			case service.ErrKeys:
 				fmt.Println("Usage: keys <prefix: string> [<limit: int>]")
-			case service.ErrIlluminate:
-				fmt.Println("Usage: illuminate <seed: string> <step: int> <k: int> [algorithm=bfs|ppr|community] [reduction=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [restart_prob=<float>] [epsilon=<float>]")
+			case service.ErrBFS:
+				fmt.Println("Usage: bfs <seed: string> [step: int] [fan_out: int] [reduction=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>]")
+			case service.ErrPagerank:
+				fmt.Println("Usage: pagerank <seed: string> [top_n: int] [restart_prob=<float>] [epsilon=<float>] [weighting=raw|tfidf|bm25] [prefix=<string>]")
+			case service.ErrCommunity:
+				fmt.Println("Usage: community <seed: string> [max_size: int] [restart_prob=<float>] [epsilon=<float>] [reduction=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>]")
 			case service.ErrInvalidVerb:
-				fmt.Println("Usage: { get | put | delete | add | scan | illuminate | help | exit } ...")
+				fmt.Println("Usage: { get | put | delete | add | scan | count | delete-prefix | keys | bfs | pagerank | community | help | exit } ...")
 			case service.ErrInvalidObjective:
-				fmt.Println("{ get { vertex | edge } | put { vertex | edge } | delete { vertex | edge } | add { edge | decaying-edge } | scan { vertices | edges } | illuminate {...} } ...")
+				fmt.Println("{ get { vertex | edge } | put { vertex | edge } | delete { vertex | edge } | add { edge | decaying-edge } | scan { vertices | edges } | count vertices | delete-prefix vertices | keys {...} | bfs {...} | pagerank {...} | community {...} } ...")
 			case service.ErrConnection:
 				fmt.Println("server error")
 			default:

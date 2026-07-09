@@ -474,11 +474,11 @@ export function parseBfs(rest: string[]): ParseResult {
       const value = tok.slice(eq + 1);
       const lvalue = value.toLowerCase();
       if (key === "step") {
-        const n = parseInt10(value);
+        const n = parsePositiveFamilyInt(value);
         if (n === null) return { ok: false, usage };
         step = n;
       } else if (key === "fan_out") {
-        const n = parseInt10(value);
+        const n = parsePositiveFamilyInt(value);
         if (n === null) return { ok: false, usage };
         fanOut = n;
       } else if (key === "reduction") {
@@ -502,11 +502,11 @@ export function parseBfs(rest: string[]): ParseResult {
       continue;
     }
     if (pos === 0) {
-      const n = parseInt10(tok);
+      const n = parsePositiveFamilyInt(tok);
       if (n === null) return { ok: false, usage };
       step = n;
     } else if (pos === 1) {
-      const n = parseInt10(tok);
+      const n = parsePositiveFamilyInt(tok);
       if (n === null) return { ok: false, usage };
       fanOut = n;
     } else {
@@ -555,15 +555,15 @@ export function parsePagerank(rest: string[]): ParseResult {
       const value = tok.slice(eq + 1);
       const lvalue = value.toLowerCase();
       if (key === "top_n") {
-        const n = parseInt10(value);
+        const n = parseNonNegativeFamilyInt(value);
         if (n === null) return { ok: false, usage };
         topN = n;
       } else if (key === "restart_prob") {
-        const f = parseFloatStrict(value);
+        const f = parseFamilyRestartProb(value);
         if (f === null) return { ok: false, usage };
         restartProb = f;
       } else if (key === "epsilon") {
-        const f = parseFloatStrict(value);
+        const f = parsePositiveFamilyFloat(value);
         if (f === null) return { ok: false, usage };
         epsilon = f;
       } else if (key === "weighting") {
@@ -579,7 +579,7 @@ export function parsePagerank(rest: string[]): ParseResult {
       continue;
     }
     if (pos === 0) {
-      const n = parseInt10(tok);
+      const n = parseNonNegativeFamilyInt(tok);
       if (n === null) return { ok: false, usage };
       topN = n;
     } else {
@@ -628,15 +628,15 @@ export function parseCommunity(rest: string[]): ParseResult {
       const value = tok.slice(eq + 1);
       const lvalue = value.toLowerCase();
       if (key === "max_size") {
-        const n = parseInt10(value);
+        const n = parseNonNegativeFamilyInt(value);
         if (n === null) return { ok: false, usage };
         maxSize = n;
       } else if (key === "restart_prob") {
-        const f = parseFloatStrict(value);
+        const f = parseFamilyRestartProb(value);
         if (f === null) return { ok: false, usage };
         restartProb = f;
       } else if (key === "epsilon") {
-        const f = parseFloatStrict(value);
+        const f = parsePositiveFamilyFloat(value);
         if (f === null) return { ok: false, usage };
         epsilon = f;
       } else if (key === "reduction") {
@@ -660,7 +660,7 @@ export function parseCommunity(rest: string[]): ParseResult {
       continue;
     }
     if (pos === 0) {
-      const n = parseInt10(tok);
+      const n = parseNonNegativeFamilyInt(tok);
       if (n === null) return { ok: false, usage };
       maxSize = n;
     } else {
@@ -939,6 +939,26 @@ function parseInt10(s: string): number | null {
   }
   const n = Number.parseInt(s, 10);
   return Number.isFinite(n) ? n : null;
+}
+
+function parsePositiveFamilyInt(s: string): number | null {
+  const n = parseInt10(s);
+  return n !== null && n > 0 ? n : null;
+}
+
+function parseNonNegativeFamilyInt(s: string): number | null {
+  const n = parseInt10(s);
+  return n !== null && n >= 0 ? n : null;
+}
+
+function parseFamilyRestartProb(s: string): number | null {
+  const n = parseFloatStrict(s);
+  return n !== null && n > 0 && n < 1 ? n : null;
+}
+
+function parsePositiveFamilyFloat(s: string): number | null {
+  const n = parseFloatStrict(s);
+  return n !== null && n > 0 ? n : null;
 }
 
 /**

@@ -56,8 +56,17 @@ EXAMPLES
 `,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := rejectMixedFamilyGrammar(cmd, args); err != nil {
+			return err
+		}
 		if len(args) > 1 {
 			return forwardFamilyPositional(cmd, "pagerank", args)
+		}
+		if err := validateExplicitRestartProbFlag(cmd, "restart-prob", pagerankRestartProb); err != nil {
+			return err
+		}
+		if err := validateExplicitPositiveFloat32Flag(cmd, "epsilon", pagerankEpsilon); err != nil {
+			return err
 		}
 		w, ok := weightingByName[pagerankWeightingStr]
 		if !ok {

@@ -61,4 +61,27 @@ func TestCLI_FamilyVerbs_RealWire(t *testing.T) {
 	if err := svc.RunArgs(ctx, []string{"pagerank", "a", "reduction=mst"}); err == nil {
 		t.Error("RunArgs(pagerank a reduction=mst) = nil, want a parse error")
 	}
+
+	// Numeric-domain failure contract (#980): the CLI parser rejects out-of-range
+	// family knobs before constructing SDK options or reaching the server.
+	for _, tc := range []struct {
+		name string
+		args []string
+		want error
+	}{
+		{name: "BfsZeroStep", args: []string{"bfs", "a", "0"}, want: cliservice.ErrBFS},
+		{name: "BfsZeroFanOut", args: []string{"bfs", "a", "1", "0"}, want: cliservice.ErrBFS},
+		{name: "PagerankNegativeTopN", args: []string{"pagerank", "a", "-1"}, want: cliservice.ErrPagerank},
+		{name: "PagerankRestartProbBoundary", args: []string{"pagerank", "a", "restart_prob=1"}, want: cliservice.ErrPagerank},
+		{name: "PagerankZeroEpsilon", args: []string{"pagerank", "a", "epsilon=0"}, want: cliservice.ErrPagerank},
+		{name: "CommunityNegativeMaxSize", args: []string{"community", "a", "-1"}, want: cliservice.ErrCommunity},
+		{name: "CommunityRestartProbBoundary", args: []string{"community", "a", "restart_prob=0"}, want: cliservice.ErrCommunity},
+		{name: "CommunityZeroEpsilon", args: []string{"community", "a", "epsilon=0"}, want: cliservice.ErrCommunity},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := svc.RunArgs(ctx, tc.args); err != tc.want {
+				t.Errorf("RunArgs(%v) = %v, want %v", tc.args, err, tc.want)
+			}
+		})
+	}
 }

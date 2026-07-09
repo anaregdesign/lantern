@@ -525,7 +525,15 @@ func TestBfsParam(t *testing.T) {
 			"alice prefix=",
 			"alice 1 2 3",    // third bare positional
 			"alice notanint", // non-integer step
-			"alice top_n=5",  // pagerank kwarg not valid on bfs
+			"alice -1 2",     // negative step
+			"alice 0 2",      // zero step
+			"alice 1 -2",     // negative fan_out
+			"alice 1 0",      // zero fan_out
+			"alice step=-1",
+			"alice step=0",
+			"alice fan_out=-1",
+			"alice fan_out=0",
+			"alice top_n=5", // pagerank kwarg not valid on bfs
 		} {
 			s, _ := NewSource(in)
 			if _, err := BfsParam(s); err == nil {
@@ -566,6 +574,19 @@ func TestPagerankParam(t *testing.T) {
 		}
 	})
 
+	t.Run("top_n zero means all positive-mass vertices", func(t *testing.T) {
+		for _, in := range []string{"alice 0", "alice top_n=0"} {
+			s, _ := NewSource(in)
+			m, err := PagerankParam(s)
+			if err != nil {
+				t.Fatalf("PagerankParam(%q): %v", in, err)
+			}
+			if m.TopN != 0 {
+				t.Fatalf("PagerankParam(%q).TopN = %d, want 0", in, m.TopN)
+			}
+		}
+	})
+
 	t.Run("top_n/restart_prob/epsilon in any order", func(t *testing.T) {
 		s, _ := NewSource("alice epsilon=0.001 restart_prob=0.25 top_n=15")
 		m, err := PagerankParam(s)
@@ -592,8 +613,17 @@ func TestPagerankParam(t *testing.T) {
 		for _, in := range []string{
 			"alice reduction=mst", // pagerank has no reduction
 			"alice objective=max", // pagerank has no objective
+			"alice -1",            // top_n cannot be negative
+			"alice top_n=-1",
 			"alice restart_prob=high",
+			"alice restart_prob=0",
+			"alice restart_prob=1",
+			"alice restart_prob=-0.1",
+			"alice restart_prob=NaN",
 			"alice epsilon=tiny",
+			"alice epsilon=0",
+			"alice epsilon=-0.1",
+			"alice epsilon=NaN",
 			"alice prefix=",
 			"alice 1 2", // second bare positional
 		} {
@@ -655,7 +685,17 @@ func TestCommunityParam(t *testing.T) {
 			"alice reduction=bogus",
 			"alice objective=bogus",
 			"alice top_n=5", // pagerank kwarg not valid on community
+			"alice -1",      // max_size cannot be negative
+			"alice max_size=-1",
 			"alice restart_prob=high",
+			"alice restart_prob=0",
+			"alice restart_prob=1",
+			"alice restart_prob=-0.1",
+			"alice restart_prob=NaN",
+			"alice epsilon=tiny",
+			"alice epsilon=0",
+			"alice epsilon=-0.1",
+			"alice epsilon=NaN",
 			"alice prefix=",
 			"alice 1 2", // second bare positional
 		} {
