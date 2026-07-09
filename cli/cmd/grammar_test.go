@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/anaregdesign/lantern/cli/parser"
@@ -94,4 +95,71 @@ func TestRunGrammarLineEmptyArgsShowsHelp(t *testing.T) {
 	if err := runGrammarLine(c, "get", nil); err != nil {
 		t.Errorf("runGrammarLine(empty) = %v, want nil (help shown)", err)
 	}
+}
+
+func TestFamilyCommandsRejectMixedFlagsAndPositionalGrammar(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		cmd   *cobra.Command
+		flag  string
+		value string
+		args  []string
+	}{
+		{name: "Bfs", cmd: bfsCmd, flag: "step", value: "2", args: []string{"alice", "3"}},
+		{name: "Pagerank", cmd: pagerankCmd, flag: "top-n", value: "5", args: []string{"alice", "3"}},
+		{name: "Community", cmd: communityCmd, flag: "max-size", value: "5", args: []string{"alice", "3"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withChangedFlag(t, tc.cmd, tc.flag, tc.value)
+			err := tc.cmd.RunE(tc.cmd, tc.args)
+			if err == nil || !strings.Contains(err.Error(), "cannot mix flags with the positional grammar") {
+				t.Fatalf("RunE(%v with --%s) = %v, want mixed-grammar error", tc.args, tc.flag, err)
+			}
+		})
+	}
+}
+
+func TestFamilyCommandsValidateFlagDomainsBeforeDial(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		cmd      *cobra.Command
+		flag     string
+		value    string
+		wantText string
+	}{
+		{name: "BfsZeroStep", cmd: bfsCmd, flag: "step", value: "0", wantText: "--step must be a positive integer"},
+		{name: "BfsZeroFanOut", cmd: bfsCmd, flag: "fan-out", value: "0", wantText: "--fan-out must be a positive integer"},
+		{name: "PagerankZeroRestartProb", cmd: pagerankCmd, flag: "restart-prob", value: "0", wantText: "--restart-prob must be a float in (0,1)"},
+		{name: "PagerankOneRestartProb", cmd: pagerankCmd, flag: "restart-prob", value: "1", wantText: "--restart-prob must be a float in (0,1)"},
+		{name: "PagerankZeroEpsilon", cmd: pagerankCmd, flag: "epsilon", value: "0", wantText: "--epsilon must be a positive float"},
+		{name: "CommunityZeroRestartProb", cmd: communityCmd, flag: "restart-prob", value: "0", wantText: "--restart-prob must be a float in (0,1)"},
+		{name: "CommunityZeroEpsilon", cmd: communityCmd, flag: "epsilon", value: "0", wantText: "--epsilon must be a positive float"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withChangedFlag(t, tc.cmd, tc.flag, tc.value)
+			err := tc.cmd.RunE(tc.cmd, []string{"alice"})
+			if err == nil || !strings.Contains(err.Error(), tc.wantText) {
+				t.Fatalf("RunE(alice with --%s=%s) = %v, want %q", tc.flag, tc.value, err, tc.wantText)
+			}
+		})
+	}
+}
+
+func withChangedFlag(t *testing.T, cmd *cobra.Command, name, value string) {
+	t.Helper()
+	flag := cmd.Flags().Lookup(name)
+	if flag == nil {
+		t.Fatalf("missing flag %q on %s", name, cmd.Name())
+	}
+	oldValue := flag.Value.String()
+	oldChanged := flag.Changed
+	if err := cmd.Flags().Set(name, value); err != nil {
+		t.Fatalf("set --%s=%s: %v", name, value, err)
+	}
+	t.Cleanup(func() {
+		if err := cmd.Flags().Set(name, oldValue); err != nil {
+			t.Fatalf("restore --%s=%s: %v", name, oldValue, err)
+		}
+		flag.Changed = oldChanged
+	})
 }

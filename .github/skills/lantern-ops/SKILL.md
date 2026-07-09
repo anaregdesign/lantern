@@ -1,6 +1,6 @@
 ---
 name: lantern-ops
-description: "Operate Lantern data through the `lantern-cli` CLI — read, write, delete, scan, count, bulk-load, back up/restore, and graph-walk vertices and edges from the command line. Use whenever the request involves manipulating data in a running Lantern server (get/put/delete a vertex or edge, prefix scan or count, bulk NDJSON load, whole-graph dump/restore backup, prefix delete, or an illuminate graph walk), or driving Lantern from an interactive/agentic system. Do NOT use this skill for editing Lantern's own Go source, regenerating protobuf/wire code, server deployment/IaC, or the MCP working-context tools."
+description: "Operate Lantern data through the `lantern-cli` CLI — read, write, delete, scan, count, bulk-load, back up/restore, and graph-walk vertices and edges from the command line. Use whenever the request involves manipulating data in a running Lantern server (get/put/delete a vertex or edge, prefix scan or count, bulk NDJSON load, whole-graph dump/restore backup, prefix delete, or a bfs/pagerank/community graph walk), or driving Lantern from an interactive/agentic system. Do NOT use this skill for editing Lantern's own Go source, regenerating protobuf/wire code, server deployment/IaC, or the MCP working-context tools."
 ---
 
 # Lantern Ops — CLI command reference
@@ -71,7 +71,9 @@ Examples worth reading before first use:
 ```shell
 lantern-cli put --help               # vertex/edge writes: value typing (type=) + ttl_seconds
 lantern-cli add --help               # additive vs idempotent edge write semantics
-lantern-cli illuminate --help        # the algorithm × reduction × objective × weighting axes
+lantern-cli bfs --help               # breadth-first family knobs: step/fan-out + reduction/objective/weighting
+lantern-cli pagerank --help          # Personalized PageRank knobs: top-n + restart-prob/epsilon
+lantern-cli community --help         # local-community knobs: max-size + reduction/objective/weighting
 lantern-cli delete-prefix --help     # the destructive-delete safety gate
 ```
 
@@ -312,33 +314,28 @@ lantern-cli scan edges user: 100 head=post:
 lantern-cli scan edges "" head=post: all=true > posts.json
 ```
 
-## `illuminate <seed>` — graph walk
+## Graph walks: `bfs`, `pagerank`, `community`
 
-Run a bounded breadth-first walk from `<seed>` and emit the visited subgraph as
-indented JSON `{vertices: {...}, edges: {tail: {head: weight}}}`. Read-only and
-idempotent. Flags:
+Run a read-only graph walk from `<seed>` and emit the visited subgraph as
+indented JSON `{vertices: {...}, edges: {tail: {head: weight}}}`. The CLI has
+one verb per traversal family; each verb also accepts the REPL positional
+grammar when more than the seed is supplied.
 
-| Flag | Default | Meaning |
+| Verb | Main knobs | Meaning |
 |---|---|---|
-| `--step <uint32>` | `1` | max walk depth from the seed. BFS-family only — ignored (has no meaning) under `--algorithm ppr` |
-| `--k <uint32>` | `10` | max neighbours visited per node. On the wire (#846) this maps to `bfs.fan_out` (per-hop top-k) for `none`/`mst`/`spt`, or `ppr.top_n` (total ranked vertices) for `ppr` |
-| `--algorithm <mode>` | `none` | traversal family + reduction. On the wire (#846) `none`/`mst`/`spt` select the BFS family (`mst`/`spt` are its post-traversal tree *reductions*), `ppr` selects the Personalized PageRank family (seed-anchored ranking via ACL forward-push), and `community` (#845) selects conductance-based local community extraction (PageRank-Nibble sweep cut over the PPR push; `--k` is then an UPPER bound — the sweep may stop earlier — and the result is the real induced subgraph, not a relevance star). The CLI keeps the single friendly flag; the typed split is server-side |
-| `--objective <dir>` | `max` | optimisation direction; governs **both** per-hop top-k pruning and the reduction: `max` (largest-weight wins; weight = relevance) or `min` (smallest-weight wins; weight = cost). Ignored by `--algorithm ppr`, which always ranks by PPR mass |
-| `--weighting <mode>` | `raw` | edge-weight transform before the walk: `raw`, `tfidf` (re-score by TF-IDF over per-vertex out-edge distribution), or `bm25` (re-score by Okapi BM25, k1=1.2/b=0.75, over the same distribution — IDF saturation + out-degree length-normalisation, consistent with full-text search) |
-| `--prefix <string>` | — | restrict the walk **frontier** to vertices with this key prefix (case-sensitive); the seed is always kept as anchor. Applied server-side before top-k and any reduction, so `--prefix` + `mst`/`spt` yields a tree over the prefix-induced subgraph, not a path in the full graph |
-| `--restart-prob <float>` | `0` (server `α=0.15`) | **`ppr` only.** Teleport/restart probability α. Higher α keeps the ranking closer to the seed; `0` defers to the server default |
-| `--epsilon <float>` | `0` (server `ε=1e-4`) | **`ppr` only.** Forward-push residual threshold ε. Smaller ε pushes more nodes (higher recall, more work); `0` defers to the server default |
+| `bfs <seed>` | `--step`, `--fan-out`, `--reduction`, `--objective`, `--weighting`, `--prefix` | Greedy per-hop top-k breadth-first walk. `reduction=mst|spt` renders a tree view; `objective=min|max` controls both pruning and reduction direction. |
+| `pagerank <seed>` | `--top-n`, `--restart-prob`, `--epsilon`, `--weighting`, `--prefix` | Personalized PageRank relevance star. No `reduction` or `objective` knob; `restart_prob` must be in `(0,1)` when supplied and `epsilon` must be positive when supplied. |
+| `community <seed>` | `--max-size`, `--restart-prob`, `--epsilon`, `--reduction`, `--objective`, `--weighting`, `--prefix` | Conductance-cut local community. `max_size=0` lets the sweep decide; optional tree reduction renders a backbone view. |
 
 ```shell
-lantern-cli illuminate alice                                   # raw 1-hop, top-10 by weight
-lantern-cli illuminate alice --step 2 --k 5 --weighting tfidf  # 2-hop, TF-IDF re-rank
-lantern-cli illuminate alice --step 2 --k 5 --weighting bm25   # 2-hop, Okapi BM25 re-rank
-lantern-cli illuminate alice --step 3 --k 20 --algorithm mst --objective min  # min-weight spanning tree
-lantern-cli illuminate alice --step 3 --k 20 --algorithm spt --objective max  # relevance-weighted SPT
-lantern-cli illuminate alice --step 2 --k 8 --algorithm ppr                    # PPR neighbourhood, server-default locality
-lantern-cli illuminate alice --step 2 --k 8 --algorithm ppr --restart-prob 0.25  # tighter, more seed-local PPR
-lantern-cli illuminate alice --k 30 --algorithm community                        # conductance-cut community (k = upper bound)
-lantern-cli illuminate alice --step 2 --k 5 --prefix users/    # frontier restricted to users/
+lantern-cli bfs alice                                      # depth-5, per-hop top-3 defaults
+lantern-cli bfs alice --step 2 --fan-out 5 --weighting tfidf
+lantern-cli bfs alice 3 20 reduction=mst objective=min     # same grammar as the REPL
+lantern-cli bfs alice --step 2 --fan-out 5 --prefix users/ # frontier restricted to users/
+lantern-cli pagerank alice --top-n 8                       # PPR neighbourhood, server-default locality
+lantern-cli pagerank alice 8 restart_prob=0.25 epsilon=1e-4
+lantern-cli community alice --max-size 30                  # conductance-cut community
+lantern-cli community alice 30 reduction=mst objective=min # community as a spanning-tree backbone
 ```
 
 ## `bulk` — NDJSON bulk load
@@ -418,7 +415,7 @@ lantern-cli get edge userA itemX | jq .weight     # → 2
 
 # Walk a relevance graph against a non-default replica over TLS
 lantern-cli --tls --tls-ca ./ca.pem -H lantern.example.com -p 443 \
-  illuminate userA --step 2 --k 10 --weighting tfidf
+  bfs userA --step 2 --fan-out 10 --weighting tfidf
 ```
 
 ## Gotchas checklist

@@ -36,38 +36,40 @@ run version            version
 run help               --help
 
 # -- vertex put/get/delete (single) ----------------------------------
-run vertex-put-string  "${META[@]}" vertex put alice 'Alice Smith' --ttl 5m
-run vertex-put-int     "${META[@]}" vertex put count 42 --ttl 5m
-run vertex-put-float   "${META[@]}" vertex put price 19.99 --ttl 5m
-run vertex-put-bool    "${META[@]}" vertex put alive true --ttl 5m
-run vertex-put-json    "${META[@]}" vertex put bob '{"age":30}' --value-type=json --ttl 5m
-run vertex-put-dt      "${META[@]}" vertex put epoch '2025-01-01T00:00:00Z' --value-type=datetime --ttl 5m
-run vertex-put-dur     "${META[@]}" vertex put cooldown 30s --value-type=duration --ttl 5m
-run vertex-put-zip     "${META[@]}" vertex put zip 01234 --value-type=string --ttl 5m
-run vertex-put-shortlived "${META[@]}" vertex put ephem hi --ttl 2s
+run vertex-put-string  "${META[@]}" put vertex alice 'Alice Smith' 300
+run vertex-put-int     "${META[@]}" put vertex count 42 300
+run vertex-put-float   "${META[@]}" put vertex price 19.99 300
+run vertex-put-bool    "${META[@]}" put vertex alive true 300
+run vertex-put-json    "${META[@]}" put vertex bob '{"age":30}' 300 type=json
+run vertex-put-dt      "${META[@]}" put vertex epoch '2025-01-01T00:00:00Z' 300 type=datetime
+run vertex-put-dur     "${META[@]}" put vertex cooldown 30s 300 type=duration
+run vertex-put-zip     "${META[@]}" put vertex zip 01234 300 type=string
+run vertex-put-shortlived "${META[@]}" put vertex ephem hi 2
 
-run vertex-get-string  "${META[@]}" vertex get alice
-run vertex-get-int     "${META[@]}" vertex get count
-run vertex-get-json    "${META[@]}" vertex get bob
-run vertex-get-missing "${META[@]}" vertex get does-not-exist
+run vertex-get-string  "${META[@]}" get vertex alice
+run vertex-get-int     "${META[@]}" get vertex count
+run vertex-get-json    "${META[@]}" get vertex bob
+run vertex-get-missing "${META[@]}" get vertex does-not-exist
 
 # -- edge add/put/get/delete (single) --------------------------------
-run edge-add-1         "${META[@]}" edge add alice bob 1.5 --ttl 5m
-run edge-add-2         "${META[@]}" edge add alice bob 0.5 --ttl 5m
-run edge-get-additive  "${META[@]}" edge get alice bob
-run edge-put-replace   "${META[@]}" edge put alice bob 0.25 --ttl 5m
-run edge-get-after-put "${META[@]}" edge get alice bob
-run edge-get-missing   "${META[@]}" edge get alice nobody
+run edge-add-1         "${META[@]}" add edge alice bob 1.5 300
+run edge-add-2         "${META[@]}" add edge alice bob 0.5 300
+run edge-get-additive  "${META[@]}" get edge alice bob
+run edge-put-replace   "${META[@]}" put edge alice bob 0.25 300
+run edge-get-after-put "${META[@]}" get edge alice bob
+run edge-get-missing   "${META[@]}" get edge alice nobody
 
-# -- illuminate every optimization mode ------------------------------
-run edge-add-carol      "${META[@]}" edge add alice carol 0.8 --ttl 5m
-run edge-add-dave       "${META[@]}" edge add bob dave 0.6 --ttl 5m
-run edge-add-carol-dave "${META[@]}" edge add carol dave 0.4 --ttl 5m
+# -- graph walk family verbs -----------------------------------------
+run edge-add-carol      "${META[@]}" add edge alice carol 0.8 300
+run edge-add-dave       "${META[@]}" add edge bob dave 0.6 300
+run edge-add-carol-dave "${META[@]}" add edge carol dave 0.4 300
 
-for mode in none mst max-st spt inverse-spt; do
-  run "illuminate-$mode" "${META[@]}" illuminate alice --step 3 --k 10 --optimize "$mode"
-done
-run illuminate-tfidf    "${META[@]}" illuminate alice --step 2 --k 5 --tfidf
+run bfs-none             "${META[@]}" bfs alice --step 3 --fan-out 10
+run bfs-mst-min          "${META[@]}" bfs alice --step 3 --fan-out 10 --reduction mst --objective min
+run bfs-spt-max          "${META[@]}" bfs alice --step 3 --fan-out 10 --reduction spt --objective max
+run bfs-tfidf            "${META[@]}" bfs alice --step 2 --fan-out 5 --weighting tfidf
+run pagerank-default     "${META[@]}" pagerank alice --top-n 8
+run community-mst        "${META[@]}" community alice --max-size 30 --reduction mst --objective min
 
 # -- bulk: NDJSON ----------------------------------------------------
 {
@@ -95,16 +97,16 @@ echo "==> bulk-vertices-stdin"
 tail -n1 "$OUT/bulk-vertices-stdin.log" | sed 's/^/    /'
 
 # -- batch delete ----------------------------------------------------
-run vertex-delete-batch "${META[@]}" vertex delete bulk-v1 bulk-v2 bulk-v3 bulk-v4 bulk-v5
-run edge-delete-batch   "${META[@]}" edge delete alice:bob alice:carol bob:dave carol:dave
+run vertex-delete-batch "${META[@]}" delete vertex bulk-v1 bulk-v2 bulk-v3 bulk-v4 bulk-v5
+run edge-delete-batch   "${META[@]}" delete edge alice bob alice carol bob dave carol dave
 
 # -- TTL expiry observation ------------------------------------------
 echo "==> waiting 4s for 'ephem' (2s TTL) to expire ..."
 sleep 4
-run vertex-get-ephem-expired "${META[@]}" vertex get ephem
+run vertex-get-ephem-expired "${META[@]}" get vertex ephem
 
 # -- gzip compression ------------------------------------------------
-run vertex-put-gzip    "${META[@]}" --compression gzip vertex put gz hello --ttl 5m
-run vertex-get-gzip    "${META[@]}" --compression gzip vertex get gz
+run vertex-put-gzip    "${META[@]}" --compression gzip put vertex gz hello 300
+run vertex-get-gzip    "${META[@]}" --compression gzip get vertex gz
 
 echo "DONE. Logs in $OUT/"

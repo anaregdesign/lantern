@@ -57,8 +57,17 @@ EXAMPLES
 `,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := rejectMixedFamilyGrammar(cmd, args); err != nil {
+			return err
+		}
 		if len(args) > 1 {
 			return forwardFamilyPositional(cmd, "community", args)
+		}
+		if err := validateExplicitRestartProbFlag(cmd, "restart-prob", communityRestartProb); err != nil {
+			return err
+		}
+		if err := validateExplicitPositiveFloat32Flag(cmd, "epsilon", communityEpsilon); err != nil {
+			return err
 		}
 		obj, ok := objectiveByName[communityObjectiveStr]
 		if !ok {

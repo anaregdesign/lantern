@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -521,15 +522,15 @@ func BfsParam(s *Source) (*Bfs, error) {
 			lvalue := strings.ToLower(value)
 			switch key {
 			case "step":
-				n, perr := strconv.Atoi(value)
+				n, perr := positiveFamilyInt(value, "bfs: step=")
 				if perr != nil {
-					return nil, errors.New("bfs: step=" + value + " (want an integer)")
+					return nil, perr
 				}
 				m.Step = n
 			case "fan_out":
-				n, perr := strconv.Atoi(value)
+				n, perr := positiveFamilyInt(value, "bfs: fan_out=")
 				if perr != nil {
-					return nil, errors.New("bfs: fan_out=" + value + " (want an integer)")
+					return nil, perr
 				}
 				m.FanOut = n
 			case "reduction":
@@ -559,15 +560,15 @@ func BfsParam(s *Source) (*Bfs, error) {
 		}
 		switch pos {
 		case 0:
-			n, perr := strconv.Atoi(tok)
+			n, perr := positiveFamilyInt(tok, "bfs: step ")
 			if perr != nil {
-				return nil, errors.New("bfs: step " + tok + " (want an integer)")
+				return nil, perr
 			}
 			m.Step = n
 		case 1:
-			n, perr := strconv.Atoi(tok)
+			n, perr := positiveFamilyInt(tok, "bfs: fan_out ")
 			if perr != nil {
-				return nil, errors.New("bfs: fan_out " + tok + " (want an integer)")
+				return nil, perr
 			}
 			m.FanOut = n
 		default:
@@ -605,23 +606,23 @@ func PagerankParam(s *Source) (*Pagerank, error) {
 			lvalue := strings.ToLower(value)
 			switch key {
 			case "top_n":
-				n, perr := strconv.Atoi(value)
+				n, perr := nonNegativeFamilyInt(value, "pagerank: top_n=")
 				if perr != nil {
-					return nil, errors.New("pagerank: top_n=" + value + " (want an integer)")
+					return nil, perr
 				}
 				m.TopN = n
 			case "restart_prob":
-				rp, perr := strconv.ParseFloat(value, 32)
+				rp, perr := familyRestartProb(value, "pagerank: restart_prob=")
 				if perr != nil {
-					return nil, errors.New("pagerank: restart_prob=" + value + " (want a float in (0,1))")
+					return nil, perr
 				}
-				m.RestartProb = float32(rp)
+				m.RestartProb = rp
 			case "epsilon":
-				eps, perr := strconv.ParseFloat(value, 32)
+				eps, perr := positiveFamilyFloat(value, "pagerank: epsilon=")
 				if perr != nil {
-					return nil, errors.New("pagerank: epsilon=" + value + " (want a positive float)")
+					return nil, perr
 				}
-				m.Epsilon = float32(eps)
+				m.Epsilon = eps
 			case "weighting":
 				if !contains(TraversalWeightings, lvalue) {
 					return nil, errors.New("pagerank: weighting=" + value + " (want raw|tfidf|bm25)")
@@ -639,9 +640,9 @@ func PagerankParam(s *Source) (*Pagerank, error) {
 		}
 		switch pos {
 		case 0:
-			n, perr := strconv.Atoi(tok)
+			n, perr := nonNegativeFamilyInt(tok, "pagerank: top_n ")
 			if perr != nil {
-				return nil, errors.New("pagerank: top_n " + tok + " (want an integer)")
+				return nil, perr
 			}
 			m.TopN = n
 		default:
@@ -679,23 +680,23 @@ func CommunityParam(s *Source) (*Community, error) {
 			lvalue := strings.ToLower(value)
 			switch key {
 			case "max_size":
-				n, perr := strconv.Atoi(value)
+				n, perr := nonNegativeFamilyInt(value, "community: max_size=")
 				if perr != nil {
-					return nil, errors.New("community: max_size=" + value + " (want an integer)")
+					return nil, perr
 				}
 				m.MaxSize = n
 			case "restart_prob":
-				rp, perr := strconv.ParseFloat(value, 32)
+				rp, perr := familyRestartProb(value, "community: restart_prob=")
 				if perr != nil {
-					return nil, errors.New("community: restart_prob=" + value + " (want a float in (0,1))")
+					return nil, perr
 				}
-				m.RestartProb = float32(rp)
+				m.RestartProb = rp
 			case "epsilon":
-				eps, perr := strconv.ParseFloat(value, 32)
+				eps, perr := positiveFamilyFloat(value, "community: epsilon=")
 				if perr != nil {
-					return nil, errors.New("community: epsilon=" + value + " (want a positive float)")
+					return nil, perr
 				}
-				m.Epsilon = float32(eps)
+				m.Epsilon = eps
 			case "reduction":
 				if !contains(TraversalReductions, lvalue) {
 					return nil, errors.New("community: reduction=" + value + " (want none|mst|spt)")
@@ -723,9 +724,9 @@ func CommunityParam(s *Source) (*Community, error) {
 		}
 		switch pos {
 		case 0:
-			n, perr := strconv.Atoi(tok)
+			n, perr := nonNegativeFamilyInt(tok, "community: max_size ")
 			if perr != nil {
-				return nil, errors.New("community: max_size " + tok + " (want an integer)")
+				return nil, perr
 			}
 			m.MaxSize = n
 		default:
@@ -734,6 +735,38 @@ func CommunityParam(s *Source) (*Community, error) {
 		pos++
 	}
 	return m, nil
+}
+
+func positiveFamilyInt(value, label string) (int, error) {
+	n, err := strconv.Atoi(value)
+	if err != nil || n <= 0 {
+		return 0, errors.New(label + value + " (want a positive integer)")
+	}
+	return n, nil
+}
+
+func nonNegativeFamilyInt(value, label string) (int, error) {
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 0 {
+		return 0, errors.New(label + value + " (want a non-negative integer)")
+	}
+	return n, nil
+}
+
+func familyRestartProb(value, label string) (float32, error) {
+	f, err := strconv.ParseFloat(value, 32)
+	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) || f <= 0 || f >= 1 {
+		return 0, errors.New(label + value + " (want a float in (0,1))")
+	}
+	return float32(f), nil
+}
+
+func positiveFamilyFloat(value, label string) (float32, error) {
+	f, err := strconv.ParseFloat(value, 32)
+	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) || f <= 0 {
+		return 0, errors.New(label + value + " (want a positive float)")
+	}
+	return float32(f), nil
 }
 
 func splitKeyValue(tok string) (key, value string, ok bool) {

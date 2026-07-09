@@ -318,6 +318,10 @@
     { "input": "pagerank", "comment": "#975: pagerank missing seed" },
     { "input": "community", "comment": "#975: community missing seed" },
     { "input": "bfs alice notanint", "comment": "#975: non-numeric step" },
+    { "input": "bfs alice -1", "comment": "#980: negative step" },
+    { "input": "bfs alice 0", "comment": "#980: zero step" },
+    { "input": "bfs alice 1 -2", "comment": "#980: negative fan_out" },
+    { "input": "bfs alice 1 0", "comment": "#980: zero fan_out" },
     {
       "input": "bfs alice 1 2 3",
       "comment": "#975: a third bare positional is rejected"
@@ -367,8 +371,24 @@
       "comment": "#801: non-numeric restart_prob is rejected"
     },
     {
+      "input": "pagerank alice -1",
+      "comment": "#980: negative top_n is rejected"
+    },
+    {
+      "input": "pagerank alice restart_prob=0",
+      "comment": "#980: explicit restart_prob must be in the open interval (0,1)"
+    },
+    {
+      "input": "pagerank alice restart_prob=1",
+      "comment": "#980: restart_prob=1 is outside the open interval"
+    },
+    {
       "input": "pagerank alice epsilon=tiny",
       "comment": "#801: non-numeric epsilon is rejected"
+    },
+    {
+      "input": "pagerank alice epsilon=0",
+      "comment": "#980: explicit epsilon must be positive; omission still defers to the server default"
     },
     {
       "input": "community alice reduction=bogus",
@@ -377,6 +397,18 @@
     {
       "input": "community alice top_n=5",
       "comment": "#975: top_n is a pagerank knob, not valid on community"
+    },
+    {
+      "input": "community alice -1",
+      "comment": "#980: negative max_size is rejected"
+    },
+    {
+      "input": "community alice restart_prob=0",
+      "comment": "#980: explicit restart_prob must be in the open interval (0,1)"
+    },
+    {
+      "input": "community alice epsilon=0",
+      "comment": "#980: explicit epsilon must be positive; omission still defers to the server default"
     },
     {
       "input": "put vertex greeting \"hello world",

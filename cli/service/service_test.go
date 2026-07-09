@@ -118,3 +118,27 @@ func TestRunArgs_AddDecayingEdge(t *testing.T) {
 		}
 	})
 }
+
+func TestRunArgs_FamilyParseErrorsReturnSpecificSentinels(t *testing.T) {
+	svc := NewCLIService(nil)
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		want error
+	}{
+		{name: "BfsMissingSeed", args: []string{"bfs"}, want: ErrBFS},
+		{name: "BfsInvalidStep", args: []string{"bfs", "alice", "0"}, want: ErrBFS},
+		{name: "PagerankMissingSeed", args: []string{"pagerank"}, want: ErrPagerank},
+		{name: "PagerankInvalidRestartProb", args: []string{"pagerank", "alice", "restart_prob=1"}, want: ErrPagerank},
+		{name: "CommunityMissingSeed", args: []string{"community"}, want: ErrCommunity},
+		{name: "CommunityInvalidEpsilon", args: []string{"community", "alice", "epsilon=0"}, want: ErrCommunity},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := svc.RunArgs(ctx, tc.args); err != tc.want {
+				t.Errorf("RunArgs(%v) = %v, want %v", tc.args, err, tc.want)
+			}
+		})
+	}
+}

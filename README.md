@@ -14,9 +14,9 @@
 *edges* connect them. So alongside "get me this value", your request-path
 code can ask, in a single millisecond-scale RPC:
 
-- *"What's near this key right now?"* — `illuminate` walks the live graph
-  and returns a subgraph already shaped for your use case (k-NN, spanning
-  tree, shortest paths, PageRank, community).
+- *"What's near this key right now?"* — `bfs`, `pagerank`, and `community`
+  walk the live graph and return a subgraph already shaped for your use case
+  (k-NN, spanning tree, shortest paths, PageRank, community).
 - *"How strongly are these two related at this moment?"* — edge weights are
   live sums of TTL'd contributions, so relationship strength decays on its
   own as events age out.
@@ -32,7 +32,7 @@ record.
 > put vertex user:42 "alice"
 > put vertex item:7  "lamp"
 > add edge user:42 item:7 1.0 1800     # each event appends a decaying contribution
-> illuminate user:42 2 10              # 2 hops out, top-10 per hop — one RPC
+> bfs user:42 2 10                     # 2 hops out, top-10 per hop — one RPC
 { "vertices": { ... }, "edges": { ... } }
 ```
 
@@ -104,11 +104,11 @@ rest of Lantern simple and fast:
 
 - **The classic algorithms apply directly.** Spanning trees, shortest
   paths, PageRank, community detection — graph theory defines them on
-  exactly this object, a weighted directed graph. `illuminate` runs them
-  natively over every edge, with no "which relationship types does this
-  walk follow?" configuration and no schema the server has to know about;
-  a property graph has to be flattened down to weights before any of that
-  theory applies.
+  exactly this object, a weighted directed graph. The traversal RPC runs
+  them natively over every edge, with no "which relationship types does
+  this walk follow?" configuration and no schema the server has to know
+  about; a property graph has to be flattened down to weights before any
+  of that theory applies.
 - **Every event can pile onto the same edge.** The additive, decaying
   weight model works because merging contributions is just addition —
   there are no per-type aggregation rules to define.
@@ -171,13 +171,16 @@ so ingesting an event stream is just a stream of edge writes.
 
 ### Graph queries as single RPCs
 
-One `Illuminate` call walks the live graph from a seed and returns exactly
-the shape you asked for. Three orthogonal axes select it:
+One `Illuminate` RPC walks the live graph from a seed and returns exactly
+the shape you asked for. The CLI exposes that RPC as three family verbs —
+`bfs`, `pagerank`, and `community` — with orthogonal knobs for tree rendering,
+optimization direction, and weighting:
 
 | Axis | Options | What it picks |
 |---|---|---|
-| `algorithm` | `none` (default) / `mst` / `spt` / `ppr` / `community` | Raw k-NN subgraph, spanning tree, shortest-path tree, Personalized PageRank neighbourhood, or the seed's natural community (conductance-cut, returned as a real induced subgraph) |
-| `objective` | `max` (default) / `min` | Keep strongest edges vs cheapest edges — the direction of both the per-hop top-k prune and the tree reduction (ignored by `ppr`, which ranks by mass) |
+| family verb | `bfs` / `pagerank` / `community` | Greedy per-hop top-k neighbourhood, Personalized PageRank relevance star, or the seed's natural community (conductance-cut, returned as a real induced subgraph) |
+| `reduction` | `none` (default) / `mst` / `spt` | Return the raw family result, or render the `bfs` / `community` result as a spanning-tree or shortest-path-tree view rooted at the seed |
+| `objective` | `max` (default) / `min` | Keep strongest edges vs cheapest edges — the direction of both the `bfs` per-hop top-k prune and any tree reduction (ignored by `pagerank`, which ranks by mass) |
 | `weighting` | `raw` (default) / `tfidf` / `bm25` | Edge-weight transform applied before the walk — TF-IDF and BM25 damp hub vertices like "popular" items |
 
 Seeing is believing. Say the store holds this graph (labels are weights):
@@ -192,7 +195,7 @@ graph LR
     c -- 4 --> f((f))
 ```
 
-`illuminate a 2 2 reduction=spt objective=max` treats heavy edges as cheap
+`bfs a 2 2 reduction=spt objective=max` treats heavy edges as cheap
 (cost = 1/weight), so one RPC hands back the **strongest-relationship
 tree** — no client-side post-processing:
 
@@ -219,21 +222,20 @@ graph LR
 A few more combinations and what they buy you:
 
 ```text
-illuminate user:42 2 10                              # raw 2-hop neighbourhood
-illuminate user:42 3 8 reduction=spt objective=max   # most-relevant path tree (BFS)
-illuminate user:42 3 8 reduction=mst objective=min   # clustering / dedup backbone (BFS)
-illuminate user:42 2 10 algorithm=ppr                # PageRank-ranked neighbourhood
-illuminate user:42 2 10 algorithm=community          # the seed's natural community
-illuminate user:42 2 10 algorithm=community reduction=mst objective=min
-                                                     # …that community, as a spanning-tree backbone
-illuminate user:42 2 10 weighting=tfidf              # suppress hub items
+bfs user:42 2 10                                      # raw 2-hop neighbourhood
+bfs user:42 3 8 reduction=spt objective=max           # most-relevant path tree
+bfs user:42 3 8 reduction=mst objective=min           # clustering / dedup backbone
+pagerank user:42 10                                   # PageRank-ranked neighbourhood
+community user:42 30                                  # the seed's natural community
+community user:42 30 reduction=mst objective=min      # …as a spanning-tree backbone
+bfs user:42 2 10 weighting=tfidf                      # suppress hub items
 ```
 
-The `algorithm` axis picks the traversal **family** (`bfs` default, `ppr`,
-`community`) and the orthogonal `reduction` axis (`none` default, `mst`, `spt`)
-renders the `bfs`/`community` result as a tree rooted at the seed — so a local
-community can be handed back as its own minimum-spanning-tree backbone in one
-RPC. `reduction` is ignored for `ppr`, which returns a ranked star.
+The family verb picks the traversal (`bfs`, `pagerank`, `community`) and the
+orthogonal `reduction` axis (`none` default, `mst`, `spt`) renders the
+`bfs`/`community` result as a tree rooted at the seed — so a local community
+can be handed back as its own minimum-spanning-tree backbone in one RPC.
+`reduction` is not accepted by `pagerank`, which returns a ranked star.
 
 PPR takes two locality knobs (`restart_prob`, `epsilon` — higher restart
 keeps the walk closer to the seed; smaller epsilon pushes further for more
@@ -246,7 +248,8 @@ because the bridge is not traversable.
 
 `SearchVertices` runs relevance-ranked (BM25) full-text search over vertex
 *content* — key plus value — as the content-addressed counterpart to prefix
-scans. Ranked hits make natural seeds for a follow-up `illuminate`:
+scans. Ranked hits make natural seeds for a follow-up `bfs`, `pagerank`, or
+`community` walk:
 
 ```shell
 lantern-cli search "rolling update"              # OR-union of the query words
@@ -294,7 +297,7 @@ OK (0.8ms)
 > get edge alice bob                    # live sum of unexpired contributions
 2.000000
 OK (0.6ms)
-> illuminate alice 2 5
+> bfs alice 2 5
 {
         "vertices": { ... },
         "edges":    { ... }
@@ -408,8 +411,8 @@ multiplexes Connect (JSON or proto), gRPC, and gRPC-Web over the same
 **Good fit**
 
 - **Real-time recommenders** — user → item interactions as decaying edges;
-  `illuminate(user, step=2, k=10, weighting=tfidf)` returns a candidate set
-  that already discounts popular items.
+  `bfs user 2 10 weighting=tfidf` returns a candidate set that already
+  discounts popular items.
 - **Session-aware personalization** — a short-TTL session graph layered on a
   long-TTL preference graph in the same store.
 - **Fraud / abuse co-occurrence** — accounts, devices, IPs as vertices;
@@ -419,7 +422,8 @@ multiplexes Connect (JSON or proto), gRPC, and gRPC-Web over the same
 - **Online graph features for ML** — neighborhood aggregations served at
   request time instead of from a batch feature store.
 - **Short-lived shared context for agents / sessions** — entity-relation
-  state scoped to a session TTL, queried with `illuminate`.
+  state scoped to a session TTL, queried with `bfs`, `pagerank`, or
+  `community`.
 
 **Not a good fit**
 
@@ -428,8 +432,8 @@ multiplexes Connect (JSON or proto), gRPC, and gRPC-Web over the same
   is built in, but there is no WAL). Replay your event stream on boot, or
   put a queue in front.
 - **Whole-graph analytics** — global PageRank, community detection across
-  billions of edges. (Seed-local PPR and community via `illuminate` *are*
-  supported online queries.)
+  billions of edges. (Seed-local PPR and community *are* supported online
+  queries.)
 - **Working sets beyond one process's RAM.** Built-in leaderless
   replication gives you HA — every replica holds the full graph — but there
   is no sharding.
@@ -549,9 +553,13 @@ scan   edges    <tail-prefix> [limit] [head=<prefix>] [all=true]
 count  vertices <prefix>
 delete-prefix vertices <prefix> [limit=<int>] [confirm=yes|dry_run=true]
 keys   <prefix> [limit]
-illuminate <seed> <step> <k> [algorithm=bfs|ppr|community] [reduction=none|mst|spt] [objective=min|max] \
-           [weighting=raw|tfidf|bm25] [prefix=<string>] \
-           [restart_prob=<float>] [epsilon=<float>]
+bfs        <seed> [step] [fan_out] [reduction=none|mst|spt] [objective=min|max] \
+           [weighting=raw|tfidf|bm25] [prefix=<string>]
+pagerank   <seed> [top_n] [restart_prob=<float>] [epsilon=<float>] \
+           [weighting=raw|tfidf|bm25] [prefix=<string>]
+community  <seed> [max_size] [restart_prob=<float>] [epsilon=<float>] \
+           [reduction=none|mst|spt] [objective=min|max] \
+           [weighting=raw|tfidf|bm25] [prefix=<string>]
 help
 exit
 ```
@@ -597,8 +605,8 @@ cd deploy/compose
 docker compose up -d --pull always
 ```
 
-Then open **<http://localhost:8080>** — the Admin loads ready to
-`illuminate`, browse, search, and run ops against the live cluster. The
+Then open **<http://localhost:8080>** — the Admin loads ready to explore,
+browse, search, and run ops against the live cluster. The
 replicas pin host ports `6380`–`6382` (the Admin's **Gateway** button picks
 which one to hit); Prometheus scrapes them all on `:9091`. Details and load
 balancing options: [deploy/compose/README.md](deploy/compose/README.md).

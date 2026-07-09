@@ -338,6 +338,15 @@ describe("parseBfs prefix= kwarg (#606 / #975)", () => {
   test("rejects an explicit empty prefix= value", () => {
     expect(parseBfs(["alice", "2", "5", "prefix="]).ok).toBe(false);
   });
+
+  test("rejects non-positive step and fan_out values (#980)", () => {
+    expect(parseBfs(["alice", "0"]).ok).toBe(false);
+    expect(parseBfs(["alice", "-1"]).ok).toBe(false);
+    expect(parseBfs(["alice", "1", "0"]).ok).toBe(false);
+    expect(parseBfs(["alice", "1", "-2"]).ok).toBe(false);
+    expect(parseBfs(["alice", "step=0"]).ok).toBe(false);
+    expect(parseBfs(["alice", "fan_out=0"]).ok).toBe(false);
+  });
 });
 
 describe("parsePagerank knobs (#801 / #975)", () => {
@@ -377,6 +386,21 @@ describe("parsePagerank knobs (#801 / #975)", () => {
 
   test("rejects a non-numeric epsilon value", () => {
     expect(parsePagerank(["alice", "5", "epsilon=tiny"]).ok).toBe(false);
+  });
+
+  test("accepts top_n=0 but rejects negative top_n (#980)", () => {
+    expect(pagerank(["alice", "0"]).topN).toBe(0);
+    expect(pagerank(["alice", "top_n=0"]).topN).toBe(0);
+    expect(parsePagerank(["alice", "-1"]).ok).toBe(false);
+    expect(parsePagerank(["alice", "top_n=-1"]).ok).toBe(false);
+  });
+
+  test("rejects explicit restart_prob outside (0,1) and epsilon <= 0 (#980)", () => {
+    expect(parsePagerank(["alice", "restart_prob=0"]).ok).toBe(false);
+    expect(parsePagerank(["alice", "restart_prob=1"]).ok).toBe(false);
+    expect(parsePagerank(["alice", "restart_prob=-0.1"]).ok).toBe(false);
+    expect(parsePagerank(["alice", "epsilon=0"]).ok).toBe(false);
+    expect(parsePagerank(["alice", "epsilon=-1e-4"]).ok).toBe(false);
   });
 
   test("rejects reduction= / objective= (the relevance star is already a tree)", () => {
@@ -425,6 +449,21 @@ describe("parseCommunity (#845 / #975)", () => {
   test("rejects an unknown kwarg (top_n=) and a second bare positional", () => {
     expect(parseCommunity(["alice", "20", "top_n=5"]).ok).toBe(false);
     expect(parseCommunity(["alice", "20", "30"]).ok).toBe(false);
+  });
+
+  test("accepts max_size=0 but rejects negative max_size (#980)", () => {
+    expect(community(["alice", "0"]).maxSize).toBe(0);
+    expect(community(["alice", "max_size=0"]).maxSize).toBe(0);
+    expect(parseCommunity(["alice", "-1"]).ok).toBe(false);
+    expect(parseCommunity(["alice", "max_size=-1"]).ok).toBe(false);
+  });
+
+  test("rejects explicit restart_prob outside (0,1) and epsilon <= 0 (#980)", () => {
+    expect(parseCommunity(["alice", "restart_prob=0"]).ok).toBe(false);
+    expect(parseCommunity(["alice", "restart_prob=1"]).ok).toBe(false);
+    expect(parseCommunity(["alice", "restart_prob=-0.1"]).ok).toBe(false);
+    expect(parseCommunity(["alice", "epsilon=0"]).ok).toBe(false);
+    expect(parseCommunity(["alice", "epsilon=-1e-4"]).ok).toBe(false);
   });
 });
 

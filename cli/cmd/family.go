@@ -2,6 +2,9 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+	"math"
 
 	"github.com/anaregdesign/lantern/cli/service"
 	client "github.com/anaregdesign/lantern/sdks/go"
@@ -46,6 +49,42 @@ func forwardFamilyPositional(cmd *cobra.Command, verb string, args []string) err
 	}
 	defer func() { _ = cli.Close() }()
 	return service.NewCLIService(cli).RunArgs(cmd.Context(), append([]string{verb}, args...))
+}
+
+func rejectMixedFamilyGrammar(cmd *cobra.Command, args []string) error {
+	if len(args) > 1 && cmd.Flags().NFlag() > 0 {
+		return errors.New("cannot mix flags with the positional grammar; use one or the other")
+	}
+	return nil
+}
+
+func validatePositiveUint32Flag(name string, value uint32) error {
+	if value == 0 {
+		return fmt.Errorf("--%s must be a positive integer", name)
+	}
+	return nil
+}
+
+func validateExplicitRestartProbFlag(cmd *cobra.Command, name string, value float32) error {
+	if !cmd.Flags().Changed(name) {
+		return nil
+	}
+	f := float64(value)
+	if math.IsNaN(f) || math.IsInf(f, 0) || f <= 0 || f >= 1 {
+		return fmt.Errorf("--%s must be a float in (0,1)", name)
+	}
+	return nil
+}
+
+func validateExplicitPositiveFloat32Flag(cmd *cobra.Command, name string, value float32) error {
+	if !cmd.Flags().Changed(name) {
+		return nil
+	}
+	f := float64(value)
+	if math.IsNaN(f) || math.IsInf(f, 0) || f <= 0 {
+		return fmt.Errorf("--%s must be a positive float", name)
+	}
+	return nil
 }
 
 // runFamilyFlagPath executes a flag-driven family walk (the bare-<seed> form

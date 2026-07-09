@@ -57,8 +57,17 @@ EXAMPLES
 `,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := rejectMixedFamilyGrammar(cmd, args); err != nil {
+			return err
+		}
 		if len(args) > 1 {
 			return forwardFamilyPositional(cmd, "bfs", args)
+		}
+		if err := validatePositiveUint32Flag("step", bfsStep); err != nil {
+			return err
+		}
+		if err := validatePositiveUint32Flag("fan-out", bfsFanOut); err != nil {
+			return err
 		}
 		obj, ok := objectiveByName[bfsObjectiveStr]
 		if !ok {
