@@ -1,0 +1,67 @@
+name: Dart SDK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sdks/dart/**"
+      - "proto/**"
+      - "buf.yaml"
+      - ".github/workflows/dart-sdk.yml"
+  pull_request:
+    paths:
+      - "sdks/dart/**"
+      - "proto/**"
+      - "buf.yaml"
+      - ".github/workflows/dart-sdk.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Generate, analyze, and test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/dart
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: 3.44.6
+          cache: true
+
+      - name: Resolve dependencies
+        run: dart pub get --enforce-lockfile
+
+      - name: Regenerate and check drift
+        working-directory: .
+        run: |
+          sdks/dart/scripts/codegen.sh
+          git diff --exit-code -- sdks/dart/lib/src/gen
+
+      - name: Check format
+        run: >-
+          dart format --output=none --set-exit-if-changed
+          lib/lantern_client.dart test
+
+      - name: Analyze
+        run: dart analyze
+
+      - name: Test
+        run: dart test
+
+      - name: Build API documentation
+        run: dart doc --validate-links
+
+      - name: Validate package shape
+        run: dart pub publish --dry-run
