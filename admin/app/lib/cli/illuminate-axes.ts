@@ -32,6 +32,7 @@ import type {
   ReductionName,
   WeightingName,
 } from "./types";
+import { quoteCliToken } from "./tokenise";
 import { parseFloatStrict } from "./verbs";
 
 /** Bounds for the step axis. Matches the Illuminate wire toolbar. */
@@ -159,7 +160,7 @@ export const CLI_WEIGHTINGS: ReadonlyArray<{
  */
 export function formatFamilyClick(seed: string, axes: CliClickAxes): string {
   const verb = axes.algorithm;
-  const tokens: string[] = [verb, seed];
+  const tokens: string[] = [verb, quoteCliToken(seed)];
   // Positional walk-size args: bfs takes step + fan_out; pagerank / community
   // take a single count (top_n / max_size). `axes.k` is the shared count axis.
   if (verb === "bfs") {
@@ -184,9 +185,10 @@ export function formatFamilyClick(seed: string, axes: CliClickAxes): string {
   // #617: prefix is a FREE-TEXT axis. Emit `prefix=<value>` only when non-empty
   // — the parser rejects an explicit empty `prefix=`, and an empty prefix means
   // "no filter" anyway, so the bare click stays the canonical short form. The
-  // value is echoed verbatim (case-SENSITIVE, #604).
+  // value is case-sensitive (#604), but quote the COMPLETE `prefix=value`
+  // token so whitespace and escape characters survive tokenisation.
   if (axes.vertexPrefix !== "") {
-    tokens.push(`prefix=${axes.vertexPrefix}`);
+    tokens.push(quoteCliToken(`prefix=${axes.vertexPrefix}`));
   }
   // #801/#942: the α/ε knobs are meaningful for the two push-based families
   // (pagerank and community — both carry the same `restart_prob`/`epsilon`

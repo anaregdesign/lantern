@@ -10,7 +10,7 @@
 
 import { describe, expect, test } from "bun:test";
 
-import { tokenise } from "~/lib/cli/tokenise";
+import { quoteCliToken, tokenise } from "~/lib/cli/tokenise";
 
 function ok(input: string): string[] {
   const r = tokenise(input);
@@ -151,5 +151,24 @@ describe("tokenise — errors (#438)", () => {
 
   test("unknown backslash escape inside double-quote", () => {
     expect(err('"bad \\q escape"')).toBe("error: invalid escape sequence \\q");
+  });
+});
+
+describe("quoteCliToken (#988)", () => {
+  test.each([
+    ["plain", "plain"],
+    ["audit:%2F", "audit:%2F"],
+    ["audit key", '"audit key"'],
+    ['say "hi"', '"say \\"hi\\""'],
+    ["C:\\tmp\\key", "C:\\tmp\\key"],
+    ["tab\tand\nnewline", '"tab\\tand\\nnewline"'],
+    ["日本語", "日本語"],
+    ["", '""'],
+    ['"starts with a quote', '"\\"starts with a quote"'],
+    ["'starts with a quote", '"\'starts with a quote"'],
+  ])("serialises %p as %p and tokenises it back", (value, want) => {
+    const serialised = quoteCliToken(value);
+    expect(serialised).toBe(want);
+    expect(ok(serialised)).toEqual([value]);
   });
 });

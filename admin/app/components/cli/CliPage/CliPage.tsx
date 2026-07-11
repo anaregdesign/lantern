@@ -18,22 +18,6 @@ import { IlluminateCanvas } from "~/components/illuminate/IlluminateCanvas/Illum
 import styles from "./CliPage.module.css";
 
 /**
- * Decode a `?seed=` query value. The browser already percent-decodes
- * `URLSearchParams`, but the seed handoff mirrors the retired Illuminate
- * page: try one more decode (some keys arrive double-encoded) and fall
- * back to the raw value when it is already decoded.
- */
-function decodeSeed(raw: string): string {
-  if (raw === "") return "";
-  try {
-    return decodeURIComponent(raw);
-  } catch {
-    // Browser already decoded once; pass through unmodified.
-    return raw;
-  }
-}
-
-/**
  * The /cli admin route. A Fluent UI command-line panel shared with the
  * Go REPL via the `lib/cli/parser` TypeScript port (#411).
  *
@@ -93,7 +77,10 @@ export function CliPage() {
     runRawRef.current = cli.runRaw;
   }, [cli.runRaw]);
   useEffect(() => {
-    const seed = decodeSeed(seedParam);
+    // URLSearchParams has already decoded this value exactly once. Decoding
+    // again corrupts literal percent escapes in valid vertex keys, e.g.
+    // `audit:%2F` becomes `audit:/` (#988).
+    const seed = seedParam;
     if (seed === "") {
       seedHandoffRef.current = null;
       return;
