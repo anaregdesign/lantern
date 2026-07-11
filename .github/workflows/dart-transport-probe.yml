@@ -99,15 +99,12 @@ jobs:
             -addext keyUsage=critical,keyCertSign,cRLSign
           openssl req -newkey rsa:2048 -nodes \
             -keyout "$probe_key" -out "$RUNNER_TEMP/lantern-probe.csr" \
-            -subj /CN=127.0.0.1 \
-            -addext basicConstraints=critical,CA:FALSE \
-            -addext keyUsage=critical,digitalSignature,keyEncipherment \
-            -addext extendedKeyUsage=serverAuth \
-            -addext subjectAltName=IP:127.0.0.1,DNS:localhost
+            -subj /CN=127.0.0.1
           openssl x509 -req -days 1 \
             -in "$RUNNER_TEMP/lantern-probe.csr" \
             -CA "$probe_ca" -CAkey "$probe_ca_key" -CAcreateserial \
-            -copy_extensions copyall -out "$probe_cert"
+            -extfile testbed/dart-transport-probe/templates/openssl-server.cnf \
+            -extensions server_cert -out "$probe_cert"
           echo "PROBE_APP=$probe_app" >> "$GITHUB_ENV"
           echo "PROBE_CA=$probe_ca" >> "$GITHUB_ENV"
           echo "PROBE_CERT=$probe_cert" >> "$GITHUB_ENV"
@@ -168,7 +165,7 @@ jobs:
             https://127.0.0.1:6434 probe-token "$PROBE_CA"
 
       - name: Run gRPC fallback on iOS
-        if: always()
+        if: ${{ always() && env.DEVICE_ID != '' && env.PROBE_CA != '' }}
         timeout-minutes: 10
         run: |
           testbed/dart-transport-probe/scripts/mobile.sh \
