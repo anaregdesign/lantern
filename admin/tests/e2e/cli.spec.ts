@@ -11,13 +11,15 @@ test.beforeAll(async () => {
   await putVertices([
     { key: "cli:alpha", string: "first" },
     { key: "cli:beta", string: "second" },
+    { key: "cli:gamma", string: "third" },
     { key: "cli:quoted key", string: "quoted seed" },
     { key: "cli:quoted target", string: "reachable only from quoted seed" },
   ]);
   // Edge so bfs / get edge happy-paths in the canvas spec
   // below have something to render.
-  await putEdges([{ tail: "cli:alpha", head: "cli:beta", weight: 2 }]);
   await putEdges([
+    { tail: "cli:alpha", head: "cli:beta", weight: 2 },
+    { tail: "cli:beta", head: "cli:gamma", weight: 1 },
     { tail: "cli:alpha", head: "cli:quoted key", weight: 1 },
     { tail: "cli:quoted key", head: "cli:quoted target", weight: 1 },
   ]);
@@ -258,6 +260,33 @@ test.describe("/cli", () => {
         }),
       )
       .toBe(true);
+  });
+
+  // #997 — Admin must dispatch the typed PPR arm over the real Connect path,
+  // not reuse BFS. The graph contains a second-hop beta→gamma edge: a
+  // breadth walk retains it, whereas PPR renders only seed-ranked star edges.
+  test("pagerank renders a seed star, not a BFS subgraph (#997)", async ({
+    page,
+  }) => {
+    await page.goto("/cli");
+    const input = page.getByTestId("cli-input");
+    await input.fill("pagerank cli:alpha 10 restart_prob=0.25 epsilon=0.001");
+    await input.press("Enter");
+    await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
+
+    type CanvasBridge = { hasEdge: (key: string) => boolean };
+    await page.waitForFunction(() => {
+      const win = window as Window & { __illuminateCanvas?: CanvasBridge };
+      return !!win.__illuminateCanvas?.hasEdge;
+    });
+    const hasEdge = (key: string): Promise<boolean> =>
+      page.evaluate((edgeKey) => {
+        const win = window as Window & { __illuminateCanvas?: CanvasBridge };
+        return win.__illuminateCanvas?.hasEdge(edgeKey) ?? false;
+      }, key);
+
+    await expect.poll(() => hasEdge("cli:alpha→cli:beta")).toBe(true);
+    expect(await hasEdge("cli:beta→cli:gamma")).toBe(false);
   });
 
   // #942 — the `community` verb must reach the LocalCommunity (#845)

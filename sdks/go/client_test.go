@@ -417,8 +417,9 @@ func TestWithWeightingWiring(t *testing.T) {
 // TestIlluminateParamsWiring verifies the #846 typed per-family options
 // marshal to the intended oneof arm: exactly one family is required;
 // WithBFS ⇒ the bfs arm with its four knobs; WithPPR ⇒ the ppr arm with its
-// three knobs; conflicting selections and zero BFS dimensions fail locally
-// without sending an ambiguous wire request.
+// three knobs; WithLocalCommunity ⇒ the community arm plus every shared axis;
+// conflicting selections and zero BFS dimensions fail locally without sending
+// an ambiguous wire request.
 func TestIlluminateParamsWiring(t *testing.T) {
 	newClient := func(t *testing.T) (*Lantern, *captureIlluminate) {
 		t.Helper()
@@ -475,6 +476,36 @@ func TestIlluminateParamsWiring(t *testing.T) {
 		}
 		if ppr.GetTopN() != 10 || ppr.GetRestartProb() != 0.25 || ppr.GetEpsilon() != 1e-3 {
 			t.Fatalf("ppr knobs = (%d,%v,%v), want (10,0.25,1e-3)", ppr.GetTopN(), ppr.GetRestartProb(), ppr.GetEpsilon())
+		}
+	})
+
+	t.Run("WithLocalCommunity marshals its arm and shared axes", func(t *testing.T) {
+		l, capt := newClient(t)
+		if _, err := l.Illuminate(context.Background(), "seed",
+			WithLocalCommunity(LocalCommunityOpts{
+				MaxSize:     17,
+				RestartProb: 0.25,
+				Epsilon:     1e-3,
+				Reduction:   ReductionMinimumSpanningTree,
+				Objective:   ObjectiveMinimize,
+			}),
+			WithWeighting(WeightingBM25),
+			WithVertexPrefix("team:"),
+		); err != nil {
+			t.Fatalf("Illuminate: %v", err)
+		}
+		community := capt.reqs[0].GetCommunity()
+		if community == nil {
+			t.Fatalf("community arm not set; params = %T", capt.reqs[0].GetParams())
+		}
+		if community.GetMaxSize() != 17 || community.GetRestartProb() != 0.25 || community.GetEpsilon() != 1e-3 {
+			t.Fatalf("community knobs = (%d,%v,%v), want (17,0.25,1e-3)", community.GetMaxSize(), community.GetRestartProb(), community.GetEpsilon())
+		}
+		if community.GetReduction() != ReductionMinimumSpanningTree || community.GetObjective() != ObjectiveMinimize {
+			t.Fatalf("community reduction/objective = (%v,%v)", community.GetReduction(), community.GetObjective())
+		}
+		if capt.reqs[0].GetWeighting() != WeightingBM25 || capt.reqs[0].GetVertexPrefix() != "team:" {
+			t.Fatalf("shared axes = weighting=%v prefix=%q", capt.reqs[0].GetWeighting(), capt.reqs[0].GetVertexPrefix())
 		}
 	})
 

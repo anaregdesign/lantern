@@ -3,7 +3,10 @@ package integration_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -31,7 +34,7 @@ func TestCLI_FamilyVerbs_RealWire(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	for _, k := range []string{"a", "b", "c"} {
+	for _, k := range []string{"a", "b", "c", "cm:a1", "cm:a2", "cm:a3", "cm:b1", "cm:b2", "cm:b3"} {
 		if err := l.PutVertex(ctx, k, k, time.Minute); err != nil {
 			t.Fatalf("PutVertex %s: %v", k, err)
 		}
@@ -41,6 +44,20 @@ func TestCLI_FamilyVerbs_RealWire(t *testing.T) {
 	}
 	if err := l.PutEdge(ctx, "b", "c", 1, time.Minute); err != nil {
 		t.Fatalf("PutEdge b->c: %v", err)
+	}
+	for _, pair := range [][2]string{
+		{"cm:a1", "cm:a2"}, {"cm:a2", "cm:a1"}, {"cm:a2", "cm:a3"}, {"cm:a3", "cm:a2"}, {"cm:a1", "cm:a3"}, {"cm:a3", "cm:a1"},
+		{"cm:b1", "cm:b2"}, {"cm:b2", "cm:b1"}, {"cm:b2", "cm:b3"}, {"cm:b3", "cm:b2"}, {"cm:b1", "cm:b3"}, {"cm:b3", "cm:b1"},
+	} {
+		if err := l.PutEdge(ctx, pair[0], pair[1], 5, time.Minute); err != nil {
+			t.Fatalf("PutEdge %s->%s: %v", pair[0], pair[1], err)
+		}
+	}
+	if err := l.PutEdge(ctx, "cm:a1", "cm:b1", 0.1, time.Minute); err != nil {
+		t.Fatalf("PutEdge cm:a1->cm:b1: %v", err)
+	}
+	if err := l.PutEdge(ctx, "cm:b1", "cm:a1", 0.1, time.Minute); err != nil {
+		t.Fatalf("PutEdge cm:b1->cm:a1: %v", err)
 	}
 
 	svc := cliservice.NewCLIService(l)
@@ -62,6 +79,33 @@ func TestCLI_FamilyVerbs_RealWire(t *testing.T) {
 		if err := svc.RunArgs(ctx, args); err != nil {
 			t.Errorf("RunArgs(%v) = %v, want nil", args, err)
 		}
+	}
+
+	// Family-specific result shapes are an external contract, not just a
+	// no-error condition: BFS keeps traversal edges, PPR returns a seed-star,
+	// and community plus reduction returns its induced cluster as a tree.
+	bfs := runCLIForGraph(t, svc, ctx, []string{"bfs", "a", "3", "10"})
+	if _, ok := bfs.Edges["b"]["c"]; !ok {
+		t.Fatalf("BFS must retain traversal edge b->c, got %+v", bfs.Edges)
+	}
+	ppr := runCLIForGraph(t, svc, ctx, []string{"pagerank", "a", "2", "restart_prob=0.25", "epsilon=0.001"})
+	if len(ppr.Edges) != 1 || ppr.Edges["a"] == nil {
+		t.Fatalf("PPR must return a seed-star, got %+v", ppr.Edges)
+	}
+	if _, ok := ppr.Edges["b"]; ok {
+		t.Fatalf("PPR must not retain BFS edge b->c, got %+v", ppr.Edges)
+	}
+	community := runCLIForGraph(t, svc, ctx, []string{"community", "cm:a1", "3", "restart_prob=0.25", "epsilon=0.001", "reduction=mst"})
+	for _, key := range []string{"cm:a1", "cm:a2", "cm:a3"} {
+		if _, ok := community.Vertices[key]; !ok {
+			t.Fatalf("community result missing %q: %+v", key, community.Vertices)
+		}
+	}
+	if _, ok := community.Vertices["cm:b1"]; ok {
+		t.Fatalf("community crossed weak bridge: %+v", community.Vertices)
+	}
+	if got := graphEdgeCount(community); got != 2 {
+		t.Fatalf("reduced 3-member community edge count = %d, want 2: %+v", got, community.Edges)
 	}
 
 	// Grammar failure contract: pagerank has no reduction axis (#975), so the
@@ -229,4 +273,47 @@ func runLanternCLI(t *testing.T, binary, endpoint string, args ...string) (stdou
 		t.Fatalf("run lantern-cli %v: %v", args, err)
 	}
 	return stdoutBuffer.String(), stderrBuffer.String(), exitErr.ExitCode()
+}
+
+// runCLIForGraph captures the CLI's JSON output while retaining the real
+// Connect/h2c request underneath. Integration tests in this package are not
+// parallel, so temporarily redirecting process stdout is safe here.
+type cliGraph struct {
+	Vertices map[string]json.RawMessage    `json:"vertices"`
+	Edges    map[string]map[string]float32 `json:"edges"`
+}
+
+func runCLIForGraph(t *testing.T, svc *cliservice.CLIService, ctx context.Context, args []string) *cliGraph {
+	t.Helper()
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	previous := os.Stdout
+	os.Stdout = write
+	err = svc.RunArgs(ctx, args)
+	_ = write.Close()
+	os.Stdout = previous
+	if err != nil {
+		_ = read.Close()
+		t.Fatalf("RunArgs(%v): %v", args, err)
+	}
+	output, readErr := io.ReadAll(read)
+	_ = read.Close()
+	if readErr != nil {
+		t.Fatalf("read CLI output: %v", readErr)
+	}
+	var graph cliGraph
+	if err := json.Unmarshal(output, &graph); err != nil {
+		t.Fatalf("decode CLI output %q: %v", output, err)
+	}
+	return &graph
+}
+
+func graphEdgeCount(graph *cliGraph) int {
+	count := 0
+	for _, heads := range graph.Edges {
+		count += len(heads)
+	}
+	return count
 }
