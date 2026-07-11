@@ -245,7 +245,7 @@ test.describe("/cli", () => {
     // The source records the exact command submitted by the canvas callback;
     // the depth-two-only target proves the RPC received `cli:quoted key`, not
     // the two tokens that an unquoted space would have produced.
-    await expect(panel).toContainText('bfs "cli:quoted key" 2 5');
+    await expect(panel).toContainText('bfs "cli:quoted key" 5 3');
     await expect
       .poll(() =>
         page.evaluate(() => {
@@ -613,26 +613,62 @@ test.describe("/cli", () => {
     page,
   }) => {
     await page.goto("/cli");
-    // The picker lives inside the canvas panel, so render a graph first
-    // to mount it (#512).
-    const input = page.getByTestId("cli-input");
-    await input.fill("get vertex cli:alpha");
-    await input.press("Enter");
-    await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
+    // Family choice is discoverable before a graph exists (#991).
+    await expect(page.getByTestId("cli-canvas-panel")).toHaveCount(0);
     const picker = page.getByTestId("cli-axis-picker");
     await expect(picker).toBeVisible();
-    // Defaults: step=2, k=5, algorithm=bfs, reduction=none, objective=max,
-    // weighting=raw → short form `bfs <key> 2 5`.
+    // Defaults match each native parser family; BFS starts at 5 hops and a
+    // fan-out of 3 rather than leaking the old shared step/k values.
     await expect(page.getByTestId("cli-axis-preview")).toHaveText(
-      "bfs <key> 2 5",
+      "bfs <key> 5 3",
     );
-    await expect(page.getByTestId("cli-axis-step")).toHaveValue("2");
-    await expect(page.getByTestId("cli-axis-k")).toHaveValue("5");
+    await expect(page.getByTestId("cli-axis-step")).toHaveValue("5");
+    await expect(page.getByTestId("cli-axis-k")).toHaveValue("3");
     await expect(page.getByTestId("cli-axis-weighting")).toBeVisible();
-    // Canvas-header hint mirrors the picker.
-    await expect(page.getByTestId("cli-click-hint")).toHaveText(
-      "bfs <key> 2 5",
+  });
+
+  test("family choice is usable before a graph on a phone viewport (#991)", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/cli");
+    const picker = page.getByTestId("cli-axis-picker");
+    await expect(picker).toBeVisible();
+    await page.getByTestId("cli-axis-algorithm").click();
+    await page.getByRole("option", { name: "Personalized PageRank" }).click();
+    await expect(page.getByTestId("cli-axis-preview")).toHaveText(
+      "pagerank <key> 10",
     );
+    await expect(page.getByTestId("cli-axis-step")).toHaveCount(0);
+    await expect(page.getByTestId("cli-axis-reduction")).toHaveCount(0);
+    await expect(page.getByTestId("cli-axis-k")).toHaveValue("10");
+  });
+
+  test("family switches keep separate last-used native values (#991)", async ({
+    page,
+  }) => {
+    await page.goto("/cli");
+    await page.getByTestId("cli-axis-step").fill("4");
+    await page.getByTestId("cli-axis-k").fill("9");
+    await expect(page.getByTestId("cli-axis-preview")).toHaveText(
+      "bfs <key> 4 9",
+    );
+
+    await page.getByTestId("cli-axis-algorithm").click();
+    await page.getByRole("option", { name: "Personalized PageRank" }).click();
+    await page.getByTestId("cli-axis-k").fill("0");
+    await expect(page.getByTestId("cli-axis-preview")).toHaveText(
+      "pagerank <key> 0",
+    );
+
+    await page.getByTestId("cli-axis-algorithm").click();
+    await page.getByRole("option", { name: "BFS (per-hop top-k)" }).click();
+    await expect(page.getByTestId("cli-axis-step")).toHaveValue("4");
+    await expect(page.getByTestId("cli-axis-k")).toHaveValue("9");
+
+    await page.getByTestId("cli-axis-algorithm").click();
+    await page.getByRole("option", { name: "Personalized PageRank" }).click();
+    await expect(page.getByTestId("cli-axis-k")).toHaveValue("0");
   });
 
   test("tuning axes updates the picker preview to the long form (#464)", async ({
@@ -646,12 +682,12 @@ test.describe("/cli", () => {
     await input.press("Enter");
     await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
     const preview = page.getByTestId("cli-axis-preview");
-    await expect(preview).toHaveText("bfs <key> 2 5");
+    await expect(preview).toHaveText("bfs <key> 5 3");
 
     // Bump step and k to long-form values.
     const step = page.getByTestId("cli-axis-step");
     await step.fill("3");
-    await expect(preview).toHaveText("bfs <key> 3 5");
+    await expect(preview).toHaveText("bfs <key> 3 3");
     const k = page.getByTestId("cli-axis-k");
     await k.fill("10");
     await expect(preview).toHaveText("bfs <key> 3 10");
@@ -661,21 +697,21 @@ test.describe("/cli", () => {
     // the preview drops the step and echoes `community <key> <max_size>`.
     await page.getByTestId("cli-axis-algorithm").click();
     await page.getByRole("option", { name: "Local community" }).click();
-    await expect(preview).toHaveText("community <key> 10");
+    await expect(preview).toHaveText("community <key> 0");
 
     // Pick reduction=spt via the reduction Dropdown (#961). The reduction
     // axis is orthogonal to the family and slots in right after the
     // max_size positional.
     await page.getByTestId("cli-axis-reduction").click();
     await page.getByRole("option", { name: "Shortest-path tree" }).click();
-    await expect(preview).toHaveText("community <key> 10 reduction=spt");
+    await expect(preview).toHaveText("community <key> 0 reduction=spt");
 
     // Pick objective=min (max is the default, so it would be omitted). For a
     // reduction this steers the tree direction (#961).
     await page.getByTestId("cli-axis-objective").click();
     await page.getByRole("option", { name: /Minimize/ }).click();
     await expect(preview).toHaveText(
-      "community <key> 10 reduction=spt objective=min",
+      "community <key> 0 reduction=spt objective=min",
     );
 
     // Pick weighting=bm25 via the Dropdown. Token order must be
@@ -683,12 +719,12 @@ test.describe("/cli", () => {
     await page.getByTestId("cli-axis-weighting").click();
     await page.getByRole("option", { name: "BM25" }).click();
     await expect(preview).toHaveText(
-      "community <key> 10 reduction=spt objective=min weighting=bm25",
+      "community <key> 0 reduction=spt objective=min weighting=bm25",
     );
 
     // The header hint tracks the picker.
     await expect(page.getByTestId("cli-click-hint")).toHaveText(
-      "community <key> 10 reduction=spt objective=min weighting=bm25",
+      "community <key> 0 reduction=spt objective=min weighting=bm25",
     );
   });
 
@@ -706,7 +742,7 @@ test.describe("/cli", () => {
     await input.press("Enter");
     await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
     const preview = page.getByTestId("cli-axis-preview");
-    await expect(preview).toHaveText("bfs <key> 2 5");
+    await expect(preview).toHaveText("bfs <key> 5 3");
 
     // The knobs are hidden until the pagerank family is active.
     await expect(page.getByTestId("cli-axis-restart-prob")).toHaveCount(0);
@@ -721,7 +757,7 @@ test.describe("/cli", () => {
     // from the click string until set.
     await page.getByTestId("cli-axis-algorithm").click();
     await page.getByRole("option", { name: "Personalized PageRank" }).click();
-    await expect(preview).toHaveText("pagerank <key> 5");
+    await expect(preview).toHaveText("pagerank <key> 10");
     const restartProb = page.getByTestId("cli-axis-restart-prob");
     const epsilon = page.getByTestId("cli-axis-epsilon");
     await expect(restartProb).toBeVisible();
@@ -733,10 +769,10 @@ test.describe("/cli", () => {
     // Tuning a knob appends it after the positional, in fixed order
     // restart_prob → epsilon.
     await restartProb.fill("0.25");
-    await expect(preview).toHaveText("pagerank <key> 5 restart_prob=0.25");
+    await expect(preview).toHaveText("pagerank <key> 10 restart_prob=0.25");
     await epsilon.fill("0.001");
     await expect(preview).toHaveText(
-      "pagerank <key> 5 restart_prob=0.25 epsilon=0.001",
+      "pagerank <key> 10 restart_prob=0.25 epsilon=0.001",
     );
 
     // Switching back to the default bfs family hides the knobs again and
@@ -747,7 +783,7 @@ test.describe("/cli", () => {
     await expect(page.getByTestId("cli-axis-restart-prob")).toHaveCount(0);
     await expect(page.getByTestId("cli-axis-epsilon")).toHaveCount(0);
     await expect(page.getByTestId("cli-axis-reduction")).toBeVisible();
-    await expect(preview).toHaveText("bfs <key> 2 5");
+    await expect(preview).toHaveText("bfs <key> 5 3");
   });
 
   // #964 — the α/ε knobs must accept floats typed a keystroke at a time, not
@@ -767,7 +803,7 @@ test.describe("/cli", () => {
 
     await page.getByTestId("cli-axis-algorithm").click();
     await page.getByRole("option", { name: "Personalized PageRank" }).click();
-    await expect(preview).toHaveText("pagerank <key> 5");
+    await expect(preview).toHaveText("pagerank <key> 10");
 
     // Type a leading-zero decimal one key at a time: the field must retain each
     // keystroke (no blanking on the intermediate "0" / "0.") and the preview
@@ -776,7 +812,7 @@ test.describe("/cli", () => {
     await restartProb.click();
     await restartProb.pressSequentially("0.15");
     await expect(restartProb).toHaveValue("0.15");
-    await expect(preview).toHaveText("pagerank <key> 5 restart_prob=0.15");
+    await expect(preview).toHaveText("pagerank <key> 10 restart_prob=0.15");
 
     // Scientific notation must survive too — a `type="number"` field reports an
     // empty value for the intermediate "1e" / "1e-". The raw text is echoed
@@ -786,7 +822,7 @@ test.describe("/cli", () => {
     await epsilon.pressSequentially("1e-4");
     await expect(epsilon).toHaveValue("1e-4");
     await expect(preview).toHaveText(
-      "pagerank <key> 5 restart_prob=0.15 epsilon=0.0001",
+      "pagerank <key> 10 restart_prob=0.15 epsilon=0.0001",
     );
   });
 
@@ -817,7 +853,7 @@ test.describe("/cli", () => {
     // Invalid persisted values hydrate to blank/server-default drafts.
     await expect(restartProb).toHaveValue("");
     await expect(epsilon).toHaveValue("");
-    await expect(preview).toHaveText("pagerank <key> 5");
+    await expect(preview).toHaveText("pagerank <key> 10");
 
     for (const raw of [
       "0",
@@ -845,7 +881,7 @@ test.describe("/cli", () => {
     }
 
     await restartProb.fill("");
-    await expect(preview).toHaveText("pagerank <key> 5");
+    await expect(preview).toHaveText("pagerank <key> 10");
 
     for (const raw of ["0", "-0.1", "0.25suffix", "1e-50"]) {
       await epsilon.fill(raw);
@@ -861,11 +897,11 @@ test.describe("/cli", () => {
     // Blank is the only default spelling. A complete valid scientific value
     // then commits and produces the same parser-accepted command text.
     await epsilon.fill("");
-    await expect(preview).toHaveText("pagerank <key> 5");
+    await expect(preview).toHaveText("pagerank <key> 10");
     await epsilon.fill("1e-4");
     await expect(epsilon).toHaveValue("1e-4");
-    await expect(preview).toHaveText("pagerank <key> 5 epsilon=0.0001");
-    await expect(hint).toHaveText("pagerank <key> 5 epsilon=0.0001");
+    await expect(preview).toHaveText("pagerank <key> 10 epsilon=0.0001");
+    await expect(hint).toHaveText("pagerank <key> 10 epsilon=0.0001");
     await expect(page.getByTestId("cli-axis-command-blocked")).toHaveCount(0);
   });
 

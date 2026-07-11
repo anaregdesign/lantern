@@ -39,17 +39,14 @@ export function CliPage() {
   // UI state — it neither touches the dispatch loop nor the scrollback.
   const [helpOpen, setHelpOpen] = useState(false);
   // Drives the two-column grid + draggable splitter (#465). Only active
-  // when a graph is present; otherwise the right column owns the full
-  // width and the splitter handle is hidden by CSS.
+  // when a graph is present; otherwise the terminal owns the full width and
+  // the family picker remains available before the first graph exists.
   const rootRef = useRef<HTMLDivElement>(null);
   const splitter = useCliSplitter({
     enabled: cli.latestGraph !== null,
     rootRef,
   });
-  // Owns the click-to-illuminate axis picker strip state (#464). The
-  // hook hydrates from localStorage so a refresh preserves a tuned
-  // exploration session, and persists each axis change so the next page
-  // load picks up where the operator left off.
+  // Owns one persisted native-value set per traversal family (#991).
   const axisPicker = useCliAxisPicker();
   const [isAxisPickerCommandValid, setIsAxisPickerCommandValid] =
     useState(true);
@@ -65,7 +62,7 @@ export function CliPage() {
   // #651 deep-link handoff: a `/cli?seed=<key>` URL (from the Vertices /
   // Edges Browse rows and the Vertex-detail toolbar) auto-fires one
   // illuminate walk for that key — the same command a canvas click emits.
-  // The walk uses the canonical default axes (`bfs <seed> 2 5`) so a
+  // The walk uses the canonical BFS defaults (`bfs <seed> 5 3`) so a
   // cross-surface deep link is deterministic; the operator can re-tune and
   // re-click from the canvas afterwards. `runRaw` is captured in a ref so the
   // one-shot effect depends only on the seed string and never re-fires when
@@ -89,7 +86,7 @@ export function CliPage() {
     // no-op (mirrors the retired Illuminate page's lastSeedRef).
     if (seedHandoffRef.current === seed) return;
     seedHandoffRef.current = seed;
-    runRawRef.current(formatFamilyClick(seed, CLI_CLICK_AXIS_DEFAULTS));
+    runRawRef.current(formatFamilyClick(seed, CLI_CLICK_AXIS_DEFAULTS.bfs));
   }, [seedParam]);
 
   // Auto-scroll the scrollback to the bottom on every new entry so the
@@ -277,6 +274,18 @@ export function CliPage() {
           </span>
         </div>
 
+        {/* Family choice is available before the first graph. This keeps the
+            initial command intentional instead of silently assuming BFS. */}
+        <div className={styles.axisControls}>
+          <CliAxisPicker
+            axes={axisPicker.axes}
+            selectFamily={axisPicker.selectFamily}
+            setAxes={axisPicker.setAxes}
+            disabled={cli.busy}
+            onPushKnobValidityChange={onPushKnobValidityChange}
+          />
+        </div>
+
         <div
           className={styles.scrollback}
           ref={scrollRef}
@@ -342,22 +351,15 @@ export function CliPage() {
         />
       ) : null}
 
-      {/* Right column — the canvas with the axis picker fused into its
-          control header (#512). Mounts only when a graph is available. */}
+      {/* Right column — the current graph. Its family picker stays in the
+          always-mounted terminal header, so an operator can choose a family
+          before producing the first graph. */}
       {cli.latestGraph !== null ? (
         <section
           className={styles.canvasColumn}
           data-testid="cli-canvas-column"
         >
           <div className={styles.canvasPanel} data-testid="cli-canvas-panel">
-            <div className={styles.canvasControls}>
-              <CliAxisPicker
-                axes={axisPicker.axes}
-                setAxis={axisPicker.setAxis}
-                disabled={cli.busy}
-                onPushKnobValidityChange={onPushKnobValidityChange}
-              />
-            </div>
             <div className={styles.canvasMeta}>
               <span className={styles.canvasMetaLabel}>from</span>
               <code className={styles.canvasMetaSource}>

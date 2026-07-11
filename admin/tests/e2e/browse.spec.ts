@@ -102,11 +102,12 @@ test.describe("/vertices", () => {
     await illuminate.click();
     // #651 folded Illuminate into the CLI: the row action now lands on /cli
     // with the row key as ?seed=, and the seed handoff auto-runs the
-    // canonical `bfs <key> 2 5`, so the canvas opens on that command.
+    // family-native default `bfs <key> 5 3`, so the canvas opens on that
+    // command.
     await expect(page).toHaveURL(/\/cli\?seed=e2e%3Avertex%3Aa/);
     await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
     await expect(page.getByTestId("cli-canvas-panel")).toContainText(
-      "bfs e2e:vertex:a 2 5",
+      "bfs e2e:vertex:a 5 3",
     );
   });
 
@@ -127,7 +128,7 @@ test.describe("/vertices", () => {
     // to the server.
     await expect(page).toHaveURL(/\/cli\?seed=e2e%3Aliteral%3A%252F/);
     await expect(page.getByTestId("cli-canvas-panel")).toContainText(
-      "bfs e2e:literal:%2F 2 5",
+      "bfs e2e:literal:%2F 5 3",
     );
   });
 
@@ -254,11 +255,12 @@ test.describe("/vertices — content search (#650)", () => {
     await expect(illuminate).toBeVisible();
     await illuminate.click();
     // #651 — content-search hit hands off to /cli, same as a prefix-scan
-    // row: the seed handoff runs `bfs <key> 2 5` onto the canvas.
+    // row: the seed handoff runs the family-native `bfs <key> 5 3` onto the
+    // canvas.
     await expect(page).toHaveURL(/\/cli\?seed=e2e%3Asearch%3Adoc3/);
     await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
     await expect(page.getByTestId("cli-canvas-panel")).toContainText(
-      "bfs e2e:search:doc3 2 5",
+      "bfs e2e:search:doc3 5 3",
     );
   });
 });

@@ -8,16 +8,23 @@ import {
 import { useCallback, useEffect, useState } from "react";
 import {
   CLI_ALGORITHMS,
-  CLI_CLICK_K_MAX,
-  CLI_CLICK_K_MIN,
-  CLI_CLICK_STEP_MAX,
-  CLI_CLICK_STEP_MIN,
+  CLI_CLICK_BFS_FAN_OUT_MAX,
+  CLI_CLICK_BFS_FAN_OUT_MIN,
+  CLI_CLICK_BFS_STEP_MAX,
+  CLI_CLICK_BFS_STEP_MIN,
+  CLI_CLICK_MAX_SIZE_MAX,
+  CLI_CLICK_MAX_SIZE_MIN,
+  CLI_CLICK_TOP_N_MAX,
+  CLI_CLICK_TOP_N_MIN,
   CLI_OBJECTIVES,
   CLI_REDUCTIONS,
   CLI_WEIGHTINGS,
   formatFamilyClick,
   isReadyPushKnob,
+  type BfsCliClickAxes,
   type CliClickAxes,
+  type CommunityCliClickAxes,
+  type PagerankCliClickAxes,
   validateEpsilonInput,
   validateRestartProbInput,
 } from "~/lib/cli/illuminate-axes";
@@ -31,257 +38,275 @@ import styles from "./CliAxisPicker.module.css";
 
 export interface CliAxisPickerProps {
   axes: CliClickAxes;
-  setAxis<K extends keyof CliClickAxes>(key: K, value: CliClickAxes[K]): void;
-  /**
-   * Disable the strip while a command is in flight (#433). The hook
-   * state itself is preserved; only the controls go read-only so a
-   * mid-flight click cannot mutate the next click string.
-   */
+  selectFamily(family: AlgorithmName): void;
+  setAxes(axes: CliClickAxes): void;
   disabled?: boolean;
-  /**
-   * Reports whether the raw α/ε drafts can produce a family command. The
-   * parent gates canvas clicks on this signal, so invalid text cannot execute
-   * the last successfully committed axis value.
-   */
+  /** Lets the canvas block a click while an α/ε draft is incomplete. */
   onPushKnobValidityChange(valid: boolean): void;
 }
 
 /**
- * Click-to-illuminate axis picker (#464).
- *
- * Renders a single-line strip of Fluent UI primitives that map 1:1 to
- * the optional kwargs of the long-form illuminate verb (post-#410):
- * step, k, algorithm (family), reduction, objective, and a
- * raw/TF-IDF/BM25 weighting Dropdown, plus a free-text prefix filter.
- * The reduction Dropdown (#961) is hidden for the ppr family, which
- * returns a relevance star with no tree view. When a push-based family is
- * selected (algorithm=ppr or algorithm=community), two extra numeric
- * inputs (restart_prob / epsilon) appear for the shared locality knobs
- * (#801/#942); a blank knob means "server default", and the step input is
- * disabled because neither family gives it a wire meaning. Wraps on narrow
- * viewports without horizontal scroll, per the architecture skill's
- * responsive guidance.
- *
- * The component owns no business state — every change goes through
- * {@link CliAxisPickerProps.setAxis}, which the parent hook
- * (`useCliAxisPicker`) persists. Bounds are sourced from the same
- * registry the formatter uses so picker UI, persistence, and command
- * formatting never disagree on the legal range.
+ * Family-native controls for click-to-explore. The selected family is visible
+ * before a graph exists and TypeScript narrows every child to the controls its
+ * command grammar actually understands.
  */
 export function CliAxisPicker({
   axes,
-  setAxis,
+  selectFamily,
+  setAxes,
   disabled,
   onPushKnobValidityChange,
 }: CliAxisPickerProps) {
-  const onStepChange = useCallback<NonNullable<InputProps["onChange"]>>(
-    (_, data) => {
-      const n = Number.parseInt(data.value, 10);
-      if (!Number.isInteger(n)) return;
-      if (n < CLI_CLICK_STEP_MIN || n > CLI_CLICK_STEP_MAX) return;
-      setAxis("step", n);
-    },
-    [setAxis],
-  );
-
-  const onKChange = useCallback<NonNullable<InputProps["onChange"]>>(
-    (_, data) => {
-      const n = Number.parseInt(data.value, 10);
-      if (!Number.isInteger(n)) return;
-      if (n < CLI_CLICK_K_MIN || n > CLI_CLICK_K_MAX) return;
-      setAxis("k", n);
-    },
-    [setAxis],
-  );
-
-  // Free-text axis (#617): any string is valid, including "" (= no filter).
-  // The formatter only echoes a non-empty prefix, so clearing the field
-  // restores the canonical short-form click.
-  const onPrefixChange = useCallback<NonNullable<InputProps["onChange"]>>(
-    (_, data) => {
-      setAxis("vertexPrefix", data.value);
-    },
-    [setAxis],
-  );
-
-  // #801/#964: the α/ε knobs are non-negative floats, but they were built as
-  // native `type="number"` inputs whose `.value` goes empty for a syntactically
-  // in-progress entry ("0.", "1e-"), and whose displayed value was re-derived
-  // from the numeric axis every render (where 0 = "server default" renders
-  // blank). Together that erased the field on any keystroke that transiently
-  // parsed to 0, so decimals in (0,1) and scientific ε were literally
-  // un-typeable — the picker behaved as if only integers were allowed. Fix:
-  // hold the operator's RAW text as local state (displayed verbatim) and commit
-  // only a valid parse to the axis, so "0.15" / "1e-4" survive keystroke by
-  // keystroke. Seeded once from the already-hydrated axes; these two handlers
-  // are the sole writers of the knobs, so the text and the numeric axis never
-  // diverge without passing through here.
-  const [restartProbText, setRestartProbText] = useState(
-    axes.restartProb > 0 ? String(axes.restartProb) : "",
-  );
-  const [epsilonText, setEpsilonText] = useState(
-    axes.epsilon > 0 ? String(axes.epsilon) : "",
-  );
-
-  // #801/#942: pagerank and community are the two push-based families that
-  // carry the α/ε locality knobs; they also give the `step` axis no wire
-  // meaning.
-  const isPushFamily =
-    axes.algorithm === "pagerank" || axes.algorithm === "community";
-  const restartProbValidation = validateRestartProbInput(restartProbText);
-  const epsilonValidation = validateEpsilonInput(epsilonText);
-  const arePushKnobsReady =
-    !isPushFamily ||
-    (isReadyPushKnob(restartProbValidation) &&
-      isReadyPushKnob(epsilonValidation));
-
+  const [isPushCommandValid, setIsPushCommandValid] = useState(true);
   const reportPushKnobValidity = useCallback(
-    (restartProbDraft: string, epsilonDraft: string) => {
-      const ready =
-        !isPushFamily ||
-        (isReadyPushKnob(validateRestartProbInput(restartProbDraft)) &&
-          isReadyPushKnob(validateEpsilonInput(epsilonDraft)));
-      onPushKnobValidityChange(ready);
+    (valid: boolean) => {
+      setIsPushCommandValid(valid);
+      onPushKnobValidityChange(valid);
     },
-    [isPushFamily, onPushKnobValidityChange],
+    [onPushKnobValidityChange],
   );
-
-  // Selection changes can hide the fields or restore them from persisted
-  // axes, so report after every render as well as synchronously in handlers.
-  // The synchronous report closes the tiny window between a keystroke and the
-  // following canvas click.
   useEffect(() => {
-    onPushKnobValidityChange(arePushKnobsReady);
-  }, [arePushKnobsReady, onPushKnobValidityChange]);
-
-  const onRestartProbChange = useCallback<NonNullable<InputProps["onChange"]>>(
-    (_, data) => {
-      setRestartProbText(data.value);
-      const validation = validateRestartProbInput(data.value);
-      if (isReadyPushKnob(validation)) {
-        setAxis("restartProb", validation.value);
-      }
-      reportPushKnobValidity(data.value, epsilonText);
-    },
-    [epsilonText, reportPushKnobValidity, setAxis],
-  );
-
-  const onEpsilonChange = useCallback<NonNullable<InputProps["onChange"]>>(
-    (_, data) => {
-      setEpsilonText(data.value);
-      const validation = validateEpsilonInput(data.value);
-      if (isReadyPushKnob(validation)) setAxis("epsilon", validation.value);
-      reportPushKnobValidity(restartProbText, data.value);
-    },
-    [reportPushKnobValidity, restartProbText, setAxis],
-  );
-
-  const preview = arePushKnobsReady
-    ? formatFamilyClick("<key>", axes)
-    : "Fix push-knob validation errors before clicking a node.";
-
-  // #961: the tree reduction is honoured for the bfs and community families
-  // and ignored for pagerank (a relevance star has no tree view), so the
-  // Dropdown is hidden for pagerank rather than echoing a knob the server
-  // drops.
-  const showsReduction = axes.algorithm !== "pagerank";
-  // #942: for the community family `k` is the max_size UPPER BOUND (the
-  // conductance sweep may stop earlier), not an exact neighbour count.
-  const kTitle =
-    axes.algorithm === "community"
-      ? "k: max community size (upper bound; the sweep may stop earlier)"
-      : "k: top-k neighbours kept per hop";
+    if (axes.family === "bfs") reportPushKnobValidity(true);
+  }, [axes.family, reportPushKnobValidity]);
 
   return (
     <div
       className={styles.strip}
       data-testid="cli-axis-picker"
       role="group"
-      aria-label="Click-to-illuminate axes"
+      aria-label="Traversal family and click-to-explore controls"
       aria-describedby="cli-axis-picker-preview"
     >
       <label className={styles.field}>
-        <span className={styles.label}>step</span>
-        <Input
-          className={styles.numberInput}
-          type="number"
-          min={CLI_CLICK_STEP_MIN}
-          max={CLI_CLICK_STEP_MAX}
-          value={String(axes.step)}
-          onChange={onStepChange}
-          disabled={disabled || isPushFamily}
-          data-testid="cli-axis-step"
-          aria-label={`Step (${CLI_CLICK_STEP_MIN}–${CLI_CLICK_STEP_MAX})`}
-          title={
-            isPushFamily
-              ? "step has no meaning for the ppr / community families"
-              : undefined
-          }
-        />
-      </label>
-
-      <label className={styles.field}>
-        <span className={styles.label}>k</span>
-        <Input
-          className={styles.numberInput}
-          type="number"
-          min={CLI_CLICK_K_MIN}
-          max={CLI_CLICK_K_MAX}
-          value={String(axes.k)}
-          onChange={onKChange}
-          disabled={disabled}
-          data-testid="cli-axis-k"
-          aria-label={`K (${CLI_CLICK_K_MIN}–${CLI_CLICK_K_MAX})`}
-          title={kTitle}
-        />
-      </label>
-
-      <label className={styles.field}>
-        <span className={styles.label}>algorithm</span>
+        <span className={styles.label}>family</span>
         <Dropdown
           className={styles.dropdown}
-          value={labelFor(CLI_ALGORITHMS, axes.algorithm)}
-          selectedOptions={[axes.algorithm]}
+          value={labelFor(CLI_ALGORITHMS, axes.family)}
+          selectedOptions={[axes.family]}
           disabled={disabled}
           onOptionSelect={(_, data) => {
-            if (!data.optionValue) return;
-            setAxis("algorithm", data.optionValue as AlgorithmName);
+            if (data.optionValue)
+              selectFamily(data.optionValue as AlgorithmName);
           }}
           data-testid="cli-axis-algorithm"
-          aria-label="Algorithm"
+          aria-label="Traversal family"
         >
-          {CLI_ALGORITHMS.map((opt) => (
-            <Option key={opt.value} value={opt.value}>
-              {opt.label}
+          {CLI_ALGORITHMS.map((option) => (
+            <Option key={option.value} value={option.value}>
+              {option.label}
             </Option>
           ))}
         </Dropdown>
       </label>
 
-      {showsReduction && (
-        <label className={styles.field}>
-          <span className={styles.label}>reduction</span>
-          <Dropdown
-            className={styles.dropdown}
-            value={labelFor(CLI_REDUCTIONS, axes.reduction)}
-            selectedOptions={[axes.reduction]}
-            disabled={disabled}
-            onOptionSelect={(_, data) => {
-              if (!data.optionValue) return;
-              setAxis("reduction", data.optionValue as ReductionName);
-            }}
-            data-testid="cli-axis-reduction"
-            aria-label="Reduction"
-          >
-            {CLI_REDUCTIONS.map((opt) => (
-              <Option key={opt.value} value={opt.value}>
-                {opt.label}
-              </Option>
-            ))}
-          </Dropdown>
-        </label>
+      {axes.family === "bfs" ? (
+        <BfsControls axes={axes} setAxes={setAxes} disabled={disabled} />
+      ) : axes.family === "pagerank" ? (
+        <PagerankControls
+          axes={axes}
+          setAxes={setAxes}
+          disabled={disabled}
+          onPushKnobValidityChange={reportPushKnobValidity}
+        />
+      ) : (
+        <CommunityControls
+          axes={axes}
+          setAxes={setAxes}
+          disabled={disabled}
+          onPushKnobValidityChange={reportPushKnobValidity}
+        />
       )}
+      <Preview axes={axes} valid={isPushCommandValid} />
+    </div>
+  );
+}
 
+function BfsControls({
+  axes,
+  setAxes,
+  disabled,
+}: {
+  axes: BfsCliClickAxes;
+  setAxes(axes: CliClickAxes): void;
+  disabled?: boolean;
+}) {
+  return (
+    <>
+      <NumberField
+        label="step"
+        value={axes.step}
+        min={CLI_CLICK_BFS_STEP_MIN}
+        max={CLI_CLICK_BFS_STEP_MAX}
+        testId="cli-axis-step"
+        disabled={disabled}
+        onValue={(step) => setAxes({ ...axes, step })}
+      />
+      <NumberField
+        label="fan_out"
+        value={axes.fanOut}
+        min={CLI_CLICK_BFS_FAN_OUT_MIN}
+        max={CLI_CLICK_BFS_FAN_OUT_MAX}
+        testId="cli-axis-k"
+        disabled={disabled}
+        onValue={(fanOut) => setAxes({ ...axes, fanOut })}
+      />
+      <TreeControls axes={axes} setAxes={setAxes} disabled={disabled} />
+      <SharedControls axes={axes} setAxes={setAxes} disabled={disabled} />
+    </>
+  );
+}
+
+function PagerankControls({
+  axes,
+  setAxes,
+  disabled,
+  onPushKnobValidityChange,
+}: {
+  axes: PagerankCliClickAxes;
+  setAxes(axes: CliClickAxes): void;
+  disabled?: boolean;
+  onPushKnobValidityChange(valid: boolean): void;
+}) {
+  return (
+    <>
+      <NumberField
+        label="top_n"
+        value={axes.topN}
+        min={CLI_CLICK_TOP_N_MIN}
+        max={CLI_CLICK_TOP_N_MAX}
+        testId="cli-axis-k"
+        disabled={disabled}
+        title="0 returns every positive-mass vertex"
+        onValue={(topN) => setAxes({ ...axes, topN })}
+      />
+      <PushControls
+        key={axes.family}
+        axes={axes}
+        setAxes={setAxes}
+        disabled={disabled}
+        onPushKnobValidityChange={onPushKnobValidityChange}
+      />
+      <SharedControls axes={axes} setAxes={setAxes} disabled={disabled} />
+    </>
+  );
+}
+
+function CommunityControls({
+  axes,
+  setAxes,
+  disabled,
+  onPushKnobValidityChange,
+}: {
+  axes: CommunityCliClickAxes;
+  setAxes(axes: CliClickAxes): void;
+  disabled?: boolean;
+  onPushKnobValidityChange(valid: boolean): void;
+}) {
+  return (
+    <>
+      <NumberField
+        label="max_size"
+        value={axes.maxSize}
+        min={CLI_CLICK_MAX_SIZE_MIN}
+        max={CLI_CLICK_MAX_SIZE_MAX}
+        testId="cli-axis-k"
+        disabled={disabled}
+        title="0 lets the conductance sweep choose the community size"
+        onValue={(maxSize) => setAxes({ ...axes, maxSize })}
+      />
+      <PushControls
+        key={axes.family}
+        axes={axes}
+        setAxes={setAxes}
+        disabled={disabled}
+        onPushKnobValidityChange={onPushKnobValidityChange}
+      />
+      <TreeControls axes={axes} setAxes={setAxes} disabled={disabled} />
+      <SharedControls axes={axes} setAxes={setAxes} disabled={disabled} />
+    </>
+  );
+}
+
+function NumberField({
+  label,
+  value,
+  min,
+  max,
+  testId,
+  disabled,
+  title,
+  onValue,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  testId: string;
+  disabled?: boolean;
+  title?: string;
+  onValue(value: number): void;
+}) {
+  const onChange = (_: unknown, data: { value: string }) => {
+    if (!/^[+-]?\d+$/.test(data.value)) return;
+    const value = Number(data.value);
+    if (!Number.isSafeInteger(value) || value < min || value > max) return;
+    onValue(value);
+  };
+  return (
+    <label className={styles.field}>
+      <span className={styles.label}>{label}</span>
+      <Input
+        className={styles.numberInput}
+        type="number"
+        min={min}
+        max={max}
+        value={String(value)}
+        onChange={onChange as NonNullable<InputProps["onChange"]>}
+        disabled={disabled}
+        data-testid={testId}
+        aria-label={`${label} (${min}–${max})`}
+        title={title}
+      />
+    </label>
+  );
+}
+
+function TreeControls({
+  axes,
+  setAxes,
+  disabled,
+}: {
+  axes: BfsCliClickAxes | CommunityCliClickAxes;
+  setAxes(axes: CliClickAxes): void;
+  disabled?: boolean;
+}) {
+  return (
+    <>
+      <label className={styles.field}>
+        <span className={styles.label}>reduction</span>
+        <Dropdown
+          className={styles.dropdown}
+          value={labelFor(CLI_REDUCTIONS, axes.reduction)}
+          selectedOptions={[axes.reduction]}
+          disabled={disabled}
+          onOptionSelect={(_, data) => {
+            if (data.optionValue) {
+              setAxes({
+                ...axes,
+                reduction: data.optionValue as ReductionName,
+              });
+            }
+          }}
+          data-testid="cli-axis-reduction"
+          aria-label="Reduction"
+        >
+          {CLI_REDUCTIONS.map((option) => (
+            <Option key={option.value} value={option.value}>
+              {option.label}
+            </Option>
+          ))}
+        </Dropdown>
+      </label>
       <label className={styles.field}>
         <span className={styles.label}>objective</span>
         <Dropdown
@@ -290,20 +315,38 @@ export function CliAxisPicker({
           selectedOptions={[axes.objective]}
           disabled={disabled}
           onOptionSelect={(_, data) => {
-            if (!data.optionValue) return;
-            setAxis("objective", data.optionValue as ObjectiveName);
+            if (data.optionValue) {
+              setAxes({
+                ...axes,
+                objective: data.optionValue as ObjectiveName,
+              });
+            }
           }}
           data-testid="cli-axis-objective"
           aria-label="Objective"
         >
-          {CLI_OBJECTIVES.map((opt) => (
-            <Option key={opt.value} value={opt.value}>
-              {opt.label}
+          {CLI_OBJECTIVES.map((option) => (
+            <Option key={option.value} value={option.value}>
+              {option.label}
             </Option>
           ))}
         </Dropdown>
       </label>
+    </>
+  );
+}
 
+function SharedControls({
+  axes,
+  setAxes,
+  disabled,
+}: {
+  axes: CliClickAxes;
+  setAxes(axes: CliClickAxes): void;
+  disabled?: boolean;
+}) {
+  return (
+    <>
       <label className={styles.field}>
         <span className={styles.label}>weighting</span>
         <Dropdown
@@ -312,98 +355,131 @@ export function CliAxisPicker({
           selectedOptions={[axes.weighting]}
           disabled={disabled}
           onOptionSelect={(_, data) => {
-            if (!data.optionValue) return;
-            setAxis("weighting", data.optionValue as WeightingName);
+            if (data.optionValue) {
+              setAxes({
+                ...axes,
+                weighting: data.optionValue as WeightingName,
+              });
+            }
           }}
           data-testid="cli-axis-weighting"
           aria-label="Weighting"
         >
-          {CLI_WEIGHTINGS.map((opt) => (
-            <Option key={opt.value} value={opt.value}>
-              {opt.label}
+          {CLI_WEIGHTINGS.map((option) => (
+            <Option key={option.value} value={option.value}>
+              {option.label}
             </Option>
           ))}
         </Dropdown>
       </label>
-
       <label className={styles.field}>
         <span className={styles.label}>prefix</span>
         <Input
           className={styles.textInput}
           type="text"
           value={axes.vertexPrefix}
-          onChange={onPrefixChange}
+          onChange={(_, data) => setAxes({ ...axes, vertexPrefix: data.value })}
           disabled={disabled}
           placeholder="(none)"
           data-testid="cli-axis-prefix"
           aria-label="Vertex prefix (optional)"
         />
       </label>
+    </>
+  );
+}
 
-      {isPushFamily && (
-        <>
-          <Field
-            className={styles.knobField}
-            label="restart_prob"
-            validationState={
-              restartProbValidation.state === "invalid" ? "error" : "none"
-            }
-            validationMessage={
-              restartProbValidation.state === "invalid"
-                ? restartProbValidation.message
-                : undefined
-            }
-            data-testid="cli-axis-restart-prob-field"
-          >
-            <Input
-              className={styles.numberInput}
-              type="text"
-              inputMode="decimal"
-              value={restartProbText}
-              onChange={onRestartProbChange}
-              disabled={disabled}
-              placeholder="0.15"
-              data-testid="cli-axis-restart-prob"
-              aria-label="Restart probability α (0–1; blank = server default)"
-            />
-          </Field>
+function PushControls({
+  axes,
+  setAxes,
+  disabled,
+  onPushKnobValidityChange,
+}: {
+  axes: PagerankCliClickAxes | CommunityCliClickAxes;
+  setAxes(axes: CliClickAxes): void;
+  disabled?: boolean;
+  onPushKnobValidityChange(valid: boolean): void;
+}) {
+  const [restartProbText, setRestartProbText] = useState(
+    axes.restartProb > 0 ? String(axes.restartProb) : "",
+  );
+  const [epsilonText, setEpsilonText] = useState(
+    axes.epsilon > 0 ? String(axes.epsilon) : "",
+  );
+  const restartProbValidation = validateRestartProbInput(restartProbText);
+  const epsilonValidation = validateEpsilonInput(epsilonText);
+  const ready =
+    isReadyPushKnob(restartProbValidation) &&
+    isReadyPushKnob(epsilonValidation);
+  useEffect(() => {
+    onPushKnobValidityChange(ready);
+  }, [onPushKnobValidityChange, ready]);
 
-          <Field
-            className={styles.knobField}
-            label="epsilon"
-            validationState={
-              epsilonValidation.state === "invalid" ? "error" : "none"
-            }
-            validationMessage={
-              epsilonValidation.state === "invalid"
-                ? epsilonValidation.message
-                : undefined
-            }
-            data-testid="cli-axis-epsilon-field"
-          >
-            <Input
-              className={styles.numberInput}
-              type="text"
-              inputMode="decimal"
-              value={epsilonText}
-              onChange={onEpsilonChange}
-              disabled={disabled}
-              placeholder="1e-4"
-              data-testid="cli-axis-epsilon"
-              aria-label="Residual threshold ε (> 0; blank = server default)"
-            />
-          </Field>
-        </>
-      )}
-
-      <code
-        id="cli-axis-picker-preview"
-        className={styles.preview}
-        data-testid="cli-axis-preview"
+  return (
+    <>
+      <Field
+        className={styles.knobField}
+        label="restart_prob"
+        validationState={
+          restartProbValidation.state === "invalid" ? "error" : "none"
+        }
+        validationMessage={
+          restartProbValidation.state === "invalid"
+            ? restartProbValidation.message
+            : undefined
+        }
+        data-testid="cli-axis-restart-prob-field"
       >
-        {preview}
-      </code>
-      {!arePushKnobsReady && (
+        <Input
+          className={styles.numberInput}
+          type="text"
+          inputMode="decimal"
+          value={restartProbText}
+          onChange={(_, data) => {
+            setRestartProbText(data.value);
+            const validation = validateRestartProbInput(data.value);
+            if (isReadyPushKnob(validation)) {
+              setAxes({ ...axes, restartProb: validation.value });
+            }
+          }}
+          disabled={disabled}
+          placeholder="0.15"
+          data-testid="cli-axis-restart-prob"
+          aria-label="Restart probability α (0–1; blank = server default)"
+        />
+      </Field>
+      <Field
+        className={styles.knobField}
+        label="epsilon"
+        validationState={
+          epsilonValidation.state === "invalid" ? "error" : "none"
+        }
+        validationMessage={
+          epsilonValidation.state === "invalid"
+            ? epsilonValidation.message
+            : undefined
+        }
+        data-testid="cli-axis-epsilon-field"
+      >
+        <Input
+          className={styles.numberInput}
+          type="text"
+          inputMode="decimal"
+          value={epsilonText}
+          onChange={(_, data) => {
+            setEpsilonText(data.value);
+            const validation = validateEpsilonInput(data.value);
+            if (isReadyPushKnob(validation)) {
+              setAxes({ ...axes, epsilon: validation.value });
+            }
+          }}
+          disabled={disabled}
+          placeholder="1e-4"
+          data-testid="cli-axis-epsilon"
+          aria-label="Residual threshold ε (> 0; blank = server default)"
+        />
+      </Field>
+      {!ready ? (
         <span
           className={styles.blocked}
           data-testid="cli-axis-command-blocked"
@@ -411,8 +487,22 @@ export function CliAxisPicker({
         >
           Fix the incomplete or invalid push-knob input before clicking a node.
         </span>
-      )}
-    </div>
+      ) : null}
+    </>
+  );
+}
+
+function Preview({ axes, valid }: { axes: CliClickAxes; valid: boolean }) {
+  return (
+    <code
+      id="cli-axis-picker-preview"
+      className={styles.preview}
+      data-testid="cli-axis-preview"
+    >
+      {valid
+        ? formatFamilyClick("<key>", axes)
+        : "Fix push-knob validation errors before clicking a node."}
+    </code>
   );
 }
 
@@ -420,8 +510,5 @@ function labelFor<T extends string>(
   options: ReadonlyArray<{ value: T; label: string }>,
   value: T,
 ): string {
-  for (const opt of options) {
-    if (opt.value === value) return opt.label;
-  }
-  return value;
+  return options.find((option) => option.value === value)?.label ?? value;
 }
