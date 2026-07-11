@@ -276,10 +276,16 @@ test.describe("/cli", () => {
     );
     await input.press("Enter");
     await expect(
-      companion.getByRole("heading", { name: "Current result: Local community" }),
+      companion.getByRole("heading", {
+        name: "Current result: Local community",
+      }),
     ).toBeVisible();
-    await expect(companion.getByText("Max size", { exact: true })).toBeVisible();
-    await expect(companion.getByText("Reduction", { exact: true })).toBeVisible();
+    await expect(
+      companion.getByText("Max size", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      companion.getByText("Reduction", { exact: true }),
+    ).toBeVisible();
   });
 
   test("canvas node click quotes an arbitrary key before reaching the RPC (#988)", async ({
