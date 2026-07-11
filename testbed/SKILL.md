@@ -21,7 +21,7 @@ testbed/
 ├── prometheus.yml          # 5s scrape against lantern:9090
 ├── scripts/
 │   ├── exercise-cli.sh     # 39 CLI scenarios; per-step rc + log capture
-│   ├── exercise-sdk.go     # 39 SDK scenarios; uses workspace replace
+│   ├── exercise-sdk.go     # 42 SDK scenarios; uses workspace replace
 │   └── query-metrics.sh    # curl /metrics → json snapshots
 └── out/                    # gitignored — logs, metric snapshots, reports
 ```
@@ -67,7 +67,7 @@ docker compose down -v
 - `exercise-cli.sh`: 39 logs in `out/cli/`. Exactly three may exit non-zero
   (the deliberate `NotFound` checks: `vertex-get-missing`, `edge-get-missing`,
   `vertex-get-ephem-expired`). Anything else is a regression.
-- `exercise-sdk.go`: prints `ok` for all 39 steps, ending with
+- `exercise-sdk.go`: prints `ok` for all 42 steps, ending with
   `SDK report written to .../out/sdk/report.txt`.
 - `lantern_build_info` reports the real release tag/commit (post-[#99][p99]).
   If it still shows `version="(devel)"`, you're running a pre-#99 build.

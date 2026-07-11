@@ -356,7 +356,7 @@ func run() error {
 		return nil
 	})
 
-	// ---- Illuminate every Optimization ------------------------------
+	// ---- Illuminate every family and optimization -------------------
 	// Re-build a small graph: alice -> bob (0.9), alice -> carol (0.1), bob -> dave (0.8), carol -> dave (0.2)
 	step("seed illuminate graph", func() error {
 		now := time.Now().Add(5 * time.Minute)
@@ -409,6 +409,36 @@ func run() error {
 		}
 		if len(g.Vertices) == 0 {
 			return fmt.Errorf("empty vertex set")
+		}
+		return nil
+	})
+	step("Illuminate PPR tuned", func() error {
+		g, err := lc.Illuminate(ctx, "ill:alice", client.WithPPR(client.PPROpts{
+			TopN:        2,
+			RestartProb: 0.25,
+			Epsilon:     1e-3,
+		}), client.WithWeighting(client.WeightingBM25))
+		if err != nil {
+			return err
+		}
+		if len(g.Edges["ill:alice"]) == 0 || len(g.Edges) != 1 {
+			return fmt.Errorf("want non-empty PPR seed star, got %+v", g.Edges)
+		}
+		return nil
+	})
+	step("Illuminate community tuned + reduction", func() error {
+		g, err := lc.Illuminate(ctx, "ill:alice", client.WithLocalCommunity(client.LocalCommunityOpts{
+			MaxSize:     4,
+			RestartProb: 0.25,
+			Epsilon:     1e-3,
+			Reduction:   client.ReductionMinimumSpanningTree,
+			Objective:   client.ObjectiveMinimize,
+		}))
+		if err != nil {
+			return err
+		}
+		if len(g.Vertices) == 0 || len(g.Edges) == 0 {
+			return fmt.Errorf("want non-empty reduced community, got vertices=%d edges=%v", len(g.Vertices), g.Edges)
 		}
 		return nil
 	})
