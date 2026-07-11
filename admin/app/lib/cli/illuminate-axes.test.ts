@@ -23,16 +23,18 @@ import {
   CLI_CLICK_AXIS_DEFAULTS,
   formatFamilyClick,
   formatStoredFloat,
-  interpretPushKnobInput,
   parseStoredAlgorithm,
-  parseStoredFloat,
+  parseStoredEpsilon,
   parseStoredK,
   parseStoredObjective,
   parseStoredPrefix,
+  parseStoredRestartProb,
   parseStoredReduction,
   parseStoredStep,
   parseStoredWeighting,
   type CliClickAxes,
+  validateEpsilonInput,
+  validateRestartProbInput,
 } from "./illuminate-axes";
 
 describe("formatFamilyClick", () => {
@@ -409,52 +411,86 @@ describe("parseStored* helpers", () => {
     expect(parseStoredPrefix(null)).toBeNull();
   });
 
-  test("PPR knobs accept finite non-negative floats and reject the rest", () => {
-    expect(parseStoredFloat("0")).toBe(0);
-    expect(parseStoredFloat("0.25")).toBe(0.25);
-    expect(parseStoredFloat("1e-4")).toBe(0.0001);
-    // 0 = "server default"; the picker stores it explicitly.
-    expect(parseStoredFloat("-0.1")).toBeNull();
-    expect(parseStoredFloat("NaN")).toBeNull();
-    expect(parseStoredFloat("Infinity")).toBeNull();
-    expect(parseStoredFloat("high")).toBeNull();
-    expect(parseStoredFloat(null)).toBeNull();
+  test("push-knob storage uses strict, family-specific float32 domains", () => {
+    expect(parseStoredRestartProb("")).toBe(0);
+    expect(parseStoredRestartProb("0.25")).toBe(0.25);
+    expect(parseStoredEpsilon("")).toBe(0);
+    expect(parseStoredEpsilon("1e-4")).toBe(0.0001);
+
+    // Legacy zero values, out-of-domain values, prefix parses, and values
+    // that change domain after float32 rounding must never hydrate.
+    for (const raw of [
+      "0",
+      "1",
+      "1.5",
+      "-0.1",
+      "0.25suffix",
+      "0.99999999",
+      "1e-50",
+      "NaN",
+      "Infinity",
+      " 0.25",
+      " ",
+    ]) {
+      expect(parseStoredRestartProb(raw)).toBeNull();
+    }
+    for (const raw of ["0", "-0.1", "1e-50", "0.25suffix"]) {
+      expect(parseStoredEpsilon(raw)).toBeNull();
+    }
+    expect(parseStoredRestartProb(null)).toBeNull();
+    expect(parseStoredEpsilon(null)).toBeNull();
   });
 
-  test("formatStoredFloat round-trips through parseStoredFloat", () => {
+  test("formatStoredFloat writes blank defaults that both strict parsers restore", () => {
+    expect(formatStoredFloat(0)).toBe("");
     for (const value of [0, 0.15, 0.25, 0.0001]) {
-      expect(parseStoredFloat(formatStoredFloat(value))).toBe(value);
+      const stored = formatStoredFloat(value);
+      expect(parseStoredRestartProb(stored)).toBe(value);
+      expect(parseStoredEpsilon(stored)).toBe(value);
     }
   });
 });
 
-describe("interpretPushKnobInput (live α/ε knob editing)", () => {
-  test("blank or whitespace commits 0 (= server default)", () => {
-    expect(interpretPushKnobInput("")).toBe(0);
-    expect(interpretPushKnobInput("   ")).toBe(0);
+describe("strict live push-knob validation", () => {
+  test("blank alone commits the server default, while complete valid values commit", () => {
+    expect(validateRestartProbInput("")).toEqual({
+      state: "default",
+      value: 0,
+    });
+    expect(validateRestartProbInput("0.15")).toEqual({
+      state: "valid",
+      value: 0.15,
+    });
+    expect(validateEpsilonInput("1e-4")).toEqual({
+      state: "valid",
+      value: 0.0001,
+    });
   });
 
-  test("commits finite non-negative decimals and scientific notation", () => {
-    expect(interpretPushKnobInput("0")).toBe(0);
-    expect(interpretPushKnobInput("0.15")).toBe(0.15);
-    expect(interpretPushKnobInput("0.001")).toBe(0.001);
-    expect(interpretPushKnobInput("1e-4")).toBe(0.0001);
+  test("incomplete decimal and scientific drafts stay intact without committing", () => {
+    for (const raw of [".", "0.", "+", "1e", "1e-"]) {
+      expect(validateRestartProbInput(raw)).toEqual({ state: "incomplete" });
+    }
   });
 
-  test("keeps a value for in-progress decimals so the field is never erased", () => {
-    // The regression this guards: typing "0.15" a key at a time used to pass
-    // through "0." → commit 0 → re-derive display from the numeric axis → blank,
-    // so a leading-zero decimal could never be built up. "0." / "0.0" must
-    // resolve to a committable 0 (the component keeps the raw text), not null.
-    expect(interpretPushKnobInput("0.")).toBe(0);
-    expect(interpretPushKnobInput("0.0")).toBe(0);
+  test("restart_prob rejects malformed and out-of-domain float32 values", () => {
+    for (const raw of [
+      "0",
+      "1",
+      "1.5",
+      "-0.1",
+      " ",
+      "0.25suffix",
+      "0.99999999", // rounds to exactly 1 as float32
+      "1e-50", // underflows to exactly 0 as float32
+    ]) {
+      expect(validateRestartProbInput(raw).state).toBe("invalid");
+    }
   });
 
-  test("rejects garbage / negatives so a good knob is never destroyed", () => {
-    expect(interpretPushKnobInput("-0.1")).toBeNull();
-    expect(interpretPushKnobInput("-")).toBeNull();
-    expect(interpretPushKnobInput("abc")).toBeNull();
-    expect(interpretPushKnobInput("NaN")).toBeNull();
-    expect(interpretPushKnobInput("Infinity")).toBeNull();
+  test("epsilon rejects zero, malformed, and float32 underflow", () => {
+    for (const raw of ["0", "-0.1", "0.25suffix", "1e-50"]) {
+      expect(validateEpsilonInput(raw).state).toBe("invalid");
+    }
   });
 });
