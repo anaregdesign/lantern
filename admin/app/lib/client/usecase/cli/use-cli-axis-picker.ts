@@ -10,10 +10,11 @@ import {
   formatStoredK,
   formatStoredStep,
   parseStoredAlgorithm,
-  parseStoredFloat,
+  parseStoredEpsilon,
   parseStoredK,
   parseStoredObjective,
   parseStoredPrefix,
+  parseStoredRestartProb,
   parseStoredReduction,
   parseStoredStep,
   parseStoredWeighting,
@@ -76,10 +77,10 @@ export function useCliAxisPicker(
       parseStoredPrefix(store.get(AXIS_STORAGE_KEYS.vertexPrefix)) ??
       CLI_CLICK_AXIS_DEFAULTS.vertexPrefix,
     restartProb:
-      parseStoredFloat(store.get(AXIS_STORAGE_KEYS.restartProb)) ??
+      parseStoredRestartProb(store.get(AXIS_STORAGE_KEYS.restartProb)) ??
       CLI_CLICK_AXIS_DEFAULTS.restartProb,
     epsilon:
-      parseStoredFloat(store.get(AXIS_STORAGE_KEYS.epsilon)) ??
+      parseStoredEpsilon(store.get(AXIS_STORAGE_KEYS.epsilon)) ??
       CLI_CLICK_AXIS_DEFAULTS.epsilon,
   }));
 

@@ -67,6 +67,16 @@ export function CliPage() {
   // exploration session, and persists each axis change so the next page
   // load picks up where the operator left off.
   const axisPicker = useCliAxisPicker();
+  const [isAxisPickerCommandValid, setIsAxisPickerCommandValid] =
+    useState(true);
+  const axisPickerCommandValidRef = useRef(true);
+  const onPushKnobValidityChange = useCallback((valid: boolean) => {
+    // Keep the ref in sync synchronously: a node click immediately after an
+    // input event must not sneak through before React has rendered the Field
+    // validation state.
+    axisPickerCommandValidRef.current = valid;
+    setIsAxisPickerCommandValid(valid);
+  }, []);
 
   // #651 deep-link handoff: a `/cli?seed=<key>` URL (from the Vertices /
   // Edges Browse rows and the Vertex-detail toolbar) auto-fires one
@@ -128,6 +138,7 @@ export function CliPage() {
   // as soon as the current dispatch settles.
   const onNodeClick = useCallback(
     (key: string) => {
+      if (!axisPickerCommandValidRef.current) return;
       cli.runRaw(formatFamilyClick(key, axisPicker.axes));
     },
     [cli, axisPicker.axes],
@@ -357,6 +368,7 @@ export function CliPage() {
                 axes={axisPicker.axes}
                 setAxis={axisPicker.setAxis}
                 disabled={cli.busy}
+                onPushKnobValidityChange={onPushKnobValidityChange}
               />
             </div>
             <div className={styles.canvasMeta}>
@@ -367,7 +379,9 @@ export function CliPage() {
               <span className={styles.canvasMetaHint}>
                 click a node →{" "}
                 <code data-testid="cli-click-hint">
-                  {formatFamilyClick("<key>", axisPicker.axes)}
+                  {isAxisPickerCommandValid
+                    ? formatFamilyClick("<key>", axisPicker.axes)
+                    : "Fix push-knob validation errors before clicking a node."}
                 </code>
               </span>
             </div>

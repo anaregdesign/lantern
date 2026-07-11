@@ -1,10 +1,11 @@
 import {
   Dropdown,
+  Field,
   Input,
   Option,
   type InputProps,
 } from "@fluentui/react-components";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   CLI_ALGORITHMS,
   CLI_CLICK_K_MAX,
@@ -15,8 +16,10 @@ import {
   CLI_REDUCTIONS,
   CLI_WEIGHTINGS,
   formatFamilyClick,
-  interpretPushKnobInput,
+  isReadyPushKnob,
   type CliClickAxes,
+  validateEpsilonInput,
+  validateRestartProbInput,
 } from "~/lib/cli/illuminate-axes";
 import type {
   AlgorithmName,
@@ -35,6 +38,12 @@ export interface CliAxisPickerProps {
    * mid-flight click cannot mutate the next click string.
    */
   disabled?: boolean;
+  /**
+   * Reports whether the raw α/ε drafts can produce a family command. The
+   * parent gates canvas clicks on this signal, so invalid text cannot execute
+   * the last successfully committed axis value.
+   */
+  onPushKnobValidityChange(valid: boolean): void;
 }
 
 /**
@@ -59,7 +68,12 @@ export interface CliAxisPickerProps {
  * registry the formatter uses so picker UI, persistence, and command
  * formatting never disagree on the legal range.
  */
-export function CliAxisPicker({ axes, setAxis, disabled }: CliAxisPickerProps) {
+export function CliAxisPicker({
+  axes,
+  setAxis,
+  disabled,
+  onPushKnobValidityChange,
+}: CliAxisPickerProps) {
   const onStepChange = useCallback<NonNullable<InputProps["onChange"]>>(
     (_, data) => {
       const n = Number.parseInt(data.value, 10);
@@ -109,31 +123,63 @@ export function CliAxisPicker({ axes, setAxis, disabled }: CliAxisPickerProps) {
     axes.epsilon > 0 ? String(axes.epsilon) : "",
   );
 
-  const onRestartProbChange = useCallback<NonNullable<InputProps["onChange"]>>(
-    (_, data) => {
-      setRestartProbText(data.value);
-      const n = interpretPushKnobInput(data.value);
-      if (n !== null) setAxis("restartProb", n);
-    },
-    [setAxis],
-  );
-
-  const onEpsilonChange = useCallback<NonNullable<InputProps["onChange"]>>(
-    (_, data) => {
-      setEpsilonText(data.value);
-      const n = interpretPushKnobInput(data.value);
-      if (n !== null) setAxis("epsilon", n);
-    },
-    [setAxis],
-  );
-
-  const preview = formatFamilyClick("<key>", axes);
-
   // #801/#942: pagerank and community are the two push-based families that
   // carry the α/ε locality knobs; they also give the `step` axis no wire
   // meaning.
   const isPushFamily =
     axes.algorithm === "pagerank" || axes.algorithm === "community";
+  const restartProbValidation = validateRestartProbInput(restartProbText);
+  const epsilonValidation = validateEpsilonInput(epsilonText);
+  const arePushKnobsReady =
+    !isPushFamily ||
+    (isReadyPushKnob(restartProbValidation) &&
+      isReadyPushKnob(epsilonValidation));
+
+  const reportPushKnobValidity = useCallback(
+    (restartProbDraft: string, epsilonDraft: string) => {
+      const ready =
+        !isPushFamily ||
+        (isReadyPushKnob(validateRestartProbInput(restartProbDraft)) &&
+          isReadyPushKnob(validateEpsilonInput(epsilonDraft)));
+      onPushKnobValidityChange(ready);
+    },
+    [isPushFamily, onPushKnobValidityChange],
+  );
+
+  // Selection changes can hide the fields or restore them from persisted
+  // axes, so report after every render as well as synchronously in handlers.
+  // The synchronous report closes the tiny window between a keystroke and the
+  // following canvas click.
+  useEffect(() => {
+    onPushKnobValidityChange(arePushKnobsReady);
+  }, [arePushKnobsReady, onPushKnobValidityChange]);
+
+  const onRestartProbChange = useCallback<NonNullable<InputProps["onChange"]>>(
+    (_, data) => {
+      setRestartProbText(data.value);
+      const validation = validateRestartProbInput(data.value);
+      if (isReadyPushKnob(validation)) {
+        setAxis("restartProb", validation.value);
+      }
+      reportPushKnobValidity(data.value, epsilonText);
+    },
+    [epsilonText, reportPushKnobValidity, setAxis],
+  );
+
+  const onEpsilonChange = useCallback<NonNullable<InputProps["onChange"]>>(
+    (_, data) => {
+      setEpsilonText(data.value);
+      const validation = validateEpsilonInput(data.value);
+      if (isReadyPushKnob(validation)) setAxis("epsilon", validation.value);
+      reportPushKnobValidity(restartProbText, data.value);
+    },
+    [reportPushKnobValidity, restartProbText, setAxis],
+  );
+
+  const preview = arePushKnobsReady
+    ? formatFamilyClick("<key>", axes)
+    : "Fix push-knob validation errors before clicking a node.";
+
   // #961: the tree reduction is honoured for the bfs and community families
   // and ignored for pagerank (a relevance star has no tree view), so the
   // Dropdown is hidden for pagerank rather than echoing a knob the server
@@ -296,8 +342,19 @@ export function CliAxisPicker({ axes, setAxis, disabled }: CliAxisPickerProps) {
 
       {isPushFamily && (
         <>
-          <label className={styles.field}>
-            <span className={styles.label}>restart_prob</span>
+          <Field
+            className={styles.knobField}
+            label="restart_prob"
+            validationState={
+              restartProbValidation.state === "invalid" ? "error" : "none"
+            }
+            validationMessage={
+              restartProbValidation.state === "invalid"
+                ? restartProbValidation.message
+                : undefined
+            }
+            data-testid="cli-axis-restart-prob-field"
+          >
             <Input
               className={styles.numberInput}
               type="text"
@@ -309,10 +366,21 @@ export function CliAxisPicker({ axes, setAxis, disabled }: CliAxisPickerProps) {
               data-testid="cli-axis-restart-prob"
               aria-label="Restart probability α (0–1; blank = server default)"
             />
-          </label>
+          </Field>
 
-          <label className={styles.field}>
-            <span className={styles.label}>epsilon</span>
+          <Field
+            className={styles.knobField}
+            label="epsilon"
+            validationState={
+              epsilonValidation.state === "invalid" ? "error" : "none"
+            }
+            validationMessage={
+              epsilonValidation.state === "invalid"
+                ? epsilonValidation.message
+                : undefined
+            }
+            data-testid="cli-axis-epsilon-field"
+          >
             <Input
               className={styles.numberInput}
               type="text"
@@ -324,7 +392,7 @@ export function CliAxisPicker({ axes, setAxis, disabled }: CliAxisPickerProps) {
               data-testid="cli-axis-epsilon"
               aria-label="Residual threshold ε (> 0; blank = server default)"
             />
-          </label>
+          </Field>
         </>
       )}
 
@@ -335,6 +403,15 @@ export function CliAxisPicker({ axes, setAxis, disabled }: CliAxisPickerProps) {
       >
         {preview}
       </code>
+      {!arePushKnobsReady && (
+        <span
+          className={styles.blocked}
+          data-testid="cli-axis-command-blocked"
+          role="status"
+        >
+          Fix the incomplete or invalid push-knob input before clicking a node.
+        </span>
+      )}
     </div>
   );
 }

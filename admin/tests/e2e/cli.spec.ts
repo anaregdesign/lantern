@@ -644,6 +644,85 @@ test.describe("/cli", () => {
     );
   });
 
+  // #987 — raw α/ε drafts must obey the same strict float32 domains as the
+  // parser before the picker can generate a click command. The test covers
+  // persisted corruption, complete-but-invalid values, suffix garbage,
+  // float32 rounding/underflow, blank defaults, and scientific notation.
+  test("push-knob validation blocks invalid click commands (#987)", async ({
+    page,
+  }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem("cli.click.restart_prob", "1.5");
+      localStorage.setItem("cli.click.epsilon", "0.25suffix");
+    });
+    await page.goto("/cli");
+    const input = page.getByTestId("cli-input");
+    await input.fill("get vertex cli:alpha");
+    await input.press("Enter");
+    await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
+
+    await page.getByTestId("cli-axis-algorithm").click();
+    await page.getByRole("option", { name: "Personalized PageRank" }).click();
+    const restartProb = page.getByTestId("cli-axis-restart-prob");
+    const epsilon = page.getByTestId("cli-axis-epsilon");
+    const preview = page.getByTestId("cli-axis-preview");
+    const hint = page.getByTestId("cli-click-hint");
+
+    // Invalid persisted values hydrate to blank/server-default drafts.
+    await expect(restartProb).toHaveValue("");
+    await expect(epsilon).toHaveValue("");
+    await expect(preview).toHaveText("pagerank <key> 5");
+
+    for (const raw of [
+      "0",
+      "1",
+      "1.5",
+      "-0.1",
+      "0.25suffix",
+      "0.99999999", // float32 rounds to 1
+      "1e-50", // float32 underflows to 0
+    ]) {
+      await restartProb.fill(raw);
+      await expect(restartProb).toHaveValue(raw);
+      await expect(
+        page.getByTestId("cli-axis-restart-prob-field"),
+      ).toContainText("restart_prob must be a float32 in (0, 1)");
+      // Neither preview nor canvas hint carries an executable command while
+      // the parent click handler is gated on this invalid raw draft.
+      await expect(preview).toHaveText(
+        "Fix push-knob validation errors before clicking a node.",
+      );
+      await expect(hint).toHaveText(
+        "Fix push-knob validation errors before clicking a node.",
+      );
+      await expect(page.getByTestId("cli-axis-command-blocked")).toBeVisible();
+    }
+
+    await restartProb.fill("");
+    await expect(preview).toHaveText("pagerank <key> 5");
+
+    for (const raw of ["0", "-0.1", "0.25suffix", "1e-50"]) {
+      await epsilon.fill(raw);
+      await expect(epsilon).toHaveValue(raw);
+      await expect(page.getByTestId("cli-axis-epsilon-field")).toContainText(
+        "epsilon must be a positive float32",
+      );
+      await expect(preview).toHaveText(
+        "Fix push-knob validation errors before clicking a node.",
+      );
+    }
+
+    // Blank is the only default spelling. A complete valid scientific value
+    // then commits and produces the same parser-accepted command text.
+    await epsilon.fill("");
+    await expect(preview).toHaveText("pagerank <key> 5");
+    await epsilon.fill("1e-4");
+    await expect(epsilon).toHaveValue("1e-4");
+    await expect(preview).toHaveText("pagerank <key> 5 epsilon=0.0001");
+    await expect(hint).toHaveText("pagerank <key> 5 epsilon=0.0001");
+    await expect(page.getByTestId("cli-axis-command-blocked")).toHaveCount(0);
+  });
+
   test("picker state persists across a reload (#464)", async ({ page }) => {
     await page.goto("/cli");
     // Render a graph so the picker mounts (#512).

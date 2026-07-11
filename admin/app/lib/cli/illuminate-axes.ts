@@ -32,6 +32,7 @@ import type {
   ReductionName,
   WeightingName,
 } from "./types";
+import { parseFloatStrict } from "./verbs";
 
 /** Bounds for the step axis. Matches the Illuminate wire toolbar. */
 export const CLI_CLICK_STEP_MIN = 1;
@@ -249,46 +250,64 @@ export function parseStoredWeighting(raw: string | null): WeightingName | null {
   return matchOption(raw, CLI_WEIGHTINGS);
 }
 
+export type PushKnobValidation =
+  | { state: "default"; value: 0 }
+  | { state: "valid"; value: number }
+  | { state: "incomplete" }
+  | { state: "invalid"; message: string };
+
+export const RESTART_PROB_VALIDATION_MESSAGE =
+  "restart_prob must be a float32 in (0, 1), or blank for the server default.";
+export const EPSILON_VALIDATION_MESSAGE =
+  "epsilon must be a positive float32, or blank for the server default.";
+
 /**
- * Parse a stored PPR knob (restart_prob / epsilon). Accepts any finite,
- * non-negative number — 0 means "use the server default". Returns null for
- * missing / malformed / negative values so the caller falls back to the
- * documented default (0). Kept lenient (the server is the final authority on
- * the (0,1) / >0 bounds) but never resurrects a NaN or a negative knob (#801).
+ * Strictly validate a restart-probability draft. The input must match the
+ * command grammar in full; its float32 representation (the value sent on the
+ * wire) must then be in the open interval (0, 1). Empty text alone requests
+ * the server default. Incomplete decimal/scientific drafts remain distinct so
+ * the picker can preserve them without committing a stale or invalid value.
  */
-export function parseStoredFloat(raw: string | null): number | null {
-  if (raw === null) return null;
-  const n = Number.parseFloat(raw);
-  if (!Number.isFinite(n)) return null;
-  if (n < 0) return null;
-  return n;
+export function validateRestartProbInput(raw: string): PushKnobValidation {
+  return validatePushKnob(
+    raw,
+    (value) => value > 0 && value < 1,
+    RESTART_PROB_VALIDATION_MESSAGE,
+  );
 }
 
 /**
- * Interpret a raw push-knob (restart_prob / epsilon) input string into the
- * number to COMMIT to the axis during live editing (#801).
- *
- * The CliAxisPicker knob fields keep the operator's raw keystrokes as the
- * displayed value — so a half-typed "0." or "1e-" survives instead of being
- * round-tripped through the numeric axis (where 0 = "server default" renders
- * blank) and erased mid-edit — and feed every keystroke through this helper to
- * decide what, if anything, to persist:
- *   - blank / whitespace → 0, i.e. "leave the knob at the server default";
- *   - a finite, non-negative parse (incl. "0", "0.", "0.15", "1e-4") → that
- *     number, committed so the live preview updates;
- *   - anything else (negative, NaN, "abc", a lone "-") → null, meaning "keep the
- *     previously committed value" so a stray keystroke never destroys a good knob.
- *
- * This is the live-edit sibling of {@link parseStoredFloat} (which guards
- * localStorage hydration). Both stay lenient about the (0,1) / >0 bounds — the
- * server remains the final authority — but neither ever resurrects a NaN or a
- * negative knob.
+ * Strictly validate an epsilon draft. Its float32 wire value must be positive;
+ * an underflow such as `1e-50` therefore remains invalid rather than silently
+ * becoming the server-default zero value.
  */
-export function interpretPushKnobInput(raw: string): number | null {
-  if (raw.trim() === "") return 0;
-  const n = Number.parseFloat(raw);
-  if (!Number.isFinite(n) || n < 0) return null;
-  return n;
+export function validateEpsilonInput(raw: string): PushKnobValidation {
+  return validatePushKnob(
+    raw,
+    (value) => value > 0,
+    EPSILON_VALIDATION_MESSAGE,
+  );
+}
+
+/** Whether a draft can safely participate in a generated click command. */
+export function isReadyPushKnob(
+  validation: PushKnobValidation,
+): validation is Extract<PushKnobValidation, { value: number }> {
+  return validation.state === "default" || validation.state === "valid";
+}
+
+/**
+ * Parse the persisted restart-probability value with the same full-string and
+ * float32-domain rules as the interactive field. A legacy stored `0` is
+ * rejected and hydrates to the documented default instead.
+ */
+export function parseStoredRestartProb(raw: string | null): number | null {
+  return parseStoredPushKnob(raw, validateRestartProbInput);
+}
+
+/** Like {@link parseStoredRestartProb}, but for the positive epsilon domain. */
+export function parseStoredEpsilon(raw: string | null): number | null {
+  return parseStoredPushKnob(raw, validateEpsilonInput);
 }
 
 /**
@@ -309,9 +328,50 @@ export function formatStoredK(value: number): string {
   return String(value);
 }
 
-/** Serialise a PPR knob for localStorage; base-10, mirrors {@link parseStoredFloat}. */
+/**
+ * Serialise a validated PPR knob for localStorage. Defaults use blank text so
+ * the next hydration distinguishes the documented default from a retired,
+ * explicit zero value that no longer satisfies either family domain.
+ */
 export function formatStoredFloat(value: number): string {
-  return String(value);
+  return value === 0 ? "" : String(value);
+}
+
+function validatePushKnob(
+  raw: string,
+  acceptsFloat32: (value: number) => boolean,
+  message: string,
+): PushKnobValidation {
+  if (raw === "") return { state: "default", value: 0 };
+  if (isIncompleteFloatDraft(raw)) return { state: "incomplete" };
+  const value = parseFloatStrict(raw);
+  if (value === null) return { state: "invalid", message };
+  const wireValue = Math.fround(value);
+  if (!Number.isFinite(wireValue) || !acceptsFloat32(wireValue)) {
+    return { state: "invalid", message };
+  }
+  // Preserve the concise decimal the operator supplied. Domain checks use the
+  // float32 value above, so this remains wire-equivalent to the CLI parser
+  // without turning `1e-4` into a long binary32 decimal in the command text.
+  return { state: "valid", value };
+}
+
+function isIncompleteFloatDraft(raw: string): boolean {
+  return (
+    /^[+-]?$/.test(raw) ||
+    /^[+-]?\.$/.test(raw) ||
+    /^[+-]?\d+\.$/.test(raw) ||
+    /^[+-]?(?:\d+\.?\d*|\.\d+)[eE][+-]?$/.test(raw)
+  );
+}
+
+function parseStoredPushKnob(
+  raw: string | null,
+  validate: (value: string) => PushKnobValidation,
+): number | null {
+  if (raw === null) return null;
+  const result = validate(raw);
+  return isReadyPushKnob(result) ? result.value : null;
 }
 
 function parseStoredInt(

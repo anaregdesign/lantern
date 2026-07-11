@@ -55,6 +55,14 @@
   min-width: 0;
 }
 
+/* Fluent Field owns the validation message for the two push-knob drafts.
+ * Keep the compact control strip layout while allowing the message to wrap
+ * underneath its own input instead of overflowing the canvas header. */
+.knobField {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
 /* Dropdowns for algorithm / objective / weighting. The descendant selector
  * raises specificity above Fluent UI's default 250px min-width so the controls
  * can shrink and the strip never overflows a narrow canvas column. */
@@ -81,4 +89,10 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.blocked {
+  flex: 1 1 100%;
+  color: var(--colorPaletteRedForeground1, #bc2f32);
+  font-size: var(--fontSizeBase200, 12px);
 }
