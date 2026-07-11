@@ -88,6 +88,27 @@ type PerfGate struct {
 		NonOKTotal     int64   `json:"non_ok_total"`
 		NonOKRatio     float64 `json:"non_ok_ratio"`
 	} `json:"observed"`
+	ProducerResults []PerfProducerResult `json:"producer_results"`
+	Verdict         string               `json:"verdict"`
+}
+
+// PerfProducerResult is one named steady-state producer's independent gate.
+// It prevents an inexpensive producer from hiding a regression in another
+// traversal family when a scenario fans out across multiple ghz processes.
+type PerfProducerResult struct {
+	Name       string `json:"name"`
+	Thresholds struct {
+		MinSteadyRps  *float64 `json:"min_steady_rps"`
+		MaxP99Ms      *float64 `json:"max_p99_ms"`
+		MaxNonOKRatio *float64 `json:"max_non_ok_ratio"`
+	} `json:"thresholds"`
+	Observed struct {
+		SteadyRps  float64 `json:"steady_rps"`
+		P99Ms      float64 `json:"p99_ms"`
+		Count      int64   `json:"count"`
+		NonOK      int64   `json:"non_ok"`
+		NonOKRatio float64 `json:"non_ok_ratio"`
+	} `json:"observed"`
 	Verdict string `json:"verdict"`
 }
 
@@ -270,6 +291,19 @@ func RenderReport(w io.Writer, in Input) error {
 		bw.printf("| non-OK ratio (ceiling) | %s | %.5f |\n",
 			perfThreshold(pg.Thresholds.MaxNonOKRatio, "%.5f"), pg.Observed.NonOKRatio)
 		bw.printf("\n")
+		if len(pg.ProducerResults) > 0 {
+			bw.printf("Named producer gates are conjunctive with the aggregate gate: every row must pass.\n\n")
+			bw.printf("| producer | verdict | rps (floor) | p99 ms (ceiling) | non-OK ratio (ceiling) |\n")
+			bw.printf("| --- | --- | ---: | ---: | ---: |\n")
+			for _, producer := range pg.ProducerResults {
+				bw.printf("| `%s` | `%s` | %.1f (%s) | %.2f (%s) | %.5f (%s) |\n",
+					producer.Name, producer.Verdict,
+					producer.Observed.SteadyRps, perfThreshold(producer.Thresholds.MinSteadyRps, "%.1f"),
+					producer.Observed.P99Ms, perfThreshold(producer.Thresholds.MaxP99Ms, "%.2f"),
+					producer.Observed.NonOKRatio, perfThreshold(producer.Thresholds.MaxNonOKRatio, "%.5f"))
+			}
+			bw.printf("\n")
+		}
 	}
 
 	bw.printf("## ghz runs\n\n")

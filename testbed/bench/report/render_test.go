@@ -152,6 +152,32 @@ func TestRenderReport_HandlesMissingArtifactsGracefully(t *testing.T) {
 	}
 }
 
+func TestRenderReport_ShowsIndependentProducerGates(t *testing.T) {
+	minRPS, maxP99 := 10.0, 250.0
+	pg := &PerfGate{Verdict: "fail"}
+	pg.ProducerResults = []PerfProducerResult{{Name: "community_arborescence_min", Verdict: "fail"}}
+	pg.ProducerResults[0].Thresholds.MinSteadyRps = &minRPS
+	pg.ProducerResults[0].Thresholds.MaxP99Ms = &maxP99
+	pg.ProducerResults[0].Observed.SteadyRps = 8
+	pg.ProducerResults[0].Observed.P99Ms = 300
+	var buf bytes.Buffer
+	if err := RenderReport(&buf, Input{Scenario: "x", Timestamp: "t", PerfGate: pg}); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"Named producer gates are conjunctive",
+		"`community_arborescence_min`",
+		"`fail`",
+		"8.0 (10.0)",
+		"300.00 (250.00)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in report:\n%s", want, out)
+		}
+	}
+}
+
 func TestLoadInput_AssemblesFromDisk(t *testing.T) {
 	dir := t.TempDir()
 

@@ -24,6 +24,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/anaregdesign/lantern/testbed/bench/topology"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
@@ -38,6 +39,7 @@ import (
 // scenarioCall is one (call, data_template) pair wherever it appears in a
 // scenario document.
 type scenarioCall struct {
+	Name         string `yaml:"name"`
 	Call         string `yaml:"call"`
 	DataTemplate string `yaml:"data_template"`
 }
@@ -59,18 +61,77 @@ type scenarioDoc struct {
 	} `yaml:"subscribe"`
 }
 
+// TestBroadIlluminateScenarioTopologyContract is the #994 semantic guard that
+// complements TestScenarioTemplates_MatchWireSchema. A proto-valid Illuminate
+// request can still run over an empty or one-edge graph, so pin both the
+// self-contained topology preflight and each family producer's real workload.
+func TestBroadIlluminateScenarioTopologyContract(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("scenarios", "broad_illuminate.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Preflight struct {
+			Kind string `yaml:"kind"`
+		} `yaml:"preflight"`
+		Target struct {
+			Calls []scenarioCall `yaml:"calls"`
+		} `yaml:"target"`
+		PerfGate struct {
+			Producers map[string]map[string]float64 `yaml:"producers"`
+		} `yaml:"perf_gate"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse broad_illuminate: %v", err)
+	}
+	if doc.Preflight.Kind != "broad_illuminate" {
+		t.Fatalf("preflight.kind = %q, want broad_illuminate", doc.Preflight.Kind)
+	}
+	fixture := topology.NewBroadIlluminateFixture(time.Now().Add(time.Hour))
+	if len(fixture.Vertices) < 1+topology.BroadIlluminateDepth*topology.BroadIlluminateFanOut+2*topology.BroadIlluminateCommunitySize {
+		t.Fatalf("fixture vertices = %d, topology unexpectedly collapsed", len(fixture.Vertices))
+	}
+
+	calls := make(map[string]string, len(doc.Target.Calls))
+	for _, call := range doc.Target.Calls {
+		if call.Name == "" {
+			t.Fatal("broad_illuminate has an unnamed producer")
+		}
+		calls[call.Name] = strings.TrimSpace(call.DataTemplate)
+		if _, ok := doc.PerfGate.Producers[call.Name]; !ok {
+			t.Errorf("producer %q has no independent perf gate", call.Name)
+		}
+	}
+	for name, want := range map[string][]string{
+		"bfs_depth3_fanout64":        {`"seed":"bench:walk:root"`, `"step":3`, `"fan_out":64`},
+		"ppr_tuned":                  {`"top_n":32`, `"restart_prob":0.2`, `"epsilon":0.000001`},
+		"community_arborescence_min": {`"seed":"bench:community:alpha:00"`, `"max_size":32`, `"reduction":1`, `"objective":1`, `"restart_prob":0.2`, `"epsilon":0.000001`},
+	} {
+		template, ok := calls[name]
+		if !ok {
+			t.Errorf("missing %s producer", name)
+			continue
+		}
+		for _, fragment := range want {
+			if !strings.Contains(template, fragment) {
+				t.Errorf("%s template missing %q: %s", name, fragment, template)
+			}
+		}
+	}
+}
+
 // calls flattens every (call, data_template) pair in the document, tagged
 // with where it came from so failures point at the offending YAML path.
 func (d scenarioDoc) calls() map[string]scenarioCall {
 	out := map[string]scenarioCall{}
 	if d.Target.Call != "" {
-		out["target"] = scenarioCall{d.Target.Call, d.Target.DataTemplate}
+		out["target"] = scenarioCall{Call: d.Target.Call, DataTemplate: d.Target.DataTemplate}
 	}
 	for i, c := range d.Target.Calls {
 		out[fmt.Sprintf("target.calls[%d]", i)] = c
 	}
 	if d.Subscribe.Call != "" {
-		out["subscribe"] = scenarioCall{d.Subscribe.Call, d.Subscribe.DataTemplate}
+		out["subscribe"] = scenarioCall{Call: d.Subscribe.Call, DataTemplate: d.Subscribe.DataTemplate}
 	}
 	for i, c := range d.Subscribe.Consumers {
 		out[fmt.Sprintf("subscribe.consumers[%d]", i)] = c
