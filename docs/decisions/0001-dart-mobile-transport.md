@@ -20,7 +20,7 @@ HTTP/1.1 client. Use these exact initial pins:
 - runtime: `connectrpc 1.0.0`, `protobuf 4.2.0`, `fixnum 1.1.1`;
 - code generation: `buf.build/connectrpc/dart:v1.0.0` and
   `buf.build/protocolbuffers/dart:v22.5.0`;
-- Dart floor: 3.7.0, matching Connect-Dart's supported language floor;
+- Dart floor: 3.10.0, allowing the maintained lints and test toolchain;
 - validated Flutter toolchain: Flutter 3.44.6 / Dart 3.12.2;
 - supported production platforms: Android and iOS native only; Flutter Web is
   outside this decision.

@@ -106,28 +106,27 @@ void main() {
 
   test('sends a fresh bearer token for every unary call', () async {
     var tokenCalls = 0;
-    final transport =
-        FakeTransportBuilder()
-            .unary<GetServerStatusRequest, GetServerStatusResponse>(
-              LanternService.getServerStatus,
-              (request, FakeHandlerContext context) {
-                expect(
-                  context.requestHeaders['authorization'],
-                  'Bearer token-$tokenCalls',
-                );
-                context.responseHeaders.add('x-request-id', 'request-1');
-                context.responseTrailers.add('x-server', 'lantern');
-                return GetServerStatusResponse(
-                  version: 'test',
-                  goVersion: 'go1.test',
-                  tlsEnabled: true,
-                  replicationEnabled: false,
-                  vertexCount: Int64(7),
-                  edgeCount: Int64(11),
-                );
-              },
-            )
-            .build();
+    final transport = FakeTransportBuilder()
+        .unary<GetServerStatusRequest, GetServerStatusResponse>(
+          LanternService.getServerStatus,
+          (request, FakeHandlerContext context) {
+            expect(
+              context.requestHeaders['authorization'],
+              'Bearer token-$tokenCalls',
+            );
+            context.responseHeaders.add('x-request-id', 'request-1');
+            context.responseTrailers.add('x-server', 'lantern');
+            return GetServerStatusResponse(
+              version: 'test',
+              goVersion: 'go1.test',
+              tlsEnabled: true,
+              replicationEnabled: false,
+              vertexCount: Int64(7),
+              edgeCount: Int64(11),
+            );
+          },
+        )
+        .build();
     final invoker = LanternInvoker(
       tokenProvider: () => 'token-${++tokenCalls}',
       transport: transport,
@@ -156,19 +155,17 @@ void main() {
   });
 
   test('maps transport failures without exposing token metadata', () async {
-    final transport =
-        FakeTransportBuilder()
-            .unary<GetServerStatusRequest, GetServerStatusResponse>(
-              LanternService.getServerStatus,
-              (request, FakeHandlerContext context) =>
-                  throw connect.ConnectException(
-                    connect.Code.unauthenticated,
-                    'credentials rejected',
-                    metadata:
-                        connect.Headers()..add('www-authenticate', 'Bearer'),
-                  ),
-            )
-            .build();
+    final transport = FakeTransportBuilder()
+        .unary<GetServerStatusRequest, GetServerStatusResponse>(
+          LanternService.getServerStatus,
+          (request, FakeHandlerContext context) =>
+              throw connect.ConnectException(
+                connect.Code.unauthenticated,
+                'credentials rejected',
+                metadata: connect.Headers()..add('www-authenticate', 'Bearer'),
+              ),
+        )
+        .build();
     final invoker = LanternInvoker(
       tokenProvider: () => 'do-not-log-me',
       transport: transport,
@@ -205,21 +202,20 @@ void main() {
 
   test('deadline and caller cancellation map to typed failures', () async {
     final pending = Completer<GetServerStatusResponse>();
-    final transport =
-        FakeTransportBuilder()
-            .unary<GetServerStatusRequest, GetServerStatusResponse>(
-              LanternService.getServerStatus,
-              (request, FakeHandlerContext context) async {
-                await Future.any<GetServerStatusResponse>([
-                  pending.future,
-                  context.signal.future.then<GetServerStatusResponse>(
-                    (connect.ConnectException error) => throw error,
-                  ),
-                ]);
-                return pending.future;
-              },
-            )
-            .build();
+    final transport = FakeTransportBuilder()
+        .unary<GetServerStatusRequest, GetServerStatusResponse>(
+          LanternService.getServerStatus,
+          (request, FakeHandlerContext context) async {
+            await Future.any<GetServerStatusResponse>([
+              pending.future,
+              context.signal.future.then<GetServerStatusResponse>(
+                (connect.ConnectException error) => throw error,
+              ),
+            ]);
+            return pending.future;
+          },
+        )
+        .build();
     final invoker = LanternInvoker(
       transport: transport,
       defaultTimeout: const Duration(milliseconds: 1),
@@ -301,20 +297,21 @@ void main() {
     );
 
     final call = invoker.invokeUnary<Object?>(
-      call: ({
-        required headers,
-        required signal,
-        required onHeader,
-        required onTrailer,
-      }) async {
-        onHeader(connect.Headers()..add('x-secret', secret));
-        onTrailer(connect.Headers()..add('x-trailer-secret', secret));
-        throw connect.ConnectException(
-          connect.Code.unauthenticated,
-          'invalid $secret',
-          metadata: connect.Headers()..add('x-metadata-secret', secret),
-        );
-      },
+      call:
+          ({
+            required headers,
+            required signal,
+            required onHeader,
+            required onTrailer,
+          }) async {
+            onHeader(connect.Headers()..add('x-secret', secret));
+            onTrailer(connect.Headers()..add('x-trailer-secret', secret));
+            throw connect.ConnectException(
+              connect.Code.unauthenticated,
+              'invalid $secret',
+              metadata: connect.Headers()..add('x-metadata-secret', secret),
+            );
+          },
     );
 
     try {
@@ -336,15 +333,16 @@ void main() {
       final signalReady = Completer<connect.AbortSignal>();
       final invoker = LanternInvoker(transport: FakeTransportBuilder().build());
       final stream = invoker.invokeStream<int>(
-        call: ({
-          required headers,
-          required signal,
-          required onHeader,
-          required onTrailer,
-        }) {
-          signalReady.complete(signal);
-          return source.stream;
-        },
+        call:
+            ({
+              required headers,
+              required signal,
+              required onHeader,
+              required onTrailer,
+            }) {
+              signalReady.complete(signal);
+              return source.stream;
+            },
       );
 
       final subscription = stream.listen((_) {});

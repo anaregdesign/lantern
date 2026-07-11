@@ -377,21 +377,19 @@ void main() {
       expected.take(4),
     );
 
-    final ascending =
-        await client
-            .scanVerticesAll(prefix: scanPrefix, limit: 2)
-            .expand((page) => page.items)
-            .map((vertex) => vertex.key)
-            .toList();
-    final descending =
-        await client
-            .scanVertexKeysAll(
-              prefix: scanPrefix,
-              limit: 2,
-              order: ScanOrder.descending,
-            )
-            .expand((page) => page.items)
-            .toList();
+    final ascending = await client
+        .scanVerticesAll(prefix: scanPrefix, limit: 2)
+        .expand((page) => page.items)
+        .map((vertex) => vertex.key)
+        .toList();
+    final descending = await client
+        .scanVertexKeysAll(
+          prefix: scanPrefix,
+          limit: 2,
+          order: ScanOrder.descending,
+        )
+        .expand((page) => page.items)
+        .toList();
     expect(ascending, expected);
     expect(descending, expected.reversed);
 
@@ -426,15 +424,14 @@ void main() {
     });
     await client.putEdges(edges);
 
-    final scanned =
-        await client
-            .scanEdgesAll(
-              tailPrefix: tailPrefix,
-              headPrefix: '$prefix-edge-head:even:',
-              limit: 1,
-            )
-            .expand((page) => page.items)
-            .toList();
+    final scanned = await client
+        .scanEdgesAll(
+          tailPrefix: tailPrefix,
+          headPrefix: '$prefix-edge-head:even:',
+          limit: 1,
+        )
+        .expand((page) => page.items)
+        .toList();
     expect(scanned.map((edge) => edge.head), matchingHeads);
     expect(scanned.map((edge) => edge.tail), [
       '${tailPrefix}0',
@@ -761,10 +758,9 @@ void main() {
       final result = await disabledClient.searchVertices('anything');
       expect(result, isA<SearchDisabled>());
     },
-    skip:
-        disabledSearchEndpoint == null || disabledSearchEndpoint.isEmpty
-            ? 'LANTERN_DART_SEARCH_DISABLED_ENDPOINT is not configured'
-            : false,
+    skip: disabledSearchEndpoint == null || disabledSearchEndpoint.isEmpty
+        ? 'LANTERN_DART_SEARCH_DISABLED_ENDPOINT is not configured'
+        : false,
   );
 
   test(

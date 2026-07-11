@@ -15,19 +15,18 @@ void main() {
     () async {
       late graph.ScanVerticesRequest captured;
       final responseCursor = Uint8List.fromList([1, 2, 3]);
-      final transport =
-          FakeTransportBuilder()
-              .unary<graph.ScanVerticesRequest, graph.ScanVerticesResponse>(
-                LanternService.scanVertices,
-                (request, context) {
-                  captured = request.clone();
-                  return graph.ScanVerticesResponse(
-                    vertices: [graph.Vertex(key: 'v', string: 'value')],
-                    nextCursor: responseCursor,
-                  );
-                },
-              )
-              .build();
+      final transport = FakeTransportBuilder()
+          .unary<graph.ScanVerticesRequest, graph.ScanVerticesResponse>(
+            LanternService.scanVertices,
+            (request, context) {
+              captured = request.clone();
+              return graph.ScanVerticesResponse(
+                vertices: [graph.Vertex(key: 'v', string: 'value')],
+                nextCursor: responseCursor,
+              );
+            },
+          )
+          .build();
       final client = _client(transport);
       final inputBytes = Uint8List.fromList([9, 8]);
       final cursor = ScanCursor.fromBytes(inputBytes);
@@ -58,25 +57,24 @@ void main() {
   test('keys-only and edge pages use their own wire requests', () async {
     late graph.ScanVertexKeysRequest keyRequest;
     late graph.ScanEdgesRequest edgeRequest;
-    final transport =
-        FakeTransportBuilder()
-            .unary<graph.ScanVertexKeysRequest, graph.ScanVertexKeysResponse>(
-              LanternService.scanVertexKeys,
-              (request, context) {
-                keyRequest = request.clone();
-                return graph.ScanVertexKeysResponse(keys: ['p:a', 'p:b']);
-              },
-            )
-            .unary<graph.ScanEdgesRequest, graph.ScanEdgesResponse>(
-              LanternService.scanEdges,
-              (request, context) {
-                edgeRequest = request.clone();
-                return graph.ScanEdgesResponse(
-                  edges: [graph.Edge(tail: 't:a', head: 'h:b', weight: 2)],
-                );
-              },
-            )
-            .build();
+    final transport = FakeTransportBuilder()
+        .unary<graph.ScanVertexKeysRequest, graph.ScanVertexKeysResponse>(
+          LanternService.scanVertexKeys,
+          (request, context) {
+            keyRequest = request.clone();
+            return graph.ScanVertexKeysResponse(keys: ['p:a', 'p:b']);
+          },
+        )
+        .unary<graph.ScanEdgesRequest, graph.ScanEdgesResponse>(
+          LanternService.scanEdges,
+          (request, context) {
+            edgeRequest = request.clone();
+            return graph.ScanEdgesResponse(
+              edges: [graph.Edge(tail: 't:a', head: 'h:b', weight: 2)],
+            );
+          },
+        )
+        .build();
     final client = _client(transport);
 
     final keys = await client.scanVertexKeys(
@@ -100,27 +98,31 @@ void main() {
     var maxActive = 0;
     var activeCanceled = false;
     final secondStarted = Completer<void>();
-    final transport =
-        FakeTransportBuilder().unary<
-          graph.ScanVertexKeysRequest,
-          graph.ScanVertexKeysResponse
-        >(LanternService.scanVertexKeys, (request, context) async {
-          calls++;
-          active++;
-          if (active > maxActive) maxActive = active;
-          if (calls == 1) {
+    final transport = FakeTransportBuilder()
+        .unary<graph.ScanVertexKeysRequest, graph.ScanVertexKeysResponse>(
+          LanternService.scanVertexKeys,
+          (request, context) async {
+            calls++;
+            active++;
+            if (active > maxActive) maxActive = active;
+            if (calls == 1) {
+              active--;
+              return graph.ScanVertexKeysResponse(
+                keys: ['p:a'],
+                nextCursor: [1],
+              );
+            }
+            secondStarted.complete();
+            await context.signal.future;
+            activeCanceled = true;
             active--;
-            return graph.ScanVertexKeysResponse(keys: ['p:a'], nextCursor: [1]);
-          }
-          secondStarted.complete();
-          await context.signal.future;
-          activeCanceled = true;
-          active--;
-          throw connect.ConnectException(
-            connect.Code.canceled,
-            'expected cancellation',
-          );
-        }).build();
+            throw connect.ConnectException(
+              connect.Code.canceled,
+              'expected cancellation',
+            );
+          },
+        )
+        .build();
     final client = _client(transport);
     late StreamSubscription<Page<String>> subscription;
     final firstPage = Completer<void>();
@@ -149,14 +151,15 @@ void main() {
     final cancellation = LanternCancellationToken();
     final firstPage = Completer<void>();
     final canceled = Completer<Object>();
-    final transport =
-        FakeTransportBuilder().unary<
-          graph.ScanVertexKeysRequest,
-          graph.ScanVertexKeysResponse
-        >(LanternService.scanVertexKeys, (request, context) {
-          calls++;
-          return graph.ScanVertexKeysResponse(keys: ['p:a'], nextCursor: [1]);
-        }).build();
+    final transport = FakeTransportBuilder()
+        .unary<graph.ScanVertexKeysRequest, graph.ScanVertexKeysResponse>(
+          LanternService.scanVertexKeys,
+          (request, context) {
+            calls++;
+            return graph.ScanVertexKeysResponse(keys: ['p:a'], nextCursor: [1]);
+          },
+        )
+        .build();
     final client = _client(transport);
     late StreamSubscription<Page<String>> subscription;
     subscription = client
@@ -184,31 +187,30 @@ void main() {
       final maxUint64 = Int64.fromInts(0xffffffff, 0xffffffff);
       late graph.DeleteVerticesByPrefixRequest vertexDelete;
       late graph.DeleteEdgesByPrefixRequest edgeDelete;
-      final transport =
-          FakeTransportBuilder()
-              .unary<
-                graph.CountVerticesByPrefixRequest,
-                graph.CountVerticesByPrefixResponse
-              >(
-                LanternService.countVerticesByPrefix,
-                (request, context) =>
-                    graph.CountVerticesByPrefixResponse(count: maxUint64),
-              )
-              .unary<
-                graph.DeleteVerticesByPrefixRequest,
-                graph.DeleteVerticesByPrefixResponse
-              >(LanternService.deleteVerticesByPrefix, (request, context) {
-                vertexDelete = request.clone();
-                return graph.DeleteVerticesByPrefixResponse(deleted: Int64(2));
-              })
-              .unary<
-                graph.DeleteEdgesByPrefixRequest,
-                graph.DeleteEdgesByPrefixResponse
-              >(LanternService.deleteEdgesByPrefix, (request, context) {
-                edgeDelete = request.clone();
-                return graph.DeleteEdgesByPrefixResponse(deleted: Int64(3));
-              })
-              .build();
+      final transport = FakeTransportBuilder()
+          .unary<
+            graph.CountVerticesByPrefixRequest,
+            graph.CountVerticesByPrefixResponse
+          >(
+            LanternService.countVerticesByPrefix,
+            (request, context) =>
+                graph.CountVerticesByPrefixResponse(count: maxUint64),
+          )
+          .unary<
+            graph.DeleteVerticesByPrefixRequest,
+            graph.DeleteVerticesByPrefixResponse
+          >(LanternService.deleteVerticesByPrefix, (request, context) {
+            vertexDelete = request.clone();
+            return graph.DeleteVerticesByPrefixResponse(deleted: Int64(2));
+          })
+          .unary<
+            graph.DeleteEdgesByPrefixRequest,
+            graph.DeleteEdgesByPrefixResponse
+          >(LanternService.deleteEdgesByPrefix, (request, context) {
+            edgeDelete = request.clone();
+            return graph.DeleteEdgesByPrefixResponse(deleted: Int64(3));
+          })
+          .build();
       final client = _client(transport);
 
       expect(
@@ -235,29 +237,28 @@ void main() {
   test('unsafe prefix deletes validate locally and never retry', () async {
     var vertexCalls = 0;
     var edgeCalls = 0;
-    final transport =
-        FakeTransportBuilder()
-            .unary<
-              graph.DeleteVerticesByPrefixRequest,
-              graph.DeleteVerticesByPrefixResponse
-            >(LanternService.deleteVerticesByPrefix, (request, context) {
-              vertexCalls++;
-              throw connect.ConnectException(
-                connect.Code.unavailable,
-                'lost committed response',
-              );
-            })
-            .unary<
-              graph.DeleteEdgesByPrefixRequest,
-              graph.DeleteEdgesByPrefixResponse
-            >(LanternService.deleteEdgesByPrefix, (request, context) {
-              edgeCalls++;
-              throw connect.ConnectException(
-                connect.Code.unavailable,
-                'lost committed response',
-              );
-            })
-            .build();
+    final transport = FakeTransportBuilder()
+        .unary<
+          graph.DeleteVerticesByPrefixRequest,
+          graph.DeleteVerticesByPrefixResponse
+        >(LanternService.deleteVerticesByPrefix, (request, context) {
+          vertexCalls++;
+          throw connect.ConnectException(
+            connect.Code.unavailable,
+            'lost committed response',
+          );
+        })
+        .unary<
+          graph.DeleteEdgesByPrefixRequest,
+          graph.DeleteEdgesByPrefixResponse
+        >(LanternService.deleteEdgesByPrefix, (request, context) {
+          edgeCalls++;
+          throw connect.ConnectException(
+            connect.Code.unavailable,
+            'lost committed response',
+          );
+        })
+        .build();
     final client = _client(transport, retry: const RetryPolicy());
 
     await expectLater(

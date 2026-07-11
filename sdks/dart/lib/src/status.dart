@@ -226,15 +226,13 @@ extension LanternStatus on LanternClient {
     return ServerStatus._(
       version: response.version,
       goVersion: response.goVersion,
-      startedAt:
-          response.hasStartedAt()
-              ? _timestampFromProto(response.startedAt)
-              : null,
+      startedAt: response.hasStartedAt()
+          ? _timestampFromProto(response.startedAt)
+          : null,
       uptime: response.hasUptime() ? _durationFromProto(response.uptime) : null,
-      defaultTtl:
-          response.hasDefaultTtl()
-              ? _durationFromProto(response.defaultTtl)
-              : null,
+      defaultTtl: response.hasDefaultTtl()
+          ? _durationFromProto(response.defaultTtl)
+          : null,
       maxBatchSize: response.maxBatchSize,
       maxKeyBytes: response.maxKeyBytes,
       scanDefaultLimit: response.scanDefaultLimit,
@@ -262,27 +260,26 @@ extension LanternStatus on LanternClient {
         onTrailer: onTrailer,
       ),
     );
-    final peers = response.peers
-        .map(
-          (peer) => ReplicationPeerStatus(
-            address: peer.address,
-            state: _replicationPeerStateFromProto(peer.state),
-            lastEventAt:
-                peer.hasLastEventAt()
+    final peers =
+        response.peers
+            .map(
+              (peer) => ReplicationPeerStatus(
+                address: peer.address,
+                state: _replicationPeerStateFromProto(peer.state),
+                lastEventAt: peer.hasLastEventAt()
                     ? _timestampFromProto(peer.lastEventAt)
                     : null,
-            appliedSequence: _uint64ToBigInt(peer.appliedSeq),
-            error: peer.error.isEmpty ? null : peer.error,
-          ),
-        )
-        .toList(growable: false)
-      ..sort((left, right) => left.address.compareTo(right.address));
+                appliedSequence: _uint64ToBigInt(peer.appliedSeq),
+                error: peer.error.isEmpty ? null : peer.error,
+              ),
+            )
+            .toList(growable: false)
+          ..sort((left, right) => left.address.compareTo(right.address));
     return ReplicationStatus._(
       nodeId: response.nodeId,
-      localNow:
-          response.hasLocalNow()
-              ? _timestampFromProto(response.localNow)
-              : null,
+      localNow: response.hasLocalNow()
+          ? _timestampFromProto(response.localNow)
+          : null,
       enabled: response.enabled,
       peers: peers,
     );

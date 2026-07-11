@@ -97,19 +97,18 @@ void main() {
     'AddDecayingEdge sends one curve and returns final effective weight',
     () async {
       late graph.AddEdgesRequest captured;
-      final transport =
-          FakeTransportBuilder()
-              .unary<graph.AddEdgesRequest, graph.AddEdgesResponse>(
-                LanternService.addEdges,
-                (request, context) {
-                  captured = request.deepCopy();
-                  return graph.AddEdgesResponse(
-                    written: request.edges.length,
-                    effectiveWeights: [8, 12, 14, 15, 16],
-                  );
-                },
-              )
-              .build();
+      final transport = FakeTransportBuilder()
+          .unary<graph.AddEdgesRequest, graph.AddEdgesResponse>(
+            LanternService.addEdges,
+            (request, context) {
+              captured = request.deepCopy();
+              return graph.AddEdgesResponse(
+                written: request.edges.length,
+                effectiveWeights: [8, 12, 14, 15, 16],
+              );
+            },
+          )
+          .build();
       final client = LanternClient.connect(
         Uri.parse('https://example.test'),
         transport: transport,
@@ -141,14 +140,15 @@ void main() {
 
   test('decaying Add without IDs is not retried', () async {
     var calls = 0;
-    final transport =
-        FakeTransportBuilder().unary<
-          graph.AddEdgesRequest,
-          graph.AddEdgesResponse
-        >(LanternService.addEdges, (request, context) {
-          calls++;
-          throw connect.ConnectException(connect.Code.unavailable, 'lost');
-        }).build();
+    final transport = FakeTransportBuilder()
+        .unary<graph.AddEdgesRequest, graph.AddEdgesResponse>(
+          LanternService.addEdges,
+          (request, context) {
+            calls++;
+            throw connect.ConnectException(connect.Code.unavailable, 'lost');
+          },
+        )
+        .build();
     final client = LanternClient.connect(
       Uri.parse('https://example.test'),
       transport: transport,

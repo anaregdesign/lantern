@@ -143,13 +143,12 @@ void main() {
 
 connect.Transport _capture(
   graph.IlluminateResponse Function(graph.IlluminateRequest request) handler,
-) =>
-    FakeTransportBuilder()
-        .unary<graph.IlluminateRequest, graph.IlluminateResponse>(
-          LanternService.illuminate,
-          (request, context) => handler(request),
-        )
-        .build();
+) => FakeTransportBuilder()
+    .unary<graph.IlluminateRequest, graph.IlluminateResponse>(
+      LanternService.illuminate,
+      (request, context) => handler(request),
+    )
+    .build();
 
 LanternClient _client(connect.Transport transport) => LanternClient.connect(
   Uri.parse('https://example.test'),

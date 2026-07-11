@@ -86,14 +86,13 @@ extension LanternScan on LanternClient {
   }) => _scanPageStream(
     initialCursor: cursor,
     options: options,
-    fetch:
-        (next, linkedOptions) => scanVertices(
-          prefix: prefix,
-          limit: limit,
-          cursor: next,
-          order: order,
-          options: linkedOptions,
-        ),
+    fetch: (next, linkedOptions) => scanVertices(
+      prefix: prefix,
+      limit: limit,
+      cursor: next,
+      order: order,
+      options: linkedOptions,
+    ),
   );
 
   /// Fetches one keys-only page without decoding vertex values.
@@ -140,14 +139,13 @@ extension LanternScan on LanternClient {
   }) => _scanPageStream(
     initialCursor: cursor,
     options: options,
-    fetch:
-        (next, linkedOptions) => scanVertexKeys(
-          prefix: prefix,
-          limit: limit,
-          cursor: next,
-          order: order,
-          options: linkedOptions,
-        ),
+    fetch: (next, linkedOptions) => scanVertexKeys(
+      prefix: prefix,
+      limit: limit,
+      cursor: next,
+      order: order,
+      options: linkedOptions,
+    ),
   );
 
   /// Fetches one ascending `(tail, head)` edge page.
@@ -193,14 +191,13 @@ extension LanternScan on LanternClient {
   }) => _scanPageStream(
     initialCursor: cursor,
     options: options,
-    fetch:
-        (next, linkedOptions) => scanEdges(
-          tailPrefix: tailPrefix,
-          headPrefix: headPrefix,
-          limit: limit,
-          cursor: next,
-          options: linkedOptions,
-        ),
+    fetch: (next, linkedOptions) => scanEdges(
+      tailPrefix: tailPrefix,
+      headPrefix: headPrefix,
+      limit: limit,
+      cursor: next,
+      options: linkedOptions,
+    ),
   );
 
   /// Counts live vertex keys under [prefix] without page materialization.

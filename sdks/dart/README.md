@@ -197,7 +197,7 @@ Protobuf `<5.0.0` ceiling is required by Connect-Dart 1.x.
 
 The supported toolchain policy is recorded in
 [ADR 0001](https://github.com/anaregdesign/lantern/blob/main/docs/decisions/0001-dart-mobile-transport.md):
-CI tests the package's Dart 3.7 floor and the pinned current Flutter/Dart pair.
+CI tests the package's Dart 3.10 floor and the pinned current Flutter/Dart pair.
 Generator/runtime compatibility pins move together through reviewed PRs.
 
 Generated files are committed under `lib/src/gen` and must never be edited by

@@ -12,18 +12,17 @@ void main() {
     'one-shot search preserves every wire option and ranked result',
     () async {
       late graph.SearchVerticesRequest captured;
-      final transport =
-          FakeTransportBuilder()
-              .unary<graph.SearchVerticesRequest, graph.SearchVerticesResponse>(
-                LanternService.searchVertices,
-                (request, context) {
-                  captured = request.clone();
-                  return graph.SearchVerticesResponse(
-                    hits: [graph.SearchHit(key: 'p:a', score: 3.5)],
-                  );
-                },
-              )
-              .build();
+      final transport = FakeTransportBuilder()
+          .unary<graph.SearchVerticesRequest, graph.SearchVerticesResponse>(
+            LanternService.searchVertices,
+            (request, context) {
+              captured = request.clone();
+              return graph.SearchVerticesResponse(
+                hits: [graph.SearchHit(key: 'p:a', score: 3.5)],
+              );
+            },
+          )
+          .build();
       final client = _client(transport);
 
       final result = await client.searchVertices(
@@ -56,33 +55,30 @@ void main() {
 
   test('omitted relevance controls omit SearchOptions', () async {
     late graph.SearchVerticesRequest captured;
-    final transport =
-        FakeTransportBuilder()
-            .unary<graph.SearchVerticesRequest, graph.SearchVerticesResponse>(
-              LanternService.searchVertices,
-              (request, context) {
-                captured = request.clone();
-                return graph.SearchVerticesResponse();
-              },
-            )
-            .build();
+    final transport = FakeTransportBuilder()
+        .unary<graph.SearchVerticesRequest, graph.SearchVerticesResponse>(
+          LanternService.searchVertices,
+          (request, context) {
+            captured = request.clone();
+            return graph.SearchVerticesResponse();
+          },
+        )
+        .build();
     final result = await _client(transport).searchVertices('none');
     expect((result as SearchEnabled).hits, isEmpty);
     expect(captured.hasOptions(), isFalse);
   });
 
   test('search-disabled is a calm typed result', () async {
-    final transport =
-        FakeTransportBuilder()
-            .unary<graph.SearchVerticesRequest, graph.SearchVerticesResponse>(
-              LanternService.searchVertices,
-              (request, context) =>
-                  throw connect.ConnectException(
-                    connect.Code.failedPrecondition,
-                    'search is disabled',
-                  ),
-            )
-            .build();
+    final transport = FakeTransportBuilder()
+        .unary<graph.SearchVerticesRequest, graph.SearchVerticesResponse>(
+          LanternService.searchVertices,
+          (request, context) => throw connect.ConnectException(
+            connect.Code.failedPrecondition,
+            'search is disabled',
+          ),
+        )
+        .build();
     final result = await _client(transport).searchVertices('q');
     expect(result, isA<SearchDisabled>());
     expect(
@@ -93,16 +89,15 @@ void main() {
 
   test('invalid relevance combinations fail before transport', () async {
     var calls = 0;
-    final transport =
-        FakeTransportBuilder()
-            .unary<graph.SearchVerticesRequest, graph.SearchVerticesResponse>(
-              LanternService.searchVertices,
-              (request, context) {
-                calls++;
-                return graph.SearchVerticesResponse();
-              },
-            )
-            .build();
+    final transport = FakeTransportBuilder()
+        .unary<graph.SearchVerticesRequest, graph.SearchVerticesResponse>(
+          LanternService.searchVertices,
+          (request, context) {
+            calls++;
+            return graph.SearchVerticesResponse();
+          },
+        )
+        .build();
     final client = _client(transport);
     for (final options in [
       const SearchOptions(fuzziness: 3),
@@ -125,18 +120,17 @@ void main() {
     'incremental search debounces and emits only the latest query',
     () async {
       final requests = <String>[];
-      final transport =
-          FakeTransportBuilder()
-              .unary<graph.SearchVerticesRequest, graph.SearchVerticesResponse>(
-                LanternService.searchVertices,
-                (request, context) {
-                  requests.add(request.query);
-                  return graph.SearchVerticesResponse(
-                    hits: [graph.SearchHit(key: request.query, score: 1)],
-                  );
-                },
-              )
-              .build();
+      final transport = FakeTransportBuilder()
+          .unary<graph.SearchVerticesRequest, graph.SearchVerticesResponse>(
+            LanternService.searchVertices,
+            (request, context) {
+              requests.add(request.query);
+              return graph.SearchVerticesResponse(
+                hits: [graph.SearchHit(key: request.query, score: 1)],
+              );
+            },
+          )
+          .build();
       final session = _client(transport).incrementalSearch(
         options: const IncrementalSearchOptions(
           debounce: Duration(milliseconds: 10),
@@ -159,21 +153,20 @@ void main() {
     () async {
       final firstStarted = Completer<void>();
       final first = Completer<graph.SearchVerticesResponse>();
-      final transport =
-          FakeTransportBuilder()
-              .unary<graph.SearchVerticesRequest, graph.SearchVerticesResponse>(
-                LanternService.searchVertices,
-                (request, context) {
-                  if (request.query == 'old') {
-                    firstStarted.complete();
-                    return first.future;
-                  }
-                  return graph.SearchVerticesResponse(
-                    hits: [graph.SearchHit(key: 'new', score: 2)],
-                  );
-                },
-              )
-              .build();
+      final transport = FakeTransportBuilder()
+          .unary<graph.SearchVerticesRequest, graph.SearchVerticesResponse>(
+            LanternService.searchVertices,
+            (request, context) {
+              if (request.query == 'old') {
+                firstStarted.complete();
+                return first.future;
+              }
+              return graph.SearchVerticesResponse(
+                hits: [graph.SearchHit(key: 'new', score: 2)],
+              );
+            },
+          )
+          .build();
       final session = _client(transport).incrementalSearch(
         options: const IncrementalSearchOptions(debounce: Duration.zero),
       );
@@ -212,17 +205,18 @@ void main() {
       var calls = 0;
       final active = Completer<void>();
       var canceled = false;
-      final transport =
-          FakeTransportBuilder().unary<
-            graph.SearchVerticesRequest,
-            graph.SearchVerticesResponse
-          >(LanternService.searchVertices, (request, context) async {
-            calls++;
-            active.complete();
-            await context.signal.future;
-            canceled = true;
-            throw connect.ConnectException(connect.Code.canceled, 'disposed');
-          }).build();
+      final transport = FakeTransportBuilder()
+          .unary<graph.SearchVerticesRequest, graph.SearchVerticesResponse>(
+            LanternService.searchVertices,
+            (request, context) async {
+              calls++;
+              active.complete();
+              await context.signal.future;
+              canceled = true;
+              throw connect.ConnectException(connect.Code.canceled, 'disposed');
+            },
+          )
+          .build();
       final session = _client(transport).incrementalSearch(
         options: const IncrementalSearchOptions(
           debounce: Duration.zero,

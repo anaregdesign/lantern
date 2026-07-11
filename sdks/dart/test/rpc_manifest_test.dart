@@ -12,12 +12,12 @@ void main() {
   });
 
   test('every app-facing RPC is intentionally classified', () {
-    final source =
-        File('lib/src/gen/graph/v1/graph.connect.spec.dart').readAsStringSync();
-    final generated =
-        RegExp(
-          r"'/\$name/([A-Za-z]+)'",
-        ).allMatches(source).map((match) => match.group(1)!).toSet();
+    final source = File(
+      'lib/src/gen/graph/v1/graph.connect.spec.dart',
+    ).readAsStringSync();
+    final generated = RegExp(
+      r"'/\$name/([A-Za-z]+)'",
+    ).allMatches(source).map((match) => match.group(1)!).toSet();
 
     expect(generated, _appFacingRpcs);
   });

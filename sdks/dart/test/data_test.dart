@@ -14,14 +14,15 @@ import 'package:test/test.dart';
 void main() {
   test('all exact value kinds encode without guessing or collapsing', () async {
     late List<graph.Vertex> encoded;
-    final transport =
-        FakeTransportBuilder().unary<
-          graph.PutVerticesRequest,
-          graph.PutVerticesResponse
-        >(LanternService.putVertices, (request, context) {
-          encoded = request.vertices.toList();
-          return graph.PutVerticesResponse(written: request.vertices.length);
-        }).build();
+    final transport = FakeTransportBuilder()
+        .unary<graph.PutVerticesRequest, graph.PutVerticesResponse>(
+          LanternService.putVertices,
+          (request, context) {
+            encoded = request.vertices.toList();
+            return graph.PutVerticesResponse(written: request.vertices.length);
+          },
+        )
+        .build();
     final client = LanternClient.connect(
       Uri.parse('https://example.test'),
       transport: transport,
@@ -88,35 +89,34 @@ void main() {
     final timestamp = wkt_timestamp.Timestamp.fromDateTime(
       DateTime.parse('2026-07-12T01:02:03.456Z'),
     );
-    final transport =
-        FakeTransportBuilder()
-            .unary<graph.GetVerticesRequest, graph.GetVerticesResponse>(
-              LanternService.getVertices,
-              (request, context) => graph.GetVerticesResponse(
-                vertices: [
-                  graph.Vertex(key: 'f64', float64: 1.25),
-                  graph.Vertex(key: 'f32', float32: 2.5),
-                  graph.Vertex(key: 'i32', int32: -7),
-                  graph.Vertex(key: 'i64', int64: Int64.MIN_VALUE),
-                  graph.Vertex(key: 'u32', uint32: 0xffffffff),
-                  graph.Vertex(key: 'u64', uint64: Int64(-1)),
-                  graph.Vertex(key: 'bool', bool_16: true),
-                  graph.Vertex(key: 'string', string: 'lantern'),
-                  graph.Vertex(key: 'bytes', bytes: [1, 2, 3]),
-                  graph.Vertex(key: 'timestamp', timestamp: timestamp),
-                  graph.Vertex(
-                    key: 'duration',
-                    duration: wkt_duration.Duration(
-                      seconds: Int64(12),
-                      nanos: 345000,
-                    ),
-                  ),
-                  graph.Vertex(key: 'nil', nil: true),
-                  graph.Vertex(key: 'unset'),
-                ],
+    final transport = FakeTransportBuilder()
+        .unary<graph.GetVerticesRequest, graph.GetVerticesResponse>(
+          LanternService.getVertices,
+          (request, context) => graph.GetVerticesResponse(
+            vertices: [
+              graph.Vertex(key: 'f64', float64: 1.25),
+              graph.Vertex(key: 'f32', float32: 2.5),
+              graph.Vertex(key: 'i32', int32: -7),
+              graph.Vertex(key: 'i64', int64: Int64.MIN_VALUE),
+              graph.Vertex(key: 'u32', uint32: 0xffffffff),
+              graph.Vertex(key: 'u64', uint64: Int64(-1)),
+              graph.Vertex(key: 'bool', bool_16: true),
+              graph.Vertex(key: 'string', string: 'lantern'),
+              graph.Vertex(key: 'bytes', bytes: [1, 2, 3]),
+              graph.Vertex(key: 'timestamp', timestamp: timestamp),
+              graph.Vertex(
+                key: 'duration',
+                duration: wkt_duration.Duration(
+                  seconds: Int64(12),
+                  nanos: 345000,
+                ),
               ),
-            )
-            .build();
+              graph.Vertex(key: 'nil', nil: true),
+              graph.Vertex(key: 'unset'),
+            ],
+          ),
+        )
+        .build();
     final client = LanternClient.connect(
       Uri.parse('https://example.test'),
       transport: transport,
@@ -186,15 +186,14 @@ void main() {
   );
 
   test('non-finite wire values fail closed as server errors', () async {
-    final transport =
-        FakeTransportBuilder()
-            .unary<graph.GetVerticesRequest, graph.GetVerticesResponse>(
-              LanternService.getVertices,
-              (request, context) => graph.GetVerticesResponse(
-                vertices: [graph.Vertex(key: 'bad', float64: double.nan)],
-              ),
-            )
-            .build();
+    final transport = FakeTransportBuilder()
+        .unary<graph.GetVerticesRequest, graph.GetVerticesResponse>(
+          LanternService.getVertices,
+          (request, context) => graph.GetVerticesResponse(
+            vertices: [graph.Vertex(key: 'bad', float64: double.nan)],
+          ),
+        )
+        .build();
     final client = LanternClient.connect(
       Uri.parse('https://example.test'),
       transport: transport,

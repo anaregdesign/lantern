@@ -426,12 +426,11 @@ final class LanternClient {
         'must be positive',
       );
     }
-    final injectionCount =
-        [
-          transport != null,
-          transportFactory != null,
-          httpClientFactory != null,
-        ].where((value) => value).length;
+    final injectionCount = [
+      transport != null,
+      transportFactory != null,
+      httpClientFactory != null,
+    ].where((value) => value).length;
     if (injectionCount > 1) {
       throw ArgumentError(
         'transport, transportFactory, and httpClientFactory are mutually exclusive',
@@ -656,8 +655,10 @@ final class LanternInvoker {
     controller = StreamController<T>(
       sync: true,
       onListen: () {
-        final invocation =
-            context = _InvocationContext(options, _defaultTimeout);
+        final invocation = context = _InvocationContext(
+          options,
+          _defaultTimeout,
+        );
         final body = _invokeStreamBody(call, invocation);
         subscription = body.listen(
           controller.add,
@@ -718,13 +719,12 @@ final class LanternInvoker {
     final signal = context.signal;
     String? token;
     try {
-      token =
-          (await Future.any<_TokenProviderResult>([
-            Future<String?>.sync(provider).then(_TokenProviderResult.value),
-            signal.future.then<_TokenProviderResult>(
-              (error) => throw _SignalAbort(error),
-            ),
-          ])).token;
+      token = (await Future.any<_TokenProviderResult>([
+        Future<String?>.sync(provider).then(_TokenProviderResult.value),
+        signal.future.then<_TokenProviderResult>(
+          (error) => throw _SignalAbort(error),
+        ),
+      ])).token;
     } on _SignalAbort catch (error) {
       // Preserve cancellation/deadline status from our signal. Provider
       // failures are handled below and never expose provider-supplied text.
