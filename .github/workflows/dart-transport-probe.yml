@@ -1,0 +1,133 @@
+name: Dart transport probe
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/dart-transport-probe.yml"
+      - "docs/decisions/0001-dart-mobile-transport.md"
+      - "proto/**"
+      - "testbed/dart-transport-probe/**"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  dart:
+    name: Generate, analyze, and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: 3.44.6
+          cache: true
+
+      - name: Install Buf
+        run: go install github.com/bufbuild/buf/cmd/buf@v1.71.0
+
+      - name: Regenerate and check drift
+        run: |
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          testbed/dart-transport-probe/scripts/codegen.sh
+          git diff --exit-code -- testbed/dart-transport-probe
+
+      - name: Check Connect candidate
+        working-directory: testbed/dart-transport-probe/connect
+        run: |
+          dart pub get
+          dart format --output=none --set-exit-if-changed \
+            lib/probe.dart test tool ../templates/connect ../templates/main.dart
+          dart analyze
+          dart test
+
+      - name: Check gRPC candidate
+        working-directory: testbed/dart-transport-probe/grpc
+        run: |
+          dart pub get
+          dart format --output=none --set-exit-if-changed \
+            lib/probe.dart test tool ../templates/grpc
+          dart analyze
+          dart test
+
+  ios:
+    name: iOS real-wire matrix
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: 3.44.6
+          cache: true
+
+      - name: Run both candidates on an iOS simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$RUNNER_TEMP/lantern"
+          cert="$RUNNER_TEMP/lantern-probe-cert.pem"
+          key="$RUNNER_TEMP/lantern-probe-key.pem"
+          go build -o "$app" ./server/cmd
+          openssl req -x509 -newkey rsa:2048 -nodes \
+            -keyout "$key" -out "$cert" -days 1 -subj /CN=127.0.0.1 \
+            -addext subjectAltName=IP:127.0.0.1,DNS:localhost
+
+          env LANTERN_PORT=6433 LANTERN_METRICS_ADDR=:9143 \
+            LANTERN_LOG_LEVEL=warn "$app" >"$RUNNER_TEMP/plain.log" 2>&1 &
+          plain_pid=$!
+          env LANTERN_PORT=6434 LANTERN_METRICS_ADDR=:9144 \
+            LANTERN_LOG_LEVEL=warn LANTERN_AUTH_TOKENS=probe-token \
+            LANTERN_TLS_CERT_FILE="$cert" LANTERN_TLS_KEY_FILE="$key" \
+            "$app" >"$RUNNER_TEMP/tls.log" 2>&1 &
+          tls_pid=$!
+          trap 'kill "$plain_pid" "$tls_pid" 2>/dev/null || true' EXIT
+
+          for port in 9143 9144; do
+            ready=0
+            for _ in {1..60}; do
+              if curl --fail --silent "http://127.0.0.1:$port/healthz" >/dev/null; then
+                ready=1
+                break
+              fi
+              sleep 1
+            done
+            if [[ $ready -ne 1 ]]; then
+              cat "$RUNNER_TEMP/plain.log" "$RUNNER_TEMP/tls.log"
+              exit 1
+            fi
+          done
+
+          device=$(xcrun simctl list devices available -j | \
+            jq -r '[.devices[][] | select(.name | startswith("iPhone"))][0].udid')
+          test -n "$device"
+          xcrun simctl boot "$device" || true
+          xcrun simctl bootstatus "$device" -b
+
+          export LANTERN_PROBE_WORKDIR="$RUNNER_TEMP/dart-mobile"
+          testbed/dart-transport-probe/scripts/mobile.sh \
+            connect "$device" http://127.0.0.1:6433 \
+            https://127.0.0.1:6434 probe-token "$cert"
+          testbed/dart-transport-probe/scripts/mobile.sh \
+            grpc "$device" http://127.0.0.1:6433 \
+            https://127.0.0.1:6434 probe-token "$cert"
