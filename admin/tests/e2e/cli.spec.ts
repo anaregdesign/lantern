@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 import { CONNECT_URL, STORAGE_KEY, putEdges, putVertices } from "./helpers";
 
@@ -57,6 +57,78 @@ test.beforeAll(async () => {
     { tail: "cli:cmty:b1", head: "cli:cmty:a1", weight: 0.1 },
   ]);
 });
+
+// #989 — below the desktop split breakpoint, terminal + graph become a page
+// scrollable stack. The canvas still needs room for its graph, hop legend, and
+// label controls at both a phone portrait and a short landscape viewport.
+test.describe("narrow CLI explorer remains operable (#989)", () => {
+  test.describe("portrait 390×844", () => {
+    test.use({ viewport: { width: 390, height: 844 } });
+
+    test("preserves a practical graph body", async ({ page }) => {
+      await assertNarrowExplorer(page);
+    });
+  });
+
+  test.describe("short landscape 844×390", () => {
+    test.use({ viewport: { width: 844, height: 390 } });
+
+    test("preserves a practical graph body", async ({ page }) => {
+      await assertNarrowExplorer(page);
+    });
+  });
+});
+
+async function assertNarrowExplorer(page: Page): Promise<void> {
+  await page.addInitScript(
+    ({ key, value }) => window.localStorage.setItem(key, value),
+    { key: STORAGE_KEY, value: CONNECT_URL },
+  );
+  await page.goto("/cli");
+  const input = page.getByTestId("cli-input");
+  await input.fill("bfs cli:alpha 2 5");
+  await input.press("Enter");
+
+  const canvasBody = page.locator('[class*="canvasBody"]');
+  await expect(canvasBody).toBeVisible();
+  const bodyBox = await canvasBody.boundingBox();
+  if (!bodyBox) throw new Error("canvas body has no bounding box");
+  expect(bodyBox.height).toBeGreaterThanOrEqual(360);
+
+  const legend = page.getByTestId("illuminate-legend");
+  const labelControls = page.getByTestId("illuminate-label-controls");
+  await expect(legend).toBeVisible();
+  await expect(labelControls).toBeVisible();
+  const legendBox = await legend.boundingBox();
+  const controlsBox = await labelControls.boundingBox();
+  if (!legendBox || !controlsBox) {
+    throw new Error("canvas overlays have no bounding boxes");
+  }
+  const overlaps =
+    legendBox.x < controlsBox.x + controlsBox.width &&
+    legendBox.x + legendBox.width > controlsBox.x &&
+    legendBox.y < controlsBox.y + controlsBox.height &&
+    legendBox.y + legendBox.height > controlsBox.y;
+  expect(overlaps).toBe(false);
+
+  // The labels remain keyboard-operable after the stacked layout has pushed
+  // the canvas below the fold. Focus scrolls the control into view; Space
+  // exercises the same native button path that touch/click uses.
+  const nodeLabels = page.getByTestId("illuminate-toggle-node-labels");
+  await nodeLabels.focus();
+  await expect(nodeLabels).toBeFocused();
+  await expect(nodeLabels).toHaveAttribute("aria-pressed", "true");
+  await nodeLabels.press("Space");
+  await expect(nodeLabels).toHaveAttribute("aria-pressed", "false");
+
+  const layout = await page.evaluate(() => ({
+    pageScrolls: document.documentElement.scrollHeight > window.innerHeight,
+    noHorizontalOverflow:
+      document.documentElement.scrollWidth <= window.innerWidth + 1,
+  }));
+  expect(layout.pageScrolls).toBe(true);
+  expect(layout.noHorizontalOverflow).toBe(true);
+}
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(

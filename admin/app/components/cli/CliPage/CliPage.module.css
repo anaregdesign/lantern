@@ -336,6 +336,36 @@
   min-height: 0;
 }
 
+/* ── Narrow viewports — a scrollable, usable stacked explorer ───────────
+   The desktop shell deliberately divides its fixed viewport height between
+   terminal and canvas. Reusing that division below the split breakpoint left
+   the wrapped picker with most of the canvas allocation, reducing the graph
+   to an unusable strip on phones and short landscape screens. Let the page
+   grow vertically instead: terminal output remains independently scrollable,
+   while the graph body retains enough room for nodes, the legend, and the
+   label-toggle cluster to coexist without overlap (#989). */
+@media (max-width: 1023px) {
+  .root[data-mode="split"] {
+    height: auto;
+    min-height: 0;
+  }
+
+  .root[data-mode="split"] > .terminal {
+    flex: 0 0 360px;
+    min-height: 320px;
+  }
+
+  .root[data-mode="split"] > .canvasColumn {
+    flex: 0 0 auto;
+    min-height: 0;
+  }
+
+  .root[data-mode="split"] .canvasBody {
+    flex: 0 0 360px;
+    min-height: 360px;
+  }
+}
+
 /* ── Wide viewports — two-column grid when a graph is present ─────────────
    Terminal (col 1) · splitter (col 2) · canvas (col 3). */
 @media (min-width: 1024px) {
