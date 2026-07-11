@@ -224,6 +224,12 @@ carries its own TTL); `PutEdge` is **idempotent replace** (single weight,
 single TTL). See the in-line discussion in `example/main.go` for the
 semantic difference.
 
+`Illuminate` accepts at most one traversal family option (`WithBFS`,
+`WithPPR`, or `WithLocalCommunity`). Combining them returns a local error that
+matches both `ErrInvalidArgument` and `ErrConflictingIlluminateFamilies` before
+any RPC is sent; the same contract applies to `NewLanternFailover`. Shared
+axes (`WithWeighting`, `WithVertexPrefix`) remain composable.
+
 `PutVertexIfAbsent` / `PutVerticesIfAbsent` are conditional writes (SET NX,
 #896): each applies only when no **live** vertex already exists at the key,
 closing the check-then-act race of a `GetVertex` → `PutVertex` sequence. The

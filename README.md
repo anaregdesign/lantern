@@ -179,7 +179,7 @@ optimization direction, and weighting:
 | Axis | Options | What it picks |
 |---|---|---|
 | family verb | `bfs` / `pagerank` / `community` | Greedy per-hop top-k neighbourhood, Personalized PageRank relevance star, or the seed's natural community (conductance-cut, returned as a real induced subgraph) |
-| `reduction` | `none` (default) / `mst` / `spt` | Return the raw family result, or render the `bfs` / `community` result as a spanning-tree or shortest-path-tree view rooted at the seed |
+| `reduction` | `none` (default) / `mst` / `spt` | Return the raw family result, or render the `bfs` / `community` result as a rooted directed arborescence (`mst`) or shortest-path tree (`spt`) |
 | `objective` | `max` (default) / `min` | Keep strongest edges vs cheapest edges — the direction of both the `bfs` per-hop top-k prune and any tree reduction (ignored by `pagerank`, which ranks by mass) |
 | `weighting` | `raw` (default) / `tfidf` / `bm25` | Edge-weight transform applied before the walk — TF-IDF and BM25 damp hub vertices like "popular" items |
 
@@ -239,7 +239,10 @@ bfs user:42 2 10 weighting=tfidf                      # suppress hub items
 The family verb picks the traversal (`bfs`, `pagerank`, `community`) and the
 orthogonal `reduction` axis (`none` default, `mst`, `spt`) renders the
 `bfs`/`community` result as a tree rooted at the seed — so a local community
-can be handed back as its own minimum-spanning-tree backbone in one RPC.
+can be handed back as its own minimum/maximum rooted directed arborescence in
+one RPC. `mst` optimises over the actual directed edges: every reachable
+non-seed vertex has one incoming tree edge, rather than applying undirected
+Prim semantics to asymmetric relationships.
 `reduction` is not accepted by `pagerank`, which returns a ranked star.
 
 PPR takes two locality knobs (`restart_prob`, `epsilon` — higher restart

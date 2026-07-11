@@ -256,3 +256,131 @@ func TestIlluminate_OneofArmRoundTrips(t *testing.T) {
 		})
 	}
 }
+
+// TestLantern_Illuminate_MSTReducesDirectedArborescence drives the #983
+// asymmetric counterexample through the actual Connect/h2c wire for both
+// reduction-capable families. A Prim-style outgoing-edge walk would choose
+// r->a(10) and r->b(11); the minimum rooted directed arborescence must instead
+// choose r->b(11) and b->a(9), whose total cost is 20.
+func TestLantern_Illuminate_MSTReducesDirectedArborescence(t *testing.T) {
+	exp := timestamppb.New(time.Now().Add(time.Hour))
+	putGraph := func(t *testing.T, keys []string, edges []*pb.Edge) (graphv1connect.LanternServiceClient, context.Context) {
+		t.Helper()
+		c, _ := newRawConnectClient(t, false)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		t.Cleanup(cancel)
+		vertices := make([]*pb.Vertex, len(keys))
+		for i, key := range keys {
+			vertices[i] = &pb.Vertex{Key: key, Value: &pb.Vertex_String_{String_: key}, Expiration: exp}
+		}
+		if _, err := c.PutVertices(ctx, connect.NewRequest(&pb.PutVerticesRequest{Vertices: vertices})); err != nil {
+			t.Fatalf("PutVertices: %v", err)
+		}
+		for _, edge := range edges {
+			edge.Expiration = exp
+		}
+		if _, err := c.PutEdges(ctx, connect.NewRequest(&pb.PutEdgesRequest{Edges: edges})); err != nil {
+			t.Fatalf("PutEdges: %v", err)
+		}
+		return c, ctx
+	}
+
+	assertArborescence := func(t *testing.T, graph *pb.Graph, wantCount int, want map[string]float32) {
+		t.Helper()
+		got := make(map[string]float32, len(graph.GetEdges()))
+		for _, edge := range graph.GetEdges() {
+			got[edge.GetTail()+"->"+edge.GetHead()] = edge.GetWeight()
+		}
+		if len(got) != wantCount {
+			t.Fatalf("tree edge count = %d, want %d (edges=%v)", len(got), wantCount, got)
+		}
+		for key, weight := range want {
+			if gotWeight, ok := got[key]; !ok || gotWeight != weight {
+				t.Errorf("tree edge %s = (%v,%v), want (%v,true); edges=%v", key, gotWeight, ok, weight, got)
+			}
+		}
+		if _, hasPrimEdge := got["r->a"]; hasPrimEdge {
+			t.Errorf("Prim-style edge r->a must not survive: %v", got)
+		}
+	}
+
+	cases := []struct {
+		name      string
+		keys      []string
+		edges     []*pb.Edge
+		req       *pb.IlluminateRequest
+		wantCount int
+		want      map[string]float32
+	}{
+		{
+			name:  "bfs",
+			keys:  []string{"r", "a", "b"},
+			edges: []*pb.Edge{{Tail: "r", Head: "a", Weight: 10}, {Tail: "r", Head: "b", Weight: 11}, {Tail: "b", Head: "a", Weight: 9}},
+			req: &pb.IlluminateRequest{Seed: "r", Params: &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{
+				Step: 2, FanOut: 2,
+				Reduction: pb.Reduction_REDUCTION_MINIMUM_SPANNING_TREE,
+				Objective: pb.Objective_OBJECTIVE_MINIMIZE,
+			}}},
+			wantCount: 2,
+			want:      map[string]float32{"r->b": 11, "b->a": 9},
+		},
+		{
+			name: "community",
+			keys: []string{"r", "a", "b", "c", "d", "e", "f", "g"},
+			edges: func() []*pb.Edge {
+				// Two strongly connected cliques joined by a weak bridge use the
+				// same real community shape as the core PageRank-Nibble contract.
+				// The first clique embeds the asymmetric arborescence counterexample.
+				members := []string{"r", "a", "b", "c"}
+				edges := make([]*pb.Edge, 0, 26)
+				for _, tail := range members {
+					for _, head := range members {
+						if tail != head {
+							edges = append(edges, &pb.Edge{Tail: tail, Head: head, Weight: 100})
+						}
+					}
+				}
+				for _, edge := range edges {
+					switch {
+					case edge.Tail == "r" && edge.Head == "a":
+						edge.Weight = 100
+					case edge.Tail == "r" && edge.Head == "b":
+						edge.Weight = 101
+					case edge.Tail == "r" && edge.Head == "c":
+						edge.Weight = 100
+					case edge.Tail == "b" && edge.Head == "a":
+						edge.Weight = 99
+					case (edge.Tail == "a" || edge.Tail == "c") && edge.Head == "b":
+						edge.Weight = 110
+					}
+				}
+				for _, tail := range []string{"d", "e", "f", "g"} {
+					for _, head := range []string{"d", "e", "f", "g"} {
+						if tail != head {
+							edges = append(edges, &pb.Edge{Tail: tail, Head: head, Weight: 1})
+						}
+					}
+				}
+				return append(edges, &pb.Edge{Tail: "c", Head: "d", Weight: 0.05}, &pb.Edge{Tail: "d", Head: "c", Weight: 0.05})
+			}(),
+			req: &pb.IlluminateRequest{Seed: "r", Params: &pb.IlluminateRequest_Community{Community: &pb.LocalCommunityParams{
+				MaxSize:   0,
+				Epsilon:   1e-6,
+				Reduction: pb.Reduction_REDUCTION_MINIMUM_SPANNING_TREE,
+				Objective: pb.Objective_OBJECTIVE_MINIMIZE,
+			}}},
+			wantCount: 3,
+			want:      map[string]float32{"r->b": 101, "b->a": 99},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, ctx := putGraph(t, tc.keys, tc.edges)
+			resp, err := c.Illuminate(ctx, connect.NewRequest(tc.req))
+			if err != nil {
+				t.Fatalf("Illuminate: %v", err)
+			}
+			assertArborescence(t, resp.Msg.GetGraph(), tc.wantCount, tc.want)
+		})
+	}
+}

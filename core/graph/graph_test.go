@@ -3,6 +3,8 @@ package graph
 import (
 	"context"
 	"errors"
+	"math"
+	"strconv"
 	"testing"
 )
 
@@ -129,8 +131,8 @@ func TestGraph_MinimumSpanningTree(t *testing.T) {
 	}
 }
 
-// TestGraph_MinimumSpanningTree_Larger exercises Prim on a 5-vertex graph
-// with a clear optimum, to guard against the incremental-push refactor.
+// TestGraph_MinimumSpanningTree_Larger exercises the directed-arborescence
+// solver on a reciprocal graph with a clear optimum.
 //
 //	a -1- b
 //	|  \  |
@@ -203,6 +205,119 @@ func TestGraph_MaximumSpanningTree(t *testing.T) {
 	}
 }
 
+func TestGraph_SpanningTree_DirectedArborescence(t *testing.T) {
+	// Lantern edges are directed. Classical Prim would greedily pick both
+	// root edges and return r->a(10) + r->b(11) = 21, but the optimal
+	// minimum rooted arborescence is r->b(11) + b->a(1) = 12.
+	//
+	//       10
+	//   r -----> a
+	//   |        ^
+	// 11|        |1
+	//   v        |
+	//   b --------
+	t.Run("minimum chooses the globally optimal directed tree", func(t *testing.T) {
+		g := NewGraph[string, int]()
+		g.PutEdge("r", "a", 10)
+		g.PutEdge("r", "b", 11)
+		g.PutEdge("b", "a", 1)
+
+		got := g.MinimumSpanningTree("r")
+		assertDirectedTree(t, got, map[string]map[string]float32{
+			"r": {"b": 11},
+			"b": {"a": 1},
+		})
+	})
+
+	t.Run("maximum chooses the globally optimal directed tree", func(t *testing.T) {
+		g := NewGraph[string, int]()
+		g.PutEdge("r", "a", 10)
+		g.PutEdge("r", "b", 11)
+		g.PutEdge("b", "a", 20)
+
+		got := g.MaximumSpanningTree("r")
+		assertDirectedTree(t, got, map[string]map[string]float32{
+			"r": {"b": 11},
+			"b": {"a": 20},
+		})
+	})
+
+	t.Run("contracts and expands a selected-edge cycle", func(t *testing.T) {
+		// The locally cheapest incoming edges select a<->b, which must be
+		// contracted. The optimum enters the cycle at a via r->a(5), then
+		// keeps a->b(1), rather than retaining the b->a cycle edge.
+		g := NewGraph[string, int]()
+		g.PutEdge("r", "a", 5)
+		g.PutEdge("r", "b", 6)
+		g.PutEdge("a", "b", 1)
+		g.PutEdge("b", "a", 1)
+		g.PutEdge("b", "c", 2)
+		g.PutEdge("r", "c", 10)
+
+		got := g.MinimumSpanningTree("r")
+		assertDirectedTree(t, got, map[string]map[string]float32{
+			"r": {"a": 5},
+			"a": {"b": 1},
+			"b": {"c": 2},
+		})
+	})
+}
+
+func assertDirectedTree(t *testing.T, got *Graph[string, int], want map[string]map[string]float32) {
+	t.Helper()
+	gotEdges := 0
+	for tail, heads := range got.Edges {
+		for head, weight := range heads {
+			gotEdges++
+			if wantWeight, ok := want[tail][head]; !ok || weight != wantWeight {
+				t.Errorf("unexpected edge %s->%s=%v (want %v)", tail, head, weight, want)
+			}
+		}
+	}
+	wantEdges := 0
+	for _, heads := range want {
+		wantEdges += len(heads)
+	}
+	if gotEdges != wantEdges {
+		t.Errorf("edge count = %d, want %d (edges=%v)", gotEdges, wantEdges, got.Edges)
+	}
+	for tail, heads := range want {
+		for head, wantWeight := range heads {
+			if gotWeight, ok := got.Edges[tail][head]; !ok || gotWeight != wantWeight {
+				t.Errorf("missing edge %s->%s=%v (edges=%v)", tail, head, wantWeight, got.Edges)
+			}
+		}
+	}
+}
+
+// BenchmarkGraph_MinimumSpanningTree_Directed is the representative #983
+// reduction benchmark. The graph has both a directed ring (which produces
+// selected-incoming-edge cycles before contraction) and root shortcuts, so it
+// exercises Chu–Liu/Edmonds rather than only the no-cycle fast path.
+func BenchmarkGraph_MinimumSpanningTree_Directed(b *testing.B) {
+	const vertices = 64
+	g := NewGraph[string, int]()
+	key := func(i int) string { return "v" + strconv.Itoa(i) }
+	for i := 0; i < vertices; i++ {
+		g.PutVertex(key(i), i)
+	}
+	for i := 0; i < vertices; i++ {
+		next := (i + 1) % vertices
+		prev := (i + vertices - 1) % vertices
+		g.PutEdge(key(i), key(next), 1)
+		g.PutEdge(key(i), key(prev), 2)
+		if i != 0 {
+			g.PutEdge(key(0), key(i), 10)
+		}
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if got := g.MinimumSpanningTree(key(0)); len(g.Vertices) != vertices {
+			b.Fatalf("vertices = %d, want %d", len(got.Vertices), vertices)
+		}
+	}
+}
+
 func TestGraph_ShortestPathTree(t *testing.T) {
 	// a -1- b -1- c, a -10- c. Dijkstra with cost = weight should still visit
 	// c via b because (1+1)=2 < 10.
@@ -260,6 +375,36 @@ func TestGraph_ShortestPathTree_IndirectCheaper(t *testing.T) {
 	}
 	if totalEdges != 3 {
 		t.Errorf("SPT total edges = %d, want 3 (edges=%v)", totalEdges, spt.Edges)
+	}
+}
+
+func TestGraph_ShortestPathTreeContext_RejectsInvalidCosts(t *testing.T) {
+	base := func() *Graph[string, int] {
+		g := NewGraph[string, int]()
+		g.PutEdge("a", "b", 1)
+		g.PutEdge("b", "a", 1) // A negative cycle must fail rather than requeue forever.
+		return g
+	}
+
+	for _, tc := range []struct {
+		name string
+		cost func(float32) float32
+	}{
+		{"negative cycle", func(float32) float32 { return -1 }},
+		{"NaN", func(float32) float32 { return float32(math.NaN()) }},
+		{"positive infinity", func(float32) float32 { return float32(math.Inf(1)) }},
+		{"distance overflow", func(float32) float32 { return math.MaxFloat32 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := base().ShortestPathTreeContext(context.Background(), "a", tc.cost)
+			if !errors.Is(err, ErrInvalidShortestPathCost) {
+				t.Fatalf("errors.Is(err, ErrInvalidShortestPathCost) = false; err = %v", err)
+			}
+			var invalid *InvalidShortestPathCostError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("errors.As(err, *InvalidShortestPathCostError) = false; err = %v", err)
+			}
+		})
 	}
 }
 

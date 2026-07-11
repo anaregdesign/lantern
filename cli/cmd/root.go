@@ -13,13 +13,13 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -132,15 +132,33 @@ EXAMPLES
 
 // Execute runs the root command. It is the only function main.go calls.
 func Execute() {
-	if err := rootCmd.ExecuteContext(signalContext()); err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
-		// Exit code 2 if the error came from the server (RPC errors carry an
-		// "rpc error:" prefix). Use 1 for everything else.
-		if strings.Contains(err.Error(), "rpc error") {
-			os.Exit(2)
-		}
-		os.Exit(1)
+	if code := runCommand(signalContext(), rootCmd); code != 0 {
+		os.Exit(code)
 	}
+}
+
+// runCommand executes a Cobra command and writes any command error to its
+// configured stderr. It is deliberately separate from Execute so callers and
+// tests can observe the CLI's exit-code contract without terminating the
+// process.
+func runCommand(ctx context.Context, command *cobra.Command) int {
+	if err := command.ExecuteContext(ctx); err != nil {
+		_, _ = fmt.Fprintln(command.ErrOrStderr(), "Error:", err)
+		return exitCode(err)
+	}
+	return 0
+}
+
+// exitCode distinguishes errors returned by a Connect server from local CLI
+// failures. The SDK keeps the original *connect.Error in its wrapped errors,
+// so errors.As works for both direct Connect failures and SDK sentinels without
+// depending on an unstable error-message prefix.
+func exitCode(err error) int {
+	var connectErr *connect.Error
+	if errors.As(err, &connectErr) {
+		return 2
+	}
+	return 1
 }
 
 // signalContext returns a context that is cancelled on SIGINT / SIGTERM so

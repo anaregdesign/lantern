@@ -89,6 +89,7 @@ scenario declares a `perf_gate:` block — the perf-gate verdict
 | `replication_apply_churn.yaml` | replicated write churn; asserts `lantern_vertex_hlc_entries` returns to baseline (#700, #705) |
 | `edge_contrib_idempotent.yaml` | AddEdge/AddEdges with repeated ContribIDs; verifies at-most-once dedup stays bounded (#706) |
 | `backup_under_load.yaml`  | BackupSnapshot concurrent with sustained writes — on-demand only, not in release sweep (#707) |
+| `broad_illuminate.yaml` | Six named traversal producers over a verified 64-way/3-hop walk and planted dense communities; preflight rejects a collapsed topology (#994) |
 
 Each YAML declares the phases (`warmup`, `steady`, `cooldown`), the ghz
 target (`call` + `data_template`), optional `subscribe` and `chaos`
@@ -115,6 +116,13 @@ scenario fails the schema PR instead of the next nightly (#934). If you
 retire or rename a wire field, migrate every scenario that sends it in the
 same PR.
 
+`broad_illuminate` additionally has a semantic topology gate. Before warmup,
+the harness seeds a deterministic graph, then verifies the requested 64-way
+three-hop BFS shape, tuned PPR touch count, and a 32-member weak-bridge
+community reduced to a directed arborescence. Its six named producers are
+gated independently as well as in aggregate, so a cheap BFS cannot hide a
+PPR or community regression.
+
 ### Perf gate (`perf_gate:` block)
 
 A scenario MAY additionally declare throughput/latency floors over its
@@ -133,6 +141,21 @@ for the scenario. The aggregation matches the release summary table
 `fail` folds into run.sh's exit code exactly like the leak gate: the
 blocking nightly (`bench-nightly.yml`) enforces it, the release-time bench
 stays advisory (`continue-on-error`, #256/#394).
+
+For a fan-out scenario, `perf_gate.producers` may define the same thresholds
+per named `target.calls[]` producer:
+
+```yaml
+perf_gate:
+  producers:
+    ppr_tuned:
+      min_steady_rps: 50
+      max_p99_ms: 1000
+      max_non_ok_ratio: 0.02
+```
+
+All named producer gates are conjunctive with the aggregate gate and appear
+as separate rows in `perf_gate.json` and the rendered report.
 
 Sizing rules (all seven release scenarios carry a block sized this way):
 

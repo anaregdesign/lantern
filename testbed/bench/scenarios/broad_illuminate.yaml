@@ -12,65 +12,76 @@
 #       families — in one 2m steady window (brackets the 60s GC sweep twice
 #       for the leak gate).
 #
-# Dependency: every variant seeds k-* (uint enums per proto/graph/v1/graph.proto:
-#   Reduction 1=MST 2=SPT, Objective 1=MINIMIZE 2=MAXIMIZE, Weighting 2=TFIDF).
-#   The k-* vertices AND the k-*→k-* edges are populated by broad_rw, so this
-#   scenario MUST run AFTER broad_rw in the release sweep (release-scenarios.txt).
-#   Run standalone against an empty graph, Illuminate still returns codes.OK with
-#   an empty subgraph — there is just no traversal work to measure.
+# Topology: `preflight.kind=broad_illuminate` seeds a self-contained fixture
+# before warmup. It has a 64-way directed walk with three reachable hops plus
+# two planted 32-member dense communities joined by weak bridges. Preflight
+# drives BFS/PPR/community+reduction against the live server and fails unless
+# degree, depth, touched PPR members, and community shape all hold. This avoids
+# treating a wire-valid traversal over an accidentally linear graph as a
+# benchmark (#994).
 name: broad_illuminate
+preflight:
+  kind: broad_illuminate
 phases:
   warmup:   { duration: 15s, concurrency: 8,  rps: 200 }
   steady:   { duration: 2m,  concurrency: 16, rps: 4000 }
   cooldown: 15s
 target:
   endpoints: ["localhost:6380", "localhost:6381", "localhost:6382"]
-  # 6 parallel ghz invocations (one per variant), each at steady.rps/6 ≈ 666
+  # 6 parallel ghz invocations (one per family/axis variant), each at
+  # steady.rps/6 ≈ 666
   # rps and the full steady.concurrency (16) → 96 concurrent traversals total.
   calls:
     # [0] raw discovered subgraph (BFS, no reduction, default MAXIMIZE + RAW) —
     #     also what warmup replays. Keep this first.
-    - call: graph.v1.LanternService/Illuminate
+    - name: bfs_raw
+      call: graph.v1.LanternService/Illuminate
       data_template: |
-        {"seed":"k-{{mod .RequestNumber 1000}}","bfs":{"step":2,"fan_out":32}}
+        {"seed":"bench:walk:root","bfs":{"step":2,"fan_out":32}}
     # [1] minimum spanning tree, cost-minimizing direction, raw weights.
-    - call: graph.v1.LanternService/Illuminate
+    - name: bfs_arborescence_min
+      call: graph.v1.LanternService/Illuminate
       data_template: |
-        {"seed":"k-{{mod .RequestNumber 1000}}","bfs":{"step":2,"fan_out":32,"objective":1,"reduction":1}}
+        {"seed":"bench:walk:root","bfs":{"step":2,"fan_out":32,"objective":1,"reduction":1}}
     # [2] shortest-path tree, relevance-maximizing, TF-IDF re-scored weights.
-    - call: graph.v1.LanternService/Illuminate
+    - name: bfs_spt_tfidf
+      call: graph.v1.LanternService/Illuminate
       data_template: |
-        {"seed":"k-{{mod .RequestNumber 1000}}","weighting":2,"bfs":{"step":2,"fan_out":32,"objective":2,"reduction":2}}
+        {"seed":"bench:walk:root","weighting":2,"bfs":{"step":2,"fan_out":32,"objective":2,"reduction":2}}
     # [3] deeper + wider traversal (heaviest BFS fan-out) over the raw subgraph.
-    - call: graph.v1.LanternService/Illuminate
+    - name: bfs_depth3_fanout64
+      call: graph.v1.LanternService/Illuminate
       data_template: |
-        {"seed":"k-{{mod .RequestNumber 1000}}","bfs":{"step":3,"fan_out":64}}
-    # [4] Personalized-PageRank relevance star (#801) — forward-push family,
-    #     top-32 by mass with the default α/ε.
-    - call: graph.v1.LanternService/Illuminate
+        {"seed":"bench:walk:root","bfs":{"step":3,"fan_out":64}}
+    # [4] tuned Personalized-PageRank relevance star (#801): top-32 by mass,
+    #     α=0.2 and ε=1e-6 exercise the actual forward-push work budget.
+    - name: ppr_tuned
+      call: graph.v1.LanternService/Illuminate
       data_template: |
-        {"seed":"k-{{mod .RequestNumber 1000}}","ppr":{"top_n":32}}
-    # [5] conductance-optimal local community (#845) — PageRank-Nibble sweep
-    #     cut, bounded to 32 members, default α/ε, induced subgraph (no
-    #     reduction).
-    - call: graph.v1.LanternService/Illuminate
+        {"seed":"bench:walk:root","ppr":{"top_n":32,"restart_prob":0.2,"epsilon":0.000001}}
+    # [5] tuned PageRank-Nibble local community (#845), then a minimum directed
+    #     arborescence reduction over the planted 32-member community.
+    - name: community_arborescence_min
+      call: graph.v1.LanternService/Illuminate
       data_template: |
-        {"seed":"k-{{mod .RequestNumber 1000}}","community":{"max_size":32}}
+        {"seed":"bench:community:alpha:00","community":{"max_size":32,"restart_prob":0.2,"epsilon":0.000001,"objective":1,"reduction":1}}
 leak_gate:
   goroutine_max_delta: 25
-  heap_alloc_max_delta_mb: 64
-# Floors sized from the nightly baselines. rps and non-OK were sized off the
-# 2026-06-29 → 2026-07-03 4-way runs (rps 3998–4000 of 4000 offered, a handful
-# of non-OK per ~480k) and still hold for the wider mix. The 2026-07 fan-out
-# widened to 6 calls (added PPR + community — #936), so p99 shipped ungated
-# pending a re-baseline (#939): the first green nightly on the new mix
-# (2026-07-04) held worst-producer p99 at 47.75ms with all six producers
-# clustered 46–48ms, so max_p99_ms is restored at 250ms — ~5x headroom,
-# deliberately generous off a single re-baseline sample and matching the
-# ttl_churn/many_subscribers multiplier band. It gates a step-change traversal
-# regression in the BFS/PPR/community families, not night-over-night drift (see
-# the perf-gate sizing rule in testbed/bench/README.md).
+  heap_alloc_max_delta_mb: 32
+# Re-baselined locally on 2026-07-11 after replacing the linear k-* fixture
+# with the real topology: aggregate 2094 RPS, worst p99 219.43 ms, worst
+# heap_alloc delta 1.16 MiB, zero goroutine growth. Floors retain >2× RPS and
+# >4× latency/heap headroom; the first nightly runs refresh the canonical
+# shared-runner record. Individual gates prevent a cheap raw BFS producer from
+# masking a regression in PPR, community, or the depth-3/fan-out-64 path.
 perf_gate:
-  min_steady_rps_total: 2000
-  max_p99_ms: 250
+  min_steady_rps_total: 1000
+  max_p99_ms: 1000
   max_non_ok_ratio: 0.02
+  producers:
+    bfs_raw: { min_steady_rps: 50, max_p99_ms: 1000, max_non_ok_ratio: 0.02 }
+    bfs_arborescence_min: { min_steady_rps: 50, max_p99_ms: 1000, max_non_ok_ratio: 0.02 }
+    bfs_spt_tfidf: { min_steady_rps: 50, max_p99_ms: 1000, max_non_ok_ratio: 0.02 }
+    bfs_depth3_fanout64: { min_steady_rps: 50, max_p99_ms: 1000, max_non_ok_ratio: 0.02 }
+    ppr_tuned: { min_steady_rps: 50, max_p99_ms: 1000, max_non_ok_ratio: 0.02 }
+    community_arborescence_min: { min_steady_rps: 50, max_p99_ms: 1000, max_non_ok_ratio: 0.02 }

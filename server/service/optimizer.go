@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"errors"
 	"math"
 
+	"connectrpc.com/connect"
 	coregraph "github.com/anaregdesign/lantern/core/graph"
 	"github.com/anaregdesign/lantern/core/graphcache"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -17,7 +19,9 @@ type optimizer func(ctx context.Context, g *coregraph.Graph[string, *pb.Vertex],
 // resolveOptimizer returns the post-traversal reduction for a
 // (reduction, objective) pair (#846: reductions are a BfsParams knob, not
 // sibling traversals). Returns nil when no reduction is needed — the caller
-// treats nil as "return the raw discovered subgraph".
+// treats nil as "return the raw discovered subgraph". The MST branch is a
+// minimum/maximum rooted directed arborescence, matching Lantern's directed
+// edge model.
 //
 // Note: Reduction UNSPECIFIED → nil (no reduction). Objective
 // OBJECTIVE_UNSPECIFIED resolves to MAXIMIZE per the proto-level default
@@ -54,6 +58,17 @@ func inverseCost(weight float32) float32 {
 		return math.MaxFloat32
 	}
 	return 1 / weight
+}
+
+// optimizerToConnect maps reduction-specific data preconditions to stable
+// wire errors while retaining ctxToConnect's cancellation semantics. In
+// particular, Dijkstra must not receive negative or non-finite costs: it can
+// otherwise continue relaxing a negative cycle indefinitely.
+func optimizerToConnect(err error) error {
+	if errors.Is(err, coregraph.ErrInvalidShortestPathCost) {
+		return connect.NewError(connect.CodeFailedPrecondition, err)
+	}
+	return ctxToConnect(err)
 }
 
 // resolvePPRParams resolves the Personalized PageRank restart probability

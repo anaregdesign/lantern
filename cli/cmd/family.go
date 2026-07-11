@@ -9,6 +9,7 @@ import (
 	"github.com/anaregdesign/lantern/cli/service"
 	client "github.com/anaregdesign/lantern/sdks/go"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 // objectiveByName / reductionByName / weightingByName map the human-friendly
@@ -52,7 +53,16 @@ func forwardFamilyPositional(cmd *cobra.Command, verb string, args []string) err
 }
 
 func rejectMixedFamilyGrammar(cmd *cobra.Command, args []string) error {
-	if len(args) > 1 && cmd.Flags().NFlag() > 0 {
+	// Persistent connection flags (--address, --timeout, …) apply to both
+	// grammar forms. Only a family command's own flags conflict with its
+	// positional arguments.
+	var hasChangedFamilyFlag bool
+	cmd.Flags().Visit(func(flag *pflag.Flag) {
+		if cmd.InheritedFlags().Lookup(flag.Name) == nil {
+			hasChangedFamilyFlag = true
+		}
+	})
+	if len(args) > 1 && hasChangedFamilyFlag {
 		return errors.New("cannot mix flags with the positional grammar; use one or the other")
 	}
 	return nil

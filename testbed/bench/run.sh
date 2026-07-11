@@ -167,6 +167,32 @@ wait_ready() {
 }
 wait_ready
 
+# ----- optional semantic topology preflight ---------------------------------
+# A schema-valid ghz template can still benchmark an empty or accidentally
+# linear graph. Scenario-owned preflight kinds seed and verify live data after
+# every replica is ready but before warmup/snapshots. Kinds are deliberately
+# allow-listed here rather than evaluated as arbitrary YAML shell so a scenario
+# remains declarative and reviewable.
+preflight_kind="$(yq -r '.preflight.kind // ""' "$SCENARIO_FILE")"
+case "$preflight_kind" in
+  "") ;;
+  broad_illuminate)
+    preflight_endpoints=""
+    for port in "${REPLICA_GRPC_PORTS[@]}"; do
+      if [[ -n "$preflight_endpoints" ]]; then preflight_endpoints+=","; fi
+      preflight_endpoints+="http://localhost:${port}"
+    done
+    log "preflight: broad_illuminate topology"
+    (
+      cd "$REPO_ROOT"
+      go run ./testbed/bench/preflight \
+        -endpoints "$preflight_endpoints" \
+        -report "$OUTDIR/topology_preflight.json"
+    )
+    ;;
+  *) die "unknown preflight.kind $preflight_kind in $SCENARIO_FILE" ;;
+esac
+
 # ----- helpers ---------------------------------------------------------------
 
 # Extract a single Prom metric value from a /metrics text exposition.
@@ -326,11 +352,13 @@ fi
 calls_len="$(yq -r '.target.calls | length // 0' "$SCENARIO_FILE")"
 prod_pids=()
 prod_files=()
+prod_names=()
 if [[ "$calls_len" != "0" && "$calls_len" != "null" ]]; then
   per_rps=$(( steady_rps / calls_len ))
   for i in $(seq 0 $(( calls_len - 1 ))); do
     call="$(yq -r ".target.calls[$i].call" "$SCENARIO_FILE")"
     data="$(yq -r ".target.calls[$i].data_template" "$SCENARIO_FILE")"
+    name="$(yq -r ".target.calls[$i].name // \"producer-$i\"" "$SCENARIO_FILE")"
     ep="${endpoints[$(( i % ${#endpoints[@]} ))]}"
     f="$OUTDIR/ghz_steady_${i}_${ep//[:.]/_}.json"
     ghz --insecure \
@@ -338,6 +366,7 @@ if [[ "$calls_len" != "0" && "$calls_len" != "null" ]]; then
       -d "$data" --format json -o "$f" "$ep" >/dev/null 2>&1 &
     prod_pids+=( "$!" )
     prod_files+=( "$f" )
+    prod_names+=( "$name" )
   done
   wait "${prod_pids[@]}"
 else
@@ -346,6 +375,7 @@ else
   ep="${endpoints[0]}"
   f="$(run_ghz steady "$ep" "$call" "$data" "$steady_conc" "$steady_rps" "$steady_duration")"
   prod_files+=( "$f" )
+  prod_names+=( "primary" )
 fi
 
 # Reap background helpers (subscribers run for steady_duration; they exit on
@@ -456,33 +486,77 @@ log "leak gate verdict: $verdict"
 perf_min_rps="$(yq -r '.perf_gate.min_steady_rps_total // ""' "$SCENARIO_FILE")"
 perf_max_p99="$(yq -r '.perf_gate.max_p99_ms // ""' "$SCENARIO_FILE")"
 perf_max_non_ok="$(yq -r '.perf_gate.max_non_ok_ratio // ""' "$SCENARIO_FILE")"
+perf_producer_gates="$(yq -o=json '.perf_gate.producers // {}' "$SCENARIO_FILE")"
 perf_verdict="skipped"
-if [[ -n "${perf_min_rps}${perf_max_p99}${perf_max_non_ok}" ]]; then
-  perf_json="$(jq -s \
+if [[ -n "${perf_min_rps}${perf_max_p99}${perf_max_non_ok}" || "$perf_producer_gates" != "{}" ]]; then
+  producer_observations=()
+  for i in "${!prod_files[@]}"; do
+    producer_observations+=( "$(jq -n \
+      --arg name "${prod_names[$i]}" \
+      --slurpfile run "${prod_files[$i]}" '
+        $run[0] as $r |
+        {
+          name: $name,
+          observed: {
+            steady_rps: $r.rps,
+            p99_ms: (((($r.latencyDistribution // []) | map(select(.percentage == 99)) | .[0].latency) // 0) / 1e6),
+            count: $r.count,
+            non_ok: (($r.statusCodeDistribution // {}) | to_entries | map(select(.key != "OK") | .value) | add // 0)
+          }
+        }')" )
+  done
+  producer_json="$(printf '%s\n' "${producer_observations[@]}" | jq -s '.')"
+  perf_json="$(jq -n \
     --arg min_rps "$perf_min_rps" \
     --arg max_p99 "$perf_max_p99" \
-    --arg max_non_ok "$perf_max_non_ok" '
+    --arg max_non_ok "$perf_max_non_ok" \
+    --argjson producer_gates "$perf_producer_gates" \
+    --argjson producer_observations "$producer_json" '
+    def optionalNumber($value): if $value == "" then null else ($value | tonumber) end;
+    def verdict($thresholds; $observed):
+      if   ($thresholds.min_steady_rps != null and $observed.steady_rps < $thresholds.min_steady_rps) then "fail"
+      elif ($thresholds.max_p99_ms != null and $observed.p99_ms > $thresholds.max_p99_ms) then "fail"
+      elif ($thresholds.max_non_ok_ratio != null and $observed.non_ok_ratio > $thresholds.max_non_ok_ratio) then "fail"
+      else "pass" end;
+    [ $producer_observations[] |
+      . as $producer |
+      ($producer_gates[$producer.name] // {}) as $raw |
+      {
+        name: $producer.name,
+        thresholds: {
+          min_steady_rps: ($raw.min_steady_rps // null),
+          max_p99_ms: ($raw.max_p99_ms // null),
+          max_non_ok_ratio: ($raw.max_non_ok_ratio // null)
+        },
+        observed: ($producer.observed + {
+          non_ok_ratio: (if $producer.observed.count > 0 then ($producer.observed.non_ok / $producer.observed.count) else 0 end)
+        })
+      } |
+      . + {verdict: verdict(.thresholds; .observed)}
+    ] as $producers |
     {
-      producers: length,
-      steady_rps_total: (map(.rps) | add),
-      p99_worst_ms: ((map(((.latencyDistribution // []) | map(select(.percentage == 99)) | .[0].latency) // 0) | max) / 1e6),
-      count_total: (map(.count) | add),
-      non_ok_total: (map((.statusCodeDistribution // {}) | to_entries | map(select(.key != "OK") | .value) | add // 0) | add)
-    } as $o |
-    ($o + {non_ok_ratio: (if $o.count_total > 0 then ($o.non_ok_total / $o.count_total) else 0 end)}) as $obs |
+      producers: ($producers | length),
+      steady_rps_total: ($producers | map(.observed.steady_rps) | add),
+      p99_worst_ms: ($producers | map(.observed.p99_ms) | max),
+      count_total: ($producers | map(.observed.count) | add),
+      non_ok_total: ($producers | map(.observed.non_ok) | add)
+    } as $aggregateRaw |
+    ($aggregateRaw + {non_ok_ratio: (if $aggregateRaw.count_total > 0 then ($aggregateRaw.non_ok_total / $aggregateRaw.count_total) else 0 end)}) as $obs |
     {
       thresholds: {
-        min_steady_rps_total: (if $min_rps == "" then null else ($min_rps | tonumber) end),
-        max_p99_ms: (if $max_p99 == "" then null else ($max_p99 | tonumber) end),
-        max_non_ok_ratio: (if $max_non_ok == "" then null else ($max_non_ok | tonumber) end)
+        min_steady_rps_total: optionalNumber($min_rps),
+        max_p99_ms: optionalNumber($max_p99),
+        max_non_ok_ratio: optionalNumber($max_non_ok)
       },
-      observed: $obs
+      observed: $obs,
+      producer_results: $producers
     } |
     . + {verdict: (
       if   (.thresholds.min_steady_rps_total != null and $obs.steady_rps_total < .thresholds.min_steady_rps_total) then "fail"
       elif (.thresholds.max_p99_ms != null and $obs.p99_worst_ms > .thresholds.max_p99_ms) then "fail"
       elif (.thresholds.max_non_ok_ratio != null and $obs.non_ok_ratio > .thresholds.max_non_ok_ratio) then "fail"
-      else "pass" end)}' "${prod_files[@]}")"
+      elif any(.producer_results[]; .verdict == "fail") then "fail"
+      else "pass" end)}')"
   printf '%s\n' "$perf_json" > "$OUTDIR/perf_gate.json"
   perf_verdict="$(jq -r '.verdict' "$OUTDIR/perf_gate.json")"
 fi

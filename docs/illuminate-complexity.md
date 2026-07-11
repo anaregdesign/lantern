@@ -88,17 +88,19 @@ At an equal-score boundary, both BFS pruning and PageRank top-$N$ retain
 ascending Lantern vertex keys. That determines membership reproducibly; the
 map-shaped response itself has no iteration-order guarantee.
 
-### Optional MST / SPT reduction
+### Optional directed-arborescence / SPT reduction
 
-When the caller asks for a spanning-tree reduction, the server runs Prim /
-Dijkstra-style selection over the already-collected subgraph
-(`spanningTreeContext` in `model.go`):
+When the caller asks for `reduction=mst`, the server computes a minimum or
+maximum rooted **directed arborescence** over the already-collected subgraph
+with Chu–Liu/Edmonds; it does not project asymmetric Lantern edges to an
+undirected graph or apply Prim. `reduction=spt` uses Dijkstra-style selection.
+The worst-case arborescence complexity is:
 
 $$
-O\!\left((V_{sub} + E_{sub})\,\log V_{sub}\right)
+O\!\left(V_{sub} E_{sub}\right)
 $$
 
-Still a function of the **visited subgraph only** — never of $N$ or $E$.
+Both are functions of the **visited subgraph only** — never of $N$ or $E$.
 
 > The walk processes tails through a worker pool, so wall-clock time also
 > benefits from parallelism, but that is a constant-factor effect and does not

@@ -37,6 +37,15 @@
 // injects a hidden default expiration — an omitted/zero TTL is honoured
 // as permanent end to end (see #523).
 //
+// # Illuminate family selection
+//
+// Illuminate accepts zero or one traversal family option: WithBFS, WithPPR,
+// or WithLocalCommunity. Passing more than one returns a local error matching
+// both ErrInvalidArgument and ErrConflictingIlluminateFamilies before any
+// endpoint is contacted. The same rule applies through NewLanternFailover.
+// Shared axes such as WithWeighting and WithVertexPrefix remain freely
+// composable with the one family option.
+//
 // # Retry policy
 //
 // Retries are opt-in and off by default — a zero-config client behaves

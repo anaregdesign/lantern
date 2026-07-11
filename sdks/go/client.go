@@ -37,6 +37,12 @@ var ErrNotFound = errors.New("not found")
 // caller-fixable input errors vs. transient failures.
 var ErrInvalidArgument = errors.New("invalid argument")
 
+// ErrConflictingIlluminateFamilies reports a local misuse of Illuminate:
+// exactly zero or one traversal-family option may be supplied. It is joined
+// with ErrInvalidArgument so callers can classify it alongside server-side
+// invalid arguments without sending an RPC.
+var ErrConflictingIlluminateFamilies = errors.New("conflicting illuminate traversal families")
+
 // ErrResourceExhausted wraps connect.CodeResourceExhausted responses
 // (rate limiter, server-side back-pressure). Callers that see this
 // should back off before retrying.
@@ -85,8 +91,9 @@ func EdgeExpiration(e *Edge) time.Time {
 // Reduction re-exports the server-side post-traversal tree-view enum so SDK
 // callers do not need to import the generated proto package directly. Per
 // the #846 oneof redesign, MST/SPT are a knob of the BFS family
-// (BFSOpts.Reduction) — not sibling algorithms — and Personalized PageRank
-// is selected by passing WithPPR instead.
+// (BFSOpts.Reduction) — not sibling algorithms. MST is a rooted directed
+// arborescence over Lantern's directed edges, and Personalized PageRank is
+// selected by passing WithPPR instead.
 type Reduction = pb.Reduction
 
 const (
@@ -98,8 +105,9 @@ const (
 // Objective is the direction of the weight-sensitive optimisation. It
 // governs both the per-hop top-k pruning and the post-traversal reduction
 // (#560): MINIMIZE treats edge weights as costs (keeps the k smallest-weight
-// edges per hop, smallest tree wins), MAXIMIZE treats them as relevance
-// (keeps the k largest-weight edges per hop, largest tree wins). Server
+// edges per hop, smallest directed arborescence wins), MAXIMIZE treats them
+// as relevance (keeps the k largest-weight edges per hop, largest directed
+// arborescence wins). Server
 // resolves ObjectiveUnspecified to ObjectiveMaximize.
 type Objective = pb.Objective
 
@@ -796,8 +804,9 @@ func NewGraph() *Graph {
 }
 
 // IlluminateOption configures a single Illuminate call. Select the traversal
-// family with at most one of WithBFS / WithPPR (the last one passed wins,
-// mirroring the wire oneof; omitting both runs BFS with server defaults —
+// family with at most one of WithBFS / WithPPR / WithLocalCommunity; supplying
+// more than one is a local ErrConflictingIlluminateFamilies error. Omitting all
+// runs BFS with server defaults —
 // the bare illuminate), and combine it with the shared axes WithWeighting /
 // WithVertexPrefix. Per-family knobs live on BFSOpts / PPROpts, so a knob
 // that another family would ignore is not expressible (#846).
@@ -809,6 +818,17 @@ type illuminateConfig struct {
 	bfs          *BFSOpts
 	ppr          *PPROpts
 	community    *LocalCommunityOpts
+	family       string
+	conflictWith string
+}
+
+func (c *illuminateConfig) selectFamily(family string) bool {
+	if c.family != "" {
+		c.conflictWith = family
+		return false
+	}
+	c.family = family
+	return true
 }
 
 // BFSOpts tunes the greedy per-hop top-k BFS walk and its optional
@@ -877,23 +897,35 @@ type LocalCommunityOpts struct {
 }
 
 // WithBFS selects the BFS traversal family with the supplied knobs.
-// Mutually exclusive with the other family options (last option wins).
+// Combining it with any other family option is rejected before the RPC.
 func WithBFS(o BFSOpts) IlluminateOption {
-	return func(c *illuminateConfig) { c.bfs, c.ppr, c.community = &o, nil, nil }
+	return func(c *illuminateConfig) {
+		if c.selectFamily("bfs") {
+			c.bfs = &o
+		}
+	}
 }
 
 // WithPPR selects the Personalized PageRank traversal family with the
-// supplied knobs. Mutually exclusive with the other family options (last
-// option wins).
+// supplied knobs. Combining it with any other family option is rejected
+// before the RPC.
 func WithPPR(o PPROpts) IlluminateOption {
-	return func(c *illuminateConfig) { c.ppr, c.bfs, c.community = &o, nil, nil }
+	return func(c *illuminateConfig) {
+		if c.selectFamily("pagerank") {
+			c.ppr = &o
+		}
+	}
 }
 
 // WithLocalCommunity selects the local community extraction family (#845)
-// with the supplied knobs. Mutually exclusive with the other family options
-// (last option wins).
+// with the supplied knobs. Combining it with any other family option is
+// rejected before the RPC.
 func WithLocalCommunity(o LocalCommunityOpts) IlluminateOption {
-	return func(c *illuminateConfig) { c.community, c.bfs, c.ppr = &o, nil, nil }
+	return func(c *illuminateConfig) {
+		if c.selectFamily("community") {
+			c.community = &o
+		}
+	}
 }
 
 // WithWeighting toggles the edge-weight transform applied BEFORE the
@@ -928,6 +960,12 @@ func (l *Lantern) Illuminate(ctx context.Context, seed string, opts ...Illuminat
 	var cfg illuminateConfig
 	for _, opt := range opts {
 		opt(&cfg)
+	}
+	if cfg.conflictWith != "" {
+		return nil, errors.Join(
+			ErrInvalidArgument,
+			fmt.Errorf("%w: %s and %s", ErrConflictingIlluminateFamilies, cfg.family, cfg.conflictWith),
+		)
 	}
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
