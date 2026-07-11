@@ -14,9 +14,9 @@
 #
 # Ordering: calls[0] (PutVertex over k-*) is what warmup replays — run.sh warms
 #           ONLY calls[0] — so it must be the working-set filler. The AddEdge
-#           path also seeds the k-* graph that the broad_illuminate scenario
-#           traverses next, so broad_rw MUST run before broad_illuminate in the
-#           release sweep (see release-scenarios.txt).
+#           path exercises the additive k-* graph write shape. broad_illuminate
+#           owns a separate, verified topology preflight (#994), so no release
+#           scenario ordering depends on these incidental edges.
 name: broad_rw
 phases:
   warmup:   { duration: 15s, concurrency: 16, rps: 1000 }
@@ -51,7 +51,7 @@ target:
     - call: graph.v1.LanternService/GetVertices
       data_template: |
         {"keys":["k-{{mod .RequestNumber 2000}}","kb-{{mod .RequestNumber 2000}}"]}
-    # [4] additive edge write — builds the k-* graph broad_illuminate traverses.
+    # [4] additive edge write — exercises the k-* edge-mutation hot path.
     - call: graph.v1.LanternService/AddEdge
       data_template: |
         {"edge":{"tail":"k-{{mod .RequestNumber 2000}}","head":"k-{{mod .RequestNumber 1000}}","weight":1.0}}

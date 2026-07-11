@@ -26,9 +26,8 @@
 # 60s sweep at least twice to measure steady state rather than transients —
 # hence 2m is the spec-correct floor, not an arbitrary truncation.
 #
-# ORDER MATTERS: broad_rw populates the k-* vertices AND the k-*->k-* edges
-# that broad_illuminate then traverses, so broad_rw MUST precede
-# broad_illuminate. Do not reorder.
+# broad_illuminate seeds and validates its own topology in preflight (#994),
+# so it is independent of broad_rw's incidental k-* mutation traffic.
 #
 # Wall-time decomposes into two parts. The scenario PHASE time is deterministic
 # (ghz runs each phase for exactly its -z duration): broad_rw 150s +
@@ -82,9 +81,9 @@
 # read / write / scan / edge / delete call surface (12-way fan-out, #708)
 broad_rw
 
-# graph traversal across the params-oneof families (BFS variants + PPR +
-# local community; 6-way fan-out) — runs AFTER broad_rw so the k-* graph it
-# traverses is populated.
+# graph traversal across the params-oneof families (BFS variants + tuned PPR +
+# local community/arborescence; 6-way fan-out) over its verified self-contained
+# topology.
 broad_illuminate
 
 # edge SET / plural-add / delete / prefix-delete / backup surface (9-way
