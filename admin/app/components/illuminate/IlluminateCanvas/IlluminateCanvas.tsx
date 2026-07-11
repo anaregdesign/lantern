@@ -832,6 +832,11 @@ export function IlluminateCanvas({
     const win = window as Window & {
       __illuminateCanvas?: {
         getNodePosition: (key: string) => { x: number; y: number } | null;
+        /**
+         * #988 test bridge: invoke the same callback a Sigma clickNode event
+         * would fire, but only for a node currently rendered in the graph.
+         */
+        clickNode: (key: string) => boolean;
         isNodeFixed: (key: string) => boolean;
         /**
          * #491 test bridge: whether an edge currently exists in
@@ -1038,6 +1043,11 @@ export function IlluminateCanvas({
           return null;
         }
         return { x: attrs.x, y: attrs.y };
+      },
+      clickNode: (key: string) => {
+        if (!graph.hasNode(key)) return false;
+        onNodeClickRef.current(key);
+        return true;
       },
       isNodeFixed: (key: string) => {
         if (!graph.hasNode(key)) return false;

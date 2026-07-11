@@ -11,10 +11,16 @@ test.beforeAll(async () => {
   await putVertices([
     { key: "cli:alpha", string: "first" },
     { key: "cli:beta", string: "second" },
+    { key: "cli:quoted key", string: "quoted seed" },
+    { key: "cli:quoted target", string: "reachable only from quoted seed" },
   ]);
   // Edge so bfs / get edge happy-paths in the canvas spec
   // below have something to render.
   await putEdges([{ tail: "cli:alpha", head: "cli:beta", weight: 2 }]);
+  await putEdges([
+    { tail: "cli:alpha", head: "cli:quoted key", weight: 1 },
+    { tail: "cli:quoted key", head: "cli:quoted target", weight: 1 },
+  ]);
 
   // #942 — a barbell so `community <seed>` has a
   // clean cluster to extract. Two tight triangles (internal weight 5,
@@ -141,6 +147,45 @@ test.describe("/cli", () => {
     await expect(page.getByTestId("cli-canvas-panel")).toContainText(
       "bfs cli:alpha 2 5",
     );
+  });
+
+  test("canvas node click quotes an arbitrary key before reaching the RPC (#988)", async ({
+    page,
+  }) => {
+    await page.goto("/cli");
+    const input = page.getByTestId("cli-input");
+    // One hop exposes the space-containing node but not its unique target.
+    await input.fill("bfs cli:alpha 1 5");
+    await input.press("Enter");
+    const panel = page.getByTestId("cli-canvas-panel");
+    await expect(panel).toBeVisible();
+
+    const clicked = await page.evaluate(() => {
+      const win = window as Window & {
+        __illuminateCanvas?: { clickNode: (key: string) => boolean };
+      };
+      return win.__illuminateCanvas?.clickNode("cli:quoted key") ?? false;
+    });
+    expect(clicked).toBe(true);
+
+    // The source records the exact command submitted by the canvas callback;
+    // the depth-two-only target proves the RPC received `cli:quoted key`, not
+    // the two tokens that an unquoted space would have produced.
+    await expect(panel).toContainText('bfs "cli:quoted key" 2 5');
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const win = window as Window & {
+            __illuminateCanvas?: {
+              getNodePosition: (key: string) => unknown;
+            };
+          };
+          return (
+            win.__illuminateCanvas?.getNodePosition("cli:quoted target") != null
+          );
+        }),
+      )
+      .toBe(true);
   });
 
   // #942 — the `community` verb must reach the LocalCommunity (#845)

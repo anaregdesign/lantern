@@ -31,6 +31,7 @@ async function seed() {
     { key: "e2e:vertex:b", int32: 42 },
     { key: "e2e:vertex:c", bool: true },
     { key: "e2e:other:z", string: "ignored" },
+    { key: "e2e:literal:%2F", string: "literal percent escape" },
     // Content-search corpus (#650). Deliberately rare tokens so a keyword
     // query matches exactly these rows and nothing else on the shared
     // server instance: `zorptangle` in two docs, `quibblefrost` in one.
@@ -106,6 +107,27 @@ test.describe("/vertices", () => {
     await expect(page.getByTestId("cli-canvas-panel")).toBeVisible();
     await expect(page.getByTestId("cli-canvas-panel")).toContainText(
       "bfs e2e:vertex:a 2 5",
+    );
+  });
+
+  test("Illuminate handoff preserves a literal percent escape in the row key (#988)", async ({
+    page,
+  }) => {
+    await page.goto("/vertices");
+    await page.getByTestId("vertex-prefix-input").fill("e2e:literal:");
+    const table = page.getByTestId("vertices-table");
+    const illuminate = table.getByRole("button", {
+      name: "Illuminate from e2e:literal:%2F",
+    });
+    await expect(illuminate).toBeVisible();
+    await illuminate.click();
+
+    // Navigation percent-encodes the literal `%` as `%25`; URLSearchParams
+    // decodes it exactly once before the CLI formatter sends the original key
+    // to the server.
+    await expect(page).toHaveURL(/\/cli\?seed=e2e%3Aliteral%3A%252F/);
+    await expect(page.getByTestId("cli-canvas-panel")).toContainText(
+      "bfs e2e:literal:%2F 2 5",
     );
   });
 

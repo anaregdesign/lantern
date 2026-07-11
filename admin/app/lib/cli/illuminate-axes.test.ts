@@ -228,6 +228,35 @@ describe("formatFamilyClick", () => {
       "bfs user:alice 2 5",
     );
   });
+
+  test("safe keys stay human-readable while literal percent escapes stay literal", () => {
+    expect(formatFamilyClick("audit:%2F", CLI_CLICK_AXIS_DEFAULTS)).toBe(
+      "bfs audit:%2F 2 5",
+    );
+  });
+
+  test.each([
+    "audit key",
+    "audit:%2F",
+    'say "hi"',
+    "C:\\tmp\\key",
+    "tab\tand\nnewline",
+    "日本語",
+  ])("serialises seed and prefix losslessly: %p", (value) => {
+    const result = parse(
+      formatFamilyClick(value, {
+        ...CLI_CLICK_AXIS_DEFAULTS,
+        vertexPrefix: value,
+      }),
+    );
+    if (!result.ok) {
+      throw new Error(`formatter rejected ${JSON.stringify(value)}`);
+    }
+    expect(result.command.verb).toBe("bfs");
+    if (result.command.verb !== "bfs") return;
+    expect(result.command.seed).toBe(value);
+    expect(result.command.vertexPrefix).toBe(value);
+  });
 });
 
 describe("formatFamilyClick ↔ parse round-trip", () => {

@@ -37,6 +37,29 @@ export type TokeniseResult =
 
 const WHITESPACE = /\s/;
 
+/**
+ * Serialise one token for this grammar without changing its tokenised value.
+ * Bare tokens remain readable whenever possible; tokens requiring protection
+ * are double-quoted with exactly the escape sequences {@link tokenise}
+ * accepts. Generated command paths must use this instead of ad-hoc quoting.
+ */
+export function quoteCliToken(value: string): string {
+  if (
+    value !== "" &&
+    !WHITESPACE.test(value) &&
+    !value.startsWith('"') &&
+    !value.startsWith("'")
+  ) {
+    return value;
+  }
+  return `"${value
+    .replaceAll("\\", "\\\\")
+    .replaceAll('"', '\\"')
+    .replaceAll("\n", "\\n")
+    .replaceAll("\r", "\\r")
+    .replaceAll("\t", "\\t")}"`;
+}
+
 export function tokenise(input: string): TokeniseResult {
   const tokens: string[] = [];
   let i = 0;
