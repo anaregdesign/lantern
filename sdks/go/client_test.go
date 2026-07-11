@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"testing"
 	"time"
 
@@ -416,8 +417,8 @@ func TestWithWeightingWiring(t *testing.T) {
 // TestIlluminateParamsWiring verifies the #846 typed per-family options
 // marshal to the intended oneof arm: no family option ⇒ params unset (the
 // bare illuminate); WithBFS ⇒ the bfs arm with its four knobs; WithPPR ⇒
-// the ppr arm with its three knobs; and the last family option wins,
-// mirroring the wire oneof.
+// the ppr arm with its three knobs; and multiple family options fail locally
+// before a request is sent.
 func TestIlluminateParamsWiring(t *testing.T) {
 	newClient := func(t *testing.T) (*Lantern, *captureIlluminate) {
 		t.Helper()
@@ -477,16 +478,42 @@ func TestIlluminateParamsWiring(t *testing.T) {
 		}
 	})
 
-	t.Run("last family option wins", func(t *testing.T) {
-		l, capt := newClient(t)
-		if _, err := l.Illuminate(context.Background(), "seed",
-			WithPPR(PPROpts{TopN: 5}),
-			WithBFS(BFSOpts{Step: 1}),
-		); err != nil {
-			t.Fatalf("Illuminate: %v", err)
+	families := []struct {
+		name string
+		opt  IlluminateOption
+	}{
+		{"bfs", WithBFS(BFSOpts{Step: 1})},
+		{"pagerank", WithPPR(PPROpts{TopN: 5})},
+		{"community", WithLocalCommunity(LocalCommunityOpts{MaxSize: 5})},
+	}
+	for _, first := range families {
+		for _, second := range families {
+			t.Run(first.name+" then "+second.name, func(t *testing.T) {
+				l, capt := newClient(t)
+				_, err := l.Illuminate(context.Background(), "seed", first.opt, second.opt)
+				if !errors.Is(err, ErrInvalidArgument) || !errors.Is(err, ErrConflictingIlluminateFamilies) {
+					t.Fatalf("Illuminate error = %v, want ErrInvalidArgument + ErrConflictingIlluminateFamilies", err)
+				}
+				if len(capt.reqs) != 0 {
+					t.Fatalf("conflicting options sent %d requests, want 0", len(capt.reqs))
+				}
+			})
 		}
-		if capt.reqs[0].GetBfs() == nil || capt.reqs[0].GetPpr() != nil {
-			t.Fatalf("want bfs arm to win, got params = %T", capt.reqs[0].GetParams())
+	}
+	for _, first := range families {
+		for _, second := range families {
+			for _, third := range families {
+				if first.name == second.name || first.name == third.name || second.name == third.name {
+					continue
+				}
+				t.Run(first.name+" then "+second.name+" then "+third.name, func(t *testing.T) {
+					l, capt := newClient(t)
+					_, err := l.Illuminate(context.Background(), "seed", first.opt, second.opt, third.opt)
+					if !errors.Is(err, ErrConflictingIlluminateFamilies) || len(capt.reqs) != 0 {
+						t.Fatalf("all-family conflict err=%v requests=%d, want local conflict and no requests", err, len(capt.reqs))
+					}
+				})
+			}
 		}
-	})
+	}
 }
