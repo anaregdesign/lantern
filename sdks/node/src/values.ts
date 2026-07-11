@@ -158,9 +158,9 @@ export type VertexKind =
  * BFS-family axes.
  *
  *   - `Reduction`  optional post-traversal tree view of the BFS-discovered
- *                  neighbourhood: UNSPECIFIED (raw subgraph), MST, or SPT
- *                  (tree rooted at the seed). A BFS-family knob — PPR is a
- *                  different family, not a reduction.
+ *                  neighbourhood: UNSPECIFIED (raw subgraph), directed MST,
+ *                  or SPT (tree rooted at the seed). A BFS-family knob — PPR
+ *                  is a different family, not a reduction.
  *   - `Objective`  selects the direction: MINIMIZE (cost-weighted) or
  *                  MAXIMIZE (relevance-weighted). Governs both the per-hop
  *                  pruning and the reduction (#560).

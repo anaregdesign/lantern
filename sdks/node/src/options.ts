@@ -22,8 +22,8 @@ export interface BfsOptions {
    */
   objective?: Objective;
   /**
-   * Optional tree view of the discovered neighbourhood (MST / SPT rooted at
-   * the seed). UNSPECIFIED = raw subgraph.
+   * Optional tree view of the discovered neighbourhood: a directed
+   * arborescence (MST) or SPT rooted at the seed. UNSPECIFIED = raw subgraph.
    */
   reduction?: Reduction;
 }

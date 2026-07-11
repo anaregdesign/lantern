@@ -1,5 +1,5 @@
-# illuminate_mst_max — MAX-MST reduction at the baseline RPS.
-# Goal: cover the (reduction=mst, objective=maximize) path of the BFS
+# illuminate_mst_max — maximum directed-arborescence reduction at baseline RPS.
+# Goal: cover the Chu–Liu/Edmonds (reduction=mst, objective=maximize) path of the BFS
 # family of the params-oneof Illuminate API (#846). Uses the proto numeric
 # enum values directly to keep the JSON payload minimal:
 #

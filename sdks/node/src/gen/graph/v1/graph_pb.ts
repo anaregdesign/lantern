@@ -2159,10 +2159,12 @@ export const BackupSnapshotResponseSchema: GenMessage<BackupSnapshotResponse> = 
  * Reduction is the optional post-traversal tree view applied to a
  * BFS-discovered neighbourhood (#846). UNSPECIFIED returns the raw
  * discovered subgraph; MINIMUM_SPANNING_TREE / SHORTEST_PATH_TREE reduce it
- * to a tree rooted at the seed. The MIN/MAX direction is independent and
- * carried by Objective. Reductions are a BfsParams knob — not sibling
- * traversals — which is why the former Algorithm enum (which conflated the
- * two; see #410/#801 history) left the request in the oneof redesign.
+ * to a tree rooted at the seed. MINIMUM_SPANNING_TREE means a directed
+ * minimum/maximum rooted arborescence over Lantern's directed edges (not an
+ * undirected Prim projection); the MIN/MAX direction is carried by Objective.
+ * Reductions are a BfsParams knob — not sibling traversals — which is why the
+ * former Algorithm enum (which conflated the two; see #410/#801 history) left
+ * the request in the oneof redesign.
  *
  * @generated from enum graph.v1.Reduction
  */

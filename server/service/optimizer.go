@@ -19,7 +19,9 @@ type optimizer func(ctx context.Context, g *coregraph.Graph[string, *pb.Vertex],
 // resolveOptimizer returns the post-traversal reduction for a
 // (reduction, objective) pair (#846: reductions are a BfsParams knob, not
 // sibling traversals). Returns nil when no reduction is needed — the caller
-// treats nil as "return the raw discovered subgraph".
+// treats nil as "return the raw discovered subgraph". The MST branch is a
+// minimum/maximum rooted directed arborescence, matching Lantern's directed
+// edge model.
 //
 // Note: Reduction UNSPECIFIED → nil (no reduction). Objective
 // OBJECTIVE_UNSPECIFIED resolves to MAXIMIZE per the proto-level default
