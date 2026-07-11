@@ -10,6 +10,7 @@ Future<Map<String, Object>> runProbe(
   String? token,
   String? caPath,
   ClientChannel? clientChannel,
+  String keyPrefix = 'probe/grpc/',
 }) async {
   final credentials = endpoint.scheme == 'https'
       ? ChannelCredentials.secure(
@@ -34,7 +35,7 @@ Future<Map<String, Object>> runProbe(
     timeout: const Duration(seconds: 5),
   );
   final client = LanternServiceClient(channel, options: options);
-  final key = 'probe/grpc/${DateTime.now().microsecondsSinceEpoch}';
+  final key = '$keyPrefix${DateTime.now().microsecondsSinceEpoch}';
   try {
     await client.putVertex(
       PutVertexRequest(

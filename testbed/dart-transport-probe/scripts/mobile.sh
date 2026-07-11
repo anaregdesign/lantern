@@ -47,10 +47,14 @@ sed \
   -e "s|__PACKAGE_NAME__|$package_name|g" \
   -e "s|__PACKAGE_PATH__|$package_path|g" \
   "$probe_root/templates/pubspec.yaml" > "$app/pubspec.yaml"
-cp "$probe_root/templates/main.dart" "$app/lib/main.dart"
-mkdir -p "$app/integration_test"
-cp "$probe_root/templates/$transport/probe_test.dart" \
-  "$app/integration_test/probe_test.dart"
+if [[ ${LANTERN_PROBE_DRIVER:-flutter-test} == simctl ]]; then
+  cp "$probe_root/templates/$transport/mobile_main.dart" "$app/lib/main.dart"
+else
+  cp "$probe_root/templates/main.dart" "$app/lib/main.dart"
+  mkdir -p "$app/integration_test"
+  cp "$probe_root/templates/$transport/probe_test.dart" \
+    "$app/integration_test/probe_test.dart"
+fi
 
 manifest="$app/android/app/src/main/AndroidManifest.xml"
 perl -0pi -e \
@@ -73,14 +77,48 @@ openssl x509 -in "$ca_cert" -outform der -out "$ca_der"
 ca_base64=$(base64 < "$ca_der" | tr -d '\n')
 cd "$app"
 flutter pub get
-flutter test integration_test/probe_test.dart \
-  -d "$device" \
-  --reporter=expanded \
-  --timeout=2m \
-  --dart-define="LANTERN_PROBE_PLAINTEXT_URL=$plaintext_url" \
-  --dart-define="LANTERN_PROBE_TLS_URL=$tls_url" \
-  --dart-define="LANTERN_PROBE_TOKEN=$token" \
+dart_defines=(
+  --dart-define="LANTERN_PROBE_PLAINTEXT_URL=$plaintext_url"
+  --dart-define="LANTERN_PROBE_TLS_URL=$tls_url"
+  --dart-define="LANTERN_PROBE_TOKEN=$token"
   --dart-define="LANTERN_PROBE_CA_BASE64=$ca_base64"
+)
+
+if [[ ${LANTERN_PROBE_DRIVER:-flutter-test} == simctl ]]; then
+  flutter build ios --simulator --debug "${dart_defines[@]}"
+  ios_app=build/ios/iphonesimulator/Runner.app
+  bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
+    "$ios_app/Info.plist")
+  xcrun simctl install "$device" "$ios_app"
+  xcrun simctl launch --terminate-running-process "$device" "$bundle_id"
+
+  count_url="${tls_url%/}/graph.v1.LanternService/CountVerticesByPrefix"
+  success_prefix="probe/$transport/ios-success/"
+  for _ in {1..120}; do
+    response=$(curl --silent --show-error --cacert "$ca_cert" \
+      --header "Authorization: Bearer $token" \
+      --header 'Connect-Protocol-Version: 1' \
+      --header 'Content-Type: application/json' \
+      --data "{\"prefix\":\"$success_prefix\"}" "$count_url" || true)
+    if jq -e '(.count | tonumber) > 0' <<<"$response" >/dev/null 2>&1; then
+      echo "$transport iOS real-wire probe passed"
+      break
+    fi
+    sleep 1
+  done
+  if ! jq -e '(.count | tonumber) > 0' <<<"${response:-}" >/dev/null 2>&1; then
+    xcrun simctl spawn "$device" log show --last 5m \
+      --predicate 'process == "Runner"' || true
+    echo "$transport iOS real-wire probe did not publish its success marker" >&2
+    exit 1
+  fi
+else
+  flutter test integration_test/probe_test.dart \
+    -d "$device" \
+    --reporter=expanded \
+    --timeout=2m \
+    "${dart_defines[@]}"
+fi
 
 if [[ -f build/app/outputs/flutter-apk/app-debug.apk ]]; then
   wc -c build/app/outputs/flutter-apk/app-debug.apk

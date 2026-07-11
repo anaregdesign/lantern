@@ -80,5 +80,8 @@ debug APKs were 78,879,151 bytes (Connect) and 79,412,635 bytes (gRPC). This is
 a harness-level comparison, not a production release-size forecast.
 
 The pull-request workflow reruns generator drift, Dart analysis/tests, and the
-full iOS simulator matrix. See the decision record in
+full iOS simulator matrix. CI builds and launches a disposable app directly
+with `simctl`, then observes a success marker over the real Lantern wire path;
+this avoids coupling the gate to Flutter's integration-test VM service. See
+the decision record in
 `docs/decisions/0001-dart-mobile-transport.md`.

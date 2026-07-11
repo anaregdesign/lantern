@@ -14,6 +14,7 @@ Future<Map<String, Object>> runProbe(
   String? token,
   String? caPath,
   HttpClient? httpClient,
+  String keyPrefix = 'probe/connect/',
 }) async {
   final securityContext =
       caPath == null
@@ -33,7 +34,7 @@ Future<Map<String, Object>> runProbe(
     if (token != null) {
       headers['authorization'] = 'Bearer $token';
     }
-    final key = 'probe/connect/${DateTime.now().microsecondsSinceEpoch}';
+    final key = '$keyPrefix${DateTime.now().microsecondsSinceEpoch}';
     var sawHeader = false;
     var sawTrailer = false;
     await client.putVertex(
