@@ -3,6 +3,7 @@ package graph
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 )
 
@@ -260,6 +261,36 @@ func TestGraph_ShortestPathTree_IndirectCheaper(t *testing.T) {
 	}
 	if totalEdges != 3 {
 		t.Errorf("SPT total edges = %d, want 3 (edges=%v)", totalEdges, spt.Edges)
+	}
+}
+
+func TestGraph_ShortestPathTreeContext_RejectsInvalidCosts(t *testing.T) {
+	base := func() *Graph[string, int] {
+		g := NewGraph[string, int]()
+		g.PutEdge("a", "b", 1)
+		g.PutEdge("b", "a", 1) // A negative cycle must fail rather than requeue forever.
+		return g
+	}
+
+	for _, tc := range []struct {
+		name string
+		cost func(float32) float32
+	}{
+		{"negative cycle", func(float32) float32 { return -1 }},
+		{"NaN", func(float32) float32 { return float32(math.NaN()) }},
+		{"positive infinity", func(float32) float32 { return float32(math.Inf(1)) }},
+		{"distance overflow", func(float32) float32 { return math.MaxFloat32 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := base().ShortestPathTreeContext(context.Background(), "a", tc.cost)
+			if !errors.Is(err, ErrInvalidShortestPathCost) {
+				t.Fatalf("errors.Is(err, ErrInvalidShortestPathCost) = false; err = %v", err)
+			}
+			var invalid *InvalidShortestPathCostError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("errors.As(err, *InvalidShortestPathCostError) = false; err = %v", err)
+			}
+		})
 	}
 }
 

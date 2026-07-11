@@ -3,10 +3,34 @@ package graph
 import (
 	"container/heap"
 	"context"
+	"errors"
+	"fmt"
+	"math"
 
 	"github.com/anaregdesign/lantern/core/collection/pq"
 	"github.com/anaregdesign/lantern/core/collection/set"
 )
+
+// ErrInvalidShortestPathCost reports a cost that violates Dijkstra's
+// finite, non-negative cost precondition. Callers can use errors.Is to
+// distinguish invalid graph data or a cost transform from cancellation and
+// other traversal failures.
+var ErrInvalidShortestPathCost = errors.New("shortest-path tree requires finite, non-negative costs")
+
+// InvalidShortestPathCostError identifies the edge cost or candidate distance
+// that made a shortest-path-tree traversal unsafe. It unwraps to
+// ErrInvalidShortestPathCost so callers need not parse its diagnostic text.
+type InvalidShortestPathCostError struct {
+	Weight   float32
+	Cost     float32
+	Distance float32
+}
+
+func (e *InvalidShortestPathCostError) Error() string {
+	return fmt.Sprintf("%v: weight=%g cost=%g candidate_distance=%g", ErrInvalidShortestPathCost, e.Weight, e.Cost, e.Distance)
+}
+
+func (e *InvalidShortestPathCostError) Unwrap() error { return ErrInvalidShortestPathCost }
 
 type Graph[S comparable, T any] struct {
 	Vertices map[S]T             `json:"vertices,omitempty"`
@@ -174,7 +198,10 @@ func (g *Graph[S, T]) spanningTreeContext(ctx context.Context, seed S, negate bo
  * ShortestPathTree returns a shortest path tree of the graph from the seed.
  * The costFunc is a function that returns the cost of the edge.
  * Typically, if the weight means like `importance`, the costFunc is a function that returns the 1 / weight.
- * It is calculated by Dijkstra's algorithm, so the costFunc must return a positive value.
+ * It is calculated by Dijkstra's algorithm, so the costFunc must return a
+ * finite, non-negative value. This convenience variant returns nil when that
+ * precondition is violated; callers that need the typed error should use
+ * ShortestPathTreeContext.
  */
 func (g *Graph[S, T]) ShortestPathTree(seed S, costFunc func(x float32) float32) *Graph[S, T] {
 	spt, _ := g.ShortestPathTreeContext(context.Background(), seed, costFunc)
@@ -197,8 +224,10 @@ func (g *Graph[S, T]) ShortestPathTree(seed S, costFunc func(x float32) float32)
 // avoided here.
 //
 // PriorityQueue is a max-heap; priorities are negated so the smallest dist
-// surfaces first. costFunc must return non-negative values (Dijkstra
-// precondition).
+// surfaces first. costFunc must return finite, non-negative values (Dijkstra
+// precondition). Costs and candidate distances are validated before they enter
+// the queue: negative costs can otherwise make a reachable cycle relax
+// forever, while NaN/Inf makes priority ordering undefined.
 func (g *Graph[S, T]) ShortestPathTreeContext(ctx context.Context, seed S, costFunc func(x float32) float32) (*Graph[S, T], error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -227,7 +256,14 @@ func (g *Graph[S, T]) ShortestPathTreeContext(ctx context.Context, seed S, costF
 			continue // stale
 		}
 		for v, w := range g.Edges[u] {
-			alt := dist[u] + costFunc(w)
+			cost := costFunc(w)
+			if cost < 0 || math.IsNaN(float64(cost)) || math.IsInf(float64(cost), 0) {
+				return nil, &InvalidShortestPathCostError{Weight: w, Cost: cost}
+			}
+			alt := dist[u] + cost
+			if math.IsNaN(float64(alt)) || math.IsInf(float64(alt), 0) {
+				return nil, &InvalidShortestPathCostError{Weight: w, Cost: cost, Distance: alt}
+			}
 			if d, ok := dist[v]; !ok || alt < d {
 				dist[v] = alt
 				prev[v] = u
