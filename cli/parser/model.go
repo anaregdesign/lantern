@@ -2,6 +2,12 @@ package parser
 
 import "time"
 
+// Help is the parsed `help [topic]` command. Topic is empty for the complete
+// grammar overview, or one of the known traversal-family topics.
+type Help struct {
+	Topic string
+}
+
 type GetVertex struct {
 	Key string
 }

@@ -147,10 +147,9 @@ func Validate(input string) error {
 		}
 
 	case "help":
-		// Extra arguments accepted silently — mirrors `exit`. The TS
-		// parser side does the same. Discoverability beats strictness:
-		// the operator typing `help` is asking for the grammar, not for
-		// a usage hint about `help` itself.
+		if _, err := HelpParam(s); err != nil {
+			return err
+		}
 
 	case "exit":
 

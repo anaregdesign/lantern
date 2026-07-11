@@ -97,6 +97,11 @@ describe("CLI grammar fixture (#411) — valid inputs", () => {
         }
         expect(normalizeFamilyCommand(result.command)).toEqual(c.expected);
       }
+      if (result.command.verb === "help" && c.expected !== undefined) {
+        expect(JSON.stringify({ topic: result.command.topic })).toBe(
+          JSON.stringify(c.expected),
+        );
+      }
     });
   }
 });

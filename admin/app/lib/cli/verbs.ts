@@ -5,6 +5,7 @@
  */
 
 import type {
+  HelpTopic,
   ObjectiveName,
   ParseResult,
   ReductionName,
@@ -731,7 +732,7 @@ export const HELP_TEXT = [
   "             [weighting={raw|tfidf|bm25}] default=raw",
   "             [prefix=<string>]           default=all keys",
   "             defaults: max_size=0 (sweep decides)",
-  "  help",
+  "  help [bfs|pagerank|community]",
   "  exit",
   "",
   'Quoting: "double" with C-style escapes (\\" \\\\ \\n \\r \\t); \'single\' verbatim.',
@@ -760,6 +761,13 @@ export interface CliCommandDoc {
   readonly summary: string;
   /** A concrete, runnable example (must parse — bound by `verbs.test.ts`). */
   readonly example: string;
+  /** Scoped help fields for the traversal families, when applicable. */
+  readonly familyHelp?: {
+    readonly defaults: readonly string[];
+    readonly domains: readonly string[];
+    readonly meaning: string;
+    readonly examples: readonly string[];
+  };
 }
 
 /**
@@ -876,6 +884,24 @@ export const CLI_COMMAND_REFERENCE: readonly CliCommandDoc[] = [
     summary:
       "Greedy per-hop top-k breadth-first walk from a seed (step hops, fan_out neighbours per hop; defaults 5/3). reduction=mst|spt renders the neighbourhood as a spanning / shortest-path tree (#961); objective steers the pruning and reduction direction.",
     example: "bfs alice 2 5 reduction=mst",
+    familyHelp: {
+      defaults: [
+        "step=5",
+        "fan_out=3",
+        "reduction=none",
+        "objective=max",
+        "weighting=raw",
+        "prefix=all keys",
+      ],
+      domains: [
+        "reduction: none|mst|spt",
+        "objective: min|max",
+        "weighting: raw|tfidf|bm25",
+      ],
+      meaning:
+        "Greedy per-hop top-k breadth-first walk. objective controls both frontier pruning and any directed-arborescence / shortest-path reduction.",
+      examples: ["bfs alice 2 5", "bfs alice 3 20 reduction=mst objective=min"],
+    },
   },
   {
     group: "Explore",
@@ -885,6 +911,26 @@ export const CLI_COMMAND_REFERENCE: readonly CliCommandDoc[] = [
     summary:
       "Personalized PageRank relevance star from a seed (top_n by mass, default 10). restart_prob (α) and epsilon (ε) tune locality; both default to the server's 0.15 / 1e-4.",
     example: "pagerank alice 15 restart_prob=0.25",
+    familyHelp: {
+      defaults: [
+        "top_n=10",
+        "restart_prob=0 (server α=0.15)",
+        "epsilon=0 (server ε=1e-4)",
+        "weighting=raw",
+        "prefix=all keys",
+      ],
+      domains: [
+        "restart_prob: 0 or (0,1)",
+        "epsilon: 0 or positive",
+        "weighting: raw|tfidf|bm25",
+      ],
+      meaning:
+        "Seed-anchored Personalized PageRank relevance star. It has no reduction or objective knob.",
+      examples: [
+        "pagerank alice",
+        "pagerank alice 15 restart_prob=0.25 epsilon=0.001",
+      ],
+    },
   },
   {
     group: "Explore",
@@ -894,12 +940,36 @@ export const CLI_COMMAND_REFERENCE: readonly CliCommandDoc[] = [
     summary:
       "Conductance-optimal local community around a seed (#845; max_size upper bound, default 0 = the sweep decides). restart_prob/epsilon tune locality; reduction renders a tree view.",
     example: "community alice 20 reduction=mst",
+    familyHelp: {
+      defaults: [
+        "max_size=0 (sweep decides)",
+        "restart_prob=0 (server α=0.15)",
+        "epsilon=0 (server ε=1e-4)",
+        "reduction=none",
+        "objective=max",
+        "weighting=raw",
+        "prefix=all keys",
+      ],
+      domains: [
+        "max_size: non-negative",
+        "reduction: none|mst|spt",
+        "objective: min|max",
+        "weighting: raw|tfidf|bm25",
+      ],
+      meaning:
+        "PageRank-Nibble conductance community returned as an induced subgraph; an optional reduction renders a rooted directed arborescence or shortest-path tree.",
+      examples: [
+        "community alice",
+        "community alice 20 reduction=mst objective=min",
+      ],
+    },
   },
   {
     group: "Session",
     verb: "help",
-    signature: "help",
-    summary: "Print the grammar reference into the terminal.",
+    signature: "help [bfs|pagerank|community]",
+    summary:
+      "Print the grammar overview or focused traversal-family reference into the terminal.",
     example: "help",
   },
   {
@@ -912,14 +982,54 @@ export const CLI_COMMAND_REFERENCE: readonly CliCommandDoc[] = [
   },
 ];
 
-/**
- * Parses the `help` verb. Extra arguments are accepted silently so
- * the verb behaves like `exit` — discoverability beats strictness
- * here, since the operator typing `help` is by definition asking for
- * the grammar reference, not for a usage hint about `help` itself.
- */
-export function parseHelp(_rest: string[]): ParseResult {
-  return { ok: true, command: { verb: "help" } };
+/** Traversal-family topics derive from the same docs that render the drawer. */
+export const HELP_TOPICS = CLI_COMMAND_REFERENCE.filter(
+  (doc) => doc.familyHelp !== undefined,
+).map((doc) => doc.verb) as readonly Exclude<HelpTopic, "">[];
+
+/** Returns the overview or a family-only reference rendered from the drawer registry. */
+export function helpTextFor(topic: HelpTopic): string {
+  if (topic === "") return HELP_TEXT;
+  const doc = CLI_COMMAND_REFERENCE.find(
+    (candidate) => candidate.verb === topic,
+  );
+  if (doc?.familyHelp === undefined) return HELP_TEXT;
+  const help = doc.familyHelp;
+  return [
+    topic,
+    "",
+    "Signature",
+    `  ${doc.signature}`,
+    "",
+    "Defaults",
+    ...help.defaults.map((value) => `  ${value}`),
+    "",
+    "Domains",
+    ...help.domains.map((value) => `  ${value}`),
+    "",
+    "Meaning",
+    `  ${help.meaning}`,
+    "",
+    "Examples",
+    ...help.examples.map((value) => `  ${value}`),
+  ].join("\n");
+}
+
+/** Parses the optional focused traversal-family help topic. */
+export function parseHelp(rest: string[]): ParseResult {
+  if (rest.length === 0)
+    return { ok: true, command: { verb: "help", topic: "" } };
+  if (rest.length !== 1) {
+    return { ok: false, usage: "usage: help [bfs|pagerank|community]" };
+  }
+  const topic = rest[0].toLowerCase();
+  if (!HELP_TOPICS.includes(topic as Exclude<HelpTopic, "">)) {
+    return {
+      ok: false,
+      usage: `unknown help topic ${JSON.stringify(rest[0])} (try: ${HELP_TOPICS.join(", ")})`,
+    };
+  }
+  return { ok: true, command: { verb: "help", topic: topic as HelpTopic } };
 }
 
 // Exact set Go's `strconv.ParseBool` accepts (mirrors the dispatcher's
