@@ -165,7 +165,7 @@ a parallel struct:
 ```go
 type Vertex    = pb.Vertex
 type Edge      = pb.Edge
-type Algorithm = pb.Algorithm
+type Reduction = pb.Reduction
 type Objective = pb.Objective
 type Weighting = pb.Weighting
 ```

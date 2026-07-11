@@ -70,6 +70,8 @@ jobs:
         run: bun run format:check
       - name: Typecheck
         run: bun run typecheck
+      - name: Typecheck maintained example
+        run: bun run example:typecheck
       - name: Test
         run: bun test
       - name: Build

@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "lantern-sdk": ["./src/index.ts"]
+    },
+    "rootDir": ".",
+    "noEmit": true
+  },
+  "include": ["src/**/*", "example/**/*"],
+  "exclude": ["node_modules", "dist", "src/generated"]
+}

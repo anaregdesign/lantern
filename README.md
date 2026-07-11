@@ -386,15 +386,31 @@ npm install lantern-sdk
 ```
 
 ```ts
-import { connect } from "lantern-sdk";
+import { Objective, Reduction, Weighting, connect } from "lantern-sdk";
 
 const client = connect("http://localhost:6380");
 try {
   await client.putVertex({ key: "user:42", value: "alice", ttlSeconds: 3600 });
   await client.addEdge({ tail: "user:42", head: "item:7", weight: 1.0, ttlSeconds: 1800 });
 
-  const graph = await client.illuminate("user:42", { step: 2, k: 16 });
+  const bfs = await client.illuminate("user:42", {
+    bfs: {
+      step: 2,
+      fanOut: 16,
+      reduction: Reduction.SHORTEST_PATH_TREE,
+      objective: Objective.MAXIMIZE,
+    },
+    weighting: Weighting.TFIDF,
+  });
+  const pagerank = await client.illuminate("user:42", {
+    ppr: { topN: 16, restartProb: 0.15, epsilon: 0.0001 },
+  });
+  const community = await client.illuminate("user:42", {
+    community: { maxSize: 16, restartProb: 0.15, epsilon: 0.0001 },
+  });
   const hits  = await client.searchVertices("desk lamp", { limit: 10 });
+
+  console.log(bfs.vertices.size, pagerank.vertices.size, community.vertices.size);
 
   for await (const page of client.scanVerticesAll("user:", 500)) {
     for (const v of page) console.log(v.key);
