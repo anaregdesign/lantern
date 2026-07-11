@@ -1,67 +1,34 @@
 # lantern-mcp client config examples
 
-Ready-to-copy MCP server entries for the major agent runtimes. The
-`lantern-mcp` server speaks **Streamable HTTP** (MCP spec 2025-06-18): you
-run it as a long-lived process that listens on `:6390` and serves the MCP
-endpoint at `/mcp`, then point your agent at the URL. All three files
-share the same shape — a single `url` pointing at the running endpoint.
+These files connect common MCP hosts to a running Lantern shared-context
+server over Streamable HTTP:
 
-| File | Drop into |
+| File | Install location |
 |---|---|
-| [`claude-desktop.json`](claude-desktop.json) | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) / `%APPDATA%\Claude\claude_desktop_config.json` (Windows) |
-| [`vscode-mcp.json`](vscode-mcp.json) | `.vscode/mcp.json` in your workspace, or `~/.config/Code/User/mcp.json` for user scope |
+| [`claude-desktop.json`](claude-desktop.json) | Claude Desktop MCP configuration |
+| [`vscode-mcp.json`](vscode-mcp.json) | `.vscode/mcp.json` or VS Code user configuration |
 | [`cursor-mcp.json`](cursor-mcp.json) | `~/.cursor/mcp.json` |
 
-> These three files only **connect** the agent to Lantern. Since #851 the
-> default tool surface is the **shared working context** (announce / track /
-> claim / whats_happening — the server's session-open instructions already
-> drive the coordination loop). The
-> [ambient-memory instruction profile](#make-the-agent-use-lantern-automatically)
-> below applies to the **legacy memory profile**
-> (`LANTERN_MCP_PROFILE=memory`) only.
-
-## Start the server first
-
-The agent no longer spawns the container — it connects to an
-already-running endpoint. Start one with Docker:
+## Start the server
 
 ```shell
 docker run --rm \
   -p 6390:6390 \
   -e LANTERN_ADDR=host.docker.internal:6380 \
-  ghcr.io/anaregdesign/lantern-mcp:v0.4.0
+  ghcr.io/anaregdesign/lantern-mcp:vX.Y.Z
 ```
 
-The container binds `0.0.0.0:6390` internally (so the published port is
-reachable) and the host sees it at `http://localhost:6390/mcp`. The
-endpoint is **unauthenticated**, so only publish the port on trusted
-networks; the handler still applies cross-origin and DNS-rebinding
-protection. See [`../README.md`](../README.md) for the full security note
-and for running the bare binary (which defaults to loopback only).
+Replace `vX.Y.Z` with a published release and pin it. The endpoint is
+`http://localhost:6390/mcp`. The MCP surface is unauthenticated, so publish it
+only on a trusted network. See the [operator reference](../README.md) for TLS,
+upstream auth, TTL, and failover settings.
 
-## Things to change before pasting
+The server's session instructions already teach the announce/track/claim/read
+coordination loop. No separate ambient-memory prompt is required or supported.
 
-- **Pin the image tag.** The `docker run` above uses `v0.4.0`; bump to
-  whatever the newest
-  [`mcp/vX.Y.Z` release](https://github.com/anaregdesign/lantern/releases?q=mcp%2F)
-  ships. Do not use `:latest` — agent runtimes treat the tool surface as
-  contract, and a silent schema bump is hostile.
-- **Pick the right `LANTERN_ADDR`** (passed to the *server*, not the agent
-  config):
-  - macOS / Windows Docker Desktop, Lantern on the host: `host.docker.internal:6380` (used above).
-  - Linux Docker, Lantern on the host: add `--network=host` and use `127.0.0.1:6380`.
-  - Lantern on a remote host: `lantern.example.com:6380` (consider TLS — see [#212](https://github.com/anaregdesign/lantern/issues/212)).
-- **Change the URL** only if you remapped the port (`-p 7000:6390` →
-  `http://localhost:7000/mcp`) or run the server on another host.
-- **TTL ladder overrides** (optional): pass `-e LANTERN_MCP_TTL_TURN=15m`
-  etc. to the `docker run` for any of the 12 buckets. Defaults are listed
-  in [`../README.md`](../README.md#ttl-buckets-required-parameter-for-every-remember_-tool).
+## stdio-only hosts
 
-### Hosts that only support stdio MCP servers
-
-If your runtime predates remote/HTTP MCP support and only accepts a
-`command`/`args` stdio server, bridge it with
-[`mcp-remote`](https://www.npmjs.com/package/mcp-remote):
+Bridge older hosts with `mcp-remote`:
 
 ```json
 {
@@ -76,83 +43,17 @@ If your runtime predates remote/HTTP MCP support and only accepts a
 
 ## Sanity check
 
-Liveness probe (no MCP handshake, always safe):
-
 ```shell
-curl -fsS http://localhost:6390/healthz   # -> ok
+curl -fsS http://localhost:6390/healthz
 ```
 
-Full MCP `initialize` over Streamable HTTP:
+A successful response is `ok`. If it fails, inspect the container logs; the
+MCP process exits non-zero when its startup ping cannot reach Lantern.
 
-```shell
-curl -sS http://localhost:6390/mcp \
-  -H 'Content-Type: application/json' \
-  -H 'Accept: application/json, text/event-stream' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"smoke","version":"1"}}}'
-```
+## Inspect the live context graph
 
-If Lantern is reachable you will see the standard MCP `initialize`
-response (as JSON or a single SSE `data:` frame). If the upstream Lantern
-endpoint is unreachable, the server exits non-zero at startup with a
-single line on stderr identifying the address that failed — so a failing
-`curl` against a dead container means the server never came up; check
-`docker logs`.
-
-## Make the agent use Lantern automatically
-
-Connecting the server (above) only makes the tools *available*. The server
-already advertises a system-prompt-style nudge at session-open, but the host
-agent ultimately decides when to call tools — so for reliably always-on
-behaviour, also install a client-side instruction profile.
-
-> **Profile note (#851):** the instruction file below targets the legacy
-> decaying-memory verbs and is only useful when the server runs with
-> `LANTERN_MCP_PROFILE=memory`. The default **context** profile ships its
-> coordination loop in the server-side session instructions and needs no
-> client-side profile.
-
-**→ [`ambient-memory.instructions.md`](ambient-memory.instructions.md)**
-
-It tells the agent to run a per-turn loop — **recall** relevant context before
-answering, **capture** durable facts and relations after a substantive
-exchange — with sensible TTL buckets and the `user.*` / `project.*` /
-`session.*` key-namespace convention so the graph stays a navigable mind map.
-
-### VS Code Copilot
-
-1. Wire the server: drop [`vscode-mcp.json`](vscode-mcp.json) into
-   `.vscode/mcp.json` (note `"type": "http"` — required since the server
-   moved to Streamable HTTP).
-2. Install the policy: copy `ambient-memory.instructions.md` into your
-   workspace at `.github/instructions/ambient-memory.instructions.md`. Its
-   `applyTo: '**'` frontmatter makes Copilot apply it to every request
-   automatically. (Alternatively, paste the body — everything below the
-   frontmatter — into `.github/copilot-instructions.md`.)
-
-### Claude Desktop / other MCP hosts
-
-1. Wire the server with [`claude-desktop.json`](claude-desktop.json) (or the
-   [`mcp-remote`](#hosts-that-only-support-stdio-mcp-servers) bridge for
-   stdio-only hosts).
-2. Copy the body of `ambient-memory.instructions.md` (skip the YAML
-   frontmatter) into the host's system prompt, project instructions, or
-   custom-instructions field. The text is host-agnostic — it only references
-   the Lantern tool names.
-
-## Watch your mind map
-
-Everything the agent captures lands in the same Lantern the MCP server writes
-to, so you can watch the graph fill in live. Point the
-[**lantern-admin**](../../admin/) SPA at that Lantern and open the **CLI**
-workspace:
-
-- In the [compose stack](../../README.md#run-with-docker-compose--open-the-admin-ui)
-  the Admin is served at **<http://localhost:8080>** — open it and go to
-  **CLI** (`/cli`).
-- Seed the walk with a namespace root you have been writing under — e.g.
-  `user.identity.name` or `project.lantern` — then increase the hop count to
-  watch related facts and relations fan out.
-
-Because recall does **not** refresh TTL, stale corners of the map fade on their
-own between visits; the keys the agent keeps re-remembering stay bright. That
-visible decay *is* the feature.
+Point [lantern-admin](../../admin/) at the same Lantern server and open the
+**CLI** (`/cli`) workspace. Run `bfs agents.<id> 2 16` to inspect an agent's
+current working set, or seed a canonical resource key to see nearby decaying
+activity. This is operational context only; expired presence and activity are
+expected to disappear.

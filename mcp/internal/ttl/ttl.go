@@ -1,8 +1,8 @@
 // Package ttl owns the 12-bucket TTL enum exposed by lantern-mcp tools.
 //
-// The bucket scheme is what every remember_*/recall_related tool exposes as
-// a required string parameter, so LLM callers have to pick a horizon
-// explicitly rather than silently falling back to a server default. The
+// The bucket scheme is used by working-context state and is an explicit
+// string parameter for post_note, so LLM callers have to pick a horizon
+// rather than silently falling back to a server default. The
 // defaults below are the canonical horizons documented in epic #283; each
 // is individually overridable via the LANTERN_MCP_TTL_<BUCKET> environment
 // variable using time.ParseDuration syntax (e.g. "45s", "2h30m").

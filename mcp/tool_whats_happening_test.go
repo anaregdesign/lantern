@@ -49,6 +49,9 @@ func TestWhatsHappening(t *testing.T) {
 		if out.Empty {
 			t.Fatalf("context not empty: %+v", out)
 		}
+		if out.Family != "bfs" {
+			t.Fatalf("family = %q, want safe default bfs", out.Family)
+		}
 		if len(out.Agents) != 1 || out.Agents[0].AgentID != "builder-1" || out.Agents[0].Task != "building" {
 			t.Fatalf("agents: %+v", out.Agents)
 		}
@@ -111,4 +114,54 @@ func TestWhatsHappening(t *testing.T) {
 		h := newContextHarness(t)
 		h.callExpectError(t, "whats_happening", map[string]any{"key": ""})
 	})
+
+	for _, tc := range []struct {
+		name   string
+		family string
+		args   map[string]any
+	}{
+		{name: "explicit BFS", family: "bfs", args: map[string]any{"bfs": map[string]any{"step": 1, "fan_out": 4, "reduction": "spt", "objective": "minimize"}}},
+		{name: "PPR", family: "ppr", args: map[string]any{"ppr": map[string]any{"top_n": 8, "restart_prob": 0.2, "epsilon": 0.001}}},
+		{name: "community", family: "community", args: map[string]any{"community": map[string]any{"max_size": 12, "reduction": "mst"}, "weighting": "bm25"}},
+	} {
+		t.Run(tc.name+" selects one typed family", func(t *testing.T) {
+			h := newContextHarness(t)
+			h.fake.illuminateFn = func(_ context.Context, seed string, _ ...client.IlluminateOption) (*client.Graph, error) {
+				return &client.Graph{Vertices: map[string]*client.Vertex{seed: {Key: seed}}, Edges: map[string]map[string]float32{}}, nil
+			}
+			tc.args["key"] = "repo.core"
+			res := h.call(t, "whats_happening", tc.args)
+			var out whatsHappeningOutput
+			structuredAs(t, res, &out)
+			if out.Family != tc.family {
+				t.Fatalf("family = %q, want %q", out.Family, tc.family)
+			}
+		})
+	}
+
+	t.Run("rejects cross-family input before Illuminate", func(t *testing.T) {
+		h := newContextHarness(t)
+		h.fake.illuminateFn = func(context.Context, string, ...client.IlluminateOption) (*client.Graph, error) {
+			t.Fatal("Illuminate called for invalid cross-family input")
+			return nil, nil
+		}
+		h.callExpectError(t, "whats_happening", map[string]any{
+			"key": "repo.core", "bfs": map[string]any{}, "ppr": map[string]any{},
+		})
+	})
+
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+	}{
+		{name: "unknown weighting", args: map[string]any{"weighting": "random"}},
+		{name: "BFS reduction on PPR", args: map[string]any{"ppr": map[string]any{"reduction": "mst"}}},
+		{name: "invalid rank probability", args: map[string]any{"ppr": map[string]any{"restart_prob": 1.0}}},
+	} {
+		t.Run("rejects "+tc.name, func(t *testing.T) {
+			h := newContextHarness(t)
+			tc.args["key"] = "repo.core"
+			h.callExpectError(t, "whats_happening", tc.args)
+		})
+	}
 }

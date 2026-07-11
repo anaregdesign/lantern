@@ -36,23 +36,9 @@ type fakeLantern struct {
 	lastScanPrefix  string
 	lastScanOptions []client.ScanOption
 
-	// SearchVertices
-	searchVerticesFn  func(ctx context.Context, query string, opts ...client.SearchOption) ([]client.SearchHit, error)
-	lastSearchQuery   string
-	lastSearchOptions []client.SearchOption
-
 	// CountVerticesByPrefix
 	countByPrefixFn func(ctx context.Context, prefix string) (uint64, error)
 	lastCountPrefix string
-
-	// DeleteVerticesByPrefix
-	deleteByPrefixFn    func(ctx context.Context, prefix string, opts ...client.DeleteByPrefixOption) (uint64, error)
-	lastDeletePrefix    string
-	deleteByPrefixCalls int
-
-	// PutVertices
-	putVerticesFn   func(ctx context.Context, inputs []client.VertexInput) error
-	lastPutVertices []client.VertexInput
 
 	// AddEdge
 	addEdgeFn      func(ctx context.Context, tail, head string, weight float32, ttl time.Duration) error
@@ -71,11 +57,6 @@ type fakeLantern struct {
 	// AddEdges
 	addEdgesFn   func(ctx context.Context, inputs []client.EdgeInput) error
 	lastAddEdges []client.EdgeInput
-
-	// GetEdge
-	getEdgeFn       func(ctx context.Context, tail, head string) (*client.Edge, error)
-	lastGetEdgeTail string
-	lastGetEdgeHead string
 
 	// ScanEdges
 	scanEdgesFn     func(ctx context.Context, opts ...client.EdgeScanOption) ([]*client.Edge, []byte, error)
@@ -134,38 +115,12 @@ func (f *fakeLantern) ScanVertices(ctx context.Context, prefix string, opts ...c
 	return nil, nil, nil
 }
 
-func (f *fakeLantern) SearchVertices(ctx context.Context, query string, opts ...client.SearchOption) ([]client.SearchHit, error) {
-	f.lastSearchQuery = query
-	f.lastSearchOptions = opts
-	if f.searchVerticesFn != nil {
-		return f.searchVerticesFn(ctx, query, opts...)
-	}
-	return nil, nil
-}
-
 func (f *fakeLantern) CountVerticesByPrefix(ctx context.Context, prefix string) (uint64, error) {
 	f.lastCountPrefix = prefix
 	if f.countByPrefixFn != nil {
 		return f.countByPrefixFn(ctx, prefix)
 	}
 	return 0, nil
-}
-
-func (f *fakeLantern) DeleteVerticesByPrefix(ctx context.Context, prefix string, opts ...client.DeleteByPrefixOption) (uint64, error) {
-	f.deleteByPrefixCalls++
-	f.lastDeletePrefix = prefix
-	if f.deleteByPrefixFn != nil {
-		return f.deleteByPrefixFn(ctx, prefix, opts...)
-	}
-	return 0, nil
-}
-
-func (f *fakeLantern) PutVertices(ctx context.Context, inputs []client.VertexInput) error {
-	f.lastPutVertices = inputs
-	if f.putVerticesFn != nil {
-		return f.putVerticesFn(ctx, inputs)
-	}
-	return nil
 }
 
 func (f *fakeLantern) AddEdges(ctx context.Context, inputs []client.EdgeInput) ([]float32, error) {
@@ -200,15 +155,6 @@ func (f *fakeLantern) AddEdge(ctx context.Context, tail, head string, weight flo
 		return f.addEdgeEffectiveFn(tail, head, weight), nil
 	}
 	return weight, nil
-}
-
-func (f *fakeLantern) GetEdge(ctx context.Context, tail, head string) (*client.Edge, error) {
-	f.lastGetEdgeTail = tail
-	f.lastGetEdgeHead = head
-	if f.getEdgeFn != nil {
-		return f.getEdgeFn(ctx, tail, head)
-	}
-	return nil, nil
 }
 
 func (f *fakeLantern) ScanEdges(ctx context.Context, opts ...client.EdgeScanOption) ([]*client.Edge, []byte, error) {

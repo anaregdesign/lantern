@@ -3,10 +3,8 @@
 // lantern-mcp is a Model Context Protocol (MCP) server that exposes a remote
 // Lantern instance as a shared working context for multi-agent fleets
 // (#851): presence, advisory claims, activity heat, and a blackboard, all
-// built on decaying state. The legacy decaying-memory verbs remain
-// available behind LANTERN_MCP_PROFILE=memory for one release cycle. It is
-// a standalone executable, not a library: import paths under this module
-// are intentionally internal-leaning.
+// built on decaying state. It is a standalone executable, not a library:
+// import paths under this module are intentionally internal-leaning.
 //
 // Dependency boundary: this module imports only the public Lantern Go
 // surface — github.com/anaregdesign/lantern/pb and

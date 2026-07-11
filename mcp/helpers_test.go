@@ -27,22 +27,19 @@ func newTestHarness(t *testing.T) *testHarness {
 // environment.
 func newTestHarnessWith(t *testing.T, r *ttl.Resolver) *testHarness {
 	t.Helper()
-	// The legacy tool tests exercise the memory profile; context-profile
-	// tests use newContextHarness below.
-	return newProfileHarness(t, r, ProfileMemory)
+	return newHarness(t, r)
 }
 
-// newContextHarness is the working-context-profile (#851) sibling of
-// newTestHarness.
+// newContextHarness keeps context-tool tests explicit at their call sites.
 func newContextHarness(t *testing.T) *testHarness {
 	t.Helper()
-	return newProfileHarness(t, mustDefaultResolver(t), ProfileContext)
+	return newHarness(t, mustDefaultResolver(t))
 }
 
-func newProfileHarness(t *testing.T, r *ttl.Resolver, profile string) *testHarness {
+func newHarness(t *testing.T, r *ttl.Resolver) *testHarness {
 	t.Helper()
 	fake := &fakeLantern{}
-	srv := newServer(fake, r, slog.New(slog.NewJSONHandler(io.Discard, nil)), profile)
+	srv := newServer(fake, r, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 
 	serverT, clientT := mcp.NewInMemoryTransports()
 	ctx, cancel := context.WithCancel(context.Background())

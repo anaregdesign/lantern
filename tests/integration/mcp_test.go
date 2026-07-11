@@ -5,253 +5,176 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/anaregdesign/lantern/core/graphcache"
 	lmcp "github.com/anaregdesign/lantern/mcp"
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	client "github.com/anaregdesign/lantern/sdks/go"
+	"github.com/anaregdesign/lantern/server/metrics"
+	"github.com/anaregdesign/lantern/server/provider"
+	"github.com/anaregdesign/lantern/server/service"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// TestMCP_EndToEnd exercises the 6-tool MCP surface through a real MCP
-// client session over InMemoryTransport, backed by a real Lantern
-// service (Connect-on-h2c per #350). It is the smoke test that proves
-// the whole stack — schema inference, argument validation, SDK
-// round-trip, and result shape — agrees end-to-end.
-func TestMCP_EndToEnd(t *testing.T) {
-	// This suite exercises the LEGACY memory verbs, which live behind
-	// LANTERN_MCP_PROFILE=memory since the #851 working-context retarget
-	// (context is the default). TestMCP_ContextProfile_EndToEnd below is
-	// the default-profile sibling.
-	t.Setenv("LANTERN_MCP_PROFILE", lmcp.ProfileMemory)
-	lan, cleanup := newInProcessClientWithPrefix(t)
-	defer cleanup()
+// TestMCP_TraversalFamilies_EndToEnd proves the default MCP surface reaches
+// every typed Illuminate family over MCP -> Go SDK -> real Connect/h2c. The
+// server metric is the independent witness that each request selected the
+// family advertised in the MCP structured result (#1001).
+func TestMCP_TraversalFamilies_EndToEnd(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := metrics.New(reg, metrics.Options{SampleInterval: time.Hour})
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+	svc := service.NewLanternService(cache).WithHotPathMetrics(m)
+	val := provider.NewValidationInterceptor(defaultIntegrationValidationLimits())
+	connectSrv := newConnectTestServer(t, svc, nil, val.ConnectInterceptor())
+	lan := newConnectClientFor(t, connectSrv.url)
+	cs, ctx := newMCPClientSession(t, lan)
 
-	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	srv, err := lmcp.NewServer(lan, logger)
-	if err != nil {
-		t.Fatalf("lmcp.NewServer: %v", err)
-	}
-
-	serverT, clientT := mcp.NewInMemoryTransports()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	serverSession, err := srv.Connect(ctx, serverT, nil)
-	if err != nil {
-		t.Fatalf("server.Connect: %v", err)
-	}
-	defer func() { _ = serverSession.Close() }()
-
-	c := mcp.NewClient(&mcp.Implementation{Name: "integration", Version: "test"}, nil)
-	cs, err := c.Connect(ctx, clientT, nil)
-	if err != nil {
-		t.Fatalf("client.Connect: %v", err)
-	}
-	defer func() { _ = cs.Close() }()
-
-	call := func(name string, args map[string]any) *mcp.CallToolResult {
-		t.Helper()
-		res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
-		if err != nil {
-			t.Fatalf("CallTool(%s): %v", name, err)
+	for _, key := range []string{"a", "b", "c", "d"} {
+		if err := lan.PutVertex(ctx, key, key, time.Hour); err != nil {
+			t.Fatalf("PutVertex(%s): %v", key, err)
 		}
-		if res.IsError {
-			t.Fatalf("CallTool(%s) IsError; content=%+v", name, res.Content)
-		}
-		return res
 	}
-
-	decode := func(res *mcp.CallToolResult, v any) {
-		t.Helper()
-		b, err := json.Marshal(res.StructuredContent)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
-		if err := json.Unmarshal(b, v); err != nil {
-			t.Fatalf("unmarshal: %v", err)
+	for _, edge := range []struct {
+		tail, head string
+		weight     float32
+	}{{"a", "b", 4}, {"a", "c", 2}, {"b", "d", 3}, {"c", "d", 1}} {
+		if _, err := lan.AddEdge(ctx, edge.tail, edge.head, edge.weight, time.Hour); err != nil {
+			t.Fatalf("AddEdge(%s,%s): %v", edge.tail, edge.head, err)
 		}
 	}
 
-	// remember_fact then recall_fact then forget.
-	call("remember_fact", map[string]any{"key": "u.tone", "value": "warm", "ttl": "turn"})
-
-	recallRes := call("recall_fact", map[string]any{"key": "u.tone"})
-	var recall struct {
-		Found bool   `json:"found"`
-		Key   string `json:"key"`
-		Value any    `json:"value"`
-	}
-	decode(recallRes, &recall)
-	if !recall.Found || recall.Value != "warm" {
-		t.Fatalf("recall mismatch: %+v", recall)
-	}
-
-	forgetRes := call("forget", map[string]any{"key": "u.tone"})
-	var forget struct {
-		Existed bool `json:"existed"`
-	}
-	decode(forgetRes, &forget)
-	if !forget.Existed {
-		t.Fatalf("expected Existed=true; got %+v", forget)
-	}
-
-	missRes := call("recall_fact", map[string]any{"key": "u.tone"})
-	var miss struct {
-		Found bool `json:"found"`
-	}
-	decode(missRes, &miss)
-	if miss.Found {
-		t.Fatalf("expected Found=false after forget; got %+v", miss)
-	}
-
-	// Additive relations: write twice, recall_related should see the
-	// summed weight to the neighbour.
-	call("remember_fact", map[string]any{"key": "fact.a", "value": "A", "ttl": "turn"})
-	call("remember_fact", map[string]any{"key": "fact.b", "value": "B", "ttl": "turn"})
-	call("remember_relation", map[string]any{"from": "fact.a", "to": "fact.b", "ttl": "turn"})
-	call("remember_relation", map[string]any{"from": "fact.a", "to": "fact.b", "ttl": "turn"})
-
-	relRes := call("recall_related", map[string]any{"seed": "fact.a", "step": 1, "k": 4})
-	var rel struct {
-		Seed      string `json:"seed"`
-		Neighbors []struct {
-			Key    string  `json:"key"`
-			Weight float32 `json:"weight"`
-		} `json:"neighbors"`
-	}
-	decode(relRes, &rel)
-	if rel.Seed != "fact.a" {
-		t.Fatalf("seed = %q", rel.Seed)
-	}
-	var seenB bool
-	for _, n := range rel.Neighbors {
-		if n.Key == "fact.b" {
-			seenB = true
-			if n.Weight < 1.5 {
-				t.Errorf("additive write should yield weight \u2265 1.5; got %v", n.Weight)
+	for _, tc := range []struct {
+		family string
+		args   map[string]any
+	}{
+		{family: "bfs", args: map[string]any{"key": "a"}},
+		{family: "ppr", args: map[string]any{"key": "a", "ppr": map[string]any{"top_n": 4}}},
+		{family: "community", args: map[string]any{"key": "a", "community": map[string]any{"max_size": 4}}},
+	} {
+		t.Run(tc.family, func(t *testing.T) {
+			res := callMCP(t, ctx, cs, "whats_happening", tc.args)
+			var out struct {
+				Family string `json:"family"`
 			}
+			decodeMCP(t, res, &out)
+			if out.Family != tc.family {
+				t.Fatalf("structured family = %q, want %q", out.Family, tc.family)
+			}
+		})
+	}
+
+	scrape := httptest.NewServer(promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+	t.Cleanup(scrape.Close)
+	body := scrapeMetrics(t, scrape.URL)
+	for _, family := range []string{"bfs", "ppr", "community"} {
+		got, ok := metricSeriesValue(t, body, "lantern_illuminate_calls_total", map[string]string{
+			"algorithm": family, "reduction": "none", "objective": "maximize",
+			"weighting": "raw", "phase": "complete", "code": "ok",
+		})
+		if !ok || got != 1 {
+			t.Errorf("successful %s MCP traversal metric = %v (present=%v), want 1", family, got, ok)
 		}
-	}
-	if !seenB {
-		t.Fatalf("fact.b missing from neighbours: %+v", rel.Neighbors)
-	}
-
-	// #961: the community family + orthogonal reduction axis must survive the
-	// full MCP → SDK → server wire path — the capability the user reported
-	// missing. algorithm=community reduction=mst asks for the seed's local
-	// cluster handed back as a minimum-spanning-tree backbone; assert the
-	// server accepts it and the echoed axes round-trip.
-	commRes := call("recall_related", map[string]any{
-		"seed":      "fact.a",
-		"step":      1,
-		"k":         8,
-		"algorithm": "community",
-		"reduction": "mst",
-		"objective": "min",
-	})
-	var comm struct {
-		Seed      string `json:"seed"`
-		Algorithm string `json:"algorithm"`
-		Reduction string `json:"reduction"`
-		Objective string `json:"objective"`
-	}
-	decode(commRes, &comm)
-	if comm.Algorithm != "community" || comm.Reduction != "mst" || comm.Objective != "min" {
-		t.Fatalf("community+reduction echo mismatch over the wire: algorithm=%q reduction=%q objective=%q; want community/mst/min",
-			comm.Algorithm, comm.Reduction, comm.Objective)
-	}
-
-	// list_under should see fact.a + fact.b.
-	listRes := call("list_under", map[string]any{"prefix": "fact."})
-	var list struct {
-		Count   int  `json:"count"`
-		HasMore bool `json:"has_more"`
-	}
-	decode(listRes, &list)
-	if list.Count < 2 {
-		t.Fatalf("expected at least 2 entries under fact.; got %d", list.Count)
 	}
 }
 
-// TestMCP_ContextProfile_EndToEnd is the #851 walkthrough over a real
-// Lantern service: agent A announces + tracks + claims; the shared board
-// (list_agents / whats_happening / list_claims) sees it; a note posted
-// against a resource surfaces in its context; release clears the lease.
-func TestMCP_ContextProfile_EndToEnd(t *testing.T) {
-	t.Setenv("LANTERN_MCP_PROFILE", lmcp.ProfileContext)
-	t.Setenv("LANTERN_MCP_AGENT_ID", "") // process identity is memoised; accept whatever it is
+// TestMCP_ContextEndToEnd walks the context-only release surface over a real
+// Lantern service: announce, activity, lease, note, situational read, release.
+func TestMCP_ContextEndToEnd(t *testing.T) {
+	t.Setenv("LANTERN_MCP_AGENT_ID", "")
 	lan, cleanup := newInProcessClientWithPrefix(t)
 	defer cleanup()
+	cs, ctx := newMCPClientSession(t, lan)
 
-	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	srv, err := lmcp.NewServer(lan, logger)
-	if err != nil {
-		t.Fatalf("lmcp.NewServer: %v", err)
-	}
-
-	serverT, clientT := mcp.NewInMemoryTransports()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	serverSession, err := srv.Connect(ctx, serverT, nil)
-	if err != nil {
-		t.Fatalf("server.Connect: %v", err)
-	}
-	defer func() { _ = serverSession.Close() }()
-	c := mcp.NewClient(&mcp.Implementation{Name: "integration-ctx", Version: "test"}, nil)
-	cs, err := c.Connect(ctx, clientT, nil)
-	if err != nil {
-		t.Fatalf("client.Connect: %v", err)
-	}
-	defer func() { _ = cs.Close() }()
-
-	call := func(name string, args map[string]any) *mcp.CallToolResult {
-		t.Helper()
-		res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
-		if err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
-		if res.IsError {
-			t.Fatalf("%s returned tool error: %+v", name, res.Content)
-		}
-		return res
-	}
-	textOf := func(res *mcp.CallToolResult) string {
-		t.Helper()
-		for _, content := range res.Content {
-			if tc, ok := content.(*mcp.TextContent); ok {
-				return tc.Text
-			}
-		}
-		return ""
-	}
-
-	// A announces and works.
-	call("announce", map[string]any{"task": "refactoring auth middleware"})
-	call("track", map[string]any{"resources": []string{"repo.api.middleware.auth", "ticket.API-17"}})
-	call("claim", map[string]any{"resource": "repo.api.middleware.auth", "note": "rewriting"})
-	call("post_note", map[string]any{
+	callMCP(t, ctx, cs, "announce", map[string]any{"task": "refactoring auth middleware"})
+	callMCP(t, ctx, cs, "track", map[string]any{"resources": []string{"repo.api.middleware.auth", "ticket.API-17"}})
+	callMCP(t, ctx, cs, "claim", map[string]any{"resource": "repo.api.middleware.auth", "note": "rewriting"})
+	callMCP(t, ctx, cs, "post_note", map[string]any{
 		"text": "auth middleware API changed", "severity": "warn",
 		"links": []string{"repo.api.middleware.auth"}, "ttl": "turn",
 	})
 
-	// The board sees all of it.
-	if got := textOf(call("list_agents", map[string]any{})); !strings.Contains(got, "refactoring auth middleware") {
-		t.Fatalf("list_agents missing the announced task: %q", got)
+	if got := mcpText(callMCP(t, ctx, cs, "list_agents", map[string]any{})); !strings.Contains(got, "refactoring auth middleware") {
+		t.Fatalf("list_agents missing announced task: %q", got)
 	}
-	if got := textOf(call("list_claims", map[string]any{})); !strings.Contains(got, "repo.api.middleware.auth") {
-		t.Fatalf("list_claims missing the lease: %q", got)
+	if got := mcpText(callMCP(t, ctx, cs, "list_claims", map[string]any{})); !strings.Contains(got, "repo.api.middleware.auth") {
+		t.Fatalf("list_claims missing lease: %q", got)
 	}
-	happening := textOf(call("whats_happening", map[string]any{"key": "repo.api.middleware.auth"}))
+	happening := mcpText(callMCP(t, ctx, cs, "whats_happening", map[string]any{"key": "repo.api.middleware.auth"}))
 	for _, want := range []string{"refactoring auth middleware", "auth middleware API changed"} {
 		if !strings.Contains(happening, want) {
 			t.Fatalf("whats_happening missing %q:\n%s", want, happening)
 		}
 	}
 
-	// Release clears the lease.
-	call("release", map[string]any{"resource": "repo.api.middleware.auth"})
-	if got := textOf(call("list_claims", map[string]any{})); strings.Contains(got, "repo.api.middleware.auth") {
+	callMCP(t, ctx, cs, "release", map[string]any{"resource": "repo.api.middleware.auth"})
+	if got := mcpText(callMCP(t, ctx, cs, "list_claims", map[string]any{})); strings.Contains(got, "repo.api.middleware.auth") {
 		t.Fatalf("lease survived release: %q", got)
 	}
+}
+
+func newMCPClientSession(t *testing.T, lan *client.Lantern) (*mcp.ClientSession, context.Context) {
+	t.Helper()
+	srv, err := lmcp.NewServer(lan, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("lmcp.NewServer: %v", err)
+	}
+	serverT, clientT := mcp.NewInMemoryTransports()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	serverSession, err := srv.Connect(ctx, serverT, nil)
+	if err != nil {
+		cancel()
+		t.Fatalf("server.Connect: %v", err)
+	}
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "integration", Version: "test"}, nil).Connect(ctx, clientT, nil)
+	if err != nil {
+		_ = serverSession.Close()
+		cancel()
+		t.Fatalf("client.Connect: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cs.Close()
+		_ = serverSession.Close()
+		cancel()
+	})
+	return cs, ctx
+}
+
+func callMCP(t *testing.T, ctx context.Context, cs *mcp.ClientSession, name string, args map[string]any) *mcp.CallToolResult {
+	t.Helper()
+	res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
+	if err != nil {
+		t.Fatalf("CallTool(%s): %v", name, err)
+	}
+	if res.IsError {
+		t.Fatalf("CallTool(%s) returned tool error: %+v", name, res.Content)
+	}
+	return res
+}
+
+func decodeMCP(t *testing.T, res *mcp.CallToolResult, dst any) {
+	t.Helper()
+	b, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		t.Fatalf("marshal structured content: %v", err)
+	}
+	if err := json.Unmarshal(b, dst); err != nil {
+		t.Fatalf("unmarshal structured content: %v", err)
+	}
+}
+
+func mcpText(res *mcp.CallToolResult) string {
+	for _, content := range res.Content {
+		if text, ok := content.(*mcp.TextContent); ok {
+			return text.Text
+		}
+	}
+	return ""
 }
