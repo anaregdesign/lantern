@@ -85,8 +85,9 @@ func EdgeExpiration(e *Edge) time.Time {
 // Reduction re-exports the server-side post-traversal tree-view enum so SDK
 // callers do not need to import the generated proto package directly. Per
 // the #846 oneof redesign, MST/SPT are a knob of the BFS family
-// (BFSOpts.Reduction) — not sibling algorithms — and Personalized PageRank
-// is selected by passing WithPPR instead.
+// (BFSOpts.Reduction) — not sibling algorithms. MST is a rooted directed
+// arborescence over Lantern's directed edges, and Personalized PageRank is
+// selected by passing WithPPR instead.
 type Reduction = pb.Reduction
 
 const (
@@ -98,8 +99,9 @@ const (
 // Objective is the direction of the weight-sensitive optimisation. It
 // governs both the per-hop top-k pruning and the post-traversal reduction
 // (#560): MINIMIZE treats edge weights as costs (keeps the k smallest-weight
-// edges per hop, smallest tree wins), MAXIMIZE treats them as relevance
-// (keeps the k largest-weight edges per hop, largest tree wins). Server
+// edges per hop, smallest directed arborescence wins), MAXIMIZE treats them
+// as relevance (keeps the k largest-weight edges per hop, largest directed
+// arborescence wins). Server
 // resolves ObjectiveUnspecified to ObjectiveMaximize.
 type Objective = pb.Objective
 

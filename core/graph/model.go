@@ -84,13 +84,18 @@ func (g *Graph[S, T]) ConnectedGraphContext(ctx context.Context, seed S) (*Graph
 	return connected, nil
 }
 
-// MinimumSpanningTree returns a minimum spanning tree of the graph rooted at seed.
+// MinimumSpanningTree returns the minimum-cost rooted directed arborescence
+// over every vertex reachable from seed. Lantern edges are directed, so this
+// is not an undirected Prim MST: every non-seed vertex has exactly one
+// selected incoming edge and remains reachable from seed in the result.
 func (g *Graph[S, T]) MinimumSpanningTree(seed S) *Graph[S, T] {
 	mst, _ := g.spanningTreeContext(context.Background(), seed, false)
 	return mst
 }
 
-// MaximumSpanningTree returns a maximum spanning tree of the graph rooted at seed.
+// MaximumSpanningTree returns the maximum-weight rooted directed arborescence
+// over every vertex reachable from seed. See [Graph.MinimumSpanningTree] for
+// the directed semantics.
 func (g *Graph[S, T]) MaximumSpanningTree(seed S) *Graph[S, T] {
 	mst, _ := g.spanningTreeContext(context.Background(), seed, true)
 	return mst
@@ -106,67 +111,188 @@ func (g *Graph[S, T]) MaximumSpanningTreeContext(ctx context.Context, seed S) (*
 	return g.spanningTreeContext(ctx, seed, true)
 }
 
-// spanningTreeContext computes either the minimum (negate=false) or maximum
-// (negate=true) spanning tree rooted at seed. It is the shared implementation
-// behind the exported MinimumSpanningTree / MaximumSpanningTree variants.
+// spanningTreeContext computes either the minimum (maximize=false) or
+// maximum (maximize=true) rooted directed arborescence. It is the shared
+// implementation behind the exported MinimumSpanningTree /
+// MaximumSpanningTree variants.
 //
-// Implementation: classic Prim. When a vertex enters the MST, only its
-// outgoing edges are pushed onto the priority queue, and stale entries
-// pointing at already-included vertices are skipped at pop time. Each edge
-// is therefore pushed and popped at most once, giving O((V+E) log V).
-// The previous version re-scanned mst.Vertices on every iteration of the
-// outer loop, paying an extra O(V) per added vertex.
-func (g *Graph[S, T]) spanningTreeContext(ctx context.Context, seed S, negate bool) (*Graph[S, T], error) {
+// Implementation: Chu–Liu/Edmonds. It selects the best incoming edge for
+// every non-root vertex, contracts any selected-edge cycles, recursively
+// solves the contracted graph, then expands the cycles by replacing precisely
+// the incoming edge where the chosen external edge enters. This gives the
+// optimal directed tree over the root-reachable subgraph, unlike Prim (whose
+// guarantee applies only to undirected graphs). The worst-case running time
+// is O(VE); traversal work limits bound this post-processing at the service
+// boundary.
+func (g *Graph[S, T]) spanningTreeContext(ctx context.Context, seed S, maximize bool) (*Graph[S, T], error) {
 	connected, err := g.ConnectedGraphContext(ctx, seed)
 	if err != nil {
 		return nil, err
 	}
 
-	type edge struct {
-		tail   S
-		head   S
-		weight float32
+	mst := NewGraph[S, T]()
+	if len(connected.Vertices) == 0 {
+		return mst, nil
 	}
 
-	mst := NewGraph[S, T]()
-	mst.PutVertex(seed, connected.Vertices[seed])
-
-	q := make(pq.PriorityQueue[*edge, float32], 0)
-	heap.Init(&q)
-
-	// pq is a max-heap; flip sign for the minimum-tree case so that the
-	// smallest original weight surfaces at the top.
-	pushOutgoing := func(tail S) {
-		for head, weight := range connected.Edges[tail] {
-			if _, ok := mst.Vertices[head]; ok {
+	vertices := make([]S, 0, len(connected.Vertices))
+	index := make(map[S]int, len(connected.Vertices))
+	for vertex := range connected.Vertices {
+		index[vertex] = len(vertices)
+		vertices = append(vertices, vertex)
+	}
+	root := index[seed]
+	edges := make([]*directedArborescenceEdge, 0)
+	for tail, heads := range connected.Edges {
+		from := index[tail]
+		for head, weight := range heads {
+			to := index[head]
+			if from == to {
+				// A self-loop cannot belong to a rooted arborescence.
 				continue
 			}
-			w := weight
-			if !negate {
-				w = -weight
+			cost := weight
+			if maximize {
+				// The solver minimizes. Negating retains the original edge
+				// weight for the returned graph while selecting the maximum
+				// total-weight arborescence.
+				cost = -cost
 			}
-			heap.Push(&q, &pq.Item[*edge, float32]{
-				Value:    &edge{tail: tail, head: head, weight: weight},
-				Priority: w,
+			edges = append(edges, &directedArborescenceEdge{
+				from:           from,
+				to:             to,
+				cost:           cost,
+				originalWeight: weight,
 			})
 		}
 	}
-	pushOutgoing(seed)
 
-	for q.Len() > 0 && len(mst.Vertices) < len(connected.Vertices) {
+	selected, err := minimumDirectedArborescence(ctx, len(vertices), root, edges)
+	if err != nil {
+		return nil, err
+	}
+	for _, vertex := range vertices {
+		mst.PutVertex(vertex, connected.Vertices[vertex])
+	}
+	for _, edge := range selected {
+		mst.PutEdge(vertices[edge.from], vertices[edge.to], edge.originalWeight)
+	}
+	return mst, nil
+}
+
+// directedArborescenceEdge is an edge in one Chu–Liu/Edmonds contraction
+// level. original points to the edge in the preceding level; top-level edges
+// have nil original and retain the source graph's endpoints and weight.
+type directedArborescenceEdge struct {
+	from, to       int
+	cost           float32
+	originalWeight float32
+	original       *directedArborescenceEdge
+}
+
+// minimumDirectedArborescence returns a minimum-cost arborescence rooted at
+// root. Its callers only pass a root-reachable graph, so every non-root node
+// has an incoming edge at every contraction level.
+func minimumDirectedArborescence(ctx context.Context, nodeCount, root int, edges []*directedArborescenceEdge) ([]*directedArborescenceEdge, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	incoming := make([]*directedArborescenceEdge, nodeCount)
+	for _, edge := range edges {
+		if edge.to == root {
+			continue
+		}
+		if current := incoming[edge.to]; current == nil || edge.cost < current.cost {
+			incoming[edge.to] = edge
+		}
+	}
+
+	// Find all cycles formed by the selected incoming edges. component is the
+	// contracted node ID; -1 marks a node not yet assigned to a component.
+	component := make([]int, nodeCount)
+	seen := make([]int, nodeCount)
+	for i := range component {
+		component[i] = -1
+		seen[i] = -1
+	}
+	componentCount := 0
+	for start := 0; start < nodeCount; start++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		picked := heap.Pop(&q).(*pq.Item[*edge, float32]).Value
-		if _, ok := mst.Vertices[picked.head]; ok {
-			// stale: head already absorbed via a better edge
+		vertex := start
+		for vertex != root && component[vertex] == -1 && seen[vertex] != start {
+			seen[vertex] = start
+			vertex = incoming[vertex].from
+		}
+		if vertex == root || component[vertex] != -1 {
 			continue
 		}
-		mst.PutVertex(picked.head, connected.Vertices[picked.head])
-		mst.PutEdge(picked.tail, picked.head, picked.weight)
-		pushOutgoing(picked.head)
+		for cycleVertex := incoming[vertex].from; cycleVertex != vertex; cycleVertex = incoming[cycleVertex].from {
+			component[cycleVertex] = componentCount
+		}
+		component[vertex] = componentCount
+		componentCount++
 	}
-	return mst, nil
+
+	if componentCount == 0 {
+		selected := make([]*directedArborescenceEdge, 0, nodeCount-1)
+		for vertex, edge := range incoming {
+			if vertex != root {
+				selected = append(selected, edge)
+			}
+		}
+		return selected, nil
+	}
+
+	// Give each non-cycle vertex a distinct component after the contracted
+	// cycles. The root cannot be in a selected-incoming-edge cycle.
+	for vertex := range component {
+		if component[vertex] == -1 {
+			component[vertex] = componentCount
+			componentCount++
+		}
+	}
+
+	contracted := make([]*directedArborescenceEdge, 0, len(edges))
+	for _, edge := range edges {
+		if edge.to == root {
+			// Root has no selected incoming edge, and no arborescence edge
+			// may enter it.
+			continue
+		}
+		from, to := component[edge.from], component[edge.to]
+		if from == to {
+			continue
+		}
+		contracted = append(contracted, &directedArborescenceEdge{
+			from:     from,
+			to:       to,
+			cost:     edge.cost - incoming[edge.to].cost,
+			original: edge,
+		})
+	}
+
+	selectedContracted, err := minimumDirectedArborescence(ctx, componentCount, component[root], contracted)
+	if err != nil {
+		return nil, err
+	}
+	// Begin with every locally best incoming edge. Each recursively selected
+	// contracted edge replaces the incoming edge for its original destination;
+	// when it enters a cycle that replacement is exactly the edge that breaks
+	// the cycle on expansion.
+	for _, edge := range selectedContracted {
+		incoming[edge.original.to] = edge.original
+	}
+
+	selected := make([]*directedArborescenceEdge, 0, nodeCount-1)
+	for vertex, edge := range incoming {
+		if vertex != root {
+			selected = append(selected, edge)
+		}
+	}
+	return selected, nil
 }
 
 // ShortestPathTree
