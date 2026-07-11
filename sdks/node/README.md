@@ -44,6 +44,12 @@ try {
 }
 ```
 
+`illuminate()` requires exactly one options arm: `bfs`, `ppr`, or
+`community`. BFS requires positive `step` and `fanOut`; missing/conflicting
+families and zero BFS dimensions raise `InvalidArgumentError` before any RPC.
+`ppr.topN = 0` and `community.maxSize = 0` remain their families' explicit
+sentinels.
+
 ## Vertex values
 
 Each method on `Lantern` accepts these JavaScript types and maps each
@@ -384,7 +390,7 @@ import { connectWeb, Reduction } from "lantern-sdk/web";
 
 const client = connectWeb("https://lantern.example.com:6380");
 const graph = await client.illuminate("hello", {
-  bfs: { reduction: Reduction.SHORTEST_PATH_TREE },
+  bfs: { step: 2, fanOut: 16, reduction: Reduction.SHORTEST_PATH_TREE },
 });
 console.log(`vertices=${graph.vertices.size}`);
 ```

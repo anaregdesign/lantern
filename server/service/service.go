@@ -566,12 +566,19 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 
 	// Dispatch on the params oneof (#846): the selected case IS the traversal
 	// family, and each arm reads only the knobs its family understands —
-	// cross-algorithm misconfiguration is unrepresentable on the wire. An
-	// unset oneof is the historical bare illuminate: BFS with server defaults.
-	// A stale pre-#846 client emitting the retired flat field numbers decodes
-	// as exactly that (the numbers are reserved), never as a different arm.
-	switch params := request.GetParams().(type) {
+	// cross-algorithm misconfiguration is unrepresentable on the wire. Family
+	// selection is required: an unset oneof (including a stale pre-#846 request
+	// that only carries retired fields) is rejected rather than silently becoming
+	// a zero-hop BFS walk.
+	params := request.GetParams()
+	if params == nil {
+		return nil, invalidIlluminateParams("traversal family is required")
+	}
+	switch params := params.(type) {
 	case *pb.IlluminateRequest_Ppr:
+		if params.Ppr == nil {
+			return nil, invalidIlluminateParams("ppr params are required")
+		}
 		// Personalized PageRank is a distinct traversal path, not a
 		// post-traversal reduction (#801): it row-normalises the weighted
 		// out-edges into a transition matrix and runs ACL forward-push from the
@@ -595,6 +602,9 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 		algoLabel, redLabel, objLabel = "ppr", "none", "maximize"
 
 	case *pb.IlluminateRequest_Community:
+		if params.Community == nil {
+			return nil, invalidIlluminateParams("community params are required")
+		}
 		// Local community extraction (#845): PageRank-Nibble sweep cut over
 		// the shared push. Membership is decided by conductance (max_size is
 		// an upper bound, not a count) and the result is the induced
@@ -651,8 +661,14 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 		}
 		algoLabel, redLabel, objLabel = "community", reductionLabel(comm.GetReduction()), objectiveLabel(comm.GetObjective())
 
-	default: // *pb.IlluminateRequest_Bfs or unset — the BFS family.
-		bfs := request.GetBfs() // nil-safe: getters yield zero values on an unset oneof
+	case *pb.IlluminateRequest_Bfs:
+		if params.Bfs == nil {
+			return nil, invalidIlluminateParams("bfs params are required")
+		}
+		bfs := params.Bfs
+		if bfs.GetStep() == 0 || bfs.GetFanOut() == 0 {
+			return nil, invalidIlluminateParams("bfs step and fan_out must both be positive")
+		}
 		// Objective steers the per-hop top-k pruning as well as the
 		// post-traversal reduction (#560): a MINIMIZE caller keeps the
 		// fan_out smallest-weight edges at each hop so the cost-minimiser is
@@ -676,6 +692,8 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 			}
 		}
 		algoLabel, redLabel, objLabel = "bfs", reductionLabel(bfs.GetReduction()), objectiveLabel(objective)
+	default:
+		return nil, invalidIlluminateParams("unknown traversal family")
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -710,6 +728,10 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 	return &pb.IlluminateResponse{
 		Graph: &pb.Graph{Vertices: vertices, Edges: edges},
 	}, nil
+}
+
+func invalidIlluminateParams(message string) error {
+	return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("illuminate: %s", message))
 }
 
 func (s *LanternService) GetVertex(ctx context.Context, request *pb.GetVertexRequest) (*pb.GetVertexResponse, error) {

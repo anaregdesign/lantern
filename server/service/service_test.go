@@ -504,7 +504,7 @@ func TestLanternService_Illuminate_NoAlgorithm(t *testing.T) {
 // arm (#846) against every shared axis: the BFS family across reduction ×
 // objective × weighting, and the PPR family across weighting. Every tuple
 // must run to completion and return at least one vertex against the
-// triangle seed. The params-unset default is covered separately by the
+// triangle seed. The explicit raw-BFS baseline is covered separately by the
 // _NoAlgorithm test above.
 func TestLanternService_Illuminate_AllAxisCombos(t *testing.T) {
 	reductions := []pb.Reduction{
@@ -1740,7 +1740,9 @@ func TestLanternService_Illuminate_TraversalBudget(t *testing.T) {
 		fb := newFakeBackend()
 		svc := NewLanternService(fb)
 
-		if _, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{Seed: "a"}); err != nil {
+		if _, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{
+			Seed: "a", Params: &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{Step: 1, FanOut: 1}},
+		}); err != nil {
 			t.Fatalf("Illuminate: %v", err)
 		}
 		if !fb.lastNeighborHadDeadline {
@@ -1753,7 +1755,7 @@ func TestLanternService_Illuminate_TraversalBudget(t *testing.T) {
 		fb.neighborBlockUntilCtxDone = true
 		svc := NewLanternService(fb).WithTraversalTimeout(20 * time.Millisecond)
 
-		_, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{Seed: "a"})
+		_, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{Seed: "a", Params: &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{Step: 1, FanOut: 1}}})
 		if connect.CodeOf(err) != connect.CodeDeadlineExceeded {
 			t.Fatalf("err = %v, want CodeDeadlineExceeded", err)
 		}
@@ -1763,7 +1765,7 @@ func TestLanternService_Illuminate_TraversalBudget(t *testing.T) {
 		fb := newFakeBackend()
 		svc := NewLanternService(fb).WithTraversalTimeout(0)
 
-		if _, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{Seed: "a"}); err != nil {
+		if _, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{Seed: "a", Params: &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{Step: 1, FanOut: 1}}}); err != nil {
 			t.Fatalf("Illuminate: %v", err)
 		}
 		if fb.lastNeighborHadDeadline {
@@ -1775,7 +1777,7 @@ func TestLanternService_Illuminate_TraversalBudget(t *testing.T) {
 		fb := newFakeBackend()
 		svc := NewLanternService(fb).WithTraversalTimeout(time.Hour)
 
-		if _, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{Seed: "a"}); err != nil {
+		if _, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{Seed: "a", Params: &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{Step: 1, FanOut: 1}}}); err != nil {
 			t.Fatalf("Illuminate: %v", err)
 		}
 		if !fb.lastNeighborHadDeadline {
@@ -1791,7 +1793,7 @@ func TestLanternService_Illuminate_TraversalBudget(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 		defer cancel()
 		start := time.Now()
-		_, err := svc.Illuminate(ctx, &pb.IlluminateRequest{Seed: "a"})
+		_, err := svc.Illuminate(ctx, &pb.IlluminateRequest{Seed: "a", Params: &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{Step: 1, FanOut: 1}}})
 		if connect.CodeOf(err) != connect.CodeDeadlineExceeded {
 			t.Fatalf("err = %v, want CodeDeadlineExceeded", err)
 		}
@@ -1928,8 +1930,8 @@ func TestLanternService_CapacityCaps(t *testing.T) {
 // TestIlluminate_FlatFieldGhost is the #846 reserved-range regression: a
 // stale pre-oneof client whose binary still emits the retired FLAT field
 // numbers (2 step, 3 k, 6 algorithm, 7 objective, 10 restart_prob,
-// 11 epsilon) must decode as params-unset — the BFS-defaults bare
-// illuminate — never alias onto the new oneof arms (12/13) or steer the
+// 11 epsilon) must decode as params-unset and be rejected as
+// InvalidArgument — never alias onto the new oneof arms (12/13) or steer a
 // dispatch. Proves the `reserved` ranges actually shield against stale
 // clients rather than just documenting intent.
 func TestIlluminate_FlatFieldGhost(t *testing.T) {
@@ -1960,26 +1962,19 @@ func TestIlluminate_FlatFieldGhost(t *testing.T) {
 		t.Fatalf("ghost flat fields decoded into params oneof: %T", req.GetParams())
 	}
 
-	// End-to-end through the dispatcher: the ghost must run the BFS-defaults
-	// arm (Neighbor with step=0, fanOut=0, strongest-first), NOT the PPR arm
-	// the stale algorithm=3 byte asked for.
+	// End-to-end through the dispatcher: the stale request must fail before it
+	// reaches either traversal family. A retired algorithm=3 byte cannot turn
+	// an invalid request into PPR (or a silent zero-hop BFS).
 	fb := newFakeBackend()
 	svc := NewLanternService(fb)
-	if _, err := svc.Illuminate(context.Background(), &req); err != nil {
-		t.Fatalf("Illuminate(ghost): %v", err)
+	if _, err := svc.Illuminate(context.Background(), &req); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("Illuminate(ghost) code = %v, want InvalidArgument (err = %v)", connect.CodeOf(err), err)
 	}
 	if fb.pprCalls != 0 {
-		t.Fatalf("pprCalls = %d, want 0 — retired algorithm byte steered the dispatch", fb.pprCalls)
+		t.Fatalf("pprCalls = %d, want 0 — stale request reached PPR", fb.pprCalls)
 	}
-	if fb.neighborCalls != 1 {
-		t.Fatalf("neighborCalls = %d, want 1 (BFS defaults arm)", fb.neighborCalls)
-	}
-	if fb.lastNeighborStep != 0 || fb.lastNeighborK != 0 {
-		t.Fatalf("ghost step/k leaked into the walk: step=%d k=%d, want 0/0",
-			fb.lastNeighborStep, fb.lastNeighborK)
-	}
-	if fb.lastNeighborSelectSmall {
-		t.Fatal("ghost objective byte flipped pruning to smallest; want strongest-first default")
+	if fb.neighborCalls != 0 {
+		t.Fatalf("neighborCalls = %d, want 0 — stale request reached BFS", fb.neighborCalls)
 	}
 }
 

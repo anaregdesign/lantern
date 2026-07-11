@@ -835,16 +835,27 @@ export class Lantern {
     });
   }
 
-  async illuminate(
-    seed: string,
-    opts: IlluminateOptions = {},
-    signal?: AbortSignal,
-  ): Promise<Graph> {
+  async illuminate(seed: string, opts: IlluminateOptions, signal?: AbortSignal): Promise<Graph>;
+  async illuminate(seed: string, opts?: IlluminateOptions, signal?: AbortSignal): Promise<Graph> {
     if (!seed) throw new InvalidArgumentError("illuminate: seed is required");
+    if (!opts) {
+      throw new InvalidArgumentError("illuminate: traversal family is required");
+    }
     const families = [opts.bfs, opts.ppr, opts.community].filter((f) => f !== undefined).length;
-    if (families > 1) {
+    if (families !== 1) {
       throw new InvalidArgumentError(
-        "illuminate: bfs, ppr and community are mutually exclusive (the traversal family is a wire oneof)",
+        "illuminate: exactly one of bfs, ppr and community is required (the traversal family is a wire oneof)",
+      );
+    }
+    if (
+      opts.bfs &&
+      (!Number.isSafeInteger(opts.bfs.step) ||
+        !Number.isSafeInteger(opts.bfs.fanOut) ||
+        opts.bfs.step <= 0 ||
+        opts.bfs.fanOut <= 0)
+    ) {
+      throw new InvalidArgumentError(
+        "illuminate: bfs step and fanOut must both be positive integers",
       );
     }
     return this.invoke(async () => {
@@ -876,8 +887,8 @@ export class Lantern {
             ? ({
                 case: "bfs" as const,
                 value: {
-                  step: opts.bfs.step ?? 0,
-                  fanOut: opts.bfs.fanOut ?? 0,
+                  step: opts.bfs.step,
+                  fanOut: opts.bfs.fanOut,
                   objective:
                     OBJECTIVE_TO_PB[opts.bfs.objective ?? Objective.UNSPECIFIED] ??
                     PbObjective.UNSPECIFIED,

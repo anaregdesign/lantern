@@ -89,6 +89,32 @@ func TestRecallRelated_RejectsEmptySeed(t *testing.T) {
 	h.callExpectError(t, "recall_related", map[string]any{"seed": ""})
 }
 
+func TestMapFamilyOption_RejectsZeroBFSDimensions(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		step uint32
+		k    uint32
+	}{
+		{name: "zero step", step: 0, k: 1},
+		{name: "zero fan-out", step: 1, k: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := mapFamilyOption(
+				algorithmBFS,
+				client.ReductionNone,
+				tc.step,
+				tc.k,
+				client.ObjectiveMaximize,
+				0,
+				0,
+			)
+			if err == nil {
+				t.Fatal("mapFamilyOption() error = nil, want zero BFS dimension rejection")
+			}
+		})
+	}
+}
+
 // TestRecallRelated_AcceptsBM25Weighting pins the #800 BM25 axis on the MCP
 // surface: weighting=bm25 must be accepted and forwarded as an Illuminate
 // option rather than rejected as an unknown value.

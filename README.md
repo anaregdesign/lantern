@@ -176,6 +176,12 @@ the shape you asked for. The CLI exposes that RPC as three family verbs —
 `bfs`, `pagerank`, and `community` — with orthogonal knobs for tree rendering,
 optimization direction, and weighting:
 
+Every request selects one family explicitly. SDK calls use `WithBFS`,
+`WithPPR`, or `WithLocalCommunity` (or the matching Node options arm); raw
+requests with no `params` arm are rejected. BFS also requires positive `step`
+and `fan_out` — unlike PageRank `top_n=0` and community `max_size=0`, zero is
+not a default sentinel for BFS.
+
 | Axis | Options | What it picks |
 |---|---|---|
 | family verb | `bfs` / `pagerank` / `community` | Greedy per-hop top-k neighbourhood, Personalized PageRank relevance star, or the seed's natural community (conductance-cut, returned as a real induced subgraph) |

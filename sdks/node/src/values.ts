@@ -153,7 +153,8 @@ export type VertexKind =
 
 /**
  * Illuminate axes for Lantern.illuminate (#846). The traversal family is
- * selected by the per-family options object (`bfs` or `ppr` on
+ * selected by the required per-family options object (`bfs`, `ppr`, or
+ * `community` on
  * IlluminateOptions — the wire oneof); the enums below are the shared and
  * BFS-family axes.
  *

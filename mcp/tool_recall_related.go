@@ -102,8 +102,8 @@ type reinforceEdge struct {
 
 type recallRelatedInput struct {
 	Seed            string                 `json:"seed"                jsonschema:"Starting fact key for the walk. The seed itself is returned at depth 0."`
-	Step            uint32                 `json:"step,omitempty"      jsonschema:"BFS depth (default 2). Larger values explore further at quadratic cost. Server enforces a hard cap. Applies to the out-direction walk only."`
-	K               uint32                 `json:"k,omitempty"         jsonschema:"Per-hop fan-out: keep the top-k strongest outgoing edges at each step (default 8). Server enforces a hard cap. Applies to the out-direction walk only."`
+	Step            uint32                 `json:"step,omitempty"      jsonschema:"BFS depth (default 2). Required to be positive for BFS; ignored by PageRank and community. Larger values explore further at quadratic cost. Server enforces a hard cap. Applies to the out-direction walk only."`
+	K               uint32                 `json:"k,omitempty"         jsonschema:"Family-native size knob: BFS fan-out (default 8, must be positive), PageRank top_n (0 = all), or community max_size (0 = sweep decides). Server enforces hard caps. Applies to the out-direction walk only."`
 	Direction       recallRelatedDirection `json:"direction,omitempty" jsonschema:"Which edge direction to follow from the seed: out (default - forward BFS over out-edges, the historical behaviour), in (reverse - return the seed's direct predecessors, so seeding a pure sink is no longer empty), or both (union of the two). step/k/algorithm/reduction/objective/weighting shape the out walk; the in pass is a single bounded reverse-adjacency hop."`
 	Algorithm       recallRelatedAlgorithm `json:"algorithm,omitempty" jsonschema:"Traversal FAMILY run from the seed: one of: bfs (default - breadth-first walk over the top-k strongest edges per hop), ppr (Personalized PageRank - rank facts by random-walk-with-restart proximity to the seed, surfacing globally well-connected context rather than just direct neighbours; tuned by restart_prob/epsilon), or community (local community extraction - return the seed's natural cluster by a sweep over a Personalized PageRank vector; k caps the community size, tuned by restart_prob/epsilon). Orthogonal to reduction."`
 	Reduction       recallRelatedReduction `json:"reduction,omitempty" jsonschema:"Post-traversal tree REDUCTION applied to the bfs/community subgraph, rooted at the seed: one of: none (default - the raw subgraph), mst (minimum/maximum spanning-tree backbone depending on objective), or spt (shortest-path tree from the seed). Orthogonal to algorithm: e.g. algorithm=community reduction=mst returns the seed's community as a spanning-tree backbone. Ignored when algorithm=ppr (PPR returns a ranked star, not a subgraph)."`
@@ -227,14 +227,21 @@ func registerRecallRelated(srv *mcp.Server, lc lanternClient, r *ttl.Resolver) {
 		acc := newNeighborAccumulator()
 		var truncated bool
 
-		// out / both: forward BFS over out-edges via Illuminate (the
-		// historical behaviour). step/k/algorithm/objective/weighting
-		// shape this walk.
+		// out / both: traverse forward edges through the selected family.
+		// Step/fan-out are BFS-only: resolve its MCP defaults here so zero
+		// cannot leak through as the now-invalid BFS wire value. PPR top_n=0
+		// and community max_size=0 retain their own explicit sentinels.
 		if direction == directionOut || direction == directionBoth {
-			// The typed family option (#846) carries every per-family knob;
-			// zero values (step/k/α/ε unset) are resolved server-side to the
-			// documented defaults exactly as the flat fields were.
-			famOpt, err := mapFamilyOption(algorithm, red, in.Step, in.K, obj, restartProb, epsilon)
+			step, k := in.Step, in.K
+			if algorithm == algorithmBFS {
+				if step == 0 {
+					step = 2
+				}
+				if k == 0 {
+					k = 8
+				}
+			}
+			famOpt, err := mapFamilyOption(algorithm, red, step, k, obj, restartProb, epsilon)
 			if err != nil {
 				return nil, recallRelatedOutput{}, fmt.Errorf("recall_related: %w", err)
 			}
@@ -348,6 +355,9 @@ func registerRecallRelated(srv *mcp.Server, lc lanternClient, r *ttl.Resolver) {
 func mapFamilyOption(a recallRelatedAlgorithm, red client.Reduction, step, k uint32, obj client.Objective, restartProb, epsilon float32) (client.IlluminateOption, error) {
 	switch a {
 	case algorithmBFS:
+		if step == 0 || k == 0 {
+			return nil, fmt.Errorf("bfs step and k must both be positive")
+		}
 		return client.WithBFS(client.BFSOpts{Step: step, FanOut: k, Objective: obj, Reduction: red}), nil
 	case algorithmPPR:
 		return client.WithPPR(client.PPROpts{TopN: k, RestartProb: restartProb, Epsilon: epsilon}), nil

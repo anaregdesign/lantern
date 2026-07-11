@@ -185,12 +185,12 @@ func TestLantern_Illuminate_VertexPrefix(t *testing.T) {
 	})
 }
 
-// TestIlluminate_OneofArmRoundTrips drives one round-trip per params arm
-// (#846) through the wire: params-unset (bare illuminate), the bfs arm (with
-// and without an MST/SPT reduction), the ppr arm, and the community arm (with
-// and without a reduction, #961) must each reach the server, dispatch to
-// their family, apply any post-traversal tree reduction, and return a graph
-// rooted at the seed.
+// TestIlluminate_OneofArmRoundTrips drives each params arm (#846) through the
+// real wire. Params-unset and zero BFS dimensions must fail with
+// InvalidArgument; explicit bfs (with and without an MST/SPT reduction), ppr,
+// and community (with and without a reduction, #961) must dispatch to their
+// family, apply any post-traversal tree reduction, and return a graph rooted
+// at the seed.
 func TestIlluminate_OneofArmRoundTrips(t *testing.T) {
 	exp := timestamppb.New(time.Now().Add(time.Hour))
 	c, _ := newRawConnectClient(t, false)
@@ -218,15 +218,15 @@ func TestIlluminate_OneofArmRoundTrips(t *testing.T) {
 		return m
 	}
 	cases := []struct {
-		name     string
-		req      *pb.IlluminateRequest
-		seedOnly bool
+		name        string
+		req         *pb.IlluminateRequest
+		wantInvalid bool
 	}{
-		// step/fan_out zero means no hops, so the unset arm returns just the
-		// seed — the same contract the flat request had (0 was never
-		// defaulted server-side); the point here is that it dispatches
-		// cleanly rather than erroring.
-		{"params unset = bare illuminate", &pb.IlluminateRequest{Seed: "s"}, true},
+		{"params unset is rejected", &pb.IlluminateRequest{Seed: "s"}, true},
+		{"zero BFS step is rejected", &pb.IlluminateRequest{Seed: "s",
+			Params: &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{Step: 0, FanOut: 5}}}, true},
+		{"zero BFS fan-out is rejected", &pb.IlluminateRequest{Seed: "s",
+			Params: &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{Step: 2, FanOut: 0}}}, true},
 		{"bfs arm", &pb.IlluminateRequest{Seed: "s",
 			Params: &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{Step: 2, FanOut: 5}}}, false},
 		{"bfs arm with reduction", &pb.IlluminateRequest{Seed: "s",
@@ -243,6 +243,12 @@ func TestIlluminate_OneofArmRoundTrips(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			resp, err := c.Illuminate(ctx, connect.NewRequest(tc.req))
+			if tc.wantInvalid {
+				if connect.CodeOf(err) != connect.CodeInvalidArgument {
+					t.Fatalf("Illuminate code = %v, want InvalidArgument (err = %v)", connect.CodeOf(err), err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("Illuminate: %v", err)
 			}
@@ -250,7 +256,7 @@ func TestIlluminate_OneofArmRoundTrips(t *testing.T) {
 			if !got["s"] {
 				t.Fatalf("seed missing from result: %v", got)
 			}
-			if !tc.seedOnly && len(got) < 2 {
+			if len(got) < 2 {
 				t.Fatalf("expected at least one neighbour beside the seed, got %v", got)
 			}
 		})

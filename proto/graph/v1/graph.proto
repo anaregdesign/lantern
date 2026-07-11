@@ -65,7 +65,7 @@ enum Reduction {
 // tree wins); MAXIMIZE treats them as relevance (keeps the k largest-weight
 // edges per hop; largest tree wins, equivalent to the historical
 // "inverse-SPT" / "max-MST" variants and the default strongest-neighbour
-// behaviour of a bare illuminate).
+// behaviour of an Objective-unspecified BFS request).
 enum Objective {
   OBJECTIVE_UNSPECIFIED = 0;
   OBJECTIVE_MINIMIZE = 1;
@@ -103,8 +103,9 @@ message IlluminateRequest {
   string vertex_prefix = 9;
   // params selects the traversal family AND carries only the knobs that
   // family understands (#846) — cross-algorithm misconfiguration (PPR with
-  // step, MST with epsilon, …) is structurally unrepresentable. Unset params
-  // means BfsParams with server defaults: the historical bare illuminate.
+  // step, MST with epsilon, …) is structurally unrepresentable. A family arm
+  // is REQUIRED; unset params is rejected with INVALID_ARGUMENT rather than
+  // silently becoming an ambiguous zero-hop BFS request.
   oneof params {
     BfsParams bfs = 12;
     PprParams ppr = 13;
@@ -115,19 +116,19 @@ message IlluminateRequest {
   // "algorithm", "objective", "restart_prob", "epsilon") by the per-family
   // params redesign (#846). All stay reserved so a stale client whose
   // binary still emits the old flat field numbers cannot silently alias
-  // newer fields — such a request decodes as params-unset (BFS defaults).
+  // newer fields — such a request decodes as params-unset and is rejected.
   reserved 2, 3, 4, 5, 6, 7, 10, 11;
   reserved "step", "k", "tfidf", "optimization", "algorithm", "objective", "restart_prob", "epsilon";
 }
 
-// BfsParams tunes the greedy per-hop top-k BFS walk (the default traversal
-// family) and its optional post-traversal tree reduction.
+// BfsParams tunes the greedy per-hop top-k BFS walk and its optional
+// post-traversal tree reduction.
 message BfsParams {
-  // step is the BFS depth. 0 = server default.
+  // step is the BFS depth and MUST be positive. 0 is INVALID_ARGUMENT.
   uint32 step = 1;
   // fan_out is the per-hop top-k prune: at each hop only the fan_out
   // strongest (or cheapest, under OBJECTIVE_MINIMIZE) edges survive.
-  // 0 = server default. (Formerly the overloaded "k".)
+  // It MUST be positive. 0 is INVALID_ARGUMENT. (Formerly the overloaded "k".)
   uint32 fan_out = 2;
   // objective governs BOTH the per-hop pruning and the reduction direction
   // (#560), so a cost-minimiser is never handed a candidate set already
