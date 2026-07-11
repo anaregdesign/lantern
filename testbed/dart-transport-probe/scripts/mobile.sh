@@ -68,7 +68,9 @@ if [[ -x /usr/libexec/PlistBuddy ]]; then
       -c 'Set :NSAppTransportSecurity:NSAllowsLocalNetworking true' "$plist"
 fi
 
-ca_base64=$(base64 < "$ca_cert" | tr -d '\n')
+ca_der="$work_root/lantern-probe-ca.der"
+openssl x509 -in "$ca_cert" -outform der -out "$ca_der"
+ca_base64=$(base64 < "$ca_der" | tr -d '\n')
 cd "$app"
 flutter pub get
 flutter test integration_test/probe_test.dart \

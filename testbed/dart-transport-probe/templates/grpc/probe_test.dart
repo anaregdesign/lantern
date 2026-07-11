@@ -21,7 +21,9 @@ void main() {
     final plaintext = await runProbe(Uri.parse(plaintextUrl));
     _expectSuccess(plaintext);
 
-    final caFile = File('${Directory.systemTemp.path}/lantern-probe-ca.pem');
+    // ChannelCredentials ultimately uses SecurityContext, which requires DER
+    // for an explicitly trusted certificate on iOS.
+    final caFile = File('${Directory.systemTemp.path}/lantern-probe-ca.der');
     await caFile.writeAsBytes(base64Decode(caBase64));
 
     await expectLater(

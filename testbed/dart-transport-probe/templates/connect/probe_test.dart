@@ -21,7 +21,8 @@ void main() {
     final plaintext = await runProbe(Uri.parse(plaintextUrl));
     _expectSuccess(plaintext);
 
-    final caFile = File('${Directory.systemTemp.path}/lantern-probe-ca.pem');
+    // SecurityContext accepts a single DER-encoded certificate on iOS.
+    final caFile = File('${Directory.systemTemp.path}/lantern-probe-ca.der');
     await caFile.writeAsBytes(base64Decode(caBase64));
 
     await expectLater(
