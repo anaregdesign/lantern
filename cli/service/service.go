@@ -32,6 +32,7 @@ var (
 	ErrBFS              = errors.New("bfs error")
 	ErrPagerank         = errors.New("pagerank error")
 	ErrCommunity        = errors.New("community error")
+	ErrHelp             = errors.New("help error")
 	ErrConnection       = errors.New("connection error")
 )
 
@@ -496,12 +497,16 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 		}
 		return c.runIlluminate(ctx, p.Seed, opts)
 	case "help":
-		// Help prints the per-verb grammar reference (#436). Single
-		// source of truth lives in `parser.HelpText`; the TS port keeps
-		// a byte-equivalent copy at `admin/app/lib/cli/verbs.ts`
-		// `HELP_TEXT`. Extra arguments are accepted silently to mirror
-		// `exit`.
-		fmt.Println(parser.HelpText)
+		help, err := parser.HelpParam(s)
+		if err != nil {
+			fmt.Printf("Error: %s\n", err)
+			return ErrHelp
+		}
+		text, ok := parser.HelpTextFor(help.Topic)
+		if !ok {
+			return ErrHelp // defensive: HelpParam owns topic validation.
+		}
+		fmt.Println(text)
 		return nil
 	default:
 		return ErrInvalidVerb

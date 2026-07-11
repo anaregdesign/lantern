@@ -5,11 +5,8 @@ import (
 	"testing"
 )
 
-// HelpText is consumed by `lantern-cli repl`'s `help` verb (#436). It must
-// stay in lockstep with the TS port at admin/app/lib/cli/verbs.ts
-// `HELP_TEXT`. These tests guard the documented contract: each family verb
-// (bfs / pagerank / community) enumerates its knobs' valid values and
-// defaults, and every verb in the dispatch table appears in the text (#975).
+// HelpText is consumed by bare `help`; HelpTextFor powers family-scoped REPL
+// and Cobra help. The TypeScript port mirrors both contracts.
 
 func TestHelpText_EnumeratesFamilyKwargs(t *testing.T) {
 	for _, kw := range []string{
@@ -47,12 +44,55 @@ func TestHelpText_ListsEveryVerb(t *testing.T) {
 	}
 }
 
-// Validate accepts the bare `help` verb (and silently tolerates extra
-// args, mirroring the TS parser at admin/app/lib/cli/parser.ts).
 func TestValidate_HelpVerb(t *testing.T) {
-	for _, in := range []string{"help", "HELP", "help me", "  help  "} {
+	for _, in := range []string{"help", "HELP", "help bfs", "help PAGERANK", "help community", "  help  "} {
 		if err := Validate(in); err != nil {
 			t.Errorf("Validate(%q) returned %v; want nil", in, err)
 		}
+	}
+	for _, in := range []string{"help me", "help bfs pagerank"} {
+		if err := Validate(in); err == nil {
+			t.Errorf("Validate(%q) = nil, want useful topic error", in)
+		}
+	}
+}
+
+func TestHelpParamAndScopedText(t *testing.T) {
+	for _, tc := range []struct {
+		input string
+		topic string
+	}{
+		{"help", ""},
+		{"help bfs", "bfs"},
+		{"help PAGERANK", "pagerank"},
+		{"help community", "community"},
+	} {
+		t.Run(tc.input, func(t *testing.T) {
+			s, err := NewSource(tc.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Verb(s); err != nil {
+				t.Fatal(err)
+			}
+			help, err := HelpParam(s)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if help.Topic != tc.topic {
+				t.Errorf("topic = %q, want %q", help.Topic, tc.topic)
+			}
+			text, ok := HelpTextFor(help.Topic)
+			if !ok {
+				t.Fatal("known topic was not renderable")
+			}
+			if tc.topic != "" {
+				for _, heading := range []string{"Signature", "Defaults", "Domains", "Meaning", "Examples"} {
+					if !strings.Contains(text, heading) {
+						t.Errorf("scoped help missing %q:\n%s", heading, text)
+					}
+				}
+			}
+		})
 	}
 }

@@ -11,7 +11,7 @@ import "testing"
 func FuzzValidate(f *testing.F) {
 	seeds := []string{
 		// Valid forms (mirrors the "valid" arm of the shared fixture).
-		"exit", "help", "help me",
+		"exit", "help", "help bfs", "help pagerank", "help community",
 		"get vertex alice", "get edge alice bob",
 		"put vertex alice Alice", "put vertex alice Alice 60",
 		"put vertex price 1234 type=int", "put vertex name 007 type=string",
@@ -36,7 +36,7 @@ func FuzzValidate(f *testing.F) {
 		`put vertex code 'console.log("hi")'`,
 		`put vertex path "a\nb\tc"`,
 		// Invalid / adversarial forms (mirrors the "invalid" arm + quoting).
-		"", "nonsense", "get", "put vertex k v type=bogus",
+		"", "nonsense", "help me", "get", "put vertex k v type=bogus",
 		"put edge alice bob notafloat", "scan vertex users/",
 		"bfs alice reduction=bogus",
 		`put vertex greeting "hello world`,

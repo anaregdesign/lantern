@@ -590,7 +590,7 @@ pagerank   <seed> [top_n] [restart_prob=<float>] [epsilon=<float>] \
 community  <seed> [max_size] [restart_prob=<float>] [epsilon=<float>] \
            [reduction=none|mst|spt] [objective=min|max] \
            [weighting=raw|tfidf|bm25] [prefix=<string>]
-help
+help [bfs|pagerank|community]
 exit
 ```
 
@@ -611,10 +611,12 @@ lantern-cli --tls --tls-ca ./ca.pem -H lantern.example.com -p 443 get vertex ali
 lantern-cli --token "$LANTERN_TOKEN" get vertex alice
 ```
 
-Every subcommand has long-form help (`lantern-cli <cmd> --help`); reads emit
-JSON on stdout, writes print `OK`. Exit codes: `0` success, `1` local/parse
-error, `2` RPC error. Values quote C-style with `"…"` (escapes) or verbatim
-with `'…'`.
+Every subcommand has long-form help (`lantern-cli <cmd> --help`, or
+`lantern-cli help <cmd>`); the REPL/Admin `help bfs|pagerank|community` shows
+only that family's signature, defaults, domains, meaning, and examples. Reads
+emit JSON on stdout, writes print `OK`. Exit codes: `0` success, `1` local/parse
+error, `2` RPC error. Values quote C-style with `"…"` (escapes) or
+verbatim with `'…'`.
 
 Pre-built binaries for Linux, macOS, and Windows (amd64 + arm64) are
 attached to every [release](https://github.com/anaregdesign/lantern/releases);

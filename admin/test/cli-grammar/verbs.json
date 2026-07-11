@@ -485,15 +485,32 @@
       "input": "get vertex \"key with spaces\"",
       "comment": "#438: quoted key works in non-put positions too"
     },
-    { "input": "help", "comment": "#436: help verb prints per-verb grammar" },
     {
-      "input": "help me",
-      "comment": "#436: help silently accepts extra args (mirrors exit)"
+      "input": "help",
+      "comment": "#995: bare help prints the complete grammar",
+      "expected": { "topic": "" }
+    },
+    {
+      "input": "help bfs",
+      "comment": "#995: focused BFS help",
+      "expected": { "topic": "bfs" }
+    },
+    {
+      "input": "help PAGERANK",
+      "comment": "#995: help topics are case-insensitive",
+      "expected": { "topic": "pagerank" }
+    },
+    {
+      "input": "help community",
+      "comment": "#995: focused community help",
+      "expected": { "topic": "community" }
     }
   ],
   "invalid": [
     { "input": "", "comment": "empty input" },
     { "input": "nonsense", "comment": "unknown verb" },
+    { "input": "help me", "comment": "#995: unknown help topic" },
+    { "input": "help bfs pagerank", "comment": "#995: only one help topic" },
     { "input": "get", "comment": "missing objective" },
     { "input": "get vertex", "comment": "missing key" },
     { "input": "get edge alice", "comment": "missing head" },

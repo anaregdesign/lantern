@@ -15,7 +15,7 @@ import {
   commandResultToGraphMerge,
 } from "~/lib/client/usecase/cli/graph-view";
 import { parse, type Command, type ParseResult } from "~/lib/cli/parser";
-import { HELP_TEXT } from "~/lib/cli/verbs";
+import { helpTextFor } from "~/lib/cli/verbs";
 import { cliReducer } from "./reducer";
 import {
   INITIAL_CLI_STATE,
@@ -243,7 +243,11 @@ export function useCli(): UseCliResult {
       if (result.command.verb === "help") {
         dispatch({
           type: "ENTRY_APPENDED",
-          entry: { input: raw, kind: "info", text: HELP_TEXT },
+          entry: {
+            input: raw,
+            kind: "info",
+            text: helpTextFor(result.command.topic),
+          },
         });
         return;
       }

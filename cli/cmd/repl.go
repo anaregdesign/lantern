@@ -16,10 +16,10 @@ import (
 // (#647). promptui renders only a bare ">" prompt, so a first-time user
 // has no cue that the shell is self-describing. Printing this once at
 // startup points them at the two verbs that make the REPL discoverable —
-// `help` (full per-verb grammar) and `exit` (quit) — mirroring the wording
-// of the web banner so both surfaces feel like one tool.
+// `help` (overview or `help bfs` family detail) and `exit` (quit) — mirroring
+// the wording of the web banner so both surfaces feel like one tool.
 const replBanner = `Lantern interactive REPL — same grammar as the admin /cli page.
-Type a verb and press Enter. Type "help" for the full command reference, "exit" to quit.`
+Type a verb and press Enter. Type "help" for the overview, "help bfs" for a family, "exit" to quit.`
 
 // replCmd preserves the legacy promptui-based interactive shell, now scoped
 // behind an explicit subcommand. New scripted use should prefer the
@@ -163,6 +163,8 @@ EXAMPLE
 				fmt.Println("Usage: pagerank <seed: string> [top_n: int] [restart_prob=<float>] [epsilon=<float>] [weighting=raw|tfidf|bm25] [prefix=<string>]")
 			case errors.Is(err, service.ErrCommunity):
 				fmt.Println("Usage: community <seed: string> [max_size: int] [restart_prob=<float>] [epsilon=<float>] [reduction=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>]")
+			case errors.Is(err, service.ErrHelp):
+				fmt.Println("Usage: help [bfs|pagerank|community]")
 			case errors.Is(err, service.ErrInvalidVerb):
 				fmt.Println("Usage: { get | put | delete | add | scan | count | delete-prefix | keys | bfs | pagerank | community | help | exit } ...")
 			case errors.Is(err, service.ErrInvalidObjective):

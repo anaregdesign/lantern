@@ -62,6 +62,16 @@ func TestRunArgs(t *testing.T) {
 			t.Errorf("RunArgs([help]) = %v, want nil", err)
 		}
 	})
+	t.Run("ScopedHelpReturnsNil", func(t *testing.T) {
+		if err := svc.RunArgs(ctx, []string{"help", "bfs"}); err != nil {
+			t.Errorf("RunArgs([help bfs]) = %v, want nil", err)
+		}
+	})
+	t.Run("UnknownHelpTopicReturnsErrHelp", func(t *testing.T) {
+		if err := svc.RunArgs(ctx, []string{"help", "unknown"}); err != ErrHelp {
+			t.Errorf("RunArgs([help unknown]) = %v, want ErrHelp", err)
+		}
+	})
 	t.Run("UnknownVerbReturnsErrInvalidVerb", func(t *testing.T) {
 		if err := svc.RunArgs(ctx, []string{"bogus"}); err != ErrInvalidVerb {
 			t.Errorf("RunArgs([bogus]) = %v, want ErrInvalidVerb", err)

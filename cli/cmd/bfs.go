@@ -20,42 +20,8 @@ var (
 var bfsCmd = &cobra.Command{
 	Use:   "bfs <seed>",
 	Short: "Greedy per-hop top-k breadth-first walk from <seed>",
-	Long: `Run a bounded breadth-first walk from <seed> and emit the visited subgraph
-as JSON.
-
-PARAMETERS (positional or flag; a bare positional fills step then fan_out)
-  step      <uint32>   walk depth (hops) from the seed        (default 5)
-  fan_out   <uint32>   max neighbours visited per hop (top-k) (default 3)
-
-FLAGS
-  --step <uint32>       walk depth from the seed (default 5)
-  --fan-out <uint32>    per-hop top-k prune (default 3)
-  --reduction <mode>    post-traversal tree view: none|mst|spt (default none)
-  --objective <dir>     min|max — steers per-hop top-k pruning AND the reduction
-                        direction (default max: strongest edges win)
-  --weighting <mode>    edge-weight transform before the walk: raw|tfidf|bm25
-                        (default raw)
-  --prefix <string>     restrict the walk frontier to vertices with this key
-                        prefix; the seed is always kept as the anchor. Empty
-                        (default) = no filter (case-sensitive).
-
-GRAMMAR PARITY (#672, #975)
-  bfs also accepts the REPL positional grammar so the prompt and the shell share
-  one grammar:
-
-    lantern-cli bfs <seed> [step] [fan_out] [reduction=none|mst|spt] \
-            [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>]
-
-  The positional form kicks in whenever more than the bare <seed> is supplied;
-  a bare "lantern-cli bfs alice" uses the flag defaults (step=5, fan_out=3).
-
-EXAMPLES
-  lantern-cli bfs alice                       # depth-5, per-hop top-3
-  lantern-cli bfs alice --step 2 --fan-out 5
-  lantern-cli bfs alice 3 20 reduction=mst objective=min
-  lantern-cli bfs alice --step 2 --fan-out 5 --weighting tfidf
-`,
-	Args: cobra.MinimumNArgs(1),
+	Long:  familyHelpText("bfs"),
+	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := rejectMixedFamilyGrammar(cmd, args); err != nil {
 			return err

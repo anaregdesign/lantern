@@ -89,7 +89,7 @@ func TestSharedGrammarFixture_FamilyNormalizedAST(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Verb(%q): %v", tc.Input, err)
 		}
-		if verb != "bfs" && verb != "pagerank" && verb != "community" {
+		if verb != "bfs" && verb != "pagerank" && verb != "community" && verb != "help" {
 			continue
 		}
 		t.Run(tc.Input, func(t *testing.T) {
@@ -129,6 +129,12 @@ func normalizedFamilyAST(input string) (map[string]any, error) {
 		return nil, err
 	}
 	switch verb {
+	case "help":
+		p, err := parser.HelpParam(s)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"topic": p.Topic}, nil
 	case "bfs":
 		p, err := parser.BfsParam(s)
 		if err != nil {

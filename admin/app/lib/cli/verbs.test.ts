@@ -15,7 +15,9 @@ import { parse } from "./parser";
 import type { Command } from "./types";
 import {
   CLI_COMMAND_REFERENCE,
+  HELP_TOPICS,
   HELP_TEXT,
+  helpTextFor,
   parseAdd,
   parseBfs,
   parseCommunity,
@@ -227,15 +229,43 @@ describe("parseHelp (#436 — help verb)", () => {
     const r = parseHelp([]);
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.command).toEqual({ verb: "help" });
+      expect(r.command).toEqual({ verb: "help", topic: "" });
     }
   });
 
-  test("extra args accepted silently (mirrors exit)", () => {
-    const r = parseHelp(["me"]);
-    expect(r.ok).toBe(true);
-    if (r.ok) {
-      expect(r.command).toEqual({ verb: "help" });
+  test("recognises exactly the documented traversal topics", () => {
+    expect(HELP_TOPICS).toEqual(["bfs", "pagerank", "community"]);
+    for (const topic of HELP_TOPICS) {
+      const r = parseHelp([topic.toUpperCase()]);
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.command).toEqual({ verb: "help", topic });
+      }
+    }
+  });
+
+  test("rejects unknown or excess topics with candidates", () => {
+    const unknown = parseHelp(["me"]);
+    expect(unknown.ok).toBe(false);
+    if (!unknown.ok)
+      expect(unknown.usage).toContain("bfs, pagerank, community");
+    expect(parseHelp(["bfs", "pagerank"]).ok).toBe(false);
+  });
+
+  test("renders focused help from the command-drawer registry", () => {
+    for (const topic of HELP_TOPICS) {
+      const text = helpTextFor(topic);
+      for (const heading of [
+        "Signature",
+        "Defaults",
+        "Domains",
+        "Meaning",
+        "Examples",
+      ]) {
+        expect(text).toContain(heading);
+      }
+      expect(text).toContain(`${topic} <seed>`);
+      expect(text).not.toContain("Lantern CLI grammar:");
     }
   });
 });

@@ -839,6 +839,23 @@ test.describe("/cli", () => {
     await expect(page.getByTestId("cli-command-reference")).toHaveCount(0);
   });
 
+  test("scoped family help renders only the selected reference (#995)", async ({
+    page,
+  }) => {
+    await page.goto("/cli");
+    const input = page.getByTestId("cli-input");
+    await input.fill("help bfs");
+    await input.press("Enter");
+    const entry = page.getByTestId("cli-entry-info").last();
+    await expect(entry).toContainText("Signature");
+    await expect(entry).toContainText("bfs <seed>");
+    await expect(entry).toContainText("Defaults");
+    await expect(entry).toContainText("Domains");
+    await expect(entry).toContainText("Examples");
+    await expect(entry).not.toContainText("Lantern CLI grammar:");
+    await expect(entry).not.toContainText("pagerank <seed>");
+  });
+
   // #945 — pasting a multi-line script into the prompt runs each line in
   // order through the pending-command queue instead of flattening the
   // newlines into one uneditable line. Synthesize a real paste event (with

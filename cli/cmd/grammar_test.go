@@ -97,6 +97,28 @@ func TestRunGrammarLineEmptyArgsShowsHelp(t *testing.T) {
 	}
 }
 
+func TestFamilyCobraHelpUsesScopedRegistry(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cmd  *cobra.Command
+	}{
+		{"bfs", bfsCmd},
+		{"pagerank", pagerankCmd},
+		{"community", communityCmd},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, want := range []string{"Signature", "Defaults", "Domains", "Meaning", "Examples"} {
+				if !strings.Contains(tc.cmd.Long, want) {
+					t.Errorf("%s Cobra help missing %q:\n%s", tc.name, want, tc.cmd.Long)
+				}
+			}
+			if !strings.Contains(tc.cmd.Long, tc.name+" <seed>") {
+				t.Errorf("%s Cobra help has wrong signature:\n%s", tc.name, tc.cmd.Long)
+			}
+		})
+	}
+}
+
 func TestFamilyCommandsRejectMixedFlagsAndPositionalGrammar(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

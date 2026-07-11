@@ -74,6 +74,7 @@ COMMAND LAYOUT
               (bfs <seed> [step] [fan_out] [reduction=…] [objective=…] …)
   pagerank    Personalized PageRank relevance star (pagerank <seed> [top_n] …)
   community   conductance-optimal local community (community <seed> [max_size] …)
+  help        print Cobra command help (help <command>)
   bulk        stream NDJSON from a file or stdin (bulk load)
   repl        interactive prompt
   version     print client version

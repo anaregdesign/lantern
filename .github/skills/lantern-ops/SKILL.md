@@ -62,7 +62,7 @@ binary before guessing.
 ```shell
 lantern-cli --help              # top-level: command layout, global flags, exit codes
 lantern-cli <verb> --help       # a verb's grammar + examples, e.g. lantern-cli put --help
-lantern help [verb]         # same content via cobra's `help` subcommand
+lantern-cli help [verb]     # same content via cobra's `help` subcommand
 lantern-cli <verb> -h           # `-h` is the short alias for `--help`
 ```
 
