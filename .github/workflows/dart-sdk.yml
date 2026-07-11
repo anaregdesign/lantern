@@ -7,12 +7,16 @@ on:
       - "sdks/dart/**"
       - "proto/**"
       - "buf.yaml"
+      - "buf.gen.yaml"
+      - "generate.go"
       - ".github/workflows/dart-sdk.yml"
   pull_request:
     paths:
       - "sdks/dart/**"
       - "proto/**"
       - "buf.yaml"
+      - "buf.gen.yaml"
+      - "generate.go"
       - ".github/workflows/dart-sdk.yml"
 
 permissions:
@@ -40,6 +44,24 @@ jobs:
           flutter-version: 3.44.6
           cache: true
 
+      - name: Start Lantern real-wire server
+        working-directory: .
+        run: |
+          go run ./server/cmd > "$RUNNER_TEMP/lantern-dart-server.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/lantern-dart-server.pid"
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent --show-error --max-time 2 \
+              -H 'Content-Type: application/json' \
+              -H 'Connect-Protocol-Version: 1' \
+              --data '{}' \
+              http://127.0.0.1:6380/grpc.health.v1.Health/Check >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/lantern-dart-server.log"
+          exit 1
+
       - name: Resolve dependencies
         run: dart pub get --enforce-lockfile
 
@@ -60,8 +82,21 @@ jobs:
       - name: Test
         run: dart test
 
+      - name: Real-wire test
+        env:
+          LANTERN_DART_REAL_WIRE_ENDPOINT: http://127.0.0.1:6380
+        run: dart test test/real_wire_test.dart
+
       - name: Build API documentation
         run: dart doc --validate-links
 
       - name: Validate package shape
         run: dart pub publish --dry-run
+
+      - name: Stop Lantern real-wire server
+        if: always()
+        working-directory: .
+        run: |
+          if [ -f "$RUNNER_TEMP/lantern-dart-server.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/lantern-dart-server.pid")" || true
+          fi

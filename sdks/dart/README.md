@@ -3,10 +3,10 @@
 Official pure-Dart package for [Lantern](https://github.com/anaregdesign/lantern),
 an in-memory graph key-vertex store with TTL-aware vertices and edges.
 
-The initial package establishes the generated wire types and reproducible
-Connect-Dart toolchain. High-level transport, auth, CRUD, query, and traversal
-APIs land in follow-up changes; this version deliberately does not claim those
-behaviors yet.
+The package includes the reusable transport foundation used by the later CRUD,
+query, and traversal facades: secure endpoint validation, per-call bearer-token
+providers, deadlines, cancellation, typed failures, health probing, and
+deterministic cleanup. Generated RPC request/response types remain private.
 
 ## Scope
 
@@ -26,10 +26,24 @@ final edge = Edge(tail: 'user:42', head: 'item:7', weight: 1);
 final graph = Graph(vertices: [vertex], edges: [edge]);
 ```
 
-Only `Vertex`, `Edge`, `Graph`, and the generated vertex oneof discriminator
-are exported today. Generated request/response types, the raw Connect client,
-and replication service remain under `lib/src/gen` so later facade work can
-classify the public surface intentionally.
+`Vertex`, `Edge`, `Graph`, the generated vertex oneof discriminator, and the
+`LanternClient` foundation are exported. `LanternClient.connect` requires HTTPS
+by default; pass `allowInsecure: true` only for local development. Supply a
+short-lived `tokenProvider` for application calls. `ping()` uses the
+auth-exempt gRPC Health-v1 Connect+JSON endpoint and throws
+`LanternHealthStatusException` when the server is not serving. Generated
+request/response types, the raw Connect client, and replication service remain
+under `lib/src/gen`.
+
+```dart
+final client = LanternClient.connect(
+  Uri.parse('https://lantern.example.com'),
+  tokenProvider: () async => session.accessToken,
+);
+await client.ping();
+// Cancel screen-owned calls with LanternCallOptions(cancellation: token).
+await client.close();
+```
 
 ## Generate wire code
 

@@ -429,9 +429,11 @@ powers the [admin SPA](admin/). Full API:
 ### Dart / Flutter
 
 [`lantern_client`](sdks/dart/) is the official pure-Dart, Android/iOS-first
-package. Its initial package exposes generated `Vertex`, `Edge`, and `Graph`
-types with reproducible Connect-Dart codegen; the high-level mobile client is
-being added in the following SDK changes. See
+package. It exports generated `Vertex`, `Edge`, and `Graph` values plus the
+reusable `LanternClient` transport foundation (secure endpoint validation,
+short-lived token providers, deadlines, cancellation, typed failures, and
+auth-exempt gRPC Health-v1 probing). CRUD/query facades build on this
+foundation in subsequent SDK changes. See
 [sdks/dart/README.md](sdks/dart/README.md) for the current supported surface.
 
 ### Anything else

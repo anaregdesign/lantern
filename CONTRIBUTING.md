@@ -42,7 +42,7 @@ created**:
 | --- | --- |
 | `Track` | `Admin` / `HA` / `Connect` / `SDK` / `Maintenance` / `Docs` |
 | `Module` | `pb` / `core` / `server` / `sdks-go` / `sdks-dart` / `sdks-node` / `sdks-python` / `admin` / `mcp` / `tests` / `docs` / `ci` |
-| `Release target` | `next pb` / `next sdks-go` / `next root` / `next mcp` / `next admin-internal` / `unscheduled` |
+| `Release target` | `next pb` / `next sdks-go` / `next sdks-dart` / `next root` / `next mcp` / `next admin-internal` / `unscheduled` |
 | `Priority` | `P0` / `P1` / `P2` |
 
 Rules:
