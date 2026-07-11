@@ -2,8 +2,11 @@ package parser_test
 
 import (
 	"encoding/json"
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/anaregdesign/lantern/cli/parser"
@@ -18,8 +21,9 @@ import (
 // time CI runs.
 type fixture struct {
 	Valid []struct {
-		Input   string `json:"input"`
-		Comment string `json:"comment,omitempty"`
+		Input    string          `json:"input"`
+		Comment  string          `json:"comment,omitempty"`
+		Expected json.RawMessage `json:"expected,omitempty"`
 	} `json:"valid"`
 	Invalid []struct {
 		Input   string `json:"input"`
@@ -71,5 +75,90 @@ func TestSharedGrammarFixture_Invalid(t *testing.T) {
 				t.Errorf("Validate(%q) accepted invalid input (%s)", tc.Input, tc.Comment)
 			}
 		})
+	}
+}
+
+func TestSharedGrammarFixture_FamilyNormalizedAST(t *testing.T) {
+	fx := loadFixture(t)
+	for _, tc := range fx.Valid {
+		s, err := parser.NewSource(tc.Input)
+		if err != nil {
+			t.Fatalf("NewSource(%q): %v", tc.Input, err)
+		}
+		verb, err := parser.Verb(s)
+		if err != nil {
+			t.Fatalf("Verb(%q): %v", tc.Input, err)
+		}
+		if verb != "bfs" && verb != "pagerank" && verb != "community" {
+			continue
+		}
+		t.Run(tc.Input, func(t *testing.T) {
+			if len(tc.Expected) == 0 {
+				t.Fatal("family fixture is missing its expected normalized AST")
+			}
+			got, err := normalizedFamilyAST(tc.Input)
+			if err != nil {
+				t.Fatalf("normalizedFamilyAST(%q): %v", tc.Input, err)
+			}
+			var want any
+			if err := json.Unmarshal(tc.Expected, &want); err != nil {
+				t.Fatalf("decode expected AST: %v", err)
+			}
+			b, err := json.Marshal(got)
+			if err != nil {
+				t.Fatalf("encode actual AST: %v", err)
+			}
+			var actual any
+			if err := json.Unmarshal(b, &actual); err != nil {
+				t.Fatalf("decode actual AST: %v", err)
+			}
+			if !reflect.DeepEqual(actual, want) {
+				t.Errorf("normalized AST mismatch\n got: %s\nwant: %s", b, tc.Expected)
+			}
+		})
+	}
+}
+
+func normalizedFamilyAST(input string) (map[string]any, error) {
+	s, err := parser.NewSource(input)
+	if err != nil {
+		return nil, err
+	}
+	verb, err := parser.Verb(s)
+	if err != nil {
+		return nil, err
+	}
+	switch verb {
+	case "bfs":
+		p, err := parser.BfsParam(s)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"family": "bfs", "seed": p.Seed, "step": p.Step, "fan_out": p.FanOut,
+			"reduction": p.Reduction, "objective": p.Objective, "weighting": p.Weighting, "prefix": p.Prefix,
+		}, nil
+	case "pagerank":
+		p, err := parser.PagerankParam(s)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"family": "pagerank", "seed": p.Seed, "top_n": p.TopN,
+			"restart_prob_f32_bits": math.Float32bits(p.RestartProb), "epsilon_f32_bits": math.Float32bits(p.Epsilon),
+			"weighting": p.Weighting, "prefix": p.Prefix,
+		}, nil
+	case "community":
+		p, err := parser.CommunityParam(s)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"family": "community", "seed": p.Seed, "max_size": p.MaxSize,
+			"restart_prob_f32_bits": math.Float32bits(p.RestartProb), "epsilon_f32_bits": math.Float32bits(p.Epsilon),
+			"reduction": p.Reduction, "objective": p.Objective, "weighting": p.Weighting, "prefix": p.Prefix,
+		}, nil
+	default:
+		return nil, fmt.Errorf("%q is not a family verb", verb)
 	}
 }

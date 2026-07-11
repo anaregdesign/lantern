@@ -941,24 +941,36 @@ function parseInt10(s: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+const MAX_UINT32 = 0xffff_ffff;
+
+function parseFamilyUint32(s: string): number | null {
+  if (!/^\d+$/.test(s)) return null;
+  const n = Number(s);
+  return Number.isSafeInteger(n) && n <= MAX_UINT32 ? n : null;
+}
+
 function parsePositiveFamilyInt(s: string): number | null {
-  const n = parseInt10(s);
+  const n = parseFamilyUint32(s);
   return n !== null && n > 0 ? n : null;
 }
 
 function parseNonNegativeFamilyInt(s: string): number | null {
-  const n = parseInt10(s);
+  const n = parseFamilyUint32(s);
   return n !== null && n >= 0 ? n : null;
 }
 
 function parseFamilyRestartProb(s: string): number | null {
   const n = parseFloatStrict(s);
-  return n !== null && n > 0 && n < 1 ? n : null;
+  if (n === null) return null;
+  const f = Math.fround(n);
+  return Number.isFinite(f) && f > 0 && f < 1 ? f : null;
 }
 
 function parsePositiveFamilyFloat(s: string): number | null {
   const n = parseFloatStrict(s);
-  return n !== null && n > 0 ? n : null;
+  if (n === null) return null;
+  const f = Math.fround(n);
+  return Number.isFinite(f) && f > 0 ? f : null;
 }
 
 /**

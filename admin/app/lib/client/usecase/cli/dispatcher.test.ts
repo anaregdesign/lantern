@@ -693,7 +693,7 @@ describe("dispatch family verbs map to the per-family oneofs (#975)", () => {
     expect(opts.ppr).toBeUndefined();
   });
 
-  test("community passes restart_prob / epsilon through unchanged", async () => {
+  test("community passes float32-normalized restart_prob / epsilon", async () => {
     const fake = new FakeLanternClient();
     fake.stub("illuminate", emptyGraph);
     const parsed = parse("community a1 5 restart_prob=0.25 epsilon=0.001");
@@ -708,8 +708,8 @@ describe("dispatch family verbs map to the per-family oneofs (#975)", () => {
     ];
     expect(opts.community).toEqual({
       maxSize: 5,
-      restartProb: 0.25,
-      epsilon: 0.001,
+      restartProb: Math.fround(0.25),
+      epsilon: Math.fround(0.001),
       reduction: SdkReduction.UNSPECIFIED,
       objective: SdkObjective.MAXIMIZE,
     });
@@ -759,8 +759,8 @@ describe("dispatch family verbs map to the per-family oneofs (#975)", () => {
     // objective (its relevance star is already a tree).
     expect(opts.ppr).toEqual({
       topN: 15,
-      restartProb: 0.25,
-      epsilon: 0.001,
+      restartProb: Math.fround(0.25),
+      epsilon: Math.fround(0.001),
     });
     expect(opts.bfs).toBeUndefined();
     expect(opts.community).toBeUndefined();

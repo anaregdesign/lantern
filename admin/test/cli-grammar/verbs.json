@@ -88,71 +88,322 @@
     { "input": "keys users/ 100", "comment": "#674: keys with optional limit" },
     {
       "input": "bfs alice",
-      "comment": "#975: bare seed uses defaults step=5 fan_out=3"
+      "comment": "#975: bare seed uses defaults step=5 fan_out=3",
+      "expected": {
+        "family": "bfs",
+        "seed": "alice",
+        "step": 5,
+        "fan_out": 3,
+        "reduction": "none",
+        "objective": "max",
+        "weighting": "raw",
+        "prefix": ""
+      }
     },
     {
-      "input": "bfs alice 2 5",
-      "comment": "#975: positional step and fan_out"
+      "input": "bfs Alice 002 005 prefix=Team:",
+      "comment": "#985: uint32 decimal values normalise while seed/prefix retain case",
+      "expected": {
+        "family": "bfs",
+        "seed": "Alice",
+        "step": 2,
+        "fan_out": 5,
+        "reduction": "none",
+        "objective": "max",
+        "weighting": "raw",
+        "prefix": "Team:"
+      }
     },
     {
       "input": "bfs alice step=2 fan_out=5",
-      "comment": "#975: step and fan_out as kwargs"
+      "comment": "#975: step and fan_out as kwargs",
+      "expected": {
+        "family": "bfs",
+        "seed": "alice",
+        "step": 2,
+        "fan_out": 5,
+        "reduction": "none",
+        "objective": "max",
+        "weighting": "raw",
+        "prefix": ""
+      }
     },
     {
       "input": "bfs alice fan_out=5",
-      "comment": "#975: step defaults, fan_out kwarg"
+      "comment": "#975: step defaults, fan_out kwarg",
+      "expected": {
+        "family": "bfs",
+        "seed": "alice",
+        "step": 5,
+        "fan_out": 5,
+        "reduction": "none",
+        "objective": "max",
+        "weighting": "raw",
+        "prefix": ""
+      }
     },
-    { "input": "bfs alice 2 5 reduction=mst" },
-    { "input": "bfs alice 2 5 reduction=spt objective=max" },
     {
-      "input": "bfs alice 2 5 reduction=spt objective=max weighting=tfidf"
+      "input": "bfs alice 2 5 reduction=mst",
+      "expected": {
+        "family": "bfs",
+        "seed": "alice",
+        "step": 2,
+        "fan_out": 5,
+        "reduction": "mst",
+        "objective": "max",
+        "weighting": "raw",
+        "prefix": ""
+      }
+    },
+    {
+      "input": "bfs alice 2 5 reduction=spt objective=max",
+      "expected": {
+        "family": "bfs",
+        "seed": "alice",
+        "step": 2,
+        "fan_out": 5,
+        "reduction": "spt",
+        "objective": "max",
+        "weighting": "raw",
+        "prefix": ""
+      }
+    },
+    {
+      "input": "bfs alice 2 5 reduction=spt objective=max weighting=tfidf",
+      "expected": {
+        "family": "bfs",
+        "seed": "alice",
+        "step": 2,
+        "fan_out": 5,
+        "reduction": "spt",
+        "objective": "max",
+        "weighting": "tfidf",
+        "prefix": ""
+      }
     },
     {
       "input": "bfs alice 2 5 weighting=tfidf objective=max reduction=spt",
-      "comment": "keyword args may appear in any order"
+      "comment": "keyword args may appear in any order",
+      "expected": {
+        "family": "bfs",
+        "seed": "alice",
+        "step": 2,
+        "fan_out": 5,
+        "reduction": "spt",
+        "objective": "max",
+        "weighting": "tfidf",
+        "prefix": ""
+      }
     },
     {
       "input": "bfs alice 2 5 reduction=spt objective=min prefix=team:",
-      "comment": "#975: bfs closed-set axes and the free-text prefix compose"
+      "comment": "#975: bfs closed-set axes and the free-text prefix compose",
+      "expected": {
+        "family": "bfs",
+        "seed": "alice",
+        "step": 2,
+        "fan_out": 5,
+        "reduction": "spt",
+        "objective": "min",
+        "weighting": "raw",
+        "prefix": "team:"
+      }
     },
     {
       "input": "pagerank alice",
-      "comment": "#975: bare seed uses default top_n=10; α/ε server-resolved"
+      "comment": "#975: bare seed uses default top_n=10; α/ε server-resolved",
+      "expected": {
+        "family": "pagerank",
+        "seed": "alice",
+        "top_n": 10,
+        "restart_prob_f32_bits": 0,
+        "epsilon_f32_bits": 0,
+        "weighting": "raw",
+        "prefix": ""
+      }
     },
-    { "input": "pagerank alice 15", "comment": "#975: positional top_n" },
-    { "input": "pagerank alice top_n=15", "comment": "#975: top_n kwarg" },
+    {
+      "input": "pagerank alice 15",
+      "comment": "#975: positional top_n",
+      "expected": {
+        "family": "pagerank",
+        "seed": "alice",
+        "top_n": 15,
+        "restart_prob_f32_bits": 0,
+        "epsilon_f32_bits": 0,
+        "weighting": "raw",
+        "prefix": ""
+      }
+    },
+    {
+      "input": "pagerank alice top_n=15",
+      "comment": "#975: top_n kwarg",
+      "expected": {
+        "family": "pagerank",
+        "seed": "alice",
+        "top_n": 15,
+        "restart_prob_f32_bits": 0,
+        "epsilon_f32_bits": 0,
+        "weighting": "raw",
+        "prefix": ""
+      }
+    },
     {
       "input": "pagerank alice 15 restart_prob=0.25 epsilon=0.001",
-      "comment": "#801: pagerank with explicit restart_prob / epsilon floats"
+      "comment": "#985: pagerank normalises explicit α/ε to their float32 wire values",
+      "expected": {
+        "family": "pagerank",
+        "seed": "alice",
+        "top_n": 15,
+        "restart_prob_f32_bits": 1048576000,
+        "epsilon_f32_bits": 981668463,
+        "weighting": "raw",
+        "prefix": ""
+      }
     },
     {
       "input": "pagerank alice weighting=bm25 restart_prob=0.2",
-      "comment": "#801: pagerank composes with the weighting axis"
+      "comment": "#801: pagerank composes with the weighting axis",
+      "expected": {
+        "family": "pagerank",
+        "seed": "alice",
+        "top_n": 10,
+        "restart_prob_f32_bits": 1045220557,
+        "epsilon_f32_bits": 0,
+        "weighting": "bm25",
+        "prefix": ""
+      }
     },
     {
       "input": "pagerank alice epsilon=1e-4",
-      "comment": "#801: scientific-notation knob value (Go strconv.ParseFloat parity)"
+      "comment": "#985: scientific notation normalises after float32 coercion",
+      "expected": {
+        "family": "pagerank",
+        "seed": "alice",
+        "top_n": 10,
+        "restart_prob_f32_bits": 0,
+        "epsilon_f32_bits": 953267991,
+        "weighting": "raw",
+        "prefix": ""
+      }
+    },
+    {
+      "input": "pagerank alice top_n=0",
+      "comment": "#985: explicit zero top_n is preserved as the server-owned cap sentinel",
+      "expected": {
+        "family": "pagerank",
+        "seed": "alice",
+        "top_n": 0,
+        "restart_prob_f32_bits": 0,
+        "epsilon_f32_bits": 0,
+        "weighting": "raw",
+        "prefix": ""
+      }
     },
     {
       "input": "community alice",
-      "comment": "#975: bare seed; the conductance sweep decides the size (max_size=0)"
+      "comment": "#975: bare seed; the conductance sweep decides the size (max_size=0)",
+      "expected": {
+        "family": "community",
+        "seed": "alice",
+        "max_size": 0,
+        "restart_prob_f32_bits": 0,
+        "epsilon_f32_bits": 0,
+        "reduction": "none",
+        "objective": "max",
+        "weighting": "raw",
+        "prefix": ""
+      }
     },
-    { "input": "community alice 20", "comment": "#975: positional max_size" },
+    {
+      "input": "community alice 20",
+      "comment": "#975: positional max_size",
+      "expected": {
+        "family": "community",
+        "seed": "alice",
+        "max_size": 20,
+        "restart_prob_f32_bits": 0,
+        "epsilon_f32_bits": 0,
+        "reduction": "none",
+        "objective": "max",
+        "weighting": "raw",
+        "prefix": ""
+      }
+    },
     {
       "input": "community alice max_size=20",
-      "comment": "#975: max_size kwarg"
+      "comment": "#975: max_size kwarg",
+      "expected": {
+        "family": "community",
+        "seed": "alice",
+        "max_size": 20,
+        "restart_prob_f32_bits": 0,
+        "epsilon_f32_bits": 0,
+        "reduction": "none",
+        "objective": "max",
+        "weighting": "raw",
+        "prefix": ""
+      }
     },
     {
       "input": "community alice 20 restart_prob=0.25 epsilon=1e-3",
-      "comment": "#942: community shares the pagerank restart_prob / epsilon locality knobs"
+      "comment": "#985: community shares the pagerank float32-normalised locality knobs",
+      "expected": {
+        "family": "community",
+        "seed": "alice",
+        "max_size": 20,
+        "restart_prob_f32_bits": 1048576000,
+        "epsilon_f32_bits": 981668463,
+        "reduction": "none",
+        "objective": "max",
+        "weighting": "raw",
+        "prefix": ""
+      }
     },
     {
       "input": "community alice 20 reduction=mst",
-      "comment": "#961: local community rendered as an MST tree view"
+      "comment": "#961: local community rendered as an MST tree view",
+      "expected": {
+        "family": "community",
+        "seed": "alice",
+        "max_size": 20,
+        "restart_prob_f32_bits": 0,
+        "epsilon_f32_bits": 0,
+        "reduction": "mst",
+        "objective": "max",
+        "weighting": "raw",
+        "prefix": ""
+      }
     },
     {
       "input": "community alice 20 reduction=spt objective=min",
-      "comment": "#961: community reduction direction set by objective"
+      "comment": "#961: community reduction direction set by objective",
+      "expected": {
+        "family": "community",
+        "seed": "alice",
+        "max_size": 20,
+        "restart_prob_f32_bits": 0,
+        "epsilon_f32_bits": 0,
+        "reduction": "spt",
+        "objective": "min",
+        "weighting": "raw",
+        "prefix": ""
+      }
+    },
+    {
+      "input": "community alice max_size=0",
+      "comment": "#985: explicit zero max_size is preserved as the server-owned cap sentinel",
+      "expected": {
+        "family": "community",
+        "seed": "alice",
+        "max_size": 0,
+        "restart_prob_f32_bits": 0,
+        "epsilon_f32_bits": 0,
+        "reduction": "none",
+        "objective": "max",
+        "weighting": "raw",
+        "prefix": ""
+      }
     },
     {
       "input": "Get VERTEX alice",
@@ -164,19 +415,59 @@
     },
     {
       "input": "bfs alice 2 5 Reduction=SPT Objective=Max Weighting=TFIDF",
-      "comment": "#437: family kwarg key + closed-set value case-insensitive"
+      "comment": "#437: family kwarg key + closed-set value case-insensitive",
+      "expected": {
+        "family": "bfs",
+        "seed": "alice",
+        "step": 2,
+        "fan_out": 5,
+        "reduction": "spt",
+        "objective": "max",
+        "weighting": "tfidf",
+        "prefix": ""
+      }
     },
     {
       "input": "bfs alice prefix=team:",
-      "comment": "#606: free-text vertex-prefix kwarg"
+      "comment": "#606: free-text vertex-prefix kwarg",
+      "expected": {
+        "family": "bfs",
+        "seed": "alice",
+        "step": 5,
+        "fan_out": 3,
+        "reduction": "none",
+        "objective": "max",
+        "weighting": "raw",
+        "prefix": "team:"
+      }
     },
     {
       "input": "bfs alice prefix=users/ reduction=spt objective=min",
-      "comment": "#606: prefix mixes with the closed-set axes in any order"
+      "comment": "#606: prefix mixes with the closed-set axes in any order",
+      "expected": {
+        "family": "bfs",
+        "seed": "alice",
+        "step": 5,
+        "fan_out": 3,
+        "reduction": "spt",
+        "objective": "min",
+        "weighting": "raw",
+        "prefix": "users/"
+      }
     },
     {
       "input": "bfs alice PREFIX=Users/Alice",
-      "comment": "#606: prefix key case-insensitive, value case-sensitive (verbatim)"
+      "comment": "#606: prefix key case-insensitive, value case-sensitive (verbatim)",
+      "expected": {
+        "family": "bfs",
+        "seed": "alice",
+        "step": 5,
+        "fan_out": 3,
+        "reduction": "none",
+        "objective": "max",
+        "weighting": "raw",
+        "prefix": "Users/Alice"
+      }
     },
     {
       "input": "put vertex greeting \"hello world\"",
@@ -320,6 +611,14 @@
     { "input": "bfs alice notanint", "comment": "#975: non-numeric step" },
     { "input": "bfs alice -1", "comment": "#980: negative step" },
     { "input": "bfs alice 0", "comment": "#980: zero step" },
+    {
+      "input": "bfs alice +2 +5",
+      "comment": "#985: family integers use unsigned decimal syntax; signs are rejected"
+    },
+    {
+      "input": "bfs alice 4294967296",
+      "comment": "#985: family integers must fit the uint32 wire range"
+    },
     { "input": "bfs alice 1 -2", "comment": "#980: negative fan_out" },
     { "input": "bfs alice 1 0", "comment": "#980: zero fan_out" },
     {
@@ -375,6 +674,14 @@
       "comment": "#980: negative top_n is rejected"
     },
     {
+      "input": "pagerank alice +5",
+      "comment": "#985: signed top_n is rejected even though Go's host int would accept it"
+    },
+    {
+      "input": "pagerank alice top_n=4294967296",
+      "comment": "#985: top_n must fit the uint32 wire range"
+    },
+    {
       "input": "pagerank alice restart_prob=0",
       "comment": "#980: explicit restart_prob must be in the open interval (0,1)"
     },
@@ -383,12 +690,20 @@
       "comment": "#980: restart_prob=1 is outside the open interval"
     },
     {
+      "input": "pagerank alice restart_prob=0.99999999",
+      "comment": "#985: validate restart_prob after float32 coercion (rounds to 1)"
+    },
+    {
       "input": "pagerank alice epsilon=tiny",
       "comment": "#801: non-numeric epsilon is rejected"
     },
     {
       "input": "pagerank alice epsilon=0",
       "comment": "#980: explicit epsilon must be positive; omission still defers to the server default"
+    },
+    {
+      "input": "pagerank alice epsilon=1e-50",
+      "comment": "#985: validate epsilon after float32 coercion (underflows to 0)"
     },
     {
       "input": "community alice reduction=bogus",
@@ -403,12 +718,28 @@
       "comment": "#980: negative max_size is rejected"
     },
     {
+      "input": "community alice +5",
+      "comment": "#985: signed max_size is rejected"
+    },
+    {
+      "input": "community alice max_size=4294967296",
+      "comment": "#985: max_size must fit the uint32 wire range"
+    },
+    {
       "input": "community alice restart_prob=0",
       "comment": "#980: explicit restart_prob must be in the open interval (0,1)"
     },
     {
       "input": "community alice epsilon=0",
       "comment": "#980: explicit epsilon must be positive; omission still defers to the server default"
+    },
+    {
+      "input": "community alice restart_prob=0.99999999",
+      "comment": "#985: float32 rounding is checked before command acceptance"
+    },
+    {
+      "input": "community alice epsilon=1e-50",
+      "comment": "#985: float32 underflow is checked before command acceptance"
     },
     {
       "input": "put vertex greeting \"hello world",

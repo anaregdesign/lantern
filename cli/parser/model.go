@@ -79,8 +79,8 @@ type DeleteEdge struct {
 // as step=/fan_out= kwargs. bfs is the only family with step and reduction knobs.
 type Bfs struct {
 	Seed      string
-	Step      int    // walk depth (default 5)
-	FanOut    int    // per-hop top-k prune (default 3)
+	Step      uint32 // walk depth (default 5)
+	FanOut    uint32 // per-hop top-k prune (default 3)
 	Reduction string // "none" | "mst" | "spt" (default: "none")
 	Objective string // "min" | "max"          (default: "max")
 	Weighting string // "raw" | "tfidf" | "bm25" (default: "raw")
@@ -95,7 +95,7 @@ type Bfs struct {
 // reduction/objective knob.
 type Pagerank struct {
 	Seed        string
-	TopN        int     // cap the star to the top-N by mass (default 10; 0 = all)
+	TopN        uint32  // cap the star to the top-N by mass (default 10; 0 = all)
 	RestartProb float32 // restart prob α; 0 (default) = server default 0.15 (#801)
 	Epsilon     float32 // residual threshold ε; 0 (default) = server default 1e-4 (#801)
 	Weighting   string  // "raw" | "tfidf" | "bm25" (default: "raw")
@@ -109,7 +109,7 @@ type Pagerank struct {
 // reduction/objective render an optional tree view of the community (#845).
 type Community struct {
 	Seed        string
-	MaxSize     int     // size upper bound (default 0 = sweep decides)
+	MaxSize     uint32  // size upper bound (default 0 = sweep decides)
 	RestartProb float32 // restart prob α; 0 (default) = server default 0.15 (#845)
 	Epsilon     float32 // residual threshold ε; 0 (default) = server default 1e-4 (#845)
 	Reduction   string  // "none" | "mst" | "spt" (default: "none")

@@ -737,20 +737,43 @@ func CommunityParam(s *Source) (*Community, error) {
 	return m, nil
 }
 
-func positiveFamilyInt(value, label string) (int, error) {
-	n, err := strconv.Atoi(value)
-	if err != nil || n <= 0 {
+func positiveFamilyInt(value, label string) (uint32, error) {
+	n, err := familyUint32(value)
+	if err != nil || n == 0 {
 		return 0, errors.New(label + value + " (want a positive integer)")
 	}
 	return n, nil
 }
 
-func nonNegativeFamilyInt(value, label string) (int, error) {
-	n, err := strconv.Atoi(value)
-	if err != nil || n < 0 {
+func nonNegativeFamilyInt(value, label string) (uint32, error) {
+	n, err := familyUint32(value)
+	if err != nil {
 		return 0, errors.New(label + value + " (want a non-negative integer)")
 	}
 	return n, nil
+}
+
+// familyUint32 defines the shared family-verb integer grammar: ASCII decimal
+// digits only, with no sign, and the exact uint32 wire range. strconv.Atoi
+// accepts a leading plus and the host's wider int range, neither of which is a
+// stable cross-surface or wire-level contract.
+func familyUint32(value string) (uint32, error) {
+	if value == "" {
+		return 0, strconv.ErrSyntax
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] < '0' || value[i] > '9' {
+			return 0, strconv.ErrSyntax
+		}
+	}
+	n, err := strconv.ParseUint(value, 10, 32)
+	if err != nil {
+		return 0, err
+	}
+	if n > math.MaxUint32 {
+		return 0, strconv.ErrRange
+	}
+	return uint32(n), nil
 }
 
 func familyRestartProb(value, label string) (float32, error) {
