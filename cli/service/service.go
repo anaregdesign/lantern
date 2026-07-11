@@ -431,23 +431,19 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 	case "bfs":
 		p, err := parser.BfsParam(s)
 		if err != nil {
-			fmt.Printf("Error: %s\n", err)
-			return ErrBFS
+			return fmt.Errorf("%w: %w", ErrBFS, err)
 		}
 		obj, ok := objectiveByREPLName[p.Objective]
 		if !ok {
-			fmt.Printf("Error: bfs: unknown objective %q\n", p.Objective)
-			return ErrBFS
+			return fmt.Errorf("%w: unknown objective %q", ErrBFS, p.Objective)
 		}
 		red, ok := reductionByREPLName[p.Reduction]
 		if !ok {
-			fmt.Printf("Error: bfs: unknown reduction %q\n", p.Reduction)
-			return ErrBFS
+			return fmt.Errorf("%w: unknown reduction %q", ErrBFS, p.Reduction)
 		}
 		w, ok := weightingByREPLName[p.Weighting]
 		if !ok {
-			fmt.Printf("Error: bfs: unknown weighting %q\n", p.Weighting)
-			return ErrBFS
+			return fmt.Errorf("%w: unknown weighting %q", ErrBFS, p.Weighting)
 		}
 		opts := []client.IlluminateOption{
 			BfsOption(clampUint32(p.Step), clampUint32(p.FanOut), red, obj),
@@ -460,13 +456,11 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 	case "pagerank":
 		p, err := parser.PagerankParam(s)
 		if err != nil {
-			fmt.Printf("Error: %s\n", err)
-			return ErrPagerank
+			return fmt.Errorf("%w: %w", ErrPagerank, err)
 		}
 		w, ok := weightingByREPLName[p.Weighting]
 		if !ok {
-			fmt.Printf("Error: pagerank: unknown weighting %q\n", p.Weighting)
-			return ErrPagerank
+			return fmt.Errorf("%w: unknown weighting %q", ErrPagerank, p.Weighting)
 		}
 		opts := []client.IlluminateOption{
 			PagerankOption(clampUint32(p.TopN), p.RestartProb, p.Epsilon),
@@ -479,23 +473,19 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 	case "community":
 		p, err := parser.CommunityParam(s)
 		if err != nil {
-			fmt.Printf("Error: %s\n", err)
-			return ErrCommunity
+			return fmt.Errorf("%w: %w", ErrCommunity, err)
 		}
 		obj, ok := objectiveByREPLName[p.Objective]
 		if !ok {
-			fmt.Printf("Error: community: unknown objective %q\n", p.Objective)
-			return ErrCommunity
+			return fmt.Errorf("%w: unknown objective %q", ErrCommunity, p.Objective)
 		}
 		red, ok := reductionByREPLName[p.Reduction]
 		if !ok {
-			fmt.Printf("Error: community: unknown reduction %q\n", p.Reduction)
-			return ErrCommunity
+			return fmt.Errorf("%w: unknown reduction %q", ErrCommunity, p.Reduction)
 		}
 		w, ok := weightingByREPLName[p.Weighting]
 		if !ok {
-			fmt.Printf("Error: community: unknown weighting %q\n", p.Weighting)
-			return ErrCommunity
+			return fmt.Errorf("%w: unknown weighting %q", ErrCommunity, p.Weighting)
 		}
 		opts := []client.IlluminateOption{
 			CommunityOption(clampUint32(p.MaxSize), red, obj, p.RestartProb, p.Epsilon),
@@ -561,8 +551,10 @@ func CommunityOption(maxSize uint32, red client.Reduction, obj client.Objective,
 func (c *CLIService) runIlluminate(ctx context.Context, seed string, opts []client.IlluminateOption) error {
 	g, err := c.client.Illuminate(ctx, seed, opts...)
 	if err != nil {
-		fmt.Printf("Error: %s\n", err)
-		return ErrConnection
+		// Keep the SDK/Connect error intact. One-shot commands classify it at
+		// the root and write it to stderr; replacing it with ErrConnection used
+		// to discard the server's code and detail on the positional path.
+		return err
 	}
 	jsonString, err := json.MarshalIndent(g, "", "\t")
 	if err != nil {

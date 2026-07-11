@@ -1,11 +1,20 @@
 package integration_test
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	cliservice "github.com/anaregdesign/lantern/cli/service"
+	"github.com/anaregdesign/lantern/core/graphcache"
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/provider"
+	serverservice "github.com/anaregdesign/lantern/server/service"
 )
 
 // TestCLI_FamilyVerbs_RealWire exercises the #975 family verbs (bfs / pagerank /
@@ -79,9 +88,145 @@ func TestCLI_FamilyVerbs_RealWire(t *testing.T) {
 		{name: "CommunityZeroEpsilon", args: []string{"community", "a", "epsilon=0"}, want: cliservice.ErrCommunity},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := svc.RunArgs(ctx, tc.args); err != tc.want {
-				t.Errorf("RunArgs(%v) = %v, want %v", tc.args, err, tc.want)
+			if err := svc.RunArgs(ctx, tc.args); !errors.Is(err, tc.want) {
+				t.Errorf("RunArgs(%v) = %v, want an error matching %v", tc.args, err, tc.want)
 			}
 		})
 	}
+}
+
+// TestCLI_FamilyVerbs_RPCFailuresUseStderrAndExit2 exercises the actual CLI
+// executable against the real Connect/h2c handler. It protects the published
+// script contract from drifting separately between the flag and positional
+// family paths (#986): a server-side validation failure keeps its Connect
+// detail, prints only on stderr, and exits 2.
+func TestCLI_FamilyVerbs_RPCFailuresUseStderrAndExit2(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+	svc := serverservice.NewLanternService(cache)
+	validator := provider.NewValidationInterceptor(defaultIntegrationValidationLimits())
+	srv := newConnectTestServer(t, svc, nil, validator.ConnectInterceptor())
+	binary := buildLanternCLI(t)
+	endpoint := strings.TrimPrefix(srv.url, "http://")
+
+	for _, tc := range []struct {
+		name       string
+		args       []string
+		wantDetail string
+	}{
+		{
+			name:       "BFS/Flag",
+			args:       []string{"bfs", "any", "--step", "99", "--fan-out", "1"},
+			wantDetail: "bfs.step 99 exceeds max",
+		},
+		{
+			name:       "BFS/Positional",
+			args:       []string{"bfs", "any", "99", "1"},
+			wantDetail: "bfs.step 99 exceeds max",
+		},
+		{
+			name:       "PageRank/Flag",
+			args:       []string{"pagerank", "any", "--top-n", "999"},
+			wantDetail: "ppr.top_n 999 exceeds max",
+		},
+		{
+			name:       "PageRank/Positional",
+			args:       []string{"pagerank", "any", "999"},
+			wantDetail: "ppr.top_n 999 exceeds max",
+		},
+		{
+			name:       "Community/Flag",
+			args:       []string{"community", "any", "--max-size", "999"},
+			wantDetail: "community.max_size 999 exceeds max",
+		},
+		{
+			name:       "Community/Positional",
+			args:       []string{"community", "any", "999"},
+			wantDetail: "community.max_size 999 exceeds max",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr, code := runLanternCLI(t, binary, endpoint, tc.args...)
+			if code != 2 {
+				t.Errorf("exit code = %d, want 2; stderr = %q", code, stderr)
+			}
+			if stdout != "" {
+				t.Errorf("stdout = %q, want empty so machine-readable output is not contaminated", stdout)
+			}
+			if !strings.Contains(stderr, "invalid_argument") {
+				t.Errorf("stderr = %q, want the Connect InvalidArgument code", stderr)
+			}
+			if !strings.Contains(stderr, tc.wantDetail) {
+				t.Errorf("stderr = %q, want preserved server detail %q", stderr, tc.wantDetail)
+			}
+			if strings.Contains(stderr, "connection error") {
+				t.Errorf("stderr = %q, must not replace the RPC cause with connection error", stderr)
+			}
+		})
+	}
+
+	// The same executable seam distinguishes local family validation from an
+	// RPC rejection. These arguments fail before Illuminate is invoked, so the
+	// documented local-error exit code remains 1 and stdout stays clean.
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		wantText string
+	}{
+		{
+			name:     "BFS/PositionalParse",
+			args:     []string{"bfs", "any", "0", "1"},
+			wantText: "step 0 (want a positive integer)",
+		},
+		{
+			name:     "PageRank/FlagValidation",
+			args:     []string{"pagerank", "any", "--restart-prob", "1"},
+			wantText: "--restart-prob must be a float in (0,1)",
+		},
+		{
+			name:     "Community/PositionalParse",
+			args:     []string{"community", "any", "restart_prob=1"},
+			wantText: "restart_prob=1 (want a float in (0,1))",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr, code := runLanternCLI(t, binary, endpoint, tc.args...)
+			if code != 1 {
+				t.Errorf("exit code = %d, want 1; stderr = %q", code, stderr)
+			}
+			if stdout != "" {
+				t.Errorf("stdout = %q, want empty for local errors too", stdout)
+			}
+			if !strings.Contains(stderr, tc.wantText) {
+				t.Errorf("stderr = %q, want local error %q", stderr, tc.wantText)
+			}
+		})
+	}
+}
+
+func buildLanternCLI(t *testing.T) string {
+	t.Helper()
+	binary := filepath.Join(t.TempDir(), "lantern-cli")
+	build := exec.Command("go", "build", "-o", binary, "./cli")
+	build.Dir = filepath.Clean(filepath.Join("..", ".."))
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("go build ./cli: %v\n%s", err, output)
+	}
+	return binary
+}
+
+func runLanternCLI(t *testing.T, binary, endpoint string, args ...string) (stdout, stderr string, exitCode int) {
+	t.Helper()
+	command := exec.Command(binary, append([]string{"--address", endpoint}, args...)...)
+	var stdoutBuffer, stderrBuffer bytes.Buffer
+	command.Stdout = &stdoutBuffer
+	command.Stderr = &stderrBuffer
+	err := command.Run()
+	if err == nil {
+		return stdoutBuffer.String(), stderrBuffer.String(), 0
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("run lantern-cli %v: %v", args, err)
+	}
+	return stdoutBuffer.String(), stderrBuffer.String(), exitErr.ExitCode()
 }

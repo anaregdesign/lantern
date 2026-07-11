@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -133,40 +134,40 @@ EXAMPLE
 			start := time.Now()
 			err = srv.Run(ctx, result)
 			elapsed := time.Since(start)
-			switch err {
-			case nil:
+			switch {
+			case err == nil:
 				fmt.Printf("OK (%v)\n", elapsed)
-			case service.ErrGetVertex:
+			case errors.Is(err, service.ErrGetVertex):
 				fmt.Println("Usage: get vertex <key: string>")
-			case service.ErrGetEdge:
+			case errors.Is(err, service.ErrGetEdge):
 				fmt.Println("Usage: get edge <tail: string> <head: string>")
-			case service.ErrPutVertex:
+			case errors.Is(err, service.ErrPutVertex):
 				fmt.Println("Usage: put vertex <key: string> <value: string> [<ttl_seconds: int>]")
-			case service.ErrPutEdge:
+			case errors.Is(err, service.ErrPutEdge):
 				fmt.Println("Usage: put edge <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]")
-			case service.ErrDeleteVertex:
+			case errors.Is(err, service.ErrDeleteVertex):
 				fmt.Println("Usage: delete vertex <key: string>")
-			case service.ErrDeleteEdge:
+			case errors.Is(err, service.ErrDeleteEdge):
 				fmt.Println("Usage: delete edge <tail: string> <head: string>")
-			case service.ErrAddEdge:
+			case errors.Is(err, service.ErrAddEdge):
 				fmt.Println("Usage: add edge <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]")
-			case service.ErrAddDecayingEdge:
+			case errors.Is(err, service.ErrAddDecayingEdge):
 				fmt.Println("Usage: add decaying-edge <tail: string> <head: string> <initial_weight: float> <ratio: float> <steps: int> <interval_seconds: int>")
-			case service.ErrScan:
+			case errors.Is(err, service.ErrScan):
 				fmt.Println("Usage: scan { vertices <prefix: string> [<limit: int>] | edges <tail-prefix: string> [<limit: int>] }")
-			case service.ErrKeys:
+			case errors.Is(err, service.ErrKeys):
 				fmt.Println("Usage: keys <prefix: string> [<limit: int>]")
-			case service.ErrBFS:
+			case errors.Is(err, service.ErrBFS):
 				fmt.Println("Usage: bfs <seed: string> [step: int] [fan_out: int] [reduction=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>]")
-			case service.ErrPagerank:
+			case errors.Is(err, service.ErrPagerank):
 				fmt.Println("Usage: pagerank <seed: string> [top_n: int] [restart_prob=<float>] [epsilon=<float>] [weighting=raw|tfidf|bm25] [prefix=<string>]")
-			case service.ErrCommunity:
+			case errors.Is(err, service.ErrCommunity):
 				fmt.Println("Usage: community <seed: string> [max_size: int] [restart_prob=<float>] [epsilon=<float>] [reduction=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>]")
-			case service.ErrInvalidVerb:
+			case errors.Is(err, service.ErrInvalidVerb):
 				fmt.Println("Usage: { get | put | delete | add | scan | count | delete-prefix | keys | bfs | pagerank | community | help | exit } ...")
-			case service.ErrInvalidObjective:
+			case errors.Is(err, service.ErrInvalidObjective):
 				fmt.Println("{ get { vertex | edge } | put { vertex | edge } | delete { vertex | edge } | add { edge | decaying-edge } | scan { vertices | edges } | count vertices | delete-prefix vertices | keys {...} | bfs {...} | pagerank {...} | community {...} } ...")
-			case service.ErrConnection:
+			case errors.Is(err, service.ErrConnection):
 				fmt.Println("server error")
 			default:
 				fmt.Println(err)

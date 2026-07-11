@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -136,8 +137,8 @@ func TestRunArgs_FamilyParseErrorsReturnSpecificSentinels(t *testing.T) {
 		{name: "CommunityInvalidEpsilon", args: []string{"community", "alice", "epsilon=0"}, want: ErrCommunity},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := svc.RunArgs(ctx, tc.args); err != tc.want {
-				t.Errorf("RunArgs(%v) = %v, want %v", tc.args, err, tc.want)
+			if err := svc.RunArgs(ctx, tc.args); !errors.Is(err, tc.want) {
+				t.Errorf("RunArgs(%v) = %v, want an error matching %v", tc.args, err, tc.want)
 			}
 		})
 	}
