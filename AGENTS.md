@@ -31,7 +31,7 @@ Dependency direction (must remain a DAG, no back edges):
          core ◀──────────────┘
 ```
 
-Tag scheme: `vX.Y.Z` for server+CLI (root module), `sdks/go/vX.Y.Z` for the SDK, `core/vX.Y.Z` for core, `pb/vX.Y.Z` for the proto stubs, `mcp/vX.Y.Z` for the MCP server image (cut independently of the root release cadence).
+Tag scheme: `vX.Y.Z` for server+CLI (root module), `sdks/go/vX.Y.Z` for the SDK, `core/vX.Y.Z` for core, `pb/vX.Y.Z` for the proto stubs, `sdks/dart/vX.Y.Z` for the independent pub.dev SDK, and `mcp/vX.Y.Z` for the MCP server image (cut independently of the root release cadence).
 
 ## Architecture notes
 
@@ -45,7 +45,7 @@ Tag scheme: `vX.Y.Z` for server+CLI (root module), `sdks/go/vX.Y.Z` for the SDK,
   - `sdks/go/` imports `pb/` only — **never** `core/...` or `server/...`.
   - `server/` imports `pb/` and `core/` only — **never** the client SDK. If a server test needs the client (e.g. a full-stack bufconn round-trip), put it in `tests/integration/` instead of under `server/`.
   - The root module (cli + tests/integration) is the only Go module that depends on all five workspace submodules.
-  - `sdks/dart/` is a standalone pure-Dart package generated from `proto/`; it never joins `go.work` or imports a Go module. Its generated `lib/src/gen/**` files are regenerated with `sdks/dart/scripts/codegen.sh`, never hand-edited.
+  - `sdks/dart/` is a standalone pure-Dart package generated from `proto/`; it never joins `go.work` or imports a Go module. Its generated `lib/src/gen/**` files are regenerated with `sdks/dart/scripts/codegen.sh`, never hand-edited. The public `LanternClient` foundation owns secure transport/auth/deadline/cancellation policy and probes the auth-exempt gRPC Health-v1 endpoint; CRUD/query facades layer on it in follow-up Issues.
   - `Illuminate*` returns the SDK-local `client.Graph` (field shape `{Vertices map[string]*Vertex; Edges map[string]map[string]float32}`, JSON-compatible with `core/graph.Graph`). The server owns every traversal family and post-traversal reduction; since #846 `IlluminateRequest` carries a per-family `params` oneof (`bfs` / `ppr` / `community`) instead of a flat `Algorithm` axis — pass the typed SDK options `client.WithBFS(BFSOpts{Step, FanOut, Objective, Reduction})`, `client.WithPPR(PPROpts{TopN, RestartProb, Epsilon})`, or `client.WithLocalCommunity(LocalCommunityOpts{…})` (#845), plus the shared `client.WithWeighting` / `client.WithVertexPrefix`.
 - **Decay model**: edges are **additive** and carry their own TTL. Be mindful of the difference between `AddEdge` and `PutEdge` (idempotency) — see the discussion in [sdks/go/example/main.go](sdks/go/example/main.go).
 
