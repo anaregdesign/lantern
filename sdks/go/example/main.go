@@ -355,7 +355,7 @@ func main() {
 		log.Printf("deleted %d orders/ vertices\n", deleted)
 	}
 
-	// illuminate from a with step 2 and fan-out 2
+	// BFS: traverse two hops with a fan-out of two.
 	if graph, err := cli.Illuminate(ctx, "a", client.WithBFS(client.BFSOpts{Step: 2, FanOut: 2})); err == nil {
 		if jsonString, err := json.MarshalIndent(graph, "", "\t"); err == nil {
 			log.Printf("%s\n", jsonString)
@@ -409,6 +409,24 @@ func main() {
 				}
 			*/
 		}
+	}
+
+	// Personalized PageRank: return the three most relevant vertices around a.
+	if graph, err := cli.Illuminate(ctx, "a", client.WithPPR(client.PPROpts{
+		TopN:        3,
+		RestartProb: 0.15,
+		Epsilon:     0.0001,
+	})); err == nil {
+		log.Printf("PPR graph has %d vertices", len(graph.Vertices))
+	}
+
+	// Local community: return the conductance-selected induced subgraph around a.
+	if graph, err := cli.Illuminate(ctx, "a", client.WithLocalCommunity(client.LocalCommunityOpts{
+		MaxSize:     3,
+		RestartProb: 0.15,
+		Epsilon:     0.0001,
+	})); err == nil {
+		log.Printf("local community graph has %d vertices", len(graph.Vertices))
 	}
 }
 

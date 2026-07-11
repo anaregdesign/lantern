@@ -312,7 +312,7 @@ export function CliPage() {
               }}
               onKeyDown={onKeyDown}
               onPaste={onPaste}
-              placeholder="get vertex alice    |    illuminate alice 2 5 reduction=spt"
+              placeholder="get vertex alice    |    bfs alice 2 5 reduction=spt"
               data-testid="cli-input"
               aria-label="CLI command input"
               autoComplete="off"

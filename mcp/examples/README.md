@@ -143,11 +143,12 @@ exchange — with sensible TTL buckets and the `user.*` / `project.*` /
 
 Everything the agent captures lands in the same Lantern the MCP server writes
 to, so you can watch the graph fill in live. Point the
-[**lantern-admin**](../../admin/) SPA at that Lantern and open **Illuminate**:
+[**lantern-admin**](../../admin/) SPA at that Lantern and open the **CLI**
+workspace:
 
 - In the [compose stack](../../README.md#run-with-docker-compose--open-the-admin-ui)
   the Admin is served at **<http://localhost:8080>** — open it and go to
-  **Illuminate** (`/illuminate`).
+  **CLI** (`/cli`).
 - Seed the walk with a namespace root you have been writing under — e.g.
   `user.identity.name` or `project.lantern` — then increase the hop count to
   watch related facts and relations fan out.

@@ -439,11 +439,11 @@ lantern-cli get edge user:alice item:laptop
 # Output: 1.000000
 
 # Walk from a seed (1-hop neighborhood)
-lantern-cli illuminate user:alice --step 1 --k 5
+lantern-cli bfs user:alice 1 5
 # Output: {"vertices":{...},"edges":{...}}
 
-# With algorithm + objective (e.g., MST, cost-weighted)
-lantern-cli illuminate user:alice --step 2 --k 10 --algorithm mst --objective min
+# Render the BFS result as a cost-weighted spanning tree
+lantern-cli bfs user:alice 2 10 reduction=mst objective=min
 ```
 
 ### Cleaning Up Test Data

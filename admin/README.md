@@ -57,7 +57,7 @@ Follows the React Router app architecture conventions used in this repo. Key
 points:
 
 - `app/routes/` — FlatRoute file routing (`_index.tsx`, `browse.tsx`,
-  `illuminate.tsx`, `ops.tsx`).
+  `cli.tsx`, `ops.tsx`). The graph explorer is part of the CLI workspace.
 - `app/components/<feature>/<Component>/` — one React component per `.tsx`,
   filename matches export, CSS Module colocated.
 - `app/lib/client/usecase/` — UI-facing use cases (e.g. `connection/`,

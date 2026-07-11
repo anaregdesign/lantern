@@ -49,6 +49,7 @@
     "codegen": "bash scripts/codegen.sh",
     "build": "tsup",
     "typecheck": "tsc --noEmit",
+    "example:typecheck": "tsc -p tsconfig.example.json --noEmit",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

@@ -1,4 +1,13 @@
-import { Algorithm, Objective, Weighting, connect } from "lantern-sdk";
+import { Objective, Reduction, Weighting, connect, type Graph } from "lantern-sdk";
+
+function printGraph(name: string, graph: Graph): void {
+  console.log(`${name}: vertices=${graph.vertices.size}`);
+  for (const [tail, row] of graph.edges) {
+    for (const [head, weight] of row) {
+      console.log(`${name}: edge ${tail} -> ${head} = ${weight}`);
+    }
+  }
+}
 
 async function main(): Promise<void> {
   const client = connect("http://localhost:6380");
@@ -6,41 +15,57 @@ async function main(): Promise<void> {
   try {
     // PutVertex — value can be string, number, bigint, boolean, Date,
     // Uint8Array, null, or a typed wrapper (Int32/Uint32/Uint64/Float32/Duration).
-    await client.putVertex("string", "A", { ttlSeconds: 60 });
-    await client.putVertex("int", 1, { ttlSeconds: 60 });
-    await client.putVertex("float", 1.1, { ttlSeconds: 60 });
-    await client.putVertex("bool", true, { ttlSeconds: 60 });
-    await client.putVertex("time", new Date(), { ttlSeconds: 60 });
-    await client.putVertex("bytes", new Uint8Array([0x41]), { ttlSeconds: 60 });
-    await client.putVertex("nil", null, { ttlSeconds: 60 });
+    await client.putVertex({ key: "string", value: "A", ttlSeconds: 60 });
+    await client.putVertex({ key: "int", value: 1, ttlSeconds: 60 });
+    await client.putVertex({ key: "float", value: 1.1, ttlSeconds: 60 });
+    await client.putVertex({ key: "bool", value: true, ttlSeconds: 60 });
+    await client.putVertex({ key: "time", value: new Date(), ttlSeconds: 60 });
+    await client.putVertex({ key: "bytes", value: new Uint8Array([0x41]), ttlSeconds: 60 });
+    await client.putVertex({ key: "nil", value: null, ttlSeconds: 60 });
 
     // GetVertex
     const v = await client.getVertex("string");
     console.log(`${v.key}: kind=${v.kind} value=${String(v.value)}`);
 
     // Edges
-    await client.addEdge("string", "int", 1.0, { ttlSeconds: 60 });
-    await client.addEdge("string", "float", 1.0, { ttlSeconds: 60 });
-    await client.addEdge("int", "bool", 1.0, { ttlSeconds: 60 });
+    await client.addEdge({ tail: "string", head: "int", weight: 1.0, ttlSeconds: 60 });
+    await client.addEdge({ tail: "string", head: "float", weight: 1.0, ttlSeconds: 60 });
+    await client.addEdge({ tail: "int", head: "bool", weight: 1.0, ttlSeconds: 60 });
 
-    // Illuminate — neighborhood graph traversal. The three orthogonal
-    // axes (algorithm × objective × weighting) replaced the legacy
-    // `tfidf` flag + `optimization` enum in #410. UNSPECIFIED on every
-    // axis defers to the server's defaults (raw subgraph, minimise,
-    // raw weighting).
-    const graph = await client.illuminate("string", {
-      step: 2,
-      k: 16,
-      algorithm: Algorithm.UNSPECIFIED,
-      objective: Objective.UNSPECIFIED,
+    // Illuminate selects exactly one traversal family. BFS supports the
+    // per-hop controls and optional tree rendering; the shared weighting is
+    // applied before the family walk.
+    const bfs = await client.illuminate("string", {
+      bfs: {
+        step: 2,
+        fanOut: 16,
+        reduction: Reduction.SHORTEST_PATH_TREE,
+        objective: Objective.MAXIMIZE,
+      },
       weighting: Weighting.UNSPECIFIED,
     });
-    console.log(`vertices: ${graph.vertices.size}`);
-    for (const [tail, row] of graph.edges) {
-      for (const [head, weight] of row) {
-        console.log(`edge ${tail} -> ${head} = ${weight}`);
-      }
-    }
+    printGraph("bfs", bfs);
+
+    // Personalized PageRank is a relevance star around the seed.
+    const pagerank = await client.illuminate("string", {
+      ppr: { topN: 16, restartProb: 0.15, epsilon: 0.0001 },
+      weighting: Weighting.TFIDF,
+    });
+    printGraph("pagerank", pagerank);
+
+    // Local community returns the induced subgraph selected by a
+    // conductance sweep, with an optional tree view of those members.
+    const community = await client.illuminate("string", {
+      community: {
+        maxSize: 16,
+        restartProb: 0.15,
+        epsilon: 0.0001,
+        reduction: Reduction.MINIMUM_SPANNING_TREE,
+        objective: Objective.MINIMIZE,
+      },
+      weighting: Weighting.BM25,
+    });
+    printGraph("community", community);
 
     // Prefix count
     const count = await client.countVerticesByPrefix("");

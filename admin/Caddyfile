@@ -2,7 +2,7 @@
 #
 # Caddy serves the React Router (SPA mode) build from /srv with:
 #   - SPA fallback to /index.html so client-side routes (e.g. /browse,
-#     /illuminate, /ops) work on direct navigation or refresh.
+#     /cli, /ops) work on direct navigation or refresh.
 #   - Aggressive cache headers on hashed asset paths (Vite emits
 #     `/assets/<name>-<hash>.js|css`), no-cache on index.html so a new
 #     deploy is picked up on next page load.
