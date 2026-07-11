@@ -296,9 +296,9 @@ export async function dispatch(input: DispatchInput): Promise<unknown> {
         client,
         {
           seed: command.seed,
+          family: "bfs",
           step: command.step,
-          k: command.fanOut,
-          family: "FAMILY_BFS",
+          fanOut: command.fanOut,
           reduction: REDUCTION_TO_API[command.reduction],
           objective: OBJECTIVE_TO_API[command.objective],
           weighting: WEIGHTING_TO_API[command.weighting],
@@ -311,8 +311,8 @@ export async function dispatch(input: DispatchInput): Promise<unknown> {
         client,
         {
           seed: command.seed,
-          k: command.topN,
-          family: "FAMILY_PERSONALIZED_PAGERANK",
+          family: "pagerank",
+          topN: command.topN,
           weighting: WEIGHTING_TO_API[command.weighting],
           vertexPrefix: command.vertexPrefix,
           restartProb: command.restartProb,
@@ -325,8 +325,8 @@ export async function dispatch(input: DispatchInput): Promise<unknown> {
         client,
         {
           seed: command.seed,
-          k: command.maxSize,
-          family: "FAMILY_LOCAL_COMMUNITY",
+          family: "community",
+          maxSize: command.maxSize,
           reduction: REDUCTION_TO_API[command.reduction],
           objective: OBJECTIVE_TO_API[command.objective],
           weighting: WEIGHTING_TO_API[command.weighting],

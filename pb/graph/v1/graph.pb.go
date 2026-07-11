@@ -91,7 +91,7 @@ func (Reduction) EnumDescriptor() ([]byte, []int) {
 // tree wins); MAXIMIZE treats them as relevance (keeps the k largest-weight
 // edges per hop; largest tree wins, equivalent to the historical
 // "inverse-SPT" / "max-MST" variants and the default strongest-neighbour
-// behaviour of a bare illuminate).
+// behaviour of an Objective-unspecified BFS request).
 type Objective int32
 
 const (
@@ -837,8 +837,9 @@ type IlluminateRequest struct {
 	VertexPrefix string `protobuf:"bytes,9,opt,name=vertex_prefix,json=vertexPrefix,proto3" json:"vertex_prefix,omitempty"`
 	// params selects the traversal family AND carries only the knobs that
 	// family understands (#846) — cross-algorithm misconfiguration (PPR with
-	// step, MST with epsilon, …) is structurally unrepresentable. Unset params
-	// means BfsParams with server defaults: the historical bare illuminate.
+	// step, MST with epsilon, …) is structurally unrepresentable. A family arm
+	// is REQUIRED; unset params is rejected with INVALID_ARGUMENT rather than
+	// silently becoming an ambiguous zero-hop BFS request.
 	//
 	// Types that are valid to be assigned to Params:
 	//
@@ -957,15 +958,15 @@ func (*IlluminateRequest_Ppr) isIlluminateRequest_Params() {}
 
 func (*IlluminateRequest_Community) isIlluminateRequest_Params() {}
 
-// BfsParams tunes the greedy per-hop top-k BFS walk (the default traversal
-// family) and its optional post-traversal tree reduction.
+// BfsParams tunes the greedy per-hop top-k BFS walk and its optional
+// post-traversal tree reduction.
 type BfsParams struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// step is the BFS depth. 0 = server default.
+	// step is the BFS depth and MUST be positive. 0 is INVALID_ARGUMENT.
 	Step uint32 `protobuf:"varint,1,opt,name=step,proto3" json:"step,omitempty"`
 	// fan_out is the per-hop top-k prune: at each hop only the fan_out
 	// strongest (or cheapest, under OBJECTIVE_MINIMIZE) edges survive.
-	// 0 = server default. (Formerly the overloaded "k".)
+	// It MUST be positive. 0 is INVALID_ARGUMENT. (Formerly the overloaded "k".)
 	FanOut uint32 `protobuf:"varint,2,opt,name=fan_out,json=fanOut,proto3" json:"fan_out,omitempty"`
 	// objective governs BOTH the per-hop pruning and the reduction direction
 	// (#560), so a cost-minimiser is never handed a candidate set already

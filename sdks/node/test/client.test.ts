@@ -39,6 +39,7 @@ import {
   backupRecordFromNdjson,
   HealthStatusError,
   type BackupRecord,
+  type IlluminateOptions,
 } from "../src/index.js";
 import {
   LanternService,
@@ -1168,12 +1169,12 @@ describe("illuminate request building (#605)", () => {
     }
   });
 
-  test("omitting both families leaves the params oneof unset (bare illuminate)", async () => {
+  test("omitting the family is an InvalidArgumentError", async () => {
     const c = newClient();
     try {
-      await c.illuminate("alice", {});
-      expect(state.lastIlluminate?.paramsCase).toBeUndefined();
-      expect(state.lastIlluminate?.vertexPrefix).toBe("");
+      const before = state.lastIlluminate;
+      await expect(c.illuminate("alice", {} as never)).rejects.toThrow(/exactly one/);
+      expect(state.lastIlluminate).toBe(before);
     } finally {
       c.close();
     }
@@ -1209,9 +1210,28 @@ describe("illuminate request building (#605)", () => {
   test("supplying both bfs and ppr is an InvalidArgumentError", async () => {
     const c = newClient();
     try {
-      await expect(c.illuminate("alice", { bfs: {}, ppr: {} })).rejects.toThrow(
-        /mutually exclusive/,
+      await expect(
+        c.illuminate("alice", {
+          bfs: { step: 1, fanOut: 1 },
+          ppr: {},
+        } as unknown as IlluminateOptions),
+      ).rejects.toThrow(/exactly one/);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("rejects a zero BFS step or fanOut before the wire", async () => {
+    const c = newClient();
+    try {
+      const before = state.lastIlluminate;
+      await expect(c.illuminate("alice", { bfs: { step: 0, fanOut: 1 } })).rejects.toThrow(
+        /must both be positive integers/,
       );
+      await expect(c.illuminate("alice", { bfs: { step: 1, fanOut: 0 } })).rejects.toThrow(
+        /must both be positive integers/,
+      );
+      expect(state.lastIlluminate).toBe(before);
     } finally {
       c.close();
     }
@@ -1220,7 +1240,9 @@ describe("illuminate request building (#605)", () => {
   test("forwards the reduction on the bfs arm", async () => {
     const c = newClient();
     try {
-      await c.illuminate("alice", { bfs: { reduction: Reduction.SHORTEST_PATH_TREE } });
+      await c.illuminate("alice", {
+        bfs: { step: 1, fanOut: 1, reduction: Reduction.SHORTEST_PATH_TREE },
+      });
       expect(state.lastIlluminate?.paramsCase).toBe("bfs");
       expect(state.lastIlluminate?.reduction).toBe(Reduction.SHORTEST_PATH_TREE);
     } finally {

@@ -25,8 +25,8 @@ type optimizer func(ctx context.Context, g *coregraph.Graph[string, *pb.Vertex],
 //
 // Note: Reduction UNSPECIFIED → nil (no reduction). Objective
 // OBJECTIVE_UNSPECIFIED resolves to MAXIMIZE per the proto-level default
-// (#560): a bare illuminate keeps the strongest edges both when pruning the
-// per-hop top-k and when reducing the discovered subgraph.
+// (#560): an objective-unspecified BFS request keeps the strongest edges both
+// when pruning the per-hop top-k and when reducing the discovered subgraph.
 func resolveOptimizer(red pb.Reduction, obj pb.Objective) optimizer {
 	switch red {
 	case pb.Reduction_REDUCTION_MINIMUM_SPANNING_TREE:

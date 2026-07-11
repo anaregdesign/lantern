@@ -356,7 +356,7 @@ func TestWithVertexPrefixWiring(t *testing.T) {
 
 	t.Run("default leaves vertex_prefix empty", func(t *testing.T) {
 		l, capt := newClient(t)
-		if _, err := l.Illuminate(context.Background(), "seed"); err != nil {
+		if _, err := l.Illuminate(context.Background(), "seed", WithBFS(BFSOpts{Step: 1, FanOut: 1})); err != nil {
 			t.Fatalf("Illuminate: %v", err)
 		}
 		if len(capt.reqs) != 1 {
@@ -369,7 +369,7 @@ func TestWithVertexPrefixWiring(t *testing.T) {
 
 	t.Run("WithVertexPrefix sets the field", func(t *testing.T) {
 		l, capt := newClient(t)
-		if _, err := l.Illuminate(context.Background(), "users/1", WithVertexPrefix("users/")); err != nil {
+		if _, err := l.Illuminate(context.Background(), "users/1", WithBFS(BFSOpts{Step: 1, FanOut: 1}), WithVertexPrefix("users/")); err != nil {
 			t.Fatalf("Illuminate: %v", err)
 		}
 		if got := capt.reqs[0].GetVertexPrefix(); got != "users/" {
@@ -393,7 +393,7 @@ func TestWithWeightingWiring(t *testing.T) {
 
 	t.Run("default leaves weighting unspecified", func(t *testing.T) {
 		l, capt := newClient(t)
-		if _, err := l.Illuminate(context.Background(), "seed"); err != nil {
+		if _, err := l.Illuminate(context.Background(), "seed", WithBFS(BFSOpts{Step: 1, FanOut: 1})); err != nil {
 			t.Fatalf("Illuminate: %v", err)
 		}
 		if got := capt.reqs[0].GetWeighting(); got != WeightingUnspecified {
@@ -404,7 +404,7 @@ func TestWithWeightingWiring(t *testing.T) {
 	for _, w := range []Weighting{WeightingRaw, WeightingTFIDF, WeightingBM25} {
 		t.Run(w.String(), func(t *testing.T) {
 			l, capt := newClient(t)
-			if _, err := l.Illuminate(context.Background(), "seed", WithWeighting(w)); err != nil {
+			if _, err := l.Illuminate(context.Background(), "seed", WithBFS(BFSOpts{Step: 1, FanOut: 1}), WithWeighting(w)); err != nil {
 				t.Fatalf("Illuminate: %v", err)
 			}
 			if got := capt.reqs[0].GetWeighting(); got != w {
@@ -415,10 +415,10 @@ func TestWithWeightingWiring(t *testing.T) {
 }
 
 // TestIlluminateParamsWiring verifies the #846 typed per-family options
-// marshal to the intended oneof arm: no family option ⇒ params unset (the
-// bare illuminate); WithBFS ⇒ the bfs arm with its four knobs; WithPPR ⇒
-// the ppr arm with its three knobs; and multiple family options fail locally
-// before a request is sent.
+// marshal to the intended oneof arm: exactly one family is required;
+// WithBFS ⇒ the bfs arm with its four knobs; WithPPR ⇒ the ppr arm with its
+// three knobs; conflicting selections and zero BFS dimensions fail locally
+// without sending an ambiguous wire request.
 func TestIlluminateParamsWiring(t *testing.T) {
 	newClient := func(t *testing.T) (*Lantern, *captureIlluminate) {
 		t.Helper()
@@ -428,13 +428,13 @@ func TestIlluminateParamsWiring(t *testing.T) {
 		return l, capt
 	}
 
-	t.Run("no family option leaves params unset", func(t *testing.T) {
+	t.Run("no family option fails without sending a request", func(t *testing.T) {
 		l, capt := newClient(t)
-		if _, err := l.Illuminate(context.Background(), "seed"); err != nil {
-			t.Fatalf("Illuminate: %v", err)
+		if _, err := l.Illuminate(context.Background(), "seed"); !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("Illuminate error = %v, want ErrInvalidArgument", err)
 		}
-		if capt.reqs[0].GetParams() != nil {
-			t.Fatalf("default params want unset, got %T", capt.reqs[0].GetParams())
+		if len(capt.reqs) != 0 {
+			t.Fatalf("missing family sent %d requests, want 0", len(capt.reqs))
 		}
 	})
 
@@ -482,7 +482,7 @@ func TestIlluminateParamsWiring(t *testing.T) {
 		name string
 		opt  IlluminateOption
 	}{
-		{"bfs", WithBFS(BFSOpts{Step: 1})},
+		{"bfs", WithBFS(BFSOpts{Step: 1, FanOut: 1})},
 		{"pagerank", WithPPR(PPROpts{TopN: 5})},
 		{"community", WithLocalCommunity(LocalCommunityOpts{MaxSize: 5})},
 	}
@@ -516,4 +516,14 @@ func TestIlluminateParamsWiring(t *testing.T) {
 			}
 		}
 	}
+
+	t.Run("zero BFS dimension fails without sending a request", func(t *testing.T) {
+		l, capt := newClient(t)
+		if _, err := l.Illuminate(context.Background(), "seed", WithBFS(BFSOpts{Step: 0, FanOut: 1})); !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("Illuminate error = %v, want ErrInvalidArgument", err)
+		}
+		if len(capt.reqs) != 0 {
+			t.Fatalf("zero BFS dimension sent %d requests, want 0", len(capt.reqs))
+		}
+	})
 }

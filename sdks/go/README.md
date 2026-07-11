@@ -40,6 +40,11 @@ See [`example/main.go`](example/main.go) for a comprehensive end-to-end
 walkthrough covering vertices, edges (`AddEdge` vs `PutEdge` semantics),
 `Illuminate`, prefix scans, batches, and TLS.
 
+`Illuminate` requires exactly one family option: `WithBFS`, `WithPPR`, or
+`WithLocalCommunity`. A BFS also requires positive `BFSOpts.Step` and
+`BFSOpts.FanOut`; a missing family or either zero dimension returns
+`ErrInvalidArgument` before an RPC is sent.
+
 ## Transport
 
 The SDK is Connect-only (Connect-Go over h2c by default, or HTTP/2 over

@@ -202,8 +202,9 @@ export type IlluminateRequest = Message<"graph.v1.IlluminateRequest"> & {
   /**
    * params selects the traversal family AND carries only the knobs that
    * family understands (#846) — cross-algorithm misconfiguration (PPR with
-   * step, MST with epsilon, …) is structurally unrepresentable. Unset params
-   * means BfsParams with server defaults: the historical bare illuminate.
+   * step, MST with epsilon, …) is structurally unrepresentable. A family arm
+   * is REQUIRED; unset params is rejected with INVALID_ARGUMENT rather than
+   * silently becoming an ambiguous zero-hop BFS request.
    *
    * @generated from oneof graph.v1.IlluminateRequest.params
    */
@@ -236,14 +237,14 @@ export const IlluminateRequestSchema: GenMessage<IlluminateRequest> = /*@__PURE_
   messageDesc(file_graph_v1_graph, 3);
 
 /**
- * BfsParams tunes the greedy per-hop top-k BFS walk (the default traversal
- * family) and its optional post-traversal tree reduction.
+ * BfsParams tunes the greedy per-hop top-k BFS walk and its optional
+ * post-traversal tree reduction.
  *
  * @generated from message graph.v1.BfsParams
  */
 export type BfsParams = Message<"graph.v1.BfsParams"> & {
   /**
-   * step is the BFS depth. 0 = server default.
+   * step is the BFS depth and MUST be positive. 0 is INVALID_ARGUMENT.
    *
    * @generated from field: uint32 step = 1;
    */
@@ -252,7 +253,7 @@ export type BfsParams = Message<"graph.v1.BfsParams"> & {
   /**
    * fan_out is the per-hop top-k prune: at each hop only the fan_out
    * strongest (or cheapest, under OBJECTIVE_MINIMIZE) edges survive.
-   * 0 = server default. (Formerly the overloaded "k".)
+   * It MUST be positive. 0 is INVALID_ARGUMENT. (Formerly the overloaded "k".)
    *
    * @generated from field: uint32 fan_out = 2;
    */
@@ -2202,7 +2203,7 @@ export const ReductionSchema: GenEnum<Reduction> = /*@__PURE__*/
  * tree wins); MAXIMIZE treats them as relevance (keeps the k largest-weight
  * edges per hop; largest tree wins, equivalent to the historical
  * "inverse-SPT" / "max-MST" variants and the default strongest-neighbour
- * behaviour of a bare illuminate).
+ * behaviour of an Objective-unspecified BFS request).
  *
  * @generated from enum graph.v1.Objective
  */

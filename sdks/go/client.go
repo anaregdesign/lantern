@@ -803,13 +803,13 @@ func NewGraph() *Graph {
 	}
 }
 
-// IlluminateOption configures a single Illuminate call. Select the traversal
-// family with at most one of WithBFS / WithPPR / WithLocalCommunity; supplying
-// more than one is a local ErrConflictingIlluminateFamilies error. Omitting all
-// runs BFS with server defaults —
-// the bare illuminate), and combine it with the shared axes WithWeighting /
-// WithVertexPrefix. Per-family knobs live on BFSOpts / PPROpts, so a knob
-// that another family would ignore is not expressible (#846).
+// IlluminateOption configures a single Illuminate call. Every call must select
+// exactly one traversal family with WithBFS / WithPPR / WithLocalCommunity;
+// omitting the family returns ErrInvalidArgument, while supplying more than one
+// also wraps ErrConflictingIlluminateFamilies. Both fail before any RPC.
+// Combine the family with WithWeighting / WithVertexPrefix. Per-family knobs
+// live on BFSOpts / PPROpts, so a knob that another family would ignore is not
+// expressible (#846).
 type IlluminateOption func(*illuminateConfig)
 
 type illuminateConfig struct {
@@ -832,13 +832,15 @@ func (c *illuminateConfig) selectFamily(family string) bool {
 }
 
 // BFSOpts tunes the greedy per-hop top-k BFS walk and its optional
-// post-traversal tree reduction. The zero value is the server-default walk.
+// post-traversal tree reduction. Step and FanOut must both be positive; zero
+// is rejected as ErrInvalidArgument rather than ambiguously requesting a
+// server default.
 type BFSOpts struct {
-	// Step is the BFS depth. 0 = server default.
+	// Step is the BFS depth and must be positive.
 	Step uint32
 	// FanOut is the per-hop top-k prune: at each hop only the FanOut
 	// strongest (or cheapest, under ObjectiveMinimize) edges survive.
-	// 0 = server default. (Formerly the overloaded "k".)
+	// It must be positive. (Formerly the overloaded "k".)
 	FanOut uint32
 	// Objective governs both the per-hop pruning and the Reduction
 	// direction (#560). Unspecified = ObjectiveMaximize.
@@ -951,11 +953,12 @@ func WithVertexPrefix(prefix string) IlluminateOption {
 	return func(c *illuminateConfig) { c.vertexPrefix = prefix }
 }
 
-// Illuminate cuts the neighbourhood subgraph around seed. Select the
-// traversal family with WithBFS / WithPPR (omitting both runs BFS with
-// server defaults — the bare illuminate) and the shared axes with
-// WithWeighting / WithVertexPrefix. See #846 for the per-family design and
-// #801 for the Personalized PageRank semantics.
+// Illuminate cuts the neighbourhood subgraph around seed. Select exactly one
+// traversal family with WithBFS / WithPPR / WithLocalCommunity and combine it
+// with shared axes WithWeighting / WithVertexPrefix. Family omission,
+// conflicting families, and zero BFS step/fan-out return ErrInvalidArgument
+// without sending an ambiguous request. See #846 for the per-family design
+// and #801 for the Personalized PageRank semantics.
 func (l *Lantern) Illuminate(ctx context.Context, seed string, opts ...IlluminateOption) (*Graph, error) {
 	var cfg illuminateConfig
 	for _, opt := range opts {
@@ -966,6 +969,12 @@ func (l *Lantern) Illuminate(ctx context.Context, seed string, opts ...Illuminat
 			ErrInvalidArgument,
 			fmt.Errorf("%w: %s and %s", ErrConflictingIlluminateFamilies, cfg.family, cfg.conflictWith),
 		)
+	}
+	if cfg.family == "" {
+		return nil, fmt.Errorf("%w: Illuminate requires exactly one traversal family", ErrInvalidArgument)
+	}
+	if cfg.bfs != nil && (cfg.bfs.Step == 0 || cfg.bfs.FanOut == 0) {
+		return nil, fmt.Errorf("%w: BFSOpts.Step and BFSOpts.FanOut must both be positive", ErrInvalidArgument)
 	}
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()

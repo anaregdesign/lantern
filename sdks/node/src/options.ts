@@ -9,13 +9,13 @@ import { Objective, Reduction, Weighting } from "./values.js";
  * post-traversal tree reduction.
  */
 export interface BfsOptions {
-  /** BFS depth limit (0 = server default; treated as "no expansion"). */
-  step?: number;
+  /** BFS depth limit. Must be a positive integer; zero is rejected. */
+  step: number;
   /**
-   * Per-hop fan-out: top-k neighbours kept at each frontier (0 = unlimited).
-   * Formerly the overloaded `k`.
+   * Per-hop fan-out: top-k neighbours kept at each frontier. Must be a
+   * positive integer; zero is rejected. Formerly the overloaded `k`.
    */
-  fanOut?: number;
+  fanOut: number;
   /**
    * Direction for both the per-hop pruning and the reduction (#560).
    * Server resolves UNSPECIFIED to MAXIMIZE.
@@ -82,18 +82,7 @@ export interface LocalCommunityOptions {
   objective?: Objective;
 }
 
-export interface IlluminateOptions {
-  /**
-   * Select the BFS traversal family with its knobs (#846). The family
-   * options are mutually exclusive — supplying more than one is an
-   * InvalidArgumentError. Omitting all runs BFS with server defaults (the
-   * bare illuminate).
-   */
-  bfs?: BfsOptions;
-  /** Select the Personalized PageRank family. Mutually exclusive. */
-  ppr?: PprOptions;
-  /** Select the local community extraction family (#845). Mutually exclusive. */
-  community?: LocalCommunityOptions;
+interface SharedIlluminateOptions {
   /**
    * Edge-weight transform applied BEFORE the walk (any family). Server
    * resolves UNSPECIFIED to RAW.
@@ -107,6 +96,28 @@ export interface IlluminateOptions {
    */
   vertexPrefix?: string;
 }
+
+/**
+ * Exactly one traversal family is required. The union makes cross-family
+ * combinations unrepresentable in TypeScript; JavaScript callers receive an
+ * InvalidArgumentError for an absent or conflicting arm at runtime.
+ */
+export type IlluminateOptions =
+  | (SharedIlluminateOptions & {
+      bfs: BfsOptions;
+      ppr?: never;
+      community?: never;
+    })
+  | (SharedIlluminateOptions & {
+      bfs?: never;
+      ppr: PprOptions;
+      community?: never;
+    })
+  | (SharedIlluminateOptions & {
+      bfs?: never;
+      ppr?: never;
+      community: LocalCommunityOptions;
+    });
 
 export interface ScanOptions {
   /** Page size (0 = server default). */
