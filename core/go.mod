@@ -2,11 +2,11 @@ module github.com/anaregdesign/lantern/core
 
 go 1.26
 
-require golang.org/x/sync v0.21.0
+require golang.org/x/sync v0.22.0
 
 require (
 	github.com/RoaringBitmap/roaring/v2 v2.19.0
-	golang.org/x/text v0.39.0
+	golang.org/x/text v0.40.0
 )
 
 require (
