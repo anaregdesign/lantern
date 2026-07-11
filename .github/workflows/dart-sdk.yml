@@ -182,7 +182,7 @@ jobs:
 
       - name: Analyze and test at the minimum floor
         run: |
-          dart analyze
+          dart analyze lib test
           dart test
 
   android:

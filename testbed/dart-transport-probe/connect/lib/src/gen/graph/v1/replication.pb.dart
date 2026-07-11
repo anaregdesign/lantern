@@ -1004,6 +1004,7 @@ class SnapshotEdgeContribution extends $pb.GeneratedMessage {
   @$pb.TagNumber(1)
   void clearWeight() => $_clearField(1);
 
+  /// Absolute expiration. An absent timestamp means a permanent contribution.
   @$pb.TagNumber(2)
   $1.Timestamp get expiration => $_getN(1);
   @$pb.TagNumber(2)
