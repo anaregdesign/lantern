@@ -327,9 +327,9 @@ describe("formatFamilyClick ↔ parse round-trip", () => {
       expect(cmd.topN).toBe(axes.k);
       expect(cmd.weighting).toBe(axes.weighting);
       expect(cmd.vertexPrefix).toBe(axes.vertexPrefix);
-      // The α/ε knobs survive the round-trip for pagerank (#801).
-      expect(cmd.restartProb).toBe(axes.restartProb);
-      expect(cmd.epsilon).toBe(axes.epsilon);
+      // The parsed command carries the exact float32 values sent on the wire.
+      expect(cmd.restartProb).toBe(Math.fround(axes.restartProb));
+      expect(cmd.epsilon).toBe(Math.fround(axes.epsilon));
     } else if (cmd.verb === "community") {
       expect(cmd.seed).toBe("user:alice");
       // community's single positional is max_size, sourced from the k axis;
@@ -339,9 +339,9 @@ describe("formatFamilyClick ↔ parse round-trip", () => {
       expect(cmd.objective).toBe(axes.objective);
       expect(cmd.weighting).toBe(axes.weighting);
       expect(cmd.vertexPrefix).toBe(axes.vertexPrefix);
-      // The α/ε knobs survive the round-trip for community too (#942).
-      expect(cmd.restartProb).toBe(axes.restartProb);
-      expect(cmd.epsilon).toBe(axes.epsilon);
+      // The parsed command carries the exact float32 values sent on the wire.
+      expect(cmd.restartProb).toBe(Math.fround(axes.restartProb));
+      expect(cmd.epsilon).toBe(Math.fround(axes.epsilon));
     } else {
       throw new Error(`unexpected verb from click formatter: ${cmd.verb}`);
     }

@@ -446,7 +446,7 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 			return fmt.Errorf("%w: unknown weighting %q", ErrBFS, p.Weighting)
 		}
 		opts := []client.IlluminateOption{
-			BfsOption(clampUint32(p.Step), clampUint32(p.FanOut), red, obj),
+			BfsOption(p.Step, p.FanOut, red, obj),
 			client.WithWeighting(w),
 		}
 		if p.Prefix != "" {
@@ -463,7 +463,7 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 			return fmt.Errorf("%w: unknown weighting %q", ErrPagerank, p.Weighting)
 		}
 		opts := []client.IlluminateOption{
-			PagerankOption(clampUint32(p.TopN), p.RestartProb, p.Epsilon),
+			PagerankOption(p.TopN, p.RestartProb, p.Epsilon),
 			client.WithWeighting(w),
 		}
 		if p.Prefix != "" {
@@ -488,7 +488,7 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 			return fmt.Errorf("%w: unknown weighting %q", ErrCommunity, p.Weighting)
 		}
 		opts := []client.IlluminateOption{
-			CommunityOption(clampUint32(p.MaxSize), red, obj, p.RestartProb, p.Epsilon),
+			CommunityOption(p.MaxSize, red, obj, p.RestartProb, p.Epsilon),
 			client.WithWeighting(w),
 		}
 		if p.Prefix != "" {
@@ -507,21 +507,6 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 		return ErrInvalidVerb
 	}
 	return nil
-}
-
-// clampUint32 saturates an int into uint32 range. The REPL parser produces
-// plain ints from strconv.Atoi; a negative or >32-bit value must not wrap
-// through the conversion into a huge step/k (CodeQL
-// go/incorrect-integer-conversion).
-func clampUint32(v int) uint32 {
-	if v < 0 {
-		return 0
-	}
-	u := uint64(v)
-	if u > math.MaxUint32 {
-		return math.MaxUint32
-	}
-	return uint32(u)
 }
 
 // BfsOption / PagerankOption / CommunityOption build the typed per-family SDK
