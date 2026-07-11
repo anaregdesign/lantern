@@ -14,6 +14,7 @@ import type { ScrollbackEntry } from "~/lib/client/usecase/cli/state";
 import { CliAxisPicker } from "~/components/cli/CliAxisPicker/CliAxisPicker";
 import { CliCommandReference } from "~/components/cli/CliCommandReference/CliCommandReference";
 import { JsonView } from "~/components/cli/JsonView/JsonView";
+import { TraversalResultCompanion } from "~/components/cli/TraversalResultCompanion/TraversalResultCompanion";
 import { IlluminateCanvas } from "~/components/illuminate/IlluminateCanvas/IlluminateCanvas";
 import styles from "./CliPage.module.css";
 
@@ -366,7 +367,7 @@ export function CliPage() {
                 {cli.latestGraph.source}
               </code>
               <span className={styles.canvasMetaHint}>
-                click a node →{" "}
+                Next walk →{" "}
                 <code data-testid="cli-click-hint">
                   {isAxisPickerCommandValid
                     ? formatFamilyClick("<key>", axisPicker.axes)
@@ -390,6 +391,10 @@ export function CliPage() {
                 fill
               />
             </div>
+            <TraversalResultCompanion
+              graph={cli.latestGraph}
+              onRunFromHere={onNodeClick}
+            />
           </div>
         </section>
       ) : null}

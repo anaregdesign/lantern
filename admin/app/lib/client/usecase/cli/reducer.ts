@@ -173,6 +173,9 @@ export function cliReducer(state: CliState, action: CliAction): CliState {
         latestGraph: {
           source: action.source,
           view: mergeGraphView(state.latestGraph?.view ?? null, action.merge),
+          // A merged write is a new canvas frame, not a traversal result. Do not
+          // present stale family parameters as if they described this frame.
+          traversal: null,
         },
       };
     }

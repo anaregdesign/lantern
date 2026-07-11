@@ -21,6 +21,7 @@ import {
   INITIAL_CLI_STATE,
   type LatestGraph,
   type ScrollbackEntry,
+  type TraversalResultMetadata,
 } from "./state";
 
 /**
@@ -159,7 +160,11 @@ export function useCli(): UseCliResult {
         if (view !== null) {
           dispatch({
             type: "GRAPH_UPDATED",
-            graph: { source: rawInput, view },
+            graph: {
+              source: rawInput,
+              view,
+              traversal: traversalResultMetadata(command),
+            },
           });
         } else {
           const merge = commandResultToGraphMerge(command);
@@ -418,6 +423,19 @@ export function useCli(): UseCliResult {
       cancelInFlight,
     ],
   );
+}
+
+function traversalResultMetadata(
+  command: Command,
+): TraversalResultMetadata | null {
+  switch (command.verb) {
+    case "bfs":
+    case "pagerank":
+    case "community":
+      return { command };
+    default:
+      return null;
+  }
 }
 
 function replacer(_key: string, value: unknown): unknown {
