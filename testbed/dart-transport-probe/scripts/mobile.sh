@@ -102,7 +102,10 @@ if [[ ${LANTERN_PROBE_DRIVER:-flutter-test} == simctl ]]; then
   count_url="${tls_url%/}/graph.v1.LanternService/CountVerticesByPrefix"
   success_prefix="probe/$transport/ios-success/"
   for _ in {1..120}; do
-    response=$(curl --silent --show-error --cacert "$ca_cert" \
+    # This localhost readback only observes the marker written by the app.
+    # TLS behavior is asserted inside the app; avoid coupling the observer to
+    # the hosted macOS curl trust backend.
+    response=$(curl --silent --show-error --insecure \
       --header "Authorization: Bearer $token" \
       --header 'Connect-Protocol-Version: 1' \
       --header 'Content-Type: application/json' \
