@@ -1,8 +1,9 @@
 # Dart transport probe
 
 This spike compares the two viable native-mobile transports for the future
-Lantern Dart SDK. It is testbed code only and does not introduce a production
-SDK API.
+Lantern Dart SDK. Connect is the accepted transport; gRPC remains the tested
+fallback. This is testbed code only and does not introduce a production SDK
+API.
 
 | Candidate     | Runtime pins                         | Buf plugin pins                                          | Wire path                               |
 | ------------- | ------------------------------------ | -------------------------------------------------------- | --------------------------------------- |
@@ -82,6 +83,8 @@ app-level custom CA injection for both candidates.
 On Flutter 3.44.6 / Dart 3.12.2 with Android emulator 36.6.11, the measured
 debug APKs were 78,879,151 bytes (Connect) and 79,412,635 bytes (gRPC). This is
 a harness-level comparison, not a production release-size forecast.
+The GitHub-hosted iOS 18.5 Simulator app bundles measured 98,116 KiB (Connect)
+and 100,500 KiB (gRPC).
 
 The pull-request workflow reruns generator drift, Dart analysis/tests, and the
 full iOS simulator matrix. CI builds and launches a disposable app directly
