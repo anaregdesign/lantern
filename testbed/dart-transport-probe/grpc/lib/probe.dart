@@ -11,10 +11,17 @@ Future<Map<String, Object>> runProbe(
   String? caPath,
   ClientChannel? clientChannel,
   String keyPrefix = 'probe/grpc/',
+  Iterable<String> pinnedCertificatePems = const <String>[],
 }) async {
+  final normalizedPins = pinnedCertificatePems.map(_normalizePem).toSet();
   final credentials = endpoint.scheme == 'https'
       ? ChannelCredentials.secure(
           certificates: caPath == null ? null : File(caPath).readAsBytesSync(),
+          onBadCertificate: normalizedPins.isEmpty
+              ? null
+              : (certificate, host) =>
+                    (host == endpoint.host || host == endpoint.authority) &&
+                    normalizedPins.contains(_normalizePem(certificate.pem)),
         )
       : const ChannelCredentials.insecure();
   final ownsChannel = clientChannel == null;
@@ -71,3 +78,5 @@ Future<Map<String, Object>> runProbe(
     }
   }
 }
+
+String _normalizePem(String pem) => pem.replaceAll(RegExp(r'\s'), '');

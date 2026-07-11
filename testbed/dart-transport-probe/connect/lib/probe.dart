@@ -15,6 +15,7 @@ Future<Map<String, Object>> runProbe(
   String? caPath,
   HttpClient? httpClient,
   String keyPrefix = 'probe/connect/',
+  Iterable<String> pinnedCertificatePems = const <String>[],
 }) async {
   final securityContext =
       caPath == null
@@ -23,6 +24,13 @@ Future<Map<String, Object>> runProbe(
             ..setTrustedCertificates(caPath));
   final ownsHttpClient = httpClient == null;
   final ioClient = httpClient ?? HttpClient(context: securityContext);
+  final normalizedPins = pinnedCertificatePems.map(_normalizePem).toSet();
+  if (normalizedPins.isNotEmpty) {
+    ioClient.badCertificateCallback =
+        (certificate, host, _) =>
+            (host == endpoint.host || host == endpoint.authority) &&
+            normalizedPins.contains(_normalizePem(certificate.pem));
+  }
   try {
     final transport = protocol.Transport(
       baseUrl: endpoint.toString(),
@@ -83,3 +91,5 @@ Future<Map<String, Object>> runProbe(
     }
   }
 }
+
+String _normalizePem(String pem) => pem.replaceAll(RegExp(r'\s'), '');

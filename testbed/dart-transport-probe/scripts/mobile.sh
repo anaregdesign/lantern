@@ -75,6 +75,11 @@ fi
 ca_der="$work_root/lantern-probe-ca.der"
 openssl x509 -in "$ca_cert" -outform der -out "$ca_der"
 ca_base64=$(base64 < "$ca_der" | tr -d '\n')
+ca_pem_base64=$(base64 < "$ca_cert" | tr -d '\n')
+leaf_base64=
+if [[ -n ${LANTERN_PROBE_SERVER_CERT:-} ]]; then
+  leaf_base64=$(base64 < "$LANTERN_PROBE_SERVER_CERT" | tr -d '\n')
+fi
 cd "$app"
 flutter pub get
 dart_defines=(
@@ -82,6 +87,8 @@ dart_defines=(
   --dart-define="LANTERN_PROBE_TLS_URL=$tls_url"
   --dart-define="LANTERN_PROBE_TOKEN=$token"
   --dart-define="LANTERN_PROBE_CA_BASE64=$ca_base64"
+  --dart-define="LANTERN_PROBE_CA_PEM_BASE64=$ca_pem_base64"
+  --dart-define="LANTERN_PROBE_LEAF_BASE64=$leaf_base64"
 )
 
 if [[ ${LANTERN_PROBE_DRIVER:-flutter-test} == simctl ]]; then

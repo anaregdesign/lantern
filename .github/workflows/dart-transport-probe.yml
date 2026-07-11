@@ -157,7 +157,6 @@ jobs:
           test -n "$device"
           xcrun simctl boot "$device" || true
           xcrun simctl bootstatus "$device" -b
-          xcrun simctl keychain "$device" add-root-cert "$PROBE_CA"
           xcrun simctl list devices | grep "$device"
           echo "DEVICE_ID=$device" >> "$GITHUB_ENV"
 
@@ -165,6 +164,7 @@ jobs:
         timeout-minutes: 15
         env:
           LANTERN_PROBE_DRIVER: simctl
+          LANTERN_PROBE_SERVER_CERT: ${{ env.PROBE_CERT }}
         run: |
           testbed/dart-transport-probe/scripts/mobile.sh \
             "${{ matrix.transport }}" "$DEVICE_ID" http://127.0.0.1:6433 \
