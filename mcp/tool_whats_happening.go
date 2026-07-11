@@ -12,7 +12,32 @@ import (
 )
 
 type whatsHappeningInput struct {
-	Key string `json:"key" jsonschema:"Seed to look around: a resource key (repo.lantern.core.graphcache), an agent (agents.<id>), or a note (notes.<id>). A key nobody has touched returns a well-formed empty context, not an error."`
+	Key       string                   `json:"key" jsonschema:"Seed to look around: a resource key (repo.lantern.core.graphcache), an agent (agents.<id>), or a note (notes.<id>). A key nobody has touched returns a well-formed empty context, not an error."`
+	Weighting string                   `json:"weighting,omitempty" jsonschema:"Optional shared edge weighting: raw (default) | tfidf | bm25."`
+	BFS       *whatsHappeningBFS       `json:"bfs,omitempty" jsonschema:"Select bounded BFS. Omit every family arm for the safe BFS default (step 2, fan_out 16). Mutually exclusive with ppr and community."`
+	PPR       *whatsHappeningPPR       `json:"ppr,omitempty" jsonschema:"Select Personalized PageRank relevance. Mutually exclusive with bfs and community."`
+	Community *whatsHappeningCommunity `json:"community,omitempty" jsonschema:"Select local community extraction. Mutually exclusive with bfs and ppr."`
+}
+
+type whatsHappeningBFS struct {
+	Step      uint32 `json:"step,omitempty" jsonschema:"Traversal depth; default 2 when omitted."`
+	FanOut    uint32 `json:"fan_out,omitempty" jsonschema:"Per-hop top-k bound; default 16 when omitted."`
+	Reduction string `json:"reduction,omitempty" jsonschema:"Optional tree view: none (default) | mst | spt."`
+	Objective string `json:"objective,omitempty" jsonschema:"Weight direction: maximize (default) | minimize."`
+}
+
+type whatsHappeningPPR struct {
+	TopN        uint32  `json:"top_n,omitempty" jsonschema:"Maximum relevance-star vertices; default 16 when omitted."`
+	RestartProb float32 `json:"restart_prob,omitempty" jsonschema:"Teleport probability in (0,1); 0 uses the server default."`
+	Epsilon     float32 `json:"epsilon,omitempty" jsonschema:"Positive forward-push threshold; 0 uses the server default."`
+}
+
+type whatsHappeningCommunity struct {
+	MaxSize     uint32  `json:"max_size,omitempty" jsonschema:"Upper bound on community size; default 32 when omitted."`
+	RestartProb float32 `json:"restart_prob,omitempty" jsonschema:"Teleport probability in (0,1); 0 uses the server default."`
+	Epsilon     float32 `json:"epsilon,omitempty" jsonschema:"Positive forward-push threshold; 0 uses the server default."`
+	Reduction   string  `json:"reduction,omitempty" jsonschema:"Optional tree view: none (default) | mst | spt."`
+	Objective   string  `json:"objective,omitempty" jsonschema:"Tree weight direction: maximize (default) | minimize."`
 }
 
 type happeningAgent struct {
@@ -35,6 +60,7 @@ type happeningNote struct {
 
 type whatsHappeningOutput struct {
 	Seed      string              `json:"seed"`
+	Family    string              `json:"family"`
 	Agents    []happeningAgent    `json:"agents"`
 	Resources []happeningResource `json:"resources"`
 	Notes     []happeningNote     `json:"notes"`
@@ -42,23 +68,9 @@ type whatsHappeningOutput struct {
 	Empty     bool                `json:"empty"`
 }
 
-const whatsHappeningDescription = "THE situational-awareness read: the active neighborhood of a resource, agent, or note RIGHT NOW — which agents are on it, what else they are co-working (activity spreads through the decaying graph), live notes concerning it, and live claims on the nearby resources. Everything is recency-weighted and self-cleaning: an agent that went quiet, a stale note, an expired claim simply are not there. Call it before touching a resource (who else is on this?), when picking up a task (what is the current state of play?), or on a sibling agent's id to see their working set. A never-touched key returns an empty context — that itself is the answer: nobody is there."
-
-// happeningSeeder abstracts the seed-neighborhood source so the graph
-// walk can be swapped (BFS Illuminate today; the #845 local-community
-// arm is the designed upgrade) without touching the classification.
-type happeningSeeder func(ctx context.Context, lc lanternClient, seed string) (*client.Graph, error)
-
-// bfsSeeder is the default neighborhood source: a 2-hop, fan-out-16 BFS.
-func bfsSeeder(ctx context.Context, lc lanternClient, seed string) (*client.Graph, error) {
-	return lc.Illuminate(ctx, seed, client.WithBFS(client.BFSOpts{Step: 2, FanOut: 16}))
-}
+const whatsHappeningDescription = "THE situational-awareness read: the active neighborhood of a resource, agent, or note RIGHT NOW — which agents are on it, what else they are co-working, live notes, and live claims. Omit traversal arms for the safe bounded BFS default, or select exactly one typed bfs, ppr, or community arm; family-specific knobs cannot leak into another family. Everything is recency-weighted and self-cleaning. A never-touched key returns an empty context — that itself is the answer: nobody is there."
 
 func registerWhatsHappening(srv *mcp.Server, lc lanternClient) {
-	registerWhatsHappeningWithSeeder(srv, lc, bfsSeeder)
-}
-
-func registerWhatsHappeningWithSeeder(srv *mcp.Server, lc lanternClient, seeder happeningSeeder) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "whats_happening",
 		Description: whatsHappeningDescription,
@@ -66,8 +78,13 @@ func registerWhatsHappeningWithSeeder(srv *mcp.Server, lc lanternClient, seeder 
 		if in.Key == "" {
 			return nil, whatsHappeningOutput{}, fmt.Errorf("whats_happening: key must not be empty")
 		}
+		family, illuminateOpts, err := whatsHappeningTraversal(in)
+		if err != nil {
+			return nil, whatsHappeningOutput{}, fmt.Errorf("whats_happening: %w", err)
+		}
 		out := whatsHappeningOutput{
 			Seed:      in.Key,
+			Family:    family,
 			Agents:    []happeningAgent{},
 			Resources: []happeningResource{},
 			Notes:     []happeningNote{},
@@ -79,7 +96,7 @@ func registerWhatsHappeningWithSeeder(srv *mcp.Server, lc lanternClient, seeder 
 		// walks naturally. Weight per vertex = strongest incoming edge in the
 		// walked subgraph — the recency/repetition heat track built up.
 		weights := map[string]float32{}
-		g, err := seeder(ctx, lc, in.Key)
+		g, err := lc.Illuminate(ctx, in.Key, illuminateOpts...)
 		if err != nil {
 			return nil, whatsHappeningOutput{}, mapSDKError("whats_happening", err)
 		}
@@ -223,6 +240,121 @@ func registerWhatsHappeningWithSeeder(srv *mcp.Server, lc lanternClient, seeder 
 			Content: []mcp.Content{&mcp.TextContent{Text: renderHappening(out)}},
 		}, out, nil
 	})
+}
+
+func whatsHappeningTraversal(in whatsHappeningInput) (string, []client.IlluminateOption, error) {
+	selected := 0
+	for _, present := range []bool{in.BFS != nil, in.PPR != nil, in.Community != nil} {
+		if present {
+			selected++
+		}
+	}
+	if selected > 1 {
+		return "", nil, fmt.Errorf("select at most one traversal family: bfs, ppr, or community")
+	}
+
+	weighting, err := parseHappeningWeighting(in.Weighting)
+	if err != nil {
+		return "", nil, err
+	}
+	opts := []client.IlluminateOption{client.WithWeighting(weighting)}
+
+	switch {
+	case in.PPR != nil:
+		if err := validateHappeningRankParams(in.PPR.RestartProb, in.PPR.Epsilon); err != nil {
+			return "", nil, err
+		}
+		topN := in.PPR.TopN
+		if topN == 0 {
+			topN = 16
+		}
+		return "ppr", append(opts, client.WithPPR(client.PPROpts{
+			TopN: topN, RestartProb: in.PPR.RestartProb, Epsilon: in.PPR.Epsilon,
+		})), nil
+	case in.Community != nil:
+		if err := validateHappeningRankParams(in.Community.RestartProb, in.Community.Epsilon); err != nil {
+			return "", nil, err
+		}
+		reduction, objective, err := parseHappeningTree(in.Community.Reduction, in.Community.Objective)
+		if err != nil {
+			return "", nil, err
+		}
+		maxSize := in.Community.MaxSize
+		if maxSize == 0 {
+			maxSize = 32
+		}
+		return "community", append(opts, client.WithLocalCommunity(client.LocalCommunityOpts{
+			MaxSize: maxSize, RestartProb: in.Community.RestartProb, Epsilon: in.Community.Epsilon,
+			Reduction: reduction, Objective: objective,
+		})), nil
+	default:
+		bfs := in.BFS
+		if bfs == nil {
+			bfs = &whatsHappeningBFS{}
+		}
+		reduction, objective, err := parseHappeningTree(bfs.Reduction, bfs.Objective)
+		if err != nil {
+			return "", nil, err
+		}
+		step, fanOut := bfs.Step, bfs.FanOut
+		if step == 0 {
+			step = 2
+		}
+		if fanOut == 0 {
+			fanOut = 16
+		}
+		return "bfs", append(opts, client.WithBFS(client.BFSOpts{
+			Step: step, FanOut: fanOut, Reduction: reduction, Objective: objective,
+		})), nil
+	}
+}
+
+func parseHappeningWeighting(raw string) (client.Weighting, error) {
+	switch strings.ToLower(raw) {
+	case "", "raw":
+		return client.WeightingRaw, nil
+	case "tfidf":
+		return client.WeightingTFIDF, nil
+	case "bm25":
+		return client.WeightingBM25, nil
+	default:
+		return client.WeightingUnspecified, fmt.Errorf("weighting must be raw, tfidf, or bm25")
+	}
+}
+
+func parseHappeningTree(reductionRaw, objectiveRaw string) (client.Reduction, client.Objective, error) {
+	var reduction client.Reduction
+	switch strings.ToLower(reductionRaw) {
+	case "", "none":
+		reduction = client.ReductionNone
+	case "mst":
+		reduction = client.ReductionMinimumSpanningTree
+	case "spt":
+		reduction = client.ReductionShortestPathTree
+	default:
+		return client.ReductionNone, client.ObjectiveUnspecified, fmt.Errorf("reduction must be none, mst, or spt")
+	}
+
+	var objective client.Objective
+	switch strings.ToLower(objectiveRaw) {
+	case "", "maximize":
+		objective = client.ObjectiveMaximize
+	case "minimize":
+		objective = client.ObjectiveMinimize
+	default:
+		return client.ReductionNone, client.ObjectiveUnspecified, fmt.Errorf("objective must be maximize or minimize")
+	}
+	return reduction, objective, nil
+}
+
+func validateHappeningRankParams(restartProb, epsilon float32) error {
+	if restartProb < 0 || restartProb >= 1 {
+		return fmt.Errorf("restart_prob must be 0 (server default) or in (0,1)")
+	}
+	if epsilon < 0 {
+		return fmt.Errorf("epsilon must be 0 (server default) or positive")
+	}
+	return nil
 }
 
 func renderHappening(out whatsHappeningOutput) string {

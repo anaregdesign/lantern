@@ -4,12 +4,16 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"connectrpc.com/grpchealth"
+	"github.com/anaregdesign/lantern/mcp/internal/ttl"
+	client "github.com/anaregdesign/lantern/sdks/go"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -73,6 +77,114 @@ func TestDefaultConfig_RejectsNonPositiveTimeout(t *testing.T) {
 	}
 }
 
+func TestRun_RejectsMissingLanternAddress(t *testing.T) {
+	err := Run(context.Background(), Config{
+		LanternAddr: ", ,",
+		Resolver:    mustDefaultResolver(t),
+	})
+	if err == nil || !strings.Contains(err.Error(), "no lantern address configured") {
+		t.Fatalf("Run error = %v, want missing-address error", err)
+	}
+}
+
+func TestRun_RejectsInvalidTTLConfigBeforeDial(t *testing.T) {
+	t.Setenv(ttl.MaxTTLEnvVar, "not-a-duration")
+	err := Run(context.Background(), Config{LanternAddr: "http://127.0.0.1:1"})
+	if err == nil || !strings.Contains(err.Error(), "load ttl config") {
+		t.Fatalf("Run error = %v, want TTL configuration error", err)
+	}
+}
+
+func TestRun_ServesUntilContextCancellation(t *testing.T) {
+	checker := grpchealth.NewStaticChecker("")
+	checker.SetStatus("", grpchealth.StatusServing)
+	_, health := grpchealth.NewHandler(checker)
+	upstream := httptest.NewUnstartedServer(health)
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
+	upstream.Config.Protocols = protocols
+	upstream.Start()
+	t.Cleanup(upstream.Close)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve MCP listener address: %v", err)
+	}
+	httpAddr := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatalf("release MCP listener address: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	resolver := mustDefaultResolver(t)
+	go func() {
+		done <- Run(ctx, Config{
+			LanternAddr: upstream.URL,
+			PingTimeout: time.Second,
+			HTTPAddr:    httpAddr,
+			Resolver:    resolver,
+		})
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		resp, requestErr := http.Get("http://" + httpAddr + "/healthz")
+		if requestErr == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		select {
+		case runErr := <-done:
+			cancel()
+			t.Fatalf("Run exited before serving healthz: %v", runErr)
+		default:
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatal("Run did not start its healthz listener")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run after cancellation: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not shut down after context cancellation")
+	}
+}
+
+func TestNewServer_LoadsTTLAndRegistersContextSurface(t *testing.T) {
+	upstream := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(upstream.Close)
+	lantern, err := client.NewLantern(upstream.URL)
+	if err != nil {
+		t.Fatalf("NewLantern: %v", err)
+	}
+	t.Cleanup(func() { _ = lantern.Close() })
+
+	srv, err := NewServer(lantern, nil)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	if srv == nil {
+		t.Fatal("NewServer returned nil server")
+	}
+}
+
+func TestNewServer_RejectsInvalidTTLConfig(t *testing.T) {
+	t.Setenv(ttl.MaxTTLEnvVar, "not-a-duration")
+	_, err := NewServer(nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "load ttl config") {
+		t.Fatalf("NewServer error = %v, want TTL configuration error", err)
+	}
+}
+
 // newHandlerTestServer builds a fake-backed MCP server and serves it over
 // HTTP via mcpHTTPHandler on an ephemeral httptest listener. It returns
 // the base URL (no path) so callers can hit /healthz or /mcp.
@@ -80,7 +192,7 @@ func newHandlerTestServer(t *testing.T) string {
 	t.Helper()
 	fake := &fakeLantern{}
 	r := mustDefaultResolver(t)
-	srv := newServer(fake, r, slog.New(slog.NewJSONHandler(io.Discard, nil)), ProfileMemory)
+	srv := newServer(fake, r, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	ts := httptest.NewServer(mcpHTTPHandler(srv, nil))
 	t.Cleanup(ts.Close)
 	return ts.URL
@@ -136,98 +248,71 @@ func TestMCPHTTPHandler_ServesMCPOverStreamableHTTP(t *testing.T) {
 	}
 }
 
-// TestServerInstructions_DefinesCaptureRecallLoop asserts the
-// session-open instructions advertise the ambient loop contract: recall
-// before answering, capture after the exchange, the no-forever / recall-
-// does-not-refresh invariants, and the key-namespace convention. These
-// are string-level guards so a future edit cannot silently drop the
-// loop-shaped guidance the LLM relies on (#528).
-func TestServerInstructions_DefinesCaptureRecallLoop(t *testing.T) {
-	lower := strings.ToLower(serverInstructions)
+// TestContextInstructions_DefinesCoordinationLoop guards the session-open
+// protocol that makes independent agents converge on the same live board.
+func TestContextInstructions_DefinesCoordinationLoop(t *testing.T) {
+	lower := strings.ToLower(contextInstructions)
 	for _, want := range []string{
-		"recall",   // step 1
-		"answer",   // step 2
-		"capture",  // step 3
-		"proactiv", // proactive framing (matches proactive/proactively)
-		"does not refresh",
-		"there is no \"forever\"",
+		"announce",
+		"track",
+		"claim",
+		"post_note",
+		"whats_happening",
+		"not long-term memory",
 	} {
 		if !strings.Contains(lower, strings.ToLower(want)) {
-			t.Errorf("serverInstructions missing %q", want)
-		}
-	}
-	// All three namespace prefixes must be named so the captured graph is
-	// navigable as a mind map.
-	for _, ns := range []string{"user.", "project.", "session."} {
-		if !strings.Contains(serverInstructions, ns) {
-			t.Errorf("serverInstructions missing namespace %q", ns)
-		}
-	}
-	// Every memory tool should be referenced so the agent knows the full
-	// toolset participates in the loop.
-	for _, tool := range []string{"remember_fact", "recall_fact", "recall_related", "list_under", "remember_relation"} {
-		if !strings.Contains(serverInstructions, tool) {
-			t.Errorf("serverInstructions does not mention tool %q", tool)
+			t.Errorf("contextInstructions missing %q", want)
 		}
 	}
 }
 
-// TestProfileToolMatrix pins the #851 cutover contract: each profile
-// registers exactly its own tool surface (plus the shared ping), so a
-// deployment can never see a mixed or missing verb set.
-func TestProfileToolMatrix(t *testing.T) {
-	contextTools := []string{
+// TestToolSurface pins the post-cutover contract: only shared-context verbs
+// are advertised; the retired ambient-memory compatibility surface cannot
+// silently reappear.
+func TestToolSurface(t *testing.T) {
+	// A stale deployment variable must not resurrect the removed surface.
+	t.Setenv("LANTERN_MCP_PROFILE", "memory")
+	want := []string{
 		"ping", "announce", "list_agents", "track", "whats_happening",
 		"claim", "release", "list_claims", "post_note", "context_stats",
 	}
-	memoryTools := []string{
-		"ping", "remember_fact", "remember_facts", "recall_fact", "search_facts",
-		"touch", "forget", "forget_under", "list_under", "list_namespaces",
-		"memory_stats", "remember_relation", "remember_relations",
-		"recall_related", "recall_relation",
+	fake := &fakeLantern{}
+	r := mustDefaultResolver(t)
+	srv := newServer(fake, r, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+
+	serverT, clientT := mcp.NewInMemoryTransports()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ss, err := srv.Connect(ctx, serverT, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
 	}
-	for _, tc := range []struct {
-		profile string
-		want    []string
-	}{
-		{ProfileContext, contextTools},
-		{ProfileMemory, memoryTools},
-	} {
-		t.Run(tc.profile, func(t *testing.T) {
-			fake := &fakeLantern{}
-			r := mustDefaultResolver(t)
-			srv := newServer(fake, r, slog.New(slog.NewJSONHandler(io.Discard, nil)), tc.profile)
+	defer func() { _ = ss.Close() }()
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "surface-test"}, nil).Connect(ctx, clientT, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer func() { _ = cs.Close() }()
 
-			serverT, clientT := mcp.NewInMemoryTransports()
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			ss, err := srv.Connect(ctx, serverT, nil)
-			if err != nil {
-				t.Fatalf("server connect: %v", err)
-			}
-			defer func() { _ = ss.Close() }()
-			cs, err := mcp.NewClient(&mcp.Implementation{Name: "matrix-test"}, nil).Connect(ctx, clientT, nil)
-			if err != nil {
-				t.Fatalf("client connect: %v", err)
-			}
-			defer func() { _ = cs.Close() }()
-
-			listed, err := cs.ListTools(ctx, &mcp.ListToolsParams{})
-			if err != nil {
-				t.Fatalf("ListTools: %v", err)
-			}
-			got := map[string]bool{}
-			for _, tool := range listed.Tools {
-				got[tool.Name] = true
-			}
-			if len(got) != len(tc.want) {
-				t.Fatalf("profile %s registered %d tools, want %d: %v", tc.profile, len(got), len(tc.want), got)
-			}
-			for _, name := range tc.want {
-				if !got[name] {
-					t.Fatalf("profile %s missing tool %q (got %v)", tc.profile, name, got)
-				}
-			}
-		})
+	listed, err := cs.ListTools(ctx, &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	got := map[string]bool{}
+	for _, tool := range listed.Tools {
+		got[tool.Name] = true
+	}
+	if len(got) != len(want) {
+		t.Fatalf("registered %d tools, want %d: %v", len(got), len(want), got)
+	}
+	for _, name := range want {
+		if !got[name] {
+			t.Fatalf("missing tool %q (got %v)", name, got)
+		}
+	}
+	for _, retired := range []string{"remember_fact", "recall_fact", "recall_related", "memory_stats"} {
+		if got[retired] {
+			t.Fatalf("retired tool %q was registered", retired)
+		}
 	}
 }
