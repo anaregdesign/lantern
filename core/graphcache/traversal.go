@@ -2,6 +2,7 @@ package graphcache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"runtime"
@@ -320,34 +321,55 @@ const (
 	// caller passes a non-positive epsilon. 1e-4 keeps the push budget small
 	// (O(1/(alpha*eps))) while staying accurate enough for ranking.
 	DefaultPPREpsilon = 1e-4
-	// pprCtxCheckInterval is how often (in pushes) the forward-push loop polls
-	// ctx for cancellation, amortising the check off the hot path the same way
-	// neighborContext checks once per BFS step.
-	pprCtxCheckInterval = 1024
+	// pprCtxCheckInterval bounds cancellation latency both between pushes and
+	// while scanning a high-degree adjacency row.
+	pprCtxCheckInterval = 256
+	// pprQueueCompactThreshold avoids retaining a grow-only queue backing
+	// array after most of its entries have been consumed.
+	pprQueueCompactThreshold = 1024
 )
 
-// pprMaxPushes is a hard guard on the forward-push budget against pathological
-// inputs (a tiny eps or alpha). The Andersen–Chung–Lang bound is ~1/(alpha*eps)
-// pushes; we allow a generous multiple plus a floor so a small graph with a
-// modest eps is never truncated before it converges, and clamp to a hard cap so
-// an adversarial request cannot spin indefinitely.
-func pprMaxPushes(alpha, epsilon float64) int {
-	const (
-		floor   = 1 << 16 // 65k — never truncate a small, well-behaved walk
-		hardCap = 1 << 27 // ~134M — absolute ceiling regardless of eps/alpha
-	)
-	if alpha <= 0 || epsilon <= 0 {
-		return floor
+// PPRWorkBudget bounds actual forward-push work, independently of response
+// size. Both fields must be positive; zero and negative values are normalised
+// to the safe defaults so no caller accidentally opts into unbounded work.
+// The server supplies its operator-owned budget for RPCs; direct core callers
+// receive the same finite defaults.
+type PPRWorkBudget struct {
+	MaxPushes       int
+	MaxTouchedEdges int
+}
+
+var ErrPPRWorkBudgetExceeded = errors.New("personalized pagerank work budget exhausted")
+
+// PPRWorkBudgetExceededError reports a rejected, non-converged traversal. It
+// deliberately contains counters rather than a partial graph: returning a
+// truncated result as though it converged would give callers false confidence.
+type PPRWorkBudgetExceededError struct {
+	Budget       PPRWorkBudget
+	Pushes       int
+	TouchedEdges int
+}
+
+func (e *PPRWorkBudgetExceededError) Error() string {
+	return fmt.Sprintf("%v: pushes=%d/%d touched_edges=%d/%d", ErrPPRWorkBudgetExceeded,
+		e.Pushes, e.Budget.MaxPushes, e.TouchedEdges, e.Budget.MaxTouchedEdges)
+}
+
+func (e *PPRWorkBudgetExceededError) Unwrap() error { return ErrPPRWorkBudgetExceeded }
+
+func defaultPPRWorkBudget() PPRWorkBudget {
+	return PPRWorkBudget{MaxPushes: 1_000_000, MaxTouchedEdges: 10_000_000}
+}
+
+func (b PPRWorkBudget) normalized() PPRWorkBudget {
+	d := defaultPPRWorkBudget()
+	if b.MaxPushes <= 0 {
+		b.MaxPushes = d.MaxPushes
 	}
-	bound := 8.0 / (alpha * epsilon)
-	if bound >= hardCap {
-		return hardCap
+	if b.MaxTouchedEdges <= 0 {
+		b.MaxTouchedEdges = d.MaxTouchedEdges
 	}
-	n := int(bound) + floor
-	if n > hardCap {
-		return hardCap
-	}
-	return n
+	return b
 }
 
 // PersonalizedPageRank is the context-free convenience wrapper over
@@ -377,15 +399,22 @@ func (c *GraphCache[S, T]) PersonalizedPageRank(seed S, topN int, alpha, epsilon
 // (raw / tfidf / bm25, via the shared scoreEdge kernel) so BM25-weighted PPR
 // composes for free. keep is the optional frontier predicate (#601): a head is
 // only walked into (and ranked) when keep(head) is true; the seed is the
-// anchor exemption. ctx is polled every pprCtxCheckInterval pushes and returns
-// ctx.Err() when cancelled. topN caps the ranked vertices returned (the request
-// k); topN <= 0 returns every vertex with positive mass. An unknown seed yields
-// an empty graph (the seed vertex alone is never emitted without neighbours).
+// anchor exemption. It uses the finite default PPRWorkBudget. Call
+// PersonalizedPageRankWithWorkBudgetContext when the caller owns stricter
+// operational limits.
 func (c *GraphCache[S, T]) PersonalizedPageRankContext(ctx context.Context, seed S, topN int, alpha, epsilon float64, weighting EdgeWeighting, keep func(S) bool) (*graph.Graph[S, T], error) {
-	if alpha <= 0 || alpha >= 1 {
+	return c.PersonalizedPageRankWithWorkBudgetContext(ctx, seed, topN, alpha, epsilon, weighting, keep, defaultPPRWorkBudget())
+}
+
+// PersonalizedPageRankWithWorkBudgetContext is PersonalizedPageRankContext
+// with an explicit bound on forward pushes and scanned adjacency entries. A
+// budget exhaustion returns ErrPPRWorkBudgetExceeded instead of a partial,
+// falsely-converged relevance star.
+func (c *GraphCache[S, T]) PersonalizedPageRankWithWorkBudgetContext(ctx context.Context, seed S, topN int, alpha, epsilon float64, weighting EdgeWeighting, keep func(S) bool, budget PPRWorkBudget) (*graph.Graph[S, T], error) {
+	if alpha <= 0 || alpha >= 1 || math.IsNaN(alpha) || math.IsInf(alpha, 0) {
 		alpha = DefaultPPRAlpha
 	}
-	if epsilon <= 0 {
+	if epsilon <= 0 || math.IsNaN(epsilon) || math.IsInf(epsilon, 0) {
 		epsilon = DefaultPPREpsilon
 	}
 
@@ -406,7 +435,7 @@ func (c *GraphCache[S, T]) PersonalizedPageRankContext(ctx context.Context, seed
 	// One liveness instant for the whole push (#838), mirroring
 	// neighborContext.
 	now := time.Now()
-	p, err := c.pprPushLocked(ctx, seed, alpha, epsilon, weighting, keep, now)
+	p, err := c.pprPushLocked(ctx, seed, alpha, epsilon, weighting, keep, now, budget)
 	if err != nil {
 		return nil, err
 	}
@@ -443,11 +472,12 @@ func (c *GraphCache[S, T]) PersonalizedPageRankContext(ctx context.Context, seed
 // pprPushLocked runs the Andersen–Chung–Lang local forward-push from seed and
 // returns the approximate PPR vector p. Factored out of
 // PersonalizedPageRankContext (#845) so the sweep-cut community extraction
-// shares one push implementation — same defaults, caps, ctx polling, keep
+// shares one push implementation — same defaults, work budget, ctx polling, keep
 // predicate, and #750 liveness rules. Caller must hold c.mu.RLock and have
 // resolved alpha/epsilon to their in-range values; now is the single liveness
 // instant for the whole walk (#838).
-func (c *GraphCache[S, T]) pprPushLocked(ctx context.Context, seed S, alpha, epsilon float64, weighting EdgeWeighting, keep func(S) bool, now time.Time) (map[S]float64, error) {
+func (c *GraphCache[S, T]) pprPushLocked(ctx context.Context, seed S, alpha, epsilon float64, weighting EdgeWeighting, keep func(S) bool, now time.Time, budget PPRWorkBudget) (map[S]float64, error) {
+	budget = budget.normalized()
 	// BM25 corpus statistics are read once, only for the BM25 weighting, under
 	// the same RLock the per-edge accessors rely on — identical to
 	// neighborContext so PPR transitions and the BFS prune weight edges alike.
@@ -473,13 +503,20 @@ func (c *GraphCache[S, T]) pprPushLocked(ctx context.Context, seed S, alpha, eps
 	r := map[S]float64{seed: 1}
 	queue := []S{seed}
 	inQueue := map[S]bool{seed: true}
-	maxPushes := pprMaxPushes(alpha, epsilon)
+	pushes, touchedEdges := 0, 0
+	compactQueue := func(qi int) ([]S, int) {
+		if qi < pprQueueCompactThreshold || qi*2 < len(queue) {
+			return queue, qi
+		}
+		active := append([]S(nil), queue[qi:]...)
+		return active, 0
+	}
 
-	// Index cursor instead of queue = queue[1:], so the loop does not
-	// re-slice while retaining the consumed backing head.
-	pushes := 0
-	for qi := 0; qi < len(queue); qi++ {
+	for qi := 0; qi < len(queue); {
 		u := queue[qi]
+		var zero S
+		queue[qi] = zero
+		qi++
 		inQueue[u] = false
 		ru := r[u]
 
@@ -494,6 +531,15 @@ func (c *GraphCache[S, T]) pprPushLocked(ctx context.Context, seed S, alpha, eps
 				docLen = len(heads) // BM25 document length = raw out-degree
 				outs = make([]scoredEdge, 0, len(heads))
 				for headID, w := range heads {
+					touchedEdges++
+					if touchedEdges > budget.MaxTouchedEdges {
+						return nil, &PPRWorkBudgetExceededError{Budget: budget, Pushes: pushes, TouchedEdges: touchedEdges}
+					}
+					if touchedEdges%pprCtxCheckInterval == 0 {
+						if err := ctx.Err(); err != nil {
+							return nil, err
+						}
+					}
 					head, ok := c.edges.resolveID(headID)
 					if !ok {
 						continue
@@ -523,7 +569,11 @@ func (c *GraphCache[S, T]) pprPushLocked(ctx context.Context, seed S, alpha, eps
 		// alpha share is absorbed into p and the remaining mass leaks — using a
 		// degree floor of 1 so a non-trivial residual is not stranded forever.
 		if ru < epsilon*float64(max(len(outs), 1)) {
+			queue, qi = compactQueue(qi)
 			continue
+		}
+		if pushes >= budget.MaxPushes {
+			return nil, &PPRWorkBudgetExceededError{Budget: budget, Pushes: pushes, TouchedEdges: touchedEdges}
 		}
 
 		r[u] = 0
@@ -540,14 +590,12 @@ func (c *GraphCache[S, T]) pprPushLocked(ctx context.Context, seed S, alpha, eps
 		}
 
 		pushes++
-		if pushes >= maxPushes {
-			break
-		}
 		if pushes%pprCtxCheckInterval == 0 {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
 		}
+		queue, qi = compactQueue(qi)
 	}
 	return p, nil
 }
@@ -593,10 +641,17 @@ func (c *GraphCache[S, T]) LocalCommunity(seed S, maxSize int, alpha, epsilon fl
 // over, so the tree honours the weighting. An unknown seed yields an empty
 // graph.
 func (c *GraphCache[S, T]) LocalCommunityContext(ctx context.Context, seed S, maxSize int, alpha, epsilon float64, weighting EdgeWeighting, keep func(S) bool) (*graph.Graph[S, T], map[S]map[S]time.Time, error) {
-	if alpha <= 0 || alpha >= 1 {
+	return c.LocalCommunityWithWorkBudgetContext(ctx, seed, maxSize, alpha, epsilon, weighting, keep, defaultPPRWorkBudget())
+}
+
+// LocalCommunityWithWorkBudgetContext is LocalCommunityContext with an
+// explicit budget for the shared PageRank-Nibble forward push. Exhaustion
+// returns ErrPPRWorkBudgetExceeded; it never emits a partial community.
+func (c *GraphCache[S, T]) LocalCommunityWithWorkBudgetContext(ctx context.Context, seed S, maxSize int, alpha, epsilon float64, weighting EdgeWeighting, keep func(S) bool, budget PPRWorkBudget) (*graph.Graph[S, T], map[S]map[S]time.Time, error) {
+	if alpha <= 0 || alpha >= 1 || math.IsNaN(alpha) || math.IsInf(alpha, 0) {
 		alpha = DefaultPPRAlpha
 	}
-	if epsilon <= 0 {
+	if epsilon <= 0 || math.IsNaN(epsilon) || math.IsInf(epsilon, 0) {
 		epsilon = DefaultPPREpsilon
 	}
 
@@ -613,7 +668,7 @@ func (c *GraphCache[S, T]) LocalCommunityContext(ctx context.Context, seed S, ma
 	}
 
 	now := time.Now()
-	p, err := c.pprPushLocked(ctx, seed, alpha, epsilon, weighting, keep, now)
+	p, err := c.pprPushLocked(ctx, seed, alpha, epsilon, weighting, keep, now, budget)
 	if err != nil {
 		return nil, nil, err
 	}

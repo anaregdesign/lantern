@@ -46,6 +46,7 @@ type fakeBackend struct {
 	lastCommunityEpsilon float64
 	lastCommunityWeight  graphcache.EdgeWeighting
 	lastCommunityKeep    func(string) bool
+	lastCommunityBudget  graphcache.PPRWorkBudget
 	communityGraph       *coregraph.Graph[string, *pb.Vertex]
 	communityExpirations map[string]map[string]time.Time
 	communityErr         error
@@ -62,6 +63,7 @@ type fakeBackend struct {
 	lastPPREpsilon   float64
 	lastPPRWeighting graphcache.EdgeWeighting
 	lastPPRKeep      func(string) bool
+	lastPPRBudget    graphcache.PPRWorkBudget
 	pprErr           error
 
 	putVerticesCalls int
@@ -242,13 +244,14 @@ func (f *fakeBackend) NeighborWithExpirationsContext(
 	return g, map[string]map[string]time.Time{}, nil
 }
 
-func (f *fakeBackend) LocalCommunityContext(
+func (f *fakeBackend) LocalCommunityWithWorkBudgetContext(
 	_ context.Context,
 	seed string,
 	maxSize int,
 	alpha, epsilon float64,
 	weighting graphcache.EdgeWeighting,
 	keep func(string) bool,
+	budget graphcache.PPRWorkBudget,
 ) (*coregraph.Graph[string, *pb.Vertex], map[string]map[string]time.Time, error) {
 	f.communityCalls++
 	f.lastCommunityMaxSize = maxSize
@@ -256,6 +259,7 @@ func (f *fakeBackend) LocalCommunityContext(
 	f.lastCommunityEpsilon = epsilon
 	f.lastCommunityWeight = weighting
 	f.lastCommunityKeep = keep
+	f.lastCommunityBudget = budget
 	if f.communityErr != nil {
 		return nil, nil, f.communityErr
 	}
@@ -267,13 +271,14 @@ func (f *fakeBackend) LocalCommunityContext(
 	return g, nil, nil
 }
 
-func (f *fakeBackend) PersonalizedPageRankContext(
+func (f *fakeBackend) PersonalizedPageRankWithWorkBudgetContext(
 	ctx context.Context,
 	seed string,
 	topN int,
 	alpha, epsilon float64,
 	weighting graphcache.EdgeWeighting,
 	keep func(string) bool,
+	budget graphcache.PPRWorkBudget,
 ) (*coregraph.Graph[string, *pb.Vertex], error) {
 	f.pprCalls++
 	f.lastPPRSeed = seed
@@ -282,6 +287,7 @@ func (f *fakeBackend) PersonalizedPageRankContext(
 	f.lastPPREpsilon = epsilon
 	f.lastPPRWeighting = weighting
 	f.lastPPRKeep = keep
+	f.lastPPRBudget = budget
 	if f.pprErr != nil {
 		return nil, f.pprErr
 	}

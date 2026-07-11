@@ -81,11 +81,11 @@ func optimizerToConnect(err error) error {
 // epsilon must be positive (0/unset → DefaultPPREpsilon=1e-4).
 func resolvePPRParams(restartProb, epsilon float32) (alpha, eps float64) {
 	alpha = float64(restartProb)
-	if alpha <= 0 || alpha >= 1 {
+	if alpha <= 0 || alpha >= 1 || math.IsNaN(alpha) || math.IsInf(alpha, 0) {
 		alpha = graphcache.DefaultPPRAlpha
 	}
 	eps = float64(epsilon)
-	if eps <= 0 {
+	if eps <= 0 || math.IsNaN(eps) || math.IsInf(eps, 0) {
 		eps = graphcache.DefaultPPREpsilon
 	}
 	return alpha, eps

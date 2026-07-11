@@ -12,6 +12,7 @@ import (
 	"errors"
 
 	"connectrpc.com/connect"
+	"github.com/anaregdesign/lantern/core/graphcache"
 )
 
 // ctxToConnect translates ctx.Err() (or any wrapped form thereof) into
@@ -34,4 +35,14 @@ func ctxToConnect(err error) error {
 	default:
 		return err
 	}
+}
+
+// traversalToConnect adds stable resource-safety errors on top of the shared
+// context mapping. A PPR/community work budget exhaustion is deliberately a
+// RESOURCE_EXHAUSTED failure, never a successful-but-truncated graph.
+func traversalToConnect(err error) error {
+	if errors.Is(err, graphcache.ErrPPRWorkBudgetExceeded) {
+		return connect.NewError(connect.CodeResourceExhausted, err)
+	}
+	return ctxToConnect(err)
 }

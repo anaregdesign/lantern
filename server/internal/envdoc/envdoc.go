@@ -109,7 +109,10 @@ var descriptions = map[string]string{
 
 	"LANTERN_STRICT_CONFIG": "Refuse to boot when any LANTERN_* value is malformed or an unknown LANTERN_* variable is set.",
 
-	"LANTERN_TRAVERSAL_TIMEOUT_MS": "Server-side wall-clock budget for Illuminate traversals in milliseconds (0 = client-owned deadlines only); expiry surfaces as DEADLINE_EXCEEDED.",
+	"LANTERN_TRAVERSAL_MAX_PUSHES":        "Maximum PPR/PageRank-Nibble forward pushes per Illuminate call; exhaustion returns RESOURCE_EXHAUSTED, never a partial result.",
+	"LANTERN_TRAVERSAL_MAX_RESULTS":       "Maximum PPR star members or local-community members returned by Illuminate; wire top_n=0/max_size=0 resolve to this cap.",
+	"LANTERN_TRAVERSAL_MAX_TOUCHED_EDGES": "Maximum adjacency entries scanned by PPR/PageRank-Nibble per Illuminate call; exhaustion returns RESOURCE_EXHAUSTED.",
+	"LANTERN_TRAVERSAL_TIMEOUT_MS":        "Server-side wall-clock budget for Illuminate traversals in milliseconds (default 5000; 0 explicitly disables it); expiry surfaces as DEADLINE_EXCEEDED.",
 }
 
 // Render produces the docs/env.md markdown for the given registry specs. It

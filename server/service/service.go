@@ -57,6 +57,8 @@ type LanternService struct {
 	onTombstoneClampReject func()
 	metrics                HotPathMetrics
 	traversalTimeout       time.Duration
+	traversalWorkBudget    graphcache.PPRWorkBudget
+	traversalMaxResults    int
 	capacity               CapacityLimits
 
 	// statusInfo + startedAt + startedAtOnce back GetServerStatus
@@ -151,7 +153,16 @@ func defaultSearchLimits() SearchLimits {
 }
 
 func NewLanternService(cache Backend) *LanternService {
-	return &LanternService{cache: cache, scan: defaultScanLimits(), search: defaultSearchLimits(), origins: newOriginStateTracker(), metrics: noopHotPathMetrics{}}
+	return &LanternService{
+		cache:               cache,
+		scan:                defaultScanLimits(),
+		search:              defaultSearchLimits(),
+		origins:             newOriginStateTracker(),
+		metrics:             noopHotPathMetrics{},
+		traversalTimeout:    5 * time.Second,
+		traversalWorkBudget: graphcache.PPRWorkBudget{MaxPushes: 1_000_000, MaxTouchedEdges: 10_000_000},
+		traversalMaxResults: 1024,
+	}
 }
 
 // WithScanLimits returns s with its prefix-RPC limits replaced. Intended
@@ -329,16 +340,51 @@ func (s *LanternService) WithTombstoneClampRejectHook(f func()) *LanternService 
 }
 
 // WithTraversalTimeout installs the server-side wall-clock budget for the
-// traversal-heavy Illuminate RPC (#842). When d > 0 every Illuminate runs
+// traversal-heavy Illuminate RPC (#842). By default every Illuminate runs
 // under context.WithTimeout(ctx, d), so a deadline-less client cannot hold
 // the graph read lock indefinitely with an expensive PPR or deep BFS; expiry
 // surfaces as CodeDeadlineExceeded via the existing ctx polling inside the
-// walks. d <= 0 (the default) keeps deadlines client-owned. The budget only
+// walks. Passing d <= 0 explicitly keeps deadlines client-owned. The budget only
 // tightens: a shorter client deadline still wins. Streaming RPCs and scans
 // are deliberately NOT covered — scans are collection-bounded by ScanLimits.
 func (s *LanternService) WithTraversalTimeout(d time.Duration) *LanternService {
 	s.traversalTimeout = d
 	return s
+}
+
+// TraversalLimits are the server-owned ceilings for PPR and local-community
+// work. The zero-valued wire sentinels top_n=0 and max_size=0 resolve to
+// MaxResults, never an unbounded response. MaxPushes and MaxTouchedEdges are
+// passed to the core push loop, which returns a typed exhaustion error rather
+// than a partial result.
+type TraversalLimits struct {
+	WorkBudget graphcache.PPRWorkBudget
+	MaxResults int
+}
+
+// WithTraversalLimits replaces the PPR/community work and result ceilings.
+// Non-positive values retain the safe constructor defaults.
+func (s *LanternService) WithTraversalLimits(l TraversalLimits) *LanternService {
+	if l.WorkBudget.MaxPushes > 0 {
+		s.traversalWorkBudget.MaxPushes = l.WorkBudget.MaxPushes
+	}
+	if l.WorkBudget.MaxTouchedEdges > 0 {
+		s.traversalWorkBudget.MaxTouchedEdges = l.WorkBudget.MaxTouchedEdges
+	}
+	if l.MaxResults > 0 {
+		s.traversalMaxResults = l.MaxResults
+	}
+	return s
+}
+
+func (s *LanternService) effectiveTraversalResultLimit(requested int, field string) (int, error) {
+	if requested == 0 {
+		return s.traversalMaxResults, nil
+	}
+	if requested > s.traversalMaxResults {
+		return 0, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%s %d exceeds traversal result cap %d", field, requested, s.traversalMaxResults))
+	}
+	return requested, nil
 }
 
 // validateExpiration enforces the LANTERN_TOMBSTONE_TTL clamp on
@@ -535,12 +581,16 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 		// the star by mass. There is no expirations map because the star
 		// edges are synthetic.
 		ppr := params.Ppr
+		topN, limitErr := s.effectiveTraversalResultLimit(int(ppr.GetTopN()), "ppr.top_n")
+		if limitErr != nil {
+			return nil, limitErr
+		}
 		alpha, epsilon := resolvePPRParams(ppr.GetRestartProb(), ppr.GetEpsilon())
 		traversalStart := time.Now()
-		g, err = s.cache.PersonalizedPageRankContext(ctx, request.GetSeed(), int(ppr.GetTopN()), alpha, epsilon, coreWeighting, keep)
+		g, err = s.cache.PersonalizedPageRankWithWorkBudgetContext(ctx, request.GetSeed(), topN, alpha, epsilon, coreWeighting, keep, s.traversalWorkBudget)
 		traversalDur = time.Since(traversalStart)
 		if err != nil {
-			return nil, ctxToConnect(err)
+			return nil, traversalToConnect(err)
 		}
 		algoLabel, redLabel, objLabel = "ppr", "none", "maximize"
 
@@ -556,12 +606,16 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 		// seed within the community stay as ISOLATED vertices rather than
 		// being dropped or wired up artificially.
 		comm := params.Community
+		maxSize, limitErr := s.effectiveTraversalResultLimit(int(comm.GetMaxSize()), "community.max_size")
+		if limitErr != nil {
+			return nil, limitErr
+		}
 		alpha, epsilon := resolvePPRParams(comm.GetRestartProb(), comm.GetEpsilon())
 		traversalStart := time.Now()
-		g, expirations, err = s.cache.LocalCommunityContext(ctx, request.GetSeed(), int(comm.GetMaxSize()), alpha, epsilon, coreWeighting, keep)
+		g, expirations, err = s.cache.LocalCommunityWithWorkBudgetContext(ctx, request.GetSeed(), maxSize, alpha, epsilon, coreWeighting, keep, s.traversalWorkBudget)
 		traversalDur = time.Since(traversalStart)
 		if err != nil {
-			return nil, ctxToConnect(err)
+			return nil, traversalToConnect(err)
 		}
 		if opt := resolveOptimizer(comm.GetReduction(), comm.GetObjective()); opt != nil {
 			optStart := time.Now()

@@ -2,6 +2,7 @@ package graphcache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -577,6 +578,54 @@ func TestGraphCache_PersonalizedPageRank(t *testing.T) {
 		}
 	})
 
+	t.Run("WorkBudgetReturnsTypedErrorInsteadOfPartialStar", func(t *testing.T) {
+		c := NewGraphCache[string, int](time.Minute)
+		c.AddEdge("seed", "a", 1)
+		c.AddEdge("a", "seed", 1)
+		_, err := c.PersonalizedPageRankWithWorkBudgetContext(context.Background(), "seed", 0, 0.15, 1e-9, WeightingRaw, nil,
+			PPRWorkBudget{MaxPushes: 1, MaxTouchedEdges: 100})
+		if !errors.Is(err, ErrPPRWorkBudgetExceeded) {
+			t.Fatalf("errors.Is(err, ErrPPRWorkBudgetExceeded) = false; err = %v", err)
+		}
+		var exhausted *PPRWorkBudgetExceededError
+		if !errors.As(err, &exhausted) || exhausted.Pushes != 1 {
+			t.Fatalf("budget error = %+v, want typed error after one push", exhausted)
+		}
+	})
+
+	t.Run("WorkBudgetCapsHighDegreeAdjacencyScans", func(t *testing.T) {
+		c := NewGraphCache[string, int](time.Minute)
+		c.AddEdge("seed", "a", 1)
+		c.AddEdge("seed", "b", 1)
+		_, err := c.PersonalizedPageRankWithWorkBudgetContext(context.Background(), "seed", 0, 0.15, 1e-9, WeightingRaw, nil,
+			PPRWorkBudget{MaxPushes: 100, MaxTouchedEdges: 1})
+		if !errors.Is(err, ErrPPRWorkBudgetExceeded) {
+			t.Fatalf("errors.Is(err, ErrPPRWorkBudgetExceeded) = false; err = %v", err)
+		}
+	})
+
+	t.Run("CancellationIsPolledInsideHighDegreeAdjacencyScans", func(t *testing.T) {
+		c := NewGraphCache[string, int](time.Minute)
+		for i := range 512 {
+			c.AddEdge("seed", fmt.Sprintf("v-%d", i), 1)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		seen := 0
+		keep := func(string) bool {
+			seen++
+			if seen == 300 {
+				cancel()
+			}
+			return true
+		}
+		_, err := c.PersonalizedPageRankWithWorkBudgetContext(ctx, "seed", 0, 0.15, 1e-9, WeightingRaw, keep,
+			PPRWorkBudget{MaxPushes: 100, MaxTouchedEdges: 10_000})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("errors.Is(err, context.Canceled) = false; err = %v", err)
+		}
+	})
+
 	t.Run("UnknownSeed", func(t *testing.T) {
 		c := NewGraphCache[string, int](time.Minute)
 		c.AddEdge("seed", "a", 1)
@@ -596,6 +645,20 @@ func TestGraphCache_PersonalizedPageRank(t *testing.T) {
 		star := g.Edges["seed"]
 		if star == nil || !(star["a"] > star["b"]) {
 			t.Errorf("defaulted PPR should still rank the heavier head first: %+v", star)
+		}
+	})
+
+	t.Run("DefaultsOnNonFiniteParams", func(t *testing.T) {
+		c := NewGraphCache[string, int](time.Minute)
+		c.AddEdge("seed", "a", 2)
+		c.AddEdge("seed", "b", 1)
+		g, err := c.PersonalizedPageRankContext(context.Background(), "seed", 0, math.NaN(), math.NaN(), WeightingRaw, nil)
+		if err != nil {
+			t.Fatalf("PersonalizedPageRankContext: %v", err)
+		}
+		star := g.Edges["seed"]
+		if star == nil || math.IsNaN(float64(star["a"])) || math.IsNaN(float64(star["b"])) {
+			t.Fatalf("non-finite parameters poisoned PPR output: %+v", star)
 		}
 	})
 }

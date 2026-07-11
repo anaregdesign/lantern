@@ -70,6 +70,34 @@ func TestWireCacheGCHooks_EmitsTickSummary(t *testing.T) {
 // failure happens inside NewConfig — the first provider wire constructs — so
 // a refused boot never reaches listener construction.
 func TestNewConfigValidation(t *testing.T) {
+	t.Run("traversal safety defaults are finite", func(t *testing.T) {
+		envconfig.ResetForTesting()
+		for _, key := range []string{
+			"LANTERN_TRAVERSAL_TIMEOUT_MS",
+			"LANTERN_TRAVERSAL_MAX_PUSHES",
+			"LANTERN_TRAVERSAL_MAX_TOUCHED_EDGES",
+			"LANTERN_TRAVERSAL_MAX_RESULTS",
+		} {
+			t.Setenv(key, "")
+		}
+		cfg, err := NewConfig()
+		if err != nil {
+			t.Fatalf("NewConfig: %v", err)
+		}
+		if got, want := cfg.Traversal.Timeout, 5*time.Second; got != want {
+			t.Errorf("Traversal.Timeout = %v, want %v", got, want)
+		}
+		if got, want := cfg.Traversal.MaxPushes, 1_000_000; got != want {
+			t.Errorf("Traversal.MaxPushes = %d, want %d", got, want)
+		}
+		if got, want := cfg.Traversal.MaxTouchedEdges, 10_000_000; got != want {
+			t.Errorf("Traversal.MaxTouchedEdges = %d, want %d", got, want)
+		}
+		if got, want := cfg.Traversal.MaxResults, 1024; got != want {
+			t.Errorf("Traversal.MaxResults = %d, want %d", got, want)
+		}
+	})
+
 	t.Run("defaults survive a malformed value without strict", func(t *testing.T) {
 		envconfig.ResetForTesting()
 		t.Setenv("LANTERN_STRICT_CONFIG", "false")

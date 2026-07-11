@@ -123,30 +123,32 @@ type Backend interface {
 		keep func(string) bool,
 	) (*coregraph.Graph[string, *pb.Vertex], map[string]map[string]time.Time, error)
 
-	// LocalCommunityContext extracts the conductance-optimal local
+	// LocalCommunityWithWorkBudgetContext extracts the conductance-optimal local
 	// community around seed (#845): the shared PPR forward-push followed by
-	// a sweep cut (PageRank-Nibble). maxSize is an UPPER BOUND (0 =
-	// unbounded); alpha/epsilon follow the PPR defaults; weighting steers
+	// a sweep cut (PageRank-Nibble). maxSize is an UPPER BOUND; the service
+	// resolves wire zero to its configured result cap before calling this
+	// backend. alpha/epsilon follow the PPR defaults; weighting steers
 	// the walk and the sweep AND is applied to the returned edge weights
 	// (WeightingRaw = the verbatim stored weight) — the returned graph is
 	// the INDUCED SUBGRAPH on the selected members with those weights and
 	// their expirations, in the same (graph, expirations) shape as the BFS
 	// path. keep scopes both the walk and the community (seed exempt).
-	LocalCommunityContext(
+	LocalCommunityWithWorkBudgetContext(
 		ctx context.Context,
 		seed string,
 		maxSize int,
 		alpha, epsilon float64,
 		weighting graphcache.EdgeWeighting,
 		keep func(string) bool,
+		budget graphcache.PPRWorkBudget,
 	) (*coregraph.Graph[string, *pb.Vertex], map[string]map[string]time.Time, error)
 
-	// PersonalizedPageRankContext computes the seed-anchored Personalized
+	// PersonalizedPageRankWithWorkBudgetContext computes the seed-anchored Personalized
 	// PageRank vector via Andersen–Chung–Lang forward-push (#801) and returns
 	// it as a one-hop "relevance star": g.Edges[seed][v] carries v's PPR mass
-	// pi[v] for the topN highest-mass vertices (topN <= 0 means every
-	// positive-mass vertex), with the seed excluded from its own star. This is
-	// a distinct traversal path, NOT a post-traversal reduction of the BFS
+	// pi[v] for the topN highest-mass vertices, with the seed excluded from its
+	// own star. The service resolves wire top_n=0 to its configured result cap.
+	// This is a distinct traversal path, NOT a post-traversal reduction of the BFS
 	// neighbourhood — alpha is the restart/teleport-to-seed probability and
 	// epsilon the residual threshold; out-of-range alpha (<=0 or >=1) and
 	// non-positive epsilon fall back to the core defaults. weighting transforms
@@ -155,13 +157,14 @@ type Backend interface {
 	// (a non-matching head never accrues mass; the seed is exempt; nil accepts
 	// every head). There is no expirations map — the star edges are synthetic
 	// relevance weights, not stored edges.
-	PersonalizedPageRankContext(
+	PersonalizedPageRankWithWorkBudgetContext(
 		ctx context.Context,
 		seed string,
 		topN int,
 		alpha, epsilon float64,
 		weighting graphcache.EdgeWeighting,
 		keep func(string) bool,
+		budget graphcache.PPRWorkBudget,
 	) (*coregraph.Graph[string, *pb.Vertex], error)
 
 	// prefix scan / count / delete. ScanByPrefixPage (#836) invokes fn for

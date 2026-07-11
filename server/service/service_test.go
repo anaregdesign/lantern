@@ -1004,7 +1004,7 @@ func TestLanternService_FakeBackend_Illuminate_PPRRouting(t *testing.T) {
 	})
 
 	t.Run("out-of-range restart_prob falls back to default", func(t *testing.T) {
-		for _, rp := range []float32{0, 1, 1.5, -0.2} {
+		for _, rp := range []float32{0, 1, 1.5, -0.2, float32(math.NaN())} {
 			fb := newSeeded()
 			svc := NewLanternService(fb)
 			if _, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{
@@ -1039,6 +1039,34 @@ func TestLanternService_FakeBackend_Illuminate_PPRRouting(t *testing.T) {
 		}
 		if !keep("users/42") || keep("orgs/9") {
 			t.Errorf(`keep mis-scoped: keep("users/42")=%v keep("orgs/9")=%v`, keep("users/42"), keep("orgs/9"))
+		}
+	})
+
+	t.Run("zero top_n resolves to the operator cap and forwards the work budget", func(t *testing.T) {
+		fb := newSeeded()
+		budget := graphcache.PPRWorkBudget{MaxPushes: 7, MaxTouchedEdges: 11}
+		svc := NewLanternService(fb).WithTraversalLimits(TraversalLimits{WorkBudget: budget, MaxResults: 1})
+		if _, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{
+			Seed: "s", Params: &pb.IlluminateRequest_Ppr{Ppr: &pb.PprParams{}},
+		}); err != nil {
+			t.Fatalf("Illuminate: %v", err)
+		}
+		if fb.lastPPRTopN != 1 {
+			t.Errorf("top_n=0 forwarded as %d, want configured cap 1", fb.lastPPRTopN)
+		}
+		if fb.lastPPRBudget != budget {
+			t.Errorf("PPR budget = %+v, want %+v", fb.lastPPRBudget, budget)
+		}
+	})
+
+	t.Run("explicit top_n above the operator cap is rejected", func(t *testing.T) {
+		fb := newSeeded()
+		svc := NewLanternService(fb).WithTraversalLimits(TraversalLimits{MaxResults: 1})
+		_, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{
+			Seed: "s", Params: &pb.IlluminateRequest_Ppr{Ppr: &pb.PprParams{TopN: 2}},
+		})
+		if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+			t.Fatalf("Illuminate code = %v, want InvalidArgument (err=%v)", got, err)
 		}
 	})
 
@@ -1708,6 +1736,18 @@ func TestExpirationClamp_FiresValidationRejectHook(t *testing.T) {
 // default injects no deadline at all (client-owned behaviour unchanged), and
 // an already-shorter client deadline still wins.
 func TestLanternService_Illuminate_TraversalBudget(t *testing.T) {
+	t.Run("default budget reaches the backend as a deadline", func(t *testing.T) {
+		fb := newFakeBackend()
+		svc := NewLanternService(fb)
+
+		if _, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{Seed: "a"}); err != nil {
+			t.Fatalf("Illuminate: %v", err)
+		}
+		if !fb.lastNeighborHadDeadline {
+			t.Fatal("default traversal budget carried no deadline")
+		}
+	})
+
 	t.Run("budget cancels an over-long traversal as DeadlineExceeded", func(t *testing.T) {
 		fb := newFakeBackend()
 		fb.neighborBlockUntilCtxDone = true
@@ -1719,9 +1759,9 @@ func TestLanternService_Illuminate_TraversalBudget(t *testing.T) {
 		}
 	})
 
-	t.Run("disabled budget injects no deadline", func(t *testing.T) {
+	t.Run("explicitly disabled budget injects no deadline", func(t *testing.T) {
 		fb := newFakeBackend()
-		svc := NewLanternService(fb)
+		svc := NewLanternService(fb).WithTraversalTimeout(0)
 
 		if _, err := svc.Illuminate(context.Background(), &pb.IlluminateRequest{Seed: "a"}); err != nil {
 			t.Fatalf("Illuminate: %v", err)
@@ -1986,6 +2026,23 @@ func TestLanternService_Illuminate_LocalCommunity(t *testing.T) {
 		if fb.lastCommunityAlpha != graphcache.DefaultPPRAlpha || fb.lastCommunityEpsilon != graphcache.DefaultPPREpsilon {
 			t.Errorf("defaults = %v/%v, want %v/%v", fb.lastCommunityAlpha, fb.lastCommunityEpsilon,
 				graphcache.DefaultPPRAlpha, graphcache.DefaultPPREpsilon)
+		}
+	})
+
+	t.Run("zero max_size resolves to the operator cap and forwards the work budget", func(t *testing.T) {
+		fb := newFakeBackend()
+		budget := graphcache.PPRWorkBudget{MaxPushes: 7, MaxTouchedEdges: 11}
+		svc := NewLanternService(fb).WithTraversalLimits(TraversalLimits{WorkBudget: budget, MaxResults: 3})
+		if _, err := svc.Illuminate(ctx, &pb.IlluminateRequest{
+			Seed: "s", Params: &pb.IlluminateRequest_Community{Community: &pb.LocalCommunityParams{}},
+		}); err != nil {
+			t.Fatalf("Illuminate: %v", err)
+		}
+		if fb.lastCommunityMaxSize != 3 {
+			t.Errorf("max_size=0 forwarded as %d, want configured cap 3", fb.lastCommunityMaxSize)
+		}
+		if fb.lastCommunityBudget != budget {
+			t.Errorf("community budget = %+v, want %+v", fb.lastCommunityBudget, budget)
 		}
 	})
 
