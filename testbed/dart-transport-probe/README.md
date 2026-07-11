@@ -73,8 +73,11 @@ for the iOS simulator. The test proves:
 - unary CRUD, `int64`, server streaming, and cancellation work on-device.
 
 The script prints the generated debug APK byte size or iOS simulator app size.
-It converts the supplied PEM CA to the single-certificate DER form required by
-`SecurityContext` on iOS before injecting it into either candidate.
+For Flutter's integration-test driver it converts the supplied PEM CA to a
+single-certificate DER trust anchor. The CI `simctl` driver instead registers
+the CA in the disposable Simulator keychain, matching iOS platform trust, and
+proves fail-closed behavior with a hostname mismatch. Android separately
+proves app-level custom trust injection for both candidates.
 On Flutter 3.44.6 / Dart 3.12.2 with Android emulator 36.6.11, the measured
 debug APKs were 78,879,151 bytes (Connect) and 79,412,635 bytes (gRPC). This is
 a harness-level comparison, not a production release-size forecast.

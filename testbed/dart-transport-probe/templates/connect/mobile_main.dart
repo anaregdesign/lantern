@@ -1,33 +1,26 @@
-import 'dart:convert';
-import 'dart:io';
-
 import 'package:lantern_connect_transport_probe/probe.dart';
 
 Future<void> main() async {
   const plaintextUrl = String.fromEnvironment('LANTERN_PROBE_PLAINTEXT_URL');
   const tlsUrl = String.fromEnvironment('LANTERN_PROBE_TLS_URL');
   const token = String.fromEnvironment('LANTERN_PROBE_TOKEN');
-  const caBase64 = String.fromEnvironment('LANTERN_PROBE_CA_BASE64');
-  if ([plaintextUrl, tlsUrl, token, caBase64].any((value) => value.isEmpty)) {
+  if ([plaintextUrl, tlsUrl, token].any((value) => value.isEmpty)) {
     throw StateError('mobile probe configuration is incomplete');
   }
 
   _expectSuccess(await runProbe(Uri.parse(plaintextUrl)));
-  final caFile = File('${Directory.systemTemp.path}/lantern-probe-ca.der');
-  await caFile.writeAsBytes(base64Decode(caBase64));
+  final trustedTls = Uri.parse(tlsUrl);
+  final wrongHostTls = trustedTls.replace(host: '127.0.0.1');
 
-  await _expectFailure(runProbe(Uri.parse(tlsUrl), token: token));
-  await _expectFailure(runProbe(Uri.parse(tlsUrl), caPath: caFile.path));
-  _expectSuccess(
-    await runProbe(Uri.parse(tlsUrl), token: token, caPath: caFile.path),
-  );
+  await _expectFailure(runProbe(wrongHostTls, token: token));
+  await _expectFailure(runProbe(trustedTls));
+  _expectSuccess(await runProbe(trustedTls, token: token));
 
   // A host-side CountVerticesByPrefix call uses this second request as the
   // success signal. Reaching it proves the complete contract above passed.
   await runProbe(
-    Uri.parse(tlsUrl),
+    trustedTls,
     token: token,
-    caPath: caFile.path,
     keyPrefix: 'probe/connect/ios-success/',
   );
 }
