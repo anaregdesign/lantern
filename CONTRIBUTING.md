@@ -19,7 +19,7 @@ whole surface and don't hedge for old clients:
   **not** need to `reserved` retired field numbers/names purely for compatibility; add a
   `reserved` only when it prevents a real decode hazard you actually care about. If a
   `buf breaking` gate is ever added, treat it as waived until `v1.0.0`.
-- **SDK APIs (Go / Node), CLI / REPL grammar, the `LANTERN_*` env-var contract, and
+- **SDK APIs (Go / Dart / Node), CLI / REPL grammar, the `LANTERN_*` env-var contract, and
   metric names** — may change between releases. Update every call site in the same change.
 - **Still forbidden (unrelated to compatibility):** `buf generate --clean`. It deletes
   `pb/go.mod` + `pb/doc.go` — a tooling footgun, not a compat concern — so the `--clean`
@@ -41,7 +41,7 @@ created**:
 | Field | Allowed values |
 | --- | --- |
 | `Track` | `Admin` / `HA` / `Connect` / `SDK` / `Maintenance` / `Docs` |
-| `Module` | `pb` / `core` / `server` / `sdks-go` / `sdks-node` / `sdks-python` / `admin` / `mcp` / `tests` / `docs` / `ci` |
+| `Module` | `pb` / `core` / `server` / `sdks-go` / `sdks-dart` / `sdks-node` / `sdks-python` / `admin` / `mcp` / `tests` / `docs` / `ci` |
 | `Release target` | `next pb` / `next sdks-go` / `next root` / `next mcp` / `next admin-internal` / `unscheduled` |
 | `Priority` | `P0` / `P1` / `P2` |
 
@@ -94,11 +94,17 @@ go test ./...                    # root module
 (cd pb      && go test ./...)
 (cd sdks/go && go test ./...)
 (cd server  && go vet ./... && go test ./...)
+(cd sdks/dart && dart format --output=none --set-exit-if-changed lib/lantern_client.dart test \
+  && dart analyze && dart test)
 ```
 
 Per-module test runs are mandatory: the root `go test ./...` does **not** span
 submodules. `make lint` runs the same linter as the `Lint` job. The `Proto (buf)` check
 fails on any uncommitted codegen diff — regenerate locally first (below).
+
+The Dart SDK is outside `go.work`; its format/analyze/test gate is therefore
+separate too. When `proto/` changes, run `sdks/dart/scripts/codegen.sh` and commit
+the regenerated `sdks/dart/lib/src/gen/**` files.
 
 ## Coverage floor (ratchet)
 
@@ -213,6 +219,8 @@ new sub-config, update the **Providers** note in `AGENTS.md`.
 - Add the require to the module that **actually imports** it (server-only middleware →
   `server/go.mod`; client transport → `sdks/go/go.mod`; cli or integration tests only →
   root `go.mod`).
+- Add Dart dependencies only to `sdks/dart/pubspec.yaml`; keep it pure Dart and run
+  `dart pub get --enforce-lockfile`, `dart analyze`, and `dart test` in that package.
 - Run `go mod tidy` in **every** affected module — workspace `replace`s do not propagate
   `go.sum` entries.
 - If the `Dockerfile` was touched, confirm every workspace member's `go.mod`/`go.sum` is

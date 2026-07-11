@@ -3,8 +3,8 @@
 Lantern is an in-memory graph KVS (`key-vertex-store`) served over Connect/HTTP-2
 (wire-compatible with gRPC and gRPC-Web on a single h2c socket); both vertices and
 edges carry TTLs and decay over time. The repo is a monorepo: a multi-module Go
-workspace (`go.work`) plus a standalone TypeScript admin SPA (`admin/`, Bun-managed,
-**outside** `go.work`).
+workspace (`go.work`), a pure-Dart SDK (`sdks/dart/`), and standalone TypeScript
+packages, with every non-Go package **outside** `go.work`.
 
 `AGENTS.md` is the full agent guide and `CONTRIBUTING.md` is the release/CI/maintenance
 contract. This file is the short, always-on subset — when it and `AGENTS.md` overlap,
@@ -16,6 +16,8 @@ they must not conflict.
   (runs `buf generate`; **never** pass `--clean`).
 - `server/cmd/wire_gen.go` — google/wire output. Regenerate from `server/` with
   `go tool wire ./cmd`.
+- `sdks/dart/lib/src/gen/**` — Dart Protobuf + Connect stubs. Regenerate with
+  `sdks/dart/scripts/codegen.sh` (which cleans only that generated directory).
 
 ## Architecture invariants
 
@@ -58,8 +60,8 @@ they must not conflict.
 - **PR titles must be Conventional Commits** (`feat`/`fix`/`docs`/`chore`/`ci`/
   `refactor`/`perf`/`test`/`build`/`revert`); a required check rejects others.
 - **Before every push**, run the local quality gate: `gofmt -l` must print nothing,
-  then `go test ./...` from the root **and** from each submodule (the root run does not
-  span submodules).
+  then `go test ./...` from the root **and** from each Go submodule (the root run does
+  not span submodules), plus Dart format/analyze/test in `sdks/dart/`.
 - Wait for all required CI checks before merging; never use `--admin`/`--no-verify`.
   Merge with `--squash --delete-branch`. Never push to `main` directly.
 

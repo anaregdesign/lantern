@@ -426,6 +426,14 @@ batch writes auto-chunk. The browser build (`lantern-sdk/web`) is what
 powers the [admin SPA](admin/). Full API:
 [sdks/node/README.md](sdks/node/README.md).
 
+### Dart / Flutter
+
+[`lantern_client`](sdks/dart/) is the official pure-Dart, Android/iOS-first
+package. Its initial package exposes generated `Vertex`, `Edge`, and `Graph`
+types with reproducible Connect-Dart codegen; the high-level mobile client is
+being added in the following SDK changes. See
+[sdks/dart/README.md](sdks/dart/README.md) for the current supported surface.
+
 ### Anything else
 
 Generate bindings from
@@ -480,6 +488,7 @@ flowchart LR
     subgraph Clients
         Admin["lantern-admin (admin/)<br/>browser console"]
         GoSDK["sdks/go"]
+        DartSDK["sdks/dart"]
         NodeSDK["sdks/node"]
         CLI["lantern-cli"]
         MCP["lantern-mcp (mcp/)"]
@@ -488,6 +497,7 @@ flowchart LR
 
     Admin   -->|Connect-Web| SVC
     GoSDK   -->|Connect / gRPC| SVC
+    DartSDK -->|Connect / HTTP/1.1| SVC
     NodeSDK -->|Connect / gRPC| SVC
     CLI     -->|Connect / gRPC| SVC
     MCP     -->|via sdks/go| SVC
@@ -723,8 +733,8 @@ Production-grade out of the box — details in the source links:
 
 ## Repository layout
 
-A monorepo of six Go modules stitched by [go.work](go.work) plus two
-Bun-managed TypeScript packages; dependency direction is a strict DAG:
+A monorepo of six Go modules stitched by [go.work](go.work), a pure-Dart SDK,
+and two Bun-managed TypeScript packages; dependency direction is a strict DAG:
 
 | Path | What it is |
 |---|---|
@@ -733,6 +743,7 @@ Bun-managed TypeScript packages; dependency direction is a strict DAG:
 | [`core/`](core/) | Reusable graph / cache / collections / concurrency / NLP building blocks |
 | [`server/`](server/) | The Connect server (DI via google/wire) |
 | [`sdks/go/`](sdks/go/) | Go client SDK — depends on `pb/` only |
+| [`sdks/dart/`](sdks/dart/) | Pure-Dart Android/iOS-first SDK (`lantern_client`) |
 | [`sdks/node/`](sdks/node/) | TypeScript client SDK (`lantern-sdk` on npm) |
 | [`cli/`](cli/) | `lantern-cli` — REPL + one-liners |
 | [`admin/`](admin/) | Browser Admin console (React Router / Fluent UI / Sigma.js) |
