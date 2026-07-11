@@ -1,3 +1,4 @@
+import type { Command } from "~/lib/cli/types";
 import type { GraphView } from "~/lib/client/usecase/illuminate/selectors";
 
 export type EntryKind = "ok" | "error" | "info";
@@ -10,10 +11,26 @@ export interface ScrollbackEntry {
   durationMs?: number;
 }
 
+/** The exact family-native command that produced a traversal result. */
+export type TraversalCommand =
+  | Extract<Command, { verb: "bfs" }>
+  | Extract<Command, { verb: "pagerank" }>
+  | Extract<Command, { verb: "community" }>;
+
+/**
+ * Metadata for the current traversal result. It deliberately captures the
+ * executed family and knobs rather than the mutable next-click picker state.
+ */
+export interface TraversalResultMetadata {
+  command: TraversalCommand;
+}
+
 export interface LatestGraph {
   /** The exact CLI input that produced this graph (`get vertex alice`, …). */
   source: string;
   view: GraphView;
+  /** Null for get/scan/mutated frames; set only for an executed family verb. */
+  traversal: TraversalResultMetadata | null;
 }
 
 /**

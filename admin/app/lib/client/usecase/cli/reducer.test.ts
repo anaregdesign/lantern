@@ -24,6 +24,7 @@ const GRAPH: LatestGraph = {
     latestResultVertexKeys: new Set<string>(),
     latestResultEdgeIds: new Set<string>(),
   },
+  traversal: null,
 };
 
 describe("cliReducer", () => {
@@ -316,6 +317,7 @@ describe("cliReducer", () => {
       });
       expect(next.latestGraph?.source).toBe("put vertex x 1");
       expect(next.latestGraph?.view.nodes.map((n) => n.id)).toEqual(["x"]);
+      expect(next.latestGraph?.traversal).toBeNull();
     });
 
     it("merges onto the existing frame instead of replacing it", () => {

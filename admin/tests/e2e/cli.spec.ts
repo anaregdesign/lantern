@@ -101,6 +101,12 @@ async function assertNarrowExplorer(page: Page): Promise<void> {
   const labelControls = page.getByTestId("illuminate-label-controls");
   await expect(legend).toBeVisible();
   await expect(labelControls).toBeVisible();
+
+  // #996 — the visual canvas now has an AT-equivalent companion. It remains
+  // in the narrow stacked layout rather than being clipped below the canvas.
+  await expect(
+    page.getByRole("region", { name: "Traversal result companion" }),
+  ).toBeVisible();
   const legendBox = await legend.boundingBox();
   const controlsBox = await labelControls.boundingBox();
   if (!legendBox || !controlsBox) {
@@ -221,6 +227,65 @@ test.describe("/cli", () => {
     await expect(page.getByTestId("cli-canvas-panel")).toContainText(
       "bfs cli:alpha 2 5",
     );
+  });
+
+  // #996 — every traversal family exposes its executed parameters and result
+  // through semantic tables. Run-from-here is a real keyboard action, while
+  // Inspect remains a normal accessible link to the vertex surface.
+  test("family results expose an accessible companion with keyboard actions (#996)", async ({
+    page,
+  }) => {
+    await page.goto("/cli");
+    const input = page.getByTestId("cli-input");
+    const companion = page.getByRole("region", {
+      name: "Traversal result companion",
+    });
+
+    await input.fill("bfs cli:alpha 2 5");
+    await input.press("Enter");
+    await expect(
+      companion.getByRole("heading", { name: "Current result: BFS" }),
+    ).toBeVisible();
+    await expect(companion.getByText("Fan-out", { exact: true })).toBeVisible();
+    const runFromBeta = companion.getByRole("button", {
+      name: "Run from cli:beta using next-walk controls",
+    });
+    await runFromBeta.focus();
+    await expect(runFromBeta).toBeFocused();
+    await runFromBeta.press("Enter");
+    await expect(page.getByTestId("cli-canvas-panel")).toContainText(
+      "bfs cli:beta",
+    );
+
+    await input.fill("pagerank cli:alpha 10 restart_prob=0.25 epsilon=0.001");
+    await input.press("Enter");
+    await expect(
+      companion.getByRole("heading", {
+        name: "Current result: Personalized PageRank",
+      }),
+    ).toBeVisible();
+    await expect(
+      companion.getByRole("table", { name: "PageRank mass ranking" }),
+    ).toBeVisible();
+    await expect(
+      companion.getByRole("link", { name: "Inspect cli:alpha" }),
+    ).toBeVisible();
+
+    await input.fill(
+      "community cli:cmty:a1 3 restart_prob=0.25 epsilon=0.001 reduction=mst",
+    );
+    await input.press("Enter");
+    await expect(
+      companion.getByRole("heading", {
+        name: "Current result: Local community",
+      }),
+    ).toBeVisible();
+    await expect(
+      companion.getByText("Max size", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      companion.getByText("Reduction", { exact: true }),
+    ).toBeVisible();
   });
 
   test("canvas node click quotes an arbitrary key before reaching the RPC (#988)", async ({
