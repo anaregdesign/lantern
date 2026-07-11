@@ -87,14 +87,29 @@ jobs:
         run: |
           set -euo pipefail
           probe_app="$RUNNER_TEMP/lantern"
+          probe_ca="$RUNNER_TEMP/lantern-probe-ca.pem"
+          probe_ca_key="$RUNNER_TEMP/lantern-probe-ca-key.pem"
           probe_cert="$RUNNER_TEMP/lantern-probe-cert.pem"
           probe_key="$RUNNER_TEMP/lantern-probe-key.pem"
           go build -o "$probe_app" ./server/cmd
           openssl req -x509 -newkey rsa:2048 -nodes \
-            -keyout "$probe_key" -out "$probe_cert" -days 1 \
+            -keyout "$probe_ca_key" -out "$probe_ca" -days 1 \
+            -subj '/CN=Lantern probe CA' \
+            -addext basicConstraints=critical,CA:TRUE \
+            -addext keyUsage=critical,keyCertSign,cRLSign
+          openssl req -newkey rsa:2048 -nodes \
+            -keyout "$probe_key" -out "$RUNNER_TEMP/lantern-probe.csr" \
             -subj /CN=127.0.0.1 \
+            -addext basicConstraints=critical,CA:FALSE \
+            -addext keyUsage=critical,digitalSignature,keyEncipherment \
+            -addext extendedKeyUsage=serverAuth \
             -addext subjectAltName=IP:127.0.0.1,DNS:localhost
+          openssl x509 -req -days 1 \
+            -in "$RUNNER_TEMP/lantern-probe.csr" \
+            -CA "$probe_ca" -CAkey "$probe_ca_key" -CAcreateserial \
+            -copy_extensions copyall -out "$probe_cert"
           echo "PROBE_APP=$probe_app" >> "$GITHUB_ENV"
+          echo "PROBE_CA=$probe_ca" >> "$GITHUB_ENV"
           echo "PROBE_CERT=$probe_cert" >> "$GITHUB_ENV"
           echo "PROBE_KEY=$probe_key" >> "$GITHUB_ENV"
           echo "LANTERN_PROBE_WORKDIR=$RUNNER_TEMP/dart-mobile" >> "$GITHUB_ENV"
@@ -150,14 +165,15 @@ jobs:
         run: |
           testbed/dart-transport-probe/scripts/mobile.sh \
             connect "$DEVICE_ID" http://127.0.0.1:6433 \
-            https://127.0.0.1:6434 probe-token "$PROBE_CERT"
+            https://127.0.0.1:6434 probe-token "$PROBE_CA"
 
       - name: Run gRPC fallback on iOS
+        if: always()
         timeout-minutes: 10
         run: |
           testbed/dart-transport-probe/scripts/mobile.sh \
             grpc "$DEVICE_ID" http://127.0.0.1:6433 \
-            https://127.0.0.1:6434 probe-token "$PROBE_CERT"
+            https://127.0.0.1:6434 probe-token "$PROBE_CA"
 
       - name: Show server logs and clean up
         if: always()
