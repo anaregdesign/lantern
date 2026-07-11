@@ -567,7 +567,7 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 			optStart := time.Now()
 			reduced, rerr := opt(ctx, g, request.GetSeed())
 			if rerr != nil {
-				return nil, ctxToConnect(rerr)
+				return nil, optimizerToConnect(rerr)
 			}
 			// Membership is preserved: re-add community members the tree
 			// could not reach as isolated vertices, then trim expirations to
@@ -618,7 +618,7 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 			g, err = opt(ctx, g, request.GetSeed())
 			optimizeDur = time.Since(optStart)
 			if err != nil {
-				return nil, ctxToConnect(err)
+				return nil, optimizerToConnect(err)
 			}
 		}
 		algoLabel, redLabel, objLabel = "bfs", reductionLabel(bfs.GetReduction()), objectiveLabel(objective)
