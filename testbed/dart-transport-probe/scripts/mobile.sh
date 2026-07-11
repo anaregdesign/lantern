@@ -30,6 +30,7 @@ esac
 project_name="lantern_${transport}_transport_mobile_probe"
 work_root=${LANTERN_PROBE_WORKDIR:-$(mktemp -d)}
 app="$work_root/$project_name"
+mkdir -p "$work_root"
 if [[ -z ${LANTERN_PROBE_WORKDIR:-} ]]; then
   trap 'rm -rf "$work_root"' EXIT
 fi
@@ -72,6 +73,8 @@ cd "$app"
 flutter pub get
 flutter test integration_test/probe_test.dart \
   -d "$device" \
+  --reporter=expanded \
+  --timeout=2m \
   --dart-define="LANTERN_PROBE_PLAINTEXT_URL=$plaintext_url" \
   --dart-define="LANTERN_PROBE_TLS_URL=$tls_url" \
   --dart-define="LANTERN_PROBE_TOKEN=$token" \

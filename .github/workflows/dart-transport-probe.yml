@@ -66,6 +66,7 @@ jobs:
   ios:
     name: iOS real-wire matrix
     runs-on: macos-15
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
 
@@ -81,27 +82,39 @@ jobs:
           flutter-version: 3.44.6
           cache: true
 
-      - name: Run both candidates on an iOS simulator
+      - name: Build probe server and certificate
         shell: bash
         run: |
           set -euo pipefail
-          app="$RUNNER_TEMP/lantern"
-          cert="$RUNNER_TEMP/lantern-probe-cert.pem"
-          key="$RUNNER_TEMP/lantern-probe-key.pem"
-          go build -o "$app" ./server/cmd
+          probe_app="$RUNNER_TEMP/lantern"
+          probe_cert="$RUNNER_TEMP/lantern-probe-cert.pem"
+          probe_key="$RUNNER_TEMP/lantern-probe-key.pem"
+          go build -o "$probe_app" ./server/cmd
           openssl req -x509 -newkey rsa:2048 -nodes \
-            -keyout "$key" -out "$cert" -days 1 -subj /CN=127.0.0.1 \
+            -keyout "$probe_key" -out "$probe_cert" -days 1 \
+            -subj /CN=127.0.0.1 \
             -addext subjectAltName=IP:127.0.0.1,DNS:localhost
+          echo "PROBE_APP=$probe_app" >> "$GITHUB_ENV"
+          echo "PROBE_CERT=$probe_cert" >> "$GITHUB_ENV"
+          echo "PROBE_KEY=$probe_key" >> "$GITHUB_ENV"
+          echo "LANTERN_PROBE_WORKDIR=$RUNNER_TEMP/dart-mobile" >> "$GITHUB_ENV"
 
+      - name: Start plaintext and TLS probe servers
+        shell: bash
+        run: |
+          set -euo pipefail
           env LANTERN_PORT=6433 LANTERN_METRICS_ADDR=:9143 \
-            LANTERN_LOG_LEVEL=warn "$app" >"$RUNNER_TEMP/plain.log" 2>&1 &
+            LANTERN_LOG_LEVEL=warn nohup "$PROBE_APP" \
+            >"$RUNNER_TEMP/plain.log" 2>&1 &
           plain_pid=$!
           env LANTERN_PORT=6434 LANTERN_METRICS_ADDR=:9144 \
             LANTERN_LOG_LEVEL=warn LANTERN_AUTH_TOKENS=probe-token \
-            LANTERN_TLS_CERT_FILE="$cert" LANTERN_TLS_KEY_FILE="$key" \
-            "$app" >"$RUNNER_TEMP/tls.log" 2>&1 &
+            LANTERN_TLS_CERT_FILE="$PROBE_CERT" \
+            LANTERN_TLS_KEY_FILE="$PROBE_KEY" nohup "$PROBE_APP" \
+            >"$RUNNER_TEMP/tls.log" 2>&1 &
           tls_pid=$!
-          trap 'kill "$plain_pid" "$tls_pid" 2>/dev/null || true' EXIT
+          echo "PLAIN_PID=$plain_pid" >> "$GITHUB_ENV"
+          echo "TLS_PID=$tls_pid" >> "$GITHUB_ENV"
 
           for port in 9143 9144; do
             ready=0
@@ -118,16 +131,40 @@ jobs:
             fi
           done
 
+      - name: Boot iOS simulator
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
           device=$(xcrun simctl list devices available -j | \
             jq -r '[.devices[][] | select(.name | startswith("iPhone"))][0].udid')
           test -n "$device"
           xcrun simctl boot "$device" || true
+          open -a Simulator --args -CurrentDeviceUDID "$device"
           xcrun simctl bootstatus "$device" -b
+          flutter devices
+          echo "DEVICE_ID=$device" >> "$GITHUB_ENV"
 
-          export LANTERN_PROBE_WORKDIR="$RUNNER_TEMP/dart-mobile"
+      - name: Run Connect candidate on iOS
+        timeout-minutes: 10
+        run: |
           testbed/dart-transport-probe/scripts/mobile.sh \
-            connect "$device" http://127.0.0.1:6433 \
-            https://127.0.0.1:6434 probe-token "$cert"
+            connect "$DEVICE_ID" http://127.0.0.1:6433 \
+            https://127.0.0.1:6434 probe-token "$PROBE_CERT"
+
+      - name: Run gRPC fallback on iOS
+        timeout-minutes: 10
+        run: |
           testbed/dart-transport-probe/scripts/mobile.sh \
-            grpc "$device" http://127.0.0.1:6433 \
-            https://127.0.0.1:6434 probe-token "$cert"
+            grpc "$DEVICE_ID" http://127.0.0.1:6433 \
+            https://127.0.0.1:6434 probe-token "$PROBE_CERT"
+
+      - name: Show server logs and clean up
+        if: always()
+        shell: bash
+        run: |
+          cat "$RUNNER_TEMP/plain.log" "$RUNNER_TEMP/tls.log" 2>/dev/null || true
+          kill "${PLAIN_PID:-}" "${TLS_PID:-}" 2>/dev/null || true
+          if [[ -n ${DEVICE_ID:-} ]]; then
+            xcrun simctl shutdown "$DEVICE_ID" || true
+          fi
