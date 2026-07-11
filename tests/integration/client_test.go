@@ -166,6 +166,75 @@ func TestLantern_Illuminate(t *testing.T) {
 	}
 }
 
+// TestLantern_Illuminate_EqualScoresUseAscendingKeys exercises the public
+// Connect/h2c path for #1000. Both BFS and PPR cap four exactly-tied heads to
+// two, so the stable ascending-key membership is observable to SDK callers.
+func TestLantern_Illuminate_EqualScoresUseAscendingKeys(t *testing.T) {
+	l, cleanup := newInProcessClient(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	for _, key := range []string{"seed", "alpha", "bravo", "charlie", "delta"} {
+		if err := l.PutVertex(ctx, key, key, time.Minute); err != nil {
+			t.Fatalf("PutVertex %q: %v", key, err)
+		}
+	}
+	for _, key := range []string{"delta", "bravo", "alpha", "charlie"} {
+		if err := l.PutEdge(ctx, "seed", key, 1, time.Minute); err != nil {
+			t.Fatalf("PutEdge seed->%s: %v", key, err)
+		}
+	}
+
+	want := map[string]bool{"alpha": true, "bravo": true}
+	for _, test := range []struct {
+		name string
+		opts []client.IlluminateOption
+	}{
+		{
+			name: "bfs",
+			opts: []client.IlluminateOption{
+				client.WithBFS(client.BFSOpts{Step: 1, FanOut: 2}),
+			},
+		},
+		{
+			name: "pagerank",
+			opts: []client.IlluminateOption{
+				client.WithPPR(client.PPROpts{TopN: 2, RestartProb: 0.15, Epsilon: 1e-7}),
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for run := 0; run < 20; run++ {
+				g, err := l.Illuminate(ctx, "seed", test.opts...)
+				if err != nil {
+					t.Fatalf("Illuminate run %d: %v", run, err)
+				}
+				got := map[string]bool{}
+				for key := range g.Edges["seed"] {
+					got[key] = true
+				}
+				if !mapsEqual(got, want) {
+					t.Fatalf("run %d retained %v, want %v", run, got, want)
+				}
+			}
+		})
+	}
+}
+
+func mapsEqual(got, want map[string]bool) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for key := range want {
+		if !got[key] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestLantern_GetVertices_BatchPartialMiss(t *testing.T) {
 	l, cleanup := newInProcessClient(t)
 	defer cleanup()

@@ -103,6 +103,32 @@ func TestSortableMap_Top_TieBoundary(t *testing.T) {
 	}
 }
 
+func TestSortableMap_StableTieBreak(t *testing.T) {
+	const runs = 100
+	keys := []string{"delta", "bravo", "alpha", "charlie"}
+	want := SortableMap[string, int]{"alpha": 5, "bravo": 5}
+
+	for run := 0; run < runs; run++ {
+		order := append([]string(nil), keys...)
+		rand.New(rand.NewSource(int64(run))).Shuffle(len(order), func(i, j int) {
+			order[i], order[j] = order[j], order[i]
+		})
+		m := NewSortableMap[string, int]()
+		for _, key := range order {
+			m[key] = 5
+		}
+
+		for _, got := range []SortableMap[string, int]{
+			m.TopStable(2, func(a, b string) bool { return a < b }),
+			m.BottomStable(2, func(a, b string) bool { return a < b }),
+		} {
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("run %d stable tie selection = %v, want %v", run, got, want)
+			}
+		}
+	}
+}
+
 // TestSortableMap_Top_LargeRandom cross-checks the new O(N log k) algorithm
 // against a straightforward sort-based reference on a randomized input. Only
 // the priority *values* of the top-k matter (ties may pick different keys).

@@ -215,9 +215,9 @@ func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int
 		// smallest weights when selectSmallest (MINIMIZE), the k largest
 		// otherwise (#560) — then trim expirations to the survivors.
 		if selectSmallest {
-			edges = edges.Bottom(k)
+			edges = edges.BottomStable(k, stableKeyLess[S])
 		} else {
-			edges = edges.Top(k)
+			edges = edges.TopStable(k, stableKeyLess[S])
 		}
 		if expRow != nil {
 			filtered := make(map[S]time.Time, len(edges))
@@ -411,9 +411,9 @@ func (c *GraphCache[S, T]) PersonalizedPageRankContext(ctx context.Context, seed
 		return nil, err
 	}
 
-	// Rank by PPR mass, excluding the seed, and keep the top-N. Reusing
-	// pq.SortableMap.Top mirrors the per-hop prune in neighborContext so the
-	// tie-breaking semantics are identical across both traversal paths.
+	// Rank by PPR mass, excluding the seed, and keep the top-N. Reusing the
+	// stable selector mirrors the per-hop prune in neighborContext so both
+	// traversal paths resolve equal scores by ascending vertex key.
 	scores := make(pq.SortableMap[S, float32], len(p))
 	for key, mass := range p {
 		if key == seed || mass <= 0 {
@@ -422,7 +422,7 @@ func (c *GraphCache[S, T]) PersonalizedPageRankContext(ctx context.Context, seed
 		scores[key] = float32(mass)
 	}
 	if topN > 0 {
-		scores = scores.Top(topN)
+		scores = scores.TopStable(topN, stableKeyLess[S])
 	}
 	if len(scores) > 0 {
 		row := make(map[S]float32, len(scores))
@@ -438,6 +438,19 @@ func (c *GraphCache[S, T]) PersonalizedPageRankContext(ctx context.Context, seed
 	}
 
 	return g, nil
+}
+
+// stableKeyLess gives all string-keyed Lantern graphs a cheap, documented
+// ascending-key tie-break. GraphCache remains generic for embedded callers;
+// its fallback keeps the same deterministic textual identity for other
+// comparable key types. Public RPC and SDK keys are strings.
+func stableKeyLess[S comparable](a, b S) bool {
+	if aString, ok := any(a).(string); ok {
+		if bString, ok := any(b).(string); ok {
+			return aString < bString
+		}
+	}
+	return fmt.Sprint(a) < fmt.Sprint(b)
 }
 
 // pprPushLocked runs the Andersen–Chung–Lang local forward-push from seed and

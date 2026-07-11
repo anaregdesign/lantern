@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"math/rand"
 	"reflect"
 	"strings"
 	"testing"
@@ -106,6 +107,47 @@ func TestGraphCache_Neighbor_ObjectiveDirection(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestGraphCache_EqualScoreSelectionIsStable pins the externally observable
+// tie rule shared by BFS per-hop pruning and PPR top-N: ascending vertex key
+// wins, independently of the underlying Go map's iteration order.
+func TestGraphCache_EqualScoreSelectionIsStable(t *testing.T) {
+	const runs = 100
+	keys := []string{"delta", "bravo", "alpha", "charlie"}
+	want := map[string]bool{"alpha": true, "bravo": true}
+
+	for run := 0; run < runs; run++ {
+		order := append([]string(nil), keys...)
+		rand.New(rand.NewSource(int64(run))).Shuffle(len(order), func(i, j int) {
+			order[i], order[j] = order[j], order[i]
+		})
+
+		c := NewGraphCache[string, string](time.Minute)
+		for _, key := range order {
+			c.AddEdge("seed", key, 1)
+		}
+
+		bfs := c.Neighbor("seed", 1, 2, WeightingRaw, false, nil)
+		if got := headSet(bfs, "seed"); !reflect.DeepEqual(got, want) {
+			t.Fatalf("run %d BFS heads = %v, want %v", run, got, want)
+		}
+
+		ppr := c.PersonalizedPageRank("seed", 2, 0.15, 1e-7, WeightingRaw, nil)
+		if got := headSet(ppr, "seed"); !reflect.DeepEqual(got, want) {
+			t.Fatalf("run %d PPR heads = %v, want %v", run, got, want)
+		}
+	}
+}
+
+func headSet(g *graph.Graph[string, string], tail string) map[string]bool {
+	got := map[string]bool{}
+	if g != nil {
+		for head := range g.Edges[tail] {
+			got[head] = true
+		}
+	}
+	return got
 }
 
 // TestGraphCache_NeighborKeep pins the #601 frontier predicate: keep func(S) bool
