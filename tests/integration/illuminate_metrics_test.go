@@ -1,8 +1,10 @@
 package integration_test
 
 import (
+	"bytes"
 	"context"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -10,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
@@ -124,6 +127,85 @@ func TestLantern_Illuminate_MetricReductionLabel(t *testing.T) {
 		"algorithm": "ppr", "reduction": "none", "objective": "maximize", "weighting": "raw",
 	}); !ok || got < 1 {
 		t.Errorf("%s{algorithm=ppr,reduction=none,objective=maximize,weighting=raw} = %v (present=%v), want ≥1", vertsCount, got, ok)
+	}
+}
+
+func TestLantern_Illuminate_FailureObservability(t *testing.T) {
+	t.Run("PPR timeout retains family and traversal phase", func(t *testing.T) {
+		reg := prometheus.NewRegistry()
+		m := metrics.New(reg, metrics.Options{SampleInterval: time.Hour})
+		cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+		svc := service.NewLanternService(cache).
+			WithHotPathMetrics(m).
+			WithTraversalTimeout(time.Nanosecond)
+		var logs bytes.Buffer
+		slow := provider.NewSlowRPCInterceptor(time.Nanosecond, slog.New(slog.NewJSONHandler(&logs, nil)))
+		val := provider.NewValidationInterceptor(defaultIntegrationValidationLimits())
+		srv := newConnectTestServer(t, svc, nil, val.ConnectInterceptor(), slow.ConnectInterceptor())
+		l := newConnectClientFor(t, srv.url)
+		scrape := httptest.NewServer(promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+		t.Cleanup(scrape.Close)
+
+		_, err := l.Illuminate(context.Background(), "seed", client.WithPPR(client.PPROpts{TopN: 4}))
+		if connect.CodeOf(err) != connect.CodeDeadlineExceeded {
+			t.Fatalf("PPR error code = %v, want deadline_exceeded: %v", connect.CodeOf(err), err)
+		}
+		body := scrapeMetrics(t, scrape.URL)
+		if got, ok := metricSeriesValue(t, body, "lantern_illuminate_calls_total", map[string]string{
+			"algorithm": "ppr", "reduction": "none", "objective": "maximize", "weighting": "raw", "phase": "traversal", "code": "deadline_exceeded",
+		}); !ok || got != 1 {
+			t.Fatalf("PPR timeout outcome = %v (present=%v), want 1", got, ok)
+		}
+		assertIlluminateSlowLog(t, logs.String(), "ppr", "none")
+	})
+
+	t.Run("BFS reduction failure retains reduction and code", func(t *testing.T) {
+		reg := prometheus.NewRegistry()
+		m := metrics.New(reg, metrics.Options{SampleInterval: time.Hour})
+		cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+		svc := service.NewLanternService(cache).WithHotPathMetrics(m)
+		var logs bytes.Buffer
+		slow := provider.NewSlowRPCInterceptor(time.Nanosecond, slog.New(slog.NewJSONHandler(&logs, nil)))
+		val := provider.NewValidationInterceptor(defaultIntegrationValidationLimits())
+		srv := newConnectTestServer(t, svc, nil, val.ConnectInterceptor(), slow.ConnectInterceptor())
+		l := newConnectClientFor(t, srv.url)
+		scrape := httptest.NewServer(promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+		t.Cleanup(scrape.Close)
+
+		for _, key := range []string{"seed", "negative"} {
+			if err := l.PutVertex(context.Background(), key, key, time.Minute); err != nil {
+				t.Fatalf("PutVertex %s: %v", key, err)
+			}
+		}
+		if err := l.PutEdge(context.Background(), "seed", "negative", -1, time.Minute); err != nil {
+			t.Fatalf("PutEdge negative: %v", err)
+		}
+		_, err := l.Illuminate(context.Background(), "seed", client.WithBFS(client.BFSOpts{
+			Step: 1, FanOut: 4, Reduction: client.ReductionShortestPathTree, Objective: client.ObjectiveMinimize,
+		}))
+		if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+			t.Fatalf("BFS reduction error code = %v, want failed_precondition: %v", connect.CodeOf(err), err)
+		}
+		body := scrapeMetrics(t, scrape.URL)
+		if got, ok := metricSeriesValue(t, body, "lantern_illuminate_calls_total", map[string]string{
+			"algorithm": "bfs", "reduction": "spt", "objective": "minimize", "weighting": "raw", "phase": "reduction", "code": "failed_precondition",
+		}); !ok || got != 1 {
+			t.Fatalf("BFS reduction outcome = %v (present=%v), want 1", got, ok)
+		}
+		assertIlluminateSlowLog(t, logs.String(), "bfs", "spt")
+	})
+}
+
+func assertIlluminateSlowLog(t *testing.T, logs, family, reduction string) {
+	t.Helper()
+	for _, want := range []string{
+		`"msg":"slow rpc"`,
+		`"illuminate.family":"` + family + `"`,
+		`"illuminate.reduction":"` + reduction + `"`,
+	} {
+		if !strings.Contains(logs, want) {
+			t.Fatalf("slow log missing %q: %s", want, logs)
+		}
 	}
 }
 

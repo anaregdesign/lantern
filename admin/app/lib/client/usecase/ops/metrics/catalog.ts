@@ -130,6 +130,21 @@ export const METRIC_PANELS: readonly PanelSpec[] = [
     ],
   },
   {
+    id: "traversal-outcomes",
+    group: "throughput",
+    title: "Illuminate outcomes",
+    description:
+      "Successful, failed, and timed-out traversals by family, phase, and Connect code.",
+    unit: "rate",
+    queries: [
+      {
+        expr: "rate(lantern_illuminate_calls_total[$__rate])",
+        by: ["algorithm", "phase", "code"],
+        legend: "{{algorithm}} · {{phase}} · {{code}}",
+      },
+    ],
+  },
+  {
     id: "rpc-latency",
     group: "latency",
     title: "RPC latency (p50 / p99)",

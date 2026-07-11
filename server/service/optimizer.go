@@ -138,6 +138,33 @@ func weightingLabel(w pb.Weighting) string {
 	return "unknown"
 }
 
+// illuminateMetricLabels resolves the bounded family axes before execution so
+// failures and timeouts retain the same attribution as successful calls.
+func illuminateMetricLabels(request *pb.IlluminateRequest) (algorithm, reduction, objective, weighting string) {
+	algorithm, reduction, objective = "unknown", "none", "maximize"
+	if request == nil {
+		return algorithm, reduction, objective, "raw"
+	}
+	weighting = weightingLabel(request.GetWeighting())
+	switch params := request.GetParams().(type) {
+	case *pb.IlluminateRequest_Bfs:
+		algorithm = "bfs"
+		if params.Bfs != nil {
+			reduction = reductionLabel(params.Bfs.GetReduction())
+			objective = objectiveLabel(params.Bfs.GetObjective())
+		}
+	case *pb.IlluminateRequest_Ppr:
+		algorithm, reduction, objective = "ppr", "none", "maximize"
+	case *pb.IlluminateRequest_Community:
+		algorithm = "community"
+		if params.Community != nil {
+			reduction = reductionLabel(params.Community.GetReduction())
+			objective = objectiveLabel(params.Community.GetObjective())
+		}
+	}
+	return algorithm, reduction, objective, weighting
+}
+
 // weightingToCore maps the wire weighting axis to the core edge-weight
 // transform. UNSPECIFIED/RAW collapse to the verbatim weight; an unknown
 // future enum value also falls back to RAW so a proto-only addition never

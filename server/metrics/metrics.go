@@ -105,6 +105,7 @@ type DomainMetrics struct {
 	illuminateVisitedVertices *prometheus.HistogramVec
 	illuminateVisitedEdges    *prometheus.HistogramVec
 	illuminateDuration        *prometheus.HistogramVec
+	illuminateCalls           *prometheus.CounterVec
 	scanResults               *prometheus.HistogramVec
 	scanDuration              *prometheus.HistogramVec
 	batchSize                 *prometheus.HistogramVec
@@ -187,12 +188,14 @@ type DomainMetrics struct {
 // added in proto without a metrics update) fall through to "unknown"
 // so a new variant cannot break label pre-warming on existing dashboards.
 var (
-	algorithmLabels  = []string{"bfs", "ppr", "community"}
-	reductionLabels  = []string{"none", "mst", "spt"}
-	objectiveLabels  = []string{"minimize", "maximize"}
-	weightingLabels  = []string{"raw", "tfidf", "bm25"}
-	illuminatePhases = []string{"traversal", "optimize"}
-	scanOps          = []string{
+	algorithmLabels        = []string{"bfs", "ppr", "community"}
+	reductionLabels        = []string{"none", "mst", "spt"}
+	objectiveLabels        = []string{"minimize", "maximize"}
+	weightingLabels        = []string{"raw", "tfidf", "bm25"}
+	illuminatePhases       = []string{"traversal", "optimize"}
+	illuminateResultPhases = []string{"validation", "traversal", "reduction", "response", "complete"}
+	illuminateCodes        = []string{"ok", "canceled", "deadline_exceeded", "invalid_argument", "failed_precondition", "resource_exhausted", "internal", "unknown"}
+	scanOps                = []string{
 		"ScanVertices",
 		"ScanVertexKeys",
 		"ScanEdges",
@@ -359,6 +362,10 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 			Help:    "Wall-clock duration of Illuminate, partitioned by traversal family (algorithm) + reduction + objective + edge weighting and phase (traversal | optimize). #410, #963.",
 			Buckets: prometheus.ExponentialBuckets(0.0001, 4, 8), // 0.1ms .. ~1.6s
 		}, []string{"algorithm", "reduction", "objective", "weighting", "phase"}),
+		illuminateCalls: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "lantern_illuminate_calls_total",
+			Help: "Illuminate calls partitioned by traversal family, reduction, objective, weighting, terminal phase, and Connect code. Includes failures and timeouts (#999).",
+		}, []string{"algorithm", "reduction", "objective", "weighting", "phase", "code"}),
 		scanResults: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "lantern_scan_results",
 			Help:    "Number of results returned by a prefix scan or count RPC, partitioned by op (ScanVertices | ScanVertexKeys | ScanEdges | CountVerticesByPrefix | DeleteVerticesByPrefix | DeleteEdgesByPrefix).",
@@ -491,7 +498,7 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		m.pubsubQueueDepth, m.pubsubDropped, m.pubsubDispatchDuration,
 		m.replicationApplied, m.replicationDropped, m.replicationLag,
 		m.antiEntropyCycles, m.antiEntropyGapsFound,
-		m.illuminateVisitedVertices, m.illuminateVisitedEdges, m.illuminateDuration,
+		m.illuminateVisitedVertices, m.illuminateVisitedEdges, m.illuminateDuration, m.illuminateCalls,
 		m.scanResults, m.scanDuration, m.batchSize,
 		m.getVertexHits, m.getVertexMisses, m.getEdgeHits, m.getEdgeMisses,
 		m.edgeContribDeduped,
@@ -536,6 +543,11 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 					m.illuminateVisitedEdges.WithLabelValues(algo, red, obj, w)
 					for _, ph := range illuminatePhases {
 						m.illuminateDuration.WithLabelValues(algo, red, obj, w, ph)
+					}
+					for _, ph := range illuminateResultPhases {
+						for _, code := range illuminateCodes {
+							m.illuminateCalls.WithLabelValues(algo, red, obj, w, ph, code)
+						}
 					}
 				}
 			}
@@ -850,6 +862,18 @@ func (m *DomainMetrics) OnIlluminate(algorithm, reduction, objective, weighting 
 	if optimize > 0 {
 		m.illuminateDuration.WithLabelValues(a, r, o, w, "optimize").Observe(optimize.Seconds())
 	}
+}
+
+// OnIlluminateResult records the terminal outcome of every Illuminate call,
+// including failures that return before the success histograms are observed.
+func (m *DomainMetrics) OnIlluminateResult(algorithm, reduction, objective, weighting, phase, code string) {
+	a := sanitizeLabel(algorithm, algorithmLabels, "unknown")
+	r := sanitizeLabel(reduction, reductionLabels, "unknown")
+	o := sanitizeLabel(objective, objectiveLabels, "unknown")
+	w := sanitizeLabel(weighting, weightingLabels, "unknown")
+	p := sanitizeLabel(phase, illuminateResultPhases, "response")
+	c := sanitizeLabel(code, illuminateCodes, "unknown")
+	m.illuminateCalls.WithLabelValues(a, r, o, w, p, c).Inc()
 }
 
 // OnScan records one prefix-scan RPC: result count and wall-clock
