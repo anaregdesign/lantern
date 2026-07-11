@@ -1,0 +1,16 @@
+name: lantern_grpc_transport_probe
+description: Reproducible gRPC-Dart fallback transport probe for Lantern.
+publish_to: none
+version: 0.0.0
+
+environment:
+  sdk: ">=3.8.0 <4.0.0"
+
+dependencies:
+  fixnum: 1.1.1
+  grpc: 5.1.0
+  protobuf: 6.0.0
+
+dev_dependencies:
+  lints: 6.1.0
+  test: 1.30.0

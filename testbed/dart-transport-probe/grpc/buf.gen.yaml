@@ -1,0 +1,8 @@
+version: v2
+plugins:
+  - remote: buf.build/protocolbuffers/dart:v25.0.0
+    out: testbed/dart-transport-probe/grpc/lib/src/gen
+    include_imports: true
+    include_wkt: true
+    opt:
+      - grpc

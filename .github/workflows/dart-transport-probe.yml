@@ -1,0 +1,181 @@
+name: Dart transport probe
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/dart-transport-probe.yml"
+      - "docs/decisions/0001-dart-mobile-transport.md"
+      - "proto/**"
+      - "testbed/dart-transport-probe/**"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  dart:
+    name: Generate, analyze, and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: 3.44.6
+          cache: true
+
+      - name: Install Buf
+        run: go install github.com/bufbuild/buf/cmd/buf@v1.71.0
+
+      - name: Regenerate and check drift
+        run: |
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          testbed/dart-transport-probe/scripts/codegen.sh
+          git diff --exit-code -- testbed/dart-transport-probe
+
+      - name: Check Connect candidate
+        working-directory: testbed/dart-transport-probe/connect
+        run: |
+          dart pub get
+          dart format --output=none --set-exit-if-changed \
+            lib/probe.dart test tool ../templates/connect ../templates/main.dart
+          dart analyze
+          dart test
+
+      - name: Check gRPC candidate
+        working-directory: testbed/dart-transport-probe/grpc
+        run: |
+          dart pub get
+          dart format --output=none --set-exit-if-changed \
+            lib/probe.dart test tool ../templates/grpc
+          dart analyze
+          dart test
+
+  ios:
+    name: iOS real-wire (${{ matrix.transport }})
+    runs-on: macos-15
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        transport: [connect, grpc]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: 3.44.6
+          cache: true
+
+      - name: Build probe server and certificate
+        shell: bash
+        run: |
+          set -euo pipefail
+          probe_app="$RUNNER_TEMP/lantern"
+          probe_ca="$RUNNER_TEMP/lantern-probe-ca.pem"
+          probe_ca_key="$RUNNER_TEMP/lantern-probe-ca-key.pem"
+          probe_cert="$RUNNER_TEMP/lantern-probe-cert.pem"
+          probe_key="$RUNNER_TEMP/lantern-probe-key.pem"
+          go build -o "$probe_app" ./server/cmd
+          openssl req -x509 -newkey rsa:2048 -nodes \
+            -keyout "$probe_ca_key" -out "$probe_ca" -days 1 \
+            -subj '/CN=Lantern probe CA' \
+            -addext basicConstraints=critical,CA:TRUE \
+            -addext keyUsage=critical,keyCertSign,cRLSign
+          openssl req -newkey rsa:2048 -nodes \
+            -keyout "$probe_key" -out "$RUNNER_TEMP/lantern-probe.csr" \
+            -subj /CN=127.0.0.1
+          openssl x509 -req -days 1 \
+            -in "$RUNNER_TEMP/lantern-probe.csr" \
+            -CA "$probe_ca" -CAkey "$probe_ca_key" -CAcreateserial \
+            -extfile testbed/dart-transport-probe/templates/openssl-server.cnf \
+            -extensions server_cert -out "$probe_cert"
+          echo "PROBE_APP=$probe_app" >> "$GITHUB_ENV"
+          echo "PROBE_CA=$probe_ca" >> "$GITHUB_ENV"
+          echo "PROBE_CERT=$probe_cert" >> "$GITHUB_ENV"
+          echo "PROBE_KEY=$probe_key" >> "$GITHUB_ENV"
+          echo "LANTERN_PROBE_WORKDIR=$RUNNER_TEMP/dart-mobile" >> "$GITHUB_ENV"
+
+      - name: Start plaintext and TLS probe servers
+        shell: bash
+        run: |
+          set -euo pipefail
+          env LANTERN_PORT=6433 LANTERN_METRICS_ADDR=:9143 \
+            LANTERN_LOG_LEVEL=warn nohup "$PROBE_APP" \
+            >"$RUNNER_TEMP/plain.log" 2>&1 &
+          plain_pid=$!
+          env LANTERN_PORT=6434 LANTERN_METRICS_ADDR=:9144 \
+            LANTERN_LOG_LEVEL=warn LANTERN_AUTH_TOKENS=probe-token \
+            LANTERN_TLS_CERT_FILE="$PROBE_CERT" \
+            LANTERN_TLS_KEY_FILE="$PROBE_KEY" nohup "$PROBE_APP" \
+            >"$RUNNER_TEMP/tls.log" 2>&1 &
+          tls_pid=$!
+          echo "PLAIN_PID=$plain_pid" >> "$GITHUB_ENV"
+          echo "TLS_PID=$tls_pid" >> "$GITHUB_ENV"
+
+          for port in 9143 9144; do
+            ready=0
+            for _ in {1..60}; do
+              if curl --fail --silent "http://127.0.0.1:$port/healthz" >/dev/null; then
+                ready=1
+                break
+              fi
+              sleep 1
+            done
+            if [[ $ready -ne 1 ]]; then
+              cat "$RUNNER_TEMP/plain.log" "$RUNNER_TEMP/tls.log"
+              exit 1
+            fi
+          done
+
+      - name: Boot iOS simulator
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          device=$(xcrun simctl list devices available -j | \
+            jq -r '[.devices[][] | select(.name | startswith("iPhone"))][0].udid')
+          test -n "$device"
+          xcrun simctl boot "$device" || true
+          xcrun simctl bootstatus "$device" -b
+          xcrun simctl list devices | grep "$device"
+          echo "DEVICE_ID=$device" >> "$GITHUB_ENV"
+
+      - name: Run candidate on iOS
+        timeout-minutes: 15
+        env:
+          LANTERN_PROBE_DRIVER: simctl
+          LANTERN_PROBE_SERVER_CERT: ${{ env.PROBE_CERT }}
+        run: |
+          testbed/dart-transport-probe/scripts/mobile.sh \
+            "${{ matrix.transport }}" "$DEVICE_ID" http://127.0.0.1:6433 \
+            https://localhost:6434 probe-token "$PROBE_CA"
+
+      - name: Show server logs and clean up
+        if: always()
+        shell: bash
+        run: |
+          cat "$RUNNER_TEMP/plain.log" "$RUNNER_TEMP/tls.log" 2>/dev/null || true
+          kill "${PLAIN_PID:-}" "${TLS_PID:-}" 2>/dev/null || true
+          if [[ -n ${DEVICE_ID:-} ]]; then
+            xcrun simctl shutdown "$DEVICE_ID" || true
+          fi
