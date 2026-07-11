@@ -180,6 +180,7 @@ class Vertex extends $pb.GeneratedMessage {
   @$pb.TagNumber(1)
   void clearKey() => $_clearField(1);
 
+  /// Absolute expiration. An absent timestamp means permanent storage.
   @$pb.TagNumber(2)
   $1.Timestamp get expiration => $_getN(1);
   @$pb.TagNumber(2)
@@ -387,6 +388,7 @@ class Edge extends $pb.GeneratedMessage {
   @$pb.TagNumber(3)
   void clearWeight() => $_clearField(3);
 
+  /// Absolute expiration. An absent timestamp means permanent storage.
   @$pb.TagNumber(4)
   $1.Timestamp get expiration => $_getN(3);
   @$pb.TagNumber(4)

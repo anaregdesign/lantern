@@ -41,6 +41,7 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+	"github.com/anaregdesign/lantern/server/internal/prototime"
 
 	"connectrpc.com/connect"
 )
@@ -383,7 +384,7 @@ func (a *AntiEntropy) snapshotFrom(ctx context.Context, cli graphv1connect.Lante
 				continue
 			}
 			a.snap.PutVertexWithExpirationHLC(
-				v.GetKey(), v, v.GetExpiration().AsTime(),
+				v.GetKey(), v, prototime.Expiration(v.GetExpiration()),
 				snapshotHLC(sv.GetHlc()),
 			)
 		case *pb.SnapshotResponse_Edge:
@@ -394,7 +395,7 @@ func (a *AntiEntropy) snapshotFrom(ctx context.Context, cli graphv1connect.Lante
 				copy(cid[:], c.GetContribId())
 				applySnapshotEdge(
 					a.snap, se.GetTail(), se.GetHead(), c.GetWeight(),
-					c.GetExpiration().AsTime(), cid, edgeHLC,
+					prototime.Expiration(c.GetExpiration()), cid, edgeHLC,
 				)
 			}
 		case *pb.SnapshotResponse_Footer:

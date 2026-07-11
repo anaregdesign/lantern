@@ -1301,10 +1301,14 @@ func TestLanternService_PutVertices_BornExpiredNotReplicated(t *testing.T) {
 
 	t.Run("AllBornExpired_NotLogged", func(t *testing.T) {
 		s, log, appendCount := newSvc(t)
-		if _, err := s.PutVertices(context.Background(), &pb.PutVerticesRequest{
+		resp, err := s.PutVertices(context.Background(), &pb.PutVerticesRequest{
 			Vertices: []*pb.Vertex{{Key: "a", Expiration: past}, {Key: "b", Expiration: past}},
-		}); err != nil {
+		})
+		if err != nil {
 			t.Fatalf("PutVertices: %v", err)
+		}
+		if resp.GetWritten() != 0 {
+			t.Fatalf("Written = %d, want 0 (born-expired must not count)", resp.GetWritten())
 		}
 		if *appendCount != 0 {
 			t.Fatalf("appendCount = %d, want 0 (born-expired must not replicate)", *appendCount)
@@ -1321,14 +1325,18 @@ func TestLanternService_PutVertices_BornExpiredNotReplicated(t *testing.T) {
 			t.Fatalf("Subscribe: %v", err)
 		}
 		t.Cleanup(func() { _ = cancel() })
-		if _, err := s.PutVertices(context.Background(), &pb.PutVerticesRequest{
+		resp, err := s.PutVertices(context.Background(), &pb.PutVerticesRequest{
 			Vertices: []*pb.Vertex{
 				{Key: "dead1", Expiration: past},
 				{Key: "live", Expiration: future},
 				{Key: "dead2", Expiration: past},
 			},
-		}); err != nil {
+		})
+		if err != nil {
 			t.Fatalf("PutVertices: %v", err)
+		}
+		if resp.GetWritten() != 1 {
+			t.Fatalf("Written = %d, want 1 (live values only)", resp.GetWritten())
 		}
 		if *appendCount != 1 {
 			t.Fatalf("appendCount = %d, want 1 (one mutation for the live subset)", *appendCount)

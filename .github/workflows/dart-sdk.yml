@@ -3,6 +3,8 @@ name: Dart SDK
 on:
   push:
     branches: [main]
+    tags:
+      - "sdks/dart/v*.*.*"
     paths:
       - "sdks/dart/**"
       - "proto/**"
@@ -21,6 +23,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
   test:
@@ -47,19 +53,30 @@ jobs:
       - name: Start Lantern real-wire server
         working-directory: .
         run: |
-          go run ./server/cmd > "$RUNNER_TEMP/lantern-dart-server.log" 2>&1 &
+          env LANTERN_METRICS_ADDR=:9090 \
+            go run ./server/cmd > "$RUNNER_TEMP/lantern-dart-server.log" 2>&1 &
           echo $! > "$RUNNER_TEMP/lantern-dart-server.pid"
+          env LANTERN_PORT=6381 LANTERN_METRICS_ADDR=:9091 \
+            LANTERN_SEARCH_ENABLED=false go run ./server/cmd \
+            > "$RUNNER_TEMP/lantern-dart-search-disabled.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/lantern-dart-search-disabled.pid"
           for attempt in $(seq 1 60); do
             if curl --fail --silent --show-error --max-time 2 \
               -H 'Content-Type: application/json' \
               -H 'Connect-Protocol-Version: 1' \
               --data '{}' \
-              http://127.0.0.1:6380/grpc.health.v1.Health/Check >/dev/null; then
+              http://127.0.0.1:6380/grpc.health.v1.Health/Check >/dev/null && \
+              curl --fail --silent --show-error --max-time 2 \
+              -H 'Content-Type: application/json' \
+              -H 'Connect-Protocol-Version: 1' \
+              --data '{}' \
+              http://127.0.0.1:6381/grpc.health.v1.Health/Check >/dev/null; then
               exit 0
             fi
             sleep 1
           done
-          cat "$RUNNER_TEMP/lantern-dart-server.log"
+          cat "$RUNNER_TEMP/lantern-dart-server.log" \
+            "$RUNNER_TEMP/lantern-dart-search-disabled.log"
           exit 1
 
       - name: Resolve dependencies
@@ -74,7 +91,7 @@ jobs:
       - name: Check format
         run: >-
           dart format --output=none --set-exit-if-changed
-          lib/lantern_client.dart test
+          lib/lantern_client.dart lib/src/*.dart test
 
       - name: Analyze
         run: dart analyze
@@ -85,13 +102,53 @@ jobs:
       - name: Real-wire test
         env:
           LANTERN_DART_REAL_WIRE_ENDPOINT: http://127.0.0.1:6380
+          LANTERN_DART_SEARCH_DISABLED_ENDPOINT: http://127.0.0.1:6381
         run: dart test test/real_wire_test.dart
 
       - name: Build API documentation
-        run: dart doc --validate-links
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/dartdoc.log"
+          dart doc --output "$RUNNER_TEMP/dartdoc" --validate-links \
+            2>&1 | tee "$log"
+          if grep -Eq '^  warning:|^warning:' "$log"; then
+            echo "::error::dartdoc emitted warnings"
+            exit 1
+          fi
 
       - name: Validate package shape
         run: dart pub publish --dry-run
+
+      - name: Generate pana quality report
+        working-directory: .
+        run: |
+          package_dir="$RUNNER_TEMP/lantern-client-package"
+          mkdir -p "$package_dir"
+          git archive HEAD:sdks/dart | tar -x -C "$package_dir"
+          dart pub global activate pana 0.23.14
+          timeout 15m dart pub global run pana --json "$package_dir" \
+            > "$RUNNER_TEMP/lantern-client-pana.json"
+
+      - name: Upload pana quality report
+        uses: actions/upload-artifact@v7
+        with:
+          name: lantern-client-pana
+          path: ${{ runner.temp }}/lantern-client-pana.json
+          if-no-files-found: error
+
+      - name: Resolve Flutter example
+        working-directory: sdks/dart/example
+        run: flutter pub get --enforce-lockfile
+
+      - name: Check Flutter example
+        working-directory: sdks/dart/example
+        run: |
+          dart format --output=none --set-exit-if-changed \
+            lib test integration_test
+          flutter analyze
+          flutter test
+          flutter build apk --debug
 
       - name: Stop Lantern real-wire server
         if: always()
@@ -99,4 +156,263 @@ jobs:
         run: |
           if [ -f "$RUNNER_TEMP/lantern-dart-server.pid" ]; then
             kill "$(cat "$RUNNER_TEMP/lantern-dart-server.pid")" || true
+          fi
+          if [ -f "$RUNNER_TEMP/lantern-dart-search-disabled.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/lantern-dart-search-disabled.pid")" || true
+          fi
+
+  minimum-dart:
+    name: Minimum Dart 3.7
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/dart
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up minimum supported Dart
+        uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1
+        with:
+          sdk: 3.7.0
+
+      - name: Resolve at the minimum floor
+        # The maintained Flutter example intentionally follows the pinned
+        # current Flutter/Dart pair and is validated in separate mobile jobs.
+        run: dart pub get --no-example
+
+      - name: Analyze and test at the minimum floor
+        run: |
+          dart analyze lib test
+          dart test
+
+  android:
+    name: Android emulator real-wire example
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: 3.44.6
+          cache: true
+
+      - name: Start Lantern
+        run: |
+          go build -o "$RUNNER_TEMP/lantern" ./server/cmd
+          env LANTERN_METRICS_ADDR=:9092 LANTERN_LOG_LEVEL=warn \
+            "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/android-server.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/android-server.pid"
+
+      - name: Enable KVM access
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run Android native smoke
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
+        with:
+          api-level: 35
+          arch: x86_64
+          profile: pixel_6
+          script: >-
+            cd sdks/dart/example && flutter pub get --enforce-lockfile &&
+            flutter test integration_test/mobile_smoke_test.dart -d emulator-5554
+            --reporter=expanded --timeout=3m
+            --dart-define=LANTERN_ENDPOINT=http://10.0.2.2:6380
+            --dart-define=LANTERN_ALLOW_INSECURE=true
+
+      - name: Show logs and stop server
+        if: always()
+        run: |
+          cat "$RUNNER_TEMP/android-server.log" 2>/dev/null || true
+          kill "$(cat "$RUNNER_TEMP/android-server.pid")" 2>/dev/null || true
+
+  ios:
+    name: iOS simulator real-wire example
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: 3.44.6
+          cache: true
+
+      - name: Start Lantern
+        run: |
+          go build -o "$RUNNER_TEMP/lantern" ./server/cmd
+          env LANTERN_METRICS_ADDR=:9093 LANTERN_LOG_LEVEL=warn \
+            "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/ios-server.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/ios-server.pid"
+
+      - name: Boot iOS simulator
+        run: |
+          device=$(xcrun simctl list devices available -j | \
+            jq -r '[.devices[][] | select(.name | startswith("iPhone"))][0].udid')
+          test -n "$device"
+          xcrun simctl boot "$device" || true
+          xcrun simctl bootstatus "$device" -b
+          echo "DEVICE_ID=$device" >> "$GITHUB_ENV"
+
+      - name: Check and build iOS example
+        working-directory: sdks/dart/example
+        run: |
+          flutter pub get --enforce-lockfile
+          flutter analyze
+          flutter build ios --debug --no-codesign
+
+      - name: Run iOS native smoke
+        working-directory: sdks/dart/example
+        run: |
+          flutter test integration_test/mobile_smoke_test.dart -d "$DEVICE_ID" \
+            --reporter=expanded --timeout=3m \
+            --dart-define=LANTERN_ENDPOINT=http://127.0.0.1:6380 \
+            --dart-define=LANTERN_ALLOW_INSECURE=true
+
+      - name: Show logs and clean up
+        if: always()
+        run: |
+          cat "$RUNNER_TEMP/ios-server.log" 2>/dev/null || true
+          kill "$(cat "$RUNNER_TEMP/ios-server.pid")" 2>/dev/null || true
+          if [[ -n ${DEVICE_ID:-} ]]; then
+            xcrun simctl shutdown "$DEVICE_ID" || true
+          fi
+
+  publish:
+    name: Publish lantern_client
+    needs: [test, minimum-dart, android, ios]
+    if: startsWith(github.ref, 'refs/tags/sdks/dart/v')
+    runs-on: ubuntu-latest
+    environment:
+      name: pub.dev
+      url: https://pub.dev/packages/lantern_client
+    permissions:
+      contents: write
+      id-token: write
+    defaults:
+      run:
+        working-directory: sdks/dart
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: 3.44.6
+          cache: true
+
+      - name: Verify tag, package version, and changelog
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^sdks/dart/v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          tag_version=${TAG#sdks/dart/v}
+          pubspec_version=$(awk '$1 == "version:" { print $2; exit }' pubspec.yaml)
+          test "$tag_version" = "$pubspec_version"
+          grep -Fx "## $tag_version" CHANGELOG.md
+          echo "VERSION=$tag_version" >> "$GITHUB_ENV"
+
+      - name: Enforce first-release epic blockers
+        if: env.VERSION == '0.1.0'
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          for issue in 1008 1009 1011 1014 1016 1017 1020 1021 1022; do
+            state=$(gh issue view "$issue" --json state --jq .state)
+            if [[ "$state" != CLOSED ]]; then
+              echo "::error::First Dart release is blocked by open Issue #$issue"
+              exit 1
+            fi
+          done
+
+      - name: Resolve exact lockfile
+        run: dart pub get --enforce-lockfile
+
+      - name: Check pub.dev package/version state
+        run: |
+          set -euo pipefail
+          package_status=$(curl --silent --show-error --output "$RUNNER_TEMP/package.json" \
+            --write-out '%{http_code}' \
+            https://pub.dev/api/packages/lantern_client)
+          version_status=$(curl --silent --show-error --output "$RUNNER_TEMP/version.json" \
+            --write-out '%{http_code}' \
+            "https://pub.dev/api/packages/lantern_client/versions/$VERSION")
+          if [[ "$version_status" == 200 ]]; then
+            echo "PUBLISH_REQUIRED=false" >> "$GITHUB_ENV"
+          elif [[ "$package_status" == 404 ]]; then
+            echo "::error::pub.dev requires lantern_client's first version to be published manually from this exact tag. Publish it, configure automated publishing for anaregdesign/lantern and sdks/dart/v{{version}}, then rerun this job."
+            exit 1
+          elif [[ "$package_status" == 200 && "$version_status" == 404 ]]; then
+            echo "PUBLISH_REQUIRED=true" >> "$GITHUB_ENV"
+          else
+            echo "::error::Unexpected pub.dev API status: package=$package_status version=$version_status"
+            exit 1
+          fi
+
+      - name: Publish with pub.dev OIDC
+        if: env.PUBLISH_REQUIRED == 'true'
+        run: dart pub publish --force
+
+      - name: Verify pub.dev version exists
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error \
+              "https://pub.dev/api/packages/lantern_client/versions/$VERSION" \
+              >/dev/null; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Published version did not become visible on pub.dev"
+          exit 1
+
+      - name: Create exact-title GitHub Release
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          notes_file=$(mktemp)
+          {
+            echo "## Lantern Dart client SDK"
+            echo
+            echo "Install with:"
+            echo
+            echo '```yaml'
+            echo 'dependencies:'
+            echo "  lantern_client: ^$VERSION"
+            echo '```'
+          } > "$notes_file"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TAG" \
+              --notes-file "$notes_file" --verify-tag
+          else
+            gh release create "$TAG" --title "$TAG" \
+              --notes-file "$notes_file" --verify-tag
           fi

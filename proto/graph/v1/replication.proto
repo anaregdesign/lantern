@@ -163,6 +163,7 @@ message SnapshotVertex {
 //               is disabled (the legacy zero-id semantics).
 message SnapshotEdgeContribution {
   float weight = 1;
+  // Absolute expiration. An absent timestamp means a permanent contribution.
   google.protobuf.Timestamp expiration = 2;
   bytes contrib_id = 3;
 }

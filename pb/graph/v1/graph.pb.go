@@ -443,8 +443,9 @@ func (ReplicationPeer_State) EnumDescriptor() ([]byte, []int) {
 }
 
 type Vertex struct {
-	state      protoimpl.MessageState `protogen:"open.v1"`
-	Key        string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Key   string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	// Absolute expiration. An absent timestamp means permanent storage.
 	Expiration *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=expiration,proto3" json:"expiration,omitempty"`
 	// Types that are valid to be assigned to Value:
 	//
@@ -704,10 +705,11 @@ func (*Vertex_Duration) isVertex_Value() {}
 func (*Vertex_Nil) isVertex_Value() {}
 
 type Edge struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Tail          string                 `protobuf:"bytes,1,opt,name=tail,proto3" json:"tail,omitempty"`
-	Head          string                 `protobuf:"bytes,2,opt,name=head,proto3" json:"head,omitempty"`
-	Weight        float32                `protobuf:"fixed32,3,opt,name=weight,proto3" json:"weight,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Tail   string                 `protobuf:"bytes,1,opt,name=tail,proto3" json:"tail,omitempty"`
+	Head   string                 `protobuf:"bytes,2,opt,name=head,proto3" json:"head,omitempty"`
+	Weight float32                `protobuf:"fixed32,3,opt,name=weight,proto3" json:"weight,omitempty"`
+	// Absolute expiration. An absent timestamp means permanent storage.
 	Expiration    *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=expiration,proto3" json:"expiration,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

@@ -20,12 +20,8 @@ func newPrefixSDKClient(t *testing.T) (*client.Lantern, func()) {
 	return newInProcessClientWithPrefix(t)
 }
 
-// seedPrefixVertices upserts keys with an explicit one-hour Expiration.
-// Without an explicit Expiration, pb.Vertex defaults to the zero timestamp
-// (1970-01-01), so the cache treats every vertex as born-expired:
-// CountVerticesByPrefix would lie (radix-only) while ScanVertices returns
-// nothing. See /memories/repo/lantern.md "GraphCache vertex seeding gotcha"
-// for the full diagnosis.
+// seedPrefixVertices uses a one-hour Expiration so the prefix SDK suite also
+// exercises expiring rows. An absent wire Timestamp is permanent storage.
 func seedPrefixVertices(t *testing.T, ctx context.Context, l *client.Lantern, keys []string) {
 	t.Helper()
 	inputs := make([]client.VertexInput, len(keys))

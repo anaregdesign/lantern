@@ -1,0 +1,5 @@
+package com.anaregdesign.lantern_example
+
+import io.flutter.embedding.android.FlutterActivity
+
+class MainActivity : FlutterActivity()
