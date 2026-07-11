@@ -198,6 +198,7 @@ func TestDomainMetrics_HotPathFamilies(t *testing.T) {
 
 	m.OnIlluminate("bfs", "mst", "minimize", "raw", 17, 42, 5*time.Millisecond, 2*time.Millisecond)
 	m.OnIlluminate("bfs", "none", "minimize", "raw", 1, 0, 100*time.Microsecond, 0) // optimize=0 → no observation on optimize phase
+	m.OnIlluminateResult("ppr", "none", "maximize", "raw", "traversal", "deadline_exceeded")
 	m.OnScan("ScanVertices", 64, 750*time.Microsecond)
 	m.OnScan("ScanVertexKeys", 32, 500*time.Microsecond)
 	m.OnScan("ScanEdges", 128, time.Millisecond)
@@ -220,6 +221,7 @@ func TestDomainMetrics_HotPathFamilies(t *testing.T) {
 		"lantern_illuminate_visited_vertices",
 		"lantern_illuminate_visited_edges",
 		"lantern_illuminate_duration_seconds",
+		"lantern_illuminate_calls_total",
 		"lantern_scan_results",
 		"lantern_scan_duration_seconds",
 		"lantern_batch_size",
@@ -262,6 +264,9 @@ func TestDomainMetrics_HotPathFamilies(t *testing.T) {
 	// p99 toward zero on RPCs that didn't run an algorithm).
 	if got := histSampleCount(t, m.illuminateDuration.WithLabelValues("bfs", "none", "minimize", "raw", "optimize")); got != 0 {
 		t.Errorf("illuminate_duration{bfs,none,minimize,raw,optimize} sample count = %v, want 0 (optimize=0 must not observe)", got)
+	}
+	if got := testutil.ToFloat64(m.illuminateCalls.WithLabelValues("ppr", "none", "maximize", "raw", "traversal", "deadline_exceeded")); got != 1 {
+		t.Errorf("illuminate_calls_total{ppr,traversal,deadline_exceeded} = %v, want 1", got)
 	}
 
 	for _, op := range scanOps {

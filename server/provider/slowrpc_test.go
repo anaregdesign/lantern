@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
@@ -123,5 +125,46 @@ func TestSlowRPCInterceptor_ConnectSilentOnFastHandler(t *testing.T) {
 	}
 	if buf.Len() != 0 {
 		t.Errorf("unexpected log output: %s", buf.String())
+	}
+}
+
+func TestSlowRPCInterceptor_IlluminateFamilyFields(t *testing.T) {
+	var buf bytes.Buffer
+	s := NewSlowRPCInterceptor(time.Nanosecond, newJSONLogger(&buf, slog.LevelWarn))
+	next := connect.UnaryFunc(func(_ context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("bad reduction"))
+	})
+	req := connect.NewRequest(&pb.IlluminateRequest{Params: &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{
+		Step: 1, FanOut: 1, Reduction: pb.Reduction_REDUCTION_SHORTEST_PATH_TREE,
+	}}})
+	_, _ = s.ConnectInterceptor()(next)(context.Background(), req)
+	recs := decodeRecords(t, &buf)
+	if len(recs) != 1 || recs[0]["illuminate.family"] != "bfs" || recs[0]["illuminate.reduction"] != "spt" {
+		t.Fatalf("slow Illuminate fields = %+v, want family=bfs reduction=spt", recs)
+	}
+}
+
+func TestLoggingInterceptor_IlluminateSpanAttributes(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	provider := trace.NewTracerProvider(trace.WithSpanProcessor(recorder))
+	ctx, span := provider.Tracer("test").Start(context.Background(), "Illuminate")
+	next := connect.UnaryFunc(func(_ context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+		return connect.NewResponse(&pb.IlluminateResponse{}), nil
+	})
+	req := connect.NewRequest(&pb.IlluminateRequest{Params: &pb.IlluminateRequest_Ppr{Ppr: &pb.PprParams{TopN: 2}}})
+	if _, err := NewLoggingInterceptor(nil).ConnectInterceptor()(next)(ctx, req); err != nil {
+		t.Fatalf("interceptor: %v", err)
+	}
+	span.End()
+	ended := recorder.Ended()
+	if len(ended) != 1 {
+		t.Fatalf("ended spans = %d, want 1", len(ended))
+	}
+	attrs := map[string]string{}
+	for _, attr := range ended[0].Attributes() {
+		attrs[string(attr.Key)] = attr.Value.AsString()
+	}
+	if attrs["lantern.illuminate.family"] != "ppr" || attrs["lantern.illuminate.reduction"] != "none" {
+		t.Fatalf("Illuminate span attributes = %+v", attrs)
 	}
 }

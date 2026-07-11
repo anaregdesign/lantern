@@ -1418,6 +1418,7 @@ func itoa(i int) string {
 // the service-layer instrumentation hooks fire on the right callbacks.
 type fakeHotPathMetrics struct {
 	illuminate []illuminateObs
+	results    []illuminateResultObs
 	scan       []scanObs
 	search     []searchObs
 	batch      []batchObs
@@ -1430,6 +1431,10 @@ type illuminateObs struct {
 	algorithm, reduction, objective, weighting string
 	visitedVertices, visitedEdges              int
 	traversal, optimize                        time.Duration
+}
+
+type illuminateResultObs struct {
+	algorithm, reduction, objective, weighting, phase, code string
 }
 
 type scanObs struct {
@@ -1455,6 +1460,9 @@ type hitMissObs struct {
 
 func (f *fakeHotPathMetrics) OnIlluminate(algorithm, reduction, objective, weighting string, vV, vE int, traversal, optimize time.Duration) {
 	f.illuminate = append(f.illuminate, illuminateObs{algorithm, reduction, objective, weighting, vV, vE, traversal, optimize})
+}
+func (f *fakeHotPathMetrics) OnIlluminateResult(algorithm, reduction, objective, weighting, phase, code string) {
+	f.results = append(f.results, illuminateResultObs{algorithm, reduction, objective, weighting, phase, code})
 }
 func (f *fakeHotPathMetrics) OnScan(op string, results int, d time.Duration) {
 	f.scan = append(f.scan, scanObs{op, results, d})
@@ -1526,6 +1534,9 @@ func TestLanternService_HotPathMetrics_EmitsOnceForBatchAndIlluminate(t *testing
 	}
 	if got := fm.illuminate[0]; got.algorithm != "bfs" || got.reduction != "mst" || got.objective != "minimize" || got.weighting != "raw" || got.visitedVertices < 1 {
 		t.Errorf("illuminate[0] = %+v, want algorithm=bfs reduction=mst objective=minimize weighting=raw visitedVertices≥1", got)
+	}
+	if len(fm.results) != 1 || fm.results[0].phase != "complete" || fm.results[0].code != "ok" {
+		t.Fatalf("illuminate result observations = %+v, want one complete/ok", fm.results)
 	}
 
 	// Singular forwarders must NOT double-instrument: GetVertex forwards

@@ -86,6 +86,7 @@ type LanternService struct {
 // Implementations must be safe for concurrent use.
 type HotPathMetrics interface {
 	OnIlluminate(algorithm, reduction, objective, weighting string, visitedVertices, visitedEdges int, traversal, optimize time.Duration)
+	OnIlluminateResult(algorithm, reduction, objective, weighting, phase, code string)
 	OnScan(op string, results int, duration time.Duration)
 	OnSearch(results int, duration time.Duration)
 	OnBatch(op string, size int)
@@ -97,6 +98,8 @@ type HotPathMetrics interface {
 type noopHotPathMetrics struct{}
 
 func (noopHotPathMetrics) OnIlluminate(string, string, string, string, int, int, time.Duration, time.Duration) {
+}
+func (noopHotPathMetrics) OnIlluminateResult(string, string, string, string, string, string) {
 }
 func (noopHotPathMetrics) OnScan(string, int, time.Duration) {}
 func (noopHotPathMetrics) OnSearch(int, time.Duration)       {}
@@ -521,7 +524,17 @@ func (s *LanternService) logMutationAt(op *pb.MutationOp, ts hlc.Timestamp) uint
 // walk. Edge weighting (RAW vs TF-IDF) is applied BEFORE the walk and
 // therefore feeds into both the frontier ranking and any subsequent
 // reduction. See #410, #963.
-func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateRequest) (*pb.IlluminateResponse, error) {
+func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateRequest) (_ *pb.IlluminateResponse, retErr error) {
+	algoLabel, redLabel, objLabel, weightLabel := illuminateMetricLabels(request)
+	phase := "validation"
+	defer func() {
+		code := "ok"
+		if retErr != nil {
+			code = connect.CodeOf(retErr).String()
+		}
+		s.metrics.OnIlluminateResult(algoLabel, redLabel, objLabel, weightLabel, phase, code)
+	}()
+
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
 	}
@@ -559,9 +572,6 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 		traversalDur time.Duration
 		optimizeDur  time.Duration
 		err          error
-		algoLabel    string
-		redLabel     string
-		objLabel     string
 	)
 
 	// Dispatch on the params oneof (#846): the selected case IS the traversal
@@ -593,13 +603,14 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 			return nil, limitErr
 		}
 		alpha, epsilon := resolvePPRParams(ppr.GetRestartProb(), ppr.GetEpsilon())
+		phase = "traversal"
 		traversalStart := time.Now()
 		g, err = s.cache.PersonalizedPageRankWithWorkBudgetContext(ctx, request.GetSeed(), topN, alpha, epsilon, coreWeighting, keep, s.traversalWorkBudget)
 		traversalDur = time.Since(traversalStart)
 		if err != nil {
 			return nil, traversalToConnect(err)
 		}
-		algoLabel, redLabel, objLabel = "ppr", "none", "maximize"
+		phase = "response"
 
 	case *pb.IlluminateRequest_Community:
 		if params.Community == nil {
@@ -621,13 +632,16 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 			return nil, limitErr
 		}
 		alpha, epsilon := resolvePPRParams(comm.GetRestartProb(), comm.GetEpsilon())
+		phase = "traversal"
 		traversalStart := time.Now()
 		g, expirations, err = s.cache.LocalCommunityWithWorkBudgetContext(ctx, request.GetSeed(), maxSize, alpha, epsilon, coreWeighting, keep, s.traversalWorkBudget)
 		traversalDur = time.Since(traversalStart)
 		if err != nil {
 			return nil, traversalToConnect(err)
 		}
+		phase = "response"
 		if opt := resolveOptimizer(comm.GetReduction(), comm.GetObjective()); opt != nil {
+			phase = "reduction"
 			optStart := time.Now()
 			reduced, rerr := opt(ctx, g, request.GetSeed())
 			if rerr != nil {
@@ -658,8 +672,8 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 			}
 			expirations = trimmed
 			optimizeDur = time.Since(optStart)
+			phase = "response"
 		}
-		algoLabel, redLabel, objLabel = "community", reductionLabel(comm.GetReduction()), objectiveLabel(comm.GetObjective())
 
 	case *pb.IlluminateRequest_Bfs:
 		if params.Bfs == nil {
@@ -676,22 +690,25 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 		// UNSPECIFIED resolves to MAXIMIZE (strongest edges).
 		objective := bfs.GetObjective()
 		selectSmallest := objective == pb.Objective_OBJECTIVE_MINIMIZE
+		phase = "traversal"
 		traversalStart := time.Now()
 		g, expirations, err = s.cache.NeighborWithExpirationsContext(ctx, request.GetSeed(), int(bfs.GetStep()), int(bfs.GetFanOut()), coreWeighting, selectSmallest, keep)
 		traversalDur = time.Since(traversalStart)
 		if err != nil {
 			return nil, ctxToConnect(err)
 		}
+		phase = "response"
 
 		if opt := resolveOptimizer(bfs.GetReduction(), objective); opt != nil {
+			phase = "reduction"
 			optStart := time.Now()
 			g, err = opt(ctx, g, request.GetSeed())
 			optimizeDur = time.Since(optStart)
 			if err != nil {
 				return nil, optimizerToConnect(err)
 			}
+			phase = "response"
 		}
-		algoLabel, redLabel, objLabel = "bfs", reductionLabel(bfs.GetReduction()), objectiveLabel(objective)
 	default:
 		return nil, invalidIlluminateParams("unknown traversal family")
 	}
@@ -723,7 +740,8 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 		}
 	}
 
-	s.metrics.OnIlluminate(algoLabel, redLabel, objLabel, weightingLabel(weighting), len(vertices), edgeCount, traversalDur, optimizeDur)
+	s.metrics.OnIlluminate(algoLabel, redLabel, objLabel, weightLabel, len(vertices), edgeCount, traversalDur, optimizeDur)
+	phase = "complete"
 
 	return &pb.IlluminateResponse{
 		Graph: &pb.Graph{Vertices: vertices, Edges: edges},

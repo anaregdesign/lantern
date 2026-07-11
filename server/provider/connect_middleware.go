@@ -33,6 +33,10 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
 // ConnectInterceptor returns a connect.UnaryInterceptorFunc that emits
@@ -50,16 +54,24 @@ import (
 func (s *SlowRPCInterceptor) ConnectInterceptor() connect.UnaryInterceptorFunc {
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+			labels, hasLabels := illuminateTelemetryLabelsFor(req.Any())
+			if hasLabels {
+				setIlluminateSpanAttributes(ctx, labels)
+			}
 			start := time.Now()
 			resp, err := next(ctx, req)
 			d := time.Since(start)
 			if d > s.threshold {
-				s.logger.LogAttrs(ctx, slog.LevelWarn, "slow rpc",
+				attrs := []slog.Attr{
 					slog.String("method", req.Spec().Procedure),
 					slog.String("code", connectCodeString(err)),
 					slog.Int64("duration_ms", d.Milliseconds()),
 					slog.Int64("threshold_ms", s.threshold.Milliseconds()),
-				)
+				}
+				if hasLabels {
+					attrs = append(attrs, labels.slogAttrs()...)
+				}
+				s.logger.LogAttrs(ctx, slog.LevelWarn, "slow rpc", attrs...)
 			}
 			return resp, err
 		}
@@ -91,26 +103,121 @@ func NewLoggingInterceptor(logger *slog.Logger) *LoggingInterceptor {
 // ValidationInterceptor.ConnectInterceptor() so the listener wiring
 // reads uniformly.
 func (l *LoggingInterceptor) ConnectInterceptor() connect.UnaryInterceptorFunc {
-	if l == nil || l.logger == nil {
-		return func(next connect.UnaryFunc) connect.UnaryFunc { return next }
-	}
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+			labels, hasLabels := illuminateTelemetryLabelsFor(req.Any())
+			if hasLabels {
+				setIlluminateSpanAttributes(ctx, labels)
+			}
 			method := req.Spec().Procedure
 			start := time.Now()
-			l.logger.LogAttrs(ctx, slog.LevelInfo, "started call",
-				slog.String("protocol", "connect"),
-				slog.String("grpc.method", method),
-			)
+			if l != nil && l.logger != nil {
+				attrs := []slog.Attr{slog.String("protocol", "connect"), slog.String("grpc.method", method)}
+				if hasLabels {
+					attrs = append(attrs, labels.slogAttrs()...)
+				}
+				l.logger.LogAttrs(ctx, slog.LevelInfo, "started call", attrs...)
+			}
 			resp, err := next(ctx, req)
-			l.logger.LogAttrs(ctx, slog.LevelInfo, "finished call",
-				slog.String("protocol", "connect"),
-				slog.String("grpc.method", method),
-				slog.String("grpc.code", connectCodeString(err)),
-				slog.Int64("grpc.duration_ms", time.Since(start).Milliseconds()),
-			)
+			if l != nil && l.logger != nil {
+				attrs := []slog.Attr{
+					slog.String("protocol", "connect"),
+					slog.String("grpc.method", method),
+					slog.String("grpc.code", connectCodeString(err)),
+					slog.Int64("grpc.duration_ms", time.Since(start).Milliseconds()),
+				}
+				if hasLabels {
+					attrs = append(attrs, labels.slogAttrs()...)
+				}
+				l.logger.LogAttrs(ctx, slog.LevelInfo, "finished call", attrs...)
+			}
 			return resp, err
 		}
+	}
+}
+
+type illuminateTelemetryLabels struct {
+	family, reduction, objective, weighting string
+}
+
+func illuminateTelemetryLabelsFor(message any) (illuminateTelemetryLabels, bool) {
+	req, ok := message.(*pb.IlluminateRequest)
+	if !ok {
+		return illuminateTelemetryLabels{}, false
+	}
+	labels := illuminateTelemetryLabels{
+		family: "unknown", reduction: "none", objective: "maximize", weighting: telemetryWeighting(req.GetWeighting()),
+	}
+	switch params := req.GetParams().(type) {
+	case *pb.IlluminateRequest_Bfs:
+		labels.family = "bfs"
+		if params.Bfs != nil {
+			labels.reduction = telemetryReduction(params.Bfs.GetReduction())
+			labels.objective = telemetryObjective(params.Bfs.GetObjective())
+		}
+	case *pb.IlluminateRequest_Ppr:
+		labels.family = "ppr"
+	case *pb.IlluminateRequest_Community:
+		labels.family = "community"
+		if params.Community != nil {
+			labels.reduction = telemetryReduction(params.Community.GetReduction())
+			labels.objective = telemetryObjective(params.Community.GetObjective())
+		}
+	}
+	return labels, true
+}
+
+func (l illuminateTelemetryLabels) slogAttrs() []slog.Attr {
+	return []slog.Attr{
+		slog.String("illuminate.family", l.family),
+		slog.String("illuminate.reduction", l.reduction),
+		slog.String("illuminate.objective", l.objective),
+		slog.String("illuminate.weighting", l.weighting),
+	}
+}
+
+func setIlluminateSpanAttributes(ctx context.Context, labels illuminateTelemetryLabels) {
+	trace.SpanFromContext(ctx).SetAttributes(
+		attribute.String("lantern.illuminate.family", labels.family),
+		attribute.String("lantern.illuminate.reduction", labels.reduction),
+		attribute.String("lantern.illuminate.objective", labels.objective),
+		attribute.String("lantern.illuminate.weighting", labels.weighting),
+	)
+}
+
+func telemetryReduction(value pb.Reduction) string {
+	switch value {
+	case pb.Reduction_REDUCTION_UNSPECIFIED:
+		return "none"
+	case pb.Reduction_REDUCTION_MINIMUM_SPANNING_TREE:
+		return "mst"
+	case pb.Reduction_REDUCTION_SHORTEST_PATH_TREE:
+		return "spt"
+	default:
+		return "unknown"
+	}
+}
+
+func telemetryObjective(value pb.Objective) string {
+	if value == pb.Objective_OBJECTIVE_MINIMIZE {
+		return "minimize"
+	}
+	if value == pb.Objective_OBJECTIVE_UNSPECIFIED || value == pb.Objective_OBJECTIVE_MAXIMIZE {
+		return "maximize"
+	}
+	return "unknown"
+}
+
+func telemetryWeighting(value pb.Weighting) string {
+	switch value {
+	case pb.Weighting_WEIGHTING_UNSPECIFIED, pb.Weighting_WEIGHTING_RAW:
+		return "raw"
+	case pb.Weighting_WEIGHTING_TFIDF:
+		return "tfidf"
+	case pb.Weighting_WEIGHTING_BM25:
+		return "bm25"
+	default:
+		return "unknown"
 	}
 }
 
