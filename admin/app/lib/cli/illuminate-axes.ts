@@ -1,29 +1,10 @@
 /**
- * Click-to-illuminate axis registry (#464).
+ * Family-native state and command formatting for the CLI graph explorer.
  *
- * The /cli page lets an operator click a vertex on the canvas to fire
- * an `illuminate` command for that key. Pre-#464 the click was hard-
- * coded to `illuminate <key> 2 5`, so configuring the post-#410 axes
- * (algorithm / objective / weighting) required typing the long form
- * by hand every time. This module exposes the *CLI-vocabulary* axis
- * options the picker strip renders, plus the small pure formatter
- * that turns the picker state into the exact text that will be echoed
- * into the scrollback.
- *
- * Why CLI vocabulary and not the wire enums?
- * The picker writes a *command string* into the CLI input buffer; the
- * same string a user could have typed. The Go REPL parser and the
- * TypeScript parser in `./verbs.ts` both accept the family axis
- * `bfs|ppr|community`, the orthogonal reduction axis `none|mst|spt`
- * (#961), plus `min|max` / `raw|tfidf|bm25`. Using the wire enums here
- * would mean the picker echoes something the parsers reject, breaking the
- * "every command echoed is something I could have typed" invariant the
- * /cli page is built on.
- *
- * Defaults match `parseIlluminate` in `./verbs.ts` so that an
- * untouched picker formats to the canonical short form
- * `illuminate <seed> 2 5` — the regression guard documented in #439
- * (default click must remain stable byte-for-byte).
+ * A picker selection writes a command the operator could type in the CLI, so
+ * this module deliberately uses the CLI vocabulary rather than wire enums.
+ * The traversal family is a discriminant: an impossible combination such as
+ * PageRank plus a BFS step or tree reduction has no TypeScript representation.
  */
 
 import type {
@@ -35,78 +16,135 @@ import type {
 import { quoteCliToken } from "./tokenise";
 import { parseFloatStrict } from "./verbs";
 
-/** Bounds for the step axis. Matches the Illuminate wire toolbar. */
-export const CLI_CLICK_STEP_MIN = 1;
-export const CLI_CLICK_STEP_MAX = 5;
-/** Bounds for the k axis. */
-export const CLI_CLICK_K_MIN = 1;
-export const CLI_CLICK_K_MAX = 32;
+export const CLI_CLICK_BFS_STEP_MIN = 1;
+export const CLI_CLICK_BFS_STEP_MAX = 5;
+export const CLI_CLICK_BFS_FAN_OUT_MIN = 1;
+export const CLI_CLICK_BFS_FAN_OUT_MAX = 32;
+export const CLI_CLICK_TOP_N_MIN = 0;
+export const CLI_CLICK_TOP_N_MAX = 32;
+export const CLI_CLICK_MAX_SIZE_MIN = 0;
+export const CLI_CLICK_MAX_SIZE_MAX = 32;
 
-export interface CliClickAxes {
-  step: number;
-  k: number;
-  /**
-   * Traversal FAMILY (#961): `bfs` (default), `ppr`, or `community`.
-   * Orthogonal to {@link reduction}.
-   */
-  algorithm: AlgorithmName;
-  /**
-   * Post-traversal tree REDUCTION (#961): `none` (default), `mst`, or `spt`.
-   * Honoured for the `bfs` and `community` families and ignored for `ppr`;
-   * {@link formatFamilyClick} only echoes it for a family that uses it.
-   */
+interface SharedCliClickAxes {
+  weighting: WeightingName;
+  /** Empty means no frontier-prefix filter. */
+  vertexPrefix: string;
+}
+
+interface TreeCliClickAxes extends SharedCliClickAxes {
   reduction: ReductionName;
   objective: ObjectiveName;
-  weighting: WeightingName;
-  /**
-   * Free-text vertex-prefix filter (#604/#617). Restricts the click-driven
-   * walk frontier to keys under this prefix; the seed is always kept as the
-   * anchor even when it does not match. Empty means "no filter". Matched
-   * against vertex keys verbatim (case-SENSITIVE), unlike the closed-set
-   * axes above.
-   */
-  vertexPrefix: string;
-  /**
-   * Push-family locality knobs (#801/#942), meaningful when
-   * `algorithm === "ppr"` or `algorithm === "community"`. `restartProb` is
-   * the restart/teleport-to-seed probability α in (0,1); `epsilon` is the
-   * forward-push residual threshold ε > 0. 0 means "leave to the server
-   * default" (α=0.15 / ε=1e-4) and is the value that keeps the bare click
-   * byte-for-byte the canonical short form — {@link formatFamilyClick}
-   * only emits these for a non-zero ppr/community walk.
-   */
+}
+
+export interface BfsCliClickAxes extends TreeCliClickAxes {
+  family: "bfs";
+  step: number;
+  fanOut: number;
+}
+
+export interface PagerankCliClickAxes extends SharedCliClickAxes {
+  family: "pagerank";
+  /** 0 returns every positive-mass vertex. */
+  topN: number;
+  /** 0 delegates to the server default. */
   restartProb: number;
+  /** 0 delegates to the server default. */
   epsilon: number;
 }
 
+export interface CommunityCliClickAxes extends TreeCliClickAxes {
+  family: "community";
+  /** 0 leaves the conductance sweep to decide the community size. */
+  maxSize: number;
+  /** 0 delegates to the server default. */
+  restartProb: number;
+  /** 0 delegates to the server default. */
+  epsilon: number;
+}
+
+export type CliClickAxes =
+  | BfsCliClickAxes
+  | PagerankCliClickAxes
+  | CommunityCliClickAxes;
+
+export interface CliClickAxesByFamily {
+  bfs: BfsCliClickAxes;
+  pagerank: PagerankCliClickAxes;
+  community: CommunityCliClickAxes;
+}
+
+export interface CliClickPickerState {
+  selectedFamily: AlgorithmName;
+  families: CliClickAxesByFamily;
+}
+
 /**
- * Defaults are wired to the same values `parseIlluminate` falls back
- * to when a long-form command omits the axis kwargs. Any drift here
- * silently breaks the regression guard in {@link formatIlluminateClick}.
+ * Click defaults intentionally match the parser's family defaults: BFS 5/3,
+ * PageRank top_n 10, and community max_size 0. The explicit zero values make
+ * the two push families' sentinel semantics visible in generated commands.
  */
-export const CLI_CLICK_AXIS_DEFAULTS: CliClickAxes = {
-  step: 2,
-  k: 5,
-  algorithm: "bfs",
-  // #961: no tree reduction by default — the bare click renders the raw
-  // discovered subgraph. Kept in lockstep with `parseIlluminate`.
-  reduction: "none",
-  // #560: the server resolves an unspecified objective to MAXIMIZE, and the
-  // objective now also steers the per-hop top-k pruning. Defaulting the
-  // picker to `max` keeps the bare click on the strongest neighbours
-  // (the pre-#560 de-facto behaviour) instead of silently inverting to
-  // the weakest once the click is dispatched.
-  objective: "max",
-  weighting: "raw",
-  // Empty = no prefix filter, so the bare click stays byte-for-byte the
-  // canonical short form `illuminate <seed> 2 5` (the #439 regression guard).
-  vertexPrefix: "",
-  // 0 = "use the server default" for both push knobs; the formatter omits
-  // them unless algorithm=ppr|community AND the value is non-zero, so the
-  // bare click is unaffected (#439 / #801 / #942).
-  restartProb: 0,
-  epsilon: 0,
+export const CLI_CLICK_AXIS_DEFAULTS: CliClickAxesByFamily = {
+  bfs: {
+    family: "bfs",
+    step: 5,
+    fanOut: 3,
+    reduction: "none",
+    objective: "max",
+    weighting: "raw",
+    vertexPrefix: "",
+  },
+  pagerank: {
+    family: "pagerank",
+    topN: 10,
+    restartProb: 0,
+    epsilon: 0,
+    weighting: "raw",
+    vertexPrefix: "",
+  },
+  community: {
+    family: "community",
+    maxSize: 0,
+    restartProb: 0,
+    epsilon: 0,
+    reduction: "none",
+    objective: "max",
+    weighting: "raw",
+    vertexPrefix: "",
+  },
 };
+
+export function defaultCliClickPickerState(): CliClickPickerState {
+  return {
+    selectedFamily: "bfs",
+    families: {
+      bfs: { ...CLI_CLICK_AXIS_DEFAULTS.bfs },
+      pagerank: { ...CLI_CLICK_AXIS_DEFAULTS.pagerank },
+      community: { ...CLI_CLICK_AXIS_DEFAULTS.community },
+    },
+  };
+}
+
+/** Select a family without touching the other families' last-used values. */
+export function selectCliClickFamily(
+  state: CliClickPickerState,
+  family: AlgorithmName,
+): CliClickPickerState {
+  return state.selectedFamily === family
+    ? state
+    : { ...state, selectedFamily: family };
+}
+
+/** Replace only the current family, refusing a stale cross-family update. */
+export function replaceCliClickFamilyAxes(
+  state: CliClickPickerState,
+  axes: CliClickAxes,
+): CliClickPickerState {
+  if (state.selectedFamily !== axes.family) return state;
+  return {
+    ...state,
+    families: { ...state.families, [axes.family]: axes },
+  };
+}
 
 export const CLI_ALGORITHMS: ReadonlyArray<{
   value: AlgorithmName;
@@ -144,73 +182,71 @@ export const CLI_WEIGHTINGS: ReadonlyArray<{
 ];
 
 /**
- * Format a click-to-illuminate command for {@link seed} as a family verb
- * (#975). The verb is `axes.algorithm` (bfs / pagerank / community): bfs emits
- * positional `<step> <fan_out>`, while pagerank / community emit a single
- * positional count (top_n / max_size), all sourced from `axes.k` (the shared
- * "count" axis). Optional kwargs are appended in fixed order only when they
- * diverge from {@link CLI_CLICK_AXIS_DEFAULTS}: `reduction=` / `objective=`
- * (bfs & community only — pagerank's relevance star is already a tree),
- * `weighting=`, `prefix=`, then the α/ε push knobs (pagerank / community only,
- * and only when non-zero). The fixed order keeps scrollback snapshots
- * deterministic and every echoed line is one the parser accepts.
- *
- * The function is intentionally pure so `bun:test` can round-trip it through
- * {@link parse} without a DOM.
+ * Formats a family-native click selection as a parser-accepted CLI command.
+ * Positional defaults stay explicit: this makes the click preview describe
+ * the exact request and keeps the zero sentinels visible for PageRank and
+ * community.
  */
 export function formatFamilyClick(seed: string, axes: CliClickAxes): string {
-  const verb = axes.algorithm;
-  const tokens: string[] = [verb, quoteCliToken(seed)];
-  // Positional walk-size args: bfs takes step + fan_out; pagerank / community
-  // take a single count (top_n / max_size). `axes.k` is the shared count axis.
-  if (verb === "bfs") {
-    tokens.push(String(axes.step), String(axes.k));
-  } else {
-    tokens.push(String(axes.k));
-  }
-  // reduction / objective apply to bfs and community (pagerank returns a
-  // relevance star with no tree view). Emit only when non-default so a bare
-  // click stays byte-stable (#439) and we never echo a knob pagerank ignores.
-  if (verb !== "pagerank") {
-    if (axes.reduction !== CLI_CLICK_AXIS_DEFAULTS.reduction) {
-      tokens.push(`reduction=${axes.reduction}`);
-    }
-    if (axes.objective !== CLI_CLICK_AXIS_DEFAULTS.objective) {
-      tokens.push(`objective=${axes.objective}`);
-    }
-  }
-  if (axes.weighting !== CLI_CLICK_AXIS_DEFAULTS.weighting) {
-    tokens.push(`weighting=${axes.weighting}`);
-  }
-  // #617: prefix is a FREE-TEXT axis. Emit `prefix=<value>` only when non-empty
-  // — the parser rejects an explicit empty `prefix=`, and an empty prefix means
-  // "no filter" anyway, so the bare click stays the canonical short form. The
-  // value is case-sensitive (#604), but quote the COMPLETE `prefix=value`
-  // token so whitespace and escape characters survive tokenisation.
-  if (axes.vertexPrefix !== "") {
-    tokens.push(quoteCliToken(`prefix=${axes.vertexPrefix}`));
-  }
-  // #801/#942: the α/ε knobs are meaningful for the two push-based families
-  // (pagerank and community — both carry the same `restart_prob`/`epsilon`
-  // locality knobs) and only when the operator has overridden the server
-  // default (0). Gating on both keeps the bare click byte-stable (#439) and
-  // never emits a knob the server ignores for the bfs family.
-  if (verb === "pagerank" || verb === "community") {
-    if (axes.restartProb > 0) {
-      tokens.push(`restart_prob=${axes.restartProb}`);
-    }
-    if (axes.epsilon > 0) {
-      tokens.push(`epsilon=${axes.epsilon}`);
-    }
+  const tokens = [axes.family, quoteCliToken(seed)];
+  switch (axes.family) {
+    case "bfs":
+      tokens.push(String(axes.step), String(axes.fanOut));
+      appendTreeTokens(tokens, axes, CLI_CLICK_AXIS_DEFAULTS.bfs);
+      break;
+    case "pagerank":
+      tokens.push(String(axes.topN));
+      appendSharedTokens(tokens, axes, CLI_CLICK_AXIS_DEFAULTS.pagerank);
+      appendPushTokens(tokens, axes);
+      break;
+    case "community":
+      tokens.push(String(axes.maxSize));
+      appendTreeTokens(tokens, axes, CLI_CLICK_AXIS_DEFAULTS.community);
+      appendPushTokens(tokens, axes);
+      break;
   }
   return tokens.join(" ");
 }
 
-/**
- * localStorage keys for the picker strip. Namespaced under `cli.click.*`
- * so they coexist with `cli.splitRatio` from #465 without collision.
- */
+function appendTreeTokens(
+  tokens: string[],
+  axes: TreeCliClickAxes,
+  defaults: TreeCliClickAxes,
+): void {
+  if (axes.reduction !== defaults.reduction) {
+    tokens.push(`reduction=${axes.reduction}`);
+  }
+  if (axes.objective !== defaults.objective) {
+    tokens.push(`objective=${axes.objective}`);
+  }
+  appendSharedTokens(tokens, axes, defaults);
+}
+
+function appendSharedTokens(
+  tokens: string[],
+  axes: SharedCliClickAxes,
+  defaults: SharedCliClickAxes,
+): void {
+  if (axes.weighting !== defaults.weighting) {
+    tokens.push(`weighting=${axes.weighting}`);
+  }
+  if (axes.vertexPrefix !== "") {
+    tokens.push(quoteCliToken(`prefix=${axes.vertexPrefix}`));
+  }
+}
+
+function appendPushTokens(
+  tokens: string[],
+  axes: Pick<PagerankCliClickAxes, "restartProb" | "epsilon">,
+): void {
+  if (axes.restartProb > 0) tokens.push(`restart_prob=${axes.restartProb}`);
+  if (axes.epsilon > 0) tokens.push(`epsilon=${axes.epsilon}`);
+}
+
+/** A versioned snapshot replaces the retired flat localStorage keys. */
 export const AXIS_STORAGE_KEYS = {
+  state: "cli.click.families.v2",
+  // Legacy flat-state keys. They are only read for one-time migration.
   step: "cli.click.step",
   k: "cli.click.k",
   algorithm: "cli.click.algorithm",
@@ -222,18 +258,117 @@ export const AXIS_STORAGE_KEYS = {
   epsilon: "cli.click.epsilon",
 } as const;
 
-/**
- * Parse a step value previously written to localStorage. Returns null
- * for missing / malformed / out-of-range values; the caller is expected
- * to fall back to {@link CLI_CLICK_AXIS_DEFAULTS}.step.
- */
-export function parseStoredStep(raw: string | null): number | null {
-  return parseStoredInt(raw, CLI_CLICK_STEP_MIN, CLI_CLICK_STEP_MAX);
+export interface LegacyAxisStorage {
+  get(key: string): string | null;
 }
 
-/** Like {@link parseStoredStep} but for the k axis. */
+/**
+ * Reads the old flat picker state without assigning `k` a new meaning for
+ * every family. Its value is migrated only to the family that was selected;
+ * the other families receive their own documented defaults.
+ */
+export function migrateLegacyCliClickPickerState(
+  storage: LegacyAxisStorage,
+): CliClickPickerState {
+  const selectedFamily =
+    parseStoredAlgorithm(storage.get(AXIS_STORAGE_KEYS.algorithm)) ?? "bfs";
+  const legacyStep =
+    parseStoredStep(storage.get(AXIS_STORAGE_KEYS.step)) ??
+    CLI_CLICK_AXIS_DEFAULTS.bfs.step;
+  const legacyK = parseStoredK(storage.get(AXIS_STORAGE_KEYS.k));
+  const reduction =
+    parseStoredReduction(storage.get(AXIS_STORAGE_KEYS.reduction)) ?? "none";
+  const objective =
+    parseStoredObjective(storage.get(AXIS_STORAGE_KEYS.objective)) ?? "max";
+  const weighting =
+    parseStoredWeighting(storage.get(AXIS_STORAGE_KEYS.weighting)) ?? "raw";
+  const vertexPrefix =
+    parseStoredPrefix(storage.get(AXIS_STORAGE_KEYS.vertexPrefix)) ?? "";
+  const restartProb =
+    parseStoredRestartProb(storage.get(AXIS_STORAGE_KEYS.restartProb)) ?? 0;
+  const epsilon =
+    parseStoredEpsilon(storage.get(AXIS_STORAGE_KEYS.epsilon)) ?? 0;
+
+  const state = defaultCliClickPickerState();
+  state.selectedFamily = selectedFamily;
+  state.families.bfs = {
+    ...state.families.bfs,
+    step: legacyStep,
+    fanOut:
+      selectedFamily === "bfs" && legacyK !== null
+        ? legacyK
+        : state.families.bfs.fanOut,
+    reduction,
+    objective,
+    weighting,
+    vertexPrefix,
+  };
+  state.families.pagerank = {
+    ...state.families.pagerank,
+    topN:
+      selectedFamily === "pagerank" && legacyK !== null
+        ? legacyK
+        : state.families.pagerank.topN,
+    restartProb,
+    epsilon,
+    weighting,
+    vertexPrefix,
+  };
+  state.families.community = {
+    ...state.families.community,
+    maxSize:
+      selectedFamily === "community" && legacyK !== null
+        ? legacyK
+        : state.families.community.maxSize,
+    restartProb,
+    epsilon,
+    reduction,
+    objective,
+    weighting,
+    vertexPrefix,
+  };
+  return state;
+}
+
+/** Returns null when the versioned snapshot is missing or malformed. */
+export function parseStoredCliClickPickerState(
+  raw: string | null,
+): CliClickPickerState | null {
+  if (raw === null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed) || parsed.version !== 2 || !isRecord(parsed.families)) {
+    return null;
+  }
+  const selectedFamily = parseStoredAlgorithm(asString(parsed.selectedFamily));
+  const bfs = parseBfsAxes(parsed.families.bfs);
+  const pagerank = parsePagerankAxes(parsed.families.pagerank);
+  const community = parseCommunityAxes(parsed.families.community);
+  if (!selectedFamily || !bfs || !pagerank || !community) return null;
+  return { selectedFamily, families: { bfs, pagerank, community } };
+}
+
+export function serialiseCliClickPickerState(
+  state: CliClickPickerState,
+): string {
+  return JSON.stringify({ version: 2, ...state });
+}
+
+export function parseStoredStep(raw: string | null): number | null {
+  return parseStoredInt(raw, CLI_CLICK_BFS_STEP_MIN, CLI_CLICK_BFS_STEP_MAX);
+}
+
+/** Parses the legacy shared k axis, whose old legal range was 1..32. */
 export function parseStoredK(raw: string | null): number | null {
-  return parseStoredInt(raw, CLI_CLICK_K_MIN, CLI_CLICK_K_MAX);
+  return parseStoredInt(
+    raw,
+    CLI_CLICK_BFS_FAN_OUT_MIN,
+    CLI_CLICK_BFS_FAN_OUT_MAX,
+  );
 }
 
 export function parseStoredAlgorithm(raw: string | null): AlgorithmName | null {
@@ -263,13 +398,6 @@ export const RESTART_PROB_VALIDATION_MESSAGE =
 export const EPSILON_VALIDATION_MESSAGE =
   "epsilon must be a positive float32, or blank for the server default.";
 
-/**
- * Strictly validate a restart-probability draft. The input must match the
- * command grammar in full; its float32 representation (the value sent on the
- * wire) must then be in the open interval (0, 1). Empty text alone requests
- * the server default. Incomplete decimal/scientific drafts remain distinct so
- * the picker can preserve them without committing a stale or invalid value.
- */
 export function validateRestartProbInput(raw: string): PushKnobValidation {
   return validatePushKnob(
     raw,
@@ -278,11 +406,6 @@ export function validateRestartProbInput(raw: string): PushKnobValidation {
   );
 }
 
-/**
- * Strictly validate an epsilon draft. Its float32 wire value must be positive;
- * an underflow such as `1e-50` therefore remains invalid rather than silently
- * becoming the server-default zero value.
- */
 export function validateEpsilonInput(raw: string): PushKnobValidation {
   return validatePushKnob(
     raw,
@@ -291,52 +414,137 @@ export function validateEpsilonInput(raw: string): PushKnobValidation {
   );
 }
 
-/** Whether a draft can safely participate in a generated click command. */
 export function isReadyPushKnob(
   validation: PushKnobValidation,
 ): validation is Extract<PushKnobValidation, { value: number }> {
   return validation.state === "default" || validation.state === "valid";
 }
 
-/**
- * Parse the persisted restart-probability value with the same full-string and
- * float32-domain rules as the interactive field. A legacy stored `0` is
- * rejected and hydrates to the documented default instead.
- */
 export function parseStoredRestartProb(raw: string | null): number | null {
   return parseStoredPushKnob(raw, validateRestartProbInput);
 }
 
-/** Like {@link parseStoredRestartProb}, but for the positive epsilon domain. */
 export function parseStoredEpsilon(raw: string | null): number | null {
   return parseStoredPushKnob(raw, validateEpsilonInput);
 }
 
-/**
- * Parse a stored vertex prefix. Prefix is free text, so every non-null
- * string is valid (including ""); only a missing key returns null, letting
- * the caller fall back to {@link CLI_CLICK_AXIS_DEFAULTS}.vertexPrefix.
- */
 export function parseStoredPrefix(raw: string | null): string | null {
   return raw;
 }
 
-/** Inverse of the parse helpers; numeric axes serialise as base-10 ints. */
-export function formatStoredStep(value: number): string {
-  return String(value);
+function parseBfsAxes(value: unknown): BfsCliClickAxes | null {
+  if (!isRecord(value) || value.family !== "bfs") return null;
+  const reduction = parseStoredReduction(asString(value.reduction));
+  const objective = parseStoredObjective(asString(value.objective));
+  const weighting = parseStoredWeighting(asString(value.weighting));
+  const vertexPrefix = asString(value.vertexPrefix);
+  const step = parseStoredInt(
+    asString(value.step),
+    CLI_CLICK_BFS_STEP_MIN,
+    CLI_CLICK_BFS_STEP_MAX,
+  );
+  const fanOut = parseStoredInt(
+    asString(value.fanOut),
+    CLI_CLICK_BFS_FAN_OUT_MIN,
+    CLI_CLICK_BFS_FAN_OUT_MAX,
+  );
+  if (
+    !reduction ||
+    !objective ||
+    !weighting ||
+    vertexPrefix === null ||
+    !step ||
+    !fanOut
+  ) {
+    return null;
+  }
+  return {
+    family: "bfs",
+    step,
+    fanOut,
+    reduction,
+    objective,
+    weighting,
+    vertexPrefix,
+  };
 }
 
-export function formatStoredK(value: number): string {
-  return String(value);
+function parsePagerankAxes(value: unknown): PagerankCliClickAxes | null {
+  if (!isRecord(value) || value.family !== "pagerank") return null;
+  const weighting = parseStoredWeighting(asString(value.weighting));
+  const vertexPrefix = asString(value.vertexPrefix);
+  const topN = parseStoredInt(
+    asString(value.topN),
+    CLI_CLICK_TOP_N_MIN,
+    CLI_CLICK_TOP_N_MAX,
+  );
+  const restartProb = parseStoredV2PushKnob(
+    asString(value.restartProb),
+    validateRestartProbInput,
+  );
+  const epsilon = parseStoredV2PushKnob(
+    asString(value.epsilon),
+    validateEpsilonInput,
+  );
+  if (
+    !weighting ||
+    vertexPrefix === null ||
+    topN === null ||
+    restartProb === null ||
+    epsilon === null
+  ) {
+    return null;
+  }
+  return {
+    family: "pagerank",
+    topN,
+    restartProb,
+    epsilon,
+    weighting,
+    vertexPrefix,
+  };
 }
 
-/**
- * Serialise a validated PPR knob for localStorage. Defaults use blank text so
- * the next hydration distinguishes the documented default from a retired,
- * explicit zero value that no longer satisfies either family domain.
- */
-export function formatStoredFloat(value: number): string {
-  return value === 0 ? "" : String(value);
+function parseCommunityAxes(value: unknown): CommunityCliClickAxes | null {
+  if (!isRecord(value) || value.family !== "community") return null;
+  const reduction = parseStoredReduction(asString(value.reduction));
+  const objective = parseStoredObjective(asString(value.objective));
+  const weighting = parseStoredWeighting(asString(value.weighting));
+  const vertexPrefix = asString(value.vertexPrefix);
+  const maxSize = parseStoredInt(
+    asString(value.maxSize),
+    CLI_CLICK_MAX_SIZE_MIN,
+    CLI_CLICK_MAX_SIZE_MAX,
+  );
+  const restartProb = parseStoredV2PushKnob(
+    asString(value.restartProb),
+    validateRestartProbInput,
+  );
+  const epsilon = parseStoredV2PushKnob(
+    asString(value.epsilon),
+    validateEpsilonInput,
+  );
+  if (
+    !reduction ||
+    !objective ||
+    !weighting ||
+    vertexPrefix === null ||
+    maxSize === null ||
+    restartProb === null ||
+    epsilon === null
+  ) {
+    return null;
+  }
+  return {
+    family: "community",
+    maxSize,
+    restartProb,
+    epsilon,
+    reduction,
+    objective,
+    weighting,
+    vertexPrefix,
+  };
 }
 
 function validatePushKnob(
@@ -352,9 +560,6 @@ function validatePushKnob(
   if (!Number.isFinite(wireValue) || !acceptsFloat32(wireValue)) {
     return { state: "invalid", message };
   }
-  // Preserve the concise decimal the operator supplied. Domain checks use the
-  // float32 value above, so this remains wire-equivalent to the CLI parser
-  // without turning `1e-4` into a long binary32 decimal in the command text.
   return { state: "valid", value };
 }
 
@@ -376,15 +581,25 @@ function parseStoredPushKnob(
   return isReadyPushKnob(result) ? result.value : null;
 }
 
+// The retired flat keys treated an explicit "0" as malformed. In the v2
+// snapshot zero is an intentional, typed sentinel and is serialised as a JSON
+// number, so accept it before applying the shared text-field validation.
+function parseStoredV2PushKnob(
+  raw: string | null,
+  validate: (value: string) => PushKnobValidation,
+): number | null {
+  if (raw === "0") return 0;
+  return parseStoredPushKnob(raw, validate);
+}
+
 function parseStoredInt(
   raw: string | null,
   lo: number,
   hi: number,
 ): number | null {
-  if (raw === null) return null;
-  const n = Number.parseInt(raw, 10);
-  if (!Number.isInteger(n)) return null;
-  if (n < lo || n > hi) return null;
+  if (raw === null || !/^[+-]?\d+$/.test(raw)) return null;
+  const n = Number(raw);
+  if (!Number.isSafeInteger(n) || n < lo || n > hi) return null;
   return n;
 }
 
@@ -393,8 +608,18 @@ function matchOption<T extends string>(
   options: ReadonlyArray<{ value: T }>,
 ): T | null {
   if (raw === null) return null;
-  for (const opt of options) {
-    if (opt.value === raw) return opt.value;
+  for (const option of options) {
+    if (option.value === raw) return option.value;
   }
+  return null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function asString(value: unknown): string | null {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
   return null;
 }

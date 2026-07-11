@@ -116,6 +116,14 @@
   gap: var(--spacingHorizontalS, 8px);
 }
 
+/* Family-native picker is deliberately mounted in the terminal rather than
+ * the graph panel: a first command needs an intentional family selection too. */
+.axisControls {
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--colorNeutralStroke2, #e0e0e0);
+  background: var(--colorNeutralBackground2, #fafafa);
+}
+
 /* Scrollback body — transparent because the terminal box owns the frame. */
 .scrollback {
   flex: 1 1 auto;
@@ -275,8 +283,8 @@
   min-width: 0;
 }
 
-/* The canvas panel: integrated axis-picker control header, a meta line,
-   and the graph body. Mirrors the terminal's frame for visual symmetry. */
+/* The canvas panel contains the current graph and its source metadata. The
+   picker lives in the always-mounted terminal header above. */
 .canvasPanel {
   display: flex;
   flex-direction: column;
@@ -287,15 +295,6 @@
   background: var(--colorNeutralBackground1, #ffffff);
   box-shadow: var(--shadow4, 0 2px 4px rgba(0, 0, 0, 0.14));
   overflow: hidden;
-}
-
-/* Wraps the CliAxisPicker as the panel's control header; the picker itself
-   renders seamlessly (no frame of its own) so it reads as part of the
-   panel chrome. */
-.canvasControls {
-  flex: 0 0 auto;
-  border-bottom: 1px solid var(--colorNeutralStroke2, #e0e0e0);
-  background: var(--colorNeutralBackground2, #fafafa);
 }
 
 .canvasMeta {
