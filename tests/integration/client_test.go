@@ -6,7 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	client "github.com/anaregdesign/lantern/sdks/go"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestLantern_PutGetDeleteVertex(t *testing.T) {
@@ -37,6 +40,61 @@ func TestLantern_PutGetDeleteVertex(t *testing.T) {
 	}
 	if _, err := l.GetVertex(ctx, "k"); err == nil {
 		t.Error("expected error after DeleteVertex, got nil")
+	}
+}
+
+// TestRawConnect_PermanentExpiration exercises the absent-Timestamp wire
+// contract over real Connect/h2c. It also fixes the plural response boundary:
+// a born-expired item is accepted but does not count as written.
+func TestRawConnect_PermanentExpiration(t *testing.T) {
+	c, _ := newRawConnectClient(t, false)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	past := timestamppb.New(time.Now().Add(-time.Minute))
+	put, err := c.PutVertices(ctx, connect.NewRequest(&pb.PutVerticesRequest{
+		Vertices: []*pb.Vertex{
+			{Key: "permanent", Value: &pb.Vertex_String_{String_: "live"}},
+			{Key: "edge-head", Value: &pb.Vertex_Nil{Nil: true}},
+			{Key: "born-expired", Value: &pb.Vertex_String_{String_: "dead"}, Expiration: past},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("PutVertices: %v", err)
+	}
+	if got := put.Msg.GetWritten(); got != 2 {
+		t.Fatalf("PutVertices.Written = %d, want 2", got)
+	}
+
+	gotVertices, err := c.GetVertices(ctx, connect.NewRequest(&pb.GetVerticesRequest{
+		Keys: []string{"permanent", "born-expired"},
+	}))
+	if err != nil {
+		t.Fatalf("GetVertices: %v", err)
+	}
+	if len(gotVertices.Msg.GetVertices()) != 1 || gotVertices.Msg.GetVertices()[0].GetKey() != "permanent" {
+		t.Fatalf("GetVertices.Vertices = %v, want permanent only", gotVertices.Msg.GetVertices())
+	}
+	if gotVertices.Msg.GetVertices()[0].GetExpiration() != nil {
+		t.Fatal("permanent vertex unexpectedly gained an expiration")
+	}
+	if got := gotVertices.Msg.GetMissing(); len(got) != 1 || got[0] != "born-expired" {
+		t.Fatalf("GetVertices.Missing = %v, want [born-expired]", got)
+	}
+
+	if _, err := c.PutEdge(ctx, connect.NewRequest(&pb.PutEdgeRequest{Edge: &pb.Edge{
+		Tail: "permanent", Head: "edge-head", Weight: 1,
+	}})); err != nil {
+		t.Fatalf("PutEdge: %v", err)
+	}
+	gotEdge, err := c.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{
+		Tail: "permanent", Head: "edge-head",
+	}))
+	if err != nil {
+		t.Fatalf("GetEdge: %v", err)
+	}
+	if gotEdge.Msg.GetEdge().GetExpiration() != nil {
+		t.Fatal("permanent edge unexpectedly gained an expiration")
 	}
 }
 

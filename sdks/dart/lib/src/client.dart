@@ -1,17 +1,39 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io' as io;
+import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:connectrpc/connect.dart' as connect;
 import 'package:connectrpc/io.dart' as connect_io;
 import 'package:connectrpc/protobuf.dart';
 import 'package:connectrpc/protocol/connect.dart' as protocol;
+import 'package:fixnum/fixnum.dart';
 
-/// Supplies the bearer token for one logical RPC.
+import 'gen/google/protobuf/duration.pb.dart' as $duration;
+import 'gen/google/protobuf/timestamp.pb.dart' as $timestamp;
+import 'gen/graph/v1/graph.connect.client.dart' as $client;
+import 'gen/graph/v1/graph.pb.dart' as $graph;
+
+part 'crud.dart';
+part 'data.dart';
+part 'decay.dart';
+part 'retry.dart';
+part 'scan.dart';
+part 'search.dart';
+part 'status.dart';
+part 'traversal.dart';
+
+/// Supplies the bearer token for one transport attempt.
 ///
-/// The provider is invoked for every call and stream subscription. Returning
-/// `null` or an empty string sends no authorization header.
+/// The provider is invoked for every unary attempt (including retries) and
+/// stream subscription. Returning `null` or an empty string sends no
+/// authorization header.
 typedef TokenProvider = FutureOr<String?> Function();
+
+/// Supplies wall-clock time for relative expiration calculation.
+typedef LanternClock = DateTime Function();
 
 /// Creates a native Dart HTTP client owned by [LanternClient].
 typedef LanternHttpClientFactory = io.HttpClient Function();
@@ -34,6 +56,9 @@ typedef LanternCloseCallback = FutureOr<void> Function();
 
 /// Caller-controlled cancellation shared by unary and streaming RPCs.
 final class LanternCancellationToken {
+  /// Creates a caller-controlled cancellation token.
+  LanternCancellationToken();
+
   final Set<void Function(Object?)> _listeners = {};
   bool _isCanceled = false;
   Object? _reason;
@@ -341,10 +366,18 @@ final class LanternClient {
     required LanternCloseCallback? closeCallback,
     required io.HttpClient? healthHttpClient,
     required Duration? defaultTimeout,
+    required LanternClock clock,
+    required RetryPolicy? retryPolicy,
+    required bool idempotentAdds,
+    required _ContribIdGenerator contribIds,
   }) : _invoker = invoker,
        _closeCallback = closeCallback,
        _healthHttpClient = healthHttpClient,
-       _defaultTimeout = defaultTimeout;
+       _defaultTimeout = defaultTimeout,
+       _clock = clock,
+       _retryPolicy = retryPolicy?._normalized(),
+       _idempotentAdds = idempotentAdds,
+       _contribIds = contribIds;
 
   /// Creates a client for [endpoint].
   ///
@@ -355,6 +388,12 @@ final class LanternClient {
   /// [transport], [transportFactory], and [httpClientFactory] are mutually
   /// exclusive. Interceptors cannot be added to an already-created [transport].
   /// A client created by [httpClientFactory] is owned and closed by this object.
+  /// [clock] is sampled once per logical CRUD call that resolves relative TTLs.
+  /// Supplying [retryPolicy] opts into bounded retry for explicitly classified
+  /// operations. [idempotentAdds] stamps missing contribution IDs once per
+  /// in-memory logical Add call, making only that call safe to replay. Automatic
+  /// IDs are not persisted across process death; durable outboxes must persist
+  /// caller-supplied 24-byte IDs with their intents.
   factory LanternClient.connect(
     Uri endpoint, {
     TokenProvider? tokenProvider,
@@ -366,6 +405,9 @@ final class LanternClient {
     LanternHttpClientFactory? httpClientFactory,
     Iterable<LanternInterceptor> interceptors = const [],
     LanternCloseCallback? onClose,
+    LanternClock? clock,
+    RetryPolicy? retryPolicy,
+    bool idempotentAdds = false,
   }) {
     final normalized = _normalizeEndpoint(
       endpoint,
@@ -425,6 +467,7 @@ final class LanternClient {
         transport: resolvedTransport,
         tokenProvider: provider,
         defaultTimeout: defaultTimeout,
+        unknownIsUnavailable: transport == null && transportFactory == null,
       ),
       closeCallback: () async {
         ownedHttpClient?.close(force: true);
@@ -432,6 +475,10 @@ final class LanternClient {
       },
       healthHttpClient: healthHttpClient,
       defaultTimeout: defaultTimeout,
+      clock: clock ?? DateTime.now,
+      retryPolicy: retryPolicy,
+      idempotentAdds: idempotentAdds,
+      contribIds: _ContribIdGenerator.secure(),
     );
   }
 
@@ -444,6 +491,10 @@ final class LanternClient {
   final LanternCloseCallback? _closeCallback;
   final io.HttpClient? _healthHttpClient;
   final Duration? _defaultTimeout;
+  final LanternClock _clock;
+  final _NormalizedRetryPolicy? _retryPolicy;
+  final bool _idempotentAdds;
+  final _ContribIdGenerator _contribIds;
   Future<void>? _closing;
 
   /// Whether shutdown has started.
@@ -544,14 +595,17 @@ final class LanternInvoker {
     required this.transport,
     TokenProvider? tokenProvider,
     Duration? defaultTimeout,
+    bool unknownIsUnavailable = false,
   }) : _tokenProvider = tokenProvider,
-       _defaultTimeout = defaultTimeout;
+       _defaultTimeout = defaultTimeout,
+       _unknownIsUnavailable = unknownIsUnavailable;
 
   /// Low-level transport used by generated clients.
   final LanternTransport transport;
 
   final TokenProvider? _tokenProvider;
   final Duration? _defaultTimeout;
+  final bool _unknownIsUnavailable;
 
   /// Invokes a unary generated-client method with common policy.
   Future<T> invokeUnary<T>({
@@ -572,7 +626,11 @@ final class LanternInvoker {
     } on LanternException {
       rethrow;
     } catch (error) {
-      throw _mapUnknownException(error, context);
+      throw _mapUnknownException(
+        error,
+        context,
+        unknownIsUnavailable: _unknownIsUnavailable,
+      );
     } finally {
       context.dispose();
     }
@@ -642,7 +700,11 @@ final class LanternInvoker {
     } on LanternException {
       rethrow;
     } catch (error) {
-      throw _mapUnknownException(error, context);
+      throw _mapUnknownException(
+        error,
+        context,
+        unknownIsUnavailable: _unknownIsUnavailable,
+      );
     } finally {
       context.signal.cancel();
       context.dispose();
@@ -934,19 +996,23 @@ LanternException _mapConnectException(
 
 LanternException _mapUnknownException(
   Object error,
-  _InvocationContext context,
-) {
-  return LanternInternalException._(
-    _ErrorData(
-      transportCode: connect.Code.unknown.value,
-      transportCodeName: connect.Code.unknown.name,
-      message: 'transport failed',
-      cause: error,
-      headers: _headersToMap(context.headers, context.token),
-      trailers: _headersToMap(context.trailers, context.token),
-      metadata: const {},
-    ),
+  _InvocationContext context, {
+  bool unknownIsUnavailable = false,
+}) {
+  final unavailable = unknownIsUnavailable || error is io.IOException;
+  final code = unavailable ? connect.Code.unavailable : connect.Code.unknown;
+  final data = _ErrorData(
+    transportCode: code.value,
+    transportCodeName: code.name,
+    message: 'transport failed',
+    cause: error,
+    headers: _headersToMap(context.headers, context.token),
+    trailers: _headersToMap(context.trailers, context.token),
+    metadata: const {},
   );
+  return unavailable
+      ? LanternUnavailableException._(data)
+      : LanternInternalException._(data);
 }
 
 Map<String, List<String>> _headersToMap(

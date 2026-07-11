@@ -15,8 +15,8 @@ import (
 // filter end-to-end through the raw Connect-Go client. The Go SDK does not yet
 // expose a WithVertexPrefix option (that is #603), so these full-stack
 // assertions speak the wire pb.IlluminateRequest directly — the same pattern
-// prefix_scan_test.go uses for RPCs the SDK has not wrapped. Fixtures carry an
-// explicit Expiration to dodge the timestamppb-nil → 1970 trap (#250 lesson).
+// prefix_scan_test.go uses for RPCs the SDK has not wrapped. Fixtures carry a
+// future Expiration so this traversal suite also exercises live TTL metadata.
 func TestLantern_Illuminate_VertexPrefix(t *testing.T) {
 	exp := timestamppb.New(time.Now().Add(time.Hour))
 

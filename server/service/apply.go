@@ -10,6 +10,7 @@ import (
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/prototime"
 )
 
 // ApplyMutation is the internal entry point used by the peer-pump (#184)
@@ -109,7 +110,7 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		if v == nil {
 			return nil
 		}
-		applied := s.cache.PutVertexWithExpirationHLC(v.GetKey(), v, v.GetExpiration().AsTime(), ts)
+		applied := s.cache.PutVertexWithExpirationHLC(v.GetKey(), v, prototime.Expiration(v.GetExpiration()), ts)
 		if !applied && useTomb && s.onTombstoneClampReject != nil {
 			s.onTombstoneClampReject()
 		}
@@ -132,7 +133,7 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 			items = append(items, graphcache.VertexItem[string, *pb.Vertex]{
 				Key:        v.GetKey(),
 				Value:      v,
-				Expiration: v.GetExpiration().AsTime(),
+				Expiration: prototime.Expiration(v.GetExpiration()),
 			})
 		}
 		rejected := s.cache.PutVerticesWithExpirationHLC(items, ts)
@@ -183,13 +184,13 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		}
 		if useTomb {
 			applied := s.cache.AddEdgeWithExpirationContribHLC(e.GetTail(), e.GetHead(), e.GetWeight(),
-				e.GetExpiration().AsTime(), cID, ts)
+				prototime.Expiration(e.GetExpiration()), cID, ts)
 			if !applied && s.onTombstoneClampReject != nil {
 				s.onTombstoneClampReject()
 			}
 		} else {
 			s.cache.AddEdgeWithExpirationContrib(e.GetTail(), e.GetHead(), e.GetWeight(),
-				e.GetExpiration().AsTime(), cID)
+				prototime.Expiration(e.GetExpiration()), cID)
 		}
 		opName = "AddEdge"
 
@@ -219,7 +220,7 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 				Tail:       e.GetTail(),
 				Head:       e.GetHead(),
 				Weight:     e.GetWeight(),
-				Expiration: e.GetExpiration().AsTime(),
+				Expiration: prototime.Expiration(e.GetExpiration()),
 				ContribID:  cID,
 			})
 		}
@@ -245,7 +246,7 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 			return nil
 		}
 		applied := s.cache.PutEdgeWithExpirationHLC(e.GetTail(), e.GetHead(), e.GetWeight(),
-			e.GetExpiration().AsTime(), ts)
+			prototime.Expiration(e.GetExpiration()), ts)
 		if !applied && useTomb && s.onTombstoneClampReject != nil {
 			s.onTombstoneClampReject()
 		}
@@ -264,7 +265,7 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 				Tail:       e.GetTail(),
 				Head:       e.GetHead(),
 				Weight:     e.GetWeight(),
-				Expiration: e.GetExpiration().AsTime(),
+				Expiration: prototime.Expiration(e.GetExpiration()),
 			})
 		}
 		rejected := s.cache.PutEdgesWithExpirationHLC(items, ts)

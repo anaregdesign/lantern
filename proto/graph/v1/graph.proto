@@ -7,6 +7,7 @@ import "google/protobuf/timestamp.proto";
 
 message Vertex {
   string key = 1;
+  // Absolute expiration. An absent timestamp means permanent storage.
   google.protobuf.Timestamp expiration = 2;
   oneof value {
     double float64 = 10;
@@ -32,6 +33,7 @@ message Edge {
   string tail = 1;
   string head = 2;
   float weight = 3;
+  // Absolute expiration. An absent timestamp means permanent storage.
   google.protobuf.Timestamp expiration = 4;
 }
 

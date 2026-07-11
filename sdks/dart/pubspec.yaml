@@ -19,5 +19,6 @@ dependencies:
   protobuf: ">=4.2.0 <5.0.0"
 
 dev_dependencies:
-  lints: 6.1.0
+  # Keep dev resolution compatible with the documented Dart 3.7 floor.
+  lints: 5.1.1
   test: 1.30.0

@@ -88,6 +88,34 @@ updates:
         patterns:
           - "github.com/prometheus/*"
 
+  # Pub updates remain PR-reviewed. Major runtime bumps are intentionally
+  # blocked because Connect-Dart 1.x requires Protobuf 4.x; generator/runtime
+  # compatibility is released as one coordinated change.
+  - package-ecosystem: pub
+    directory: /sdks/dart
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      dart-runtime:
+        patterns:
+          - connectrpc
+          - fixnum
+          - protobuf
+      dart-dev:
+        dependency-type: development
+    ignore:
+      - dependency-name: connectrpc
+        update-types: ["version-update:semver-major"]
+      - dependency-name: protobuf
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: pub
+    directory: /sdks/dart/example
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+
   - package-ecosystem: github-actions
     directory: /
     schedule:

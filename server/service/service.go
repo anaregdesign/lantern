@@ -18,6 +18,7 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/search"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/prototime"
 )
 
 // ServiceName is the fully-qualified service name used for per-service
@@ -814,15 +815,16 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 	items := make([]graphcache.VertexItem[string, *pb.Vertex], 0, len(in))
 	liveCount := 0
 	for _, v := range in {
-		if err := s.validateExpiration(v.GetExpiration().AsTime()); err != nil {
+		expiration := prototime.Expiration(v.GetExpiration())
+		if err := s.validateExpiration(expiration); err != nil {
 			return nil, err
 		}
 		items = append(items, graphcache.VertexItem[string, *pb.Vertex]{
 			Key:        v.GetKey(),
 			Value:      v,
-			Expiration: v.GetExpiration().AsTime(),
+			Expiration: expiration,
 		})
-		if cache.IsLiveAt(v.GetExpiration().AsTime(), now) {
+		if cache.IsLiveAt(expiration, now) {
 			liveCount++
 		}
 	}
@@ -884,7 +886,7 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 		case liveCount > 0:
 			live := make([]*pb.Vertex, 0, liveCount)
 			for _, v := range in {
-				if cache.IsLiveAt(v.GetExpiration().AsTime(), now) {
+				if cache.IsLiveAt(prototime.Expiration(v.GetExpiration()), now) {
 					live = append(live, v)
 				}
 			}
@@ -893,7 +895,10 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 	} else {
 		s.cache.PutVerticesWithExpiration(items)
 	}
-	return &pb.PutVerticesResponse{Written: int32(len(items))}, nil
+	// The response counts values that became live, not merely values accepted
+	// for processing. This keeps the plural result aligned with PutVertex's
+	// written=false contract for a born-expired value.
+	return &pb.PutVerticesResponse{Written: int32(liveCount)}, nil
 }
 
 func (s *LanternService) DeleteVertex(ctx context.Context, in *pb.DeleteVertexRequest) (*pb.DeleteVertexResponse, error) {
@@ -1000,14 +1005,15 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 	contribIDs := request.GetContribIds()
 	items := make([]graphcache.EdgeItem[string], 0, len(in))
 	for i, e := range in {
-		if err := s.validateExpiration(e.GetExpiration().AsTime()); err != nil {
+		expiration := prototime.Expiration(e.GetExpiration())
+		if err := s.validateExpiration(expiration); err != nil {
 			return nil, err
 		}
 		item := graphcache.EdgeItem[string]{
 			Tail:       e.GetTail(),
 			Head:       e.GetHead(),
 			Weight:     e.GetWeight(),
-			Expiration: e.GetExpiration().AsTime(),
+			Expiration: expiration,
 		}
 		// contrib_ids is index-aligned and optional (#588): a shorter or
 		// missing slot, or an empty/zero key, leaves ContribID zero — the
@@ -1082,14 +1088,15 @@ func (s *LanternService) PutEdges(ctx context.Context, request *pb.PutEdgesReque
 	s.metrics.OnBatch("PutEdges", len(in))
 	items := make([]graphcache.EdgeItem[string], 0, len(in))
 	for _, e := range in {
-		if err := s.validateExpiration(e.GetExpiration().AsTime()); err != nil {
+		expiration := prototime.Expiration(e.GetExpiration())
+		if err := s.validateExpiration(expiration); err != nil {
 			return nil, err
 		}
 		items = append(items, graphcache.EdgeItem[string]{
 			Tail:       e.GetTail(),
 			Head:       e.GetHead(),
 			Weight:     e.GetWeight(),
-			Expiration: e.GetExpiration().AsTime(),
+			Expiration: expiration,
 		})
 	}
 	// Aggregate capacity soft caps (#848) — same conservative deltas as

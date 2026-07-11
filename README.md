@@ -6,6 +6,7 @@
 [![Release](https://img.shields.io/github/v/release/anaregdesign/lantern)](https://github.com/anaregdesign/lantern/releases)
 [![Go Reference](https://pkg.go.dev/badge/github.com/anaregdesign/lantern/sdks/go.svg)](https://pkg.go.dev/github.com/anaregdesign/lantern/sdks/go)
 [![npm](https://img.shields.io/npm/v/lantern-sdk)](https://www.npmjs.com/package/lantern-sdk)
+[![pub package](https://img.shields.io/pub/v/lantern_client.svg)](https://pub.dev/packages/lantern_client)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 **Lantern is a cache that understands relationships.** It is a
@@ -428,12 +429,17 @@ powers the [admin SPA](admin/). Full API:
 
 ### Dart / Flutter
 
+```bash
+dart pub add lantern_client
+```
+
 [`lantern_client`](sdks/dart/) is the official pure-Dart, Android/iOS-first
-package. It exports generated `Vertex`, `Edge`, and `Graph` values plus the
-reusable `LanternClient` transport foundation (secure endpoint validation,
-short-lived token providers, deadlines, cancellation, typed failures, and
-auth-exempt gRPC Health-v1 probing). CRUD/query facades build on this
-foundation in subsequent SDK changes. See
+package. It exports immutable SDK-native values, TTL-preserving Graph results,
+CRUD, cursor scans, full-text/incremental search, typed traversal families,
+cold-start ranking, explicit status snapshots, and the reusable
+`LanternClient` transport foundation (secure endpoint validation, short-lived
+token providers, deadlines, cancellation, bounded retry, typed failures, and
+auth-exempt gRPC Health-v1 probing). See
 [sdks/dart/README.md](sdks/dart/README.md) for the current supported surface.
 
 ### Anything else

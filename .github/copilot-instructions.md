@@ -61,7 +61,12 @@ they must not conflict.
   `refactor`/`perf`/`test`/`build`/`revert`); a required check rejects others.
 - **Before every push**, run the local quality gate: `gofmt -l` must print nothing,
   then `go test ./...` from the root **and** from each Go submodule (the root run does
-  not span submodules), plus Dart format/analyze/test in `sdks/dart/`.
+  not span submodules), plus Dart format/analyze/test in `sdks/dart/` and Flutter
+  analyze/test in `sdks/dart/example/`.
+- **Dart releases are independent.** `sdks/dart/vX.Y.Z` must match
+  `sdks/dart/pubspec.yaml` and `CHANGELOG.md`; the tag workflow runs Dart plus
+  Android/iOS gates, publishes `lantern_client` through pub.dev OIDC, and only then
+  creates an exact-title GitHub Release. Never store a pub token.
 - Wait for all required CI checks before merging; never use `--admin`/`--no-verify`.
   Merge with `--squash --delete-branch`. Never push to `main` directly.
 

@@ -94,8 +94,14 @@ go test ./...                    # root module
 (cd pb      && go test ./...)
 (cd sdks/go && go test ./...)
 (cd server  && go vet ./... && go test ./...)
-(cd sdks/dart && dart format --output=none --set-exit-if-changed lib/lantern_client.dart test \
-  && dart analyze && dart test)
+(cd sdks/dart && dart format --output=none --set-exit-if-changed \
+  lib/lantern_client.dart lib/src/*.dart test \
+  && dart pub get --enforce-lockfile && dart analyze && dart test \
+  && dart doc --output "$(mktemp -d)" --validate-links \
+  && dart pub publish --dry-run)
+(cd sdks/dart/example && dart format --output=none --set-exit-if-changed \
+  lib test integration_test \
+  && flutter pub get --enforce-lockfile && flutter analyze && flutter test)
 ```
 
 Per-module test runs are mandatory: the root `go test ./...` does **not** span
@@ -104,7 +110,9 @@ fails on any uncommitted codegen diff — regenerate locally first (below).
 
 The Dart SDK is outside `go.work`; its format/analyze/test gate is therefore
 separate too. When `proto/` changes, run `sdks/dart/scripts/codegen.sh` and commit
-the regenerated `sdks/dart/lib/src/gen/**` files.
+the regenerated `sdks/dart/lib/src/gen/**` files. The supported toolchain source of
+truth is `docs/decisions/0001-dart-mobile-transport.md`; the workflow pins mirror that
+decision and also runs the package at its declared minimum Dart floor.
 
 ## Coverage floor (ratchet)
 
@@ -197,6 +205,9 @@ go generate ./...   # runs buf generate (NO --clean) + wire
 
 Commit the regenerated stubs under `pb/`. Never pass `--clean` to buf — its output root
 is `pb/`, so `--clean` would delete `pb/go.mod` and `pb/doc.go` alongside the stubs.
+The same schema change triggers `dart-sdk.yml`; regenerate the private Dart stubs too.
+If the wire shape consumed or shipped by `lantern_client` changes, cut an independent
+`sdks/dart/vX.Y.Z` release after the compatible server/proto change lands.
 
 ## After editing wire providers (`server/provider/*`, `server/cmd/wire.go`)
 
@@ -272,7 +283,7 @@ The `server/` module is never tagged independently — it ships under the root t
 buildx under QEMU is slow; if a root tag already pushed the amd64 image, bump the patch
 number rather than force-moving the tag.
 
-`mcp/` and `admin/` are cut **independently** of the root cadence:
+`mcp/`, `admin/`, and `sdks/dart/` are cut **independently** of the root cadence:
 
 - `mcp/vX.Y.Z` triggers `mcp-publish.yml` → `ghcr.io/anaregdesign/lantern-mcp` (multi-arch
   + cosign). The MCP server only imports `pb/` and `sdks/go/`, so a `sdks/go` bump is the
@@ -283,9 +294,36 @@ number rather than force-moving the tag.
   only upstream pin that forces a re-tag. The container hosts the SPA on Caddy and does
   not reverse-proxy the Lantern listener — the browser calls the gateway directly, so the
   server's `LANTERN_CORS_ALLOWED_ORIGINS` must include the admin origin.
+- `sdks/dart/vX.Y.Z` must match `sdks/dart/pubspec.yaml` version `X.Y.Z` and a
+  `CHANGELOG.md` heading `## X.Y.Z`. It triggers `dart-sdk.yml`, which must pass the
+  minimum/current Dart gates, real-wire tests, warning-free docs, publish dry-run,
+  `pana`, and Android/iOS example conformance before publishing `lantern_client` with
+  pub.dev OIDC (`id-token: write`, no token secret). Configure pub.dev automated
+  publishing for repository `anaregdesign/lantern` and tag pattern
+  `sdks/dart/v{{version}}`. The workflow creates/updates the GitHub Release only after
+  pub.dev confirms the version exists; its title is exactly the tag.
+
+**One-time first Dart publish.** pub.dev requires an authorized uploader to publish the
+first package version manually. For `0.1.0`, first complete every epic blocker and both
+physical-device columns in `sdks/dart/example/physical-device-smoke.md`. From a clean
+tagged checkout, after the tag workflow's verification jobs pass and its publish job
+reports the expected first-version block, run:
+
+```bash
+git switch --detach sdks/dart/v0.1.0
+cd sdks/dart
+dart pub get --enforce-lockfile
+dart pub publish
+```
+
+Immediately bind automated publishing on pub.dev, then rerun the tag workflow's publish
+job. It observes the already-published exact version, skips a duplicate upload, and
+creates the GitHub Release. Re-check `https://pub.dev/api/packages/lantern_client`
+immediately before this one-time step; if another owner has claimed the name, stop for
+an explicit naming decision. Never force-move a published Dart tag/version—bump patch.
 
 **Release title convention (locked).** Every GitHub Release title MUST equal its tag name
-verbatim (`v0.7.2`, `core/v0.2.0`, `sdks/go/v0.8.0`, `mcp/v0.1.0`, `admin/v0.1.0`, …) —
+verbatim (`v0.7.2`, `core/v0.2.0`, `sdks/go/v0.8.0`, `sdks/dart/v0.1.0`, `mcp/v0.1.0`, `admin/v0.1.0`, …) —
 no friendly aliases. The container-publishing workflows enforce this via
 `gh release create --title "$TAG"`; when creating SDK releases manually, pass the same
 `--title "$TAG"`.

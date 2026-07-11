@@ -774,8 +774,9 @@ func (x *SnapshotVertex) GetHlc() *HLCTimestamp {
 //	            originated from a local non-replicated AddEdge and dedup
 //	            is disabled (the legacy zero-id semantics).
 type SnapshotEdgeContribution struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Weight        float32                `protobuf:"fixed32,1,opt,name=weight,proto3" json:"weight,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Weight float32                `protobuf:"fixed32,1,opt,name=weight,proto3" json:"weight,omitempty"`
+	// Absolute expiration. An absent timestamp means a permanent contribution.
 	Expiration    *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=expiration,proto3" json:"expiration,omitempty"`
 	ContribId     []byte                 `protobuf:"bytes,3,opt,name=contrib_id,json=contribId,proto3" json:"contrib_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
