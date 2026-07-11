@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/server/backup"
@@ -162,6 +163,13 @@ func newLanternService(
 		WithTombstoneClampRejectHook(dm.OnTombstoneClampRejected).
 		WithTombstoneTTL(rc.TombstoneTTL).
 		WithTraversalTimeout(trc.Timeout).
+		WithTraversalLimits(service.TraversalLimits{
+			WorkBudget: graphcache.PPRWorkBudget{
+				MaxPushes:       trc.MaxPushes,
+				MaxTouchedEdges: trc.MaxTouchedEdges,
+			},
+			MaxResults: trc.MaxResults,
+		}).
 		WithHotPathMetrics(dm).
 		WithLogger(logger).
 		WithStatusInfo(service.StatusInfo{
