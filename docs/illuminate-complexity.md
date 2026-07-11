@@ -84,6 +84,10 @@ $$
 and the pruning *shrinks* the frontier handed to the next hop, which usually
 makes $E_{sub}$ far smaller than the reachable component.
 
+At an equal-score boundary, both BFS pruning and PageRank top-$N$ retain
+ascending Lantern vertex keys. That determines membership reproducibly; the
+map-shaped response itself has no iteration-order guarantee.
+
 ### Optional directed-arborescence / SPT reduction
 
 When the caller asks for `reduction=mst`, the server computes a minimum or

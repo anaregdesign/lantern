@@ -183,6 +183,11 @@ optimization direction, and weighting:
 | `objective` | `max` (default) / `min` | Keep strongest edges vs cheapest edges — the direction of both the `bfs` per-hop top-k prune and any tree reduction (ignored by `pagerank`, which ranks by mass) |
 | `weighting` | `raw` (default) / `tfidf` / `bm25` | Edge-weight transform applied before the walk — TF-IDF and BM25 damp hub vertices like "popular" items |
 
+When a bounded BFS hop or PageRank top-N cut has equal scores at its boundary,
+Lantern retains the ascending vertex keys. This makes result membership stable
+across identical requests; callers must still treat map iteration order as
+unspecified.
+
 Seeing is believing. Say the store holds this graph (labels are weights):
 
 ```mermaid
