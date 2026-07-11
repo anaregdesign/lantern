@@ -64,9 +64,13 @@ jobs:
           dart test
 
   ios:
-    name: iOS real-wire matrix
+    name: iOS real-wire (${{ matrix.transport }})
     runs-on: macos-15
-    timeout-minutes: 35
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        transport: [connect, grpc]
     steps:
       - uses: actions/checkout@v7
 
@@ -157,19 +161,11 @@ jobs:
           flutter devices
           echo "DEVICE_ID=$device" >> "$GITHUB_ENV"
 
-      - name: Run Connect candidate on iOS
+      - name: Run candidate on iOS
         timeout-minutes: 10
         run: |
           testbed/dart-transport-probe/scripts/mobile.sh \
-            connect "$DEVICE_ID" http://127.0.0.1:6433 \
-            https://127.0.0.1:6434 probe-token "$PROBE_CA"
-
-      - name: Run gRPC fallback on iOS
-        if: ${{ always() && env.DEVICE_ID != '' && env.PROBE_CA != '' }}
-        timeout-minutes: 10
-        run: |
-          testbed/dart-transport-probe/scripts/mobile.sh \
-            grpc "$DEVICE_ID" http://127.0.0.1:6433 \
+            "${{ matrix.transport }}" "$DEVICE_ID" http://127.0.0.1:6433 \
             https://127.0.0.1:6434 probe-token "$PROBE_CA"
 
       - name: Show server logs and clean up

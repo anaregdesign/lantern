@@ -18,7 +18,7 @@ Future<Map<String, Object>> runProbe(
   final securityContext =
       caPath == null
           ? null
-          : (SecurityContext(withTrustedRoots: true)
+          : (SecurityContext(withTrustedRoots: false)
             ..setTrustedCertificates(caPath));
   final ownsHttpClient = httpClient == null;
   final ioClient = httpClient ?? HttpClient(context: securityContext);
