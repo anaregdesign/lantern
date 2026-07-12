@@ -45,7 +45,11 @@ export function connectWeb(baseUrl: string, args: LanternArgs = {}): Lantern {
 
 export { Lantern } from "./client.js";
 export type { LanternArgs } from "./client.js";
-export { ReplicationPeer_State, SearchErrorReason } from "./gen/graph/v1/graph_pb.js";
+export {
+  ReplicationPeer_State,
+  SearchErrorReason,
+  SearchIndexHealth,
+} from "./gen/graph/v1/graph_pb.js";
 export { MAX_DECAY_STEPS, decayContributions, halfLifeDecay } from "./decay.js";
 export type { DecayOptions } from "./decay.js";
 export {

@@ -3,6 +3,7 @@ package graphcache
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/anaregdesign/lantern/core/search"
 )
@@ -31,7 +32,7 @@ import (
 // The relevance gate (core/search/relevance, parity_gate_test.go) replicates
 // exactly this pipeline (with positions on) and ratchets its measured metrics
 // against the pinned Lucene baseline — change the two in lockstep.
-func newSearchIndex[S comparable](positions bool, compareID func(S, S) int) *search.InvertedIndex[S, search.Document] {
+func newSearchIndex[S comparable](positions bool, limits search.SearchAnalysisLimits, compareID func(S, S) int) *search.InvertedIndex[S, search.Document] {
 	analyzer := search.NewScriptAwareAnalyzer()
 	scorer := search.ClassWeighted{
 		Base:       search.BM25{K1: search.DefaultBM25K1, B: search.DefaultBM25B},
@@ -41,6 +42,7 @@ func newSearchIndex[S comparable](positions bool, compareID func(S, S) int) *sea
 	if positions {
 		opts = append(opts, search.WithPositions())
 	}
+	opts = append(opts, search.WithAnalysisLimits(limits))
 	return search.NewInvertedIndex[S, search.Document](analyzer, scorer, compareID, opts...)
 }
 
@@ -54,6 +56,7 @@ type SearchIndexOption func(*searchIndexConfig)
 // with no options — keeps recording positions exactly as before #908.
 type searchIndexConfig struct {
 	positions bool
+	limits    search.SearchAnalysisLimits
 }
 
 // WithoutSearchPositions builds the search index without positional postings
@@ -65,6 +68,12 @@ type searchIndexConfig struct {
 // failing.
 func WithoutSearchPositions() SearchIndexOption {
 	return func(c *searchIndexConfig) { c.positions = false }
+}
+
+// WithSearchAnalysisLimits installs hard document/aggregate budgets and
+// retained-capacity compaction thresholds on the secondary index.
+func WithSearchAnalysisLimits(limits search.SearchAnalysisLimits) SearchIndexOption {
+	return func(c *searchIndexConfig) { c.limits = limits }
 }
 
 // EnableSearchIndex turns on the optional content-search index, projecting each
@@ -105,7 +114,43 @@ func (c *GraphCache[S, T]) EnableSearchIndex(extract func(T) search.Document, co
 		panic("graphcache: EnableSearchIndex must be called before any vertex is stored")
 	}
 	c.searchExtract = extract
-	c.searchIndex = newSearchIndex[S](cfg.positions, compareID)
+	c.searchIndex = newSearchIndex[S](cfg.positions, cfg.limits, compareID)
+}
+
+// RebuildSearchIndex re-analyzes the complete live graph under the configured
+// limits and atomically replaces an incomplete index. It fails without
+// changing health when any current vertex still exceeds a bound.
+func (c *GraphCache[S, T]) RebuildSearchIndex() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.rebuildSearchIndexLocked()
+}
+
+func (c *GraphCache[S, T]) rebuildSearchIndexLocked() error {
+	if c.searchIndex == nil {
+		return nil
+	}
+	items := make([]search.PreparedItem[S], 0, c.vertices.Count())
+	var firstErr error
+	c.vertices.Range(func(key S, value T, _ time.Time) bool {
+		prepared, _, err := c.searchIndex.Prepare(c.searchExtract(value))
+		if err != nil {
+			firstErr = err
+			return false
+		}
+		items = append(items, search.PreparedItem[S]{ID: key, Prepared: prepared})
+		return true
+	})
+	if firstErr != nil {
+		return firstErr
+	}
+	return c.searchIndex.RebuildPrepared(items)
+}
+
+func (c *GraphCache[S, T]) rebuildIncompleteSearchLocked() {
+	if c.searchIndex != nil && c.searchIndex.Health() != search.IndexHealthy {
+		_ = c.rebuildSearchIndexLocked()
+	}
 }
 
 // SearchVertices returns up to limit keys whose indexed content matches query,

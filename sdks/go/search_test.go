@@ -284,4 +284,35 @@ func TestSearchVertices(t *testing.T) {
 			t.Fatalf("SearchFailureReason = %v, want admission", got)
 		}
 	})
+
+	t.Run("index health and write budget carry distinct sentinels", func(t *testing.T) {
+		tests := []struct {
+			name   string
+			code   connect.Code
+			reason pb.SearchErrorReason
+			want   error
+		}{
+			{"incomplete", connect.CodeFailedPrecondition, pb.SearchErrorReason_SEARCH_INDEX_INCOMPLETE, ErrSearchIndexIncomplete},
+			{"write budget", connect.CodeResourceExhausted, pb.SearchErrorReason_SEARCH_INDEX_BUDGET_EXHAUSTED, ErrSearchIndexBudget},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				l, capt := newClient(t)
+				connectErr := connect.NewError(tc.code, errors.New(tc.name))
+				detail, detailErr := connect.NewErrorDetail(&pb.SearchErrorDetail{Reason: tc.reason, WorkKind: "document_bytes"})
+				if detailErr != nil {
+					t.Fatal(detailErr)
+				}
+				connectErr.AddDetail(detail)
+				capt.err = connectErr
+				_, err := l.SearchVertices(context.Background(), "alpha")
+				if !errors.Is(err, tc.want) {
+					t.Fatalf("error = %v, want %v", err, tc.want)
+				}
+				if got := SearchFailureReason(err); got != tc.reason {
+					t.Fatalf("reason = %v, want %v", got, tc.reason)
+				}
+			})
+		}
+	})
 }

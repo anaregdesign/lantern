@@ -109,6 +109,10 @@ func (s *LanternService) SearchVertices(ctx context.Context, in *pb.SearchVertic
 	ranked, workStats, err := s.cache.SearchVerticesMatchContext(ctx, in.GetQuery(), int(limit), in.GetPrefix(), opts, phrase, s.search.WorkBudget)
 	stats = workStats
 	if err != nil {
+		if errors.Is(err, search.ErrIndexIncomplete) {
+			outcome, reason = "failed_precondition", "index_incomplete"
+			return nil, newSearchPreconditionError(pb.SearchErrorReason_SEARCH_INDEX_INCOMPLETE, err)
+		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			outcome, reason = searchContextOutcome(err)
 			return nil, ctxToConnect(err)

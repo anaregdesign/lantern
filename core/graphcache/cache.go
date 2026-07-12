@@ -187,19 +187,27 @@ func (c *GraphCache[S, T]) putVertexLocked(key S, value T, expiration time.Time)
 // applied to the search index — analysis having run outside c.mu — otherwise
 // the document is analyzed inline. Caller must hold c.mu (#739).
 func (c *GraphCache[S, T]) upsertVertexLocked(key S, value T, expiration time.Time, prepared *search.PreparedDocument) {
+	c.upsertVertexStorageLocked(key, value, expiration)
+	if c.searchIndex != nil {
+		var err error
+		if prepared != nil {
+			err = c.searchIndex.IndexPrepared(key, *prepared)
+		} else {
+			err = c.searchIndex.Index(key, c.searchExtract(value))
+		}
+		if err != nil {
+			c.searchIndex.MarkIncomplete()
+		}
+	}
+}
+
+func (c *GraphCache[S, T]) upsertVertexStorageLocked(key S, value T, expiration time.Time) {
 	physicallyExisted := c.vertices.UpsertWithExpiration(key, value, expiration)
 	if !physicallyExisted {
 		if c.dict != nil {
 			c.dict.intern(key)
 		}
 		c.insertVertexPrefixLocked(key)
-	}
-	if c.searchIndex != nil {
-		if prepared != nil {
-			c.searchIndex.IndexPrepared(key, *prepared)
-		} else {
-			c.searchIndex.Index(key, c.searchExtract(value))
-		}
 	}
 }
 
@@ -224,7 +232,7 @@ func (c *GraphCache[S, T]) putLocalVertexLocked(key S, value T, expiration time.
 // putLocalVertexLockedAt is putLocalVertexLocked with the liveness clock and an
 // optional precomputed search document supplied by the caller. A batch writer
 // samples time.Now() once for the whole batch and analyzes every search
-// document outside c.mu (see prepareSearchDocs), then calls this per item so the
+// document outside c.mu (see prepareSearchDocsBounded), then calls this per item so the
 // only work under c.mu is the cheap store + postings mutation. A nil prepared
 // falls back to inline analysis. Caller must hold c.mu (#739).
 //
@@ -234,6 +242,10 @@ func (c *GraphCache[S, T]) putLocalVertexLocked(key S, value T, expiration time.
 // so a born-expired item is reported as neither written nor skipped (#918);
 // unconditional callers may ignore the return.
 func (c *GraphCache[S, T]) putLocalVertexLockedAt(key S, value T, expiration, now time.Time, prepared *search.PreparedDocument) (stored bool) {
+	return c.putLocalVertexLockedAtMode(key, value, expiration, now, prepared, true)
+}
+
+func (c *GraphCache[S, T]) putLocalVertexLockedAtMode(key S, value T, expiration, now time.Time, prepared *search.PreparedDocument, updateSearch bool) (stored bool) {
 	if !cache.IsLiveAt(expiration, now) {
 		// Dead on arrival. Delete is a cheap map-miss when the key is absent
 		// (the common churn case) and fires the eviction hook — releasing the
@@ -242,7 +254,11 @@ func (c *GraphCache[S, T]) putLocalVertexLockedAt(key S, value T, expiration, no
 		c.vertices.Delete(key)
 		return false
 	}
-	c.upsertVertexLocked(key, value, expiration, prepared)
+	if updateSearch {
+		c.upsertVertexLocked(key, value, expiration, prepared)
+	} else {
+		c.upsertVertexStorageLocked(key, value, expiration)
+	}
 	return true
 }
 
@@ -328,11 +344,8 @@ func (c *GraphCache[S, T]) GetEdgeDetail(tail, head S) (float32, time.Time, bool
 	return w, exp, true
 }
 
-func (c *GraphCache[S, T]) PutVertexWithExpiration(key S, value T, expiration time.Time) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.putLocalVertexLocked(key, value, expiration)
+func (c *GraphCache[S, T]) PutVertexWithExpiration(key S, value T, expiration time.Time) error {
+	return c.PutVerticesWithExpirationChecked([]VertexItem[S, T]{{Key: key, Value: value, Expiration: expiration}})
 }
 
 // PutVertexWithExpirationIfAbsent writes the vertex only when no live vertex
@@ -353,12 +366,12 @@ func (c *GraphCache[S, T]) PutVertexWithExpirationIfAbsent(key S, value T, expir
 	return c.putLocalVertexLocked(key, value, expiration)
 }
 
-func (c *GraphCache[S, T]) PutVertexWithTTL(key S, value T, ttl time.Duration) {
-	c.PutVertexWithExpiration(key, value, time.Now().Add(ttl))
+func (c *GraphCache[S, T]) PutVertexWithTTL(key S, value T, ttl time.Duration) error {
+	return c.PutVertexWithExpiration(key, value, time.Now().Add(ttl))
 }
 
-func (c *GraphCache[S, T]) PutVertex(key S, value T) {
-	c.PutVertexWithTTL(key, value, c.defaultTTL)
+func (c *GraphCache[S, T]) PutVertex(key S, value T) error {
+	return c.PutVertexWithTTL(key, value, c.defaultTTL)
 }
 
 func (c *GraphCache[S, T]) AddEdgeWithExpiration(tail, head S, w float32, expiration time.Time) {
@@ -416,7 +429,9 @@ func (c *GraphCache[S, T]) DeleteVertex(key S) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return c.vertices.Delete(key)
+	deleted := c.vertices.Delete(key)
+	c.rebuildIncompleteSearchLocked()
+	return deleted
 }
 
 // DeleteEdge removes the (tail, head) edge and returns whether it was present.

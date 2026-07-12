@@ -20,6 +20,7 @@ func TestDocumentAdapters(t *testing.T) {
 		{"FloatExp", Float(1e20), "1e+20"},
 		{"Bool", Bool(true), "true"},
 		{"Bytes", Bytes("byte text"), "byte text"},
+		{"BinaryBytes", Bytes{0xff, 0xfe}, ""},
 		{"Time", Time(ts), "2026-06-14T01:02:03Z"},
 		{"Duration", Duration(90 * time.Minute), "1h30m0s"},
 	}

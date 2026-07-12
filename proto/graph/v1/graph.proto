@@ -739,9 +739,9 @@ message PutEdgesResponse {
 // is up and roughly configured as expected".
 message GetServerStatusRequest {}
 
-// SearchErrorReason is the bounded, machine-readable reason attached to a
-// FAILED_PRECONDITION from SearchVertices. Clients must branch on this enum,
-// never on the human-readable status message.
+// SearchErrorReason is the bounded, machine-readable reason attached to
+// SearchVertices failures and search-index write rejections. Clients must
+// branch on this enum, never on the human-readable status message.
 enum SearchErrorReason {
   SEARCH_ERROR_REASON_UNSPECIFIED = 0;
   // buf:lint:ignore ENUM_VALUE_PREFIX -- stable cross-SDK reason code.
@@ -752,14 +752,18 @@ enum SearchErrorReason {
   SEARCH_WORK_BUDGET_EXHAUSTED = 3;
   // buf:lint:ignore ENUM_VALUE_PREFIX -- stable cross-SDK reason code.
   SEARCH_ADMISSION_SATURATED = 4;
+  // buf:lint:ignore ENUM_VALUE_PREFIX -- stable cross-SDK reason code.
+  SEARCH_INDEX_INCOMPLETE = 5;
+  // buf:lint:ignore ENUM_VALUE_PREFIX -- stable cross-SDK reason code.
+  SEARCH_INDEX_BUDGET_EXHAUSTED = 6;
 }
 
 // SearchErrorDetail is carried as a Connect error detail when a search
-// capability is unavailable or execution containment rejects the attempt.
+// capability is unavailable or query/write containment rejects the attempt.
 message SearchErrorDetail {
   SearchErrorReason reason = 1;
   // work_kind is one of query_bytes, query_terms, dictionary_visits,
-  // posting_visits, or position_visits for budget exhaustion; empty otherwise.
+  // posting_visits, position_visits, or an index analysis-limit kind; empty otherwise.
   string work_kind = 2;
 }
 
@@ -784,6 +788,38 @@ message SearchCapabilities {
   uint64 max_posting_visits = 15;
   uint64 max_position_visits = 16;
   uint32 max_in_flight = 17;
+  uint32 max_document_bytes = 18;
+  uint32 max_document_tokens = 19;
+  uint32 max_document_terms = 20;
+  uint64 max_live_terms = 21;
+  uint64 max_live_postings = 22;
+  uint64 max_position_entries = 23;
+  double compaction_ratio = 24;
+  uint64 compaction_min_retired = 25;
+  SearchIndexStats index_stats = 26;
+}
+
+// SearchIndexStats exposes logical size, retained high-water storage, rebuild
+// activity, and whether the index is safe to serve.
+enum SearchIndexHealth {
+  SEARCH_INDEX_HEALTH_UNSPECIFIED = 0;
+  SEARCH_INDEX_HEALTH_DISABLED = 1;
+  SEARCH_INDEX_HEALTH_HEALTHY = 2;
+  SEARCH_INDEX_HEALTH_INCOMPLETE = 3;
+}
+
+message SearchIndexStats {
+  SearchIndexHealth health = 1;
+  uint64 documents = 2;
+  uint64 live_terms = 3;
+  uint64 retained_term_slots = 4;
+  uint64 retained_ordinals = 5;
+  uint64 postings = 6;
+  uint64 position_entries = 7;
+  uint64 estimated_live_bytes = 8;
+  uint64 estimated_retained_bytes = 9;
+  uint64 rebuild_count = 10;
+  google.protobuf.Duration last_rebuild_duration = 11;
 }
 
 message GetServerStatusResponse {

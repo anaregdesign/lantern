@@ -13,6 +13,16 @@ import (
 // the Vertex / Edge alias pattern already established in client.go.
 type ServerStatus = pb.GetServerStatusResponse
 
+// SearchIndexHealth is the bounded consistency state published with status.
+type SearchIndexHealth = pb.SearchIndexHealth
+
+const (
+	SearchIndexHealthUnspecified = pb.SearchIndexHealth_SEARCH_INDEX_HEALTH_UNSPECIFIED
+	SearchIndexHealthDisabled    = pb.SearchIndexHealth_SEARCH_INDEX_HEALTH_DISABLED
+	SearchIndexHealthHealthy     = pb.SearchIndexHealth_SEARCH_INDEX_HEALTH_HEALTHY
+	SearchIndexHealthIncomplete  = pb.SearchIndexHealth_SEARCH_INDEX_HEALTH_INCOMPLETE
+)
+
 // ServerStartedAt returns the wall-clock instant the server began
 // serving requests, or the zero time when the server did not include
 // the timestamp (e.g. WithStatusInfo was never wired in a test path).

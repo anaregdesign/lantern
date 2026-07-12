@@ -16,6 +16,12 @@ enum SearchErrorReason {
 
   /// Every configured in-flight search slot was occupied.
   searchAdmissionSaturated,
+
+  /// The graph converged but the local derived index needs a bounded rebuild.
+  searchIndexIncomplete,
+
+  /// A local write would exceed a configured search-index memory limit.
+  searchIndexBudgetExhausted,
 }
 
 /// How a multi-term query selects matching vertices.

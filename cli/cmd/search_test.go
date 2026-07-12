@@ -72,6 +72,10 @@ func TestActionableSearchError(t *testing.T) {
 	if !strings.Contains(disabled.Error(), "LANTERN_SEARCH_ENABLED=true") {
 		t.Errorf("disabled error is not actionable: %q", disabled)
 	}
+	incomplete := actionableSearchError(errors.Join(client.ErrFailedPrecondition, client.ErrSearchIndexIncomplete))
+	if !strings.Contains(incomplete.Error(), "bounded rebuild") {
+		t.Errorf("incomplete error is not actionable: %q", incomplete)
+	}
 }
 
 // TestSearchCommandRegistered guards that search is a top-level command with the

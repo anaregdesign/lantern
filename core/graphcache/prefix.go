@@ -204,6 +204,7 @@ func (c *GraphCache[S, T]) DeleteByPrefix(ctx context.Context, prefix string, li
 		return true
 	})
 	deleted := len(c.vertices.DeleteMany(victims))
+	c.rebuildIncompleteSearchLocked()
 	return deleted
 }
 

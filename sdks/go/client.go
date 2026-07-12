@@ -295,6 +295,8 @@ func wrapConnectErr(err error) error {
 			return errors.Join(ErrResourceExhausted, ErrSearchWorkBudget, err)
 		case SearchErrorReasonAdmission:
 			return errors.Join(ErrResourceExhausted, ErrSearchAdmission, err)
+		case SearchErrorReasonIndexBudget:
+			return errors.Join(ErrResourceExhausted, ErrSearchIndexBudget, err)
 		default:
 			return errors.Join(ErrResourceExhausted, err)
 		}
@@ -306,6 +308,8 @@ func wrapConnectErr(err error) error {
 			return errors.Join(ErrFailedPrecondition, ErrSearchDisabled, err)
 		case SearchErrorReasonPositionsDisabled:
 			return errors.Join(ErrFailedPrecondition, ErrSearchPositionsDisabled, err)
+		case SearchErrorReasonIndexIncomplete:
+			return errors.Join(ErrFailedPrecondition, ErrSearchIndexIncomplete, err)
 		default:
 			return errors.Join(ErrFailedPrecondition, err)
 		}

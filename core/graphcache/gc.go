@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/anaregdesign/lantern/core/hlc"
+	"github.com/anaregdesign/lantern/core/search"
 )
 
 // flush performs the fused GC sweep over the edge map in a single walk.
@@ -198,6 +199,9 @@ func (c *GraphCache[S, T]) Watch(ctx context.Context, interval time.Duration) {
 		case <-ticker.C:
 			start := time.Now()
 			vExpired := c.vertices.Flush()
+			if vExpired > 0 && c.searchIndex != nil && c.searchIndex.Health() != search.IndexHealthy {
+				_ = c.RebuildSearchIndex()
+			}
 			eExpired, dRemoved := c.flush()
 			d := time.Since(start)
 			onExpire, onGC := c.snapshotHooks()

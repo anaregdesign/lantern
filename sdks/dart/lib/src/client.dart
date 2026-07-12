@@ -1025,6 +1025,10 @@ LanternException _mapConnectException(
           SearchErrorReason.searchWorkBudgetExhausted,
         $graph.SearchErrorReason.SEARCH_ADMISSION_SATURATED =>
           SearchErrorReason.searchAdmissionSaturated,
+        $graph.SearchErrorReason.SEARCH_INDEX_INCOMPLETE =>
+          SearchErrorReason.searchIndexIncomplete,
+        $graph.SearchErrorReason.SEARCH_INDEX_BUDGET_EXHAUSTED =>
+          SearchErrorReason.searchIndexBudgetExhausted,
         _ => SearchErrorReason.unspecified,
       };
       return (reason: reason, workKind: decoded.workKind);

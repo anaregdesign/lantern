@@ -161,7 +161,8 @@ func newLanternService(
 				MaxPostingVisits:    int64(src.MaxPostingVisits),
 				MaxPositionVisits:   int64(src.MaxPositionVisits),
 			},
-			MaxInFlight: src.MaxInFlight,
+			MaxInFlight:    src.MaxInFlight,
+			AnalysisLimits: src.AnalysisLimits,
 		}).
 		WithReplication(log, clock, dm.OnMutationLogAppend).
 		WithAppliedHook(dm.OnReplicationApplied).

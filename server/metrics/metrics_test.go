@@ -232,6 +232,15 @@ func TestDomainMetrics_HotPathFamilies(t *testing.T) {
 		"lantern_search_work",
 		"lantern_search_index_terms",
 		"lantern_search_index_docs",
+		"lantern_search_index_retained_term_slots",
+		"lantern_search_index_retained_ordinals",
+		"lantern_search_index_postings",
+		"lantern_search_index_position_entries",
+		"lantern_search_index_estimated_live_bytes",
+		"lantern_search_index_estimated_retained_bytes",
+		"lantern_search_index_rebuild_count",
+		"lantern_search_index_last_rebuild_duration_seconds",
+		"lantern_search_index_healthy",
 		"lantern_vertex_hlc_entries",
 		"lantern_vertex_hlc_entries_high_water",
 	} {
@@ -345,6 +354,29 @@ func TestDomainMetrics_VertexHLCHighWaterGauge(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(m.vertexHLCHighWater); got != 240_000 {
 		t.Errorf("vertex_hlc_entries_high_water = %v, want 240000 (per-cycle peak)", got)
+	}
+}
+
+func TestDomainMetrics_SearchIndexCapacityGauges(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := New(reg, Options{SampleInterval: time.Hour})
+	m.BindSearchIndexSampler(func() search.IndexMemoryStats {
+		return search.IndexMemoryStats{Documents: 2, LiveTerms: 3, RetainedTermSlots: 5, RetainedOrdinals: 4, Postings: 7, PositionEntries: 11, EstimatedLiveBytes: 100, EstimatedRetainedBytes: 140, RebuildCount: 6, LastRebuildDuration: 25 * time.Millisecond, Health: search.IndexHealthy}
+	})
+	m.tick()
+	checks := []struct {
+		gauge prometheus.Gauge
+		want  float64
+	}{
+		{m.searchIndexDocs, 2}, {m.searchIndexTerms, 3}, {m.searchIndexRetainedTerms, 5},
+		{m.searchIndexRetainedOrdinals, 4}, {m.searchIndexPostings, 7}, {m.searchIndexPositions, 11},
+		{m.searchIndexLiveBytes, 100}, {m.searchIndexRetainedBytes, 140}, {m.searchIndexRebuilds, 6},
+		{m.searchIndexRebuildDuration, 0.025}, {m.searchIndexHealthy, 1},
+	}
+	for _, check := range checks {
+		if got := testutil.ToFloat64(check.gauge); got != check.want {
+			t.Errorf("gauge = %v, want %v", got, check.want)
+		}
 	}
 }
 

@@ -8,6 +8,12 @@ type Analyzer interface {
 	Analyze(text string) []Token
 }
 
+// boundedAnalyzer lets the index stop a production analysis pipeline as soon
+// as its token budget is crossed, rather than materializing the remainder.
+type boundedAnalyzer interface {
+	AnalyzeBounded(text string, maxTokens int) ([]Token, bool)
+}
+
 // AnalyzerFunc adapts an ordinary function to the Analyzer interface.
 type AnalyzerFunc func(text string) []Token
 
@@ -94,4 +100,28 @@ func (a *pipelineAnalyzer) Analyze(text string) []Token {
 		tokens = filter.Filter(tokens)
 	}
 	return tokens
+}
+
+func (a *pipelineAnalyzer) AnalyzeBounded(text string, maxTokens int) ([]Token, bool) {
+	for _, n := range a.normalizers {
+		text = n.Normalize(text)
+	}
+	var tokens []Token
+	var exceeded bool
+	if t, ok := a.tokenizer.(boundedTokenizer); ok {
+		tokens, exceeded = t.TokenizeBounded(text, maxTokens)
+	} else {
+		tokens = a.tokenizer.Tokenize(text)
+		exceeded = maxTokens > 0 && len(tokens) > maxTokens
+	}
+	if exceeded {
+		return nil, true
+	}
+	for _, filter := range a.filters {
+		tokens = filter.Filter(tokens)
+		if maxTokens > 0 && len(tokens) > maxTokens {
+			return nil, true
+		}
+	}
+	return tokens, false
 }

@@ -12,6 +12,71 @@ enum DegreeDirection {
   both,
 }
 
+/// Whether the local derived search index can safely serve results.
+enum SearchIndexHealth {
+  /// No recognized state was supplied.
+  unspecified,
+
+  /// Search indexing is disabled on this endpoint.
+  disabled,
+
+  /// The complete derived index is safe to serve.
+  healthy,
+
+  /// Graph state converged but the derived index requires a rebuild.
+  incomplete,
+}
+
+/// Observable logical and retained search-index capacity snapshot.
+final class SearchIndexStats {
+  const SearchIndexStats._({
+    required this.health,
+    required this.documents,
+    required this.liveTerms,
+    required this.retainedTermSlots,
+    required this.retainedOrdinals,
+    required this.postings,
+    required this.positionEntries,
+    required this.estimatedLiveBytes,
+    required this.estimatedRetainedBytes,
+    required this.rebuildCount,
+    required this.lastRebuildDuration,
+  });
+
+  /// Current consistency state.
+  final SearchIndexHealth health;
+
+  /// Indexed live documents.
+  final BigInt documents;
+
+  /// Distinct live terms.
+  final BigInt liveTerms;
+
+  /// Retained term-ID slots, including reusable retired slots.
+  final BigInt retainedTermSlots;
+
+  /// Retained document ordinal high-water.
+  final BigInt retainedOrdinals;
+
+  /// Live term-document pairs.
+  final BigInt postings;
+
+  /// Live positional entries.
+  final BigInt positionEntries;
+
+  /// Stable logical estimate of live bytes.
+  final BigInt estimatedLiveBytes;
+
+  /// Stable estimate including retained high-water slots.
+  final BigInt estimatedRetainedBytes;
+
+  /// Completed compactions and bounded rebuilds.
+  final BigInt rebuildCount;
+
+  /// Duration of the latest rebuild, when supplied.
+  final Duration? lastRebuildDuration;
+}
+
 /// One immutable degree-ranked vertex.
 final class DegreeEntry {
   /// Creates one ranked entry.
@@ -44,6 +109,15 @@ final class SearchCapabilities {
     required this.analyzerVersion,
     required this.projectionVersion,
     required this.configFingerprint,
+    required this.maxDocumentBytes,
+    required this.maxDocumentTokens,
+    required this.maxDocumentTerms,
+    required this.maxLiveTerms,
+    required this.maxLivePostings,
+    required this.maxPositionEntries,
+    required this.compactionRatio,
+    required this.compactionMinRetired,
+    required this.indexStats,
   });
 
   /// Whether full-text search is available.
@@ -75,6 +149,33 @@ final class SearchCapabilities {
 
   /// SHA-256 capability fingerprint used to compare HA members.
   final String configFingerprint;
+
+  /// Maximum projected bytes per indexed document.
+  final int maxDocumentBytes;
+
+  /// Maximum analyzed tokens per document.
+  final int maxDocumentTokens;
+
+  /// Maximum distinct terms per document.
+  final int maxDocumentTerms;
+
+  /// Aggregate live-term ceiling.
+  final BigInt maxLiveTerms;
+
+  /// Aggregate live-posting ceiling.
+  final BigInt maxLivePostings;
+
+  /// Aggregate positional-entry ceiling.
+  final BigInt maxPositionEntries;
+
+  /// Retained-to-live ratio that triggers compaction.
+  final double compactionRatio;
+
+  /// Minimum retired slots before ratio-triggered compaction.
+  final BigInt compactionMinRetired;
+
+  /// Current index capacity and health snapshot.
+  final SearchIndexStats indexStats;
 }
 
 /// Explicit point-in-time server status snapshot.
@@ -307,6 +408,54 @@ extension LanternStatus on LanternClient {
         analyzerVersion: response.search.analyzerVersion,
         projectionVersion: response.search.projectionVersion,
         configFingerprint: response.search.configFingerprint,
+        maxDocumentBytes: response.search.maxDocumentBytes,
+        maxDocumentTokens: response.search.maxDocumentTokens,
+        maxDocumentTerms: response.search.maxDocumentTerms,
+        maxLiveTerms: _uint64ToBigInt(response.search.maxLiveTerms),
+        maxLivePostings: _uint64ToBigInt(response.search.maxLivePostings),
+        maxPositionEntries: _uint64ToBigInt(response.search.maxPositionEntries),
+        compactionRatio: response.search.compactionRatio,
+        compactionMinRetired: _uint64ToBigInt(
+          response.search.compactionMinRetired,
+        ),
+        indexStats: SearchIndexStats._(
+          health: switch (response.search.indexStats.health) {
+            $graph.SearchIndexHealth.SEARCH_INDEX_HEALTH_DISABLED =>
+              SearchIndexHealth.disabled,
+            $graph.SearchIndexHealth.SEARCH_INDEX_HEALTH_HEALTHY =>
+              SearchIndexHealth.healthy,
+            $graph.SearchIndexHealth.SEARCH_INDEX_HEALTH_INCOMPLETE =>
+              SearchIndexHealth.incomplete,
+            _ => SearchIndexHealth.unspecified,
+          },
+          documents: _uint64ToBigInt(response.search.indexStats.documents),
+          liveTerms: _uint64ToBigInt(response.search.indexStats.liveTerms),
+          retainedTermSlots: _uint64ToBigInt(
+            response.search.indexStats.retainedTermSlots,
+          ),
+          retainedOrdinals: _uint64ToBigInt(
+            response.search.indexStats.retainedOrdinals,
+          ),
+          postings: _uint64ToBigInt(response.search.indexStats.postings),
+          positionEntries: _uint64ToBigInt(
+            response.search.indexStats.positionEntries,
+          ),
+          estimatedLiveBytes: _uint64ToBigInt(
+            response.search.indexStats.estimatedLiveBytes,
+          ),
+          estimatedRetainedBytes: _uint64ToBigInt(
+            response.search.indexStats.estimatedRetainedBytes,
+          ),
+          rebuildCount: _uint64ToBigInt(
+            response.search.indexStats.rebuildCount,
+          ),
+          lastRebuildDuration:
+              response.search.indexStats.hasLastRebuildDuration()
+              ? _durationFromProto(
+                  response.search.indexStats.lastRebuildDuration,
+                )
+              : null,
+        ),
       ),
     );
   }

@@ -3,6 +3,7 @@ package search
 import (
 	"strconv"
 	"time"
+	"unicode/utf8"
 )
 
 // Document is the indexable payload handed to an Indexer: anything that can
@@ -13,6 +14,14 @@ import (
 // pre-flatten every document into a bare string.
 type Document interface {
 	String() string
+}
+
+// SizedDocument can expose a cheap upper bound before String performs an
+// expensive projection. The production vertex projection uses it to reject a
+// large JSON/string payload before parsing or concatenating it.
+type SizedDocument interface {
+	Document
+	SizeHint() int
 }
 
 // Text adapts a plain string to Document so raw text can be indexed without a
@@ -56,13 +65,17 @@ type Bool bool
 // String returns "true" or "false", making Bool a Document.
 func (b Bool) String() string { return strconv.FormatBool(bool(b)) }
 
-// Bytes adapts a raw byte slice to Document by interpreting it as text, so
-// byte-backed UTF-8 content is indexable just like Text. Non-text bytes yield
-// whatever terms the Analyzer extracts from that byte interpretation.
+// Bytes adapts valid UTF-8 to text. Arbitrary binary bytes produce an empty
+// document instead of accidentally entering the text analyzer.
 type Bytes []byte
 
 // String returns the bytes interpreted as text, making Bytes a Document.
-func (b Bytes) String() string { return string(b) }
+func (b Bytes) String() string {
+	if !utf8.Valid(b) {
+		return ""
+	}
+	return string(b)
+}
 
 // Time adapts a timestamp to Document, formatted as RFC3339 with nanosecond
 // precision — the same rendering Vertex timestamps use elsewhere.

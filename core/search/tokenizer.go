@@ -48,6 +48,10 @@ type Tokenizer interface {
 	Tokenize(text string) []Token
 }
 
+type boundedTokenizer interface {
+	TokenizeBounded(text string, maxTokens int) ([]Token, bool)
+}
+
 // TokenizerFunc adapts an ordinary function to the Tokenizer interface.
 type TokenizerFunc func(text string) []Token
 

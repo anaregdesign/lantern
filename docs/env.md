@@ -72,13 +72,21 @@ value is treated as unset for the non-string kinds. The MCP server's
 | `LANTERN_REFLECTION` | bool | `true` | Serve gRPC server reflection on the primary listener. |
 | `LANTERN_SCAN_DEFAULT_LIMIT` | uint32 | `1000` | Page size used when a Scan* request leaves limit unset. |
 | `LANTERN_SCAN_MAX_LIMIT` | uint32 | `10000` | Ceiling a Scan* request's limit is clamped to. |
+| `LANTERN_SEARCH_COMPACTION_MIN_RETIRED` | int | `10000` | Minimum retired term/ordinal slots before ratio-triggered compaction. |
+| `LANTERN_SEARCH_COMPACTION_RATIO` | float | `2` | Retained-to-live high-water ratio that triggers index compaction. |
 | `LANTERN_SEARCH_DEFAULT_LIMIT` | uint32 | `100` | Ranked-hit count used when SearchVertices leaves limit unset. |
 | `LANTERN_SEARCH_DEFAULT_MIN_SHOULD` | uint32 | `1` | Minimum-should-match count applied when the mode resolves to min-should but the request leaves it 0. |
 | `LANTERN_SEARCH_DEFAULT_MODE` | string | `any` | Match mode applied when a SearchVertices request omits it: any (OR), all (AND), or min-should. Validated at startup — an unrecognised value fails boot. |
 | `LANTERN_SEARCH_ENABLED` | bool | `true` | Build the full-text search index and serve SearchVertices (off = FAILED_PRECONDITION). |
 | `LANTERN_SEARCH_MAX_DICTIONARY_VISITS` | int | `1000000` | Maximum dictionary candidates inspected by one search. |
+| `LANTERN_SEARCH_MAX_DOCUMENT_BYTES` | int | `1048576` | Maximum UTF-8 bytes in one projected search document before analysis. |
+| `LANTERN_SEARCH_MAX_DOCUMENT_TERMS` | int | `100000` | Maximum distinct analyzed terms in one search document. |
+| `LANTERN_SEARCH_MAX_DOCUMENT_TOKENS` | int | `250000` | Maximum analyzed tokens produced by one search document. |
 | `LANTERN_SEARCH_MAX_IN_FLIGHT` | int | `32` | Maximum concurrently executing searches; excess attempts fail immediately. |
 | `LANTERN_SEARCH_MAX_LIMIT` | uint32 | `1000` | Ceiling SearchVertices' limit is clamped to. |
+| `LANTERN_SEARCH_MAX_LIVE_POSTINGS` | int | `50000000` | Maximum live term-document posting entries. |
+| `LANTERN_SEARCH_MAX_LIVE_TERMS` | int | `5000000` | Maximum distinct terms retained across the live search index. |
+| `LANTERN_SEARCH_MAX_POSITION_ENTRIES` | int | `50000000` | Maximum live positional entries when search positions are enabled. |
 | `LANTERN_SEARCH_MAX_POSITION_VISITS` | int | `10000000` | Maximum positional entries inspected by one search. |
 | `LANTERN_SEARCH_MAX_POSTING_VISITS` | int | `10000000` | Maximum posting entries inspected by one search. |
 | `LANTERN_SEARCH_MAX_QUERY_BYTES` | int | `16384` | Maximum UTF-8 bytes accepted in one search query. |

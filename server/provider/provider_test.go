@@ -199,7 +199,11 @@ func TestNewConfigValidation(t *testing.T) {
 		}
 		if cfg.Search.Timeout <= 0 || cfg.Search.MaxQueryBytes <= 0 || cfg.Search.MaxQueryTerms <= 0 ||
 			cfg.Search.MaxDictionaryVisits <= 0 || cfg.Search.MaxPostingVisits <= 0 ||
-			cfg.Search.MaxPositionVisits <= 0 || cfg.Search.MaxInFlight <= 0 {
+			cfg.Search.MaxPositionVisits <= 0 || cfg.Search.MaxInFlight <= 0 ||
+			cfg.Search.AnalysisLimits.MaxDocumentBytes <= 0 || cfg.Search.AnalysisLimits.MaxDocumentTokens <= 0 ||
+			cfg.Search.AnalysisLimits.MaxDocumentTerms <= 0 || cfg.Search.AnalysisLimits.MaxLiveTerms <= 0 ||
+			cfg.Search.AnalysisLimits.MaxLivePostings <= 0 || cfg.Search.AnalysisLimits.MaxPositionEntries <= 0 ||
+			cfg.Search.AnalysisLimits.CompactionRatio <= 1 || cfg.Search.AnalysisLimits.CompactionMinRetired <= 0 {
 			t.Fatalf("search safety defaults are not all positive: %+v", cfg.Search)
 		}
 	})
@@ -212,6 +216,13 @@ func TestNewConfigValidation(t *testing.T) {
 		"LANTERN_SEARCH_MAX_POSTING_VISITS",
 		"LANTERN_SEARCH_MAX_POSITION_VISITS",
 		"LANTERN_SEARCH_MAX_IN_FLIGHT",
+		"LANTERN_SEARCH_MAX_DOCUMENT_BYTES",
+		"LANTERN_SEARCH_MAX_DOCUMENT_TOKENS",
+		"LANTERN_SEARCH_MAX_DOCUMENT_TERMS",
+		"LANTERN_SEARCH_MAX_LIVE_TERMS",
+		"LANTERN_SEARCH_MAX_LIVE_POSTINGS",
+		"LANTERN_SEARCH_MAX_POSITION_ENTRIES",
+		"LANTERN_SEARCH_COMPACTION_MIN_RETIRED",
 	} {
 		t.Run("search safety rejects non-positive "+key, func(t *testing.T) {
 			envconfig.ResetForTesting()
@@ -223,6 +234,15 @@ func TestNewConfigValidation(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("search compaction ratio must exceed one", func(t *testing.T) {
+		envconfig.ResetForTesting()
+		t.Setenv("LANTERN_SEARCH_COMPACTION_RATIO", "1")
+		_, err := NewConfig()
+		if err == nil || !strings.Contains(err.Error(), "LANTERN_SEARCH_COMPACTION_RATIO") {
+			t.Fatalf("NewConfig error = %v", err)
+		}
+	})
 
 	t.Run("query term cap cannot exceed byte cap", func(t *testing.T) {
 		envconfig.ResetForTesting()

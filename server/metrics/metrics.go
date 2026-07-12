@@ -34,7 +34,7 @@ type OriginStatesSampler func() int
 // SearchIndexSampler reports the current number of distinct terms and indexed
 // documents in the optional search index. A nil sampler leaves
 // lantern_search_index_terms and lantern_search_index_docs at 0.
-type SearchIndexSampler func() (terms, docs int)
+type SearchIndexSampler func() search.IndexMemoryStats
 
 // VertexHLCSampler reports the current number of entries in the per-key LWW
 // watermark map (vertexHLC). A nil sampler leaves lantern_vertex_hlc_entries
@@ -142,8 +142,17 @@ type DomainMetrics struct {
 	// Search-index size gauges (#703). Sampled off InvertedIndex.Stats()
 	// on the same cadence as lantern_vertices / lantern_edges. Both stay
 	// 0 when LANTERN_SEARCH_ENABLED=false (sampler is nil).
-	searchIndexTerms prometheus.Gauge
-	searchIndexDocs  prometheus.Gauge
+	searchIndexTerms            prometheus.Gauge
+	searchIndexDocs             prometheus.Gauge
+	searchIndexRetainedTerms    prometheus.Gauge
+	searchIndexRetainedOrdinals prometheus.Gauge
+	searchIndexPostings         prometheus.Gauge
+	searchIndexPositions        prometheus.Gauge
+	searchIndexLiveBytes        prometheus.Gauge
+	searchIndexRetainedBytes    prometheus.Gauge
+	searchIndexRebuilds         prometheus.Gauge
+	searchIndexRebuildDuration  prometheus.Gauge
+	searchIndexHealthy          prometheus.Gauge
 
 	// Per-structure cardinality gauge for the LWW watermark map (#705).
 	// Sampled off GraphCache.VertexHLCCount(). Tracks the live replicated
@@ -461,6 +470,15 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 			Name: "lantern_search_index_docs",
 			Help: "Current number of documents (indexed vertices) in the search inverted index (#703). Sampled on the same cadence as lantern_vertices. Always 0 when LANTERN_SEARCH_ENABLED=false.",
 		}),
+		searchIndexRetainedTerms:    prometheus.NewGauge(prometheus.GaugeOpts{Name: "lantern_search_index_retained_term_slots", Help: "Retained term-ID slots, including reusable tombstoned slots."}),
+		searchIndexRetainedOrdinals: prometheus.NewGauge(prometheus.GaugeOpts{Name: "lantern_search_index_retained_ordinals", Help: "Retained document ordinal high-water after compaction."}),
+		searchIndexPostings:         prometheus.NewGauge(prometheus.GaugeOpts{Name: "lantern_search_index_postings", Help: "Live distinct term-document posting entries."}),
+		searchIndexPositions:        prometheus.NewGauge(prometheus.GaugeOpts{Name: "lantern_search_index_position_entries", Help: "Live positional entries retained by the search index."}),
+		searchIndexLiveBytes:        prometheus.NewGauge(prometheus.GaugeOpts{Name: "lantern_search_index_estimated_live_bytes", Help: "Stable logical estimate of live search-index bytes."}),
+		searchIndexRetainedBytes:    prometheus.NewGauge(prometheus.GaugeOpts{Name: "lantern_search_index_estimated_retained_bytes", Help: "Stable logical estimate including retained high-water slots."}),
+		searchIndexRebuilds:         prometheus.NewGauge(prometheus.GaugeOpts{Name: "lantern_search_index_rebuild_count", Help: "Completed search-index compactions and bounded rebuilds in this process."}),
+		searchIndexRebuildDuration:  prometheus.NewGauge(prometheus.GaugeOpts{Name: "lantern_search_index_last_rebuild_duration_seconds", Help: "Wall duration of the latest search-index compaction or rebuild."}),
+		searchIndexHealthy:          prometheus.NewGauge(prometheus.GaugeOpts{Name: "lantern_search_index_healthy", Help: "1 when search can be served from a complete index; 0 otherwise."}),
 		vertexHLCEntries: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "lantern_vertex_hlc_entries",
 			Help: "Current number of entries in the per-key LWW watermark map used by the replication apply path (#705). Tracks the live replicated-key set; a value growing monotonically across GC ticks signals the vertexHLC leak (issue #700). Always 0 on a single-node deployment.",
@@ -545,6 +563,8 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		m.getVertexHits, m.getVertexMisses, m.getEdgeHits, m.getEdgeMisses,
 		m.edgeContribDeduped,
 		m.searchResults, m.searchDuration, m.searchCalls, m.searchWork, m.searchIndexTerms, m.searchIndexDocs,
+		m.searchIndexRetainedTerms, m.searchIndexRetainedOrdinals, m.searchIndexPostings, m.searchIndexPositions,
+		m.searchIndexLiveBytes, m.searchIndexRetainedBytes, m.searchIndexRebuilds, m.searchIndexRebuildDuration, m.searchIndexHealthy,
 		m.vertexHLCEntries, m.vertexHLCHighWater,
 		m.peerConnected, m.replicationApplyTotal, m.snapshotReplayedTotal,
 		m.snapshotVertices, m.snapshotEdges, m.snapshotDuration,
@@ -1111,9 +1131,22 @@ func (m *DomainMetrics) tick() {
 		m.originStatesCount.Set(float64(m.originSample()))
 	}
 	if m.searchIndexSample != nil {
-		terms, docs := m.searchIndexSample()
-		m.searchIndexTerms.Set(float64(terms))
-		m.searchIndexDocs.Set(float64(docs))
+		stats := m.searchIndexSample()
+		m.searchIndexTerms.Set(float64(stats.LiveTerms))
+		m.searchIndexDocs.Set(float64(stats.Documents))
+		m.searchIndexRetainedTerms.Set(float64(stats.RetainedTermSlots))
+		m.searchIndexRetainedOrdinals.Set(float64(stats.RetainedOrdinals))
+		m.searchIndexPostings.Set(float64(stats.Postings))
+		m.searchIndexPositions.Set(float64(stats.PositionEntries))
+		m.searchIndexLiveBytes.Set(float64(stats.EstimatedLiveBytes))
+		m.searchIndexRetainedBytes.Set(float64(stats.EstimatedRetainedBytes))
+		m.searchIndexRebuilds.Set(float64(stats.RebuildCount))
+		m.searchIndexRebuildDuration.Set(stats.LastRebuildDuration.Seconds())
+		if stats.Health == search.IndexHealthy {
+			m.searchIndexHealthy.Set(1)
+		} else {
+			m.searchIndexHealthy.Set(0)
+		}
 	}
 	if m.vertexHLCSample != nil {
 		m.vertexHLCEntries.Set(float64(m.vertexHLCSample()))

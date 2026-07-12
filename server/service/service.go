@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -158,6 +159,7 @@ type SearchLimits struct {
 	MaxQueryBytes    int
 	WorkBudget       search.Budget
 	MaxInFlight      int
+	AnalysisLimits   search.SearchAnalysisLimits
 }
 
 func defaultSearchLimits() SearchLimits {
@@ -831,6 +833,31 @@ func (s *LanternService) PutVertex(ctx context.Context, request *pb.PutVertexReq
 	return &pb.PutVertexResponse{Written: resp.GetWritten() >= 1}, nil
 }
 
+// RestoreVertices applies backup state for graph convergence while treating
+// search as a rebuildable derived index. A value outside the local analysis
+// budgets is still restored; GraphCache marks search incomplete so queries
+// fail closed until a bounded rebuild succeeds.
+func (s *LanternService) RestoreVertices(ctx context.Context, request *pb.PutVerticesRequest) (*pb.PutVerticesResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, ctxToConnect(err)
+	}
+	now := time.Now()
+	items := make([]graphcache.VertexItem[string, *pb.Vertex], 0, len(request.GetVertices()))
+	written := 0
+	for _, vertex := range request.GetVertices() {
+		if vertex == nil {
+			continue
+		}
+		expiration := prototime.Expiration(vertex.GetExpiration())
+		items = append(items, graphcache.VertexItem[string, *pb.Vertex]{Key: vertex.GetKey(), Value: vertex, Expiration: expiration})
+		if cache.IsLiveAt(expiration, now) {
+			written++
+		}
+	}
+	s.cache.PutVerticesWithExpirationHLC(items, hlc.Timestamp{})
+	return &pb.PutVerticesResponse{Written: int32(written)}, nil
+}
+
 func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVerticesRequest) (*pb.PutVerticesResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
@@ -873,7 +900,10 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 			// born-expired item is discarded and excluded (#918), so
 			// writtenIdx is all-live by construction and needs no second
 			// liveness filter before replication.
-			writtenIdx, skipped := s.cache.PutVerticesWithExpirationIfAbsentHLC(items, ts)
+			writtenIdx, skipped, err := s.cache.PutVerticesWithExpirationIfAbsentHLCChecked(items, ts)
+			if err != nil {
+				return nil, searchIndexWriteError(err)
+			}
 			if len(writtenIdx) > 0 {
 				live := make([]*pb.Vertex, 0, len(writtenIdx))
 				for _, i := range writtenIdx {
@@ -883,7 +913,10 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 			}
 			return &pb.PutVerticesResponse{Written: int32(len(writtenIdx)), SkippedKeys: skipped}, nil
 		}
-		written, skipped := s.cache.PutVerticesWithExpirationIfAbsent(items)
+		written, skipped, err := s.cache.PutVerticesWithExpirationIfAbsentChecked(items)
+		if err != nil {
+			return nil, searchIndexWriteError(err)
+		}
 		return &pb.PutVerticesResponse{Written: int32(written), SkippedKeys: skipped}, nil
 	}
 	// When replication is enabled (clock wired) every local write is stamped
@@ -905,7 +938,9 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 	// unchanged so the steady-state cost is a single liveness check per vertex.
 	if s.clock != nil {
 		ts := s.clock.Now()
-		s.cache.PutVerticesWithExpirationHLC(items, ts)
+		if _, err := s.cache.PutVerticesWithExpirationHLCChecked(items, ts); err != nil {
+			return nil, searchIndexWriteError(err)
+		}
 		switch {
 		case liveCount == len(in):
 			s.logMutationAt(&pb.MutationOp{Op: &pb.MutationOp_PutVertices{PutVertices: request}}, ts)
@@ -919,12 +954,25 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 			s.logMutationAt(&pb.MutationOp{Op: &pb.MutationOp_PutVertices{PutVertices: &pb.PutVerticesRequest{Vertices: live}}}, ts)
 		}
 	} else {
-		s.cache.PutVerticesWithExpiration(items)
+		if err := s.cache.PutVerticesWithExpirationChecked(items); err != nil {
+			return nil, searchIndexWriteError(err)
+		}
 	}
 	// The response counts values that became live, not merely values accepted
 	// for processing. This keeps the plural result aligned with PutVertex's
 	// written=false contract for a born-expired value.
 	return &pb.PutVerticesResponse{Written: int32(liveCount)}, nil
+}
+
+func searchIndexWriteError(err error) error {
+	if errors.Is(err, search.ErrIndexIncomplete) {
+		return newSearchPreconditionError(pb.SearchErrorReason_SEARCH_INDEX_INCOMPLETE, err)
+	}
+	var limit *search.AnalysisLimitError
+	if errors.As(err, &limit) {
+		return newSearchResourceError(pb.SearchErrorReason_SEARCH_INDEX_BUDGET_EXHAUSTED, string(limit.Kind), err)
+	}
+	return connect.NewError(connect.CodeInternal, err)
 }
 
 func (s *LanternService) DeleteVertex(ctx context.Context, in *pb.DeleteVertexRequest) (*pb.DeleteVertexResponse, error) {

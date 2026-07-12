@@ -21,18 +21,18 @@ import (
 type Backend interface {
 	// vertex reads/writes
 	GetVertex(key string) (*pb.Vertex, bool)
-	PutVerticesWithExpiration(items []graphcache.VertexItem[string, *pb.Vertex])
-	// PutVerticesWithExpirationIfAbsent writes each vertex only when no live
+	PutVerticesWithExpirationChecked(items []graphcache.VertexItem[string, *pb.Vertex]) error
+	// PutVerticesWithExpirationIfAbsentChecked writes each vertex only when no live
 	// vertex exists at its key (SET NX, #896). It returns the number written
 	// and the keys skipped because a live vertex already existed. Used by the
 	// LOCAL write path when replication is off (clock nil).
-	PutVerticesWithExpirationIfAbsent(items []graphcache.VertexItem[string, *pb.Vertex]) (written int, skipped []string)
-	// PutVerticesWithExpirationIfAbsentHLC is the replication-aware sibling:
+	PutVerticesWithExpirationIfAbsentChecked(items []graphcache.VertexItem[string, *pb.Vertex]) (written int, skipped []string, err error)
+	// PutVerticesWithExpirationIfAbsentHLCChecked is the replication-aware sibling:
 	// it stamps each accepted write with ts so the origin participates in LWW,
 	// and returns the request-order indices of items that passed the absence
 	// check (so the caller can replicate only that subset) plus the skipped
 	// keys. Used when replication is enabled (clock non-nil).
-	PutVerticesWithExpirationIfAbsentHLC(items []graphcache.VertexItem[string, *pb.Vertex], ts hlc.Timestamp) (writtenIdx []int, skipped []string)
+	PutVerticesWithExpirationIfAbsentHLCChecked(items []graphcache.VertexItem[string, *pb.Vertex], ts hlc.Timestamp) (writtenIdx []int, skipped []string, err error)
 	DeleteVertices(keys []string) int
 
 	// edge reads/writes
@@ -86,6 +86,7 @@ type Backend interface {
 	// applied=false — so the apply path fires its clamp-reject metric once
 	// per rejected item with unchanged meaning.
 	PutVerticesWithExpirationHLC(items []graphcache.VertexItem[string, *pb.Vertex], ts hlc.Timestamp) int
+	PutVerticesWithExpirationHLCChecked(items []graphcache.VertexItem[string, *pb.Vertex], ts hlc.Timestamp) (int, error)
 	PutEdgesWithExpirationHLC(items []graphcache.EdgeItem[string], ts hlc.Timestamp) int
 	AddEdgesWithExpirationContribHLC(items []graphcache.EdgeItem[string], ts hlc.Timestamp) (effective []float32, deduped int)
 
@@ -241,4 +242,5 @@ type Backend interface {
 	// to populate the admin UI's at-a-glance counters.
 	VertexCount() int
 	EdgeCount() int
+	SearchIndexMemoryStats() search.IndexMemoryStats
 }

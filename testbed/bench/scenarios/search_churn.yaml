@@ -18,8 +18,9 @@
 #   selection rather than an exact-only dictionary lookup (#1056).
 #
 # steady >= 2m so the leak window brackets the GC sweep repeatedly.
-# Assert lantern_search_index_terms and lantern_search_index_docs return
-# to ~baseline after cooldown (the "index decays in lockstep" claim).
+# Assert lantern_search_index_terms/docs plus retained_term_slots,
+# retained_ordinals, and estimated_retained_bytes return to ~baseline after
+# cooldown (the #1050 compaction claim, not merely logical deletion).
 #
 # The bench cluster runs search on by default (LANTERN_SEARCH_ENABLED=true).
 # The explicit expiration template below is required: omitting Vertex.expiration

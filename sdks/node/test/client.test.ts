@@ -1477,6 +1477,27 @@ describe("searchVertices request building (#639)", () => {
       c.close();
     }
   });
+
+  test("index write budget remains a distinct typed reason", async () => {
+    const c = newClient();
+    state.searchResource = {
+      reason: SearchErrorReason.SEARCH_INDEX_BUDGET_EXHAUSTED,
+      workKind: "document_bytes",
+    };
+    try {
+      await c.searchVertices("alpha");
+      expect.unreachable("budgeted search should fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ResourceExhaustedError);
+      expect((error as ResourceExhaustedError).reason).toBe(
+        SearchErrorReason.SEARCH_INDEX_BUDGET_EXHAUSTED,
+      );
+      expect((error as ResourceExhaustedError).workKind).toBe("document_bytes");
+    } finally {
+      state.searchResource = undefined;
+      c.close();
+    }
+  });
 });
 
 describe("bearer token option (#850)", () => {

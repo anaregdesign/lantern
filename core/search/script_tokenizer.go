@@ -40,6 +40,14 @@ type ScriptAwareTokenizer struct {
 // Tokenize splits text into script runs and emits per-run tokens as described
 // on the type.
 func (t ScriptAwareTokenizer) Tokenize(text string) []Token {
+	tokens, _ := t.TokenizeBounded(text, 0)
+	return tokens
+}
+
+// TokenizeBounded stops before appending token maxTokens+1. The boolean is
+// true when more output exists, allowing callers to reject a large document
+// without retaining its complete token stream.
+func (t ScriptAwareTokenizer) TokenizeBounded(text string, maxTokens int) ([]Token, bool) {
 	n := t.N
 	if n < 2 {
 		n = 2
@@ -53,7 +61,11 @@ func (t ScriptAwareTokenizer) Tokenize(text string) []Token {
 			for j < len(runes) && isUnboundedScript(runes[j]) {
 				j++
 			}
-			tokens = appendRunGrams(tokens, runes[i:j], n, ClassWord)
+			var exceeded bool
+			tokens, exceeded = appendRunGramsBounded(tokens, runes[i:j], n, ClassWord, maxTokens)
+			if exceeded {
+				return nil, true
+			}
 			i = j
 		case isWordRune(r):
 			j := i + 1
@@ -62,31 +74,41 @@ func (t ScriptAwareTokenizer) Tokenize(text string) []Token {
 			}
 			word := runes[i:j]
 			tokens = append(tokens, Token{Term: string(word), Class: ClassWord})
+			if maxTokens > 0 && len(tokens) > maxTokens {
+				return nil, true
+			}
 			if len(word) > n {
 				// Strictly longer than one window: a word of exactly N runes
 				// would emit itself again, and the word token already carries
 				// that evidence on the primary channel.
-				tokens = appendRunGrams(tokens, word, n, ClassGram)
+				var exceeded bool
+				tokens, exceeded = appendRunGramsBounded(tokens, word, n, ClassGram, maxTokens)
+				if exceeded {
+					return nil, true
+				}
 			}
 			i = j
 		default:
 			i++ // delimiter: whitespace, punctuation, symbols
 		}
 	}
-	return tokens
+	return tokens, false
 }
 
-// appendRunGrams appends every n-rune window of run as a token of the given
-// class; a run shorter than n is emitted whole, so it stays matchable rather
-// than vanishing (the CJKBigramFilter unigram fallback).
-func appendRunGrams(tokens []Token, run []rune, n int, class TokenClass) []Token {
+// appendRunGramsBounded emits every n-rune window, stopping at the cap. A
+// short run is emitted whole (the CJKBigramFilter unigram fallback).
+func appendRunGramsBounded(tokens []Token, run []rune, n int, class TokenClass, maxTokens int) ([]Token, bool) {
 	if len(run) < n {
-		return append(tokens, Token{Term: string(run), Class: class})
+		tokens = append(tokens, Token{Term: string(run), Class: class})
+		return tokens, maxTokens > 0 && len(tokens) > maxTokens
 	}
 	for i := 0; i+n <= len(run); i++ {
 		tokens = append(tokens, Token{Term: string(run[i : i+n]), Class: class})
+		if maxTokens > 0 && len(tokens) > maxTokens {
+			return nil, true
+		}
 	}
-	return tokens
+	return tokens, false
 }
 
 // unboundedScripts are the scripts written without spaces between words, for
@@ -129,3 +151,4 @@ func isWordRune(r rune) bool {
 
 // Interface assertion: ScriptAwareTokenizer is a Tokenizer.
 var _ Tokenizer = ScriptAwareTokenizer{}
+var _ boundedTokenizer = ScriptAwareTokenizer{}

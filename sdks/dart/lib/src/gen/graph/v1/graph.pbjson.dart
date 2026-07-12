@@ -103,6 +103,8 @@ const SearchErrorReason$json = {
     {'1': 'SEARCH_POSITIONS_DISABLED', '2': 2},
     {'1': 'SEARCH_WORK_BUDGET_EXHAUSTED', '2': 3},
     {'1': 'SEARCH_ADMISSION_SATURATED', '2': 4},
+    {'1': 'SEARCH_INDEX_INCOMPLETE', '2': 5},
+    {'1': 'SEARCH_INDEX_BUDGET_EXHAUSTED', '2': 6},
   ],
 };
 
@@ -111,7 +113,25 @@ final $typed_data.Uint8List searchErrorReasonDescriptor = $convert.base64Decode(
     'ChFTZWFyY2hFcnJvclJlYXNvbhIjCh9TRUFSQ0hfRVJST1JfUkVBU09OX1VOU1BFQ0lGSUVEEA'
     'ASEwoPU0VBUkNIX0RJU0FCTEVEEAESHQoZU0VBUkNIX1BPU0lUSU9OU19ESVNBQkxFRBACEiAK'
     'HFNFQVJDSF9XT1JLX0JVREdFVF9FWEhBVVNURUQQAxIeChpTRUFSQ0hfQURNSVNTSU9OX1NBVF'
-    'VSQVRFRBAE');
+    'VSQVRFRBAEEhsKF1NFQVJDSF9JTkRFWF9JTkNPTVBMRVRFEAUSIQodU0VBUkNIX0lOREVYX0JV'
+    'REdFVF9FWEhBVVNURUQQBg==');
+
+@$core.Deprecated('Use searchIndexHealthDescriptor instead')
+const SearchIndexHealth$json = {
+  '1': 'SearchIndexHealth',
+  '2': [
+    {'1': 'SEARCH_INDEX_HEALTH_UNSPECIFIED', '2': 0},
+    {'1': 'SEARCH_INDEX_HEALTH_DISABLED', '2': 1},
+    {'1': 'SEARCH_INDEX_HEALTH_HEALTHY', '2': 2},
+    {'1': 'SEARCH_INDEX_HEALTH_INCOMPLETE', '2': 3},
+  ],
+};
+
+/// Descriptor for `SearchIndexHealth`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List searchIndexHealthDescriptor = $convert.base64Decode(
+    'ChFTZWFyY2hJbmRleEhlYWx0aBIjCh9TRUFSQ0hfSU5ERVhfSEVBTFRIX1VOU1BFQ0lGSUVEEA'
+    'ASIAocU0VBUkNIX0lOREVYX0hFQUxUSF9ESVNBQkxFRBABEh8KG1NFQVJDSF9JTkRFWF9IRUFM'
+    'VEhfSEVBTFRIWRACEiIKHlNFQVJDSF9JTkRFWF9IRUFMVEhfSU5DT01QTEVURRAD');
 
 @$core.Deprecated('Use vertexDescriptor instead')
 const Vertex$json = {
@@ -1318,6 +1338,58 @@ const SearchCapabilities$json = {
       '10': 'maxPositionVisits'
     },
     {'1': 'max_in_flight', '3': 17, '4': 1, '5': 13, '10': 'maxInFlight'},
+    {
+      '1': 'max_document_bytes',
+      '3': 18,
+      '4': 1,
+      '5': 13,
+      '10': 'maxDocumentBytes'
+    },
+    {
+      '1': 'max_document_tokens',
+      '3': 19,
+      '4': 1,
+      '5': 13,
+      '10': 'maxDocumentTokens'
+    },
+    {
+      '1': 'max_document_terms',
+      '3': 20,
+      '4': 1,
+      '5': 13,
+      '10': 'maxDocumentTerms'
+    },
+    {'1': 'max_live_terms', '3': 21, '4': 1, '5': 4, '10': 'maxLiveTerms'},
+    {
+      '1': 'max_live_postings',
+      '3': 22,
+      '4': 1,
+      '5': 4,
+      '10': 'maxLivePostings'
+    },
+    {
+      '1': 'max_position_entries',
+      '3': 23,
+      '4': 1,
+      '5': 4,
+      '10': 'maxPositionEntries'
+    },
+    {'1': 'compaction_ratio', '3': 24, '4': 1, '5': 1, '10': 'compactionRatio'},
+    {
+      '1': 'compaction_min_retired',
+      '3': 25,
+      '4': 1,
+      '5': 4,
+      '10': 'compactionMinRetired'
+    },
+    {
+      '1': 'index_stats',
+      '3': 26,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.SearchIndexStats',
+      '10': 'indexStats'
+    },
   ],
 };
 
@@ -1336,7 +1408,84 @@ final $typed_data.Uint8List searchCapabilitiesDescriptor = $convert.base64Decode
     'eFF1ZXJ5VGVybXMSMgoVbWF4X2RpY3Rpb25hcnlfdmlzaXRzGA4gASgEUhNtYXhEaWN0aW9uYX'
     'J5VmlzaXRzEiwKEm1heF9wb3N0aW5nX3Zpc2l0cxgPIAEoBFIQbWF4UG9zdGluZ1Zpc2l0cxIu'
     'ChNtYXhfcG9zaXRpb25fdmlzaXRzGBAgASgEUhFtYXhQb3NpdGlvblZpc2l0cxIiCg1tYXhfaW'
-    '5fZmxpZ2h0GBEgASgNUgttYXhJbkZsaWdodA==');
+    '5fZmxpZ2h0GBEgASgNUgttYXhJbkZsaWdodBIsChJtYXhfZG9jdW1lbnRfYnl0ZXMYEiABKA1S'
+    'EG1heERvY3VtZW50Qnl0ZXMSLgoTbWF4X2RvY3VtZW50X3Rva2VucxgTIAEoDVIRbWF4RG9jdW'
+    '1lbnRUb2tlbnMSLAoSbWF4X2RvY3VtZW50X3Rlcm1zGBQgASgNUhBtYXhEb2N1bWVudFRlcm1z'
+    'EiQKDm1heF9saXZlX3Rlcm1zGBUgASgEUgxtYXhMaXZlVGVybXMSKgoRbWF4X2xpdmVfcG9zdG'
+    'luZ3MYFiABKARSD21heExpdmVQb3N0aW5ncxIwChRtYXhfcG9zaXRpb25fZW50cmllcxgXIAEo'
+    'BFISbWF4UG9zaXRpb25FbnRyaWVzEikKEGNvbXBhY3Rpb25fcmF0aW8YGCABKAFSD2NvbXBhY3'
+    'Rpb25SYXRpbxI0ChZjb21wYWN0aW9uX21pbl9yZXRpcmVkGBkgASgEUhRjb21wYWN0aW9uTWlu'
+    'UmV0aXJlZBI7CgtpbmRleF9zdGF0cxgaIAEoCzIaLmdyYXBoLnYxLlNlYXJjaEluZGV4U3RhdH'
+    'NSCmluZGV4U3RhdHM=');
+
+@$core.Deprecated('Use searchIndexStatsDescriptor instead')
+const SearchIndexStats$json = {
+  '1': 'SearchIndexStats',
+  '2': [
+    {
+      '1': 'health',
+      '3': 1,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.SearchIndexHealth',
+      '10': 'health'
+    },
+    {'1': 'documents', '3': 2, '4': 1, '5': 4, '10': 'documents'},
+    {'1': 'live_terms', '3': 3, '4': 1, '5': 4, '10': 'liveTerms'},
+    {
+      '1': 'retained_term_slots',
+      '3': 4,
+      '4': 1,
+      '5': 4,
+      '10': 'retainedTermSlots'
+    },
+    {
+      '1': 'retained_ordinals',
+      '3': 5,
+      '4': 1,
+      '5': 4,
+      '10': 'retainedOrdinals'
+    },
+    {'1': 'postings', '3': 6, '4': 1, '5': 4, '10': 'postings'},
+    {'1': 'position_entries', '3': 7, '4': 1, '5': 4, '10': 'positionEntries'},
+    {
+      '1': 'estimated_live_bytes',
+      '3': 8,
+      '4': 1,
+      '5': 4,
+      '10': 'estimatedLiveBytes'
+    },
+    {
+      '1': 'estimated_retained_bytes',
+      '3': 9,
+      '4': 1,
+      '5': 4,
+      '10': 'estimatedRetainedBytes'
+    },
+    {'1': 'rebuild_count', '3': 10, '4': 1, '5': 4, '10': 'rebuildCount'},
+    {
+      '1': 'last_rebuild_duration',
+      '3': 11,
+      '4': 1,
+      '5': 11,
+      '6': '.google.protobuf.Duration',
+      '10': 'lastRebuildDuration'
+    },
+  ],
+};
+
+/// Descriptor for `SearchIndexStats`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List searchIndexStatsDescriptor = $convert.base64Decode(
+    'ChBTZWFyY2hJbmRleFN0YXRzEjMKBmhlYWx0aBgBIAEoDjIbLmdyYXBoLnYxLlNlYXJjaEluZG'
+    'V4SGVhbHRoUgZoZWFsdGgSHAoJZG9jdW1lbnRzGAIgASgEUglkb2N1bWVudHMSHQoKbGl2ZV90'
+    'ZXJtcxgDIAEoBFIJbGl2ZVRlcm1zEi4KE3JldGFpbmVkX3Rlcm1fc2xvdHMYBCABKARSEXJldG'
+    'FpbmVkVGVybVNsb3RzEisKEXJldGFpbmVkX29yZGluYWxzGAUgASgEUhByZXRhaW5lZE9yZGlu'
+    'YWxzEhoKCHBvc3RpbmdzGAYgASgEUghwb3N0aW5ncxIpChBwb3NpdGlvbl9lbnRyaWVzGAcgAS'
+    'gEUg9wb3NpdGlvbkVudHJpZXMSMAoUZXN0aW1hdGVkX2xpdmVfYnl0ZXMYCCABKARSEmVzdGlt'
+    'YXRlZExpdmVCeXRlcxI4Chhlc3RpbWF0ZWRfcmV0YWluZWRfYnl0ZXMYCSABKARSFmVzdGltYX'
+    'RlZFJldGFpbmVkQnl0ZXMSIwoNcmVidWlsZF9jb3VudBgKIAEoBFIMcmVidWlsZENvdW50Ek0K'
+    'FWxhc3RfcmVidWlsZF9kdXJhdGlvbhgLIAEoCzIZLmdvb2dsZS5wcm90b2J1Zi5EdXJhdGlvbl'
+    'ITbGFzdFJlYnVpbGREdXJhdGlvbg==');
 
 @$core.Deprecated('Use getServerStatusResponseDescriptor instead')
 const GetServerStatusResponse$json = {
@@ -1753,6 +1902,7 @@ const $core.Map<$core.String, $core.Map<$core.String, $core.dynamic>>
   '.graph.v1.GetServerStatusRequest': GetServerStatusRequest$json,
   '.graph.v1.GetServerStatusResponse': GetServerStatusResponse$json,
   '.graph.v1.SearchCapabilities': SearchCapabilities$json,
+  '.graph.v1.SearchIndexStats': SearchIndexStats$json,
   '.graph.v1.GetReplicationStatusRequest': GetReplicationStatusRequest$json,
   '.graph.v1.GetReplicationStatusResponse': GetReplicationStatusResponse$json,
   '.graph.v1.ReplicationPeer': ReplicationPeer$json,

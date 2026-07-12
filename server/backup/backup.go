@@ -10,9 +10,9 @@
 // LanternService.BackupSnapshot RPC verbatim through a file-backed Sender,
 // so files are byte-identical to `lantern-cli dump --format proto` and
 // interchange with the CLI. Restore replays frames through the in-process
-// PutVertices / PutEdges, so HLC stamping and the born-expired skip (#698)
-// apply automatically — an entry whose TTL already elapsed since the dump
-// is correctly NOT resurrected.
+// RestoreVertices / PutEdges. Vertex restore preserves graph convergence even
+// when local search-index limits differ, while the born-expired skip (#698)
+// still prevents an entry whose TTL elapsed since the dump from resurrecting.
 //
 // Shared storage is never assumed safe for concurrent writes (networked
 // or FUSE-backed filesystems generally have no reliable file locking), so
@@ -83,7 +83,7 @@ type Config struct {
 // full GraphCache.
 type Service interface {
 	BackupSnapshot(ctx context.Context, req *pb.BackupSnapshotRequest, stream service.Sender[pb.BackupSnapshotResponse]) error
-	PutVertices(ctx context.Context, req *pb.PutVerticesRequest) (*pb.PutVerticesResponse, error)
+	RestoreVertices(ctx context.Context, req *pb.PutVerticesRequest) (*pb.PutVerticesResponse, error)
 	PutEdges(ctx context.Context, req *pb.PutEdgesRequest) (*pb.PutEdgesResponse, error)
 }
 
@@ -114,7 +114,7 @@ func New(svc Service, cfg Config, reg prometheus.Registerer, logger *slog.Logger
 }
 
 // RestoreOnStartup loads the newest valid dump from the backup directory and
-// replays it through PutVertices / PutEdges. It is a no-op (zero, nil) when
+// replays it through RestoreVertices / PutEdges. It is a no-op (zero, nil) when
 // restore is disabled or the directory is empty/absent — a fresh start is
 // not an error. A directory that contains only corrupt files returns an
 // error so RestoreRequired callers can fail boot.
@@ -262,8 +262,8 @@ func (b *Backupper) apply(ctx context.Context, vertices []*pb.Vertex, edges []*p
 	var stats Stats
 	for i := 0; i < len(vertices); i += restoreChunkSize {
 		end := min(i+restoreChunkSize, len(vertices))
-		if _, err := b.svc.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: vertices[i:end]}); err != nil {
-			return stats, fmt.Errorf("backup: restore PutVertices: %w", err)
+		if _, err := b.svc.RestoreVertices(ctx, &pb.PutVerticesRequest{Vertices: vertices[i:end]}); err != nil {
+			return stats, fmt.Errorf("backup: restore vertices: %w", err)
 		}
 		stats.Vertices += end - i
 	}
