@@ -234,7 +234,11 @@ func TestSearchVertices_IncrementalLatestInputWins(t *testing.T) {
 
 	const debounce = 30 * time.Millisecond
 	incremental := l.NewIncrementalSearch(ctx, client.WithDebounce(debounce))
-	defer incremental.Close()
+	defer func() {
+		if err := incremental.Close(); err != nil {
+			t.Errorf("Close incremental search: %v", err)
+		}
+	}()
 
 	incremental.Search("alpha")
 	incremental.Search("beta")
