@@ -560,8 +560,9 @@ Vertex _vertexFromProto($graph.Vertex value) {
   return Vertex(
     key: value.key,
     value: decoded,
-    expiration:
-        value.hasExpiration() ? _timestampFromProto(value.expiration) : null,
+    expiration: value.hasExpiration()
+        ? _timestampFromProto(value.expiration)
+        : null,
   );
 }
 
@@ -579,8 +580,9 @@ Edge _edgeFromProto($graph.Edge value) => Edge(
   tail: value.tail,
   head: value.head,
   weight: _finiteFloatFromProto(value.weight, 'edge weight'),
-  expiration:
-      value.hasExpiration() ? _timestampFromProto(value.expiration) : null,
+  expiration: value.hasExpiration()
+      ? _timestampFromProto(value.expiration)
+      : null,
 );
 
 LanternException _internalSdkException(String message) =>

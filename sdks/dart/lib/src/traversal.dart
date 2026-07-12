@@ -203,10 +203,9 @@ extension LanternTraversal on LanternClient {
         _validateProbabilityAndEpsilon(restartProbability, epsilon);
         request.ppr = $graph.PprParams(
           topN: topN,
-          restartProb:
-              restartProbability == null
-                  ? null
-                  : _normalizeFloat32(restartProbability),
+          restartProb: restartProbability == null
+              ? null
+              : _normalizeFloat32(restartProbability),
           epsilon: epsilon == null ? null : _normalizeFloat32(epsilon),
         );
       case LocalCommunityOptions(
@@ -220,10 +219,9 @@ extension LanternTraversal on LanternClient {
         _validateProbabilityAndEpsilon(restartProbability, epsilon);
         request.community = $graph.LocalCommunityParams(
           maxSize: maxSize,
-          restartProb:
-              restartProbability == null
-                  ? null
-                  : _normalizeFloat32(restartProbability),
+          restartProb: restartProbability == null
+              ? null
+              : _normalizeFloat32(restartProbability),
           epsilon: epsilon == null ? null : _normalizeFloat32(epsilon),
           objective: _objectiveToProto(objective),
           reduction: _reductionToProto(reduction),
@@ -282,13 +280,13 @@ void _validateProbabilityAndEpsilon(double? probability, double? epsilon) {
   }
 }
 
-$graph.Objective _objectiveToProto(
-  TraversalObjective objective,
-) => switch (objective) {
-  TraversalObjective.serverDefault => $graph.Objective.OBJECTIVE_UNSPECIFIED,
-  TraversalObjective.minimize => $graph.Objective.OBJECTIVE_MINIMIZE,
-  TraversalObjective.maximize => $graph.Objective.OBJECTIVE_MAXIMIZE,
-};
+$graph.Objective _objectiveToProto(TraversalObjective objective) =>
+    switch (objective) {
+      TraversalObjective.serverDefault =>
+        $graph.Objective.OBJECTIVE_UNSPECIFIED,
+      TraversalObjective.minimize => $graph.Objective.OBJECTIVE_MINIMIZE,
+      TraversalObjective.maximize => $graph.Objective.OBJECTIVE_MAXIMIZE,
+    };
 
 $graph.Reduction _reductionToProto(TraversalReduction reduction) =>
     switch (reduction) {
@@ -299,11 +297,11 @@ $graph.Reduction _reductionToProto(TraversalReduction reduction) =>
         $graph.Reduction.REDUCTION_SHORTEST_PATH_TREE,
     };
 
-$graph.Weighting _weightingToProto(
-  TraversalWeighting weighting,
-) => switch (weighting) {
-  TraversalWeighting.serverDefault => $graph.Weighting.WEIGHTING_UNSPECIFIED,
-  TraversalWeighting.raw => $graph.Weighting.WEIGHTING_RAW,
-  TraversalWeighting.tfidf => $graph.Weighting.WEIGHTING_TFIDF,
-  TraversalWeighting.bm25 => $graph.Weighting.WEIGHTING_BM25,
-};
+$graph.Weighting _weightingToProto(TraversalWeighting weighting) =>
+    switch (weighting) {
+      TraversalWeighting.serverDefault =>
+        $graph.Weighting.WEIGHTING_UNSPECIFIED,
+      TraversalWeighting.raw => $graph.Weighting.WEIGHTING_RAW,
+      TraversalWeighting.tfidf => $graph.Weighting.WEIGHTING_TFIDF,
+      TraversalWeighting.bm25 => $graph.Weighting.WEIGHTING_BM25,
+    };

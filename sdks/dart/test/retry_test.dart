@@ -37,14 +37,15 @@ void main() {
 
   test('read retries unavailable and exhaustion remains typed', () async {
     var calls = 0;
-    final transport =
-        FakeTransportBuilder().unary<
-          graph.GetVerticesRequest,
-          graph.GetVerticesResponse
-        >(LanternService.getVertices, (request, context) {
-          calls++;
-          throw connect.ConnectException(connect.Code.unavailable, 'down');
-        }).build();
+    final transport = FakeTransportBuilder()
+        .unary<graph.GetVerticesRequest, graph.GetVerticesResponse>(
+          LanternService.getVertices,
+          (request, context) {
+            calls++;
+            throw connect.ConnectException(connect.Code.unavailable, 'down');
+          },
+        )
+        .build();
     final client = _client(
       transport,
       retryPolicy: const RetryPolicy(
@@ -71,14 +72,15 @@ void main() {
 
   test('Add retries only with IDs and reuses bytes across attempts', () async {
     var unsafeCalls = 0;
-    final unsafeTransport =
-        FakeTransportBuilder().unary<
-          graph.AddEdgesRequest,
-          graph.AddEdgesResponse
-        >(LanternService.addEdges, (request, context) {
-          unsafeCalls++;
-          throw connect.ConnectException(connect.Code.unavailable, 'lost');
-        }).build();
+    final unsafeTransport = FakeTransportBuilder()
+        .unary<graph.AddEdgesRequest, graph.AddEdgesResponse>(
+          LanternService.addEdges,
+          (request, context) {
+            unsafeCalls++;
+            throw connect.ConnectException(connect.Code.unavailable, 'lost');
+          },
+        )
+        .build();
     final unsafe = _client(unsafeTransport, retryPolicy: _fastRetry);
     await expectLater(
       unsafe.addEdge(EdgeInput(tail: 'a', head: 'b', weight: 1)),
@@ -88,23 +90,24 @@ void main() {
 
     var safeCalls = 0;
     final seen = <List<List<int>>>[];
-    final safeTransport =
-        FakeTransportBuilder().unary<
-          graph.AddEdgesRequest,
-          graph.AddEdgesResponse
-        >(LanternService.addEdges, (request, context) {
-          safeCalls++;
-          seen.add(
-            request.contribIds.map((value) => List<int>.from(value)).toList(),
-          );
-          if (safeCalls == 1) {
-            throw connect.ConnectException(
-              connect.Code.unavailable,
-              'response lost',
+    final safeTransport = FakeTransportBuilder()
+        .unary<graph.AddEdgesRequest, graph.AddEdgesResponse>(
+          LanternService.addEdges,
+          (request, context) {
+            safeCalls++;
+            seen.add(
+              request.contribIds.map((value) => List<int>.from(value)).toList(),
             );
-          }
-          return graph.AddEdgesResponse(written: 2, effectiveWeights: [1, 2]);
-        }).build();
+            if (safeCalls == 1) {
+              throw connect.ConnectException(
+                connect.Code.unavailable,
+                'response lost',
+              );
+            }
+            return graph.AddEdgesResponse(written: 2, effectiveWeights: [1, 2]);
+          },
+        )
+        .build();
     final safe = _client(
       safeTransport,
       retryPolicy: _fastRetry,
@@ -129,18 +132,19 @@ void main() {
   test('stable Put replays one request and one absolute expiration', () async {
     var calls = 0;
     final expirations = <DateTime>[];
-    final transport =
-        FakeTransportBuilder().unary<
-          graph.PutVerticesRequest,
-          graph.PutVerticesResponse
-        >(LanternService.putVertices, (request, context) {
-          calls++;
-          expirations.add(request.vertices.single.expiration.toDateTime());
-          if (calls == 1) {
-            throw connect.ConnectException(connect.Code.unavailable, 'lost');
-          }
-          return graph.PutVerticesResponse(written: 1);
-        }).build();
+    final transport = FakeTransportBuilder()
+        .unary<graph.PutVerticesRequest, graph.PutVerticesResponse>(
+          LanternService.putVertices,
+          (request, context) {
+            calls++;
+            expirations.add(request.vertices.single.expiration.toDateTime());
+            if (calls == 1) {
+              throw connect.ConnectException(connect.Code.unavailable, 'lost');
+            }
+            return graph.PutVerticesResponse(written: 1);
+          },
+        )
+        .build();
     var clockCalls = 0;
     final client = _client(
       transport,
@@ -169,29 +173,22 @@ void main() {
   test('PutIfAbsent and Delete preserve ambiguous result semantics', () async {
     var putCalls = 0;
     var deleteCalls = 0;
-    final transport =
-        FakeTransportBuilder()
-            .unary<graph.PutVerticesRequest, graph.PutVerticesResponse>(
-              LanternService.putVertices,
-              (request, context) {
-                putCalls++;
-                throw connect.ConnectException(
-                  connect.Code.unavailable,
-                  'lost',
-                );
-              },
-            )
-            .unary<graph.DeleteVerticesRequest, graph.DeleteVerticesResponse>(
-              LanternService.deleteVertices,
-              (request, context) {
-                deleteCalls++;
-                throw connect.ConnectException(
-                  connect.Code.unavailable,
-                  'lost',
-                );
-              },
-            )
-            .build();
+    final transport = FakeTransportBuilder()
+        .unary<graph.PutVerticesRequest, graph.PutVerticesResponse>(
+          LanternService.putVertices,
+          (request, context) {
+            putCalls++;
+            throw connect.ConnectException(connect.Code.unavailable, 'lost');
+          },
+        )
+        .unary<graph.DeleteVerticesRequest, graph.DeleteVerticesResponse>(
+          LanternService.deleteVertices,
+          (request, context) {
+            deleteCalls++;
+            throw connect.ConnectException(connect.Code.unavailable, 'lost');
+          },
+        )
+        .build();
     final client = _client(transport, retryPolicy: _fastRetry);
 
     await expectLater(
@@ -211,24 +208,23 @@ void main() {
   test('resource exhausted requires explicit opt-in', () async {
     Future<void> run({required bool optIn, required int expectedCalls}) async {
       var calls = 0;
-      final transport =
-          FakeTransportBuilder()
-              .unary<graph.GetVerticesRequest, graph.GetVerticesResponse>(
-                LanternService.getVertices,
-                (request, context) {
-                  calls++;
-                  if (calls == 1) {
-                    throw connect.ConnectException(
-                      connect.Code.resourceExhausted,
-                      'busy',
-                    );
-                  }
-                  return graph.GetVerticesResponse(
-                    vertices: [graph.Vertex(key: 'key', nil: true)],
-                  );
-                },
-              )
-              .build();
+      final transport = FakeTransportBuilder()
+          .unary<graph.GetVerticesRequest, graph.GetVerticesResponse>(
+            LanternService.getVertices,
+            (request, context) {
+              calls++;
+              if (calls == 1) {
+                throw connect.ConnectException(
+                  connect.Code.resourceExhausted,
+                  'busy',
+                );
+              }
+              return graph.GetVerticesResponse(
+                vertices: [graph.Vertex(key: 'key', nil: true)],
+              );
+            },
+          )
+          .build();
       final client = _client(
         transport,
         retryPolicy: RetryPolicy(
@@ -255,14 +251,15 @@ void main() {
 
   test('cancellation and overall deadline stop backoff immediately', () async {
     final firstAttempt = Completer<void>();
-    final transport =
-        FakeTransportBuilder().unary<
-          graph.GetVerticesRequest,
-          graph.GetVerticesResponse
-        >(LanternService.getVertices, (request, context) {
-          if (!firstAttempt.isCompleted) firstAttempt.complete();
-          throw connect.ConnectException(connect.Code.unavailable, 'down');
-        }).build();
+    final transport = FakeTransportBuilder()
+        .unary<graph.GetVerticesRequest, graph.GetVerticesResponse>(
+          LanternService.getVertices,
+          (request, context) {
+            if (!firstAttempt.isCompleted) firstAttempt.complete();
+            throw connect.ConnectException(connect.Code.unavailable, 'down');
+          },
+        )
+        .build();
     final cancellation = LanternCancellationToken();
     final client = _client(
       transport,
@@ -290,12 +287,12 @@ void main() {
   });
 
   test('retry registry covers every generated RPC and fails closed', () {
-    final source =
-        File('lib/src/gen/graph/v1/graph.connect.spec.dart').readAsStringSync();
-    final generated =
-        RegExp(
-          r"'/\$name/([A-Za-z]+)'",
-        ).allMatches(source).map((match) => match.group(1)!).toSet();
+    final source = File(
+      'lib/src/gen/graph/v1/graph.connect.spec.dart',
+    ).readAsStringSync();
+    final generated = RegExp(
+      r"'/\$name/([A-Za-z]+)'",
+    ).allMatches(source).map((match) => match.group(1)!).toSet();
 
     expect(RetryRegistry.classifications.keys.toSet(), containsAll(generated));
     expect(RetryRegistry.classify('FutureUnknownMethod'), RpcRetryClass.never);

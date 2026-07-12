@@ -27,10 +27,9 @@ final class RetryPolicy {
 
   _NormalizedRetryPolicy _normalized() => _NormalizedRetryPolicy(
     maxAttempts: maxAttempts < 1 ? 3 : maxAttempts,
-    baseDelay:
-        baseDelay <= Duration.zero
-            ? const Duration(milliseconds: 100)
-            : baseDelay,
+    baseDelay: baseDelay <= Duration.zero
+        ? const Duration(milliseconds: 100)
+        : baseDelay,
     maxDelay: maxDelay <= Duration.zero ? const Duration(seconds: 2) : maxDelay,
     retryResourceExhausted: retryResourceExhausted,
   );

@@ -40,8 +40,10 @@ DecayOptions halfLifeDecay({
       'halfLife, interval, and horizon must be positive',
     );
   }
-  final ratio =
-      pow(0.5, interval.inMicroseconds / halfLife.inMicroseconds).toDouble();
+  final ratio = pow(
+    0.5,
+    interval.inMicroseconds / halfLife.inMicroseconds,
+  ).toDouble();
   var steps = (horizon.inMicroseconds / interval.inMicroseconds).ceil();
   if (steps < 1) steps = 1;
   if (steps > maxDecaySteps) steps = maxDecaySteps;
@@ -68,12 +70,11 @@ List<EdgeInput> decayContributions({
   final output = <EdgeInput>[];
   for (var step = 1; step <= options.steps; step++) {
     final exponent = step - 1;
-    final contribution =
-        step < options.steps
-            ? options.initialWeight *
-                pow(options.ratio, exponent) *
-                (1 - options.ratio)
-            : options.initialWeight * pow(options.ratio, exponent);
+    final contribution = step < options.steps
+        ? options.initialWeight *
+              pow(options.ratio, exponent) *
+              (1 - options.ratio)
+        : options.initialWeight * pow(options.ratio, exponent);
     final weight = _normalizeFloat32(contribution.toDouble());
     if (weight == 0) continue;
     DateTime expiration;
