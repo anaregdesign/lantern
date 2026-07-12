@@ -39,22 +39,31 @@ export interface SearchResultRow {
 }
 
 /** How a multi-word content-search query's words combine. */
-export type SearchMatchMode = "any" | "all" | "min-should";
+export type SearchMatchMode = "server" | "any" | "all" | "min-should";
+
+/** Supported fuzzy edit-distance capability. */
+export type SearchFuzziness = 0 | 1 | 2;
 
 /** The relevance controls the search box exposes (#892). */
 export interface SearchQueryOptions {
-  /** Word combination: "any" (OR, default), "all" (AND), or "min-should". */
+  /** Word combination, or "server" to preserve the server default. */
   matchMode: SearchMatchMode;
+  /** Explicit threshold used only by "min-should". */
+  minShouldMatch: number;
   /** Require the query's words to occur adjacently, in order. */
   phrase: boolean;
-  /** Tolerate typos and match word prefixes. */
-  fuzzy: boolean;
+  /** Maximum fuzzy edit distance. */
+  fuzziness: SearchFuzziness;
+  /** Match dictionary terms that extend a query word. */
+  prefixTerms: boolean;
 }
 
 export const DEFAULT_SEARCH_QUERY_OPTIONS: SearchQueryOptions = {
-  matchMode: "any",
+  matchMode: "server",
+  minShouldMatch: 2,
   phrase: false,
-  fuzzy: false,
+  fuzziness: 0,
+  prefixTerms: false,
 };
 
 export interface SearchVerticesState {

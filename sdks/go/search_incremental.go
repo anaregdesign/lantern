@@ -45,8 +45,7 @@ type IncrementalSearchOption func(*incrementalSearchOptions)
 
 type incrementalSearchOptions struct {
 	debounce       time.Duration
-	limit          uint32
-	prefix         string
+	search         searchOptions
 	minQueryLength int
 }
 
@@ -62,14 +61,24 @@ func WithDebounce(d time.Duration) IncrementalSearchOption {
 // SearchVertices RPC the driver issues, exactly like WithSearchLimit on a
 // one-shot call. 0 (the default) lets the server apply its configured default.
 func WithIncrementalSearchLimit(n uint32) IncrementalSearchOption {
-	return func(o *incrementalSearchOptions) { o.limit = n }
+	return func(o *incrementalSearchOptions) { o.search.limit = n }
 }
 
 // WithIncrementalSearchPrefix scopes every issued search to vertices whose key
 // carries the given prefix, exactly like WithSearchPrefix on a one-shot call.
 // An empty prefix (the default) searches every live vertex.
 func WithIncrementalSearchPrefix(p string) IncrementalSearchOption {
-	return func(o *incrementalSearchOptions) { o.prefix = p }
+	return func(o *incrementalSearchOptions) { o.search.prefix = p }
+}
+
+// WithIncrementalSearchOptions applies the same relevance options accepted by
+// one-shot SearchVertices to every dispatched incremental search.
+func WithIncrementalSearchOptions(opts ...SearchOption) IncrementalSearchOption {
+	return func(o *incrementalSearchOptions) {
+		for _, apply := range opts {
+			apply(&o.search)
+		}
+	}
 }
 
 // WithMinQueryLength sets the shortest query, counted in runes, that triggers
@@ -91,8 +100,8 @@ func WithMinQueryLength(n int) IncrementalSearchOption {
 // (a consumer ranging over it should also select on its own done signal) and
 // further Search calls are dropped.
 type IncrementalSearch struct {
-	l    *Lantern
-	opts incrementalSearchOptions
+	searcher Searcher
+	opts     incrementalSearchOptions
 
 	updates chan SearchUpdate
 
@@ -121,6 +130,17 @@ type IncrementalSearch struct {
 // call so cancellation and Close can wait for all owned work. Cancel ctx or
 // call Close to stop it.
 func (l *Lantern) NewIncrementalSearch(ctx context.Context, opts ...IncrementalSearchOption) *IncrementalSearch {
+	return NewIncrementalSearch(ctx, l, opts...)
+}
+
+// Searcher is the narrow one-shot capability IncrementalSearch requires.
+// Both Lantern and Failover implement it.
+type Searcher interface {
+	SearchVertices(context.Context, string, ...SearchOption) ([]SearchHit, error)
+}
+
+// NewIncrementalSearch starts a search-as-you-type driver over any Searcher.
+func NewIncrementalSearch(ctx context.Context, searcher Searcher, opts ...IncrementalSearchOption) *IncrementalSearch {
 	o := incrementalSearchOptions{
 		debounce:       defaultIncrementalDebounce,
 		minQueryLength: defaultMinQueryLength,
@@ -136,18 +156,23 @@ func (l *Lantern) NewIncrementalSearch(ctx context.Context, opts ...IncrementalS
 	}
 	dctx, cancel := context.WithCancel(ctx)
 	s := &IncrementalSearch{
-		l:       l,
-		opts:    o,
-		updates: make(chan SearchUpdate, 1),
-		ctx:     dctx,
-		cancel:  cancel,
-		done:    make(chan struct{}),
+		searcher: searcher,
+		opts:     o,
+		updates:  make(chan SearchUpdate, 1),
+		ctx:      dctx,
+		cancel:   cancel,
+		done:     make(chan struct{}),
 	}
 	go func() {
 		<-dctx.Done()
 		s.shutdown()
 	}()
 	return s
+}
+
+// NewIncrementalSearch starts a failover-aware incremental search driver.
+func (f *Failover) NewIncrementalSearch(ctx context.Context, opts ...IncrementalSearchOption) *IncrementalSearch {
+	return NewIncrementalSearch(ctx, f, opts...)
 }
 
 // Search makes query the latest input immediately: it invalidates buffered
@@ -231,14 +256,8 @@ func (s *IncrementalSearch) dispatch(epoch uint64, query string) {
 // doSearch issues one SearchVertices call and delivers its result unless the
 // call was cancelled (superseded by a newer query) before it returned.
 func (s *IncrementalSearch) doSearch(ctx context.Context, epoch uint64, query string) {
-	opts := make([]SearchOption, 0, 2)
-	if s.opts.limit > 0 {
-		opts = append(opts, WithSearchLimit(s.opts.limit))
-	}
-	if s.opts.prefix != "" {
-		opts = append(opts, WithSearchPrefix(s.opts.prefix))
-	}
-	hits, err := s.l.SearchVertices(ctx, query, opts...)
+	configured := s.opts.search
+	hits, err := s.searcher.SearchVertices(ctx, query, func(o *searchOptions) { *o = configured })
 	if ctx.Err() != nil {
 		return // superseded or shut down: drop the stale reply
 	}

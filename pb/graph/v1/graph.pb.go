@@ -265,9 +265,8 @@ func (ScanOrder) EnumDescriptor() ([]byte, []int) {
 type MatchMode int32
 
 const (
-	// MATCH_MODE_UNSPECIFIED defers to the server default
-	// (LANTERN_SEARCH_DEFAULT_MODE, itself defaulting to ANY), so an unset field
-	// keeps the OR-union behavior.
+	// MATCH_MODE_UNSPECIFIED always defers to LANTERN_SEARCH_DEFAULT_MODE,
+	// including when other SearchOptions fields are present.
 	MatchMode_MATCH_MODE_UNSPECIFIED MatchMode = 0
 	// MATCH_MODE_ANY keeps every vertex sharing at least one query term (OR).
 	MatchMode_MATCH_MODE_ANY MatchMode = 1
@@ -2201,20 +2200,24 @@ func (x *ScanVertexKeysResponse) GetNextCursor() []byte {
 }
 
 // SearchOptions carries the optional relevance controls for SearchVertices
-// (#892): match mode, phrase adjacency, and prefix/fuzzy term expansion. Every
-// field is optional and the zero value reproduces the default OR-union search,
-// so leaving options unset is identical to the pre-#892 request.
+// (#892): match mode, phrase adjacency, and prefix/fuzzy term expansion. An
+// omitted message and an all-zero message both defer match membership to the
+// server default. The server rejects unknown enums, out-of-domain numeric
+// values, and combinations whose fields would otherwise be ignored (#1055).
 type SearchOptions struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// match_mode selects AND / OR / minimum-should-match membership (#890).
+	// match_mode selects AND / OR / minimum-should-match membership (#890), or
+	// defers to the server default when unspecified.
 	MatchMode MatchMode `protobuf:"varint,1,opt,name=match_mode,json=matchMode,proto3,enum=graph.v1.MatchMode" json:"match_mode,omitempty"`
 	// min_should_match is the minimum number of distinct query word terms a
-	// vertex must carry when match_mode is MATCH_MODE_MIN_SHOULD; clamped to
-	// [1, number of query word terms]. Ignored for other modes.
+	// vertex must carry. A non-zero value is valid only with an explicit
+	// MATCH_MODE_MIN_SHOULD. Zero with that mode uses the server's configured
+	// LANTERN_SEARCH_DEFAULT_MIN_SHOULD value.
 	MinShouldMatch uint32 `protobuf:"varint,2,opt,name=min_should_match,json=minShouldMatch,proto3" json:"min_should_match,omitempty"`
 	// phrase requires the query's word terms to occur adjacently, in order
-	// (#889) — the precision counterpart to the OR-union. It takes precedence
-	// over match_mode.
+	// (#889). Until phrase composition is implemented, phrase=true requires
+	// match_mode unspecified, min_should_match=0, fuzziness=0, and
+	// prefix_terms=false; conflicting combinations return INVALID_ARGUMENT.
 	Phrase bool `protobuf:"varint,3,opt,name=phrase,proto3" json:"phrase,omitempty"`
 	// fuzziness is the maximum edit distance (0, 1, or 2) at which a query word
 	// also matches dictionary terms, so a typo still finds the term (#891). 0

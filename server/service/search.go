@@ -49,6 +49,9 @@ func (s *LanternService) SearchVertices(ctx context.Context, in *pb.SearchVertic
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
 	}
+	if err := validateSearchOptions(in.GetOptions()); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
 	if !s.search.Enabled {
 		return nil, newSearchPreconditionError(pb.SearchErrorReason_SEARCH_DISABLED, errSearchDisabled)
 	}
@@ -59,9 +62,6 @@ func (s *LanternService) SearchVertices(ctx context.Context, in *pb.SearchVertic
 	if phrase && !s.search.PositionsEnabled {
 		return nil, newSearchPreconditionError(pb.SearchErrorReason_SEARCH_POSITIONS_DISABLED, errSearchPositionsDisabled)
 	}
-	if in.GetOptions().GetFuzziness() > searchMaxFuzziness {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("search fuzziness must be at most %d", searchMaxFuzziness))
-	}
 	ranked := s.cache.SearchVerticesMatch(in.GetQuery(), int(limit), in.GetPrefix(), opts, phrase)
 	hits := make([]*pb.SearchHit, 0, len(ranked))
 	for _, r := range ranked {
@@ -69,6 +69,45 @@ func (s *LanternService) SearchVertices(ctx context.Context, in *pb.SearchVertic
 	}
 	s.metrics.OnSearch(len(hits), time.Since(start))
 	return &pb.SearchVerticesResponse{Hits: hits}, nil
+}
+
+// validateSearchOptions is the authoritative request-boundary decision table
+// for SearchOptions. It rejects values that the backend would otherwise ignore
+// or reinterpret, so every accepted field has one observable meaning (#1055).
+func validateSearchOptions(o *pb.SearchOptions) error {
+	if o == nil {
+		return nil
+	}
+	switch o.GetMatchMode() {
+	case pb.MatchMode_MATCH_MODE_UNSPECIFIED,
+		pb.MatchMode_MATCH_MODE_ANY,
+		pb.MatchMode_MATCH_MODE_ALL,
+		pb.MatchMode_MATCH_MODE_MIN_SHOULD:
+	default:
+		return fmt.Errorf("search match_mode %d is not recognized", o.GetMatchMode())
+	}
+	if o.GetMinShouldMatch() != 0 && o.GetMatchMode() != pb.MatchMode_MATCH_MODE_MIN_SHOULD {
+		return errors.New("search min_should_match requires match_mode MATCH_MODE_MIN_SHOULD")
+	}
+	if o.GetFuzziness() > searchMaxFuzziness {
+		return fmt.Errorf("search fuzziness must be at most %d", searchMaxFuzziness)
+	}
+	if !o.GetPhrase() {
+		return nil
+	}
+	if o.GetMatchMode() != pb.MatchMode_MATCH_MODE_UNSPECIFIED {
+		return errors.New("search phrase cannot be combined with an explicit match_mode")
+	}
+	if o.GetMinShouldMatch() != 0 {
+		return errors.New("search phrase cannot be combined with min_should_match")
+	}
+	if o.GetFuzziness() != 0 {
+		return errors.New("search phrase cannot be combined with fuzziness")
+	}
+	if o.GetPrefixTerms() {
+		return errors.New("search phrase cannot be combined with prefix_terms")
+	}
+	return nil
 }
 
 func newSearchPreconditionError(reason pb.SearchErrorReason, cause error) error {
@@ -86,7 +125,8 @@ func newSearchPreconditionError(reason pb.SearchErrorReason, cause error) error 
 // server defaults apply; when it sends them, the request values are taken
 // literally — an unspecified match_mode still falls back to the default, but a
 // zero fuzziness or false prefix_terms means off, so a client can turn any
-// option off. phrase takes precedence over the match mode.
+// option off. validateSearchOptions has already rejected combinations the core
+// backend cannot compose.
 func (s *LanternService) resolveSearchOptions(o *pb.SearchOptions) (search.MatchOptions, bool) {
 	if o == nil {
 		return search.MatchOptions{Mode: s.search.DefaultMode, MinShouldMatch: int(s.search.DefaultMinShould)}, false

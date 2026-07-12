@@ -113,8 +113,51 @@ function toPbMatchMode(m: MatchMode | undefined): PbMatchMode {
       return PbMatchMode.ALL;
     case "min-should":
       return PbMatchMode.MIN_SHOULD;
+    case undefined:
+      return PbMatchMode.UNSPECIFIED;
     default:
       return PbMatchMode.ANY;
+  }
+}
+
+const MAX_UINT32 = 0xffff_ffff;
+
+function validateSearchInteger(name: string, value: number | undefined, max = MAX_UINT32): void {
+  if (value === undefined) return;
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value < 0 || value > max) {
+    throw new InvalidArgumentError(
+      `search: ${name} must be an integer in [0, ${max}]; got ${value}`,
+    );
+  }
+}
+
+function validateSearchOptions(opts: SearchOptions): void {
+  validateSearchInteger("limit", opts.limit);
+  validateSearchInteger("minShouldMatch", opts.minShouldMatch);
+  validateSearchInteger("fuzziness", opts.fuzziness, 2);
+  if (
+    opts.matchMode !== undefined &&
+    opts.matchMode !== "any" &&
+    opts.matchMode !== "all" &&
+    opts.matchMode !== "min-should"
+  ) {
+    throw new InvalidArgumentError(`search: unrecognized matchMode ${String(opts.matchMode)}`);
+  }
+  if ((opts.minShouldMatch ?? 0) !== 0 && opts.matchMode !== "min-should") {
+    throw new InvalidArgumentError('search: minShouldMatch requires matchMode "min-should"');
+  }
+  if (!opts.phrase) return;
+  if (opts.matchMode !== undefined) {
+    throw new InvalidArgumentError("search: phrase cannot be combined with an explicit matchMode");
+  }
+  if ((opts.minShouldMatch ?? 0) !== 0) {
+    throw new InvalidArgumentError("search: phrase cannot be combined with minShouldMatch");
+  }
+  if ((opts.fuzziness ?? 0) !== 0) {
+    throw new InvalidArgumentError("search: phrase cannot be combined with fuzziness");
+  }
+  if (opts.prefixTerms === true) {
+    throw new InvalidArgumentError("search: phrase cannot be combined with prefixTerms");
   }
 }
 
@@ -568,6 +611,7 @@ export class Lantern {
     signal?: AbortSignal,
   ): Promise<SearchHit[]> {
     return this.invoke(async () => {
+      validateSearchOptions(opts);
       const resp = await this.client.searchVertices(
         {
           query,

@@ -267,7 +267,7 @@ scans. Hits use the stable total order `(score DESC, raw key ASC)` and make
 natural seeds for a follow-up `bfs`, `pagerank`, or `community` walk:
 
 ```shell
-lantern-cli search "rolling update"              # OR-union of the query words
+lantern-cli search "rolling update"              # use the server's configured mode
 lantern-cli search "rolling update" --mode all   # require every word (AND)
 lantern-cli search "rolling update" --phrase     # adjacent, in order
 lantern-cli search serach --fuzziness 1          # typos still hit
@@ -282,6 +282,20 @@ positions rejects `phrase=true` with the typed reason
 `SEARCH_POSITIONS_DISABLED`; it never silently returns unordered AND matches.
 `GetServerStatus.search` exposes these capabilities, their defaults and limits,
 implementation versions, and a configuration fingerprint.
+
+Search option interpretation is identical on every surface:
+
+| Request | Membership behavior |
+| --- | --- |
+| options omitted, or `match_mode=UNSPECIFIED` | Always use `LANTERN_SEARCH_DEFAULT_MODE`, even when fuzziness or prefix terms are set |
+| explicit `ANY` / `ALL` / `MIN_SHOULD` | Override the server default |
+| `MIN_SHOULD` with `min_should_match=0` | Use `LANTERN_SEARCH_DEFAULT_MIN_SHOULD` |
+| non-zero `min_should_match` with any other mode | `INVALID_ARGUMENT` |
+| phrase plus an explicit mode, fuzziness, or prefix terms | `INVALID_ARGUMENT` until those compositions are implemented |
+
+Unknown enum values, fuzziness outside `0..2`, and option fields that would be
+ignored are rejected rather than clamped or silently reinterpreted. Go, Node,
+and Dart validate the same combinations locally before issuing an RPC.
 
 ---
 

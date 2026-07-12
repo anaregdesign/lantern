@@ -55,23 +55,71 @@ func TestSearchVertices_PhraseWithoutPositionsFailsClosed(t *testing.T) {
 	}
 }
 
-func TestSearchVertices_RejectsFuzzinessAboveCapability(t *testing.T) {
-	fb := newFakeBackend()
-	svc := NewLanternService(fb).WithSearchLimits(SearchLimits{
-		Enabled:          true,
-		PositionsEnabled: true,
-		DefaultLimit:     100,
-		MaxLimit:         1000,
-	})
-	_, err := svc.SearchVertices(context.Background(), &pb.SearchVerticesRequest{
-		Query:   "serach",
-		Options: &pb.SearchOptions{Fuzziness: 3},
-	})
-	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
-		t.Fatalf("code = %v, want InvalidArgument", got)
+func TestSearchVertices_RejectsInvalidOptionsBeforeBackend(t *testing.T) {
+	tests := []struct {
+		name string
+		opts *pb.SearchOptions
+	}{
+		{"unknown match mode", &pb.SearchOptions{MatchMode: pb.MatchMode(99)}},
+		{"minimum with unspecified mode", &pb.SearchOptions{MinShouldMatch: 1}},
+		{"minimum with any", &pb.SearchOptions{MatchMode: pb.MatchMode_MATCH_MODE_ANY, MinShouldMatch: 1}},
+		{"fuzziness above capability", &pb.SearchOptions{Fuzziness: 3}},
+		{"phrase with explicit mode", &pb.SearchOptions{Phrase: true, MatchMode: pb.MatchMode_MATCH_MODE_ALL}},
+		{"phrase with fuzziness", &pb.SearchOptions{Phrase: true, Fuzziness: 1}},
+		{"phrase with prefix terms", &pb.SearchOptions{Phrase: true, PrefixTerms: true}},
 	}
-	if fb.searchCalls != 0 {
-		t.Errorf("backend SearchVertices called %d times, want 0", fb.searchCalls)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fb := newFakeBackend()
+			// Keep search disabled to prove malformed requests are rejected at
+			// the request boundary before feature gating or backend access.
+			svc := NewLanternService(fb)
+			_, err := svc.SearchVertices(context.Background(), &pb.SearchVerticesRequest{
+				Query:   "alpha beta",
+				Options: tc.opts,
+			})
+			if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+				t.Fatalf("code = %v, want InvalidArgument (err=%v)", got, err)
+			}
+			if fb.searchCalls != 0 {
+				t.Errorf("backend SearchVertices called %d times, want 0", fb.searchCalls)
+			}
+		})
+	}
+}
+
+func TestSearchVertices_AcceptsOptionsDecisionTable(t *testing.T) {
+	tests := []struct {
+		name string
+		opts *pb.SearchOptions
+	}{
+		{"omitted", nil},
+		{"all zero", &pb.SearchOptions{}},
+		{"explicit any", &pb.SearchOptions{MatchMode: pb.MatchMode_MATCH_MODE_ANY}},
+		{"explicit all", &pb.SearchOptions{MatchMode: pb.MatchMode_MATCH_MODE_ALL}},
+		{"minimum server threshold", &pb.SearchOptions{MatchMode: pb.MatchMode_MATCH_MODE_MIN_SHOULD}},
+		{"minimum explicit threshold", &pb.SearchOptions{MatchMode: pb.MatchMode_MATCH_MODE_MIN_SHOULD, MinShouldMatch: 2}},
+		{"fuzzy with server mode", &pb.SearchOptions{Fuzziness: 1}},
+		{"prefix terms with server mode", &pb.SearchOptions{PrefixTerms: true}},
+		{"phrase alone", &pb.SearchOptions{Phrase: true}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fb := newFakeBackend()
+			svc := NewLanternService(fb).WithSearchLimits(SearchLimits{
+				Enabled:          true,
+				PositionsEnabled: true,
+				DefaultLimit:     100,
+				MaxLimit:         1000,
+			})
+			_, err := svc.SearchVertices(context.Background(), &pb.SearchVerticesRequest{Query: "alpha beta", Options: tc.opts})
+			if err != nil {
+				t.Fatalf("SearchVertices: %v", err)
+			}
+			if fb.searchCalls != 1 {
+				t.Errorf("backend SearchVertices called %d times, want 1", fb.searchCalls)
+			}
+		})
 	}
 }
 

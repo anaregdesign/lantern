@@ -37,10 +37,15 @@ export async function searchVertices(
       {
         limit: request.limit ?? 0,
         prefix: request.prefix ?? "",
-        matchMode: request.matchMode,
+        matchMode:
+          request.matchMode === "server" ? undefined : request.matchMode,
+        minShouldMatch:
+          request.matchMode === "min-should"
+            ? request.minShouldMatch
+            : undefined,
         phrase: request.phrase,
-        // The admin exposes fuzzy as one toggle: one edit of slack + prefix terms.
-        ...(request.fuzzy ? { fuzziness: 1, prefixTerms: true } : {}),
+        fuzziness: request.fuzziness,
+        prefixTerms: request.prefixTerms,
       },
       init?.signal,
     );

@@ -38,7 +38,10 @@ import {
   formatScore,
   selectCaption,
 } from "~/lib/client/usecase/search-vertices/selectors";
-import type { SearchMatchMode } from "~/lib/client/usecase/search-vertices/state";
+import type {
+  SearchFuzziness,
+  SearchMatchMode,
+} from "~/lib/client/usecase/search-vertices/state";
 import type { Vertex } from "~/lib/client/infrastructure/api/types";
 import { getServerStatus } from "~/lib/client/infrastructure/api/get-server-status";
 import { useLanternClient } from "~/lib/client/infrastructure/api/use-lantern-client";
@@ -58,9 +61,10 @@ type FindMode = "prefix" | "search";
 
 /** Human labels for the content-search match modes (#892). */
 const MATCH_MODE_LABELS: Record<SearchMatchMode, string> = {
+  server: "Server default",
   any: "Any word (OR)",
   all: "All words (AND)",
-  "min-should": "Most words",
+  "min-should": "At least N words",
 };
 
 /** A vertex row normalised across both find modes. */
@@ -82,9 +86,12 @@ export function BrowseVerticesPage() {
   const [mode, setMode] = useState<FindMode>("prefix");
   const [prefix, setPrefix] = useState("");
   const [query, setQuery] = useState("");
-  const [matchMode, setMatchMode] = useState<SearchMatchMode>("any");
+  const [searchPrefix, setSearchPrefix] = useState("");
+  const [matchMode, setMatchMode] = useState<SearchMatchMode>("server");
+  const [minShouldMatch, setMinShouldMatch] = useState(2);
   const [phrase, setPhrase] = useState(false);
-  const [fuzzy, setFuzzy] = useState(false);
+  const [fuzziness, setFuzziness] = useState<SearchFuzziness>(0);
+  const [prefixTerms, setPrefixTerms] = useState(false);
   // null = loading, undefined = capability lookup failed.
   const [positionsEnabled, setPositionsEnabled] = useState<
     boolean | null | undefined
@@ -93,7 +100,14 @@ export function BrowseVerticesPage() {
   const browse = useBrowseVertices(prefix, {
     pageSize: DEFAULT_VERTEX_PAGE_SIZE,
   });
-  const search = useSearchVertices(client, query, { matchMode, phrase, fuzzy });
+  const search = useSearchVertices(client, query, {
+    prefix: searchPrefix,
+    matchMode,
+    minShouldMatch,
+    phrase,
+    fuzziness,
+    prefixTerms,
+  });
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -113,6 +127,8 @@ export function BrowseVerticesPage() {
 
   const searching = mode === "search";
   const searchStatus = search.state.status;
+  const phraseCompatible =
+    matchMode === "server" && fuzziness === 0 && !prefixTerms;
 
   // Normalise both find modes into a single row list so the table markup
   // (and the Edit + Illuminate handoffs) stays a single code path.
@@ -242,46 +258,94 @@ export function BrowseVerticesPage() {
               className={styles.searchOptionsMode}
               selectedOptions={[matchMode]}
               value={MATCH_MODE_LABELS[matchMode]}
+              disabled={phrase}
               onOptionSelect={(_, data) =>
-                setMatchMode((data.optionValue as SearchMatchMode) ?? "any")
+                setMatchMode((data.optionValue as SearchMatchMode) ?? "server")
               }
               data-testid="search-mode"
             >
+              <Option value="server" text="Server default">
+                Server default
+              </Option>
               <Option value="any" text="Any word (OR)">
                 Any word (OR)
               </Option>
               <Option value="all" text="All words (AND)">
                 All words (AND)
               </Option>
-              <Option value="min-should" text="Most words">
-                Most words
+              <Option value="min-should" text="At least N words">
+                At least N words
               </Option>
             </Dropdown>
           </Field>
+          {matchMode === "min-should" ? (
+            <Field label="Minimum words">
+              <Input
+                type="number"
+                min={1}
+                step={1}
+                value={String(minShouldMatch)}
+                disabled={phrase}
+                onChange={(_, data) => {
+                  const value = Number(data.value);
+                  if (Number.isInteger(value) && value > 0) {
+                    setMinShouldMatch(value);
+                  }
+                }}
+                data-testid="search-min-should"
+              />
+            </Field>
+          ) : null}
+          <Field label="Key namespace prefix">
+            <Input
+              value={searchPrefix}
+              onChange={(_, data) => setSearchPrefix(data.value)}
+              placeholder="e.g. user:"
+              data-testid="search-prefix"
+            />
+          </Field>
+          <Field label="Fuzziness">
+            <Dropdown
+              selectedOptions={[String(fuzziness)]}
+              value={String(fuzziness)}
+              disabled={phrase}
+              onOptionSelect={(_, data) =>
+                setFuzziness(Number(data.optionValue ?? 0) as SearchFuzziness)
+              }
+              data-testid="search-fuzzy"
+            >
+              <Option value="0">0 (exact)</Option>
+              <Option value="1">1 edit</Option>
+              <Option value="2">2 edits</Option>
+            </Dropdown>
+          </Field>
+          <Switch
+            label="Prefix terms"
+            checked={prefixTerms}
+            disabled={phrase}
+            onChange={(_, data) => setPrefixTerms(data.checked)}
+            data-testid="search-prefix-terms"
+          />
           <div>
             <Switch
               label="Phrase"
               checked={phrase}
-              disabled={positionsEnabled !== true}
+              disabled={positionsEnabled !== true || !phraseCompatible}
               onChange={(_, data) => setPhrase(data.checked)}
               data-testid="search-phrase"
             />
-            {positionsEnabled !== true ? (
+            {positionsEnabled !== true || !phraseCompatible ? (
               <small data-testid="search-phrase-unavailable">
-                {positionsEnabled === false
-                  ? "Unavailable: this server does not store positional postings."
-                  : positionsEnabled === undefined
-                    ? "Unavailable: server phrase capabilities could not be loaded."
-                    : "Checking server phrase capabilities…"}
+                {!phraseCompatible
+                  ? "Choose Server default, fuzziness 0, and disable prefix terms to use phrase search."
+                  : positionsEnabled === false
+                    ? "Unavailable: this server does not store positional postings."
+                    : positionsEnabled === undefined
+                      ? "Unavailable: server phrase capabilities could not be loaded."
+                      : "Checking server phrase capabilities…"}
               </small>
             ) : null}
           </div>
-          <Switch
-            label="Fuzzy"
-            checked={fuzzy}
-            onChange={(_, data) => setFuzzy(data.checked)}
-            data-testid="search-fuzzy"
-          />
         </section>
       ) : null}
 
@@ -457,3 +521,6 @@ export function BrowseVerticesPage() {
     </div>
   );
 }
+<Option value="server" text="Server default">
+  Server default
+</Option>;

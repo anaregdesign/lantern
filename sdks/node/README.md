@@ -290,6 +290,14 @@ positional postings is distinct:
 lets clients discover positions, defaults, limits, implementation versions,
 and the HA configuration fingerprint before issuing a query.
 
+An omitted `matchMode` always sends `MATCH_MODE_UNSPECIFIED`, even when another
+relevance option is present, so the server default remains authoritative.
+`matchMode: "min-should"` accepts `minShouldMatch: 0` as the server-threshold
+sentinel. Invalid integers/ranges, a non-zero threshold under another mode,
+and phrase combined with an explicit mode/fuzziness/prefix terms reject locally
+with `InvalidArgumentError` before transport. `incrementalSearch` accepts and
+forwards the same complete `SearchOptions` set as one-shot search.
+
 ## Backup & restore
 
 `backup(opts?)` streams a whole-graph, point-in-time dump as an **async

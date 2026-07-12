@@ -65,19 +65,95 @@ func wireSearchErrorReason(t *testing.T, err error) pb.SearchErrorReason {
 // production composition root makes.
 func newSearchRawClient(t *testing.T, enabled bool) graphv1connect.LanternServiceClient {
 	t.Helper()
-	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
-	cache.EnablePrefixIndex(func(k string) string { return k })
-	if enabled {
-		cache.EnableSearchIndex(searchVertexDocument, strings.Compare)
-	}
-	svc := service.NewLanternService(cache).WithSearchLimits(service.SearchLimits{
+	return newSearchRawClientWithLimits(t, service.SearchLimits{
 		Enabled:          enabled,
 		PositionsEnabled: enabled,
 		DefaultLimit:     100,
 		MaxLimit:         1000,
 	})
+}
+
+func newSearchRawClientWithLimits(t *testing.T, limits service.SearchLimits) graphv1connect.LanternServiceClient {
+	t.Helper()
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+	cache.EnablePrefixIndex(func(k string) string { return k })
+	if limits.Enabled {
+		cache.EnableSearchIndex(searchVertexDocument, strings.Compare)
+	}
+	svc := service.NewLanternService(cache).WithSearchLimits(limits)
 	srv := newConnectTestServer(t, svc, nil)
 	return graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
+}
+
+// TestSearchVertices_OptionsContract proves the #1055 decision table over the
+// real Connect/h2c path. In particular, adding fuzziness must not turn an
+// omitted match mode into ANY when this server is configured for ALL.
+func TestSearchVertices_OptionsContract(t *testing.T) {
+	c := newSearchRawClientWithLimits(t, service.SearchLimits{
+		Enabled:          true,
+		PositionsEnabled: true,
+		DefaultLimit:     100,
+		MaxLimit:         1000,
+		DefaultMode:      search.MatchAll,
+		DefaultMinShould: 2,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	exp := timestamppb.New(time.Now().Add(time.Hour))
+	if _, err := c.PutVertices(ctx, connect.NewRequest(&pb.PutVerticesRequest{Vertices: []*pb.Vertex{
+		{Key: "doc.both", Value: &pb.Vertex_String_{String_: "alpha beta"}, Expiration: exp},
+		{Key: "doc.alpha", Value: &pb.Vertex_String_{String_: "alpha"}, Expiration: exp},
+		{Key: "doc.beta", Value: &pb.Vertex_String_{String_: "beta"}, Expiration: exp},
+	}})); err != nil {
+		t.Fatalf("PutVertices: %v", err)
+	}
+
+	keys := func(query string, options *pb.SearchOptions) []string {
+		t.Helper()
+		resp, err := c.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{Query: query, Options: options}))
+		if err != nil {
+			t.Fatalf("SearchVertices(%q, %+v): %v", query, options, err)
+		}
+		got := make([]string, len(resp.Msg.GetHits()))
+		for i, hit := range resp.Msg.GetHits() {
+			got[i] = hit.GetKey()
+		}
+		sort.Strings(got)
+		return got
+	}
+	assertKeys := func(name string, got, want []string) {
+		t.Helper()
+		if !slices.Equal(got, want) {
+			t.Errorf("%s keys = %v, want %v", name, got, want)
+		}
+	}
+
+	assertKeys("omitted uses ALL", keys("alpha beta", nil), []string{"doc.both"})
+	assertKeys("fuzziness preserves omitted ALL", keys("alpga beta", &pb.SearchOptions{Fuzziness: 1}), []string{"doc.both"})
+	assertKeys("explicit ANY", keys("alpha beta", &pb.SearchOptions{MatchMode: pb.MatchMode_MATCH_MODE_ANY}), []string{"doc.alpha", "doc.beta", "doc.both"})
+	assertKeys("MIN zero uses server threshold", keys("alpha beta", &pb.SearchOptions{MatchMode: pb.MatchMode_MATCH_MODE_MIN_SHOULD}), []string{"doc.both"})
+	assertKeys("MIN explicit one", keys("alpha beta", &pb.SearchOptions{MatchMode: pb.MatchMode_MATCH_MODE_MIN_SHOULD, MinShouldMatch: 1}), []string{"doc.alpha", "doc.beta", "doc.both"})
+
+	invalid := []struct {
+		name string
+		opts *pb.SearchOptions
+	}{
+		{"unknown mode", &pb.SearchOptions{MatchMode: pb.MatchMode(99)}},
+		{"minimum without explicit MIN", &pb.SearchOptions{MinShouldMatch: 1}},
+		{"minimum with ANY", &pb.SearchOptions{MatchMode: pb.MatchMode_MATCH_MODE_ANY, MinShouldMatch: 1}},
+		{"fuzziness out of range", &pb.SearchOptions{Fuzziness: 3}},
+		{"phrase with explicit mode", &pb.SearchOptions{Phrase: true, MatchMode: pb.MatchMode_MATCH_MODE_ALL}},
+		{"phrase with fuzziness", &pb.SearchOptions{Phrase: true, Fuzziness: 1}},
+		{"phrase with prefix terms", &pb.SearchOptions{Phrase: true, PrefixTerms: true}},
+	}
+	for _, tc := range invalid {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := c.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{Query: "alpha beta", Options: tc.opts}))
+			if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+				t.Fatalf("code = %v, want InvalidArgument (err=%v)", got, err)
+			}
+		})
+	}
 }
 
 // newSearchSDKClient mirrors newSearchRawClient but returns the high-level

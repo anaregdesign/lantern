@@ -142,8 +142,8 @@ export interface EdgeScanOptions extends ScanOptions {
 
 /**
  * How a multi-word query's terms combine when choosing which vertices match
- * (see {@link SearchOptions.matchMode}): "any" (OR-union, the default), "all"
- * (AND), or "min-should" (at least {@link SearchOptions.minShouldMatch} terms).
+ * (see {@link SearchOptions.matchMode}): omitted defers to the server, "any"
+ * is OR, "all" is AND, and "min-should" requires a threshold.
  */
 export type MatchMode = "any" | "all" | "min-should";
 
@@ -152,7 +152,7 @@ export interface SearchOptions {
   limit?: number;
   /** Restrict hits to vertices whose key carries this prefix (empty/omitted = no namespace scope). */
   prefix?: string;
-  /** How the query's words combine: "any" (OR, default), "all" (AND), or "min-should". */
+  /** How query words combine; omitted always defers to the server default. */
   matchMode?: MatchMode;
   /** With matchMode "min-should", the minimum distinct query words a hit must carry (0 = server default). */
   minShouldMatch?: number;

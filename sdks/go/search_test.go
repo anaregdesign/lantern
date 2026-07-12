@@ -37,6 +37,37 @@ func TestSearchOptions_Apply(t *testing.T) {
 	}
 }
 
+func TestValidateSearchOptions(t *testing.T) {
+	valid := [][]SearchOption{
+		nil,
+		{WithFuzziness(1)},
+		{WithMatchMode(MatchAny)},
+		{WithMatchMode(MatchMinShould)},
+		{WithMatchMode(MatchMinShould), WithMinShouldMatch(2)},
+		{WithPhrase()},
+	}
+	for i, opts := range valid {
+		if err := ValidateSearchOptions(opts...); err != nil {
+			t.Errorf("valid case %d: %v", i, err)
+		}
+	}
+
+	invalid := [][]SearchOption{
+		{WithMatchMode(MatchMode(99))},
+		{WithMinShouldMatch(1)},
+		{WithMatchMode(MatchAny), WithMinShouldMatch(1)},
+		{WithFuzziness(3)},
+		{WithPhrase(), WithMatchMode(MatchAll)},
+		{WithPhrase(), WithFuzziness(1)},
+		{WithPhrase(), WithPrefixTerms()},
+	}
+	for i, opts := range invalid {
+		if err := ValidateSearchOptions(opts...); !errors.Is(err, ErrInvalidArgument) {
+			t.Errorf("invalid case %d: err = %v, want ErrInvalidArgument", i, err)
+		}
+	}
+}
+
 // captureSearch is a fake LanternServiceClient that records every
 // SearchVerticesRequest it receives and replays a canned response (or error).
 // It embeds the interface (left nil) so it satisfies the full surface while
@@ -106,6 +137,17 @@ func TestSearchVertices(t *testing.T) {
 		}
 		if got.GetPrefix() != "" {
 			t.Errorf("default prefix = %q, want empty", got.GetPrefix())
+		}
+	})
+
+	t.Run("invalid options fail locally without transport", func(t *testing.T) {
+		l, capt := newClient(t)
+		_, err := l.SearchVertices(context.Background(), "alpha beta", WithPhrase(), WithFuzziness(1))
+		if !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("error = %v, want ErrInvalidArgument", err)
+		}
+		if len(capt.reqs) != 0 {
+			t.Fatalf("transport received %d requests, want 0", len(capt.reqs))
 		}
 	})
 

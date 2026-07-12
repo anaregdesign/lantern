@@ -22,14 +22,16 @@ var (
 // parseSearchMode maps the --mode flag onto a client.MatchMode.
 func parseSearchMode(s string) (client.MatchMode, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "", "any":
+	case "", "server", "default", "unset":
+		return client.MatchServerDefault, nil
+	case "any":
 		return client.MatchAny, nil
 	case "all":
 		return client.MatchAll, nil
 	case "min-should", "minshould", "min_should":
 		return client.MatchMinShould, nil
 	default:
-		return 0, fmt.Errorf("unknown --mode %q (want any|all|min-should)", s)
+		return 0, fmt.Errorf("unknown --mode %q (want server|any|all|min-should)", s)
 	}
 }
 
@@ -44,8 +46,9 @@ per line as "<key>\t<score>", most relevant first; a query that matches nothing
 prints nothing and exits 0. Requires the server's search index
 (LANTERN_SEARCH_ENABLED, on by default).
 
-The default is an OR-union over the query's words. Tune relevance with:
+By default the server chooses how query words combine. Override it with:
 
+	--mode server         defer to LANTERN_SEARCH_DEFAULT_MODE (default)
   --mode all            require every query word (AND)
   --mode min-should --min-should N   require at least N distinct query words
   --phrase              require the words to occur adjacently, in order
@@ -69,16 +72,13 @@ EXAMPLES
 		if err != nil {
 			return err
 		}
-		cli, err := dial()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = cli.Close() }()
 
 		opts := []client.SearchOption{
 			client.WithSearchLimit(searchLimit),
 			client.WithSearchPrefix(searchPrefix),
-			client.WithMatchMode(mode),
+		}
+		if mode != client.MatchServerDefault {
+			opts = append(opts, client.WithMatchMode(mode))
 		}
 		if searchMinShould > 0 {
 			opts = append(opts, client.WithMinShouldMatch(searchMinShould))
@@ -92,6 +92,15 @@ EXAMPLES
 		if searchPhrase {
 			opts = append(opts, client.WithPhrase())
 		}
+		if err := client.ValidateSearchOptions(opts...); err != nil {
+			return err
+		}
+
+		cli, err := dial()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = cli.Close() }()
 
 		hits, err := cli.SearchVertices(cmd.Context(), args[0], opts...)
 		if err != nil {
@@ -120,7 +129,7 @@ func init() {
 	f := searchCmd.Flags()
 	f.Uint32Var(&searchLimit, "limit", 0, "maximum hits to return (0 = server default)")
 	f.StringVar(&searchPrefix, "prefix", "", "restrict hits to vertices whose key carries this prefix")
-	f.StringVar(&searchMode, "mode", "any", "term combination: any|all|min-should")
+	f.StringVar(&searchMode, "mode", "server", "term combination: server|any|all|min-should")
 	f.Uint32Var(&searchMinShould, "min-should", 0, "minimum distinct query words a hit must carry (with --mode min-should)")
 	f.Uint32Var(&searchFuzziness, "fuzziness", 0, "maximum edit distance for fuzzy term matching (0-2)")
 	f.BoolVar(&searchPrefixTerms, "prefix-terms", false, "also match dictionary terms that extend a query word")

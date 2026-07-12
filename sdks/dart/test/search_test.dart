@@ -9,7 +9,7 @@ import 'package:test/test.dart';
 
 void main() {
   test(
-    'one-shot search preserves every wire option and ranked result',
+    'one-shot search preserves every composable wire option and ranked result',
     () async {
       late graph.SearchVerticesRequest captured;
       final transport = FakeTransportBuilder()
@@ -32,7 +32,6 @@ void main() {
           prefix: 'p:',
           matchMode: SearchMatchMode.minShouldMatch,
           minShouldMatch: 1,
-          phrase: true,
           fuzziness: 2,
           prefixTerms: true,
         ),
@@ -47,11 +46,63 @@ void main() {
       expect(captured.hasOptions(), isTrue);
       expect(captured.options.matchMode, graph.MatchMode.MATCH_MODE_MIN_SHOULD);
       expect(captured.options.minShouldMatch, 1);
-      expect(captured.options.phrase, isTrue);
+      expect(captured.options.phrase, isFalse);
       expect(captured.options.fuzziness, 2);
       expect(captured.options.prefixTerms, isTrue);
     },
   );
+
+  test('phrase alone is forwarded with server-default membership', () async {
+    late graph.SearchVerticesRequest captured;
+    final transport = FakeTransportBuilder()
+        .unary<graph.SearchVerticesRequest, graph.SearchVerticesResponse>(
+          LanternService.searchVertices,
+          (request, context) {
+            captured = request.clone();
+            return graph.SearchVerticesResponse();
+          },
+        )
+        .build();
+    await _client(transport).searchVertices(
+      'alpha beta',
+      searchOptions: const SearchOptions(phrase: true),
+    );
+    expect(captured.options.matchMode, graph.MatchMode.MATCH_MODE_UNSPECIFIED);
+    expect(captured.options.phrase, isTrue);
+  });
+
+  test('minimum mode accepts the server threshold sentinel', () async {
+    var calls = 0;
+    final transport = FakeTransportBuilder()
+        .unary<graph.SearchVerticesRequest, graph.SearchVerticesResponse>(
+          LanternService.searchVertices,
+          (request, context) {
+            calls++;
+            expect(
+              request.options.matchMode,
+              graph.MatchMode.MATCH_MODE_MIN_SHOULD,
+            );
+            expect(request.options.minShouldMatch, 0);
+            return graph.SearchVerticesResponse();
+          },
+        )
+        .build();
+    final client = _client(transport);
+    await client.searchVertices(
+      'alpha beta',
+      searchOptions: const SearchOptions(
+        matchMode: SearchMatchMode.minShouldMatch,
+      ),
+    );
+    await client.searchVertices(
+      'alpha beta',
+      searchOptions: const SearchOptions(
+        matchMode: SearchMatchMode.minShouldMatch,
+        minShouldMatch: 0,
+      ),
+    );
+    expect(calls, 2);
+  });
 
   test('omitted relevance controls omit SearchOptions', () async {
     late graph.SearchVerticesRequest captured;
@@ -144,10 +195,10 @@ void main() {
     for (final options in [
       const SearchOptions(fuzziness: 3),
       const SearchOptions(minShouldMatch: 1),
-      const SearchOptions(
-        matchMode: SearchMatchMode.minShouldMatch,
-        minShouldMatch: 0,
-      ),
+      const SearchOptions(matchMode: SearchMatchMode.any, minShouldMatch: 1),
+      const SearchOptions(phrase: true, matchMode: SearchMatchMode.all),
+      const SearchOptions(phrase: true, fuzziness: 1),
+      const SearchOptions(phrase: true, prefixTerms: true),
       const SearchOptions(limit: -1),
     ]) {
       await expectLater(

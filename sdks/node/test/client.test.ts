@@ -47,6 +47,7 @@ import {
   VertexSchema,
   EdgeSchema,
   ScanOrder,
+  MatchMode,
   SearchErrorDetailSchema,
 } from "../src/gen/graph/v1/graph_pb.js";
 
@@ -65,7 +66,16 @@ interface StubState {
     epsilon: number;
   };
   /** Last SearchVerticesRequest the stub observed, for request-building assertions (#639). */
-  lastSearch?: { query: string; limit: number; prefix: string };
+  lastSearch?: {
+    query: string;
+    limit: number;
+    prefix: string;
+    matchMode?: number;
+    minShouldMatch?: number;
+    phrase?: boolean;
+    fuzziness?: number;
+    prefixTerms?: boolean;
+  };
   /** Ranked hits the searchVertices stub returns (descending relevance). */
   searchHits?: { key: string; score: number }[];
   /** When true, searchVertices rejects with FAILED_PRECONDITION (index disabled). */
@@ -198,7 +208,20 @@ function newStubRoutes(state: StubState) {
       // SearchVerticesRequest (#639) and exercises the FAILED_PRECONDITION
       // (index-disabled) branch. Returns the configured ranked hits.
       async searchVertices(req) {
-        state.lastSearch = { query: req.query, limit: req.limit, prefix: req.prefix };
+        state.lastSearch = {
+          query: req.query,
+          limit: req.limit,
+          prefix: req.prefix,
+          ...(req.options
+            ? {
+                matchMode: req.options.matchMode,
+                minShouldMatch: req.options.minShouldMatch,
+                phrase: req.options.phrase,
+                fuzziness: req.options.fuzziness,
+                prefixTerms: req.options.prefixTerms,
+              }
+            : {}),
+        };
         if (state.searchPositionsDisabled) {
           throw new ConnectError(
             "phrase search requires positional postings",
@@ -1302,6 +1325,59 @@ describe("searchVertices request building (#639)", () => {
     try {
       await c.searchVertices("q");
       expect(state.lastSearch).toEqual({ query: "q", limit: 0, prefix: "" });
+    } finally {
+      c.close();
+    }
+  });
+
+  test("other relevance options preserve the server-default match mode", async () => {
+    const c = newClient();
+    try {
+      await c.searchVertices("alpha beta", { fuzziness: 1 });
+      expect(state.lastSearch?.matchMode).toBe(MatchMode.UNSPECIFIED);
+      expect(state.lastSearch?.fuzziness).toBe(1);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("forwards the complete valid relevance option set", async () => {
+    const c = newClient();
+    try {
+      await c.searchVertices("alpha beta", {
+        matchMode: "min-should",
+        minShouldMatch: 2,
+        fuzziness: 1,
+        prefixTerms: true,
+      });
+      expect(state.lastSearch).toMatchObject({
+        matchMode: MatchMode.MIN_SHOULD,
+        minShouldMatch: 2,
+        fuzziness: 1,
+        prefixTerms: true,
+      });
+    } finally {
+      c.close();
+    }
+  });
+
+  test.each([
+    { minShouldMatch: 1 },
+    { matchMode: "any", minShouldMatch: 1 },
+    { fuzziness: 3 },
+    { limit: Number.NaN },
+    { limit: 1.5 },
+    { phrase: true, matchMode: "all" },
+    { phrase: true, fuzziness: 1 },
+    { phrase: true, prefixTerms: true },
+  ] as const)("rejects invalid options locally without transport: %o", async (opts) => {
+    const c = newClient();
+    const before = state.lastSearch;
+    try {
+      await expect(c.searchVertices("alpha beta", opts as never)).rejects.toBeInstanceOf(
+        InvalidArgumentError,
+      );
+      expect(state.lastSearch).toBe(before);
     } finally {
       c.close();
     }

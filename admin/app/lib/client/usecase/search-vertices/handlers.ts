@@ -42,8 +42,10 @@ export async function fetchSearchResults(
         limit: input.limit,
         prefix: input.prefix,
         matchMode: input.options.matchMode,
+        minShouldMatch: input.options.minShouldMatch,
         phrase: input.options.phrase,
-        fuzzy: input.options.fuzzy,
+        fuzziness: input.options.fuzziness,
+        prefixTerms: input.options.prefixTerms,
       },
       { signal: input.signal },
     );

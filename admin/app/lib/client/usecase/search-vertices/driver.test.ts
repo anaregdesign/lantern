@@ -157,9 +157,8 @@ describe("search vertices latest-input-wins driver", () => {
 
     const nextEpoch = h.driver.update(
       h.input("alpha beta", {
+        ...DEFAULT_SEARCH_QUERY_OPTIONS,
         matchMode: "all",
-        phrase: false,
-        fuzzy: false,
       }),
       10,
     );
