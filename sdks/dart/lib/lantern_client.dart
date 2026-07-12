@@ -68,6 +68,8 @@ export 'src/client.dart'
         SearchDisabled,
         SearchEnabled,
         SearchHit,
+        SearchErrorReason,
+        SearchCapabilities,
         SearchMatchMode,
         SearchOptions,
         SearchResult,

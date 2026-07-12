@@ -283,7 +283,8 @@ final class LanternResourceExhaustedException extends LanternException {
 /// An operation that failed a state precondition.
 final class LanternFailedPreconditionException extends LanternException {
   LanternFailedPreconditionException._(_ErrorData data)
-    : super._(
+    : searchReason = data.searchReason,
+      super._(
         code: LanternCode.failedPrecondition,
         transportCode: data.transportCode,
         transportCodeName: data.transportCodeName,
@@ -293,6 +294,9 @@ final class LanternFailedPreconditionException extends LanternException {
         trailers: data.trailers,
         metadata: data.metadata,
       );
+
+  /// Bounded search capability reason, or unspecified for other RPCs.
+  final SearchErrorReason searchReason;
 }
 
 /// The health endpoint replied successfully but reported a non-serving state.
@@ -977,6 +981,7 @@ LanternException _mapConnectException(
     headers: _headersToMap(context.headers, context.token),
     trailers: _headersToMap(context.trailers, context.token),
     metadata: _headersToMap(error.metadata, context.token),
+    searchReason: _searchErrorReason(error),
   );
   return switch (error.code) {
     connect.Code.canceled => LanternCanceledException._(data),
@@ -992,6 +997,25 @@ LanternException _mapConnectException(
     connect.Code.unavailable => LanternUnavailableException._(data),
     _ => LanternInternalException._(data),
   };
+}
+
+SearchErrorReason _searchErrorReason(connect.ConnectException error) {
+  for (final detail in error.details) {
+    if (detail.type != 'graph.v1.SearchErrorDetail') continue;
+    try {
+      final decoded = $graph.SearchErrorDetail.fromBuffer(detail.value);
+      return switch (decoded.reason) {
+        $graph.SearchErrorReason.SEARCH_DISABLED =>
+          SearchErrorReason.searchDisabled,
+        $graph.SearchErrorReason.SEARCH_POSITIONS_DISABLED =>
+          SearchErrorReason.searchPositionsDisabled,
+        _ => SearchErrorReason.unspecified,
+      };
+    } on Object {
+      continue;
+    }
+  }
+  return SearchErrorReason.unspecified;
 }
 
 LanternException _mapUnknownException(
@@ -1046,6 +1070,7 @@ final class _ErrorData {
     required this.headers,
     required this.trailers,
     required this.metadata,
+    this.searchReason = SearchErrorReason.unspecified,
   });
 
   final int transportCode;
@@ -1055,4 +1080,5 @@ final class _ErrorData {
   final Map<String, List<String>> headers;
   final Map<String, List<String>> trailers;
   final Map<String, List<String>> metadata;
+  final SearchErrorReason searchReason;
 }

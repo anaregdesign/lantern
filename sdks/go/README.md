@@ -219,6 +219,7 @@ design discussion.
 | Write  | `PutVertex` / `PutVertexAt` / `PutVertexIfAbsent` / `PutVertexIfAbsentAt` / `AddEdge` / `AddEdgeAt` / `PutEdge` / `PutEdgeAt` | `PutVertices` / `PutVerticesIfAbsent` / `AddEdges` / `PutEdges` |
 | Delete | `DeleteVertex` / `DeleteEdge` | `DeleteVertices` / `DeleteEdges` |
 | Scan   | — | `ScanVertices`, `ScanVerticesAll`, `ScanVertexKeys`, `ScanVertexKeysAll`, `ScanEdges`, `ScanEdgesAll`, `CountVerticesByPrefix`, `DeleteVerticesByPrefix`, `DeleteEdgesByPrefix` |
+| Search | `SearchVertices` | — |
 | Graph  | `Illuminate` | — |
 | Replication | `Subscribe` (server-stream iter.Seq2) | — |
 | Status | `Ping`, `GetServerStatus`, `GetReplicationStatus` | — |
@@ -228,6 +229,13 @@ design discussion.
 carries its own TTL); `PutEdge` is **idempotent replace** (single weight,
 single TTL). See the in-line discussion in `example/main.go` for the
 semantic difference.
+
+Search capability failures stay machine-readable: a disabled index matches
+`ErrSearchDisabled`, while a phrase request without positional postings
+matches `ErrSearchPositionsDisabled`; both also match
+`ErrFailedPrecondition`. `SearchFailureReason` returns the bounded wire reason,
+and `ServerStatus.GetSearch()` exposes positions, defaults, limits,
+implementation versions, and the HA configuration fingerprint.
 
 `Illuminate` accepts at most one traversal family option (`WithBFS`,
 `WithPPR`, or `WithLocalCommunity`). Combining them returns a local error that

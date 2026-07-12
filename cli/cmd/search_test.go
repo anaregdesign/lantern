@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"errors"
+	"strings"
 	"testing"
 
 	client "github.com/anaregdesign/lantern/sdks/go"
@@ -34,6 +36,19 @@ func TestParseSearchMode(t *testing.T) {
 		if got != c.want {
 			t.Errorf("parseSearchMode(%q) = %v, want %v", c.in, got, c.want)
 		}
+	}
+}
+
+func TestActionableSearchError(t *testing.T) {
+	positions := actionableSearchError(errors.Join(client.ErrFailedPrecondition, client.ErrSearchPositionsDisabled))
+	for _, want := range []string{"LANTERN_SEARCH_POSITIONS=true", "omit --phrase"} {
+		if !strings.Contains(positions.Error(), want) {
+			t.Errorf("positions error %q does not contain %q", positions, want)
+		}
+	}
+	disabled := actionableSearchError(errors.Join(client.ErrFailedPrecondition, client.ErrSearchDisabled))
+	if !strings.Contains(disabled.Error(), "LANTERN_SEARCH_ENABLED=true") {
+		t.Errorf("disabled error is not actionable: %q", disabled)
 	}
 }
 

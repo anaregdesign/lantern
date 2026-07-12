@@ -729,12 +729,45 @@ message PutEdgesResponse {
   int32 written = 1;
 }
 
-// GetServerStatusRequest carries no parameters — the response is a flat
+// GetServerStatusRequest carries no parameters — the response is a
 // snapshot of the server's identity, build, configuration ceilings, and
 // current live counts. Intended for the admin UI's "Ops" tab and any
 // lightweight smoke-test tooling that just needs to confirm "the server
 // is up and roughly configured as expected".
 message GetServerStatusRequest {}
+
+// SearchErrorReason is the bounded, machine-readable reason attached to a
+// FAILED_PRECONDITION from SearchVertices. Clients must branch on this enum,
+// never on the human-readable status message.
+enum SearchErrorReason {
+  SEARCH_ERROR_REASON_UNSPECIFIED = 0;
+  // buf:lint:ignore ENUM_VALUE_PREFIX -- stable cross-SDK reason code.
+  SEARCH_DISABLED = 1;
+  // buf:lint:ignore ENUM_VALUE_PREFIX -- stable cross-SDK reason code.
+  SEARCH_POSITIONS_DISABLED = 2;
+}
+
+// SearchErrorDetail is carried as a Connect error detail when a search
+// capability required by the request is unavailable.
+message SearchErrorDetail {
+  SearchErrorReason reason = 1;
+}
+
+// SearchCapabilities is the server's discoverable full-text-search contract.
+// config_fingerprint changes whenever one of these capability-defining values
+// changes, allowing operators to spot heterogeneous HA members cheaply.
+message SearchCapabilities {
+  bool enabled = 1;
+  bool positions_enabled = 2;
+  uint32 default_limit = 3;
+  uint32 max_limit = 4;
+  MatchMode default_match_mode = 5;
+  uint32 default_min_should_match = 6;
+  uint32 max_fuzziness = 7;
+  string analyzer_version = 8;
+  string projection_version = 9;
+  string config_fingerprint = 10;
+}
 
 message GetServerStatusResponse {
   // Build/version stamp. Falls back to "dev" when the binary was built
@@ -784,6 +817,10 @@ message GetServerStatusResponse {
   // expired entries bounded by the GC tick.
   uint64 vertex_count = 12;
   uint64 edge_count = 13;
+
+  // Full-text-search capability snapshot. Clients can use this to disable
+  // controls that the selected server cannot satisfy before sending a query.
+  SearchCapabilities search = 14;
 }
 
 // ReplicationPeer is one row of the GetReplicationStatus snapshot.

@@ -147,6 +147,7 @@ func newLanternService(
 		}).
 		WithSearchLimits(service.SearchLimits{
 			Enabled:          src.Enabled,
+			PositionsEnabled: src.Positions,
 			DefaultLimit:     src.DefaultLimit,
 			MaxLimit:         src.MaxLimit,
 			DefaultMode:      service.ParseMatchMode(src.DefaultMode),

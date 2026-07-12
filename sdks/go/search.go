@@ -2,9 +2,47 @@ package client
 
 import (
 	"context"
+	"errors"
 
+	"connectrpc.com/connect"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
+
+// SearchErrorReason is the bounded reason carried by a SearchVertices
+// FAILED_PRECONDITION response.
+type SearchErrorReason = pb.SearchErrorReason
+
+const (
+	SearchErrorReasonUnspecified       = pb.SearchErrorReason_SEARCH_ERROR_REASON_UNSPECIFIED
+	SearchErrorReasonDisabled          = pb.SearchErrorReason_SEARCH_DISABLED
+	SearchErrorReasonPositionsDisabled = pb.SearchErrorReason_SEARCH_POSITIONS_DISABLED
+)
+
+var (
+	// ErrSearchDisabled means the server has no content-search index.
+	ErrSearchDisabled = errors.New("search disabled")
+	// ErrSearchPositionsDisabled means phrase adjacency cannot be verified.
+	ErrSearchPositionsDisabled = errors.New("search positions disabled")
+)
+
+// SearchFailureReason extracts the machine-readable reason from a search
+// FAILED_PRECONDITION, including errors wrapped by the SDK.
+func SearchFailureReason(err error) SearchErrorReason {
+	var connectErr *connect.Error
+	if !errors.As(err, &connectErr) {
+		return SearchErrorReasonUnspecified
+	}
+	for _, detail := range connectErr.Details() {
+		value, valueErr := detail.Value()
+		if valueErr != nil {
+			continue
+		}
+		if searchDetail, ok := value.(*pb.SearchErrorDetail); ok {
+			return searchDetail.GetReason()
+		}
+	}
+	return SearchErrorReasonUnspecified
+}
 
 // SearchHit is one ranked result from Lantern.SearchVertices: the key of a
 // matching vertex paired with its full-text relevance Score (higher is more
@@ -111,10 +149,9 @@ func WithPrefixTerms() SearchOption {
 // and the SDK does not pre-clamp.
 //
 // Gating: when the server was started without the search index
-// (LANTERN_SEARCH_ENABLED=false) the call returns an error matching
-// ErrFailedPrecondition — a configuration state, not a transient failure.
-// Detect it with errors.Is(err, ErrFailedPrecondition) and present a calm
-// "search is turned off" state rather than retrying.
+// (LANTERN_SEARCH_ENABLED=false) the call returns an error matching both
+// ErrFailedPrecondition and ErrSearchDisabled. A phrase request against a
+// server without positional postings matches ErrSearchPositionsDisabled.
 func (l *Lantern) SearchVertices(ctx context.Context, query string, opts ...SearchOption) ([]SearchHit, error) {
 	o := searchOptions{}
 	for _, apply := range opts {

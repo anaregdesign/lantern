@@ -31,6 +31,52 @@ final class DegreeEntry {
   final double weightedDegree;
 }
 
+/// Discoverable full-text-search contract for one serving endpoint.
+final class SearchCapabilities {
+  const SearchCapabilities._({
+    required this.enabled,
+    required this.positionsEnabled,
+    required this.defaultLimit,
+    required this.maxLimit,
+    required this.defaultMatchMode,
+    required this.defaultMinShouldMatch,
+    required this.maxFuzziness,
+    required this.analyzerVersion,
+    required this.projectionVersion,
+    required this.configFingerprint,
+  });
+
+  /// Whether full-text search is available.
+  final bool enabled;
+
+  /// Whether phrase adjacency can be verified.
+  final bool positionsEnabled;
+
+  /// Ranked-hit count used when a request omits its limit.
+  final int defaultLimit;
+
+  /// Maximum ranked-hit count accepted per request.
+  final int maxLimit;
+
+  /// Server-wide default query-term match mode.
+  final SearchMatchMode defaultMatchMode;
+
+  /// Default term threshold for [SearchMatchMode.minShouldMatch].
+  final int defaultMinShouldMatch;
+
+  /// Maximum accepted fuzzy edit distance.
+  final int maxFuzziness;
+
+  /// Stable analyzer implementation version.
+  final String analyzerVersion;
+
+  /// Stable vertex-to-document projection version.
+  final String projectionVersion;
+
+  /// SHA-256 capability fingerprint used to compare HA members.
+  final String configFingerprint;
+}
+
 /// Explicit point-in-time server status snapshot.
 final class ServerStatus {
   ServerStatus._({
@@ -47,6 +93,7 @@ final class ServerStatus {
     required this.replicationEnabled,
     required this.vertexCount,
     required this.edgeCount,
+    required this.search,
   });
 
   /// Server build/version stamp.
@@ -87,6 +134,9 @@ final class ServerStatus {
 
   /// Best-effort live edge count.
   final BigInt edgeCount;
+
+  /// Full-text-search capability snapshot and HA configuration fingerprint.
+  final SearchCapabilities search;
 }
 
 /// Replication peer lifecycle state.
@@ -241,6 +291,23 @@ extension LanternStatus on LanternClient {
       replicationEnabled: response.replicationEnabled,
       vertexCount: _uint64ToBigInt(response.vertexCount),
       edgeCount: _uint64ToBigInt(response.edgeCount),
+      search: SearchCapabilities._(
+        enabled: response.search.enabled,
+        positionsEnabled: response.search.positionsEnabled,
+        defaultLimit: response.search.defaultLimit,
+        maxLimit: response.search.maxLimit,
+        defaultMatchMode: switch (response.search.defaultMatchMode) {
+          $graph.MatchMode.MATCH_MODE_ALL => SearchMatchMode.all,
+          $graph.MatchMode.MATCH_MODE_MIN_SHOULD =>
+            SearchMatchMode.minShouldMatch,
+          _ => SearchMatchMode.any,
+        },
+        defaultMinShouldMatch: response.search.defaultMinShouldMatch,
+        maxFuzziness: response.search.maxFuzziness,
+        analyzerVersion: response.search.analyzerVersion,
+        projectionVersion: response.search.projectionVersion,
+        configFingerprint: response.search.configFingerprint,
+      ),
     );
   }
 

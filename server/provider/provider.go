@@ -196,10 +196,11 @@ type SearchConfig struct {
 	// Positions is opt-out (LANTERN_SEARCH_POSITIONS, default true): when true
 	// the search index records positional postings so phrase queries verify
 	// adjacency and the proximity boost ranks tight matches higher. Setting it
-	// false drops the per-(word term, vertex) position store — phrase queries
-	// degrade to the AND-intersection and the proximity boost goes inert —
-	// trading phrase/proximity fidelity for a smaller index on large corpora
-	// (#908). Ignored when Enabled is false.
+	// false drops the per-(word term, vertex) position store. Phrase requests
+	// then fail closed with SEARCH_POSITIONS_DISABLED because adjacency cannot
+	// be verified; the proximity boost is inert. This trades the phrase feature
+	// for a smaller index on large corpora (#908/#1054). Ignored when Enabled is
+	// false.
 	Positions bool
 	// DefaultMode is the match mode applied when a SearchVertices request omits
 	// options or leaves match_mode unspecified: "any" (OR), "all" (AND), or

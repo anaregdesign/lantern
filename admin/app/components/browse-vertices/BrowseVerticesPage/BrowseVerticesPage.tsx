@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Badge,
   Button,
@@ -40,6 +40,8 @@ import {
 } from "~/lib/client/usecase/search-vertices/selectors";
 import type { SearchMatchMode } from "~/lib/client/usecase/search-vertices/state";
 import type { Vertex } from "~/lib/client/infrastructure/api/types";
+import { getServerStatus } from "~/lib/client/infrastructure/api/get-server-status";
+import { useLanternClient } from "~/lib/client/infrastructure/api/use-lantern-client";
 import { ValueCell } from "../ValueCell/ValueCell";
 import { ExpirationCell } from "../ExpirationCell/ExpirationCell";
 import { Pager } from "../Pager/Pager";
@@ -83,11 +85,31 @@ export function BrowseVerticesPage() {
   const [matchMode, setMatchMode] = useState<SearchMatchMode>("any");
   const [phrase, setPhrase] = useState(false);
   const [fuzzy, setFuzzy] = useState(false);
+  // null = loading, undefined = capability lookup failed.
+  const [positionsEnabled, setPositionsEnabled] = useState<
+    boolean | null | undefined
+  >(null);
+  const client = useLanternClient();
   const browse = useBrowseVertices(prefix, {
     pageSize: DEFAULT_VERTEX_PAGE_SIZE,
   });
-  const search = useSearchVertices(query, { matchMode, phrase, fuzzy });
+  const search = useSearchVertices(client, query, { matchMode, phrase, fuzzy });
   const navigate = useNavigate();
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setPositionsEnabled(null);
+    setPhrase(false);
+    void getServerStatus(client, { signal: controller.signal })
+      .then((status) => {
+        setPositionsEnabled(status.search.positionsEnabled);
+        if (!status.search.positionsEnabled) setPhrase(false);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setPositionsEnabled(undefined);
+      });
+    return () => controller.abort();
+  }, [client]);
 
   const searching = mode === "search";
   const searchStatus = search.state.status;
@@ -236,12 +258,24 @@ export function BrowseVerticesPage() {
               </Option>
             </Dropdown>
           </Field>
-          <Switch
-            label="Phrase"
-            checked={phrase}
-            onChange={(_, data) => setPhrase(data.checked)}
-            data-testid="search-phrase"
-          />
+          <div>
+            <Switch
+              label="Phrase"
+              checked={phrase}
+              disabled={positionsEnabled !== true}
+              onChange={(_, data) => setPhrase(data.checked)}
+              data-testid="search-phrase"
+            />
+            {positionsEnabled !== true ? (
+              <small data-testid="search-phrase-unavailable">
+                {positionsEnabled === false
+                  ? "Unavailable: this server does not store positional postings."
+                  : positionsEnabled === undefined
+                    ? "Unavailable: server phrase capabilities could not be loaded."
+                    : "Checking server phrase capabilities…"}
+              </small>
+            ) : null}
+          </div>
           <Switch
             label="Fuzzy"
             checked={fuzzy}

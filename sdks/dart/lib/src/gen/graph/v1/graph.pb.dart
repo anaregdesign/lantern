@@ -4390,7 +4390,7 @@ class PutEdgesResponse extends $pb.GeneratedMessage {
   void clearWritten() => $_clearField(1);
 }
 
-/// GetServerStatusRequest carries no parameters — the response is a flat
+/// GetServerStatusRequest carries no parameters — the response is a
 /// snapshot of the server's identity, build, configuration ceilings, and
 /// current live counts. Intended for the admin UI's "Ops" tab and any
 /// lightweight smoke-test tooling that just needs to confirm "the server
@@ -4437,6 +4437,243 @@ class GetServerStatusRequest extends $pb.GeneratedMessage {
   static GetServerStatusRequest? _defaultInstance;
 }
 
+/// SearchErrorDetail is carried as a Connect error detail when a search
+/// capability required by the request is unavailable.
+class SearchErrorDetail extends $pb.GeneratedMessage {
+  factory SearchErrorDetail({
+    SearchErrorReason? reason,
+  }) {
+    final result = create();
+    if (reason != null) result.reason = reason;
+    return result;
+  }
+
+  SearchErrorDetail._();
+
+  factory SearchErrorDetail.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory SearchErrorDetail.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'SearchErrorDetail',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..e<SearchErrorReason>(
+        1, _omitFieldNames ? '' : 'reason', $pb.PbFieldType.OE,
+        defaultOrMaker: SearchErrorReason.SEARCH_ERROR_REASON_UNSPECIFIED,
+        valueOf: SearchErrorReason.valueOf,
+        enumValues: SearchErrorReason.values)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SearchErrorDetail clone() => SearchErrorDetail()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SearchErrorDetail copyWith(void Function(SearchErrorDetail) updates) =>
+      super.copyWith((message) => updates(message as SearchErrorDetail))
+          as SearchErrorDetail;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static SearchErrorDetail create() => SearchErrorDetail._();
+  @$core.override
+  SearchErrorDetail createEmptyInstance() => create();
+  static $pb.PbList<SearchErrorDetail> createRepeated() =>
+      $pb.PbList<SearchErrorDetail>();
+  @$core.pragma('dart2js:noInline')
+  static SearchErrorDetail getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<SearchErrorDetail>(create);
+  static SearchErrorDetail? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  SearchErrorReason get reason => $_getN(0);
+  @$pb.TagNumber(1)
+  set reason(SearchErrorReason value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasReason() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearReason() => $_clearField(1);
+}
+
+/// SearchCapabilities is the server's discoverable full-text-search contract.
+/// config_fingerprint changes whenever one of these capability-defining values
+/// changes, allowing operators to spot heterogeneous HA members cheaply.
+class SearchCapabilities extends $pb.GeneratedMessage {
+  factory SearchCapabilities({
+    $core.bool? enabled,
+    $core.bool? positionsEnabled,
+    $core.int? defaultLimit,
+    $core.int? maxLimit,
+    MatchMode? defaultMatchMode,
+    $core.int? defaultMinShouldMatch,
+    $core.int? maxFuzziness,
+    $core.String? analyzerVersion,
+    $core.String? projectionVersion,
+    $core.String? configFingerprint,
+  }) {
+    final result = create();
+    if (enabled != null) result.enabled = enabled;
+    if (positionsEnabled != null) result.positionsEnabled = positionsEnabled;
+    if (defaultLimit != null) result.defaultLimit = defaultLimit;
+    if (maxLimit != null) result.maxLimit = maxLimit;
+    if (defaultMatchMode != null) result.defaultMatchMode = defaultMatchMode;
+    if (defaultMinShouldMatch != null)
+      result.defaultMinShouldMatch = defaultMinShouldMatch;
+    if (maxFuzziness != null) result.maxFuzziness = maxFuzziness;
+    if (analyzerVersion != null) result.analyzerVersion = analyzerVersion;
+    if (projectionVersion != null) result.projectionVersion = projectionVersion;
+    if (configFingerprint != null) result.configFingerprint = configFingerprint;
+    return result;
+  }
+
+  SearchCapabilities._();
+
+  factory SearchCapabilities.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory SearchCapabilities.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'SearchCapabilities',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOB(1, _omitFieldNames ? '' : 'enabled')
+    ..aOB(2, _omitFieldNames ? '' : 'positionsEnabled')
+    ..a<$core.int>(
+        3, _omitFieldNames ? '' : 'defaultLimit', $pb.PbFieldType.OU3)
+    ..a<$core.int>(4, _omitFieldNames ? '' : 'maxLimit', $pb.PbFieldType.OU3)
+    ..e<MatchMode>(
+        5, _omitFieldNames ? '' : 'defaultMatchMode', $pb.PbFieldType.OE,
+        defaultOrMaker: MatchMode.MATCH_MODE_UNSPECIFIED,
+        valueOf: MatchMode.valueOf,
+        enumValues: MatchMode.values)
+    ..a<$core.int>(
+        6, _omitFieldNames ? '' : 'defaultMinShouldMatch', $pb.PbFieldType.OU3)
+    ..a<$core.int>(
+        7, _omitFieldNames ? '' : 'maxFuzziness', $pb.PbFieldType.OU3)
+    ..aOS(8, _omitFieldNames ? '' : 'analyzerVersion')
+    ..aOS(9, _omitFieldNames ? '' : 'projectionVersion')
+    ..aOS(10, _omitFieldNames ? '' : 'configFingerprint')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SearchCapabilities clone() => SearchCapabilities()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SearchCapabilities copyWith(void Function(SearchCapabilities) updates) =>
+      super.copyWith((message) => updates(message as SearchCapabilities))
+          as SearchCapabilities;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static SearchCapabilities create() => SearchCapabilities._();
+  @$core.override
+  SearchCapabilities createEmptyInstance() => create();
+  static $pb.PbList<SearchCapabilities> createRepeated() =>
+      $pb.PbList<SearchCapabilities>();
+  @$core.pragma('dart2js:noInline')
+  static SearchCapabilities getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<SearchCapabilities>(create);
+  static SearchCapabilities? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.bool get enabled => $_getBF(0);
+  @$pb.TagNumber(1)
+  set enabled($core.bool value) => $_setBool(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasEnabled() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearEnabled() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.bool get positionsEnabled => $_getBF(1);
+  @$pb.TagNumber(2)
+  set positionsEnabled($core.bool value) => $_setBool(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasPositionsEnabled() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearPositionsEnabled() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.int get defaultLimit => $_getIZ(2);
+  @$pb.TagNumber(3)
+  set defaultLimit($core.int value) => $_setUnsignedInt32(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasDefaultLimit() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearDefaultLimit() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $core.int get maxLimit => $_getIZ(3);
+  @$pb.TagNumber(4)
+  set maxLimit($core.int value) => $_setUnsignedInt32(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasMaxLimit() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearMaxLimit() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  MatchMode get defaultMatchMode => $_getN(4);
+  @$pb.TagNumber(5)
+  set defaultMatchMode(MatchMode value) => $_setField(5, value);
+  @$pb.TagNumber(5)
+  $core.bool hasDefaultMatchMode() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearDefaultMatchMode() => $_clearField(5);
+
+  @$pb.TagNumber(6)
+  $core.int get defaultMinShouldMatch => $_getIZ(5);
+  @$pb.TagNumber(6)
+  set defaultMinShouldMatch($core.int value) => $_setUnsignedInt32(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasDefaultMinShouldMatch() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearDefaultMinShouldMatch() => $_clearField(6);
+
+  @$pb.TagNumber(7)
+  $core.int get maxFuzziness => $_getIZ(6);
+  @$pb.TagNumber(7)
+  set maxFuzziness($core.int value) => $_setUnsignedInt32(6, value);
+  @$pb.TagNumber(7)
+  $core.bool hasMaxFuzziness() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearMaxFuzziness() => $_clearField(7);
+
+  @$pb.TagNumber(8)
+  $core.String get analyzerVersion => $_getSZ(7);
+  @$pb.TagNumber(8)
+  set analyzerVersion($core.String value) => $_setString(7, value);
+  @$pb.TagNumber(8)
+  $core.bool hasAnalyzerVersion() => $_has(7);
+  @$pb.TagNumber(8)
+  void clearAnalyzerVersion() => $_clearField(8);
+
+  @$pb.TagNumber(9)
+  $core.String get projectionVersion => $_getSZ(8);
+  @$pb.TagNumber(9)
+  set projectionVersion($core.String value) => $_setString(8, value);
+  @$pb.TagNumber(9)
+  $core.bool hasProjectionVersion() => $_has(8);
+  @$pb.TagNumber(9)
+  void clearProjectionVersion() => $_clearField(9);
+
+  @$pb.TagNumber(10)
+  $core.String get configFingerprint => $_getSZ(9);
+  @$pb.TagNumber(10)
+  set configFingerprint($core.String value) => $_setString(9, value);
+  @$pb.TagNumber(10)
+  $core.bool hasConfigFingerprint() => $_has(9);
+  @$pb.TagNumber(10)
+  void clearConfigFingerprint() => $_clearField(10);
+}
+
 class GetServerStatusResponse extends $pb.GeneratedMessage {
   factory GetServerStatusResponse({
     $core.String? version,
@@ -4452,6 +4689,7 @@ class GetServerStatusResponse extends $pb.GeneratedMessage {
     $core.bool? replicationEnabled,
     $fixnum.Int64? vertexCount,
     $fixnum.Int64? edgeCount,
+    SearchCapabilities? search,
   }) {
     final result = create();
     if (version != null) result.version = version;
@@ -4468,6 +4706,7 @@ class GetServerStatusResponse extends $pb.GeneratedMessage {
       result.replicationEnabled = replicationEnabled;
     if (vertexCount != null) result.vertexCount = vertexCount;
     if (edgeCount != null) result.edgeCount = edgeCount;
+    if (search != null) result.search = search;
     return result;
   }
 
@@ -4507,6 +4746,8 @@ class GetServerStatusResponse extends $pb.GeneratedMessage {
     ..a<$fixnum.Int64>(
         13, _omitFieldNames ? '' : 'edgeCount', $pb.PbFieldType.OU6,
         defaultOrMaker: $fixnum.Int64.ZERO)
+    ..aOM<SearchCapabilities>(14, _omitFieldNames ? '' : 'search',
+        subBuilder: SearchCapabilities.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -4678,6 +4919,19 @@ class GetServerStatusResponse extends $pb.GeneratedMessage {
   $core.bool hasEdgeCount() => $_has(12);
   @$pb.TagNumber(13)
   void clearEdgeCount() => $_clearField(13);
+
+  /// Full-text-search capability snapshot. Clients can use this to disable
+  /// controls that the selected server cannot satisfy before sending a query.
+  @$pb.TagNumber(14)
+  SearchCapabilities get search => $_getN(13);
+  @$pb.TagNumber(14)
+  set search(SearchCapabilities value) => $_setField(14, value);
+  @$pb.TagNumber(14)
+  $core.bool hasSearch() => $_has(13);
+  @$pb.TagNumber(14)
+  void clearSearch() => $_clearField(14);
+  @$pb.TagNumber(14)
+  SearchCapabilities ensureSearch() => $_ensure(13);
 }
 
 /// ReplicationPeer is one row of the GetReplicationStatus snapshot.

@@ -95,6 +95,18 @@ void main() {
               replicationEnabled: false,
               vertexCount: Int64(7),
               edgeCount: Int64(8),
+              search: graph.SearchCapabilities(
+                enabled: true,
+                positionsEnabled: false,
+                defaultLimit: 25,
+                maxLimit: 250,
+                defaultMatchMode: graph.MatchMode.MATCH_MODE_MIN_SHOULD,
+                defaultMinShouldMatch: 2,
+                maxFuzziness: 2,
+                analyzerVersion: 'script-aware-v1',
+                projectionVersion: 'vertex-key-value-v1',
+                configFingerprint: 'abc123',
+              ),
             ),
           )
           .build();
@@ -109,6 +121,12 @@ void main() {
       expect(status.tlsEnabled, isTrue);
       expect(status.vertexCount, BigInt.from(7));
       expect(status.edgeCount, BigInt.from(8));
+      expect(status.search.enabled, isTrue);
+      expect(status.search.positionsEnabled, isFalse);
+      expect(status.search.defaultMatchMode, SearchMatchMode.minShouldMatch);
+      expect(status.search.defaultMinShouldMatch, 2);
+      expect(status.search.maxFuzziness, 2);
+      expect(status.search.configFingerprint, 'abc123');
     },
   );
 

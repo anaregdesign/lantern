@@ -150,14 +150,52 @@ func TestSearchVertices(t *testing.T) {
 
 	t.Run("FAILED_PRECONDITION maps to ErrFailedPrecondition", func(t *testing.T) {
 		l, capt := newClient(t)
-		capt.err = connect.NewError(connect.CodeFailedPrecondition,
+		connectErr := connect.NewError(connect.CodeFailedPrecondition,
 			errors.New("vertex search is disabled on this server"))
+		detail, detailErr := connect.NewErrorDetail(&pb.SearchErrorDetail{
+			Reason: pb.SearchErrorReason_SEARCH_DISABLED,
+		})
+		if detailErr != nil {
+			t.Fatalf("NewErrorDetail: %v", detailErr)
+		}
+		connectErr.AddDetail(detail)
+		capt.err = connectErr
 		hits, err := l.SearchVertices(context.Background(), "q")
 		if hits != nil {
 			t.Errorf("want nil hits on error, got %v", hits)
 		}
 		if !errors.Is(err, ErrFailedPrecondition) {
 			t.Fatalf("want errors.Is(err, ErrFailedPrecondition), got %v", err)
+		}
+		if !errors.Is(err, ErrSearchDisabled) {
+			t.Fatalf("want errors.Is(err, ErrSearchDisabled), got %v", err)
+		}
+		if got := SearchFailureReason(err); got != SearchErrorReasonDisabled {
+			t.Fatalf("SearchFailureReason = %v, want SEARCH_DISABLED", got)
+		}
+	})
+
+	t.Run("positions reason remains distinct from disabled search", func(t *testing.T) {
+		l, capt := newClient(t)
+		connectErr := connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("phrase search requires positional postings"))
+		detail, detailErr := connect.NewErrorDetail(&pb.SearchErrorDetail{
+			Reason: pb.SearchErrorReason_SEARCH_POSITIONS_DISABLED,
+		})
+		if detailErr != nil {
+			t.Fatalf("NewErrorDetail: %v", detailErr)
+		}
+		connectErr.AddDetail(detail)
+		capt.err = connectErr
+		_, err := l.SearchVertices(context.Background(), "alpha beta", WithPhrase())
+		if !errors.Is(err, ErrSearchPositionsDisabled) {
+			t.Fatalf("want errors.Is(err, ErrSearchPositionsDisabled), got %v", err)
+		}
+		if errors.Is(err, ErrSearchDisabled) {
+			t.Fatalf("positions-disabled error incorrectly matches ErrSearchDisabled: %v", err)
+		}
+		if got := SearchFailureReason(err); got != SearchErrorReasonPositionsDisabled {
+			t.Fatalf("SearchFailureReason = %v, want SEARCH_POSITIONS_DISABLED", got)
 		}
 	})
 }

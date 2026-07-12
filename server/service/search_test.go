@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -26,9 +27,73 @@ func TestSearchVertices_DisabledReturnsFailedPrecondition(t *testing.T) {
 	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
 		t.Fatalf("code = %v, want FailedPrecondition", got)
 	}
+	assertSearchErrorReason(t, err, pb.SearchErrorReason_SEARCH_DISABLED)
 	if fb.searchCalls != 0 {
 		t.Errorf("backend SearchVertices called %d times while disabled, want 0", fb.searchCalls)
 	}
+}
+
+func TestSearchVertices_PhraseWithoutPositionsFailsClosed(t *testing.T) {
+	fb := newFakeBackend()
+	svc := NewLanternService(fb).WithSearchLimits(SearchLimits{
+		Enabled:          true,
+		PositionsEnabled: false,
+		DefaultLimit:     100,
+		MaxLimit:         1000,
+	})
+
+	_, err := svc.SearchVertices(context.Background(), &pb.SearchVerticesRequest{
+		Query:   "alpha beta",
+		Options: &pb.SearchOptions{Phrase: true},
+	})
+	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
+		t.Fatalf("code = %v, want FailedPrecondition", got)
+	}
+	assertSearchErrorReason(t, err, pb.SearchErrorReason_SEARCH_POSITIONS_DISABLED)
+	if fb.searchCalls != 0 {
+		t.Errorf("backend SearchVertices called %d times, want 0", fb.searchCalls)
+	}
+}
+
+func TestSearchVertices_RejectsFuzzinessAboveCapability(t *testing.T) {
+	fb := newFakeBackend()
+	svc := NewLanternService(fb).WithSearchLimits(SearchLimits{
+		Enabled:          true,
+		PositionsEnabled: true,
+		DefaultLimit:     100,
+		MaxLimit:         1000,
+	})
+	_, err := svc.SearchVertices(context.Background(), &pb.SearchVerticesRequest{
+		Query:   "serach",
+		Options: &pb.SearchOptions{Fuzziness: 3},
+	})
+	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+		t.Fatalf("code = %v, want InvalidArgument", got)
+	}
+	if fb.searchCalls != 0 {
+		t.Errorf("backend SearchVertices called %d times, want 0", fb.searchCalls)
+	}
+}
+
+func assertSearchErrorReason(t *testing.T, err error, want pb.SearchErrorReason) {
+	t.Helper()
+	var connectErr *connect.Error
+	if !errors.As(err, &connectErr) {
+		t.Fatalf("error %T is not *connect.Error", err)
+	}
+	for _, detail := range connectErr.Details() {
+		value, valueErr := detail.Value()
+		if valueErr != nil {
+			t.Fatalf("decode detail: %v", valueErr)
+		}
+		if searchDetail, ok := value.(*pb.SearchErrorDetail); ok {
+			if got := searchDetail.GetReason(); got != want {
+				t.Fatalf("reason = %v, want %v", got, want)
+			}
+			return
+		}
+	}
+	t.Fatalf("SearchErrorDetail not found in %v", err)
 }
 
 func TestSearchVertices_EnabledMapsRankedHits(t *testing.T) {
