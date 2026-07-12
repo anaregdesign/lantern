@@ -1,7 +1,18 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
+import {
+  useCallback,
+  useLayoutEffect,
+  useMemo,
+  useReducer,
+  useState,
+} from "react";
 import { useLanternClient } from "~/lib/client/infrastructure/api/use-lantern-client";
 import { fetchSearchResults } from "./handlers";
-import { searchVerticesReducer, type SearchVerticesAction } from "./reducer";
+import {
+  browserSearchVerticesScheduler,
+  createSearchVerticesDriver,
+  type SearchVerticesInput,
+} from "./driver";
+import { searchVerticesReducer } from "./reducer";
 import {
   INITIAL_SEARCH_VERTICES_STATE,
   type SearchMatchMode,
@@ -63,69 +74,35 @@ export function useSearchVertices(
     INITIAL_SEARCH_VERTICES_STATE,
   );
 
-  // Debounce the live query into the reducer.
-  useEffect(() => {
-    const handle = window.setTimeout(() => {
-      dispatch({ type: "QUERY_CHANGED", query: rawQuery });
-    }, debounceMs);
-    return () => window.clearTimeout(handle);
-  }, [rawQuery, debounceMs]);
+  const [driver] = useState(() =>
+    createSearchVerticesDriver({
+      dispatch,
+      run: fetchSearchResults,
+      scheduler: browserSearchVerticesScheduler,
+    }),
+  );
 
-  // Fold option changes into the reducer immediately: toggling a control is
-  // a deliberate act, not a per-keystroke storm, so it needs no debounce.
-  // The reducer bumps the epoch, which re-runs the live query below.
-  useEffect(() => {
-    dispatch({
-      type: "OPTIONS_CHANGED",
+  const input = useMemo<SearchVerticesInput>(
+    () => ({
+      client,
+      query: rawQuery,
+      limit,
+      prefix,
       options: { matchMode, phrase, fuzzy },
-    });
-  }, [matchMode, phrase, fuzzy]);
+    }),
+    [client, rawQuery, limit, prefix, matchMode, phrase, fuzzy],
+  );
 
-  // On every query change, search + hydrate under a fresh AbortController.
-  const lastEpochRef = useRef<number>(-1);
-  useEffect(() => {
-    if (state.queryEpoch === lastEpochRef.current) {
-      return;
-    }
-    lastEpochRef.current = state.queryEpoch;
-    if (state.query.length === 0) {
-      // Empty query: nothing to fetch (the reducer already cleared state).
-      return;
-    }
-    const controller = new AbortController();
-    void fetchSearchResults(
-      {
-        client,
-        query: state.query,
-        limit,
-        prefix,
-        options: state.options,
-        epoch: state.queryEpoch,
-        signal: controller.signal,
-      },
-      dispatch as (action: SearchVerticesAction) => void,
-    );
-    return () => controller.abort();
-  }, [client, state.query, state.queryEpoch, state.options, limit, prefix]);
+  // Invalidate the old epoch during the commit that displays the new input.
+  // Only starting the replacement RPC is debounced.
+  useLayoutEffect(() => {
+    driver.update(input, debounceMs);
+    return () => driver.cancel();
+  }, [driver, input, debounceMs]);
 
   const retry = useCallback(() => {
-    if (state.query.length === 0) {
-      return;
-    }
-    // Re-run under the live epoch so the reducer accepts the response; the
-    // detached controller mirrors Browse Vertices' manual refresh.
-    void fetchSearchResults(
-      {
-        client,
-        query: state.query,
-        limit,
-        prefix,
-        options: state.options,
-        epoch: state.queryEpoch,
-      },
-      dispatch as (action: SearchVerticesAction) => void,
-    );
-  }, [client, state.query, state.queryEpoch, state.options, limit, prefix]);
+    driver.retry(input, state.queryEpoch);
+  }, [driver, input, state.queryEpoch]);
 
   return useMemo<UseSearchVerticesResult>(
     () => ({ state, retry }),

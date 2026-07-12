@@ -152,6 +152,7 @@ void main() {
     'newer query cancels and stale success or error cannot overwrite',
     () async {
       final firstStarted = Completer<void>();
+      final firstCanceled = Completer<void>();
       final first = Completer<graph.SearchVerticesResponse>();
       final transport = FakeTransportBuilder()
           .unary<graph.SearchVerticesRequest, graph.SearchVerticesResponse>(
@@ -159,6 +160,9 @@ void main() {
             (request, context) {
               if (request.query == 'old') {
                 firstStarted.complete();
+                context.signal.future.then((_) {
+                  if (!firstCanceled.isCompleted) firstCanceled.complete();
+                });
                 return first.future;
               }
               return graph.SearchVerticesResponse(
@@ -168,7 +172,9 @@ void main() {
           )
           .build();
       final session = _client(transport).incrementalSearch(
-        options: const IncrementalSearchOptions(debounce: Duration.zero),
+        options: const IncrementalSearchOptions(
+          debounce: Duration(milliseconds: 80),
+        ),
       );
       addTearDown(session.dispose);
       final delivered = <SearchUpdate>[];
@@ -178,6 +184,9 @@ void main() {
       session.search('old');
       await firstStarted.future;
       session.search('new');
+      // Cancellation belongs to the input call, before the replacement's
+      // debounce expires.
+      await firstCanceled.future.timeout(const Duration(milliseconds: 30));
       await session.updates.firstWhere(
         (update) =>
             update.query == 'new' && update.phase == SearchUpdatePhase.results,

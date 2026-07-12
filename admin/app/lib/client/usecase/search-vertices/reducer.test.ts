@@ -1,10 +1,19 @@
 import { describe, expect, it } from "bun:test";
 import { searchVerticesReducer, type SearchVerticesAction } from "./reducer";
 import {
+  DEFAULT_SEARCH_QUERY_OPTIONS,
   INITIAL_SEARCH_VERTICES_STATE,
   type SearchResultRow,
   type SearchVerticesState,
 } from "./state";
+
+function input(
+  query: string,
+  epoch: number,
+  options = DEFAULT_SEARCH_QUERY_OPTIONS,
+): SearchVerticesAction {
+  return { type: "INPUT_CHANGED", query, epoch, options };
+}
 
 function reduce(
   state: SearchVerticesState,
@@ -21,10 +30,7 @@ const ROW: SearchResultRow = {
 
 describe("searchVerticesReducer", () => {
   it("bumps the epoch and clears prior results on a new query", () => {
-    const next = reduce(INITIAL_SEARCH_VERTICES_STATE, {
-      type: "QUERY_CHANGED",
-      query: "alpha",
-    });
+    const next = reduce(INITIAL_SEARCH_VERTICES_STATE, input("alpha", 1));
     expect(next.query).toBe("alpha");
     expect(next.queryEpoch).toBe(1);
     expect(next.status).toBe("idle");
@@ -32,16 +38,10 @@ describe("searchVerticesReducer", () => {
     expect(next.error).toBeNull();
   });
 
-  it("ignores a QUERY_CHANGED that does not change the query", () => {
-    const seeded = reduce(INITIAL_SEARCH_VERTICES_STATE, {
-      type: "QUERY_CHANGED",
-      query: "alpha",
-    });
-    const same = searchVerticesReducer(seeded, {
-      type: "QUERY_CHANGED",
-      query: "alpha",
-    });
-    // Identity preserved → no epoch bump, no re-fetch.
+  it("ignores an input action whose epoch is not newer", () => {
+    const seeded = reduce(INITIAL_SEARCH_VERTICES_STATE, input("alpha", 1));
+    const same = searchVerticesReducer(seeded, input("alpha", 1));
+    // Identity preserved: an old effect cannot rewind the live lifecycle.
     expect(same).toBe(seeded);
     expect(same.queryEpoch).toBe(1);
   });
@@ -49,14 +49,11 @@ describe("searchVerticesReducer", () => {
   it("resets to the empty state (but advances epoch) when the query is cleared", () => {
     const seeded = reduce(
       INITIAL_SEARCH_VERTICES_STATE,
-      { type: "QUERY_CHANGED", query: "alpha" },
+      input("alpha", 1),
       { type: "SEARCH_REQUESTED", epoch: 1 },
       { type: "SEARCH_RECEIVED", epoch: 1, results: [ROW] },
     );
-    const cleared = searchVerticesReducer(seeded, {
-      type: "QUERY_CHANGED",
-      query: "",
-    });
+    const cleared = searchVerticesReducer(seeded, input("", 2));
     expect(cleared.query).toBe("");
     expect(cleared.results).toEqual([]);
     expect(cleared.status).toBe("idle");
@@ -67,7 +64,7 @@ describe("searchVerticesReducer", () => {
   it("applies a search result that matches the live epoch", () => {
     const next = reduce(
       INITIAL_SEARCH_VERTICES_STATE,
-      { type: "QUERY_CHANGED", query: "alpha" },
+      input("alpha", 1),
       { type: "SEARCH_REQUESTED", epoch: 1 },
       { type: "SEARCH_RECEIVED", epoch: 1, results: [ROW] },
     );
@@ -78,7 +75,7 @@ describe("searchVerticesReducer", () => {
   it("treats a zero-result response as a ready, empty success", () => {
     const next = reduce(
       INITIAL_SEARCH_VERTICES_STATE,
-      { type: "QUERY_CHANGED", query: "nomatch" },
+      input("nomatch", 1),
       { type: "SEARCH_REQUESTED", epoch: 1 },
       { type: "SEARCH_RECEIVED", epoch: 1, results: [] },
     );
@@ -91,9 +88,9 @@ describe("searchVerticesReducer", () => {
     // Type "ab" (epoch 1), then "abc" (epoch 2) before "ab"'s search lands.
     const seeded = reduce(
       INITIAL_SEARCH_VERTICES_STATE,
-      { type: "QUERY_CHANGED", query: "ab" },
+      input("ab", 1),
       { type: "SEARCH_REQUESTED", epoch: 1 },
-      { type: "QUERY_CHANGED", query: "abc" },
+      input("abc", 2),
     );
     expect(seeded.queryEpoch).toBe(2);
 
@@ -119,7 +116,7 @@ describe("searchVerticesReducer", () => {
   it("records a search failure and clears results on the live epoch", () => {
     const next = reduce(
       INITIAL_SEARCH_VERTICES_STATE,
-      { type: "QUERY_CHANGED", query: "boom" },
+      input("boom", 1),
       { type: "SEARCH_REQUESTED", epoch: 1 },
       { type: "SEARCH_RECEIVED", epoch: 1, results: [ROW] },
       { type: "SEARCH_FAILED", epoch: 1, error: "unavailable" },
@@ -132,7 +129,7 @@ describe("searchVerticesReducer", () => {
   it("enters the disabled state (no error) when the index is off", () => {
     const next = reduce(
       INITIAL_SEARCH_VERTICES_STATE,
-      { type: "QUERY_CHANGED", query: "alpha" },
+      input("alpha", 1),
       { type: "SEARCH_REQUESTED", epoch: 1 },
       { type: "SEARCH_DISABLED", epoch: 1 },
     );
@@ -144,8 +141,8 @@ describe("searchVerticesReducer", () => {
   it("drops a stale SEARCH_DISABLED from an abandoned query", () => {
     const seeded = reduce(
       INITIAL_SEARCH_VERTICES_STATE,
-      { type: "QUERY_CHANGED", query: "ab" },
-      { type: "QUERY_CHANGED", query: "abc" },
+      input("ab", 1),
+      input("abc", 2),
     );
     const afterStale = searchVerticesReducer(seeded, {
       type: "SEARCH_DISABLED",
@@ -158,14 +155,18 @@ describe("searchVerticesReducer", () => {
   it("bumps the epoch and re-runs the live query when an option changes", () => {
     const seeded = reduce(
       INITIAL_SEARCH_VERTICES_STATE,
-      { type: "QUERY_CHANGED", query: "alpha beta" },
+      input("alpha beta", 1),
       { type: "SEARCH_REQUESTED", epoch: 1 },
       { type: "SEARCH_RECEIVED", epoch: 1, results: [ROW] },
     );
-    const next = searchVerticesReducer(seeded, {
-      type: "OPTIONS_CHANGED",
-      options: { matchMode: "all", phrase: false, fuzzy: false },
-    });
+    const next = searchVerticesReducer(
+      seeded,
+      input("alpha beta", 2, {
+        matchMode: "all",
+        phrase: false,
+        fuzzy: false,
+      }),
+    );
     expect(next.options.matchMode).toBe("all");
     // A changed control re-runs the query, exactly like a keystroke.
     expect(next.queryEpoch).toBe(2);
@@ -174,25 +175,11 @@ describe("searchVerticesReducer", () => {
     expect(next.error).toBeNull();
   });
 
-  it("ignores an OPTIONS_CHANGED that changes nothing", () => {
-    const seeded = reduce(INITIAL_SEARCH_VERTICES_STATE, {
-      type: "QUERY_CHANGED",
-      query: "alpha",
-    });
-    const same = searchVerticesReducer(seeded, {
-      type: "OPTIONS_CHANGED",
-      options: { matchMode: "any", phrase: false, fuzzy: false },
-    });
-    // Identity preserved → no epoch bump, no re-fetch.
-    expect(same).toBe(seeded);
-    expect(same.queryEpoch).toBe(1);
-  });
-
   it("advances the epoch but stays inert when options change with no query", () => {
-    const next = searchVerticesReducer(INITIAL_SEARCH_VERTICES_STATE, {
-      type: "OPTIONS_CHANGED",
-      options: { matchMode: "any", phrase: true, fuzzy: false },
-    });
+    const next = searchVerticesReducer(
+      INITIAL_SEARCH_VERTICES_STATE,
+      input("", 1, { matchMode: "any", phrase: true, fuzzy: false }),
+    );
     expect(next.options.phrase).toBe(true);
     // Epoch advances so a slow reply from the prior options cannot land,
     // but the empty query means the effect issues no fetch.
@@ -204,16 +191,17 @@ describe("searchVerticesReducer", () => {
   it("preserves the chosen options when the query is cleared", () => {
     const seeded = reduce(
       INITIAL_SEARCH_VERTICES_STATE,
-      { type: "QUERY_CHANGED", query: "alpha" },
-      {
-        type: "OPTIONS_CHANGED",
-        options: { matchMode: "all", phrase: true, fuzzy: false },
-      },
+      input("alpha", 1),
+      input("alpha", 2, {
+        matchMode: "all",
+        phrase: true,
+        fuzzy: false,
+      }),
     );
-    const cleared = searchVerticesReducer(seeded, {
-      type: "QUERY_CHANGED",
-      query: "",
-    });
+    const cleared = searchVerticesReducer(
+      seeded,
+      input("", 3, { matchMode: "all", phrase: true, fuzzy: false }),
+    );
     expect(cleared.query).toBe("");
     expect(cleared.options).toEqual({
       matchMode: "all",

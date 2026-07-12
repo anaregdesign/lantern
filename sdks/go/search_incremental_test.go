@@ -19,11 +19,16 @@ import (
 // replays per-query canned hits (or a single canned error for every query).
 type fakeIncSearch struct {
 	graphv1connect.LanternServiceClient
-	mu    sync.Mutex
-	reqs  []*pb.SearchVerticesRequest
-	delay map[string]time.Duration
-	hits  map[string][]*pb.SearchHit
-	err   error
+	mu           sync.Mutex
+	reqs         []*pb.SearchVerticesRequest
+	delay        map[string]time.Duration
+	hits         map[string][]*pb.SearchHit
+	err          error
+	errByQuery   map[string]error
+	started      map[string]chan struct{}
+	release      map[string]chan struct{}
+	canceled     map[string]chan struct{}
+	ignoreCancel map[string]bool
 }
 
 func (f *fakeIncSearch) SearchVertices(ctx context.Context, req *connect.Request[pb.SearchVerticesRequest]) (*connect.Response[pb.SearchVerticesResponse], error) {
@@ -32,8 +37,28 @@ func (f *fakeIncSearch) SearchVertices(ctx context.Context, req *connect.Request
 	f.reqs = append(f.reqs, req.Msg)
 	d := f.delay[q]
 	h := f.hits[q]
-	e := f.err
+	e := f.errByQuery[q]
+	if e == nil {
+		e = f.err
+	}
+	started := f.started[q]
+	release := f.release[q]
+	canceled := f.canceled[q]
+	ignoreCancel := f.ignoreCancel[q]
 	f.mu.Unlock()
+	signal(started)
+	if release != nil {
+		if ignoreCancel {
+			<-release
+		} else {
+			select {
+			case <-release:
+			case <-ctx.Done():
+				signal(canceled)
+				return nil, ctx.Err()
+			}
+		}
+	}
 	if e != nil {
 		return nil, e
 	}
@@ -45,6 +70,16 @@ func (f *fakeIncSearch) SearchVertices(ctx context.Context, req *connect.Request
 		}
 	}
 	return connect.NewResponse(&pb.SearchVerticesResponse{Hits: h}), nil
+}
+
+func signal(ch chan struct{}) {
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
 }
 
 func (f *fakeIncSearch) calls() []string {
@@ -90,6 +125,15 @@ func waitUpdate(t *testing.T, is *IncrementalSearch) SearchUpdate {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for a SearchUpdate")
 		return SearchUpdate{}
+	}
+}
+
+func assertSignal(t *testing.T, ch <-chan struct{}, within time.Duration, name string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(within):
+		t.Fatalf("timed out waiting for %s", name)
 	}
 }
 
@@ -180,19 +224,24 @@ func TestIncrementalSearch_DebounceCoalesces(t *testing.T) {
 }
 
 func TestIncrementalSearch_CancelsInFlight(t *testing.T) {
+	started := make(chan struct{}, 1)
+	canceled := make(chan struct{}, 1)
 	fake := &fakeIncSearch{
-		delay: map[string]time.Duration{"slow": 500 * time.Millisecond},
 		hits: map[string][]*pb.SearchHit{
 			"slow": {{Key: "slow.hit", Score: 9}},
 			"fast": {{Key: "fast.hit", Score: 1}},
 		},
+		started:  map[string]chan struct{}{"slow": started},
+		release:  map[string]chan struct{}{"slow": make(chan struct{})},
+		canceled: map[string]chan struct{}{"slow": canceled},
 	}
-	is := newDriver(t, fake, WithDebounce(5*time.Millisecond))
+	is := newDriver(t, fake, WithDebounce(80*time.Millisecond))
 
 	is.Search("slow")
-	// Let "slow" dispatch and enter its 500ms delay before superseding it.
-	time.Sleep(60 * time.Millisecond)
+	assertSignal(t, started, time.Second, "slow RPC start")
 	is.Search("fast")
+	// Cancellation belongs to the input call, not the next timer firing.
+	assertSignal(t, canceled, 30*time.Millisecond, "slow RPC cancellation")
 
 	u := waitUpdate(t, is)
 	if u.Query != "fast" {
@@ -207,12 +256,51 @@ func TestIncrementalSearch_CancelsInFlight(t *testing.T) {
 	}
 }
 
+func TestIncrementalSearch_DropsCompletionDuringNextDebounce(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "result"},
+		{name: "error", err: errors.New("late failure")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			started := make(chan struct{}, 1)
+			release := make(chan struct{})
+			fake := &fakeIncSearch{
+				hits:         map[string][]*pb.SearchHit{"old": {{Key: "stale", Score: 1}}},
+				errByQuery:   map[string]error{"old": tc.err},
+				started:      map[string]chan struct{}{"old": started},
+				release:      map[string]chan struct{}{"old": release},
+				ignoreCancel: map[string]bool{"old": true},
+			}
+			is := newDriver(t, fake, WithDebounce(100*time.Millisecond))
+
+			is.Search("old")
+			assertSignal(t, started, time.Second, "old RPC start")
+			is.Search("new")
+			close(release) // transport loses the cancellation race
+
+			select {
+			case got := <-is.Updates():
+				t.Fatalf("stale update delivered during new debounce: %+v", got)
+			case <-time.After(30 * time.Millisecond):
+			}
+		})
+	}
+}
+
 func TestIncrementalSearch_MinQueryLength(t *testing.T) {
 	fake := &fakeIncSearch{}
-	is := newDriver(t, fake, WithDebounce(5*time.Millisecond), WithMinQueryLength(3))
+	is := newDriver(t, fake, WithDebounce(time.Hour), WithMinQueryLength(3))
 
 	is.Search("ab") // shorter than 3 runes
-	u := waitUpdate(t, is)
+	var u SearchUpdate
+	select {
+	case u = <-is.Updates():
+	default:
+		t.Fatal("too-short input did not reset synchronously")
+	}
 
 	if u.Query != "ab" {
 		t.Errorf("query = %q, want %q", u.Query, "ab")
@@ -225,6 +313,29 @@ func TestIncrementalSearch_MinQueryLength(t *testing.T) {
 	}
 	if got := fake.calls(); len(got) != 0 {
 		t.Errorf("calls = %v, want no RPC for a too-short query", got)
+	}
+}
+
+func TestIncrementalSearch_NewInputInvalidatesBufferedUpdate(t *testing.T) {
+	fake := &fakeIncSearch{hits: map[string][]*pb.SearchHit{
+		"old": {{Key: "old", Score: 1}},
+	}}
+	is := newDriver(t, fake, WithDebounce(0))
+
+	is.Search("old")
+	// Wait until the result is buffered without consuming it.
+	deadline := time.Now().Add(time.Second)
+	for len(is.updates) == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if len(is.updates) == 0 {
+		t.Fatal("old result was not buffered")
+	}
+	is.Search("new")
+	select {
+	case got := <-is.Updates():
+		t.Fatalf("new input left buffered stale update: %+v", got)
+	default:
 	}
 }
 
@@ -241,18 +352,47 @@ func TestIncrementalSearch_DeliversError(t *testing.T) {
 	}
 }
 
-func TestIncrementalSearch_CloseIsIdempotent(t *testing.T) {
-	fake := &fakeIncSearch{}
-	l := mustLantern(t)
-	l.client = fake
-	is := l.NewIncrementalSearch(context.Background(), WithDebounce(5*time.Millisecond))
+func TestIncrementalSearch_Close(t *testing.T) {
+	t.Run("idempotent and cancels pending debounce", func(t *testing.T) {
+		fake := &fakeIncSearch{}
+		l := mustLantern(t)
+		l.client = fake
+		is := l.NewIncrementalSearch(context.Background(), WithDebounce(time.Hour))
+		is.Search("pending")
 
-	if err := is.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	if err := is.Close(); err != nil {
-		t.Fatalf("second Close: %v", err)
-	}
-	// A Search after Close must not panic or block.
-	is.Search("ignored")
+		if err := is.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		if err := is.Close(); err != nil {
+			t.Fatalf("second Close: %v", err)
+		}
+		// A Search after Close must not panic, block, or reach the wire.
+		is.Search("ignored")
+		if got := fake.calls(); len(got) != 0 {
+			t.Fatalf("calls after closing pending debounce = %v, want none", got)
+		}
+	})
+
+	t.Run("cancels active RPC before returning", func(t *testing.T) {
+		started := make(chan struct{}, 1)
+		canceled := make(chan struct{}, 1)
+		fake := &fakeIncSearch{
+			started:  map[string]chan struct{}{"active": started},
+			release:  map[string]chan struct{}{"active": make(chan struct{})},
+			canceled: map[string]chan struct{}{"active": canceled},
+		}
+		l := mustLantern(t)
+		l.client = fake
+		is := l.NewIncrementalSearch(context.Background(), WithDebounce(0))
+		is.Search("active")
+		assertSignal(t, started, time.Second, "active RPC start")
+
+		closed := make(chan struct{})
+		go func() {
+			_ = is.Close()
+			close(closed)
+		}()
+		assertSignal(t, canceled, time.Second, "active RPC cancellation")
+		assertSignal(t, closed, time.Second, "Close return")
+	})
 }
