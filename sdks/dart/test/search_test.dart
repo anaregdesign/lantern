@@ -76,6 +76,14 @@ void main() {
           (request, context) => throw connect.ConnectException(
             connect.Code.failedPrecondition,
             'search is disabled',
+            details: [
+              connect.ErrorDetail(
+                'graph.v1.SearchErrorDetail',
+                graph.SearchErrorDetail(
+                  reason: graph.SearchErrorReason.SEARCH_DISABLED,
+                ).writeToBuffer(),
+              ),
+            ],
           ),
         )
         .build();
@@ -84,6 +92,40 @@ void main() {
     expect(
       (result as SearchDisabled).cause,
       isA<LanternFailedPreconditionException>(),
+    );
+    expect(result.cause.searchReason, SearchErrorReason.searchDisabled);
+  });
+
+  test('positions-disabled is not misclassified as search disabled', () async {
+    final transport = FakeTransportBuilder()
+        .unary<graph.SearchVerticesRequest, graph.SearchVerticesResponse>(
+          LanternService.searchVertices,
+          (request, context) => throw connect.ConnectException(
+            connect.Code.failedPrecondition,
+            'phrase search requires positional postings',
+            details: [
+              connect.ErrorDetail(
+                'graph.v1.SearchErrorDetail',
+                graph.SearchErrorDetail(
+                  reason: graph.SearchErrorReason.SEARCH_POSITIONS_DISABLED,
+                ).writeToBuffer(),
+              ),
+            ],
+          ),
+        )
+        .build();
+    await expectLater(
+      _client(transport).searchVertices(
+        'alpha beta',
+        searchOptions: const SearchOptions(phrase: true),
+      ),
+      throwsA(
+        isA<LanternFailedPreconditionException>().having(
+          (error) => error.searchReason,
+          'searchReason',
+          SearchErrorReason.searchPositionsDisabled,
+        ),
+      ),
     );
   });
 

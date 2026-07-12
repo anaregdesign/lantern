@@ -120,7 +120,13 @@ phrase matching, fuzziness, and prefix-term expansion. Nullable relevance
 fields preserve the distinction between omitted server defaults and explicit
 values. A server with search disabled returns the `SearchDisabled` result,
 which lets UI code render a calm unavailable state without classifying an
-exception.
+exception. Only the typed `SearchErrorReason.searchDisabled` detail maps to
+that result; missing positional postings remain a
+`LanternFailedPreconditionException` with
+`SearchErrorReason.searchPositionsDisabled`, so phrase capability failures are
+never mistaken for a disabled index. `getServerStatus().search` exposes the
+endpoint's positions flag, defaults, limits, implementation versions, and HA
+configuration fingerprint.
 
 ```dart
 final result = await client.searchVertices(

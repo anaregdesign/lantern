@@ -276,7 +276,12 @@ lantern-cli search espresso --prefix user.       # scope to a key namespace
 ```
 
 The index is maintained server-side and is on by default
-(`LANTERN_SEARCH_ENABLED`).
+(`LANTERN_SEARCH_ENABLED`). Phrase search additionally requires positional
+postings (`LANTERN_SEARCH_POSITIONS`, also on by default). A server without
+positions rejects `phrase=true` with the typed reason
+`SEARCH_POSITIONS_DISABLED`; it never silently returns unordered AND matches.
+`GetServerStatus.search` exposes these capabilities, their defaults and limits,
+implementation versions, and a configuration fingerprint.
 
 ---
 

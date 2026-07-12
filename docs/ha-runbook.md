@@ -646,6 +646,14 @@ A short checklist to walk before opening an incident:
 - [ ] **NTP drift > 500 ms.** RFC D3. Watch
       `lantern_hlc_skew_clamped_total` if/when present, or just keep
       NTP healthy.
+- [ ] **Heterogeneous search configuration.** Keep every `LANTERN_SEARCH_*`
+      value identical across replicas. Query `GetServerStatus` directly on
+      each pod and compare `search.config_fingerprint`; any mismatch means
+      clients can observe different search results or capabilities depending
+      on which replica serves the call. In particular, a replica with
+      `LANTERN_SEARCH_POSITIONS=false` rejects `phrase=true` with
+      `SEARCH_POSITIONS_DISABLED` while a positions-enabled replica executes
+      the phrase query.
 
 ---
 

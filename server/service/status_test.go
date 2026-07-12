@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anaregdesign/lantern/core/search"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
@@ -96,6 +97,55 @@ func TestLanternService_GetServerStatus(t *testing.T) {
 		}
 		if resp.GetGoVersion() == "" {
 			t.Errorf("GoVersion: got empty, want runtime.Version()")
+		}
+		if resp.GetSearch() == nil || resp.GetSearch().GetConfigFingerprint() == "" {
+			t.Errorf("Search: got %+v, want a discoverable capability snapshot", resp.GetSearch())
+		}
+	})
+
+	t.Run("ReportsSearchCapabilitiesAndConfigFingerprint", func(t *testing.T) {
+		fb := newFakeBackend()
+		limits := SearchLimits{
+			Enabled:          true,
+			PositionsEnabled: true,
+			DefaultLimit:     25,
+			MaxLimit:         250,
+			DefaultMode:      search.MatchMinShould,
+			DefaultMinShould: 2,
+		}
+		withPositions := NewLanternService(fb).WithSearchLimits(limits)
+		resp, err := withPositions.GetServerStatus(context.Background(), &pb.GetServerStatusRequest{})
+		if err != nil {
+			t.Fatalf("GetServerStatus: %v", err)
+		}
+		got := resp.GetSearch()
+		if !got.GetEnabled() || !got.GetPositionsEnabled() {
+			t.Errorf("search booleans = enabled:%t positions:%t, want true/true", got.GetEnabled(), got.GetPositionsEnabled())
+		}
+		if got.GetDefaultLimit() != 25 || got.GetMaxLimit() != 250 {
+			t.Errorf("search limits = %d/%d, want 25/250", got.GetDefaultLimit(), got.GetMaxLimit())
+		}
+		if got.GetDefaultMatchMode() != pb.MatchMode_MATCH_MODE_MIN_SHOULD || got.GetDefaultMinShouldMatch() != 2 {
+			t.Errorf("search defaults = %v/%d, want MIN_SHOULD/2", got.GetDefaultMatchMode(), got.GetDefaultMinShouldMatch())
+		}
+		if got.GetMaxFuzziness() != 2 || got.GetAnalyzerVersion() == "" || got.GetProjectionVersion() == "" {
+			t.Errorf("search implementation capabilities incomplete: %+v", got)
+		}
+		if len(got.GetConfigFingerprint()) != 64 {
+			t.Errorf("fingerprint length = %d, want 64 hex chars", len(got.GetConfigFingerprint()))
+		}
+
+		limits.PositionsEnabled = false
+		withoutPositions := NewLanternService(fb).WithSearchLimits(limits)
+		other, err := withoutPositions.GetServerStatus(context.Background(), &pb.GetServerStatusRequest{})
+		if err != nil {
+			t.Fatalf("GetServerStatus positions off: %v", err)
+		}
+		if other.GetSearch().GetPositionsEnabled() {
+			t.Error("positions_enabled = true, want false")
+		}
+		if other.GetSearch().GetConfigFingerprint() == got.GetConfigFingerprint() {
+			t.Error("heterogeneous search configs reported the same fingerprint")
 		}
 	})
 

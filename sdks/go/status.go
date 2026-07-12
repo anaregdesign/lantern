@@ -7,7 +7,7 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
-// ServerStatus is the flat snapshot returned by Lantern.GetServerStatus.
+// ServerStatus is the snapshot returned by Lantern.GetServerStatus.
 // Exposed as a true Go alias of the generated proto type so callers can
 // freely pass it across SDK / pb boundaries without conversion — matches
 // the Vertex / Edge alias pattern already established in client.go.
@@ -34,7 +34,7 @@ func ServerUptime(s *ServerStatus) time.Duration {
 	return s.Uptime.AsDuration()
 }
 
-// GetServerStatus returns the server's flat status snapshot — build/
+// GetServerStatus returns the server's status snapshot — build/
 // version, configuration ceilings, TLS / replication flags, and live
 // vertex / edge counts. Cheap to call (O(1) on the server) and intended
 // for the admin UI's "Ops" tab plus lightweight smoke-test tooling.

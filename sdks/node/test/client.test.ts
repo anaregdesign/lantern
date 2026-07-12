@@ -35,6 +35,7 @@ import {
   Int32,
   Uint64,
   Float32,
+  SearchErrorReason,
   backupRecordToNdjson,
   backupRecordFromNdjson,
   HealthStatusError,
@@ -46,6 +47,7 @@ import {
   VertexSchema,
   EdgeSchema,
   ScanOrder,
+  SearchErrorDetailSchema,
 } from "../src/gen/graph/v1/graph_pb.js";
 
 interface StubState {
@@ -68,6 +70,8 @@ interface StubState {
   searchHits?: { key: string; score: number }[];
   /** When true, searchVertices rejects with FAILED_PRECONDITION (index disabled). */
   searchDisabled?: boolean;
+  /** When true, phrase search rejects because positional postings are absent. */
+  searchPositionsDisabled?: boolean;
   /** Last AddEdgeRequest the stub observed, for contrib-id assertions (#895). */
   lastAddEdge?: { contribId: Uint8Array };
   /** Every AddEdgesRequest the stub observed, in order, for chunk-alignment assertions (#895). */
@@ -195,8 +199,26 @@ function newStubRoutes(state: StubState) {
       // (index-disabled) branch. Returns the configured ranked hits.
       async searchVertices(req) {
         state.lastSearch = { query: req.query, limit: req.limit, prefix: req.prefix };
+        if (state.searchPositionsDisabled) {
+          throw new ConnectError(
+            "phrase search requires positional postings",
+            Code.FailedPrecondition,
+            undefined,
+            [
+              {
+                desc: SearchErrorDetailSchema,
+                value: { reason: SearchErrorReason.SEARCH_POSITIONS_DISABLED },
+              },
+            ],
+          );
+        }
         if (state.searchDisabled) {
-          throw new ConnectError("search index disabled", Code.FailedPrecondition);
+          throw new ConnectError("search index disabled", Code.FailedPrecondition, undefined, [
+            {
+              desc: SearchErrorDetailSchema,
+              value: { reason: SearchErrorReason.SEARCH_DISABLED },
+            },
+          ]);
         }
         return { hits: state.searchHits ?? [] };
       },
@@ -1300,9 +1322,32 @@ describe("searchVertices request building (#639)", () => {
     const c = newClient();
     state.searchDisabled = true;
     try {
-      await expect(c.searchVertices("q")).rejects.toThrow(FailedPreconditionError);
+      try {
+        await c.searchVertices("q");
+        expect.unreachable("search should fail");
+      } catch (error) {
+        expect(error).toBeInstanceOf(FailedPreconditionError);
+        expect((error as FailedPreconditionError).reason).toBe(SearchErrorReason.SEARCH_DISABLED);
+      }
     } finally {
       state.searchDisabled = false;
+      c.close();
+    }
+  });
+
+  test("positions-disabled remains a distinct typed reason", async () => {
+    const c = newClient();
+    state.searchPositionsDisabled = true;
+    try {
+      await c.searchVertices("alpha beta", { phrase: true });
+      expect.unreachable("phrase search should fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(FailedPreconditionError);
+      expect((error as FailedPreconditionError).reason).toBe(
+        SearchErrorReason.SEARCH_POSITIONS_DISABLED,
+      );
+    } finally {
+      state.searchPositionsDisabled = false;
       c.close();
     }
   });

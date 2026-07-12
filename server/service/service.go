@@ -134,12 +134,15 @@ func defaultScanLimits() ScanLimits {
 // the composition root's decision NOT to call GraphCache.EnableSearchIndex
 // (the core search backend returns nil for a disabled index, a no-match,
 // and an empty query alike, so the gate cannot live in the cache — #624).
+// PositionsEnabled records whether adjacency can be verified; phrase requests
+// fail closed when false.
 // DefaultLimit / MaxLimit cap the per-call ranked-hit count exactly like
 // ScanLimits caps the prefix RPCs.
 type SearchLimits struct {
-	Enabled      bool
-	DefaultLimit uint32
-	MaxLimit     uint32
+	Enabled          bool
+	PositionsEnabled bool
+	DefaultLimit     uint32
+	MaxLimit         uint32
 	// DefaultMode is the match mode applied when a request leaves match_mode
 	// unspecified (#892); the zero value is MatchAny (the OR-union default).
 	DefaultMode search.MatchMode

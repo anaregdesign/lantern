@@ -30,6 +30,18 @@ function makeStatus(overrides: Partial<ServerStatus> = {}): ServerStatus {
     replicationEnabled: false,
     vertexCount: 42,
     edgeCount: 17,
+    search: {
+      enabled: true,
+      positionsEnabled: true,
+      defaultLimit: 100,
+      maxLimit: 1000,
+      defaultMatchMode: "any",
+      defaultMinShouldMatch: 1,
+      maxFuzziness: 2,
+      analyzerVersion: "script-aware-v1",
+      projectionVersion: "vertex-key-value-v1",
+      configFingerprint: "fingerprint",
+    },
     ...overrides,
   };
 }
@@ -120,6 +132,9 @@ describe("serverCardSummary", () => {
       "disabled",
     );
     expect(rows.find(([label]) => label === "TLS")?.[1]).toBe("enabled");
+    expect(rows.find(([label]) => label === "Search config")?.[1]).toBe(
+      "fingerprint",
+    );
   });
 
   it("substitutes (dev) when version is empty", () => {

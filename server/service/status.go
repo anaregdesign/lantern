@@ -2,6 +2,9 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"runtime"
 	"runtime/debug"
 	"time"
@@ -62,7 +65,7 @@ func (s *LanternService) Uptime() time.Duration {
 	return time.Since(s.startedAt)
 }
 
-// GetServerStatus returns a flat snapshot of the server's identity, build
+// GetServerStatus returns a snapshot of the server's identity, build
 // info, configuration ceilings, and current live vertex/edge counts. The
 // cache-count fields are read directly from the in-memory index — O(1)
 // and safe to call from any RPC. When WithStatusInfo was not wired (the
@@ -85,12 +88,42 @@ func (s *LanternService) GetServerStatus(ctx context.Context, _ *pb.GetServerSta
 		ReplicationEnabled: s.statusInfo.ReplicationEnabled,
 		VertexCount:        uint64(s.cache.VertexCount()),
 		EdgeCount:          uint64(s.cache.EdgeCount()),
+		Search:             s.searchCapabilities(),
 	}
 	if !s.startedAt.IsZero() {
 		resp.StartedAt = timestamppb.New(s.startedAt)
 		resp.Uptime = durationpb.New(now.Sub(s.startedAt))
 	}
 	return resp, nil
+}
+
+func (s *LanternService) searchCapabilities() *pb.SearchCapabilities {
+	capabilities := &pb.SearchCapabilities{
+		Enabled:               s.search.Enabled,
+		PositionsEnabled:      s.search.Enabled && s.search.PositionsEnabled,
+		DefaultLimit:          s.search.DefaultLimit,
+		MaxLimit:              s.search.MaxLimit,
+		DefaultMatchMode:      matchModeToPB(s.search.DefaultMode),
+		DefaultMinShouldMatch: s.search.DefaultMinShould,
+		MaxFuzziness:          searchMaxFuzziness,
+		AnalyzerVersion:       searchAnalyzerVersion,
+		ProjectionVersion:     searchProjectionVersion,
+	}
+	canonical := fmt.Sprintf(
+		"enabled=%t\npositions=%t\ndefault_limit=%d\nmax_limit=%d\ndefault_match_mode=%d\ndefault_min_should_match=%d\nmax_fuzziness=%d\nanalyzer=%s\nprojection=%s\n",
+		capabilities.Enabled,
+		s.search.PositionsEnabled,
+		capabilities.DefaultLimit,
+		capabilities.MaxLimit,
+		capabilities.DefaultMatchMode,
+		capabilities.DefaultMinShouldMatch,
+		capabilities.MaxFuzziness,
+		capabilities.AnalyzerVersion,
+		capabilities.ProjectionVersion,
+	)
+	sum := sha256.Sum256([]byte(canonical))
+	capabilities.ConfigFingerprint = hex.EncodeToString(sum[:])
+	return capabilities
 }
 
 // statusVersion returns the configured version string, falling back to

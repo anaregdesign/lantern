@@ -4,6 +4,7 @@ import {
   LanternError,
   NotFoundError,
   ResourceExhaustedError,
+  SearchErrorReason,
 } from "lantern-sdk/web";
 
 /**
@@ -28,13 +29,20 @@ export class LanternApiError extends Error {
    * `err.grpcMessage ?? err.message`) keeps working unchanged.
    */
   readonly grpcMessage: string;
+  readonly searchReason: SearchErrorReason;
 
-  private constructor(rpc: string, code: string, message: string) {
+  private constructor(
+    rpc: string,
+    code: string,
+    message: string,
+    searchReason = SearchErrorReason.SEARCH_ERROR_REASON_UNSPECIFIED,
+  ) {
     super(`${rpc} failed: ${message}`);
     this.name = "LanternApiError";
     this.rpc = rpc;
     this.code = code;
     this.grpcMessage = message;
+    this.searchReason = searchReason;
   }
 
   static fromUnknown(rpc: string, err: unknown): Error {
@@ -51,7 +59,12 @@ export class LanternApiError extends Error {
       return new LanternApiError(rpc, "resource_exhausted", err.message);
     }
     if (err instanceof FailedPreconditionError) {
-      return new LanternApiError(rpc, "failed_precondition", err.message);
+      return new LanternApiError(
+        rpc,
+        "failed_precondition",
+        err.message,
+        err.reason,
+      );
     }
     if (err instanceof LanternError) {
       return new LanternApiError(rpc, "unknown", err.message);
@@ -78,10 +91,10 @@ export class LanternApiError extends Error {
    * toast (#627).
    */
   static isDisabled(err: unknown): boolean {
-    return (
-      err instanceof FailedPreconditionError ||
-      (err instanceof LanternApiError && err.code === "failed_precondition")
-    );
+    return err instanceof FailedPreconditionError
+      ? err.reason === SearchErrorReason.SEARCH_DISABLED
+      : err instanceof LanternApiError &&
+          err.searchReason === SearchErrorReason.SEARCH_DISABLED;
   }
 
   /**

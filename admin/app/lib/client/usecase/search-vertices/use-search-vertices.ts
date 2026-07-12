@@ -5,7 +5,7 @@ import {
   useReducer,
   useState,
 } from "react";
-import { useLanternClient } from "~/lib/client/infrastructure/api/use-lantern-client";
+import type { LanternClient } from "~/lib/client/infrastructure/api/lantern-client";
 import { fetchSearchResults } from "./handlers";
 import {
   browserSearchVerticesScheduler,
@@ -59,6 +59,7 @@ export interface UseSearchVerticesResult {
  * epoch guards make any reply that still lands inert.
  */
 export function useSearchVertices(
+  client: LanternClient,
   rawQuery: string,
   options: UseSearchVerticesOptions = {},
 ): UseSearchVerticesResult {
@@ -68,7 +69,6 @@ export function useSearchVertices(
   const matchMode = options.matchMode ?? "any";
   const phrase = options.phrase ?? false;
   const fuzzy = options.fuzzy ?? false;
-  const client = useLanternClient();
   const [state, dispatch] = useReducer(
     searchVerticesReducer,
     INITIAL_SEARCH_VERTICES_STATE,

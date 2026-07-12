@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -94,7 +95,7 @@ EXAMPLES
 
 		hits, err := cli.SearchVertices(cmd.Context(), args[0], opts...)
 		if err != nil {
-			return err
+			return actionableSearchError(err)
 		}
 		out := cmd.OutOrStdout()
 		for _, h := range hits {
@@ -102,6 +103,17 @@ EXAMPLES
 		}
 		return nil
 	},
+}
+
+func actionableSearchError(err error) error {
+	switch {
+	case errors.Is(err, client.ErrSearchPositionsDisabled):
+		return fmt.Errorf("phrase search is unavailable: restart the server with LANTERN_SEARCH_POSITIONS=true or omit --phrase: %w", err)
+	case errors.Is(err, client.ErrSearchDisabled):
+		return fmt.Errorf("content search is unavailable: restart the server with LANTERN_SEARCH_ENABLED=true: %w", err)
+	default:
+		return err
+	}
 }
 
 func init() {

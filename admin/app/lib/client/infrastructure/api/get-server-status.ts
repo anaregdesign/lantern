@@ -2,7 +2,7 @@ import type { LanternClient } from "./lantern-client";
 import { LanternApiError } from "./error";
 
 /**
- * ServerStatus is the JSON-flat view of GetServerStatusResponse the
+ * ServerStatus is the JSON-friendly view of GetServerStatusResponse the
  * Ops view consumes. Durations are surfaced as both the raw seconds
  * value (for tooling) and a human-readable label (for the card).
  *
@@ -28,6 +28,20 @@ export interface ServerStatus {
   replicationEnabled: boolean;
   vertexCount: number;
   edgeCount: number;
+  search: SearchCapabilities;
+}
+
+export interface SearchCapabilities {
+  enabled: boolean;
+  positionsEnabled: boolean;
+  defaultLimit: number;
+  maxLimit: number;
+  defaultMatchMode: "any" | "all" | "min-should";
+  defaultMinShouldMatch: number;
+  maxFuzziness: number;
+  analyzerVersion: string;
+  projectionVersion: string;
+  configFingerprint: string;
 }
 
 /**
@@ -62,6 +76,23 @@ export async function getServerStatus(
       // realistic cache size).
       vertexCount: Number(resp.vertexCount),
       edgeCount: Number(resp.edgeCount),
+      search: {
+        enabled: resp.search?.enabled ?? false,
+        positionsEnabled: resp.search?.positionsEnabled ?? false,
+        defaultLimit: resp.search?.defaultLimit ?? 0,
+        maxLimit: resp.search?.maxLimit ?? 0,
+        defaultMatchMode:
+          resp.search?.defaultMatchMode === 2
+            ? "all"
+            : resp.search?.defaultMatchMode === 3
+              ? "min-should"
+              : "any",
+        defaultMinShouldMatch: resp.search?.defaultMinShouldMatch ?? 0,
+        maxFuzziness: resp.search?.maxFuzziness ?? 0,
+        analyzerVersion: resp.search?.analyzerVersion ?? "",
+        projectionVersion: resp.search?.projectionVersion ?? "",
+        configFingerprint: resp.search?.configFingerprint ?? "",
+      },
     };
   } catch (err) {
     throw LanternApiError.fromUnknown("GetServerStatus", err);

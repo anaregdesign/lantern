@@ -40,6 +40,25 @@ func searchVertexDocument(v *pb.Vertex) search.Document {
 	return search.Text(b.String())
 }
 
+func wireSearchErrorReason(t *testing.T, err error) pb.SearchErrorReason {
+	t.Helper()
+	var connectErr *connect.Error
+	if !errors.As(err, &connectErr) {
+		t.Fatalf("error %T is not *connect.Error", err)
+	}
+	for _, detail := range connectErr.Details() {
+		value, valueErr := detail.Value()
+		if valueErr != nil {
+			t.Fatalf("decode error detail: %v", valueErr)
+		}
+		if searchDetail, ok := value.(*pb.SearchErrorDetail); ok {
+			return searchDetail.GetReason()
+		}
+	}
+	t.Fatalf("SearchErrorDetail missing from wire error: %v", err)
+	return pb.SearchErrorReason_SEARCH_ERROR_REASON_UNSPECIFIED
+}
+
 // newSearchRawClient stands up a Connect server whose GraphCache has the
 // search index enabled (or not) and whose service gates SearchVertices on
 // the matching SearchLimits.Enabled flag — the same two-sided agreement the
@@ -52,9 +71,10 @@ func newSearchRawClient(t *testing.T, enabled bool) graphv1connect.LanternServic
 		cache.EnableSearchIndex(searchVertexDocument, strings.Compare)
 	}
 	svc := service.NewLanternService(cache).WithSearchLimits(service.SearchLimits{
-		Enabled:      enabled,
-		DefaultLimit: 100,
-		MaxLimit:     1000,
+		Enabled:          enabled,
+		PositionsEnabled: enabled,
+		DefaultLimit:     100,
+		MaxLimit:         1000,
 	})
 	srv := newConnectTestServer(t, svc, nil)
 	return graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
@@ -72,9 +92,10 @@ func newSearchSDKClient(t *testing.T, enabled bool) *client.Lantern {
 		cache.EnableSearchIndex(searchVertexDocument, strings.Compare)
 	}
 	svc := service.NewLanternService(cache).WithSearchLimits(service.SearchLimits{
-		Enabled:      enabled,
-		DefaultLimit: 100,
-		MaxLimit:     1000,
+		Enabled:          enabled,
+		PositionsEnabled: enabled,
+		DefaultLimit:     100,
+		MaxLimit:         1000,
 	})
 	srv := newConnectTestServer(t, svc, nil)
 	return newConnectClientFor(t, srv.url)
@@ -147,6 +168,9 @@ func TestSearchVertices_DisabledReturnsFailedPrecondition(t *testing.T) {
 	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
 		t.Fatalf("code = %v, want FailedPrecondition", got)
 	}
+	if got := wireSearchErrorReason(t, err); got != pb.SearchErrorReason_SEARCH_DISABLED {
+		t.Fatalf("reason = %v, want SEARCH_DISABLED", got)
+	}
 }
 
 // TestSearchVertices_SDKForwarder drives the SDK's high-level SearchVertices
@@ -212,6 +236,12 @@ func TestSearchVertices_SDKForwarder(t *testing.T) {
 		}
 		if !errors.Is(err, client.ErrFailedPrecondition) {
 			t.Fatalf("want errors.Is(err, client.ErrFailedPrecondition), got %v", err)
+		}
+		if !errors.Is(err, client.ErrSearchDisabled) {
+			t.Fatalf("want errors.Is(err, client.ErrSearchDisabled), got %v", err)
+		}
+		if got := client.SearchFailureReason(err); got != client.SearchErrorReasonDisabled {
+			t.Fatalf("SearchFailureReason = %v, want SEARCH_DISABLED", got)
 		}
 	})
 }
@@ -492,20 +522,19 @@ func TestSearchVertices_DeterministicAcrossHistories(t *testing.T) {
 	}
 }
 
-// TestSearchVertices_PositionsOff verifies the #908 opt-out end to end through
-// the RPC: with LANTERN_SEARCH_POSITIONS=false the index keeps no positions, so
-// a phrase query degrades to the AND-intersection (every word present, adjacency
-// unverified) instead of failing — the scattered doc that a position-tracking
-// index would drop is now kept.
+// TestSearchVertices_PositionsOff verifies that the wire service fails closed:
+// without positions it cannot prove adjacency, so it must never silently
+// reinterpret phrase=true as an unordered AND query.
 func TestSearchVertices_PositionsOff(t *testing.T) {
 	// Build a search-enabled service whose cache index tracks no positions.
 	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 	cache.EnablePrefixIndex(func(k string) string { return k })
 	cache.EnableSearchIndex(searchVertexDocument, strings.Compare, graphcache.WithoutSearchPositions())
 	svc := service.NewLanternService(cache).WithSearchLimits(service.SearchLimits{
-		Enabled:      true,
-		DefaultLimit: 100,
-		MaxLimit:     1000,
+		Enabled:          true,
+		PositionsEnabled: false,
+		DefaultLimit:     100,
+		MaxLimit:         1000,
 	})
 	srv := newConnectTestServer(t, svc, nil)
 	c := graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
@@ -522,22 +551,34 @@ func TestSearchVertices_PositionsOff(t *testing.T) {
 		t.Fatalf("PutVertices: %v", err)
 	}
 
-	resp, err := c.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{
+	_, err := c.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{
 		Query:   "alpha beta",
 		Options: &pb.SearchOptions{Phrase: true},
 	}))
-	if err != nil {
-		t.Fatalf("SearchVertices phrase: %v", err)
+	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
+		t.Fatalf("code = %v, want FailedPrecondition", got)
 	}
-	got := map[string]bool{}
-	for _, h := range resp.Msg.GetHits() {
-		got[h.GetKey()] = true
+	if got := wireSearchErrorReason(t, err); got != pb.SearchErrorReason_SEARCH_POSITIONS_DISABLED {
+		t.Fatalf("reason = %v, want SEARCH_POSITIONS_DISABLED", got)
 	}
-	// Positions off: the phrase query is the AND-intersection, so BOTH the
-	// adjacent doc and the scattered doc come back (a position-tracking index
-	// would drop doc.split — asserted in TestSearchVertices_Options).
-	if !got["doc.phrase"] || !got["doc.split"] {
-		t.Errorf("positions-off phrase = %v, want both {doc.phrase, doc.split} (AND-intersection)", got)
+	status, statusErr := c.GetServerStatus(ctx, connect.NewRequest(&pb.GetServerStatusRequest{}))
+	if statusErr != nil {
+		t.Fatalf("GetServerStatus: %v", statusErr)
+	}
+	capabilities := status.Msg.GetSearch()
+	if !capabilities.GetEnabled() || capabilities.GetPositionsEnabled() {
+		t.Fatalf("search capabilities = %+v, want enabled with positions off", capabilities)
+	}
+	if capabilities.GetConfigFingerprint() == "" {
+		t.Fatal("search config fingerprint is empty")
+	}
+	withPositions := newSearchRawClient(t, true)
+	peerStatus, peerErr := withPositions.GetServerStatus(ctx, connect.NewRequest(&pb.GetServerStatusRequest{}))
+	if peerErr != nil {
+		t.Fatalf("GetServerStatus positions-enabled peer: %v", peerErr)
+	}
+	if peerStatus.Msg.GetSearch().GetConfigFingerprint() == capabilities.GetConfigFingerprint() {
+		t.Fatal("mixed search configuration is invisible: peer fingerprints match")
 	}
 }
 

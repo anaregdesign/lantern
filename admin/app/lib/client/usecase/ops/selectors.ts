@@ -110,6 +110,9 @@ export function serverCardSummary(s: ServerStatus): Array<[string, string]> {
     ],
     ["TLS", s.tlsEnabled ? "enabled" : "disabled"],
     ["Replication", s.replicationEnabled ? "enabled" : "disabled"],
+    ["Search", s.search.enabled ? "enabled" : "disabled"],
+    ["Search positions", s.search.positionsEnabled ? "enabled" : "disabled"],
+    ["Search config", s.search.configFingerprint || "(unknown)"],
     ["Vertices (approx.)", formatCount(s.vertexCount)],
     ["Edges (approx.)", formatCount(s.edgeCount)],
   ];

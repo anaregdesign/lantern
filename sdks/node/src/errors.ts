@@ -19,6 +19,9 @@
  * `inputs.slice(err.written)`.
  */
 
+import { ConnectError } from "@connectrpc/connect";
+import { SearchErrorDetailSchema, SearchErrorReason } from "./gen/graph/v1/graph_pb.js";
+
 export class LanternError extends Error {
   override readonly cause?: unknown;
   constructor(message: string, options?: { cause?: unknown }) {
@@ -57,9 +60,11 @@ export class ResourceExhaustedError extends LanternError {
  * error. Maps from `Code.FailedPrecondition` (9).
  */
 export class FailedPreconditionError extends LanternError {
-  constructor(message: string, options?: { cause?: unknown }) {
+  readonly reason: SearchErrorReason;
+  constructor(message: string, options?: { cause?: unknown; reason?: SearchErrorReason }) {
     super(message, options);
     this.name = "FailedPreconditionError";
+    this.reason = options?.reason ?? SearchErrorReason.SEARCH_ERROR_REASON_UNSPECIFIED;
   }
 }
 
@@ -113,7 +118,7 @@ function stringify(err: unknown): string {
  */
 export function wrapConnectError(err: unknown): LanternError {
   if (err instanceof LanternError) return err;
-  // Duck-type to avoid importing ConnectError at this layer.
+  // Read the common status fields without changing non-Connect fallthrough.
   const ce = err as { code?: number; rawMessage?: string; message?: string };
   const message = ce.rawMessage ?? ce.message ?? String(err);
   switch (ce.code) {
@@ -124,7 +129,12 @@ export function wrapConnectError(err: unknown): LanternError {
     case 8:
       return new ResourceExhaustedError(message, { cause: err });
     case 9:
-      return new FailedPreconditionError(message, { cause: err });
+      return new FailedPreconditionError(message, {
+        cause: err,
+        reason:
+          ConnectError.from(err).findDetails(SearchErrorDetailSchema)[0]?.reason ??
+          SearchErrorReason.SEARCH_ERROR_REASON_UNSPECIFIED,
+      });
     default:
       return new LanternError(message, { cause: err });
   }

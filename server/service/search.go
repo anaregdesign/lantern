@@ -20,6 +20,14 @@ import (
 // treating it as a transient failure.
 var errSearchDisabled = errors.New("vertex search is disabled on this server; set LANTERN_SEARCH_ENABLED=true to enable it")
 
+var errSearchPositionsDisabled = errors.New("phrase search requires positional postings; set LANTERN_SEARCH_POSITIONS=true or omit phrase=true")
+
+const (
+	searchMaxFuzziness      = uint32(2)
+	searchAnalyzerVersion   = "script-aware-v1"
+	searchProjectionVersion = "vertex-key-value-v1"
+)
+
 // SearchVertices returns vertices ranked by full-text relevance over their
 // indexed content (key + value) in stable (score DESC, raw key ASC) order. It
 // is the content counterpart to ScanVertices' lexicographic key walk: callers
@@ -42,12 +50,18 @@ func (s *LanternService) SearchVertices(ctx context.Context, in *pb.SearchVertic
 		return nil, ctxToConnect(err)
 	}
 	if !s.search.Enabled {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errSearchDisabled)
+		return nil, newSearchPreconditionError(pb.SearchErrorReason_SEARCH_DISABLED, errSearchDisabled)
 	}
 	start := time.Now()
 	limit := clampLimit(in.GetLimit(), s.search.DefaultLimit, s.search.MaxLimit)
 
 	opts, phrase := s.resolveSearchOptions(in.GetOptions())
+	if phrase && !s.search.PositionsEnabled {
+		return nil, newSearchPreconditionError(pb.SearchErrorReason_SEARCH_POSITIONS_DISABLED, errSearchPositionsDisabled)
+	}
+	if in.GetOptions().GetFuzziness() > searchMaxFuzziness {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("search fuzziness must be at most %d", searchMaxFuzziness))
+	}
 	ranked := s.cache.SearchVerticesMatch(in.GetQuery(), int(limit), in.GetPrefix(), opts, phrase)
 	hits := make([]*pb.SearchHit, 0, len(ranked))
 	for _, r := range ranked {
@@ -55,6 +69,16 @@ func (s *LanternService) SearchVertices(ctx context.Context, in *pb.SearchVertic
 	}
 	s.metrics.OnSearch(len(hits), time.Since(start))
 	return &pb.SearchVerticesResponse{Hits: hits}, nil
+}
+
+func newSearchPreconditionError(reason pb.SearchErrorReason, cause error) error {
+	err := connect.NewError(connect.CodeFailedPrecondition, cause)
+	detail, detailErr := connect.NewErrorDetail(&pb.SearchErrorDetail{Reason: reason})
+	if detailErr != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("marshal SearchErrorDetail: %w", detailErr))
+	}
+	err.AddDetail(detail)
+	return err
 }
 
 // resolveSearchOptions maps the request's SearchOptions to the core query
@@ -91,6 +115,17 @@ func matchModeFromPB(m pb.MatchMode, fallback search.MatchMode) search.MatchMode
 		return search.MatchMinShould
 	default:
 		return fallback
+	}
+}
+
+func matchModeToPB(m search.MatchMode) pb.MatchMode {
+	switch m {
+	case search.MatchAll:
+		return pb.MatchMode_MATCH_MODE_ALL
+	case search.MatchMinShould:
+		return pb.MatchMode_MATCH_MODE_MIN_SHOULD
+	default:
+		return pb.MatchMode_MATCH_MODE_ANY
 	}
 }
 

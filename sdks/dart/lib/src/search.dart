@@ -1,5 +1,17 @@
 part of 'client.dart';
 
+/// Machine-readable reason for a search FAILED_PRECONDITION.
+enum SearchErrorReason {
+  /// No recognized search reason detail was supplied.
+  unspecified,
+
+  /// The endpoint has content search disabled.
+  searchDisabled,
+
+  /// Phrase adjacency cannot be verified because positions are disabled.
+  searchPositionsDisabled,
+}
+
 /// How a multi-term query selects matching vertices.
 enum SearchMatchMode {
   /// Match at least one analyzed term.
@@ -294,7 +306,10 @@ extension LanternSearch on LanternClient {
         ),
       );
     } on LanternFailedPreconditionException catch (error) {
-      return SearchDisabled(error);
+      if (error.searchReason == SearchErrorReason.searchDisabled) {
+        return SearchDisabled(error);
+      }
+      rethrow;
     }
   }
 

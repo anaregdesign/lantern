@@ -19,6 +19,18 @@ const sampleServer: ServerStatus = {
   replicationEnabled: true,
   vertexCount: 42,
   edgeCount: 17,
+  search: {
+    enabled: true,
+    positionsEnabled: true,
+    defaultLimit: 100,
+    maxLimit: 1000,
+    defaultMatchMode: "any",
+    defaultMinShouldMatch: 1,
+    maxFuzziness: 2,
+    analyzerVersion: "script-aware-v1",
+    projectionVersion: "vertex-key-value-v1",
+    configFingerprint: "fingerprint",
+  },
 };
 
 const sampleReplication: ReplicationStatus = {

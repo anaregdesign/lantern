@@ -282,8 +282,13 @@ const { found } = await client.getVertices(hits.map((h) => h.key));
 
 An empty or unmatched query resolves to `[]` (not an error). When the
 server's index is disabled (`LANTERN_SEARCH_ENABLED=false`) the call rejects
-with `FailedPreconditionError`, so callers can render a calm "search not
-enabled" state instead of treating it as a hard failure.
+with `FailedPreconditionError` whose `reason` is
+`SearchErrorReason.SEARCH_DISABLED`, so callers can render a calm "search not
+enabled" state without parsing text. A phrase query sent to a server without
+positional postings is distinct:
+`SearchErrorReason.SEARCH_POSITIONS_DISABLED`. `getServerStatus().search`
+lets clients discover positions, defaults, limits, implementation versions,
+and the HA configuration fingerprint before issuing a query.
 
 ## Backup & restore
 

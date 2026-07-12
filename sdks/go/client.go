@@ -294,7 +294,14 @@ func wrapConnectErr(err error) error {
 	case connect.CodeUnavailable:
 		return errors.Join(ErrUnavailable, err)
 	case connect.CodeFailedPrecondition:
-		return errors.Join(ErrFailedPrecondition, err)
+		switch SearchFailureReason(err) {
+		case SearchErrorReasonDisabled:
+			return errors.Join(ErrFailedPrecondition, ErrSearchDisabled, err)
+		case SearchErrorReasonPositionsDisabled:
+			return errors.Join(ErrFailedPrecondition, ErrSearchPositionsDisabled, err)
+		default:
+			return errors.Join(ErrFailedPrecondition, err)
+		}
 	case connect.CodeUnauthenticated:
 		return errors.Join(ErrUnauthenticated, err)
 	}
