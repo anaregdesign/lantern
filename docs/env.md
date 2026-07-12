@@ -76,8 +76,15 @@ value is treated as unset for the non-string kinds. The MCP server's
 | `LANTERN_SEARCH_DEFAULT_MIN_SHOULD` | uint32 | `1` | Minimum-should-match count applied when the mode resolves to min-should but the request leaves it 0. |
 | `LANTERN_SEARCH_DEFAULT_MODE` | string | `any` | Match mode applied when a SearchVertices request omits it: any (OR), all (AND), or min-should. Validated at startup — an unrecognised value fails boot. |
 | `LANTERN_SEARCH_ENABLED` | bool | `true` | Build the full-text search index and serve SearchVertices (off = FAILED_PRECONDITION). |
+| `LANTERN_SEARCH_MAX_DICTIONARY_VISITS` | int | `1000000` | Maximum dictionary candidates inspected by one search. |
+| `LANTERN_SEARCH_MAX_IN_FLIGHT` | int | `32` | Maximum concurrently executing searches; excess attempts fail immediately. |
 | `LANTERN_SEARCH_MAX_LIMIT` | uint32 | `1000` | Ceiling SearchVertices' limit is clamped to. |
+| `LANTERN_SEARCH_MAX_POSITION_VISITS` | int | `10000000` | Maximum positional entries inspected by one search. |
+| `LANTERN_SEARCH_MAX_POSTING_VISITS` | int | `10000000` | Maximum posting entries inspected by one search. |
+| `LANTERN_SEARCH_MAX_QUERY_BYTES` | int | `16384` | Maximum UTF-8 bytes accepted in one search query. |
+| `LANTERN_SEARCH_MAX_QUERY_TERMS` | int | `1024` | Maximum distinct analyzed terms in one search query. |
 | `LANTERN_SEARCH_POSITIONS` | bool | `true` | Record positional postings so phrase queries verify adjacency and the proximity boost ranks tight matches higher. Off drops the position store: phrase=true fails closed with FAILED_PRECONDITION / SEARCH_POSITIONS_DISABLED instead of returning unordered matches. |
+| `LANTERN_SEARCH_TIMEOUT_MS` | int | `5000` | Server-side deadline applied to every SearchVertices attempt. |
 | `LANTERN_SHUTDOWN_TIMEOUT_SECONDS` | int | `30` | Graceful-shutdown drain budget for in-flight requests before a hard close. |
 | `LANTERN_SLOW_RPC_THRESHOLD_MS` | int | `500` | RPCs slower than this emit a warn-level "slow rpc" log line (0 disables). |
 | `LANTERN_STRICT_CONFIG` | bool | `false` | Refuse to boot when any LANTERN_* value is malformed or an unknown LANTERN_* variable is set. |

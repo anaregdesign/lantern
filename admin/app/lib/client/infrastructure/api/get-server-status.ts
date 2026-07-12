@@ -42,6 +42,13 @@ export interface SearchCapabilities {
   analyzerVersion: string;
   projectionVersion: string;
   configFingerprint: string;
+  timeoutMs: number;
+  maxQueryBytes: number;
+  maxQueryTerms: number;
+  maxDictionaryVisits: number;
+  maxPostingVisits: number;
+  maxPositionVisits: number;
+  maxInFlight: number;
 }
 
 /**
@@ -92,6 +99,13 @@ export async function getServerStatus(
         analyzerVersion: resp.search?.analyzerVersion ?? "",
         projectionVersion: resp.search?.projectionVersion ?? "",
         configFingerprint: resp.search?.configFingerprint ?? "",
+        timeoutMs: resp.search?.timeoutMs ?? 0,
+        maxQueryBytes: resp.search?.maxQueryBytes ?? 0,
+        maxQueryTerms: resp.search?.maxQueryTerms ?? 0,
+        maxDictionaryVisits: Number(resp.search?.maxDictionaryVisits ?? 0n),
+        maxPostingVisits: Number(resp.search?.maxPostingVisits ?? 0n),
+        maxPositionVisits: Number(resp.search?.maxPositionVisits ?? 0n),
+        maxInFlight: resp.search?.maxInFlight ?? 0,
       },
     };
   } catch (err) {

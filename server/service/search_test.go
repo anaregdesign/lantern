@@ -5,11 +5,14 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 
 	"github.com/anaregdesign/lantern/core/search"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 func TestSearchVertices_DisabledReturnsFailedPrecondition(t *testing.T) {
@@ -125,6 +128,14 @@ func TestSearchVertices_AcceptsOptionsDecisionTable(t *testing.T) {
 
 func assertSearchErrorReason(t *testing.T, err error, want pb.SearchErrorReason) {
 	t.Helper()
+	searchDetail := searchErrorDetail(t, err)
+	if got := searchDetail.GetReason(); got != want {
+		t.Fatalf("reason = %v, want %v", got, want)
+	}
+}
+
+func searchErrorDetail(t *testing.T, err error) *pb.SearchErrorDetail {
+	t.Helper()
 	var connectErr *connect.Error
 	if !errors.As(err, &connectErr) {
 		t.Fatalf("error %T is not *connect.Error", err)
@@ -135,13 +146,11 @@ func assertSearchErrorReason(t *testing.T, err error, want pb.SearchErrorReason)
 			t.Fatalf("decode detail: %v", valueErr)
 		}
 		if searchDetail, ok := value.(*pb.SearchErrorDetail); ok {
-			if got := searchDetail.GetReason(); got != want {
-				t.Fatalf("reason = %v, want %v", got, want)
-			}
-			return
+			return searchDetail
 		}
 	}
 	t.Fatalf("SearchErrorDetail not found in %v", err)
+	return nil
 }
 
 func TestSearchVertices_EnabledMapsRankedHits(t *testing.T) {
@@ -236,6 +245,183 @@ func TestSearchVertices_CanceledContext(t *testing.T) {
 	}
 	if fb.searchCalls != 0 {
 		t.Errorf("backend called despite canceled context")
+	}
+}
+
+func TestSearchVertices_RejectsOversizeQuery(t *testing.T) {
+	fb := newFakeBackend()
+	svc := NewLanternService(fb).WithSearchLimits(SearchLimits{
+		Enabled:       true,
+		DefaultLimit:  10,
+		MaxLimit:      100,
+		MaxQueryBytes: 4,
+	})
+
+	_, err := svc.SearchVertices(context.Background(), &pb.SearchVerticesRequest{Query: "12345"})
+	if got := connect.CodeOf(err); got != connect.CodeResourceExhausted {
+		t.Fatalf("code = %v, want ResourceExhausted", got)
+	}
+	detail := searchErrorDetail(t, err)
+	if detail.GetReason() != pb.SearchErrorReason_SEARCH_WORK_BUDGET_EXHAUSTED || detail.GetWorkKind() != "query_bytes" {
+		t.Fatalf("detail = %+v, want work-budget/query_bytes", detail)
+	}
+	if fb.searchCalls != 0 {
+		t.Fatalf("backend calls = %d, want 0", fb.searchCalls)
+	}
+}
+
+func TestSearchVertices_MapsWorkBudgetExhaustion(t *testing.T) {
+	fb := newFakeBackend()
+	fm := &fakeHotPathMetrics{}
+	fb.searchContextFn = func(context.Context) ([]search.Result[string], search.Stats, error) {
+		return nil, search.Stats{PostingVisits: 3}, &search.BudgetExceededError{Kind: search.WorkPostingVisits, Limit: 2}
+	}
+	wantBudget := search.Budget{MaxQueryTerms: 1, MaxDictionaryVisits: 2, MaxPostingVisits: 3, MaxPositionVisits: 4}
+	svc := NewLanternService(fb).WithSearchLimits(SearchLimits{
+		Enabled:      true,
+		DefaultLimit: 10,
+		MaxLimit:     100,
+		WorkBudget:   wantBudget,
+	}).WithHotPathMetrics(fm)
+
+	resp, err := svc.SearchVertices(context.Background(), &pb.SearchVerticesRequest{Query: "alpha"})
+	if resp != nil {
+		t.Fatalf("response = %+v, want nil on exhaustion", resp)
+	}
+	if got := connect.CodeOf(err); got != connect.CodeResourceExhausted {
+		t.Fatalf("code = %v, want ResourceExhausted", got)
+	}
+	detail := searchErrorDetail(t, err)
+	if detail.GetReason() != pb.SearchErrorReason_SEARCH_WORK_BUDGET_EXHAUSTED || detail.GetWorkKind() != string(search.WorkPostingVisits) {
+		t.Fatalf("detail = %+v, want posting budget exhaustion", detail)
+	}
+	if fb.lastSearchBudget != wantBudget {
+		t.Fatalf("backend budget = %+v, want %+v", fb.lastSearchBudget, wantBudget)
+	}
+	if len(fm.searchExecution) != 1 || fm.searchExecution[0].outcome != "resource_exhausted" ||
+		fm.searchExecution[0].reason != string(search.WorkPostingVisits) || fm.searchExecution[0].stats.PostingVisits != 3 {
+		t.Fatalf("execution observations = %+v, want one bounded posting exhaustion", fm.searchExecution)
+	}
+}
+
+func TestSearchVertices_AppliesServerTimeout(t *testing.T) {
+	fb := newFakeBackend()
+	fb.searchContextFn = func(ctx context.Context) ([]search.Result[string], search.Stats, error) {
+		if _, ok := ctx.Deadline(); !ok {
+			t.Error("backend context has no server deadline")
+		}
+		<-ctx.Done()
+		return nil, search.Stats{}, ctx.Err()
+	}
+	svc := NewLanternService(fb).WithSearchLimits(SearchLimits{
+		Enabled:      true,
+		DefaultLimit: 10,
+		MaxLimit:     100,
+		Timeout:      10 * time.Millisecond,
+	})
+
+	_, err := svc.SearchVertices(context.Background(), &pb.SearchVerticesRequest{Query: "alpha"})
+	if got := connect.CodeOf(err); got != connect.CodeDeadlineExceeded {
+		t.Fatalf("code = %v, want DeadlineExceeded", got)
+	}
+}
+
+func TestSearchVertices_AdmissionSaturation(t *testing.T) {
+	fb := newFakeBackend()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	fb.searchContextFn = func(context.Context) ([]search.Result[string], search.Stats, error) {
+		close(started)
+		<-release
+		return nil, search.Stats{}, nil
+	}
+	svc := NewLanternService(fb).WithSearchLimits(SearchLimits{
+		Enabled:      true,
+		DefaultLimit: 10,
+		MaxLimit:     100,
+		MaxInFlight:  1,
+	})
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := svc.SearchVertices(context.Background(), &pb.SearchVerticesRequest{Query: "first"})
+		firstDone <- err
+	}()
+	<-started
+
+	_, err := svc.SearchVertices(context.Background(), &pb.SearchVerticesRequest{Query: "second"})
+	if got := connect.CodeOf(err); got != connect.CodeResourceExhausted {
+		t.Fatalf("code = %v, want ResourceExhausted", got)
+	}
+	detail := searchErrorDetail(t, err)
+	if detail.GetReason() != pb.SearchErrorReason_SEARCH_ADMISSION_SATURATED {
+		t.Fatalf("reason = %v, want admission saturated", detail.GetReason())
+	}
+	if fb.searchCalls != 1 {
+		t.Fatalf("backend calls = %d, want only admitted request", fb.searchCalls)
+	}
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first request: %v", err)
+	}
+}
+
+func TestSearchVertices_CancelsInFlightBackend(t *testing.T) {
+	fb := newFakeBackend()
+	started := make(chan struct{})
+	fb.searchContextFn = func(ctx context.Context) ([]search.Result[string], search.Stats, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, search.Stats{}, ctx.Err()
+	}
+	svc := NewLanternService(fb).WithSearchLimits(SearchLimits{Enabled: true, DefaultLimit: 10, MaxLimit: 100})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.SearchVertices(ctx, &pb.SearchVerticesRequest{Query: "alpha"})
+		done <- err
+	}()
+	<-started
+	cancel()
+	if err := <-done; connect.CodeOf(err) != connect.CodeCanceled {
+		t.Fatalf("error = %v, want Canceled", err)
+	}
+}
+
+func TestSearchVertices_RecordsBoundedTraceWork(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	defer func() { _ = provider.Shutdown(context.Background()) }()
+	ctx, span := provider.Tracer("test").Start(context.Background(), "search")
+	fb := newFakeBackend()
+	fb.searchContextFn = func(context.Context) ([]search.Result[string], search.Stats, error) {
+		return nil, search.Stats{QueryTerms: 2, DictionaryVisits: 3, PostingVisits: 5, PositionVisits: 7}, nil
+	}
+	svc := NewLanternService(fb).WithSearchLimits(SearchLimits{Enabled: true, DefaultLimit: 10, MaxLimit: 100})
+	if _, err := svc.SearchVertices(ctx, &pb.SearchVerticesRequest{Query: "alpha beta"}); err != nil {
+		t.Fatalf("SearchVertices: %v", err)
+	}
+	span.End()
+
+	ended := recorder.Ended()
+	if len(ended) != 1 {
+		t.Fatalf("ended spans = %d, want 1", len(ended))
+	}
+	attrs := map[string]any{}
+	for _, attr := range ended[0].Attributes() {
+		attrs[string(attr.Key)] = attr.Value.AsInterface()
+	}
+	for key, want := range map[string]any{
+		"lantern.search.outcome":           "ok",
+		"lantern.search.reason":            "none",
+		"lantern.search.query_terms":       int64(2),
+		"lantern.search.dictionary_visits": int64(3),
+		"lantern.search.posting_visits":    int64(5),
+		"lantern.search.position_visits":   int64(7),
+	} {
+		if got := attrs[key]; got != want {
+			t.Errorf("attribute %s = %#v, want %#v", key, got, want)
+		}
 	}
 }
 

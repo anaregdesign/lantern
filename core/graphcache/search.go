@@ -1,6 +1,7 @@
 package graphcache
 
 import (
+	"context"
 	"strings"
 
 	"github.com/anaregdesign/lantern/core/search"
@@ -134,8 +135,15 @@ func (c *GraphCache[S, T]) SearchVertices(query string, limit int, keyPrefix str
 // scoping are identical, and the bounded top-k selection still pushes them into
 // the accept callback so a broad query never materialises its whole match set.
 func (c *GraphCache[S, T]) SearchVerticesMatch(query string, limit int, keyPrefix string, opts search.MatchOptions, phrase bool) []search.Result[S] {
+	results, _, _ := c.SearchVerticesMatchContext(context.Background(), query, limit, keyPrefix, opts, phrase, search.Budget{})
+	return results
+}
+
+// SearchVerticesMatchContext is SearchVerticesMatch with cancellation and
+// deterministic search-work accounting. An error returns no partial results.
+func (c *GraphCache[S, T]) SearchVerticesMatchContext(ctx context.Context, query string, limit int, keyPrefix string, opts search.MatchOptions, phrase bool, budget search.Budget) ([]search.Result[S], search.Stats, error) {
 	if limit <= 0 {
-		return nil
+		return nil, search.Stats{}, nil
 	}
 	// Phase 1 — capture the immutable references the search path needs under a
 	// short RLock, then release c.mu before the expensive work. searchIndex and
@@ -148,7 +156,7 @@ func (c *GraphCache[S, T]) SearchVerticesMatch(query string, limit int, keyPrefi
 	c.mu.RUnlock()
 
 	if index == nil {
-		return nil
+		return nil, search.Stats{}, nil
 	}
 	// Phase 2 — query analysis, BM25 ranking, and liveness/prefix filtering all
 	// run WITHOUT GraphCache.mu. The liveness and prefix filters are pushed INTO
@@ -171,15 +179,20 @@ func (c *GraphCache[S, T]) SearchVerticesMatch(query string, limit int, keyPrefi
 		return keyPrefix == "" || keyHasPrefix(prefixExtract, id, keyPrefix)
 	}
 	var out []search.Result[S]
+	var stats search.Stats
+	var err error
 	if phrase {
-		out = index.SearchPhraseTopK(query, limit, accept)
+		out, stats, err = index.SearchPhraseTopKContext(ctx, query, limit, accept, budget)
 	} else {
-		out = index.SearchMatchTopK(query, limit, accept, opts)
+		out, stats, err = index.SearchMatchTopKContext(ctx, query, limit, accept, opts, budget)
+	}
+	if err != nil {
+		return nil, stats, err
 	}
 	if len(out) == 0 {
-		return nil
+		return nil, stats, nil
 	}
-	return out
+	return out, stats, nil
 }
 
 // keyHasPrefix reports whether key's string projection starts with prefix,

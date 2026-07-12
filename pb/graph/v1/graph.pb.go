@@ -331,6 +331,10 @@ const (
 	SearchErrorReason_SEARCH_DISABLED SearchErrorReason = 1
 	// buf:lint:ignore ENUM_VALUE_PREFIX -- stable cross-SDK reason code.
 	SearchErrorReason_SEARCH_POSITIONS_DISABLED SearchErrorReason = 2
+	// buf:lint:ignore ENUM_VALUE_PREFIX -- stable cross-SDK reason code.
+	SearchErrorReason_SEARCH_WORK_BUDGET_EXHAUSTED SearchErrorReason = 3
+	// buf:lint:ignore ENUM_VALUE_PREFIX -- stable cross-SDK reason code.
+	SearchErrorReason_SEARCH_ADMISSION_SATURATED SearchErrorReason = 4
 )
 
 // Enum value maps for SearchErrorReason.
@@ -339,11 +343,15 @@ var (
 		0: "SEARCH_ERROR_REASON_UNSPECIFIED",
 		1: "SEARCH_DISABLED",
 		2: "SEARCH_POSITIONS_DISABLED",
+		3: "SEARCH_WORK_BUDGET_EXHAUSTED",
+		4: "SEARCH_ADMISSION_SATURATED",
 	}
 	SearchErrorReason_value = map[string]int32{
 		"SEARCH_ERROR_REASON_UNSPECIFIED": 0,
 		"SEARCH_DISABLED":                 1,
 		"SEARCH_POSITIONS_DISABLED":       2,
+		"SEARCH_WORK_BUDGET_EXHAUSTED":    3,
+		"SEARCH_ADMISSION_SATURATED":      4,
 	}
 )
 
@@ -3987,10 +3995,13 @@ func (*GetServerStatusRequest) Descriptor() ([]byte, []int) {
 }
 
 // SearchErrorDetail is carried as a Connect error detail when a search
-// capability required by the request is unavailable.
+// capability is unavailable or execution containment rejects the attempt.
 type SearchErrorDetail struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Reason        SearchErrorReason      `protobuf:"varint,1,opt,name=reason,proto3,enum=graph.v1.SearchErrorReason" json:"reason,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Reason SearchErrorReason      `protobuf:"varint,1,opt,name=reason,proto3,enum=graph.v1.SearchErrorReason" json:"reason,omitempty"`
+	// work_kind is one of query_bytes, query_terms, dictionary_visits,
+	// posting_visits, or position_visits for budget exhaustion; empty otherwise.
+	WorkKind      string `protobuf:"bytes,2,opt,name=work_kind,json=workKind,proto3" json:"work_kind,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4032,6 +4043,13 @@ func (x *SearchErrorDetail) GetReason() SearchErrorReason {
 	return SearchErrorReason_SEARCH_ERROR_REASON_UNSPECIFIED
 }
 
+func (x *SearchErrorDetail) GetWorkKind() string {
+	if x != nil {
+		return x.WorkKind
+	}
+	return ""
+}
+
 // SearchCapabilities is the server's discoverable full-text-search contract.
 // config_fingerprint changes whenever one of these capability-defining values
 // changes, allowing operators to spot heterogeneous HA members cheaply.
@@ -4047,6 +4065,13 @@ type SearchCapabilities struct {
 	AnalyzerVersion       string                 `protobuf:"bytes,8,opt,name=analyzer_version,json=analyzerVersion,proto3" json:"analyzer_version,omitempty"`
 	ProjectionVersion     string                 `protobuf:"bytes,9,opt,name=projection_version,json=projectionVersion,proto3" json:"projection_version,omitempty"`
 	ConfigFingerprint     string                 `protobuf:"bytes,10,opt,name=config_fingerprint,json=configFingerprint,proto3" json:"config_fingerprint,omitempty"`
+	TimeoutMs             uint32                 `protobuf:"varint,11,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
+	MaxQueryBytes         uint32                 `protobuf:"varint,12,opt,name=max_query_bytes,json=maxQueryBytes,proto3" json:"max_query_bytes,omitempty"`
+	MaxQueryTerms         uint32                 `protobuf:"varint,13,opt,name=max_query_terms,json=maxQueryTerms,proto3" json:"max_query_terms,omitempty"`
+	MaxDictionaryVisits   uint64                 `protobuf:"varint,14,opt,name=max_dictionary_visits,json=maxDictionaryVisits,proto3" json:"max_dictionary_visits,omitempty"`
+	MaxPostingVisits      uint64                 `protobuf:"varint,15,opt,name=max_posting_visits,json=maxPostingVisits,proto3" json:"max_posting_visits,omitempty"`
+	MaxPositionVisits     uint64                 `protobuf:"varint,16,opt,name=max_position_visits,json=maxPositionVisits,proto3" json:"max_position_visits,omitempty"`
+	MaxInFlight           uint32                 `protobuf:"varint,17,opt,name=max_in_flight,json=maxInFlight,proto3" json:"max_in_flight,omitempty"`
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
 }
@@ -4149,6 +4174,55 @@ func (x *SearchCapabilities) GetConfigFingerprint() string {
 		return x.ConfigFingerprint
 	}
 	return ""
+}
+
+func (x *SearchCapabilities) GetTimeoutMs() uint32 {
+	if x != nil {
+		return x.TimeoutMs
+	}
+	return 0
+}
+
+func (x *SearchCapabilities) GetMaxQueryBytes() uint32 {
+	if x != nil {
+		return x.MaxQueryBytes
+	}
+	return 0
+}
+
+func (x *SearchCapabilities) GetMaxQueryTerms() uint32 {
+	if x != nil {
+		return x.MaxQueryTerms
+	}
+	return 0
+}
+
+func (x *SearchCapabilities) GetMaxDictionaryVisits() uint64 {
+	if x != nil {
+		return x.MaxDictionaryVisits
+	}
+	return 0
+}
+
+func (x *SearchCapabilities) GetMaxPostingVisits() uint64 {
+	if x != nil {
+		return x.MaxPostingVisits
+	}
+	return 0
+}
+
+func (x *SearchCapabilities) GetMaxPositionVisits() uint64 {
+	if x != nil {
+		return x.MaxPositionVisits
+	}
+	return 0
+}
+
+func (x *SearchCapabilities) GetMaxInFlight() uint32 {
+	if x != nil {
+		return x.MaxInFlight
+	}
+	return 0
 }
 
 type GetServerStatusResponse struct {
@@ -4944,9 +5018,10 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x05edges\x18\x01 \x03(\v2\x0e.graph.v1.EdgeR\x05edges\",\n" +
 	"\x10PutEdgesResponse\x12\x18\n" +
 	"\awritten\x18\x01 \x01(\x05R\awritten\"\x18\n" +
-	"\x16GetServerStatusRequest\"H\n" +
+	"\x16GetServerStatusRequest\"e\n" +
 	"\x11SearchErrorDetail\x123\n" +
-	"\x06reason\x18\x01 \x01(\x0e2\x1b.graph.v1.SearchErrorReasonR\x06reason\"\xc7\x03\n" +
+	"\x06reason\x18\x01 \x01(\x0e2\x1b.graph.v1.SearchErrorReasonR\x06reason\x12\x1b\n" +
+	"\twork_kind\x18\x02 \x01(\tR\bworkKind\"\xec\x05\n" +
 	"\x12SearchCapabilities\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12+\n" +
 	"\x11positions_enabled\x18\x02 \x01(\bR\x10positionsEnabled\x12#\n" +
@@ -4958,7 +5033,15 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x10analyzer_version\x18\b \x01(\tR\x0fanalyzerVersion\x12-\n" +
 	"\x12projection_version\x18\t \x01(\tR\x11projectionVersion\x12-\n" +
 	"\x12config_fingerprint\x18\n" +
-	" \x01(\tR\x11configFingerprint\"\xe4\x04\n" +
+	" \x01(\tR\x11configFingerprint\x12\x1d\n" +
+	"\n" +
+	"timeout_ms\x18\v \x01(\rR\ttimeoutMs\x12&\n" +
+	"\x0fmax_query_bytes\x18\f \x01(\rR\rmaxQueryBytes\x12&\n" +
+	"\x0fmax_query_terms\x18\r \x01(\rR\rmaxQueryTerms\x122\n" +
+	"\x15max_dictionary_visits\x18\x0e \x01(\x04R\x13maxDictionaryVisits\x12,\n" +
+	"\x12max_posting_visits\x18\x0f \x01(\x04R\x10maxPostingVisits\x12.\n" +
+	"\x13max_position_visits\x18\x10 \x01(\x04R\x11maxPositionVisits\x12\"\n" +
+	"\rmax_in_flight\x18\x11 \x01(\rR\vmaxInFlight\"\xe4\x04\n" +
 	"\x17GetServerStatusResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\x1d\n" +
 	"\n" +
@@ -5027,11 +5110,13 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x16MATCH_MODE_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eMATCH_MODE_ANY\x10\x01\x12\x12\n" +
 	"\x0eMATCH_MODE_ALL\x10\x02\x12\x19\n" +
-	"\x15MATCH_MODE_MIN_SHOULD\x10\x03*l\n" +
+	"\x15MATCH_MODE_MIN_SHOULD\x10\x03*\xae\x01\n" +
 	"\x11SearchErrorReason\x12#\n" +
 	"\x1fSEARCH_ERROR_REASON_UNSPECIFIED\x10\x00\x12\x13\n" +
 	"\x0fSEARCH_DISABLED\x10\x01\x12\x1d\n" +
-	"\x19SEARCH_POSITIONS_DISABLED\x10\x022\xb3\x10\n" +
+	"\x19SEARCH_POSITIONS_DISABLED\x10\x02\x12 \n" +
+	"\x1cSEARCH_WORK_BUDGET_EXHAUSTED\x10\x03\x12\x1e\n" +
+	"\x1aSEARCH_ADMISSION_SATURATED\x10\x042\xb3\x10\n" +
 	"\x0eLanternService\x12G\n" +
 	"\n" +
 	"Illuminate\x12\x1b.graph.v1.IlluminateRequest\x1a\x1c.graph.v1.IlluminateResponse\x12D\n" +

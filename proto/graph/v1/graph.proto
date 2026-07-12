@@ -748,12 +748,19 @@ enum SearchErrorReason {
   SEARCH_DISABLED = 1;
   // buf:lint:ignore ENUM_VALUE_PREFIX -- stable cross-SDK reason code.
   SEARCH_POSITIONS_DISABLED = 2;
+  // buf:lint:ignore ENUM_VALUE_PREFIX -- stable cross-SDK reason code.
+  SEARCH_WORK_BUDGET_EXHAUSTED = 3;
+  // buf:lint:ignore ENUM_VALUE_PREFIX -- stable cross-SDK reason code.
+  SEARCH_ADMISSION_SATURATED = 4;
 }
 
 // SearchErrorDetail is carried as a Connect error detail when a search
-// capability required by the request is unavailable.
+// capability is unavailable or execution containment rejects the attempt.
 message SearchErrorDetail {
   SearchErrorReason reason = 1;
+  // work_kind is one of query_bytes, query_terms, dictionary_visits,
+  // posting_visits, or position_visits for budget exhaustion; empty otherwise.
+  string work_kind = 2;
 }
 
 // SearchCapabilities is the server's discoverable full-text-search contract.
@@ -770,6 +777,13 @@ message SearchCapabilities {
   string analyzer_version = 8;
   string projection_version = 9;
   string config_fingerprint = 10;
+  uint32 timeout_ms = 11;
+  uint32 max_query_bytes = 12;
+  uint32 max_query_terms = 13;
+  uint64 max_dictionary_visits = 14;
+  uint64 max_posting_visits = 15;
+  uint64 max_position_visits = 16;
+  uint32 max_in_flight = 17;
 }
 
 message GetServerStatusResponse {

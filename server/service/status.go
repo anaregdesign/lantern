@@ -108,9 +108,16 @@ func (s *LanternService) searchCapabilities() *pb.SearchCapabilities {
 		MaxFuzziness:          searchMaxFuzziness,
 		AnalyzerVersion:       searchAnalyzerVersion,
 		ProjectionVersion:     searchProjectionVersion,
+		TimeoutMs:             uint32(s.search.Timeout.Milliseconds()),
+		MaxQueryBytes:         uint32(s.search.MaxQueryBytes),
+		MaxQueryTerms:         uint32(s.search.WorkBudget.MaxQueryTerms),
+		MaxDictionaryVisits:   uint64(s.search.WorkBudget.MaxDictionaryVisits),
+		MaxPostingVisits:      uint64(s.search.WorkBudget.MaxPostingVisits),
+		MaxPositionVisits:     uint64(s.search.WorkBudget.MaxPositionVisits),
+		MaxInFlight:           uint32(s.search.MaxInFlight),
 	}
 	canonical := fmt.Sprintf(
-		"enabled=%t\npositions=%t\ndefault_limit=%d\nmax_limit=%d\ndefault_match_mode=%d\ndefault_min_should_match=%d\nmax_fuzziness=%d\nanalyzer=%s\nprojection=%s\n",
+		"enabled=%t\npositions=%t\ndefault_limit=%d\nmax_limit=%d\ndefault_match_mode=%d\ndefault_min_should_match=%d\nmax_fuzziness=%d\nanalyzer=%s\nprojection=%s\ntimeout_ms=%d\nmax_query_bytes=%d\nmax_query_terms=%d\nmax_dictionary_visits=%d\nmax_posting_visits=%d\nmax_position_visits=%d\nmax_in_flight=%d\n",
 		capabilities.Enabled,
 		s.search.PositionsEnabled,
 		capabilities.DefaultLimit,
@@ -120,6 +127,13 @@ func (s *LanternService) searchCapabilities() *pb.SearchCapabilities {
 		capabilities.MaxFuzziness,
 		capabilities.AnalyzerVersion,
 		capabilities.ProjectionVersion,
+		capabilities.TimeoutMs,
+		capabilities.MaxQueryBytes,
+		capabilities.MaxQueryTerms,
+		capabilities.MaxDictionaryVisits,
+		capabilities.MaxPostingVisits,
+		capabilities.MaxPositionVisits,
+		capabilities.MaxInFlight,
 	)
 	sum := sha256.Sum256([]byte(canonical))
 	capabilities.ConfigFingerprint = hex.EncodeToString(sum[:])

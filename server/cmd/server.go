@@ -13,6 +13,7 @@ import (
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
+	"github.com/anaregdesign/lantern/core/search"
 	"github.com/anaregdesign/lantern/server/backup"
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 	"github.com/anaregdesign/lantern/server/provider"
@@ -152,6 +153,15 @@ func newLanternService(
 			MaxLimit:         src.MaxLimit,
 			DefaultMode:      service.ParseMatchMode(src.DefaultMode),
 			DefaultMinShould: src.DefaultMinShould,
+			Timeout:          src.Timeout,
+			MaxQueryBytes:    src.MaxQueryBytes,
+			WorkBudget: search.Budget{
+				MaxQueryTerms:       int64(src.MaxQueryTerms),
+				MaxDictionaryVisits: int64(src.MaxDictionaryVisits),
+				MaxPostingVisits:    int64(src.MaxPostingVisits),
+				MaxPositionVisits:   int64(src.MaxPositionVisits),
+			},
+			MaxInFlight: src.MaxInFlight,
 		}).
 		WithReplication(log, clock, dm.OnMutationLogAppend).
 		WithAppliedHook(dm.OnReplicationApplied).

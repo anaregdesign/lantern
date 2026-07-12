@@ -195,14 +195,26 @@ class SearchErrorReason extends $pb.ProtobufEnum {
   static const SearchErrorReason SEARCH_POSITIONS_DISABLED =
       SearchErrorReason._(2, _omitEnumNames ? '' : 'SEARCH_POSITIONS_DISABLED');
 
+  /// buf:lint:ignore ENUM_VALUE_PREFIX -- stable cross-SDK reason code.
+  static const SearchErrorReason SEARCH_WORK_BUDGET_EXHAUSTED =
+      SearchErrorReason._(
+          3, _omitEnumNames ? '' : 'SEARCH_WORK_BUDGET_EXHAUSTED');
+
+  /// buf:lint:ignore ENUM_VALUE_PREFIX -- stable cross-SDK reason code.
+  static const SearchErrorReason SEARCH_ADMISSION_SATURATED =
+      SearchErrorReason._(
+          4, _omitEnumNames ? '' : 'SEARCH_ADMISSION_SATURATED');
+
   static const $core.List<SearchErrorReason> values = <SearchErrorReason>[
     SEARCH_ERROR_REASON_UNSPECIFIED,
     SEARCH_DISABLED,
     SEARCH_POSITIONS_DISABLED,
+    SEARCH_WORK_BUDGET_EXHAUSTED,
+    SEARCH_ADMISSION_SATURATED,
   ];
 
   static final $core.List<SearchErrorReason?> _byValue =
-      $pb.ProtobufEnum.$_initByValueList(values, 2);
+      $pb.ProtobufEnum.$_initByValueList(values, 4);
   static SearchErrorReason? valueOf($core.int value) =>
       value < 0 || value >= _byValue.length ? null : _byValue[value];
 

@@ -189,6 +189,13 @@ type ScanConfig struct {
 //   - LANTERN_SEARCH_MAX_LIMIT         (default 1000)
 //   - LANTERN_SEARCH_DEFAULT_MODE      (default "any": any|all|min-should)
 //   - LANTERN_SEARCH_DEFAULT_MIN_SHOULD (default 1)
+//   - LANTERN_SEARCH_TIMEOUT_MS         (default 5000)
+//   - LANTERN_SEARCH_MAX_QUERY_BYTES    (default 16384)
+//   - LANTERN_SEARCH_MAX_QUERY_TERMS    (default 1024)
+//   - LANTERN_SEARCH_MAX_DICTIONARY_VISITS (default 1000000)
+//   - LANTERN_SEARCH_MAX_POSTING_VISITS (default 10000000)
+//   - LANTERN_SEARCH_MAX_POSITION_VISITS (default 10000000)
+//   - LANTERN_SEARCH_MAX_IN_FLIGHT      (default 32)
 type SearchConfig struct {
 	Enabled      bool
 	DefaultLimit uint32
@@ -209,7 +216,14 @@ type SearchConfig struct {
 	DefaultMode string
 	// DefaultMinShould is the minimum-should-match count applied when the mode
 	// resolves to min-should but the request leaves min_should_match at 0.
-	DefaultMinShould uint32
+	DefaultMinShould    uint32
+	Timeout             time.Duration
+	MaxQueryBytes       int
+	MaxQueryTerms       int
+	MaxDictionaryVisits int
+	MaxPostingVisits    int
+	MaxPositionVisits   int
+	MaxInFlight         int
 }
 
 // Config aggregates every focused sub-config. It is constructed once at
@@ -308,12 +322,19 @@ func NewConfig() (*Config, error) {
 			DeleteByPrefixMaxLimit:     envconfig.Uint32("LANTERN_DELETE_BY_PREFIX_MAX_LIMIT", 100000),
 		},
 		Search: SearchConfig{
-			Enabled:          envconfig.Bool("LANTERN_SEARCH_ENABLED", true),
-			Positions:        envconfig.Bool("LANTERN_SEARCH_POSITIONS", true),
-			DefaultLimit:     envconfig.Uint32("LANTERN_SEARCH_DEFAULT_LIMIT", 100),
-			MaxLimit:         envconfig.Uint32("LANTERN_SEARCH_MAX_LIMIT", 1000),
-			DefaultMode:      envconfig.String("LANTERN_SEARCH_DEFAULT_MODE", "any"),
-			DefaultMinShould: envconfig.Uint32("LANTERN_SEARCH_DEFAULT_MIN_SHOULD", 1),
+			Enabled:             envconfig.Bool("LANTERN_SEARCH_ENABLED", true),
+			Positions:           envconfig.Bool("LANTERN_SEARCH_POSITIONS", true),
+			DefaultLimit:        envconfig.Uint32("LANTERN_SEARCH_DEFAULT_LIMIT", 100),
+			MaxLimit:            envconfig.Uint32("LANTERN_SEARCH_MAX_LIMIT", 1000),
+			DefaultMode:         envconfig.String("LANTERN_SEARCH_DEFAULT_MODE", "any"),
+			DefaultMinShould:    envconfig.Uint32("LANTERN_SEARCH_DEFAULT_MIN_SHOULD", 1),
+			Timeout:             time.Duration(envconfig.Int("LANTERN_SEARCH_TIMEOUT_MS", 5000)) * time.Millisecond,
+			MaxQueryBytes:       envconfig.Int("LANTERN_SEARCH_MAX_QUERY_BYTES", 16*1024),
+			MaxQueryTerms:       envconfig.Int("LANTERN_SEARCH_MAX_QUERY_TERMS", 1024),
+			MaxDictionaryVisits: envconfig.Int("LANTERN_SEARCH_MAX_DICTIONARY_VISITS", 1_000_000),
+			MaxPostingVisits:    envconfig.Int("LANTERN_SEARCH_MAX_POSTING_VISITS", 10_000_000),
+			MaxPositionVisits:   envconfig.Int("LANTERN_SEARCH_MAX_POSITION_VISITS", 10_000_000),
+			MaxInFlight:         envconfig.Int("LANTERN_SEARCH_MAX_IN_FLIGHT", 32),
 		},
 		MutationLog: loadMutationLogConfig(),
 		Replication: loadReplicationConfig(),
@@ -334,7 +355,40 @@ func NewConfig() (*Config, error) {
 	if err := service.ValidateMatchMode(cfg.Search.DefaultMode); err != nil {
 		return nil, err
 	}
+	if err := validateSearchConfig(cfg.Search); err != nil {
+		return nil, err
+	}
 	return cfg, nil
+}
+
+func validateSearchConfig(c SearchConfig) error {
+	if c.DefaultLimit == 0 || c.MaxLimit == 0 || c.DefaultLimit > c.MaxLimit {
+		return fmt.Errorf("search limits require 0 < default_limit <= max_limit")
+	}
+	if c.DefaultMinShould == 0 {
+		return fmt.Errorf("LANTERN_SEARCH_DEFAULT_MIN_SHOULD must be positive")
+	}
+	values := []struct {
+		name  string
+		value int64
+	}{
+		{"LANTERN_SEARCH_TIMEOUT_MS", c.Timeout.Milliseconds()},
+		{"LANTERN_SEARCH_MAX_QUERY_BYTES", int64(c.MaxQueryBytes)},
+		{"LANTERN_SEARCH_MAX_QUERY_TERMS", int64(c.MaxQueryTerms)},
+		{"LANTERN_SEARCH_MAX_DICTIONARY_VISITS", int64(c.MaxDictionaryVisits)},
+		{"LANTERN_SEARCH_MAX_POSTING_VISITS", int64(c.MaxPostingVisits)},
+		{"LANTERN_SEARCH_MAX_POSITION_VISITS", int64(c.MaxPositionVisits)},
+		{"LANTERN_SEARCH_MAX_IN_FLIGHT", int64(c.MaxInFlight)},
+	}
+	for _, item := range values {
+		if item.value <= 0 {
+			return fmt.Errorf("%s must be positive", item.name)
+		}
+	}
+	if c.MaxQueryTerms > c.MaxQueryBytes {
+		return fmt.Errorf("LANTERN_SEARCH_MAX_QUERY_TERMS must not exceed LANTERN_SEARCH_MAX_QUERY_BYTES")
+	}
+	return nil
 }
 
 func loadTraversalConfig() TraversalConfig {

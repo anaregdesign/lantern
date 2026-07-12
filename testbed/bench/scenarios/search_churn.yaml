@@ -7,6 +7,10 @@
 #   under the InvertedIndex RWMutex.
 # - consistency: SearchVertices skips vertices whose TTL has expired but
 #   whose Flush has not yet run.
+# - execution budgets: separate broad-posting, fuzzy-dictionary, and broad-
+#   phrase producers exercise every dominant read-work family while the writer
+#   p99 exposes index-lock delay. The harness captures CPU, alloc, mutex, and
+#   block profiles around the same steady window (#1049).
 # - expansion: one two-clause query drives both semantic cap-overflow paths:
 #   `topic` prefix-expands over the live unique-term set, while `fuzz000`
 #   fuzzy-expands over 100 live neighbours at edit distance <= 2. Both exceed
@@ -30,21 +34,26 @@ phases:
   cooldown: 60s
 target:
   endpoints: ["localhost:6380", "localhost:6381", "localhost:6382"]
-  # Two parallel streams per fan-out rule: writes feed the index, reads
-  # query it.  per_rps = steady.rps / 2 = 1000 rps each.
+  # Four parallel streams per fan-out rule: one writer plus broad-posting,
+  # fuzzy-dictionary, and broad-phrase reads. per_rps = 500 rps each.
   calls:
     # [0] short-TTL string vertex. The 50k key space is larger than the
-    #     ~15k live set at 1k writes/s with 15s expirations, so keys are not
+    #     ~7.5k live set at 500 writes/s with 15s expirations, so keys are not
     #     refreshed before they age out and GC churns the index during steady.
     #     topicNNNNN supplies thousands of live prefix candidates; fuzzNNN is
     #     a bounded 100-term family whose every member lies within two edits of
-    #     fuzz000. Keeping them in one value preserves the existing 2-producer
-    #     split while making both expansion caps overflow.
+    #     fuzz000. The shared phrase makes broad posting and phrase verification
+    #     inspect the whole live set while the writer's p99 measures lock delay.
     - name: writer
       call: graph.v1.LanternService/PutVertex
       data_template: |
-        {"vertex":{"key":"search-{{mod .RequestNumber 50000}}","string":"topic{{ printf `%05d` (mod .RequestNumber 50000) }} fuzz{{ printf `%03d` (mod .RequestNumber 100) }}","expiration":"{{ now | dateModify `15s` | date `2006-01-02T15:04:05.999999999Z07:00` }}"}}
-    # [1] Both query clauses overflow the 50-term expansion cap independently:
+        {"vertex":{"key":"search-{{mod .RequestNumber 50000}}","string":"shared phrase topic{{ printf `%05d` (mod .RequestNumber 50000) }} fuzz{{ printf `%03d` (mod .RequestNumber 100) }}","expiration":"{{ now | dateModify `15s` | date `2006-01-02T15:04:05.999999999Z07:00` }}"}}
+    # [1] Broad exact posting/proximity work over every live document.
+    - name: broad_posting
+      call: graph.v1.LanternService/SearchVertices
+      data_template: |
+        {"query":"shared","limit":20}
+    # [2] Both query clauses overflow the 50-term expansion cap independently:
     #     topic matches every live topicNNNNN by prefix, and fuzz000 reaches all
     #     fuzz000..fuzz099 with fuzziness=2. Auxiliary grams still exercise the
     #     production script-aware ranking path around those word clauses.
@@ -52,20 +61,24 @@ target:
       call: graph.v1.LanternService/SearchVertices
       data_template: |
         {"query":"topic fuzz000","limit":20,"options":{"prefixTerms":true,"fuzziness":2}}
+    # [3] Broad positional intersection and adjacency verification.
+    - name: broad_phrase
+      call: graph.v1.LanternService/SearchVertices
+      data_template: |
+        {"query":"shared phrase","limit":20,"options":{"phrase":true}}
 leak_gate:
   goroutine_max_delta: 20
   heap_alloc_max_delta_mb: 32
-# Floors from the 2026-06-29 → 2026-07-03 nightly baselines: aggregate steady
-# rps 1614–1843 (offered 2000), worst-producer p99 149–248 ms (the
-# SearchVertices leg dominates), non-OK 25–64 of ~380k.
+# The producer mix changed for #1049, so these are deliberately loose first-
+# night ratchets with ample headroom. Tighten from several green nightly runs;
+# writer p99 is the explicit lock-delay signal, while the harness profiles
+# provide CPU/allocation/mutex evidence for the three adversarial read paths.
 perf_gate:
-  min_steady_rps_total: 800
-  max_p99_ms: 1250
+  min_steady_rps_total: 300
+  max_p99_ms: 4000
   max_non_ok_ratio: 0.02
-  # Producer names make the advanced-search leg independently measurable in
-  # perf_gate.json. Error budgets are safe to gate immediately; throughput and
-  # p99 need fresh nightly baselines for this heavier query before they can be
-  # sized with the README-mandated >=2x headroom.
   producers:
-    writer: { max_non_ok_ratio: 0.02 }
-    prefix_fuzzy_cap_overflow: { max_non_ok_ratio: 0.02 }
+    writer: { max_p99_ms: 2000, max_non_ok_ratio: 0.02 }
+    broad_posting: { max_p99_ms: 4000, max_non_ok_ratio: 0.02 }
+    prefix_fuzzy_cap_overflow: { max_p99_ms: 4000, max_non_ok_ratio: 0.02 }
+    broad_phrase: { max_p99_ms: 4000, max_non_ok_ratio: 0.02 }

@@ -4320,13 +4320,15 @@ class GetServerStatusRequest extends $pb.GeneratedMessage {
 }
 
 /// SearchErrorDetail is carried as a Connect error detail when a search
-/// capability required by the request is unavailable.
+/// capability is unavailable or execution containment rejects the attempt.
 class SearchErrorDetail extends $pb.GeneratedMessage {
   factory SearchErrorDetail({
     SearchErrorReason? reason,
+    $core.String? workKind,
   }) {
     final result = create();
     if (reason != null) result.reason = reason;
+    if (workKind != null) result.workKind = workKind;
     return result;
   }
 
@@ -4345,6 +4347,7 @@ class SearchErrorDetail extends $pb.GeneratedMessage {
       createEmptyInstance: create)
     ..aE<SearchErrorReason>(1, _omitFieldNames ? '' : 'reason',
         enumValues: SearchErrorReason.values)
+    ..aOS(2, _omitFieldNames ? '' : 'workKind')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -4374,6 +4377,17 @@ class SearchErrorDetail extends $pb.GeneratedMessage {
   $core.bool hasReason() => $_has(0);
   @$pb.TagNumber(1)
   void clearReason() => $_clearField(1);
+
+  /// work_kind is one of query_bytes, query_terms, dictionary_visits,
+  /// posting_visits, or position_visits for budget exhaustion; empty otherwise.
+  @$pb.TagNumber(2)
+  $core.String get workKind => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set workKind($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasWorkKind() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearWorkKind() => $_clearField(2);
 }
 
 /// SearchCapabilities is the server's discoverable full-text-search contract.
@@ -4391,6 +4405,13 @@ class SearchCapabilities extends $pb.GeneratedMessage {
     $core.String? analyzerVersion,
     $core.String? projectionVersion,
     $core.String? configFingerprint,
+    $core.int? timeoutMs,
+    $core.int? maxQueryBytes,
+    $core.int? maxQueryTerms,
+    $fixnum.Int64? maxDictionaryVisits,
+    $fixnum.Int64? maxPostingVisits,
+    $fixnum.Int64? maxPositionVisits,
+    $core.int? maxInFlight,
   }) {
     final result = create();
     if (enabled != null) result.enabled = enabled;
@@ -4404,6 +4425,14 @@ class SearchCapabilities extends $pb.GeneratedMessage {
     if (analyzerVersion != null) result.analyzerVersion = analyzerVersion;
     if (projectionVersion != null) result.projectionVersion = projectionVersion;
     if (configFingerprint != null) result.configFingerprint = configFingerprint;
+    if (timeoutMs != null) result.timeoutMs = timeoutMs;
+    if (maxQueryBytes != null) result.maxQueryBytes = maxQueryBytes;
+    if (maxQueryTerms != null) result.maxQueryTerms = maxQueryTerms;
+    if (maxDictionaryVisits != null)
+      result.maxDictionaryVisits = maxDictionaryVisits;
+    if (maxPostingVisits != null) result.maxPostingVisits = maxPostingVisits;
+    if (maxPositionVisits != null) result.maxPositionVisits = maxPositionVisits;
+    if (maxInFlight != null) result.maxInFlight = maxInFlight;
     return result;
   }
 
@@ -4434,6 +4463,22 @@ class SearchCapabilities extends $pb.GeneratedMessage {
     ..aOS(8, _omitFieldNames ? '' : 'analyzerVersion')
     ..aOS(9, _omitFieldNames ? '' : 'projectionVersion')
     ..aOS(10, _omitFieldNames ? '' : 'configFingerprint')
+    ..aI(11, _omitFieldNames ? '' : 'timeoutMs', fieldType: $pb.PbFieldType.OU3)
+    ..aI(12, _omitFieldNames ? '' : 'maxQueryBytes',
+        fieldType: $pb.PbFieldType.OU3)
+    ..aI(13, _omitFieldNames ? '' : 'maxQueryTerms',
+        fieldType: $pb.PbFieldType.OU3)
+    ..a<$fixnum.Int64>(
+        14, _omitFieldNames ? '' : 'maxDictionaryVisits', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        15, _omitFieldNames ? '' : 'maxPostingVisits', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        16, _omitFieldNames ? '' : 'maxPositionVisits', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..aI(17, _omitFieldNames ? '' : 'maxInFlight',
+        fieldType: $pb.PbFieldType.OU3)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -4544,6 +4589,69 @@ class SearchCapabilities extends $pb.GeneratedMessage {
   $core.bool hasConfigFingerprint() => $_has(9);
   @$pb.TagNumber(10)
   void clearConfigFingerprint() => $_clearField(10);
+
+  @$pb.TagNumber(11)
+  $core.int get timeoutMs => $_getIZ(10);
+  @$pb.TagNumber(11)
+  set timeoutMs($core.int value) => $_setUnsignedInt32(10, value);
+  @$pb.TagNumber(11)
+  $core.bool hasTimeoutMs() => $_has(10);
+  @$pb.TagNumber(11)
+  void clearTimeoutMs() => $_clearField(11);
+
+  @$pb.TagNumber(12)
+  $core.int get maxQueryBytes => $_getIZ(11);
+  @$pb.TagNumber(12)
+  set maxQueryBytes($core.int value) => $_setUnsignedInt32(11, value);
+  @$pb.TagNumber(12)
+  $core.bool hasMaxQueryBytes() => $_has(11);
+  @$pb.TagNumber(12)
+  void clearMaxQueryBytes() => $_clearField(12);
+
+  @$pb.TagNumber(13)
+  $core.int get maxQueryTerms => $_getIZ(12);
+  @$pb.TagNumber(13)
+  set maxQueryTerms($core.int value) => $_setUnsignedInt32(12, value);
+  @$pb.TagNumber(13)
+  $core.bool hasMaxQueryTerms() => $_has(12);
+  @$pb.TagNumber(13)
+  void clearMaxQueryTerms() => $_clearField(13);
+
+  @$pb.TagNumber(14)
+  $fixnum.Int64 get maxDictionaryVisits => $_getI64(13);
+  @$pb.TagNumber(14)
+  set maxDictionaryVisits($fixnum.Int64 value) => $_setInt64(13, value);
+  @$pb.TagNumber(14)
+  $core.bool hasMaxDictionaryVisits() => $_has(13);
+  @$pb.TagNumber(14)
+  void clearMaxDictionaryVisits() => $_clearField(14);
+
+  @$pb.TagNumber(15)
+  $fixnum.Int64 get maxPostingVisits => $_getI64(14);
+  @$pb.TagNumber(15)
+  set maxPostingVisits($fixnum.Int64 value) => $_setInt64(14, value);
+  @$pb.TagNumber(15)
+  $core.bool hasMaxPostingVisits() => $_has(14);
+  @$pb.TagNumber(15)
+  void clearMaxPostingVisits() => $_clearField(15);
+
+  @$pb.TagNumber(16)
+  $fixnum.Int64 get maxPositionVisits => $_getI64(15);
+  @$pb.TagNumber(16)
+  set maxPositionVisits($fixnum.Int64 value) => $_setInt64(15, value);
+  @$pb.TagNumber(16)
+  $core.bool hasMaxPositionVisits() => $_has(15);
+  @$pb.TagNumber(16)
+  void clearMaxPositionVisits() => $_clearField(16);
+
+  @$pb.TagNumber(17)
+  $core.int get maxInFlight => $_getIZ(16);
+  @$pb.TagNumber(17)
+  set maxInFlight($core.int value) => $_setUnsignedInt32(16, value);
+  @$pb.TagNumber(17)
+  $core.bool hasMaxInFlight() => $_has(16);
+  @$pb.TagNumber(17)
+  void clearMaxInFlight() => $_clearField(17);
 }
 
 class GetServerStatusResponse extends $pb.GeneratedMessage {

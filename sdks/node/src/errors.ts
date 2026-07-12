@@ -46,9 +46,16 @@ export class InvalidArgumentError extends LanternError {
 }
 
 export class ResourceExhaustedError extends LanternError {
-  constructor(message: string, options?: { cause?: unknown }) {
+  readonly reason: SearchErrorReason;
+  readonly workKind: string;
+  constructor(
+    message: string,
+    options?: { cause?: unknown; reason?: SearchErrorReason; workKind?: string },
+  ) {
     super(message, options);
     this.name = "ResourceExhaustedError";
+    this.reason = options?.reason ?? SearchErrorReason.SEARCH_ERROR_REASON_UNSPECIFIED;
+    this.workKind = options?.workKind ?? "";
   }
 }
 
@@ -126,8 +133,14 @@ export function wrapConnectError(err: unknown): LanternError {
       return new NotFoundError(message, { cause: err });
     case 3:
       return new InvalidArgumentError(message, { cause: err });
-    case 8:
-      return new ResourceExhaustedError(message, { cause: err });
+    case 8: {
+      const detail = ConnectError.from(err).findDetails(SearchErrorDetailSchema)[0];
+      return new ResourceExhaustedError(message, {
+        cause: err,
+        reason: detail?.reason ?? SearchErrorReason.SEARCH_ERROR_REASON_UNSPECIFIED,
+        workKind: detail?.workKind ?? "",
+      });
+    }
     case 9:
       return new FailedPreconditionError(message, {
         cause: err,

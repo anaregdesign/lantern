@@ -1,6 +1,6 @@
 part of 'client.dart';
 
-/// Machine-readable reason for a search FAILED_PRECONDITION.
+/// Machine-readable reason for a typed search failure.
 enum SearchErrorReason {
   /// No recognized search reason detail was supplied.
   unspecified,
@@ -10,6 +10,12 @@ enum SearchErrorReason {
 
   /// Phrase adjacency cannot be verified because positions are disabled.
   searchPositionsDisabled,
+
+  /// A deterministic per-query work cap was exhausted.
+  searchWorkBudgetExhausted,
+
+  /// Every configured in-flight search slot was occupied.
+  searchAdmissionSaturated,
 }
 
 /// How a multi-term query selects matching vertices.

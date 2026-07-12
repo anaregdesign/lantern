@@ -9,14 +9,15 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
-// SearchErrorReason is the bounded reason carried by a SearchVertices
-// FAILED_PRECONDITION response.
+// SearchErrorReason is the bounded reason carried by a SearchVertices error.
 type SearchErrorReason = pb.SearchErrorReason
 
 const (
 	SearchErrorReasonUnspecified       = pb.SearchErrorReason_SEARCH_ERROR_REASON_UNSPECIFIED
 	SearchErrorReasonDisabled          = pb.SearchErrorReason_SEARCH_DISABLED
 	SearchErrorReasonPositionsDisabled = pb.SearchErrorReason_SEARCH_POSITIONS_DISABLED
+	SearchErrorReasonWorkBudget        = pb.SearchErrorReason_SEARCH_WORK_BUDGET_EXHAUSTED
+	SearchErrorReasonAdmission         = pb.SearchErrorReason_SEARCH_ADMISSION_SATURATED
 )
 
 var (
@@ -24,10 +25,14 @@ var (
 	ErrSearchDisabled = errors.New("search disabled")
 	// ErrSearchPositionsDisabled means phrase adjacency cannot be verified.
 	ErrSearchPositionsDisabled = errors.New("search positions disabled")
+	// ErrSearchWorkBudget means one deterministic per-query work cap was exceeded.
+	ErrSearchWorkBudget = errors.New("search work budget exhausted")
+	// ErrSearchAdmission means every configured in-flight search slot was occupied.
+	ErrSearchAdmission = errors.New("search admission saturated")
 )
 
 // SearchFailureReason extracts the machine-readable reason from a search
-// FAILED_PRECONDITION, including errors wrapped by the SDK.
+// error detail, including errors wrapped by the SDK.
 func SearchFailureReason(err error) SearchErrorReason {
 	var connectErr *connect.Error
 	if !errors.As(err, &connectErr) {
@@ -43,6 +48,26 @@ func SearchFailureReason(err error) SearchErrorReason {
 		}
 	}
 	return SearchErrorReasonUnspecified
+}
+
+// SearchFailureWorkKind extracts the stable exhausted counter name
+// (query_bytes, query_terms, dictionary_visits, posting_visits, or
+// position_visits). It is empty for non-budget errors.
+func SearchFailureWorkKind(err error) string {
+	var connectErr *connect.Error
+	if !errors.As(err, &connectErr) {
+		return ""
+	}
+	for _, detail := range connectErr.Details() {
+		value, valueErr := detail.Value()
+		if valueErr != nil {
+			continue
+		}
+		if searchDetail, ok := value.(*pb.SearchErrorDetail); ok {
+			return searchDetail.GetWorkKind()
+		}
+	}
+	return ""
 }
 
 // SearchHit is one ranked result from Lantern.SearchVertices: the key of a

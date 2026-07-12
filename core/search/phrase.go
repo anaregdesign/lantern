@@ -1,6 +1,9 @@
 package search
 
-import "sort"
+import (
+	"context"
+	"sort"
+)
 
 // SearchPhrase returns the documents that contain the query's word-channel
 // terms as a consecutive phrase, ranked by BM25 over those terms. It is the
@@ -40,23 +43,44 @@ func (idx *InvertedIndex[S, D]) SearchPhrase(query string) []Result[S] {
 // accept contract are identical to SearchTopK. k <= 0, a query with no word
 // terms, or zero accepted matches return nil.
 func (idx *InvertedIndex[S, D]) SearchPhraseTopK(query string, k int, accept func(id S) bool) []Result[S] {
+	results, _, _ := idx.SearchPhraseTopKContext(context.Background(), query, k, accept, Budget{})
+	return results
+}
+
+// SearchPhraseTopKContext is SearchPhraseTopK with cancellation and
+// deterministic work accounting. It never returns partial results on error.
+func (idx *InvertedIndex[S, D]) SearchPhraseTopKContext(ctx context.Context, query string, k int, accept func(id S) bool, budget Budget) ([]Result[S], Stats, error) {
+	work := newWorkTracker(ctx, budget)
 	if k <= 0 {
-		return nil
+		return nil, work.stats, nil
 	}
 	terms := idx.phraseQueryTerms(query)
+	if err := work.visit(WorkQueryTerms, int64(len(terms))); err != nil {
+		return nil, work.stats, err
+	}
 	if len(terms) == 0 {
-		return nil
+		return nil, work.stats, nil
 	}
 
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
-	ords := idx.phraseMatchLocked(terms)
-	if len(ords) == 0 {
-		return nil
+	ords, err := idx.phraseMatchTrackedLocked(terms, work)
+	if err != nil {
+		return nil, work.stats, err
 	}
-	scores := idx.scorePhraseLocked(terms, ords)
-	return idx.selectTopKLocked(scores, k, accept)
+	if len(ords) == 0 {
+		return nil, work.stats, nil
+	}
+	scores, err := idx.scorePhraseTrackedLocked(terms, ords, work)
+	if err != nil {
+		return nil, work.stats, err
+	}
+	results, err := idx.selectTopKTrackedLocked(scores, k, accept, work)
+	if err != nil {
+		return nil, work.stats, err
+	}
+	return results, work.stats, nil
 }
 
 // phraseQueryTerms analyzes query and returns its primary (ClassWord) tokens in
@@ -81,21 +105,29 @@ func (idx *InvertedIndex[S, D]) phraseQueryTerms(query string) []string {
 // the ordered ClassWord query terms with duplicates kept, so a repeated word
 // must appear repeated and adjacent. Callers must hold idx.mu.
 func (idx *InvertedIndex[S, D]) phraseMatchLocked(terms []string) []uint32 {
+	ords, _ := idx.phraseMatchTrackedLocked(terms, newWorkTracker(nil, Budget{}))
+	return ords
+}
+
+func (idx *InvertedIndex[S, D]) phraseMatchTrackedLocked(terms []string, work *workTracker) ([]uint32, error) {
 	cp := &idx.classes[ClassWord]
 	if cp.docCount == 0 {
-		return nil
+		return nil, nil
 	}
 	// Resolve every query term's posting list; a missing term means the phrase
 	// cannot occur anywhere.
 	lists := make([]*postingList, len(terms))
 	for i, term := range terms {
+		if err := work.check(); err != nil {
+			return nil, err
+		}
 		tid, ok := cp.dict.lookup(term)
 		if !ok {
-			return nil
+			return nil, nil
 		}
 		pl := cp.postings[tid]
 		if pl == nil {
-			return nil
+			return nil, nil
 		}
 		lists[i] = pl
 	}
@@ -107,23 +139,37 @@ func (idx *InvertedIndex[S, D]) phraseMatchLocked(terms []string) []uint32 {
 			rarest = i
 		}
 	}
-	intersection := lists[rarest].docs.Clone()
-	for i := range lists {
-		if i != rarest {
-			intersection.And(lists[i].docs)
+	out := make([]uint32, 0, lists[rarest].cardinality())
+	for it := lists[rarest].docs.Iterator(); it.HasNext(); {
+		if err := work.visit(WorkPostingVisits, 1); err != nil {
+			return nil, err
 		}
-	}
-	if intersection.IsEmpty() {
-		return nil
-	}
-	out := make([]uint32, 0, intersection.GetCardinality())
-	for it := intersection.Iterator(); it.HasNext(); {
 		ord := it.Next()
-		if phraseAdjacent(lists, ord) {
+		present := true
+		for i, list := range lists {
+			if i == rarest {
+				continue
+			}
+			if err := work.visit(WorkPostingVisits, 1); err != nil {
+				return nil, err
+			}
+			if !list.docs.Contains(ord) {
+				present = false
+				break
+			}
+		}
+		if !present {
+			continue
+		}
+		adjacent, err := phraseAdjacentTracked(lists, ord, work)
+		if err != nil {
+			return nil, err
+		}
+		if adjacent {
 			out = append(out, ord)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // scorePhraseLocked scores the phrase-matched ordinals over the query's
@@ -131,14 +177,22 @@ func (idx *InvertedIndex[S, D]) phraseMatchLocked(terms []string) []uint32 {
 // restricted to the ClassWord channel (phrase terms are word-class). Callers
 // must hold idx.mu.
 func (idx *InvertedIndex[S, D]) scorePhraseLocked(terms []string, ords []uint32) map[uint32]float64 {
+	scores, _ := idx.scorePhraseTrackedLocked(terms, ords, newWorkTracker(nil, Budget{}))
+	return scores
+}
+
+func (idx *InvertedIndex[S, D]) scorePhraseTrackedLocked(terms []string, ords []uint32, work *workTracker) (map[uint32]float64, error) {
 	cp := &idx.classes[ClassWord]
 	if cp.docCount == 0 {
-		return nil
+		return nil, nil
 	}
 	avgLen := float64(cp.totalLen) / float64(cp.docCount)
 	scores := make(map[uint32]float64, len(ords))
 	seen := make(map[string]struct{}, len(terms))
 	for _, term := range terms {
+		if err := work.check(); err != nil {
+			return nil, err
+		}
 		if _, dup := seen[term]; dup {
 			continue
 		}
@@ -153,6 +207,9 @@ func (idx *InvertedIndex[S, D]) scorePhraseLocked(terms []string, ords []uint32)
 		}
 		df := pl.cardinality()
 		for _, ord := range ords {
+			if err := work.visit(WorkPostingVisits, 1); err != nil {
+				return nil, err
+			}
 			addScore(scores, ord, idx.scorer.Score(TermStats{
 				TF:     pl.tf(ord),
 				DF:     df,
@@ -164,7 +221,7 @@ func (idx *InvertedIndex[S, D]) scorePhraseLocked(terms []string, ords []uint32)
 		}
 	}
 	dropNonFiniteScores(scores)
-	return scores
+	return scores, nil
 }
 
 // phraseAdjacent reports whether the query terms occur at consecutive positions
@@ -174,22 +231,50 @@ func (idx *InvertedIndex[S, D]) scorePhraseLocked(terms []string, ords []uint32)
 // trivially adjacent. lists holds one posting list per query term in order; ord
 // is a member of all of them.
 func phraseAdjacent(lists []*postingList, ord uint32) bool {
+	ok, _ := phraseAdjacentTracked(lists, ord, newWorkTracker(nil, Budget{}))
+	return ok
+}
+
+func phraseAdjacentTracked(lists []*postingList, ord uint32, work *workTracker) (bool, error) {
 	if len(lists) < 2 {
-		return true
+		return true, nil
 	}
 	first := lists[0].positionsOf(ord)
 	if first == nil {
-		return true // positions not tracked: degrade to AND
+		return true, nil // positions not tracked: degrade to AND
+	}
+	if err := work.visit(WorkPositionVisits, int64(len(first))); err != nil {
+		return false, err
 	}
 	// The phrase occurs iff some position p of the first term is followed by
 	// term i at p+i for every i. Positions are ascending, so each follow-on
 	// check is a binary search.
 	for _, p := range first {
-		if phraseStartsAt(lists, ord, p) {
-			return true
+		ok, err := phraseStartsAtTracked(lists, ord, p, work)
+		if err != nil {
+			return false, err
+		}
+		if ok {
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
+}
+
+func phraseStartsAtTracked(lists []*postingList, ord uint32, start uint32, work *workTracker) (bool, error) {
+	for i := 1; i < len(lists); i++ {
+		pos := lists[i].positionsOf(ord)
+		if pos == nil {
+			return true, nil
+		}
+		if err := work.visit(WorkPositionVisits, int64(len(pos))); err != nil {
+			return false, err
+		}
+		if !containsSortedU32(pos, start+uint32(i)) {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // phraseStartsAt reports whether every term i (i >= 1) occurs at position

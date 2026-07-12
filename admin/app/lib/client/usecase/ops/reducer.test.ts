@@ -30,6 +30,13 @@ const sampleServer: ServerStatus = {
     analyzerVersion: "script-aware-v1",
     projectionVersion: "vertex-key-value-v1",
     configFingerprint: "fingerprint",
+    timeoutMs: 5000,
+    maxQueryBytes: 16384,
+    maxQueryTerms: 1024,
+    maxDictionaryVisits: 1_000_000,
+    maxPostingVisits: 10_000_000,
+    maxPositionVisits: 10_000_000,
+    maxInFlight: 32,
   },
 };
 

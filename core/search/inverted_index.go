@@ -417,8 +417,16 @@ func (idx *InvertedIndex[S, D]) queryTerms(query string) []Token {
 // class matches nothing — the write side panics on such tokens, so no posting
 // can exist for one.
 func (idx *InvertedIndex[S, D]) scoreLocked(queryTerms []Token) map[uint32]float64 {
+	scores, _ := idx.scoreTrackedLocked(queryTerms, newWorkTracker(nil, Budget{}))
+	return scores
+}
+
+func (idx *InvertedIndex[S, D]) scoreTrackedLocked(queryTerms []Token, work *workTracker) (map[uint32]float64, error) {
 	scores := make(map[uint32]float64)
 	for _, token := range queryTerms {
+		if err := work.check(); err != nil {
+			return nil, err
+		}
 		if int(token.Class) >= numTokenClasses {
 			continue
 		}
@@ -437,6 +445,9 @@ func (idx *InvertedIndex[S, D]) scoreLocked(queryTerms []Token) map[uint32]float
 		df := pl.cardinality()
 		avgLen := float64(cp.totalLen) / float64(cp.docCount)
 		for it := pl.docs.Iterator(); it.HasNext(); {
+			if err := work.visit(WorkPostingVisits, 1); err != nil {
+				return nil, err
+			}
 			ord := it.Next()
 			addScore(scores, ord, idx.scorer.Score(TermStats{
 				TF:     pl.tf(ord),
@@ -449,7 +460,7 @@ func (idx *InvertedIndex[S, D]) scoreLocked(queryTerms []Token) map[uint32]float
 		}
 	}
 	dropNonFiniteScores(scores)
-	return scores
+	return scores, nil
 }
 
 // addScore accumulates one contribution while poisoning a document whose
@@ -540,8 +551,16 @@ func (idx *InvertedIndex[S, D]) SearchTopK(query string, k int, accept func(id S
 // the same total-order boundary used by exhaustive ranking. Callers must hold
 // idx.mu; k > 0 is the caller's precondition.
 func (idx *InvertedIndex[S, D]) selectTopKLocked(scores map[uint32]float64, k int, accept func(id S) bool) []Result[S] {
+	out, _ := idx.selectTopKTrackedLocked(scores, k, accept, newWorkTracker(nil, Budget{}))
+	return out
+}
+
+func (idx *InvertedIndex[S, D]) selectTopKTrackedLocked(scores map[uint32]float64, k int, accept func(id S) bool, work *workTracker) ([]Result[S], error) {
 	h := topKHeap[S]{entries: make([]Result[S], 0, k), better: idx.betterResult}
 	for ord, score := range scores {
+		if err := work.check(); err != nil {
+			return nil, err
+		}
 		if math.IsNaN(score) || math.IsInf(score, 0) {
 			continue
 		}
@@ -561,11 +580,11 @@ func (idx *InvertedIndex[S, D]) selectTopKLocked(scores map[uint32]float64, k in
 		heap.Fix(&h, 0)
 	}
 	if len(h.entries) == 0 {
-		return nil
+		return nil, nil
 	}
 	out := h.entries
 	sort.Slice(out, func(i, j int) bool { return idx.betterResult(out[i], out[j]) })
-	return out
+	return out, nil
 }
 
 // topKHeap is the size-k min-heap behind SearchTopK: the root is the weakest

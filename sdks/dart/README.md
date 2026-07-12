@@ -130,6 +130,11 @@ that result; missing positional postings remain a
 never mistaken for a disabled index. `getServerStatus().search` exposes the
 endpoint's positions flag, defaults, limits, implementation versions, and HA
 configuration fingerprint.
+`LanternResourceExhaustedException.searchReason` distinguishes work-budget
+exhaustion from admission saturation, while `searchWorkKind` identifies the
+exhausted counter. Cancellation, deadline, and work-budget failures are
+terminal for that attempt; retry unchanged only for admission saturation with
+jittered backoff, and issue only the newest input in incremental UI flows.
 
 ```dart
 final result = await client.searchVertices(

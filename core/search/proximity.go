@@ -27,17 +27,24 @@ const proximityBoostWeight = 0.3
 // candidate pool: SearchTopK's bounded selection still sees exactly the
 // OR-union matches, now with tighter matches ranked higher.
 func (idx *InvertedIndex[S, D]) applyProximityLocked(scores map[uint32]float64, queryTerms []Token) {
+	_ = idx.applyProximityTrackedLocked(scores, queryTerms, newWorkTracker(nil, Budget{}))
+}
+
+func (idx *InvertedIndex[S, D]) applyProximityTrackedLocked(scores map[uint32]float64, queryTerms []Token, work *workTracker) error {
 	if !idx.positions || idx.proximityWeight == 0 || len(scores) == 0 {
-		return
+		return nil
 	}
 	cp := &idx.classes[ClassWord]
 	if cp.docCount == 0 {
-		return
+		return nil
 	}
 	// Resolve the distinct word-channel query terms that exist in the corpus;
 	// fewer than two means there is no pair whose distance could matter.
 	var lists []*postingList
 	for _, token := range queryTerms {
+		if err := work.check(); err != nil {
+			return err
+		}
 		if token.Class != ClassWord {
 			continue
 		}
@@ -50,20 +57,29 @@ func (idx *InvertedIndex[S, D]) applyProximityLocked(scores map[uint32]float64, 
 		}
 	}
 	if len(lists) < 2 {
-		return
+		return nil
 	}
 	present := make([][]uint32, 0, len(lists))
 	for ord := range scores {
+		if err := work.check(); err != nil {
+			return err
+		}
 		present = present[:0]
 		for _, pl := range lists {
 			if pos := pl.positionsOf(ord); pos != nil {
+				if err := work.visit(WorkPositionVisits, int64(len(pos))); err != nil {
+					return err
+				}
 				present = append(present, pos)
 			}
 		}
 		if len(present) < 2 {
 			continue
 		}
-		w := smallestWindow(present)
+		w, err := smallestWindowTracked(present, work)
+		if err != nil {
+			return err
+		}
 		if w < 0 {
 			continue
 		}
@@ -77,6 +93,7 @@ func (idx *InvertedIndex[S, D]) applyProximityLocked(scores map[uint32]float64, 
 		}
 		addScore(scores, ord, idx.proximityWeight*float64(len(present)-1)/float64(span+1))
 	}
+	return nil
 }
 
 // smallestWindow returns the width (largest position minus smallest) of the
@@ -86,15 +103,23 @@ func (idx *InvertedIndex[S, D]) applyProximityLocked(scores map[uint32]float64, 
 // pointer sitting at the current minimum — the only move that can shrink the
 // window — until that list is exhausted.
 func smallestWindow(lists [][]uint32) int {
+	best, _ := smallestWindowTracked(lists, newWorkTracker(nil, Budget{}))
+	return best
+}
+
+func smallestWindowTracked(lists [][]uint32, work *workTracker) (int, error) {
 	ptr := make([]int, len(lists))
 	best := -1
 	for {
+		if err := work.check(); err != nil {
+			return -1, err
+		}
 		lo := ^uint32(0)
 		var hi uint32
 		loList := -1
 		for i, l := range lists {
 			if len(l) == 0 {
-				return -1
+				return -1, nil
 			}
 			p := l[ptr[i]]
 			if p < lo {
@@ -108,12 +133,12 @@ func smallestWindow(lists [][]uint32) int {
 		if w := int(hi - lo); best < 0 || w < best {
 			best = w
 			if best == 0 {
-				return 0
+				return 0, nil
 			}
 		}
 		ptr[loList]++
 		if ptr[loList] == len(lists[loList]) {
-			return best
+			return best, nil
 		}
 	}
 }

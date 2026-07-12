@@ -264,8 +264,12 @@ so dashboards render the full variant set from process start:
   reduction) plus a `phase` (`traversal` | `optimize`) on duration.
 - **Scan / count**: `lantern_scan_results{op}`, `lantern_scan_duration_seconds{op}`.
 - **Search** (optional index): `lantern_search_results`,
-  `lantern_search_duration_seconds`, and the index-size gauges
+  `lantern_search_duration_seconds`, bounded terminal
+  `lantern_search_calls_total{outcome,reason}`, deterministic
+  `lantern_search_work{kind}`, and the index-size gauges
   `lantern_search_index_terms` / `_docs` (0 unless `LANTERN_SEARCH_ENABLED`).
+  Search labels are fixed enums; raw query text, prefixes, matched keys, and
+  value snippets are never labels.
 - **Batch shape**: `lantern_batch_size{op}` — the plural-RPC item count, so a
   "slow write" can be split into "large batch" vs "slow per-item".
 

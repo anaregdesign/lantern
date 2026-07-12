@@ -180,6 +180,73 @@ void main() {
     );
   });
 
+  test('work-budget error exposes bounded reason and work kind', () async {
+    final transport = FakeTransportBuilder()
+        .unary<graph.SearchVerticesRequest, graph.SearchVerticesResponse>(
+          LanternService.searchVertices,
+          (request, context) => throw connect.ConnectException(
+            connect.Code.resourceExhausted,
+            'posting budget exhausted',
+            details: [
+              connect.ErrorDetail(
+                'graph.v1.SearchErrorDetail',
+                graph.SearchErrorDetail(
+                  reason: graph.SearchErrorReason.SEARCH_WORK_BUDGET_EXHAUSTED,
+                  workKind: 'posting_visits',
+                ).writeToBuffer(),
+              ),
+            ],
+          ),
+        )
+        .build();
+    await expectLater(
+      _client(transport).searchVertices('alpha'),
+      throwsA(
+        isA<LanternResourceExhaustedException>()
+            .having(
+              (error) => error.searchReason,
+              'searchReason',
+              SearchErrorReason.searchWorkBudgetExhausted,
+            )
+            .having(
+              (error) => error.searchWorkKind,
+              'searchWorkKind',
+              'posting_visits',
+            ),
+      ),
+    );
+  });
+
+  test('admission saturation remains distinct from work exhaustion', () async {
+    final transport = FakeTransportBuilder()
+        .unary<graph.SearchVerticesRequest, graph.SearchVerticesResponse>(
+          LanternService.searchVertices,
+          (request, context) => throw connect.ConnectException(
+            connect.Code.resourceExhausted,
+            'search admission saturated',
+            details: [
+              connect.ErrorDetail(
+                'graph.v1.SearchErrorDetail',
+                graph.SearchErrorDetail(
+                  reason: graph.SearchErrorReason.SEARCH_ADMISSION_SATURATED,
+                ).writeToBuffer(),
+              ),
+            ],
+          ),
+        )
+        .build();
+    await expectLater(
+      _client(transport).searchVertices('alpha'),
+      throwsA(
+        isA<LanternResourceExhaustedException>().having(
+          (error) => error.searchReason,
+          'searchReason',
+          SearchErrorReason.searchAdmissionSaturated,
+        ),
+      ),
+    );
+  });
+
   test('invalid relevance combinations fail before transport', () async {
     var calls = 0;
     final transport = FakeTransportBuilder()

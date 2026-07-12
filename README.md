@@ -283,6 +283,16 @@ positions rejects `phrase=true` with the typed reason
 `GetServerStatus.search` exposes these capabilities, their defaults and limits,
 implementation versions, and a configuration fingerprint.
 
+Every search has a server deadline, bounded query/analyzed-term/dictionary/
+posting/position work, and an in-flight admission slot. Cancellation or a
+deadline returns no partial hits. `SEARCH_WORK_BUDGET_EXHAUSTED` includes a
+stable `work_kind`; `SEARCH_ADMISSION_SATURATED` is distinct so clients can
+apply jittered backoff. Canceled, deadline, and work-budget failures are
+terminal for that attempt—interactive/incremental clients should discard it
+and issue only the newest input, not replay stale queries. A budget failure
+usually calls for a narrower query or fewer expansion options; only admission
+saturation is normally worth retrying unchanged.
+
 Search option interpretation is identical on every surface:
 
 | Request | Membership behavior |
