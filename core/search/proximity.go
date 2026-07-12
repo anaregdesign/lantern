@@ -26,7 +26,7 @@ const proximityBoostWeight = 0.3
 // It runs after scoreLocked over the same match set, so it never widens the
 // candidate pool: SearchTopK's bounded selection still sees exactly the
 // OR-union matches, now with tighter matches ranked higher.
-func (idx *InvertedIndex[S, D]) applyProximityLocked(scores map[uint32]float64, queryTerms map[Token]struct{}) {
+func (idx *InvertedIndex[S, D]) applyProximityLocked(scores map[uint32]float64, queryTerms []Token) {
 	if !idx.positions || idx.proximityWeight == 0 || len(scores) == 0 {
 		return
 	}
@@ -37,7 +37,7 @@ func (idx *InvertedIndex[S, D]) applyProximityLocked(scores map[uint32]float64, 
 	// Resolve the distinct word-channel query terms that exist in the corpus;
 	// fewer than two means there is no pair whose distance could matter.
 	var lists []*postingList
-	for token := range queryTerms {
+	for _, token := range queryTerms {
 		if token.Class != ClassWord {
 			continue
 		}
@@ -75,7 +75,7 @@ func (idx *InvertedIndex[S, D]) applyProximityLocked(scores map[uint32]float64, 
 		if span < 0 {
 			span = 0
 		}
-		scores[ord] += idx.proximityWeight * float64(len(present)-1) / float64(span+1)
+		addScore(scores, ord, idx.proximityWeight*float64(len(present)-1)/float64(span+1))
 	}
 }
 

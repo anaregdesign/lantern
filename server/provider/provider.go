@@ -474,7 +474,7 @@ func NewGraphCache(c CacheConfig, sc SearchConfig) *graphcache.GraphCache[string
 		if !sc.Positions {
 			opts = append(opts, graphcache.WithoutSearchPositions())
 		}
-		gc.EnableSearchIndex(vertexSearchDocument, opts...)
+		gc.EnableSearchIndex(vertexSearchDocument, strings.Compare, opts...)
 	}
 	return gc
 }

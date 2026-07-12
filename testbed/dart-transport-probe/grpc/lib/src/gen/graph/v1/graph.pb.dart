@@ -2325,14 +2325,15 @@ class SearchVerticesResponse extends $pb.GeneratedMessage {
       $pb.GeneratedMessage.$_defaultFor<SearchVerticesResponse>(create);
   static SearchVerticesResponse? _defaultInstance;
 
-  /// hits in descending relevance order (BM25). May be shorter than `limit`
-  /// when fewer vertices match; empty when nothing matches.
+  /// hits use the stable total order (score DESC, raw key ASC). May be shorter
+  /// than `limit` when fewer vertices match; empty when nothing matches.
   @$pb.TagNumber(1)
   $pb.PbList<SearchHit> get hits => $_getList(0);
 }
 
 /// SearchHit pairs a matching vertex key with the relevance score the index
-/// assigned it (BM25; higher is more relevant). The value and TTL are not
+/// assigned it (BM25; higher is more relevant). Equal scores are ordered by the
+/// raw, unnormalised key in ascending lexical order. The value and TTL are not
 /// included — callers that need them issue a follow-up GetVertices with the
 /// returned keys.
 class SearchHit extends $pb.GeneratedMessage {

@@ -21,9 +21,9 @@ import (
 var errSearchDisabled = errors.New("vertex search is disabled on this server; set LANTERN_SEARCH_ENABLED=true to enable it")
 
 // SearchVertices returns vertices ranked by full-text relevance over their
-// indexed content (key + value), most relevant first. It is the content
-// counterpart to ScanVertices' lexicographic key walk: callers search by
-// remembered topic words instead of an exact key prefix.
+// indexed content (key + value) in stable (score DESC, raw key ASC) order. It
+// is the content counterpart to ScanVertices' lexicographic key walk: callers
+// search by remembered topic words instead of an exact key prefix.
 //
 // Gating: when the server was started without the search index
 // (LANTERN_SEARCH_ENABLED=false) the RPC returns FAILED_PRECONDITION. The

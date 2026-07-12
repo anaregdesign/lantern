@@ -541,9 +541,10 @@ export class Lantern {
   /**
    * Content-addressed vertex search. Runs a relevance-ranked full-text
    * query over vertex *content* (key + value) via the server-side
-   * index, returning ranked `{ key, score }` hits in descending BM25
-   * order — the seed candidates a caller picks before an `illuminate`
-   * traversal, where `score` doubles as the seed's initial weight.
+   * index, returning ranked `{ key, score }` hits in stable `(score DESC,
+   * raw key ASC)` order — the seed candidates a caller picks before an
+   * `illuminate` traversal, where `score` doubles as the seed's initial
+   * weight.
    *
    * Unlike `scanVertices` (a lexicographic key-prefix walk), this
    * matches the *value*. `opts.limit` caps the ranked hits (0 = server

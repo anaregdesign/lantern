@@ -1,6 +1,8 @@
 package search
 
 import (
+	"container/heap"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -10,8 +12,8 @@ import (
 // MaxTermExpansions caps how many dictionary terms a single word-channel query
 // term expands to under prefix/fuzzy matching, so a hot prefix or a small
 // fuzziness over a large dictionary cannot blow up a query. It mirrors Lucene's
-// default multi-term rewrite cap; the exact term is always kept, then the scan
-// fills the remaining budget in dictionary id order (deterministic).
+// default multi-term rewrite cap. Selection is semantic and independent of
+// dictionary ids: exact first, then prefix quality, then fuzzy edit distance.
 const MaxTermExpansions = 50
 
 // expandsTerms reports whether the options request prefix or fuzzy term
@@ -37,9 +39,9 @@ type queryClause struct {
 // it. Auxiliary gram tokens and CJK grams (isExpandable is false for a run of
 // unbounded-script runes) are never expanded — they are fixed-width windows, so
 // prefix/fuzzy widening is meaningless. Callers hold idx.mu.
-func (idx *InvertedIndex[S, D]) buildClausesLocked(queryTerms map[Token]struct{}, opts MatchOptions) []queryClause {
+func (idx *InvertedIndex[S, D]) buildClausesLocked(queryTerms []Token, opts MatchOptions) []queryClause {
 	clauses := make([]queryClause, 0, len(queryTerms))
-	for token := range queryTerms {
+	for _, token := range queryTerms {
 		if int(token.Class) >= numTokenClasses {
 			continue
 		}
@@ -90,14 +92,14 @@ func (idx *InvertedIndex[S, D]) scoreClausesLocked(clauses []queryClause, opts M
 			df := pl.cardinality()
 			for it := pl.docs.Iterator(); it.HasNext(); {
 				ord := it.Next()
-				scores[ord] += idx.scorer.Score(TermStats{
+				addScore(scores, ord, idx.scorer.Score(TermStats{
 					TF:     pl.tf(ord),
 					DF:     df,
 					N:      cp.docCount,
 					DocLen: idx.docs[ord].lengths[cl.class],
 					AvgLen: avgLen,
 					Class:  cl.class,
-				})
+				}))
 			}
 			if union != nil {
 				union.Or(pl.docs)
@@ -109,6 +111,7 @@ func (idx *InvertedIndex[S, D]) scoreClausesLocked(clauses []queryClause, opts M
 			}
 		}
 	}
+	dropNonFiniteScores(scores)
 	if coverage != nil {
 		if threshold := coverageThreshold(opts, numWords); threshold > 0 {
 			for ord := range scores {
@@ -137,81 +140,217 @@ func isExpandable(term string) bool {
 	return false
 }
 
-// expand returns the interned term ids matching term under the expansion flags,
-// capped at limit: the exact term (if interned) first, then terms that have term
-// as a prefix (when prefix is set), and terms within maxEdits edit distance
-// (when maxEdits > 0). It scans the live term slice in id order, so the result
-// — including which terms survive the cap — is deterministic. Callers hold the
-// index lock. Intended for word terms; the caller skips CJK grams.
+// expansionKind orders non-exact candidates when prefix and fuzzy expansion are
+// combined. A literal continuation is stronger than a typo candidate; a term
+// matching both is classified once as prefix.
+type expansionKind uint8
+
+const (
+	expansionPrefix expansionKind = iota
+	expansionFuzzy
+)
+
+type expansionCandidate struct {
+	id      uint32
+	term    string
+	kind    expansionKind
+	quality int // prefix rune-extension length or Levenshtein distance
+}
+
+// betterExpansion defines the history-independent expansion order after the
+// exact term: kind, quality, then normalized UTF-8 term ascending.
+func betterExpansion(a, b expansionCandidate) bool {
+	if a.kind != b.kind {
+		return a.kind < b.kind
+	}
+	if a.quality != b.quality {
+		return a.quality < b.quality
+	}
+	return a.term < b.term
+}
+
+// expansionTopHeap keeps its weakest retained candidate at the root.
+type expansionTopHeap []expansionCandidate
+
+func (h expansionTopHeap) Len() int { return len(h) }
+func (h expansionTopHeap) Less(i, j int) bool {
+	return betterExpansion(h[j], h[i])
+}
+func (h expansionTopHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+func (h *expansionTopHeap) Push(x any)   { *h = append(*h, x.(expansionCandidate)) }
+func (h *expansionTopHeap) Pop() any {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[:n-1]
+	return x
+}
+
+func retainExpansion(h *expansionTopHeap, candidate expansionCandidate, limit int) {
+	if len(*h) < limit {
+		if *h == nil {
+			*h = make(expansionTopHeap, 0, limit)
+		}
+		*h = append(*h, candidate)
+		if len(*h) == limit {
+			heap.Init(h)
+		}
+		return
+	}
+	if betterExpansion(candidate, (*h)[0]) {
+		(*h)[0] = candidate
+		heap.Fix(h, 0)
+	}
+}
+
+// expand returns interned term ids capped at limit in a semantic order
+// independent of term ids and mutation history: exact first; prefix matches by
+// (rune extension length, term); then fuzzy-only matches by (edit distance,
+// term). Callers hold the index lock. Intended for word terms; the caller skips
+// CJK grams.
 func (d *termDict) expand(term string, prefix bool, maxEdits, limit int) []uint32 {
 	if limit <= 0 {
 		return nil
 	}
 	out := make([]uint32, 0, min(limit, 8))
-	seen := make(map[uint32]struct{})
-	appendID := func(id uint32) bool {
-		if _, dup := seen[id]; dup {
-			return len(out) < limit
-		}
-		seen[id] = struct{}{}
-		out = append(out, id)
-		return len(out) < limit
-	}
 	if id, ok := d.ids[term]; ok {
-		if !appendID(id) {
+		out = append(out, id)
+		if len(out) == limit {
 			return out
 		}
 	}
 	if !prefix && maxEdits <= 0 {
 		return out
 	}
+
 	// Fuzzy matching converts each length-compatible candidate to runes and runs
-	// a two-row Levenshtein DP. Both the rune slice and the DP rows are sized at
-	// most len(qr)+maxEdits (the rune-length gate rejects anything longer), so a
-	// single scratch trio, allocated once here, serves the whole scan instead of
-	// a per-candidate allocation — the dominant cost of a fuzzy expansion over a
-	// large dictionary (#909). The scan still visits terms in id order, so the
-	// cap survivors are unchanged.
-	qr := []rune(term)
+	// a two-row Levenshtein DP. ASCII words up to 64 bytes use Myers' bit-vector
+	// algorithm instead, reducing each candidate to one pass of word-sized
+	// operations. The DP scratch is allocated lazily only if a Unicode candidate
+	// needs it. A bounded heap retains only the best remaining terms, so semantic
+	// selection uses O(limit) transient memory.
+	var asciiMasks [utf8.RuneSelf]uint64
+	useASCII := len(term) > 0 && len(term) <= 64 && isASCII(term)
+	queryLen := len(term)
+	var qr []rune
+	if useASCII {
+		for i := range term {
+			asciiMasks[term[i]] |= uint64(1) << i
+		}
+	} else {
+		qr = []rune(term)
+		queryLen = len(qr)
+	}
 	var candRunes []rune
 	var dpPrev, dpCurr []int
-	if maxEdits > 0 {
-		candRunes = make([]rune, 0, len(qr)+maxEdits)
-		dpPrev = make([]int, len(qr)+maxEdits+1)
-		dpCurr = make([]int, len(qr)+maxEdits+1)
+	ensureDPScratch := func() {
+		if dpPrev != nil {
+			return
+		}
+		if qr == nil {
+			qr = []rune(term)
+		}
+		candRunes = make([]rune, 0, queryLen+maxEdits)
+		dpPrev = make([]int, queryLen+maxEdits+1)
+		dpCurr = make([]int, queryLen+maxEdits+1)
 	}
+	remaining := limit - len(out)
+	var best expansionTopHeap
 	for id, cand := range d.terms {
 		if cand == "" || cand == term {
-			continue // released slot, or the exact term already added
+			continue
 		}
-		matched := prefix && strings.HasPrefix(cand, term)
-		if !matched && maxEdits > 0 {
-			// Rune-length gate before the O(len) rune conversion and DP: edit
-			// distance is at least the rune-length difference, so a candidate
-			// whose length is more than maxEdits from the query cannot match.
-			// utf8.RuneCountInString allocates nothing, so the rune decode and
-			// Levenshtein run only for the few length-compatible candidates while
-			// the rest of the scan stays a cheap length count. A skipped candidate
-			// would have failed withinEdits anyway (it bails on that same length
-			// difference), so the match set — and thus which terms survive the
-			// cap — is byte-for-byte the pre-gate result.
-			if cl := utf8.RuneCountInString(cand); cl-len(qr) <= maxEdits && len(qr)-cl <= maxEdits {
-				candRunes = candRunes[:0]
-				for _, r := range cand {
-					candRunes = append(candRunes, r)
-				}
-				if withinEditsRows(qr, candRunes, maxEdits, dpPrev, dpCurr) {
-					matched = true
-				}
-			}
+		if prefix && strings.HasPrefix(cand, term) {
+			retainExpansion(&best, expansionCandidate{
+				id:      uint32(id),
+				term:    cand,
+				kind:    expansionPrefix,
+				quality: utf8.RuneCountInString(cand) - queryLen,
+			}, remaining)
+			continue
 		}
-		if matched {
-			if !appendID(uint32(id)) {
-				return out
+		if maxEdits <= 0 {
+			continue
+		}
+		candidateASCII := useASCII && isASCII(cand)
+		cl := len(cand)
+		if !candidateASCII {
+			cl = utf8.RuneCountInString(cand)
+		}
+		if cl-queryLen > maxEdits || queryLen-cl > maxEdits {
+			continue
+		}
+		if candidateASCII {
+			if distance, ok := asciiLevenshteinWithin(len(term), cand, maxEdits, &asciiMasks); ok {
+				retainExpansion(&best, expansionCandidate{
+					id:      uint32(id),
+					term:    cand,
+					kind:    expansionFuzzy,
+					quality: distance,
+				}, remaining)
 			}
+			continue
+		}
+		ensureDPScratch()
+		candRunes = candRunes[:0]
+		for _, r := range cand {
+			candRunes = append(candRunes, r)
+		}
+		if distance, ok := editDistanceWithinRows(qr, candRunes, maxEdits, dpPrev, dpCurr); ok {
+			retainExpansion(&best, expansionCandidate{
+				id:      uint32(id),
+				term:    cand,
+				kind:    expansionFuzzy,
+				quality: distance,
+			}, remaining)
 		}
 	}
+	sort.Slice(best, func(i, j int) bool { return betterExpansion(best[i], best[j]) })
+	for _, candidate := range best {
+		out = append(out, candidate.id)
+	}
 	return out
+}
+
+func isASCII(s string) bool {
+	for i := range len(s) {
+		if s[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
+}
+
+// asciiLevenshteinWithin computes the exact distance from the ASCII pattern
+// represented by masks to candidate when it is at most maxEdits, using Myers'
+// bit-vector algorithm. The caller guarantees 1 <= patternLen <= 64 and an
+// ASCII candidate. A partial score may still fall as remaining candidate bytes
+// arrive, so rejection uses the safe lower bound score - remaining.
+func asciiLevenshteinWithin(patternLen int, candidate string, maxEdits int, masks *[utf8.RuneSelf]uint64) (int, bool) {
+	positive := ^uint64(0)
+	negative := uint64(0)
+	score := patternLen
+	highBit := uint64(1) << (patternLen - 1)
+	for i := range candidate {
+		equal := masks[candidate[i]]
+		vertical := equal | negative
+		horizontal := (((equal & positive) + positive) ^ positive) | equal
+		positiveHorizontal := negative | ^(horizontal | positive)
+		negativeHorizontal := positive & horizontal
+		if positiveHorizontal&highBit != 0 {
+			score++
+		} else if negativeHorizontal&highBit != 0 {
+			score--
+		}
+		positiveHorizontal = (positiveHorizontal << 1) | 1
+		negativeHorizontal <<= 1
+		positive = negativeHorizontal | ^(vertical | positiveHorizontal)
+		negative = positiveHorizontal & vertical
+		if score-(len(candidate)-i-1) > maxEdits {
+			return 0, false
+		}
+	}
+	return score, score <= maxEdits
 }
 
 // withinEdits reports whether the Levenshtein edit distance between rune slices
@@ -222,7 +361,8 @@ func withinEdits(a, b []rune, maxEdits int) bool {
 		return false
 	}
 	n := len(b) + 1
-	return withinEditsRows(a, b, maxEdits, make([]int, n), make([]int, n))
+	_, ok := editDistanceWithinRows(a, b, maxEdits, make([]int, n), make([]int, n))
+	return ok
 }
 
 // withinEditsRows is withinEdits over caller-provided scratch rows so a large
@@ -233,9 +373,16 @@ func withinEdits(a, b []rune, maxEdits int) bool {
 // exceeds maxEdits, so a bounded distance check over a large dictionary stays
 // cheap. Contents are fully overwritten each call, so stale scratch is fine.
 func withinEditsRows(a, b []rune, maxEdits int, prev, curr []int) bool {
+	_, ok := editDistanceWithinRows(a, b, maxEdits, prev, curr)
+	return ok
+}
+
+// editDistanceWithinRows returns the exact Levenshtein distance when it is at
+// most maxEdits, using caller-provided scratch rows.
+func editDistanceWithinRows(a, b []rune, maxEdits int, prev, curr []int) (int, bool) {
 	la, lb := len(a), len(b)
 	if la-lb > maxEdits || lb-la > maxEdits {
-		return false
+		return 0, false
 	}
 	prev, curr = prev[:lb+1], curr[:lb+1]
 	for j := 0; j <= lb; j++ {
@@ -255,9 +402,10 @@ func withinEditsRows(a, b []rune, maxEdits int, prev, curr []int) bool {
 			}
 		}
 		if rowMin > maxEdits {
-			return false
+			return 0, false
 		}
 		prev, curr = curr, prev
 	}
-	return prev[lb] <= maxEdits
+	distance := prev[lb]
+	return distance, distance <= maxEdits
 }

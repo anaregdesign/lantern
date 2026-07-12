@@ -83,10 +83,10 @@ abstract final class LanternService {
   );
 
   /// SearchVertices returns vertices ranked by full-text relevance over their
-  /// content (key + value), optionally scoped to a key prefix. Requires the
-  /// server-side search index (LANTERN_SEARCH_ENABLED, on by default);
-  /// returns FAILED_PRECONDITION when disabled. Plural-only — ranked search
-  /// is inherently plural.
+  /// content (key + value), optionally scoped to a key prefix, in stable
+  /// (score DESC, raw key ASC) order. Requires the server-side search index
+  /// (LANTERN_SEARCH_ENABLED, on by default); returns FAILED_PRECONDITION when
+  /// disabled. Plural-only — ranked search is inherently plural.
   static const searchVertices = connect.Spec(
     '/$name/SearchVertices',
     connect.StreamType.unary,

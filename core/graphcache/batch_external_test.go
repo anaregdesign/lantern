@@ -1,6 +1,7 @@
 package graphcache_test
 
 import (
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -221,7 +222,7 @@ func TestBatchAPIs_ReturnCounts(t *testing.T) {
 func TestDeleteVertices_ClearsPrefixAndSearchIndexes(t *testing.T) {
 	c := graphcache.NewGraphCache[string, string](time.Minute)
 	c.EnablePrefixIndex(func(k string) string { return k })
-	c.EnableSearchIndex(func(v string) search.Document { return search.Text(v) })
+	c.EnableSearchIndex(func(v string) search.Document { return search.Text(v) }, strings.Compare)
 
 	c.PutVertex("ns:a", "alpha")
 	c.PutVertex("ns:b", "bravo")

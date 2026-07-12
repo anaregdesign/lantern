@@ -9,7 +9,7 @@ import (
 func TestGraphCache_IndexLifecycle_ExplicitVertexAndEndpointCreation(t *testing.T) {
 	c := NewGraphCache[string, string](time.Minute)
 	c.EnablePrefixIndex(identityExtract)
-	c.EnableSearchIndex(textExtract)
+	c.EnableSearchIndex(textExtract, compareStringID)
 	exp := time.Now().Add(time.Minute)
 
 	c.PutVertexWithExpiration("user:1", "explicit searchable payload", exp)

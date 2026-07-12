@@ -24,7 +24,7 @@ func gateAnalyzer() Analyzer {
 
 // gateIndex builds a fresh index wired with the example's analyzer and scorer.
 func gateIndex() *InvertedIndex[string, Text] {
-	return NewInvertedIndex[string, Text](gateAnalyzer(), BM25{K1: 1.2, B: 0.75})
+	return NewInvertedIndex[string, Text](gateAnalyzer(), BM25{K1: 1.2, B: 0.75}, compareStringID)
 }
 
 // foldingAnalyzer extends the gate analyzer with the width and diacritic
@@ -47,7 +47,7 @@ func foldingAnalyzer() Analyzer {
 // foldingIndex builds a fresh index wired with the folding analyzer and the
 // example's scorer.
 func foldingIndex() *InvertedIndex[string, Text] {
-	return NewInvertedIndex[string, Text](foldingAnalyzer(), BM25{K1: 1.2, B: 0.75})
+	return NewInvertedIndex[string, Text](foldingAnalyzer(), BM25{K1: 1.2, B: 0.75}, compareStringID)
 }
 
 // TestSearchQualityGateMultilingual indexes a small corpus per case and asserts
@@ -363,7 +363,7 @@ func TestSearchQualityGateFolding(t *testing.T) {
 }
 
 // sortedEqual reports whether got and want hold the same IDs regardless of
-// order, so set-membership assertions do not depend on score ties.
+// order for cases that intentionally assert membership separately from rank.
 func sortedEqual(got, want []string) bool {
 	g := append([]string(nil), got...)
 	w := append([]string(nil), want...)
@@ -390,6 +390,7 @@ func scriptAwareIndex() *InvertedIndex[string, Text] {
 	return NewInvertedIndex[string, Text](
 		NewScriptAwareAnalyzer(),
 		ClassWeighted{Base: BM25{K1: DefaultBM25K1, B: DefaultBM25B}, GramWeight: DefaultGramWeight},
+		compareStringID,
 	)
 }
 

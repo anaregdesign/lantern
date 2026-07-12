@@ -7,6 +7,11 @@
 #   under the InvertedIndex RWMutex.
 # - consistency: SearchVertices skips vertices whose TTL has expired but
 #   whose Flush has not yet run.
+# - expansion: one two-clause query drives both semantic cap-overflow paths:
+#   `topic` prefix-expands over the live unique-term set, while `fuzz000`
+#   fuzzy-expands over 100 live neighbours at edit distance <= 2. Both exceed
+#   MaxTermExpansions=50, so the release sweep exercises capped survivor
+#   selection rather than an exact-only dictionary lookup (#1056).
 #
 # steady >= 2m so the leak window brackets the GC sweep repeatedly.
 # Assert lantern_search_index_terms and lantern_search_index_docs return
@@ -31,13 +36,22 @@ target:
     # [0] short-TTL string vertex. The 50k key space is larger than the
     #     ~15k live set at 1k writes/s with 15s expirations, so keys are not
     #     refreshed before they age out and GC churns the index during steady.
-    - call: graph.v1.LanternService/PutVertex
+    #     topicNNNNN supplies thousands of live prefix candidates; fuzzNNN is
+    #     a bounded 100-term family whose every member lies within two edits of
+    #     fuzz000. Keeping them in one value preserves the existing 2-producer
+    #     split while making both expansion caps overflow.
+    - name: writer
+      call: graph.v1.LanternService/PutVertex
       data_template: |
-        {"vertex":{"key":"search-{{mod .RequestNumber 50000}}","string":"topic {{mod .RequestNumber 100}}","expiration":"{{ now | dateModify `15s` | date `2006-01-02T15:04:05.999999999Z07:00` }}"}}
-    # [1] full-text query over the indexed content.
-    - call: graph.v1.LanternService/SearchVertices
+        {"vertex":{"key":"search-{{mod .RequestNumber 50000}}","string":"topic{{ printf `%05d` (mod .RequestNumber 50000) }} fuzz{{ printf `%03d` (mod .RequestNumber 100) }}","expiration":"{{ now | dateModify `15s` | date `2006-01-02T15:04:05.999999999Z07:00` }}"}}
+    # [1] Both query clauses overflow the 50-term expansion cap independently:
+    #     topic matches every live topicNNNNN by prefix, and fuzz000 reaches all
+    #     fuzz000..fuzz099 with fuzziness=2. Auxiliary grams still exercise the
+    #     production script-aware ranking path around those word clauses.
+    - name: prefix_fuzzy_cap_overflow
+      call: graph.v1.LanternService/SearchVertices
       data_template: |
-        {"query":"topic {{mod .RequestNumber 100}}","limit":20}
+        {"query":"topic fuzz000","limit":20,"options":{"prefixTerms":true,"fuzziness":2}}
 leak_gate:
   goroutine_max_delta: 20
   heap_alloc_max_delta_mb: 32
@@ -48,3 +62,10 @@ perf_gate:
   min_steady_rps_total: 800
   max_p99_ms: 1250
   max_non_ok_ratio: 0.02
+  # Producer names make the advanced-search leg independently measurable in
+  # perf_gate.json. Error budgets are safe to gate immediately; throughput and
+  # p99 need fresh nightly baselines for this heavier query before they can be
+  # sized with the README-mandated >=2x headroom.
+  producers:
+    writer: { max_non_ok_ratio: 0.02 }
+    prefix_fuzzy_cap_overflow: { max_non_ok_ratio: 0.02 }

@@ -147,7 +147,7 @@ func TestDeleteByPrefixHLC_TombstonesPerVertex(t *testing.T) {
 func TestDeleteVerticesHLC_BatchTombstonesAllDeletesPresent(t *testing.T) {
 	c := NewGraphCache[string, string](time.Minute)
 	c.EnablePrefixIndex(identityExtract)
-	c.EnableSearchIndex(textExtract)
+	c.EnableSearchIndex(textExtract, compareStringID)
 	exp := time.Now().Add(time.Hour)
 	t0 := hlc.Timestamp{WallNs: 1000}
 	t1 := hlc.Timestamp{WallNs: 2000}

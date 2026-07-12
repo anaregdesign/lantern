@@ -1,6 +1,9 @@
 package search
 
 import (
+	"fmt"
+	"math"
+	"slices"
 	"sort"
 	"testing"
 )
@@ -9,7 +12,7 @@ import (
 // query's terms must occur at consecutive positions, so an adjacent phrase
 // matches while the same terms scattered apart do not.
 func TestSearchPhrase(t *testing.T) {
-	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, WithPositions())
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID, WithPositions())
 	idx.Index("adjacent", Text("the data set is clean"))   // data@1 set@2 — adjacent
 	idx.Index("scattered", Text("the set holds the data")) // set@1 data@4 — apart
 	idx.Index("partial", Text("only data here"))           // data only
@@ -52,7 +55,7 @@ func TestSearchPhrase(t *testing.T) {
 // repeated and adjacent in the document, exercising a term whose posting
 // carries more than one position.
 func TestSearchPhraseRepeatedWord(t *testing.T) {
-	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, WithPositions())
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID, WithPositions())
 	idx.Index("double", Text("go go rust")) // go@0 go@1
 	idx.Index("single", Text("go rust go")) // go@0 go@2 — not adjacent
 
@@ -66,7 +69,7 @@ func TestSearchPhraseRepeatedWord(t *testing.T) {
 // without WithPositions cannot verify adjacency, so SearchPhrase falls back to
 // the AND-intersection: every term present, order unverified.
 func TestSearchPhraseDegradesWithoutPositions(t *testing.T) {
-	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil) // no WithPositions
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID) // no WithPositions
 	idx.Index("adjacent", Text("the data set is clean"))
 	idx.Index("scattered", Text("the set holds the data"))
 	idx.Index("partial", Text("only data here")) // only one of the two terms
@@ -83,7 +86,7 @@ func TestSearchPhraseDegradesWithoutPositions(t *testing.T) {
 // survivor intact, and re-indexing with a different order updates them so a
 // stale phrase no longer matches.
 func TestSearchPhrasePositionsLifecycle(t *testing.T) {
-	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, WithPositions())
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID, WithPositions())
 	idx.Index("doc1", Text("data set one"))
 	idx.Index("doc2", Text("data set two"))
 
@@ -107,7 +110,7 @@ func TestSearchPhrasePositionsLifecycle(t *testing.T) {
 // query phrase's bigrams must occur at consecutive positions, exactly as they
 // do inside the matching run.
 func TestSearchPhraseCJK(t *testing.T) {
-	idx := NewInvertedIndex[string, Document](NewScriptAwareAnalyzer(), nil, WithPositions())
+	idx := NewInvertedIndex[string, Document](NewScriptAwareAnalyzer(), nil, compareStringID, WithPositions())
 	// "データセット" bigrams デー ータ タセ セッ ット appear consecutively here.
 	idx.Index("match", Text("データセットを解析する"))
 	// The same characters, but セット precedes データ — the phrase's bigrams
@@ -123,7 +126,7 @@ func TestSearchPhraseCJK(t *testing.T) {
 // TestSearchPhraseTopK covers the bounded-selection sibling: k caps the page,
 // accept filters candidates, and k <= 0 or no word terms return nil.
 func TestSearchPhraseTopK(t *testing.T) {
-	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, WithPositions())
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID, WithPositions())
 	idx.Index("a", Text("data set alpha"))
 	idx.Index("b", Text("data set beta data set"))
 	idx.Index("c", Text("no phrase here"))
@@ -154,6 +157,44 @@ func TestSearchPhraseTopK(t *testing.T) {
 			t.Fatalf("SearchPhraseTopK blank = %v, want nil", idsOf(got))
 		}
 	})
+}
+
+func TestSearchPhraseDeterministicTieOrder(t *testing.T) {
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID, WithPositions())
+	want := make([]string, 32)
+	for i := range want {
+		want[i] = fmt.Sprintf("doc-%03d", i)
+	}
+	for i := len(want) - 1; i >= 0; i-- {
+		idx.Index(want[i], Text("data set"))
+	}
+	if got := idsOf(idx.SearchPhrase("data set")); !slices.Equal(got, want) {
+		t.Fatalf("SearchPhrase order = %v, want %v", got, want)
+	}
+	for repeat := 0; repeat < 100; repeat++ {
+		if got := idsOf(idx.SearchPhraseTopK("data set", 10, nil)); !slices.Equal(got, want[:10]) {
+			t.Fatalf("repeat %d SearchPhraseTopK order = %v, want %v", repeat, got, want[:10])
+		}
+	}
+}
+
+func TestSearchPhraseDropsNonFiniteScores(t *testing.T) {
+	scorer := ScorerFunc(func(stats TermStats) float64 {
+		if stats.DocLen == 2 {
+			return math.NaN()
+		}
+		return 1
+	})
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, scorer, compareStringID, WithPositions())
+	idx.Index("invalid", Text("data set"))
+	idx.Index("finite", Text("data set extra"))
+	want := []string{"finite"}
+	if got := idsOf(idx.SearchPhrase("data set")); !slices.Equal(got, want) {
+		t.Fatalf("SearchPhrase non-finite = %v, want %v", got, want)
+	}
+	if got := idsOf(idx.SearchPhraseTopK("data set", 10, nil)); !slices.Equal(got, want) {
+		t.Fatalf("SearchPhraseTopK non-finite = %v, want %v", got, want)
+	}
 }
 
 // TestContainsSortedU32 covers the binary-search helper phrase adjacency relies

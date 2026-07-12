@@ -439,13 +439,14 @@ message SearchVerticesRequest {
 }
 
 message SearchVerticesResponse {
-  // hits in descending relevance order (BM25). May be shorter than `limit`
-  // when fewer vertices match; empty when nothing matches.
+  // hits use the stable total order (score DESC, raw key ASC). May be shorter
+  // than `limit` when fewer vertices match; empty when nothing matches.
   repeated SearchHit hits = 1;
 }
 
 // SearchHit pairs a matching vertex key with the relevance score the index
-// assigned it (BM25; higher is more relevant). The value and TTL are not
+// assigned it (BM25; higher is more relevant). Equal scores are ordered by the
+// raw, unnormalised key in ascending lexical order. The value and TTL are not
 // included — callers that need them issue a follow-up GetVertices with the
 // returned keys.
 message SearchHit {
@@ -904,10 +905,10 @@ service LanternService {
   rpc ScanVertexKeys(ScanVertexKeysRequest) returns (ScanVertexKeysResponse);
 
   // SearchVertices returns vertices ranked by full-text relevance over their
-  // content (key + value), optionally scoped to a key prefix. Requires the
-  // server-side search index (LANTERN_SEARCH_ENABLED, on by default);
-  // returns FAILED_PRECONDITION when disabled. Plural-only — ranked search
-  // is inherently plural.
+  // content (key + value), optionally scoped to a key prefix, in stable
+  // (score DESC, raw key ASC) order. Requires the server-side search index
+  // (LANTERN_SEARCH_ENABLED, on by default); returns FAILED_PRECONDITION when
+  // disabled. Plural-only — ranked search is inherently plural.
   rpc SearchVertices(SearchVerticesRequest) returns (SearchVerticesResponse);
 
   // CountVerticesByPrefix returns the number of live vertices whose key

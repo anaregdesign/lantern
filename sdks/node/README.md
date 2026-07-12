@@ -269,10 +269,11 @@ you want the `EdgeInput[]` without sending it.
 
 `searchVertices` runs a relevance-ranked full-text query over vertex
 _content_ (key + value) — unlike `scanVertices`, which is a lexicographic
-key-prefix walk. It returns `{ key, score }` hits in descending BM25 order:
-the seed candidates to pick before an `illuminate` traversal, where `score`
-doubles as the seed's initial weight. Hits carry only the key and score, so
-hydrate value/TTL with a follow-up `getVertices`, preserving rank order.
+key-prefix walk. It returns `{ key, score }` hits in stable `(score DESC, raw
+key ASC)` order: the seed candidates to pick before an `illuminate` traversal,
+where `score` doubles as the seed's initial weight. Hits carry only the key and
+score, so hydrate value/TTL with a follow-up `getVertices`, preserving rank
+order.
 
 ```ts
 const hits = await client.searchVertices("quarterly revenue", { limit: 10, prefix: "doc/" });

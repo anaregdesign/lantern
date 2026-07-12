@@ -11,7 +11,7 @@ import (
 // TestSearchMatchModes covers the three modes on a word-only analyzer, where
 // every match is a word match so the modes reduce to textbook boolean logic.
 func TestSearchMatchModes(t *testing.T) {
-	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil)
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID)
 	idx.Index("all", Text("alpha beta gamma")) // alpha + beta
 	idx.Index("one", Text("alpha delta"))      // alpha only
 	idx.Index("other", Text("beta epsilon"))   // beta only
@@ -63,7 +63,7 @@ func TestMatchModeEquivalences(t *testing.T) {
 	rng := rand.New(rand.NewSource(890))
 	vocab := []string{"a", "b", "c", "d", "e"}
 	for trial := 0; trial < 60; trial++ {
-		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil)
+		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID)
 		docWords := map[string]map[string]struct{}{}
 		nDocs := 5 + rng.Intn(40)
 		for i := 0; i < nDocs; i++ {
@@ -124,7 +124,7 @@ func TestMatchModeEquivalences(t *testing.T) {
 // a full page fills when one exists, k bounds it, accept filters, and k <= 0
 // returns nil.
 func TestSearchMatchTopK(t *testing.T) {
-	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil)
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID)
 	idx.Index("all1", Text("alpha beta x"))
 	idx.Index("all2", Text("alpha beta y z"))
 	idx.Index("one", Text("alpha only"))
@@ -159,7 +159,7 @@ func TestSearchMatchTopK(t *testing.T) {
 // bigrams — the Lucene CJKAnalyzer + AND behavior — while MatchAny still
 // surfaces a document sharing only some.
 func TestSearchMatchModesCJK(t *testing.T) {
-	idx := NewInvertedIndex[string, Document](NewScriptAwareAnalyzer(), nil)
+	idx := NewInvertedIndex[string, Document](NewScriptAwareAnalyzer(), nil, compareStringID)
 	idx.Index("both", Text("データセット"))    // デー ータ タセ セッ ット
 	idx.Index("partial", Text("データベース")) // shares デー ータ only
 

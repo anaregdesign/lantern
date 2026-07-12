@@ -78,7 +78,7 @@ func TestIndexDocs(t *testing.T) {
 		Name: "unit",
 		Docs: []Doc{{ID: "a", Text: "full text search"}, {ID: "b", Text: "graph traversal"}},
 	}
-	idx := search.NewInvertedIndex[string, search.Text](search.NewNGramAnalyzer(2), nil)
+	idx := search.NewInvertedIndex[string, search.Text](search.NewNGramAnalyzer(2), nil, strings.Compare)
 	c.IndexDocs(idx)
 	results := idx.Search("search")
 	if len(results) != 1 || results[0].ID != "a" {
@@ -87,9 +87,9 @@ func TestIndexDocs(t *testing.T) {
 }
 
 func TestRankSearcher(t *testing.T) {
-	idx := search.NewInvertedIndex[string, search.Text](search.NewNGramAnalyzer(2), nil)
-	// Identical documents score identically; RankSearcher must break the tie
-	// by ID so evaluation is deterministic run to run.
+	idx := search.NewInvertedIndex[string, search.Text](search.NewNGramAnalyzer(2), nil, strings.Compare)
+	// Identical documents score identically; RankSearcher must preserve the
+	// core index's ID tie-break instead of repairing it itself.
 	idx.Index("zeta", search.Text("same text"))
 	idx.Index("alpha", search.Text("same text"))
 	idx.Index("miss", search.Text("unrelated"))

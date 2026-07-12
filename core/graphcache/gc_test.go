@@ -13,7 +13,7 @@ import (
 func TestGraphCache_GCFlushMaintainsIndexesWatermarksAndDanglingEdges(t *testing.T) {
 	c := NewGraphCache[string, string](time.Minute)
 	c.EnablePrefixIndex(identityExtract)
-	c.EnableSearchIndex(textExtract)
+	c.EnableSearchIndex(textExtract, compareStringID)
 
 	now := time.Now()
 	liveExp := now.Add(time.Minute)

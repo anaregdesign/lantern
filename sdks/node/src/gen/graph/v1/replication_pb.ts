@@ -399,6 +399,8 @@ export type SnapshotEdgeContribution = Message<"graph.v1.SnapshotEdgeContributio
   weight: number;
 
   /**
+   * Absolute expiration. An absent timestamp means a permanent contribution.
+   *
    * @generated from field: google.protobuf.Timestamp expiration = 2;
    */
   expiration?: Timestamp | undefined;

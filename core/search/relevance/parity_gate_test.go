@@ -12,8 +12,10 @@ package relevance
 // the epic wants ratcheted upward).
 
 import (
+	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/anaregdesign/lantern/core/search"
@@ -43,15 +45,16 @@ func productionIndexWith(opts ...search.IndexOption) *search.InvertedIndex[strin
 			Base:       search.BM25{K1: search.DefaultBM25K1, B: search.DefaultBM25B},
 			GramWeight: search.DefaultGramWeight,
 		},
+		strings.Compare,
 		append([]search.IndexOption{search.WithPositions()}, opts...)...,
 	)
 }
 
 // productionFloors are the ratcheted minima per corpus, pinned from a measured
 // run of the current production pipeline (values truncated down to 3 decimals
-// so the assertion has headroom of at most one thousandth). RankSearcher
-// breaks score ties deterministically, so these numbers are exact and stable;
-// any drop below a floor is a real ranking change, not jitter.
+// so the assertion has headroom of at most one thousandth). The production
+// Searcher supplies the deterministic total order, so these numbers are exact
+// and stable; any drop below a floor is a real ranking change, not jitter.
 var productionFloors = map[string]Metrics{
 	// Re-pinned for #910's proximity qrels: the en and mixed corpora each gained
 	// a proximity-sensitive query (q27 "zephyr quokka", mq16 "marimba gable")
@@ -275,15 +278,9 @@ func TestMatchAllPrecision(t *testing.T) {
 	}
 }
 
-// rankResults orders search results most-relevant first, breaking score ties by
-// ID, matching RankSearcher's deterministic order.
+// rankResults preserves the production order; it must not repair ties inside
+// the relevance harness.
 func rankResults(results []search.Result[string]) []string {
-	sort.SliceStable(results, func(i, j int) bool {
-		if results[i].Score != results[j].Score {
-			return results[i].Score > results[j].Score
-		}
-		return results[i].ID < results[j].ID
-	})
 	ids := make([]string, len(results))
 	for i, r := range results {
 		ids[i] = r.ID
@@ -311,6 +308,7 @@ func TestFuzzyRecoversTypos(t *testing.T) {
 	idx := search.NewInvertedIndex[string, search.Text](
 		search.NewAnalyzer([]search.Normalizer{search.LowercaseNormalizer{}}, search.UnicodeTokenizer{}, nil),
 		nil,
+		strings.Compare,
 	)
 	en.IndexDocs(idx)
 	byID := queryByID(en)
@@ -341,6 +339,119 @@ func TestFuzzyRecoversTypos(t *testing.T) {
 	fuzzyTop := rankResults(idx.SearchMatch(clean.Text, search.MatchOptions{Fuzziness: 1}))
 	if len(exactTop) == 0 || len(fuzzyTop) == 0 || exactTop[0] != fuzzyTop[0] {
 		t.Errorf("clean query %q: fuzzy changed the top hit", clean.Text)
+	}
+}
+
+// TestExpansionCapRelevance is the judged cap-overflow corpus for #1056. It
+// measures the decision to keep raw BM25 scoring after semantic expansion:
+// expansion chooses the exact term plus the 49 strongest candidates, then
+// ordinary term statistics rank those documents without a hidden
+// distance/extension multiplier. The exact document has stronger term
+// frequency and must lead; every retained candidate is judged relevant.
+func TestExpansionCapRelevance(t *testing.T) {
+	type fixture struct {
+		name       string
+		query      string
+		candidates []string // already in semantic expansion order
+		opts       search.MatchOptions
+	}
+
+	query := "aaaa"
+	var fuzzyNear []string
+	for pos := range len(query) {
+		for replacement := byte('b'); replacement <= 'z'; replacement++ {
+			term := []byte(query)
+			term[pos] = replacement
+			fuzzyNear = append(fuzzyNear, string(term))
+		}
+	}
+	sort.Strings(fuzzyNear)
+	var fuzzyFar []string
+	for first := byte('b'); first <= 'z'; first++ {
+		for second := byte('b'); second <= 'z'; second++ {
+			fuzzyFar = append(fuzzyFar, string([]byte{first, second, 'a', 'a'}))
+			if len(fuzzyFar) == 30 {
+				break
+			}
+		}
+		if len(fuzzyFar) == 30 {
+			break
+		}
+	}
+	sort.Strings(fuzzyFar)
+
+	var prefixShort []string
+	for suffix := byte('a'); suffix <= 'z'; suffix++ {
+		prefixShort = append(prefixShort, query+string(suffix))
+	}
+	sort.Strings(prefixShort)
+	var prefixLong []string
+	for first := byte('a'); first <= 'z'; first++ {
+		for second := byte('a'); second <= 'z'; second++ {
+			prefixLong = append(prefixLong, query+string([]byte{first, second}))
+			if len(prefixLong) == 40 {
+				break
+			}
+		}
+		if len(prefixLong) == 40 {
+			break
+		}
+	}
+	sort.Strings(prefixLong)
+
+	fixtures := []fixture{
+		{
+			name:       "fuzzy distance",
+			query:      query,
+			candidates: append(fuzzyNear, fuzzyFar...),
+			opts:       search.MatchOptions{Fuzziness: 2},
+		},
+		{
+			name:       "prefix extension",
+			query:      query,
+			candidates: append(prefixShort, prefixLong...),
+			opts:       search.MatchOptions{PrefixTerms: true},
+		},
+	}
+
+	for _, tc := range fixtures {
+		t.Run(tc.name, func(t *testing.T) {
+			idx := search.NewInvertedIndex[string, search.Text](
+				search.NewAnalyzer([]search.Normalizer{search.LowercaseNormalizer{}}, search.UnicodeTokenizer{}, nil),
+				nil,
+				strings.Compare,
+			)
+			qrels := map[string]int{"exact": 3}
+			// Reverse semantic order on purpose: an internal-ID cap would retain
+			// the wrong documents and fail both recall and the relevance check.
+			for i := len(tc.candidates) - 1; i >= 0; i-- {
+				id := fmt.Sprintf("candidate-%03d", i)
+				idx.Index(id, search.Text(tc.candidates[i]))
+				if i < search.MaxTermExpansions-1 {
+					qrels[id] = 2
+				}
+			}
+			idx.Index("exact", search.Text(strings.Repeat(tc.query+" ", 4)))
+
+			ranked := rankResults(idx.SearchMatch(tc.query, tc.opts))
+			if len(ranked) != search.MaxTermExpansions {
+				t.Fatalf("results = %d, want expansion cap %d", len(ranked), search.MaxTermExpansions)
+			}
+			if ranked[0] != "exact" {
+				t.Fatalf("top result = %q, want exact", ranked[0])
+			}
+			for rank, id := range ranked {
+				if qrels[id] == 0 {
+					t.Fatalf("rank %d retained unjudged weaker candidate %q", rank+1, id)
+				}
+			}
+			ndcg := NDCGAt(NDCGDepth, ranked, qrels)
+			recall := RecallAt(EvalDepth, ranked, qrels)
+			if ndcg < 1-1e-12 || recall < 1-1e-12 {
+				t.Errorf("cap-overflow relevance below ideal: nDCG@10=%.6f Recall@50=%.6f", ndcg, recall)
+			}
+			t.Logf("raw-BM25 cap overflow: nDCG@10=%.4f MRR=%.4f Recall@50=%.4f", ndcg, ReciprocalRank(ranked, qrels), recall)
+		})
 	}
 }
 

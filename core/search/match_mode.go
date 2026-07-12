@@ -1,7 +1,5 @@
 package search
 
-import "sort"
-
 // MatchMode selects how a multi-term query's word-channel terms combine to
 // decide which documents match. It governs membership only — the Scorer still
 // ranks whatever matches — and counts distinct query terms on the primary
@@ -52,8 +50,8 @@ type MatchOptions struct {
 // raising precision on multi-word queries; the score is unchanged (still the
 // full word+gram BM25 sum), so ranking within the narrowed set is identical to
 // the OR-union's ranking of the same documents. A query with no analyzable
-// terms, or one that nothing satisfies, returns nil; ties in score have an
-// unspecified order.
+// terms, or one that nothing satisfies, returns nil. Equal scores use the
+// index's required typed document-ID comparator ascending.
 func (idx *InvertedIndex[S, D]) SearchMatch(query string, opts MatchOptions) []Result[S] {
 	queryTerms := idx.queryTerms(query)
 	if len(queryTerms) == 0 {
@@ -67,14 +65,7 @@ func (idx *InvertedIndex[S, D]) SearchMatch(query string, opts MatchOptions) []R
 	if len(scores) == 0 {
 		return nil
 	}
-	results := make([]Result[S], 0, len(scores))
-	for ord, score := range scores {
-		results = append(results, Result[S]{ID: idx.docs[ord].id, Score: score})
-	}
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Score > results[j].Score
-	})
-	return results
+	return idx.rankedResultsLocked(scores)
 }
 
 // SearchMatchTopK is the bounded-selection sibling of SearchMatch, combining
@@ -108,7 +99,7 @@ func (idx *InvertedIndex[S, D]) SearchMatchTopK(query string, k int, accept func
 // expansion into both scoring and coverage); the exact-term default keeps using
 // scoreLocked + filterByCoverageLocked so it is byte-for-byte unchanged. Callers
 // must hold idx.mu.
-func (idx *InvertedIndex[S, D]) scoredMatchesLocked(queryTerms map[Token]struct{}, opts MatchOptions) map[uint32]float64 {
+func (idx *InvertedIndex[S, D]) scoredMatchesLocked(queryTerms []Token, opts MatchOptions) map[uint32]float64 {
 	var scores map[uint32]float64
 	if opts.expandsTerms() {
 		scores = idx.scoreClausesLocked(idx.buildClausesLocked(queryTerms, opts), opts)
@@ -122,6 +113,7 @@ func (idx *InvertedIndex[S, D]) scoredMatchesLocked(queryTerms map[Token]struct{
 		return scores
 	}
 	idx.applyProximityLocked(scores, queryTerms)
+	dropNonFiniteScores(scores)
 	return scores
 }
 
@@ -133,11 +125,11 @@ func (idx *InvertedIndex[S, D]) scoredMatchesLocked(queryTerms map[Token]struct{
 // bigrams, matching Lucene's CJKAnalyzer under AND. A query word term absent
 // from the corpus still raises the bar it can never meet, so an AND with any
 // missing term is correctly empty. Callers must hold idx.mu.
-func (idx *InvertedIndex[S, D]) filterByCoverageLocked(scores map[uint32]float64, queryTerms map[Token]struct{}, opts MatchOptions) {
+func (idx *InvertedIndex[S, D]) filterByCoverageLocked(scores map[uint32]float64, queryTerms []Token, opts MatchOptions) {
 	cp := &idx.classes[ClassWord]
 	numWords := 0
 	coverage := make(map[uint32]int, len(scores))
-	for token := range queryTerms {
+	for _, token := range queryTerms {
 		if token.Class != ClassWord {
 			continue
 		}
