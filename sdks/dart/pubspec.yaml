@@ -11,7 +11,7 @@ topics:
   - lantern
 
 environment:
-  sdk: ">=3.10.0 <4.0.0"
+  sdk: ">=3.11.0 <4.0.0"
 
 dependencies:
   connectrpc: ">=1.0.0 <2.0.0"
@@ -19,6 +19,6 @@ dependencies:
   protobuf: ">=4.2.0 <5.0.0"
 
 dev_dependencies:
-  # Keep dev resolution compatible with the documented Dart 3.10 floor.
+  # Keep dev resolution compatible with the documented Dart 3.11 floor.
   lints: 5.1.1
   test: 1.30.0

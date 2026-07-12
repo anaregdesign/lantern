@@ -162,7 +162,7 @@ jobs:
           fi
 
   minimum-dart:
-    name: Minimum Dart 3.10
+    name: Minimum Dart 3.11
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -173,7 +173,7 @@ jobs:
       - name: Set up minimum supported Dart
         uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1
         with:
-          sdk: 3.10.0
+          sdk: 3.11.0
 
       - name: Resolve at the minimum floor
         # The maintained Flutter example intentionally follows the pinned
