@@ -95,19 +95,21 @@ type IncrementalSearch struct {
 	opts incrementalSearchOptions
 
 	updates chan SearchUpdate
-	wake    chan struct{}
 
 	ctx    context.Context
 	cancel context.CancelFunc
 	done   chan struct{}
 
-	mu     sync.Mutex
-	latest string
-	dirty  bool
+	mu           sync.Mutex
+	closed       bool
+	timer        *time.Timer
+	searchCancel context.CancelFunc
+	searchEpoch  uint64
+	workers      sync.WaitGroup
 
-	// epoch is bumped once per dispatched search (real or short-circuit). A
-	// reply is delivered only while epoch still equals the value its dispatch
-	// recorded, so a late reply from a superseded query is dropped.
+	// epoch is bumped once per input, before its debounce starts. A reply is
+	// delivered only while epoch still equals the value that input recorded,
+	// so an old RPC cannot publish during the next input's debounce window.
 	epoch     atomic.Uint64
 	deliverMu sync.Mutex
 
@@ -115,9 +117,9 @@ type IncrementalSearch struct {
 }
 
 // NewIncrementalSearch starts a search-as-you-type driver bound to ctx and
-// returns it. The driver owns one background goroutine that debounces Search
-// calls, issues SearchVertices, and publishes results to Updates. Cancel ctx
-// or call Close to stop it.
+// returns it. The driver tracks every debounce callback and SearchVertices
+// call so cancellation and Close can wait for all owned work. Cancel ctx or
+// call Close to stop it.
 func (l *Lantern) NewIncrementalSearch(ctx context.Context, opts ...IncrementalSearchOption) *IncrementalSearch {
 	o := incrementalSearchOptions{
 		debounce:       defaultIncrementalDebounce,
@@ -137,28 +139,47 @@ func (l *Lantern) NewIncrementalSearch(ctx context.Context, opts ...IncrementalS
 		l:       l,
 		opts:    o,
 		updates: make(chan SearchUpdate, 1),
-		wake:    make(chan struct{}, 1),
 		ctx:     dctx,
 		cancel:  cancel,
 		done:    make(chan struct{}),
 	}
-	go s.run()
+	go func() {
+		<-dctx.Done()
+		s.shutdown()
+	}()
 	return s
 }
 
-// Search records query as the latest pending search and wakes the driver. It
-// never blocks: repeated calls before the debounce window elapses overwrite
-// the pending query, so only the final keystroke's text is searched. A call
+// Search makes query the latest input immediately: it invalidates buffered
+// output, stops the previous debounce timer, and cancels the active RPC before
+// starting the new debounce window. It never blocks on network work. A call
 // after Close (or ctx cancellation) is a no-op.
 func (s *IncrementalSearch) Search(query string) {
 	s.mu.Lock()
-	s.latest = query
-	s.dirty = true
-	s.mu.Unlock()
-	select {
-	case s.wake <- struct{}{}:
-	default:
+	if s.closed || s.ctx.Err() != nil {
+		s.mu.Unlock()
+		return
 	}
+	epoch := s.epoch.Add(1)
+	s.stopTimerLocked()
+	s.cancelSearchLocked()
+	s.invalidateBuffered()
+
+	if len([]rune(query)) < s.opts.minQueryLength {
+		s.mu.Unlock()
+		// Too short to search: reset immediately, without waiting for debounce.
+		s.deliver(epoch, SearchUpdate{Query: query, Hits: []SearchHit{}})
+		return
+	}
+
+	// Account for the timer callback before publishing the timer pointer.
+	// shutdown changes closed under the same lock, so Wait cannot race an Add.
+	s.workers.Add(1)
+	s.timer = time.AfterFunc(s.opts.debounce, func() {
+		defer s.workers.Done()
+		s.dispatch(epoch, query)
+	})
+	s.mu.Unlock()
 }
 
 // Updates is the stream of search results, one SearchUpdate per dispatched
@@ -176,71 +197,35 @@ func (s *IncrementalSearch) Updates() <-chan SearchUpdate {
 // goroutine; it always returns nil (the error return mirrors io.Closer for
 // composability).
 func (s *IncrementalSearch) Close() error {
-	s.closeOnce.Do(func() { s.cancel() })
+	s.cancel()
+	s.shutdown()
 	<-s.done
 	return nil
 }
 
-// run is the single driver goroutine. It owns the debounce timer and the
-// in-flight search's cancel func, so neither needs its own lock.
-func (s *IncrementalSearch) run() {
-	defer close(s.done)
-
-	timer := time.NewTimer(s.opts.debounce)
-	if !timer.Stop() {
-		<-timer.C
+// dispatch starts the RPC only if the input that armed this timer is still
+// current. The timer callback itself owns the blocking RPC, so shutdown can
+// deterministically wait for every background worker.
+func (s *IncrementalSearch) dispatch(epoch uint64, query string) {
+	s.mu.Lock()
+	if s.closed || s.ctx.Err() != nil || s.epoch.Load() != epoch {
+		s.mu.Unlock()
+		return
 	}
-	armed := false
+	s.timer = nil
+	sctx, cancel := context.WithCancel(s.ctx)
+	s.searchCancel = cancel
+	s.searchEpoch = epoch
+	s.mu.Unlock()
 
-	var searchCancel context.CancelFunc
-	cancelInFlight := func() {
-		if searchCancel != nil {
-			searchCancel()
-			searchCancel = nil
-		}
+	s.doSearch(sctx, epoch, query)
+
+	s.mu.Lock()
+	if s.searchEpoch == epoch {
+		s.searchCancel = nil
+		s.searchEpoch = 0
 	}
-
-	for {
-		select {
-		case <-s.ctx.Done():
-			timer.Stop()
-			cancelInFlight()
-			return
-
-		case <-s.wake:
-			// (Re)arm the debounce window on every keystroke.
-			if armed && !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			timer.Reset(s.opts.debounce)
-			armed = true
-
-		case <-timer.C:
-			armed = false
-			s.mu.Lock()
-			query := s.latest
-			had := s.dirty
-			s.dirty = false
-			s.mu.Unlock()
-			if !had {
-				continue
-			}
-			// A newer dispatch supersedes any in-flight search.
-			cancelInFlight()
-			epoch := s.epoch.Add(1)
-			if len([]rune(query)) < s.opts.minQueryLength {
-				// Too short to search: answer immediately, no round-trip.
-				s.deliver(epoch, SearchUpdate{Query: query, Hits: []SearchHit{}})
-				continue
-			}
-			sctx, c := context.WithCancel(s.ctx)
-			searchCancel = c
-			go s.doSearch(sctx, epoch, query)
-		}
-	}
+	s.mu.Unlock()
 }
 
 // doSearch issues one SearchVertices call and delivers its result unless the
@@ -278,4 +263,54 @@ func (s *IncrementalSearch) deliver(epoch uint64, u SearchUpdate) {
 	case s.updates <- u:
 	default:
 	}
+}
+
+// invalidateBuffered removes a result that was delivered before the newest
+// input but not yet consumed. Callers must hold s.mu; deliverMu serializes the
+// drain against a finishing RPC.
+func (s *IncrementalSearch) invalidateBuffered() {
+	s.deliverMu.Lock()
+	defer s.deliverMu.Unlock()
+	select {
+	case <-s.updates:
+	default:
+	}
+}
+
+// stopTimerLocked stops and releases the pending debounce timer. A timer that
+// has already started owns its workers.Done call; a timer stopped here never
+// runs, so this method balances the Add performed by Search.
+func (s *IncrementalSearch) stopTimerLocked() {
+	if s.timer == nil {
+		return
+	}
+	if s.timer.Stop() {
+		s.workers.Done()
+	}
+	s.timer = nil
+}
+
+func (s *IncrementalSearch) cancelSearchLocked() {
+	if s.searchCancel == nil {
+		return
+	}
+	s.searchCancel()
+	s.searchCancel = nil
+	s.searchEpoch = 0
+}
+
+// shutdown is shared by Close and parent-context cancellation. It prevents
+// new timers, cancels current work, and closes done only after every timer/RPC
+// callback has returned.
+func (s *IncrementalSearch) shutdown() {
+	s.closeOnce.Do(func() {
+		s.mu.Lock()
+		s.closed = true
+		s.epoch.Add(1)
+		s.stopTimerLocked()
+		s.cancelSearchLocked()
+		s.mu.Unlock()
+		s.workers.Wait()
+		close(s.done)
+	})
 }

@@ -216,6 +216,57 @@ func TestSearchVertices_SDKForwarder(t *testing.T) {
 	})
 }
 
+// TestSearchVertices_IncrementalLatestInputWins drives the Go SDK's
+// search-as-you-type orchestration over the real Connect/h2c path. The final
+// query in a burst is the only result exposed, and an empty input invalidates
+// pending debounce work immediately without a later stale delivery (#1052).
+func TestSearchVertices_IncrementalLatestInputWins(t *testing.T) {
+	l := newSearchSDKClient(t, true)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := l.PutVertices(ctx, []client.VertexInput{
+		{Key: "doc.alpha", Value: "alpha", Expiration: time.Now().Add(time.Hour)},
+		{Key: "doc.beta", Value: "beta", Expiration: time.Now().Add(time.Hour)},
+	}); err != nil {
+		t.Fatalf("PutVertices: %v", err)
+	}
+
+	const debounce = 30 * time.Millisecond
+	incremental := l.NewIncrementalSearch(ctx, client.WithDebounce(debounce))
+	defer incremental.Close()
+
+	incremental.Search("alpha")
+	incremental.Search("beta")
+	select {
+	case update := <-incremental.Updates():
+		if update.Err != nil {
+			t.Fatalf("incremental beta: %v", update.Err)
+		}
+		if update.Query != "beta" || len(update.Hits) != 1 || update.Hits[0].Key != "doc.beta" {
+			t.Fatalf("update = %+v, want beta/doc.beta", update)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for incremental beta result")
+	}
+
+	incremental.Search("alpha")
+	incremental.Search("")
+	select {
+	case update := <-incremental.Updates():
+		if update.Query != "" || update.Err != nil || len(update.Hits) != 0 {
+			t.Fatalf("empty reset = %+v, want synchronous empty update", update)
+		}
+	default:
+		t.Fatal("empty input did not reset synchronously")
+	}
+	select {
+	case update := <-incremental.Updates():
+		t.Fatalf("pending alpha search delivered after empty input: %+v", update)
+	case <-time.After(2 * debounce):
+	}
+}
+
 // TestSearchVertices_Options drives the #892 SearchOptions end to end through
 // the raw Connect handler: match mode, phrase adjacency, fuzzy/prefix term
 // expansion, and minimum-should-match, each over a live index.

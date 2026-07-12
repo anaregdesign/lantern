@@ -3,8 +3,8 @@ import type { Vertex } from "~/lib/client/infrastructure/api/types";
 /**
  * State for the vertex content-search screen (#627).
  *
- * The screen debounces the user's query, runs the server's BM25 keyword
- * search, then hydrates the ranked `{ key, score }` hits back into full
+ * The screen invalidates on every input immediately, debounces the matching
+ * BM25 keyword search, then hydrates ranked `{ key, score }` hits into full
  * vertices (preserving rank order) for display. Async I/O lives in
  * `handlers.ts`; this module and `reducer.ts` are the pure, unit-testable
  * core. Every server response carries the `queryEpoch` it was issued
@@ -58,7 +58,7 @@ export const DEFAULT_SEARCH_QUERY_OPTIONS: SearchQueryOptions = {
 };
 
 export interface SearchVerticesState {
-  /** The debounced query currently being searched. */
+  /** The latest input query; only the matching RPC start is debounced. */
   query: string;
   /** Monotonic counter bumped on every query or option change. */
   queryEpoch: number;

@@ -59,6 +59,17 @@ export type SearchFn = (
   signal?: AbortSignal,
 ) => Promise<SearchHit[]>;
 
+/** Clock abstraction used to test debounce behavior without wall-clock sleeps. */
+export interface IncrementalSearchScheduler {
+  setTimeout(callback: () => void, delayMs: number): unknown;
+  clearTimeout(handle: unknown): void;
+}
+
+const systemScheduler: IncrementalSearchScheduler = {
+  setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
+  clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
 /**
  * A search-as-you-type driver. Push queries with `search` as the user types;
  * receive ranked results via `subscribe` (which returns an unsubscribe) or by
@@ -75,11 +86,14 @@ export interface IncrementalSearch {
 /**
  * Builds an {@link IncrementalSearch} around any {@link SearchFn}. Most callers
  * use `Lantern.incrementalSearch()`, which binds `searchVertices`; this factory
- * is exported for tests and for driving a custom search primitive.
+ * is exported for tests and for driving a custom search primitive. The
+ * scheduler parameter supports deterministic clocks; applications normally
+ * leave it at the system default.
  */
 export function createIncrementalSearch(
   searchFn: SearchFn,
   options: IncrementalSearchOptions = {},
+  scheduler: IncrementalSearchScheduler = systemScheduler,
 ): IncrementalSearch {
   const debounceMs = options.debounceMs ?? DEFAULT_DEBOUNCE_MS;
   const minQueryLength = options.minQueryLength ?? DEFAULT_MIN_QUERY_LENGTH;
@@ -87,7 +101,7 @@ export function createIncrementalSearch(
 
   const listeners = new Set<(update: SearchUpdate) => void>();
   let epoch = 0;
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timer: unknown;
   let inFlight: AbortController | undefined;
   let closed = false;
 
@@ -108,18 +122,8 @@ export function createIncrementalSearch(
     }
   }
 
-  function dispatch(query: string): void {
-    if (closed) return;
-    // A newer dispatch supersedes any in-flight search.
-    inFlight?.abort();
-    inFlight = undefined;
-    const myEpoch = ++epoch;
-
-    if ([...query].length < minQueryLength) {
-      // Too short to search: answer immediately, no round-trip.
-      emit({ query, hits: [] });
-      return;
-    }
+  function dispatch(query: string, myEpoch: number): void {
+    if (closed || myEpoch !== epoch) return;
 
     const controller = new AbortController();
     inFlight = controller;
@@ -138,18 +142,35 @@ export function createIncrementalSearch(
 
   function search(query: string): void {
     if (closed) return;
-    if (timer !== undefined) clearTimeout(timer);
-    timer = setTimeout(() => {
+    // Latest INPUT wins: invalidate buffered output, the pending debounce,
+    // and the active RPC before waiting to dispatch the new query.
+    const myEpoch = ++epoch;
+    buffered = undefined;
+    if (timer !== undefined) {
+      scheduler.clearTimeout(timer);
       timer = undefined;
-      dispatch(query);
+    }
+    inFlight?.abort();
+    inFlight = undefined;
+
+    if ([...query].length < minQueryLength) {
+      // Too short to search: reset immediately, with no debounce or RPC.
+      emit({ query, hits: [] });
+      return;
+    }
+
+    timer = scheduler.setTimeout(() => {
+      timer = undefined;
+      dispatch(query, myEpoch);
     }, debounceMs);
   }
 
   function close(): void {
     if (closed) return;
     closed = true;
+    epoch++;
     if (timer !== undefined) {
-      clearTimeout(timer);
+      scheduler.clearTimeout(timer);
       timer = undefined;
     }
     inFlight?.abort();

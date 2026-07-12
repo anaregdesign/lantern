@@ -59,6 +59,7 @@ export {
 export type {
   IncrementalSearch,
   IncrementalSearchOptions,
+  IncrementalSearchScheduler,
   SearchFn,
   SearchUpdate,
 } from "./incremental-search.js";
