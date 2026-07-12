@@ -387,7 +387,9 @@ func TestSearchVertices_CancellationAndAdmissionOverWire(t *testing.T) {
 			Expiration: expiration,
 		}
 	}
-	cache.PutVerticesWithExpiration(items)
+	if err := cache.PutVerticesWithExpiration(items); err != nil {
+		t.Fatalf("PutVerticesWithExpiration: %v", err)
+	}
 
 	metrics := &wireSearchMetrics{executions: make(chan wireSearchExecution, 32)}
 	svc := service.NewLanternService(cache).WithSearchLimits(service.SearchLimits{

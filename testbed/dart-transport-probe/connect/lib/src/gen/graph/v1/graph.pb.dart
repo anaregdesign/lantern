@@ -4442,7 +4442,7 @@ class GetServerStatusRequest extends $pb.GeneratedMessage {
 }
 
 /// SearchErrorDetail is carried as a Connect error detail when a search
-/// capability is unavailable or execution containment rejects the attempt.
+/// capability is unavailable or query/write containment rejects the attempt.
 class SearchErrorDetail extends $pb.GeneratedMessage {
   factory SearchErrorDetail({
     SearchErrorReason? reason,
@@ -4506,7 +4506,7 @@ class SearchErrorDetail extends $pb.GeneratedMessage {
   void clearReason() => $_clearField(1);
 
   /// work_kind is one of query_bytes, query_terms, dictionary_visits,
-  /// posting_visits, or position_visits for budget exhaustion; empty otherwise.
+  /// posting_visits, position_visits, or an index analysis-limit kind; empty otherwise.
   @$pb.TagNumber(2)
   $core.String get workKind => $_getSZ(1);
   @$pb.TagNumber(2)
@@ -4539,6 +4539,15 @@ class SearchCapabilities extends $pb.GeneratedMessage {
     $fixnum.Int64? maxPostingVisits,
     $fixnum.Int64? maxPositionVisits,
     $core.int? maxInFlight,
+    $core.int? maxDocumentBytes,
+    $core.int? maxDocumentTokens,
+    $core.int? maxDocumentTerms,
+    $fixnum.Int64? maxLiveTerms,
+    $fixnum.Int64? maxLivePostings,
+    $fixnum.Int64? maxPositionEntries,
+    $core.double? compactionRatio,
+    $fixnum.Int64? compactionMinRetired,
+    SearchIndexStats? indexStats,
   }) {
     final result = create();
     if (enabled != null) result.enabled = enabled;
@@ -4560,6 +4569,17 @@ class SearchCapabilities extends $pb.GeneratedMessage {
     if (maxPostingVisits != null) result.maxPostingVisits = maxPostingVisits;
     if (maxPositionVisits != null) result.maxPositionVisits = maxPositionVisits;
     if (maxInFlight != null) result.maxInFlight = maxInFlight;
+    if (maxDocumentBytes != null) result.maxDocumentBytes = maxDocumentBytes;
+    if (maxDocumentTokens != null) result.maxDocumentTokens = maxDocumentTokens;
+    if (maxDocumentTerms != null) result.maxDocumentTerms = maxDocumentTerms;
+    if (maxLiveTerms != null) result.maxLiveTerms = maxLiveTerms;
+    if (maxLivePostings != null) result.maxLivePostings = maxLivePostings;
+    if (maxPositionEntries != null)
+      result.maxPositionEntries = maxPositionEntries;
+    if (compactionRatio != null) result.compactionRatio = compactionRatio;
+    if (compactionMinRetired != null)
+      result.compactionMinRetired = compactionMinRetired;
+    if (indexStats != null) result.indexStats = indexStats;
     return result;
   }
 
@@ -4609,6 +4629,28 @@ class SearchCapabilities extends $pb.GeneratedMessage {
         defaultOrMaker: $fixnum.Int64.ZERO)
     ..a<$core.int>(
         17, _omitFieldNames ? '' : 'maxInFlight', $pb.PbFieldType.OU3)
+    ..a<$core.int>(
+        18, _omitFieldNames ? '' : 'maxDocumentBytes', $pb.PbFieldType.OU3)
+    ..a<$core.int>(
+        19, _omitFieldNames ? '' : 'maxDocumentTokens', $pb.PbFieldType.OU3)
+    ..a<$core.int>(
+        20, _omitFieldNames ? '' : 'maxDocumentTerms', $pb.PbFieldType.OU3)
+    ..a<$fixnum.Int64>(
+        21, _omitFieldNames ? '' : 'maxLiveTerms', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        22, _omitFieldNames ? '' : 'maxLivePostings', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        23, _omitFieldNames ? '' : 'maxPositionEntries', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$core.double>(
+        24, _omitFieldNames ? '' : 'compactionRatio', $pb.PbFieldType.OD)
+    ..a<$fixnum.Int64>(
+        25, _omitFieldNames ? '' : 'compactionMinRetired', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..aOM<SearchIndexStats>(26, _omitFieldNames ? '' : 'indexStats',
+        subBuilder: SearchIndexStats.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -4784,6 +4826,293 @@ class SearchCapabilities extends $pb.GeneratedMessage {
   $core.bool hasMaxInFlight() => $_has(16);
   @$pb.TagNumber(17)
   void clearMaxInFlight() => $_clearField(17);
+
+  @$pb.TagNumber(18)
+  $core.int get maxDocumentBytes => $_getIZ(17);
+  @$pb.TagNumber(18)
+  set maxDocumentBytes($core.int value) => $_setUnsignedInt32(17, value);
+  @$pb.TagNumber(18)
+  $core.bool hasMaxDocumentBytes() => $_has(17);
+  @$pb.TagNumber(18)
+  void clearMaxDocumentBytes() => $_clearField(18);
+
+  @$pb.TagNumber(19)
+  $core.int get maxDocumentTokens => $_getIZ(18);
+  @$pb.TagNumber(19)
+  set maxDocumentTokens($core.int value) => $_setUnsignedInt32(18, value);
+  @$pb.TagNumber(19)
+  $core.bool hasMaxDocumentTokens() => $_has(18);
+  @$pb.TagNumber(19)
+  void clearMaxDocumentTokens() => $_clearField(19);
+
+  @$pb.TagNumber(20)
+  $core.int get maxDocumentTerms => $_getIZ(19);
+  @$pb.TagNumber(20)
+  set maxDocumentTerms($core.int value) => $_setUnsignedInt32(19, value);
+  @$pb.TagNumber(20)
+  $core.bool hasMaxDocumentTerms() => $_has(19);
+  @$pb.TagNumber(20)
+  void clearMaxDocumentTerms() => $_clearField(20);
+
+  @$pb.TagNumber(21)
+  $fixnum.Int64 get maxLiveTerms => $_getI64(20);
+  @$pb.TagNumber(21)
+  set maxLiveTerms($fixnum.Int64 value) => $_setInt64(20, value);
+  @$pb.TagNumber(21)
+  $core.bool hasMaxLiveTerms() => $_has(20);
+  @$pb.TagNumber(21)
+  void clearMaxLiveTerms() => $_clearField(21);
+
+  @$pb.TagNumber(22)
+  $fixnum.Int64 get maxLivePostings => $_getI64(21);
+  @$pb.TagNumber(22)
+  set maxLivePostings($fixnum.Int64 value) => $_setInt64(21, value);
+  @$pb.TagNumber(22)
+  $core.bool hasMaxLivePostings() => $_has(21);
+  @$pb.TagNumber(22)
+  void clearMaxLivePostings() => $_clearField(22);
+
+  @$pb.TagNumber(23)
+  $fixnum.Int64 get maxPositionEntries => $_getI64(22);
+  @$pb.TagNumber(23)
+  set maxPositionEntries($fixnum.Int64 value) => $_setInt64(22, value);
+  @$pb.TagNumber(23)
+  $core.bool hasMaxPositionEntries() => $_has(22);
+  @$pb.TagNumber(23)
+  void clearMaxPositionEntries() => $_clearField(23);
+
+  @$pb.TagNumber(24)
+  $core.double get compactionRatio => $_getN(23);
+  @$pb.TagNumber(24)
+  set compactionRatio($core.double value) => $_setDouble(23, value);
+  @$pb.TagNumber(24)
+  $core.bool hasCompactionRatio() => $_has(23);
+  @$pb.TagNumber(24)
+  void clearCompactionRatio() => $_clearField(24);
+
+  @$pb.TagNumber(25)
+  $fixnum.Int64 get compactionMinRetired => $_getI64(24);
+  @$pb.TagNumber(25)
+  set compactionMinRetired($fixnum.Int64 value) => $_setInt64(24, value);
+  @$pb.TagNumber(25)
+  $core.bool hasCompactionMinRetired() => $_has(24);
+  @$pb.TagNumber(25)
+  void clearCompactionMinRetired() => $_clearField(25);
+
+  @$pb.TagNumber(26)
+  SearchIndexStats get indexStats => $_getN(25);
+  @$pb.TagNumber(26)
+  set indexStats(SearchIndexStats value) => $_setField(26, value);
+  @$pb.TagNumber(26)
+  $core.bool hasIndexStats() => $_has(25);
+  @$pb.TagNumber(26)
+  void clearIndexStats() => $_clearField(26);
+  @$pb.TagNumber(26)
+  SearchIndexStats ensureIndexStats() => $_ensure(25);
+}
+
+class SearchIndexStats extends $pb.GeneratedMessage {
+  factory SearchIndexStats({
+    SearchIndexHealth? health,
+    $fixnum.Int64? documents,
+    $fixnum.Int64? liveTerms,
+    $fixnum.Int64? retainedTermSlots,
+    $fixnum.Int64? retainedOrdinals,
+    $fixnum.Int64? postings,
+    $fixnum.Int64? positionEntries,
+    $fixnum.Int64? estimatedLiveBytes,
+    $fixnum.Int64? estimatedRetainedBytes,
+    $fixnum.Int64? rebuildCount,
+    $1.Duration? lastRebuildDuration,
+  }) {
+    final result = create();
+    if (health != null) result.health = health;
+    if (documents != null) result.documents = documents;
+    if (liveTerms != null) result.liveTerms = liveTerms;
+    if (retainedTermSlots != null) result.retainedTermSlots = retainedTermSlots;
+    if (retainedOrdinals != null) result.retainedOrdinals = retainedOrdinals;
+    if (postings != null) result.postings = postings;
+    if (positionEntries != null) result.positionEntries = positionEntries;
+    if (estimatedLiveBytes != null)
+      result.estimatedLiveBytes = estimatedLiveBytes;
+    if (estimatedRetainedBytes != null)
+      result.estimatedRetainedBytes = estimatedRetainedBytes;
+    if (rebuildCount != null) result.rebuildCount = rebuildCount;
+    if (lastRebuildDuration != null)
+      result.lastRebuildDuration = lastRebuildDuration;
+    return result;
+  }
+
+  SearchIndexStats._();
+
+  factory SearchIndexStats.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory SearchIndexStats.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'SearchIndexStats',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..e<SearchIndexHealth>(
+        1, _omitFieldNames ? '' : 'health', $pb.PbFieldType.OE,
+        defaultOrMaker: SearchIndexHealth.SEARCH_INDEX_HEALTH_UNSPECIFIED,
+        valueOf: SearchIndexHealth.valueOf,
+        enumValues: SearchIndexHealth.values)
+    ..a<$fixnum.Int64>(
+        2, _omitFieldNames ? '' : 'documents', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        3, _omitFieldNames ? '' : 'liveTerms', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        4, _omitFieldNames ? '' : 'retainedTermSlots', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        5, _omitFieldNames ? '' : 'retainedOrdinals', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        6, _omitFieldNames ? '' : 'postings', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        7, _omitFieldNames ? '' : 'positionEntries', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        8, _omitFieldNames ? '' : 'estimatedLiveBytes', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        9, _omitFieldNames ? '' : 'estimatedRetainedBytes', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        10, _omitFieldNames ? '' : 'rebuildCount', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..aOM<$1.Duration>(11, _omitFieldNames ? '' : 'lastRebuildDuration',
+        subBuilder: $1.Duration.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SearchIndexStats clone() => SearchIndexStats()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SearchIndexStats copyWith(void Function(SearchIndexStats) updates) =>
+      super.copyWith((message) => updates(message as SearchIndexStats))
+          as SearchIndexStats;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static SearchIndexStats create() => SearchIndexStats._();
+  @$core.override
+  SearchIndexStats createEmptyInstance() => create();
+  static $pb.PbList<SearchIndexStats> createRepeated() =>
+      $pb.PbList<SearchIndexStats>();
+  @$core.pragma('dart2js:noInline')
+  static SearchIndexStats getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<SearchIndexStats>(create);
+  static SearchIndexStats? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  SearchIndexHealth get health => $_getN(0);
+  @$pb.TagNumber(1)
+  set health(SearchIndexHealth value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasHealth() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearHealth() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $fixnum.Int64 get documents => $_getI64(1);
+  @$pb.TagNumber(2)
+  set documents($fixnum.Int64 value) => $_setInt64(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasDocuments() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearDocuments() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $fixnum.Int64 get liveTerms => $_getI64(2);
+  @$pb.TagNumber(3)
+  set liveTerms($fixnum.Int64 value) => $_setInt64(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasLiveTerms() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearLiveTerms() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $fixnum.Int64 get retainedTermSlots => $_getI64(3);
+  @$pb.TagNumber(4)
+  set retainedTermSlots($fixnum.Int64 value) => $_setInt64(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasRetainedTermSlots() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearRetainedTermSlots() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  $fixnum.Int64 get retainedOrdinals => $_getI64(4);
+  @$pb.TagNumber(5)
+  set retainedOrdinals($fixnum.Int64 value) => $_setInt64(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasRetainedOrdinals() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearRetainedOrdinals() => $_clearField(5);
+
+  @$pb.TagNumber(6)
+  $fixnum.Int64 get postings => $_getI64(5);
+  @$pb.TagNumber(6)
+  set postings($fixnum.Int64 value) => $_setInt64(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasPostings() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearPostings() => $_clearField(6);
+
+  @$pb.TagNumber(7)
+  $fixnum.Int64 get positionEntries => $_getI64(6);
+  @$pb.TagNumber(7)
+  set positionEntries($fixnum.Int64 value) => $_setInt64(6, value);
+  @$pb.TagNumber(7)
+  $core.bool hasPositionEntries() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearPositionEntries() => $_clearField(7);
+
+  @$pb.TagNumber(8)
+  $fixnum.Int64 get estimatedLiveBytes => $_getI64(7);
+  @$pb.TagNumber(8)
+  set estimatedLiveBytes($fixnum.Int64 value) => $_setInt64(7, value);
+  @$pb.TagNumber(8)
+  $core.bool hasEstimatedLiveBytes() => $_has(7);
+  @$pb.TagNumber(8)
+  void clearEstimatedLiveBytes() => $_clearField(8);
+
+  @$pb.TagNumber(9)
+  $fixnum.Int64 get estimatedRetainedBytes => $_getI64(8);
+  @$pb.TagNumber(9)
+  set estimatedRetainedBytes($fixnum.Int64 value) => $_setInt64(8, value);
+  @$pb.TagNumber(9)
+  $core.bool hasEstimatedRetainedBytes() => $_has(8);
+  @$pb.TagNumber(9)
+  void clearEstimatedRetainedBytes() => $_clearField(9);
+
+  @$pb.TagNumber(10)
+  $fixnum.Int64 get rebuildCount => $_getI64(9);
+  @$pb.TagNumber(10)
+  set rebuildCount($fixnum.Int64 value) => $_setInt64(9, value);
+  @$pb.TagNumber(10)
+  $core.bool hasRebuildCount() => $_has(9);
+  @$pb.TagNumber(10)
+  void clearRebuildCount() => $_clearField(10);
+
+  @$pb.TagNumber(11)
+  $1.Duration get lastRebuildDuration => $_getN(10);
+  @$pb.TagNumber(11)
+  set lastRebuildDuration($1.Duration value) => $_setField(11, value);
+  @$pb.TagNumber(11)
+  $core.bool hasLastRebuildDuration() => $_has(10);
+  @$pb.TagNumber(11)
+  void clearLastRebuildDuration() => $_clearField(11);
+  @$pb.TagNumber(11)
+  $1.Duration ensureLastRebuildDuration() => $_ensure(10);
 }
 
 class GetServerStatusResponse extends $pb.GeneratedMessage {
