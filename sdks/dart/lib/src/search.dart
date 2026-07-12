@@ -50,7 +50,7 @@ final class SearchOptions {
   final bool? prefixTerms;
 }
 
-/// One immutable BM25-ranked hit.
+/// One immutable BM25-ranked hit; equal scores use raw [key] ascending.
 final class SearchHit {
   /// Creates a ranked hit.
   const SearchHit({required this.key, required this.score});
@@ -73,7 +73,7 @@ final class SearchEnabled extends SearchResult {
   SearchEnabled(Iterable<SearchHit> hits)
     : hits = List<SearchHit>.unmodifiable(hits);
 
-  /// Ranked hits, possibly empty.
+  /// Ranked hits in stable `(score DESC, raw key ASC)` order, possibly empty.
   final List<SearchHit> hits;
 }
 

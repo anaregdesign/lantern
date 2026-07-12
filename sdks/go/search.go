@@ -8,9 +8,10 @@ import (
 
 // SearchHit is one ranked result from Lantern.SearchVertices: the key of a
 // matching vertex paired with its full-text relevance Score (higher is more
-// relevant). Like EdgeRef it is a flat SDK-native value, not a proto alias —
-// it carries only the key and score, so call GetVertex / GetVertices on the
-// keys to hydrate the stored value and TTL.
+// relevant). Equal scores are ordered by raw Key ascending. Like EdgeRef it is
+// a flat SDK-native value, not a proto alias — it carries only the key and
+// score, so call GetVertex / GetVertices on the keys to hydrate the stored
+// value and TTL.
 type SearchHit struct {
 	Key   string
 	Score float64
@@ -98,9 +99,9 @@ func WithPrefixTerms() SearchOption {
 }
 
 // SearchVertices returns vertices ranked by full-text relevance over their
-// indexed content (key + value), most relevant first. It is the content
-// counterpart to ScanVertices' lexicographic key walk: search by a
-// remembered topic word instead of an exact key prefix.
+// indexed content (key + value) in stable (score DESC, raw key ASC) order. It
+// is the content counterpart to ScanVertices' lexicographic key walk: search
+// by a remembered topic word instead of an exact key prefix.
 //
 // Empty result vs. error: an empty, unanalysable, or simply non-matching
 // query is a zero-hit success — the returned slice is empty (never nil) and

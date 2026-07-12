@@ -2,6 +2,7 @@ package search
 
 import (
 	"container/heap"
+	"math"
 	"sort"
 	"sync"
 )
@@ -15,8 +16,8 @@ import (
 // It splits the two responsibilities of relevance search. The index owns
 // matching and the statistics behind it — per-document term frequencies and
 // document lengths — while a pluggable Scorer (BM25 by default) turns those
-// statistics into the ranking. Search returns hits ordered by descending
-// score.
+// statistics into the ranking. Search returns hits in the stable total order
+// (score descending, caller-provided typed ID comparator ascending).
 //
 // Terms live in per-class tables (#888): each TokenClass has its own term
 // dictionary, postings, and corpus statistics, so a dual-channel analyzer
@@ -32,6 +33,12 @@ import (
 type InvertedIndex[S comparable, D Document] struct {
 	analyzer Analyzer
 	scorer   Scorer
+	// compareID defines the stable ascending typed-ID order used to break
+	// equal-score ties.
+	// It is required because comparable alone does not imply an order, and an
+	// internal document ordinal would make externally visible ranking depend on
+	// insertion/delete history.
+	compareID func(S, S) int
 	// positions is fixed at construction (WithPositions): when set, Index
 	// records each primary-channel (ClassWord) term's token positions so
 	// SearchPhrase and the proximity boost can tell an exact phrase from
@@ -131,10 +138,15 @@ func WithProximityWeight(w float64) IndexOption {
 
 // NewInvertedIndex returns an empty index that analyzes both documents and
 // queries with analyzer and ranks matches with scorer. Passing a nil scorer
-// installs BM25 with the standard parameters (K1 = 1.2, B = 0.75). D is the
-// document type it accepts; use Text to index plain strings. Pass
-// WithPositions to enable phrase and proximity queries (SearchPhrase).
-func NewInvertedIndex[S comparable, D Document](analyzer Analyzer, scorer Scorer, opts ...IndexOption) *InvertedIndex[S, D] {
+// installs BM25 with the standard parameters (K1 = 1.2, B = 0.75). compareID
+// is the mandatory ascending total order for equal-score document IDs; it must
+// be stable across processes/replicas. D is the document type it accepts; use
+// Text to index plain strings. Pass WithPositions to enable phrase and
+// proximity queries (SearchPhrase).
+func NewInvertedIndex[S comparable, D Document](analyzer Analyzer, scorer Scorer, compareID func(S, S) int, opts ...IndexOption) *InvertedIndex[S, D] {
+	if compareID == nil {
+		panic("search: NewInvertedIndex compareID must not be nil")
+	}
 	if scorer == nil {
 		scorer = BM25{K1: DefaultBM25K1, B: DefaultBM25B}
 	}
@@ -146,6 +158,7 @@ func NewInvertedIndex[S comparable, D Document](analyzer Analyzer, scorer Scorer
 	idx := &InvertedIndex[S, D]{
 		analyzer:        analyzer,
 		scorer:          scorer,
+		compareID:       compareID,
 		positions:       cfg.positions,
 		proximityWeight: cfg.proximityWeight,
 		ords:            newOrdinals[S](),
@@ -364,7 +377,7 @@ func (idx *InvertedIndex[S, D]) deleteLocked(id S) {
 // in the query weights a document only once; the same spelling on two token
 // classes counts once per class, since the channels carry distinct evidence.
 // A query with no analyzable terms, or one that matches nothing, returns nil;
-// ties in score have an unspecified order.
+// equal scores use the required typed document-ID comparator ascending.
 //
 // Search is the MatchAny case of SearchMatch; pass a MatchOptions to require
 // every query term (MatchAll) or a minimum number of them (MatchMinShould).
@@ -372,18 +385,30 @@ func (idx *InvertedIndex[S, D]) Search(query string) []Result[S] {
 	return idx.SearchMatch(query, MatchOptions{})
 }
 
-// queryTerms analyzes query and collapses the tokens to the distinct
-// (class, term) set, so a term repeated in the query contributes a document's
-// weight once per channel, matching the boolean union.
-func (idx *InvertedIndex[S, D]) queryTerms(query string) map[Token]struct{} {
+// queryTerms analyzes query and collapses the tokens to a stable, distinct
+// (class, term) slice, so a term repeated in the query contributes a document's
+// weight once per channel and floating-point contributions are accumulated in
+// the same order on every call and replica.
+func (idx *InvertedIndex[S, D]) queryTerms(query string) []Token {
 	tokens := idx.analyzer.Analyze(query)
 	if len(tokens) == 0 {
 		return nil
 	}
-	queryTerms := make(map[Token]struct{}, len(tokens))
+	seen := make(map[Token]struct{}, len(tokens))
+	queryTerms := make([]Token, 0, len(tokens))
 	for _, token := range tokens {
-		queryTerms[token] = struct{}{}
+		if _, ok := seen[token]; ok {
+			continue
+		}
+		seen[token] = struct{}{}
+		queryTerms = append(queryTerms, token)
 	}
+	sort.Slice(queryTerms, func(i, j int) bool {
+		if queryTerms[i].Class != queryTerms[j].Class {
+			return queryTerms[i].Class < queryTerms[j].Class
+		}
+		return queryTerms[i].Term < queryTerms[j].Term
+	})
 	return queryTerms
 }
 
@@ -391,9 +416,9 @@ func (idx *InvertedIndex[S, D]) queryTerms(query string) map[Token]struct{} {
 // callers must hold idx.mu (read or write). A query token with an undefined
 // class matches nothing — the write side panics on such tokens, so no posting
 // can exist for one.
-func (idx *InvertedIndex[S, D]) scoreLocked(queryTerms map[Token]struct{}) map[uint32]float64 {
+func (idx *InvertedIndex[S, D]) scoreLocked(queryTerms []Token) map[uint32]float64 {
 	scores := make(map[uint32]float64)
-	for token := range queryTerms {
+	for _, token := range queryTerms {
 		if int(token.Class) >= numTokenClasses {
 			continue
 		}
@@ -413,17 +438,68 @@ func (idx *InvertedIndex[S, D]) scoreLocked(queryTerms map[Token]struct{}) map[u
 		avgLen := float64(cp.totalLen) / float64(cp.docCount)
 		for it := pl.docs.Iterator(); it.HasNext(); {
 			ord := it.Next()
-			scores[ord] += idx.scorer.Score(TermStats{
+			addScore(scores, ord, idx.scorer.Score(TermStats{
 				TF:     pl.tf(ord),
 				DF:     df,
 				N:      cp.docCount,
 				DocLen: idx.docs[ord].lengths[token.Class],
 				AvgLen: avgLen,
 				Class:  token.Class,
-			})
+			}))
 		}
 	}
+	dropNonFiniteScores(scores)
 	return scores
+}
+
+// addScore accumulates one contribution while poisoning a document whose
+// scorer emits NaN/Inf (or whose finite contributions overflow). The poison is
+// removed by dropNonFiniteScores, so non-finite custom scorer output can never
+// enter sorting or heap selection.
+func addScore(scores map[uint32]float64, ord uint32, contribution float64) {
+	current, exists := scores[ord]
+	if exists && math.IsNaN(current) {
+		return
+	}
+	if math.IsNaN(contribution) || math.IsInf(contribution, 0) {
+		scores[ord] = math.NaN()
+		return
+	}
+	total := current + contribution
+	if math.IsNaN(total) || math.IsInf(total, 0) {
+		scores[ord] = math.NaN()
+		return
+	}
+	scores[ord] = total
+}
+
+func dropNonFiniteScores(scores map[uint32]float64) {
+	for ord, score := range scores {
+		if math.IsNaN(score) || math.IsInf(score, 0) {
+			delete(scores, ord)
+		}
+	}
+}
+
+// betterResult is the single external ranking contract: score descending,
+// then the caller-supplied document ID order ascending.
+func (idx *InvertedIndex[S, D]) betterResult(a, b Result[S]) bool {
+	if a.Score != b.Score {
+		return a.Score > b.Score
+	}
+	return idx.compareID(a.ID, b.ID) < 0
+}
+
+func (idx *InvertedIndex[S, D]) rankedResultsLocked(scores map[uint32]float64) []Result[S] {
+	results := make([]Result[S], 0, len(scores))
+	for ord, score := range scores {
+		if math.IsNaN(score) || math.IsInf(score, 0) {
+			continue
+		}
+		results = append(results, Result[S]{ID: idx.docs[ord].id, Score: score})
+	}
+	sort.Slice(results, func(i, j int) bool { return idx.betterResult(results[i], results[j]) })
+	return results
 }
 
 // SearchTopK is the bounded-selection sibling of Search (#841): it computes
@@ -448,9 +524,9 @@ func (idx *InvertedIndex[S, D]) scoreLocked(queryTerms map[Token]struct{}) map[u
 // idx.mu — so no cycle is possible. accept must not call back into this
 // index's write methods.
 //
-// Results are ordered by descending score; ties at the k-th boundary keep an
-// unspecified subset, matching Search's unspecified tie order. k <= 0, an
-// unanalyzable query, or zero accepted matches return nil.
+// Results use the index's total order (score DESC, typed ID comparator ASC),
+// including at the k-th boundary. k <= 0, an unanalyzable query, or zero
+// accepted matches return nil.
 //
 // SearchTopK is the MatchAny case of SearchMatchTopK.
 func (idx *InvertedIndex[S, D]) SearchTopK(query string, k int, accept func(id S) bool) []Result[S] {
@@ -460,32 +536,35 @@ func (idx *InvertedIndex[S, D]) SearchTopK(query string, k int, accept func(id S
 // selectTopKLocked returns the k highest-scoring documents in scores that pass
 // accept, as a descending-ranked slice. It is the bounded-selection phase
 // shared by SearchTopK and SearchPhraseTopK: a size-k min-heap holds the
-// current best, accept is consulted lazily (only once a candidate's score
-// clears the heap boundary) so rejection never scales with the match set, and
-// ties at the k-th boundary keep an unspecified subset. Callers must hold
+// current best, and accept is consulted lazily only after a candidate clears
+// the same total-order boundary used by exhaustive ranking. Callers must hold
 // idx.mu; k > 0 is the caller's precondition.
 func (idx *InvertedIndex[S, D]) selectTopKLocked(scores map[uint32]float64, k int, accept func(id S) bool) []Result[S] {
-	h := topKHeap[S]{entries: make([]Result[S], 0, k)}
+	h := topKHeap[S]{entries: make([]Result[S], 0, k), better: idx.betterResult}
 	for ord, score := range scores {
-		if len(h.entries) == k && score <= h.entries[0].Score {
+		if math.IsNaN(score) || math.IsInf(score, 0) {
 			continue
 		}
 		id := idx.docs[ord].id
+		candidate := Result[S]{ID: id, Score: score}
+		if len(h.entries) == k && !idx.betterResult(candidate, h.entries[0]) {
+			continue
+		}
 		if accept != nil && !accept(id) {
 			continue
 		}
 		if len(h.entries) < k {
-			heap.Push(&h, Result[S]{ID: id, Score: score})
+			heap.Push(&h, candidate)
 			continue
 		}
-		h.entries[0] = Result[S]{ID: id, Score: score}
+		h.entries[0] = candidate
 		heap.Fix(&h, 0)
 	}
 	if len(h.entries) == 0 {
 		return nil
 	}
 	out := h.entries
-	sort.Slice(out, func(i, j int) bool { return out[i].Score > out[j].Score })
+	sort.Slice(out, func(i, j int) bool { return idx.betterResult(out[i], out[j]) })
 	return out
 }
 
@@ -493,12 +572,15 @@ func (idx *InvertedIndex[S, D]) selectTopKLocked(scores map[uint32]float64, k in
 // retained hit, evicted whenever a stronger accepted candidate arrives.
 type topKHeap[S comparable] struct {
 	entries []Result[S]
+	better  func(Result[S], Result[S]) bool
 }
 
-func (h topKHeap[S]) Len() int           { return len(h.entries) }
-func (h topKHeap[S]) Less(i, j int) bool { return h.entries[i].Score < h.entries[j].Score }
-func (h topKHeap[S]) Swap(i, j int)      { h.entries[i], h.entries[j] = h.entries[j], h.entries[i] }
-func (h *topKHeap[S]) Push(x any)        { h.entries = append(h.entries, x.(Result[S])) }
+func (h topKHeap[S]) Len() int { return len(h.entries) }
+func (h topKHeap[S]) Less(i, j int) bool {
+	return h.better(h.entries[j], h.entries[i]) // weakest result at the root
+}
+func (h topKHeap[S]) Swap(i, j int) { h.entries[i], h.entries[j] = h.entries[j], h.entries[i] }
+func (h *topKHeap[S]) Push(x any)   { h.entries = append(h.entries, x.(Result[S])) }
 func (h *topKHeap[S]) Pop() any {
 	old := h.entries
 	n := len(old)

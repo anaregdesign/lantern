@@ -128,10 +128,10 @@ type LanternServiceClient interface {
 	// RPC for the `keys` CLI verb. A non-empty prefix is REQUIRED. Plural-only.
 	ScanVertexKeys(context.Context, *connect.Request[v1.ScanVertexKeysRequest]) (*connect.Response[v1.ScanVertexKeysResponse], error)
 	// SearchVertices returns vertices ranked by full-text relevance over their
-	// content (key + value), optionally scoped to a key prefix. Requires the
-	// server-side search index (LANTERN_SEARCH_ENABLED, on by default);
-	// returns FAILED_PRECONDITION when disabled. Plural-only — ranked search
-	// is inherently plural.
+	// content (key + value), optionally scoped to a key prefix, in stable
+	// (score DESC, raw key ASC) order. Requires the server-side search index
+	// (LANTERN_SEARCH_ENABLED, on by default); returns FAILED_PRECONDITION when
+	// disabled. Plural-only — ranked search is inherently plural.
 	SearchVertices(context.Context, *connect.Request[v1.SearchVerticesRequest]) (*connect.Response[v1.SearchVerticesResponse], error)
 	// CountVerticesByPrefix returns the number of live vertices whose key
 	// starts with the given prefix.
@@ -549,10 +549,10 @@ type LanternServiceHandler interface {
 	// RPC for the `keys` CLI verb. A non-empty prefix is REQUIRED. Plural-only.
 	ScanVertexKeys(context.Context, *connect.Request[v1.ScanVertexKeysRequest]) (*connect.Response[v1.ScanVertexKeysResponse], error)
 	// SearchVertices returns vertices ranked by full-text relevance over their
-	// content (key + value), optionally scoped to a key prefix. Requires the
-	// server-side search index (LANTERN_SEARCH_ENABLED, on by default);
-	// returns FAILED_PRECONDITION when disabled. Plural-only — ranked search
-	// is inherently plural.
+	// content (key + value), optionally scoped to a key prefix, in stable
+	// (score DESC, raw key ASC) order. Requires the server-side search index
+	// (LANTERN_SEARCH_ENABLED, on by default); returns FAILED_PRECONDITION when
+	// disabled. Plural-only — ranked search is inherently plural.
 	SearchVertices(context.Context, *connect.Request[v1.SearchVerticesRequest]) (*connect.Response[v1.SearchVerticesResponse], error)
 	// CountVerticesByPrefix returns the number of live vertices whose key
 	// starts with the given prefix.

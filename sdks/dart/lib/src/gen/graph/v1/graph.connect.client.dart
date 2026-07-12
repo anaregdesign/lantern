@@ -171,10 +171,10 @@ extension type LanternServiceClient (connect.Transport _transport) {
   }
 
   /// SearchVertices returns vertices ranked by full-text relevance over their
-  /// content (key + value), optionally scoped to a key prefix. Requires the
-  /// server-side search index (LANTERN_SEARCH_ENABLED, on by default);
-  /// returns FAILED_PRECONDITION when disabled. Plural-only — ranked search
-  /// is inherently plural.
+  /// content (key + value), optionally scoped to a key prefix, in stable
+  /// (score DESC, raw key ASC) order. Requires the server-side search index
+  /// (LANTERN_SEARCH_ENABLED, on by default); returns FAILED_PRECONDITION when
+  /// disabled. Plural-only — ranked search is inherently plural.
   Future<graphv1graph.SearchVerticesResponse> searchVertices(
     graphv1graph.SearchVerticesRequest input, {
     connect.Headers? headers,

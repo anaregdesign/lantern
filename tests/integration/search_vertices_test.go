@@ -1,13 +1,19 @@
 package integration_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"math/rand"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
@@ -43,7 +49,7 @@ func newSearchRawClient(t *testing.T, enabled bool) graphv1connect.LanternServic
 	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 	cache.EnablePrefixIndex(func(k string) string { return k })
 	if enabled {
-		cache.EnableSearchIndex(searchVertexDocument)
+		cache.EnableSearchIndex(searchVertexDocument, strings.Compare)
 	}
 	svc := service.NewLanternService(cache).WithSearchLimits(service.SearchLimits{
 		Enabled:      enabled,
@@ -63,7 +69,7 @@ func newSearchSDKClient(t *testing.T, enabled bool) *client.Lantern {
 	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 	cache.EnablePrefixIndex(func(k string) string { return k })
 	if enabled {
-		cache.EnableSearchIndex(searchVertexDocument)
+		cache.EnableSearchIndex(searchVertexDocument, strings.Compare)
 	}
 	svc := service.NewLanternService(cache).WithSearchLimits(service.SearchLimits{
 		Enabled:      enabled,
@@ -291,6 +297,146 @@ func TestSearchVertices_Options(t *testing.T) {
 	})
 }
 
+// TestSearchVertices_DeterministicAcrossHistories drives cap-overflow prefix
+// and fuzzy expansion through independent real Connect/h2c servers whose final
+// corpora are identical but whose document/term ordinal histories differ. The
+// complete protobuf bytes (ordered keys and float bits) must agree on every
+// repeated call.
+func TestSearchVertices_DeterministicAcrossHistories(t *testing.T) {
+	type document struct {
+		key   string
+		value string
+	}
+	var documents []document
+	var prefixWant []string
+	for i := 0; i < 80; i++ {
+		key := fmt.Sprintf("docp-%03d", i)
+		documents = append(documents, document{key: key, value: fmt.Sprintf("pr%03d", i)})
+		if i < search.MaxTermExpansions {
+			prefixWant = append(prefixWant, key)
+		}
+	}
+	var fuzzyTerms []string
+	for ch := byte('b'); ch <= 'z'; ch++ {
+		fuzzyTerms = append(fuzzyTerms, string([]byte{ch, 'a'}), string([]byte{'a', ch}))
+	}
+	for digit := byte('0'); digit <= '9'; digit++ {
+		fuzzyTerms = append(fuzzyTerms, string([]byte{'a', digit, 'a'}))
+	}
+	sort.Strings(fuzzyTerms)
+	var fuzzyWant []string
+	for i, term := range fuzzyTerms {
+		key := fmt.Sprintf("docf-%03d", i)
+		documents = append(documents, document{key: key, value: term})
+		if i < search.MaxTermExpansions {
+			fuzzyWant = append(fuzzyWant, key)
+		}
+	}
+
+	seed := func(t *testing.T, c graphv1connect.LanternServiceClient, order []int, churn bool) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		exp := timestamppb.New(time.Now().Add(time.Hour))
+		if churn {
+			var transient []*pb.Vertex
+			for i := 0; i < len(documents); i += 3 {
+				transient = append(transient, &pb.Vertex{
+					Key:        documents[i].key,
+					Value:      &pb.Vertex_String_{String_: fmt.Sprintf("temporary%03d", i)},
+					Expiration: exp,
+				})
+			}
+			if _, err := c.PutVertices(ctx, connect.NewRequest(&pb.PutVerticesRequest{Vertices: transient})); err != nil {
+				t.Fatalf("PutVertices transient: %v", err)
+			}
+		}
+		vertices := make([]*pb.Vertex, 0, len(order))
+		for _, i := range order {
+			vertices = append(vertices, &pb.Vertex{
+				Key:        documents[i].key,
+				Value:      &pb.Vertex_String_{String_: documents[i].value},
+				Expiration: exp,
+			})
+		}
+		if _, err := c.PutVertices(ctx, connect.NewRequest(&pb.PutVerticesRequest{Vertices: vertices})); err != nil {
+			t.Fatalf("PutVertices final: %v", err)
+		}
+	}
+
+	forward := make([]int, len(documents))
+	for i := range forward {
+		forward[i] = i
+	}
+	reverse := append([]int(nil), forward...)
+	for i, j := 0, len(reverse)-1; i < j; i, j = i+1, j-1 {
+		reverse[i], reverse[j] = reverse[j], reverse[i]
+	}
+	random := append([]int(nil), forward...)
+	rand.New(rand.NewSource(1056)).Shuffle(len(random), func(i, j int) {
+		random[i], random[j] = random[j], random[i]
+	})
+	histories := []struct {
+		name  string
+		order []int
+		churn bool
+	}{
+		{"forward", forward, false},
+		{"reverse", reverse, false},
+		{"random", random, false},
+		{"release-reuse", reverse, true},
+	}
+	tests := []struct {
+		name    string
+		query   string
+		options *pb.SearchOptions
+		want    []string
+	}{
+		{"prefix", "pr", &pb.SearchOptions{PrefixTerms: true}, prefixWant},
+		{"fuzzy", "aa", &pb.SearchOptions{Fuzziness: 1}, fuzzyWant},
+	}
+
+	baseline := make(map[string][]byte, len(tests))
+	for _, history := range histories {
+		t.Run(history.name, func(t *testing.T) {
+			c := newSearchRawClient(t, true)
+			seed(t, c, history.order, history.churn)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			for _, tc := range tests {
+				t.Run(tc.name, func(t *testing.T) {
+					for repeat := 0; repeat < 100; repeat++ {
+						resp, err := c.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{
+							Query:   tc.query,
+							Limit:   100,
+							Options: tc.options,
+						}))
+						if err != nil {
+							t.Fatalf("repeat %d SearchVertices: %v", repeat, err)
+						}
+						gotKeys := make([]string, len(resp.Msg.GetHits()))
+						for i, hit := range resp.Msg.GetHits() {
+							gotKeys[i] = hit.GetKey()
+						}
+						if !slices.Equal(gotKeys, tc.want) {
+							t.Fatalf("repeat %d keys = %v, want %v", repeat, gotKeys, tc.want)
+						}
+						wire, err := proto.MarshalOptions{Deterministic: true}.Marshal(resp.Msg)
+						if err != nil {
+							t.Fatalf("marshal response: %v", err)
+						}
+						if want, ok := baseline[tc.name]; !ok {
+							baseline[tc.name] = append([]byte(nil), wire...)
+						} else if !bytes.Equal(wire, want) {
+							t.Fatalf("repeat %d response bytes differ across calls/histories", repeat)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
 // TestSearchVertices_PositionsOff verifies the #908 opt-out end to end through
 // the RPC: with LANTERN_SEARCH_POSITIONS=false the index keeps no positions, so
 // a phrase query degrades to the AND-intersection (every word present, adjacency
@@ -300,7 +446,7 @@ func TestSearchVertices_PositionsOff(t *testing.T) {
 	// Build a search-enabled service whose cache index tracks no positions.
 	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 	cache.EnablePrefixIndex(func(k string) string { return k })
-	cache.EnableSearchIndex(searchVertexDocument, graphcache.WithoutSearchPositions())
+	cache.EnableSearchIndex(searchVertexDocument, strings.Compare, graphcache.WithoutSearchPositions())
 	svc := service.NewLanternService(cache).WithSearchLimits(service.SearchLimits{
 		Enabled:      true,
 		DefaultLimit: 100,

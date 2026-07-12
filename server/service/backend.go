@@ -193,11 +193,12 @@ type Backend interface {
 
 	// SearchVertices returns vertices ranked by full-text relevance over
 	// their indexed content, optionally scoped to keyPrefix, capped at
-	// limit (limit <= 0 returns nil). The returned slice is ordered by
-	// descending score. It returns nil when the search index is disabled,
-	// the query has no analysable terms, or nothing matches — the three
-	// are indistinguishable here, so the handler decides FAILED_PRECONDITION
-	// from its own SearchConfig.Enabled flag, not this return value (#624).
+	// limit (limit <= 0 returns nil). The returned slice uses the stable
+	// production order (score DESC, raw key ASC). It returns nil when the
+	// search index is disabled, the query has no analysable terms, or nothing
+	// matches — the three are indistinguishable here, so the handler decides
+	// FAILED_PRECONDITION from its own SearchConfig.Enabled flag, not this return
+	// value (#624).
 	SearchVertices(query string, limit int, keyPrefix string) []search.Result[string]
 	SearchVerticesMatch(query string, limit int, keyPrefix string, opts search.MatchOptions, phrase bool) []search.Result[string]
 

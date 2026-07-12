@@ -30,7 +30,7 @@ import (
 // The relevance gate (core/search/relevance, parity_gate_test.go) replicates
 // exactly this pipeline (with positions on) and ratchets its measured metrics
 // against the pinned Lucene baseline — change the two in lockstep.
-func newSearchIndex[S comparable](positions bool) *search.InvertedIndex[S, search.Document] {
+func newSearchIndex[S comparable](positions bool, compareID func(S, S) int) *search.InvertedIndex[S, search.Document] {
 	analyzer := search.NewScriptAwareAnalyzer()
 	scorer := search.ClassWeighted{
 		Base:       search.BM25{K1: search.DefaultBM25K1, B: search.DefaultBM25B},
@@ -40,7 +40,7 @@ func newSearchIndex[S comparable](positions bool) *search.InvertedIndex[S, searc
 	if positions {
 		opts = append(opts, search.WithPositions())
 	}
-	return search.NewInvertedIndex[S, search.Document](analyzer, scorer, opts...)
+	return search.NewInvertedIndex[S, search.Document](analyzer, scorer, compareID, opts...)
 }
 
 // SearchIndexOption configures the optional content-search index at
@@ -49,8 +49,8 @@ func newSearchIndex[S comparable](positions bool) *search.InvertedIndex[S, searc
 type SearchIndexOption func(*searchIndexConfig)
 
 // searchIndexConfig is the resolved EnableSearchIndex configuration. positions
-// defaults to true so the common call — EnableSearchIndex(extract) with no
-// options — keeps recording positions exactly as before #908.
+// defaults to true so the common call — EnableSearchIndex(extract, compareID)
+// with no options — keeps recording positions exactly as before #908.
 type searchIndexConfig struct {
 	positions bool
 }
@@ -71,7 +71,9 @@ func WithoutSearchPositions() SearchIndexOption {
 // vertex's string value). Like EnablePrefixIndex it must be called before any
 // vertex is stored, is idempotent, and panics on a non-empty cache so the
 // caller cannot silently observe an index that disagrees with point reads.
-// extract must not be nil. By default the index records positional postings for
+// extract and compareID must not be nil. compareID is the stable ascending
+// typed-key order used to break equal-score ties; production passes raw lexical
+// string-key comparison. By default the index records positional postings for
 // phrase and proximity queries; pass WithoutSearchPositions to build the leaner
 // position-free index (#908).
 //
@@ -82,9 +84,12 @@ func WithoutSearchPositions() SearchIndexOption {
 // they describe.
 // The index is a third opt-in secondary structure alongside the prefix index;
 // when it is left disabled the put / evict hot paths pay only a nil check.
-func (c *GraphCache[S, T]) EnableSearchIndex(extract func(T) search.Document, opts ...SearchIndexOption) {
+func (c *GraphCache[S, T]) EnableSearchIndex(extract func(T) search.Document, compareID func(S, S) int, opts ...SearchIndexOption) {
 	if extract == nil {
 		panic("graphcache: EnableSearchIndex extract must not be nil")
+	}
+	if compareID == nil {
+		panic("graphcache: EnableSearchIndex compareID must not be nil")
 	}
 	cfg := searchIndexConfig{positions: true}
 	for _, opt := range opts {
@@ -99,7 +104,7 @@ func (c *GraphCache[S, T]) EnableSearchIndex(extract func(T) search.Document, op
 		panic("graphcache: EnableSearchIndex must be called before any vertex is stored")
 	}
 	c.searchExtract = extract
-	c.searchIndex = newSearchIndex[S](cfg.positions)
+	c.searchIndex = newSearchIndex[S](cfg.positions, compareID)
 }
 
 // SearchVertices returns up to limit keys whose indexed content matches query,
@@ -114,7 +119,8 @@ func (c *GraphCache[S, T]) EnableSearchIndex(extract func(T) search.Document, op
 // GetVertex calls under the snapshot lock would surface. Because matching is
 // the index's boolean OR over the query terms, limit is applied after the
 // liveness and prefix filters so a full page of live, in-scope hits is
-// returned whenever one exists.
+// returned whenever one exists. Equal scores are ordered ascending by the
+// typed compareID function supplied to EnableSearchIndex.
 func (c *GraphCache[S, T]) SearchVertices(query string, limit int, keyPrefix string) []search.Result[S] {
 	return c.SearchVerticesMatch(query, limit, keyPrefix, search.MatchOptions{}, false)
 }

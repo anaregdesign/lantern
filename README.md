@@ -263,8 +263,8 @@ because the bridge is not traversable.
 
 `SearchVertices` runs relevance-ranked (BM25) full-text search over vertex
 *content* — key plus value — as the content-addressed counterpart to prefix
-scans. Ranked hits make natural seeds for a follow-up `bfs`, `pagerank`, or
-`community` walk:
+scans. Hits use the stable total order `(score DESC, raw key ASC)` and make
+natural seeds for a follow-up `bfs`, `pagerank`, or `community` walk:
 
 ```shell
 lantern-cli search "rolling update"              # OR-union of the query words

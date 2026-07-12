@@ -13,8 +13,9 @@ type Result[S comparable] struct {
 // score, ordered from most to least relevant — the ranked seed candidates a
 // caller picks before a wider graph traversal, where the score can double as a
 // seed's initial weight. Documents that share no analyzed term with the query
-// are omitted, and a query with no analyzable terms yields no results. Ties in
-// score have an unspecified relative order.
+// are omitted, and a query with no analyzable terms yields no results.
+// Implementations provide a stable document-ID order for equal scores;
+// InvertedIndex requires a typed ascending ID comparator at construction.
 type Searcher[S comparable] interface {
 	Search(query string) []Result[S]
 }

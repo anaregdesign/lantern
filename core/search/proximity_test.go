@@ -7,7 +7,7 @@ import "testing"
 // far apart the query terms sit, so the boost is the sole tie-breaker and the
 // adjacent document must rank first.
 func TestProximityBoostRanksTightMatchFirst(t *testing.T) {
-	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, WithPositions())
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID, WithPositions())
 	idx.Index("adjacent", Text("alpha quick fox beta gamma delta"))  // quick@1 fox@2
 	idx.Index("scattered", Text("quick alpha beta gamma delta fox")) // quick@0 fox@5
 
@@ -27,7 +27,7 @@ func TestProximityBoostRanksTightMatchFirst(t *testing.T) {
 // the same two documents score identically when the index tracks none, so the
 // OR-union ranking is unchanged.
 func TestProximityBoostInertWithoutPositions(t *testing.T) {
-	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil) // no WithPositions
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID) // no WithPositions
 	idx.Index("adjacent", Text("alpha quick fox beta gamma delta"))
 	idx.Index("scattered", Text("quick alpha beta gamma delta fox"))
 
@@ -50,7 +50,7 @@ func TestProximityBoostInertWithoutPositions(t *testing.T) {
 // 0.8*w — measured here at two weights to fix the slope.
 func TestProximityWeightScalesBoost(t *testing.T) {
 	build := func(w float64) []Result[string] {
-		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, WithPositions(), WithProximityWeight(w))
+		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID, WithPositions(), WithProximityWeight(w))
 		idx.Index("adjacent", Text("alpha quick fox beta gamma delta"))  // quick@1 fox@2
 		idx.Index("scattered", Text("quick alpha beta gamma delta fox")) // quick@0 fox@5
 		return idx.Search("quick fox")
@@ -91,7 +91,7 @@ func TestProximityWeightScalesBoost(t *testing.T) {
 // measure, so the boost is a no-op and ranking stays pure BM25 (the shorter,
 // denser document still wins on its own merits).
 func TestProximityBoostSingleTermNoOp(t *testing.T) {
-	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, WithPositions())
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID, WithPositions())
 	idx.Index("dense", Text("quick quick fox"))
 	idx.Index("sparse", Text("quick alpha beta gamma"))
 
@@ -104,7 +104,7 @@ func TestProximityBoostSingleTermNoOp(t *testing.T) {
 // TestProximityBoostTopK verifies the boost also reorders SearchTopK, which
 // applies it before bounded selection so a tight match can claim a scarce slot.
 func TestProximityBoostTopK(t *testing.T) {
-	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, WithPositions())
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID, WithPositions())
 	idx.Index("adjacent", Text("alpha quick fox beta gamma delta"))
 	idx.Index("scattered", Text("quick alpha beta gamma delta fox"))
 

@@ -90,8 +90,8 @@ func RecallAt(k int, ranked []string, qrels map[string]int) float64 {
 // document IDs ordered most-relevant first — and macro-averages the metrics.
 // Each ranked list is truncated to EvalDepth first (see EvalDepth for why), so
 // rank may return more without affecting the result. Rankers built on a
-// Searcher should go through RankSearcher so score ties are broken
-// deterministically.
+// Searcher should go through RankSearcher so its production total order is
+// preserved without a harness-side tie repair.
 func Evaluate(c Corpus, rank func(q Query) []string) Metrics {
 	if len(c.Queries) == 0 {
 		return Metrics{}

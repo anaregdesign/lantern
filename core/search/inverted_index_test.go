@@ -5,6 +5,7 @@ import (
 	"math"
 	"math/rand"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -26,7 +27,7 @@ func (fakeAnalyzer) Analyze(text string) []Token {
 }
 
 func TestInvertedIndex(t *testing.T) {
-	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil)
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID)
 	idx.Index("doc1", Text("Alpha Beta"))
 	idx.Index("doc2", Text("beta gamma"))
 
@@ -55,7 +56,7 @@ func TestInvertedIndex(t *testing.T) {
 }
 
 func TestInvertedIndexDelete(t *testing.T) {
-	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil)
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID)
 	idx.Index("doc1", Text("alpha beta"))
 	idx.Index("doc2", Text("beta gamma"))
 
@@ -96,7 +97,7 @@ func TestInvertedIndexDelete(t *testing.T) {
 // entries/length, and is a no-op for an empty input. It is the batch sibling
 // of Delete (#738).
 func TestInvertedIndexDeleteMany(t *testing.T) {
-	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil)
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID)
 	idx.Index("doc1", Text("alpha beta"))
 	idx.Index("doc2", Text("beta gamma"))
 	idx.Index("doc3", Text("gamma delta"))
@@ -133,7 +134,7 @@ func TestInvertedIndexDeleteMany(t *testing.T) {
 }
 
 func TestInvertedIndexReindexReplaces(t *testing.T) {
-	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil)
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID)
 	idx.Index("doc1", Text("alpha beta"))
 	// Re-index the same id with new text: the old terms must not linger.
 	idx.Index("doc1", Text("gamma"))
@@ -163,7 +164,7 @@ func TestInvertedIndexReindexReplaces(t *testing.T) {
 // all rank a document higher, and a query term repeated does not double-count.
 func TestInvertedIndexRanking(t *testing.T) {
 	t.Run("higher term frequency ranks first", func(t *testing.T) {
-		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil)
+		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID)
 		idx.Index("more", Text("go go go rust"))
 		idx.Index("less", Text("go rust python"))
 		res := idx.Search("go")
@@ -179,7 +180,7 @@ func TestInvertedIndexRanking(t *testing.T) {
 	})
 
 	t.Run("shorter document ranks first at equal term frequency", func(t *testing.T) {
-		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil)
+		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID)
 		idx.Index("short", Text("go rust"))
 		idx.Index("long", Text("go rust python java perl"))
 		res := idx.Search("go")
@@ -189,7 +190,7 @@ func TestInvertedIndexRanking(t *testing.T) {
 	})
 
 	t.Run("rarer query term lifts its document", func(t *testing.T) {
-		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil)
+		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID)
 		idx.Index("a", Text("common rare"))
 		idx.Index("b", Text("common x"))
 		idx.Index("c", Text("common y"))
@@ -200,7 +201,7 @@ func TestInvertedIndexRanking(t *testing.T) {
 	})
 
 	t.Run("repeated query term scored once", func(t *testing.T) {
-		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil)
+		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID)
 		idx.Index("d", Text("go rust"))
 		once := idx.Search("go")
 		twice := idx.Search("go go")
@@ -215,7 +216,7 @@ func TestInvertedIndexRanking(t *testing.T) {
 // final document count is deterministic: each writer keeps its odd-indexed
 // documents and deletes the even-indexed ones.
 func TestInvertedIndexConcurrent(t *testing.T) {
-	idx := NewInvertedIndex[int, Text](NewAnalyzer([]Normalizer{LowercaseNormalizer{}}, UnicodeTokenizer{}, nil), nil)
+	idx := NewInvertedIndex[int, Text](NewAnalyzer([]Normalizer{LowercaseNormalizer{}}, UnicodeTokenizer{}, nil), nil, compareIntID)
 
 	const writers = 8
 	const docsPerWriter = 200
@@ -251,11 +252,11 @@ func TestInvertedIndexConcurrent(t *testing.T) {
 // semantics.
 func TestInvertedIndexPrepared(t *testing.T) {
 	t.Run("IndexPrepared matches Index", func(t *testing.T) {
-		viaIndex := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil)
+		viaIndex := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID)
 		viaIndex.Index("doc1", Text("Alpha Beta"))
 		viaIndex.Index("doc2", Text("beta gamma"))
 
-		viaPrepared := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil)
+		viaPrepared := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID)
 		viaPrepared.IndexPrepared("doc1", viaPrepared.Prepare(Text("Alpha Beta")))
 		viaPrepared.IndexPrepared("doc2", viaPrepared.Prepare(Text("beta gamma")))
 
@@ -271,7 +272,7 @@ func TestInvertedIndexPrepared(t *testing.T) {
 	})
 
 	t.Run("empty prepared removes id", func(t *testing.T) {
-		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil)
+		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID)
 		idx.IndexPrepared("doc1", idx.Prepare(Text("alpha beta")))
 		// Re-index doc1 with a document that analyzes to no terms: its postings
 		// must be dropped, matching Index's replace-with-empty behavior.
@@ -282,7 +283,7 @@ func TestInvertedIndexPrepared(t *testing.T) {
 	})
 
 	t.Run("IndexManyPrepared applies batch last-write", func(t *testing.T) {
-		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil)
+		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID)
 		// doc1 appears twice; the later item must win (replace semantics in
 		// slice order). doc2's first document is later replaced by an empty one,
 		// so it must be absent at the end.
@@ -343,7 +344,7 @@ var benchVocab = []string{
 }
 
 func buildBigramIndex(corpus map[string]Text) *InvertedIndex[string, Text] {
-	idx := NewInvertedIndex[string, Text](bigramAnalyzer(), nil)
+	idx := NewInvertedIndex[string, Text](bigramAnalyzer(), nil, compareStringID)
 	for id, doc := range corpus {
 		idx.Index(id, doc)
 	}
@@ -355,7 +356,7 @@ func buildBigramIndex(corpus map[string]Text) *InvertedIndex[string, Text] {
 // state overhead. The bigram analyzer emits every term on the primary channel,
 // so every term carries positions — the worst case for the position store.
 func buildBigramIndexWithPositions(corpus map[string]Text) *InvertedIndex[string, Text] {
-	idx := NewInvertedIndex[string, Text](bigramAnalyzer(), nil, WithPositions())
+	idx := NewInvertedIndex[string, Text](bigramAnalyzer(), nil, compareStringID, WithPositions())
 	for id, doc := range corpus {
 		idx.Index(id, doc)
 	}
@@ -507,24 +508,16 @@ func BenchmarkSearchPhrase(b *testing.B) {
 }
 
 // TestSearchTopK property-checks the bounded selection (#841) against the
-// reference pipeline "full Search → filter by accept → truncate to k":
-// result length, membership, per-id scores, and the descending score
-// multiset must all agree (tie order at the k-th boundary is free).
+// reference pipeline "full Search → filter by accept → truncate to k". The
+// complete Result slice must agree exactly, including equal-score boundary
+// membership and score bits.
 func TestSearchTopK(t *testing.T) {
 	idx := NewInvertedIndex[string, Text](NewAnalyzer(
 		[]Normalizer{LowercaseNormalizer{}},
 		NGramTokenizer{N: 2},
 		nil,
-	), nil)
+	), nil, compareStringID)
 	rng := rand.New(rand.NewSource(841))
-	// Search and SearchTopK both accumulate BM25 contributions while iterating
-	// the distinct-term set (a Go map), so the floating-point addition order —
-	// and therefore the last ULP of a multi-term score — can differ between
-	// any two calls. Compare scores with a relative tolerance, not bitwise.
-	closeEnough := func(a, b float64) bool {
-		diff := math.Abs(a - b)
-		return diff <= 1e-9*math.Max(math.Abs(a), math.Abs(b))
-	}
 	words := []string{"alpha", "alps", "altitude", "beta", "bethel", "gamma", "gambit", "delta"}
 	docs := make(map[string]string, 120)
 	for i := 0; i < 120; i++ {
@@ -549,34 +542,13 @@ func TestSearchTopK(t *testing.T) {
 						want = append(want, r)
 					}
 				}
-				sort.SliceStable(want, func(i, j int) bool { return want[i].Score > want[j].Score })
 				if len(want) > k {
 					want = want[:k]
 				}
 
 				got := idx.SearchTopK(query, k, accept)
-				if len(got) != len(want) {
-					t.Fatalf("q=%q accept=%s k=%d: len=%d, want %d", query, name, k, len(got), len(want))
-				}
-				fullScore := make(map[string]float64, len(full))
-				for _, r := range full {
-					fullScore[r.ID] = r.Score
-				}
-				for i, r := range got {
-					if i > 0 && got[i-1].Score < r.Score {
-						t.Fatalf("q=%q accept=%s k=%d: not descending at %d: %v", query, name, k, i, got)
-					}
-					if s, ok := fullScore[r.ID]; !ok || !closeEnough(s, r.Score) {
-						t.Fatalf("q=%q accept=%s k=%d: id %s score %v disagrees with full search (%v, %v)", query, name, k, r.ID, r.Score, s, ok)
-					}
-					if accept != nil && !accept(r.ID) {
-						t.Fatalf("q=%q accept=%s k=%d: rejected id %s returned", query, name, k, r.ID)
-					}
-				}
-				for i := range got {
-					if !closeEnough(got[i].Score, want[i].Score) {
-						t.Fatalf("q=%q accept=%s k=%d: score multiset diverges at %d: got %v want %v", query, name, k, i, got, want)
-					}
+				if !slices.Equal(got, want) {
+					t.Fatalf("q=%q accept=%s k=%d: got %v, want %v", query, name, k, got, want)
 				}
 			}
 		}
@@ -592,6 +564,142 @@ func TestSearchTopK(t *testing.T) {
 	})
 }
 
+// TestSearchOrderingIndependentOfHistory proves the externally visible total
+// order is independent of document ordinals, insertion order, and delete /
+// reinsert churn. k deliberately cuts through a 64-way score tie.
+func TestSearchOrderingIndependentOfHistory(t *testing.T) {
+	ids := make([]string, 64)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("doc-%03d", i)
+	}
+	build := func(order []string, churn bool) *InvertedIndex[string, Text] {
+		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID)
+		for _, id := range order {
+			idx.Index(id, Text("common stable"))
+		}
+		if churn {
+			for i := 0; i < len(ids); i += 3 {
+				idx.Index(ids[i], Text("transient history term"))
+			}
+			for i := len(ids) - 1; i >= 0; i -= 3 {
+				idx.Index(ids[i], Text("common stable"))
+			}
+		}
+		return idx
+	}
+
+	reverse := append([]string(nil), ids...)
+	slices.Reverse(reverse)
+	random := append([]string(nil), ids...)
+	rand.New(rand.NewSource(1056)).Shuffle(len(random), func(i, j int) { random[i], random[j] = random[j], random[i] })
+	histories := []struct {
+		name  string
+		order []string
+		churn bool
+	}{
+		{"forward", ids, false},
+		{"reverse", reverse, false},
+		{"random", random, false},
+		{"release-reuse", random, true},
+	}
+
+	var baseline []Result[string]
+	for _, history := range histories {
+		t.Run(history.name, func(t *testing.T) {
+			idx := build(history.order, history.churn)
+			full := idx.Search("common stable")
+			if got := idsOf(full); !slices.Equal(got, ids) {
+				t.Fatalf("full order = %v, want lexical IDs", got)
+			}
+			if baseline == nil {
+				baseline = append([]Result[string](nil), full...)
+			} else if !slices.Equal(full, baseline) {
+				t.Fatalf("full results differ from baseline:\n got  %v\n want %v", full, baseline)
+			}
+			wantTop := baseline[:10]
+			for repeat := 0; repeat < 100; repeat++ {
+				if got := idx.SearchTopK("common stable", 10, nil); !slices.Equal(got, wantTop) {
+					t.Fatalf("repeat %d top-k = %v, want %v", repeat, got, wantTop)
+				}
+			}
+		})
+	}
+}
+
+// TestSearchScoreBitsRepeat verifies sorted query clauses fix floating-point
+// addition order and the resulting near-tie membership. The two small
+// contributions disappear when added after 1e16, but survive when accumulated
+// first; a map-order implementation can therefore flip both score bits and k=1.
+func TestSearchScoreBitsRepeat(t *testing.T) {
+	scorer := ScorerFunc(func(stats TermStats) float64 {
+		if stats.TF == 1 {
+			return 1e16
+		}
+		return 1
+	})
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, scorer, compareStringID)
+	idx.Index("huge-first", Text("a b b c c c")) // lexical contribution order: 1e16, 1, 1
+	idx.Index("huge-last", Text("a a b b c"))    // lexical contribution order: 1, 1, 1e16
+	want := []Result[string]{
+		{ID: "huge-last", Score: 1e16 + 2},
+		{ID: "huge-first", Score: 1e16},
+	}
+	for _, query := range []string{"a b c", "c a b", "b c a"} {
+		for repeat := 0; repeat < 100; repeat++ {
+			got := idx.Search(query)
+			if !slices.Equal(got, want) {
+				t.Fatalf("query %q repeat %d results = %v, want %v", query, repeat, got, want)
+			}
+			for i := range got {
+				if bits, wantBits := math.Float64bits(got[i].Score), math.Float64bits(want[i].Score); bits != wantBits {
+					t.Fatalf("query %q repeat %d result %d score bits = %x, want %x", query, repeat, i, bits, wantBits)
+				}
+			}
+			if top := idx.SearchTopK(query, 1, nil); !slices.Equal(top, want[:1]) {
+				t.Fatalf("query %q repeat %d top-k = %v, want %v", query, repeat, top, want[:1])
+			}
+		}
+	}
+}
+
+// TestSearchDropsNonFiniteScores keeps malformed custom scorer output out of
+// exhaustive and bounded ranking.
+func TestSearchDropsNonFiniteScores(t *testing.T) {
+	scorer := ScorerFunc(func(stats TermStats) float64 {
+		switch stats.TF {
+		case 1:
+			return math.NaN()
+		case 2:
+			return math.Inf(1)
+		case 3:
+			return math.Inf(-1)
+		default:
+			return 1
+		}
+	})
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, scorer, compareStringID)
+	idx.Index("nan", Text("x"))
+	idx.Index("positive-infinity", Text("x x"))
+	idx.Index("negative-infinity", Text("x x x"))
+	idx.Index("finite", Text("x x x x"))
+	want := []Result[string]{{ID: "finite", Score: 1}}
+	if got := idx.Search("x"); !slices.Equal(got, want) {
+		t.Fatalf("Search non-finite scores = %v, want %v", got, want)
+	}
+	if got := idx.SearchTopK("x", 10, nil); !slices.Equal(got, want) {
+		t.Fatalf("SearchTopK non-finite scores = %v, want %v", got, want)
+	}
+}
+
+func TestNewInvertedIndexRequiresComparator(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("nil comparator did not panic")
+		}
+	}()
+	NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, nil)
+}
+
 // BenchmarkSearchTopKBroadQuery pits the bounded selection against the full
 // sort on the workload #841 targets: a two-character query over a large
 // corpus (the bigram analyzer makes it match nearly everything), keeping
@@ -601,7 +709,7 @@ func BenchmarkSearchTopKBroadQuery(b *testing.B) {
 		[]Normalizer{LowercaseNormalizer{}},
 		NGramTokenizer{N: 2},
 		nil,
-	), nil)
+	), nil, compareStringID)
 	for i := 0; i < 20000; i++ {
 		idx.Index(fmt.Sprintf("doc-%05d", i), Text(fmt.Sprintf("alpha beta gamma delta %05d", i)))
 	}
@@ -632,6 +740,7 @@ func TestInvertedIndexDualClass(t *testing.T) {
 		return NewInvertedIndex[string, Text](
 			NewScriptAwareAnalyzer(),
 			ClassWeighted{Base: BM25{K1: DefaultBM25K1, B: DefaultBM25B}, GramWeight: DefaultGramWeight},
+			compareStringID,
 		)
 	}
 
@@ -683,7 +792,7 @@ func TestInvertedIndexDualClass(t *testing.T) {
 		bad := AnalyzerFunc(func(text string) []Token {
 			return []Token{{Term: text, Class: TokenClass(9)}}
 		})
-		idx := NewInvertedIndex[string, Text](bad, nil)
+		idx := NewInvertedIndex[string, Text](bad, nil, compareStringID)
 		defer func() {
 			if recover() == nil {
 				t.Fatal("indexing an undefined TokenClass did not panic")

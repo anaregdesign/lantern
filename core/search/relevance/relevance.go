@@ -18,7 +18,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
-	"sort"
 
 	"github.com/anaregdesign/lantern/core/search"
 )
@@ -145,20 +144,12 @@ func (c Corpus) validate() error {
 	return nil
 }
 
-// RankSearcher adapts a Searcher into the ranking function Evaluate consumes,
-// breaking score ties by document ID. Search documents ties as unspecified
-// order; without a deterministic tie-break the metrics would jitter from run
-// to run whenever tied documents straddle a relevance grade, and a ratcheted
-// floor cannot tolerate jitter.
+// RankSearcher adapts a Searcher into the ranking function Evaluate consumes.
+// The production Searcher already owns the complete deterministic order; the
+// harness must preserve it rather than mask an implementation regression.
 func RankSearcher(s search.Searcher[string]) func(q Query) []string {
 	return func(q Query) []string {
 		results := s.Search(q.Text)
-		sort.SliceStable(results, func(i, j int) bool {
-			if results[i].Score != results[j].Score {
-				return results[i].Score > results[j].Score
-			}
-			return results[i].ID < results[j].ID
-		})
 		ids := make([]string, len(results))
 		for i, r := range results {
 			ids[i] = r.ID

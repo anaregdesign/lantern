@@ -529,7 +529,7 @@ func floatNear(a, b float32) bool {
 func testLogicalVertexVisibility(t *testing.T) {
 	c := NewGraphCache[string, string](time.Hour)
 	c.EnablePrefixIndex(identityExtract)
-	c.EnableSearchIndex(textExtract)
+	c.EnableSearchIndex(textExtract, compareStringID)
 	live := time.Now().Add(time.Hour)
 
 	c.PutVertexWithExpiration("live:1", "rivers", live)
@@ -610,7 +610,7 @@ func testLogicalVertexVisibility(t *testing.T) {
 func testLogicalGCNonObservable(t *testing.T) {
 	c := NewGraphCache[string, string](time.Hour)
 	c.EnablePrefixIndex(identityExtract)
-	c.EnableSearchIndex(textExtract)
+	c.EnableSearchIndex(textExtract, compareStringID)
 	live := time.Now().Add(time.Hour)
 
 	c.PutVertexWithExpiration("k:live", "rivers", live)
@@ -656,7 +656,7 @@ func testLogicalGCNonObservable(t *testing.T) {
 func testLogicalNoResurrection(t *testing.T) {
 	c := NewGraphCache[string, string](time.Hour)
 	c.EnablePrefixIndex(identityExtract)
-	c.EnableSearchIndex(textExtract)
+	c.EnableSearchIndex(textExtract, compareStringID)
 	live := time.Now().Add(time.Hour)
 
 	c.PutVertexWithExpiration("old:1", "phoenix", live)

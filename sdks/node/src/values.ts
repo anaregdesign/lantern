@@ -242,11 +242,11 @@ export interface Graph {
 /**
  * A single relevance-ranked result from `searchVertices`. `key` is the
  * matching vertex key; `score` is the BM25 relevance (higher = more
- * relevant) the server-side index assigned, which doubles as the
- * seed's initial weight for a follow-up `illuminate`. The value and
- * TTL are intentionally omitted — callers that need them issue a
- * follow-up `getVertices` with the returned keys, preserving rank
- * order.
+ * relevant) the server-side index assigned. Equal scores use raw key
+ * ascending. The score doubles as the seed's initial weight for a follow-up
+ * `illuminate`. The value and TTL are intentionally omitted — callers that
+ * need them issue a follow-up `getVertices` with the returned keys,
+ * preserving rank order.
  */
 export interface SearchHit {
   readonly key: string;

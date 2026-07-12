@@ -216,7 +216,7 @@ func TestGraphCache_PrefixIndex_DroppedOnDeleteVertex(t *testing.T) {
 func TestGraphCache_DeleteByPrefix_ClearsSearchIndex(t *testing.T) {
 	c := NewGraphCache[string, string](time.Minute)
 	c.EnablePrefixIndex(identityExtract)
-	c.EnableSearchIndex(textExtract)
+	c.EnableSearchIndex(textExtract, compareStringID)
 	c.PutVertex("doc:1", "alpha")
 	c.PutVertex("doc:2", "bravo")
 	c.PutVertex("keep:1", "zulu")

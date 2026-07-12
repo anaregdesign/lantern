@@ -2324,8 +2324,8 @@ func (x *SearchVerticesRequest) GetOptions() *SearchOptions {
 
 type SearchVerticesResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// hits in descending relevance order (BM25). May be shorter than `limit`
-	// when fewer vertices match; empty when nothing matches.
+	// hits use the stable total order (score DESC, raw key ASC). May be shorter
+	// than `limit` when fewer vertices match; empty when nothing matches.
 	Hits          []*SearchHit `protobuf:"bytes,1,rep,name=hits,proto3" json:"hits,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2369,7 +2369,8 @@ func (x *SearchVerticesResponse) GetHits() []*SearchHit {
 }
 
 // SearchHit pairs a matching vertex key with the relevance score the index
-// assigned it (BM25; higher is more relevant). The value and TTL are not
+// assigned it (BM25; higher is more relevant). Equal scores are ordered by the
+// raw, unnormalised key in ascending lexical order. The value and TTL are not
 // included — callers that need them issue a follow-up GetVertices with the
 // returned keys.
 type SearchHit struct {

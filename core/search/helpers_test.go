@@ -1,5 +1,13 @@
 package search
 
+import (
+	"cmp"
+	"strings"
+)
+
+func compareStringID(a, b string) int { return strings.Compare(a, b) }
+func compareIntID(a, b int) int       { return cmp.Compare(a, b) }
+
 // equalStrings reports whether a and b contain the same strings in the same
 // order. Shared by the search package's white-box tests.
 func equalStrings(a, b []string) bool {

@@ -15,6 +15,7 @@ import (
 // textExtract is the value projection used by the string-keyed tests: it makes
 // the stored string value itself the searchable document.
 func textExtract(s string) search.Document { return search.Text(s) }
+func compareStringID(a, b string) int      { return strings.Compare(a, b) }
 
 // keys returns just the IDs of a ranked result set, in rank order, for terse
 // assertions.
@@ -44,7 +45,7 @@ func TestGraphCache_EnableSearchIndex_AfterPutPanics(t *testing.T) {
 			t.Fatal("expected panic when enabling search index on non-empty cache")
 		}
 	}()
-	c.EnableSearchIndex(textExtract)
+	c.EnableSearchIndex(textExtract, compareStringID)
 }
 
 func TestGraphCache_EnableSearchIndex_NilExtractPanics(t *testing.T) {
@@ -54,13 +55,23 @@ func TestGraphCache_EnableSearchIndex_NilExtractPanics(t *testing.T) {
 			t.Fatal("expected panic when extract is nil")
 		}
 	}()
-	c.EnableSearchIndex(nil)
+	c.EnableSearchIndex(nil, compareStringID)
+}
+
+func TestGraphCache_EnableSearchIndex_NilComparatorPanics(t *testing.T) {
+	c := NewGraphCache[string, string](time.Minute)
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic when compareID is nil")
+		}
+	}()
+	c.EnableSearchIndex(textExtract, nil)
 }
 
 func TestGraphCache_EnableSearchIndex_Idempotent(t *testing.T) {
 	c := NewGraphCache[string, string](time.Minute)
-	c.EnableSearchIndex(textExtract)
-	c.EnableSearchIndex(textExtract) // must not panic
+	c.EnableSearchIndex(textExtract, compareStringID)
+	c.EnableSearchIndex(textExtract, compareStringID) // must not panic
 }
 
 // TestGraphCache_EnableSearchIndex_WithoutPositions covers the #908 opt-out:
@@ -84,7 +95,7 @@ func TestGraphCache_EnableSearchIndex_WithoutPositions(t *testing.T) {
 
 	t.Run("positions on verifies adjacency", func(t *testing.T) {
 		c := NewGraphCache[string, string](time.Minute)
-		c.EnableSearchIndex(textExtract) // default: positions on
+		c.EnableSearchIndex(textExtract, compareStringID) // default: positions on
 		seed(c)
 		if got := phraseHits(c); !reflect.DeepEqual(got, map[string]bool{"adj": true}) {
 			t.Fatalf("phrase hits = %v, want only {adj} (split's words are not adjacent)", got)
@@ -93,7 +104,7 @@ func TestGraphCache_EnableSearchIndex_WithoutPositions(t *testing.T) {
 
 	t.Run("positions off degrades to AND-intersection", func(t *testing.T) {
 		c := NewGraphCache[string, string](time.Minute)
-		c.EnableSearchIndex(textExtract, WithoutSearchPositions())
+		c.EnableSearchIndex(textExtract, compareStringID, WithoutSearchPositions())
 		seed(c)
 		if got := phraseHits(c); !reflect.DeepEqual(got, map[string]bool{"adj": true, "split": true}) {
 			t.Fatalf("phrase hits = %v, want {adj, split} (positions off => AND-intersection)", got)
@@ -104,7 +115,7 @@ func TestGraphCache_EnableSearchIndex_WithoutPositions(t *testing.T) {
 func TestGraphCache_SearchVertices(t *testing.T) {
 	t.Run("Ranking", func(t *testing.T) {
 		c := NewGraphCache[string, string](time.Minute)
-		c.EnableSearchIndex(textExtract)
+		c.EnableSearchIndex(textExtract, compareStringID)
 		c.PutVertex("exact", "arch")
 		c.PutVertex("infix", "research laboratory")
 		c.PutVertex("other", "a giant panda")
@@ -119,7 +130,7 @@ func TestGraphCache_SearchVertices(t *testing.T) {
 
 	t.Run("Overwrite drops stale postings", func(t *testing.T) {
 		c := NewGraphCache[string, string](time.Minute)
-		c.EnableSearchIndex(textExtract)
+		c.EnableSearchIndex(textExtract, compareStringID)
 		c.PutVertex("k", "alpha")
 		if got := keys(c.SearchVertices("alpha", 10, "")); !equalKeys(got, []string{"k"}) {
 			t.Fatalf("before overwrite: SearchVertices(alpha) = %v, want [k]", got)
@@ -137,7 +148,7 @@ func TestGraphCache_SearchVertices(t *testing.T) {
 
 	t.Run("Delete stops matching", func(t *testing.T) {
 		c := NewGraphCache[string, string](time.Minute)
-		c.EnableSearchIndex(textExtract)
+		c.EnableSearchIndex(textExtract, compareStringID)
 		c.PutVertex("k", "gamma unique")
 		if got := keys(c.SearchVertices("gamma", 10, "")); !equalKeys(got, []string{"k"}) {
 			t.Fatalf("before delete: got %v, want [k]", got)
@@ -154,7 +165,7 @@ func TestGraphCache_SearchVertices(t *testing.T) {
 
 	t.Run("Clear stops matching", func(t *testing.T) {
 		c := NewGraphCache[string, string](time.Minute)
-		c.EnableSearchIndex(textExtract)
+		c.EnableSearchIndex(textExtract, compareStringID)
 		c.PutVertex("a", "shared term")
 		c.PutVertex("b", "shared word")
 		// The inner cache's Clear fires SetOnEvict for every key, so the
@@ -167,7 +178,7 @@ func TestGraphCache_SearchVertices(t *testing.T) {
 
 	t.Run("TTL expiry stops matching", func(t *testing.T) {
 		c := NewGraphCache[string, string](time.Minute)
-		c.EnableSearchIndex(textExtract)
+		c.EnableSearchIndex(textExtract, compareStringID)
 		// Live and already-expired vertices share the term; only the live one
 		// must surface, even before the GC Flush runs (liveness filter).
 		c.PutVertex("live", "delta payload")
@@ -185,30 +196,30 @@ func TestGraphCache_SearchVertices(t *testing.T) {
 
 	t.Run("KeyPrefix scopes results", func(t *testing.T) {
 		c := NewGraphCache[string, string](time.Minute)
-		c.EnableSearchIndex(textExtract)
+		c.EnableSearchIndex(textExtract, compareStringID)
 		c.PutVertex("user:1", "common keyword")
 		c.PutVertex("user:2", "common keyword")
 		c.PutVertex("session:a", "common keyword")
 		got := c.SearchVertices("keyword", 10, "user:")
-		if want := []string{"user:1", "user:2"}; !sameSet(keys(got), want) {
+		if want := []string{"user:1", "user:2"}; !equalKeys(keys(got), want) {
 			t.Fatalf("SearchVertices(keyword, prefix user:) = %v, want %v", keys(got), want)
 		}
 	})
 
 	t.Run("Limit caps results", func(t *testing.T) {
 		c := NewGraphCache[string, string](time.Minute)
-		c.EnableSearchIndex(textExtract)
+		c.EnableSearchIndex(textExtract, compareStringID)
 		for _, k := range []string{"k1", "k2", "k3", "k4"} {
 			c.PutVertex(k, "common keyword")
 		}
-		if got := c.SearchVertices("keyword", 2, ""); len(got) != 2 {
-			t.Fatalf("SearchVertices(keyword, limit 2) returned %d hits, want 2", len(got))
+		if got := keys(c.SearchVertices("keyword", 2, "")); !equalKeys(got, []string{"k1", "k2"}) {
+			t.Fatalf("SearchVertices(keyword, limit 2) = %v, want [k1 k2]", got)
 		}
 	})
 
 	t.Run("Empty query returns nil", func(t *testing.T) {
 		c := NewGraphCache[string, string](time.Minute)
-		c.EnableSearchIndex(textExtract)
+		c.EnableSearchIndex(textExtract, compareStringID)
 		c.PutVertex("k", "anything")
 		if got := c.SearchVertices("", 10, ""); got != nil {
 			t.Fatalf("SearchVertices(empty) = %v, want nil", keys(got))
@@ -217,7 +228,7 @@ func TestGraphCache_SearchVertices(t *testing.T) {
 
 	t.Run("Non-positive limit returns nil", func(t *testing.T) {
 		c := NewGraphCache[string, string](time.Minute)
-		c.EnableSearchIndex(textExtract)
+		c.EnableSearchIndex(textExtract, compareStringID)
 		c.PutVertex("k", "anything")
 		if got := c.SearchVertices("anything", 0, ""); got != nil {
 			t.Fatalf("SearchVertices(limit 0) = %v, want nil", keys(got))
@@ -229,7 +240,7 @@ func TestGraphCache_SearchVertices(t *testing.T) {
 
 	t.Run("No match returns nil", func(t *testing.T) {
 		c := NewGraphCache[string, string](time.Minute)
-		c.EnableSearchIndex(textExtract)
+		c.EnableSearchIndex(textExtract, compareStringID)
 		c.PutVertex("k", "alpha beta")
 		if got := c.SearchVertices("zzzzz", 10, ""); got != nil {
 			t.Fatalf("SearchVertices(no-match) = %v, want nil", keys(got))
@@ -245,7 +256,7 @@ func TestGraphCache_SearchVertices(t *testing.T) {
 // time.
 func TestGraphCache_SearchVertices_Concurrent(t *testing.T) {
 	c := NewGraphCache[string, string](time.Minute)
-	c.EnableSearchIndex(textExtract)
+	c.EnableSearchIndex(textExtract, compareStringID)
 	c.EnablePrefixIndex(func(s string) string { return s })
 
 	const keysN = 200
@@ -320,25 +331,6 @@ func equalKeys(got, want []string) bool {
 	return true
 }
 
-// sameSet reports whether got and want contain the same keys regardless of
-// order — used where rank order between equally-scored docs is unspecified.
-func sameSet(got, want []string) bool {
-	if len(got) != len(want) {
-		return false
-	}
-	seen := make(map[string]int, len(got))
-	for _, k := range got {
-		seen[k]++
-	}
-	for _, k := range want {
-		if seen[k] == 0 {
-			return false
-		}
-		seen[k]--
-	}
-	return true
-}
-
 // TestGraphCache_PutVertices_SearchLifecycle verifies that moving search-document
 // analysis outside the aggregate write lock (#739) keeps the batch put path in
 // perfect lockstep with the search index: hits are visible synchronously after
@@ -351,7 +343,7 @@ func TestGraphCache_PutVertices_SearchLifecycle(t *testing.T) {
 
 	t.Run("batch puts are searchable synchronously", func(t *testing.T) {
 		c := NewGraphCache[string, string](time.Minute)
-		c.EnableSearchIndex(textExtract)
+		c.EnableSearchIndex(textExtract, compareStringID)
 		c.PutVerticesWithExpiration([]VertexItem[string, string]{
 			{Key: "a", Value: "alpha", Expiration: future()},
 			{Key: "b", Value: "bravo", Expiration: future()},
@@ -366,7 +358,7 @@ func TestGraphCache_PutVertices_SearchLifecycle(t *testing.T) {
 
 	t.Run("overwrite drops stale document", func(t *testing.T) {
 		c := NewGraphCache[string, string](time.Minute)
-		c.EnableSearchIndex(textExtract)
+		c.EnableSearchIndex(textExtract, compareStringID)
 		c.PutVerticesWithExpiration([]VertexItem[string, string]{
 			{Key: "a", Value: "alpha", Expiration: future()},
 		})
@@ -383,7 +375,7 @@ func TestGraphCache_PutVertices_SearchLifecycle(t *testing.T) {
 
 	t.Run("duplicate keys in one batch keep last write", func(t *testing.T) {
 		c := NewGraphCache[string, string](time.Minute)
-		c.EnableSearchIndex(textExtract)
+		c.EnableSearchIndex(textExtract, compareStringID)
 		c.PutVerticesWithExpiration([]VertexItem[string, string]{
 			{Key: "a", Value: "alpha", Expiration: future()},
 			{Key: "a", Value: "zulu", Expiration: future()},
@@ -398,7 +390,7 @@ func TestGraphCache_PutVertices_SearchLifecycle(t *testing.T) {
 
 	t.Run("born-expired item is neither stored nor indexed", func(t *testing.T) {
 		c := NewGraphCache[string, string](time.Minute)
-		c.EnableSearchIndex(textExtract)
+		c.EnableSearchIndex(textExtract, compareStringID)
 		c.PutVerticesWithExpiration([]VertexItem[string, string]{
 			{Key: "live", Value: "alpha", Expiration: future()},
 			{Key: "dead", Value: "bravo", Expiration: time.Now().Add(-time.Minute)},
@@ -423,7 +415,7 @@ func TestGraphCache_PutVertices_SearchLifecycle(t *testing.T) {
 func TestGraphCache_SearchVertices_LifecycleIntersection(t *testing.T) {
 	c := NewGraphCache[string, string](time.Hour)
 	c.EnablePrefixIndex(identityExtract)
-	c.EnableSearchIndex(textExtract)
+	c.EnableSearchIndex(textExtract, compareStringID)
 	live := time.Now().Add(time.Hour)
 
 	c.PutVertexWithExpiration("eu:1", "harbor", live)

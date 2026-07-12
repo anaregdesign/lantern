@@ -13,7 +13,8 @@ import "sort"
 // When the index was built without WithPositions the position refinement is
 // unavailable and SearchPhrase degrades to the pure AND-intersection (every
 // term present, order unverified). A query with no word terms, or one that
-// matches nothing, returns nil; ties in score have an unspecified order.
+// matches nothing, returns nil. Equal scores use the index's required typed
+// document-ID comparator ascending.
 func (idx *InvertedIndex[S, D]) SearchPhrase(query string) []Result[S] {
 	terms := idx.phraseQueryTerms(query)
 	if len(terms) == 0 {
@@ -28,12 +29,7 @@ func (idx *InvertedIndex[S, D]) SearchPhrase(query string) []Result[S] {
 		return nil
 	}
 	scores := idx.scorePhraseLocked(terms, ords)
-	results := make([]Result[S], 0, len(scores))
-	for ord, score := range scores {
-		results = append(results, Result[S]{ID: idx.docs[ord].id, Score: score})
-	}
-	sort.Slice(results, func(i, j int) bool { return results[i].Score > results[j].Score })
-	return results
+	return idx.rankedResultsLocked(scores)
 }
 
 // SearchPhraseTopK is the bounded-selection sibling of SearchPhrase, mirroring
@@ -157,16 +153,17 @@ func (idx *InvertedIndex[S, D]) scorePhraseLocked(terms []string, ords []uint32)
 		}
 		df := pl.cardinality()
 		for _, ord := range ords {
-			scores[ord] += idx.scorer.Score(TermStats{
+			addScore(scores, ord, idx.scorer.Score(TermStats{
 				TF:     pl.tf(ord),
 				DF:     df,
 				N:      cp.docCount,
 				DocLen: idx.docs[ord].lengths[ClassWord],
 				AvgLen: avgLen,
 				Class:  ClassWord,
-			})
+			}))
 		}
 	}
+	dropNonFiniteScores(scores)
 	return scores
 }
 

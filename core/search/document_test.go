@@ -36,7 +36,7 @@ func TestDocumentAdaptersIndexable(t *testing.T) {
 	// Every adapter must be usable as a real index payload: indexing a value and
 	// querying its rendered text should find it.
 	analyzer := NewAnalyzer([]Normalizer{LowercaseNormalizer{}}, UnicodeTokenizer{}, nil)
-	idx := NewInvertedIndex[string, Document](analyzer, BM25{K1: 1.2, B: 0.75})
+	idx := NewInvertedIndex[string, Document](analyzer, BM25{K1: 1.2, B: 0.75}, compareStringID)
 
 	idx.Index("int", Int(2026))
 	idx.Index("bool", Bool(false))

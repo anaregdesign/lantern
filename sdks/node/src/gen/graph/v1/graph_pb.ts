@@ -24,6 +24,8 @@ export type Vertex = Message<"graph.v1.Vertex"> & {
   key: string;
 
   /**
+   * Absolute expiration. An absent timestamp means permanent storage.
+   *
    * @generated from field: google.protobuf.Timestamp expiration = 2;
    */
   expiration?: Timestamp | undefined;
@@ -137,6 +139,8 @@ export type Edge = Message<"graph.v1.Edge"> & {
   weight: number;
 
   /**
+   * Absolute expiration. An absent timestamp means permanent storage.
+   *
    * @generated from field: google.protobuf.Timestamp expiration = 4;
    */
   expiration?: Timestamp | undefined;
@@ -974,8 +978,8 @@ export const SearchVerticesRequestSchema: GenMessage<SearchVerticesRequest> = /*
  */
 export type SearchVerticesResponse = Message<"graph.v1.SearchVerticesResponse"> & {
   /**
-   * hits in descending relevance order (BM25). May be shorter than `limit`
-   * when fewer vertices match; empty when nothing matches.
+   * hits use the stable total order (score DESC, raw key ASC). May be shorter
+   * than `limit` when fewer vertices match; empty when nothing matches.
    *
    * @generated from field: repeated graph.v1.SearchHit hits = 1;
    */
@@ -991,7 +995,8 @@ export const SearchVerticesResponseSchema: GenMessage<SearchVerticesResponse> = 
 
 /**
  * SearchHit pairs a matching vertex key with the relevance score the index
- * assigned it (BM25; higher is more relevant). The value and TTL are not
+ * assigned it (BM25; higher is more relevant). Equal scores are ordered by the
+ * raw, unnormalised key in ascending lexical order. The value and TTL are not
  * included — callers that need them issue a follow-up GetVertices with the
  * returned keys.
  *
@@ -2446,10 +2451,10 @@ export const LanternService: GenService<{
   },
   /**
    * SearchVertices returns vertices ranked by full-text relevance over their
-   * content (key + value), optionally scoped to a key prefix. Requires the
-   * server-side search index (LANTERN_SEARCH_ENABLED, on by default);
-   * returns FAILED_PRECONDITION when disabled. Plural-only — ranked search
-   * is inherently plural.
+   * content (key + value), optionally scoped to a key prefix, in stable
+   * (score DESC, raw key ASC) order. Requires the server-side search index
+   * (LANTERN_SEARCH_ENABLED, on by default); returns FAILED_PRECONDITION when
+   * disabled. Plural-only — ranked search is inherently plural.
    *
    * @generated from rpc graph.v1.LanternService.SearchVertices
    */
