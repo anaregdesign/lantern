@@ -14,7 +14,10 @@ func TestParseSearchMode(t *testing.T) {
 		want    client.MatchMode
 		wantErr bool
 	}{
-		{"", client.MatchAny, false},
+		{"", client.MatchServerDefault, false},
+		{"server", client.MatchServerDefault, false},
+		{"default", client.MatchServerDefault, false},
+		{"unset", client.MatchServerDefault, false},
 		{"any", client.MatchAny, false},
 		{"ANY", client.MatchAny, false},
 		{"all", client.MatchAll, false},
@@ -36,6 +39,25 @@ func TestParseSearchMode(t *testing.T) {
 		if got != c.want {
 			t.Errorf("parseSearchMode(%q) = %v, want %v", c.in, got, c.want)
 		}
+	}
+}
+
+func TestSearchFlagOptionsValidateBeforeDial(t *testing.T) {
+	tests := []struct {
+		name string
+		opts []client.SearchOption
+	}{
+		{"minimum without min mode", []client.SearchOption{client.WithMinShouldMatch(1)}},
+		{"phrase with explicit mode", []client.SearchOption{client.WithPhrase(), client.WithMatchMode(client.MatchAny)}},
+		{"phrase with fuzzy", []client.SearchOption{client.WithPhrase(), client.WithFuzziness(1)}},
+		{"fuzziness outside range", []client.SearchOption{client.WithFuzziness(3)}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := client.ValidateSearchOptions(tc.opts...); !errors.Is(err, client.ErrInvalidArgument) {
+				t.Fatalf("ValidateSearchOptions = %v, want ErrInvalidArgument", err)
+			}
+		})
 	}
 }
 

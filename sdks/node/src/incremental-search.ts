@@ -12,6 +12,8 @@
  */
 
 import type { SearchHit } from "./values.js";
+import type { SearchOptions } from "./options.js";
+import { InvalidArgumentError } from "./errors.js";
 
 /** Default debounce window (ms); mirrors the admin SPA's `SUGGEST_DEBOUNCE_MS`. */
 export const DEFAULT_DEBOUNCE_MS = 150;
@@ -19,13 +21,9 @@ export const DEFAULT_DEBOUNCE_MS = 150;
 /** Default shortest query (in code points) that triggers an RPC. */
 export const DEFAULT_MIN_QUERY_LENGTH = 1;
 
-export interface IncrementalSearchOptions {
+export interface IncrementalSearchOptions extends SearchOptions {
   /** Quiet period after the last `search` call before the RPC fires (default 150). */
   debounceMs?: number;
-  /** Per-call hit cap forwarded to every `searchVertices` RPC (0/omitted = server default). */
-  limit?: number;
-  /** Key-prefix namespace scope forwarded to every `searchVertices` RPC. */
-  prefix?: string;
   /**
    * Shortest query (code points) that triggers an RPC; a shorter one resolves
    * immediately to an empty result with no round-trip (default 1). Pass 0 to
@@ -55,7 +53,7 @@ export interface SearchUpdate {
  */
 export type SearchFn = (
   query: string,
-  opts: { limit?: number; prefix?: string },
+  opts: SearchOptions,
   signal?: AbortSignal,
 ) => Promise<SearchHit[]>;
 
@@ -97,7 +95,15 @@ export function createIncrementalSearch(
 ): IncrementalSearch {
   const debounceMs = options.debounceMs ?? DEFAULT_DEBOUNCE_MS;
   const minQueryLength = options.minQueryLength ?? DEFAULT_MIN_QUERY_LENGTH;
-  const searchOpts = { limit: options.limit, prefix: options.prefix };
+  for (const [name, value] of [
+    ["debounceMs", debounceMs],
+    ["minQueryLength", minQueryLength],
+  ] as const) {
+    if (!Number.isFinite(value) || !Number.isInteger(value) || value < 0) {
+      throw new InvalidArgumentError(`incremental search: ${name} must be a non-negative integer`);
+    }
+  }
+  const { debounceMs: _debounceMs, minQueryLength: _minQueryLength, ...searchOpts } = options;
 
   const listeners = new Set<(update: SearchUpdate) => void>();
   let epoch = 0;

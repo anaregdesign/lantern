@@ -9,6 +9,7 @@ import {
   type SearchFn,
   type SearchUpdate,
 } from "../src/incremental-search.js";
+import type { SearchOptions } from "../src/options.js";
 
 class FakeScheduler implements IncrementalSearchScheduler {
   private now = 0;
@@ -60,12 +61,20 @@ describe("createIncrementalSearch", () => {
   });
 
   test("forwards limit/prefix and delivers ranked hits", async () => {
-    const calls: { query: string; opts: { limit?: number; prefix?: string } }[] = [];
+    const calls: { query: string; opts: SearchOptions }[] = [];
     const searchFn: SearchFn = async (query, opts) => {
       calls.push({ query, opts });
       return [{ key: "user.hi", score: 1.5 }];
     };
-    const is = createIncrementalSearch(searchFn, { debounceMs: 5, limit: 7, prefix: "user." });
+    const is = createIncrementalSearch(searchFn, {
+      debounceMs: 5,
+      limit: 7,
+      prefix: "user.",
+      matchMode: "min-should",
+      minShouldMatch: 2,
+      fuzziness: 1,
+      prefixTerms: true,
+    });
 
     is.search("hello");
     const u = await nextUpdate(is);
@@ -75,7 +84,17 @@ describe("createIncrementalSearch", () => {
     expect(u.query).toBe("hello");
     expect(u.hits).toEqual([{ key: "user.hi", score: 1.5 }]);
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toEqual({ query: "hello", opts: { limit: 7, prefix: "user." } });
+    expect(calls[0]).toEqual({
+      query: "hello",
+      opts: {
+        limit: 7,
+        prefix: "user.",
+        matchMode: "min-should",
+        minShouldMatch: 2,
+        fuzziness: 1,
+        prefixTerms: true,
+      },
+    });
   });
 
   test("debounce coalesces a burst into one search of the final query", async () => {

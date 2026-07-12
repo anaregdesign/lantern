@@ -866,15 +866,17 @@ export const ScanVertexKeysResponseSchema: GenMessage<ScanVertexKeysResponse> = 
 
 /**
  * SearchOptions carries the optional relevance controls for SearchVertices
- * (#892): match mode, phrase adjacency, and prefix/fuzzy term expansion. Every
- * field is optional and the zero value reproduces the default OR-union search,
- * so leaving options unset is identical to the pre-#892 request.
+ * (#892): match mode, phrase adjacency, and prefix/fuzzy term expansion. An
+ * omitted message and an all-zero message both defer match membership to the
+ * server default. The server rejects unknown enums, out-of-domain numeric
+ * values, and combinations whose fields would otherwise be ignored (#1055).
  *
  * @generated from message graph.v1.SearchOptions
  */
 export type SearchOptions = Message<"graph.v1.SearchOptions"> & {
   /**
-   * match_mode selects AND / OR / minimum-should-match membership (#890).
+   * match_mode selects AND / OR / minimum-should-match membership (#890), or
+   * defers to the server default when unspecified.
    *
    * @generated from field: graph.v1.MatchMode match_mode = 1;
    */
@@ -882,8 +884,9 @@ export type SearchOptions = Message<"graph.v1.SearchOptions"> & {
 
   /**
    * min_should_match is the minimum number of distinct query word terms a
-   * vertex must carry when match_mode is MATCH_MODE_MIN_SHOULD; clamped to
-   * [1, number of query word terms]. Ignored for other modes.
+   * vertex must carry. A non-zero value is valid only with an explicit
+   * MATCH_MODE_MIN_SHOULD. Zero with that mode uses the server's configured
+   * LANTERN_SEARCH_DEFAULT_MIN_SHOULD value.
    *
    * @generated from field: uint32 min_should_match = 2;
    */
@@ -891,8 +894,9 @@ export type SearchOptions = Message<"graph.v1.SearchOptions"> & {
 
   /**
    * phrase requires the query's word terms to occur adjacently, in order
-   * (#889) — the precision counterpart to the OR-union. It takes precedence
-   * over match_mode.
+   * (#889). Until phrase composition is implemented, phrase=true requires
+   * match_mode unspecified, min_should_match=0, fuzziness=0, and
+   * prefix_terms=false; conflicting combinations return INVALID_ARGUMENT.
    *
    * @generated from field: bool phrase = 3;
    */
@@ -2416,9 +2420,8 @@ export const ScanOrderSchema: GenEnum<ScanOrder> = /*@__PURE__*/
  */
 export enum MatchMode {
   /**
-   * MATCH_MODE_UNSPECIFIED defers to the server default
-   * (LANTERN_SEARCH_DEFAULT_MODE, itself defaulting to ANY), so an unset field
-   * keeps the OR-union behavior.
+   * MATCH_MODE_UNSPECIFIED always defers to LANTERN_SEARCH_DEFAULT_MODE,
+   * including when other SearchOptions fields are present.
    *
    * @generated from enum value: MATCH_MODE_UNSPECIFIED = 0;
    */

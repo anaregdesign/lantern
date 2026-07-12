@@ -215,6 +215,16 @@ test.describe("/vertices — content search (#650)", () => {
     await expect(page.getByTestId("search-mode")).toBeVisible();
     await expect(page.getByTestId("search-phrase")).toBeVisible();
     await expect(page.getByTestId("search-fuzzy")).toBeVisible();
+    await expect(page.getByTestId("search-prefix")).toBeVisible();
+    await expect(page.getByTestId("search-prefix-terms")).toBeVisible();
+
+    // The minimum mode exposes a real positive threshold, then returning to
+    // Server default removes the explicit override before the query runs.
+    await page.getByTestId("search-mode").click();
+    await page.getByRole("option", { name: "At least N words" }).click();
+    await expect(page.getByTestId("search-min-should")).toHaveValue("2");
+    await page.getByTestId("search-mode").click();
+    await page.getByRole("option", { name: "Server default" }).click();
 
     // "zorptangle consensus": only doc1 carries both words; doc2 has
     // "zorptangle" but not "consensus".
@@ -222,7 +232,8 @@ test.describe("/vertices — content search (#650)", () => {
 
     const table = page.getByTestId("search-results-table");
     await expect(table).toBeVisible();
-    // Any-word (default OR): doc2 rides in on the shared "zorptangle".
+    // The e2e server's configured default is OR, so doc2 rides in on the
+    // shared "zorptangle" without the admin forcing an explicit ANY mode.
     await expect(
       table.getByRole("link", { name: "e2e:search:doc2" }),
     ).toBeVisible();

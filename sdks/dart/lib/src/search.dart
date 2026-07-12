@@ -49,7 +49,8 @@ final class SearchOptions {
   /// Optional query-term membership mode.
   final SearchMatchMode? matchMode;
 
-  /// Required positive term count for [SearchMatchMode.minShouldMatch].
+  /// Optional term count for [SearchMatchMode.minShouldMatch]. Zero or null
+  /// selects the server's configured threshold.
   final int? minShouldMatch;
 
   /// Whether word terms must occur adjacently and in order.
@@ -325,21 +326,36 @@ extension LanternSearch on LanternClient {
 void _validateSearchOptions(SearchOptions options) {
   _validateUint32(options.limit, 'limit');
   final min = options.minShouldMatch;
-  if (options.matchMode == SearchMatchMode.minShouldMatch) {
-    if (min == null || min <= 0) {
-      throw _invalidArgumentException(
-        'minShouldMatch must be positive for minShouldMatch mode',
-      );
-    }
-  } else if (min != null) {
+  if (min != null) _validateUint32(min, 'minShouldMatch');
+  if (min != null &&
+      min != 0 &&
+      options.matchMode != SearchMatchMode.minShouldMatch) {
     throw _invalidArgumentException(
       'minShouldMatch requires minShouldMatch mode',
     );
   }
-  if (min != null) _validateUint32(min, 'minShouldMatch');
   final fuzziness = options.fuzziness;
   if (fuzziness != null && (fuzziness < 0 || fuzziness > 2)) {
     throw _invalidArgumentException('fuzziness must be 0, 1, or 2');
+  }
+  if (options.phrase != true) return;
+  if (options.matchMode != null) {
+    throw _invalidArgumentException(
+      'phrase cannot be combined with an explicit matchMode',
+    );
+  }
+  if (min != null && min != 0) {
+    throw _invalidArgumentException(
+      'phrase cannot be combined with minShouldMatch',
+    );
+  }
+  if (fuzziness != null && fuzziness != 0) {
+    throw _invalidArgumentException('phrase cannot be combined with fuzziness');
+  }
+  if (options.prefixTerms == true) {
+    throw _invalidArgumentException(
+      'phrase cannot be combined with prefixTerms',
+    );
   }
 }
 

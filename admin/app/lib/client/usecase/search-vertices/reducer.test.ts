@@ -162,9 +162,8 @@ describe("searchVerticesReducer", () => {
     const next = searchVerticesReducer(
       seeded,
       input("alpha beta", 2, {
+        ...DEFAULT_SEARCH_QUERY_OPTIONS,
         matchMode: "all",
-        phrase: false,
-        fuzzy: false,
       }),
     );
     expect(next.options.matchMode).toBe("all");
@@ -178,7 +177,7 @@ describe("searchVerticesReducer", () => {
   it("advances the epoch but stays inert when options change with no query", () => {
     const next = searchVerticesReducer(
       INITIAL_SEARCH_VERTICES_STATE,
-      input("", 1, { matchMode: "any", phrase: true, fuzzy: false }),
+      input("", 1, { ...DEFAULT_SEARCH_QUERY_OPTIONS, phrase: true }),
     );
     expect(next.options.phrase).toBe(true);
     // Epoch advances so a slow reply from the prior options cannot land,
@@ -193,20 +192,24 @@ describe("searchVerticesReducer", () => {
       INITIAL_SEARCH_VERTICES_STATE,
       input("alpha", 1),
       input("alpha", 2, {
-        matchMode: "all",
+        ...DEFAULT_SEARCH_QUERY_OPTIONS,
+        matchMode: "server",
         phrase: true,
-        fuzzy: false,
       }),
     );
     const cleared = searchVerticesReducer(
       seeded,
-      input("", 3, { matchMode: "all", phrase: true, fuzzy: false }),
+      input("", 3, {
+        ...DEFAULT_SEARCH_QUERY_OPTIONS,
+        matchMode: "server",
+        phrase: true,
+      }),
     );
     expect(cleared.query).toBe("");
     expect(cleared.options).toEqual({
-      matchMode: "all",
+      ...DEFAULT_SEARCH_QUERY_OPTIONS,
+      matchMode: "server",
       phrase: true,
-      fuzzy: false,
     });
   });
 });

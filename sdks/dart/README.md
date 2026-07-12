@@ -118,7 +118,10 @@ caps one call only. The SDK never retries or silently loops prefix Delete.
 `searchVertices` exposes prefix scope, limit, any/all/min-should-match modes,
 phrase matching, fuzziness, and prefix-term expansion. Nullable relevance
 fields preserve the distinction between omitted server defaults and explicit
-values. A server with search disabled returns the `SearchDisabled` result,
+values. `SearchMatchMode.minShouldMatch` accepts a null/zero
+`minShouldMatch` as the server-threshold sentinel. Non-zero thresholds under
+another mode and phrase combined with an explicit mode/fuzziness/prefix terms
+fail locally before transport. A server with search disabled returns the `SearchDisabled` result,
 which lets UI code render a calm unavailable state without classifying an
 exception. Only the typed `SearchErrorReason.searchDisabled` detail maps to
 that result; missing positional postings remain a

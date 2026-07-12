@@ -146,9 +146,8 @@ class ScanOrder extends $pb.ProtobufEnum {
 /// matches. Coverage counts word-channel terms, so requiring "all" of a CJK run
 /// means all of its bigrams.
 class MatchMode extends $pb.ProtobufEnum {
-  /// MATCH_MODE_UNSPECIFIED defers to the server default
-  /// (LANTERN_SEARCH_DEFAULT_MODE, itself defaulting to ANY), so an unset field
-  /// keeps the OR-union behavior.
+  /// MATCH_MODE_UNSPECIFIED always defers to LANTERN_SEARCH_DEFAULT_MODE,
+  /// including when other SearchOptions fields are present.
   static const MatchMode MATCH_MODE_UNSPECIFIED =
       MatchMode._(0, _omitEnumNames ? '' : 'MATCH_MODE_UNSPECIFIED');
 

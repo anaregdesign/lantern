@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"connectrpc.com/connect"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -56,11 +57,13 @@ type SearchHit struct {
 }
 
 // MatchMode selects how SearchVertices combines a multi-word query's terms:
-// MatchAny (OR, the server default), MatchAll (AND), or MatchMinShould (at
+// MatchServerDefault, MatchAny (OR), MatchAll (AND), or MatchMinShould (at
 // least WithMinShouldMatch terms). It is a thin alias of the wire enum.
 type MatchMode = pb.MatchMode
 
 const (
+	// MatchServerDefault defers membership semantics to the server.
+	MatchServerDefault = pb.MatchMode_MATCH_MODE_UNSPECIFIED
 	// MatchAny keeps vertices sharing at least one query term (OR-union).
 	MatchAny = pb.MatchMode_MATCH_MODE_ANY
 	// MatchAll keeps vertices carrying every query word term (AND).
@@ -85,6 +88,8 @@ type searchOptions struct {
 	prefixTerms    bool
 	phrase         bool
 }
+
+const maxSearchFuzziness = uint32(2)
 
 // WithSearchLimit caps the number of hits the server returns from one
 // SearchVertices call. 0 (the default) lets the server apply its configured
@@ -116,9 +121,9 @@ func WithMinShouldMatch(n uint32) SearchOption {
 	return func(o *searchOptions) { o.minShouldMatch = n }
 }
 
-// WithPhrase requires the query's word terms to occur adjacently, in order —
-// the precision counterpart to the default OR-union. It takes precedence over
-// WithMatchMode (#889).
+// WithPhrase requires the query's word terms to occur adjacently, in order.
+// Phrase currently cannot compose with an explicit match mode, fuzziness, or
+// prefix terms; ValidateSearchOptions rejects those combinations (#889).
 func WithPhrase() SearchOption {
 	return func(o *searchOptions) { o.phrase = true }
 }
@@ -134,6 +139,51 @@ func WithFuzziness(edits uint32) SearchOption {
 // "lan" finds "lantern" (#891).
 func WithPrefixTerms() SearchOption {
 	return func(o *searchOptions) { o.prefixTerms = true }
+}
+
+// ValidateSearchOptions checks SearchOption values without dialing a server.
+// Invalid combinations wrap ErrInvalidArgument, matching an INVALID_ARGUMENT
+// response from the server. SearchVertices calls it automatically; command
+// surfaces may call it before opening a transport.
+func ValidateSearchOptions(opts ...SearchOption) error {
+	o := searchOptions{}
+	for _, apply := range opts {
+		apply(&o)
+	}
+	return validateSearchOptions(o)
+}
+
+func validateSearchOptions(o searchOptions) error {
+	switch o.matchMode {
+	case pb.MatchMode_MATCH_MODE_UNSPECIFIED,
+		pb.MatchMode_MATCH_MODE_ANY,
+		pb.MatchMode_MATCH_MODE_ALL,
+		pb.MatchMode_MATCH_MODE_MIN_SHOULD:
+	default:
+		return fmt.Errorf("%w: search match mode %d is not recognized", ErrInvalidArgument, o.matchMode)
+	}
+	if o.minShouldMatch != 0 && o.matchMode != pb.MatchMode_MATCH_MODE_MIN_SHOULD {
+		return fmt.Errorf("%w: WithMinShouldMatch requires WithMatchMode(MatchMinShould)", ErrInvalidArgument)
+	}
+	if o.fuzziness > maxSearchFuzziness {
+		return fmt.Errorf("%w: WithFuzziness must be 0, 1, or 2", ErrInvalidArgument)
+	}
+	if !o.phrase {
+		return nil
+	}
+	if o.matchMode != pb.MatchMode_MATCH_MODE_UNSPECIFIED {
+		return fmt.Errorf("%w: WithPhrase cannot be combined with an explicit match mode", ErrInvalidArgument)
+	}
+	if o.minShouldMatch != 0 {
+		return fmt.Errorf("%w: WithPhrase cannot be combined with WithMinShouldMatch", ErrInvalidArgument)
+	}
+	if o.fuzziness != 0 {
+		return fmt.Errorf("%w: WithPhrase cannot be combined with WithFuzziness", ErrInvalidArgument)
+	}
+	if o.prefixTerms {
+		return fmt.Errorf("%w: WithPhrase cannot be combined with WithPrefixTerms", ErrInvalidArgument)
+	}
+	return nil
 }
 
 // SearchVertices returns vertices ranked by full-text relevance over their
@@ -156,6 +206,9 @@ func (l *Lantern) SearchVertices(ctx context.Context, query string, opts ...Sear
 	o := searchOptions{}
 	for _, apply := range opts {
 		apply(&o)
+	}
+	if err := validateSearchOptions(o); err != nil {
+		return nil, err
 	}
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()

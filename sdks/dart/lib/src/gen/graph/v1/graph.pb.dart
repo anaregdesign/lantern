@@ -2086,9 +2086,10 @@ class ScanVertexKeysResponse extends $pb.GeneratedMessage {
 }
 
 /// SearchOptions carries the optional relevance controls for SearchVertices
-/// (#892): match mode, phrase adjacency, and prefix/fuzzy term expansion. Every
-/// field is optional and the zero value reproduces the default OR-union search,
-/// so leaving options unset is identical to the pre-#892 request.
+/// (#892): match mode, phrase adjacency, and prefix/fuzzy term expansion. An
+/// omitted message and an all-zero message both defer match membership to the
+/// server default. The server rejects unknown enums, out-of-domain numeric
+/// values, and combinations whose fields would otherwise be ignored (#1055).
 class SearchOptions extends $pb.GeneratedMessage {
   factory SearchOptions({
     MatchMode? matchMode,
@@ -2151,7 +2152,8 @@ class SearchOptions extends $pb.GeneratedMessage {
       $pb.GeneratedMessage.$_defaultFor<SearchOptions>(create);
   static SearchOptions? _defaultInstance;
 
-  /// match_mode selects AND / OR / minimum-should-match membership (#890).
+  /// match_mode selects AND / OR / minimum-should-match membership (#890), or
+  /// defers to the server default when unspecified.
   @$pb.TagNumber(1)
   MatchMode get matchMode => $_getN(0);
   @$pb.TagNumber(1)
@@ -2162,8 +2164,9 @@ class SearchOptions extends $pb.GeneratedMessage {
   void clearMatchMode() => $_clearField(1);
 
   /// min_should_match is the minimum number of distinct query word terms a
-  /// vertex must carry when match_mode is MATCH_MODE_MIN_SHOULD; clamped to
-  /// [1, number of query word terms]. Ignored for other modes.
+  /// vertex must carry. A non-zero value is valid only with an explicit
+  /// MATCH_MODE_MIN_SHOULD. Zero with that mode uses the server's configured
+  /// LANTERN_SEARCH_DEFAULT_MIN_SHOULD value.
   @$pb.TagNumber(2)
   $core.int get minShouldMatch => $_getIZ(1);
   @$pb.TagNumber(2)
@@ -2174,8 +2177,9 @@ class SearchOptions extends $pb.GeneratedMessage {
   void clearMinShouldMatch() => $_clearField(2);
 
   /// phrase requires the query's word terms to occur adjacently, in order
-  /// (#889) — the precision counterpart to the OR-union. It takes precedence
-  /// over match_mode.
+  /// (#889). Until phrase composition is implemented, phrase=true requires
+  /// match_mode unspecified, min_should_match=0, fuzziness=0, and
+  /// prefix_terms=false; conflicting combinations return INVALID_ARGUMENT.
   @$pb.TagNumber(3)
   $core.bool get phrase => $_getBF(2);
   @$pb.TagNumber(3)

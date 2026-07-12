@@ -236,6 +236,15 @@ matches `ErrSearchPositionsDisabled`; both also match
 `ErrFailedPrecondition`. `SearchFailureReason` returns the bounded wire reason,
 and `ServerStatus.GetSearch()` exposes positions, defaults, limits,
 implementation versions, and the HA configuration fingerprint.
+Leaving `WithMatchMode` unset always preserves the server's configured match
+mode, including when `WithFuzziness` or `WithPrefixTerms` is present.
+`WithMatchMode(MatchMinShould)` plus `WithMinShouldMatch(0)` selects the
+server's threshold. `ValidateSearchOptions` and `SearchVertices` reject
+non-zero thresholds under another mode, fuzziness above 2, and phrase combined
+with an explicit mode/fuzziness/prefix terms as `ErrInvalidArgument` before an
+RPC. `WithIncrementalSearchOptions` forwards the complete one-shot option set;
+the package-level `NewIncrementalSearch` accepts the narrow `Searcher`
+interface implemented by both `Lantern` and `Failover`.
 
 `Illuminate` accepts at most one traversal family option (`WithBFS`,
 `WithPPR`, or `WithLocalCommunity`). Combining them returns a local error that

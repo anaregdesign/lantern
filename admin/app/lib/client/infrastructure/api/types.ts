@@ -103,18 +103,22 @@ export interface ScanVerticesResponse {
 // into full vertices via GetVertices, preserving rank order.
 
 /** How a multi-word content-search query's words combine (#892). */
-export type SearchMatchMode = "any" | "all" | "min-should";
+export type SearchMatchMode = "server" | "any" | "all" | "min-should";
 
 export interface SearchVerticesRequest {
   query: string;
   limit?: number;
   prefix?: string;
-  /** Word combination: "any" (OR, default), "all" (AND), or "min-should". */
+  /** Word combination, or "server" to preserve the server default. */
   matchMode?: SearchMatchMode;
+  /** Explicit threshold for "min-should". */
+  minShouldMatch?: number;
   /** Require the query's words to occur adjacently, in order. */
   phrase?: boolean;
-  /** Tolerate typos and match word prefixes (edit distance 1 + prefix terms). */
-  fuzzy?: boolean;
+  /** Maximum fuzzy edit distance (0, 1, or 2). */
+  fuzziness?: 0 | 1 | 2;
+  /** Match dictionary terms that extend a query word. */
+  prefixTerms?: boolean;
 }
 
 export interface SearchHit {

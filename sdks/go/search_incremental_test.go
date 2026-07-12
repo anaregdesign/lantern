@@ -160,11 +160,11 @@ func TestIncrementalSearchOptions(t *testing.T) {
 		if o.debounce != 7*time.Millisecond {
 			t.Errorf("debounce = %v, want 7ms", o.debounce)
 		}
-		if o.limit != 9 {
-			t.Errorf("limit = %d, want 9", o.limit)
+		if o.search.limit != 9 {
+			t.Errorf("limit = %d, want 9", o.search.limit)
 		}
-		if o.prefix != "user." {
-			t.Errorf("prefix = %q, want %q", o.prefix, "user.")
+		if o.search.prefix != "user." {
+			t.Errorf("prefix = %q, want %q", o.search.prefix, "user.")
 		}
 		if o.minQueryLength != 3 {
 			t.Errorf("minQueryLength = %d, want 3", o.minQueryLength)
@@ -177,7 +177,8 @@ func TestIncrementalSearch_ForwardsAndDelivers(t *testing.T) {
 		"hello": {{Key: "user.hi", Score: 1.5}},
 	}}
 	is := newDriver(t, fake, WithDebounce(5*time.Millisecond),
-		WithIncrementalSearchLimit(7), WithIncrementalSearchPrefix("user."))
+		WithIncrementalSearchLimit(7), WithIncrementalSearchPrefix("user."),
+		WithIncrementalSearchOptions(WithMatchMode(MatchMinShould), WithMinShouldMatch(2), WithFuzziness(1), WithPrefixTerms()))
 
 	is.Search("hello")
 	u := waitUpdate(t, is)
@@ -200,6 +201,32 @@ func TestIncrementalSearch_ForwardsAndDelivers(t *testing.T) {
 	}
 	if req.GetPrefix() != "user." {
 		t.Errorf("prefix = %q, want %q", req.GetPrefix(), "user.")
+	}
+	if got := req.GetOptions(); got.GetMatchMode() != pb.MatchMode_MATCH_MODE_MIN_SHOULD || got.GetMinShouldMatch() != 2 || got.GetFuzziness() != 1 || !got.GetPrefixTerms() {
+		t.Errorf("options = %+v, want complete one-shot options", got)
+	}
+}
+
+type fakeSearcher struct {
+	queries []string
+}
+
+func (f *fakeSearcher) SearchVertices(_ context.Context, query string, _ ...SearchOption) ([]SearchHit, error) {
+	f.queries = append(f.queries, query)
+	return []SearchHit{{Key: "narrow", Score: 1}}, nil
+}
+
+func TestIncrementalSearch_AcceptsNarrowSearcher(t *testing.T) {
+	fake := &fakeSearcher{}
+	is := NewIncrementalSearch(context.Background(), fake, WithDebounce(0))
+	t.Cleanup(func() { _ = is.Close() })
+	is.Search("hello")
+	u := waitUpdate(t, is)
+	if len(u.Hits) != 1 || u.Hits[0].Key != "narrow" {
+		t.Fatalf("hits = %+v, want narrow Searcher result", u.Hits)
+	}
+	if len(fake.queries) != 1 || fake.queries[0] != "hello" {
+		t.Fatalf("queries = %v, want [hello]", fake.queries)
 	}
 }
 

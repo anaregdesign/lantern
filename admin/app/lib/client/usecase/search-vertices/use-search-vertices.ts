@@ -16,6 +16,7 @@ import { searchVerticesReducer } from "./reducer";
 import {
   INITIAL_SEARCH_VERTICES_STATE,
   type SearchMatchMode,
+  type SearchFuzziness,
   type SearchVerticesState,
 } from "./state";
 
@@ -38,12 +39,16 @@ export interface UseSearchVerticesOptions {
   /** Optional key-prefix filter applied to the ranked hits server-side. */
   prefix?: string;
   debounceMs?: number;
-  /** Word combination: "any" (OR, default), "all" (AND), or "min-should". */
+  /** Word combination, or "server" to preserve the server default. */
   matchMode?: SearchMatchMode;
+  /** Explicit threshold used by "min-should". */
+  minShouldMatch?: number;
   /** Require the query's words to occur adjacently, in order. */
   phrase?: boolean;
-  /** Tolerate typos and match word prefixes. */
-  fuzzy?: boolean;
+  /** Maximum fuzzy edit distance. */
+  fuzziness?: SearchFuzziness;
+  /** Match dictionary terms that extend a query word. */
+  prefixTerms?: boolean;
 }
 
 export interface UseSearchVerticesResult {
@@ -66,9 +71,11 @@ export function useSearchVertices(
   const limit = options.limit ?? DEFAULT_SEARCH_LIMIT;
   const prefix = options.prefix;
   const debounceMs = options.debounceMs ?? SEARCH_DEBOUNCE_MS;
-  const matchMode = options.matchMode ?? "any";
+  const matchMode = options.matchMode ?? "server";
+  const minShouldMatch = options.minShouldMatch ?? 2;
   const phrase = options.phrase ?? false;
-  const fuzzy = options.fuzzy ?? false;
+  const fuzziness = options.fuzziness ?? 0;
+  const prefixTerms = options.prefixTerms ?? false;
   const [state, dispatch] = useReducer(
     searchVerticesReducer,
     INITIAL_SEARCH_VERTICES_STATE,
@@ -88,9 +95,25 @@ export function useSearchVertices(
       query: rawQuery,
       limit,
       prefix,
-      options: { matchMode, phrase, fuzzy },
+      options: {
+        matchMode,
+        minShouldMatch,
+        phrase,
+        fuzziness,
+        prefixTerms,
+      },
     }),
-    [client, rawQuery, limit, prefix, matchMode, phrase, fuzzy],
+    [
+      client,
+      rawQuery,
+      limit,
+      prefix,
+      matchMode,
+      minShouldMatch,
+      phrase,
+      fuzziness,
+      prefixTerms,
+    ],
   );
 
   // Invalidate the old epoch during the commit that displays the new input.
