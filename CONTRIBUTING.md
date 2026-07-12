@@ -304,10 +304,13 @@ number rather than force-moving the tag.
   pub.dev confirms the version exists; its title is exactly the tag.
 
 **One-time first Dart publish.** pub.dev requires an authorized uploader to publish the
-first package version manually. For `0.1.0`, first complete every epic blocker and both
-physical-device columns in `sdks/dart/example/physical-device-smoke.md`. From a clean
-tagged checkout, after the tag workflow's verification jobs pass and its publish job
-reports the expected first-version block, run:
+first package version manually. For `0.1.0`, the tag workflow requires the v0.1
+implementation leaves (#1008, #1009, #1011, #1014, and #1016) and the physical-device
+gate (#1017) to be closed. Release-tracking Issues #1020 and #1022 remain open until the
+publish and exact-title GitHub Release are verified; the Phase 2 offline-design Issue
+#1021 is not a v0.1 release blocker. From a clean tagged checkout, after the tag
+workflow's verification jobs pass and its publish job reports the expected
+first-version block, run:
 
 ```bash
 git switch --detach sdks/dart/v0.1.0
