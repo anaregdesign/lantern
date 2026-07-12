@@ -105,10 +105,10 @@ class LanternServiceClient extends $grpc.Client {
   }
 
   /// SearchVertices returns vertices ranked by full-text relevance over their
-  /// content (key + value), optionally scoped to a key prefix. Requires the
-  /// server-side search index (LANTERN_SEARCH_ENABLED, on by default);
-  /// returns FAILED_PRECONDITION when disabled. Plural-only — ranked search
-  /// is inherently plural.
+  /// content (key + value), optionally scoped to a key prefix, in stable
+  /// (score DESC, raw key ASC) order. Requires the server-side search index
+  /// (LANTERN_SEARCH_ENABLED, on by default); returns FAILED_PRECONDITION when
+  /// disabled. Plural-only — ranked search is inherently plural.
   $grpc.ResponseFuture<$0.SearchVerticesResponse> searchVertices(
     $0.SearchVerticesRequest request, {
     $grpc.CallOptions? options,
