@@ -82,6 +82,8 @@ type fakeBackend struct {
 	lastSearchPrefix string
 	lastSearchOpts   search.MatchOptions
 	lastSearchPhrase bool
+	lastSearchBudget search.Budget
+	searchContextFn  func(context.Context) ([]search.Result[string], search.Stats, error)
 
 	// #588 idempotent-AddEdge wiring capture. The canonical AddEdges path
 	// now calls AddEdgesWithExpirationContrib; tests assert contrib_ids are
@@ -463,6 +465,23 @@ func (f *fakeBackend) SearchVerticesMatch(query string, limit int, keyPrefix str
 	f.lastSearchOpts = opts
 	f.lastSearchPhrase = phrase
 	return f.SearchVertices(query, limit, keyPrefix)
+}
+
+func (f *fakeBackend) SearchVerticesMatchContext(ctx context.Context, query string, limit int, keyPrefix string, opts search.MatchOptions, phrase bool, budget search.Budget) ([]search.Result[string], search.Stats, error) {
+	f.lastSearchOpts = opts
+	f.lastSearchPhrase = phrase
+	f.lastSearchBudget = budget
+	f.searchCalls++
+	f.lastSearchQuery = query
+	f.lastSearchLimit = limit
+	f.lastSearchPrefix = keyPrefix
+	if f.searchContextFn != nil {
+		return f.searchContextFn(ctx)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, search.Stats{}, err
+	}
+	return f.searchResults, search.Stats{}, nil
 }
 
 func (f *fakeBackend) DeleteByPrefix(_ context.Context, prefix string, limit int) int {

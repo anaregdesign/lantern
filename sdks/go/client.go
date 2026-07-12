@@ -290,7 +290,14 @@ func wrapConnectErr(err error) error {
 	case connect.CodeInvalidArgument:
 		return errors.Join(ErrInvalidArgument, err)
 	case connect.CodeResourceExhausted:
-		return errors.Join(ErrResourceExhausted, err)
+		switch SearchFailureReason(err) {
+		case SearchErrorReasonWorkBudget:
+			return errors.Join(ErrResourceExhausted, ErrSearchWorkBudget, err)
+		case SearchErrorReasonAdmission:
+			return errors.Join(ErrResourceExhausted, ErrSearchAdmission, err)
+		default:
+			return errors.Join(ErrResourceExhausted, err)
+		}
 	case connect.CodeUnavailable:
 		return errors.Join(ErrUnavailable, err)
 	case connect.CodeFailedPrecondition:

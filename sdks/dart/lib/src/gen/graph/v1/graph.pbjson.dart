@@ -101,13 +101,17 @@ const SearchErrorReason$json = {
     {'1': 'SEARCH_ERROR_REASON_UNSPECIFIED', '2': 0},
     {'1': 'SEARCH_DISABLED', '2': 1},
     {'1': 'SEARCH_POSITIONS_DISABLED', '2': 2},
+    {'1': 'SEARCH_WORK_BUDGET_EXHAUSTED', '2': 3},
+    {'1': 'SEARCH_ADMISSION_SATURATED', '2': 4},
   ],
 };
 
 /// Descriptor for `SearchErrorReason`. Decode as a `google.protobuf.EnumDescriptorProto`.
 final $typed_data.Uint8List searchErrorReasonDescriptor = $convert.base64Decode(
     'ChFTZWFyY2hFcnJvclJlYXNvbhIjCh9TRUFSQ0hfRVJST1JfUkVBU09OX1VOU1BFQ0lGSUVEEA'
-    'ASEwoPU0VBUkNIX0RJU0FCTEVEEAESHQoZU0VBUkNIX1BPU0lUSU9OU19ESVNBQkxFRBAC');
+    'ASEwoPU0VBUkNIX0RJU0FCTEVEEAESHQoZU0VBUkNIX1BPU0lUSU9OU19ESVNBQkxFRBACEiAK'
+    'HFNFQVJDSF9XT1JLX0JVREdFVF9FWEhBVVNURUQQAxIeChpTRUFSQ0hfQURNSVNTSU9OX1NBVF'
+    'VSQVRFRBAE');
 
 @$core.Deprecated('Use vertexDescriptor instead')
 const Vertex$json = {
@@ -1235,13 +1239,14 @@ const SearchErrorDetail$json = {
       '6': '.graph.v1.SearchErrorReason',
       '10': 'reason'
     },
+    {'1': 'work_kind', '3': 2, '4': 1, '5': 9, '10': 'workKind'},
   ],
 };
 
 /// Descriptor for `SearchErrorDetail`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List searchErrorDetailDescriptor = $convert.base64Decode(
     'ChFTZWFyY2hFcnJvckRldGFpbBIzCgZyZWFzb24YASABKA4yGy5ncmFwaC52MS5TZWFyY2hFcn'
-    'JvclJlYXNvblIGcmVhc29u');
+    'JvclJlYXNvblIGcmVhc29uEhsKCXdvcmtfa2luZBgCIAEoCVIId29ya0tpbmQ=');
 
 @$core.Deprecated('Use searchCapabilitiesDescriptor instead')
 const SearchCapabilities$json = {
@@ -1288,6 +1293,31 @@ const SearchCapabilities$json = {
       '5': 9,
       '10': 'configFingerprint'
     },
+    {'1': 'timeout_ms', '3': 11, '4': 1, '5': 13, '10': 'timeoutMs'},
+    {'1': 'max_query_bytes', '3': 12, '4': 1, '5': 13, '10': 'maxQueryBytes'},
+    {'1': 'max_query_terms', '3': 13, '4': 1, '5': 13, '10': 'maxQueryTerms'},
+    {
+      '1': 'max_dictionary_visits',
+      '3': 14,
+      '4': 1,
+      '5': 4,
+      '10': 'maxDictionaryVisits'
+    },
+    {
+      '1': 'max_posting_visits',
+      '3': 15,
+      '4': 1,
+      '5': 4,
+      '10': 'maxPostingVisits'
+    },
+    {
+      '1': 'max_position_visits',
+      '3': 16,
+      '4': 1,
+      '5': 4,
+      '10': 'maxPositionVisits'
+    },
+    {'1': 'max_in_flight', '3': 17, '4': 1, '5': 13, '10': 'maxInFlight'},
   ],
 };
 
@@ -1301,7 +1331,12 @@ final $typed_data.Uint8List searchCapabilitiesDescriptor = $convert.base64Decode
     'F0Y2gSIwoNbWF4X2Z1enppbmVzcxgHIAEoDVIMbWF4RnV6emluZXNzEikKEGFuYWx5emVyX3Zl'
     'cnNpb24YCCABKAlSD2FuYWx5emVyVmVyc2lvbhItChJwcm9qZWN0aW9uX3ZlcnNpb24YCSABKA'
     'lSEXByb2plY3Rpb25WZXJzaW9uEi0KEmNvbmZpZ19maW5nZXJwcmludBgKIAEoCVIRY29uZmln'
-    'RmluZ2VycHJpbnQ=');
+    'RmluZ2VycHJpbnQSHQoKdGltZW91dF9tcxgLIAEoDVIJdGltZW91dE1zEiYKD21heF9xdWVyeV'
+    '9ieXRlcxgMIAEoDVINbWF4UXVlcnlCeXRlcxImCg9tYXhfcXVlcnlfdGVybXMYDSABKA1SDW1h'
+    'eFF1ZXJ5VGVybXMSMgoVbWF4X2RpY3Rpb25hcnlfdmlzaXRzGA4gASgEUhNtYXhEaWN0aW9uYX'
+    'J5VmlzaXRzEiwKEm1heF9wb3N0aW5nX3Zpc2l0cxgPIAEoBFIQbWF4UG9zdGluZ1Zpc2l0cxIu'
+    'ChNtYXhfcG9zaXRpb25fdmlzaXRzGBAgASgEUhFtYXhQb3NpdGlvblZpc2l0cxIiCg1tYXhfaW'
+    '5fZmxpZ2h0GBEgASgNUgttYXhJbkZsaWdodA==');
 
 @$core.Deprecated('Use getServerStatusResponseDescriptor instead')
 const GetServerStatusResponse$json = {

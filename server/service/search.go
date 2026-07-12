@@ -11,6 +11,8 @@ import (
 
 	"github.com/anaregdesign/lantern/core/search"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // errSearchDisabled is the FAILED_PRECONDITION payload returned when the
@@ -46,29 +48,97 @@ const (
 // filters. An empty or unanalysable query yields zero hits (not an error).
 // Prefix, when non-empty, scopes hits to vertices whose key carries it.
 func (s *LanternService) SearchVertices(ctx context.Context, in *pb.SearchVerticesRequest) (*pb.SearchVerticesResponse, error) {
+	start := time.Now()
+	outcome, reason := "internal", "internal"
+	var stats search.Stats
+	span := trace.SpanFromContext(ctx)
+	defer func() {
+		s.metrics.OnSearchExecution(outcome, reason, stats)
+		span.SetAttributes(
+			attribute.String("lantern.search.outcome", outcome),
+			attribute.String("lantern.search.reason", reason),
+			attribute.Int64("lantern.search.query_terms", stats.QueryTerms),
+			attribute.Int64("lantern.search.dictionary_visits", stats.DictionaryVisits),
+			attribute.Int64("lantern.search.posting_visits", stats.PostingVisits),
+			attribute.Int64("lantern.search.position_visits", stats.PositionVisits),
+		)
+	}()
 	if err := ctx.Err(); err != nil {
+		outcome, reason = searchContextOutcome(err)
 		return nil, ctxToConnect(err)
 	}
 	if err := validateSearchOptions(in.GetOptions()); err != nil {
+		outcome, reason = "invalid_argument", "invalid_options"
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	if !s.search.Enabled {
+		outcome, reason = "failed_precondition", "disabled"
 		return nil, newSearchPreconditionError(pb.SearchErrorReason_SEARCH_DISABLED, errSearchDisabled)
 	}
-	start := time.Now()
-	limit := clampLimit(in.GetLimit(), s.search.DefaultLimit, s.search.MaxLimit)
-
+	if s.search.MaxQueryBytes > 0 && len(in.GetQuery()) > s.search.MaxQueryBytes {
+		outcome, reason = "resource_exhausted", "query_bytes"
+		return nil, newSearchResourceError(
+			pb.SearchErrorReason_SEARCH_WORK_BUDGET_EXHAUSTED,
+			"query_bytes",
+			fmt.Errorf("search query exceeds %d bytes", s.search.MaxQueryBytes),
+		)
+	}
 	opts, phrase := s.resolveSearchOptions(in.GetOptions())
 	if phrase && !s.search.PositionsEnabled {
+		outcome, reason = "failed_precondition", "positions_disabled"
 		return nil, newSearchPreconditionError(pb.SearchErrorReason_SEARCH_POSITIONS_DISABLED, errSearchPositionsDisabled)
 	}
-	ranked := s.cache.SearchVerticesMatch(in.GetQuery(), int(limit), in.GetPrefix(), opts, phrase)
+	if s.search.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.search.Timeout)
+		defer cancel()
+	}
+	if s.searchGate != nil {
+		if s.searchGate.TryAcquire(1) {
+			defer s.searchGate.Release(1)
+		} else {
+			outcome, reason = "resource_exhausted", "admission"
+			return nil, newSearchResourceError(
+				pb.SearchErrorReason_SEARCH_ADMISSION_SATURATED,
+				"",
+				errors.New("search admission capacity is saturated"),
+			)
+		}
+	}
+	limit := clampLimit(in.GetLimit(), s.search.DefaultLimit, s.search.MaxLimit)
+	ranked, workStats, err := s.cache.SearchVerticesMatchContext(ctx, in.GetQuery(), int(limit), in.GetPrefix(), opts, phrase, s.search.WorkBudget)
+	stats = workStats
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			outcome, reason = searchContextOutcome(err)
+			return nil, ctxToConnect(err)
+		}
+		var exhausted *search.BudgetExceededError
+		if errors.As(err, &exhausted) {
+			outcome, reason = "resource_exhausted", string(exhausted.Kind)
+			return nil, newSearchResourceError(
+				pb.SearchErrorReason_SEARCH_WORK_BUDGET_EXHAUSTED,
+				string(exhausted.Kind),
+				err,
+			)
+		}
+		outcome, reason = "internal", "internal"
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
 	hits := make([]*pb.SearchHit, 0, len(ranked))
 	for _, r := range ranked {
 		hits = append(hits, &pb.SearchHit{Key: r.ID, Score: r.Score})
 	}
 	s.metrics.OnSearch(len(hits), time.Since(start))
+	outcome, reason = "ok", "none"
 	return &pb.SearchVerticesResponse{Hits: hits}, nil
+}
+
+func searchContextOutcome(err error) (outcome, reason string) {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "deadline_exceeded", "deadline"
+	}
+	return "canceled", "canceled"
 }
 
 // validateSearchOptions is the authoritative request-boundary decision table
@@ -113,6 +183,16 @@ func validateSearchOptions(o *pb.SearchOptions) error {
 func newSearchPreconditionError(reason pb.SearchErrorReason, cause error) error {
 	err := connect.NewError(connect.CodeFailedPrecondition, cause)
 	detail, detailErr := connect.NewErrorDetail(&pb.SearchErrorDetail{Reason: reason})
+	if detailErr != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("marshal SearchErrorDetail: %w", detailErr))
+	}
+	err.AddDetail(detail)
+	return err
+}
+
+func newSearchResourceError(reason pb.SearchErrorReason, workKind string, cause error) error {
+	err := connect.NewError(connect.CodeResourceExhausted, cause)
+	detail, detailErr := connect.NewErrorDetail(&pb.SearchErrorDetail{Reason: reason, WorkKind: workKind})
 	if detailErr != nil {
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("marshal SearchErrorDetail: %w", detailErr))
 	}

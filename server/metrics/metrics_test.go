@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/anaregdesign/lantern/core/concurrent/pubsub"
+	"github.com/anaregdesign/lantern/core/search"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
@@ -227,6 +228,8 @@ func TestDomainMetrics_HotPathFamilies(t *testing.T) {
 		"lantern_batch_size",
 		"lantern_search_results",
 		"lantern_search_duration_seconds",
+		"lantern_search_calls_total",
+		"lantern_search_work",
 		"lantern_search_index_terms",
 		"lantern_search_index_docs",
 		"lantern_vertex_hlc_entries",
@@ -289,6 +292,19 @@ func TestDomainMetrics_HotPathFamilies(t *testing.T) {
 	}
 	if got := histSampleCount(t, m.searchDuration); got != 1 {
 		t.Errorf("search_duration sample count = %v, want 1", got)
+	}
+	m.OnSearchExecution("resource_exhausted", string(search.WorkPostingVisits), search.Stats{PostingVisits: 17})
+	if got := testutil.ToFloat64(m.searchCalls.WithLabelValues("resource_exhausted", string(search.WorkPostingVisits))); got != 1 {
+		t.Errorf("search_calls_total{resource_exhausted,posting_visits} = %v, want 1", got)
+	}
+	if got := histSampleCount(t, m.searchWork.WithLabelValues(string(search.WorkPostingVisits))); got != 1 {
+		t.Errorf("search_work{posting_visits} sample count = %v, want 1", got)
+	}
+	// Unknown values are collapsed to bounded fallbacks instead of becoming
+	// user-controlled labels.
+	m.OnSearchExecution("raw-query", "raw-prefix", search.Stats{})
+	if got := testutil.ToFloat64(m.searchCalls.WithLabelValues("internal", "internal")); got != 1 {
+		t.Errorf("search_calls_total{internal,internal} = %v, want sanitized sample", got)
 	}
 }
 

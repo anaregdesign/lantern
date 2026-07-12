@@ -30,6 +30,7 @@ import {
   FailedPreconditionError,
   InvalidArgumentError,
   NotFoundError,
+  ResourceExhaustedError,
   connect,
   Reduction,
   Int32,
@@ -82,6 +83,8 @@ interface StubState {
   searchDisabled?: boolean;
   /** When true, phrase search rejects because positional postings are absent. */
   searchPositionsDisabled?: boolean;
+  /** Optional typed RESOURCE_EXHAUSTED search failure. */
+  searchResource?: { reason: SearchErrorReason; workKind?: string };
   /** Last AddEdgeRequest the stub observed, for contrib-id assertions (#895). */
   lastAddEdge?: { contribId: Uint8Array };
   /** Every AddEdgesRequest the stub observed, in order, for chunk-alignment assertions (#895). */
@@ -222,6 +225,14 @@ function newStubRoutes(state: StubState) {
               }
             : {}),
         };
+        if (state.searchResource) {
+          throw new ConnectError("search execution exhausted", Code.ResourceExhausted, undefined, [
+            {
+              desc: SearchErrorDetailSchema,
+              value: state.searchResource,
+            },
+          ]);
+        }
         if (state.searchPositionsDisabled) {
           throw new ConnectError(
             "phrase search requires positional postings",
@@ -1424,6 +1435,45 @@ describe("searchVertices request building (#639)", () => {
       );
     } finally {
       state.searchPositionsDisabled = false;
+      c.close();
+    }
+  });
+
+  test("work budget exposes bounded reason and work kind", async () => {
+    const c = newClient();
+    state.searchResource = {
+      reason: SearchErrorReason.SEARCH_WORK_BUDGET_EXHAUSTED,
+      workKind: "posting_visits",
+    };
+    try {
+      await c.searchVertices("alpha");
+      expect.unreachable("budgeted search should fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ResourceExhaustedError);
+      expect((error as ResourceExhaustedError).reason).toBe(
+        SearchErrorReason.SEARCH_WORK_BUDGET_EXHAUSTED,
+      );
+      expect((error as ResourceExhaustedError).workKind).toBe("posting_visits");
+    } finally {
+      state.searchResource = undefined;
+      c.close();
+    }
+  });
+
+  test("admission remains distinct from work exhaustion", async () => {
+    const c = newClient();
+    state.searchResource = { reason: SearchErrorReason.SEARCH_ADMISSION_SATURATED };
+    try {
+      await c.searchVertices("alpha");
+      expect.unreachable("saturated search should fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ResourceExhaustedError);
+      expect((error as ResourceExhaustedError).reason).toBe(
+        SearchErrorReason.SEARCH_ADMISSION_SATURATED,
+      );
+      expect((error as ResourceExhaustedError).workKind).toBe("");
+    } finally {
+      state.searchResource = undefined;
       c.close();
     }
   });

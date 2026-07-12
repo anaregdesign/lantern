@@ -19,6 +19,7 @@ import (
 	"github.com/anaregdesign/lantern/core/search"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/prototime"
+	"golang.org/x/sync/semaphore"
 )
 
 // ServiceName is the fully-qualified service name used for per-service
@@ -45,6 +46,7 @@ type LanternService struct {
 	cache                  Backend
 	scan                   ScanLimits
 	search                 SearchLimits
+	searchGate             *semaphore.Weighted
 	log                    *mutationlog.Log
 	clock                  *hlc.Clock
 	origin                 []byte
@@ -90,6 +92,7 @@ type HotPathMetrics interface {
 	OnIlluminateResult(algorithm, reduction, objective, weighting, phase, code string)
 	OnScan(op string, results int, duration time.Duration)
 	OnSearch(results int, duration time.Duration)
+	OnSearchExecution(outcome, reason string, stats search.Stats)
 	OnBatch(op string, size int)
 	OnGetVertices(hits, misses int)
 	OnGetEdges(hits, misses int)
@@ -104,10 +107,12 @@ func (noopHotPathMetrics) OnIlluminateResult(string, string, string, string, str
 }
 func (noopHotPathMetrics) OnScan(string, int, time.Duration) {}
 func (noopHotPathMetrics) OnSearch(int, time.Duration)       {}
-func (noopHotPathMetrics) OnBatch(string, int)               {}
-func (noopHotPathMetrics) OnGetVertices(int, int)            {}
-func (noopHotPathMetrics) OnGetEdges(int, int)               {}
-func (noopHotPathMetrics) OnEdgeContribDeduped(int)          {}
+func (noopHotPathMetrics) OnSearchExecution(string, string, search.Stats) {
+}
+func (noopHotPathMetrics) OnBatch(string, int)      {}
+func (noopHotPathMetrics) OnGetVertices(int, int)   {}
+func (noopHotPathMetrics) OnGetEdges(int, int)      {}
+func (noopHotPathMetrics) OnEdgeContribDeduped(int) {}
 
 // ScanLimits caps the per-call pagination knobs for the prefix RPCs. It is
 // a value struct rather than a pointer-to-provider type so the service
@@ -149,13 +154,26 @@ type SearchLimits struct {
 	// DefaultMinShould is the minimum-should-match count applied when the mode
 	// is MatchMinShould but the request leaves min_should_match at 0.
 	DefaultMinShould uint32
+	Timeout          time.Duration
+	MaxQueryBytes    int
+	WorkBudget       search.Budget
+	MaxInFlight      int
 }
 
 func defaultSearchLimits() SearchLimits {
 	return SearchLimits{
-		Enabled:      false,
-		DefaultLimit: 100,
-		MaxLimit:     1000,
+		Enabled:       false,
+		DefaultLimit:  100,
+		MaxLimit:      1000,
+		Timeout:       5 * time.Second,
+		MaxQueryBytes: 16 * 1024,
+		WorkBudget: search.Budget{
+			MaxQueryTerms:       1024,
+			MaxDictionaryVisits: 1_000_000,
+			MaxPostingVisits:    10_000_000,
+			MaxPositionVisits:   10_000_000,
+		},
+		MaxInFlight: 32,
 	}
 }
 
@@ -187,6 +205,11 @@ func (s *LanternService) WithScanLimits(l ScanLimits) *LanternService {
 // path until they opt in.
 func (s *LanternService) WithSearchLimits(l SearchLimits) *LanternService {
 	s.search = l
+	if l.MaxInFlight > 0 {
+		s.searchGate = semaphore.NewWeighted(int64(l.MaxInFlight))
+	} else {
+		s.searchGate = nil
+	}
 	return s
 }
 

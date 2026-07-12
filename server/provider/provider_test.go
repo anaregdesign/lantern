@@ -190,6 +190,49 @@ func TestNewConfigValidation(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("search work limits default to finite positive values", func(t *testing.T) {
+		envconfig.ResetForTesting()
+		cfg, err := NewConfig()
+		if err != nil {
+			t.Fatalf("NewConfig: %v", err)
+		}
+		if cfg.Search.Timeout <= 0 || cfg.Search.MaxQueryBytes <= 0 || cfg.Search.MaxQueryTerms <= 0 ||
+			cfg.Search.MaxDictionaryVisits <= 0 || cfg.Search.MaxPostingVisits <= 0 ||
+			cfg.Search.MaxPositionVisits <= 0 || cfg.Search.MaxInFlight <= 0 {
+			t.Fatalf("search safety defaults are not all positive: %+v", cfg.Search)
+		}
+	})
+
+	for _, key := range []string{
+		"LANTERN_SEARCH_TIMEOUT_MS",
+		"LANTERN_SEARCH_MAX_QUERY_BYTES",
+		"LANTERN_SEARCH_MAX_QUERY_TERMS",
+		"LANTERN_SEARCH_MAX_DICTIONARY_VISITS",
+		"LANTERN_SEARCH_MAX_POSTING_VISITS",
+		"LANTERN_SEARCH_MAX_POSITION_VISITS",
+		"LANTERN_SEARCH_MAX_IN_FLIGHT",
+	} {
+		t.Run("search safety rejects non-positive "+key, func(t *testing.T) {
+			envconfig.ResetForTesting()
+			t.Setenv("LANTERN_STRICT_CONFIG", "false")
+			t.Setenv(key, "0")
+			_, err := NewConfig()
+			if err == nil || !strings.Contains(err.Error(), key) {
+				t.Fatalf("NewConfig error = %v, want unconditional rejection naming %s", err, key)
+			}
+		})
+	}
+
+	t.Run("query term cap cannot exceed byte cap", func(t *testing.T) {
+		envconfig.ResetForTesting()
+		t.Setenv("LANTERN_SEARCH_MAX_QUERY_BYTES", "4")
+		t.Setenv("LANTERN_SEARCH_MAX_QUERY_TERMS", "5")
+		_, err := NewConfig()
+		if err == nil || !strings.Contains(err.Error(), "MAX_QUERY_TERMS") || !strings.Contains(err.Error(), "MAX_QUERY_BYTES") {
+			t.Fatalf("NewConfig error = %v, want cap-relationship rejection", err)
+		}
+	})
 }
 
 // TestMetricsMux groups the HTTP-shim tests for newMetricsMux. The

@@ -1,5 +1,7 @@
 package search
 
+import "context"
+
 // MatchMode selects how a multi-term query's word-channel terms combine to
 // decide which documents match. It governs membership only — the Scorer still
 // ranks whatever matches — and counts distinct query terms on the primary
@@ -74,22 +76,40 @@ func (idx *InvertedIndex[S, D]) SearchMatch(query string, opts MatchOptions) []R
 // order and accept contract are identical to SearchTopK. k <= 0, an unanalyzable
 // query, or zero accepted matches return nil.
 func (idx *InvertedIndex[S, D]) SearchMatchTopK(query string, k int, accept func(id S) bool, opts MatchOptions) []Result[S] {
+	results, _, _ := idx.SearchMatchTopKContext(context.Background(), query, k, accept, opts, Budget{})
+	return results
+}
+
+// SearchMatchTopKContext is SearchMatchTopK with cancellation and deterministic
+// work accounting. It never returns partial results on error.
+func (idx *InvertedIndex[S, D]) SearchMatchTopKContext(ctx context.Context, query string, k int, accept func(id S) bool, opts MatchOptions, budget Budget) ([]Result[S], Stats, error) {
+	work := newWorkTracker(ctx, budget)
 	if k <= 0 {
-		return nil
+		return nil, work.stats, nil
 	}
 	queryTerms := idx.queryTerms(query)
+	if err := work.visit(WorkQueryTerms, int64(len(queryTerms))); err != nil {
+		return nil, work.stats, err
+	}
 	if len(queryTerms) == 0 {
-		return nil
+		return nil, work.stats, nil
 	}
 
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
-	scores := idx.scoredMatchesLocked(queryTerms, opts)
-	if len(scores) == 0 {
-		return nil
+	scores, err := idx.scoredMatchesTrackedLocked(queryTerms, opts, work)
+	if err != nil {
+		return nil, work.stats, err
 	}
-	return idx.selectTopKLocked(scores, k, accept)
+	if len(scores) == 0 {
+		return nil, work.stats, nil
+	}
+	results, err := idx.selectTopKTrackedLocked(scores, k, accept, work)
+	if err != nil {
+		return nil, work.stats, err
+	}
+	return results, work.stats, nil
 }
 
 // scoredMatchesLocked builds the final score map for a query under opts: the
@@ -100,21 +120,41 @@ func (idx *InvertedIndex[S, D]) SearchMatchTopK(query string, k int, accept func
 // scoreLocked + filterByCoverageLocked so it is byte-for-byte unchanged. Callers
 // must hold idx.mu.
 func (idx *InvertedIndex[S, D]) scoredMatchesLocked(queryTerms []Token, opts MatchOptions) map[uint32]float64 {
+	scores, _ := idx.scoredMatchesTrackedLocked(queryTerms, opts, newWorkTracker(nil, Budget{}))
+	return scores
+}
+
+func (idx *InvertedIndex[S, D]) scoredMatchesTrackedLocked(queryTerms []Token, opts MatchOptions, work *workTracker) (map[uint32]float64, error) {
 	var scores map[uint32]float64
 	if opts.expandsTerms() {
-		scores = idx.scoreClausesLocked(idx.buildClausesLocked(queryTerms, opts), opts)
+		clauses, err := idx.buildClausesTrackedLocked(queryTerms, opts, work)
+		if err != nil {
+			return nil, err
+		}
+		scores, err = idx.scoreClausesTrackedLocked(clauses, opts, work)
+		if err != nil {
+			return nil, err
+		}
 	} else {
-		scores = idx.scoreLocked(queryTerms)
+		var err error
+		scores, err = idx.scoreTrackedLocked(queryTerms, work)
+		if err != nil {
+			return nil, err
+		}
 		if opts.Mode != MatchAny {
-			idx.filterByCoverageLocked(scores, queryTerms, opts)
+			if err := idx.filterByCoverageTrackedLocked(scores, queryTerms, opts, work); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if len(scores) == 0 {
-		return scores
+		return scores, nil
 	}
-	idx.applyProximityLocked(scores, queryTerms)
+	if err := idx.applyProximityTrackedLocked(scores, queryTerms, work); err != nil {
+		return nil, err
+	}
 	dropNonFiniteScores(scores)
-	return scores
+	return scores, nil
 }
 
 // filterByCoverageLocked drops documents from scores that do not cover enough
@@ -126,10 +166,17 @@ func (idx *InvertedIndex[S, D]) scoredMatchesLocked(queryTerms []Token, opts Mat
 // from the corpus still raises the bar it can never meet, so an AND with any
 // missing term is correctly empty. Callers must hold idx.mu.
 func (idx *InvertedIndex[S, D]) filterByCoverageLocked(scores map[uint32]float64, queryTerms []Token, opts MatchOptions) {
+	_ = idx.filterByCoverageTrackedLocked(scores, queryTerms, opts, newWorkTracker(nil, Budget{}))
+}
+
+func (idx *InvertedIndex[S, D]) filterByCoverageTrackedLocked(scores map[uint32]float64, queryTerms []Token, opts MatchOptions, work *workTracker) error {
 	cp := &idx.classes[ClassWord]
 	numWords := 0
 	coverage := make(map[uint32]int, len(scores))
 	for _, token := range queryTerms {
+		if err := work.check(); err != nil {
+			return err
+		}
 		if token.Class != ClassWord {
 			continue
 		}
@@ -143,18 +190,25 @@ func (idx *InvertedIndex[S, D]) filterByCoverageLocked(scores map[uint32]float64
 			continue
 		}
 		for it := pl.docs.Iterator(); it.HasNext(); {
+			if err := work.visit(WorkPostingVisits, 1); err != nil {
+				return err
+			}
 			coverage[it.Next()]++
 		}
 	}
 	threshold := coverageThreshold(opts, numWords)
 	if threshold <= 0 {
-		return // nothing required (MatchAny, or a query with no word terms)
+		return nil // nothing required (MatchAny, or a query with no word terms)
 	}
 	for ord := range scores {
+		if err := work.check(); err != nil {
+			return err
+		}
 		if coverage[ord] < threshold {
 			delete(scores, ord)
 		}
 	}
+	return nil
 }
 
 // coverageThreshold resolves the minimum word-term coverage a document needs

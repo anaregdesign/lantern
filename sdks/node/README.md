@@ -289,6 +289,12 @@ positional postings is distinct:
 `SearchErrorReason.SEARCH_POSITIONS_DISABLED`. `getServerStatus().search`
 lets clients discover positions, defaults, limits, implementation versions,
 and the HA configuration fingerprint before issuing a query.
+`ResourceExhaustedError.reason` distinguishes
+`SEARCH_WORK_BUDGET_EXHAUSTED` from `SEARCH_ADMISSION_SATURATED`, and
+`workKind` identifies the exhausted counter. Cancellation, deadline, and work
+budget failures are terminal for that attempt; retry unchanged only for
+admission saturation with jittered backoff, and issue only the newest input in
+incremental UI flows.
 
 An omitted `matchMode` always sends `MATCH_MODE_UNSPECIFIED`, even when another
 relevance option is present, so the server default remains authoritative.

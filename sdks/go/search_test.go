@@ -240,4 +240,48 @@ func TestSearchVertices(t *testing.T) {
 			t.Fatalf("SearchFailureReason = %v, want SEARCH_POSITIONS_DISABLED", got)
 		}
 	})
+
+	t.Run("work budget carries typed sentinel and kind", func(t *testing.T) {
+		l, capt := newClient(t)
+		connectErr := connect.NewError(connect.CodeResourceExhausted, errors.New("posting budget"))
+		detail, detailErr := connect.NewErrorDetail(&pb.SearchErrorDetail{
+			Reason:   pb.SearchErrorReason_SEARCH_WORK_BUDGET_EXHAUSTED,
+			WorkKind: "posting_visits",
+		})
+		if detailErr != nil {
+			t.Fatalf("NewErrorDetail: %v", detailErr)
+		}
+		connectErr.AddDetail(detail)
+		capt.err = connectErr
+		_, err := l.SearchVertices(context.Background(), "alpha")
+		if !errors.Is(err, ErrResourceExhausted) || !errors.Is(err, ErrSearchWorkBudget) {
+			t.Fatalf("error = %v, want resource + search budget sentinels", err)
+		}
+		if got := SearchFailureReason(err); got != SearchErrorReasonWorkBudget {
+			t.Fatalf("SearchFailureReason = %v, want work budget", got)
+		}
+		if got := SearchFailureWorkKind(err); got != "posting_visits" {
+			t.Fatalf("SearchFailureWorkKind = %q, want posting_visits", got)
+		}
+	})
+
+	t.Run("admission carries distinct typed sentinel", func(t *testing.T) {
+		l, capt := newClient(t)
+		connectErr := connect.NewError(connect.CodeResourceExhausted, errors.New("admission"))
+		detail, detailErr := connect.NewErrorDetail(&pb.SearchErrorDetail{
+			Reason: pb.SearchErrorReason_SEARCH_ADMISSION_SATURATED,
+		})
+		if detailErr != nil {
+			t.Fatalf("NewErrorDetail: %v", detailErr)
+		}
+		connectErr.AddDetail(detail)
+		capt.err = connectErr
+		_, err := l.SearchVertices(context.Background(), "alpha")
+		if !errors.Is(err, ErrResourceExhausted) || !errors.Is(err, ErrSearchAdmission) {
+			t.Fatalf("error = %v, want resource + admission sentinels", err)
+		}
+		if got := SearchFailureReason(err); got != SearchErrorReasonAdmission {
+			t.Fatalf("SearchFailureReason = %v, want admission", got)
+		}
+	})
 }

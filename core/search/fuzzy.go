@@ -40,21 +40,33 @@ type queryClause struct {
 // unbounded-script runes) are never expanded — they are fixed-width windows, so
 // prefix/fuzzy widening is meaningless. Callers hold idx.mu.
 func (idx *InvertedIndex[S, D]) buildClausesLocked(queryTerms []Token, opts MatchOptions) []queryClause {
+	clauses, _ := idx.buildClausesTrackedLocked(queryTerms, opts, newWorkTracker(nil, Budget{}))
+	return clauses
+}
+
+func (idx *InvertedIndex[S, D]) buildClausesTrackedLocked(queryTerms []Token, opts MatchOptions, work *workTracker) ([]queryClause, error) {
 	clauses := make([]queryClause, 0, len(queryTerms))
 	for _, token := range queryTerms {
+		if err := work.check(); err != nil {
+			return nil, err
+		}
 		if int(token.Class) >= numTokenClasses {
 			continue
 		}
 		cp := &idx.classes[token.Class]
 		var ids []uint32
 		if token.Class == ClassWord && opts.expandsTerms() && isExpandable(token.Term) {
-			ids = cp.dict.expand(token.Term, opts.PrefixTerms, opts.Fuzziness, MaxTermExpansions)
+			var err error
+			ids, err = cp.dict.expandTracked(token.Term, opts.PrefixTerms, opts.Fuzziness, MaxTermExpansions, work)
+			if err != nil {
+				return nil, err
+			}
 		} else if tid, ok := cp.dict.lookup(token.Term); ok {
 			ids = []uint32{tid}
 		}
 		clauses = append(clauses, queryClause{class: token.Class, termIDs: ids})
 	}
-	return clauses
+	return clauses, nil
 }
 
 // scoreClausesLocked scores documents over expanded query clauses: each clause
@@ -65,6 +77,11 @@ func (idx *InvertedIndex[S, D]) buildClausesLocked(queryTerms []Token, opts Matc
 // counterpart of scoreLocked + filterByCoverageLocked; the non-expansion path
 // keeps using those so the default query is byte-for-byte unchanged.
 func (idx *InvertedIndex[S, D]) scoreClausesLocked(clauses []queryClause, opts MatchOptions) map[uint32]float64 {
+	scores, _ := idx.scoreClausesTrackedLocked(clauses, opts, newWorkTracker(nil, Budget{}))
+	return scores
+}
+
+func (idx *InvertedIndex[S, D]) scoreClausesTrackedLocked(clauses []queryClause, opts MatchOptions, work *workTracker) (map[uint32]float64, error) {
 	scores := make(map[uint32]float64)
 	var coverage map[uint32]int
 	numWords := 0
@@ -72,6 +89,9 @@ func (idx *InvertedIndex[S, D]) scoreClausesLocked(clauses []queryClause, opts M
 		coverage = make(map[uint32]int)
 	}
 	for _, cl := range clauses {
+		if err := work.check(); err != nil {
+			return nil, err
+		}
 		if coverage != nil && cl.class == ClassWord {
 			numWords++ // count every word clause, even an unmatched typo, toward the bar
 		}
@@ -91,7 +111,13 @@ func (idx *InvertedIndex[S, D]) scoreClausesLocked(clauses []queryClause, opts M
 			}
 			df := pl.cardinality()
 			for it := pl.docs.Iterator(); it.HasNext(); {
+				if err := work.visit(WorkPostingVisits, 1); err != nil {
+					return nil, err
+				}
 				ord := it.Next()
+				if union != nil {
+					union.Add(ord)
+				}
 				addScore(scores, ord, idx.scorer.Score(TermStats{
 					TF:     pl.tf(ord),
 					DF:     df,
@@ -101,12 +127,12 @@ func (idx *InvertedIndex[S, D]) scoreClausesLocked(clauses []queryClause, opts M
 					Class:  cl.class,
 				}))
 			}
-			if union != nil {
-				union.Or(pl.docs)
-			}
 		}
 		if union != nil {
 			for it := union.Iterator(); it.HasNext(); {
+				if err := work.visit(WorkPostingVisits, 1); err != nil {
+					return nil, err
+				}
 				coverage[it.Next()]++
 			}
 		}
@@ -115,13 +141,16 @@ func (idx *InvertedIndex[S, D]) scoreClausesLocked(clauses []queryClause, opts M
 	if coverage != nil {
 		if threshold := coverageThreshold(opts, numWords); threshold > 0 {
 			for ord := range scores {
+				if err := work.check(); err != nil {
+					return nil, err
+				}
 				if coverage[ord] < threshold {
 					delete(scores, ord)
 				}
 			}
 		}
 	}
-	return scores
+	return scores, nil
 }
 
 // isExpandable reports whether a word-channel term should be widened by
@@ -209,18 +238,23 @@ func retainExpansion(h *expansionTopHeap, candidate expansionCandidate, limit in
 // term). Callers hold the index lock. Intended for word terms; the caller skips
 // CJK grams.
 func (d *termDict) expand(term string, prefix bool, maxEdits, limit int) []uint32 {
+	out, _ := d.expandTracked(term, prefix, maxEdits, limit, newWorkTracker(nil, Budget{}))
+	return out
+}
+
+func (d *termDict) expandTracked(term string, prefix bool, maxEdits, limit int, work *workTracker) ([]uint32, error) {
 	if limit <= 0 {
-		return nil
+		return nil, nil
 	}
 	out := make([]uint32, 0, min(limit, 8))
 	if id, ok := d.ids[term]; ok {
 		out = append(out, id)
 		if len(out) == limit {
-			return out
+			return out, nil
 		}
 	}
 	if !prefix && maxEdits <= 0 {
-		return out
+		return out, nil
 	}
 
 	// Fuzzy matching converts each length-compatible candidate to runes and runs
@@ -257,6 +291,9 @@ func (d *termDict) expand(term string, prefix bool, maxEdits, limit int) []uint3
 	remaining := limit - len(out)
 	var best expansionTopHeap
 	for id, cand := range d.terms {
+		if err := work.visit(WorkDictionaryVisits, 1); err != nil {
+			return nil, err
+		}
 		if cand == "" || cand == term {
 			continue
 		}
@@ -296,7 +333,11 @@ func (d *termDict) expand(term string, prefix bool, maxEdits, limit int) []uint3
 		for _, r := range cand {
 			candRunes = append(candRunes, r)
 		}
-		if distance, ok := editDistanceWithinRows(qr, candRunes, maxEdits, dpPrev, dpCurr); ok {
+		distance, ok, err := editDistanceWithinRowsTracked(qr, candRunes, maxEdits, dpPrev, dpCurr, work)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
 			retainExpansion(&best, expansionCandidate{
 				id:      uint32(id),
 				term:    cand,
@@ -309,7 +350,7 @@ func (d *termDict) expand(term string, prefix bool, maxEdits, limit int) []uint3
 	for _, candidate := range best {
 		out = append(out, candidate.id)
 	}
-	return out
+	return out, nil
 }
 
 func isASCII(s string) bool {
@@ -380,15 +421,23 @@ func withinEditsRows(a, b []rune, maxEdits int, prev, curr []int) bool {
 // editDistanceWithinRows returns the exact Levenshtein distance when it is at
 // most maxEdits, using caller-provided scratch rows.
 func editDistanceWithinRows(a, b []rune, maxEdits int, prev, curr []int) (int, bool) {
+	distance, ok, _ := editDistanceWithinRowsTracked(a, b, maxEdits, prev, curr, newWorkTracker(nil, Budget{}))
+	return distance, ok
+}
+
+func editDistanceWithinRowsTracked(a, b []rune, maxEdits int, prev, curr []int, work *workTracker) (int, bool, error) {
 	la, lb := len(a), len(b)
 	if la-lb > maxEdits || lb-la > maxEdits {
-		return 0, false
+		return 0, false, nil
 	}
 	prev, curr = prev[:lb+1], curr[:lb+1]
 	for j := 0; j <= lb; j++ {
 		prev[j] = j
 	}
 	for i := 1; i <= la; i++ {
+		if err := work.check(); err != nil {
+			return 0, false, err
+		}
 		curr[0] = i
 		rowMin := curr[0]
 		for j := 1; j <= lb; j++ {
@@ -402,10 +451,10 @@ func editDistanceWithinRows(a, b []rune, maxEdits int, prev, curr []int) (int, b
 			}
 		}
 		if rowMin > maxEdits {
-			return 0, false
+			return 0, false, nil
 		}
 		prev, curr = curr, prev
 	}
 	distance := prev[lb]
-	return distance, distance <= maxEdits
+	return distance, distance <= maxEdits, nil
 }

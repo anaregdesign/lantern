@@ -236,6 +236,13 @@ matches `ErrSearchPositionsDisabled`; both also match
 `ErrFailedPrecondition`. `SearchFailureReason` returns the bounded wire reason,
 and `ServerStatus.GetSearch()` exposes positions, defaults, limits,
 implementation versions, and the HA configuration fingerprint.
+Execution containment failures remain typed: work-cap exhaustion matches
+`ErrSearchWorkBudget` and exposes its stable counter through
+`SearchFailureWorkKind`, while in-flight saturation matches
+`ErrSearchAdmission`; both also match `ErrResourceExhausted`. Cancellation,
+deadline, and work-budget failures are terminal for that attempt. Retry an
+unchanged query only for admission saturation (with jittered backoff), and let
+incremental UI drivers issue only their newest input.
 Leaving `WithMatchMode` unset always preserves the server's configured match
 mode, including when `WithFuzziness` or `WithPrefixTerms` is present.
 `WithMatchMode(MatchMinShould)` plus `WithMinShouldMatch(0)` selects the

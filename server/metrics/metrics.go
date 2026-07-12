@@ -12,6 +12,7 @@ import (
 
 	"github.com/anaregdesign/lantern/core/concurrent/pubsub"
 	"github.com/anaregdesign/lantern/core/mutationlog"
+	"github.com/anaregdesign/lantern/core/search"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -135,6 +136,8 @@ type DomainMetrics struct {
 	// dashboards can alert on search-specific SLOs without filtering.
 	searchResults  prometheus.Histogram
 	searchDuration prometheus.Histogram
+	searchCalls    *prometheus.CounterVec
+	searchWork     *prometheus.HistogramVec
 
 	// Search-index size gauges (#703). Sampled off InvertedIndex.Stats()
 	// on the same cadence as lantern_vertices / lantern_edges. Both stay
@@ -212,6 +215,36 @@ var (
 		"AddEdges",
 		"PutEdges",
 		"DeleteEdges",
+	}
+	searchOutcomes = []string{
+		"ok",
+		"canceled",
+		"deadline_exceeded",
+		"invalid_argument",
+		"failed_precondition",
+		"resource_exhausted",
+		"internal",
+	}
+	searchReasons = []string{
+		"none",
+		"canceled",
+		"deadline",
+		"invalid_options",
+		"disabled",
+		"positions_disabled",
+		"query_bytes",
+		"admission",
+		string(search.WorkQueryTerms),
+		string(search.WorkDictionaryVisits),
+		string(search.WorkPostingVisits),
+		string(search.WorkPositionVisits),
+		"internal",
+	}
+	searchWorkKinds = []string{
+		string(search.WorkQueryTerms),
+		string(search.WorkDictionaryVisits),
+		string(search.WorkPostingVisits),
+		string(search.WorkPositionVisits),
 	}
 	// replicationApplyOps covers every pb.MutationOp oneof variant. The
 	// service layer translates the proto-internal case selector into one
@@ -411,6 +444,15 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 			Help:    "Wall-clock duration of a SearchVertices RPC (#703).",
 			Buckets: prometheus.ExponentialBuckets(0.0001, 4, 8), // 0.1ms .. ~1.6s
 		}),
+		searchCalls: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "lantern_search_calls_total",
+			Help: "Total SearchVertices attempts partitioned by bounded terminal outcome and reason. Query text, prefixes, and matched keys are never labels.",
+		}, []string{"outcome", "reason"}),
+		searchWork: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "lantern_search_work",
+			Help:    "Deterministic work charged by SearchVertices, partitioned by the bounded work counter kind.",
+			Buckets: prometheus.ExponentialBuckets(1, 4, 12),
+		}, []string{"kind"}),
 		searchIndexTerms: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "lantern_search_index_terms",
 			Help: "Current number of distinct terms in the search inverted index (#703). Sampled on the same cadence as lantern_vertices. Always 0 when LANTERN_SEARCH_ENABLED=false.",
@@ -502,7 +544,7 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		m.scanResults, m.scanDuration, m.batchSize,
 		m.getVertexHits, m.getVertexMisses, m.getEdgeHits, m.getEdgeMisses,
 		m.edgeContribDeduped,
-		m.searchResults, m.searchDuration, m.searchIndexTerms, m.searchIndexDocs,
+		m.searchResults, m.searchDuration, m.searchCalls, m.searchWork, m.searchIndexTerms, m.searchIndexDocs,
 		m.vertexHLCEntries, m.vertexHLCHighWater,
 		m.peerConnected, m.replicationApplyTotal, m.snapshotReplayedTotal,
 		m.snapshotVertices, m.snapshotEdges, m.snapshotDuration,
@@ -559,6 +601,14 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 	}
 	for _, op := range batchOps {
 		m.batchSize.WithLabelValues(op)
+	}
+	for _, outcome := range searchOutcomes {
+		for _, reason := range searchReasons {
+			m.searchCalls.WithLabelValues(outcome, reason)
+		}
+	}
+	for _, kind := range searchWorkKinds {
+		m.searchWork.WithLabelValues(kind)
 	}
 	// Pre-warm the replication-apply counter so dashboards render every
 	// MutationOp variant from process start. Per-peer collectors
@@ -939,6 +989,26 @@ func (m *DomainMetrics) OnEdgeContribDeduped(n int) {
 func (m *DomainMetrics) OnSearch(results int, duration time.Duration) {
 	m.searchResults.Observe(float64(results))
 	m.searchDuration.Observe(duration.Seconds())
+}
+
+// OnSearchExecution records exactly one bounded terminal outcome plus the
+// deterministic work charged by the query executor. The sanitizer prevents a
+// future caller from introducing user-controlled metric cardinality.
+func (m *DomainMetrics) OnSearchExecution(outcome, reason string, stats search.Stats) {
+	o := sanitizeLabel(outcome, searchOutcomes, "internal")
+	r := sanitizeLabel(reason, searchReasons, "internal")
+	m.searchCalls.WithLabelValues(o, r).Inc()
+	for _, item := range []struct {
+		kind  string
+		value int64
+	}{
+		{string(search.WorkQueryTerms), stats.QueryTerms},
+		{string(search.WorkDictionaryVisits), stats.DictionaryVisits},
+		{string(search.WorkPostingVisits), stats.PostingVisits},
+		{string(search.WorkPositionVisits), stats.PositionVisits},
+	} {
+		m.searchWork.WithLabelValues(item.kind).Observe(float64(item.value))
+	}
 }
 
 // BindSampler stores the gauge-population callback. Must be called before

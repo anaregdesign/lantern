@@ -1,12 +1,62 @@
 package search
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"sort"
 	"strings"
 	"testing"
 )
+
+func TestSearchMatchTopKContextBudgets(t *testing.T) {
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID, WithPositions())
+	for i := 0; i < 20; i++ {
+		idx.Index(fmt.Sprintf("doc-%02d", i), Text(fmt.Sprintf("alpha beta term%02d", i)))
+	}
+	tests := []struct {
+		name   string
+		query  string
+		opts   MatchOptions
+		budget Budget
+		kind   WorkKind
+	}{
+		{"query terms", "alpha beta", MatchOptions{}, Budget{MaxQueryTerms: 1}, WorkQueryTerms},
+		{"posting visits", "alpha", MatchOptions{}, Budget{MaxPostingVisits: 5}, WorkPostingVisits},
+		{"dictionary visits", "termzz", MatchOptions{Fuzziness: 1}, Budget{MaxDictionaryVisits: 5}, WorkDictionaryVisits},
+		{"position visits", "alpha beta", MatchOptions{}, Budget{MaxPositionVisits: 1}, WorkPositionVisits},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, stats, err := idx.SearchMatchTopKContext(context.Background(), tc.query, 10, nil, tc.opts, tc.budget)
+			if got != nil || !errors.Is(err, ErrBudgetExceeded) {
+				t.Fatalf("results=%v stats=%+v err=%v, want no partial results + exhaustion", got, stats, err)
+			}
+			var exhausted *BudgetExceededError
+			if !errors.As(err, &exhausted) || exhausted.Kind != tc.kind {
+				t.Fatalf("error = %#v, want kind %s", err, tc.kind)
+			}
+		})
+	}
+}
+
+func TestSearchMatchTopKContextCancellationReleasesWriter(t *testing.T) {
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID)
+	for i := 0; i < 100; i++ {
+		idx.Index(fmt.Sprintf("doc-%05d", i), Text(fmt.Sprintf("candidate%05d", i)))
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, err := idx.SearchMatchTopKContext(ctx, "candidata", 10, nil, MatchOptions{Fuzziness: 2}, Budget{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("search error = %v, want context.Canceled", err)
+	}
+
+	// Index takes the write lock, so completing proves the canceled read path
+	// released its RLock before returning.
+	idx.Index("writer", Text("writer progress"))
+}
 
 // TestSearchMatchModes covers the three modes on a word-only analyzer, where
 // every match is a word match so the modes reduce to textbook boolean logic.

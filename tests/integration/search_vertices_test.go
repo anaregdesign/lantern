@@ -42,6 +42,11 @@ func searchVertexDocument(v *pb.Vertex) search.Document {
 
 func wireSearchErrorReason(t *testing.T, err error) pb.SearchErrorReason {
 	t.Helper()
+	return wireSearchErrorDetail(t, err).GetReason()
+}
+
+func wireSearchErrorDetail(t *testing.T, err error) *pb.SearchErrorDetail {
+	t.Helper()
 	var connectErr *connect.Error
 	if !errors.As(err, &connectErr) {
 		t.Fatalf("error %T is not *connect.Error", err)
@@ -52,11 +57,11 @@ func wireSearchErrorReason(t *testing.T, err error) pb.SearchErrorReason {
 			t.Fatalf("decode error detail: %v", valueErr)
 		}
 		if searchDetail, ok := value.(*pb.SearchErrorDetail); ok {
-			return searchDetail.GetReason()
+			return searchDetail
 		}
 	}
 	t.Fatalf("SearchErrorDetail missing from wire error: %v", err)
-	return pb.SearchErrorReason_SEARCH_ERROR_REASON_UNSPECIFIED
+	return nil
 }
 
 // newSearchRawClient stands up a Connect server whose GraphCache has the
@@ -84,6 +89,30 @@ func newSearchRawClientWithLimits(t *testing.T, limits service.SearchLimits) gra
 	srv := newConnectTestServer(t, svc, nil)
 	return graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
 }
+
+type wireSearchExecution struct {
+	outcome string
+	reason  string
+	stats   search.Stats
+}
+
+type wireSearchMetrics struct {
+	executions chan wireSearchExecution
+}
+
+func (m *wireSearchMetrics) OnIlluminate(string, string, string, string, int, int, time.Duration, time.Duration) {
+}
+func (m *wireSearchMetrics) OnIlluminateResult(string, string, string, string, string, string) {
+}
+func (m *wireSearchMetrics) OnScan(string, int, time.Duration) {}
+func (m *wireSearchMetrics) OnSearch(int, time.Duration)       {}
+func (m *wireSearchMetrics) OnSearchExecution(outcome, reason string, stats search.Stats) {
+	m.executions <- wireSearchExecution{outcome: outcome, reason: reason, stats: stats}
+}
+func (m *wireSearchMetrics) OnBatch(string, int)      {}
+func (m *wireSearchMetrics) OnGetVertices(int, int)   {}
+func (m *wireSearchMetrics) OnGetEdges(int, int)      {}
+func (m *wireSearchMetrics) OnEdgeContribDeduped(int) {}
 
 // TestSearchVertices_OptionsContract proves the #1055 decision table over the
 // real Connect/h2c path. In particular, adding fuzziness must not turn an
@@ -153,6 +182,217 @@ func TestSearchVertices_OptionsContract(t *testing.T) {
 				t.Fatalf("code = %v, want InvalidArgument (err=%v)", got, err)
 			}
 		})
+	}
+}
+
+func TestSearchVertices_ExecutionBudgetsOverWire(t *testing.T) {
+	tests := []struct {
+		name     string
+		limits   service.SearchLimits
+		query    string
+		options  *pb.SearchOptions
+		seed     []string
+		workKind string
+	}{
+		{
+			name:     "query bytes",
+			limits:   service.SearchLimits{Enabled: true, PositionsEnabled: true, DefaultLimit: 10, MaxLimit: 100, MaxQueryBytes: 4},
+			query:    "12345",
+			workKind: "query_bytes",
+		},
+		{
+			name:     "query terms",
+			limits:   service.SearchLimits{Enabled: true, PositionsEnabled: true, DefaultLimit: 10, MaxLimit: 100, WorkBudget: search.Budget{MaxQueryTerms: 1}},
+			query:    "alpha beta",
+			workKind: string(search.WorkQueryTerms),
+		},
+		{
+			name:     "dictionary visits",
+			limits:   service.SearchLimits{Enabled: true, PositionsEnabled: true, DefaultLimit: 10, MaxLimit: 100, WorkBudget: search.Budget{MaxDictionaryVisits: 1}},
+			query:    "zzzzz",
+			options:  &pb.SearchOptions{Fuzziness: 1},
+			seed:     []string{"alpha", "bravo", "charlie"},
+			workKind: string(search.WorkDictionaryVisits),
+		},
+		{
+			name:     "posting visits",
+			limits:   service.SearchLimits{Enabled: true, PositionsEnabled: true, DefaultLimit: 10, MaxLimit: 100, WorkBudget: search.Budget{MaxPostingVisits: 1}},
+			query:    "alpha",
+			seed:     []string{"alpha", "alpha", "alpha"},
+			workKind: string(search.WorkPostingVisits),
+		},
+		{
+			name:     "position visits",
+			limits:   service.SearchLimits{Enabled: true, PositionsEnabled: true, DefaultLimit: 10, MaxLimit: 100, WorkBudget: search.Budget{MaxPositionVisits: 1}},
+			query:    "alpha beta",
+			options:  &pb.SearchOptions{Phrase: true},
+			seed:     []string{"alpha beta"},
+			workKind: string(search.WorkPositionVisits),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newSearchRawClientWithLimits(t, tc.limits)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if len(tc.seed) > 0 {
+				vertices := make([]*pb.Vertex, len(tc.seed))
+				for i, value := range tc.seed {
+					vertices[i] = &pb.Vertex{
+						Key:        fmt.Sprintf("budget/%s/%d", strings.ReplaceAll(tc.name, " ", "-"), i),
+						Value:      &pb.Vertex_String_{String_: value},
+						Expiration: timestamppb.New(time.Now().Add(time.Hour)),
+					}
+				}
+				if _, err := c.PutVertices(ctx, connect.NewRequest(&pb.PutVerticesRequest{Vertices: vertices})); err != nil {
+					t.Fatalf("PutVertices: %v", err)
+				}
+			}
+
+			resp, err := c.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{Query: tc.query, Options: tc.options}))
+			if resp != nil {
+				t.Fatalf("response = %+v, want nil on budget exhaustion", resp)
+			}
+			if got := connect.CodeOf(err); got != connect.CodeResourceExhausted {
+				t.Fatalf("code = %v, want ResourceExhausted (err=%v)", got, err)
+			}
+			detail := wireSearchErrorDetail(t, err)
+			if detail.GetReason() != pb.SearchErrorReason_SEARCH_WORK_BUDGET_EXHAUSTED || detail.GetWorkKind() != tc.workKind {
+				t.Fatalf("detail = %+v, want work-budget/%s", detail, tc.workKind)
+			}
+		})
+	}
+}
+
+func TestSearchVertices_ServerTimeoutOverWire(t *testing.T) {
+	c := newSearchRawClientWithLimits(t, service.SearchLimits{
+		Enabled:          true,
+		PositionsEnabled: true,
+		DefaultLimit:     10,
+		MaxLimit:         100,
+		Timeout:          time.Nanosecond,
+	})
+	_, err := c.SearchVertices(context.Background(), connect.NewRequest(&pb.SearchVerticesRequest{Query: "alpha"}))
+	if got := connect.CodeOf(err); got != connect.CodeDeadlineExceeded {
+		t.Fatalf("code = %v, want DeadlineExceeded (err=%v)", got, err)
+	}
+
+	statusClient := newSearchRawClientWithLimits(t, service.SearchLimits{
+		Enabled:          true,
+		PositionsEnabled: true,
+		DefaultLimit:     10,
+		MaxLimit:         100,
+		Timeout:          1500 * time.Millisecond,
+		MaxQueryBytes:    123,
+		WorkBudget: search.Budget{
+			MaxQueryTerms:       12,
+			MaxDictionaryVisits: 34,
+			MaxPostingVisits:    56,
+			MaxPositionVisits:   78,
+		},
+		MaxInFlight: 9,
+	})
+	status, err := statusClient.GetServerStatus(context.Background(), connect.NewRequest(&pb.GetServerStatusRequest{}))
+	if err != nil {
+		t.Fatalf("GetServerStatus: %v", err)
+	}
+	got := status.Msg.GetSearch()
+	if got.GetTimeoutMs() != 1500 || got.GetMaxQueryBytes() != 123 || got.GetMaxQueryTerms() != 12 ||
+		got.GetMaxDictionaryVisits() != 34 || got.GetMaxPostingVisits() != 56 ||
+		got.GetMaxPositionVisits() != 78 || got.GetMaxInFlight() != 9 {
+		t.Fatalf("execution capabilities = %+v, want configured limits", got)
+	}
+}
+
+func TestSearchVertices_CancellationAndAdmissionOverWire(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+	cache.EnablePrefixIndex(func(k string) string { return k })
+	cache.EnableSearchIndex(searchVertexDocument, strings.Compare)
+	expiration := time.Now().Add(time.Hour)
+	items := make([]graphcache.VertexItem[string, *pb.Vertex], 15_000)
+	for i := range items {
+		key := fmt.Sprintf("load/%05d", i)
+		items[i] = graphcache.VertexItem[string, *pb.Vertex]{
+			Key:        key,
+			Value:      &pb.Vertex{Key: key, Value: &pb.Vertex_String_{String_: fmt.Sprintf("candidate%05d", i)}},
+			Expiration: expiration,
+		}
+	}
+	cache.PutVerticesWithExpiration(items)
+
+	metrics := &wireSearchMetrics{executions: make(chan wireSearchExecution, 32)}
+	svc := service.NewLanternService(cache).WithSearchLimits(service.SearchLimits{
+		Enabled:          true,
+		PositionsEnabled: true,
+		DefaultLimit:     10,
+		MaxLimit:         100,
+		Timeout:          5 * time.Second,
+		MaxInFlight:      1,
+	}).WithHotPathMetrics(metrics)
+	srv := newConnectTestServer(t, svc, nil)
+	c := graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
+
+	terms := make([]string, 12)
+	for i := range terms {
+		terms[i] = fmt.Sprintf("candidatx%05d", i)
+	}
+	heavy := &pb.SearchVerticesRequest{
+		Query:   strings.Join(terms, " "),
+		Options: &pb.SearchOptions{Fuzziness: 1},
+	}
+	heavyCtx, cancelHeavy := context.WithCancel(context.Background())
+	heavyDone := make(chan error, 1)
+	go func() {
+		_, err := c.SearchVertices(heavyCtx, connect.NewRequest(heavy))
+		heavyDone <- err
+	}()
+	time.Sleep(10 * time.Millisecond)
+
+	// An admission rejection proves the heavy call has crossed the real h2c
+	// boundary and acquired the only execution slot. Cancel only after that
+	// signal, so this exercises cancellation after backend entry.
+	var admissionErr error
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		_, err := c.SearchVertices(context.Background(), connect.NewRequest(&pb.SearchVerticesRequest{Query: "probe"}))
+		if connect.CodeOf(err) == connect.CodeResourceExhausted {
+			admissionErr = err
+			break
+		}
+		select {
+		case err := <-heavyDone:
+			t.Fatalf("heavy search finished before admission was observable: %v", err)
+		default:
+		}
+	}
+	if admissionErr == nil {
+		t.Fatal("did not observe admission saturation while heavy search was active")
+	}
+	admissionDetail := wireSearchErrorDetail(t, admissionErr)
+	if admissionDetail.GetReason() != pb.SearchErrorReason_SEARCH_ADMISSION_SATURATED {
+		t.Fatalf("admission detail = %+v, want SEARCH_ADMISSION_SATURATED", admissionDetail)
+	}
+
+	cancelHeavy()
+	if err := <-heavyDone; connect.CodeOf(err) != connect.CodeCanceled {
+		t.Fatalf("heavy search error = %v, want Canceled", err)
+	}
+
+	metricDeadline := time.NewTimer(2 * time.Second)
+	defer metricDeadline.Stop()
+	for {
+		select {
+		case observation := <-metrics.executions:
+			if observation.outcome != "canceled" {
+				continue
+			}
+			if observation.reason != "canceled" || observation.stats.DictionaryVisits == 0 {
+				t.Fatalf("canceled observation = %+v, want dictionary work before cancellation", observation)
+			}
+			return
+		case <-metricDeadline.C:
+			t.Fatal("server did not publish the canceled execution observation")
+		}
 	}
 }
 
@@ -320,6 +560,35 @@ func TestSearchVertices_SDKForwarder(t *testing.T) {
 			t.Fatalf("SearchFailureReason = %v, want SEARCH_DISABLED", got)
 		}
 	})
+}
+
+func TestSearchVertices_SDKExecutionError(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+	cache.EnablePrefixIndex(func(k string) string { return k })
+	cache.EnableSearchIndex(searchVertexDocument, strings.Compare)
+	svc := service.NewLanternService(cache).WithSearchLimits(service.SearchLimits{
+		Enabled:          true,
+		PositionsEnabled: true,
+		DefaultLimit:     10,
+		MaxLimit:         100,
+		MaxQueryBytes:    4,
+	})
+	srv := newConnectTestServer(t, svc, nil)
+	l := newConnectClientFor(t, srv.url)
+
+	hits, err := l.SearchVertices(context.Background(), "12345")
+	if hits != nil {
+		t.Fatalf("hits = %+v, want nil", hits)
+	}
+	if !errors.Is(err, client.ErrResourceExhausted) || !errors.Is(err, client.ErrSearchWorkBudget) {
+		t.Fatalf("error = %v, want resource + search-budget sentinels", err)
+	}
+	if got := client.SearchFailureReason(err); got != client.SearchErrorReasonWorkBudget {
+		t.Fatalf("SearchFailureReason = %v, want work budget", got)
+	}
+	if got := client.SearchFailureWorkKind(err); got != "query_bytes" {
+		t.Fatalf("SearchFailureWorkKind = %q, want query_bytes", got)
+	}
 }
 
 // TestSearchVertices_IncrementalLatestInputWins drives the Go SDK's

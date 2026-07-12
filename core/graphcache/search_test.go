@@ -1,6 +1,8 @@
 package graphcache
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"reflect"
@@ -25,6 +27,55 @@ func keys(results []search.Result[string]) []string {
 		out[i] = r.ID
 	}
 	return out
+}
+
+func TestGraphCache_SearchConcurrentMutationAndCancellation(t *testing.T) {
+	c := NewGraphCache[string, string](time.Minute)
+	c.EnableSearchIndex(textExtract, compareStringID)
+	for i := 0; i < 200; i++ {
+		c.PutVertex(fmt.Sprintf("seed-%03d", i), "alpha beta")
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, 3)
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 500; i++ {
+			c.PutVertex(fmt.Sprintf("hot-%03d", i%50), "alpha beta gamma")
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 500; i++ {
+			c.DeleteVertex(fmt.Sprintf("hot-%03d", i%50))
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 500; i++ {
+			ctx, cancel := context.WithCancel(context.Background())
+			if i%2 == 0 {
+				cancel()
+			}
+			_, _, err := c.SearchVerticesMatchContext(ctx, "alpha beta", 10, "", search.MatchOptions{}, false, search.Budget{})
+			cancel()
+			if err != nil && !errors.Is(err, context.Canceled) {
+				errs <- err
+				return
+			}
+		}
+	}()
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent search: %v", err)
+	}
 }
 
 func TestGraphCache_SearchDisabledByDefault(t *testing.T) {

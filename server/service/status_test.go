@@ -112,6 +112,15 @@ func TestLanternService_GetServerStatus(t *testing.T) {
 			MaxLimit:         250,
 			DefaultMode:      search.MatchMinShould,
 			DefaultMinShould: 2,
+			Timeout:          1500 * time.Millisecond,
+			MaxQueryBytes:    4096,
+			WorkBudget: search.Budget{
+				MaxQueryTerms:       12,
+				MaxDictionaryVisits: 34,
+				MaxPostingVisits:    56,
+				MaxPositionVisits:   78,
+			},
+			MaxInFlight: 9,
 		}
 		withPositions := NewLanternService(fb).WithSearchLimits(limits)
 		resp, err := withPositions.GetServerStatus(context.Background(), &pb.GetServerStatusRequest{})
@@ -130,6 +139,11 @@ func TestLanternService_GetServerStatus(t *testing.T) {
 		}
 		if got.GetMaxFuzziness() != 2 || got.GetAnalyzerVersion() == "" || got.GetProjectionVersion() == "" {
 			t.Errorf("search implementation capabilities incomplete: %+v", got)
+		}
+		if got.GetTimeoutMs() != 1500 || got.GetMaxQueryBytes() != 4096 || got.GetMaxQueryTerms() != 12 ||
+			got.GetMaxDictionaryVisits() != 34 || got.GetMaxPostingVisits() != 56 ||
+			got.GetMaxPositionVisits() != 78 || got.GetMaxInFlight() != 9 {
+			t.Errorf("search execution capabilities incomplete: %+v", got)
 		}
 		if len(got.GetConfigFingerprint()) != 64 {
 			t.Errorf("fingerprint length = %d, want 64 hex chars", len(got.GetConfigFingerprint()))

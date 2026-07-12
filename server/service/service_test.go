@@ -1425,14 +1425,15 @@ func itoa(i int) string {
 // fakeHotPathMetrics captures one observation per RPC so tests can assert
 // the service-layer instrumentation hooks fire on the right callbacks.
 type fakeHotPathMetrics struct {
-	illuminate []illuminateObs
-	results    []illuminateResultObs
-	scan       []scanObs
-	search     []searchObs
-	batch      []batchObs
-	getVertex  []hitMissObs
-	getEdge    []hitMissObs
-	contribDed []int
+	illuminate      []illuminateObs
+	results         []illuminateResultObs
+	scan            []scanObs
+	search          []searchObs
+	searchExecution []searchExecutionObs
+	batch           []batchObs
+	getVertex       []hitMissObs
+	getEdge         []hitMissObs
+	contribDed      []int
 }
 
 type illuminateObs struct {
@@ -1456,6 +1457,12 @@ type searchObs struct {
 	duration time.Duration
 }
 
+type searchExecutionObs struct {
+	outcome string
+	reason  string
+	stats   search.Stats
+}
+
 type batchObs struct {
 	op   string
 	size int
@@ -1477,6 +1484,9 @@ func (f *fakeHotPathMetrics) OnScan(op string, results int, d time.Duration) {
 }
 func (f *fakeHotPathMetrics) OnSearch(results int, d time.Duration) {
 	f.search = append(f.search, searchObs{results, d})
+}
+func (f *fakeHotPathMetrics) OnSearchExecution(outcome, reason string, stats search.Stats) {
+	f.searchExecution = append(f.searchExecution, searchExecutionObs{outcome, reason, stats})
 }
 func (f *fakeHotPathMetrics) OnBatch(op string, size int) {
 	f.batch = append(f.batch, batchObs{op, size})
@@ -1622,6 +1632,9 @@ func TestLanternService_HotPathMetrics_EmitsOnSearch(t *testing.T) {
 	}
 	if fm.search[0].duration <= 0 {
 		t.Errorf("OnSearch duration = %v, want > 0", fm.search[0].duration)
+	}
+	if len(fm.searchExecution) != 1 || fm.searchExecution[0].outcome != "ok" || fm.searchExecution[0].reason != "none" {
+		t.Errorf("OnSearchExecution observations = %+v, want one ok/none", fm.searchExecution)
 	}
 }
 

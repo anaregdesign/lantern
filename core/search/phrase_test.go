@@ -1,12 +1,29 @@
 package search
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"math"
 	"slices"
 	"sort"
 	"testing"
 )
+
+func TestSearchPhraseTopKContextPositionBudget(t *testing.T) {
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID, WithPositions())
+	idx.Index("doc", Text("data set data set"))
+	got, stats, err := idx.SearchPhraseTopKContext(
+		context.Background(), "data set", 10, nil, Budget{MaxPositionVisits: 1},
+	)
+	if got != nil || !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("results=%v stats=%+v err=%v, want position exhaustion", got, stats, err)
+	}
+	var exhausted *BudgetExceededError
+	if !errors.As(err, &exhausted) || exhausted.Kind != WorkPositionVisits {
+		t.Fatalf("error = %#v, want position kind", err)
+	}
+}
 
 // TestSearchPhrase covers phrase matching over the primary word channel: the
 // query's terms must occur at consecutive positions, so an adjacent phrase
