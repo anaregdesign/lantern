@@ -1,9 +1,12 @@
 package provider
 
 import (
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/anaregdesign/lantern/core/graphcache"
+	"github.com/anaregdesign/lantern/core/search"
 	v1 "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
@@ -37,6 +40,11 @@ func TestVertexSearchDocument(t *testing.T) {
 			name:   "bytes value passes through as text",
 			vertex: &v1.Vertex{Key: "blob", Value: &v1.Vertex_Bytes{Bytes: []byte("hello")}},
 			want:   "blob hello",
+		},
+		{
+			name:   "invalid UTF-8 bytes are treated as binary",
+			vertex: &v1.Vertex{Key: "blob", Value: &v1.Vertex_Bytes{Bytes: []byte{0xff, 0xfe}}},
+			want:   "blob",
 		},
 		{
 			name:   "int64 value formatted decimally",
@@ -80,6 +88,36 @@ func TestVertexSearchDocument(t *testing.T) {
 				t.Errorf("vertexSearchDocument = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestNewGraphCacheSearchDocumentBudgetsCoverJSONAndBytes(t *testing.T) {
+	limits := search.SearchAnalysisLimits{
+		MaxDocumentBytes: 7, MaxDocumentTokens: 100, MaxDocumentTerms: 100,
+		MaxLiveTerms: 100, MaxLivePostings: 100, MaxPositionEntries: 100,
+		CompactionRatio: 2, CompactionMinRetired: 1,
+	}
+	newCache := func() *graphcache.GraphCache[string, *v1.Vertex] {
+		return NewGraphCache(CacheConfig{TTL: time.Minute}, SearchConfig{Enabled: true, AnalysisLimits: limits})
+	}
+	for _, tc := range []struct {
+		name   string
+		vertex *v1.Vertex
+	}{
+		{"JSON string values", &v1.Vertex{Key: "k", Value: &v1.Vertex_String_{String_: `{"field":"123456"}`}}},
+		{"valid UTF-8 bytes", &v1.Vertex{Key: "k", Value: &v1.Vertex_Bytes{Bytes: []byte("123456")}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := newCache().PutVertex(tc.vertex.GetKey(), tc.vertex)
+			var limit *search.AnalysisLimitError
+			if !errors.As(err, &limit) || limit.Kind != search.LimitDocumentBytes {
+				t.Fatalf("PutVertex error = %v", err)
+			}
+		})
+	}
+	invalid := &v1.Vertex{Key: "k", Value: &v1.Vertex_Bytes{Bytes: []byte{0xff, 0xfe, 0xfd}}}
+	if err := newCache().PutVertex("k", invalid); err != nil {
+		t.Fatalf("binary bytes should index key only: %v", err)
 	}
 }
 

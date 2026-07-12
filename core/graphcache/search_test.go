@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/search"
 )
 
@@ -18,6 +19,83 @@ import (
 // the stored string value itself the searchable document.
 func textExtract(s string) search.Document { return search.Text(s) }
 func compareStringID(a, b string) int      { return strings.Compare(a, b) }
+
+func TestGraphCacheSearchAnalysisLimits(t *testing.T) {
+	limits := search.SearchAnalysisLimits{
+		MaxDocumentBytes:     8,
+		MaxDocumentTokens:    20,
+		MaxDocumentTerms:     20,
+		MaxLiveTerms:         20,
+		MaxLivePostings:      20,
+		MaxPositionEntries:   20,
+		CompactionRatio:      2,
+		CompactionMinRetired: 1,
+	}
+	newCache := func() *GraphCache[string, string] {
+		c := NewGraphCache[string, string](time.Minute)
+		c.EnableSearchIndex(textExtract, compareStringID, WithSearchAnalysisLimits(limits))
+		return c
+	}
+
+	t.Run("local batch atomic", func(t *testing.T) {
+		c := newCache()
+		err := c.PutVerticesWithExpirationChecked([]VertexItem[string, string]{
+			{Key: "ok", Value: "small", Expiration: time.Now().Add(time.Minute)},
+			{Key: "bad", Value: "too-large", Expiration: time.Now().Add(time.Minute)},
+		})
+		var limit *search.AnalysisLimitError
+		if !errors.As(err, &limit) || limit.Kind != search.LimitDocumentBytes {
+			t.Fatalf("error = %v", err)
+		}
+		if _, ok := c.GetVertex("ok"); ok {
+			t.Fatal("valid prefix of rejected batch committed")
+		}
+		if got := c.SearchIndexMemoryStats().Documents; got != 0 {
+			t.Fatalf("indexed docs = %d", got)
+		}
+	})
+
+	t.Run("if absent ignores oversized skipped item", func(t *testing.T) {
+		c := newCache()
+		if err := c.PutVerticesWithExpirationChecked([]VertexItem[string, string]{{Key: "taken", Value: "old", Expiration: time.Now().Add(time.Minute)}}); err != nil {
+			t.Fatal(err)
+		}
+		written, skipped, err := c.PutVerticesWithExpirationIfAbsentChecked([]VertexItem[string, string]{
+			{Key: "taken", Value: "too-large", Expiration: time.Now().Add(time.Minute)},
+			{Key: "fresh", Value: "new", Expiration: time.Now().Add(time.Minute)},
+		})
+		if err != nil || written != 1 || !reflect.DeepEqual(skipped, []string{"taken"}) {
+			t.Fatalf("written=%d skipped=%v err=%v", written, skipped, err)
+		}
+		if got, _ := c.GetVertex("fresh"); got != "new" {
+			t.Fatalf("fresh = %q", got)
+		}
+	})
+
+	t.Run("replication converges graph and fails search closed", func(t *testing.T) {
+		c := newCache()
+		c.PutVerticesWithExpirationHLC([]VertexItem[string, string]{{Key: "legacy", Value: "too-large", Expiration: time.Now().Add(time.Minute)}}, hlc.Timestamp{WallNs: 1})
+		if got, ok := c.GetVertex("legacy"); !ok || got != "too-large" {
+			t.Fatalf("replicated graph value = %q, %t", got, ok)
+		}
+		if got := c.SearchIndexMemoryStats().Health; got != search.IndexIncomplete {
+			t.Fatalf("health = %q", got)
+		}
+		if _, _, err := c.SearchVerticesMatchContext(context.Background(), "large", 10, "", search.MatchOptions{}, false, search.Budget{}); !errors.Is(err, search.ErrIndexIncomplete) {
+			t.Fatalf("search err = %v", err)
+		}
+		if err := c.RebuildSearchIndex(); err == nil {
+			t.Fatal("rebuild unexpectedly accepted the oversized live value")
+		}
+		if got := c.SearchIndexMemoryStats().Health; got != search.IndexIncomplete {
+			t.Fatalf("health after failed rebuild = %q", got)
+		}
+		c.DeleteVertex("legacy")
+		if got := c.SearchIndexMemoryStats().Health; got != search.IndexHealthy {
+			t.Fatalf("automatic bounded rebuild health = %q", got)
+		}
+	})
+}
 
 // keys returns just the IDs of a ranked result set, in rank order, for terse
 // assertions.

@@ -83,11 +83,80 @@ func newSearchRawClientWithLimits(t *testing.T, limits service.SearchLimits) gra
 	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 	cache.EnablePrefixIndex(func(k string) string { return k })
 	if limits.Enabled {
-		cache.EnableSearchIndex(searchVertexDocument, strings.Compare)
+		cache.EnableSearchIndex(searchVertexDocument, strings.Compare, graphcache.WithSearchAnalysisLimits(limits.AnalysisLimits))
 	}
 	svc := service.NewLanternService(cache).WithSearchLimits(limits)
 	srv := newConnectTestServer(t, svc, nil)
 	return graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
+}
+
+func TestSearchIndexWriteBudgetsOverWire(t *testing.T) {
+	limits := service.SearchLimits{
+		Enabled: true, PositionsEnabled: true, DefaultLimit: 10, MaxLimit: 100,
+		AnalysisLimits: search.SearchAnalysisLimits{
+			MaxDocumentBytes: 8, MaxDocumentTokens: 20, MaxDocumentTerms: 20,
+			MaxLiveTerms: 20, MaxLivePostings: 20, MaxPositionEntries: 20,
+			CompactionRatio: 2, CompactionMinRetired: 1,
+		},
+	}
+	c := newSearchRawClientWithLimits(t, limits)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	exp := timestamppb.New(time.Now().Add(time.Hour))
+	_, err := c.PutVertices(ctx, connect.NewRequest(&pb.PutVerticesRequest{Vertices: []*pb.Vertex{
+		{Key: "a", Value: &pb.Vertex_String_{String_: "ok"}, Expiration: exp},
+		{Key: "b", Value: &pb.Vertex_String_{String_: "oversized"}, Expiration: exp},
+	}}))
+	if got := connect.CodeOf(err); got != connect.CodeResourceExhausted {
+		t.Fatalf("code = %v, want ResourceExhausted (err=%v)", got, err)
+	}
+	detail := wireSearchErrorDetail(t, err)
+	if detail.GetReason() != pb.SearchErrorReason_SEARCH_INDEX_BUDGET_EXHAUSTED || detail.GetWorkKind() != string(search.LimitDocumentBytes) {
+		t.Fatalf("detail = %+v", detail)
+	}
+	for _, key := range []string{"a", "b"} {
+		_, getErr := c.GetVertex(ctx, connect.NewRequest(&pb.GetVertexRequest{Key: key}))
+		if connect.CodeOf(getErr) != connect.CodeNotFound {
+			t.Fatalf("GetVertex(%q) err = %v, batch was not atomic", key, getErr)
+		}
+	}
+	if _, err := c.PutVertex(ctx, connect.NewRequest(&pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "c", Value: &pb.Vertex_String_{String_: "ok"}, Expiration: exp}})); err != nil {
+		t.Fatalf("small PutVertex: %v", err)
+	}
+}
+
+func TestSearchIndexRestoreConvergenceOverWire(t *testing.T) {
+	analysis := search.SearchAnalysisLimits{
+		MaxDocumentBytes: 8, MaxDocumentTokens: 20, MaxDocumentTerms: 20,
+		MaxLiveTerms: 20, MaxLivePostings: 20, MaxPositionEntries: 20,
+		CompactionRatio: 2, CompactionMinRetired: 1,
+	}
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+	cache.EnablePrefixIndex(func(key string) string { return key })
+	cache.EnableSearchIndex(searchVertexDocument, strings.Compare, graphcache.WithSearchAnalysisLimits(analysis))
+	svc := service.NewLanternService(cache).WithSearchLimits(service.SearchLimits{Enabled: true, PositionsEnabled: true, DefaultLimit: 10, MaxLimit: 100, AnalysisLimits: analysis})
+	exp := timestamppb.New(time.Now().Add(time.Hour))
+	if _, err := svc.RestoreVertices(context.Background(), &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: "legacy", Value: &pb.Vertex_String_{String_: "oversized"}, Expiration: exp}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := newConnectTestServer(t, svc, nil)
+	c := graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if got, err := c.GetVertex(ctx, connect.NewRequest(&pb.GetVertexRequest{Key: "legacy"})); err != nil || got.Msg.GetVertex().GetString_() != "oversized" {
+		t.Fatalf("restored graph value = %+v err=%v", got, err)
+	}
+	_, err := c.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{Query: "legacy"}))
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition || wireSearchErrorReason(t, err) != pb.SearchErrorReason_SEARCH_INDEX_INCOMPLETE {
+		t.Fatalf("incomplete search err = %v", err)
+	}
+	if _, err := c.DeleteVertex(ctx, connect.NewRequest(&pb.DeleteVertexRequest{Key: "legacy"})); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{Query: "legacy"})); err != nil {
+		t.Fatalf("search after automatic bounded rebuild: %v", err)
+	}
 }
 
 type wireSearchExecution struct {

@@ -92,6 +92,7 @@ type fakeBackend struct {
 	addEdgesContribCalls int
 	lastAddEdgesItems    []graphcache.EdgeItem[string]
 	dedupReturn          int
+	searchStats          search.IndexMemoryStats
 }
 
 func newFakeBackend() *fakeBackend {
@@ -113,6 +114,11 @@ func (f *fakeBackend) PutVerticesWithExpiration(items []graphcache.VertexItem[st
 	}
 }
 
+func (f *fakeBackend) PutVerticesWithExpirationChecked(items []graphcache.VertexItem[string, *pb.Vertex]) error {
+	f.PutVerticesWithExpiration(items)
+	return nil
+}
+
 func (f *fakeBackend) PutVerticesWithExpirationIfAbsent(items []graphcache.VertexItem[string, *pb.Vertex]) (int, []string) {
 	f.putVerticesCalls++
 	written := 0
@@ -128,6 +134,11 @@ func (f *fakeBackend) PutVerticesWithExpirationIfAbsent(items []graphcache.Verte
 	return written, skipped
 }
 
+func (f *fakeBackend) PutVerticesWithExpirationIfAbsentChecked(items []graphcache.VertexItem[string, *pb.Vertex]) (int, []string, error) {
+	written, skipped := f.PutVerticesWithExpirationIfAbsent(items)
+	return written, skipped, nil
+}
+
 func (f *fakeBackend) PutVerticesWithExpirationIfAbsentHLC(items []graphcache.VertexItem[string, *pb.Vertex], _ hlc.Timestamp) ([]int, []string) {
 	f.putVerticesCalls++
 	var writtenIdx []int
@@ -141,6 +152,11 @@ func (f *fakeBackend) PutVerticesWithExpirationIfAbsentHLC(items []graphcache.Ve
 		writtenIdx = append(writtenIdx, i)
 	}
 	return writtenIdx, skipped
+}
+
+func (f *fakeBackend) PutVerticesWithExpirationIfAbsentHLCChecked(items []graphcache.VertexItem[string, *pb.Vertex], ts hlc.Timestamp) ([]int, []string, error) {
+	written, skipped := f.PutVerticesWithExpirationIfAbsentHLC(items, ts)
+	return written, skipped, nil
 }
 
 func (f *fakeBackend) DeleteVertices(keys []string) int {
@@ -611,6 +627,14 @@ func (f *fakeBackend) PutEdgeWithExpirationHLC(tail, head string, w float32, _ t
 func (f *fakeBackend) PutVerticesWithExpirationHLC(items []graphcache.VertexItem[string, *pb.Vertex], _ hlc.Timestamp) int {
 	f.PutVerticesWithExpiration(items)
 	return 0
+}
+
+func (f *fakeBackend) PutVerticesWithExpirationHLCChecked(items []graphcache.VertexItem[string, *pb.Vertex], ts hlc.Timestamp) (int, error) {
+	return f.PutVerticesWithExpirationHLC(items, ts), nil
+}
+
+func (f *fakeBackend) SearchIndexMemoryStats() search.IndexMemoryStats {
+	return f.searchStats
 }
 
 func (f *fakeBackend) PutEdgesWithExpirationHLC(items []graphcache.EdgeItem[string], _ hlc.Timestamp) int {

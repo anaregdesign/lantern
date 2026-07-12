@@ -84,6 +84,9 @@ func (idx *InvertedIndex[S, D]) SearchMatchTopK(query string, k int, accept func
 // work accounting. It never returns partial results on error.
 func (idx *InvertedIndex[S, D]) SearchMatchTopKContext(ctx context.Context, query string, k int, accept func(id S) bool, opts MatchOptions, budget Budget) ([]Result[S], Stats, error) {
 	work := newWorkTracker(ctx, budget)
+	if idx.Health() != IndexHealthy {
+		return nil, work.stats, ErrIndexIncomplete
+	}
 	if k <= 0 {
 		return nil, work.stats, nil
 	}
@@ -97,6 +100,9 @@ func (idx *InvertedIndex[S, D]) SearchMatchTopKContext(ctx context.Context, quer
 
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
+	if idx.health != IndexHealthy {
+		return nil, work.stats, ErrIndexIncomplete
+	}
 
 	scores, err := idx.scoredMatchesTrackedLocked(queryTerms, opts, work)
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"math"
 	"sort"
 	"sync"
+	"time"
 )
 
 // InvertedIndex is a generic, in-memory inverted index that maps each
@@ -50,6 +51,7 @@ type InvertedIndex[S comparable, D Document] struct {
 	// WithProximityWeight so the relevance harness can sweep it. 0 disables the
 	// boost. Read without the lock — it never changes after construction.
 	proximityWeight float64
+	limits          SearchAnalysisLimits
 
 	mu sync.RWMutex
 	// classes holds one posting table per token class; a term's class is part
@@ -63,7 +65,12 @@ type InvertedIndex[S comparable, D Document] struct {
 	// docs is the forward index: document ordinal -> the id, per-class lengths,
 	// and term ids needed to score, return, and drop the document in
 	// O(terms-in-doc).
-	docs map[uint32]docEntry[S]
+	docs                map[uint32]docEntry[S]
+	livePostings        int64
+	livePositions       int64
+	health              IndexHealth
+	rebuildCount        uint64
+	lastRebuildDuration time.Duration
 }
 
 // classPostings is one token class's slice of the index: its term dictionary,
@@ -101,7 +108,8 @@ type docEntry[S comparable] struct {
 	// indexed under, per class (see termDict), used to drop its postings on
 	// delete or re-index. A []uint32 keeps the per-document forward index
 	// compact.
-	terms [numTokenClasses][]uint32
+	terms           [numTokenClasses][]uint32
+	positionEntries int
 }
 
 // IndexOption configures an InvertedIndex at construction time.
@@ -111,6 +119,7 @@ type IndexOption func(*indexConfig)
 type indexConfig struct {
 	positions       bool
 	proximityWeight float64
+	limits          SearchAnalysisLimits
 }
 
 // WithPositions makes the index record each term's token positions on the
@@ -134,6 +143,11 @@ func WithPositions() IndexOption {
 // WithPositions, since the boost needs the positional postings.
 func WithProximityWeight(w float64) IndexOption {
 	return func(c *indexConfig) { c.proximityWeight = w }
+}
+
+// WithAnalysisLimits installs hard per-document and aggregate index budgets.
+func WithAnalysisLimits(limits SearchAnalysisLimits) IndexOption {
+	return func(c *indexConfig) { c.limits = limits }
 }
 
 // NewInvertedIndex returns an empty index that analyzes both documents and
@@ -161,8 +175,10 @@ func NewInvertedIndex[S comparable, D Document](analyzer Analyzer, scorer Scorer
 		compareID:       compareID,
 		positions:       cfg.positions,
 		proximityWeight: cfg.proximityWeight,
+		limits:          cfg.limits,
 		ords:            newOrdinals[S](),
 		docs:            make(map[uint32]docEntry[S]),
+		health:          IndexHealthy,
 	}
 	for class := range idx.classes {
 		idx.classes[class] = classPostings{
@@ -177,15 +193,19 @@ func NewInvertedIndex[S comparable, D Document](analyzer Analyzer, scorer Scorer
 // doc.String(). Indexing an id that is already present replaces its previous
 // postings, so re-indexing a mutated document leaves no stale terms behind;
 // Index therefore doubles as update. A document with no analyzable terms simply
-// removes id.
+// removes id. Configured analysis/index limits are checked before mutation.
 //
 // Index is the analyze-then-write convenience wrapper over Prepare +
 // IndexPrepared: analysis runs outside idx.mu and only the cheap postings
 // mutation happens under it. Callers that want to keep analysis off a hotter
 // lock of their own (e.g. a layered cache writing under its aggregate lock)
 // should call Prepare before taking that lock and IndexPrepared after.
-func (idx *InvertedIndex[S, D]) Index(id S, doc D) {
-	idx.IndexPrepared(id, idx.Prepare(doc))
+func (idx *InvertedIndex[S, D]) Index(id S, doc D) error {
+	prepared, _, err := idx.Prepare(doc)
+	if err != nil {
+		return err
+	}
+	return idx.IndexPrepared(id, prepared)
 }
 
 // PreparedDocument carries the analyzed tokens of a document so the expensive
@@ -204,21 +224,66 @@ type PreparedItem[S comparable] struct {
 }
 
 // Prepare analyzes doc.String() WITHOUT taking the index lock and returns the
-// tokens IndexPrepared needs. The analyzer is immutable and stateless, so
-// Prepare is safe to call concurrently and from outside any of the caller's
-// locks.
-func (idx *InvertedIndex[S, D]) Prepare(doc D) PreparedDocument {
-	return PreparedDocument{tokens: idx.analyzer.Analyze(doc.String())}
+// bounded tokens IndexPrepared needs, their AnalysisStats, or a typed
+// AnalysisLimitError. The analyzer is immutable and stateless, so Prepare is
+// safe to call concurrently and from outside any of the caller's locks.
+func (idx *InvertedIndex[S, D]) Prepare(doc D) (PreparedDocument, AnalysisStats, error) {
+	if sized, ok := any(doc).(SizedDocument); ok {
+		hint := sized.SizeHint()
+		if err := limitError(LimitDocumentBytes, int64(hint), int64(idx.limits.MaxDocumentBytes)); err != nil {
+			return PreparedDocument{}, AnalysisStats{ProjectedBytes: hint}, err
+		}
+	}
+	text := doc.String()
+	stats := AnalysisStats{ProjectedBytes: len(text)}
+	if err := limitError(LimitDocumentBytes, int64(stats.ProjectedBytes), int64(idx.limits.MaxDocumentBytes)); err != nil {
+		return PreparedDocument{}, stats, err
+	}
+	var tokens []Token
+	if analyzer, ok := idx.analyzer.(boundedAnalyzer); ok {
+		var exceeded bool
+		tokens, exceeded = analyzer.AnalyzeBounded(text, idx.limits.MaxDocumentTokens)
+		if exceeded {
+			return PreparedDocument{}, stats, &AnalysisLimitError{Kind: LimitDocumentTokens, Got: int64(idx.limits.MaxDocumentTokens + 1), Limit: int64(idx.limits.MaxDocumentTokens)}
+		}
+	} else {
+		tokens = idx.analyzer.Analyze(text)
+	}
+	stats.Tokens = len(tokens)
+	if err := limitError(LimitDocumentTokens, int64(stats.Tokens), int64(idx.limits.MaxDocumentTokens)); err != nil {
+		return PreparedDocument{}, stats, err
+	}
+	seen := make(map[Token]struct{}, len(tokens))
+	for _, token := range tokens {
+		if int(token.Class) >= numTokenClasses {
+			panic("search: token with undefined TokenClass")
+		}
+		seen[token] = struct{}{}
+		if idx.positions && token.Class == ClassWord {
+			stats.PositionEntries++
+		}
+	}
+	stats.UniqueTerms = len(seen)
+	stats.Postings = len(seen)
+	if err := limitError(LimitDocumentTerms, int64(stats.UniqueTerms), int64(idx.limits.MaxDocumentTerms)); err != nil {
+		return PreparedDocument{}, stats, err
+	}
+	return PreparedDocument{tokens: tokens}, stats, nil
 }
 
 // IndexPrepared records id's postings from a PreparedDocument produced by
 // Prepare, taking idx.mu only for the postings mutation. Replace semantics match
 // Index: any previous postings for id are dropped first, and an empty prepared
 // document simply removes id.
-func (idx *InvertedIndex[S, D]) IndexPrepared(id S, prepared PreparedDocument) {
+func (idx *InvertedIndex[S, D]) IndexPrepared(id S, prepared PreparedDocument) error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
+	if err := idx.validatePreparedLocked([]PreparedItem[S]{{ID: id, Prepared: prepared}}); err != nil {
+		return err
+	}
 	idx.indexPreparedLocked(id, prepared.tokens)
+	idx.compactIfNeededLocked()
+	return nil
 }
 
 // IndexManyPrepared applies a batch of prepared documents under a SINGLE index
@@ -226,15 +291,58 @@ func (idx *InvertedIndex[S, D]) IndexPrepared(id S, prepared PreparedDocument) {
 // last-write semantics. It is the batch sibling of IndexPrepared for callers
 // (e.g. batch vertex writes) that have no other per-id work to interleave
 // between the postings updates (#739).
-func (idx *InvertedIndex[S, D]) IndexManyPrepared(items []PreparedItem[S]) {
+func (idx *InvertedIndex[S, D]) IndexManyPrepared(items []PreparedItem[S]) error {
+	if len(items) == 0 {
+		return nil
+	}
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	if err := idx.validatePreparedLocked(items); err != nil {
+		return err
+	}
+	for _, it := range finalPreparedItems(items) {
+		idx.indexPreparedLocked(it.ID, it.Prepared.tokens)
+	}
+	idx.compactIfNeededLocked()
+	return nil
+}
+
+// ValidateManyPrepared checks aggregate limits against the batch's final
+// replace state without mutating the index. A caller that serializes all index
+// writers with an outer lock may use this to preserve a larger transaction's
+// atomicity before applying the same batch.
+func (idx *InvertedIndex[S, D]) ValidateManyPrepared(items []PreparedItem[S]) error {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.validatePreparedLocked(items)
+}
+
+// IndexManyPreparedValidated applies a batch previously accepted by
+// ValidateManyPrepared. The caller must serialize intervening writers.
+func (idx *InvertedIndex[S, D]) IndexManyPreparedValidated(items []PreparedItem[S]) {
 	if len(items) == 0 {
 		return
 	}
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
-	for _, it := range items {
-		idx.indexPreparedLocked(it.ID, it.Prepared.tokens)
+	for _, item := range finalPreparedItems(items) {
+		idx.indexPreparedLocked(item.ID, item.Prepared.tokens)
 	}
+	idx.compactIfNeededLocked()
+}
+
+func finalPreparedItems[S comparable](items []PreparedItem[S]) []PreparedItem[S] {
+	last := make(map[S]int, len(items))
+	for i, item := range items {
+		last[item.ID] = i
+	}
+	out := make([]PreparedItem[S], 0, len(last))
+	for i, item := range items {
+		if last[item.ID] == i {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 // indexPreparedLocked is the shared postings-mutation core of IndexPrepared and
@@ -315,7 +423,101 @@ func (idx *InvertedIndex[S, D]) indexPreparedLocked(id S, tokens []Token) {
 		cp.totalLen += len(sorted)
 		cp.docCount++
 	}
+	if idx.positions {
+		entry.positionEntries = entry.lengths[ClassWord]
+	}
 	idx.docs[ord] = entry
+	for class := range entry.terms {
+		idx.livePostings += int64(len(entry.terms[class]))
+	}
+	idx.livePositions += int64(entry.positionEntries)
+}
+
+type termKey struct {
+	class TokenClass
+	term  string
+}
+
+// validatePreparedLocked evaluates the final state of a batch before any
+// posting mutation. Repeated IDs use last-write semantics, and replacements
+// subtract their old contribution, so a near-cap in-place update is accepted
+// without weakening the hard aggregate bounds.
+func (idx *InvertedIndex[S, D]) validatePreparedLocked(items []PreparedItem[S]) error {
+	if idx.limits.MaxLiveTerms <= 0 && idx.limits.MaxLivePostings <= 0 && idx.limits.MaxPositionEntries <= 0 {
+		return nil
+	}
+	last := make(map[S]PreparedDocument, len(items))
+	for _, item := range items {
+		last[item.ID] = item.Prepared
+	}
+	postings := idx.livePostings
+	positions := idx.livePositions
+	deltaDF := make(map[termKey]int)
+	baseDF := make(map[termKey]int)
+	loadDF := func(key termKey) int {
+		if n, ok := baseDF[key]; ok {
+			return n
+		}
+		cp := &idx.classes[key.class]
+		tid, ok := cp.dict.lookup(key.term)
+		if !ok {
+			baseDF[key] = 0
+			return 0
+		}
+		n := cp.postings[tid].cardinality()
+		baseDF[key] = n
+		return n
+	}
+	for id := range last {
+		if ord, ok := idx.ords.lookup(id); ok {
+			entry := idx.docs[ord]
+			for class := range entry.terms {
+				for _, tid := range entry.terms[class] {
+					key := termKey{class: TokenClass(class), term: idx.classes[class].dict.terms[tid]}
+					loadDF(key)
+					deltaDF[key]--
+					postings--
+				}
+			}
+			positions -= int64(entry.positionEntries)
+		}
+	}
+	for _, prepared := range last {
+		seen := make(map[termKey]struct{}, len(prepared.tokens))
+		for _, token := range prepared.tokens {
+			key := termKey{class: token.Class, term: token.Term}
+			if _, ok := seen[key]; !ok {
+				seen[key] = struct{}{}
+				loadDF(key)
+				deltaDF[key]++
+				postings++
+			}
+			if idx.positions && token.Class == ClassWord {
+				positions++
+			}
+		}
+	}
+	liveTerms := 0
+	for class := range idx.classes {
+		liveTerms += len(idx.classes[class].postings)
+	}
+	for key, delta := range deltaDF {
+		before := baseDF[key]
+		after := before + delta
+		if before == 0 && after > 0 {
+			liveTerms++
+		}
+		if before > 0 && after == 0 {
+			liveTerms--
+		}
+	}
+	if err := limitError(LimitLiveTerms, int64(liveTerms), int64(idx.limits.MaxLiveTerms)); err != nil {
+		return err
+	}
+	if err := limitError(LimitLivePostings, postings, idx.limits.MaxLivePostings); err != nil {
+		return err
+	}
+	return limitError(LimitPositionEntries, positions, idx.limits.MaxPositionEntries)
 }
 
 // Delete removes id and all of its postings from the index. It is a no-op when
@@ -325,6 +527,7 @@ func (idx *InvertedIndex[S, D]) Delete(id S) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 	idx.deleteLocked(id)
+	idx.compactIfNeededLocked()
 }
 
 // DeleteMany removes every id in ids and its postings under a single write
@@ -341,6 +544,7 @@ func (idx *InvertedIndex[S, D]) DeleteMany(ids []S) {
 	for _, id := range ids {
 		idx.deleteLocked(id)
 	}
+	idx.compactIfNeededLocked()
 }
 
 // deleteLocked removes id and its postings; callers must hold idx.mu for
@@ -352,6 +556,10 @@ func (idx *InvertedIndex[S, D]) deleteLocked(id S) {
 		return
 	}
 	entry := idx.docs[ord]
+	for class := range entry.terms {
+		idx.livePostings -= int64(len(entry.terms[class]))
+	}
+	idx.livePositions -= int64(entry.positionEntries)
 	for class := range entry.terms {
 		cp := &idx.classes[class]
 		for _, tid := range entry.terms[class] {
@@ -367,6 +575,141 @@ func (idx *InvertedIndex[S, D]) deleteLocked(id S) {
 	}
 	delete(idx.docs, ord)
 	idx.ords.release(id, ord)
+}
+
+// MarkIncomplete makes all subsequent context-aware searches fail closed.
+func (idx *InvertedIndex[S, D]) MarkIncomplete() {
+	idx.mu.Lock()
+	idx.health = IndexIncomplete
+	idx.mu.Unlock()
+}
+
+// Health returns the current consistency state.
+func (idx *InvertedIndex[S, D]) Health() IndexHealth {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.health
+}
+
+// Compact atomically rebuilds dictionaries, ordinals, postings, and document
+// maps from the live logical corpus. Searches observe either complete state.
+func (idx *InvertedIndex[S, D]) Compact() {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	idx.compactLocked()
+}
+
+// RebuildPrepared constructs a complete bounded replacement off to the side
+// and swaps it in only after every aggregate limit succeeds. A failed rebuild
+// leaves the prior (possibly incomplete) index untouched and unhealthy.
+func (idx *InvertedIndex[S, D]) RebuildPrepared(items []PreparedItem[S]) error {
+	var opts []IndexOption
+	if idx.positions {
+		opts = append(opts, WithPositions())
+	}
+	opts = append(opts, WithProximityWeight(idx.proximityWeight), WithAnalysisLimits(idx.limits))
+	tmp := NewInvertedIndex[S, D](idx.analyzer, idx.scorer, idx.compareID, opts...)
+	start := time.Now()
+	if err := tmp.IndexManyPrepared(items); err != nil {
+		return err
+	}
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	idx.classes, idx.ords, idx.docs = tmp.classes, tmp.ords, tmp.docs
+	idx.livePostings, idx.livePositions = tmp.livePostings, tmp.livePositions
+	idx.health = IndexHealthy
+	idx.rebuildCount++
+	idx.lastRebuildDuration = time.Since(start)
+	return nil
+}
+
+func (idx *InvertedIndex[S, D]) compactIfNeededLocked() {
+	liveTerms, retainedTerms := 0, 0
+	for class := range idx.classes {
+		liveTerms += len(idx.classes[class].postings)
+		retainedTerms += len(idx.classes[class].dict.terms)
+	}
+	if len(idx.docs) == 0 {
+		if retainedTerms > 0 || idx.ords.next > 0 {
+			idx.compactLocked()
+		}
+		return
+	}
+	ratio := idx.limits.CompactionRatio
+	if ratio <= 1 {
+		return
+	}
+	retired := retainedTerms - liveTerms + int(idx.ords.next) - len(idx.docs)
+	if retired < idx.limits.CompactionMinRetired {
+		return
+	}
+	termHigh := liveTerms == 0 || float64(retainedTerms) > float64(liveTerms)*ratio
+	ordHigh := float64(idx.ords.next) > float64(len(idx.docs))*ratio
+	if termHigh || ordHigh {
+		idx.compactLocked()
+	}
+}
+
+func (idx *InvertedIndex[S, D]) compactLocked() {
+	start := time.Now()
+	items := make([]PreparedItem[S], 0, len(idx.docs))
+	for ord, entry := range idx.docs {
+		var tokens []Token
+		wordStart := len(tokens)
+		if idx.positions && entry.positionEntries > 0 {
+			words := make([]Token, entry.positionEntries)
+			for _, tid := range entry.terms[ClassWord] {
+				term := idx.classes[ClassWord].dict.terms[tid]
+				for _, pos := range idx.classes[ClassWord].postings[tid].positionsOf(ord) {
+					if int(pos) < len(words) {
+						words[pos] = Token{Term: term, Class: ClassWord}
+					}
+				}
+			}
+			tokens = append(tokens, words...)
+		} else {
+			for _, tid := range entry.terms[ClassWord] {
+				pl := idx.classes[ClassWord].postings[tid]
+				for range pl.tf(ord) {
+					tokens = append(tokens, Token{Term: idx.classes[ClassWord].dict.terms[tid], Class: ClassWord})
+				}
+			}
+		}
+		if missing := entry.lengths[ClassWord] - (len(tokens) - wordStart); missing > 0 && len(entry.terms[ClassWord]) > 0 {
+			term := idx.classes[ClassWord].dict.terms[entry.terms[ClassWord][0]]
+			for range missing {
+				tokens = append(tokens, Token{Term: term, Class: ClassWord})
+			}
+		}
+		for class := int(ClassWord) + 1; class < numTokenClasses; class++ {
+			classStart := len(tokens)
+			for _, tid := range entry.terms[class] {
+				pl := idx.classes[class].postings[tid]
+				for range pl.tf(ord) {
+					tokens = append(tokens, Token{Term: idx.classes[class].dict.terms[tid], Class: TokenClass(class)})
+				}
+			}
+			if missing := entry.lengths[class] - (len(tokens) - classStart); missing > 0 && len(entry.terms[class]) > 0 {
+				term := idx.classes[class].dict.terms[entry.terms[class][0]]
+				for range missing {
+					tokens = append(tokens, Token{Term: term, Class: TokenClass(class)})
+				}
+			}
+		}
+		items = append(items, PreparedItem[S]{ID: entry.id, Prepared: PreparedDocument{tokens: tokens}})
+	}
+	var opts []IndexOption
+	if idx.positions {
+		opts = append(opts, WithPositions())
+	}
+	opts = append(opts, WithProximityWeight(idx.proximityWeight), WithAnalysisLimits(idx.limits))
+	tmp := NewInvertedIndex[S, D](idx.analyzer, idx.scorer, idx.compareID, opts...)
+	// The logical state already passed these limits; rebuilding cannot fail.
+	_ = tmp.IndexManyPrepared(items)
+	idx.classes, idx.ords, idx.docs = tmp.classes, tmp.ords, tmp.docs
+	idx.livePostings, idx.livePositions = tmp.livePostings, tmp.livePositions
+	idx.rebuildCount++
+	idx.lastRebuildDuration = time.Since(start)
 }
 
 // Search returns the documents that share at least one analyzed term with
@@ -614,12 +957,38 @@ func (h *topKHeap[S]) Pop() any {
 // may be in progress), but are accurate enough for a Prometheus gauge sampled
 // on a regular cadence. The call does not block writers.
 func (idx *InvertedIndex[S, D]) Stats() (terms, docs int) {
+	stats := idx.MemoryStats()
+	return stats.LiveTerms, stats.Documents
+}
+
+// MemoryStats returns live/retained cardinalities, a conservative byte
+// estimate, compaction history, and consistency health.
+func (idx *InvertedIndex[S, D]) MemoryStats() IndexMemoryStats {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
-	for class := range idx.classes {
-		terms += len(idx.classes[class].postings)
+	stats := IndexMemoryStats{
+		Documents:           len(idx.docs),
+		Postings:            idx.livePostings,
+		PositionEntries:     idx.livePositions,
+		RetainedOrdinals:    int(idx.ords.next),
+		RebuildCount:        idx.rebuildCount,
+		LastRebuildDuration: idx.lastRebuildDuration,
+		Health:              idx.health,
 	}
-	return terms, len(idx.docs)
+	var termBytes int64
+	for class := range idx.classes {
+		cp := &idx.classes[class]
+		stats.LiveTerms += len(cp.postings)
+		stats.RetainedTermSlots += len(cp.dict.terms)
+		for term := range cp.dict.ids {
+			termBytes += int64(len(term))
+		}
+	}
+	// This estimate intentionally uses stable logical units rather than Go map
+	// implementation details, making it comparable across builds and nodes.
+	stats.EstimatedLiveBytes = termBytes + int64(stats.Documents)*32 + stats.Postings*12 + stats.PositionEntries
+	stats.EstimatedRetainedBytes = stats.EstimatedLiveBytes + int64(stats.RetainedTermSlots-stats.LiveTerms)*16 + int64(stats.RetainedOrdinals-stats.Documents)*8
+	return stats
 }
 
 // Interface assertions: InvertedIndex is both an Indexer and a Searcher.

@@ -1,5 +1,7 @@
 package graphcache
 
+import "github.com/anaregdesign/lantern/core/search"
+
 // VertexCount returns the live vertex count under an RLock. Intended for
 // Prometheus gauges that sample the cache periodically.
 func (c *GraphCache[S, T]) VertexCount() int {
@@ -50,11 +52,17 @@ func (c *GraphCache[S, T]) VertexHLCHighWater() int {
 // index is disabled. Safe for concurrent use; intended for Prometheus gauge
 // sampling.
 func (c *GraphCache[S, T]) SearchIndexStats() (terms, docs int) {
+	stats := c.SearchIndexMemoryStats()
+	return stats.LiveTerms, stats.Documents
+}
+
+// SearchIndexMemoryStats returns the complete index capacity/health snapshot.
+func (c *GraphCache[S, T]) SearchIndexMemoryStats() search.IndexMemoryStats {
 	c.mu.RLock()
 	idx := c.searchIndex
 	c.mu.RUnlock()
 	if idx == nil {
-		return 0, 0
+		return search.IndexMemoryStats{}
 	}
-	return idx.Stats()
+	return idx.MemoryStats()
 }

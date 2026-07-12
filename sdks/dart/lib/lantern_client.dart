@@ -70,6 +70,8 @@ export 'src/client.dart'
         SearchHit,
         SearchErrorReason,
         SearchCapabilities,
+        SearchIndexHealth,
+        SearchIndexStats,
         SearchMatchMode,
         SearchOptions,
         SearchResult,

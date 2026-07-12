@@ -1,6 +1,8 @@
 package search
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"math"
 	"math/rand"
@@ -17,6 +19,14 @@ import (
 // normalizer/tokenizer/filter pipeline.
 type fakeAnalyzer struct{}
 
+type hintedDocument struct {
+	hint   int
+	called *bool
+}
+
+func (d hintedDocument) String() string { *d.called = true; return strings.Repeat("x", d.hint) }
+func (d hintedDocument) SizeHint() int  { return d.hint }
+
 func (fakeAnalyzer) Analyze(text string) []Token {
 	fields := strings.Fields(strings.ToLower(text))
 	tokens := make([]Token, len(fields))
@@ -24,6 +34,172 @@ func (fakeAnalyzer) Analyze(text string) []Token {
 		tokens[i] = Token{Term: f}
 	}
 	return tokens
+}
+
+func TestInvertedIndexAnalysisLimits(t *testing.T) {
+	t.Run("document dimensions", func(t *testing.T) {
+		unicodeIndex := NewInvertedIndex[string, Text](NewScriptAwareAnalyzer(), nil, compareStringID,
+			WithAnalysisLimits(SearchAnalysisLimits{MaxDocumentBytes: 1}))
+		if _, stats, err := unicodeIndex.Prepare(Text("é")); err == nil || stats.ProjectedBytes != 2 {
+			t.Fatalf("Prepare unicode = stats=%+v err=%v, want 2-byte rejection", stats, err)
+		}
+
+		tokenIndex := NewInvertedIndex[string, Text](NewScriptAwareAnalyzer(), nil, compareStringID,
+			WithAnalysisLimits(SearchAnalysisLimits{MaxDocumentTokens: 3}))
+		if _, _, err := tokenIndex.Prepare(Text("abcdef")); !isAnalysisLimit(err, LimitDocumentTokens) {
+			t.Fatalf("Prepare token cap err = %v", err)
+		}
+
+		termIndex := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID,
+			WithAnalysisLimits(SearchAnalysisLimits{MaxDocumentTerms: 2}))
+		if _, _, err := termIndex.Prepare(Text("a b c a")); !isAnalysisLimit(err, LimitDocumentTerms) {
+			t.Fatalf("Prepare term cap err = %v", err)
+		}
+	})
+
+	t.Run("size hint rejects before projection", func(t *testing.T) {
+		called := false
+		idx := NewInvertedIndex[string, hintedDocument](fakeAnalyzer{}, nil, compareStringID,
+			WithAnalysisLimits(SearchAnalysisLimits{MaxDocumentBytes: 4}))
+		if _, _, err := idx.Prepare(hintedDocument{hint: 5, called: &called}); !isAnalysisLimit(err, LimitDocumentBytes) {
+			t.Fatalf("Prepare err = %v", err)
+		}
+		if called {
+			t.Fatal("String was called after the size hint already exceeded the limit")
+		}
+	})
+
+	t.Run("aggregate batch is atomic", func(t *testing.T) {
+		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID,
+			WithAnalysisLimits(SearchAnalysisLimits{MaxLiveTerms: 2, MaxLivePostings: 2}))
+		if err := idx.Index("existing", Text("alpha")); err != nil {
+			t.Fatal(err)
+		}
+		p1, _, _ := idx.Prepare(Text("beta"))
+		p2, _, _ := idx.Prepare(Text("gamma"))
+		err := idx.IndexManyPrepared([]PreparedItem[string]{{ID: "one", Prepared: p1}, {ID: "two", Prepared: p2}})
+		if !isAnalysisLimit(err, LimitLiveTerms) {
+			t.Fatalf("IndexManyPrepared err = %v", err)
+		}
+		if got := idsOf(idx.Search("alpha")); !equalStrings(got, []string{"existing"}) {
+			t.Fatalf("existing after rejection = %v", got)
+		}
+		if got := idx.MemoryStats(); got.Documents != 1 || got.LiveTerms != 1 || got.Postings != 1 {
+			t.Fatalf("stats after rejection = %+v", got)
+		}
+	})
+
+	t.Run("duplicate IDs are budgeted and applied by final state", func(t *testing.T) {
+		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID,
+			WithAnalysisLimits(SearchAnalysisLimits{MaxLiveTerms: 2, MaxLivePostings: 2}))
+		if err := idx.Index("existing", Text("alpha")); err != nil {
+			t.Fatal(err)
+		}
+		transient, _, _ := idx.Prepare(Text("beta gamma"))
+		final, _, _ := idx.Prepare(Text("beta"))
+		if err := idx.IndexManyPrepared([]PreparedItem[string]{{ID: "same", Prepared: transient}, {ID: "same", Prepared: final}}); err != nil {
+			t.Fatalf("final-state batch: %v", err)
+		}
+		if got := idx.MemoryStats(); got.LiveTerms != 2 || got.Postings != 2 {
+			t.Fatalf("stats = %+v", got)
+		}
+	})
+
+	t.Run("positions", func(t *testing.T) {
+		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID, WithPositions(),
+			WithAnalysisLimits(SearchAnalysisLimits{MaxPositionEntries: 2}))
+		if err := idx.Index("x", Text("a b c")); !isAnalysisLimit(err, LimitPositionEntries) {
+			t.Fatalf("Index err = %v", err)
+		}
+		if got := idx.MemoryStats().Documents; got != 0 {
+			t.Fatalf("documents = %d after rejection", got)
+		}
+	})
+
+	t.Run("aggregate postings", func(t *testing.T) {
+		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID,
+			WithAnalysisLimits(SearchAnalysisLimits{MaxLiveTerms: 10, MaxLivePostings: 1}))
+		if err := idx.Index("x", Text("a b")); !isAnalysisLimit(err, LimitLivePostings) {
+			t.Fatalf("Index err = %v", err)
+		}
+	})
+}
+
+func TestInvertedIndexCompactionAndHealth(t *testing.T) {
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID,
+		WithAnalysisLimits(SearchAnalysisLimits{CompactionRatio: 1.1, CompactionMinRetired: 1}))
+	for i := range 100 {
+		_ = idx.Index(fmt.Sprintf("doc-%d", i), Text(fmt.Sprintf("term-%d", i)))
+	}
+	for i := range 99 {
+		idx.Delete(fmt.Sprintf("doc-%d", i))
+	}
+	stats := idx.MemoryStats()
+	if stats.RetainedTermSlots > 2 || stats.RetainedOrdinals > 2 || stats.RebuildCount == 0 {
+		t.Fatalf("compacted stats = %+v", stats)
+	}
+	_, work, err := idx.SearchMatchTopKContext(context.Background(), "term-99", 10, nil, MatchOptions{Fuzziness: 1}, Budget{MaxDictionaryVisits: 10})
+	if err != nil || work.DictionaryVisits > 2 {
+		t.Fatalf("post-compaction fuzzy work = %+v err=%v", work, err)
+	}
+	idx.MarkIncomplete()
+	if _, _, err := idx.SearchMatchTopKContext(context.Background(), "term", 10, nil, MatchOptions{}, Budget{}); !errors.Is(err, ErrIndexIncomplete) {
+		t.Fatalf("incomplete search err = %v", err)
+	}
+	p, _, err := idx.Prepare(Text("healthy"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.RebuildPrepared([]PreparedItem[string]{{ID: "fresh", Prepared: p}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := idx.MemoryStats().Health; got != IndexHealthy {
+		t.Fatalf("health = %q", got)
+	}
+}
+
+func TestInvertedIndexConcurrentSearchWriteCompaction(t *testing.T) {
+	idx := NewInvertedIndex[string, Text](NewScriptAwareAnalyzer(), nil, compareStringID, WithPositions(),
+		WithAnalysisLimits(SearchAnalysisLimits{MaxDocumentBytes: 1 << 10, MaxDocumentTokens: 1_000, MaxDocumentTerms: 1_000, MaxLiveTerms: 10_000, MaxLivePostings: 100_000, MaxPositionEntries: 100_000, CompactionRatio: 2, CompactionMinRetired: 10}))
+	var wg sync.WaitGroup
+	for worker := range 4 {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for i := range 200 {
+				key := fmt.Sprintf("%d/%d", worker, i%50)
+				_ = idx.Index(key, Text(fmt.Sprintf("shared term-%d", i)))
+				if i%3 == 0 {
+					idx.Delete(key)
+				}
+				if i%7 == 0 {
+					idx.Compact()
+				}
+				_, _, _ = idx.SearchMatchTopKContext(context.Background(), "shared", 10, nil, MatchOptions{}, Budget{})
+			}
+		}(worker)
+	}
+	wg.Wait()
+	if got := idx.MemoryStats().Health; got != IndexHealthy {
+		t.Fatalf("health = %q", got)
+	}
+}
+
+func TestInvertedIndexCompactionPreservesClampedFrequencyLength(t *testing.T) {
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID)
+	if err := idx.Index("long", Text(strings.Repeat("repeat ", 70_000))); err != nil {
+		t.Fatal(err)
+	}
+	want := totalLenSum(idx)
+	idx.Compact()
+	if got := totalLenSum(idx); got != want {
+		t.Fatalf("total length after compaction = %d, want %d", got, want)
+	}
+}
+
+func isAnalysisLimit(err error, kind AnalysisLimitKind) bool {
+	var limit *AnalysisLimitError
+	return errors.As(err, &limit) && limit.Kind == kind
 }
 
 func TestInvertedIndex(t *testing.T) {
@@ -251,14 +427,22 @@ func TestInvertedIndexConcurrent(t *testing.T) {
 // and IndexManyPrepared must apply a batch under one lock with last-write
 // semantics.
 func TestInvertedIndexPrepared(t *testing.T) {
+	mustPrepare := func(t *testing.T, idx *InvertedIndex[string, Text], text Text) PreparedDocument {
+		t.Helper()
+		prepared, _, err := idx.Prepare(text)
+		if err != nil {
+			t.Fatalf("Prepare: %v", err)
+		}
+		return prepared
+	}
 	t.Run("IndexPrepared matches Index", func(t *testing.T) {
 		viaIndex := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID)
 		viaIndex.Index("doc1", Text("Alpha Beta"))
 		viaIndex.Index("doc2", Text("beta gamma"))
 
 		viaPrepared := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID)
-		viaPrepared.IndexPrepared("doc1", viaPrepared.Prepare(Text("Alpha Beta")))
-		viaPrepared.IndexPrepared("doc2", viaPrepared.Prepare(Text("beta gamma")))
+		viaPrepared.IndexPrepared("doc1", mustPrepare(t, viaPrepared, Text("Alpha Beta")))
+		viaPrepared.IndexPrepared("doc2", mustPrepare(t, viaPrepared, Text("beta gamma")))
 
 		for _, q := range []string{"alpha", "beta", "gamma", "alpha gamma"} {
 			a := idsOf(viaIndex.Search(q))
@@ -273,10 +457,10 @@ func TestInvertedIndexPrepared(t *testing.T) {
 
 	t.Run("empty prepared removes id", func(t *testing.T) {
 		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID)
-		idx.IndexPrepared("doc1", idx.Prepare(Text("alpha beta")))
+		idx.IndexPrepared("doc1", mustPrepare(t, idx, Text("alpha beta")))
 		// Re-index doc1 with a document that analyzes to no terms: its postings
 		// must be dropped, matching Index's replace-with-empty behavior.
-		idx.IndexPrepared("doc1", idx.Prepare(Text("   ")))
+		idx.IndexPrepared("doc1", mustPrepare(t, idx, Text("   ")))
 		if got := idsOf(idx.Search("alpha")); len(got) != 0 {
 			t.Fatalf(`Search("alpha") after empty re-index = %v, want none`, got)
 		}
@@ -288,10 +472,10 @@ func TestInvertedIndexPrepared(t *testing.T) {
 		// slice order). doc2's first document is later replaced by an empty one,
 		// so it must be absent at the end.
 		items := []PreparedItem[string]{
-			{ID: "doc1", Prepared: idx.Prepare(Text("alpha"))},
-			{ID: "doc2", Prepared: idx.Prepare(Text("beta"))},
-			{ID: "doc1", Prepared: idx.Prepare(Text("gamma"))},
-			{ID: "doc2", Prepared: idx.Prepare(Text("   "))},
+			{ID: "doc1", Prepared: mustPrepare(t, idx, Text("alpha"))},
+			{ID: "doc2", Prepared: mustPrepare(t, idx, Text("beta"))},
+			{ID: "doc1", Prepared: mustPrepare(t, idx, Text("gamma"))},
+			{ID: "doc2", Prepared: mustPrepare(t, idx, Text("   "))},
 		}
 		idx.IndexManyPrepared(items)
 
@@ -432,6 +616,55 @@ func BenchmarkInvertedIndexBuildWithPositions(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		runtime.KeepAlive(buildBigramIndexWithPositions(corpus))
+	}
+}
+
+// BenchmarkInvertedIndexBoundedBatch covers the #1050 capacity path at the
+// two canonical plural sizes and a long document, with positional storage on
+// and off. Each iteration includes analysis, final-state preflight, and build.
+func BenchmarkInvertedIndexBoundedBatch(b *testing.B) {
+	for _, positions := range []bool{false, true} {
+		positionName := map[bool]string{false: "PositionsOff", true: "PositionsOn"}[positions]
+		for _, size := range []int{1_000, 10_000} {
+			b.Run(fmt.Sprintf("%s/Batch%d", positionName, size), func(b *testing.B) {
+				corpus := makeBigramCorpus(size)
+				b.ReportAllocs()
+				for b.Loop() {
+					var opts []IndexOption
+					if positions {
+						opts = append(opts, WithPositions())
+					}
+					idx := NewInvertedIndex[string, Text](NewScriptAwareAnalyzer(), nil, compareStringID, opts...)
+					items := make([]PreparedItem[string], 0, size)
+					for id, doc := range corpus {
+						prepared, _, err := idx.Prepare(doc)
+						if err != nil {
+							b.Fatal(err)
+						}
+						items = append(items, PreparedItem[string]{ID: id, Prepared: prepared})
+					}
+					if err := idx.IndexManyPrepared(items); err != nil {
+						b.Fatal(err)
+					}
+					runtime.KeepAlive(idx)
+				}
+			})
+		}
+		b.Run(positionName+"/LongDocument", func(b *testing.B) {
+			doc := Text(strings.Repeat("bounded-search-document ", 10_000))
+			b.ReportAllocs()
+			for b.Loop() {
+				var opts []IndexOption
+				if positions {
+					opts = append(opts, WithPositions())
+				}
+				idx := NewInvertedIndex[string, Text](NewScriptAwareAnalyzer(), nil, compareStringID, opts...)
+				if err := idx.Index("long", doc); err != nil {
+					b.Fatal(err)
+				}
+				runtime.KeepAlive(idx)
+			}
+		})
 	}
 }
 

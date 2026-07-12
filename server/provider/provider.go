@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
+	"github.com/anaregdesign/lantern/core/search"
 	v1 "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
@@ -196,6 +198,14 @@ type ScanConfig struct {
 //   - LANTERN_SEARCH_MAX_POSTING_VISITS (default 10000000)
 //   - LANTERN_SEARCH_MAX_POSITION_VISITS (default 10000000)
 //   - LANTERN_SEARCH_MAX_IN_FLIGHT      (default 32)
+//   - LANTERN_SEARCH_MAX_DOCUMENT_BYTES (default 1048576)
+//   - LANTERN_SEARCH_MAX_DOCUMENT_TOKENS (default 250000)
+//   - LANTERN_SEARCH_MAX_DOCUMENT_TERMS (default 100000)
+//   - LANTERN_SEARCH_MAX_LIVE_TERMS     (default 5000000)
+//   - LANTERN_SEARCH_MAX_LIVE_POSTINGS  (default 50000000)
+//   - LANTERN_SEARCH_MAX_POSITION_ENTRIES (default 50000000)
+//   - LANTERN_SEARCH_COMPACTION_RATIO   (default 2)
+//   - LANTERN_SEARCH_COMPACTION_MIN_RETIRED (default 10000)
 type SearchConfig struct {
 	Enabled      bool
 	DefaultLimit uint32
@@ -224,6 +234,7 @@ type SearchConfig struct {
 	MaxPostingVisits    int
 	MaxPositionVisits   int
 	MaxInFlight         int
+	AnalysisLimits      search.SearchAnalysisLimits
 }
 
 // Config aggregates every focused sub-config. It is constructed once at
@@ -335,6 +346,16 @@ func NewConfig() (*Config, error) {
 			MaxPostingVisits:    envconfig.Int("LANTERN_SEARCH_MAX_POSTING_VISITS", 10_000_000),
 			MaxPositionVisits:   envconfig.Int("LANTERN_SEARCH_MAX_POSITION_VISITS", 10_000_000),
 			MaxInFlight:         envconfig.Int("LANTERN_SEARCH_MAX_IN_FLIGHT", 32),
+			AnalysisLimits: search.SearchAnalysisLimits{
+				MaxDocumentBytes:     envconfig.Int("LANTERN_SEARCH_MAX_DOCUMENT_BYTES", 1<<20),
+				MaxDocumentTokens:    envconfig.Int("LANTERN_SEARCH_MAX_DOCUMENT_TOKENS", 250_000),
+				MaxDocumentTerms:     envconfig.Int("LANTERN_SEARCH_MAX_DOCUMENT_TERMS", 100_000),
+				MaxLiveTerms:         envconfig.Int("LANTERN_SEARCH_MAX_LIVE_TERMS", 5_000_000),
+				MaxLivePostings:      int64(envconfig.Int("LANTERN_SEARCH_MAX_LIVE_POSTINGS", 50_000_000)),
+				MaxPositionEntries:   int64(envconfig.Int("LANTERN_SEARCH_MAX_POSITION_ENTRIES", 50_000_000)),
+				CompactionRatio:      envconfig.Float("LANTERN_SEARCH_COMPACTION_RATIO", 2),
+				CompactionMinRetired: envconfig.Int("LANTERN_SEARCH_COMPACTION_MIN_RETIRED", 10_000),
+			},
 		},
 		MutationLog: loadMutationLogConfig(),
 		Replication: loadReplicationConfig(),
@@ -379,6 +400,16 @@ func validateSearchConfig(c SearchConfig) error {
 		{"LANTERN_SEARCH_MAX_POSTING_VISITS", int64(c.MaxPostingVisits)},
 		{"LANTERN_SEARCH_MAX_POSITION_VISITS", int64(c.MaxPositionVisits)},
 		{"LANTERN_SEARCH_MAX_IN_FLIGHT", int64(c.MaxInFlight)},
+		{"LANTERN_SEARCH_MAX_DOCUMENT_BYTES", int64(c.AnalysisLimits.MaxDocumentBytes)},
+		{"LANTERN_SEARCH_MAX_DOCUMENT_TOKENS", int64(c.AnalysisLimits.MaxDocumentTokens)},
+		{"LANTERN_SEARCH_MAX_DOCUMENT_TERMS", int64(c.AnalysisLimits.MaxDocumentTerms)},
+		{"LANTERN_SEARCH_MAX_LIVE_TERMS", int64(c.AnalysisLimits.MaxLiveTerms)},
+		{"LANTERN_SEARCH_MAX_LIVE_POSTINGS", c.AnalysisLimits.MaxLivePostings},
+		{"LANTERN_SEARCH_MAX_POSITION_ENTRIES", c.AnalysisLimits.MaxPositionEntries},
+		{"LANTERN_SEARCH_COMPACTION_MIN_RETIRED", int64(c.AnalysisLimits.CompactionMinRetired)},
+	}
+	if c.AnalysisLimits.CompactionRatio <= 1 || math.IsNaN(c.AnalysisLimits.CompactionRatio) || math.IsInf(c.AnalysisLimits.CompactionRatio, 0) {
+		return fmt.Errorf("LANTERN_SEARCH_COMPACTION_RATIO must be greater than 1")
 	}
 	for _, item := range values {
 		if item.value <= 0 {
@@ -529,6 +560,7 @@ func NewGraphCache(c CacheConfig, sc SearchConfig) *graphcache.GraphCache[string
 		if !sc.Positions {
 			opts = append(opts, graphcache.WithoutSearchPositions())
 		}
+		opts = append(opts, graphcache.WithSearchAnalysisLimits(sc.AnalysisLimits))
 		gc.EnableSearchIndex(vertexSearchDocument, strings.Compare, opts...)
 	}
 	return gc
@@ -552,8 +584,8 @@ func NewDomainMetrics(
 	m.BindSampler(func() (int, int) {
 		return cache.VertexCount(), cache.EdgeCount()
 	})
-	m.BindSearchIndexSampler(func() (int, int) {
-		return cache.SearchIndexStats()
+	m.BindSearchIndexSampler(func() search.IndexMemoryStats {
+		return cache.SearchIndexMemoryStats()
 	})
 	m.BindVertexHLCSampler(func() int {
 		return cache.VertexHLCCount()

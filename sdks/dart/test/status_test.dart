@@ -106,6 +106,22 @@ void main() {
                 analyzerVersion: 'script-aware-v1',
                 projectionVersion: 'vertex-key-value-v1',
                 configFingerprint: 'abc123',
+                maxDocumentBytes: 100,
+                maxDocumentTokens: 90,
+                maxDocumentTerms: 80,
+                maxLiveTerms: Int64(70),
+                maxLivePostings: Int64(60),
+                maxPositionEntries: Int64(50),
+                compactionRatio: 2.5,
+                compactionMinRetired: Int64(40),
+                indexStats: graph.SearchIndexStats(
+                  health: graph.SearchIndexHealth.SEARCH_INDEX_HEALTH_HEALTHY,
+                  documents: Int64(3),
+                  liveTerms: Int64(4),
+                  retainedTermSlots: Int64(5),
+                  estimatedRetainedBytes: Int64(120),
+                  rebuildCount: Int64(2),
+                ),
               ),
             ),
           )
@@ -127,6 +143,12 @@ void main() {
       expect(status.search.defaultMinShouldMatch, 2);
       expect(status.search.maxFuzziness, 2);
       expect(status.search.configFingerprint, 'abc123');
+      expect(status.search.maxDocumentBytes, 100);
+      expect(status.search.maxLivePostings, BigInt.from(60));
+      expect(status.search.compactionRatio, 2.5);
+      expect(status.search.indexStats.health, SearchIndexHealth.healthy);
+      expect(status.search.indexStats.estimatedRetainedBytes, BigInt.from(120));
+      expect(status.search.indexStats.rebuildCount, BigInt.from(2));
     },
   );
 

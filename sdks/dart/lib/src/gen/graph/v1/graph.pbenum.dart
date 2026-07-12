@@ -179,9 +179,9 @@ class MatchMode extends $pb.ProtobufEnum {
   const MatchMode._(super.value, super.name);
 }
 
-/// SearchErrorReason is the bounded, machine-readable reason attached to a
-/// FAILED_PRECONDITION from SearchVertices. Clients must branch on this enum,
-/// never on the human-readable status message.
+/// SearchErrorReason is the bounded, machine-readable reason attached to
+/// SearchVertices failures and search-index write rejections. Clients must
+/// branch on this enum, never on the human-readable status message.
 class SearchErrorReason extends $pb.ProtobufEnum {
   static const SearchErrorReason SEARCH_ERROR_REASON_UNSPECIFIED =
       SearchErrorReason._(
@@ -205,20 +205,62 @@ class SearchErrorReason extends $pb.ProtobufEnum {
       SearchErrorReason._(
           4, _omitEnumNames ? '' : 'SEARCH_ADMISSION_SATURATED');
 
+  /// buf:lint:ignore ENUM_VALUE_PREFIX -- stable cross-SDK reason code.
+  static const SearchErrorReason SEARCH_INDEX_INCOMPLETE =
+      SearchErrorReason._(5, _omitEnumNames ? '' : 'SEARCH_INDEX_INCOMPLETE');
+
+  /// buf:lint:ignore ENUM_VALUE_PREFIX -- stable cross-SDK reason code.
+  static const SearchErrorReason SEARCH_INDEX_BUDGET_EXHAUSTED =
+      SearchErrorReason._(
+          6, _omitEnumNames ? '' : 'SEARCH_INDEX_BUDGET_EXHAUSTED');
+
   static const $core.List<SearchErrorReason> values = <SearchErrorReason>[
     SEARCH_ERROR_REASON_UNSPECIFIED,
     SEARCH_DISABLED,
     SEARCH_POSITIONS_DISABLED,
     SEARCH_WORK_BUDGET_EXHAUSTED,
     SEARCH_ADMISSION_SATURATED,
+    SEARCH_INDEX_INCOMPLETE,
+    SEARCH_INDEX_BUDGET_EXHAUSTED,
   ];
 
   static final $core.List<SearchErrorReason?> _byValue =
-      $pb.ProtobufEnum.$_initByValueList(values, 4);
+      $pb.ProtobufEnum.$_initByValueList(values, 6);
   static SearchErrorReason? valueOf($core.int value) =>
       value < 0 || value >= _byValue.length ? null : _byValue[value];
 
   const SearchErrorReason._(super.value, super.name);
+}
+
+/// SearchIndexStats exposes logical size, retained high-water storage, rebuild
+/// activity, and whether the index is safe to serve.
+class SearchIndexHealth extends $pb.ProtobufEnum {
+  static const SearchIndexHealth SEARCH_INDEX_HEALTH_UNSPECIFIED =
+      SearchIndexHealth._(
+          0, _omitEnumNames ? '' : 'SEARCH_INDEX_HEALTH_UNSPECIFIED');
+  static const SearchIndexHealth SEARCH_INDEX_HEALTH_DISABLED =
+      SearchIndexHealth._(
+          1, _omitEnumNames ? '' : 'SEARCH_INDEX_HEALTH_DISABLED');
+  static const SearchIndexHealth SEARCH_INDEX_HEALTH_HEALTHY =
+      SearchIndexHealth._(
+          2, _omitEnumNames ? '' : 'SEARCH_INDEX_HEALTH_HEALTHY');
+  static const SearchIndexHealth SEARCH_INDEX_HEALTH_INCOMPLETE =
+      SearchIndexHealth._(
+          3, _omitEnumNames ? '' : 'SEARCH_INDEX_HEALTH_INCOMPLETE');
+
+  static const $core.List<SearchIndexHealth> values = <SearchIndexHealth>[
+    SEARCH_INDEX_HEALTH_UNSPECIFIED,
+    SEARCH_INDEX_HEALTH_DISABLED,
+    SEARCH_INDEX_HEALTH_HEALTHY,
+    SEARCH_INDEX_HEALTH_INCOMPLETE,
+  ];
+
+  static final $core.List<SearchIndexHealth?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 3);
+  static SearchIndexHealth? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const SearchIndexHealth._(super.value, super.name);
 }
 
 /// Direction selects which incident edges count toward a vertex's degree.

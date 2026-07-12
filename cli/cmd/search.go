@@ -120,6 +120,8 @@ func actionableSearchError(err error) error {
 		return fmt.Errorf("phrase search is unavailable: restart the server with LANTERN_SEARCH_POSITIONS=true or omit --phrase: %w", err)
 	case errors.Is(err, client.ErrSearchDisabled):
 		return fmt.Errorf("content search is unavailable: restart the server with LANTERN_SEARCH_ENABLED=true: %w", err)
+	case errors.Is(err, client.ErrSearchIndexIncomplete):
+		return fmt.Errorf("content search is unavailable: the local index is incomplete and requires a bounded rebuild: %w", err)
 	default:
 		return err
 	}

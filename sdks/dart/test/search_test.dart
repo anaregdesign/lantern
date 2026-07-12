@@ -247,6 +247,43 @@ void main() {
     );
   });
 
+  test('index budget reason remains typed', () async {
+    final transport = FakeTransportBuilder()
+        .unary<graph.SearchVerticesRequest, graph.SearchVerticesResponse>(
+          LanternService.searchVertices,
+          (request, context) => throw connect.ConnectException(
+            connect.Code.resourceExhausted,
+            'document budget exhausted',
+            details: [
+              connect.ErrorDetail(
+                'graph.v1.SearchErrorDetail',
+                graph.SearchErrorDetail(
+                  reason: graph.SearchErrorReason.SEARCH_INDEX_BUDGET_EXHAUSTED,
+                  workKind: 'document_bytes',
+                ).writeToBuffer(),
+              ),
+            ],
+          ),
+        )
+        .build();
+    await expectLater(
+      _client(transport).searchVertices('alpha'),
+      throwsA(
+        isA<LanternResourceExhaustedException>()
+            .having(
+              (error) => error.searchReason,
+              'searchReason',
+              SearchErrorReason.searchIndexBudgetExhausted,
+            )
+            .having(
+              (error) => error.searchWorkKind,
+              'searchWorkKind',
+              'document_bytes',
+            ),
+      ),
+    );
+  });
+
   test('invalid relevance combinations fail before transport', () async {
     var calls = 0;
     final transport = FakeTransportBuilder()

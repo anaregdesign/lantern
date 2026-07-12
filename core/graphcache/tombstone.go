@@ -99,6 +99,7 @@ func (c *GraphCache[S, T]) DeleteVertexHLC(key S, ts hlc.Timestamp, expiration t
 	defer c.mu.Unlock()
 	existed := c.vertices.Delete(key)
 	c.setVertexTombstoneLocked(key, ts, expiration)
+	c.rebuildIncompleteSearchLocked()
 	return existed
 }
 
@@ -120,6 +121,7 @@ func (c *GraphCache[S, T]) DeleteVerticesHLC(keys []S, ts hlc.Timestamp, expirat
 	for _, k := range keys {
 		c.setVertexTombstoneLocked(k, ts, expiration)
 	}
+	c.rebuildIncompleteSearchLocked()
 	return n
 }
 
@@ -185,6 +187,7 @@ func (c *GraphCache[S, T]) DeleteByPrefixHLC(ctx context.Context, prefix string,
 	for _, k := range victims {
 		c.setVertexTombstoneLocked(k, ts, expiration)
 	}
+	c.rebuildIncompleteSearchLocked()
 	return n, nil
 }
 

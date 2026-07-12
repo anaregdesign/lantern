@@ -9,6 +9,7 @@ import (
 	"runtime/debug"
 	"time"
 
+	"github.com/anaregdesign/lantern/core/search"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -98,6 +99,16 @@ func (s *LanternService) GetServerStatus(ctx context.Context, _ *pb.GetServerSta
 }
 
 func (s *LanternService) searchCapabilities() *pb.SearchCapabilities {
+	indexStats := s.cache.SearchIndexMemoryStats()
+	limits := s.search.AnalysisLimits
+	health := pb.SearchIndexHealth_SEARCH_INDEX_HEALTH_UNSPECIFIED
+	if !s.search.Enabled {
+		health = pb.SearchIndexHealth_SEARCH_INDEX_HEALTH_DISABLED
+	} else if indexStats.Health == search.IndexHealthy {
+		health = pb.SearchIndexHealth_SEARCH_INDEX_HEALTH_HEALTHY
+	} else if indexStats.Health == search.IndexIncomplete {
+		health = pb.SearchIndexHealth_SEARCH_INDEX_HEALTH_INCOMPLETE
+	}
 	capabilities := &pb.SearchCapabilities{
 		Enabled:               s.search.Enabled,
 		PositionsEnabled:      s.search.Enabled && s.search.PositionsEnabled,
@@ -115,9 +126,32 @@ func (s *LanternService) searchCapabilities() *pb.SearchCapabilities {
 		MaxPostingVisits:      uint64(s.search.WorkBudget.MaxPostingVisits),
 		MaxPositionVisits:     uint64(s.search.WorkBudget.MaxPositionVisits),
 		MaxInFlight:           uint32(s.search.MaxInFlight),
+		MaxDocumentBytes:      uint32(limits.MaxDocumentBytes),
+		MaxDocumentTokens:     uint32(limits.MaxDocumentTokens),
+		MaxDocumentTerms:      uint32(limits.MaxDocumentTerms),
+		MaxLiveTerms:          uint64(limits.MaxLiveTerms),
+		MaxLivePostings:       uint64(limits.MaxLivePostings),
+		MaxPositionEntries:    uint64(limits.MaxPositionEntries),
+		CompactionRatio:       limits.CompactionRatio,
+		CompactionMinRetired:  uint64(limits.CompactionMinRetired),
+		IndexStats: &pb.SearchIndexStats{
+			Health:                 health,
+			Documents:              uint64(indexStats.Documents),
+			LiveTerms:              uint64(indexStats.LiveTerms),
+			RetainedTermSlots:      uint64(indexStats.RetainedTermSlots),
+			RetainedOrdinals:       uint64(indexStats.RetainedOrdinals),
+			Postings:               uint64(indexStats.Postings),
+			PositionEntries:        uint64(indexStats.PositionEntries),
+			EstimatedLiveBytes:     uint64(indexStats.EstimatedLiveBytes),
+			EstimatedRetainedBytes: uint64(indexStats.EstimatedRetainedBytes),
+			RebuildCount:           indexStats.RebuildCount,
+		},
+	}
+	if indexStats.RebuildCount > 0 {
+		capabilities.IndexStats.LastRebuildDuration = durationpb.New(indexStats.LastRebuildDuration)
 	}
 	canonical := fmt.Sprintf(
-		"enabled=%t\npositions=%t\ndefault_limit=%d\nmax_limit=%d\ndefault_match_mode=%d\ndefault_min_should_match=%d\nmax_fuzziness=%d\nanalyzer=%s\nprojection=%s\ntimeout_ms=%d\nmax_query_bytes=%d\nmax_query_terms=%d\nmax_dictionary_visits=%d\nmax_posting_visits=%d\nmax_position_visits=%d\nmax_in_flight=%d\n",
+		"enabled=%t\npositions=%t\ndefault_limit=%d\nmax_limit=%d\ndefault_match_mode=%d\ndefault_min_should_match=%d\nmax_fuzziness=%d\nanalyzer=%s\nprojection=%s\ntimeout_ms=%d\nmax_query_bytes=%d\nmax_query_terms=%d\nmax_dictionary_visits=%d\nmax_posting_visits=%d\nmax_position_visits=%d\nmax_in_flight=%d\nmax_document_bytes=%d\nmax_document_tokens=%d\nmax_document_terms=%d\nmax_live_terms=%d\nmax_live_postings=%d\nmax_position_entries=%d\ncompaction_ratio=%g\ncompaction_min_retired=%d\n",
 		capabilities.Enabled,
 		s.search.PositionsEnabled,
 		capabilities.DefaultLimit,
@@ -134,6 +168,14 @@ func (s *LanternService) searchCapabilities() *pb.SearchCapabilities {
 		capabilities.MaxPostingVisits,
 		capabilities.MaxPositionVisits,
 		capabilities.MaxInFlight,
+		capabilities.MaxDocumentBytes,
+		capabilities.MaxDocumentTokens,
+		capabilities.MaxDocumentTerms,
+		capabilities.MaxLiveTerms,
+		capabilities.MaxLivePostings,
+		capabilities.MaxPositionEntries,
+		capabilities.CompactionRatio,
+		capabilities.CompactionMinRetired,
 	)
 	sum := sha256.Sum256([]byte(canonical))
 	capabilities.ConfigFingerprint = hex.EncodeToString(sum[:])

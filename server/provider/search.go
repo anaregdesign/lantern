@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/anaregdesign/lantern/core/search"
 	v1 "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -31,17 +32,48 @@ var jsonStringValueNormalizer search.JSONStringValueNormalizer
 // non-string scalars so a serialized document is searchable by its content,
 // not by its structure. A JSON document carrying no string content therefore
 // folds in nothing and the vertex is indexed by its key alone.
-func vertexSearchDocument(v *v1.Vertex) search.Document {
-	if v == nil {
-		return search.Text("")
+type vertexSearchProjection struct{ vertex *v1.Vertex }
+
+func vertexSearchDocument(v *v1.Vertex) search.Document { return vertexSearchProjection{vertex: v} }
+
+func (p vertexSearchProjection) String() string {
+	if p.vertex == nil {
+		return ""
 	}
 	var b strings.Builder
-	b.WriteString(v.GetKey())
-	if text, ok := vertexValueText(v); ok && text != "" {
+	b.WriteString(p.vertex.GetKey())
+	if text, ok := vertexValueText(p.vertex); ok && text != "" {
 		b.WriteByte(' ')
 		b.WriteString(text)
 	}
-	return search.Text(b.String())
+	return b.String()
+}
+
+// SizeHint is an allocation-free upper bound for the projection's UTF-8
+// bytes. In particular it rejects a large JSON string before Normalize parses
+// it into an object tree. Invalid UTF-8 bytes are binary and contribute zero.
+func (p vertexSearchProjection) SizeHint() int {
+	if p.vertex == nil {
+		return 0
+	}
+	n := len(p.vertex.GetKey())
+	var valueBytes int
+	switch value := p.vertex.GetValue().(type) {
+	case *v1.Vertex_String_:
+		valueBytes = len(value.String_)
+	case *v1.Vertex_Bytes:
+		if utf8.Valid(value.Bytes) {
+			valueBytes = len(value.Bytes)
+		}
+	default:
+		if text, ok := vertexValueText(p.vertex); ok {
+			valueBytes = len(text)
+		}
+	}
+	if valueBytes > 0 {
+		n += 1 + valueBytes
+	}
+	return n
 }
 
 // vertexValueText returns the indexable text form of a vertex's value and
@@ -56,6 +88,12 @@ func vertexValueText(v *v1.Vertex) (string, bool) {
 		// empty result folds in nothing (the caller drops empty value text).
 		return jsonStringValueNormalizer.Normalize(val.String_), true
 	case *v1.Vertex_Bytes:
+		// Binary payloads are not text by accident: only valid UTF-8 participates
+		// in full-text search. The projected-document byte budget is enforced by
+		// the index before tokenization.
+		if !utf8.Valid(val.Bytes) {
+			return "", false
+		}
 		return string(val.Bytes), true
 	case *v1.Vertex_Float64:
 		return strconv.FormatFloat(val.Float64, 'g', -1, 64), true

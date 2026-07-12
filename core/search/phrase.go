@@ -51,6 +51,9 @@ func (idx *InvertedIndex[S, D]) SearchPhraseTopK(query string, k int, accept fun
 // deterministic work accounting. It never returns partial results on error.
 func (idx *InvertedIndex[S, D]) SearchPhraseTopKContext(ctx context.Context, query string, k int, accept func(id S) bool, budget Budget) ([]Result[S], Stats, error) {
 	work := newWorkTracker(ctx, budget)
+	if idx.Health() != IndexHealthy {
+		return nil, work.stats, ErrIndexIncomplete
+	}
 	if k <= 0 {
 		return nil, work.stats, nil
 	}
@@ -64,6 +67,9 @@ func (idx *InvertedIndex[S, D]) SearchPhraseTopKContext(ctx context.Context, que
 
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
+	if idx.health != IndexHealthy {
+		return nil, work.stats, ErrIndexIncomplete
+	}
 
 	ords, err := idx.phraseMatchTrackedLocked(terms, work)
 	if err != nil {

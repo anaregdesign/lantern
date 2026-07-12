@@ -121,7 +121,13 @@ func TestLanternService_GetServerStatus(t *testing.T) {
 				MaxPositionVisits:   78,
 			},
 			MaxInFlight: 9,
+			AnalysisLimits: search.SearchAnalysisLimits{
+				MaxDocumentBytes: 100, MaxDocumentTokens: 90, MaxDocumentTerms: 80,
+				MaxLiveTerms: 70, MaxLivePostings: 60, MaxPositionEntries: 50,
+				CompactionRatio: 2.5, CompactionMinRetired: 40,
+			},
 		}
+		fb.searchStats = search.IndexMemoryStats{Health: search.IndexHealthy, Documents: 3, LiveTerms: 4, RetainedTermSlots: 5, EstimatedLiveBytes: 100, EstimatedRetainedBytes: 120, RebuildCount: 2}
 		withPositions := NewLanternService(fb).WithSearchLimits(limits)
 		resp, err := withPositions.GetServerStatus(context.Background(), &pb.GetServerStatusRequest{})
 		if err != nil {
@@ -148,6 +154,12 @@ func TestLanternService_GetServerStatus(t *testing.T) {
 		if len(got.GetConfigFingerprint()) != 64 {
 			t.Errorf("fingerprint length = %d, want 64 hex chars", len(got.GetConfigFingerprint()))
 		}
+		if got.GetMaxDocumentBytes() != 100 || got.GetMaxLivePostings() != 60 || got.GetCompactionRatio() != 2.5 {
+			t.Errorf("analysis capabilities incomplete: %+v", got)
+		}
+		if got.GetIndexStats().GetHealth() != pb.SearchIndexHealth_SEARCH_INDEX_HEALTH_HEALTHY || got.GetIndexStats().GetEstimatedRetainedBytes() != 120 || got.GetIndexStats().GetRebuildCount() != 2 {
+			t.Errorf("index stats incomplete: %+v", got.GetIndexStats())
+		}
 
 		limits.PositionsEnabled = false
 		withoutPositions := NewLanternService(fb).WithSearchLimits(limits)
@@ -160,6 +172,15 @@ func TestLanternService_GetServerStatus(t *testing.T) {
 		}
 		if other.GetSearch().GetConfigFingerprint() == got.GetConfigFingerprint() {
 			t.Error("heterogeneous search configs reported the same fingerprint")
+		}
+		limits.PositionsEnabled = true
+		limits.AnalysisLimits.MaxDocumentBytes++
+		differentBudget, err := NewLanternService(fb).WithSearchLimits(limits).GetServerStatus(context.Background(), &pb.GetServerStatusRequest{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if differentBudget.GetSearch().GetConfigFingerprint() == got.GetConfigFingerprint() {
+			t.Error("heterogeneous analysis budgets reported the same fingerprint")
 		}
 	})
 

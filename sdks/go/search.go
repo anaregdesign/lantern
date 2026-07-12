@@ -18,6 +18,8 @@ const (
 	SearchErrorReasonPositionsDisabled = pb.SearchErrorReason_SEARCH_POSITIONS_DISABLED
 	SearchErrorReasonWorkBudget        = pb.SearchErrorReason_SEARCH_WORK_BUDGET_EXHAUSTED
 	SearchErrorReasonAdmission         = pb.SearchErrorReason_SEARCH_ADMISSION_SATURATED
+	SearchErrorReasonIndexIncomplete   = pb.SearchErrorReason_SEARCH_INDEX_INCOMPLETE
+	SearchErrorReasonIndexBudget       = pb.SearchErrorReason_SEARCH_INDEX_BUDGET_EXHAUSTED
 )
 
 var (
@@ -29,6 +31,11 @@ var (
 	ErrSearchWorkBudget = errors.New("search work budget exhausted")
 	// ErrSearchAdmission means every configured in-flight search slot was occupied.
 	ErrSearchAdmission = errors.New("search admission saturated")
+	// ErrSearchIndexIncomplete means the graph converged but the local derived
+	// index requires a successful bounded rebuild.
+	ErrSearchIndexIncomplete = errors.New("search index incomplete")
+	// ErrSearchIndexBudget means a local write would exceed an index memory cap.
+	ErrSearchIndexBudget = errors.New("search index budget exhausted")
 )
 
 // SearchFailureReason extracts the machine-readable reason from a search

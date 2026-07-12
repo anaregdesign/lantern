@@ -63,7 +63,11 @@ export type {
   SearchFn,
   SearchUpdate,
 } from "./incremental-search.js";
-export { ReplicationPeer_State, SearchErrorReason } from "./gen/graph/v1/graph_pb.js";
+export {
+  ReplicationPeer_State,
+  SearchErrorReason,
+  SearchIndexHealth,
+} from "./gen/graph/v1/graph_pb.js";
 export { CONTRIB_ID_BYTES } from "./contrib.js";
 export { MAX_DECAY_STEPS, decayContributions, halfLifeDecay } from "./decay.js";
 export type { DecayOptions } from "./decay.js";

@@ -29,7 +29,7 @@ func (f *fakeService) BackupSnapshot(_ context.Context, _ *pb.BackupSnapshotRequ
 	return nil
 }
 
-func (f *fakeService) PutVertices(_ context.Context, req *pb.PutVerticesRequest) (*pb.PutVerticesResponse, error) {
+func (f *fakeService) RestoreVertices(_ context.Context, req *pb.PutVerticesRequest) (*pb.PutVerticesResponse, error) {
 	f.putV = append(f.putV, req.GetVertices()...)
 	return &pb.PutVerticesResponse{}, nil
 }

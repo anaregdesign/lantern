@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/anaregdesign/lantern/core/hlc"
+	"github.com/anaregdesign/lantern/core/search"
 )
 
 // AddEdgeWithExpirationContribHLC is the tombstone-aware sibling of
@@ -34,12 +35,31 @@ func (c *GraphCache[S, T]) AddEdgeWithExpirationContribHLC(tail, head S, w float
 // PutVertexWithExpiration; this helper is intentionally narrow to the
 // replicated path so non-replicated workloads pay nothing.
 func (c *GraphCache[S, T]) PutVertexWithExpirationHLC(key S, value T, expiration time.Time, ts hlc.Timestamp) bool {
+	var prepared search.PreparedDocument
+	var prepErr error
+	if c.searchIndex != nil {
+		prepared, _, prepErr = c.searchIndex.Prepare(c.searchExtract(value))
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.vertexWriteAllowedLocked(key, ts) {
 		return false
 	}
-	c.putVertexLocked(key, value, expiration)
+	if c.searchIndex != nil && c.searchIndex.Health() != search.IndexHealthy {
+		prepErr = search.ErrIndexIncomplete
+	}
+	if c.searchIndex != nil && prepErr == nil {
+		prepErr = c.searchIndex.ValidateManyPrepared([]search.PreparedItem[S]{{ID: key, Prepared: prepared}})
+	}
+	if prepErr != nil && c.searchIndex != nil {
+		c.searchIndex.MarkIncomplete()
+		c.upsertVertexStorageLocked(key, value, expiration)
+	} else if c.searchIndex != nil {
+		c.searchIndex.IndexManyPreparedValidated([]search.PreparedItem[S]{{ID: key, Prepared: prepared}})
+		c.upsertVertexStorageLocked(key, value, expiration)
+	} else {
+		c.putVertexLocked(key, value, expiration)
+	}
 	c.recordVertexHLCLocked(key, ts)
 	c.clearVertexTombstoneLocked(key)
 	return true
