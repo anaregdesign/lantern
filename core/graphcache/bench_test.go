@@ -730,6 +730,90 @@ func BenchmarkPutVerticesIndexed(b *testing.B) {
 	})
 }
 
+// BenchmarkPutVerticesIndexedBatchPreparation covers #1051's production batch
+// shapes. In addition to Go's ns/op and allocation metrics it reports the time
+// actually spent holding GraphCache.mu, input throughput, and search-index
+// write-lock acquisitions so off-lock preparation is visible independently of
+// total analysis cost. Run with -benchmem; use -benchtime=1x for the 65k arms.
+func BenchmarkPutVerticesIndexedBatchPreparation(b *testing.B) {
+	type scenario struct {
+		name       string
+		n          int
+		value      string
+		duplicates int
+		skipped    bool
+	}
+	short := "alpha beta gamma delta"
+	long := strings.Repeat("alpha beta gamma delta epsilon zeta eta theta ", 64)
+	scenarios := []scenario{
+		{name: "UniqueShort/1k", n: 1_000, value: short},
+		{name: "UniqueShort/10k", n: 10_000, value: short},
+		{name: "UniqueShort/65k", n: 65_000, value: short},
+		{name: "UniqueLong/1k", n: 1_000, value: long},
+		{name: "DuplicateHeavy/65k", n: 65_000, value: short, duplicates: 128},
+		{name: "SkippedHeavy/65k", n: 65_000, value: short, skipped: true},
+	}
+	for _, positions := range []bool{true, false} {
+		positionName := "PositionsOn"
+		if !positions {
+			positionName = "PositionsOff"
+		}
+		for _, scenario := range scenarios {
+			scenario := scenario
+			b.Run(positionName+"/"+scenario.name, func(b *testing.B) {
+				exp := time.Now().Add(time.Hour)
+				items := make([]VertexItem[string, string], scenario.n)
+				for i := range items {
+					keyIndex := i
+					if scenario.duplicates > 0 {
+						keyIndex %= scenario.duplicates
+					}
+					items[i] = VertexItem[string, string]{
+						Key:        makeKey("batch://", keyIndex, 32),
+						Value:      scenario.value,
+						Expiration: exp,
+					}
+				}
+				c := NewGraphCache[string, string](time.Hour)
+				var opts []SearchIndexOption
+				if !positions {
+					opts = append(opts, WithoutSearchPositions())
+				}
+				c.EnableSearchIndex(func(value string) search.Document { return search.Text(value) }, compareStringID, opts...)
+				if scenario.skipped {
+					if err := c.PutVerticesWithExpiration(items); err != nil {
+						b.Fatal(err)
+					}
+				}
+
+				var graphLock time.Duration
+				observe := func(d time.Duration) { graphLock += d }
+				beforeLocks := c.SearchIndexMemoryStats().WriteLockAcquisitions
+				b.ReportAllocs()
+				b.ResetTimer()
+				for range b.N {
+					if scenario.skipped {
+						if _, _, err := c.putVerticesIfAbsentChecked(items, hlc.Timestamp{}, false, observe); err != nil {
+							b.Fatal(err)
+						}
+						continue
+					}
+					if err := c.putVerticesWithExpirationChecked(items, observe); err != nil {
+						b.Fatal(err)
+					}
+				}
+				elapsed := b.Elapsed()
+				afterLocks := c.SearchIndexMemoryStats().WriteLockAcquisitions
+				if b.N > 0 {
+					b.ReportMetric(float64(graphLock.Nanoseconds())/float64(b.N), "graph_lock_ns/op")
+					b.ReportMetric(float64(afterLocks-beforeLocks)/float64(b.N), "index_write_locks/op")
+					b.ReportMetric(float64(scenario.n*b.N)/elapsed.Seconds(), "items/s")
+				}
+			})
+		}
+	}
+}
+
 // BenchmarkApplyPutVerticesHLC contrasts the two ways the replication apply
 // path can replay a 1k-vertex MutationOp_PutVertices with the search index
 // enabled (#840): the pre-#840 loop of singular PutVertexWithExpirationHLC

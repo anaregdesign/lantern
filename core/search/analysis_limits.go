@@ -80,6 +80,7 @@ type IndexMemoryStats struct {
 	EstimatedRetainedBytes int64
 	RebuildCount           uint64
 	LastRebuildDuration    time.Duration
+	WriteLockAcquisitions  uint64
 	Health                 IndexHealth
 }
 

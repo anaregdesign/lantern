@@ -48,8 +48,64 @@ func (c *GraphCache[S, T]) deleteVerticesIndexes(keys []S) {
 		c.prefixIndex.deleteMany(prefixes)
 	}
 	if c.searchIndex != nil {
-		c.searchIndex.DeleteMany(keys)
+		c.searchIndex.DeleteMany(c.searchEvictionsNotPreapplied(keys))
 	}
+}
+
+// deleteVertexStoragePreindexedLocked removes a born-expired batch item after
+// its zero PreparedDocument has already removed the key from the search index.
+// The cache eviction hook remains responsible for dictionary/prefix cleanup,
+// but consumes the marker and skips a redundant search write-lock acquisition.
+func (c *GraphCache[S, T]) deleteVertexStoragePreindexedLocked(key S) bool {
+	if c.searchIndex == nil {
+		return c.vertices.Delete(key)
+	}
+	c.searchEvictionMu.Lock()
+	if c.searchPreappliedEvictions == nil {
+		c.searchPreappliedEvictions = make(map[S]int)
+	}
+	c.searchPreappliedEvictions[key]++
+	c.searchEvictionMu.Unlock()
+
+	deleted := c.vertices.Delete(key)
+
+	// An absent key fires no hook, so remove an unconsumed marker here. When
+	// Delete did fire the synchronous hook, that hook already consumed it.
+	c.searchEvictionMu.Lock()
+	if count := c.searchPreappliedEvictions[key]; count > 1 {
+		c.searchPreappliedEvictions[key] = count - 1
+	} else {
+		delete(c.searchPreappliedEvictions, key)
+	}
+	if len(c.searchPreappliedEvictions) == 0 {
+		c.searchPreappliedEvictions = nil
+	}
+	c.searchEvictionMu.Unlock()
+	return deleted
+}
+
+func (c *GraphCache[S, T]) searchEvictionsNotPreapplied(keys []S) []S {
+	c.searchEvictionMu.Lock()
+	defer c.searchEvictionMu.Unlock()
+	if len(c.searchPreappliedEvictions) == 0 {
+		return keys
+	}
+	pending := make([]S, 0, len(keys))
+	for _, key := range keys {
+		if count := c.searchPreappliedEvictions[key]; count > 0 {
+			if count == 1 {
+				delete(c.searchPreappliedEvictions, key)
+			} else {
+				c.searchPreappliedEvictions[key] = count - 1
+			}
+			continue
+		}
+		pending = append(pending, key)
+	}
+	if len(c.searchPreappliedEvictions) == 0 {
+		c.searchPreappliedEvictions = nil
+	}
+	return pending
 }
 
 // onEdgeAddedLocked maintains the per-tail head index after a successful

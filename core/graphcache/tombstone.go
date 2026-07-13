@@ -113,6 +113,10 @@ func (c *GraphCache[S, T]) DeleteVerticesHLC(keys []S, ts hlc.Timestamp, expirat
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.searchIndex != nil {
+		c.searchCommitMu.Lock()
+		defer c.searchCommitMu.Unlock()
+	}
 	// DeleteMany batches the vertex-index maintenance into one pass (#738);
 	// it returns only the keys that were present, which is exactly the count
 	// we report. Tombstones still go on EVERY key (including absent ones) so
@@ -179,6 +183,10 @@ func (c *GraphCache[S, T]) DeleteByPrefixHLC(ctx context.Context, prefix string,
 	})
 	if err := ctx.Err(); err != nil {
 		return 0, err
+	}
+	if c.searchIndex != nil && len(victims) > 0 {
+		c.searchCommitMu.Lock()
+		defer c.searchCommitMu.Unlock()
 	}
 	// victims are all live (resolveProjected confirms via the vertex cache),
 	// so DeleteMany removes them all; batch it into one index-maintenance pass
