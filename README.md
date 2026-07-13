@@ -268,6 +268,12 @@ edge-created endpoint vertices are immediately searchable by key. Hits use the
 stable total order `(score DESC, raw key ASC)` and make
 natural seeds for a follow-up `bfs`, `pagerank`, or `community` walk:
 
+The production analyzer uses Unicode full case folding and canonical NFC,
+preserves meaningful Thai/Indic/accent marks, and keeps emoji/Unicode symbols
+searchable. A two-rune Latin query participates in both the exact-word and
+auxiliary infix channels (`ar` recalls `search`), while exact whole-word
+evidence retains the higher score.
+
 ```shell
 lantern-cli search "rolling update"              # use the server's configured mode
 lantern-cli search "rolling update" --mode all   # require every word (AND)

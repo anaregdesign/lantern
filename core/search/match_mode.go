@@ -62,6 +62,7 @@ func (idx *InvertedIndex[S, D]) SearchMatch(query string, opts MatchOptions) []R
 		return nil
 	}
 	queryTerms := idx.queryTerms(query)
+	queryTerms = queryTermsForMatchOptions(queryTerms, opts)
 	if len(queryTerms) == 0 {
 		return nil
 	}
@@ -115,6 +116,7 @@ func (idx *InvertedIndex[S, D]) SearchMatchTopKCandidatesContextAt(ctx context.C
 		return nil, work.stats, err
 	}
 	queryTerms := idx.queryTerms(query)
+	queryTerms = queryTermsForMatchOptions(queryTerms, opts)
 	if err := work.visit(WorkQueryTerms, int64(len(queryTerms))); err != nil {
 		return nil, work.stats, err
 	}
@@ -137,6 +139,32 @@ func (idx *InvertedIndex[S, D]) SearchMatchTopKCandidatesContextAt(ctx context.C
 		return nil, work.stats, err
 	}
 	return results, work.stats, nil
+}
+
+// queryTermsForMatchOptions removes the query-only exact-width gram when the
+// primary term is itself undergoing prefix/fuzzy expansion. Keeping both would
+// let the exact gram bypass the bounded semantic-expansion candidate set. The
+// ordinary exact path retains it for #1067 two-rune infix recall.
+func queryTermsForMatchOptions(terms []Token, opts MatchOptions) []Token {
+	if !opts.expandsTerms() {
+		return terms
+	}
+	words := make(map[string]struct{}, len(terms))
+	for _, term := range terms {
+		if term.Class == ClassWord {
+			words[term.Term] = struct{}{}
+		}
+	}
+	out := terms[:0]
+	for _, term := range terms {
+		if term.Class == ClassGram {
+			if _, duplicate := words[term.Term]; duplicate {
+				continue
+			}
+		}
+		out = append(out, term)
+	}
+	return out
 }
 
 // scoredMatchesLocked builds the final score map for a query under opts: the

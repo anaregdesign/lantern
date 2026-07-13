@@ -11,6 +11,38 @@ func TestLowercaseNormalizer(t *testing.T) {
 	}
 }
 
+func TestCaseFoldNormalizer(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"GermanSharpS", "Straße", "strasse"},
+		{"GreekFinalSigma", "ΟΣ ος οσ", "οσ οσ οσ"},
+		{"TurkishIsLanguageNeutral", "İ I ı i", "i̇ i ı i"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := (CaseFoldNormalizer{}).Normalize(tc.in); got != tc.want {
+				t.Fatalf("Normalize(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCanonicalNormalizer(t *testing.T) {
+	composed := "café"
+	decomposed := "cafe\u0301"
+	if got := (CanonicalNormalizer{}).Normalize(decomposed); got != composed {
+		t.Fatalf("Normalize(%q) = %q, want NFC %q", decomposed, got, composed)
+	}
+	for _, text := range []string{"สวัสดี", "हिन्दी", "Ελλάδα", "ёж"} {
+		if got := (CanonicalNormalizer{}).Normalize(text); got != text {
+			t.Fatalf("Normalize(%q) = %q, want meaningful marks preserved", text, got)
+		}
+	}
+}
+
 func TestSpaceNormalizer(t *testing.T) {
 	if got := (SpaceNormalizer{}).Normalize("  a\t\nb   c  "); got != "a b c" {
 		t.Fatalf("Normalize = %q, want %q", got, "a b c")
@@ -33,6 +65,19 @@ func TestPunctuationNormalizer(t *testing.T) {
 	// than being preserved as PunctuationFilter would.
 	if got := (PunctuationNormalizer{}).Normalize("a=b+node-1"); got != "a b node 1" {
 		t.Fatalf("Normalize = %q, want %q", got, "a b node 1")
+	}
+}
+
+func TestSymbolPreservingPunctuationNormalizer(t *testing.T) {
+	got := (SymbolPreservingPunctuationNormalizer{}).Normalize("go,node+❤ 👩‍💻")
+	if got != "go node+❤ 👩‍💻" {
+		t.Fatalf("Normalize = %q, want punctuation boundaries and symbols preserved", got)
+	}
+}
+
+func TestEmojiPresentationNormalizer(t *testing.T) {
+	if got := (EmojiPresentationNormalizer{}).Normalize("❤︎ ❤️"); got != "❤ ❤" {
+		t.Fatalf("Normalize = %q, want presentation selectors removed", got)
 	}
 }
 

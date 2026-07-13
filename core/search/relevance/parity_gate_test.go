@@ -24,7 +24,8 @@ import (
 // productionIndex replicates the exact index core/graphcache.newSearchIndex
 // builds for SearchVertices — since #888 the script-aware dual-channel
 // analyzer with class-weighted BM25, and since #889 with positional postings
-// (WithPositions) for phrase and proximity ranking. It is intentionally a
+// (WithPositions) for phrase and proximity ranking. Since #1067 query analysis
+// adds a two-rune auxiliary term and Unicode identity follows analyzer v2. It is intentionally a
 // replica, not an import: graphcache depends on search, so this package (a
 // sibling under search) states the pipeline explicitly, and this comment plus
 // the one on newSearchIndex keep the two in sync.

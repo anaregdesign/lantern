@@ -105,7 +105,7 @@ func (idx *InvertedIndex[S, D]) SearchPhraseTopKCandidatesContextAt(ctx context.
 // run's grams are themselves ClassWord, so they are kept and verified by the
 // same pos+1 rule.
 func (idx *InvertedIndex[S, D]) phraseQueryTerms(query string) []string {
-	tokens := idx.analyzer.Analyze(query)
+	tokens := idx.analyzeQuery(query)
 	var terms []string
 	for _, t := range tokens {
 		if t.Class == ClassWord {

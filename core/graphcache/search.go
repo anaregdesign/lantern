@@ -10,15 +10,16 @@ import (
 
 // newSearchIndex builds the inverted index used by the optional content-search
 // feature. Since #888 it installs the script-aware dual-channel pipeline
-// (search.NewScriptAwareAnalyzer): width / diacritic / lowercase / punctuation
-// / space normalizers feed a ScriptAwareTokenizer whose word runs index whole
+// (search.NewScriptAwareAnalyzer): width / NFC / full-case / emoji-presentation
+// / punctuation / space normalizers feed a ScriptAwareTokenizer whose word runs index whole
 // words (primary) plus intra-word bigrams (auxiliary, for infix and typo
 // recall) and whose unbounded-script (CJK-like) runs index bigrams as the
 // word-level unit. Matches are ranked by Okapi BM25 with the standard
 // parameters, wrapped in ClassWeighted so auxiliary gram evidence counts at
 // DefaultGramWeight and a whole-word match dominates fragment matches. The
-// same analyzer runs over both stored values and queries, so index-time and
-// query-time terms stay symmetric.
+// Query analysis adds only the two-rune auxiliary term needed to make short
+// infix recall continuous. Match modes count ClassWord terms only; document
+// postings and corpus statistics remain unchanged.
 //
 // Since #889 the index also records positional postings (WithPositions): the
 // token positions of each primary-channel term, so the search layer can tell

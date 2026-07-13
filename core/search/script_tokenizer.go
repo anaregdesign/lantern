@@ -15,18 +15,22 @@ import "unicode"
 //     bigram pipeline's infix recall ("arch" finding "search") and typo
 //     tolerance; pair the index with ClassWeighted so this redundant channel
 //     stays evidence, not the ranking.
-//   - A run of an unbounded script — one written without spaces between
-//     words: Han, Hiragana, Katakana, Hangul, Thai, Lao, Khmer, Myanmar —
+//   - A CJKBigram run — Unicode Ideographic characters, Hiragana, Katakana,
+//     and Hangul, following Lucene's documented CJKBigramFilter script set —
 //     emits its N-rune windows as primary tokens, exactly the strategy of
 //     Lucene's CJKAnalyzer, because there the gram is the word-level unit. A
 //     run shorter than N (a lone ideograph) is emitted whole, so single-
 //     character words stay searchable.
-//   - Every other rune (whitespace, punctuation, symbols) delimits runs and
-//     is dropped, so no gram ever straddles a word boundary and the
+//   - Combining marks continue the preceding lexical run, preserving Thai and
+//     Indic identity. Each Unicode symbol is searchable as one primary token;
+//     ZWJ-linked symbols form one token and adjacent unjoined symbols do not.
+//   - Every other rune (whitespace and punctuation) delimits runs and is
+//     dropped, so no gram ever straddles a word boundary and the
 //     WhitespaceFilter step of the plain n-gram pipeline is unnecessary.
 //
-// Run it after the folding normalizers (width, diacritic, lowercase,
-// punctuation, space) — NewScriptAwareAnalyzer wires that pipeline. In
+// Run it after the production normalizers (width, canonical composition, full
+// case fold, emoji presentation, punctuation, space) — NewScriptAwareAnalyzer
+// wires that pipeline. In
 // particular WidthNormalizer must run first so half-width katakana joins the
 // katakana run it belongs to. N < 2 is treated as 2 (bigrams), so the zero
 // value is the production configuration. It holds no state and is safe for
@@ -58,7 +62,7 @@ func (t ScriptAwareTokenizer) TokenizeBounded(text string, maxTokens int) ([]Tok
 		switch r := runes[i]; {
 		case isUnboundedScript(r):
 			j := i + 1
-			for j < len(runes) && isUnboundedScript(runes[j]) {
+			for j < len(runes) && (isUnboundedScript(runes[j]) || unicode.IsMark(runes[j])) {
 				j++
 			}
 			var exceeded bool
@@ -69,7 +73,7 @@ func (t ScriptAwareTokenizer) TokenizeBounded(text string, maxTokens int) ([]Tok
 			i = j
 		case isWordRune(r):
 			j := i + 1
-			for j < len(runes) && isWordRune(runes[j]) {
+			for j < len(runes) && (isWordRune(runes[j]) || unicode.IsMark(runes[j]) || unicode.Is(unicode.Join_Control, runes[j])) {
 				j++
 			}
 			word := runes[i:j]
@@ -78,9 +82,9 @@ func (t ScriptAwareTokenizer) TokenizeBounded(text string, maxTokens int) ([]Tok
 				return nil, true
 			}
 			if len(word) > n {
-				// Strictly longer than one window: a word of exactly N runes
-				// would emit itself again, and the word token already carries
-				// that evidence on the primary channel.
+				// Document analysis omits a redundant exact-width gram. The
+				// production QueryAnalyzer adds it only to queries, where it
+				// closes the short-infix discontinuity without growing postings.
 				var exceeded bool
 				tokens, exceeded = appendRunGramsBounded(tokens, word, n, ClassGram, maxTokens)
 				if exceeded {
@@ -88,12 +92,35 @@ func (t ScriptAwareTokenizer) TokenizeBounded(text string, maxTokens int) ([]Tok
 				}
 			}
 			i = j
+		case unicode.IsSymbol(r):
+			j := symbolClusterEnd(runes, i)
+			tokens = append(tokens, Token{Term: string(runes[i:j]), Class: ClassWord})
+			if maxTokens > 0 && len(tokens) > maxTokens {
+				return nil, true
+			}
+			i = j
 		default:
-			i++ // delimiter: whitespace, punctuation, symbols
+			i++ // delimiter: whitespace, punctuation, orphaned mark/control
 		}
 	}
 	return tokens, false
 }
+
+func symbolClusterEnd(runes []rune, start int) int {
+	j := start + 1
+	for j < len(runes) && (unicode.IsMark(runes[j]) || isEmojiModifier(runes[j])) {
+		j++
+	}
+	for j+1 < len(runes) && runes[j] == '\u200d' && unicode.IsSymbol(runes[j+1]) {
+		j += 2
+		for j < len(runes) && (unicode.IsMark(runes[j]) || isEmojiModifier(runes[j])) {
+			j++
+		}
+	}
+	return j
+}
+
+func isEmojiModifier(r rune) bool { return r >= 0x1f3fb && r <= 0x1f3ff }
 
 // appendRunGramsBounded emits every n-rune window, stopping at the cap. A
 // short run is emitted whole (the CJKBigramFilter unigram fallback).
@@ -111,19 +138,15 @@ func appendRunGramsBounded(tokens []Token, run []rune, n int, class TokenClass, 
 	return tokens, false
 }
 
-// unboundedScripts are the scripts written without spaces between words, for
-// which n-grams are the word-level indexing unit: the CJKBigramFilter set
-// (Han, Hiragana, Katakana, Hangul) plus the space-free Southeast Asian
-// scripts.
+// unboundedScripts mirrors Lucene CJKBigramFilter's documented script set.
+// Han membership is derived from Unicode's Ideographic property below rather
+// than a hand-maintained block list; the remaining scripts have standard Go
+// Unicode tables. Southeast Asian scripts follow UAX #29's default lexical
+// runs and retain auxiliary grams, avoiding an invented per-script list.
 var unboundedScripts = []*unicode.RangeTable{
-	unicode.Han,
 	unicode.Hiragana,
 	unicode.Katakana,
 	unicode.Hangul,
-	unicode.Thai,
-	unicode.Lao,
-	unicode.Khmer,
-	unicode.Myanmar,
 }
 
 // isUnboundedScript reports whether r belongs to a script indexed by n-grams.
@@ -135,12 +158,27 @@ func isUnboundedScript(r rune) bool {
 	case 'ー', '々', '〆':
 		return true
 	}
+	if unicode.Is(unicode.Ideographic, r) {
+		return true
+	}
 	for _, table := range unboundedScripts {
 		if unicode.Is(table, r) {
 			return true
 		}
 	}
 	return false
+}
+
+func isCJKPrimaryTerm(term string) bool {
+	if term == "" {
+		return false
+	}
+	for _, r := range term {
+		if !isUnboundedScript(r) && !unicode.IsMark(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // isWordRune reports whether r continues a word run of a space-delimited
