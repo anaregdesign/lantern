@@ -134,24 +134,29 @@ func (c *GraphCache[S, T]) RebuildSearchIndex() error {
 // this boundary so a partially replayed derived index is never advertised as
 // healthy or queried for partial results.
 func (c *GraphCache[S, T]) BeginSearchIndexRecovery() {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.searchIndex == nil {
+		return
+	}
+	// Preserve the graph -> search lock order used by every vertex writer.
+	// Snapshot recovery runs concurrently with local writes, so taking these
+	// locks in the opposite order can deadlock a writer that already owns mu.
 	c.searchCommitMu.Lock()
 	defer c.searchCommitMu.Unlock()
-	c.mu.RLock()
-	index := c.searchIndex
-	c.mu.RUnlock()
-	if index != nil {
-		index.MarkIncomplete()
-	}
+	c.searchIndex.MarkIncomplete()
 }
 
 // CompleteSearchIndexRecovery rebuilds the complete derived index from the
 // live graph and marks it healthy only after the atomic replacement succeeds.
 // A limit error leaves the graph intact and the index incomplete.
 func (c *GraphCache[S, T]) CompleteSearchIndexRecovery() error {
-	c.searchCommitMu.Lock()
-	defer c.searchCommitMu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// Match the graph -> search lock order used by vertex writes. Recovery is
+	// reachable from replication while those writes remain active.
+	c.searchCommitMu.Lock()
+	defer c.searchCommitMu.Unlock()
 	return c.rebuildSearchIndexLocked()
 }
 
