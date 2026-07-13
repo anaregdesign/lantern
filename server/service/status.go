@@ -125,6 +125,7 @@ func (s *LanternService) searchCapabilities() *pb.SearchCapabilities {
 		MaxDictionaryVisits:   uint64(s.search.WorkBudget.MaxDictionaryVisits),
 		MaxPostingVisits:      uint64(s.search.WorkBudget.MaxPostingVisits),
 		MaxPositionVisits:     uint64(s.search.WorkBudget.MaxPositionVisits),
+		MaxExpirationVisits:   uint64(s.search.WorkBudget.MaxExpirationVisits),
 		MaxInFlight:           uint32(s.search.MaxInFlight),
 		MaxDocumentBytes:      uint32(limits.MaxDocumentBytes),
 		MaxDocumentTokens:     uint32(limits.MaxDocumentTokens),
@@ -137,6 +138,10 @@ func (s *LanternService) searchCapabilities() *pb.SearchCapabilities {
 		IndexStats: &pb.SearchIndexStats{
 			Health:                 health,
 			Documents:              uint64(indexStats.Documents),
+			PhysicalDocuments:      uint64(indexStats.PhysicalDocuments),
+			ExpiredDocuments:       uint64(indexStats.ExpiredDocuments),
+			ExpirationQueueEntries: uint64(indexStats.ExpirationQueueEntries),
+			ExpirationPurged:       indexStats.ExpirationPurged,
 			LiveTerms:              uint64(indexStats.LiveTerms),
 			RetainedTermSlots:      uint64(indexStats.RetainedTermSlots),
 			RetainedOrdinals:       uint64(indexStats.RetainedOrdinals),
@@ -150,8 +155,11 @@ func (s *LanternService) searchCapabilities() *pb.SearchCapabilities {
 	if indexStats.RebuildCount > 0 {
 		capabilities.IndexStats.LastRebuildDuration = durationpb.New(indexStats.LastRebuildDuration)
 	}
+	if indexStats.ExpirationPurged > 0 {
+		capabilities.IndexStats.LastExpirationPurgeDuration = durationpb.New(indexStats.LastExpirationPurge)
+	}
 	canonical := fmt.Sprintf(
-		"enabled=%t\npositions=%t\ndefault_limit=%d\nmax_limit=%d\ndefault_match_mode=%d\ndefault_min_should_match=%d\nmax_fuzziness=%d\nanalyzer=%s\nprojection=%s\ntimeout_ms=%d\nmax_query_bytes=%d\nmax_query_terms=%d\nmax_dictionary_visits=%d\nmax_posting_visits=%d\nmax_position_visits=%d\nmax_in_flight=%d\nmax_document_bytes=%d\nmax_document_tokens=%d\nmax_document_terms=%d\nmax_live_terms=%d\nmax_live_postings=%d\nmax_position_entries=%d\ncompaction_ratio=%g\ncompaction_min_retired=%d\n",
+		"enabled=%t\npositions=%t\ndefault_limit=%d\nmax_limit=%d\ndefault_match_mode=%d\ndefault_min_should_match=%d\nmax_fuzziness=%d\nanalyzer=%s\nprojection=%s\ntimeout_ms=%d\nmax_query_bytes=%d\nmax_query_terms=%d\nmax_dictionary_visits=%d\nmax_posting_visits=%d\nmax_position_visits=%d\nmax_expiration_visits=%d\nmax_in_flight=%d\nmax_document_bytes=%d\nmax_document_tokens=%d\nmax_document_terms=%d\nmax_live_terms=%d\nmax_live_postings=%d\nmax_position_entries=%d\ncompaction_ratio=%g\ncompaction_min_retired=%d\n",
 		capabilities.Enabled,
 		s.search.PositionsEnabled,
 		capabilities.DefaultLimit,
@@ -167,6 +175,7 @@ func (s *LanternService) searchCapabilities() *pb.SearchCapabilities {
 		capabilities.MaxDictionaryVisits,
 		capabilities.MaxPostingVisits,
 		capabilities.MaxPositionVisits,
+		capabilities.MaxExpirationVisits,
 		capabilities.MaxInFlight,
 		capabilities.MaxDocumentBytes,
 		capabilities.MaxDocumentTokens,

@@ -231,9 +231,17 @@ func (c *Cache[S, T]) DeleteMany(keys []S) []S {
 }
 
 func (c *Cache[S, T]) Has(key S) bool {
+	return c.HasAt(key, time.Now())
+}
 
-	_, ok := c.Get(key)
-	return ok
+// HasAt reports logical membership at the caller's already-sampled time. It
+// lets compound reads apply one liveness instant across several entries
+// instead of sampling the wall clock once per probe.
+func (c *Cache[S, T]) HasAt(key S, now time.Time) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	v, ok := c.cache[key]
+	return ok && IsLiveAt(v.expiration, now)
 }
 
 // Clear removes every entry. When an eviction callback is installed it is

@@ -199,7 +199,7 @@ func TestNewConfigValidation(t *testing.T) {
 		}
 		if cfg.Search.Timeout <= 0 || cfg.Search.MaxQueryBytes <= 0 || cfg.Search.MaxQueryTerms <= 0 ||
 			cfg.Search.MaxDictionaryVisits <= 0 || cfg.Search.MaxPostingVisits <= 0 ||
-			cfg.Search.MaxPositionVisits <= 0 || cfg.Search.MaxInFlight <= 0 ||
+			cfg.Search.MaxPositionVisits <= 0 || cfg.Search.MaxExpirationVisits <= 0 || cfg.Search.MaxInFlight <= 0 ||
 			cfg.Search.AnalysisLimits.MaxDocumentBytes <= 0 || cfg.Search.AnalysisLimits.MaxDocumentTokens <= 0 ||
 			cfg.Search.AnalysisLimits.MaxDocumentTerms <= 0 || cfg.Search.AnalysisLimits.MaxLiveTerms <= 0 ||
 			cfg.Search.AnalysisLimits.MaxLivePostings <= 0 || cfg.Search.AnalysisLimits.MaxPositionEntries <= 0 ||
@@ -215,6 +215,7 @@ func TestNewConfigValidation(t *testing.T) {
 		"LANTERN_SEARCH_MAX_DICTIONARY_VISITS",
 		"LANTERN_SEARCH_MAX_POSTING_VISITS",
 		"LANTERN_SEARCH_MAX_POSITION_VISITS",
+		"LANTERN_SEARCH_MAX_EXPIRATION_VISITS",
 		"LANTERN_SEARCH_MAX_IN_FLIGHT",
 		"LANTERN_SEARCH_MAX_DOCUMENT_BYTES",
 		"LANTERN_SEARCH_MAX_DOCUMENT_TOKENS",

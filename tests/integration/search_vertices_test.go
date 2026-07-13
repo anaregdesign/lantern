@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand"
 	"slices"
 	"sort"
@@ -360,6 +361,7 @@ func TestSearchVertices_ServerTimeoutOverWire(t *testing.T) {
 			MaxDictionaryVisits: 34,
 			MaxPostingVisits:    56,
 			MaxPositionVisits:   78,
+			MaxExpirationVisits: 90,
 		},
 		MaxInFlight: 9,
 	})
@@ -370,9 +372,98 @@ func TestSearchVertices_ServerTimeoutOverWire(t *testing.T) {
 	got := status.Msg.GetSearch()
 	if got.GetTimeoutMs() != 1500 || got.GetMaxQueryBytes() != 123 || got.GetMaxQueryTerms() != 12 ||
 		got.GetMaxDictionaryVisits() != 34 || got.GetMaxPostingVisits() != 56 ||
-		got.GetMaxPositionVisits() != 78 || got.GetMaxInFlight() != 9 {
+		got.GetMaxPositionVisits() != 78 || got.GetMaxExpirationVisits() != 90 || got.GetMaxInFlight() != 9 {
 		t.Fatalf("execution capabilities = %+v, want configured limits", got)
 	}
+}
+
+func TestSearchVertices_ExpirationOverWire(t *testing.T) {
+	t.Run("ranking and expansion use only the live corpus", func(t *testing.T) {
+		withExpired := newSearchRawClient(t, true)
+		baseline := newSearchRawClient(t, true)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		liveExpiration := timestamppb.New(time.Now().Add(time.Hour))
+		expiration := time.Now().Add(100 * time.Millisecond)
+		for _, c := range []graphv1connect.LanternServiceClient{withExpired, baseline} {
+			_, err := c.PutVertex(ctx, connect.NewRequest(&pb.PutVertexRequest{Vertex: &pb.Vertex{
+				Key: "live", Value: &pb.Vertex_String_{String_: "alpha beta"}, Expiration: liveExpiration,
+			}}))
+			if err != nil {
+				t.Fatalf("PutVertex live: %v", err)
+			}
+		}
+		_, err := withExpired.PutVertex(ctx, connect.NewRequest(&pb.PutVertexRequest{Vertex: &pb.Vertex{
+			Key: "expired", Value: &pb.Vertex_String_{String_: "alpha alpha zzuniqueonly"}, Expiration: timestamppb.New(expiration),
+		}}))
+		if err != nil {
+			t.Fatalf("PutVertex expired: %v", err)
+		}
+		time.Sleep(time.Until(expiration) + 20*time.Millisecond)
+
+		searchRequest := connect.NewRequest(&pb.SearchVerticesRequest{Query: "alpha"})
+		got, err := withExpired.SearchVertices(ctx, searchRequest)
+		if err != nil {
+			t.Fatalf("SearchVertices with expired: %v", err)
+		}
+		want, err := baseline.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{Query: "alpha"}))
+		if err != nil {
+			t.Fatalf("SearchVertices baseline: %v", err)
+		}
+		if len(got.Msg.GetHits()) != 1 || len(want.Msg.GetHits()) != 1 || got.Msg.GetHits()[0].GetKey() != "live" || math.Float64bits(got.Msg.GetHits()[0].GetScore()) != math.Float64bits(want.Msg.GetHits()[0].GetScore()) {
+			t.Fatalf("live-corpus ranking = %+v, baseline = %+v", got.Msg.GetHits(), want.Msg.GetHits())
+		}
+		expanded, err := withExpired.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{
+			Query: "zzuniq", Options: &pb.SearchOptions{PrefixTerms: true},
+		}))
+		if err != nil {
+			t.Fatalf("SearchVertices expired-only prefix: %v", err)
+		}
+		if len(expanded.Msg.GetHits()) != 0 {
+			t.Fatalf("expired-only expansion hits = %+v", expanded.Msg.GetHits())
+		}
+		status, err := withExpired.GetServerStatus(ctx, connect.NewRequest(&pb.GetServerStatusRequest{}))
+		if err != nil {
+			t.Fatalf("GetServerStatus: %v", err)
+		}
+		stats := status.Msg.GetSearch().GetIndexStats()
+		if stats.GetDocuments() != 1 || stats.GetPhysicalDocuments() != 1 || stats.GetExpiredDocuments() != 0 || stats.GetExpirationQueueEntries() != 1 || stats.GetExpirationPurged() != 1 || stats.GetLastExpirationPurgeDuration() == nil {
+			t.Fatalf("post-purge index stats = %+v", stats)
+		}
+	})
+
+	t.Run("expiration work is bounded and retryable", func(t *testing.T) {
+		c := newSearchRawClientWithLimits(t, service.SearchLimits{
+			Enabled: true, PositionsEnabled: true, DefaultLimit: 10, MaxLimit: 100,
+			WorkBudget: search.Budget{MaxExpirationVisits: 1, MaxPostingVisits: 100},
+		})
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		expiration := time.Now().Add(100 * time.Millisecond)
+		vertices := []*pb.Vertex{
+			{Key: "dead-a", Value: &pb.Vertex_String_{String_: "alpha"}, Expiration: timestamppb.New(expiration)},
+			{Key: "dead-b", Value: &pb.Vertex_String_{String_: "alpha"}, Expiration: timestamppb.New(expiration)},
+		}
+		if _, err := c.PutVertices(ctx, connect.NewRequest(&pb.PutVerticesRequest{Vertices: vertices})); err != nil {
+			t.Fatalf("PutVertices: %v", err)
+		}
+		time.Sleep(time.Until(expiration) + 20*time.Millisecond)
+		_, err := c.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{Query: "alpha"}))
+		if got := connect.CodeOf(err); got != connect.CodeResourceExhausted {
+			t.Fatalf("first purge code = %v, want ResourceExhausted (err=%v)", got, err)
+		}
+		detail := wireSearchErrorDetail(t, err)
+		if detail.GetReason() != pb.SearchErrorReason_SEARCH_WORK_BUDGET_EXHAUSTED || detail.GetWorkKind() != string(search.WorkExpirationVisits) {
+			t.Fatalf("detail = %+v, want expiration budget exhaustion", detail)
+		}
+		second, err := c.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{Query: "alpha"}))
+		if err != nil {
+			t.Fatalf("retry after bounded progress: %v", err)
+		}
+		if len(second.Msg.GetHits()) != 0 {
+			t.Fatalf("retry hits = %+v, want none", second.Msg.GetHits())
+		}
+	})
 }
 
 func TestSearchVertices_CancellationAndAdmissionOverWire(t *testing.T) {

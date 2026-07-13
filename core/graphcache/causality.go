@@ -49,13 +49,13 @@ func (c *GraphCache[S, T]) PutVertexWithExpirationHLC(key S, value T, expiration
 		prepErr = search.ErrIndexIncomplete
 	}
 	if c.searchIndex != nil && prepErr == nil {
-		prepErr = c.searchIndex.ValidateManyPrepared([]search.PreparedItem[S]{{ID: key, Prepared: prepared}})
+		prepErr = c.searchIndex.ValidateManyPrepared([]search.PreparedItem[S]{{ID: key, Prepared: prepared, Expiration: expiration}})
 	}
 	if prepErr != nil && c.searchIndex != nil {
 		c.searchIndex.MarkIncomplete()
 		c.upsertVertexStorageLocked(key, value, expiration)
 	} else if c.searchIndex != nil {
-		c.searchIndex.IndexManyPreparedValidated([]search.PreparedItem[S]{{ID: key, Prepared: prepared}})
+		c.searchIndex.IndexManyPreparedValidated([]search.PreparedItem[S]{{ID: key, Prepared: prepared, Expiration: expiration}})
 		c.upsertVertexStorageLocked(key, value, expiration)
 	} else {
 		c.putVertexLocked(key, value, expiration)

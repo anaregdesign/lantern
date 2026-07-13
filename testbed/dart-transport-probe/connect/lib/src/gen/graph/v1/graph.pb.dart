@@ -4506,7 +4506,8 @@ class SearchErrorDetail extends $pb.GeneratedMessage {
   void clearReason() => $_clearField(1);
 
   /// work_kind is one of query_bytes, query_terms, dictionary_visits,
-  /// posting_visits, position_visits, or an index analysis-limit kind; empty otherwise.
+  /// posting_visits, position_visits, expiration_visits, or an index
+  /// analysis-limit kind; empty otherwise.
   @$pb.TagNumber(2)
   $core.String get workKind => $_getSZ(1);
   @$pb.TagNumber(2)
@@ -4548,6 +4549,7 @@ class SearchCapabilities extends $pb.GeneratedMessage {
     $core.double? compactionRatio,
     $fixnum.Int64? compactionMinRetired,
     SearchIndexStats? indexStats,
+    $fixnum.Int64? maxExpirationVisits,
   }) {
     final result = create();
     if (enabled != null) result.enabled = enabled;
@@ -4580,6 +4582,8 @@ class SearchCapabilities extends $pb.GeneratedMessage {
     if (compactionMinRetired != null)
       result.compactionMinRetired = compactionMinRetired;
     if (indexStats != null) result.indexStats = indexStats;
+    if (maxExpirationVisits != null)
+      result.maxExpirationVisits = maxExpirationVisits;
     return result;
   }
 
@@ -4651,6 +4655,9 @@ class SearchCapabilities extends $pb.GeneratedMessage {
         defaultOrMaker: $fixnum.Int64.ZERO)
     ..aOM<SearchIndexStats>(26, _omitFieldNames ? '' : 'indexStats',
         subBuilder: SearchIndexStats.create)
+    ..a<$fixnum.Int64>(
+        27, _omitFieldNames ? '' : 'maxExpirationVisits', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -4909,6 +4916,15 @@ class SearchCapabilities extends $pb.GeneratedMessage {
   void clearIndexStats() => $_clearField(26);
   @$pb.TagNumber(26)
   SearchIndexStats ensureIndexStats() => $_ensure(25);
+
+  @$pb.TagNumber(27)
+  $fixnum.Int64 get maxExpirationVisits => $_getI64(26);
+  @$pb.TagNumber(27)
+  set maxExpirationVisits($fixnum.Int64 value) => $_setInt64(26, value);
+  @$pb.TagNumber(27)
+  $core.bool hasMaxExpirationVisits() => $_has(26);
+  @$pb.TagNumber(27)
+  void clearMaxExpirationVisits() => $_clearField(27);
 }
 
 class SearchIndexStats extends $pb.GeneratedMessage {
@@ -4924,6 +4940,11 @@ class SearchIndexStats extends $pb.GeneratedMessage {
     $fixnum.Int64? estimatedRetainedBytes,
     $fixnum.Int64? rebuildCount,
     $1.Duration? lastRebuildDuration,
+    $fixnum.Int64? physicalDocuments,
+    $fixnum.Int64? expiredDocuments,
+    $fixnum.Int64? expirationQueueEntries,
+    $fixnum.Int64? expirationPurged,
+    $1.Duration? lastExpirationPurgeDuration,
   }) {
     final result = create();
     if (health != null) result.health = health;
@@ -4940,6 +4961,13 @@ class SearchIndexStats extends $pb.GeneratedMessage {
     if (rebuildCount != null) result.rebuildCount = rebuildCount;
     if (lastRebuildDuration != null)
       result.lastRebuildDuration = lastRebuildDuration;
+    if (physicalDocuments != null) result.physicalDocuments = physicalDocuments;
+    if (expiredDocuments != null) result.expiredDocuments = expiredDocuments;
+    if (expirationQueueEntries != null)
+      result.expirationQueueEntries = expirationQueueEntries;
+    if (expirationPurged != null) result.expirationPurged = expirationPurged;
+    if (lastExpirationPurgeDuration != null)
+      result.lastExpirationPurgeDuration = lastExpirationPurgeDuration;
     return result;
   }
 
@@ -4990,6 +5018,20 @@ class SearchIndexStats extends $pb.GeneratedMessage {
         defaultOrMaker: $fixnum.Int64.ZERO)
     ..aOM<$1.Duration>(11, _omitFieldNames ? '' : 'lastRebuildDuration',
         subBuilder: $1.Duration.create)
+    ..a<$fixnum.Int64>(
+        12, _omitFieldNames ? '' : 'physicalDocuments', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        13, _omitFieldNames ? '' : 'expiredDocuments', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(14, _omitFieldNames ? '' : 'expirationQueueEntries',
+        $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        15, _omitFieldNames ? '' : 'expirationPurged', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..aOM<$1.Duration>(16, _omitFieldNames ? '' : 'lastExpirationPurgeDuration',
+        subBuilder: $1.Duration.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -5022,6 +5064,7 @@ class SearchIndexStats extends $pb.GeneratedMessage {
   @$pb.TagNumber(1)
   void clearHealth() => $_clearField(1);
 
+  /// documents is the logical live document count at the status sample's now.
   @$pb.TagNumber(2)
   $fixnum.Int64 get documents => $_getI64(1);
   @$pb.TagNumber(2)
@@ -5031,6 +5074,7 @@ class SearchIndexStats extends $pb.GeneratedMessage {
   @$pb.TagNumber(2)
   void clearDocuments() => $_clearField(2);
 
+  /// The following live cardinalities use the same sampled now as documents.
   @$pb.TagNumber(3)
   $fixnum.Int64 get liveTerms => $_getI64(2);
   @$pb.TagNumber(3)
@@ -5113,6 +5157,55 @@ class SearchIndexStats extends $pb.GeneratedMessage {
   void clearLastRebuildDuration() => $_clearField(11);
   @$pb.TagNumber(11)
   $1.Duration ensureLastRebuildDuration() => $_ensure(10);
+
+  /// Physical documents include expired entries awaiting bounded query purge
+  /// or the cache's background GC hook.
+  @$pb.TagNumber(12)
+  $fixnum.Int64 get physicalDocuments => $_getI64(11);
+  @$pb.TagNumber(12)
+  set physicalDocuments($fixnum.Int64 value) => $_setInt64(11, value);
+  @$pb.TagNumber(12)
+  $core.bool hasPhysicalDocuments() => $_has(11);
+  @$pb.TagNumber(12)
+  void clearPhysicalDocuments() => $_clearField(12);
+
+  @$pb.TagNumber(13)
+  $fixnum.Int64 get expiredDocuments => $_getI64(12);
+  @$pb.TagNumber(13)
+  set expiredDocuments($fixnum.Int64 value) => $_setInt64(12, value);
+  @$pb.TagNumber(13)
+  $core.bool hasExpiredDocuments() => $_has(12);
+  @$pb.TagNumber(13)
+  void clearExpiredDocuments() => $_clearField(13);
+
+  @$pb.TagNumber(14)
+  $fixnum.Int64 get expirationQueueEntries => $_getI64(13);
+  @$pb.TagNumber(14)
+  set expirationQueueEntries($fixnum.Int64 value) => $_setInt64(13, value);
+  @$pb.TagNumber(14)
+  $core.bool hasExpirationQueueEntries() => $_has(13);
+  @$pb.TagNumber(14)
+  void clearExpirationQueueEntries() => $_clearField(14);
+
+  @$pb.TagNumber(15)
+  $fixnum.Int64 get expirationPurged => $_getI64(14);
+  @$pb.TagNumber(15)
+  set expirationPurged($fixnum.Int64 value) => $_setInt64(14, value);
+  @$pb.TagNumber(15)
+  $core.bool hasExpirationPurged() => $_has(14);
+  @$pb.TagNumber(15)
+  void clearExpirationPurged() => $_clearField(15);
+
+  @$pb.TagNumber(16)
+  $1.Duration get lastExpirationPurgeDuration => $_getN(15);
+  @$pb.TagNumber(16)
+  set lastExpirationPurgeDuration($1.Duration value) => $_setField(16, value);
+  @$pb.TagNumber(16)
+  $core.bool hasLastExpirationPurgeDuration() => $_has(15);
+  @$pb.TagNumber(16)
+  void clearLastExpirationPurgeDuration() => $_clearField(16);
+  @$pb.TagNumber(16)
+  $1.Duration ensureLastExpirationPurgeDuration() => $_ensure(15);
 }
 
 class GetServerStatusResponse extends $pb.GeneratedMessage {

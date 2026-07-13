@@ -1,16 +1,18 @@
 # search_churn — sustained PutVertex (string values, short TTL) concurrent
 # with SearchVertices. Exercises the search index lifecycle under churn:
 #
-# - leak: postings/docs maps must shrink after TTL eviction (index decays
-#   in lockstep with vertex eviction via the shared SetOnEvict hook).
+# - leak: query-time expiration purge must shrink postings/docs before the
+#   slower vertex GC; the later eviction hook is an idempotent delete (#1057).
 # - thread-safety: concurrent index-write (PutVertex) vs Search read
 #   under the InvertedIndex RWMutex.
-# - consistency: SearchVertices skips vertices whose TTL has expired but
-#   whose Flush has not yet run.
+# - consistency: SearchVertices purges vertices whose TTL has expired but whose
+#   Flush has not yet run, so BM25 stats and vocabulary use the returned live
+#   corpus rather than merely hiding dead keys (#1057).
 # - execution budgets: separate broad-posting, fuzzy-dictionary, and broad-
-#   phrase producers exercise every dominant read-work family while the writer
-#   p99 exposes index-lock delay. The harness captures CPU, alloc, mutex, and
-#   block profiles around the same steady window (#1049).
+#   phrase producers exercise every dominant read-work family, including
+#   expiration_visits as short TTLs mature, while the writer p99 exposes
+#   index-lock delay. The harness captures CPU, alloc, mutex, and block profiles
+#   around the same steady window (#1049, #1057).
 # - expansion: one two-clause query drives both semantic cap-overflow paths:
 #   `topic` prefix-expands over the live unique-term set, while `fuzz000`
 #   fuzzy-expands over 100 live neighbours at edit distance <= 2. Both exceed
@@ -18,9 +20,11 @@
 #   selection rather than an exact-only dictionary lookup (#1056).
 #
 # steady >= 2m so the leak window brackets the GC sweep repeatedly.
-# Assert lantern_search_index_terms/docs plus retained_term_slots,
-# retained_ordinals, and estimated_retained_bytes return to ~baseline after
-# cooldown (the #1050 compaction claim, not merely logical deletion).
+# Assert lantern_search_index_terms/docs plus physical_documents,
+# expired_documents, expiration_queue_entries, expiration_purged,
+# retained_term_slots, retained_ordinals, and estimated_retained_bytes return
+# to ~baseline after cooldown (the #1050 compaction and #1057 bounded-purge
+# claims, not merely result filtering).
 #
 # The bench cluster runs search on by default (LANTERN_SEARCH_ENABLED=true).
 # The explicit expiration template below is required: omitting Vertex.expiration

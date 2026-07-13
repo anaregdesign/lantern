@@ -174,6 +174,7 @@ func defaultSearchLimits() SearchLimits {
 			MaxDictionaryVisits: 1_000_000,
 			MaxPostingVisits:    10_000_000,
 			MaxPositionVisits:   10_000_000,
+			MaxExpirationVisits: 100_000,
 		},
 		MaxInFlight: 32,
 	}

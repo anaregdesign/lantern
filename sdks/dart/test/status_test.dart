@@ -112,11 +112,19 @@ void main() {
                 maxLiveTerms: Int64(70),
                 maxLivePostings: Int64(60),
                 maxPositionEntries: Int64(50),
+                maxExpirationVisits: Int64(45),
                 compactionRatio: 2.5,
                 compactionMinRetired: Int64(40),
                 indexStats: graph.SearchIndexStats(
                   health: graph.SearchIndexHealth.SEARCH_INDEX_HEALTH_HEALTHY,
                   documents: Int64(3),
+                  physicalDocuments: Int64(5),
+                  expiredDocuments: Int64(2),
+                  expirationQueueEntries: Int64(2),
+                  expirationPurged: Int64(9),
+                  lastExpirationPurgeDuration: duration_proto.Duration(
+                    nanos: 12000000,
+                  ),
                   liveTerms: Int64(4),
                   retainedTermSlots: Int64(5),
                   estimatedRetainedBytes: Int64(120),
@@ -145,8 +153,18 @@ void main() {
       expect(status.search.configFingerprint, 'abc123');
       expect(status.search.maxDocumentBytes, 100);
       expect(status.search.maxLivePostings, BigInt.from(60));
+      expect(status.search.maxExpirationVisits, BigInt.from(45));
       expect(status.search.compactionRatio, 2.5);
       expect(status.search.indexStats.health, SearchIndexHealth.healthy);
+      expect(status.search.indexStats.documents, BigInt.from(3));
+      expect(status.search.indexStats.physicalDocuments, BigInt.from(5));
+      expect(status.search.indexStats.expiredDocuments, BigInt.from(2));
+      expect(status.search.indexStats.expirationQueueEntries, BigInt.from(2));
+      expect(status.search.indexStats.expirationPurged, BigInt.from(9));
+      expect(
+        status.search.indexStats.lastExpirationPurgeDuration,
+        const Duration(milliseconds: 12),
+      );
       expect(status.search.indexStats.estimatedRetainedBytes, BigInt.from(120));
       expect(status.search.indexStats.rebuildCount, BigInt.from(2));
     },

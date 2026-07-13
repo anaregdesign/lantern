@@ -83,6 +83,7 @@ var descriptions = map[string]string{
 	"LANTERN_SEARCH_MAX_DICTIONARY_VISITS":  "Maximum dictionary candidates inspected by one search.",
 	"LANTERN_SEARCH_MAX_POSTING_VISITS":     "Maximum posting entries inspected by one search.",
 	"LANTERN_SEARCH_MAX_POSITION_VISITS":    "Maximum positional entries inspected by one search.",
+	"LANTERN_SEARCH_MAX_EXPIRATION_VISITS":  "Maximum expired documents purged by one search attempt.",
 	"LANTERN_SEARCH_MAX_IN_FLIGHT":          "Maximum concurrently executing searches; excess attempts fail immediately.",
 	"LANTERN_SEARCH_MAX_DOCUMENT_BYTES":     "Maximum UTF-8 bytes in one projected search document before analysis.",
 	"LANTERN_SEARCH_MAX_DOCUMENT_TOKENS":    "Maximum analyzed tokens produced by one search document.",

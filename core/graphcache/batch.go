@@ -151,7 +151,11 @@ func preparedItemsForIndexes[S comparable, T any](items []VertexItem[S, T], inde
 	}
 	out := make([]search.PreparedItem[S], 0, len(indexes))
 	for _, i := range indexes {
-		out = append(out, search.PreparedItem[S]{ID: items[i].Key, Prepared: preparation.documents[i]})
+		out = append(out, search.PreparedItem[S]{
+			ID:         items[i].Key,
+			Prepared:   preparation.documents[i],
+			Expiration: items[i].Expiration,
+		})
 	}
 	return out
 }

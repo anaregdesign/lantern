@@ -61,6 +61,7 @@ func (s *LanternService) SearchVertices(ctx context.Context, in *pb.SearchVertic
 			attribute.Int64("lantern.search.dictionary_visits", stats.DictionaryVisits),
 			attribute.Int64("lantern.search.posting_visits", stats.PostingVisits),
 			attribute.Int64("lantern.search.position_visits", stats.PositionVisits),
+			attribute.Int64("lantern.search.expiration_visits", stats.ExpirationVisits),
 		)
 	}()
 	if err := ctx.Err(); err != nil {

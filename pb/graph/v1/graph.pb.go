@@ -4062,7 +4062,8 @@ type SearchErrorDetail struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	Reason SearchErrorReason      `protobuf:"varint,1,opt,name=reason,proto3,enum=graph.v1.SearchErrorReason" json:"reason,omitempty"`
 	// work_kind is one of query_bytes, query_terms, dictionary_visits,
-	// posting_visits, position_visits, or an index analysis-limit kind; empty otherwise.
+	// posting_visits, position_visits, expiration_visits, or an index
+	// analysis-limit kind; empty otherwise.
 	WorkKind      string `protobuf:"bytes,2,opt,name=work_kind,json=workKind,proto3" json:"work_kind,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -4143,6 +4144,7 @@ type SearchCapabilities struct {
 	CompactionRatio       float64                `protobuf:"fixed64,24,opt,name=compaction_ratio,json=compactionRatio,proto3" json:"compaction_ratio,omitempty"`
 	CompactionMinRetired  uint64                 `protobuf:"varint,25,opt,name=compaction_min_retired,json=compactionMinRetired,proto3" json:"compaction_min_retired,omitempty"`
 	IndexStats            *SearchIndexStats      `protobuf:"bytes,26,opt,name=index_stats,json=indexStats,proto3" json:"index_stats,omitempty"`
+	MaxExpirationVisits   uint64                 `protobuf:"varint,27,opt,name=max_expiration_visits,json=maxExpirationVisits,proto3" json:"max_expiration_visits,omitempty"`
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
 }
@@ -4359,21 +4361,37 @@ func (x *SearchCapabilities) GetIndexStats() *SearchIndexStats {
 	return nil
 }
 
+func (x *SearchCapabilities) GetMaxExpirationVisits() uint64 {
+	if x != nil {
+		return x.MaxExpirationVisits
+	}
+	return 0
+}
+
 type SearchIndexStats struct {
-	state                  protoimpl.MessageState `protogen:"open.v1"`
-	Health                 SearchIndexHealth      `protobuf:"varint,1,opt,name=health,proto3,enum=graph.v1.SearchIndexHealth" json:"health,omitempty"`
-	Documents              uint64                 `protobuf:"varint,2,opt,name=documents,proto3" json:"documents,omitempty"`
-	LiveTerms              uint64                 `protobuf:"varint,3,opt,name=live_terms,json=liveTerms,proto3" json:"live_terms,omitempty"`
-	RetainedTermSlots      uint64                 `protobuf:"varint,4,opt,name=retained_term_slots,json=retainedTermSlots,proto3" json:"retained_term_slots,omitempty"`
-	RetainedOrdinals       uint64                 `protobuf:"varint,5,opt,name=retained_ordinals,json=retainedOrdinals,proto3" json:"retained_ordinals,omitempty"`
-	Postings               uint64                 `protobuf:"varint,6,opt,name=postings,proto3" json:"postings,omitempty"`
-	PositionEntries        uint64                 `protobuf:"varint,7,opt,name=position_entries,json=positionEntries,proto3" json:"position_entries,omitempty"`
-	EstimatedLiveBytes     uint64                 `protobuf:"varint,8,opt,name=estimated_live_bytes,json=estimatedLiveBytes,proto3" json:"estimated_live_bytes,omitempty"`
-	EstimatedRetainedBytes uint64                 `protobuf:"varint,9,opt,name=estimated_retained_bytes,json=estimatedRetainedBytes,proto3" json:"estimated_retained_bytes,omitempty"`
-	RebuildCount           uint64                 `protobuf:"varint,10,opt,name=rebuild_count,json=rebuildCount,proto3" json:"rebuild_count,omitempty"`
-	LastRebuildDuration    *durationpb.Duration   `protobuf:"bytes,11,opt,name=last_rebuild_duration,json=lastRebuildDuration,proto3" json:"last_rebuild_duration,omitempty"`
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Health SearchIndexHealth      `protobuf:"varint,1,opt,name=health,proto3,enum=graph.v1.SearchIndexHealth" json:"health,omitempty"`
+	// documents is the logical live document count at the status sample's now.
+	Documents uint64 `protobuf:"varint,2,opt,name=documents,proto3" json:"documents,omitempty"`
+	// The following live cardinalities use the same sampled now as documents.
+	LiveTerms              uint64               `protobuf:"varint,3,opt,name=live_terms,json=liveTerms,proto3" json:"live_terms,omitempty"`
+	RetainedTermSlots      uint64               `protobuf:"varint,4,opt,name=retained_term_slots,json=retainedTermSlots,proto3" json:"retained_term_slots,omitempty"`
+	RetainedOrdinals       uint64               `protobuf:"varint,5,opt,name=retained_ordinals,json=retainedOrdinals,proto3" json:"retained_ordinals,omitempty"`
+	Postings               uint64               `protobuf:"varint,6,opt,name=postings,proto3" json:"postings,omitempty"`
+	PositionEntries        uint64               `protobuf:"varint,7,opt,name=position_entries,json=positionEntries,proto3" json:"position_entries,omitempty"`
+	EstimatedLiveBytes     uint64               `protobuf:"varint,8,opt,name=estimated_live_bytes,json=estimatedLiveBytes,proto3" json:"estimated_live_bytes,omitempty"`
+	EstimatedRetainedBytes uint64               `protobuf:"varint,9,opt,name=estimated_retained_bytes,json=estimatedRetainedBytes,proto3" json:"estimated_retained_bytes,omitempty"`
+	RebuildCount           uint64               `protobuf:"varint,10,opt,name=rebuild_count,json=rebuildCount,proto3" json:"rebuild_count,omitempty"`
+	LastRebuildDuration    *durationpb.Duration `protobuf:"bytes,11,opt,name=last_rebuild_duration,json=lastRebuildDuration,proto3" json:"last_rebuild_duration,omitempty"`
+	// Physical documents include expired entries awaiting bounded query purge
+	// or the cache's background GC hook.
+	PhysicalDocuments           uint64               `protobuf:"varint,12,opt,name=physical_documents,json=physicalDocuments,proto3" json:"physical_documents,omitempty"`
+	ExpiredDocuments            uint64               `protobuf:"varint,13,opt,name=expired_documents,json=expiredDocuments,proto3" json:"expired_documents,omitempty"`
+	ExpirationQueueEntries      uint64               `protobuf:"varint,14,opt,name=expiration_queue_entries,json=expirationQueueEntries,proto3" json:"expiration_queue_entries,omitempty"`
+	ExpirationPurged            uint64               `protobuf:"varint,15,opt,name=expiration_purged,json=expirationPurged,proto3" json:"expiration_purged,omitempty"`
+	LastExpirationPurgeDuration *durationpb.Duration `protobuf:"bytes,16,opt,name=last_expiration_purge_duration,json=lastExpirationPurgeDuration,proto3" json:"last_expiration_purge_duration,omitempty"`
+	unknownFields               protoimpl.UnknownFields
+	sizeCache                   protoimpl.SizeCache
 }
 
 func (x *SearchIndexStats) Reset() {
@@ -4479,6 +4497,41 @@ func (x *SearchIndexStats) GetRebuildCount() uint64 {
 func (x *SearchIndexStats) GetLastRebuildDuration() *durationpb.Duration {
 	if x != nil {
 		return x.LastRebuildDuration
+	}
+	return nil
+}
+
+func (x *SearchIndexStats) GetPhysicalDocuments() uint64 {
+	if x != nil {
+		return x.PhysicalDocuments
+	}
+	return 0
+}
+
+func (x *SearchIndexStats) GetExpiredDocuments() uint64 {
+	if x != nil {
+		return x.ExpiredDocuments
+	}
+	return 0
+}
+
+func (x *SearchIndexStats) GetExpirationQueueEntries() uint64 {
+	if x != nil {
+		return x.ExpirationQueueEntries
+	}
+	return 0
+}
+
+func (x *SearchIndexStats) GetExpirationPurged() uint64 {
+	if x != nil {
+		return x.ExpirationPurged
+	}
+	return 0
+}
+
+func (x *SearchIndexStats) GetLastExpirationPurgeDuration() *durationpb.Duration {
+	if x != nil {
+		return x.LastExpirationPurgeDuration
 	}
 	return nil
 }
@@ -5279,7 +5332,7 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x16GetServerStatusRequest\"e\n" +
 	"\x11SearchErrorDetail\x123\n" +
 	"\x06reason\x18\x01 \x01(\x0e2\x1b.graph.v1.SearchErrorReasonR\x06reason\x12\x1b\n" +
-	"\twork_kind\x18\x02 \x01(\tR\bworkKind\"\x9a\t\n" +
+	"\twork_kind\x18\x02 \x01(\tR\bworkKind\"\xce\t\n" +
 	"\x12SearchCapabilities\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12+\n" +
 	"\x11positions_enabled\x18\x02 \x01(\bR\x10positionsEnabled\x12#\n" +
@@ -5309,7 +5362,8 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x10compaction_ratio\x18\x18 \x01(\x01R\x0fcompactionRatio\x124\n" +
 	"\x16compaction_min_retired\x18\x19 \x01(\x04R\x14compactionMinRetired\x12;\n" +
 	"\vindex_stats\x18\x1a \x01(\v2\x1a.graph.v1.SearchIndexStatsR\n" +
-	"indexStats\"\x88\x04\n" +
+	"indexStats\x122\n" +
+	"\x15max_expiration_visits\x18\x1b \x01(\x04R\x13maxExpirationVisits\"\xab\x06\n" +
 	"\x10SearchIndexStats\x123\n" +
 	"\x06health\x18\x01 \x01(\x0e2\x1b.graph.v1.SearchIndexHealthR\x06health\x12\x1c\n" +
 	"\tdocuments\x18\x02 \x01(\x04R\tdocuments\x12\x1d\n" +
@@ -5323,7 +5377,12 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x18estimated_retained_bytes\x18\t \x01(\x04R\x16estimatedRetainedBytes\x12#\n" +
 	"\rrebuild_count\x18\n" +
 	" \x01(\x04R\frebuildCount\x12M\n" +
-	"\x15last_rebuild_duration\x18\v \x01(\v2\x19.google.protobuf.DurationR\x13lastRebuildDuration\"\xe4\x04\n" +
+	"\x15last_rebuild_duration\x18\v \x01(\v2\x19.google.protobuf.DurationR\x13lastRebuildDuration\x12-\n" +
+	"\x12physical_documents\x18\f \x01(\x04R\x11physicalDocuments\x12+\n" +
+	"\x11expired_documents\x18\r \x01(\x04R\x10expiredDocuments\x128\n" +
+	"\x18expiration_queue_entries\x18\x0e \x01(\x04R\x16expirationQueueEntries\x12+\n" +
+	"\x11expiration_purged\x18\x0f \x01(\x04R\x10expirationPurged\x12^\n" +
+	"\x1elast_expiration_purge_duration\x18\x10 \x01(\v2\x19.google.protobuf.DurationR\x1blastExpirationPurgeDuration\"\xe4\x04\n" +
 	"\x17GetServerStatusResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\x1d\n" +
 	"\n" +
@@ -5574,73 +5633,74 @@ var file_graph_v1_graph_proto_depIdxs = []int32{
 	67, // 39: graph.v1.SearchCapabilities.index_stats:type_name -> graph.v1.SearchIndexStats
 	6,  // 40: graph.v1.SearchIndexStats.health:type_name -> graph.v1.SearchIndexHealth
 	76, // 41: graph.v1.SearchIndexStats.last_rebuild_duration:type_name -> google.protobuf.Duration
-	75, // 42: graph.v1.GetServerStatusResponse.started_at:type_name -> google.protobuf.Timestamp
-	76, // 43: graph.v1.GetServerStatusResponse.uptime:type_name -> google.protobuf.Duration
-	76, // 44: graph.v1.GetServerStatusResponse.default_ttl:type_name -> google.protobuf.Duration
-	66, // 45: graph.v1.GetServerStatusResponse.search:type_name -> graph.v1.SearchCapabilities
-	8,  // 46: graph.v1.ReplicationPeer.state:type_name -> graph.v1.ReplicationPeer.State
-	75, // 47: graph.v1.ReplicationPeer.last_event_at:type_name -> google.protobuf.Timestamp
-	75, // 48: graph.v1.GetReplicationStatusResponse.local_now:type_name -> google.protobuf.Timestamp
-	69, // 49: graph.v1.GetReplicationStatusResponse.peers:type_name -> graph.v1.ReplicationPeer
-	9,  // 50: graph.v1.BackupSnapshotResponse.vertex:type_name -> graph.v1.Vertex
-	10, // 51: graph.v1.BackupSnapshotResponse.edge:type_name -> graph.v1.Edge
-	12, // 52: graph.v1.LanternService.Illuminate:input_type -> graph.v1.IlluminateRequest
-	17, // 53: graph.v1.LanternService.GetVertex:input_type -> graph.v1.GetVertexRequest
-	19, // 54: graph.v1.LanternService.GetVertices:input_type -> graph.v1.GetVerticesRequest
-	21, // 55: graph.v1.LanternService.PutVertex:input_type -> graph.v1.PutVertexRequest
-	23, // 56: graph.v1.LanternService.PutVertices:input_type -> graph.v1.PutVerticesRequest
-	25, // 57: graph.v1.LanternService.DeleteVertex:input_type -> graph.v1.DeleteVertexRequest
-	27, // 58: graph.v1.LanternService.DeleteVertices:input_type -> graph.v1.DeleteVerticesRequest
-	29, // 59: graph.v1.LanternService.ScanVertices:input_type -> graph.v1.ScanVerticesRequest
-	31, // 60: graph.v1.LanternService.ScanVertexKeys:input_type -> graph.v1.ScanVertexKeysRequest
-	34, // 61: graph.v1.LanternService.SearchVertices:input_type -> graph.v1.SearchVerticesRequest
-	37, // 62: graph.v1.LanternService.CountVerticesByPrefix:input_type -> graph.v1.CountVerticesByPrefixRequest
-	39, // 63: graph.v1.LanternService.DeleteVerticesByPrefix:input_type -> graph.v1.DeleteVerticesByPrefixRequest
-	41, // 64: graph.v1.LanternService.TopVerticesByDegree:input_type -> graph.v1.TopVerticesByDegreeRequest
-	43, // 65: graph.v1.LanternService.GetEdge:input_type -> graph.v1.GetEdgeRequest
-	45, // 66: graph.v1.LanternService.GetEdges:input_type -> graph.v1.GetEdgesRequest
-	56, // 67: graph.v1.LanternService.AddEdge:input_type -> graph.v1.AddEdgeRequest
-	58, // 68: graph.v1.LanternService.AddEdges:input_type -> graph.v1.AddEdgesRequest
-	60, // 69: graph.v1.LanternService.PutEdge:input_type -> graph.v1.PutEdgeRequest
-	62, // 70: graph.v1.LanternService.PutEdges:input_type -> graph.v1.PutEdgesRequest
-	47, // 71: graph.v1.LanternService.DeleteEdge:input_type -> graph.v1.DeleteEdgeRequest
-	52, // 72: graph.v1.LanternService.DeleteEdges:input_type -> graph.v1.DeleteEdgesRequest
-	54, // 73: graph.v1.LanternService.DeleteEdgesByPrefix:input_type -> graph.v1.DeleteEdgesByPrefixRequest
-	50, // 74: graph.v1.LanternService.ScanEdges:input_type -> graph.v1.ScanEdgesRequest
-	64, // 75: graph.v1.LanternService.GetServerStatus:input_type -> graph.v1.GetServerStatusRequest
-	70, // 76: graph.v1.LanternService.GetReplicationStatus:input_type -> graph.v1.GetReplicationStatusRequest
-	72, // 77: graph.v1.LanternService.BackupSnapshot:input_type -> graph.v1.BackupSnapshotRequest
-	16, // 78: graph.v1.LanternService.Illuminate:output_type -> graph.v1.IlluminateResponse
-	18, // 79: graph.v1.LanternService.GetVertex:output_type -> graph.v1.GetVertexResponse
-	20, // 80: graph.v1.LanternService.GetVertices:output_type -> graph.v1.GetVerticesResponse
-	22, // 81: graph.v1.LanternService.PutVertex:output_type -> graph.v1.PutVertexResponse
-	24, // 82: graph.v1.LanternService.PutVertices:output_type -> graph.v1.PutVerticesResponse
-	26, // 83: graph.v1.LanternService.DeleteVertex:output_type -> graph.v1.DeleteVertexResponse
-	28, // 84: graph.v1.LanternService.DeleteVertices:output_type -> graph.v1.DeleteVerticesResponse
-	30, // 85: graph.v1.LanternService.ScanVertices:output_type -> graph.v1.ScanVerticesResponse
-	32, // 86: graph.v1.LanternService.ScanVertexKeys:output_type -> graph.v1.ScanVertexKeysResponse
-	35, // 87: graph.v1.LanternService.SearchVertices:output_type -> graph.v1.SearchVerticesResponse
-	38, // 88: graph.v1.LanternService.CountVerticesByPrefix:output_type -> graph.v1.CountVerticesByPrefixResponse
-	40, // 89: graph.v1.LanternService.DeleteVerticesByPrefix:output_type -> graph.v1.DeleteVerticesByPrefixResponse
-	42, // 90: graph.v1.LanternService.TopVerticesByDegree:output_type -> graph.v1.TopVerticesByDegreeResponse
-	44, // 91: graph.v1.LanternService.GetEdge:output_type -> graph.v1.GetEdgeResponse
-	46, // 92: graph.v1.LanternService.GetEdges:output_type -> graph.v1.GetEdgesResponse
-	57, // 93: graph.v1.LanternService.AddEdge:output_type -> graph.v1.AddEdgeResponse
-	59, // 94: graph.v1.LanternService.AddEdges:output_type -> graph.v1.AddEdgesResponse
-	61, // 95: graph.v1.LanternService.PutEdge:output_type -> graph.v1.PutEdgeResponse
-	63, // 96: graph.v1.LanternService.PutEdges:output_type -> graph.v1.PutEdgesResponse
-	48, // 97: graph.v1.LanternService.DeleteEdge:output_type -> graph.v1.DeleteEdgeResponse
-	53, // 98: graph.v1.LanternService.DeleteEdges:output_type -> graph.v1.DeleteEdgesResponse
-	55, // 99: graph.v1.LanternService.DeleteEdgesByPrefix:output_type -> graph.v1.DeleteEdgesByPrefixResponse
-	51, // 100: graph.v1.LanternService.ScanEdges:output_type -> graph.v1.ScanEdgesResponse
-	68, // 101: graph.v1.LanternService.GetServerStatus:output_type -> graph.v1.GetServerStatusResponse
-	71, // 102: graph.v1.LanternService.GetReplicationStatus:output_type -> graph.v1.GetReplicationStatusResponse
-	73, // 103: graph.v1.LanternService.BackupSnapshot:output_type -> graph.v1.BackupSnapshotResponse
-	78, // [78:104] is the sub-list for method output_type
-	52, // [52:78] is the sub-list for method input_type
-	52, // [52:52] is the sub-list for extension type_name
-	52, // [52:52] is the sub-list for extension extendee
-	0,  // [0:52] is the sub-list for field type_name
+	76, // 42: graph.v1.SearchIndexStats.last_expiration_purge_duration:type_name -> google.protobuf.Duration
+	75, // 43: graph.v1.GetServerStatusResponse.started_at:type_name -> google.protobuf.Timestamp
+	76, // 44: graph.v1.GetServerStatusResponse.uptime:type_name -> google.protobuf.Duration
+	76, // 45: graph.v1.GetServerStatusResponse.default_ttl:type_name -> google.protobuf.Duration
+	66, // 46: graph.v1.GetServerStatusResponse.search:type_name -> graph.v1.SearchCapabilities
+	8,  // 47: graph.v1.ReplicationPeer.state:type_name -> graph.v1.ReplicationPeer.State
+	75, // 48: graph.v1.ReplicationPeer.last_event_at:type_name -> google.protobuf.Timestamp
+	75, // 49: graph.v1.GetReplicationStatusResponse.local_now:type_name -> google.protobuf.Timestamp
+	69, // 50: graph.v1.GetReplicationStatusResponse.peers:type_name -> graph.v1.ReplicationPeer
+	9,  // 51: graph.v1.BackupSnapshotResponse.vertex:type_name -> graph.v1.Vertex
+	10, // 52: graph.v1.BackupSnapshotResponse.edge:type_name -> graph.v1.Edge
+	12, // 53: graph.v1.LanternService.Illuminate:input_type -> graph.v1.IlluminateRequest
+	17, // 54: graph.v1.LanternService.GetVertex:input_type -> graph.v1.GetVertexRequest
+	19, // 55: graph.v1.LanternService.GetVertices:input_type -> graph.v1.GetVerticesRequest
+	21, // 56: graph.v1.LanternService.PutVertex:input_type -> graph.v1.PutVertexRequest
+	23, // 57: graph.v1.LanternService.PutVertices:input_type -> graph.v1.PutVerticesRequest
+	25, // 58: graph.v1.LanternService.DeleteVertex:input_type -> graph.v1.DeleteVertexRequest
+	27, // 59: graph.v1.LanternService.DeleteVertices:input_type -> graph.v1.DeleteVerticesRequest
+	29, // 60: graph.v1.LanternService.ScanVertices:input_type -> graph.v1.ScanVerticesRequest
+	31, // 61: graph.v1.LanternService.ScanVertexKeys:input_type -> graph.v1.ScanVertexKeysRequest
+	34, // 62: graph.v1.LanternService.SearchVertices:input_type -> graph.v1.SearchVerticesRequest
+	37, // 63: graph.v1.LanternService.CountVerticesByPrefix:input_type -> graph.v1.CountVerticesByPrefixRequest
+	39, // 64: graph.v1.LanternService.DeleteVerticesByPrefix:input_type -> graph.v1.DeleteVerticesByPrefixRequest
+	41, // 65: graph.v1.LanternService.TopVerticesByDegree:input_type -> graph.v1.TopVerticesByDegreeRequest
+	43, // 66: graph.v1.LanternService.GetEdge:input_type -> graph.v1.GetEdgeRequest
+	45, // 67: graph.v1.LanternService.GetEdges:input_type -> graph.v1.GetEdgesRequest
+	56, // 68: graph.v1.LanternService.AddEdge:input_type -> graph.v1.AddEdgeRequest
+	58, // 69: graph.v1.LanternService.AddEdges:input_type -> graph.v1.AddEdgesRequest
+	60, // 70: graph.v1.LanternService.PutEdge:input_type -> graph.v1.PutEdgeRequest
+	62, // 71: graph.v1.LanternService.PutEdges:input_type -> graph.v1.PutEdgesRequest
+	47, // 72: graph.v1.LanternService.DeleteEdge:input_type -> graph.v1.DeleteEdgeRequest
+	52, // 73: graph.v1.LanternService.DeleteEdges:input_type -> graph.v1.DeleteEdgesRequest
+	54, // 74: graph.v1.LanternService.DeleteEdgesByPrefix:input_type -> graph.v1.DeleteEdgesByPrefixRequest
+	50, // 75: graph.v1.LanternService.ScanEdges:input_type -> graph.v1.ScanEdgesRequest
+	64, // 76: graph.v1.LanternService.GetServerStatus:input_type -> graph.v1.GetServerStatusRequest
+	70, // 77: graph.v1.LanternService.GetReplicationStatus:input_type -> graph.v1.GetReplicationStatusRequest
+	72, // 78: graph.v1.LanternService.BackupSnapshot:input_type -> graph.v1.BackupSnapshotRequest
+	16, // 79: graph.v1.LanternService.Illuminate:output_type -> graph.v1.IlluminateResponse
+	18, // 80: graph.v1.LanternService.GetVertex:output_type -> graph.v1.GetVertexResponse
+	20, // 81: graph.v1.LanternService.GetVertices:output_type -> graph.v1.GetVerticesResponse
+	22, // 82: graph.v1.LanternService.PutVertex:output_type -> graph.v1.PutVertexResponse
+	24, // 83: graph.v1.LanternService.PutVertices:output_type -> graph.v1.PutVerticesResponse
+	26, // 84: graph.v1.LanternService.DeleteVertex:output_type -> graph.v1.DeleteVertexResponse
+	28, // 85: graph.v1.LanternService.DeleteVertices:output_type -> graph.v1.DeleteVerticesResponse
+	30, // 86: graph.v1.LanternService.ScanVertices:output_type -> graph.v1.ScanVerticesResponse
+	32, // 87: graph.v1.LanternService.ScanVertexKeys:output_type -> graph.v1.ScanVertexKeysResponse
+	35, // 88: graph.v1.LanternService.SearchVertices:output_type -> graph.v1.SearchVerticesResponse
+	38, // 89: graph.v1.LanternService.CountVerticesByPrefix:output_type -> graph.v1.CountVerticesByPrefixResponse
+	40, // 90: graph.v1.LanternService.DeleteVerticesByPrefix:output_type -> graph.v1.DeleteVerticesByPrefixResponse
+	42, // 91: graph.v1.LanternService.TopVerticesByDegree:output_type -> graph.v1.TopVerticesByDegreeResponse
+	44, // 92: graph.v1.LanternService.GetEdge:output_type -> graph.v1.GetEdgeResponse
+	46, // 93: graph.v1.LanternService.GetEdges:output_type -> graph.v1.GetEdgesResponse
+	57, // 94: graph.v1.LanternService.AddEdge:output_type -> graph.v1.AddEdgeResponse
+	59, // 95: graph.v1.LanternService.AddEdges:output_type -> graph.v1.AddEdgesResponse
+	61, // 96: graph.v1.LanternService.PutEdge:output_type -> graph.v1.PutEdgeResponse
+	63, // 97: graph.v1.LanternService.PutEdges:output_type -> graph.v1.PutEdgesResponse
+	48, // 98: graph.v1.LanternService.DeleteEdge:output_type -> graph.v1.DeleteEdgeResponse
+	53, // 99: graph.v1.LanternService.DeleteEdges:output_type -> graph.v1.DeleteEdgesResponse
+	55, // 100: graph.v1.LanternService.DeleteEdgesByPrefix:output_type -> graph.v1.DeleteEdgesByPrefixResponse
+	51, // 101: graph.v1.LanternService.ScanEdges:output_type -> graph.v1.ScanEdgesResponse
+	68, // 102: graph.v1.LanternService.GetServerStatus:output_type -> graph.v1.GetServerStatusResponse
+	71, // 103: graph.v1.LanternService.GetReplicationStatus:output_type -> graph.v1.GetReplicationStatusResponse
+	73, // 104: graph.v1.LanternService.BackupSnapshot:output_type -> graph.v1.BackupSnapshotResponse
+	79, // [79:105] is the sub-list for method output_type
+	53, // [53:79] is the sub-list for method input_type
+	53, // [53:53] is the sub-list for extension type_name
+	53, // [53:53] is the sub-list for extension extendee
+	0,  // [0:53] is the sub-list for field type_name
 }
 
 func init() { file_graph_v1_graph_proto_init() }

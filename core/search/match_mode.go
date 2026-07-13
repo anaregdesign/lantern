@@ -1,6 +1,9 @@
 package search
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // MatchMode selects how a multi-term query's word-channel terms combine to
 // decide which documents match. It governs membership only — the Scorer still
@@ -55,6 +58,9 @@ type MatchOptions struct {
 // terms, or one that nothing satisfies, returns nil. Equal scores use the
 // index's required typed document-ID comparator ascending.
 func (idx *InvertedIndex[S, D]) SearchMatch(query string, opts MatchOptions) []Result[S] {
+	if err := idx.purgeExpired(newWorkTracker(context.Background(), Budget{}), idx.clock()); err != nil {
+		return nil
+	}
 	queryTerms := idx.queryTerms(query)
 	if len(queryTerms) == 0 {
 		return nil
@@ -83,12 +89,22 @@ func (idx *InvertedIndex[S, D]) SearchMatchTopK(query string, k int, accept func
 // SearchMatchTopKContext is SearchMatchTopK with cancellation and deterministic
 // work accounting. It never returns partial results on error.
 func (idx *InvertedIndex[S, D]) SearchMatchTopKContext(ctx context.Context, query string, k int, accept func(id S) bool, opts MatchOptions, budget Budget) ([]Result[S], Stats, error) {
+	return idx.SearchMatchTopKContextAt(ctx, query, k, accept, opts, budget, idx.clock())
+}
+
+// SearchMatchTopKContextAt is SearchMatchTopKContext with an explicit
+// liveness instant. Layered stores use it to share one sampled now between
+// index expiration and their accept callback.
+func (idx *InvertedIndex[S, D]) SearchMatchTopKContextAt(ctx context.Context, query string, k int, accept func(id S) bool, opts MatchOptions, budget Budget, now time.Time) ([]Result[S], Stats, error) {
 	work := newWorkTracker(ctx, budget)
 	if idx.Health() != IndexHealthy {
 		return nil, work.stats, ErrIndexIncomplete
 	}
 	if k <= 0 {
 		return nil, work.stats, nil
+	}
+	if err := idx.purgeExpired(work, now); err != nil {
+		return nil, work.stats, err
 	}
 	queryTerms := idx.queryTerms(query)
 	if err := work.visit(WorkQueryTerms, int64(len(queryTerms))); err != nil {

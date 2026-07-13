@@ -232,6 +232,11 @@ func TestDomainMetrics_HotPathFamilies(t *testing.T) {
 		"lantern_search_work",
 		"lantern_search_index_terms",
 		"lantern_search_index_docs",
+		"lantern_search_index_physical_documents",
+		"lantern_search_index_expired_documents",
+		"lantern_search_index_expiration_queue_entries",
+		"lantern_search_index_expiration_purged",
+		"lantern_search_index_last_expiration_purge_duration_seconds",
 		"lantern_search_index_retained_term_slots",
 		"lantern_search_index_retained_ordinals",
 		"lantern_search_index_postings",
@@ -309,6 +314,10 @@ func TestDomainMetrics_HotPathFamilies(t *testing.T) {
 	if got := histSampleCount(t, m.searchWork.WithLabelValues(string(search.WorkPostingVisits))); got != 1 {
 		t.Errorf("search_work{posting_visits} sample count = %v, want 1", got)
 	}
+	m.OnSearchExecution("resource_exhausted", string(search.WorkExpirationVisits), search.Stats{ExpirationVisits: 5})
+	if got := histSampleCount(t, m.searchWork.WithLabelValues(string(search.WorkExpirationVisits))); got != 2 {
+		t.Errorf("search_work{expiration_visits} sample count = %v, want 2", got)
+	}
 	// Unknown values are collapsed to bounded fallbacks instead of becoming
 	// user-controlled labels.
 	m.OnSearchExecution("raw-query", "raw-prefix", search.Stats{})
@@ -361,14 +370,16 @@ func TestDomainMetrics_SearchIndexCapacityGauges(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := New(reg, Options{SampleInterval: time.Hour})
 	m.BindSearchIndexSampler(func() search.IndexMemoryStats {
-		return search.IndexMemoryStats{Documents: 2, LiveTerms: 3, RetainedTermSlots: 5, RetainedOrdinals: 4, Postings: 7, PositionEntries: 11, EstimatedLiveBytes: 100, EstimatedRetainedBytes: 140, RebuildCount: 6, LastRebuildDuration: 25 * time.Millisecond, Health: search.IndexHealthy}
+		return search.IndexMemoryStats{Documents: 2, PhysicalDocuments: 4, ExpiredDocuments: 2, ExpirationQueueEntries: 2, ExpirationPurged: 8, LastExpirationPurge: 15 * time.Millisecond, LiveTerms: 3, RetainedTermSlots: 5, RetainedOrdinals: 4, Postings: 7, PositionEntries: 11, EstimatedLiveBytes: 100, EstimatedRetainedBytes: 140, RebuildCount: 6, LastRebuildDuration: 25 * time.Millisecond, Health: search.IndexHealthy}
 	})
 	m.tick()
 	checks := []struct {
 		gauge prometheus.Gauge
 		want  float64
 	}{
-		{m.searchIndexDocs, 2}, {m.searchIndexTerms, 3}, {m.searchIndexRetainedTerms, 5},
+		{m.searchIndexDocs, 2}, {m.searchIndexPhysicalDocs, 4}, {m.searchIndexExpiredDocs, 2},
+		{m.searchIndexExpirationQueue, 2}, {m.searchIndexExpirationPurged, 8}, {m.searchIndexPurgeDuration, 0.015},
+		{m.searchIndexTerms, 3}, {m.searchIndexRetainedTerms, 5},
 		{m.searchIndexRetainedOrdinals, 4}, {m.searchIndexPostings, 7}, {m.searchIndexPositions, 11},
 		{m.searchIndexLiveBytes, 100}, {m.searchIndexRetainedBytes, 140}, {m.searchIndexRebuilds, 6},
 		{m.searchIndexRebuildDuration, 0.025}, {m.searchIndexHealthy, 1},

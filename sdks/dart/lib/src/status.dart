@@ -32,6 +32,11 @@ final class SearchIndexStats {
   const SearchIndexStats._({
     required this.health,
     required this.documents,
+    required this.physicalDocuments,
+    required this.expiredDocuments,
+    required this.expirationQueueEntries,
+    required this.expirationPurged,
+    required this.lastExpirationPurgeDuration,
     required this.liveTerms,
     required this.retainedTermSlots,
     required this.retainedOrdinals,
@@ -48,6 +53,21 @@ final class SearchIndexStats {
 
   /// Indexed live documents.
   final BigInt documents;
+
+  /// Physically retained documents before bounded expiration purging.
+  final BigInt physicalDocuments;
+
+  /// Physically retained documents that are no longer live.
+  final BigInt expiredDocuments;
+
+  /// Pending expiration records retained by the bounded min-heap.
+  final BigInt expirationQueueEntries;
+
+  /// Documents removed by query-time expiration purging.
+  final BigInt expirationPurged;
+
+  /// Duration of the latest query-time expiration purge, when supplied.
+  final Duration? lastExpirationPurgeDuration;
 
   /// Distinct live terms.
   final BigInt liveTerms;
@@ -115,6 +135,7 @@ final class SearchCapabilities {
     required this.maxLiveTerms,
     required this.maxLivePostings,
     required this.maxPositionEntries,
+    required this.maxExpirationVisits,
     required this.compactionRatio,
     required this.compactionMinRetired,
     required this.indexStats,
@@ -167,6 +188,9 @@ final class SearchCapabilities {
 
   /// Aggregate positional-entry ceiling.
   final BigInt maxPositionEntries;
+
+  /// Maximum expired documents purged by one search attempt.
+  final BigInt maxExpirationVisits;
 
   /// Retained-to-live ratio that triggers compaction.
   final double compactionRatio;
@@ -414,6 +438,9 @@ extension LanternStatus on LanternClient {
         maxLiveTerms: _uint64ToBigInt(response.search.maxLiveTerms),
         maxLivePostings: _uint64ToBigInt(response.search.maxLivePostings),
         maxPositionEntries: _uint64ToBigInt(response.search.maxPositionEntries),
+        maxExpirationVisits: _uint64ToBigInt(
+          response.search.maxExpirationVisits,
+        ),
         compactionRatio: response.search.compactionRatio,
         compactionMinRetired: _uint64ToBigInt(
           response.search.compactionMinRetired,
@@ -429,6 +456,24 @@ extension LanternStatus on LanternClient {
             _ => SearchIndexHealth.unspecified,
           },
           documents: _uint64ToBigInt(response.search.indexStats.documents),
+          physicalDocuments: _uint64ToBigInt(
+            response.search.indexStats.physicalDocuments,
+          ),
+          expiredDocuments: _uint64ToBigInt(
+            response.search.indexStats.expiredDocuments,
+          ),
+          expirationQueueEntries: _uint64ToBigInt(
+            response.search.indexStats.expirationQueueEntries,
+          ),
+          expirationPurged: _uint64ToBigInt(
+            response.search.indexStats.expirationPurged,
+          ),
+          lastExpirationPurgeDuration:
+              response.search.indexStats.hasLastExpirationPurgeDuration()
+              ? _durationFromProto(
+                  response.search.indexStats.lastExpirationPurgeDuration,
+                )
+              : null,
           liveTerms: _uint64ToBigInt(response.search.indexStats.liveTerms),
           retainedTermSlots: _uint64ToBigInt(
             response.search.indexStats.retainedTermSlots,

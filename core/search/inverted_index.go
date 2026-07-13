@@ -54,6 +54,7 @@ type InvertedIndex[S comparable, D Document] struct {
 	// boost. Read without the lock — it never changes after construction.
 	proximityWeight float64
 	limits          SearchAnalysisLimits
+	clock           func() time.Time
 
 	mu sync.RWMutex
 	// classes holds one posting table per token class; a term's class is part
@@ -68,12 +69,15 @@ type InvertedIndex[S comparable, D Document] struct {
 	// and term ids needed to score, return, and drop the document in
 	// O(terms-in-doc).
 	docs                  map[uint32]docEntry[S]
+	expirations           expiryHeap
 	livePostings          int64
 	livePositions         int64
 	health                IndexHealth
 	rebuildCount          uint64
 	lastRebuildDuration   time.Duration
 	writeLockAcquisitions uint64
+	expirationPurged      uint64
+	lastExpirationPurge   time.Duration
 }
 
 // classPostings is one token class's slice of the index: its term dictionary,
@@ -113,6 +117,7 @@ type docEntry[S comparable] struct {
 	// compact.
 	terms           [numTokenClasses][]uint32
 	positionEntries int
+	expiry          *expiryRecord
 }
 
 // IndexOption configures an InvertedIndex at construction time.
@@ -123,6 +128,7 @@ type indexConfig struct {
 	positions       bool
 	proximityWeight float64
 	limits          SearchAnalysisLimits
+	clock           func() time.Time
 }
 
 // WithPositions makes the index record each term's token positions on the
@@ -153,6 +159,16 @@ func WithAnalysisLimits(limits SearchAnalysisLimits) IndexOption {
 	return func(c *indexConfig) { c.limits = limits }
 }
 
+// WithIndexClock overrides the wall clock used for expiration decisions. It is
+// primarily useful for deterministic tests; production callers normally use
+// the default time.Now clock.
+func WithIndexClock(clock func() time.Time) IndexOption {
+	if clock == nil {
+		panic("search: WithIndexClock clock must not be nil")
+	}
+	return func(c *indexConfig) { c.clock = clock }
+}
+
 // NewInvertedIndex returns an empty index that analyzes both documents and
 // queries with analyzer and ranks matches with scorer. Passing a nil scorer
 // installs BM25 with the standard parameters (K1 = 1.2, B = 0.75). compareID
@@ -169,6 +185,7 @@ func NewInvertedIndex[S comparable, D Document](analyzer Analyzer, scorer Scorer
 	}
 	var cfg indexConfig
 	cfg.proximityWeight = proximityBoostWeight
+	cfg.clock = time.Now
 	for _, opt := range opts {
 		opt(&cfg)
 	}
@@ -179,6 +196,7 @@ func NewInvertedIndex[S comparable, D Document](analyzer Analyzer, scorer Scorer
 		positions:       cfg.positions,
 		proximityWeight: cfg.proximityWeight,
 		limits:          cfg.limits,
+		clock:           cfg.clock,
 		ords:            newOrdinals[S](),
 		docs:            make(map[uint32]docEntry[S]),
 		health:          IndexHealthy,
@@ -204,11 +222,18 @@ func NewInvertedIndex[S comparable, D Document](analyzer Analyzer, scorer Scorer
 // lock of their own (e.g. a layered cache writing under its aggregate lock)
 // should call Prepare before taking that lock and IndexPrepared after.
 func (idx *InvertedIndex[S, D]) Index(id S, doc D) error {
+	return idx.IndexWithExpiration(id, doc, time.Time{})
+}
+
+// IndexWithExpiration is Index with an absolute TTL deadline. Zero time and
+// Unix epoch-or-earlier mean no expiration. A born-expired document behaves as
+// a delete and never enters postings or the expiration heap.
+func (idx *InvertedIndex[S, D]) IndexWithExpiration(id S, doc D, expiration time.Time) error {
 	prepared, _, err := idx.Prepare(doc)
 	if err != nil {
 		return err
 	}
-	return idx.IndexPrepared(id, prepared)
+	return idx.IndexPreparedWithExpiration(id, prepared, expiration)
 }
 
 // PreparedDocument carries an already grouped document representation so all
@@ -236,8 +261,9 @@ type preparedTerm struct {
 
 // PreparedItem pairs an id with its PreparedDocument for IndexManyPrepared.
 type PreparedItem[S comparable] struct {
-	ID       S
-	Prepared PreparedDocument
+	ID         S
+	Prepared   PreparedDocument
+	Expiration time.Time
 }
 
 // Prepare analyzes doc.String() WITHOUT taking the index lock and returns the
@@ -343,12 +369,20 @@ func (idx *InvertedIndex[S, D]) Prepare(doc D) (PreparedDocument, AnalysisStats,
 // Index: any previous postings for id are dropped first, and an empty prepared
 // document simply removes id.
 func (idx *InvertedIndex[S, D]) IndexPrepared(id S, prepared PreparedDocument) error {
+	return idx.IndexPreparedWithExpiration(id, prepared, time.Time{})
+}
+
+// IndexPreparedWithExpiration applies a prepared document with an absolute
+// expiration deadline.
+func (idx *InvertedIndex[S, D]) IndexPreparedWithExpiration(id S, prepared PreparedDocument, expiration time.Time) error {
 	idx.lockWrite()
 	defer idx.mu.Unlock()
-	if err := idx.validatePreparedLocked([]PreparedItem[S]{{ID: id, Prepared: prepared}}); err != nil {
+	now := idx.clock()
+	item := PreparedItem[S]{ID: id, Prepared: prepared, Expiration: expiration}
+	if err := idx.validatePreparedLocked([]PreparedItem[S]{item}, now); err != nil {
 		return err
 	}
-	idx.indexPreparedLocked(id, prepared)
+	idx.indexPreparedLocked(item, now)
 	idx.compactIfNeededLocked()
 	return nil
 }
@@ -364,11 +398,12 @@ func (idx *InvertedIndex[S, D]) IndexManyPrepared(items []PreparedItem[S]) error
 	}
 	idx.lockWrite()
 	defer idx.mu.Unlock()
-	if err := idx.validatePreparedLocked(items); err != nil {
+	now := idx.clock()
+	if err := idx.validatePreparedLocked(items, now); err != nil {
 		return err
 	}
 	for _, it := range finalPreparedItems(items) {
-		idx.indexPreparedLocked(it.ID, it.Prepared)
+		idx.indexPreparedLocked(it, now)
 	}
 	idx.compactIfNeededLocked()
 	return nil
@@ -381,7 +416,7 @@ func (idx *InvertedIndex[S, D]) IndexManyPrepared(items []PreparedItem[S]) error
 func (idx *InvertedIndex[S, D]) ValidateManyPrepared(items []PreparedItem[S]) error {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
-	return idx.validatePreparedLocked(items)
+	return idx.validatePreparedLocked(items, idx.clock())
 }
 
 // IndexManyPreparedValidated applies a batch previously accepted by
@@ -392,8 +427,9 @@ func (idx *InvertedIndex[S, D]) IndexManyPreparedValidated(items []PreparedItem[
 	}
 	idx.lockWrite()
 	defer idx.mu.Unlock()
+	now := idx.clock()
 	for _, item := range finalPreparedItems(items) {
-		idx.indexPreparedLocked(item.ID, item.Prepared)
+		idx.indexPreparedLocked(item, now)
 	}
 	idx.compactIfNeededLocked()
 }
@@ -415,16 +451,16 @@ func finalPreparedItems[S comparable](items []PreparedItem[S]) []PreparedItem[S]
 // indexPreparedLocked is the shared postings-mutation core of IndexPrepared and
 // IndexManyPrepared; callers must hold idx.mu for writing. Prepare has already
 // validated classes and reduced every class to sorted distinct terms.
-func (idx *InvertedIndex[S, D]) indexPreparedLocked(id S, prepared PreparedDocument) {
+func (idx *InvertedIndex[S, D]) indexPreparedLocked(item PreparedItem[S], now time.Time) {
 	// Replace semantics: drop any postings from a previous Index(id, ...)
 	// before recording the new ones.
-	idx.deleteLocked(id)
-	if prepared.postings == 0 {
+	idx.deleteLocked(item.ID)
+	if item.Prepared.postings == 0 || !expirationLiveAt(item.Expiration, now) {
 		return
 	}
-	ord := idx.ords.assign(id)
-	entry := docEntry[S]{id: id}
-	for class, preparedClass := range prepared.classes {
+	ord := idx.ords.assign(item.ID)
+	entry := docEntry[S]{id: item.ID}
+	for class, preparedClass := range item.Prepared.classes {
 		if len(preparedClass.terms) == 0 {
 			continue
 		}
@@ -445,7 +481,12 @@ func (idx *InvertedIndex[S, D]) indexPreparedLocked(id S, prepared PreparedDocum
 		cp.totalLen += preparedClass.length
 		cp.docCount++
 	}
-	entry.positionEntries = prepared.positionEntries
+	entry.positionEntries = item.Prepared.positionEntries
+	if expirationFinite(item.Expiration) {
+		record := &expiryRecord{at: item.Expiration, ord: ord, index: -1}
+		heap.Push(&idx.expirations, record)
+		entry.expiry = record
+	}
 	idx.docs[ord] = entry
 	for class := range entry.terms {
 		idx.livePostings += int64(len(entry.terms[class]))
@@ -462,13 +503,13 @@ type termKey struct {
 // posting mutation. Repeated IDs use last-write semantics, and replacements
 // subtract their old contribution, so a near-cap in-place update is accepted
 // without weakening the hard aggregate bounds.
-func (idx *InvertedIndex[S, D]) validatePreparedLocked(items []PreparedItem[S]) error {
+func (idx *InvertedIndex[S, D]) validatePreparedLocked(items []PreparedItem[S], now time.Time) error {
 	if idx.limits.MaxLiveTerms <= 0 && idx.limits.MaxLivePostings <= 0 && idx.limits.MaxPositionEntries <= 0 {
 		return nil
 	}
-	last := make(map[S]PreparedDocument, len(items))
+	last := make(map[S]PreparedItem[S], len(items))
 	for _, item := range items {
-		last[item.ID] = item.Prepared
+		last[item.ID] = item
 	}
 	postings := idx.livePostings
 	positions := idx.livePositions
@@ -502,7 +543,11 @@ func (idx *InvertedIndex[S, D]) validatePreparedLocked(items []PreparedItem[S]) 
 			positions -= int64(entry.positionEntries)
 		}
 	}
-	for _, prepared := range last {
+	for _, item := range last {
+		if !expirationLiveAt(item.Expiration, now) {
+			continue
+		}
+		prepared := item.Prepared
 		for class, preparedClass := range prepared.classes {
 			for _, term := range preparedClass.terms {
 				key := termKey{class: TokenClass(class), term: term.term}
@@ -572,6 +617,10 @@ func (idx *InvertedIndex[S, D]) deleteLocked(id S) {
 		return
 	}
 	entry := idx.docs[ord]
+	if entry.expiry != nil && entry.expiry.index >= 0 {
+		heap.Remove(&idx.expirations, entry.expiry.index)
+		entry.expiry = nil
+	}
 	for class := range entry.terms {
 		idx.livePostings -= int64(len(entry.terms[class]))
 	}
@@ -624,6 +673,7 @@ func (idx *InvertedIndex[S, D]) RebuildPrepared(items []PreparedItem[S]) error {
 		opts = append(opts, WithPositions())
 	}
 	opts = append(opts, WithProximityWeight(idx.proximityWeight), WithAnalysisLimits(idx.limits))
+	opts = append(opts, WithIndexClock(idx.clock))
 	tmp := NewInvertedIndex[S, D](idx.analyzer, idx.scorer, idx.compareID, opts...)
 	start := time.Now()
 	if err := tmp.IndexManyPrepared(items); err != nil {
@@ -631,7 +681,7 @@ func (idx *InvertedIndex[S, D]) RebuildPrepared(items []PreparedItem[S]) error {
 	}
 	idx.lockWrite()
 	defer idx.mu.Unlock()
-	idx.classes, idx.ords, idx.docs = tmp.classes, tmp.ords, tmp.docs
+	idx.classes, idx.ords, idx.docs, idx.expirations = tmp.classes, tmp.ords, tmp.docs, tmp.expirations
 	idx.livePostings, idx.livePositions = tmp.livePostings, tmp.livePositions
 	idx.health = IndexHealthy
 	idx.rebuildCount++
@@ -704,17 +754,22 @@ func (idx *InvertedIndex[S, D]) compactLocked() {
 			prepared.classes[class] = preparedClass
 			prepared.postings += len(preparedClass.terms)
 		}
-		items = append(items, PreparedItem[S]{ID: entry.id, Prepared: prepared})
+		var expiration time.Time
+		if entry.expiry != nil {
+			expiration = entry.expiry.at
+		}
+		items = append(items, PreparedItem[S]{ID: entry.id, Prepared: prepared, Expiration: expiration})
 	}
 	var opts []IndexOption
 	if idx.positions {
 		opts = append(opts, WithPositions())
 	}
 	opts = append(opts, WithProximityWeight(idx.proximityWeight), WithAnalysisLimits(idx.limits))
+	opts = append(opts, WithIndexClock(idx.clock))
 	tmp := NewInvertedIndex[S, D](idx.analyzer, idx.scorer, idx.compareID, opts...)
 	// The logical state already passed these limits; rebuilding cannot fail.
 	_ = tmp.IndexManyPrepared(items)
-	idx.classes, idx.ords, idx.docs = tmp.classes, tmp.ords, tmp.docs
+	idx.classes, idx.ords, idx.docs, idx.expirations = tmp.classes, tmp.ords, tmp.docs, tmp.expirations
 	idx.livePostings, idx.livePositions = tmp.livePostings, tmp.livePositions
 	idx.rebuildCount++
 	idx.lastRebuildDuration = time.Since(start)
@@ -974,29 +1029,73 @@ func (idx *InvertedIndex[S, D]) Stats() (terms, docs int) {
 func (idx *InvertedIndex[S, D]) MemoryStats() IndexMemoryStats {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
+	now := idx.clock()
 	stats := IndexMemoryStats{
-		Documents:             len(idx.docs),
-		Postings:              idx.livePostings,
-		PositionEntries:       idx.livePositions,
-		RetainedOrdinals:      int(idx.ords.next),
-		RebuildCount:          idx.rebuildCount,
-		LastRebuildDuration:   idx.lastRebuildDuration,
-		WriteLockAcquisitions: idx.writeLockAcquisitions,
-		Health:                idx.health,
+		Documents:              len(idx.docs),
+		PhysicalDocuments:      len(idx.docs),
+		ExpirationQueueEntries: len(idx.expirations),
+		Postings:               idx.livePostings,
+		PositionEntries:        idx.livePositions,
+		RetainedOrdinals:       int(idx.ords.next),
+		RebuildCount:           idx.rebuildCount,
+		LastRebuildDuration:    idx.lastRebuildDuration,
+		WriteLockAcquisitions:  idx.writeLockAcquisitions,
+		ExpirationPurged:       idx.expirationPurged,
+		LastExpirationPurge:    idx.lastExpirationPurge,
+		Health:                 idx.health,
 	}
-	var termBytes int64
+	var liveTermBytes, physicalTermBytes int64
+	activeTerms := 0
 	for class := range idx.classes {
 		cp := &idx.classes[class]
-		stats.LiveTerms += len(cp.postings)
+		activeTerms += len(cp.postings)
 		stats.RetainedTermSlots += len(cp.dict.terms)
 		for term := range cp.dict.ids {
-			termBytes += int64(len(term))
+			physicalTermBytes += int64(len(term))
+		}
+	}
+	stats.LiveTerms = activeTerms
+	liveTermBytes = physicalTermBytes
+
+	// The heap already contains exactly one node per physically retained
+	// expiring document, so deriving the logical snapshot from due nodes avoids
+	// scanning permanent/future documents. The temporary DF maps scale with the
+	// cleanup lag, not the whole corpus.
+	var expiredDF [numTokenClasses]map[uint32]int
+	for _, record := range idx.expirations {
+		if record.at.After(now) {
+			continue
+		}
+		entry, ok := idx.docs[record.ord]
+		if !ok || entry.expiry != record {
+			continue
+		}
+		stats.Documents--
+		stats.ExpiredDocuments++
+		stats.PositionEntries -= int64(entry.positionEntries)
+		for class := range entry.terms {
+			stats.Postings -= int64(len(entry.terms[class]))
+			if len(entry.terms[class]) > 0 && expiredDF[class] == nil {
+				expiredDF[class] = make(map[uint32]int, len(entry.terms[class]))
+			}
+			for _, tid := range entry.terms[class] {
+				expiredDF[class][tid]++
+			}
+		}
+	}
+	for class := range expiredDF {
+		cp := &idx.classes[class]
+		for tid, expiredDocuments := range expiredDF[class] {
+			if expiredDocuments == cp.postings[tid].cardinality() {
+				stats.LiveTerms--
+				liveTermBytes -= int64(len(cp.dict.terms[tid]))
+			}
 		}
 	}
 	// This estimate intentionally uses stable logical units rather than Go map
 	// implementation details, making it comparable across builds and nodes.
-	stats.EstimatedLiveBytes = termBytes + int64(stats.Documents)*32 + stats.Postings*12 + stats.PositionEntries
-	stats.EstimatedRetainedBytes = stats.EstimatedLiveBytes + int64(stats.RetainedTermSlots-stats.LiveTerms)*16 + int64(stats.RetainedOrdinals-stats.Documents)*8
+	stats.EstimatedLiveBytes = liveTermBytes + int64(stats.Documents)*32 + stats.Postings*12 + stats.PositionEntries
+	stats.EstimatedRetainedBytes = physicalTermBytes + int64(stats.PhysicalDocuments)*32 + idx.livePostings*12 + idx.livePositions + int64(stats.RetainedTermSlots-activeTerms)*16 + int64(stats.RetainedOrdinals-stats.PhysicalDocuments)*8
 	return stats
 }
 

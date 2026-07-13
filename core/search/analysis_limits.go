@@ -71,6 +71,9 @@ var ErrIndexIncomplete = errors.New("search index is incomplete; bounded rebuild
 // IndexMemoryStats is an observable snapshot of live and retained index state.
 type IndexMemoryStats struct {
 	Documents              int
+	PhysicalDocuments      int
+	ExpiredDocuments       int
+	ExpirationQueueEntries int
 	LiveTerms              int
 	RetainedTermSlots      int
 	RetainedOrdinals       int
@@ -81,6 +84,8 @@ type IndexMemoryStats struct {
 	RebuildCount           uint64
 	LastRebuildDuration    time.Duration
 	WriteLockAcquisitions  uint64
+	ExpirationPurged       uint64
+	LastExpirationPurge    time.Duration
 	Health                 IndexHealth
 }
 

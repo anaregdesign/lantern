@@ -197,6 +197,7 @@ type ScanConfig struct {
 //   - LANTERN_SEARCH_MAX_DICTIONARY_VISITS (default 1000000)
 //   - LANTERN_SEARCH_MAX_POSTING_VISITS (default 10000000)
 //   - LANTERN_SEARCH_MAX_POSITION_VISITS (default 10000000)
+//   - LANTERN_SEARCH_MAX_EXPIRATION_VISITS (default 100000)
 //   - LANTERN_SEARCH_MAX_IN_FLIGHT      (default 32)
 //   - LANTERN_SEARCH_MAX_DOCUMENT_BYTES (default 1048576)
 //   - LANTERN_SEARCH_MAX_DOCUMENT_TOKENS (default 250000)
@@ -233,6 +234,7 @@ type SearchConfig struct {
 	MaxDictionaryVisits int
 	MaxPostingVisits    int
 	MaxPositionVisits   int
+	MaxExpirationVisits int
 	MaxInFlight         int
 	AnalysisLimits      search.SearchAnalysisLimits
 }
@@ -345,6 +347,7 @@ func NewConfig() (*Config, error) {
 			MaxDictionaryVisits: envconfig.Int("LANTERN_SEARCH_MAX_DICTIONARY_VISITS", 1_000_000),
 			MaxPostingVisits:    envconfig.Int("LANTERN_SEARCH_MAX_POSTING_VISITS", 10_000_000),
 			MaxPositionVisits:   envconfig.Int("LANTERN_SEARCH_MAX_POSITION_VISITS", 10_000_000),
+			MaxExpirationVisits: envconfig.Int("LANTERN_SEARCH_MAX_EXPIRATION_VISITS", 100_000),
 			MaxInFlight:         envconfig.Int("LANTERN_SEARCH_MAX_IN_FLIGHT", 32),
 			AnalysisLimits: search.SearchAnalysisLimits{
 				MaxDocumentBytes:     envconfig.Int("LANTERN_SEARCH_MAX_DOCUMENT_BYTES", 1<<20),
@@ -399,6 +402,7 @@ func validateSearchConfig(c SearchConfig) error {
 		{"LANTERN_SEARCH_MAX_DICTIONARY_VISITS", int64(c.MaxDictionaryVisits)},
 		{"LANTERN_SEARCH_MAX_POSTING_VISITS", int64(c.MaxPostingVisits)},
 		{"LANTERN_SEARCH_MAX_POSITION_VISITS", int64(c.MaxPositionVisits)},
+		{"LANTERN_SEARCH_MAX_EXPIRATION_VISITS", int64(c.MaxExpirationVisits)},
 		{"LANTERN_SEARCH_MAX_IN_FLIGHT", int64(c.MaxInFlight)},
 		{"LANTERN_SEARCH_MAX_DOCUMENT_BYTES", int64(c.AnalysisLimits.MaxDocumentBytes)},
 		{"LANTERN_SEARCH_MAX_DOCUMENT_TOKENS", int64(c.AnalysisLimits.MaxDocumentTokens)},

@@ -144,6 +144,11 @@ type DomainMetrics struct {
 	// 0 when LANTERN_SEARCH_ENABLED=false (sampler is nil).
 	searchIndexTerms            prometheus.Gauge
 	searchIndexDocs             prometheus.Gauge
+	searchIndexPhysicalDocs     prometheus.Gauge
+	searchIndexExpiredDocs      prometheus.Gauge
+	searchIndexExpirationQueue  prometheus.Gauge
+	searchIndexExpirationPurged prometheus.Gauge
+	searchIndexPurgeDuration    prometheus.Gauge
 	searchIndexRetainedTerms    prometheus.Gauge
 	searchIndexRetainedOrdinals prometheus.Gauge
 	searchIndexPostings         prometheus.Gauge
@@ -247,6 +252,7 @@ var (
 		string(search.WorkDictionaryVisits),
 		string(search.WorkPostingVisits),
 		string(search.WorkPositionVisits),
+		string(search.WorkExpirationVisits),
 		"internal",
 	}
 	searchWorkKinds = []string{
@@ -254,6 +260,7 @@ var (
 		string(search.WorkDictionaryVisits),
 		string(search.WorkPostingVisits),
 		string(search.WorkPositionVisits),
+		string(search.WorkExpirationVisits),
 	}
 	// replicationApplyOps covers every pb.MutationOp oneof variant. The
 	// service layer translates the proto-internal case selector into one
@@ -468,8 +475,13 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		}),
 		searchIndexDocs: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "lantern_search_index_docs",
-			Help: "Current number of documents (indexed vertices) in the search inverted index (#703). Sampled on the same cadence as lantern_vertices. Always 0 when LANTERN_SEARCH_ENABLED=false.",
+			Help: "Current number of live documents (indexed vertices) in the search inverted index (#703/#1057). Sampled on the same cadence as lantern_vertices. Always 0 when LANTERN_SEARCH_ENABLED=false.",
 		}),
+		searchIndexPhysicalDocs:     prometheus.NewGauge(prometheus.GaugeOpts{Name: "lantern_search_index_physical_documents", Help: "Physical search-index documents before query-time TTL purge."}),
+		searchIndexExpiredDocs:      prometheus.NewGauge(prometheus.GaugeOpts{Name: "lantern_search_index_expired_documents", Help: "Expired physical search-index documents awaiting bounded query purge or background GC."}),
+		searchIndexExpirationQueue:  prometheus.NewGauge(prometheus.GaugeOpts{Name: "lantern_search_index_expiration_queue_entries", Help: "Entries in the bounded search-index expiration min-heap."}),
+		searchIndexExpirationPurged: prometheus.NewGauge(prometheus.GaugeOpts{Name: "lantern_search_index_expiration_purged", Help: "Cumulative documents removed by query-time expiration purge."}),
+		searchIndexPurgeDuration:    prometheus.NewGauge(prometheus.GaugeOpts{Name: "lantern_search_index_last_expiration_purge_duration_seconds", Help: "Wall duration of the latest query-time expiration purge."}),
 		searchIndexRetainedTerms:    prometheus.NewGauge(prometheus.GaugeOpts{Name: "lantern_search_index_retained_term_slots", Help: "Retained term-ID slots, including reusable tombstoned slots."}),
 		searchIndexRetainedOrdinals: prometheus.NewGauge(prometheus.GaugeOpts{Name: "lantern_search_index_retained_ordinals", Help: "Retained document ordinal high-water after compaction."}),
 		searchIndexPostings:         prometheus.NewGauge(prometheus.GaugeOpts{Name: "lantern_search_index_postings", Help: "Live distinct term-document posting entries."}),
@@ -563,6 +575,7 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		m.getVertexHits, m.getVertexMisses, m.getEdgeHits, m.getEdgeMisses,
 		m.edgeContribDeduped,
 		m.searchResults, m.searchDuration, m.searchCalls, m.searchWork, m.searchIndexTerms, m.searchIndexDocs,
+		m.searchIndexPhysicalDocs, m.searchIndexExpiredDocs, m.searchIndexExpirationQueue, m.searchIndexExpirationPurged, m.searchIndexPurgeDuration,
 		m.searchIndexRetainedTerms, m.searchIndexRetainedOrdinals, m.searchIndexPostings, m.searchIndexPositions,
 		m.searchIndexLiveBytes, m.searchIndexRetainedBytes, m.searchIndexRebuilds, m.searchIndexRebuildDuration, m.searchIndexHealthy,
 		m.vertexHLCEntries, m.vertexHLCHighWater,
@@ -1026,6 +1039,7 @@ func (m *DomainMetrics) OnSearchExecution(outcome, reason string, stats search.S
 		{string(search.WorkDictionaryVisits), stats.DictionaryVisits},
 		{string(search.WorkPostingVisits), stats.PostingVisits},
 		{string(search.WorkPositionVisits), stats.PositionVisits},
+		{string(search.WorkExpirationVisits), stats.ExpirationVisits},
 	} {
 		m.searchWork.WithLabelValues(item.kind).Observe(float64(item.value))
 	}
@@ -1134,6 +1148,11 @@ func (m *DomainMetrics) tick() {
 		stats := m.searchIndexSample()
 		m.searchIndexTerms.Set(float64(stats.LiveTerms))
 		m.searchIndexDocs.Set(float64(stats.Documents))
+		m.searchIndexPhysicalDocs.Set(float64(stats.PhysicalDocuments))
+		m.searchIndexExpiredDocs.Set(float64(stats.ExpiredDocuments))
+		m.searchIndexExpirationQueue.Set(float64(stats.ExpirationQueueEntries))
+		m.searchIndexExpirationPurged.Set(float64(stats.ExpirationPurged))
+		m.searchIndexPurgeDuration.Set(stats.LastExpirationPurge.Seconds())
 		m.searchIndexRetainedTerms.Set(float64(stats.RetainedTermSlots))
 		m.searchIndexRetainedOrdinals.Set(float64(stats.RetainedOrdinals))
 		m.searchIndexPostings.Set(float64(stats.Postings))
