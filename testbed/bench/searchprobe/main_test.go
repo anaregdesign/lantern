@@ -171,7 +171,7 @@ func TestVerifyDeepPaginationScopesEveryPage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lantern.Close()
+	defer func() { _ = lantern.Close() }()
 	if err := verifyDeepPagination(context.Background(), lantern); err != nil {
 		t.Fatal(err)
 	}
