@@ -1,0 +1,41 @@
+{
+  "version": "search-conformance-v1",
+  "vertices": [
+    {"key": "search-conformance/order/a", "value": "stabletoken"},
+    {"key": "search-conformance/order/b", "value": "stabletoken"},
+    {"key": "search-conformance/boolean/all", "value": "alpha bravo"},
+    {"key": "search-conformance/boolean/alpha", "value": "alpha charlie"},
+    {"key": "search-conformance/phrase/exact", "value": "delta echo"},
+    {"key": "search-conformance/phrase/reverse", "value": "echo delta"},
+    {"key": "search-conformance/fuzzy/doc", "value": "kubernetes"},
+    {"key": "search-conformance/prefix/doc", "value": "lantern"},
+    {"key": "search-conformance/scope/in", "value": "scopeterm"},
+    {"key": "outside-scope", "value": "scopeterm"}
+  ],
+  "queries": [
+    {"name": "server-default-order", "query": "stabletoken", "options": {"prefix": "search-conformance/order/"}, "want_keys": ["search-conformance/order/a", "search-conformance/order/b"]},
+    {"name": "explicit-any-order", "query": "stabletoken", "options": {"prefix": "search-conformance/order/", "match_mode": "any"}, "want_keys": ["search-conformance/order/a", "search-conformance/order/b"]},
+    {"name": "all", "query": "alpha bravo", "options": {"prefix": "search-conformance/boolean/", "match_mode": "all"}, "want_keys": ["search-conformance/boolean/all"]},
+    {"name": "min-should", "query": "delta echo zulu", "options": {"prefix": "search-conformance/phrase/", "match_mode": "min-should", "min_should_match": 2}, "want_keys": ["search-conformance/phrase/exact", "search-conformance/phrase/reverse"]},
+    {"name": "phrase", "query": "delta echo", "options": {"prefix": "search-conformance/phrase/", "phrase": true}, "want_keys": ["search-conformance/phrase/exact"]},
+    {"name": "fuzzy", "query": "kubernets", "options": {"prefix": "search-conformance/fuzzy/", "fuzziness": 1}, "want_keys": ["search-conformance/fuzzy/doc"]},
+    {"name": "prefix-terms", "query": "lant", "options": {"prefix": "search-conformance/prefix/", "prefix_terms": true}, "want_keys": ["search-conformance/prefix/doc"]},
+    {"name": "prefix-scope", "query": "scopeterm", "options": {"prefix": "search-conformance/scope/"}, "want_keys": ["search-conformance/scope/in"]},
+    {"name": "limit", "query": "stabletoken", "options": {"prefix": "search-conformance/order/", "limit": 1}, "want_keys": ["search-conformance/order/a"]},
+    {"name": "empty", "query": "", "options": {}, "want_keys": []}
+  ],
+  "invalid": [
+    {"name": "min-should-without-mode", "query": "alpha", "options": {"min_should_match": 1}},
+    {"name": "min-should-with-any", "query": "alpha", "options": {"match_mode": "any", "min_should_match": 1}},
+    {"name": "phrase-with-all", "query": "alpha bravo", "options": {"match_mode": "all", "phrase": true}},
+    {"name": "phrase-with-fuzzy", "query": "alpha bravo", "options": {"phrase": true, "fuzziness": 1}},
+    {"name": "phrase-with-prefix-terms", "query": "alpha bravo", "options": {"phrase": true, "prefix_terms": true}},
+    {"name": "fuzziness-too-high", "query": "alpha", "options": {"fuzziness": 3}}
+  ],
+  "cancellation": {"name": "pre-canceled", "query": "stabletoken", "options": {"prefix": "search-conformance/order/"}},
+  "typed_errors": [
+    {"name": "disabled", "environment": "disabled", "query": "alpha", "options": {}, "reason": "search-disabled"},
+    {"name": "positions-disabled", "environment": "positions-disabled", "query": "alpha bravo", "options": {"phrase": true}, "reason": "positions-disabled"},
+    {"name": "query-budget", "environment": "query-budget", "query": "12345", "options": {}, "reason": "query_bytes"}
+  ]
+}

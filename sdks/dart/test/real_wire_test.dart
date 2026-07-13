@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io' as io;
 import 'dart:typed_data';
 
@@ -637,6 +638,157 @@ void main() {
       expect(update.hits.map((hit) => hit.key), ['${searchPrefix}a']);
     },
   );
+
+  test('shared production search conformance manifest', () async {
+    final manifest =
+        jsonDecode(
+              io.File(
+                '../../testdata/search/conformance.json',
+              ).readAsStringSync(),
+            )
+            as Map<String, dynamic>;
+    expect(manifest['version'], 'search-conformance-v1');
+
+    SearchOptions options(Map<String, dynamic> raw) {
+      final mode = switch (raw['match_mode']) {
+        'any' => SearchMatchMode.any,
+        'all' => SearchMatchMode.all,
+        'min-should' => SearchMatchMode.minShouldMatch,
+        _ => null,
+      };
+      return SearchOptions(
+        limit: (raw['limit'] as num?)?.toInt() ?? 0,
+        prefix: raw['prefix'] as String? ?? '',
+        matchMode: mode,
+        minShouldMatch: (raw['min_should_match'] as num?)?.toInt(),
+        phrase: raw['phrase'] as bool?,
+        fuzziness: (raw['fuzziness'] as num?)?.toInt(),
+        prefixTerms: raw['prefix_terms'] as bool?,
+      );
+    }
+
+    final vertices = (manifest['vertices'] as List<dynamic>)
+        .cast<Map<String, dynamic>>()
+        .map(
+          (vertex) => VertexInput(
+            key: vertex['key'] as String,
+            value: VertexValue.string(vertex['value'] as String),
+          ),
+        )
+        .toList();
+    await client.putVertices(vertices);
+
+    for (final fixture
+        in (manifest['queries'] as List<dynamic>)
+            .cast<Map<String, dynamic>>()) {
+      final result = await client.searchVertices(
+        fixture['query'] as String,
+        searchOptions: options(
+          (fixture['options'] as Map<dynamic, dynamic>).cast<String, dynamic>(),
+        ),
+      );
+      expect(result, isA<SearchEnabled>(), reason: fixture['name'] as String);
+      expect(
+        (result as SearchEnabled).hits.map((hit) => hit.key).toList(),
+        (fixture['want_keys'] as List<dynamic>).cast<String>(),
+        reason: fixture['name'] as String,
+      );
+      expect(result.hits.every((hit) => hit.score.isFinite), isTrue);
+    }
+
+    for (final fixture
+        in (manifest['invalid'] as List<dynamic>)
+            .cast<Map<String, dynamic>>()) {
+      await expectLater(
+        client.searchVertices(
+          fixture['query'] as String,
+          searchOptions: options(
+            (fixture['options'] as Map<dynamic, dynamic>)
+                .cast<String, dynamic>(),
+          ),
+        ),
+        throwsA(isA<LanternInvalidArgumentException>()),
+        reason: fixture['name'] as String,
+      );
+    }
+
+    final cancellation = (manifest['cancellation'] as Map<dynamic, dynamic>)
+        .cast<String, dynamic>();
+    final cancellationToken = LanternCancellationToken()
+      ..cancel('shared conformance pre-canceled');
+    await expectLater(
+      client.searchVertices(
+        cancellation['query'] as String,
+        searchOptions: options(
+          (cancellation['options'] as Map<dynamic, dynamic>)
+              .cast<String, dynamic>(),
+        ),
+        options: LanternCallOptions(cancellation: cancellationToken),
+      ),
+      throwsA(isA<LanternCanceledException>()),
+      reason: cancellation['name'] as String,
+    );
+
+    final errorEndpoints = <String, String?>{
+      'disabled':
+          io.Platform.environment['LANTERN_DART_SEARCH_DISABLED_ENDPOINT'],
+      'positions-disabled': io
+          .Platform
+          .environment['LANTERN_DART_SEARCH_POSITIONS_DISABLED_ENDPOINT'],
+      'query-budget':
+          io.Platform.environment['LANTERN_DART_SEARCH_BUDGET_ENDPOINT'],
+    };
+    for (final fixture
+        in (manifest['typed_errors'] as List<dynamic>)
+            .cast<Map<String, dynamic>>()) {
+      final environment = fixture['environment'] as String;
+      final errorEndpoint = errorEndpoints[environment];
+      expect(errorEndpoint, isNotNull, reason: '$environment endpoint missing');
+      final errorClient = LanternClient.connect(
+        Uri.parse(errorEndpoint!),
+        allowInsecure: errorEndpoint.startsWith('http://'),
+      );
+      addTearDown(errorClient.close);
+      final call = errorClient.searchVertices(
+        fixture['query'] as String,
+        searchOptions: options(
+          (fixture['options'] as Map<dynamic, dynamic>).cast<String, dynamic>(),
+        ),
+      );
+      switch (fixture['reason']) {
+        case 'search-disabled':
+          expect(await call, isA<SearchDisabled>());
+        case 'positions-disabled':
+          await expectLater(
+            call,
+            throwsA(
+              isA<LanternFailedPreconditionException>().having(
+                (error) => error.searchReason,
+                'searchReason',
+                SearchErrorReason.searchPositionsDisabled,
+              ),
+            ),
+          );
+        case 'query_bytes':
+          await expectLater(
+            call,
+            throwsA(
+              isA<LanternResourceExhaustedException>()
+                  .having(
+                    (error) => error.searchReason,
+                    'searchReason',
+                    SearchErrorReason.searchWorkBudgetExhausted,
+                  )
+                  .having(
+                    (error) => error.searchWorkKind,
+                    'searchWorkKind',
+                    'query_bytes',
+                  ),
+            ),
+          );
+      }
+    }
+  });
 
   test(
     'all traversal families preserve family sentinels and Edge TTL',

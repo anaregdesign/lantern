@@ -3,10 +3,12 @@ package integration_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"math/rand"
+	"os"
 	"slices"
 	"sort"
 	"strings"
@@ -21,6 +23,7 @@ import (
 
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/search"
+	"github.com/anaregdesign/lantern/core/search/relevance"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	client "github.com/anaregdesign/lantern/sdks/go"
@@ -28,18 +31,112 @@ import (
 	"github.com/anaregdesign/lantern/server/service"
 )
 
-// searchVertexDocument mirrors the production provider projection
-// (server/provider/search.go) closely enough for the wire test: it folds
-// the key together with the string value so a query matches either. The
-// integration suite cannot import the unexported provider helper, and the
-// exact value-type rendering is covered by the provider unit test — here we
-// only need a live index behind the RPC.
-func searchVertexDocument(key string, v *pb.Vertex) search.Document {
-	fields := search.Fields{{ID: search.FieldKey, Text: key}}
-	if v != nil && v.GetString_() != "" {
-		fields = append(fields, search.DocumentField{ID: search.FieldValue, Text: v.GetString_()})
+type searchConformanceManifest struct {
+	Version      string                    `json:"version"`
+	Vertices     []searchConformanceVertex `json:"vertices"`
+	Queries      []searchConformanceCase   `json:"queries"`
+	Invalid      []searchConformanceCase   `json:"invalid"`
+	Cancellation searchConformanceCase     `json:"cancellation"`
+	TypedErrors  []searchConformanceError  `json:"typed_errors"`
+}
+
+type searchConformanceVertex struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+type searchConformanceCase struct {
+	Name     string                   `json:"name"`
+	Query    string                   `json:"query"`
+	Options  searchConformanceOptions `json:"options"`
+	WantKeys []string                 `json:"want_keys"`
+}
+
+type searchConformanceOptions struct {
+	Limit          uint32 `json:"limit"`
+	Prefix         string `json:"prefix"`
+	MatchMode      string `json:"match_mode"`
+	MinShouldMatch uint32 `json:"min_should_match"`
+	Phrase         bool   `json:"phrase"`
+	Fuzziness      uint32 `json:"fuzziness"`
+	PrefixTerms    bool   `json:"prefix_terms"`
+}
+
+type searchConformanceError struct {
+	Name        string                   `json:"name"`
+	Environment string                   `json:"environment"`
+	Query       string                   `json:"query"`
+	Options     searchConformanceOptions `json:"options"`
+	Reason      string                   `json:"reason"`
+}
+
+func loadSearchConformanceManifest(t *testing.T) searchConformanceManifest {
+	t.Helper()
+	raw, err := os.ReadFile("../../testdata/search/conformance.json")
+	if err != nil {
+		t.Fatal(err)
 	}
-	return fields
+	var manifest searchConformanceManifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Version != "search-conformance-v1" || len(manifest.Vertices) == 0 || len(manifest.Queries) == 0 || len(manifest.Invalid) == 0 || manifest.Cancellation.Name == "" || len(manifest.TypedErrors) == 0 {
+		t.Fatalf("invalid search conformance manifest: %+v", manifest)
+	}
+	return manifest
+}
+
+func conformancePBOptions(options searchConformanceOptions) *pb.SearchOptions {
+	mode := pb.MatchMode_MATCH_MODE_UNSPECIFIED
+	switch options.MatchMode {
+	case "any":
+		mode = pb.MatchMode_MATCH_MODE_ANY
+	case "all":
+		mode = pb.MatchMode_MATCH_MODE_ALL
+	case "min-should":
+		mode = pb.MatchMode_MATCH_MODE_MIN_SHOULD
+	}
+	if mode == pb.MatchMode_MATCH_MODE_UNSPECIFIED && options.MinShouldMatch == 0 && !options.Phrase && options.Fuzziness == 0 && !options.PrefixTerms {
+		return nil
+	}
+	return &pb.SearchOptions{MatchMode: mode, MinShouldMatch: options.MinShouldMatch, Phrase: options.Phrase, Fuzziness: options.Fuzziness, PrefixTerms: options.PrefixTerms}
+}
+
+func conformanceSDKOptions(options searchConformanceOptions) []client.SearchOption {
+	var out []client.SearchOption
+	if options.Limit != 0 {
+		out = append(out, client.WithSearchLimit(options.Limit))
+	}
+	if options.Prefix != "" {
+		out = append(out, client.WithSearchPrefix(options.Prefix))
+	}
+	switch options.MatchMode {
+	case "any":
+		out = append(out, client.WithMatchMode(client.MatchAny))
+	case "all":
+		out = append(out, client.WithMatchMode(client.MatchAll))
+	case "min-should":
+		out = append(out, client.WithMatchMode(client.MatchMinShould))
+	}
+	if options.MinShouldMatch != 0 {
+		out = append(out, client.WithMinShouldMatch(options.MinShouldMatch))
+	}
+	if options.Phrase {
+		out = append(out, client.WithPhrase())
+	}
+	if options.Fuzziness != 0 {
+		out = append(out, client.WithFuzziness(options.Fuzziness))
+	}
+	if options.PrefixTerms {
+		out = append(out, client.WithPrefixTerms())
+	}
+	return out
+}
+
+func newProductionSearchCache(ttl time.Duration, enabled, positions bool, limits search.SearchAnalysisLimits) *graphcache.GraphCache[string, *pb.Vertex] {
+	return provider.NewGraphCache(provider.CacheConfig{TTL: ttl}, provider.SearchConfig{
+		Enabled: enabled, Positions: positions, AnalysisLimits: limits,
+	})
 }
 
 func wireSearchErrorReason(t *testing.T, err error) pb.SearchErrorReason {
@@ -82,11 +179,7 @@ func newSearchRawClient(t *testing.T, enabled bool) graphv1connect.LanternServic
 
 func newSearchRawClientWithLimits(t *testing.T, limits service.SearchLimits) graphv1connect.LanternServiceClient {
 	t.Helper()
-	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
-	cache.EnablePrefixIndex(func(k string) string { return k })
-	if limits.Enabled {
-		cache.EnableSearchIndex(searchVertexDocument, strings.Compare, graphcache.WithSearchAnalysisLimits(limits.AnalysisLimits))
-	}
+	cache := newProductionSearchCache(time.Minute, limits.Enabled, limits.PositionsEnabled, limits.AnalysisLimits)
 	svc := service.NewLanternService(cache).WithSearchLimits(limits)
 	srv := newConnectTestServer(t, svc, nil)
 	return graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
@@ -133,9 +226,7 @@ func TestSearchIndexRestoreConvergenceOverWire(t *testing.T) {
 		MaxLiveTerms: 20, MaxLivePostings: 20, MaxPositionEntries: 20,
 		CompactionRatio: 2, CompactionMinRetired: 1,
 	}
-	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
-	cache.EnablePrefixIndex(func(key string) string { return key })
-	cache.EnableSearchIndex(searchVertexDocument, strings.Compare, graphcache.WithSearchAnalysisLimits(analysis))
+	cache := newProductionSearchCache(time.Minute, true, true, analysis)
 	svc := service.NewLanternService(cache).WithSearchLimits(service.SearchLimits{Enabled: true, PositionsEnabled: true, DefaultLimit: 10, MaxLimit: 100, AnalysisLimits: analysis})
 	exp := timestamppb.New(time.Now().Add(time.Hour))
 	if _, err := svc.RestoreVertices(context.Background(), &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: "legacy", Value: &pb.Vertex_String_{String_: "oversized"}, Expiration: exp}}}); err != nil {
@@ -466,9 +557,7 @@ func TestSearchVertices_ExpirationOverWire(t *testing.T) {
 }
 
 func TestSearchVertices_CancellationAndAdmissionOverWire(t *testing.T) {
-	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
-	cache.EnablePrefixIndex(func(k string) string { return k })
-	cache.EnableSearchIndex(searchVertexDocument, strings.Compare)
+	cache := newProductionSearchCache(time.Minute, true, true, search.SearchAnalysisLimits{})
 	expiration := time.Now().Add(time.Hour)
 	items := make([]graphcache.VertexItem[string, *pb.Vertex], 15_000)
 	for i := range items {
@@ -560,9 +649,7 @@ func TestSearchVertices_CancellationAndAdmissionOverWire(t *testing.T) {
 }
 
 func TestSearchVertices_PrefixCandidatePushdownOverRealH2C(t *testing.T) {
-	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
-	cache.EnablePrefixIndex(func(key string) string { return key })
-	cache.EnableSearchIndex(searchVertexDocument, strings.Compare)
+	cache := newProductionSearchCache(time.Hour, true, true, search.SearchAnalysisLimits{})
 	expiration := time.Now().Add(time.Hour)
 	items := make([]graphcache.VertexItem[string, *pb.Vertex], 0, 2010)
 	for i := 0; i < 2000; i++ {
@@ -687,15 +774,215 @@ func TestSearchVertices_ProductionStructuredFieldsOverRealH2C(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := status.Msg.GetSearch().GetProjectionVersion(); got != "vertex-fields-v2" {
+	if got := status.Msg.GetSearch().GetProjectionVersion(); got != relevance.BaselineProjectionVersion {
 		t.Fatalf("projection version = %q", got)
 	}
-	if got := status.Msg.GetSearch().GetAnalyzerVersion(); got != "script-aware-v2" {
+	if got := status.Msg.GetSearch().GetAnalyzerVersion(); got != relevance.BaselineAnalyzerVersion {
 		t.Fatalf("analyzer version = %q", got)
 	}
 	if got := status.Msg.GetSearch().GetConfigFingerprint(); len(got) != 64 {
 		t.Fatalf("config fingerprint = %q, want 64 hex chars", got)
 	}
+}
+
+func TestSearchVertices_SharedConformanceManifest(t *testing.T) {
+	manifest := loadSearchConformanceManifest(t)
+	newClients := func(searchConfig provider.SearchConfig, limits service.SearchLimits) (graphv1connect.LanternServiceClient, *client.Lantern) {
+		cache := provider.NewGraphCache(provider.CacheConfig{TTL: time.Hour}, searchConfig)
+		svc := service.NewLanternService(cache).WithSearchLimits(limits)
+		srv := newConnectTestServer(t, svc, nil)
+		return graphv1connect.NewLanternServiceClient(h2cClient(), srv.url), newConnectClientFor(t, srv.url)
+	}
+	limits := service.SearchLimits{Enabled: true, PositionsEnabled: true, DefaultLimit: 100, MaxLimit: 1000}
+	raw, sdk := newClients(provider.SearchConfig{Enabled: true, Positions: true}, limits)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	expiration := timestamppb.New(time.Now().Add(time.Hour))
+	vertices := make([]*pb.Vertex, len(manifest.Vertices))
+	for i, fixture := range manifest.Vertices {
+		vertices[i] = &pb.Vertex{Key: fixture.Key, Value: &pb.Vertex_String_{String_: fixture.Value}, Expiration: expiration}
+	}
+	if _, err := raw.PutVertices(ctx, connect.NewRequest(&pb.PutVerticesRequest{Vertices: vertices})); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range manifest.Queries {
+		t.Run(tc.Name, func(t *testing.T) {
+			response, err := raw.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{
+				Query: tc.Query, Limit: tc.Options.Limit, Prefix: tc.Options.Prefix, Options: conformancePBOptions(tc.Options),
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			rawKeys := make([]string, len(response.Msg.GetHits()))
+			for i, hit := range response.Msg.GetHits() {
+				rawKeys[i] = hit.GetKey()
+			}
+			if !slices.Equal(rawKeys, tc.WantKeys) {
+				t.Fatalf("raw keys = %v, want %v", rawKeys, tc.WantKeys)
+			}
+			sdkHits, err := sdk.SearchVertices(ctx, tc.Query, conformanceSDKOptions(tc.Options)...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sdkKeys := make([]string, len(sdkHits))
+			for i, hit := range sdkHits {
+				sdkKeys[i] = hit.Key
+				if math.Float64bits(hit.Score) != math.Float64bits(response.Msg.GetHits()[i].GetScore()) {
+					t.Fatalf("score bits at %d differ: raw=%v SDK=%v", i, response.Msg.GetHits()[i].GetScore(), hit.Score)
+				}
+			}
+			if !slices.Equal(sdkKeys, tc.WantKeys) {
+				t.Fatalf("SDK keys = %v, want %v", sdkKeys, tc.WantKeys)
+			}
+		})
+	}
+	for _, tc := range manifest.Invalid {
+		t.Run("invalid/"+tc.Name, func(t *testing.T) {
+			_, rawErr := raw.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{
+				Query: tc.Query, Limit: tc.Options.Limit, Prefix: tc.Options.Prefix, Options: conformancePBOptions(tc.Options),
+			}))
+			if connect.CodeOf(rawErr) != connect.CodeInvalidArgument {
+				t.Fatalf("raw error = %v, want InvalidArgument", rawErr)
+			}
+			_, sdkErr := sdk.SearchVertices(ctx, tc.Query, conformanceSDKOptions(tc.Options)...)
+			if !errors.Is(sdkErr, client.ErrInvalidArgument) {
+				t.Fatalf("SDK error = %v, want ErrInvalidArgument", sdkErr)
+			}
+		})
+	}
+	t.Run("cancellation/"+manifest.Cancellation.Name, func(t *testing.T) {
+		canceled, stop := context.WithCancel(context.Background())
+		stop()
+		tc := manifest.Cancellation
+		_, rawErr := raw.SearchVertices(canceled, connect.NewRequest(&pb.SearchVerticesRequest{
+			Query: tc.Query, Limit: tc.Options.Limit, Prefix: tc.Options.Prefix, Options: conformancePBOptions(tc.Options),
+		}))
+		if connect.CodeOf(rawErr) != connect.CodeCanceled {
+			t.Fatalf("raw cancellation error = %v, want Canceled", rawErr)
+		}
+		_, sdkErr := sdk.SearchVertices(canceled, tc.Query, conformanceSDKOptions(tc.Options)...)
+		if connect.CodeOf(sdkErr) != connect.CodeCanceled {
+			t.Fatalf("SDK cancellation error = %v, want Canceled", sdkErr)
+		}
+	})
+
+	for _, tc := range manifest.TypedErrors {
+		t.Run("typed/"+tc.Name, func(t *testing.T) {
+			searchConfig := provider.SearchConfig{Enabled: true, Positions: true}
+			errorLimits := limits
+			switch tc.Environment {
+			case "disabled":
+				searchConfig.Enabled = false
+				errorLimits.Enabled = false
+			case "positions-disabled":
+				searchConfig.Positions = false
+				errorLimits.PositionsEnabled = false
+			case "query-budget":
+				errorLimits.MaxQueryBytes = 4
+			}
+			_, errorSDK := newClients(searchConfig, errorLimits)
+			_, err := errorSDK.SearchVertices(ctx, tc.Query, conformanceSDKOptions(tc.Options)...)
+			switch tc.Reason {
+			case "search-disabled":
+				if !errors.Is(err, client.ErrSearchDisabled) {
+					t.Fatalf("error = %v, want search disabled", err)
+				}
+			case "positions-disabled":
+				if !errors.Is(err, client.ErrSearchPositionsDisabled) {
+					t.Fatalf("error = %v, want positions disabled", err)
+				}
+			case "query_bytes":
+				if !errors.Is(err, client.ErrSearchWorkBudget) || client.SearchFailureWorkKind(err) != "query_bytes" {
+					t.Fatalf("error = %v, want query_bytes budget", err)
+				}
+			}
+		})
+	}
+}
+
+func TestSearchVertices_LifecycleConvergenceOverProductionComposition(t *testing.T) {
+	cache := newProductionSearchCache(time.Minute, true, true, search.SearchAnalysisLimits{})
+	svc := service.NewLanternService(cache).WithSearchLimits(service.SearchLimits{
+		Enabled: true, PositionsEnabled: true, DefaultLimit: 100, MaxLimit: 1000,
+	})
+	srv := newConnectTestServer(t, svc, nil)
+	raw := graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	expiration := timestamppb.New(time.Now().Add(time.Hour))
+
+	searchKeys := func(query string) []string {
+		t.Helper()
+		response, err := raw.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{
+			Query: query, Limit: 100, Options: &pb.SearchOptions{MatchMode: pb.MatchMode_MATCH_MODE_ALL},
+		}))
+		if err != nil {
+			t.Fatalf("SearchVertices(%q): %v", query, err)
+		}
+		keys := make([]string, len(response.Msg.GetHits()))
+		for i, hit := range response.Msg.GetHits() {
+			keys[i] = hit.GetKey()
+		}
+		return keys
+	}
+	assertKeys := func(query string, want ...string) {
+		t.Helper()
+		if got := searchKeys(query); !slices.Equal(got, want) {
+			t.Fatalf("SearchVertices(%q) keys = %v, want %v", query, got, want)
+		}
+	}
+
+	vertices := []*pb.Vertex{
+		{Key: "lifecycle/overwrite", Value: &pb.Vertex_String_{String_: "oldlifecycletoken"}, Expiration: expiration},
+		{Key: "lifecycle/delete-one", Value: &pb.Vertex_String_{String_: "singledeletetoken"}, Expiration: expiration},
+		{Key: "lifecycle/delete-batch/a", Value: &pb.Vertex_String_{String_: "batchdeletetoken"}, Expiration: expiration},
+		{Key: "lifecycle/delete-batch/b", Value: &pb.Vertex_String_{String_: "batchdeletetoken"}, Expiration: expiration},
+		{Key: "lifecycle/delete-prefix/a", Value: &pb.Vertex_String_{String_: "prefixdeletetoken"}, Expiration: expiration},
+		{Key: "lifecycle/delete-prefix/b", Value: &pb.Vertex_String_{String_: "prefixdeletetoken"}, Expiration: expiration},
+	}
+	if _, err := raw.PutVertices(ctx, connect.NewRequest(&pb.PutVerticesRequest{Vertices: vertices})); err != nil {
+		t.Fatal(err)
+	}
+	assertKeys("oldlifecycletoken", "lifecycle/overwrite")
+	if _, err := raw.PutVertex(ctx, connect.NewRequest(&pb.PutVertexRequest{Vertex: &pb.Vertex{
+		Key: "lifecycle/overwrite", Value: &pb.Vertex_String_{String_: "newlifecycletoken"}, Expiration: expiration,
+	}})); err != nil {
+		t.Fatal(err)
+	}
+	assertKeys("oldlifecycletoken")
+	assertKeys("newlifecycletoken", "lifecycle/overwrite")
+
+	if _, err := raw.DeleteVertex(ctx, connect.NewRequest(&pb.DeleteVertexRequest{Key: "lifecycle/delete-one"})); err != nil {
+		t.Fatal(err)
+	}
+	assertKeys("singledeletetoken")
+	if _, err := raw.DeleteVertices(ctx, connect.NewRequest(&pb.DeleteVerticesRequest{Keys: []string{
+		"lifecycle/delete-batch/a", "lifecycle/delete-batch/b",
+	}})); err != nil {
+		t.Fatal(err)
+	}
+	assertKeys("batchdeletetoken")
+	deleted, err := raw.DeleteVerticesByPrefix(ctx, connect.NewRequest(&pb.DeleteVerticesByPrefixRequest{Prefix: "lifecycle/delete-prefix/"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted.Msg.GetDeleted() != 2 {
+		t.Fatalf("DeleteVerticesByPrefix deleted = %d, want 2", deleted.Msg.GetDeleted())
+	}
+	assertKeys("prefixdeletetoken")
+
+	origin := []byte("search-replica01")
+	replicated := &pb.Vertex{
+		Key: "lifecycle/replicated", Value: &pb.Vertex_String_{String_: "replicatedapplytoken"}, Expiration: expiration,
+	}
+	if err := svc.ApplyMutation(ctx, &pb.Mutation{
+		Seq: 1, Origin: origin,
+		Hlc: &pb.HLCTimestamp{WallNs: time.Now().UnixNano(), NodeId: origin},
+		Op:  &pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{Vertex: replicated}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertKeys("replicatedapplytoken", "lifecycle/replicated")
 }
 
 func searchHitsContain(hits []client.SearchHit, key string) bool {
@@ -713,11 +1000,7 @@ func searchHitsContain(hits []client.SearchHit, key string) bool {
 // white-box request/response tests.
 func newSearchSDKClient(t *testing.T, enabled bool) *client.Lantern {
 	t.Helper()
-	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
-	cache.EnablePrefixIndex(func(k string) string { return k })
-	if enabled {
-		cache.EnableSearchIndex(searchVertexDocument, strings.Compare)
-	}
+	cache := newProductionSearchCache(time.Minute, enabled, enabled, search.SearchAnalysisLimits{})
 	svc := service.NewLanternService(cache).WithSearchLimits(service.SearchLimits{
 		Enabled:          enabled,
 		PositionsEnabled: enabled,
@@ -962,9 +1245,7 @@ func TestSearchVertices_SDKForwarder(t *testing.T) {
 }
 
 func TestSearchVertices_SDKExecutionError(t *testing.T) {
-	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
-	cache.EnablePrefixIndex(func(k string) string { return k })
-	cache.EnableSearchIndex(searchVertexDocument, strings.Compare)
+	cache := newProductionSearchCache(time.Minute, true, true, search.SearchAnalysisLimits{})
 	svc := service.NewLanternService(cache).WithSearchLimits(service.SearchLimits{
 		Enabled:          true,
 		PositionsEnabled: true,
@@ -1271,9 +1552,7 @@ func TestSearchVertices_DeterministicAcrossHistories(t *testing.T) {
 // reinterpret phrase=true as an unordered AND query.
 func TestSearchVertices_PositionsOff(t *testing.T) {
 	// Build a search-enabled service whose cache index tracks no positions.
-	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
-	cache.EnablePrefixIndex(func(k string) string { return k })
-	cache.EnableSearchIndex(searchVertexDocument, strings.Compare, graphcache.WithoutSearchPositions())
+	cache := newProductionSearchCache(time.Minute, true, false, search.SearchAnalysisLimits{})
 	svc := service.NewLanternService(cache).WithSearchLimits(service.SearchLimits{
 		Enabled:          true,
 		PositionsEnabled: false,

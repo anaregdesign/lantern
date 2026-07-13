@@ -13,7 +13,6 @@ package relevance
 
 import (
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -98,19 +97,16 @@ func TestProductionPipelineRelevanceFloors(t *testing.T) {
 	}
 }
 
-// TestLuceneBaselineComparison replays the pinned Lucene rankings (produced
-// offline by testbed/lucene-baseline; CI never runs a JVM) through the same
-// metric functions and ASSERTS the epic's definition of done (#886): the
-// production pipeline scores at least as high as every pinned Lucene run on
-// every metric of every corpus. #888 (script-aware analyzer) is what made
-// this hold; keeping it as an assertion means later ranking work (#889,
-// #890, #891) may reshuffle results but never below Lucene.
-func TestLuceneBaselineComparison(t *testing.T) {
+// TestLuceneBaselineArtifactCoverage keeps the core-owned artifact complete.
+// Exact Lantern-vs-Lucene metric comparison lives in server/provider, where
+// the production vertex projection is available without violating core's leaf
+// dependency boundary.
+func TestLuceneBaselineArtifactCoverage(t *testing.T) {
 	runs, err := LoadBaselineRuns(BaselineRunsFile)
-	if os.IsNotExist(err) {
-		t.Skipf("no pinned baseline at %s — generate it with testbed/lucene-baseline (see testbed/SKILL.md)", BaselineRunsFile)
-	}
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runs.ValidateProvenance(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -123,6 +119,7 @@ func TestLuceneBaselineComparison(t *testing.T) {
 		byName[c.Name] = c
 	}
 
+	blocking := make(map[string]int, len(corpora))
 	for name, run := range runs.Runs {
 		t.Run(name, func(t *testing.T) {
 			c, ok := byName[run.Corpus]
@@ -134,31 +131,15 @@ func TestLuceneBaselineComparison(t *testing.T) {
 					t.Fatalf("run %q ranks unknown query %q — regenerate the baseline after editing fixtures", name, qid)
 				}
 			}
-			lucene := run.Evaluate(c)
-
-			idx := productionIndex()
-			c.IndexDocs(idx)
-			lantern := Evaluate(c, RankSearcher(idx))
-
-			t.Logf("%s [%s, %s]: lucene nDCG@10=%.4f MRR=%.4f Recall@50=%.4f | lantern nDCG@10=%.4f MRR=%.4f Recall@50=%.4f",
-				run.Corpus, runs.Engine, run.Analyzer,
-				lucene.NDCG10, lucene.MRR, lucene.Recall50,
-				lantern.NDCG10, lantern.MRR, lantern.Recall50)
-
-			// Both sides are deterministic; the epsilon only forgives the
-			// float-summation ULPs of a legitimate exact tie (ja matches
-			// Lucene's CJK bigrams ranking-for-ranking).
-			const eps = 1e-9
-			if lantern.NDCG10 < lucene.NDCG10-eps {
-				t.Errorf("nDCG@10 %.4f below Lucene %s %.4f", lantern.NDCG10, run.Analyzer, lucene.NDCG10)
-			}
-			if lantern.MRR < lucene.MRR-eps {
-				t.Errorf("MRR %.4f below Lucene %s %.4f", lantern.MRR, run.Analyzer, lucene.MRR)
-			}
-			if lantern.Recall50 < lucene.Recall50-eps {
-				t.Errorf("Recall@50 %.4f below Lucene %s %.4f", lantern.Recall50, run.Analyzer, lucene.Recall50)
+			if run.Blocking {
+				blocking[run.Corpus]++
 			}
 		})
+	}
+	for _, corpus := range corpora {
+		if blocking[corpus.Name] == 0 {
+			t.Errorf("corpus %q has no blocking Lucene comparator", corpus.Name)
+		}
 	}
 }
 

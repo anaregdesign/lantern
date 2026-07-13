@@ -11,6 +11,10 @@ on:
       - "buf.yaml"
       - "buf.gen.yaml"
       - "generate.go"
+      - "core/search/**"
+      - "core/graphcache/**"
+      - "server/**"
+      - "testdata/search/**"
       - ".github/workflows/dart-sdk.yml"
   pull_request:
     paths:
@@ -19,6 +23,10 @@ on:
       - "buf.yaml"
       - "buf.gen.yaml"
       - "generate.go"
+      - "core/search/**"
+      - "core/graphcache/**"
+      - "server/**"
+      - "testdata/search/**"
       - ".github/workflows/dart-sdk.yml"
 
 permissions:
@@ -53,30 +61,31 @@ jobs:
       - name: Start Lantern real-wire server
         working-directory: .
         run: |
-          env LANTERN_METRICS_ADDR=:9090 \
-            go run ./server/cmd > "$RUNNER_TEMP/lantern-dart-server.log" 2>&1 &
-          echo $! > "$RUNNER_TEMP/lantern-dart-server.pid"
-          env LANTERN_PORT=6381 LANTERN_METRICS_ADDR=:9091 \
-            LANTERN_SEARCH_ENABLED=false go run ./server/cmd \
-            > "$RUNNER_TEMP/lantern-dart-search-disabled.log" 2>&1 &
-          echo $! > "$RUNNER_TEMP/lantern-dart-search-disabled.pid"
+          go build -o "$RUNNER_TEMP/lantern" ./server/cmd
+          env LANTERN_PORT=6380 LANTERN_METRICS_ADDR=:9090 \
+            "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-dart-enabled.log" 2>&1 &
+          echo $! >> "$RUNNER_TEMP/lantern-dart.pids"
+          env LANTERN_PORT=6381 LANTERN_METRICS_ADDR=:9091 LANTERN_SEARCH_ENABLED=false \
+            "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-dart-disabled.log" 2>&1 &
+          echo $! >> "$RUNNER_TEMP/lantern-dart.pids"
+          env LANTERN_PORT=6382 LANTERN_METRICS_ADDR=:9092 LANTERN_SEARCH_POSITIONS=false \
+            "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-dart-positions.log" 2>&1 &
+          echo $! >> "$RUNNER_TEMP/lantern-dart.pids"
+          env LANTERN_PORT=6383 LANTERN_METRICS_ADDR=:9093 LANTERN_SEARCH_MAX_QUERY_BYTES=4 \
+            LANTERN_SEARCH_MAX_QUERY_TERMS=4 \
+            "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-dart-budget.log" 2>&1 &
+          echo $! >> "$RUNNER_TEMP/lantern-dart.pids"
           for attempt in $(seq 1 60); do
-            if curl --fail --silent --show-error --max-time 2 \
-              -H 'Content-Type: application/json' \
-              -H 'Connect-Protocol-Version: 1' \
-              --data '{}' \
-              http://127.0.0.1:6380/grpc.health.v1.Health/Check >/dev/null && \
+            ready=true
+            for port in 6380 6381 6382 6383; do
               curl --fail --silent --show-error --max-time 2 \
-              -H 'Content-Type: application/json' \
-              -H 'Connect-Protocol-Version: 1' \
-              --data '{}' \
-              http://127.0.0.1:6381/grpc.health.v1.Health/Check >/dev/null; then
-              exit 0
-            fi
+                -H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' \
+                --data '{}' "http://127.0.0.1:$port/grpc.health.v1.Health/Check" >/dev/null || ready=false
+            done
+            $ready && exit 0
             sleep 1
           done
-          cat "$RUNNER_TEMP/lantern-dart-server.log" \
-            "$RUNNER_TEMP/lantern-dart-search-disabled.log"
+          cat "$RUNNER_TEMP"/lantern-dart-*.log
           exit 1
 
       - name: Resolve dependencies
@@ -103,6 +112,8 @@ jobs:
         env:
           LANTERN_DART_REAL_WIRE_ENDPOINT: http://127.0.0.1:6380
           LANTERN_DART_SEARCH_DISABLED_ENDPOINT: http://127.0.0.1:6381
+          LANTERN_DART_SEARCH_POSITIONS_DISABLED_ENDPOINT: http://127.0.0.1:6382
+          LANTERN_DART_SEARCH_BUDGET_ENDPOINT: http://127.0.0.1:6383
         run: dart test test/real_wire_test.dart
 
       - name: Build API documentation
@@ -154,11 +165,8 @@ jobs:
         if: always()
         working-directory: .
         run: |
-          if [ -f "$RUNNER_TEMP/lantern-dart-server.pid" ]; then
-            kill "$(cat "$RUNNER_TEMP/lantern-dart-server.pid")" || true
-          fi
-          if [ -f "$RUNNER_TEMP/lantern-dart-search-disabled.pid" ]; then
-            kill "$(cat "$RUNNER_TEMP/lantern-dart-search-disabled.pid")" || true
+          if [ -f "$RUNNER_TEMP/lantern-dart.pids" ]; then
+            xargs kill < "$RUNNER_TEMP/lantern-dart.pids" || true
           fi
 
   minimum-dart:

@@ -1,0 +1,2923 @@
+{
+  "fixture_format": "typed-string-vertex-fields-v1",
+  "projection_version": "vertex-fields-v2",
+  "corpora": {
+    "en": {
+      "docs": [
+        {
+          "id": "coffee-01",
+          "fields": [
+            {
+              "name": "key",
+              "text": "coffee-01"
+            },
+            {
+              "name": "value",
+              "text": "Espresso extraction: 18 g dose, 36 g yield, 27 seconds at 93 degrees."
+            }
+          ]
+        },
+        {
+          "id": "coffee-02",
+          "fields": [
+            {
+              "name": "key",
+              "text": "coffee-02"
+            },
+            {
+              "name": "value",
+              "text": "Pour-over brew guide: medium grind, 3 minute total brew time for a V60."
+            }
+          ]
+        },
+        {
+          "id": "coffee-03",
+          "fields": [
+            {
+              "name": "key",
+              "text": "coffee-03"
+            },
+            {
+              "name": "value",
+              "text": "French press coffee steeps for four minutes before pressing the plunger."
+            }
+          ]
+        },
+        {
+          "id": "coffee-04",
+          "fields": [
+            {
+              "name": "key",
+              "text": "coffee-04"
+            },
+            {
+              "name": "value",
+              "text": "Cold brew concentrate steeps overnight; dilute one to one with water before serving."
+            }
+          ]
+        },
+        {
+          "id": "coffee-05",
+          "fields": [
+            {
+              "name": "key",
+              "text": "coffee-05"
+            },
+            {
+              "name": "value",
+              "text": "Café Lumière serves single-origin espresso and hand-brewed filter coffee."
+            }
+          ]
+        },
+        {
+          "id": "coffee-06",
+          "fields": [
+            {
+              "name": "key",
+              "text": "coffee-06"
+            },
+            {
+              "name": "value",
+              "text": "Latte art basics: microfoam texture matters more than the pour pattern."
+            }
+          ]
+        },
+        {
+          "id": "coffee-07",
+          "fields": [
+            {
+              "name": "key",
+              "text": "coffee-07"
+            },
+            {
+              "name": "value",
+              "text": "espresso"
+            },
+            {
+              "name": "value",
+              "text": "Ethiopia"
+            },
+            {
+              "name": "value",
+              "text": "double"
+            }
+          ]
+        },
+        {
+          "id": "coffee-08",
+          "fields": [
+            {
+              "name": "key",
+              "text": "coffee-08"
+            },
+            {
+              "name": "value",
+              "text": "Decaf espresso beans lose some crema but keep most of the flavor."
+            }
+          ]
+        },
+        {
+          "id": "k8s-01",
+          "fields": [
+            {
+              "name": "key",
+              "text": "k8s-01"
+            },
+            {
+              "name": "value",
+              "text": "Kubernetes rolling update: set maxUnavailable to zero for no-downtime deploys."
+            }
+          ]
+        },
+        {
+          "id": "k8s-02",
+          "fields": [
+            {
+              "name": "key",
+              "text": "k8s-02"
+            },
+            {
+              "name": "value",
+              "text": "kubectl rollout status watches a deployment until the rolling update completes."
+            }
+          ]
+        },
+        {
+          "id": "k8s-03",
+          "fields": [
+            {
+              "name": "key",
+              "text": "k8s-03"
+            },
+            {
+              "name": "value",
+              "text": "Blue-green deployment keeps two environments and switches the router at cutover."
+            }
+          ]
+        },
+        {
+          "id": "k8s-04",
+          "fields": [
+            {
+              "name": "key",
+              "text": "k8s-04"
+            },
+            {
+              "name": "value",
+              "text": "Canary release: shift five percent of traffic to the new version and watch error rates."
+            }
+          ]
+        },
+        {
+          "id": "k8s-05",
+          "fields": [
+            {
+              "name": "key",
+              "text": "k8s-05"
+            },
+            {
+              "name": "value",
+              "text": "Horizontal pod autoscaler scales replicas on CPU utilization or custom metrics."
+            }
+          ]
+        },
+        {
+          "id": "k8s-06",
+          "fields": [
+            {
+              "name": "key",
+              "text": "k8s-06"
+            },
+            {
+              "name": "value",
+              "text": "Init containers run to completion before the app containers start."
+            }
+          ]
+        },
+        {
+          "id": "k8s-07",
+          "fields": [
+            {
+              "name": "key",
+              "text": "k8s-07"
+            },
+            {
+              "name": "value",
+              "text": "api:v2"
+            },
+            {
+              "name": "value",
+              "text": "Deployment"
+            },
+            {
+              "name": "value",
+              "text": "RollingUpdate"
+            }
+          ]
+        },
+        {
+          "id": "k8s-08",
+          "fields": [
+            {
+              "name": "key",
+              "text": "k8s-08"
+            },
+            {
+              "name": "value",
+              "text": "Pod disruption budgets protect availability during voluntary node drains."
+            }
+          ]
+        },
+        {
+          "id": "k8s-09",
+          "fields": [
+            {
+              "name": "key",
+              "text": "k8s-09"
+            },
+            {
+              "name": "value",
+              "text": "Helm chart values override image tags per environment."
+            }
+          ]
+        },
+        {
+          "id": "k8s-10",
+          "fields": [
+            {
+              "name": "key",
+              "text": "k8s-10"
+            },
+            {
+              "name": "value",
+              "text": "Liveness probes restart a stuck pod; readiness probes gate traffic."
+            }
+          ]
+        },
+        {
+          "id": "db-01",
+          "fields": [
+            {
+              "name": "key",
+              "text": "db-01"
+            },
+            {
+              "name": "value",
+              "text": "Redis is an in-memory key-value store with optional persistence."
+            }
+          ]
+        },
+        {
+          "id": "db-02",
+          "fields": [
+            {
+              "name": "key",
+              "text": "db-02"
+            },
+            {
+              "name": "value",
+              "text": "The database index speeds up reads at the cost of slower writes."
+            }
+          ]
+        },
+        {
+          "id": "db-03",
+          "fields": [
+            {
+              "name": "key",
+              "text": "db-03"
+            },
+            {
+              "name": "value",
+              "text": "Cache invalidation strategy: write-through keeps the cache and database consistent."
+            }
+          ]
+        },
+        {
+          "id": "db-04",
+          "fields": [
+            {
+              "name": "key",
+              "text": "db-04"
+            },
+            {
+              "name": "value",
+              "text": "PostgreSQL vacuum reclaims storage occupied by dead tuples."
+            }
+          ]
+        },
+        {
+          "id": "db-05",
+          "fields": [
+            {
+              "name": "key",
+              "text": "db-05"
+            },
+            {
+              "name": "value",
+              "text": "A B-tree index keeps keys sorted for range scans."
+            }
+          ]
+        },
+        {
+          "id": "db-06",
+          "fields": [
+            {
+              "name": "key",
+              "text": "db-06"
+            },
+            {
+              "name": "value",
+              "text": "LRU cache eviction drops the least recently used entry when full."
+            }
+          ]
+        },
+        {
+          "id": "db-07",
+          "fields": [
+            {
+              "name": "key",
+              "text": "db-07"
+            },
+            {
+              "name": "value",
+              "text": "Time-to-live expiry: cached entries decay after their TTL elapses."
+            }
+          ]
+        },
+        {
+          "id": "db-08",
+          "fields": [
+            {
+              "name": "key",
+              "text": "db-08"
+            },
+            {
+              "name": "value",
+              "text": "Sharding splits the dataset across nodes by key range or hash."
+            }
+          ]
+        },
+        {
+          "id": "db-09",
+          "fields": [
+            {
+              "name": "key",
+              "text": "db-09"
+            },
+            {
+              "name": "value",
+              "text": "postgres"
+            }
+          ]
+        },
+        {
+          "id": "db-10",
+          "fields": [
+            {
+              "name": "key",
+              "text": "db-10"
+            },
+            {
+              "name": "value",
+              "text": "Write-ahead log durability: every commit is flushed before acknowledgment."
+            }
+          ]
+        },
+        {
+          "id": "ir-01",
+          "fields": [
+            {
+              "name": "key",
+              "text": "ir-01"
+            },
+            {
+              "name": "value",
+              "text": "Full-text search ranks documents with BM25 term weighting."
+            }
+          ]
+        },
+        {
+          "id": "ir-02",
+          "fields": [
+            {
+              "name": "key",
+              "text": "ir-02"
+            },
+            {
+              "name": "value",
+              "text": "The inverted index maps each term to the documents containing it."
+            }
+          ]
+        },
+        {
+          "id": "ir-03",
+          "fields": [
+            {
+              "name": "key",
+              "text": "ir-03"
+            },
+            {
+              "name": "value",
+              "text": "A training data set of labeled queries improves ranking evaluation."
+            }
+          ]
+        },
+        {
+          "id": "ir-04",
+          "fields": [
+            {
+              "name": "key",
+              "text": "ir-04"
+            },
+            {
+              "name": "value",
+              "text": "Database systems and search engines optimize very different workloads."
+            }
+          ]
+        },
+        {
+          "id": "ir-05",
+          "fields": [
+            {
+              "name": "key",
+              "text": "ir-05"
+            },
+            {
+              "name": "value",
+              "text": "Tokenization splits text into terms before indexing."
+            }
+          ]
+        },
+        {
+          "id": "ir-06",
+          "fields": [
+            {
+              "name": "key",
+              "text": "ir-06"
+            },
+            {
+              "name": "value",
+              "text": "Stop words like the and of are dropped to shrink the index."
+            }
+          ]
+        },
+        {
+          "id": "ir-07",
+          "fields": [
+            {
+              "name": "key",
+              "text": "ir-07"
+            },
+            {
+              "name": "value",
+              "text": "Recall measures how many relevant documents the search surfaced."
+            }
+          ]
+        },
+        {
+          "id": "ir-08",
+          "fields": [
+            {
+              "name": "key",
+              "text": "ir-08"
+            },
+            {
+              "name": "value",
+              "text": "The research team published a survey of neural ranking models."
+            }
+          ]
+        },
+        {
+          "id": "ir-09",
+          "fields": [
+            {
+              "name": "key",
+              "text": "ir-09"
+            },
+            {
+              "name": "value",
+              "text": "Set the data retention policy to ninety days."
+            }
+          ]
+        },
+        {
+          "id": "bike-01",
+          "fields": [
+            {
+              "name": "key",
+              "text": "bike-01"
+            },
+            {
+              "name": "value",
+              "text": "Road bike tire pressure: 80 psi front, 85 rear for a 70 kg rider."
+            }
+          ]
+        },
+        {
+          "id": "bike-02",
+          "fields": [
+            {
+              "name": "key",
+              "text": "bike-02"
+            },
+            {
+              "name": "value",
+              "text": "Fix a flat tire: lever the bead off, patch the tube, reseat and inflate."
+            }
+          ]
+        },
+        {
+          "id": "bike-03",
+          "fields": [
+            {
+              "name": "key",
+              "text": "bike-03"
+            },
+            {
+              "name": "value",
+              "text": "Chain maintenance: degrease, lube, and wipe every 300 km."
+            }
+          ]
+        },
+        {
+          "id": "bike-04",
+          "fields": [
+            {
+              "name": "key",
+              "text": "bike-04"
+            },
+            {
+              "name": "value",
+              "text": "Gravel bikes take wider tires than road bikes for rough terrain."
+            }
+          ]
+        },
+        {
+          "id": "bike-05",
+          "fields": [
+            {
+              "name": "key",
+              "text": "bike-05"
+            },
+            {
+              "name": "value",
+              "text": "Clipless pedals improve pedaling efficiency on long climbs."
+            }
+          ]
+        },
+        {
+          "id": "bike-06",
+          "fields": [
+            {
+              "name": "key",
+              "text": "bike-06"
+            },
+            {
+              "name": "value",
+              "text": "Disc brakes outperform rim brakes in wet weather."
+            }
+          ]
+        },
+        {
+          "id": "bike-07",
+          "fields": [
+            {
+              "name": "key",
+              "text": "bike-07"
+            },
+            {
+              "name": "value",
+              "text": "gravel"
+            }
+          ]
+        },
+        {
+          "id": "bike-08",
+          "fields": [
+            {
+              "name": "key",
+              "text": "bike-08"
+            },
+            {
+              "name": "value",
+              "text": "Bike fitting: saddle height set by the heel-on-pedal method."
+            }
+          ]
+        },
+        {
+          "id": "pasta-01",
+          "fields": [
+            {
+              "name": "key",
+              "text": "pasta-01"
+            },
+            {
+              "name": "value",
+              "text": "Carbonara uses eggs, guanciale, and pecorino — never cream."
+            }
+          ]
+        },
+        {
+          "id": "pasta-02",
+          "fields": [
+            {
+              "name": "key",
+              "text": "pasta-02"
+            },
+            {
+              "name": "value",
+              "text": "Salt the pasta water generously; it should taste like the sea."
+            }
+          ]
+        },
+        {
+          "id": "pasta-03",
+          "fields": [
+            {
+              "name": "key",
+              "text": "pasta-03"
+            },
+            {
+              "name": "value",
+              "text": "Fresh pasta dough rests thirty minutes before rolling."
+            }
+          ]
+        },
+        {
+          "id": "pasta-04",
+          "fields": [
+            {
+              "name": "key",
+              "text": "pasta-04"
+            },
+            {
+              "name": "value",
+              "text": "Cacio e pepe emulsifies pecorino with starchy pasta water."
+            }
+          ]
+        },
+        {
+          "id": "pasta-05",
+          "fields": [
+            {
+              "name": "key",
+              "text": "pasta-05"
+            },
+            {
+              "name": "value",
+              "text": "Dried spaghetti cooks al dente in about nine minutes."
+            }
+          ]
+        },
+        {
+          "id": "pasta-06",
+          "fields": [
+            {
+              "name": "key",
+              "text": "pasta-06"
+            },
+            {
+              "name": "value",
+              "text": "Tomato sauce base: garlic, olive oil, canned San Marzano tomatoes."
+            }
+          ]
+        },
+        {
+          "id": "pasta-07",
+          "fields": [
+            {
+              "name": "key",
+              "text": "pasta-07"
+            },
+            {
+              "name": "value",
+              "text": "Gnocchi float to the surface when they are done."
+            }
+          ]
+        },
+        {
+          "id": "pasta-08",
+          "fields": [
+            {
+              "name": "key",
+              "text": "pasta-08"
+            },
+            {
+              "name": "value",
+              "text": "carbonara"
+            }
+          ]
+        },
+        {
+          "id": "astro-01",
+          "fields": [
+            {
+              "name": "key",
+              "text": "astro-01"
+            },
+            {
+              "name": "value",
+              "text": "Jupiter is the largest planet in the solar system."
+            }
+          ]
+        },
+        {
+          "id": "astro-02",
+          "fields": [
+            {
+              "name": "key",
+              "text": "astro-02"
+            },
+            {
+              "name": "value",
+              "text": "A total solar eclipse occurs when the moon fully covers the sun."
+            }
+          ]
+        },
+        {
+          "id": "astro-03",
+          "fields": [
+            {
+              "name": "key",
+              "text": "astro-03"
+            },
+            {
+              "name": "value",
+              "text": "The James Webb telescope observes in the infrared spectrum."
+            }
+          ]
+        },
+        {
+          "id": "astro-04",
+          "fields": [
+            {
+              "name": "key",
+              "text": "astro-04"
+            },
+            {
+              "name": "value",
+              "text": "Mars rovers search for signs of ancient water."
+            }
+          ]
+        },
+        {
+          "id": "astro-05",
+          "fields": [
+            {
+              "name": "key",
+              "text": "astro-05"
+            },
+            {
+              "name": "value",
+              "text": "A light year is the distance light travels in one year."
+            }
+          ]
+        },
+        {
+          "id": "astro-06",
+          "fields": [
+            {
+              "name": "key",
+              "text": "astro-06"
+            },
+            {
+              "name": "value",
+              "text": "Saturn's rings are mostly water ice with some rock."
+            }
+          ]
+        },
+        {
+          "id": "astro-07",
+          "fields": [
+            {
+              "name": "key",
+              "text": "astro-07"
+            },
+            {
+              "name": "value",
+              "text": "Neutron stars pack a solar mass into a city-sized sphere."
+            }
+          ]
+        },
+        {
+          "id": "astro-08",
+          "fields": [
+            {
+              "name": "key",
+              "text": "astro-08"
+            },
+            {
+              "name": "value",
+              "text": "The Milky Way and Andromeda will merge in about four billion years."
+            }
+          ]
+        },
+        {
+          "id": "auth-01",
+          "fields": [
+            {
+              "name": "key",
+              "text": "auth-01"
+            },
+            {
+              "name": "value",
+              "text": "OAuth 2.0 authorization code flow exchanges a code for an access token."
+            }
+          ]
+        },
+        {
+          "id": "auth-02",
+          "fields": [
+            {
+              "name": "key",
+              "text": "auth-02"
+            },
+            {
+              "name": "value",
+              "text": "Refresh tokens rotate on every use to limit replay."
+            }
+          ]
+        },
+        {
+          "id": "auth-03",
+          "fields": [
+            {
+              "name": "key",
+              "text": "auth-03"
+            },
+            {
+              "name": "value",
+              "text": "TOTP two-factor authentication generates a six-digit code every 30 seconds."
+            }
+          ]
+        },
+        {
+          "id": "auth-04",
+          "fields": [
+            {
+              "name": "key",
+              "text": "auth-04"
+            },
+            {
+              "name": "value",
+              "text": "Password hashing uses argon2id with a per-user salt."
+            }
+          ]
+        },
+        {
+          "id": "auth-05",
+          "fields": [
+            {
+              "name": "key",
+              "text": "auth-05"
+            },
+            {
+              "name": "value",
+              "text": "JWT access tokens carry signed claims and expire quickly."
+            }
+          ]
+        },
+        {
+          "id": "auth-06",
+          "fields": [
+            {
+              "name": "key",
+              "text": "auth-06"
+            },
+            {
+              "name": "value",
+              "text": "mTLS authenticates both client and server with certificates."
+            }
+          ]
+        },
+        {
+          "id": "auth-07",
+          "fields": [
+            {
+              "name": "key",
+              "text": "auth-07"
+            },
+            {
+              "name": "value",
+              "text": "client_credentials"
+            },
+            {
+              "name": "value",
+              "text": "read:vertices"
+            }
+          ]
+        },
+        {
+          "id": "auth-08",
+          "fields": [
+            {
+              "name": "key",
+              "text": "auth-08"
+            },
+            {
+              "name": "value",
+              "text": "API keys are stored hashed and shown only once at creation."
+            }
+          ]
+        },
+        {
+          "id": "auth-09",
+          "fields": [
+            {
+              "name": "key",
+              "text": "auth-09"
+            },
+            {
+              "name": "value",
+              "text": "Single sign-on delegates login to the identity provider via SAML or OIDC."
+            }
+          ]
+        },
+        {
+          "id": "garden-01",
+          "fields": [
+            {
+              "name": "key",
+              "text": "garden-01"
+            },
+            {
+              "name": "value",
+              "text": "Tomato seedlings need six hours of direct sun daily."
+            }
+          ]
+        },
+        {
+          "id": "garden-02",
+          "fields": [
+            {
+              "name": "key",
+              "text": "garden-02"
+            },
+            {
+              "name": "value",
+              "text": "Compost turns kitchen scraps into nutrient-rich soil."
+            }
+          ]
+        },
+        {
+          "id": "garden-03",
+          "fields": [
+            {
+              "name": "key",
+              "text": "garden-03"
+            },
+            {
+              "name": "value",
+              "text": "Prune roses in late winter before new growth starts."
+            }
+          ]
+        },
+        {
+          "id": "garden-04",
+          "fields": [
+            {
+              "name": "key",
+              "text": "garden-04"
+            },
+            {
+              "name": "value",
+              "text": "Basil grows fast in warm weather; pinch flowers to keep leaves tender."
+            }
+          ]
+        },
+        {
+          "id": "garden-05",
+          "fields": [
+            {
+              "name": "key",
+              "text": "garden-05"
+            },
+            {
+              "name": "value",
+              "text": "Raised beds drain better and warm earlier in spring."
+            }
+          ]
+        },
+        {
+          "id": "garden-06",
+          "fields": [
+            {
+              "name": "key",
+              "text": "garden-06"
+            },
+            {
+              "name": "value",
+              "text": "Mulch keeps soil moisture in and weeds down."
+            }
+          ]
+        },
+        {
+          "id": "garden-07",
+          "fields": [
+            {
+              "name": "key",
+              "text": "garden-07"
+            },
+            {
+              "name": "value",
+              "text": "Succulents rot in soggy soil; water only when dry."
+            }
+          ]
+        },
+        {
+          "id": "garden-08",
+          "fields": [
+            {
+              "name": "key",
+              "text": "garden-08"
+            },
+            {
+              "name": "value",
+              "text": "basil"
+            },
+            {
+              "name": "value",
+              "text": "full"
+            },
+            {
+              "name": "value",
+              "text": "daily"
+            }
+          ]
+        },
+        {
+          "id": "travel-01",
+          "fields": [
+            {
+              "name": "key",
+              "text": "travel-01"
+            },
+            {
+              "name": "value",
+              "text": "Narita Express runs from the airport to Tokyo Station in about an hour."
+            }
+          ]
+        },
+        {
+          "id": "travel-02",
+          "fields": [
+            {
+              "name": "key",
+              "text": "travel-02"
+            },
+            {
+              "name": "value",
+              "text": "Check-in closes 45 minutes before international departures."
+            }
+          ]
+        },
+        {
+          "id": "travel-03",
+          "fields": [
+            {
+              "name": "key",
+              "text": "travel-03"
+            },
+            {
+              "name": "value",
+              "text": "A transit visa is not required for connections under 24 hours."
+            }
+          ]
+        },
+        {
+          "id": "travel-04",
+          "fields": [
+            {
+              "name": "key",
+              "text": "travel-04"
+            },
+            {
+              "name": "value",
+              "text": "Carry-on liquids are limited to 100 ml containers in a clear bag."
+            }
+          ]
+        },
+        {
+          "id": "travel-05",
+          "fields": [
+            {
+              "name": "key",
+              "text": "travel-05"
+            },
+            {
+              "name": "value",
+              "text": "The airport shuttle leaves every 20 minutes from terminal two."
+            }
+          ]
+        },
+        {
+          "id": "travel-06",
+          "fields": [
+            {
+              "name": "key",
+              "text": "travel-06"
+            },
+            {
+              "name": "value",
+              "text": "Jet lag eases if you shift sleep two hours before flying east."
+            }
+          ]
+        },
+        {
+          "id": "travel-07",
+          "fields": [
+            {
+              "name": "key",
+              "text": "travel-07"
+            },
+            {
+              "name": "value",
+              "text": "10:25"
+            },
+            {
+              "name": "value",
+              "text": "NH105"
+            },
+            {
+              "name": "value",
+              "text": "52"
+            }
+          ]
+        },
+        {
+          "id": "travel-08",
+          "fields": [
+            {
+              "name": "key",
+              "text": "travel-08"
+            },
+            {
+              "name": "value",
+              "text": "Lounge access with a priority pass includes showers at most hubs."
+            }
+          ]
+        },
+        {
+          "id": "misc-01",
+          "fields": [
+            {
+              "name": "key",
+              "text": "misc-01"
+            },
+            {
+              "name": "value",
+              "text": "The stone arch bridge has stood for two hundred years."
+            }
+          ]
+        },
+        {
+          "id": "misc-02",
+          "fields": [
+            {
+              "name": "key",
+              "text": "misc-02"
+            },
+            {
+              "name": "value",
+              "text": "Architecture reviews happen every Thursday afternoon."
+            }
+          ]
+        },
+        {
+          "id": "misc-03",
+          "fields": [
+            {
+              "name": "key",
+              "text": "misc-03"
+            },
+            {
+              "name": "value",
+              "text": "Monarch butterflies migrate thousands of kilometers each autumn."
+            }
+          ]
+        },
+        {
+          "id": "misc-04",
+          "fields": [
+            {
+              "name": "key",
+              "text": "misc-04"
+            },
+            {
+              "name": "value",
+              "text": "user:profile:9f2c settings cached at edge nodes"
+            }
+          ]
+        },
+        {
+          "id": "misc-05",
+          "fields": [
+            {
+              "name": "key",
+              "text": "misc-05"
+            },
+            {
+              "name": "value",
+              "text": "TOKYO office headcount grows to forty this quarter."
+            }
+          ]
+        },
+        {
+          "id": "en-prox-scatter",
+          "fields": [
+            {
+              "name": "key",
+              "text": "en-prox-scatter"
+            },
+            {
+              "name": "value",
+              "text": "zephyr marlin pewter granite quokka"
+            }
+          ]
+        },
+        {
+          "id": "en-prox-tight",
+          "fields": [
+            {
+              "name": "key",
+              "text": "en-prox-tight"
+            },
+            {
+              "name": "value",
+              "text": "marlin pewter granite zephyr quokka"
+            }
+          ]
+        }
+      ]
+    },
+    "ja": {
+      "docs": [
+        {
+          "id": "ramen-01",
+          "fields": [
+            {
+              "name": "key",
+              "text": "ramen-01"
+            },
+            {
+              "name": "value",
+              "text": "東京の醤油ラーメンは鶏ガラスープが基本です。"
+            }
+          ]
+        },
+        {
+          "id": "ramen-02",
+          "fields": [
+            {
+              "name": "key",
+              "text": "ramen-02"
+            },
+            {
+              "name": "value",
+              "text": "札幌の味噌ラーメンにはコーンとバターをのせる店が多い。"
+            }
+          ]
+        },
+        {
+          "id": "ramen-03",
+          "fields": [
+            {
+              "name": "key",
+              "text": "ramen-03"
+            },
+            {
+              "name": "value",
+              "text": "博多の豚骨ラーメンは細麺で替え玉ができる。"
+            }
+          ]
+        },
+        {
+          "id": "ramen-04",
+          "fields": [
+            {
+              "name": "key",
+              "text": "ramen-04"
+            },
+            {
+              "name": "value",
+              "text": "つけ麺は濃厚な魚介豚骨スープに麺を浸して食べる。"
+            }
+          ]
+        },
+        {
+          "id": "ramen-05",
+          "fields": [
+            {
+              "name": "key",
+              "text": "ramen-05"
+            },
+            {
+              "name": "value",
+              "text": "家系ラーメンはほうれん草と海苔とチャーシューが定番。"
+            }
+          ]
+        },
+        {
+          "id": "ramen-06",
+          "fields": [
+            {
+              "name": "key",
+              "text": "ramen-06"
+            },
+            {
+              "name": "value",
+              "text": "インスタントラーメンに卵とネギを加えると格段においしくなる。"
+            }
+          ]
+        },
+        {
+          "id": "ramen-07",
+          "fields": [
+            {
+              "name": "key",
+              "text": "ramen-07"
+            },
+            {
+              "name": "value",
+              "text": "ラーメン"
+            },
+            {
+              "name": "value",
+              "text": "麺屋一番"
+            },
+            {
+              "name": "value",
+              "text": "新宿"
+            }
+          ]
+        },
+        {
+          "id": "ramen-08",
+          "fields": [
+            {
+              "name": "key",
+              "text": "ramen-08"
+            },
+            {
+              "name": "value",
+              "text": "塩ラーメンは澄んだスープで素材の味が際立つ。"
+            }
+          ]
+        },
+        {
+          "id": "onsen-01",
+          "fields": [
+            {
+              "name": "key",
+              "text": "onsen-01"
+            },
+            {
+              "name": "value",
+              "text": "箱根の温泉は東京から電車で九十分の人気日帰り先。"
+            }
+          ]
+        },
+        {
+          "id": "onsen-02",
+          "fields": [
+            {
+              "name": "key",
+              "text": "onsen-02"
+            },
+            {
+              "name": "value",
+              "text": "露天風呂から雪景色を眺める冬の温泉旅行は格別だ。"
+            }
+          ]
+        },
+        {
+          "id": "onsen-03",
+          "fields": [
+            {
+              "name": "key",
+              "text": "onsen-03"
+            },
+            {
+              "name": "value",
+              "text": "草津温泉の湯畑は夜のライトアップが美しい。"
+            }
+          ]
+        },
+        {
+          "id": "onsen-04",
+          "fields": [
+            {
+              "name": "key",
+              "text": "onsen-04"
+            },
+            {
+              "name": "value",
+              "text": "温泉の泉質は硫黄泉や炭酸水素塩泉など十種類に分かれる。"
+            }
+          ]
+        },
+        {
+          "id": "onsen-05",
+          "fields": [
+            {
+              "name": "key",
+              "text": "onsen-05"
+            },
+            {
+              "name": "value",
+              "text": "旅館の会席料理は地元の山菜と川魚が中心だった。"
+            }
+          ]
+        },
+        {
+          "id": "onsen-06",
+          "fields": [
+            {
+              "name": "key",
+              "text": "onsen-06"
+            },
+            {
+              "name": "value",
+              "text": "足湯なら無料で楽しめる温泉街も多い。"
+            }
+          ]
+        },
+        {
+          "id": "onsen-07",
+          "fields": [
+            {
+              "name": "key",
+              "text": "onsen-07"
+            },
+            {
+              "name": "value",
+              "text": "山吹旅館"
+            },
+            {
+              "name": "value",
+              "text": "かけ流し"
+            },
+            {
+              "name": "value",
+              "text": "和室10畳"
+            }
+          ]
+        },
+        {
+          "id": "onsen-08",
+          "fields": [
+            {
+              "name": "key",
+              "text": "onsen-08"
+            },
+            {
+              "name": "value",
+              "text": "別府の地獄めぐりは源泉の噴気を見学する観光コース。"
+            }
+          ]
+        },
+        {
+          "id": "ml-01",
+          "fields": [
+            {
+              "name": "key",
+              "text": "ml-01"
+            },
+            {
+              "name": "value",
+              "text": "機械学習モデルの過学習は正則化とデータ拡張で抑える。"
+            }
+          ]
+        },
+        {
+          "id": "ml-02",
+          "fields": [
+            {
+              "name": "key",
+              "text": "ml-02"
+            },
+            {
+              "name": "value",
+              "text": "ニューラルネットワークの学習率は最初に調整すべき超パラメータだ。"
+            }
+          ]
+        },
+        {
+          "id": "ml-03",
+          "fields": [
+            {
+              "name": "key",
+              "text": "ml-03"
+            },
+            {
+              "name": "value",
+              "text": "教師あり学習にはラベル付きの訓練データが必要になる。"
+            }
+          ]
+        },
+        {
+          "id": "ml-04",
+          "fields": [
+            {
+              "name": "key",
+              "text": "ml-04"
+            },
+            {
+              "name": "value",
+              "text": "勾配降下法は損失関数を最小化する基本の最適化手法。"
+            }
+          ]
+        },
+        {
+          "id": "ml-05",
+          "fields": [
+            {
+              "name": "key",
+              "text": "ml-05"
+            },
+            {
+              "name": "value",
+              "text": "交差検証でモデルの汎化性能を見積もる。"
+            }
+          ]
+        },
+        {
+          "id": "ml-06",
+          "fields": [
+            {
+              "name": "key",
+              "text": "ml-06"
+            },
+            {
+              "name": "value",
+              "text": "自然言語処理では形態素解析で文を単語に分割する。"
+            }
+          ]
+        },
+        {
+          "id": "ml-07",
+          "fields": [
+            {
+              "name": "key",
+              "text": "ml-07"
+            },
+            {
+              "name": "value",
+              "text": "分類器"
+            }
+          ]
+        },
+        {
+          "id": "ml-08",
+          "fields": [
+            {
+              "name": "key",
+              "text": "ml-08"
+            },
+            {
+              "name": "value",
+              "text": "深層学習の推論はGPUで大幅に高速化できる。"
+            }
+          ]
+        },
+        {
+          "id": "train-01",
+          "fields": [
+            {
+              "name": "key",
+              "text": "train-01"
+            },
+            {
+              "name": "value",
+              "text": "新幹線のぞみ号は東京大阪間を約二時間半で結ぶ。"
+            }
+          ]
+        },
+        {
+          "id": "train-02",
+          "fields": [
+            {
+              "name": "key",
+              "text": "train-02"
+            },
+            {
+              "name": "value",
+              "text": "青春18きっぷは普通列車が一日乗り放題になる。"
+            }
+          ]
+        },
+        {
+          "id": "train-03",
+          "fields": [
+            {
+              "name": "key",
+              "text": "train-03"
+            },
+            {
+              "name": "value",
+              "text": "山手線は環状運転で主要駅を一周する。"
+            }
+          ]
+        },
+        {
+          "id": "train-04",
+          "fields": [
+            {
+              "name": "key",
+              "text": "train-04"
+            },
+            {
+              "name": "value",
+              "text": "寝台特急サンライズ出雲は数少ない定期夜行列車だ。"
+            }
+          ]
+        },
+        {
+          "id": "train-05",
+          "fields": [
+            {
+              "name": "key",
+              "text": "train-05"
+            },
+            {
+              "name": "value",
+              "text": "ICカードは全国の鉄道とバスで相互利用できる。"
+            }
+          ]
+        },
+        {
+          "id": "train-06",
+          "fields": [
+            {
+              "name": "key",
+              "text": "train-06"
+            },
+            {
+              "name": "value",
+              "text": "ローカル線の車窓から田園風景をのんびり眺める旅もいい。"
+            }
+          ]
+        },
+        {
+          "id": "train-07",
+          "fields": [
+            {
+              "name": "key",
+              "text": "train-07"
+            },
+            {
+              "name": "value",
+              "text": "東京-高尾"
+            },
+            {
+              "name": "value",
+              "text": "約60分"
+            },
+            {
+              "name": "value",
+              "text": "中央線"
+            }
+          ]
+        },
+        {
+          "id": "train-08",
+          "fields": [
+            {
+              "name": "key",
+              "text": "train-08"
+            },
+            {
+              "name": "value",
+              "text": "駅弁は地域の名物を詰めた鉄道旅の楽しみのひとつ。"
+            }
+          ]
+        },
+        {
+          "id": "washoku-01",
+          "fields": [
+            {
+              "name": "key",
+              "text": "washoku-01"
+            },
+            {
+              "name": "value",
+              "text": "出汁は昆布と鰹節でとるのが和食の基本。"
+            }
+          ]
+        },
+        {
+          "id": "washoku-02",
+          "fields": [
+            {
+              "name": "key",
+              "text": "washoku-02"
+            },
+            {
+              "name": "value",
+              "text": "味噌汁の具は豆腐とわかめが定番だ。"
+            }
+          ]
+        },
+        {
+          "id": "washoku-03",
+          "fields": [
+            {
+              "name": "key",
+              "text": "washoku-03"
+            },
+            {
+              "name": "value",
+              "text": "天ぷらは衣を薄くして高温で短時間揚げる。"
+            }
+          ]
+        },
+        {
+          "id": "washoku-04",
+          "fields": [
+            {
+              "name": "key",
+              "text": "washoku-04"
+            },
+            {
+              "name": "value",
+              "text": "寿司の酢飯は米酢と砂糖と塩で味を調える。"
+            }
+          ]
+        },
+        {
+          "id": "washoku-05",
+          "fields": [
+            {
+              "name": "key",
+              "text": "washoku-05"
+            },
+            {
+              "name": "value",
+              "text": "肉じゃがは醤油とみりんで甘辛く煮る家庭料理。"
+            }
+          ]
+        },
+        {
+          "id": "washoku-06",
+          "fields": [
+            {
+              "name": "key",
+              "text": "washoku-06"
+            },
+            {
+              "name": "value",
+              "text": "茶碗蒸しは弱火で蒸すと滑らかに仕上がる。"
+            }
+          ]
+        },
+        {
+          "id": "washoku-07",
+          "fields": [
+            {
+              "name": "key",
+              "text": "washoku-07"
+            },
+            {
+              "name": "value",
+              "text": "鯖の塩焼き"
+            },
+            {
+              "name": "value",
+              "text": "味噌汁"
+            },
+            {
+              "name": "value",
+              "text": "焼き魚定食"
+            }
+          ]
+        },
+        {
+          "id": "washoku-08",
+          "fields": [
+            {
+              "name": "key",
+              "text": "washoku-08"
+            },
+            {
+              "name": "value",
+              "text": "漬物は野菜を塩や糠で発酵させた保存食。"
+            }
+          ]
+        },
+        {
+          "id": "soccer-01",
+          "fields": [
+            {
+              "name": "key",
+              "text": "soccer-01"
+            },
+            {
+              "name": "value",
+              "text": "ワールドカップ予選で日本代表が逆転勝ちした。"
+            }
+          ]
+        },
+        {
+          "id": "soccer-02",
+          "fields": [
+            {
+              "name": "key",
+              "text": "soccer-02"
+            },
+            {
+              "name": "value",
+              "text": "オフサイドは守備側の最終ラインより前でパスを受けると成立する。"
+            }
+          ]
+        },
+        {
+          "id": "soccer-03",
+          "fields": [
+            {
+              "name": "key",
+              "text": "soccer-03"
+            },
+            {
+              "name": "value",
+              "text": "ペナルティキックは十二ヤード地点から蹴る。"
+            }
+          ]
+        },
+        {
+          "id": "soccer-04",
+          "fields": [
+            {
+              "name": "key",
+              "text": "soccer-04"
+            },
+            {
+              "name": "value",
+              "text": "リーグ戦は勝ち点で順位が決まり得失点差が次の基準になる。"
+            }
+          ]
+        },
+        {
+          "id": "soccer-05",
+          "fields": [
+            {
+              "name": "key",
+              "text": "soccer-05"
+            },
+            {
+              "name": "value",
+              "text": "海外移籍した若手選手の活躍が期待される。"
+            }
+          ]
+        },
+        {
+          "id": "soccer-06",
+          "fields": [
+            {
+              "name": "key",
+              "text": "soccer-06"
+            },
+            {
+              "name": "value",
+              "text": "2-1"
+            },
+            {
+              "name": "value",
+              "text": "国立競技場"
+            },
+            {
+              "name": "value",
+              "text": "決勝"
+            }
+          ]
+        },
+        {
+          "id": "soccer-07",
+          "fields": [
+            {
+              "name": "key",
+              "text": "soccer-07"
+            },
+            {
+              "name": "value",
+              "text": "ゴールキーパーはペナルティエリア内でだけ手を使える。"
+            }
+          ]
+        },
+        {
+          "id": "book-01",
+          "fields": [
+            {
+              "name": "key",
+              "text": "book-01"
+            },
+            {
+              "name": "value",
+              "text": "図書館の本は二週間借りられて一回だけ延長できる。"
+            }
+          ]
+        },
+        {
+          "id": "book-02",
+          "fields": [
+            {
+              "name": "key",
+              "text": "book-02"
+            },
+            {
+              "name": "value",
+              "text": "夏目漱石の坊っちゃんは中学生でも読みやすい名作だ。"
+            }
+          ]
+        },
+        {
+          "id": "book-03",
+          "fields": [
+            {
+              "name": "key",
+              "text": "book-03"
+            },
+            {
+              "name": "value",
+              "text": "電子書籍は端末ひとつで数千冊持ち歩ける。"
+            }
+          ]
+        },
+        {
+          "id": "book-04",
+          "fields": [
+            {
+              "name": "key",
+              "text": "book-04"
+            },
+            {
+              "name": "value",
+              "text": "推理小説の伏線が最終章で一気に回収された。"
+            }
+          ]
+        },
+        {
+          "id": "book-05",
+          "fields": [
+            {
+              "name": "key",
+              "text": "book-05"
+            },
+            {
+              "name": "value",
+              "text": "絵本の読み聞かせは語彙の発達に良い影響がある。"
+            }
+          ]
+        },
+        {
+          "id": "book-06",
+          "fields": [
+            {
+              "name": "key",
+              "text": "book-06"
+            },
+            {
+              "name": "value",
+              "text": "雪国"
+            },
+            {
+              "name": "value",
+              "text": "川端康成"
+            }
+          ]
+        },
+        {
+          "id": "book-07",
+          "fields": [
+            {
+              "name": "key",
+              "text": "book-07"
+            },
+            {
+              "name": "value",
+              "text": "古本市で絶版の写真集を安く手に入れた。"
+            }
+          ]
+        },
+        {
+          "id": "phone-01",
+          "fields": [
+            {
+              "name": "key",
+              "text": "phone-01"
+            },
+            {
+              "name": "value",
+              "text": "スマートフォンのバッテリーは残量二割で充電すると長持ちする。"
+            }
+          ]
+        },
+        {
+          "id": "phone-02",
+          "fields": [
+            {
+              "name": "key",
+              "text": "phone-02"
+            },
+            {
+              "name": "value",
+              "text": "機種変更ではデータ移行アプリで写真も連絡先も引き継げる。"
+            }
+          ]
+        },
+        {
+          "id": "phone-03",
+          "fields": [
+            {
+              "name": "key",
+              "text": "phone-03"
+            },
+            {
+              "name": "value",
+              "text": "画面割れの修理費用は保証プランで大きく変わる。"
+            }
+          ]
+        },
+        {
+          "id": "phone-04",
+          "fields": [
+            {
+              "name": "key",
+              "text": "phone-04"
+            },
+            {
+              "name": "value",
+              "text": "格安SIMに乗り換えて通信費が月三千円下がった。"
+            }
+          ]
+        },
+        {
+          "id": "phone-05",
+          "fields": [
+            {
+              "name": "key",
+              "text": "phone-05"
+            },
+            {
+              "name": "value",
+              "text": "カメラの夜景モードは手持ちでも明るく撮れる。"
+            }
+          ]
+        },
+        {
+          "id": "phone-06",
+          "fields": [
+            {
+              "name": "key",
+              "text": "phone-06"
+            },
+            {
+              "name": "value",
+              "text": "128GB"
+            },
+            {
+              "name": "value",
+              "text": "Pixel"
+            },
+            {
+              "name": "value",
+              "text": "黒"
+            }
+          ]
+        },
+        {
+          "id": "phone-07",
+          "fields": [
+            {
+              "name": "key",
+              "text": "phone-07"
+            },
+            {
+              "name": "value",
+              "text": "ながらスマホは歩行中の事故につながり危険だ。"
+            }
+          ]
+        },
+        {
+          "id": "weather-01",
+          "fields": [
+            {
+              "name": "key",
+              "text": "weather-01"
+            },
+            {
+              "name": "value",
+              "text": "台風が接近すると気圧が下がり頭痛を訴える人が増える。"
+            }
+          ]
+        },
+        {
+          "id": "weather-02",
+          "fields": [
+            {
+              "name": "key",
+              "text": "weather-02"
+            },
+            {
+              "name": "value",
+              "text": "梅雨前線が停滞して一週間雨が続いた。"
+            }
+          ]
+        },
+        {
+          "id": "weather-03",
+          "fields": [
+            {
+              "name": "key",
+              "text": "weather-03"
+            },
+            {
+              "name": "value",
+              "text": "真夏日は最高気温三十度以上、猛暑日は三十五度以上を指す。"
+            }
+          ]
+        },
+        {
+          "id": "weather-04",
+          "fields": [
+            {
+              "name": "key",
+              "text": "weather-04"
+            },
+            {
+              "name": "value",
+              "text": "花粉の飛散は二月下旬のスギから始まる。"
+            }
+          ]
+        },
+        {
+          "id": "weather-05",
+          "fields": [
+            {
+              "name": "key",
+              "text": "weather-05"
+            },
+            {
+              "name": "value",
+              "text": "初雪の便りが北海道から届いた。"
+            }
+          ]
+        },
+        {
+          "id": "weather-06",
+          "fields": [
+            {
+              "name": "key",
+              "text": "weather-06"
+            },
+            {
+              "name": "value",
+              "text": "晴れのち曇り"
+            },
+            {
+              "name": "value",
+              "text": "東京"
+            }
+          ]
+        },
+        {
+          "id": "weather-07",
+          "fields": [
+            {
+              "name": "key",
+              "text": "weather-07"
+            },
+            {
+              "name": "value",
+              "text": "雷が鳴ったら建物の中に避難するのが安全だ。"
+            }
+          ]
+        },
+        {
+          "id": "niwa-01",
+          "fields": [
+            {
+              "name": "key",
+              "text": "niwa-01"
+            },
+            {
+              "name": "value",
+              "text": "朝顔の種は五月に蒔くと夏休みに花が咲く。"
+            }
+          ]
+        },
+        {
+          "id": "niwa-02",
+          "fields": [
+            {
+              "name": "key",
+              "text": "niwa-02"
+            },
+            {
+              "name": "value",
+              "text": "トマトの脇芽は早めに摘むと実が大きく育つ。"
+            }
+          ]
+        },
+        {
+          "id": "niwa-03",
+          "fields": [
+            {
+              "name": "key",
+              "text": "niwa-03"
+            },
+            {
+              "name": "value",
+              "text": "観葉植物は直射日光を避けて明るい日陰に置く。"
+            }
+          ]
+        },
+        {
+          "id": "niwa-04",
+          "fields": [
+            {
+              "name": "key",
+              "text": "niwa-04"
+            },
+            {
+              "name": "value",
+              "text": "紫陽花の色は土の酸性度で青にも桃色にも変わる。"
+            }
+          ]
+        },
+        {
+          "id": "niwa-05",
+          "fields": [
+            {
+              "name": "key",
+              "text": "niwa-05"
+            },
+            {
+              "name": "value",
+              "text": "多肉植物は乾燥に強く水やりは月に数回でよい。"
+            }
+          ]
+        },
+        {
+          "id": "niwa-06",
+          "fields": [
+            {
+              "name": "key",
+              "text": "niwa-06"
+            },
+            {
+              "name": "value",
+              "text": "良好"
+            },
+            {
+              "name": "value",
+              "text": "バジル"
+            },
+            {
+              "name": "value",
+              "text": "毎日"
+            }
+          ]
+        },
+        {
+          "id": "niwa-07",
+          "fields": [
+            {
+              "name": "key",
+              "text": "niwa-07"
+            },
+            {
+              "name": "value",
+              "text": "芝生は春と秋に肥料を与えると密に育つ。"
+            }
+          ]
+        }
+      ]
+    },
+    "mixed": {
+      "docs": [
+        {
+          "id": "mk8s-01",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mk8s-01"
+            },
+            {
+              "name": "value",
+              "text": "Kubernetesのローリングアップデートは無停止でPodを入れ替える。"
+            }
+          ]
+        },
+        {
+          "id": "mk8s-02",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mk8s-02"
+            },
+            {
+              "name": "value",
+              "text": "kubectl applyでマニフェストの差分だけ適用される。"
+            }
+          ]
+        },
+        {
+          "id": "mk8s-03",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mk8s-03"
+            },
+            {
+              "name": "value",
+              "text": "本番環境のdeploymentはreplicas三つで冗長化している。"
+            }
+          ]
+        },
+        {
+          "id": "mk8s-04",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mk8s-04"
+            },
+            {
+              "name": "value",
+              "text": "Helmチャートでステージング環境の設定を上書きする。"
+            }
+          ]
+        },
+        {
+          "id": "mk8s-05",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mk8s-05"
+            },
+            {
+              "name": "value",
+              "text": "api-gateway"
+            },
+            {
+              "name": "value",
+              "text": "production"
+            }
+          ]
+        },
+        {
+          "id": "mk8s-06",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mk8s-06"
+            },
+            {
+              "name": "value",
+              "text": "Podのliveness probeが失敗すると自動で再起動される。"
+            }
+          ]
+        },
+        {
+          "id": "mk8s-07",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mk8s-07"
+            },
+            {
+              "name": "value",
+              "text": "ノードのメンテナンスはdrainしてから行う。"
+            }
+          ]
+        },
+        {
+          "id": "mdb-01",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mdb-01"
+            },
+            {
+              "name": "value",
+              "text": "Redisクラスタはシャーディングでスループットを伸ばす。"
+            }
+          ]
+        },
+        {
+          "id": "mdb-02",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mdb-02"
+            },
+            {
+              "name": "value",
+              "text": "PostgreSQLのバックアップは毎晩S3へ転送している。"
+            }
+          ]
+        },
+        {
+          "id": "mdb-03",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mdb-03"
+            },
+            {
+              "name": "value",
+              "text": "インメモリキャッシュのTTLは既定で三百秒に設定。"
+            }
+          ]
+        },
+        {
+          "id": "mdb-04",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mdb-04"
+            },
+            {
+              "name": "value",
+              "text": "レプリケーション遅延が五秒を超えたらアラートを出す。"
+            }
+          ]
+        },
+        {
+          "id": "mdb-05",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mdb-05"
+            },
+            {
+              "name": "value",
+              "text": "postgres"
+            }
+          ]
+        },
+        {
+          "id": "mdb-06",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mdb-06"
+            },
+            {
+              "name": "value",
+              "text": "スロークエリログでインデックス不足を特定した。"
+            }
+          ]
+        },
+        {
+          "id": "mdb-07",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mdb-07"
+            },
+            {
+              "name": "value",
+              "text": "グラフデータベースは頂点とエッジで関係を表現する。"
+            }
+          ]
+        },
+        {
+          "id": "prod-01",
+          "fields": [
+            {
+              "name": "key",
+              "text": "prod-01"
+            },
+            {
+              "name": "value",
+              "text": "ワイヤレスイヤホン Pro 2は最大八時間再生できる。"
+            }
+          ]
+        },
+        {
+          "id": "prod-02",
+          "fields": [
+            {
+              "name": "key",
+              "text": "prod-02"
+            },
+            {
+              "name": "value",
+              "text": "コーヒーメーカー"
+            },
+            {
+              "name": "value",
+              "text": "CM-500"
+            }
+          ]
+        },
+        {
+          "id": "prod-03",
+          "fields": [
+            {
+              "name": "key",
+              "text": "prod-03"
+            },
+            {
+              "name": "value",
+              "text": "4Kモニター27インチはUSB-C給電に対応。"
+            }
+          ]
+        },
+        {
+          "id": "prod-04",
+          "fields": [
+            {
+              "name": "key",
+              "text": "prod-04"
+            },
+            {
+              "name": "value",
+              "text": "電動アシスト自転車のバッテリーは一回の充電で約60km走る。"
+            }
+          ]
+        },
+        {
+          "id": "prod-05",
+          "fields": [
+            {
+              "name": "key",
+              "text": "prod-05"
+            },
+            {
+              "name": "value",
+              "text": "ロボット掃除機は畳もフローリングも自動で判別する。"
+            }
+          ]
+        },
+        {
+          "id": "prod-06",
+          "fields": [
+            {
+              "name": "key",
+              "text": "prod-06"
+            },
+            {
+              "name": "value",
+              "text": "キーボード"
+            },
+            {
+              "name": "value",
+              "text": "US"
+            },
+            {
+              "name": "value",
+              "text": "茶軸"
+            }
+          ]
+        },
+        {
+          "id": "prod-07",
+          "fields": [
+            {
+              "name": "key",
+              "text": "prod-07"
+            },
+            {
+              "name": "value",
+              "text": "スマートウォッチで睡眠の質をスコア化できる。"
+            }
+          ]
+        },
+        {
+          "id": "mtrv-01",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mtrv-01"
+            },
+            {
+              "name": "value",
+              "text": "Tokyo Metroの24時間券は外国人観光客に人気だ。"
+            }
+          ]
+        },
+        {
+          "id": "mtrv-02",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mtrv-02"
+            },
+            {
+              "name": "value",
+              "text": "羽田空港のTerminal 3は国際線専用ターミナル。"
+            }
+          ]
+        },
+        {
+          "id": "mtrv-03",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mtrv-03"
+            },
+            {
+              "name": "value",
+              "text": "新宿駅のJR東口からBic Cameraまで徒歩三分。"
+            }
+          ]
+        },
+        {
+          "id": "mtrv-04",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mtrv-04"
+            },
+            {
+              "name": "value",
+              "text": "15:00"
+            },
+            {
+              "name": "value",
+              "text": "パークホテル東京"
+            },
+            {
+              "name": "value",
+              "text": "汐留"
+            }
+          ]
+        },
+        {
+          "id": "mtrv-05",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mtrv-05"
+            },
+            {
+              "name": "value",
+              "text": "京都のバス一日券は600円で市内観光に便利。"
+            }
+          ]
+        },
+        {
+          "id": "mtrv-06",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mtrv-06"
+            },
+            {
+              "name": "value",
+              "text": "Suicaはコンビニでもチャージできる。"
+            }
+          ]
+        },
+        {
+          "id": "mtrv-07",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mtrv-07"
+            },
+            {
+              "name": "value",
+              "text": "成田エクスプレスはNarita Airportと都心を結ぶ。"
+            }
+          ]
+        },
+        {
+          "id": "mdev-01",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mdev-01"
+            },
+            {
+              "name": "value",
+              "text": "コードレビューはPull Requestごとに二名の承認が必要。"
+            }
+          ]
+        },
+        {
+          "id": "mdev-02",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mdev-02"
+            },
+            {
+              "name": "value",
+              "text": "CIのビルドはmainブランチへのpushで自動実行される。"
+            }
+          ]
+        },
+        {
+          "id": "mdev-03",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mdev-03"
+            },
+            {
+              "name": "value",
+              "text": "リリースノートはCHANGELOGから自動生成している。"
+            }
+          ]
+        },
+        {
+          "id": "mdev-04",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mdev-04"
+            },
+            {
+              "name": "value",
+              "text": "main"
+            },
+            {
+              "name": "value",
+              "text": "lantern"
+            },
+            {
+              "name": "value",
+              "text": "必須"
+            }
+          ]
+        },
+        {
+          "id": "mdev-05",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mdev-05"
+            },
+            {
+              "name": "value",
+              "text": "障害対応のポストモーテムは非難なしで事実に集中する。"
+            }
+          ]
+        },
+        {
+          "id": "mdev-06",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mdev-06"
+            },
+            {
+              "name": "value",
+              "text": "フィーチャーフラグで新機能を段階的に公開する。"
+            }
+          ]
+        },
+        {
+          "id": "mdev-07",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mdev-07"
+            },
+            {
+              "name": "value",
+              "text": "APIのレート制限は毎分六十リクエストまで。"
+            }
+          ]
+        },
+        {
+          "id": "mfood-01",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mfood-01"
+            },
+            {
+              "name": "value",
+              "text": "抹茶ラテはミルクの温度を六十度に保つと甘みが出る。"
+            }
+          ]
+        },
+        {
+          "id": "mfood-02",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mfood-02"
+            },
+            {
+              "name": "value",
+              "text": "クラフトビールのIPAはホップの苦味が特徴。"
+            }
+          ]
+        },
+        {
+          "id": "mfood-03",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mfood-03"
+            },
+            {
+              "name": "value",
+              "text": "カレーライス"
+            },
+            {
+              "name": "value",
+              "text": "中辛"
+            }
+          ]
+        },
+        {
+          "id": "mfood-04",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mfood-04"
+            },
+            {
+              "name": "value",
+              "text": "コンビニのカフェラテは100円台でも十分おいしい。"
+            }
+          ]
+        },
+        {
+          "id": "mfood-05",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mfood-05"
+            },
+            {
+              "name": "value",
+              "text": "タピオカミルクティーの再ブームが来ている。"
+            }
+          ]
+        },
+        {
+          "id": "mmisc-01",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mmisc-01"
+            },
+            {
+              "name": "value",
+              "text": "ＴＯＫＹＯマラソンの抽選倍率は十倍を超える。"
+            }
+          ]
+        },
+        {
+          "id": "mmisc-02",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mmisc-02"
+            },
+            {
+              "name": "value",
+              "text": "ｷｬｯｼｭﾚｽ決済のポイント還元が今月で終了する。"
+            }
+          ]
+        },
+        {
+          "id": "mmisc-03",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mmisc-03"
+            },
+            {
+              "name": "value",
+              "text": "Wi-Fiルーターの設置場所は家の中心が理想。"
+            }
+          ]
+        },
+        {
+          "id": "mprox-scatter",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mprox-scatter"
+            },
+            {
+              "name": "value",
+              "text": "marimba cinder plinth obsidian gable"
+            }
+          ]
+        },
+        {
+          "id": "mprox-tight",
+          "fields": [
+            {
+              "name": "key",
+              "text": "mprox-tight"
+            },
+            {
+              "name": "value",
+              "text": "cinder plinth obsidian marimba gable"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

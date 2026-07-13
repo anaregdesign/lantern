@@ -122,23 +122,29 @@ docker compose logs lantern --no-color \
 
 ## Lucene relevance baseline (#887)
 
-`lucene-baseline/` regenerates the pinned Lucene rankings the search-relevance
-harness compares against (`core/search/relevance`, gate
-`TestLuceneBaselineComparison`). CI never runs a JVM: the runner executes
-offline here, and only its output — `core/search/relevance/testdata/lucene_runs.json`
-— is committed.
+`lucene-baseline/` regenerates the pinned Lucene rankings that the exact
+production projection gate compares against. CI never runs a JVM: the runner
+executes offline here. Both the provider-generated `projected_fields.json`
+input and the runner's `lucene_runs.json` output are committed under
+`core/search/relevance/testdata/`.
 
 ```bash
+(
+  cd server
+  UPDATE_SEARCH_PROJECTION_FIXTURE=1 \
+    go test ./provider -run TestVertexSearchProjectionFixture
+)
 testbed/lucene-baseline/run.sh   # docker build + run; rewrites lucene_runs.json
-(cd core && go test ./search/relevance/ -v -run TestLuceneBaselineComparison)
+(cd core && go test ./search/relevance/ -run 'Test(BaselineProvenanceMatchesCanonicalCorpora|LuceneBaselineArtifactCoverage)')
+(cd server && go test ./provider -run 'Test(VertexSearchProjectionFixture|ProductionProjectionRelevanceGate)')
 ```
 
 Rules:
 
-- **Regenerate whenever a corpus fixture changes** (`testdata/{en,ja,mixed}.json`)
-  and commit the refreshed runs file in the same PR — the gate fails on runs
-  that rank a query the fixtures no longer define, but it cannot detect a
-  stale ranking for an *edited* document text.
+- **Regenerate whenever a corpus fixture or production search
+  projection/analyzer/scorer version changes** and commit the refreshed runs
+  file in the same PR. The artifact carries raw corpus SHA-256 values and
+  contract versions; a missing or stale artifact fails CI.
 - The engine config is deliberately stock (BM25 defaults, escaped plain-text
   queries, default-OR QueryParser, StandardAnalyzer / EnglishAnalyzer /
   CJKAnalyzer / kuromoji per corpus) — #886's definition of done is measured

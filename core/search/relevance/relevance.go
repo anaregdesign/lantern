@@ -62,7 +62,7 @@ func (c Corpus) IndexDocs(idx search.Indexer[string, search.Text]) {
 	}
 }
 
-//go:embed testdata/en.json testdata/ja.json testdata/mixed.json
+//go:embed testdata/en.json testdata/ja.json testdata/mixed.json testdata/projected_fields.json
 var corporaFS embed.FS
 
 // corporaFiles lists the embedded fixtures in the order Corpora returns them.
