@@ -20,6 +20,7 @@ var (
 		"count",
 		"delete-prefix",
 		"keys",
+		"search",
 		"bfs",
 		"pagerank",
 		"community",
@@ -808,6 +809,97 @@ func contains(set []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// SearchParam parses the shared search grammar. The query is the sole
+// positional operand (quote it when it contains whitespace); every remaining
+// token is a key=value option so the grammar stays lossless across shells,
+// the raw REPL tokenizer, and the TypeScript port used by Admin /cli.
+func SearchParam(s *Source) (*Search, error) {
+	m := &Search{Mode: "server", Projection: "key-score"}
+	var err error
+	if m.Query, err = String(s); err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{})
+	for s.HasNext() {
+		tok, err := String(s)
+		if err != nil {
+			return nil, err
+		}
+		key, value, ok := splitKeyValue(tok)
+		if !ok || key == "" {
+			return nil, fmt.Errorf("search: unexpected token %q (options use key=value)", tok)
+		}
+		key = strings.ToLower(key)
+		if _, duplicate := seen[key]; duplicate {
+			return nil, fmt.Errorf("search: duplicate option %q", key)
+		}
+		seen[key] = struct{}{}
+		switch key {
+		case "limit":
+			m.Limit, err = familyUint32(value)
+			if err != nil {
+				return nil, fmt.Errorf("search: limit=%s (want a uint32)", value)
+			}
+		case "prefix":
+			m.Prefix = value
+		case "mode":
+			m.Mode = strings.ToLower(value)
+			if !contains([]string{"server", "any", "all", "min-should"}, m.Mode) {
+				return nil, fmt.Errorf("search: mode=%s (want server|any|all|min-should)", value)
+			}
+		case "min_should":
+			m.MinShould, err = familyUint32(value)
+			if err != nil {
+				return nil, fmt.Errorf("search: min_should=%s (want a uint32)", value)
+			}
+		case "phrase":
+			m.Phrase, err = strconv.ParseBool(value)
+			if err != nil {
+				return nil, fmt.Errorf("search: phrase=%s (want bool)", value)
+			}
+		case "fuzziness":
+			m.Fuzziness, err = familyUint32(value)
+			if err != nil || m.Fuzziness > 2 {
+				return nil, fmt.Errorf("search: fuzziness=%s (want 0|1|2)", value)
+			}
+		case "prefix_terms":
+			m.PrefixTerms, err = strconv.ParseBool(value)
+			if err != nil {
+				return nil, fmt.Errorf("search: prefix_terms=%s (want bool)", value)
+			}
+		case "cursor":
+			m.Cursor = value
+		case "all":
+			m.All, err = strconv.ParseBool(value)
+			if err != nil {
+				return nil, fmt.Errorf("search: all=%s (want bool)", value)
+			}
+		case "projection":
+			m.Projection = strings.ToLower(value)
+			if !contains([]string{"key-score", "full-vertex"}, m.Projection) {
+				return nil, fmt.Errorf("search: projection=%s (want key-score|full-vertex)", value)
+			}
+		case "format":
+			m.Format = strings.ToLower(value)
+			if !contains([]string{"json", "ndjson", "tsv"}, m.Format) {
+				return nil, fmt.Errorf("search: format=%s (want json|ndjson|tsv)", value)
+			}
+		default:
+			return nil, fmt.Errorf("search: unknown option %q", key)
+		}
+	}
+	if m.MinShould != 0 && m.Mode != "min-should" {
+		return nil, errors.New("search: min_should requires mode=min-should")
+	}
+	if m.Phrase && (m.Mode != "server" || m.MinShould != 0 || m.Fuzziness != 0 || m.PrefixTerms) {
+		return nil, errors.New("search: phrase cannot combine with mode, min_should, fuzziness, or prefix_terms")
+	}
+	if m.All && m.Format == "json" {
+		return nil, errors.New("search: all=true requires format=ndjson or format=tsv")
+	}
+	return m, nil
 }
 
 // ScanVerticesParam parses `scan vertices <prefix> [limit]`. The objective

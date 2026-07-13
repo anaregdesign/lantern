@@ -486,6 +486,60 @@
       "comment": "#438: quoted key works in non-put positions too"
     },
     {
+      "input": "search \"静かな rolling update\" limit=17 prefix=Users/ mode=min-should min_should=2 fuzziness=1 prefix_terms=true cursor=AQID all=true projection=full-vertex format=ndjson",
+      "comment": "#1068: Unicode multi-word query plus every composable option",
+      "expected": {
+        "query": "静かな rolling update",
+        "limit": 17,
+        "prefix": "Users/",
+        "mode": "min-should",
+        "min_should": 2,
+        "phrase": false,
+        "fuzziness": 1,
+        "prefix_terms": true,
+        "cursor": "AQID",
+        "all": true,
+        "projection": "full-vertex",
+        "format": "ndjson"
+      }
+    },
+    {
+      "input": "search \"exact phrase\" phrase=true",
+      "comment": "#1068: phrase is valid with server-owned match defaults",
+      "expected": {
+        "query": "exact phrase",
+        "limit": 0,
+        "prefix": "",
+        "mode": "server",
+        "min_should": 0,
+        "phrase": true,
+        "fuzziness": 0,
+        "prefix_terms": false,
+        "cursor": "",
+        "all": false,
+        "projection": "key-score",
+        "format": ""
+      }
+    },
+    {
+      "input": "search alpha format=tsv",
+      "comment": "#1068: explicit lossless TSV output",
+      "expected": {
+        "query": "alpha",
+        "limit": 0,
+        "prefix": "",
+        "mode": "server",
+        "min_should": 0,
+        "phrase": false,
+        "fuzziness": 0,
+        "prefix_terms": false,
+        "cursor": "",
+        "all": false,
+        "projection": "key-score",
+        "format": "tsv"
+      }
+    },
+    {
       "input": "help",
       "comment": "#995: bare help prints the complete grammar",
       "expected": { "topic": "" }
@@ -509,6 +563,61 @@
   "invalid": [
     { "input": "", "comment": "empty input" },
     { "input": "nonsense", "comment": "unknown verb" },
+    { "input": "search", "comment": "#1068: search requires a query token" },
+    {
+      "input": "search alpha 10",
+      "comment": "#1068: options require key=value"
+    },
+    { "input": "search alpha limit=-1", "comment": "#1068: unsigned limit" },
+    {
+      "input": "search alpha limit=4294967296",
+      "comment": "#1068: limit must fit uint32"
+    },
+    {
+      "input": "search alpha fuzziness=3",
+      "comment": "#1068: fuzziness range"
+    },
+    {
+      "input": "search alpha min_should=1",
+      "comment": "#1068: minimum requires min-should mode"
+    },
+    {
+      "input": "search alpha phrase=true mode=any",
+      "comment": "#1068: phrase cannot compose with explicit mode"
+    },
+    {
+      "input": "search alpha phrase=true fuzziness=1",
+      "comment": "#1068: phrase cannot compose with fuzziness"
+    },
+    {
+      "input": "search alpha phrase=true prefix_terms=true",
+      "comment": "#1068: phrase cannot compose with prefix terms"
+    },
+    {
+      "input": "search alpha all=true format=json",
+      "comment": "#1068: exhaustive JSON collection is refused"
+    },
+    {
+      "input": "search alpha mode=bogus",
+      "comment": "#1068: closed match mode"
+    },
+    {
+      "input": "search alpha projection=bogus",
+      "comment": "#1068: closed projection"
+    },
+    {
+      "input": "search alpha format=yaml",
+      "comment": "#1068: closed output format"
+    },
+    { "input": "search alpha all=maybe", "comment": "#1068: boolean syntax" },
+    {
+      "input": "search alpha limit=1 limit=2",
+      "comment": "#1068: duplicate options are rejected"
+    },
+    {
+      "input": "search alpha unknown=value",
+      "comment": "#1068: unknown options are rejected"
+    },
     { "input": "help me", "comment": "#995: unknown help topic" },
     { "input": "help bfs pagerank", "comment": "#995: only one help topic" },
     { "input": "get", "comment": "missing objective" },

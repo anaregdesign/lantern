@@ -22,6 +22,9 @@ export type HelpTopic = "" | AlgorithmName;
 export type ReductionName = "none" | "mst" | "spt";
 export type ObjectiveName = "min" | "max";
 export type WeightingName = "raw" | "tfidf" | "bm25";
+export type SearchMatchMode = "server" | "any" | "all" | "min-should";
+export type SearchProjection = "key-score" | "full-vertex";
+export type SearchOutputFormat = "" | "json" | "ndjson" | "tsv";
 
 export type Command =
   | { verb: "exit" }
@@ -93,6 +96,23 @@ export type Command =
       all: boolean;
     }
   | { verb: "keys"; prefix: string; limit: number }
+  | {
+      /** Shared BM25 content-search grammar (#1068). */
+      verb: "search";
+      query: string;
+      limit: number;
+      prefix: string;
+      mode: SearchMatchMode;
+      minShould: number;
+      phrase: boolean;
+      fuzziness: 0 | 1 | 2;
+      prefixTerms: boolean;
+      cursor: string;
+      all: boolean;
+      projection: SearchProjection;
+      /** Empty means contextual default: json for one page, ndjson for all. */
+      format: SearchOutputFormat;
+    }
   | { verb: "count"; objective: "vertices"; prefix: string }
   | {
       verb: "delete-prefix";

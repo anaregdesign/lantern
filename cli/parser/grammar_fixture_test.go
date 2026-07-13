@@ -78,7 +78,7 @@ func TestSharedGrammarFixture_Invalid(t *testing.T) {
 	}
 }
 
-func TestSharedGrammarFixture_FamilyNormalizedAST(t *testing.T) {
+func TestSharedGrammarFixture_NormalizedAST(t *testing.T) {
 	fx := loadFixture(t)
 	for _, tc := range fx.Valid {
 		s, err := parser.NewSource(tc.Input)
@@ -89,7 +89,7 @@ func TestSharedGrammarFixture_FamilyNormalizedAST(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Verb(%q): %v", tc.Input, err)
 		}
-		if verb != "bfs" && verb != "pagerank" && verb != "community" && verb != "help" {
+		if verb != "bfs" && verb != "pagerank" && verb != "community" && verb != "search" && verb != "help" {
 			continue
 		}
 		t.Run(tc.Input, func(t *testing.T) {
@@ -144,6 +144,17 @@ func normalizedFamilyAST(input string) (map[string]any, error) {
 			"family": "bfs", "seed": p.Seed, "step": p.Step, "fan_out": p.FanOut,
 			"reduction": p.Reduction, "objective": p.Objective, "weighting": p.Weighting, "prefix": p.Prefix,
 		}, nil
+	case "search":
+		p, err := parser.SearchParam(s)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"query": p.Query, "limit": p.Limit, "prefix": p.Prefix, "mode": p.Mode,
+			"min_should": p.MinShould, "phrase": p.Phrase, "fuzziness": p.Fuzziness,
+			"prefix_terms": p.PrefixTerms, "cursor": p.Cursor, "all": p.All,
+			"projection": p.Projection, "format": p.Format,
+		}, nil
 	case "pagerank":
 		p, err := parser.PagerankParam(s)
 		if err != nil {
@@ -165,6 +176,6 @@ func normalizedFamilyAST(input string) (map[string]any, error) {
 			"reduction": p.Reduction, "objective": p.Objective, "weighting": p.Weighting, "prefix": p.Prefix,
 		}, nil
 	default:
-		return nil, fmt.Errorf("%q is not a family verb", verb)
+		return nil, fmt.Errorf("%q has no normalized fixture AST", verb)
 	}
 }

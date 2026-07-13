@@ -5,10 +5,14 @@
  */
 
 import type {
+  Command,
   HelpTopic,
   ObjectiveName,
   ParseResult,
   ReductionName,
+  SearchMatchMode,
+  SearchOutputFormat,
+  SearchProjection,
   WeightingName,
 } from "./types";
 
@@ -449,6 +453,143 @@ export function parseDeletePrefix(rest: string[]): ParseResult {
   };
 }
 
+/** Parse the cross-language `search <query> key=value...` grammar (#1068). */
+export function parseSearch(rest: string[]): ParseResult {
+  if (rest.length === 0) {
+    return { ok: false, usage: searchUsage() };
+  }
+  const command: Extract<Command, { verb: "search" }> = {
+    verb: "search",
+    query: rest[0],
+    limit: 0,
+    prefix: "",
+    mode: "server",
+    minShould: 0,
+    phrase: false,
+    fuzziness: 0,
+    prefixTerms: false,
+    cursor: "",
+    all: false,
+    projection: "key-score",
+    format: "",
+  };
+  const seen = new Set<string>();
+  for (const token of rest.slice(1)) {
+    const eq = token.indexOf("=");
+    if (eq <= 0) {
+      return { ok: false, usage: searchUsage() };
+    }
+    const key = token.slice(0, eq).toLowerCase();
+    const value = token.slice(eq + 1);
+    if (seen.has(key)) {
+      return { ok: false, usage: searchUsage() };
+    }
+    seen.add(key);
+    switch (key) {
+      case "limit": {
+        const n = parseFamilyUint32(value);
+        if (n === null) return { ok: false, usage: searchUsage() };
+        command.limit = n;
+        break;
+      }
+      case "prefix":
+        command.prefix = value;
+        break;
+      case "mode": {
+        const mode = value.toLowerCase();
+        if (
+          !(["server", "any", "all", "min-should"] as const).includes(
+            mode as SearchMatchMode,
+          )
+        ) {
+          return { ok: false, usage: searchUsage() };
+        }
+        command.mode = mode as SearchMatchMode;
+        break;
+      }
+      case "min_should": {
+        const n = parseFamilyUint32(value);
+        if (n === null) return { ok: false, usage: searchUsage() };
+        command.minShould = n;
+        break;
+      }
+      case "phrase": {
+        const bool = parseBoolStrict(value);
+        if (bool === null) return { ok: false, usage: searchUsage() };
+        command.phrase = bool;
+        break;
+      }
+      case "fuzziness": {
+        const n = parseFamilyUint32(value);
+        if (n === null || n > 2) return { ok: false, usage: searchUsage() };
+        command.fuzziness = n as 0 | 1 | 2;
+        break;
+      }
+      case "prefix_terms": {
+        const bool = parseBoolStrict(value);
+        if (bool === null) return { ok: false, usage: searchUsage() };
+        command.prefixTerms = bool;
+        break;
+      }
+      case "cursor":
+        command.cursor = value;
+        break;
+      case "all": {
+        const bool = parseBoolStrict(value);
+        if (bool === null) return { ok: false, usage: searchUsage() };
+        command.all = bool;
+        break;
+      }
+      case "projection": {
+        const projection = value.toLowerCase();
+        if (
+          !(["key-score", "full-vertex"] as const).includes(
+            projection as SearchProjection,
+          )
+        ) {
+          return { ok: false, usage: searchUsage() };
+        }
+        command.projection = projection as SearchProjection;
+        break;
+      }
+      case "format": {
+        const format = value.toLowerCase();
+        if (
+          !(["json", "ndjson", "tsv"] as const).includes(
+            format as Exclude<SearchOutputFormat, "">,
+          )
+        ) {
+          return { ok: false, usage: searchUsage() };
+        }
+        command.format = format as Exclude<SearchOutputFormat, "">;
+        break;
+      }
+      default:
+        return { ok: false, usage: searchUsage() };
+    }
+  }
+  if (command.minShould !== 0 && command.mode !== "min-should") {
+    return { ok: false, usage: searchUsage() };
+  }
+  if (
+    command.phrase &&
+    (command.mode !== "server" ||
+      command.minShould !== 0 ||
+      command.fuzziness !== 0 ||
+      command.prefixTerms)
+  ) {
+    return { ok: false, usage: searchUsage() };
+  }
+  if (command.all && command.format === "json") {
+    return { ok: false, usage: searchUsage() };
+  }
+  return { ok: true, command };
+}
+
+function searchUsage(): string {
+  return "usage: search <query: string> [limit=<uint32>] [prefix=<string>] [mode=server|any|all|min-should] [min_should=<uint32>] [phrase=<bool>] [fuzziness=0|1|2] [prefix_terms=<bool>] [cursor=<base64url>] [all=<bool>] [projection=key-score|full-vertex] [format=json|ndjson|tsv]";
+}
+
 export function parseBfs(rest: string[]): ParseResult {
   const usage =
     "usage: bfs <seed: string> [step: int] [fan_out: int] [reduction=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>]";
@@ -712,6 +853,7 @@ export const HELP_TEXT = [
   "  count  vertices <prefix: string>",
   "  delete-prefix vertices <prefix: string> [limit=<int>] [confirm=yes|dry_run=true]",
   "  keys   <prefix: string> [<limit: int>]",
+  "  search <query: string> [limit=<uint32>] [prefix=<string>] [mode=server|any|all|min-should] [min_should=<uint32>] [phrase=<bool>] [fuzziness=0|1|2] [prefix_terms=<bool>] [cursor=<base64url>] [all=<bool>] [projection=key-score|full-vertex] [format=json|ndjson|tsv]",
   "  bfs        <seed: string> [step: int] [fan_out: int]",
   "             [reduction={none|mst|spt}]  default=none",
   "             [objective={min|max}]       default=max",
@@ -875,6 +1017,15 @@ export const CLI_COMMAND_REFERENCE: readonly CliCommandDoc[] = [
     signature: "count vertices <prefix>",
     summary: "Count vertices whose key starts with a prefix.",
     example: "count vertices user:",
+  },
+  {
+    group: "Browse",
+    verb: "search",
+    signature:
+      "search <query> [limit=...] [mode=...] [phrase=...] [all=...] [format=...]",
+    summary:
+      "BM25 content search with cursor paging. One page is lossless JSON; all=true follows the bounded search session.",
+    example: 'search "rolling update" mode=all limit=20',
   },
   {
     group: "Explore",

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"math/rand"
 	"net/http/httptest"
@@ -24,6 +25,8 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/anaregdesign/lantern/cli/parser"
+	cliservice "github.com/anaregdesign/lantern/cli/service"
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/search"
 	"github.com/anaregdesign/lantern/core/search/relevance"
@@ -1132,6 +1135,145 @@ func TestSearchVertices_EndToEnd(t *testing.T) {
 	if got := empty.Msg.GetHits(); len(got) != 0 {
 		t.Fatalf("empty-query hits = %d, want 0", len(got))
 	}
+}
+
+func TestSearchCLISharedGrammarOverRealH2C(t *testing.T) {
+	type pageOutput struct {
+		Hits []struct {
+			Key string `json:"key"`
+		} `json:"hits"`
+		NextCursor string `json:"next_cursor"`
+	}
+	decodePage := func(t *testing.T, output []byte) pageOutput {
+		t.Helper()
+		var page pageOutput
+		if err := json.Unmarshal(output, &page); err != nil {
+			t.Fatalf("decode CLI page %q: %v", output, err)
+		}
+		return page
+	}
+	newCLI := func(t *testing.T, limits service.SearchLimits) (graphv1connect.LanternServiceClient, *client.Lantern) {
+		t.Helper()
+		cache := newProductionSearchCache(time.Minute, limits.Enabled, limits.PositionsEnabled, search.SearchAnalysisLimits{})
+		svc := service.NewLanternService(cache).WithSearchLimits(limits)
+		srv := newConnectTestServer(t, svc, nil)
+		return graphv1connect.NewLanternServiceClient(h2cClient(), srv.url), newConnectClientFor(t, srv.url)
+	}
+
+	t.Run("Cobra model and raw REPL grammar return the same request result", func(t *testing.T) {
+		raw, sdk := newCLI(t, service.SearchLimits{
+			Enabled: true, PositionsEnabled: true, DefaultLimit: 1, MaxLimit: 1,
+			CursorTTL: time.Minute, MaxSessions: 8, MaxSessionHits: 16, MaxSessionBytes: 1 << 20,
+		})
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		expiration := timestamppb.New(time.Now().Add(time.Hour))
+		losslessKey := "eq/tab\tnewline\nquote\"slash\\"
+		vertices := []*pb.Vertex{
+			{Key: losslessKey, Value: &pb.Vertex_String_{String_: "cliequalitytoken"}, Expiration: expiration},
+			{Key: "stream/01", Value: &pb.Vertex_String_{String_: "clistreamtoken"}, Expiration: expiration},
+			{Key: "stream/02", Value: &pb.Vertex_String_{String_: "clistreamtoken"}, Expiration: expiration},
+			{Key: "stream/03", Value: &pb.Vertex_String_{String_: "clistreamtoken"}, Expiration: expiration},
+		}
+		if _, err := raw.PutVertices(ctx, connect.NewRequest(&pb.PutVerticesRequest{Vertices: vertices})); err != nil {
+			t.Fatal(err)
+		}
+
+		model := parser.Search{Query: "cliequalitytoken", Limit: 1, Prefix: "eq/", Mode: "server", Projection: "full-vertex"}
+		var cobraOut bytes.Buffer
+		if err := cliservice.NewCLIService(sdk, cliservice.WithOutput(&cobraOut)).RunSearch(ctx, model); err != nil {
+			t.Fatal(err)
+		}
+		var replOut bytes.Buffer
+		if err := cliservice.NewCLIService(sdk, cliservice.WithOutput(&replOut)).Run(ctx, "search cliequalitytoken limit=1 prefix=eq/ mode=server projection=full-vertex"); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(cobraOut.Bytes(), replOut.Bytes()) {
+			t.Fatalf("Cobra-model output = %s\nREPL output = %s", cobraOut.Bytes(), replOut.Bytes())
+		}
+		page := decodePage(t, replOut.Bytes())
+		if len(page.Hits) != 1 || page.Hits[0].Key != losslessKey {
+			t.Fatalf("lossless CLI page = %+v", page)
+		}
+
+		var allOut bytes.Buffer
+		if err := cliservice.NewCLIService(sdk, cliservice.WithOutput(&allOut)).Run(ctx, "search clistreamtoken prefix=stream/ limit=1 all=true"); err != nil {
+			t.Fatal(err)
+		}
+		decoder := json.NewDecoder(&allOut)
+		var got []string
+		for {
+			var hit struct {
+				Key string `json:"key"`
+			}
+			if err := decoder.Decode(&hit); errors.Is(err, io.EOF) {
+				break
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			got = append(got, hit.Key)
+		}
+		if !slices.Equal(got, []string{"stream/01", "stream/02", "stream/03"}) {
+			t.Fatalf("streamed keys = %v", got)
+		}
+
+		var emptyOut bytes.Buffer
+		if err := cliservice.NewCLIService(sdk, cliservice.WithOutput(&emptyOut)).Run(ctx, `search ""`); err != nil {
+			t.Fatal(err)
+		}
+		if hits := decodePage(t, emptyOut.Bytes()).Hits; len(hits) != 0 {
+			t.Fatalf("no-hit output = %+v", hits)
+		}
+
+		var invalidOut bytes.Buffer
+		err := cliservice.NewCLIService(sdk, cliservice.WithOutput(&invalidOut)).Run(ctx, "search alpha phrase=true fuzziness=1")
+		if !errors.Is(err, cliservice.ErrSearch) || invalidOut.Len() != 0 {
+			t.Fatalf("invalid combination err=%v output=%q", err, invalidOut.String())
+		}
+
+		canceled, cancelNow := context.WithCancel(ctx)
+		cancelNow()
+		var canceledOut bytes.Buffer
+		err = cliservice.NewCLIService(sdk, cliservice.WithOutput(&canceledOut)).Run(canceled, "search cliequalitytoken")
+		if !errors.Is(err, context.Canceled) || canceledOut.Len() != 0 {
+			t.Fatalf("canceled JSON err=%v output=%q", err, canceledOut.String())
+		}
+	})
+
+	t.Run("disabled and stale errors stay typed and actionable", func(t *testing.T) {
+		_, disabled := newCLI(t, service.SearchLimits{Enabled: false, DefaultLimit: 1, MaxLimit: 1})
+		var disabledOut bytes.Buffer
+		err := cliservice.NewCLIService(disabled, cliservice.WithOutput(&disabledOut)).Run(context.Background(), "search alpha")
+		if !errors.Is(err, client.ErrSearchDisabled) || !strings.Contains(err.Error(), "LANTERN_SEARCH_ENABLED=true") || disabledOut.Len() != 0 {
+			t.Fatalf("disabled err=%v output=%q", err, disabledOut.String())
+		}
+
+		raw, sdk := newCLI(t, service.SearchLimits{
+			Enabled: true, PositionsEnabled: true, DefaultLimit: 1, MaxLimit: 1,
+			CursorTTL: time.Second, MaxSessions: 4, MaxSessionHits: 8, MaxSessionBytes: 1 << 20,
+		})
+		expiration := timestamppb.New(time.Now().Add(time.Hour))
+		if _, err := raw.PutVertices(context.Background(), connect.NewRequest(&pb.PutVerticesRequest{Vertices: []*pb.Vertex{
+			{Key: "stale/a", Value: &pb.Vertex_String_{String_: "clicursorstaletoken"}, Expiration: expiration},
+			{Key: "stale/b", Value: &pb.Vertex_String_{String_: "clicursorstaletoken"}, Expiration: expiration},
+		}})); err != nil {
+			t.Fatal(err)
+		}
+		var firstOut bytes.Buffer
+		if err := cliservice.NewCLIService(sdk, cliservice.WithOutput(&firstOut)).Run(context.Background(), "search clicursorstaletoken limit=1"); err != nil {
+			t.Fatal(err)
+		}
+		cursor := decodePage(t, firstOut.Bytes()).NextCursor
+		if cursor == "" {
+			t.Fatal("first CLI page did not return a cursor")
+		}
+		time.Sleep(1100 * time.Millisecond)
+		var staleOut bytes.Buffer
+		err = cliservice.NewCLIService(sdk, cliservice.WithOutput(&staleOut)).Run(context.Background(), "search clicursorstaletoken limit=1 cursor="+cursor)
+		if !errors.Is(err, client.ErrSearchCursorStale) || !strings.Contains(err.Error(), "restart explicitly") || staleOut.Len() != 0 {
+			t.Fatalf("stale err=%v output=%q", err, staleOut.String())
+		}
+	})
 }
 
 // TestSearchVertices_PluralWriteVisibilityOverWire pins #1051's batch

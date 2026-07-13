@@ -38,6 +38,7 @@ const VERBS: readonly string[] = [
   "scan",
   "count",
   "keys",
+  "search",
   "bfs",
   "pagerank",
   "community",
@@ -65,6 +66,20 @@ const FAMILY_OPTION_KEYS: Record<string, readonly string[]> = {
     "prefix",
   ],
 };
+
+const SEARCH_OPTION_KEYS = [
+  "limit",
+  "prefix",
+  "mode",
+  "min_should",
+  "phrase",
+  "fuzziness",
+  "prefix_terms",
+  "cursor",
+  "all",
+  "projection",
+  "format",
+] as const;
 
 /** Cap on how many key candidates we surface, so the hint stays compact. */
 const MAX_KEY_CANDIDATES = 50;
@@ -121,6 +136,13 @@ export function completeCommandLine(
   if (isFamilyVerb && slotIndex >= 2) {
     return {
       candidates: completeFamilyOption(verb, tokens, token),
+      start,
+      token,
+    };
+  }
+  if (verb === "search" && slotIndex >= 2) {
+    return {
+      candidates: completeSearchOption(tokens, token),
       start,
       token,
     };
@@ -261,6 +283,40 @@ function completeFamilyOption(
   return values
     .filter((v) => v.startsWith(valuePrefix))
     .map((v) => `${kw}=${v}`);
+}
+
+function completeSearchOption(
+  tokens: readonly string[],
+  token: string,
+): string[] {
+  const eq = token.indexOf("=");
+  if (eq === -1) {
+    const used = new Set(
+      tokens.slice(2).map((value) => value.split("=")[0].toLowerCase()),
+    );
+    return filterByPrefix(
+      SEARCH_OPTION_KEYS.filter((key) => !used.has(key)).map(
+        (key) => `${key}=`,
+      ),
+      token,
+    );
+  }
+  const key = token.slice(0, eq).toLowerCase();
+  const values: Record<string, readonly string[]> = {
+    mode: ["server", "any", "all", "min-should"],
+    phrase: ["true", "false"],
+    fuzziness: ["0", "1", "2"],
+    prefix_terms: ["true", "false"],
+    all: ["true", "false"],
+    projection: ["key-score", "full-vertex"],
+    format: ["json", "ndjson", "tsv"],
+  };
+  const candidates = values[key];
+  if (candidates === undefined) return [];
+  const prefix = token.slice(eq + 1).toLowerCase();
+  return candidates
+    .filter((value) => value.startsWith(prefix))
+    .map((value) => `${key}=${value}`);
 }
 
 /** The enum values for a family option keyword, or null if unknown. */

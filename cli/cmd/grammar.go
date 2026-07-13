@@ -19,12 +19,15 @@ import (
 //	lantern-cli delete edge   <tail> <head>
 //	lantern-cli scan   vertices <prefix> [limit]
 //	lantern-cli scan   edges    <tail-prefix> [limit]
+//	lantern-cli search <query> [limit=<n>] [mode=server|any|all|min-should] [...]
 //
 // These commands intentionally share ONE grammar and ONE dispatcher with
 // the REPL: each forwards its argv to service.CLIService.RunArgs, the same
 // entry point the REPL uses per typed line. The verb-first grammar is the
-// single CLI surface; `bulk` (NDJSON load) and the global TLS/gzip flags
-// cover what the grammar deliberately does not.
+// single CLI surface. Search keeps a dedicated Cobra facade for idiomatic
+// --flags, but it maps those flags into parser.Search and calls the same
+// CLIService.RunSearch as this grammar. `bulk` (NDJSON load) and the global
+// TLS/gzip flags cover what the grammar deliberately does not.
 //
 // Flag-parsing note: each verb sets SetInterspersed(false) so a value
 // beginning with '-' (e.g. a negative edge weight, `add edge a b -1.5`) is

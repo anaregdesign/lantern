@@ -74,6 +74,24 @@ class FakeLanternClient {
   ): unknown {
     return this.invoke("scanVertexKeys", [prefix, opts, signal]);
   }
+  searchVerticesPage(
+    query: string,
+    opts?: unknown,
+    signal?: AbortSignal,
+  ): unknown {
+    return this.invoke("searchVerticesPage", [query, opts, signal]);
+  }
+  searchVerticesIter(
+    query: string,
+    opts?: unknown,
+    signal?: AbortSignal,
+  ): AsyncIterable<unknown> {
+    return this.invoke("searchVerticesIter", [
+      query,
+      opts,
+      signal,
+    ]) as AsyncIterable<unknown>;
+  }
   countVerticesByPrefix(prefix: string, signal?: AbortSignal): unknown {
     return this.invoke("countVerticesByPrefix", [prefix, signal]);
   }
@@ -797,5 +815,88 @@ describe("dispatch family verbs map to the per-family oneofs (#975)", () => {
     });
     expect(opts.community).toBeUndefined();
     expect(opts.ppr).toBeUndefined();
+  });
+});
+
+describe("dispatch search (#1068 shared request semantics)", () => {
+  test("maps every grammar option onto one Node SDK page request", async () => {
+    const fake = new FakeLanternClient();
+    fake.stub("searchVerticesPage", () => ({
+      hits: [{ key: "利用者/one", score: 2.5, projectionStatus: "key-score" }],
+      nextCursor: new Uint8Array([4, 5]),
+      effectiveLimit: 17,
+      truncated: true,
+      continuationLimited: false,
+    }));
+    const parsed = parse(
+      'search "静かな rolling update" limit=17 prefix=利用者/ mode=min-should min_should=2 fuzziness=1 prefix_terms=true cursor=AQID projection=key-score format=json',
+    );
+    if (!parsed.ok) throw new Error(parsed.usage);
+
+    const result = await dispatch({
+      client: asClient(fake),
+      command: parsed.command,
+    });
+
+    expect(fake.calls).toHaveLength(1);
+    const [query, opts] = fake.calls[0].args as [
+      string,
+      {
+        limit: number;
+        prefix: string;
+        matchMode: string;
+        minShouldMatch: number;
+        fuzziness: number;
+        prefixTerms: boolean;
+        cursor: Uint8Array;
+        projection: string;
+      },
+    ];
+    expect(query).toBe("静かな rolling update");
+    expect(opts).toMatchObject({
+      limit: 17,
+      prefix: "利用者/",
+      matchMode: "min-should",
+      minShouldMatch: 2,
+      fuzziness: 1,
+      prefixTerms: true,
+      projection: "key-score",
+    });
+    expect(Array.from(opts.cursor)).toEqual([1, 2, 3]);
+    expect(result).toMatchObject({
+      hits: [{ key: "利用者/one", score: 2.5 }],
+      nextCursor: "BAU",
+      effectiveLimit: 17,
+      truncated: true,
+    });
+  });
+
+  test("all=true follows the bounded cursor chain", async () => {
+    const fake = new FakeLanternClient();
+    fake.stub("searchVerticesIter", async function* () {
+      yield { key: "a", score: 2 };
+      yield { key: "b", score: 1 };
+    });
+    const parsed = parse("search alpha limit=1 all=true");
+    if (!parsed.ok) throw new Error(parsed.usage);
+    const result = (await dispatch({
+      client: asClient(fake),
+      command: parsed.command,
+    })) as { hits: Array<{ key: string }> };
+    expect(result.hits.map((hit) => hit.key)).toEqual(["a", "b"]);
+    expect(fake.calls).toHaveLength(1);
+    expect(fake.calls[0].method).toBe("searchVerticesIter");
+    const opts = fake.calls[0].args[1] as { cursor: Uint8Array };
+    expect(Array.from(opts.cursor)).toEqual([]);
+  });
+
+  test("rejects a malformed cursor before the SDK call", async () => {
+    const fake = new FakeLanternClient();
+    const parsed = parse("search alpha cursor=not+base64");
+    if (!parsed.ok) throw new Error(parsed.usage);
+    await expect(
+      dispatch({ client: asClient(fake), command: parsed.command }),
+    ).rejects.toThrow("unpadded URL-safe base64");
+    expect(fake.calls).toHaveLength(0);
   });
 });

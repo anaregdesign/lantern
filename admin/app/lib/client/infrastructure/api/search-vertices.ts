@@ -35,31 +35,10 @@ export async function searchVertices(
   try {
     const page = await client.searchVerticesPage(
       request.query,
-      {
-        limit: request.limit ?? 0,
-        prefix: request.prefix ?? "",
-        matchMode:
-          request.matchMode === "server" ? undefined : request.matchMode,
-        minShouldMatch:
-          request.matchMode === "min-should"
-            ? request.minShouldMatch
-            : undefined,
-        phrase: request.phrase,
-        fuzziness: request.fuzziness,
-        prefixTerms: request.prefixTerms,
-        cursor: request.cursor,
-        projection: request.projection,
-      },
+      sdkSearchOptions(request),
       init?.signal,
     );
-    const hits: SearchHit[] = page.hits.map((hit) => ({
-      key: hit.key,
-      score: hit.score,
-      ...(hit.vertex ? { vertex: sdkVertexToFlat(hit.vertex) } : {}),
-      ...(hit.projectionStatus
-        ? { projectionStatus: hit.projectionStatus }
-        : {}),
-    }));
+    const hits: SearchHit[] = page.hits.map(toAdminSearchHit);
     return {
       hits,
       nextCursor: page.nextCursor,
@@ -70,4 +49,57 @@ export async function searchVertices(
   } catch (err) {
     throw LanternApiError.fromUnknown("SearchVertices", err);
   }
+}
+
+/**
+ * Follow the maintained Node SDK's bounded search iterator. The iterator owns
+ * cursor propagation and raises its typed continuation error after the final
+ * retained hit; this adapter only maps SDK vertices into Admin's flat shape.
+ */
+export async function searchAllVertices(
+  client: LanternClient,
+  request: SearchVerticesRequest,
+  init?: { signal?: AbortSignal },
+): Promise<SearchHit[]> {
+  try {
+    const hits: SearchHit[] = [];
+    for await (const hit of client.searchVerticesIter(
+      request.query,
+      sdkSearchOptions(request),
+      init?.signal,
+    )) {
+      hits.push(toAdminSearchHit(hit));
+    }
+    return hits;
+  } catch (err) {
+    throw LanternApiError.fromUnknown("SearchVertices", err);
+  }
+}
+
+type SdkSearchHit = Awaited<
+  ReturnType<LanternClient["searchVertices"]>
+>[number];
+
+function toAdminSearchHit(hit: SdkSearchHit): SearchHit {
+  return {
+    key: hit.key,
+    score: hit.score,
+    ...(hit.vertex ? { vertex: sdkVertexToFlat(hit.vertex) } : {}),
+    ...(hit.projectionStatus ? { projectionStatus: hit.projectionStatus } : {}),
+  };
+}
+
+function sdkSearchOptions(request: SearchVerticesRequest) {
+  return {
+    limit: request.limit ?? 0,
+    prefix: request.prefix ?? "",
+    matchMode: request.matchMode === "server" ? undefined : request.matchMode,
+    minShouldMatch:
+      request.matchMode === "min-should" ? request.minShouldMatch : undefined,
+    phrase: request.phrase,
+    fuzziness: request.fuzziness,
+    prefixTerms: request.prefixTerms,
+    cursor: request.cursor,
+    projection: request.projection,
+  };
 }

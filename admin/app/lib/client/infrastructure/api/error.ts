@@ -5,6 +5,8 @@ import {
   NotFoundError,
   ResourceExhaustedError,
   SearchErrorReason,
+  SearchContinuationLimitedError,
+  SearchCursorStaleError,
 } from "lantern-sdk/web";
 
 /**
@@ -53,15 +55,36 @@ export class LanternApiError extends Error {
       return new LanternApiError(rpc, "not_found", err.message);
     }
     if (err instanceof InvalidArgumentError) {
-      return new LanternApiError(rpc, "invalid_argument", err.message);
+      return new LanternApiError(
+        rpc,
+        "invalid_argument",
+        err.message,
+        err.reason,
+      );
     }
     if (err instanceof ResourceExhaustedError) {
-      return new LanternApiError(rpc, "resource_exhausted", err.message);
+      return new LanternApiError(
+        rpc,
+        "resource_exhausted",
+        err.message,
+        err.reason,
+      );
     }
     if (err instanceof FailedPreconditionError) {
       return new LanternApiError(
         rpc,
         "failed_precondition",
+        err.message,
+        err.reason,
+      );
+    }
+    if (err instanceof SearchCursorStaleError) {
+      return new LanternApiError(rpc, "aborted", err.message, err.reason);
+    }
+    if (err instanceof SearchContinuationLimitedError) {
+      return new LanternApiError(
+        rpc,
+        "resource_exhausted",
         err.message,
         err.reason,
       );

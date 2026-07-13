@@ -27,10 +27,11 @@ import {
   parsePagerank,
   parsePut,
   parseScan,
+  parseSearch,
 } from "./verbs";
 
 const VERB_LIST_USAGE =
-  "usage: { get | put | delete | delete-prefix | add | scan | count | keys | bfs | pagerank | community | help | exit } ...";
+  "usage: { get | put | delete | delete-prefix | add | scan | count | keys | search | bfs | pagerank | community | help | exit } ...";
 
 const VERBS = new Set([
   "exit",
@@ -43,6 +44,7 @@ const VERBS = new Set([
   "scan",
   "count",
   "keys",
+  "search",
   "bfs",
   "pagerank",
   "community",
@@ -86,6 +88,8 @@ export function parse(input: string): ParseResult {
       return parseDeletePrefix(rest);
     case "keys":
       return parseKeys(rest);
+    case "search":
+      return parseSearch(rest);
     case "bfs":
       return parseBfs(rest);
     case "pagerank":

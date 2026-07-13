@@ -63,6 +63,7 @@ const HelpText = `Lantern CLI grammar:
   count  vertices <prefix: string>
   delete-prefix vertices <prefix: string> [limit=<int>] [confirm=yes|dry_run=true]
   keys   <prefix: string> [<limit: int>]
+  search <query: string> [limit=<uint32>] [prefix=<string>] [mode=server|any|all|min-should] [min_should=<uint32>] [phrase=<bool>] [fuzziness=0|1|2] [prefix_terms=<bool>] [cursor=<base64url>] [all=<bool>] [projection=key-score|full-vertex] [format=json|ndjson|tsv]
   bfs        <seed: string> [step: int] [fan_out: int]
              [reduction={none|mst|spt}]  default=none
              [objective={min|max}]       default=max

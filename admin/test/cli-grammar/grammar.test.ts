@@ -74,6 +74,21 @@ function normalizeFamilyCommand(command: Command): Record<string, unknown> {
         weighting: command.weighting,
         prefix: command.vertexPrefix,
       };
+    case "search":
+      return {
+        query: command.query,
+        limit: command.limit,
+        prefix: command.prefix,
+        mode: command.mode,
+        min_should: command.minShould,
+        phrase: command.phrase,
+        fuzziness: command.fuzziness,
+        prefix_terms: command.prefixTerms,
+        cursor: command.cursor,
+        all: command.all,
+        projection: command.projection,
+        format: command.format,
+      };
     default:
       throw new Error(`expected family command, got ${command.verb}`);
   }
@@ -89,7 +104,9 @@ describe("CLI grammar fixture (#411) — valid inputs", () => {
         );
       }
       expect(result.ok).toBe(true);
-      if (["bfs", "pagerank", "community"].includes(result.command.verb)) {
+      if (
+        ["bfs", "pagerank", "community", "search"].includes(result.command.verb)
+      ) {
         if (c.expected === undefined) {
           throw new Error(
             `family fixture ${JSON.stringify(c.input)} is missing its expected normalized AST`,
