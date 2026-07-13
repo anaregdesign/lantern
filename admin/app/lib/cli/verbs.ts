@@ -877,6 +877,8 @@ export const HELP_TEXT = [
   "  help [bfs|pagerank|community]",
   "  exit",
   "",
+  "Search contract: https://github.com/anaregdesign/lantern/blob/main/docs/search.md",
+  "",
   'Quoting: "double" with C-style escapes (\\" \\\\ \\n \\r \\t); \'single\' verbatim.',
   "Verb/objective case-insensitive; argument values preserve case.",
 ].join("\n");
@@ -1024,7 +1026,7 @@ export const CLI_COMMAND_REFERENCE: readonly CliCommandDoc[] = [
     signature:
       "search <query> [limit=...] [mode=...] [phrase=...] [all=...] [format=...]",
     summary:
-      "BM25 content search with cursor paging. One page is lossless JSON; all=true follows the bounded search session.",
+      "BM25 content search with cursor paging. One page is lossless JSON; all=true follows the bounded search session. Canonical contract: https://github.com/anaregdesign/lantern/blob/main/docs/search.md",
     example: 'search "rolling update" mode=all limit=20',
   },
   {

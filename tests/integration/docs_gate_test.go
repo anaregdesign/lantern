@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/anaregdesign/lantern/cli/parser"
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // TestTraversalDocumentationGate keeps the maintained consumer examples and
@@ -137,6 +139,121 @@ func TestDartFirstReleaseBlockerGate(t *testing.T) {
 	}
 }
 
+// TestSearchDocumentationGate keeps the canonical search guide synchronized
+// with the wire schema and every maintained user-facing surface. Tables remain
+// readable hand-written prose, while descriptor reflection makes a new option,
+// response field, capability, or typed reason fail the ordinary root suite
+// until its contract is documented (#1069).
+func TestSearchDocumentationGate(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("resolve repository root: %v", err)
+	}
+	read := func(path string) string {
+		t.Helper()
+		contents, readErr := os.ReadFile(filepath.Join(repoRoot, path))
+		if readErr != nil {
+			t.Fatalf("read %s: %v", path, readErr)
+		}
+		return string(contents)
+	}
+
+	guide := read("docs/search.md")
+	file := pb.File_graph_v1_graph_proto
+	for _, name := range []string{
+		"SearchOptions",
+		"SearchVerticesRequest",
+		"SearchVerticesResponse",
+		"SearchCapabilities",
+	} {
+		message := file.Messages().ByName(protoreflect.Name(name))
+		if message == nil {
+			t.Fatalf("proto descriptor is missing %s", name)
+		}
+		for i := 0; i < message.Fields().Len(); i++ {
+			field := message.Fields().Get(i)
+			want := "`" + string(field.Name()) + "`"
+			if !strings.Contains(guide, want) {
+				t.Errorf("docs/search.md is missing %s.%s as %s", name, field.Name(), want)
+			}
+		}
+	}
+	for _, name := range []string{
+		"MatchMode",
+		"SearchProjection",
+		"SearchHitProjectionStatus",
+		"SearchErrorReason",
+		"SearchIndexHealth",
+	} {
+		enum := file.Enums().ByName(protoreflect.Name(name))
+		if enum == nil {
+			t.Fatalf("proto descriptor is missing %s", name)
+		}
+		for i := 0; i < enum.Values().Len(); i++ {
+			value := enum.Values().Get(i)
+			want := "`" + string(value.Name()) + "`"
+			if !strings.Contains(guide, want) {
+				t.Errorf("docs/search.md is missing %s.%s as %s", name, value.Name(), want)
+			}
+		}
+	}
+
+	linkChecks := map[string]string{
+		"README.md":                         "docs/search.md",
+		"server/README.md":                  "docs/search.md",
+		"docs/env.md":                       "SearchVertices contract](search.md)",
+		"docs/replication.md":               "SearchVertices contract](search.md",
+		"docs/ha-runbook.md":                "SearchVertices contract](search.md)",
+		"sdks/go/README.md":                 "docs/search.md",
+		"sdks/go/doc.go":                    "docs/search.md",
+		"sdks/node/README.md":               "docs/search.md",
+		"sdks/node/src/index.ts":            "docs/search.md",
+		"sdks/dart/README.md":               "docs/search.md",
+		"sdks/dart/lib/lantern_client.dart": "docs/search.md",
+		"cli/cmd/search.go":                 "docs/search.md",
+		"cli/parser/help.go":                "docs/search.md",
+		"admin/app/lib/cli/verbs.ts":        "docs/search.md",
+		"admin/app/components/browse-vertices/BrowseVerticesPage/BrowseVerticesPage.tsx": "docs/search.md",
+		"admin/app/components/ops/SearchStatusCard/SearchStatusCard.tsx":                 "docs/search.md",
+	}
+	for path, want := range linkChecks {
+		if !strings.Contains(read(path), want) {
+			t.Errorf("%s is missing canonical search contract link %q", path, want)
+		}
+	}
+
+	examples := map[string][]string{
+		"sdks/go/example/search.go":       {"SearchVertices(", "NewIncrementalSearch("},
+		"sdks/node/example/search.ts":     {"searchVertices(", "incrementalSearch("},
+		"sdks/dart/example/lib/main.dart": {"searchVertices(", "incrementalSearch("},
+	}
+	for path, required := range examples {
+		contents := read(path)
+		for _, want := range required {
+			if !strings.Contains(contents, want) {
+				t.Errorf("%s is missing compiling search example %q", path, want)
+			}
+		}
+	}
+
+	const start = "<!-- search-cli-grammar:start -->"
+	const end = "<!-- search-cli-grammar:end -->"
+	startAt := strings.Index(guide, start)
+	endAt := strings.Index(guide, end)
+	if startAt < 0 || endAt < 0 || endAt <= startAt {
+		t.Fatal("docs/search.md is missing ordered search CLI grammar markers")
+	}
+	for _, line := range strings.Split(guide[startAt+len(start):endAt], "\n") {
+		command := strings.TrimSpace(line)
+		if command == "" || strings.HasPrefix(command, "```") {
+			continue
+		}
+		t.Run(command, func(t *testing.T) {
+			parseSearchDocumentationCommand(t, command)
+		})
+	}
+}
+
 func parseTraversalDocumentationCommand(t *testing.T, command string) {
 	t.Helper()
 	command = strings.TrimPrefix(command, "lantern-cli ")
@@ -159,6 +276,27 @@ func parseTraversalDocumentationCommand(t *testing.T, command string) {
 		t.Fatalf("unexpected traversal verb %q", verb)
 	}
 	if err != nil {
+		t.Fatalf("parse %q: %v", command, err)
+	}
+	if err := parser.EOF(source); err != nil {
+		t.Fatalf("trailing token in %q: %v", command, err)
+	}
+}
+
+func parseSearchDocumentationCommand(t *testing.T, command string) {
+	t.Helper()
+	source, err := parser.NewSource(command)
+	if err != nil {
+		t.Fatalf("tokenise %q: %v", command, err)
+	}
+	verb, err := parser.Verb(source)
+	if err != nil {
+		t.Fatalf("parse verb in %q: %v", command, err)
+	}
+	if verb != "search" {
+		t.Fatalf("unexpected search documentation verb %q", verb)
+	}
+	if _, err := parser.SearchParam(source); err != nil {
 		t.Fatalf("parse %q: %v", command, err)
 	}
 	if err := parser.EOF(source); err != nil {

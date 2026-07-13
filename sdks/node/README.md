@@ -298,13 +298,16 @@ you want the `EdgeInput[]` without sending it.
 _content_ (key + value) — unlike `scanVertices`, which is a lexicographic
 key-prefix walk. It returns `{ key, score }` hits in stable `(score DESC, raw
 key ASC)` order: the seed candidates to pick before an `illuminate` traversal,
-where `score` doubles as the seed's initial weight. Hits carry only the key and
-score, so hydrate value/TTL with a follow-up `getVertices`, preserving rank
-order.
+where `score` doubles as the seed's initial weight. Use
+`projection: "full-vertex"` when the exact selection-time value/TTL is needed;
+a follow-up `getVertices` hydration is racy under concurrent writes.
 
 ```ts
-const hits = await client.searchVertices("quarterly revenue", { limit: 10, prefix: "doc/" });
-const { found } = await client.getVertices(hits.map((h) => h.key));
+const hits = await client.searchVertices("quarterly revenue", {
+  limit: 10,
+  prefix: "doc/",
+  projection: "full-vertex",
+});
 ```
 
 An empty or unmatched query resolves to `[]` (not an error). When the
@@ -330,6 +333,12 @@ sentinel. Invalid integers/ranges, a non-zero threshold under another mode,
 and phrase combined with an explicit mode/fuzziness/prefix terms reject locally
 with `InvalidArgumentError` before transport. `incrementalSearch` accepts and
 forwards the same complete `SearchOptions` set as one-shot search.
+
+The [canonical SearchVertices contract](../../docs/search.md) defines document
+projection, Unicode analysis, relative BM25 scoring, TTL consistency, budgets,
+typed reasons, endpoint-sticky cursors, and HA. The maintained
+[`example/search.ts`](example/search.ts) compiles one-shot, capability,
+phrase/typo, pagination, disabled, cancellation, and incremental flows in CI.
 
 ## Backup & restore
 

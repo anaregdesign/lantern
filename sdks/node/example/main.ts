@@ -1,4 +1,5 @@
 import { Objective, Reduction, Weighting, connect, type Graph } from "lantern-sdk";
+import { runSearchExamples } from "./search.js";
 
 function printGraph(name: string, graph: Graph): void {
   console.log(`${name}: vertices=${graph.vertices.size}`);
@@ -22,6 +23,8 @@ async function main(): Promise<void> {
     await client.putVertex({ key: "time", value: new Date(), ttlSeconds: 60 });
     await client.putVertex({ key: "bytes", value: new Uint8Array([0x41]), ttlSeconds: 60 });
     await client.putVertex({ key: "nil", value: null, ttlSeconds: 60 });
+
+    await runSearchExamples(client);
 
     // GetVertex
     const v = await client.getVertex("string");

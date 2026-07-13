@@ -166,6 +166,10 @@ test.describe("/vertices — content search (#650)", () => {
 
     await expect(page.getByTestId("search-idle")).toBeVisible();
     await expect(page.getByTestId("search-results-table")).toHaveCount(0);
+    await expect(page.getByTestId("search-contract-link")).toHaveAttribute(
+      "href",
+      "https://github.com/anaregdesign/lantern/blob/main/docs/search.md",
+    );
   });
 
   test("ranks the strongest content matches to the top", async ({ page }) => {

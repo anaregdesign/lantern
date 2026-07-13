@@ -2,6 +2,10 @@
 ///
 /// Generated service and replication internals remain private to the package;
 /// CRUD and query facades are layered on the reusable [LanternClient].
+///
+/// Search projection, analysis, ranking, TTL, typed-error, cursor, and HA
+/// semantics are canonical at
+/// https://github.com/anaregdesign/lantern/blob/main/docs/search.md.
 library;
 
 export 'src/client.dart'

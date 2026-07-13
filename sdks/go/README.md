@@ -269,6 +269,12 @@ the exact value/TTL snapshot selected with ranking and removes a racy follow-up
 cursor is sent only to the current endpoint because sessions are not portable
 between replicas.
 
+The [canonical SearchVertices contract](../../docs/search.md) is authoritative
+for document projection, Unicode analysis, ranking, TTL consistency, budgets,
+typed reasons, and HA. The maintained
+[`example/search.go`](example/search.go) compiles one-shot, capability,
+phrase/typo, pagination, disabled, cancellation, and incremental flows in CI.
+
 `Illuminate` accepts at most one traversal family option (`WithBFS`,
 `WithPPR`, or `WithLocalCommunity`). Combining them returns a local error that
 matches both `ErrInvalidArgument` and `ErrConflictingIlluminateFamilies` before

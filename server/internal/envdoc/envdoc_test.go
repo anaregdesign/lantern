@@ -26,7 +26,12 @@ func TestRenderCoversFullRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
-	for _, want := range []string{"| `LANTERN_PORT` |", "| `LANTERN_STRICT_CONFIG` |", "GENERATED FILE"} {
+	for _, want := range []string{
+		"| `LANTERN_PORT` |",
+		"| `LANTERN_STRICT_CONFIG` |",
+		"GENERATED FILE",
+		"[SearchVertices contract](search.md)",
+	} {
 		if !strings.Contains(doc, want) {
 			t.Fatalf("rendered doc missing %q", want)
 		}

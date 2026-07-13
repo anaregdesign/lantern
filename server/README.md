@@ -9,9 +9,10 @@ gRPC-Web all multiplexed on the same h2c port). The pre-#347 split
 (separate grpc-gateway listener + additive Connect listener) is gone —
 everything serves on the single `LANTERN_PORT` socket.
 
-See the [repo README](../README.md) for the end-user usage walkthrough; this
-file documents the **server module itself** (layout, providers, env vars,
-observability endpoints).
+See the [repo README](../README.md) for the end-user usage walkthrough and the
+[canonical SearchVertices contract](../docs/search.md) for index, budget,
+error, TTL, cursor, and HA semantics. This file documents the **server module
+itself** (layout, providers, env vars, observability endpoints).
 
 ## Install / run
 

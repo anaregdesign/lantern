@@ -266,7 +266,10 @@ vertex key and value fields as the content-addressed counterpart to prefix
 scans. Phrase/proximity never cross key/value or JSON string-leaf boundaries;
 edge-created endpoint vertices are immediately searchable by key. Hits use the
 stable total order `(score DESC, raw key ASC)` and make
-natural seeds for a follow-up `bfs`, `pagerank`, or `community` walk:
+natural seeds for a follow-up `bfs`, `pagerank`, or `community` walk. The
+[canonical SearchVertices contract](docs/search.md) defines projection,
+Unicode analysis, membership, ranking, typed errors, TTL consistency, bounded
+pagination, and HA behavior for every surface.
 
 The production analyzer uses Unicode full case folding and canonical NFC,
 preserves meaningful Thai/Indic/accent marks, and keeps emoji/Unicode symbols
@@ -285,55 +288,16 @@ lantern-cli search espresso --limit 20 --all     # stream retained pages as NDJS
 lantern-cli search espresso --projection full-vertex
 ```
 
-The index is maintained server-side and is on by default
-(`LANTERN_SEARCH_ENABLED`). Phrase search additionally requires positional
-postings (`LANTERN_SEARCH_POSITIONS`, also on by default). A server without
-positions rejects `phrase=true` with the typed reason
-`SEARCH_POSITIONS_DISABLED`; it never silently returns unordered AND matches.
-`GetServerStatus.search` exposes these capabilities, their defaults and limits,
-implementation versions, and a configuration fingerprint.
+The index is maintained server-side. Read `GetServerStatus.search` before
+offering phrase or expansion controls: it reports availability, defaults,
+budgets, implementation versions, index health, and the HA configuration
+fingerprint. `FULL_VERTEX` returns the exact selection-time value/TTL snapshot;
+cursor pages retain that snapshot and must remain on one endpoint.
 
-Search pages are immutable, bounded snapshots in `(score DESC, raw key ASC)`
-order. A one-page response reports `effective_limit`, `truncated`, an opaque
-`next_cursor`, and `continuation_limited`; no approximate count is presented as
-an exact total. Repeat the same query, options, projection, and endpoint with
-the returned cursor. Tampered or mismatched cursors are typed
-`INVALID_ARGUMENT` / `SEARCH_CURSOR_INVALID`; expired or evicted sessions are
-typed `ABORTED` / `SEARCH_CURSOR_STALE` and must restart explicitly from page
-one. Sessions are endpoint-sticky and bounded by the discoverable
-`LANTERN_SEARCH_CURSOR_TTL_SECONDS`, `LANTERN_SEARCH_MAX_SESSIONS`,
-`LANTERN_SEARCH_MAX_SESSION_HITS`, and `LANTERN_SEARCH_MAX_SESSION_BYTES`.
-
-The default `KEY_SCORE` projection remains lightweight. `FULL_VERTEX` carries
-the exact value/TTL snapshot selected under the same barrier as ranking, so a
-caller does not need a racy `GetVertices` hydration pass. Writes, deletes, and
-TTL expiry after page one do not change the retained snapshot. See
-[ADR 0008](docs/decisions/0008-bounded-search-pagination-sessions.md) for the
-churn measurement and session decision.
-
-Every search has a server deadline, bounded query/analyzed-term/dictionary/
-posting/position work, and an in-flight admission slot. Cancellation or a
-deadline returns no partial hits. `SEARCH_WORK_BUDGET_EXHAUSTED` includes a
-stable `work_kind`; `SEARCH_ADMISSION_SATURATED` is distinct so clients can
-apply jittered backoff. Canceled, deadline, and work-budget failures are
-terminal for that attempt—interactive/incremental clients should discard it
-and issue only the newest input, not replay stale queries. A budget failure
-usually calls for a narrower query or fewer expansion options; only admission
-saturation is normally worth retrying unchanged.
-
-Search option interpretation is identical on every surface:
-
-| Request | Membership behavior |
-| --- | --- |
-| options omitted, or `match_mode=UNSPECIFIED` | Always use `LANTERN_SEARCH_DEFAULT_MODE`, even when fuzziness or prefix terms are set |
-| explicit `ANY` / `ALL` / `MIN_SHOULD` | Override the server default |
-| `MIN_SHOULD` with `min_should_match=0` | Use `LANTERN_SEARCH_DEFAULT_MIN_SHOULD` |
-| non-zero `min_should_match` with any other mode | `INVALID_ARGUMENT` |
-| phrase plus an explicit mode, fuzziness, or prefix terms | `INVALID_ARGUMENT` until those compositions are implemented |
-
-Unknown enum values, fuzziness outside `0..2`, and option fields that would be
-ignored are rejected rather than clamped or silently reinterpreted. Go, Node,
-and Dart validate the same combinations locally before issuing an RPC.
+Search is local/eventual under replication. During lag, corpus membership and
+BM25 scores may differ between replicas, and cursor sessions are never
+portable. Serving replicas must have the same `config_fingerprint`; see the
+[HA contract](docs/search.md#replication-failover-and-cursors).
 
 ---
 
