@@ -129,6 +129,32 @@ func (c *GraphCache[S, T]) RebuildSearchIndex() error {
 	return c.rebuildSearchIndexLocked()
 }
 
+// BeginSearchIndexRecovery makes search fail closed before a bulk recovery
+// path starts mutating the graph. Replication snapshot and backup restore use
+// this boundary so a partially replayed derived index is never advertised as
+// healthy or queried for partial results.
+func (c *GraphCache[S, T]) BeginSearchIndexRecovery() {
+	c.searchCommitMu.Lock()
+	defer c.searchCommitMu.Unlock()
+	c.mu.RLock()
+	index := c.searchIndex
+	c.mu.RUnlock()
+	if index != nil {
+		index.MarkIncomplete()
+	}
+}
+
+// CompleteSearchIndexRecovery rebuilds the complete derived index from the
+// live graph and marks it healthy only after the atomic replacement succeeds.
+// A limit error leaves the graph intact and the index incomplete.
+func (c *GraphCache[S, T]) CompleteSearchIndexRecovery() error {
+	c.searchCommitMu.Lock()
+	defer c.searchCommitMu.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.rebuildSearchIndexLocked()
+}
+
 func (c *GraphCache[S, T]) rebuildSearchIndexLocked() error {
 	if c.searchIndex == nil {
 		return nil

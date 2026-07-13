@@ -359,8 +359,10 @@ func (f *Failover) ScanVertexKeys(ctx context.Context, prefix string, opts ...Sc
 }
 
 // SearchVertices forwards to the current endpoint's SearchVertices, failing
-// over on ErrUnavailable. Search runs over the shared replicated keyspace, so
-// a mid-call rotation simply re-runs the query against the next replica.
+// over on ErrUnavailable. Search is local/eventual: during replication lag or
+// a partition, a rotation may change membership, BM25 scores, or result order.
+// Exact cross-endpoint results require the same live graph and homogeneous
+// search config; production traffic should target readiness-gated replicas.
 func (f *Failover) SearchVertices(ctx context.Context, query string, opts ...SearchOption) (hits []SearchHit, err error) {
 	e := f.call(ctx, "SearchVertices", func(l failoverNode) error {
 		var ie error

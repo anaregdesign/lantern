@@ -64,13 +64,14 @@ func NewAntiEntropyDriver(
 ) *replication.AntiEntropy {
 	_ = pump // forces wire to construct the pump before the driver
 	return replication.NewAntiEntropy(replication.AntiEntropyConfig{
-		NodeID:           rc.NodeID,
-		Peers:            pc.Peers,
-		Interval:         ac.Interval,
-		SubscribeTimeout: ac.SubscribeTimeout,
-		GapWarnThreshold: ac.GapWarnThreshold,
-		Logger:           logger,
-		Metrics:          m,
-		AuthToken:        firstToken(auth.Tokens),
+		NodeID:                  rc.NodeID,
+		Peers:                   pc.Peers,
+		Interval:                ac.Interval,
+		SubscribeTimeout:        ac.SubscribeTimeout,
+		GapWarnThreshold:        ac.GapWarnThreshold,
+		Logger:                  logger,
+		Metrics:                 m,
+		AuthToken:               firstToken(auth.Tokens),
+		SearchConfigFingerprint: svc.SearchConfigFingerprint(),
 	}, svc, svc, cache)
 }

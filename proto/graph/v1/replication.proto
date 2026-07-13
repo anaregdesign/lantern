@@ -98,6 +98,12 @@ message SubscribeRequest {
   // 16-byte HLC NodeID; values are the next local `seq` the consumer
   // expects from that origin.
   map<string, uint64> from_seq_per_origin = 1;
+  // Next entry in this responder's replica-local mutation log. This is only
+  // valid when resuming against the SAME responder that emitted
+  // SnapshotHeader.cutoff_local_seq; zero uses the portable per-origin path.
+  // Keeping the two sequence domains separate prevents a stale per-origin
+  // cursor from bypassing ring-buffer gap detection.
+  uint64 from_local_seq = 2;
 }
 
 // SubscribeResponse carries one replicated mutation per message.
@@ -115,11 +121,12 @@ message SnapshotRequest {}
 // freezes the per-origin watermark and the snapshot-open HLC the server
 // used to materialise the snapshot.
 //
-// A bootstrapping peer MUST persist `cutoff_seq_per_origin` and
-// `cutoff_hlc` before applying any payload entries and MUST resume
-// `Subscribe` with `from_seq_per_origin = {origin: seq+1 for each
-// (origin, seq) in cutoff_seq_per_origin}` so the snapshot and the
-// live tail stitch without gap or overlap.
+// A bootstrapping peer MUST persist `cutoff_seq_per_origin`,
+// `cutoff_local_seq`, and `cutoff_hlc` before applying any payload entries and
+// MUST resume Subscribe against the SAME responder with both
+// `from_seq_per_origin = {origin: seq+1 for each (origin, seq) in
+// cutoff_seq_per_origin}` and `from_local_seq = cutoff_local_seq+1` so the
+// snapshot and the live tail stitch without gap or overlap.
 //
 // Keys in `cutoff_seq_per_origin` are 32-char lowercase hex of the
 // 16-byte HLC NodeID, matching `SubscribeRequest.from_seq_per_origin`.
@@ -130,6 +137,10 @@ message SnapshotRequest {}
 message SnapshotHeader {
   map<string, uint64> cutoff_seq_per_origin = 1;
   HLCTimestamp cutoff_hlc = 2;
+  // Replica-local mutation-log position at snapshot open. It is deliberately
+  // separate from the portable per-origin watermarks and only resumes a tail
+  // against the same responder.
+  uint64 cutoff_local_seq = 3;
 }
 
 // SnapshotFooter is always the LAST SnapshotResponse on the wire. It carries
@@ -208,10 +219,11 @@ message SnapshotResponse {
 // part of #178's implementation in docs/replication.md.
 service LanternReplicationService {
   // Subscribe streams replicated mutations to a peer (or CDC consumer)
-  // starting at `from_seq` (inclusive). The server replays any in-buffer
-  // entries first, then streams live mutations as they are appended.
+  // starting at the supplied per-origin cursor. A same-responder snapshot
+  // resume also supplies `from_local_seq`; the server replays retained entries
+  // from that local position first, then streams live mutations.
   //
-  // If `from_seq` is below the server's first available seq the call
+  // If the requested replica-local replay window has been evicted, the call
   // fails with FAILED_PRECONDITION ("gapped") and the caller must
   // snapshot + resubscribe. Slow consumers whose channel backs up may
   // also have the stream terminated with FAILED_PRECONDITION — the
@@ -224,14 +236,15 @@ service LanternReplicationService {
 
   // Snapshot streams a point-in-time, causally-consistent dump of every
   // live vertex and edge to a bootstrapping peer. The first frame is a
-  // SnapshotHeader carrying the (cutoff_seq_per_origin, cutoff_hlc) the
-  // server used to materialise the snapshot; the last frame is a
+  // SnapshotHeader carrying the (cutoff_seq_per_origin, cutoff_local_seq,
+  // cutoff_hlc) the server used to materialise the snapshot; the last frame is a
   // SnapshotFooter with the actual vertex / edge counts streamed.
   //
   // Bootstrap stitch contract: after receiving the SnapshotFooter the
   // peer MUST call `Subscribe(from_seq_per_origin = {origin: seq+1 for
-  // each (origin, seq) in cutoff_seq_per_origin})` to pick up the live
-  // tail. Without that the snapshot and the live stream cannot be glued
+  // each (origin, seq) in cutoff_seq_per_origin}, from_local_seq =
+  // cutoff_local_seq+1)` against the same responder to pick up the live tail.
+  // Without that the snapshot and live stream cannot be glued
   // together without gap or overlap.
   //
   // No HTTP gateway annotation (parity with Subscribe).
@@ -283,4 +296,8 @@ message OriginState {
 message PeerStatusResponse {
   bytes self_origin = 1;
   repeated OriginState origins = 2;
+  // Fingerprint of every search setting that can change capabilities or
+  // ordered results. Replicas compare this before declaring themselves ready;
+  // empty means the responder cannot prove search-config compatibility.
+  string search_config_fingerprint = 3;
 }

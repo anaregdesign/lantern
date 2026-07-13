@@ -145,6 +145,8 @@ func TestDomainMetrics_ReplicationFamilies(t *testing.T) {
 	m.OnAntiEntropyCycle()
 	m.OnAntiEntropyBehind("peer-a:7000", "aabbccdd", 42)   // gauge=42, gaps=1
 	m.OnAntiEntropyCaughtUp("peer-a:7000", "aabbccdd", 42) // gauge→0
+	m.OnSearchConfig("peer-a:7000", false)
+	m.OnSearchConfig("peer-b:7000", true)
 
 	mfs, err := reg.Gather()
 	if err != nil {
@@ -160,6 +162,8 @@ func TestDomainMetrics_ReplicationFamilies(t *testing.T) {
 		"lantern_replication_lag_seq",
 		"lantern_anti_entropy_cycles_total",
 		"lantern_anti_entropy_gaps_found_total",
+		"lantern_search_config_match",
+		"lantern_search_config_mismatch_total",
 	} {
 		if !names[want] {
 			t.Errorf("metric family %q not registered", want)
@@ -184,6 +188,15 @@ func TestDomainMetrics_ReplicationFamilies(t *testing.T) {
 	// CaughtUp reset the lag back to 0 after the Behind tick set it to 42.
 	if got := testutil.ToFloat64(m.replicationLag.WithLabelValues("peer-a:7000", "aabbccdd")); got != 0 {
 		t.Errorf("replication_lag_seq after CaughtUp = %v, want 0", got)
+	}
+	if got := testutil.ToFloat64(m.searchConfigMatch.WithLabelValues("peer-a:7000")); got != 0 {
+		t.Errorf("search_config_match{peer-a} = %v, want 0", got)
+	}
+	if got := testutil.ToFloat64(m.searchConfigMatch.WithLabelValues("peer-b:7000")); got != 1 {
+		t.Errorf("search_config_match{peer-b} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.searchConfigMismatch.WithLabelValues("peer-a:7000")); got != 1 {
+		t.Errorf("search_config_mismatch_total{peer-a} = %v, want 1", got)
 	}
 }
 

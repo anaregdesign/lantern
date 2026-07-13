@@ -85,6 +85,8 @@ type Service interface {
 	BackupSnapshot(ctx context.Context, req *pb.BackupSnapshotRequest, stream service.Sender[pb.BackupSnapshotResponse]) error
 	RestoreVertices(ctx context.Context, req *pb.PutVerticesRequest) (*pb.PutVerticesResponse, error)
 	PutEdges(ctx context.Context, req *pb.PutEdgesRequest) (*pb.PutEdgesResponse, error)
+	BeginSearchIndexRecovery()
+	CompleteSearchIndexRecovery() error
 }
 
 // Stats counts the vertices and edges in a single backup or restore.
@@ -260,19 +262,30 @@ func (b *Backupper) failed() {
 // vertex values.
 func (b *Backupper) apply(ctx context.Context, vertices []*pb.Vertex, edges []*pb.Edge) (Stats, error) {
 	var stats Stats
+	b.svc.BeginSearchIndexRecovery()
 	for i := 0; i < len(vertices); i += restoreChunkSize {
 		end := min(i+restoreChunkSize, len(vertices))
-		if _, err := b.svc.RestoreVertices(ctx, &pb.PutVerticesRequest{Vertices: vertices[i:end]}); err != nil {
+		resp, err := b.svc.RestoreVertices(ctx, &pb.PutVerticesRequest{Vertices: vertices[i:end]})
+		if err != nil {
 			return stats, fmt.Errorf("backup: restore vertices: %w", err)
 		}
-		stats.Vertices += end - i
+		stats.Vertices += int(resp.GetWritten())
 	}
 	for i := 0; i < len(edges); i += restoreChunkSize {
 		end := min(i+restoreChunkSize, len(edges))
-		if _, err := b.svc.PutEdges(ctx, &pb.PutEdgesRequest{Edges: edges[i:end]}); err != nil {
+		resp, err := b.svc.PutEdges(ctx, &pb.PutEdgesRequest{Edges: edges[i:end]})
+		if err != nil {
 			return stats, fmt.Errorf("backup: restore PutEdges: %w", err)
 		}
-		stats.Edges += end - i
+		stats.Edges += int(resp.GetWritten())
+	}
+	if err := b.svc.CompleteSearchIndexRecovery(); err != nil {
+		b.logger.Warn("backup: restored graph but search index remains incomplete",
+			slog.Any("err", err),
+			slog.Int("vertices_attempted", len(vertices)),
+			slog.Int("vertices_written", stats.Vertices),
+			slog.Int("edges_attempted", len(edges)),
+			slog.Int("edges_written", stats.Edges))
 	}
 	return stats, nil
 }

@@ -103,6 +103,33 @@ func TestGraphCacheSearchAnalysisLimits(t *testing.T) {
 			t.Fatalf("automatic bounded rebuild health = %q", got)
 		}
 	})
+
+	t.Run("bulk recovery stays incomplete until exact rebuild", func(t *testing.T) {
+		c := newCache()
+		expiration := time.Now().Add(time.Minute)
+		if err := c.PutVertexWithExpiration("before", "alpha", expiration); err != nil {
+			t.Fatal(err)
+		}
+		c.BeginSearchIndexRecovery()
+		if got := c.SearchIndexMemoryStats().Health; got != search.IndexIncomplete {
+			t.Fatalf("health during recovery = %q", got)
+		}
+		if _, _, err := c.SearchVerticesMatchContext(context.Background(), "alpha", 10, "", search.MatchOptions{}, false, search.Budget{}); !errors.Is(err, search.ErrIndexIncomplete) {
+			t.Fatalf("search during recovery err = %v", err)
+		}
+		if applied := c.PutVertexWithExpirationHLC("during", "beta", expiration, hlc.Timestamp{WallNs: 2}); !applied {
+			t.Fatal("recovery write was rejected")
+		}
+		if err := c.CompleteSearchIndexRecovery(); err != nil {
+			t.Fatalf("CompleteSearchIndexRecovery: %v", err)
+		}
+		if got := c.SearchIndexMemoryStats().Health; got != search.IndexHealthy {
+			t.Fatalf("health after recovery = %q", got)
+		}
+		if got := keys(c.SearchVertices("alpha beta", 10, "")); !reflect.DeepEqual(got, []string{"before", "during"}) {
+			t.Fatalf("rebuilt results = %v", got)
+		}
+	})
 }
 
 // keys returns just the IDs of a ranked result set, in rank order, for terse

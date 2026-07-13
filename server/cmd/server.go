@@ -225,7 +225,8 @@ func newLanternReplicationService(
 	return service.NewLanternReplicationService(log, backend, clock).
 		WithMetrics(dm).
 		WithLogger(logger).
-		WithOriginStates(svc)
+		WithOriginStates(svc).
+		WithSearchConfig(svc)
 }
 
 func (a *App) Run(ctx context.Context) error {

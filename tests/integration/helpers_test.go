@@ -3,9 +3,11 @@ package integration_test
 import (
 	"context"
 	"crypto/tls"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
@@ -13,12 +15,103 @@ import (
 	"golang.org/x/net/http2"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
+	"github.com/anaregdesign/lantern/core/search"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	client "github.com/anaregdesign/lantern/sdks/go"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
 )
+
+func productionSearchAnalysisLimits() search.SearchAnalysisLimits {
+	return search.SearchAnalysisLimits{
+		MaxDocumentBytes:     1 << 20,
+		MaxDocumentTokens:    250_000,
+		MaxDocumentTerms:     100_000,
+		MaxLiveTerms:         5_000_000,
+		MaxLivePostings:      50_000_000,
+		MaxPositionEntries:   50_000_000,
+		CompactionRatio:      2,
+		CompactionMinRetired: 10_000,
+	}
+}
+
+func productionSearchLimits(enabled, positions bool) service.SearchLimits {
+	return service.SearchLimits{
+		Enabled:          enabled,
+		PositionsEnabled: enabled && positions,
+		DefaultLimit:     100,
+		MaxLimit:         1000,
+		DefaultMode:      search.MatchAny,
+		DefaultMinShould: 1,
+		Timeout:          5 * time.Second,
+		MaxQueryBytes:    16 * 1024,
+		WorkBudget: search.Budget{
+			MaxQueryTerms:       1024,
+			MaxDictionaryVisits: 1_000_000,
+			MaxPostingVisits:    10_000_000,
+			MaxPositionVisits:   10_000_000,
+			MaxExpirationVisits: 100_000,
+		},
+		MaxInFlight:    32,
+		AnalysisLimits: productionSearchAnalysisLimits(),
+	}
+}
+
+func newProductionSearchCache(ttl time.Duration, enabled, positions bool, limits search.SearchAnalysisLimits) *graphcache.GraphCache[string, *pb.Vertex] {
+	return provider.NewGraphCache(provider.CacheConfig{TTL: ttl}, provider.SearchConfig{
+		Enabled: enabled, Positions: positions, AnalysisLimits: limits,
+	})
+}
+
+type searchHitSignature struct {
+	key       string
+	scoreBits uint64
+}
+
+func wireSearchSignature(ctx context.Context, raw graphv1connect.LanternServiceClient, query string, options *pb.SearchOptions) ([]searchHitSignature, error) {
+	resp, err := raw.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{
+		Query: query, Limit: 1000, Options: options,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]searchHitSignature, len(resp.Msg.GetHits()))
+	for i, hit := range resp.Msg.GetHits() {
+		out[i] = searchHitSignature{key: hit.GetKey(), scoreBits: math.Float64bits(hit.GetScore())}
+	}
+	return out, nil
+}
+
+func waitForSearchConvergence(t *testing.T, ctx context.Context, query string, options *pb.SearchOptions, raws ...graphv1connect.LanternServiceClient) []searchHitSignature {
+	t.Helper()
+	if len(raws) < 2 {
+		t.Fatal("waitForSearchConvergence requires at least two replicas")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var latest [][]searchHitSignature
+	for time.Now().Before(deadline) {
+		latest = latest[:0]
+		converged := true
+		for _, raw := range raws {
+			signature, err := wireSearchSignature(ctx, raw, query, options)
+			if err != nil {
+				converged = false
+				break
+			}
+			latest = append(latest, signature)
+			if len(latest) > 1 && !reflect.DeepEqual(latest[0], signature) {
+				converged = false
+			}
+		}
+		if converged {
+			return latest[0]
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("search %q did not converge exactly: %+v", query, latest)
+	return nil
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers — Connect-on-h2c in-process harness

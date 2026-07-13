@@ -43,12 +43,16 @@ is required for either reads or writes.
    to seed its in-memory state. `SnapshotHeader.cutoff_seq_per_origin`
    carries the per-origin watermark the snapshot was materialised against;
    the bootstrapping peer resumes by opening `Subscribe(from_seq_per_origin
-   = {origin: seq + 1 for each (origin, seq) in cutoff_seq_per_origin})`
-   so the snapshot and the live tail stitch without gap or overlap. See
-   #415 (Reading B) and the wire types in §8.2/§8.3.
+   = {origin: seq + 1 for each (origin, seq) in cutoff_seq_per_origin},
+   from_local_seq = cutoff_local_seq + 1)` against the same responder, so the
+   snapshot and live tail stitch without gap or overlap while portable
+   per-origin cursors still detect an evicted replay window. See #415
+   (Reading B) and the wire types in §8.2/§8.3.
 4. **Readiness gates traffic.** `/healthz/ready` returns `NOT_SERVING`
-   whenever replication lag exceeds `LANTERN_MAX_REPLICATION_LAG`, so the
-   load balancer drains the instance. **Single-instance mode** (empty
+   whenever replication lag exceeds `LANTERN_MAX_REPLICATION_LAG` or an
+   observed peer reports a different search config fingerprint, so the load
+   balancer drains the instance. Graph replication continues across a search
+   mismatch for repair and diagnosis. **Single-instance mode** (empty
    `LANTERN_PEERS`) bypasses this gate.
 5. **No leader, no Raft, no external storage.** v1 is intentionally
    ephemeral. Single-pod loss recovers from peers; total-cluster loss is
@@ -90,10 +94,19 @@ whether re-applying an already-seen mutation is a no-op.
 | `DeleteVertex(es)` | Tombstone (LWW) | A tombstone is itself an entry with HLC. Any `Put*` / `Add*` whose HLC < tombstone HLC is dropped. Tombstone TTL = D4. |
 | `DeleteEdge(s)` | Tombstone (LWW) on `(tail, head)` | Same as vertex tombstone. |
 
-Reads (`GetVertex(es)`, `GetEdge(s)`, `Illuminate`) are local-only — they
-never block on peers and never read-repair. Read-after-write across nodes is
-**eventual**, bounded by the readiness gate (invariant 4) plus the pump's
-flush latency target (§9).
+Reads (`GetVertex(es)`, `GetEdge(s)`, `Illuminate`, `SearchVertices`) are
+local-only — they never block on peers and never read-repair. Read-after-write
+across nodes is **eventual**, bounded by the readiness gate (invariant 4) plus
+the pump's flush latency target (§9).
+
+`SearchVertices` is derived from each replica's local live graph. During lag
+or a partition, membership, document frequency, BM25 scores, and top-k order
+may differ across replicas; a client-side failover can therefore return a
+different response. Once replicas have the same live graph and identical
+`search.config_fingerprint`, they return the same ordered hits and score bits.
+Snapshot bootstrap, anti-entropy snapshot repair, and backup restore mark the
+local search index `INCOMPLETE` before replay and rebuild it from the complete
+live graph before reporting `HEALTHY`. `DISABLED` remains a separate state.
 
 ## 5. Hybrid Logical Clock
 
@@ -315,17 +328,18 @@ Consequence:
   writer stamps it atomically at `Log.Append` time via the
   `SeqStamper` callback (see `core/mutationlog`).
 
-The internal peer pump uses the same RPC but with an empty cursor and
-relies on `ApplyMutation`'s watermark CAS to dedup duplicate hops; it
-still performs input-side self-echo suppression (`Mutation.Origin ==
-local NodeID → drop`) as defence-in-depth.
+The internal peer pump uses the same RPC. Ordinary sessions start with an
+empty portable cursor and rely on `ApplyMutation`'s watermark CAS to dedup
+duplicate hops; snapshot recovery resumes with both header-derived origin and
+same-responder local cursors. It still performs input-side self-echo
+suppression (`Mutation.Origin == local NodeID → drop`) as defence-in-depth.
 
 Back-pressure: server terminates the stream with `FAILED_PRECONDITION`
-(`gapped`) if either (a) the ring has been truncated below the
-oldest seq the cursor could match, or (b) the consumer's send buffer
+(`gapped`) if either (a) the ring has been truncated below the requested
+responder-local replay position, or (b) the consumer's send buffer
 overflows. In both cases the consumer must re-bootstrap via
 `Snapshot` and resume `Subscribe` with the
-`cutoff_seq_per_origin` returned by `SnapshotHeader`.
+`cutoff_seq_per_origin` and `cutoff_local_seq` returned by `SnapshotHeader`.
 
 Handler implementation notes (issue #180):
 
@@ -337,11 +351,9 @@ Handler implementation notes (issue #180):
   with the reason `"gapped"`, both at subscribe time (initial check) and
   when the in-flight channel is closed by the log's slow-subscriber
   eviction. This matches the wire contract above.
-- The handler shallow-copies the buffered `*pb.Mutation` into the
-  outbound `SubscribeResponse.Mutation` while overwriting `Seq` with
-  `entry.Seq`. The write path stores `Seq=0` on the buffered Mutation;
-  only Subscribe stamps it. Peer-pump apply (`#182`) must therefore
-  read `Seq` from the streamed envelope.
+- The handler forwards the buffered `*pb.Mutation` with its originating
+  writer's `Mutation.Seq` intact. A relay's replica-local `entry.Seq` is a
+  separate transport cursor and must never overwrite the portable origin seq.
 - Health: a separate service name `graph.v1.LanternReplicationService`
   is registered with the grpc health server and flipped to
   `NOT_SERVING` on shutdown alongside `LanternService`.
@@ -356,7 +368,7 @@ rpc Snapshot(SnapshotRequest) returns (stream SnapshotResponse);
 
 message SnapshotResponse {
   oneof entry {
-    SnapshotHeader header = 1;   // first frame: cutoff_seq_per_origin + cutoff_hlc
+    SnapshotHeader header = 1;   // first frame: origin/local cutoffs + cutoff_hlc
     SnapshotVertex vertex = 2;   // body: live vertex with stored HLC
     SnapshotEdge   edge   = 3;   // body: edge with per-contribution payloads
     SnapshotFooter footer = 4;   // last frame: streamed vertex/edge counts
@@ -370,6 +382,7 @@ message SnapshotHeader {
   // applied from that origin. Empty when the cluster is cold.
   map<string, uint64> cutoff_seq_per_origin = 1;
   HLCTimestamp cutoff_hlc = 2;
+  uint64 cutoff_local_seq = 3; // same-responder log position
 }
 
 message SnapshotEdge {
@@ -395,7 +408,10 @@ Framing contract:
   `logMutation`). `cutoff_hlc` is the primary's `clock.Now()` at
   snapshot-open time. The consumer Subscribes with
   `from_seq_per_origin = {origin: seq + 1 for each (origin, seq) in
-  cutoff_seq_per_origin}` to stitch the snapshot and the live tail.
+  cutoff_seq_per_origin}` and `from_local_seq = cutoff_local_seq + 1`
+  against that same responder to stitch the snapshot and the live tail.
+  `cutoff_local_seq` is deliberately not portable across replicas; the
+  per-origin map remains the portable CDC/failover watermark.
   An empty map means the primary has not yet applied any origin
   (cold cluster); the consumer should pass an empty Subscribe cursor.
 - The **footer** is always the last frame. It reports the actually
@@ -435,17 +451,21 @@ new pod boots
   │
   ├── for each peer P (in parallel; first to respond wins):
   │     stream = P.Snapshot(SnapshotRequest{})
-  │     header  = stream.Recv()      // {cutoff_seq_per_origin, cutoff_hlc}
+  │     header  = stream.Recv()      // per-origin + responder-local cutoffs
+  │     mark local search index INCOMPLETE
   │     apply  body frames → local cache
   │     footer = last frame          // assert counts match
+  │     rebuild exact local search index; only then mark HEALTHY
   │
   ├── for each peer P:
-  │     go pump(P)                  // Subscribe sends an empty cursor;
-  │                                  // the local watermark CAS dedups
-  │                                  // anything the snapshot already covered
+  │     compare PeerStatus.search_config_fingerprint
+  │     go pump(P)                  // Subscribe resumes at
+  │                                  // origin cutoffs + 1 and this
+  │                                  // responder's local cutoff + 1
   │
   └── /healthz/ready flips SERVING when:
-        - lag(P) < LANTERN_MAX_REPLICATION_LAG for all peers, OR
+        - lag(P) < LANTERN_MAX_REPLICATION_LAG and observed peer search
+          fingerprints match, OR
         - single-instance mode (LANTERN_PEERS empty)
 ```
 
@@ -518,6 +538,10 @@ Helm chart.
 Lantern is **AP** in CAP terms. During a partition:
 
 - Each side accepts both reads and writes (no quorum).
+- `SearchVertices` remains available but is local/eventual. Corpus membership,
+  BM25 statistics, scores, and top-k order may differ until mutation streaming
+  or anti-entropy repairs the graph; clients must not interpret a partition-time
+  response as a cluster-wide snapshot.
 - `Add*` writes on both sides combine cleanly when the partition heals
   (G-Set union). No data is lost.
 - `Put*` writes on both sides converge to the higher-HLC value. The losing
@@ -538,6 +562,7 @@ The [HA runbook](ha-runbook.md) describes detection (`lantern_replication_lag_se
 |---|---|---|
 | Single pod crash | k8s probe / Compose healthcheck | k8s/Compose restarts pod → bootstraps from peers. |
 | Pod falls behind > buffer | `Subscribe` returns `FailedPrecondition` (reason `gapped`) | Pump auto re-snapshots and resumes. |
+| Search config differs across replicas | `lantern_search_config_match{peer}=0`, mismatch counter/log, readiness `NOT_SERVING` | Make every search-affecting `LANTERN_SEARCH_*` value homogeneous, then wait for the next pump/anti-entropy comparison. |
 | All peers unreachable on boot | `Snapshot` fails on every peer | Pod stays `NOT_SERVING`; operator alert on readiness. |
 | Total-cluster loss | every replica down | **Accepted data loss** (D1) — bring the cluster back empty, *or* run snapshot backups (`LANTERN_BACKUP_*`, [backup.md](backup.md)) so each node restores its newest dump on boot. |
 | NTP skew > 500ms | `lantern_hlc_skew_clamped_total > 0` (planned — #180/#182) | Fix NTP. Mutations from the drifted peer keep applying (their HLC wall is clamped, §5.3); convergence is preserved but the drifted peer's stamps land behind real wall time until it heals. |

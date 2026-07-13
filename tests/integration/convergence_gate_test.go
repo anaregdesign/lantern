@@ -33,7 +33,9 @@ func newConvergenceNode(t *testing.T, nodeID hlc.NodeID, tombstoneTTL time.Durat
 	svc := service.NewLanternService(cache).
 		WithReplication(log, clock, nil).
 		WithTombstoneTTL(tombstoneTTL)
-	rep := service.NewLanternReplicationService(log, cache, clock)
+	rep := service.NewLanternReplicationService(log, cache, clock).
+		WithOriginStates(svc).
+		WithSearchConfig(svc)
 	srv := newConnectTestServer(t, svc, rep)
 
 	return &pumpNode{

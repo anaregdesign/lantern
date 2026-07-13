@@ -92,14 +92,15 @@ func NewReplicationPump(
 	logger *slog.Logger,
 ) *replication.Pump {
 	cfg := replication.Config{
-		NodeID:            rc.NodeID,
-		Peers:             pc.Peers,
-		BackoffMin:        pc.BackoffMin,
-		BackoffMax:        pc.BackoffMax,
-		Logger:            logger,
-		Metrics:           m,
-		DiscoveryInterval: pc.DiscoveryInterval,
-		AuthToken:         firstToken(ac.Tokens),
+		NodeID:                  rc.NodeID,
+		Peers:                   pc.Peers,
+		BackoffMin:              pc.BackoffMin,
+		BackoffMax:              pc.BackoffMax,
+		Logger:                  logger,
+		Metrics:                 m,
+		DiscoveryInterval:       pc.DiscoveryInterval,
+		AuthToken:               firstToken(ac.Tokens),
+		SearchConfigFingerprint: svc.SearchConfigFingerprint(),
 	}
 	if pc.Discovery == "dns" && pc.DNSName != "" {
 		selfIPs, err := replication.LocalIPSet()

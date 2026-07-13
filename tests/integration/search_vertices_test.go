@@ -133,12 +133,6 @@ func conformanceSDKOptions(options searchConformanceOptions) []client.SearchOpti
 	return out
 }
 
-func newProductionSearchCache(ttl time.Duration, enabled, positions bool, limits search.SearchAnalysisLimits) *graphcache.GraphCache[string, *pb.Vertex] {
-	return provider.NewGraphCache(provider.CacheConfig{TTL: ttl}, provider.SearchConfig{
-		Enabled: enabled, Positions: positions, AnalysisLimits: limits,
-	})
-}
-
 func wireSearchErrorReason(t *testing.T, err error) pb.SearchErrorReason {
 	t.Helper()
 	return wireSearchErrorDetail(t, err).GetReason()

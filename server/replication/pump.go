@@ -4,25 +4,25 @@
 // goroutine maintains a long-lived Connect-Go HTTP/2 stream to its peer
 // and, in order:
 //
-//  1. Opens LanternReplicationService.Subscribe(from_seq=N), where N is
-//     the next seq the local node expects from THAT peer (tracked
-//     per-peer across reconnects, starts at 0 on first connect).
+//  1. Verifies PeerStatus search-config compatibility, then opens
+//     LanternReplicationService.Subscribe with an empty portable cursor.
 //  2. If the server replies codes.FailedPrecondition (reason "gapped" —
 //     the canonical bootstrap signal from #180), opens
 //     LanternReplicationService.Snapshot, replays the Header→Vertex→Edge
-//     frames into the local cache, then resumes Subscribe at
-//     header.cutoff_seq + 1.
+//     frames into the local cache, then resumes against the same responder at
+//     both header origin cutoffs + 1 and header.cutoff_local_seq + 1.
 //  3. Applies every received Mutation via the local MutationApplier
-//     (LanternService.ApplyMutation, which bypasses the local mutation
-//     log so replayed writes are NOT re-broadcast).
+//     (LanternService.ApplyMutation). Reading B appends a newly-observed remote
+//     mutation to the local log so any replica can serve the full cluster
+//     stream; the per-origin watermark prevents relay loops.
 //  4. On any other error (connection drop, peer crash, transient
 //     Unavailable) the goroutine reconnects with exponential backoff
 //     capped at BackoffMax.
 //
 // Self-echo suppression: a Mutation whose Origin == local NodeID is
 // dropped on receipt. The replication design is symmetric — every peer
-// streams its OWN appended mutations to every subscriber, so receivers
-// must filter their own writes back out.
+// log carries entries from every cluster origin, so receivers must filter
+// their own writes back out.
 //
 // LANTERN_PEERS="" (the default) yields a no-op pump: Run returns
 // immediately and no goroutines are spawned. This is single-instance
@@ -33,6 +33,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -65,6 +66,15 @@ type SnapshotApplier interface {
 	PutEdgeWithExpirationHLC(tail, head string, w float32, exp time.Time, ts hlc.Timestamp) bool
 }
 
+type searchIndexRecovery interface {
+	BeginSearchIndexRecovery()
+	CompleteSearchIndexRecovery() error
+}
+
+type snapshotWatermarkApplier interface {
+	ApplySnapshotWatermarks(cutoffs map[string]uint64, ts hlc.Timestamp) error
+}
+
 // applySnapshotEdge re-applies one snapshot edge contribution into the local
 // cache via snap. A Put-origin (LWW-Register) contribution carries a zero
 // ContribID: re-applying it through AddEdgeWithExpirationContribHLC hits the
@@ -94,6 +104,7 @@ type Metrics interface {
 	OnPumpApply(peer string)
 	OnPumpDropSelfEcho(peer string)
 	OnPumpSnapshotReplayed(peer string, vertices, edges uint64, duration time.Duration)
+	OnSearchConfig(peer string, matched bool)
 }
 
 type nopMetrics struct{}
@@ -103,6 +114,7 @@ func (nopMetrics) OnPumpDisconnect(string, string)                              
 func (nopMetrics) OnPumpApply(string)                                           {}
 func (nopMetrics) OnPumpDropSelfEcho(string)                                    {}
 func (nopMetrics) OnPumpSnapshotReplayed(string, uint64, uint64, time.Duration) {}
+func (nopMetrics) OnSearchConfig(string, bool)                                  {}
 
 // Config groups the inputs every Pump goroutine needs. All fields
 // except Peers are required to be valid; NewPump fills sensible
@@ -143,6 +155,12 @@ type Config struct {
 	// against peers running with LANTERN_AUTH_TOKENS (#850).
 	AuthToken string
 
+	// SearchConfigFingerprint is the local search capability fingerprint.
+	// When non-empty, every peer session verifies PeerStatus before opening
+	// Subscribe. A mismatch does not block graph replication, but readiness
+	// and metrics remain degraded until every observed peer matches.
+	SearchConfigFingerprint string
+
 	// HTTPClient is the http.Client used to open Connect-Go streams
 	// against each peer. When nil, defaultH2CClient() is used so the
 	// pump talks plain HTTP/2 over the cluster network — sufficient
@@ -177,6 +195,7 @@ type Pump struct {
 	cfg     Config
 	apply   MutationApplier
 	snap    SnapshotApplier
+	marks   snapshotWatermarkApplier
 	tracker *peerTracker
 }
 
@@ -201,7 +220,11 @@ func NewPump(cfg Config, apply MutationApplier, snap SnapshotApplier) *Pump {
 		cfg.HTTPClient = defaultH2CClient()
 	}
 	cfg.HTTPClient = withAuthToken(cfg.HTTPClient, cfg.AuthToken)
-	return &Pump{cfg: cfg, apply: apply, snap: snap, tracker: newPeerTracker()}
+	pump := &Pump{cfg: cfg, apply: apply, snap: snap, tracker: newPeerTracker()}
+	if marks, ok := apply.(snapshotWatermarkApplier); ok {
+		pump.marks = marks
+	}
+	return pump
 }
 
 // Run starts one goroutine per peer and blocks until ctx is
@@ -278,13 +301,12 @@ func (p *Pump) Run(ctx context.Context) error {
 // the loop sleeps for the current backoff (doubling, capped at
 // BackoffMax) and retries until ctx is cancelled.
 //
-// Under the leaderless Subscribe contract (#415, B-2/B-3/B-4) the
-// pump no longer tracks per-peer next-seq state across reconnects:
-// every Subscribe sends an empty per-origin cursor and the local
-// ApplyMutation watermark CAS dedups anything we have already seen
-// via this peer or any other. This trades one full-range scan per
-// reconnect (bounded by the mutation log ring capacity) for a much
-// simpler reconnect path that holds zero authoritative state.
+// Under the leaderless Subscribe contract (#415, B-2/B-3/B-4), ordinary
+// reconnects send an empty per-origin cursor and the local ApplyMutation
+// watermark CAS dedups anything already seen via this peer or any other.
+// A gapped session is different: after replaying a snapshot, the pump resumes
+// from the snapshot header's cutoff so it does not request the same unavailable
+// log prefix again.
 func (p *Pump) runPeer(ctx context.Context, addr string) {
 	log := p.cfg.Logger.With(slog.String("peer", addr))
 	defer p.tracker.removePeer(addr)
@@ -335,12 +357,26 @@ func (p *Pump) session(ctx context.Context, addr string) error {
 	cli := graphv1connect.NewLanternReplicationServiceClient(
 		p.cfg.HTTPClient, peerBaseURL(addr),
 	)
+	if p.cfg.SearchConfigFingerprint != "" {
+		status, err := cli.PeerStatus(ctx, connect.NewRequest(&pb.PeerStatusRequest{}))
+		if err != nil {
+			return fmt.Errorf("peer search-config status: %w", err)
+		}
+		remote := status.Msg.GetSearchConfigFingerprint()
+		matched := remote != "" && remote == p.cfg.SearchConfigFingerprint
+		p.cfg.Metrics.OnSearchConfig(addr, matched)
+		if !matched {
+			log.Error("replication pump: search config mismatch",
+				slog.String("local_fingerprint", p.cfg.SearchConfigFingerprint),
+				slog.String("peer_fingerprint", remote))
+		}
+	}
 
 	p.cfg.Metrics.OnPumpConnect(addr)
 	log.Info("replication pump: peer transition",
 		slog.String("transition", "connect"))
 
-	err := p.subscribe(ctx, cli, addr)
+	err := p.subscribe(ctx, cli, addr, nil, 0)
 	if err == nil {
 		p.cfg.Metrics.OnPumpDisconnect(addr, "clean")
 		log.Info("replication pump: peer transition",
@@ -356,15 +392,14 @@ func (p *Pump) session(ctx context.Context, addr string) error {
 		return nil
 	}
 	if connect.CodeOf(err) == connect.CodeFailedPrecondition {
-		// gapped: snapshot, then resume Subscribe with an empty
-		// cursor again. The local ApplyMutation watermark CAS
-		// (#415, B-3) dedups any entries the snapshot already
-		// covered, so we do not need to thread cutoff_seq_per_origin
-		// through to the Subscribe call.
+		// Gapped: snapshot, then resume after the snapshot cutoffs. Sending
+		// an empty cursor here would request the unavailable log prefix again
+		// and loop through snapshots indefinitely.
 		log.Info("replication pump: peer transition",
 			slog.String("transition", "snapshot_start"),
 			slog.String("reason", "gapped"))
-		if sErr := p.snapshot(ctx, cli, addr); sErr != nil {
+		header, sErr := p.snapshot(ctx, cli, addr)
+		if sErr != nil {
 			p.cfg.Metrics.OnPumpDisconnect(addr, "snapshot_failed")
 			log.Warn("replication pump: peer transition",
 				slog.String("transition", "snapshot_finish"),
@@ -375,7 +410,8 @@ func (p *Pump) session(ctx context.Context, addr string) error {
 		log.Info("replication pump: peer transition",
 			slog.String("transition", "snapshot_finish"),
 			slog.String("reason", "applied"))
-		err = p.subscribe(ctx, cli, addr)
+		resume := resumeAfterSnapshot(header)
+		err = p.subscribe(ctx, cli, addr, resume.origins, resume.local)
 		if err == nil {
 			p.cfg.Metrics.OnPumpDisconnect(addr, "clean")
 			log.Info("replication pump: peer transition",
@@ -397,16 +433,17 @@ func (p *Pump) session(ctx context.Context, addr string) error {
 // Returns any error from Receive / Apply; a clean stream end
 // returns nil.
 //
-// Under the leaderless Subscribe contract (#415) the peer's local
-// log carries mutations from every cluster origin, not just the
-// peer's own writes. The pump intentionally sends an empty cursor
-// (= deliver every retained entry) and relies on the per-origin
-// watermark CAS inside LanternService.ApplyMutation to dedup
-// entries it has already seen via another peer hop. This keeps the
-// reconnect path simple at the price of one full-range scan per
-// reconnect, bounded by the mutation log ring capacity.
-func (p *Pump) subscribe(ctx context.Context, cli graphv1connect.LanternReplicationServiceClient, addr string) error {
-	stream, err := cli.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{}))
+// Under the leaderless Subscribe contract (#415), the peer's local log carries
+// mutations from every cluster origin, not just the peer's own writes. Ordinary
+// reconnects pass an empty cursor (= deliver every retained entry) and rely on
+// LanternService.ApplyMutation's per-origin watermark CAS for deduplication.
+// Snapshot recovery instead passes the header-derived cursor supplied by the
+// caller so the live tail starts after the point-in-time cut.
+func (p *Pump) subscribe(ctx context.Context, cli graphv1connect.LanternReplicationServiceClient, addr string, cursor map[string]uint64, fromLocalSeq uint64) error {
+	stream, err := cli.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{
+		FromSeqPerOrigin: cursor,
+		FromLocalSeq:     fromLocalSeq,
+	}))
 	if err != nil {
 		return err
 	}
@@ -438,20 +475,24 @@ func (p *Pump) subscribe(ctx context.Context, cli graphv1connect.LanternReplicat
 // Returns nil on a clean (header + payload + footer) stream, or any
 // receive / apply error.
 //
-// The header's cutoff_seq_per_origin and cutoff_hlc are intentionally
-// not propagated outwards: the next Subscribe call sends an empty
-// cursor and relies on the local per-origin watermark CAS to dedup
-// any entries that the snapshot already covered, so the pump does not
-// need to thread the cutoff through to the resume call.
-func (p *Pump) snapshot(ctx context.Context, cli graphv1connect.LanternReplicationServiceClient, addr string) error {
+// The returned header supplies the exact per-origin resume cursor and local
+// watermark cut for the live tail. Replaying those cutoffs before Subscribe
+// prevents both duplicate application and an infinite gapped-snapshot loop.
+func (p *Pump) snapshot(ctx context.Context, cli graphv1connect.LanternReplicationServiceClient, addr string) (*pb.SnapshotHeader, error) {
 	stream, err := cli.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{}))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = stream.Close() }()
+	var recovery searchIndexRecovery
+	if candidate, ok := p.snap.(searchIndexRecovery); ok {
+		recovery = candidate
+		recovery.BeginSearchIndexRecovery()
+	}
 	start := time.Now()
 	var (
 		gotHeader    bool
+		header       *pb.SnapshotHeader
 		vertexCount  uint64
 		edgeCount    uint64
 		sawFooter    bool
@@ -462,15 +503,16 @@ func (p *Pump) snapshot(ctx context.Context, cli graphv1connect.LanternReplicati
 		switch e := resp.GetEntry().(type) {
 		case *pb.SnapshotResponse_Header:
 			if gotHeader {
-				return connect.NewError(connect.CodeInternal, errors.New("snapshot: duplicate header frame"))
+				return nil, connect.NewError(connect.CodeInternal, errors.New("snapshot: duplicate header frame"))
 			}
 			gotHeader = true
+			header = e.Header
 		case *pb.SnapshotResponse_Vertex:
 			if !gotHeader {
-				return connect.NewError(connect.CodeInternal, errors.New("snapshot: vertex frame before header"))
+				return nil, connect.NewError(connect.CodeInternal, errors.New("snapshot: vertex frame before header"))
 			}
 			if sawFooter {
-				return connect.NewError(connect.CodeInternal, errors.New("snapshot: vertex frame after footer"))
+				return nil, connect.NewError(connect.CodeInternal, errors.New("snapshot: vertex frame after footer"))
 			}
 			sv := e.Vertex
 			v := sv.GetVertex()
@@ -483,10 +525,10 @@ func (p *Pump) snapshot(ctx context.Context, cli graphv1connect.LanternReplicati
 			}
 		case *pb.SnapshotResponse_Edge:
 			if !gotHeader {
-				return connect.NewError(connect.CodeInternal, errors.New("snapshot: edge frame before header"))
+				return nil, connect.NewError(connect.CodeInternal, errors.New("snapshot: edge frame before header"))
 			}
 			if sawFooter {
-				return connect.NewError(connect.CodeInternal, errors.New("snapshot: edge frame after footer"))
+				return nil, connect.NewError(connect.CodeInternal, errors.New("snapshot: edge frame after footer"))
 			}
 			se := e.Edge
 			edgeHLC := snapshotHLC(se.GetHlc())
@@ -506,13 +548,13 @@ func (p *Pump) snapshot(ctx context.Context, cli graphv1connect.LanternReplicati
 		}
 	}
 	if err := stream.Err(); err != nil && !errors.Is(err, io.EOF) {
-		return err
+		return nil, err
 	}
 	if !gotHeader {
-		return connect.NewError(connect.CodeInternal, errors.New("snapshot: stream ended before header"))
+		return nil, connect.NewError(connect.CodeInternal, errors.New("snapshot: stream ended before header"))
 	}
 	if !sawFooter {
-		return connect.NewError(connect.CodeInternal, errors.New("snapshot: stream ended before footer"))
+		return nil, connect.NewError(connect.CodeInternal, errors.New("snapshot: stream ended before footer"))
 	}
 	if footerCounts.v != vertexCount || footerCounts.e != edgeCount {
 		// Count mismatch is a soft warning, not a hard error — the
@@ -525,8 +567,46 @@ func (p *Pump) snapshot(ctx context.Context, cli graphv1connect.LanternReplicati
 			slog.Uint64("edges_applied", edgeCount),
 			slog.Uint64("edges_footer", footerCounts.e))
 	}
+	if recovery != nil {
+		if err := recovery.CompleteSearchIndexRecovery(); err != nil {
+			p.cfg.Logger.Warn("replication pump: snapshot rebuilt graph but search index remains incomplete",
+				slog.String("peer", addr), slog.Any("err", err))
+		}
+	}
+	if p.marks != nil {
+		if err := p.marks.ApplySnapshotWatermarks(header.GetCutoffSeqPerOrigin(), snapshotHLC(header.GetCutoffHlc())); err != nil {
+			return nil, err
+		}
+	}
 	p.cfg.Metrics.OnPumpSnapshotReplayed(addr, vertexCount, edgeCount, time.Since(start))
-	return nil
+	return header, nil
+}
+
+type snapshotResumeCursor struct {
+	origins map[string]uint64
+	local   uint64
+}
+
+func resumeAfterSnapshot(header *pb.SnapshotHeader) snapshotResumeCursor {
+	if header == nil {
+		return snapshotResumeCursor{}
+	}
+	resume := snapshotResumeCursor{
+		origins: make(map[string]uint64, len(header.GetCutoffSeqPerOrigin())),
+	}
+	for origin, cutoff := range header.GetCutoffSeqPerOrigin() {
+		if cutoff == ^uint64(0) {
+			resume.origins[origin] = cutoff
+			continue
+		}
+		resume.origins[origin] = cutoff + 1
+	}
+	if cutoff := header.GetCutoffLocalSeq(); cutoff == ^uint64(0) {
+		resume.local = cutoff
+	} else {
+		resume.local = cutoff + 1
+	}
+	return resume
 }
 
 // isSelfEcho returns true when mu was originated by the local node.

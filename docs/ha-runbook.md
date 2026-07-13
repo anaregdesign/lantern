@@ -269,6 +269,8 @@ exact Prometheus series.
 | `lantern_replication_dropped_total{peer,reason}` | counter | Replication frames or peer interactions dropped. `reason` is `self_echo` / `subscribe_failed` / `snapshot_failed` / `dial_failed` / `peerstatus_failed` / `catchup_failed` / `clean` / `ctx_cancel`. A persistent non-zero rate (excluding `self_echo` / `clean`) signals an unreachable or stuck peer. |
 | `lantern_anti_entropy_cycles_total` | counter | Anti-entropy ticks. Should advance at `LANTERN_ANTI_ENTROPY_INTERVAL_MS` cadence. |
 | `lantern_anti_entropy_gaps_found_total{peer,origin}` | counter | Non-zero = real divergence detected and being repaired. Spiking after a partition heal = expected. Persistently incrementing in steady state = open a bug. |
+| `lantern_search_config_match{peer}` | gauge | `1` means the peer's search capability fingerprint exactly matches this pod; `0` means missing/mismatched and keeps readiness `NOT_SERVING`. |
+| `lantern_search_config_mismatch_total{peer}` | counter | Pump/anti-entropy observations of missing or mismatched search config. A rising counter means the topology is still heterogeneous. |
 | `lantern_mutation_log_entries_total` | counter | Total mutations ever logged on this pod. |
 | `lantern_mutation_log_capacity` | gauge | Ring buffer capacity. If sustained `rate(mutation_log_entries) × subscribe_lag_seconds > capacity`, slow peers will fall off and re-snapshot. |
 | `lantern_subscribe_active_streams` | gauge | Inbound subscribers (peers + external CDC). Drop = peer disconnect or CDC consumer crash. |
@@ -406,6 +408,12 @@ Operational notes:
 Lantern is **AP**. Both sides of a partition keep accepting reads and
 writes. See RFC §[10](replication.md#10-partition--split-brain-analysis)
 for the full analysis. The operational summary:
+
+`SearchVertices` is also available on both sides, but it is explicitly
+local/eventual: document membership, BM25 statistics, scores, and top-k order
+can differ until heal. Static SDK failover may therefore change a search
+response. Route user traffic only to ready replicas and wait for lag plus
+search-config signals to converge before comparing exact results.
 
 | Mutation type | Partition-time behaviour | Post-heal |
 |---|---|---|
@@ -647,10 +655,13 @@ A short checklist to walk before opening an incident:
       `lantern_hlc_skew_clamped_total` if/when present, or just keep
       NTP healthy.
 - [ ] **Heterogeneous search configuration.** Keep every `LANTERN_SEARCH_*`
-      value identical across replicas. Query `GetServerStatus` directly on
-      each pod and compare `search.config_fingerprint`; any mismatch means
-      clients can observe different search results or capabilities depending
-      on which replica serves the call. In particular, a replica with
+      value identical across replicas. Pump and anti-entropy compare
+      `PeerStatus.search_config_fingerprint` automatically; a mismatch sets
+      `lantern_search_config_match{peer}=0`, increments
+      `lantern_search_config_mismatch_total{peer}`, logs both fingerprints,
+      and keeps readiness `NOT_SERVING` while graph replication continues.
+      `GetServerStatus.search.config_fingerprint` remains the direct per-pod
+      diagnostic. In particular, a replica with
       `LANTERN_SEARCH_POSITIONS=false` rejects `phrase=true` with
       `SEARCH_POSITIONS_DISABLED` while a positions-enabled replica executes
       the phrase query.
@@ -671,6 +682,7 @@ operator actions.
 | NTP skew > 500 ms | `lantern_hlc_skew_clamped_total` (planned — #180/#182; until then watch NTP) | Fix NTP. Convergence preserved, but the drifted peer's stamps land behind real wall time. |
 | Network partition < tombstone TTL | `replication_lag_seq` spike; `anti_entropy_gaps_found_total` non-zero after heal | Auto-converges. No action. |
 | Network partition > tombstone TTL | Same signals + possible resurrection | Force re-snapshot from the side you trust ([§9.1](#91-force-a-re-snapshot)). Consider extending tombstone TTL. |
+| Search config mismatch | `search_config_match{peer}=0`, readiness 503 | Make search-affecting env identical; graph replication is intentionally still active. |
 
 ---
 
