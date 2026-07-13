@@ -69,11 +69,11 @@ leak_gate:
   goroutine_max_delta: 25
   heap_alloc_max_delta_mb: 32
 # Re-baselined from hosted ubuntu-latest runs after replacing the linear k-*
-# fixture with the verified topology. The 2026-07-12 run (29205455324) and
-# 2026-07-13 rerun attempt 2 (29279299107) measured 342.4-347.8 aggregate RPS
-# and 2226.99-2238.62 ms worst p99. Per-producer minima/maxima across those
-# runs were: raw 50.3/997.17, arborescence 85.6/563.77, SPT 57.0/838.52,
-# depth-3 14.3/2238.62, PPR 79.6/607.59, and community 37.2/1226.10.
+# fixture with the verified topology. Runs 29205455324, 29279299107 (attempt
+# 2), and 29283812783 measured 342.4-380.1 aggregate RPS and 2226.99-2301.95
+# ms worst p99. Per-producer minima/maxima across those runs were: raw
+# 50.3/997.17, arborescence 85.6/563.77, SPT 57.0/838.52, depth-3
+# 14.0/2301.95, PPR 79.6/607.59, and community 37.2/1226.10.
 # Floors keep >2x headroom below the lowest hosted throughput; ceilings keep
 # >=2x headroom above the highest hosted p99. Individual gates prevent a cheap
 # raw BFS producer from masking PPR, community, or depth-3 regressions.
