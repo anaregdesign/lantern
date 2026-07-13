@@ -22,6 +22,42 @@ enum SearchErrorReason {
 
   /// A local write would exceed a configured search-index memory limit.
   searchIndexBudgetExhausted,
+
+  /// The endpoint-sticky search session expired or was evicted.
+  searchCursorStale,
+
+  /// The cursor signature, owner request, endpoint, or configuration differs.
+  searchCursorInvalid,
+
+  /// The server retained only a bounded prefix of the ranked snapshot.
+  searchContinuationLimited,
+}
+
+/// Ranked-hit payload size.
+enum SearchProjection {
+  /// Return only key and relevance score.
+  keyScore,
+
+  /// Return the exact vertex value and TTL snapshot selected with the score.
+  fullVertex,
+}
+
+/// Per-hit projection state.
+enum SearchHitProjectionStatus {
+  /// An older server did not report projection state.
+  unspecified,
+
+  /// The hit intentionally carries key and score only.
+  keyScore,
+
+  /// [SearchHit.vertex] is the exact value/TTL snapshot selected with ranking.
+  snapshot,
+
+  /// The ranked key no longer had a provable live vertex snapshot.
+  missing,
+
+  /// A backend detected replacement and omitted the unrelated value.
+  replaced,
 }
 
 /// How a multi-term query selects matching vertices.
@@ -50,6 +86,8 @@ final class SearchOptions {
     this.phrase,
     this.fuzziness,
     this.prefixTerms,
+    this.cursor = const [],
+    this.projection = SearchProjection.keyScore,
   });
 
   /// Maximum hits; zero selects the server default.
@@ -73,18 +111,63 @@ final class SearchOptions {
 
   /// Whether query words also match dictionary extensions.
   final bool? prefixTerms;
+
+  /// Opaque endpoint-sticky cursor from the previous page.
+  final List<int> cursor;
+
+  /// Ranked-hit payload size.
+  final SearchProjection projection;
 }
 
 /// One immutable BM25-ranked hit; equal scores use raw [key] ascending.
 final class SearchHit {
   /// Creates a ranked hit.
-  const SearchHit({required this.key, required this.score});
+  const SearchHit({
+    required this.key,
+    required this.score,
+    this.vertex,
+    this.projectionStatus = SearchHitProjectionStatus.unspecified,
+  });
 
   /// Matching vertex key.
   final String key;
 
   /// BM25 relevance score; higher is more relevant.
   final double score;
+
+  /// Exact value/TTL snapshot for [SearchProjection.fullVertex].
+  final Vertex? vertex;
+
+  /// Whether [vertex] is a proven selection-time snapshot.
+  final SearchHitProjectionStatus projectionStatus;
+}
+
+/// One bounded page from an endpoint-sticky ranked snapshot.
+final class SearchPage {
+  /// Creates an immutable page.
+  SearchPage({
+    required Iterable<SearchHit> hits,
+    required Iterable<int> nextCursor,
+    required this.effectiveLimit,
+    required this.truncated,
+    required this.continuationLimited,
+  }) : hits = List<SearchHit>.unmodifiable(hits),
+       nextCursor = List<int>.unmodifiable(nextCursor);
+
+  /// Ranked hits in stable `(score DESC, raw key ASC)` order.
+  final List<SearchHit> hits;
+
+  /// Opaque cursor for the next page; empty means no admitted continuation.
+  final List<int> nextCursor;
+
+  /// Server-clamped page size.
+  final int effectiveLimit;
+
+  /// Whether more ranked hits existed beyond this page.
+  final bool truncated;
+
+  /// Whether a bounded session cap prevented complete continuation.
+  final bool continuationLimited;
 }
 
 /// Result of one search, including the server-configured disabled state.
@@ -289,40 +372,78 @@ extension LanternSearch on LanternClient {
     SearchOptions searchOptions = const SearchOptions(),
     LanternCallOptions? options,
   }) async {
-    _ensureOpen();
-    _validateSearchOptions(searchOptions);
-    final wireOptions = _searchOptionsToProto(searchOptions);
-    final request = $graph.SearchVerticesRequest(
-      query: query,
-      limit: searchOptions.limit,
-      prefix: searchOptions.prefix,
-      options: wireOptions,
-    );
     try {
-      final response = await _invoke(
-        'SearchVertices',
-        _freezeCallOptions(options),
-        (raw, headers, signal, onHeader, onTrailer) => raw.searchVertices(
-          request,
-          headers: headers,
-          signal: signal,
-          onHeader: onHeader,
-          onTrailer: onTrailer,
-        ),
+      final page = await searchVerticesPage(
+        query,
+        searchOptions: searchOptions,
+        options: options,
       );
-      return SearchEnabled(
-        response.hits.map(
-          (hit) => SearchHit(
-            key: hit.key,
-            score: _finiteFloatFromProto(hit.score, 'search score'),
-          ),
-        ),
-      );
+      return SearchEnabled(page.hits);
     } on LanternFailedPreconditionException catch (error) {
       if (error.searchReason == SearchErrorReason.searchDisabled) {
         return SearchDisabled(error);
       }
       rethrow;
+    }
+  }
+
+  /// Returns one bounded endpoint-sticky search snapshot page.
+  Future<SearchPage> searchVerticesPage(
+    String query, {
+    SearchOptions searchOptions = const SearchOptions(),
+    LanternCallOptions? options,
+  }) async {
+    _ensureOpen();
+    _validateSearchOptions(searchOptions);
+    final request = $graph.SearchVerticesRequest(
+      query: query,
+      limit: searchOptions.limit,
+      prefix: searchOptions.prefix,
+      options: _searchOptionsToProto(searchOptions),
+      cursor: List<int>.from(searchOptions.cursor),
+      projection: _searchProjectionToProto(searchOptions.projection),
+    );
+    final response = await _invoke(
+      'SearchVerticesPage',
+      _freezeCallOptions(options),
+      (raw, headers, signal, onHeader, onTrailer) => raw.searchVertices(
+        request,
+        headers: headers,
+        signal: signal,
+        onHeader: onHeader,
+        onTrailer: onTrailer,
+      ),
+    );
+    return SearchPage(
+      hits: response.hits.map(_searchHitFromProto),
+      nextCursor: response.nextCursor,
+      effectiveLimit: response.effectiveLimit,
+      truncated: response.truncated,
+      continuationLimited: response.continuationLimited,
+    );
+  }
+
+  /// Lazily yields every hit retained by one bounded search session.
+  Stream<SearchHit> searchVerticesStream(
+    String query, {
+    SearchOptions searchOptions = const SearchOptions(),
+    LanternCallOptions? options,
+  }) async* {
+    var cursor = List<int>.from(searchOptions.cursor);
+    while (true) {
+      final page = await searchVerticesPage(
+        query,
+        searchOptions: _searchOptionsWithCursor(searchOptions, cursor),
+        options: options,
+      );
+      yield* Stream<SearchHit>.fromIterable(page.hits);
+      if (page.nextCursor.isEmpty) {
+        if (page.continuationLimited) {
+          throw LanternSearchContinuationLimitedException._();
+        }
+        return;
+      }
+      cursor = page.nextCursor;
     }
   }
 
@@ -335,8 +456,53 @@ extension LanternSearch on LanternClient {
   }
 }
 
+SearchOptions _searchOptionsWithCursor(
+  SearchOptions options,
+  List<int> cursor,
+) => SearchOptions(
+  limit: options.limit,
+  prefix: options.prefix,
+  matchMode: options.matchMode,
+  minShouldMatch: options.minShouldMatch,
+  phrase: options.phrase,
+  fuzziness: options.fuzziness,
+  prefixTerms: options.prefixTerms,
+  cursor: cursor,
+  projection: options.projection,
+);
+
+$graph.SearchProjection _searchProjectionToProto(SearchProjection projection) =>
+    switch (projection) {
+      SearchProjection.keyScore =>
+        $graph.SearchProjection.SEARCH_PROJECTION_KEY_SCORE,
+      SearchProjection.fullVertex =>
+        $graph.SearchProjection.SEARCH_PROJECTION_FULL_VERTEX,
+    };
+
+SearchHit _searchHitFromProto($graph.SearchHit hit) => SearchHit(
+  key: hit.key,
+  score: _finiteFloatFromProto(hit.score, 'search score'),
+  vertex: hit.hasVertex() ? _vertexFromProto(hit.vertex) : null,
+  projectionStatus: switch (hit.projectionStatus) {
+    $graph.SearchHitProjectionStatus.SEARCH_HIT_PROJECTION_STATUS_KEY_SCORE =>
+      SearchHitProjectionStatus.keyScore,
+    $graph.SearchHitProjectionStatus.SEARCH_HIT_PROJECTION_STATUS_SNAPSHOT =>
+      SearchHitProjectionStatus.snapshot,
+    $graph.SearchHitProjectionStatus.SEARCH_HIT_PROJECTION_STATUS_MISSING =>
+      SearchHitProjectionStatus.missing,
+    $graph.SearchHitProjectionStatus.SEARCH_HIT_PROJECTION_STATUS_REPLACED =>
+      SearchHitProjectionStatus.replaced,
+    _ => SearchHitProjectionStatus.unspecified,
+  },
+);
+
 void _validateSearchOptions(SearchOptions options) {
   _validateUint32(options.limit, 'limit');
+  for (final byte in options.cursor) {
+    if (byte < 0 || byte > 0xff) {
+      throw _invalidArgumentException('cursor must contain only bytes');
+    }
+  }
   final min = options.minShouldMatch;
   if (min != null) _validateUint32(min, 'minShouldMatch');
   if (min != null &&

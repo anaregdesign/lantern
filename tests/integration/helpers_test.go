@@ -161,7 +161,7 @@ func defaultIntegrationValidationLimits() provider.ValidationLimits {
 // rep MAY be nil — the replication handler is then not mounted,
 // so single-node deployments can be exercised end-to-end.
 func newConnectTestServer(
-	t *testing.T,
+	t testing.TB,
 	svc *service.LanternService,
 	rep *service.LanternReplicationService,
 	interceptors ...connect.Interceptor,

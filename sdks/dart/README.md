@@ -136,6 +136,20 @@ exhausted counter. Cancellation, deadline, and work-budget failures are
 terminal for that attempt; retry unchanged only for admission saturation with
 jittered backoff, and issue only the newest input in incremental UI flows.
 
+`searchVerticesPage` returns one immutable, endpoint-sticky ranked page with
+`nextCursor`, `effectiveLimit`, `truncated`, and `continuationLimited`. Repeat
+the same `SearchOptions` with that cursor. Expired or evicted sessions throw a
+typed `LanternAbortedException` with `SearchErrorReason.searchCursorStale`;
+tamper or request/config/endpoint mismatch is a
+`LanternInvalidArgumentException` with `searchCursorInvalid`. Restart from page
+one explicitly. `searchVerticesStream` follows pages lazily and never builds an
+unbounded list; a bounded tail throws
+`LanternSearchContinuationLimitedException` after the final retained hit.
+
+`SearchProjection.keyScore` is the lightweight default.
+`SearchProjection.fullVertex` includes the exact value/TTL snapshot selected
+with ranking and avoids a racy follow-up read.
+
 ```dart
 final result = await client.searchVertices(
   'quiet cafe',
@@ -149,6 +163,17 @@ switch (result) {
     showHits(hits);
   case SearchDisabled():
     showSearchUnavailable();
+}
+
+await for (final hit in client.searchVerticesStream(
+  'quiet cafe',
+  searchOptions: const SearchOptions(
+    limit: 50,
+    prefix: 'place:',
+    projection: SearchProjection.fullVertex,
+  ),
+)) {
+  showHit(hit.key, hit.vertex);
 }
 ```
 

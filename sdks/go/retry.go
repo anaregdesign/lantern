@@ -235,6 +235,7 @@ var methodRetryClasses = map[string]methodRetryClass{
 	"ScanEdgesAll":           retryAlways,
 	"CountVerticesByPrefix":  retryAlways,
 	"SearchVertices":         retryAlways,
+	"SearchVerticesPage":     retryAlways,
 	"Illuminate":             retryAlways,
 	"GetServerStatus":        retryAlways,
 	"GetReplicationStatus":   retryAlways,
@@ -248,6 +249,7 @@ var methodRetryClasses = map[string]methodRetryClass{
 	"Restore":              retryNever, // stream restore — excluded in v1
 	"Subscribe":            retryNever, // server-streaming replication feed
 	"NewIncrementalSearch": retryNever, // session constructor; per-query retries ride unary
+	"SearchVerticesIter":   retryNever, // local iterator; each page owns its unary retry
 }
 
 // retryableMethod is the method-name counterpart to requestRetryable,

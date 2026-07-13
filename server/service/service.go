@@ -45,26 +45,28 @@ const ServiceName = "graph.v1.LanternService"
 // wire binding maps it to *graphcache.GraphCache in production. Tests can supply
 // a fake without standing up the real cache.
 type LanternService struct {
-	cache                  Backend
-	scan                   ScanLimits
-	search                 SearchLimits
-	searchGate             *semaphore.Weighted
-	log                    *mutationlog.Log
-	clock                  *hlc.Clock
-	origin                 []byte
-	onAppend               func()
-	logger                 *slog.Logger
-	tombstoneTTL           time.Duration
-	origins                *originStateTracker
-	onApplied              func(origin string)
-	onReplicationApply     func(op string)
-	onValidationReject     func(reason string)
-	onTombstoneClampReject func()
-	metrics                HotPathMetrics
-	traversalTimeout       time.Duration
-	traversalWorkBudget    graphcache.PPRWorkBudget
-	traversalMaxResults    int
-	capacity               CapacityLimits
+	cache                   Backend
+	scan                    ScanLimits
+	search                  SearchLimits
+	searchConfigFingerprint string
+	searchGate              *semaphore.Weighted
+	searchSessions          *searchSessionStore
+	log                     *mutationlog.Log
+	clock                   *hlc.Clock
+	origin                  []byte
+	onAppend                func()
+	logger                  *slog.Logger
+	tombstoneTTL            time.Duration
+	origins                 *originStateTracker
+	onApplied               func(origin string)
+	onReplicationApply      func(op string)
+	onValidationReject      func(reason string)
+	onTombstoneClampReject  func()
+	metrics                 HotPathMetrics
+	traversalTimeout        time.Duration
+	traversalWorkBudget     graphcache.PPRWorkBudget
+	traversalMaxResults     int
+	capacity                CapacityLimits
 
 	// statusInfo + startedAt + startedAtOnce back GetServerStatus
 	// (#314). Populated by WithStatusInfo / MarkStarted from the
@@ -157,6 +159,10 @@ type SearchLimits struct {
 	MaxQueryBytes    int
 	WorkBudget       search.Budget
 	MaxInFlight      int
+	CursorTTL        time.Duration
+	MaxSessions      int
+	MaxSessionHits   int
+	MaxSessionBytes  int64
 	AnalysisLimits   search.SearchAnalysisLimits
 }
 
@@ -174,20 +180,27 @@ func defaultSearchLimits() SearchLimits {
 			MaxPositionVisits:   10_000_000,
 			MaxExpirationVisits: 100_000,
 		},
-		MaxInFlight: 32,
+		MaxInFlight:     32,
+		CursorTTL:       time.Minute,
+		MaxSessions:     128,
+		MaxSessionHits:  10_000,
+		MaxSessionBytes: 64 << 20,
 	}
 }
 
 func NewLanternService(cache Backend) *LanternService {
+	searchLimits := defaultSearchLimits()
 	return &LanternService{
-		cache:               cache,
-		scan:                defaultScanLimits(),
-		search:              defaultSearchLimits(),
-		origins:             newOriginStateTracker(),
-		metrics:             noopHotPathMetrics{},
-		traversalTimeout:    5 * time.Second,
-		traversalWorkBudget: graphcache.PPRWorkBudget{MaxPushes: 1_000_000, MaxTouchedEdges: 10_000_000},
-		traversalMaxResults: 1024,
+		cache:                   cache,
+		scan:                    defaultScanLimits(),
+		search:                  searchLimits,
+		searchConfigFingerprint: computeSearchConfigFingerprint(searchLimits),
+		searchSessions:          newSearchSessionStore(searchLimits),
+		origins:                 newOriginStateTracker(),
+		metrics:                 noopHotPathMetrics{},
+		traversalTimeout:        5 * time.Second,
+		traversalWorkBudget:     graphcache.PPRWorkBudget{MaxPushes: 1_000_000, MaxTouchedEdges: 10_000_000},
+		traversalMaxResults:     1024,
 	}
 }
 
@@ -205,7 +218,28 @@ func (s *LanternService) WithScanLimits(l ScanLimits) *LanternService {
 // unit tests that construct LanternService directly get the FAILED_PRECONDITION
 // path until they opt in.
 func (s *LanternService) WithSearchLimits(l SearchLimits) *LanternService {
+	defaults := defaultSearchLimits()
+	if l.DefaultLimit == 0 {
+		l.DefaultLimit = defaults.DefaultLimit
+	}
+	if l.MaxLimit == 0 {
+		l.MaxLimit = defaults.MaxLimit
+	}
+	if l.CursorTTL <= 0 {
+		l.CursorTTL = defaults.CursorTTL
+	}
+	if l.MaxSessions <= 0 {
+		l.MaxSessions = defaults.MaxSessions
+	}
+	if l.MaxSessionHits <= 0 {
+		l.MaxSessionHits = defaults.MaxSessionHits
+	}
+	if l.MaxSessionBytes <= 0 {
+		l.MaxSessionBytes = defaults.MaxSessionBytes
+	}
 	s.search = l
+	s.searchConfigFingerprint = computeSearchConfigFingerprint(l)
+	s.searchSessions = newSearchSessionStore(l)
 	if l.MaxInFlight > 0 {
 		s.searchGate = semaphore.NewWeighted(int64(l.MaxInFlight))
 	} else {

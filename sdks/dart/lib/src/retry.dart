@@ -113,6 +113,7 @@ final class RetryRegistry {
     'ScanVerticesAll': RpcRetryClass.read,
     'ScanVertexKeysAll': RpcRetryClass.read,
     'ScanEdgesAll': RpcRetryClass.read,
+    'SearchVerticesPage': RpcRetryClass.read,
   };
 
   /// Returns [RpcRetryClass.never] for unknown methods.

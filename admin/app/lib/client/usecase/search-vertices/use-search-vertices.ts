@@ -3,6 +3,7 @@ import {
   useLayoutEffect,
   useMemo,
   useReducer,
+  useRef,
   useState,
 } from "react";
 import type { LanternClient } from "~/lib/client/infrastructure/api/lantern-client";
@@ -29,8 +30,8 @@ import {
 export const SEARCH_DEBOUNCE_MS = 200;
 
 /**
- * Cap on the number of ranked hits requested per query. Kept modest so the
- * single hydration batch stays small and the results list stays scannable.
+ * Page size for ranked hits. Kept modest so each FULL_VERTEX response stays
+ * small and the results list can render incrementally.
  */
 export const DEFAULT_SEARCH_LIMIT = 25;
 
@@ -55,12 +56,16 @@ export interface UseSearchVerticesResult {
   state: SearchVerticesState;
   /** Re-runs the current query (e.g. after the operator enables the index). */
   retry: () => void;
+  /** Whether a retained endpoint-sticky page can be loaded. */
+  canLoadMore: boolean;
+  /** Appends the next retained page without hiding existing rows. */
+  loadMore: () => void;
 }
 
 /**
  * Wires the pure search reducer + handlers to the live Lantern client.
  * Owns a single AbortController per query epoch so a fresh keystroke
- * cancels the previous search and hydration immediately; the reducer's
+ * cancels the previous search immediately; the reducer's
  * epoch guards make any reply that still lands inert.
  */
 export function useSearchVertices(
@@ -80,6 +85,7 @@ export function useSearchVertices(
     searchVerticesReducer,
     INITIAL_SEARCH_VERTICES_STATE,
   );
+  const loadMoreController = useRef<AbortController | null>(null);
 
   const [driver] = useState(() =>
     createSearchVerticesDriver({
@@ -119,16 +125,52 @@ export function useSearchVertices(
   // Invalidate the old epoch during the commit that displays the new input.
   // Only starting the replacement RPC is debounced.
   useLayoutEffect(() => {
+    loadMoreController.current?.abort();
+    loadMoreController.current = null;
     driver.update(input, debounceMs);
-    return () => driver.cancel();
+    return () => {
+      loadMoreController.current?.abort();
+      loadMoreController.current = null;
+      driver.cancel();
+    };
   }, [driver, input, debounceMs]);
 
   const retry = useCallback(() => {
+    loadMoreController.current?.abort();
+    loadMoreController.current = null;
     driver.retry(input, state.queryEpoch);
   }, [driver, input, state.queryEpoch]);
 
+  const loadMore = useCallback(() => {
+    if (
+      state.nextCursor === null ||
+      state.loadingMore ||
+      loadMoreController.current !== null
+    ) {
+      return;
+    }
+    const controller = new AbortController();
+    loadMoreController.current = controller;
+    void fetchSearchResults(
+      {
+        ...input,
+        epoch: state.queryEpoch,
+        cursor: state.nextCursor,
+        append: true,
+        signal: controller.signal,
+      },
+      dispatch,
+    ).finally(() => {
+      if (loadMoreController.current === controller) {
+        loadMoreController.current = null;
+      }
+    });
+  }, [input, state.loadingMore, state.nextCursor, state.queryEpoch]);
+
+  const canLoadMore = state.nextCursor !== null && !state.loadingMore;
+
   return useMemo<UseSearchVerticesResult>(
-    () => ({ state, retry }),
-    [state, retry],
+    () => ({ state, retry, canLoadMore, loadMore }),
+    [state, retry, canLoadMore, loadMore],
   );
 }

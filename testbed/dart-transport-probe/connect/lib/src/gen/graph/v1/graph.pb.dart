@@ -2233,12 +2233,16 @@ class SearchVerticesRequest extends $pb.GeneratedMessage {
     $core.int? limit,
     $core.String? prefix,
     SearchOptions? options,
+    $core.List<$core.int>? cursor,
+    SearchProjection? projection,
   }) {
     final result = create();
     if (query != null) result.query = query;
     if (limit != null) result.limit = limit;
     if (prefix != null) result.prefix = prefix;
     if (options != null) result.options = options;
+    if (cursor != null) result.cursor = cursor;
+    if (projection != null) result.projection = projection;
     return result;
   }
 
@@ -2260,6 +2264,13 @@ class SearchVerticesRequest extends $pb.GeneratedMessage {
     ..aOS(3, _omitFieldNames ? '' : 'prefix')
     ..aOM<SearchOptions>(4, _omitFieldNames ? '' : 'options',
         subBuilder: SearchOptions.create)
+    ..a<$core.List<$core.int>>(
+        5, _omitFieldNames ? '' : 'cursor', $pb.PbFieldType.OY)
+    ..e<SearchProjection>(
+        6, _omitFieldNames ? '' : 'projection', $pb.PbFieldType.OE,
+        defaultOrMaker: SearchProjection.SEARCH_PROJECTION_UNSPECIFIED,
+        valueOf: SearchProjection.valueOf,
+        enumValues: SearchProjection.values)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -2324,14 +2335,45 @@ class SearchVerticesRequest extends $pb.GeneratedMessage {
   void clearOptions() => $_clearField(4);
   @$pb.TagNumber(4)
   SearchOptions ensureOptions() => $_ensure(3);
+
+  /// cursor is the opaque endpoint-sticky continuation returned by the prior
+  /// page. It is bound to every request option and projection; changing any of
+  /// them returns INVALID_ARGUMENT. Empty starts a new bounded snapshot.
+  @$pb.TagNumber(5)
+  $core.List<$core.int> get cursor => $_getN(4);
+  @$pb.TagNumber(5)
+  set cursor($core.List<$core.int> value) => $_setBytes(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasCursor() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearCursor() => $_clearField(5);
+
+  /// projection defaults to KEY_SCORE when unspecified.
+  @$pb.TagNumber(6)
+  SearchProjection get projection => $_getN(5);
+  @$pb.TagNumber(6)
+  set projection(SearchProjection value) => $_setField(6, value);
+  @$pb.TagNumber(6)
+  $core.bool hasProjection() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearProjection() => $_clearField(6);
 }
 
 class SearchVerticesResponse extends $pb.GeneratedMessage {
   factory SearchVerticesResponse({
     $core.Iterable<SearchHit>? hits,
+    $core.List<$core.int>? nextCursor,
+    $core.int? effectiveLimit,
+    $core.bool? truncated,
+    $core.bool? continuationLimited,
   }) {
     final result = create();
     if (hits != null) result.hits.addAll(hits);
+    if (nextCursor != null) result.nextCursor = nextCursor;
+    if (effectiveLimit != null) result.effectiveLimit = effectiveLimit;
+    if (truncated != null) result.truncated = truncated;
+    if (continuationLimited != null)
+      result.continuationLimited = continuationLimited;
     return result;
   }
 
@@ -2350,6 +2392,12 @@ class SearchVerticesResponse extends $pb.GeneratedMessage {
       createEmptyInstance: create)
     ..pc<SearchHit>(1, _omitFieldNames ? '' : 'hits', $pb.PbFieldType.PM,
         subBuilder: SearchHit.create)
+    ..a<$core.List<$core.int>>(
+        2, _omitFieldNames ? '' : 'nextCursor', $pb.PbFieldType.OY)
+    ..a<$core.int>(
+        3, _omitFieldNames ? '' : 'effectiveLimit', $pb.PbFieldType.OU3)
+    ..aOB(4, _omitFieldNames ? '' : 'truncated')
+    ..aOB(5, _omitFieldNames ? '' : 'continuationLimited')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -2379,21 +2427,68 @@ class SearchVerticesResponse extends $pb.GeneratedMessage {
   /// than `limit` when fewer vertices match; empty when nothing matches.
   @$pb.TagNumber(1)
   $pb.PbList<SearchHit> get hits => $_getList(0);
+
+  /// next_cursor is non-empty while another retained snapshot page exists.
+  @$pb.TagNumber(2)
+  $core.List<$core.int> get nextCursor => $_getN(1);
+  @$pb.TagNumber(2)
+  set nextCursor($core.List<$core.int> value) => $_setBytes(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasNextCursor() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearNextCursor() => $_clearField(2);
+
+  /// effective_limit is the server-clamped page size used for this response.
+  @$pb.TagNumber(3)
+  $core.int get effectiveLimit => $_getIZ(2);
+  @$pb.TagNumber(3)
+  set effectiveLimit($core.int value) => $_setUnsignedInt32(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasEffectiveLimit() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearEffectiveLimit() => $_clearField(3);
+
+  /// truncated is true when the page does not contain every matching snapshot
+  /// hit, even when the caller chooses not to continue.
+  @$pb.TagNumber(4)
+  $core.bool get truncated => $_getBF(3);
+  @$pb.TagNumber(4)
+  set truncated($core.bool value) => $_setBool(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasTruncated() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearTruncated() => $_clearField(4);
+
+  /// continuation_limited means the bounded session hit/byte cap observed more
+  /// matches than it could retain. The final retained page has no next_cursor
+  /// while this remains true; iterators surface a typed terminal error instead
+  /// of pretending the bounded prefix was exhaustive.
+  @$pb.TagNumber(5)
+  $core.bool get continuationLimited => $_getBF(4);
+  @$pb.TagNumber(5)
+  set continuationLimited($core.bool value) => $_setBool(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasContinuationLimited() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearContinuationLimited() => $_clearField(5);
 }
 
 /// SearchHit pairs a matching vertex key with the relevance score the index
 /// assigned it (BM25; higher is more relevant). Equal scores are ordered by the
-/// raw, unnormalised key in ascending lexical order. The value and TTL are not
-/// included — callers that need them issue a follow-up GetVertices with the
-/// returned keys.
+/// raw, unnormalised key in ascending lexical order. KEY_SCORE omits the value
+/// and TTL; FULL_VERTEX carries an immutable selected snapshot.
 class SearchHit extends $pb.GeneratedMessage {
   factory SearchHit({
     $core.String? key,
     $core.double? score,
+    Vertex? vertex,
+    SearchHitProjectionStatus? projectionStatus,
   }) {
     final result = create();
     if (key != null) result.key = key;
     if (score != null) result.score = score;
+    if (vertex != null) result.vertex = vertex;
+    if (projectionStatus != null) result.projectionStatus = projectionStatus;
     return result;
   }
 
@@ -2412,6 +2507,13 @@ class SearchHit extends $pb.GeneratedMessage {
       createEmptyInstance: create)
     ..aOS(1, _omitFieldNames ? '' : 'key')
     ..a<$core.double>(2, _omitFieldNames ? '' : 'score', $pb.PbFieldType.OD)
+    ..aOM<Vertex>(3, _omitFieldNames ? '' : 'vertex', subBuilder: Vertex.create)
+    ..e<SearchHitProjectionStatus>(
+        4, _omitFieldNames ? '' : 'projectionStatus', $pb.PbFieldType.OE,
+        defaultOrMaker:
+            SearchHitProjectionStatus.SEARCH_HIT_PROJECTION_STATUS_UNSPECIFIED,
+        valueOf: SearchHitProjectionStatus.valueOf,
+        enumValues: SearchHitProjectionStatus.values)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -2450,6 +2552,28 @@ class SearchHit extends $pb.GeneratedMessage {
   $core.bool hasScore() => $_has(1);
   @$pb.TagNumber(2)
   void clearScore() => $_clearField(2);
+
+  /// vertex is populated only for FULL_VERTEX SNAPSHOT hits. It is the exact
+  /// immutable value/TTL selected under the same barrier as the score.
+  @$pb.TagNumber(3)
+  Vertex get vertex => $_getN(2);
+  @$pb.TagNumber(3)
+  set vertex(Vertex value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasVertex() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearVertex() => $_clearField(3);
+  @$pb.TagNumber(3)
+  Vertex ensureVertex() => $_ensure(2);
+
+  @$pb.TagNumber(4)
+  SearchHitProjectionStatus get projectionStatus => $_getN(3);
+  @$pb.TagNumber(4)
+  set projectionStatus(SearchHitProjectionStatus value) => $_setField(4, value);
+  @$pb.TagNumber(4)
+  $core.bool hasProjectionStatus() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearProjectionStatus() => $_clearField(4);
 }
 
 /// CountVerticesByPrefixRequest returns the number of live vertex keys with
@@ -4550,6 +4674,10 @@ class SearchCapabilities extends $pb.GeneratedMessage {
     $fixnum.Int64? compactionMinRetired,
     SearchIndexStats? indexStats,
     $fixnum.Int64? maxExpirationVisits,
+    $core.int? cursorTtlSeconds,
+    $core.int? maxSessions,
+    $core.int? maxSessionHits,
+    $fixnum.Int64? maxSessionBytes,
   }) {
     final result = create();
     if (enabled != null) result.enabled = enabled;
@@ -4584,6 +4712,10 @@ class SearchCapabilities extends $pb.GeneratedMessage {
     if (indexStats != null) result.indexStats = indexStats;
     if (maxExpirationVisits != null)
       result.maxExpirationVisits = maxExpirationVisits;
+    if (cursorTtlSeconds != null) result.cursorTtlSeconds = cursorTtlSeconds;
+    if (maxSessions != null) result.maxSessions = maxSessions;
+    if (maxSessionHits != null) result.maxSessionHits = maxSessionHits;
+    if (maxSessionBytes != null) result.maxSessionBytes = maxSessionBytes;
     return result;
   }
 
@@ -4657,6 +4789,15 @@ class SearchCapabilities extends $pb.GeneratedMessage {
         subBuilder: SearchIndexStats.create)
     ..a<$fixnum.Int64>(
         27, _omitFieldNames ? '' : 'maxExpirationVisits', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$core.int>(
+        28, _omitFieldNames ? '' : 'cursorTtlSeconds', $pb.PbFieldType.OU3)
+    ..a<$core.int>(
+        29, _omitFieldNames ? '' : 'maxSessions', $pb.PbFieldType.OU3)
+    ..a<$core.int>(
+        30, _omitFieldNames ? '' : 'maxSessionHits', $pb.PbFieldType.OU3)
+    ..a<$fixnum.Int64>(
+        31, _omitFieldNames ? '' : 'maxSessionBytes', $pb.PbFieldType.OU6,
         defaultOrMaker: $fixnum.Int64.ZERO)
     ..hasRequiredFields = false;
 
@@ -4925,6 +5066,42 @@ class SearchCapabilities extends $pb.GeneratedMessage {
   $core.bool hasMaxExpirationVisits() => $_has(26);
   @$pb.TagNumber(27)
   void clearMaxExpirationVisits() => $_clearField(27);
+
+  @$pb.TagNumber(28)
+  $core.int get cursorTtlSeconds => $_getIZ(27);
+  @$pb.TagNumber(28)
+  set cursorTtlSeconds($core.int value) => $_setUnsignedInt32(27, value);
+  @$pb.TagNumber(28)
+  $core.bool hasCursorTtlSeconds() => $_has(27);
+  @$pb.TagNumber(28)
+  void clearCursorTtlSeconds() => $_clearField(28);
+
+  @$pb.TagNumber(29)
+  $core.int get maxSessions => $_getIZ(28);
+  @$pb.TagNumber(29)
+  set maxSessions($core.int value) => $_setUnsignedInt32(28, value);
+  @$pb.TagNumber(29)
+  $core.bool hasMaxSessions() => $_has(28);
+  @$pb.TagNumber(29)
+  void clearMaxSessions() => $_clearField(29);
+
+  @$pb.TagNumber(30)
+  $core.int get maxSessionHits => $_getIZ(29);
+  @$pb.TagNumber(30)
+  set maxSessionHits($core.int value) => $_setUnsignedInt32(29, value);
+  @$pb.TagNumber(30)
+  $core.bool hasMaxSessionHits() => $_has(29);
+  @$pb.TagNumber(30)
+  void clearMaxSessionHits() => $_clearField(30);
+
+  @$pb.TagNumber(31)
+  $fixnum.Int64 get maxSessionBytes => $_getI64(30);
+  @$pb.TagNumber(31)
+  set maxSessionBytes($fixnum.Int64 value) => $_setInt64(30, value);
+  @$pb.TagNumber(31)
+  $core.bool hasMaxSessionBytes() => $_has(30);
+  @$pb.TagNumber(31)
+  void clearMaxSessionBytes() => $_clearField(31);
 }
 
 class SearchIndexStats extends $pb.GeneratedMessage {
@@ -4945,6 +5122,7 @@ class SearchIndexStats extends $pb.GeneratedMessage {
     $fixnum.Int64? expirationQueueEntries,
     $fixnum.Int64? expirationPurged,
     $1.Duration? lastExpirationPurgeDuration,
+    $fixnum.Int64? generation,
   }) {
     final result = create();
     if (health != null) result.health = health;
@@ -4968,6 +5146,7 @@ class SearchIndexStats extends $pb.GeneratedMessage {
     if (expirationPurged != null) result.expirationPurged = expirationPurged;
     if (lastExpirationPurgeDuration != null)
       result.lastExpirationPurgeDuration = lastExpirationPurgeDuration;
+    if (generation != null) result.generation = generation;
     return result;
   }
 
@@ -5032,6 +5211,9 @@ class SearchIndexStats extends $pb.GeneratedMessage {
         defaultOrMaker: $fixnum.Int64.ZERO)
     ..aOM<$1.Duration>(16, _omitFieldNames ? '' : 'lastExpirationPurgeDuration',
         subBuilder: $1.Duration.create)
+    ..a<$fixnum.Int64>(
+        17, _omitFieldNames ? '' : 'generation', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -5206,6 +5388,18 @@ class SearchIndexStats extends $pb.GeneratedMessage {
   void clearLastExpirationPurgeDuration() => $_clearField(16);
   @$pb.TagNumber(16)
   $1.Duration ensureLastExpirationPurgeDuration() => $_ensure(15);
+
+  /// generation advances on every committed search-visible mutation batch,
+  /// TTL purge, and rebuild. It is diagnostic only for bounded search
+  /// sessions; clients do not compare it themselves.
+  @$pb.TagNumber(17)
+  $fixnum.Int64 get generation => $_getI64(16);
+  @$pb.TagNumber(17)
+  set generation($fixnum.Int64 value) => $_setInt64(16, value);
+  @$pb.TagNumber(17)
+  $core.bool hasGeneration() => $_has(16);
+  @$pb.TagNumber(17)
+  void clearGeneration() => $_clearField(17);
 }
 
 class GetServerStatusResponse extends $pb.GeneratedMessage {

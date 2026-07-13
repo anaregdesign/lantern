@@ -97,6 +97,10 @@ func (c *GraphCache[S, T]) setEdgeTombstoneLocked(tail, head S, ts hlc.Timestamp
 func (c *GraphCache[S, T]) DeleteVertexHLC(key S, ts hlc.Timestamp, expiration time.Time) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.searchIndex != nil {
+		c.searchCommitMu.Lock()
+		defer c.searchCommitMu.Unlock()
+	}
 	existed := c.vertices.Delete(key)
 	c.setVertexTombstoneLocked(key, ts, expiration)
 	c.rebuildIncompleteSearchLocked()

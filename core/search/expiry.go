@@ -74,6 +74,7 @@ func (idx *InvertedIndex[S, D]) purgeExpired(work *workTracker, now time.Time) e
 		if purged > 0 {
 			idx.expirationPurged += purged
 			idx.lastExpirationPurge = time.Since(started)
+			idx.generation++
 		}
 	}()
 	for len(idx.expirations) > 0 {

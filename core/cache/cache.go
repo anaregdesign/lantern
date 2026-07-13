@@ -129,12 +129,19 @@ func (c *Cache[S, T]) fireEvicted(one func(S), many func([]S), evicted []S) {
 }
 
 func (c *Cache[S, T]) Get(key S) (T, bool) {
+	return c.GetAt(key, time.Now())
+}
+
+// GetAt returns the live value at the caller's already-sampled instant. It is
+// the value-returning sibling of HasAt for compound reads that must apply one
+// liveness boundary across selection and hydration.
+func (c *Cache[S, T]) GetAt(key S, now time.Time) (T, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
 	var noop T
 	v, ok := c.cache[key]
-	if !ok || v.IsExpired() {
+	if !ok || !IsLiveAt(v.expiration, now) {
 		// Expired entries are cleaned up by the periodic Flush in Watch;
 		// avoid spawning a goroutine per lookup.
 		return noop, false

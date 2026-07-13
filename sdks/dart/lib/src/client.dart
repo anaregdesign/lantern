@@ -135,6 +135,9 @@ enum LanternCode {
   /// A server or client resource limit was exhausted.
   resourceExhausted,
 
+  /// An optimistic or endpoint-local continuation can no longer proceed.
+  aborted,
+
   /// The operation is invalid in the current state.
   failedPrecondition,
 
@@ -208,7 +211,8 @@ final class LanternCanceledException extends LanternException {
 /// An invalid request.
 final class LanternInvalidArgumentException extends LanternException {
   LanternInvalidArgumentException._(_ErrorData data)
-    : super._(
+    : searchReason = data.searchReason,
+      super._(
         code: LanternCode.invalidArgument,
         transportCode: data.transportCode,
         transportCodeName: data.transportCodeName,
@@ -218,6 +222,9 @@ final class LanternInvalidArgumentException extends LanternException {
         trailers: data.trailers,
         metadata: data.metadata,
       );
+
+  /// Bounded search reason, or unspecified for non-search validation errors.
+  final SearchErrorReason searchReason;
 }
 
 /// An operation whose deadline expired.
@@ -286,6 +293,62 @@ final class LanternResourceExhaustedException extends LanternException {
 
   /// Exhausted work counter name, or empty for admission/non-search errors.
   final String searchWorkKind;
+}
+
+/// An operation that was aborted because its continuation state changed.
+final class LanternAbortedException extends LanternException {
+  LanternAbortedException._(_ErrorData data)
+    : searchReason = data.searchReason,
+      super._(
+        code: LanternCode.aborted,
+        transportCode: data.transportCode,
+        transportCodeName: data.transportCodeName,
+        message: data.message,
+        cause: data.cause,
+        headers: data.headers,
+        trailers: data.trailers,
+        metadata: data.metadata,
+      );
+
+  /// Bounded search reason, or unspecified for non-search aborted calls.
+  final SearchErrorReason searchReason;
+}
+
+/// The endpoint-sticky search session expired or was evicted.
+final class LanternSearchCursorStaleException extends LanternException {
+  LanternSearchCursorStaleException._(_ErrorData data)
+    : super._(
+        code: LanternCode.aborted,
+        transportCode: data.transportCode,
+        transportCodeName: data.transportCodeName,
+        message: data.message,
+        cause: data.cause,
+        headers: data.headers,
+        trailers: data.trailers,
+        metadata: data.metadata,
+      );
+
+  /// Stable cursor failure reason.
+  SearchErrorReason get searchReason => SearchErrorReason.searchCursorStale;
+}
+
+/// The server retained only a bounded prefix of one search snapshot.
+final class LanternSearchContinuationLimitedException extends LanternException {
+  LanternSearchContinuationLimitedException._()
+    : super._(
+        code: LanternCode.resourceExhausted,
+        transportCode: connect.Code.resourceExhausted.value,
+        transportCodeName: connect.Code.resourceExhausted.name,
+        message: 'search continuation was limited by the server session cap',
+        cause: null,
+        headers: const {},
+        trailers: const {},
+        metadata: const {},
+      );
+
+  /// Stable bounded-tail reason.
+  SearchErrorReason get searchReason =>
+      SearchErrorReason.searchContinuationLimited;
 }
 
 /// An operation that failed a state precondition.
@@ -1000,6 +1063,10 @@ LanternException _mapConnectException(
     connect.Code.notFound => LanternNotFoundException._(data),
     connect.Code.permissionDenied => LanternPermissionDeniedException._(data),
     connect.Code.resourceExhausted => LanternResourceExhaustedException._(data),
+    connect.Code.aborted =>
+      searchError.reason == SearchErrorReason.searchCursorStale
+          ? LanternSearchCursorStaleException._(data)
+          : LanternAbortedException._(data),
     connect.Code.failedPrecondition => LanternFailedPreconditionException._(
       data,
     ),
@@ -1029,6 +1096,12 @@ LanternException _mapConnectException(
           SearchErrorReason.searchIndexIncomplete,
         $graph.SearchErrorReason.SEARCH_INDEX_BUDGET_EXHAUSTED =>
           SearchErrorReason.searchIndexBudgetExhausted,
+        $graph.SearchErrorReason.SEARCH_CURSOR_STALE =>
+          SearchErrorReason.searchCursorStale,
+        $graph.SearchErrorReason.SEARCH_CURSOR_INVALID =>
+          SearchErrorReason.searchCursorInvalid,
+        $graph.SearchErrorReason.SEARCH_CONTINUATION_LIMITED =>
+          SearchErrorReason.searchContinuationLimited,
         _ => SearchErrorReason.unspecified,
       };
       return (reason: reason, workKind: decoded.workKind);

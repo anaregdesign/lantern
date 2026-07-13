@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/protobuf/proto"
 )
 
 // errSearchDisabled is the FAILED_PRECONDITION payload returned when the
@@ -105,6 +107,11 @@ func (s *LanternService) SearchVertices(ctx context.Context, in *pb.SearchVertic
 		observation.Outcome, observation.Reason = "invalid_argument", "invalid_options"
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
+	projection, err := normalizeSearchProjection(in.GetProjection())
+	if err != nil {
+		observation.Outcome, observation.Reason = "invalid_argument", "invalid_projection"
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
 	if !s.search.Enabled {
 		observation.Outcome, observation.Reason = "failed_precondition", "disabled"
 		return nil, newSearchPreconditionError(pb.SearchErrorReason_SEARCH_DISABLED, errSearchDisabled)
@@ -123,6 +130,35 @@ func (s *LanternService) SearchVertices(ctx context.Context, in *pb.SearchVertic
 		observation.Outcome, observation.Reason = "failed_precondition", "positions_disabled"
 		return nil, newSearchPreconditionError(pb.SearchErrorReason_SEARCH_POSITIONS_DISABLED, errSearchPositionsDisabled)
 	}
+	limit := clampLimit(in.GetLimit(), s.search.DefaultLimit, s.search.MaxLimit)
+	requestHash, err := searchRequestHash(in, limit, projection)
+	if err != nil {
+		observation.Outcome, observation.Reason = "internal", "internal"
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	configFingerprint := s.SearchConfigFingerprint()
+	if len(in.GetCursor()) > 0 {
+		hits, next, truncated, limited, pageErr := s.searchSessions.page(in.GetCursor(), requestHash, configFingerprint, int(limit))
+		if pageErr != nil {
+			switch {
+			case errors.Is(pageErr, errSearchCursorStale):
+				observation.Outcome, observation.Reason = "aborted", "cursor_stale"
+				return nil, newSearchAbortedError(pb.SearchErrorReason_SEARCH_CURSOR_STALE, pageErr)
+			default:
+				observation.Outcome, observation.Reason = "invalid_argument", "cursor_invalid"
+				return nil, newSearchInvalidCursorError(pb.SearchErrorReason_SEARCH_CURSOR_INVALID, pageErr)
+			}
+		}
+		observation.Results = len(hits)
+		observation.Outcome, observation.Reason = "ok", "none"
+		return &pb.SearchVerticesResponse{
+			Hits:                hits,
+			NextCursor:          next,
+			EffectiveLimit:      limit,
+			Truncated:           truncated,
+			ContinuationLimited: limited,
+		}, nil
+	}
 	if s.search.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, s.search.Timeout)
@@ -140,8 +176,46 @@ func (s *LanternService) SearchVertices(ctx context.Context, in *pb.SearchVertic
 			)
 		}
 	}
-	limit := clampLimit(in.GetLimit(), s.search.DefaultLimit, s.search.MaxLimit)
-	ranked, workStats, err := s.cache.SearchVerticesMatchContext(ctx, in.GetQuery(), int(limit), in.GetPrefix(), opts, phrase, s.search.WorkBudget)
+	retainedLimit := s.searchSessions.maxRetainedHits()
+	if retainedLimit < int(limit) {
+		retainedLimit = int(limit)
+	}
+	queryLimit := retainedLimit + 1
+	var hits []*pb.SearchHit
+	var workStats search.Stats
+	if projection == pb.SearchProjection_SEARCH_PROJECTION_FULL_VERTEX {
+		var snapshotErr error
+		snapshot, stats, snapshotErr := s.cache.SearchVerticesSnapshotContext(ctx, in.GetQuery(), queryLimit, in.GetPrefix(), opts, phrase, s.search.WorkBudget)
+		workStats = stats
+		err = snapshotErr
+		if err == nil {
+			hits = make([]*pb.SearchHit, 0, len(snapshot))
+			for _, ranked := range snapshot {
+				hit := &pb.SearchHit{Key: ranked.Result.ID, Score: ranked.Result.Score}
+				if ranked.Found && ranked.Value != nil {
+					hit.Vertex = proto.Clone(ranked.Value).(*pb.Vertex)
+					hit.ProjectionStatus = pb.SearchHitProjectionStatus_SEARCH_HIT_PROJECTION_STATUS_SNAPSHOT
+				} else {
+					hit.ProjectionStatus = pb.SearchHitProjectionStatus_SEARCH_HIT_PROJECTION_STATUS_MISSING
+				}
+				hits = append(hits, hit)
+			}
+		}
+	} else {
+		ranked, stats, rankedErr := s.cache.SearchVerticesMatchContext(ctx, in.GetQuery(), queryLimit, in.GetPrefix(), opts, phrase, s.search.WorkBudget)
+		workStats = stats
+		err = rankedErr
+		if err == nil {
+			hits = make([]*pb.SearchHit, 0, len(ranked))
+			for _, result := range ranked {
+				hits = append(hits, &pb.SearchHit{
+					Key:              result.ID,
+					Score:            result.Score,
+					ProjectionStatus: pb.SearchHitProjectionStatus_SEARCH_HIT_PROJECTION_STATUS_KEY_SCORE,
+				})
+			}
+		}
+	}
 	observation.Stats = workStats
 	if err != nil {
 		if errors.Is(err, search.ErrIndexIncomplete) {
@@ -164,18 +238,64 @@ func (s *LanternService) SearchVertices(ctx context.Context, in *pb.SearchVertic
 		observation.Outcome, observation.Reason = "internal", "internal"
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	hits := make([]*pb.SearchHit, 0, len(ranked))
-	for _, r := range ranked {
-		hits = append(hits, &pb.SearchHit{Key: r.ID, Score: r.Score})
+	limited := len(hits) > retainedLimit
+	if limited {
+		hits = hits[:retainedLimit]
 	}
-	observation.Results = len(hits)
+	pageEnd := min(int(limit), len(hits))
+	pageHits := cloneSearchHits(hits[:pageEnd])
+	truncated := pageEnd < len(hits) || limited
+	var next []byte
+	continuationLimited := limited
+	if pageEnd < len(hits) {
+		var admitted bool
+		next, admitted, err = s.searchSessions.create(requestHash, configFingerprint, hits, limited, pageEnd)
+		if err != nil {
+			observation.Outcome, observation.Reason = "internal", "internal"
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		if !admitted {
+			continuationLimited = true
+		}
+	}
+	observation.Results = len(pageHits)
 	observation.Outcome = "ok"
-	if len(hits) == 0 {
+	if len(pageHits) == 0 {
 		observation.Reason = "no_hits"
 	} else {
 		observation.Reason = "none"
 	}
-	return &pb.SearchVerticesResponse{Hits: hits}, nil
+	return &pb.SearchVerticesResponse{
+		Hits:                pageHits,
+		NextCursor:          next,
+		EffectiveLimit:      limit,
+		Truncated:           truncated,
+		ContinuationLimited: continuationLimited,
+	}, nil
+}
+
+func normalizeSearchProjection(projection pb.SearchProjection) (pb.SearchProjection, error) {
+	switch projection {
+	case pb.SearchProjection_SEARCH_PROJECTION_UNSPECIFIED,
+		pb.SearchProjection_SEARCH_PROJECTION_KEY_SCORE:
+		return pb.SearchProjection_SEARCH_PROJECTION_KEY_SCORE, nil
+	case pb.SearchProjection_SEARCH_PROJECTION_FULL_VERTEX:
+		return projection, nil
+	default:
+		return 0, fmt.Errorf("search projection %d is not recognized", projection)
+	}
+}
+
+func searchRequestHash(in *pb.SearchVerticesRequest, limit uint32, projection pb.SearchProjection) ([32]byte, error) {
+	canonical := proto.Clone(in).(*pb.SearchVerticesRequest)
+	canonical.Cursor = nil
+	canonical.Limit = limit
+	canonical.Projection = projection
+	raw, err := (proto.MarshalOptions{Deterministic: true}).Marshal(canonical)
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("marshal search cursor request: %w", err)
+	}
+	return sha256.Sum256(raw), nil
 }
 
 func searchObservationForRequest(in *pb.SearchVerticesRequest) SearchObservation {
@@ -273,6 +393,26 @@ func newSearchPreconditionError(reason pb.SearchErrorReason, cause error) error 
 func newSearchResourceError(reason pb.SearchErrorReason, workKind string, cause error) error {
 	err := connect.NewError(connect.CodeResourceExhausted, cause)
 	detail, detailErr := connect.NewErrorDetail(&pb.SearchErrorDetail{Reason: reason, WorkKind: workKind})
+	if detailErr != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("marshal SearchErrorDetail: %w", detailErr))
+	}
+	err.AddDetail(detail)
+	return err
+}
+
+func newSearchInvalidCursorError(reason pb.SearchErrorReason, cause error) error {
+	err := connect.NewError(connect.CodeInvalidArgument, cause)
+	detail, detailErr := connect.NewErrorDetail(&pb.SearchErrorDetail{Reason: reason})
+	if detailErr != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("marshal SearchErrorDetail: %w", detailErr))
+	}
+	err.AddDetail(detail)
+	return err
+}
+
+func newSearchAbortedError(reason pb.SearchErrorReason, cause error) error {
+	err := connect.NewError(connect.CodeAborted, cause)
+	detail, detailErr := connect.NewErrorDetail(&pb.SearchErrorDetail{Reason: reason})
 	if detailErr != nil {
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("marshal SearchErrorDetail: %w", detailErr))
 	}

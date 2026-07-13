@@ -31,6 +31,7 @@ type writer interface {
 
 type searcher interface {
 	SearchVertices(context.Context, string, ...client.SearchOption) ([]client.SearchHit, error)
+	SearchVerticesPage(context.Context, string, ...client.SearchOption) (client.SearchPage, error)
 }
 
 type check struct {
@@ -97,10 +98,10 @@ func main() {
 			_ = lantern.Close()
 			if err != nil {
 				rep.Verdict = "fail"
-				rep.Replicas = append(rep.Replicas, replicaReport{Endpoint: endpoint, Checks: len(searchChecks()), Verdict: "fail"})
+				rep.Replicas = append(rep.Replicas, replicaReport{Endpoint: endpoint, Checks: searchCheckCount(), Verdict: "fail"})
 				continue
 			}
-			rep.Replicas = append(rep.Replicas, replicaReport{Endpoint: endpoint, Checks: len(searchChecks()), Verdict: "pass"})
+			rep.Replicas = append(rep.Replicas, replicaReport{Endpoint: endpoint, Checks: searchCheckCount(), Verdict: "pass"})
 		}
 		writeReport(*reportPath, rep)
 		if rep.Verdict != "pass" {
@@ -120,6 +121,12 @@ func seed(ctx context.Context, w writer, now time.Time) error {
 		{Key: betaKey, Value: "quick blue fox embers"},
 		{Key: gammaKey, Value: "quick brown dog cinder"},
 	}
+	for i := range 9 {
+		inputs = append(inputs, client.VertexInput{
+			Key:   fmt.Sprintf("bench:search:page:%02d", i),
+			Value: "deeppaginationbeacon",
+		})
+	}
 	if err := w.PutVertices(ctx, inputs); err != nil {
 		return err
 	}
@@ -132,6 +139,8 @@ func seed(ctx context.Context, w writer, now time.Time) error {
 	}
 	return nil
 }
+
+func searchCheckCount() int { return len(searchChecks()) + 1 }
 
 func searchChecks() []check {
 	return []check{
@@ -199,6 +208,53 @@ func verifyOnce(ctx context.Context, s searcher) error {
 				return fmt.Errorf("%s: forbidden key is present", c.Name)
 			}
 		}
+	}
+	return verifyDeepPagination(ctx, s)
+}
+
+func verifyDeepPagination(ctx context.Context, s searcher) error {
+	want := make([]string, 9)
+	for i := range want {
+		want[i] = fmt.Sprintf("bench:search:page:%02d", i)
+	}
+	var got []string
+	var cursor []byte
+	pages := 0
+	for {
+		page, err := s.SearchVerticesPage(
+			ctx,
+			"deeppaginationbeacon",
+			client.WithSearchLimit(2),
+			client.WithFullVertex(),
+			client.WithSearchCursor(cursor),
+		)
+		if err != nil {
+			return fmt.Errorf("deep_pagination page %d: %w", pages+1, err)
+		}
+		pages++
+		if pages == 1 && (!page.Truncated || len(page.NextCursor) == 0 || page.EffectiveLimit != 2) {
+			return errors.New("deep_pagination first page omitted truthful continuation metadata")
+		}
+		for _, hit := range page.Hits {
+			if hit.ProjectionStatus != client.SearchHitProjectionSnapshot || hit.Vertex == nil {
+				return errors.New("deep_pagination FULL_VERTEX hit is not a proven snapshot")
+			}
+			value, valueErr := client.StringValue(hit.Vertex)
+			if valueErr != nil || value != "deeppaginationbeacon" {
+				return errors.New("deep_pagination FULL_VERTEX snapshot value changed")
+			}
+			got = append(got, hit.Key)
+		}
+		if len(page.NextCursor) == 0 {
+			if page.Truncated || page.ContinuationLimited {
+				return errors.New("deep_pagination ended with an incomplete bounded tail")
+			}
+			break
+		}
+		cursor = page.NextCursor
+	}
+	if pages < 5 || !slices.Equal(got, want) {
+		return fmt.Errorf("deep_pagination pages=%d ordered key count=%d", pages, len(got))
 	}
 	return nil
 }

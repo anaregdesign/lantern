@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 
 	"connectrpc.com/connect"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -20,6 +21,9 @@ const (
 	SearchErrorReasonAdmission         = pb.SearchErrorReason_SEARCH_ADMISSION_SATURATED
 	SearchErrorReasonIndexIncomplete   = pb.SearchErrorReason_SEARCH_INDEX_INCOMPLETE
 	SearchErrorReasonIndexBudget       = pb.SearchErrorReason_SEARCH_INDEX_BUDGET_EXHAUSTED
+	SearchErrorReasonCursorStale       = pb.SearchErrorReason_SEARCH_CURSOR_STALE
+	SearchErrorReasonCursorInvalid     = pb.SearchErrorReason_SEARCH_CURSOR_INVALID
+	SearchErrorReasonContinuation      = pb.SearchErrorReason_SEARCH_CONTINUATION_LIMITED
 )
 
 var (
@@ -36,6 +40,15 @@ var (
 	ErrSearchIndexIncomplete = errors.New("search index incomplete")
 	// ErrSearchIndexBudget means a local write would exceed an index memory cap.
 	ErrSearchIndexBudget = errors.New("search index budget exhausted")
+	// ErrSearchCursorStale means the endpoint-sticky session expired or was
+	// evicted. Restart explicitly from page one; never reuse the cursor.
+	ErrSearchCursorStale = errors.New("search cursor stale")
+	// ErrSearchCursorInvalid means the opaque cursor was tampered with or used
+	// with a different query, option set, projection, config, or endpoint.
+	ErrSearchCursorInvalid = errors.New("search cursor invalid")
+	// ErrSearchContinuationLimited means a bounded session exposed more matches
+	// than its configured hit/byte cap could retain.
+	ErrSearchContinuationLimited = errors.New("search continuation limited")
 )
 
 // SearchFailureReason extracts the machine-readable reason from a search
@@ -80,12 +93,43 @@ func SearchFailureWorkKind(err error) string {
 // SearchHit is one ranked result from Lantern.SearchVertices: the key of a
 // matching vertex paired with its full-text relevance Score (higher is more
 // relevant). Equal scores are ordered by raw Key ascending. Like EdgeRef it is
-// a flat SDK-native value, not a proto alias — it carries only the key and
-// score, so call GetVertex / GetVertices on the keys to hydrate the stored
-// value and TTL.
+// a flat SDK-native value, not a proto alias. Vertex is populated only when
+// SearchProjectionFullVertex was requested and ProjectionStatus proves an
+// exact selection snapshot.
 type SearchHit struct {
-	Key   string
-	Score float64
+	Key              string
+	Score            float64
+	Vertex           *Vertex
+	ProjectionStatus SearchHitProjectionStatus
+}
+
+// SearchProjection selects lightweight key+score hits or exact vertex
+// snapshots. The unspecified wire value is normalized to KeyScore.
+type SearchProjection = pb.SearchProjection
+
+const (
+	SearchProjectionKeyScore   = pb.SearchProjection_SEARCH_PROJECTION_KEY_SCORE
+	SearchProjectionFullVertex = pb.SearchProjection_SEARCH_PROJECTION_FULL_VERTEX
+)
+
+// SearchHitProjectionStatus states whether a hit is lightweight, an exact
+// snapshot, or a fail-closed missing/replaced selection.
+type SearchHitProjectionStatus = pb.SearchHitProjectionStatus
+
+const (
+	SearchHitProjectionKeyScore = pb.SearchHitProjectionStatus_SEARCH_HIT_PROJECTION_STATUS_KEY_SCORE
+	SearchHitProjectionSnapshot = pb.SearchHitProjectionStatus_SEARCH_HIT_PROJECTION_STATUS_SNAPSHOT
+	SearchHitProjectionMissing  = pb.SearchHitProjectionStatus_SEARCH_HIT_PROJECTION_STATUS_MISSING
+	SearchHitProjectionReplaced = pb.SearchHitProjectionStatus_SEARCH_HIT_PROJECTION_STATUS_REPLACED
+)
+
+// SearchPage is one bounded page plus its explicit continuation contract.
+type SearchPage struct {
+	Hits                []SearchHit
+	NextCursor          []byte
+	EffectiveLimit      uint32
+	Truncated           bool
+	ContinuationLimited bool
 }
 
 // MatchMode selects how SearchVertices combines a multi-word query's terms:
@@ -119,6 +163,8 @@ type searchOptions struct {
 	fuzziness      uint32
 	prefixTerms    bool
 	phrase         bool
+	cursor         []byte
+	projection     pb.SearchProjection
 }
 
 const maxSearchFuzziness = uint32(2)
@@ -137,6 +183,23 @@ func WithSearchLimit(n uint32) SearchOption {
 // namespace. An empty prefix (the default) searches every live vertex.
 func WithSearchPrefix(p string) SearchOption {
 	return func(o *searchOptions) { o.prefix = p }
+}
+
+// WithSearchCursor resumes the endpoint-sticky snapshot returned by the prior
+// SearchVerticesPage call. Treat cursor as opaque and repeat every other
+// option exactly.
+func WithSearchCursor(cursor []byte) SearchOption {
+	return func(o *searchOptions) { o.cursor = append([]byte(nil), cursor...) }
+}
+
+// WithSearchProjection selects KEY_SCORE or FULL_VERTEX result projection.
+func WithSearchProjection(projection SearchProjection) SearchOption {
+	return func(o *searchOptions) { o.projection = projection }
+}
+
+// WithFullVertex requests exact value/TTL snapshots in each ranked hit.
+func WithFullVertex() SearchOption {
+	return WithSearchProjection(SearchProjectionFullVertex)
 }
 
 // WithMatchMode selects how a multi-word query's terms combine: MatchAny (OR),
@@ -186,6 +249,13 @@ func ValidateSearchOptions(opts ...SearchOption) error {
 }
 
 func validateSearchOptions(o searchOptions) error {
+	switch o.projection {
+	case pb.SearchProjection_SEARCH_PROJECTION_UNSPECIFIED,
+		pb.SearchProjection_SEARCH_PROJECTION_KEY_SCORE,
+		pb.SearchProjection_SEARCH_PROJECTION_FULL_VERTEX:
+	default:
+		return fmt.Errorf("%w: search projection %d is not recognized", ErrInvalidArgument, o.projection)
+	}
 	switch o.matchMode {
 	case pb.MatchMode_MATCH_MODE_UNSPECIFIED,
 		pb.MatchMode_MATCH_MODE_ANY,
@@ -237,19 +307,29 @@ func validateSearchOptions(o searchOptions) error {
 // ErrFailedPrecondition and ErrSearchDisabled. A phrase request against a
 // server without positional postings matches ErrSearchPositionsDisabled.
 func (l *Lantern) SearchVertices(ctx context.Context, query string, opts ...SearchOption) ([]SearchHit, error) {
+	page, err := l.SearchVerticesPage(ctx, query, opts...)
+	return page.Hits, err
+}
+
+// SearchVerticesPage returns one bounded page. Truncated is truthful even when
+// the caller stops; NextCursor continues the same endpoint-sticky immutable
+// snapshot. A zero-hit success returns a non-nil empty Hits slice.
+func (l *Lantern) SearchVerticesPage(ctx context.Context, query string, opts ...SearchOption) (SearchPage, error) {
 	o := searchOptions{}
 	for _, apply := range opts {
 		apply(&o)
 	}
 	if err := validateSearchOptions(o); err != nil {
-		return nil, err
+		return SearchPage{}, err
 	}
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
 	req := &pb.SearchVerticesRequest{
-		Query:  query,
-		Limit:  o.limit,
-		Prefix: o.prefix,
+		Query:      query,
+		Limit:      o.limit,
+		Prefix:     o.prefix,
+		Cursor:     o.cursor,
+		Projection: o.projection,
 	}
 	if o.matchMode != pb.MatchMode_MATCH_MODE_UNSPECIFIED || o.minShouldMatch != 0 || o.fuzziness != 0 || o.prefixTerms || o.phrase {
 		req.Options = &pb.SearchOptions{
@@ -262,12 +342,59 @@ func (l *Lantern) SearchVertices(ctx context.Context, query string, opts ...Sear
 	}
 	resp, err := unary(ctx, l, req, l.client.SearchVertices)
 	if err != nil {
-		return nil, err
+		return SearchPage{}, err
 	}
 	pbHits := resp.GetHits()
 	hits := make([]SearchHit, 0, len(pbHits))
 	for _, h := range pbHits {
-		hits = append(hits, SearchHit{Key: h.GetKey(), Score: h.GetScore()})
+		hits = append(hits, SearchHit{
+			Key:              h.GetKey(),
+			Score:            h.GetScore(),
+			Vertex:           h.GetVertex(),
+			ProjectionStatus: h.GetProjectionStatus(),
+		})
 	}
-	return hits, nil
+	return SearchPage{
+		Hits:                hits,
+		NextCursor:          append([]byte(nil), resp.GetNextCursor()...),
+		EffectiveLimit:      resp.GetEffectiveLimit(),
+		Truncated:           resp.GetTruncated(),
+		ContinuationLimited: resp.GetContinuationLimited(),
+	}, nil
+}
+
+// SearchVerticesIter lazily yields every retained snapshot hit page by page.
+// It never materializes an unbounded collection. When the server's bounded
+// session cap prevented exhaustive retention it yields
+// ErrSearchContinuationLimited after the final retained hit.
+func (l *Lantern) SearchVerticesIter(ctx context.Context, query string, opts ...SearchOption) iter.Seq2[SearchHit, error] {
+	return func(yield func(SearchHit, error) bool) {
+		initial := searchOptions{}
+		for _, apply := range opts {
+			apply(&initial)
+		}
+		cursor := append([]byte(nil), initial.cursor...)
+		for {
+			pageOpts := append(append([]SearchOption(nil), opts...), WithSearchCursor(cursor))
+			page, err := l.SearchVerticesPage(ctx, query, pageOpts...)
+			if err != nil {
+				var zero SearchHit
+				yield(zero, err)
+				return
+			}
+			for _, hit := range page.Hits {
+				if !yield(hit, nil) {
+					return
+				}
+			}
+			if len(page.NextCursor) == 0 {
+				if page.ContinuationLimited {
+					var zero SearchHit
+					yield(zero, ErrSearchContinuationLimited)
+				}
+				return
+			}
+			cursor = page.NextCursor
+		}
+	}
 }

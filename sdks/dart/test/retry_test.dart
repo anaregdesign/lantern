@@ -298,6 +298,7 @@ void main() {
     expect(RetryRegistry.classify('FutureUnknownMethod'), RpcRetryClass.never);
     expect(RetryRegistry.classify('DeleteVertex'), RpcRetryClass.never);
     expect(RetryRegistry.classify('BackupSnapshot'), RpcRetryClass.stream);
+    expect(RetryRegistry.classify('SearchVerticesPage'), RpcRetryClass.read);
   });
 }
 

@@ -38,6 +38,10 @@ const sampleServer: ServerStatus = {
     maxPositionVisits: 10_000_000,
     maxExpirationVisits: 1_000_000,
     maxInFlight: 32,
+    cursorTtlSeconds: 60,
+    maxSessions: 128,
+    maxSessionHits: 10_000,
+    maxSessionBytes: 67_108_864,
     maxDocumentBytes: 1_048_576,
     maxDocumentTokens: 32_768,
     maxDocumentTerms: 16_384,
@@ -63,6 +67,7 @@ const sampleServer: ServerStatus = {
       rebuildCount: 2,
       lastRebuildDurationSeconds: 0.025,
       lastExpirationPurgeDurationSeconds: 0.001,
+      generation: 7,
     },
   },
 };

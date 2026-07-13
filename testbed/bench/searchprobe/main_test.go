@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +14,9 @@ import (
 
 type fakeSearcher struct {
 	responses [][]client.SearchHit
+	pages     []client.SearchPage
 	call      int
+	pageCall  int
 }
 
 func (f *fakeSearcher) SearchVertices(context.Context, string, ...client.SearchOption) ([]client.SearchHit, error) {
@@ -23,6 +26,49 @@ func (f *fakeSearcher) SearchVertices(context.Context, string, ...client.SearchO
 	response := f.responses[f.call]
 	f.call++
 	return response, nil
+}
+
+func (f *fakeSearcher) SearchVerticesPage(context.Context, string, ...client.SearchOption) (client.SearchPage, error) {
+	if f.pageCall >= len(f.pages) {
+		return client.SearchPage{}, nil
+	}
+	page := f.pages[f.pageCall]
+	f.pageCall++
+	return page, nil
+}
+
+func successfulPaginationPages() []client.SearchPage {
+	pages := make([]client.SearchPage, 0, 5)
+	for start := 0; start < 9; start += 2 {
+		end := min(start+2, 9)
+		hits := make([]client.SearchHit, 0, end-start)
+		for i := start; i < end; i++ {
+			hits = append(hits, client.SearchHit{
+				Key:              fmt.Sprintf("bench:search:page:%02d", i),
+				Vertex:           mustStringVertex(fmt.Sprintf("bench:search:page:%02d", i), "deeppaginationbeacon"),
+				ProjectionStatus: client.SearchHitProjectionSnapshot,
+			})
+		}
+		var cursor []byte
+		if end < 9 {
+			cursor = []byte{byte(end)}
+		}
+		pages = append(pages, client.SearchPage{
+			Hits:           hits,
+			NextCursor:     cursor,
+			EffectiveLimit: 2,
+			Truncated:      end < 9,
+		})
+	}
+	return pages
+}
+
+func mustStringVertex(key, value string) *client.Vertex {
+	vertex, err := client.UnmarshalVertexJSON([]byte(fmt.Sprintf(`{"key":%q,"type":"string","value":%q}`, key, value)))
+	if err != nil {
+		panic(err)
+	}
+	return vertex
 }
 
 type fakeWriter struct {
@@ -52,7 +98,7 @@ func TestVerifyOnce(t *testing.T) {
 			}
 			responses = append(responses, hits)
 		}
-		if err := verifyOnce(context.Background(), &fakeSearcher{responses: responses}); err != nil {
+		if err := verifyOnce(context.Background(), &fakeSearcher{responses: responses, pages: successfulPaginationPages()}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -81,7 +127,7 @@ func TestFailureReportIsBounded(t *testing.T) {
 		Verdict: "fail",
 		Replicas: []replicaReport{{
 			Endpoint: "http://localhost:6380",
-			Checks:   len(searchChecks()),
+			Checks:   searchCheckCount(),
 			Verdict:  "fail",
 		}},
 	})
@@ -102,7 +148,7 @@ func TestSeedWritesLifecycleSentinels(t *testing.T) {
 	if err := seed(context.Background(), w, now); err != nil {
 		t.Fatal(err)
 	}
-	if len(w.inputs) != 6 || w.deletedKey != deletedKey {
+	if len(w.inputs) != 15 || w.deletedKey != deletedKey {
 		t.Fatalf("inputs = %d, deleted = %q", len(w.inputs), w.deletedKey)
 	}
 	var expiration time.Time

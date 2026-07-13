@@ -288,6 +288,9 @@ func wrapConnectErr(err error) error {
 	case connect.CodeNotFound:
 		return errors.Join(ErrNotFound, err)
 	case connect.CodeInvalidArgument:
+		if SearchFailureReason(err) == SearchErrorReasonCursorInvalid {
+			return errors.Join(ErrInvalidArgument, ErrSearchCursorInvalid, err)
+		}
 		return errors.Join(ErrInvalidArgument, err)
 	case connect.CodeResourceExhausted:
 		switch SearchFailureReason(err) {
@@ -315,6 +318,10 @@ func wrapConnectErr(err error) error {
 		}
 	case connect.CodeUnauthenticated:
 		return errors.Join(ErrUnauthenticated, err)
+	case connect.CodeAborted:
+		if SearchFailureReason(err) == SearchErrorReasonCursorStale {
+			return errors.Join(ErrSearchCursorStale, err)
+		}
 	}
 	return err
 }

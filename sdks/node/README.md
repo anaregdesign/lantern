@@ -201,6 +201,33 @@ so replaying a cursor under the opposite order is rejected with
 `*All` async iterables take `order` as a trailing argument, e.g.
 `client.scanVerticesAll("user:", 500, undefined, "desc")`.
 
+### Search pages and projection
+
+`searchVerticesPage(query, opts?)` returns one immutable, endpoint-sticky
+ranked page with `nextCursor`, `effectiveLimit`, `truncated`, and
+`continuationLimited`. Carry the same query/options/projection with the cursor.
+An expired or evicted session throws `SearchCursorStaleError`; cursor tamper or
+request/config/endpoint mismatch remains an `InvalidArgumentError` with reason
+`SEARCH_CURSOR_INVALID`. Restart from page one explicitly—clients never hide a
+stale chain.
+
+`searchVerticesIter` is an async iterable over every retained page and does not
+build an unbounded array. If the endpoint retained only a bounded result prefix,
+it throws `SearchContinuationLimitedError` after yielding the final retained
+hit. The default `projection: "key-score"` stays lightweight;
+`projection: "full-vertex"` includes the exact value/TTL snapshot selected with
+the score and avoids a racy second hydration RPC.
+
+```ts
+for await (const hit of client.searchVerticesIter("quiet cafe", {
+  limit: 50,
+  prefix: "place:",
+  projection: "full-vertex",
+})) {
+  console.log(hit.key, hit.vertex);
+}
+```
+
 ### Prefix bulk-delete
 
 `deleteVerticesByPrefix(prefix, opts?)` and `deleteEdgesByPrefix(opts?)` remove

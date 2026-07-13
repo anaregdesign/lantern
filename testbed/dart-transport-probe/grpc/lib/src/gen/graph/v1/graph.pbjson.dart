@@ -92,6 +92,42 @@ final $typed_data.Uint8List matchModeDescriptor = $convert.base64Decode(
     'CglNYXRjaE1vZGUSGgoWTUFUQ0hfTU9ERV9VTlNQRUNJRklFRBAAEhIKDk1BVENIX01PREVfQU'
     '5ZEAESEgoOTUFUQ0hfTU9ERV9BTEwQAhIZChVNQVRDSF9NT0RFX01JTl9TSE9VTEQQAw==');
 
+@$core.Deprecated('Use searchProjectionDescriptor instead')
+const SearchProjection$json = {
+  '1': 'SearchProjection',
+  '2': [
+    {'1': 'SEARCH_PROJECTION_UNSPECIFIED', '2': 0},
+    {'1': 'SEARCH_PROJECTION_KEY_SCORE', '2': 1},
+    {'1': 'SEARCH_PROJECTION_FULL_VERTEX', '2': 2},
+  ],
+};
+
+/// Descriptor for `SearchProjection`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List searchProjectionDescriptor = $convert.base64Decode(
+    'ChBTZWFyY2hQcm9qZWN0aW9uEiEKHVNFQVJDSF9QUk9KRUNUSU9OX1VOU1BFQ0lGSUVEEAASHw'
+    'obU0VBUkNIX1BST0pFQ1RJT05fS0VZX1NDT1JFEAESIQodU0VBUkNIX1BST0pFQ1RJT05fRlVM'
+    'TF9WRVJURVgQAg==');
+
+@$core.Deprecated('Use searchHitProjectionStatusDescriptor instead')
+const SearchHitProjectionStatus$json = {
+  '1': 'SearchHitProjectionStatus',
+  '2': [
+    {'1': 'SEARCH_HIT_PROJECTION_STATUS_UNSPECIFIED', '2': 0},
+    {'1': 'SEARCH_HIT_PROJECTION_STATUS_KEY_SCORE', '2': 1},
+    {'1': 'SEARCH_HIT_PROJECTION_STATUS_SNAPSHOT', '2': 2},
+    {'1': 'SEARCH_HIT_PROJECTION_STATUS_MISSING', '2': 3},
+    {'1': 'SEARCH_HIT_PROJECTION_STATUS_REPLACED', '2': 4},
+  ],
+};
+
+/// Descriptor for `SearchHitProjectionStatus`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List searchHitProjectionStatusDescriptor = $convert.base64Decode(
+    'ChlTZWFyY2hIaXRQcm9qZWN0aW9uU3RhdHVzEiwKKFNFQVJDSF9ISVRfUFJPSkVDVElPTl9TVE'
+    'FUVVNfVU5TUEVDSUZJRUQQABIqCiZTRUFSQ0hfSElUX1BST0pFQ1RJT05fU1RBVFVTX0tFWV9T'
+    'Q09SRRABEikKJVNFQVJDSF9ISVRfUFJPSkVDVElPTl9TVEFUVVNfU05BUFNIT1QQAhIoCiRTRU'
+    'FSQ0hfSElUX1BST0pFQ1RJT05fU1RBVFVTX01JU1NJTkcQAxIpCiVTRUFSQ0hfSElUX1BST0pF'
+    'Q1RJT05fU1RBVFVTX1JFUExBQ0VEEAQ=');
+
 @$core.Deprecated('Use searchErrorReasonDescriptor instead')
 const SearchErrorReason$json = {
   '1': 'SearchErrorReason',
@@ -103,6 +139,9 @@ const SearchErrorReason$json = {
     {'1': 'SEARCH_ADMISSION_SATURATED', '2': 4},
     {'1': 'SEARCH_INDEX_INCOMPLETE', '2': 5},
     {'1': 'SEARCH_INDEX_BUDGET_EXHAUSTED', '2': 6},
+    {'1': 'SEARCH_CURSOR_STALE', '2': 7},
+    {'1': 'SEARCH_CURSOR_INVALID', '2': 8},
+    {'1': 'SEARCH_CONTINUATION_LIMITED', '2': 9},
   ],
 };
 
@@ -112,7 +151,8 @@ final $typed_data.Uint8List searchErrorReasonDescriptor = $convert.base64Decode(
     'ASEwoPU0VBUkNIX0RJU0FCTEVEEAESHQoZU0VBUkNIX1BPU0lUSU9OU19ESVNBQkxFRBACEiAK'
     'HFNFQVJDSF9XT1JLX0JVREdFVF9FWEhBVVNURUQQAxIeChpTRUFSQ0hfQURNSVNTSU9OX1NBVF'
     'VSQVRFRBAEEhsKF1NFQVJDSF9JTkRFWF9JTkNPTVBMRVRFEAUSIQodU0VBUkNIX0lOREVYX0JV'
-    'REdFVF9FWEhBVVNURUQQBg==');
+    'REdFVF9FWEhBVVNURUQQBhIXChNTRUFSQ0hfQ1VSU09SX1NUQUxFEAcSGQoVU0VBUkNIX0NVUl'
+    'NPUl9JTlZBTElEEAgSHwobU0VBUkNIX0NPTlRJTlVBVElPTl9MSU1JVEVEEAk=');
 
 @$core.Deprecated('Use searchIndexHealthDescriptor instead')
 const SearchIndexHealth$json = {
@@ -728,6 +768,15 @@ const SearchVerticesRequest$json = {
       '6': '.graph.v1.SearchOptions',
       '10': 'options'
     },
+    {'1': 'cursor', '3': 5, '4': 1, '5': 12, '10': 'cursor'},
+    {
+      '1': 'projection',
+      '3': 6,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.SearchProjection',
+      '10': 'projection'
+    },
   ],
 };
 
@@ -735,7 +784,9 @@ const SearchVerticesRequest$json = {
 final $typed_data.Uint8List searchVerticesRequestDescriptor = $convert.base64Decode(
     'ChVTZWFyY2hWZXJ0aWNlc1JlcXVlc3QSFAoFcXVlcnkYASABKAlSBXF1ZXJ5EhQKBWxpbWl0GA'
     'IgASgNUgVsaW1pdBIWCgZwcmVmaXgYAyABKAlSBnByZWZpeBIxCgdvcHRpb25zGAQgASgLMhcu'
-    'Z3JhcGgudjEuU2VhcmNoT3B0aW9uc1IHb3B0aW9ucw==');
+    'Z3JhcGgudjEuU2VhcmNoT3B0aW9uc1IHb3B0aW9ucxIWCgZjdXJzb3IYBSABKAxSBmN1cnNvch'
+    'I6Cgpwcm9qZWN0aW9uGAYgASgOMhouZ3JhcGgudjEuU2VhcmNoUHJvamVjdGlvblIKcHJvamVj'
+    'dGlvbg==');
 
 @$core.Deprecated('Use searchVerticesResponseDescriptor instead')
 const SearchVerticesResponse$json = {
@@ -749,14 +800,25 @@ const SearchVerticesResponse$json = {
       '6': '.graph.v1.SearchHit',
       '10': 'hits'
     },
+    {'1': 'next_cursor', '3': 2, '4': 1, '5': 12, '10': 'nextCursor'},
+    {'1': 'effective_limit', '3': 3, '4': 1, '5': 13, '10': 'effectiveLimit'},
+    {'1': 'truncated', '3': 4, '4': 1, '5': 8, '10': 'truncated'},
+    {
+      '1': 'continuation_limited',
+      '3': 5,
+      '4': 1,
+      '5': 8,
+      '10': 'continuationLimited'
+    },
   ],
 };
 
 /// Descriptor for `SearchVerticesResponse`. Decode as a `google.protobuf.DescriptorProto`.
-final $typed_data.Uint8List searchVerticesResponseDescriptor =
-    $convert.base64Decode(
-        'ChZTZWFyY2hWZXJ0aWNlc1Jlc3BvbnNlEicKBGhpdHMYASADKAsyEy5ncmFwaC52MS5TZWFyY2'
-        'hIaXRSBGhpdHM=');
+final $typed_data.Uint8List searchVerticesResponseDescriptor = $convert.base64Decode(
+    'ChZTZWFyY2hWZXJ0aWNlc1Jlc3BvbnNlEicKBGhpdHMYASADKAsyEy5ncmFwaC52MS5TZWFyY2'
+    'hIaXRSBGhpdHMSHwoLbmV4dF9jdXJzb3IYAiABKAxSCm5leHRDdXJzb3ISJwoPZWZmZWN0aXZl'
+    'X2xpbWl0GAMgASgNUg5lZmZlY3RpdmVMaW1pdBIcCgl0cnVuY2F0ZWQYBCABKAhSCXRydW5jYX'
+    'RlZBIxChRjb250aW51YXRpb25fbGltaXRlZBgFIAEoCFITY29udGludWF0aW9uTGltaXRlZA==');
 
 @$core.Deprecated('Use searchHitDescriptor instead')
 const SearchHit$json = {
@@ -764,12 +826,31 @@ const SearchHit$json = {
   '2': [
     {'1': 'key', '3': 1, '4': 1, '5': 9, '10': 'key'},
     {'1': 'score', '3': 2, '4': 1, '5': 1, '10': 'score'},
+    {
+      '1': 'vertex',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.Vertex',
+      '10': 'vertex'
+    },
+    {
+      '1': 'projection_status',
+      '3': 4,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.SearchHitProjectionStatus',
+      '10': 'projectionStatus'
+    },
   ],
 };
 
 /// Descriptor for `SearchHit`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List searchHitDescriptor = $convert.base64Decode(
-    'CglTZWFyY2hIaXQSEAoDa2V5GAEgASgJUgNrZXkSFAoFc2NvcmUYAiABKAFSBXNjb3Jl');
+    'CglTZWFyY2hIaXQSEAoDa2V5GAEgASgJUgNrZXkSFAoFc2NvcmUYAiABKAFSBXNjb3JlEigKBn'
+    'ZlcnRleBgDIAEoCzIQLmdyYXBoLnYxLlZlcnRleFIGdmVydGV4ElAKEXByb2plY3Rpb25fc3Rh'
+    'dHVzGAQgASgOMiMuZ3JhcGgudjEuU2VhcmNoSGl0UHJvamVjdGlvblN0YXR1c1IQcHJvamVjdG'
+    'lvblN0YXR1cw==');
 
 @$core.Deprecated('Use countVerticesByPrefixRequestDescriptor instead')
 const CountVerticesByPrefixRequest$json = {
@@ -1395,6 +1476,22 @@ const SearchCapabilities$json = {
       '5': 4,
       '10': 'maxExpirationVisits'
     },
+    {
+      '1': 'cursor_ttl_seconds',
+      '3': 28,
+      '4': 1,
+      '5': 13,
+      '10': 'cursorTtlSeconds'
+    },
+    {'1': 'max_sessions', '3': 29, '4': 1, '5': 13, '10': 'maxSessions'},
+    {'1': 'max_session_hits', '3': 30, '4': 1, '5': 13, '10': 'maxSessionHits'},
+    {
+      '1': 'max_session_bytes',
+      '3': 31,
+      '4': 1,
+      '5': 4,
+      '10': 'maxSessionBytes'
+    },
   ],
 };
 
@@ -1422,7 +1519,10 @@ final $typed_data.Uint8List searchCapabilitiesDescriptor = $convert.base64Decode
     'Rpb25SYXRpbxI0ChZjb21wYWN0aW9uX21pbl9yZXRpcmVkGBkgASgEUhRjb21wYWN0aW9uTWlu'
     'UmV0aXJlZBI7CgtpbmRleF9zdGF0cxgaIAEoCzIaLmdyYXBoLnYxLlNlYXJjaEluZGV4U3RhdH'
     'NSCmluZGV4U3RhdHMSMgoVbWF4X2V4cGlyYXRpb25fdmlzaXRzGBsgASgEUhNtYXhFeHBpcmF0'
-    'aW9uVmlzaXRz');
+    'aW9uVmlzaXRzEiwKEmN1cnNvcl90dGxfc2Vjb25kcxgcIAEoDVIQY3Vyc29yVHRsU2Vjb25kcx'
+    'IhCgxtYXhfc2Vzc2lvbnMYHSABKA1SC21heFNlc3Npb25zEigKEG1heF9zZXNzaW9uX2hpdHMY'
+    'HiABKA1SDm1heFNlc3Npb25IaXRzEioKEW1heF9zZXNzaW9uX2J5dGVzGB8gASgEUg9tYXhTZX'
+    'NzaW9uQnl0ZXM=');
 
 @$core.Deprecated('Use searchIndexStatsDescriptor instead')
 const SearchIndexStats$json = {
@@ -1513,6 +1613,7 @@ const SearchIndexStats$json = {
       '6': '.google.protobuf.Duration',
       '10': 'lastExpirationPurgeDuration'
     },
+    {'1': 'generation', '3': 17, '4': 1, '5': 4, '10': 'generation'},
   ],
 };
 
@@ -1532,7 +1633,8 @@ final $typed_data.Uint8List searchIndexStatsDescriptor = $convert.base64Decode(
     'RzEjgKGGV4cGlyYXRpb25fcXVldWVfZW50cmllcxgOIAEoBFIWZXhwaXJhdGlvblF1ZXVlRW50'
     'cmllcxIrChFleHBpcmF0aW9uX3B1cmdlZBgPIAEoBFIQZXhwaXJhdGlvblB1cmdlZBJeCh5sYX'
     'N0X2V4cGlyYXRpb25fcHVyZ2VfZHVyYXRpb24YECABKAsyGS5nb29nbGUucHJvdG9idWYuRHVy'
-    'YXRpb25SG2xhc3RFeHBpcmF0aW9uUHVyZ2VEdXJhdGlvbg==');
+    'YXRpb25SG2xhc3RFeHBpcmF0aW9uUHVyZ2VEdXJhdGlvbhIeCgpnZW5lcmF0aW9uGBEgASgEUg'
+    'pnZW5lcmF0aW9u');
 
 @$core.Deprecated('Use getServerStatusResponseDescriptor instead')
 const GetServerStatusResponse$json = {

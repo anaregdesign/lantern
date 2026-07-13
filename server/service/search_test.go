@@ -322,7 +322,7 @@ func TestSearchVertices_ClampsLimitAndForwardsPrefix(t *testing.T) {
 		limits    SearchLimits
 		reqLimit  uint32
 		reqPrefix string
-		wantLimit int
+		wantLimit uint32
 	}{
 		{"zero falls back to default", SearchLimits{Enabled: true, DefaultLimit: 25, MaxLimit: 1000}, 0, "user.", 25},
 		{"over max is capped", SearchLimits{Enabled: true, DefaultLimit: 25, MaxLimit: 50}, 9999, "", 50},
@@ -332,7 +332,7 @@ func TestSearchVertices_ClampsLimitAndForwardsPrefix(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			fb := newFakeBackend()
 			svc := NewLanternService(fb).WithSearchLimits(tc.limits)
-			_, err := svc.SearchVertices(context.Background(), &pb.SearchVerticesRequest{
+			resp, err := svc.SearchVertices(context.Background(), &pb.SearchVerticesRequest{
 				Query:  "q",
 				Limit:  tc.reqLimit,
 				Prefix: tc.reqPrefix,
@@ -340,8 +340,11 @@ func TestSearchVertices_ClampsLimitAndForwardsPrefix(t *testing.T) {
 			if err != nil {
 				t.Fatalf("SearchVertices: %v", err)
 			}
-			if fb.lastSearchLimit != tc.wantLimit {
-				t.Errorf("backend limit = %d, want %d", fb.lastSearchLimit, tc.wantLimit)
+			if resp.GetEffectiveLimit() != tc.wantLimit {
+				t.Errorf("effective limit = %d, want %d", resp.GetEffectiveLimit(), tc.wantLimit)
+			}
+			if fb.lastSearchLimit != svc.search.MaxSessionHits+1 {
+				t.Errorf("backend snapshot limit = %d, want %d", fb.lastSearchLimit, svc.search.MaxSessionHits+1)
 			}
 			if fb.lastSearchPrefix != tc.reqPrefix {
 				t.Errorf("backend prefix = %q, want %q", fb.lastSearchPrefix, tc.reqPrefix)
@@ -351,6 +354,118 @@ func TestSearchVertices_ClampsLimitAndForwardsPrefix(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSearchVertices_CursorPaginationSnapshot(t *testing.T) {
+	fb := newFakeBackend()
+	fb.searchResults = []search.Result[string]{
+		{ID: "a", Score: 5}, {ID: "b", Score: 4}, {ID: "c", Score: 3},
+		{ID: "d", Score: 2}, {ID: "e", Score: 1},
+	}
+	svc := NewLanternService(fb).WithSearchLimits(SearchLimits{
+		Enabled: true, DefaultLimit: 2, MaxLimit: 2,
+		CursorTTL: time.Minute, MaxSessions: 4, MaxSessionHits: 10, MaxSessionBytes: 1 << 20,
+	})
+	request := &pb.SearchVerticesRequest{Query: "alpha", Limit: 2}
+	first, err := svc.SearchVertices(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSearchPage(t, first, []string{"a", "b"}, true, false, true)
+
+	// The continuation owns the ranked snapshot; later backend mutation cannot
+	// insert, remove, or reorder an already-issued page chain.
+	fb.searchResults = []search.Result[string]{{ID: "z", Score: 100}}
+	second, err := svc.SearchVertices(context.Background(), &pb.SearchVerticesRequest{
+		Query: "alpha", Limit: 2, Cursor: first.GetNextCursor(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSearchPage(t, second, []string{"c", "d"}, true, false, true)
+	third, err := svc.SearchVertices(context.Background(), &pb.SearchVerticesRequest{
+		Query: "alpha", Limit: 2, Cursor: second.GetNextCursor(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSearchPage(t, third, []string{"e"}, false, false, false)
+	if fb.searchCalls != 1 {
+		t.Fatalf("backend searches = %d, want 1 snapshot build", fb.searchCalls)
+	}
+
+	_, err = svc.SearchVertices(context.Background(), &pb.SearchVerticesRequest{
+		Query: "different", Limit: 2, Cursor: first.GetNextCursor(),
+	})
+	if connect.CodeOf(err) != connect.CodeInvalidArgument || SearchFailureReasonForTest(err) != pb.SearchErrorReason_SEARCH_CURSOR_INVALID {
+		t.Fatalf("request mismatch err = %v", err)
+	}
+}
+
+func TestSearchVertices_FullVertexSnapshotAndContinuationLimit(t *testing.T) {
+	fb := newFakeBackend()
+	for i, key := range []string{"a", "b", "c", "d", "e"} {
+		fb.searchResults = append(fb.searchResults, search.Result[string]{ID: key, Score: float64(5 - i)})
+		fb.vertices[key] = &pb.Vertex{Key: key, Value: &pb.Vertex_String_{String_: "original-" + key}}
+	}
+	svc := NewLanternService(fb).WithSearchLimits(SearchLimits{
+		Enabled: true, DefaultLimit: 2, MaxLimit: 2,
+		CursorTTL: time.Minute, MaxSessions: 4, MaxSessionHits: 4, MaxSessionBytes: 1 << 20,
+	})
+	first, err := svc.SearchVertices(context.Background(), &pb.SearchVerticesRequest{
+		Query: "alpha", Limit: 2, Projection: pb.SearchProjection_SEARCH_PROJECTION_FULL_VERTEX,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSearchPage(t, first, []string{"a", "b"}, true, true, true)
+	for _, hit := range first.GetHits() {
+		if hit.GetProjectionStatus() != pb.SearchHitProjectionStatus_SEARCH_HIT_PROJECTION_STATUS_SNAPSHOT || hit.GetVertex().GetString_() != "original-"+hit.GetKey() {
+			t.Fatalf("FULL_VERTEX hit = %+v", hit)
+		}
+	}
+	fb.vertices["c"] = &pb.Vertex{Key: "c", Value: &pb.Vertex_String_{String_: "replacement"}}
+	second, err := svc.SearchVertices(context.Background(), &pb.SearchVerticesRequest{
+		Query: "alpha", Limit: 2, Projection: pb.SearchProjection_SEARCH_PROJECTION_FULL_VERTEX,
+		Cursor: first.GetNextCursor(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSearchPage(t, second, []string{"c", "d"}, true, true, false)
+	if got := second.GetHits()[0].GetVertex().GetString_(); got != "original-c" {
+		t.Fatalf("snapshot vertex = %q, want original-c", got)
+	}
+}
+
+func assertSearchPage(t *testing.T, page *pb.SearchVerticesResponse, wantKeys []string, truncated, limited, hasNext bool) {
+	t.Helper()
+	got := make([]string, 0, len(page.GetHits()))
+	for _, hit := range page.GetHits() {
+		got = append(got, hit.GetKey())
+	}
+	if strings.Join(got, ",") != strings.Join(wantKeys, ",") {
+		t.Fatalf("keys = %v, want %v", got, wantKeys)
+	}
+	if page.GetTruncated() != truncated || page.GetContinuationLimited() != limited || (len(page.GetNextCursor()) > 0) != hasNext {
+		t.Fatalf("page flags = truncated:%t limited:%t next:%t", page.GetTruncated(), page.GetContinuationLimited(), len(page.GetNextCursor()) > 0)
+	}
+}
+
+func SearchFailureReasonForTest(err error) pb.SearchErrorReason {
+	var connectErr *connect.Error
+	if !errors.As(err, &connectErr) {
+		return pb.SearchErrorReason_SEARCH_ERROR_REASON_UNSPECIFIED
+	}
+	for _, detail := range connectErr.Details() {
+		value, valueErr := detail.Value()
+		if valueErr == nil {
+			if searchDetail, ok := value.(*pb.SearchErrorDetail); ok {
+				return searchDetail.GetReason()
+			}
+		}
+	}
+	return pb.SearchErrorReason_SEARCH_ERROR_REASON_UNSPECIFIED
 }
 
 func TestSearchVertices_CanceledContext(t *testing.T) {

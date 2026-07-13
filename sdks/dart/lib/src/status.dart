@@ -46,6 +46,7 @@ final class SearchIndexStats {
     required this.estimatedRetainedBytes,
     required this.rebuildCount,
     required this.lastRebuildDuration,
+    required this.generation,
   });
 
   /// Current consistency state.
@@ -95,6 +96,9 @@ final class SearchIndexStats {
 
   /// Duration of the latest rebuild, when supplied.
   final Duration? lastRebuildDuration;
+
+  /// Monotonic local index mutation generation for diagnostics.
+  final BigInt generation;
 }
 
 /// One immutable degree-ranked vertex.
@@ -136,6 +140,10 @@ final class SearchCapabilities {
     required this.maxLivePostings,
     required this.maxPositionEntries,
     required this.maxExpirationVisits,
+    required this.cursorTtl,
+    required this.maxSessions,
+    required this.maxSessionHits,
+    required this.maxSessionBytes,
     required this.compactionRatio,
     required this.compactionMinRetired,
     required this.indexStats,
@@ -191,6 +199,18 @@ final class SearchCapabilities {
 
   /// Maximum expired documents purged by one search attempt.
   final BigInt maxExpirationVisits;
+
+  /// Endpoint-sticky cursor lifetime.
+  final Duration cursorTtl;
+
+  /// Maximum live bounded search sessions.
+  final int maxSessions;
+
+  /// Maximum ranked hits retained by one session.
+  final int maxSessionHits;
+
+  /// Aggregate retained session-byte budget.
+  final BigInt maxSessionBytes;
 
   /// Retained-to-live ratio that triggers compaction.
   final double compactionRatio;
@@ -441,6 +461,10 @@ extension LanternStatus on LanternClient {
         maxExpirationVisits: _uint64ToBigInt(
           response.search.maxExpirationVisits,
         ),
+        cursorTtl: Duration(seconds: response.search.cursorTtlSeconds),
+        maxSessions: response.search.maxSessions,
+        maxSessionHits: response.search.maxSessionHits,
+        maxSessionBytes: _uint64ToBigInt(response.search.maxSessionBytes),
         compactionRatio: response.search.compactionRatio,
         compactionMinRetired: _uint64ToBigInt(
           response.search.compactionMinRetired,
@@ -500,6 +524,7 @@ extension LanternStatus on LanternClient {
                   response.search.indexStats.lastRebuildDuration,
                 )
               : null,
+          generation: _uint64ToBigInt(response.search.indexStats.generation),
         ),
       ),
     );

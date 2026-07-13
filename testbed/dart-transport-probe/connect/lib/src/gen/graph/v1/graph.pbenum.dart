@@ -179,6 +179,73 @@ class MatchMode extends $pb.ProtobufEnum {
   const MatchMode._(super.value, super.name);
 }
 
+/// SearchProjection selects how much stored vertex data each ranked hit
+/// carries. The zero value deliberately preserves the historical lightweight
+/// key+score response.
+class SearchProjection extends $pb.ProtobufEnum {
+  static const SearchProjection SEARCH_PROJECTION_UNSPECIFIED =
+      SearchProjection._(
+          0, _omitEnumNames ? '' : 'SEARCH_PROJECTION_UNSPECIFIED');
+  static const SearchProjection SEARCH_PROJECTION_KEY_SCORE =
+      SearchProjection._(
+          1, _omitEnumNames ? '' : 'SEARCH_PROJECTION_KEY_SCORE');
+  static const SearchProjection SEARCH_PROJECTION_FULL_VERTEX =
+      SearchProjection._(
+          2, _omitEnumNames ? '' : 'SEARCH_PROJECTION_FULL_VERTEX');
+
+  static const $core.List<SearchProjection> values = <SearchProjection>[
+    SEARCH_PROJECTION_UNSPECIFIED,
+    SEARCH_PROJECTION_KEY_SCORE,
+    SEARCH_PROJECTION_FULL_VERTEX,
+  ];
+
+  static final $core.List<SearchProjection?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 2);
+  static SearchProjection? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const SearchProjection._(super.value, super.name);
+}
+
+/// SearchHitProjectionStatus makes FULL_VERTEX selection races explicit. The
+/// server normally returns SNAPSHOT because ranking and hydration share one
+/// search commit barrier. MISSING/REPLACED are reserved fail-closed states for
+/// a backend that cannot prove that invariant; such a hit never carries an
+/// unrelated vertex value.
+class SearchHitProjectionStatus extends $pb.ProtobufEnum {
+  static const SearchHitProjectionStatus
+      SEARCH_HIT_PROJECTION_STATUS_UNSPECIFIED = SearchHitProjectionStatus._(
+          0, _omitEnumNames ? '' : 'SEARCH_HIT_PROJECTION_STATUS_UNSPECIFIED');
+  static const SearchHitProjectionStatus
+      SEARCH_HIT_PROJECTION_STATUS_KEY_SCORE = SearchHitProjectionStatus._(
+          1, _omitEnumNames ? '' : 'SEARCH_HIT_PROJECTION_STATUS_KEY_SCORE');
+  static const SearchHitProjectionStatus SEARCH_HIT_PROJECTION_STATUS_SNAPSHOT =
+      SearchHitProjectionStatus._(
+          2, _omitEnumNames ? '' : 'SEARCH_HIT_PROJECTION_STATUS_SNAPSHOT');
+  static const SearchHitProjectionStatus SEARCH_HIT_PROJECTION_STATUS_MISSING =
+      SearchHitProjectionStatus._(
+          3, _omitEnumNames ? '' : 'SEARCH_HIT_PROJECTION_STATUS_MISSING');
+  static const SearchHitProjectionStatus SEARCH_HIT_PROJECTION_STATUS_REPLACED =
+      SearchHitProjectionStatus._(
+          4, _omitEnumNames ? '' : 'SEARCH_HIT_PROJECTION_STATUS_REPLACED');
+
+  static const $core.List<SearchHitProjectionStatus> values =
+      <SearchHitProjectionStatus>[
+    SEARCH_HIT_PROJECTION_STATUS_UNSPECIFIED,
+    SEARCH_HIT_PROJECTION_STATUS_KEY_SCORE,
+    SEARCH_HIT_PROJECTION_STATUS_SNAPSHOT,
+    SEARCH_HIT_PROJECTION_STATUS_MISSING,
+    SEARCH_HIT_PROJECTION_STATUS_REPLACED,
+  ];
+
+  static final $core.List<SearchHitProjectionStatus?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 4);
+  static SearchHitProjectionStatus? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const SearchHitProjectionStatus._(super.value, super.name);
+}
+
 /// SearchErrorReason is the bounded, machine-readable reason attached to
 /// SearchVertices failures and search-index write rejections. Clients must
 /// branch on this enum, never on the human-readable status message.
@@ -214,6 +281,19 @@ class SearchErrorReason extends $pb.ProtobufEnum {
       SearchErrorReason._(
           6, _omitEnumNames ? '' : 'SEARCH_INDEX_BUDGET_EXHAUSTED');
 
+  /// buf:lint:ignore ENUM_VALUE_PREFIX -- stable cross-SDK reason code.
+  static const SearchErrorReason SEARCH_CURSOR_STALE =
+      SearchErrorReason._(7, _omitEnumNames ? '' : 'SEARCH_CURSOR_STALE');
+
+  /// buf:lint:ignore ENUM_VALUE_PREFIX -- stable cross-SDK reason code.
+  static const SearchErrorReason SEARCH_CURSOR_INVALID =
+      SearchErrorReason._(8, _omitEnumNames ? '' : 'SEARCH_CURSOR_INVALID');
+
+  /// buf:lint:ignore ENUM_VALUE_PREFIX -- stable cross-SDK reason code.
+  static const SearchErrorReason SEARCH_CONTINUATION_LIMITED =
+      SearchErrorReason._(
+          9, _omitEnumNames ? '' : 'SEARCH_CONTINUATION_LIMITED');
+
   static const $core.List<SearchErrorReason> values = <SearchErrorReason>[
     SEARCH_ERROR_REASON_UNSPECIFIED,
     SEARCH_DISABLED,
@@ -222,10 +302,13 @@ class SearchErrorReason extends $pb.ProtobufEnum {
     SEARCH_ADMISSION_SATURATED,
     SEARCH_INDEX_INCOMPLETE,
     SEARCH_INDEX_BUDGET_EXHAUSTED,
+    SEARCH_CURSOR_STALE,
+    SEARCH_CURSOR_INVALID,
+    SEARCH_CONTINUATION_LIMITED,
   ];
 
   static final $core.List<SearchErrorReason?> _byValue =
-      $pb.ProtobufEnum.$_initByValueList(values, 6);
+      $pb.ProtobufEnum.$_initByValueList(values, 9);
   static SearchErrorReason? valueOf($core.int value) =>
       value < 0 || value >= _byValue.length ? null : _byValue[value];
 

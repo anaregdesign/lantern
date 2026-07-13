@@ -84,6 +84,62 @@ describe("searchVerticesReducer", () => {
     expect(next.error).toBeNull();
   });
 
+  it("appends a cursor page while preserving already visible rows", () => {
+    const firstCursor = new Uint8Array([1]);
+    const nextCursor = new Uint8Array([2]);
+    const seeded = reduce(
+      INITIAL_SEARCH_VERTICES_STATE,
+      input("alpha", 1),
+      { type: "SEARCH_REQUESTED", epoch: 1 },
+      {
+        type: "SEARCH_RECEIVED",
+        epoch: 1,
+        results: [ROW],
+        nextCursor: firstCursor,
+        truncated: true,
+      },
+      { type: "SEARCH_MORE_REQUESTED", epoch: 1 },
+    );
+    expect(seeded.results).toEqual([ROW]);
+    expect(seeded.loadingMore).toBe(true);
+
+    const second: SearchResultRow = { key: "doc:beta", score: 1, vertex: null };
+    const next = searchVerticesReducer(seeded, {
+      type: "SEARCH_MORE_RECEIVED",
+      epoch: 1,
+      results: [second],
+      nextCursor,
+      truncated: true,
+      continuationLimited: false,
+    });
+    expect(next.results).toEqual([ROW, second]);
+    expect(next.nextCursor).toBe(nextCursor);
+    expect(next.loadingMore).toBe(false);
+  });
+
+  it("keeps loaded rows when a next-page request fails", () => {
+    const seeded = reduce(
+      INITIAL_SEARCH_VERTICES_STATE,
+      input("alpha", 1),
+      {
+        type: "SEARCH_RECEIVED",
+        epoch: 1,
+        results: [ROW],
+        nextCursor: new Uint8Array([1]),
+        truncated: true,
+      },
+      { type: "SEARCH_MORE_REQUESTED", epoch: 1 },
+    );
+    const failed = searchVerticesReducer(seeded, {
+      type: "SEARCH_MORE_FAILED",
+      epoch: 1,
+      error: "cursor stale",
+    });
+    expect(failed.results).toEqual([ROW]);
+    expect(failed.status).toBe("ready");
+    expect(failed.loadMoreError).toBe("cursor stale");
+  });
+
   it("drops a stale search response from an abandoned query (epoch guard)", () => {
     // Type "ab" (epoch 1), then "abc" (epoch 2) before "ab"'s search lands.
     const seeded = reduce(

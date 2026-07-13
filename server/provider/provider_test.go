@@ -200,6 +200,7 @@ func TestNewConfigValidation(t *testing.T) {
 		if cfg.Search.Timeout <= 0 || cfg.Search.MaxQueryBytes <= 0 || cfg.Search.MaxQueryTerms <= 0 ||
 			cfg.Search.MaxDictionaryVisits <= 0 || cfg.Search.MaxPostingVisits <= 0 ||
 			cfg.Search.MaxPositionVisits <= 0 || cfg.Search.MaxExpirationVisits <= 0 || cfg.Search.MaxInFlight <= 0 ||
+			cfg.Search.CursorTTL <= 0 || cfg.Search.MaxSessions <= 0 || cfg.Search.MaxSessionHits <= int(cfg.Search.MaxLimit) || cfg.Search.MaxSessionBytes <= 0 ||
 			cfg.Search.AnalysisLimits.MaxDocumentBytes <= 0 || cfg.Search.AnalysisLimits.MaxDocumentTokens <= 0 ||
 			cfg.Search.AnalysisLimits.MaxDocumentTerms <= 0 || cfg.Search.AnalysisLimits.MaxLiveTerms <= 0 ||
 			cfg.Search.AnalysisLimits.MaxLivePostings <= 0 || cfg.Search.AnalysisLimits.MaxPositionEntries <= 0 ||
@@ -217,6 +218,10 @@ func TestNewConfigValidation(t *testing.T) {
 		"LANTERN_SEARCH_MAX_POSITION_VISITS",
 		"LANTERN_SEARCH_MAX_EXPIRATION_VISITS",
 		"LANTERN_SEARCH_MAX_IN_FLIGHT",
+		"LANTERN_SEARCH_CURSOR_TTL_SECONDS",
+		"LANTERN_SEARCH_MAX_SESSIONS",
+		"LANTERN_SEARCH_MAX_SESSION_HITS",
+		"LANTERN_SEARCH_MAX_SESSION_BYTES",
 		"LANTERN_SEARCH_MAX_DOCUMENT_BYTES",
 		"LANTERN_SEARCH_MAX_DOCUMENT_TOKENS",
 		"LANTERN_SEARCH_MAX_DOCUMENT_TERMS",
@@ -252,6 +257,16 @@ func TestNewConfigValidation(t *testing.T) {
 		_, err := NewConfig()
 		if err == nil || !strings.Contains(err.Error(), "MAX_QUERY_TERMS") || !strings.Contains(err.Error(), "MAX_QUERY_BYTES") {
 			t.Fatalf("NewConfig error = %v, want cap-relationship rejection", err)
+		}
+	})
+
+	t.Run("search session hit cap must exceed a page", func(t *testing.T) {
+		envconfig.ResetForTesting()
+		t.Setenv("LANTERN_SEARCH_MAX_LIMIT", "100")
+		t.Setenv("LANTERN_SEARCH_MAX_SESSION_HITS", "100")
+		_, err := NewConfig()
+		if err == nil || !strings.Contains(err.Error(), "MAX_SESSION_HITS") || !strings.Contains(err.Error(), "MAX_LIMIT") {
+			t.Fatalf("NewConfig error = %v, want session/page relationship rejection", err)
 		}
 	})
 }

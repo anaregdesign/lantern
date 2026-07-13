@@ -13,7 +13,24 @@ export type SearchVerticesAction =
       epoch: number;
     }
   | { type: "SEARCH_REQUESTED"; epoch: number }
-  | { type: "SEARCH_RECEIVED"; epoch: number; results: SearchResultRow[] }
+  | {
+      type: "SEARCH_RECEIVED";
+      epoch: number;
+      results: SearchResultRow[];
+      nextCursor?: Uint8Array;
+      truncated?: boolean;
+      continuationLimited?: boolean;
+    }
+  | { type: "SEARCH_MORE_REQUESTED"; epoch: number }
+  | {
+      type: "SEARCH_MORE_RECEIVED";
+      epoch: number;
+      results: SearchResultRow[];
+      nextCursor: Uint8Array;
+      truncated: boolean;
+      continuationLimited: boolean;
+    }
+  | { type: "SEARCH_MORE_FAILED"; epoch: number; error: string }
   | { type: "SEARCH_FAILED"; epoch: number; error: string }
   | { type: "SEARCH_DISABLED"; epoch: number };
 
@@ -52,6 +69,11 @@ export function searchVerticesReducer(
         status: "idle",
         results: [],
         error: null,
+        nextCursor: null,
+        truncated: false,
+        continuationLimited: false,
+        loadingMore: false,
+        loadMoreError: null,
       };
     }
     case "SEARCH_REQUESTED": {
@@ -69,13 +91,58 @@ export function searchVerticesReducer(
         status: "ready",
         results: action.results,
         error: null,
+        nextCursor:
+          action.nextCursor && action.nextCursor.length > 0
+            ? action.nextCursor
+            : null,
+        truncated: action.truncated ?? false,
+        continuationLimited: action.continuationLimited ?? false,
+        loadingMore: false,
+        loadMoreError: null,
       };
+    }
+    case "SEARCH_MORE_REQUESTED": {
+      if (action.epoch !== state.queryEpoch || state.nextCursor === null) {
+        return state;
+      }
+      return { ...state, loadingMore: true, loadMoreError: null };
+    }
+    case "SEARCH_MORE_RECEIVED": {
+      if (action.epoch !== state.queryEpoch) {
+        return state;
+      }
+      return {
+        ...state,
+        status: "ready",
+        results: [...state.results, ...action.results],
+        nextCursor: action.nextCursor.length > 0 ? action.nextCursor : null,
+        truncated: action.truncated,
+        continuationLimited: action.continuationLimited,
+        loadingMore: false,
+        loadMoreError: null,
+      };
+    }
+    case "SEARCH_MORE_FAILED": {
+      if (action.epoch !== state.queryEpoch) {
+        return state;
+      }
+      return { ...state, loadingMore: false, loadMoreError: action.error };
     }
     case "SEARCH_FAILED": {
       if (action.epoch !== state.queryEpoch) {
         return state;
       }
-      return { ...state, status: "error", error: action.error, results: [] };
+      return {
+        ...state,
+        status: "error",
+        error: action.error,
+        results: [],
+        nextCursor: null,
+        truncated: false,
+        continuationLimited: false,
+        loadingMore: false,
+        loadMoreError: null,
+      };
     }
     case "SEARCH_DISABLED": {
       if (action.epoch !== state.queryEpoch) {
@@ -83,7 +150,17 @@ export function searchVerticesReducer(
       }
       // The server has the keyword index turned off — a calm, expected
       // outcome (opt-out), not a failure. Clear any prior error.
-      return { ...state, status: "disabled", results: [], error: null };
+      return {
+        ...state,
+        status: "disabled",
+        results: [],
+        error: null,
+        nextCursor: null,
+        truncated: false,
+        continuationLimited: false,
+        loadingMore: false,
+        loadMoreError: null,
+      };
     }
     default: {
       return state;

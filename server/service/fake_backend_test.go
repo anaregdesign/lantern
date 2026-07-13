@@ -500,6 +500,19 @@ func (f *fakeBackend) SearchVerticesMatchContext(ctx context.Context, query stri
 	return f.searchResults, search.Stats{}, nil
 }
 
+func (f *fakeBackend) SearchVerticesSnapshotContext(ctx context.Context, query string, limit int, keyPrefix string, opts search.MatchOptions, phrase bool, budget search.Budget) ([]graphcache.SearchSnapshotHit[string, *pb.Vertex], search.Stats, error) {
+	results, stats, err := f.SearchVerticesMatchContext(ctx, query, limit, keyPrefix, opts, phrase, budget)
+	if err != nil {
+		return nil, stats, err
+	}
+	hits := make([]graphcache.SearchSnapshotHit[string, *pb.Vertex], 0, len(results))
+	for _, result := range results {
+		vertex, found := f.GetVertex(result.ID)
+		hits = append(hits, graphcache.SearchSnapshotHit[string, *pb.Vertex]{Result: result, Value: vertex, Found: found})
+	}
+	return hits, stats, nil
+}
+
 func (f *fakeBackend) DeleteByPrefix(_ context.Context, prefix string, limit int) int {
 	victims := []string{}
 	for k := range f.vertices {

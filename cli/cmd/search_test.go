@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -39,6 +40,49 @@ func TestParseSearchMode(t *testing.T) {
 		if got != c.want {
 			t.Errorf("parseSearchMode(%q) = %v, want %v", c.in, got, c.want)
 		}
+	}
+}
+
+func TestParseSearchProjection(t *testing.T) {
+	for _, tc := range []struct {
+		input string
+		want  client.SearchProjection
+	}{
+		{"key-score", client.SearchProjectionKeyScore},
+		{"KEY_SCORE", client.SearchProjectionKeyScore},
+		{"full-vertex", client.SearchProjectionFullVertex},
+		{"full_vertex", client.SearchProjectionFullVertex},
+	} {
+		got, err := parseSearchProjection(tc.input)
+		if err != nil || got != tc.want {
+			t.Errorf("parseSearchProjection(%q) = (%v, %v), want (%v, nil)", tc.input, got, err, tc.want)
+		}
+	}
+	if _, err := parseSearchProjection("everything"); err == nil {
+		t.Fatal("parseSearchProjection(everything) = nil error")
+	}
+}
+
+func TestSearchHitForOutputPreservesProjectedVertex(t *testing.T) {
+	projected, err := client.UnmarshalVertexJSON([]byte(`{"key":"doc/1","type":"string","value":"alpha"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hit, err := searchHitForOutput(client.SearchHit{
+		Key:              "doc/1",
+		Score:            3.5,
+		Vertex:           projected,
+		ProjectionStatus: client.SearchHitProjectionSnapshot,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var vertex map[string]any
+	if err := json.Unmarshal(hit.Vertex, &vertex); err != nil {
+		t.Fatal(err)
+	}
+	if hit.ProjectionStatus != "snapshot" || vertex["key"] != "doc/1" || vertex["value"] != "alpha" {
+		t.Fatalf("output = %#v, vertex = %#v", hit, vertex)
 	}
 }
 
@@ -87,7 +131,7 @@ func TestSearchCommandRegistered(t *testing.T) {
 			continue
 		}
 		found = true
-		for _, name := range []string{"mode", "phrase", "fuzziness", "prefix-terms", "min-should", "limit", "prefix"} {
+		for _, name := range []string{"mode", "phrase", "fuzziness", "prefix-terms", "min-should", "limit", "prefix", "cursor", "all", "projection"} {
 			if c.Flags().Lookup(name) == nil {
 				t.Errorf("search command missing --%s flag", name)
 			}

@@ -15,7 +15,8 @@ import (
 // only the methods it exercises. It mirrors the fake used by the MCP
 // failover tests before the logic moved into the SDK (#592).
 type fakeNode struct {
-	getVertexFn func(ctx context.Context, key string) (*Vertex, error)
+	getVertexFn  func(ctx context.Context, key string) (*Vertex, error)
+	searchPageFn func(ctx context.Context, query string, opts ...SearchOption) (SearchPage, error)
 	// addEdgeAtWithIDsFn / addEdgesWithIDsFn drive the id-accepting seams the
 	// failover ring actually calls for additive writes (#916); the failover
 	// AddEdge/AddEdgeAt/AddEdges methods route through these, so tests wire
@@ -57,6 +58,12 @@ func (f *fakeNode) ScanVertexKeys(context.Context, string, ...ScanOption) ([]str
 }
 func (f *fakeNode) SearchVertices(context.Context, string, ...SearchOption) ([]SearchHit, error) {
 	return nil, nil
+}
+func (f *fakeNode) SearchVerticesPage(ctx context.Context, query string, opts ...SearchOption) (SearchPage, error) {
+	if f.searchPageFn != nil {
+		return f.searchPageFn(ctx, query, opts...)
+	}
+	return SearchPage{}, nil
 }
 func (f *fakeNode) CountVerticesByPrefix(context.Context, string) (uint64, error) { return 0, nil }
 func (f *fakeNode) DeleteVerticesByPrefix(context.Context, string, ...DeleteByPrefixOption) (uint64, error) {
@@ -103,6 +110,66 @@ func (f *fakeNode) Illuminate(context.Context, string, ...IlluminateOption) (*Gr
 }
 func (f *fakeNode) Ping(context.Context) error { return f.pingErr }
 func (f *fakeNode) Close() error               { f.closed++; return nil }
+
+func TestFailoverSearchPageCursorIsEndpointSticky(t *testing.T) {
+	firstCalls, secondCalls := 0, 0
+	first := &fakeNode{searchPageFn: func(context.Context, string, ...SearchOption) (SearchPage, error) {
+		firstCalls++
+		return SearchPage{}, ErrUnavailable
+	}}
+	second := &fakeNode{searchPageFn: func(_ context.Context, _ string, opts ...SearchOption) (SearchPage, error) {
+		secondCalls++
+		configured := searchOptions{}
+		for _, apply := range opts {
+			apply(&configured)
+		}
+		if len(configured.cursor) == 0 {
+			return SearchPage{Hits: []SearchHit{{Key: "a"}}, NextCursor: []byte("sticky")}, nil
+		}
+		return SearchPage{}, ErrUnavailable
+	}}
+	f := &Failover{nodes: []failoverNode{first, second}}
+	page, err := f.SearchVerticesPage(context.Background(), "alpha")
+	if err != nil || string(page.NextCursor) != "sticky" {
+		t.Fatalf("first page = %+v, err=%v", page, err)
+	}
+	if firstCalls != 1 || secondCalls != 1 || f.cur.Load() != 1 {
+		t.Fatalf("first page calls = %d/%d current=%d", firstCalls, secondCalls, f.cur.Load())
+	}
+	_, err = f.SearchVerticesPage(context.Background(), "alpha", WithSearchCursor(page.NextCursor))
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("continuation err = %v, want ErrUnavailable", err)
+	}
+	if firstCalls != 1 || secondCalls != 2 {
+		t.Fatalf("cursor rotated endpoints: calls=%d/%d", firstCalls, secondCalls)
+	}
+}
+
+func TestFailoverSearchIteratorHonorsInitialCursor(t *testing.T) {
+	wantCursor := []byte("resume")
+	node := &fakeNode{searchPageFn: func(_ context.Context, _ string, opts ...SearchOption) (SearchPage, error) {
+		configured := searchOptions{}
+		for _, apply := range opts {
+			apply(&configured)
+		}
+		if !bytes.Equal(configured.cursor, wantCursor) {
+			t.Fatalf("cursor = %q, want %q", configured.cursor, wantCursor)
+		}
+		return SearchPage{Hits: []SearchHit{{Key: "resumed"}}}, nil
+	}}
+	f := &Failover{nodes: []failoverNode{node}}
+
+	var keys []string
+	for hit, err := range f.SearchVerticesIter(context.Background(), "alpha", WithSearchCursor(wantCursor)) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, hit.Key)
+	}
+	if len(keys) != 1 || keys[0] != "resumed" {
+		t.Fatalf("keys = %v", keys)
+	}
+}
 
 // unavailableErr returns the error a real *Lantern endpoint surfaces when a
 // node is unreachable (connection refused) or replies CodeUnavailable: the

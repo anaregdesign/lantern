@@ -80,6 +80,7 @@ type InvertedIndex[S comparable, D Document] struct {
 	writeLockAcquisitions uint64
 	expirationPurged      uint64
 	lastExpirationPurge   time.Duration
+	generation            uint64
 }
 
 // classPostings is one token class's slice of the index: its term dictionary,
@@ -436,6 +437,7 @@ func (idx *InvertedIndex[S, D]) IndexPreparedWithExpiration(id S, prepared Prepa
 		return err
 	}
 	idx.indexPreparedLocked(item, now)
+	idx.generation++
 	idx.compactIfNeededLocked()
 	return nil
 }
@@ -458,6 +460,7 @@ func (idx *InvertedIndex[S, D]) IndexManyPrepared(items []PreparedItem[S]) error
 	for _, it := range finalPreparedItems(items) {
 		idx.indexPreparedLocked(it, now)
 	}
+	idx.generation++
 	idx.compactIfNeededLocked()
 	return nil
 }
@@ -484,6 +487,7 @@ func (idx *InvertedIndex[S, D]) IndexManyPreparedValidated(items []PreparedItem[
 	for _, item := range finalPreparedItems(items) {
 		idx.indexPreparedLocked(item, now)
 	}
+	idx.generation++
 	idx.compactIfNeededLocked()
 }
 
@@ -652,6 +656,7 @@ func (idx *InvertedIndex[S, D]) Delete(id S) {
 	idx.lockWrite()
 	defer idx.mu.Unlock()
 	idx.deleteLocked(id)
+	idx.generation++
 	idx.compactIfNeededLocked()
 }
 
@@ -669,6 +674,7 @@ func (idx *InvertedIndex[S, D]) DeleteMany(ids []S) {
 	for _, id := range ids {
 		idx.deleteLocked(id)
 	}
+	idx.generation++
 	idx.compactIfNeededLocked()
 }
 
@@ -715,6 +721,7 @@ func (idx *InvertedIndex[S, D]) deleteLocked(id S) {
 func (idx *InvertedIndex[S, D]) MarkIncomplete() {
 	idx.lockWrite()
 	idx.health = IndexIncomplete
+	idx.generation++
 	idx.mu.Unlock()
 }
 
@@ -754,6 +761,7 @@ func (idx *InvertedIndex[S, D]) RebuildPrepared(items []PreparedItem[S]) error {
 	idx.livePostings, idx.livePositions = tmp.livePostings, tmp.livePositions
 	idx.health = IndexHealthy
 	idx.rebuildCount++
+	idx.generation++
 	idx.lastRebuildDuration = time.Since(start)
 	return nil
 }
@@ -1118,6 +1126,7 @@ func (idx *InvertedIndex[S, D]) MemoryStats() IndexMemoryStats {
 		WriteLockAcquisitions:  idx.writeLockAcquisitions,
 		ExpirationPurged:       idx.expirationPurged,
 		LastExpirationPurge:    idx.lastExpirationPurge,
+		Generation:             idx.generation,
 		Health:                 idx.health,
 	}
 	var liveTermBytes, physicalTermBytes int64

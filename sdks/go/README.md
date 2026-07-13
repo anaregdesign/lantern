@@ -219,7 +219,7 @@ design discussion.
 | Write  | `PutVertex` / `PutVertexAt` / `PutVertexIfAbsent` / `PutVertexIfAbsentAt` / `AddEdge` / `AddEdgeAt` / `PutEdge` / `PutEdgeAt` | `PutVertices` / `PutVerticesIfAbsent` / `AddEdges` / `PutEdges` |
 | Delete | `DeleteVertex` / `DeleteEdge` | `DeleteVertices` / `DeleteEdges` |
 | Scan   | — | `ScanVertices`, `ScanVerticesAll`, `ScanVertexKeys`, `ScanVertexKeysAll`, `ScanEdges`, `ScanEdgesAll`, `CountVerticesByPrefix`, `DeleteVerticesByPrefix`, `DeleteEdgesByPrefix` |
-| Search | `SearchVertices` | — |
+| Search | `SearchVertices`, `SearchVerticesPage` | `SearchVerticesIter` |
 | Graph  | `Illuminate` | — |
 | Replication | `Subscribe` (server-stream iter.Seq2) | — |
 | Status | `Ping`, `GetServerStatus`, `GetReplicationStatus` | — |
@@ -252,6 +252,22 @@ with an explicit mode/fuzziness/prefix terms as `ErrInvalidArgument` before an
 RPC. `WithIncrementalSearchOptions` forwards the complete one-shot option set;
 the package-level `NewIncrementalSearch` accepts the narrow `Searcher`
 interface implemented by both `Lantern` and `Failover`.
+
+`SearchVerticesPage` returns one immutable, endpoint-sticky ranked snapshot
+page with `NextCursor`, `EffectiveLimit`, `Truncated`, and
+`ContinuationLimited`. Repeat every query option and projection with
+`WithSearchCursor`; a mismatch/tamper matches `ErrSearchCursorInvalid`, while an
+expired or evicted session matches `ErrSearchCursorStale`. Both are terminal
+for that chain—restart from page one explicitly. `SearchVerticesIter` follows
+pages lazily and never accumulates an unbounded slice; if the server could
+retain only a bounded prefix it yields `ErrSearchContinuationLimited` after the
+last retained hit.
+
+The default projection is lightweight key+score. `WithFullVertex()` includes
+the exact value/TTL snapshot selected with ranking and removes a racy follow-up
+`GetVertices` call. Static `Failover` may rotate for page one, but a non-empty
+cursor is sent only to the current endpoint because sessions are not portable
+between replicas.
 
 `Illuminate` accepts at most one traversal family option (`WithBFS`,
 `WithPPR`, or `WithLocalCommunity`). Combining them returns a local error that

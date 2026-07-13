@@ -69,6 +69,30 @@ describe("selectCaption", () => {
     ).toBe("1 result");
   });
 
+  it("labels a truncated bounded page as top N shown", () => {
+    expect(
+      selectCaption(
+        state({
+          query: "alpha",
+          status: "ready",
+          results: [ROW],
+          truncated: true,
+        }),
+      ),
+    ).toBe("Top 1 shown.");
+    expect(
+      selectCaption(
+        state({
+          query: "alpha",
+          status: "ready",
+          results: [ROW],
+          truncated: true,
+          continuationLimited: true,
+        }),
+      ),
+    ).toContain("Server continuation limit reached");
+  });
+
   it("reports an empty match set when ready with no results", () => {
     expect(
       selectCaption(state({ query: "nomatch", status: "ready", results: [] })),

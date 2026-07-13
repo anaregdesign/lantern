@@ -39,9 +39,29 @@ export class NotFoundError extends LanternError {
 }
 
 export class InvalidArgumentError extends LanternError {
-  constructor(message: string, options?: { cause?: unknown }) {
+  readonly reason: SearchErrorReason;
+  constructor(message: string, options?: { cause?: unknown; reason?: SearchErrorReason }) {
     super(message, options);
     this.name = "InvalidArgumentError";
+    this.reason = options?.reason ?? SearchErrorReason.SEARCH_ERROR_REASON_UNSPECIFIED;
+  }
+}
+
+/** Raised when an endpoint-sticky search session expired or was evicted. */
+export class SearchCursorStaleError extends LanternError {
+  readonly reason = SearchErrorReason.SEARCH_CURSOR_STALE;
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "SearchCursorStaleError";
+  }
+}
+
+/** Raised by searchVerticesIter after the final retained bounded-session hit. */
+export class SearchContinuationLimitedError extends LanternError {
+  readonly reason = SearchErrorReason.SEARCH_CONTINUATION_LIMITED;
+  constructor(message = "search continuation was limited by the server session cap") {
+    super(message);
+    this.name = "SearchContinuationLimitedError";
   }
 }
 
@@ -132,7 +152,12 @@ export function wrapConnectError(err: unknown): LanternError {
     case 5:
       return new NotFoundError(message, { cause: err });
     case 3:
-      return new InvalidArgumentError(message, { cause: err });
+      return new InvalidArgumentError(message, {
+        cause: err,
+        reason:
+          ConnectError.from(err).findDetails(SearchErrorDetailSchema)[0]?.reason ??
+          SearchErrorReason.SEARCH_ERROR_REASON_UNSPECIFIED,
+      });
     case 8: {
       const detail = ConnectError.from(err).findDetails(SearchErrorDetailSchema)[0];
       return new ResourceExhaustedError(message, {
@@ -148,6 +173,15 @@ export function wrapConnectError(err: unknown): LanternError {
           ConnectError.from(err).findDetails(SearchErrorDetailSchema)[0]?.reason ??
           SearchErrorReason.SEARCH_ERROR_REASON_UNSPECIFIED,
       });
+    case 10: {
+      const reason =
+        ConnectError.from(err).findDetails(SearchErrorDetailSchema)[0]?.reason ??
+        SearchErrorReason.SEARCH_ERROR_REASON_UNSPECIFIED;
+      if (reason === SearchErrorReason.SEARCH_CURSOR_STALE) {
+        return new SearchCursorStaleError(message, { cause: err });
+      }
+      return new LanternError(message, { cause: err });
+    }
     default:
       return new LanternError(message, { cause: err });
   }

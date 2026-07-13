@@ -1,5 +1,4 @@
 import { LanternApiError } from "~/lib/client/infrastructure/api/error";
-import { getVertices } from "~/lib/client/infrastructure/api/get-vertices";
 import type { LanternClient } from "~/lib/client/infrastructure/api/lantern-client";
 import { searchVertices } from "~/lib/client/infrastructure/api/search-vertices";
 import type { SearchQueryOptions, SearchResultRow } from "./state";
@@ -13,16 +12,14 @@ export interface FetchSearchResultsInput {
   options: SearchQueryOptions;
   epoch: number;
   signal?: AbortSignal;
+  cursor?: Uint8Array;
+  append?: boolean;
 }
 
 /**
- * Runs the two-step content search: BM25 keyword search for ranked
- * `{ key, score }` hits, then a single batch `GetVertices` to hydrate the
- * keys into full vertices. The ranked hit order is authoritative — the
- * hydration result is partitioned into found/missing and re-projected
- * against the hit list, so a hit whose vertex expired between the two
- * calls still renders its rank slot (with a `null` vertex) rather than
- * silently dropping out of the ranking.
+ * Runs one FULL_VERTEX search page. Ranking and value/TTL selection share the
+ * server's commit barrier, so Admin never pairs an old score with a newer
+ * unrelated value through a second hydration RPC.
  *
  * As in Browse Vertices and the vertex picker, `AbortError` is swallowed:
  * cancelling an in-flight search when the query moves on is normal control
@@ -33,9 +30,12 @@ export async function fetchSearchResults(
   input: FetchSearchResultsInput,
   dispatch: (action: SearchVerticesAction) => void,
 ): Promise<void> {
-  dispatch({ type: "SEARCH_REQUESTED", epoch: input.epoch });
+  dispatch({
+    type: input.append ? "SEARCH_MORE_REQUESTED" : "SEARCH_REQUESTED",
+    epoch: input.epoch,
+  });
   try {
-    const { hits } = await searchVertices(
+    const page = await searchVertices(
       input.client,
       {
         query: input.query,
@@ -46,25 +46,24 @@ export async function fetchSearchResults(
         phrase: input.options.phrase,
         fuzziness: input.options.fuzziness,
         prefixTerms: input.options.prefixTerms,
+        cursor: input.cursor,
+        projection: "full-vertex",
       },
       { signal: input.signal },
     );
-    if (hits.length === 0) {
-      // Empty match set is an empty success, not an error.
-      dispatch({ type: "SEARCH_RECEIVED", epoch: input.epoch, results: [] });
-      return;
-    }
-    const keys = hits.map((hit) => hit.key);
-    const { found } = await getVertices(input.client, keys, {
-      signal: input.signal,
-    });
-    const byKey = new Map(found.map((vertex) => [vertex.key ?? "", vertex]));
-    const results: SearchResultRow[] = hits.map((hit) => ({
+    const results: SearchResultRow[] = page.hits.map((hit) => ({
       key: hit.key,
       score: hit.score,
-      vertex: byKey.get(hit.key) ?? null,
+      vertex: hit.vertex ?? null,
     }));
-    dispatch({ type: "SEARCH_RECEIVED", epoch: input.epoch, results });
+    dispatch({
+      type: input.append ? "SEARCH_MORE_RECEIVED" : "SEARCH_RECEIVED",
+      epoch: input.epoch,
+      results,
+      nextCursor: page.nextCursor,
+      truncated: page.truncated,
+      continuationLimited: page.continuationLimited,
+    });
   } catch (err) {
     if (isAbortError(err)) {
       return;
@@ -73,11 +72,19 @@ export async function fetchSearchResults(
       dispatch({ type: "SEARCH_DISABLED", epoch: input.epoch });
       return;
     }
-    dispatch({
-      type: "SEARCH_FAILED",
-      epoch: input.epoch,
-      error: messageOf(err),
-    });
+    dispatch(
+      input.append
+        ? {
+            type: "SEARCH_MORE_FAILED",
+            epoch: input.epoch,
+            error: messageOf(err),
+          }
+        : {
+            type: "SEARCH_FAILED",
+            epoch: input.epoch,
+            error: messageOf(err),
+          },
+    );
   }
 }
 
