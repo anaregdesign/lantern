@@ -26,6 +26,10 @@
 # forward; healthy must remain exactly 1. The semantic gate independently
 # checks a persistent hit, deleted/expired absence, stable ordering, key prefix,
 # phrase, fuzzy-1/2, prefix terms, ALL, and MIN_SHOULD before and after load.
+# retained_ratio is intentionally a no-growth pre/post gate instead of an
+# absolute ceiling: production compaction allows fewer than 10,000 retired
+# entries to remain, so a small live denominator can legitimately produce a
+# ratio above 3 while every absolute retained-size gauge stays bounded.
 #
 # The bench cluster runs search on by default (LANTERN_SEARCH_ENABLED=true).
 # The explicit expiration template below is required: omitting Vertex.expiration
@@ -132,7 +136,7 @@ metric_gate:
     lantern_search_index_postings: { max_increase: 2048, max_ratio: 1.5 }
     lantern_search_index_position_entries: { max_increase: 4096, max_ratio: 1.5 }
     lantern_search_index_estimated_retained_bytes: { max_increase: 67108864, max_ratio: 2 }
-    lantern_search_index_retained_ratio: { max_post: 3 }
+    lantern_search_index_retained_ratio: { max_increase: 0, max_ratio: 1 }
     lantern_search_index_healthy: { min_post: 1, max_post: 1 }
 # The producer mix changed for #1049, so these are deliberately loose first-
 # night ratchets with ample headroom. Tighten from several green nightly runs;
