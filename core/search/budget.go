@@ -14,6 +14,7 @@ const (
 	WorkDictionaryVisits WorkKind = "dictionary_visits"
 	WorkPostingVisits    WorkKind = "posting_visits"
 	WorkPositionVisits   WorkKind = "position_visits"
+	WorkExpirationVisits WorkKind = "expiration_visits"
 )
 
 // ErrBudgetExceeded classifies deterministic query-work exhaustion.
@@ -26,6 +27,7 @@ type Budget struct {
 	MaxDictionaryVisits int64
 	MaxPostingVisits    int64
 	MaxPositionVisits   int64
+	MaxExpirationVisits int64
 }
 
 // Stats is the exact work charged to one search attempt.
@@ -34,6 +36,7 @@ type Stats struct {
 	DictionaryVisits int64
 	PostingVisits    int64
 	PositionVisits   int64
+	ExpirationVisits int64
 }
 
 // BudgetExceededError records which stable counter exhausted its limit.
@@ -78,6 +81,8 @@ func (w *workTracker) visit(kind WorkKind, n int64) error {
 		value, limit = &w.stats.PostingVisits, w.budget.MaxPostingVisits
 	case WorkPositionVisits:
 		value, limit = &w.stats.PositionVisits, w.budget.MaxPositionVisits
+	case WorkExpirationVisits:
+		value, limit = &w.stats.ExpirationVisits, w.budget.MaxExpirationVisits
 	default:
 		panic("search: unknown work kind")
 	}

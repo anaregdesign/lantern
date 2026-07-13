@@ -67,9 +67,10 @@ type GraphCache[S comparable, T any] struct {
 	// on EVERY put, not just the first insert, because a vertex's value —
 	// and therefore its postings — changes on overwrite. Entries are dropped
 	// from the index by the shared vertices.SetOnEvict hook, so they decay
-	// in lockstep with the vertices they describe (Delete, Clear, and TTL
-	// Flush all route through that hook). When nil the put / evict paths pay
-	// only a single nil check.
+	// for non-TTL eviction by the shared vertices.SetOnEvict hook. TTL entries
+	// are removed from search at query time using the index's expiration heap;
+	// the later cache Flush hook is an idempotent delete. When nil the put /
+	// evict paths pay only a single nil check.
 	searchIndex   *search.InvertedIndex[S, search.Document]
 	searchExtract func(T) search.Document
 	// searchCommitMu makes a prepared vertex batch visible to Search as one
@@ -201,7 +202,7 @@ func (c *GraphCache[S, T]) putVertexLocked(key S, value T, expiration time.Time)
 func (c *GraphCache[S, T]) upsertVertexLocked(key S, value T, expiration time.Time) {
 	c.upsertVertexStorageLocked(key, value, expiration)
 	if c.searchIndex != nil {
-		if err := c.searchIndex.Index(key, c.searchExtract(value)); err != nil {
+		if err := c.searchIndex.IndexWithExpiration(key, c.searchExtract(value), expiration); err != nil {
 			c.searchIndex.MarkIncomplete()
 		}
 	}

@@ -763,7 +763,8 @@ enum SearchErrorReason {
 message SearchErrorDetail {
   SearchErrorReason reason = 1;
   // work_kind is one of query_bytes, query_terms, dictionary_visits,
-  // posting_visits, position_visits, or an index analysis-limit kind; empty otherwise.
+  // posting_visits, position_visits, expiration_visits, or an index
+  // analysis-limit kind; empty otherwise.
   string work_kind = 2;
 }
 
@@ -797,6 +798,7 @@ message SearchCapabilities {
   double compaction_ratio = 24;
   uint64 compaction_min_retired = 25;
   SearchIndexStats index_stats = 26;
+  uint64 max_expiration_visits = 27;
 }
 
 // SearchIndexStats exposes logical size, retained high-water storage, rebuild
@@ -810,7 +812,9 @@ enum SearchIndexHealth {
 
 message SearchIndexStats {
   SearchIndexHealth health = 1;
+  // documents is the logical live document count at the status sample's now.
   uint64 documents = 2;
+  // The following live cardinalities use the same sampled now as documents.
   uint64 live_terms = 3;
   uint64 retained_term_slots = 4;
   uint64 retained_ordinals = 5;
@@ -820,6 +824,13 @@ message SearchIndexStats {
   uint64 estimated_retained_bytes = 9;
   uint64 rebuild_count = 10;
   google.protobuf.Duration last_rebuild_duration = 11;
+  // Physical documents include expired entries awaiting bounded query purge
+  // or the cache's background GC hook.
+  uint64 physical_documents = 12;
+  uint64 expired_documents = 13;
+  uint64 expiration_queue_entries = 14;
+  uint64 expiration_purged = 15;
+  google.protobuf.Duration last_expiration_purge_duration = 16;
 }
 
 message GetServerStatusResponse {

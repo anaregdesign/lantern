@@ -58,6 +58,18 @@ func TestWorkTracker(t *testing.T) {
 			t.Fatalf("visits = %d, want 0", w.stats.DictionaryVisits)
 		}
 	})
+
+	t.Run("expiration visits have an independent limit", func(t *testing.T) {
+		w := newWorkTracker(context.Background(), Budget{MaxExpirationVisits: 1})
+		if err := w.visit(WorkExpirationVisits, 1); err != nil {
+			t.Fatalf("visit within budget: %v", err)
+		}
+		err := w.visit(WorkExpirationVisits, 1)
+		var exhausted *BudgetExceededError
+		if !errors.As(err, &exhausted) || exhausted.Kind != WorkExpirationVisits || w.stats.ExpirationVisits != 2 {
+			t.Fatalf("error=%v stats=%+v, want expiration exhaustion at 2", err, w.stats)
+		}
+	})
 }
 
 func TestContextCancellationObservedInsideSearchLoops(t *testing.T) {
@@ -116,6 +128,7 @@ func BenchmarkSearchExecutionBudgets(b *testing.B) {
 		MaxDictionaryVisits: 1_000_000,
 		MaxPostingVisits:    10_000_000,
 		MaxPositionVisits:   10_000_000,
+		MaxExpirationVisits: 100_000,
 	}
 	run := func(b *testing.B, query string, opts MatchOptions, phrase bool) {
 		b.ReportAllocs()
@@ -135,6 +148,7 @@ func BenchmarkSearchExecutionBudgets(b *testing.B) {
 		b.ReportMetric(float64(stats.DictionaryVisits), "dictionary_visits/op")
 		b.ReportMetric(float64(stats.PostingVisits), "posting_visits/op")
 		b.ReportMetric(float64(stats.PositionVisits), "position_visits/op")
+		b.ReportMetric(float64(stats.ExpirationVisits), "expiration_visits/op")
 	}
 	b.Run("BroadPosting", func(b *testing.B) { run(b, "shared", MatchOptions{}, false) })
 	b.Run("FuzzyDictionary", func(b *testing.B) { run(b, "candidatx12345", MatchOptions{Fuzziness: 1}, false) })

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand"
 	"reflect"
 	"strings"
@@ -105,6 +106,68 @@ func keys(results []search.Result[string]) []string {
 		out[i] = r.ID
 	}
 	return out
+}
+
+// TestGraphCache_SearchExpirationIndependentOfBackgroundGC pins the TTL
+// contract at the GraphCache boundary. Search must rank from the same live
+// corpus whether or not the comparatively slow cache GC tick has reclaimed
+// the expired vertex yet.
+func TestGraphCache_SearchExpirationIndependentOfBackgroundGC(t *testing.T) {
+	newCache := func() *GraphCache[string, string] {
+		c := NewGraphCache[string, string](time.Hour)
+		c.EnableSearchIndex(textExtract, compareStringID)
+		return c
+	}
+	withExpired := newCache()
+	baseline := newCache()
+	expiration := time.Now().Add(20 * time.Millisecond)
+	for _, c := range []*GraphCache[string, string]{withExpired, baseline} {
+		if err := c.PutVertexWithExpiration("live", "alpha beta", time.Now().Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := withExpired.PutVertexWithExpiration("expired", "alpha alpha zzuniqueonly", expiration); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Until(expiration) + 10*time.Millisecond)
+
+	before := withExpired.SearchIndexMemoryStats()
+	if before.Documents != 1 || before.PhysicalDocuments != 2 || before.ExpiredDocuments != 1 {
+		t.Fatalf("pre-purge stats = %+v, want live=1 physical=2 expired=1", before)
+	}
+	query := func(c *GraphCache[string, string]) ([]search.Result[string], search.Stats) {
+		results, stats, err := c.SearchVerticesMatchContext(context.Background(), "alpha", 10, "", search.MatchOptions{}, false, search.Budget{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return results, stats
+	}
+	got, work := query(withExpired)
+	want, _ := query(baseline)
+	if !reflect.DeepEqual(keys(got), keys(want)) || len(got) != 1 || math.Float64bits(got[0].Score) != math.Float64bits(want[0].Score) {
+		t.Fatalf("query-time purge results = %+v, baseline = %+v", got, want)
+	}
+	if work.ExpirationVisits != 1 {
+		t.Fatalf("expiration visits = %d, want 1", work.ExpirationVisits)
+	}
+	if got := withExpired.SearchVerticesMatch("zzuniq", 10, "", search.MatchOptions{PrefixTerms: true}, false); len(got) != 0 {
+		t.Fatalf("expired-only prefix candidates = %+v, want none", got)
+	}
+	afterPurge := withExpired.SearchIndexMemoryStats()
+	if afterPurge.Documents != 1 || afterPurge.PhysicalDocuments != 1 || afterPurge.ExpirationPurged != 1 {
+		t.Fatalf("post-purge stats = %+v", afterPurge)
+	}
+
+	// The graph cache still physically retains the dead vertex until GC. Its
+	// later eviction hook is idempotent with the index's earlier purge and must
+	// not perturb ranking.
+	if removed := withExpired.vertices.Flush(); removed != 1 {
+		t.Fatalf("background Flush removed %d vertices, want 1", removed)
+	}
+	afterGC, _ := query(withExpired)
+	if !reflect.DeepEqual(got, afterGC) {
+		t.Fatalf("ranking changed after background GC: before=%+v after=%+v", got, afterGC)
+	}
 }
 
 func TestGraphCache_SearchConcurrentMutationAndCancellation(t *testing.T) {

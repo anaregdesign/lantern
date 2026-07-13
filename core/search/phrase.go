@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"sort"
+	"time"
 )
 
 // SearchPhrase returns the documents that contain the query's word-channel
@@ -19,6 +20,9 @@ import (
 // matches nothing, returns nil. Equal scores use the index's required typed
 // document-ID comparator ascending.
 func (idx *InvertedIndex[S, D]) SearchPhrase(query string) []Result[S] {
+	if err := idx.purgeExpired(newWorkTracker(context.Background(), Budget{}), idx.clock()); err != nil {
+		return nil
+	}
 	terms := idx.phraseQueryTerms(query)
 	if len(terms) == 0 {
 		return nil
@@ -50,12 +54,21 @@ func (idx *InvertedIndex[S, D]) SearchPhraseTopK(query string, k int, accept fun
 // SearchPhraseTopKContext is SearchPhraseTopK with cancellation and
 // deterministic work accounting. It never returns partial results on error.
 func (idx *InvertedIndex[S, D]) SearchPhraseTopKContext(ctx context.Context, query string, k int, accept func(id S) bool, budget Budget) ([]Result[S], Stats, error) {
+	return idx.SearchPhraseTopKContextAt(ctx, query, k, accept, budget, idx.clock())
+}
+
+// SearchPhraseTopKContextAt is SearchPhraseTopKContext with an explicit
+// liveness instant shared with a layered store's accept callback.
+func (idx *InvertedIndex[S, D]) SearchPhraseTopKContextAt(ctx context.Context, query string, k int, accept func(id S) bool, budget Budget, now time.Time) ([]Result[S], Stats, error) {
 	work := newWorkTracker(ctx, budget)
 	if idx.Health() != IndexHealthy {
 		return nil, work.stats, ErrIndexIncomplete
 	}
 	if k <= 0 {
 		return nil, work.stats, nil
+	}
+	if err := idx.purgeExpired(work, now); err != nil {
+		return nil, work.stats, err
 	}
 	terms := idx.phraseQueryTerms(query)
 	if err := work.visit(WorkQueryTerms, int64(len(terms))); err != nil {

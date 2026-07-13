@@ -160,6 +160,7 @@ func newLanternService(
 				MaxDictionaryVisits: int64(src.MaxDictionaryVisits),
 				MaxPostingVisits:    int64(src.MaxPostingVisits),
 				MaxPositionVisits:   int64(src.MaxPositionVisits),
+				MaxExpirationVisits: int64(src.MaxExpirationVisits),
 			},
 			MaxInFlight:    src.MaxInFlight,
 			AnalysisLimits: src.AnalysisLimits,

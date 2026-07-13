@@ -82,6 +82,7 @@ value is treated as unset for the non-string kinds. The MCP server's
 | `LANTERN_SEARCH_MAX_DOCUMENT_BYTES` | int | `1048576` | Maximum UTF-8 bytes in one projected search document before analysis. |
 | `LANTERN_SEARCH_MAX_DOCUMENT_TERMS` | int | `100000` | Maximum distinct analyzed terms in one search document. |
 | `LANTERN_SEARCH_MAX_DOCUMENT_TOKENS` | int | `250000` | Maximum analyzed tokens produced by one search document. |
+| `LANTERN_SEARCH_MAX_EXPIRATION_VISITS` | int | `100000` | Maximum expired documents purged by one search attempt. |
 | `LANTERN_SEARCH_MAX_IN_FLIGHT` | int | `32` | Maximum concurrently executing searches; excess attempts fail immediately. |
 | `LANTERN_SEARCH_MAX_LIMIT` | uint32 | `1000` | Ceiling SearchVertices' limit is clamped to. |
 | `LANTERN_SEARCH_MAX_LIVE_POSTINGS` | int | `50000000` | Maximum live term-document posting entries. |

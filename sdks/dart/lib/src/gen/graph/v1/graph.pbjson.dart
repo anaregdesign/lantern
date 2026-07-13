@@ -1390,6 +1390,13 @@ const SearchCapabilities$json = {
       '6': '.graph.v1.SearchIndexStats',
       '10': 'indexStats'
     },
+    {
+      '1': 'max_expiration_visits',
+      '3': 27,
+      '4': 1,
+      '5': 4,
+      '10': 'maxExpirationVisits'
+    },
   ],
 };
 
@@ -1416,7 +1423,8 @@ final $typed_data.Uint8List searchCapabilitiesDescriptor = $convert.base64Decode
     'BFISbWF4UG9zaXRpb25FbnRyaWVzEikKEGNvbXBhY3Rpb25fcmF0aW8YGCABKAFSD2NvbXBhY3'
     'Rpb25SYXRpbxI0ChZjb21wYWN0aW9uX21pbl9yZXRpcmVkGBkgASgEUhRjb21wYWN0aW9uTWlu'
     'UmV0aXJlZBI7CgtpbmRleF9zdGF0cxgaIAEoCzIaLmdyYXBoLnYxLlNlYXJjaEluZGV4U3RhdH'
-    'NSCmluZGV4U3RhdHM=');
+    'NSCmluZGV4U3RhdHMSMgoVbWF4X2V4cGlyYXRpb25fdmlzaXRzGBsgASgEUhNtYXhFeHBpcmF0'
+    'aW9uVmlzaXRz');
 
 @$core.Deprecated('Use searchIndexStatsDescriptor instead')
 const SearchIndexStats$json = {
@@ -1471,6 +1479,42 @@ const SearchIndexStats$json = {
       '6': '.google.protobuf.Duration',
       '10': 'lastRebuildDuration'
     },
+    {
+      '1': 'physical_documents',
+      '3': 12,
+      '4': 1,
+      '5': 4,
+      '10': 'physicalDocuments'
+    },
+    {
+      '1': 'expired_documents',
+      '3': 13,
+      '4': 1,
+      '5': 4,
+      '10': 'expiredDocuments'
+    },
+    {
+      '1': 'expiration_queue_entries',
+      '3': 14,
+      '4': 1,
+      '5': 4,
+      '10': 'expirationQueueEntries'
+    },
+    {
+      '1': 'expiration_purged',
+      '3': 15,
+      '4': 1,
+      '5': 4,
+      '10': 'expirationPurged'
+    },
+    {
+      '1': 'last_expiration_purge_duration',
+      '3': 16,
+      '4': 1,
+      '5': 11,
+      '6': '.google.protobuf.Duration',
+      '10': 'lastExpirationPurgeDuration'
+    },
   ],
 };
 
@@ -1485,7 +1529,12 @@ final $typed_data.Uint8List searchIndexStatsDescriptor = $convert.base64Decode(
     'YXRlZExpdmVCeXRlcxI4Chhlc3RpbWF0ZWRfcmV0YWluZWRfYnl0ZXMYCSABKARSFmVzdGltYX'
     'RlZFJldGFpbmVkQnl0ZXMSIwoNcmVidWlsZF9jb3VudBgKIAEoBFIMcmVidWlsZENvdW50Ek0K'
     'FWxhc3RfcmVidWlsZF9kdXJhdGlvbhgLIAEoCzIZLmdvb2dsZS5wcm90b2J1Zi5EdXJhdGlvbl'
-    'ITbGFzdFJlYnVpbGREdXJhdGlvbg==');
+    'ITbGFzdFJlYnVpbGREdXJhdGlvbhItChJwaHlzaWNhbF9kb2N1bWVudHMYDCABKARSEXBoeXNp'
+    'Y2FsRG9jdW1lbnRzEisKEWV4cGlyZWRfZG9jdW1lbnRzGA0gASgEUhBleHBpcmVkRG9jdW1lbn'
+    'RzEjgKGGV4cGlyYXRpb25fcXVldWVfZW50cmllcxgOIAEoBFIWZXhwaXJhdGlvblF1ZXVlRW50'
+    'cmllcxIrChFleHBpcmF0aW9uX3B1cmdlZBgPIAEoBFIQZXhwaXJhdGlvblB1cmdlZBJeCh5sYX'
+    'N0X2V4cGlyYXRpb25fcHVyZ2VfZHVyYXRpb24YECABKAsyGS5nb29nbGUucHJvdG9idWYuRHVy'
+    'YXRpb25SG2xhc3RFeHBpcmF0aW9uUHVyZ2VEdXJhdGlvbg==');
 
 @$core.Deprecated('Use getServerStatusResponseDescriptor instead')
 const GetServerStatusResponse$json = {

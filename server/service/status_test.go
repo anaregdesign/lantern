@@ -119,6 +119,7 @@ func TestLanternService_GetServerStatus(t *testing.T) {
 				MaxDictionaryVisits: 34,
 				MaxPostingVisits:    56,
 				MaxPositionVisits:   78,
+				MaxExpirationVisits: 90,
 			},
 			MaxInFlight: 9,
 			AnalysisLimits: search.SearchAnalysisLimits{
@@ -127,7 +128,7 @@ func TestLanternService_GetServerStatus(t *testing.T) {
 				CompactionRatio: 2.5, CompactionMinRetired: 40,
 			},
 		}
-		fb.searchStats = search.IndexMemoryStats{Health: search.IndexHealthy, Documents: 3, LiveTerms: 4, RetainedTermSlots: 5, EstimatedLiveBytes: 100, EstimatedRetainedBytes: 120, RebuildCount: 2}
+		fb.searchStats = search.IndexMemoryStats{Health: search.IndexHealthy, Documents: 3, PhysicalDocuments: 5, ExpiredDocuments: 2, ExpirationQueueEntries: 2, ExpirationPurged: 9, LastExpirationPurge: 12 * time.Millisecond, LiveTerms: 4, RetainedTermSlots: 5, EstimatedLiveBytes: 100, EstimatedRetainedBytes: 120, RebuildCount: 2}
 		withPositions := NewLanternService(fb).WithSearchLimits(limits)
 		resp, err := withPositions.GetServerStatus(context.Background(), &pb.GetServerStatusRequest{})
 		if err != nil {
@@ -148,7 +149,7 @@ func TestLanternService_GetServerStatus(t *testing.T) {
 		}
 		if got.GetTimeoutMs() != 1500 || got.GetMaxQueryBytes() != 4096 || got.GetMaxQueryTerms() != 12 ||
 			got.GetMaxDictionaryVisits() != 34 || got.GetMaxPostingVisits() != 56 ||
-			got.GetMaxPositionVisits() != 78 || got.GetMaxInFlight() != 9 {
+			got.GetMaxPositionVisits() != 78 || got.GetMaxExpirationVisits() != 90 || got.GetMaxInFlight() != 9 {
 			t.Errorf("search execution capabilities incomplete: %+v", got)
 		}
 		if len(got.GetConfigFingerprint()) != 64 {
@@ -157,7 +158,7 @@ func TestLanternService_GetServerStatus(t *testing.T) {
 		if got.GetMaxDocumentBytes() != 100 || got.GetMaxLivePostings() != 60 || got.GetCompactionRatio() != 2.5 {
 			t.Errorf("analysis capabilities incomplete: %+v", got)
 		}
-		if got.GetIndexStats().GetHealth() != pb.SearchIndexHealth_SEARCH_INDEX_HEALTH_HEALTHY || got.GetIndexStats().GetEstimatedRetainedBytes() != 120 || got.GetIndexStats().GetRebuildCount() != 2 {
+		if got.GetIndexStats().GetHealth() != pb.SearchIndexHealth_SEARCH_INDEX_HEALTH_HEALTHY || got.GetIndexStats().GetDocuments() != 3 || got.GetIndexStats().GetPhysicalDocuments() != 5 || got.GetIndexStats().GetExpiredDocuments() != 2 || got.GetIndexStats().GetExpirationQueueEntries() != 2 || got.GetIndexStats().GetExpirationPurged() != 9 || got.GetIndexStats().GetLastExpirationPurgeDuration().AsDuration() != 12*time.Millisecond || got.GetIndexStats().GetEstimatedRetainedBytes() != 120 || got.GetIndexStats().GetRebuildCount() != 2 {
 			t.Errorf("index stats incomplete: %+v", got.GetIndexStats())
 		}
 
@@ -181,6 +182,15 @@ func TestLanternService_GetServerStatus(t *testing.T) {
 		}
 		if differentBudget.GetSearch().GetConfigFingerprint() == got.GetConfigFingerprint() {
 			t.Error("heterogeneous analysis budgets reported the same fingerprint")
+		}
+		limits.AnalysisLimits.MaxDocumentBytes--
+		limits.WorkBudget.MaxExpirationVisits++
+		differentExpirationBudget, err := NewLanternService(fb).WithSearchLimits(limits).GetServerStatus(context.Background(), &pb.GetServerStatusRequest{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if differentExpirationBudget.GetSearch().GetConfigFingerprint() == got.GetConfigFingerprint() {
+			t.Error("heterogeneous expiration budgets reported the same fingerprint")
 		}
 	})
 

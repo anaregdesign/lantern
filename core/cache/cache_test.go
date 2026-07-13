@@ -280,6 +280,18 @@ func TestCache_Has(t *testing.T) {
 	}
 }
 
+func TestCache_HasAt(t *testing.T) {
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	c := NewCache[string, int](time.Minute)
+	c.PutWithExpiration("k", 1, base.Add(time.Minute))
+	if !c.HasAt("k", base) {
+		t.Fatal("HasAt before expiration = false, want true")
+	}
+	if c.HasAt("k", base.Add(time.Minute)) {
+		t.Fatal("HasAt at expiration = true, want false")
+	}
+}
+
 // TestCache_OnEvict_Delete verifies the callback fires exactly once when an
 // existing key is deleted, and not at all when an absent key is "deleted".
 func TestCache_OnEvict_Delete(t *testing.T) {

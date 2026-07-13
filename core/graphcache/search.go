@@ -87,11 +87,11 @@ func WithSearchAnalysisLimits(limits search.SearchAnalysisLimits) SearchIndexOpt
 // phrase and proximity queries; pass WithoutSearchPositions to build the leaner
 // position-free index (#908).
 //
-// Once enabled, the index is kept in perfect lockstep with the vertex
-// lifecycle: every put (including overwrites) re-indexes the value, and
-// eviction — Delete, DeleteMany, Clear, and TTL Flush — drops the key through
-// the shared SetOnEvictMany hook, so entries decay together with the vertices
-// they describe.
+// Once enabled, every put (including overwrites) atomically replaces the value,
+// postings, and expiration record. Explicit eviction drops the key through the
+// shared SetOnEvictMany hook. A query purges due index entries before scoring,
+// while the later TTL Flush hook performs an idempotent delete, so cache GC
+// timing cannot affect live-corpus ranking.
 // The index is a third opt-in secondary structure alongside the prefix index;
 // when it is left disabled the put / evict hot paths pay only a nil check.
 func (c *GraphCache[S, T]) EnableSearchIndex(extract func(T) search.Document, compareID func(S, S) int, opts ...SearchIndexOption) {
@@ -132,13 +132,13 @@ func (c *GraphCache[S, T]) rebuildSearchIndexLocked() error {
 	}
 	items := make([]search.PreparedItem[S], 0, c.vertices.Count())
 	var firstErr error
-	c.vertices.Range(func(key S, value T, _ time.Time) bool {
+	c.vertices.Range(func(key S, value T, expiration time.Time) bool {
 		prepared, _, err := c.searchIndex.Prepare(c.searchExtract(value))
 		if err != nil {
 			firstErr = err
 			return false
 		}
-		items = append(items, search.PreparedItem[S]{ID: key, Prepared: prepared})
+		items = append(items, search.PreparedItem[S]{ID: key, Prepared: prepared, Expiration: expiration})
 		return true
 	})
 	if firstErr != nil {
@@ -215,6 +215,7 @@ func (c *GraphCache[S, T]) SearchVerticesMatchContext(ctx context.Context, query
 	// analysis or any unrelated graph operation.
 	c.searchCommitMu.RLock()
 	defer c.searchCommitMu.RUnlock()
+	queryNow := time.Now()
 	// Phase 2 — query analysis, BM25 ranking, and liveness/prefix filtering all
 	// run WITHOUT GraphCache.mu. The liveness and prefix filters are pushed INTO
 	// the index's bounded top-k selection as the accept callback (#841), so a
@@ -225,13 +226,15 @@ func (c *GraphCache[S, T]) SearchVerticesMatchContext(ctx context.Context, query
 	// then probes only the vertex cache's inner mutex (which never acquires the
 	// index lock). This preserves the order already established by index writes
 	// running under GraphCache.mu. Liveness is
-	// checked via vertices.Has, so an expired-but-not-yet-flushed vertex is
+	// checked via vertices.HasAt using the same queryNow passed to the index, so
+	// candidate probes never resample the wall clock per posting. An
+	// expired-but-not-yet-flushed vertex is
 	// skipped; the read may race a concurrent Put/Delete and observe either side
 	// of it, the same racy point-read contract GetVertex provides (#740).
 	accept := func(id S) bool {
-		if !c.vertices.Has(id) {
-			// Expired between the index write and this read but the async Flush
-			// has not run yet; consistent with point-read semantics, absent.
+		if !c.vertices.HasAt(id, queryNow) {
+			// Dead at the sampled instant or physically removed by a concurrent
+			// Delete/Flush; consistent with the point-read race boundary.
 			return false
 		}
 		return keyPrefix == "" || keyHasPrefix(prefixExtract, id, keyPrefix)
@@ -240,9 +243,9 @@ func (c *GraphCache[S, T]) SearchVerticesMatchContext(ctx context.Context, query
 	var stats search.Stats
 	var err error
 	if phrase {
-		out, stats, err = index.SearchPhraseTopKContext(ctx, query, limit, accept, budget)
+		out, stats, err = index.SearchPhraseTopKContextAt(ctx, query, limit, accept, budget, queryNow)
 	} else {
-		out, stats, err = index.SearchMatchTopKContext(ctx, query, limit, accept, opts, budget)
+		out, stats, err = index.SearchMatchTopKContextAt(ctx, query, limit, accept, opts, budget, queryNow)
 	}
 	if err != nil {
 		return nil, stats, err

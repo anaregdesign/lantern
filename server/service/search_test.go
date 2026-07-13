@@ -276,7 +276,7 @@ func TestSearchVertices_MapsWorkBudgetExhaustion(t *testing.T) {
 	fb.searchContextFn = func(context.Context) ([]search.Result[string], search.Stats, error) {
 		return nil, search.Stats{PostingVisits: 3}, &search.BudgetExceededError{Kind: search.WorkPostingVisits, Limit: 2}
 	}
-	wantBudget := search.Budget{MaxQueryTerms: 1, MaxDictionaryVisits: 2, MaxPostingVisits: 3, MaxPositionVisits: 4}
+	wantBudget := search.Budget{MaxQueryTerms: 1, MaxDictionaryVisits: 2, MaxPostingVisits: 3, MaxPositionVisits: 4, MaxExpirationVisits: 5}
 	svc := NewLanternService(fb).WithSearchLimits(SearchLimits{
 		Enabled:      true,
 		DefaultLimit: 10,
