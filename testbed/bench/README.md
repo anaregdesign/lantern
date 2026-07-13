@@ -16,7 +16,9 @@ Markdown report.
 >
 > **Release CI runs a compact canonical sweep.** On every `vX.Y.Z` tag
 > push, the `Release` workflow runs `./testbed/bench/release.sh` — a
-> driver that sweeps the scenarios listed in `release-scenarios.txt`. To
+> driver that sweeps the scenarios listed in `release-scenarios.txt`. Each
+> scenario owns a fresh Compose lifecycle so data, retained high-water state,
+> and scenario-specific cluster env cannot leak into its successor (#1097). To
 > keep wall-time bounded without losing coverage, the sweep is seven
 > scenarios: three fan-out scenarios (`broad_rw`, `broad_mutate`,
 > `broad_illuminate`) that
@@ -29,13 +31,15 @@ Markdown report.
 > fixed-format `bench-report.md` that is spliced into the GitHub Release
 > notes. This full profiling sweep remains `continue-on-error`, so a noisy
 > runner cannot block a release; it is separate from the short blocking Search
-> qualification above. See issues [#256], [#262], [#573], [#708], [#1063].
+> qualification above. See issues [#256], [#262], [#573], [#708], [#1063],
+> [#1097].
 
 [#256]: https://github.com/anaregdesign/lantern/issues/256
 [#262]: https://github.com/anaregdesign/lantern/issues/262
 [#573]: https://github.com/anaregdesign/lantern/issues/573
 [#708]: https://github.com/anaregdesign/lantern/issues/708
 [#1063]: https://github.com/anaregdesign/lantern/issues/1063
+[#1097]: https://github.com/anaregdesign/lantern/issues/1097
 
 ## Prerequisites
 

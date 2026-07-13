@@ -290,6 +290,40 @@ func TestSearchReleaseQualificationIsBlocking(t *testing.T) {
 	}
 }
 
+// TestReleaseSweepIsolatesScenarioClusters keeps release measurements from
+// inheriting data, high-water state, or ignored cluster overrides from a prior
+// scenario. run.sh must own the complete Compose lifecycle for every entry.
+func TestReleaseSweepIsolatesScenarioClusters(t *testing.T) {
+	releaseScript, err := os.ReadFile("release.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := string(releaseScript)
+	if !strings.Contains(release, `if "$HERE/run.sh" "$s"; then`) {
+		t.Error("release sweep does not invoke the scenario-owned run.sh lifecycle")
+	}
+	for _, sharedClusterContract := range []string{"SKIP_UP=1", "KEEP_UP=1", `docker compose "${COMPOSE_FILES[@]}" up`} {
+		if strings.Contains(release, sharedClusterContract) {
+			t.Errorf("release sweep still contains shared-cluster contract %q", sharedClusterContract)
+		}
+	}
+
+	runScript, err := os.ReadFile("run.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := string(runScript)
+	clusterOverride := strings.Index(run, `cluster_ttl="$(yq -r '.cluster.default_ttl_seconds`)
+	composeUp := strings.Index(run, `docker compose "${COMPOSE_FILES[@]}" up -d --wait`)
+	composeDown := strings.Index(run, `docker compose "${COMPOSE_FILES[@]}" down -v`)
+	if clusterOverride < 0 || composeUp < 0 || clusterOverride > composeUp {
+		t.Error("run.sh must apply scenario cluster overrides before compose up")
+	}
+	if composeDown < 0 {
+		t.Error("run.sh must remove scenario volumes during cleanup")
+	}
+}
+
 // calls flattens every (call, data_template) pair in the document, tagged
 // with where it came from so failures point at the offending YAML path.
 func (d scenarioDoc) calls() map[string]scenarioCall {
