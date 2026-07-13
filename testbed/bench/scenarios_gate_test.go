@@ -181,6 +181,16 @@ func TestSearchChurnScenarioGateContract(t *testing.T) {
 			t.Errorf("metric %s has no threshold", metric)
 		}
 	}
+	retainedRatio := doc.MetricGate.Metrics["lantern_search_index_retained_ratio"]
+	if increase, ok := retainedRatio["max_increase"]; !ok || increase != 0 {
+		t.Errorf("retained ratio max_increase = %v, present %t; want 0, true", increase, ok)
+	}
+	if ratio, ok := retainedRatio["max_ratio"]; !ok || ratio != 1 {
+		t.Errorf("retained ratio max_ratio = %v, present %t; want 1, true", ratio, ok)
+	}
+	if _, ok := retainedRatio["max_post"]; ok {
+		t.Error("retained ratio must not use an absolute max_post")
+	}
 
 	calls := make(map[string]string, len(doc.Target.Calls))
 	totalRPS := 0
