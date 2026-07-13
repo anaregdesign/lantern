@@ -38,12 +38,13 @@ func newSearchIndex[S comparable](positions bool, limits search.SearchAnalysisLi
 		Base:       search.BM25{K1: search.DefaultBM25K1, B: search.DefaultBM25B},
 		GramWeight: search.DefaultGramWeight,
 	}
+	fieldScorer := search.FieldWeighted{Base: scorer, KeyWeight: search.DefaultKeyFieldWeight, ValueWeight: 1}
 	var opts []search.IndexOption
 	if positions {
 		opts = append(opts, search.WithPositions())
 	}
 	opts = append(opts, search.WithAnalysisLimits(limits))
-	return search.NewInvertedIndex[S, search.Document](analyzer, scorer, compareID, opts...)
+	return search.NewInvertedIndex[S, search.Document](analyzer, fieldScorer, compareID, opts...)
 }
 
 // SearchIndexOption configures the optional content-search index at
@@ -77,8 +78,9 @@ func WithSearchAnalysisLimits(limits search.SearchAnalysisLimits) SearchIndexOpt
 }
 
 // EnableSearchIndex turns on the optional content-search index, projecting each
-// stored value T into the search.Document that gets indexed (for example the
-// vertex's string value). Like EnablePrefixIndex it must be called before any
+// stored (key, value) pair into the search.Document that gets indexed. Receiving
+// the key lets a structured projection index implicit endpoint vertices as
+// key-only documents. Like EnablePrefixIndex it must be called before any
 // vertex is stored, is idempotent, and panics on a non-empty cache so the
 // caller cannot silently observe an index that disagrees with point reads.
 // extract and compareID must not be nil. compareID is the stable ascending
@@ -94,7 +96,7 @@ func WithSearchAnalysisLimits(limits search.SearchAnalysisLimits) SearchIndexOpt
 // timing cannot affect live-corpus ranking.
 // The index is a third opt-in secondary structure alongside the prefix index;
 // when it is left disabled the put / evict hot paths pay only a nil check.
-func (c *GraphCache[S, T]) EnableSearchIndex(extract func(T) search.Document, compareID func(S, S) int, opts ...SearchIndexOption) {
+func (c *GraphCache[S, T]) EnableSearchIndex(extract func(S, T) search.Document, compareID func(S, S) int, opts ...SearchIndexOption) {
 	if extract == nil {
 		panic("graphcache: EnableSearchIndex extract must not be nil")
 	}
@@ -133,7 +135,7 @@ func (c *GraphCache[S, T]) rebuildSearchIndexLocked() error {
 	items := make([]search.PreparedItem[S], 0, c.vertices.Count())
 	var firstErr error
 	c.vertices.Range(func(key S, value T, expiration time.Time) bool {
-		prepared, _, err := c.searchIndex.Prepare(c.searchExtract(value))
+		prepared, _, err := c.searchIndex.Prepare(c.searchExtract(key, value))
 		if err != nil {
 			firstErr = err
 			return false

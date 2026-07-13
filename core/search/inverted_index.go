@@ -23,7 +23,8 @@ import (
 // (score descending, caller-provided typed ID comparator ascending).
 //
 // Terms live in per-class tables (#888): each TokenClass has its own term
-// dictionary, postings, and corpus statistics, so a dual-channel analyzer
+// dictionary and postings. Corpus statistics and posting payloads are further
+// scoped by semantic Document field (#1061), so a dual-channel analyzer
 // (ScriptAwareTokenizer's whole words + auxiliary intra-word grams) never
 // mixes the two channels' document frequencies or lengths, and a class-aware
 // Scorer (ClassWeighted) can weight them apart. A single-channel pipeline
@@ -99,6 +100,10 @@ type classPostings struct {
 	// docCount is how many documents carry at least one token of this class —
 	// the class's corpus size, the N of its TermStats.
 	docCount int
+	// Field-local corpus statistics back BM25F-style scoring while the shared
+	// dictionary and docs bitmap preserve key-or-value recall and expansion.
+	fieldTotalLen [numDocumentFields]int
+	fieldDocCount [numDocumentFields]int
 }
 
 // docEntry is the forward-index entry recorded for each indexed document, keyed
@@ -111,12 +116,15 @@ type docEntry[S comparable] struct {
 	// the |d| that each class's length normalization compares against the
 	// class average.
 	lengths [numTokenClasses]int
+	// fieldLengths keeps length normalization inside a semantic field.
+	fieldLengths [numTokenClasses][numDocumentFields]int
 	// terms is the de-duplicated list of distinct term ids the document was
 	// indexed under, per class (see termDict), used to drop its postings on
 	// delete or re-index. A []uint32 keeps the per-document forward index
 	// compact.
 	terms           [numTokenClasses][]uint32
 	positionEntries int
+	postingEntries  int
 	expiry          *expiryRecord
 }
 
@@ -249,14 +257,26 @@ type PreparedDocument struct {
 }
 
 type preparedClass struct {
-	length int
-	terms  []preparedTerm
+	length       int
+	fieldLengths [numDocumentFields]int
+	terms        []preparedTerm
 }
 
 type preparedTerm struct {
 	term      string
 	frequency int
-	positions []uint32
+	fields    [numDocumentFields]preparedFieldTerm
+}
+
+type preparedFieldTerm struct {
+	frequency int
+	positions []uint64
+}
+
+type preparedOccurrence struct {
+	token    Token
+	field    FieldID
+	position uint64
 }
 
 // PreparedItem pairs an id with its PreparedDocument for IndexManyPrepared.
@@ -266,7 +286,8 @@ type PreparedItem[S comparable] struct {
 	Expiration time.Time
 }
 
-// Prepare analyzes doc.String() WITHOUT taking the index lock and returns the
+// Prepare analyzes a FieldedDocument's field instances (or doc.String() as one
+// default field) WITHOUT taking the index lock and returns the
 // bounded tokens IndexPrepared needs, their AnalysisStats, or a typed
 // AnalysisLimitError. The analyzer is immutable and stateless, so Prepare is
 // safe to call concurrently and from outside any of the caller's locks.
@@ -277,85 +298,116 @@ func (idx *InvertedIndex[S, D]) Prepare(doc D) (PreparedDocument, AnalysisStats,
 			return PreparedDocument{}, AnalysisStats{ProjectedBytes: hint}, err
 		}
 	}
-	text := doc.String()
-	stats := AnalysisStats{ProjectedBytes: len(text)}
+	fields := []DocumentField{{ID: FieldDefault, Text: doc.String()}}
+	if fielded, ok := any(doc).(FieldedDocument); ok {
+		fields = fielded.SearchFields()
+	}
+	var stats AnalysisStats
+	for _, field := range fields {
+		if field.ID >= numDocumentFields {
+			panic("search: document with undefined FieldID")
+		}
+		stats.ProjectedBytes += len(field.Text)
+	}
 	if err := limitError(LimitDocumentBytes, int64(stats.ProjectedBytes), int64(idx.limits.MaxDocumentBytes)); err != nil {
 		return PreparedDocument{}, stats, err
 	}
-	var tokens []Token
-	if analyzer, ok := idx.analyzer.(boundedAnalyzer); ok {
-		var exceeded bool
-		tokens, exceeded = analyzer.AnalyzeBounded(text, idx.limits.MaxDocumentTokens)
-		if exceeded {
-			return PreparedDocument{}, stats, &AnalysisLimitError{Kind: LimitDocumentTokens, Got: int64(idx.limits.MaxDocumentTokens + 1), Limit: int64(idx.limits.MaxDocumentTokens)}
-		}
-	} else {
-		tokens = idx.analyzer.Analyze(text)
-	}
-	stats.Tokens = len(tokens)
-	if err := limitError(LimitDocumentTokens, int64(stats.Tokens), int64(idx.limits.MaxDocumentTokens)); err != nil {
-		return PreparedDocument{}, stats, err
-	}
 	prepared := PreparedDocument{}
-	var wordPositions map[string][]uint32
-	if idx.positions {
-		wordPositions = make(map[string][]uint32)
-	}
-	var wordPosition uint32
-	for _, token := range tokens {
-		if int(token.Class) >= numTokenClasses {
-			panic("search: token with undefined TokenClass")
+	var occurrences []preparedOccurrence
+	var fieldInstances [numDocumentFields]uint32
+	for _, field := range fields {
+		instance := fieldInstances[field.ID]
+		fieldInstances[field.ID]++
+		remaining := 0
+		if idx.limits.MaxDocumentTokens > 0 {
+			remaining = idx.limits.MaxDocumentTokens - stats.Tokens
+			if remaining < 1 {
+				remaining = 1
+			}
 		}
-		if idx.positions && token.Class == ClassWord {
-			wordPositions[token.Term] = append(wordPositions[token.Term], wordPosition)
-			wordPosition++
+		var tokens []Token
+		if analyzer, ok := idx.analyzer.(boundedAnalyzer); ok {
+			var exceeded bool
+			tokens, exceeded = analyzer.AnalyzeBounded(field.Text, remaining)
+			if exceeded {
+				return PreparedDocument{}, stats, &AnalysisLimitError{Kind: LimitDocumentTokens, Got: int64(idx.limits.MaxDocumentTokens + 1), Limit: int64(idx.limits.MaxDocumentTokens)}
+			}
+		} else {
+			tokens = idx.analyzer.Analyze(field.Text)
+		}
+		stats.Tokens += len(tokens)
+		if err := limitError(LimitDocumentTokens, int64(stats.Tokens), int64(idx.limits.MaxDocumentTokens)); err != nil {
+			return PreparedDocument{}, stats, err
+		}
+		var wordPosition uint32
+		for _, token := range tokens {
+			if int(token.Class) >= numTokenClasses {
+				panic("search: token with undefined TokenClass")
+			}
+			occurrence := preparedOccurrence{token: token, field: field.ID}
+			if idx.positions && token.Class == ClassWord {
+				occurrence.position = uint64(instance)<<32 | uint64(wordPosition)
+				wordPosition++
+				prepared.positionEntries++
+			}
+			occurrences = append(occurrences, occurrence)
+			prepared.classes[token.Class].length++
+			prepared.classes[token.Class].fieldLengths[field.ID]++
 		}
 	}
-	// The analyzer owns this token slice for the call, so sort it in place
-	// instead of allocating a second occurrence-sized scratch representation.
-	// Positions were captured above while tokens were still in source order.
-	slices.SortFunc(tokens, func(a, b Token) int {
-		if a.Class < b.Class {
+	slices.SortFunc(occurrences, func(a, b preparedOccurrence) int {
+		if a.token.Class < b.token.Class {
 			return -1
 		}
-		if a.Class > b.Class {
+		if a.token.Class > b.token.Class {
 			return 1
 		}
-		return strings.Compare(a.Term, b.Term)
+		if cmp := strings.Compare(a.token.Term, b.token.Term); cmp != 0 {
+			return cmp
+		}
+		if a.field < b.field {
+			return -1
+		}
+		if a.field > b.field {
+			return 1
+		}
+		if a.position < b.position {
+			return -1
+		}
+		if a.position > b.position {
+			return 1
+		}
+		return 0
 	})
-	var distinct [numTokenClasses]int
-	for i := 0; i < len(tokens); {
+	for i := 0; i < len(occurrences); {
 		j := i + 1
-		for j < len(tokens) && tokens[j] == tokens[i] {
+		for j < len(occurrences) && occurrences[j].token == occurrences[i].token {
 			j++
 		}
-		distinct[tokens[i].Class]++
-		i = j
-	}
-	for class, count := range distinct {
-		if count > 0 {
-			prepared.classes[class].terms = make([]preparedTerm, 0, count)
+		class := occurrences[i].token.Class
+		term := preparedTerm{term: occurrences[i].token.Term, frequency: j - i}
+		for k := i; k < j; {
+			end := k + 1
+			for end < j && occurrences[end].field == occurrences[k].field {
+				end++
+			}
+			fieldTerm := &term.fields[occurrences[k].field]
+			fieldTerm.frequency = end - k
+			if idx.positions && class == ClassWord {
+				fieldTerm.positions = make([]uint64, 0, end-k)
+				for _, occurrence := range occurrences[k:end] {
+					fieldTerm.positions = append(fieldTerm.positions, occurrence.position)
+				}
+			}
+			prepared.postings++
+			k = end
 		}
-	}
-	for i := 0; i < len(tokens); {
-		j := i + 1
-		for j < len(tokens) && tokens[j] == tokens[i] {
-			j++
-		}
-		class := tokens[i].Class
-		term := preparedTerm{term: tokens[i].Term, frequency: j - i}
-		if idx.positions && class == ClassWord {
-			term.positions = wordPositions[term.term]
-		}
-		prepared.classes[class].length += j - i
 		prepared.classes[class].terms = append(prepared.classes[class].terms, term)
-		prepared.postings++
 		i = j
 	}
-	if idx.positions {
-		prepared.positionEntries = int(wordPosition)
+	for class := range prepared.classes {
+		stats.UniqueTerms += len(prepared.classes[class].terms)
 	}
-	stats.UniqueTerms = prepared.postings
 	stats.Postings = prepared.postings
 	stats.PositionEntries = prepared.positionEntries
 	if err := limitError(LimitDocumentTerms, int64(stats.UniqueTerms), int64(idx.limits.MaxDocumentTerms)); err != nil {
@@ -473,24 +525,31 @@ func (idx *InvertedIndex[S, D]) indexPreparedLocked(item PreparedItem[S], now ti
 				pl = newPostingList()
 				cp.postings[tid] = pl
 			}
-			pl.set(ord, preparedTerm.frequency, preparedTerm.positions)
+			pl.setFields(ord, preparedTerm.fields)
 			terms = append(terms, tid)
 		}
 		entry.lengths[class] = preparedClass.length
+		entry.fieldLengths[class] = preparedClass.fieldLengths
 		entry.terms[class] = terms
 		cp.totalLen += preparedClass.length
 		cp.docCount++
+		for field, length := range preparedClass.fieldLengths {
+			if length == 0 {
+				continue
+			}
+			cp.fieldTotalLen[field] += length
+			cp.fieldDocCount[field]++
+		}
 	}
 	entry.positionEntries = item.Prepared.positionEntries
+	entry.postingEntries = item.Prepared.postings
 	if expirationFinite(item.Expiration) {
 		record := &expiryRecord{at: item.Expiration, ord: ord, index: -1}
 		heap.Push(&idx.expirations, record)
 		entry.expiry = record
 	}
 	idx.docs[ord] = entry
-	for class := range entry.terms {
-		idx.livePostings += int64(len(entry.terms[class]))
-	}
+	idx.livePostings += int64(entry.postingEntries)
 	idx.livePositions += int64(entry.positionEntries)
 }
 
@@ -532,12 +591,12 @@ func (idx *InvertedIndex[S, D]) validatePreparedLocked(items []PreparedItem[S], 
 	for id := range last {
 		if ord, ok := idx.ords.lookup(id); ok {
 			entry := idx.docs[ord]
+			postings -= int64(entry.postingEntries)
 			for class := range entry.terms {
 				for _, tid := range entry.terms[class] {
 					key := termKey{class: TokenClass(class), term: idx.classes[class].dict.terms[tid]}
 					loadDF(key)
 					deltaDF[key]--
-					postings--
 				}
 			}
 			positions -= int64(entry.positionEntries)
@@ -553,7 +612,11 @@ func (idx *InvertedIndex[S, D]) validatePreparedLocked(items []PreparedItem[S], 
 				key := termKey{class: TokenClass(class), term: term.term}
 				loadDF(key)
 				deltaDF[key]++
-				postings++
+				for _, fieldTerm := range term.fields {
+					if fieldTerm.frequency > 0 {
+						postings++
+					}
+				}
 			}
 		}
 		positions += int64(prepared.positionEntries)
@@ -621,9 +684,7 @@ func (idx *InvertedIndex[S, D]) deleteLocked(id S) {
 		heap.Remove(&idx.expirations, entry.expiry.index)
 		entry.expiry = nil
 	}
-	for class := range entry.terms {
-		idx.livePostings -= int64(len(entry.terms[class]))
-	}
+	idx.livePostings -= int64(entry.postingEntries)
 	idx.livePositions -= int64(entry.positionEntries)
 	for class := range entry.terms {
 		cp := &idx.classes[class]
@@ -636,6 +697,13 @@ func (idx *InvertedIndex[S, D]) deleteLocked(id S) {
 		if entry.lengths[class] > 0 {
 			cp.totalLen -= entry.lengths[class]
 			cp.docCount--
+		}
+		for field, length := range entry.fieldLengths[class] {
+			if length == 0 {
+				continue
+			}
+			cp.fieldTotalLen[field] -= length
+			cp.fieldDocCount[field]--
 		}
 	}
 	delete(idx.docs, ord)
@@ -723,36 +791,51 @@ func (idx *InvertedIndex[S, D]) compactLocked() {
 		prepared := PreparedDocument{positionEntries: entry.positionEntries}
 		for class := range entry.terms {
 			preparedClass := preparedClass{
-				length: entry.lengths[class],
-				terms:  make([]preparedTerm, 0, len(entry.terms[class])),
+				length:       entry.lengths[class],
+				fieldLengths: entry.fieldLengths[class],
+				terms:        make([]preparedTerm, 0, len(entry.terms[class])),
 			}
-			frequencySum := 0
+			var frequencySum [numDocumentFields]int
 			for _, tid := range entry.terms[class] {
 				pl := idx.classes[class].postings[tid]
-				positions := []uint32(nil)
-				frequency := pl.tf(ord)
-				if idx.positions && class == int(ClassWord) {
-					positions = pl.positionsOf(ord)
-					frequency = len(positions)
+				term := preparedTerm{term: idx.classes[class].dict.terms[tid]}
+				for field := FieldID(0); field < numDocumentFields; field++ {
+					frequency := pl.tfInField(ord, field)
+					if frequency == 0 {
+						continue
+					}
+					positions := []uint64(nil)
+					if idx.positions && class == int(ClassWord) {
+						positions = pl.positionsInField(ord, field)
+						frequency = len(positions)
+					}
+					term.fields[field] = preparedFieldTerm{frequency: frequency, positions: positions}
+					term.frequency += frequency
+					frequencySum[field] += frequency
+					prepared.postings++
 				}
-				preparedClass.terms = append(preparedClass.terms, preparedTerm{
-					term:      idx.classes[class].dict.terms[tid],
-					frequency: frequency,
-					positions: positions,
-				})
-				frequencySum += frequency
+				preparedClass.terms = append(preparedClass.terms, term)
 			}
 			// Frequencies above uint16 are intentionally clamped in postingList.
 			// Preserve the exact document length across compaction by assigning
 			// the unobservable excess to one already-saturated term.
-			if missing := preparedClass.length - frequencySum; missing > 0 && len(preparedClass.terms) > 0 {
-				preparedClass.terms[0].frequency += missing
+			for field, length := range preparedClass.fieldLengths {
+				missing := length - frequencySum[field]
+				if missing <= 0 {
+					continue
+				}
+				for i := range preparedClass.terms {
+					if preparedClass.terms[i].fields[field].frequency > 0 {
+						preparedClass.terms[i].fields[field].frequency += missing
+						preparedClass.terms[i].frequency += missing
+						break
+					}
+				}
 			}
 			sort.Slice(preparedClass.terms, func(i, j int) bool {
 				return preparedClass.terms[i].term < preparedClass.terms[j].term
 			})
 			prepared.classes[class] = preparedClass
-			prepared.postings += len(preparedClass.terms)
 		}
 		var expiration time.Time
 		if entry.expiry != nil {
@@ -848,25 +931,48 @@ func (idx *InvertedIndex[S, D]) scoreTrackedLocked(queryTerms []Token, work *wor
 		if !ok {
 			continue
 		}
-		df := pl.cardinality()
-		avgLen := float64(cp.totalLen) / float64(cp.docCount)
 		for it := pl.docs.Iterator(); it.HasNext(); {
 			if err := work.visit(WorkPostingVisits, 1); err != nil {
 				return nil, err
 			}
 			ord := it.Next()
-			addScore(scores, ord, idx.scorer.Score(TermStats{
-				TF:     pl.tf(ord),
-				DF:     df,
-				N:      cp.docCount,
-				DocLen: idx.docs[ord].lengths[token.Class],
-				AvgLen: avgLen,
-				Class:  token.Class,
-			}))
+			addScore(scores, ord, idx.termScoreLocked(ord, token.Class, pl))
 		}
 	}
 	dropNonFiniteScores(scores)
 	return scores, nil
+}
+
+// termScoreLocked sums one term's field-local contributions for ord. Corpus
+// statistics and length normalization never cross fields; the shared posting
+// bitmap still makes result membership key-or-value.
+func (idx *InvertedIndex[S, D]) termScoreLocked(ord uint32, class TokenClass, pl *postingList) float64 {
+	cp := &idx.classes[class]
+	entry := idx.docs[ord]
+	var score float64
+	for field := FieldID(0); field < numDocumentFields; field++ {
+		tf := pl.tfInField(ord, field)
+		if tf == 0 || cp.fieldDocCount[field] == 0 {
+			continue
+		}
+		contribution := idx.scorer.Score(TermStats{
+			TF:     tf,
+			DF:     pl.fieldCardinality(field),
+			N:      cp.fieldDocCount[field],
+			DocLen: entry.fieldLengths[class][field],
+			AvgLen: float64(cp.fieldTotalLen[field]) / float64(cp.fieldDocCount[field]),
+			Class:  class,
+			Field:  field,
+		})
+		if math.IsNaN(contribution) || math.IsInf(contribution, 0) {
+			return math.NaN()
+		}
+		score += contribution
+		if math.IsNaN(score) || math.IsInf(score, 0) {
+			return math.NaN()
+		}
+	}
+	return score
 }
 
 // addScore accumulates one contribution while poisoning a document whose
@@ -1028,8 +1134,8 @@ func (idx *InvertedIndex[S, D]) MemoryStats() IndexMemoryStats {
 		stats.Documents--
 		stats.ExpiredDocuments++
 		stats.PositionEntries -= int64(entry.positionEntries)
+		stats.Postings -= int64(entry.postingEntries)
 		for class := range entry.terms {
-			stats.Postings -= int64(len(entry.terms[class]))
 			if len(entry.terms[class]) > 0 && expiredDF[class] == nil {
 				expiredDF[class] = make(map[uint32]int, len(entry.terms[class]))
 			}

@@ -99,7 +99,6 @@ func (idx *InvertedIndex[S, D]) scoreClausesTrackedLocked(clauses []queryClause,
 		if cp.docCount == 0 || len(cl.termIDs) == 0 {
 			continue
 		}
-		avgLen := float64(cp.totalLen) / float64(cp.docCount)
 		var union *roaring.Bitmap
 		if coverage != nil && cl.class == ClassWord {
 			union = roaring.New()
@@ -109,7 +108,6 @@ func (idx *InvertedIndex[S, D]) scoreClausesTrackedLocked(clauses []queryClause,
 			if pl == nil {
 				continue
 			}
-			df := pl.cardinality()
 			for it := pl.docs.Iterator(); it.HasNext(); {
 				if err := work.visit(WorkPostingVisits, 1); err != nil {
 					return nil, err
@@ -118,14 +116,7 @@ func (idx *InvertedIndex[S, D]) scoreClausesTrackedLocked(clauses []queryClause,
 				if union != nil {
 					union.Add(ord)
 				}
-				addScore(scores, ord, idx.scorer.Score(TermStats{
-					TF:     pl.tf(ord),
-					DF:     df,
-					N:      cp.docCount,
-					DocLen: idx.docs[ord].lengths[cl.class],
-					AvgLen: avgLen,
-					Class:  cl.class,
-				}))
+				addScore(scores, ord, idx.termScoreLocked(ord, cl.class, pl))
 			}
 		}
 		if union != nil {

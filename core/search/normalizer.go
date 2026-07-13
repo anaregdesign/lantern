@@ -130,39 +130,41 @@ type JSONStringValueNormalizer struct{}
 // Normalize returns the space-joined string values of a JSON object or array,
 // or the input unchanged when it is not such a document.
 func (JSONStringValueNormalizer) Normalize(text string) string {
+	values, structured := (JSONStringValueNormalizer{}).Values(text)
+	if !structured {
+		return text
+	}
+	return strings.Join(values, " ")
+}
+
+// Values returns each JSON string leaf as a separate deterministic field
+// instance. structured is false for plain text and malformed JSON, whose
+// caller should preserve the original input as one field.
+func (JSONStringValueNormalizer) Values(text string) (values []string, structured bool) {
 	trimmed := strings.TrimSpace(text)
 	// Only a JSON object or array is treated as structured JSON. Plain prose
 	// and bare scalars (including a quoted JSON string) are left untouched, so
 	// values like "true" or "42" stay searchable as their literal text.
 	if len(trimmed) == 0 || (trimmed[0] != '{' && trimmed[0] != '[') {
-		return text
+		return nil, false
 	}
 	var parsed any
 	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
-		return text // looked like JSON but is not: index the raw text as-is.
+		return nil, false // looked like JSON but is not: preserve raw text.
 	}
-	var b strings.Builder
-	appendJSONStringValues(&b, parsed)
-	return b.String()
+	appendJSONStringValueFields(&values, parsed)
+	return values, true
 }
 
-// appendJSONStringValues walks a value decoded from JSON and appends every
-// string it contains to b, separated by single spaces. Object keys and
-// non-string scalars are skipped; objects are visited in sorted-key order for
-// deterministic output.
-func appendJSONStringValues(b *strings.Builder, v any) {
+func appendJSONStringValueFields(out *[]string, v any) {
 	switch val := v.(type) {
 	case string:
-		if val == "" {
-			return
+		if val != "" {
+			*out = append(*out, val)
 		}
-		if b.Len() > 0 {
-			b.WriteByte(' ')
-		}
-		b.WriteString(val)
 	case []any:
 		for _, e := range val {
-			appendJSONStringValues(b, e)
+			appendJSONStringValueFields(out, e)
 		}
 	case map[string]any:
 		keys := make([]string, 0, len(val))
@@ -171,10 +173,9 @@ func appendJSONStringValues(b *strings.Builder, v any) {
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			appendJSONStringValues(b, val[k])
+			appendJSONStringValueFields(out, val[k])
 		}
 	}
-	// float64 (numbers), bool, and nil carry no searchable text: skipped.
 }
 
 // dropNonspacingMark returns r unless r is a Unicode nonspacing combining mark

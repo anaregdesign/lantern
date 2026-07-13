@@ -61,8 +61,8 @@ type GraphCache[S comparable, T any] struct {
 	headByTail map[vertexID]*headIndex
 
 	// searchIndex is an optional secondary inverted index (see
-	// EnableSearchIndex) that ranks live vertices by how well their
-	// projected value matches a query (BM25). Like prefixIndex it is opt-in
+	// EnableSearchIndex) that ranks live vertices by how well their projected
+	// key and value fields match a query (BM25). Like prefixIndex it is opt-in
 	// and maintained under c.mu, but it differs in one way: it is refreshed
 	// on EVERY put, not just the first insert, because a vertex's value —
 	// and therefore its postings — changes on overwrite. Entries are dropped
@@ -72,7 +72,7 @@ type GraphCache[S comparable, T any] struct {
 	// the later cache Flush hook is an idempotent delete. When nil the put /
 	// evict paths pay only a single nil check.
 	searchIndex   *search.InvertedIndex[S, search.Document]
-	searchExtract func(T) search.Document
+	searchExtract func(S, T) search.Document
 	// searchCommitMu makes a prepared vertex batch visible to Search as one
 	// transition across both the vertex store and inverted index. Searches hold
 	// RLock across the same bounded execution interval that takes the index read
@@ -202,7 +202,7 @@ func (c *GraphCache[S, T]) putVertexLocked(key S, value T, expiration time.Time)
 func (c *GraphCache[S, T]) upsertVertexLocked(key S, value T, expiration time.Time) {
 	c.upsertVertexStorageLocked(key, value, expiration)
 	if c.searchIndex != nil {
-		if err := c.searchIndex.IndexWithExpiration(key, c.searchExtract(value), expiration); err != nil {
+		if err := c.searchIndex.IndexWithExpiration(key, c.searchExtract(key, value), expiration); err != nil {
 			c.searchIndex.MarkIncomplete()
 		}
 	}
@@ -276,12 +276,12 @@ func (c *GraphCache[S, T]) ensureVertexLocked(key S, expiration time.Time) {
 	if c.vertices.Has(key) {
 		return
 	}
-	if c.dict != nil {
+	var value T
+	physicallyExisted := c.vertices.UpsertWithExpiration(key, value, expiration)
+	if !physicallyExisted && c.dict != nil {
 		c.dict.intern(key)
 	}
-	var noop T
-	c.vertices.PutWithExpiration(key, noop, expiration)
-	c.onEndpointVertexCreatedLocked(key)
+	c.onEndpointVertexCreatedLocked(key, expiration, !physicallyExisted)
 }
 
 // GetVertex returns the live value stored for key. It is a point read that

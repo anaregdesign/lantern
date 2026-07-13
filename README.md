@@ -261,9 +261,11 @@ because the bridge is not traversable.
 
 ### Full-text search over the same store
 
-`SearchVertices` runs relevance-ranked (BM25) full-text search over vertex
-*content* — key plus value — as the content-addressed counterpart to prefix
-scans. Hits use the stable total order `(score DESC, raw key ASC)` and make
+`SearchVertices` runs relevance-ranked (BM25) full-text search over separate
+vertex key and value fields as the content-addressed counterpart to prefix
+scans. Phrase/proximity never cross key/value or JSON string-leaf boundaries;
+edge-created endpoint vertices are immediately searchable by key. Hits use the
+stable total order `(score DESC, raw key ASC)` and make
 natural seeds for a follow-up `bfs`, `pagerank`, or `community` walk:
 
 ```shell

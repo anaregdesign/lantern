@@ -40,7 +40,7 @@ func TestPostingList(t *testing.T) {
 
 	t.Run("positions are recorded, read back, and dropped on remove", func(t *testing.T) {
 		q := newPostingList()
-		q.set(1, 2, []uint32{3, 7}) // two occurrences at positions 3 and 7
+		q.set(1, 2, []uint64{3, 7}) // two occurrences at positions 3 and 7
 		q.set(2, 1, nil)            // present, but no positions tracked
 		if got := q.positionsOf(1); len(got) != 2 || got[0] != 3 || got[1] != 7 {
 			t.Fatalf("positionsOf(1) = %v, want [3 7]", got)
@@ -53,6 +53,20 @@ func TestPostingList(t *testing.T) {
 		}
 		if got := q.positionsOf(1); got != nil {
 			t.Fatalf("positionsOf(1) after remove = %v, want nil (positions dropped)", got)
+		}
+	})
+
+	t.Run("default fast path migrates when structured fields appear", func(t *testing.T) {
+		q := newPostingList()
+		q.set(1, 1, nil)
+		var fields [numDocumentFields]preparedFieldTerm
+		fields[FieldKey] = preparedFieldTerm{frequency: 1}
+		q.setFields(2, fields)
+		if !q.containsField(1, FieldDefault) || q.containsField(2, FieldDefault) || !q.containsField(2, FieldKey) {
+			t.Fatalf("field membership default/key = %t/%t/%t", q.containsField(1, FieldDefault), q.containsField(2, FieldDefault), q.containsField(2, FieldKey))
+		}
+		if q.fieldCardinality(FieldDefault) != 1 || q.fieldCardinality(FieldKey) != 1 {
+			t.Fatalf("field cardinalities = %d/%d", q.fieldCardinality(FieldDefault), q.fieldCardinality(FieldKey))
 		}
 	})
 }
@@ -72,7 +86,7 @@ func TestPostingListClampsTF(t *testing.T) {
 // consume the packed store via positionsOf.
 func TestPackPositions(t *testing.T) {
 	t.Run("edge cases round-trip; empty packs to no bytes", func(t *testing.T) {
-		cases := [][]uint32{
+		cases := [][]uint64{
 			nil,
 			{0},
 			{5},
@@ -94,10 +108,10 @@ func TestPackPositions(t *testing.T) {
 	t.Run("randomized ascending sequences round-trip", func(t *testing.T) {
 		rng := rand.New(rand.NewSource(1))
 		for iter := 0; iter < 2000; iter++ {
-			seq := make([]uint32, rng.Intn(64))
-			var acc uint32
+			seq := make([]uint64, rng.Intn(64))
+			var acc uint64
 			for i := range seq {
-				acc += uint32(rng.Intn(1<<20) + 1) // strictly ascending, wide gaps
+				acc += uint64(rng.Intn(1<<20) + 1) // strictly ascending, wide gaps
 				seq[i] = acc
 			}
 			if got := unpackPositions(packPositions(seq)); !slices.Equal(got, seq) {
@@ -107,9 +121,9 @@ func TestPackPositions(t *testing.T) {
 	})
 
 	t.Run("decode reuses caller scratch", func(t *testing.T) {
-		dst := make([]uint32, 0, 8)
-		got := unpackPositionsInto(dst, packPositions([]uint32{2, 5, 9}))
-		if !slices.Equal(got, []uint32{2, 5, 9}) {
+		dst := make([]uint64, 0, 8)
+		got := unpackPositionsInto(dst, packPositions([]uint64{2, 5, 9}))
+		if !slices.Equal(got, []uint64{2, 5, 9}) {
 			t.Fatalf("decoded = %v", got)
 		}
 		if &got[0] != &dst[:1][0] {

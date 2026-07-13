@@ -1,5 +1,7 @@
 package graphcache
 
+import "time"
+
 // onVerticesEvicted keeps all vertex-owned side structures in sync with a batch
 // of vertex cache evictions. It is installed as cache.Cache.SetOnEvictMany and
 // may be invoked by Delete, DeleteMany, Clear, or Flush (a single-key Delete
@@ -20,11 +22,19 @@ func (c *GraphCache[S, T]) onVerticesEvicted(keys []S) {
 }
 
 // onEndpointVertexCreatedLocked updates the vertex-side indexes for an
-// auto-created edge endpoint. Endpoint creation records key existence for
-// prefix scans but deliberately does not index search content: the zero T value
-// is not an explicit user document. Caller must hold c.mu.
-func (c *GraphCache[S, T]) onEndpointVertexCreatedLocked(key S) {
-	c.insertVertexPrefixLocked(key)
+// auto-created edge endpoint. Prefix membership is inserted once per physical
+// slot; search projection runs on every creation/revival so an extractor can
+// emit a key-only document from (key, zero T). Caller must hold c.mu.
+func (c *GraphCache[S, T]) onEndpointVertexCreatedLocked(key S, expiration time.Time, firstInsert bool) {
+	if firstInsert {
+		c.insertVertexPrefixLocked(key)
+	}
+	if c.searchIndex != nil {
+		var value T
+		if err := c.searchIndex.IndexWithExpiration(key, c.searchExtract(key, value), expiration); err != nil {
+			c.searchIndex.MarkIncomplete()
+		}
+	}
 }
 
 func (c *GraphCache[S, T]) insertVertexPrefixLocked(key S) {

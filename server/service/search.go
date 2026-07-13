@@ -27,11 +27,11 @@ var errSearchPositionsDisabled = errors.New("phrase search requires positional p
 const (
 	searchMaxFuzziness      = uint32(2)
 	searchAnalyzerVersion   = "script-aware-v1"
-	searchProjectionVersion = "vertex-key-value-v1"
+	searchProjectionVersion = "vertex-fields-v2"
 )
 
 // SearchVertices returns vertices ranked by full-text relevance over their
-// indexed content (key + value) in stable (score DESC, raw key ASC) order. It
+// field-separated key and value content in stable (score DESC, raw key ASC) order. It
 // is the content counterpart to ScanVertices' lexicographic key walk: callers
 // search by remembered topic words instead of an exact key prefix.
 //

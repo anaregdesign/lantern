@@ -181,3 +181,51 @@ func TestClassWeighted(t *testing.T) {
 		}
 	})
 }
+
+func TestFieldWeighted(t *testing.T) {
+	base := ScorerFunc(func(TermStats) float64 { return 2 })
+	scorer := FieldWeighted{Base: base, KeyWeight: 1.5, ValueWeight: 0.75}
+	if got := scorer.Score(TermStats{Field: FieldDefault}); got != 2 {
+		t.Fatalf("default score = %v", got)
+	}
+	if got := scorer.Score(TermStats{Field: FieldKey}); got != 3 {
+		t.Fatalf("key score = %v", got)
+	}
+	if got := scorer.Score(TermStats{Field: FieldValue}); got != 1.5 {
+		t.Fatalf("value score = %v", got)
+	}
+}
+
+func TestDefaultKeyFieldWeightMeasuredPlateau(t *testing.T) {
+	type fixture struct {
+		query string
+		want  string
+	}
+	fixtures := []fixture{{"alpha", "z-key-alpha"}, {"settings", "z-key-settings"}, {"calm", "value-calm"}}
+	measure := func(weight float64) int {
+		idx := NewInvertedIndex[string, Document](fakeAnalyzer{}, FieldWeighted{
+			Base: BM25{K1: DefaultBM25K1, B: DefaultBM25B}, KeyWeight: weight, ValueWeight: 1,
+		}, compareStringID)
+		idx.Index("a-value-alpha", Fields{{ID: FieldValue, Text: "alpha"}})
+		idx.Index("z-key-alpha", Fields{{ID: FieldKey, Text: "alpha"}})
+		idx.Index("a-value-settings", Fields{{ID: FieldValue, Text: "settings"}})
+		idx.Index("z-key-settings", Fields{{ID: FieldKey, Text: "settings"}})
+		idx.Index("value-calm", Fields{{ID: FieldValue, Text: "calm concise"}})
+		correct := 0
+		for _, fixture := range fixtures {
+			results := idx.Search(fixture.query)
+			if len(results) > 0 && results[0].ID == fixture.want {
+				correct++
+			}
+		}
+		return correct
+	}
+	if baseline := measure(1); baseline >= len(fixtures) {
+		t.Fatalf("unweighted baseline unexpectedly perfect: %d/%d", baseline, len(fixtures))
+	}
+	for _, weight := range []float64{DefaultKeyFieldWeight, 2, 2.25} {
+		if got := measure(weight); got != len(fixtures) {
+			t.Fatalf("key weight %.2f qrels = %d/%d", weight, got, len(fixtures))
+		}
+	}
+}

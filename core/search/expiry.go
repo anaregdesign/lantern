@@ -91,10 +91,7 @@ func (idx *InvertedIndex[S, D]) purgeExpired(work *workTracker, now time.Time) e
 			heap.Pop(&idx.expirations)
 			continue
 		}
-		postingVisits := 0
-		for class := range entry.terms {
-			postingVisits += len(entry.terms[class])
-		}
+		postingVisits := entry.postingEntries
 		if err := work.visit(WorkPostingVisits, int64(postingVisits)); err != nil {
 			return err
 		}

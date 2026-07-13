@@ -2,6 +2,7 @@ package provider
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -84,10 +85,46 @@ func TestVertexSearchDocument(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := vertexSearchDocument(tc.vertex).String(); got != tc.want {
+			if got := vertexSearchDocument(tc.vertex.GetKey(), tc.vertex).String(); got != tc.want {
 				t.Errorf("vertexSearchDocument = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestVertexSearchDocumentPreservesFieldInstances(t *testing.T) {
+	doc := vertexSearchDocument("alpha", &v1.Vertex{
+		Key: "alpha", Value: &v1.Vertex_String_{String_: `{"b":"beta gamma","a":"delta"}`},
+	}).(vertexSearchProjection)
+	want := []search.DocumentField{
+		{ID: search.FieldKey, Text: "alpha"},
+		{ID: search.FieldValue, Text: "delta"},
+		{ID: search.FieldValue, Text: "beta gamma"},
+	}
+	if got := doc.SearchFields(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("fields = %+v, want %+v", got, want)
+	}
+	endpoint := vertexSearchDocument("implicit.endpoint", nil).(vertexSearchProjection)
+	if got := endpoint.SearchFields(); !reflect.DeepEqual(got, []search.DocumentField{{ID: search.FieldKey, Text: "implicit.endpoint"}}) {
+		t.Fatalf("endpoint fields = %+v", got)
+	}
+}
+
+func TestNewGraphCacheSearchFieldBoundariesAndImplicitEndpoints(t *testing.T) {
+	gc := NewGraphCache(CacheConfig{TTL: time.Minute}, SearchConfig{Enabled: true, Positions: true})
+	expiration := time.Now().Add(time.Hour)
+	if err := gc.PutVertexWithExpiration("alpha", &v1.Vertex{Key: "alpha", Value: &v1.Vertex_String_{String_: "beta"}}, expiration); err != nil {
+		t.Fatal(err)
+	}
+	if err := gc.PutVertexWithExpiration("json", &v1.Vertex{Key: "json", Value: &v1.Vertex_String_{String_: `{"a":"alpha","b":"beta"}`}}, expiration); err != nil {
+		t.Fatal(err)
+	}
+	if hits := gc.SearchVerticesMatch("alpha beta", 10, "", search.MatchOptions{}, true); len(hits) != 0 {
+		t.Fatalf("synthetic cross-field phrase hits = %+v", hits)
+	}
+	gc.AddEdgeWithExpiration("implicit-tail", "implicit-head", 1, expiration)
+	if hits := gc.SearchVertices("tail", 10, ""); len(hits) == 0 || hits[0].ID != "implicit-tail" {
+		t.Fatalf("implicit endpoint hits = %+v", hits)
 	}
 }
 

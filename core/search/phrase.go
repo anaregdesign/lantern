@@ -147,8 +147,9 @@ func (idx *InvertedIndex[S, D]) phraseMatchTrackedLocked(terms []string, work *w
 		}
 		lists[i] = pl
 	}
-	// AND-intersect membership, starting from the rarest term so the running
-	// intersection shrinks fastest.
+	// Stream the globally rarest term, then require every term inside one field.
+	// Global membership alone is insufficient: key=alpha/value=beta must not
+	// synthesize the phrase "alpha beta" across the boundary.
 	rarest := 0
 	for i := 1; i < len(lists); i++ {
 		if lists[i].cardinality() < lists[rarest].cardinality() {
@@ -161,27 +162,28 @@ func (idx *InvertedIndex[S, D]) phraseMatchTrackedLocked(terms []string, work *w
 			return nil, err
 		}
 		ord := it.Next()
-		present := true
-		for i, list := range lists {
-			if i == rarest {
+		matched := false
+		for field := FieldID(0); field < numDocumentFields && !matched; field++ {
+			present := true
+			for _, list := range lists {
+				if err := work.visit(WorkPostingVisits, 1); err != nil {
+					return nil, err
+				}
+				if !list.containsField(ord, field) {
+					present = false
+					break
+				}
+			}
+			if !present {
 				continue
 			}
-			if err := work.visit(WorkPostingVisits, 1); err != nil {
+			adjacent, err := phraseAdjacentFieldTracked(lists, ord, field, work)
+			if err != nil {
 				return nil, err
 			}
-			if !list.docs.Contains(ord) {
-				present = false
-				break
-			}
+			matched = adjacent
 		}
-		if !present {
-			continue
-		}
-		adjacent, err := phraseAdjacentTracked(lists, ord, work)
-		if err != nil {
-			return nil, err
-		}
-		if adjacent {
+		if matched {
 			out = append(out, ord)
 		}
 	}
@@ -202,7 +204,6 @@ func (idx *InvertedIndex[S, D]) scorePhraseTrackedLocked(terms []string, ords []
 	if cp.docCount == 0 {
 		return nil, nil
 	}
-	avgLen := float64(cp.totalLen) / float64(cp.docCount)
 	scores := make(map[uint32]float64, len(ords))
 	seen := make(map[string]struct{}, len(terms))
 	for _, term := range terms {
@@ -221,19 +222,11 @@ func (idx *InvertedIndex[S, D]) scorePhraseTrackedLocked(terms []string, ords []
 		if pl == nil {
 			continue
 		}
-		df := pl.cardinality()
 		for _, ord := range ords {
 			if err := work.visit(WorkPostingVisits, 1); err != nil {
 				return nil, err
 			}
-			addScore(scores, ord, idx.scorer.Score(TermStats{
-				TF:     pl.tf(ord),
-				DF:     df,
-				N:      cp.docCount,
-				DocLen: idx.docs[ord].lengths[ClassWord],
-				AvgLen: avgLen,
-				Class:  ClassWord,
-			}))
+			addScore(scores, ord, idx.termScoreLocked(ord, ClassWord, pl))
 		}
 	}
 	dropNonFiniteScores(scores)
@@ -252,10 +245,14 @@ func phraseAdjacent(lists []*postingList, ord uint32) bool {
 }
 
 func phraseAdjacentTracked(lists []*postingList, ord uint32, work *workTracker) (bool, error) {
+	return phraseAdjacentFieldTracked(lists, ord, FieldDefault, work)
+}
+
+func phraseAdjacentFieldTracked(lists []*postingList, ord uint32, field FieldID, work *workTracker) (bool, error) {
 	if len(lists) < 2 {
 		return true, nil
 	}
-	first := lists[0].positionsOf(ord)
+	first := lists[0].positionsInField(ord, field)
 	if first == nil {
 		return true, nil // positions not tracked: degrade to AND
 	}
@@ -266,7 +263,7 @@ func phraseAdjacentTracked(lists []*postingList, ord uint32, work *workTracker) 
 	// term i at p+i for every i. Positions are ascending, so each follow-on
 	// check is a binary search.
 	for _, p := range first {
-		ok, err := phraseStartsAtTracked(lists, ord, p, work)
+		ok, err := phraseStartsAtFieldTracked(lists, ord, field, p, work)
 		if err != nil {
 			return false, err
 		}
@@ -278,15 +275,19 @@ func phraseAdjacentTracked(lists []*postingList, ord uint32, work *workTracker) 
 }
 
 func phraseStartsAtTracked(lists []*postingList, ord uint32, start uint32, work *workTracker) (bool, error) {
+	return phraseStartsAtFieldTracked(lists, ord, FieldDefault, uint64(start), work)
+}
+
+func phraseStartsAtFieldTracked(lists []*postingList, ord uint32, field FieldID, start uint64, work *workTracker) (bool, error) {
 	for i := 1; i < len(lists); i++ {
-		pos := lists[i].positionsOf(ord)
+		pos := lists[i].positionsInField(ord, field)
 		if pos == nil {
 			return true, nil
 		}
 		if err := work.visit(WorkPositionVisits, int64(len(pos))); err != nil {
 			return false, err
 		}
-		if !containsSortedU32(pos, start+uint32(i)) {
+		if !containsSortedU64(pos, start+uint64(i)) {
 			return false, nil
 		}
 	}
@@ -296,21 +297,18 @@ func phraseStartsAtTracked(lists []*postingList, ord uint32, start uint32, work 
 // phraseStartsAt reports whether every term i (i >= 1) occurs at position
 // start+i in document ord, i.e. the phrase begins at start.
 func phraseStartsAt(lists []*postingList, ord uint32, start uint32) bool {
-	for i := 1; i < len(lists); i++ {
-		pos := lists[i].positionsOf(ord)
-		if pos == nil {
-			return true // positions not tracked mid-list: degrade to AND
-		}
-		if !containsSortedU32(pos, start+uint32(i)) {
-			return false
-		}
-	}
-	return true
+	ok, _ := phraseStartsAtTracked(lists, ord, start, newWorkTracker(nil, Budget{}))
+	return ok
 }
 
 // containsSortedU32 reports whether the ascending slice s contains v, via binary
 // search.
 func containsSortedU32(s []uint32, v uint32) bool {
+	i := sort.Search(len(s), func(i int) bool { return s[i] >= v })
+	return i < len(s) && s[i] == v
+}
+
+func containsSortedU64(s []uint64, v uint64) bool {
 	i := sort.Search(len(s), func(i int) bool { return s[i] >= v })
 	return i < len(s) && s[i] == v
 }

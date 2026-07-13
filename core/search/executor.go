@@ -3,6 +3,7 @@ package search
 import (
 	"container/heap"
 	"math"
+	"slices"
 	"sort"
 
 	"github.com/RoaringBitmap/roaring/v2"
@@ -19,7 +20,6 @@ type CandidateSource[S comparable] func(yield func(S) bool)
 type scoringTerm struct {
 	class TokenClass
 	pl    *postingList
-	df    int
 }
 
 type scoringClause struct {
@@ -31,22 +31,24 @@ type scoringPlan struct {
 	clauses   []scoringClause
 	wordCount int
 	threshold int
-	proximity []*postingList
+	proximity [numDocumentFields][]*postingList
 }
 
 type executorScratch struct {
-	positions [][]uint32
-	present   [][]uint32
+	positions [][]uint64
+	present   [][]uint64
 	pointers  []int
+	instances []uint32
+	instance  [][]uint64
 }
 
-func (s *executorScratch) decode(lists []*postingList, ord uint32, work *workTracker) ([][]uint32, error) {
+func (s *executorScratch) decode(lists []*postingList, ord uint32, field FieldID, work *workTracker) ([][]uint64, error) {
 	if len(s.positions) < len(lists) {
-		s.positions = append(s.positions, make([][]uint32, len(lists)-len(s.positions))...)
+		s.positions = append(s.positions, make([][]uint64, len(lists)-len(s.positions))...)
 	}
 	s.present = s.present[:0]
 	for i, pl := range lists {
-		s.positions[i] = pl.positionsInto(ord, s.positions[i])
+		s.positions[i] = pl.positionsInto(ord, field, s.positions[i])
 		if len(s.positions[i]) == 0 {
 			continue
 		}
@@ -92,7 +94,7 @@ func (idx *InvertedIndex[S, D]) buildScoringPlanLocked(queryTerms []Token, opts 
 		cp := &idx.classes[clause.class]
 		for _, tid := range clause.termIDs {
 			if pl := cp.postings[tid]; pl != nil {
-				resolved.terms = append(resolved.terms, scoringTerm{class: clause.class, pl: pl, df: pl.cardinality()})
+				resolved.terms = append(resolved.terms, scoringTerm{class: clause.class, pl: pl})
 			}
 		}
 		plan.clauses = append(plan.clauses, resolved)
@@ -107,7 +109,9 @@ func (idx *InvertedIndex[S, D]) buildScoringPlanLocked(queryTerms []Token, opts 
 			}
 			if tid, ok := cp.dict.lookup(token.Term); ok {
 				if pl := cp.postings[tid]; pl != nil {
-					plan.proximity = append(plan.proximity, pl)
+					for field := FieldID(0); field < numDocumentFields; field++ {
+						plan.proximity[field] = append(plan.proximity[field], pl)
+					}
 				}
 			}
 		}
@@ -116,7 +120,7 @@ func (idx *InvertedIndex[S, D]) buildScoringPlanLocked(queryTerms []Token, opts 
 }
 
 func (idx *InvertedIndex[S, D]) scoreCandidateLocked(ord uint32, plan scoringPlan, scratch *executorScratch, work *workTracker, chargeProbes bool) (float64, bool, error) {
-	entry, ok := idx.docs[ord]
+	_, ok := idx.docs[ord]
 	if !ok {
 		return 0, false, nil
 	}
@@ -129,11 +133,9 @@ func (idx *InvertedIndex[S, D]) scoreCandidateLocked(ord uint32, plan scoringPla
 			return 0, false, err
 		}
 		clauseMatched := false
-		cp := &idx.classes[clause.class]
-		if cp.docCount == 0 {
+		if idx.classes[clause.class].docCount == 0 {
 			continue
 		}
-		avgLen := float64(cp.totalLen) / float64(cp.docCount)
 		for _, term := range clause.terms {
 			if chargeProbes {
 				if err := work.visit(WorkPostingVisits, 1); err != nil {
@@ -145,14 +147,7 @@ func (idx *InvertedIndex[S, D]) scoreCandidateLocked(ord uint32, plan scoringPla
 			}
 			matched = true
 			clauseMatched = true
-			contribution := idx.scorer.Score(TermStats{
-				TF:     term.pl.tf(ord),
-				DF:     term.df,
-				N:      cp.docCount,
-				DocLen: entry.lengths[term.class],
-				AvgLen: avgLen,
-				Class:  term.class,
-			})
+			contribution := idx.termScoreLocked(ord, term.class, term.pl)
 			if math.IsNaN(contribution) || math.IsInf(contribution, 0) {
 				poisoned = true
 				continue
@@ -171,32 +166,77 @@ func (idx *InvertedIndex[S, D]) scoreCandidateLocked(ord uint32, plan scoringPla
 	if !matched || coverage < plan.threshold || poisoned {
 		return 0, false, nil
 	}
-	if len(plan.proximity) >= 2 {
-		present, err := scratch.decode(plan.proximity, ord, work)
+	var bestProximity float64
+	for field := FieldID(0); field < numDocumentFields; field++ {
+		if len(plan.proximity[field]) < 2 {
+			continue
+		}
+		present, err := scratch.decode(plan.proximity[field], ord, field, work)
 		if err != nil {
 			return 0, false, err
 		}
-		if len(present) >= 2 {
-			if len(scratch.pointers) < len(present) {
-				scratch.pointers = make([]int, len(present))
-			}
-			window, err := smallestWindowWithPointersTracked(present, scratch.pointers[:len(present)], work)
-			if err != nil {
-				return 0, false, err
-			}
-			if window >= 0 {
-				span := window - (len(present) - 1)
-				if span < 0 {
-					span = 0
-				}
-				score += idx.proximityWeight * float64(len(present)-1) / float64(span+1)
-			}
+		bonus, err := scratch.proximityBonus(present, work)
+		if err != nil {
+			return 0, false, err
+		}
+		if bonus > bestProximity {
+			bestProximity = bonus
 		}
 	}
+	score += idx.proximityWeight * bestProximity
 	if math.IsNaN(score) || math.IsInf(score, 0) {
 		return 0, false, nil
 	}
 	return score, true, nil
+}
+
+func (s *executorScratch) proximityBonus(lists [][]uint64, work *workTracker) (float64, error) {
+	if len(lists) < 2 {
+		return 0, nil
+	}
+	s.instances = s.instances[:0]
+	for _, positions := range lists {
+		for _, position := range positions {
+			instance := uint32(position >> 32)
+			if len(s.instances) == 0 || s.instances[len(s.instances)-1] != instance {
+				s.instances = append(s.instances, instance)
+			}
+		}
+	}
+	slices.Sort(s.instances)
+	s.instances = slices.Compact(s.instances)
+	var best float64
+	for _, instance := range s.instances {
+		s.instance = s.instance[:0]
+		lo := uint64(instance) << 32
+		hi := lo | uint64(1<<32-1)
+		for _, positions := range lists {
+			start := sort.Search(len(positions), func(i int) bool { return positions[i] >= lo })
+			end := sort.Search(len(positions), func(i int) bool { return positions[i] > hi })
+			if start < end {
+				s.instance = append(s.instance, positions[start:end])
+			}
+		}
+		if len(s.instance) < 2 {
+			continue
+		}
+		if len(s.pointers) < len(s.instance) {
+			s.pointers = make([]int, len(s.instance))
+		}
+		window, err := smallestWindowWithPointersTracked(s.instance, s.pointers[:len(s.instance)], work)
+		if err != nil {
+			return 0, err
+		}
+		span := window - (len(s.instance) - 1)
+		if span < 0 {
+			span = 0
+		}
+		bonus := float64(len(s.instance)-1) / float64(span+1)
+		if bonus > best {
+			best = bonus
+		}
+	}
+	return best, nil
 }
 
 type postingCursor struct {
@@ -340,7 +380,6 @@ func (idx *InvertedIndex[S, D]) executePhraseTopKLocked(terms []string, k int, a
 		seen[term] = struct{}{}
 		distinct = append(distinct, lists[i])
 	}
-	avgLen := float64(cp.totalLen) / float64(cp.docCount)
 	h := topKHeap[S]{entries: make([]Result[S], 0, k), better: idx.betterResult}
 	var scratch executorScratch
 	visit := func(ord uint32, chargeProbes bool) error {
@@ -354,30 +393,35 @@ func (idx *InvertedIndex[S, D]) executePhraseTopKLocked(terms []string, k int, a
 		if accept != nil && !accept(entry.id) {
 			return work.candidateSkip()
 		}
-		for _, list := range lists {
-			if chargeProbes {
-				if err := work.visit(WorkPostingVisits, 1); err != nil {
-					return err
+		matchedPhrase := false
+		for field := FieldID(0); field < numDocumentFields && !matchedPhrase; field++ {
+			present := true
+			for _, list := range lists {
+				if chargeProbes {
+					if err := work.visit(WorkPostingVisits, 1); err != nil {
+						return err
+					}
+				}
+				if !list.containsField(ord, field) {
+					present = false
+					break
 				}
 			}
-			if !list.docs.Contains(ord) {
-				return work.candidateSkip()
+			if !present {
+				continue
 			}
+			positions, err := scratch.decode(lists, ord, field, work)
+			if err != nil {
+				return err
+			}
+			matchedPhrase = phraseAdjacentDecoded(positions)
 		}
-		positions, err := scratch.decode(lists, ord, work)
-		if err != nil {
-			return err
-		}
-		adjacent := phraseAdjacentDecoded(positions)
-		if !adjacent {
+		if !matchedPhrase {
 			return work.candidateSkip()
 		}
 		var score float64
 		for _, list := range distinct {
-			contribution := idx.scorer.Score(TermStats{
-				TF: list.tf(ord), DF: list.cardinality(), N: cp.docCount,
-				DocLen: entry.lengths[ClassWord], AvgLen: avgLen, Class: ClassWord,
-			})
+			contribution := idx.termScoreLocked(ord, ClassWord, list)
 			if math.IsNaN(contribution) || math.IsInf(contribution, 0) {
 				return work.candidateSkip()
 			}
@@ -439,14 +483,14 @@ func (idx *InvertedIndex[S, D]) executePhraseTopKLocked(terms []string, k int, a
 	return out, nil
 }
 
-func phraseAdjacentDecoded(positions [][]uint32) bool {
+func phraseAdjacentDecoded(positions [][]uint64) bool {
 	if len(positions) < 2 {
 		return true
 	}
 	for _, start := range positions[0] {
 		matched := true
 		for i := 1; i < len(positions); i++ {
-			if !containsSortedU32(positions[i], start+uint32(i)) {
+			if !containsSortedU64(positions[i], start+uint64(i)) {
 				matched = false
 				break
 			}

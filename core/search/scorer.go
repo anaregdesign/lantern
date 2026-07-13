@@ -17,6 +17,11 @@ const (
 	// Lucene baselines on all corpora, with the extremes offering no durable
 	// advantage over this midpoint.
 	DefaultGramWeight = 0.2
+	// DefaultKeyFieldWeight is the measured production key-field multiplier.
+	// The structured-field qrels plateau across [1.75, 2.25]; 1.75 is the
+	// lowest measured weight that lifts exact namespace evidence without
+	// overwhelming value-only matches.
+	DefaultKeyFieldWeight = 1.75
 )
 
 // TermStats carries the corpus statistics a Scorer needs to weight one
@@ -24,9 +29,9 @@ const (
 // index while computing a result; a Scorer treats it as read-only input and
 // holds no state of its own, so a single Scorer is safe for concurrent use.
 //
-// Every count is scoped to the term's token class (#888): the index keeps
-// separate postings and statistics per class, so DF, N, DocLen, and AvgLen
-// describe only the channel the term matched on. For a single-channel
+// Every count is scoped to the term's token class and semantic field
+// (#888/#1061): DF, N, DocLen, and AvgLen describe only that channel/field.
+// For a single-channel, single-field
 // pipeline that scoping is invisible — the class's corpus is the corpus.
 type TermStats struct {
 	// TF is how many times the term occurs in this document (term frequency).
@@ -45,6 +50,8 @@ type TermStats struct {
 	// Class is the matching channel the term belongs to, so a class-aware
 	// Scorer (ClassWeighted) can weight primary and auxiliary evidence apart.
 	Class TokenClass
+	// Field identifies the semantic document field supplying this evidence.
+	Field FieldID
 }
 
 // Scorer assigns a relevance weight to a single (query term, document)
@@ -159,6 +166,36 @@ type ClassWeighted struct {
 	GramWeight float64
 }
 
+// FieldWeighted layers stable key/value weights over a base scorer. Default
+// text and value evidence use weight 1 unless explicitly overridden.
+type FieldWeighted struct {
+	Base        Scorer
+	KeyWeight   float64
+	ValueWeight float64
+}
+
+func (s FieldWeighted) Score(stats TermStats) float64 {
+	base := s.Base
+	if base == nil {
+		base = BM25{K1: DefaultBM25K1, B: DefaultBM25B}
+	}
+	weight := 1.0
+	switch stats.Field {
+	case FieldKey:
+		if s.KeyWeight != 0 {
+			weight = s.KeyWeight
+		}
+	case FieldValue:
+		if s.ValueWeight != 0 {
+			weight = s.ValueWeight
+		}
+	}
+	if weight < 0 {
+		weight = 0
+	}
+	return base.Score(stats) * weight
+}
+
 // Score returns the base score, scaled by GramWeight for auxiliary-channel
 // matches.
 func (s ClassWeighted) Score(stats TermStats) float64 {
@@ -184,4 +221,5 @@ func (s ClassWeighted) Score(stats TermStats) float64 {
 var (
 	_ Scorer = BM25{}
 	_ Scorer = ClassWeighted{}
+	_ Scorer = FieldWeighted{}
 )

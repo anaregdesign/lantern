@@ -15,12 +15,9 @@ import (
 // non-JSON text through unchanged (#758). It is stateless and safe to share.
 var jsonStringValueNormalizer search.JSONStringValueNormalizer
 
-// vertexSearchDocument projects a vertex into the text that the full-text
-// index analyses (#624). It folds the key together with the value so a query
-// matches either the namespace path or the stored content — this mirrors the
-// MCP search_facts semantics, where a remembered topic word may live in the
-// key (e.g. "user.preferences.tone") or in the value, and the caller should
-// not need to know which.
+// vertexSearchDocument projects a vertex into explicit key and value fields.
+// A query still matches either namespace path or stored content, but BM25,
+// phrase, and proximity evidence never cross their synthetic boundary (#1061).
 //
 // The value side is rendered to its natural human string: text and bytes
 // pass through, scalars are formatted decimally, timestamps use RFC3339 and
@@ -28,23 +25,38 @@ var jsonStringValueNormalizer search.JSONStringValueNormalizer
 // existence-only vertex is still discoverable by its key alone.
 //
 // String values that hold a JSON object or array are projected to just their
-// string values (#758): JSONStringValueNormalizer drops the field names and
-// non-string scalars so a serialized document is searchable by its content,
-// not by its structure. A JSON document carrying no string content therefore
-// folds in nothing and the vertex is indexed by its key alone.
-type vertexSearchProjection struct{ vertex *v1.Vertex }
+// string values (#758): JSONStringValueNormalizer drops field names and
+// non-string scalars, and each string leaf remains a separate value-field
+// instance. A JSON document carrying no string content is key-only.
+type vertexSearchProjection struct {
+	key    string
+	vertex *v1.Vertex
+}
 
-func vertexSearchDocument(v *v1.Vertex) search.Document { return vertexSearchProjection{vertex: v} }
+func vertexSearchDocument(key string, v *v1.Vertex) search.Document {
+	return vertexSearchProjection{key: key, vertex: v}
+}
+
+func (p vertexSearchProjection) SearchFields() []search.DocumentField {
+	fields := make([]search.DocumentField, 0, 2)
+	if p.key != "" {
+		fields = append(fields, search.DocumentField{ID: search.FieldKey, Text: p.key})
+	}
+	for _, text := range vertexValueTexts(p.vertex) {
+		if text != "" {
+			fields = append(fields, search.DocumentField{ID: search.FieldValue, Text: text})
+		}
+	}
+	return fields
+}
 
 func (p vertexSearchProjection) String() string {
-	if p.vertex == nil {
-		return ""
-	}
 	var b strings.Builder
-	b.WriteString(p.vertex.GetKey())
-	if text, ok := vertexValueText(p.vertex); ok && text != "" {
-		b.WriteByte(' ')
-		b.WriteString(text)
+	for _, field := range p.SearchFields() {
+		if b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(field.Text)
 	}
 	return b.String()
 }
@@ -54,9 +66,9 @@ func (p vertexSearchProjection) String() string {
 // it into an object tree. Invalid UTF-8 bytes are binary and contribute zero.
 func (p vertexSearchProjection) SizeHint() int {
 	if p.vertex == nil {
-		return 0
+		return len(p.key)
 	}
-	n := len(p.vertex.GetKey())
+	n := len(p.key)
 	var valueBytes int
 	switch value := p.vertex.GetValue().(type) {
 	case *v1.Vertex_String_:
@@ -80,41 +92,52 @@ func (p vertexSearchProjection) SizeHint() int {
 // whether the value carries any text at all. The unset and explicit-nil
 // variants return ("", false) so callers index the key only.
 func vertexValueText(v *v1.Vertex) (string, bool) {
+	values := vertexValueTexts(v)
+	return strings.Join(values, " "), len(values) > 0
+}
+
+func vertexValueTexts(v *v1.Vertex) []string {
+	if v == nil {
+		return nil
+	}
 	switch val := v.GetValue().(type) {
 	case *v1.Vertex_String_:
 		// A string value is often a serialized JSON document; index only its
 		// string values, never the JSON field names or non-string scalars
 		// (#758). Non-JSON text passes through unchanged. An all-structure or
 		// empty result folds in nothing (the caller drops empty value text).
-		return jsonStringValueNormalizer.Normalize(val.String_), true
+		if values, structured := jsonStringValueNormalizer.Values(val.String_); structured {
+			return values
+		}
+		return []string{val.String_}
 	case *v1.Vertex_Bytes:
 		// Binary payloads are not text by accident: only valid UTF-8 participates
 		// in full-text search. The projected-document byte budget is enforced by
 		// the index before tokenization.
 		if !utf8.Valid(val.Bytes) {
-			return "", false
+			return nil
 		}
-		return string(val.Bytes), true
+		return []string{string(val.Bytes)}
 	case *v1.Vertex_Float64:
-		return strconv.FormatFloat(val.Float64, 'g', -1, 64), true
+		return []string{strconv.FormatFloat(val.Float64, 'g', -1, 64)}
 	case *v1.Vertex_Float32:
-		return strconv.FormatFloat(float64(val.Float32), 'g', -1, 32), true
+		return []string{strconv.FormatFloat(float64(val.Float32), 'g', -1, 32)}
 	case *v1.Vertex_Int32:
-		return strconv.FormatInt(int64(val.Int32), 10), true
+		return []string{strconv.FormatInt(int64(val.Int32), 10)}
 	case *v1.Vertex_Int64:
-		return strconv.FormatInt(val.Int64, 10), true
+		return []string{strconv.FormatInt(val.Int64, 10)}
 	case *v1.Vertex_Uint32:
-		return strconv.FormatUint(uint64(val.Uint32), 10), true
+		return []string{strconv.FormatUint(uint64(val.Uint32), 10)}
 	case *v1.Vertex_Uint64:
-		return strconv.FormatUint(val.Uint64, 10), true
+		return []string{strconv.FormatUint(val.Uint64, 10)}
 	case *v1.Vertex_Bool:
-		return strconv.FormatBool(val.Bool), true
+		return []string{strconv.FormatBool(val.Bool)}
 	case *v1.Vertex_Timestamp:
-		return val.Timestamp.AsTime().Format(time.RFC3339Nano), true
+		return []string{val.Timestamp.AsTime().Format(time.RFC3339Nano)}
 	case *v1.Vertex_Duration:
-		return val.Duration.AsDuration().String(), true
+		return []string{val.Duration.AsDuration().String()}
 	default:
 		// Vertex_Nil and the unset oneof: key-only indexing.
-		return "", false
+		return nil
 	}
 }

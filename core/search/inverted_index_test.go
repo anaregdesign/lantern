@@ -36,6 +36,61 @@ func (fakeAnalyzer) Analyze(text string) []Token {
 	return tokens
 }
 
+func TestInvertedIndexStructuredFields(t *testing.T) {
+	newIndex := func(weight float64, opts ...IndexOption) *InvertedIndex[string, Document] {
+		scorer := FieldWeighted{Base: BM25{K1: DefaultBM25K1, B: DefaultBM25B}, KeyWeight: weight, ValueWeight: 1}
+		return NewInvertedIndex[string, Document](fakeAnalyzer{}, scorer, compareStringID, opts...)
+	}
+
+	t.Run("phrase cannot cross semantic field or value instance", func(t *testing.T) {
+		idx := newIndex(1, WithPositions())
+		docs := map[string]Fields{
+			"key-value-split": {{ID: FieldKey, Text: "alpha"}, {ID: FieldValue, Text: "beta"}},
+			"value-split":     {{ID: FieldValue, Text: "alpha"}, {ID: FieldValue, Text: "beta"}},
+			"key-phrase":      {{ID: FieldKey, Text: "alpha beta"}},
+			"value-phrase":    {{ID: FieldValue, Text: "alpha beta"}},
+		}
+		for id, doc := range docs {
+			if err := idx.Index(id, doc); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got, want := idsOf(idx.SearchPhrase("alpha beta")), []string{"key-phrase", "value-phrase"}; !slices.Equal(got, want) {
+			t.Fatalf("phrase hits = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("proximity is local to one value instance", func(t *testing.T) {
+		idx := newIndex(1, WithPositions())
+		idx.Index("together", Fields{{ID: FieldValue, Text: "alpha beta"}})
+		idx.Index("split", Fields{{ID: FieldValue, Text: "alpha"}, {ID: FieldValue, Text: "beta"}})
+		results := idx.Search("alpha beta")
+		if len(results) != 2 || results[0].ID != "together" || results[0].Score <= results[1].Score {
+			t.Fatalf("proximity results = %+v, want together strictly first", results)
+		}
+	})
+
+	t.Run("key weight uses field-local corpus statistics", func(t *testing.T) {
+		idx := newIndex(DefaultKeyFieldWeight)
+		idx.Index("key", Fields{{ID: FieldKey, Text: "alpha"}})
+		idx.Index("value", Fields{{ID: FieldValue, Text: "alpha"}})
+		results := idx.Search("alpha")
+		if len(results) != 2 || results[0].ID != "key" || results[0].Score <= results[1].Score {
+			t.Fatalf("field-weighted results = %+v, want key strictly first", results)
+		}
+	})
+
+	t.Run("compaction preserves fields and boundaries", func(t *testing.T) {
+		idx := newIndex(1, WithPositions())
+		idx.Index("cross", Fields{{ID: FieldKey, Text: "alpha"}, {ID: FieldValue, Text: "beta"}})
+		idx.Index("within", Fields{{ID: FieldValue, Text: "alpha beta"}})
+		idx.Compact()
+		if got := idsOf(idx.SearchPhrase("alpha beta")); !slices.Equal(got, []string{"within"}) {
+			t.Fatalf("phrase after compaction = %v", got)
+		}
+	})
+}
+
 func TestInvertedIndexAnalysisLimits(t *testing.T) {
 	t.Run("document dimensions", func(t *testing.T) {
 		unicodeIndex := NewInvertedIndex[string, Text](NewScriptAwareAnalyzer(), nil, compareStringID,
@@ -54,6 +109,20 @@ func TestInvertedIndexAnalysisLimits(t *testing.T) {
 			WithAnalysisLimits(SearchAnalysisLimits{MaxDocumentTerms: 2}))
 		if _, _, err := termIndex.Prepare(Text("a b c a")); !isAnalysisLimit(err, LimitDocumentTerms) {
 			t.Fatalf("Prepare term cap err = %v", err)
+		}
+	})
+
+	t.Run("structured fields share aggregate limits and retain field postings", func(t *testing.T) {
+		idx := NewInvertedIndex[string, Document](fakeAnalyzer{}, nil, compareStringID,
+			WithAnalysisLimits(SearchAnalysisLimits{MaxDocumentTokens: 3}))
+		_, stats, err := idx.Prepare(Fields{{ID: FieldKey, Text: "alpha beta"}, {ID: FieldValue, Text: "alpha gamma"}})
+		if !isAnalysisLimit(err, LimitDocumentTokens) || stats.Tokens != 4 {
+			t.Fatalf("structured token limit stats=%+v err=%v", stats, err)
+		}
+		unbounded := NewInvertedIndex[string, Document](fakeAnalyzer{}, nil, compareStringID)
+		_, stats, err = unbounded.Prepare(Fields{{ID: FieldKey, Text: "alpha"}, {ID: FieldValue, Text: "alpha"}})
+		if err != nil || stats.UniqueTerms != 1 || stats.Postings != 2 {
+			t.Fatalf("structured stats=%+v err=%v, want terms=1 postings=2", stats, err)
 		}
 	})
 
@@ -442,10 +511,10 @@ func TestInvertedIndexPrepared(t *testing.T) {
 		if words.length != 3 || len(words.terms) != 2 || prepared.postings != 2 || prepared.positionEntries != 3 {
 			t.Fatalf("prepared = %+v", prepared)
 		}
-		if got := words.terms[0]; got.term != "alpha" || got.frequency != 1 || !slices.Equal(got.positions, []uint32{1}) {
+		if got := words.terms[0]; got.term != "alpha" || got.frequency != 1 || !slices.Equal(got.fields[FieldDefault].positions, []uint64{1}) {
 			t.Fatalf("first grouped term = %+v", got)
 		}
-		if got := words.terms[1]; got.term != "beta" || got.frequency != 2 || !slices.Equal(got.positions, []uint32{0, 2}) {
+		if got := words.terms[1]; got.term != "beta" || got.frequency != 2 || !slices.Equal(got.fields[FieldDefault].positions, []uint64{0, 2}) {
 			t.Fatalf("second grouped term = %+v", got)
 		}
 	})
@@ -737,6 +806,47 @@ func BenchmarkSearchProximity(b *testing.B) {
 			idx.Search(queries[i%len(queries)])
 		}
 	})
+}
+
+// BenchmarkStructuredFieldSearch records the query-time cost and retained
+// logical bytes of the v2 field model against the historical flattened text.
+func BenchmarkStructuredFieldSearch(b *testing.B) {
+	const documents = 20_000
+	for _, structured := range []bool{false, true} {
+		name := map[bool]string{false: "Flat", true: "Structured"}[structured]
+		b.Run(name, func(b *testing.B) {
+			runtime.GC()
+			var before runtime.MemStats
+			runtime.ReadMemStats(&before)
+			scorer := FieldWeighted{Base: BM25{K1: DefaultBM25K1, B: DefaultBM25B}, KeyWeight: DefaultKeyFieldWeight, ValueWeight: 1}
+			idx := NewInvertedIndex[string, Document](fakeAnalyzer{}, scorer, compareStringID, WithPositions())
+			for i := 0; i < documents; i++ {
+				key := fmt.Sprintf("tenant.%03d.note.%06d", i%100, i)
+				valueA := fmt.Sprintf("alpha topic%d", i%100)
+				valueB := "beta searchable content"
+				var doc Document = Text(key + " " + valueA + " " + valueB)
+				if structured {
+					doc = Fields{{ID: FieldKey, Text: key}, {ID: FieldValue, Text: valueA}, {ID: FieldValue, Text: valueB}}
+				}
+				if err := idx.Index(key, doc); err != nil {
+					b.Fatal(err)
+				}
+			}
+			runtime.GC()
+			var after runtime.MemStats
+			runtime.ReadMemStats(&after)
+			heapBytesPerDoc := float64(after.HeapAlloc-before.HeapAlloc) / documents
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				if results := idx.SearchTopK("alpha beta", 10, nil); len(results) != 10 {
+					b.Fatalf("results=%d", len(results))
+				}
+			}
+			runtime.KeepAlive(idx)
+			b.ReportMetric(heapBytesPerDoc, "heap-B/doc")
+		})
+	}
 }
 
 // BenchmarkSearchPhrase measures phrase-query latency (AND-intersection plus
