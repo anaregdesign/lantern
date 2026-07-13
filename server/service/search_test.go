@@ -395,7 +395,7 @@ func TestSearchVertices_RecordsBoundedTraceWork(t *testing.T) {
 	ctx, span := provider.Tracer("test").Start(context.Background(), "search")
 	fb := newFakeBackend()
 	fb.searchContextFn = func(context.Context) ([]search.Result[string], search.Stats, error) {
-		return nil, search.Stats{QueryTerms: 2, DictionaryVisits: 3, PostingVisits: 5, PositionVisits: 7}, nil
+		return nil, search.Stats{QueryTerms: 2, DictionaryVisits: 3, PostingVisits: 5, PositionVisits: 7, CandidateVisits: 11, CandidateSkips: 4}, nil
 	}
 	svc := NewLanternService(fb).WithSearchLimits(SearchLimits{Enabled: true, DefaultLimit: 10, MaxLimit: 100})
 	if _, err := svc.SearchVertices(ctx, &pb.SearchVerticesRequest{Query: "alpha beta"}); err != nil {
@@ -418,6 +418,8 @@ func TestSearchVertices_RecordsBoundedTraceWork(t *testing.T) {
 		"lantern.search.dictionary_visits": int64(3),
 		"lantern.search.posting_visits":    int64(5),
 		"lantern.search.position_visits":   int64(7),
+		"lantern.search.candidate_visits":  int64(11),
+		"lantern.search.candidate_skips":   int64(4),
 	} {
 		if got := attrs[key]; got != want {
 			t.Errorf("attribute %s = %#v, want %#v", key, got, want)

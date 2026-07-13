@@ -76,8 +76,8 @@ func (idx *InvertedIndex[S, D]) SearchMatch(query string, opts MatchOptions) []R
 	return idx.rankedResultsLocked(scores)
 }
 
-// SearchMatchTopK is the bounded-selection sibling of SearchMatch, combining
-// its match mode with the size-k selection and accept gating of SearchTopK.
+// SearchMatchTopK is the bounded-execution sibling of SearchMatch, combining
+// its match mode with the streaming candidate execution and size-k heap of SearchTopK.
 // SearchTopK is SearchMatchTopK(query, k, accept, MatchOptions{}). The lock
 // order and accept contract are identical to SearchTopK. k <= 0, an unanalyzable
 // query, or zero accepted matches return nil.
@@ -96,6 +96,14 @@ func (idx *InvertedIndex[S, D]) SearchMatchTopKContext(ctx context.Context, quer
 // liveness instant. Layered stores use it to share one sampled now between
 // index expiration and their accept callback.
 func (idx *InvertedIndex[S, D]) SearchMatchTopKContextAt(ctx context.Context, query string, k int, accept func(id S) bool, opts MatchOptions, budget Budget, now time.Time) ([]Result[S], Stats, error) {
+	return idx.SearchMatchTopKCandidatesContextAt(ctx, query, k, accept, opts, budget, now, nil)
+}
+
+// SearchMatchTopKCandidatesContextAt is SearchMatchTopKContextAt with an
+// optional streaming candidate scope. Supplying a source makes retrieval score
+// only those IDs while retaining global corpus statistics, so filtering does
+// not silently change BM25 IDF or length normalization.
+func (idx *InvertedIndex[S, D]) SearchMatchTopKCandidatesContextAt(ctx context.Context, query string, k int, accept func(id S) bool, opts MatchOptions, budget Budget, now time.Time, candidates CandidateSource[S]) ([]Result[S], Stats, error) {
 	work := newWorkTracker(ctx, budget)
 	if idx.Health() != IndexHealthy {
 		return nil, work.stats, ErrIndexIncomplete
@@ -120,14 +128,11 @@ func (idx *InvertedIndex[S, D]) SearchMatchTopKContextAt(ctx context.Context, qu
 		return nil, work.stats, ErrIndexIncomplete
 	}
 
-	scores, err := idx.scoredMatchesTrackedLocked(queryTerms, opts, work)
+	plan, err := idx.buildScoringPlanLocked(queryTerms, opts, work)
 	if err != nil {
 		return nil, work.stats, err
 	}
-	if len(scores) == 0 {
-		return nil, work.stats, nil
-	}
-	results, err := idx.selectTopKTrackedLocked(scores, k, accept, work)
+	results, err := idx.executeTopKLocked(plan, k, accept, candidates, work)
 	if err != nil {
 		return nil, work.stats, err
 	}

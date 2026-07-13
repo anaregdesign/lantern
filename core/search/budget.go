@@ -15,6 +15,8 @@ const (
 	WorkPostingVisits    WorkKind = "posting_visits"
 	WorkPositionVisits   WorkKind = "position_visits"
 	WorkExpirationVisits WorkKind = "expiration_visits"
+	WorkCandidateVisits  WorkKind = "candidate_visits"
+	WorkCandidateSkips   WorkKind = "candidate_skips"
 )
 
 // ErrBudgetExceeded classifies deterministic query-work exhaustion.
@@ -37,6 +39,8 @@ type Stats struct {
 	PostingVisits    int64
 	PositionVisits   int64
 	ExpirationVisits int64
+	CandidateVisits  int64
+	CandidateSkips   int64
 }
 
 // BudgetExceededError records which stable counter exhausted its limit.
@@ -66,6 +70,9 @@ func newWorkTracker(ctx context.Context, budget Budget) *workTracker {
 
 func (w *workTracker) check() error { return w.ctx.Err() }
 
+func (w *workTracker) candidateVisit() error { return w.visit(WorkCandidateVisits, 1) }
+func (w *workTracker) candidateSkip() error  { return w.visit(WorkCandidateSkips, 1) }
+
 func (w *workTracker) visit(kind WorkKind, n int64) error {
 	if err := w.ctx.Err(); err != nil {
 		return err
@@ -83,6 +90,10 @@ func (w *workTracker) visit(kind WorkKind, n int64) error {
 		value, limit = &w.stats.PositionVisits, w.budget.MaxPositionVisits
 	case WorkExpirationVisits:
 		value, limit = &w.stats.ExpirationVisits, w.budget.MaxExpirationVisits
+	case WorkCandidateVisits:
+		value = &w.stats.CandidateVisits
+	case WorkCandidateSkips:
+		value = &w.stats.CandidateSkips
 	default:
 		panic("search: unknown work kind")
 	}

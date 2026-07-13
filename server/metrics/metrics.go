@@ -261,6 +261,8 @@ var (
 		string(search.WorkPostingVisits),
 		string(search.WorkPositionVisits),
 		string(search.WorkExpirationVisits),
+		string(search.WorkCandidateVisits),
+		string(search.WorkCandidateSkips),
 	}
 	// replicationApplyOps covers every pb.MutationOp oneof variant. The
 	// service layer translates the proto-internal case selector into one
@@ -1040,6 +1042,8 @@ func (m *DomainMetrics) OnSearchExecution(outcome, reason string, stats search.S
 		{string(search.WorkPostingVisits), stats.PostingVisits},
 		{string(search.WorkPositionVisits), stats.PositionVisits},
 		{string(search.WorkExpirationVisits), stats.ExpirationVisits},
+		{string(search.WorkCandidateVisits), stats.CandidateVisits},
+		{string(search.WorkCandidateSkips), stats.CandidateSkips},
 	} {
 		m.searchWork.WithLabelValues(item.kind).Observe(float64(item.value))
 	}

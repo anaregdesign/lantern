@@ -109,6 +109,11 @@ func smallestWindow(lists [][]uint32) int {
 
 func smallestWindowTracked(lists [][]uint32, work *workTracker) (int, error) {
 	ptr := make([]int, len(lists))
+	return smallestWindowWithPointersTracked(lists, ptr, work)
+}
+
+func smallestWindowWithPointersTracked(lists [][]uint32, ptr []int, work *workTracker) (int, error) {
+	clear(ptr)
 	best := -1
 	for {
 		if err := work.check(); err != nil {

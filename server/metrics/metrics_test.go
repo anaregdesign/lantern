@@ -307,12 +307,18 @@ func TestDomainMetrics_HotPathFamilies(t *testing.T) {
 	if got := histSampleCount(t, m.searchDuration); got != 1 {
 		t.Errorf("search_duration sample count = %v, want 1", got)
 	}
-	m.OnSearchExecution("resource_exhausted", string(search.WorkPostingVisits), search.Stats{PostingVisits: 17})
+	m.OnSearchExecution("resource_exhausted", string(search.WorkPostingVisits), search.Stats{PostingVisits: 17, CandidateVisits: 11, CandidateSkips: 3})
 	if got := testutil.ToFloat64(m.searchCalls.WithLabelValues("resource_exhausted", string(search.WorkPostingVisits))); got != 1 {
 		t.Errorf("search_calls_total{resource_exhausted,posting_visits} = %v, want 1", got)
 	}
 	if got := histSampleCount(t, m.searchWork.WithLabelValues(string(search.WorkPostingVisits))); got != 1 {
 		t.Errorf("search_work{posting_visits} sample count = %v, want 1", got)
+	}
+	if got := histSampleCount(t, m.searchWork.WithLabelValues(string(search.WorkCandidateVisits))); got != 1 {
+		t.Errorf("search_work{candidate_visits} sample count = %v, want 1", got)
+	}
+	if got := histSampleCount(t, m.searchWork.WithLabelValues(string(search.WorkCandidateSkips))); got != 1 {
+		t.Errorf("search_work{candidate_skips} sample count = %v, want 1", got)
 	}
 	m.OnSearchExecution("resource_exhausted", string(search.WorkExpirationVisits), search.Stats{ExpirationVisits: 5})
 	if got := histSampleCount(t, m.searchWork.WithLabelValues(string(search.WorkExpirationVisits))); got != 2 {

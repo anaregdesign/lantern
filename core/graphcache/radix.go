@@ -207,6 +207,21 @@ func (r *radix) deleteAt(n *radixNode, key string) bool {
 func (r *radix) walkPrefix(prefix string, fn func(key string) bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	r.walkPrefixLocked(prefix, fn)
+}
+
+// withPrefixWalk holds the radix read lock while fn consumes a lock-free walk
+// closure. It lets a layered query establish radix -> downstream-index lock
+// order once and stream candidates without materialising the prefix subtree.
+func (r *radix) withPrefixWalk(prefix string, fn func(walk func(func(string) bool))) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	fn(func(visit func(string) bool) { r.walkPrefixLocked(prefix, visit) })
+}
+
+// walkPrefixLocked is walkPrefix without synchronization. Caller holds at
+// least r.mu.RLock.
+func (r *radix) walkPrefixLocked(prefix string, fn func(key string) bool) {
 	node, accumulated, ok := r.descend(prefix)
 	if !ok {
 		return

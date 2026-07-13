@@ -173,6 +173,7 @@ func TestGraphCache_SearchExpirationIndependentOfBackgroundGC(t *testing.T) {
 func TestGraphCache_SearchConcurrentMutationAndCancellation(t *testing.T) {
 	c := NewGraphCache[string, string](time.Minute)
 	c.EnableSearchIndex(textExtract, compareStringID)
+	c.EnablePrefixIndex(func(key string) string { return key })
 	for i := 0; i < 200; i++ {
 		c.PutVertex(fmt.Sprintf("seed-%03d", i), "alpha beta")
 	}
@@ -203,7 +204,7 @@ func TestGraphCache_SearchConcurrentMutationAndCancellation(t *testing.T) {
 			if i%2 == 0 {
 				cancel()
 			}
-			_, _, err := c.SearchVerticesMatchContext(ctx, "alpha beta", 10, "", search.MatchOptions{}, false, search.Budget{})
+			_, _, err := c.SearchVerticesMatchContext(ctx, "alpha beta", 10, "seed-", search.MatchOptions{}, false, search.Budget{})
 			cancel()
 			if err != nil && !errors.Is(err, context.Canceled) {
 				errs <- err
@@ -395,6 +396,43 @@ func TestGraphCache_SearchVertices(t *testing.T) {
 		got := c.SearchVertices("keyword", 10, "user:")
 		if want := []string{"user:1", "user:2"}; !equalKeys(keys(got), want) {
 			t.Fatalf("SearchVertices(keyword, prefix user:) = %v, want %v", keys(got), want)
+		}
+	})
+
+	t.Run("Prefix index pushes candidate scope into retrieval", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Minute)
+		c.EnableSearchIndex(textExtract, compareStringID)
+		c.EnablePrefixIndex(func(key string) string { return key })
+		items := make([]VertexItem[string, string], 0, 2010)
+		expiration := time.Now().Add(time.Hour)
+		for i := 0; i < 2000; i++ {
+			items = append(items, VertexItem[string, string]{Key: fmt.Sprintf("other:%04d", i), Value: "shared keyword", Expiration: expiration})
+		}
+		for i := 0; i < 10; i++ {
+			items = append(items, VertexItem[string, string]{Key: fmt.Sprintf("scope:%02d", i), Value: "shared keyword", Expiration: expiration})
+		}
+		if err := c.PutVerticesWithExpiration(items); err != nil {
+			t.Fatal(err)
+		}
+		scoped, scopedStats, err := c.SearchVerticesMatchContext(context.Background(), "keyword", 5, "scope:", search.MatchOptions{}, false, search.Budget{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		global, globalStats, err := c.SearchVerticesMatchContext(context.Background(), "keyword", 5, "", search.MatchOptions{}, false, search.Budget{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(scoped) != 5 || len(global) != 5 {
+			t.Fatalf("result sizes: scoped=%d global=%d, want 5/5", len(scoped), len(global))
+		}
+		if scopedStats.CandidateVisits != 10 {
+			t.Fatalf("scoped candidate visits=%d, want prefix population 10", scopedStats.CandidateVisits)
+		}
+		if globalStats.CandidateVisits != 2010 {
+			t.Fatalf("global candidate visits=%d, want corpus population 2010", globalStats.CandidateVisits)
+		}
+		if scopedStats.PostingVisits >= globalStats.PostingVisits/10 {
+			t.Fatalf("prefix pushdown did not bound posting work: scoped=%d global=%d", scopedStats.PostingVisits, globalStats.PostingVisits)
 		}
 	})
 

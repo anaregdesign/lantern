@@ -112,8 +112,8 @@ func TestContextCancellationObservedInsideSearchLoops(t *testing.T) {
 			plain.Index(fmt.Sprintf("doc-%03d", i), Text("alpha"))
 		}
 		results, stats, err := plain.SearchMatchTopKContext(newStepCancelContext(110), "alpha", 10, nil, MatchOptions{}, Budget{})
-		if results != nil || !errors.Is(err, context.Canceled) || stats.PostingVisits != 100 {
-			t.Fatalf("results=%v stats=%+v err=%v, want cancellation during selection", results, stats, err)
+		if results != nil || !errors.Is(err, context.Canceled) || stats.CandidateVisits == 0 {
+			t.Fatalf("results=%v stats=%+v err=%v, want cancellation during candidate execution", results, stats, err)
 		}
 	})
 }

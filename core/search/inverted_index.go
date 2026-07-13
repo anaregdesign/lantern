@@ -919,20 +919,18 @@ func (idx *InvertedIndex[S, D]) rankedResultsLocked(scores map[uint32]float64) [
 	return results
 }
 
-// SearchTopK is the bounded-selection sibling of Search (#841): it computes
-// the same OR-union BM25 scores but returns only the k highest-scoring
-// documents that satisfy accept, without materialising or fully sorting the
-// complete match set. With a bigram analyzer a short query can match most
-// of the corpus, so Search's O(M log M) sort over all M matches dominates
-// broad queries; SearchTopK selects with a size-k bounded heap in
-// O(M log k) time and O(k) result memory instead.
+// SearchTopK is the bounded-execution sibling of Search (#841/#1060): it
+// multiway-merges sorted postings, scores one document at a time, and retains
+// only the k highest-scoring accepted documents. It therefore avoids both the
+// exhaustive ordinal-to-score map and the complete result sort. Working memory
+// is O(k + query clauses), independent of the total match count M.
 //
-// accept gates a document BEFORE it can occupy one of the k slots, so
-// filtered-out documents (dead vertices, out-of-scope keys) never consume
-// the page budget — a full page of accepted hits is returned whenever one
-// exists. accept may be nil (accept everything). To keep accept calls off
-// the O(M) score loop it is consulted lazily, only when a candidate's score
-// qualifies it for the heap.
+// accept gates a document before scoring and before it can occupy one of the k
+// slots, so filtered-out documents (for example dead vertices) consume neither
+// scoring work nor page budget. accept may be nil (accept everything). A
+// layered store with a selective secondary index should use CandidateSource
+// through SearchMatchTopKCandidatesContextAt instead of expressing that scope
+// as an O(M) accept predicate.
 //
 // LOCK ORDER: accept runs while idx.mu is held for reading. The established
 // order is GraphCache.mu → idx.mu → (vertex-cache inner mutex): index writes
@@ -948,49 +946,6 @@ func (idx *InvertedIndex[S, D]) rankedResultsLocked(scores map[uint32]float64) [
 // SearchTopK is the MatchAny case of SearchMatchTopK.
 func (idx *InvertedIndex[S, D]) SearchTopK(query string, k int, accept func(id S) bool) []Result[S] {
 	return idx.SearchMatchTopK(query, k, accept, MatchOptions{})
-}
-
-// selectTopKLocked returns the k highest-scoring documents in scores that pass
-// accept, as a descending-ranked slice. It is the bounded-selection phase
-// shared by SearchTopK and SearchPhraseTopK: a size-k min-heap holds the
-// current best, and accept is consulted lazily only after a candidate clears
-// the same total-order boundary used by exhaustive ranking. Callers must hold
-// idx.mu; k > 0 is the caller's precondition.
-func (idx *InvertedIndex[S, D]) selectTopKLocked(scores map[uint32]float64, k int, accept func(id S) bool) []Result[S] {
-	out, _ := idx.selectTopKTrackedLocked(scores, k, accept, newWorkTracker(nil, Budget{}))
-	return out
-}
-
-func (idx *InvertedIndex[S, D]) selectTopKTrackedLocked(scores map[uint32]float64, k int, accept func(id S) bool, work *workTracker) ([]Result[S], error) {
-	h := topKHeap[S]{entries: make([]Result[S], 0, k), better: idx.betterResult}
-	for ord, score := range scores {
-		if err := work.check(); err != nil {
-			return nil, err
-		}
-		if math.IsNaN(score) || math.IsInf(score, 0) {
-			continue
-		}
-		id := idx.docs[ord].id
-		candidate := Result[S]{ID: id, Score: score}
-		if len(h.entries) == k && !idx.betterResult(candidate, h.entries[0]) {
-			continue
-		}
-		if accept != nil && !accept(id) {
-			continue
-		}
-		if len(h.entries) < k {
-			heap.Push(&h, candidate)
-			continue
-		}
-		h.entries[0] = candidate
-		heap.Fix(&h, 0)
-	}
-	if len(h.entries) == 0 {
-		return nil, nil
-	}
-	out := h.entries
-	sort.Slice(out, func(i, j int) bool { return idx.betterResult(out[i], out[j]) })
-	return out, nil
 }
 
 // topKHeap is the size-k min-heap behind SearchTopK: the root is the weakest
