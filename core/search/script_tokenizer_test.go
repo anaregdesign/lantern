@@ -39,9 +39,7 @@ func TestScriptAwareTokenizer(t *testing.T) {
 			},
 		},
 		{
-			name: "TwoRuneWordSkipsRedundantGram",
-			// A word of exactly N runes would emit itself again as a gram;
-			// the word token already carries that evidence.
+			name: "TwoRuneDocumentSkipsRedundantGram",
 			text: "go",
 			want: []Token{{Term: "go", Class: ClassWord}},
 		},
@@ -126,11 +124,43 @@ func TestScriptAwareTokenizer(t *testing.T) {
 			},
 		},
 		{
-			name: "ThaiIsUnbounded",
+			name: "ThaiUsesWordAndAuxiliaryGrams",
 			text: "ไทย",
 			want: []Token{
-				{Term: "ไท", Class: ClassWord},
-				{Term: "ทย", Class: ClassWord},
+				{Term: "ไทย", Class: ClassWord},
+				{Term: "ไท", Class: ClassGram},
+				{Term: "ทย", Class: ClassGram},
+			},
+		},
+		{
+			name: "ThaiMarksStayAttached",
+			text: "ก่า",
+			want: []Token{
+				{Term: "ก่า", Class: ClassWord},
+				{Term: "ก่", Class: ClassGram},
+				{Term: "่า", Class: ClassGram},
+			},
+		},
+		{
+			name: "IndicMarksStayInsideWord",
+			text: "हिन्दी",
+			want: []Token{
+				{Term: "हिन्दी", Class: ClassWord},
+				{Term: "हि", Class: ClassGram},
+				{Term: "िन", Class: ClassGram},
+				{Term: "न्", Class: ClassGram},
+				{Term: "्द", Class: ClassGram},
+				{Term: "दी", Class: ClassGram},
+			},
+		},
+		{
+			name: "EmojiClustersAreSearchable",
+			text: "❤ 👩‍💻 😀👍",
+			want: []Token{
+				{Term: "❤", Class: ClassWord},
+				{Term: "👩‍💻", Class: ClassWord},
+				{Term: "😀", Class: ClassWord},
+				{Term: "👍", Class: ClassWord},
 			},
 		},
 		{

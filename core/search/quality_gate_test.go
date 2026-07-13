@@ -489,3 +489,96 @@ func TestSearchQualityGateScriptAware(t *testing.T) {
 		})
 	}
 }
+
+// TestSearchQualityGateUnicodeMinimalPairs is the reviewed #1067 qrel set.
+// Grade 3 identifies the intended lexical identity; grade 1 permits an
+// auxiliary-gram recall hit without allowing it to outrank the exact word.
+func TestSearchQualityGateUnicodeMinimalPairs(t *testing.T) {
+	docs := map[string]string{
+		"sharp":       "Straße",
+		"ss":          "Strasse",
+		"accented":    "café",
+		"plain":       "cafe",
+		"thai-plain":  "กา",
+		"thai-tone":   "ก่า",
+		"indic-short": "कल",
+		"indic-long":  "काल",
+		"heart":       "❤",
+		"heart-emoji": "❤️",
+		"developer":   "👩‍💻",
+		"scientist":   "👩‍🔬",
+		"cjk":         "東京",
+		"digits":      "2026",
+		"mixed":       "東京 Go 2026",
+	}
+	queries := []struct {
+		name  string
+		text  string
+		qrels map[string]int
+	}{
+		{"case-fold-sharp-s", "STRASSE", map[string]int{"sharp": 3, "ss": 3}},
+		{"canonical-composition", "cafe\u0301", map[string]int{"accented": 3, "plain": 1}},
+		{"accent-distinction", "cafe", map[string]int{"plain": 3, "accented": 1}},
+		{"thai-mark-distinction", "ก่า", map[string]int{"thai-tone": 3}},
+		{"indic-mark-distinction", "काल", map[string]int{"indic-long": 3}},
+		{"emoji-presentation", "❤️", map[string]int{"heart": 3, "heart-emoji": 3}},
+		{"emoji-zwj-distinction", "👩‍💻", map[string]int{"developer": 3}},
+		{"cjk", "東京", map[string]int{"cjk": 3, "mixed": 2}},
+		{"digits", "2026", map[string]int{"digits": 3, "mixed": 2}},
+	}
+
+	idx := scriptAwareIndex()
+	for id, text := range docs {
+		idx.Index(id, Text(text))
+	}
+	for _, query := range queries {
+		t.Run(query.name, func(t *testing.T) {
+			results := idx.Search(query.text)
+			if len(results) == 0 {
+				t.Fatal("no results")
+			}
+			if grade := query.qrels[results[0].ID]; grade != 3 {
+				t.Fatalf("top %q has grade %d, want 3; results=%v", results[0].ID, grade, idsOf(results))
+			}
+			for id, grade := range query.qrels {
+				if grade == 3 && !containsID(results, id) {
+					t.Errorf("missing grade-3 result %q; results=%v", id, idsOf(results))
+				}
+			}
+		})
+	}
+}
+
+func containsID(results []Result[string], id string) bool {
+	for _, result := range results {
+		if result.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func TestSearchQualityGateTwoRuneInfix(t *testing.T) {
+	idx := scriptAwareIndex()
+	idx.Index("exact", Text("ar"))
+	idx.Index("carrier", Text("search"))
+	idx.Index("noise", Text("graph"))
+	results := idx.Search("ar")
+	if got := idsOf(results); !equalStrings(got, []string{"exact", "carrier"}) {
+		t.Fatalf("Search(ar) = %v, want exact then carrier", got)
+	}
+	all := idx.SearchMatch("ar", MatchOptions{Mode: MatchAll})
+	if got := idsOf(all); !equalStrings(got, []string{"exact"}) {
+		t.Fatalf("SearchMatch(ar, all) = %v, want only exact channel-complete word", got)
+	}
+	cjk := scriptAwareIndex()
+	cjk.Index("exact", Text("東京"))
+	cjk.Index("carrier", Text("東京都"))
+	if got := idsOf(cjk.SearchMatch("東京", MatchOptions{Mode: MatchAll})); !equalStrings(got, []string{"exact", "carrier"}) {
+		t.Fatalf("CJK MatchAll = %v, want primary-bigram behavior preserved", got)
+	}
+	prefix := idx.SearchMatch("ar", MatchOptions{PrefixTerms: true})
+	if got := idsOf(prefix); !equalStrings(got, []string{"exact"}) {
+		t.Fatalf("prefix SearchMatch(ar) = %v, supplemental gram bypassed expansion semantics", got)
+	}
+}

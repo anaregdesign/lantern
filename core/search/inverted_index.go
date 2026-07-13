@@ -13,8 +13,9 @@ import (
 // InvertedIndex is a generic, in-memory inverted index that maps each
 // analyzed term to the documents whose text contains it. It is the default
 // Indexer + Searcher implementation: indexed documents (any Document, via
-// doc.String()) and raw queries pass through the same Analyzer, so index-time
-// and query-time terms stay symmetric.
+// doc.String()) and raw queries pass through the configured Analyzer. An
+// optional QueryAnalyzer may add query-only evidence; otherwise index-time and
+// query-time terms stay symmetric.
 //
 // It splits the two responsibilities of relevance search. The index owns
 // matching and the statistics behind it — per-document term frequencies and
@@ -879,7 +880,7 @@ func (idx *InvertedIndex[S, D]) Search(query string) []Result[S] {
 // weight once per channel and floating-point contributions are accumulated in
 // the same order on every call and replica.
 func (idx *InvertedIndex[S, D]) queryTerms(query string) []Token {
-	tokens := idx.analyzer.Analyze(query)
+	tokens := idx.analyzeQuery(query)
 	if len(tokens) == 0 {
 		return nil
 	}
@@ -899,6 +900,13 @@ func (idx *InvertedIndex[S, D]) queryTerms(query string) []Token {
 		return queryTerms[i].Term < queryTerms[j].Term
 	})
 	return queryTerms
+}
+
+func (idx *InvertedIndex[S, D]) analyzeQuery(query string) []Token {
+	if analyzer, ok := idx.analyzer.(QueryAnalyzer); ok {
+		return analyzer.AnalyzeQuery(query)
+	}
+	return idx.analyzer.Analyze(query)
 }
 
 // scoreLocked computes the OR-union score map for a distinct query-term set;

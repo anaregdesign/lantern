@@ -635,6 +635,13 @@ func TestSearchVertices_ProductionStructuredFieldsOverRealH2C(t *testing.T) {
 		{Key: "alpha", Value: "beta", Expiration: expiration},
 		{Key: "json-boundaries", Value: `{"a":"alpha","b":"beta"}`, Expiration: expiration},
 		{Key: "within-value", Value: "alpha beta", Expiration: expiration},
+		{Key: "two-rune-exact", Value: "ar", Expiration: expiration},
+		{Key: "two-rune-carrier", Value: "search", Expiration: expiration},
+		{Key: "case-fold", Value: "Straße", Expiration: expiration},
+		{Key: "thai-plain", Value: "กา", Expiration: expiration},
+		{Key: "thai-tone", Value: "ก่า", Expiration: expiration},
+		{Key: "emoji-developer", Value: "👩‍💻", Expiration: expiration},
+		{Key: "emoji-scientist", Value: "👩‍🔬", Expiration: expiration},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -657,6 +664,25 @@ func TestSearchVertices_ProductionStructuredFieldsOverRealH2C(t *testing.T) {
 	if len(endpoint) == 0 || endpoint[0].Key != "implicit-tail-key" {
 		t.Fatalf("implicit endpoint hits = %+v", endpoint)
 	}
+	twoRune, err := sdk.SearchVertices(ctx, "ar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(twoRune) < 2 || twoRune[0].Key != "two-rune-exact" || !searchHitsContain(twoRune, "two-rune-carrier") {
+		t.Fatalf("two-rune hits = %+v, want exact first and infix carrier present", twoRune)
+	}
+	caseFold, err := sdk.SearchVertices(ctx, "STRASSE")
+	if err != nil || len(caseFold) == 0 || caseFold[0].Key != "case-fold" {
+		t.Fatalf("case-fold hits = %+v err=%v", caseFold, err)
+	}
+	thai, err := sdk.SearchVertices(ctx, "ก่า")
+	if err != nil || len(thai) == 0 || thai[0].Key != "thai-tone" {
+		t.Fatalf("Thai mark hits = %+v err=%v", thai, err)
+	}
+	emoji, err := sdk.SearchVertices(ctx, "👩‍💻")
+	if err != nil || len(emoji) != 1 || emoji[0].Key != "emoji-developer" {
+		t.Fatalf("emoji ZWJ hits = %+v err=%v", emoji, err)
+	}
 	status, err := raw.GetServerStatus(ctx, connect.NewRequest(&pb.GetServerStatusRequest{}))
 	if err != nil {
 		t.Fatal(err)
@@ -664,6 +690,21 @@ func TestSearchVertices_ProductionStructuredFieldsOverRealH2C(t *testing.T) {
 	if got := status.Msg.GetSearch().GetProjectionVersion(); got != "vertex-fields-v2" {
 		t.Fatalf("projection version = %q", got)
 	}
+	if got := status.Msg.GetSearch().GetAnalyzerVersion(); got != "script-aware-v2" {
+		t.Fatalf("analyzer version = %q", got)
+	}
+	if got := status.Msg.GetSearch().GetConfigFingerprint(); len(got) != 64 {
+		t.Fatalf("config fingerprint = %q, want 64 hex chars", got)
+	}
+}
+
+func searchHitsContain(hits []client.SearchHit, key string) bool {
+	for _, hit := range hits {
+		if hit.Key == key {
+			return true
+		}
+	}
+	return false
 }
 
 // newSearchSDKClient mirrors newSearchRawClient but returns the high-level

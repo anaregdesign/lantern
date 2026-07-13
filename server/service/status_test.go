@@ -144,7 +144,7 @@ func TestLanternService_GetServerStatus(t *testing.T) {
 		if got.GetDefaultMatchMode() != pb.MatchMode_MATCH_MODE_MIN_SHOULD || got.GetDefaultMinShouldMatch() != 2 {
 			t.Errorf("search defaults = %v/%d, want MIN_SHOULD/2", got.GetDefaultMatchMode(), got.GetDefaultMinShouldMatch())
 		}
-		if got.GetMaxFuzziness() != 2 || got.GetAnalyzerVersion() == "" || got.GetProjectionVersion() != "vertex-fields-v2" {
+		if got.GetMaxFuzziness() != 2 || got.GetAnalyzerVersion() != "script-aware-v2" || got.GetProjectionVersion() != "vertex-fields-v2" {
 			t.Errorf("search implementation capabilities incomplete: %+v", got)
 		}
 		if got.GetTimeoutMs() != 1500 || got.GetMaxQueryBytes() != 4096 || got.GetMaxQueryTerms() != 12 ||

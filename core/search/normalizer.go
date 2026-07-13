@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode"
 
+	"golang.org/x/text/cases"
 	"golang.org/x/text/unicode/norm"
 	"golang.org/x/text/width"
 )
@@ -29,6 +30,24 @@ type LowercaseNormalizer struct{}
 
 // Normalize returns the lower-cased text.
 func (LowercaseNormalizer) Normalize(text string) string { return strings.ToLower(text) }
+
+// CaseFoldNormalizer applies Unicode's language-neutral full case fold. Unlike
+// lowercasing, case folding expands equivalences such as German sharp-s to
+// "ss" and maps both Greek sigma forms to sigma. It deliberately does not
+// apply locale-specific mappings (for example Turkish dotted/dotless I).
+type CaseFoldNormalizer struct{}
+
+// Normalize returns the Unicode case-folded text.
+func (CaseFoldNormalizer) Normalize(text string) string { return cases.Fold().String(text) }
+
+// CanonicalNormalizer converts canonically equivalent spellings to NFC while
+// preserving every combining mark. It is the conservative production choice:
+// composed/decomposed input matches, but Thai tones, Indic viramas/matras,
+// accents, niqqud, and harakat are never erased as a recall shortcut.
+type CanonicalNormalizer struct{}
+
+// Normalize returns text in Unicode NFC.
+func (CanonicalNormalizer) Normalize(text string) string { return norm.NFC.String(text) }
 
 // SpaceNormalizer collapses every run of Unicode whitespace to a single ASCII
 // space and trims the ends. It is useful in front of a WhitespaceTokenizer when
@@ -54,6 +73,39 @@ func (PunctuationNormalizer) Normalize(text string) string {
 	return strings.Map(func(r rune) rune {
 		if isPunctOrSymbol(r) {
 			return ' '
+		}
+		return r
+	}, text)
+}
+
+// SymbolPreservingPunctuationNormalizer replaces Unicode punctuation with a
+// boundary while retaining symbols as searchable content. Production search
+// uses it so emoji and intentional mathematical/currency symbols do not vanish;
+// callers that want the older punctuation-and-symbol boundary policy can keep
+// using PunctuationNormalizer.
+type SymbolPreservingPunctuationNormalizer struct{}
+
+// Normalize replaces punctuation, but not symbols, with an ASCII space.
+func (SymbolPreservingPunctuationNormalizer) Normalize(text string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsPunct(r) {
+			return ' '
+		}
+		return r
+	}, text)
+}
+
+// EmojiPresentationNormalizer removes the text/emoji presentation selectors
+// U+FE0E and U+FE0F. Presentation is a rendering preference rather than lexical
+// identity, so "❤", "❤︎", and "❤️" share one searchable term. ZWJ and skin-tone
+// modifiers remain significant.
+type EmojiPresentationNormalizer struct{}
+
+// Normalize removes Unicode variation selectors 15 and 16.
+func (EmojiPresentationNormalizer) Normalize(text string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\ufe0e' || r == '\ufe0f' {
+			return -1
 		}
 		return r
 	}, text)

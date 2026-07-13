@@ -1,11 +1,22 @@
 package search
 
-// Analyzer converts raw text into the sequence of index terms used by both
-// indexing and querying. Running the same Analyzer on documents and on queries
-// is what keeps the two sides symmetric. Implementations in this package are
+import "unicode/utf8"
+
+// Analyzer converts raw text into index terms. Queries use the same Analyze
+// method unless the dynamic implementation also provides QueryAnalyzer for a
+// documented query-only recall channel. Implementations in this package are
 // stateless and safe for concurrent use by multiple goroutines.
 type Analyzer interface {
 	Analyze(text string) []Token
+}
+
+// QueryAnalyzer is an optional asymmetric analysis extension. An index always
+// calls Analyze for documents; when the dynamic Analyzer also implements this
+// interface it calls AnalyzeQuery for search input. Match-mode coverage remains
+// defined solely by ClassWord; extra ClassGram terms are ranking evidence.
+type QueryAnalyzer interface {
+	Analyzer
+	AnalyzeQuery(text string) []Token
 }
 
 // boundedAnalyzer lets the index stop a production analysis pipeline as soon
@@ -65,8 +76,9 @@ func NewNGramAnalyzer(n int) Analyzer {
 }
 
 // NewScriptAwareAnalyzer returns the production analyzer for mixed-script
-// content search (#888): the full folding pipeline — width, diacritic,
-// lowercase, punctuation, and space normalizers — feeding a
+// content search (#888, #1067): width folding, canonical normalization, full
+// Unicode case folding, emoji-presentation folding, punctuation boundaries,
+// and space normalization feeding a
 // ScriptAwareTokenizer at N = 2. Space-delimited scripts index whole words as
 // primary tokens plus intra-word bigrams as auxiliary tokens, and unbounded
 // (CJK-like) scripts index bigrams as primary tokens, so one analyzer serves
@@ -75,20 +87,50 @@ func NewNGramAnalyzer(n int) Analyzer {
 // ClassWeighted scorer so the auxiliary grams keep infix and typo recall
 // without outranking whole-word matches. No token filter is needed: the
 // tokenizer already drops delimiters and never emits a gram across a word
-// boundary.
+// boundary. Query analysis adds a ClassGram copy of a two-rune primary term,
+// making "ar" recall "search" while the exact whole-word document still wins
+// through the higher-weight ClassWord channel. Document postings stay unchanged.
 func NewScriptAwareAnalyzer() Analyzer {
-	return NewAnalyzer(
+	pipeline := NewAnalyzer(
 		[]Normalizer{
 			WidthNormalizer{},
-			DiacriticNormalizer{},
-			LowercaseNormalizer{},
-			PunctuationNormalizer{},
+			CanonicalNormalizer{},
+			CaseFoldNormalizer{},
+			EmojiPresentationNormalizer{},
+			SymbolPreservingPunctuationNormalizer{},
 			SpaceNormalizer{},
 		},
 		ScriptAwareTokenizer{N: 2},
 		nil,
 	)
+	return &scriptAwareAnalyzer{pipeline: pipeline.(*pipelineAnalyzer)}
 }
+
+type scriptAwareAnalyzer struct {
+	pipeline *pipelineAnalyzer
+}
+
+func (a *scriptAwareAnalyzer) Analyze(text string) []Token {
+	return a.pipeline.Analyze(text)
+}
+
+func (a *scriptAwareAnalyzer) AnalyzeBounded(text string, maxTokens int) ([]Token, bool) {
+	return a.pipeline.AnalyzeBounded(text, maxTokens)
+}
+
+func (a *scriptAwareAnalyzer) AnalyzeQuery(text string) []Token {
+	tokens := a.Analyze(text)
+	baseLen := len(tokens)
+	for i := 0; i < baseLen; i++ {
+		if tokens[i].Class == ClassWord && utf8.RuneCountInString(tokens[i].Term) == 2 && !isCJKPrimaryTerm(tokens[i].Term) {
+			tokens = append(tokens, Token{Term: tokens[i].Term, Class: ClassGram})
+		}
+	}
+	return tokens
+}
+
+var _ QueryAnalyzer = (*scriptAwareAnalyzer)(nil)
+var _ boundedAnalyzer = (*scriptAwareAnalyzer)(nil)
 
 // Analyze runs text through the normalizers, tokenizer, and filter chain.
 func (a *pipelineAnalyzer) Analyze(text string) []Token {

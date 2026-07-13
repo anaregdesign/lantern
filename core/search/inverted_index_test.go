@@ -1088,6 +1088,53 @@ func BenchmarkSearchTopKBroadQuery(b *testing.B) {
 	})
 }
 
+// BenchmarkSearchTwoRuneInfix measures the production #1067 path on a broad
+// two-rune query and records retained heap next to the pre-v2 comparable
+// four-rune query. The corpus is identical across cases.
+func BenchmarkSearchTwoRuneInfix(b *testing.B) {
+	const documents = 20_000
+	legacy := func() Analyzer {
+		return NewAnalyzer(
+			[]Normalizer{WidthNormalizer{}, DiacriticNormalizer{}, LowercaseNormalizer{}, PunctuationNormalizer{}, SpaceNormalizer{}},
+			ScriptAwareTokenizer{N: 2}, nil,
+		)
+	}
+	for _, tc := range []struct {
+		name     string
+		analyzer func() Analyzer
+		query    string
+	}{
+		{"V1-arch", legacy, "arch"},
+		{"V2-arch", NewScriptAwareAnalyzer, "arch"},
+		{"V2-ar", NewScriptAwareAnalyzer, "ar"},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			runtime.GC()
+			var before runtime.MemStats
+			runtime.ReadMemStats(&before)
+			idx := NewInvertedIndex[string, Text](tc.analyzer(), ClassWeighted{
+				Base: BM25{K1: DefaultBM25K1, B: DefaultBM25B}, GramWeight: DefaultGramWeight,
+			}, compareStringID)
+			for i := 0; i < documents; i++ {
+				idx.Index(fmt.Sprintf("doc-%05d", i), Text(fmt.Sprintf("full text search archive shard %05d", i)))
+			}
+			runtime.GC()
+			var after runtime.MemStats
+			runtime.ReadMemStats(&after)
+			heapBytesPerDoc := float64(after.HeapAlloc-before.HeapAlloc) / documents
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				if got := idx.SearchTopK(tc.query, 10, nil); len(got) != 10 {
+					b.Fatalf("results=%d", len(got))
+				}
+			}
+			runtime.KeepAlive(idx)
+			b.ReportMetric(heapBytesPerDoc, "heap-B/doc")
+		})
+	}
+}
+
 // TestInvertedIndexDualClass covers the per-class posting tables (#888): the
 // two channels keep separate statistics and identities, a class-aware scorer
 // ranks whole-word evidence above fragment evidence, and deletes reclaim both

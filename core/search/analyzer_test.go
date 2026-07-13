@@ -86,10 +86,10 @@ func TestNewScriptAwareAnalyzer(t *testing.T) {
 			{Term: "ok", Class: ClassGram},
 			{Term: "ky", Class: ClassGram},
 			{Term: "yo", Class: ClassGram},
-			{Term: "cafe", Class: ClassWord},
+			{Term: "café", Class: ClassWord},
 			{Term: "ca", Class: ClassGram},
 			{Term: "af", Class: ClassGram},
-			{Term: "fe", Class: ClassGram},
+			{Term: "fé", Class: ClassGram},
 		}
 		if !tokensEqual(got, want) {
 			t.Fatalf("Analyze = %v, want %v", got, want)
@@ -122,4 +122,116 @@ func TestNewScriptAwareAnalyzer(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("FullCaseFoldAndCanonicalEquivalence", func(t *testing.T) {
+		if got, want := a.Analyze("Straße ΟΣ cafe\u0301"), a.Analyze("STRASSE ος café"); !tokensEqual(got, want) {
+			t.Fatalf("case/canonical equivalents differ:\n got %v\nwant %v", got, want)
+		}
+	})
+
+	t.Run("MeaningfulMarksRemainInPrimaryTerms", func(t *testing.T) {
+		for _, pair := range [][2]string{{"กา", "ก่า"}, {"कल", "काल"}, {"cafe", "café"}} {
+			left := primaryTerms(a.Analyze(pair[0]))
+			right := primaryTerms(a.Analyze(pair[1]))
+			if tokensEqual(left, right) {
+				t.Fatalf("Analyze(%q) and Analyze(%q) collapsed to %v", pair[0], pair[1], left)
+			}
+		}
+	})
+
+	t.Run("EmojiPresentationEquivalentButZWJIntentDistinct", func(t *testing.T) {
+		if got, want := a.Analyze("❤"), a.Analyze("❤️"); !tokensEqual(got, want) {
+			t.Fatalf("emoji presentation differs: %v vs %v", got, want)
+		}
+		if tokensEqual(a.Analyze("👩‍💻"), a.Analyze("👩‍🔬")) {
+			t.Fatal("distinct ZWJ emoji sequences collapsed")
+		}
+	})
+
+	t.Run("TwoRuneQueryAddsAuxiliaryChannel", func(t *testing.T) {
+		qa, ok := a.(QueryAnalyzer)
+		if !ok {
+			t.Fatal("production analyzer does not implement QueryAnalyzer")
+		}
+		want := []Token{{Term: "ar", Class: ClassWord}, {Term: "ar", Class: ClassGram}}
+		if got := qa.AnalyzeQuery("ar"); !tokensEqual(got, want) {
+			t.Fatalf("AnalyzeQuery(ar) = %v, want %v", got, want)
+		}
+		if got := a.Analyze("ar"); !tokensEqual(got, want[:1]) {
+			t.Fatalf("document Analyze(ar) = %v, want word channel only", got)
+		}
+		cjk := []Token{{Term: "東京", Class: ClassWord}}
+		if got := qa.AnalyzeQuery("東京"); !tokensEqual(got, cjk) {
+			t.Fatalf("AnalyzeQuery(東京) = %v, want unchanged primary CJK bigram", got)
+		}
+	})
+}
+
+func primaryTerms(tokens []Token) []Token {
+	out := make([]Token, 0, len(tokens))
+	for _, token := range tokens {
+		if token.Class == ClassWord {
+			out = append(out, token)
+		}
+	}
+	return out
+}
+
+func FuzzScriptAwareAnalyzer(f *testing.F) {
+	for _, seed := range []string{"Straße", "cafe\u0301", "สวัสดี", "हिन्दी", "👩‍💻", string([]byte{0xff, 'a', 0xfe})} {
+		f.Add(seed, uint8(16))
+	}
+	a := NewScriptAwareAnalyzer()
+	f.Fuzz(func(t *testing.T, text string, rawLimit uint8) {
+		limit := int(rawLimit) + 1
+		tokens := a.Analyze(text)
+		// Each input rune can produce at most one primary token plus one
+		// auxiliary bigram, with a small constant allowance for case-fold
+		// expansion and symbol clusters. This catches accidental unbounded
+		// expansion while accepting malformed UTF-8's replacement runes.
+		if len(tokens) > 2*len([]rune(text))+4 {
+			t.Fatalf("Analyze expanded %d runes to %d tokens", len([]rune(text)), len(tokens))
+		}
+		bounded, ok := a.(boundedAnalyzer)
+		if !ok {
+			t.Fatal("production analyzer is not bounded")
+		}
+		got, exceeded := bounded.AnalyzeBounded(text, limit)
+		if exceeded && got != nil {
+			t.Fatalf("bounded overflow retained %d tokens", len(got))
+		}
+		if !exceeded && len(got) > limit {
+			t.Fatalf("bounded analysis returned %d tokens over limit %d", len(got), limit)
+		}
+	})
+}
+
+// BenchmarkScriptAwareAnalyzerVersions measures the CPU/allocation cost of the
+// #1067 Unicode policy against the previously shipped v1 pipeline.
+func BenchmarkScriptAwareAnalyzerVersions(b *testing.B) {
+	v1 := NewAnalyzer(
+		[]Normalizer{WidthNormalizer{}, DiacriticNormalizer{}, LowercaseNormalizer{}, PunctuationNormalizer{}, SpaceNormalizer{}},
+		ScriptAwareTokenizer{N: 2}, nil,
+	)
+	v2 := NewScriptAwareAnalyzer()
+	// Keep the comparison corpus on scripts whose tokenizer policy did not
+	// change, isolating the analyzer v2 transforms from the separately tested
+	// Thai/Indic/emoji tokenization behavior.
+	text := "Straße café ΟΣ 東京 2026 full-text search"
+	for _, tc := range []struct {
+		name     string
+		analyzer Analyzer
+	}{
+		{"V1", v1},
+		{"V2", v2},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if got := tc.analyzer.Analyze(text); len(got) == 0 {
+					b.Fatal("no tokens")
+				}
+			}
+		})
+	}
 }

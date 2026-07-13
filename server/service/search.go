@@ -26,7 +26,7 @@ var errSearchPositionsDisabled = errors.New("phrase search requires positional p
 
 const (
 	searchMaxFuzziness      = uint32(2)
-	searchAnalyzerVersion   = "script-aware-v1"
+	searchAnalyzerVersion   = "script-aware-v2"
 	searchProjectionVersion = "vertex-fields-v2"
 )
 
