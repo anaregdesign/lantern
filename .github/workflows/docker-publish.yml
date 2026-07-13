@@ -21,8 +21,178 @@ jobs:
   verify:
     uses: ./.github/workflows/_verify.yml
 
-  build:
+  search-qualification:
+    name: Search release qualification
     needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout tagged commit
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        id: setup-go
+        continue-on-error: true
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.5'
+          check-latest: true
+
+      - name: Verify checked-out tag SHA
+        id: tag-sha
+        continue-on-error: true
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Qualify request-boundary decisions
+        id: request-boundary
+        continue-on-error: true
+        run: |
+          go test ./server/service -run 'TestSearchVertices_(PhraseWithoutPositionsFailsClosed|RejectsInvalidOptionsBeforeBackend|AcceptsOptionsDecisionTable)$'
+
+      - name: Qualify production wire semantics
+        id: wire-semantics
+        continue-on-error: true
+        run: |
+          go test ./tests/integration -run 'TestSearchVertices_(OptionsContract|ProductionStructuredFieldsOverRealH2C|LifecycleConvergenceOverProductionComposition|PositionsOff)$'
+
+      - name: Qualify HA Search convergence
+        id: ha-convergence
+        continue-on-error: true
+        run: |
+          go test ./tests/integration -run 'Test(PeerPump_SearchPartitionHealConvergence|AntiEntropy_GappedLogRebuildsExactSearchIndex)$'
+
+      - name: Install bench prerequisites
+        id: bench-prerequisites
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          GHZ_VERSION="0.121.0"
+          curl -fsSL -o /tmp/ghz.tgz \
+            "https://github.com/bojand/ghz/releases/download/v${GHZ_VERSION}/ghz-linux-x86_64.tar.gz"
+          sudo tar -xzf /tmp/ghz.tgz -C /usr/local/bin ghz
+          sudo chmod +x /usr/local/bin/ghz
+          YQ_VERSION="v4.45.4"
+          sudo curl -fsSL -o /usr/local/bin/yq \
+            "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          sudo chmod +x /usr/local/bin/yq
+          ghz --version
+          yq --version
+
+      - name: Build tagged lantern:local image
+        id: qualification-image
+        continue-on-error: true
+        run: |
+          docker build \
+            --build-arg VERSION=${{ github.ref_name }} \
+            --build-arg COMMIT=${{ github.sha }} \
+            -t lantern:local .
+
+      - name: Run short Search qualification scenario
+        id: qualification-scenario
+        continue-on-error: true
+        env:
+          COMPOSE_PROJECT_NAME: lantern-search-qualification
+          LANTERN_IMAGE: lantern:local
+          LEAK_GATE_ONLY: "1"
+        run: ./testbed/bench/run.sh search_qualification
+
+      - name: Record qualification stages
+        if: always()
+        env:
+          CHECKOUT: ${{ steps.checkout.outcome }}
+          SETUP_GO: ${{ steps.setup-go.outcome }}
+          TAG_SHA: ${{ steps.tag-sha.outcome }}
+          REQUEST_BOUNDARY: ${{ steps.request-boundary.outcome }}
+          WIRE_SEMANTICS: ${{ steps.wire-semantics.outcome }}
+          HA_CONVERGENCE: ${{ steps.ha-convergence.outcome }}
+          BENCH_PREREQUISITES: ${{ steps.bench-prerequisites.outcome }}
+          QUALIFICATION_IMAGE: ${{ steps.qualification-image.outcome }}
+          QUALIFICATION_SCENARIO: ${{ steps.qualification-scenario.outcome }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg tag "$GITHUB_REF_NAME" \
+            --arg sha "$GITHUB_SHA" \
+            --arg checkout "$CHECKOUT" \
+            --arg setup_go "$SETUP_GO" \
+            --arg tag_sha "$TAG_SHA" \
+            --arg request_boundary "$REQUEST_BOUNDARY" \
+            --arg wire_semantics "$WIRE_SEMANTICS" \
+            --arg ha_convergence "$HA_CONVERGENCE" \
+            --arg bench_prerequisites "$BENCH_PREREQUISITES" \
+            --arg qualification_image "$QUALIFICATION_IMAGE" \
+            --arg qualification_scenario "$QUALIFICATION_SCENARIO" '
+              def status($outcome):
+                if $outcome == "success" then "pass"
+                elif $outcome == "skipped" then "skipped"
+                else "fail"
+                end;
+              [
+                {name:"checkout", status:status($checkout)},
+                {name:"setup_go", status:status($setup_go)},
+                {name:"verify_tag_sha", status:status($tag_sha)},
+                {name:"request_boundary", status:status($request_boundary)},
+                {name:"production_wire_semantics", status:status($wire_semantics)},
+                {name:"ha_search_convergence", status:status($ha_convergence)},
+                {name:"bench_prerequisites", status:status($bench_prerequisites)},
+                {name:"build_tagged_image", status:status($qualification_image)},
+                {name:"search_qualification_scenario", status:status($qualification_scenario)}
+              ] as $stages |
+              [{name:"search_qualification", status:status($qualification_scenario)}] as $scenarios |
+              {
+                tag:$tag,
+                commit_sha:$sha,
+                stages:$stages,
+                scenarios:$scenarios,
+                verdict:(if all($stages[]; .status == "pass") then "pass" else "fail" end)
+              }
+            ' > qualification-report.json
+          {
+            echo '# Search release qualification'
+            echo
+            echo "- Tag: \`$GITHUB_REF_NAME\`"
+            echo "- Commit SHA: \`$GITHUB_SHA\`"
+            echo "- Verdict: \`$(jq -r .verdict qualification-report.json)\`"
+            echo
+            echo '| stage | status |'
+            echo '| --- | --- |'
+            jq -r '.stages[] | "| `\(.name)` | `\(.status)` |"' qualification-report.json
+            echo
+            echo '| scenario | status |'
+            echo '| --- | --- |'
+            jq -r '.scenarios[] | "| `\(.name)` | `\(.status)` |"' qualification-report.json
+          } > qualification-report.md
+          scenario_report="$(find testbed/bench/out/search_qualification -name report.md -type f 2>/dev/null | sort | tail -1 || true)"
+          if [[ -n "$scenario_report" ]]; then
+            cp "$scenario_report" qualification-scenario-report.md
+          fi
+
+      - name: Upload Search qualification report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: search-qualification-${{ github.sha }}
+          path: |
+            qualification-report.json
+            qualification-report.md
+            qualification-scenario-report.md
+            testbed/bench/out/search_qualification/**/semantic_*.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Enforce Search qualification
+        if: always()
+        run: test "$(jq -r .verdict qualification-report.json)" = pass
+
+  build:
+    # The multi-arch image must never publish from a tag whose deterministic
+    # Search qualification failed or was skipped. GitHub Release depends on
+    # this job, so the same gate also blocks release publication.
+    needs: [verify, search-qualification]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -100,12 +270,13 @@ jobs:
     # Release-time benchmark sweep. Runs the compact scenario set
     # listed in testbed/bench/release-scenarios.txt against a freshly-built
     # local image and uploads a fixed-format bench-report.md for the release
-    # job to splice into the release notes. Non-blocking: a leak-gate
+    # job to splice into the release notes. Non-blocking: a lifecycle/perf
     # failure or harness hiccup must not prevent a release from shipping
-    # (the deliberate design of #256, #394). Leak ENFORCEMENT instead lives in
+    # (the deliberate design of #256, #394). This full profiling sweep is
+    # separate from the short blocking search-qualification job above.
+    # Scheduled lifecycle/perf ENFORCEMENT also lives in
     # the nightly blocking run (.github/workflows/bench-nightly.yml), which
-    # runs this same sweep WITHOUT continue-on-error so a goroutine/heap-leak
-    # regression fails a required check rather than just warning here (#716).
+    # runs this same sweep WITHOUT continue-on-error (#716, #1063).
     name: Release-time benchmark
     needs: verify
     runs-on: ubuntu-latest
@@ -166,7 +337,9 @@ jobs:
 
   binaries:
     name: Build CLI + server binaries
-    needs: verify
+    # GoReleaser may also publish Homebrew casks, so it shares the blocking
+    # Search qualification with the container image and GitHub Release.
+    needs: [verify, search-qualification]
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -178,6 +178,41 @@ func TestRenderReport_ShowsIndependentProducerGates(t *testing.T) {
 	}
 }
 
+func TestRenderReport_ShowsMetricAndSemanticGates(t *testing.T) {
+	pre, post, delta, ratio := 100.0, 105.0, 5.0, 1.05
+	mg := &MetricGate{Verdict: "pass", Results: []MetricGateResult{{
+		Endpoint: "localhost:9390",
+		Metric:   "lantern_search_index_docs",
+		Pre:      &pre,
+		Post:     &post,
+		Delta:    &delta,
+		Ratio:    &ratio,
+		Verdict:  "pass",
+	}}}
+	semanticPre := &SemanticGate{Phase: "pre", Verdict: "pass", Replicas: []SemanticGateReplica{{Endpoint: "http://localhost:6380", Checks: 11, Verdict: "pass"}}}
+	semanticPost := &SemanticGate{Phase: "post", Verdict: "pass", Replicas: []SemanticGateReplica{{Endpoint: "http://localhost:6380", Checks: 11, Verdict: "pass"}}}
+
+	var buf bytes.Buffer
+	if err := RenderReport(&buf, Input{Scenario: "search", Timestamp: "t", MetricGate: mg, SemanticPre: semanticPre, SemanticPost: semanticPost}); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"**Metric gate verdict:** `pass`",
+		"**Semantic gate verdict:** `pass`",
+		"## Metric gate",
+		"`lantern_search_index_docs`",
+		"100 | 105 | 5 | 1.05",
+		"## Semantic gate",
+		"| `pre` | `http://localhost:6380` | 11 | `pass` |",
+		"query text, prefixes, keys, and values are omitted",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in report:\n%s", want, out)
+		}
+	}
+}
+
 func TestLoadInput_AssemblesFromDisk(t *testing.T) {
 	dir := t.TempDir()
 
@@ -192,6 +227,11 @@ func TestLoadInput_AssemblesFromDisk(t *testing.T) {
 	pg.Thresholds.MaxP99Ms = &maxP99
 	pg.Observed.P99WorstMs = 900
 	mustWriteJSON(t, filepath.Join(dir, "perf_gate.json"), pg)
+
+	mg := MetricGate{Verdict: "pass"}
+	mustWriteJSON(t, filepath.Join(dir, "metric_gate.json"), mg)
+	mustWriteJSON(t, filepath.Join(dir, "semantic_pre.json"), SemanticGate{Phase: "pre", Verdict: "pass"})
+	mustWriteJSON(t, filepath.Join(dir, "semantic_post.json"), SemanticGate{Phase: "post", Verdict: "pass"})
 
 	gh := GhzSummary{Count: 42, Rps: 1, Average: 1_000_000,
 		StatusCodeDistribution: map[string]int{"OK": 42},
@@ -227,6 +267,12 @@ func TestLoadInput_AssemblesFromDisk(t *testing.T) {
 		in.PerfGate.Thresholds.MaxP99Ms == nil || *in.PerfGate.Thresholds.MaxP99Ms != 250 ||
 		in.PerfGate.Thresholds.MinSteadyRpsTotal != nil {
 		t.Errorf("perf gate not loaded: %+v", in.PerfGate)
+	}
+	if in.MetricGate == nil || in.MetricGate.Verdict != "pass" {
+		t.Errorf("metric gate not loaded: %+v", in.MetricGate)
+	}
+	if in.SemanticPre == nil || in.SemanticPre.Phase != "pre" || in.SemanticPost == nil || in.SemanticPost.Phase != "post" {
+		t.Errorf("semantic gates not loaded: pre=%+v post=%+v", in.SemanticPre, in.SemanticPost)
 	}
 	if len(in.GhzFiles) != 1 || in.GhzFiles[0].Summary.Count != 42 {
 		t.Errorf("ghz files: %+v", in.GhzFiles)

@@ -1,7 +1,7 @@
 // Package main is the release-time bench aggregator.
 //
 // It consumes the per-scenario artifacts produced by testbed/bench/run.sh
-// (one run directory per scenario, each containing leak_gate.json,
+// (one run directory per scenario, containing its configured gate JSON,
 // ghz_*.json, and a pre-rendered report.md) and emits a single fixed-format
 // Markdown document suitable for appending to a GitHub Release body.
 //
@@ -14,7 +14,7 @@
 //	- Captured: <UTC timestamp>
 //
 //	## Summary
-//	| scenario | leak gate | rps | p99 (ms) | non-OK |
+//	| scenario | leak gate | metric gate | semantic gate | perf gate | rps | p99 (ms) | non-OK |
 //	| ... |
 //
 //	## <scenario>
@@ -62,6 +62,18 @@ type perfGate struct {
 	Verdict string `json:"verdict"`
 }
 
+// metricGate mirrors the generic lifecycle metric gate verdict. Detailed
+// per-replica values remain in each scenario's nested report.
+type metricGate struct {
+	Verdict string `json:"verdict"`
+}
+
+// semanticGate mirrors one bounded Search probe phase. A scenario that
+// declares this gate requires both its pre and post phases to pass.
+type semanticGate struct {
+	Verdict string `json:"verdict"`
+}
+
 // ghzSummary mirrors the subset of testbed/bench/report.GhzSummary that
 // the summary table needs.
 type ghzSummary struct {
@@ -84,11 +96,13 @@ type scenarioInput struct {
 
 // summaryRow is the rendered values for one row in the Summary table.
 type summaryRow struct {
-	Verdict     string // "pass", "fail", or "(failed)" if artifacts are missing
-	PerfVerdict string // "pass", "fail", or "—" when the scenario gates no perf metric
-	Rps         string // pre-formatted, e.g. "5000.0" or "—"
-	P99ms       string // pre-formatted, e.g. "0.89" or "—"
-	NonOK       string // pre-formatted, e.g. "0" or "—"
+	Verdict         string // "pass", "fail", or "(failed)" if artifacts are missing
+	MetricVerdict   string // "pass", "fail", or "—" when no metric gate is configured
+	SemanticVerdict string // "pass", "fail", or "—" when no semantic gate is configured
+	PerfVerdict     string // "pass", "fail", or "—" when the scenario gates no perf metric
+	Rps             string // pre-formatted, e.g. "5000.0" or "—"
+	P99ms           string // pre-formatted, e.g. "0.89" or "—"
+	NonOK           string // pre-formatted, e.g. "0" or "—"
 }
 
 // Header carries the fixed-format report header fields.
@@ -100,7 +114,15 @@ type Header struct {
 }
 
 func loadScenario(name, dir string) scenarioInput {
-	in := scenarioInput{Name: name, Dir: dir, Row: summaryRow{Verdict: "(failed)", PerfVerdict: "—", Rps: "—", P99ms: "—", NonOK: "—"}}
+	in := scenarioInput{Name: name, Dir: dir, Row: summaryRow{
+		Verdict:         "(failed)",
+		MetricVerdict:   "—",
+		SemanticVerdict: "—",
+		PerfVerdict:     "—",
+		Rps:             "—",
+		P99ms:           "—",
+		NonOK:           "—",
+	}}
 	if dir == "" {
 		return in
 	}
@@ -118,6 +140,33 @@ func loadScenario(name, dir string) scenarioInput {
 		var pg perfGate
 		if err := json.Unmarshal(b, &pg); err == nil && pg.Verdict != "" {
 			in.Row.PerfVerdict = pg.Verdict
+		}
+	}
+
+	// Generic lifecycle metric-gate verdict (optional artifact).
+	if b, err := os.ReadFile(filepath.Join(dir, "metric_gate.json")); err == nil {
+		var mg metricGate
+		if err := json.Unmarshal(b, &mg); err == nil && mg.Verdict != "" {
+			in.Row.MetricVerdict = mg.Verdict
+		}
+	}
+
+	// If either semantic phase exists, both phases must exist and pass.
+	var semanticVerdicts []string
+	for _, artifact := range []string{"semantic_pre.json", "semantic_post.json"} {
+		if b, err := os.ReadFile(filepath.Join(dir, artifact)); err == nil {
+			var sg semanticGate
+			if err := json.Unmarshal(b, &sg); err == nil {
+				semanticVerdicts = append(semanticVerdicts, sg.Verdict)
+			} else {
+				semanticVerdicts = append(semanticVerdicts, "fail")
+			}
+		}
+	}
+	if len(semanticVerdicts) > 0 {
+		in.Row.SemanticVerdict = "fail"
+		if len(semanticVerdicts) == 2 && semanticVerdicts[0] == "pass" && semanticVerdicts[1] == "pass" {
+			in.Row.SemanticVerdict = "pass"
 		}
 	}
 
@@ -211,11 +260,12 @@ func Render(w io.Writer, h Header, scenarios []scenarioInput) error {
 	bw.printf("- Captured: `%s`\n\n", h.Captured)
 
 	bw.printf("## Summary\n\n")
-	bw.printf("| scenario | leak gate | perf gate | rps | p99 (ms) | non-OK |\n")
-	bw.printf("| --- | --- | --- | ---: | ---: | ---: |\n")
+	bw.printf("| scenario | leak gate | metric gate | semantic gate | perf gate | rps | p99 (ms) | non-OK |\n")
+	bw.printf("| --- | --- | --- | --- | --- | ---: | ---: | ---: |\n")
 	for _, s := range scenarios {
-		bw.printf("| `%s` | `%s` | `%s` | %s | %s | %s |\n",
-			s.Name, s.Row.Verdict, s.Row.PerfVerdict, s.Row.Rps, s.Row.P99ms, s.Row.NonOK)
+		bw.printf("| `%s` | `%s` | `%s` | `%s` | `%s` | %s | %s | %s |\n",
+			s.Name, s.Row.Verdict, s.Row.MetricVerdict, s.Row.SemanticVerdict,
+			s.Row.PerfVerdict, s.Row.Rps, s.Row.P99ms, s.Row.NonOK)
 	}
 	bw.printf("\n")
 

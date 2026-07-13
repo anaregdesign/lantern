@@ -20,8 +20,8 @@
 #                     nightly leak gate sets this so the un-truncated sweep fits a
 #                     sane CI timeout; the advisory release bench leaves it unset.
 #
-# Exits 0 if the leak gate verdict is "pass" AND the perf gate (when the
-# scenario declares a `perf_gate:` block — see below) did not fail; exits 1
+# Exits 0 if the leak gate verdict is "pass" AND declared metric, semantic,
+# and perf gates pass; exits 1
 # otherwise. Exits 2 on misuse.
 #
 # Prerequisites: bash 4+, docker, docker compose v2, ghz, yq (v4+), jq, curl,
@@ -39,12 +39,45 @@ COMPOSE_FILES=(
 )
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-lantern-bench}"
 PROM_URL="${PROM_URL:-http://localhost:9091}"
+COMPOSE_STARTED=0
 
 REPLICA_METRICS_PORTS=(9390 9391 9392)
 REPLICA_GRPC_PORTS=(6380 6381 6382)
 
+# Always include the search derived-index lifecycle in the lightweight runtime
+# snapshots, including LEAK_GATE_ONLY runs. These are unlabeled gauges, so this
+# list has fixed cardinality and cannot capture request/user data. Scenario
+# metric_gate keys are added below after the YAML has been resolved.
+RUNTIME_METRIC_NAMES=(
+  lantern_search_index_docs
+  lantern_search_index_terms
+  lantern_search_index_physical_documents
+  lantern_search_index_expired_documents
+  lantern_search_index_expiration_queue_entries
+  lantern_search_index_expiration_purged
+  lantern_search_index_last_expiration_purge_duration_seconds
+  lantern_search_index_retained_term_slots
+  lantern_search_index_retained_ordinals
+  lantern_search_index_postings
+  lantern_search_index_position_entries
+  lantern_search_index_estimated_live_bytes
+  lantern_search_index_estimated_retained_bytes
+  lantern_search_index_rebuild_count
+  lantern_search_index_last_rebuild_duration_seconds
+  lantern_search_index_healthy
+)
+
 die() { echo "run.sh: $*" >&2; exit 1; }
 log() { printf '[%s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
+
+cleanup() {
+  if [[ "$COMPOSE_STARTED" == "1" && "${KEEP_UP:-0}" != "1" ]]; then
+    log "compose down -v"
+    docker compose "${COMPOSE_FILES[@]}" down -v >/dev/null 2>&1 || true
+    COMPOSE_STARTED=0
+  fi
+}
+trap cleanup EXIT
 
 need() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"; }
 need docker
@@ -116,6 +149,7 @@ if [[ "${SKIP_UP:-0}" != "1" ]]; then
   # Since #435 the canonical compose declares three explicit lantern-{0,1,2}
   # services with pinned host ports, so `--scale lantern=3` is no longer
   # needed (and would in fact fail — there is no `lantern` service).
+  COMPOSE_STARTED=1
   docker compose "${COMPOSE_FILES[@]}" up -d --wait
 fi
 
@@ -154,6 +188,15 @@ SCENARIO_FILE="$SCENARIO_RESOLVED"
 # Re-parse fields that depend on endpoints after substitution.
 endpoints=( $(yq -r '.target.endpoints[]' "$SCENARIO_FILE") )
 
+# A generic metric_gate may name another unlabeled gauge. Add it once while
+# retaining the fixed built-in search catalogue above.
+while IFS= read -r metric_name; do
+  [[ -z "$metric_name" ]] && continue
+  if [[ " ${RUNTIME_METRIC_NAMES[*]} " != *" ${metric_name} "* ]]; then
+    RUNTIME_METRIC_NAMES+=( "$metric_name" )
+  fi
+done < <(yq -r '.metric_gate.metrics // {} | keys | .[]' "$SCENARIO_FILE")
+
 wait_ready() {
   local p
   for p in "${REPLICA_METRICS_PORTS[@]}"; do
@@ -166,6 +209,41 @@ wait_ready() {
   done
 }
 wait_ready
+
+semantic_kind="$(yq -r '.semantic_gate.kind // ""' "$SCENARIO_FILE")"
+semantic_endpoints=""
+for port in "${REPLICA_GRPC_PORTS[@]}"; do
+  if [[ -n "$semantic_endpoints" ]]; then semantic_endpoints+=","; fi
+  semantic_endpoints+="http://localhost:${port}"
+done
+
+run_search_probe() {
+  local mode="$1" phase="${2:-}"
+  local report="$OUTDIR/semantic_${mode}.json"
+  local args=( -mode "$mode" )
+  if [[ "$mode" == "verify" ]]; then
+    report="$OUTDIR/semantic_${phase}.json"
+    args+=( -phase "$phase" )
+  fi
+  args+=(
+    -endpoints "$semantic_endpoints"
+    -report "$report"
+    -timeout "${SEARCH_PROBE_TIMEOUT:-90s}"
+  )
+  (
+    cd "$REPO_ROOT"
+    go run ./testbed/bench/searchprobe "${args[@]}"
+  )
+}
+
+case "$semantic_kind" in
+  "") ;;
+  search)
+    log "semantic gate: seed deterministic search fixture"
+    run_search_probe seed
+    ;;
+  *) die "unknown semantic_gate.kind $semantic_kind in $SCENARIO_FILE" ;;
+esac
 
 # ----- optional semantic topology preflight ---------------------------------
 # A schema-valid ghz template can still benchmark an empty or accidentally
@@ -196,7 +274,7 @@ esac
 # ----- helpers ---------------------------------------------------------------
 
 # Extract a single Prom metric value from a /metrics text exposition.
-# $1 metric name, $2 raw text -> echoes numeric value or "0".
+# $1 metric name, $2 raw text -> echoes the numeric value or nothing.
 prom_scalar() {
   local name="$1" text="$2"
   awk -v n="$name" '$1 == n { print $2; exit }' <<<"$text"
@@ -254,11 +332,22 @@ snapshot_runtime() {
       if [[ -z "$vhe"     || "$rvhe" -lt "$vhe"    ]]; then vhe="$rvhe"; fi
       if [[ -z "$vhw"     || "$rvhw" -gt "$vhw"    ]]; then vhw="$rvhw"; fi
     done
+    local metric_samples='{}' metric_name metric_value
+    for metric_name in "${RUNTIME_METRIC_NAMES[@]}"; do
+      metric_value="$(prom_scalar "$metric_name" "$text")"
+      if [[ -z "$metric_value" ]]; then
+        metric_samples="$(jq -c --arg name "$metric_name" '.[$name] = null' <<<"$metric_samples")"
+      else
+        metric_samples="$(jq -c --arg name "$metric_name" --arg value "$metric_value" \
+          '.[$name] = ($value | tonumber)' <<<"$metric_samples")"
+      fi
+    done
     samples+=( "$(jq -nc --arg ep "localhost:${port}" \
         --argjson g "$g" \
         --argjson hi "$h_inuse" --argjson ha "$h_alloc" --argjson ho "$h_objs" \
         --argjson vhe "$vhe" --argjson vhw "$vhw" \
-      '{endpoint: $ep, goroutines: $g, heap_inuse_bytes: $hi, heap_alloc_bytes: $ha, heap_objects: $ho, vertex_hlc_entries: $vhe, vertex_hlc_high_water: $vhw}')" )
+        --argjson metrics "$metric_samples" \
+      '{endpoint: $ep, goroutines: $g, heap_inuse_bytes: $hi, heap_alloc_bytes: $ha, heap_objects: $ho, vertex_hlc_entries: $vhe, vertex_hlc_high_water: $vhw, metrics: $metrics}')" )
   done
   printf '%s\n' "${samples[@]}" | jq -s '.' > "$out"
 }
@@ -286,6 +375,10 @@ warm_data="$(yq -r '.target.data_template // .target.calls[0].data_template' "$S
 run_ghz warmup "${endpoints[0]}" "$warm_call" "$warm_data" "$warmup_conc" "$warmup_rps" "$warmup_duration" >/dev/null
 
 # ----- PRE snapshot (after warmup) -------------------------------------------
+if [[ "$semantic_kind" == "search" ]]; then
+  log "semantic gate: verify every replica before steady load"
+  run_search_probe verify pre
+fi
 snapshot_runtime "$OUTDIR/runtime_pre.json"
 if [[ "${LEAK_GATE_ONLY:-0}" != "1" ]]; then
   "$CAPTURE_DIR/pprof.sh" "$OUTDIR/pprof" pre || log "pprof pre snapshot reported warnings"
@@ -359,10 +452,15 @@ if [[ "$calls_len" != "0" && "$calls_len" != "null" ]]; then
     call="$(yq -r ".target.calls[$i].call" "$SCENARIO_FILE")"
     data="$(yq -r ".target.calls[$i].data_template" "$SCENARIO_FILE")"
     name="$(yq -r ".target.calls[$i].name // \"producer-$i\"" "$SCENARIO_FILE")"
+    producer_rps="$(yq -r ".target.calls[$i].rps // 0" "$SCENARIO_FILE")"
+    if [[ "$producer_rps" == "0" || "$producer_rps" == "null" ]]; then
+      producer_rps="$per_rps"
+    fi
+    [[ "$producer_rps" =~ ^[1-9][0-9]*$ ]] || die "target.calls[$i].rps must be a positive integer"
     ep="${endpoints[$(( i % ${#endpoints[@]} ))]}"
     f="$OUTDIR/ghz_steady_${i}_${ep//[:.]/_}.json"
     ghz --insecure \
-      --call "$call" -c "$steady_conc" --rps "$per_rps" -z "$steady_duration" \
+      --call "$call" -c "$steady_conc" --rps "$producer_rps" -z "$steady_duration" \
       -d "$data" --format json -o "$f" "$ep" >/dev/null 2>&1 &
     prod_pids+=( "$!" )
     prod_files+=( "$f" )
@@ -390,6 +488,10 @@ log "cooldown: ${cooldown}"
 sleep "${cooldown%s}"
 
 # ----- POST snapshot ---------------------------------------------------------
+if [[ "$semantic_kind" == "search" ]]; then
+  log "semantic gate: verify every replica after cooldown"
+  run_search_probe verify post
+fi
 snapshot_runtime "$OUTDIR/runtime_post.json"
 
 # pprof captures + Prometheus range queries are throughput/diagnostic extras the
@@ -404,21 +506,27 @@ else
 
   # ----- Prom range queries --------------------------------------------------
   log "capturing Prometheus range queries from $PROM_URL"
+  prom_query_files=( "$CAPTURE_DIR/prom_queries.txt" )
+  if [[ "$semantic_kind" == "search" ]]; then
+    prom_query_files+=( "$CAPTURE_DIR/prom_queries_search.txt" )
+  fi
   i=0
-  while IFS= read -r line; do
-    q="${line%%#*}"; q="${q#"${q%%[![:space:]]*}"}"; q="${q%"${q##*[![:space:]]}"}"
-    [[ -z "$q" ]] && continue
-    i=$(( i + 1 ))
-    out="$OUTDIR/prom/q_$(printf '%02d' "$i").json"
-    curl -fsS --max-time 30 -G "$PROM_URL/api/v1/query_range" \
-      --data-urlencode "query=$q" \
-      --data-urlencode "start=$steady_start_epoch" \
-      --data-urlencode "end=$steady_end_epoch" \
-      --data-urlencode "step=5s" \
-      > "$out" || log "prom query failed: $q"
-    jq -nc --arg q "$q" --arg f "$(basename "$out")" '{query:$q, file:$f}' \
-      >> "$OUTDIR/prom/_index.ndjson"
-  done < "$CAPTURE_DIR/prom_queries.txt"
+  for prom_query_file in "${prom_query_files[@]}"; do
+    while IFS= read -r line; do
+      q="${line%%#*}"; q="${q#"${q%%[![:space:]]*}"}"; q="${q%"${q##*[![:space:]]}"}"
+      [[ -z "$q" ]] && continue
+      i=$(( i + 1 ))
+      out="$OUTDIR/prom/q_$(printf '%02d' "$i").json"
+      curl -fsS --max-time 30 -G "$PROM_URL/api/v1/query_range" \
+        --data-urlencode "query=$q" \
+        --data-urlencode "start=$steady_start_epoch" \
+        --data-urlencode "end=$steady_end_epoch" \
+        --data-urlencode "step=5s" \
+        > "$out" || log "prom query failed: $q"
+      jq -nc --arg q "$q" --arg f "$(basename "$out")" '{query:$q, file:$f}' \
+        >> "$OUTDIR/prom/_index.ndjson"
+    done < "$prom_query_file"
+  done
 fi
 
 # ----- Leak gate -------------------------------------------------------------
@@ -467,6 +575,28 @@ leak_json="$(jq -n \
 printf '%s\n' "$leak_json" > "$OUTDIR/leak_gate.json"
 verdict="$(jq -r '.verdict' "$OUTDIR/leak_gate.json")"
 log "leak gate verdict: $verdict"
+
+# ----- Metric gate -----------------------------------------------------------
+# Generic pre/post contracts over the unlabeled gauges captured in every
+# runtime snapshot. The Go evaluator fails closed on missing/non-finite samples
+# and is unit-tested with a deliberately broken cleanup fixture.
+metric_count="$(yq -r '.metric_gate.metrics // {} | length' "$SCENARIO_FILE")"
+metric_verdict="skipped"
+if [[ "$metric_count" != "0" && "$metric_count" != "null" ]]; then
+  if (
+    cd "$REPO_ROOT"
+    go run ./testbed/bench/metricgate \
+      -scenario "$SCENARIO_FILE" \
+      -pre "$OUTDIR/runtime_pre.json" \
+      -post "$OUTDIR/runtime_post.json" \
+      -out "$OUTDIR/metric_gate.json"
+  ); then
+    metric_verdict="pass"
+  else
+    metric_verdict="fail"
+  fi
+fi
+log "metric gate verdict: $metric_verdict"
 
 # ----- Perf gate --------------------------------------------------------------
 # Optional per-scenario floors over the steady-phase producers (#935). Same
@@ -570,9 +700,6 @@ log "perf gate verdict: $perf_verdict"
 log "report: $OUTDIR/report.md"
 
 # ----- Teardown --------------------------------------------------------------
-if [[ "${KEEP_UP:-0}" != "1" ]]; then
-  log "compose down -v"
-  docker compose "${COMPOSE_FILES[@]}" down -v >/dev/null
-fi
+cleanup
 
-if [[ "$verdict" == "pass" && "$perf_verdict" != "fail" ]]; then exit 0; else exit 1; fi
+if [[ "$verdict" == "pass" && "$metric_verdict" != "fail" && "$perf_verdict" != "fail" ]]; then exit 0; else exit 1; fi

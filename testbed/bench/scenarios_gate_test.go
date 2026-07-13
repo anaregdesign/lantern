@@ -120,6 +120,156 @@ func TestBroadIlluminateScenarioTopologyContract(t *testing.T) {
 	}
 }
 
+// TestSearchChurnScenarioGateContract keeps #1063's blocking search proof
+// honest: every advanced producer is independently ratcheted, semantic probes
+// run on every replica, and the derived-index gauges have real pre/post gates.
+func TestSearchChurnScenarioGateContract(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("scenarios", "search_churn.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		SemanticGate struct {
+			Kind string `yaml:"kind"`
+		} `yaml:"semantic_gate"`
+		Target struct {
+			Calls []struct {
+				Name         string `yaml:"name"`
+				Call         string `yaml:"call"`
+				DataTemplate string `yaml:"data_template"`
+				RPS          int    `yaml:"rps"`
+			} `yaml:"calls"`
+		} `yaml:"target"`
+		Phases struct {
+			Steady struct {
+				RPS int `yaml:"rps"`
+			} `yaml:"steady"`
+		} `yaml:"phases"`
+		MetricGate struct {
+			Metrics map[string]map[string]float64 `yaml:"metrics"`
+		} `yaml:"metric_gate"`
+		PerfGate struct {
+			Producers map[string]struct {
+				MinSteadyRPS *float64 `yaml:"min_steady_rps"`
+				MaxP99MS     *float64 `yaml:"max_p99_ms"`
+				MaxNonOK     *float64 `yaml:"max_non_ok_ratio"`
+			} `yaml:"producers"`
+		} `yaml:"perf_gate"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse search_churn: %v", err)
+	}
+	if doc.SemanticGate.Kind != "search" {
+		t.Fatalf("semantic_gate.kind = %q, want search", doc.SemanticGate.Kind)
+	}
+	for _, metric := range []string{
+		"lantern_search_index_docs",
+		"lantern_search_index_terms",
+		"lantern_search_index_physical_documents",
+		"lantern_search_index_expired_documents",
+		"lantern_search_index_expiration_queue_entries",
+		"lantern_search_index_expiration_purged",
+		"lantern_search_index_retained_term_slots",
+		"lantern_search_index_retained_ordinals",
+		"lantern_search_index_postings",
+		"lantern_search_index_position_entries",
+		"lantern_search_index_estimated_retained_bytes",
+		"lantern_search_index_healthy",
+	} {
+		if len(doc.MetricGate.Metrics[metric]) == 0 {
+			t.Errorf("metric %s has no threshold", metric)
+		}
+	}
+
+	calls := make(map[string]string, len(doc.Target.Calls))
+	totalRPS := 0
+	for _, call := range doc.Target.Calls {
+		if call.Name == "" || call.RPS <= 0 {
+			t.Errorf("producer has invalid name/rps: %+v", call)
+			continue
+		}
+		totalRPS += call.RPS
+		calls[call.Name] = strings.TrimSpace(call.DataTemplate)
+		gate, ok := doc.PerfGate.Producers[call.Name]
+		if !ok || gate.MinSteadyRPS == nil || gate.MaxP99MS == nil || gate.MaxNonOK == nil {
+			t.Errorf("producer %q lacks independent rps+p99/non-OK gate", call.Name)
+		}
+	}
+	if totalRPS != doc.Phases.Steady.RPS {
+		t.Errorf("producer rps sum = %d, steady rps = %d", totalRPS, doc.Phases.Steady.RPS)
+	}
+	for name, fragments := range map[string][]string{
+		"writer":                    {`"expiration"`},
+		"broad_posting":             {`"query":"shared"`},
+		"prefix_scoped":             {`"prefix":"search-000"`},
+		"fuzzy_1":                   {`"fuzziness":1`},
+		"fuzzy_2":                   {`"fuzziness":2`},
+		"prefix_terms":              {`"prefixTerms":true`},
+		"prefix_fuzzy_cap_overflow": {`"prefixTerms":true`, `"fuzziness":2`},
+		"match_all":                 {`"matchMode":2`},
+		"min_should":                {`"matchMode":3`, `"minShouldMatch":2`},
+		"broad_phrase":              {`"phrase":true`},
+	} {
+		template, ok := calls[name]
+		if !ok {
+			t.Errorf("missing advanced producer %q", name)
+			continue
+		}
+		for _, fragment := range fragments {
+			if !strings.Contains(template, fragment) {
+				t.Errorf("%s template missing %q: %s", name, fragment, template)
+			}
+		}
+	}
+	runScript, err := os.ReadFile("run.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(runScript), `any(.producer_results[]; .verdict == "fail")`) {
+		t.Error("perf gate does not conjunctively fold named producer failures")
+	}
+}
+
+// TestSearchReleaseQualificationIsBlocking pins the release dependency rather
+// than merely checking that a qualification job exists. A failed or skipped
+// stage must produce a fail verdict, and image publication must need that job.
+func TestSearchReleaseQualificationIsBlocking(t *testing.T) {
+	releaseWorkflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "docker-publish.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := string(releaseWorkflow)
+	for _, contract := range []string{
+		"search-qualification:",
+		"go test ./server/service -run",
+		"go test ./tests/integration -run",
+		"./testbed/bench/run.sh search_qualification",
+		`all($stages[]; .status == "pass")`,
+		`scenarios:$scenarios`,
+		"needs: [verify, search-qualification]",
+		`test "$(jq -r .verdict qualification-report.json)" = pass`,
+	} {
+		if !strings.Contains(release, contract) {
+			t.Errorf("release workflow missing blocking contract %q", contract)
+		}
+	}
+
+	nightlyWorkflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "bench-nightly.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nightly := string(nightlyWorkflow)
+	for _, contract := range []string{
+		"Run deterministic advanced Search wire contracts",
+		"TestSearchVertices_(OptionsContract|PositionsOff)",
+		"RELEASE_BENCH_BUDGET_SECONDS: \"0\"",
+	} {
+		if !strings.Contains(nightly, contract) {
+			t.Errorf("nightly workflow missing Search contract %q", contract)
+		}
+	}
+}
+
 // calls flattens every (call, data_template) pair in the document, tagged
 // with where it came from so failures point at the offending YAML path.
 func (d scenarioDoc) calls() map[string]scenarioCall {

@@ -1,0 +1,67 @@
+# search_qualification is the short, deterministic tag-SHA gate. It is kept
+# outside release-scenarios.txt: docker-publish.yml runs it against a fresh
+# three-replica cluster and refuses to publish an image when any semantic,
+# lifecycle, leak, or producer-owned perf contract fails.
+name: search_qualification
+cluster:
+  gc_interval_seconds: 2
+phases:
+  # The semantic fixture has one 10-second TTL sentinel. A 12-second warmup
+  # makes the pre probe prove expiration rather than merely presence.
+  warmup:   { duration: 12s, concurrency: 4, rps: 100 }
+  steady:   { duration: 20s, concurrency: 8, rps: 300 }
+  cooldown: 15s
+semantic_gate:
+  kind: search
+target:
+  endpoints: ["localhost:6380", "localhost:6381", "localhost:6382"]
+  calls:
+    - name: writer
+      rps: 100
+      call: graph.v1.LanternService/PutVertex
+      data_template: |
+        {"vertex":{"key":"qualification-{{mod .RequestNumber 10000}}","string":"shared phrase topic{{ printf `%05d` (mod .RequestNumber 10000) }} fuzz{{ printf `%03d` (mod .RequestNumber 100) }}","expiration":"{{ now | dateModify `5s` | date `2006-01-02T15:04:05.999999999Z07:00` }}"}}
+    - name: broad_posting
+      rps: 100
+      call: graph.v1.LanternService/SearchVertices
+      data_template: |
+        {"query":"shared","limit":20}
+    - name: prefix_scoped
+      rps: 50
+      call: graph.v1.LanternService/SearchVertices
+      data_template: |
+        {"query":"shared","limit":20,"prefix":"qualification-000"}
+    - name: fuzzy_prefix
+      rps: 50
+      call: graph.v1.LanternService/SearchVertices
+      data_template: |
+        {"query":"topic fuzz000","limit":20,"options":{"prefixTerms":true,"fuzziness":2}}
+leak_gate:
+  goroutine_max_delta: 20
+  heap_alloc_max_delta_mb: 32
+metric_gate:
+  metrics:
+    lantern_search_index_docs: { max_increase: 128, max_ratio: 1.5 }
+    lantern_search_index_terms: { max_increase: 512, max_ratio: 2 }
+    lantern_search_index_physical_documents: { max_increase: 128, max_ratio: 1.5 }
+    lantern_search_index_expired_documents: { max_increase: 64, max_ratio: 2 }
+    lantern_search_index_expiration_queue_entries: { max_increase: 128, max_ratio: 1.5 }
+    lantern_search_index_expiration_purged: { min_increase: 1 }
+    lantern_search_index_retained_term_slots: { max_increase: 20000, max_ratio: 3 }
+    lantern_search_index_retained_ordinals: { max_increase: 20000, max_ratio: 3 }
+    lantern_search_index_postings: { max_increase: 1024, max_ratio: 2 }
+    lantern_search_index_position_entries: { max_increase: 2048, max_ratio: 2 }
+    lantern_search_index_estimated_retained_bytes: { max_increase: 33554432, max_ratio: 3 }
+    lantern_search_index_healthy: { min_post: 1, max_post: 1 }
+# Wide ratchets reject step changes while tolerating ordinary hosted-runner
+# jitter. Each Search producer is independent, so writer throughput cannot
+# conceal an unexpectedly slow or empty Search path.
+perf_gate:
+  min_steady_rps_total: 100
+  max_p99_ms: 4000
+  max_non_ok_ratio: 0.02
+  producers:
+    writer: { min_steady_rps: 20, max_p99_ms: 2000, max_non_ok_ratio: 0.02 }
+    broad_posting: { min_steady_rps: 20, max_p99_ms: 4000, max_non_ok_ratio: 0.02 }
+    prefix_scoped: { min_steady_rps: 10, max_p99_ms: 3000, max_non_ok_ratio: 0.02 }
+    fuzzy_prefix: { min_steady_rps: 10, max_p99_ms: 4000, max_non_ok_ratio: 0.02 }

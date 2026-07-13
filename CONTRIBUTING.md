@@ -265,11 +265,17 @@ Tag order matters because each downstream module pins its upstream tag:
    VCS, so there is no artifact to push.
 4. Bump the matching `require`/`replace` lines in the root `go.mod` to the freshly-tagged
    versions.
-5. Root `vX.Y.Z` — triggers `docker-publish.yml` (multi-arch buildx + cosign keyless),
-   which also runs the release-time bench sweep and splices a report into the notes. The
-   bench job is **non-blocking**: if it fails or is cancelled the release still ships
-   with a placeholder bench section (the `release` job's `needs:` deliberately excludes
-   `bench`, because Actions treats `cancelled` as neither success nor failure).
+5. Root `vX.Y.Z` — triggers `docker-publish.yml`. Before any multi-arch image or GitHub
+   Release can publish, the tagged SHA must pass the short blocking Search qualification:
+   request-boundary tests, production real-h2c semantics, HA convergence, and the fresh
+   three-replica `search_qualification` scenario. Its artifact records the tag, full SHA,
+   and an explicit pass/fail/skipped status for every stage and scenario; any non-success
+   blocks the image and GoReleaser jobs. The workflow separately runs the full
+   release-time bench sweep and splices its report into the notes. That profiling bench
+   remains **non-blocking**: if it fails
+   or is cancelled the release still uses a placeholder bench section (the `release`
+   job's `needs:` deliberately excludes `bench`, because Actions treats `cancelled` as
+   neither success nor failure).
 
 The root release also builds the `lantern` (server) and `lantern-cli` binaries via
 GoReleaser and pushes Homebrew casks to

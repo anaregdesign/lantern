@@ -3,15 +3,16 @@
 # Lines starting with `#` and blank lines are ignored.
 #
 # This is the canonical release-time signal. The release bench job is
-# `continue-on-error` (non-blocking) so a leak-gate hiccup or slow runner can
-# never block a release (the deliberate design of #256, #394). The SAME sweep
+# `continue-on-error` (non-blocking) so a profiling hiccup or slow runner can
+# never block a release (the deliberate design of #256, #394). Root tags have
+# a separate short blocking search_qualification job (#1063). The SAME sweep
 # ALSO runs nightly via `.github/workflows/bench-nightly.yml` WITHOUT
 # continue-on-error and with RELEASE_BENCH_BUDGET_SECONDS=0 (no truncation), so
-# a goroutine/heap-leak regression (#716) or a perf-floor breach (each scenario
-# below carries a `perf_gate:` block — see testbed/bench/README.md, #935) fails
-# a nightly check there rather than merely warning in an advisory artifact. Rather than run ~16
-# single-call scenarios (which paid per-scenario fixed overhead — warmup +
-# pre/post runtime+pprof snapshots + cooldown + 12 Prometheus range queries +
+# a leak, metric, semantic, or perf-gate breach (each scenario carries the
+# relevant blocks — see testbed/bench/README.md, #716/#935/#1063) fails
+# a nightly check there rather than merely warning in an advisory artifact.
+# Rather than run ~16 single-call scenarios (which paid per-scenario fixed overhead — warmup +
+# pre/post runtime+pprof snapshots + cooldown + Prometheus range queries +
 # report render — for each call path), the sweep is compacted to SEVEN
 # scenarios, THREE of which fan out across many call paths inside a single
 # steady window (see the `target.calls` fan-out rule in run.sh). This keeps
@@ -34,7 +35,7 @@
 # broad_illuminate 150s + broad_mutate 165s + ttl_churn 210s +
 # many_subscribers 180s + search_churn 210s + replication_apply_churn 300s
 # = ~23 min total. On top of that, EACH scenario pays per-scenario CAPTURE
-# overhead — two pprof snapshots (24 curls, up to 60s each) + 12 Prometheus
+# overhead — two pprof snapshots (24 curls, up to 60s each) + Prometheus
 # range queries (up to 30s each) — which on a contended ubuntu-latest runner
 # adds ~5-10 min/scenario, so the FULL-capture sweep runs ~55-65 min, not the
 # ~25 min an earlier revision of this comment assumed (see #727).
@@ -97,8 +98,11 @@ ttl_churn
 # leaderless Subscribe fan-out across replicas
 many_subscribers
 
-# search index lifecycle: churn PutVertex (short TTL) + parallel SearchVertices
-# asserts lantern_search_index_* returns to baseline after cooldown (#703)
+# search index lifecycle: churn PutVertex (short TTL) + independent exact,
+# scoped, fuzzy-1/2, prefix, cap-overflow, ALL, MIN_SHOULD, and phrase Search
+# producers. Semantic probes reject empty-OK behavior; per-replica metric gates
+# require index decay/health and per-producer perf gates prevent Put throughput
+# from hiding slow Search (#703, #1048, #1063).
 search_churn
 
 # replicated write churn: asserts lantern_vertex_hlc_entries returns to baseline
