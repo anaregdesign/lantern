@@ -174,6 +174,7 @@ func TestSearchChurnScenarioGateContract(t *testing.T) {
 		"lantern_search_index_postings",
 		"lantern_search_index_position_entries",
 		"lantern_search_index_estimated_retained_bytes",
+		"lantern_search_index_retained_ratio",
 		"lantern_search_index_healthy",
 	} {
 		if len(doc.MetricGate.Metrics[metric]) == 0 {

@@ -19,6 +19,7 @@ export type PanelGroup =
   | "cache"
   | "throughput"
   | "latency"
+  | "search"
   | "ttl"
   | "backpressure"
   | "replication"
@@ -58,11 +59,11 @@ export interface PanelQuery {
    */
   by?: readonly string[];
   /**
-   * How the inner expression is aggregated. `"sum"` (the default) wraps it
-   * in `sum by (…)`. `{ quantile }` wraps it in
+   * How the inner expression is aggregated. `"sum"` (the default), `"avg"`,
+   * `"min"`, or `"max"` wraps it in the matching `… by (…)`. `{ quantile }` wraps it in
    * `histogram_quantile(q, sum by (le, …) (…))` for `_bucket` series.
    */
-  agg?: "sum" | { quantile: number };
+  agg?: "sum" | "avg" | "min" | "max" | { quantile: number };
 }
 
 export interface PanelSpec {
@@ -80,6 +81,7 @@ export const PANEL_GROUPS: ReadonlyArray<{ id: PanelGroup; label: string }> = [
   { id: "cache", label: "Cache" },
   { id: "throughput", label: "Throughput" },
   { id: "latency", label: "Latency" },
+  { id: "search", label: "Search" },
   { id: "ttl", label: "TTL reaping" },
   { id: "backpressure", label: "Back-pressure" },
   { id: "replication", label: "Replication" },
@@ -194,6 +196,206 @@ export const METRIC_PANELS: readonly PanelSpec[] = [
         expr: "rate(lantern_gc_duration_seconds_bucket[$__rate])",
         agg: { quantile: 0.99 },
         legend: "p99",
+      },
+    ],
+  },
+  {
+    id: "search-outcomes",
+    group: "search",
+    title: "Search outcomes",
+    description:
+      "Terminal SearchVertices attempts by bounded mode, outcome, and reason.",
+    unit: "rate",
+    queries: [
+      {
+        expr: "rate(lantern_search_calls_total[$__rate])",
+        by: ["mode", "outcome", "reason"],
+        legend: "{{mode}} · {{outcome}} · {{reason}}",
+      },
+    ],
+  },
+  {
+    id: "search-latency",
+    group: "search",
+    title: "Search latency (p50 / p99)",
+    description: "End-to-end SearchVertices latency by mode and outcome.",
+    unit: "seconds",
+    queries: [
+      {
+        expr: "rate(lantern_search_duration_seconds_bucket[$__rate])",
+        by: ["mode", "outcome"],
+        agg: { quantile: 0.5 },
+        legend: "p50 · {{mode}} · {{outcome}}",
+      },
+      {
+        expr: "rate(lantern_search_duration_seconds_bucket[$__rate])",
+        by: ["mode", "outcome"],
+        agg: { quantile: 0.99 },
+        legend: "p99 · {{mode}} · {{outcome}}",
+      },
+    ],
+  },
+  {
+    id: "search-phase-latency",
+    group: "search",
+    title: "Search phase latency (p99)",
+    description:
+      "Analysis, expansion, and selection time separated for slow-query triage.",
+    unit: "seconds",
+    queries: [
+      {
+        expr: "rate(lantern_search_phase_duration_seconds_bucket[$__rate])",
+        by: ["mode", "phase"],
+        agg: { quantile: 0.99 },
+        legend: "{{mode}} · {{phase}}",
+      },
+    ],
+  },
+  {
+    id: "search-hits",
+    group: "search",
+    title: "Search hits per query (p50 / p99)",
+    description: "Returned hit-count distribution by mode and outcome.",
+    unit: "count",
+    queries: [
+      {
+        expr: "rate(lantern_search_results_bucket[$__rate])",
+        by: ["mode", "outcome"],
+        agg: { quantile: 0.5 },
+        legend: "p50 · {{mode}} · {{outcome}}",
+      },
+      {
+        expr: "rate(lantern_search_results_bucket[$__rate])",
+        by: ["mode", "outcome"],
+        agg: { quantile: 0.99 },
+        legend: "p99 · {{mode}} · {{outcome}}",
+      },
+    ],
+  },
+  {
+    id: "search-work",
+    group: "search",
+    title: "Search work (p99)",
+    description:
+      "Deterministic analysis, expansion, posting, position, and selection work.",
+    unit: "count",
+    queries: [
+      {
+        expr: "rate(lantern_search_work_bucket[$__rate])",
+        by: ["mode", "kind"],
+        agg: { quantile: 0.99 },
+        legend: "{{mode}} · {{kind}}",
+      },
+    ],
+  },
+  {
+    id: "search-index-health",
+    group: "search",
+    title: "Search index health",
+    description:
+      "One-hot local index state and search-config agreement with each peer.",
+    unit: "count",
+    queries: [
+      {
+        expr: "lantern_search_index_state",
+        by: ["state"],
+        agg: "max",
+        legend: "index {{state}}",
+      },
+      {
+        expr: "lantern_search_config_match",
+        by: ["peer"],
+        agg: "min",
+        legend: "config {{peer}}",
+      },
+    ],
+  },
+  {
+    id: "search-index-population",
+    group: "search",
+    title: "Search index population",
+    description:
+      "Logical, physical, and expired documents retained by the index.",
+    unit: "count",
+    queries: [
+      { expr: "lantern_vertices", legend: "live vertices" },
+      { expr: "lantern_search_index_docs", legend: "live documents" },
+      {
+        expr: "lantern_search_index_physical_documents",
+        legend: "physical documents",
+      },
+      {
+        expr: "lantern_search_index_expired_documents",
+        legend: "expired documents",
+      },
+      {
+        expr: "lantern_search_index_expiration_queue_entries",
+        legend: "expiration queue",
+      },
+    ],
+  },
+  {
+    id: "search-index-structures",
+    group: "search",
+    title: "Search index structures",
+    description: "Live terms, postings, positions, and retained ordinals.",
+    unit: "count",
+    queries: [
+      { expr: "lantern_search_index_terms", legend: "live terms" },
+      { expr: "lantern_search_index_postings", legend: "postings" },
+      {
+        expr: "lantern_search_index_position_entries",
+        legend: "positions",
+      },
+      {
+        expr: "lantern_search_index_retained_ordinals",
+        legend: "retained ordinals",
+      },
+    ],
+  },
+  {
+    id: "search-index-memory",
+    group: "search",
+    title: "Search index memory",
+    description: "Estimated live and retained bytes held by the derived index.",
+    unit: "bytes",
+    queries: [
+      {
+        expr: "lantern_search_index_estimated_live_bytes",
+        legend: "live bytes",
+      },
+      {
+        expr: "lantern_search_index_estimated_retained_bytes",
+        legend: "retained bytes",
+      },
+    ],
+  },
+  {
+    id: "search-index-retention",
+    group: "search",
+    title: "Search retention ratio",
+    description:
+      "Retained-to-live index bytes; sustained growth indicates compaction pressure.",
+    unit: "ratio",
+    queries: [
+      {
+        expr: "lantern_search_index_retained_ratio",
+        agg: "avg",
+        legend: "retained / live",
+      },
+    ],
+  },
+  {
+    id: "search-rejections",
+    group: "search",
+    title: "Search rejections",
+    description: "Rejected SearchVertices attempts by bounded reason.",
+    unit: "rate",
+    queries: [
+      {
+        expr: "rate(lantern_search_rejections_total[$__rate])",
+        by: ["reason"],
+        legend: "{{reason}}",
       },
     ],
   },

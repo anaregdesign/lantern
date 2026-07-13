@@ -338,6 +338,9 @@ func (d *termDict) expandTracked(term string, prefix bool, maxEdits, limit int, 
 		}
 	}
 	sort.Slice(best, func(i, j int) bool { return betterExpansion(best[i], best[j]) })
+	if err := work.visit(WorkExpansionRetained, int64(len(best))); err != nil {
+		return nil, err
+	}
 	for _, candidate := range best {
 		out = append(out, candidate.id)
 	}

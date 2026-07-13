@@ -1,0 +1,56 @@
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1.25rem;
+}
+
+.headingRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.title {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.lead {
+  margin: 0;
+  color: var(--colorNeutralForeground3);
+  font-size: 0.9rem;
+}
+
+.definitionList {
+  display: grid;
+  gap: 0;
+  margin: 0;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: minmax(130px, max-content) minmax(0, 1fr);
+  gap: 0.4rem 1rem;
+  padding: 0.25rem 0;
+}
+
+.row dt {
+  color: var(--colorNeutralForeground3);
+  font-weight: 500;
+}
+
+.row dd {
+  margin: 0;
+  font-family: var(--fontFamilyMonospace, monospace);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 520px) {
+  .row {
+    grid-template-columns: 1fr;
+    gap: 0.1rem;
+  }
+}

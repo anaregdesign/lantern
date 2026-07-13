@@ -78,10 +78,26 @@ func (idx *InvertedIndex[S, D]) SearchPhraseTopKCandidatesContextAt(ctx context.
 	if err := idx.purgeExpired(work, now); err != nil {
 		return nil, work.stats, err
 	}
-	terms := idx.phraseQueryTerms(query)
-	if err := work.visit(WorkQueryTerms, int64(len(terms))); err != nil {
+	analysisStart := time.Now()
+	if err := work.visit(WorkQueryBytes, int64(len(query))); err != nil {
+		work.stats.AnalysisDuration = time.Since(analysisStart)
 		return nil, work.stats, err
 	}
+	tokens := idx.analyzeQuery(query)
+	if err := work.visit(WorkQueryTokens, int64(len(tokens))); err != nil {
+		work.stats.AnalysisDuration = time.Since(analysisStart)
+		return nil, work.stats, err
+	}
+	terms := phraseTermsFromTokens(tokens)
+	if err := work.visit(WorkQueryClauses, int64(len(terms))); err != nil {
+		work.stats.AnalysisDuration = time.Since(analysisStart)
+		return nil, work.stats, err
+	}
+	if err := work.visit(WorkQueryTerms, int64(len(terms))); err != nil {
+		work.stats.AnalysisDuration = time.Since(analysisStart)
+		return nil, work.stats, err
+	}
+	work.stats.AnalysisDuration = time.Since(analysisStart)
 	if len(terms) == 0 {
 		return nil, work.stats, nil
 	}
@@ -92,7 +108,9 @@ func (idx *InvertedIndex[S, D]) SearchPhraseTopKCandidatesContextAt(ctx context.
 		return nil, work.stats, ErrIndexIncomplete
 	}
 
+	selectionStart := time.Now()
 	results, err := idx.executePhraseTopKLocked(terms, k, accept, candidates, work)
+	work.stats.SelectionDuration = time.Since(selectionStart)
 	if err != nil {
 		return nil, work.stats, err
 	}
@@ -105,7 +123,10 @@ func (idx *InvertedIndex[S, D]) SearchPhraseTopKCandidatesContextAt(ctx context.
 // run's grams are themselves ClassWord, so they are kept and verified by the
 // same pos+1 rule.
 func (idx *InvertedIndex[S, D]) phraseQueryTerms(query string) []string {
-	tokens := idx.analyzeQuery(query)
+	return phraseTermsFromTokens(idx.analyzeQuery(query))
+}
+
+func phraseTermsFromTokens(tokens []Token) []string {
 	var terms []string
 	for _, t := range tokens {
 		if t.Class == ClassWord {

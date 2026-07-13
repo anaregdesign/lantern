@@ -263,15 +263,59 @@ so dashboards render the full variant set from process start:
   `algorithm` is the traversal family, `reduction` the post-traversal tree
   reduction) plus a `phase` (`traversal` | `optimize`) on duration.
 - **Scan / count**: `lantern_scan_results{op}`, `lantern_scan_duration_seconds{op}`.
-- **Search** (optional index): `lantern_search_results`,
-  `lantern_search_duration_seconds`, bounded terminal
-  `lantern_search_calls_total{outcome,reason}`, deterministic
-  `lantern_search_work{kind}`, and the index-size gauges
-  `lantern_search_index_terms` / `_docs` (0 unless `LANTERN_SEARCH_ENABLED`).
-  Search labels are fixed enums; raw query text, prefixes, matched keys, and
-  value snippets are never labels.
+- **Search** (optional index): every handler exit produces exactly one
+  `lantern_search_calls_total` observation with bounded request dimensions
+  (`mode`, `phrase`, `fuzziness`, prefix booleans) and terminal
+  `outcome`/`reason`. `lantern_search_duration_seconds{mode,outcome}` and
+  `lantern_search_results{mode,outcome}` include successes, zero-hit calls,
+  validation failures, admission failures, budget exhaustion, cancellation,
+  deadlines, capability/index failures, and internal errors.
+  `lantern_search_phase_duration_seconds{phase,mode}` separates `analysis`,
+  `expansion`, and `selection`. `lantern_search_work{kind,mode}` separates
+  query bytes/tokens/clauses, expansion/dictionary work, posting/position/
+  expiration visits, and candidate selection. Together they answer whether a
+  slow query grew before candidate retrieval, inside the index, or during
+  ranking.
+- **Search index health**: logical/physical/expired document gauges, live and
+  retained structure sizes, `lantern_search_index_retained_ratio`, rebuild and
+  purge gauges, and one-hot
+  `lantern_search_index_state{state=disabled|healthy|incomplete}` expose
+  retention leaks, degraded indexes, and rebuild activity without pprof.
+  `lantern_search_config_match{peer}` remains the cross-replica configuration
+  check. Raw query text, prefix values, matched keys, and value snippets are
+  never metric labels.
 - **Batch shape**: `lantern_batch_size{op}` — the plural-RPC item count, so a
   "slow write" can be split into "large batch" vs "slow per-item".
+
+**Search SLO templates.** Use `outcome="ok"` (including `reason="no_hits"`)
+as the successful request population and keep client/capability rejection
+budgets separate from server reliability:
+
+```promql
+# Availability/error budget: internal + deadline failures among all attempts.
+sum(rate(lantern_search_calls_total{outcome=~"internal|deadline_exceeded"}[30d]))
+/
+sum(rate(lantern_search_calls_total[30d]))
+
+# Latency SLO: p99 of successful calls by request mode.
+histogram_quantile(
+  0.99,
+  sum by (le, mode) (
+    rate(lantern_search_duration_seconds_bucket{outcome="ok"}[5m])
+  )
+)
+
+# Saturation budget, kept separate so traffic shaping does not masquerade as
+# an availability failure.
+sum(rate(lantern_search_rejections_total{reason=~"admission|.*_visits|query_(bytes|terms)"}[5m]))
+/
+sum(rate(lantern_search_calls_total[5m]))
+```
+
+Set the latency objective below `LANTERN_SEARCH_TIMEOUT_MS` and derive the
+availability/saturation thresholds from the product's error budget. The Admin
+Ops Search group renders these per replica by default, so a single degraded
+replica is not hidden by cluster aggregation.
 
 ### 5.8 Recall quality & dedup — "is the cache actually answering?"
 
@@ -306,7 +350,7 @@ first place a maintainer looks when "it gets slower / fatter over days".
 
 | Message | Level | Trigger | Key attrs |
 |---|---|---|---|
-| `slow rpc` | warn | handler exceeded `LANTERN_SLOW_RPC_THRESHOLD_MS` | `method`, `code`, `duration_ms`, `threshold_ms` |
+| `slow rpc` | warn | handler exceeded `LANTERN_SLOW_RPC_THRESHOLD_MS` | `method`, `code`, `duration_ms`, `threshold_ms`; Search adds bounded mode/phrase/fuzziness/prefix-presence dimensions |
 | `validation rejected` | debug | validation interceptor returned `InvalidArgument` | `reason`, `error` |
 | `graph cache: gc tick` | info | every `GraphCache.Watch` tick | `vertices_expired`, `edges_expired`, `dangling_edges_removed`, `vertices_remaining`, `edges_remaining`, `duration_ms` |
 | `anti-entropy: gap exceeds warn threshold` | warn | per-origin gap over threshold | `origin`, `gap`, `threshold` |
@@ -350,9 +394,13 @@ you *which hop* (handler vs lock vs fan-out) owns the regression.
 
 **Current coverage & gaps.** Today there is exactly **one span per request** at
 the listener; there are **no internal child spans** (illuminate phases, the
-apply path, snapshot replay) and the streaming RPCs get only the outer span. So
-traces currently answer "which RPC was slow" but not "which *phase* of it" — a
-§8 candidate, and one to apply **selectively**.
+apply path, snapshot replay) and the streaming RPCs get only the outer span.
+`SearchVertices` enriches that existing span with bounded request dimensions,
+terminal outcome/reason, deterministic work counts, and
+`analysis_duration_seconds` / `expansion_duration_seconds` /
+`selection_duration_seconds`. That makes a slow search attributable without
+creating hot-path child spans. Other RPCs still answer only "which RPC was
+slow"; selective phase attributes or child spans remain a §8 candidate.
 
 **When tracing earns its keep — and when it doesn't.** Lantern's hot paths are
 sub-millisecond in-memory operations; a span per internal hop would cost more

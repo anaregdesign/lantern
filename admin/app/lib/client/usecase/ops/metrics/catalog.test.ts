@@ -63,6 +63,51 @@ describe("METRIC_PANELS", () => {
       }
     }
   });
+
+  it("covers search outcomes, p99 phases, index health, and retention", () => {
+    const searchPanels = METRIC_PANELS.filter(
+      (panel) => panel.group === "search",
+    );
+    expect(searchPanels.length).toBeGreaterThanOrEqual(8);
+    const expressions = searchPanels.flatMap((panel) =>
+      panel.queries.map((query) => query.expr),
+    );
+    for (const family of [
+      "lantern_search_calls_total",
+      "lantern_search_duration_seconds_bucket",
+      "lantern_search_phase_duration_seconds_bucket",
+      "lantern_search_results_bucket",
+      "lantern_search_work_bucket",
+      "lantern_search_index_state",
+      "lantern_search_config_match",
+      "lantern_search_index_retained_ratio",
+      "lantern_search_rejections_total",
+    ]) {
+      expect(expressions.some((expr) => expr.includes(family))).toBe(true);
+    }
+  });
+
+  it("uses only bounded grouping labels for search panels", () => {
+    const allowed = new Set([
+      "mode",
+      "outcome",
+      "reason",
+      "phase",
+      "kind",
+      "state",
+      "peer",
+    ]);
+    for (const panel of METRIC_PANELS.filter(
+      (candidate) => candidate.group === "search",
+    )) {
+      for (const query of panel.queries) {
+        for (const label of query.by ?? []) {
+          expect(allowed.has(label)).toBe(true);
+          expect(label).not.toMatch(/query|prefix|key|value/);
+        }
+      }
+    }
+  });
 });
 
 describe("PANEL_GROUPS", () => {

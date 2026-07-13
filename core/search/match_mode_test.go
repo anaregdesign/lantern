@@ -41,6 +41,29 @@ func TestSearchMatchTopKContextBudgets(t *testing.T) {
 	}
 }
 
+func TestSearchMatchTopKContextReportsAnalysisExpansionAndSelection(t *testing.T) {
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID, WithPositions())
+	idx.Index("exact", Text("alpha alphabet beta"))
+	idx.Index("expanded", Text("alphabet beta"))
+
+	got, stats, err := idx.SearchMatchTopKContext(
+		context.Background(), "alpha alpha beta", 10, nil,
+		MatchOptions{PrefixTerms: true}, Budget{},
+	)
+	if err != nil || len(got) == 0 {
+		t.Fatalf("SearchMatchTopKContext results=%v err=%v", got, err)
+	}
+	if stats.QueryBytes != int64(len("alpha alpha beta")) || stats.QueryTokens != 3 || stats.QueryClauses != 2 || stats.QueryTerms != 2 {
+		t.Fatalf("query analysis stats = %+v, want bytes=%d tokens=3 clauses=2", stats, len("alpha alpha beta"))
+	}
+	if stats.ExpansionRetained == 0 || stats.DictionaryVisits == 0 {
+		t.Fatalf("expansion stats = %+v, want retained expansions and dictionary work", stats)
+	}
+	if stats.AnalysisDuration <= 0 || stats.ExpansionDuration <= 0 || stats.SelectionDuration <= 0 {
+		t.Fatalf("phase durations = analysis:%v expansion:%v selection:%v, want positive", stats.AnalysisDuration, stats.ExpansionDuration, stats.SelectionDuration)
+	}
+}
+
 func TestSearchMatchTopKContextCancellationReleasesWriter(t *testing.T) {
 	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID)
 	for i := 0; i < 100; i++ {

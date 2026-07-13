@@ -25,6 +25,24 @@ func TestSearchPhraseTopKContextPositionBudget(t *testing.T) {
 	}
 }
 
+func TestSearchPhraseTopKContextReportsAnalysisAndSelection(t *testing.T) {
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID, WithPositions())
+	idx.Index("doc", Text("data set data set"))
+	got, stats, err := idx.SearchPhraseTopKContext(context.Background(), "data set", 10, nil, Budget{})
+	if err != nil || len(got) != 1 {
+		t.Fatalf("results=%v err=%v", got, err)
+	}
+	if stats.QueryBytes != int64(len("data set")) || stats.QueryTokens != 2 || stats.QueryClauses != 2 || stats.QueryTerms != 2 {
+		t.Fatalf("analysis stats = %+v", stats)
+	}
+	if stats.PositionVisits == 0 || stats.AnalysisDuration <= 0 || stats.SelectionDuration <= 0 {
+		t.Fatalf("phrase work stats = %+v", stats)
+	}
+	if stats.ExpansionDuration != 0 || stats.ExpansionRetained != 0 {
+		t.Fatalf("phrase reported expansion work: %+v", stats)
+	}
+}
+
 // TestSearchPhrase covers phrase matching over the primary word channel: the
 // query's terms must occur at consecutive positions, so an adjacent phrase
 // matches while the same terms scattered apart do not.

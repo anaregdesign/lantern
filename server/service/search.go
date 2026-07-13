@@ -30,6 +30,23 @@ const (
 	searchProjectionVersion = "vertex-fields-v2"
 )
 
+// SearchObservation is the one terminal telemetry record emitted for every
+// SearchVertices handler invocation. Request dimensions are bounded enums or
+// booleans; query text, prefixes, matched keys, and values never cross this
+// observability boundary.
+type SearchObservation struct {
+	Mode          string
+	Phrase        bool
+	Fuzziness     uint32
+	PrefixTerms   bool
+	PrefixPresent bool
+	Outcome       string
+	Reason        string
+	Results       int
+	TotalDuration time.Duration
+	Stats         search.Stats
+}
+
 // SearchVertices returns vertices ranked by full-text relevance over their
 // field-separated key and value content in stable (score DESC, raw key ASC) order. It
 // is the content counterpart to ScanVertices' lexicographic key walk: callers
@@ -49,37 +66,52 @@ const (
 // Prefix, when non-empty, scopes hits to vertices whose key carries it.
 func (s *LanternService) SearchVertices(ctx context.Context, in *pb.SearchVerticesRequest) (*pb.SearchVerticesResponse, error) {
 	start := time.Now()
-	outcome, reason := "internal", "internal"
-	var stats search.Stats
+	observation := searchObservationForRequest(in)
 	span := trace.SpanFromContext(ctx)
 	defer func() {
-		s.metrics.OnSearchExecution(outcome, reason, stats)
+		observation.TotalDuration = time.Since(start)
+		s.metrics.OnSearchExecution(observation)
 		span.SetAttributes(
-			attribute.String("lantern.search.outcome", outcome),
-			attribute.String("lantern.search.reason", reason),
-			attribute.Int64("lantern.search.query_terms", stats.QueryTerms),
-			attribute.Int64("lantern.search.dictionary_visits", stats.DictionaryVisits),
-			attribute.Int64("lantern.search.posting_visits", stats.PostingVisits),
-			attribute.Int64("lantern.search.position_visits", stats.PositionVisits),
-			attribute.Int64("lantern.search.expiration_visits", stats.ExpirationVisits),
-			attribute.Int64("lantern.search.candidate_visits", stats.CandidateVisits),
-			attribute.Int64("lantern.search.candidate_skips", stats.CandidateSkips),
+			attribute.String("lantern.search.mode", observation.Mode),
+			attribute.Bool("lantern.search.phrase", observation.Phrase),
+			attribute.String("lantern.search.fuzziness", searchFuzzinessLabel(observation.Fuzziness)),
+			attribute.Bool("lantern.search.prefix_terms", observation.PrefixTerms),
+			attribute.Bool("lantern.search.prefix_present", observation.PrefixPresent),
+			attribute.String("lantern.search.outcome", observation.Outcome),
+			attribute.String("lantern.search.reason", observation.Reason),
+			attribute.Int("lantern.search.results", observation.Results),
+			attribute.Int64("lantern.search.query_bytes", observation.Stats.QueryBytes),
+			attribute.Int64("lantern.search.query_tokens", observation.Stats.QueryTokens),
+			attribute.Int64("lantern.search.query_clauses", observation.Stats.QueryClauses),
+			attribute.Int64("lantern.search.query_terms", observation.Stats.QueryTerms),
+			attribute.Int64("lantern.search.dictionary_visits", observation.Stats.DictionaryVisits),
+			attribute.Int64("lantern.search.expansions_retained", observation.Stats.ExpansionRetained),
+			attribute.Int64("lantern.search.posting_visits", observation.Stats.PostingVisits),
+			attribute.Int64("lantern.search.position_visits", observation.Stats.PositionVisits),
+			attribute.Int64("lantern.search.expiration_visits", observation.Stats.ExpirationVisits),
+			attribute.Int64("lantern.search.candidate_visits", observation.Stats.CandidateVisits),
+			attribute.Int64("lantern.search.candidate_skips", observation.Stats.CandidateSkips),
+			attribute.Float64("lantern.search.analysis_duration_seconds", observation.Stats.AnalysisDuration.Seconds()),
+			attribute.Float64("lantern.search.expansion_duration_seconds", observation.Stats.ExpansionDuration.Seconds()),
+			attribute.Float64("lantern.search.selection_duration_seconds", observation.Stats.SelectionDuration.Seconds()),
+			attribute.Float64("lantern.search.total_duration_seconds", observation.TotalDuration.Seconds()),
 		)
 	}()
 	if err := ctx.Err(); err != nil {
-		outcome, reason = searchContextOutcome(err)
+		observation.Outcome, observation.Reason = searchContextOutcome(err)
 		return nil, ctxToConnect(err)
 	}
 	if err := validateSearchOptions(in.GetOptions()); err != nil {
-		outcome, reason = "invalid_argument", "invalid_options"
+		observation.Outcome, observation.Reason = "invalid_argument", "invalid_options"
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	if !s.search.Enabled {
-		outcome, reason = "failed_precondition", "disabled"
+		observation.Outcome, observation.Reason = "failed_precondition", "disabled"
 		return nil, newSearchPreconditionError(pb.SearchErrorReason_SEARCH_DISABLED, errSearchDisabled)
 	}
 	if s.search.MaxQueryBytes > 0 && len(in.GetQuery()) > s.search.MaxQueryBytes {
-		outcome, reason = "resource_exhausted", "query_bytes"
+		observation.Stats.QueryBytes = int64(len(in.GetQuery()))
+		observation.Outcome, observation.Reason = "resource_exhausted", "query_bytes"
 		return nil, newSearchResourceError(
 			pb.SearchErrorReason_SEARCH_WORK_BUDGET_EXHAUSTED,
 			"query_bytes",
@@ -88,7 +120,7 @@ func (s *LanternService) SearchVertices(ctx context.Context, in *pb.SearchVertic
 	}
 	opts, phrase := s.resolveSearchOptions(in.GetOptions())
 	if phrase && !s.search.PositionsEnabled {
-		outcome, reason = "failed_precondition", "positions_disabled"
+		observation.Outcome, observation.Reason = "failed_precondition", "positions_disabled"
 		return nil, newSearchPreconditionError(pb.SearchErrorReason_SEARCH_POSITIONS_DISABLED, errSearchPositionsDisabled)
 	}
 	if s.search.Timeout > 0 {
@@ -100,7 +132,7 @@ func (s *LanternService) SearchVertices(ctx context.Context, in *pb.SearchVertic
 		if s.searchGate.TryAcquire(1) {
 			defer s.searchGate.Release(1)
 		} else {
-			outcome, reason = "resource_exhausted", "admission"
+			observation.Outcome, observation.Reason = "resource_exhausted", "admission"
 			return nil, newSearchResourceError(
 				pb.SearchErrorReason_SEARCH_ADMISSION_SATURATED,
 				"",
@@ -110,35 +142,76 @@ func (s *LanternService) SearchVertices(ctx context.Context, in *pb.SearchVertic
 	}
 	limit := clampLimit(in.GetLimit(), s.search.DefaultLimit, s.search.MaxLimit)
 	ranked, workStats, err := s.cache.SearchVerticesMatchContext(ctx, in.GetQuery(), int(limit), in.GetPrefix(), opts, phrase, s.search.WorkBudget)
-	stats = workStats
+	observation.Stats = workStats
 	if err != nil {
 		if errors.Is(err, search.ErrIndexIncomplete) {
-			outcome, reason = "failed_precondition", "index_incomplete"
+			observation.Outcome, observation.Reason = "failed_precondition", "index_incomplete"
 			return nil, newSearchPreconditionError(pb.SearchErrorReason_SEARCH_INDEX_INCOMPLETE, err)
 		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			outcome, reason = searchContextOutcome(err)
+			observation.Outcome, observation.Reason = searchContextOutcome(err)
 			return nil, ctxToConnect(err)
 		}
 		var exhausted *search.BudgetExceededError
 		if errors.As(err, &exhausted) {
-			outcome, reason = "resource_exhausted", string(exhausted.Kind)
+			observation.Outcome, observation.Reason = "resource_exhausted", string(exhausted.Kind)
 			return nil, newSearchResourceError(
 				pb.SearchErrorReason_SEARCH_WORK_BUDGET_EXHAUSTED,
 				string(exhausted.Kind),
 				err,
 			)
 		}
-		outcome, reason = "internal", "internal"
+		observation.Outcome, observation.Reason = "internal", "internal"
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	hits := make([]*pb.SearchHit, 0, len(ranked))
 	for _, r := range ranked {
 		hits = append(hits, &pb.SearchHit{Key: r.ID, Score: r.Score})
 	}
-	s.metrics.OnSearch(len(hits), time.Since(start))
-	outcome, reason = "ok", "none"
+	observation.Results = len(hits)
+	observation.Outcome = "ok"
+	if len(hits) == 0 {
+		observation.Reason = "no_hits"
+	} else {
+		observation.Reason = "none"
+	}
 	return &pb.SearchVerticesResponse{Hits: hits}, nil
+}
+
+func searchObservationForRequest(in *pb.SearchVerticesRequest) SearchObservation {
+	o := in.GetOptions()
+	return SearchObservation{
+		Mode:          searchModeLabel(o),
+		Phrase:        o.GetPhrase(),
+		Fuzziness:     o.GetFuzziness(),
+		PrefixTerms:   o.GetPrefixTerms(),
+		PrefixPresent: in.GetPrefix() != "",
+		Outcome:       "internal",
+		Reason:        "internal",
+	}
+}
+
+func searchModeLabel(o *pb.SearchOptions) string {
+	if o == nil || o.GetMatchMode() == pb.MatchMode_MATCH_MODE_UNSPECIFIED {
+		return "server"
+	}
+	switch o.GetMatchMode() {
+	case pb.MatchMode_MATCH_MODE_ANY:
+		return "any"
+	case pb.MatchMode_MATCH_MODE_ALL:
+		return "all"
+	case pb.MatchMode_MATCH_MODE_MIN_SHOULD:
+		return "min_should"
+	default:
+		return "unknown"
+	}
+}
+
+func searchFuzzinessLabel(value uint32) string {
+	if value <= searchMaxFuzziness {
+		return fmt.Sprintf("%d", value)
+	}
+	return "other"
 }
 
 func searchContextOutcome(err error) (outcome, reason string) {

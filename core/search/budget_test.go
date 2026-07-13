@@ -70,6 +70,23 @@ func TestWorkTracker(t *testing.T) {
 			t.Fatalf("error=%v stats=%+v, want expiration exhaustion at 2", err, w.stats)
 		}
 	})
+
+	t.Run("observability counters are charged without adding budgets", func(t *testing.T) {
+		w := newWorkTracker(context.Background(), Budget{})
+		for kind, n := range map[WorkKind]int64{
+			WorkQueryBytes:        12,
+			WorkQueryTokens:       5,
+			WorkQueryClauses:      3,
+			WorkExpansionRetained: 7,
+		} {
+			if err := w.visit(kind, n); err != nil {
+				t.Fatalf("visit %s: %v", kind, err)
+			}
+		}
+		if w.stats.QueryBytes != 12 || w.stats.QueryTokens != 5 || w.stats.QueryClauses != 3 || w.stats.ExpansionRetained != 7 {
+			t.Fatalf("observability stats = %+v", w.stats)
+		}
+	})
 }
 
 func TestContextCancellationObservedInsideSearchLoops(t *testing.T) {
@@ -93,7 +110,9 @@ func TestContextCancellationObservedInsideSearchLoops(t *testing.T) {
 	})
 
 	t.Run("phrase verification", func(t *testing.T) {
-		results, stats, err := idx.SearchPhraseTopKContext(newStepCancelContext(10), "alpha beta", 10, nil, Budget{})
+		// Query observability charges bytes/tokens/clauses before executor
+		// work, so cancel after those bounded checks to reach positions.
+		results, stats, err := idx.SearchPhraseTopKContext(newStepCancelContext(14), "alpha beta", 10, nil, Budget{})
 		if results != nil || !errors.Is(err, context.Canceled) || stats.PositionVisits == 0 {
 			t.Fatalf("results=%v stats=%+v err=%v, want cancellation during phrase positions", results, stats, err)
 		}

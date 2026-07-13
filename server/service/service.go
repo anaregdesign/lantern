@@ -93,8 +93,7 @@ type HotPathMetrics interface {
 	OnIlluminate(algorithm, reduction, objective, weighting string, visitedVertices, visitedEdges int, traversal, optimize time.Duration)
 	OnIlluminateResult(algorithm, reduction, objective, weighting, phase, code string)
 	OnScan(op string, results int, duration time.Duration)
-	OnSearch(results int, duration time.Duration)
-	OnSearchExecution(outcome, reason string, stats search.Stats)
+	OnSearchExecution(observation SearchObservation)
 	OnBatch(op string, size int)
 	OnGetVertices(hits, misses int)
 	OnGetEdges(hits, misses int)
@@ -107,14 +106,12 @@ func (noopHotPathMetrics) OnIlluminate(string, string, string, string, int, int,
 }
 func (noopHotPathMetrics) OnIlluminateResult(string, string, string, string, string, string) {
 }
-func (noopHotPathMetrics) OnScan(string, int, time.Duration) {}
-func (noopHotPathMetrics) OnSearch(int, time.Duration)       {}
-func (noopHotPathMetrics) OnSearchExecution(string, string, search.Stats) {
-}
-func (noopHotPathMetrics) OnBatch(string, int)      {}
-func (noopHotPathMetrics) OnGetVertices(int, int)   {}
-func (noopHotPathMetrics) OnGetEdges(int, int)      {}
-func (noopHotPathMetrics) OnEdgeContribDeduped(int) {}
+func (noopHotPathMetrics) OnScan(string, int, time.Duration)   {}
+func (noopHotPathMetrics) OnSearchExecution(SearchObservation) {}
+func (noopHotPathMetrics) OnBatch(string, int)                 {}
+func (noopHotPathMetrics) OnGetVertices(int, int)              {}
+func (noopHotPathMetrics) OnGetEdges(int, int)                 {}
+func (noopHotPathMetrics) OnEdgeContribDeduped(int)            {}
 
 // ScanLimits caps the per-call pagination knobs for the prefix RPCs. It is
 // a value struct rather than a pointer-to-provider type so the service

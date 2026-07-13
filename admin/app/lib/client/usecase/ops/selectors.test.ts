@@ -3,11 +3,14 @@ import { describe, expect, it } from "bun:test";
 import type { ServerStatus } from "~/lib/client/infrastructure/api/get-server-status";
 import {
   formatCount,
+  formatBytes,
   formatDuration,
   formatStaleness,
   formatUptime,
   peerStatePillIntent,
   replicationCardSummary,
+  searchHealthIntent,
+  searchStatusSummary,
   serverCardSummary,
 } from "./selectors";
 
@@ -47,7 +50,34 @@ function makeStatus(overrides: Partial<ServerStatus> = {}): ServerStatus {
       maxDictionaryVisits: 1_000_000,
       maxPostingVisits: 10_000_000,
       maxPositionVisits: 10_000_000,
+      maxExpirationVisits: 1_000_000,
       maxInFlight: 32,
+      maxDocumentBytes: 1_048_576,
+      maxDocumentTokens: 32_768,
+      maxDocumentTerms: 16_384,
+      maxLiveTerms: 1_000_000,
+      maxLivePostings: 10_000_000,
+      maxPositionEntries: 10_000_000,
+      compactionRatio: 1.5,
+      compactionMinRetired: 10_000,
+      index: {
+        health: "healthy",
+        documents: 42,
+        physicalDocuments: 44,
+        expiredDocuments: 2,
+        expirationQueueEntries: 2,
+        expirationPurged: 7,
+        liveTerms: 11,
+        retainedTermSlots: 13,
+        retainedOrdinals: 44,
+        postings: 120,
+        positionEntries: 240,
+        estimatedLiveBytes: 1024,
+        estimatedRetainedBytes: 1536,
+        rebuildCount: 2,
+        lastRebuildDurationSeconds: 0.025,
+        lastExpirationPurgeDurationSeconds: 0.001,
+      },
     },
     ...overrides,
   };
@@ -111,6 +141,14 @@ describe("formatCount", () => {
   });
 });
 
+describe("formatBytes", () => {
+  it("uses binary units without hiding small values", () => {
+    expect(formatBytes(0)).toBe("0 B");
+    expect(formatBytes(1536)).toBe("1.50 KiB");
+    expect(formatBytes(Number.NaN)).toBe("-");
+  });
+});
+
 describe("peerStatePillIntent", () => {
   it("maps every documented state to a Fluent intent", () => {
     expect(peerStatePillIntent("streaming")).toBe("success");
@@ -139,9 +177,7 @@ describe("serverCardSummary", () => {
       "disabled",
     );
     expect(rows.find(([label]) => label === "TLS")?.[1]).toBe("enabled");
-    expect(rows.find(([label]) => label === "Search config")?.[1]).toBe(
-      "fingerprint",
-    );
+    expect(rows.some(([label]) => label === "Search config")).toBe(false);
   });
 
   it("substitutes (dev) when version is empty", () => {
@@ -182,6 +218,30 @@ describe("serverCardSummary", () => {
       makeStatus({ startedAtMs: 1_700_000_000_000, uptimeSeconds: 0 }),
     );
     expect(rows.find(([label]) => label === "Uptime")?.[1]).toBe("0s");
+  });
+});
+
+describe("searchStatusSummary", () => {
+  it("surfaces capability, budgets, index health inputs, and retention", () => {
+    const search = makeStatus().search;
+    const rows = searchStatusSummary(search);
+    expect(rows.find(([label]) => label === "Capability")?.[1]).toBe("enabled");
+    expect(rows.find(([label]) => label === "Documents")?.[1]).toContain(
+      "42 live",
+    );
+    expect(rows.find(([label]) => label === "Retained storage")?.[1]).toContain(
+      "1.50× live",
+    );
+    expect(rows.find(([label]) => label === "Config fingerprint")?.[1]).toBe(
+      "fingerprint",
+    );
+  });
+
+  it("maps every health state to an actionable intent", () => {
+    expect(searchHealthIntent("healthy")).toBe("success");
+    expect(searchHealthIntent("incomplete")).toBe("error");
+    expect(searchHealthIntent("disabled")).toBe("info");
+    expect(searchHealthIntent("unspecified")).toBe("warning");
   });
 });
 

@@ -168,3 +168,89 @@ func TestLoggingInterceptor_IlluminateSpanAttributes(t *testing.T) {
 		t.Fatalf("Illuminate span attributes = %+v", attrs)
 	}
 }
+
+func TestSlowRPCInterceptor_SearchFieldsAreBounded(t *testing.T) {
+	var buf bytes.Buffer
+	s := NewSlowRPCInterceptor(time.Nanosecond, newJSONLogger(&buf, slog.LevelWarn))
+	next := connect.UnaryFunc(func(_ context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+		return connect.NewResponse(&pb.SearchVerticesResponse{}), nil
+	})
+	req := connect.NewRequest(&pb.SearchVerticesRequest{
+		Query:  "private-query-value",
+		Prefix: "private-prefix-value",
+		Options: &pb.SearchOptions{
+			MatchMode:   pb.MatchMode(99),
+			Phrase:      true,
+			Fuzziness:   99,
+			PrefixTerms: true,
+		},
+	})
+	if _, err := s.ConnectInterceptor()(next)(context.Background(), req); err != nil {
+		t.Fatalf("interceptor: %v", err)
+	}
+	recs := decodeRecords(t, &buf)
+	if len(recs) != 1 {
+		t.Fatalf("slow search records = %d, want 1", len(recs))
+	}
+	rec := recs[0]
+	for key, want := range map[string]any{
+		"search.mode":           "unknown",
+		"search.phrase":         true,
+		"search.fuzziness":      "other",
+		"search.prefix_terms":   true,
+		"search.prefix_present": true,
+	} {
+		if got := rec[key]; got != want {
+			t.Errorf("%s = %#v, want %#v", key, got, want)
+		}
+	}
+	if strings.Contains(buf.String(), req.Msg.GetQuery()) || strings.Contains(buf.String(), req.Msg.GetPrefix()) {
+		t.Fatalf("slow search log leaked query or prefix: %s", buf.String())
+	}
+}
+
+func TestLoggingInterceptor_SearchSpanAttributesAreBounded(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	provider := trace.NewTracerProvider(trace.WithSpanProcessor(recorder))
+	ctx, span := provider.Tracer("test").Start(context.Background(), "SearchVertices")
+	next := connect.UnaryFunc(func(_ context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+		return connect.NewResponse(&pb.SearchVerticesResponse{}), nil
+	})
+	req := connect.NewRequest(&pb.SearchVerticesRequest{
+		Query:  "private-query-value",
+		Prefix: "private-prefix-value",
+		Options: &pb.SearchOptions{
+			MatchMode: pb.MatchMode_MATCH_MODE_MIN_SHOULD,
+			Fuzziness: 2,
+		},
+	})
+	if _, err := NewLoggingInterceptor(nil).ConnectInterceptor()(next)(ctx, req); err != nil {
+		t.Fatalf("interceptor: %v", err)
+	}
+	span.End()
+	ended := recorder.Ended()
+	if len(ended) != 1 {
+		t.Fatalf("ended spans = %d, want 1", len(ended))
+	}
+	attrs := map[string]any{}
+	for _, attr := range ended[0].Attributes() {
+		attrs[string(attr.Key)] = attr.Value.AsInterface()
+	}
+	for key, want := range map[string]any{
+		"lantern.search.mode":           "min_should",
+		"lantern.search.phrase":         false,
+		"lantern.search.fuzziness":      "2",
+		"lantern.search.prefix_terms":   false,
+		"lantern.search.prefix_present": true,
+	} {
+		if got := attrs[key]; got != want {
+			t.Errorf("%s = %#v, want %#v", key, got, want)
+		}
+	}
+	for _, attr := range ended[0].Attributes() {
+		value := attr.Value.Emit()
+		if strings.Contains(value, req.Msg.GetQuery()) || strings.Contains(value, req.Msg.GetPrefix()) {
+			t.Fatalf("search span leaked query or prefix in %s=%q", attr.Key, value)
+		}
+	}
+}

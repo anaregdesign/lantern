@@ -115,11 +115,27 @@ func (idx *InvertedIndex[S, D]) SearchMatchTopKCandidatesContextAt(ctx context.C
 	if err := idx.purgeExpired(work, now); err != nil {
 		return nil, work.stats, err
 	}
-	queryTerms := idx.queryTerms(query)
-	queryTerms = queryTermsForMatchOptions(queryTerms, opts)
-	if err := work.visit(WorkQueryTerms, int64(len(queryTerms))); err != nil {
+	analysisStart := time.Now()
+	if err := work.visit(WorkQueryBytes, int64(len(query))); err != nil {
+		work.stats.AnalysisDuration = time.Since(analysisStart)
 		return nil, work.stats, err
 	}
+	tokens := idx.analyzeQuery(query)
+	if err := work.visit(WorkQueryTokens, int64(len(tokens))); err != nil {
+		work.stats.AnalysisDuration = time.Since(analysisStart)
+		return nil, work.stats, err
+	}
+	queryTerms := distinctQueryTerms(tokens)
+	queryTerms = queryTermsForMatchOptions(queryTerms, opts)
+	if err := work.visit(WorkQueryClauses, int64(len(queryTerms))); err != nil {
+		work.stats.AnalysisDuration = time.Since(analysisStart)
+		return nil, work.stats, err
+	}
+	if err := work.visit(WorkQueryTerms, int64(len(queryTerms))); err != nil {
+		work.stats.AnalysisDuration = time.Since(analysisStart)
+		return nil, work.stats, err
+	}
+	work.stats.AnalysisDuration = time.Since(analysisStart)
 	if len(queryTerms) == 0 {
 		return nil, work.stats, nil
 	}
@@ -130,11 +146,15 @@ func (idx *InvertedIndex[S, D]) SearchMatchTopKCandidatesContextAt(ctx context.C
 		return nil, work.stats, ErrIndexIncomplete
 	}
 
+	expansionStart := time.Now()
 	plan, err := idx.buildScoringPlanLocked(queryTerms, opts, work)
+	work.stats.ExpansionDuration = time.Since(expansionStart)
 	if err != nil {
 		return nil, work.stats, err
 	}
+	selectionStart := time.Now()
 	results, err := idx.executeTopKLocked(plan, k, accept, candidates, work)
+	work.stats.SelectionDuration = time.Since(selectionStart)
 	if err != nil {
 		return nil, work.stats, err
 	}

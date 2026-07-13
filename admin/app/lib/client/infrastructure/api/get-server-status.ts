@@ -48,7 +48,36 @@ export interface SearchCapabilities {
   maxDictionaryVisits: number;
   maxPostingVisits: number;
   maxPositionVisits: number;
+  maxExpirationVisits: number;
   maxInFlight: number;
+  maxDocumentBytes: number;
+  maxDocumentTokens: number;
+  maxDocumentTerms: number;
+  maxLiveTerms: number;
+  maxLivePostings: number;
+  maxPositionEntries: number;
+  compactionRatio: number;
+  compactionMinRetired: number;
+  index: SearchIndexStatus;
+}
+
+export interface SearchIndexStatus {
+  health: "disabled" | "healthy" | "incomplete" | "unspecified";
+  documents: number;
+  physicalDocuments: number;
+  expiredDocuments: number;
+  expirationQueueEntries: number;
+  expirationPurged: number;
+  liveTerms: number;
+  retainedTermSlots: number;
+  retainedOrdinals: number;
+  postings: number;
+  positionEntries: number;
+  estimatedLiveBytes: number;
+  estimatedRetainedBytes: number;
+  rebuildCount: number;
+  lastRebuildDurationSeconds: number;
+  lastExpirationPurgeDurationSeconds: number;
 }
 
 /**
@@ -105,10 +134,81 @@ export async function getServerStatus(
         maxDictionaryVisits: Number(resp.search?.maxDictionaryVisits ?? 0n),
         maxPostingVisits: Number(resp.search?.maxPostingVisits ?? 0n),
         maxPositionVisits: Number(resp.search?.maxPositionVisits ?? 0n),
+        maxExpirationVisits: Number(resp.search?.maxExpirationVisits ?? 0n),
         maxInFlight: resp.search?.maxInFlight ?? 0,
+        maxDocumentBytes: resp.search?.maxDocumentBytes ?? 0,
+        maxDocumentTokens: resp.search?.maxDocumentTokens ?? 0,
+        maxDocumentTerms: resp.search?.maxDocumentTerms ?? 0,
+        maxLiveTerms: Number(resp.search?.maxLiveTerms ?? 0n),
+        maxLivePostings: Number(resp.search?.maxLivePostings ?? 0n),
+        maxPositionEntries: Number(resp.search?.maxPositionEntries ?? 0n),
+        compactionRatio: resp.search?.compactionRatio ?? 0,
+        compactionMinRetired: Number(resp.search?.compactionMinRetired ?? 0n),
+        index: {
+          health: searchIndexHealth(resp.search?.indexStats?.health),
+          documents: Number(resp.search?.indexStats?.documents ?? 0n),
+          physicalDocuments: Number(
+            resp.search?.indexStats?.physicalDocuments ?? 0n,
+          ),
+          expiredDocuments: Number(
+            resp.search?.indexStats?.expiredDocuments ?? 0n,
+          ),
+          expirationQueueEntries: Number(
+            resp.search?.indexStats?.expirationQueueEntries ?? 0n,
+          ),
+          expirationPurged: Number(
+            resp.search?.indexStats?.expirationPurged ?? 0n,
+          ),
+          liveTerms: Number(resp.search?.indexStats?.liveTerms ?? 0n),
+          retainedTermSlots: Number(
+            resp.search?.indexStats?.retainedTermSlots ?? 0n,
+          ),
+          retainedOrdinals: Number(
+            resp.search?.indexStats?.retainedOrdinals ?? 0n,
+          ),
+          postings: Number(resp.search?.indexStats?.postings ?? 0n),
+          positionEntries: Number(
+            resp.search?.indexStats?.positionEntries ?? 0n,
+          ),
+          estimatedLiveBytes: Number(
+            resp.search?.indexStats?.estimatedLiveBytes ?? 0n,
+          ),
+          estimatedRetainedBytes: Number(
+            resp.search?.indexStats?.estimatedRetainedBytes ?? 0n,
+          ),
+          rebuildCount: Number(resp.search?.indexStats?.rebuildCount ?? 0n),
+          lastRebuildDurationSeconds: durationSeconds(
+            resp.search?.indexStats?.lastRebuildDuration,
+          ),
+          lastExpirationPurgeDurationSeconds: durationSeconds(
+            resp.search?.indexStats?.lastExpirationPurgeDuration,
+          ),
+        },
       },
     };
   } catch (err) {
     throw LanternApiError.fromUnknown("GetServerStatus", err);
+  }
+}
+
+function durationSeconds(
+  duration: { seconds: bigint; nanos: number } | undefined,
+): number {
+  if (!duration) return 0;
+  return Number(duration.seconds) + duration.nanos / 1_000_000_000;
+}
+
+function searchIndexHealth(
+  health: number | undefined,
+): SearchIndexStatus["health"] {
+  switch (health) {
+    case 1:
+      return "disabled";
+    case 2:
+      return "healthy";
+    case 3:
+      return "incomplete";
+    default:
+      return "unspecified";
   }
 }

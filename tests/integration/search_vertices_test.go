@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"net/http/httptest"
 	"os"
 	"slices"
 	"sort"
@@ -18,6 +19,8 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -27,6 +30,7 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	client "github.com/anaregdesign/lantern/sdks/go"
+	servermetrics "github.com/anaregdesign/lantern/server/metrics"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
 )
@@ -246,14 +250,8 @@ func TestSearchIndexRestoreConvergenceOverWire(t *testing.T) {
 	}
 }
 
-type wireSearchExecution struct {
-	outcome string
-	reason  string
-	stats   search.Stats
-}
-
 type wireSearchMetrics struct {
-	executions chan wireSearchExecution
+	executions chan service.SearchObservation
 }
 
 func (m *wireSearchMetrics) OnIlluminate(string, string, string, string, int, int, time.Duration, time.Duration) {
@@ -261,9 +259,8 @@ func (m *wireSearchMetrics) OnIlluminate(string, string, string, string, int, in
 func (m *wireSearchMetrics) OnIlluminateResult(string, string, string, string, string, string) {
 }
 func (m *wireSearchMetrics) OnScan(string, int, time.Duration) {}
-func (m *wireSearchMetrics) OnSearch(int, time.Duration)       {}
-func (m *wireSearchMetrics) OnSearchExecution(outcome, reason string, stats search.Stats) {
-	m.executions <- wireSearchExecution{outcome: outcome, reason: reason, stats: stats}
+func (m *wireSearchMetrics) OnSearchExecution(observation service.SearchObservation) {
+	m.executions <- observation
 }
 func (m *wireSearchMetrics) OnBatch(string, int)      {}
 func (m *wireSearchMetrics) OnGetVertices(int, int)   {}
@@ -566,7 +563,7 @@ func TestSearchVertices_CancellationAndAdmissionOverWire(t *testing.T) {
 		t.Fatalf("PutVerticesWithExpiration: %v", err)
 	}
 
-	metrics := &wireSearchMetrics{executions: make(chan wireSearchExecution, 32)}
+	metrics := &wireSearchMetrics{executions: make(chan service.SearchObservation, 32)}
 	svc := service.NewLanternService(cache).WithSearchLimits(service.SearchLimits{
 		Enabled:          true,
 		PositionsEnabled: true,
@@ -629,16 +626,93 @@ func TestSearchVertices_CancellationAndAdmissionOverWire(t *testing.T) {
 	for {
 		select {
 		case observation := <-metrics.executions:
-			if observation.outcome != "canceled" {
+			if observation.Outcome != "canceled" {
 				continue
 			}
-			if observation.reason != "canceled" || observation.stats.DictionaryVisits == 0 {
+			if observation.Reason != "canceled" || observation.Stats.DictionaryVisits == 0 {
 				t.Fatalf("canceled observation = %+v, want dictionary work before cancellation", observation)
 			}
 			return
 		case <-metricDeadline.C:
 			t.Fatal("server did not publish the canceled execution observation")
 		}
+	}
+}
+
+func TestSearchVertices_TerminalMetricsOverRealH2C(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := servermetrics.New(reg, servermetrics.Options{SampleInterval: time.Hour})
+	cache := newProductionSearchCache(time.Hour, true, true, search.SearchAnalysisLimits{})
+	expiration := time.Now().Add(time.Hour)
+	if err := cache.PutVerticesWithExpiration([]graphcache.VertexItem[string, *pb.Vertex]{
+		{
+			Key: "private-prefix/doc",
+			Value: &pb.Vertex{
+				Key: "private-prefix/doc",
+				Value: &pb.Vertex_String_{
+					String_: "private-query-value",
+				},
+			},
+			Expiration: expiration,
+		},
+	}); err != nil {
+		t.Fatalf("seed search cache: %v", err)
+	}
+	svc := service.NewLanternService(cache).WithSearchLimits(service.SearchLimits{
+		Enabled: true, PositionsEnabled: true, DefaultLimit: 10, MaxLimit: 100,
+	}).WithHotPathMetrics(m)
+	srv := newConnectTestServer(t, svc, nil)
+	c := graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
+	scrape := httptest.NewServer(promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+	t.Cleanup(scrape.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	if _, err := c.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{
+		Query: "private-query-value", Prefix: "private-prefix/",
+		Options: &pb.SearchOptions{MatchMode: pb.MatchMode_MATCH_MODE_ALL},
+	})); err != nil {
+		t.Fatalf("successful search: %v", err)
+	}
+	if _, err := c.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{
+		Query: "private-query-value", Prefix: "missing-prefix/",
+	})); err != nil {
+		t.Fatalf("no-hit search: %v", err)
+	}
+	_, err := c.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{
+		Query: "invalid", Options: &pb.SearchOptions{Phrase: true, Fuzziness: 1},
+	}))
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("invalid search code = %v, want InvalidArgument", connect.CodeOf(err))
+	}
+
+	body := scrapeMetrics(t, scrape.URL)
+	for _, want := range []struct {
+		labels map[string]string
+	}{
+		{map[string]string{
+			"mode": "all", "phrase": "no", "fuzziness": "0",
+			"prefix_terms": "no", "prefix_present": "yes", "outcome": "ok", "reason": "none",
+		}},
+		{map[string]string{
+			"mode": "server", "phrase": "no", "fuzziness": "0",
+			"prefix_terms": "no", "prefix_present": "yes", "outcome": "ok", "reason": "no_hits",
+		}},
+		{map[string]string{
+			"mode": "server", "phrase": "yes", "fuzziness": "1",
+			"prefix_terms": "no", "prefix_present": "no", "outcome": "invalid_argument", "reason": "invalid_options",
+		}},
+	} {
+		if got, ok := metricSeriesValue(t, body, "lantern_search_calls_total", want.labels); !ok || got != 1 {
+			t.Errorf("search_calls_total%v = %v (present=%v), want exactly 1", want.labels, got, ok)
+		}
+	}
+	if !strings.Contains(body, "lantern_search_phase_duration_seconds_count") ||
+		!strings.Contains(body, "lantern_search_work_count") {
+		t.Error("search phase/work histogram families missing from scrape")
+	}
+	if strings.Contains(body, "private-query-value") || strings.Contains(body, "private-prefix/") {
+		t.Fatal("Prometheus scrape leaked user-controlled query or prefix")
 	}
 }
 
@@ -662,7 +736,7 @@ func TestSearchVertices_PrefixCandidatePushdownOverRealH2C(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	metrics := &wireSearchMetrics{executions: make(chan wireSearchExecution, 4)}
+	metrics := &wireSearchMetrics{executions: make(chan service.SearchObservation, 4)}
 	svc := service.NewLanternService(cache).WithSearchLimits(service.SearchLimits{
 		Enabled: true, PositionsEnabled: true, DefaultLimit: 10, MaxLimit: 100,
 	}).WithHotPathMetrics(metrics)
@@ -683,7 +757,7 @@ func TestSearchVertices_PrefixCandidatePushdownOverRealH2C(t *testing.T) {
 			t.Fatalf("out-of-scope hit %q", hit.GetKey())
 		}
 	}
-	if observation := <-metrics.executions; observation.outcome != "ok" || observation.stats.CandidateVisits != 10 {
+	if observation := <-metrics.executions; observation.Outcome != "ok" || observation.Stats.CandidateVisits != 10 {
 		t.Fatalf("scoped execution=%+v, want 10 candidate visits", observation)
 	}
 
@@ -696,7 +770,7 @@ func TestSearchVertices_PrefixCandidatePushdownOverRealH2C(t *testing.T) {
 	if len(empty.Msg.GetHits()) != 0 {
 		t.Fatalf("missing-prefix hits=%d, want 0", len(empty.Msg.GetHits()))
 	}
-	if observation := <-metrics.executions; observation.outcome != "ok" || observation.stats.CandidateVisits != 0 {
+	if observation := <-metrics.executions; observation.Outcome != "ok" || observation.Stats.CandidateVisits != 0 {
 		t.Fatalf("missing-prefix execution=%+v, want zero candidate visits", observation)
 	}
 }

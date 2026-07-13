@@ -15,6 +15,129 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
+func TestSearchVertices_TerminalObservationExactlyOnce(t *testing.T) {
+	tests := []struct {
+		name        string
+		limits      SearchLimits
+		request     *pb.SearchVerticesRequest
+		context     func() context.Context
+		backend     func(*fakeBackend)
+		wantOutcome string
+		wantReason  string
+	}{
+		{
+			name: "success", limits: SearchLimits{Enabled: true},
+			request: &pb.SearchVerticesRequest{Query: "alpha"},
+			backend: func(f *fakeBackend) {
+				f.searchResults = []search.Result[string]{{ID: "doc", Score: 1}}
+			},
+			wantOutcome: "ok", wantReason: "none",
+		},
+		{
+			name: "zero hit", limits: SearchLimits{Enabled: true},
+			request:     &pb.SearchVerticesRequest{Query: "absent"},
+			wantOutcome: "ok", wantReason: "no_hits",
+		},
+		{
+			name: "disabled", request: &pb.SearchVerticesRequest{Query: "alpha"},
+			wantOutcome: "failed_precondition", wantReason: "disabled",
+		},
+		{
+			name: "invalid options", limits: SearchLimits{Enabled: true},
+			request:     &pb.SearchVerticesRequest{Query: "alpha", Options: &pb.SearchOptions{Fuzziness: 99}},
+			wantOutcome: "invalid_argument", wantReason: "invalid_options",
+		},
+		{
+			name: "pre-canceled", limits: SearchLimits{Enabled: true},
+			request: &pb.SearchVerticesRequest{Query: "alpha"},
+			context: func() context.Context {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx
+			},
+			wantOutcome: "canceled", wantReason: "canceled",
+		},
+		{
+			name: "query bytes", limits: SearchLimits{Enabled: true, MaxQueryBytes: 1},
+			request:     &pb.SearchVerticesRequest{Query: "alpha"},
+			wantOutcome: "resource_exhausted", wantReason: "query_bytes",
+		},
+		{
+			name: "positions disabled", limits: SearchLimits{Enabled: true},
+			request:     &pb.SearchVerticesRequest{Query: "alpha beta", Options: &pb.SearchOptions{Phrase: true}},
+			wantOutcome: "failed_precondition", wantReason: "positions_disabled",
+		},
+		{
+			name: "index incomplete", limits: SearchLimits{Enabled: true},
+			request: &pb.SearchVerticesRequest{Query: "alpha"},
+			backend: func(f *fakeBackend) {
+				f.searchContextFn = func(context.Context) ([]search.Result[string], search.Stats, error) {
+					return nil, search.Stats{}, search.ErrIndexIncomplete
+				}
+			},
+			wantOutcome: "failed_precondition", wantReason: "index_incomplete",
+		},
+		{
+			name: "work budget", limits: SearchLimits{Enabled: true},
+			request: &pb.SearchVerticesRequest{Query: "alpha"},
+			backend: func(f *fakeBackend) {
+				f.searchContextFn = func(context.Context) ([]search.Result[string], search.Stats, error) {
+					return nil, search.Stats{PostingVisits: 2}, &search.BudgetExceededError{Kind: search.WorkPostingVisits, Limit: 1}
+				}
+			},
+			wantOutcome: "resource_exhausted", wantReason: string(search.WorkPostingVisits),
+		},
+		{
+			name: "deadline", limits: SearchLimits{Enabled: true},
+			request: &pb.SearchVerticesRequest{Query: "alpha"},
+			backend: func(f *fakeBackend) {
+				f.searchContextFn = func(context.Context) ([]search.Result[string], search.Stats, error) {
+					return nil, search.Stats{}, context.DeadlineExceeded
+				}
+			},
+			wantOutcome: "deadline_exceeded", wantReason: "deadline",
+		},
+		{
+			name: "internal", limits: SearchLimits{Enabled: true},
+			request: &pb.SearchVerticesRequest{Query: "alpha"},
+			backend: func(f *fakeBackend) {
+				f.searchContextFn = func(context.Context) ([]search.Result[string], search.Stats, error) {
+					return nil, search.Stats{}, errors.New("backend failure")
+				}
+			},
+			wantOutcome: "internal", wantReason: "internal",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fb := newFakeBackend()
+			if tc.backend != nil {
+				tc.backend(fb)
+			}
+			metrics := &fakeHotPathMetrics{}
+			svc := NewLanternService(fb).WithSearchLimits(tc.limits).WithHotPathMetrics(metrics)
+			ctx := context.Background()
+			if tc.context != nil {
+				ctx = tc.context()
+			}
+			_, _ = svc.SearchVertices(ctx, tc.request)
+			if len(metrics.searchExecution) != 1 {
+				t.Fatalf("terminal observations = %d, want exactly 1", len(metrics.searchExecution))
+			}
+			got := metrics.searchExecution[0]
+			if got.Outcome != tc.wantOutcome || got.Reason != tc.wantReason {
+				t.Fatalf("terminal observation = %+v, want outcome=%s reason=%s", got, tc.wantOutcome, tc.wantReason)
+			}
+			if tc.wantReason == "query_bytes" && got.Stats.QueryBytes != int64(len(tc.request.GetQuery())) {
+				t.Errorf("query-bytes rejection work = %d, want %d", got.Stats.QueryBytes, len(tc.request.GetQuery()))
+			}
+			if got.TotalDuration <= 0 {
+				t.Errorf("terminal duration = %v, want > 0", got.TotalDuration)
+			}
+		})
+	}
+}
+
 func TestSearchVertices_DisabledReturnsFailedPrecondition(t *testing.T) {
 	// A service built with the default limits has search disabled (opt-in
 	// at the composition root), so the RPC must refuse before touching the
@@ -298,8 +421,8 @@ func TestSearchVertices_MapsWorkBudgetExhaustion(t *testing.T) {
 	if fb.lastSearchBudget != wantBudget {
 		t.Fatalf("backend budget = %+v, want %+v", fb.lastSearchBudget, wantBudget)
 	}
-	if len(fm.searchExecution) != 1 || fm.searchExecution[0].outcome != "resource_exhausted" ||
-		fm.searchExecution[0].reason != string(search.WorkPostingVisits) || fm.searchExecution[0].stats.PostingVisits != 3 {
+	if len(fm.searchExecution) != 1 || fm.searchExecution[0].Outcome != "resource_exhausted" ||
+		fm.searchExecution[0].Reason != string(search.WorkPostingVisits) || fm.searchExecution[0].Stats.PostingVisits != 3 {
 		t.Fatalf("execution observations = %+v, want one bounded posting exhaustion", fm.searchExecution)
 	}
 }
@@ -328,6 +451,7 @@ func TestSearchVertices_AppliesServerTimeout(t *testing.T) {
 
 func TestSearchVertices_AdmissionSaturation(t *testing.T) {
 	fb := newFakeBackend()
+	fm := &fakeHotPathMetrics{}
 	started := make(chan struct{})
 	release := make(chan struct{})
 	fb.searchContextFn = func(context.Context) ([]search.Result[string], search.Stats, error) {
@@ -340,7 +464,7 @@ func TestSearchVertices_AdmissionSaturation(t *testing.T) {
 		DefaultLimit: 10,
 		MaxLimit:     100,
 		MaxInFlight:  1,
-	})
+	}).WithHotPathMetrics(fm)
 
 	firstDone := make(chan error, 1)
 	go func() {
@@ -360,9 +484,15 @@ func TestSearchVertices_AdmissionSaturation(t *testing.T) {
 	if fb.searchCalls != 1 {
 		t.Fatalf("backend calls = %d, want only admitted request", fb.searchCalls)
 	}
+	if len(fm.searchExecution) != 1 || fm.searchExecution[0].Outcome != "resource_exhausted" || fm.searchExecution[0].Reason != "admission" {
+		t.Fatalf("observations before release = %+v, want exactly one admission rejection", fm.searchExecution)
+	}
 	close(release)
 	if err := <-firstDone; err != nil {
 		t.Fatalf("first request: %v", err)
+	}
+	if len(fm.searchExecution) != 2 {
+		t.Fatalf("terminal observations = %+v, want one per request", fm.searchExecution)
 	}
 }
 
@@ -413,7 +543,7 @@ func TestSearchVertices_RecordsBoundedTraceWork(t *testing.T) {
 	}
 	for key, want := range map[string]any{
 		"lantern.search.outcome":           "ok",
-		"lantern.search.reason":            "none",
+		"lantern.search.reason":            "no_hits",
 		"lantern.search.query_terms":       int64(2),
 		"lantern.search.dictionary_visits": int64(3),
 		"lantern.search.posting_visits":    int64(5),
