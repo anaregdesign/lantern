@@ -72,6 +72,18 @@ type GraphCache[S comparable, T any] struct {
 	// only a single nil check.
 	searchIndex   *search.InvertedIndex[S, search.Document]
 	searchExtract func(T) search.Document
+	// searchCommitMu makes a prepared vertex batch visible to Search as one
+	// transition across both the vertex store and inverted index. Searches hold
+	// RLock across the same bounded execution interval that takes the index read
+	// lock; batch analysis is complete before the writer takes Lock.
+	searchCommitMu sync.RWMutex
+	// searchPreappliedEvictions suppresses the search-index portion of the
+	// synchronous vertex eviction hook when a prepared batch has already
+	// applied the same deletion through IndexManyPrepared. Dictionary and
+	// prefix cleanup still run normally. The separate mutex is required because
+	// eviction hooks may fire without GraphCache.mu.
+	searchEvictionMu          sync.Mutex
+	searchPreappliedEvictions map[S]int
 
 	// vertexHLC tracks the last HLC accepted by PutVertexWithExpirationHLC
 	// (the LWW replication apply path; #182). It is only populated when
@@ -171,10 +183,10 @@ func (c *GraphCache[S, T]) EnablePrefixIndex(extract func(S) string) {
 // putVertexLocked inserts (or refreshes) a vertex entry with its search
 // document analyzed inline (under c.mu). It backs the replicated apply path
 // (PutVertexWithExpirationHLC) and the inline-analysis fallback for single
-// local writes; batch writers precompute the search document outside c.mu and
-// call upsertVertexLocked with it directly. Caller must hold c.mu.
+// local writes. Prepared batch writers bypass it after applying their compact
+// mutations once through IndexManyPrepared. Caller must hold c.mu.
 func (c *GraphCache[S, T]) putVertexLocked(key S, value T, expiration time.Time) {
-	c.upsertVertexLocked(key, value, expiration, nil)
+	c.upsertVertexLocked(key, value, expiration)
 }
 
 // upsertVertexLocked stores/refreshes the vertex and updates its secondary
@@ -183,19 +195,13 @@ func (c *GraphCache[S, T]) putVertexLocked(key S, value T, expiration time.Time)
 // side effects — dictionary interning and prefix insertion — so an
 // expired-but-not-yet-flushed overwrite neither re-interns the key (which would
 // inflate its dictionary refcount past the single live slot) nor re-inserts it
-// into the prefix index. When prepared is non-nil its pre-analyzed tokens are
-// applied to the search index — analysis having run outside c.mu — otherwise
-// the document is analyzed inline. Caller must hold c.mu (#739).
-func (c *GraphCache[S, T]) upsertVertexLocked(key S, value T, expiration time.Time, prepared *search.PreparedDocument) {
+// into the prefix index. The singular path analyzes the document inline;
+// prepared batch paths call upsertVertexStorageLocked directly after their one
+// IndexManyPrepared mutation. Caller must hold c.mu (#739, #1051).
+func (c *GraphCache[S, T]) upsertVertexLocked(key S, value T, expiration time.Time) {
 	c.upsertVertexStorageLocked(key, value, expiration)
 	if c.searchIndex != nil {
-		var err error
-		if prepared != nil {
-			err = c.searchIndex.IndexPrepared(key, *prepared)
-		} else {
-			err = c.searchIndex.Index(key, c.searchExtract(value))
-		}
-		if err != nil {
+		if err := c.searchIndex.Index(key, c.searchExtract(value)); err != nil {
 			c.searchIndex.MarkIncomplete()
 		}
 	}
@@ -226,36 +232,36 @@ func (c *GraphCache[S, T]) upsertVertexStorageLocked(key S, value T, expiration 
 // a per-key watermark after the store, so it keeps calling putVertexLocked
 // directly. Caller must hold c.mu.
 func (c *GraphCache[S, T]) putLocalVertexLocked(key S, value T, expiration time.Time) bool {
-	return c.putLocalVertexLockedAt(key, value, expiration, time.Now(), nil)
+	return c.putLocalVertexLockedAt(key, value, expiration, time.Now())
 }
 
-// putLocalVertexLockedAt is putLocalVertexLocked with the liveness clock and an
-// optional precomputed search document supplied by the caller. A batch writer
-// samples time.Now() once for the whole batch and analyzes every search
-// document outside c.mu (see prepareSearchDocsBounded), then calls this per item so the
-// only work under c.mu is the cheap store + postings mutation. A nil prepared
-// falls back to inline analysis. Caller must hold c.mu (#739).
+// putLocalVertexLockedAt is putLocalVertexLocked with the liveness clock
+// supplied by the caller. Caller must hold c.mu.
 //
 // It returns stored=false when the write was discarded because its expiration
 // was already past (dead on arrival), and true when the value was upserted.
 // The if-absent write paths use this to count only writes that actually landed
 // so a born-expired item is reported as neither written nor skipped (#918);
 // unconditional callers may ignore the return.
-func (c *GraphCache[S, T]) putLocalVertexLockedAt(key S, value T, expiration, now time.Time, prepared *search.PreparedDocument) (stored bool) {
-	return c.putLocalVertexLockedAtMode(key, value, expiration, now, prepared, true)
+func (c *GraphCache[S, T]) putLocalVertexLockedAt(key S, value T, expiration, now time.Time) (stored bool) {
+	return c.putLocalVertexLockedAtMode(key, value, expiration, now, true)
 }
 
-func (c *GraphCache[S, T]) putLocalVertexLockedAtMode(key S, value T, expiration, now time.Time, prepared *search.PreparedDocument, updateSearch bool) (stored bool) {
+func (c *GraphCache[S, T]) putLocalVertexLockedAtMode(key S, value T, expiration, now time.Time, updateSearch bool) (stored bool) {
 	if !cache.IsLiveAt(expiration, now) {
 		// Dead on arrival. Delete is a cheap map-miss when the key is absent
 		// (the common churn case) and fires the eviction hook — releasing the
 		// dictionary reference and dropping prefix/search postings — when it is
 		// present, so an overwrite-to-expired still takes effect.
-		c.vertices.Delete(key)
+		if updateSearch {
+			c.vertices.Delete(key)
+		} else {
+			c.deleteVertexStoragePreindexedLocked(key)
+		}
 		return false
 	}
 	if updateSearch {
-		c.upsertVertexLocked(key, value, expiration, prepared)
+		c.upsertVertexLocked(key, value, expiration)
 	} else {
 		c.upsertVertexStorageLocked(key, value, expiration)
 	}

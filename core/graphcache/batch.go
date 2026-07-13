@@ -43,11 +43,14 @@ type EdgeKey[S comparable] struct {
 // post-batch state — never an intermediate snapshot where some keys are
 // present and others are not.
 //
-// Search-document analysis (tokenization) for the whole batch runs BEFORE the
-// lock is taken (see prepareSearchDocsBounded) so the expensive per-vertex work never
-// serializes other writers behind the aggregate graph lock; only the cheap
-// store + postings mutation happens under c.mu (#739). A search-analysis limit
-// error rejects the complete batch before either structure changes.
+// Search-document projection, tokenization, sorting, and term aggregation run
+// BEFORE the lock is taken (see prepareSearchDocsBounded), so expensive
+// per-vertex work never serializes other writers behind the aggregate graph
+// lock. The accepted compact mutations are applied through one index write-lock
+// acquisition. SearchVertices holds the shared side of searchCommitMu, so it
+// observes the complete pre-batch or post-batch state, never a midpoint. A
+// search-analysis limit error rejects the complete batch before either
+// structure changes (#739, #1051).
 func (c *GraphCache[S, T]) PutVerticesWithExpiration(items []VertexItem[S, T]) error {
 	return c.PutVerticesWithExpirationChecked(items)
 }
@@ -66,53 +69,130 @@ func (c *GraphCache[S, T]) PutVerticesWithExpirationIfAbsent(items []VertexItem[
 	return written, skipped
 }
 
-// prepareSearchDocsBounded analyzes every live item outside c.mu, returning a
-// 1:1 prepared/error pair. Born-expired items are left empty and skipped.
-func (c *GraphCache[S, T]) prepareSearchDocsBounded(items []VertexItem[S, T], now time.Time) ([]search.PreparedDocument, []error) {
-	if c.searchIndex == nil {
-		return nil, nil
-	}
-	prepared := make([]search.PreparedDocument, len(items))
-	errs := make([]error, len(items))
-	for i := range items {
-		if cache.IsLiveAt(items[i].Expiration, now) {
-			prepared[i], _, errs[i] = c.searchIndex.Prepare(c.searchExtract(items[i].Value))
-		}
-	}
-	return prepared, errs
+// searchPreparation holds index-aligned compact documents across optimistic
+// planning retries. A ready entry has either a prepared document or an error;
+// skipped entries remain untouched and perform no analysis.
+type searchPreparation struct {
+	documents []search.PreparedDocument
+	errs      []error
+	ready     []bool
 }
 
-// preparedAt returns a pointer to the i-th prepared document, or nil when no
-// search index produced a batch (prepared == nil) so the callee falls back to
-// inline analysis. The pointer is safe to take because prepared is a
-// fixed-size slice that is never appended to after preparation returns.
-func preparedAt(prepared []search.PreparedDocument, i int) *search.PreparedDocument {
-	if prepared == nil {
+func (c *GraphCache[S, T]) newSearchPreparation(n int) *searchPreparation {
+	if c.searchIndex == nil {
 		return nil
 	}
-	return &prepared[i]
+	return &searchPreparation{
+		documents: make([]search.PreparedDocument, n),
+		errs:      make([]error, n),
+		ready:     make([]bool, n),
+	}
+}
+
+// prepareSearchDocsBounded performs the expensive projection, tokenization,
+// sorting, and aggregation for selected items outside c.mu. Born-expired items
+// are marked ready with the zero prepared document, which represents deletion.
+func (c *GraphCache[S, T]) prepareSearchDocsBounded(items []VertexItem[S, T], indexes []int, now time.Time, preparation *searchPreparation) {
+	if preparation == nil {
+		return
+	}
+	for _, i := range indexes {
+		if preparation.ready[i] {
+			continue
+		}
+		preparation.ready[i] = true
+		if cache.IsLiveAt(items[i].Expiration, now) {
+			preparation.documents[i], _, preparation.errs[i] = c.searchIndex.Prepare(c.searchExtract(items[i].Value))
+		}
+	}
+}
+
+// finalVertexIndexes returns the last accepted item for each key, in request
+// order of those final occurrences. Only these values can affect the final
+// secondary-index state; preparing earlier duplicates is wasted work.
+func finalVertexIndexes[S comparable, T any](items []VertexItem[S, T], accepted []int) []int {
+	last := make(map[S]int, len(accepted))
+	for _, i := range accepted {
+		last[items[i].Key] = i
+	}
+	final := make([]int, 0, len(last))
+	for _, i := range accepted {
+		if last[items[i].Key] == i {
+			final = append(final, i)
+		}
+	}
+	return final
+}
+
+func allVertexIndexes[S comparable, T any](items []VertexItem[S, T]) []int {
+	indexes := make([]int, len(items))
+	for i := range items {
+		indexes[i] = i
+	}
+	return indexes
+}
+
+func missingPreparedIndexes(preparation *searchPreparation, indexes []int) []int {
+	if preparation == nil {
+		return nil
+	}
+	var missing []int
+	for _, i := range indexes {
+		if !preparation.ready[i] {
+			missing = append(missing, i)
+		}
+	}
+	return missing
+}
+
+func preparedItemsForIndexes[S comparable, T any](items []VertexItem[S, T], indexes []int, preparation *searchPreparation) []search.PreparedItem[S] {
+	if preparation == nil {
+		return nil
+	}
+	out := make([]search.PreparedItem[S], 0, len(indexes))
+	for _, i := range indexes {
+		out = append(out, search.PreparedItem[S]{ID: items[i].Key, Prepared: preparation.documents[i]})
+	}
+	return out
 }
 
 // PutVerticesWithExpirationChecked is the bounded, all-or-nothing local write
 // path. Analysis and aggregate-limit validation complete before either the
 // vertex cache or secondary index is mutated.
 func (c *GraphCache[S, T]) PutVerticesWithExpirationChecked(items []VertexItem[S, T]) error {
+	return c.putVerticesWithExpirationChecked(items, nil)
+}
+
+func (c *GraphCache[S, T]) putVerticesWithExpirationChecked(items []VertexItem[S, T], observeLock func(time.Duration)) error {
 	if len(items) == 0 {
 		return nil
 	}
 	now := time.Now()
-	prepared, errs := c.prepareSearchDocsBounded(items, now)
-	for _, err := range errs {
-		if err != nil {
-			return err
+	preparation := c.newSearchPreparation(len(items))
+	var final []int
+	if preparation != nil {
+		final = finalVertexIndexes(items, allVertexIndexes(items))
+		c.prepareSearchDocsBounded(items, final, now, preparation)
+		for _, i := range final {
+			if preparation.errs[i] != nil {
+				return preparation.errs[i]
+			}
 		}
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if observeLock != nil {
+		lockedAt := time.Now()
+		defer func() { observeLock(time.Since(lockedAt)) }()
+	}
+	if c.searchIndex != nil {
+		c.searchCommitMu.Lock()
+		defer c.searchCommitMu.Unlock()
+	}
 	if c.searchIndex != nil && c.searchIndex.Health() != search.IndexHealthy {
 		return search.ErrIndexIncomplete
 	}
-	indexItems := preparedItems(items, prepared)
+	indexItems := preparedItemsForIndexes(items, final, preparation)
 	if c.searchIndex != nil {
 		if err := c.searchIndex.ValidateManyPrepared(indexItems); err != nil {
 			return err
@@ -120,7 +200,7 @@ func (c *GraphCache[S, T]) PutVerticesWithExpirationChecked(items []VertexItem[S
 		c.searchIndex.IndexManyPreparedValidated(indexItems)
 	}
 	for i := range items {
-		c.putLocalVertexLockedAtMode(items[i].Key, items[i].Value, items[i].Expiration, now, preparedAt(prepared, i), false)
+		c.putLocalVertexLockedAtMode(items[i].Key, items[i].Value, items[i].Expiration, now, false)
 	}
 	if c.searchIndex != nil && c.searchIndex.Health() != search.IndexHealthy {
 		return c.rebuildSearchIndexLocked()
@@ -128,46 +208,98 @@ func (c *GraphCache[S, T]) PutVerticesWithExpirationChecked(items []VertexItem[S
 	return nil
 }
 
-func preparedItems[S comparable, T any](items []VertexItem[S, T], prepared []search.PreparedDocument) []search.PreparedItem[S] {
-	if prepared == nil {
-		return nil
-	}
-	out := make([]search.PreparedItem[S], len(items))
-	for i := range items {
-		out[i] = search.PreparedItem[S]{ID: items[i].Key, Prepared: prepared[i]}
-	}
-	return out
-}
-
 // PutVerticesWithExpirationIfAbsentChecked is the conditional sibling of the
 // bounded local path. Limits are evaluated only for items that would actually
 // be accepted; an oversized skipped item cannot poison an otherwise valid
 // batch.
 func (c *GraphCache[S, T]) PutVerticesWithExpirationIfAbsentChecked(items []VertexItem[S, T]) (written int, skipped []S, err error) {
-	accepted, skipped, err := c.putVerticesIfAbsentChecked(items, hlc.Timestamp{}, false)
+	accepted, skipped, err := c.putVerticesIfAbsentChecked(items, hlc.Timestamp{}, false, nil)
 	return len(accepted), skipped, err
 }
 
 // PutVerticesWithExpirationIfAbsentHLCChecked is the local replicated-origin
 // path: accepted writes are bounded before graph or HLC mutation.
 func (c *GraphCache[S, T]) PutVerticesWithExpirationIfAbsentHLCChecked(items []VertexItem[S, T], ts hlc.Timestamp) (writtenIdx []int, skipped []S, err error) {
-	return c.putVerticesIfAbsentChecked(items, ts, true)
+	return c.putVerticesIfAbsentChecked(items, ts, true, nil)
 }
 
-func (c *GraphCache[S, T]) putVerticesIfAbsentChecked(items []VertexItem[S, T], ts hlc.Timestamp, useHLC bool) ([]int, []S, error) {
+func (c *GraphCache[S, T]) putVerticesIfAbsentChecked(items []VertexItem[S, T], ts hlc.Timestamp, useHLC bool, observeLock func(time.Duration)) ([]int, []S, error) {
 	if len(items) == 0 {
 		return nil, nil, nil
 	}
 	now := time.Now()
-	prepared, errs := c.prepareSearchDocsBounded(items, now)
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.searchIndex != nil && c.searchIndex.Health() != search.IndexHealthy {
-		return nil, nil, search.ErrIndexIncomplete
+	preparation := c.newSearchPreparation(len(items))
+	for {
+		c.mu.Lock()
+		lockedAt := time.Time{}
+		if observeLock != nil {
+			lockedAt = time.Now()
+		}
+		unlock := func() {
+			if observeLock != nil {
+				observeLock(time.Since(lockedAt))
+			}
+			c.mu.Unlock()
+		}
+		if c.searchIndex != nil && c.searchIndex.Health() != search.IndexHealthy {
+			unlock()
+			return nil, nil, search.ErrIndexIncomplete
+		}
+		accepted, skipped := c.planVerticesIfAbsentLocked(items, ts, useHLC, now)
+		missing := missingPreparedIndexes(preparation, accepted)
+		if len(missing) > 0 {
+			unlock()
+			c.prepareSearchDocsBounded(items, missing, now, preparation)
+			continue
+		}
+		if preparation != nil {
+			for _, i := range accepted {
+				if preparation.errs[i] != nil {
+					unlock()
+					return nil, nil, preparation.errs[i]
+				}
+			}
+		}
+		if c.searchIndex != nil {
+			c.searchCommitMu.Lock()
+		}
+		indexItems := preparedItemsForIndexes(items, accepted, preparation)
+		if c.searchIndex != nil {
+			if err := c.searchIndex.ValidateManyPrepared(indexItems); err != nil {
+				c.searchCommitMu.Unlock()
+				unlock()
+				return nil, nil, err
+			}
+			c.searchIndex.IndexManyPreparedValidated(indexItems)
+		}
+		for _, i := range accepted {
+			item := items[i]
+			c.putLocalVertexLockedAtMode(item.Key, item.Value, item.Expiration, now, false)
+			if useHLC {
+				c.recordVertexHLCLocked(item.Key, ts)
+				c.clearVertexTombstoneLocked(item.Key)
+			}
+		}
+		if c.searchIndex != nil && c.searchIndex.Health() != search.IndexHealthy {
+			if err := c.rebuildSearchIndexLocked(); err != nil {
+				c.searchCommitMu.Unlock()
+				unlock()
+				return nil, nil, err
+			}
+		}
+		if c.searchIndex != nil {
+			c.searchCommitMu.Unlock()
+		}
+		unlock()
+		return accepted, skipped, nil
 	}
+}
+
+// planVerticesIfAbsentLocked performs only cheap liveness/causality checks.
+// Callers release c.mu before preparing the returned documents, then retry the
+// plan before commit; a stable skipped item is therefore never analyzed.
+func (c *GraphCache[S, T]) planVerticesIfAbsentLocked(items []VertexItem[S, T], ts hlc.Timestamp, useHLC bool, now time.Time) (accepted []int, skipped []S) {
 	reserved := make(map[S]struct{})
-	var accepted []int
-	var skipped []S
 	for i, item := range items {
 		_, duplicate := reserved[item.Key]
 		if c.vertices.Has(item.Key) || duplicate || (useHLC && !c.vertexWriteAllowedLocked(item.Key, ts)) {
@@ -177,38 +309,10 @@ func (c *GraphCache[S, T]) putVerticesIfAbsentChecked(items []VertexItem[S, T], 
 		if !cache.IsLiveAt(item.Expiration, now) {
 			continue
 		}
-		if errs != nil && errs[i] != nil {
-			return nil, nil, errs[i]
-		}
 		accepted = append(accepted, i)
 		reserved[item.Key] = struct{}{}
 	}
-	indexItems := make([]search.PreparedItem[S], 0, len(accepted))
-	if c.searchIndex != nil {
-		for _, i := range accepted {
-			indexItems = append(indexItems, search.PreparedItem[S]{ID: items[i].Key, Prepared: prepared[i]})
-		}
-	}
-	if c.searchIndex != nil {
-		if err := c.searchIndex.ValidateManyPrepared(indexItems); err != nil {
-			return nil, nil, err
-		}
-		c.searchIndex.IndexManyPreparedValidated(indexItems)
-	}
-	for _, i := range accepted {
-		item := items[i]
-		c.putLocalVertexLockedAtMode(item.Key, item.Value, item.Expiration, now, preparedAt(prepared, i), false)
-		if useHLC {
-			c.recordVertexHLCLocked(item.Key, ts)
-			c.clearVertexTombstoneLocked(item.Key)
-		}
-	}
-	if c.searchIndex != nil && c.searchIndex.Health() != search.IndexHealthy {
-		if err := c.rebuildSearchIndexLocked(); err != nil {
-			return nil, nil, err
-		}
-	}
-	return accepted, skipped, nil
+	return accepted, skipped
 }
 
 // AddEdgesWithExpiration additively writes every supplied edge under a
@@ -309,8 +413,8 @@ func (c *GraphCache[S, T]) PutEdgesWithExpiration(items []EdgeItem[S]) {
 
 // DeleteVertices removes every supplied vertex under a single write lock
 // and returns the count of keys that were actually present (and therefore
-// deleted). Concurrent readers observe either the pre-batch or the
-// post-batch state. Vertex-owned side indexes (dict refs, prefix radix,
+// deleted). Concurrent SearchVertices readers observe either the pre-batch or
+// the post-batch state through searchCommitMu. Vertex-owned side indexes (dict refs, prefix radix,
 // search postings) are cleaned in one pass via the batch eviction hook so a
 // large delete pays one acquisition per index instead of one per key (#738).
 func (c *GraphCache[S, T]) DeleteVertices(keys []S) int {
@@ -319,6 +423,10 @@ func (c *GraphCache[S, T]) DeleteVertices(keys []S) int {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.searchIndex != nil {
+		c.searchCommitMu.Lock()
+		defer c.searchCommitMu.Unlock()
+	}
 	n := len(c.vertices.DeleteMany(keys))
 	c.rebuildIncompleteSearchLocked()
 	return n
@@ -387,54 +495,75 @@ func (c *GraphCache[S, T]) putVerticesWithExpirationHLC(items []VertexItem[S, T]
 		return 0, nil
 	}
 	now := time.Now()
-	prepared, prepErrs := c.prepareSearchDocsBounded(items, now)
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if strict && c.searchIndex != nil && c.searchIndex.Health() != search.IndexHealthy {
-		return 0, search.ErrIndexIncomplete
+	preparation := c.newSearchPreparation(len(items))
+	for {
+		c.mu.Lock()
+		accepted, rejected := c.planVerticesHLCLocked(items, ts)
+		var final []int
+		var indexErr error
+		if c.searchIndex != nil && c.searchIndex.Health() != search.IndexHealthy {
+			indexErr = search.ErrIndexIncomplete
+		} else if preparation != nil {
+			final = finalVertexIndexes(items, accepted)
+			missing := missingPreparedIndexes(preparation, final)
+			if len(missing) > 0 {
+				c.mu.Unlock()
+				c.prepareSearchDocsBounded(items, missing, now, preparation)
+				continue
+			}
+			if preparation != nil {
+				for _, i := range final {
+					if preparation.errs[i] != nil {
+						indexErr = preparation.errs[i]
+						break
+					}
+				}
+			}
+		}
+		indexItems := preparedItemsForIndexes(items, final, preparation)
+		if c.searchIndex != nil {
+			c.searchCommitMu.Lock()
+		}
+		if indexErr == nil && c.searchIndex != nil {
+			indexErr = c.searchIndex.ValidateManyPrepared(indexItems)
+		}
+		if strict && indexErr != nil {
+			if c.searchIndex != nil {
+				c.searchCommitMu.Unlock()
+			}
+			c.mu.Unlock()
+			return rejected, indexErr
+		}
+		if c.searchIndex != nil && indexErr == nil {
+			c.searchIndex.IndexManyPreparedValidated(indexItems)
+		}
+		if indexErr != nil && c.searchIndex != nil {
+			c.searchIndex.MarkIncomplete()
+		}
+		for _, i := range accepted {
+			item := items[i]
+			c.putLocalVertexLockedAtMode(item.Key, item.Value, item.Expiration, now, false)
+			c.recordVertexHLCLocked(item.Key, ts)
+			c.clearVertexTombstoneLocked(item.Key)
+		}
+		if c.searchIndex != nil {
+			c.searchCommitMu.Unlock()
+		}
+		c.mu.Unlock()
+		return rejected, nil
 	}
-	accepted := make([]int, 0, len(items))
+}
+
+func (c *GraphCache[S, T]) planVerticesHLCLocked(items []VertexItem[S, T], ts hlc.Timestamp) (accepted []int, rejected int) {
+	accepted = make([]int, 0, len(items))
 	for i := range items {
-		it := items[i]
-		if !c.vertexWriteAllowedLocked(it.Key, ts) {
+		if !c.vertexWriteAllowedLocked(items[i].Key, ts) {
 			rejected++
 			continue
 		}
 		accepted = append(accepted, i)
 	}
-	indexItems := make([]search.PreparedItem[S], 0, len(accepted))
-	var indexErr error
-	if c.searchIndex != nil && c.searchIndex.Health() != search.IndexHealthy {
-		indexErr = search.ErrIndexIncomplete
-	} else if c.searchIndex != nil {
-		for _, i := range accepted {
-			if prepErrs != nil && prepErrs[i] != nil {
-				indexErr = prepErrs[i]
-				break
-			}
-			indexItems = append(indexItems, search.PreparedItem[S]{ID: items[i].Key, Prepared: prepared[i]})
-		}
-	}
-	if indexErr == nil && c.searchIndex != nil {
-		indexErr = c.searchIndex.ValidateManyPrepared(indexItems)
-	}
-	if strict && indexErr != nil {
-		return rejected, indexErr
-	}
-	updateSearch := c.searchIndex != nil && indexErr == nil
-	if updateSearch {
-		c.searchIndex.IndexManyPreparedValidated(indexItems)
-	}
-	if indexErr != nil && c.searchIndex != nil {
-		c.searchIndex.MarkIncomplete()
-	}
-	for _, i := range accepted {
-		it := items[i]
-		c.putLocalVertexLockedAtMode(it.Key, it.Value, it.Expiration, now, preparedAt(prepared, i), false)
-		c.recordVertexHLCLocked(it.Key, ts)
-		c.clearVertexTombstoneLocked(it.Key)
-	}
-	return rejected, nil
+	return accepted, rejected
 }
 
 // PutVerticesWithExpirationIfAbsentHLC is the replication-aware sibling of

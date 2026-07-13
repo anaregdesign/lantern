@@ -435,6 +435,20 @@ func TestInvertedIndexPrepared(t *testing.T) {
 		}
 		return prepared
 	}
+	t.Run("Prepare groups sorted frequencies and positions", func(t *testing.T) {
+		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID, WithPositions())
+		prepared := mustPrepare(t, idx, Text("Beta alpha beta"))
+		words := prepared.classes[ClassWord]
+		if words.length != 3 || len(words.terms) != 2 || prepared.postings != 2 || prepared.positionEntries != 3 {
+			t.Fatalf("prepared = %+v", prepared)
+		}
+		if got := words.terms[0]; got.term != "alpha" || got.frequency != 1 || !slices.Equal(got.positions, []uint32{1}) {
+			t.Fatalf("first grouped term = %+v", got)
+		}
+		if got := words.terms[1]; got.term != "beta" || got.frequency != 2 || !slices.Equal(got.positions, []uint32{0, 2}) {
+			t.Fatalf("second grouped term = %+v", got)
+		}
+	})
 	t.Run("IndexPrepared matches Index", func(t *testing.T) {
 		viaIndex := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID)
 		viaIndex.Index("doc1", Text("Alpha Beta"))

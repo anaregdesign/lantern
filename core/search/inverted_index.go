@@ -3,7 +3,9 @@ package search
 import (
 	"container/heap"
 	"math"
+	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -65,12 +67,13 @@ type InvertedIndex[S comparable, D Document] struct {
 	// docs is the forward index: document ordinal -> the id, per-class lengths,
 	// and term ids needed to score, return, and drop the document in
 	// O(terms-in-doc).
-	docs                map[uint32]docEntry[S]
-	livePostings        int64
-	livePositions       int64
-	health              IndexHealth
-	rebuildCount        uint64
-	lastRebuildDuration time.Duration
+	docs                  map[uint32]docEntry[S]
+	livePostings          int64
+	livePositions         int64
+	health                IndexHealth
+	rebuildCount          uint64
+	lastRebuildDuration   time.Duration
+	writeLockAcquisitions uint64
 }
 
 // classPostings is one token class's slice of the index: its term dictionary,
@@ -208,13 +211,27 @@ func (idx *InvertedIndex[S, D]) Index(id S, doc D) error {
 	return idx.IndexPrepared(id, prepared)
 }
 
-// PreparedDocument carries the analyzed tokens of a document so the expensive
-// analysis (doc.String() + tokenization) can run outside the index write lock.
-// Produce one with Prepare and apply it with IndexPrepared or IndexManyPrepared.
-// The zero value is a valid empty document: applying it removes the id, matching
-// Index of a document with no analyzable terms.
+// PreparedDocument carries an already grouped document representation so all
+// analysis, partitioning, sorting, frequency aggregation, and position
+// collection complete before the index write lock is acquired. Produce one
+// with Prepare and apply it with IndexPrepared or IndexManyPrepared. The zero
+// value is a valid empty document: applying it removes the id, matching Index
+// of a document with no analyzable terms.
 type PreparedDocument struct {
-	tokens []Token
+	classes         [numTokenClasses]preparedClass
+	postings        int
+	positionEntries int
+}
+
+type preparedClass struct {
+	length int
+	terms  []preparedTerm
+}
+
+type preparedTerm struct {
+	term      string
+	frequency int
+	positions []uint32
 }
 
 // PreparedItem pairs an id with its PreparedDocument for IndexManyPrepared.
@@ -253,22 +270,72 @@ func (idx *InvertedIndex[S, D]) Prepare(doc D) (PreparedDocument, AnalysisStats,
 	if err := limitError(LimitDocumentTokens, int64(stats.Tokens), int64(idx.limits.MaxDocumentTokens)); err != nil {
 		return PreparedDocument{}, stats, err
 	}
-	seen := make(map[Token]struct{}, len(tokens))
+	prepared := PreparedDocument{}
+	var wordPositions map[string][]uint32
+	if idx.positions {
+		wordPositions = make(map[string][]uint32)
+	}
+	var wordPosition uint32
 	for _, token := range tokens {
 		if int(token.Class) >= numTokenClasses {
 			panic("search: token with undefined TokenClass")
 		}
-		seen[token] = struct{}{}
 		if idx.positions && token.Class == ClassWord {
-			stats.PositionEntries++
+			wordPositions[token.Term] = append(wordPositions[token.Term], wordPosition)
+			wordPosition++
 		}
 	}
-	stats.UniqueTerms = len(seen)
-	stats.Postings = len(seen)
+	// The analyzer owns this token slice for the call, so sort it in place
+	// instead of allocating a second occurrence-sized scratch representation.
+	// Positions were captured above while tokens were still in source order.
+	slices.SortFunc(tokens, func(a, b Token) int {
+		if a.Class < b.Class {
+			return -1
+		}
+		if a.Class > b.Class {
+			return 1
+		}
+		return strings.Compare(a.Term, b.Term)
+	})
+	var distinct [numTokenClasses]int
+	for i := 0; i < len(tokens); {
+		j := i + 1
+		for j < len(tokens) && tokens[j] == tokens[i] {
+			j++
+		}
+		distinct[tokens[i].Class]++
+		i = j
+	}
+	for class, count := range distinct {
+		if count > 0 {
+			prepared.classes[class].terms = make([]preparedTerm, 0, count)
+		}
+	}
+	for i := 0; i < len(tokens); {
+		j := i + 1
+		for j < len(tokens) && tokens[j] == tokens[i] {
+			j++
+		}
+		class := tokens[i].Class
+		term := preparedTerm{term: tokens[i].Term, frequency: j - i}
+		if idx.positions && class == ClassWord {
+			term.positions = wordPositions[term.term]
+		}
+		prepared.classes[class].length += j - i
+		prepared.classes[class].terms = append(prepared.classes[class].terms, term)
+		prepared.postings++
+		i = j
+	}
+	if idx.positions {
+		prepared.positionEntries = int(wordPosition)
+	}
+	stats.UniqueTerms = prepared.postings
+	stats.Postings = prepared.postings
+	stats.PositionEntries = prepared.positionEntries
 	if err := limitError(LimitDocumentTerms, int64(stats.UniqueTerms), int64(idx.limits.MaxDocumentTerms)); err != nil {
 		return PreparedDocument{}, stats, err
 	}
-	return PreparedDocument{tokens: tokens}, stats, nil
+	return prepared, stats, nil
 }
 
 // IndexPrepared records id's postings from a PreparedDocument produced by
@@ -276,12 +343,12 @@ func (idx *InvertedIndex[S, D]) Prepare(doc D) (PreparedDocument, AnalysisStats,
 // Index: any previous postings for id are dropped first, and an empty prepared
 // document simply removes id.
 func (idx *InvertedIndex[S, D]) IndexPrepared(id S, prepared PreparedDocument) error {
-	idx.mu.Lock()
+	idx.lockWrite()
 	defer idx.mu.Unlock()
 	if err := idx.validatePreparedLocked([]PreparedItem[S]{{ID: id, Prepared: prepared}}); err != nil {
 		return err
 	}
-	idx.indexPreparedLocked(id, prepared.tokens)
+	idx.indexPreparedLocked(id, prepared)
 	idx.compactIfNeededLocked()
 	return nil
 }
@@ -295,13 +362,13 @@ func (idx *InvertedIndex[S, D]) IndexManyPrepared(items []PreparedItem[S]) error
 	if len(items) == 0 {
 		return nil
 	}
-	idx.mu.Lock()
+	idx.lockWrite()
 	defer idx.mu.Unlock()
 	if err := idx.validatePreparedLocked(items); err != nil {
 		return err
 	}
 	for _, it := range finalPreparedItems(items) {
-		idx.indexPreparedLocked(it.ID, it.Prepared.tokens)
+		idx.indexPreparedLocked(it.ID, it.Prepared)
 	}
 	idx.compactIfNeededLocked()
 	return nil
@@ -323,10 +390,10 @@ func (idx *InvertedIndex[S, D]) IndexManyPreparedValidated(items []PreparedItem[
 	if len(items) == 0 {
 		return
 	}
-	idx.mu.Lock()
+	idx.lockWrite()
 	defer idx.mu.Unlock()
 	for _, item := range finalPreparedItems(items) {
-		idx.indexPreparedLocked(item.ID, item.Prepared.tokens)
+		idx.indexPreparedLocked(item.ID, item.Prepared)
 	}
 	idx.compactIfNeededLocked()
 }
@@ -346,86 +413,39 @@ func finalPreparedItems[S comparable](items []PreparedItem[S]) []PreparedItem[S]
 }
 
 // indexPreparedLocked is the shared postings-mutation core of IndexPrepared and
-// IndexManyPrepared; callers must hold idx.mu for writing. A token with an
-// undefined class panics: that is a broken analyzer, not a malformed document.
-func (idx *InvertedIndex[S, D]) indexPreparedLocked(id S, tokens []Token) {
+// IndexManyPrepared; callers must hold idx.mu for writing. Prepare has already
+// validated classes and reduced every class to sorted distinct terms.
+func (idx *InvertedIndex[S, D]) indexPreparedLocked(id S, prepared PreparedDocument) {
 	// Replace semantics: drop any postings from a previous Index(id, ...)
 	// before recording the new ones.
 	idx.deleteLocked(id)
-	if len(tokens) == 0 {
+	if prepared.postings == 0 {
 		return
-	}
-	// Partition the document's terms by class; each class's postings and
-	// statistics are recorded independently. perClass slices are transient
-	// scratch; only the compact distinct-term slices are retained.
-	var perClass [numTokenClasses][]string
-	// wordPositions maps each primary (ClassWord) term to its ascending token
-	// positions in this document, recorded only when the index tracks positions.
-	// Position counts word tokens only (auxiliary grams are skipped), so
-	// "data set" yields data@0 set@1 and a CJK run's consecutive bigrams get
-	// consecutive positions — both let SearchPhrase verify adjacency with pos+1.
-	var wordPositions map[string][]uint32
-	if idx.positions {
-		wordPositions = make(map[string][]uint32)
-	}
-	var wordPos uint32
-	for _, token := range tokens {
-		if int(token.Class) >= numTokenClasses {
-			panic("search: token with undefined TokenClass")
-		}
-		perClass[token.Class] = append(perClass[token.Class], token.Term)
-		if wordPositions != nil && token.Class == ClassWord {
-			wordPositions[token.Term] = append(wordPositions[token.Term], wordPos)
-			wordPos++
-		}
 	}
 	ord := idx.ords.assign(id)
 	entry := docEntry[S]{id: id}
-	for class, sorted := range perClass {
-		if len(sorted) == 0 {
+	for class, preparedClass := range prepared.classes {
+		if len(preparedClass.terms) == 0 {
 			continue
 		}
-		// Sort this class's terms so the distinct terms and their frequencies
-		// (the run length of each equal stretch) can be read in one linear pass.
-		sort.Strings(sorted)
-
-		// Count distinct terms up front so the retained forward-index slice is
-		// allocated at its exact length (no spare capacity held per document).
-		distinct := 1
-		for i := 1; i < len(sorted); i++ {
-			if sorted[i] != sorted[i-1] {
-				distinct++
-			}
-		}
 		cp := &idx.classes[class]
-		terms := make([]uint32, 0, distinct)
-		for i := 0; i < len(sorted); {
-			j := i + 1
-			for j < len(sorted) && sorted[j] == sorted[i] {
-				j++
-			}
-			tid := cp.dict.intern(sorted[i])
+		terms := make([]uint32, 0, len(preparedClass.terms))
+		for _, preparedTerm := range preparedClass.terms {
+			tid := cp.dict.intern(preparedTerm.term)
 			pl, ok := cp.postings[tid]
 			if !ok {
 				pl = newPostingList()
 				cp.postings[tid] = pl
 			}
-			var pos []uint32
-			if wordPositions != nil && class == int(ClassWord) {
-				pos = wordPositions[sorted[i]]
-			}
-			pl.set(ord, j-i, pos) // term frequency = run length of this term
+			pl.set(ord, preparedTerm.frequency, preparedTerm.positions)
 			terms = append(terms, tid)
-			i = j
 		}
-		entry.lengths[class] = len(sorted)
+		entry.lengths[class] = preparedClass.length
 		entry.terms[class] = terms
-		cp.totalLen += len(sorted)
+		cp.totalLen += preparedClass.length
 		cp.docCount++
 	}
-	if idx.positions {
-		entry.positionEntries = entry.lengths[ClassWord]
-	}
+	entry.positionEntries = prepared.positionEntries
 	idx.docs[ord] = entry
 	for class := range entry.terms {
 		idx.livePostings += int64(len(entry.terms[class]))
@@ -483,19 +503,15 @@ func (idx *InvertedIndex[S, D]) validatePreparedLocked(items []PreparedItem[S]) 
 		}
 	}
 	for _, prepared := range last {
-		seen := make(map[termKey]struct{}, len(prepared.tokens))
-		for _, token := range prepared.tokens {
-			key := termKey{class: token.Class, term: token.Term}
-			if _, ok := seen[key]; !ok {
-				seen[key] = struct{}{}
+		for class, preparedClass := range prepared.classes {
+			for _, term := range preparedClass.terms {
+				key := termKey{class: TokenClass(class), term: term.term}
 				loadDF(key)
 				deltaDF[key]++
 				postings++
 			}
-			if idx.positions && token.Class == ClassWord {
-				positions++
-			}
 		}
+		positions += int64(prepared.positionEntries)
 	}
 	liveTerms := 0
 	for class := range idx.classes {
@@ -524,7 +540,7 @@ func (idx *InvertedIndex[S, D]) validatePreparedLocked(items []PreparedItem[S]) 
 // id was never indexed. A term whose last document is removed is dropped
 // entirely, so a delete-heavy workload never leaks empty posting sets.
 func (idx *InvertedIndex[S, D]) Delete(id S) {
-	idx.mu.Lock()
+	idx.lockWrite()
 	defer idx.mu.Unlock()
 	idx.deleteLocked(id)
 	idx.compactIfNeededLocked()
@@ -539,7 +555,7 @@ func (idx *InvertedIndex[S, D]) DeleteMany(ids []S) {
 	if len(ids) == 0 {
 		return
 	}
-	idx.mu.Lock()
+	idx.lockWrite()
 	defer idx.mu.Unlock()
 	for _, id := range ids {
 		idx.deleteLocked(id)
@@ -579,7 +595,7 @@ func (idx *InvertedIndex[S, D]) deleteLocked(id S) {
 
 // MarkIncomplete makes all subsequent context-aware searches fail closed.
 func (idx *InvertedIndex[S, D]) MarkIncomplete() {
-	idx.mu.Lock()
+	idx.lockWrite()
 	idx.health = IndexIncomplete
 	idx.mu.Unlock()
 }
@@ -594,7 +610,7 @@ func (idx *InvertedIndex[S, D]) Health() IndexHealth {
 // Compact atomically rebuilds dictionaries, ordinals, postings, and document
 // maps from the live logical corpus. Searches observe either complete state.
 func (idx *InvertedIndex[S, D]) Compact() {
-	idx.mu.Lock()
+	idx.lockWrite()
 	defer idx.mu.Unlock()
 	idx.compactLocked()
 }
@@ -613,7 +629,7 @@ func (idx *InvertedIndex[S, D]) RebuildPrepared(items []PreparedItem[S]) error {
 	if err := tmp.IndexManyPrepared(items); err != nil {
 		return err
 	}
-	idx.mu.Lock()
+	idx.lockWrite()
 	defer idx.mu.Unlock()
 	idx.classes, idx.ords, idx.docs = tmp.classes, tmp.ords, tmp.docs
 	idx.livePostings, idx.livePositions = tmp.livePostings, tmp.livePositions
@@ -654,49 +670,41 @@ func (idx *InvertedIndex[S, D]) compactLocked() {
 	start := time.Now()
 	items := make([]PreparedItem[S], 0, len(idx.docs))
 	for ord, entry := range idx.docs {
-		var tokens []Token
-		wordStart := len(tokens)
-		if idx.positions && entry.positionEntries > 0 {
-			words := make([]Token, entry.positionEntries)
-			for _, tid := range entry.terms[ClassWord] {
-				term := idx.classes[ClassWord].dict.terms[tid]
-				for _, pos := range idx.classes[ClassWord].postings[tid].positionsOf(ord) {
-					if int(pos) < len(words) {
-						words[pos] = Token{Term: term, Class: ClassWord}
-					}
-				}
+		prepared := PreparedDocument{positionEntries: entry.positionEntries}
+		for class := range entry.terms {
+			preparedClass := preparedClass{
+				length: entry.lengths[class],
+				terms:  make([]preparedTerm, 0, len(entry.terms[class])),
 			}
-			tokens = append(tokens, words...)
-		} else {
-			for _, tid := range entry.terms[ClassWord] {
-				pl := idx.classes[ClassWord].postings[tid]
-				for range pl.tf(ord) {
-					tokens = append(tokens, Token{Term: idx.classes[ClassWord].dict.terms[tid], Class: ClassWord})
-				}
-			}
-		}
-		if missing := entry.lengths[ClassWord] - (len(tokens) - wordStart); missing > 0 && len(entry.terms[ClassWord]) > 0 {
-			term := idx.classes[ClassWord].dict.terms[entry.terms[ClassWord][0]]
-			for range missing {
-				tokens = append(tokens, Token{Term: term, Class: ClassWord})
-			}
-		}
-		for class := int(ClassWord) + 1; class < numTokenClasses; class++ {
-			classStart := len(tokens)
+			frequencySum := 0
 			for _, tid := range entry.terms[class] {
 				pl := idx.classes[class].postings[tid]
-				for range pl.tf(ord) {
-					tokens = append(tokens, Token{Term: idx.classes[class].dict.terms[tid], Class: TokenClass(class)})
+				positions := []uint32(nil)
+				frequency := pl.tf(ord)
+				if idx.positions && class == int(ClassWord) {
+					positions = pl.positionsOf(ord)
+					frequency = len(positions)
 				}
+				preparedClass.terms = append(preparedClass.terms, preparedTerm{
+					term:      idx.classes[class].dict.terms[tid],
+					frequency: frequency,
+					positions: positions,
+				})
+				frequencySum += frequency
 			}
-			if missing := entry.lengths[class] - (len(tokens) - classStart); missing > 0 && len(entry.terms[class]) > 0 {
-				term := idx.classes[class].dict.terms[entry.terms[class][0]]
-				for range missing {
-					tokens = append(tokens, Token{Term: term, Class: TokenClass(class)})
-				}
+			// Frequencies above uint16 are intentionally clamped in postingList.
+			// Preserve the exact document length across compaction by assigning
+			// the unobservable excess to one already-saturated term.
+			if missing := preparedClass.length - frequencySum; missing > 0 && len(preparedClass.terms) > 0 {
+				preparedClass.terms[0].frequency += missing
 			}
+			sort.Slice(preparedClass.terms, func(i, j int) bool {
+				return preparedClass.terms[i].term < preparedClass.terms[j].term
+			})
+			prepared.classes[class] = preparedClass
+			prepared.postings += len(preparedClass.terms)
 		}
-		items = append(items, PreparedItem[S]{ID: entry.id, Prepared: PreparedDocument{tokens: tokens}})
+		items = append(items, PreparedItem[S]{ID: entry.id, Prepared: prepared})
 	}
 	var opts []IndexOption
 	if idx.positions {
@@ -967,13 +975,14 @@ func (idx *InvertedIndex[S, D]) MemoryStats() IndexMemoryStats {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 	stats := IndexMemoryStats{
-		Documents:           len(idx.docs),
-		Postings:            idx.livePostings,
-		PositionEntries:     idx.livePositions,
-		RetainedOrdinals:    int(idx.ords.next),
-		RebuildCount:        idx.rebuildCount,
-		LastRebuildDuration: idx.lastRebuildDuration,
-		Health:              idx.health,
+		Documents:             len(idx.docs),
+		Postings:              idx.livePostings,
+		PositionEntries:       idx.livePositions,
+		RetainedOrdinals:      int(idx.ords.next),
+		RebuildCount:          idx.rebuildCount,
+		LastRebuildDuration:   idx.lastRebuildDuration,
+		WriteLockAcquisitions: idx.writeLockAcquisitions,
+		Health:                idx.health,
 	}
 	var termBytes int64
 	for class := range idx.classes {
@@ -989,6 +998,11 @@ func (idx *InvertedIndex[S, D]) MemoryStats() IndexMemoryStats {
 	stats.EstimatedLiveBytes = termBytes + int64(stats.Documents)*32 + stats.Postings*12 + stats.PositionEntries
 	stats.EstimatedRetainedBytes = stats.EstimatedLiveBytes + int64(stats.RetainedTermSlots-stats.LiveTerms)*16 + int64(stats.RetainedOrdinals-stats.Documents)*8
 	return stats
+}
+
+func (idx *InvertedIndex[S, D]) lockWrite() {
+	idx.mu.Lock()
+	idx.writeLockAcquisitions++
 }
 
 // Interface assertions: InvertedIndex is both an Indexer and a Searcher.

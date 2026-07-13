@@ -12,6 +12,170 @@ import (
 	"github.com/anaregdesign/lantern/core/search"
 )
 
+type countingSearchDocument struct {
+	text  string
+	calls *atomic.Int64
+}
+
+func (d countingSearchDocument) String() string {
+	d.calls.Add(1)
+	return d.text
+}
+
+func countingSearchExtract(d countingSearchDocument) search.Document { return d }
+
+func compareStringID(a, b string) int { return strings.Compare(a, b) }
+
+func TestPutVerticesWithExpiration_SearchBatchPreparation(t *testing.T) {
+	t.Run("one write lock and final duplicate state", func(t *testing.T) {
+		c := graphcache.NewGraphCache[string, string](time.Minute)
+		c.EnableSearchIndex(func(value string) search.Document { return search.Text(value) }, compareStringID)
+		exp := time.Now().Add(time.Minute)
+		if err := c.PutVerticesWithExpiration([]graphcache.VertexItem[string, string]{
+			{Key: "gone", Value: "old gone", Expiration: exp},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		before := c.SearchIndexMemoryStats().WriteLockAcquisitions
+		if err := c.PutVerticesWithExpiration([]graphcache.VertexItem[string, string]{
+			{Key: "duplicate", Value: "obsolete", Expiration: exp},
+			{Key: "gone", Value: "must disappear", Expiration: time.Now().Add(-time.Second)},
+			{Key: "fresh", Value: "batchterm", Expiration: exp},
+			{Key: "duplicate", Value: "final batchterm", Expiration: exp},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		after := c.SearchIndexMemoryStats().WriteLockAcquisitions
+		if got := after - before; got != 1 {
+			t.Fatalf("index write-lock acquisitions = %d, want 1", got)
+		}
+		if got := c.SearchVerticesMatch("obsolete", 10, "", search.MatchOptions{Mode: search.MatchAll}, false); len(got) != 0 {
+			t.Fatalf("obsolete duplicate remained searchable: %v", got)
+		}
+		if got := c.SearchVerticesMatch("gone", 10, "", search.MatchOptions{Mode: search.MatchAll}, false); len(got) != 0 {
+			t.Fatalf("born-expired overwrite remained searchable: %v", got)
+		}
+		if got := c.SearchVertices("batchterm", 10, ""); len(got) != 2 {
+			t.Fatalf("batchterm results = %v, want 2", got)
+		}
+		if stats := c.SearchIndexMemoryStats(); stats.Documents != 2 {
+			t.Fatalf("indexed documents = %d, want 2", stats.Documents)
+		}
+		if deleted := c.DeleteVertices([]string{"duplicate", "gone", "fresh"}); deleted != 2 {
+			t.Fatalf("DeleteVertices = %d, want 2", deleted)
+		}
+		if stats := c.SearchIndexMemoryStats(); stats.Documents != 0 || stats.LiveTerms != 0 || stats.Postings != 0 || stats.PositionEntries != 0 {
+			t.Fatalf("index refs after delete = %+v, want empty live state", stats)
+		}
+	})
+
+	t.Run("stable skips and duplicates avoid analysis", func(t *testing.T) {
+		var calls atomic.Int64
+		value := func(text string) countingSearchDocument {
+			return countingSearchDocument{text: text, calls: &calls}
+		}
+		c := graphcache.NewGraphCache[string, countingSearchDocument](time.Minute)
+		c.EnableSearchIndex(countingSearchExtract, compareStringID)
+		exp := time.Now().Add(time.Minute)
+		if err := c.PutVerticesWithExpiration([]graphcache.VertexItem[string, countingSearchDocument]{
+			{Key: "taken", Value: value("taken"), Expiration: exp},
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		calls.Store(0)
+		written, skipped, err := c.PutVerticesWithExpirationIfAbsentChecked([]graphcache.VertexItem[string, countingSearchDocument]{
+			{Key: "taken", Value: value("must not analyze"), Expiration: exp},
+			{Key: "fresh", Value: value("accepted"), Expiration: exp},
+			{Key: "fresh", Value: value("duplicate must not analyze"), Expiration: exp},
+			{Key: "expired", Value: value("born expired"), Expiration: time.Now().Add(-time.Second)},
+		})
+		if err != nil || written != 1 || len(skipped) != 2 || skipped[0] != "taken" || skipped[1] != "fresh" {
+			t.Fatalf("written=%d skipped=%v err=%v", written, skipped, err)
+		}
+		if got := calls.Load(); got != 1 {
+			t.Fatalf("if-absent document analyses = %d, want 1", got)
+		}
+
+		calls.Store(0)
+		if err := c.PutVerticesWithExpiration([]graphcache.VertexItem[string, countingSearchDocument]{
+			{Key: "duplicate", Value: value("first"), Expiration: exp},
+			{Key: "duplicate", Value: value("second"), Expiration: exp},
+			{Key: "duplicate", Value: value("final"), Expiration: exp},
+			{Key: "expired", Value: value("born expired"), Expiration: time.Now().Add(-time.Second)},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if got := calls.Load(); got != 1 {
+			t.Fatalf("unconditional document analyses = %d, want final duplicate only", got)
+		}
+
+		calls.Store(0)
+		if rejected, err := c.PutVerticesWithExpirationHLCChecked([]graphcache.VertexItem[string, countingSearchDocument]{
+			{Key: "taken", Value: value("newer"), Expiration: exp},
+		}, hlc.Timestamp{WallNs: 20}); err != nil || rejected != 0 {
+			t.Fatalf("seed HLC rejected=%d err=%v", rejected, err)
+		}
+		calls.Store(0)
+		rejected, err := c.PutVerticesWithExpirationHLCChecked([]graphcache.VertexItem[string, countingSearchDocument]{
+			{Key: "taken", Value: value("stale must not analyze"), Expiration: exp},
+			{Key: "hlc-fresh", Value: value("accepted"), Expiration: exp},
+		}, hlc.Timestamp{WallNs: 10})
+		if err != nil || rejected != 1 {
+			t.Fatalf("stale HLC rejected=%d err=%v", rejected, err)
+		}
+		if got := calls.Load(); got != 1 {
+			t.Fatalf("HLC document analyses = %d, want 1", got)
+		}
+	})
+}
+
+func TestPutVerticesWithExpiration_SearchBatchVisibility(t *testing.T) {
+	const documents = 128
+	c := graphcache.NewGraphCache[string, string](time.Minute)
+	c.EnableSearchIndex(func(value string) search.Document { return search.Text(value) }, compareStringID)
+	exp := time.Now().Add(time.Minute)
+	items := make([]graphcache.VertexItem[string, string], documents)
+	keys := make([]string, documents)
+	for i := range items {
+		key := "batch-" + itoa(i)
+		keys[i] = key
+		items[i] = graphcache.VertexItem[string, string]{Key: key, Value: "atomicbatchterm", Expiration: exp}
+	}
+
+	var stop atomic.Bool
+	var reads atomic.Int64
+	var partial atomic.Int64
+	var readers sync.WaitGroup
+	readers.Add(4)
+	for range 4 {
+		go func() {
+			defer readers.Done()
+			for !stop.Load() {
+				got := len(c.SearchVertices("atomicbatchterm", documents+1, ""))
+				reads.Add(1)
+				if got != 0 && got != documents {
+					partial.Add(1)
+				}
+			}
+		}()
+	}
+	for range 50 {
+		if err := c.PutVerticesWithExpiration(items); err != nil {
+			t.Fatal(err)
+		}
+		c.DeleteVertices(keys)
+	}
+	stop.Store(true)
+	readers.Wait()
+	if reads.Load() == 0 {
+		t.Fatal("reader never executed")
+	}
+	if got := partial.Load(); got != 0 {
+		t.Fatalf("search observed %d partial batch snapshots", got)
+	}
+}
+
 // TestAddEdgesWithExpiration_AtomicNeighborSnapshot verifies that a
 // concurrent reader using Neighbor (which holds the cache RLock for the
 // duration of a single call) observes either the pre-batch state (no

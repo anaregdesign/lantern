@@ -203,6 +203,10 @@ func (c *GraphCache[S, T]) DeleteByPrefix(ctx context.Context, prefix string, li
 		victims = append(victims, key)
 		return true
 	})
+	if c.searchIndex != nil && len(victims) > 0 {
+		c.searchCommitMu.Lock()
+		defer c.searchCommitMu.Unlock()
+	}
 	deleted := len(c.vertices.DeleteMany(victims))
 	c.rebuildIncompleteSearchLocked()
 	return deleted

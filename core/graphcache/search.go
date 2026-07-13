@@ -167,6 +167,11 @@ func (c *GraphCache[S, T]) rebuildIncompleteSearchLocked() {
 // liveness and prefix filters so a full page of live, in-scope hits is
 // returned whenever one exists. Equal scores are ordered ascending by the
 // typed compareID function supplied to EnableSearchIndex.
+//
+// Plural vertex writes/deletes publish their vertex and index mutations through
+// one commit barrier, so a concurrent search observes the complete pre-batch or
+// post-batch result set. Singular writes retain GetVertex's point-read contract
+// and may race a search on that one key.
 func (c *GraphCache[S, T]) SearchVertices(query string, limit int, keyPrefix string) []search.Result[S] {
 	return c.SearchVerticesMatch(query, limit, keyPrefix, search.MatchOptions{}, false)
 }
@@ -203,15 +208,23 @@ func (c *GraphCache[S, T]) SearchVerticesMatchContext(ctx context.Context, query
 	if index == nil {
 		return nil, search.Stats{}, nil
 	}
+	// A prepared vertex batch updates the index and vertex store under the
+	// exclusive side of this barrier. Holding the shared side for ranking plus
+	// liveness filtering guarantees a search observes the complete pre-batch or
+	// post-batch view, never an index/store midpoint. The barrier does not cover
+	// analysis or any unrelated graph operation.
+	c.searchCommitMu.RLock()
+	defer c.searchCommitMu.RUnlock()
 	// Phase 2 — query analysis, BM25 ranking, and liveness/prefix filtering all
 	// run WITHOUT GraphCache.mu. The liveness and prefix filters are pushed INTO
 	// the index's bounded top-k selection as the accept callback (#841), so a
 	// broad query (the bigram analyzer makes a two-character query match most of
 	// the corpus) never materialises and fully sorts its whole match set.
 	//
-	// Lock order: accept runs under the index's RLock and probes only the vertex
-	// cache's inner mutex (which never acquires the index lock), an order already
-	// established by index writes running under GraphCache.mu. Liveness is
+	// Lock order: accept runs under searchCommitMu.RLock and the index's RLock,
+	// then probes only the vertex cache's inner mutex (which never acquires the
+	// index lock). This preserves the order already established by index writes
+	// running under GraphCache.mu. Liveness is
 	// checked via vertices.Has, so an expired-but-not-yet-flushed vertex is
 	// skipped; the read may race a concurrent Put/Delete and observe either side
 	// of it, the same racy point-read contract GetVertex provides (#740).

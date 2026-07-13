@@ -9,6 +9,8 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -540,6 +542,94 @@ func TestSearchVertices_EndToEnd(t *testing.T) {
 	}
 	if got := empty.Msg.GetHits(); len(got) != 0 {
 		t.Fatalf("empty-query hits = %d, want 0", len(got))
+	}
+}
+
+// TestSearchVertices_PluralWriteVisibilityOverWire pins #1051's batch
+// visibility contract over the real Connect/h2c path: a search concurrent with
+// PutVertices/DeleteVertices observes the complete pre-batch or post-batch hit
+// set, never the midpoint between the prepared index update and vertex commit.
+func TestSearchVertices_PluralWriteVisibilityOverWire(t *testing.T) {
+	const documents = 128
+	c := newSearchRawClient(t, true)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	exp := timestamppb.New(time.Now().Add(time.Hour))
+	vertices := make([]*pb.Vertex, documents)
+	keys := make([]string, documents)
+	for i := range vertices {
+		key := fmt.Sprintf("wire-batch-%03d", i)
+		keys[i] = key
+		vertices[i] = &pb.Vertex{Key: key, Value: &pb.Vertex_String_{String_: "wireatomicterm"}, Expiration: exp}
+	}
+	put := func() error {
+		_, err := c.PutVertices(ctx, connect.NewRequest(&pb.PutVerticesRequest{Vertices: vertices}))
+		return err
+	}
+	del := func() error {
+		_, err := c.DeleteVertices(ctx, connect.NewRequest(&pb.DeleteVerticesRequest{Keys: keys}))
+		return err
+	}
+	searchCount := func() (int, error) {
+		resp, err := c.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{Query: "wireatomicterm", Limit: documents + 1}))
+		if err != nil {
+			return 0, err
+		}
+		return len(resp.Msg.GetHits()), nil
+	}
+
+	if err := put(); err != nil {
+		t.Fatalf("initial PutVertices: %v", err)
+	}
+	if got, err := searchCount(); err != nil || got != documents {
+		t.Fatalf("post-batch hits=%d err=%v, want %d", got, err, documents)
+	}
+	if err := del(); err != nil {
+		t.Fatalf("initial DeleteVertices: %v", err)
+	}
+
+	var stop atomic.Bool
+	var reads atomic.Int64
+	var partial atomic.Int64
+	errCh := make(chan error, 1)
+	var reader sync.WaitGroup
+	reader.Add(1)
+	go func() {
+		defer reader.Done()
+		for !stop.Load() {
+			got, err := searchCount()
+			if err != nil {
+				select {
+				case errCh <- err:
+				default:
+				}
+				return
+			}
+			reads.Add(1)
+			if got != 0 && got != documents {
+				partial.Add(1)
+			}
+		}
+	}()
+	for range 20 {
+		if err := put(); err != nil {
+			t.Fatalf("PutVertices: %v", err)
+		}
+		if err := del(); err != nil {
+			t.Fatalf("DeleteVertices: %v", err)
+		}
+	}
+	stop.Store(true)
+	reader.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatalf("SearchVertices: %v", err)
+	}
+	if reads.Load() == 0 {
+		t.Fatal("wire reader never executed")
+	}
+	if got := partial.Load(); got != 0 {
+		t.Fatalf("wire search observed %d partial plural-write snapshots", got)
 	}
 }
 
