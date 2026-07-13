@@ -34,7 +34,7 @@ func TestLoadScenario_MissingDir(t *testing.T) {
 	if s.Row.Verdict != "(failed)" {
 		t.Errorf("missing dir verdict: %q", s.Row.Verdict)
 	}
-	if s.Row.PerfVerdict != "—" || s.Row.Rps != "—" || s.Row.P99ms != "—" || s.Row.NonOK != "—" {
+	if s.Row.MetricVerdict != "—" || s.Row.SemanticVerdict != "—" || s.Row.PerfVerdict != "—" || s.Row.Rps != "—" || s.Row.P99ms != "—" || s.Row.NonOK != "—" {
 		t.Errorf("missing dir row: %+v", s.Row)
 	}
 }
@@ -42,6 +42,9 @@ func TestLoadScenario_MissingDir(t *testing.T) {
 func TestLoadScenario_PopulatesRowAndDetail(t *testing.T) {
 	dir := t.TempDir()
 	writeJSON(t, filepath.Join(dir, "leak_gate.json"), map[string]any{"verdict": "pass"})
+	writeJSON(t, filepath.Join(dir, "metric_gate.json"), map[string]any{"verdict": "pass"})
+	writeJSON(t, filepath.Join(dir, "semantic_pre.json"), map[string]any{"verdict": "pass"})
+	writeJSON(t, filepath.Join(dir, "semantic_post.json"), map[string]any{"verdict": "pass"})
 	writeJSON(t, filepath.Join(dir, "perf_gate.json"), map[string]any{"verdict": "fail"})
 	writeJSON(t, filepath.Join(dir, "ghz_steady_localhost_6380.json"), map[string]any{
 		"count":                  1000,
@@ -60,6 +63,9 @@ func TestLoadScenario_PopulatesRowAndDetail(t *testing.T) {
 	if s.Row.PerfVerdict != "fail" {
 		t.Errorf("perf verdict: %q", s.Row.PerfVerdict)
 	}
+	if s.Row.MetricVerdict != "pass" || s.Row.SemanticVerdict != "pass" {
+		t.Errorf("lifecycle verdicts: %+v", s.Row)
+	}
 	if s.Row.Rps != "4995.5" {
 		t.Errorf("rps: %q", s.Row.Rps)
 	}
@@ -71,6 +77,17 @@ func TestLoadScenario_PopulatesRowAndDetail(t *testing.T) {
 	}
 	if !strings.Contains(s.Detail, "### Inner") || !strings.Contains(s.Detail, "#### Section") {
 		t.Errorf("detail not demoted: %q", s.Detail)
+	}
+}
+
+func TestLoadScenario_SemanticGateFailsClosedWhenPostMissing(t *testing.T) {
+	dir := t.TempDir()
+	writeJSON(t, filepath.Join(dir, "leak_gate.json"), map[string]any{"verdict": "pass"})
+	writeJSON(t, filepath.Join(dir, "semantic_pre.json"), map[string]any{"verdict": "pass"})
+
+	s := loadScenario("search_churn", dir)
+	if s.Row.SemanticVerdict != "fail" {
+		t.Fatalf("semantic verdict = %q, want fail", s.Row.SemanticVerdict)
 	}
 }
 
@@ -112,11 +129,11 @@ func TestRender_FixedFormat(t *testing.T) {
 		{
 			Name:   "smoke_write_heavy",
 			Detail: "### Bench report — `smoke_write_heavy`\nbody\n",
-			Row:    summaryRow{Verdict: "pass", PerfVerdict: "pass", Rps: "5000.0", P99ms: "1.23", NonOK: "0"},
+			Row:    summaryRow{Verdict: "pass", MetricVerdict: "pass", SemanticVerdict: "pass", PerfVerdict: "pass", Rps: "5000.0", P99ms: "1.23", NonOK: "0"},
 		},
 		{
 			Name: "smoke_read_heavy",
-			Row:  summaryRow{Verdict: "(failed)", PerfVerdict: "—", Rps: "—", P99ms: "—", NonOK: "—"},
+			Row:  summaryRow{Verdict: "(failed)", MetricVerdict: "—", SemanticVerdict: "—", PerfVerdict: "—", Rps: "—", P99ms: "—", NonOK: "—"},
 		},
 	}
 	var buf bytes.Buffer
@@ -131,9 +148,9 @@ func TestRender_FixedFormat(t *testing.T) {
 		"- Runner: `linux/amd64`",
 		"- Captured: `20260101T000000Z`",
 		"## Summary",
-		"| scenario | leak gate | perf gate | rps | p99 (ms) | non-OK |",
-		"| `smoke_write_heavy` | `pass` | `pass` | 5000.0 | 1.23 | 0 |",
-		"| `smoke_read_heavy` | `(failed)` | `—` | — | — | — |",
+		"| scenario | leak gate | metric gate | semantic gate | perf gate | rps | p99 (ms) | non-OK |",
+		"| `smoke_write_heavy` | `pass` | `pass` | `pass` | `pass` | 5000.0 | 1.23 | 0 |",
+		"| `smoke_read_heavy` | `(failed)` | `—` | `—` | `—` | — | — | — |",
 		"## smoke_write_heavy",
 		"### Bench report — `smoke_write_heavy`",
 		"## smoke_read_heavy",

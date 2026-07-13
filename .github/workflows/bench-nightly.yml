@@ -1,15 +1,17 @@
 name: Bench (nightly leak gate)
 
-# Nightly BLOCKING leak + perf gate. Runs the same compact scenario sweep as
+# Nightly BLOCKING leak + metric + semantic + perf gate. Runs the same compact scenario sweep as
 # the release-time bench (testbed/bench/release-scenarios.txt) against a
 # freshly-built lantern:local image, but — unlike the release bench, which is
 # deliberately `continue-on-error` so a hiccup can never block shipping
 # (#256, #394) — this job has NO continue-on-error. release.sh exits non-zero
-# when any scenario's goroutine/heap leak gate trips OR any scenario's
-# perf_gate floors (min steady rps / max p99 / max non-OK ratio, #935) are
-# breached, so a leak or step-change performance regression fails this
+# when any scenario's goroutine/heap leak gate, lifecycle metric gate,
+# semantic probe, or perf floor trips. Per-producer Search gates prevent fast
+# Put traffic from hiding a slow Search family, so a correctness, retention,
+# or step-change performance regression fails this
 # nightly check rather than merely warning in an advisory artifact.
-# This is the enforcement half of #716 (leaks) and #935 (perf floors).
+# This is the enforcement half of #716 (leaks), #935 (perf floors), and #1063
+# (Search qualification).
 #
 # It also runs with RELEASE_BENCH_BUDGET_SECONDS=0 (the sweep's graceful
 # wall-clock cutoff disabled), so every scenario runs to completion and no leak
@@ -70,6 +72,12 @@ jobs:
             "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
           sudo chmod +x /usr/local/bin/yq
           yq --version
+      - name: Run deterministic advanced Search wire contracts
+        # search_churn covers positions-on plus every advanced producer. This
+        # real-h2c test adds the positions-off fail-closed contract without
+        # relying on shared-runner timing.
+        run: |
+          go test ./tests/integration -run 'TestSearchVertices_(OptionsContract|PositionsOff)$'
       - name: Build lantern:local image
         run: |
           docker build \

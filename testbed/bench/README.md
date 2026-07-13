@@ -2,20 +2,24 @@
 
 Reusable performance + memory-leak harness for the HA `docker compose`
 cluster (see `deploy/compose/`). Drives the cluster with [`ghz`][ghz],
-captures Prometheus range queries + Go pprof snapshots, applies a
-per-scenario leak gate, and renders a Markdown report.
+captures Prometheus range queries + Go pprof snapshots, applies per-scenario
+leak / lifecycle-metric / semantic / producer-performance gates, and renders a
+Markdown report.
 
-> **PR CI does not run this harness.** Per the parent epic [#237], the
-> default PR pipeline runs only fast functional checks; this harness is a
-> local / on-demand tool meant to be used by maintainers when investigating
-> performance or leak regressions. Its outputs (under `testbed/bench/out/`)
-> are git-ignored.
+> **PR CI does not run the wall-clock scenarios.** The default PR pipeline
+> runs their schema/contract tests, but not a Compose load run. On a root
+> `vX.Y.Z` tag, however, `docker-publish.yml` runs the short
+> `search_qualification` scenario plus targeted real-h2c Search tests as a
+> blocking qualification. A failed or skipped stage prevents image and GitHub
+> Release publication. Its bounded artifact records the tag, full commit SHA,
+> every stage status, and the scenario report.
 >
 > **Release CI runs a compact canonical sweep.** On every `vX.Y.Z` tag
 > push, the `Release` workflow runs `./testbed/bench/release.sh` — a
 > driver that sweeps the scenarios listed in `release-scenarios.txt`. To
-> keep wall-time bounded without losing coverage, the sweep is six
-> scenarios: two fan-out scenarios (`broad_rw`, `broad_illuminate`) that
+> keep wall-time bounded without losing coverage, the sweep is seven
+> scenarios: three fan-out scenarios (`broad_rw`, `broad_mutate`,
+> `broad_illuminate`) that
 > exercise many call paths inside a single steady window (read / write /
 > batch / scan / edge / delete / ScanVertexKeys / CountVerticesByPrefix /
 > idempotent AddEdge, and the Illuminate algorithm/reduction × objective ×
@@ -23,13 +27,15 @@ per-scenario leak gate, and renders a Markdown report.
 > / thread-safety under churn, #703), and `replication_apply_churn`
 > (vertexHLC map regression gate, #700 / #705). It produces a
 > fixed-format `bench-report.md` that is spliced into the GitHub Release
-> notes. The bench job is `continue-on-error`, so a noisy runner cannot
-> block a release. See issues [#256], [#262], [#573], [#708].
+> notes. This full profiling sweep remains `continue-on-error`, so a noisy
+> runner cannot block a release; it is separate from the short blocking Search
+> qualification above. See issues [#256], [#262], [#573], [#708], [#1063].
 
 [#256]: https://github.com/anaregdesign/lantern/issues/256
 [#262]: https://github.com/anaregdesign/lantern/issues/262
 [#573]: https://github.com/anaregdesign/lantern/issues/573
 [#708]: https://github.com/anaregdesign/lantern/issues/708
+[#1063]: https://github.com/anaregdesign/lantern/issues/1063
 
 ## Prerequisites
 
@@ -64,10 +70,9 @@ SKIP_UP=1 KEEP_UP=1 ./testbed/bench/run.sh mixed_rw
 PPROF_CPU=1 ./testbed/bench/run.sh addedge_contention
 ```
 
-The exit code folds together the leak-gate verdict and — when the
-scenario declares a `perf_gate:` block — the perf-gate verdict
-(`0` = both pass, `1` = either failed). Run artifacts are written under
-`testbed/bench/out/<scenario>/<UTC-timestamp>/`.
+The exit code folds together the leak gate and any declared metric, semantic,
+and perf gates (`0` = all pass, `1` = at least one failed). Run artifacts are
+written under `testbed/bench/out/<scenario>/<UTC-timestamp>/`.
 
 ## Scenarios
 
@@ -84,7 +89,8 @@ scenario declares a `perf_gate:` block — the perf-gate verdict
 | `replication_soak.yaml`   | producer on r0, `Subscribe` consumers on r1/r2 for 10m |
 | `chaos_kill_replica.yaml` | mid-load `docker kill` + restart of one replica |
 | `many_subscribers.yaml`   | N concurrent `Subscribe` streams across replicas (#240 pubsub probe) |
-| `search_churn.yaml`       | PutVertex (short TTL) + parallel SearchVertices; asserts search-index decays (#703) |
+| `search_churn.yaml`       | PutVertex (short TTL) + all advanced SearchVertices families; per-producer perf plus semantic/index-decay gates (#1048) |
+| `search_qualification.yaml` | short fresh-cluster tag-SHA gate; deterministic Search semantics, TTL cleanup, metric, leak, and producer perf contracts (#1063) |
 | `prefix_surface.yaml`     | ScanVertexKeys + ScanEdges + CountVerticesByPrefix + DeleteVerticesByPrefix fan-out (#704) |
 | `replication_apply_churn.yaml` | replicated write churn; asserts `lantern_vertex_hlc_entries` returns to baseline (#700, #705) |
 | `edge_contrib_idempotent.yaml` | AddEdge/AddEdges with repeated ContribIDs; verifies at-most-once dedup stays bounded (#706) |
@@ -101,6 +107,11 @@ live memory rather than span-level allocator headroom. The legacy field
 name `heap_inuse_max_delta_mb` is still accepted for backward
 compatibility but produced false-positive verdicts under sustained
 churn — see issue #248.
+
+For fan-out targets, each `target.calls[]` entry may declare its own positive
+integer `rps`. Otherwise the phase RPS is divided equally. Use explicit RPS
+when one producer must not borrow throughput from another; `search_churn` does
+this so a fast `PutVertex` cannot conceal a slow Search family.
 
 RPC benchmark payloads that omit `Vertex.expiration` / `Edge.expiration`
 write permanent entries. `cluster.default_ttl_seconds` configures the server's
@@ -157,6 +168,40 @@ perf_gate:
 All named producer gates are conjunctive with the aggregate gate and appear
 as separate rows in `perf_gate.json` and the rendered report.
 
+### Lifecycle metric gate (`metric_gate:` block)
+
+`metric_gate.metrics` compares each replica's unlabeled gauge in the pre/post
+runtime snapshots. Thresholds on a metric are conjunctive:
+
+```yaml
+metric_gate:
+  metrics:
+    lantern_search_index_docs:
+      max_increase: 256
+      max_ratio: 1.25
+    lantern_search_index_expiration_purged:
+      min_increase: 1
+    lantern_search_index_healthy:
+      min_post: 1
+      max_post: 1
+```
+
+Available comparisons are `max_increase`, `max_ratio`, `min_increase`,
+`min_post`, and `max_post`. Missing or non-finite samples fail closed. Ratio
+growth from a zero baseline also fails when post is positive; pair ratio and
+absolute limits intentionally rather than using ratio as a noise filter. The
+verdict is written to `metric_gate.json` and folds into `run.sh`'s exit code.
+
+### Search semantic gate (`semantic_gate:` block)
+
+`semantic_gate.kind: search` seeds a deterministic fixture before warmup and
+checks every replica both before and after steady load. It proves a persistent
+hit, deleted/expired absence, stable ordering, key-prefix filtering, phrase,
+fuzzy-1/2, prefix-term, ALL, and MIN_SHOULD behavior. An HTTP-OK response with
+empty hits therefore fails. The bounded `semantic_pre.json` and
+`semantic_post.json` artifacts contain only phase, replica endpoint, check
+count, and verdict—never query text, prefixes, keys, or values.
+
 Sizing rules (all seven release scenarios carry a block sized this way):
 
 - Floors are **ratchet floors with ≥2x headroom** over the worst nightly
@@ -169,9 +214,10 @@ Sizing rules (all seven release scenarios carry a block sized this way):
   queue-depth p99 — observed varying 7x night-over-night — so they gate rps
   and non-OK only.
 - **Re-baseline after changing a scenario's mix.** Adding/removing a
-  `target.calls` entry re-splits per-call rps and shifts every observed
-  metric; drop the affected ceilings in the same PR and restore them (from
-  fresh nightly numbers, with headroom) after a few green nightlies.
+  `target.calls` entry re-splits RPS for entries without an explicit `rps` and
+  always shifts the offered mix; drop the affected ceilings in the same PR and
+  restore them (from fresh nightly numbers, with headroom) after a few green
+  nightlies.
 - When a perf floor legitimately moves (accepted throughput/latency
   trade-off), adjust it **in the same PR** and say so in the PR body — same
   contract as the coverage-floor ratchet in CONTRIBUTING.md.
@@ -182,8 +228,10 @@ Sizing rules (all seven release scenarios carry a block sized this way):
 testbed/bench/out/<scenario>/<ts>/
 ├── report.md                       # rendered summary (start here)
 ├── leak_gate.json                  # verdict + per-replica deltas + thresholds
+├── metric_gate.json                # per-replica pre/post gauge contracts (when declared)
+├── semantic_{pre,post}.json        # bounded Search semantic verdicts (when declared)
 ├── perf_gate.json                  # perf verdict + thresholds + observed (only when perf_gate: declared)
-├── runtime_pre.json                # per-replica go_goroutines + heap_alloc/heap_inuse/heap_objects, after warmup
+├── runtime_pre.json                # runtime values + unlabeled lifecycle gauges, after warmup
 ├── runtime_post.json               # same, after cooldown
 ├── ghz_warmup_<endpoint>.json      # raw ghz results, one per invocation
 ├── ghz_steady_<...>.json
@@ -223,14 +271,15 @@ testbed/bench/out/<scenario>/<ts>/
    `lantern_subscription_dropped_total` and
    `lantern_subscription_queue_depth_bucket` queries in `prom/`.
 
-## Why not in CI?
+## Why only the short qualification is blocking
 
-This harness needs real wall-clock time (multi-minute steady phases, a
-10-minute soak), a healthy Docker daemon, and stable host conditions to
-produce trustworthy numbers. Running it in CI would be both slow and
-flaky. The parent epic ([#237]) explicitly carves out this harness as a
-maintainer-driven tool; functional regressions are covered by the
-existing unit + integration suites that CI already runs.
+The full sweep needs multi-minute steady phases, a 10-minute soak, pprof and
+Prometheus capture, a healthy Docker daemon, and stable host conditions. It is
+therefore advisory at release time and blocking only in the untruncated
+nightly. Root tags additionally run the deliberately short, tolerant
+`search_qualification` scenario: deterministic semantic and lifecycle
+failures block, while loose throughput/p99 ratchets reject only step changes
+and tolerate normal hosted-runner jitter.
 
 [ghz]: https://ghz.sh/
 [yq]: https://github.com/mikefarah/yq

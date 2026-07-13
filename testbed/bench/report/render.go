@@ -3,10 +3,13 @@
 // It consumes the JSON artifacts emitted by testbed/bench/run.sh under
 // out/<scenario>/<timestamp>/ and writes a Markdown summary to stdout:
 //
-//   - leak_gate.json            -> Leak Gate section + verdict header
-//   - ghz_*.json                -> Per-phase / per-call latency tables
-//   - prom/_index.ndjson        -> Indexed list of Prom range queries
-//   - pprof/                    -> Inventory of captured pprof profiles
+//   - leak_gate.json                 -> Leak Gate section + verdict header
+//   - metric_gate.json               -> Per-replica lifecycle gauge contracts
+//   - semantic_{pre,post}.json       -> Bounded Search correctness probes
+//   - perf_gate.json                 -> Aggregate and named-producer ratchets
+//   - ghz_*.json                     -> Per-phase / per-call latency tables
+//   - prom/_index.ndjson             -> Indexed list of Prom range queries
+//   - pprof/                         -> Inventory of captured pprof profiles
 //
 // The renderer is intentionally side-effect free aside from reading the
 // run directory and writing Markdown to its writer, so it round-trips
@@ -112,6 +115,47 @@ type PerfProducerResult struct {
 	Verdict string `json:"verdict"`
 }
 
+// MetricGate mirrors metricgate's generic pre/post gauge report.
+type MetricGate struct {
+	Verdict string             `json:"verdict"`
+	Results []MetricGateResult `json:"results"`
+}
+
+// MetricGateResult is one metric on one replica. Threshold values are
+// pointers because every scenario chooses the dimensions appropriate for the
+// gauge (absolute growth, ratio, activity floor, or final-state bounds).
+type MetricGateResult struct {
+	Endpoint   string `json:"endpoint"`
+	Metric     string `json:"metric"`
+	Thresholds struct {
+		MaxIncrease *float64 `json:"max_increase"`
+		MaxRatio    *float64 `json:"max_ratio"`
+		MinIncrease *float64 `json:"min_increase"`
+		MinPost     *float64 `json:"min_post"`
+		MaxPost     *float64 `json:"max_post"`
+	} `json:"thresholds"`
+	Pre      *float64 `json:"pre"`
+	Post     *float64 `json:"post"`
+	Delta    *float64 `json:"delta"`
+	Ratio    *float64 `json:"ratio"`
+	Failures []string `json:"failures"`
+	Verdict  string   `json:"verdict"`
+}
+
+// SemanticGate is one bounded search-probe phase. It intentionally contains
+// no query text, prefixes, keys, or values.
+type SemanticGate struct {
+	Phase    string                `json:"phase"`
+	Verdict  string                `json:"verdict"`
+	Replicas []SemanticGateReplica `json:"replicas"`
+}
+
+type SemanticGateReplica struct {
+	Endpoint string `json:"endpoint"`
+	Checks   int    `json:"checks"`
+	Verdict  string `json:"verdict"`
+}
+
 // GhzSummary captures the subset of fields ghz writes that the report uses.
 // All durations are nanoseconds as serialised by ghz --format json.
 type GhzSummary struct {
@@ -138,13 +182,16 @@ type PromIndexEntry struct {
 // Input is the rendered report's input model. All fields are optional —
 // missing artifacts produce "(not captured)" sections rather than errors.
 type Input struct {
-	Scenario  string
-	Timestamp string
-	LeakGate  *LeakGate
-	PerfGate  *PerfGate
-	GhzFiles  []GhzFile
-	PromIndex []PromIndexEntry
-	PprofList []string
+	Scenario     string
+	Timestamp    string
+	LeakGate     *LeakGate
+	MetricGate   *MetricGate
+	SemanticPre  *SemanticGate
+	SemanticPost *SemanticGate
+	PerfGate     *PerfGate
+	GhzFiles     []GhzFile
+	PromIndex    []PromIndexEntry
+	PprofList    []string
 }
 
 // GhzFile is one ghz JSON output paired with its source filename so the
@@ -177,6 +224,31 @@ func LoadInput(dir, scenario, ts string) (Input, error) {
 		in.PerfGate = &pg
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return in, err
+	}
+
+	if b, err := os.ReadFile(filepath.Join(dir, "metric_gate.json")); err == nil {
+		var mg MetricGate
+		if err := json.Unmarshal(b, &mg); err != nil {
+			return in, fmt.Errorf("parse metric_gate.json: %w", err)
+		}
+		in.MetricGate = &mg
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return in, err
+	}
+
+	for name, target := range map[string]**SemanticGate{
+		"semantic_pre.json":  &in.SemanticPre,
+		"semantic_post.json": &in.SemanticPost,
+	} {
+		if b, err := os.ReadFile(filepath.Join(dir, name)); err == nil {
+			var gate SemanticGate
+			if err := json.Unmarshal(b, &gate); err != nil {
+				return in, fmt.Errorf("parse %s: %w", name, err)
+			}
+			*target = &gate
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return in, err
+		}
 	}
 
 	entries, err := os.ReadDir(dir)
@@ -242,8 +314,15 @@ func RenderReport(w io.Writer, in Input) error {
 	if in.PerfGate != nil {
 		perfVerdict = in.PerfGate.Verdict
 	}
+	metricVerdict := "(no metric gate configured)"
+	if in.MetricGate != nil {
+		metricVerdict = in.MetricGate.Verdict
+	}
+	semanticVerdict := semanticGateVerdict(in.SemanticPre, in.SemanticPost)
 	bw.printf("# Bench report — `%s` @ `%s`\n\n", in.Scenario, in.Timestamp)
 	bw.printf("**Leak gate verdict:** `%s`\n\n", verdict)
+	bw.printf("**Metric gate verdict:** `%s`\n\n", metricVerdict)
+	bw.printf("**Semantic gate verdict:** `%s`\n\n", semanticVerdict)
 	bw.printf("**Perf gate verdict:** `%s`\n\n", perfVerdict)
 
 	bw.printf("## Leak gate\n\n")
@@ -272,6 +351,39 @@ func RenderReport(w io.Writer, in Input) error {
 				r.HeapObjectsPre, r.HeapObjectsPost, r.HeapObjectsDelta,
 				r.VertexHLCEntriesPost, r.VertexHLCHighWaterPost,
 			)
+		}
+		bw.printf("\n")
+	}
+
+	bw.printf("## Metric gate\n\n")
+	if in.MetricGate == nil {
+		bw.printf("_not configured_\n\n")
+	} else {
+		bw.printf("Every configured threshold is conjunctive. Missing/non-finite samples fail closed; `—` means the ratio is undefined from a zero baseline.\n\n")
+		bw.printf("| replica | metric | verdict | pre | post | delta | ratio |\n")
+		bw.printf("| --- | --- | --- | ---: | ---: | ---: | ---: |\n")
+		for _, row := range in.MetricGate.Results {
+			bw.printf("| `%s` | `%s` | `%s` | %s | %s | %s | %s |\n",
+				row.Endpoint, row.Metric, row.Verdict,
+				optionalFloat(row.Pre), optionalFloat(row.Post), optionalFloat(row.Delta), optionalFloat(row.Ratio))
+		}
+		bw.printf("\n")
+	}
+
+	bw.printf("## Semantic gate\n\n")
+	if in.SemanticPre == nil && in.SemanticPost == nil {
+		bw.printf("_not configured_\n\n")
+	} else {
+		bw.printf("The bounded report records only phase/check counts; query text, prefixes, keys, and values are omitted.\n\n")
+		bw.printf("| phase | replica | checks | verdict |\n")
+		bw.printf("| --- | --- | ---: | --- |\n")
+		for _, gate := range []*SemanticGate{in.SemanticPre, in.SemanticPost} {
+			if gate == nil {
+				continue
+			}
+			for _, replica := range gate.Replicas {
+				bw.printf("| `%s` | `%s` | %d | `%s` |\n", gate.Phase, replica.Endpoint, replica.Checks, replica.Verdict)
+			}
 		}
 		bw.printf("\n")
 	}
@@ -378,6 +490,23 @@ func RenderReport(w io.Writer, in Input) error {
 	bw.printf("   `go tool pprof -http=:0 -base <pre> <post>`\n")
 	bw.printf("3. For elevated tail latency, cross-reference the matching Prom histogram query with `<replica>__post__goroutine.pb.gz` (look for blocked stacks).\n")
 	return bw.err
+}
+
+func semanticGateVerdict(pre, post *SemanticGate) string {
+	if pre == nil && post == nil {
+		return "(no semantic gate configured)"
+	}
+	if pre == nil || post == nil || pre.Verdict != "pass" || post.Verdict != "pass" {
+		return "fail"
+	}
+	return "pass"
+}
+
+func optionalFloat(v *float64) string {
+	if v == nil {
+		return "—"
+	}
+	return fmt.Sprintf("%.6g", *v)
 }
 
 // perfThreshold renders an optional perf-gate threshold: nil (metric not

@@ -10,11 +10,10 @@
 # - consistency: SearchVertices purges vertices whose TTL has expired but whose
 #   Flush has not yet run, so BM25 stats and vocabulary use the returned live
 #   corpus rather than merely hiding dead keys (#1057).
-# - execution budgets: separate broad-posting, prefix-scoped, fuzzy-dictionary,
-#   and broad-phrase producers exercise every dominant read-work family, including
-#   expiration_visits as short TTLs mature, while the writer p99 exposes
-#   index-lock delay. The harness captures CPU, alloc, mutex, and block profiles
-#   around the same steady window (#1049, #1057).
+# - execution budgets: named exact, prefix-scoped, fuzzy-1, fuzzy-2,
+#   prefix-term, cap-overflow, ALL, MIN_SHOULD, and phrase producers exercise
+#   every advanced option and dominant read-work family. Every producer has its
+#   own throughput/p99/error floor, so Put throughput cannot hide a slow Search.
 # - expansion: one two-clause query drives both semantic cap-overflow paths:
 #   `topic` prefix-expands over the live unique-term set, while `fuzz000`
 #   fuzzy-expands over 100 live neighbours at edit distance <= 2. Both exceed
@@ -22,11 +21,11 @@
 #   selection rather than an exact-only dictionary lookup (#1056).
 #
 # steady >= 2m so the leak window brackets the GC sweep repeatedly.
-# Assert lantern_search_index_terms/docs plus physical_documents,
-# expired_documents, expiration_queue_entries, expiration_purged,
-# retained_term_slots, retained_ordinals, and estimated_retained_bytes return
-# to ~baseline after cooldown (the #1050 compaction and #1057 bounded-purge
-# claims, not merely result filtering).
+# The metric gate below compares every replica's pre/post baseline for live and
+# retained search structures. The cumulative expiration_purged gauge must move
+# forward; healthy must remain exactly 1. The semantic gate independently
+# checks a persistent hit, deleted/expired absence, stable ordering, key prefix,
+# phrase, fuzzy-1/2, prefix terms, ALL, and MIN_SHOULD before and after load.
 #
 # The bench cluster runs search on by default (LANTERN_SEARCH_ENABLED=true).
 # The explicit expiration template below is required: omitting Vertex.expiration
@@ -37,12 +36,14 @@ cluster:
   gc_interval_seconds: 10
 phases:
   warmup:   { duration: 30s, concurrency: 16, rps: 500 }
-  steady:   { duration: 2m,  concurrency: 32, rps: 2000 }
+  steady:   { duration: 2m,  concurrency: 16, rps: 1600 }
   cooldown: 60s
+semantic_gate:
+  kind: search
 target:
   endpoints: ["localhost:6380", "localhost:6381", "localhost:6382"]
-  # Five parallel streams per fan-out rule: one writer plus broad-posting,
-  # prefix-scoped, fuzzy-dictionary, and broad-phrase reads. per_rps = 400 rps each.
+  # Producer-owned rps keeps the writer at the intended 500 rps while each
+  # advanced Search family receives an independent realistic load.
   calls:
     # [0] short-TTL string vertex. The 50k key space is larger than the
     #     ~7.5k live set at 500 writes/s with 15s expirations, so keys are not
@@ -52,36 +53,86 @@ target:
     #     fuzz000. The shared phrase makes broad posting and phrase verification
     #     inspect the whole live set while the writer's p99 measures lock delay.
     - name: writer
+      rps: 500
       call: graph.v1.LanternService/PutVertex
       data_template: |
         {"vertex":{"key":"search-{{mod .RequestNumber 50000}}","string":"shared phrase topic{{ printf `%05d` (mod .RequestNumber 50000) }} fuzz{{ printf `%03d` (mod .RequestNumber 100) }}","expiration":"{{ now | dateModify `15s` | date `2006-01-02T15:04:05.999999999Z07:00` }}"}}
     # [1] Broad exact posting/proximity work over every live document.
     - name: broad_posting
+      rps: 200
       call: graph.v1.LanternService/SearchVertices
       data_template: |
         {"query":"shared","limit":20}
     # [2] A selective key scope exercises radix -> bounded retrieval pushdown.
     #     Candidate visits must track this subtree, not the global live corpus.
     - name: prefix_scoped
+      rps: 200
       call: graph.v1.LanternService/SearchVertices
       data_template: |
         {"query":"shared","limit":20,"prefix":"search-000"}
-    # [3] Both query clauses overflow the 50-term expansion cap independently:
+    # [3] Fuzzy-1 over the bounded fuzz000..fuzz099 family.
+    - name: fuzzy_1
+      rps: 100
+      call: graph.v1.LanternService/SearchVertices
+      data_template: |
+        {"query":"fuzz000","limit":20,"options":{"fuzziness":1}}
+    # [4] Fuzzy-2 independently covers its wider dictionary walk.
+    - name: fuzzy_2
+      rps: 100
+      call: graph.v1.LanternService/SearchVertices
+      data_template: |
+        {"query":"fuzz000","limit":20,"options":{"fuzziness":2}}
+    # [5] Prefix terms over the live high-cardinality topic dictionary.
+    - name: prefix_terms
+      rps: 100
+      call: graph.v1.LanternService/SearchVertices
+      data_template: |
+        {"query":"topic","limit":20,"options":{"prefixTerms":true}}
+    # [6] Both query clauses overflow the 50-term expansion cap independently:
     #     topic matches every live topicNNNNN by prefix, and fuzz000 reaches all
     #     fuzz000..fuzz099 with fuzziness=2. Auxiliary grams still exercise the
     #     production script-aware ranking path around those word clauses.
     - name: prefix_fuzzy_cap_overflow
+      rps: 100
       call: graph.v1.LanternService/SearchVertices
       data_template: |
         {"query":"topic fuzz000","limit":20,"options":{"prefixTerms":true,"fuzziness":2}}
-    # [4] Broad positional intersection and adjacency verification.
+    # [7] Explicit ALL membership.
+    - name: match_all
+      rps: 100
+      call: graph.v1.LanternService/SearchVertices
+      data_template: |
+        {"query":"shared phrase","limit":20,"options":{"matchMode":2}}
+    # [8] Explicit MIN_SHOULD membership (two of three clauses).
+    - name: min_should
+      rps: 100
+      call: graph.v1.LanternService/SearchVertices
+      data_template: |
+        {"query":"shared phrase fuzz000","limit":20,"options":{"matchMode":3,"minShouldMatch":2}}
+    # [9] Positions-enabled broad adjacency verification. The blocking tag
+    #     qualification separately runs the production positions-off contract.
     - name: broad_phrase
+      rps: 100
       call: graph.v1.LanternService/SearchVertices
       data_template: |
         {"query":"shared phrase","limit":20,"options":{"phrase":true}}
 leak_gate:
   goroutine_max_delta: 20
   heap_alloc_max_delta_mb: 32
+metric_gate:
+  metrics:
+    lantern_search_index_docs: { max_increase: 256, max_ratio: 1.25 }
+    lantern_search_index_terms: { max_increase: 1024, max_ratio: 1.5 }
+    lantern_search_index_physical_documents: { max_increase: 256, max_ratio: 1.25 }
+    lantern_search_index_expired_documents: { max_increase: 64, max_ratio: 2 }
+    lantern_search_index_expiration_queue_entries: { max_increase: 256, max_ratio: 1.25 }
+    lantern_search_index_expiration_purged: { min_increase: 1 }
+    lantern_search_index_retained_term_slots: { max_increase: 100000, max_ratio: 2 }
+    lantern_search_index_retained_ordinals: { max_increase: 100000, max_ratio: 2 }
+    lantern_search_index_postings: { max_increase: 2048, max_ratio: 1.5 }
+    lantern_search_index_position_entries: { max_increase: 4096, max_ratio: 1.5 }
+    lantern_search_index_estimated_retained_bytes: { max_increase: 67108864, max_ratio: 2 }
+    lantern_search_index_healthy: { min_post: 1, max_post: 1 }
 # The producer mix changed for #1049, so these are deliberately loose first-
 # night ratchets with ample headroom. Tighten from several green nightly runs;
 # writer p99 is the explicit lock-delay signal, while the harness profiles
@@ -91,8 +142,13 @@ perf_gate:
   max_p99_ms: 4000
   max_non_ok_ratio: 0.02
   producers:
-    writer: { max_p99_ms: 2000, max_non_ok_ratio: 0.02 }
-    broad_posting: { max_p99_ms: 4000, max_non_ok_ratio: 0.02 }
-    prefix_scoped: { max_p99_ms: 2000, max_non_ok_ratio: 0.02 }
-    prefix_fuzzy_cap_overflow: { max_p99_ms: 4000, max_non_ok_ratio: 0.02 }
-    broad_phrase: { max_p99_ms: 4000, max_non_ok_ratio: 0.02 }
+    writer: { min_steady_rps: 100, max_p99_ms: 2000, max_non_ok_ratio: 0.02 }
+    broad_posting: { min_steady_rps: 20, max_p99_ms: 4000, max_non_ok_ratio: 0.02 }
+    prefix_scoped: { min_steady_rps: 20, max_p99_ms: 2000, max_non_ok_ratio: 0.02 }
+    fuzzy_1: { min_steady_rps: 20, max_p99_ms: 4000, max_non_ok_ratio: 0.02 }
+    fuzzy_2: { min_steady_rps: 20, max_p99_ms: 4000, max_non_ok_ratio: 0.02 }
+    prefix_terms: { min_steady_rps: 20, max_p99_ms: 4000, max_non_ok_ratio: 0.02 }
+    prefix_fuzzy_cap_overflow: { min_steady_rps: 20, max_p99_ms: 4000, max_non_ok_ratio: 0.02 }
+    match_all: { min_steady_rps: 20, max_p99_ms: 4000, max_non_ok_ratio: 0.02 }
+    min_should: { min_steady_rps: 20, max_p99_ms: 4000, max_non_ok_ratio: 0.02 }
+    broad_phrase: { min_steady_rps: 20, max_p99_ms: 4000, max_non_ok_ratio: 0.02 }
