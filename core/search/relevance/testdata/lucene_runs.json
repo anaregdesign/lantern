@@ -1,10 +1,24 @@
 {
   "engine": "lucene-9.11.1",
-  "generated": "2026-07-03T11:45:23.842077045Z",
+  "generated": "2026-07-13T03:15:13.670216Z",
+  "provenance": {
+    "corpus_sha256": {
+      "testdata/en.json": "6fffa87e4f3d99766049f410808ba7c5ab309b226a2d3f52e00a6534ba52ae6f",
+      "testdata/ja.json": "249f049c2f1216b8d1677d85ca02ebf77e99ee313050d935c714afc10920998f",
+      "testdata/mixed.json": "bc290a9cdf40336c8b796ab783a6184078f47ed9897f2f2f0effd302d43d48c9"
+    },
+    "projected_fields_sha256": "a005823993db32ca6727f588a36674b6bb57804c4da4d09c05792f8ac1c90c4a",
+    "fixture_format": "typed-string-vertex-fields-v1",
+    "projection_version": "vertex-fields-v2",
+    "analyzer_version": "script-aware-v2",
+    "scorer_config": "field-weighted-bm25:k1=1.2,b=0.75,key=1.75,value=1,gram=0.2,proximity=0.3",
+    "generation_command": "testbed/lucene-baseline/run.sh"
+  },
   "runs": {
     "en-standard": {
       "corpus": "en",
       "analyzer": "StandardAnalyzer",
+      "blocking": true,
       "results": {
         "q01": [
           "coffee-07",
@@ -65,8 +79,8 @@
           "travel-01"
         ],
         "q14": [
-          "db-04",
-          "db-09"
+          "db-09",
+          "db-04"
         ],
         "q15": [
           "k8s-08",
@@ -88,12 +102,15 @@
           "coffee-03",
           "coffee-05",
           "coffee-04",
+          "coffee-01",
+          "coffee-06",
+          "coffee-07",
+          "coffee-08",
           "misc-04",
           "auth-08",
           "travel-08",
           "k8s-03",
-          "db-02",
-          "coffee-01"
+          "db-02"
         ],
         "q19": [
           "k8s-07",
@@ -124,8 +141,8 @@
           "db-07"
         ],
         "q26": [
-          "coffee-07",
           "coffee-05",
+          "coffee-07",
           "auth-09"
         ],
         "q27": [
@@ -137,6 +154,7 @@
     "en-english": {
       "corpus": "en",
       "analyzer": "EnglishAnalyzer",
+      "blocking": true,
       "results": {
         "q01": [
           "coffee-07",
@@ -202,8 +220,8 @@
           "travel-01"
         ],
         "q14": [
-          "db-04",
-          "db-09"
+          "db-09",
+          "db-04"
         ],
         "q15": [
           "k8s-05",
@@ -226,11 +244,15 @@
           "coffee-05",
           "coffee-02",
           "coffee-03",
-          "coffee-04"
+          "coffee-04",
+          "coffee-01",
+          "coffee-06",
+          "coffee-07",
+          "coffee-08"
         ],
         "q19": [
-          "k8s-01",
           "k8s-07",
+          "k8s-01",
           "k8s-02",
           "k8s-03"
         ],
@@ -261,8 +283,8 @@
           "auth-05"
         ],
         "q26": [
-          "coffee-07",
           "coffee-05",
+          "coffee-07",
           "auth-09"
         ],
         "q27": [
@@ -274,6 +296,7 @@
     "ja-cjk": {
       "corpus": "ja",
       "analyzer": "CJKAnalyzer",
+      "blocking": true,
       "results": {
         "jq01": [
           "ramen-07",
@@ -300,7 +323,6 @@
         ],
         "jq04": [
           "onsen-02",
-          "onsen-07",
           "onsen-06",
           "onsen-03",
           "onsen-01",
@@ -379,25 +401,26 @@
     "ja-kuromoji": {
       "corpus": "ja",
       "analyzer": "JapaneseAnalyzer",
+      "blocking": false,
       "results": {
         "jq01": [
+          "ramen-07",
           "ramen-01",
           "ramen-05",
           "ramen-03",
           "ramen-06",
           "ramen-08",
-          "ramen-02",
-          "ramen-07"
+          "ramen-02"
         ],
         "jq02": [
           "ramen-01",
           "washoku-05",
+          "ramen-07",
           "ramen-05",
           "ramen-03",
           "ramen-06",
           "ramen-08",
-          "ramen-02",
-          "ramen-07"
+          "ramen-02"
         ],
         "jq03": [
           "ramen-03",
@@ -408,7 +431,6 @@
           "onsen-06",
           "onsen-03",
           "onsen-01",
-          "onsen-07",
           "onsen-04"
         ],
         "jq05": [
@@ -435,6 +457,7 @@
         ],
         "jq11": [
           "washoku-02",
+          "washoku-07",
           "ramen-02"
         ],
         "jq12": [
@@ -460,7 +483,6 @@
         ],
         "jq19": [
           "niwa-04",
-          "phone-06",
           "onsen-02"
         ],
         "jq20": [
@@ -480,6 +502,7 @@
     "mixed-cjk": {
       "corpus": "mixed",
       "analyzer": "CJKAnalyzer",
+      "blocking": true,
       "results": {
         "mq01": [
           "mk8s-01",
@@ -501,12 +524,11 @@
         ],
         "mq03": [
           "mdb-02",
-          "mk8s-01",
           "mdb-05",
-          "mdev-04",
+          "mk8s-01",
+          "mdb-06",
           "mfood-02",
-          "prod-04",
-          "mdb-06"
+          "prod-04"
         ],
         "mq04": [
           "mdb-03",
@@ -536,12 +558,10 @@
           "mtrv-06",
           "mk8s-04",
           "mdev-06",
-          "mdb-05",
           "mdb-01"
         ],
         "mq10": [
-          "mdev-01",
-          "mfood-03"
+          "mdev-01"
         ],
         "mq11": [
           "mdev-07",
@@ -581,6 +601,7 @@
     "mixed-kuromoji": {
       "corpus": "mixed",
       "analyzer": "JapaneseAnalyzer",
+      "blocking": false,
       "results": {
         "mq01": [
           "mk8s-01"
@@ -591,8 +612,8 @@
           "mfood-05"
         ],
         "mq03": [
-          "mdb-02",
-          "mdb-05"
+          "mdb-05",
+          "mdb-02"
         ],
         "mq04": [
           "mdb-03",

@@ -1,6 +1,7 @@
 package relevance
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,10 +13,12 @@ func TestLoadBaselineRuns(t *testing.T) {
 		blob := `{
 			"engine": "lucene-9.11.1",
 			"generated": "2026-07-03T00:00:00Z",
+			"provenance": {},
 			"runs": {
 				"en-standard": {
 					"corpus": "en",
 					"analyzer": "StandardAnalyzer",
+					"blocking": true,
 					"results": {"q1": ["a", "b"]}
 				}
 			}
@@ -28,11 +31,14 @@ func TestLoadBaselineRuns(t *testing.T) {
 			t.Fatalf("LoadBaselineRuns = %v", err)
 		}
 		run, ok := runs.Runs["en-standard"]
-		if !ok || run.Corpus != "en" || run.Analyzer != "StandardAnalyzer" {
+		if !ok || run.Corpus != "en" || run.Analyzer != "StandardAnalyzer" || !run.Blocking {
 			t.Fatalf("parsed run = %+v", run)
 		}
 		if got := run.Results["q1"]; len(got) != 2 || got[0] != "a" {
 			t.Fatalf("parsed results = %v", got)
+		}
+		if err := runs.ValidateProvenance(); err == nil {
+			t.Fatal("empty provenance accepted")
 		}
 	})
 
@@ -50,6 +56,34 @@ func TestLoadBaselineRuns(t *testing.T) {
 		}
 		if _, err := LoadBaselineRuns(path); err == nil {
 			t.Fatal("malformed runs file accepted")
+		}
+	})
+}
+
+func TestBaselineProvenanceMatchesCanonicalCorpora(t *testing.T) {
+	runs, err := LoadBaselineRuns(BaselineRunsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runs.ValidateProvenance(); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("engine drift", func(t *testing.T) {
+		stale := runs
+		stale.Engine = "lucene-other"
+		if err := stale.ValidateProvenance(); err == nil {
+			t.Fatal("engine drift accepted")
+		}
+	})
+	t.Run("analyzer drift", func(t *testing.T) {
+		stale := runs
+		stale.Runs = maps.Clone(runs.Runs)
+		run := stale.Runs["en-standard"]
+		run.Analyzer = "OtherAnalyzer"
+		stale.Runs["en-standard"] = run
+		if err := stale.ValidateProvenance(); err == nil {
+			t.Fatal("analyzer drift accepted")
 		}
 	})
 }
