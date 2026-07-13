@@ -7,6 +7,7 @@ import (
 	"math"
 	"math/rand"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -128,6 +129,71 @@ func TestGraphCacheSearchAnalysisLimits(t *testing.T) {
 		}
 		if got := keys(c.SearchVertices("alpha beta", 10, "")); !reflect.DeepEqual(got, []string{"before", "during"}) {
 			t.Fatalf("rebuilt results = %v", got)
+		}
+	})
+}
+
+func TestGraphCache_SearchRecoveryLockOrder(t *testing.T) {
+	newCache := func() *GraphCache[string, string] {
+		c := NewGraphCache[string, string](time.Minute)
+		c.EnableSearchIndex(textExtract, compareStringID)
+		return c
+	}
+	assertGraphLockFirst := func(t *testing.T, c *GraphCache[string, string], recover func() error) {
+		t.Helper()
+		// Hold the graph lock so recovery must wait at its first acquisition.
+		// If recovery takes searchCommitMu first, TryRLock observes the reversed
+		// order before we release mu, without leaving a deadlocked goroutine.
+		c.mu.Lock()
+		started := make(chan struct{})
+		done := make(chan error, 1)
+		go func() {
+			close(started)
+			done <- recover()
+		}()
+		<-started
+
+		searchLockedFirst := false
+		for range 1_000 {
+			runtime.Gosched()
+			if !c.searchCommitMu.TryRLock() {
+				searchLockedFirst = true
+				break
+			}
+			c.searchCommitMu.RUnlock()
+		}
+		c.mu.Unlock()
+
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("recovery: %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("recovery did not complete after graph lock release")
+		}
+		if searchLockedFirst {
+			t.Fatal("recovery acquired searchCommitMu while GraphCache.mu was unavailable")
+		}
+	}
+
+	t.Run("begin", func(t *testing.T) {
+		c := newCache()
+		assertGraphLockFirst(t, c, func() error {
+			c.BeginSearchIndexRecovery()
+			return nil
+		})
+		if got := c.SearchIndexMemoryStats().Health; got != search.IndexIncomplete {
+			t.Fatalf("health after begin = %q", got)
+		}
+	})
+
+	t.Run("complete", func(t *testing.T) {
+		c := newCache()
+		c.BeginSearchIndexRecovery()
+		assertGraphLockFirst(t, c, c.CompleteSearchIndexRecovery)
+		if got := c.SearchIndexMemoryStats().Health; got != search.IndexHealthy {
+			t.Fatalf("health after complete = %q", got)
 		}
 	})
 }
