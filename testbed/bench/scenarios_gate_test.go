@@ -229,6 +229,15 @@ func TestSearchChurnScenarioGateContract(t *testing.T) {
 	if !strings.Contains(string(runScript), `any(.producer_results[]; .verdict == "fail")`) {
 		t.Error("perf gate does not conjunctively fold named producer failures")
 	}
+	for _, fragment := range []string{
+		`if ! run_search_probe verify pre; then`,
+		`if ! run_search_probe verify post; then`,
+		`semantic_verdict" != "fail"`,
+	} {
+		if !strings.Contains(string(runScript), fragment) {
+			t.Errorf("semantic gate failure path missing %q", fragment)
+		}
+	}
 }
 
 // TestSearchReleaseQualificationIsBlocking pins the release dependency rather
