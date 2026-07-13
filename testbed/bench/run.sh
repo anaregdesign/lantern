@@ -62,6 +62,7 @@ RUNTIME_METRIC_NAMES=(
   lantern_search_index_position_entries
   lantern_search_index_estimated_live_bytes
   lantern_search_index_estimated_retained_bytes
+  lantern_search_index_retained_ratio
   lantern_search_index_rebuild_count
   lantern_search_index_last_rebuild_duration_seconds
   lantern_search_index_healthy

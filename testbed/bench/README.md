@@ -181,6 +181,8 @@ metric_gate:
       max_ratio: 1.25
     lantern_search_index_expiration_purged:
       min_increase: 1
+    lantern_search_index_retained_ratio:
+      max_post: 3
     lantern_search_index_healthy:
       min_post: 1
       max_post: 1

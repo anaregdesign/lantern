@@ -180,6 +180,19 @@ describe("composeQuery", () => {
     );
   });
 
+  it("supports non-additive gauge aggregation", () => {
+    const average: PanelQuery = {
+      expr: "lantern_search_index_retained_ratio",
+      agg: "avg",
+    };
+    expect(composeQuery(average, "per-replica")).toBe(
+      "avg by (instance) (lantern_search_index_retained_ratio)",
+    );
+    expect(composeQuery(average, "sum")).toBe(
+      "avg(lantern_search_index_retained_ratio)",
+    );
+  });
+
   it("wraps bucket series in histogram_quantile with le grouped", () => {
     expect(composeQuery(quantile, "per-replica")).toBe(
       "histogram_quantile(0.99, sum by (le, instance) (rate(grpc_server_handling_seconds_bucket[$__rate])))",

@@ -20,6 +20,7 @@ import {
 import { DEFAULT_POLL_MS } from "~/lib/client/usecase/ops/state";
 import { useOps } from "~/lib/client/usecase/ops/use-ops";
 import { MetricsSection } from "../MetricsSection/MetricsSection";
+import { SearchStatusCard } from "../SearchStatusCard/SearchStatusCard";
 import styles from "./OpsPage.module.css";
 
 /**
@@ -82,6 +83,11 @@ export function OpsPage() {
           status={ops.state.replication.status}
           data={ops.state.replication.data}
           error={ops.state.replication.error}
+        />
+        <SearchStatusCard
+          status={ops.state.server.status}
+          data={ops.state.server.data}
+          error={ops.state.server.error}
         />
       </section>
       <MetricsSection pollMs={ops.state.pollMs} refreshNonce={refreshNonce} />

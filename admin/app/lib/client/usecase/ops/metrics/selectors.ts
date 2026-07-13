@@ -76,9 +76,9 @@ export function composeQuery(query: PanelQuery, mode: AggMode): string {
     return `histogram_quantile(${agg.quantile}, sum by (${labels}) (${query.expr}))`;
   }
   if (groupBy.length === 0) {
-    return `sum(${query.expr})`;
+    return agg + "(" + query.expr + ")";
   }
-  return `sum by (${groupBy.join(", ")}) (${query.expr})`;
+  return agg + " by (" + groupBy.join(", ") + ") (" + query.expr + ")";
 }
 
 /**

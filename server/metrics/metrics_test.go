@@ -3,11 +3,13 @@ package metrics
 import (
 	"context"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/anaregdesign/lantern/core/concurrent/pubsub"
 	"github.com/anaregdesign/lantern/core/search"
+	"github.com/anaregdesign/lantern/server/service"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
@@ -241,8 +243,10 @@ func TestDomainMetrics_HotPathFamilies(t *testing.T) {
 		"lantern_batch_size",
 		"lantern_search_results",
 		"lantern_search_duration_seconds",
+		"lantern_search_phase_duration_seconds",
 		"lantern_search_calls_total",
 		"lantern_search_work",
+		"lantern_search_rejections_total",
 		"lantern_search_index_terms",
 		"lantern_search_index_docs",
 		"lantern_search_index_physical_documents",
@@ -256,9 +260,11 @@ func TestDomainMetrics_HotPathFamilies(t *testing.T) {
 		"lantern_search_index_position_entries",
 		"lantern_search_index_estimated_live_bytes",
 		"lantern_search_index_estimated_retained_bytes",
+		"lantern_search_index_retained_ratio",
 		"lantern_search_index_rebuild_count",
 		"lantern_search_index_last_rebuild_duration_seconds",
 		"lantern_search_index_healthy",
+		"lantern_search_index_state",
 		"lantern_vertex_hlc_entries",
 		"lantern_vertex_hlc_entries_high_water",
 	} {
@@ -312,36 +318,69 @@ func TestDomainMetrics_HotPathFamilies(t *testing.T) {
 		t.Errorf("batch_size{AddEdges} sample count = %v, want 1", got)
 	}
 
-	// OnSearch emits on the dedicated search histograms, not the scan family.
-	m.OnSearch(5, 3*time.Millisecond)
-	if got := histSampleCount(t, m.searchResults); got != 1 {
-		t.Errorf("search_results sample count = %v, want 1", got)
+	// One terminal observation emits all bounded SearchVertices series.
+	m.OnSearchExecution(service.SearchObservation{
+		Mode: "all", Phrase: true, Fuzziness: 2, PrefixTerms: true, PrefixPresent: true,
+		Outcome: "resource_exhausted", Reason: string(search.WorkPostingVisits), TotalDuration: 3 * time.Millisecond,
+		Stats: search.Stats{
+			QueryBytes: 23, QueryTokens: 4, QueryClauses: 3, QueryTerms: 3,
+			DictionaryVisits: 19, ExpansionRetained: 2, PostingVisits: 17,
+			PositionVisits: 13, ExpirationVisits: 7, CandidateVisits: 11, CandidateSkips: 3,
+			AnalysisDuration: 100 * time.Microsecond, ExpansionDuration: 200 * time.Microsecond, SelectionDuration: 300 * time.Microsecond,
+		},
+	})
+	if got := histSampleCount(t, m.searchResults.WithLabelValues("all", "resource_exhausted")); got != 1 {
+		t.Errorf("search_results{all,resource_exhausted} sample count = %v, want 1", got)
 	}
-	if got := histSampleCount(t, m.searchDuration); got != 1 {
-		t.Errorf("search_duration sample count = %v, want 1", got)
+	if got := histSampleCount(t, m.searchDuration.WithLabelValues("all", "resource_exhausted")); got != 1 {
+		t.Errorf("search_duration{all,resource_exhausted} sample count = %v, want 1", got)
 	}
-	m.OnSearchExecution("resource_exhausted", string(search.WorkPostingVisits), search.Stats{PostingVisits: 17, CandidateVisits: 11, CandidateSkips: 3})
-	if got := testutil.ToFloat64(m.searchCalls.WithLabelValues("resource_exhausted", string(search.WorkPostingVisits))); got != 1 {
+	if got := testutil.ToFloat64(m.searchCalls.WithLabelValues("all", "yes", "2", "yes", "yes", "resource_exhausted", string(search.WorkPostingVisits))); got != 1 {
 		t.Errorf("search_calls_total{resource_exhausted,posting_visits} = %v, want 1", got)
 	}
-	if got := histSampleCount(t, m.searchWork.WithLabelValues(string(search.WorkPostingVisits))); got != 1 {
+	if got := histSampleCount(t, m.searchWork.WithLabelValues(string(search.WorkPostingVisits), "all")); got != 1 {
 		t.Errorf("search_work{posting_visits} sample count = %v, want 1", got)
 	}
-	if got := histSampleCount(t, m.searchWork.WithLabelValues(string(search.WorkCandidateVisits))); got != 1 {
+	if got := histSampleCount(t, m.searchWork.WithLabelValues(string(search.WorkCandidateVisits), "all")); got != 1 {
 		t.Errorf("search_work{candidate_visits} sample count = %v, want 1", got)
 	}
-	if got := histSampleCount(t, m.searchWork.WithLabelValues(string(search.WorkCandidateSkips))); got != 1 {
+	if got := histSampleCount(t, m.searchWork.WithLabelValues(string(search.WorkCandidateSkips), "all")); got != 1 {
 		t.Errorf("search_work{candidate_skips} sample count = %v, want 1", got)
 	}
-	m.OnSearchExecution("resource_exhausted", string(search.WorkExpirationVisits), search.Stats{ExpirationVisits: 5})
-	if got := histSampleCount(t, m.searchWork.WithLabelValues(string(search.WorkExpirationVisits))); got != 2 {
+	if got := histSampleCount(t, m.searchPhaseDuration.WithLabelValues("analysis", "all")); got != 1 {
+		t.Errorf("search_phase_duration{analysis,all} sample count = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.searchRejections.WithLabelValues(string(search.WorkPostingVisits))); got != 1 {
+		t.Errorf("search_rejections_total{posting_visits} = %v, want 1", got)
+	}
+	m.OnSearchExecution(service.SearchObservation{Mode: "all", Outcome: "resource_exhausted", Reason: string(search.WorkExpirationVisits), Stats: search.Stats{ExpirationVisits: 5}})
+	if got := histSampleCount(t, m.searchWork.WithLabelValues(string(search.WorkExpirationVisits), "all")); got != 2 {
 		t.Errorf("search_work{expiration_visits} sample count = %v, want 2", got)
 	}
 	// Unknown values are collapsed to bounded fallbacks instead of becoming
 	// user-controlled labels.
-	m.OnSearchExecution("raw-query", "raw-prefix", search.Stats{})
-	if got := testutil.ToFloat64(m.searchCalls.WithLabelValues("internal", "internal")); got != 1 {
+	m.OnSearchExecution(service.SearchObservation{Mode: "raw-query", Fuzziness: 999, Outcome: "raw-query", Reason: "raw-prefix"})
+	if got := testutil.ToFloat64(m.searchCalls.WithLabelValues("unknown", "no", "other", "no", "no", "internal", "internal")); got != 1 {
 		t.Errorf("search_calls_total{internal,internal} = %v, want sanitized sample", got)
+	}
+	mfs, err = reg.Gather()
+	if err != nil {
+		t.Fatalf("gather after search observations: %v", err)
+	}
+	for _, mf := range mfs {
+		if !strings.HasPrefix(mf.GetName(), "lantern_search_") {
+			continue
+		}
+		for _, metric := range mf.GetMetric() {
+			for _, label := range metric.GetLabel() {
+				if strings.Contains(label.GetName(), "query") || strings.Contains(label.GetName(), "prefix") && label.GetName() != "prefix_terms" && label.GetName() != "prefix_present" {
+					t.Errorf("search metric %s has user-controlled label name %q", mf.GetName(), label.GetName())
+				}
+				if label.GetValue() == "raw-query" || label.GetValue() == "raw-prefix" {
+					t.Errorf("search metric %s leaked raw label value %q", mf.GetName(), label.GetValue())
+				}
+			}
+		}
 	}
 }
 
@@ -401,12 +440,28 @@ func TestDomainMetrics_SearchIndexCapacityGauges(t *testing.T) {
 		{m.searchIndexTerms, 3}, {m.searchIndexRetainedTerms, 5},
 		{m.searchIndexRetainedOrdinals, 4}, {m.searchIndexPostings, 7}, {m.searchIndexPositions, 11},
 		{m.searchIndexLiveBytes, 100}, {m.searchIndexRetainedBytes, 140}, {m.searchIndexRebuilds, 6},
-		{m.searchIndexRebuildDuration, 0.025}, {m.searchIndexHealthy, 1},
+		{m.searchIndexRetainedRatio, 1.4}, {m.searchIndexRebuildDuration, 0.025}, {m.searchIndexHealthy, 1},
 	}
 	for _, check := range checks {
 		if got := testutil.ToFloat64(check.gauge); got != check.want {
 			t.Errorf("gauge = %v, want %v", got, check.want)
 		}
+	}
+	if got := testutil.ToFloat64(m.searchIndexState.WithLabelValues("healthy")); got != 1 {
+		t.Errorf("search_index_state{healthy} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.searchIndexState.WithLabelValues("disabled")); got != 0 {
+		t.Errorf("search_index_state{disabled} = %v, want 0", got)
+	}
+}
+
+func TestDomainMetrics_SearchIndexDefaultsToDisabled(t *testing.T) {
+	m := New(prometheus.NewRegistry(), Options{SampleInterval: time.Hour})
+	if got := testutil.ToFloat64(m.searchIndexState.WithLabelValues("disabled")); got != 1 {
+		t.Errorf("search_index_state{disabled} = %v, want 1 before a sampler is bound", got)
+	}
+	if got := testutil.ToFloat64(m.searchIndexState.WithLabelValues("healthy")); got != 0 {
+		t.Errorf("search_index_state{healthy} = %v, want 0", got)
 	}
 }
 

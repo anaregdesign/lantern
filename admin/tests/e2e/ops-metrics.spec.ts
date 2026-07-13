@@ -58,6 +58,8 @@ test.describe("Ops metrics section", () => {
   }) => {
     await page.goto("/ops");
     await expect(page.getByTestId("ops-server-card")).toBeVisible();
+    await expect(page.getByTestId("ops-search-card")).toBeVisible();
+    await expect(page.getByTestId("ops-search-health")).toHaveText("healthy");
     const section = page.getByTestId("ops-metrics-section");
     await expect(section).toBeVisible();
     await expect(
@@ -124,6 +126,55 @@ test.describe("Ops metrics section", () => {
     await expect(
       page.getByTestId("ops-metric-cache-size-summary"),
     ).toBeVisible();
+    await expect(page.getByTestId("ops-metrics-group-search")).toBeVisible();
+    await expect(page.getByTestId("ops-metric-search-outcomes")).toBeVisible();
+    await expect(
+      page.getByTestId("ops-metric-search-outcomes-summary"),
+    ).toBeVisible();
+    await expect(
+      page.getByTestId("ops-metric-search-index-health-summary"),
+    ).toBeVisible();
+  });
+
+  test("keeps absent search metrics local to the search panels", async ({
+    page,
+  }) => {
+    await page.route("**/api/prom/api/v1/query_range*", async (route) => {
+      const now = Math.floor(Date.now() / 1000);
+      const query = new URL(route.request().url()).searchParams.get("query");
+      const body = (query ?? "").includes("lantern_search_")
+        ? { status: "success", data: { resultType: "matrix", result: [] } }
+        : matrixEnvelope(now);
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(body),
+      });
+    });
+
+    await page.goto("/ops");
+    await expect(
+      page.getByTestId("ops-metric-search-outcomes-empty"),
+    ).toBeVisible();
+    await expect(page.getByTestId("ops-metrics-degraded")).toHaveCount(0);
+    await expect(
+      page.getByTestId("ops-metric-cache-size-summary"),
+    ).toBeVisible();
+  });
+
+  test("keeps the search status card readable on a narrow viewport", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/ops");
+    await expect(page.getByTestId("ops-search-card")).toBeVisible();
+    await expect(
+      page.getByText("Query budgets", { exact: true }),
+    ).toBeVisible();
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - window.innerWidth,
+    );
+    expect(overflow).toBeLessThanOrEqual(0);
   });
 
   test("shows the replica key in per-replica mode and hides it in sum mode", async ({

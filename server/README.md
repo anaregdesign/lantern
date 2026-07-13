@@ -168,6 +168,30 @@ runtime, process, and `grpc_server_*` collectors):
 | `lantern_illuminate_duration_seconds` | histogram | `algorithm`, `reduction`, `objective`, `weighting`, `phase` | Per-phase (`traversal`, `optimize`) wall-clock; `optimize` only emitted when a reduction actually ran (i.e. `reduction != none`, for the `bfs` and `community` families). |
 | `lantern_scan_results` | histogram | `op` | Result counts for prefix scans (`ScanVertices`, `ScanEdges`, `DeleteVerticesByPrefix`). |
 | `lantern_scan_duration_seconds` | histogram | `op` | Wall-clock for the same scan ops. |
+| `lantern_search_results` | histogram | `mode`, `outcome` | Hits returned by every terminal `SearchVertices` attempt, including zero-hit and rejected calls. |
+| `lantern_search_duration_seconds` | histogram | `mode`, `outcome` | End-to-end handler duration for every terminal search path. |
+| `lantern_search_phase_duration_seconds` | histogram | `phase`, `mode` | Executor phase duration for `analysis`, `expansion`, and `selection`; zero/unreached phases are not observed. |
+| `lantern_search_calls_total` | counter | `mode`, `phrase`, `fuzziness`, `prefix_terms`, `prefix_present`, `outcome`, `reason` | Exactly one terminal observation per `SearchVertices` attempt. All dimensions are fixed buckets; query text and prefix values are absent. |
+| `lantern_search_work` | histogram | `kind`, `mode` | Deterministic work per attempt: query bytes/tokens/clauses/terms, dictionary visits, retained expansions, posting/position/expiration visits, candidate visits/skips. |
+| `lantern_search_rejections_total` | counter | `reason` | Rejected attempts split by bounded reason (`invalid_options`, capability/index state, admission, work budget, or `internal`). |
+| `lantern_search_index_docs` | gauge | — | Logical live index documents at the sampled time. |
+| `lantern_search_index_physical_documents` | gauge | — | Physical documents, including expired entries awaiting purge. |
+| `lantern_search_index_expired_documents` | gauge | — | Expired physical documents awaiting bounded query purge or background GC. |
+| `lantern_search_index_expiration_queue_entries` | gauge | — | Entries in the search expiration min-heap. |
+| `lantern_search_index_expiration_purged` | gauge | — | Cumulative documents removed by bounded query-time purge. |
+| `lantern_search_index_last_expiration_purge_duration_seconds` | gauge | — | Latest query-time expiration purge duration. |
+| `lantern_search_index_terms` | gauge | — | Logical live term count. |
+| `lantern_search_index_retained_term_slots` | gauge | — | Retained term-ID slots, including reusable tombstoned slots. |
+| `lantern_search_index_retained_ordinals` | gauge | — | Retained document ordinal high-water. |
+| `lantern_search_index_postings` | gauge | — | Logical live posting count. |
+| `lantern_search_index_position_entries` | gauge | — | Logical live position-entry count. |
+| `lantern_search_index_estimated_live_bytes` | gauge | — | Estimated live index storage. |
+| `lantern_search_index_estimated_retained_bytes` | gauge | — | Estimated physical retained index storage. |
+| `lantern_search_index_retained_ratio` | gauge | — | Retained/live byte amplification (`retained / max(live, 1)`). |
+| `lantern_search_index_rebuild_count` | gauge | — | Completed index rebuilds. |
+| `lantern_search_index_last_rebuild_duration_seconds` | gauge | — | Latest rebuild duration. |
+| `lantern_search_index_healthy` | gauge | — | Compatibility gauge: 1 only when the local index is healthy. |
+| `lantern_search_index_state` | gauge | `state` | One-hot local state (`disabled`, `healthy`, `incomplete`) so degraded/disabled are distinguishable without pprof. |
 | `lantern_batch_size` | histogram | `op` | Batch size for plural RPCs (`GetVertices`, `PutVertices`, `DeleteVertices`, `GetEdges`, `AddEdges`, `PutEdges`, `DeleteEdges`). Singular forwarders are NOT instrumented to avoid double-counting. |
 | `lantern_get_vertex_hits_total` | counter | — | `GetVertices` key lookups that found a live vertex (present at read time, including a present-but-nil value). Counted once by the plural impl; the singular `GetVertex` forwards through it. Recall hit ratio = `hits / (hits + misses)`. |
 | `lantern_get_vertex_misses_total` | counter | — | `GetVertices` key lookups that found no live vertex (absent or expired). The miss side of the vertex recall ratio. |
@@ -191,7 +215,7 @@ standing up a metrics stack:
 
 | Logger message | Level | Trigger | Key attrs |
 | --- | --- | --- | --- |
-| `slow rpc` | `warn` | Unary or stream handler ran longer than `LANTERN_SLOW_RPC_THRESHOLD_MS`. | `method`, `code`, `duration_ms`, `threshold_ms` |
+| `slow rpc` | `warn` | Unary or stream handler ran longer than `LANTERN_SLOW_RPC_THRESHOLD_MS`. | `method`, `code`, `duration_ms`, `threshold_ms`; Search adds bounded `search.mode`, `search.phrase`, `search.fuzziness`, `search.prefix_terms`, `search.prefix_present`. |
 | `validation rejected` | `debug` | Validation interceptor returned `InvalidArgument` (also bumps `lantern_validation_rejected_total`). | `reason`, `error` |
 | `graph cache: gc tick` | `info` | One record per `GraphCache.Watch` tick (always fires, even on empty ticks). | `vertices_expired`, `edges_expired`, `dangling_edges_removed`, `vertices_remaining`, `edges_remaining`, `duration_ms` |
 | `anti-entropy: gap exceeds warn threshold` | `warn` | Detected per-origin gap exceeds `LANTERN_ANTI_ENTROPY_GAP_WARN_THRESHOLD`. | `origin`, `gap`, `threshold` |
@@ -210,6 +234,16 @@ standing up a metrics stack:
 - **Hot scans** — `lantern_scan_results` / `lantern_scan_duration_seconds`
   flag clients fan-paging large prefixes; expect to also see `slow rpc`
   records for the same `method`.
+- **Slow search** — start with `lantern_search_duration_seconds` p99, then
+  compare `lantern_search_phase_duration_seconds{phase}` and
+  `lantern_search_work{kind}`. Expansion/dictionary growth points to fuzzy or
+  prefix expansion; posting/position growth points to corpus density or phrase
+  work; selection/candidate growth points to a broad result set.
+- **Search index retention** — a rising
+  `lantern_search_index_retained_ratio` with
+  `lantern_search_index_state{state="healthy"} == 1` indicates compaction
+  pressure; `state="incomplete"` or `lantern_search_config_match == 0` is a
+  correctness/readiness problem and should be handled before latency tuning.
 - **Recall effectiveness** — `lantern_get_vertex_hits_total` /
   `lantern_get_vertex_misses_total` (and the `_edge_` pair) give a hit
   ratio `hits / (hits + misses)`; a falling ratio means callers are asking

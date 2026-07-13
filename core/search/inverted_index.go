@@ -880,7 +880,14 @@ func (idx *InvertedIndex[S, D]) Search(query string) []Result[S] {
 // weight once per channel and floating-point contributions are accumulated in
 // the same order on every call and replica.
 func (idx *InvertedIndex[S, D]) queryTerms(query string) []Token {
-	tokens := idx.analyzeQuery(query)
+	return distinctQueryTerms(idx.analyzeQuery(query))
+}
+
+// distinctQueryTerms collapses an already analyzed token stream to the
+// stable clause set used for scoring. Keeping analysis separate lets the
+// bounded executor report both analyzer output (tokens) and scoring input
+// (clauses) without running the analyzer twice.
+func distinctQueryTerms(tokens []Token) []Token {
 	if len(tokens) == 0 {
 		return nil
 	}

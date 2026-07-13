@@ -4,19 +4,24 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // WorkKind identifies one deterministic search-work counter.
 type WorkKind string
 
 const (
-	WorkQueryTerms       WorkKind = "query_terms"
-	WorkDictionaryVisits WorkKind = "dictionary_visits"
-	WorkPostingVisits    WorkKind = "posting_visits"
-	WorkPositionVisits   WorkKind = "position_visits"
-	WorkExpirationVisits WorkKind = "expiration_visits"
-	WorkCandidateVisits  WorkKind = "candidate_visits"
-	WorkCandidateSkips   WorkKind = "candidate_skips"
+	WorkQueryBytes        WorkKind = "query_bytes"
+	WorkQueryTokens       WorkKind = "query_tokens"
+	WorkQueryClauses      WorkKind = "query_clauses"
+	WorkQueryTerms        WorkKind = "query_terms"
+	WorkDictionaryVisits  WorkKind = "dictionary_visits"
+	WorkExpansionRetained WorkKind = "expansions_retained"
+	WorkPostingVisits     WorkKind = "posting_visits"
+	WorkPositionVisits    WorkKind = "position_visits"
+	WorkExpirationVisits  WorkKind = "expiration_visits"
+	WorkCandidateVisits   WorkKind = "candidate_visits"
+	WorkCandidateSkips    WorkKind = "candidate_skips"
 )
 
 // ErrBudgetExceeded classifies deterministic query-work exhaustion.
@@ -32,15 +37,23 @@ type Budget struct {
 	MaxExpirationVisits int64
 }
 
-// Stats is the exact work charged to one search attempt.
+// Stats captures exact deterministic work plus coarse executor phase timing
+// for one search attempt.
 type Stats struct {
-	QueryTerms       int64
-	DictionaryVisits int64
-	PostingVisits    int64
-	PositionVisits   int64
-	ExpirationVisits int64
-	CandidateVisits  int64
-	CandidateSkips   int64
+	QueryBytes        int64
+	QueryTokens       int64
+	QueryClauses      int64
+	QueryTerms        int64
+	DictionaryVisits  int64
+	ExpansionRetained int64
+	PostingVisits     int64
+	PositionVisits    int64
+	ExpirationVisits  int64
+	CandidateVisits   int64
+	CandidateSkips    int64
+	AnalysisDuration  time.Duration
+	ExpansionDuration time.Duration
+	SelectionDuration time.Duration
 }
 
 // BudgetExceededError records which stable counter exhausted its limit.
@@ -80,10 +93,18 @@ func (w *workTracker) visit(kind WorkKind, n int64) error {
 	var value *int64
 	var limit int64
 	switch kind {
+	case WorkQueryBytes:
+		value = &w.stats.QueryBytes
+	case WorkQueryTokens:
+		value = &w.stats.QueryTokens
+	case WorkQueryClauses:
+		value = &w.stats.QueryClauses
 	case WorkQueryTerms:
 		value, limit = &w.stats.QueryTerms, w.budget.MaxQueryTerms
 	case WorkDictionaryVisits:
 		value, limit = &w.stats.DictionaryVisits, w.budget.MaxDictionaryVisits
+	case WorkExpansionRetained:
+		value = &w.stats.ExpansionRetained
 	case WorkPostingVisits:
 		value, limit = &w.stats.PostingVisits, w.budget.MaxPostingVisits
 	case WorkPositionVisits:

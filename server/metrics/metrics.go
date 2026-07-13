@@ -13,6 +13,7 @@ import (
 	"github.com/anaregdesign/lantern/core/concurrent/pubsub"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/search"
+	"github.com/anaregdesign/lantern/server/service"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -136,14 +137,16 @@ type DomainMetrics struct {
 	// Search RPC observability (#703). searchResults and searchDuration
 	// are separate histograms (not reusing the scan family) so
 	// dashboards can alert on search-specific SLOs without filtering.
-	searchResults  prometheus.Histogram
-	searchDuration prometheus.Histogram
-	searchCalls    *prometheus.CounterVec
-	searchWork     *prometheus.HistogramVec
+	searchResults       *prometheus.HistogramVec
+	searchDuration      *prometheus.HistogramVec
+	searchPhaseDuration *prometheus.HistogramVec
+	searchCalls         *prometheus.CounterVec
+	searchWork          *prometheus.HistogramVec
+	searchRejections    *prometheus.CounterVec
 
-	// Search-index size gauges (#703). Sampled off InvertedIndex.Stats()
-	// on the same cadence as lantern_vertices / lantern_edges. Both stay
-	// 0 when LANTERN_SEARCH_ENABLED=false (sampler is nil).
+	// Search-index size/health gauges (#703/#1064). Sampled off
+	// InvertedIndex.Stats() on the same cadence as lantern_vertices / edges.
+	// Size gauges stay 0 and state=disabled when no sampler is bound.
 	searchIndexTerms            prometheus.Gauge
 	searchIndexDocs             prometheus.Gauge
 	searchIndexPhysicalDocs     prometheus.Gauge
@@ -157,9 +160,11 @@ type DomainMetrics struct {
 	searchIndexPositions        prometheus.Gauge
 	searchIndexLiveBytes        prometheus.Gauge
 	searchIndexRetainedBytes    prometheus.Gauge
+	searchIndexRetainedRatio    prometheus.Gauge
 	searchIndexRebuilds         prometheus.Gauge
 	searchIndexRebuildDuration  prometheus.Gauge
 	searchIndexHealthy          prometheus.Gauge
+	searchIndexState            *prometheus.GaugeVec
 
 	// Per-structure cardinality gauge for the LWW watermark map (#705).
 	// Sampled off GraphCache.VertexHLCCount(). Tracks the live replicated
@@ -243,11 +248,13 @@ var (
 	}
 	searchReasons = []string{
 		"none",
+		"no_hits",
 		"canceled",
 		"deadline",
 		"invalid_options",
 		"disabled",
 		"positions_disabled",
+		"index_incomplete",
 		"query_bytes",
 		"admission",
 		string(search.WorkQueryTerms),
@@ -258,13 +265,38 @@ var (
 		"internal",
 	}
 	searchWorkKinds = []string{
+		string(search.WorkQueryBytes),
+		string(search.WorkQueryTokens),
+		string(search.WorkQueryClauses),
 		string(search.WorkQueryTerms),
 		string(search.WorkDictionaryVisits),
+		string(search.WorkExpansionRetained),
 		string(search.WorkPostingVisits),
 		string(search.WorkPositionVisits),
 		string(search.WorkExpirationVisits),
 		string(search.WorkCandidateVisits),
 		string(search.WorkCandidateSkips),
+	}
+	searchModes         = []string{"server", "any", "all", "min_should", "unknown"}
+	searchPhases        = []string{"analysis", "expansion", "selection"}
+	searchIndexStates   = []string{"disabled", "healthy", "incomplete"}
+	searchTerminalPairs = [][2]string{
+		{"ok", "none"},
+		{"ok", "no_hits"},
+		{"canceled", "canceled"},
+		{"deadline_exceeded", "deadline"},
+		{"invalid_argument", "invalid_options"},
+		{"failed_precondition", "disabled"},
+		{"failed_precondition", "positions_disabled"},
+		{"failed_precondition", "index_incomplete"},
+		{"resource_exhausted", "query_bytes"},
+		{"resource_exhausted", "admission"},
+		{"resource_exhausted", string(search.WorkQueryTerms)},
+		{"resource_exhausted", string(search.WorkDictionaryVisits)},
+		{"resource_exhausted", string(search.WorkPostingVisits)},
+		{"resource_exhausted", string(search.WorkPositionVisits)},
+		{"resource_exhausted", string(search.WorkExpirationVisits)},
+		{"internal", "internal"},
 	}
 	// replicationApplyOps covers every pb.MutationOp oneof variant. The
 	// service layer translates the proto-internal case selector into one
@@ -462,25 +494,34 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 			Name: "lantern_edge_contrib_deduped_total",
 			Help: "Total additive edge contributions suppressed by client-supplied ContribID dedup (#588). A retried idempotent AddEdge/AddEdges re-sending the same ContribID bumps this instead of double-counting edge weight.",
 		}),
-		searchResults: prometheus.NewHistogram(prometheus.HistogramOpts{
+		searchResults: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "lantern_search_results",
-			Help:    "Number of hits returned by a SearchVertices RPC (#703). Separate from the scan family so search-specific SLOs can be alerted on independently.",
-			Buckets: prometheus.ExponentialBuckets(1, 4, 10),
-		}),
-		searchDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Help:    "Number of hits returned by every terminal SearchVertices attempt, partitioned by bounded request mode and outcome.",
+			Buckets: append([]float64{0}, prometheus.ExponentialBuckets(1, 4, 10)...),
+		}, []string{"mode", "outcome"}),
+		searchDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "lantern_search_duration_seconds",
-			Help:    "Wall-clock duration of a SearchVertices RPC (#703).",
+			Help:    "End-to-end handler duration of every SearchVertices attempt, partitioned by bounded request mode and outcome.",
 			Buckets: prometheus.ExponentialBuckets(0.0001, 4, 8), // 0.1ms .. ~1.6s
-		}),
+		}, []string{"mode", "outcome"}),
+		searchPhaseDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "lantern_search_phase_duration_seconds",
+			Help:    "Executor duration partitioned by bounded phase (analysis, expansion, selection) and request mode.",
+			Buckets: prometheus.ExponentialBuckets(0.00001, 4, 10),
+		}, []string{"phase", "mode"}),
 		searchCalls: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "lantern_search_calls_total",
-			Help: "Total SearchVertices attempts partitioned by bounded terminal outcome and reason. Query text, prefixes, and matched keys are never labels.",
-		}, []string{"outcome", "reason"}),
+			Help: "Total SearchVertices attempts partitioned only by bounded option dimensions, terminal outcome, and reason. Query text, prefixes, and matched keys are never labels.",
+		}, []string{"mode", "phrase", "fuzziness", "prefix_terms", "prefix_present", "outcome", "reason"}),
 		searchWork: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "lantern_search_work",
-			Help:    "Deterministic work charged by SearchVertices, partitioned by the bounded work counter kind.",
+			Help:    "Deterministic work charged by SearchVertices, partitioned by bounded work kind and request mode.",
 			Buckets: prometheus.ExponentialBuckets(1, 4, 12),
-		}, []string{"kind"}),
+		}, []string{"kind", "mode"}),
+		searchRejections: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "lantern_search_rejections_total",
+			Help: "SearchVertices attempts rejected before a successful response, partitioned by a bounded reason.",
+		}, []string{"reason"}),
 		searchIndexTerms: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "lantern_search_index_terms",
 			Help: "Current number of distinct terms in the search inverted index (#703). Sampled on the same cadence as lantern_vertices. Always 0 when LANTERN_SEARCH_ENABLED=false.",
@@ -500,9 +541,14 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		searchIndexPositions:        prometheus.NewGauge(prometheus.GaugeOpts{Name: "lantern_search_index_position_entries", Help: "Live positional entries retained by the search index."}),
 		searchIndexLiveBytes:        prometheus.NewGauge(prometheus.GaugeOpts{Name: "lantern_search_index_estimated_live_bytes", Help: "Stable logical estimate of live search-index bytes."}),
 		searchIndexRetainedBytes:    prometheus.NewGauge(prometheus.GaugeOpts{Name: "lantern_search_index_estimated_retained_bytes", Help: "Stable logical estimate including retained high-water slots."}),
+		searchIndexRetainedRatio:    prometheus.NewGauge(prometheus.GaugeOpts{Name: "lantern_search_index_retained_ratio", Help: "Estimated retained bytes divided by max(estimated live bytes, 1); sustained growth indicates unreclaimed high-water storage."}),
 		searchIndexRebuilds:         prometheus.NewGauge(prometheus.GaugeOpts{Name: "lantern_search_index_rebuild_count", Help: "Completed search-index compactions and bounded rebuilds in this process."}),
 		searchIndexRebuildDuration:  prometheus.NewGauge(prometheus.GaugeOpts{Name: "lantern_search_index_last_rebuild_duration_seconds", Help: "Wall duration of the latest search-index compaction or rebuild."}),
 		searchIndexHealthy:          prometheus.NewGauge(prometheus.GaugeOpts{Name: "lantern_search_index_healthy", Help: "1 when search can be served from a complete index; 0 otherwise."}),
+		searchIndexState: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "lantern_search_index_state",
+			Help: "One-hot current search-index state (disabled, healthy, incomplete).",
+		}, []string{"state"}),
 		vertexHLCEntries: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "lantern_vertex_hlc_entries",
 			Help: "Current number of entries in the per-key LWW watermark map used by the replication apply path (#705). Tracks the live replicated-key set; a value growing monotonically across GC ticks signals the vertexHLC leak (issue #700). Always 0 on a single-node deployment.",
@@ -587,10 +633,10 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		m.scanResults, m.scanDuration, m.batchSize,
 		m.getVertexHits, m.getVertexMisses, m.getEdgeHits, m.getEdgeMisses,
 		m.edgeContribDeduped,
-		m.searchResults, m.searchDuration, m.searchCalls, m.searchWork, m.searchIndexTerms, m.searchIndexDocs,
+		m.searchResults, m.searchDuration, m.searchPhaseDuration, m.searchCalls, m.searchWork, m.searchRejections, m.searchIndexTerms, m.searchIndexDocs,
 		m.searchIndexPhysicalDocs, m.searchIndexExpiredDocs, m.searchIndexExpirationQueue, m.searchIndexExpirationPurged, m.searchIndexPurgeDuration,
 		m.searchIndexRetainedTerms, m.searchIndexRetainedOrdinals, m.searchIndexPostings, m.searchIndexPositions,
-		m.searchIndexLiveBytes, m.searchIndexRetainedBytes, m.searchIndexRebuilds, m.searchIndexRebuildDuration, m.searchIndexHealthy,
+		m.searchIndexLiveBytes, m.searchIndexRetainedBytes, m.searchIndexRetainedRatio, m.searchIndexRebuilds, m.searchIndexRebuildDuration, m.searchIndexHealthy, m.searchIndexState,
 		m.vertexHLCEntries, m.vertexHLCHighWater,
 		m.peerConnected, m.replicationApplyTotal, m.snapshotReplayedTotal,
 		m.snapshotVertices, m.snapshotEdges, m.snapshotDuration,
@@ -648,14 +694,33 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 	for _, op := range batchOps {
 		m.batchSize.WithLabelValues(op)
 	}
-	for _, outcome := range searchOutcomes {
-		for _, reason := range searchReasons {
-			m.searchCalls.WithLabelValues(outcome, reason)
+	for _, mode := range searchModes {
+		for _, outcome := range searchOutcomes {
+			m.searchResults.WithLabelValues(mode, outcome)
+			m.searchDuration.WithLabelValues(mode, outcome)
+		}
+		for _, pair := range searchTerminalPairs {
+			m.searchCalls.WithLabelValues(mode, "no", "0", "no", "no", pair[0], pair[1])
+		}
+		for _, kind := range searchWorkKinds {
+			m.searchWork.WithLabelValues(kind, mode)
+		}
+		for _, phase := range searchPhases {
+			m.searchPhaseDuration.WithLabelValues(phase, mode)
 		}
 	}
-	for _, kind := range searchWorkKinds {
-		m.searchWork.WithLabelValues(kind)
+	for _, reason := range searchReasons {
+		if reason != "none" && reason != "no_hits" {
+			m.searchRejections.WithLabelValues(reason)
+		}
 	}
+	for _, state := range searchIndexStates {
+		m.searchIndexState.WithLabelValues(state)
+	}
+	// Until a sampler is bound and ticked the index is disabled, not an
+	// unknown all-zero state. A real sampler replaces this one-hot row on the
+	// first tick with healthy or incomplete as appropriate.
+	m.searchIndexState.WithLabelValues("disabled").Set(1)
 	// Pre-warm the replication-apply counter so dashboards render every
 	// MutationOp variant from process start. Per-peer collectors
 	// (peer_connected, snapshot_*) cannot be pre-warmed because peer
@@ -1043,34 +1108,73 @@ func (m *DomainMetrics) OnEdgeContribDeduped(n int) {
 	}
 }
 
-// OnSearch records one SearchVertices RPC: the number of ranked hits returned
-// and the wall-clock duration (#703). Called by the SearchVertices handler;
-// results=0 is still observed (an empty result is a valid outcome).
-func (m *DomainMetrics) OnSearch(results int, duration time.Duration) {
-	m.searchResults.Observe(float64(results))
-	m.searchDuration.Observe(duration.Seconds())
-}
-
-// OnSearchExecution records exactly one bounded terminal outcome plus the
-// deterministic work charged by the query executor. The sanitizer prevents a
-// future caller from introducing user-controlled metric cardinality.
-func (m *DomainMetrics) OnSearchExecution(outcome, reason string, stats search.Stats) {
-	o := sanitizeLabel(outcome, searchOutcomes, "internal")
-	r := sanitizeLabel(reason, searchReasons, "internal")
-	m.searchCalls.WithLabelValues(o, r).Inc()
+// OnSearchExecution records exactly one bounded terminal observation for a
+// SearchVertices attempt. Every string is sanitized against a finite set and
+// the remaining dimensions are booleans or a fixed fuzziness bucket, so raw
+// query text, prefixes, keys, and values cannot become labels.
+func (m *DomainMetrics) OnSearchExecution(observation service.SearchObservation) {
+	mode := sanitizeLabel(observation.Mode, searchModes, "unknown")
+	outcome := sanitizeLabel(observation.Outcome, searchOutcomes, "internal")
+	reason := sanitizeLabel(observation.Reason, searchReasons, "internal")
+	phrase := boolLabel(observation.Phrase)
+	prefixTerms := boolLabel(observation.PrefixTerms)
+	prefixPresent := boolLabel(observation.PrefixPresent)
+	fuzziness := fuzzinessLabel(observation.Fuzziness)
+	m.searchCalls.WithLabelValues(mode, phrase, fuzziness, prefixTerms, prefixPresent, outcome, reason).Inc()
+	m.searchResults.WithLabelValues(mode, outcome).Observe(float64(max(0, observation.Results)))
+	m.searchDuration.WithLabelValues(mode, outcome).Observe(observation.TotalDuration.Seconds())
+	if outcome == "invalid_argument" || outcome == "failed_precondition" || outcome == "resource_exhausted" || outcome == "internal" {
+		m.searchRejections.WithLabelValues(reason).Inc()
+	}
+	for _, phase := range []struct {
+		name     string
+		duration time.Duration
+	}{
+		{"analysis", observation.Stats.AnalysisDuration},
+		{"expansion", observation.Stats.ExpansionDuration},
+		{"selection", observation.Stats.SelectionDuration},
+	} {
+		if phase.duration > 0 {
+			m.searchPhaseDuration.WithLabelValues(phase.name, mode).Observe(phase.duration.Seconds())
+		}
+	}
 	for _, item := range []struct {
 		kind  string
 		value int64
 	}{
-		{string(search.WorkQueryTerms), stats.QueryTerms},
-		{string(search.WorkDictionaryVisits), stats.DictionaryVisits},
-		{string(search.WorkPostingVisits), stats.PostingVisits},
-		{string(search.WorkPositionVisits), stats.PositionVisits},
-		{string(search.WorkExpirationVisits), stats.ExpirationVisits},
-		{string(search.WorkCandidateVisits), stats.CandidateVisits},
-		{string(search.WorkCandidateSkips), stats.CandidateSkips},
+		{string(search.WorkQueryBytes), observation.Stats.QueryBytes},
+		{string(search.WorkQueryTokens), observation.Stats.QueryTokens},
+		{string(search.WorkQueryClauses), observation.Stats.QueryClauses},
+		{string(search.WorkQueryTerms), observation.Stats.QueryTerms},
+		{string(search.WorkDictionaryVisits), observation.Stats.DictionaryVisits},
+		{string(search.WorkExpansionRetained), observation.Stats.ExpansionRetained},
+		{string(search.WorkPostingVisits), observation.Stats.PostingVisits},
+		{string(search.WorkPositionVisits), observation.Stats.PositionVisits},
+		{string(search.WorkExpirationVisits), observation.Stats.ExpirationVisits},
+		{string(search.WorkCandidateVisits), observation.Stats.CandidateVisits},
+		{string(search.WorkCandidateSkips), observation.Stats.CandidateSkips},
 	} {
-		m.searchWork.WithLabelValues(item.kind).Observe(float64(item.value))
+		m.searchWork.WithLabelValues(item.kind, mode).Observe(float64(item.value))
+	}
+}
+
+func boolLabel(value bool) string {
+	if value {
+		return "yes"
+	}
+	return "no"
+}
+
+func fuzzinessLabel(value uint32) string {
+	switch value {
+	case 0:
+		return "0"
+	case 1:
+		return "1"
+	case 2:
+		return "2"
+	default:
+		return "other"
 	}
 }
 
@@ -1188,12 +1292,26 @@ func (m *DomainMetrics) tick() {
 		m.searchIndexPositions.Set(float64(stats.PositionEntries))
 		m.searchIndexLiveBytes.Set(float64(stats.EstimatedLiveBytes))
 		m.searchIndexRetainedBytes.Set(float64(stats.EstimatedRetainedBytes))
+		denominator := max(int64(1), stats.EstimatedLiveBytes)
+		m.searchIndexRetainedRatio.Set(float64(stats.EstimatedRetainedBytes) / float64(denominator))
 		m.searchIndexRebuilds.Set(float64(stats.RebuildCount))
 		m.searchIndexRebuildDuration.Set(stats.LastRebuildDuration.Seconds())
+		state := "disabled"
 		if stats.Health == search.IndexHealthy {
 			m.searchIndexHealthy.Set(1)
+			state = "healthy"
 		} else {
 			m.searchIndexHealthy.Set(0)
+			if stats.Health == search.IndexIncomplete {
+				state = "incomplete"
+			}
+		}
+		for _, candidate := range searchIndexStates {
+			value := 0.0
+			if candidate == state {
+				value = 1
+			}
+			m.searchIndexState.WithLabelValues(candidate).Set(value)
 		}
 	}
 	if m.vertexHLCSample != nil {

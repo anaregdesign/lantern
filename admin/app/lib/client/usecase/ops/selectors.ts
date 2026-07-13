@@ -1,4 +1,8 @@
-import type { ServerStatus } from "~/lib/client/infrastructure/api/get-server-status";
+import type {
+  SearchCapabilities,
+  SearchIndexStatus,
+  ServerStatus,
+} from "~/lib/client/infrastructure/api/get-server-status";
 import type {
   ReplicationPeerState,
   ReplicationStatus,
@@ -64,6 +68,19 @@ export function formatCount(n: number): string {
   return n.toLocaleString();
 }
 
+export function formatBytes(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return "-";
+  if (n < 1024) return `${Math.floor(n)} B`;
+  const units = ["KiB", "MiB", "GiB", "TiB"];
+  let value = n / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[unit]}`;
+}
+
 /**
  * peerStatePillIntent maps a ReplicationPeerState onto the Fluent UI
  * "intent" label the table cell uses for the colour pill.
@@ -110,12 +127,97 @@ export function serverCardSummary(s: ServerStatus): Array<[string, string]> {
     ],
     ["TLS", s.tlsEnabled ? "enabled" : "disabled"],
     ["Replication", s.replicationEnabled ? "enabled" : "disabled"],
-    ["Search", s.search.enabled ? "enabled" : "disabled"],
-    ["Search positions", s.search.positionsEnabled ? "enabled" : "disabled"],
-    ["Search config", s.search.configFingerprint || "(unknown)"],
     ["Vertices (approx.)", formatCount(s.vertexCount)],
     ["Edges (approx.)", formatCount(s.edgeCount)],
   ];
+}
+
+export function searchHealthIntent(
+  health: SearchIndexStatus["health"],
+): "success" | "warning" | "error" | "info" {
+  switch (health) {
+    case "healthy":
+      return "success";
+    case "incomplete":
+      return "error";
+    case "disabled":
+      return "info";
+    case "unspecified":
+      return "warning";
+  }
+}
+
+export function searchStatusSummary(
+  search: SearchCapabilities,
+): Array<[string, string]> {
+  const index = search.index;
+  const retainedRatio =
+    index.estimatedLiveBytes > 0
+      ? index.estimatedRetainedBytes / index.estimatedLiveBytes
+      : index.estimatedRetainedBytes > 0
+        ? Number.POSITIVE_INFINITY
+        : 0;
+  const ratioLabel = Number.isFinite(retainedRatio)
+    ? `${retainedRatio.toFixed(2)}×`
+    : "∞";
+  return [
+    ["Capability", search.enabled ? "enabled" : "disabled"],
+    ["Positions", search.positionsEnabled ? "enabled" : "disabled"],
+    [
+      "Default query",
+      `${search.defaultMatchMode}, ${formatCount(search.defaultLimit)} hits (${formatCount(search.maxLimit)} max)`,
+    ],
+    [
+      "Query budgets",
+      `${formatBytes(search.maxQueryBytes)} / ${formatCount(search.maxQueryTerms)} terms / ${formatCount(search.maxInFlight)} in flight`,
+    ],
+    [
+      "Work budgets",
+      `${formatCount(search.maxDictionaryVisits)} dictionary / ${formatCount(search.maxPostingVisits)} postings / ${formatCount(search.maxPositionVisits)} positions / ${formatCount(search.maxExpirationVisits)} expiration`,
+    ],
+    [
+      "Document limits",
+      `${formatBytes(search.maxDocumentBytes)} / ${formatCount(search.maxDocumentTokens)} tokens / ${formatCount(search.maxDocumentTerms)} terms`,
+    ],
+    [
+      "Index capacity",
+      `${formatCount(search.maxLiveTerms)} terms / ${formatCount(search.maxLivePostings)} postings / ${formatCount(search.maxPositionEntries)} positions`,
+    ],
+    [
+      "Documents",
+      `${formatCount(index.documents)} live / ${formatCount(index.physicalDocuments)} physical / ${formatCount(index.expiredDocuments)} expired`,
+    ],
+    [
+      "Structures",
+      `${formatCount(index.liveTerms)} terms / ${formatCount(index.postings)} postings / ${formatCount(index.positionEntries)} positions`,
+    ],
+    [
+      "Retained storage",
+      `${formatBytes(index.estimatedRetainedBytes)} (${ratioLabel} live; ${formatCount(index.retainedTermSlots)} term slots / ${formatCount(index.retainedOrdinals)} ordinals)`,
+    ],
+    [
+      "Expiration",
+      `${formatCount(index.expirationQueueEntries)} queued / ${formatCount(index.expirationPurged)} purged / ${formatSeconds(index.lastExpirationPurgeDurationSeconds)} last`,
+    ],
+    [
+      "Rebuilds",
+      `${formatCount(index.rebuildCount)} / ${formatSeconds(index.lastRebuildDurationSeconds)} last`,
+    ],
+    [
+      "Compaction",
+      `${search.compactionRatio.toFixed(2)}× at ${formatCount(search.compactionMinRetired)} retired`,
+    ],
+    ["Analyzer", search.analyzerVersion || "(unknown)"],
+    ["Projection", search.projectionVersion || "(unknown)"],
+    ["Config fingerprint", search.configFingerprint || "(unknown)"],
+  ];
+}
+
+function formatSeconds(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "-";
+  if (seconds < 0.001) return `${(seconds * 1_000_000).toFixed(0)}µs`;
+  if (seconds < 1) return `${(seconds * 1000).toFixed(1)}ms`;
+  return `${seconds.toFixed(2)}s`;
 }
 
 /**

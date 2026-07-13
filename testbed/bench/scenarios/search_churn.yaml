@@ -132,6 +132,7 @@ metric_gate:
     lantern_search_index_postings: { max_increase: 2048, max_ratio: 1.5 }
     lantern_search_index_position_entries: { max_increase: 4096, max_ratio: 1.5 }
     lantern_search_index_estimated_retained_bytes: { max_increase: 67108864, max_ratio: 2 }
+    lantern_search_index_retained_ratio: { max_post: 3 }
     lantern_search_index_healthy: { min_post: 1, max_post: 1 }
 # The producer mix changed for #1049, so these are deliberately loose first-
 # night ratchets with ample headroom. Tighten from several green nightly runs;

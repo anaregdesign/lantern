@@ -54,9 +54,13 @@ import (
 func (s *SlowRPCInterceptor) ConnectInterceptor() connect.UnaryInterceptorFunc {
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			labels, hasLabels := illuminateTelemetryLabelsFor(req.Any())
-			if hasLabels {
-				setIlluminateSpanAttributes(ctx, labels)
+			illuminateLabels, hasIlluminateLabels := illuminateTelemetryLabelsFor(req.Any())
+			if hasIlluminateLabels {
+				setIlluminateSpanAttributes(ctx, illuminateLabels)
+			}
+			searchLabels, hasSearchLabels := searchTelemetryLabelsFor(req.Any())
+			if hasSearchLabels {
+				setSearchSpanAttributes(ctx, searchLabels)
 			}
 			start := time.Now()
 			resp, err := next(ctx, req)
@@ -68,8 +72,11 @@ func (s *SlowRPCInterceptor) ConnectInterceptor() connect.UnaryInterceptorFunc {
 					slog.Int64("duration_ms", d.Milliseconds()),
 					slog.Int64("threshold_ms", s.threshold.Milliseconds()),
 				}
-				if hasLabels {
-					attrs = append(attrs, labels.slogAttrs()...)
+				if hasIlluminateLabels {
+					attrs = append(attrs, illuminateLabels.slogAttrs()...)
+				}
+				if hasSearchLabels {
+					attrs = append(attrs, searchLabels.slogAttrs()...)
 				}
 				s.logger.LogAttrs(ctx, slog.LevelWarn, "slow rpc", attrs...)
 			}
@@ -105,16 +112,23 @@ func NewLoggingInterceptor(logger *slog.Logger) *LoggingInterceptor {
 func (l *LoggingInterceptor) ConnectInterceptor() connect.UnaryInterceptorFunc {
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			labels, hasLabels := illuminateTelemetryLabelsFor(req.Any())
-			if hasLabels {
-				setIlluminateSpanAttributes(ctx, labels)
+			illuminateLabels, hasIlluminateLabels := illuminateTelemetryLabelsFor(req.Any())
+			if hasIlluminateLabels {
+				setIlluminateSpanAttributes(ctx, illuminateLabels)
+			}
+			searchLabels, hasSearchLabels := searchTelemetryLabelsFor(req.Any())
+			if hasSearchLabels {
+				setSearchSpanAttributes(ctx, searchLabels)
 			}
 			method := req.Spec().Procedure
 			start := time.Now()
 			if l != nil && l.logger != nil {
 				attrs := []slog.Attr{slog.String("protocol", "connect"), slog.String("grpc.method", method)}
-				if hasLabels {
-					attrs = append(attrs, labels.slogAttrs()...)
+				if hasIlluminateLabels {
+					attrs = append(attrs, illuminateLabels.slogAttrs()...)
+				}
+				if hasSearchLabels {
+					attrs = append(attrs, searchLabels.slogAttrs()...)
 				}
 				l.logger.LogAttrs(ctx, slog.LevelInfo, "started call", attrs...)
 			}
@@ -126,8 +140,11 @@ func (l *LoggingInterceptor) ConnectInterceptor() connect.UnaryInterceptorFunc {
 					slog.String("grpc.code", connectCodeString(err)),
 					slog.Int64("grpc.duration_ms", time.Since(start).Milliseconds()),
 				}
-				if hasLabels {
-					attrs = append(attrs, labels.slogAttrs()...)
+				if hasIlluminateLabels {
+					attrs = append(attrs, illuminateLabels.slogAttrs()...)
+				}
+				if hasSearchLabels {
+					attrs = append(attrs, searchLabels.slogAttrs()...)
 				}
 				l.logger.LogAttrs(ctx, slog.LevelInfo, "finished call", attrs...)
 			}
@@ -183,6 +200,78 @@ func setIlluminateSpanAttributes(ctx context.Context, labels illuminateTelemetry
 		attribute.String("lantern.illuminate.objective", labels.objective),
 		attribute.String("lantern.illuminate.weighting", labels.weighting),
 	)
+}
+
+type searchTelemetryLabels struct {
+	mode          string
+	phrase        bool
+	fuzziness     string
+	prefixTerms   bool
+	prefixPresent bool
+}
+
+func searchTelemetryLabelsFor(message any) (searchTelemetryLabels, bool) {
+	req, ok := message.(*pb.SearchVerticesRequest)
+	if !ok {
+		return searchTelemetryLabels{}, false
+	}
+	o := req.GetOptions()
+	return searchTelemetryLabels{
+		mode:          telemetrySearchMode(o),
+		phrase:        o.GetPhrase(),
+		fuzziness:     telemetrySearchFuzziness(o.GetFuzziness()),
+		prefixTerms:   o.GetPrefixTerms(),
+		prefixPresent: req.GetPrefix() != "",
+	}, true
+}
+
+func (l searchTelemetryLabels) slogAttrs() []slog.Attr {
+	return []slog.Attr{
+		slog.String("search.mode", l.mode),
+		slog.Bool("search.phrase", l.phrase),
+		slog.String("search.fuzziness", l.fuzziness),
+		slog.Bool("search.prefix_terms", l.prefixTerms),
+		slog.Bool("search.prefix_present", l.prefixPresent),
+	}
+}
+
+func setSearchSpanAttributes(ctx context.Context, labels searchTelemetryLabels) {
+	trace.SpanFromContext(ctx).SetAttributes(
+		attribute.String("lantern.search.mode", labels.mode),
+		attribute.Bool("lantern.search.phrase", labels.phrase),
+		attribute.String("lantern.search.fuzziness", labels.fuzziness),
+		attribute.Bool("lantern.search.prefix_terms", labels.prefixTerms),
+		attribute.Bool("lantern.search.prefix_present", labels.prefixPresent),
+	)
+}
+
+func telemetrySearchMode(o *pb.SearchOptions) string {
+	if o == nil || o.GetMatchMode() == pb.MatchMode_MATCH_MODE_UNSPECIFIED {
+		return "server"
+	}
+	switch o.GetMatchMode() {
+	case pb.MatchMode_MATCH_MODE_ANY:
+		return "any"
+	case pb.MatchMode_MATCH_MODE_ALL:
+		return "all"
+	case pb.MatchMode_MATCH_MODE_MIN_SHOULD:
+		return "min_should"
+	default:
+		return "unknown"
+	}
+}
+
+func telemetrySearchFuzziness(value uint32) string {
+	switch value {
+	case 0:
+		return "0"
+	case 1:
+		return "1"
+	case 2:
+		return "2"
+	default:
+		return "other"
+	}
 }
 
 func telemetryReduction(value pb.Reduction) string {

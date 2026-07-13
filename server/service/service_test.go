@@ -1458,8 +1458,7 @@ type fakeHotPathMetrics struct {
 	illuminate      []illuminateObs
 	results         []illuminateResultObs
 	scan            []scanObs
-	search          []searchObs
-	searchExecution []searchExecutionObs
+	searchExecution []SearchObservation
 	batch           []batchObs
 	getVertex       []hitMissObs
 	getEdge         []hitMissObs
@@ -1482,17 +1481,6 @@ type scanObs struct {
 	duration time.Duration
 }
 
-type searchObs struct {
-	results  int
-	duration time.Duration
-}
-
-type searchExecutionObs struct {
-	outcome string
-	reason  string
-	stats   search.Stats
-}
-
 type batchObs struct {
 	op   string
 	size int
@@ -1512,11 +1500,8 @@ func (f *fakeHotPathMetrics) OnIlluminateResult(algorithm, reduction, objective,
 func (f *fakeHotPathMetrics) OnScan(op string, results int, d time.Duration) {
 	f.scan = append(f.scan, scanObs{op, results, d})
 }
-func (f *fakeHotPathMetrics) OnSearch(results int, d time.Duration) {
-	f.search = append(f.search, searchObs{results, d})
-}
-func (f *fakeHotPathMetrics) OnSearchExecution(outcome, reason string, stats search.Stats) {
-	f.searchExecution = append(f.searchExecution, searchExecutionObs{outcome, reason, stats})
+func (f *fakeHotPathMetrics) OnSearchExecution(observation SearchObservation) {
+	f.searchExecution = append(f.searchExecution, observation)
 }
 func (f *fakeHotPathMetrics) OnBatch(op string, size int) {
 	f.batch = append(f.batch, batchObs{op, size})
@@ -1638,7 +1623,7 @@ func TestLanternService_HotPathMetrics_EmitsOnScan(t *testing.T) {
 }
 
 // TestLanternService_HotPathMetrics_EmitsOnSearch asserts that SearchVertices
-// fires OnSearch (not OnScan) with the result count and a positive duration.
+// emits one terminal search observation (not a scan observation).
 func TestLanternService_HotPathMetrics_EmitsOnSearch(t *testing.T) {
 	fm := &fakeHotPathMetrics{}
 	fb := newFakeBackend()
@@ -1652,18 +1637,19 @@ func TestLanternService_HotPathMetrics_EmitsOnSearch(t *testing.T) {
 		t.Fatalf("SearchVertices: %v", err)
 	}
 	if len(fm.scan) != 0 {
-		t.Errorf("OnScan called %d times during SearchVertices, want 0 (must use OnSearch instead)", len(fm.scan))
+		t.Errorf("OnScan called %d times during SearchVertices, want 0", len(fm.scan))
 	}
-	if len(fm.search) != 1 {
-		t.Fatalf("OnSearch observations = %d, want 1", len(fm.search))
+	if len(fm.searchExecution) != 1 {
+		t.Fatalf("OnSearchExecution observations = %d, want 1", len(fm.searchExecution))
 	}
-	if fm.search[0].results != 2 {
-		t.Errorf("OnSearch results = %d, want 2", fm.search[0].results)
+	observation := fm.searchExecution[0]
+	if observation.Results != 2 {
+		t.Errorf("OnSearchExecution results = %d, want 2", observation.Results)
 	}
-	if fm.search[0].duration <= 0 {
-		t.Errorf("OnSearch duration = %v, want > 0", fm.search[0].duration)
+	if observation.TotalDuration <= 0 {
+		t.Errorf("OnSearchExecution duration = %v, want > 0", observation.TotalDuration)
 	}
-	if len(fm.searchExecution) != 1 || fm.searchExecution[0].outcome != "ok" || fm.searchExecution[0].reason != "none" {
+	if observation.Outcome != "ok" || observation.Reason != "none" || observation.Mode != "server" {
 		t.Errorf("OnSearchExecution observations = %+v, want one ok/none", fm.searchExecution)
 	}
 }

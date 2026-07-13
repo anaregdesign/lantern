@@ -285,7 +285,29 @@ exact Prometheus series.
 | `lantern_gc_duration_seconds` | GC sweep latency histogram. |
 | `lantern_build_info{version,commit,go_version}` | Version pinning for cross-checks during upgrade. |
 
-### 4.3 RPC layer
+### 4.3 Search health and replica consistency
+
+Search has both a local derived index and a cluster-wide configuration
+contract. Check both before attributing a search incident to ordinary RPC
+latency:
+
+| Metric | What it tells you |
+|---|---|
+| `lantern_search_index_state{state}` | One-hot local state. `healthy=1` serves searches; `incomplete=1` rejects them until a bounded rebuild succeeds; `disabled=1` is intentional only when Search is disabled. |
+| `lantern_search_index_retained_ratio` | Estimated retained/live byte amplification. Sustained growth indicates compaction pressure even when logical counts look stable. |
+| `lantern_search_index_{docs,physical_documents,expired_documents}` | Logical vs physical retention. A widening physical/live gap with expired documents points to purge/GC lag. |
+| `lantern_search_index_expiration_queue_entries` / `_expiration_purged` | Expiration backlog and forward purge progress. |
+| `lantern_search_index_rebuild_count` / `_last_rebuild_duration_seconds` | Whether recovery rebuilt the index and how expensive the latest rebuild was. |
+| `lantern_search_config_match{peer}` | Per-peer fingerprint agreement. Any 0 keeps replicated readiness degraded. |
+| `lantern_search_calls_total{mode,outcome,reason}` | Exactly one terminal observation per Search RPC; use it for outcome/error ratios. |
+| `lantern_search_phase_duration_seconds{phase,mode}` / `lantern_search_work{kind,mode}` | Splits slow searches into analysis, expansion, postings/positions, and candidate selection. |
+
+The Admin Ops Search card shows the current replica's capability and index
+snapshot. Its Search metrics group defaults to per-replica series, including
+p50/p99 outcomes and index/config health, so one unhealthy pod is not averaged
+away.
+
+### 4.4 RPC layer
 
 The in-house Connect interceptor in
 `server/provider/connect_middleware.go` exposes the canonical
@@ -294,7 +316,7 @@ The names are intentionally retained for operator-dashboard continuity
 after the gRPC middleware was deleted in #337/#352; the wire protocol is
 Connect. Use them for per-RPC latency SLOs.
 
-### 4.4 Alerts worth shipping (PromQL sketches)
+### 4.5 Alerts worth shipping (PromQL sketches)
 
 ```promql
 # Pod has been lagging a peer for > 60s
@@ -311,6 +333,22 @@ count(up{job="lantern"} == 1) < 2
 
 # A peer disappeared from /metrics altogether
 absent(lantern_replication_lag_seq{peer="…"})
+
+# A local Search index cannot safely serve
+max by (instance) (
+  lantern_search_index_state{state="incomplete"}
+) == 1
+
+# Search retained storage is more than 2x live for 15 minutes
+min_over_time(lantern_search_index_retained_ratio[15m]) > 2
+
+# Any observed peer has a different Search configuration
+min by (instance) (lantern_search_config_match) == 0
+
+# Search internal/deadline terminal failures are occurring
+sum by (instance) (
+  rate(lantern_search_calls_total{outcome=~"internal|deadline_exceeded"}[5m])
+) > 0
 ```
 
 Tune thresholds to your write rate; the qualitative shape — lag and

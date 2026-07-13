@@ -178,6 +178,16 @@ func TestTermDictExpand(t *testing.T) {
 			t.Fatalf("prefix 'sea' = %v, want [sea search searchh searching]", got)
 		}
 	})
+	t.Run("tracked expansion reports only non-exact survivors", func(t *testing.T) {
+		work := newWorkTracker(nil, Budget{})
+		ids, err := d.expandTracked("sea", true, 0, 50, work)
+		if err != nil || len(ids) != 4 {
+			t.Fatalf("expandTracked ids=%v err=%v", ids, err)
+		}
+		if work.stats.ExpansionRetained != 3 {
+			t.Fatalf("expansions retained = %d, want 3 non-exact survivors", work.stats.ExpansionRetained)
+		}
+	})
 	t.Run("fuzzy orders by edit distance then term", func(t *testing.T) {
 		got := expandedTerms(d, "search", false, 1, 50)
 		if !equalStrings(got, []string{"search", "searchh", "serch", "xearch"}) {
