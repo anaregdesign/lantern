@@ -378,6 +378,27 @@ func TestInvertedIndexDeleteMany(t *testing.T) {
 	}
 }
 
+func TestInvertedIndexGeneration(t *testing.T) {
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, strings.Compare)
+	if got := idx.MemoryStats().Generation; got != 0 {
+		t.Fatalf("initial generation = %d, want 0", got)
+	}
+	idx.Index("a", Text("alpha"))
+	first := idx.MemoryStats().Generation
+	if first == 0 {
+		t.Fatal("generation did not advance after index")
+	}
+	idx.DeleteMany([]string{"a", "missing"})
+	second := idx.MemoryStats().Generation
+	if second != first+1 {
+		t.Fatalf("generation after delete batch = %d, want %d", second, first+1)
+	}
+	idx.MarkIncomplete()
+	if got := idx.MemoryStats().Generation; got != second+1 {
+		t.Fatalf("generation after incomplete = %d, want %d", got, second+1)
+	}
+}
+
 func TestInvertedIndexReindexReplaces(t *testing.T) {
 	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID)
 	idx.Index("doc1", Text("alpha beta"))

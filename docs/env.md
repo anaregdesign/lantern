@@ -74,6 +74,7 @@ value is treated as unset for the non-string kinds. The MCP server's
 | `LANTERN_SCAN_MAX_LIMIT` | uint32 | `10000` | Ceiling a Scan* request's limit is clamped to. |
 | `LANTERN_SEARCH_COMPACTION_MIN_RETIRED` | int | `10000` | Minimum retired term/ordinal slots before ratio-triggered compaction. |
 | `LANTERN_SEARCH_COMPACTION_RATIO` | float | `2` | Retained-to-live high-water ratio that triggers index compaction. |
+| `LANTERN_SEARCH_CURSOR_TTL_SECONDS` | int | `60` | Lifetime of an endpoint-sticky bounded search session and its signed cursors. |
 | `LANTERN_SEARCH_DEFAULT_LIMIT` | uint32 | `100` | Ranked-hit count used when SearchVertices leaves limit unset. |
 | `LANTERN_SEARCH_DEFAULT_MIN_SHOULD` | uint32 | `1` | Minimum-should-match count applied when the mode resolves to min-should but the request leaves it 0. |
 | `LANTERN_SEARCH_DEFAULT_MODE` | string | `any` | Match mode applied when a SearchVertices request omits it: any (OR), all (AND), or min-should. Validated at startup — an unrecognised value fails boot. |
@@ -92,6 +93,9 @@ value is treated as unset for the non-string kinds. The MCP server's
 | `LANTERN_SEARCH_MAX_POSTING_VISITS` | int | `10000000` | Maximum posting entries inspected by one search. |
 | `LANTERN_SEARCH_MAX_QUERY_BYTES` | int | `16384` | Maximum UTF-8 bytes accepted in one search query. |
 | `LANTERN_SEARCH_MAX_QUERY_TERMS` | int | `1024` | Maximum distinct analyzed terms in one search query. |
+| `LANTERN_SEARCH_MAX_SESSIONS` | int | `128` | Maximum live search pagination sessions retained by one endpoint; least-recently-used sessions are evicted. |
+| `LANTERN_SEARCH_MAX_SESSION_BYTES` | int | `67108864` | Aggregate byte budget for retained search-session hits on one endpoint. |
+| `LANTERN_SEARCH_MAX_SESSION_HITS` | int | `10000` | Maximum ranked hits retained by one search session; must exceed LANTERN_SEARCH_MAX_LIMIT. |
 | `LANTERN_SEARCH_POSITIONS` | bool | `true` | Record positional postings so phrase queries verify adjacency and the proximity boost ranks tight matches higher. Off drops the position store: phrase=true fails closed with FAILED_PRECONDITION / SEARCH_POSITIONS_DISABLED instead of returning unordered matches. |
 | `LANTERN_SEARCH_TIMEOUT_MS` | int | `5000` | Server-side deadline applied to every SearchVertices attempt. |
 | `LANTERN_SHUTDOWN_TIMEOUT_SECONDS` | int | `30` | Graceful-shutdown drain budget for in-flight requests before a hard close. |

@@ -1,5 +1,6 @@
 import type { LanternClient } from "./lantern-client";
 import { LanternApiError } from "./error";
+import { sdkVertexToFlat } from "./to-flat";
 import type {
   SearchHit,
   SearchVerticesRequest,
@@ -15,9 +16,9 @@ export type {
 /**
  * Calls `LanternService.SearchVertices` via `lantern-sdk/web` (#627).
  *
- * Returns the server's BM25-ranked `{ key, score }` hits in descending
- * relevance order. A blank query, or a query that matches nothing,
- * resolves to an empty `hits` array — an empty success, not an error.
+ * Returns one bounded endpoint-sticky BM25 page. FULL_VERTEX hits are mapped
+ * at this adapter boundary into the admin's flat Vertex shape, preserving the
+ * server's selection-time value/TTL snapshot without a hydration RPC.
  *
  * When the server has the keyword index disabled (opt-out via
  * `LANTERN_SEARCH_ENABLED=false`) the SDK raises
@@ -32,7 +33,7 @@ export async function searchVertices(
   init?: { signal?: AbortSignal },
 ): Promise<SearchVerticesResponse> {
   try {
-    const hits: SearchHit[] = await client.searchVertices(
+    const page = await client.searchVerticesPage(
       request.query,
       {
         limit: request.limit ?? 0,
@@ -46,10 +47,26 @@ export async function searchVertices(
         phrase: request.phrase,
         fuzziness: request.fuzziness,
         prefixTerms: request.prefixTerms,
+        cursor: request.cursor,
+        projection: request.projection,
       },
       init?.signal,
     );
-    return { hits };
+    const hits: SearchHit[] = page.hits.map((hit) => ({
+      key: hit.key,
+      score: hit.score,
+      ...(hit.vertex ? { vertex: sdkVertexToFlat(hit.vertex) } : {}),
+      ...(hit.projectionStatus
+        ? { projectionStatus: hit.projectionStatus }
+        : {}),
+    }));
+    return {
+      hits,
+      nextCursor: page.nextCursor,
+      effectiveLimit: page.effectiveLimit,
+      truncated: page.truncated,
+      continuationLimited: page.continuationLimited,
+    };
   } catch (err) {
     throw LanternApiError.fromUnknown("SearchVertices", err);
   }

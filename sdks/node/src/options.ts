@@ -147,6 +147,9 @@ export interface EdgeScanOptions extends ScanOptions {
  */
 export type MatchMode = "any" | "all" | "min-should";
 
+/** Ranked-hit payload size. Omitted is the lightweight key+score default. */
+export type SearchProjection = "key-score" | "full-vertex";
+
 export interface SearchOptions {
   /** Caps the number of ranked hits returned (0 = server default; the server also enforces a hard max). */
   limit?: number;
@@ -162,6 +165,10 @@ export interface SearchOptions {
   fuzziness?: number;
   /** Also match dictionary terms that extend a query word, so "lan" finds "lantern". */
   prefixTerms?: boolean;
+  /** Opaque endpoint-sticky cursor from the previous page. */
+  cursor?: Uint8Array;
+  /** Include exact value/TTL snapshots instead of key+score only. */
+  projection?: SearchProjection;
 }
 
 export interface DeleteByPrefixOptions {

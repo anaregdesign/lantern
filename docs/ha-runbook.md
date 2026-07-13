@@ -453,6 +453,17 @@ can differ until heal. Static SDK failover may therefore change a search
 response. Route user traffic only to ready replicas and wait for lag plus
 search-config signals to converge before comparing exact results.
 
+Search pagination is intentionally endpoint-sticky. The first page may land on
+any ready replica, but every non-empty search cursor must return to that same
+process: sessions and signing keys are neither replicated nor portable. Enable
+load-balancer affinity for at least the advertised
+`GetServerStatus.search.cursor_ttl_seconds`; static Go SDK failover pins a
+continuation to its current endpoint. If that endpoint is lost, the client gets
+typed `SEARCH_CURSOR_INVALID` or `SEARCH_CURSOR_STALE` and must restart from
+page one—never resume the cursor on another replica. Tune the session count,
+hit, and aggregate-byte caps together with replica memory, and alert on clients
+that repeatedly restart deep page chains.
+
 | Mutation type | Partition-time behaviour | Post-heal |
 |---|---|---|
 | `AddEdge*` | Both sides accumulate contributions. | G-Set union: every contribution survives. Weight = sum. |

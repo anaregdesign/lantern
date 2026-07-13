@@ -121,14 +121,18 @@ func TestLanternService_GetServerStatus(t *testing.T) {
 				MaxPositionVisits:   78,
 				MaxExpirationVisits: 90,
 			},
-			MaxInFlight: 9,
+			MaxInFlight:     9,
+			CursorTTL:       2 * time.Minute,
+			MaxSessions:     7,
+			MaxSessionHits:  500,
+			MaxSessionBytes: 123456,
 			AnalysisLimits: search.SearchAnalysisLimits{
 				MaxDocumentBytes: 100, MaxDocumentTokens: 90, MaxDocumentTerms: 80,
 				MaxLiveTerms: 70, MaxLivePostings: 60, MaxPositionEntries: 50,
 				CompactionRatio: 2.5, CompactionMinRetired: 40,
 			},
 		}
-		fb.searchStats = search.IndexMemoryStats{Health: search.IndexHealthy, Documents: 3, PhysicalDocuments: 5, ExpiredDocuments: 2, ExpirationQueueEntries: 2, ExpirationPurged: 9, LastExpirationPurge: 12 * time.Millisecond, LiveTerms: 4, RetainedTermSlots: 5, EstimatedLiveBytes: 100, EstimatedRetainedBytes: 120, RebuildCount: 2}
+		fb.searchStats = search.IndexMemoryStats{Health: search.IndexHealthy, Documents: 3, PhysicalDocuments: 5, ExpiredDocuments: 2, ExpirationQueueEntries: 2, ExpirationPurged: 9, LastExpirationPurge: 12 * time.Millisecond, LiveTerms: 4, RetainedTermSlots: 5, EstimatedLiveBytes: 100, EstimatedRetainedBytes: 120, RebuildCount: 2, Generation: 7}
 		withPositions := NewLanternService(fb).WithSearchLimits(limits)
 		resp, err := withPositions.GetServerStatus(context.Background(), &pb.GetServerStatusRequest{})
 		if err != nil {
@@ -152,13 +156,16 @@ func TestLanternService_GetServerStatus(t *testing.T) {
 			got.GetMaxPositionVisits() != 78 || got.GetMaxExpirationVisits() != 90 || got.GetMaxInFlight() != 9 {
 			t.Errorf("search execution capabilities incomplete: %+v", got)
 		}
+		if got.GetCursorTtlSeconds() != 120 || got.GetMaxSessions() != 7 || got.GetMaxSessionHits() != 500 || got.GetMaxSessionBytes() != 123456 {
+			t.Errorf("search pagination capabilities incomplete: %+v", got)
+		}
 		if len(got.GetConfigFingerprint()) != 64 {
 			t.Errorf("fingerprint length = %d, want 64 hex chars", len(got.GetConfigFingerprint()))
 		}
 		if got.GetMaxDocumentBytes() != 100 || got.GetMaxLivePostings() != 60 || got.GetCompactionRatio() != 2.5 {
 			t.Errorf("analysis capabilities incomplete: %+v", got)
 		}
-		if got.GetIndexStats().GetHealth() != pb.SearchIndexHealth_SEARCH_INDEX_HEALTH_HEALTHY || got.GetIndexStats().GetDocuments() != 3 || got.GetIndexStats().GetPhysicalDocuments() != 5 || got.GetIndexStats().GetExpiredDocuments() != 2 || got.GetIndexStats().GetExpirationQueueEntries() != 2 || got.GetIndexStats().GetExpirationPurged() != 9 || got.GetIndexStats().GetLastExpirationPurgeDuration().AsDuration() != 12*time.Millisecond || got.GetIndexStats().GetEstimatedRetainedBytes() != 120 || got.GetIndexStats().GetRebuildCount() != 2 {
+		if got.GetIndexStats().GetHealth() != pb.SearchIndexHealth_SEARCH_INDEX_HEALTH_HEALTHY || got.GetIndexStats().GetDocuments() != 3 || got.GetIndexStats().GetPhysicalDocuments() != 5 || got.GetIndexStats().GetExpiredDocuments() != 2 || got.GetIndexStats().GetExpirationQueueEntries() != 2 || got.GetIndexStats().GetExpirationPurged() != 9 || got.GetIndexStats().GetLastExpirationPurgeDuration().AsDuration() != 12*time.Millisecond || got.GetIndexStats().GetEstimatedRetainedBytes() != 120 || got.GetIndexStats().GetRebuildCount() != 2 || got.GetIndexStats().GetGeneration() != 7 {
 			t.Errorf("index stats incomplete: %+v", got.GetIndexStats())
 		}
 
@@ -191,6 +198,15 @@ func TestLanternService_GetServerStatus(t *testing.T) {
 		}
 		if differentExpirationBudget.GetSearch().GetConfigFingerprint() == got.GetConfigFingerprint() {
 			t.Error("heterogeneous expiration budgets reported the same fingerprint")
+		}
+		limits.WorkBudget.MaxExpirationVisits--
+		limits.MaxSessions++
+		differentSessionCap, err := NewLanternService(fb).WithSearchLimits(limits).GetServerStatus(context.Background(), &pb.GetServerStatusRequest{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if differentSessionCap.GetSearch().GetConfigFingerprint() == got.GetConfigFingerprint() {
+			t.Error("heterogeneous search session caps reported the same fingerprint")
 		}
 	})
 

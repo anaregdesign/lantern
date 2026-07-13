@@ -281,6 +281,8 @@ lantern-cli search "rolling update" --phrase     # adjacent, in order
 lantern-cli search serach --fuzziness 1          # typos still hit
 lantern-cli search lan --prefix-terms            # "lan" finds "lantern"
 lantern-cli search espresso --prefix user.       # scope to a key namespace
+lantern-cli search espresso --limit 20 --all     # stream retained pages as NDJSON
+lantern-cli search espresso --projection full-vertex
 ```
 
 The index is maintained server-side and is on by default
@@ -290,6 +292,24 @@ positions rejects `phrase=true` with the typed reason
 `SEARCH_POSITIONS_DISABLED`; it never silently returns unordered AND matches.
 `GetServerStatus.search` exposes these capabilities, their defaults and limits,
 implementation versions, and a configuration fingerprint.
+
+Search pages are immutable, bounded snapshots in `(score DESC, raw key ASC)`
+order. A one-page response reports `effective_limit`, `truncated`, an opaque
+`next_cursor`, and `continuation_limited`; no approximate count is presented as
+an exact total. Repeat the same query, options, projection, and endpoint with
+the returned cursor. Tampered or mismatched cursors are typed
+`INVALID_ARGUMENT` / `SEARCH_CURSOR_INVALID`; expired or evicted sessions are
+typed `ABORTED` / `SEARCH_CURSOR_STALE` and must restart explicitly from page
+one. Sessions are endpoint-sticky and bounded by the discoverable
+`LANTERN_SEARCH_CURSOR_TTL_SECONDS`, `LANTERN_SEARCH_MAX_SESSIONS`,
+`LANTERN_SEARCH_MAX_SESSION_HITS`, and `LANTERN_SEARCH_MAX_SESSION_BYTES`.
+
+The default `KEY_SCORE` projection remains lightweight. `FULL_VERTEX` carries
+the exact value/TTL snapshot selected under the same barrier as ranking, so a
+caller does not need a racy `GetVertices` hydration pass. Writes, deletes, and
+TTL expiry after page one do not change the retained snapshot. See
+[ADR 0008](docs/decisions/0008-bounded-search-pagination-sessions.md) for the
+churn measurement and session decision.
 
 Every search has a server deadline, bounded query/analyzed-term/dictionary/
 posting/position work, and an in-flight admission slot. Cancellation or a
@@ -400,6 +420,13 @@ g, _ := cli.Illuminate(ctx, "user:42",
 
 // Full-text search: BM25-ranked hits over vertex content.
 hits, _ := cli.SearchVertices(ctx, "desk lamp", client.WithMatchMode(client.MatchAll))
+
+// Page beyond the per-call limit without collecting an unbounded slice.
+for hit, err := range cli.SearchVerticesIter(ctx, "desk lamp",
+    client.WithSearchLimit(50), client.WithFullVertex()) {
+    if err != nil { log.Fatal(err) }
+    fmt.Println(hit.Key, client.StringValue(hit.Vertex))
+}
 
 // Prefix scan: enumerate a namespace, auto-paginated.
 for batch, err := range cli.ScanVerticesAll(ctx, "user:", 100) {

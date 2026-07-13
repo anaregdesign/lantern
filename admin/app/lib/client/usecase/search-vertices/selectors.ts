@@ -33,9 +33,14 @@ export function selectCaption(state: SearchVerticesState): string {
     return state.error ?? "Search failed.";
   }
   if (state.status === "ready") {
-    return state.results.length === 0
-      ? "No vertices match this query."
-      : formatResultCount(state.results.length);
+    if (state.results.length === 0) return "No vertices match this query.";
+    if (state.truncated) {
+      const suffix = state.continuationLimited
+        ? " Server continuation limit reached."
+        : "";
+      return `Top ${state.results.length} shown.${suffix}`;
+    }
+    return formatResultCount(state.results.length);
   }
   return "Searching…";
 }

@@ -97,13 +97,16 @@ export interface ScanVerticesResponse {
   nextCursor?: string;
 }
 
-// Content-search (BM25 keyword) value-object shapes (#627). The server
-// ranks vertices by indexed string/bytes content and returns lightweight
-// `{ key, score }` hits — the admin search usecase hydrates the keys back
-// into full vertices via GetVertices, preserving rank order.
+// Content-search (BM25 keyword) value-object shapes (#627/#1065).
 
 /** How a multi-word content-search query's words combine (#892). */
 export type SearchMatchMode = "server" | "any" | "all" | "min-should";
+export type SearchProjection = "key-score" | "full-vertex";
+export type SearchHitProjectionStatus =
+  | "key-score"
+  | "snapshot"
+  | "missing"
+  | "replaced";
 
 export interface SearchVerticesRequest {
   query: string;
@@ -119,15 +122,25 @@ export interface SearchVerticesRequest {
   fuzziness?: 0 | 1 | 2;
   /** Match dictionary terms that extend a query word. */
   prefixTerms?: boolean;
+  /** Opaque endpoint-sticky cursor returned by the prior page. */
+  cursor?: Uint8Array;
+  /** Include exact value/TTL snapshots instead of key+score only. */
+  projection?: SearchProjection;
 }
 
 export interface SearchHit {
   key: string;
   score: number;
+  vertex?: Vertex;
+  projectionStatus?: SearchHitProjectionStatus;
 }
 
 export interface SearchVerticesResponse {
   hits: SearchHit[];
+  nextCursor: Uint8Array;
+  effectiveLimit: number;
+  truncated: boolean;
+  continuationLimited: boolean;
 }
 
 export interface AddEdgeBody {

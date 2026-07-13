@@ -244,13 +244,23 @@ export interface Graph {
  * matching vertex key; `score` is the BM25 relevance (higher = more
  * relevant) the server-side index assigned. Equal scores use raw key
  * ascending. The score doubles as the seed's initial weight for a follow-up
- * `illuminate`. The value and TTL are intentionally omitted — callers that
- * need them issue a follow-up `getVertices` with the returned keys,
- * preserving rank order.
+ * `illuminate`. The default `key-score` projection omits value and TTL;
+ * `full-vertex` carries an immutable selected snapshot.
  */
 export interface SearchHit {
   readonly key: string;
   readonly score: number;
+  readonly vertex?: Vertex;
+  readonly projectionStatus?: "key-score" | "snapshot" | "missing" | "replaced";
+}
+
+/** One bounded, endpoint-sticky search snapshot page. */
+export interface SearchPage {
+  readonly hits: SearchHit[];
+  readonly nextCursor: Uint8Array;
+  readonly effectiveLimit: number;
+  readonly truncated: boolean;
+  readonly continuationLimited: boolean;
 }
 
 // ----------------------------------------------------------------------------

@@ -127,6 +127,10 @@ func (s *LanternService) searchCapabilities() *pb.SearchCapabilities {
 		MaxPositionVisits:     uint64(s.search.WorkBudget.MaxPositionVisits),
 		MaxExpirationVisits:   uint64(s.search.WorkBudget.MaxExpirationVisits),
 		MaxInFlight:           uint32(s.search.MaxInFlight),
+		CursorTtlSeconds:      uint32(s.search.CursorTTL / time.Second),
+		MaxSessions:           uint32(s.search.MaxSessions),
+		MaxSessionHits:        uint32(s.search.MaxSessionHits),
+		MaxSessionBytes:       uint64(s.search.MaxSessionBytes),
 		MaxDocumentBytes:      uint32(limits.MaxDocumentBytes),
 		MaxDocumentTokens:     uint32(limits.MaxDocumentTokens),
 		MaxDocumentTerms:      uint32(limits.MaxDocumentTerms),
@@ -150,7 +154,9 @@ func (s *LanternService) searchCapabilities() *pb.SearchCapabilities {
 			EstimatedLiveBytes:     uint64(indexStats.EstimatedLiveBytes),
 			EstimatedRetainedBytes: uint64(indexStats.EstimatedRetainedBytes),
 			RebuildCount:           indexStats.RebuildCount,
+			Generation:             indexStats.Generation,
 		},
+		ConfigFingerprint: s.SearchConfigFingerprint(),
 	}
 	if indexStats.RebuildCount > 0 {
 		capabilities.IndexStats.LastRebuildDuration = durationpb.New(indexStats.LastRebuildDuration)
@@ -158,44 +164,55 @@ func (s *LanternService) searchCapabilities() *pb.SearchCapabilities {
 	if indexStats.ExpirationPurged > 0 {
 		capabilities.IndexStats.LastExpirationPurgeDuration = durationpb.New(indexStats.LastExpirationPurge)
 	}
+	return capabilities
+}
+
+func computeSearchConfigFingerprint(limits SearchLimits) string {
+	analysis := limits.AnalysisLimits
 	canonical := fmt.Sprintf(
-		"enabled=%t\npositions=%t\ndefault_limit=%d\nmax_limit=%d\ndefault_match_mode=%d\ndefault_min_should_match=%d\nmax_fuzziness=%d\nanalyzer=%s\nprojection=%s\ntimeout_ms=%d\nmax_query_bytes=%d\nmax_query_terms=%d\nmax_dictionary_visits=%d\nmax_posting_visits=%d\nmax_position_visits=%d\nmax_expiration_visits=%d\nmax_in_flight=%d\nmax_document_bytes=%d\nmax_document_tokens=%d\nmax_document_terms=%d\nmax_live_terms=%d\nmax_live_postings=%d\nmax_position_entries=%d\ncompaction_ratio=%g\ncompaction_min_retired=%d\n",
-		capabilities.Enabled,
-		s.search.PositionsEnabled,
-		capabilities.DefaultLimit,
-		capabilities.MaxLimit,
-		capabilities.DefaultMatchMode,
-		capabilities.DefaultMinShouldMatch,
-		capabilities.MaxFuzziness,
-		capabilities.AnalyzerVersion,
-		capabilities.ProjectionVersion,
-		capabilities.TimeoutMs,
-		capabilities.MaxQueryBytes,
-		capabilities.MaxQueryTerms,
-		capabilities.MaxDictionaryVisits,
-		capabilities.MaxPostingVisits,
-		capabilities.MaxPositionVisits,
-		capabilities.MaxExpirationVisits,
-		capabilities.MaxInFlight,
-		capabilities.MaxDocumentBytes,
-		capabilities.MaxDocumentTokens,
-		capabilities.MaxDocumentTerms,
-		capabilities.MaxLiveTerms,
-		capabilities.MaxLivePostings,
-		capabilities.MaxPositionEntries,
-		capabilities.CompactionRatio,
-		capabilities.CompactionMinRetired,
+		"enabled=%t\npositions=%t\ndefault_limit=%d\nmax_limit=%d\ndefault_match_mode=%d\ndefault_min_should_match=%d\nmax_fuzziness=%d\nanalyzer=%s\nprojection=%s\ntimeout_ms=%d\nmax_query_bytes=%d\nmax_query_terms=%d\nmax_dictionary_visits=%d\nmax_posting_visits=%d\nmax_position_visits=%d\nmax_expiration_visits=%d\nmax_in_flight=%d\ncursor_ttl_seconds=%d\nmax_sessions=%d\nmax_session_hits=%d\nmax_session_bytes=%d\nmax_document_bytes=%d\nmax_document_tokens=%d\nmax_document_terms=%d\nmax_live_terms=%d\nmax_live_postings=%d\nmax_position_entries=%d\ncompaction_ratio=%g\ncompaction_min_retired=%d\n",
+		limits.Enabled,
+		limits.PositionsEnabled,
+		limits.DefaultLimit,
+		limits.MaxLimit,
+		matchModeToPB(limits.DefaultMode),
+		limits.DefaultMinShould,
+		searchMaxFuzziness,
+		searchAnalyzerVersion,
+		searchProjectionVersion,
+		limits.Timeout.Milliseconds(),
+		limits.MaxQueryBytes,
+		limits.WorkBudget.MaxQueryTerms,
+		limits.WorkBudget.MaxDictionaryVisits,
+		limits.WorkBudget.MaxPostingVisits,
+		limits.WorkBudget.MaxPositionVisits,
+		limits.WorkBudget.MaxExpirationVisits,
+		limits.MaxInFlight,
+		limits.CursorTTL/time.Second,
+		limits.MaxSessions,
+		limits.MaxSessionHits,
+		limits.MaxSessionBytes,
+		analysis.MaxDocumentBytes,
+		analysis.MaxDocumentTokens,
+		analysis.MaxDocumentTerms,
+		analysis.MaxLiveTerms,
+		analysis.MaxLivePostings,
+		analysis.MaxPositionEntries,
+		analysis.CompactionRatio,
+		analysis.CompactionMinRetired,
 	)
 	sum := sha256.Sum256([]byte(canonical))
-	capabilities.ConfigFingerprint = hex.EncodeToString(sum[:])
-	return capabilities
+	return hex.EncodeToString(sum[:])
 }
 
 // SearchConfigFingerprint returns the stable search-capability fingerprint
 // published by GetServerStatus. The replication PeerStatus surface uses the
 // same value so HA members compare exactly the contract clients discover.
 func (s *LanternService) SearchConfigFingerprint() string {
-	return s.searchCapabilities().GetConfigFingerprint()
+	if s.searchConfigFingerprint != "" {
+		return s.searchConfigFingerprint
+	}
+	return computeSearchConfigFingerprint(s.search)
 }
 
 // statusVersion returns the configured version string, falling back to

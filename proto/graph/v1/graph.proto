@@ -418,6 +418,28 @@ message SearchOptions {
   bool prefix_terms = 5;
 }
 
+// SearchProjection selects how much stored vertex data each ranked hit
+// carries. The zero value deliberately preserves the historical lightweight
+// key+score response.
+enum SearchProjection {
+  SEARCH_PROJECTION_UNSPECIFIED = 0;
+  SEARCH_PROJECTION_KEY_SCORE = 1;
+  SEARCH_PROJECTION_FULL_VERTEX = 2;
+}
+
+// SearchHitProjectionStatus makes FULL_VERTEX selection races explicit. The
+// server normally returns SNAPSHOT because ranking and hydration share one
+// search commit barrier. MISSING/REPLACED are reserved fail-closed states for
+// a backend that cannot prove that invariant; such a hit never carries an
+// unrelated vertex value.
+enum SearchHitProjectionStatus {
+  SEARCH_HIT_PROJECTION_STATUS_UNSPECIFIED = 0;
+  SEARCH_HIT_PROJECTION_STATUS_KEY_SCORE = 1;
+  SEARCH_HIT_PROJECTION_STATUS_SNAPSHOT = 2;
+  SEARCH_HIT_PROJECTION_STATUS_MISSING = 3;
+  SEARCH_HIT_PROJECTION_STATUS_REPLACED = 4;
+}
+
 // SearchVerticesRequest runs a relevance-ranked full-text search over vertex
 // *content* (key + value), as opposed to ScanVertices' lexicographic
 // key-prefix walk. `query` is analysed with the same pipeline used to build
@@ -439,22 +461,43 @@ message SearchVerticesRequest {
   // options carries the optional match-mode / phrase / fuzzy controls (#892);
   // unset means the default OR-union search.
   SearchOptions options = 4;
+  // cursor is the opaque endpoint-sticky continuation returned by the prior
+  // page. It is bound to every request option and projection; changing any of
+  // them returns INVALID_ARGUMENT. Empty starts a new bounded snapshot.
+  bytes cursor = 5;
+  // projection defaults to KEY_SCORE when unspecified.
+  SearchProjection projection = 6;
 }
 
 message SearchVerticesResponse {
   // hits use the stable total order (score DESC, raw key ASC). May be shorter
   // than `limit` when fewer vertices match; empty when nothing matches.
   repeated SearchHit hits = 1;
+  // next_cursor is non-empty while another retained snapshot page exists.
+  bytes next_cursor = 2;
+  // effective_limit is the server-clamped page size used for this response.
+  uint32 effective_limit = 3;
+  // truncated is true when the page does not contain every matching snapshot
+  // hit, even when the caller chooses not to continue.
+  bool truncated = 4;
+  // continuation_limited means the bounded session hit/byte cap observed more
+  // matches than it could retain. The final retained page has no next_cursor
+  // while this remains true; iterators surface a typed terminal error instead
+  // of pretending the bounded prefix was exhaustive.
+  bool continuation_limited = 5;
 }
 
 // SearchHit pairs a matching vertex key with the relevance score the index
 // assigned it (BM25; higher is more relevant). Equal scores are ordered by the
-// raw, unnormalised key in ascending lexical order. The value and TTL are not
-// included — callers that need them issue a follow-up GetVertices with the
-// returned keys.
+// raw, unnormalised key in ascending lexical order. KEY_SCORE omits the value
+// and TTL; FULL_VERTEX carries an immutable selected snapshot.
 message SearchHit {
   string key = 1;
   double score = 2;
+  // vertex is populated only for FULL_VERTEX SNAPSHOT hits. It is the exact
+  // immutable value/TTL selected under the same barrier as the score.
+  Vertex vertex = 3;
+  SearchHitProjectionStatus projection_status = 4;
 }
 
 // CountVerticesByPrefixRequest returns the number of live vertex keys with
@@ -756,6 +799,12 @@ enum SearchErrorReason {
   SEARCH_INDEX_INCOMPLETE = 5;
   // buf:lint:ignore ENUM_VALUE_PREFIX -- stable cross-SDK reason code.
   SEARCH_INDEX_BUDGET_EXHAUSTED = 6;
+  // buf:lint:ignore ENUM_VALUE_PREFIX -- stable cross-SDK reason code.
+  SEARCH_CURSOR_STALE = 7;
+  // buf:lint:ignore ENUM_VALUE_PREFIX -- stable cross-SDK reason code.
+  SEARCH_CURSOR_INVALID = 8;
+  // buf:lint:ignore ENUM_VALUE_PREFIX -- stable cross-SDK reason code.
+  SEARCH_CONTINUATION_LIMITED = 9;
 }
 
 // SearchErrorDetail is carried as a Connect error detail when a search
@@ -799,6 +848,10 @@ message SearchCapabilities {
   uint64 compaction_min_retired = 25;
   SearchIndexStats index_stats = 26;
   uint64 max_expiration_visits = 27;
+  uint32 cursor_ttl_seconds = 28;
+  uint32 max_sessions = 29;
+  uint32 max_session_hits = 30;
+  uint64 max_session_bytes = 31;
 }
 
 // SearchIndexStats exposes logical size, retained high-water storage, rebuild
@@ -831,6 +884,10 @@ message SearchIndexStats {
   uint64 expiration_queue_entries = 14;
   uint64 expiration_purged = 15;
   google.protobuf.Duration last_expiration_purge_duration = 16;
+  // generation advances on every committed search-visible mutation batch,
+  // TTL purge, and rebuild. It is diagnostic only for bounded search
+  // sessions; clients do not compare it themselves.
+  uint64 generation = 17;
 }
 
 message GetServerStatusResponse {

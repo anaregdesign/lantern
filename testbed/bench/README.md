@@ -199,8 +199,10 @@ verdict is written to `metric_gate.json` and folds into `run.sh`'s exit code.
 `semantic_gate.kind: search` seeds a deterministic fixture before warmup and
 checks every replica both before and after steady load. It proves a persistent
 hit, deleted/expired absence, stable ordering, key-prefix filtering, phrase,
-fuzzy-1/2, prefix-term, ALL, and MIN_SHOULD behavior. An HTTP-OK response with
-empty hits therefore fails. The bounded `semantic_pre.json` and
+fuzzy-1/2, prefix-term, ALL, and MIN_SHOULD behavior. It also walks a five-page
+endpoint-sticky cursor chain with FULL_VERTEX snapshots, rejecting duplicate,
+gap, truncated-tail, or projection races under concurrent index churn. An
+HTTP-OK response with empty hits therefore fails. The bounded `semantic_pre.json` and
 `semantic_post.json` artifacts contain only phase, replica endpoint, check
 count, and verdict—never query text, prefixes, keys, or values.
 

@@ -86,6 +86,7 @@ type IndexMemoryStats struct {
 	WriteLockAcquisitions  uint64
 	ExpirationPurged       uint64
 	LastExpirationPurge    time.Duration
+	Generation             uint64
 	Health                 IndexHealth
 }
 

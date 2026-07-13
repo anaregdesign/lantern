@@ -215,7 +215,9 @@ export function BrowseVerticesPage() {
                 shape="rounded"
                 data-testid="search-count-badge"
               >
-                {rows.length} {rows.length === 1 ? "result" : "results"}
+                {search.state.truncated
+                  ? `Top ${rows.length} shown`
+                  : `${rows.length} ${rows.length === 1 ? "result" : "results"}`}
               </Badge>
             ) : null
           ) : browse.count !== null ? (
@@ -378,6 +380,12 @@ export function BrowseVerticesPage() {
         </MessageBar>
       ) : null}
 
+      {searching && search.state.loadMoreError ? (
+        <MessageBar intent="error" className={styles.alert}>
+          <MessageBarBody>{search.state.loadMoreError}</MessageBarBody>
+        </MessageBar>
+      ) : null}
+
       {!searching && browse.state.error ? (
         <MessageBar intent="error" className={styles.alert}>
           <MessageBarBody>{browse.state.error}</MessageBarBody>
@@ -517,6 +525,17 @@ export function BrowseVerticesPage() {
           onPrevious={browse.goPrevious}
           onNext={browse.goNext}
         />
+      ) : search.state.nextCursor !== null ? (
+        <div className={styles.searchPager}>
+          <Button
+            appearance="secondary"
+            onClick={search.loadMore}
+            disabled={!search.canLoadMore}
+            data-testid="search-load-more"
+          >
+            {search.state.loadingMore ? "Loading…" : "Load more"}
+          </Button>
+        </div>
       ) : null}
     </div>
   );

@@ -42,6 +42,10 @@ func (c *GraphCache[S, T]) PutVertexWithExpirationHLC(key S, value T, expiration
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.searchIndex != nil {
+		c.searchCommitMu.Lock()
+		defer c.searchCommitMu.Unlock()
+	}
 	if !c.vertexWriteAllowedLocked(key, ts) {
 		return false
 	}

@@ -41,6 +41,7 @@ package client
 import (
 	"context"
 	"errors"
+	"iter"
 	"sync/atomic"
 	"time"
 )
@@ -96,6 +97,7 @@ type failoverNode interface {
 	ScanVertices(ctx context.Context, prefix string, opts ...ScanOption) (vertices []*Vertex, nextCursor []byte, err error)
 	ScanVertexKeys(ctx context.Context, prefix string, opts ...ScanOption) (keys []string, nextCursor []byte, err error)
 	SearchVertices(ctx context.Context, query string, opts ...SearchOption) (hits []SearchHit, err error)
+	SearchVerticesPage(ctx context.Context, query string, opts ...SearchOption) (SearchPage, error)
 	CountVerticesByPrefix(ctx context.Context, prefix string) (uint64, error)
 	DeleteVerticesByPrefix(ctx context.Context, prefix string, opts ...DeleteByPrefixOption) (uint64, error)
 	AddEdge(ctx context.Context, tail, head string, weight float32, ttl time.Duration) (float32, error)
@@ -226,6 +228,18 @@ func (f *Failover) call(ctx context.Context, method string, fn func(failoverNode
 		return f.try(fn)
 	}
 	return f.retry.run(ctx, func() error { return f.try(fn) })
+}
+
+// callCurrent retries only the currently selected endpoint. Search-session
+// cursors are endpoint-sticky; rotating them would turn a transport outage
+// into a misleading cursor-invalid response from another process.
+func (f *Failover) callCurrent(ctx context.Context, method string, fn func(failoverNode) error) error {
+	idx := int(f.cur.Load() % uint64(len(f.nodes)))
+	run := func() error { return fn(f.nodes[idx]) }
+	if f.retry == nil || !retryableMethod(method, f.idempotentAdds) {
+		return run()
+	}
+	return f.retry.run(ctx, run)
 }
 
 // PutVertex forwards to the current endpoint's PutVertex, failing over on
@@ -370,6 +384,61 @@ func (f *Failover) SearchVertices(ctx context.Context, query string, opts ...Sea
 		return ie
 	})
 	return hits, e
+}
+
+// SearchVerticesPage starts on the failover ring, but a non-empty cursor is
+// retried only against the sticky endpoint that minted its bounded session.
+// ErrUnavailable is returned as-is so callers can restart explicitly from
+// page one; the SDK never silently changes the snapshot.
+func (f *Failover) SearchVerticesPage(ctx context.Context, query string, opts ...SearchOption) (page SearchPage, err error) {
+	configured := searchOptions{}
+	for _, apply := range opts {
+		apply(&configured)
+	}
+	call := f.call
+	if len(configured.cursor) > 0 {
+		call = f.callCurrent
+	}
+	err = call(ctx, "SearchVerticesPage", func(l failoverNode) error {
+		var pageErr error
+		page, pageErr = l.SearchVerticesPage(ctx, query, opts...)
+		return pageErr
+	})
+	return page, err
+}
+
+// SearchVerticesIter lazily follows SearchVerticesPage while preserving its
+// endpoint stickiness and bounded-tail error contract.
+func (f *Failover) SearchVerticesIter(ctx context.Context, query string, opts ...SearchOption) iter.Seq2[SearchHit, error] {
+	return func(yield func(SearchHit, error) bool) {
+		initial := searchOptions{}
+		for _, apply := range opts {
+			apply(&initial)
+		}
+		cursor := append([]byte(nil), initial.cursor...)
+		for {
+			pageOpts := append(append([]SearchOption(nil), opts...), WithSearchCursor(cursor))
+			page, err := f.SearchVerticesPage(ctx, query, pageOpts...)
+			if err != nil {
+				var zero SearchHit
+				yield(zero, err)
+				return
+			}
+			for _, hit := range page.Hits {
+				if !yield(hit, nil) {
+					return
+				}
+			}
+			if len(page.NextCursor) == 0 {
+				if page.ContinuationLimited {
+					var zero SearchHit
+					yield(zero, ErrSearchContinuationLimited)
+				}
+				return
+			}
+			cursor = page.NextCursor
+		}
+	}
 }
 
 // CountVerticesByPrefix forwards to the current endpoint's

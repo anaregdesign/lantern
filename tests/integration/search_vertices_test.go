@@ -1709,3 +1709,236 @@ func TestSearchVertices_SDKOptions(t *testing.T) {
 		t.Errorf("MatchAll hits = %v, want only doc.both", got)
 	}
 }
+
+func TestSearchVertices_PaginationProjectionAndSnapshotOverRealH2C(t *testing.T) {
+	limits := service.SearchLimits{
+		Enabled:          true,
+		PositionsEnabled: true,
+		DefaultLimit:     2,
+		MaxLimit:         2,
+		CursorTTL:        time.Minute,
+		MaxSessions:      8,
+		MaxSessionHits:   16,
+		MaxSessionBytes:  1 << 20,
+	}
+	cache := newProductionSearchCache(time.Minute, true, true, search.SearchAnalysisLimits{})
+	svc := service.NewLanternService(cache).WithSearchLimits(limits)
+	srv := newConnectTestServer(t, svc, nil)
+	raw := graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	expiration := timestamppb.New(time.Now().Add(time.Hour))
+	vertices := make([]*pb.Vertex, 0, 6)
+	for i := 6; i >= 1; i-- {
+		vertices = append(vertices, &pb.Vertex{
+			Key:        fmt.Sprintf("page/%02d", i),
+			Value:      &pb.Vertex_String_{String_: "shared paginationtoken"},
+			Expiration: expiration,
+		})
+	}
+	if _, err := raw.PutVertices(ctx, connect.NewRequest(&pb.PutVerticesRequest{Vertices: vertices})); err != nil {
+		t.Fatal(err)
+	}
+
+	keyScore, err := raw.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{
+		Query: "paginationtoken", Limit: 2,
+		Projection: pb.SearchProjection_SEARCH_PROJECTION_KEY_SCORE,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, hit := range keyScore.Msg.GetHits() {
+		if hit.GetVertex() != nil || hit.GetProjectionStatus() != pb.SearchHitProjectionStatus_SEARCH_HIT_PROJECTION_STATUS_KEY_SCORE {
+			t.Fatalf("lightweight hit = %+v", hit)
+		}
+	}
+
+	request := &pb.SearchVerticesRequest{
+		Query: "paginationtoken", Limit: 2,
+		Projection: pb.SearchProjection_SEARCH_PROJECTION_FULL_VERTEX,
+	}
+	first, err := raw.SearchVertices(ctx, connect.NewRequest(request))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Msg.GetTruncated() || first.Msg.GetEffectiveLimit() != 2 || len(first.Msg.GetNextCursor()) == 0 {
+		t.Fatalf("first page metadata = %+v", first.Msg)
+	}
+	for _, hit := range first.Msg.GetHits() {
+		if hit.GetProjectionStatus() != pb.SearchHitProjectionStatus_SEARCH_HIT_PROJECTION_STATUS_SNAPSHOT || hit.GetVertex().GetString_() != "shared paginationtoken" {
+			t.Fatalf("full hit = %+v", hit)
+		}
+	}
+
+	tampered := append([]byte(nil), first.Msg.GetNextCursor()...)
+	tampered[len(tampered)-1] ^= 0xff
+	_, tamperErr := raw.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{
+		Query: request.GetQuery(), Limit: request.GetLimit(), Projection: request.GetProjection(), Cursor: tampered,
+	}))
+	if connect.CodeOf(tamperErr) != connect.CodeInvalidArgument || wireSearchErrorReason(t, tamperErr) != pb.SearchErrorReason_SEARCH_CURSOR_INVALID {
+		t.Fatalf("tampered cursor error = %v", tamperErr)
+	}
+	_, mismatchErr := raw.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{
+		Query: "other", Limit: request.GetLimit(), Projection: request.GetProjection(), Cursor: first.Msg.GetNextCursor(),
+	}))
+	if connect.CodeOf(mismatchErr) != connect.CodeInvalidArgument || wireSearchErrorReason(t, mismatchErr) != pb.SearchErrorReason_SEARCH_CURSOR_INVALID {
+		t.Fatalf("request-mismatched cursor error = %v", mismatchErr)
+	}
+
+	// Mutations after page 1 do not alter the admitted bounded snapshot: no
+	// duplicate/gap, and FULL_VERTEX never pairs an old score with new content.
+	if _, err := raw.PutVertex(ctx, connect.NewRequest(&pb.PutVertexRequest{Vertex: &pb.Vertex{
+		Key: "page/03", Value: &pb.Vertex_String_{String_: "replacement"}, Expiration: expiration,
+	}})); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.DeleteVertex(ctx, connect.NewRequest(&pb.DeleteVertexRequest{Key: "page/04"})); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.PutVertex(ctx, connect.NewRequest(&pb.PutVertexRequest{Vertex: &pb.Vertex{
+		Key: "page/00", Value: &pb.Vertex_String_{String_: "shared paginationtoken"}, Expiration: expiration,
+	}})); err != nil {
+		t.Fatal(err)
+	}
+
+	all := append([]*pb.SearchHit(nil), first.Msg.GetHits()...)
+	cursor := first.Msg.GetNextCursor()
+	for len(cursor) > 0 {
+		page, pageErr := raw.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{
+			Query: request.GetQuery(), Limit: request.GetLimit(), Projection: request.GetProjection(), Cursor: cursor,
+		}))
+		if pageErr != nil {
+			t.Fatal(pageErr)
+		}
+		all = append(all, page.Msg.GetHits()...)
+		cursor = page.Msg.GetNextCursor()
+		if len(cursor) == 0 && (page.Msg.GetTruncated() || page.Msg.GetContinuationLimited()) {
+			t.Fatalf("final page metadata = %+v", page.Msg)
+		}
+	}
+	wantKeys := []string{"page/01", "page/02", "page/03", "page/04", "page/05", "page/06"}
+	gotKeys := make([]string, len(all))
+	for i, hit := range all {
+		gotKeys[i] = hit.GetKey()
+		if hit.GetVertex().GetString_() != "shared paginationtoken" || hit.GetProjectionStatus() != pb.SearchHitProjectionStatus_SEARCH_HIT_PROJECTION_STATUS_SNAPSHOT {
+			t.Fatalf("snapshot hit[%d] = %+v", i, hit)
+		}
+	}
+	if !slices.Equal(gotKeys, wantKeys) {
+		t.Fatalf("paged keys = %v, want %v", gotKeys, wantKeys)
+	}
+
+	status, err := raw.GetServerStatus(ctx, connect.NewRequest(&pb.GetServerStatusRequest{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities := status.Msg.GetSearch()
+	if capabilities.GetCursorTtlSeconds() != 60 || capabilities.GetMaxSessions() != 8 || capabilities.GetMaxSessionHits() != 16 || capabilities.GetIndexStats().GetGeneration() == 0 {
+		t.Fatalf("pagination capabilities = %+v", capabilities)
+	}
+}
+
+func TestSearchVertices_SDKPaginationAndStaleCursorOverRealH2C(t *testing.T) {
+	newClients := func(t *testing.T, ttl time.Duration) (graphv1connect.LanternServiceClient, *client.Lantern) {
+		t.Helper()
+		cache := newProductionSearchCache(time.Minute, true, true, search.SearchAnalysisLimits{})
+		svc := service.NewLanternService(cache).WithSearchLimits(service.SearchLimits{
+			Enabled: true, PositionsEnabled: true, DefaultLimit: 2, MaxLimit: 2,
+			CursorTTL: ttl, MaxSessions: 8, MaxSessionHits: 16, MaxSessionBytes: 1 << 20,
+		})
+		srv := newConnectTestServer(t, svc, nil)
+		return graphv1connect.NewLanternServiceClient(h2cClient(), srv.url), newConnectClientFor(t, srv.url)
+	}
+
+	t.Run("page and iterator enumerate beyond server max", func(t *testing.T) {
+		raw, sdk := newClients(t, time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		expiration := timestamppb.New(time.Now().Add(time.Hour))
+		vertices := make([]*pb.Vertex, 5)
+		for i := range vertices {
+			vertices[i] = &pb.Vertex{Key: fmt.Sprintf("sdk/%02d", i+1), Value: &pb.Vertex_String_{String_: "sdkpaginationtoken"}, Expiration: expiration}
+		}
+		if _, err := raw.PutVertices(ctx, connect.NewRequest(&pb.PutVerticesRequest{Vertices: vertices})); err != nil {
+			t.Fatal(err)
+		}
+		first, err := sdk.SearchVerticesPage(ctx, "sdkpaginationtoken", client.WithSearchLimit(2), client.WithFullVertex())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(first.Hits) != 2 || first.Hits[0].Vertex.GetString_() != "sdkpaginationtoken" || len(first.NextCursor) == 0 {
+			t.Fatalf("first SDK page = %+v", first)
+		}
+		keys := []string{first.Hits[0].Key, first.Hits[1].Key}
+		for hit, iterErr := range sdk.SearchVerticesIter(ctx, "sdkpaginationtoken", client.WithSearchLimit(2), client.WithFullVertex(), client.WithSearchCursor(first.NextCursor)) {
+			if iterErr != nil {
+				t.Fatal(iterErr)
+			}
+			keys = append(keys, hit.Key)
+		}
+		if !slices.Equal(keys, []string{"sdk/01", "sdk/02", "sdk/03", "sdk/04", "sdk/05"}) {
+			t.Fatalf("SDK paged keys = %v", keys)
+		}
+	})
+
+	t.Run("expired endpoint session is typed aborted", func(t *testing.T) {
+		raw, sdk := newClients(t, time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		expiration := timestamppb.New(time.Now().Add(time.Hour))
+		vertices := []*pb.Vertex{
+			{Key: "stale/1", Value: &pb.Vertex_String_{String_: "stalecursortoken"}, Expiration: expiration},
+			{Key: "stale/2", Value: &pb.Vertex_String_{String_: "stalecursortoken"}, Expiration: expiration},
+			{Key: "stale/3", Value: &pb.Vertex_String_{String_: "stalecursortoken"}, Expiration: expiration},
+		}
+		if _, err := raw.PutVertices(ctx, connect.NewRequest(&pb.PutVerticesRequest{Vertices: vertices})); err != nil {
+			t.Fatal(err)
+		}
+		first, err := sdk.SearchVerticesPage(ctx, "stalecursortoken", client.WithSearchLimit(2))
+		if err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(1100 * time.Millisecond)
+		_, err = sdk.SearchVerticesPage(ctx, "stalecursortoken", client.WithSearchLimit(2), client.WithSearchCursor(first.NextCursor))
+		if !errors.Is(err, client.ErrSearchCursorStale) || connect.CodeOf(err) != connect.CodeAborted {
+			t.Fatalf("expired cursor error = %v", err)
+		}
+	})
+}
+
+func BenchmarkSearchVerticesProjectionOverRealH2C(b *testing.B) {
+	cache := newProductionSearchCache(time.Minute, true, true, search.SearchAnalysisLimits{})
+	svc := service.NewLanternService(cache).WithSearchLimits(service.SearchLimits{
+		Enabled: true, PositionsEnabled: true, DefaultLimit: 100, MaxLimit: 100,
+		CursorTTL: time.Minute, MaxSessions: 8, MaxSessionHits: 200, MaxSessionBytes: 8 << 20,
+	})
+	srv := newConnectTestServer(b, svc, nil)
+	raw := graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
+	expiration := timestamppb.New(time.Now().Add(time.Hour))
+	vertices := make([]*pb.Vertex, 100)
+	for i := range vertices {
+		vertices[i] = &pb.Vertex{Key: fmt.Sprintf("bench/%03d", i), Value: &pb.Vertex_String_{String_: strings.Repeat("projectionbenchmark ", 8)}, Expiration: expiration}
+	}
+	if _, err := raw.PutVertices(context.Background(), connect.NewRequest(&pb.PutVerticesRequest{Vertices: vertices})); err != nil {
+		b.Fatal(err)
+	}
+	for _, projection := range []pb.SearchProjection{
+		pb.SearchProjection_SEARCH_PROJECTION_KEY_SCORE,
+		pb.SearchProjection_SEARCH_PROJECTION_FULL_VERTEX,
+	} {
+		b.Run(projection.String(), func(b *testing.B) {
+			var wireBytes int64
+			b.ResetTimer()
+			for range b.N {
+				resp, err := raw.SearchVertices(context.Background(), connect.NewRequest(&pb.SearchVerticesRequest{
+					Query: "projectionbenchmark", Limit: 100, Projection: projection,
+				}))
+				if err != nil {
+					b.Fatal(err)
+				}
+				wireBytes += int64(proto.Size(resp.Msg))
+			}
+			b.ReportMetric(float64(wireBytes)/float64(b.N), "wire_bytes/op")
+		})
+	}
+}

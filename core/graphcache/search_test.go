@@ -751,3 +751,29 @@ func TestGraphCache_SearchVertices_LifecycleIntersection(t *testing.T) {
 		t.Errorf("Search(summit) = %v, want eu:2", got)
 	}
 }
+
+func TestGraphCache_SearchVerticesSnapshotContext(t *testing.T) {
+	c := NewGraphCache[string, string](time.Minute)
+	c.EnableSearchIndex(textExtract, compareStringID)
+	if err := c.PutVerticesWithExpiration([]VertexItem[string, string]{
+		{Key: "a", Value: "alpha old", Expiration: time.Now().Add(time.Hour)},
+		{Key: "b", Value: "alpha stable", Expiration: time.Now().Add(time.Hour)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	hits, _, err := c.SearchVerticesSnapshotContext(context.Background(), "alpha", 10, "", search.MatchOptions{}, false, search.Budget{})
+	if err != nil || len(hits) != 2 {
+		t.Fatalf("snapshot = %+v, err=%v", hits, err)
+	}
+	for _, hit := range hits {
+		if !hit.Found || hit.Value == "" {
+			t.Fatalf("unhydrated snapshot hit = %+v", hit)
+		}
+	}
+	if err := c.PutVertexWithExpiration("a", "replacement", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if hits[0].Result.ID == "a" && hits[0].Value != "alpha old" {
+		t.Fatalf("owned snapshot changed to %q", hits[0].Value)
+	}
+}

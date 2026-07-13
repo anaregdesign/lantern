@@ -156,6 +156,18 @@ func TestCache_Get(t *testing.T) {
 			}
 		})
 	}
+	t.Run("GetAtUsesCallerInstant", func(t *testing.T) {
+		expiration := time.Unix(200, 0)
+		c := Cache[string, int]{cache: map[string]volatile[int]{
+			"k": {value: 7, expiration: expiration},
+		}}
+		if got, ok := c.GetAt("k", expiration.Add(-time.Nanosecond)); !ok || got != 7 {
+			t.Fatalf("GetAt before expiration = (%d, %t), want (7, true)", got, ok)
+		}
+		if got, ok := c.GetAt("k", expiration); ok || got != 0 {
+			t.Fatalf("GetAt at expiration = (%d, %t), want (0, false)", got, ok)
+		}
+	})
 }
 
 func TestCache_Set(t *testing.T) {

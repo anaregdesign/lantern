@@ -120,6 +120,186 @@ void main() {
     expect(captured.hasOptions(), isFalse);
   });
 
+  test('page forwards cursor and maps full-vertex snapshot metadata', () async {
+    late graph.SearchVerticesRequest captured;
+    final transport = FakeTransportBuilder()
+        .unary<graph.SearchVerticesRequest, graph.SearchVerticesResponse>(
+          LanternService.searchVertices,
+          (request, context) {
+            captured = request.clone();
+            return graph.SearchVerticesResponse(
+              hits: [
+                graph.SearchHit(
+                  key: 'doc/1',
+                  score: 3.5,
+                  vertex: graph.Vertex(key: 'doc/1', string: 'alpha'),
+                  projectionStatus: graph
+                      .SearchHitProjectionStatus
+                      .SEARCH_HIT_PROJECTION_STATUS_SNAPSHOT,
+                ),
+              ],
+              nextCursor: [4, 5],
+              effectiveLimit: 1,
+              truncated: true,
+            );
+          },
+        )
+        .build();
+
+    final page = await _client(transport).searchVerticesPage(
+      'alpha',
+      searchOptions: const SearchOptions(
+        limit: 1,
+        cursor: [1, 2, 3],
+        projection: SearchProjection.fullVertex,
+      ),
+    );
+
+    expect(captured.cursor, [1, 2, 3]);
+    expect(
+      captured.projection,
+      graph.SearchProjection.SEARCH_PROJECTION_FULL_VERTEX,
+    );
+    expect(page.hits.single.key, 'doc/1');
+    expect(page.hits.single.vertex?.value, isA<StringValue>());
+    expect((page.hits.single.vertex?.value as StringValue).value, 'alpha');
+    expect(
+      page.hits.single.projectionStatus,
+      SearchHitProjectionStatus.snapshot,
+    );
+    expect(page.nextCursor, [4, 5]);
+    expect(page.effectiveLimit, 1);
+    expect(page.truncated, isTrue);
+    expect(page.continuationLimited, isFalse);
+  });
+
+  test('stream follows opaque cursors lazily', () async {
+    final cursors = <List<int>>[];
+    final responses = [
+      graph.SearchVerticesResponse(
+        hits: [graph.SearchHit(key: 'doc/1', score: 2)],
+        nextCursor: [9],
+        effectiveLimit: 1,
+        truncated: true,
+      ),
+      graph.SearchVerticesResponse(
+        hits: [graph.SearchHit(key: 'doc/2', score: 1)],
+        effectiveLimit: 1,
+      ),
+    ];
+    final transport = FakeTransportBuilder()
+        .unary<graph.SearchVerticesRequest, graph.SearchVerticesResponse>(
+          LanternService.searchVertices,
+          (request, context) {
+            cursors.add(List<int>.from(request.cursor));
+            return responses.removeAt(0);
+          },
+        )
+        .build();
+
+    final hits = await _client(transport)
+        .searchVerticesStream(
+          'alpha',
+          searchOptions: const SearchOptions(limit: 1),
+        )
+        .toList();
+
+    expect(hits.map((hit) => hit.key), ['doc/1', 'doc/2']);
+    expect(cursors, [
+      <int>[],
+      [9],
+    ]);
+  });
+
+  test(
+    'stream surfaces a typed bounded-tail error after retained hits',
+    () async {
+      final transport = FakeTransportBuilder()
+          .unary<graph.SearchVerticesRequest, graph.SearchVerticesResponse>(
+            LanternService.searchVertices,
+            (request, context) => graph.SearchVerticesResponse(
+              hits: [graph.SearchHit(key: 'doc/1', score: 1)],
+              effectiveLimit: 1,
+              truncated: true,
+              continuationLimited: true,
+            ),
+          )
+          .build();
+      final keys = <String>[];
+
+      try {
+        await for (final hit in _client(
+          transport,
+        ).searchVerticesStream('alpha')) {
+          keys.add(hit.key);
+        }
+        fail('bounded continuation should fail after the retained tail');
+      } on LanternSearchContinuationLimitedException catch (error) {
+        expect(keys, ['doc/1']);
+        expect(error.searchReason, SearchErrorReason.searchContinuationLimited);
+      }
+    },
+  );
+
+  test('stale cursor maps ABORTED detail to a dedicated exception', () async {
+    final transport = FakeTransportBuilder()
+        .unary<graph.SearchVerticesRequest, graph.SearchVerticesResponse>(
+          LanternService.searchVertices,
+          (request, context) => throw connect.ConnectException(
+            connect.Code.aborted,
+            'search cursor is stale',
+            details: [
+              connect.ErrorDetail(
+                'graph.v1.SearchErrorDetail',
+                graph.SearchErrorDetail(
+                  reason: graph.SearchErrorReason.SEARCH_CURSOR_STALE,
+                ).writeToBuffer(),
+              ),
+            ],
+          ),
+        )
+        .build();
+
+    await expectLater(
+      _client(transport).searchVerticesPage(
+        'alpha',
+        searchOptions: const SearchOptions(cursor: [1]),
+      ),
+      throwsA(isA<LanternSearchCursorStaleException>()),
+    );
+  });
+
+  test('invalid cursor retains its machine-readable reason', () async {
+    final transport = FakeTransportBuilder()
+        .unary<graph.SearchVerticesRequest, graph.SearchVerticesResponse>(
+          LanternService.searchVertices,
+          (request, context) => throw connect.ConnectException(
+            connect.Code.invalidArgument,
+            'search cursor does not belong to this request',
+            details: [
+              connect.ErrorDetail(
+                'graph.v1.SearchErrorDetail',
+                graph.SearchErrorDetail(
+                  reason: graph.SearchErrorReason.SEARCH_CURSOR_INVALID,
+                ).writeToBuffer(),
+              ),
+            ],
+          ),
+        )
+        .build();
+
+    await expectLater(
+      _client(transport).searchVerticesPage('alpha'),
+      throwsA(
+        isA<LanternInvalidArgumentException>().having(
+          (error) => error.searchReason,
+          'searchReason',
+          SearchErrorReason.searchCursorInvalid,
+        ),
+      ),
+    );
+  });
+
   test('search-disabled is a calm typed result', () async {
     final transport = FakeTransportBuilder()
         .unary<graph.SearchVerticesRequest, graph.SearchVerticesResponse>(

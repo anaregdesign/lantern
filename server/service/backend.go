@@ -203,6 +203,7 @@ type Backend interface {
 	SearchVertices(query string, limit int, keyPrefix string) []search.Result[string]
 	SearchVerticesMatch(query string, limit int, keyPrefix string, opts search.MatchOptions, phrase bool) []search.Result[string]
 	SearchVerticesMatchContext(ctx context.Context, query string, limit int, keyPrefix string, opts search.MatchOptions, phrase bool, budget search.Budget) ([]search.Result[string], search.Stats, error)
+	SearchVerticesSnapshotContext(ctx context.Context, query string, limit int, keyPrefix string, opts search.MatchOptions, phrase bool, budget search.Budget) ([]graphcache.SearchSnapshotHit[string, *pb.Vertex], search.Stats, error)
 
 	// edge-side prefix scan. ScanEdgesByPrefixPage (#836) invokes fn for
 	// each live edge whose tail starts with tailPrefix AND whose head

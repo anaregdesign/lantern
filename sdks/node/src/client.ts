@@ -39,6 +39,8 @@ import {
   Objective as PbObjective,
   Reduction as PbReduction,
   ScanOrder as PbScanOrder,
+  SearchHitProjectionStatus as PbSearchHitProjectionStatus,
+  SearchProjection as PbSearchProjection,
   Weighting as PbWeighting,
   VertexSchema,
   type Edge as PbEdge,
@@ -52,6 +54,7 @@ import {
   InvalidArgumentError,
   LanternError,
   NotFoundError,
+  SearchContinuationLimitedError,
   wrapConnectError,
 } from "./errors.js";
 import {
@@ -68,6 +71,7 @@ import {
   type EdgeInput,
   type Graph,
   type SearchHit,
+  type SearchPage,
   type Vertex,
   type VertexInput,
 } from "./values.js";
@@ -120,6 +124,34 @@ function toPbMatchMode(m: MatchMode | undefined): PbMatchMode {
   }
 }
 
+function toPbSearchProjection(projection: SearchOptions["projection"]): PbSearchProjection {
+  switch (projection) {
+    case "full-vertex":
+      return PbSearchProjection.FULL_VERTEX;
+    case "key-score":
+      return PbSearchProjection.KEY_SCORE;
+    default:
+      return PbSearchProjection.UNSPECIFIED;
+  }
+}
+
+function fromPbSearchProjectionStatus(
+  status: PbSearchHitProjectionStatus,
+): SearchHit["projectionStatus"] {
+  switch (status) {
+    case PbSearchHitProjectionStatus.KEY_SCORE:
+      return "key-score";
+    case PbSearchHitProjectionStatus.SNAPSHOT:
+      return "snapshot";
+    case PbSearchHitProjectionStatus.MISSING:
+      return "missing";
+    case PbSearchHitProjectionStatus.REPLACED:
+      return "replaced";
+    default:
+      return undefined;
+  }
+}
+
 const MAX_UINT32 = 0xffff_ffff;
 
 function validateSearchInteger(name: string, value: number | undefined, max = MAX_UINT32): void {
@@ -142,6 +174,13 @@ function validateSearchOptions(opts: SearchOptions): void {
     opts.matchMode !== "min-should"
   ) {
     throw new InvalidArgumentError(`search: unrecognized matchMode ${String(opts.matchMode)}`);
+  }
+  if (
+    opts.projection !== undefined &&
+    opts.projection !== "key-score" &&
+    opts.projection !== "full-vertex"
+  ) {
+    throw new InvalidArgumentError(`search: unrecognized projection ${String(opts.projection)}`);
   }
   if ((opts.minShouldMatch ?? 0) !== 0 && opts.matchMode !== "min-should") {
     throw new InvalidArgumentError('search: minShouldMatch requires matchMode "min-should"');
@@ -594,10 +633,9 @@ export class Lantern {
    * default; the server also enforces a hard maximum); `opts.prefix`
    * composes content relevance with a key-prefix namespace scope.
    *
-   * Hits carry only the key + score: the value and TTL are omitted, so
-   * callers that need them issue a follow-up `getVertices` with the
-   * returned keys, preserving rank order. Be defensive about a ranked
-   * key that no longer resolves (TTL expiry racing the follow-up read).
+   * The default `key-score` projection carries only key + score. Select
+   * `full-vertex` to include the immutable value/TTL snapshot chosen under
+   * the same server barrier as ranking, avoiding a racy follow-up read.
    *
    * An empty or unanalysable query yields `[]` (not an error). When the
    * server-side index is disabled (`LANTERN_SEARCH_ENABLED=false`) the
@@ -610,6 +648,16 @@ export class Lantern {
     opts: SearchOptions = {},
     signal?: AbortSignal,
   ): Promise<SearchHit[]> {
+    const page = await this.searchVerticesPage(query, opts, signal);
+    return page.hits;
+  }
+
+  /** Returns one bounded endpoint-sticky search snapshot page. */
+  async searchVerticesPage(
+    query: string,
+    opts: SearchOptions = {},
+    signal?: AbortSignal,
+  ): Promise<SearchPage> {
     return this.invoke(async () => {
       validateSearchOptions(opts);
       const resp = await this.client.searchVertices(
@@ -618,11 +666,54 @@ export class Lantern {
           limit: opts.limit ?? 0,
           prefix: opts.prefix ?? "",
           options: buildSearchOptions(opts),
+          cursor: opts.cursor ?? new Uint8Array(),
+          projection: toPbSearchProjection(opts.projection),
         },
         this.callOpts(signal),
       );
-      return resp.hits.map((h) => ({ key: h.key, score: h.score }));
+      return {
+        hits: resp.hits.map((h) => {
+          const hit: SearchHit = { key: h.key, score: h.score };
+          if (h.vertex) {
+            (hit as { vertex?: Vertex }).vertex = fromVertexJson(
+              toJson(VertexSchema, h.vertex) as Record<string, unknown>,
+            );
+          }
+          const projectionStatus = fromPbSearchProjectionStatus(h.projectionStatus);
+          if (projectionStatus) {
+            (hit as { projectionStatus?: SearchHit["projectionStatus"] }).projectionStatus =
+              projectionStatus;
+          }
+          return hit;
+        }),
+        nextCursor: new Uint8Array(resp.nextCursor),
+        effectiveLimit: resp.effectiveLimit,
+        truncated: resp.truncated,
+        continuationLimited: resp.continuationLimited,
+      };
     });
+  }
+
+  /**
+   * Lazily yields every hit retained by one bounded search session. It never
+   * accumulates an unbounded array; a bounded-tail response throws
+   * SearchContinuationLimitedError after the final retained hit.
+   */
+  async *searchVerticesIter(
+    query: string,
+    opts: SearchOptions = {},
+    signal?: AbortSignal,
+  ): AsyncGenerator<SearchHit, void, void> {
+    let cursor = opts.cursor ?? new Uint8Array();
+    while (true) {
+      const page = await this.searchVerticesPage(query, { ...opts, cursor }, signal);
+      for (const hit of page.hits) yield hit;
+      if (page.nextCursor.length === 0) {
+        if (page.continuationLimited) throw new SearchContinuationLimitedError();
+        return;
+      }
+      cursor = page.nextCursor;
+    }
   }
 
   /**

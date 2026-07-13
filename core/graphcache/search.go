@@ -218,9 +218,42 @@ func (c *GraphCache[S, T]) SearchVerticesMatch(query string, limit int, keyPrefi
 	return results
 }
 
+// SearchSnapshotHit is one relevance result plus the exact live value selected
+// under the same search commit barrier. Found is false only when an unexpected
+// backend inconsistency prevented hydration; callers must never pair the score
+// with a later unrelated point read.
+type SearchSnapshotHit[S comparable, T any] struct {
+	Result search.Result[S]
+	Value  T
+	Found  bool
+}
+
 // SearchVerticesMatchContext is SearchVerticesMatch with cancellation and
 // deterministic search-work accounting. An error returns no partial results.
 func (c *GraphCache[S, T]) SearchVerticesMatchContext(ctx context.Context, query string, limit int, keyPrefix string, opts search.MatchOptions, phrase bool, budget search.Budget) ([]search.Result[S], search.Stats, error) {
+	return c.searchVerticesContext(ctx, query, limit, keyPrefix, opts, phrase, budget, nil)
+}
+
+// SearchVerticesSnapshotContext ranks and hydrates one bounded result snapshot
+// under the same commit barrier. It is used by cursor sessions and FULL_VERTEX
+// projection so TTL/overwrite races cannot attach new content to an old score.
+func (c *GraphCache[S, T]) SearchVerticesSnapshotContext(ctx context.Context, query string, limit int, keyPrefix string, opts search.MatchOptions, phrase bool, budget search.Budget) ([]SearchSnapshotHit[S, T], search.Stats, error) {
+	var snapshot []SearchSnapshotHit[S, T]
+	_, stats, err := c.searchVerticesContext(ctx, query, limit, keyPrefix, opts, phrase, budget, func(results []search.Result[S], queryNow time.Time) {
+		snapshot = make([]SearchSnapshotHit[S, T], 0, len(results))
+		for _, result := range results {
+			value, found := c.vertices.GetAt(result.ID, queryNow)
+			snapshot = append(snapshot, SearchSnapshotHit[S, T]{Result: result, Value: value, Found: found})
+		}
+	})
+	return snapshot, stats, err
+}
+
+// searchVerticesContext owns the shared ranking path. When capture is non-nil,
+// it runs before the search commit barrier is released so projection hydration
+// observes the same liveness boundary without imposing wrapper allocations on
+// the lightweight key+score path.
+func (c *GraphCache[S, T]) searchVerticesContext(ctx context.Context, query string, limit int, keyPrefix string, opts search.MatchOptions, phrase bool, budget search.Budget, capture func([]search.Result[S], time.Time)) ([]search.Result[S], search.Stats, error) {
 	if limit <= 0 {
 		return nil, search.Stats{}, nil
 	}
@@ -301,6 +334,9 @@ func (c *GraphCache[S, T]) SearchVerticesMatchContext(ctx context.Context, query
 	}
 	if len(out) == 0 {
 		return nil, stats, nil
+	}
+	if capture != nil {
+		capture(out, queryNow)
 	}
 	return out, stats, nil
 }

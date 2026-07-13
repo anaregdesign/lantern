@@ -96,6 +96,11 @@
   margin: 0;
 }
 
+.searchPager {
+  display: flex;
+  justify-content: center;
+}
+
 .tableWrapper {
   position: relative;
   border: 1px solid var(--colorNeutralStroke2, #e0e0e0);

@@ -366,6 +366,10 @@ func (c *GraphCache[S, T]) PutVertexWithExpiration(key S, value T, expiration ti
 func (c *GraphCache[S, T]) PutVertexWithExpirationIfAbsent(key S, value T, expiration time.Time) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.searchIndex != nil {
+		c.searchCommitMu.Lock()
+		defer c.searchCommitMu.Unlock()
+	}
 
 	if c.vertices.Has(key) {
 		return false
@@ -435,6 +439,10 @@ func (c *GraphCache[S, T]) AddEdgeWithExpirationContrib(tail, head S, w float32,
 func (c *GraphCache[S, T]) DeleteVertex(key S) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.searchIndex != nil {
+		c.searchCommitMu.Lock()
+		defer c.searchCommitMu.Unlock()
+	}
 
 	deleted := c.vertices.Delete(key)
 	c.rebuildIncompleteSearchLocked()

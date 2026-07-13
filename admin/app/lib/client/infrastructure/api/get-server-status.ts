@@ -50,6 +50,10 @@ export interface SearchCapabilities {
   maxPositionVisits: number;
   maxExpirationVisits: number;
   maxInFlight: number;
+  cursorTtlSeconds: number;
+  maxSessions: number;
+  maxSessionHits: number;
+  maxSessionBytes: number;
   maxDocumentBytes: number;
   maxDocumentTokens: number;
   maxDocumentTerms: number;
@@ -78,6 +82,7 @@ export interface SearchIndexStatus {
   rebuildCount: number;
   lastRebuildDurationSeconds: number;
   lastExpirationPurgeDurationSeconds: number;
+  generation: number;
 }
 
 /**
@@ -136,6 +141,10 @@ export async function getServerStatus(
         maxPositionVisits: Number(resp.search?.maxPositionVisits ?? 0n),
         maxExpirationVisits: Number(resp.search?.maxExpirationVisits ?? 0n),
         maxInFlight: resp.search?.maxInFlight ?? 0,
+        cursorTtlSeconds: resp.search?.cursorTtlSeconds ?? 0,
+        maxSessions: resp.search?.maxSessions ?? 0,
+        maxSessionHits: resp.search?.maxSessionHits ?? 0,
+        maxSessionBytes: Number(resp.search?.maxSessionBytes ?? 0n),
         maxDocumentBytes: resp.search?.maxDocumentBytes ?? 0,
         maxDocumentTokens: resp.search?.maxDocumentTokens ?? 0,
         maxDocumentTerms: resp.search?.maxDocumentTerms ?? 0,
@@ -183,6 +192,7 @@ export async function getServerStatus(
           lastExpirationPurgeDurationSeconds: durationSeconds(
             resp.search?.indexStats?.lastExpirationPurgeDuration,
           ),
+          generation: Number(resp.search?.indexStats?.generation ?? 0n),
         },
       },
     };

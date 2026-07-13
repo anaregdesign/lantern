@@ -199,6 +199,10 @@ type ScanConfig struct {
 //   - LANTERN_SEARCH_MAX_POSITION_VISITS (default 10000000)
 //   - LANTERN_SEARCH_MAX_EXPIRATION_VISITS (default 100000)
 //   - LANTERN_SEARCH_MAX_IN_FLIGHT      (default 32)
+//   - LANTERN_SEARCH_CURSOR_TTL_SECONDS (default 60)
+//   - LANTERN_SEARCH_MAX_SESSIONS       (default 128)
+//   - LANTERN_SEARCH_MAX_SESSION_HITS   (default 10000)
+//   - LANTERN_SEARCH_MAX_SESSION_BYTES  (default 67108864)
 //   - LANTERN_SEARCH_MAX_DOCUMENT_BYTES (default 1048576)
 //   - LANTERN_SEARCH_MAX_DOCUMENT_TOKENS (default 250000)
 //   - LANTERN_SEARCH_MAX_DOCUMENT_TERMS (default 100000)
@@ -236,6 +240,10 @@ type SearchConfig struct {
 	MaxPositionVisits   int
 	MaxExpirationVisits int
 	MaxInFlight         int
+	CursorTTL           time.Duration
+	MaxSessions         int
+	MaxSessionHits      int
+	MaxSessionBytes     int64
 	AnalysisLimits      search.SearchAnalysisLimits
 }
 
@@ -349,6 +357,10 @@ func NewConfig() (*Config, error) {
 			MaxPositionVisits:   envconfig.Int("LANTERN_SEARCH_MAX_POSITION_VISITS", 10_000_000),
 			MaxExpirationVisits: envconfig.Int("LANTERN_SEARCH_MAX_EXPIRATION_VISITS", 100_000),
 			MaxInFlight:         envconfig.Int("LANTERN_SEARCH_MAX_IN_FLIGHT", 32),
+			CursorTTL:           time.Duration(envconfig.Int("LANTERN_SEARCH_CURSOR_TTL_SECONDS", 60)) * time.Second,
+			MaxSessions:         envconfig.Int("LANTERN_SEARCH_MAX_SESSIONS", 128),
+			MaxSessionHits:      envconfig.Int("LANTERN_SEARCH_MAX_SESSION_HITS", 10_000),
+			MaxSessionBytes:     int64(envconfig.Int("LANTERN_SEARCH_MAX_SESSION_BYTES", 64<<20)),
 			AnalysisLimits: search.SearchAnalysisLimits{
 				MaxDocumentBytes:     envconfig.Int("LANTERN_SEARCH_MAX_DOCUMENT_BYTES", 1<<20),
 				MaxDocumentTokens:    envconfig.Int("LANTERN_SEARCH_MAX_DOCUMENT_TOKENS", 250_000),
@@ -392,6 +404,9 @@ func validateSearchConfig(c SearchConfig) error {
 	if c.DefaultMinShould == 0 {
 		return fmt.Errorf("LANTERN_SEARCH_DEFAULT_MIN_SHOULD must be positive")
 	}
+	if c.MaxSessionHits <= int(c.MaxLimit) {
+		return fmt.Errorf("LANTERN_SEARCH_MAX_SESSION_HITS must exceed LANTERN_SEARCH_MAX_LIMIT")
+	}
 	values := []struct {
 		name  string
 		value int64
@@ -404,6 +419,10 @@ func validateSearchConfig(c SearchConfig) error {
 		{"LANTERN_SEARCH_MAX_POSITION_VISITS", int64(c.MaxPositionVisits)},
 		{"LANTERN_SEARCH_MAX_EXPIRATION_VISITS", int64(c.MaxExpirationVisits)},
 		{"LANTERN_SEARCH_MAX_IN_FLIGHT", int64(c.MaxInFlight)},
+		{"LANTERN_SEARCH_CURSOR_TTL_SECONDS", int64(c.CursorTTL / time.Second)},
+		{"LANTERN_SEARCH_MAX_SESSIONS", int64(c.MaxSessions)},
+		{"LANTERN_SEARCH_MAX_SESSION_HITS", int64(c.MaxSessionHits)},
+		{"LANTERN_SEARCH_MAX_SESSION_BYTES", c.MaxSessionBytes},
 		{"LANTERN_SEARCH_MAX_DOCUMENT_BYTES", int64(c.AnalysisLimits.MaxDocumentBytes)},
 		{"LANTERN_SEARCH_MAX_DOCUMENT_TOKENS", int64(c.AnalysisLimits.MaxDocumentTokens)},
 		{"LANTERN_SEARCH_MAX_DOCUMENT_TERMS", int64(c.AnalysisLimits.MaxDocumentTerms)},

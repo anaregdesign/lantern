@@ -320,6 +320,118 @@ func (MatchMode) EnumDescriptor() ([]byte, []int) {
 	return file_graph_v1_graph_proto_rawDescGZIP(), []int{4}
 }
 
+// SearchProjection selects how much stored vertex data each ranked hit
+// carries. The zero value deliberately preserves the historical lightweight
+// key+score response.
+type SearchProjection int32
+
+const (
+	SearchProjection_SEARCH_PROJECTION_UNSPECIFIED SearchProjection = 0
+	SearchProjection_SEARCH_PROJECTION_KEY_SCORE   SearchProjection = 1
+	SearchProjection_SEARCH_PROJECTION_FULL_VERTEX SearchProjection = 2
+)
+
+// Enum value maps for SearchProjection.
+var (
+	SearchProjection_name = map[int32]string{
+		0: "SEARCH_PROJECTION_UNSPECIFIED",
+		1: "SEARCH_PROJECTION_KEY_SCORE",
+		2: "SEARCH_PROJECTION_FULL_VERTEX",
+	}
+	SearchProjection_value = map[string]int32{
+		"SEARCH_PROJECTION_UNSPECIFIED": 0,
+		"SEARCH_PROJECTION_KEY_SCORE":   1,
+		"SEARCH_PROJECTION_FULL_VERTEX": 2,
+	}
+)
+
+func (x SearchProjection) Enum() *SearchProjection {
+	p := new(SearchProjection)
+	*p = x
+	return p
+}
+
+func (x SearchProjection) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SearchProjection) Descriptor() protoreflect.EnumDescriptor {
+	return file_graph_v1_graph_proto_enumTypes[5].Descriptor()
+}
+
+func (SearchProjection) Type() protoreflect.EnumType {
+	return &file_graph_v1_graph_proto_enumTypes[5]
+}
+
+func (x SearchProjection) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SearchProjection.Descriptor instead.
+func (SearchProjection) EnumDescriptor() ([]byte, []int) {
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{5}
+}
+
+// SearchHitProjectionStatus makes FULL_VERTEX selection races explicit. The
+// server normally returns SNAPSHOT because ranking and hydration share one
+// search commit barrier. MISSING/REPLACED are reserved fail-closed states for
+// a backend that cannot prove that invariant; such a hit never carries an
+// unrelated vertex value.
+type SearchHitProjectionStatus int32
+
+const (
+	SearchHitProjectionStatus_SEARCH_HIT_PROJECTION_STATUS_UNSPECIFIED SearchHitProjectionStatus = 0
+	SearchHitProjectionStatus_SEARCH_HIT_PROJECTION_STATUS_KEY_SCORE   SearchHitProjectionStatus = 1
+	SearchHitProjectionStatus_SEARCH_HIT_PROJECTION_STATUS_SNAPSHOT    SearchHitProjectionStatus = 2
+	SearchHitProjectionStatus_SEARCH_HIT_PROJECTION_STATUS_MISSING     SearchHitProjectionStatus = 3
+	SearchHitProjectionStatus_SEARCH_HIT_PROJECTION_STATUS_REPLACED    SearchHitProjectionStatus = 4
+)
+
+// Enum value maps for SearchHitProjectionStatus.
+var (
+	SearchHitProjectionStatus_name = map[int32]string{
+		0: "SEARCH_HIT_PROJECTION_STATUS_UNSPECIFIED",
+		1: "SEARCH_HIT_PROJECTION_STATUS_KEY_SCORE",
+		2: "SEARCH_HIT_PROJECTION_STATUS_SNAPSHOT",
+		3: "SEARCH_HIT_PROJECTION_STATUS_MISSING",
+		4: "SEARCH_HIT_PROJECTION_STATUS_REPLACED",
+	}
+	SearchHitProjectionStatus_value = map[string]int32{
+		"SEARCH_HIT_PROJECTION_STATUS_UNSPECIFIED": 0,
+		"SEARCH_HIT_PROJECTION_STATUS_KEY_SCORE":   1,
+		"SEARCH_HIT_PROJECTION_STATUS_SNAPSHOT":    2,
+		"SEARCH_HIT_PROJECTION_STATUS_MISSING":     3,
+		"SEARCH_HIT_PROJECTION_STATUS_REPLACED":    4,
+	}
+)
+
+func (x SearchHitProjectionStatus) Enum() *SearchHitProjectionStatus {
+	p := new(SearchHitProjectionStatus)
+	*p = x
+	return p
+}
+
+func (x SearchHitProjectionStatus) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SearchHitProjectionStatus) Descriptor() protoreflect.EnumDescriptor {
+	return file_graph_v1_graph_proto_enumTypes[6].Descriptor()
+}
+
+func (SearchHitProjectionStatus) Type() protoreflect.EnumType {
+	return &file_graph_v1_graph_proto_enumTypes[6]
+}
+
+func (x SearchHitProjectionStatus) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SearchHitProjectionStatus.Descriptor instead.
+func (SearchHitProjectionStatus) EnumDescriptor() ([]byte, []int) {
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{6}
+}
+
 // SearchErrorReason is the bounded, machine-readable reason attached to
 // SearchVertices failures and search-index write rejections. Clients must
 // branch on this enum, never on the human-readable status message.
@@ -339,6 +451,12 @@ const (
 	SearchErrorReason_SEARCH_INDEX_INCOMPLETE SearchErrorReason = 5
 	// buf:lint:ignore ENUM_VALUE_PREFIX -- stable cross-SDK reason code.
 	SearchErrorReason_SEARCH_INDEX_BUDGET_EXHAUSTED SearchErrorReason = 6
+	// buf:lint:ignore ENUM_VALUE_PREFIX -- stable cross-SDK reason code.
+	SearchErrorReason_SEARCH_CURSOR_STALE SearchErrorReason = 7
+	// buf:lint:ignore ENUM_VALUE_PREFIX -- stable cross-SDK reason code.
+	SearchErrorReason_SEARCH_CURSOR_INVALID SearchErrorReason = 8
+	// buf:lint:ignore ENUM_VALUE_PREFIX -- stable cross-SDK reason code.
+	SearchErrorReason_SEARCH_CONTINUATION_LIMITED SearchErrorReason = 9
 )
 
 // Enum value maps for SearchErrorReason.
@@ -351,6 +469,9 @@ var (
 		4: "SEARCH_ADMISSION_SATURATED",
 		5: "SEARCH_INDEX_INCOMPLETE",
 		6: "SEARCH_INDEX_BUDGET_EXHAUSTED",
+		7: "SEARCH_CURSOR_STALE",
+		8: "SEARCH_CURSOR_INVALID",
+		9: "SEARCH_CONTINUATION_LIMITED",
 	}
 	SearchErrorReason_value = map[string]int32{
 		"SEARCH_ERROR_REASON_UNSPECIFIED": 0,
@@ -360,6 +481,9 @@ var (
 		"SEARCH_ADMISSION_SATURATED":      4,
 		"SEARCH_INDEX_INCOMPLETE":         5,
 		"SEARCH_INDEX_BUDGET_EXHAUSTED":   6,
+		"SEARCH_CURSOR_STALE":             7,
+		"SEARCH_CURSOR_INVALID":           8,
+		"SEARCH_CONTINUATION_LIMITED":     9,
 	}
 )
 
@@ -374,11 +498,11 @@ func (x SearchErrorReason) String() string {
 }
 
 func (SearchErrorReason) Descriptor() protoreflect.EnumDescriptor {
-	return file_graph_v1_graph_proto_enumTypes[5].Descriptor()
+	return file_graph_v1_graph_proto_enumTypes[7].Descriptor()
 }
 
 func (SearchErrorReason) Type() protoreflect.EnumType {
-	return &file_graph_v1_graph_proto_enumTypes[5]
+	return &file_graph_v1_graph_proto_enumTypes[7]
 }
 
 func (x SearchErrorReason) Number() protoreflect.EnumNumber {
@@ -387,7 +511,7 @@ func (x SearchErrorReason) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use SearchErrorReason.Descriptor instead.
 func (SearchErrorReason) EnumDescriptor() ([]byte, []int) {
-	return file_graph_v1_graph_proto_rawDescGZIP(), []int{5}
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{7}
 }
 
 // SearchIndexStats exposes logical size, retained high-water storage, rebuild
@@ -428,11 +552,11 @@ func (x SearchIndexHealth) String() string {
 }
 
 func (SearchIndexHealth) Descriptor() protoreflect.EnumDescriptor {
-	return file_graph_v1_graph_proto_enumTypes[6].Descriptor()
+	return file_graph_v1_graph_proto_enumTypes[8].Descriptor()
 }
 
 func (SearchIndexHealth) Type() protoreflect.EnumType {
-	return &file_graph_v1_graph_proto_enumTypes[6]
+	return &file_graph_v1_graph_proto_enumTypes[8]
 }
 
 func (x SearchIndexHealth) Number() protoreflect.EnumNumber {
@@ -441,7 +565,7 @@ func (x SearchIndexHealth) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use SearchIndexHealth.Descriptor instead.
 func (SearchIndexHealth) EnumDescriptor() ([]byte, []int) {
-	return file_graph_v1_graph_proto_rawDescGZIP(), []int{6}
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{8}
 }
 
 // Direction selects which incident edges count toward a vertex's degree.
@@ -486,11 +610,11 @@ func (x TopVerticesByDegreeRequest_Direction) String() string {
 }
 
 func (TopVerticesByDegreeRequest_Direction) Descriptor() protoreflect.EnumDescriptor {
-	return file_graph_v1_graph_proto_enumTypes[7].Descriptor()
+	return file_graph_v1_graph_proto_enumTypes[9].Descriptor()
 }
 
 func (TopVerticesByDegreeRequest_Direction) Type() protoreflect.EnumType {
-	return &file_graph_v1_graph_proto_enumTypes[7]
+	return &file_graph_v1_graph_proto_enumTypes[9]
 }
 
 func (x TopVerticesByDegreeRequest_Direction) Number() protoreflect.EnumNumber {
@@ -549,11 +673,11 @@ func (x ReplicationPeer_State) String() string {
 }
 
 func (ReplicationPeer_State) Descriptor() protoreflect.EnumDescriptor {
-	return file_graph_v1_graph_proto_enumTypes[8].Descriptor()
+	return file_graph_v1_graph_proto_enumTypes[10].Descriptor()
 }
 
 func (ReplicationPeer_State) Type() protoreflect.EnumType {
-	return &file_graph_v1_graph_proto_enumTypes[8]
+	return &file_graph_v1_graph_proto_enumTypes[10]
 }
 
 func (x ReplicationPeer_State) Number() protoreflect.EnumNumber {
@@ -2386,7 +2510,13 @@ type SearchVerticesRequest struct {
 	Prefix string                 `protobuf:"bytes,3,opt,name=prefix,proto3" json:"prefix,omitempty"`
 	// options carries the optional match-mode / phrase / fuzzy controls (#892);
 	// unset means the default OR-union search.
-	Options       *SearchOptions `protobuf:"bytes,4,opt,name=options,proto3" json:"options,omitempty"`
+	Options *SearchOptions `protobuf:"bytes,4,opt,name=options,proto3" json:"options,omitempty"`
+	// cursor is the opaque endpoint-sticky continuation returned by the prior
+	// page. It is bound to every request option and projection; changing any of
+	// them returns INVALID_ARGUMENT. Empty starts a new bounded snapshot.
+	Cursor []byte `protobuf:"bytes,5,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	// projection defaults to KEY_SCORE when unspecified.
+	Projection    SearchProjection `protobuf:"varint,6,opt,name=projection,proto3,enum=graph.v1.SearchProjection" json:"projection,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2449,13 +2579,39 @@ func (x *SearchVerticesRequest) GetOptions() *SearchOptions {
 	return nil
 }
 
+func (x *SearchVerticesRequest) GetCursor() []byte {
+	if x != nil {
+		return x.Cursor
+	}
+	return nil
+}
+
+func (x *SearchVerticesRequest) GetProjection() SearchProjection {
+	if x != nil {
+		return x.Projection
+	}
+	return SearchProjection_SEARCH_PROJECTION_UNSPECIFIED
+}
+
 type SearchVerticesResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// hits use the stable total order (score DESC, raw key ASC). May be shorter
 	// than `limit` when fewer vertices match; empty when nothing matches.
-	Hits          []*SearchHit `protobuf:"bytes,1,rep,name=hits,proto3" json:"hits,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Hits []*SearchHit `protobuf:"bytes,1,rep,name=hits,proto3" json:"hits,omitempty"`
+	// next_cursor is non-empty while another retained snapshot page exists.
+	NextCursor []byte `protobuf:"bytes,2,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
+	// effective_limit is the server-clamped page size used for this response.
+	EffectiveLimit uint32 `protobuf:"varint,3,opt,name=effective_limit,json=effectiveLimit,proto3" json:"effective_limit,omitempty"`
+	// truncated is true when the page does not contain every matching snapshot
+	// hit, even when the caller chooses not to continue.
+	Truncated bool `protobuf:"varint,4,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	// continuation_limited means the bounded session hit/byte cap observed more
+	// matches than it could retain. The final retained page has no next_cursor
+	// while this remains true; iterators surface a typed terminal error instead
+	// of pretending the bounded prefix was exhaustive.
+	ContinuationLimited bool `protobuf:"varint,5,opt,name=continuation_limited,json=continuationLimited,proto3" json:"continuation_limited,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *SearchVerticesResponse) Reset() {
@@ -2495,17 +2651,48 @@ func (x *SearchVerticesResponse) GetHits() []*SearchHit {
 	return nil
 }
 
+func (x *SearchVerticesResponse) GetNextCursor() []byte {
+	if x != nil {
+		return x.NextCursor
+	}
+	return nil
+}
+
+func (x *SearchVerticesResponse) GetEffectiveLimit() uint32 {
+	if x != nil {
+		return x.EffectiveLimit
+	}
+	return 0
+}
+
+func (x *SearchVerticesResponse) GetTruncated() bool {
+	if x != nil {
+		return x.Truncated
+	}
+	return false
+}
+
+func (x *SearchVerticesResponse) GetContinuationLimited() bool {
+	if x != nil {
+		return x.ContinuationLimited
+	}
+	return false
+}
+
 // SearchHit pairs a matching vertex key with the relevance score the index
 // assigned it (BM25; higher is more relevant). Equal scores are ordered by the
-// raw, unnormalised key in ascending lexical order. The value and TTL are not
-// included — callers that need them issue a follow-up GetVertices with the
-// returned keys.
+// raw, unnormalised key in ascending lexical order. KEY_SCORE omits the value
+// and TTL; FULL_VERTEX carries an immutable selected snapshot.
 type SearchHit struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
-	Score         float64                `protobuf:"fixed64,2,opt,name=score,proto3" json:"score,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Key   string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Score float64                `protobuf:"fixed64,2,opt,name=score,proto3" json:"score,omitempty"`
+	// vertex is populated only for FULL_VERTEX SNAPSHOT hits. It is the exact
+	// immutable value/TTL selected under the same barrier as the score.
+	Vertex           *Vertex                   `protobuf:"bytes,3,opt,name=vertex,proto3" json:"vertex,omitempty"`
+	ProjectionStatus SearchHitProjectionStatus `protobuf:"varint,4,opt,name=projection_status,json=projectionStatus,proto3,enum=graph.v1.SearchHitProjectionStatus" json:"projection_status,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *SearchHit) Reset() {
@@ -2550,6 +2737,20 @@ func (x *SearchHit) GetScore() float64 {
 		return x.Score
 	}
 	return 0
+}
+
+func (x *SearchHit) GetVertex() *Vertex {
+	if x != nil {
+		return x.Vertex
+	}
+	return nil
+}
+
+func (x *SearchHit) GetProjectionStatus() SearchHitProjectionStatus {
+	if x != nil {
+		return x.ProjectionStatus
+	}
+	return SearchHitProjectionStatus_SEARCH_HIT_PROJECTION_STATUS_UNSPECIFIED
 }
 
 // CountVerticesByPrefixRequest returns the number of live vertex keys with
@@ -4145,6 +4346,10 @@ type SearchCapabilities struct {
 	CompactionMinRetired  uint64                 `protobuf:"varint,25,opt,name=compaction_min_retired,json=compactionMinRetired,proto3" json:"compaction_min_retired,omitempty"`
 	IndexStats            *SearchIndexStats      `protobuf:"bytes,26,opt,name=index_stats,json=indexStats,proto3" json:"index_stats,omitempty"`
 	MaxExpirationVisits   uint64                 `protobuf:"varint,27,opt,name=max_expiration_visits,json=maxExpirationVisits,proto3" json:"max_expiration_visits,omitempty"`
+	CursorTtlSeconds      uint32                 `protobuf:"varint,28,opt,name=cursor_ttl_seconds,json=cursorTtlSeconds,proto3" json:"cursor_ttl_seconds,omitempty"`
+	MaxSessions           uint32                 `protobuf:"varint,29,opt,name=max_sessions,json=maxSessions,proto3" json:"max_sessions,omitempty"`
+	MaxSessionHits        uint32                 `protobuf:"varint,30,opt,name=max_session_hits,json=maxSessionHits,proto3" json:"max_session_hits,omitempty"`
+	MaxSessionBytes       uint64                 `protobuf:"varint,31,opt,name=max_session_bytes,json=maxSessionBytes,proto3" json:"max_session_bytes,omitempty"`
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
 }
@@ -4368,6 +4573,34 @@ func (x *SearchCapabilities) GetMaxExpirationVisits() uint64 {
 	return 0
 }
 
+func (x *SearchCapabilities) GetCursorTtlSeconds() uint32 {
+	if x != nil {
+		return x.CursorTtlSeconds
+	}
+	return 0
+}
+
+func (x *SearchCapabilities) GetMaxSessions() uint32 {
+	if x != nil {
+		return x.MaxSessions
+	}
+	return 0
+}
+
+func (x *SearchCapabilities) GetMaxSessionHits() uint32 {
+	if x != nil {
+		return x.MaxSessionHits
+	}
+	return 0
+}
+
+func (x *SearchCapabilities) GetMaxSessionBytes() uint64 {
+	if x != nil {
+		return x.MaxSessionBytes
+	}
+	return 0
+}
+
 type SearchIndexStats struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	Health SearchIndexHealth      `protobuf:"varint,1,opt,name=health,proto3,enum=graph.v1.SearchIndexHealth" json:"health,omitempty"`
@@ -4390,8 +4623,12 @@ type SearchIndexStats struct {
 	ExpirationQueueEntries      uint64               `protobuf:"varint,14,opt,name=expiration_queue_entries,json=expirationQueueEntries,proto3" json:"expiration_queue_entries,omitempty"`
 	ExpirationPurged            uint64               `protobuf:"varint,15,opt,name=expiration_purged,json=expirationPurged,proto3" json:"expiration_purged,omitempty"`
 	LastExpirationPurgeDuration *durationpb.Duration `protobuf:"bytes,16,opt,name=last_expiration_purge_duration,json=lastExpirationPurgeDuration,proto3" json:"last_expiration_purge_duration,omitempty"`
-	unknownFields               protoimpl.UnknownFields
-	sizeCache                   protoimpl.SizeCache
+	// generation advances on every committed search-visible mutation batch,
+	// TTL purge, and rebuild. It is diagnostic only for bounded search
+	// sessions; clients do not compare it themselves.
+	Generation    uint64 `protobuf:"varint,17,opt,name=generation,proto3" json:"generation,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SearchIndexStats) Reset() {
@@ -4534,6 +4771,13 @@ func (x *SearchIndexStats) GetLastExpirationPurgeDuration() *durationpb.Duration
 		return x.LastExpirationPurgeDuration
 	}
 	return nil
+}
+
+func (x *SearchIndexStats) GetGeneration() uint64 {
+	if x != nil {
+		return x.Generation
+	}
+	return 0
 }
 
 type GetServerStatusResponse struct {
@@ -5230,17 +5474,28 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x10min_should_match\x18\x02 \x01(\rR\x0eminShouldMatch\x12\x16\n" +
 	"\x06phrase\x18\x03 \x01(\bR\x06phrase\x12\x1c\n" +
 	"\tfuzziness\x18\x04 \x01(\rR\tfuzziness\x12!\n" +
-	"\fprefix_terms\x18\x05 \x01(\bR\vprefixTerms\"\x8e\x01\n" +
+	"\fprefix_terms\x18\x05 \x01(\bR\vprefixTerms\"\xe2\x01\n" +
 	"\x15SearchVerticesRequest\x12\x14\n" +
 	"\x05query\x18\x01 \x01(\tR\x05query\x12\x14\n" +
 	"\x05limit\x18\x02 \x01(\rR\x05limit\x12\x16\n" +
 	"\x06prefix\x18\x03 \x01(\tR\x06prefix\x121\n" +
-	"\aoptions\x18\x04 \x01(\v2\x17.graph.v1.SearchOptionsR\aoptions\"A\n" +
+	"\aoptions\x18\x04 \x01(\v2\x17.graph.v1.SearchOptionsR\aoptions\x12\x16\n" +
+	"\x06cursor\x18\x05 \x01(\fR\x06cursor\x12:\n" +
+	"\n" +
+	"projection\x18\x06 \x01(\x0e2\x1a.graph.v1.SearchProjectionR\n" +
+	"projection\"\xdc\x01\n" +
 	"\x16SearchVerticesResponse\x12'\n" +
-	"\x04hits\x18\x01 \x03(\v2\x13.graph.v1.SearchHitR\x04hits\"3\n" +
+	"\x04hits\x18\x01 \x03(\v2\x13.graph.v1.SearchHitR\x04hits\x12\x1f\n" +
+	"\vnext_cursor\x18\x02 \x01(\fR\n" +
+	"nextCursor\x12'\n" +
+	"\x0feffective_limit\x18\x03 \x01(\rR\x0eeffectiveLimit\x12\x1c\n" +
+	"\ttruncated\x18\x04 \x01(\bR\ttruncated\x121\n" +
+	"\x14continuation_limited\x18\x05 \x01(\bR\x13continuationLimited\"\xaf\x01\n" +
 	"\tSearchHit\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05score\x18\x02 \x01(\x01R\x05score\"6\n" +
+	"\x05score\x18\x02 \x01(\x01R\x05score\x12(\n" +
+	"\x06vertex\x18\x03 \x01(\v2\x10.graph.v1.VertexR\x06vertex\x12P\n" +
+	"\x11projection_status\x18\x04 \x01(\x0e2#.graph.v1.SearchHitProjectionStatusR\x10projectionStatus\"6\n" +
 	"\x1cCountVerticesByPrefixRequest\x12\x16\n" +
 	"\x06prefix\x18\x01 \x01(\tR\x06prefix\"5\n" +
 	"\x1dCountVerticesByPrefixResponse\x12\x14\n" +
@@ -5332,7 +5587,8 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x16GetServerStatusRequest\"e\n" +
 	"\x11SearchErrorDetail\x123\n" +
 	"\x06reason\x18\x01 \x01(\x0e2\x1b.graph.v1.SearchErrorReasonR\x06reason\x12\x1b\n" +
-	"\twork_kind\x18\x02 \x01(\tR\bworkKind\"\xce\t\n" +
+	"\twork_kind\x18\x02 \x01(\tR\bworkKind\"\xf5\n" +
+	"\n" +
 	"\x12SearchCapabilities\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12+\n" +
 	"\x11positions_enabled\x18\x02 \x01(\bR\x10positionsEnabled\x12#\n" +
@@ -5363,7 +5619,11 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x16compaction_min_retired\x18\x19 \x01(\x04R\x14compactionMinRetired\x12;\n" +
 	"\vindex_stats\x18\x1a \x01(\v2\x1a.graph.v1.SearchIndexStatsR\n" +
 	"indexStats\x122\n" +
-	"\x15max_expiration_visits\x18\x1b \x01(\x04R\x13maxExpirationVisits\"\xab\x06\n" +
+	"\x15max_expiration_visits\x18\x1b \x01(\x04R\x13maxExpirationVisits\x12,\n" +
+	"\x12cursor_ttl_seconds\x18\x1c \x01(\rR\x10cursorTtlSeconds\x12!\n" +
+	"\fmax_sessions\x18\x1d \x01(\rR\vmaxSessions\x12(\n" +
+	"\x10max_session_hits\x18\x1e \x01(\rR\x0emaxSessionHits\x12*\n" +
+	"\x11max_session_bytes\x18\x1f \x01(\x04R\x0fmaxSessionBytes\"\xcb\x06\n" +
 	"\x10SearchIndexStats\x123\n" +
 	"\x06health\x18\x01 \x01(\x0e2\x1b.graph.v1.SearchIndexHealthR\x06health\x12\x1c\n" +
 	"\tdocuments\x18\x02 \x01(\x04R\tdocuments\x12\x1d\n" +
@@ -5382,7 +5642,10 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x11expired_documents\x18\r \x01(\x04R\x10expiredDocuments\x128\n" +
 	"\x18expiration_queue_entries\x18\x0e \x01(\x04R\x16expirationQueueEntries\x12+\n" +
 	"\x11expiration_purged\x18\x0f \x01(\x04R\x10expirationPurged\x12^\n" +
-	"\x1elast_expiration_purge_duration\x18\x10 \x01(\v2\x19.google.protobuf.DurationR\x1blastExpirationPurgeDuration\"\xe4\x04\n" +
+	"\x1elast_expiration_purge_duration\x18\x10 \x01(\v2\x19.google.protobuf.DurationR\x1blastExpirationPurgeDuration\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x11 \x01(\x04R\n" +
+	"generation\"\xe4\x04\n" +
 	"\x17GetServerStatusResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\x1d\n" +
 	"\n" +
@@ -5451,7 +5714,17 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x16MATCH_MODE_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eMATCH_MODE_ANY\x10\x01\x12\x12\n" +
 	"\x0eMATCH_MODE_ALL\x10\x02\x12\x19\n" +
-	"\x15MATCH_MODE_MIN_SHOULD\x10\x03*\xee\x01\n" +
+	"\x15MATCH_MODE_MIN_SHOULD\x10\x03*y\n" +
+	"\x10SearchProjection\x12!\n" +
+	"\x1dSEARCH_PROJECTION_UNSPECIFIED\x10\x00\x12\x1f\n" +
+	"\x1bSEARCH_PROJECTION_KEY_SCORE\x10\x01\x12!\n" +
+	"\x1dSEARCH_PROJECTION_FULL_VERTEX\x10\x02*\xf5\x01\n" +
+	"\x19SearchHitProjectionStatus\x12,\n" +
+	"(SEARCH_HIT_PROJECTION_STATUS_UNSPECIFIED\x10\x00\x12*\n" +
+	"&SEARCH_HIT_PROJECTION_STATUS_KEY_SCORE\x10\x01\x12)\n" +
+	"%SEARCH_HIT_PROJECTION_STATUS_SNAPSHOT\x10\x02\x12(\n" +
+	"$SEARCH_HIT_PROJECTION_STATUS_MISSING\x10\x03\x12)\n" +
+	"%SEARCH_HIT_PROJECTION_STATUS_REPLACED\x10\x04*\xc3\x02\n" +
 	"\x11SearchErrorReason\x12#\n" +
 	"\x1fSEARCH_ERROR_REASON_UNSPECIFIED\x10\x00\x12\x13\n" +
 	"\x0fSEARCH_DISABLED\x10\x01\x12\x1d\n" +
@@ -5459,7 +5732,10 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x1cSEARCH_WORK_BUDGET_EXHAUSTED\x10\x03\x12\x1e\n" +
 	"\x1aSEARCH_ADMISSION_SATURATED\x10\x04\x12\x1b\n" +
 	"\x17SEARCH_INDEX_INCOMPLETE\x10\x05\x12!\n" +
-	"\x1dSEARCH_INDEX_BUDGET_EXHAUSTED\x10\x06*\x9f\x01\n" +
+	"\x1dSEARCH_INDEX_BUDGET_EXHAUSTED\x10\x06\x12\x17\n" +
+	"\x13SEARCH_CURSOR_STALE\x10\a\x12\x19\n" +
+	"\x15SEARCH_CURSOR_INVALID\x10\b\x12\x1f\n" +
+	"\x1bSEARCH_CONTINUATION_LIMITED\x10\t*\x9f\x01\n" +
 	"\x11SearchIndexHealth\x12#\n" +
 	"\x1fSEARCH_INDEX_HEALTH_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cSEARCH_INDEX_HEALTH_DISABLED\x10\x01\x12\x1f\n" +
@@ -5509,198 +5785,203 @@ func file_graph_v1_graph_proto_rawDescGZIP() []byte {
 	return file_graph_v1_graph_proto_rawDescData
 }
 
-var file_graph_v1_graph_proto_enumTypes = make([]protoimpl.EnumInfo, 9)
+var file_graph_v1_graph_proto_enumTypes = make([]protoimpl.EnumInfo, 11)
 var file_graph_v1_graph_proto_msgTypes = make([]protoimpl.MessageInfo, 66)
 var file_graph_v1_graph_proto_goTypes = []any{
-	(Reduction)(0),         // 0: graph.v1.Reduction
-	(Objective)(0),         // 1: graph.v1.Objective
-	(Weighting)(0),         // 2: graph.v1.Weighting
-	(ScanOrder)(0),         // 3: graph.v1.ScanOrder
-	(MatchMode)(0),         // 4: graph.v1.MatchMode
-	(SearchErrorReason)(0), // 5: graph.v1.SearchErrorReason
-	(SearchIndexHealth)(0), // 6: graph.v1.SearchIndexHealth
-	(TopVerticesByDegreeRequest_Direction)(0), // 7: graph.v1.TopVerticesByDegreeRequest.Direction
-	(ReplicationPeer_State)(0),                // 8: graph.v1.ReplicationPeer.State
-	(*Vertex)(nil),                            // 9: graph.v1.Vertex
-	(*Edge)(nil),                              // 10: graph.v1.Edge
-	(*Graph)(nil),                             // 11: graph.v1.Graph
-	(*IlluminateRequest)(nil),                 // 12: graph.v1.IlluminateRequest
-	(*BfsParams)(nil),                         // 13: graph.v1.BfsParams
-	(*LocalCommunityParams)(nil),              // 14: graph.v1.LocalCommunityParams
-	(*PprParams)(nil),                         // 15: graph.v1.PprParams
-	(*IlluminateResponse)(nil),                // 16: graph.v1.IlluminateResponse
-	(*GetVertexRequest)(nil),                  // 17: graph.v1.GetVertexRequest
-	(*GetVertexResponse)(nil),                 // 18: graph.v1.GetVertexResponse
-	(*GetVerticesRequest)(nil),                // 19: graph.v1.GetVerticesRequest
-	(*GetVerticesResponse)(nil),               // 20: graph.v1.GetVerticesResponse
-	(*PutVertexRequest)(nil),                  // 21: graph.v1.PutVertexRequest
-	(*PutVertexResponse)(nil),                 // 22: graph.v1.PutVertexResponse
-	(*PutVerticesRequest)(nil),                // 23: graph.v1.PutVerticesRequest
-	(*PutVerticesResponse)(nil),               // 24: graph.v1.PutVerticesResponse
-	(*DeleteVertexRequest)(nil),               // 25: graph.v1.DeleteVertexRequest
-	(*DeleteVertexResponse)(nil),              // 26: graph.v1.DeleteVertexResponse
-	(*DeleteVerticesRequest)(nil),             // 27: graph.v1.DeleteVerticesRequest
-	(*DeleteVerticesResponse)(nil),            // 28: graph.v1.DeleteVerticesResponse
-	(*ScanVerticesRequest)(nil),               // 29: graph.v1.ScanVerticesRequest
-	(*ScanVerticesResponse)(nil),              // 30: graph.v1.ScanVerticesResponse
-	(*ScanVertexKeysRequest)(nil),             // 31: graph.v1.ScanVertexKeysRequest
-	(*ScanVertexKeysResponse)(nil),            // 32: graph.v1.ScanVertexKeysResponse
-	(*SearchOptions)(nil),                     // 33: graph.v1.SearchOptions
-	(*SearchVerticesRequest)(nil),             // 34: graph.v1.SearchVerticesRequest
-	(*SearchVerticesResponse)(nil),            // 35: graph.v1.SearchVerticesResponse
-	(*SearchHit)(nil),                         // 36: graph.v1.SearchHit
-	(*CountVerticesByPrefixRequest)(nil),      // 37: graph.v1.CountVerticesByPrefixRequest
-	(*CountVerticesByPrefixResponse)(nil),     // 38: graph.v1.CountVerticesByPrefixResponse
-	(*DeleteVerticesByPrefixRequest)(nil),     // 39: graph.v1.DeleteVerticesByPrefixRequest
-	(*DeleteVerticesByPrefixResponse)(nil),    // 40: graph.v1.DeleteVerticesByPrefixResponse
-	(*TopVerticesByDegreeRequest)(nil),        // 41: graph.v1.TopVerticesByDegreeRequest
-	(*TopVerticesByDegreeResponse)(nil),       // 42: graph.v1.TopVerticesByDegreeResponse
-	(*GetEdgeRequest)(nil),                    // 43: graph.v1.GetEdgeRequest
-	(*GetEdgeResponse)(nil),                   // 44: graph.v1.GetEdgeResponse
-	(*GetEdgesRequest)(nil),                   // 45: graph.v1.GetEdgesRequest
-	(*GetEdgesResponse)(nil),                  // 46: graph.v1.GetEdgesResponse
-	(*DeleteEdgeRequest)(nil),                 // 47: graph.v1.DeleteEdgeRequest
-	(*DeleteEdgeResponse)(nil),                // 48: graph.v1.DeleteEdgeResponse
-	(*EdgeKey)(nil),                           // 49: graph.v1.EdgeKey
-	(*ScanEdgesRequest)(nil),                  // 50: graph.v1.ScanEdgesRequest
-	(*ScanEdgesResponse)(nil),                 // 51: graph.v1.ScanEdgesResponse
-	(*DeleteEdgesRequest)(nil),                // 52: graph.v1.DeleteEdgesRequest
-	(*DeleteEdgesResponse)(nil),               // 53: graph.v1.DeleteEdgesResponse
-	(*DeleteEdgesByPrefixRequest)(nil),        // 54: graph.v1.DeleteEdgesByPrefixRequest
-	(*DeleteEdgesByPrefixResponse)(nil),       // 55: graph.v1.DeleteEdgesByPrefixResponse
-	(*AddEdgeRequest)(nil),                    // 56: graph.v1.AddEdgeRequest
-	(*AddEdgeResponse)(nil),                   // 57: graph.v1.AddEdgeResponse
-	(*AddEdgesRequest)(nil),                   // 58: graph.v1.AddEdgesRequest
-	(*AddEdgesResponse)(nil),                  // 59: graph.v1.AddEdgesResponse
-	(*PutEdgeRequest)(nil),                    // 60: graph.v1.PutEdgeRequest
-	(*PutEdgeResponse)(nil),                   // 61: graph.v1.PutEdgeResponse
-	(*PutEdgesRequest)(nil),                   // 62: graph.v1.PutEdgesRequest
-	(*PutEdgesResponse)(nil),                  // 63: graph.v1.PutEdgesResponse
-	(*GetServerStatusRequest)(nil),            // 64: graph.v1.GetServerStatusRequest
-	(*SearchErrorDetail)(nil),                 // 65: graph.v1.SearchErrorDetail
-	(*SearchCapabilities)(nil),                // 66: graph.v1.SearchCapabilities
-	(*SearchIndexStats)(nil),                  // 67: graph.v1.SearchIndexStats
-	(*GetServerStatusResponse)(nil),           // 68: graph.v1.GetServerStatusResponse
-	(*ReplicationPeer)(nil),                   // 69: graph.v1.ReplicationPeer
-	(*GetReplicationStatusRequest)(nil),       // 70: graph.v1.GetReplicationStatusRequest
-	(*GetReplicationStatusResponse)(nil),      // 71: graph.v1.GetReplicationStatusResponse
-	(*BackupSnapshotRequest)(nil),             // 72: graph.v1.BackupSnapshotRequest
-	(*BackupSnapshotResponse)(nil),            // 73: graph.v1.BackupSnapshotResponse
-	(*TopVerticesByDegreeResponse_Entry)(nil), // 74: graph.v1.TopVerticesByDegreeResponse.Entry
-	(*timestamppb.Timestamp)(nil),             // 75: google.protobuf.Timestamp
-	(*durationpb.Duration)(nil),               // 76: google.protobuf.Duration
+	(Reduction)(0),                            // 0: graph.v1.Reduction
+	(Objective)(0),                            // 1: graph.v1.Objective
+	(Weighting)(0),                            // 2: graph.v1.Weighting
+	(ScanOrder)(0),                            // 3: graph.v1.ScanOrder
+	(MatchMode)(0),                            // 4: graph.v1.MatchMode
+	(SearchProjection)(0),                     // 5: graph.v1.SearchProjection
+	(SearchHitProjectionStatus)(0),            // 6: graph.v1.SearchHitProjectionStatus
+	(SearchErrorReason)(0),                    // 7: graph.v1.SearchErrorReason
+	(SearchIndexHealth)(0),                    // 8: graph.v1.SearchIndexHealth
+	(TopVerticesByDegreeRequest_Direction)(0), // 9: graph.v1.TopVerticesByDegreeRequest.Direction
+	(ReplicationPeer_State)(0),                // 10: graph.v1.ReplicationPeer.State
+	(*Vertex)(nil),                            // 11: graph.v1.Vertex
+	(*Edge)(nil),                              // 12: graph.v1.Edge
+	(*Graph)(nil),                             // 13: graph.v1.Graph
+	(*IlluminateRequest)(nil),                 // 14: graph.v1.IlluminateRequest
+	(*BfsParams)(nil),                         // 15: graph.v1.BfsParams
+	(*LocalCommunityParams)(nil),              // 16: graph.v1.LocalCommunityParams
+	(*PprParams)(nil),                         // 17: graph.v1.PprParams
+	(*IlluminateResponse)(nil),                // 18: graph.v1.IlluminateResponse
+	(*GetVertexRequest)(nil),                  // 19: graph.v1.GetVertexRequest
+	(*GetVertexResponse)(nil),                 // 20: graph.v1.GetVertexResponse
+	(*GetVerticesRequest)(nil),                // 21: graph.v1.GetVerticesRequest
+	(*GetVerticesResponse)(nil),               // 22: graph.v1.GetVerticesResponse
+	(*PutVertexRequest)(nil),                  // 23: graph.v1.PutVertexRequest
+	(*PutVertexResponse)(nil),                 // 24: graph.v1.PutVertexResponse
+	(*PutVerticesRequest)(nil),                // 25: graph.v1.PutVerticesRequest
+	(*PutVerticesResponse)(nil),               // 26: graph.v1.PutVerticesResponse
+	(*DeleteVertexRequest)(nil),               // 27: graph.v1.DeleteVertexRequest
+	(*DeleteVertexResponse)(nil),              // 28: graph.v1.DeleteVertexResponse
+	(*DeleteVerticesRequest)(nil),             // 29: graph.v1.DeleteVerticesRequest
+	(*DeleteVerticesResponse)(nil),            // 30: graph.v1.DeleteVerticesResponse
+	(*ScanVerticesRequest)(nil),               // 31: graph.v1.ScanVerticesRequest
+	(*ScanVerticesResponse)(nil),              // 32: graph.v1.ScanVerticesResponse
+	(*ScanVertexKeysRequest)(nil),             // 33: graph.v1.ScanVertexKeysRequest
+	(*ScanVertexKeysResponse)(nil),            // 34: graph.v1.ScanVertexKeysResponse
+	(*SearchOptions)(nil),                     // 35: graph.v1.SearchOptions
+	(*SearchVerticesRequest)(nil),             // 36: graph.v1.SearchVerticesRequest
+	(*SearchVerticesResponse)(nil),            // 37: graph.v1.SearchVerticesResponse
+	(*SearchHit)(nil),                         // 38: graph.v1.SearchHit
+	(*CountVerticesByPrefixRequest)(nil),      // 39: graph.v1.CountVerticesByPrefixRequest
+	(*CountVerticesByPrefixResponse)(nil),     // 40: graph.v1.CountVerticesByPrefixResponse
+	(*DeleteVerticesByPrefixRequest)(nil),     // 41: graph.v1.DeleteVerticesByPrefixRequest
+	(*DeleteVerticesByPrefixResponse)(nil),    // 42: graph.v1.DeleteVerticesByPrefixResponse
+	(*TopVerticesByDegreeRequest)(nil),        // 43: graph.v1.TopVerticesByDegreeRequest
+	(*TopVerticesByDegreeResponse)(nil),       // 44: graph.v1.TopVerticesByDegreeResponse
+	(*GetEdgeRequest)(nil),                    // 45: graph.v1.GetEdgeRequest
+	(*GetEdgeResponse)(nil),                   // 46: graph.v1.GetEdgeResponse
+	(*GetEdgesRequest)(nil),                   // 47: graph.v1.GetEdgesRequest
+	(*GetEdgesResponse)(nil),                  // 48: graph.v1.GetEdgesResponse
+	(*DeleteEdgeRequest)(nil),                 // 49: graph.v1.DeleteEdgeRequest
+	(*DeleteEdgeResponse)(nil),                // 50: graph.v1.DeleteEdgeResponse
+	(*EdgeKey)(nil),                           // 51: graph.v1.EdgeKey
+	(*ScanEdgesRequest)(nil),                  // 52: graph.v1.ScanEdgesRequest
+	(*ScanEdgesResponse)(nil),                 // 53: graph.v1.ScanEdgesResponse
+	(*DeleteEdgesRequest)(nil),                // 54: graph.v1.DeleteEdgesRequest
+	(*DeleteEdgesResponse)(nil),               // 55: graph.v1.DeleteEdgesResponse
+	(*DeleteEdgesByPrefixRequest)(nil),        // 56: graph.v1.DeleteEdgesByPrefixRequest
+	(*DeleteEdgesByPrefixResponse)(nil),       // 57: graph.v1.DeleteEdgesByPrefixResponse
+	(*AddEdgeRequest)(nil),                    // 58: graph.v1.AddEdgeRequest
+	(*AddEdgeResponse)(nil),                   // 59: graph.v1.AddEdgeResponse
+	(*AddEdgesRequest)(nil),                   // 60: graph.v1.AddEdgesRequest
+	(*AddEdgesResponse)(nil),                  // 61: graph.v1.AddEdgesResponse
+	(*PutEdgeRequest)(nil),                    // 62: graph.v1.PutEdgeRequest
+	(*PutEdgeResponse)(nil),                   // 63: graph.v1.PutEdgeResponse
+	(*PutEdgesRequest)(nil),                   // 64: graph.v1.PutEdgesRequest
+	(*PutEdgesResponse)(nil),                  // 65: graph.v1.PutEdgesResponse
+	(*GetServerStatusRequest)(nil),            // 66: graph.v1.GetServerStatusRequest
+	(*SearchErrorDetail)(nil),                 // 67: graph.v1.SearchErrorDetail
+	(*SearchCapabilities)(nil),                // 68: graph.v1.SearchCapabilities
+	(*SearchIndexStats)(nil),                  // 69: graph.v1.SearchIndexStats
+	(*GetServerStatusResponse)(nil),           // 70: graph.v1.GetServerStatusResponse
+	(*ReplicationPeer)(nil),                   // 71: graph.v1.ReplicationPeer
+	(*GetReplicationStatusRequest)(nil),       // 72: graph.v1.GetReplicationStatusRequest
+	(*GetReplicationStatusResponse)(nil),      // 73: graph.v1.GetReplicationStatusResponse
+	(*BackupSnapshotRequest)(nil),             // 74: graph.v1.BackupSnapshotRequest
+	(*BackupSnapshotResponse)(nil),            // 75: graph.v1.BackupSnapshotResponse
+	(*TopVerticesByDegreeResponse_Entry)(nil), // 76: graph.v1.TopVerticesByDegreeResponse.Entry
+	(*timestamppb.Timestamp)(nil),             // 77: google.protobuf.Timestamp
+	(*durationpb.Duration)(nil),               // 78: google.protobuf.Duration
 }
 var file_graph_v1_graph_proto_depIdxs = []int32{
-	75, // 0: graph.v1.Vertex.expiration:type_name -> google.protobuf.Timestamp
-	75, // 1: graph.v1.Vertex.timestamp:type_name -> google.protobuf.Timestamp
-	76, // 2: graph.v1.Vertex.duration:type_name -> google.protobuf.Duration
-	75, // 3: graph.v1.Edge.expiration:type_name -> google.protobuf.Timestamp
-	9,  // 4: graph.v1.Graph.vertices:type_name -> graph.v1.Vertex
-	10, // 5: graph.v1.Graph.edges:type_name -> graph.v1.Edge
+	77, // 0: graph.v1.Vertex.expiration:type_name -> google.protobuf.Timestamp
+	77, // 1: graph.v1.Vertex.timestamp:type_name -> google.protobuf.Timestamp
+	78, // 2: graph.v1.Vertex.duration:type_name -> google.protobuf.Duration
+	77, // 3: graph.v1.Edge.expiration:type_name -> google.protobuf.Timestamp
+	11, // 4: graph.v1.Graph.vertices:type_name -> graph.v1.Vertex
+	12, // 5: graph.v1.Graph.edges:type_name -> graph.v1.Edge
 	2,  // 6: graph.v1.IlluminateRequest.weighting:type_name -> graph.v1.Weighting
-	13, // 7: graph.v1.IlluminateRequest.bfs:type_name -> graph.v1.BfsParams
-	15, // 8: graph.v1.IlluminateRequest.ppr:type_name -> graph.v1.PprParams
-	14, // 9: graph.v1.IlluminateRequest.community:type_name -> graph.v1.LocalCommunityParams
+	15, // 7: graph.v1.IlluminateRequest.bfs:type_name -> graph.v1.BfsParams
+	17, // 8: graph.v1.IlluminateRequest.ppr:type_name -> graph.v1.PprParams
+	16, // 9: graph.v1.IlluminateRequest.community:type_name -> graph.v1.LocalCommunityParams
 	1,  // 10: graph.v1.BfsParams.objective:type_name -> graph.v1.Objective
 	0,  // 11: graph.v1.BfsParams.reduction:type_name -> graph.v1.Reduction
 	0,  // 12: graph.v1.LocalCommunityParams.reduction:type_name -> graph.v1.Reduction
 	1,  // 13: graph.v1.LocalCommunityParams.objective:type_name -> graph.v1.Objective
-	11, // 14: graph.v1.IlluminateResponse.graph:type_name -> graph.v1.Graph
-	9,  // 15: graph.v1.GetVertexResponse.vertex:type_name -> graph.v1.Vertex
-	9,  // 16: graph.v1.GetVerticesResponse.vertices:type_name -> graph.v1.Vertex
-	9,  // 17: graph.v1.PutVertexRequest.vertex:type_name -> graph.v1.Vertex
-	9,  // 18: graph.v1.PutVerticesRequest.vertices:type_name -> graph.v1.Vertex
+	13, // 14: graph.v1.IlluminateResponse.graph:type_name -> graph.v1.Graph
+	11, // 15: graph.v1.GetVertexResponse.vertex:type_name -> graph.v1.Vertex
+	11, // 16: graph.v1.GetVerticesResponse.vertices:type_name -> graph.v1.Vertex
+	11, // 17: graph.v1.PutVertexRequest.vertex:type_name -> graph.v1.Vertex
+	11, // 18: graph.v1.PutVerticesRequest.vertices:type_name -> graph.v1.Vertex
 	3,  // 19: graph.v1.ScanVerticesRequest.order:type_name -> graph.v1.ScanOrder
-	9,  // 20: graph.v1.ScanVerticesResponse.vertices:type_name -> graph.v1.Vertex
+	11, // 20: graph.v1.ScanVerticesResponse.vertices:type_name -> graph.v1.Vertex
 	3,  // 21: graph.v1.ScanVertexKeysRequest.order:type_name -> graph.v1.ScanOrder
 	4,  // 22: graph.v1.SearchOptions.match_mode:type_name -> graph.v1.MatchMode
-	33, // 23: graph.v1.SearchVerticesRequest.options:type_name -> graph.v1.SearchOptions
-	36, // 24: graph.v1.SearchVerticesResponse.hits:type_name -> graph.v1.SearchHit
-	7,  // 25: graph.v1.TopVerticesByDegreeRequest.direction:type_name -> graph.v1.TopVerticesByDegreeRequest.Direction
-	74, // 26: graph.v1.TopVerticesByDegreeResponse.entries:type_name -> graph.v1.TopVerticesByDegreeResponse.Entry
-	10, // 27: graph.v1.GetEdgeResponse.edge:type_name -> graph.v1.Edge
-	49, // 28: graph.v1.GetEdgesRequest.edges:type_name -> graph.v1.EdgeKey
-	10, // 29: graph.v1.GetEdgesResponse.edges:type_name -> graph.v1.Edge
-	49, // 30: graph.v1.GetEdgesResponse.missing:type_name -> graph.v1.EdgeKey
-	10, // 31: graph.v1.ScanEdgesResponse.edges:type_name -> graph.v1.Edge
-	49, // 32: graph.v1.DeleteEdgesRequest.edges:type_name -> graph.v1.EdgeKey
-	10, // 33: graph.v1.AddEdgeRequest.edge:type_name -> graph.v1.Edge
-	10, // 34: graph.v1.AddEdgesRequest.edges:type_name -> graph.v1.Edge
-	10, // 35: graph.v1.PutEdgeRequest.edge:type_name -> graph.v1.Edge
-	10, // 36: graph.v1.PutEdgesRequest.edges:type_name -> graph.v1.Edge
-	5,  // 37: graph.v1.SearchErrorDetail.reason:type_name -> graph.v1.SearchErrorReason
-	4,  // 38: graph.v1.SearchCapabilities.default_match_mode:type_name -> graph.v1.MatchMode
-	67, // 39: graph.v1.SearchCapabilities.index_stats:type_name -> graph.v1.SearchIndexStats
-	6,  // 40: graph.v1.SearchIndexStats.health:type_name -> graph.v1.SearchIndexHealth
-	76, // 41: graph.v1.SearchIndexStats.last_rebuild_duration:type_name -> google.protobuf.Duration
-	76, // 42: graph.v1.SearchIndexStats.last_expiration_purge_duration:type_name -> google.protobuf.Duration
-	75, // 43: graph.v1.GetServerStatusResponse.started_at:type_name -> google.protobuf.Timestamp
-	76, // 44: graph.v1.GetServerStatusResponse.uptime:type_name -> google.protobuf.Duration
-	76, // 45: graph.v1.GetServerStatusResponse.default_ttl:type_name -> google.protobuf.Duration
-	66, // 46: graph.v1.GetServerStatusResponse.search:type_name -> graph.v1.SearchCapabilities
-	8,  // 47: graph.v1.ReplicationPeer.state:type_name -> graph.v1.ReplicationPeer.State
-	75, // 48: graph.v1.ReplicationPeer.last_event_at:type_name -> google.protobuf.Timestamp
-	75, // 49: graph.v1.GetReplicationStatusResponse.local_now:type_name -> google.protobuf.Timestamp
-	69, // 50: graph.v1.GetReplicationStatusResponse.peers:type_name -> graph.v1.ReplicationPeer
-	9,  // 51: graph.v1.BackupSnapshotResponse.vertex:type_name -> graph.v1.Vertex
-	10, // 52: graph.v1.BackupSnapshotResponse.edge:type_name -> graph.v1.Edge
-	12, // 53: graph.v1.LanternService.Illuminate:input_type -> graph.v1.IlluminateRequest
-	17, // 54: graph.v1.LanternService.GetVertex:input_type -> graph.v1.GetVertexRequest
-	19, // 55: graph.v1.LanternService.GetVertices:input_type -> graph.v1.GetVerticesRequest
-	21, // 56: graph.v1.LanternService.PutVertex:input_type -> graph.v1.PutVertexRequest
-	23, // 57: graph.v1.LanternService.PutVertices:input_type -> graph.v1.PutVerticesRequest
-	25, // 58: graph.v1.LanternService.DeleteVertex:input_type -> graph.v1.DeleteVertexRequest
-	27, // 59: graph.v1.LanternService.DeleteVertices:input_type -> graph.v1.DeleteVerticesRequest
-	29, // 60: graph.v1.LanternService.ScanVertices:input_type -> graph.v1.ScanVerticesRequest
-	31, // 61: graph.v1.LanternService.ScanVertexKeys:input_type -> graph.v1.ScanVertexKeysRequest
-	34, // 62: graph.v1.LanternService.SearchVertices:input_type -> graph.v1.SearchVerticesRequest
-	37, // 63: graph.v1.LanternService.CountVerticesByPrefix:input_type -> graph.v1.CountVerticesByPrefixRequest
-	39, // 64: graph.v1.LanternService.DeleteVerticesByPrefix:input_type -> graph.v1.DeleteVerticesByPrefixRequest
-	41, // 65: graph.v1.LanternService.TopVerticesByDegree:input_type -> graph.v1.TopVerticesByDegreeRequest
-	43, // 66: graph.v1.LanternService.GetEdge:input_type -> graph.v1.GetEdgeRequest
-	45, // 67: graph.v1.LanternService.GetEdges:input_type -> graph.v1.GetEdgesRequest
-	56, // 68: graph.v1.LanternService.AddEdge:input_type -> graph.v1.AddEdgeRequest
-	58, // 69: graph.v1.LanternService.AddEdges:input_type -> graph.v1.AddEdgesRequest
-	60, // 70: graph.v1.LanternService.PutEdge:input_type -> graph.v1.PutEdgeRequest
-	62, // 71: graph.v1.LanternService.PutEdges:input_type -> graph.v1.PutEdgesRequest
-	47, // 72: graph.v1.LanternService.DeleteEdge:input_type -> graph.v1.DeleteEdgeRequest
-	52, // 73: graph.v1.LanternService.DeleteEdges:input_type -> graph.v1.DeleteEdgesRequest
-	54, // 74: graph.v1.LanternService.DeleteEdgesByPrefix:input_type -> graph.v1.DeleteEdgesByPrefixRequest
-	50, // 75: graph.v1.LanternService.ScanEdges:input_type -> graph.v1.ScanEdgesRequest
-	64, // 76: graph.v1.LanternService.GetServerStatus:input_type -> graph.v1.GetServerStatusRequest
-	70, // 77: graph.v1.LanternService.GetReplicationStatus:input_type -> graph.v1.GetReplicationStatusRequest
-	72, // 78: graph.v1.LanternService.BackupSnapshot:input_type -> graph.v1.BackupSnapshotRequest
-	16, // 79: graph.v1.LanternService.Illuminate:output_type -> graph.v1.IlluminateResponse
-	18, // 80: graph.v1.LanternService.GetVertex:output_type -> graph.v1.GetVertexResponse
-	20, // 81: graph.v1.LanternService.GetVertices:output_type -> graph.v1.GetVerticesResponse
-	22, // 82: graph.v1.LanternService.PutVertex:output_type -> graph.v1.PutVertexResponse
-	24, // 83: graph.v1.LanternService.PutVertices:output_type -> graph.v1.PutVerticesResponse
-	26, // 84: graph.v1.LanternService.DeleteVertex:output_type -> graph.v1.DeleteVertexResponse
-	28, // 85: graph.v1.LanternService.DeleteVertices:output_type -> graph.v1.DeleteVerticesResponse
-	30, // 86: graph.v1.LanternService.ScanVertices:output_type -> graph.v1.ScanVerticesResponse
-	32, // 87: graph.v1.LanternService.ScanVertexKeys:output_type -> graph.v1.ScanVertexKeysResponse
-	35, // 88: graph.v1.LanternService.SearchVertices:output_type -> graph.v1.SearchVerticesResponse
-	38, // 89: graph.v1.LanternService.CountVerticesByPrefix:output_type -> graph.v1.CountVerticesByPrefixResponse
-	40, // 90: graph.v1.LanternService.DeleteVerticesByPrefix:output_type -> graph.v1.DeleteVerticesByPrefixResponse
-	42, // 91: graph.v1.LanternService.TopVerticesByDegree:output_type -> graph.v1.TopVerticesByDegreeResponse
-	44, // 92: graph.v1.LanternService.GetEdge:output_type -> graph.v1.GetEdgeResponse
-	46, // 93: graph.v1.LanternService.GetEdges:output_type -> graph.v1.GetEdgesResponse
-	57, // 94: graph.v1.LanternService.AddEdge:output_type -> graph.v1.AddEdgeResponse
-	59, // 95: graph.v1.LanternService.AddEdges:output_type -> graph.v1.AddEdgesResponse
-	61, // 96: graph.v1.LanternService.PutEdge:output_type -> graph.v1.PutEdgeResponse
-	63, // 97: graph.v1.LanternService.PutEdges:output_type -> graph.v1.PutEdgesResponse
-	48, // 98: graph.v1.LanternService.DeleteEdge:output_type -> graph.v1.DeleteEdgeResponse
-	53, // 99: graph.v1.LanternService.DeleteEdges:output_type -> graph.v1.DeleteEdgesResponse
-	55, // 100: graph.v1.LanternService.DeleteEdgesByPrefix:output_type -> graph.v1.DeleteEdgesByPrefixResponse
-	51, // 101: graph.v1.LanternService.ScanEdges:output_type -> graph.v1.ScanEdgesResponse
-	68, // 102: graph.v1.LanternService.GetServerStatus:output_type -> graph.v1.GetServerStatusResponse
-	71, // 103: graph.v1.LanternService.GetReplicationStatus:output_type -> graph.v1.GetReplicationStatusResponse
-	73, // 104: graph.v1.LanternService.BackupSnapshot:output_type -> graph.v1.BackupSnapshotResponse
-	79, // [79:105] is the sub-list for method output_type
-	53, // [53:79] is the sub-list for method input_type
-	53, // [53:53] is the sub-list for extension type_name
-	53, // [53:53] is the sub-list for extension extendee
-	0,  // [0:53] is the sub-list for field type_name
+	35, // 23: graph.v1.SearchVerticesRequest.options:type_name -> graph.v1.SearchOptions
+	5,  // 24: graph.v1.SearchVerticesRequest.projection:type_name -> graph.v1.SearchProjection
+	38, // 25: graph.v1.SearchVerticesResponse.hits:type_name -> graph.v1.SearchHit
+	11, // 26: graph.v1.SearchHit.vertex:type_name -> graph.v1.Vertex
+	6,  // 27: graph.v1.SearchHit.projection_status:type_name -> graph.v1.SearchHitProjectionStatus
+	9,  // 28: graph.v1.TopVerticesByDegreeRequest.direction:type_name -> graph.v1.TopVerticesByDegreeRequest.Direction
+	76, // 29: graph.v1.TopVerticesByDegreeResponse.entries:type_name -> graph.v1.TopVerticesByDegreeResponse.Entry
+	12, // 30: graph.v1.GetEdgeResponse.edge:type_name -> graph.v1.Edge
+	51, // 31: graph.v1.GetEdgesRequest.edges:type_name -> graph.v1.EdgeKey
+	12, // 32: graph.v1.GetEdgesResponse.edges:type_name -> graph.v1.Edge
+	51, // 33: graph.v1.GetEdgesResponse.missing:type_name -> graph.v1.EdgeKey
+	12, // 34: graph.v1.ScanEdgesResponse.edges:type_name -> graph.v1.Edge
+	51, // 35: graph.v1.DeleteEdgesRequest.edges:type_name -> graph.v1.EdgeKey
+	12, // 36: graph.v1.AddEdgeRequest.edge:type_name -> graph.v1.Edge
+	12, // 37: graph.v1.AddEdgesRequest.edges:type_name -> graph.v1.Edge
+	12, // 38: graph.v1.PutEdgeRequest.edge:type_name -> graph.v1.Edge
+	12, // 39: graph.v1.PutEdgesRequest.edges:type_name -> graph.v1.Edge
+	7,  // 40: graph.v1.SearchErrorDetail.reason:type_name -> graph.v1.SearchErrorReason
+	4,  // 41: graph.v1.SearchCapabilities.default_match_mode:type_name -> graph.v1.MatchMode
+	69, // 42: graph.v1.SearchCapabilities.index_stats:type_name -> graph.v1.SearchIndexStats
+	8,  // 43: graph.v1.SearchIndexStats.health:type_name -> graph.v1.SearchIndexHealth
+	78, // 44: graph.v1.SearchIndexStats.last_rebuild_duration:type_name -> google.protobuf.Duration
+	78, // 45: graph.v1.SearchIndexStats.last_expiration_purge_duration:type_name -> google.protobuf.Duration
+	77, // 46: graph.v1.GetServerStatusResponse.started_at:type_name -> google.protobuf.Timestamp
+	78, // 47: graph.v1.GetServerStatusResponse.uptime:type_name -> google.protobuf.Duration
+	78, // 48: graph.v1.GetServerStatusResponse.default_ttl:type_name -> google.protobuf.Duration
+	68, // 49: graph.v1.GetServerStatusResponse.search:type_name -> graph.v1.SearchCapabilities
+	10, // 50: graph.v1.ReplicationPeer.state:type_name -> graph.v1.ReplicationPeer.State
+	77, // 51: graph.v1.ReplicationPeer.last_event_at:type_name -> google.protobuf.Timestamp
+	77, // 52: graph.v1.GetReplicationStatusResponse.local_now:type_name -> google.protobuf.Timestamp
+	71, // 53: graph.v1.GetReplicationStatusResponse.peers:type_name -> graph.v1.ReplicationPeer
+	11, // 54: graph.v1.BackupSnapshotResponse.vertex:type_name -> graph.v1.Vertex
+	12, // 55: graph.v1.BackupSnapshotResponse.edge:type_name -> graph.v1.Edge
+	14, // 56: graph.v1.LanternService.Illuminate:input_type -> graph.v1.IlluminateRequest
+	19, // 57: graph.v1.LanternService.GetVertex:input_type -> graph.v1.GetVertexRequest
+	21, // 58: graph.v1.LanternService.GetVertices:input_type -> graph.v1.GetVerticesRequest
+	23, // 59: graph.v1.LanternService.PutVertex:input_type -> graph.v1.PutVertexRequest
+	25, // 60: graph.v1.LanternService.PutVertices:input_type -> graph.v1.PutVerticesRequest
+	27, // 61: graph.v1.LanternService.DeleteVertex:input_type -> graph.v1.DeleteVertexRequest
+	29, // 62: graph.v1.LanternService.DeleteVertices:input_type -> graph.v1.DeleteVerticesRequest
+	31, // 63: graph.v1.LanternService.ScanVertices:input_type -> graph.v1.ScanVerticesRequest
+	33, // 64: graph.v1.LanternService.ScanVertexKeys:input_type -> graph.v1.ScanVertexKeysRequest
+	36, // 65: graph.v1.LanternService.SearchVertices:input_type -> graph.v1.SearchVerticesRequest
+	39, // 66: graph.v1.LanternService.CountVerticesByPrefix:input_type -> graph.v1.CountVerticesByPrefixRequest
+	41, // 67: graph.v1.LanternService.DeleteVerticesByPrefix:input_type -> graph.v1.DeleteVerticesByPrefixRequest
+	43, // 68: graph.v1.LanternService.TopVerticesByDegree:input_type -> graph.v1.TopVerticesByDegreeRequest
+	45, // 69: graph.v1.LanternService.GetEdge:input_type -> graph.v1.GetEdgeRequest
+	47, // 70: graph.v1.LanternService.GetEdges:input_type -> graph.v1.GetEdgesRequest
+	58, // 71: graph.v1.LanternService.AddEdge:input_type -> graph.v1.AddEdgeRequest
+	60, // 72: graph.v1.LanternService.AddEdges:input_type -> graph.v1.AddEdgesRequest
+	62, // 73: graph.v1.LanternService.PutEdge:input_type -> graph.v1.PutEdgeRequest
+	64, // 74: graph.v1.LanternService.PutEdges:input_type -> graph.v1.PutEdgesRequest
+	49, // 75: graph.v1.LanternService.DeleteEdge:input_type -> graph.v1.DeleteEdgeRequest
+	54, // 76: graph.v1.LanternService.DeleteEdges:input_type -> graph.v1.DeleteEdgesRequest
+	56, // 77: graph.v1.LanternService.DeleteEdgesByPrefix:input_type -> graph.v1.DeleteEdgesByPrefixRequest
+	52, // 78: graph.v1.LanternService.ScanEdges:input_type -> graph.v1.ScanEdgesRequest
+	66, // 79: graph.v1.LanternService.GetServerStatus:input_type -> graph.v1.GetServerStatusRequest
+	72, // 80: graph.v1.LanternService.GetReplicationStatus:input_type -> graph.v1.GetReplicationStatusRequest
+	74, // 81: graph.v1.LanternService.BackupSnapshot:input_type -> graph.v1.BackupSnapshotRequest
+	18, // 82: graph.v1.LanternService.Illuminate:output_type -> graph.v1.IlluminateResponse
+	20, // 83: graph.v1.LanternService.GetVertex:output_type -> graph.v1.GetVertexResponse
+	22, // 84: graph.v1.LanternService.GetVertices:output_type -> graph.v1.GetVerticesResponse
+	24, // 85: graph.v1.LanternService.PutVertex:output_type -> graph.v1.PutVertexResponse
+	26, // 86: graph.v1.LanternService.PutVertices:output_type -> graph.v1.PutVerticesResponse
+	28, // 87: graph.v1.LanternService.DeleteVertex:output_type -> graph.v1.DeleteVertexResponse
+	30, // 88: graph.v1.LanternService.DeleteVertices:output_type -> graph.v1.DeleteVerticesResponse
+	32, // 89: graph.v1.LanternService.ScanVertices:output_type -> graph.v1.ScanVerticesResponse
+	34, // 90: graph.v1.LanternService.ScanVertexKeys:output_type -> graph.v1.ScanVertexKeysResponse
+	37, // 91: graph.v1.LanternService.SearchVertices:output_type -> graph.v1.SearchVerticesResponse
+	40, // 92: graph.v1.LanternService.CountVerticesByPrefix:output_type -> graph.v1.CountVerticesByPrefixResponse
+	42, // 93: graph.v1.LanternService.DeleteVerticesByPrefix:output_type -> graph.v1.DeleteVerticesByPrefixResponse
+	44, // 94: graph.v1.LanternService.TopVerticesByDegree:output_type -> graph.v1.TopVerticesByDegreeResponse
+	46, // 95: graph.v1.LanternService.GetEdge:output_type -> graph.v1.GetEdgeResponse
+	48, // 96: graph.v1.LanternService.GetEdges:output_type -> graph.v1.GetEdgesResponse
+	59, // 97: graph.v1.LanternService.AddEdge:output_type -> graph.v1.AddEdgeResponse
+	61, // 98: graph.v1.LanternService.AddEdges:output_type -> graph.v1.AddEdgesResponse
+	63, // 99: graph.v1.LanternService.PutEdge:output_type -> graph.v1.PutEdgeResponse
+	65, // 100: graph.v1.LanternService.PutEdges:output_type -> graph.v1.PutEdgesResponse
+	50, // 101: graph.v1.LanternService.DeleteEdge:output_type -> graph.v1.DeleteEdgeResponse
+	55, // 102: graph.v1.LanternService.DeleteEdges:output_type -> graph.v1.DeleteEdgesResponse
+	57, // 103: graph.v1.LanternService.DeleteEdgesByPrefix:output_type -> graph.v1.DeleteEdgesByPrefixResponse
+	53, // 104: graph.v1.LanternService.ScanEdges:output_type -> graph.v1.ScanEdgesResponse
+	70, // 105: graph.v1.LanternService.GetServerStatus:output_type -> graph.v1.GetServerStatusResponse
+	73, // 106: graph.v1.LanternService.GetReplicationStatus:output_type -> graph.v1.GetReplicationStatusResponse
+	75, // 107: graph.v1.LanternService.BackupSnapshot:output_type -> graph.v1.BackupSnapshotResponse
+	82, // [82:108] is the sub-list for method output_type
+	56, // [56:82] is the sub-list for method input_type
+	56, // [56:56] is the sub-list for extension type_name
+	56, // [56:56] is the sub-list for extension extendee
+	0,  // [0:56] is the sub-list for field type_name
 }
 
 func init() { file_graph_v1_graph_proto_init() }
@@ -5736,7 +6017,7 @@ func file_graph_v1_graph_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_graph_v1_graph_proto_rawDesc), len(file_graph_v1_graph_proto_rawDesc)),
-			NumEnums:      9,
+			NumEnums:      11,
 			NumMessages:   66,
 			NumExtensions: 0,
 			NumServices:   1,

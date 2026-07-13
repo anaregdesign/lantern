@@ -87,6 +87,8 @@ export {
   NotFoundError,
   OverflowError,
   ResourceExhaustedError,
+  SearchContinuationLimitedError,
+  SearchCursorStaleError,
 } from "./errors.js";
 export type {
   ConnectOptions,
@@ -100,6 +102,7 @@ export type {
   MatchMode,
   ScanOptions,
   SearchOptions,
+  SearchProjection,
 } from "./options.js";
 export {
   Duration,
@@ -120,6 +123,7 @@ export type {
   EdgeInput,
   Graph,
   SearchHit,
+  SearchPage,
   Vertex,
   VertexInput,
   VertexKind,

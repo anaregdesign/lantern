@@ -31,6 +31,8 @@ import {
   InvalidArgumentError,
   NotFoundError,
   ResourceExhaustedError,
+  SearchContinuationLimitedError,
+  SearchCursorStaleError,
   connect,
   Reduction,
   Int32,
@@ -50,6 +52,8 @@ import {
   ScanOrder,
   MatchMode,
   SearchErrorDetailSchema,
+  SearchHitProjectionStatus,
+  SearchProjection,
 } from "../src/gen/graph/v1/graph_pb.js";
 
 interface StubState {
@@ -76,9 +80,28 @@ interface StubState {
     phrase?: boolean;
     fuzziness?: number;
     prefixTerms?: boolean;
+    cursor: Uint8Array;
+    projection: number;
   };
+  /** Every opaque cursor observed by the search stub. */
+  searchCursors: Uint8Array[];
   /** Ranked hits the searchVertices stub returns (descending relevance). */
   searchHits?: { key: string; score: number }[];
+  /** Optional queued page responses for cursor/iterator contract tests. */
+  searchPages?: Array<{
+    hits: Array<{
+      key: string;
+      score: number;
+      vertex?: ReturnType<typeof create<typeof VertexSchema>>;
+      projectionStatus?: SearchHitProjectionStatus;
+    }>;
+    nextCursor?: Uint8Array;
+    effectiveLimit?: number;
+    truncated?: boolean;
+    continuationLimited?: boolean;
+  }>;
+  /** Optional typed ABORTED search failure. */
+  searchAbortedReason?: SearchErrorReason;
   /** When true, searchVertices rejects with FAILED_PRECONDITION (index disabled). */
   searchDisabled?: boolean;
   /** When true, phrase search rejects because positional postings are absent. */
@@ -215,6 +238,8 @@ function newStubRoutes(state: StubState) {
           query: req.query,
           limit: req.limit,
           prefix: req.prefix,
+          cursor: req.cursor,
+          projection: req.projection,
           ...(req.options
             ? {
                 matchMode: req.options.matchMode,
@@ -225,6 +250,15 @@ function newStubRoutes(state: StubState) {
               }
             : {}),
         };
+        state.searchCursors.push(req.cursor);
+        if (state.searchAbortedReason !== undefined) {
+          throw new ConnectError("search cursor is stale", Code.Aborted, undefined, [
+            {
+              desc: SearchErrorDetailSchema,
+              value: { reason: state.searchAbortedReason },
+            },
+          ]);
+        }
         if (state.searchResource) {
           throw new ConnectError("search execution exhausted", Code.ResourceExhausted, undefined, [
             {
@@ -253,6 +287,9 @@ function newStubRoutes(state: StubState) {
               value: { reason: SearchErrorReason.SEARCH_DISABLED },
             },
           ]);
+        }
+        if (state.searchPages && state.searchPages.length > 0) {
+          return state.searchPages.shift()!;
         }
         return { hits: state.searchHits ?? [] };
       },
@@ -381,7 +418,13 @@ function newStubRoutes(state: StubState) {
 
 let server: http.Server;
 let baseUrl: string;
-const state: StubState = { vertices: new Map(), addEdgesCalls: [], edges: new Map(), writeLog: [] };
+const state: StubState = {
+  vertices: new Map(),
+  searchCursors: [],
+  addEdgesCalls: [],
+  edges: new Map(),
+  writeLog: [],
+};
 
 beforeAll(async () => {
   // HTTP/1.1 server (not http2) — Bun's test runner has rough edges
@@ -1318,7 +1361,13 @@ describe("searchVertices request building (#639)", () => {
     ];
     try {
       const hits = await c.searchVertices("alpha beta", { limit: 5, prefix: "doc/" });
-      expect(state.lastSearch).toEqual({ query: "alpha beta", limit: 5, prefix: "doc/" });
+      expect(state.lastSearch).toEqual({
+        query: "alpha beta",
+        limit: 5,
+        prefix: "doc/",
+        cursor: new Uint8Array(),
+        projection: SearchProjection.UNSPECIFIED,
+      });
       expect(hits).toEqual([
         { key: "doc/3", score: 9.5 },
         { key: "doc/1", score: 4.2 },
@@ -1335,7 +1384,13 @@ describe("searchVertices request building (#639)", () => {
     state.searchHits = [];
     try {
       await c.searchVertices("q");
-      expect(state.lastSearch).toEqual({ query: "q", limit: 0, prefix: "" });
+      expect(state.lastSearch).toEqual({
+        query: "q",
+        limit: 0,
+        prefix: "",
+        cursor: new Uint8Array(),
+        projection: SearchProjection.UNSPECIFIED,
+      });
     } finally {
       c.close();
     }
@@ -1401,6 +1456,125 @@ describe("searchVertices request building (#639)", () => {
     try {
       await expect(c.searchVertices("nothing")).resolves.toEqual([]);
     } finally {
+      c.close();
+    }
+  });
+
+  test("returns full-vertex page projection and pagination metadata", async () => {
+    const c = newClient();
+    const cursor = new Uint8Array([1, 2, 3]);
+    state.searchPages = [
+      {
+        hits: [
+          {
+            key: "doc/1",
+            score: 3.5,
+            vertex: create(VertexSchema, {
+              key: "doc/1",
+              value: { case: "string", value: "alpha" },
+            }),
+            projectionStatus: SearchHitProjectionStatus.SNAPSHOT,
+          },
+        ],
+        nextCursor: new Uint8Array([4, 5]),
+        effectiveLimit: 1,
+        truncated: true,
+        continuationLimited: false,
+      },
+    ];
+    try {
+      const page = await c.searchVerticesPage("alpha", {
+        limit: 1,
+        cursor,
+        projection: "full-vertex",
+      });
+      expect(state.lastSearch?.cursor).toEqual(cursor);
+      expect(state.lastSearch?.projection).toBe(SearchProjection.FULL_VERTEX);
+      expect(page).toEqual({
+        hits: [
+          {
+            key: "doc/1",
+            score: 3.5,
+            vertex: { key: "doc/1", value: "alpha", kind: "string", expiration: null },
+            projectionStatus: "snapshot",
+          },
+        ],
+        nextCursor: new Uint8Array([4, 5]),
+        effectiveLimit: 1,
+        truncated: true,
+        continuationLimited: false,
+      });
+    } finally {
+      state.searchPages = undefined;
+      c.close();
+    }
+  });
+
+  test("iterator follows opaque cursors lazily without accumulating pages", async () => {
+    const c = newClient();
+    state.searchCursors = [];
+    state.searchPages = [
+      {
+        hits: [{ key: "doc/1", score: 2 }],
+        nextCursor: new Uint8Array([9]),
+        effectiveLimit: 1,
+        truncated: true,
+      },
+      {
+        hits: [{ key: "doc/2", score: 1 }],
+        nextCursor: new Uint8Array(),
+        effectiveLimit: 1,
+      },
+    ];
+    try {
+      const keys: string[] = [];
+      for await (const hit of c.searchVerticesIter("alpha", { limit: 1 })) {
+        keys.push(hit.key);
+      }
+      expect(keys).toEqual(["doc/1", "doc/2"]);
+      expect(state.searchCursors).toEqual([new Uint8Array(), new Uint8Array([9])]);
+    } finally {
+      state.searchPages = undefined;
+      c.close();
+    }
+  });
+
+  test("iterator surfaces a typed bounded-tail error after yielding retained hits", async () => {
+    const c = newClient();
+    state.searchPages = [
+      {
+        hits: [{ key: "doc/1", score: 1 }],
+        nextCursor: new Uint8Array(),
+        effectiveLimit: 1,
+        truncated: true,
+        continuationLimited: true,
+      },
+    ];
+    const keys: string[] = [];
+    try {
+      for await (const hit of c.searchVerticesIter("alpha", { limit: 1 })) {
+        keys.push(hit.key);
+      }
+      expect.unreachable("bounded continuation should fail after the retained tail");
+    } catch (error) {
+      expect(keys).toEqual(["doc/1"]);
+      expect(error).toBeInstanceOf(SearchContinuationLimitedError);
+    } finally {
+      state.searchPages = undefined;
+      c.close();
+    }
+  });
+
+  test("maps endpoint session expiry to SearchCursorStaleError", async () => {
+    const c = newClient();
+    state.searchAbortedReason = SearchErrorReason.SEARCH_CURSOR_STALE;
+    try {
+      await c.searchVerticesPage("alpha", { cursor: new Uint8Array([1]) });
+      expect.unreachable("stale cursor should fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(SearchCursorStaleError);
+    } finally {
+      state.searchAbortedReason = undefined;
       c.close();
     }
   });

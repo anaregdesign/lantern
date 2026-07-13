@@ -4,8 +4,7 @@ import type { Vertex } from "~/lib/client/infrastructure/api/types";
  * State for the vertex content-search screen (#627).
  *
  * The screen invalidates on every input immediately, debounces the matching
- * BM25 keyword search, then hydrates ranked `{ key, score }` hits into full
- * vertices (preserving rank order) for display. Async I/O lives in
+ * BM25 keyword search with FULL_VERTEX selection-time snapshots. Async I/O lives in
  * `handlers.ts`; this module and `reducer.ts` are the pure, unit-testable
  * core. Every server response carries the `queryEpoch` it was issued
  * under so a stale reply from an abandoned query can never clobber the
@@ -24,16 +23,15 @@ export type SearchVerticesStatus =
   | "error"
   | "disabled";
 
-/** One ranked search hit, hydrated with its full vertex when available. */
+/** One ranked search hit with its exact selection-time vertex when available. */
 export interface SearchResultRow {
   /** The matched vertex key. */
   key: string;
   /** BM25 relevance score (higher = more relevant). */
   score: number;
   /**
-   * The hydrated vertex, or `null` when the key no longer resolves — a hit
-   * whose vertex expired between the search and the hydration (a real,
-   * expected TTL race). The row still renders so the rank slot is honest.
+   * Exact selection-time snapshot, or `null` for a fail-closed missing or
+   * replaced projection. The row still renders so the rank slot is honest.
    */
   vertex: Vertex | null;
 }
@@ -79,6 +77,16 @@ export interface SearchVerticesState {
   error: string | null;
   /** The relevance controls applied to `query`. */
   options: SearchQueryOptions;
+  /** Opaque endpoint-sticky cursor for the next retained page. */
+  nextCursor: Uint8Array | null;
+  /** Whether more ranked hits existed beyond the rows currently shown. */
+  truncated: boolean;
+  /** Whether server retention caps prevented exhaustive continuation. */
+  continuationLimited: boolean;
+  /** A next-page request is active while existing rows remain visible. */
+  loadingMore: boolean;
+  /** Next-page failure that does not erase already loaded rows. */
+  loadMoreError: string | null;
 }
 
 export const INITIAL_SEARCH_VERTICES_STATE: SearchVerticesState = {
@@ -88,4 +96,9 @@ export const INITIAL_SEARCH_VERTICES_STATE: SearchVerticesState = {
   results: [],
   error: null,
   options: DEFAULT_SEARCH_QUERY_OPTIONS,
+  nextCursor: null,
+  truncated: false,
+  continuationLimited: false,
+  loadingMore: false,
+  loadMoreError: null,
 };

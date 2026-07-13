@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -74,9 +75,10 @@ func TestValidateSearchOptions(t *testing.T) {
 // overriding only SearchVertices.
 type captureSearch struct {
 	graphv1connect.LanternServiceClient
-	reqs []*pb.SearchVerticesRequest
-	resp *pb.SearchVerticesResponse
-	err  error
+	reqs      []*pb.SearchVerticesRequest
+	resp      *pb.SearchVerticesResponse
+	responses []*pb.SearchVerticesResponse
+	err       error
 }
 
 func (c *captureSearch) SearchVertices(_ context.Context, req *connect.Request[pb.SearchVerticesRequest]) (*connect.Response[pb.SearchVerticesResponse], error) {
@@ -84,11 +86,91 @@ func (c *captureSearch) SearchVertices(_ context.Context, req *connect.Request[p
 	if c.err != nil {
 		return nil, c.err
 	}
+	if len(c.responses) > 0 {
+		resp := c.responses[0]
+		c.responses = c.responses[1:]
+		return connect.NewResponse(resp), nil
+	}
 	resp := c.resp
 	if resp == nil {
 		resp = &pb.SearchVerticesResponse{}
 	}
 	return connect.NewResponse(resp), nil
+}
+
+func TestSearchVerticesPageAndIterator(t *testing.T) {
+	newClient := func(t *testing.T) (*Lantern, *captureSearch) {
+		t.Helper()
+		l := mustLantern(t)
+		capt := &captureSearch{}
+		l.client = capt
+		return l, capt
+	}
+
+	t.Run("PageMapsCursorProjectionAndSnapshot", func(t *testing.T) {
+		l, capt := newClient(t)
+		capt.resp = &pb.SearchVerticesResponse{
+			Hits: []*pb.SearchHit{{
+				Key: "a", Score: 2,
+				Vertex:           &pb.Vertex{Key: "a", Value: &pb.Vertex_String_{String_: "alpha"}},
+				ProjectionStatus: pb.SearchHitProjectionStatus_SEARCH_HIT_PROJECTION_STATUS_SNAPSHOT,
+			}},
+			NextCursor: []byte("next"), EffectiveLimit: 7, Truncated: true,
+		}
+		page, err := l.SearchVerticesPage(context.Background(), "alpha",
+			WithSearchLimit(7), WithSearchCursor([]byte("start")), WithFullVertex())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Hits) != 1 || page.Hits[0].Vertex.GetString_() != "alpha" || page.Hits[0].ProjectionStatus != SearchHitProjectionSnapshot {
+			t.Fatalf("page hits = %+v", page.Hits)
+		}
+		if string(page.NextCursor) != "next" || page.EffectiveLimit != 7 || !page.Truncated {
+			t.Fatalf("page metadata = %+v", page)
+		}
+		request := capt.reqs[0]
+		if string(request.GetCursor()) != "start" || request.GetProjection() != pb.SearchProjection_SEARCH_PROJECTION_FULL_VERTEX {
+			t.Fatalf("request cursor/projection = %q/%v", request.GetCursor(), request.GetProjection())
+		}
+	})
+
+	t.Run("IteratorHonorsInitialCursorAndContinuesLazily", func(t *testing.T) {
+		l, capt := newClient(t)
+		capt.responses = []*pb.SearchVerticesResponse{
+			{Hits: []*pb.SearchHit{{Key: "a", Score: 3}, {Key: "b", Score: 2}}, NextCursor: []byte("next"), Truncated: true},
+			{Hits: []*pb.SearchHit{{Key: "c", Score: 1}}},
+		}
+		var keys []string
+		for hit, err := range l.SearchVerticesIter(context.Background(), "alpha",
+			WithSearchLimit(2), WithSearchCursor([]byte("start"))) {
+			if err != nil {
+				t.Fatal(err)
+			}
+			keys = append(keys, hit.Key)
+		}
+		if got := fmt.Sprint(keys); got != "[a b c]" {
+			t.Fatalf("iterator keys = %s", got)
+		}
+		if len(capt.reqs) != 2 || string(capt.reqs[0].GetCursor()) != "start" || string(capt.reqs[1].GetCursor()) != "next" {
+			t.Fatalf("iterator requests = %+v", capt.reqs)
+		}
+	})
+
+	t.Run("IteratorSurfacesBoundedTail", func(t *testing.T) {
+		l, capt := newClient(t)
+		capt.resp = &pb.SearchVerticesResponse{
+			Hits: []*pb.SearchHit{{Key: "a"}}, Truncated: true, ContinuationLimited: true,
+		}
+		var terminal error
+		for _, err := range l.SearchVerticesIter(context.Background(), "alpha") {
+			if err != nil {
+				terminal = err
+			}
+		}
+		if !errors.Is(terminal, ErrSearchContinuationLimited) {
+			t.Fatalf("terminal = %v", terminal)
+		}
+	})
 }
 
 // TestSearchVertices verifies the forwarder's contracts: it wires
