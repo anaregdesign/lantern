@@ -181,9 +181,9 @@ func (c *GraphCache[S, T]) SearchVertices(query string, limit int, keyPrefix str
 // requires the query's word terms to occur adjacently, in order. phrase takes
 // precedence over opts.Mode — a phrase query is served by the index's phrase
 // search. SearchVertices is exactly SearchVerticesMatch with the zero
-// MatchOptions and phrase == false (the default OR-union). Liveness and prefix
-// scoping are identical, and the bounded top-k selection still pushes them into
-// the accept callback so a broad query never materialises its whole match set.
+// MatchOptions and phrase == false (the default OR-union). Liveness is pushed
+// into the accept callback; when the prefix radix is enabled, prefix membership
+// is streamed into core as a CandidateSource before scoring.
 func (c *GraphCache[S, T]) SearchVerticesMatch(query string, limit int, keyPrefix string, opts search.MatchOptions, phrase bool) []search.Result[S] {
 	results, _, _ := c.SearchVerticesMatchContext(context.Background(), query, limit, keyPrefix, opts, phrase, search.Budget{})
 	return results
@@ -203,6 +203,7 @@ func (c *GraphCache[S, T]) SearchVerticesMatchContext(ctx context.Context, query
 	c.mu.RLock()
 	index := c.searchIndex
 	prefixExtract := c.prefixExtract
+	prefixIndex := c.prefixIndex
 	c.mu.RUnlock()
 
 	if index == nil {
@@ -217,10 +218,12 @@ func (c *GraphCache[S, T]) SearchVerticesMatchContext(ctx context.Context, query
 	defer c.searchCommitMu.RUnlock()
 	queryNow := time.Now()
 	// Phase 2 — query analysis, BM25 ranking, and liveness/prefix filtering all
-	// run WITHOUT GraphCache.mu. The liveness and prefix filters are pushed INTO
-	// the index's bounded top-k selection as the accept callback (#841), so a
+	// run WITHOUT GraphCache.mu. Liveness is pushed into bounded execution as an
+	// accept callback (#841), so a
 	// broad query (the bigram analyzer makes a two-character query match most of
-	// the corpus) never materialises and fully sorts its whole match set.
+	// the corpus) never materialises and fully sorts its whole match set. A
+	// non-empty prefix is pushed down separately through the radix candidate
+	// source below, avoiding global scoring.
 	//
 	// Lock order: accept runs under searchCommitMu.RLock and the index's RLock,
 	// then probes only the vertex cache's inner mutex (which never acquires the
@@ -242,10 +245,27 @@ func (c *GraphCache[S, T]) SearchVerticesMatchContext(ctx context.Context, query
 	var out []search.Result[S]
 	var stats search.Stats
 	var err error
-	if phrase {
-		out, stats, err = index.SearchPhraseTopKContextAt(ctx, query, limit, accept, budget, queryNow)
+	execute := func(candidates search.CandidateSource[S]) {
+		if phrase {
+			out, stats, err = index.SearchPhraseTopKCandidatesContextAt(ctx, query, limit, accept, budget, queryNow, candidates)
+		} else {
+			out, stats, err = index.SearchMatchTopKCandidatesContextAt(ctx, query, limit, accept, opts, budget, queryNow, candidates)
+		}
+	}
+	if keyPrefix != "" && prefixIndex != nil {
+		// Establish radix -> inverted-index lock order and retain the radix read
+		// lock only for the synchronous query. Writers already mutate the prefix
+		// radix before search postings under GraphCache.mu, so this cannot cycle.
+		prefixIndex.withPrefixWalk(keyPrefix, func(walk func(func(string) bool)) {
+			execute(func(yield func(S) bool) {
+				walk(func(projected string) bool {
+					id, ok := c.keyForProjection(projected)
+					return !ok || yield(id)
+				})
+			})
+		})
 	} else {
-		out, stats, err = index.SearchMatchTopKContextAt(ctx, query, limit, accept, opts, budget, queryNow)
+		execute(nil)
 	}
 	if err != nil {
 		return nil, stats, err
@@ -273,4 +293,16 @@ func keyHasPrefix[S comparable](prefixExtract func(S) string, key S, prefix stri
 		return strings.HasPrefix(s, prefix)
 	}
 	return false
+}
+
+// keyForProjection reverses the radix projection without applying liveness.
+// Search evaluates liveness once at queryNow in accept; keeping projection and
+// liveness separate avoids resampling the clock while candidates stream.
+func (c *GraphCache[S, T]) keyForProjection(projected string) (S, bool) {
+	var zero S
+	if _, isString := any(zero).(string); isString {
+		key, ok := any(projected).(S)
+		return key, ok
+	}
+	return c.dict.findByProjection(c.prefixExtract, projected)
 }

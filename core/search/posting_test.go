@@ -105,6 +105,17 @@ func TestPackPositions(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("decode reuses caller scratch", func(t *testing.T) {
+		dst := make([]uint32, 0, 8)
+		got := unpackPositionsInto(dst, packPositions([]uint32{2, 5, 9}))
+		if !slices.Equal(got, []uint32{2, 5, 9}) {
+			t.Fatalf("decoded = %v", got)
+		}
+		if &got[0] != &dst[:1][0] {
+			t.Fatal("decode replaced sufficient caller scratch")
+		}
+	})
 }
 func TestOrdinals(t *testing.T) {
 	o := newOrdinals[string]()

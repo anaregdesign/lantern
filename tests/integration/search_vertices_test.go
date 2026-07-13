@@ -560,6 +560,67 @@ func TestSearchVertices_CancellationAndAdmissionOverWire(t *testing.T) {
 	}
 }
 
+func TestSearchVertices_PrefixCandidatePushdownOverRealH2C(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	cache.EnablePrefixIndex(func(key string) string { return key })
+	cache.EnableSearchIndex(searchVertexDocument, strings.Compare)
+	expiration := time.Now().Add(time.Hour)
+	items := make([]graphcache.VertexItem[string, *pb.Vertex], 0, 2010)
+	for i := 0; i < 2000; i++ {
+		key := fmt.Sprintf("other/%04d", i)
+		items = append(items, graphcache.VertexItem[string, *pb.Vertex]{
+			Key: key, Value: &pb.Vertex{Key: key, Value: &pb.Vertex_String_{String_: "shared payload"}}, Expiration: expiration,
+		})
+	}
+	for i := 0; i < 10; i++ {
+		key := fmt.Sprintf("scope/%02d", i)
+		items = append(items, graphcache.VertexItem[string, *pb.Vertex]{
+			Key: key, Value: &pb.Vertex{Key: key, Value: &pb.Vertex_String_{String_: "shared payload"}}, Expiration: expiration,
+		})
+	}
+	if err := cache.PutVerticesWithExpiration(items); err != nil {
+		t.Fatal(err)
+	}
+
+	metrics := &wireSearchMetrics{executions: make(chan wireSearchExecution, 4)}
+	svc := service.NewLanternService(cache).WithSearchLimits(service.SearchLimits{
+		Enabled: true, PositionsEnabled: true, DefaultLimit: 10, MaxLimit: 100,
+	}).WithHotPathMetrics(metrics)
+	srv := newConnectTestServer(t, svc, nil)
+	c := graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
+
+	resp, err := c.SearchVertices(context.Background(), connect.NewRequest(&pb.SearchVerticesRequest{
+		Query: "shared", Prefix: "scope/", Limit: 5,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Msg.GetHits()) != 5 {
+		t.Fatalf("scoped hits=%d, want 5", len(resp.Msg.GetHits()))
+	}
+	for _, hit := range resp.Msg.GetHits() {
+		if !strings.HasPrefix(hit.GetKey(), "scope/") {
+			t.Fatalf("out-of-scope hit %q", hit.GetKey())
+		}
+	}
+	if observation := <-metrics.executions; observation.outcome != "ok" || observation.stats.CandidateVisits != 10 {
+		t.Fatalf("scoped execution=%+v, want 10 candidate visits", observation)
+	}
+
+	empty, err := c.SearchVertices(context.Background(), connect.NewRequest(&pb.SearchVerticesRequest{
+		Query: "shared", Prefix: "missing/", Limit: 5,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(empty.Msg.GetHits()) != 0 {
+		t.Fatalf("missing-prefix hits=%d, want 0", len(empty.Msg.GetHits()))
+	}
+	if observation := <-metrics.executions; observation.outcome != "ok" || observation.stats.CandidateVisits != 0 {
+		t.Fatalf("missing-prefix execution=%+v, want zero candidate visits", observation)
+	}
+}
+
 // newSearchSDKClient mirrors newSearchRawClient but returns the high-level
 // *client.Lantern so the SDK SearchVertices forwarder (#625) is exercised
 // against the real service handler — the SDK package itself keeps only

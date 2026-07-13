@@ -96,7 +96,17 @@ func (p *postingList) positionsOf(ord uint32) []uint32 {
 	if p.positions == nil {
 		return nil
 	}
-	return unpackPositions(p.positions[ord])
+	return unpackPositionsInto(nil, p.positions[ord])
+}
+
+// positionsInto decodes ord's positions into dst, reusing its capacity. The
+// bounded query executor keeps one scratch slice per query term so positional
+// work does not allocate once per matching document.
+func (p *postingList) positionsInto(ord uint32, dst []uint32) []uint32 {
+	if p.positions == nil {
+		return nil
+	}
+	return unpackPositionsInto(dst[:0], p.positions[ord])
 }
 
 // packPositions delta+varint encodes an ascending position slice: the first
@@ -121,11 +131,18 @@ func packPositions(positions []uint32) []byte {
 // into the ascending absolute positions. It returns nil for empty input (a
 // document that carries no positions for the term).
 func unpackPositions(b []byte) []uint32 {
+	return unpackPositionsInto(nil, b)
+}
+
+func unpackPositionsInto(dst []uint32, b []byte) []uint32 {
 	if len(b) == 0 {
-		return nil
+		return dst[:0]
 	}
 	// Each position occupies at least one byte, so len(b) bounds the count.
-	out := make([]uint32, 0, len(b))
+	out := dst
+	if cap(out) < len(b) {
+		out = make([]uint32, 0, len(b))
+	}
 	var acc uint32
 	for i := 0; i < len(b); {
 		delta, n := binary.Uvarint(b[i:])

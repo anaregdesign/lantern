@@ -39,9 +39,10 @@ func (idx *InvertedIndex[S, D]) SearchPhrase(query string) []Result[S] {
 	return idx.rankedResultsLocked(scores)
 }
 
-// SearchPhraseTopK is the bounded-selection sibling of SearchPhrase, mirroring
-// SearchTopK (#841): it phrase-matches then returns only the k highest-scoring
-// documents that satisfy accept, without fully sorting the match set. accept
+// SearchPhraseTopK is the bounded-execution sibling of SearchPhrase, mirroring
+// SearchTopK (#841/#1060): it streams the rarest posting, verifies and scores
+// one phrase candidate at a time, and retains only the k highest-scoring
+// documents that satisfy accept. accept
 // gates a document before it can occupy one of the k slots (dead vertices,
 // out-of-scope keys) and may be nil (accept everything). The lock order and
 // accept contract are identical to SearchTopK. k <= 0, a query with no word
@@ -60,6 +61,13 @@ func (idx *InvertedIndex[S, D]) SearchPhraseTopKContext(ctx context.Context, que
 // SearchPhraseTopKContextAt is SearchPhraseTopKContext with an explicit
 // liveness instant shared with a layered store's accept callback.
 func (idx *InvertedIndex[S, D]) SearchPhraseTopKContextAt(ctx context.Context, query string, k int, accept func(id S) bool, budget Budget, now time.Time) ([]Result[S], Stats, error) {
+	return idx.SearchPhraseTopKCandidatesContextAt(ctx, query, k, accept, budget, now, nil)
+}
+
+// SearchPhraseTopKCandidatesContextAt is SearchPhraseTopKContextAt with an
+// optional streaming candidate scope. It keeps the same global BM25 corpus
+// statistics while avoiding work outside a selective layered-store scope.
+func (idx *InvertedIndex[S, D]) SearchPhraseTopKCandidatesContextAt(ctx context.Context, query string, k int, accept func(id S) bool, budget Budget, now time.Time, candidates CandidateSource[S]) ([]Result[S], Stats, error) {
 	work := newWorkTracker(ctx, budget)
 	if idx.Health() != IndexHealthy {
 		return nil, work.stats, ErrIndexIncomplete
@@ -84,18 +92,7 @@ func (idx *InvertedIndex[S, D]) SearchPhraseTopKContextAt(ctx context.Context, q
 		return nil, work.stats, ErrIndexIncomplete
 	}
 
-	ords, err := idx.phraseMatchTrackedLocked(terms, work)
-	if err != nil {
-		return nil, work.stats, err
-	}
-	if len(ords) == 0 {
-		return nil, work.stats, nil
-	}
-	scores, err := idx.scorePhraseTrackedLocked(terms, ords, work)
-	if err != nil {
-		return nil, work.stats, err
-	}
-	results, err := idx.selectTopKTrackedLocked(scores, k, accept, work)
+	results, err := idx.executePhraseTopKLocked(terms, k, accept, candidates, work)
 	if err != nil {
 		return nil, work.stats, err
 	}
