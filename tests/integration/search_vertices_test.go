@@ -24,6 +24,7 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	client "github.com/anaregdesign/lantern/sdks/go"
+	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
 )
 
@@ -33,14 +34,12 @@ import (
 // integration suite cannot import the unexported provider helper, and the
 // exact value-type rendering is covered by the provider unit test — here we
 // only need a live index behind the RPC.
-func searchVertexDocument(v *pb.Vertex) search.Document {
-	var b strings.Builder
-	b.WriteString(v.GetKey())
-	if s := v.GetString_(); s != "" {
-		b.WriteByte(' ')
-		b.WriteString(s)
+func searchVertexDocument(key string, v *pb.Vertex) search.Document {
+	fields := search.Fields{{ID: search.FieldKey, Text: key}}
+	if v != nil && v.GetString_() != "" {
+		fields = append(fields, search.DocumentField{ID: search.FieldValue, Text: v.GetString_()})
 	}
-	return search.Text(b.String())
+	return fields
 }
 
 func wireSearchErrorReason(t *testing.T, err error) pb.SearchErrorReason {
@@ -618,6 +617,52 @@ func TestSearchVertices_PrefixCandidatePushdownOverRealH2C(t *testing.T) {
 	}
 	if observation := <-metrics.executions; observation.outcome != "ok" || observation.stats.CandidateVisits != 0 {
 		t.Fatalf("missing-prefix execution=%+v, want zero candidate visits", observation)
+	}
+}
+
+func TestSearchVertices_ProductionStructuredFieldsOverRealH2C(t *testing.T) {
+	cache := provider.NewGraphCache(provider.CacheConfig{TTL: time.Hour}, provider.SearchConfig{Enabled: true, Positions: true})
+	svc := service.NewLanternService(cache).WithSearchLimits(service.SearchLimits{
+		Enabled: true, PositionsEnabled: true, DefaultLimit: 20, MaxLimit: 100,
+	})
+	srv := newConnectTestServer(t, svc, nil)
+	raw := graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
+	sdk := newConnectClientFor(t, srv.url)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	expiration := time.Now().Add(time.Hour)
+	if err := sdk.PutVertices(ctx, []client.VertexInput{
+		{Key: "alpha", Value: "beta", Expiration: expiration},
+		{Key: "json-boundaries", Value: `{"a":"alpha","b":"beta"}`, Expiration: expiration},
+		{Key: "within-value", Value: "alpha beta", Expiration: expiration},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	phrase, err := raw.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{
+		Query: "alpha beta", Limit: 20, Options: &pb.SearchOptions{Phrase: true},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hits := phrase.Msg.GetHits(); len(hits) != 1 || hits[0].GetKey() != "within-value" {
+		t.Fatalf("phrase hits = %+v, want only within-value", hits)
+	}
+	if _, err := sdk.AddEdge(ctx, "implicit-tail-key", "implicit-head-key", 1, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	endpoint, err := sdk.SearchVertices(ctx, "implicit-tail-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(endpoint) == 0 || endpoint[0].Key != "implicit-tail-key" {
+		t.Fatalf("implicit endpoint hits = %+v", endpoint)
+	}
+	status, err := raw.GetServerStatus(ctx, connect.NewRequest(&pb.GetServerStatusRequest{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := status.Msg.GetSearch().GetProjectionVersion(); got != "vertex-fields-v2" {
+		t.Fatalf("projection version = %q", got)
 	}
 }
 

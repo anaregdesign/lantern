@@ -102,7 +102,7 @@ func (c *GraphCache[S, T]) prepareSearchDocsBounded(items []VertexItem[S, T], in
 		}
 		preparation.ready[i] = true
 		if cache.IsLiveAt(items[i].Expiration, now) {
-			preparation.documents[i], _, preparation.errs[i] = c.searchIndex.Prepare(c.searchExtract(items[i].Value))
+			preparation.documents[i], _, preparation.errs[i] = c.searchIndex.Prepare(c.searchExtract(items[i].Key, items[i].Value))
 		}
 	}
 }

@@ -219,7 +219,9 @@ func validateSearchOptions(o searchOptions) error {
 }
 
 // SearchVertices returns vertices ranked by full-text relevance over their
-// indexed content (key + value) in stable (score DESC, raw key ASC) order. It
+// indexed key and value fields in stable (score DESC, raw key ASC) order. Field
+// boundaries are preserved for phrase/proximity and key evidence is weighted
+// independently by the server. It
 // is the content counterpart to ScanVertices' lexicographic key walk: search
 // by a remembered topic word instead of an exact key prefix.
 //

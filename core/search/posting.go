@@ -7,23 +7,26 @@ import (
 )
 
 // postingList is one term's posting set: which document ordinals contain the
-// term, plus their term frequencies and — when the index tracks positions —
-// the token positions the term occupies in each document. Membership lives in
-// a Roaring bitmap — compressed and mutable, so it fits the decaying
+// term, plus field-local term frequencies and — when the index tracks positions
+// — token positions. Union membership lives in a Roaring bitmap; structured
+// fields add sparse per-field bitmaps while the single default-field path reuses
+// the union bitmap and pays no duplicate membership store. This fits the decaying
 // workload's constant add / remove without the per-entry overhead of a map
 // keyed by the document id. Frequencies default to 1 and only the
 // comparatively rare term that occurs more than once in a document is recorded
 // in tfHi, so the common case carries no per-(term, document) frequency
-// storage at all. positions is nil unless the index was built WithPositions
-// and the term carries at least one position in the document, so an index that
+// storage at all. fieldPosition entries exist only when the index was built WithPositions
+// and the term carries at least one position in that field, so an index that
 // serves only OR-union ranking pays nothing for phrase/proximity support
-// (#889). Each document's positions are stored delta+varint packed (#908): the
-// ascending token positions become a compact []byte instead of a []uint32, so
+// (#889). Each document's positions are stored delta+varint packed (#908): a
+// uint64 combines field-instance and token offset before compact encoding, so
 // the store costs ~1 byte per position (short vertex values) rather than 4.
 type postingList struct {
-	docs      *roaring.Bitmap   // document ordinals containing this term
-	tfHi      map[uint32]uint16 // ordinal -> term frequency, recorded only when tf > 1
-	positions map[uint32][]byte // ordinal -> delta+varint packed ascending positions, only when the index tracks positions
+	docs          *roaring.Bitmap // document ordinals containing this term in any field
+	hasNonDefault bool
+	fieldDocs     [numDocumentFields]*roaring.Bitmap
+	fieldTFHi     [numDocumentFields]map[uint32]uint16
+	fieldPosition [numDocumentFields]map[uint32][]byte
 }
 
 // newPostingList returns an empty posting list ready to record documents.
@@ -31,7 +34,7 @@ func newPostingList() *postingList {
 	return &postingList{docs: roaring.New()}
 }
 
-// set records that document ord contains the term tf times (tf >= 1). A tf of 1
+// set records a default-field term and backs legacy single-text documents. A tf of 1
 // — the common case — costs only the bitmap membership bit. positions, when
 // non-empty, are the term's ascending token positions in the document; they
 // are stored only when the index tracks positions (WithPositions) and only for
@@ -39,19 +42,51 @@ func newPostingList() *postingList {
 // nothing. They are delta+varint packed into a fresh []byte, so the caller's
 // transient position slice is not retained and the store holds only the
 // compact bytes.
-func (p *postingList) set(ord uint32, tf int, positions []uint32) {
-	p.docs.Add(ord)
-	if tf > 1 {
-		if p.tfHi == nil {
-			p.tfHi = make(map[uint32]uint16)
+func (p *postingList) set(ord uint32, tf int, positions []uint64) {
+	var fields [numDocumentFields]preparedFieldTerm
+	fields[FieldDefault] = preparedFieldTerm{frequency: tf, positions: positions}
+	p.setFields(ord, fields)
+}
+
+func (p *postingList) setFields(ord uint32, fields [numDocumentFields]preparedFieldTerm) {
+	if !p.hasNonDefault {
+		for field := FieldKey; field < numDocumentFields; field++ {
+			if fields[field].frequency == 0 {
+				continue
+			}
+			p.hasNonDefault = true
+			if !p.docs.IsEmpty() {
+				p.fieldDocs[FieldDefault] = p.docs.Clone()
+			}
+			break
 		}
-		p.tfHi[ord] = clampTF(tf)
 	}
-	if len(positions) > 0 {
-		if p.positions == nil {
-			p.positions = make(map[uint32][]byte)
+	p.docs.Add(ord)
+	for field, value := range fields {
+		if value.frequency == 0 {
+			continue
 		}
-		p.positions[ord] = packPositions(positions)
+		if FieldID(field) == FieldDefault && !p.hasNonDefault {
+			// Until a non-default field appears, the union bitmap is exactly the
+			// default-field bitmap; do not duplicate it.
+		} else if p.fieldDocs[field] == nil {
+			p.fieldDocs[field] = roaring.New()
+		}
+		if p.fieldDocs[field] != nil {
+			p.fieldDocs[field].Add(ord)
+		}
+		if value.frequency > 1 {
+			if p.fieldTFHi[field] == nil {
+				p.fieldTFHi[field] = make(map[uint32]uint16)
+			}
+			p.fieldTFHi[field][ord] = clampTF(value.frequency)
+		}
+		if len(value.positions) > 0 {
+			if p.fieldPosition[field] == nil {
+				p.fieldPosition[field] = make(map[uint32][]byte)
+			}
+			p.fieldPosition[field][ord] = packPositions(value.positions)
+		}
 	}
 }
 
@@ -61,16 +96,26 @@ func (p *postingList) set(ord uint32, tf int, positions []uint32) {
 // document's position slice.
 func (p *postingList) remove(ord uint32) (empty bool) {
 	p.docs.Remove(ord)
-	if p.tfHi != nil {
-		delete(p.tfHi, ord)
-		if len(p.tfHi) == 0 {
-			p.tfHi = nil
+	for field := range p.fieldDocs {
+		if FieldID(field) == FieldDefault && !p.hasNonDefault {
+			// p.docs owns default membership in the single-field fast path.
+		} else if p.fieldDocs[field] != nil {
+			p.fieldDocs[field].Remove(ord)
+			if p.fieldDocs[field].IsEmpty() {
+				p.fieldDocs[field] = nil
+			}
 		}
-	}
-	if p.positions != nil {
-		delete(p.positions, ord)
-		if len(p.positions) == 0 {
-			p.positions = nil
+		if p.fieldTFHi[field] != nil {
+			delete(p.fieldTFHi[field], ord)
+			if len(p.fieldTFHi[field]) == 0 {
+				p.fieldTFHi[field] = nil
+			}
+		}
+		if p.fieldPosition[field] != nil {
+			delete(p.fieldPosition[field], ord)
+			if len(p.fieldPosition[field]) == 0 {
+				p.fieldPosition[field] = nil
+			}
 		}
 	}
 	return p.docs.IsEmpty()
@@ -79,34 +124,70 @@ func (p *postingList) remove(ord uint32) (empty bool) {
 // tf returns document ord's frequency for this term: 1 unless an override was
 // recorded. Callers iterate p.docs, so ord is always a member.
 func (p *postingList) tf(ord uint32) int {
-	if p.tfHi != nil {
-		if f, ok := p.tfHi[ord]; ok {
-			return int(f)
+	var total int
+	for field := FieldID(0); field < numDocumentFields; field++ {
+		total += p.tfInField(ord, field)
+	}
+	if total == 0 {
+		return 1
+	}
+	return total
+}
+
+func (p *postingList) tfInField(ord uint32, field FieldID) int {
+	docs := p.fieldDocs[field]
+	if field == FieldDefault && !p.hasNonDefault {
+		docs = p.docs
+	}
+	if docs == nil || !docs.Contains(ord) {
+		return 0
+	}
+	if p.fieldTFHi[field] != nil {
+		if frequency, ok := p.fieldTFHi[field][ord]; ok {
+			return int(frequency)
 		}
 	}
 	return 1
 }
 
-// positionsOf returns document ord's ascending token positions for this term,
+func (p *postingList) containsField(ord uint32, field FieldID) bool {
+	if field == FieldDefault && !p.hasNonDefault {
+		return p.docs.Contains(ord)
+	}
+	return p.fieldDocs[field] != nil && p.fieldDocs[field].Contains(ord)
+}
+
+func (p *postingList) fieldCardinality(field FieldID) int {
+	if field == FieldDefault && !p.hasNonDefault {
+		return int(p.docs.GetCardinality())
+	}
+	if p.fieldDocs[field] == nil {
+		return 0
+	}
+	return int(p.fieldDocs[field].GetCardinality())
+}
+
+// positionsOf returns document ord's ascending default-field positions,
 // or nil when the index does not track positions (or ord carries none). The
-// packed bytes are decoded into a fresh []uint32 on each call, so the returned
+// packed bytes are decoded into a fresh []uint64 on each call, so the returned
 // slice is owned by the caller and safe to mutate; it is not shared with the
 // posting list.
-func (p *postingList) positionsOf(ord uint32) []uint32 {
-	if p.positions == nil {
-		return nil
-	}
-	return unpackPositionsInto(nil, p.positions[ord])
+func (p *postingList) positionsOf(ord uint32) []uint64 {
+	return p.positionsInField(ord, FieldDefault)
 }
 
 // positionsInto decodes ord's positions into dst, reusing its capacity. The
 // bounded query executor keeps one scratch slice per query term so positional
 // work does not allocate once per matching document.
-func (p *postingList) positionsInto(ord uint32, dst []uint32) []uint32 {
-	if p.positions == nil {
-		return nil
+func (p *postingList) positionsInto(ord uint32, field FieldID, dst []uint64) []uint64 {
+	if p.fieldPosition[field] == nil {
+		return dst[:0]
 	}
-	return unpackPositionsInto(dst[:0], p.positions[ord])
+	return unpackPositionsInto(dst[:0], p.fieldPosition[field][ord])
+}
+
+func (p *postingList) positionsInField(ord uint32, field FieldID) []uint64 {
+	return p.positionsInto(ord, field, nil)
 }
 
 // packPositions delta+varint encodes an ascending position slice: the first
@@ -116,12 +197,12 @@ func (p *postingList) positionsInto(ord uint32, dst []uint32) []uint32 {
 // counter), so gaps are small and pack into a single byte for the short vertex
 // values Lantern indexes — a ~4x shrink over the raw []uint32. positions must
 // be ascending; the indexer builds it that way.
-func packPositions(positions []uint32) []byte {
+func packPositions(positions []uint64) []byte {
 	// One byte per position is the common case, so size the buffer for it.
 	buf := make([]byte, 0, len(positions))
-	var prev uint32
+	var prev uint64
 	for _, pos := range positions {
-		buf = binary.AppendUvarint(buf, uint64(pos-prev))
+		buf = binary.AppendUvarint(buf, pos-prev)
 		prev = pos
 	}
 	return buf
@@ -130,26 +211,26 @@ func packPositions(positions []uint32) []byte {
 // unpackPositions reverses packPositions, decoding the delta+varint bytes back
 // into the ascending absolute positions. It returns nil for empty input (a
 // document that carries no positions for the term).
-func unpackPositions(b []byte) []uint32 {
+func unpackPositions(b []byte) []uint64 {
 	return unpackPositionsInto(nil, b)
 }
 
-func unpackPositionsInto(dst []uint32, b []byte) []uint32 {
+func unpackPositionsInto(dst []uint64, b []byte) []uint64 {
 	if len(b) == 0 {
 		return dst[:0]
 	}
 	// Each position occupies at least one byte, so len(b) bounds the count.
 	out := dst
 	if cap(out) < len(b) {
-		out = make([]uint32, 0, len(b))
+		out = make([]uint64, 0, len(b))
 	}
-	var acc uint32
+	var acc uint64
 	for i := 0; i < len(b); {
 		delta, n := binary.Uvarint(b[i:])
 		if n <= 0 {
 			break // malformed; only reachable on a corrupted buffer
 		}
-		acc += uint32(delta)
+		acc += delta
 		out = append(out, acc)
 		i += n
 	}

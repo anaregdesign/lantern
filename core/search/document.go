@@ -2,6 +2,7 @@ package search
 
 import (
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 )
@@ -16,9 +17,55 @@ type Document interface {
 	String() string
 }
 
+// FieldID is a stable semantic search field. FieldDefault preserves the
+// single-text Document contract; FieldKey and FieldValue let layered stores
+// keep identifier and content evidence separate without importing their
+// domain types into core.
+type FieldID uint8
+
+const (
+	FieldDefault FieldID = iota
+	FieldKey
+	FieldValue
+	numDocumentFields
+)
+
+// DocumentField is one independently analyzed field instance. Multiple
+// FieldValue entries are allowed (for example JSON string leaves); phrase and
+// proximity never cross from one instance to another.
+type DocumentField struct {
+	ID   FieldID
+	Text string
+}
+
+// FieldedDocument exposes structured search fields. It remains a Document so
+// existing generic index bounds and diagnostics keep a plain-text fallback,
+// but Prepare uses SearchFields directly when this interface is present.
+type FieldedDocument interface {
+	Document
+	SearchFields() []DocumentField
+}
+
+// Fields is a convenient immutable FieldedDocument for callers that already
+// have projected text instances.
+type Fields []DocumentField
+
+func (f Fields) SearchFields() []DocumentField { return f }
+
+func (f Fields) String() string {
+	var b strings.Builder
+	for _, field := range f {
+		if b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(field.Text)
+	}
+	return b.String()
+}
+
 // SizedDocument can expose a cheap upper bound before String performs an
 // expensive projection. The production vertex projection uses it to reject a
-// large JSON/string payload before parsing or concatenating it.
+// large JSON/string payload before parsing or projecting its fields.
 type SizedDocument interface {
 	Document
 	SizeHint() int

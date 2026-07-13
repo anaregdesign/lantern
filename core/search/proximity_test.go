@@ -119,15 +119,15 @@ func TestProximityBoostTopK(t *testing.T) {
 func TestSmallestWindow(t *testing.T) {
 	tests := []struct {
 		name  string
-		lists [][]uint32
+		lists [][]uint64
 		want  int
 	}{
-		{"two adjacent", [][]uint32{{1}, {2}}, 1},
-		{"two apart", [][]uint32{{0}, {5}}, 5},
-		{"three consecutive", [][]uint32{{0}, {1}, {2}}, 2},
-		{"picks the closest occurrences", [][]uint32{{0, 10}, {9}}, 1},
-		{"single list has zero width", [][]uint32{{3, 7}}, 0},
-		{"an empty list has no window", [][]uint32{{1}, {}}, -1},
+		{"two adjacent", [][]uint64{{1}, {2}}, 1},
+		{"two apart", [][]uint64{{0}, {5}}, 5},
+		{"three consecutive", [][]uint64{{0}, {1}, {2}}, 2},
+		{"picks the closest occurrences", [][]uint64{{0, 10}, {9}}, 1},
+		{"single list has zero width", [][]uint64{{3, 7}}, 0},
+		{"an empty list has no window", [][]uint64{{1}, {}}, -1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

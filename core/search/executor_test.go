@@ -179,6 +179,43 @@ func TestBoundedPhraseExecutorMatchesExhaustive(t *testing.T) {
 	}
 }
 
+func TestBoundedExecutorStructuredFieldsMatchExhaustive(t *testing.T) {
+	scorer := FieldWeighted{Base: BM25{K1: DefaultBM25K1, B: DefaultBM25B}, KeyWeight: DefaultKeyFieldWeight, ValueWeight: 1}
+	idx := NewInvertedIndex[string, Document](fakeAnalyzer{}, scorer, compareStringID, WithPositions())
+	for i := 0; i < 150; i++ {
+		doc := Fields{
+			{ID: FieldKey, Text: fmt.Sprintf("tenant%d alpha", i%7)},
+			{ID: FieldValue, Text: "beta gamma"},
+			{ID: FieldValue, Text: "delta alpha"},
+		}
+		if i%5 == 0 {
+			doc[1].Text = "alpha beta gamma"
+		}
+		if err := idx.Index(fmt.Sprintf("doc-%03d", i), doc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		query string
+		opts  MatchOptions
+	}{
+		{"alpha beta", MatchOptions{}},
+		{"alpha beta", MatchOptions{Mode: MatchAll}},
+		{"alp", MatchOptions{PrefixTerms: true}},
+		{"gama", MatchOptions{Fuzziness: 1}},
+	} {
+		want := exhaustiveTopK(idx.SearchMatch(tc.query, tc.opts), 17, nil)
+		got := idx.SearchMatchTopK(tc.query, 17, nil, tc.opts)
+		if !slices.Equal(got, want) {
+			t.Fatalf("query=%q opts=%+v:\n got  %v\n want %v", tc.query, tc.opts, got, want)
+		}
+	}
+	wantPhrase := exhaustiveTopK(idx.SearchPhrase("alpha beta"), 11, nil)
+	if got := idx.SearchPhraseTopK("alpha beta", 11, nil); !slices.Equal(got, wantPhrase) {
+		t.Fatalf("phrase:\n got  %v\n want %v", got, wantPhrase)
+	}
+}
+
 func TestBoundedTopKAllocationsDoNotScaleWithMatches(t *testing.T) {
 	build := func(n int) *InvertedIndex[string, Text] {
 		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID, WithPositions())

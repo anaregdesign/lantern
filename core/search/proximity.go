@@ -59,39 +59,28 @@ func (idx *InvertedIndex[S, D]) applyProximityTrackedLocked(scores map[uint32]fl
 	if len(lists) < 2 {
 		return nil
 	}
-	present := make([][]uint32, 0, len(lists))
+	var scratch executorScratch
 	for ord := range scores {
 		if err := work.check(); err != nil {
 			return err
 		}
-		present = present[:0]
-		for _, pl := range lists {
-			if pos := pl.positionsOf(ord); pos != nil {
-				if err := work.visit(WorkPositionVisits, int64(len(pos))); err != nil {
-					return err
-				}
-				present = append(present, pos)
+		var best float64
+		for field := FieldID(0); field < numDocumentFields; field++ {
+			present, err := scratch.decode(lists, ord, field, work)
+			if err != nil {
+				return err
+			}
+			bonus, err := scratch.proximityBonus(present, work)
+			if err != nil {
+				return err
+			}
+			if bonus > best {
+				best = bonus
 			}
 		}
-		if len(present) < 2 {
-			continue
+		if best > 0 {
+			addScore(scores, ord, idx.proximityWeight*best)
 		}
-		w, err := smallestWindowTracked(present, work)
-		if err != nil {
-			return err
-		}
-		if w < 0 {
-			continue
-		}
-		// The tightest window for t present terms spans t-1 gaps (consecutive
-		// positions), so span is the excess spread over that ideal: 0 for an
-		// exact adjacency, growing as the terms drift apart. The bonus decays
-		// as 1/(span+1) and scales with the number of clustered terms.
-		span := w - (len(present) - 1)
-		if span < 0 {
-			span = 0
-		}
-		addScore(scores, ord, idx.proximityWeight*float64(len(present)-1)/float64(span+1))
 	}
 	return nil
 }
@@ -102,25 +91,25 @@ func (idx *InvertedIndex[S, D]) applyProximityTrackedLocked(scores map[uint32]fl
 // range covering elements from k sorted lists" sweep: repeatedly advance the
 // pointer sitting at the current minimum — the only move that can shrink the
 // window — until that list is exhausted.
-func smallestWindow(lists [][]uint32) int {
+func smallestWindow(lists [][]uint64) int {
 	best, _ := smallestWindowTracked(lists, newWorkTracker(nil, Budget{}))
 	return best
 }
 
-func smallestWindowTracked(lists [][]uint32, work *workTracker) (int, error) {
+func smallestWindowTracked(lists [][]uint64, work *workTracker) (int, error) {
 	ptr := make([]int, len(lists))
 	return smallestWindowWithPointersTracked(lists, ptr, work)
 }
 
-func smallestWindowWithPointersTracked(lists [][]uint32, ptr []int, work *workTracker) (int, error) {
+func smallestWindowWithPointersTracked(lists [][]uint64, ptr []int, work *workTracker) (int, error) {
 	clear(ptr)
 	best := -1
 	for {
 		if err := work.check(); err != nil {
 			return -1, err
 		}
-		lo := ^uint32(0)
-		var hi uint32
+		lo := ^uint64(0)
+		var hi uint64
 		loList := -1
 		for i, l := range lists {
 			if len(l) == 0 {

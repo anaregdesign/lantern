@@ -479,7 +479,7 @@ func BenchmarkPutVertex_Search(b *testing.B) {
 
 	b.Run("Indexed", func(b *testing.B) {
 		c := NewGraphCache[string, string](time.Hour)
-		c.EnableSearchIndex(func(v string) search.Document { return search.Text(v) }, compareStringID)
+		c.EnableSearchIndex(func(_ string, v string) search.Document { return search.Text(v) }, compareStringID)
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
@@ -530,7 +530,7 @@ func BenchmarkSearchVertices(b *testing.B) {
 	const n = 5000
 	newSeeded := func() *GraphCache[string, string] {
 		c := NewGraphCache[string, string](time.Hour)
-		c.EnableSearchIndex(func(v string) search.Document { return search.Text(v) }, compareStringID)
+		c.EnableSearchIndex(func(_ string, v string) search.Document { return search.Text(v) }, compareStringID)
 		c.EnablePrefixIndex(func(s string) string { return s })
 		exp := time.Now().Add(time.Hour)
 		for i := 0; i < n; i++ {
@@ -618,7 +618,7 @@ func BenchmarkDeleteVertices_Indexed(b *testing.B) {
 				b.StopTimer()
 				c := NewGraphCache[string, string](time.Hour)
 				c.EnablePrefixIndex(func(k string) string { return k })
-				c.EnableSearchIndex(func(v string) search.Document { return search.Text(v) }, compareStringID)
+				c.EnableSearchIndex(func(_ string, v string) search.Document { return search.Text(v) }, compareStringID)
 				vs := make([]VertexItem[string, string], n)
 				for i, k := range keys {
 					vs[i] = VertexItem[string, string]{Key: k, Value: benchSearchCorpus[i%len(benchSearchCorpus)], Expiration: exp}
@@ -653,7 +653,7 @@ func BenchmarkDeleteByPrefix_Indexed(b *testing.B) {
 				b.StopTimer()
 				c := NewGraphCache[string, string](time.Hour)
 				c.EnablePrefixIndex(func(k string) string { return k })
-				c.EnableSearchIndex(func(v string) search.Document { return search.Text(v) }, compareStringID)
+				c.EnableSearchIndex(func(_ string, v string) search.Document { return search.Text(v) }, compareStringID)
 				vs := make([]VertexItem[string, string], n)
 				for i, k := range keys {
 					vs[i] = VertexItem[string, string]{Key: k, Value: benchSearchCorpus[i%len(benchSearchCorpus)], Expiration: exp}
@@ -704,7 +704,7 @@ func BenchmarkPutVerticesIndexed(b *testing.B) {
 
 	b.Run("SearchEnabled", func(b *testing.B) {
 		c := NewGraphCache[string, string](time.Hour)
-		c.EnableSearchIndex(func(v string) search.Document { return search.Text(v) }, compareStringID)
+		c.EnableSearchIndex(func(_ string, v string) search.Document { return search.Text(v) }, compareStringID)
 		items := makeBatch("k")
 		b.ReportAllocs()
 		b.ResetTimer()
@@ -715,7 +715,7 @@ func BenchmarkPutVerticesIndexed(b *testing.B) {
 
 	b.Run("SearchEnabledParallel", func(b *testing.B) {
 		c := NewGraphCache[string, string](time.Hour)
-		c.EnableSearchIndex(func(v string) search.Document { return search.Text(v) }, compareStringID)
+		c.EnableSearchIndex(func(_ string, v string) search.Document { return search.Text(v) }, compareStringID)
 		var worker atomic.Int64
 		b.ReportAllocs()
 		b.ResetTimer()
@@ -779,7 +779,7 @@ func BenchmarkPutVerticesIndexedBatchPreparation(b *testing.B) {
 				if !positions {
 					opts = append(opts, WithoutSearchPositions())
 				}
-				c.EnableSearchIndex(func(value string) search.Document { return search.Text(value) }, compareStringID, opts...)
+				c.EnableSearchIndex(func(_ string, value string) search.Document { return search.Text(value) }, compareStringID, opts...)
 				if scenario.skipped {
 					if err := c.PutVerticesWithExpiration(items); err != nil {
 						b.Fatal(err)
@@ -829,7 +829,7 @@ func BenchmarkApplyPutVerticesHLC(b *testing.B) {
 	}
 	newCache := func() *GraphCache[string, string] {
 		c := NewGraphCache[string, string](time.Hour)
-		c.EnableSearchIndex(func(v string) search.Document { return search.Text(v) }, compareStringID)
+		c.EnableSearchIndex(func(_ string, v string) search.Document { return search.Text(v) }, compareStringID)
 		return c
 	}
 	ts := hlc.Timestamp{WallNs: 1}

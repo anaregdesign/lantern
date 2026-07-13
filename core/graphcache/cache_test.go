@@ -375,7 +375,7 @@ func TestGraphCache_PutVertexWithExpiration_BornExpired(t *testing.T) {
 	newCache := func() *GraphCache[string, string] {
 		c := NewGraphCache[string, string](time.Minute)
 		c.EnablePrefixIndex(func(s string) string { return s })
-		c.EnableSearchIndex(func(v string) search.Document { return search.Text(v) }, compareStringID)
+		c.EnableSearchIndex(func(_ string, v string) search.Document { return search.Text(v) }, compareStringID)
 		return c
 	}
 	past := time.Now().Add(-time.Hour)
@@ -1457,7 +1457,7 @@ func TestSearchIndexStats(t *testing.T) {
 		t.Errorf("disabled: got (%d, %d), want (0, 0)", terms, docs)
 	}
 
-	c.EnableSearchIndex(func(v string) search.Document { return search.Text(v) }, compareStringID)
+	c.EnableSearchIndex(func(_ string, v string) search.Document { return search.Text(v) }, compareStringID)
 	exp := time.Now().Add(time.Hour)
 	c.PutVertexWithExpiration("key:1", "hello world", exp)
 	c.PutVertexWithExpiration("key:2", "foo bar", exp)

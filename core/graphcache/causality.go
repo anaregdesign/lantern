@@ -38,7 +38,7 @@ func (c *GraphCache[S, T]) PutVertexWithExpirationHLC(key S, value T, expiration
 	var prepared search.PreparedDocument
 	var prepErr error
 	if c.searchIndex != nil {
-		prepared, _, prepErr = c.searchIndex.Prepare(c.searchExtract(value))
+		prepared, _, prepErr = c.searchIndex.Prepare(c.searchExtract(key, value))
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()

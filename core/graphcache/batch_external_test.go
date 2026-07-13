@@ -22,14 +22,14 @@ func (d countingSearchDocument) String() string {
 	return d.text
 }
 
-func countingSearchExtract(d countingSearchDocument) search.Document { return d }
+func countingSearchExtract(_ string, d countingSearchDocument) search.Document { return d }
 
 func compareStringID(a, b string) int { return strings.Compare(a, b) }
 
 func TestPutVerticesWithExpiration_SearchBatchPreparation(t *testing.T) {
 	t.Run("one write lock and final duplicate state", func(t *testing.T) {
 		c := graphcache.NewGraphCache[string, string](time.Minute)
-		c.EnableSearchIndex(func(value string) search.Document { return search.Text(value) }, compareStringID)
+		c.EnableSearchIndex(func(_ string, value string) search.Document { return search.Text(value) }, compareStringID)
 		exp := time.Now().Add(time.Minute)
 		if err := c.PutVerticesWithExpiration([]graphcache.VertexItem[string, string]{
 			{Key: "gone", Value: "old gone", Expiration: exp},
@@ -133,7 +133,7 @@ func TestPutVerticesWithExpiration_SearchBatchPreparation(t *testing.T) {
 func TestPutVerticesWithExpiration_SearchBatchVisibility(t *testing.T) {
 	const documents = 128
 	c := graphcache.NewGraphCache[string, string](time.Minute)
-	c.EnableSearchIndex(func(value string) search.Document { return search.Text(value) }, compareStringID)
+	c.EnableSearchIndex(func(_ string, value string) search.Document { return search.Text(value) }, compareStringID)
 	exp := time.Now().Add(time.Minute)
 	items := make([]graphcache.VertexItem[string, string], documents)
 	keys := make([]string, documents)
@@ -386,7 +386,7 @@ func TestBatchAPIs_ReturnCounts(t *testing.T) {
 func TestDeleteVertices_ClearsPrefixAndSearchIndexes(t *testing.T) {
 	c := graphcache.NewGraphCache[string, string](time.Minute)
 	c.EnablePrefixIndex(func(k string) string { return k })
-	c.EnableSearchIndex(func(v string) search.Document { return search.Text(v) }, strings.Compare)
+	c.EnableSearchIndex(func(_ string, v string) search.Document { return search.Text(v) }, strings.Compare)
 
 	c.PutVertex("ns:a", "alpha")
 	c.PutVertex("ns:b", "bravo")

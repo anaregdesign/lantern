@@ -1,6 +1,9 @@
 package search
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestLowercaseNormalizer(t *testing.T) {
 	if got := (LowercaseNormalizer{}).Normalize("HeLLo Wörld"); got != "hello wörld" {
@@ -123,5 +126,15 @@ func TestJSONStringValueNormalizer(t *testing.T) {
 				t.Fatalf("Normalize(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestJSONStringValueNormalizerValuesPreserveBoundaries(t *testing.T) {
+	values, structured := (JSONStringValueNormalizer{}).Values(`{"b":["beta","gamma"],"a":"alpha","n":4}`)
+	if !structured || !slices.Equal(values, []string{"alpha", "beta", "gamma"}) {
+		t.Fatalf("Values = %v, %t", values, structured)
+	}
+	if values, structured := (JSONStringValueNormalizer{}).Values("plain text"); structured || values != nil {
+		t.Fatalf("plain Values = %v, %t", values, structured)
 	}
 }

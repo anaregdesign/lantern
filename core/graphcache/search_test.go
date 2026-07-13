@@ -18,8 +18,15 @@ import (
 
 // textExtract is the value projection used by the string-keyed tests: it makes
 // the stored string value itself the searchable document.
-func textExtract(s string) search.Document { return search.Text(s) }
-func compareStringID(a, b string) int      { return strings.Compare(a, b) }
+func textExtract(_ string, s string) search.Document { return search.Text(s) }
+func compareStringID(a, b string) int                { return strings.Compare(a, b) }
+func keyValueExtract(key, value string) search.Document {
+	fields := search.Fields{{ID: search.FieldKey, Text: key}}
+	if value != "" {
+		fields = append(fields, search.DocumentField{ID: search.FieldValue, Text: value})
+	}
+	return fields
+}
 
 func TestGraphCacheSearchAnalysisLimits(t *testing.T) {
 	limits := search.SearchAnalysisLimits{
@@ -396,6 +403,44 @@ func TestGraphCache_SearchVertices(t *testing.T) {
 		got := c.SearchVertices("keyword", 10, "user:")
 		if want := []string{"user:1", "user:2"}; !equalKeys(keys(got), want) {
 			t.Fatalf("SearchVertices(keyword, prefix user:) = %v, want %v", keys(got), want)
+		}
+	})
+
+	t.Run("Implicit endpoints are key-searchable and follow vertex lifecycle", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Minute)
+		c.EnableSearchIndex(keyValueExtract, compareStringID)
+		expiration := time.Now().Add(time.Hour)
+		c.AddEdgeWithExpiration("implicit-tail-unique", "implicit-head-unique", 1, expiration)
+		if got := keys(c.SearchVertices("tail", 10, "")); !equalKeys(got, []string{"implicit-tail-unique"}) {
+			t.Fatalf("implicit tail search = %v", got)
+		}
+		if got := keys(c.SearchVertices("head", 10, "")); !equalKeys(got, []string{"implicit-head-unique"}) {
+			t.Fatalf("implicit head search = %v", got)
+		}
+		if err := c.PutVertexWithExpiration("implicit-tail-unique", "explicit-content", expiration); err != nil {
+			t.Fatal(err)
+		}
+		if got := keys(c.SearchVertices("content", 10, "")); !equalKeys(got, []string{"implicit-tail-unique"}) {
+			t.Fatalf("explicit value search = %v", got)
+		}
+		if !c.DeleteVertex("implicit-tail-unique") {
+			t.Fatal("DeleteVertex returned false")
+		}
+		if got := c.SearchVertices("tail content", 10, ""); got != nil {
+			t.Fatalf("deleted endpoint remained searchable: %v", keys(got))
+		}
+
+		expiring := NewGraphCache[string, string](time.Minute)
+		expiring.EnableSearchIndex(keyValueExtract, compareStringID)
+		due := time.Now().Add(10 * time.Millisecond)
+		expiring.AddEdgeWithExpiration("revived-tail", "revived-head", 1, due)
+		time.Sleep(time.Until(due) + 5*time.Millisecond)
+		if got := expiring.SearchVertices("revived", 10, ""); got != nil {
+			t.Fatalf("expired endpoints searchable: %v", keys(got))
+		}
+		expiring.PutEdgeWithExpiration("revived-tail", "revived-head", 1, time.Now().Add(time.Hour))
+		if got := keys(expiring.SearchVertices("tail", 10, "")); !equalKeys(got, []string{"revived-tail"}) {
+			t.Fatalf("revived endpoint search = %v", got)
 		}
 	})
 

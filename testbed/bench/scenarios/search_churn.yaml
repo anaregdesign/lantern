@@ -5,6 +5,8 @@
 #   slower vertex GC; the later eviction hook is an idempotent delete (#1057).
 # - thread-safety: concurrent index-write (PutVertex) vs Search read
 #   under the InvertedIndex RWMutex.
+# - structured projection: every write updates separate key/value field
+#   postings and field-local BM25/positions (`vertex-fields-v2`, #1061).
 # - consistency: SearchVertices purges vertices whose TTL has expired but whose
 #   Flush has not yet run, so BM25 stats and vocabulary use the returned live
 #   corpus rather than merely hiding dead keys (#1057).
