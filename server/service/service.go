@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -473,6 +474,34 @@ func (s *LanternService) LocalSeq(origin hlc.NodeID) uint64 {
 	return s.origins.LocalSeq(origin)
 }
 
+// ApplySnapshotWatermarks advances the per-origin dedup table to a completed
+// snapshot's cutoff. This lets the next Subscribe resume at cutoff+1 instead
+// of repeatedly falling back to the same snapshot, and makes PeerStatus
+// truthful immediately after bootstrap.
+func (s *LanternService) ApplySnapshotWatermarks(cutoffs map[string]uint64, ts hlc.Timestamp) error {
+	if s.origins == nil {
+		return nil
+	}
+	type cutoff struct {
+		origin hlc.NodeID
+		seq    uint64
+	}
+	validated := make([]cutoff, 0, len(cutoffs))
+	for encoded, seq := range cutoffs {
+		decoded, err := hex.DecodeString(encoded)
+		if err != nil || len(decoded) != len(hlc.NodeID{}) {
+			return fmt.Errorf("snapshot cutoff origin %q is not a 16-byte hex NodeID", encoded)
+		}
+		var origin hlc.NodeID
+		copy(origin[:], decoded)
+		validated = append(validated, cutoff{origin: origin, seq: seq})
+	}
+	for _, item := range validated {
+		s.origins.Record(item.origin, item.seq, ts)
+	}
+	return nil
+}
+
 // OriginStatesCount returns the number of distinct origins currently
 // recorded in the per-origin watermark table, or 0 when the tracker is
 // unwired. Used by provider/metrics to sample lantern_origin_states_count.
@@ -481,6 +510,30 @@ func (s *LanternService) OriginStatesCount() int {
 		return 0
 	}
 	return s.origins.OriginCount()
+}
+
+type searchIndexRecoveryBackend interface {
+	BeginSearchIndexRecovery()
+	CompleteSearchIndexRecovery() error
+}
+
+// BeginSearchIndexRecovery marks an optional derived index incomplete before
+// snapshot or restore bulk replay. Backends without search support remain a
+// no-op so the service's narrow fake seams stay source-compatible.
+func (s *LanternService) BeginSearchIndexRecovery() {
+	if recovery, ok := s.cache.(searchIndexRecoveryBackend); ok {
+		recovery.BeginSearchIndexRecovery()
+	}
+}
+
+// CompleteSearchIndexRecovery rebuilds the optional derived index from the
+// complete live graph. Graph convergence is preserved even when the rebuild
+// returns a configured search-limit error; callers decide how to surface it.
+func (s *LanternService) CompleteSearchIndexRecovery() error {
+	if recovery, ok := s.cache.(searchIndexRecoveryBackend); ok {
+		return recovery.CompleteSearchIndexRecovery()
+	}
+	return nil
 }
 
 // logMutation appends op to the mutation log after a local commit. The HLC

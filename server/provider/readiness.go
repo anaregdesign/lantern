@@ -78,6 +78,11 @@ func (f *pumpMetricsFanOut) OnPumpSnapshotReplayed(peer string, vertices, edges 
 	f.gate.OnPumpSnapshotReplayed(peer, vertices, edges, duration)
 }
 
+func (f *pumpMetricsFanOut) OnSearchConfig(peer string, matched bool) {
+	f.dm.OnSearchConfig(peer, matched)
+	f.gate.OnSearchConfig(peer, matched)
+}
+
 // antiEntropyMetricsFanOut delegates AntiEntropyMetrics events to both
 // *DomainMetrics and the readiness Gate.
 type antiEntropyMetricsFanOut struct {
@@ -114,4 +119,9 @@ func (f *antiEntropyMetricsFanOut) OnAntiEntropyCaughtUp(peer, origin string, ap
 func (f *antiEntropyMetricsFanOut) OnAntiEntropyError(peer, reason string) {
 	f.dm.OnAntiEntropyError(peer, reason)
 	f.gate.OnAntiEntropyError(peer, reason)
+}
+
+func (f *antiEntropyMetricsFanOut) OnSearchConfig(peer string, matched bool) {
+	f.dm.OnSearchConfig(peer, matched)
+	f.gate.OnSearchConfig(peer, matched)
 }

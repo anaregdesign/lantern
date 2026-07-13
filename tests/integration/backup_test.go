@@ -141,10 +141,12 @@ func TestBackupper_ServerInternal_RoundTrip_E2E(t *testing.T) {
 	val := provider.NewValidationInterceptor(defaultIntegrationValidationLimits())
 
 	// Source service, seeded via the SDK.
-	srcCache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
-	srcSvc := service.NewLanternService(srcCache)
+	searchLimits := productionSearchLimits(true, true)
+	srcCache := newProductionSearchCache(time.Minute, true, true, searchLimits.AnalysisLimits)
+	srcSvc := service.NewLanternService(srcCache).WithSearchLimits(searchLimits)
 	srcSrv := newConnectTestServer(t, srcSvc, nil, val.ConnectInterceptor())
 	srcSDK := newConnectClientFor(t, srcSrv.url)
+	srcRaw := graphv1connect.NewLanternServiceClient(h2cClient(), srcSrv.url)
 
 	const bigInt = int64(9007199254740993) // 2^53 + 1
 	if err := srcSDK.PutVertex(ctx, "alice", "Alice", time.Minute); err != nil {
@@ -156,15 +158,20 @@ func TestBackupper_ServerInternal_RoundTrip_E2E(t *testing.T) {
 	if _, err := srcSDK.AddEdge(ctx, "alice", "num", 1.5, time.Minute); err != nil {
 		t.Fatal(err)
 	}
+	expiresBeforeRestore := time.Now().Add(500 * time.Millisecond)
+	if err := srcSDK.PutVertexAt(ctx, "expired-during-restart", "restore-expired-term", expiresBeforeRestore); err != nil {
+		t.Fatal(err)
+	}
 
 	// Server-internal dump (same path as the periodic loop).
 	if _, err := backup.New(srcSvc, cfg, nil, nil).BackupNow(ctx); err != nil {
 		t.Fatalf("BackupNow: %v", err)
 	}
+	time.Sleep(time.Until(expiresBeforeRestore) + 25*time.Millisecond)
 
 	// Fresh service, restored on startup from the dump.
-	dstCache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
-	dstSvc := service.NewLanternService(dstCache)
+	dstCache := newProductionSearchCache(time.Minute, true, true, searchLimits.AnalysisLimits)
+	dstSvc := service.NewLanternService(dstCache).WithSearchLimits(searchLimits)
 	dstSrv := newConnectTestServer(t, dstSvc, nil, val.ConnectInterceptor())
 	dstRaw := graphv1connect.NewLanternServiceClient(h2cClient(), dstSrv.url)
 
@@ -186,6 +193,20 @@ func TestBackupper_ServerInternal_RoundTrip_E2E(t *testing.T) {
 	}
 	if e := es["alice->num"]; e == nil || e.GetWeight() != 1.5 {
 		t.Errorf("restored edge alice->num = %v, want weight 1.5", e)
+	}
+	if _, ok := vs["expired-during-restart"]; ok {
+		t.Errorf("born-expired restore resurrected expired vertex: %v", vs)
+	}
+	waitForSearchConvergence(t, ctx, "Alice", nil, srcRaw, dstRaw)
+	if got, err := wireSearchSignature(ctx, dstRaw, "restore-expired-term", nil); err != nil || len(got) != 0 {
+		t.Fatalf("expired restore search = %+v err=%v", got, err)
+	}
+	status, err := dstRaw.GetServerStatus(ctx, connect.NewRequest(&pb.GetServerStatusRequest{}))
+	if err != nil {
+		t.Fatalf("GetServerStatus after restore: %v", err)
+	}
+	if got := status.Msg.GetSearch().GetIndexStats(); got.GetHealth() != pb.SearchIndexHealth_SEARCH_INDEX_HEALTH_HEALTHY || got.GetDocuments() != 2 {
+		t.Fatalf("restored search stats = %+v, want healthy with two documents", got)
 	}
 }
 

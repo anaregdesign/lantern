@@ -191,6 +191,13 @@ func (s *LanternService) searchCapabilities() *pb.SearchCapabilities {
 	return capabilities
 }
 
+// SearchConfigFingerprint returns the stable search-capability fingerprint
+// published by GetServerStatus. The replication PeerStatus surface uses the
+// same value so HA members compare exactly the contract clients discover.
+func (s *LanternService) SearchConfigFingerprint() string {
+	return s.searchCapabilities().GetConfigFingerprint()
+}
+
 // statusVersion returns the configured version string, falling back to
 // the VCS-stamped main module version baked in by `go build` (modern
 // Go embeds it in runtime/debug.BuildInfo). When neither is available

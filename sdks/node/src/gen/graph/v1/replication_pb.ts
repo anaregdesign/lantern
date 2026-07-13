@@ -14,7 +14,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file graph/v1/replication.proto.
  */
 export const file_graph_v1_replication: GenFile = /*@__PURE__*/
-  fileDesc("ChpncmFwaC92MS9yZXBsaWNhdGlvbi5wcm90bxIIZ3JhcGgudjEiQQoMSExDVGltZXN0YW1wEg8KB3dhbGxfbnMYASABKAMSDwoHbG9naWNhbBgCIAEoDRIPCgdub2RlX2lkGAMgASgMIqoFCgpNdXRhdGlvbk9wEjAKCnB1dF92ZXJ0ZXgYASABKAsyGi5ncmFwaC52MS5QdXRWZXJ0ZXhSZXF1ZXN0SAASNAoMcHV0X3ZlcnRpY2VzGAIgASgLMhwuZ3JhcGgudjEuUHV0VmVydGljZXNSZXF1ZXN0SAASNgoNZGVsZXRlX3ZlcnRleBgDIAEoCzIdLmdyYXBoLnYxLkRlbGV0ZVZlcnRleFJlcXVlc3RIABI6Cg9kZWxldGVfdmVydGljZXMYBCABKAsyHy5ncmFwaC52MS5EZWxldGVWZXJ0aWNlc1JlcXVlc3RIABJMChlkZWxldGVfdmVydGljZXNfYnlfcHJlZml4GAUgASgLMicuZ3JhcGgudjEuRGVsZXRlVmVydGljZXNCeVByZWZpeFJlcXVlc3RIABIsCghhZGRfZWRnZRgGIAEoCzIYLmdyYXBoLnYxLkFkZEVkZ2VSZXF1ZXN0SAASLgoJYWRkX2VkZ2VzGAcgASgLMhkuZ3JhcGgudjEuQWRkRWRnZXNSZXF1ZXN0SAASLAoIcHV0X2VkZ2UYCCABKAsyGC5ncmFwaC52MS5QdXRFZGdlUmVxdWVzdEgAEi4KCXB1dF9lZGdlcxgJIAEoCzIZLmdyYXBoLnYxLlB1dEVkZ2VzUmVxdWVzdEgAEjIKC2RlbGV0ZV9lZGdlGAogASgLMhsuZ3JhcGgudjEuRGVsZXRlRWRnZVJlcXVlc3RIABI0CgxkZWxldGVfZWRnZXMYCyABKAsyHC5ncmFwaC52MS5EZWxldGVFZGdlc1JlcXVlc3RIABJGChZkZWxldGVfZWRnZXNfYnlfcHJlZml4GAwgASgLMiQuZ3JhcGgudjEuRGVsZXRlRWRnZXNCeVByZWZpeFJlcXVlc3RIAEIECgJvcCJuCghNdXRhdGlvbhILCgNzZXEYASABKAQSIwoDaGxjGAIgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wEg4KBm9yaWdpbhgDIAEoDBIgCgJvcBgEIAEoCzIULmdyYXBoLnYxLk11dGF0aW9uT3AimgEKEFN1YnNjcmliZVJlcXVlc3QSTQoTZnJvbV9zZXFfcGVyX29yaWdpbhgBIAMoCzIwLmdyYXBoLnYxLlN1YnNjcmliZVJlcXVlc3QuRnJvbVNlcVBlck9yaWdpbkVudHJ5GjcKFUZyb21TZXFQZXJPcmlnaW5FbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAQ6AjgBIjkKEVN1YnNjcmliZVJlc3BvbnNlEiQKCG11dGF0aW9uGAEgASgLMhIuZ3JhcGgudjEuTXV0YXRpb24iEQoPU25hcHNob3RSZXF1ZXN0IsgBCg5TbmFwc2hvdEhlYWRlchJPChVjdXRvZmZfc2VxX3Blcl9vcmlnaW4YASADKAsyMC5ncmFwaC52MS5TbmFwc2hvdEhlYWRlci5DdXRvZmZTZXFQZXJPcmlnaW5FbnRyeRIqCgpjdXRvZmZfaGxjGAIgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wGjkKF0N1dG9mZlNlcVBlck9yaWdpbkVudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoBDoCOAEiOgoOU25hcHNob3RGb290ZXISFAoMdmVydGV4X2NvdW50GAEgASgEEhIKCmVkZ2VfY291bnQYAiABKAQiVwoOU25hcHNob3RWZXJ0ZXgSIAoGdmVydGV4GAEgASgLMhAuZ3JhcGgudjEuVmVydGV4EiMKA2hsYxgCIAEoCzIWLmdyYXBoLnYxLkhMQ1RpbWVzdGFtcCJuChhTbmFwc2hvdEVkZ2VDb250cmlidXRpb24SDgoGd2VpZ2h0GAEgASgCEi4KCmV4cGlyYXRpb24YAiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhIKCmNvbnRyaWJfaWQYAyABKAwiigEKDFNuYXBzaG90RWRnZRIMCgR0YWlsGAEgASgJEgwKBGhlYWQYAiABKAkSIwoDaGxjGAMgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wEjkKDWNvbnRyaWJ1dGlvbnMYBCADKAsyIi5ncmFwaC52MS5TbmFwc2hvdEVkZ2VDb250cmlidXRpb24ixwEKEFNuYXBzaG90UmVzcG9uc2USKgoGaGVhZGVyGAEgASgLMhguZ3JhcGgudjEuU25hcHNob3RIZWFkZXJIABIqCgZ2ZXJ0ZXgYAiABKAsyGC5ncmFwaC52MS5TbmFwc2hvdFZlcnRleEgAEiYKBGVkZ2UYAyABKAsyFi5ncmFwaC52MS5TbmFwc2hvdEVkZ2VIABIqCgZmb290ZXIYBCABKAsyGC5ncmFwaC52MS5TbmFwc2hvdEZvb3RlckgAQgcKBWVudHJ5IhMKEVBlZXJTdGF0dXNSZXF1ZXN0IlkKC09yaWdpblN0YXRlEg4KBm9yaWdpbhgBIAEoDBIQCghsYXN0X3NlcRgCIAEoBBIoCghsYXN0X2hsYxgDIAEoCzIWLmdyYXBoLnYxLkhMQ1RpbWVzdGFtcCJRChJQZWVyU3RhdHVzUmVzcG9uc2USEwoLc2VsZl9vcmlnaW4YASABKAwSJgoHb3JpZ2lucxgCIAMoCzIVLmdyYXBoLnYxLk9yaWdpblN0YXRlMvEBChlMYW50ZXJuUmVwbGljYXRpb25TZXJ2aWNlEkYKCVN1YnNjcmliZRIaLmdyYXBoLnYxLlN1YnNjcmliZVJlcXVlc3QaGy5ncmFwaC52MS5TdWJzY3JpYmVSZXNwb25zZTABEkMKCFNuYXBzaG90EhkuZ3JhcGgudjEuU25hcHNob3RSZXF1ZXN0GhouZ3JhcGgudjEuU25hcHNob3RSZXNwb25zZTABEkcKClBlZXJTdGF0dXMSGy5ncmFwaC52MS5QZWVyU3RhdHVzUmVxdWVzdBocLmdyYXBoLnYxLlBlZXJTdGF0dXNSZXNwb25zZUJhCgxjb20uZ3JhcGgudjFCEFJlcGxpY2F0aW9uUHJvdG9QAaICA0dYWKoCCEdyYXBoLlYxygIIR3JhcGhcVjHiAhRHcmFwaFxWMVxHUEJNZXRhZGF0YeoCCUdyYXBoOjpWMWIGcHJvdG8z", [file_google_protobuf_timestamp, file_graph_v1_graph]);
+  fileDesc("ChpncmFwaC92MS9yZXBsaWNhdGlvbi5wcm90bxIIZ3JhcGgudjEiQQoMSExDVGltZXN0YW1wEg8KB3dhbGxfbnMYASABKAMSDwoHbG9naWNhbBgCIAEoDRIPCgdub2RlX2lkGAMgASgMIqoFCgpNdXRhdGlvbk9wEjAKCnB1dF92ZXJ0ZXgYASABKAsyGi5ncmFwaC52MS5QdXRWZXJ0ZXhSZXF1ZXN0SAASNAoMcHV0X3ZlcnRpY2VzGAIgASgLMhwuZ3JhcGgudjEuUHV0VmVydGljZXNSZXF1ZXN0SAASNgoNZGVsZXRlX3ZlcnRleBgDIAEoCzIdLmdyYXBoLnYxLkRlbGV0ZVZlcnRleFJlcXVlc3RIABI6Cg9kZWxldGVfdmVydGljZXMYBCABKAsyHy5ncmFwaC52MS5EZWxldGVWZXJ0aWNlc1JlcXVlc3RIABJMChlkZWxldGVfdmVydGljZXNfYnlfcHJlZml4GAUgASgLMicuZ3JhcGgudjEuRGVsZXRlVmVydGljZXNCeVByZWZpeFJlcXVlc3RIABIsCghhZGRfZWRnZRgGIAEoCzIYLmdyYXBoLnYxLkFkZEVkZ2VSZXF1ZXN0SAASLgoJYWRkX2VkZ2VzGAcgASgLMhkuZ3JhcGgudjEuQWRkRWRnZXNSZXF1ZXN0SAASLAoIcHV0X2VkZ2UYCCABKAsyGC5ncmFwaC52MS5QdXRFZGdlUmVxdWVzdEgAEi4KCXB1dF9lZGdlcxgJIAEoCzIZLmdyYXBoLnYxLlB1dEVkZ2VzUmVxdWVzdEgAEjIKC2RlbGV0ZV9lZGdlGAogASgLMhsuZ3JhcGgudjEuRGVsZXRlRWRnZVJlcXVlc3RIABI0CgxkZWxldGVfZWRnZXMYCyABKAsyHC5ncmFwaC52MS5EZWxldGVFZGdlc1JlcXVlc3RIABJGChZkZWxldGVfZWRnZXNfYnlfcHJlZml4GAwgASgLMiQuZ3JhcGgudjEuRGVsZXRlRWRnZXNCeVByZWZpeFJlcXVlc3RIAEIECgJvcCJuCghNdXRhdGlvbhILCgNzZXEYASABKAQSIwoDaGxjGAIgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wEg4KBm9yaWdpbhgDIAEoDBIgCgJvcBgEIAEoCzIULmdyYXBoLnYxLk11dGF0aW9uT3AisgEKEFN1YnNjcmliZVJlcXVlc3QSTQoTZnJvbV9zZXFfcGVyX29yaWdpbhgBIAMoCzIwLmdyYXBoLnYxLlN1YnNjcmliZVJlcXVlc3QuRnJvbVNlcVBlck9yaWdpbkVudHJ5EhYKDmZyb21fbG9jYWxfc2VxGAIgASgEGjcKFUZyb21TZXFQZXJPcmlnaW5FbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAQ6AjgBIjkKEVN1YnNjcmliZVJlc3BvbnNlEiQKCG11dGF0aW9uGAEgASgLMhIuZ3JhcGgudjEuTXV0YXRpb24iEQoPU25hcHNob3RSZXF1ZXN0IuIBCg5TbmFwc2hvdEhlYWRlchJPChVjdXRvZmZfc2VxX3Blcl9vcmlnaW4YASADKAsyMC5ncmFwaC52MS5TbmFwc2hvdEhlYWRlci5DdXRvZmZTZXFQZXJPcmlnaW5FbnRyeRIqCgpjdXRvZmZfaGxjGAIgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wEhgKEGN1dG9mZl9sb2NhbF9zZXEYAyABKAQaOQoXQ3V0b2ZmU2VxUGVyT3JpZ2luRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgEOgI4ASI6Cg5TbmFwc2hvdEZvb3RlchIUCgx2ZXJ0ZXhfY291bnQYASABKAQSEgoKZWRnZV9jb3VudBgCIAEoBCJXCg5TbmFwc2hvdFZlcnRleBIgCgZ2ZXJ0ZXgYASABKAsyEC5ncmFwaC52MS5WZXJ0ZXgSIwoDaGxjGAIgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wIm4KGFNuYXBzaG90RWRnZUNvbnRyaWJ1dGlvbhIOCgZ3ZWlnaHQYASABKAISLgoKZXhwaXJhdGlvbhgCIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASEgoKY29udHJpYl9pZBgDIAEoDCKKAQoMU25hcHNob3RFZGdlEgwKBHRhaWwYASABKAkSDAoEaGVhZBgCIAEoCRIjCgNobGMYAyABKAsyFi5ncmFwaC52MS5ITENUaW1lc3RhbXASOQoNY29udHJpYnV0aW9ucxgEIAMoCzIiLmdyYXBoLnYxLlNuYXBzaG90RWRnZUNvbnRyaWJ1dGlvbiLHAQoQU25hcHNob3RSZXNwb25zZRIqCgZoZWFkZXIYASABKAsyGC5ncmFwaC52MS5TbmFwc2hvdEhlYWRlckgAEioKBnZlcnRleBgCIAEoCzIYLmdyYXBoLnYxLlNuYXBzaG90VmVydGV4SAASJgoEZWRnZRgDIAEoCzIWLmdyYXBoLnYxLlNuYXBzaG90RWRnZUgAEioKBmZvb3RlchgEIAEoCzIYLmdyYXBoLnYxLlNuYXBzaG90Rm9vdGVySABCBwoFZW50cnkiEwoRUGVlclN0YXR1c1JlcXVlc3QiWQoLT3JpZ2luU3RhdGUSDgoGb3JpZ2luGAEgASgMEhAKCGxhc3Rfc2VxGAIgASgEEigKCGxhc3RfaGxjGAMgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wInQKElBlZXJTdGF0dXNSZXNwb25zZRITCgtzZWxmX29yaWdpbhgBIAEoDBImCgdvcmlnaW5zGAIgAygLMhUuZ3JhcGgudjEuT3JpZ2luU3RhdGUSIQoZc2VhcmNoX2NvbmZpZ19maW5nZXJwcmludBgDIAEoCTLxAQoZTGFudGVyblJlcGxpY2F0aW9uU2VydmljZRJGCglTdWJzY3JpYmUSGi5ncmFwaC52MS5TdWJzY3JpYmVSZXF1ZXN0GhsuZ3JhcGgudjEuU3Vic2NyaWJlUmVzcG9uc2UwARJDCghTbmFwc2hvdBIZLmdyYXBoLnYxLlNuYXBzaG90UmVxdWVzdBoaLmdyYXBoLnYxLlNuYXBzaG90UmVzcG9uc2UwARJHCgpQZWVyU3RhdHVzEhsuZ3JhcGgudjEuUGVlclN0YXR1c1JlcXVlc3QaHC5ncmFwaC52MS5QZWVyU3RhdHVzUmVzcG9uc2VCYQoMY29tLmdyYXBoLnYxQhBSZXBsaWNhdGlvblByb3RvUAGiAgNHWFiqAghHcmFwaC5WMcoCCEdyYXBoXFYx4gIUR3JhcGhcVjFcR1BCTWV0YWRhdGHqAglHcmFwaDo6VjFiBnByb3RvMw", [file_google_protobuf_timestamp, file_graph_v1_graph]);
 
 /**
  * HLCTimestamp is the wire form of core/hlc.Timestamp. All replicated
@@ -238,6 +238,17 @@ export type SubscribeRequest = Message<"graph.v1.SubscribeRequest"> & {
    * @generated from field: map<string, uint64> from_seq_per_origin = 1;
    */
   fromSeqPerOrigin: { [key: string]: bigint };
+
+  /**
+   * Next entry in this responder's replica-local mutation log. This is only
+   * valid when resuming against the SAME responder that emitted
+   * SnapshotHeader.cutoff_local_seq; zero uses the portable per-origin path.
+   * Keeping the two sequence domains separate prevents a stale per-origin
+   * cursor from bypassing ring-buffer gap detection.
+   *
+   * @generated from field: uint64 from_local_seq = 2;
+   */
+  fromLocalSeq: bigint;
 };
 
 /**
@@ -289,11 +300,12 @@ export const SnapshotRequestSchema: GenMessage<SnapshotRequest> = /*@__PURE__*/
  * freezes the per-origin watermark and the snapshot-open HLC the server
  * used to materialise the snapshot.
  *
- * A bootstrapping peer MUST persist `cutoff_seq_per_origin` and
- * `cutoff_hlc` before applying any payload entries and MUST resume
- * `Subscribe` with `from_seq_per_origin = {origin: seq+1 for each
- * (origin, seq) in cutoff_seq_per_origin}` so the snapshot and the
- * live tail stitch without gap or overlap.
+ * A bootstrapping peer MUST persist `cutoff_seq_per_origin`,
+ * `cutoff_local_seq`, and `cutoff_hlc` before applying any payload entries and
+ * MUST resume Subscribe against the SAME responder with both
+ * `from_seq_per_origin = {origin: seq+1 for each (origin, seq) in
+ * cutoff_seq_per_origin}` and `from_local_seq = cutoff_local_seq+1` so the
+ * snapshot and the live tail stitch without gap or overlap.
  *
  * Keys in `cutoff_seq_per_origin` are 32-char lowercase hex of the
  * 16-byte HLC NodeID, matching `SubscribeRequest.from_seq_per_origin`.
@@ -314,6 +326,15 @@ export type SnapshotHeader = Message<"graph.v1.SnapshotHeader"> & {
    * @generated from field: graph.v1.HLCTimestamp cutoff_hlc = 2;
    */
   cutoffHlc?: HLCTimestamp | undefined;
+
+  /**
+   * Replica-local mutation-log position at snapshot open. It is deliberately
+   * separate from the portable per-origin watermarks and only resumes a tail
+   * against the same responder.
+   *
+   * @generated from field: uint64 cutoff_local_seq = 3;
+   */
+  cutoffLocalSeq: bigint;
 };
 
 /**
@@ -573,6 +594,15 @@ export type PeerStatusResponse = Message<"graph.v1.PeerStatusResponse"> & {
    * @generated from field: repeated graph.v1.OriginState origins = 2;
    */
   origins: OriginState[];
+
+  /**
+   * Fingerprint of every search setting that can change capabilities or
+   * ordered results. Replicas compare this before declaring themselves ready;
+   * empty means the responder cannot prove search-config compatibility.
+   *
+   * @generated from field: string search_config_fingerprint = 3;
+   */
+  searchConfigFingerprint: string;
 };
 
 /**
@@ -601,10 +631,11 @@ export const PeerStatusResponseSchema: GenMessage<PeerStatusResponse> = /*@__PUR
 export const LanternReplicationService: GenService<{
   /**
    * Subscribe streams replicated mutations to a peer (or CDC consumer)
-   * starting at `from_seq` (inclusive). The server replays any in-buffer
-   * entries first, then streams live mutations as they are appended.
+   * starting at the supplied per-origin cursor. A same-responder snapshot
+   * resume also supplies `from_local_seq`; the server replays retained entries
+   * from that local position first, then streams live mutations.
    *
-   * If `from_seq` is below the server's first available seq the call
+   * If the requested replica-local replay window has been evicted, the call
    * fails with FAILED_PRECONDITION ("gapped") and the caller must
    * snapshot + resubscribe. Slow consumers whose channel backs up may
    * also have the stream terminated with FAILED_PRECONDITION — the
@@ -624,14 +655,15 @@ export const LanternReplicationService: GenService<{
   /**
    * Snapshot streams a point-in-time, causally-consistent dump of every
    * live vertex and edge to a bootstrapping peer. The first frame is a
-   * SnapshotHeader carrying the (cutoff_seq_per_origin, cutoff_hlc) the
-   * server used to materialise the snapshot; the last frame is a
+   * SnapshotHeader carrying the (cutoff_seq_per_origin, cutoff_local_seq,
+   * cutoff_hlc) the server used to materialise the snapshot; the last frame is a
    * SnapshotFooter with the actual vertex / edge counts streamed.
    *
    * Bootstrap stitch contract: after receiving the SnapshotFooter the
    * peer MUST call `Subscribe(from_seq_per_origin = {origin: seq+1 for
-   * each (origin, seq) in cutoff_seq_per_origin})` to pick up the live
-   * tail. Without that the snapshot and the live stream cannot be glued
+   * each (origin, seq) in cutoff_seq_per_origin}, from_local_seq =
+   * cutoff_local_seq+1)` against the same responder to pick up the live tail.
+   * Without that the snapshot and live stream cannot be glued
    * together without gap or overlap.
    *
    * No HTTP gateway annotation (parity with Subscribe).

@@ -22,9 +22,10 @@ abstract final class LanternReplicationService {
   static const name = 'graph.v1.LanternReplicationService';
 
   /// Subscribe streams replicated mutations to a peer (or CDC consumer)
-  /// starting at `from_seq` (inclusive). The server replays any in-buffer
-  /// entries first, then streams live mutations as they are appended.
-  /// If `from_seq` is below the server's first available seq the call
+  /// starting at the supplied per-origin cursor. A same-responder snapshot
+  /// resume also supplies `from_local_seq`; the server replays retained entries
+  /// from that local position first, then streams live mutations.
+  /// If the requested replica-local replay window has been evicted, the call
   /// fails with FAILED_PRECONDITION ("gapped") and the caller must
   /// snapshot + resubscribe. Slow consumers whose channel backs up may
   /// also have the stream terminated with FAILED_PRECONDITION — the
@@ -41,13 +42,14 @@ abstract final class LanternReplicationService {
 
   /// Snapshot streams a point-in-time, causally-consistent dump of every
   /// live vertex and edge to a bootstrapping peer. The first frame is a
-  /// SnapshotHeader carrying the (cutoff_seq_per_origin, cutoff_hlc) the
-  /// server used to materialise the snapshot; the last frame is a
+  /// SnapshotHeader carrying the (cutoff_seq_per_origin, cutoff_local_seq,
+  /// cutoff_hlc) the server used to materialise the snapshot; the last frame is a
   /// SnapshotFooter with the actual vertex / edge counts streamed.
   /// Bootstrap stitch contract: after receiving the SnapshotFooter the
   /// peer MUST call `Subscribe(from_seq_per_origin = {origin: seq+1 for
-  /// each (origin, seq) in cutoff_seq_per_origin})` to pick up the live
-  /// tail. Without that the snapshot and the live stream cannot be glued
+  /// each (origin, seq) in cutoff_seq_per_origin}, from_local_seq =
+  /// cutoff_local_seq+1)` against the same responder to pick up the live tail.
+  /// Without that the snapshot and live stream cannot be glued
   /// together without gap or overlap.
   /// No HTTP gateway annotation (parity with Subscribe).
   static const snapshot = connect.Spec(

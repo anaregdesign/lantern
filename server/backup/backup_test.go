@@ -10,14 +10,21 @@ import (
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/service"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // fakeService satisfies the backup Service: BackupSnapshot emits a fixed
 // frame list; PutVertices / PutEdges record what restore replayed.
 type fakeService struct {
-	frames []*pb.BackupSnapshotResponse
-	putV   []*pb.Vertex
-	putE   []*pb.Edge
+	frames             []*pb.BackupSnapshotResponse
+	putV               []*pb.Vertex
+	putE               []*pb.Edge
+	restoreVertexCount func(*pb.PutVerticesRequest) int32
+	restoreEdgeCount   func(*pb.PutEdgesRequest) int32
+	beginRecovery      int
+	completeRecovery   int
+	completeErr        error
 }
 
 func (f *fakeService) BackupSnapshot(_ context.Context, _ *pb.BackupSnapshotRequest, stream service.Sender[pb.BackupSnapshotResponse]) error {
@@ -31,12 +38,26 @@ func (f *fakeService) BackupSnapshot(_ context.Context, _ *pb.BackupSnapshotRequ
 
 func (f *fakeService) RestoreVertices(_ context.Context, req *pb.PutVerticesRequest) (*pb.PutVerticesResponse, error) {
 	f.putV = append(f.putV, req.GetVertices()...)
-	return &pb.PutVerticesResponse{}, nil
+	written := int32(len(req.GetVertices()))
+	if f.restoreVertexCount != nil {
+		written = f.restoreVertexCount(req)
+	}
+	return &pb.PutVerticesResponse{Written: written}, nil
 }
 
 func (f *fakeService) PutEdges(_ context.Context, req *pb.PutEdgesRequest) (*pb.PutEdgesResponse, error) {
 	f.putE = append(f.putE, req.GetEdges()...)
-	return &pb.PutEdgesResponse{}, nil
+	written := int32(len(req.GetEdges()))
+	if f.restoreEdgeCount != nil {
+		written = f.restoreEdgeCount(req)
+	}
+	return &pb.PutEdgesResponse{Written: written}, nil
+}
+
+func (f *fakeService) BeginSearchIndexRecovery() { f.beginRecovery++ }
+func (f *fakeService) CompleteSearchIndexRecovery() error {
+	f.completeRecovery++
+	return f.completeErr
 }
 
 func vFrame(key string) *pb.BackupSnapshotResponse {
@@ -71,6 +92,36 @@ func TestBackupper_RoundTrip(t *testing.T) {
 	}
 	if len(dst.putE) != 1 || dst.putE[0].GetTail() != "a" || dst.putE[0].GetHead() != "b" || dst.putE[0].GetWeight() != 1.5 {
 		t.Fatalf("restored edges = %+v", dst.putE)
+	}
+	if dst.beginRecovery != 1 || dst.completeRecovery != 1 {
+		t.Fatalf("search recovery lifecycle = begin %d complete %d, want 1/1", dst.beginRecovery, dst.completeRecovery)
+	}
+}
+
+func TestBackupper_RestoreCountsActualWrites(t *testing.T) {
+	dir := t.TempDir()
+	src := &fakeService{frames: []*pb.BackupSnapshotResponse{vFrame("live"), vFrame("expired"), eFrame("live", "tail", 1)}}
+	if _, err := New(src, testConfig(dir), nil, nil).backupOnce(context.Background()); err != nil {
+		t.Fatalf("backupOnce: %v", err)
+	}
+	dst := &fakeService{
+		restoreVertexCount: func(*pb.PutVerticesRequest) int32 { return 1 },
+		restoreEdgeCount:   func(*pb.PutEdgesRequest) int32 { return 0 },
+	}
+	reg := prometheus.NewRegistry()
+	b := New(dst, testConfig(dir), reg, nil)
+	stats, err := b.RestoreOnStartup(context.Background())
+	if err != nil {
+		t.Fatalf("RestoreOnStartup: %v", err)
+	}
+	if stats.Vertices != 1 || stats.Edges != 0 {
+		t.Fatalf("actual restore stats = %+v, want {Vertices:1 Edges:0}", stats)
+	}
+	if got := testutil.ToFloat64(b.metrics.restoreVtx); got != 1 {
+		t.Fatalf("lantern_restore_vertices = %v, want 1 actual write", got)
+	}
+	if got := testutil.ToFloat64(b.metrics.restoreEdges); got != 0 {
+		t.Fatalf("lantern_restore_edges = %v, want 0 actual writes", got)
 	}
 }
 

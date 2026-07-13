@@ -152,6 +152,8 @@ runtime, process, and `grpc_server_*` collectors):
 | `lantern_replication_lag_seq` | gauge | `peer`, `origin` | Per-(peer, origin) lag in seq units. |
 | `lantern_anti_entropy_cycles_total` | counter | — | Anti-entropy ticks. |
 | `lantern_anti_entropy_gaps_found_total` | counter | `peer`, `origin` | Ticks observing a non-zero gap. |
+| `lantern_search_config_match` | gauge | `peer` | 1 when the peer reports the exact local search capability fingerprint; 0 keeps replicated readiness degraded. |
+| `lantern_search_config_mismatch_total` | counter | `peer` | Pump/anti-entropy observations of missing or mismatched peer search config. |
 | `lantern_peer_connected` | gauge | `peer` | 1 while the local pump holds a `Subscribe` stream to `peer`; 0 after disconnect. Flips back to 1 on reconnect. |
 | `lantern_replication_apply_total` | counter | `op` | Per-`MutationOp` apply count (`PutVertex`, `PutVertices`, `DeleteVertex`, `DeleteVertices`, `DeleteVerticesByPrefix`, `AddEdge`, `AddEdges`, `PutEdge`, `PutEdges`, `DeleteEdge`, `DeleteEdges`). Unknown ops fold onto `unknown`. Pre-warmed at startup. |
 | `lantern_snapshot_replayed_total` | counter | `peer` | Snapshots fully replayed from `peer` (after initial bootstrap or reconnect). |

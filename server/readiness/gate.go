@@ -54,6 +54,7 @@ type Gate struct {
 	bootstrapped bool
 	draining     bool
 	lags         map[string]uint64 // key = peer + "\x00" + origin
+	searchConfig map[string]bool   // peer -> fingerprint match
 	current      grpchealth.Status
 
 	// ready is a lock-free mirror of the current status so HTTP probes
@@ -67,11 +68,12 @@ type Gate struct {
 // transitions and may be nil in tests.
 func NewGate(maxLag uint64, hasPeers bool, hs HealthSetter) *Gate {
 	g := &Gate{
-		maxLag:   maxLag,
-		hasPeers: hasPeers,
-		health:   hs,
-		lags:     make(map[string]uint64),
-		current:  grpchealth.StatusNotServing,
+		maxLag:       maxLag,
+		hasPeers:     hasPeers,
+		health:       hs,
+		lags:         make(map[string]uint64),
+		searchConfig: make(map[string]bool),
+		current:      grpchealth.StatusNotServing,
 	}
 	if !hasPeers {
 		// Single-instance: ready immediately. Surface SERVING via the
@@ -145,6 +147,22 @@ func (g *Gate) SetLag(peer, origin string, gap uint64) {
 	g.evaluateLocked()
 }
 
+// SetSearchConfig records whether a peer reports the exact local search
+// capability fingerprint. Any observed mismatch keeps a replicated node out
+// of readiness; single-instance deployments bypass the check.
+func (g *Gate) SetSearchConfig(peer string, matched bool) {
+	if !g.hasPeers {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if previous, ok := g.searchConfig[peer]; ok && previous == matched {
+		return
+	}
+	g.searchConfig[peer] = matched
+	g.evaluateLocked()
+}
+
 // Ready reports the current readiness verdict without taking the lock.
 // Safe to call from HTTP probe handlers on every request.
 func (g *Gate) Ready() bool { return g.ready.Load() }
@@ -163,6 +181,11 @@ func (g *Gate) readyLocked() bool {
 	}
 	for _, v := range g.lags {
 		if v > g.maxLag {
+			return false
+		}
+	}
+	for _, matched := range g.searchConfig {
+		if !matched {
 			return false
 		}
 	}
@@ -208,6 +231,11 @@ func (g *Gate) OnAntiEntropyCaughtUp(peer, origin string, _ uint64) {
 // OnAntiEntropyError is a no-op: transport errors do not by themselves
 // imply staleness — the next successful probe will update lag.
 func (g *Gate) OnAntiEntropyError(string, string) {}
+
+// OnSearchConfig is shared by the pump and anti-entropy metric adapters.
+func (g *Gate) OnSearchConfig(peer string, matched bool) {
+	g.SetSearchConfig(peer, matched)
+}
 
 // --- replication.Metrics (pump) adapter ---
 

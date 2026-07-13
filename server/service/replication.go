@@ -54,6 +54,13 @@ type OriginStatesProvider interface {
 	OriginStates() []OriginState
 }
 
+// SearchConfigFingerprintProvider supplies the search contract carried by
+// PeerStatus. *LanternService satisfies it with the same fingerprint exposed
+// through GetServerStatus.
+type SearchConfigFingerprintProvider interface {
+	SearchConfigFingerprint() string
+}
+
 // LanternReplicationService is the in-process implementation of the
 // graph.v1.LanternReplicationService surface. It exposes the
 // mutation log as a resumable, back-pressured server-streaming RPC
@@ -69,6 +76,7 @@ type LanternReplicationService struct {
 	metrics SubscribeMetrics
 	logger  *slog.Logger
 	origins OriginStatesProvider
+	search  SearchConfigFingerprintProvider
 }
 
 // NewLanternReplicationService constructs the service. log MUST be the same
@@ -113,6 +121,14 @@ func (s *LanternReplicationService) WithOriginStates(p OriginStatesProvider) *La
 	return s
 }
 
+// WithSearchConfig wires the search fingerprint published by PeerStatus.
+// Nil leaves the field empty, which callers must treat as unverified rather
+// than compatible.
+func (s *LanternReplicationService) WithSearchConfig(p SearchConfigFingerprintProvider) *LanternReplicationService {
+	s.search = p
+	return s
+}
+
 // Subscribe streams every mutation log entry whose (origin, seq)
 // satisfies the per-origin resume cursor in req.FromSeqPerOrigin to
 // the supplied Sender, honouring ctx cancellation throughout.
@@ -125,9 +141,10 @@ func (s *LanternReplicationService) WithOriginStates(p OriginStatesProvider) *La
 // does not require deduplication or seq remapping.
 //
 // Flow:
-//  1. Open a log subscription at seq 1 so the dispatcher hands us
-//     every retained entry. Per-origin filtering happens entirely at
-//     this layer — the log itself is origin-agnostic.
+//  1. Open a log subscription at req.FromLocalSeq when a snapshot consumer
+//     resumes against the same responder; otherwise start at local seq 1 so
+//     ring eviction remains a detectable gap. Per-origin sequence is unrelated
+//     to this replica-local position and filtering happens at this layer.
 //  2. For each entry, filter by the per-origin cursor: deliver only
 //     when mu.Seq >= cursor[origin]. Origins absent from the cursor
 //     are delivered from the oldest retained entry — this lets a
@@ -136,8 +153,8 @@ func (s *LanternReplicationService) WithOriginStates(p OriginStatesProvider) *La
 //     mu.Seq carries the originating writer's seq (stamped at
 //     logMutation / preserved across relay), NOT the forwarding
 //     replica's local log seq.
-//  3. ErrGapped from the log layer (the log was truncated below seq
-//     1, which only happens if the ring evicted entries) surfaces as
+//  3. ErrGapped from the log layer (the ring was truncated below the
+//     requested local position) surfaces as
 //     FailedPrecondition + reason "gapped" so the client knows to
 //     snapshot and resubscribe (RFC §8.2).
 //  4. If the channel is closed mid-stream the subscriber fell behind
@@ -152,12 +169,16 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 		return connect.NewError(connect.CodeUnavailable, errors.New("replication is not enabled on this server"))
 	}
 	cursor := req.GetFromSeqPerOrigin()
-	ch, cancel, err := s.log.Subscribe(1)
+	fromLocalSeq := req.GetFromLocalSeq()
+	if fromLocalSeq == 0 {
+		fromLocalSeq = 1
+	}
+	ch, cancel, err := s.log.Subscribe(fromLocalSeq)
 	if err != nil {
 		if errors.Is(err, mutationlog.ErrGapped) {
 			s.metrics.OnSubscribeDropped("gapped")
 			return connect.NewError(connect.CodeFailedPrecondition,
-				errors.New("gapped: log truncated below seq 1; snapshot and resubscribe"))
+				fmt.Errorf("gapped: log truncated below requested local seq %d; snapshot and resubscribe", fromLocalSeq))
 		}
 		return connect.NewError(connect.CodeUnavailable, fmt.Errorf("subscribe failed: %w", err))
 	}
@@ -259,11 +280,16 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, _ *pb.Snapshot
 	if s.clock != nil {
 		cutoffHLC = s.clock.Now()
 	}
+	var cutoffLocalSeq uint64
+	if s.log != nil {
+		cutoffLocalSeq, _ = s.log.LastSeq()
+	}
 	header := &pb.SnapshotResponse{
 		Entry: &pb.SnapshotResponse_Header{
 			Header: &pb.SnapshotHeader{
 				CutoffSeqPerOrigin: cutoffPerOrigin,
 				CutoffHlc:          hlcToProto(cutoffHLC),
+				CutoffLocalSeq:     cutoffLocalSeq,
 			},
 		},
 	}
@@ -352,6 +378,9 @@ func (s *LanternReplicationService) PeerStatus(ctx context.Context, _ *pb.PeerSt
 	}
 	rows := s.origins.OriginStates()
 	out := &pb.PeerStatusResponse{Origins: make([]*pb.OriginState, 0, len(rows))}
+	if s.search != nil {
+		out.SearchConfigFingerprint = s.search.SearchConfigFingerprint()
+	}
 	if s.clock != nil {
 		nid := s.clock.NodeID()
 		out.SelfOrigin = append([]byte(nil), nid[:]...)

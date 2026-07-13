@@ -67,6 +67,8 @@ type DomainMetrics struct {
 	replicationLag       *prometheus.GaugeVec
 	antiEntropyCycles    prometheus.Counter
 	antiEntropyGapsFound *prometheus.CounterVec
+	searchConfigMatch    *prometheus.GaugeVec
+	searchConfigMismatch *prometheus.CounterVec
 
 	// Replication / mutation-log / back-pressure observability (#221).
 	peerConnected         *prometheus.GaugeVec
@@ -398,6 +400,14 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 			Name: "lantern_anti_entropy_gaps_found_total",
 			Help: "Total anti-entropy ticks that observed a non-zero gap, partitioned by peer address and origin (HLC NodeID, lowercase hex).",
 		}, []string{"peer", "origin"}),
+		searchConfigMatch: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "lantern_search_config_match",
+			Help: "1 when the named peer reports the exact local search capability fingerprint; 0 when missing or mismatched.",
+		}, []string{"peer"}),
+		searchConfigMismatch: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "lantern_search_config_mismatch_total",
+			Help: "Total pump or anti-entropy observations of a missing or mismatched peer search capability fingerprint.",
+		}, []string{"peer"}),
 		illuminateVisitedVertices: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "lantern_illuminate_visited_vertices",
 			Help:    "Vertices in the subgraph returned by Illuminate, partitioned by traversal family (algorithm) + post-traversal reduction + objective + edge weighting (#410, #963).",
@@ -572,6 +582,7 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		m.pubsubQueueDepth, m.pubsubDropped, m.pubsubDispatchDuration,
 		m.replicationApplied, m.replicationDropped, m.replicationLag,
 		m.antiEntropyCycles, m.antiEntropyGapsFound,
+		m.searchConfigMatch, m.searchConfigMismatch,
 		m.illuminateVisitedVertices, m.illuminateVisitedEdges, m.illuminateDuration, m.illuminateCalls,
 		m.scanResults, m.scanDuration, m.batchSize,
 		m.getVertexHits, m.getVertexMisses, m.getEdgeHits, m.getEdgeMisses,
@@ -783,6 +794,20 @@ func (m *DomainMetrics) SetReplicationLag(peer, origin string, lag uint64) {
 // peers).
 func (m *DomainMetrics) OnAntiEntropyCycle() {
 	m.antiEntropyCycles.Inc()
+}
+
+// OnSearchConfig publishes the latest compatibility verdict and counts every
+// mismatch observation. Fingerprints themselves stay in status/logs rather
+// than metric labels to avoid unbounded cardinality.
+func (m *DomainMetrics) OnSearchConfig(peer string, matched bool) {
+	value := 0.0
+	if matched {
+		value = 1
+	}
+	m.searchConfigMatch.WithLabelValues(peer).Set(value)
+	if !matched {
+		m.searchConfigMismatch.WithLabelValues(peer).Inc()
+	}
 }
 
 // OnAntiEntropyGapFound increments

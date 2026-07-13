@@ -119,3 +119,33 @@ func TestApplySnapshotEdgeIdempotent(t *testing.T) {
 		}
 	})
 }
+
+func TestResumeAfterSnapshot(t *testing.T) {
+	t.Run("empty header has no cursor", func(t *testing.T) {
+		if got := resumeAfterSnapshot(nil); got.origins != nil || got.local != 0 {
+			t.Fatalf("resumeAfterSnapshot(nil) = %+v, want zero cursor", got)
+		}
+	})
+
+	t.Run("cutoffs advance to the next origin sequence", func(t *testing.T) {
+		header := &pb.SnapshotHeader{
+			CutoffSeqPerOrigin: map[string]uint64{"origin-a": 7, "origin-b": 12},
+			CutoffLocalSeq:     20,
+		}
+		got := resumeAfterSnapshot(header)
+		if got.origins["origin-a"] != 8 || got.origins["origin-b"] != 13 || got.local != 21 {
+			t.Fatalf("resume cursor = %+v, want origin-a=8 origin-b=13 local=21", got)
+		}
+	})
+
+	t.Run("maximum cutoff does not wrap", func(t *testing.T) {
+		header := &pb.SnapshotHeader{
+			CutoffSeqPerOrigin: map[string]uint64{"origin-max": ^uint64(0)},
+			CutoffLocalSeq:     ^uint64(0),
+		}
+		got := resumeAfterSnapshot(header)
+		if got.origins["origin-max"] != ^uint64(0) || got.local != ^uint64(0) {
+			t.Fatalf("maximum cutoffs resumed at %+v, want no wrap", got)
+		}
+	})
+}

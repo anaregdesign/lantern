@@ -28,6 +28,7 @@ type snapshotPeer struct {
 	clock *hlc.Clock
 	log   *mutationlog.Log
 	sdk   *client.Lantern
+	raw   graphv1connect.LanternServiceClient
 	repl  graphv1connect.LanternReplicationServiceClient
 }
 
@@ -43,10 +44,14 @@ func newSnapshotPeer(t *testing.T, nodeID hlc.NodeID) *snapshotPeer {
 	log := mutationlog.New(mutationlog.Options{Capacity: 1024, SubscriberBuffer: 1024})
 	t.Cleanup(func() { _ = log.Close() })
 	clock := hlc.New(nodeID, hlc.Options{})
-	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
-	svc := service.NewLanternService(cache).WithReplication(log, clock, nil)
+	limits := productionSearchLimits(true, true)
+	cache := newProductionSearchCache(time.Minute, true, true, limits.AnalysisLimits)
+	svc := service.NewLanternService(cache).
+		WithSearchLimits(limits).
+		WithReplication(log, clock, nil)
 	rep := service.NewLanternReplicationService(log, cache, clock).
-		WithOriginStates(svc)
+		WithOriginStates(svc).
+		WithSearchConfig(svc)
 	srv := newConnectTestServer(t, svc, rep, vi.ConnectInterceptor())
 
 	return &snapshotPeer{
@@ -54,6 +59,7 @@ func newSnapshotPeer(t *testing.T, nodeID hlc.NodeID) *snapshotPeer {
 		clock: clock,
 		log:   log,
 		sdk:   newConnectClientFor(t, srv.url),
+		raw:   graphv1connect.NewLanternServiceClient(h2cClient(), srv.url),
 		repl:  newReplicationRawClient(t, srv.url),
 	}
 }
@@ -63,10 +69,9 @@ func newSnapshotPeer(t *testing.T, nodeID hlc.NodeID) *snapshotPeer {
 // with a mix of vertices and additive edges, replays every frame
 // into its own cache via the HLC + ContribID seams, and observes the
 // same Illuminate answers as the primary. The header's per-origin
-// cutoff is also asserted to equal the primary's local writes
-// watermark at snapshot-open time so that downstream
-// `Subscribe(from_seq_per_origin = {origin: seq+1})` is guaranteed
-// to stitch cleanly (#415, B-4).
+// origin and responder-local cutoffs are asserted at snapshot-open time so a
+// downstream Subscribe carrying both +1 cursors is guaranteed to stitch
+// cleanly (#415, B-4).
 func TestSnapshot_E2E_PrimaryToFollower(t *testing.T) {
 	primary := newSnapshotPeer(t, hlc.NodeID{0x01})
 	follower := newSnapshotPeer(t, hlc.NodeID{0x02})
@@ -132,6 +137,9 @@ func TestSnapshot_E2E_PrimaryToFollower(t *testing.T) {
 	if hdr.GetCutoffHlc() == nil {
 		t.Errorf("cutoff_hlc is nil; expected the primary clock's current Now()")
 	}
+	if got := hdr.GetCutoffLocalSeq(); got != wantSeq {
+		t.Errorf("cutoff_local_seq=%d want %d", got, wantSeq)
+	}
 
 	// Stream body: apply each frame to the follower using the HLC +
 	// ContribID seams. Footer MUST be the very last frame.
@@ -140,6 +148,14 @@ func TestSnapshot_E2E_PrimaryToFollower(t *testing.T) {
 		gotEdgeCount   uint64
 		footer         *pb.SnapshotFooter
 	)
+	follower.cache.BeginSearchIndexRecovery()
+	recovering, err := follower.raw.GetServerStatus(ctx, connect.NewRequest(&pb.GetServerStatusRequest{}))
+	if err != nil {
+		t.Fatalf("follower GetServerStatus during snapshot: %v", err)
+	}
+	if got := recovering.Msg.GetSearch().GetIndexStats().GetHealth(); got != pb.SearchIndexHealth_SEARCH_INDEX_HEALTH_INCOMPLETE {
+		t.Fatalf("follower search health during snapshot = %v", got)
+	}
 	for stream.Receive() {
 		entry := stream.Msg()
 		switch e := entry.GetEntry().(type) {
@@ -196,6 +212,9 @@ func TestSnapshot_E2E_PrimaryToFollower(t *testing.T) {
 	if got := uint64(5); footer.GetEdgeCount() != got {
 		t.Errorf("edge_count=%d want %d", footer.GetEdgeCount(), got)
 	}
+	if err := follower.cache.CompleteSearchIndexRecovery(); err != nil {
+		t.Fatalf("follower CompleteSearchIndexRecovery: %v", err)
+	}
 
 	// Verify convergence: every (tail, head) pair has the same weight
 	// on both peers and every vertex round-trips.
@@ -221,6 +240,14 @@ func TestSnapshot_E2E_PrimaryToFollower(t *testing.T) {
 		if !pok || !fok {
 			t.Errorf("vertex %s presence mismatch: primary=%v follower=%v", key, pok, fok)
 		}
+	}
+	waitForSearchConvergence(t, ctx, "val", nil, primary.raw, follower.raw)
+	healthy, err := follower.raw.GetServerStatus(ctx, connect.NewRequest(&pb.GetServerStatusRequest{}))
+	if err != nil {
+		t.Fatalf("follower GetServerStatus after snapshot: %v", err)
+	}
+	if got := healthy.Msg.GetSearch().GetIndexStats().GetHealth(); got != pb.SearchIndexHealth_SEARCH_INDEX_HEALTH_HEALTHY {
+		t.Fatalf("follower search health after snapshot = %v", got)
 	}
 }
 

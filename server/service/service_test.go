@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -29,6 +30,35 @@ func newTestService(t *testing.T) *LanternService {
 
 func futureTs(d time.Duration) *timestamppb.Timestamp {
 	return timestamppb.New(time.Now().Add(d))
+}
+
+func TestLanternService_ApplySnapshotWatermarks(t *testing.T) {
+	svc := newTestService(t)
+	origin := hlc.NodeID{0x11, 0x22, 0x33}
+	ts := hlc.Timestamp{WallNs: 42, Logical: 7, NodeID: origin}
+
+	if err := svc.ApplySnapshotWatermarks(map[string]uint64{
+		hex.EncodeToString(origin[:]): 9,
+	}, ts); err != nil {
+		t.Fatalf("ApplySnapshotWatermarks: %v", err)
+	}
+	if got := svc.LocalSeq(origin); got != 9 {
+		t.Fatalf("LocalSeq = %d, want 9", got)
+	}
+
+	other := hlc.NodeID{0x44}
+	if err := svc.ApplySnapshotWatermarks(map[string]uint64{
+		hex.EncodeToString(other[:]): 10,
+		"not-hex":                    11,
+	}, ts); err == nil {
+		t.Fatal("ApplySnapshotWatermarks accepted a malformed origin")
+	}
+	if got := svc.LocalSeq(origin); got != 9 {
+		t.Fatalf("malformed cutoff changed LocalSeq to %d, want 9", got)
+	}
+	if got := svc.LocalSeq(other); got != 0 {
+		t.Fatalf("partially validated cutoff changed other LocalSeq to %d, want 0", got)
+	}
 }
 
 func TestLanternService_PutAndGetVertex(t *testing.T) {

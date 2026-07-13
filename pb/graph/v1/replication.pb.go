@@ -456,8 +456,14 @@ type SubscribeRequest struct {
 	// 16-byte HLC NodeID; values are the next local `seq` the consumer
 	// expects from that origin.
 	FromSeqPerOrigin map[string]uint64 `protobuf:"bytes,1,rep,name=from_seq_per_origin,json=fromSeqPerOrigin,proto3" json:"from_seq_per_origin,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Next entry in this responder's replica-local mutation log. This is only
+	// valid when resuming against the SAME responder that emitted
+	// SnapshotHeader.cutoff_local_seq; zero uses the portable per-origin path.
+	// Keeping the two sequence domains separate prevents a stale per-origin
+	// cursor from bypassing ring-buffer gap detection.
+	FromLocalSeq  uint64 `protobuf:"varint,2,opt,name=from_local_seq,json=fromLocalSeq,proto3" json:"from_local_seq,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SubscribeRequest) Reset() {
@@ -495,6 +501,13 @@ func (x *SubscribeRequest) GetFromSeqPerOrigin() map[string]uint64 {
 		return x.FromSeqPerOrigin
 	}
 	return nil
+}
+
+func (x *SubscribeRequest) GetFromLocalSeq() uint64 {
+	if x != nil {
+		return x.FromLocalSeq
+	}
+	return 0
 }
 
 // SubscribeResponse carries one replicated mutation per message.
@@ -586,11 +599,12 @@ func (*SnapshotRequest) Descriptor() ([]byte, []int) {
 // freezes the per-origin watermark and the snapshot-open HLC the server
 // used to materialise the snapshot.
 //
-// A bootstrapping peer MUST persist `cutoff_seq_per_origin` and
-// `cutoff_hlc` before applying any payload entries and MUST resume
-// `Subscribe` with `from_seq_per_origin = {origin: seq+1 for each
-// (origin, seq) in cutoff_seq_per_origin}` so the snapshot and the
-// live tail stitch without gap or overlap.
+// A bootstrapping peer MUST persist `cutoff_seq_per_origin`,
+// `cutoff_local_seq`, and `cutoff_hlc` before applying any payload entries and
+// MUST resume Subscribe against the SAME responder with both
+// `from_seq_per_origin = {origin: seq+1 for each (origin, seq) in
+// cutoff_seq_per_origin}` and `from_local_seq = cutoff_local_seq+1` so the
+// snapshot and the live tail stitch without gap or overlap.
 //
 // Keys in `cutoff_seq_per_origin` are 32-char lowercase hex of the
 // 16-byte HLC NodeID, matching `SubscribeRequest.from_seq_per_origin`.
@@ -602,8 +616,12 @@ type SnapshotHeader struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
 	CutoffSeqPerOrigin map[string]uint64      `protobuf:"bytes,1,rep,name=cutoff_seq_per_origin,json=cutoffSeqPerOrigin,proto3" json:"cutoff_seq_per_origin,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
 	CutoffHlc          *HLCTimestamp          `protobuf:"bytes,2,opt,name=cutoff_hlc,json=cutoffHlc,proto3" json:"cutoff_hlc,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// Replica-local mutation-log position at snapshot open. It is deliberately
+	// separate from the portable per-origin watermarks and only resumes a tail
+	// against the same responder.
+	CutoffLocalSeq uint64 `protobuf:"varint,3,opt,name=cutoff_local_seq,json=cutoffLocalSeq,proto3" json:"cutoff_local_seq,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *SnapshotHeader) Reset() {
@@ -648,6 +666,13 @@ func (x *SnapshotHeader) GetCutoffHlc() *HLCTimestamp {
 		return x.CutoffHlc
 	}
 	return nil
+}
+
+func (x *SnapshotHeader) GetCutoffLocalSeq() uint64 {
+	if x != nil {
+		return x.CutoffLocalSeq
+	}
+	return 0
 }
 
 // SnapshotFooter is always the LAST SnapshotResponse on the wire. It carries
@@ -1137,11 +1162,15 @@ func (x *OriginState) GetLastHlc() *HLCTimestamp {
 // anti-entropy callers can pick out the row that represents this
 // peer's own writes without having to pre-configure peer NodeIDs.
 type PeerStatusResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	SelfOrigin    []byte                 `protobuf:"bytes,1,opt,name=self_origin,json=selfOrigin,proto3" json:"self_origin,omitempty"`
-	Origins       []*OriginState         `protobuf:"bytes,2,rep,name=origins,proto3" json:"origins,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	SelfOrigin []byte                 `protobuf:"bytes,1,opt,name=self_origin,json=selfOrigin,proto3" json:"self_origin,omitempty"`
+	Origins    []*OriginState         `protobuf:"bytes,2,rep,name=origins,proto3" json:"origins,omitempty"`
+	// Fingerprint of every search setting that can change capabilities or
+	// ordered results. Replicas compare this before declaring themselves ready;
+	// empty means the responder cannot prove search-config compatibility.
+	SearchConfigFingerprint string `protobuf:"bytes,3,opt,name=search_config_fingerprint,json=searchConfigFingerprint,proto3" json:"search_config_fingerprint,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *PeerStatusResponse) Reset() {
@@ -1188,6 +1217,13 @@ func (x *PeerStatusResponse) GetOrigins() []*OriginState {
 	return nil
 }
 
+func (x *PeerStatusResponse) GetSearchConfigFingerprint() string {
+	if x != nil {
+		return x.SearchConfigFingerprint
+	}
+	return ""
+}
+
 var File_graph_v1_replication_proto protoreflect.FileDescriptor
 
 const file_graph_v1_replication_proto_rawDesc = "" +
@@ -1219,19 +1255,21 @@ const file_graph_v1_replication_proto_rawDesc = "" +
 	"\x03seq\x18\x01 \x01(\x04R\x03seq\x12(\n" +
 	"\x03hlc\x18\x02 \x01(\v2\x16.graph.v1.HLCTimestampR\x03hlc\x12\x16\n" +
 	"\x06origin\x18\x03 \x01(\fR\x06origin\x12$\n" +
-	"\x02op\x18\x04 \x01(\v2\x14.graph.v1.MutationOpR\x02op\"\xb8\x01\n" +
+	"\x02op\x18\x04 \x01(\v2\x14.graph.v1.MutationOpR\x02op\"\xde\x01\n" +
 	"\x10SubscribeRequest\x12_\n" +
-	"\x13from_seq_per_origin\x18\x01 \x03(\v20.graph.v1.SubscribeRequest.FromSeqPerOriginEntryR\x10fromSeqPerOrigin\x1aC\n" +
+	"\x13from_seq_per_origin\x18\x01 \x03(\v20.graph.v1.SubscribeRequest.FromSeqPerOriginEntryR\x10fromSeqPerOrigin\x12$\n" +
+	"\x0efrom_local_seq\x18\x02 \x01(\x04R\ffromLocalSeq\x1aC\n" +
 	"\x15FromSeqPerOriginEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"C\n" +
 	"\x11SubscribeResponse\x12.\n" +
 	"\bmutation\x18\x01 \x01(\v2\x12.graph.v1.MutationR\bmutation\"\x11\n" +
-	"\x0fSnapshotRequest\"\xf3\x01\n" +
+	"\x0fSnapshotRequest\"\x9d\x02\n" +
 	"\x0eSnapshotHeader\x12c\n" +
 	"\x15cutoff_seq_per_origin\x18\x01 \x03(\v20.graph.v1.SnapshotHeader.CutoffSeqPerOriginEntryR\x12cutoffSeqPerOrigin\x125\n" +
 	"\n" +
-	"cutoff_hlc\x18\x02 \x01(\v2\x16.graph.v1.HLCTimestampR\tcutoffHlc\x1aE\n" +
+	"cutoff_hlc\x18\x02 \x01(\v2\x16.graph.v1.HLCTimestampR\tcutoffHlc\x12(\n" +
+	"\x10cutoff_local_seq\x18\x03 \x01(\x04R\x0ecutoffLocalSeq\x1aE\n" +
 	"\x17CutoffSeqPerOriginEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"R\n" +
@@ -1264,11 +1302,12 @@ const file_graph_v1_replication_proto_rawDesc = "" +
 	"\vOriginState\x12\x16\n" +
 	"\x06origin\x18\x01 \x01(\fR\x06origin\x12\x19\n" +
 	"\blast_seq\x18\x02 \x01(\x04R\alastSeq\x121\n" +
-	"\blast_hlc\x18\x03 \x01(\v2\x16.graph.v1.HLCTimestampR\alastHlc\"f\n" +
+	"\blast_hlc\x18\x03 \x01(\v2\x16.graph.v1.HLCTimestampR\alastHlc\"\xa2\x01\n" +
 	"\x12PeerStatusResponse\x12\x1f\n" +
 	"\vself_origin\x18\x01 \x01(\fR\n" +
 	"selfOrigin\x12/\n" +
-	"\aorigins\x18\x02 \x03(\v2\x15.graph.v1.OriginStateR\aorigins2\xf1\x01\n" +
+	"\aorigins\x18\x02 \x03(\v2\x15.graph.v1.OriginStateR\aorigins\x12:\n" +
+	"\x19search_config_fingerprint\x18\x03 \x01(\tR\x17searchConfigFingerprint2\xf1\x01\n" +
 	"\x19LanternReplicationService\x12F\n" +
 	"\tSubscribe\x12\x1a.graph.v1.SubscribeRequest\x1a\x1b.graph.v1.SubscribeResponse0\x01\x12C\n" +
 	"\bSnapshot\x12\x19.graph.v1.SnapshotRequest\x1a\x1a.graph.v1.SnapshotResponse0\x01\x12G\n" +

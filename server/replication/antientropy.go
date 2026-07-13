@@ -17,9 +17,10 @@ package replication
 // only case anti-entropy can repair via this peer — remote-origin
 // gaps must be healed by talking to the originating node, which is
 // outside the scope of one peer's mutation log), the driver opens
-// a bounded Subscribe(from_seq = local_for_peer + 1) and applies
+// a bounded Subscribe(from_seq_per_origin = local_for_peer + 1) and applies
 // up to the peer-reported target seq. FailedPrecondition triggers
-// a Snapshot replay, after which Subscribe resumes at cutoff+1.
+// a Snapshot replay; later ticks retain that responder's local cutoff so
+// Subscribe can resume the live tail without re-requesting an evicted prefix.
 //
 // LANTERN_ANTI_ENTROPY_INTERVAL controls the tick cadence. The
 // default 30s is a deliberate compromise: short enough that a
@@ -67,6 +68,7 @@ type AntiEntropyMetrics interface {
 	OnAntiEntropyBehind(peer, origin string, gap uint64)
 	OnAntiEntropyCaughtUp(peer, origin string, applied uint64)
 	OnAntiEntropyError(peer, reason string)
+	OnSearchConfig(peer string, matched bool)
 }
 
 type nopAntiEntropyMetrics struct{}
@@ -76,6 +78,7 @@ func (nopAntiEntropyMetrics) OnAntiEntropyTick(string)                     {}
 func (nopAntiEntropyMetrics) OnAntiEntropyBehind(string, string, uint64)   {}
 func (nopAntiEntropyMetrics) OnAntiEntropyCaughtUp(string, string, uint64) {}
 func (nopAntiEntropyMetrics) OnAntiEntropyError(string, string)            {}
+func (nopAntiEntropyMetrics) OnSearchConfig(string, bool)                  {}
 
 // AntiEntropyConfig groups the driver's inputs. All fields except
 // Peers / Interval are optional; NewAntiEntropy fills defaults.
@@ -113,6 +116,11 @@ type AntiEntropyConfig struct {
 	// peers running with LANTERN_AUTH_TOKENS (#850).
 	AuthToken string
 
+	// SearchConfigFingerprint is compared with every PeerStatus response.
+	// Empty disables the comparison for narrow unit-test wiring; production
+	// always supplies the LanternService fingerprint.
+	SearchConfigFingerprint string
+
 	// HTTPClient is the http.Client used to open Connect-Go streams
 	// against each peer. Defaults to defaultH2CClient() (plaintext
 	// HTTP/2 for the in-cluster HA topology).
@@ -131,10 +139,12 @@ type AntiEntropyConfig struct {
 // is 0), so it is meant to run alongside the Connect listener and
 // pump in an errgroup.
 type AntiEntropy struct {
-	cfg   AntiEntropyConfig
-	local LocalStateProvider
-	apply MutationApplier
-	snap  SnapshotApplier
+	cfg         AntiEntropyConfig
+	local       LocalStateProvider
+	apply       MutationApplier
+	snap        SnapshotApplier
+	resumeMu    sync.Mutex
+	resumeLocal map[string]uint64
 }
 
 // NewAntiEntropy constructs the driver. local MUST be the same
@@ -158,7 +168,10 @@ func NewAntiEntropy(cfg AntiEntropyConfig, local LocalStateProvider, apply Mutat
 		cfg.HTTPClient = defaultH2CClient()
 	}
 	cfg.HTTPClient = withAuthToken(cfg.HTTPClient, cfg.AuthToken)
-	return &AntiEntropy{cfg: cfg, local: local, apply: apply, snap: snap}
+	return &AntiEntropy{
+		cfg: cfg, local: local, apply: apply, snap: snap,
+		resumeLocal: make(map[string]uint64),
+	}
 }
 
 // Run starts the periodic tick loop and blocks until ctx is
@@ -222,6 +235,16 @@ func (a *AntiEntropy) tickPeer(ctx context.Context, addr string) {
 		return
 	}
 	msg := resp.Msg
+	if a.cfg.SearchConfigFingerprint != "" {
+		remote := msg.GetSearchConfigFingerprint()
+		matched := remote != "" && remote == a.cfg.SearchConfigFingerprint
+		a.cfg.Metrics.OnSearchConfig(addr, matched)
+		if !matched {
+			log.Error("anti-entropy: search config mismatch",
+				slog.String("local_fingerprint", a.cfg.SearchConfigFingerprint),
+				slog.String("peer_fingerprint", remote))
+		}
+	}
 	if len(msg.GetSelfOrigin()) == 0 {
 		// Peer cannot identify itself — older binary or
 		// replication unwired on the peer side. Nothing to do.
@@ -283,7 +306,7 @@ func (a *AntiEntropy) tickPeer(ctx context.Context, addr string) {
 			slog.Uint64("threshold", a.cfg.GapWarnThreshold))
 	}
 
-	applied, err := a.catchUp(ctx, cli, peerNID, localSeq+1, target)
+	applied, err := a.catchUp(ctx, addr, cli, peerNID, localSeq+1, target)
 	if err != nil {
 		log.Warn("anti-entropy: catch-up failed",
 			slog.Any("err", err), slog.Uint64("applied", applied))
@@ -310,15 +333,18 @@ func (a *AntiEntropy) tickPeer(ctx context.Context, addr string) {
 // drop anyway.
 //
 // Returns the number of mutations applied during this call.
-func (a *AntiEntropy) catchUp(ctx context.Context, cli graphv1connect.LanternReplicationServiceClient, peerNID hlc.NodeID, fromSeq, target uint64) (uint64, error) {
+func (a *AntiEntropy) catchUp(ctx context.Context, addr string, cli graphv1connect.LanternReplicationServiceClient, peerNID hlc.NodeID, fromSeq, target uint64) (uint64, error) {
 	tctx, cancel := context.WithTimeout(ctx, a.cfg.SubscribeTimeout)
 	defer cancel()
 
 	cursor := map[string]uint64{hex.EncodeToString(peerNID[:]): fromSeq}
-	stream, err := cli.Subscribe(tctx, connect.NewRequest(&pb.SubscribeRequest{FromSeqPerOrigin: cursor}))
+	stream, err := cli.Subscribe(tctx, connect.NewRequest(&pb.SubscribeRequest{
+		FromSeqPerOrigin: cursor,
+		FromLocalSeq:     a.snapshotResumeLocal(addr),
+	}))
 	if err != nil {
 		if connect.CodeOf(err) == connect.CodeFailedPrecondition {
-			return 0, a.snapshotFrom(ctx, cli)
+			return 0, a.snapshotFrom(ctx, addr, cli)
 		}
 		return 0, err
 	}
@@ -350,7 +376,7 @@ func (a *AntiEntropy) catchUp(ctx context.Context, cli graphv1connect.LanternRep
 		return applied, nil
 	}
 	if connect.CodeOf(recvErr) == connect.CodeFailedPrecondition {
-		return applied, a.snapshotFrom(ctx, cli)
+		return applied, a.snapshotFrom(ctx, addr, cli)
 	}
 	// Deadline-exceeded from the subscribe timeout is expected
 	// when the catch-up window is shorter than the gap — surface as
@@ -366,17 +392,23 @@ func (a *AntiEntropy) catchUp(ctx context.Context, cli graphv1connect.LanternRep
 // cache. Triggered by FailedPrecondition on Subscribe. After this
 // returns, the next anti-entropy tick will re-probe PeerStatus and
 // resume normal catch-up.
-func (a *AntiEntropy) snapshotFrom(ctx context.Context, cli graphv1connect.LanternReplicationServiceClient) error {
+func (a *AntiEntropy) snapshotFrom(ctx context.Context, addr string, cli graphv1connect.LanternReplicationServiceClient) error {
 	stream, err := cli.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{}))
 	if err != nil {
 		return err
 	}
 	defer func() { _ = stream.Close() }()
+	var recovery searchIndexRecovery
+	if candidate, ok := a.snap.(searchIndexRecovery); ok {
+		recovery = candidate
+		recovery.BeginSearchIndexRecovery()
+	}
+	var header *pb.SnapshotHeader
 	for stream.Receive() {
 		resp := stream.Msg()
 		switch e := resp.GetEntry().(type) {
 		case *pb.SnapshotResponse_Header:
-			// nothing to apply
+			header = e.Header
 		case *pb.SnapshotResponse_Vertex:
 			sv := e.Vertex
 			v := sv.GetVertex()
@@ -406,5 +438,28 @@ func (a *AntiEntropy) snapshotFrom(ctx context.Context, cli graphv1connect.Lante
 	if err := stream.Err(); err != nil && !errors.Is(err, io.EOF) {
 		return err
 	}
+	if recovery != nil {
+		if err := recovery.CompleteSearchIndexRecovery(); err != nil {
+			a.cfg.Logger.Warn("anti-entropy: snapshot rebuilt graph but search index remains incomplete",
+				slog.Any("err", err))
+		}
+	}
+	if marks, ok := a.apply.(snapshotWatermarkApplier); ok && header != nil {
+		if err := marks.ApplySnapshotWatermarks(header.GetCutoffSeqPerOrigin(), snapshotHLC(header.GetCutoffHlc())); err != nil {
+			return err
+		}
+	}
+	if header != nil {
+		resume := resumeAfterSnapshot(header)
+		a.resumeMu.Lock()
+		a.resumeLocal[addr] = resume.local
+		a.resumeMu.Unlock()
+	}
 	return nil
+}
+
+func (a *AntiEntropy) snapshotResumeLocal(addr string) uint64 {
+	a.resumeMu.Lock()
+	defer a.resumeMu.Unlock()
+	return a.resumeLocal[addr]
 }

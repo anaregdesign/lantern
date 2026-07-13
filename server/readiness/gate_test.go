@@ -104,6 +104,17 @@ func TestGate_PumpAndAntiEntropyAdapters(t *testing.T) {
 		t.Fatalf("expected SERVING after first OnPumpConnect with no lag rows")
 	}
 
+	// A heterogeneous search contract is a hard readiness failure even when
+	// mutation watermarks are caught up.
+	g.OnSearchConfig("peer-a", false)
+	if g.Ready() {
+		t.Fatal("expected NOT_SERVING after search config mismatch")
+	}
+	g.OnSearchConfig("peer-a", true)
+	if !g.Ready() {
+		t.Fatal("expected SERVING after search config match")
+	}
+
 	// AntiEntropy Behind beyond threshold should flip NOT_SERVING.
 	g.OnAntiEntropyBehind("peer-a", "origin-a", 11)
 	if g.Ready() {
