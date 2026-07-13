@@ -167,6 +167,18 @@ test.describe("/cli", () => {
     await expect(ok.last()).toContainText("first");
   });
 
+  test("search uses the shared grammar and safely renders JSON", async ({
+    page,
+  }) => {
+    await page.goto("/cli");
+    const input = page.getByTestId("cli-input");
+    await input.fill("search first prefix=cli: limit=5");
+    await input.press("Enter");
+    const ok = page.getByTestId("cli-entry-ok").last();
+    await expect(ok).toContainText("cli:alpha");
+    await expect(ok.getByTestId("cli-json")).toBeVisible();
+  });
+
   test("invalid verb surfaces the parser usage hint", async ({ page }) => {
     await page.goto("/cli");
     const input = page.getByTestId("cli-input");

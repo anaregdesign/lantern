@@ -665,6 +665,10 @@ scan   edges    <tail-prefix> [limit] [head=<prefix>] [all=true]
 count  vertices <prefix>
 delete-prefix vertices <prefix> [limit=<int>] [confirm=yes|dry_run=true]
 keys   <prefix> [limit]
+search <query> [limit=<n>] [prefix=<string>] [mode=server|any|all|min-should] \
+       [min_should=<n>] [phrase=true] [fuzziness=0|1|2] [prefix_terms=true] \
+       [cursor=<base64url>] [all=true] [projection=key-score|full-vertex] \
+       [format=json|ndjson|tsv]
 bfs        <seed> [step] [fan_out] [reduction=none|mst|spt] [objective=min|max] \
            [weighting=raw|tfidf|bm25] [prefix=<string>]
 pagerank   <seed> [top_n] [restart_prob=<float>] [epsilon=<float>] \
@@ -681,10 +685,13 @@ exit
 lantern-cli put vertex alice '{"name":"Alice"}' type=json
 lantern-cli delete vertex alice bob carol
 lantern-cli scan vertices users/ all=true > snap.json
+lantern-cli search "desk lamp" mode=all limit=20
 lantern-cli delete-prefix vertices tmp/ dry_run=true
 
-# Outside the grammar: search, streamed bulk load, and whole-graph backup.
-lantern-cli search "desk lamp" --mode all --limit 20
+# Cobra flags are an equivalent facade over the same shared search model.
+lantern-cli search "desk lamp" --mode all --limit 20 --format json
+
+# Outside the grammar: streamed bulk load and whole-graph backup.
 cat edges.ndjson | lantern-cli bulk edges add -
 lantern-cli dump graph.pb && lantern-cli restore graph.pb
 
@@ -696,7 +703,8 @@ lantern-cli --token "$LANTERN_TOKEN" get vertex alice
 Every subcommand has long-form help (`lantern-cli <cmd> --help`, or
 `lantern-cli help <cmd>`); the REPL/Admin `help bfs|pagerank|community` shows
 only that family's signature, defaults, domains, meaning, and examples. Reads
-emit JSON on stdout, writes print `OK`. Exit codes: `0` success, `1` local/parse
+emit JSON on stdout by default; search additionally supports streamed NDJSON
+and explicitly selected, RFC-style escaped TSV. Writes print `OK`. Exit codes: `0` success, `1` local/parse
 error, `2` RPC error. Values quote C-style with `"…"` (escapes) or
 verbatim with `'…'`.
 

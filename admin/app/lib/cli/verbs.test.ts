@@ -42,6 +42,7 @@ const CANONICAL_VERBS = [
   "scan",
   "count",
   "keys",
+  "search",
   "bfs",
   "pagerank",
   "community",

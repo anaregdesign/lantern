@@ -152,6 +152,33 @@ type Keys struct {
 	Limit  int
 }
 
+// Search backs the shared content-search grammar used by the Go REPL,
+// verb-first Cobra command, and Admin /cli (#1068):
+//
+//	search <query> [limit=<uint32>] [prefix=<string>] [mode=server|any|all|min-should]
+//	       [min_should=<uint32>] [phrase=<bool>] [fuzziness=0|1|2]
+//	       [prefix_terms=<bool>] [cursor=<base64url>] [all=<bool>]
+//	       [projection=key-score|full-vertex] [format=json|ndjson|tsv]
+//
+// Cursor remains opaque at the grammar boundary and is decoded only by the
+// service that builds SDK options. Format is empty when omitted so the output
+// layer can resolve the contextual default (json for one page, ndjson for
+// all=true) without losing whether the operator selected a format explicitly.
+type Search struct {
+	Query       string
+	Limit       uint32
+	Prefix      string
+	Mode        string
+	MinShould   uint32
+	Phrase      bool
+	Fuzziness   uint32
+	PrefixTerms bool
+	Cursor      string
+	All         bool
+	Projection  string
+	Format      string
+}
+
 // CountVertices backs `count vertices <prefix>` — the prefix-cardinality
 // verb migrated from the former `vertex count` subcommand.
 type CountVertices struct {

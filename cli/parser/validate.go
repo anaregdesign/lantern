@@ -14,7 +14,7 @@ func Validate(input string) error {
 	}
 	v, err := Verb(s)
 	if err != nil {
-		return errors.New("usage: { get | put | delete | add | scan | count | delete-prefix | keys | bfs | pagerank | community | help | exit } ... ")
+		return errors.New("usage: { get | put | delete | add | scan | count | delete-prefix | keys | search | bfs | pagerank | community | help | exit } ... ")
 	}
 
 	switch v {
@@ -133,6 +133,10 @@ func Validate(input string) error {
 		if _, err := KeysParam(s); err != nil {
 			return errors.New("usage: keys <prefix: string> [<limit: int>]")
 		}
+	case "search":
+		if _, err := SearchParam(s); err != nil {
+			return fmt.Errorf("usage: search <query: string> [limit=<uint32>] [prefix=<string>] [mode=server|any|all|min-should] [min_should=<uint32>] [phrase=<bool>] [fuzziness=0|1|2] [prefix_terms=<bool>] [cursor=<base64url>] [all=<bool>] [projection=key-score|full-vertex] [format=json|ndjson|tsv]: %w", err)
+		}
 	case "bfs":
 		if _, err := BfsParam(s); err != nil {
 			return errors.New("usage: bfs <seed: string> [step: int] [fan_out: int] [reduction=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>]")
@@ -154,7 +158,7 @@ func Validate(input string) error {
 	case "exit":
 
 	default:
-		return errors.New("usage: { get | put | delete | add | scan | count | delete-prefix | keys | bfs | pagerank | community | help | exit } ... ")
+		return errors.New("usage: { get | put | delete | add | scan | count | delete-prefix | keys | search | bfs | pagerank | community | help | exit } ... ")
 	}
 	return nil
 }

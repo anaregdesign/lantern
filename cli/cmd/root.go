@@ -67,7 +67,7 @@ WHAT LANTERN IS
 COMMAND LAYOUT
   Verb-first grammar (one-liners — identical to the "lantern-cli repl" prompt and
   the admin web /cli):
-    get / put / add / delete / scan / count / delete-prefix / keys
+    get / put / add / delete / scan / count / delete-prefix / keys / search
       e.g. "lantern-cli get vertex alice", "lantern-cli scan vertices users/ all=true",
       "lantern-cli count vertices users/", "lantern-cli keys user:" (Redis-style KEYS)
   bfs         greedy per-hop top-k BFS walk from a seed
@@ -96,8 +96,9 @@ GLOBAL CONNECTION FLAGS
       --chunk-size   batch chunk size for multi-key write/delete (default 1000)
 
 OUTPUT
-  All read commands print JSON on stdout. All write commands print a single
-  "OK" line on stdout when they succeed. Errors go to stderr.
+  Read commands print JSON on stdout by default. Search additionally supports
+  streamed NDJSON and explicit, losslessly encoded TSV. All write commands
+  print a single "OK" line on stdout when they succeed. Errors go to stderr.
 
 EXIT CODES
   0  success
@@ -116,6 +117,7 @@ EXAMPLES
   lantern-cli delete vertex alice bob carol        # variadic batch delete
   lantern-cli delete-prefix vertices tmp/ dry_run=true
   lantern-cli keys user: 100                       # Redis-style KEYS (vertex keys under a prefix)
+  lantern-cli search "rolling update" mode=all limit=20
   lantern-cli bfs alice 2 5 reduction=spt objective=max
 
   # NDJSON bulk load (streamed)

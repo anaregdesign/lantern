@@ -51,6 +51,10 @@ import { putVertex } from "~/lib/client/infrastructure/api/put-vertex";
 import { scanEdges } from "~/lib/client/infrastructure/api/scan-edges";
 import { scanVertexKeys } from "~/lib/client/infrastructure/api/scan-vertex-keys";
 import { scanVertices } from "~/lib/client/infrastructure/api/scan-vertices";
+import {
+  searchAllVertices,
+  searchVertices,
+} from "~/lib/client/infrastructure/api/search-vertices";
 import type { Edge, Vertex } from "~/lib/client/infrastructure/api/types";
 import type {
   Command,
@@ -291,6 +295,8 @@ export async function dispatch(input: DispatchInput): Promise<unknown> {
         { prefix: command.prefix, limit: command.limit },
         { signal },
       );
+    case "search":
+      return dispatchSearch(client, command, signal);
     case "bfs":
       return illuminate(
         client,
@@ -342,6 +348,73 @@ export async function dispatch(input: DispatchInput): Promise<unknown> {
 // ----------------------------------------------------------------------------
 // Internals
 // ----------------------------------------------------------------------------
+
+type SearchCommand = Extract<Command, { verb: "search" }>;
+
+/**
+ * Execute the shared search model through the maintained Node SDK adapter.
+ * Admin scrollback is intrinsically JSON, so `format` affects the Go machine
+ * surface only; the browser always returns a safely serialisable page object.
+ * all=true follows the bounded server search session and collects at most that
+ * retained session into one scrollback entry (the same bounded compromise the
+ * existing scan all=true dispatcher uses).
+ */
+async function dispatchSearch(
+  client: LanternClient,
+  command: SearchCommand,
+  signal?: AbortSignal,
+): Promise<Record<string, unknown>> {
+  const request = {
+    query: command.query,
+    limit: command.limit,
+    prefix: command.prefix,
+    matchMode: command.mode,
+    minShouldMatch: command.minShould,
+    phrase: command.phrase,
+    fuzziness: command.fuzziness,
+    prefixTerms: command.prefixTerms,
+    cursor: decodeSearchCursor(command.cursor),
+    projection: command.projection,
+  } as const;
+  if (command.all) {
+    return { hits: await searchAllVertices(client, request, { signal }) };
+  }
+  const page = await searchVertices(client, request, { signal });
+  return {
+    hits: page.hits,
+    nextCursor: encodeSearchCursor(page.nextCursor),
+    effectiveLimit: page.effectiveLimit,
+    truncated: page.truncated,
+    continuationLimited: page.continuationLimited,
+  };
+}
+
+function decodeSearchCursor(value: string): Uint8Array {
+  if (value === "") return new Uint8Array();
+  if (!/^[A-Za-z0-9_-]+$/.test(value) || value.length % 4 === 1) {
+    throw new Error("search: cursor must be unpadded URL-safe base64");
+  }
+  const padded =
+    value.replaceAll("-", "+").replaceAll("_", "/") +
+    "=".repeat((4 - (value.length % 4)) % 4);
+  let binary: string;
+  try {
+    binary = atob(padded);
+  } catch {
+    throw new Error("search: cursor must be unpadded URL-safe base64");
+  }
+  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+}
+
+function encodeSearchCursor(cursor: Uint8Array): string {
+  if (cursor.length === 0) return "";
+  let binary = "";
+  for (const byte of cursor) binary += String.fromCharCode(byte);
+  return btoa(binary)
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/, "");
+}
 
 // Page through every `scan vertices` result so `all=true` renders the
 // full set (mirrors the Go REPL's ScanVerticesAll loop). The infra

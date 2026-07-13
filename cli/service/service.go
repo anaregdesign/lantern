@@ -29,40 +29,13 @@ var (
 	ErrCount            = errors.New("count error")
 	ErrDeletePrefix     = errors.New("delete-prefix error")
 	ErrKeys             = errors.New("keys error")
+	ErrSearch           = errors.New("search error")
 	ErrBFS              = errors.New("bfs error")
 	ErrPagerank         = errors.New("pagerank error")
 	ErrCommunity        = errors.New("community error")
 	ErrHelp             = errors.New("help error")
 	ErrConnection       = errors.New("connection error")
 )
-
-type CLIService struct {
-	client *client.Lantern
-}
-
-func NewCLIService(client *client.Lantern) *CLIService {
-	return &CLIService{
-		client: client,
-	}
-}
-
-func (c *CLIService) Run(ctx context.Context, str string) error {
-	s, err := parser.NewSource(str)
-	if err != nil {
-		fmt.Printf("Error: %s\n", err)
-		return ErrInvalidVerb
-	}
-	return c.runSource(ctx, s)
-}
-
-// RunArgs dispatches an already-split token stream (verb + arguments)
-// through the same grammar the REPL parses from a raw line. The one-shot
-// verb-first CLI commands (`lantern-cli get vertex <key>`, …) call this with
-// cobra's argv so the one-liner surface and the REPL share exactly one
-// grammar and one dispatcher (#672).
-func (c *CLIService) RunArgs(ctx context.Context, args []string) error {
-	return c.runSource(ctx, parser.NewSourceFromTokens(args))
-}
 
 // runSource is the shared verb dispatcher behind both Run (a raw line from
 // the REPL) and RunArgs (pre-split argv from the one-shot verbs).
@@ -428,6 +401,13 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 			fmt.Println(k)
 		}
 		return nil
+
+	case "search":
+		p, err := parser.SearchParam(s)
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrSearch, err)
+		}
+		return c.RunSearch(ctx, *p)
 
 	case "bfs":
 		p, err := parser.BfsParam(s)

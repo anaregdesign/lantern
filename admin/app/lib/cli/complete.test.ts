@@ -24,6 +24,7 @@ describe("completeCommandLine — verbs (slot 0)", () => {
       "scan",
       "count",
       "keys",
+      "search",
       "bfs",
       "pagerank",
       "community",
@@ -250,6 +251,33 @@ describe("completeCommandLine — family option kwargs (slot ≥ 2)", () => {
     expect(
       completeCommandLine("community alice epsilon=", KEYS).candidates,
     ).toEqual([]);
+  });
+});
+
+describe("completeCommandLine — search option kwargs", () => {
+  test("offers every search option after the query", () => {
+    expect(completeCommandLine("search alpha ", KEYS).candidates).toEqual([
+      "limit=",
+      "prefix=",
+      "mode=",
+      "min_should=",
+      "phrase=",
+      "fuzziness=",
+      "prefix_terms=",
+      "cursor=",
+      "all=",
+      "projection=",
+      "format=",
+    ]);
+  });
+
+  test("completes closed search option values", () => {
+    expect(completeCommandLine("search alpha mode=m", KEYS).candidates).toEqual(
+      ["mode=min-should"],
+    );
+    expect(
+      completeCommandLine("search alpha format=", KEYS).candidates,
+    ).toEqual(["format=json", "format=ndjson", "format=tsv"]);
   });
 });
 
