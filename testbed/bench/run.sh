@@ -97,6 +97,14 @@ TS="$(date -u +%Y%m%dT%H%M%SZ)"
 OUTDIR="$HERE/out/${SCENARIO_NAME}/${TS}"
 mkdir -p "$OUTDIR/prom" "$OUTDIR/pprof"
 
+render_report() {
+  (
+    cd "$REPO_ROOT"
+    go run ./testbed/bench/report -dir "$OUTDIR" -scenario "$SCENARIO_NAME" -timestamp "$TS"
+  ) > "$OUTDIR/report.md"
+  log "report: $OUTDIR/report.md"
+}
+
 # Parse common scenario fields up-front.
 warmup_duration="$(yq -r '.phases.warmup.duration' "$SCENARIO_FILE")"
 warmup_conc="$(yq -r '.phases.warmup.concurrency' "$SCENARIO_FILE")"
@@ -376,9 +384,15 @@ warm_data="$(yq -r '.target.data_template // .target.calls[0].data_template' "$S
 run_ghz warmup "${endpoints[0]}" "$warm_call" "$warm_data" "$warmup_conc" "$warmup_rps" "$warmup_duration" >/dev/null
 
 # ----- PRE snapshot (after warmup) -------------------------------------------
+semantic_verdict="skipped"
 if [[ "$semantic_kind" == "search" ]]; then
   log "semantic gate: verify every replica before steady load"
-  run_search_probe verify pre
+  if ! run_search_probe verify pre; then
+    semantic_verdict="fail"
+    render_report
+    exit 1
+  fi
+  semantic_verdict="pass"
 fi
 snapshot_runtime "$OUTDIR/runtime_pre.json"
 if [[ "${LEAK_GATE_ONLY:-0}" != "1" ]]; then
@@ -491,7 +505,9 @@ sleep "${cooldown%s}"
 # ----- POST snapshot ---------------------------------------------------------
 if [[ "$semantic_kind" == "search" ]]; then
   log "semantic gate: verify every replica after cooldown"
-  run_search_probe verify post
+  if ! run_search_probe verify post; then
+    semantic_verdict="fail"
+  fi
 fi
 snapshot_runtime "$OUTDIR/runtime_post.json"
 
@@ -694,13 +710,9 @@ fi
 log "perf gate verdict: $perf_verdict"
 
 # ----- Render report ---------------------------------------------------------
-(
-  cd "$REPO_ROOT"
-  go run ./testbed/bench/report -dir "$OUTDIR" -scenario "$SCENARIO_NAME" -timestamp "$TS"
-) > "$OUTDIR/report.md"
-log "report: $OUTDIR/report.md"
+render_report
 
 # ----- Teardown --------------------------------------------------------------
 cleanup
 
-if [[ "$verdict" == "pass" && "$metric_verdict" != "fail" && "$perf_verdict" != "fail" ]]; then exit 0; else exit 1; fi
+if [[ "$verdict" == "pass" && "$metric_verdict" != "fail" && "$semantic_verdict" != "fail" && "$perf_verdict" != "fail" ]]; then exit 0; else exit 1; fi

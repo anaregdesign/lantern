@@ -189,7 +189,7 @@ func TestRenderReport_ShowsMetricAndSemanticGates(t *testing.T) {
 		Ratio:    &ratio,
 		Verdict:  "pass",
 	}}}
-	semanticPre := &SemanticGate{Phase: "pre", Verdict: "pass", Replicas: []SemanticGateReplica{{Endpoint: "http://localhost:6380", Checks: 11, Verdict: "pass"}}}
+	semanticPre := &SemanticGate{Phase: "pre", Verdict: "fail", Replicas: []SemanticGateReplica{{Endpoint: "http://localhost:6380", Checks: 11, Verdict: "fail", Failure: "deep_pagination"}}}
 	semanticPost := &SemanticGate{Phase: "post", Verdict: "pass", Replicas: []SemanticGateReplica{{Endpoint: "http://localhost:6380", Checks: 11, Verdict: "pass"}}}
 
 	var buf bytes.Buffer
@@ -199,12 +199,13 @@ func TestRenderReport_ShowsMetricAndSemanticGates(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"**Metric gate verdict:** `pass`",
-		"**Semantic gate verdict:** `pass`",
+		"**Semantic gate verdict:** `fail`",
 		"## Metric gate",
 		"`lantern_search_index_docs`",
 		"100 | 105 | 5 | 1.05",
 		"## Semantic gate",
-		"| `pre` | `http://localhost:6380` | 11 | `pass` |",
+		"| `pre` | `http://localhost:6380` | 11 | `fail` | `deep_pagination` |",
+		"| `post` | `http://localhost:6380` | 11 | `pass` | — |",
 		"query text, prefixes, keys, and values are omitted",
 	} {
 		if !strings.Contains(out, want) {
