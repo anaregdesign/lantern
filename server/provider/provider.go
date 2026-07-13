@@ -404,7 +404,7 @@ func validateSearchConfig(c SearchConfig) error {
 	if c.DefaultMinShould == 0 {
 		return fmt.Errorf("LANTERN_SEARCH_DEFAULT_MIN_SHOULD must be positive")
 	}
-	if c.MaxSessionHits <= int(c.MaxLimit) {
+	if c.MaxSessionHits <= 0 || uint64(c.MaxSessionHits) <= uint64(c.MaxLimit) {
 		return fmt.Errorf("LANTERN_SEARCH_MAX_SESSION_HITS must exceed LANTERN_SEARCH_MAX_LIMIT")
 	}
 	values := []struct {
