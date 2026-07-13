@@ -44,7 +44,8 @@ jobs:
     # mid-sweep before it could render a verdict. The fix is NOT a bigger cap but
     # LEAK_GATE_ONLY=1 below, which drops the diagnostic captures the gate never
     # reads (24 pprof + 12 prom curls per scenario); that returns the sweep to
-    # ~deterministic phase time (~23 min) + image build/setup, ~35-40 min total.
+    # ~deterministic phase time plus isolated cluster lifecycles (~25-26 min)
+    # and image build/setup, ~35-40 min total.
     # 50 min leaves headroom for a slow cold build while still bounding a wedged
     # scenario — and is well under the rejected 90 min.
     timeout-minutes: 50

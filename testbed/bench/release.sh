@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # release.sh — release-time bench driver.
 #
-# Runs every scenario listed in testbed/bench/release-scenarios.txt against
-# a single shared Compose stack and produces ONE aggregated bench-report.md
-# in the fixed format expected by the release workflow.
+# Runs every scenario listed in testbed/bench/release-scenarios.txt against a
+# fresh Compose stack and produces ONE aggregated bench-report.md in the fixed
+# format expected by the release workflow.
 #
 # Usage:
 #   ./testbed/bench/release.sh [--out PATH]
@@ -27,10 +27,9 @@
 #   2  setup error (missing tools, missing image, etc.)
 #
 # Design notes:
-#   - We DO bring up Compose ourselves once (not inside run.sh) and pass
-#     SKIP_UP=1/KEEP_UP=1 to run.sh for every scenario, so all scenarios
-#     hit the same 3-replica cluster. This keeps wall-time bounded and
-#     ensures every scenario observes the same baseline.
+#   - Each run.sh invocation owns a fresh Compose lifecycle. This prevents
+#     vertices, search high-water state, and scenario-owned cluster overrides
+#     from leaking across measurements while keeping one aggregated report.
 #   - We DO NOT abort on a single scenario failure — the aggregator marks
 #     missing scenarios as `(failed)` rows and the workflow surfaces the
 #     overall verdict via this script's exit code.
@@ -43,10 +42,6 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
-COMPOSE_FILES=(
-  -f "$REPO_ROOT/deploy/compose/docker-compose.yml"
-  -f "$HERE/compose.override.yml"
-)
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-lantern-bench-release}"
 
 OUT_PATH="bench-report.md"
@@ -88,11 +83,11 @@ done < "$SCENARIO_LIST"
 # aggregate a partial report and exit cleanly BEFORE the runner hard-kills the
 # job (which would discard the report entirely, leaving the release notes with a
 # placeholder). The default (1620s = 27 min) leaves the compact canonical sweep
-# (~23 min of scenario loop; see release-scenarios.txt, #573, #708, #716)
-# headroom to finish, so it only trips when a runner is abnormally slow or the
-# scenario set grows. Set RELEASE_BENCH_BUDGET_SECONDS=0 to disable (the nightly
-# blocking job in bench-nightly.yml does exactly that so no leak can hide behind
-# a truncated sweep).
+# (~25-26 min including isolated cluster lifecycles; see release-scenarios.txt
+# and #1097) headroom to finish, so it only trips when a runner is abnormally
+# slow or the scenario set grows. Set RELEASE_BENCH_BUDGET_SECONDS=0 to disable
+# (the nightly blocking job in bench-nightly.yml does exactly that so no leak
+# can hide behind a truncated sweep).
 BUDGET_SECONDS="${RELEASE_BENCH_BUDGET_SECONDS:-1620}"
 
 log "release-bench: tag=$TAG commit=$COMMIT_SHORT runner=$RUNNER captured=$CAPTURED"
@@ -105,18 +100,6 @@ if ! docker image inspect "$img" >/dev/null 2>&1; then
   die "docker image $img not found; build it first (e.g. \`docker build -t lantern:local .\`)"
 fi
 export LANTERN_IMAGE="$img"
-
-# Bring up the shared cluster once.
-log "compose up (project=$COMPOSE_PROJECT_NAME, image=$img)"
-# Since #435 the canonical compose declares three explicit lantern-{0,1,2}
-# services, so `--scale lantern=3` is no longer needed.
-docker compose "${COMPOSE_FILES[@]}" up -d --wait
-
-cleanup() {
-  log "compose down"
-  docker compose "${COMPOSE_FILES[@]}" down -v >/dev/null 2>&1 || true
-}
-trap cleanup EXIT
 
 # Track each scenario's output directory and overall verdict.
 scenario_args=()
@@ -147,8 +130,9 @@ for s in "${scenarios[@]}"; do
   # Snapshot existing run directories so we can identify the new one.
   before_listing="$(ls -1 "$before_dir" 2>/dev/null | sort || true)"
 
-  # SKIP_UP=1 + KEEP_UP=1 → run.sh reuses our cluster and leaves it alone.
-  if SKIP_UP=1 KEEP_UP=1 "$HERE/run.sh" "$s"; then
+  # run.sh owns compose up and down -v so every scenario starts without data,
+  # retained high-water state, or cluster env inherited from its predecessor.
+  if "$HERE/run.sh" "$s"; then
     log "scenario $s: PASS"
   else
     log "scenario $s: FAIL (leak gate or harness error)"
