@@ -154,6 +154,7 @@ type SemanticGateReplica struct {
 	Endpoint string `json:"endpoint"`
 	Checks   int    `json:"checks"`
 	Verdict  string `json:"verdict"`
+	Failure  string `json:"failure,omitempty"`
 }
 
 // GhzSummary captures the subset of fields ghz writes that the report uses.
@@ -374,15 +375,19 @@ func RenderReport(w io.Writer, in Input) error {
 	if in.SemanticPre == nil && in.SemanticPost == nil {
 		bw.printf("_not configured_\n\n")
 	} else {
-		bw.printf("The bounded report records only phase/check counts; query text, prefixes, keys, and values are omitted.\n\n")
-		bw.printf("| phase | replica | checks | verdict |\n")
-		bw.printf("| --- | --- | ---: | --- |\n")
+		bw.printf("The bounded report records only phase/check counts and a non-sensitive failed-check category; query text, prefixes, keys, and values are omitted.\n\n")
+		bw.printf("| phase | replica | checks | verdict | failed check |\n")
+		bw.printf("| --- | --- | ---: | --- | --- |\n")
 		for _, gate := range []*SemanticGate{in.SemanticPre, in.SemanticPost} {
 			if gate == nil {
 				continue
 			}
 			for _, replica := range gate.Replicas {
-				bw.printf("| `%s` | `%s` | %d | `%s` |\n", gate.Phase, replica.Endpoint, replica.Checks, replica.Verdict)
+				failure := "—"
+				if replica.Failure != "" {
+					failure = fmt.Sprintf("`%s`", replica.Failure)
+				}
+				bw.printf("| `%s` | `%s` | %d | `%s` | %s |\n", gate.Phase, replica.Endpoint, replica.Checks, replica.Verdict, failure)
 			}
 		}
 		bw.printf("\n")

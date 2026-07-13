@@ -3,12 +3,17 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	client "github.com/anaregdesign/lantern/sdks/go"
 )
 
@@ -36,6 +41,8 @@ func (f *fakeSearcher) SearchVerticesPage(context.Context, string, ...client.Sea
 	f.pageCall++
 	return page, nil
 }
+
+func (f *fakeSearcher) Close() error { return nil }
 
 func successfulPaginationPages() []client.SearchPage {
 	pages := make([]client.SearchPage, 0, 5)
@@ -111,6 +118,114 @@ func TestVerifyOnce(t *testing.T) {
 	})
 }
 
+type paginationCapture struct {
+	graphv1connect.UnimplementedLanternServiceHandler
+	requests []*pb.SearchVerticesRequest
+}
+
+func (c *paginationCapture) SearchVertices(_ context.Context, req *connect.Request[pb.SearchVerticesRequest]) (*connect.Response[pb.SearchVerticesResponse], error) {
+	c.requests = append(c.requests, req.Msg)
+	start := 0
+	if cursor := req.Msg.GetCursor(); len(cursor) > 0 {
+		start = int(cursor[0])
+	}
+	end := min(start+2, 9)
+	hits := make([]*pb.SearchHit, 0, end-start)
+	for i := start; i < end; i++ {
+		key := fmt.Sprintf("%s%02d", pagePrefix, i)
+		hits = append(hits, &pb.SearchHit{
+			Key: key,
+			Vertex: &pb.Vertex{
+				Key:   key,
+				Value: &pb.Vertex_String_{String_: "deeppaginationbeacon"},
+			},
+			ProjectionStatus: pb.SearchHitProjectionStatus_SEARCH_HIT_PROJECTION_STATUS_SNAPSHOT,
+		})
+	}
+	var next []byte
+	if end < 9 {
+		next = []byte{byte(end)}
+	}
+	return connect.NewResponse(&pb.SearchVerticesResponse{
+		Hits:           hits,
+		NextCursor:     next,
+		EffectiveLimit: 2,
+		Truncated:      end < 9,
+	}), nil
+}
+
+func TestVerifyDeepPaginationScopesEveryPage(t *testing.T) {
+	capture := &paginationCapture{}
+	path, handler := graphv1connect.NewLanternServiceHandler(capture)
+	mux := http.NewServeMux()
+	mux.Handle(path, handler)
+	server := httptest.NewUnstartedServer(mux)
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
+	server.Config.Protocols = protocols
+	server.Start()
+	defer server.Close()
+
+	lantern, err := client.NewLantern(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lantern.Close() }()
+	if err := verifyDeepPagination(context.Background(), lantern); err != nil {
+		t.Fatal(err)
+	}
+	if len(capture.requests) != 5 {
+		t.Fatalf("requests = %d, want 5", len(capture.requests))
+	}
+	for i, request := range capture.requests {
+		if request.GetPrefix() != pagePrefix {
+			t.Errorf("request %d prefix = %q, want %q", i+1, request.GetPrefix(), pagePrefix)
+		}
+	}
+}
+
+type blockingSearchClient struct {
+	started chan<- struct{}
+}
+
+func (b *blockingSearchClient) SearchVertices(ctx context.Context, _ string, _ ...client.SearchOption) ([]client.SearchHit, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	b.started <- struct{}{}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (b *blockingSearchClient) SearchVerticesPage(context.Context, string, ...client.SearchOption) (client.SearchPage, error) {
+	return client.SearchPage{}, nil
+}
+
+func (b *blockingSearchClient) Close() error { return nil }
+
+func TestVerifyReplicasRunsConcurrentlyAndReportsCheckCategory(t *testing.T) {
+	started := make(chan struct{}, 3)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	report := verifyReplicas(ctx, "pre", []string{"a", "b", "c"}, func(string) (searchClient, error) {
+		return &blockingSearchClient{started: started}, nil
+	})
+	if len(started) != 3 {
+		t.Fatalf("started replicas = %d, want 3", len(started))
+	}
+	if report.Verdict != "fail" || len(report.Replicas) != 3 {
+		t.Fatalf("report = %+v", report)
+	}
+	for _, replica := range report.Replicas {
+		if replica.Verdict != "fail" || replica.Failure != "live_sentinel" {
+			t.Errorf("replica = %+v", replica)
+		}
+	}
+}
+
 func TestWaitForChecksPreservesSemanticFailureAtDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 	defer cancel()
@@ -129,6 +244,7 @@ func TestFailureReportIsBounded(t *testing.T) {
 			Endpoint: "http://localhost:6380",
 			Checks:   searchCheckCount(),
 			Verdict:  "fail",
+			Failure:  "deep_pagination",
 		}},
 	})
 	raw, err := os.ReadFile(path)
@@ -139,6 +255,9 @@ func TestFailureReportIsBounded(t *testing.T) {
 		if strings.Contains(string(raw), forbidden) {
 			t.Errorf("bounded report contains fixture data %q: %s", forbidden, raw)
 		}
+	}
+	if !strings.Contains(string(raw), `"failure": "deep_pagination"`) {
+		t.Fatalf("bounded report omitted failure category: %s", raw)
 	}
 }
 

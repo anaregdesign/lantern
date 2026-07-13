@@ -10,6 +10,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	client "github.com/anaregdesign/lantern/sdks/go"
@@ -22,6 +23,7 @@ const (
 	alphaKey   = "bench:search:probe:01"
 	betaKey    = "bench:search:probe:02"
 	gammaKey   = "bench:search:probe:03"
+	pagePrefix = "bench:search:page:"
 )
 
 type writer interface {
@@ -33,6 +35,13 @@ type searcher interface {
 	SearchVertices(context.Context, string, ...client.SearchOption) ([]client.SearchHit, error)
 	SearchVerticesPage(context.Context, string, ...client.SearchOption) (client.SearchPage, error)
 }
+
+type searchClient interface {
+	searcher
+	Close() error
+}
+
+type searchDialer func(string) (searchClient, error)
 
 type check struct {
 	Name     string
@@ -47,6 +56,7 @@ type replicaReport struct {
 	Endpoint string `json:"endpoint"`
 	Checks   int    `json:"checks"`
 	Verdict  string `json:"verdict"`
+	Failure  string `json:"failure,omitempty"`
 }
 
 type probeReport struct {
@@ -86,23 +96,9 @@ func main() {
 		if *phase != "pre" && *phase != "post" {
 			fatalf("verify mode requires -phase pre or -phase post")
 		}
-		rep := probeReport{Phase: *phase, Verdict: "pass"}
-		for _, endpoint := range endpoints {
-			lantern, err := client.NewLantern(endpoint)
-			if err != nil {
-				rep.Verdict = "fail"
-				rep.Replicas = append(rep.Replicas, replicaReport{Endpoint: endpoint, Verdict: "fail"})
-				continue
-			}
-			err = waitForChecks(ctx, lantern)
-			_ = lantern.Close()
-			if err != nil {
-				rep.Verdict = "fail"
-				rep.Replicas = append(rep.Replicas, replicaReport{Endpoint: endpoint, Checks: searchCheckCount(), Verdict: "fail"})
-				continue
-			}
-			rep.Replicas = append(rep.Replicas, replicaReport{Endpoint: endpoint, Checks: searchCheckCount(), Verdict: "pass"})
-		}
+		rep := verifyReplicas(ctx, *phase, endpoints, func(endpoint string) (searchClient, error) {
+			return client.NewLantern(endpoint)
+		})
 		writeReport(*reportPath, rep)
 		if rep.Verdict != "pass" {
 			fatalf("semantic verification failed; see bounded report")
@@ -123,7 +119,7 @@ func seed(ctx context.Context, w writer, now time.Time) error {
 	}
 	for i := range 9 {
 		inputs = append(inputs, client.VertexInput{
-			Key:   fmt.Sprintf("bench:search:page:%02d", i),
+			Key:   fmt.Sprintf("%s%02d", pagePrefix, i),
 			Value: "deeppaginationbeacon",
 		})
 	}
@@ -138,6 +134,44 @@ func seed(ctx context.Context, w writer, now time.Time) error {
 		return errors.New("delete sentinel was not written")
 	}
 	return nil
+}
+
+// verifyReplicas starts every replica check under the same bounded context.
+// A permanently unsatisfied contract on one replica therefore cannot consume
+// the whole probe budget before the other replicas produce useful evidence.
+func verifyReplicas(ctx context.Context, phase string, endpoints []string, dial searchDialer) probeReport {
+	reports := make([]replicaReport, len(endpoints))
+	var wg sync.WaitGroup
+	for i, endpoint := range endpoints {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			report := replicaReport{Endpoint: endpoint, Checks: searchCheckCount(), Verdict: "pass"}
+			lantern, err := dial(endpoint)
+			if err != nil {
+				report.Verdict = "fail"
+				report.Failure = "dial"
+				reports[i] = report
+				return
+			}
+			defer func() { _ = lantern.Close() }()
+			if err := waitForChecks(ctx, lantern); err != nil {
+				report.Verdict = "fail"
+				report.Failure = semanticFailureName(err)
+			}
+			reports[i] = report
+		}()
+	}
+	wg.Wait()
+
+	rep := probeReport{Phase: phase, Verdict: "pass", Replicas: reports}
+	for _, report := range reports {
+		if report.Verdict != "pass" {
+			rep.Verdict = "fail"
+			break
+		}
+	}
+	return rep
 }
 
 func searchCheckCount() int { return len(searchChecks()) + 1 }
@@ -168,7 +202,7 @@ func waitForChecks(ctx context.Context, s searcher) error {
 	var last error
 	for {
 		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("semantic checks did not converge: %v: %w", last, err)
+			return convergenceFailure(last, err)
 		}
 		last = verifyOnce(ctx, s)
 		if last == nil {
@@ -177,45 +211,75 @@ func waitForChecks(ctx context.Context, s searcher) error {
 		select {
 		case <-time.After(250 * time.Millisecond):
 		case <-ctx.Done():
-			return fmt.Errorf("semantic checks did not converge: %v: %w", last, ctx.Err())
+			return convergenceFailure(last, ctx.Err())
 		}
 	}
+}
+
+type semanticFailure struct {
+	name string
+	err  error
+}
+
+func (e *semanticFailure) Error() string { return fmt.Sprintf("%s: %v", e.name, e.err) }
+func (e *semanticFailure) Unwrap() error { return e.err }
+
+func newSemanticFailure(name string, err error) error {
+	return &semanticFailure{name: name, err: err}
+}
+
+func semanticFailureName(err error) string {
+	var failure *semanticFailure
+	if errors.As(err, &failure) && failure.name != "" {
+		return failure.name
+	}
+	return "unknown"
+}
+
+func convergenceFailure(last, cause error) error {
+	return newSemanticFailure(
+		semanticFailureName(last),
+		fmt.Errorf("semantic checks did not converge: %v: %w", last, cause),
+	)
 }
 
 func verifyOnce(ctx context.Context, s searcher) error {
 	for _, c := range searchChecks() {
 		hits, err := c.Run(ctx, s)
 		if err != nil {
-			return fmt.Errorf("%s: %w", c.Name, err)
+			return newSemanticFailure(c.Name, err)
 		}
 		got := make([]string, len(hits))
 		for i, hit := range hits {
 			got[i] = hit.Key
 		}
 		if c.Want != nil && !slices.Equal(got, c.Want) {
-			return fmt.Errorf("%s: ordered keys = %v, want %v", c.Name, got, c.Want)
+			return newSemanticFailure(c.Name, fmt.Errorf("ordered keys = %v, want %v", got, c.Want))
 		}
 		if len(got) < len(c.Top) || !slices.Equal(got[:len(c.Top)], c.Top) {
-			return fmt.Errorf("%s: top ordered keys do not match", c.Name)
+			return newSemanticFailure(c.Name, errors.New("top ordered keys do not match"))
 		}
 		for _, key := range c.Contains {
 			if !slices.Contains(got, key) {
-				return fmt.Errorf("%s: required key is absent", c.Name)
+				return newSemanticFailure(c.Name, errors.New("required key is absent"))
 			}
 		}
 		for _, key := range c.Excludes {
 			if slices.Contains(got, key) {
-				return fmt.Errorf("%s: forbidden key is present", c.Name)
+				return newSemanticFailure(c.Name, errors.New("forbidden key is present"))
 			}
 		}
 	}
-	return verifyDeepPagination(ctx, s)
+	if err := verifyDeepPagination(ctx, s); err != nil {
+		return newSemanticFailure("deep_pagination", err)
+	}
+	return nil
 }
 
 func verifyDeepPagination(ctx context.Context, s searcher) error {
 	want := make([]string, 9)
 	for i := range want {
-		want[i] = fmt.Sprintf("bench:search:page:%02d", i)
+		want[i] = fmt.Sprintf("%s%02d", pagePrefix, i)
 	}
 	var got []string
 	var cursor []byte
@@ -225,6 +289,7 @@ func verifyDeepPagination(ctx context.Context, s searcher) error {
 			ctx,
 			"deeppaginationbeacon",
 			client.WithSearchLimit(2),
+			client.WithSearchPrefix(pagePrefix),
 			client.WithFullVertex(),
 			client.WithSearchCursor(cursor),
 		)
