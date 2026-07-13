@@ -46,6 +46,16 @@
 // Shared axes such as WithWeighting and WithVertexPrefix remain freely
 // composable with the one family option.
 //
+// # Content search
+//
+// SearchVertices, SearchVerticesPage, SearchVerticesIter, and
+// NewIncrementalSearch share the canonical projection, Unicode analysis,
+// membership, ranking, TTL, typed-error, cursor, and HA contract documented at
+// https://github.com/anaregdesign/lantern/blob/main/docs/search.md. The
+// compiling example/search.go demonstrates capability discovery, one-shot and
+// incremental search, phrase/typo options, bounded pagination, cancellation,
+// and a disabled endpoint.
+//
 // # Retry policy
 //
 // Retries are opt-in and off by default — a zero-config client behaves

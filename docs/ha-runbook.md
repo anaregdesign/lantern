@@ -291,6 +291,14 @@ Search has both a local derived index and a cluster-wide configuration
 contract. Check both before attributing a search incident to ordinary RPC
 latency:
 
+**Do not serve mixed search configuration.** Every search-affecting setting
+must produce the same `GetServerStatus.search.config_fingerprint` on every
+member. A mismatch correctly keeps readiness `NOT_SERVING` while replication
+continues. Search reads remain local/eventual, and BM25 scores are relative to
+the local corpus; do not compare scores across lagging replicas or unrelated
+queries. The [canonical SearchVertices contract](search.md) defines projection,
+typed errors, TTL consistency, cursor affinity, and failover behavior.
+
 | Metric | What it tells you |
 |---|---|
 | `lantern_search_index_state{state}` | One-hot local state. `healthy=1` serves searches; `incomplete=1` rejects them until a bounded rebuild succeeds; `disabled=1` is intentional only when Search is disabled. |
@@ -463,6 +471,10 @@ typed `SEARCH_CURSOR_INVALID` or `SEARCH_CURSOR_STALE` and must restart from
 page one—never resume the cursor on another replica. Tune the session count,
 hit, and aggregate-byte caps together with replica memory, and alert on clients
 that repeatedly restart deep page chains.
+
+One-page failover is also a new local/eventual read, not continuation of the
+lost replica's snapshot. Its membership and numeric scores may legitimately
+differ until graph state and `config_fingerprint` converge.
 
 | Mutation type | Partition-time behaviour | Post-heal |
 |---|---|---|
@@ -714,6 +726,8 @@ A short checklist to walk before opening an incident:
       `LANTERN_SEARCH_POSITIONS=false` rejects `phrase=true` with
       `SEARCH_POSITIONS_DISABLED` while a positions-enabled replica executes
       the phrase query.
+      See the [canonical search HA contract](search.md#replication-failover-and-cursors)
+      before changing routing, cursor affinity, or any search setting.
 
 ---
 

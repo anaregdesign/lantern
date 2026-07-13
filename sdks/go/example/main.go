@@ -59,6 +59,10 @@ func main() {
 		log.Fatal(err)
 	}
 
+	if err := runSearchExamples(ctx, cli); err != nil {
+		log.Fatal(err)
+	}
+
 	/*
 		GetVertex:
 	*/

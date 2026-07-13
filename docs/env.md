@@ -8,6 +8,8 @@ back to its default; an unknown `LANTERN_*` name logs a typo warning; with
 `LANTERN_STRICT_CONFIG=true` either condition fails boot. An explicitly empty
 value is treated as unset for the non-string kinds. The MCP server's
 `LANTERN_MCP_*` namespace belongs to that process and is not listed here.
+Search projection, membership, error, TTL, cursor, and HA semantics are
+canonical in the [SearchVertices contract](search.md).
 
 | Variable | Type | Default | Description |
 |---|---|---|---|

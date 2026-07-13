@@ -21,6 +21,10 @@
  * subpath ships `connectWeb()` and a bundle that excludes
  * `@connectrpc/connect-node`.
  *
+ * Search projection, analysis, ranking, TTL, typed-error, cursor, and HA
+ * semantics are canonical at
+ * https://github.com/anaregdesign/lantern/blob/main/docs/search.md.
+ *
  * @packageDocumentation
  */
 

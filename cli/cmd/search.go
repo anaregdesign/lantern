@@ -73,6 +73,9 @@ hit's exact selection-time value/TTL snapshot. --cursor accepts the unpadded
 URL-safe base64 next_cursor from a previous page; every other option and the
 serving endpoint must remain unchanged.
 
+CANONICAL CONTRACT
+  https://github.com/anaregdesign/lantern/blob/main/docs/search.md
+
 REPL EQUIVALENT
   search "rolling update" mode=all limit=20 format=json
   search espresso limit=20 all=true

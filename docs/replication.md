@@ -104,9 +104,15 @@ or a partition, membership, document frequency, BM25 scores, and top-k order
 may differ across replicas; a client-side failover can therefore return a
 different response. Once replicas have the same live graph and identical
 `search.config_fingerprint`, they return the same ordered hits and score bits.
+BM25 scores are query- and corpus-relative, so clients must not compare their
+numeric values across lagging replicas or unrelated queries. Mixed
+search-affecting configuration is prohibited on serving members: fingerprint
+mismatch keeps readiness `NOT_SERVING` even though replication continues.
 Snapshot bootstrap, anti-entropy snapshot repair, and backup restore mark the
 local search index `INCOMPLETE` before replay and rebuild it from the complete
 live graph before reporting `HEALTHY`. `DISABLED` remains a separate state.
+The canonical projection, error, cursor, and failover rules are in the
+[SearchVertices contract](search.md#replication-failover-and-cursors).
 
 ## 5. Hybrid Logical Clock
 
@@ -541,7 +547,9 @@ Lantern is **AP** in CAP terms. During a partition:
 - `SearchVertices` remains available but is local/eventual. Corpus membership,
   BM25 statistics, scores, and top-k order may differ until mutation streaming
   or anti-entropy repairs the graph; clients must not interpret a partition-time
-  response as a cluster-wide snapshot.
+  response as a cluster-wide snapshot or compare its numeric score with another
+  replica. Cursor sessions and signing keys are endpoint-local; failover must
+  discard a continuation and restart from page one.
 - `Add*` writes on both sides combine cleanly when the partition heals
   (G-Set union). No data is lost.
 - `Put*` writes on both sides converge to the higher-HLC value. The losing

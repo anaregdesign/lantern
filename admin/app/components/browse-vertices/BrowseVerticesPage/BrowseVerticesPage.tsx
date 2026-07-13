@@ -174,6 +174,19 @@ export function BrowseVerticesPage() {
           {searching
             ? "Full-text search over indexed vertex content, ranked by relevance."
             : `Scan vertices by key prefix. Page size is ${DEFAULT_VERTEX_PAGE_SIZE}; expired or expiring rows are highlighted.`}
+          {searching ? (
+            <>
+              {" "}
+              <a
+                href="https://github.com/anaregdesign/lantern/blob/main/docs/search.md"
+                target="_blank"
+                rel="noreferrer"
+                data-testid="search-contract-link"
+              >
+                Search contract
+              </a>
+            </>
+          ) : null}
         </p>
       </header>
 
@@ -261,6 +274,7 @@ export function BrowseVerticesPage() {
               selectedOptions={[matchMode]}
               value={MATCH_MODE_LABELS[matchMode]}
               disabled={phrase}
+              title="Controls query-word membership; Server default defers to this endpoint's advertised configuration."
               onOptionSelect={(_, data) =>
                 setMatchMode((data.optionValue as SearchMatchMode) ?? "server")
               }
@@ -303,6 +317,7 @@ export function BrowseVerticesPage() {
               value={searchPrefix}
               onChange={(_, data) => setSearchPrefix(data.value)}
               placeholder="e.g. user:"
+              title="Restricts membership to vertex keys in this namespace before ranking."
               data-testid="search-prefix"
             />
           </Field>
@@ -311,6 +326,7 @@ export function BrowseVerticesPage() {
               selectedOptions={[String(fuzziness)]}
               value={String(fuzziness)}
               disabled={phrase}
+              title="Also visits dictionary terms within this edit distance; phrase mode does not compose with fuzziness."
               onOptionSelect={(_, data) =>
                 setFuzziness(Number(data.optionValue ?? 0) as SearchFuzziness)
               }
@@ -325,6 +341,7 @@ export function BrowseVerticesPage() {
             label="Prefix terms"
             checked={prefixTerms}
             disabled={phrase}
+            title="Also matches dictionary terms extending a query word; phrase mode does not compose with this expansion."
             onChange={(_, data) => setPrefixTerms(data.checked)}
             data-testid="search-prefix-terms"
           />
@@ -333,6 +350,7 @@ export function BrowseVerticesPage() {
               label="Phrase"
               checked={phrase}
               disabled={positionsEnabled !== true || !phraseCompatible}
+              title="Requires adjacent, ordered words inside one key, value, or JSON string-leaf field."
               onChange={(_, data) => setPhrase(data.checked)}
               data-testid="search-phrase"
             />

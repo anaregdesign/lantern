@@ -87,6 +87,8 @@ const HelpText = `Lantern CLI grammar:
   help [bfs|pagerank|community]
   exit
 
+Search contract: https://github.com/anaregdesign/lantern/blob/main/docs/search.md
+
 Quoting: "double" with C-style escapes (\" \\ \n \r \t); 'single' verbatim.
 Verb/objective case-insensitive; argument values preserve case.`
 

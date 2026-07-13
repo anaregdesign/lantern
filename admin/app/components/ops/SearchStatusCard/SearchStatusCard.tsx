@@ -50,7 +50,15 @@ export function SearchStatusCard({
       </div>
       <p className={styles.lead}>
         Capability, budgets, and current index health from{" "}
-        <code>GetServerStatus</code>.
+        <code>GetServerStatus</code>.{" "}
+        <a
+          href="https://github.com/anaregdesign/lantern/blob/main/docs/search.md"
+          target="_blank"
+          rel="noreferrer"
+          data-testid="ops-search-contract-link"
+        >
+          Search contract
+        </a>
       </p>
       {status === "loading" && <Spinner size="tiny" label="Loading…" />}
       {status === "error" && error && (

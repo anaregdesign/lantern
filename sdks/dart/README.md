@@ -115,6 +115,14 @@ caps one call only. The SDK never retries or silently loops prefix Delete.
 
 ## Search, discovery, and traversal
 
+The [canonical SearchVertices contract](https://github.com/anaregdesign/lantern/blob/main/docs/search.md)
+is authoritative
+for document projection, Unicode analysis, relative BM25 scoring, TTL
+consistency, budgets, typed reasons, endpoint-sticky cursors, and HA. The
+maintained [Flutter example](https://github.com/anaregdesign/lantern/blob/main/sdks/dart/example/lib/main.dart)
+compiles both one-shot and incremental flows, including capability discovery,
+phrase/typo options, pagination, disabled handling, and cancellation.
+
 `searchVertices` exposes prefix scope, limit, any/all/min-should-match modes,
 phrase matching, fuzziness, and prefix-term expansion. Nullable relevance
 fields preserve the distinction between omitted server defaults and explicit

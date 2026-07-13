@@ -169,7 +169,9 @@ func Render(specs []envconfig.Spec) (string, error) {
 	b.WriteString("back to its default; an unknown `LANTERN_*` name logs a typo warning; with\n")
 	b.WriteString("`LANTERN_STRICT_CONFIG=true` either condition fails boot. An explicitly empty\n")
 	b.WriteString("value is treated as unset for the non-string kinds. The MCP server's\n")
-	b.WriteString("`LANTERN_MCP_*` namespace belongs to that process and is not listed here.\n\n")
+	b.WriteString("`LANTERN_MCP_*` namespace belongs to that process and is not listed here.\n")
+	b.WriteString("Search projection, membership, error, TTL, cursor, and HA semantics are\n")
+	b.WriteString("canonical in the [SearchVertices contract](search.md).\n\n")
 	b.WriteString("| Variable | Type | Default | Description |\n")
 	b.WriteString("|---|---|---|---|\n")
 	for _, s := range sorted {
