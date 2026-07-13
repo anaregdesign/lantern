@@ -133,7 +133,8 @@ func TestSearchChurnScenarioGateContract(t *testing.T) {
 			Kind string `yaml:"kind"`
 		} `yaml:"semantic_gate"`
 		Target struct {
-			Calls []struct {
+			Endpoints []string `yaml:"endpoints"`
+			Calls     []struct {
 				Name         string `yaml:"name"`
 				Call         string `yaml:"call"`
 				DataTemplate string `yaml:"data_template"`
@@ -142,7 +143,8 @@ func TestSearchChurnScenarioGateContract(t *testing.T) {
 		} `yaml:"target"`
 		Phases struct {
 			Steady struct {
-				RPS int `yaml:"rps"`
+				Concurrency int `yaml:"concurrency"`
+				RPS         int `yaml:"rps"`
 			} `yaml:"steady"`
 		} `yaml:"phases"`
 		MetricGate struct {
@@ -174,33 +176,30 @@ func TestSearchChurnScenarioGateContract(t *testing.T) {
 		"lantern_search_index_postings",
 		"lantern_search_index_position_entries",
 		"lantern_search_index_estimated_retained_bytes",
-		"lantern_search_index_retained_ratio",
 		"lantern_search_index_healthy",
 	} {
 		if len(doc.MetricGate.Metrics[metric]) == 0 {
 			t.Errorf("metric %s has no threshold", metric)
 		}
 	}
-	retainedRatio := doc.MetricGate.Metrics["lantern_search_index_retained_ratio"]
-	if increase, ok := retainedRatio["max_increase"]; !ok || increase != 0 {
-		t.Errorf("retained ratio max_increase = %v, present %t; want 0, true", increase, ok)
-	}
-	if ratio, ok := retainedRatio["max_ratio"]; !ok || ratio != 1 {
-		t.Errorf("retained ratio max_ratio = %v, present %t; want 1, true", ratio, ok)
-	}
-	if _, ok := retainedRatio["max_post"]; ok {
-		t.Error("retained ratio must not use an absolute max_post")
+	if _, ok := doc.MetricGate.Metrics["lantern_search_index_retained_ratio"]; ok {
+		t.Error("retained ratio must not be gated while the live denominator decays")
 	}
 
 	calls := make(map[string]string, len(doc.Target.Calls))
+	searchProducersByEndpoint := make(map[string]int, len(doc.Target.Endpoints))
 	totalRPS := 0
-	for _, call := range doc.Target.Calls {
+	for i, call := range doc.Target.Calls {
 		if call.Name == "" || call.RPS <= 0 {
 			t.Errorf("producer has invalid name/rps: %+v", call)
 			continue
 		}
 		totalRPS += call.RPS
 		calls[call.Name] = strings.TrimSpace(call.DataTemplate)
+		if strings.HasSuffix(call.Call, "/SearchVertices") && len(doc.Target.Endpoints) > 0 {
+			endpoint := doc.Target.Endpoints[i%len(doc.Target.Endpoints)]
+			searchProducersByEndpoint[endpoint]++
+		}
 		gate, ok := doc.PerfGate.Producers[call.Name]
 		if !ok || gate.MinSteadyRPS == nil || gate.MaxP99MS == nil || gate.MaxNonOK == nil {
 			t.Errorf("producer %q lacks independent rps+p99/non-OK gate", call.Name)
@@ -208,6 +207,22 @@ func TestSearchChurnScenarioGateContract(t *testing.T) {
 	}
 	if totalRPS != doc.Phases.Steady.RPS {
 		t.Errorf("producer rps sum = %d, steady rps = %d", totalRPS, doc.Phases.Steady.RPS)
+	}
+	if len(doc.Target.Endpoints) == 0 {
+		t.Fatal("search churn has no target endpoints")
+	}
+	if doc.Phases.Steady.Concurrency <= 0 {
+		t.Fatalf("steady concurrency = %d, want positive", doc.Phases.Steady.Concurrency)
+	}
+	const defaultSearchMaxInFlight = 32
+	for _, endpoint := range doc.Target.Endpoints {
+		producers := searchProducersByEndpoint[endpoint]
+		inFlight := producers * doc.Phases.Steady.Concurrency
+		if producers == 0 {
+			t.Errorf("endpoint %s has no Search producer", endpoint)
+		} else if inFlight >= defaultSearchMaxInFlight {
+			t.Errorf("endpoint %s Search demand = %d producers * %d concurrency = %d, want below admission limit %d", endpoint, producers, doc.Phases.Steady.Concurrency, inFlight, defaultSearchMaxInFlight)
+		}
 	}
 	for name, fragments := range map[string][]string{
 		"writer":                    {`"expiration"`},
