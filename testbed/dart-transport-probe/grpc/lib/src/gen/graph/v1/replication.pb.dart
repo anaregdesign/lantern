@@ -546,10 +546,12 @@ class SubscribeRequest extends $pb.GeneratedMessage {
   factory SubscribeRequest({
     $core.Iterable<$core.MapEntry<$core.String, $fixnum.Int64>>?
         fromSeqPerOrigin,
+    $fixnum.Int64? fromLocalSeq,
   }) {
     final result = create();
     if (fromSeqPerOrigin != null)
       result.fromSeqPerOrigin.addEntries(fromSeqPerOrigin);
+    if (fromLocalSeq != null) result.fromLocalSeq = fromLocalSeq;
     return result;
   }
 
@@ -572,6 +574,9 @@ class SubscribeRequest extends $pb.GeneratedMessage {
         keyFieldType: $pb.PbFieldType.OS,
         valueFieldType: $pb.PbFieldType.OU6,
         packageName: const $pb.PackageName('graph.v1'))
+    ..a<$fixnum.Int64>(
+        2, _omitFieldNames ? '' : 'fromLocalSeq', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -598,6 +603,20 @@ class SubscribeRequest extends $pb.GeneratedMessage {
   /// expects from that origin.
   @$pb.TagNumber(1)
   $pb.PbMap<$core.String, $fixnum.Int64> get fromSeqPerOrigin => $_getMap(0);
+
+  /// Next entry in this responder's replica-local mutation log. This is only
+  /// valid when resuming against the SAME responder that emitted
+  /// SnapshotHeader.cutoff_local_seq; zero uses the portable per-origin path.
+  /// Keeping the two sequence domains separate prevents a stale per-origin
+  /// cursor from bypassing ring-buffer gap detection.
+  @$pb.TagNumber(2)
+  $fixnum.Int64 get fromLocalSeq => $_getI64(1);
+  @$pb.TagNumber(2)
+  set fromLocalSeq($fixnum.Int64 value) => $_setInt64(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasFromLocalSeq() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearFromLocalSeq() => $_clearField(2);
 }
 
 /// SubscribeResponse carries one replicated mutation per message.
@@ -704,11 +723,12 @@ class SnapshotRequest extends $pb.GeneratedMessage {
 /// freezes the per-origin watermark and the snapshot-open HLC the server
 /// used to materialise the snapshot.
 ///
-/// A bootstrapping peer MUST persist `cutoff_seq_per_origin` and
-/// `cutoff_hlc` before applying any payload entries and MUST resume
-/// `Subscribe` with `from_seq_per_origin = {origin: seq+1 for each
-/// (origin, seq) in cutoff_seq_per_origin}` so the snapshot and the
-/// live tail stitch without gap or overlap.
+/// A bootstrapping peer MUST persist `cutoff_seq_per_origin`,
+/// `cutoff_local_seq`, and `cutoff_hlc` before applying any payload entries and
+/// MUST resume Subscribe against the SAME responder with both
+/// `from_seq_per_origin = {origin: seq+1 for each (origin, seq) in
+/// cutoff_seq_per_origin}` and `from_local_seq = cutoff_local_seq+1` so the
+/// snapshot and the live tail stitch without gap or overlap.
 ///
 /// Keys in `cutoff_seq_per_origin` are 32-char lowercase hex of the
 /// 16-byte HLC NodeID, matching `SubscribeRequest.from_seq_per_origin`.
@@ -721,11 +741,13 @@ class SnapshotHeader extends $pb.GeneratedMessage {
     $core.Iterable<$core.MapEntry<$core.String, $fixnum.Int64>>?
         cutoffSeqPerOrigin,
     HLCTimestamp? cutoffHlc,
+    $fixnum.Int64? cutoffLocalSeq,
   }) {
     final result = create();
     if (cutoffSeqPerOrigin != null)
       result.cutoffSeqPerOrigin.addEntries(cutoffSeqPerOrigin);
     if (cutoffHlc != null) result.cutoffHlc = cutoffHlc;
+    if (cutoffLocalSeq != null) result.cutoffLocalSeq = cutoffLocalSeq;
     return result;
   }
 
@@ -750,6 +772,9 @@ class SnapshotHeader extends $pb.GeneratedMessage {
         packageName: const $pb.PackageName('graph.v1'))
     ..aOM<HLCTimestamp>(2, _omitFieldNames ? '' : 'cutoffHlc',
         subBuilder: HLCTimestamp.create)
+    ..a<$fixnum.Int64>(
+        3, _omitFieldNames ? '' : 'cutoffLocalSeq', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -784,6 +809,18 @@ class SnapshotHeader extends $pb.GeneratedMessage {
   void clearCutoffHlc() => $_clearField(2);
   @$pb.TagNumber(2)
   HLCTimestamp ensureCutoffHlc() => $_ensure(1);
+
+  /// Replica-local mutation-log position at snapshot open. It is deliberately
+  /// separate from the portable per-origin watermarks and only resumes a tail
+  /// against the same responder.
+  @$pb.TagNumber(3)
+  $fixnum.Int64 get cutoffLocalSeq => $_getI64(2);
+  @$pb.TagNumber(3)
+  set cutoffLocalSeq($fixnum.Int64 value) => $_setInt64(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasCutoffLocalSeq() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearCutoffLocalSeq() => $_clearField(3);
 }
 
 /// SnapshotFooter is always the LAST SnapshotResponse on the wire. It carries
@@ -1393,10 +1430,13 @@ class PeerStatusResponse extends $pb.GeneratedMessage {
   factory PeerStatusResponse({
     $core.List<$core.int>? selfOrigin,
     $core.Iterable<OriginState>? origins,
+    $core.String? searchConfigFingerprint,
   }) {
     final result = create();
     if (selfOrigin != null) result.selfOrigin = selfOrigin;
     if (origins != null) result.origins.addAll(origins);
+    if (searchConfigFingerprint != null)
+      result.searchConfigFingerprint = searchConfigFingerprint;
     return result;
   }
 
@@ -1417,6 +1457,7 @@ class PeerStatusResponse extends $pb.GeneratedMessage {
         1, _omitFieldNames ? '' : 'selfOrigin', $pb.PbFieldType.OY)
     ..pPM<OriginState>(2, _omitFieldNames ? '' : 'origins',
         subBuilder: OriginState.create)
+    ..aOS(3, _omitFieldNames ? '' : 'searchConfigFingerprint')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1449,6 +1490,18 @@ class PeerStatusResponse extends $pb.GeneratedMessage {
 
   @$pb.TagNumber(2)
   $pb.PbList<OriginState> get origins => $_getList(1);
+
+  /// Fingerprint of every search setting that can change capabilities or
+  /// ordered results. Replicas compare this before declaring themselves ready;
+  /// empty means the responder cannot prove search-config compatibility.
+  @$pb.TagNumber(3)
+  $core.String get searchConfigFingerprint => $_getSZ(2);
+  @$pb.TagNumber(3)
+  set searchConfigFingerprint($core.String value) => $_setString(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasSearchConfigFingerprint() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearSearchConfigFingerprint() => $_clearField(3);
 }
 
 const $core.bool _omitFieldNames =

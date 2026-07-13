@@ -210,6 +210,7 @@ const SubscribeRequest$json = {
       '6': '.graph.v1.SubscribeRequest.FromSeqPerOriginEntry',
       '10': 'fromSeqPerOrigin'
     },
+    {'1': 'from_local_seq', '3': 2, '4': 1, '5': 4, '10': 'fromLocalSeq'},
   ],
   '3': [SubscribeRequest_FromSeqPerOriginEntry$json],
 };
@@ -228,8 +229,8 @@ const SubscribeRequest_FromSeqPerOriginEntry$json = {
 final $typed_data.Uint8List subscribeRequestDescriptor = $convert.base64Decode(
     'ChBTdWJzY3JpYmVSZXF1ZXN0El8KE2Zyb21fc2VxX3Blcl9vcmlnaW4YASADKAsyMC5ncmFwaC'
     '52MS5TdWJzY3JpYmVSZXF1ZXN0LkZyb21TZXFQZXJPcmlnaW5FbnRyeVIQZnJvbVNlcVBlck9y'
-    'aWdpbhpDChVGcm9tU2VxUGVyT3JpZ2luRW50cnkSEAoDa2V5GAEgASgJUgNrZXkSFAoFdmFsdW'
-    'UYAiABKARSBXZhbHVlOgI4AQ==');
+    'aWdpbhIkCg5mcm9tX2xvY2FsX3NlcRgCIAEoBFIMZnJvbUxvY2FsU2VxGkMKFUZyb21TZXFQZX'
+    'JPcmlnaW5FbnRyeRIQCgNrZXkYASABKAlSA2tleRIUCgV2YWx1ZRgCIAEoBFIFdmFsdWU6AjgB');
 
 @$core.Deprecated('Use subscribeResponseDescriptor instead')
 const SubscribeResponse$json = {
@@ -280,6 +281,7 @@ const SnapshotHeader$json = {
       '6': '.graph.v1.HLCTimestamp',
       '10': 'cutoffHlc'
     },
+    {'1': 'cutoff_local_seq', '3': 3, '4': 1, '5': 4, '10': 'cutoffLocalSeq'},
   ],
   '3': [SnapshotHeader_CutoffSeqPerOriginEntry$json],
 };
@@ -299,8 +301,9 @@ final $typed_data.Uint8List snapshotHeaderDescriptor = $convert.base64Decode(
     'Cg5TbmFwc2hvdEhlYWRlchJjChVjdXRvZmZfc2VxX3Blcl9vcmlnaW4YASADKAsyMC5ncmFwaC'
     '52MS5TbmFwc2hvdEhlYWRlci5DdXRvZmZTZXFQZXJPcmlnaW5FbnRyeVISY3V0b2ZmU2VxUGVy'
     'T3JpZ2luEjUKCmN1dG9mZl9obGMYAiABKAsyFi5ncmFwaC52MS5ITENUaW1lc3RhbXBSCWN1dG'
-    '9mZkhsYxpFChdDdXRvZmZTZXFQZXJPcmlnaW5FbnRyeRIQCgNrZXkYASABKAlSA2tleRIUCgV2'
-    'YWx1ZRgCIAEoBFIFdmFsdWU6AjgB');
+    '9mZkhsYxIoChBjdXRvZmZfbG9jYWxfc2VxGAMgASgEUg5jdXRvZmZMb2NhbFNlcRpFChdDdXRv'
+    'ZmZTZXFQZXJPcmlnaW5FbnRyeRIQCgNrZXkYASABKAlSA2tleRIUCgV2YWx1ZRgCIAEoBFIFdm'
+    'FsdWU6AjgB');
 
 @$core.Deprecated('Use snapshotFooterDescriptor instead')
 const SnapshotFooter$json = {
@@ -498,10 +501,18 @@ const PeerStatusResponse$json = {
       '6': '.graph.v1.OriginState',
       '10': 'origins'
     },
+    {
+      '1': 'search_config_fingerprint',
+      '3': 3,
+      '4': 1,
+      '5': 9,
+      '10': 'searchConfigFingerprint'
+    },
   ],
 };
 
 /// Descriptor for `PeerStatusResponse`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List peerStatusResponseDescriptor = $convert.base64Decode(
     'ChJQZWVyU3RhdHVzUmVzcG9uc2USHwoLc2VsZl9vcmlnaW4YASABKAxSCnNlbGZPcmlnaW4SLw'
-    'oHb3JpZ2lucxgCIAMoCzIVLmdyYXBoLnYxLk9yaWdpblN0YXRlUgdvcmlnaW5z');
+    'oHb3JpZ2lucxgCIAMoCzIVLmdyYXBoLnYxLk9yaWdpblN0YXRlUgdvcmlnaW5zEjoKGXNlYXJj'
+    'aF9jb25maWdfZmluZ2VycHJpbnQYAyABKAlSF3NlYXJjaENvbmZpZ0ZpbmdlcnByaW50');
