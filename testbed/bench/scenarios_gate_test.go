@@ -120,6 +120,42 @@ func TestBroadIlluminateScenarioTopologyContract(t *testing.T) {
 	}
 }
 
+// TestBroadRWScenarioSeparatesSearchRecovery keeps its codes.OK RPC-surface
+// contract independent from the derived-index rebuild lifecycle. Hosted
+// mutation-log gap recovery may rebuild Search; search_churn owns that proof.
+func TestBroadRWScenarioSeparatesSearchRecovery(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("scenarios", "broad_rw.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Cluster struct {
+			SearchEnabled *bool `yaml:"search_enabled"`
+		} `yaml:"cluster"`
+		Target struct {
+			Calls []scenarioCall `yaml:"calls"`
+		} `yaml:"target"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse broad_rw: %v", err)
+	}
+	if doc.Cluster.SearchEnabled == nil || *doc.Cluster.SearchEnabled {
+		t.Fatal("broad_rw must disable Search so snapshot rebuilds cannot reject its codes.OK Put producers")
+	}
+	methods := make(map[string]bool, len(doc.Target.Calls))
+	for _, call := range doc.Target.Calls {
+		methods[call.Call] = true
+	}
+	for _, method := range []string{
+		"graph.v1.LanternService/PutVertex",
+		"graph.v1.LanternService/PutVertices",
+	} {
+		if !methods[method] {
+			t.Errorf("broad_rw lost required write producer %s", method)
+		}
+	}
+}
+
 // TestSearchChurnScenarioGateContract keeps #1063's blocking search proof
 // honest: every advanced producer is independently ratcheted, semantic probes
 // run on every replica, and the derived-index gauges have real pre/post gates.

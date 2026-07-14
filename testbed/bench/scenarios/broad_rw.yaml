@@ -11,6 +11,11 @@
 #       twice (steady 2m). Key spaces are chosen so every call returns codes.OK
 #       (non-OK ~ 0): plural reads return OK + a `missing` list rather than
 #       NotFound; AddEdge is additive; DeleteVertex targets a monotonic space.
+#       Search is disabled for this scenario because a mutation-log gap can
+#       trigger snapshot restore on a saturated hosted runner; the derived
+#       index then correctly fails strict local Put* with SEARCH_INDEX_INCOMPLETE
+#       while it rebuilds. search_churn owns that lifecycle contract, whereas
+#       broad_rw requires every RPC-surface producer to remain codes.OK (#1101).
 #
 # Ordering: calls[0] (PutVertex over k-*) is what warmup replays — run.sh warms
 #           ONLY calls[0] — so it must be the working-set filler. The AddEdge
@@ -18,6 +23,8 @@
 #           owns a separate, verified topology preflight (#994), so no release
 #           scenario ordering depends on these incidental edges.
 name: broad_rw
+cluster:
+  search_enabled: false
 phases:
   warmup:   { duration: 15s, concurrency: 16, rps: 1000 }
   steady:   { duration: 2m,  concurrency: 16, rps: 12000 }

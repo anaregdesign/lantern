@@ -427,8 +427,8 @@ func RenderReport(w io.Writer, in Input) error {
 	if len(in.GhzFiles) == 0 {
 		bw.printf("_no ghz artifacts found_\n\n")
 	} else {
-		bw.printf("| file | count | rps | avg ms | p99 ms | non-OK |\n")
-		bw.printf("| --- | ---: | ---: | ---: | ---: | ---: |\n")
+		bw.printf("| file | count | rps | avg ms | p99 ms | non-OK | non-OK statuses |\n")
+		bw.printf("| --- | ---: | ---: | ---: | ---: | ---: | --- |\n")
 		sawStream := false
 		for _, g := range in.GhzFiles {
 			// ghz reports server-streaming RPCs (file prefix `ghz_sub_`)
@@ -440,6 +440,7 @@ func RenderReport(w io.Writer, in Input) error {
 			// issue #258, item 4.
 			isStream := strings.HasPrefix(g.Name, "ghz_sub_")
 			nonOKCell := "—"
+			statusCell := "—"
 			if !isStream {
 				nonOK := 0
 				for code, n := range g.Summary.StatusCodeDistribution {
@@ -448,16 +449,18 @@ func RenderReport(w io.Writer, in Input) error {
 					}
 				}
 				nonOKCell = fmt.Sprintf("%d", nonOK)
+				statusCell = nonOKStatusSummary(g.Summary.StatusCodeDistribution)
 			} else {
 				sawStream = true
 			}
-			bw.printf("| `%s` | %d | %.1f | %.2f | %.2f | %s |\n",
+			bw.printf("| `%s` | %d | %.1f | %.2f | %.2f | %s | %s |\n",
 				g.Name,
 				g.Summary.Count,
 				g.Summary.Rps,
 				nsToMs(g.Summary.Average),
 				nsToMs(percentileNs(g.Summary, 99)),
 				nonOKCell,
+				statusCell,
 			)
 		}
 		bw.printf("\n")
@@ -495,6 +498,24 @@ func RenderReport(w io.Writer, in Input) error {
 	bw.printf("   `go tool pprof -http=:0 -base <pre> <post>`\n")
 	bw.printf("3. For elevated tail latency, cross-reference the matching Prom histogram query with `<replica>__post__goroutine.pb.gz` (look for blocked stacks).\n")
 	return bw.err
+}
+
+// nonOKStatusSummary keeps hosted failures actionable without copying ghz's
+// unbounded error strings into the durable report. Connect/gRPC status names
+// form a small fixed vocabulary; sort them so report diffs are deterministic.
+func nonOKStatusSummary(distribution map[string]int) string {
+	statuses := make([]string, 0, len(distribution))
+	for status, count := range distribution {
+		if status == "OK" || count <= 0 {
+			continue
+		}
+		statuses = append(statuses, fmt.Sprintf("`%s=%d`", status, count))
+	}
+	if len(statuses) == 0 {
+		return "—"
+	}
+	sort.Strings(statuses)
+	return strings.Join(statuses, ", ")
 }
 
 func semanticGateVerdict(pre, post *SemanticGate) string {
