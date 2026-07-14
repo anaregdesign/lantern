@@ -79,7 +79,7 @@ func TestRenderReport_AllSectionsAndVerdict(t *testing.T) {
 		"| 12 / 240000 |", // vertexHLC entries (drained) / high-water (peak)
 		"50.00",           // p99 ms
 		"`ghz_steady_localhost_6380.json`",
-		"| 10 |", // non-OK column
+		"| 10 | `DEADLINE_EXCEEDED=10` |",
 		"`go_goroutines` → `prom/q_01.json`",
 		"`pprof/localhost_9390__post__heap.pb.gz`",
 		"## Drill-down",
@@ -88,9 +88,6 @@ func TestRenderReport_AllSectionsAndVerdict(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("report missing %q\n---\n%s", want, out)
 		}
-	}
-	if strings.Contains(out, "DEADLINE_EXCEEDED") {
-		t.Errorf("report should not name individual non-OK codes:\n%s", out)
 	}
 }
 
@@ -120,10 +117,10 @@ func TestRenderReport_StreamingGhzRowsMaskNonOK(t *testing.T) {
 		t.Fatalf("RenderReport: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "| `ghz_steady_localhost_6380.json` | 100 | 100.0 | 0.00 | 0.00 | 5 |") {
+	if !strings.Contains(out, "| `ghz_steady_localhost_6380.json` | 100 | 100.0 | 0.00 | 0.00 | 5 | `Unavailable=5` |") {
 		t.Errorf("steady row should report numeric non-OK; got:\n%s", out)
 	}
-	if !strings.Contains(out, "| `ghz_sub_1.json` | 130000 | 433.0 | 0.00 | 0.00 | — |") {
+	if !strings.Contains(out, "| `ghz_sub_1.json` | 130000 | 433.0 | 0.00 | 0.00 | — | — |") {
 		t.Errorf("streaming row should mask non-OK with \"—\"; got:\n%s", out)
 	}
 	if !strings.Contains(out, "`ghz_sub_*` rows show `—` for non-OK") {
