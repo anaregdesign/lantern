@@ -52,8 +52,11 @@ metric_gate:
     lantern_search_index_postings: { max_increase: 1024, max_ratio: 2 }
     lantern_search_index_position_entries: { max_increase: 2048, max_ratio: 2 }
     lantern_search_index_estimated_retained_bytes: { max_increase: 33554432, max_ratio: 3 }
-    lantern_search_index_retained_ratio: { max_post: 3 }
     lantern_search_index_healthy: { min_post: 1, max_post: 1 }
+# retained_ratio is intentionally not gated: the short TTL workload can shrink
+# the live-byte denominator below the compaction floor while retained slots are
+# still bounded by the absolute gauges above. A fixed ratio ceiling would turn
+# that expected state into a false release failure (#1105).
 # Wide ratchets reject step changes while tolerating ordinary hosted-runner
 # jitter. Each Search producer is independent, so writer throughput cannot
 # conceal an unexpectedly slow or empty Search path.

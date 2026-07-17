@@ -301,6 +301,37 @@ func TestSearchChurnScenarioGateContract(t *testing.T) {
 	}
 }
 
+// TestSearchQualificationScenarioGateContract keeps the short-TTL release
+// qualification from treating the diagnostic retained/live ratio as a leak.
+// Production intentionally waits for the compaction floor before rebuilding
+// retained index structures, so the ratio can rise as live documents expire.
+func TestSearchQualificationScenarioGateContract(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("scenarios", "search_qualification.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		MetricGate struct {
+			Metrics map[string]map[string]float64 `yaml:"metrics"`
+		} `yaml:"metric_gate"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse search_qualification: %v", err)
+	}
+	for _, metric := range []string{
+		"lantern_search_index_retained_term_slots",
+		"lantern_search_index_retained_ordinals",
+		"lantern_search_index_estimated_retained_bytes",
+	} {
+		if len(doc.MetricGate.Metrics[metric]) == 0 {
+			t.Errorf("metric %s has no threshold", metric)
+		}
+	}
+	if _, ok := doc.MetricGate.Metrics["lantern_search_index_retained_ratio"]; ok {
+		t.Error("retained ratio must not be gated while the live denominator decays")
+	}
+}
+
 // TestSearchReleaseQualificationIsBlocking pins the release dependency rather
 // than merely checking that a qualification job exists. A failed or skipped
 // stage must produce a fail verdict, and image publication must need that job.
