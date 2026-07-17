@@ -288,6 +288,28 @@ jobs:
           flutter build ios --debug --no-codesign
 
       - name: Run iOS native smoke
+        id: ios_smoke
+        continue-on-error: true
+        timeout-minutes: 8
+        working-directory: sdks/dart/example
+        run: |
+          flutter test integration_test/mobile_smoke_test.dart -d "$DEVICE_ID" \
+            --reporter=expanded --timeout=3m \
+            --dart-define=LANTERN_ENDPOINT=http://127.0.0.1:6380 \
+            --dart-define=LANTERN_ALLOW_INSECURE=true
+
+      # Flutter's test timeout does not cover a stalled iOS app launch.
+      - name: Reboot iOS simulator after a failed smoke attempt
+        if: steps.ios_smoke.outcome == 'failure'
+        run: |
+          xcrun simctl shutdown "$DEVICE_ID" || true
+          xcrun simctl erase "$DEVICE_ID"
+          xcrun simctl boot "$DEVICE_ID"
+          xcrun simctl bootstatus "$DEVICE_ID" -b
+
+      - name: Retry iOS native smoke
+        if: steps.ios_smoke.outcome == 'failure'
+        timeout-minutes: 8
         working-directory: sdks/dart/example
         run: |
           flutter test integration_test/mobile_smoke_test.dart -d "$DEVICE_ID" \
