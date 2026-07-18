@@ -34,6 +34,7 @@ dependencies:
     path: ..
 
 dev_dependencies:
+  connectrpc: 1.0.0
   flutter_test:
     sdk: flutter
   integration_test:

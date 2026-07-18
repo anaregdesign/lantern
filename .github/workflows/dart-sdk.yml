@@ -290,7 +290,7 @@ jobs:
         run: |
           flutter pub get --enforce-lockfile
           dart format --output=none --set-exit-if-changed \
-            lib test integration_test
+            lib test integration_test test_driver
           flutter analyze --no-pub
           flutter test --no-pub
 

@@ -42,7 +42,7 @@ packages:
     source: hosted
     version: "1.19.1"
   connectrpc:
-    dependency: transitive
+    dependency: "direct dev"
     description:
       name: connectrpc
       sha256: a1dbf301d0dfa189bb879a9f15bbe72f31dbac581f385035a10fcc2d31a93a18
