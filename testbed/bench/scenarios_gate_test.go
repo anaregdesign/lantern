@@ -311,12 +311,22 @@ func TestSearchQualificationScenarioGateContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	var doc struct {
+		Phases struct {
+			Cooldown string `yaml:"cooldown"`
+		} `yaml:"phases"`
 		MetricGate struct {
 			Metrics map[string]map[string]float64 `yaml:"metrics"`
 		} `yaml:"metric_gate"`
 	}
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
 		t.Fatalf("parse search_qualification: %v", err)
+	}
+	cooldown, err := time.ParseDuration(doc.Phases.Cooldown)
+	if err != nil {
+		t.Fatalf("parse search_qualification cooldown: %v", err)
+	}
+	if cooldown < time.Minute {
+		t.Errorf("search qualification cooldown = %s, want at least 1m for TTL index quiescence", cooldown)
 	}
 	for _, metric := range []string{
 		"lantern_search_index_retained_term_slots",
