@@ -158,6 +158,7 @@ func TestDartWorkflowGate(t *testing.T) {
 		"name: Classify changes",
 		"docs/decisions/0001-dart-mobile-transport.md",
 		"name: Generate, analyze, and test",
+		"dart pub get --enforce-lockfile --no-example",
 		"if: needs.changes.outputs.full == 'true'",
 		"bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99",
 		"version: 1.71.0",

@@ -155,7 +155,9 @@ jobs:
           exit 1
 
       - name: Resolve dependencies
-        run: dart pub get --enforce-lockfile
+        # The Flutter example resolves in the blocking Android job. Keeping it
+        # out of this pure-Dart job avoids requiring a second Flutter install.
+        run: dart pub get --enforce-lockfile --no-example
 
       - name: Regenerate and check drift
         if: needs.changes.outputs.full == 'true'
