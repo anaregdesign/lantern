@@ -8,7 +8,7 @@ require (
 	github.com/anaregdesign/lantern/core v0.18.0
 	github.com/anaregdesign/lantern/mcp v0.0.0-00010101000000-000000000000
 	github.com/anaregdesign/lantern/pb v0.12.0
-	github.com/anaregdesign/lantern/sdks/go v0.22.0
+	github.com/anaregdesign/lantern/sdks/go v0.24.0
 	github.com/anaregdesign/lantern/server v0.0.0-00010101000000-000000000000
 	github.com/manifoldco/promptui v0.9.0
 	github.com/modelcontextprotocol/go-sdk v1.6.1

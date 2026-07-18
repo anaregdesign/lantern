@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.1
+
+- Accept the Dart offline contract and set an official, opt-in
+  `lantern_client_offline` package as the product direction while keeping the
+  online `lantern_client` free of implicit persistence and platform storage
+  dependencies.
+- Specify a single-item durable mutation model, stable logical-call grouping,
+  per-key ordering, explicit dead-letter/ambiguous controls, and independently
+  implementable codec, package, integration, and server follow-ups.
+
 ## 0.1.0
 
 - Scaffold the pure-Dart `lantern_client` package.
@@ -35,7 +45,7 @@
 - Add Android emulator and iOS simulator real-wire gates, Android/iOS build
   gates, mobile security/troubleshooting guidance, and a physical-device smoke
   evidence checklist.
-- Document the proposed app-owned offline Repository contract, including exact
+- Document the initial app-owned offline Repository contract, including exact
   cache freshness, durable contribution IDs, crash-safe outbox states,
   ambiguous-operation exclusions, threat controls, and golden scenarios; the
   core SDK still has no implicit persistence.

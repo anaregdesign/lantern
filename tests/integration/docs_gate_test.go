@@ -3,7 +3,6 @@ package integration_test
 import (
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -100,11 +99,10 @@ func TestTraversalDocumentationGate(t *testing.T) {
 	}
 }
 
-// TestDartFirstReleaseBlockerGate keeps the executable v0.1 release gate
-// aligned with the documented dependency spine. Release-tracking Issues must
-// remain open until publishing is verified, and Phase 2 design work must not
-// silently become a v0.1 blocker.
-func TestDartFirstReleaseBlockerGate(t *testing.T) {
+// TestDartPublishingContractGate keeps the tag-driven pub.dev OIDC release
+// path aligned with the documented publishing contract after the one-time
+// manual first release.
+func TestDartPublishingContractGate(t *testing.T) {
 	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatalf("resolve repository root: %v", err)
@@ -116,13 +114,23 @@ func TestDartFirstReleaseBlockerGate(t *testing.T) {
 		t.Fatalf("read Dart SDK workflow: %v", err)
 	}
 
-	match := regexp.MustCompile(`for issue in ([0-9 ]+); do`).FindStringSubmatch(string(workflow))
-	if len(match) != 2 {
-		t.Fatal("Dart SDK workflow is missing the first-release Issue gate")
+	for _, contract := range []string{
+		"startsWith(github.ref, 'refs/tags/sdks/dart/v')",
+		"id-token: write",
+		"dart pub publish --force",
+		`gh release create "$TAG" --title "$TAG"`,
+	} {
+		if !strings.Contains(string(workflow), contract) {
+			t.Errorf("Dart SDK workflow is missing publishing contract %q", contract)
+		}
 	}
-	const wantBlockers = "1008 1009 1011 1014 1016 1017"
-	if got := strings.Join(strings.Fields(match[1]), " "); got != wantBlockers {
-		t.Fatalf("Dart v0.1 blockers = %q, want %q", got, wantBlockers)
+	for _, retired := range []string{
+		"Enforce first-release epic blockers",
+		"First Dart release is blocked by open Issue",
+	} {
+		if strings.Contains(string(workflow), retired) {
+			t.Errorf("Dart SDK workflow still contains retired first-release contract %q", retired)
+		}
 	}
 
 	contributing, err := os.ReadFile(filepath.Join(repoRoot, "CONTRIBUTING.md"))
@@ -130,12 +138,16 @@ func TestDartFirstReleaseBlockerGate(t *testing.T) {
 		t.Fatalf("read CONTRIBUTING.md: %v", err)
 	}
 	for _, contract := range []string{
-		"Release-tracking Issues #1020 and #1022 remain open",
-		"#1021 is not a v0.1 release blocker",
+		"The one-time manual first publish completed with `0.1.0`",
+		"Later releases are tag-driven only",
+		"manual `dart pub publish`",
 	} {
 		if !strings.Contains(string(contributing), contract) {
 			t.Errorf("CONTRIBUTING.md is missing Dart release contract %q", contract)
 		}
+	}
+	if strings.Contains(string(contributing), "git switch --detach sdks/dart/v0.1.0") {
+		t.Error("CONTRIBUTING.md still contains the retired manual first-publish procedure")
 	}
 }
 
