@@ -172,7 +172,9 @@ jobs:
           lib/lantern_client.dart lib/src/*.dart test
 
       - name: Analyze
-        run: dart analyze
+        # The standalone Dart SDK intentionally does not resolve the Flutter
+        # example. Android and iOS jobs analyze that package with Flutter.
+        run: dart analyze lib test
 
       - name: Test
         run: dart test
