@@ -313,27 +313,12 @@ number rather than force-moving the tag.
   `sdks/dart/v{{version}}`. The workflow creates/updates the GitHub Release only after
   pub.dev confirms the version exists; its title is exactly the tag.
 
-**One-time first Dart publish.** pub.dev requires an authorized uploader to publish the
-first package version manually. For `0.1.0`, the tag workflow requires the v0.1
-implementation leaves (#1008, #1009, #1011, #1014, and #1016) and the physical-device
-gate (#1017) to be closed. Release-tracking Issues #1020 and #1022 remain open until the
-publish and exact-title GitHub Release are verified; the Phase 2 offline-design Issue
-#1021 is not a v0.1 release blocker. From a clean tagged checkout, after the tag
-workflow's verification jobs pass and its publish job reports the expected
-first-version block, run:
-
-```bash
-git switch --detach sdks/dart/v0.1.0
-cd sdks/dart
-dart pub get --enforce-lockfile
-dart pub publish
-```
-
-Immediately bind automated publishing on pub.dev, then rerun the tag workflow's publish
-job. It observes the already-published exact version, skips a duplicate upload, and
-creates the GitHub Release. Re-check `https://pub.dev/api/packages/lantern_client`
-immediately before this one-time step; if another owner has claimed the name, stop for
-an explicit naming decision. Never force-move a published Dart tag/version—bump patch.
+**Dart publishing status.** The one-time manual first publish completed with `0.1.0`,
+and pub.dev automated publishing is bound to repository `anaregdesign/lantern` and tag
+pattern `sdks/dart/v{{version}}`. Later releases are tag-driven only; do not run a
+manual `dart pub publish`. Immediately before tagging, check
+`https://pub.dev/api/packages/lantern_client` and confirm the target version does not
+already exist. Never force-move a published Dart tag/version—bump patch.
 
 **Release title convention (locked).** Every GitHub Release title MUST equal its tag name
 verbatim (`v0.7.2`, `core/v0.2.0`, `sdks/go/v0.8.0`, `sdks/dart/v0.1.0`, `mcp/v0.1.0`, `admin/v0.1.0`, …) —

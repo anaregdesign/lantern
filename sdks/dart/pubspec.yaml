@@ -1,6 +1,6 @@
 name: lantern_client
 description: Pure Dart client SDK for Lantern, an in-memory graph key-vertex store with TTL-aware vertices and edges.
-version: 0.1.0
+version: 0.1.1
 repository: https://github.com/anaregdesign/lantern
 homepage: https://github.com/anaregdesign/lantern/tree/main/sdks/dart
 issue_tracker: https://github.com/anaregdesign/lantern/issues

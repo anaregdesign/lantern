@@ -521,24 +521,6 @@ jobs:
           grep -Fx "## $tag_version" CHANGELOG.md
           echo "VERSION=$tag_version" >> "$GITHUB_ENV"
 
-      - name: Enforce first-release epic blockers
-        if: env.VERSION == '0.1.0'
-        working-directory: .
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          # Check only work that must be complete before the release starts.
-          # Release-tracking Issues #1020 and #1022 close after publishing, and
-          # the Phase 2 offline-design Issue #1021 is not a v0.1 blocker.
-          for issue in 1008 1009 1011 1014 1016 1017; do
-            state=$(gh issue view "$issue" --json state --jq .state)
-            if [[ "$state" != CLOSED ]]; then
-              echo "::error::First Dart release is blocked by open Issue #$issue"
-              exit 1
-            fi
-          done
-
       - name: Resolve exact lockfile
         run: dart pub get --enforce-lockfile
 
