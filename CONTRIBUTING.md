@@ -112,7 +112,11 @@ The Dart SDK is outside `go.work`; its format/analyze/test gate is therefore
 separate too. When `proto/` changes, run `sdks/dart/scripts/codegen.sh` and commit
 the regenerated `sdks/dart/lib/src/gen/**` files. The supported toolchain source of
 truth is `docs/decisions/0001-dart-mobile-transport.md`; the workflow pins mirror that
-decision and also runs the package at its declared minimum Dart floor.
+decision and also runs the package at its declared minimum Dart floor. The workflow
+routes backend/search-only changes through the current-Dart unit and real-wire gates;
+Dart SDK, proto, codegen/toolchain, workflow, and release-tag changes run the complete
+minimum/current Dart, package-quality, Android, and iOS matrix. The stable `Gate` job
+checks the required result set for either scope.
 
 ## Coverage floor (ratchet)
 

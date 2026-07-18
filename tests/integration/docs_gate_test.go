@@ -139,6 +139,96 @@ func TestDartFirstReleaseBlockerGate(t *testing.T) {
 	}
 }
 
+// TestDartWorkflowGate keeps the change-scoped fast path from weakening the
+// release and SDK-surface matrix. Backend-only changes may skip platform work,
+// but the stable aggregate gate must require every full-matrix job when Dart,
+// proto, toolchain, workflow, or release inputs change.
+func TestDartWorkflowGate(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("resolve repository root: %v", err)
+	}
+
+	workflow, err := os.ReadFile(filepath.Join(repoRoot, ".github", "workflows", "dart-sdk.yml"))
+	if err != nil {
+		t.Fatalf("read Dart SDK workflow: %v", err)
+	}
+	text := string(workflow)
+	for _, contract := range []string{
+		"name: Classify changes",
+		"docs/decisions/0001-dart-mobile-transport.md",
+		"name: Generate, analyze, and test",
+		"dart pub get --enforce-lockfile --no-example",
+		"dart analyze lib test",
+		"if: needs.changes.outputs.full == 'true'",
+		"bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99",
+		"version: 1.71.0",
+		"name: Minimum Dart 3.11",
+		"name: Build API documentation",
+		"dart pub publish --dry-run",
+		"dart pub global run pana --json",
+		"name: Check Flutter example",
+		"flutter test --no-pub integration_test/mobile_smoke_test.dart -d emulator-5554",
+		"name: Start iOS simulator boot",
+		"name: Wait for iOS simulator",
+		"flutter build ios --debug --no-codesign --no-pub",
+		"name: Gate",
+		"needs: [changes, test, minimum-dart, android, ios]",
+		"require_result minimum-dart \"$MINIMUM_DART_RESULT\" success",
+		"require_result android \"$ANDROID_RESULT\" success",
+		"require_result ios \"$IOS_RESULT\" success",
+		"needs: [gate]",
+	} {
+		if !strings.Contains(text, contract) {
+			t.Errorf("Dart SDK workflow is missing scoped-gate contract %q", contract)
+		}
+	}
+	if strings.Contains(text, "flutter build apk --debug") {
+		t.Error("Dart SDK workflow duplicates the APK build already performed by the Android native smoke")
+	}
+
+	iosStart := strings.Index(text, "\n  ios:\n")
+	if iosStart < 0 {
+		t.Fatal("Dart SDK workflow is missing the iOS job")
+	}
+	gateOffset := strings.Index(text[iosStart:], "\n  gate:\n")
+	if gateOffset < 0 {
+		t.Fatal("Dart SDK workflow is missing the aggregate gate after the iOS job")
+	}
+	ios := text[iosStart : iosStart+gateOffset]
+	last := -1
+	for _, step := range []string{
+		"name: Start iOS simulator boot",
+		"name: Start Lantern",
+		"name: Check and build iOS example",
+		"name: Wait for iOS simulator",
+		"name: Run iOS native smoke",
+	} {
+		index := strings.Index(ios, step)
+		if index < 0 {
+			t.Fatalf("iOS job is missing %q", step)
+		}
+		if index <= last {
+			t.Fatalf("iOS step %q is out of order", step)
+		}
+		last = index
+	}
+
+	contributing, err := os.ReadFile(filepath.Join(repoRoot, "CONTRIBUTING.md"))
+	if err != nil {
+		t.Fatalf("read CONTRIBUTING.md: %v", err)
+	}
+	for _, contract := range []string{
+		"routes backend/search-only changes through the current-Dart unit and real-wire gates",
+		"stable `Gate` job",
+		"required result set for either scope",
+	} {
+		if !strings.Contains(string(contributing), contract) {
+			t.Errorf("CONTRIBUTING.md is missing Dart workflow contract %q", contract)
+		}
+	}
+}
+
 // TestSearchDocumentationGate keeps the canonical search guide synchronized
 // with the wire schema and every maintained user-facing surface. Tables remain
 // readable hand-written prose, while descriptor reflection makes a new option,
