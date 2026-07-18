@@ -1,7 +1,8 @@
-# 0002: Dart offline Repository contract
+# 0002: Dart offline Repository and package contract
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-12
+- Accepted: 2026-07-19
 - Issue: #1021
 
 ## Context
@@ -26,27 +27,32 @@ stored beside a mutation can make delivery durable.
 
 ## Decision
 
-Keep `lantern_client` free of an implicit read cache and mutation outbox.
-Applications own an opt-in Repository around the SDK and their chosen storage,
-identity, encryption, and OS scheduling facilities.
+Keep `lantern_client` free of an implicit read cache and mutation outbox. Ship
+an official, opt-in `lantern_client_offline` package that provides the
+storage-neutral codec, state machine, cache/outbox engine, and replay
+coordinator defined below. Applications compose that package as their
+Repository and still own identity, encryption policy, and OS scheduling.
 
 The SDK supplies the online primitives that a Repository needs—immutable exact
 values, absolute expiration, caller-supplied contribution IDs, typed errors,
 cancellation, and per-call token acquisition—but does not depend on SQLite,
 secure storage, connectivity, Flutter, or a state-management library.
 
-An optional `lantern_client_offline` package is deferred. It may be proposed
-only after at least two application integrations validate the codec, state
-machine, migration, and adapter boundary below. Persistence built directly
-into `lantern_client` is rejected: it would force policy and platform
+`lantern_client_offline` takes an injected transactional `OfflineStore`; it
+does not bundle a database. A separately versioned
+`lantern_client_offline_sqlite` adapter is the intended default integration
+after the storage contract is proven. Both packages remain experimental until
+at least two application integrations validate the codec, state machine,
+migration, user isolation, and adapter boundary. Persistence built directly
+into `lantern_client` remains rejected: it would force policy and platform
 dependencies on every client and make user isolation an SDK-global concern.
 
 ## Alternatives
 
 | Boundary | Decision | Reason |
 | --- | --- | --- |
-| App-owned Repository hooks/examples | Chosen | Keeps policy, identity, encryption, and lifecycle with the application while the online SDK stays pure Dart. |
-| Optional `lantern_client_offline` with storage adapter | Deferred | A separate package could be useful, but its codec/migration/API needs production evidence before becoming a maintained contract. |
+| App-owned Repository hooks/examples only | Rejected as the final product boundary | Preserves maximum flexibility but makes every mobile application rebuild the same crash-sensitive sync engine. Examples remain valuable for integration and policy ownership. |
+| Official opt-in `lantern_client_offline` with storage adapter | Chosen | Provides Firestore-like offline ergonomics while keeping persistence opt-in and the online SDK pure Dart. Experimental status makes the evidence gate explicit. |
 | Persistence inside `lantern_client` | Rejected | Forces a database and platform policy on all callers, couples logout/encryption to transport, and risks implicit unsafe replay. |
 
 ## Read-cache contract
@@ -116,14 +122,23 @@ management. The SDK never receives the storage encryption key.
 
 ## Mutation-outbox contract
 
-The durable record is committed before the first network attempt. It contains:
+The durable record is committed before the first network attempt. One record
+represents one mutation item; a plural application call commits one record per
+item in a single enqueue transaction. Records from that call share an
+`operationId` and have stable, zero-based `itemIndex` values. This makes
+per-item progress durable without inventing a terminal state for a batch whose
+items have mixed confirmation or expiration outcomes.
+
+The storage model contains:
 
 ```dart
 final class OutboxRecord {
   String recordId;              // stable application UUID, not a token
+  String operationId;           // stable logical-call UUID for batch grouping
+  int itemIndex;
   int schemaVersion;
   String partitionId;
-  OfflineIntent intent;         // exact, versioned serialized operation
+  OfflineIntent intent;         // exact, versioned serialized single-item intent
   DateTime enqueuedAt;
   DateTime? absoluteExpiration; // relative TTL resolved once at enqueue
   String orderingKey;
@@ -132,35 +147,38 @@ final class OutboxRecord {
   OutboxState state;
   String? leaseOwner;
   DateTime? leaseUntil;
-  List<int>? contributionId;    // exact 24 bytes for each Add item
-  Set<int> confirmedItems;      // durable per-item/chunk progress
+  List<int>? contributionId;    // required exact 24 bytes for Add
   String? diagnosticCode;       // credential/content-free
 }
 ```
 
-The abbreviated typed operation union initially admits only:
+The abbreviated typed operation union initially admits only single-item Put
+and Add intents:
 
 ```dart
 sealed class OfflineIntent {}
-final class PutVerticesIntent extends OfflineIntent {}
-final class PutEdgesIntent extends OfflineIntent {}
-final class AddEdgesIntent extends OfflineIntent {} // every item has 24-byte ID
+final class PutVertexIntent extends OfflineIntent {}
+final class PutEdgeIntent extends OfflineIntent {}
+final class AddEdgeIntent extends OfflineIntent {} // contributionId is required
 ```
 
-The payload stores exact input values and resolved absolute expirations, not a
-closure or generated request object. Add contribution IDs are generated and
-persisted in the same enqueue transaction as the intent. A process restart,
-chunk reconstruction, and every retry reuse identical bytes. A relative TTL
-is resolved once at enqueue; if `now >= absoluteExpiration` before confirmation,
-the record becomes `expired` and is never rebased.
+The payload stores the exact input value, including its wire kind and float
+payload, plus the resolved absolute expiration; it is not a closure or a
+generated request object. Enqueue samples the clock once per logical call and
+resolves each item's relative TTL against that instant before committing all
+records. Add contribution IDs are generated and persisted in the same
+transaction as the intent. A process restart, replay-batch reconstruction,
+and every retry reuse identical bytes. If `now >= absoluteExpiration` before
+confirmation, that item becomes `expired` and is never rebased.
 
 Put is safe to replay to its final state. Add is replayable only when every
-remaining item has a persisted valid contribution ID. Confirmed item indexes
-are committed after each response so a crash does not rebuild already-finished
-non-idempotent work. If an Add response is lost, replaying the same IDs is the
-reconciliation; if the server can no longer retain that contribution because
-the intent itself expired, the Repository expires the item rather than
-minting a new ID.
+claimed record has a persisted valid contribution ID. The coordinator may
+batch compatible records as a transport optimization, but it commits each
+record's resulting state transactionally after a response. A crash therefore
+does not rebuild already-confirmed items into a later batch. If an Add response
+is lost, replaying the same IDs is the reconciliation; if the server can no
+longer retain that contribution because the intent itself expired, the
+Repository expires the item rather than minting a new ID.
 
 PutIfAbsent, singular/plural Delete result semantics, and capped prefix Delete
 are excluded from the generic outbox. An application-specific workflow may
@@ -168,11 +186,38 @@ place one in `ambiguous` only when it also provides a domain reconciliation
 screen/API. It can never convert an unknown outcome into `false`, zero, or
 success, and no helper loops destructive prefix calls.
 
-Per-key ordering is FIFO by `orderingKey`. A multi-key intent acquires all of
-its sorted ordering keys atomically to avoid deadlock; independent keys may run
-concurrently up to an application cap. One storage transaction claims a
-bounded batch with a lease. After a crash, lease expiry returns `sending` work
-to `enqueued`; stable IDs/progress make the next attempt safe.
+Per-key ordering is FIFO by `orderingKey`; a Vertex uses its key and an Edge
+uses its collision-free length-prefixed `(tail, head)` identity. A logical
+plural call does not create a global ordering barrier: independent keys may run
+concurrently up to an application cap, while records for the same key remain
+ordered by enqueue sequence. One storage transaction claims a bounded set of
+compatible records with leases. After a crash, lease expiry returns `sending`
+work to `enqueued`; stable IDs and per-record states make the next attempt safe.
+
+The offline package exposes a control surface that lets the application make
+unsafe and failed work inspectable without exposing payloads through logs.
+Names are illustrative, but the typed capabilities are required:
+
+```dart
+abstract interface class OfflineRepositoryControl {
+  Future<List<DeadLetterSummary>> listDeadLetters(String partitionId);
+  Future<void> deleteDeadLetter(String partitionId, String recordId);
+  Future<void> retryDeadLetter(String partitionId, String recordId);
+  Future<void> resolveAmbiguous(
+    String partitionId,
+    String recordId,
+    AmbiguousResolution resolution,
+  );
+  Future<void> wipePartition(String partitionId);
+}
+```
+
+`DeadLetterSummary` exposes only record ID, operation category, state, age,
+attempt count, and diagnostic code by default. Reading the sensitive intent is
+a separate application-authorized action. `resolveAmbiguous` exists only for
+an application-specific unsafe workflow with domain reconciliation; the
+generic Put/Add outbox neither accepts unsafe intents nor fabricates an
+outcome.
 
 ## State machine
 
@@ -182,7 +227,7 @@ stateDiagram-v2
     Enqueued --> Sending: bounded claim + lease
     Sending --> Confirmed: response and progress committed
     Sending --> Enqueued: retryable failure / lease expiry
-    Sending --> Ambiguous: excluded unsafe operation has unknown outcome
+    Sending --> Ambiguous: app-specific unsafe extension has unknown outcome
     Enqueued --> Expired: absolute expiration reached
     Sending --> Expired: absolute expiration reached before safe replay
     Enqueued --> DeadLetter: poison / migration / attempt policy
@@ -247,29 +292,37 @@ without application-owned OS background task or push infrastructure.
    request; it is quarantined with a content-free diagnostic and recoverable
    dead-letter action.
 
-## Follow-up scopes after acceptance
+## Follow-up scopes
 
-Do not open or implement these until this ADR is accepted. Each is intended to
-be an independent Issue:
+Each scope is an independent Issue. Later scopes may use evidence or artifacts
+from an earlier scope, but none may add implicit persistence to
+`lantern_client`:
 
-1. Publish storage-neutral v1 cache/outbox codec fixtures and cross-process
-   golden tests, without adding persistence to `lantern_client`.
-2. Add an application-Repository example using an injected transactional
+1. [#1111](https://github.com/anaregdesign/lantern/issues/1111) publishes
+   storage-neutral v1 cache/outbox codec fixtures and cross-process golden
+   tests, without adding persistence to `lantern_client`.
+2. [#1112](https://github.com/anaregdesign/lantern/issues/1112) implements the
+   experimental `lantern_client_offline` package with an injected transactional
    store, partition wipe, capacity limits, and fresh/stale/expired states.
-3. Prototype a separate `lantern_client_offline` storage-adapter interface and
-   replay coordinator behind an experimental version, with crash fault
-   injection and no bundled database.
-4. Evaluate SQLite and alternative adapters plus Keychain/Keystore integration
-   in application space; record production evidence and decide whether the
-   optional package graduates.
-5. Add foreground-resume replay and dead-letter UI examples, explicitly
+3. [#1113](https://github.com/anaregdesign/lantern/issues/1113) adds a maintained
+   Flutter integration with foreground-resume replay and dead-letter controls,
    excluding OS background delivery promises.
+4. [#1114](https://github.com/anaregdesign/lantern/issues/1114) validates the
+   experimental package in two application integrations, evaluates SQLite and
+   an alternative adapter plus Keychain/Keystore integration, and decides
+   whether the package and a separately versioned SQLite adapter graduate.
+5. [#1115](https://github.com/anaregdesign/lantern/issues/1115) adds
+   server-authoritative operation receipts so mutations whose public result is
+   ambiguous after response loss can be reconciled safely.
+6. [#1116](https://github.com/anaregdesign/lantern/issues/1116) adds a
+   client-facing revision/change stream for bounded invalidation after server
+   Deletes, expiration, and HA convergence.
 
 ## Consequences
 
 The online SDK remains deterministic, dependency-light, and honest about what
-it can confirm. Applications do more integration work, but they retain control
-of identity, storage, encryption, UX, and OS lifecycle. A future helper cannot
-silently change TTL, mint an Add ID after enqueue, replay ambiguous Deletes, or
-persist credentials; those are now compatibility constraints for any offline
-package proposal.
+it can confirm. The official offline package removes repeated sync-engine work
+without taking ownership of application identity, encryption, UX, or OS
+lifecycle. It cannot silently change TTL, mint an Add ID after enqueue, replay
+ambiguous Deletes, or persist credentials; those are compatibility constraints
+for every offline-package version.
