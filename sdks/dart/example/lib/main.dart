@@ -5,6 +5,25 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:lantern_client/lantern_client.dart';
 
+/// Lossless, type-labelled text used by the example's value list.
+String formatVertexValue(VertexValue value) => switch (value) {
+  Float64Value(value: final number) => 'float64=$number',
+  Float32Value(value: final number) => 'float32=$number',
+  Int32Value(value: final number) => 'int32=$number',
+  Int64Value(value: final number) => 'int64=$number',
+  Uint32Value(value: final number) => 'uint32=$number',
+  Uint64Value(value: final number) => 'uint64=$number',
+  BoolValue(value: final boolean) => 'bool=$boolean',
+  StringValue(value: final string) => 'string=${jsonEncode(string)}',
+  BytesValue(value: final bytes) => 'bytes=base64:${base64Encode(bytes)}',
+  TimestampValue(value: final timestamp) =>
+    'timestamp=${timestamp.toUtc().toIso8601String()}',
+  DurationValue(value: final duration) =>
+    'duration_us=${duration.inMicroseconds}',
+  NilValue() => 'nil',
+  UnsetValue() => 'unset',
+};
+
 void main() {
   runApp(LanternExampleApp(configuration: DemoConfiguration.fromEnvironment()));
 }
@@ -253,7 +272,7 @@ final class _DiscoveryScreenState extends State<_DiscoveryScreen> {
         ...keys.items.map((key) => 'key $key'),
         ...vertices.items.map(
           (vertex) =>
-              'value ${vertex.key}: ${vertex.value.runtimeType} '
+              'value ${vertex.key}: ${formatVertexValue(vertex.value)} '
               'expires=${vertex.expiration?.toIso8601String() ?? 'never'}',
         ),
       ]);

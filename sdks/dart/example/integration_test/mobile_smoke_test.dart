@@ -76,5 +76,9 @@ void main() {
       ),
       isA<Graph>(),
     );
+    // ignore: avoid_print
+    print(
+      'MOBILE_SMOKE_PASS vertices=${inputs.length} edge=1 scan=true bfs=true',
+    );
   });
 }
