@@ -15,6 +15,7 @@ on:
       - "core/graphcache/**"
       - "server/**"
       - "testdata/search/**"
+      - "docs/decisions/0001-dart-mobile-transport.md"
       - ".github/workflows/dart-sdk.yml"
   pull_request:
     paths:
@@ -27,6 +28,7 @@ on:
       - "core/graphcache/**"
       - "server/**"
       - "testdata/search/**"
+      - "docs/decisions/0001-dart-mobile-transport.md"
       - ".github/workflows/dart-sdk.yml"
 
 permissions:
@@ -37,8 +39,68 @@ concurrency:
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
+  changes:
+    name: Classify changes
+    runs-on: ubuntu-latest
+    outputs:
+      full: ${{ steps.scope.outputs.full }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # Backend-only changes still exercise the pure-Dart client over the real
+      # wire. The complete toolchain and mobile matrix is reserved for changes
+      # that can alter the generated/package/platform surfaces, and for tags.
+      - name: Select required gate scope
+        id: scope
+        shell: bash
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          full=false
+
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            full=true
+          else
+            if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+              base=$PR_BASE_SHA
+              head=$PR_HEAD_SHA
+              range="$base...$head"
+            else
+              base=$PUSH_BEFORE_SHA
+              head=$GITHUB_SHA
+              if [[ "$base" =~ ^0+$ ]]; then
+                full=true
+                range=
+              else
+                range="$base..$head"
+              fi
+            fi
+
+            if [[ "$full" == false ]]; then
+              while IFS= read -r path; do
+                case "$path" in
+                  sdks/dart/* | proto/* | buf.yaml | buf.gen.yaml | generate.go | \
+                    docs/decisions/0001-dart-mobile-transport.md | \
+                    .github/workflows/dart-sdk.yml)
+                    full=true
+                    break
+                    ;;
+                esac
+              done < <(git diff --name-only "$range")
+            fi
+          fi
+
+          echo "full=$full" >> "$GITHUB_OUTPUT"
+          echo "Full Dart/mobile matrix: $full" >> "$GITHUB_STEP_SUMMARY"
+
   test:
     name: Generate, analyze, and test
+    needs: changes
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -51,12 +113,16 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Set up Flutter
-        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+      - name: Set up current supported Dart
+        uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1
         with:
-          channel: stable
-          flutter-version: 3.44.6
-          cache: true
+          sdk: 3.12.2
+
+      - name: Set up Buf
+        if: needs.changes.outputs.full == 'true'
+        uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
+        with:
+          version: 1.71.0
 
       - name: Start Lantern real-wire server
         working-directory: .
@@ -92,6 +158,7 @@ jobs:
         run: dart pub get --enforce-lockfile
 
       - name: Regenerate and check drift
+        if: needs.changes.outputs.full == 'true'
         working-directory: .
         run: |
           sdks/dart/scripts/codegen.sh
@@ -117,6 +184,7 @@ jobs:
         run: dart test test/real_wire_test.dart
 
       - name: Build API documentation
+        if: needs.changes.outputs.full == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -129,9 +197,11 @@ jobs:
           fi
 
       - name: Validate package shape
+        if: needs.changes.outputs.full == 'true'
         run: dart pub publish --dry-run
 
       - name: Generate pana quality report
+        if: needs.changes.outputs.full == 'true'
         working-directory: .
         run: |
           package_dir="$RUNNER_TEMP/lantern-client-package"
@@ -142,24 +212,12 @@ jobs:
             > "$RUNNER_TEMP/lantern-client-pana.json"
 
       - name: Upload pana quality report
+        if: needs.changes.outputs.full == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: lantern-client-pana
           path: ${{ runner.temp }}/lantern-client-pana.json
           if-no-files-found: error
-
-      - name: Resolve Flutter example
-        working-directory: sdks/dart/example
-        run: flutter pub get --enforce-lockfile
-
-      - name: Check Flutter example
-        working-directory: sdks/dart/example
-        run: |
-          dart format --output=none --set-exit-if-changed \
-            lib test integration_test
-          flutter analyze
-          flutter test
-          flutter build apk --debug
 
       - name: Stop Lantern real-wire server
         if: always()
@@ -171,6 +229,8 @@ jobs:
 
   minimum-dart:
     name: Minimum Dart 3.11
+    needs: changes
+    if: needs.changes.outputs.full == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -195,6 +255,8 @@ jobs:
 
   android:
     name: Android emulator real-wire example
+    needs: changes
+    if: needs.changes.outputs.full == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -219,6 +281,15 @@ jobs:
             "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/android-server.log" 2>&1 &
           echo $! > "$RUNNER_TEMP/android-server.pid"
 
+      - name: Check Flutter example
+        working-directory: sdks/dart/example
+        run: |
+          flutter pub get --enforce-lockfile
+          dart format --output=none --set-exit-if-changed \
+            lib test integration_test
+          flutter analyze --no-pub
+          flutter test --no-pub
+
       - name: Enable KVM access
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
@@ -233,8 +304,8 @@ jobs:
           arch: x86_64
           profile: pixel_6
           script: >-
-            cd sdks/dart/example && flutter pub get --enforce-lockfile &&
-            flutter test integration_test/mobile_smoke_test.dart -d emulator-5554
+            cd sdks/dart/example &&
+            flutter test --no-pub integration_test/mobile_smoke_test.dart -d emulator-5554
             --reporter=expanded --timeout=3m
             --dart-define=LANTERN_ENDPOINT=http://10.0.2.2:6380
             --dart-define=LANTERN_ALLOW_INSECURE=true
@@ -247,6 +318,8 @@ jobs:
 
   ios:
     name: iOS simulator real-wire example
+    needs: changes
+    if: needs.changes.outputs.full == 'true'
     runs-on: macos-15
     timeout-minutes: 30
     steps:
@@ -264,6 +337,26 @@ jobs:
           flutter-version: 3.44.6
           cache: true
 
+      - name: Start iOS simulator boot
+        run: |
+          boot_simulator() {
+            set -euo pipefail
+            device=$(xcrun simctl list devices available -j | \
+              jq -r '[.devices[][] | select(.name | startswith("iPhone"))][0].udid')
+            test -n "$device"
+            echo "$device" > "$RUNNER_TEMP/ios-device-id"
+            xcrun simctl boot "$device" || true
+            xcrun simctl bootstatus "$device" -b
+          }
+          (
+            if boot_simulator; then
+              touch "$RUNNER_TEMP/ios-simulator-ready"
+            else
+              touch "$RUNNER_TEMP/ios-simulator-failed"
+            fi
+          ) > "$RUNNER_TEMP/ios-simulator-boot.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/ios-simulator-boot.pid"
+
       - name: Start Lantern
         run: |
           go build -o "$RUNNER_TEMP/lantern" ./server/cmd
@@ -271,21 +364,35 @@ jobs:
             "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/ios-server.log" 2>&1 &
           echo $! > "$RUNNER_TEMP/ios-server.pid"
 
-      - name: Boot iOS simulator
-        run: |
-          device=$(xcrun simctl list devices available -j | \
-            jq -r '[.devices[][] | select(.name | startswith("iPhone"))][0].udid')
-          test -n "$device"
-          xcrun simctl boot "$device" || true
-          xcrun simctl bootstatus "$device" -b
-          echo "DEVICE_ID=$device" >> "$GITHUB_ENV"
-
       - name: Check and build iOS example
         working-directory: sdks/dart/example
         run: |
           flutter pub get --enforce-lockfile
-          flutter analyze
-          flutter build ios --debug --no-codesign
+          flutter analyze --no-pub
+          flutter build ios --debug --no-codesign --no-pub
+
+      - name: Wait for iOS simulator
+        timeout-minutes: 5
+        run: |
+          for attempt in $(seq 1 300); do
+            if [[ -f "$RUNNER_TEMP/ios-simulator-ready" ]]; then
+              break
+            fi
+            if [[ -f "$RUNNER_TEMP/ios-simulator-failed" ]]; then
+              cat "$RUNNER_TEMP/ios-simulator-boot.log"
+              exit 1
+            fi
+            sleep 1
+          done
+          if [[ ! -f "$RUNNER_TEMP/ios-simulator-ready" ]]; then
+            cat "$RUNNER_TEMP/ios-simulator-boot.log"
+            echo "::error::iOS simulator did not become ready"
+            exit 1
+          fi
+          device=$(cat "$RUNNER_TEMP/ios-device-id")
+          test -n "$device"
+          echo "DEVICE_ID=$device" >> "$GITHUB_ENV"
+          cat "$RUNNER_TEMP/ios-simulator-boot.log"
 
       - name: Run iOS native smoke
         id: ios_smoke
@@ -293,7 +400,7 @@ jobs:
         timeout-minutes: 8
         working-directory: sdks/dart/example
         run: |
-          flutter test integration_test/mobile_smoke_test.dart -d "$DEVICE_ID" \
+          flutter test --no-pub integration_test/mobile_smoke_test.dart -d "$DEVICE_ID" \
             --reporter=expanded --timeout=3m \
             --dart-define=LANTERN_ENDPOINT=http://127.0.0.1:6380 \
             --dart-define=LANTERN_ALLOW_INSECURE=true
@@ -312,7 +419,7 @@ jobs:
         timeout-minutes: 8
         working-directory: sdks/dart/example
         run: |
-          flutter test integration_test/mobile_smoke_test.dart -d "$DEVICE_ID" \
+          flutter test --no-pub integration_test/mobile_smoke_test.dart -d "$DEVICE_ID" \
             --reporter=expanded --timeout=3m \
             --dart-define=LANTERN_ENDPOINT=http://127.0.0.1:6380 \
             --dart-define=LANTERN_ALLOW_INSECURE=true
@@ -322,13 +429,59 @@ jobs:
         run: |
           cat "$RUNNER_TEMP/ios-server.log" 2>/dev/null || true
           kill "$(cat "$RUNNER_TEMP/ios-server.pid")" 2>/dev/null || true
-          if [[ -n ${DEVICE_ID:-} ]]; then
-            xcrun simctl shutdown "$DEVICE_ID" || true
+          if [[ -f "$RUNNER_TEMP/ios-simulator-boot.pid" ]]; then
+            kill "$(cat "$RUNNER_TEMP/ios-simulator-boot.pid")" 2>/dev/null || true
           fi
+          device=${DEVICE_ID:-}
+          if [[ -z "$device" && -f "$RUNNER_TEMP/ios-device-id" ]]; then
+            device=$(cat "$RUNNER_TEMP/ios-device-id")
+          fi
+          if [[ -n "$device" ]]; then
+            xcrun simctl shutdown "$device" || true
+          fi
+
+  gate:
+    name: Gate
+    if: always()
+    needs: [changes, test, minimum-dart, android, ios]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify required jobs
+        shell: bash
+        env:
+          FULL: ${{ needs.changes.outputs.full }}
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          MINIMUM_DART_RESULT: ${{ needs.minimum-dart.result }}
+          ANDROID_RESULT: ${{ needs.android.result }}
+          IOS_RESULT: ${{ needs.ios.result }}
+        run: |
+          set -euo pipefail
+          require_result() {
+            local job=$1 actual=$2 expected=$3
+            if [[ "$actual" != "$expected" ]]; then
+              echo "::error::$job result is $actual; expected $expected"
+              exit 1
+            fi
+          }
+
+          require_result changes "$CHANGES_RESULT" success
+          require_result test "$TEST_RESULT" success
+          if [[ "$FULL" == true ]]; then
+            require_result minimum-dart "$MINIMUM_DART_RESULT" success
+            require_result android "$ANDROID_RESULT" success
+            require_result ios "$IOS_RESULT" success
+          else
+            require_result minimum-dart "$MINIMUM_DART_RESULT" skipped
+            require_result android "$ANDROID_RESULT" skipped
+            require_result ios "$IOS_RESULT" skipped
+          fi
+
+          echo "Full Dart/mobile matrix: $FULL" >> "$GITHUB_STEP_SUMMARY"
 
   publish:
     name: Publish lantern_client
-    needs: [test, minimum-dart, android, ios]
+    needs: [gate]
     if: startsWith(github.ref, 'refs/tags/sdks/dart/v')
     runs-on: ubuntu-latest
     environment:
