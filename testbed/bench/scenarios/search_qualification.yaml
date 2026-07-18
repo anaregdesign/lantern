@@ -10,7 +10,10 @@ phases:
   # makes the pre probe prove expiration rather than merely presence.
   warmup:   { duration: 12s, concurrency: 4, rps: 100 }
   steady:   { duration: 20s, concurrency: 8, rps: 300 }
-  cooldown: 15s
+  # Hosted runners can delay replication and the 2s expiration sweep under
+  # image-build contention. Match the established TTL-churn settle window so
+  # the post snapshot measures a drained index rather than scheduler timing.
+  cooldown: 60s
 semantic_gate:
   kind: search
 target:
