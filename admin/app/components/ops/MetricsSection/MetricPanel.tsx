@@ -36,7 +36,7 @@ export function MetricPanel({ panel, state, aliases }: MetricPanelProps) {
   return (
     <Card className={styles.panel} data-testid={testId}>
       <header className={styles.head}>
-        <h3 className={styles.title}>{panel.title}</h3>
+        <h4 className={styles.title}>{panel.title}</h4>
         <p className={styles.description}>{panel.description}</p>
       </header>
       {pending && <Spinner size="tiny" label="Loading…" />}

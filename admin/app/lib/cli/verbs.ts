@@ -874,7 +874,7 @@ export const HELP_TEXT = [
   "             [weighting={raw|tfidf|bm25}] default=raw",
   "             [prefix=<string>]           default=all keys",
   "             defaults: max_size=0 (sweep decides)",
-  "  help [bfs|pagerank|community]",
+  "  help [search|bfs|pagerank|community]",
   "  exit",
   "",
   "Search contract: https://github.com/anaregdesign/lantern/blob/main/docs/search.md",
@@ -905,8 +905,8 @@ export interface CliCommandDoc {
   readonly summary: string;
   /** A concrete, runnable example (must parse — bound by `verbs.test.ts`). */
   readonly example: string;
-  /** Scoped help fields for the traversal families, when applicable. */
-  readonly familyHelp?: {
+  /** Focused help fields for commands whose parameters need a full reference. */
+  readonly scopedHelp?: {
     readonly defaults: readonly string[];
     readonly domains: readonly string[];
     readonly meaning: string;
@@ -1024,10 +1024,48 @@ export const CLI_COMMAND_REFERENCE: readonly CliCommandDoc[] = [
     group: "Browse",
     verb: "search",
     signature:
-      "search <query> [limit=...] [mode=...] [phrase=...] [all=...] [format=...]",
+      "search <query> [limit=<uint32>] [prefix=<string>] [mode=server|any|all|min-should] [min_should=<uint32>] [phrase=<bool>] [fuzziness=0|1|2] [prefix_terms=<bool>] [cursor=<base64url>] [all=<bool>] [projection=key-score|full-vertex] [format=json|ndjson|tsv]",
     summary:
       "BM25 content search with cursor paging. One page is lossless JSON; all=true follows the bounded search session. Canonical contract: https://github.com/anaregdesign/lantern/blob/main/docs/search.md",
     example: 'search "rolling update" mode=all limit=20',
+    scopedHelp: {
+      defaults: [
+        "limit=0 (endpoint default)",
+        "prefix=all keys",
+        "mode=server (endpoint default)",
+        "min_should=0 (endpoint default when mode=min-should)",
+        "phrase=false",
+        "fuzziness=0 (exact terms)",
+        "prefix_terms=false",
+        "cursor=first page",
+        "all=false",
+        "projection=key-score",
+        "format=json (all=true defaults to ndjson)",
+      ],
+      domains: [
+        "query: required full-text input analyzed and ranked by BM25 relevance",
+        "limit: maximum hits per page; 0 uses the endpoint default and the endpoint applies its cap",
+        "prefix: candidate vertex-key namespace; empty searches every key",
+        "mode: server defers to endpoint config; any=OR; all=AND; min-should requires N distinct words",
+        "min_should: positive word threshold used only with mode=min-should",
+        "phrase: adjacent ordered words within one key, value, or JSON string field",
+        "fuzziness: maximum dictionary-term edit distance 0|1|2",
+        "prefix_terms: include dictionary terms extending a query word (lan matches lantern)",
+        "cursor: opaque unpadded URL-safe base64 continuation from the same request and endpoint",
+        "all: lazily follow the bounded endpoint-sticky cursor session",
+        "projection: key-score or the exact selection-time full-vertex value/TTL snapshot",
+        "format: lossless page JSON, per-hit NDJSON, or quoted TSV",
+        "Compatibility: phrase=true requires mode=server, fuzziness=0, prefix_terms=false, and endpoint positional postings; all=true requires ndjson or tsv",
+      ],
+      meaning:
+        "Search live vertex keys and values by relevance without treating the derived index as a source of truth. See https://github.com/anaregdesign/lantern/blob/main/docs/search.md.",
+      examples: [
+        'search "rolling update" mode=all limit=20',
+        'search "release notes" phrase=true',
+        "search serach fuzziness=1",
+        "search espresso limit=20 all=true format=ndjson",
+      ],
+    },
   },
   {
     group: "Explore",
@@ -1037,7 +1075,7 @@ export const CLI_COMMAND_REFERENCE: readonly CliCommandDoc[] = [
     summary:
       "Greedy per-hop top-k breadth-first walk from a seed (step hops, fan_out neighbours per hop; defaults 5/3). reduction=mst|spt renders the neighbourhood as a spanning / shortest-path tree (#961); objective steers the pruning and reduction direction.",
     example: "bfs alice 2 5 reduction=mst",
-    familyHelp: {
+    scopedHelp: {
       defaults: [
         "step=5",
         "fan_out=3",
@@ -1064,7 +1102,7 @@ export const CLI_COMMAND_REFERENCE: readonly CliCommandDoc[] = [
     summary:
       "Personalized PageRank relevance star from a seed (top_n by mass, default 10). restart_prob (α) and epsilon (ε) tune locality; both default to the server's 0.15 / 1e-4.",
     example: "pagerank alice 15 restart_prob=0.25",
-    familyHelp: {
+    scopedHelp: {
       defaults: [
         "top_n=10",
         "restart_prob=0 (server α=0.15)",
@@ -1093,7 +1131,7 @@ export const CLI_COMMAND_REFERENCE: readonly CliCommandDoc[] = [
     summary:
       "Conductance-optimal local community around a seed (#845; max_size upper bound, default 0 = the sweep decides). restart_prob/epsilon tune locality; reduction renders a tree view.",
     example: "community alice 20 reduction=mst",
-    familyHelp: {
+    scopedHelp: {
       defaults: [
         "max_size=0 (sweep decides)",
         "restart_prob=0 (server α=0.15)",
@@ -1120,9 +1158,9 @@ export const CLI_COMMAND_REFERENCE: readonly CliCommandDoc[] = [
   {
     group: "Session",
     verb: "help",
-    signature: "help [bfs|pagerank|community]",
+    signature: "help [search|bfs|pagerank|community]",
     summary:
-      "Print the grammar overview or focused traversal-family reference into the terminal.",
+      "Print the grammar overview or a focused search/traversal reference into the terminal.",
     example: "help",
   },
   {
@@ -1135,19 +1173,19 @@ export const CLI_COMMAND_REFERENCE: readonly CliCommandDoc[] = [
   },
 ];
 
-/** Traversal-family topics derive from the same docs that render the drawer. */
+/** Focused topics derive from the same docs that render the drawer. */
 export const HELP_TOPICS = CLI_COMMAND_REFERENCE.filter(
-  (doc) => doc.familyHelp !== undefined,
+  (doc) => doc.scopedHelp !== undefined,
 ).map((doc) => doc.verb) as readonly Exclude<HelpTopic, "">[];
 
-/** Returns the overview or a family-only reference rendered from the drawer registry. */
+/** Returns the overview or a command-only reference rendered from the drawer registry. */
 export function helpTextFor(topic: HelpTopic): string {
   if (topic === "") return HELP_TEXT;
   const doc = CLI_COMMAND_REFERENCE.find(
     (candidate) => candidate.verb === topic,
   );
-  if (doc?.familyHelp === undefined) return HELP_TEXT;
-  const help = doc.familyHelp;
+  if (doc?.scopedHelp === undefined) return HELP_TEXT;
+  const help = doc.scopedHelp;
   return [
     topic,
     "",
@@ -1168,12 +1206,15 @@ export function helpTextFor(topic: HelpTopic): string {
   ].join("\n");
 }
 
-/** Parses the optional focused traversal-family help topic. */
+/** Parses the optional focused command help topic. */
 export function parseHelp(rest: string[]): ParseResult {
   if (rest.length === 0)
     return { ok: true, command: { verb: "help", topic: "" } };
   if (rest.length !== 1) {
-    return { ok: false, usage: "usage: help [bfs|pagerank|community]" };
+    return {
+      ok: false,
+      usage: "usage: help [search|bfs|pagerank|community]",
+    };
   }
   const topic = rest[0].toLowerCase();
   if (!HELP_TOPICS.includes(topic as Exclude<HelpTopic, "">)) {

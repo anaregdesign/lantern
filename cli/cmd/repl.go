@@ -164,7 +164,7 @@ EXAMPLE
 			case errors.Is(err, service.ErrCommunity):
 				fmt.Println("Usage: community <seed: string> [max_size: int] [restart_prob=<float>] [epsilon=<float>] [reduction=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>]")
 			case errors.Is(err, service.ErrHelp):
-				fmt.Println("Usage: help [bfs|pagerank|community]")
+				fmt.Println("Usage: help [search|bfs|pagerank|community]")
 			case errors.Is(err, service.ErrInvalidVerb):
 				fmt.Println("Usage: { get | put | delete | add | scan | count | delete-prefix | keys | bfs | pagerank | community | help | exit } ...")
 			case errors.Is(err, service.ErrInvalidObjective):

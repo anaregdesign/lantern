@@ -256,6 +256,39 @@ test.describe("/vertices — content search (#650)", () => {
     ).toHaveCount(0);
   });
 
+  test("every content-search parameter explains itself by pointer and keyboard (#1129)", async ({
+    page,
+  }) => {
+    await page.goto("/vertices");
+    await page.getByRole("tab", { name: "Content search" }).click();
+
+    const guidance = [
+      ["search-query-help", "analyzes the words"],
+      ["search-mode-help", "query words qualify"],
+      ["search-prefix-help", "before ranking"],
+      ["search-fuzzy-help", "edit distance"],
+      ["search-prefix-terms-help", "extend a query word"],
+      ["search-phrase-help", "adjacent, ordered words"],
+    ] as const;
+
+    for (const [testId, text] of guidance) {
+      const trigger = page.getByTestId(testId);
+      await expect(trigger).toBeVisible();
+      await trigger.hover();
+      await expect(page.getByRole("tooltip")).toContainText(text);
+      await page.mouse.move(0, 0);
+      await expect(page.getByRole("tooltip")).toHaveCount(0);
+    }
+
+    await page.getByTestId("search-mode").click();
+    await page.getByRole("option", { name: "At least N words" }).click();
+    const minimumHelp = page.getByTestId("search-min-should-help");
+    await minimumHelp.focus();
+    await expect(page.getByRole("tooltip")).toContainText(
+      "distinct analyzed query words",
+    );
+  });
+
   test("Illuminate action seeds the CLI explorer with the hit key", async ({
     page,
   }) => {

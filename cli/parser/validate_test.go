@@ -11,7 +11,7 @@ import "testing"
 func FuzzValidate(f *testing.F) {
 	seeds := []string{
 		// Valid forms (mirrors the "valid" arm of the shared fixture).
-		"exit", "help", "help bfs", "help pagerank", "help community",
+		"exit", "help", "help search", "help bfs", "help pagerank", "help community",
 		"get vertex alice", "get edge alice bob",
 		"put vertex alice Alice", "put vertex alice Alice 60",
 		"put vertex price 1234 type=int", "put vertex name 007 type=string",

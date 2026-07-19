@@ -129,6 +129,7 @@ export function MetricsSection({ pollMs, refreshNonce }: MetricsSectionProps) {
           <MetricGroup
             key={group.id}
             label={group.label}
+            description={group.description}
             groupId={group.id}
             panels={panels}
             state={state.panels}
@@ -142,6 +143,7 @@ export function MetricsSection({ pollMs, refreshNonce }: MetricsSectionProps) {
 
 interface MetricGroupProps {
   label: string;
+  description: string;
   groupId: PanelGroup;
   panels: typeof METRIC_PANELS;
   state: Record<string, PanelState>;
@@ -150,14 +152,26 @@ interface MetricGroupProps {
 
 function MetricGroup({
   label,
+  description,
   groupId,
   panels,
   state,
   aliases,
 }: MetricGroupProps) {
+  const headingId = `ops-metrics-heading-${groupId}`;
+
   return (
-    <div className={styles.group} data-testid={`ops-metrics-group-${groupId}`}>
-      <h3 className={styles.groupTitle}>{label}</h3>
+    <section
+      className={styles.group}
+      data-testid={`ops-metrics-group-${groupId}`}
+      aria-labelledby={headingId}
+    >
+      <header className={styles.groupHeader}>
+        <h3 id={headingId} className={styles.groupTitle}>
+          {label}
+        </h3>
+        <p className={styles.groupDescription}>{description}</p>
+      </header>
       <div className={styles.grid}>
         {panels.map((panel) => {
           const panelState = state[panel.id];
@@ -174,6 +188,6 @@ function MetricGroup({
           );
         })}
       </div>
-    </div>
+    </section>
   );
 }

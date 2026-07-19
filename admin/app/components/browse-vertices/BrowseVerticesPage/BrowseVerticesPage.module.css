@@ -82,6 +82,12 @@
   flex-wrap: wrap;
 }
 
+.searchParameter {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacingVerticalXXS, 2px);
+}
+
 .searchOptionsMode {
   min-width: 180px;
 }

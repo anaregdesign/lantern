@@ -48,6 +48,7 @@ import { useLanternClient } from "~/lib/client/infrastructure/api/use-lantern-cl
 import { ValueCell } from "../ValueCell/ValueCell";
 import { ExpirationCell } from "../ExpirationCell/ExpirationCell";
 import { Pager } from "../Pager/Pager";
+import { SearchParameterLabel } from "../SearchParameterLabel/SearchParameterLabel";
 import styles from "./BrowseVerticesPage.module.css";
 
 /**
@@ -66,6 +67,24 @@ const MATCH_MODE_LABELS: Record<SearchMatchMode, string> = {
   all: "All words (AND)",
   "min-should": "At least N words",
 };
+
+/** Supplemental explanations shared by every Data > Content search control. */
+const SEARCH_PARAMETER_HELP = {
+  query:
+    "Required full-text input. Lantern analyzes the words and ranks matching live vertices by BM25 relevance.",
+  match:
+    "Controls how analyzed query words qualify a result. Server default uses this endpoint's advertised search configuration.",
+  minimumWords:
+    "With At least N words, requires this many distinct analyzed query words to match. The value must be a positive integer.",
+  prefix:
+    "Restricts candidates to vertex keys in this namespace before ranking. Leave empty to search every key.",
+  fuzziness:
+    "Maximum edit distance for typo matching: 0 is exact, 1 or 2 expands to nearby dictionary terms. It cannot combine with Phrase.",
+  prefixTerms:
+    'Also matches dictionary terms that extend a query word, such as "lan" matching "lantern". It cannot combine with Phrase.',
+  phrase:
+    "Requires adjacent, ordered words within one key, value, or JSON string field. It needs positional postings, Server default match, fuzziness 0, and Prefix terms off.",
+} as const;
 
 /** A vertex row normalised across both find modes. */
 interface VertexRow {
@@ -201,15 +220,22 @@ export function BrowseVerticesPage() {
 
       <section className={styles.controls}>
         {searching ? (
-          <Field label="Query" className={styles.prefixField}>
+          <div className={`${styles.searchParameter} ${styles.prefixField}`}>
+            <SearchParameterLabel
+              controlId="content-search-query"
+              label="Query"
+              description={SEARCH_PARAMETER_HELP.query}
+              testId="search-query-help"
+            />
             <Input
+              id="content-search-query"
               value={query}
               onChange={(_, data) => setQuery(data.value)}
               placeholder="e.g. distributed systems"
               contentBefore={<Search20Regular />}
               data-testid="search-query-input"
             />
-          </Field>
+          </div>
         ) : (
           <Field label="Key prefix" className={styles.prefixField}>
             <Input
@@ -268,13 +294,19 @@ export function BrowseVerticesPage() {
 
       {searching ? (
         <section className={styles.searchOptions} data-testid="search-options">
-          <Field label="Match">
+          <div className={styles.searchParameter}>
+            <SearchParameterLabel
+              controlId="content-search-match"
+              label="Match"
+              description={SEARCH_PARAMETER_HELP.match}
+              testId="search-mode-help"
+            />
             <Dropdown
+              id="content-search-match"
               className={styles.searchOptionsMode}
               selectedOptions={[matchMode]}
               value={MATCH_MODE_LABELS[matchMode]}
               disabled={phrase}
-              title="Controls query-word membership; Server default defers to this endpoint's advertised configuration."
               onOptionSelect={(_, data) =>
                 setMatchMode((data.optionValue as SearchMatchMode) ?? "server")
               }
@@ -293,10 +325,17 @@ export function BrowseVerticesPage() {
                 At least N words
               </Option>
             </Dropdown>
-          </Field>
+          </div>
           {matchMode === "min-should" ? (
-            <Field label="Minimum words">
+            <div className={styles.searchParameter}>
+              <SearchParameterLabel
+                controlId="content-search-minimum-words"
+                label="Minimum words"
+                description={SEARCH_PARAMETER_HELP.minimumWords}
+                testId="search-min-should-help"
+              />
               <Input
+                id="content-search-minimum-words"
                 type="number"
                 min={1}
                 step={1}
@@ -310,23 +349,35 @@ export function BrowseVerticesPage() {
                 }}
                 data-testid="search-min-should"
               />
-            </Field>
+            </div>
           ) : null}
-          <Field label="Key namespace prefix">
+          <div className={styles.searchParameter}>
+            <SearchParameterLabel
+              controlId="content-search-prefix"
+              label="Key namespace prefix"
+              description={SEARCH_PARAMETER_HELP.prefix}
+              testId="search-prefix-help"
+            />
             <Input
+              id="content-search-prefix"
               value={searchPrefix}
               onChange={(_, data) => setSearchPrefix(data.value)}
               placeholder="e.g. user:"
-              title="Restricts membership to vertex keys in this namespace before ranking."
               data-testid="search-prefix"
             />
-          </Field>
-          <Field label="Fuzziness">
+          </div>
+          <div className={styles.searchParameter}>
+            <SearchParameterLabel
+              controlId="content-search-fuzziness"
+              label="Fuzziness"
+              description={SEARCH_PARAMETER_HELP.fuzziness}
+              testId="search-fuzzy-help"
+            />
             <Dropdown
+              id="content-search-fuzziness"
               selectedOptions={[String(fuzziness)]}
               value={String(fuzziness)}
               disabled={phrase}
-              title="Also visits dictionary terms within this edit distance; phrase mode does not compose with fuzziness."
               onOptionSelect={(_, data) =>
                 setFuzziness(Number(data.optionValue ?? 0) as SearchFuzziness)
               }
@@ -336,21 +387,33 @@ export function BrowseVerticesPage() {
               <Option value="1">1 edit</Option>
               <Option value="2">2 edits</Option>
             </Dropdown>
-          </Field>
-          <Switch
-            label="Prefix terms"
-            checked={prefixTerms}
-            disabled={phrase}
-            title="Also matches dictionary terms extending a query word; phrase mode does not compose with this expansion."
-            onChange={(_, data) => setPrefixTerms(data.checked)}
-            data-testid="search-prefix-terms"
-          />
-          <div>
+          </div>
+          <div className={styles.searchParameter}>
+            <SearchParameterLabel
+              controlId="content-search-prefix-terms"
+              label="Prefix terms"
+              description={SEARCH_PARAMETER_HELP.prefixTerms}
+              testId="search-prefix-terms-help"
+            />
             <Switch
+              id="content-search-prefix-terms"
+              checked={prefixTerms}
+              disabled={phrase}
+              onChange={(_, data) => setPrefixTerms(data.checked)}
+              data-testid="search-prefix-terms"
+            />
+          </div>
+          <div className={styles.searchParameter}>
+            <SearchParameterLabel
+              controlId="content-search-phrase"
               label="Phrase"
+              description={SEARCH_PARAMETER_HELP.phrase}
+              testId="search-phrase-help"
+            />
+            <Switch
+              id="content-search-phrase"
               checked={phrase}
               disabled={positionsEnabled !== true || !phraseCompatible}
-              title="Requires adjacent, ordered words inside one key, value, or JSON string-leaf field."
               onChange={(_, data) => setPhrase(data.checked)}
               data-testid="search-phrase"
             />

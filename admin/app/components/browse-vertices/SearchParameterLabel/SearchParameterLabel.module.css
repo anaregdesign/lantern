@@ -1,0 +1,6 @@
+.root {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacingHorizontalXXS, 2px);
+  min-height: 24px;
+}

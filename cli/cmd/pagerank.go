@@ -19,7 +19,7 @@ var (
 var pagerankCmd = &cobra.Command{
 	Use:   "pagerank <seed>",
 	Short: "Personalized PageRank relevance star from <seed>",
-	Long:  familyHelpText("pagerank"),
+	Long:  scopedHelpText("pagerank"),
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := rejectMixedFamilyGrammar(cmd, args); err != nil {

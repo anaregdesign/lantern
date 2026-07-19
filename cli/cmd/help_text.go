@@ -7,21 +7,21 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// familyHelpText gives Cobra the same structured topic rendering the REPL
-// prints for `help <family>`. Cobra adds each command's flag table after this
-// text, retaining normal flag discoverability without duplicating grammar,
+// scopedHelpText gives Cobra the same structured topic rendering the REPL
+// prints for `help <topic>`. Cobra adds each command's flag table after this
+// text, retaining normal flag discoverability without duplicating signatures,
 // defaults, domains, meaning, or examples.
-func familyHelpText(topic string) string {
+func scopedHelpText(topic string) string {
 	text, ok := parser.HelpTextFor(topic)
 	if !ok {
-		panic("unknown family help topic: " + topic)
+		panic("unknown scoped help topic: " + topic)
 	}
 	return text
 }
 
 // helpCmd restores Cobra's conventional `lantern-cli help <command>` entry
-// point. It delegates to the target command's Help method, so the structured
-// family text above and Cobra's generated flag table are both retained.
+// point. It delegates to the target command's Help method, so structured topic
+// text and Cobra's generated flag table are both retained.
 var helpCmd = &cobra.Command{
 	Use:   "help [command]",
 	Short: "Help about any command",
@@ -32,7 +32,7 @@ var helpCmd = &cobra.Command{
 		}
 		target, _, err := rootCmd.Find(args)
 		if err != nil || target == rootCmd || target.Name() == "help" {
-			return fmt.Errorf("unknown command %q (try: bfs, pagerank, community, or --help)", args[0])
+			return fmt.Errorf("unknown command %q (try: search, bfs, pagerank, community, or --help)", args[0])
 		}
 		return target.Help()
 	},

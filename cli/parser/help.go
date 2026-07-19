@@ -5,10 +5,9 @@ import (
 	"strings"
 )
 
-// HelpTopic is the structured source for family-scoped help. The REPL renders
-// it directly and Cobra consumes the same rendered text for `bfs --help`,
-// `pagerank --help`, and `community --help`, so signatures, defaults, domains,
-// meaning, and examples cannot drift between those Go surfaces.
+// HelpTopic is the structured source for command-scoped help. The REPL renders
+// it directly and Cobra consumes the same rendered text, so signatures,
+// defaults, domains, meaning, and examples cannot drift between Go surfaces.
 type HelpTopic struct {
 	Name      string
 	Signature string
@@ -19,6 +18,40 @@ type HelpTopic struct {
 }
 
 var helpTopics = []HelpTopic{
+	{
+		Name:      "search",
+		Signature: "search <query> [limit=<uint32>] [prefix=<string>] [mode=server|any|all|min-should] [min_should=<uint32>] [phrase=<bool>] [fuzziness=0|1|2] [prefix_terms=<bool>] [cursor=<base64url>] [all=<bool>] [projection=key-score|full-vertex] [format=json|ndjson|tsv]",
+		Defaults: []string{
+			"limit=0 (endpoint default)",
+			"prefix=all keys",
+			"mode=server (endpoint default)",
+			"min_should=0 (endpoint default when mode=min-should)",
+			"phrase=false",
+			"fuzziness=0 (exact terms)",
+			"prefix_terms=false",
+			"cursor=first page",
+			"all=false",
+			"projection=key-score",
+			"format=json (all=true defaults to ndjson)",
+		},
+		Domains: []string{
+			"query: required full-text input analyzed and ranked by BM25 relevance",
+			"limit: maximum hits per page; 0 uses the endpoint default and the endpoint applies its cap",
+			"prefix: candidate vertex-key namespace; empty searches every key",
+			"mode: server defers to endpoint config; any=OR; all=AND; min-should requires N distinct words",
+			"min_should: positive word threshold used only with mode=min-should",
+			"phrase: adjacent ordered words within one key, value, or JSON string field",
+			"fuzziness: maximum dictionary-term edit distance 0|1|2",
+			"prefix_terms: include dictionary terms extending a query word (lan matches lantern)",
+			"cursor: opaque unpadded URL-safe base64 continuation from the same request and endpoint",
+			"all: lazily follow the bounded endpoint-sticky cursor session",
+			"projection: key-score or the exact selection-time full-vertex value/TTL snapshot",
+			"format: lossless page JSON, per-hit NDJSON, or quoted TSV",
+			"Compatibility: phrase=true requires mode=server, fuzziness=0, prefix_terms=false, and endpoint positional postings; all=true requires ndjson or tsv",
+		},
+		Meaning:  "Search live vertex keys and values by relevance without treating the derived index as a source of truth. See https://github.com/anaregdesign/lantern/blob/main/docs/search.md.",
+		Examples: []string{`search "rolling update" mode=all limit=20`, `search "release notes" phrase=true`, "search serach fuzziness=1", "search espresso limit=20 all=true format=ndjson"},
+	},
 	{
 		Name:      "bfs",
 		Signature: "bfs <seed> [step] [fan_out] [reduction=none|mst|spt] [objective=min|max] [weighting=raw|tfidf|bm25] [prefix=<string>]",
@@ -84,7 +117,7 @@ const HelpText = `Lantern CLI grammar:
              [weighting={raw|tfidf|bm25}] default=raw
              [prefix=<string>]           default=all keys
              defaults: max_size=0 (sweep decides)
-  help [bfs|pagerank|community]
+  help [search|bfs|pagerank|community]
   exit
 
 Search contract: https://github.com/anaregdesign/lantern/blob/main/docs/search.md
@@ -92,7 +125,7 @@ Search contract: https://github.com/anaregdesign/lantern/blob/main/docs/search.m
 Quoting: "double" with C-style escapes (\" \\ \n \r \t); 'single' verbatim.
 Verb/objective case-insensitive; argument values preserve case.`
 
-// HelpParam parses the optional family topic. Unknown topics and excess
+// HelpParam parses the optional focused command topic. Unknown topics and excess
 // arguments are rejected so operators get an actionable candidate list rather
 // than silently receiving unrelated global help.
 func HelpParam(s *Source) (*Help, error) {
@@ -123,7 +156,7 @@ func HelpTopicNames() []string {
 }
 
 // HelpTextFor renders the overview for an empty topic or the structured
-// family-only reference for a known topic. Callers that parse user input should
+// command-only reference for a known topic. Callers that parse user input should
 // use HelpParam first; the bool accommodates Cobra's static construction.
 func HelpTextFor(topic string) (string, bool) {
 	if topic == "" {

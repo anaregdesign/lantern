@@ -18,7 +18,7 @@
 // axis picker (#464, #975). Since #975 the family is a first-class verb, so these
 // are the verb names (`ppr` was renamed to `pagerank` per the user's preference).
 export type AlgorithmName = "bfs" | "pagerank" | "community";
-export type HelpTopic = "" | AlgorithmName;
+export type HelpTopic = "" | "search" | AlgorithmName;
 export type ReductionName = "none" | "mst" | "spt";
 export type ObjectiveName = "min" | "max";
 export type WeightingName = "raw" | "tfidf" | "bm25";
