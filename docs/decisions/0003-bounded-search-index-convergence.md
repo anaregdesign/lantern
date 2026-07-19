@@ -27,10 +27,12 @@ marks it `incomplete`. `SearchVertices` then fails closed with
 `SEARCH_INDEX_INCOMPLETE`; point reads, scans, traversal, replication, and
 backup remain available.
 
-A bounded rebuild analyzes every live vertex into a replacement index and
-swaps it atomically only after all limits succeed. It restores `healthy` state.
-Removing or resizing the offending values is therefore required before a
-rebuild can succeed.
+A bounded rebuild analyzes every live vertex into a replacement index through
+fixed-size batches and swaps it atomically only after all limits succeed. The
+rebuild retains one analyzed batch, not a second corpus-wide prepared copy, so
+transient analysis memory is bounded independently of the vertex count. It
+restores `healthy` state. Removing or resizing the offending values is therefore
+required before a rebuild can succeed.
 
 Valid UTF-8 byte values are eligible for text indexing and share the projected
 document byte limit. Arbitrary binary values are stored normally but contribute

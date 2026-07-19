@@ -488,6 +488,48 @@ func BenchmarkPutVertex_Search(b *testing.B) {
 	})
 }
 
+// BenchmarkSearchIndexRecovery measures only the derived-index rebuild phase
+// after a restore has populated the source-of-truth graph. The recovery path
+// must retain at most one bounded prepared batch rather than a second analyzed
+// representation of the complete corpus; alloc_B/doc is the headline metric.
+func BenchmarkSearchIndexRecovery(b *testing.B) {
+	const documents = 10_000
+	expiration := time.Now().Add(time.Hour)
+	b.ReportAllocs()
+	for range b.N {
+		b.StopTimer()
+		c := NewGraphCache[string, string](time.Hour)
+		c.EnableSearchIndex(keyValueExtract, compareStringID)
+		c.BeginSearchIndexRecovery()
+		c.mu.Lock()
+		for i := range documents {
+			c.upsertVertexStorageLocked(
+				makeKey("recovery", i, 24),
+				benchSearchCorpus[i%len(benchSearchCorpus)],
+				expiration,
+			)
+		}
+		c.mu.Unlock()
+		runtime.GC()
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		b.StartTimer()
+
+		if err := c.CompleteSearchIndexRecovery(); err != nil {
+			b.Fatal(err)
+		}
+
+		b.StopTimer()
+		runtime.ReadMemStats(&after)
+		b.ReportMetric(float64(after.TotalAlloc-before.TotalAlloc)/documents, "alloc_B/doc")
+		if got := c.SearchIndexMemoryStats().Documents; got != documents {
+			b.Fatalf("indexed documents = %d, want %d", got, documents)
+		}
+		runtime.KeepAlive(c)
+		b.StartTimer()
+	}
+}
+
 // BenchmarkScanEdgesByPrefix measures the edge-prefix scan after #742 moved the
 // visitor out of the read lock: matching rows are snapshotted under c.mu.RLock
 // and the visitor replays after release. The headline cost surfaced here is the

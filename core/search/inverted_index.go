@@ -83,6 +83,13 @@ type InvertedIndex[S comparable, D Document] struct {
 	generation            uint64
 }
 
+// rebuildBatchSize bounds the transient analyzed representation retained while
+// reconstructing an index. RebuildDocuments publishes only after the complete
+// replacement passes every limit, so this batch is an implementation detail:
+// it trades a small number of write-lock acquisitions for a corpus-independent
+// memory ceiling during restore and replication recovery.
+const rebuildBatchSize = 256
+
 // classPostings is one token class's slice of the index: its term dictionary,
 // its postings, and the class-scoped corpus statistics BM25 length
 // normalization and IDF need. Keeping them per class is what stops auxiliary
@@ -744,17 +751,73 @@ func (idx *InvertedIndex[S, D]) Compact() {
 // and swaps it in only after every aggregate limit succeeds. A failed rebuild
 // leaves the prior (possibly incomplete) index untouched and unhealthy.
 func (idx *InvertedIndex[S, D]) RebuildPrepared(items []PreparedItem[S]) error {
+	tmp := idx.emptyClone()
+	start := time.Now()
+	if err := tmp.IndexManyPrepared(items); err != nil {
+		return err
+	}
+	idx.publishRebuild(tmp, start)
+	return nil
+}
+
+// RebuildDocuments constructs a complete replacement through bounded batches
+// and publishes it atomically. visit must call yield for each document in the
+// desired final corpus. Analysis and aggregate-limit validation happen against
+// the replacement; an error discards it and leaves the prior index unchanged.
+//
+// Unlike RebuildPrepared, this path never retains the analyzed representation
+// of the whole corpus. It is intended for recovery code that already owns the
+// source-of-truth graph and can enumerate it while searches fail closed.
+func (idx *InvertedIndex[S, D]) RebuildDocuments(visit func(yield func(S, D, time.Time) error) error) error {
+	if visit == nil {
+		panic("search: RebuildDocuments visit must not be nil")
+	}
+	tmp := idx.emptyClone()
+	start := time.Now()
+	batch := make([]PreparedItem[S], 0, rebuildBatchSize)
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		if err := tmp.IndexManyPrepared(batch); err != nil {
+			return err
+		}
+		clear(batch)
+		batch = batch[:0]
+		return nil
+	}
+	yield := func(id S, doc D, expiration time.Time) error {
+		prepared, _, err := tmp.Prepare(doc)
+		if err != nil {
+			return err
+		}
+		batch = append(batch, PreparedItem[S]{ID: id, Prepared: prepared, Expiration: expiration})
+		if len(batch) == cap(batch) {
+			return flush()
+		}
+		return nil
+	}
+	if err := visit(yield); err != nil {
+		return err
+	}
+	if err := flush(); err != nil {
+		return err
+	}
+	idx.publishRebuild(tmp, start)
+	return nil
+}
+
+func (idx *InvertedIndex[S, D]) emptyClone() *InvertedIndex[S, D] {
 	var opts []IndexOption
 	if idx.positions {
 		opts = append(opts, WithPositions())
 	}
 	opts = append(opts, WithProximityWeight(idx.proximityWeight), WithAnalysisLimits(idx.limits))
 	opts = append(opts, WithIndexClock(idx.clock))
-	tmp := NewInvertedIndex[S, D](idx.analyzer, idx.scorer, idx.compareID, opts...)
-	start := time.Now()
-	if err := tmp.IndexManyPrepared(items); err != nil {
-		return err
-	}
+	return NewInvertedIndex[S, D](idx.analyzer, idx.scorer, idx.compareID, opts...)
+}
+
+func (idx *InvertedIndex[S, D]) publishRebuild(tmp *InvertedIndex[S, D], start time.Time) {
 	idx.lockWrite()
 	defer idx.mu.Unlock()
 	idx.classes, idx.ords, idx.docs, idx.expirations = tmp.classes, tmp.ords, tmp.docs, tmp.expirations
@@ -763,7 +826,6 @@ func (idx *InvertedIndex[S, D]) RebuildPrepared(items []PreparedItem[S]) error {
 	idx.rebuildCount++
 	idx.generation++
 	idx.lastRebuildDuration = time.Since(start)
-	return nil
 }
 
 func (idx *InvertedIndex[S, D]) compactIfNeededLocked() {

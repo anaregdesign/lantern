@@ -121,8 +121,10 @@ func (c *GraphCache[S, T]) EnableSearchIndex(extract func(S, T) search.Document,
 }
 
 // RebuildSearchIndex re-analyzes the complete live graph under the configured
-// limits and atomically replaces an incomplete index. It fails without
-// changing health when any current vertex still exceeds a bound.
+// limits and atomically replaces an incomplete index. The replacement is built
+// through bounded batches so recovery memory does not scale with a second
+// corpus-wide PreparedItem slice. It fails without changing health when any
+// current vertex still exceeds a bound.
 func (c *GraphCache[S, T]) RebuildSearchIndex() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -164,21 +166,14 @@ func (c *GraphCache[S, T]) rebuildSearchIndexLocked() error {
 	if c.searchIndex == nil {
 		return nil
 	}
-	items := make([]search.PreparedItem[S], 0, c.vertices.Count())
-	var firstErr error
-	c.vertices.Range(func(key S, value T, expiration time.Time) bool {
-		prepared, _, err := c.searchIndex.Prepare(c.searchExtract(key, value))
-		if err != nil {
-			firstErr = err
-			return false
-		}
-		items = append(items, search.PreparedItem[S]{ID: key, Prepared: prepared, Expiration: expiration})
-		return true
-	})
-	if firstErr != nil {
+	return c.searchIndex.RebuildDocuments(func(yield func(S, search.Document, time.Time) error) error {
+		var firstErr error
+		c.vertices.Range(func(key S, value T, expiration time.Time) bool {
+			firstErr = yield(key, c.searchExtract(key, value), expiration)
+			return firstErr == nil
+		})
 		return firstErr
-	}
-	return c.searchIndex.RebuildPrepared(items)
+	})
 }
 
 func (c *GraphCache[S, T]) rebuildIncompleteSearchLocked() {
