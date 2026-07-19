@@ -3,6 +3,7 @@ package integration_test
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -400,7 +401,7 @@ func TestGKEDeployRecoveryWorkflow(t *testing.T) {
 		"google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3",
 		"google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3",
 		"google-github-actions/get-gke-credentials@3da1e46a907576cefaa90c484278bb5b259dd395 # v3",
-		"azure/setup-helm@9bc31f4ebc9b171d7bfbaa5d006ae7abdb4310 # v5",
+		"azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5",
 		"helm upgrade --install",
 		"--wait --timeout 10m --debug",
 		"if: failure()",
@@ -410,6 +411,17 @@ func TestGKEDeployRecoveryWorkflow(t *testing.T) {
 	} {
 		if !strings.Contains(string(deployWorkflow), contract) {
 			t.Errorf("reusable GKE deployment workflow is missing recovery contract %q", contract)
+		}
+	}
+	for _, action := range []string{
+		"google-github-actions/auth",
+		"google-github-actions/setup-gcloud",
+		"google-github-actions/get-gke-credentials",
+		"azure/setup-helm",
+	} {
+		pinnedUse := regexp.MustCompile(`(?m)^\s*uses:\s+` + regexp.QuoteMeta(action) + `@[0-9a-f]{40}(?:\s+#.*)?$`)
+		if !pinnedUse.Match(deployWorkflow) {
+			t.Errorf("reusable GKE deployment workflow does not pin %s to a 40-character commit SHA", action)
 		}
 	}
 }

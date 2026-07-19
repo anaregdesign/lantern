@@ -76,7 +76,7 @@ jobs:
           project_id: ${{ env.GCP_PROJECT_ID }}
 
       - name: Set up Helm
-        uses: azure/setup-helm@9bc31f4ebc9b171d7bfbaa5d006ae7abdb4310 # v5
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
         with:
           version: v3.16.3
 
