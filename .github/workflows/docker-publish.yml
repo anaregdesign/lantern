@@ -490,72 +490,17 @@ jobs:
               "${assets[@]}"
           fi
 
-  # Continuous deployment: roll the freshly-pushed server image onto the live
-  # GKE Autopilot cluster. Gated on `build` so we only deploy an image that was
-  # actually pushed + signed; the workflow's `tags: [ 'v*.*.*' ]` trigger keeps
-  # this tag-push-only. Auth is keyless via Workload Identity Federation — the
-  # repo-scoped OIDC provider + deploy SA are provisioned out-of-band and wired
-  # through the GCP_WIF_PROVIDER / GCP_DEPLOY_SA secrets. See #809.
+  # Continuous deployment reuses the same workflow as manual recovery. Gating
+  # on `build` still guarantees that release-triggered deploys only consume an
+  # image that this run pushed and signed; operators can separately dispatch
+  # _deploy-gke.yml for an already-published immutable tag.
   deploy-gke:
     name: Deploy to GKE Autopilot
     needs: build
-    runs-on: ubuntu-latest
+    uses: ./.github/workflows/_deploy-gke.yml
+    with:
+      image_tag: ${{ github.ref_name }}
+    secrets: inherit
     permissions:
       contents: read
-      id-token: write   # mint the OIDC token google-github-actions/auth exchanges
-    # Deployment target coordinates are non-secret but environment-specific;
-    # configure them as repository variables instead of baking one cluster into
-    # the reusable release workflow.
-    env:
-      GKE_CLUSTER: ${{ vars['GKE_CLUSTER'] }}
-      GKE_LOCATION: ${{ vars['GKE_LOCATION'] }}
-      GCP_PROJECT_ID: ${{ vars['GCP_PROJECT_ID'] }}
-      RELEASE: ${{ vars['GKE_HELM_RELEASE'] }}
-      NAMESPACE: ${{ vars['GKE_NAMESPACE'] }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Validate GKE deployment configuration
-        run: |
-          set -euo pipefail
-          for name in GKE_CLUSTER GKE_LOCATION GCP_PROJECT_ID RELEASE NAMESPACE; do
-            if [ -z "${!name}" ]; then
-              echo "Missing repository variable for $name" >&2
-              exit 1
-            fi
-          done
-
-      - name: Authenticate to Google Cloud (WIF)
-        uses: google-github-actions/auth@v3
-        with:
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
-          service_account: ${{ secrets.GCP_DEPLOY_SA }}
-
-      - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v3
-
-      - name: Get GKE credentials
-        uses: google-github-actions/get-gke-credentials@v3
-        with:
-          cluster_name: ${{ env.GKE_CLUSTER }}
-          location: ${{ env.GKE_LOCATION }}
-          project_id: ${{ env.GCP_PROJECT_ID }}
-
-      - name: Set up Helm
-        uses: azure/setup-helm@v5
-        with:
-          version: v3.16.3
-
-      - name: Roll the new image onto the StatefulSet
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          # The published GHCR tag is SemVer-pure (no leading v).
-          helm upgrade --install "$RELEASE" deploy/helm/lantern \
-            --namespace "$NAMESPACE" \
-            --set image.tag="${TAG#v}" \
-            --wait --timeout 10m
-          kubectl rollout status "statefulset/$RELEASE" \
-            --namespace "$NAMESPACE" --timeout=10m
+      id-token: write
