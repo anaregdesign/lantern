@@ -1,0 +1,115 @@
+name: Deploy existing image to GKE
+
+on:
+  workflow_call:
+    inputs:
+      image_tag:
+        description: Immutable Lantern server image tag, with or without a leading v
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Immutable Lantern server image tag, with or without a leading v
+        required: true
+        type: string
+
+concurrency:
+  group: deploy-gke-${{ vars['GKE_CLUSTER'] }}-${{ vars['GKE_NAMESPACE'] }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to GKE Autopilot
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GKE_CLUSTER: ${{ vars['GKE_CLUSTER'] }}
+      GKE_LOCATION: ${{ vars['GKE_LOCATION'] }}
+      GCP_PROJECT_ID: ${{ vars['GCP_PROJECT_ID'] }}
+      RELEASE: ${{ vars['GKE_HELM_RELEASE'] }}
+      NAMESPACE: ${{ vars['GKE_NAMESPACE'] }}
+      IMAGE_TAG: ${{ inputs.image_tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Validate deployment inputs
+        id: inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in GKE_CLUSTER GKE_LOCATION GCP_PROJECT_ID RELEASE NAMESPACE IMAGE_TAG; do
+            if [ -z "${!name}" ]; then
+              echo "Missing deployment input $name" >&2
+              exit 1
+            fi
+          done
+          if [[ ! "$IMAGE_TAG" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "image_tag must be vX.Y.Z or X.Y.Z" >&2
+            exit 1
+          fi
+          echo "pure_tag=${IMAGE_TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify published image
+        env:
+          PURE_TAG: ${{ steps.inputs.outputs.pure_tag }}
+        run: docker buildx imagetools inspect "ghcr.io/${GITHUB_REPOSITORY}:${PURE_TAG}"
+
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+
+      - name: Get GKE credentials
+        uses: google-github-actions/get-gke-credentials@3da1e46a907576cefaa90c484278bb5b259dd395 # v3
+        with:
+          cluster_name: ${{ env.GKE_CLUSTER }}
+          location: ${{ env.GKE_LOCATION }}
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
+        with:
+          version: v3.16.3
+
+      - name: Roll the image onto the StatefulSet
+        env:
+          PURE_TAG: ${{ steps.inputs.outputs.pure_tag }}
+        run: |
+          set -euo pipefail
+          helm upgrade --install "$RELEASE" deploy/helm/lantern \
+            --namespace "$NAMESPACE" \
+            --set image.tag="$PURE_TAG" \
+            --wait --timeout 10m --debug
+          kubectl rollout status "statefulset/$RELEASE" \
+            --namespace "$NAMESPACE" --timeout=10m
+
+      - name: Collect rollout diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          selector="app.kubernetes.io/instance=$RELEASE"
+          helm status "$RELEASE" --namespace "$NAMESPACE" --show-desc
+          kubectl get statefulset "$RELEASE" --namespace "$NAMESPACE" -o wide
+          kubectl describe statefulset "$RELEASE" --namespace "$NAMESPACE"
+          kubectl get pods --namespace "$NAMESPACE" --selector "$selector" -o wide
+          kubectl describe pods --namespace "$NAMESPACE" --selector "$selector"
+          kubectl get pvc --namespace "$NAMESPACE" -o wide
+          kubectl get events --namespace "$NAMESPACE" \
+            --sort-by='.lastTimestamp' | tail -n 200
+          while IFS= read -r pod; do
+            kubectl logs "$pod" --namespace "$NAMESPACE" \
+              --all-containers --tail=200
+            kubectl logs "$pod" --namespace "$NAMESPACE" \
+              --all-containers --previous --tail=200
+          done < <(kubectl get pods --namespace "$NAMESPACE" \
+            --selector "$selector" -o name)
