@@ -524,7 +524,9 @@ jobs:
           echo "VERSION=$tag_version" >> "$GITHUB_ENV"
 
       - name: Resolve exact lockfile
-        run: dart pub get --enforce-lockfile
+        # The publish runner intentionally installs Dart only. Resolve the
+        # package lock without descending into the maintained Flutter example.
+        run: dart pub get --enforce-lockfile --no-example
 
       - name: Check pub.dev package/version state
         run: |

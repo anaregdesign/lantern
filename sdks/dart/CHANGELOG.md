@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.3
+
+- Resolve the package lock without descending into the Flutter example on the
+  pure-Dart pub.dev OIDC runner. This patch changes release automation only;
+  the SDK API and runtime behavior are unchanged from 0.1.2.
+
 ## 0.1.2
 
 - Bootstrap pub.dev authentication with the official `dart-lang/setup-dart`
