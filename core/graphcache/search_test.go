@@ -105,7 +105,7 @@ func TestGraphCacheSearchAnalysisLimits(t *testing.T) {
 		}
 	})
 
-	t.Run("bulk recovery stays incomplete until exact rebuild", func(t *testing.T) {
+	t.Run("bulk recovery stays incomplete until bounded exact rebuild", func(t *testing.T) {
 		c := newCache()
 		expiration := time.Now().Add(time.Minute)
 		if err := c.PutVertexWithExpiration("before", "alpha", expiration); err != nil {
@@ -126,6 +126,9 @@ func TestGraphCacheSearchAnalysisLimits(t *testing.T) {
 		}
 		if got := c.SearchIndexMemoryStats().Health; got != search.IndexHealthy {
 			t.Fatalf("health after recovery = %q", got)
+		}
+		if got := c.SearchIndexMemoryStats().RebuildCount; got != 1 {
+			t.Fatalf("rebuild count = %d, want 1", got)
 		}
 		if got := keys(c.SearchVertices("alpha beta", 10, "")); !reflect.DeepEqual(got, []string{"before", "during"}) {
 			t.Fatalf("rebuilt results = %v", got)

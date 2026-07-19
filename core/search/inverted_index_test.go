@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeAnalyzer is a whitespace-splitting, case-folding analyzer used to
@@ -225,6 +226,67 @@ func TestInvertedIndexCompactionAndHealth(t *testing.T) {
 	if got := idx.MemoryStats().Health; got != IndexHealthy {
 		t.Fatalf("health = %q", got)
 	}
+}
+
+func TestInvertedIndexRebuildDocuments(t *testing.T) {
+	t.Run("publishes complete replacement atomically", func(t *testing.T) {
+		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID)
+		if err := idx.Index("old", Text("alpha")); err != nil {
+			t.Fatal(err)
+		}
+
+		err := idx.RebuildDocuments(func(yield func(string, Text, time.Time) error) error {
+			for i := range rebuildBatchSize {
+				if err := yield(fmt.Sprintf("new-%03d", i), Text("beta"), time.Time{}); err != nil {
+					return err
+				}
+			}
+			// One internal batch has already been applied to the replacement,
+			// but publication must still leave readers on the prior index.
+			if got := idsOf(idx.Search("alpha")); !slices.Equal(got, []string{"old"}) {
+				t.Fatalf("index changed before rebuild publication: %v", got)
+			}
+			return yield("new-final", Text("gamma"), time.Time{})
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := idsOf(idx.Search("alpha")); len(got) != 0 {
+			t.Fatalf("retired document survived rebuild: %v", got)
+		}
+		if got := idsOf(idx.Search("gamma")); !slices.Equal(got, []string{"new-final"}) {
+			t.Fatalf("rebuilt final document = %v", got)
+		}
+		stats := idx.MemoryStats()
+		if stats.Health != IndexHealthy || stats.RebuildCount != 1 || stats.Documents != rebuildBatchSize+1 {
+			t.Fatalf("rebuild stats = %+v", stats)
+		}
+	})
+
+	t.Run("limit failure retains prior index", func(t *testing.T) {
+		idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID,
+			WithAnalysisLimits(SearchAnalysisLimits{MaxLiveTerms: 1}))
+		if err := idx.Index("old", Text("alpha")); err != nil {
+			t.Fatal(err)
+		}
+		err := idx.RebuildDocuments(func(yield func(string, Text, time.Time) error) error {
+			for i := range rebuildBatchSize {
+				if err := yield(fmt.Sprintf("new-%03d", i), Text("beta"), time.Time{}); err != nil {
+					return err
+				}
+			}
+			return yield("new-final", Text("gamma"), time.Time{})
+		})
+		if !isAnalysisLimit(err, LimitLiveTerms) {
+			t.Fatalf("rebuild err = %v", err)
+		}
+		if got := idsOf(idx.Search("alpha")); !slices.Equal(got, []string{"old"}) {
+			t.Fatalf("prior index after rejected rebuild = %v", got)
+		}
+		if got := idx.MemoryStats(); got.RebuildCount != 0 || got.Documents != 1 {
+			t.Fatalf("stats after rejected rebuild = %+v", got)
+		}
+	})
 }
 
 func TestInvertedIndexConcurrentSearchWriteCompaction(t *testing.T) {
