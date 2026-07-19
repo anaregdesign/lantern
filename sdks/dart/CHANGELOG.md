@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.2
+
+- Bootstrap pub.dev authentication with the official `dart-lang/setup-dart`
+  GitHub OIDC flow so headless releases cannot fall back to interactive Google
+  OAuth.
+- Bound the publish job with a hard timeout. This patch changes release
+  automation only; the SDK API and runtime behavior are unchanged from 0.1.1.
+
 ## 0.1.1
 
 - Accept the Dart offline contract and set an official, opt-in

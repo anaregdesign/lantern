@@ -488,6 +488,7 @@ jobs:
     needs: [gate]
     if: startsWith(github.ref, 'refs/tags/sdks/dart/v')
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment:
       name: pub.dev
       url: https://pub.dev/packages/lantern_client
@@ -502,12 +503,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Flutter
-        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+      # setup-dart also mints and configures the GitHub OIDC credential that
+      # pub.dev's automated publisher consumes. A Flutter-only setup silently
+      # falls back to interactive Google OAuth in a headless runner.
+      - name: Set up current supported Dart and pub.dev OIDC
+        uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1
         with:
-          channel: stable
-          flutter-version: 3.44.6
-          cache: true
+          sdk: 3.12.2
 
       - name: Verify tag, package version, and changelog
         env:

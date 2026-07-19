@@ -113,14 +113,21 @@ func TestDartPublishingContractGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read Dart SDK workflow: %v", err)
 	}
+	publishStart := strings.Index(string(workflow), "\n  publish:\n")
+	if publishStart == -1 {
+		t.Fatal("Dart SDK workflow is missing the publish job")
+	}
+	publishWorkflow := string(workflow)[publishStart:]
 
 	for _, contract := range []string{
 		"startsWith(github.ref, 'refs/tags/sdks/dart/v')",
+		"timeout-minutes: 15",
 		"id-token: write",
+		"uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1",
 		"dart pub publish --force",
 		`gh release create "$TAG" --title "$TAG"`,
 	} {
-		if !strings.Contains(string(workflow), contract) {
+		if !strings.Contains(publishWorkflow, contract) {
 			t.Errorf("Dart SDK workflow is missing publishing contract %q", contract)
 		}
 	}
