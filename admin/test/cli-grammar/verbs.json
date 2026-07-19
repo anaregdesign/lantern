@@ -545,6 +545,11 @@
       "expected": { "topic": "" }
     },
     {
+      "input": "help search",
+      "comment": "#1129: focused content-search parameter help",
+      "expected": { "topic": "search" }
+    },
+    {
       "input": "help bfs",
       "comment": "#995: focused BFS help",
       "expected": { "topic": "bfs" }

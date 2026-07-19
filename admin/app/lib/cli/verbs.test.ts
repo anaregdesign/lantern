@@ -234,8 +234,8 @@ describe("parseHelp (#436 — help verb)", () => {
     }
   });
 
-  test("recognises exactly the documented traversal topics", () => {
-    expect(HELP_TOPICS).toEqual(["bfs", "pagerank", "community"]);
+  test("recognises exactly the documented focused topics", () => {
+    expect(HELP_TOPICS).toEqual(["search", "bfs", "pagerank", "community"]);
     for (const topic of HELP_TOPICS) {
       const r = parseHelp([topic.toUpperCase()]);
       expect(r.ok).toBe(true);
@@ -265,8 +265,31 @@ describe("parseHelp (#436 — help verb)", () => {
       ]) {
         expect(text).toContain(heading);
       }
-      expect(text).toContain(`${topic} <seed>`);
+      expect(text).toContain(
+        topic === "search" ? "search <query>" : `${topic} <seed>`,
+      );
       expect(text).not.toContain("Lantern CLI grammar:");
+    }
+  });
+
+  test("documents every content-search parameter and compatibility rule", () => {
+    const text = helpTextFor("search");
+    for (const parameter of [
+      "query:",
+      "limit:",
+      "prefix:",
+      "mode:",
+      "min_should:",
+      "phrase:",
+      "fuzziness:",
+      "prefix_terms:",
+      "cursor:",
+      "all:",
+      "projection:",
+      "format:",
+      "Compatibility:",
+    ]) {
+      expect(text).toContain(parameter);
     }
   });
 });

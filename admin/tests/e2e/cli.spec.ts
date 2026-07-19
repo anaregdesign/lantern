@@ -1115,6 +1115,35 @@ test.describe("/cli", () => {
     await expect(entry).not.toContainText("pagerank <seed>");
   });
 
+  test("scoped search help explains every parameter (#1129)", async ({
+    page,
+  }) => {
+    await page.goto("/cli");
+    const input = page.getByTestId("cli-input");
+    await input.fill("help search");
+    await input.press("Enter");
+    const entry = page.getByTestId("cli-entry-info").last();
+    await expect(entry).toContainText("search <query>");
+    for (const parameter of [
+      "query:",
+      "limit:",
+      "prefix:",
+      "mode:",
+      "min_should:",
+      "phrase:",
+      "fuzziness:",
+      "prefix_terms:",
+      "cursor:",
+      "all:",
+      "projection:",
+      "format:",
+      "Compatibility:",
+    ]) {
+      await expect(entry).toContainText(parameter);
+    }
+    await expect(entry).not.toContainText("bfs <seed>");
+  });
+
   // #945 — pasting a multi-line script into the prompt runs each line in
   // order through the pending-command queue instead of flattening the
   // newlines into one uneditable line. Synthesize a real paste event (with

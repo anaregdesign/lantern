@@ -20,7 +20,7 @@ var (
 var bfsCmd = &cobra.Command{
 	Use:   "bfs <seed>",
 	Short: "Greedy per-hop top-k breadth-first walk from <seed>",
-	Long:  familyHelpText("bfs"),
+	Long:  scopedHelpText("bfs"),
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := rejectMixedFamilyGrammar(cmd, args); err != nil {

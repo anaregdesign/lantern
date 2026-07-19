@@ -16,14 +16,14 @@
 
 /** Logical grouping used to lay panels out under section headings. */
 export type PanelGroup =
-  | "cache"
-  | "throughput"
-  | "latency"
-  | "search"
-  | "ttl"
-  | "backpressure"
+  | "storage"
+  | "requests"
+  | "illuminate"
+  | "search-requests"
+  | "search-index"
+  | "maintenance"
   | "replication"
-  | "rejections"
+  | "guardrails"
   | "runtime";
 
 /**
@@ -76,17 +76,58 @@ export interface PanelSpec {
   queries: PanelQuery[];
 }
 
-/** Section groups in display order, with human-readable headings. */
-export const PANEL_GROUPS: ReadonlyArray<{ id: PanelGroup; label: string }> = [
-  { id: "cache", label: "Cache" },
-  { id: "throughput", label: "Throughput" },
-  { id: "latency", label: "Latency" },
-  { id: "search", label: "Search" },
-  { id: "ttl", label: "TTL reaping" },
-  { id: "backpressure", label: "Back-pressure" },
-  { id: "replication", label: "Replication" },
-  { id: "rejections", label: "Rejections" },
-  { id: "runtime", label: "Process / Go runtime" },
+/** Section groups in display order, with operator-oriented headings. */
+export const PANEL_GROUPS: ReadonlyArray<{
+  id: PanelGroup;
+  label: string;
+  description: string;
+}> = [
+  {
+    id: "storage",
+    label: "Store inventory",
+    description: "Current graph volume and the objects that occupy memory.",
+  },
+  {
+    id: "requests",
+    label: "Request traffic",
+    description: "RPC volume and latency, separated by operational workload.",
+  },
+  {
+    id: "illuminate",
+    label: "Illuminate",
+    description: "Traversal latency and terminal outcomes for each algorithm.",
+  },
+  {
+    id: "search-requests",
+    label: "Search requests",
+    description: "Search outcomes, latency, result volume, and bounded work.",
+  },
+  {
+    id: "search-index",
+    label: "Search index",
+    description:
+      "Index readiness, population, structures, and memory retention.",
+  },
+  {
+    id: "maintenance",
+    label: "Maintenance",
+    description: "TTL cleanup and graph-cache garbage collection.",
+  },
+  {
+    id: "replication",
+    label: "Replication",
+    description: "Mutation-log pressure, peer health, lag, applies, and drops.",
+  },
+  {
+    id: "guardrails",
+    label: "Guardrails",
+    description: "Rejected work separated by the subsystem that refused it.",
+  },
+  {
+    id: "runtime",
+    label: "Process / Go runtime",
+    description: "Process memory and scheduler load.",
+  },
 ];
 
 /**
@@ -95,7 +136,7 @@ export const PANEL_GROUPS: ReadonlyArray<{ id: PanelGroup; label: string }> = [
 export const METRIC_PANELS: readonly PanelSpec[] = [
   {
     id: "cache-size",
-    group: "cache",
+    group: "storage",
     title: "Cache size",
     description: "Live vertices and edges currently held in the store.",
     unit: "count",
@@ -106,7 +147,7 @@ export const METRIC_PANELS: readonly PanelSpec[] = [
   },
   {
     id: "write-throughput",
-    group: "throughput",
+    group: "requests",
     title: "Write throughput",
     description: "Mutation-log appends per second.",
     unit: "rate",
@@ -118,37 +159,108 @@ export const METRIC_PANELS: readonly PanelSpec[] = [
     ],
   },
   {
-    id: "rpc-throughput",
-    group: "throughput",
-    title: "RPC throughput",
-    description: "Completed RPCs per second, by method.",
+    id: "rpc-read-throughput",
+    group: "requests",
+    title: "Read RPC throughput",
+    description: "Point reads, scans, counts, and degree queries by method.",
     unit: "rate",
     queries: [
       {
-        expr: "rate(grpc_server_handled_total[$__rate])",
+        expr: 'rate(grpc_server_handled_total{grpc_method=~"Get(Vertex|Vertices|Edge|Edges)|ScanVertices|ScanVertexKeys|ScanEdges|CountVerticesByPrefix|TopVerticesByDegree"}[$__rate]) > 0',
         by: ["grpc_method"],
         legend: "{{grpc_method}}",
       },
     ],
   },
   {
-    id: "traversal-outcomes",
-    group: "throughput",
-    title: "Illuminate outcomes",
-    description:
-      "Successful, failed, and timed-out traversals by family, phase, and Connect code.",
+    id: "rpc-write-throughput",
+    group: "requests",
+    title: "Write RPC throughput",
+    description: "Put, add, and delete operations by method.",
     unit: "rate",
     queries: [
       {
-        expr: "rate(lantern_illuminate_calls_total[$__rate])",
-        by: ["algorithm", "phase", "code"],
-        legend: "{{algorithm}} · {{phase}} · {{code}}",
+        expr: 'rate(grpc_server_handled_total{grpc_method=~"Put.*|Add.*|Delete.*"}[$__rate]) > 0',
+        by: ["grpc_method"],
+        legend: "{{grpc_method}}",
+      },
+    ],
+  },
+  {
+    id: "rpc-query-throughput",
+    group: "requests",
+    title: "Query RPC throughput",
+    description: "Illuminate and SearchVertices completions by method.",
+    unit: "rate",
+    queries: [
+      {
+        expr: 'rate(grpc_server_handled_total{grpc_method=~"Illuminate|SearchVertices"}[$__rate]) > 0',
+        by: ["grpc_method"],
+        legend: "{{grpc_method}}",
+      },
+    ],
+  },
+  {
+    id: "rpc-status-throughput",
+    group: "requests",
+    title: "Status RPC throughput",
+    description: "Server and replication status probes by method.",
+    unit: "rate",
+    queries: [
+      {
+        expr: 'rate(grpc_server_handled_total{grpc_method=~"GetServerStatus|GetReplicationStatus"}[$__rate]) > 0',
+        by: ["grpc_method"],
+        legend: "{{grpc_method}}",
+      },
+    ],
+  },
+  {
+    id: "illuminate-outcomes-bfs",
+    group: "illuminate",
+    title: "Illuminate outcomes · BFS",
+    description: "Non-zero terminal BFS outcomes by phase and Connect code.",
+    unit: "rate",
+    queries: [
+      {
+        expr: 'rate(lantern_illuminate_calls_total{algorithm="bfs"}[$__rate]) > 0',
+        by: ["phase", "code"],
+        legend: "{{phase}} · {{code}}",
+      },
+    ],
+  },
+  {
+    id: "illuminate-outcomes-ppr",
+    group: "illuminate",
+    title: "Illuminate outcomes · PageRank",
+    description:
+      "Non-zero terminal Personalized PageRank outcomes by phase and Connect code.",
+    unit: "rate",
+    queries: [
+      {
+        expr: 'rate(lantern_illuminate_calls_total{algorithm="ppr"}[$__rate]) > 0',
+        by: ["phase", "code"],
+        legend: "{{phase}} · {{code}}",
+      },
+    ],
+  },
+  {
+    id: "illuminate-outcomes-community",
+    group: "illuminate",
+    title: "Illuminate outcomes · Community",
+    description:
+      "Non-zero terminal local-community outcomes by phase and Connect code.",
+    unit: "rate",
+    queries: [
+      {
+        expr: 'rate(lantern_illuminate_calls_total{algorithm="community"}[$__rate]) > 0',
+        by: ["phase", "code"],
+        legend: "{{phase}} · {{code}}",
       },
     ],
   },
   {
     id: "rpc-latency",
-    group: "latency",
+    group: "requests",
     title: "RPC latency (p50 / p99)",
     description: "Server handling-time quantiles across all methods.",
     unit: "seconds",
@@ -166,17 +278,26 @@ export const METRIC_PANELS: readonly PanelSpec[] = [
     ],
   },
   {
-    id: "traversal-latency",
-    group: "latency",
-    title: "Illuminate & scan latency (p99)",
-    description: "99th-percentile traversal and scan durations.",
+    id: "illuminate-latency",
+    group: "illuminate",
+    title: "Illuminate latency (p99)",
+    description: "99th-percentile end-to-end traversal duration.",
     unit: "seconds",
     queries: [
       {
         expr: "rate(lantern_illuminate_duration_seconds_bucket[$__rate])",
         agg: { quantile: 0.99 },
-        legend: "illuminate",
+        legend: "p99",
       },
+    ],
+  },
+  {
+    id: "scan-latency",
+    group: "requests",
+    title: "Scan latency (p99)",
+    description: "99th-percentile scan duration by operation.",
+    unit: "seconds",
+    queries: [
       {
         expr: "rate(lantern_scan_duration_seconds_bucket[$__rate])",
         by: ["op"],
@@ -187,7 +308,7 @@ export const METRIC_PANELS: readonly PanelSpec[] = [
   },
   {
     id: "gc-duration",
-    group: "latency",
+    group: "maintenance",
     title: "GC duration (p99)",
     description: "99th-percentile graph-cache GC sweep duration.",
     unit: "seconds",
@@ -200,35 +321,98 @@ export const METRIC_PANELS: readonly PanelSpec[] = [
     ],
   },
   {
-    id: "search-outcomes",
-    group: "search",
-    title: "Search outcomes",
-    description:
-      "Terminal SearchVertices attempts by bounded mode, outcome, and reason.",
+    id: "search-successes",
+    group: "search-requests",
+    title: "Search successes",
+    description: "Successful and zero-hit searches by matching mode.",
     unit: "rate",
     queries: [
       {
-        expr: "rate(lantern_search_calls_total[$__rate])",
-        by: ["mode", "outcome", "reason"],
-        legend: "{{mode}} · {{outcome}} · {{reason}}",
+        expr: 'rate(lantern_search_calls_total{outcome="ok"}[$__rate]) > 0',
+        by: ["mode", "reason"],
+        legend: "{{mode}} · {{reason}}",
       },
     ],
   },
   {
-    id: "search-latency",
-    group: "search",
-    title: "Search latency (p50 / p99)",
-    description: "End-to-end SearchVertices latency by mode and outcome.",
+    id: "search-interruptions",
+    group: "search-requests",
+    title: "Search interruptions",
+    description: "Canceled and deadline-exceeded searches by mode.",
+    unit: "rate",
+    queries: [
+      {
+        expr: 'rate(lantern_search_calls_total{outcome=~"canceled|deadline_exceeded"}[$__rate]) > 0',
+        by: ["mode", "outcome"],
+        legend: "{{mode}} · {{outcome}}",
+      },
+    ],
+  },
+  {
+    id: "search-refusals",
+    group: "search-requests",
+    title: "Search refusals",
+    description:
+      "Invalid, unavailable, and budget-exhausted searches by reason.",
+    unit: "rate",
+    queries: [
+      {
+        expr: 'rate(lantern_search_calls_total{outcome=~"invalid_argument|failed_precondition|resource_exhausted"}[$__rate]) > 0',
+        by: ["outcome", "reason"],
+        legend: "{{outcome}} · {{reason}}",
+      },
+    ],
+  },
+  {
+    id: "search-internal-failures",
+    group: "search-requests",
+    title: "Search internal failures",
+    description: "Unexpected internal failures by matching mode.",
+    unit: "rate",
+    queries: [
+      {
+        expr: 'rate(lantern_search_calls_total{outcome="internal"}[$__rate]) > 0',
+        by: ["mode"],
+        legend: "{{mode}}",
+      },
+    ],
+  },
+  {
+    id: "search-success-latency",
+    group: "search-requests",
+    title: "Successful search latency (p50 / p99)",
+    description: "End-to-end latency for successful searches by mode.",
     unit: "seconds",
     queries: [
       {
-        expr: "rate(lantern_search_duration_seconds_bucket[$__rate])",
+        expr: 'rate(lantern_search_duration_seconds_bucket{outcome="ok"}[$__rate])',
+        by: ["mode"],
+        agg: { quantile: 0.5 },
+        legend: "p50 · {{mode}}",
+      },
+      {
+        expr: 'rate(lantern_search_duration_seconds_bucket{outcome="ok"}[$__rate])',
+        by: ["mode"],
+        agg: { quantile: 0.99 },
+        legend: "p99 · {{mode}}",
+      },
+    ],
+  },
+  {
+    id: "search-failure-latency",
+    group: "search-requests",
+    title: "Failed search latency (p50 / p99)",
+    description: "End-to-end latency for non-success outcomes by mode.",
+    unit: "seconds",
+    queries: [
+      {
+        expr: 'rate(lantern_search_duration_seconds_bucket{outcome!="ok"}[$__rate])',
         by: ["mode", "outcome"],
         agg: { quantile: 0.5 },
         legend: "p50 · {{mode}} · {{outcome}}",
       },
       {
-        expr: "rate(lantern_search_duration_seconds_bucket[$__rate])",
+        expr: 'rate(lantern_search_duration_seconds_bucket{outcome!="ok"}[$__rate])',
         by: ["mode", "outcome"],
         agg: { quantile: 0.99 },
         legend: "p99 · {{mode}} · {{outcome}}",
@@ -236,52 +420,80 @@ export const METRIC_PANELS: readonly PanelSpec[] = [
     ],
   },
   {
-    id: "search-phase-latency",
-    group: "search",
-    title: "Search phase latency (p99)",
-    description:
-      "Analysis, expansion, and selection time separated for slow-query triage.",
+    id: "search-analysis-latency",
+    group: "search-requests",
+    title: "Search analysis latency (p99)",
+    description: "Query analysis time by matching mode.",
     unit: "seconds",
     queries: [
       {
-        expr: "rate(lantern_search_phase_duration_seconds_bucket[$__rate])",
-        by: ["mode", "phase"],
+        expr: 'rate(lantern_search_phase_duration_seconds_bucket{phase="analysis"}[$__rate])',
+        by: ["mode"],
         agg: { quantile: 0.99 },
-        legend: "{{mode}} · {{phase}}",
+        legend: "{{mode}}",
+      },
+    ],
+  },
+  {
+    id: "search-expansion-latency",
+    group: "search-requests",
+    title: "Search expansion latency (p99)",
+    description: "Dictionary and fuzzy-expansion time by matching mode.",
+    unit: "seconds",
+    queries: [
+      {
+        expr: 'rate(lantern_search_phase_duration_seconds_bucket{phase="expansion"}[$__rate])',
+        by: ["mode"],
+        agg: { quantile: 0.99 },
+        legend: "{{mode}}",
+      },
+    ],
+  },
+  {
+    id: "search-selection-latency",
+    group: "search-requests",
+    title: "Search selection latency (p99)",
+    description: "Candidate scoring and selection time by matching mode.",
+    unit: "seconds",
+    queries: [
+      {
+        expr: 'rate(lantern_search_phase_duration_seconds_bucket{phase="selection"}[$__rate])',
+        by: ["mode"],
+        agg: { quantile: 0.99 },
+        legend: "{{mode}}",
       },
     ],
   },
   {
     id: "search-hits",
-    group: "search",
-    title: "Search hits per query (p50 / p99)",
-    description: "Returned hit-count distribution by mode and outcome.",
+    group: "search-requests",
+    title: "Successful search hits (p50 / p99)",
+    description: "Returned hit-count distribution for successful searches.",
     unit: "count",
     queries: [
       {
-        expr: "rate(lantern_search_results_bucket[$__rate])",
-        by: ["mode", "outcome"],
+        expr: 'rate(lantern_search_results_bucket{outcome="ok"}[$__rate])',
+        by: ["mode"],
         agg: { quantile: 0.5 },
-        legend: "p50 · {{mode}} · {{outcome}}",
+        legend: "p50 · {{mode}}",
       },
       {
-        expr: "rate(lantern_search_results_bucket[$__rate])",
-        by: ["mode", "outcome"],
+        expr: 'rate(lantern_search_results_bucket{outcome="ok"}[$__rate])',
+        by: ["mode"],
         agg: { quantile: 0.99 },
-        legend: "p99 · {{mode}} · {{outcome}}",
+        legend: "p99 · {{mode}}",
       },
     ],
   },
   {
-    id: "search-work",
-    group: "search",
-    title: "Search work (p99)",
-    description:
-      "Deterministic analysis, expansion, posting, position, and selection work.",
+    id: "search-query-work",
+    group: "search-requests",
+    title: "Search query work (p99)",
+    description: "Query bytes, tokens, clauses, and terms by matching mode.",
     unit: "count",
     queries: [
       {
-        expr: "rate(lantern_search_work_bucket[$__rate])",
+        expr: 'rate(lantern_search_work_bucket{kind=~"query_bytes|query_tokens|query_clauses|query_terms"}[$__rate])',
         by: ["mode", "kind"],
         agg: { quantile: 0.99 },
         legend: "{{mode}} · {{kind}}",
@@ -289,33 +501,85 @@ export const METRIC_PANELS: readonly PanelSpec[] = [
     ],
   },
   {
-    id: "search-index-health",
-    group: "search",
-    title: "Search index health",
-    description:
-      "One-hot local index state and search-config agreement with each peer.",
+    id: "search-expansion-work",
+    group: "search-requests",
+    title: "Search expansion work (p99)",
+    description: "Dictionary visits and retained expansions by matching mode.",
+    unit: "count",
+    queries: [
+      {
+        expr: 'rate(lantern_search_work_bucket{kind=~"dictionary_visits|expansion_retained"}[$__rate])',
+        by: ["mode", "kind"],
+        agg: { quantile: 0.99 },
+        legend: "{{mode}} · {{kind}}",
+      },
+    ],
+  },
+  {
+    id: "search-index-work",
+    group: "search-requests",
+    title: "Search index work (p99)",
+    description: "Posting, position, and expiration visits by matching mode.",
+    unit: "count",
+    queries: [
+      {
+        expr: 'rate(lantern_search_work_bucket{kind=~"posting_visits|position_visits|expiration_visits"}[$__rate])',
+        by: ["mode", "kind"],
+        agg: { quantile: 0.99 },
+        legend: "{{mode}} · {{kind}}",
+      },
+    ],
+  },
+  {
+    id: "search-candidate-work",
+    group: "search-requests",
+    title: "Search candidate work (p99)",
+    description: "Candidate visits and skips by matching mode.",
+    unit: "count",
+    queries: [
+      {
+        expr: 'rate(lantern_search_work_bucket{kind=~"candidate_visits|candidate_skips"}[$__rate])',
+        by: ["mode", "kind"],
+        agg: { quantile: 0.99 },
+        legend: "{{mode}} · {{kind}}",
+      },
+    ],
+  },
+  {
+    id: "search-index-state",
+    group: "search-index",
+    title: "Index state",
+    description: "One-hot local index readiness state.",
     unit: "count",
     queries: [
       {
         expr: "lantern_search_index_state",
         by: ["state"],
         agg: "max",
-        legend: "index {{state}}",
-      },
-      {
-        expr: "lantern_search_config_match",
-        by: ["peer"],
-        agg: "min",
-        legend: "config {{peer}}",
+        legend: "{{state}}",
       },
     ],
   },
   {
-    id: "search-index-population",
-    group: "search",
-    title: "Search index population",
-    description:
-      "Logical, physical, and expired documents retained by the index.",
+    id: "search-config-agreement",
+    group: "search-index",
+    title: "Search config agreement",
+    description: "Whether each peer reports the same search configuration.",
+    unit: "count",
+    queries: [
+      {
+        expr: "lantern_search_config_match",
+        by: ["peer"],
+        agg: "min",
+        legend: "{{peer}}",
+      },
+    ],
+  },
+  {
+    id: "search-index-documents",
+    group: "search-index",
+    title: "Index documents",
+    description: "Live graph vertices and logical/physical index documents.",
     unit: "count",
     queries: [
       { expr: "lantern_vertices", legend: "live vertices" },
@@ -324,6 +588,15 @@ export const METRIC_PANELS: readonly PanelSpec[] = [
         expr: "lantern_search_index_physical_documents",
         legend: "physical documents",
       },
+    ],
+  },
+  {
+    id: "search-expiration-backlog",
+    group: "search-index",
+    title: "Index expiration backlog",
+    description: "Expired documents retained and queued for cleanup.",
+    unit: "count",
+    queries: [
       {
         expr: "lantern_search_index_expired_documents",
         legend: "expired documents",
@@ -335,14 +608,23 @@ export const METRIC_PANELS: readonly PanelSpec[] = [
     ],
   },
   {
-    id: "search-index-structures",
-    group: "search",
-    title: "Search index structures",
-    description: "Live terms, postings, positions, and retained ordinals.",
+    id: "search-index-dictionary",
+    group: "search-index",
+    title: "Index dictionary",
+    description: "Live terms and posting-list entries.",
     unit: "count",
     queries: [
       { expr: "lantern_search_index_terms", legend: "live terms" },
       { expr: "lantern_search_index_postings", legend: "postings" },
+    ],
+  },
+  {
+    id: "search-index-positions",
+    group: "search-index",
+    title: "Index positions",
+    description: "Position entries and retained document ordinals.",
+    unit: "count",
+    queries: [
       {
         expr: "lantern_search_index_position_entries",
         legend: "positions",
@@ -355,7 +637,7 @@ export const METRIC_PANELS: readonly PanelSpec[] = [
   },
   {
     id: "search-index-memory",
-    group: "search",
+    group: "search-index",
     title: "Search index memory",
     description: "Estimated live and retained bytes held by the derived index.",
     unit: "bytes",
@@ -372,7 +654,7 @@ export const METRIC_PANELS: readonly PanelSpec[] = [
   },
   {
     id: "search-index-retention",
-    group: "search",
+    group: "search-index",
     title: "Search retention ratio",
     description:
       "Retained-to-live index bytes; sustained growth indicates compaction pressure.",
@@ -387,13 +669,13 @@ export const METRIC_PANELS: readonly PanelSpec[] = [
   },
   {
     id: "search-rejections",
-    group: "search",
+    group: "guardrails",
     title: "Search rejections",
     description: "Rejected SearchVertices attempts by bounded reason.",
     unit: "rate",
     queries: [
       {
-        expr: "rate(lantern_search_rejections_total[$__rate])",
+        expr: "rate(lantern_search_rejections_total[$__rate]) > 0",
         by: ["reason"],
         legend: "{{reason}}",
       },
@@ -401,7 +683,7 @@ export const METRIC_PANELS: readonly PanelSpec[] = [
   },
   {
     id: "ttl-reaping",
-    group: "ttl",
+    group: "maintenance",
     title: "TTL reaping",
     description: "Expired vertices and edges reaped per second, by kind.",
     unit: "rate",
@@ -415,7 +697,7 @@ export const METRIC_PANELS: readonly PanelSpec[] = [
   },
   {
     id: "mutation-log-fill",
-    group: "backpressure",
+    group: "replication",
     title: "Mutation-log fill ratio",
     description: "Fraction of the mutation-log ring buffer in use (0–1).",
     unit: "ratio",
@@ -425,7 +707,7 @@ export const METRIC_PANELS: readonly PanelSpec[] = [
   },
   {
     id: "mutation-log-eviction",
-    group: "backpressure",
+    group: "replication",
     title: "Mutation-log eviction rate",
     description: "Entries evicted from the mutation log per second.",
     unit: "rate",
@@ -438,7 +720,7 @@ export const METRIC_PANELS: readonly PanelSpec[] = [
   },
   {
     id: "subscribe-streams",
-    group: "backpressure",
+    group: "replication",
     title: "Active subscribe streams",
     description: "Open replication Subscribe streams.",
     unit: "count",
@@ -471,46 +753,72 @@ export const METRIC_PANELS: readonly PanelSpec[] = [
   {
     id: "replication-apply",
     group: "replication",
-    title: "Replication apply / drop rate",
+    title: "Replication apply rate",
     // The apply counter also carries an `op` label (11 RPC kinds). Breaking
     // the panel down by `op` multiplies by replica count (33+ lines here) and
     // is illegible as a legend; per-op apply rates belong in an ad-hoc query,
     // not an at-a-glance health panel. We sum over `op` to show one applied
-    // line per replica, and keep the low-cardinality `reason` split on drops
-    // (where "why" is the actionable signal — e.g. self_echo suppression).
-    description: "Remote mutations applied per replica, and drops by reason.",
+    // line per replica; drop reasons have their own focused panel below.
+    description: "Remote mutations applied per replica, summed over operation.",
     unit: "rate",
     queries: [
       {
-        expr: "rate(lantern_replication_apply_total[$__rate])",
+        expr: "rate(lantern_replication_apply_total[$__rate]) > 0",
         legend: "applied",
-      },
-      {
-        expr: "rate(lantern_replication_dropped_total[$__rate])",
-        by: ["reason"],
-        legend: "dropped {{reason}}",
       },
     ],
   },
   {
-    id: "rejections",
-    group: "rejections",
-    title: "Rejections",
-    description:
-      "Validation, rate-limit, and tombstone-clamp rejections per second.",
+    id: "replication-drops",
+    group: "replication",
+    title: "Replication drop rate",
+    description: "Remote mutations dropped per second by bounded reason.",
     unit: "rate",
     queries: [
       {
-        expr: "rate(lantern_validation_rejected_total[$__rate])",
-        legend: "validation",
+        expr: "rate(lantern_replication_dropped_total[$__rate]) > 0",
+        by: ["reason"],
+        legend: "{{reason}}",
       },
+    ],
+  },
+  {
+    id: "validation-rejections",
+    group: "guardrails",
+    title: "Validation rejections",
+    description: "Requests rejected by input validation, separated by reason.",
+    unit: "rate",
+    queries: [
+      {
+        expr: "rate(lantern_validation_rejected_total[$__rate]) > 0",
+        by: ["reason"],
+        legend: "{{reason}}",
+      },
+    ],
+  },
+  {
+    id: "rate-limit-rejections",
+    group: "guardrails",
+    title: "Rate-limit rejections",
+    description: "Requests refused by the process-wide token bucket.",
+    unit: "rate",
+    queries: [
       {
         expr: "rate(lantern_rate_limit_rejected_total[$__rate])",
-        legend: "rate limit",
+        legend: "rejected",
       },
+    ],
+  },
+  {
+    id: "tombstone-clamp-rejections",
+    group: "guardrails",
+    title: "Tombstone-clamp rejections",
+    description: "Causally late replicated mutations rejected by LWW guards.",
+    unit: "rate",
+    queries: [
       {
         expr: "rate(lantern_tombstone_clamp_rejected_total[$__rate])",
-        legend: "tombstone clamp",
+        legend: "rejected",
       },
     ],
   },

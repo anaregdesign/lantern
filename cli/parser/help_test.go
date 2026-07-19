@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// HelpText is consumed by bare `help`; HelpTextFor powers family-scoped REPL
+// HelpText is consumed by bare `help`; HelpTextFor powers command-scoped REPL
 // and Cobra help. The TypeScript port mirrors both contracts.
 
 func TestHelpText_EnumeratesFamilyKwargs(t *testing.T) {
@@ -45,7 +45,7 @@ func TestHelpText_ListsEveryVerb(t *testing.T) {
 }
 
 func TestValidate_HelpVerb(t *testing.T) {
-	for _, in := range []string{"help", "HELP", "help bfs", "help PAGERANK", "help community", "  help  "} {
+	for _, in := range []string{"help", "HELP", "help search", "help bfs", "help PAGERANK", "help community", "  help  "} {
 		if err := Validate(in); err != nil {
 			t.Errorf("Validate(%q) returned %v; want nil", in, err)
 		}
@@ -63,6 +63,7 @@ func TestHelpParamAndScopedText(t *testing.T) {
 		topic string
 	}{
 		{"help", ""},
+		{"help search", "search"},
 		{"help bfs", "bfs"},
 		{"help PAGERANK", "pagerank"},
 		{"help community", "community"},
@@ -94,5 +95,21 @@ func TestHelpParamAndScopedText(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestHelpTextFor_SearchDocumentsEveryParameter(t *testing.T) {
+	text, ok := HelpTextFor("search")
+	if !ok {
+		t.Fatal("search help topic was not renderable")
+	}
+	for _, want := range []string{
+		"query:", "limit:", "prefix:", "mode:", "min_should:",
+		"phrase:", "fuzziness:", "prefix_terms:", "cursor:", "all:",
+		"projection:", "format:", "Compatibility:",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("search help missing %q:\n%s", want, text)
+		}
 	}
 }

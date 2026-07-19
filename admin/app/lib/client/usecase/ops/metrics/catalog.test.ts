@@ -65,10 +65,10 @@ describe("METRIC_PANELS", () => {
   });
 
   it("covers search outcomes, p99 phases, index health, and retention", () => {
-    const searchPanels = METRIC_PANELS.filter(
-      (panel) => panel.group === "search",
+    const searchPanels = METRIC_PANELS.filter((panel) =>
+      panel.queries.some((query) => query.expr.includes("lantern_search_")),
     );
-    expect(searchPanels.length).toBeGreaterThanOrEqual(8);
+    expect(searchPanels.length).toBeGreaterThanOrEqual(16);
     const expressions = searchPanels.flatMap((panel) =>
       panel.queries.map((query) => query.expr),
     );
@@ -97,8 +97,8 @@ describe("METRIC_PANELS", () => {
       "state",
       "peer",
     ]);
-    for (const panel of METRIC_PANELS.filter(
-      (candidate) => candidate.group === "search",
+    for (const panel of METRIC_PANELS.filter((candidate) =>
+      candidate.queries.some((query) => query.expr.includes("lantern_search_")),
     )) {
       for (const query of panel.queries) {
         for (const label of query.by ?? []) {
@@ -106,6 +106,117 @@ describe("METRIC_PANELS", () => {
           expect(label).not.toMatch(/query|prefix|key|value/);
         }
       }
+    }
+  });
+
+  it("splits Illuminate outcomes by family and suppresses pre-warmed zero series", () => {
+    const panels = METRIC_PANELS.filter((panel) =>
+      panel.id.startsWith("illuminate-outcomes-"),
+    );
+    expect(panels.map((panel) => panel.id)).toEqual([
+      "illuminate-outcomes-bfs",
+      "illuminate-outcomes-ppr",
+      "illuminate-outcomes-community",
+    ]);
+    expect(
+      METRIC_PANELS.some((panel) => panel.id === "traversal-outcomes"),
+    ).toBe(false);
+
+    for (const [panel, algorithm] of panels.map(
+      (panel, index) => [panel, ["bfs", "ppr", "community"][index]] as const,
+    )) {
+      expect(panel.queries).toHaveLength(1);
+      const query = panel.queries[0];
+      expect(query.expr).toContain(`algorithm="${algorithm}"`);
+      expect(query.expr).toEndWith(") > 0");
+      expect(query.by).toEqual(["phase", "code"]);
+      expect(query.legend).toBe("{{phase}} · {{code}}");
+    }
+  });
+
+  it("splits mixed high-cardinality panels by operational decision", () => {
+    const ids = new Set(METRIC_PANELS.map((panel) => panel.id));
+
+    for (const retired of [
+      "rpc-throughput",
+      "traversal-latency",
+      "search-outcomes",
+      "search-latency",
+      "search-phase-latency",
+      "search-work",
+      "search-index-health",
+      "search-index-population",
+      "search-index-structures",
+      "rejections",
+    ]) {
+      expect(ids.has(retired)).toBe(false);
+    }
+
+    for (const focused of [
+      "rpc-read-throughput",
+      "rpc-write-throughput",
+      "rpc-query-throughput",
+      "rpc-status-throughput",
+      "illuminate-latency",
+      "scan-latency",
+      "search-successes",
+      "search-interruptions",
+      "search-refusals",
+      "search-internal-failures",
+      "search-analysis-latency",
+      "search-expansion-latency",
+      "search-selection-latency",
+      "search-query-work",
+      "search-expansion-work",
+      "search-index-work",
+      "search-candidate-work",
+      "search-index-state",
+      "search-config-agreement",
+      "search-index-documents",
+      "search-expiration-backlog",
+      "search-index-dictionary",
+      "search-index-positions",
+      "replication-apply",
+      "replication-drops",
+      "validation-rejections",
+      "rate-limit-rejections",
+      "tombstone-clamp-rejections",
+    ]) {
+      expect(ids.has(focused)).toBe(true);
+    }
+  });
+
+  it("filters pre-warmed counter series out of dense legends", () => {
+    for (const id of [
+      "rpc-read-throughput",
+      "rpc-write-throughput",
+      "rpc-query-throughput",
+      "rpc-status-throughput",
+      "search-successes",
+      "search-interruptions",
+      "search-refusals",
+      "search-internal-failures",
+      "search-rejections",
+      "replication-apply",
+      "replication-drops",
+      "validation-rejections",
+    ]) {
+      const panel = METRIC_PANELS.find((candidate) => candidate.id === id);
+      expect(panel).toBeDefined();
+      expect(
+        panel?.queries.every((query) => query.expr.endsWith(") > 0")),
+      ).toBe(true);
+    }
+  });
+
+  it("covers every read scan method in the focused RPC panel", () => {
+    const panel = METRIC_PANELS.find(
+      (candidate) => candidate.id === "rpc-read-throughput",
+    );
+    expect(panel).toBeDefined();
+    const expression = panel?.queries[0].expr ?? "";
+    for (const method of ["ScanVertices", "ScanVertexKeys", "ScanEdges"]) {
+      expect(expression).toContain(method);
     }
   });
 });
@@ -121,5 +232,22 @@ describe("PANEL_GROUPS", () => {
   it("has unique group ids", () => {
     const ids = PANEL_GROUPS.map((g) => g.id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("provides operator-oriented labels and descriptions", () => {
+    expect(PANEL_GROUPS.map((group) => group.label)).toEqual([
+      "Store inventory",
+      "Request traffic",
+      "Illuminate",
+      "Search requests",
+      "Search index",
+      "Maintenance",
+      "Replication",
+      "Guardrails",
+      "Process / Go runtime",
+    ]);
+    for (const group of PANEL_GROUPS) {
+      expect(group.description.length).toBeGreaterThan(0);
+    }
   });
 });

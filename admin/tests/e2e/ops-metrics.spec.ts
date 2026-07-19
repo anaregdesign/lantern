@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+import { CONNECT_URL, STORAGE_KEY } from "./helpers";
+
 /**
  * Ops Metrics (#524) — the Prometheus time-series half of the Ops page.
  *
@@ -53,6 +55,13 @@ function multiInstanceEnvelope(
 }
 
 test.describe("Ops metrics section", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(
+      ({ key, value }) => window.localStorage.setItem(key, value),
+      { key: STORAGE_KEY, value: CONNECT_URL },
+    );
+  });
+
   test("renders the metrics section below the status cards", async ({
     page,
   }) => {
@@ -118,6 +127,7 @@ test.describe("Ops metrics section", () => {
     });
 
     await page.goto("/ops");
+    const section = page.getByTestId("ops-metrics-section");
     // The degraded banner must NOT appear once panels resolve.
     await expect(page.getByTestId("ops-metrics-degraded")).toHaveCount(0);
     // The cache-size panel is the first catalog entry; it renders a summary
@@ -126,14 +136,51 @@ test.describe("Ops metrics section", () => {
     await expect(
       page.getByTestId("ops-metric-cache-size-summary"),
     ).toBeVisible();
-    await expect(page.getByTestId("ops-metrics-group-search")).toBeVisible();
-    await expect(page.getByTestId("ops-metric-search-outcomes")).toBeVisible();
     await expect(
-      page.getByTestId("ops-metric-search-outcomes-summary"),
+      page.getByTestId("ops-metric-illuminate-outcomes-bfs-summary"),
     ).toBeVisible();
     await expect(
-      page.getByTestId("ops-metric-search-index-health-summary"),
+      page.getByTestId("ops-metric-illuminate-outcomes-ppr-summary"),
     ).toBeVisible();
+    await expect(
+      page.getByTestId("ops-metric-illuminate-outcomes-community-summary"),
+    ).toBeVisible();
+    await expect(page.getByTestId("ops-metric-traversal-outcomes")).toHaveCount(
+      0,
+    );
+    for (const heading of [
+      "Store inventory",
+      "Request traffic",
+      "Illuminate",
+      "Search requests",
+      "Search index",
+      "Maintenance",
+      "Replication",
+      "Guardrails",
+      "Process / Go runtime",
+    ]) {
+      await expect(
+        section.getByRole("heading", { level: 3, name: heading }),
+      ).toBeVisible();
+    }
+    await expect(
+      page.getByTestId("ops-metrics-group-search-requests"),
+    ).toBeVisible();
+    await expect(
+      page.getByTestId("ops-metrics-group-search-index"),
+    ).toBeVisible();
+    await expect(page.getByTestId("ops-metric-search-successes")).toBeVisible();
+    await expect(
+      page.getByTestId("ops-metric-search-successes-summary"),
+    ).toBeVisible();
+    await expect(
+      page.getByTestId("ops-metric-search-index-state-summary"),
+    ).toBeVisible();
+    await expect(page.getByTestId("ops-metric-search-outcomes")).toHaveCount(0);
+    await expect(
+      page.getByTestId("ops-metric-replication-drops"),
+    ).toBeVisible();
+    await expect(page.getByTestId("ops-metric-rejections")).toHaveCount(0);
   });
 
   test("keeps absent search metrics local to the search panels", async ({
@@ -154,7 +201,7 @@ test.describe("Ops metrics section", () => {
 
     await page.goto("/ops");
     await expect(
-      page.getByTestId("ops-metric-search-outcomes-empty"),
+      page.getByTestId("ops-metric-search-successes-empty"),
     ).toBeVisible();
     await expect(page.getByTestId("ops-metrics-degraded")).toHaveCount(0);
     await expect(
@@ -162,7 +209,7 @@ test.describe("Ops metrics section", () => {
     ).toBeVisible();
   });
 
-  test("keeps the search status card readable on a narrow viewport", async ({
+  test("keeps status and metric sections readable on a narrow viewport", async ({
     page,
   }) => {
     await page.setViewportSize({ width: 390, height: 844 });
@@ -170,6 +217,12 @@ test.describe("Ops metrics section", () => {
     await expect(page.getByTestId("ops-search-card")).toBeVisible();
     await expect(
       page.getByText("Query budgets", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("heading", { level: 3, name: "Search requests" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("heading", { level: 4, name: "Search successes" }),
     ).toBeVisible();
     const overflow = await page.evaluate(
       () => document.documentElement.scrollWidth - window.innerWidth,

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/anaregdesign/lantern/cli/parser"
@@ -72,5 +73,18 @@ func TestSearchCommandRegistered(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("search command not registered on rootCmd")
+	}
+}
+
+func TestSearchCommandHelpExplainsTheSearchContract(t *testing.T) {
+	for _, want := range []string{
+		"query:", "limit:", "prefix:", "mode:", "min_should:",
+		"phrase:", "fuzziness:", "prefix_terms:", "cursor:", "all:",
+		"projection:", "format:", "Compatibility:",
+		"https://github.com/anaregdesign/lantern/blob/main/docs/search.md",
+	} {
+		if !strings.Contains(searchCmd.Long, want) {
+			t.Errorf("search command help missing %q:\n%s", want, searchCmd.Long)
+		}
 	}
 }

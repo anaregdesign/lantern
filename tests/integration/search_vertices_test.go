@@ -1160,6 +1160,23 @@ func TestSearchCLISharedGrammarOverRealH2C(t *testing.T) {
 		return graphv1connect.NewLanternServiceClient(h2cClient(), srv.url), newConnectClientFor(t, srv.url)
 	}
 
+	t.Run("built CLI help explains every search parameter", func(t *testing.T) {
+		binary := buildLanternCLI(t)
+		stdout, stderr, exitCode := runLanternCLI(t, binary, "127.0.0.1:1", "search", "--help")
+		if exitCode != 0 || stderr != "" {
+			t.Fatalf("search --help exit=%d stderr=%q", exitCode, stderr)
+		}
+		for _, want := range []string{
+			"query:", "limit:", "prefix:", "mode:", "min_should:",
+			"phrase:", "fuzziness:", "prefix_terms:", "cursor:", "all:",
+			"projection:", "format:", "Compatibility:",
+		} {
+			if !strings.Contains(stdout, want) {
+				t.Errorf("search --help missing %q:\n%s", want, stdout)
+			}
+		}
+	})
+
 	t.Run("Cobra model and raw REPL grammar return the same request result", func(t *testing.T) {
 		raw, sdk := newCLI(t, service.SearchLimits{
 			Enabled: true, PositionsEnabled: true, DefaultLimit: 1, MaxLimit: 1,

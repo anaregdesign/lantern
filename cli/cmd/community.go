@@ -21,7 +21,7 @@ var (
 var communityCmd = &cobra.Command{
 	Use:   "community <seed>",
 	Short: "Conductance-optimal local community around <seed>",
-	Long:  familyHelpText("community"),
+	Long:  scopedHelpText("community"),
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := rejectMixedFamilyGrammar(cmd, args); err != nil {
