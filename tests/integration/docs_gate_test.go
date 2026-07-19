@@ -125,6 +125,7 @@ func TestDartPublishingContractGate(t *testing.T) {
 		"timeout-minutes: 15",
 		"id-token: write",
 		"uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1",
+		"dart pub get --enforce-lockfile --no-example",
 		"dart pub publish --force",
 		`gh release create "$TAG" --title "$TAG"`,
 	} {
