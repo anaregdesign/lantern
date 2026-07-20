@@ -23,6 +23,7 @@ import {
   diffRenderSets,
 } from "~/lib/client/usecase/illuminate/reconcile";
 import {
+  COLD_LAYOUT_FRAME_BUDGET_MS,
   FORCE_ALPHA,
   FORCE_ALPHA_COLD,
   type ForceLink,
@@ -220,7 +221,7 @@ export function IlluminateCanvas({
   /**
    * Snapshot of the node IDs the graph held at the end of the previous
    * reconcile. Diffing against the next reconcile's IDs tells us whether
-   * this is a cold mount (empty → populated, full synchronous layout),
+   * this is a cold mount (empty → populated, bounded batched layout),
    * an incremental expansion (animated easing, #483), or a no-op
    * structural delta (just re-apply the hide filter).
    */
@@ -332,6 +333,30 @@ export function IlluminateCanvas({
     // ramp itself, plus its larger size and pinned position (#500).
     (node: { hopDistance: number }) => colorForHop(node.hopDistance, palette),
     [palette],
+  );
+  const renderTargets = useMemo(
+    () =>
+      selectRenderTargets({
+        nodes,
+        edges,
+        latestResultVertexKeys,
+        latestResultEdgeIds,
+      }),
+    [nodes, edges, latestResultVertexKeys, latestResultEdgeIds],
+  );
+  const hasExpiringElements = useMemo(
+    () =>
+      nodes.some(
+        (node) =>
+          renderTargets.nodeIds.has(node.id) &&
+          node.vertex.expiration !== undefined,
+      ) ||
+      edges.some(
+        (edge) =>
+          renderTargets.edgeIds.has(edge.id) &&
+          edge.edge.expiration !== undefined,
+      ),
+    [nodes, edges, renderTargets],
   );
 
   // #483 continuous d3-force layout lifecycle — the live simulation
@@ -1274,6 +1299,7 @@ export function IlluminateCanvas({
   // aggregate. The warning-window red tint sweeps over 60 s so it
   // remains visually obvious without a higher refresh rate.
   useEffect(() => {
+    if (!hasExpiringElements) return;
     let intervalId: ReturnType<typeof setInterval> | null = null;
     const sigma = sigmaRef.current;
     const tick = () => {
@@ -1313,7 +1339,7 @@ export function IlluminateCanvas({
       stop();
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, []);
+  }, [hasExpiringElements]);
   // === end #459 ==========================================================
 
   // Reconcile the graph with the latest view model. The canvas renders
@@ -1331,12 +1357,7 @@ export function IlluminateCanvas({
     // membership rule (latest-result-or-full-accumulator fallback) is
     // owned by the pure `selectRenderTargets` selector so the reconcile
     // diff and the hop legend can never disagree about what's on screen.
-    const { nodeIds: nextNodeIds, edgeIds: nextEdgeIds } = selectRenderTargets({
-      nodes,
-      edges,
-      latestResultVertexKeys,
-      latestResultEdgeIds,
-    });
+    const { nodeIds: nextNodeIds, edgeIds: nextEdgeIds } = renderTargets;
 
     // Per-reconcile diff used to choose the layout regime below (#483).
     // We compute it BEFORE mutating the graph so the counts reflect the
@@ -1500,14 +1521,14 @@ export function IlluminateCanvas({
       });
     }
 
-    // Cold (or full reseed: no survivors) settles synchronously so the
-    // first paint is already a sensible layout. An incremental expansion
-    // refreshes ONCE at t=0 (survivors render at their EXACT prior
-    // position — no snap) and then eases on rAF. A pure attribute or
-    // weight change just refreshes and leaves any running animation
-    // alone. The decision is pure (#495 batch 3): `decideLayoutRegime`
-    // owns the cold/incremental/static branch; the component maps the
-    // chosen regime to the heat constant + the imperative sim calls.
+    // Cold (or full reseed: no survivors) paints its seeded positions and
+    // settles in bounded rAF batches so large graphs cannot monopolize the
+    // main thread. An incremental expansion refreshes ONCE at t=0 (survivors
+    // render at their EXACT prior position — no snap) and then eases one tick
+    // per rAF. A pure attribute or weight change just refreshes and leaves any
+    // running animation alone. The decision is pure (#495 batch 3):
+    // `decideLayoutRegime` owns the cold/incremental/static branch; the
+    // component maps the regime to heat + scheduling policy.
     const regime = decideLayoutRegime({
       nextNodeCount: nextNodeIds.size,
       forceNodeCount: forceNodes.length,
@@ -1517,7 +1538,8 @@ export function IlluminateCanvas({
     });
     if (regime === "cold") {
       beginLayout(forceNodes, forceLinks, FORCE_ALPHA_COLD);
-      settleLayout();
+      sigma?.refresh();
+      startLayoutLoop(COLD_LAYOUT_FRAME_BUDGET_MS);
     } else if (regime === "incremental") {
       beginLayout(forceNodes, forceLinks, FORCE_ALPHA);
       // Paint survivors at their exact prior position before the first
@@ -1539,10 +1561,9 @@ export function IlluminateCanvas({
     // (x:0.5, y:0.5, ratio:1); with sigma's autoRescale + autoCenter that
     // frames the whole rendered graph. Gated on the structural regimes +
     // a non-empty result so a TTL tick, theme flip, or hover ("static",
-    // or an empty Clear) never yanks the viewport. For `cold` the layout
-    // has already settled synchronously; for `incremental` autoRescale
-    // re-normalises every eased frame, so resetting to the default still
-    // frames the whole graph as it relaxes.
+    // or an empty Clear) never yanks the viewport. For both `cold` and
+    // `incremental`, autoRescale re-normalises every eased frame, so resetting
+    // to the default still frames the whole graph as it relaxes.
     if (
       (regime === "cold" || regime === "incremental") &&
       forceNodes.length > 0
@@ -1557,12 +1578,10 @@ export function IlluminateCanvas({
     nodes,
     edges,
     latestExpansionOrigin,
-    latestResultVertexKeys,
-    latestResultEdgeIds,
+    renderTargets,
     palette,
     pickFill,
     beginLayout,
-    settleLayout,
     startLayoutLoop,
     stopLayout,
   ]);
@@ -1602,16 +1621,10 @@ export function IlluminateCanvas({
           color: palette.hopUnreachable,
         },
       };
-    const { nodeIds } = selectRenderTargets({
-      nodes,
-      edges,
-      latestResultVertexKeys,
-      latestResultEdgeIds,
-    });
-    return selectHopBucketCounts(nodes, nodeIds)
+    return selectHopBucketCounts(nodes, renderTargets.nodeIds)
       .filter((b) => b.count > 0)
       .map((b) => ({ ...b, ...presentation[b.key] }));
-  }, [nodes, edges, palette, latestResultVertexKeys, latestResultEdgeIds]);
+  }, [nodes, palette, renderTargets]);
 
   return (
     <div className={wrapperClass} data-testid="illuminate-canvas">

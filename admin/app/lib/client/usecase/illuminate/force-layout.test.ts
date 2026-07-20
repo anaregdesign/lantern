@@ -6,6 +6,7 @@ import {
   FORCE_COLLIDE_PADDING,
   collideRadius,
   createForceSimulation,
+  tickSimulationFrame,
   type ForceLink,
   type ForceNode,
 } from "./force-layout";
@@ -138,5 +139,32 @@ describe("createForceSimulation", () => {
     };
     // ...and only the fully-resolvable link survives.
     expect(linkForce.links()).toHaveLength(1);
+  });
+});
+
+describe("tickSimulationFrame", () => {
+  test("advances exactly one tick when no batch budget is requested", () => {
+    const nodes: ForceNode[] = [
+      { id: "a", size: 4, x: 0, y: 0 },
+      { id: "b", size: 4, x: 10, y: 0 },
+    ];
+    const simulation = createForceSimulation(nodes, []);
+    const before = simulation.alpha();
+
+    expect(tickSimulationFrame(simulation, 0, () => 0)).toBe(1);
+    expect(simulation.alpha()).toBeLessThan(before);
+  });
+
+  test("yields after consuming the cold-layout frame budget", () => {
+    const nodes: ForceNode[] = [
+      { id: "a", size: 4, x: 0, y: 0 },
+      { id: "b", size: 4, x: 10, y: 0 },
+    ];
+    const simulation = createForceSimulation(nodes, []);
+    const samples = [0, 1, 4];
+    const now = () => samples.shift() ?? 4;
+
+    expect(tickSimulationFrame(simulation, 4, now)).toBe(2);
+    expect(simulation.alpha()).toBeGreaterThan(FORCE_ALPHA_MIN);
   });
 });

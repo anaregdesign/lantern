@@ -12,11 +12,10 @@
  *      fully recomputed or skipped.
  *
  * #483 replaces FA2 with a continuous, velocity-Verlet d3-force
- * simulation that the component drives one `tick()` at a time inside a
- * `requestAnimationFrame` loop. The same engine is used for the cold
- * start (run synchronously to completion) and for incremental
- * expansions (animated), so the whole canvas lives in ONE coordinate
- * system and never rescales between the two paths.
+ * simulation that the component drives inside a `requestAnimationFrame`
+ * loop. The same engine is used for cold starts (bounded batches per frame)
+ * and incremental expansions (one tick per frame), so the whole canvas lives
+ * in ONE coordinate system and never rescales between the two paths.
  *
  * This module is deliberately free of React, sigma, and graphology so it
  * stays trivially unit-testable: it owns the force *recipe* and the
@@ -101,10 +100,16 @@ export const FORCE_CENTER_STRENGTH = 0.03;
 export const FORCE_ALPHA = 0.5;
 /**
  * Initial alpha for a *cold* start (empty → populated). Full heat so a
- * from-scratch layout reaches a clean equilibrium; the cold pass runs
- * synchronously so the user never sees the warm-up.
+ * from-scratch layout reaches a clean equilibrium; the cold pass advances in
+ * bounded animation-frame batches so it cannot become one long task.
  */
 export const FORCE_ALPHA_COLD = 1;
+/**
+ * Maximum main-thread time spent advancing a cold layout in one animation
+ * frame. One force tick cannot be preempted, but subsequent ticks yield once
+ * this budget is consumed so large graphs never settle in one long task.
+ */
+export const COLD_LAYOUT_FRAME_BUDGET_MS = 8;
 /**
  * Per-tick cooling factor. `alpha *= (1 - decay)` each tick, so the
  * simulation reaches {@link FORCE_ALPHA_MIN} in a bounded number of
@@ -222,8 +227,33 @@ export function createForceSimulation(
     .alphaMin(FORCE_ALPHA_MIN)
     .alpha(options.alpha ?? FORCE_ALPHA);
 
-  // We tick manually from a rAF loop (or synchronously for cold start);
-  // stop d3's built-in timer so nothing runs until we ask.
+  // We tick manually from the controller's rAF loop (batched for cold
+  // starts); stop d3's internal timer so nothing runs until we ask.
   simulation.stop();
   return simulation;
+}
+
+/**
+ * Advance a simulation for one animation frame. A zero budget preserves the
+ * incremental-layout contract of exactly one tick per frame; a positive
+ * budget lets cold starts batch cheap ticks while yielding before the next
+ * frame once the budget is consumed.
+ */
+export function tickSimulationFrame(
+  simulation: Simulation<ForceNode, ForceLink>,
+  frameBudgetMs: number,
+  now: () => number = () => performance.now(),
+): number {
+  const budget = Math.max(0, frameBudgetMs);
+  const startedAt = now();
+  let ticks = 0;
+  do {
+    simulation.tick();
+    ticks += 1;
+  } while (
+    budget > 0 &&
+    simulation.alpha() > FORCE_ALPHA_MIN &&
+    now() - startedAt < budget
+  );
+  return ticks;
 }
