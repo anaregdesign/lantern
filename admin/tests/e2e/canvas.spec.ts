@@ -186,6 +186,27 @@ test.describe("/cli canvas", () => {
     expect(contrastReport.ratio).toBeGreaterThanOrEqual(4.5);
   });
 
+  test("Non-expiring graphs do not schedule periodic renderer refreshes (#1145)", async ({
+    page,
+  }) => {
+    await renderHub(page);
+
+    type Bridge = { tickCount: () => number };
+    await page.waitForFunction(() => {
+      const win = window as Window & { __illuminateCanvas?: Bridge };
+      return !!win.__illuminateCanvas?.tickCount;
+    });
+    const ticks = (): Promise<number> =>
+      page.evaluate(() => {
+        const win = window as Window & { __illuminateCanvas?: Bridge };
+        return win.__illuminateCanvas?.tickCount() ?? -1;
+      });
+
+    const before = await ticks();
+    await page.waitForTimeout(1200);
+    expect(await ticks()).toBe(before);
+  });
+
   // #517 — the operator can independently hide vertex and edge labels.
   // The toggles drive Sigma's renderLabels / renderEdgeLabels settings,
   // surfaced for assertion through the canvas bridge.

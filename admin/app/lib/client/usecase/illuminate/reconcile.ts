@@ -77,8 +77,8 @@ export function diffRenderSets(
  * Which d3-force layout regime a reconcile should run (#483):
  *
  * - `"cold"`: empty → populated, or a full reseed with NO survivors. The
- *   component settles the simulation synchronously so the first paint is
- *   already a clean layout (full heat, `FORCE_ALPHA_COLD`).
+ *   component starts at full heat (`FORCE_ALPHA_COLD`) and settles in bounded
+ *   animation-frame batches so large graphs do not create one long task.
  * - `"incremental"`: at least one survivor carried over AND something
  *   structural changed (a node was added/dropped, or the edge set changed
  *   — #500). The component eases the new frame in on rAF (`FORCE_ALPHA`),

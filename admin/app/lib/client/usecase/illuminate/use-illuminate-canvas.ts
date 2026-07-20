@@ -29,6 +29,7 @@ import {
   FORCE_ALPHA,
   FORCE_ALPHA_MIN,
   createForceSimulation,
+  tickSimulationFrame,
   type ForceLink,
   type ForceNode,
 } from "./force-layout";
@@ -45,6 +46,7 @@ export interface LayoutState {
   forceNodes: ForceNode[];
   nodeById: Map<string, ForceNode>;
   raf: number | null;
+  frameBudgetMs: number;
 }
 
 /**
@@ -68,16 +70,20 @@ export interface IlluminateCanvasController {
   /**
    * Replace the current simulation with a fresh one over the supplied
    * visible nodes/links, seeded from their current positions. Does NOT
-   * start the loop — the caller decides whether to animate (incremental)
-   * or settle synchronously (cold).
+   * start the loop — the caller chooses one-tick incremental animation or
+   * bounded cold-start batches.
    */
   beginLayout: (
     forceNodes: ForceNode[],
     forceLinks: ForceLink[],
     alpha: number,
   ) => void;
-  /** Schedule the animation loop unless it is already running or paused. */
-  startLayoutLoop: () => void;
+  /**
+   * Schedule the animation loop unless it is already running or paused.
+   * Passing a budget batches cold-start ticks; omitting it preserves the
+   * current simulation's mode.
+   */
+  startLayoutLoop: (frameBudgetMs?: number) => void;
   /** Cancel any in-flight animation frame and drop the simulation. */
   stopLayout: () => void;
   /** Rebuild + reheat the simulation over the live graph (drag release). */
@@ -158,7 +164,7 @@ export function useIlluminateCanvas({
       layout.raf = null;
       return;
     }
-    layout.simulation.tick();
+    tickSimulationFrame(layout.simulation, layout.frameBudgetMs);
     writeBackLayoutPositions();
     sigmaRef.current?.refresh();
     if (layout.simulation.alpha() <= FORCE_ALPHA_MIN) {
@@ -169,17 +175,24 @@ export function useIlluminateCanvas({
   }, [writeBackLayoutPositions, stopLayout, sigmaRef]);
 
   /** Schedule the animation loop unless it is already running or paused. */
-  const startLayoutLoop = useCallback(() => {
-    const layout = layoutRef.current;
-    if (!layout || layout.raf != null || layoutPausedRef.current) return;
-    layout.raf = requestAnimationFrame(runLayoutFrame);
-  }, [runLayoutFrame]);
+  const startLayoutLoop = useCallback(
+    (frameBudgetMs?: number) => {
+      const layout = layoutRef.current;
+      if (!layout) return;
+      if (frameBudgetMs !== undefined) {
+        layout.frameBudgetMs = Math.max(0, frameBudgetMs);
+      }
+      if (layout.raf != null || layoutPausedRef.current) return;
+      layout.raf = requestAnimationFrame(runLayoutFrame);
+    },
+    [runLayoutFrame],
+  );
 
   /**
    * Replace the current simulation with a fresh one over the supplied
    * visible nodes/links, seeded from their current positions. Does NOT
-   * start the loop — the caller decides whether to animate (incremental)
-   * or settle synchronously (cold).
+   * start the loop — the caller chooses one-tick incremental animation or
+   * bounded cold-start batches.
    */
   const beginLayout = useCallback(
     (forceNodes: ForceNode[], forceLinks: ForceLink[], alpha: number) => {
@@ -189,7 +202,13 @@ export function useIlluminateCanvas({
         alpha,
       });
       const nodeById = new Map(forceNodes.map((n) => [n.id, n] as const));
-      layoutRef.current = { simulation, forceNodes, nodeById, raf: null };
+      layoutRef.current = {
+        simulation,
+        forceNodes,
+        nodeById,
+        raf: null,
+        frameBudgetMs: 0,
+      };
     },
     [],
   );
@@ -265,8 +284,8 @@ export function useIlluminateCanvas({
 
   /**
    * Run the simulation to rest synchronously (bounded by `maxTicks`),
-   * write back, refresh, and drop it. Used for the cold-start layout and
-   * by the e2e to freeze positions before camera assertions.
+   * write back, refresh, and drop it. Kept for the deterministic test bridge
+   * that freezes positions before spacing and camera assertions.
    */
   const settleLayout = useCallback(
     (maxTicks = 500): number => {

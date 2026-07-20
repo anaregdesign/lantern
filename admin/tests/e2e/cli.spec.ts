@@ -310,6 +310,14 @@ test.describe("/cli", () => {
     await input.press("Enter");
     const panel = page.getByTestId("cli-canvas-panel");
     await expect(panel).toBeVisible();
+    await page.waitForFunction(() => {
+      const win = window as Window & {
+        __illuminateCanvas?: {
+          getNodePosition: (key: string) => unknown;
+        };
+      };
+      return win.__illuminateCanvas?.getNodePosition("cli:quoted key") != null;
+    });
 
     const clicked = await page.evaluate(() => {
       const win = window as Window & {

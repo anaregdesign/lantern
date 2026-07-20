@@ -1,6 +1,14 @@
 import { Button, Spinner } from "@fluentui/react-components";
 import { BookQuestionMark20Regular } from "@fluentui/react-icons";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useSearchParams } from "react-router";
 import {
   CLI_CLICK_AXIS_DEFAULTS,
@@ -15,8 +23,13 @@ import { CliAxisPicker } from "~/components/cli/CliAxisPicker/CliAxisPicker";
 import { CliCommandReference } from "~/components/cli/CliCommandReference/CliCommandReference";
 import { JsonView } from "~/components/cli/JsonView/JsonView";
 import { TraversalResultCompanion } from "~/components/cli/TraversalResultCompanion/TraversalResultCompanion";
-import { IlluminateCanvas } from "~/components/illuminate/IlluminateCanvas/IlluminateCanvas";
 import styles from "./CliPage.module.css";
+
+const IlluminateCanvas = lazy(async () => {
+  const module =
+    await import("~/components/illuminate/IlluminateCanvas/IlluminateCanvas");
+  return { default: module.IlluminateCanvas };
+});
 
 /**
  * The /cli admin route. A Fluent UI command-line panel shared with the
@@ -29,6 +42,7 @@ import styles from "./CliPage.module.css";
  */
 export function CliPage() {
   const cli = useCli();
+  const { enqueueScript, runRaw } = cli;
   const [searchParams] = useSearchParams();
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -70,10 +84,10 @@ export function CliPage() {
   // the controller's identity changes between renders.
   const seedParam = searchParams.get("seed") ?? "";
   const seedHandoffRef = useRef<string | null>(null);
-  const runRawRef = useRef(cli.runRaw);
+  const runRawRef = useRef(runRaw);
   useEffect(() => {
-    runRawRef.current = cli.runRaw;
-  }, [cli.runRaw]);
+    runRawRef.current = runRaw;
+  }, [runRaw]);
   useEffect(() => {
     // URLSearchParams has already decoded this value exactly once. Decoding
     // again corrupts literal percent escapes in valid vertex keys, e.g.
@@ -109,9 +123,9 @@ export function CliPage() {
       const text = e.clipboardData.getData("text");
       if (!text.includes("\n")) return;
       e.preventDefault();
-      cli.enqueueScript(text.split("\n"));
+      enqueueScript(text.split("\n"));
     },
-    [cli],
+    [enqueueScript],
   );
 
   // Click-to-illuminate (#439, #464). Writes the picker-formatted
@@ -124,9 +138,9 @@ export function CliPage() {
   const onNodeClick = useCallback(
     (key: string) => {
       if (!axisPickerCommandValidRef.current) return;
-      cli.runRaw(formatFamilyClick(key, axisPicker.axes));
+      runRaw(formatFamilyClick(key, axisPicker.axes));
     },
-    [cli, axisPicker.axes],
+    [runRaw, axisPicker.axes],
   );
 
   const onKeyDown = useCallback(
@@ -376,20 +390,22 @@ export function CliPage() {
               </span>
             </div>
             <div className={styles.canvasBody}>
-              <IlluminateCanvas
-                nodes={cli.latestGraph.view.nodes}
-                edges={cli.latestGraph.view.edges}
-                latestExpansionOrigin={
-                  cli.latestGraph.view.latestExpansionOrigin
-                }
-                latestResultVertexKeys={
-                  cli.latestGraph.view.latestResultVertexKeys
-                }
-                latestResultEdgeIds={cli.latestGraph.view.latestResultEdgeIds}
-                onNodeClick={onNodeClick}
-                isBusy={cli.busy}
-                fill
-              />
+              <Suspense fallback={<Spinner label="Loading graph renderer" />}>
+                <IlluminateCanvas
+                  nodes={cli.latestGraph.view.nodes}
+                  edges={cli.latestGraph.view.edges}
+                  latestExpansionOrigin={
+                    cli.latestGraph.view.latestExpansionOrigin
+                  }
+                  latestResultVertexKeys={
+                    cli.latestGraph.view.latestResultVertexKeys
+                  }
+                  latestResultEdgeIds={cli.latestGraph.view.latestResultEdgeIds}
+                  onNodeClick={onNodeClick}
+                  isBusy={cli.busy}
+                  fill
+                />
+              </Suspense>
             </div>
             <TraversalResultCompanion
               graph={cli.latestGraph}
