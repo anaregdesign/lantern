@@ -28,6 +28,7 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ include "lantern.serviceAccountName" . }}
+      enableServiceLinks: {{ .Values.enableServiceLinks }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

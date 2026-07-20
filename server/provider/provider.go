@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"net"
@@ -380,7 +381,12 @@ func NewConfig() (*Config, error) {
 		CORS:        loadCORSConfig(),
 		Backup:      loadBackupConfig(),
 	}
-	if err := validateEnv(os.Environ()); err != nil {
+	// Config validation runs before Wire can construct and install the
+	// process-wide logger. Build the same configured logger here so bootstrap
+	// records are structured (and keep their severity in collectors such as
+	// GKE Cloud Logging) instead of falling back to slog's plain-text stderr
+	// handler.
+	if err := validateEnv(os.Environ(), newLogger(cfg.Observability, os.Stderr)); err != nil {
 		return nil, err
 	}
 	// Unlike the malformed/unknown-variable findings (warn, and only fail under
@@ -483,12 +489,10 @@ var foreignEnvPrefixes = []string{"LANTERN_MCP_", "LANTERN_TOKEN"}
 
 // validateEnv is the boot-time config validation pass (#847). It runs after
 // every loader has registered its variables, so the envconfig registry is
-// the complete env contract at this point. It reports through slog.Default()
-// (the structured logger replaces the default later in the wire graph; these
-// lines still land on stderr) and fails only under LANTERN_STRICT_CONFIG.
-func validateEnv(environ []string) error {
+// the complete env contract at this point. It reports through the bootstrap
+// logger supplied by NewConfig and fails only under LANTERN_STRICT_CONFIG.
+func validateEnv(environ []string, log *slog.Logger) error {
 	strict := envconfig.Bool("LANTERN_STRICT_CONFIG", false)
-	log := slog.Default()
 
 	findings := envconfig.Findings()
 	for _, f := range findings {
@@ -553,16 +557,20 @@ func NewSearchConfig(c *Config) SearchConfig               { return c.Search }
 // NewLogger builds the process-wide structured logger and installs it as the
 // slog default so any package-level slog.* call inherits the same handler.
 func NewLogger(o ObservabilityConfig) *slog.Logger {
+	l := newLogger(o, os.Stderr)
+	slog.SetDefault(l)
+	return l
+}
+
+func newLogger(o ObservabilityConfig, w io.Writer) *slog.Logger {
 	opts := &slog.HandlerOptions{Level: o.LogLevel}
 	var h slog.Handler
 	if strings.EqualFold(o.LogFormat, "text") {
-		h = slog.NewTextHandler(os.Stderr, opts)
+		h = slog.NewTextHandler(w, opts)
 	} else {
-		h = slog.NewJSONHandler(os.Stderr, opts)
+		h = slog.NewJSONHandler(w, opts)
 	}
-	l := slog.New(h).With(slog.String("service", "lantern"))
-	slog.SetDefault(l)
-	return l
+	return slog.New(h).With(slog.String("service", "lantern"))
 }
 
 func NewGraphCache(c CacheConfig, sc SearchConfig) *graphcache.GraphCache[string, *v1.Vertex] {

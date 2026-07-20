@@ -425,6 +425,24 @@ func TestGKEDeployRecoveryWorkflow(t *testing.T) {
 			t.Errorf("reusable GKE deployment workflow does not pin %s to a 40-character commit SHA", action)
 		}
 	}
+
+	chartDir := filepath.Join(repoRoot, "deploy", "helm", "lantern")
+	values, err := os.ReadFile(filepath.Join(chartDir, "values.yaml"))
+	if err != nil {
+		t.Fatalf("read Helm values: %v", err)
+	}
+	if !regexp.MustCompile(`(?m)^enableServiceLinks:\s+false$`).Match(values) {
+		t.Error("Helm defaults must disable Kubernetes ServiceLinks")
+	}
+	for _, name := range []string{"statefulset.yaml", "admin-deployment.yaml", "mcp-deployment.yaml"} {
+		template, err := os.ReadFile(filepath.Join(chartDir, "templates", name))
+		if err != nil {
+			t.Fatalf("read Helm template %s: %v", name, err)
+		}
+		if !strings.Contains(string(template), "enableServiceLinks: {{ .Values.enableServiceLinks }}") {
+			t.Errorf("Helm template %s does not apply the ServiceLink policy", name)
+		}
+	}
 }
 
 func parseTraversalDocumentationCommand(t *testing.T, command string) {

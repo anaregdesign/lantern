@@ -61,6 +61,7 @@ can be disabled via `podDisruptionBudget.enabled=false`.
 | `replicaCount`                              | `2`                    | Minimal HA default (full-replica store).           |
 | `image.repository`                          | `ghcr.io/anaregdesign/lantern` | Override for private mirrors.              |
 | `image.tag`                                 | `.Chart.AppVersion`    | Pin to a specific release tag in production.       |
+| `enableServiceLinks`                        | `false`                | Disable unused Kubernetes ServiceLink env injection; enable only for legacy ServiceLink discovery. |
 | `service.port`                              | `6380`                 | gRPC.                                              |
 | `metrics.port`                              | `9090`                 | `/metrics`, `/healthz`, `/readyz`.                 |
 | `replication.discovery.mode`                | `dns`                  | `static` falls back to `LANTERN_PEERS`.            |
