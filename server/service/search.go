@@ -131,13 +131,13 @@ func (s *LanternService) SearchVertices(ctx context.Context, in *pb.SearchVertic
 		return nil, newSearchPreconditionError(pb.SearchErrorReason_SEARCH_POSITIONS_DISABLED, errSearchPositionsDisabled)
 	}
 	limit := clampLimit(in.GetLimit(), s.search.DefaultLimit, s.search.MaxLimit)
-	requestHash, err := searchRequestHash(in, limit, projection)
-	if err != nil {
-		observation.Outcome, observation.Reason = "internal", "internal"
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
 	configFingerprint := s.SearchConfigFingerprint()
 	if len(in.GetCursor()) > 0 {
+		requestHash, hashErr := searchRequestHash(in, limit, projection)
+		if hashErr != nil {
+			observation.Outcome, observation.Reason = "internal", "internal"
+			return nil, connect.NewError(connect.CodeInternal, hashErr)
+		}
 		hits, next, truncated, limited, pageErr := s.searchSessions.page(in.GetCursor(), requestHash, configFingerprint, int(limit))
 		if pageErr != nil {
 			switch {
@@ -193,7 +193,9 @@ func (s *LanternService) SearchVertices(ctx context.Context, in *pb.SearchVertic
 			for _, ranked := range snapshot {
 				hit := &pb.SearchHit{Key: ranked.Result.ID, Score: ranked.Result.Score}
 				if ranked.Found && ranked.Value != nil {
-					hit.Vertex = proto.Clone(ranked.Value).(*pb.Vertex)
+					// The hydrated pointer is transient: the response and cursor
+					// session boundaries below each clone the hits they own.
+					hit.Vertex = ranked.Value
 					hit.ProjectionStatus = pb.SearchHitProjectionStatus_SEARCH_HIT_PROJECTION_STATUS_SNAPSHOT
 				} else {
 					hit.ProjectionStatus = pb.SearchHitProjectionStatus_SEARCH_HIT_PROJECTION_STATUS_MISSING
@@ -248,6 +250,11 @@ func (s *LanternService) SearchVertices(ctx context.Context, in *pb.SearchVertic
 	var next []byte
 	continuationLimited := limited
 	if pageEnd < len(hits) {
+		requestHash, hashErr := searchRequestHash(in, limit, projection)
+		if hashErr != nil {
+			observation.Outcome, observation.Reason = "internal", "internal"
+			return nil, connect.NewError(connect.CodeInternal, hashErr)
+		}
 		var admitted bool
 		next, admitted, err = s.searchSessions.create(requestHash, configFingerprint, hits, limited, pageEnd)
 		if err != nil {
