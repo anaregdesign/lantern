@@ -97,8 +97,9 @@ kubectl get statefulset,svc,pdb -l app.kubernetes.io/instance=lantern
 ```
 
 **Why two Services?** The headless Service (`*-headless`,
-`clusterIP: None`, `publishNotReadyAddresses: false`) is what the
-DNS pump resolves — its A records are the live pod IPs. The
+`clusterIP: None`, `publishNotReadyAddresses: true`) is what the
+DNS pump resolves — its A records include bootstrapping pod IPs so a
+simultaneous cold start cannot deadlock behind readiness. The
 `ClusterIP` Service is what clients hit; they get a stable VIP and
 kube-proxy spreads load across the backing pods. Splitting them means
 client traffic never accidentally targets a pod that's still
@@ -266,7 +267,7 @@ exact Prometheus series.
 |---|---|---|
 | `lantern_replication_lag_seq{peer,origin}` | gauge | How many mutation log entries this pod is behind `peer` for that `origin`. **The single most important HA signal.** |
 | `lantern_replication_applied_total{origin}` | counter | Remote mutations from `origin` (the originating writer node) that landed in the local cache. `rate()` ≈ steady-state replication throughput per origin. |
-| `lantern_replication_dropped_total{peer,reason}` | counter | Replication frames or peer interactions dropped. `reason` is `self_echo` / `subscribe_failed` / `snapshot_failed` / `dial_failed` / `peerstatus_failed` / `catchup_failed` / `clean` / `ctx_cancel`. A persistent non-zero rate (excluding `self_echo` / `clean`) signals an unreachable or stuck peer. |
+| `lantern_replication_dropped_total{peer,reason}` | counter | Replication frames or peer interactions dropped. `reason` is `self_echo` / `subscribe_failed` / `snapshot_failed` / `dial_failed` / `peerstatus_failed` / `catchup_failed` / `discovery_failed` / `clean` / `ctx_cancel`. A persistent non-zero rate (excluding `self_echo` / `clean`) signals an unreachable or stuck peer. |
 | `lantern_anti_entropy_cycles_total` | counter | Anti-entropy ticks. Should advance at `LANTERN_ANTI_ENTROPY_INTERVAL_MS` cadence. |
 | `lantern_anti_entropy_gaps_found_total{peer,origin}` | counter | Non-zero = real divergence detected and being repaired. Spiking after a partition heal = expected. Persistently incrementing in steady state = open a bug. |
 | `lantern_search_config_match{peer}` | gauge | `1` means the peer's search capability fingerprint exactly matches this pod; `0` means missing/mismatched and keeps readiness `NOT_SERVING`. |
@@ -650,10 +651,9 @@ Walk the bootstrap flow:
    - Check `LANTERN_PEER_DISCOVERY` env values.
    - From inside the pod, `getent hosts <discovery-dns-name>` should
      return one A record per other pod.
-   - The headless Service has `publishNotReadyAddresses: false`; if
-     **all** pods restart simultaneously, no pod is "ready" yet so
-     the headless Service publishes nothing. **Boot one pod at a
-     time** in this case.
+   - Confirm the headless Service has `publishNotReadyAddresses: true` so
+     bootstrapping pods are discoverable. The separate client Service remains
+     readiness-gated.
 3. If snapshot succeeds but `/readyz` stays 503: lag is above
    threshold. Check `lantern_replication_lag_seq`. Either wait
    (steady-state catch-up) or bump `LANTERN_MAX_REPLICATION_LAG`.
@@ -693,10 +693,11 @@ A short checklist to walk before opening an incident:
       for you; custom manifests must.
 - [ ] **Probes on wrong port:** `/healthz` and `/readyz` are on the
       **metrics** port (9090), not the gRPC port (6380).
-- [ ] **`publishNotReadyAddresses: false` deadlock:** if every pod
-      restarts simultaneously, none is "ready", the headless Service
-      publishes nothing, and nobody bootstraps. Roll pods one at a
-      time, or temporarily flip the flag.
+- [ ] **`publishNotReadyAddresses: false` deadlock:** if every pod restarts
+      simultaneously, none is "ready", the headless Service publishes
+      nothing, and nobody bootstraps. The maintained Helm chart sets this to
+      `true`; custom manifests must do the same for peer discovery while
+      keeping the client-facing Service readiness-gated.
 - [ ] **OSS nginx as a Lantern LB:** the `resolve` keyword on
       `upstream server` is nginx-plus only. Use an HTTP/2-aware
       reverse proxy (Envoy, Caddy, Traefik) or kube-proxy via a

@@ -404,9 +404,12 @@ func TestGKEDeployRecoveryWorkflow(t *testing.T) {
 		"google-github-actions/get-gke-credentials@3da1e46a907576cefaa90c484278bb5b259dd395 # v3",
 		"azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5",
 		"helm upgrade --install",
+		"--set metrics.podMonitoring.enabled=true",
+		"--for=condition=ConfigurationCreateSuccess --timeout=2m",
 		"--wait --timeout 10m --debug",
 		"if: failure()",
 		"kubectl describe statefulset",
+		"kubectl get podmonitoring",
 		"kubectl get events",
 		"--all-containers --previous --tail=200",
 	} {
@@ -433,6 +436,13 @@ func TestGKEDeployRecoveryWorkflow(t *testing.T) {
 	}
 	if !regexp.MustCompile(`(?m)^enableServiceLinks:\s+false$`).Match(values) {
 		t.Error("Helm defaults must disable Kubernetes ServiceLinks")
+	}
+	headlessService, err := os.ReadFile(filepath.Join(chartDir, "templates", "service.yaml"))
+	if err != nil {
+		t.Fatalf("read Helm headless Service template: %v", err)
+	}
+	if !regexp.MustCompile(`(?m)^\s*publishNotReadyAddresses:\s+true$`).Match(headlessService) {
+		t.Error("Helm peer-discovery Service must publish bootstrapping pods")
 	}
 	for _, name := range []string{"statefulset.yaml", "admin-deployment.yaml", "mcp-deployment.yaml"} {
 		template, err := os.ReadFile(filepath.Join(chartDir, "templates", name))

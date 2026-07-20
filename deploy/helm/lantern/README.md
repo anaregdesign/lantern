@@ -44,15 +44,16 @@ helm lint deploy/helm/lantern
 
 The pump reads `LANTERN_PEER_DISCOVERY=dns` and resolves the headless
 `Service` FQDN to obtain peer IPs. `LocalIPSet()` in the server filters
-the pod's own IP so the supervisor never dials itself.
+the pod's own IP so the supervisor never dials itself. The headless Service
+publishes not-ready addresses so peers can discover one another during a cold
+start; the separate client Service continues to exclude unready pods.
 
 ## Single-instance fallback
 
-For dev / single-instance topologies set `replicaCount=1` and either
-keep `replication.discovery.mode=dns` (the DNSSource will resolve to
-just the local pod and filter it out — pump becomes a no-op) or set
-`replication.discovery.mode=static` with `replication.peers=[]`. PDB
-can be disabled via `podDisruptionBudget.enabled=false`.
+For dev / single-instance topologies set `replicaCount=1`,
+`replication.discovery.mode=static`, and `replication.peers=[]`. DNS discovery
+selects HA readiness mode and therefore intentionally waits for a peer. PDB can
+be disabled via `podDisruptionBudget.enabled=false`.
 
 ## Tuning
 

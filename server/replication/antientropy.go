@@ -81,16 +81,21 @@ func (nopAntiEntropyMetrics) OnAntiEntropyError(string, string)            {}
 func (nopAntiEntropyMetrics) OnSearchConfig(string, bool)                  {}
 
 // AntiEntropyConfig groups the driver's inputs. All fields except
-// Peers / Interval are optional; NewAntiEntropy fills defaults.
+// Peers / Source / Interval are optional; NewAntiEntropy fills defaults.
 type AntiEntropyConfig struct {
 	// NodeID is the local node's HLC NodeID. Used to skip
 	// PeerStatus rows where self_origin == local NodeID (the
 	// peer should never be ahead of us on our OWN origin).
 	NodeID hlc.NodeID
 
-	// Peers is the static list of peer addresses to poll. Empty
-	// (or nil) yields a no-op driver — Run returns immediately.
+	// Peers is the static list of peer addresses to poll. Empty (or nil)
+	// yields a no-op driver only when Source is also nil.
 	Peers []string
+
+	// Source, when non-nil, takes precedence over Peers and is resolved on
+	// every anti-entropy cycle. This keeps periodic repair aligned with a
+	// dynamic Pump topology such as Kubernetes headless-Service DNS.
+	Source PeerSource
 
 	// Interval is the tick cadence. 0 disables the driver
 	// entirely (Run returns immediately). A negative value is
@@ -135,8 +140,8 @@ type AntiEntropyConfig struct {
 
 // AntiEntropy is the periodic convergence driver. Construct with
 // NewAntiEntropy and start with Run(ctx). Run blocks until ctx is
-// cancelled (or returns immediately when Peers is empty or Interval
-// is 0), so it is meant to run alongside the Connect listener and
+// cancelled (or returns immediately when both Peers and Source are empty, or
+// Interval is 0), so it is meant to run alongside the Connect listener and
 // pump in an errgroup.
 type AntiEntropy struct {
 	cfg         AntiEntropyConfig
@@ -176,16 +181,19 @@ func NewAntiEntropy(cfg AntiEntropyConfig, local LocalStateProvider, apply Mutat
 
 // Run starts the periodic tick loop and blocks until ctx is
 // cancelled. Returns nil after all in-flight ticks have completed.
-// A driver with no peers or zero interval is a no-op.
+// A driver with neither peers nor a Source, or with a zero interval, is a
+// no-op.
 func (a *AntiEntropy) Run(ctx context.Context) error {
-	if len(a.cfg.Peers) == 0 || a.cfg.Interval == 0 {
+	if (len(a.cfg.Peers) == 0 && a.cfg.Source == nil) || a.cfg.Interval == 0 {
 		a.cfg.Logger.Info("anti-entropy: disabled",
 			slog.Int("peers", len(a.cfg.Peers)),
+			slog.Bool("dynamic_source", a.cfg.Source != nil),
 			slog.Duration("interval", a.cfg.Interval))
 		return nil
 	}
 	a.cfg.Logger.Info("anti-entropy: starting",
 		slog.Int("peers", len(a.cfg.Peers)),
+		slog.Bool("dynamic_source", a.cfg.Source != nil),
 		slog.Duration("interval", a.cfg.Interval))
 
 	t := time.NewTicker(a.cfg.Interval)
@@ -206,8 +214,18 @@ func (a *AntiEntropy) Run(ctx context.Context) error {
 // anti-entropy is best-effort.
 func (a *AntiEntropy) tickAll(ctx context.Context) {
 	a.cfg.Metrics.OnAntiEntropyCycle()
+	peers := a.cfg.Peers
+	if a.cfg.Source != nil {
+		resolved, err := a.cfg.Source.Resolve(ctx)
+		if err != nil {
+			a.cfg.Logger.Warn("anti-entropy: peer discovery failed", slog.Any("err", err))
+			a.cfg.Metrics.OnAntiEntropyError("discovery", "discovery_failed")
+			return
+		}
+		peers = resolved
+	}
 	var wg sync.WaitGroup
-	for _, addr := range a.cfg.Peers {
+	for _, addr := range peers {
 		wg.Add(1)
 		go func(addr string) {
 			defer wg.Done()

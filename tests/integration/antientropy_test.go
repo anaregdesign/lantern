@@ -2,8 +2,10 @@ package integration_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +19,69 @@ import (
 	"github.com/anaregdesign/lantern/server/replication"
 	"github.com/anaregdesign/lantern/server/service"
 )
+
+type mutableAntiEntropyPeerSource struct {
+	mu    sync.RWMutex
+	peers []string
+	err   error
+}
+
+func (s *mutableAntiEntropyPeerSource) Resolve(context.Context) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.err != nil {
+		return nil, s.err
+	}
+	return append([]string(nil), s.peers...), nil
+}
+
+func (s *mutableAntiEntropyPeerSource) set(peers []string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.peers = append([]string(nil), peers...)
+	s.err = err
+}
+
+type antiEntropyMetricRecorder struct {
+	mu              sync.Mutex
+	cycles          int
+	ticks           map[string]int
+	discoveryErrors int
+}
+
+func newAntiEntropyMetricRecorder() *antiEntropyMetricRecorder {
+	return &antiEntropyMetricRecorder{ticks: make(map[string]int)}
+}
+
+func (m *antiEntropyMetricRecorder) OnAntiEntropyCycle() {
+	m.mu.Lock()
+	m.cycles++
+	m.mu.Unlock()
+}
+
+func (m *antiEntropyMetricRecorder) OnAntiEntropyTick(peer string) {
+	m.mu.Lock()
+	m.ticks[peer]++
+	m.mu.Unlock()
+}
+
+func (*antiEntropyMetricRecorder) OnAntiEntropyBehind(string, string, uint64)   {}
+func (*antiEntropyMetricRecorder) OnAntiEntropyCaughtUp(string, string, uint64) {}
+func (m *antiEntropyMetricRecorder) OnAntiEntropyError(peer, reason string) {
+	if peer != "discovery" || reason != "discovery_failed" {
+		return
+	}
+	m.mu.Lock()
+	m.discoveryErrors++
+	m.mu.Unlock()
+}
+func (*antiEntropyMetricRecorder) OnSearchConfig(string, bool) {}
+
+func (m *antiEntropyMetricRecorder) snapshot(peer string) (cycles, ticks, discoveryErrors int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cycles, m.ticks[peer], m.discoveryErrors
+}
 
 // antiEntropyNode is a deliberately stripped-down variant of pumpNode
 // that wires WithOriginStates on the replication service so PeerStatus
@@ -214,6 +279,85 @@ func TestAntiEntropy_DriverConvergesWithoutPump(t *testing.T) {
 	}
 	if got := waitForSearchConvergence(t, ctx, "ae-current", exactAll, b.raw, c.raw); len(got) != 1 {
 		t.Fatalf("anti-entropy current query = %+v", got)
+	}
+}
+
+// TestAntiEntropy_DynamicPeerSource follows the production DNS-discovery
+// contract over real h2c: membership changes are picked up on later cycles, a
+// transient resolver failure does not stop the driver, and a removed peer is
+// no longer polled.
+func TestAntiEntropy_DynamicPeerSource(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping dynamic anti-entropy convergence test in short mode")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	b := newAntiEntropyNode(t, hlc.NodeID{0xDB})
+	c := newAntiEntropyNode(t, hlc.NodeID{0xDC})
+	follower := newAntiEntropyNode(t, hlc.NodeID{0xDD})
+	source := &mutableAntiEntropyPeerSource{}
+	source.set([]string{b.url}, nil)
+	metrics := newAntiEntropyMetricRecorder()
+	ae := replication.NewAntiEntropy(replication.AntiEntropyConfig{
+		NodeID:                  follower.nodeID,
+		Source:                  source,
+		Interval:                25 * time.Millisecond,
+		SubscribeTimeout:        2 * time.Second,
+		HTTPClient:              h2cClient(),
+		Metrics:                 metrics,
+		SearchConfigFingerprint: follower.svc.SearchConfigFingerprint(),
+	}, follower.svc, follower.svc, follower.cache)
+	aeCtx, cancelAE := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { _ = ae.Run(aeCtx); close(done) }()
+	t.Cleanup(func() {
+		cancelAE()
+		<-done
+	})
+
+	if err := b.sdk.PutVertex(ctx, "dynamic-b", "from-b", time.Minute); err != nil {
+		t.Fatalf("b.PutVertex: %v", err)
+	}
+	if !waitForVertex(t, follower.cache, "dynamic-b", 3*time.Second) {
+		t.Fatal("dynamic source never converged the initial peer")
+	}
+
+	cyclesBeforeError, _, _ := metrics.snapshot(b.url)
+	source.set(nil, errors.New("transient DNS failure"))
+	time.Sleep(100 * time.Millisecond)
+	cyclesAfterError, _, discoveryErrors := metrics.snapshot(b.url)
+	if cyclesAfterError <= cyclesBeforeError {
+		t.Fatalf("cycles stalled across discovery error: before=%d after=%d", cyclesBeforeError, cyclesAfterError)
+	}
+	if discoveryErrors == 0 {
+		t.Fatal("discovery failure was not exposed through anti-entropy metrics")
+	}
+
+	source.set([]string{c.url}, nil)
+	if err := c.sdk.PutVertex(ctx, "dynamic-c", "from-c", time.Minute); err != nil {
+		t.Fatalf("c.PutVertex: %v", err)
+	}
+	if !waitForVertex(t, follower.cache, "dynamic-c", 3*time.Second) {
+		t.Fatal("dynamic source never converged the added peer")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		_, cTicks, _ := metrics.snapshot(c.url)
+		if cTicks >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("dynamic source did not poll the replacement peer twice")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	_, bTicks, _ := metrics.snapshot(b.url)
+	time.Sleep(100 * time.Millisecond)
+	_, bTicksLater, _ := metrics.snapshot(b.url)
+	if bTicksLater != bTicks {
+		t.Fatalf("removed peer kept receiving ticks: before=%d after=%d", bTicks, bTicksLater)
 	}
 }
 

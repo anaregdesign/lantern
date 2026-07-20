@@ -8,7 +8,9 @@ metadata:
     lantern.anaregdesign.io/role: peer-discovery
 spec:
   clusterIP: None
-  publishNotReadyAddresses: false
+  # Peer DNS must include bootstrapping pods; the separate client Service
+  # remains readiness-gated and never routes application traffic to them.
+  publishNotReadyAddresses: true
   selector:
     {{- include "lantern.selectorLabels" . | nindent 4 }}
   ports:

@@ -84,6 +84,7 @@ func loadPeerConfig() PeerConfig {
 // generic specialisation — it sees only the SnapshotApplier surface.
 func NewReplicationPump(
 	pc PeerConfig,
+	resolver *PeerResolver,
 	rc ReplicationConfig,
 	ac AuthConfig,
 	svc *service.LanternService,
@@ -102,22 +103,8 @@ func NewReplicationPump(
 		AuthToken:               firstToken(ac.Tokens),
 		SearchConfigFingerprint: svc.SearchConfigFingerprint(),
 	}
-	if pc.Discovery == "dns" && pc.DNSName != "" {
-		selfIPs, err := replication.LocalIPSet()
-		if err != nil {
-			logger.Warn("replication pump: failed to enumerate local IPs for DNS self-filter",
-				slog.Any("err", err))
-			selfIPs = nil
-		}
-		cfg.Source = &replication.DNSSource{
-			Name:    pc.DNSName,
-			Port:    pc.DefaultPort,
-			SelfIPs: selfIPs,
-		}
-		logger.Info("replication pump: DNS peer discovery enabled",
-			slog.String("dns_name", pc.DNSName),
-			slog.String("default_port", pc.DefaultPort),
-			slog.Duration("interval", pc.DiscoveryInterval))
+	if resolver != nil {
+		cfg.Source = resolver.Source
 	}
 	return replication.NewPump(cfg, svc, cache)
 }
