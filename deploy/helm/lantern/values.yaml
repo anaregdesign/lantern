@@ -173,8 +173,15 @@ backup:
     accessModes: ["ReadWriteOnce"]
     size: 1Gi
 
-# Liveness/readiness probes.
+# Startup/liveness/readiness probes. The metrics listener starts only after a
+# restore-on-start backup has been loaded, so startup gets its own budget and
+# suppresses liveness/readiness until the restore is complete.
 probes:
+  startup:
+    initialDelaySeconds: 60
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 36
   liveness:
     initialDelaySeconds: 10
     periodSeconds: 10
