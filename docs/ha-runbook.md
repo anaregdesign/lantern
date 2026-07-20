@@ -110,13 +110,14 @@ bootstrapping.
 The chart strips the peer env entirely; you get single-instance
 mode (§2.1) with k8s scheduling and probes intact.
 
-**Probes.** Liveness and readiness both hit the metrics port (9090),
-paths `/healthz` and `/readyz`. The readiness probe is intentionally
-slow (`initialDelaySeconds: 5`, `periodSeconds: 10`,
-`failureThreshold: 6` = ~60 s window) so a freshly-scaled-up pod can
-finish anti-entropy bootstrap without being restarted as "not ready
-fast enough". **Brief 503s on `/readyz` immediately after a scale-up
-are expected**, not a bug.
+**Probes.** Startup, liveness, and readiness all hit the metrics port
+(9090). Startup and liveness use `/healthz`; readiness uses `/readyz`.
+The startup probe waits 60 seconds before its first check, then allows 36
+failures at five-second intervals, giving restore-on-start about four minutes
+before Kubernetes restarts the container. Liveness and readiness do not run
+until startup succeeds. Readiness then checks every five seconds; **brief 503s
+on `/readyz` while anti-entropy establishes the peer baseline are expected**
+and remove the pod from the client Service without restarting it.
 
 **Probe-port gotcha.** Probes are on the metrics port (9090), not the
 Lantern RPC port (6380). The RPC port serves the `grpc.health.v1`

@@ -77,6 +77,7 @@ be disabled via `podDisruptionBudget.enabled=false`.
 | `backup.persistence.size`                   | `1Gi`                  | Per-pod PVC size for dumps.                        |
 | `backup.persistence.existingClaim`          | `""`                   | Set to a pre-provisioned RWX claim for a shared dump volume. |
 | `resources.requests` / `.limits`            | `250m` CPU / `512Mi`   | requests == limits (Autopilot Guaranteed QoS). 250m is the Autopilot min; 512Mi the server floor. |
+| `probes.startup`                            | 60s initial delay, 5s period, 36 failures | Gives restore-on-start about four minutes before restart; liveness/readiness stay disabled until it succeeds. |
 | `metrics.serviceMonitor.enabled`            | `false`                | Requires the prometheus-operator CRD.              |
 | `metrics.podMonitoring.enabled`             | `false`                | GKE Managed Service for Prometheus (GMP). Requires the `monitoring.googleapis.com/v1` PodMonitoring CRD (default on GKE). |
 | `metrics.podMonitoring.interval`            | `60s`                  | GMP scrape interval.                               |

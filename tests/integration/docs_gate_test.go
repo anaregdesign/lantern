@@ -481,6 +481,31 @@ func TestGKEDeployRecoveryWorkflow(t *testing.T) {
 	if !regexp.MustCompile(`(?m)^\s*publishNotReadyAddresses:\s+true$`).Match(headlessService) {
 		t.Error("Helm peer-discovery Service must publish bootstrapping pods")
 	}
+	statefulSet, err := os.ReadFile(filepath.Join(chartDir, "templates", "statefulset.yaml"))
+	if err != nil {
+		t.Fatalf("read Helm StatefulSet template: %v", err)
+	}
+	for _, contract := range []string{
+		"startupProbe:",
+		"initialDelaySeconds: {{ .Values.probes.startup.initialDelaySeconds }}",
+		"periodSeconds: {{ .Values.probes.startup.periodSeconds }}",
+		"timeoutSeconds: {{ .Values.probes.startup.timeoutSeconds }}",
+		"failureThreshold: {{ .Values.probes.startup.failureThreshold }}",
+	} {
+		if !strings.Contains(string(statefulSet), contract) {
+			t.Errorf("Helm StatefulSet is missing startup guard %q", contract)
+		}
+	}
+	for _, contract := range []string{
+		"  startup:",
+		"    initialDelaySeconds: 60",
+		"    periodSeconds: 5",
+		"    failureThreshold: 36",
+	} {
+		if !strings.Contains(string(values), contract) {
+			t.Errorf("Helm defaults are missing startup budget %q", contract)
+		}
+	}
 	for _, name := range []string{"statefulset.yaml", "admin-deployment.yaml", "mcp-deployment.yaml"} {
 		template, err := os.ReadFile(filepath.Join(chartDir, "templates", name))
 		if err != nil {
