@@ -90,6 +90,37 @@ be disabled via `podDisruptionBudget.enabled=false`.
 See [`values.yaml`](values.yaml) for the full set including probes,
 resources, security context, anti-affinity, and `extraEnv`.
 
+## GMP cost guard
+
+[Managed Service for Prometheus bills primarily by ingested
+samples](https://cloud.google.com/stackdriver/docs/managed-prometheus/cost-controls).
+The default `PodMonitoring.metricRelabeling` therefore keeps the production
+signals used for HA, readiness, backups, capacity/resource health,
+search-index health, validation, subscriptions, and gRPC RED monitoring. It
+drops the high-cardinality Illuminate and detailed search/scan/batch families
+from GMP only; Lantern's local `/metrics` endpoint remains complete for
+short-lived diagnosis or a self-managed Prometheus.
+
+The July 2026 two-pod production sample exposed 14,604 total series. At a
+60-second interval that is an upper bound of 630,892,800 samples per 30-day
+month. The default allowlist retained 425 series on the busier pod, reducing
+the two-pod upper bound to approximately 36.7 million samples per month (about
+94% fewer). Histogram billing can be lower because GMP counts only populated
+buckets, so treat these figures as conservative planning bounds. Re-measure
+after adding labels or metric families.
+
+To ingest the full surface deliberately, override the list:
+
+```shell
+helm upgrade --install lantern deploy/helm/lantern \
+  --set metrics.podMonitoring.enabled=true \
+  --set-json 'metrics.podMonitoring.metricRelabeling=[]'
+```
+
+Increasing `metrics.podMonitoring.interval` reduces sample cost linearly but
+also delays short HA signals. The maintained production profile keeps `60s`
+and controls cost by cardinality instead.
+
 ## Admin UI (`admin.enabled=true`)
 
 The browser-facing admin SPA (`lantern-admin`) ships as part of this

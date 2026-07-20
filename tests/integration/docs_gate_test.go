@@ -437,6 +437,43 @@ func TestGKEDeployRecoveryWorkflow(t *testing.T) {
 	if !regexp.MustCompile(`(?m)^enableServiceLinks:\s+false$`).Match(values) {
 		t.Error("Helm defaults must disable Kubernetes ServiceLinks")
 	}
+	metricKeep := regexp.MustCompile(`(?m)^\s*regex:\s*(.+)$`).FindSubmatch(values)
+	if len(metricKeep) != 2 {
+		t.Fatal("Helm defaults must define one GMP metric allowlist")
+	}
+	keep, err := regexp.Compile("^(?:" + strings.TrimSpace(string(metricKeep[1])) + ")$")
+	if err != nil {
+		t.Fatalf("compile GMP metric allowlist: %v", err)
+	}
+	for _, metric := range []string{
+		"grpc_server_handling_seconds_bucket",
+		"lantern_anti_entropy_cycles_total",
+		"lantern_anti_entropy_gaps_found_total",
+		"lantern_replication_lag_seq",
+		"lantern_replication_dropped_total",
+		"lantern_search_config_match",
+		"lantern_search_index_healthy",
+		"lantern_snapshot_replayed_total",
+		"lantern_backup_failures_total",
+		"lantern_vertices",
+		"process_resident_memory_bytes",
+	} {
+		if !keep.MatchString(metric) {
+			t.Errorf("GMP metric allowlist drops required signal %q", metric)
+		}
+	}
+	for _, metric := range []string{
+		"lantern_illuminate_calls_total",
+		"lantern_illuminate_duration_seconds_bucket",
+		"lantern_search_duration_seconds_bucket",
+		"lantern_scan_duration_seconds_bucket",
+		"lantern_batch_size_bucket",
+		"go_memstats_mallocs_total",
+	} {
+		if keep.MatchString(metric) {
+			t.Errorf("GMP metric allowlist retains high-volume signal %q", metric)
+		}
+	}
 	headlessService, err := os.ReadFile(filepath.Join(chartDir, "templates", "service.yaml"))
 	if err != nil {
 		t.Fatalf("read Helm headless Service template: %v", err)
