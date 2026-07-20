@@ -107,19 +107,18 @@ metrics:
     interval: 60s
     labels: {}
     # GMP metricRelabeling applied to scraped samples (Prometheus
-    # metric_relabel_configs semantics). The default keeps the signals this
-    # deployment actually consumes — every lantern_* family, the grpc_server_*
-    # RPC RED metrics (rate/errors/latency; emitted lazily on the first unary
-    # call), and a minimal runtime set (scrape up, goroutines, heap-in-use,
-    # RSS, CPU) — and drops the generic go_*/process_*/promhttp_* collectors
-    # that carry no Lantern-specific signal. This is signal curation, not a
-    # major cost lever: lantern_* (its illuminate/scan histograms) is ~95% of
-    # the live series count, so the dropped collectors are only a small slice.
-    # Set to [] to ingest every scraped series.
+    # metric_relabel_configs semantics). GMP bills primarily per ingested
+    # sample, so the default is a production allowlist: HA/readiness, backup,
+    # capacity/resource, search-index health, validation, subscription, and
+    # gRPC RED signals. It intentionally excludes the high-cardinality
+    # lantern_illuminate_*, detailed lantern_search_* histograms, scan, and
+    # batch families; gRPC RED metrics retain request rate/error/latency while
+    # logs provide detailed RCA. The complete /metrics endpoint is unchanged.
+    # Set to [] only when a full scrape is intentional and budgeted.
     metricRelabeling:
       - action: keep
         sourceLabels: [__name__]
-        regex: lantern_.*|grpc_server_.*|up|go_goroutines|go_memstats_heap_inuse_bytes|process_resident_memory_bytes|process_cpu_seconds_total
+        regex: up|go_goroutines|go_memstats_heap_inuse_bytes|process_resident_memory_bytes|process_cpu_seconds_total|grpc_server_.*|lantern_(anti_entropy_.*|auth_rejected_total|backup_.*|build_info|capacity_limit|edge_contrib_deduped_total|edges|get_(edge|vertex)_(hits|misses)_total|gc_duration_seconds_.*|mutation_log_.*|mutationlog_subscriber_dropped_total|origin_states_count|peer_connected|rate_limit_rejected_total|replication_.*|restore_.*|search_calls_total|search_config_.*|search_index_.*|search_rejections_total|snapshot_.*|subscribe_.*|subscription_.*|tombstone_clamp_rejected_total|ttl_expirations_total|validation_rejected_total|vertex_hlc_.*|vertices)
 
 # Replication / peer discovery. See docs/replication.md §9.1.
 replication:
