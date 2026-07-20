@@ -10,6 +10,14 @@
 # scenario should report starve = 0/64 (modulo bench-level startup
 # noise; ≤ 5/64 is the documented acceptance bar of #392).
 name: many_subscribers
+# This scenario deliberately drives the 10k-entry bench mutation log past its
+# retention window so Subscribe gap recovery and full Snapshot replay are part
+# of the load. Search snapshot recovery correctly marks the derived index
+# incomplete and rejects local indexed writes while it rebuilds; that is an
+# orthogonal contract already covered by the search scenarios and would turn
+# expected recovery backpressure into a false producer perf failure here.
+cluster:
+  search_enabled: false
 phases:
   # steady compacted from 5m to 2m for the release sweep (#573); still long
   # enough for the Subscribe fan-out to reach steady state and to bracket the
@@ -44,11 +52,11 @@ leak_gate:
   # cover the working set across all three replicas. See #258 item 2
   # for the rationale and #419 for the Reading B capacity discussion.
   heap_alloc_max_delta_mb: 512
-# Floors from the 2026-06-29 → 2026-07-03 nightly baselines: the single
-# pinned-replica producer delivers 366–500 rps under the 64-stream fan-out
-# (offered 2000 — contention-bound by design) with p99 208–293 ms and non-OK
-# 20–32. The gate only reads the producer's ghz report; stream health is
-# assessed via lantern_subscription_* series (see #258 item 4).
+# Floors originate from the 2026-06-29 → 2026-07-03 mixed search/subscriber
+# nightly baselines. Keep those conservative thresholds until the search-free
+# scenario has accumulated enough nightly samples for a deliberate rebaseline.
+# The perf gate reads only the producer's ghz report; stream health is observed
+# through the lantern_subscription_* series (see #258 item 4).
 perf_gate:
   min_steady_rps_total: 180
   max_p99_ms: 1500
