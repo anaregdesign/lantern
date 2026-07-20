@@ -208,6 +208,15 @@ resources:
     cpu: 250m
     memory: 512Mi
 
+# Keep the Go-managed working set below the container limit so transient
+# backup restore + replication catch-up allocations trigger GC instead of a
+# kernel OOM kill. This is intentionally below the 512Mi default limit to
+# leave headroom for the binary, thread stacks, and non-Go memory. Override
+# this together with resources.limits.memory; set "" only when the runtime
+# should have no explicit soft limit.
+runtime:
+  goMemoryLimit: 384MiB
+
 # Extra environment variables (raw env list, appended after the
 # templated ones). Useful for TLS_* / RATE_LIMIT_* / LOG_* tweaks.
 extraEnv: []

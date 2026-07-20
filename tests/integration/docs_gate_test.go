@@ -486,6 +486,9 @@ func TestGKEDeployRecoveryWorkflow(t *testing.T) {
 		t.Fatalf("read Helm StatefulSet template: %v", err)
 	}
 	for _, contract := range []string{
+		"{{- with .Values.runtime.goMemoryLimit }}",
+		"- name: GOMEMLIMIT",
+		"value: {{ . | quote }}",
 		"startupProbe:",
 		"initialDelaySeconds: {{ .Values.probes.startup.initialDelaySeconds }}",
 		"periodSeconds: {{ .Values.probes.startup.periodSeconds }}",
@@ -497,6 +500,8 @@ func TestGKEDeployRecoveryWorkflow(t *testing.T) {
 		}
 	}
 	for _, contract := range []string{
+		"runtime:",
+		"  goMemoryLimit: 384MiB",
 		"  startup:",
 		"    initialDelaySeconds: 60",
 		"    periodSeconds: 5",

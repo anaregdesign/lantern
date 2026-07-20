@@ -90,6 +90,10 @@ spec:
               value: {{ .Values.log.level | quote }}
             - name: LANTERN_LOG_FORMAT
               value: {{ .Values.log.format | quote }}
+            {{- with .Values.runtime.goMemoryLimit }}
+            - name: GOMEMLIMIT
+              value: {{ . | quote }}
+            {{- end }}
             - name: LANTERN_DEFAULT_TTL_SECONDS
               value: {{ .Values.cache.defaultTtlSeconds | quote }}
             - name: LANTERN_PEER_DISCOVERY
