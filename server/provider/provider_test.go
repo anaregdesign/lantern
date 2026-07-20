@@ -70,6 +70,35 @@ func TestWireCacheGCHooks_EmitsTickSummary(t *testing.T) {
 // failure happens inside NewConfig — the first provider wire constructs — so
 // a refused boot never reaches listener construction.
 func TestNewConfigValidation(t *testing.T) {
+	t.Run("bootstrap validation uses configured JSON logger", func(t *testing.T) {
+		envconfig.ResetForTesting()
+		t.Setenv("LANTERN_STRICT_CONFIG", "false")
+		var buf bytes.Buffer
+		logger := newLogger(ObservabilityConfig{
+			LogLevel:  slog.LevelInfo,
+			LogFormat: "json",
+		}, &buf)
+
+		if err := validateEnv([]string{"LANTERN_NOT_REAL=1"}, logger); err != nil {
+			t.Fatalf("validateEnv: %v", err)
+		}
+		recs := decodeRecords(t, &buf)
+		if len(recs) != 2 {
+			t.Fatalf("bootstrap records = %d, want 2: %v", len(recs), recs)
+		}
+		warn := recs[0]
+		if warn["level"] != "WARN" || warn["msg"] != "config: unknown LANTERN_* variable" {
+			t.Fatalf("bootstrap warning severity/message = %v/%v, want WARN/unknown-variable", warn["level"], warn["msg"])
+		}
+		if warn["service"] != "lantern" || warn["key"] != "LANTERN_NOT_REAL" {
+			t.Fatalf("bootstrap warning fields = %v", warn)
+		}
+		info := recs[1]
+		if info["level"] != "INFO" || info["msg"] != "config: environment overrides active" {
+			t.Fatalf("bootstrap summary severity/message = %v/%v, want INFO/environment-summary", info["level"], info["msg"])
+		}
+	})
+
 	t.Run("traversal safety defaults are finite", func(t *testing.T) {
 		envconfig.ResetForTesting()
 		for _, key := range []string{

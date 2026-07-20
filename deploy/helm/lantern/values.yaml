@@ -17,6 +17,13 @@ image:
 
 imagePullSecrets: []
 
+# Lantern discovers peers and sibling services through DNS, so Kubernetes
+# ServiceLink environment variables are unnecessary. Keep them disabled to
+# avoid namespace-dependent LANTERN_* variables colliding with the server's
+# strict config validation. Set true only for a workload that explicitly
+# depends on legacy ServiceLink discovery.
+enableServiceLinks: false
+
 nameOverride: ""
 fullnameOverride: ""
 
