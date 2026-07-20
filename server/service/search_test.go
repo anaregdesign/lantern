@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -424,7 +425,11 @@ func TestSearchVertices_FullVertexSnapshotAndContinuationLimit(t *testing.T) {
 			t.Fatalf("FULL_VERTEX hit = %+v", hit)
 		}
 	}
-	fb.vertices["c"] = &pb.Vertex{Key: "c", Value: &pb.Vertex_String_{String_: "replacement"}}
+	fb.vertices["a"].Value = &pb.Vertex_String_{String_: "replacement"}
+	if got := first.GetHits()[0].GetVertex().GetString_(); got != "original-a" {
+		t.Fatalf("response vertex = %q after backend mutation, want original-a", got)
+	}
+	fb.vertices["c"].Value = &pb.Vertex_String_{String_: "replacement"}
 	second, err := svc.SearchVertices(context.Background(), &pb.SearchVerticesRequest{
 		Query: "alpha", Limit: 2, Projection: pb.SearchProjection_SEARCH_PROJECTION_FULL_VERTEX,
 		Cursor: first.GetNextCursor(),
@@ -435,6 +440,49 @@ func TestSearchVertices_FullVertexSnapshotAndContinuationLimit(t *testing.T) {
 	assertSearchPage(t, second, []string{"c", "d"}, true, true, false)
 	if got := second.GetHits()[0].GetVertex().GetString_(); got != "original-c" {
 		t.Fatalf("snapshot vertex = %q, want original-c", got)
+	}
+}
+
+func BenchmarkSearchVertices_FullVertexSinglePage(b *testing.B) {
+	const hitCount = 100
+	fb := newFakeBackend()
+	value := strings.Repeat("search projection payload ", 128)
+	for i := range hitCount {
+		key := "vertex-" + strconv.Itoa(i)
+		fb.searchResults = append(fb.searchResults, search.Result[string]{
+			ID:    key,
+			Score: float64(hitCount - i),
+		})
+		fb.vertices[key] = &pb.Vertex{
+			Key:   key,
+			Value: &pb.Vertex_String_{String_: value},
+		}
+	}
+	svc := NewLanternService(fb).WithSearchLimits(SearchLimits{
+		Enabled:         true,
+		DefaultLimit:    hitCount,
+		MaxLimit:        hitCount,
+		CursorTTL:       time.Minute,
+		MaxSessions:     4,
+		MaxSessionHits:  hitCount,
+		MaxSessionBytes: 1 << 30,
+	})
+	request := &pb.SearchVerticesRequest{
+		Query:      "payload",
+		Limit:      hitCount,
+		Projection: pb.SearchProjection_SEARCH_PROJECTION_FULL_VERTEX,
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		response, err := svc.SearchVertices(context.Background(), request)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(response.GetHits()) != hitCount {
+			b.Fatalf("hits = %d, want %d", len(response.GetHits()), hitCount)
+		}
 	}
 }
 
