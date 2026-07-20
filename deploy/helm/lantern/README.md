@@ -77,6 +77,7 @@ be disabled via `podDisruptionBudget.enabled=false`.
 | `backup.persistence.size`                   | `1Gi`                  | Per-pod PVC size for dumps.                        |
 | `backup.persistence.existingClaim`          | `""`                   | Set to a pre-provisioned RWX claim for a shared dump volume. |
 | `resources.requests` / `.limits`            | `250m` CPU / `512Mi`   | requests == limits (Autopilot Guaranteed QoS). 250m is the Autopilot min; 512Mi the server floor. |
+| `runtime.goMemoryLimit`                     | `384MiB`                | Sets `GOMEMLIMIT` below the 512Mi container limit; override it together with `resources.limits.memory`. |
 | `probes.startup`                            | 60s initial delay, 5s period, 36 failures | Gives restore-on-start about four minutes before restart; liveness/readiness stay disabled until it succeeds. |
 | `metrics.serviceMonitor.enabled`            | `false`                | Requires the prometheus-operator CRD.              |
 | `metrics.podMonitoring.enabled`             | `false`                | GKE Managed Service for Prometheus (GMP). Requires the `monitoring.googleapis.com/v1` PodMonitoring CRD (default on GKE). |
@@ -90,6 +91,15 @@ be disabled via `podDisruptionBudget.enabled=false`.
 
 See [`values.yaml`](values.yaml) for the full set including probes,
 resources, security context, anti-affinity, and `extraEnv`.
+
+`runtime.goMemoryLimit` is a Go runtime soft limit, not a Kubernetes resource
+request. Keeping it below `resources.limits.memory` makes GC react to transient
+backup-restore and replication-catch-up allocations before the kernel OOM
+killer acts, while preserving headroom for thread stacks and non-Go memory.
+The default keeps the Autopilot request at 512Mi, so it adds no recurring
+compute cost. When sizing a larger graph, change both values deliberately;
+set `runtime.goMemoryLimit: ""` only when another runtime memory controller is
+in place.
 
 ## GMP cost guard
 
