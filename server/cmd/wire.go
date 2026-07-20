@@ -31,6 +31,7 @@ func initializeApp() (*App, error) {
 		provider.NewReplicationConfig,
 		provider.NewReadinessConfig,
 		provider.NewPeerConfig,
+		provider.NewPeerResolver,
 		provider.NewAntiEntropyConfig,
 		provider.NewHLCClock,
 		provider.NewMutationLog,

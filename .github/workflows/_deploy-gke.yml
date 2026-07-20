@@ -88,7 +88,11 @@ jobs:
           helm upgrade --install "$RELEASE" deploy/helm/lantern \
             --namespace "$NAMESPACE" \
             --set image.tag="$PURE_TAG" \
+            --set metrics.podMonitoring.enabled=true \
             --wait --timeout 10m --debug
+          kubectl wait "podmonitoring/$RELEASE" \
+            --namespace "$NAMESPACE" \
+            --for=condition=ConfigurationCreateSuccess --timeout=2m
           kubectl rollout status "statefulset/$RELEASE" \
             --namespace "$NAMESPACE" --timeout=10m
 
@@ -104,6 +108,7 @@ jobs:
           kubectl get pods --namespace "$NAMESPACE" --selector "$selector" -o wide
           kubectl describe pods --namespace "$NAMESPACE" --selector "$selector"
           kubectl get pvc --namespace "$NAMESPACE" -o wide
+          kubectl get podmonitoring "$RELEASE" --namespace "$NAMESPACE" -o yaml
           kubectl get events --namespace "$NAMESPACE" \
             --sort-by='.lastTimestamp' | tail -n 200
           while IFS= read -r pod; do

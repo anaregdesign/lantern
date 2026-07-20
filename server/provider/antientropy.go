@@ -48,11 +48,12 @@ func loadAntiEntropyConfig() AntiEntropyConfig {
 // bounded Subscribe-or-Snapshot catch-up when the peer's own
 // origin watermark exceeds the local one.
 //
-// Empty PeerConfig.Peers or a zero Interval yields a driver whose
-// Run is a no-op (returns immediately), so the same wire graph
+// Neither static peers nor a dynamic resolver, or a zero Interval, yields a
+// driver whose Run is a no-op (returns immediately), so the same wire graph
 // supports single-instance, pump-only, and full-HA topologies.
 func NewAntiEntropyDriver(
 	pc PeerConfig,
+	resolver *PeerResolver,
 	rc ReplicationConfig,
 	ac AntiEntropyConfig,
 	auth AuthConfig,
@@ -63,9 +64,14 @@ func NewAntiEntropyDriver(
 	logger *slog.Logger,
 ) *replication.AntiEntropy {
 	_ = pump // forces wire to construct the pump before the driver
+	var source replication.PeerSource
+	if resolver != nil {
+		source = resolver.Source
+	}
 	return replication.NewAntiEntropy(replication.AntiEntropyConfig{
 		NodeID:                  rc.NodeID,
 		Peers:                   pc.Peers,
+		Source:                  source,
 		Interval:                ac.Interval,
 		SubscribeTimeout:        ac.SubscribeTimeout,
 		GapWarnThreshold:        ac.GapWarnThreshold,

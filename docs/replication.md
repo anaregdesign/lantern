@@ -52,8 +52,9 @@ is required for either reads or writes.
    whenever replication lag exceeds `LANTERN_MAX_REPLICATION_LAG` or an
    observed peer reports a different search config fingerprint, so the load
    balancer drains the instance. Graph replication continues across a search
-   mismatch for repair and diagnosis. **Single-instance mode** (empty
-   `LANTERN_PEERS`) bypasses this gate.
+   mismatch for repair and diagnosis. **Single-instance mode** (static
+   discovery with empty `LANTERN_PEERS`) bypasses this gate; DNS discovery
+   selects peer mode even before the first peer resolves.
 5. **No leader, no Raft, no external storage.** v1 is intentionally
    ephemeral. Single-pod loss recovers from peers; total-cluster loss is
    accepted data loss **unless snapshot backups are configured**
@@ -472,7 +473,7 @@ new pod boots
   └── /healthz/ready flips SERVING when:
         - lag(P) < LANTERN_MAX_REPLICATION_LAG and observed peer search
           fingerprints match, OR
-        - single-instance mode (LANTERN_PEERS empty)
+        - single-instance mode (static discovery and LANTERN_PEERS empty)
 ```
 
 Target steady-state flush latency: **< 100 ms** intra-DC at 1k mut/s.

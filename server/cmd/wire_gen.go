@@ -59,17 +59,18 @@ func initializeApp() (*App, error) {
 	lanternServer := service.NewLanternServer(lanternListener, logger, lifecycleConfig, healthChecker, graphCache, lanternService, lanternReplicationService)
 	readinessConfig := provider.NewReadinessConfig(config)
 	peerConfig := provider.NewPeerConfig(config)
-	gate := provider.NewReadinessGate(readinessConfig, peerConfig, healthChecker)
+	peerResolver := provider.NewPeerResolver(peerConfig, logger)
+	gate := provider.NewReadinessGate(readinessConfig, peerConfig, peerResolver, healthChecker)
 	metricsServer := provider.NewMetricsServer(observabilityConfig, registry, gate, logger)
 	tracing, err := provider.NewTracing(logger)
 	if err != nil {
 		return nil, err
 	}
 	metrics := provider.NewPumpMetrics(domainMetrics, gate)
-	pump := provider.NewReplicationPump(peerConfig, replicationConfig, authConfig, lanternService, graphCache, metrics, logger)
+	pump := provider.NewReplicationPump(peerConfig, peerResolver, replicationConfig, authConfig, lanternService, graphCache, metrics, logger)
 	antiEntropyConfig := provider.NewAntiEntropyConfig(config)
 	antiEntropyMetrics := provider.NewAntiEntropyMetrics(domainMetrics, gate)
-	antiEntropy := provider.NewAntiEntropyDriver(peerConfig, replicationConfig, antiEntropyConfig, authConfig, lanternService, graphCache, pump, antiEntropyMetrics, logger)
+	antiEntropy := provider.NewAntiEntropyDriver(peerConfig, peerResolver, replicationConfig, antiEntropyConfig, authConfig, lanternService, graphCache, pump, antiEntropyMetrics, logger)
 	backupConfig := provider.NewBackupConfig(config)
 	backupper := provider.NewBackupper(backupConfig, lanternService, registry, logger)
 	llmConfig := provider.NewLLMConfig(config)

@@ -229,7 +229,7 @@ a leader. Grouped by concern:
   fresh or gapped pod re-seeded, and how expensive it was.
 - **Dropped frames (RCA).** `lantern_replication_dropped_total{peer,reason}`
   (reasons: `self_echo`, `subscribe_failed`, `snapshot_failed`, `dial_failed`,
-  `peerstatus_failed`, `catchup_failed`, `ctx_cancel`, `clean`),
+  `peerstatus_failed`, `catchup_failed`, `discovery_failed`, `ctx_cancel`, `clean`),
   `lantern_origin_states_count` (distinct writers ever seen ≈ peer-set size).
 
 ### 5.5 In-process pub/sub (client CDC) — "are local subscribers keeping up?"

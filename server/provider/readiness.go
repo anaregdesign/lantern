@@ -14,7 +14,7 @@ import (
 //   - LANTERN_MAX_REPLICATION_LAG       maximum tolerated per-(peer, origin)
 //     lag in mutation-seq units before the overall ("") gRPC health entry
 //     flips to NOT_SERVING. Default 10000. Single-instance deployments
-//     (empty LANTERN_PEERS) bypass gating entirely.
+//     (no static peers and no dynamic discovery) bypass gating entirely.
 type ReadinessConfig struct {
 	MaxLag uint64
 }
@@ -31,11 +31,11 @@ func loadReadinessConfig() ReadinessConfig {
 }
 
 // NewReadinessGate constructs the readiness Gate that drives the overall
-// ("") gRPC health entry. The peer-mode flag is derived from PeerConfig:
-// empty LANTERN_PEERS yields a permanently-ready gate that bypasses lag
-// gating, matching the single-instance startup contract.
-func NewReadinessGate(rc ReadinessConfig, pc PeerConfig, hc *HealthChecker) *readiness.Gate {
-	return readiness.NewGate(rc.MaxLag, len(pc.Peers) > 0, hc)
+// ("") gRPC health entry. Either static peers or a dynamic resolver selects
+// peer mode; only a topology with neither bypasses lag gating.
+func NewReadinessGate(rc ReadinessConfig, pc PeerConfig, resolver *PeerResolver, hc *HealthChecker) *readiness.Gate {
+	hasDynamicPeers := resolver != nil && resolver.Source != nil
+	return readiness.NewGate(rc.MaxLag, len(pc.Peers) > 0 || hasDynamicPeers, hc)
 }
 
 // pumpMetricsFanOut delegates replication.Metrics events to both
