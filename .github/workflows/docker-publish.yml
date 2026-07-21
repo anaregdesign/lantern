@@ -37,7 +37,7 @@ jobs:
       - name: Set up Go
         id: setup-go
         continue-on-error: true
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: '1.26.5'
           check-latest: true
@@ -296,7 +296,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: '1.26.5'
           check-latest: true
@@ -350,7 +350,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: '1.26.5'
           check-latest: true
