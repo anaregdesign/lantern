@@ -88,15 +88,22 @@ placeholder byte variables shown above.
 - typed loading, empty, unauthenticated, unavailable, timeout,
   retry-exhausted, and unexpected-error UI states;
 - `AppLifecycleListener` cancellation on hide/pause and explicit refresh on
-  resume.
+  resume;
+- an opt-in `lantern_client_offline` screen with immediate cached snapshots,
+  locally committed Put/Add pending state, Add estimates, explicit probe/replay,
+  and authorized dead-letter inspect/retry/delete controls.
 
 The app deliberately does not close its app-scoped client on `inactive`, which
 can be caused by a phone call or system dialog. It cancels screen work on
 hide/pause, re-fetches freshness-sensitive data on resume, and closes the
 client only when its owner is disposed. Do not rely on a termination callback:
 iOS may suspend shortly after backgrounding, and Android Doze can stop network
-access. The SDK provides no offline cache, background sync, or delivery
-guarantee.
+access. The standard `lantern_client` provides no implicit offline cache,
+background sync, or delivery guarantee. The example's opt-in offline Repository
+uses `InMemoryOfflineStore`, so it demonstrates the state/UX contract but does
+not survive process termination. Production apps must inject a durable,
+encrypted transactional store, bind each partition to the signed-in
+user/tenant, and wipe that partition on logout.
 
 ## Checks
 
@@ -110,7 +117,9 @@ flutter build ios --debug --no-codesign
 ```
 
 The native real-wire smoke is in
-`integration_test/mobile_smoke_test.dart`. See
+`integration_test/mobile_smoke_test.dart`; it covers offline enqueue, cached
+pending state, probe-gated replay, confirmation, and the direct online surface.
+See
 [physical-device-smoke.md](physical-device-smoke.md) for the required device
 matrix and evidence format.
 

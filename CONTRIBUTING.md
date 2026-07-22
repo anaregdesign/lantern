@@ -99,6 +99,10 @@ go test ./...                    # root module
   && dart pub get --enforce-lockfile && dart analyze && dart test \
   && dart doc --output "$(mktemp -d)" --validate-links \
   && dart pub publish --dry-run)
+(cd sdks/dart/offline && dart format --output=none --set-exit-if-changed \
+  lib test && dart pub get --enforce-lockfile \
+  && dart analyze && dart test \
+  && dart doc --output "$(mktemp -d)" --validate-links)
 (cd sdks/dart/example && dart format --output=none --set-exit-if-changed \
   lib test integration_test \
   && flutter pub get --enforce-lockfile && flutter analyze && flutter test)
@@ -116,7 +120,13 @@ decision and also runs the package at its declared minimum Dart floor. The workf
 routes backend/search-only changes through the current-Dart unit and real-wire gates;
 Dart SDK, proto, codegen/toolchain, workflow, and release-tag changes run the complete
 minimum/current Dart, package-quality, Android, and iOS matrix. The stable `Gate` job
-checks the required result set for either scope.
+checks the required result set for either scope. The experimental
+`sdks/dart/offline/` child runs from its own working directory at minimum/current
+Dart, including fresh-process canonical snapshot tests and real-server
+committed-response-loss replay. Its path dependency and `publish_to: none` remain
+intentional until the separate release Issue accepts hosted dependency conversion
+after ADR 0002's physical-device graduation gate; the parent `lantern_client`
+publish archive must continue to exclude `offline/`.
 
 ## Coverage floor (ratchet)
 

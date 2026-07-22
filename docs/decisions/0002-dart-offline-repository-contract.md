@@ -38,14 +38,48 @@ values, absolute expiration, caller-supplied contribution IDs, typed errors,
 cancellation, and per-call token acquisition—but does not depend on SQLite,
 secure storage, connectivity, Flutter, or a state-management library.
 
+### Reference-core implementation
+
+The accepted contract now has an experimental pure-Dart reference core at
+`sdks/dart/offline` (`lantern_client_offline`, `publish_to: none`). It supplies
+the v1 fail-closed JSON codec and deterministic fixtures, immutable public
+ports/types, a non-production `InMemoryOfflineStore`, confirmed-cache policy
+engine, latency-compensated Put/Add overlays, and explicit bounded replay over
+an injected `OfflineRemote`. It is intentionally not a persistence or
+encryption implementation.
+
+The core admits only unconditional `PutVertex`, `PutEdge`, and stable-ID
+`AddEdge`; it keeps one outbox record per item plus one content-free durable
+aggregate per logical operation, resolves relative TTL once, and rejects late
+lease/generation responses after a partition wipe. Calling a
+write method means the local transaction committed—not that remote delivery was
+confirmed. Replay is foreground-only through explicit `drain`, `start`, or
+`resume` calls. The reference store exists for tests and conformance examples;
+production adapters must preserve its serializable transaction, defensive-byte,
+partition-generation, durable FIFO ordinal, capacity, renewable lease,
+operation/dead-letter retention, and codec semantics. They can execute
+`runStoreConformanceSuite` in their own test runner against an empty adapter.
+
+The package has no storage key API and makes no encryption claim. Applications
+must provide at-rest encryption and key lifecycle policy in their store adapter.
+Schema open/migration failures must fail closed as `OfflineSchemaException`;
+malformed v1 record bytes or v2 reference snapshots must fail closed as
+`OfflineCodecException` and must never be sent to `OfflineRemote`. Reference
+snapshot schema v2 adds operation aggregates; opening schema v1 reconstructs
+active operation metadata transactionally and marks outcomes no longer present
+in the legacy outbox as `outcomeUnknown`. Cache and outbox capacity failures use
+`OfflineCapacityException`; adapters may evict only confirmed cache records,
+never live unconfirmed outbox records.
+
 `lantern_client_offline` takes an injected transactional `OfflineStore`; it
-does not bundle a database. A separately versioned
-`lantern_client_offline_sqlite` adapter is the intended default integration
-after the storage contract is proven. Both packages remain experimental until
-at least two application integrations validate the codec, state machine,
-migration, user isolation, and adapter boundary. Persistence built directly
-into `lantern_client` remains rejected: it would force policy and platform
-dependencies on every client and make user isolation an SDK-global concern.
+does not bundle a database. The storage-neutral contract graduates only after
+its deterministic host gates are paired with the maintained example on at least
+one physical Android or iOS device. A separately versioned production adapter
+may be proposed later after passing the reusable conformance suite; no default
+adapter or package publication is implied by core graduation. Persistence built
+directly into `lantern_client` remains rejected: it would force policy and
+platform dependencies on every client and make user isolation an SDK-global
+concern.
 
 ## Alternatives
 
@@ -83,19 +117,25 @@ The record also carries `validatedAt`, optional ETag/version metadata supplied
 by an application gateway, and its last access time for eviction. A codec must
 fail closed on an unknown schema/kind instead of converting it to unset or nil.
 
-Reads return an explicit state:
+Reads return an immutable snapshot with an explicit state:
 
 ```dart
-sealed class CachedRead<T> {}
-final class Fresh<T> extends CachedRead<T> { T value; DateTime validatedAt; }
-final class Stale<T> extends CachedRead<T> { T value; DateTime validatedAt; }
-final class Missing<T> extends CachedRead<T> { DateTime validatedAt; }
-final class Expired<T> extends CachedRead<T> { DateTime expiredAt; }
-final class Unknown<T> extends CachedRead<T> { Object? cause; }
+enum OfflineReadState { fresh, stale, missing, expired, unknown }
+
+final class OfflineSnapshot<T> {
+  OfflineReadState state;
+  OfflineReadSource? source;
+  T? value;
+  DateTime? validatedAt;
+  bool hasPendingWrites;
+  bool isEstimate;
+}
 ```
 
-The actual types will be immutable; fields above are abbreviated API-sketch
-notation.
+Fields above are abbreviated API-sketch notation; the implemented type is
+immutable. Cache-first watches emit local state immediately, attempt one server
+revalidation, coalesce identical snapshots, and remain subscribed to local
+changes even when that revalidation fails.
 
 - `Fresh` requires `now < expiration` (when present) and application freshness
   age within its configured bound.
@@ -128,6 +168,14 @@ item in a single enqueue transaction. Records from that call share an
 `operationId` and have stable, zero-based `itemIndex` values. This makes
 per-item progress durable without inventing a terminal state for a batch whose
 items have mixed confirmation or expiration outcomes.
+
+The same transaction also creates or updates a content-free operation
+aggregate. `getWriteStatus` and `watchWrite` reconstruct its latest per-item
+states after process restart; the process-local handle stream is only a
+convenience. Enqueue, claim, confirmation, retry, authentication pause,
+dead-letter, expiry, and lease recovery update outbox and aggregate metadata
+atomically. Terminal aggregates have bounded retention and may be evicted;
+non-terminal aggregates may not be evicted to admit new work.
 
 The storage model contains:
 
@@ -172,9 +220,11 @@ and every retry reuse identical bytes. If `now >= absoluteExpiration` before
 confirmation, that item becomes `expired` and is never rebased.
 
 Put is safe to replay to its final state. Add is replayable only when every
-claimed record has a persisted valid contribution ID. The coordinator may
-batch compatible records as a transport optimization, but it commits each
-record's resulting state transactionally after a response. A crash therefore
+claimed record has a persisted valid contribution ID. The coordinator may batch compatible records as a future transport
+optimization, but the accepted baseline deliberately sends one item per RPC and
+commits each record's resulting state transactionally after its response. A
+1,001-item real-wire restart scenario proves that already-confirmed items are
+not replayed while the remaining items resume safely. A crash therefore
 does not rebuild already-confirmed items into a later batch. If an Add response
 is lost, replaying the same IDs is the reconciliation; if the server can no
 longer retain that contribution because the intent itself expired, the
@@ -193,6 +243,15 @@ concurrently up to an application cap, while records for the same key remain
 ordered by enqueue sequence. One storage transaction claims a bounded set of
 compatible records with leases. After a crash, lease expiry returns `sending`
 work to `enqueued`; stable IDs and per-record states make the next attempt safe.
+While an RPC remains active, the coordinator renews its lease with an
+owner/generation/state CAS. A lost lease makes the late response ineligible for
+local confirmation.
+
+Distinct remote reads have repository-wide and per-partition active and queued
+caps. Snapshot watchers have repository-wide, per-partition, and active
+partition caps. These bounds apply only to remote legs and active subscriptions;
+cache-only reads remain local, and queued cancellation cannot start a remote
+request.
 
 The offline package exposes a control surface that lets the application make
 unsafe and failed work inspectable without exposing payloads through logs.
@@ -307,16 +366,23 @@ from an earlier scope, but none may add implicit persistence to
 3. [#1113](https://github.com/anaregdesign/lantern/issues/1113) adds a maintained
    Flutter integration with foreground-resume replay and dead-letter controls,
    excluding OS background delivery promises.
-4. [#1114](https://github.com/anaregdesign/lantern/issues/1114) validates the
-   experimental package in two application integrations, evaluates SQLite and
-   an alternative adapter plus Keychain/Keystore integration, and decides
-   whether the package and a separately versioned SQLite adapter graduate.
+4. [#1114](https://github.com/anaregdesign/lantern/issues/1114) combines the
+   storage-neutral crash/conformance gates with the maintained example running
+   on at least one physical Android or iOS device, then decides whether the
+   package contract is ready for separate release planning. Production adapter,
+   Keychain/Keystore, and publication work remain separate follow-up scopes.
 5. [#1115](https://github.com/anaregdesign/lantern/issues/1115) adds
    server-authoritative operation receipts so mutations whose public result is
    ambiguous after response loss can be reconciled safely.
 6. [#1116](https://github.com/anaregdesign/lantern/issues/1116) adds a
    client-facing revision/change stream for bounded invalidation after server
    Deletes, expiration, and HA convergence.
+7. [#1162](https://github.com/anaregdesign/lantern/issues/1162) implements a
+   separately versioned production SQLite adapter and runs the reusable store
+   conformance suite plus physical restart/isolation checks.
+8. [#1163](https://github.com/anaregdesign/lantern/issues/1163) owns hosted
+   dependency conversion, versioning, pub.dev OIDC, and the independent
+   `sdks/dart/offline/vX.Y.Z` release contract.
 
 ## Consequences
 

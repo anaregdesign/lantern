@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:lantern_client/lantern_client.dart';
+import 'package:lantern_client_offline/lantern_client_offline.dart';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -76,9 +77,76 @@ void main() {
       ),
       isA<Graph>(),
     );
+    final offline = OfflineLanternRepository(
+      store: InMemoryOfflineStore(),
+      remote: LanternClientOfflineRemote(client),
+    );
+    addTearDown(offline.dispose);
+    const partition = 'mobile-smoke-session';
+    final offlineVertexKey = '${prefix}offline-vertex';
+    final put = await offline.putVertex(
+      partitionId: partition,
+      input: VertexInput(
+        key: offlineVertexKey,
+        value: VertexValue.string('queued-offline'),
+        expiresIn: const Duration(minutes: 2),
+      ),
+    );
+    final putStatuses = put.statuses.toList();
+    final offlineEdge = EdgeInput(
+      tail: '${prefix}offline-tail',
+      head: '${prefix}offline-head',
+      weight: 0.5,
+      expiresIn: const Duration(minutes: 2),
+    );
+    final add = await offline.addEdge(
+      partitionId: partition,
+      input: offlineEdge,
+    );
+    final addStatuses = add.statuses.toList();
+    final pendingVertex = await offline.readVertex(
+      partition,
+      offlineVertexKey,
+      policy: OfflineReadPolicy.cacheOnly,
+    );
+    final pendingEdge = await offline.readEdge(
+      partition,
+      EdgeRef(offlineEdge.tail, offlineEdge.head),
+      policy: OfflineReadPolicy.cacheOnly,
+    );
+    expect(pendingVertex.hasPendingWrites, isTrue);
+    expect(pendingEdge.hasPendingWrites, isTrue);
+    expect(pendingEdge.isEstimate, isTrue);
+
+    expect(await offline.probeAndDrain(partition), 2);
+    expect((await putStatuses).last.state, OfflineWriteState.confirmed);
+    expect((await addStatuses).last.state, OfflineWriteState.confirmed);
+    final cachedVertex = await offline.readVertex(
+      partition,
+      offlineVertexKey,
+      policy: OfflineReadPolicy.cacheOnly,
+    );
+    final cachedEdge = await offline.readEdge(
+      partition,
+      EdgeRef(offlineEdge.tail, offlineEdge.head),
+      policy: OfflineReadPolicy.cacheOnly,
+    );
+    expect(cachedVertex.hasPendingWrites, isFalse);
+    expect(cachedVertex.source, OfflineReadSource.cache);
+    expect(cachedEdge.hasPendingWrites, isFalse);
+    expect(cachedEdge.isEstimate, isFalse);
+    expect(
+      (await client.getVertex(offlineVertexKey)).value,
+      isA<StringValue>(),
+    );
+    expect(
+      await client.getEdge(EdgeRef(offlineEdge.tail, offlineEdge.head)),
+      isA<Edge>().having((value) => value.weight, 'weight', 0.5),
+    );
     // ignore: avoid_print
     print(
-      'MOBILE_SMOKE_PASS vertices=${inputs.length} edge=1 scan=true bfs=true',
+      'MOBILE_SMOKE_PASS vertices=${inputs.length} edge=1 scan=true bfs=true '
+      'offline_cache=true offline_replay=true',
     );
   });
 }

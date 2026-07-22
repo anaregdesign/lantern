@@ -1,0 +1,1 @@
+{"schema":1,"type":"cache","partitionId":"partition","generation":0,"key":{"kind":"vertex","key":"fixture","tail":null,"head":null},"record":"value","entity":{"kind":"vertex","key":"fixture","value":{"kind":"string","data":"value"},"expiration":null,"tail":null,"head":null,"weight":null},"validatedAt":"0","lastAccessAt":"0","missingUntil":null,"versionTag":null}

@@ -470,6 +470,13 @@ token providers, deadlines, cancellation, bounded retry, typed failures, and
 auth-exempt gRPC Health-v1 probing). See
 [sdks/dart/README.md](sdks/dart/README.md) for the current supported surface.
 
+[`lantern_client_offline`](sdks/dart/offline/) is an experimental, unpublished,
+opt-in pure-Dart Repository layer for Firebase-like cached snapshots, locally
+committed Put/Add overlays, and explicit foreground replay. It injects the
+transactional store, never persists credentials, never serves past Lantern TTL,
+and reuses exact persisted Add contribution IDs after response loss. The online
+SDK, Go SDK, and CLI retain their existing direct-online behavior.
+
 ### Anything else
 
 Generate bindings from
@@ -788,6 +795,7 @@ and two Bun-managed TypeScript packages; dependency direction is a strict DAG:
 | [`server/`](server/) | The Connect server (DI via google/wire) |
 | [`sdks/go/`](sdks/go/) | Go client SDK — depends on `pb/` only |
 | [`sdks/dart/`](sdks/dart/) | Pure-Dart Android/iOS-first SDK (`lantern_client`) |
+| [`sdks/dart/offline/`](sdks/dart/offline/) | Experimental storage-neutral offline Repository (`lantern_client_offline`) |
 | [`sdks/node/`](sdks/node/) | TypeScript client SDK (`lantern-sdk` on npm) |
 | [`cli/`](cli/) | `lantern-cli` — REPL + one-liners |
 | [`admin/`](admin/) | Browser Admin console (React Router / Fluent UI / Sigma.js) |

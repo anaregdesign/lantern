@@ -32,6 +32,8 @@ dependencies:
     sdk: flutter
   lantern_client:
     path: ..
+  lantern_client_offline:
+    path: ../offline
 
 dev_dependencies:
   connectrpc: 1.0.0
