@@ -1,0 +1,23 @@
+name: lantern_client_offline
+description: Experimental pure-Dart cache, durable outbox, and foreground replay repository for Lantern.
+version: 0.1.0
+publish_to: none
+repository: https://github.com/anaregdesign/lantern
+homepage: https://github.com/anaregdesign/lantern/tree/main/sdks/dart/offline
+issue_tracker: https://github.com/anaregdesign/lantern/issues
+topics:
+  - cache
+  - graph
+  - lantern
+  - offline
+
+environment:
+  sdk: ">=3.11.0 <4.0.0"
+
+dependencies:
+  lantern_client:
+    path: ..
+
+dev_dependencies:
+  lints: 6.1.0
+  test: 1.31.2

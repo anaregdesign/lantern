@@ -151,3 +151,42 @@ triggered successful scans. Airplane mode produced the bounded
 `retryExhausted` UI state and zero server RPCs; after restoring Airplane mode,
 Wi-Fi, and foreground state, `ScanVertexKeys`, `ScanVertices`, and
 `TopVerticesByDegree` completed with `grpc.code=ok`.
+
+## Offline Repository physical validation
+
+The opt-in `lantern_client_offline` flow was rerun after its integration into
+the maintained mobile smoke.
+
+- UTC date: 2026-07-22.
+- Device: iPhone 16 Pro, iOS 26.5.2 (23F84).
+- Flutter: 3.44.6, Dart 3.12.2, framework revision
+  `ee80f08bbf97172ec030b8751ceab557177a34a6`.
+- Lantern: offline Epic working tree based on
+  `da543e0a57b538a8429d1fc0e04dd122b6a6c625`.
+- Topology: signed debug app on the physical iPhone, private LAN to the
+  development Lantern listener, synthetic values, and explicit debug-only
+  insecure transport.
+
+Sanitized command:
+
+```bash
+flutter test --no-pub integration_test/mobile_smoke_test.dart \
+  -d <physical-iphone-id> --reporter=expanded --timeout=3m \
+  --dart-define=LANTERN_ENDPOINT=http://<host-lan-address>:6380 \
+  --dart-define=LANTERN_ALLOW_INSECURE=true
+```
+
+Sanitized result:
+
+```text
+MOBILE_SMOKE_PASS vertices=13 edge=1 scan=true bfs=true \
+offline_cache=true offline_replay=true
+All tests passed!
+```
+
+The physical run locally committed PutVertex and stable-ID AddEdge, observed
+the pending cache and estimated Add before replay, then completed a real
+Lantern probe/drain and observed confirmed non-pending cache state. The example
+uses `InMemoryOfflineStore`; process-restart durability remains covered by the
+storage-neutral fresh-process, response-loss, migration, and adapter
+conformance tests rather than being claimed from this device run.

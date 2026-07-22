@@ -4,6 +4,9 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:lantern_client/lantern_client.dart';
+import 'package:lantern_client_offline/lantern_client_offline.dart';
+
+import 'offline_demo.dart';
 
 /// Lossless, type-labelled text used by the example's value list.
 String formatVertexValue(VertexValue value) => switch (value) {
@@ -122,6 +125,7 @@ final class _ClientOwner extends StatefulWidget {
 final class _ClientOwnerState extends State<_ClientOwner> {
   late final _RuntimeTokenProvider _tokens;
   late final LanternClient _client;
+  late final OfflineLanternRepository _offlineRepository;
 
   @override
   void initState() {
@@ -137,19 +141,25 @@ final class _ClientOwnerState extends State<_ClientOwner> {
       retryPolicy: const RetryPolicy(),
       idempotentAdds: true,
     );
+    _offlineRepository = OfflineLanternRepository(
+      store: InMemoryOfflineStore(),
+      remote: LanternClientOfflineRemote(_client),
+    );
   }
 
   @override
   void dispose() {
     // A signed-in/app session owns the client. Transient inactive/background
     // lifecycle states do not close it.
+    unawaited(_offlineRepository.dispose());
     unawaited(_client.close());
     _tokens.close();
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) => _DiscoveryScreen(client: _client);
+  Widget build(BuildContext context) =>
+      _DiscoveryScreen(client: _client, offlineRepository: _offlineRepository);
 }
 
 enum _UiPhase {
@@ -164,9 +174,13 @@ enum _UiPhase {
 }
 
 final class _DiscoveryScreen extends StatefulWidget {
-  const _DiscoveryScreen({required this.client});
+  const _DiscoveryScreen({
+    required this.client,
+    required this.offlineRepository,
+  });
 
   final LanternClient client;
+  final OfflineLanternRepository offlineRepository;
 
   @override
   State<_DiscoveryScreen> createState() => _DiscoveryScreenState();
@@ -548,6 +562,18 @@ final class _DiscoveryScreenState extends State<_DiscoveryScreen> {
                 onPressed: () =>
                     _traverse(const LocalCommunityOptions(maxSize: 20)),
                 child: const Text('Community'),
+              ),
+              OutlinedButton(
+                key: const Key('open-offline-demo'),
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => OfflineDemoScreen(
+                      repository: widget.offlineRepository,
+                      partitionId: 'flutter-demo-session',
+                    ),
+                  ),
+                ),
+                child: const Text('Offline'),
               ),
             ],
           ),

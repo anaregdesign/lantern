@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "scenario": "in_memory_reference_1001",
+  "limits": {
+    "enqueueMillis": 5000,
+    "replayMillis": 30000,
+    "cacheReadP99Micros": 50000,
+    "rssDeltaBytes": 536870912,
+    "snapshotBytes": 4194304
+  }
+}

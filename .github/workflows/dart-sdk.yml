@@ -16,6 +16,7 @@ on:
       - "server/**"
       - "testdata/search/**"
       - "docs/decisions/0001-dart-mobile-transport.md"
+      - "docs/decisions/0002-dart-offline-repository-contract.md"
       - ".github/workflows/dart-sdk.yml"
   pull_request:
     paths:
@@ -29,6 +30,7 @@ on:
       - "server/**"
       - "testdata/search/**"
       - "docs/decisions/0001-dart-mobile-transport.md"
+      - "docs/decisions/0002-dart-offline-repository-contract.md"
       - ".github/workflows/dart-sdk.yml"
 
 permissions:
@@ -86,6 +88,7 @@ jobs:
                 case "$path" in
                   sdks/dart/* | proto/* | buf.yaml | buf.gen.yaml | generate.go | \
                     docs/decisions/0001-dart-mobile-transport.md | \
+                    docs/decisions/0002-dart-offline-repository-contract.md | \
                     .github/workflows/dart-sdk.yml)
                     full=true
                     break
@@ -255,6 +258,142 @@ jobs:
       - name: Analyze and test at the minimum floor
         run: |
           dart analyze lib test
+          dart test
+
+  offline-test:
+    name: Offline package and real-wire replay
+    needs: changes
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/dart/offline
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Set up current supported Dart
+        uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1
+        with:
+          sdk: 3.12.2
+
+      - name: Start Lantern real-wire server
+        working-directory: .
+        run: |
+          go build -o "$RUNNER_TEMP/lantern-offline" ./server/cmd
+          env LANTERN_PORT=6398 LANTERN_METRICS_ADDR=:9098 LANTERN_LOG_LEVEL=warn \
+            "$RUNNER_TEMP/lantern-offline" > "$RUNNER_TEMP/lantern-offline.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/lantern-offline.pid"
+          for attempt in $(seq 1 60); do
+            curl --fail --silent --show-error --max-time 2 \
+              -H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' \
+              --data '{}' \
+              http://127.0.0.1:6398/grpc.health.v1.Health/Check >/dev/null && exit 0
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/lantern-offline.log"
+          exit 1
+
+      - name: Resolve exact offline lockfile
+        run: dart pub get --enforce-lockfile
+
+      - name: Check format
+        run: dart format --output=none --set-exit-if-changed lib test tool
+
+      - name: Analyze
+        run: dart analyze lib test tool
+
+      - name: Test with real committed-response loss
+        env:
+          LANTERN_DART_REAL_WIRE_ENDPOINT: http://127.0.0.1:6398
+        run: dart test
+
+      - name: Check reference-store resource baseline
+        run: >-
+          dart run tool/performance_probe.dart
+          --output "$RUNNER_TEMP/lantern-offline-performance.json"
+
+      - name: Upload sanitized offline performance evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: lantern-offline-performance
+          path: ${{ runner.temp }}/lantern-offline-performance.json
+          if-no-files-found: error
+
+      - name: Build warning-free API documentation
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/dart-offline-doc.log"
+          dart doc --output "$RUNNER_TEMP/dart-offline-doc" --validate-links \
+            2>&1 | tee "$log"
+          if grep -Eq '^  warning:|^warning:' "$log"; then
+            echo "::error::offline dartdoc emitted warnings"
+            exit 1
+          fi
+
+      - name: Prove experimental publish remains blocked
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/dart-offline-publish.log"
+          if dart pub publish --dry-run >"$log" 2>&1; then
+            cat "$log"
+            echo "::error::experimental offline package unexpectedly passed publish validation"
+            exit 1
+          fi
+          grep -F 'path source' "$log"
+
+      - name: Prove parent publish archive isolation
+        working-directory: sdks/dart
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/dart-parent-publish.log"
+          dart pub get --enforce-lockfile --no-example
+          dart pub publish --dry-run >"$log" 2>&1
+          if grep -Eq 'offline($|/)' "$log"; then
+            cat "$log"
+            echo "::error::parent lantern_client archive contains the offline package"
+            exit 1
+          fi
+          if dart pub deps --json | grep -F '"lantern_client_offline"'; then
+            echo "::error::parent lantern_client depends on the offline package"
+            exit 1
+          fi
+
+      - name: Stop Lantern real-wire server
+        if: always()
+        working-directory: .
+        run: |
+          cat "$RUNNER_TEMP/lantern-offline.log" 2>/dev/null || true
+          if [[ -f "$RUNNER_TEMP/lantern-offline.pid" ]]; then
+            kill "$(cat "$RUNNER_TEMP/lantern-offline.pid")" 2>/dev/null || true
+          fi
+
+  offline-minimum-dart:
+    name: Offline package minimum Dart 3.11
+    needs: changes
+    if: needs.changes.outputs.full == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/dart/offline
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up minimum supported Dart
+        uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1
+        with:
+          sdk: 3.11.0
+
+      - name: Resolve, analyze, and test at the minimum floor
+        run: |
+          dart pub get --enforce-lockfile
+          dart analyze lib test tool
           dart test
 
   android:
@@ -447,7 +586,7 @@ jobs:
   gate:
     name: Gate
     if: always()
-    needs: [changes, test, minimum-dart, android, ios]
+    needs: [changes, test, minimum-dart, offline-test, offline-minimum-dart, android, ios]
     runs-on: ubuntu-latest
     steps:
       - name: Verify required jobs
@@ -457,6 +596,8 @@ jobs:
           CHANGES_RESULT: ${{ needs.changes.result }}
           TEST_RESULT: ${{ needs.test.result }}
           MINIMUM_DART_RESULT: ${{ needs.minimum-dart.result }}
+          OFFLINE_TEST_RESULT: ${{ needs.offline-test.result }}
+          OFFLINE_MINIMUM_DART_RESULT: ${{ needs.offline-minimum-dart.result }}
           ANDROID_RESULT: ${{ needs.android.result }}
           IOS_RESULT: ${{ needs.ios.result }}
         run: |
@@ -471,12 +612,15 @@ jobs:
 
           require_result changes "$CHANGES_RESULT" success
           require_result test "$TEST_RESULT" success
+          require_result offline-test "$OFFLINE_TEST_RESULT" success
           if [[ "$FULL" == true ]]; then
             require_result minimum-dart "$MINIMUM_DART_RESULT" success
+            require_result offline-minimum-dart "$OFFLINE_MINIMUM_DART_RESULT" success
             require_result android "$ANDROID_RESULT" success
             require_result ios "$IOS_RESULT" success
           else
             require_result minimum-dart "$MINIMUM_DART_RESULT" skipped
+            require_result offline-minimum-dart "$OFFLINE_MINIMUM_DART_RESULT" skipped
             require_result android "$ANDROID_RESULT" skipped
             require_result ios "$IOS_RESULT" skipped
           fi
