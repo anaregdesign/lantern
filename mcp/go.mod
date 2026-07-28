@@ -12,7 +12,7 @@ require (
 
 require (
 	connectrpc.com/connect v1.20.0 // indirect
-	github.com/anaregdesign/lantern/core v0.18.0 // indirect
+	github.com/anaregdesign/lantern/core v0.18.1 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
