@@ -99,6 +99,7 @@
 //   - Reduction    = pb.Reduction    (see client.go)
 //   - Objective    = pb.Objective    (see client.go)
 //   - Weighting    = pb.Weighting    (see client.go)
+//   - ChangeEvent  = pb.Mutation     (see subscribe.go)
 //
 // Because these are true aliases (declared with `type X = pb.X`, not
 // `type X pb.X`), client.Vertex and pb.Vertex are the same type and
@@ -129,6 +130,11 @@
 //     client-side traversal than pb.Graph's flat slice shape. This is
 //     a deliberate shape transformation, not a duplicate data
 //     definition.
+//
+//   - ChangeOrigin / ChangeCursor
+//     Comparable SDK cursor keys for the wire's fixed 16-byte mutation
+//     origin. Proto map keys cannot be bytes, and importing core/hlc here
+//     would violate the SDK's pb-only module boundary.
 //
 // See https://github.com/anaregdesign/lantern/issues/106 for the
 // design discussion.
