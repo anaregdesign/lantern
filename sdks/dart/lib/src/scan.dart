@@ -342,7 +342,7 @@ Stream<Page<T>> _scanPageStream<T>({
 
   controller = StreamController<Page<T>>(
     onListen: () {
-      unlinkCaller = callerCancellation?._listen((reason) {
+      unlinkCaller = callerCancellation?.listen((reason) {
         streamCancellation.cancel(reason ?? 'caller canceled scan');
         // A caller token must also wake a stream paused between page RPCs so
         // the pump can observe cancellation without starting another request.

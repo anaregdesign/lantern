@@ -212,6 +212,39 @@ void main() {
     await subscription.cancel();
   });
 
+  test(
+    'watch observes a mutation committed during its initial snapshot',
+    () async {
+      final clock = MutableClock(initial);
+      final store = _GapInjectingStore(
+        injectedAt: initial,
+        injected: Vertex(
+          key: 'watched',
+          value: VertexValue.string('between'),
+          expiration: null,
+        ),
+      )..arm();
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: FakeOfflineRemote(),
+        config: testConfig(clock),
+      );
+
+      final snapshots = await repository
+          .watchVertex(
+            'p',
+            'watched',
+            initialPolicy: OfflineReadPolicy.cacheOnly,
+          )
+          .take(2)
+          .toList()
+          .timeout(const Duration(seconds: 1));
+
+      expect(snapshots.first.state, OfflineReadState.unknown);
+      expect((snapshots.last.value!.value as StringValue).value, 'between');
+    },
+  );
+
   test('late remote read cannot repopulate a wiped partition', () async {
     final clock = MutableClock(initial);
     final store = InMemoryOfflineStore();
@@ -270,6 +303,154 @@ void main() {
     );
   });
 
+  test('canceling the first same-key caller leaves the second alive', () async {
+    final clock = MutableClock(initial);
+    final remote = _ControlledReadRemote();
+    final repository = OfflineLanternRepository(
+      store: InMemoryOfflineStore(),
+      remote: remote,
+      config: testConfig(clock),
+    );
+    final firstCancellation = LanternCancellationToken();
+    final secondCancellation = LanternCancellationToken();
+    final first = repository.readVertex(
+      'p',
+      'shared',
+      policy: OfflineReadPolicy.serverOnly,
+      cancellation: firstCancellation,
+    );
+    await remote.waitUntilStarted('shared');
+    final second = repository.readVertex(
+      'p',
+      'shared',
+      policy: OfflineReadPolicy.serverOnly,
+      cancellation: secondCancellation,
+    );
+
+    firstCancellation.cancel();
+    await expectLater(first, throwsA(isA<OfflineCanceledException>()));
+    expect(remote.started.where((key) => key == 'shared'), hasLength(1));
+
+    remote.complete('shared');
+    expect((await second).state, OfflineReadState.missing);
+    expect(remote.started.where((key) => key == 'shared'), hasLength(1));
+  });
+
+  test('canceling the second same-key caller leaves the first alive', () async {
+    final clock = MutableClock(initial);
+    final remote = _ControlledReadRemote();
+    final repository = OfflineLanternRepository(
+      store: InMemoryOfflineStore(),
+      remote: remote,
+      config: testConfig(clock),
+    );
+    final firstCancellation = LanternCancellationToken();
+    final secondCancellation = LanternCancellationToken();
+    final first = repository.readVertex(
+      'p',
+      'shared',
+      policy: OfflineReadPolicy.serverOnly,
+      cancellation: firstCancellation,
+    );
+    await remote.waitUntilStarted('shared');
+    final second = repository.readVertex(
+      'p',
+      'shared',
+      policy: OfflineReadPolicy.serverOnly,
+      cancellation: secondCancellation,
+    );
+
+    secondCancellation.cancel();
+    await expectLater(second, throwsA(isA<OfflineCanceledException>()));
+    expect(remote.started.where((key) => key == 'shared'), hasLength(1));
+
+    remote.complete('shared');
+    expect((await first).state, OfflineReadState.missing);
+    expect(remote.started.where((key) => key == 'shared'), hasLength(1));
+  });
+
+  test('the final waiter cancels transport and releases its permit', () async {
+    final clock = MutableClock(initial);
+    final remote = _CancelableReadRemote();
+    final repository = OfflineLanternRepository(
+      store: InMemoryOfflineStore(),
+      remote: remote,
+      config: OfflineConfig(
+        clock: clock.call,
+        idGenerator: testConfig(clock).idGenerator,
+        jitter: (_) => Duration.zero,
+        maxReadConcurrency: 1,
+        maxReadConcurrencyPerPartition: 1,
+      ),
+    );
+    final cancellation = LanternCancellationToken();
+    final canceled = repository.readVertex(
+      'p',
+      'first',
+      policy: OfflineReadPolicy.serverOnly,
+      cancellation: cancellation,
+    );
+    await remote.waitUntilStarted('first');
+
+    cancellation.cancel();
+    await expectLater(canceled, throwsA(isA<OfflineCanceledException>()));
+    await remote.waitUntilCanceled('first');
+
+    final next = repository.readVertex(
+      'p',
+      'next',
+      policy: OfflineReadPolicy.serverOnly,
+    );
+    await remote.waitUntilStarted('next');
+    remote.complete('next');
+    expect((await next).state, OfflineReadState.missing);
+    expect(remote.canceled.where((key) => key == 'first'), hasLength(1));
+  });
+
+  test(
+    'dispose fails a deferred caller even when the prior flight never settles',
+    () async {
+      final clock = MutableClock(initial);
+      final remote = _CancellationIgnoringReadRemote();
+      addTearDown(remote.release);
+      final repository = OfflineLanternRepository(
+        store: InMemoryOfflineStore(),
+        remote: remote,
+        config: testConfig(clock),
+      );
+      final cancellation = LanternCancellationToken();
+      final first = repository.readVertex(
+        'p',
+        'shared',
+        policy: OfflineReadPolicy.serverOnly,
+        cancellation: cancellation,
+      );
+      await remote.started.future;
+
+      cancellation.cancel();
+      await expectLater(first, throwsA(isA<OfflineCanceledException>()));
+      await remote.cancellationObserved.future;
+
+      final deferred = repository.readVertex(
+        'p',
+        'shared',
+        policy: OfflineReadPolicy.serverOnly,
+      );
+      final deferredExpectation = expectLater(
+        deferred.timeout(const Duration(seconds: 1)),
+        throwsA(isA<OfflineDisposedException>()),
+      );
+
+      await repository.dispose().timeout(const Duration(seconds: 1));
+      await deferredExpectation;
+      expect(remote.startCount, 1);
+
+      remote.release();
+      await Future<void>.delayed(Duration.zero);
+      expect(remote.startCount, 1);
+    },
+  );
+
   test(
     'remote reads honor global, partition, queue, and cancellation bounds',
     () async {
@@ -288,6 +469,18 @@ void main() {
           maxQueuedReadsPerPartition: 1,
         ),
       );
+      final preCanceled = LanternCancellationToken()..cancel();
+      await expectLater(
+        repository.readVertex(
+          'p',
+          'pre-canceled',
+          policy: OfflineReadPolicy.serverOnly,
+          cancellation: preCanceled,
+        ),
+        throwsA(isA<OfflineCanceledException>()),
+      );
+      expect(remote.started, isNot(contains('pre-canceled')));
+
       final first = repository.readVertex(
         'p',
         'first',
@@ -387,35 +580,141 @@ void main() {
     },
   );
 
-  test('watch cancellation is not surfaced as a stream error', () async {
+  test('pause, resume, and final cancel release the store listener', () async {
     final clock = MutableClock(initial);
-    final store = InMemoryOfflineStore();
+    final store = _TrackingStore();
     final repository = OfflineLanternRepository(
       store: store,
       remote: FakeOfflineRemote(),
       config: testConfig(clock),
     );
-    final cancellation = LanternCancellationToken();
-    final errors = <Object>[];
+    final initialSnapshot = Completer<void>();
+    final changedSnapshot = Completer<OfflineSnapshot<Vertex>>();
     final subscription = repository
-        .watchVertex(
-          'p',
-          'key',
-          initialPolicy: OfflineReadPolicy.cacheOnly,
-          cancellation: cancellation,
-        )
-        .listen((_) {}, onError: errors.add);
-    await Future<void>.delayed(Duration.zero);
-    cancellation.cancel();
+        .watchVertex('p', 'watched', initialPolicy: OfflineReadPolicy.cacheOnly)
+        .listen((snapshot) {
+          if (!initialSnapshot.isCompleted) {
+            initialSnapshot.complete();
+          } else if (snapshot.hasPendingWrites &&
+              !changedSnapshot.isCompleted) {
+            changedSnapshot.complete(snapshot);
+          }
+        });
+    await initialSnapshot.future.timeout(const Duration(seconds: 1));
+    expect(store.activeChangeSubscriptions, 1);
+
+    subscription.pause();
     await repository.putVertex(
       partitionId: 'p',
-      input: VertexInput(key: 'key', value: VertexValue.string('value')),
+      input: VertexInput(key: 'watched', value: VertexValue.string('changed')),
     );
-    await Future<void>.delayed(const Duration(milliseconds: 10));
+    await Future<void>.delayed(Duration.zero);
+    expect(changedSnapshot.isCompleted, isFalse);
 
-    expect(errors, isEmpty);
+    subscription.resume();
+    expect(
+      (await changedSnapshot.future.timeout(
+        const Duration(seconds: 1),
+      )).hasPendingWrites,
+      isTrue,
+    );
     await subscription.cancel();
+    expect(store.activeChangeSubscriptions, 0);
   });
+
+  test(
+    'delayed failing store cancellation releases watcher capacity first',
+    () async {
+      final clock = MutableClock(initial);
+      final store = _ControlledCancelStore();
+      addTearDown(store.releaseFirstCancellation);
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: FakeOfflineRemote(),
+        config: OfflineConfig(
+          clock: clock.call,
+          idGenerator: testConfig(clock).idGenerator,
+          jitter: (_) => Duration.zero,
+          maxWatchers: 1,
+          maxWatchersPerPartition: 1,
+          maxActiveWatcherPartitions: 1,
+        ),
+      );
+      final firstInitial = Completer<void>();
+      final first = repository
+          .watchVertex('p', 'first', initialPolicy: OfflineReadPolicy.cacheOnly)
+          .listen((_) => firstInitial.complete());
+      await firstInitial.future.timeout(const Duration(seconds: 1));
+
+      final firstCancellation = expectLater(
+        first.cancel(),
+        throwsA(isA<StateError>()),
+      );
+      await store.firstCancellationStarted.future.timeout(
+        const Duration(seconds: 1),
+      );
+
+      final secondInitial = Completer<void>();
+      final second = repository
+          .watchVertex(
+            'p',
+            'second',
+            initialPolicy: OfflineReadPolicy.cacheOnly,
+          )
+          .listen((_) => secondInitial.complete());
+      await secondInitial.future.timeout(const Duration(seconds: 1));
+
+      store.releaseFirstCancellation();
+      await firstCancellation;
+      await second.cancel();
+      await repository.dispose();
+    },
+  );
+
+  test(
+    'idle watch cancellation closes and releases watcher capacity',
+    () async {
+      final clock = MutableClock(initial);
+      final repository = OfflineLanternRepository(
+        store: InMemoryOfflineStore(),
+        remote: FakeOfflineRemote(),
+        config: OfflineConfig(
+          clock: clock.call,
+          idGenerator: testConfig(clock).idGenerator,
+          jitter: (_) => Duration.zero,
+          maxWatchers: 1,
+          maxWatchersPerPartition: 1,
+          maxActiveWatcherPartitions: 1,
+        ),
+      );
+      final errors = <Object>[];
+      for (var index = 0; index < 3; index++) {
+        final cancellation = LanternCancellationToken();
+        final initialSnapshot = Completer<void>();
+        final done = Completer<void>();
+        repository
+            .watchVertex(
+              'p',
+              'key-$index',
+              initialPolicy: OfflineReadPolicy.cacheOnly,
+              cancellation: cancellation,
+            )
+            .listen(
+              (_) {
+                if (!initialSnapshot.isCompleted) initialSnapshot.complete();
+              },
+              onError: errors.add,
+              onDone: () => done.complete(),
+            );
+        await initialSnapshot.future.timeout(const Duration(seconds: 1));
+
+        cancellation.cancel();
+        await done.future.timeout(const Duration(seconds: 1));
+      }
+
+      expect(errors, isEmpty);
+    },
+  );
 
   test(
     'an oversized confirmed read remains usable and emits capacity diagnostics',
@@ -510,6 +809,223 @@ final class _ControlledReadRemote extends FakeOfflineRemote {
     _active -= 1;
     return const OfflineRemoteMissing<Vertex>();
   }
+}
+
+final class _CancelableReadRemote extends FakeOfflineRemote {
+  final Map<String, Completer<OfflineRemoteRead<Vertex>>> _responses =
+      <String, Completer<OfflineRemoteRead<Vertex>>>{};
+  final Map<String, Completer<void>> _startedSignals =
+      <String, Completer<void>>{};
+  final Map<String, Completer<void>> _canceledSignals =
+      <String, Completer<void>>{};
+  final List<String> canceled = <String>[];
+
+  Future<void> waitUntilStarted(String key) =>
+      _startedSignals.putIfAbsent(key, Completer<void>.new).future;
+
+  Future<void> waitUntilCanceled(String key) =>
+      _canceledSignals.putIfAbsent(key, Completer<void>.new).future;
+
+  void complete(String key) {
+    final response = _responses.putIfAbsent(
+      key,
+      Completer<OfflineRemoteRead<Vertex>>.new,
+    );
+    if (!response.isCompleted) {
+      response.complete(const OfflineRemoteMissing<Vertex>());
+    }
+  }
+
+  @override
+  Future<OfflineRemoteRead<Vertex>> getVertex(
+    String key, {
+    LanternCancellationToken? cancellation,
+  }) async {
+    _startedSignals.putIfAbsent(key, Completer<void>.new).complete();
+    final response = _responses.putIfAbsent(
+      key,
+      Completer<OfflineRemoteRead<Vertex>>.new,
+    );
+    final removeCancellationListener = cancellation?.listen((_) {
+      canceled.add(key);
+      _canceledSignals.putIfAbsent(key, Completer<void>.new).complete();
+      if (!response.isCompleted) {
+        response.completeError(const OfflineCanceledException());
+      }
+    });
+    try {
+      return await response.future;
+    } finally {
+      removeCancellationListener?.call();
+    }
+  }
+}
+
+final class _CancellationIgnoringReadRemote extends FakeOfflineRemote {
+  final Completer<void> started = Completer<void>();
+  final Completer<void> cancellationObserved = Completer<void>();
+  final Completer<OfflineRemoteRead<Vertex>> _response =
+      Completer<OfflineRemoteRead<Vertex>>();
+  var startCount = 0;
+
+  void release() {
+    if (!_response.isCompleted) {
+      _response.complete(const OfflineRemoteMissing<Vertex>());
+    }
+  }
+
+  @override
+  Future<OfflineRemoteRead<Vertex>> getVertex(
+    String key, {
+    LanternCancellationToken? cancellation,
+  }) async {
+    startCount += 1;
+    if (!started.isCompleted) started.complete();
+    final removeCancellationListener = cancellation?.listen((_) {
+      if (!cancellationObserved.isCompleted) cancellationObserved.complete();
+    });
+    try {
+      return await _response.future;
+    } finally {
+      removeCancellationListener?.call();
+    }
+  }
+}
+
+final class _GapInjectingStore implements OfflineStore {
+  _GapInjectingStore({required this.injectedAt, required this.injected});
+
+  final InMemoryOfflineStore _delegate = InMemoryOfflineStore();
+  final DateTime injectedAt;
+  final Vertex injected;
+  var _armed = false;
+  var _injected = false;
+
+  void arm() => _armed = true;
+
+  @override
+  Stream<OfflineStoreChange> changes(String partitionId) =>
+      _delegate.changes(partitionId);
+
+  @override
+  Future<T> transaction<T>(
+    FutureOr<T> Function(OfflineStoreTransaction transaction) action,
+  ) async {
+    final result = await _delegate.transaction(action);
+    if (_armed && !_injected) {
+      _injected = true;
+      await _delegate.transaction((transaction) {
+        transaction.putCache(
+          'p',
+          OfflineCacheRecord.value(
+            partitionId: 'p',
+            generation: 0,
+            key: OfflineEntityKey.vertex(injected.key),
+            entity: injected,
+            validatedAt: injectedAt,
+            lastAccessAt: injectedAt,
+          ),
+        );
+      });
+    }
+    return result;
+  }
+}
+
+final class _TrackingStore implements OfflineStore {
+  final InMemoryOfflineStore _delegate = InMemoryOfflineStore();
+  var activeChangeSubscriptions = 0;
+
+  @override
+  Stream<OfflineStoreChange> changes(String partitionId) {
+    StreamSubscription<OfflineStoreChange>? upstream;
+    var active = false;
+    late final StreamController<OfflineStoreChange> controller;
+
+    Future<void> cancelUpstream() async {
+      if (active) {
+        active = false;
+        activeChangeSubscriptions -= 1;
+      }
+      await upstream?.cancel();
+    }
+
+    controller = StreamController<OfflineStoreChange>(
+      sync: true,
+      onListen: () {
+        active = true;
+        activeChangeSubscriptions += 1;
+        upstream = _delegate
+            .changes(partitionId)
+            .listen(
+              controller.add,
+              onError: controller.addError,
+              onDone: controller.close,
+            );
+      },
+      onPause: () => upstream?.pause(),
+      onResume: () => upstream?.resume(),
+      onCancel: cancelUpstream,
+    );
+    return controller.stream;
+  }
+
+  @override
+  Future<T> transaction<T>(
+    FutureOr<T> Function(OfflineStoreTransaction transaction) action,
+  ) => _delegate.transaction(action);
+}
+
+final class _ControlledCancelStore implements OfflineStore {
+  final InMemoryOfflineStore _delegate = InMemoryOfflineStore();
+  final Completer<void> firstCancellationStarted = Completer<void>();
+  final Completer<void> _releaseFirstCancellation = Completer<void>();
+  var _cancellationCount = 0;
+
+  void releaseFirstCancellation() {
+    if (!_releaseFirstCancellation.isCompleted) {
+      _releaseFirstCancellation.complete();
+    }
+  }
+
+  @override
+  Stream<OfflineStoreChange> changes(String partitionId) {
+    StreamSubscription<OfflineStoreChange>? upstream;
+    late final StreamController<OfflineStoreChange> controller;
+
+    controller = StreamController<OfflineStoreChange>(
+      sync: true,
+      onListen: () {
+        upstream = _delegate
+            .changes(partitionId)
+            .listen(
+              controller.add,
+              onError: controller.addError,
+              onDone: controller.close,
+            );
+      },
+      onPause: () => upstream?.pause(),
+      onResume: () => upstream?.resume(),
+      onCancel: () async {
+        _cancellationCount += 1;
+        if (_cancellationCount == 1) {
+          if (!firstCancellationStarted.isCompleted) {
+            firstCancellationStarted.complete();
+          }
+          await _releaseFirstCancellation.future;
+          await upstream?.cancel();
+          throw StateError('store cancellation failed');
+        }
+        await upstream?.cancel();
+      },
+    );
+    return controller.stream;
+  }
+
+  @override
+  Future<T> transaction<T>(
+    FutureOr<T> Function(OfflineStoreTransaction transaction) action,
+  ) => _delegate.transaction(action);
 }
 
 final class _RecordingDiagnostics implements OfflineDiagnostics {

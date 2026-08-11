@@ -12,6 +12,70 @@ import 'package:lantern_client/src/gen/graph/v1/graph.pb.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test('cancellation listeners fire once and detach idempotently', () {
+    final cancellation = LanternCancellationToken();
+    final retainedReason = Object();
+    final reasons = <Object?>[];
+    final detachedReasons = <Object?>[];
+    final remove = cancellation.listen(reasons.add);
+    final removeDetached = cancellation.listen(detachedReasons.add);
+
+    removeDetached();
+    removeDetached();
+    cancellation.cancel(retainedReason);
+    cancellation.cancel(Object());
+    remove();
+    remove();
+
+    expect(reasons, hasLength(1));
+    expect(reasons.single, same(retainedReason));
+    expect(detachedReasons, isEmpty);
+  });
+
+  test('a throwing cancellation listener cannot poison fan-out', () async {
+    final cancellation = LanternCancellationToken();
+    final reason = Object();
+    final delivered = <Object?>[];
+    final reported = Completer<Object>();
+
+    runZonedGuarded(
+      () {
+        cancellation.listen((_) => throw StateError('listener failed'));
+        cancellation.listen(delivered.add);
+        cancellation.cancel(reason);
+      },
+      (error, _) {
+        if (!reported.isCompleted) reported.complete(error);
+      },
+    );
+
+    expect(delivered, <Object?>[reason]);
+    expect(await reported.future, isA<StateError>());
+  });
+
+  test('pre-canceled listeners run in a detachable microtask', () async {
+    final cancellation = LanternCancellationToken();
+    final retainedReason = Object();
+    cancellation.cancel(retainedReason);
+    var synchronous = true;
+    final reasons = <Object?>[];
+    final detachedReasons = <Object?>[];
+    cancellation.listen((reason) {
+      expect(synchronous, isFalse);
+      reasons.add(reason);
+    });
+    final removeDetached = cancellation.listen(detachedReasons.add);
+    removeDetached();
+    removeDetached();
+
+    synchronous = false;
+    await Future<void>.delayed(Duration.zero);
+
+    expect(reasons, hasLength(1));
+    expect(reasons.single, same(retainedReason));
+    expect(detachedReasons, isEmpty);
+  });
+
   test('health ping uses auth-exempt Connect JSON and maps status', () async {
     final requests = <io.HttpRequest>[];
     final server = await io.HttpServer.bind('127.0.0.1', 0);

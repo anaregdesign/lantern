@@ -74,19 +74,48 @@ final class LanternCancellationToken {
     if (_isCanceled) return;
     _isCanceled = true;
     _reason = reason;
-    for (final listener in _listeners.toList(growable: false)) {
-      listener(reason);
-    }
+    final listeners = _listeners.toList(growable: false);
     _listeners.clear();
+    final failures = <({Object error, StackTrace stackTrace})>[];
+    for (final listener in listeners) {
+      try {
+        listener(reason);
+      } catch (error, stackTrace) {
+        failures.add((error: error, stackTrace: stackTrace));
+      }
+    }
+    final zone = Zone.current;
+    for (final failure in failures) {
+      scheduleMicrotask(
+        () => zone.handleUncaughtError(failure.error, failure.stackTrace),
+      );
+    }
   }
 
-  void Function() _listen(void Function(Object?) listener) {
-    if (_isCanceled) {
-      scheduleMicrotask(() => listener(_reason));
-      return () {};
+  /// Registers [listener] to run once when this token is canceled.
+  ///
+  /// The returned callback detaches the listener and is safe to call more than
+  /// once. When this token is already canceled, delivery is scheduled in a
+  /// microtask so callers can still detach before the callback runs. A listener
+  /// failure is reported asynchronously after every listener has been offered
+  /// the cancellation signal.
+  void Function() listen(void Function(Object?) listener) {
+    var detached = false;
+    void notify(Object? reason) {
+      if (detached) return;
+      listener(reason);
     }
-    _listeners.add(listener);
-    return () => _listeners.remove(listener);
+
+    if (_isCanceled) {
+      scheduleMicrotask(() => notify(_reason));
+    } else {
+      _listeners.add(notify);
+    }
+    return () {
+      if (detached) return;
+      detached = true;
+      _listeners.remove(notify);
+    };
   }
 }
 
@@ -898,7 +927,7 @@ final class _CallSignal implements connect.AbortSignal {
         _timer = Timer(remaining, _expire);
       }
     }
-    _removeCancellationListener = cancellation?._listen(_cancelFromCaller);
+    _removeCancellationListener = cancellation?.listen(_cancelFromCaller);
   }
 
   final Completer<connect.ConnectException> _completer = Completer();

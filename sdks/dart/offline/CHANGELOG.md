@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Preserve typed cancellation through the online adapter, isolate same-key
+  single-flight waiters, cancel transport only after the final waiter leaves,
+  and close idle watches immediately without missing initial store changes.
+
 ## 0.1.0
 
 - Initial experimental storage-neutral offline Repository core.

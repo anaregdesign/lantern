@@ -63,7 +63,11 @@ No stale policy serves a value at or after its Lantern expiration.
 Distinct remote reads, queued reads, active watchers, per-partition watchers,
 and watcher-owning partitions all have explicit bounds. Queued cancellation
 does not consume a remote permit, and lifecycle cancellation closes a watch
-without surfacing a cancellation error as application failure.
+without surfacing a cancellation error as application failure. Same-key reads
+share one remote flight while retaining per-caller cancellation; the underlying
+call is canceled only after its final waiter leaves. Watches subscribe to local
+changes before their initial snapshot and reconcile any mutation that arrives
+during that handoff.
 
 Replay is never inferred from network type. Call `drain`, `start`, or `resume`
 from explicit foreground work, or `probeAndDrain` to require a successful real
