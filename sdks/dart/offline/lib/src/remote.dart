@@ -1,5 +1,3 @@
-import 'dart:typed_data';
-
 import 'package:lantern_client/lantern_client.dart';
 
 import 'errors.dart';
@@ -64,7 +62,7 @@ final class OfflineRemoteMissing<T> extends OfflineRemoteRead<T> {
 /// Network port used by [OfflineLanternRepository].
 ///
 /// Implementations must acquire credentials at send time and honor cancellation.
-/// They must return exact values/expirations and preserve an Add contribution ID.
+/// They must return exact values and expirations.
 abstract interface class OfflineRemote {
   /// Probes the real Lantern health surface without implying mutation delivery.
   Future<void> probe({LanternCancellationToken? cancellation});
@@ -89,13 +87,6 @@ abstract interface class OfflineRemote {
 
   /// Writes one already expiration-resolved edge.
   Future<void> putEdge(Edge edge, {LanternCancellationToken? cancellation});
-
-  /// Adds one stable contribution and returns the exact resulting edge.
-  Future<Edge> addEdge(
-    Edge edge,
-    Uint8List contributionId, {
-    LanternCancellationToken? cancellation,
-  });
 }
 
 /// [OfflineRemote] adapter over the official [LanternClient].
@@ -115,39 +106,6 @@ final class LanternClientOfflineRemote implements OfflineRemote {
       await client.ping(
         options: LanternCallOptions(cancellation: cancellation),
       );
-    } catch (error) {
-      throw _mapFailure(error);
-    }
-  }
-
-  @override
-  Future<Edge> addEdge(
-    Edge edge,
-    Uint8List contributionId, {
-    LanternCancellationToken? cancellation,
-  }) async {
-    try {
-      await client.addEdge(
-        EdgeInput(
-          tail: edge.tail,
-          head: edge.head,
-          weight: edge.weight,
-          expiresAt: edge.expiration,
-          contribId: contributionId,
-        ),
-        options: LanternCallOptions(cancellation: cancellation),
-      );
-      final read = await getEdge(
-        EdgeRef(edge.tail, edge.head),
-        cancellation: cancellation,
-      );
-      return switch (read) {
-        OfflineRemotePresent<Edge>(:final value) => value,
-        OfflineRemoteMissing<Edge>() =>
-          throw const OfflineRemoteProtocolException(),
-      };
-    } on OfflineRemoteFailure {
-      rethrow;
     } catch (error) {
       throw _mapFailure(error);
     }

@@ -442,9 +442,6 @@ void main() {
   test(
     'canonical snapshot survives a fresh Dart process and lease recovery',
     () async {
-      final contributionId = Uint8List.fromList(
-        List<int>.generate(24, (index) => index + 1),
-      );
       final store = InMemoryOfflineStore();
       await store.transaction((transaction) {
         transaction.putCache(
@@ -464,18 +461,17 @@ void main() {
         );
         final assigned = transaction.enqueue(
           OfflineOutboxRecord(
-            recordId: 'add',
+            recordId: 'put-edge',
             operationId: 'operation',
             itemIndex: 0,
             partitionId: 'p',
-            intent: OfflineAddEdgeIntent(
+            intent: OfflinePutEdgeIntent(
               Edge(
                 tail: 'tail',
                 head: 'head',
                 weight: Float32Value(0.1).value,
                 expiration: now.add(const Duration(minutes: 1)),
               ),
-              contributionId,
             ),
             enqueuedAt: now,
             ordinal: 0,
@@ -533,10 +529,7 @@ void main() {
           limit: 1,
         ),
       );
-      expect(
-        (recovered.single.intent as OfflineAddEdgeIntent).contributionId,
-        contributionId,
-      );
+      expect(recovered.single.intent, isA<OfflinePutEdgeIntent>());
 
       final temporary = await Directory.systemTemp.createTemp(
         'lantern-offline-snapshot-',
@@ -556,7 +549,7 @@ void main() {
 
   test('snapshot restore fails closed on schema and corruption', () {
     expect(
-      () => InMemoryOfflineStore.fromSnapshot('{"schema":3,"partitions":[]}'),
+      () => InMemoryOfflineStore.fromSnapshot('{"schema":4,"partitions":[]}'),
       throwsA(isA<OfflineSchemaException>()),
     );
     expect(
@@ -626,6 +619,177 @@ void main() {
       ),
     );
   });
+
+  test(
+    'schema v1 migration quarantines legacy Add while reconstructing status',
+    () async {
+      final store = InMemoryOfflineStore();
+      await store.transaction((transaction) {
+        transaction.enqueue(
+          OfflineOutboxRecord(
+            recordId: 'legacy-v1-add',
+            operationId: 'legacy-v1-operation',
+            itemIndex: 0,
+            partitionId: 'p',
+            intent: OfflineAddEdgeIntent(
+              Edge(
+                tail: 'tail',
+                head: 'head',
+                weight: Float32Value(0.25).value,
+                expiration: now.add(const Duration(minutes: 1)),
+              ),
+              Uint8List.fromList(List<int>.generate(24, (index) => index + 1)),
+            ),
+            enqueuedAt: now,
+            ordinal: 0,
+            state: OfflineOutboxState.enqueued,
+            attemptCount: 2,
+            generation: 0,
+            diagnosticCode: 'unavailable',
+          ),
+        );
+        expect(
+          transaction.claim(
+            'p',
+            owner: 'legacy-process',
+            now: now,
+            leaseDuration: const Duration(minutes: 1),
+            limit: 1,
+          ),
+          hasLength(1),
+        );
+      });
+      final legacy =
+          jsonDecode(await store.exportSnapshot()) as Map<String, Object?>;
+      legacy['schema'] = 1;
+      for (final value in legacy['partitions']! as List<Object?>) {
+        (value! as Map<String, Object?>).remove('operations');
+      }
+
+      final restored = InMemoryOfflineStore.fromSnapshot(jsonEncode(legacy));
+      final migrated = await restored.transaction((transaction) {
+        return (
+          record: transaction.getOutbox('p', 'legacy-v1-add')!,
+          operation: transaction
+              .getOperation('p', 'legacy-v1-operation')!
+              .status,
+          claimed: transaction.claim(
+            'p',
+            owner: 'restarted-process',
+            now: now.add(const Duration(minutes: 2)),
+            leaseDuration: const Duration(seconds: 1),
+            limit: 1,
+          ),
+        );
+      });
+
+      expect(migrated.record.state, OfflineOutboxState.deadLetter);
+      expect(migrated.record.attemptCount, 2);
+      expect(migrated.record.leaseOwner, isNull);
+      expect(migrated.record.leaseUntil, isNull);
+      expect(migrated.record.diagnosticCode, 'unsupported_add');
+      expect(migrated.operation.isTerminal, isTrue);
+      expect(
+        migrated.operation.items.single.state,
+        OfflineWriteState.deadLetter,
+      );
+      expect(migrated.operation.items.single.attemptCount, 2);
+      expect(migrated.operation.items.single.diagnosticCode, 'unsupported_add');
+      expect(migrated.claimed, isEmpty);
+    },
+  );
+
+  test(
+    'schema v2 migration quarantines legacy Add as inspectable terminal work',
+    () async {
+      final store = InMemoryOfflineStore();
+      await store.transaction((transaction) {
+        final assigned = transaction.enqueue(
+          OfflineOutboxRecord(
+            recordId: 'legacy-add',
+            operationId: 'legacy-add-operation',
+            itemIndex: 0,
+            partitionId: 'p',
+            intent: OfflineAddEdgeIntent(
+              Edge(
+                tail: 'tail',
+                head: 'head',
+                weight: Float32Value(0.25).value,
+                expiration: now.add(const Duration(minutes: 1)),
+              ),
+              Uint8List.fromList(List<int>.generate(24, (index) => index + 1)),
+            ),
+            enqueuedAt: now,
+            ordinal: 0,
+            state: OfflineOutboxState.enqueued,
+            attemptCount: 0,
+            generation: 0,
+          ),
+        );
+        final claimed = transaction.claim(
+          'p',
+          owner: 'old-process',
+          now: now,
+          leaseDuration: const Duration(minutes: 1),
+          limit: 1,
+        );
+        transaction.putOperation(
+          OfflineOperationRecord(
+            partitionId: 'p',
+            generation: 0,
+            operationId: assigned.operationId,
+            items: <OfflineWriteStatus>[
+              OfflineWriteStatus(
+                recordId: assigned.recordId,
+                operationId: assigned.operationId,
+                itemIndex: 0,
+                state: OfflineWriteState.sending,
+                attemptCount: claimed.single.attemptCount,
+              ),
+            ],
+            updatedAt: now,
+          ),
+        );
+      });
+      final legacy = jsonDecode(await store.exportSnapshot());
+      (legacy as Map<String, Object?>)['schema'] = 2;
+
+      final restored = InMemoryOfflineStore.fromSnapshot(jsonEncode(legacy));
+      final migrated = await restored.transaction((transaction) {
+        return (
+          record: transaction.getOutbox('p', 'legacy-add')!,
+          operation: transaction
+              .getOperation('p', 'legacy-add-operation')!
+              .status,
+          claimed: transaction.claim(
+            'p',
+            owner: 'new-process',
+            now: now.add(const Duration(minutes: 2)),
+            leaseDuration: const Duration(seconds: 1),
+            limit: 1,
+          ),
+        );
+      });
+
+      expect(migrated.record.state, OfflineOutboxState.deadLetter);
+      expect(migrated.record.attemptCount, 0);
+      expect(migrated.record.leaseOwner, isNull);
+      expect(migrated.record.leaseUntil, isNull);
+      expect(migrated.record.diagnosticCode, 'unsupported_add');
+      expect(
+        migrated.operation.items.single.state,
+        OfflineWriteState.deadLetter,
+      );
+      expect(migrated.operation.items.single.diagnosticCode, 'unsupported_add');
+      expect(migrated.operation.isTerminal, isTrue);
+      expect(migrated.claimed, isEmpty);
+      expect(
+        (jsonDecode(await restored.exportSnapshot())
+            as Map<String, Object?>)['schema'],
+        InMemoryOfflineStore.snapshotSchemaVersion,
+      );
+    },
+  );
 
   test(
     'reference store passes the reusable adapter conformance suite',

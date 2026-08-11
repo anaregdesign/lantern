@@ -11,6 +11,7 @@ import 'types.dart';
 /// Version one deliberately fails closed on unknown schema, discriminator,
 /// field, float payload, range, or byte encoding. It preserves every public
 /// [VertexValue] kind, including nil versus unset and exact IEEE float bits.
+/// Legacy Add intents remain decodable only so stores can quarantine them.
 final class OfflineCodec {
   OfflineCodec._();
 

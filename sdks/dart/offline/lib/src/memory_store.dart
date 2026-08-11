@@ -14,7 +14,7 @@ import 'types.dart';
 /// not be used as a production persistence adapter.
 final class InMemoryOfflineStore implements OfflineStore {
   /// Current canonical reference-store snapshot schema.
-  static const int snapshotSchemaVersion = 2;
+  static const int snapshotSchemaVersion = 3;
 
   /// Creates an empty reference store with explicit capacity bounds.
   InMemoryOfflineStore({this.limits = const OfflineStoreLimits()}) {
@@ -744,7 +744,9 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
     final root = _snapshotObject(decoded);
     _expectSnapshotKeys(root, const <String>{'schema', 'partitions'});
     final schema = root['schema'];
-    if (schema != 1 && schema != InMemoryOfflineStore.snapshotSchemaVersion) {
+    if (schema != 1 &&
+        schema != 2 &&
+        schema != InMemoryOfflineStore.snapshotSchemaVersion) {
       throw const OfflineSchemaException();
     }
     final partitionsValue = root['partitions'];
@@ -796,7 +798,9 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
       final outbox = _snapshotStrings(encoded['outbox']);
       var largestOrdinal = 0;
       for (final item in outbox) {
-        final record = OfflineCodec.decodeOutboxRecord(item);
+        final record = _quarantineLegacyAdd(
+          OfflineCodec.decodeOutboxRecord(item),
+        );
         if (record.partitionId != partitionId ||
             record.generation != generation ||
             record.ordinal > partition.nextOrdinal ||
@@ -828,6 +832,7 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
           }
           partition.operations[operation.operationId] = operation;
         }
+        _migrateLegacyAddOperations(partition);
         for (final record in partition.outbox.values) {
           final operation = partition.operations[record.operationId];
           if (operation == null ||
@@ -847,6 +852,69 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
   } catch (_) {
     throw const OfflineCodecException();
   }
+}
+
+OfflineOutboxRecord _quarantineLegacyAdd(OfflineOutboxRecord record) {
+  if (record.intent is! OfflineAddEdgeIntent ||
+      (record.state == OfflineOutboxState.deadLetter &&
+          record.leaseOwner == null &&
+          record.leaseUntil == null &&
+          record.nextAttemptAt == null &&
+          record.diagnosticCode == 'unsupported_add')) {
+    return record;
+  }
+  return record.copyWith(
+    state: OfflineOutboxState.deadLetter,
+    clearNextAttemptAt: true,
+    clearLeaseOwner: true,
+    clearLeaseUntil: true,
+    diagnosticCode: 'unsupported_add',
+  );
+}
+
+void _migrateLegacyAddOperations(_MemoryPartition partition) {
+  var changed = false;
+  for (final record in partition.outbox.values) {
+    if (record.intent is! OfflineAddEdgeIntent) continue;
+    final operation = partition.operations[record.operationId];
+    if (operation == null ||
+        record.itemIndex >= operation.items.length ||
+        operation.items[record.itemIndex].recordId != record.recordId) {
+      throw const OfflineCodecException();
+    }
+    final current = operation.items[record.itemIndex];
+    if (current.state == OfflineWriteState.deadLetter &&
+        current.attemptCount == record.attemptCount &&
+        current.diagnosticCode == 'unsupported_add') {
+      continue;
+    }
+    final items = operation.items.toList(growable: false);
+    items[record.itemIndex] = OfflineWriteStatus(
+      recordId: record.recordId,
+      operationId: record.operationId,
+      itemIndex: record.itemIndex,
+      state: OfflineWriteState.deadLetter,
+      attemptCount: record.attemptCount,
+      diagnosticCode: 'unsupported_add',
+    );
+    final status = OfflineOperationStatus(
+      operationId: operation.operationId,
+      items: items,
+    );
+    final updatedAt = operation.updatedAt.isAfter(record.enqueuedAt)
+        ? operation.updatedAt
+        : record.enqueuedAt;
+    partition.operations[operation.operationId] = OfflineOperationRecord(
+      partitionId: operation.partitionId,
+      generation: operation.generation,
+      operationId: operation.operationId,
+      items: items,
+      updatedAt: updatedAt,
+      terminalAt: status.isTerminal ? operation.terminalAt ?? updatedAt : null,
+    );
+    changed = true;
+  }
+  if (changed) partition.version += 1;
 }
 
 Map<String, OfflineOperationRecord> _migrateV1Operations(

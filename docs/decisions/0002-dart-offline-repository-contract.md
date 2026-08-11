@@ -1,9 +1,10 @@
 # 0002: Dart offline Repository and package contract
 
-- Status: Accepted
+- Status: Accepted; amended to Put-only first release
 - Date: 2026-07-12
 - Accepted: 2026-07-19
-- Issue: #1021
+- Amended: 2026-08-11
+- Issues: #1021, #1175
 
 ## Context
 
@@ -15,9 +16,11 @@ work, schema migration, eviction, and product-specific conflict UX.
 
 Lantern also has contracts that make a generic queue unsafe unless it is
 designed before the first attempt. Relative TTL becomes one absolute instant;
-Add is idempotent only with the same persisted 24-byte contribution ID;
-PutIfAbsent and Delete counts change after an ambiguously committed replay;
-and a capped prefix Delete can remove a second page if replayed.
+Put reaches the same final state when replayed, but a persisted 24-byte
+contribution ID alone does not give offline Add a server-authoritative outcome
+after response loss and contribution-retention or TTL changes. PutIfAbsent and
+Delete counts change after an ambiguously committed replay, and a capped prefix
+Delete can remove a second page if replayed.
 
 Flutter's
 [offline-first guidance](https://docs.flutter.dev/app-architecture/design-patterns/offline-first)
@@ -37,6 +40,8 @@ The SDK supplies the online primitives that a Repository needs—immutable exact
 values, absolute expiration, caller-supplied contribution IDs, typed errors,
 cancellation, and per-call token acquisition—but does not depend on SQLite,
 secure storage, connectivity, Flutter, or a state-management library.
+Caller-supplied contribution IDs remain part of the direct-online SDK; they do
+not make Add part of the durable offline contract.
 
 ### Reference-core implementation
 
@@ -44,13 +49,13 @@ The accepted contract now has an experimental pure-Dart reference core at
 `sdks/dart/offline` (`lantern_client_offline`, `publish_to: none`). It supplies
 the v1 fail-closed JSON codec and deterministic fixtures, immutable public
 ports/types, a non-production `InMemoryOfflineStore`, confirmed-cache policy
-engine, latency-compensated Put/Add overlays, and explicit bounded replay over
+engine, latency-compensated Put overlays, and explicit bounded replay over
 an injected `OfflineRemote`. It is intentionally not a persistence or
 encryption implementation.
 
-The core admits only unconditional `PutVertex`, `PutEdge`, and stable-ID
-`AddEdge`; it keeps one outbox record per item plus one content-free durable
-aggregate per logical operation, resolves relative TTL once, and rejects late
+The first-release core admits only unconditional `PutVertex` and `PutEdge`; it
+keeps one outbox record per item plus one content-free durable aggregate per
+logical operation, resolves relative TTL once, and rejects late
 lease/generation responses after a partition wipe. Calling a
 write method means the local transaction committed—not that remote delivery was
 confirmed. Replay is foreground-only through explicit `drain`, `start`, or
@@ -63,11 +68,13 @@ operation/dead-letter retention, and codec semantics. They can execute
 The package has no storage key API and makes no encryption claim. Applications
 must provide at-rest encryption and key lifecycle policy in their store adapter.
 Schema open/migration failures must fail closed as `OfflineSchemaException`;
-malformed v1 record bytes or v2 reference snapshots must fail closed as
+malformed record bytes or v1/v2/v3 reference snapshots must fail closed as
 `OfflineCodecException` and must never be sent to `OfflineRemote`. Reference
-snapshot schema v2 adds operation aggregates; opening schema v1 reconstructs
-active operation metadata transactionally and marks outcomes no longer present
-in the legacy outbox as `outcomeUnknown`. Cache and outbox capacity failures use
+snapshot schema v3 preserves operation aggregates and quarantines every legacy
+Add as an inspectable terminal `unsupported_add` dead letter. Opening schema v1
+or v2 performs that migration transactionally; v1 also reconstructs active
+operation metadata and marks outcomes no longer present in the legacy outbox as
+`outcomeUnknown`. Cache and outbox capacity failures use
 `OfflineCapacityException`; adapters may evict only confirmed cache records,
 never live unconfirmed outbox records.
 
@@ -128,7 +135,6 @@ final class OfflineSnapshot<T> {
   T? value;
   DateTime? validatedAt;
   bool hasPendingWrites;
-  bool isEstimate;
 }
 ```
 
@@ -195,40 +201,43 @@ final class OutboxRecord {
   OutboxState state;
   String? leaseOwner;
   DateTime? leaseUntil;
-  List<int>? contributionId;    // required exact 24 bytes for Add
   String? diagnosticCode;       // credential/content-free
 }
 ```
 
-The abbreviated typed operation union initially admits only single-item Put
-and Add intents:
+The active abbreviated typed operation union admits only single-item Put
+intents:
 
 ```dart
 sealed class OfflineIntent {}
 final class PutVertexIntent extends OfflineIntent {}
 final class PutEdgeIntent extends OfflineIntent {}
-final class AddEdgeIntent extends OfflineIntent {} // contributionId is required
 ```
 
 The payload stores the exact input value, including its wire kind and float
 payload, plus the resolved absolute expiration; it is not a closure or a
 generated request object. Enqueue samples the clock once per logical call and
 resolves each item's relative TTL against that instant before committing all
-records. Add contribution IDs are generated and persisted in the same
-transaction as the intent. A process restart, replay-batch reconstruction,
-and every retry reuse identical bytes. If `now >= absoluteExpiration` before
-confirmation, that item becomes `expired` and is never rebased.
+records. If `now >= absoluteExpiration` before confirmation, that item becomes
+`expired` and is never rebased.
 
-Put is safe to replay to its final state. Add is replayable only when every
-claimed record has a persisted valid contribution ID. The coordinator may batch compatible records as a future transport
-optimization, but the accepted baseline deliberately sends one item per RPC and
-commits each record's resulting state transactionally after its response. A
-1,001-item real-wire restart scenario proves that already-confirmed items are
-not replayed while the remaining items resume safely. A crash therefore
-does not rebuild already-confirmed items into a later batch. If an Add response
-is lost, replaying the same IDs is the reconciliation; if the server can no
-longer retain that contribution because the intent itself expired, the
-Repository expires the item rather than minting a new ID.
+Put is safe to replay to its final state. The coordinator may batch compatible
+records as a future transport optimization, but the accepted baseline sends
+one item per RPC and commits each record's resulting state transactionally
+after its response. A 1,001-item restart scenario proves that already-confirmed
+items are not replayed while remaining Put items resume safely. A crash
+therefore does not rebuild already-confirmed items into a later batch.
+
+The codec retains `AddEdgeIntent` and its exact contribution ID only to read
+snapshots produced by the earlier experimental implementation. Snapshot open
+and replay both fail closed: the item becomes terminal `deadLetter` with
+diagnostic `unsupported_add`, its attempt count is unchanged, no pending read
+overlay is produced, and `OfflineRemote` has no Add method. Authorized
+inspection and deletion remain available; generic retry returns
+`OfflineUnsupportedOperationException` instead of sending it. Add can re-enter
+the durable public API only after #1115 defines server-authoritative operation
+receipts and the offline package proves receipt-based TTL, response-loss,
+restart, and conformance behavior.
 
 PutIfAbsent, singular/plural Delete result semantics, and capped prefix Delete
 are excluded from the generic outbox. An application-specific workflow may
@@ -275,7 +284,7 @@ abstract interface class OfflineRepositoryControl {
 attempt count, and diagnostic code by default. Reading the sensitive intent is
 a separate application-authorized action. `resolveAmbiguous` exists only for
 an application-specific unsafe workflow with domain reconciliation; the
-generic Put/Add outbox neither accepts unsafe intents nor fabricates an
+generic Put-only outbox neither accepts unsafe intents nor fabricates an
 outcome.
 
 ## State machine
@@ -283,6 +292,7 @@ outcome.
 ```mermaid
 stateDiagram-v2
     [*] --> Enqueued: durable enqueue transaction
+    [*] --> DeadLetter: legacy Add migration (no send)
     Enqueued --> Sending: bounded claim + lease
     Sending --> Confirmed: response and progress committed
     Sending --> Enqueued: retryable failure / lease expiry
@@ -293,7 +303,7 @@ stateDiagram-v2
     Sending --> DeadLetter: permanent typed failure
     Ambiguous --> Confirmed: app reconciliation proves commit
     Ambiguous --> DeadLetter: app chooses no further mutation
-    DeadLetter --> Enqueued: explicit inspected retry only
+    DeadLetter --> Enqueued: explicit inspected retry (supported Put only)
     Confirmed --> [*]
     Expired --> [*]
 ```
@@ -319,7 +329,7 @@ without application-owned OS background task or push infrastructure.
 | Cross-user/tenant data leak | Partition every key/record; atomically wipe on logout/user switch; do not reuse a partition identifier. |
 | Device backup or file extraction | Application chooses encryption and platform key storage; document backup exclusion/rotation policy. |
 | Corrupt/tampered record | Authenticated storage where required, strict schema/length/range checks, quarantine/dead-letter without sending. |
-| Crash between network commit and local confirmation | Put replays; Add reuses persisted IDs; unsafe conditional/Delete operations remain explicit ambiguous. |
+| Crash between network commit and local confirmation | Put replays to the same final state; Add remains outside the offline API until server-authoritative receipts exist; unsafe conditional/Delete operations remain explicit ambiguous. |
 | Crash during migration | Copy-on-write/versioned migration with transaction marker; old schema remains readable until commit or is quarantined. |
 | Disk exhaustion/queue flood | Per-partition/global byte and count caps, backpressure, bounded claims, read-cache eviction before outbox loss. |
 | Sensitive telemetry | Default metrics expose category, state, age bucket, attempts, counts, and error code only—never keys, values, graph content, IDs, or credentials. |
@@ -328,12 +338,11 @@ without application-owned OS background task or push infrastructure.
 
 ## Golden scenarios
 
-1. **Add crash/replay:** persist an Add with fixed 24-byte IDs, commit remotely,
-   lose the response, restart, replay identical bytes, and observe one live
-   contribution/effective weight.
-2. **Partial batch crash:** confirm chunk/items 0–999, crash before the next
-   chunk, restart from persisted progress, and never resend an unsafe confirmed
-   item. A stable-ID Add may safely replay an uncertain current chunk.
+1. **Put crash/replay:** commit a Put remotely, lose the response, restart, and
+   replay to the same exact value and absolute expiration.
+2. **Partial batch crash:** confirm items 0–999, crash before the next item,
+   restart from persisted progress, and resume the remaining Put items without
+   resending confirmed work.
 3. **TTL expires offline:** resolve relative TTL at enqueue, advance past the
    absolute instant, and mark expired without network I/O or TTL rebasing.
 4. **Auth rotation:** persist no credential, receive Unauthenticated, pause,
@@ -348,8 +357,9 @@ without application-owned OS background task or push infrastructure.
    expiration while offline; even stale-allowed read returns Expired and
    destroys/quarantines the payload.
 8. **Corruption/migration:** invalid kind/length/schema never becomes a wire
-   request; it is quarantined with a content-free diagnostic and recoverable
-   dead-letter action.
+   request. A legacy Add from a v1/v2 snapshot becomes an inspectable terminal
+   `unsupported_add` dead letter with attempt count unchanged and zero remote
+   calls, while supported Put siblings in the same operation still replay.
 
 ## Follow-up scopes
 
@@ -373,22 +383,25 @@ from an earlier scope, but none may add implicit persistence to
    Keychain/Keystore, and publication work remain separate follow-up scopes.
 5. [#1115](https://github.com/anaregdesign/lantern/issues/1115) adds
    server-authoritative operation receipts so mutations whose public result is
-   ambiguous after response loss can be reconciled safely.
+   ambiguous after response loss can be reconciled safely. Offline Add remains
+   disabled until those receipts define authoritative TTL/outcome semantics and
+   the offline package adds response-loss, restart, and conformance evidence.
 6. [#1116](https://github.com/anaregdesign/lantern/issues/1116) adds a
-   client-facing revision/change stream for bounded invalidation after server
-   Deletes, expiration, and HA convergence.
-7. [#1162](https://github.com/anaregdesign/lantern/issues/1162) implements a
-   separately versioned production SQLite adapter and runs the reusable store
-   conformance suite plus physical restart/isolation checks.
-8. [#1163](https://github.com/anaregdesign/lantern/issues/1163) owns hosted
+   client-facing revision/change stream for explicit mutations and HA
+   convergence. It does not synthesize an event when TTL expires.
+7. [#1162](https://github.com/anaregdesign/lantern/issues/1162) owns hosted
    dependency conversion, versioning, pub.dev OIDC, and the independent
    `sdks/dart/offline/vX.Y.Z` release contract.
+8. [#1163](https://github.com/anaregdesign/lantern/issues/1163) implements a
+   separately versioned production SQLite adapter and runs the reusable store
+   conformance suite plus physical restart/isolation checks.
 
 ## Consequences
 
 The online SDK remains deterministic, dependency-light, and honest about what
 it can confirm. The official offline package removes repeated sync-engine work
 without taking ownership of application identity, encryption, UX, or OS
-lifecycle. It cannot silently change TTL, mint an Add ID after enqueue, replay
-ambiguous Deletes, or persist credentials; those are compatibility constraints
-for every offline-package version.
+lifecycle. It cannot silently change TTL, send a legacy Add, replay ambiguous
+Deletes, or persist credentials; those are compatibility constraints for every
+offline-package version. Direct-online Add remains available in
+`lantern_client`; durable offline Add is deferred to the #1115 receipt contract.

@@ -72,10 +72,11 @@ operations are never replayed because a committed response loss would change
 their observable result.
 
 Automatic IDs do not turn two application calls into one operation and do not
-survive process restart. For an offline/durable outbox, generate or accept a
-caller ID, persist its exact 24 bytes with the intent, and reuse it on replay.
-This package does not implement an offline queue. A contribution ID deduplicates
-only while the server retains that contribution.
+survive process restart. This package does not implement an offline queue. A
+contribution ID deduplicates only while the server retains that contribution.
+The experimental `lantern_client_offline` package therefore admits Put only;
+durable Add remains disabled until #1115 provides server-authoritative operation
+receipts and matching TTL/response-loss evidence.
 
 `addDecayingEdge` expands a geometric curve into at most 16 staggered-TTL
 contributions whose initial live sum is exact. With `idempotentAdds` enabled,

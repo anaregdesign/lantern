@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_client_offline/lantern_client_offline.dart';
@@ -10,7 +11,7 @@ void main() {
   final initial = DateTime.utc(2026, 7, 22, 12);
 
   test(
-    'local Put/Add overlays are immediately visible with stable Add ID',
+    'local Put overlays are immediately visible and replay exactly',
     () async {
       final clock = MutableClock(initial);
       final store = InMemoryOfflineStore();
@@ -33,7 +34,7 @@ void main() {
       expect(snapshot.hasPendingWrites, isTrue);
       expect(await put.statuses.first, isA<OfflineWriteStatus>());
 
-      await repository.addEdge(
+      await repository.putEdge(
         partitionId: 'p',
         input: EdgeInput(tail: 'a', head: 'b', weight: 0.1),
       );
@@ -43,22 +44,127 @@ void main() {
         policy: OfflineReadPolicy.cacheOnly,
       );
       expect(edge.hasPendingWrites, isTrue);
-      expect(edge.isEstimate, isTrue);
       expect(edge.value!.weight, Float32Value(0.1).value);
       final records = await store.transaction(
         (transaction) => transaction.outbox('p'),
       );
-      final add = records.singleWhere(
-        (record) => record.intent.category == OfflineOperationCategory.addEdge,
+      expect(records, hasLength(2));
+      expect(await repository.drain('p'), 2);
+      expect(remote.edgePutCalls, 1);
+      expect((await put.statuses.first).state, OfflineWriteState.confirmed);
+    },
+  );
+
+  test(
+    'legacy Add is never overlaid or sent and becomes inspectable terminal work',
+    () async {
+      final clock = MutableClock(initial);
+      final store = InMemoryOfflineStore();
+      final remote = FakeOfflineRemote();
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: remote,
+        config: testConfig(clock),
+      );
+      addTearDown(repository.dispose);
+      late final OfflineOutboxRecord legacyAdd;
+      await store.transaction((transaction) {
+        final assigned = transaction.enqueueAll(<OfflineOutboxRecord>[
+          OfflineOutboxRecord(
+            recordId: 'legacy-add',
+            operationId: 'mixed-operation',
+            itemIndex: 0,
+            partitionId: 'p',
+            intent: OfflineAddEdgeIntent(
+              Edge(
+                tail: 'a',
+                head: 'b',
+                weight: Float32Value(0.5).value,
+                expiration: initial.add(const Duration(hours: 1)),
+              ),
+              Uint8List.fromList(List<int>.generate(24, (index) => index + 1)),
+            ),
+            enqueuedAt: initial,
+            ordinal: 0,
+            state: OfflineOutboxState.enqueued,
+            attemptCount: 0,
+            generation: 0,
+          ),
+          OfflineOutboxRecord(
+            recordId: 'safe-put',
+            operationId: 'mixed-operation',
+            itemIndex: 1,
+            partitionId: 'p',
+            intent: OfflinePutVertexIntent(
+              Vertex(
+                key: 'safe',
+                value: VertexValue.string('value'),
+                expiration: null,
+              ),
+            ),
+            enqueuedAt: initial,
+            ordinal: 0,
+            state: OfflineOutboxState.enqueued,
+            attemptCount: 0,
+            generation: 0,
+          ),
+        ]);
+        legacyAdd = assigned.first;
+        transaction.putOperation(
+          OfflineOperationRecord(
+            partitionId: 'p',
+            generation: 0,
+            operationId: 'mixed-operation',
+            items: assigned
+                .map(
+                  (record) => OfflineWriteStatus(
+                    recordId: record.recordId,
+                    operationId: record.operationId,
+                    itemIndex: record.itemIndex,
+                    state: OfflineWriteState.locallyCommitted,
+                    attemptCount: 0,
+                  ),
+                )
+                .toList(growable: false),
+            updatedAt: initial,
+          ),
+        );
+      });
+
+      final beforeDrain = await repository.readEdge(
+        'p',
+        const EdgeRef('a', 'b'),
+        policy: OfflineReadPolicy.cacheOnly,
+      );
+      expect(beforeDrain.value, isNull);
+      expect(beforeDrain.hasPendingWrites, isFalse);
+
+      expect(await repository.drain('p'), 1);
+      expect(remote.vertexPutCalls, 1);
+      expect(remote.edgePutCalls, 0);
+      final status = await repository.getWriteStatus('p', 'mixed-operation');
+      expect(status!.isTerminal, isTrue);
+      expect(status.confirmedCount, 1);
+      expect(status.deadLetterCount, 1);
+      expect(status.items.first.attemptCount, 0);
+      expect(status.items.first.diagnosticCode, 'unsupported_add');
+      final deadLetter = (await repository.listDeadLetters('p')).single;
+      expect(deadLetter.category, OfflineOperationCategory.addEdge);
+      expect(deadLetter.diagnosticCode, 'unsupported_add');
+      final inspected = await repository.inspectDeadLetter(
+        'p',
+        legacyAdd.recordId,
+        authorize: (_) async => true,
+      );
+      expect(inspected, isA<OfflineAddEdgeIntent>());
+      await expectLater(
+        repository.retryDeadLetter('p', legacyAdd.recordId),
+        throwsA(isA<OfflineUnsupportedOperationException>()),
       );
       expect(
-        (add.intent as OfflineAddEdgeIntent).contributionId,
-        hasLength(24),
+        (await repository.listDeadLetters('p')).single.recordId,
+        'legacy-add',
       );
-      expect(await repository.drain('p'), 2);
-      expect(remote.edgeAddCalls, 1);
-      expect(remote.lastContributionId, hasLength(24));
-      expect((await put.statuses.first).state, OfflineWriteState.confirmed);
     },
   );
 

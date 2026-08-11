@@ -1,5 +1,3 @@
-import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lantern_client/lantern_client.dart';
@@ -12,7 +10,7 @@ void main() {
   const edgeTail = 'widget:profile';
   const edgeHead = 'widget:counter';
 
-  testWidgets('shows cache immediately and local Put/Add pending estimates', (
+  testWidgets('shows cache immediately and local Put pending values', (
     tester,
   ) async {
     final remote = _FakeRemote()
@@ -57,12 +55,15 @@ void main() {
     );
     expect(_chipText(tester, const Key('offline-vertex-pending')), 'pending');
 
-    final add = find.byKey(const Key('offline-add-local'));
-    await tester.ensureVisible(add);
-    await tester.tap(add);
+    final saveEdge = find.byKey(const Key('offline-save-edge-local'));
+    await tester.ensureVisible(saveEdge);
+    await tester.tap(saveEdge);
     await tester.pumpAndSettle();
     expect(_chipText(tester, const Key('offline-edge-pending')), 'pending');
-    expect(find.byKey(const Key('offline-edge-estimate')), findsOneWidget);
+    expect(
+      tester.widget<Text>(find.byKey(const Key('offline-edge-value'))).data,
+      '0.25',
+    );
   });
 
   testWidgets('replay changes a local Put from pending to confirmed', (
@@ -337,22 +338,5 @@ final class _FakeRemote implements OfflineRemote {
     LanternCancellationToken? cancellation,
   }) async {
     edges[EdgeRef(edge.tail, edge.head)] = edge;
-  }
-
-  @override
-  Future<Edge> addEdge(
-    Edge edge,
-    Uint8List contributionId, {
-    LanternCancellationToken? cancellation,
-  }) async {
-    final ref = EdgeRef(edge.tail, edge.head);
-    final result = Edge(
-      tail: edge.tail,
-      head: edge.head,
-      weight: Float32Value((edges[ref]?.weight ?? 0) + edge.weight).value,
-      expiration: edge.expiration,
-    );
-    edges[ref] = result;
-    return result;
   }
 }

@@ -13,9 +13,6 @@ typedef OfflineClock = DateTime Function();
 /// Generates an opaque record or operation identifier.
 typedef OfflineIdGenerator = String Function();
 
-/// Generates one opaque 24-byte Add contribution identifier.
-typedef OfflineContributionIdGenerator = Uint8List Function();
-
 /// Produces a full-jitter delay no greater than its supplied ceiling.
 typedef OfflineJitter = Duration Function(Duration ceiling);
 
@@ -254,7 +251,7 @@ enum OfflineOperationCategory {
   /// An idempotent edge replacement.
   putEdge,
 
-  /// A stable-contribution additive edge write.
+  /// A legacy Add record retained only for fail-closed migration and inspection.
   addEdge,
 }
 
@@ -309,9 +306,13 @@ final class OfflinePutEdgeIntent extends OfflineIntent {
   DateTime? get expiration => edge.expiration;
 }
 
-/// A stable-contribution persisted additive edge write.
+/// A legacy persisted Add retained only for fail-closed migration and inspection.
+///
+/// [OfflineLanternRepository] cannot enqueue or replay this intent. The type
+/// remains decodable so experimental snapshots can become inspectable terminal
+/// records instead of being sent blindly or discarded.
 final class OfflineAddEdgeIntent extends OfflineIntent {
-  /// Creates an additive edge intent with one exact 24-byte contribution ID.
+  /// Creates a migration-only Add intent with one exact contribution ID.
   OfflineAddEdgeIntent(Edge edge, Uint8List contributionId)
     : edge = copyOfflineEdge(edge),
       _contributionId = Uint8List.fromList(contributionId) {
@@ -321,7 +322,7 @@ final class OfflineAddEdgeIntent extends OfflineIntent {
     }
   }
 
-  /// Exact additive contribution.
+  /// Exact legacy additive contribution.
   final Edge edge;
   final Uint8List _contributionId;
 
@@ -505,7 +506,6 @@ final class OfflineSnapshot<T> {
     this.expiredAt,
     this.cause,
     this.hasPendingWrites = false,
-    this.isEstimate = false,
   });
 
   /// Read certainty state.
@@ -528,9 +528,6 @@ final class OfflineSnapshot<T> {
 
   /// Whether one or more live local mutations are overlaid.
   final bool hasPendingWrites;
-
-  /// Whether an Add overlay lacks a known confirmed base weight.
-  final bool isEstimate;
 }
 
 /// Observable write lifecycle state.
@@ -886,13 +883,10 @@ final class OfflineConfig {
     this.maxRetryDelay = const Duration(seconds: 30),
     OfflineClock? clock,
     OfflineIdGenerator? idGenerator,
-    OfflineContributionIdGenerator? contributionIdGenerator,
     OfflineJitter? jitter,
     this.diagnostics,
   }) : clock = clock ?? _utcNow,
        idGenerator = idGenerator ?? _opaqueId,
-       contributionIdGenerator =
-           contributionIdGenerator ?? _opaqueContributionId,
        jitter = jitter ?? _fullJitter,
        leaseRenewalInterval =
            leaseRenewalInterval ??
@@ -980,9 +974,6 @@ final class OfflineConfig {
   /// Injected opaque record/operation ID generator.
   final OfflineIdGenerator idGenerator;
 
-  /// Injected exact 24-byte Add contribution ID generator.
-  final OfflineContributionIdGenerator contributionIdGenerator;
-
   /// Injected full-jitter sampler.
   final OfflineJitter jitter;
 
@@ -996,15 +987,6 @@ String _opaqueId() {
   final random = Random.secure();
   final bytes = List<int>.generate(16, (_) => random.nextInt(256));
   return bytes.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
-}
-
-Uint8List _opaqueContributionId() {
-  final random = Random.secure();
-  final bytes = Uint8List.fromList(
-    List<int>.generate(24, (_) => random.nextInt(256)),
-  );
-  if (!bytes.any((byte) => byte != 0)) bytes[0] = 1;
-  return bytes;
 }
 
 Duration _fullJitter(Duration ceiling) {

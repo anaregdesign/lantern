@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_client_offline/lantern_client_offline.dart';
@@ -21,13 +20,10 @@ class FakeOfflineRemote implements OfflineRemote {
   final Map<EdgeRef, Edge> edges = <EdgeRef, Edge>{};
   final List<OfflineRemoteFailure> vertexPutFailures = <OfflineRemoteFailure>[];
   final List<OfflineRemoteFailure> edgePutFailures = <OfflineRemoteFailure>[];
-  final List<OfflineRemoteFailure> edgeAddFailures = <OfflineRemoteFailure>[];
   final List<OfflineRemoteFailure> vertexGetFailures = <OfflineRemoteFailure>[];
   final List<OfflineRemoteFailure> edgeGetFailures = <OfflineRemoteFailure>[];
   int vertexPutCalls = 0;
   int edgePutCalls = 0;
-  int edgeAddCalls = 0;
-  Uint8List? lastContributionId;
   final List<OfflineRemoteFailure> probeFailures = <OfflineRemoteFailure>[];
   int probeCalls = 0;
 
@@ -35,27 +31,6 @@ class FakeOfflineRemote implements OfflineRemote {
   Future<void> probe({LanternCancellationToken? cancellation}) async {
     probeCalls++;
     if (probeFailures.isNotEmpty) throw probeFailures.removeAt(0);
-  }
-
-  @override
-  Future<Edge> addEdge(
-    Edge edge,
-    Uint8List contributionId, {
-    LanternCancellationToken? cancellation,
-  }) async {
-    edgeAddCalls++;
-    lastContributionId = Uint8List.fromList(contributionId);
-    if (edgeAddFailures.isNotEmpty) throw edgeAddFailures.removeAt(0);
-    final ref = EdgeRef(edge.tail, edge.head);
-    final current = edges[ref];
-    final result = Edge(
-      tail: edge.tail,
-      head: edge.head,
-      weight: Float32Value((current?.weight ?? 0) + edge.weight).value,
-      expiration: edge.expiration,
-    );
-    edges[ref] = result;
-    return result;
   }
 
   @override
@@ -106,7 +81,6 @@ class FakeOfflineRemote implements OfflineRemote {
 OfflineConfig testConfig(MutableClock clock) => OfflineConfig(
   clock: clock.call,
   idGenerator: _ids(),
-  contributionIdGenerator: _contributionIds(),
   jitter: (_) => Duration.zero,
   baseRetryDelay: const Duration(microseconds: 1),
   maxRetryDelay: const Duration(seconds: 1),
@@ -115,16 +89,6 @@ OfflineConfig testConfig(MutableClock clock) => OfflineConfig(
 OfflineIdGenerator _ids() {
   var index = 0;
   return () => 'test-${++index}';
-}
-
-OfflineContributionIdGenerator _contributionIds() {
-  var index = 0;
-  return () {
-    final seed = ++index;
-    return Uint8List.fromList(
-      List<int>.generate(24, (byte) => (byte + seed) & 0xff),
-    );
-  };
 }
 
 OfflineRemoteFailure failure(OfflineRemoteErrorKind kind) =>

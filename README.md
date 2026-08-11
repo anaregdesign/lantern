@@ -472,10 +472,13 @@ auth-exempt gRPC Health-v1 probing). See
 
 [`lantern_client_offline`](sdks/dart/offline/) is an experimental, unpublished,
 opt-in pure-Dart Repository layer for Firebase-like cached snapshots, locally
-committed Put/Add overlays, and explicit foreground replay. It injects the
-transactional store, never persists credentials, never serves past Lantern TTL,
-and reuses exact persisted Add contribution IDs after response loss. The online
-SDK, Go SDK, and CLI retain their existing direct-online behavior.
+committed Put overlays, and explicit foreground replay. It injects the
+transactional store, never persists credentials, and never serves past Lantern
+TTL. Its first-release durable mutation surface is Put-only; experimental legacy
+Add records migrate to inspectable terminal `unsupported_add` dead letters and
+are never replayed. Direct-online Add in the online SDK, Go SDK, and CLI is
+unchanged. Durable offline Add is deferred until #1115 provides
+server-authoritative operation receipts.
 
 ### Anything else
 
