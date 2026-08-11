@@ -124,7 +124,7 @@ func TestDartPublishingContractGate(t *testing.T) {
 		"startsWith(github.ref, 'refs/tags/sdks/dart/v')",
 		"timeout-minutes: 15",
 		"id-token: write",
-		"uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1",
+		"uses: dart-lang/setup-dart@7654d458321ee25acccccfdb86cd48bd95768ff1 # v1.8.0",
 		"dart pub get --enforce-lockfile --no-example",
 		"dart pub publish --force",
 		`gh release create "$TAG" --title "$TAG"`,

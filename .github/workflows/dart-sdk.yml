@@ -120,7 +120,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Set up current supported Dart
-        uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1
+        uses: dart-lang/setup-dart@7654d458321ee25acccccfdb86cd48bd95768ff1 # v1.8.0
         with:
           sdk: 3.12.2
 
@@ -295,7 +295,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Set up minimum supported Dart
-        uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1
+        uses: dart-lang/setup-dart@7654d458321ee25acccccfdb86cd48bd95768ff1 # v1.8.0
         with:
           sdk: 3.11.0
 
@@ -325,7 +325,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Set up current supported Dart
-        uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1
+        uses: dart-lang/setup-dart@7654d458321ee25acccccfdb86cd48bd95768ff1 # v1.8.0
         with:
           sdk: 3.12.2
 
@@ -417,7 +417,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Set up minimum supported Dart
-        uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1
+        uses: dart-lang/setup-dart@7654d458321ee25acccccfdb86cd48bd95768ff1 # v1.8.0
         with:
           sdk: 3.11.0
 
@@ -682,7 +682,7 @@ jobs:
       # pub.dev's automated publisher consumes. A Flutter-only setup silently
       # falls back to interactive Google OAuth in a headless runner.
       - name: Set up current supported Dart and pub.dev OIDC
-        uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1
+        uses: dart-lang/setup-dart@7654d458321ee25acccccfdb86cd48bd95768ff1 # v1.8.0
         with:
           sdk: 3.12.2
 
