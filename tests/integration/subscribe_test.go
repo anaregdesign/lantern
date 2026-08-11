@@ -13,6 +13,7 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	client "github.com/anaregdesign/lantern/sdks/go"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
 )
@@ -199,5 +200,76 @@ func TestSubscribe_PerOriginCursor_Skips(t *testing.T) {
 		if g != want[i] {
 			t.Errorf("entry[%d] got %+v want %+v", i, g, want[i])
 		}
+	}
+}
+
+// TestSubscribeSDK_TypedCursorAndGap exercises the public Go SDK facade over
+// the real Connect/h2c handler. It pins both the typed per-origin cursor happy
+// path and the retained-log gap failure contract introduced by #1182.
+func TestSubscribeSDK_TypedCursorAndGap(t *testing.T) {
+	origin := hlc.NodeID{0x31, 0x32, 0x33, 0x34}
+	log := mutationlog.New(mutationlog.Options{Capacity: 8, SubscriberBuffer: 8})
+	t.Cleanup(func() { _ = log.Close() })
+	clock := hlc.New(origin, hlc.Options{})
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+	svc := service.NewLanternService(cache).WithReplication(log, clock, nil)
+	rep := service.NewLanternReplicationService(log, cache, clock)
+	srv := newConnectTestServer(t, svc, rep, nil)
+	sdk := newConnectClientFor(t, srv.url)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for i := 1; i <= 4; i++ {
+		if err := sdk.PutVertex(ctx, "sdk-cursor-"+itoa(i), "v", time.Minute); err != nil {
+			t.Fatalf("PutVertex[%d]: %v", i, err)
+		}
+	}
+
+	sdkOrigin, err := client.ChangeOriginFromBytes(origin[:])
+	if err != nil {
+		t.Fatalf("ChangeOriginFromBytes: %v", err)
+	}
+	var events []*client.ChangeEvent
+	for event, streamErr := range sdk.Subscribe(ctx, client.ChangeCursor{sdkOrigin: 3}) {
+		if streamErr != nil {
+			t.Fatalf("Subscribe(cursor=3): %v", streamErr)
+		}
+		events = append(events, event)
+		if len(events) == 2 {
+			break
+		}
+	}
+	if len(events) != 2 || events[0].GetSeq() != 3 || events[1].GetSeq() != 4 {
+		t.Fatalf("events = %v, want seqs [3 4]", events)
+	}
+	gotOrigin, err := client.ChangeOriginFromBytes(events[0].GetOrigin())
+	if err != nil {
+		t.Fatalf("event origin: %v", err)
+	}
+	if gotOrigin != sdkOrigin {
+		t.Fatalf("event origin = %s, want %s", gotOrigin, sdkOrigin)
+	}
+
+	gapLog := mutationlog.New(mutationlog.Options{Capacity: 2, SubscriberBuffer: 8})
+	t.Cleanup(func() { _ = gapLog.Close() })
+	gapClock := hlc.New(origin, hlc.Options{})
+	gapCache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+	gapService := service.NewLanternService(gapCache).WithReplication(gapLog, gapClock, nil)
+	gapReplication := service.NewLanternReplicationService(gapLog, gapCache, gapClock)
+	gapServer := newConnectTestServer(t, gapService, gapReplication, nil)
+	gapSDK := newConnectClientFor(t, gapServer.url)
+	for i := 1; i <= 4; i++ {
+		if err := gapSDK.PutVertex(ctx, "sdk-gap-"+itoa(i), "v", time.Minute); err != nil {
+			t.Fatalf("gap PutVertex[%d]: %v", i, err)
+		}
+	}
+
+	var gapErr error
+	for _, streamErr := range gapSDK.Subscribe(ctx, client.ChangeCursor{sdkOrigin: 1}) {
+		gapErr = streamErr
+		break
+	}
+	if !errors.Is(gapErr, client.ErrFailedPrecondition) {
+		t.Fatalf("Subscribe(cursor=1) error = %v, want ErrFailedPrecondition", gapErr)
 	}
 }

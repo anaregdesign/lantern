@@ -207,6 +207,10 @@ A few SDK-only types remain and are intentional, not redundant:
   (`map[string]*Vertex`, `map[string]map[string]float32`) that is more
   convenient for client-side traversal than `pb.Graph`'s flat slice shape.
   This is a deliberate shape transformation, not a duplicate data definition.
+- **`ChangeOrigin` / `ChangeCursor`** — comparable SDK-local cursor keys for
+  Subscribe's fixed 16-byte mutation origins. `ChangeEvent` remains a true
+  alias of the generated `pb.Mutation`; the SDK therefore stays `pb`-only
+  without creating a parallel mutation model or importing `core/hlc`.
 
 See [issue #106](https://github.com/anaregdesign/lantern/issues/106) for the
 design discussion.
@@ -224,6 +228,12 @@ design discussion.
 | Replication | `Subscribe` (server-stream iter.Seq2) | — |
 | Status | `Ping`, `GetServerStatus`, `GetReplicationStatus` | — |
 | Backup | — | `Backup` / `Restore` |
+
+`Subscribe` accepts a `ChangeCursor` whose values are the next sequence
+expected per origin and yields `*ChangeEvent` mutations directly. Use
+`ChangeOriginFromBytes(event.GetOrigin())` to obtain the comparable cursor key;
+`ChangeOrigin.String()` returns the canonical 32-character hex form used on
+the wire and in diagnostics.
 
 `AddEdge` is **additive** (multiple calls add weight, each contribution
 carries its own TTL); `PutEdge` is **idempotent replace** (single weight,
