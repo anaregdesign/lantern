@@ -1,6 +1,7 @@
 @TestOn('vm')
 library;
 
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -9,6 +10,87 @@ import 'package:lantern_client_offline/lantern_client_offline.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test('online adapter preserves typed transport cancellation', () async {
+    final requestStarted = Completer<void>();
+    final releaseResponse = Completer<void>();
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() async {
+      if (!releaseResponse.isCompleted) releaseResponse.complete();
+      await server.close(force: true);
+    });
+    server.listen((request) async {
+      if (!requestStarted.isCompleted) requestStarted.complete();
+      await releaseResponse.future;
+      try {
+        request.response.statusCode = HttpStatus.serviceUnavailable;
+        await request.response.close();
+      } on Object {
+        // Caller cancellation may close the request before test teardown.
+      }
+    });
+    final client = LanternClient.connect(
+      Uri.parse('http://${server.address.host}:${server.port}'),
+      allowInsecure: true,
+      defaultTimeout: null,
+    );
+    addTearDown(client.close);
+    final remote = LanternClientOfflineRemote(client);
+    final cancellation = LanternCancellationToken();
+
+    final reading = remote.getVertex('cancel', cancellation: cancellation);
+    await requestStarted.future;
+    cancellation.cancel('screen disposed');
+
+    await expectLater(reading, throwsA(isA<OfflineCanceledException>()));
+  });
+
+  test('online adapter classifies a retry-exhausted typed cause', () async {
+    var attempts = 0;
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    server.listen((request) async {
+      attempts += 1;
+      request.response
+        ..statusCode = HttpStatus.serviceUnavailable
+        ..headers.contentType = ContentType.json
+        ..write('{"code":"unavailable","message":"down"}');
+      await request.response.close();
+    });
+    final client = LanternClient.connect(
+      Uri.parse('http://${server.address.host}:${server.port}'),
+      allowInsecure: true,
+      retryPolicy: const RetryPolicy(
+        maxAttempts: 2,
+        baseDelay: Duration(microseconds: 1),
+        maxDelay: Duration(microseconds: 1),
+      ),
+    );
+    addTearDown(client.close);
+    final remote = LanternClientOfflineRemote(client);
+
+    await expectLater(
+      remote.getVertex('retry'),
+      throwsA(
+        isA<OfflineRemoteFailure>()
+            .having(
+              (failure) => failure.kind,
+              'kind',
+              OfflineRemoteErrorKind.unavailable,
+            )
+            .having(
+              (failure) => failure.cause,
+              'cause',
+              isA<LanternRetryExhaustedException>().having(
+                (wrapper) => wrapper.cause,
+                'typed cause',
+                isA<LanternUnavailableException>(),
+              ),
+            ),
+      ),
+    );
+    expect(attempts, 2);
+  });
+
   test(
     'real server commit plus response loss replays safe Put and Add',
     () async {

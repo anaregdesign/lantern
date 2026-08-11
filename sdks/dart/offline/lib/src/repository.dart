@@ -42,8 +42,9 @@ final class OfflineLanternRepository {
   _writeStatuses = <_WriteStatusKey, StreamController<OfflineWriteStatus>>{};
   final Map<_WriteStatusKey, OfflineWriteStatus> _latestWriteStatuses =
       <_WriteStatusKey, OfflineWriteStatus>{};
-  final Map<_ReadFlightKey, Future<Object>> _singleFlights =
-      <_ReadFlightKey, Future<Object>>{};
+  final Map<_ReadFlightKey, _ReadFlight> _singleFlights =
+      <_ReadFlightKey, _ReadFlight>{};
+  final Set<_ReadFlightWaiter> _deferredReadWaiters = <_ReadFlightWaiter>{};
   late final _ReadLimiter _readLimiter;
   final Map<String, int> _activeWatchers = <String, int>{};
   int _activeWatcherCount = 0;
@@ -72,12 +73,13 @@ final class OfflineLanternRepository {
     );
     return _singleFlight(
       flightKey,
-      () => _readVertex(
+      cancellation,
+      (flightCancellation) => _readVertex(
         partitionId,
         key,
         policy: policy,
         allowStale: allowStale,
-        cancellation: cancellation,
+        cancellation: flightCancellation,
       ),
     );
   }
@@ -104,12 +106,13 @@ final class OfflineLanternRepository {
     );
     return _singleFlight(
       flightKey,
-      () => _readEdge(
+      cancellation,
+      (flightCancellation) => _readEdge(
         partitionId,
         edge,
         policy: policy,
         allowStale: allowStale,
-        cancellation: cancellation,
+        cancellation: flightCancellation,
       ),
     );
   }
@@ -129,12 +132,12 @@ final class OfflineLanternRepository {
     return _watchSnapshots<Vertex>(
       partitionId,
       initialPolicy: initialPolicy,
-      load: (policy) => readVertex(
+      load: (policy, watchCancellation) => readVertex(
         partitionId,
         key,
         policy: policy,
         allowStale: allowStale,
-        cancellation: cancellation,
+        cancellation: watchCancellation,
       ),
       equals: _vertexSnapshotEquals,
       cancellation: cancellation,
@@ -157,12 +160,12 @@ final class OfflineLanternRepository {
     return _watchSnapshots<Edge>(
       partitionId,
       initialPolicy: initialPolicy,
-      load: (policy) => readEdge(
+      load: (policy, watchCancellation) => readEdge(
         partitionId,
         edge,
         policy: policy,
         allowStale: allowStale,
-        cancellation: cancellation,
+        cancellation: watchCancellation,
       ),
       equals: _edgeSnapshotEquals,
       cancellation: cancellation,
@@ -781,17 +784,27 @@ final class OfflineLanternRepository {
     );
   }
 
-  /// Releases process-local watchers and prevents new repository work.
-  ///
-  /// Callers remain responsible for canceling tokens supplied to active remote
-  /// calls before disposal.
+  /// Cancels owned reads, releases process-local watchers, and prevents work.
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
     final controllers = _writeStatuses.values.toList(growable: false);
     _writeStatuses.clear();
     _latestWriteStatuses.clear();
+    final flights = _singleFlights.values.toSet().toList(growable: false);
     _singleFlights.clear();
+    final deferredReadWaiters = _deferredReadWaiters.toList(growable: false);
+    _deferredReadWaiters.clear();
+    for (final waiter in deferredReadWaiters) {
+      waiter.removeCancellationRegistration();
+      waiter.completeError(
+        const OfflineDisposedException(),
+        StackTrace.current,
+      );
+    }
+    for (final flight in flights) {
+      flight.cancel(const OfflineDisposedException());
+    }
     _readLimiter.dispose();
     final watchers = _watchDisposers.toList(growable: false);
     _watchDisposers.clear();
@@ -811,16 +824,26 @@ final class OfflineLanternRepository {
   Stream<OfflineSnapshot<T>> _watchSnapshots<T>(
     String partitionId, {
     required OfflineReadPolicy initialPolicy,
-    required Future<OfflineSnapshot<T>> Function(OfflineReadPolicy policy) load,
+    required Future<OfflineSnapshot<T>> Function(
+      OfflineReadPolicy policy,
+      LanternCancellationToken cancellation,
+    )
+    load,
     required bool Function(OfflineSnapshot<T>, OfflineSnapshot<T>) equals,
     required LanternCancellationToken? cancellation,
   }) {
     _ensureActive();
     OfflineSnapshot<T>? previous;
     StreamSubscription<OfflineStoreChange>? changes;
+    final watchCancellation = LanternCancellationToken();
+    void Function()? removeCancellationListener;
     var canceled = false;
     var registered = false;
+    var paused = false;
+    var initialComplete = false;
+    var pendingChange = false;
     var changeTail = Future<void>.value();
+    Future<void>? closing;
     late final StreamController<OfflineSnapshot<T>> controller;
     late final Future<void> Function() closeWatch;
 
@@ -832,12 +855,27 @@ final class OfflineLanternRepository {
     }
 
     Future<void> emit(OfflineReadPolicy policy) async {
-      _throwIfCanceled(cancellation);
-      final current = await load(policy);
+      _throwIfCanceled(watchCancellation);
+      final current = await load(policy, watchCancellation);
       if (canceled || controller.isClosed) return;
       if (previous != null && equals(previous!, current)) return;
       previous = current;
       controller.add(current);
+    }
+
+    void enqueueChange() {
+      changeTail = changeTail.then((_) async {
+        if (canceled) return;
+        try {
+          await emit(OfflineReadPolicy.cacheOnly);
+        } catch (error, stackTrace) {
+          if (!canceled &&
+              !controller.isClosed &&
+              error is! OfflineCanceledException) {
+            controller.addError(error, stackTrace);
+          }
+        }
+      });
     }
 
     void subscribeToChanges() {
@@ -845,28 +883,29 @@ final class OfflineLanternRepository {
           .changes(partitionId)
           .listen(
             (_) {
-              changeTail = changeTail.then((_) async {
-                try {
-                  await emit(OfflineReadPolicy.cacheOnly);
-                } catch (error, stackTrace) {
-                  if (!canceled &&
-                      !controller.isClosed &&
-                      error is! OfflineCanceledException) {
-                    controller.addError(error, stackTrace);
-                  }
-                }
-              });
+              if (canceled) return;
+              if (!initialComplete) {
+                pendingChange = true;
+                return;
+              }
+              enqueueChange();
             },
             onError: (Object error, StackTrace stackTrace) {
               if (!canceled && !controller.isClosed) {
                 controller.addError(error, stackTrace);
+                unawaited(closeWatch());
               }
             },
           );
+      if (paused) changes!.pause();
     }
 
     Future<void> startWatching() async {
       try {
+        // Register the change listener before the initial read. Changes that
+        // arrive while the initial snapshot is in flight are reconciled after
+        // that snapshot, so every continuing policy has a no-gap handoff.
+        subscribeToChanges();
         if (initialPolicy == OfflineReadPolicy.cacheFirst) {
           await emit(OfflineReadPolicy.cacheOnly);
           if (canceled) return;
@@ -879,54 +918,77 @@ final class OfflineLanternRepository {
               controller.addError(error, stackTrace);
             }
           }
-          if (canceled) return;
-          subscribeToChanges();
-          await emit(OfflineReadPolicy.cacheOnly);
-          return;
         } else {
           await emit(initialPolicy);
         }
-        if (canceled) return;
-        subscribeToChanges();
       } catch (error, stackTrace) {
         if (error is OfflineCanceledException) {
-          releaseWatcher();
-          if (!controller.isClosed) await controller.close();
+          await closeWatch();
         } else if (!canceled && !controller.isClosed) {
           controller.addError(error, stackTrace);
-          releaseWatcher();
-          await controller.close();
+          await closeWatch();
+        }
+      } finally {
+        initialComplete = true;
+        if (pendingChange && !canceled) {
+          pendingChange = false;
+          enqueueChange();
         }
       }
     }
 
-    closeWatch = () async {
-      canceled = true;
-      await changes?.cancel();
-      releaseWatcher();
-      if (!controller.isClosed) await controller.close();
+    closeWatch = () {
+      final existing = closing;
+      if (existing != null) return existing;
+      final result = () async {
+        canceled = true;
+        watchCancellation.cancel();
+        removeCancellationListener?.call();
+        removeCancellationListener = null;
+        final subscription = changes;
+        changes = null;
+        previous = null;
+        releaseWatcher();
+        try {
+          await subscription?.cancel();
+        } finally {
+          if (!controller.isClosed) await controller.close();
+        }
+      }();
+      closing = result;
+      return result;
     };
     controller = StreamController<OfflineSnapshot<T>>(
       sync: true,
       onListen: () {
         try {
+          _ensureActive();
+          if (cancellation?.isCanceled ?? false) {
+            unawaited(controller.close());
+            return;
+          }
           _registerWatcher(partitionId);
           registered = true;
           _watchDisposers.add(closeWatch);
+          removeCancellationListener = cancellation?.listen((_) {
+            unawaited(closeWatch());
+          });
           unawaited(startWatching());
         } catch (error, stackTrace) {
           controller.addError(error, stackTrace);
           unawaited(controller.close());
         }
       },
-      onCancel: () async {
-        canceled = true;
-        await changes?.cancel();
-        releaseWatcher();
-      },
+      onCancel: closeWatch,
     );
-    controller.onPause = () => changes?.pause();
-    controller.onResume = () => changes?.resume();
+    controller.onPause = () {
+      paused = true;
+      changes?.pause();
+    };
+    controller.onResume = () {
+      paused = false;
+      changes?.resume();
+    };
     return controller.stream;
   }
 
@@ -954,6 +1016,7 @@ final class OfflineLanternRepository {
         cancellation,
         () => remote.getVertex(key, cancellation: cancellation),
       );
+      _throwIfCanceled(cancellation);
       final now = config.clock().toUtc();
       switch (read) {
         case OfflineRemotePresent<Vertex>(:final value):
@@ -1039,6 +1102,9 @@ final class OfflineLanternRepository {
         OfflineReadSource.server,
       );
     } on OfflineRemoteFailure catch (error) {
+      if (error.kind == OfflineRemoteErrorKind.canceled) {
+        throw const OfflineCanceledException();
+      }
       if (policy == OfflineReadPolicy.serverFirst &&
           _eligible(local, allowStale: allowStale)) {
         return local;
@@ -1077,6 +1143,7 @@ final class OfflineLanternRepository {
         cancellation,
         () => remote.getEdge(edge, cancellation: cancellation),
       );
+      _throwIfCanceled(cancellation);
       final now = config.clock().toUtc();
       switch (read) {
         case OfflineRemotePresent<Edge>(:final value):
@@ -1165,6 +1232,9 @@ final class OfflineLanternRepository {
         OfflineReadSource.server,
       );
     } on OfflineRemoteFailure catch (error) {
+      if (error.kind == OfflineRemoteErrorKind.canceled) {
+        throw const OfflineCanceledException();
+      }
       if (policy == OfflineReadPolicy.serverFirst &&
           _eligible(local, allowStale: allowStale)) {
         return local;
@@ -2064,15 +2134,81 @@ final class OfflineLanternRepository {
     }
   }
 
-  Future<T> _singleFlight<T>(_ReadFlightKey key, Future<T> Function() task) {
+  Future<T> _singleFlight<T>(
+    _ReadFlightKey key,
+    LanternCancellationToken? cancellation,
+    Future<T> Function(LanternCancellationToken cancellation) task,
+  ) {
+    if (_disposed) {
+      return Future<T>.error(const OfflineDisposedException());
+    }
+    if (cancellation?.isCanceled ?? false) {
+      return Future<T>.error(const OfflineCanceledException());
+    }
     final existing = _singleFlights[key];
-    if (existing != null) return existing as Future<T>;
-    late final Future<T> future;
-    future = task().whenComplete(() {
-      if (identical(_singleFlights[key], future)) _singleFlights.remove(key);
+    if (existing != null) {
+      if (existing.acceptingWaiters) {
+        return existing.addWaiter<T>(cancellation);
+      }
+      return _waitForReadFlight<T>(key, existing, cancellation, task);
+    }
+    late final _ReadFlight flight;
+    flight = _ReadFlight(
+      task: (flightCancellation) async => task(flightCancellation),
+      onSettled: () {
+        if (identical(_singleFlights[key], flight)) {
+          _singleFlights.remove(key);
+        }
+      },
+    );
+    _singleFlights[key] = flight;
+    final waiter = flight.addWaiter<T>(cancellation);
+    flight.start();
+    return waiter;
+  }
+
+  Future<T> _waitForReadFlight<T>(
+    _ReadFlightKey key,
+    _ReadFlight previous,
+    LanternCancellationToken? cancellation,
+    Future<T> Function(LanternCancellationToken cancellation) task,
+  ) {
+    if (cancellation?.isCanceled ?? false) {
+      return Future<T>.error(const OfflineCanceledException());
+    }
+    final waiter = _TypedReadFlightWaiter<T>();
+    _deferredReadWaiters.add(waiter);
+    waiter.removeCancellationListener = cancellation?.listen((_) {
+      if (!_deferredReadWaiters.remove(waiter)) return;
+      waiter.removeCancellationRegistration();
+      waiter.completeError(
+        const OfflineCanceledException(),
+        StackTrace.current,
+      );
     });
-    _singleFlights[key] = future as Future<Object>;
-    return future;
+    previous.settled.whenComplete(() {
+      if (waiter.isCompleted) {
+        _deferredReadWaiters.remove(waiter);
+        waiter.removeCancellationRegistration();
+        return;
+      }
+      _deferredReadWaiters.remove(waiter);
+      waiter.removeCancellationRegistration();
+      if (_disposed) {
+        waiter.completeError(
+          const OfflineDisposedException(),
+          StackTrace.current,
+        );
+        return;
+      }
+      _singleFlight(key, cancellation, task).then(
+        waiter.complete,
+        onError: (Object error, StackTrace stackTrace) {
+          waiter.completeError(error, stackTrace);
+        },
+      );
+    });
+    return waiter.future;
   }
 
   bool _fresh(DateTime validatedAt, DateTime now) =>
@@ -2353,10 +2489,9 @@ final class _ReadLimiter {
     _queued.add(waiter);
     _queuedByPartition[partitionId] = partitionQueued + 1;
     if (cancellation != null) {
-      waiter.cancellationTimer = Timer.periodic(
-        const Duration(milliseconds: 10),
-        (_) => _removeCanceled(waiter),
-      );
+      waiter.removeCancellationListener = cancellation.listen((_) {
+        _removeCanceled(waiter);
+      });
     }
     _drain();
     return waiter.completer.future;
@@ -2369,7 +2504,7 @@ final class _ReadLimiter {
     _queued.clear();
     _queuedByPartition.clear();
     for (final waiter in queued) {
-      waiter.cancellationTimer?.cancel();
+      waiter.removeCancellationRegistration();
       waiter.completer.completeError(const OfflineDisposedException());
     }
   }
@@ -2405,7 +2540,7 @@ final class _ReadLimiter {
       if (index < 0) return;
       final waiter = _queued.removeAt(index);
       _decrementQueued(waiter.partitionId);
-      waiter.cancellationTimer?.cancel();
+      waiter.removeCancellationRegistration();
       if (waiter.cancellation?.isCanceled ?? false) {
         waiter.completer.completeError(const OfflineCanceledException());
         continue;
@@ -2417,7 +2552,7 @@ final class _ReadLimiter {
   void _removeCanceled(_ReadWaiter waiter) {
     if (!(waiter.cancellation?.isCanceled ?? false)) return;
     final removed = _queued.remove(waiter);
-    waiter.cancellationTimer?.cancel();
+    waiter.removeCancellationRegistration();
     if (!removed) return;
     _decrementQueued(waiter.partitionId);
     waiter.completer.completeError(const OfflineCanceledException());
@@ -2440,7 +2575,12 @@ final class _ReadWaiter {
   final String partitionId;
   final LanternCancellationToken? cancellation;
   final Completer<_ReadPermit> completer = Completer<_ReadPermit>();
-  Timer? cancellationTimer;
+  void Function()? removeCancellationListener;
+
+  void removeCancellationRegistration() {
+    removeCancellationListener?.call();
+    removeCancellationListener = null;
+  }
 }
 
 final class _ReadPermit {
@@ -2578,6 +2718,135 @@ final class _WriteStatusKey {
 
   @override
   int get hashCode => Object.hash(partitionId, recordId);
+}
+
+final class _ReadFlight {
+  _ReadFlight({required this.task, required this.onSettled});
+
+  final Future<Object?> Function(LanternCancellationToken cancellation) task;
+  final void Function() onSettled;
+  final LanternCancellationToken _cancellation = LanternCancellationToken();
+  final Set<_ReadFlightWaiter> _waiters = <_ReadFlightWaiter>{};
+  final Completer<void> _settled = Completer<void>();
+  var _started = false;
+  var _acceptingWaiters = true;
+  var _isSettled = false;
+
+  bool get acceptingWaiters => _acceptingWaiters;
+
+  Future<void> get settled => _settled.future;
+
+  Future<T> addWaiter<T>(LanternCancellationToken? cancellation) {
+    if (!_acceptingWaiters) {
+      return Future<T>.error(const OfflineCanceledException());
+    }
+    if (cancellation?.isCanceled ?? false) {
+      return Future<T>.error(const OfflineCanceledException());
+    }
+    final waiter = _TypedReadFlightWaiter<T>();
+    _waiters.add(waiter);
+    waiter.removeCancellationListener = cancellation?.listen((_) {
+      _cancelWaiter(waiter);
+    });
+    return waiter.future;
+  }
+
+  void start() {
+    if (_started) return;
+    _started = true;
+    unawaited(_run());
+  }
+
+  void cancel(Object error) {
+    if (_isSettled) return;
+    _acceptingWaiters = false;
+    _cancellation.cancel(error);
+    final waiters = _waiters.toList(growable: false);
+    _waiters.clear();
+    for (final waiter in waiters) {
+      waiter.removeCancellationRegistration();
+      waiter.completeError(error, StackTrace.current);
+    }
+  }
+
+  void _cancelWaiter(_ReadFlightWaiter waiter) {
+    if (!_waiters.remove(waiter)) return;
+    waiter.removeCancellationRegistration();
+    waiter.completeError(const OfflineCanceledException(), StackTrace.current);
+    if (_waiters.isEmpty && !_isSettled) {
+      _acceptingWaiters = false;
+      _cancellation.cancel();
+    }
+  }
+
+  Future<void> _run() async {
+    try {
+      final value = await task(_cancellation);
+      final waiters = _waiters.toList(growable: false);
+      _waiters.clear();
+      for (final waiter in waiters) {
+        waiter.removeCancellationRegistration();
+        waiter.complete(value);
+      }
+    } catch (error, stackTrace) {
+      final waiters = _waiters.toList(growable: false);
+      _waiters.clear();
+      for (final waiter in waiters) {
+        waiter.removeCancellationRegistration();
+        waiter.completeError(error, stackTrace);
+      }
+    } finally {
+      _acceptingWaiters = false;
+      _isSettled = true;
+      onSettled();
+      _settled.complete();
+    }
+  }
+}
+
+abstract interface class _ReadFlightWaiter {
+  bool get isCompleted;
+
+  set removeCancellationListener(void Function()? value);
+
+  void removeCancellationRegistration();
+
+  void complete(Object? value);
+
+  void completeError(Object error, StackTrace stackTrace);
+}
+
+final class _TypedReadFlightWaiter<T> implements _ReadFlightWaiter {
+  final Completer<T> _completer = Completer<T>();
+  void Function()? _removeCancellationListener;
+
+  Future<T> get future => _completer.future;
+
+  @override
+  bool get isCompleted => _completer.isCompleted;
+
+  @override
+  set removeCancellationListener(void Function()? value) {
+    _removeCancellationListener = value;
+  }
+
+  @override
+  void removeCancellationRegistration() {
+    _removeCancellationListener?.call();
+    _removeCancellationListener = null;
+  }
+
+  @override
+  void complete(Object? value) {
+    if (!_completer.isCompleted) _completer.complete(value as T);
+  }
+
+  @override
+  void completeError(Object error, StackTrace stackTrace) {
+    if (!_completer.isCompleted) {
+      _completer.completeError(error, stackTrace);
+    }
+  }
 }
 
 final class _ReadFlightKey {

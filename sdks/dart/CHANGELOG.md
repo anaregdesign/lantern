@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Expose detachable, fan-out-safe `LanternCancellationToken.listen` lifecycle
+  notifications so companion packages can isolate shared work from individual
+  callers without polling.
+
 ## 0.1.3
 
 - Resolve the package lock without descending into the Flutter example on the

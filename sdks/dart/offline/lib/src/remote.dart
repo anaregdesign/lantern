@@ -231,13 +231,19 @@ final class LanternClientOfflineRemote implements OfflineRemote {
   }
 }
 
-OfflineRemoteFailure _mapFailure(Object error) {
+Exception _mapFailure(Object error) {
   if (error is OfflineRemoteFailure) return error;
-  return OfflineRemoteFailure(switch (error) {
+  if (error is OfflineCanceledException) return error;
+  final classified = error is LanternRetryExhaustedException
+      ? error.cause
+      : error;
+  if (classified is LanternCanceledException) {
+    return const OfflineCanceledException();
+  }
+  return OfflineRemoteFailure(switch (classified) {
     LanternUnavailableException() => OfflineRemoteErrorKind.unavailable,
     LanternUnauthenticatedException() => OfflineRemoteErrorKind.unauthenticated,
     LanternInvalidArgumentException() => OfflineRemoteErrorKind.invalidArgument,
-    LanternCanceledException() => OfflineRemoteErrorKind.canceled,
     LanternResourceExhaustedException() =>
       OfflineRemoteErrorKind.resourceExhausted,
     LanternPermissionDeniedException() ||
