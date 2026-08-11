@@ -99,11 +99,11 @@ void main() {
       weight: 0.5,
       expiresIn: const Duration(minutes: 2),
     );
-    final add = await offline.addEdge(
+    final edgePut = await offline.putEdge(
       partitionId: partition,
       input: offlineEdge,
     );
-    final addStatuses = add.statuses.toList();
+    final edgePutStatuses = edgePut.statuses.toList();
     final pendingVertex = await offline.readVertex(
       partition,
       offlineVertexKey,
@@ -116,11 +116,10 @@ void main() {
     );
     expect(pendingVertex.hasPendingWrites, isTrue);
     expect(pendingEdge.hasPendingWrites, isTrue);
-    expect(pendingEdge.isEstimate, isTrue);
 
     expect(await offline.probeAndDrain(partition), 2);
     expect((await putStatuses).last.state, OfflineWriteState.confirmed);
-    expect((await addStatuses).last.state, OfflineWriteState.confirmed);
+    expect((await edgePutStatuses).last.state, OfflineWriteState.confirmed);
     final cachedVertex = await offline.readVertex(
       partition,
       offlineVertexKey,
@@ -134,7 +133,6 @@ void main() {
     expect(cachedVertex.hasPendingWrites, isFalse);
     expect(cachedVertex.source, OfflineReadSource.cache);
     expect(cachedEdge.hasPendingWrites, isFalse);
-    expect(cachedEdge.isEstimate, isFalse);
     expect(
       (await client.getVertex(offlineVertexKey)).value,
       isA<StringValue>(),

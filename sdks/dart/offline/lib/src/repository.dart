@@ -290,85 +290,6 @@ final class OfflineLanternRepository {
     );
   }
 
-  /// Durably enqueues one stable-ID additive edge contribution.
-  ///
-  /// A caller-supplied ID is preserved. Otherwise this method creates the exact
-  /// 24-byte ID in the same local transaction that persists its intent.
-  Future<OfflineWriteHandle> addEdge({
-    required String partitionId,
-    required EdgeInput input,
-    String? operationId,
-  }) async {
-    _validatePartitionAndKey(partitionId, input.tail);
-    _ensureActive();
-    if (input.head.isEmpty) throw const OfflineArgumentException();
-    final now = config.clock().toUtc();
-    final edge = Edge(
-      tail: input.tail,
-      head: input.head,
-      weight: normalizeOfflineFloat32(input.weight),
-      expiration: _resolveExpiration(input.expiresIn, input.expiresAt, now),
-    );
-    final supplied = input.contribId;
-    if (supplied != null &&
-        (supplied.length != 24 || !supplied.any((byte) => byte != 0))) {
-      throw const OfflineArgumentException();
-    }
-    return _enqueueAdd(
-      partitionId,
-      edge,
-      supplied,
-      now: now,
-      operationId: operationId,
-    );
-  }
-
-  /// Atomically enqueues a logical plural stable-ID additive operation.
-  Future<OfflineWriteOperation> addEdges({
-    required String partitionId,
-    required Iterable<EdgeInput> inputs,
-    String? operationId,
-  }) {
-    _validatePartition(partitionId);
-    _ensureActive();
-    final items = inputs.toList(growable: false);
-    if (items.isEmpty) throw const OfflineArgumentException();
-    final now = config.clock().toUtc();
-    final intents = items
-        .map((input) {
-          _validatePartitionAndKey(partitionId, input.tail);
-          if (input.head.isEmpty) throw const OfflineArgumentException();
-          final edge = Edge(
-            tail: input.tail,
-            head: input.head,
-            weight: normalizeOfflineFloat32(input.weight),
-            expiration: _resolveExpiration(
-              input.expiresIn,
-              input.expiresAt,
-              now,
-            ),
-          );
-          final supplied = input.contribId;
-          if (supplied != null &&
-              (supplied.length != 24 || !supplied.any((byte) => byte != 0))) {
-            throw const OfflineArgumentException();
-          }
-          return () {
-            final contributionId = supplied == null
-                ? config.contributionIdGenerator()
-                : Uint8List.fromList(supplied);
-            return OfflineAddEdgeIntent(edge, contributionId);
-          };
-        })
-        .toList(growable: false);
-    return _enqueueOperation(
-      partitionId,
-      intents,
-      now: now,
-      operationId: operationId,
-    );
-  }
-
   /// Returns the latest durable aggregate status for one logical write.
   Future<OfflineOperationStatus?> getWriteStatus(
     String partitionId,
@@ -699,6 +620,9 @@ final class OfflineLanternRepository {
       final record = transaction.getOutbox(partitionId, recordId);
       if (record == null || record.state != OfflineOutboxState.deadLetter) {
         throw const OfflineArgumentException();
+      }
+      if (record.intent is OfflineAddEdgeIntent) {
+        throw const OfflineUnsupportedOperationException();
       }
       final now = config.clock().toUtc();
       if (!_live(record.absoluteExpiration, now)) {
@@ -1276,7 +1200,7 @@ final class OfflineLanternRepository {
           );
         }
       }
-      return pending.isEmpty ? base : _markPending(base, isEstimate: false);
+      return pending.isEmpty ? base : _markPending(base);
     });
     _recordReadDiagnostic(snapshot);
     return snapshot;
@@ -1298,7 +1222,6 @@ final class OfflineLanternRepository {
         transaction.outboxForKey(partitionId, identity),
         now,
       );
-      var estimate = false;
       for (final item in pending) {
         switch (item.intent) {
           case OfflinePutEdgeIntent(:final edge):
@@ -1309,46 +1232,14 @@ final class OfflineLanternRepository {
               validatedAt: base.validatedAt,
               hasPendingWrites: true,
             );
-            estimate = false;
-          case OfflineAddEdgeIntent(:final edge):
-            final existing = base.value;
-            if (existing == null) {
-              base = OfflineSnapshot<Edge>(
-                state: OfflineReadState.unknown,
-                source: base.source,
-                value: Edge(
-                  tail: edge.tail,
-                  head: edge.head,
-                  weight: normalizeOfflineFloat32(edge.weight),
-                  expiration: edge.expiration,
-                ),
-                validatedAt: base.validatedAt,
-                hasPendingWrites: true,
-                isEstimate: true,
-              );
-              estimate = true;
-            } else {
-              base = OfflineSnapshot<Edge>(
-                state: base.state,
-                source: base.source,
-                value: Edge(
-                  tail: existing.tail,
-                  head: existing.head,
-                  weight: normalizeOfflineFloat32(
-                    existing.weight + edge.weight,
-                  ),
-                  expiration: existing.expiration,
-                ),
-                validatedAt: base.validatedAt,
-                hasPendingWrites: true,
-                isEstimate: estimate,
-              );
-            }
+          case OfflineAddEdgeIntent():
+            // Migration-only Add records are filtered out by [_livePending].
+            break;
           case OfflinePutVertexIntent():
             throw StateError('vertex intent has edge ordering key');
         }
       }
-      return pending.isEmpty ? base : _markPending(base, isEstimate: estimate);
+      return pending.isEmpty ? base : _markPending(base);
     });
     _recordReadDiagnostic(snapshot);
     return snapshot;
@@ -1518,30 +1409,6 @@ final class OfflineLanternRepository {
     return OfflineWriteOperation(operationId: opId, items: handles);
   }
 
-  Future<OfflineWriteHandle> _enqueueAdd(
-    String partitionId,
-    Edge edge,
-    Uint8List? supplied, {
-    required DateTime now,
-    required String? operationId,
-  }) async => (await _enqueueOperation(
-    partitionId,
-    <OfflineIntent Function()>[
-      () {
-        final contributionId = supplied == null
-            ? config.contributionIdGenerator()
-            : Uint8List.fromList(supplied);
-        if (contributionId.length != 24 ||
-            !contributionId.any((byte) => byte != 0)) {
-          throw const OfflineArgumentException();
-        }
-        return OfflineAddEdgeIntent(edge, contributionId);
-      },
-    ],
-    now: now,
-    operationId: operationId,
-  )).items.single;
-
   Future<_ReplayOutcome> _replayWithRenewal(
     String partitionId,
     OfflineOutboxRecord claimed, {
@@ -1568,6 +1435,9 @@ final class OfflineLanternRepository {
     required String owner,
     required LanternCancellationToken? cancellation,
   }) async {
+    if (claimed.intent is OfflineAddEdgeIntent) {
+      return _deadLetterUnsupportedAdd(partitionId, claimed, owner);
+    }
     final now = config.clock().toUtc();
     if (!_live(claimed.absoluteExpiration, now)) {
       await _expireRecord(partitionId, claimed, owner);
@@ -1583,12 +1453,9 @@ final class OfflineLanternRepository {
           edge,
           cancellation,
         ),
-        OfflineAddEdgeIntent(:final edge, :final contributionId) =>
-          await remote.addEdge(
-            edge,
-            contributionId,
-            cancellation: cancellation,
-          ),
+        OfflineAddEdgeIntent() => throw StateError(
+          'legacy Add reached the remote replay switch',
+        ),
       };
       var cacheRejected = false;
       final applied = await store.transaction((transaction) {
@@ -1661,6 +1528,53 @@ final class OfflineLanternRepository {
       await _releaseClaim(partitionId, claimed, owner);
       rethrow;
     }
+  }
+
+  Future<_ReplayOutcome> _deadLetterUnsupportedAdd(
+    String partitionId,
+    OfflineOutboxRecord claimed,
+    String owner,
+  ) async {
+    final now = config.clock().toUtc();
+    final applied = await store.transaction((transaction) {
+      final current = transaction.getOutbox(partitionId, claimed.recordId);
+      if (current == null ||
+          current.generation != claimed.generation ||
+          current.state != OfflineOutboxState.sending ||
+          current.leaseOwner != owner ||
+          current.leaseUntil == null ||
+          !now.isBefore(current.leaseUntil!) ||
+          transaction.generation(partitionId) != claimed.generation) {
+        return false;
+      }
+      transaction.updateOutbox(
+        current.copyWith(
+          state: OfflineOutboxState.deadLetter,
+          clearNextAttemptAt: true,
+          clearLeaseOwner: true,
+          clearLeaseUntil: true,
+          diagnosticCode: 'unsupported_add',
+        ),
+      );
+      _updateOperationStatus(
+        transaction,
+        current,
+        OfflineWriteState.deadLetter,
+        attemptCount: current.attemptCount,
+        diagnosticCode: 'unsupported_add',
+        now: now,
+      );
+      return true;
+    });
+    if (applied) {
+      _emit(
+        claimed,
+        OfflineWriteState.deadLetter,
+        attemptCount: claimed.attemptCount,
+        diagnosticCode: 'unsupported_add',
+      );
+    }
+    return _ReplayOutcome(deadLetter: applied);
   }
 
   Future<Object?> _putVertexRemote(
@@ -2264,22 +2178,18 @@ final class OfflineLanternRepository {
     expiredAt: snapshot.expiredAt,
     cause: snapshot.cause,
     hasPendingWrites: snapshot.hasPendingWrites,
-    isEstimate: snapshot.isEstimate,
   );
 
-  OfflineSnapshot<T> _markPending<T>(
-    OfflineSnapshot<T> snapshot, {
-    required bool isEstimate,
-  }) => OfflineSnapshot<T>(
-    state: snapshot.state,
-    source: snapshot.source,
-    value: snapshot.value,
-    validatedAt: snapshot.validatedAt,
-    expiredAt: snapshot.expiredAt,
-    cause: snapshot.cause,
-    hasPendingWrites: true,
-    isEstimate: isEstimate,
-  );
+  OfflineSnapshot<T> _markPending<T>(OfflineSnapshot<T> snapshot) =>
+      OfflineSnapshot<T>(
+        state: snapshot.state,
+        source: snapshot.source,
+        value: snapshot.value,
+        validatedAt: snapshot.validatedAt,
+        expiredAt: snapshot.expiredAt,
+        cause: snapshot.cause,
+        hasPendingWrites: true,
+      );
 
   OfflineSnapshot<T> _unknown<T>() =>
       OfflineSnapshot<T>(state: OfflineReadState.unknown, source: null);
@@ -2292,6 +2202,7 @@ final class OfflineLanternRepository {
         (record) =>
             (record.state == OfflineOutboxState.enqueued ||
                 record.state == OfflineOutboxState.sending) &&
+            record.intent is! OfflineAddEdgeIntent &&
             _live(record.absoluteExpiration, now),
       )
       .toList(growable: false);
@@ -2897,8 +2808,7 @@ bool _snapshotMetadataEquals<T>(
     left.validatedAt == right.validatedAt &&
     left.expiredAt == right.expiredAt &&
     identical(left.cause, right.cause) &&
-    left.hasPendingWrites == right.hasPendingWrites &&
-    left.isEstimate == right.isEstimate;
+    left.hasPendingWrites == right.hasPendingWrites;
 
 bool _vertexEquals(Vertex? left, Vertex? right) {
   if (identical(left, right)) return true;

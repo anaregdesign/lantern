@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_client_offline/lantern_client_offline.dart';
@@ -162,13 +161,6 @@ void _require(bool condition, String label) {
 }
 
 final class _ImmediateRemote implements OfflineRemote {
-  @override
-  Future<Edge> addEdge(
-    Edge edge,
-    Uint8List contributionId, {
-    LanternCancellationToken? cancellation,
-  }) async => edge;
-
   @override
   Future<OfflineRemoteRead<Edge>> getEdge(
     EdgeRef edge, {

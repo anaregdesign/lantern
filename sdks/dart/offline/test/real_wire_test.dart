@@ -2,6 +2,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -92,7 +93,7 @@ void main() {
   });
 
   test(
-    'real server commit plus response loss replays safe Put and Add',
+    'real server commit plus response loss replays PutVertex and PutEdge',
     () async {
       final endpointValue =
           Platform.environment['LANTERN_DART_REAL_WIRE_ENDPOINT'];
@@ -113,7 +114,7 @@ void main() {
       final dropping = _ResponseDroppingRemote(
         online,
         dropNextPutVertex: true,
-        dropNextAddEdge: true,
+        dropNextPutEdge: true,
       );
       final store = InMemoryOfflineStore();
       final enqueueNow = DateTime.now().toUtc();
@@ -124,8 +125,6 @@ void main() {
           clock: () => enqueueNow,
           jitter: (ceiling) => ceiling,
           baseRetryDelay: const Duration(seconds: 1),
-          contributionIdGenerator: () =>
-              Uint8List.fromList(List<int>.generate(24, (index) => index + 1)),
         ),
       );
       final prefix =
@@ -141,7 +140,7 @@ void main() {
           expiresIn: const Duration(minutes: 5),
         ),
       );
-      await repository.addEdge(
+      await repository.putEdge(
         partitionId: 'wire',
         input: EdgeInput(
           tail: tail,
@@ -152,16 +151,15 @@ void main() {
       );
       expect(await repository.drain('wire'), 0);
       expect(dropping.putVertexCalls, 1);
-      expect(dropping.addEdgeCalls, 1);
+      expect(dropping.putEdgeCalls, 1);
       final beforeRestart = await store.transaction(
         (transaction) => transaction.outbox('wire'),
       );
       expect(beforeRestart, hasLength(2));
-      final firstAdd = beforeRestart
+      final firstEdge = beforeRestart
           .map((record) => record.intent)
-          .whereType<OfflineAddEdgeIntent>()
+          .whereType<OfflinePutEdgeIntent>()
           .single;
-      expect(dropping.contributionIds.single, firstAdd.contributionId);
 
       final snapshot = await store.exportSnapshot();
       await repository.dispose();
@@ -176,10 +174,9 @@ void main() {
       );
       addTearDown(restarted.dispose);
       expect(await restarted.drain('wire'), 2);
-      expect(recording.contributionIds.single, firstAdd.contributionId);
       expect(
         recording.edgeExpirations.single,
-        firstAdd.edge.expiration,
+        firstEdge.edge.expiration,
         reason: 'replay must not rebase the once-resolved TTL',
       );
 
@@ -188,6 +185,140 @@ void main() {
       final edge = await client.getEdge(EdgeRef(tail, head));
       expect(edge.weight, Float32Value(0.75).value);
       expect(await restarted.listPending('wire'), isEmpty);
+    },
+  );
+
+  test(
+    'legacy Add response loss cannot resurrect an Edge deleted before restart',
+    () async {
+      final endpointValue =
+          Platform.environment['LANTERN_DART_REAL_WIRE_ENDPOINT'];
+      if (endpointValue == null || endpointValue.isEmpty) {
+        markTestSkipped('set LANTERN_DART_REAL_WIRE_ENDPOINT');
+        return;
+      }
+      final endpoint = Uri.parse(endpointValue);
+      final client = LanternClient.connect(
+        endpoint,
+        allowInsecure: endpoint.scheme == 'http',
+        idempotentAdds: true,
+      );
+      addTearDown(client.close);
+      await client.ping();
+
+      final prefix =
+          'dart-offline-add-quarantine:'
+          '${DateTime.now().microsecondsSinceEpoch}:';
+      final edgeRef = EdgeRef('${prefix}tail', '${prefix}head');
+      addTearDown(() => client.deleteEdge(edgeRef));
+      final contributionId = Uint8List.fromList(
+        List<int>.generate(24, (index) => index + 1),
+      );
+      final enqueuedAt = DateTime.now().toUtc();
+      final expiration = enqueuedAt.add(const Duration(minutes: 5));
+      final legacyStore = InMemoryOfflineStore();
+      await legacyStore.transaction((transaction) {
+        final assigned = transaction.enqueue(
+          OfflineOutboxRecord(
+            recordId: '${prefix}record',
+            operationId: '${prefix}operation',
+            itemIndex: 0,
+            partitionId: 'legacy-wire',
+            intent: OfflineAddEdgeIntent(
+              Edge(
+                tail: edgeRef.tail,
+                head: edgeRef.head,
+                weight: Float32Value(0.5).value,
+                expiration: expiration,
+              ),
+              contributionId,
+            ),
+            enqueuedAt: enqueuedAt,
+            ordinal: 0,
+            state: OfflineOutboxState.enqueued,
+            attemptCount: 1,
+            generation: 0,
+            nextAttemptAt: enqueuedAt.add(const Duration(seconds: 1)),
+            diagnosticCode: 'unavailable',
+          ),
+        );
+        transaction.putOperation(
+          OfflineOperationRecord(
+            partitionId: assigned.partitionId,
+            generation: assigned.generation,
+            operationId: assigned.operationId,
+            items: <OfflineWriteStatus>[
+              OfflineWriteStatus(
+                recordId: assigned.recordId,
+                operationId: assigned.operationId,
+                itemIndex: assigned.itemIndex,
+                state: OfflineWriteState.retryScheduled,
+                attemptCount: assigned.attemptCount,
+                diagnosticCode: assigned.diagnosticCode,
+              ),
+            ],
+            updatedAt: enqueuedAt,
+          ),
+        );
+      });
+
+      // The direct-online commit succeeds, but the retained retry record above
+      // models the old adapter losing that response before local confirmation.
+      expect(
+        await client.addEdge(
+          EdgeInput(
+            tail: edgeRef.tail,
+            head: edgeRef.head,
+            weight: 0.5,
+            expiresAt: expiration,
+            contribId: contributionId,
+          ),
+        ),
+        Float32Value(0.5).value,
+      );
+      expect(await client.deleteEdge(edgeRef), isTrue);
+      await expectLater(
+        client.getEdge(edgeRef),
+        throwsA(isA<LanternNotFoundException>()),
+      );
+
+      final legacySnapshot =
+          jsonDecode(await legacyStore.exportSnapshot())
+              as Map<String, Object?>;
+      legacySnapshot['schema'] = 2;
+      final recording = _ResponseDroppingRemote(
+        LanternClientOfflineRemote(client),
+      );
+      final restarted = OfflineLanternRepository(
+        store: InMemoryOfflineStore.fromSnapshot(jsonEncode(legacySnapshot)),
+        remote: recording,
+        config: OfflineConfig(
+          clock: () => enqueuedAt.add(const Duration(seconds: 2)),
+          jitter: (_) => Duration.zero,
+        ),
+      );
+      addTearDown(restarted.dispose);
+
+      expect(await restarted.drain('legacy-wire'), 0);
+      expect(recording.putVertexCalls, 0);
+      expect(recording.putEdgeCalls, 0);
+      final deadLetters = await restarted.listDeadLetters('legacy-wire');
+      expect(deadLetters, hasLength(1));
+      expect(deadLetters.single.category, OfflineOperationCategory.addEdge);
+      expect(deadLetters.single.attemptCount, 1);
+      expect(deadLetters.single.diagnosticCode, 'unsupported_add');
+      final status = await restarted.getWriteStatus(
+        'legacy-wire',
+        '${prefix}operation',
+      );
+      expect(status!.isTerminal, isTrue);
+      expect(status.deadLetterCount, 1);
+      expect(status.items.single.attemptCount, 1);
+      expect(status.items.single.diagnosticCode, 'unsupported_add');
+      await expectLater(
+        client.getEdge(edgeRef),
+        throwsA(isA<LanternNotFoundException>()),
+      );
     },
   );
 
@@ -295,41 +426,15 @@ final class _ResponseDroppingRemote implements OfflineRemote {
   _ResponseDroppingRemote(
     this.delegate, {
     this.dropNextPutVertex = false,
-    this.dropNextAddEdge = false,
+    this.dropNextPutEdge = false,
   });
 
   final OfflineRemote delegate;
   bool dropNextPutVertex;
-  bool dropNextAddEdge;
+  bool dropNextPutEdge;
   int putVertexCalls = 0;
-  int addEdgeCalls = 0;
-  final List<Uint8List> contributionIds = <Uint8List>[];
+  int putEdgeCalls = 0;
   final List<DateTime?> edgeExpirations = <DateTime?>[];
-
-  @override
-  Future<Edge> addEdge(
-    Edge edge,
-    Uint8List contributionId, {
-    LanternCancellationToken? cancellation,
-  }) async {
-    addEdgeCalls++;
-    contributionIds.add(Uint8List.fromList(contributionId));
-    edgeExpirations.add(edge.expiration);
-    final result = await delegate.addEdge(
-      edge,
-      contributionId,
-      cancellation: cancellation,
-    );
-    if (dropNextAddEdge) {
-      dropNextAddEdge = false;
-      throw OfflineRemoteFailure(
-        OfflineRemoteErrorKind.unavailable,
-        StateError('response dropped after real commit'),
-      );
-    }
-
-    return result;
-  }
 
   @override
   Future<OfflineRemoteRead<Edge>> getEdge(
@@ -348,8 +453,21 @@ final class _ResponseDroppingRemote implements OfflineRemote {
       delegate.probe(cancellation: cancellation);
 
   @override
-  Future<void> putEdge(Edge edge, {LanternCancellationToken? cancellation}) =>
-      delegate.putEdge(edge, cancellation: cancellation);
+  Future<void> putEdge(
+    Edge edge, {
+    LanternCancellationToken? cancellation,
+  }) async {
+    putEdgeCalls++;
+    edgeExpirations.add(edge.expiration);
+    await delegate.putEdge(edge, cancellation: cancellation);
+    if (dropNextPutEdge) {
+      dropNextPutEdge = false;
+      throw OfflineRemoteFailure(
+        OfflineRemoteErrorKind.unavailable,
+        StateError('response dropped after real commit'),
+      );
+    }
+  }
 
   @override
   Future<void> putVertex(
@@ -374,13 +492,6 @@ final class _FailingAfterRemote implements OfflineRemote {
   final OfflineRemote delegate;
   final int succeedBefore;
   var putVertexCalls = 0;
-
-  @override
-  Future<Edge> addEdge(
-    Edge edge,
-    Uint8List contributionId, {
-    LanternCancellationToken? cancellation,
-  }) => delegate.addEdge(edge, contributionId, cancellation: cancellation);
 
   @override
   Future<OfflineRemoteRead<Edge>> getEdge(

@@ -16,6 +16,12 @@ final class OfflineArgumentException extends OfflineException {
   const OfflineArgumentException() : super('invalid_argument');
 }
 
+/// A mutation is intentionally unavailable in the durable offline contract.
+final class OfflineUnsupportedOperationException extends OfflineException {
+  /// Creates an unsupported-operation failure.
+  const OfflineUnsupportedOperationException() : super('unsupported_operation');
+}
+
 /// A cache or outbox record could not be decoded safely.
 final class OfflineCodecException extends OfflineException {
   /// Creates a fail-closed codec failure.

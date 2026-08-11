@@ -184,9 +184,12 @@ offline_cache=true offline_replay=true
 All tests passed!
 ```
 
-The physical run locally committed PutVertex and stable-ID AddEdge, observed
-the pending cache and estimated Add before replay, then completed a real
-Lantern probe/drain and observed confirmed non-pending cache state. The example
-uses `InMemoryOfflineStore`; process-restart durability remains covered by the
-storage-neutral fresh-process, response-loss, migration, and adapter
-conformance tests rather than being claimed from this device run.
+This recorded run predates the Put-only amendment in #1175 and is retained only
+as historical lifecycle/probe evidence; it does not validate the current
+offline mutation contract. The maintained mobile smoke now locally commits
+`PutVertex` and `PutEdge`, observes their exact pending cache values, then probes
+and drains. That revised scenario must be rerun on a physical device before it
+is recorded as current release evidence. The example uses
+`InMemoryOfflineStore`; process-restart durability remains covered by the
+storage-neutral fresh-process, Put response-loss, legacy-Add quarantine, and
+adapter conformance tests rather than being claimed from this device run.

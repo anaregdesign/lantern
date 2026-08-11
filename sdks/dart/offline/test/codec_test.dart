@@ -48,7 +48,7 @@ void main() {
       }
     });
 
-    test('preserves exact edge float bits and Add contribution IDs', () {
+    test('preserves legacy Add bytes for fail-closed migration', () {
       final record = OfflineOutboxRecord(
         recordId: 'r',
         operationId: 'o',
@@ -170,7 +170,7 @@ void main() {
       );
     });
 
-    test('matches deterministic v1 fixtures byte-for-byte', () {
+    test('matches cache and legacy Add v1 fixtures byte-for-byte', () {
       for (final path in <String>[
         'test/fixtures/v1_cache_vertex.json',
         'test/fixtures/v1_outbox_add.json',

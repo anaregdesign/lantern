@@ -3,7 +3,7 @@
 Experimental, storage-neutral offline Repository support for
 [`lantern_client`](https://pub.dev/packages/lantern_client). It provides a strict
 versioned cache/outbox codec, a deterministic non-production in-memory reference
-store, latency-compensated Put/Add writes, and explicit foreground replay.
+store, latency-compensated Put writes, and explicit foreground replay.
 
 It is pure Dart and deliberately does **not** bundle SQLite, Flutter,
 connectivity, secure storage, state management, scheduling, or encryption. An
@@ -41,24 +41,34 @@ final operation = repository.watchWrite(
 
 An offline write Future means the local transaction has committed. Watch its
 handle for remote confirmation, retry, expiry, or dead-letter status. Only
-unconditional `PutVertex`, `PutEdge`, and stable-ID `AddEdge` are admitted.
-Conditional puts and Deletes intentionally have no durable API.
+unconditional `PutVertex` and `PutEdge` are admitted. Add, conditional puts,
+and Deletes intentionally have no durable API in the first release.
 
 Per-item handle streams are process-local conveniences. `getWriteStatus` and
 `watchWrite` read a content-free durable operation aggregate, preserve mixed
 plural progress, and remain reconstructible after a new repository process.
 Terminal operation metadata has explicit retention and capacity limits.
 
-`putVertices`, `putEdges`, and `addEdges` atomically enqueue every item in one
-logical operation with stable item indexes. Relative TTL is resolved to one
-absolute instant at enqueue, and Add reuses the same persisted 24-byte
-contribution ID after retries or response loss.
+`putVertices` and `putEdges` atomically enqueue every item in one logical
+operation with stable item indexes. Relative TTL is resolved to one absolute
+instant at enqueue and is never rebased during replay.
+
+Snapshots written by the earlier experimental Add implementation remain
+readable for migration only. Snapshot schema v3 converts every legacy Add item
+to an inspectable terminal dead letter with diagnostic `unsupported_add`,
+without incrementing its attempt count, overlaying it on reads, or invoking the
+remote. `retryDeadLetter` rejects that item with
+`OfflineUnsupportedOperationException`; applications may inspect it through
+their authorization callback and then retain or delete it. Durable Add can be
+considered again only after #1115 supplies server-authoritative operation
+receipts and the offline package has conformance and response-loss evidence for
+that receipt contract.
 
 `readVertex`/`readEdge` expose cache-only, cache-first, and server-only policies.
 `watchVertex`/`watchEdge` emit the cache immediately, revalidate once against
 Lantern, coalesce identical snapshots, and then follow local store changes.
 Snapshots distinguish fresh, stale, missing, expired, and unknown states and
-carry `hasPendingWrites` plus `isEstimate` for latency-compensated Add overlays.
+carry `hasPendingWrites` for exact Put overlays.
 No stale policy serves a value at or after its Lantern expiration.
 Distinct remote reads, queued reads, active watchers, per-partition watchers,
 and watcher-owning partitions all have explicit bounds. Queued cancellation
@@ -88,9 +98,10 @@ does not survive process termination. Production adapters must preserve the
 `OfflineStore` transaction, generation, byte-accounting, lease, and canonical
 codec contracts. Adapter packages can invoke `runStoreConformanceSuite` from
 their own tests. `exportSnapshot` and `InMemoryOfflineStore.fromSnapshot` exist
-only for deterministic fresh-process conformance tests; snapshot schema v2
-persists operation aggregates and transactionally migrates active v1 outbox
-metadata. They are not a persistence adapter. The checked-in
+only for deterministic fresh-process conformance tests; snapshot schema v3
+persists operation aggregates, transactionally migrates active v1 metadata,
+and quarantines legacy Add records from v1/v2 snapshots. They are not a
+persistence adapter. The checked-in
 `tool/performance_probe.dart` records content-free p50/p95/p99, RSS, replay,
 enqueue, and snapshot-size evidence against conservative bounds. See the ADR at
 `docs/decisions/0002-dart-offline-repository-contract.md`.
@@ -103,7 +114,7 @@ and increments the partition generation so late replay responses are discarded.
 The package does not receive storage encryption keys and does not emit keys,
 values, contribution IDs, tokens, or partition identifiers in diagnostics.
 
-The maintained Flutter example shows cached/pending/estimate state, explicit
+The maintained Flutter example shows cached/pending Put state, explicit
 probe/replay, lifecycle cancellation/resume, and authorized dead-letter
 controls. Its in-memory store is still non-durable; a production application
 must inject a transactional encrypted store and call `wipePartition` before a

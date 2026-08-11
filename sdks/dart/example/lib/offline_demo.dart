@@ -124,9 +124,9 @@ final class _OfflineDemoScreenState extends State<OfflineDemoScreen> {
     });
   }
 
-  Future<void> _addEdge() async {
-    await _run('Saving Add locally', () async {
-      final handle = await widget.repository.addEdge(
+  Future<void> _saveEdge() async {
+    await _run('Saving Edge locally', () async {
+      final handle = await widget.repository.putEdge(
         partitionId: widget.partitionId,
         input: EdgeInput(
           tail: widget.edgeTail,
@@ -136,7 +136,7 @@ final class _OfflineDemoScreenState extends State<OfflineDemoScreen> {
         ),
       );
       _watchWrite(handle);
-      _message = 'Add saved locally with a persisted contribution ID';
+      _message = 'Edge saved locally; remote confirmation is separate';
     });
   }
 
@@ -339,7 +339,7 @@ final class _OfflineDemoScreenState extends State<OfflineDemoScreen> {
           ),
           const SizedBox(height: 16),
           _SnapshotCard(
-            title: 'Additive Edge',
+            title: 'Cached Edge',
             snapshot: edge,
             value: edge?.value?.weight.toString(),
             keyPrefix: 'offline-edge',
@@ -347,9 +347,9 @@ final class _OfflineDemoScreenState extends State<OfflineDemoScreen> {
           Align(
             alignment: Alignment.centerLeft,
             child: OutlinedButton(
-              key: const Key('offline-add-local'),
-              onPressed: _busy ? null : _addEdge,
-              child: const Text('Add 0.25 locally'),
+              key: const Key('offline-save-edge-local'),
+              onPressed: _busy ? null : _saveEdge,
+              child: const Text('Save Edge locally'),
             ),
           ),
           const SizedBox(height: 12),
@@ -447,11 +447,6 @@ final class _SnapshotCard<T> extends StatelessWidget {
                         : 'confirmed',
                   ),
                 ),
-                if (current?.isEstimate ?? false)
-                  Chip(
-                    key: Key('$keyPrefix-estimate'),
-                    label: const Text('estimate'),
-                  ),
               ],
             ),
           ],

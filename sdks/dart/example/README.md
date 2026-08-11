@@ -90,8 +90,9 @@ placeholder byte variables shown above.
 - `AppLifecycleListener` cancellation on hide/pause and explicit refresh on
   resume;
 - an opt-in `lantern_client_offline` screen with immediate cached snapshots,
-  locally committed Put/Add pending state, Add estimates, explicit probe/replay,
-  and authorized dead-letter inspect/retry/delete controls.
+  locally committed Put pending state, explicit probe/replay, and authorized
+  dead-letter inspect/retry/delete controls. Durable Add is intentionally absent
+  until #1115 provides server-authoritative operation receipts.
 
 The app deliberately does not close its app-scoped client on `inactive`, which
 can be caused by a phone call or system dialog. It cancels screen work on
