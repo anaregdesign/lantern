@@ -17,6 +17,7 @@ on:
       - "testdata/search/**"
       - "docs/decisions/0001-dart-mobile-transport.md"
       - "docs/decisions/0002-dart-offline-repository-contract.md"
+      - "CONTRIBUTING.md"
       - ".github/workflows/dart-sdk.yml"
   pull_request:
     paths:
@@ -31,6 +32,7 @@ on:
       - "testdata/search/**"
       - "docs/decisions/0001-dart-mobile-transport.md"
       - "docs/decisions/0002-dart-offline-repository-contract.md"
+      - "CONTRIBUTING.md"
       - ".github/workflows/dart-sdk.yml"
 
 permissions:
@@ -89,6 +91,7 @@ jobs:
                   sdks/dart/* | proto/* | buf.yaml | buf.gen.yaml | generate.go | \
                     docs/decisions/0001-dart-mobile-transport.md | \
                     docs/decisions/0002-dart-offline-repository-contract.md | \
+                    CONTRIBUTING.md | \
                     .github/workflows/dart-sdk.yml)
                     full=true
                     break
@@ -203,17 +206,63 @@ jobs:
             exit 1
           fi
 
-      - name: Validate package shape
+      # `--to-archive` uses Dart Pub's own publish file selection and tarball
+      # builder. Verify that exact artifact outside the repository so a sibling
+      # path cannot make a broken included package look resolvable.
+      - name: Build and verify isolated parent publish archive
         if: needs.changes.outputs.full == 'true'
-        run: dart pub publish --dry-run
+        working-directory: .
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact_root="$RUNNER_TEMP/lantern-client-artifact"
+          source_dir="$artifact_root/source"
+          archive="$artifact_root/lantern_client.tar.gz"
+          package_dir="$artifact_root/unpacked/package"
+          isolated_pub_cache="$artifact_root/pub-cache"
+          mkdir -p "$source_dir" "$package_dir" "$isolated_pub_cache"
+
+          git archive HEAD:sdks/dart | tar -x -C "$source_dir"
+          dart pub publish -C "$source_dir" --to-archive="$archive"
+          tar -xzf "$archive" -C "$package_dir"
+
+          mapfile -d '' pubspecs < <(find "$package_dir" -name pubspec.yaml -print0)
+          if [[ "${#pubspecs[@]}" -eq 0 ]]; then
+            echo "::error::parent publish archive contains no pubspec.yaml"
+            exit 1
+          fi
+          if [[ -e "$package_dir/offline" || -e "$package_dir/example/pubspec.yaml" ]]; then
+            echo "::error::parent publish archive contains a repository-only package"
+            exit 1
+          fi
+          if [[ ! -f "$package_dir/example/lantern_client_example.dart" ]]; then
+            echo "::error::parent publish archive lost its standalone online example"
+            exit 1
+          fi
+          if grep -HnE '^[[:space:]]*lantern_client_offline:' "${pubspecs[@]}"; then
+            echo "::error::parent publish archive references lantern_client_offline"
+            exit 1
+          fi
+
+          for pubspec in "${pubspecs[@]}"; do
+            package=$(dirname "$pubspec")
+            (
+              cd "$package"
+              PUB_CACHE="$isolated_pub_cache" dart pub get --no-example
+              PUB_CACHE="$isolated_pub_cache" dart analyze
+            )
+          done
+
+          (
+            cd "$package_dir"
+            PUB_CACHE="$isolated_pub_cache" dart test
+          )
 
       - name: Generate pana quality report
         if: needs.changes.outputs.full == 'true'
         working-directory: .
         run: |
-          package_dir="$RUNNER_TEMP/lantern-client-package"
-          mkdir -p "$package_dir"
-          git archive HEAD:sdks/dart | tar -x -C "$package_dir"
+          package_dir="$RUNNER_TEMP/lantern-client-artifact/unpacked/package"
           dart pub global activate pana 0.23.14
           timeout 15m dart pub global run pana --json "$package_dir" \
             > "$RUNNER_TEMP/lantern-client-pana.json"
@@ -346,24 +395,6 @@ jobs:
             exit 1
           fi
           grep -F 'path source' "$log"
-
-      - name: Prove parent publish archive isolation
-        working-directory: sdks/dart
-        shell: bash
-        run: |
-          set -euo pipefail
-          log="$RUNNER_TEMP/dart-parent-publish.log"
-          dart pub get --enforce-lockfile --no-example
-          dart pub publish --dry-run >"$log" 2>&1
-          if grep -Eq 'offline($|/)' "$log"; then
-            cat "$log"
-            echo "::error::parent lantern_client archive contains the offline package"
-            exit 1
-          fi
-          if dart pub deps --json | grep -F '"lantern_client_offline"'; then
-            echo "::error::parent lantern_client depends on the offline package"
-            exit 1
-          fi
 
       - name: Stop Lantern real-wire server
         if: always()

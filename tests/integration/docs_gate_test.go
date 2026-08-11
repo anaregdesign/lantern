@@ -178,6 +178,8 @@ func TestDartWorkflowGate(t *testing.T) {
 	for _, contract := range []string{
 		"name: Classify changes",
 		"docs/decisions/0001-dart-mobile-transport.md",
+		"docs/decisions/0002-dart-offline-repository-contract.md",
+		"CONTRIBUTING.md",
 		"name: Generate, analyze, and test",
 		"dart pub get --enforce-lockfile --no-example",
 		"dart analyze lib test",
@@ -186,7 +188,12 @@ func TestDartWorkflowGate(t *testing.T) {
 		"version: 1.71.0",
 		"name: Minimum Dart 3.11",
 		"name: Build API documentation",
-		"dart pub publish --dry-run",
+		"name: Build and verify isolated parent publish archive",
+		`dart pub publish -C "$source_dir" --to-archive="$archive"`,
+		`tar -xzf "$archive" -C "$package_dir"`,
+		`mapfile -d '' pubspecs`,
+		`PUB_CACHE="$isolated_pub_cache" dart pub get --no-example`,
+		`PUB_CACHE="$isolated_pub_cache" dart analyze`,
 		"dart pub global run pana --json",
 		"name: Check Flutter example",
 		"flutter test --no-pub integration_test/mobile_smoke_test.dart -d emulator-5554",
@@ -205,6 +212,28 @@ func TestDartWorkflowGate(t *testing.T) {
 		if !strings.Contains(text, contract) {
 			t.Errorf("Dart SDK workflow is missing scoped-gate contract %q", contract)
 		}
+	}
+
+	pubignore, err := os.ReadFile(filepath.Join(repoRoot, "sdks", "dart", ".pubignore"))
+	if err != nil {
+		t.Fatalf("read parent Dart .pubignore: %v", err)
+	}
+	pubignoreText := "\n" + string(pubignore) + "\n"
+	for _, excluded := range []string{"example/*", "offline/"} {
+		if !strings.Contains(pubignoreText, "\n"+excluded+"\n") {
+			t.Errorf("parent Dart publish archive no longer excludes %q", excluded)
+		}
+	}
+	if !strings.Contains(pubignoreText, "\n!example/lantern_client_example.dart\n") {
+		t.Error("parent Dart publish archive no longer retains its standalone online example")
+	}
+
+	contributing, err := os.ReadFile(filepath.Join(repoRoot, "CONTRIBUTING.md"))
+	if err != nil {
+		t.Fatalf("read CONTRIBUTING.md: %v", err)
+	}
+	if !strings.Contains(string(contributing), "lib test tool && dart pub get --enforce-lockfile") {
+		t.Error("documented offline format gate does not include tool sources")
 	}
 	if strings.Contains(text, "flutter build apk --debug") {
 		t.Error("Dart SDK workflow duplicates the APK build already performed by the Android native smoke")
@@ -237,10 +266,6 @@ func TestDartWorkflowGate(t *testing.T) {
 		last = index
 	}
 
-	contributing, err := os.ReadFile(filepath.Join(repoRoot, "CONTRIBUTING.md"))
-	if err != nil {
-		t.Fatalf("read CONTRIBUTING.md: %v", err)
-	}
 	for _, contract := range []string{
 		"routes backend/search-only changes through the current-Dart unit and real-wire gates",
 		"stable `Gate` job",
