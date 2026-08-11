@@ -272,8 +272,11 @@ The maintained [Flutter example](https://github.com/anaregdesign/lantern/tree/ma
 demonstrates runtime token refresh,
 secure endpoint configuration, app/screen lifecycle ownership, bounded paging,
 incremental search, traversal, typed failure states, and the physical-device
-smoke checklist. The core SDK has no implicit offline cache or
-background-delivery promise. The accepted
+smoke checklist. The full app is a repository integration fixture rather than
+part of the `lantern_client` publish archive because it also exercises the
+unpublished offline child by path. The archive retains a standalone online
+example while remaining dependency-closed. The core SDK has no implicit offline
+cache or background-delivery promise. The accepted
 [offline Repository and package contract](https://github.com/anaregdesign/lantern/blob/main/docs/decisions/0002-dart-offline-repository-contract.md)
 defines the official opt-in `lantern_client_offline` direction: a
 storage-adapter-driven cache/outbox engine that remains separate from this

@@ -1,3 +1,8 @@
 .dart_tool/
 build/
+# The maintained Flutter app is a repository integration fixture. Publish only
+# the standalone online example below; every other immediate child (including
+# the nested pubspec and offline path dependency) remains repository-only.
+example/*
+!example/lantern_client_example.dart
 offline/

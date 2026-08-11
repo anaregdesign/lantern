@@ -100,7 +100,7 @@ go test ./...                    # root module
   && dart doc --output "$(mktemp -d)" --validate-links \
   && dart pub publish --dry-run)
 (cd sdks/dart/offline && dart format --output=none --set-exit-if-changed \
-  lib test && dart pub get --enforce-lockfile \
+  lib test tool && dart pub get --enforce-lockfile \
   && dart analyze && dart test \
   && dart doc --output "$(mktemp -d)" --validate-links)
 (cd sdks/dart/example && dart format --output=none --set-exit-if-changed \
@@ -126,7 +126,12 @@ Dart, including fresh-process canonical snapshot tests and real-server
 committed-response-loss replay. Its path dependency and `publish_to: none` remain
 intentional until the separate release Issue accepts hosted dependency conversion
 after ADR 0002's physical-device graduation gate; the parent `lantern_client`
-publish archive must continue to exclude `offline/`.
+publish archive must continue to exclude `offline/`. The maintained Flutter app
+under `sdks/dart/example/` is a repository integration fixture because it consumes
+that child by path, so only its standalone online example is included in the parent
+archive. CI uses Dart Pub's own archive builder, unpacks the resulting tarball
+outside the checkout, resolves every included `pubspec.yaml` with an isolated
+cache, then runs analysis, tests, and `pana` against the unpacked artifact.
 
 ## Coverage floor (ratchet)
 
@@ -316,10 +321,10 @@ number rather than force-moving the tag.
   server's `LANTERN_CORS_ALLOWED_ORIGINS` must include the admin origin.
 - `sdks/dart/vX.Y.Z` must match `sdks/dart/pubspec.yaml` version `X.Y.Z` and a
   `CHANGELOG.md` heading `## X.Y.Z`. It triggers `dart-sdk.yml`, which must pass the
-  minimum/current Dart gates, real-wire tests, warning-free docs, publish dry-run,
-  `pana`, and Android/iOS example conformance before publishing `lantern_client` with
-  pub.dev OIDC (`id-token: write`, no token secret). Configure pub.dev automated
-  publishing for repository `anaregdesign/lantern` and tag pattern
+  minimum/current Dart gates, real-wire tests, warning-free docs, isolated publish-
+  archive resolution, `pana`, and Android/iOS example conformance before publishing
+  `lantern_client` with pub.dev OIDC (`id-token: write`, no token secret). Configure
+  pub.dev automated publishing for repository `anaregdesign/lantern` and tag pattern
   `sdks/dart/v{{version}}`. The workflow creates/updates the GitHub Release only after
   pub.dev confirms the version exists; its title is exactly the tag.
 
