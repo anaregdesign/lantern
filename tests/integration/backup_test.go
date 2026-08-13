@@ -182,6 +182,9 @@ func TestBackupper_ServerInternal_RoundTrip_E2E(t *testing.T) {
 	if stats.Vertices != 2 || stats.Edges != 1 {
 		t.Fatalf("restore stats = %+v, want {2,1}", stats)
 	}
+	if vertices, edges := dstCache.CausalBarrierCounts(); vertices != 0 || edges != 0 {
+		t.Fatalf("zero-HLC backup restore retained causal barriers = %d/%d, want 0/0", vertices, edges)
+	}
 
 	// Re-dump the restored service and confirm fidelity.
 	vs, es := drainBackup(t, ctx, dstRaw, &pb.BackupSnapshotRequest{})

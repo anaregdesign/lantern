@@ -99,7 +99,7 @@ jobs:
         run: |
           set -euo pipefail
           # slug:floor% -- keep in sync with CONTRIBUTING.md "Coverage floor".
-          floors="root:31 core:84 mcp:84 pb:5 sdks-go:37 server:52"
+          floors="root:31 core:84 mcp:84 pb:15 sdks-go:37 server:52"
           fail=0
           for entry in $floors; do
             slug=${entry%%:*}

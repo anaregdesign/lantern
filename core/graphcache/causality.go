@@ -34,8 +34,9 @@ func (c *GraphCache[S, T]) AddEdgeWithExpirationContribHLC(tail, head S, w float
 // PutVertexWithExpirationHLC is the LWW-aware sibling of
 // PutVertexWithExpiration used by the replication apply path. When the stored
 // HLC for key is strictly newer than ts the call is a no-op and returns
-// applied=false. A zero ts always applies and is recorded as the zero watermark
-// (nothing can be strictly older than it). Local writers continue to use
+// applied=false. A zero ts always applies and may mark live state as having no
+// causal floor, but it is never retained as a barrier after the payload is
+// absent. Local writers continue to use
 // PutVertexWithExpiration; this helper is intentionally narrow to the
 // replicated path so non-replicated workloads pay nothing.
 func (c *GraphCache[S, T]) PutVertexWithExpirationHLC(key S, value T, expiration time.Time, ts hlc.Timestamp) bool {
@@ -192,6 +193,9 @@ func (c *GraphCache[S, T]) recordVertexHLCLocked(key S, ts hlc.Timestamp) {
 // latter tracks live replicated values and is swept with the live set, while a
 // delete-like overwrite must remain authoritative after GC.
 func (c *GraphCache[S, T]) recordVertexCausalBarrierLocked(key S, ts hlc.Timestamp) {
+	if ts == (hlc.Timestamp{}) {
+		return
+	}
 	if c.vertexCausalBarriers == nil {
 		c.vertexCausalBarriers = make(map[S]hlc.Timestamp)
 	}
@@ -241,6 +245,9 @@ func (c *GraphCache[S, T]) edgePutWriteAllowedLocked(tail, head S, ts hlc.Timest
 }
 
 func (c *GraphCache[S, T]) recordEdgeCausalBarrierLocked(tail, head S, ts hlc.Timestamp) {
+	if ts == (hlc.Timestamp{}) {
+		return
+	}
 	if c.edgeCausalBarriers == nil {
 		c.edgeCausalBarriers = make(map[EdgeKey[S]]hlc.Timestamp)
 	}

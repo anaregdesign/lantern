@@ -91,6 +91,41 @@ func TestAcceptedExpiredPutCausalBarrierSurvivesGC(t *testing.T) {
 	})
 }
 
+func TestZeroHLCAcceptedExpiredPutRetainsNoCausalBarrier(t *testing.T) {
+	live := time.Now().Add(time.Hour)
+	expired := time.Now().Add(-time.Hour)
+
+	t.Run("vertex", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Hour)
+		if err := c.PutVertexWithExpiration("v", "old", live); err != nil {
+			t.Fatal(err)
+		}
+		if !c.PutVertexWithExpirationHLC("v", "expired restore", expired, hlc.Timestamp{}) {
+			t.Fatal("zero-HLC expired vertex Put was rejected")
+		}
+		if _, ok := c.GetVertex("v"); ok {
+			t.Fatal("zero-HLC expired vertex Put did not remove the old value")
+		}
+		if vertices, edges := c.CausalBarrierCounts(); vertices != 0 || edges != 0 {
+			t.Fatalf("barriers after zero-HLC expired vertex Put = %d/%d, want 0/0", vertices, edges)
+		}
+	})
+
+	t.Run("edge", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Hour)
+		c.PutEdgeWithExpiration("tail", "head", 1, live)
+		if !c.PutEdgeWithExpirationHLC("tail", "head", 2, expired, hlc.Timestamp{}) {
+			t.Fatal("zero-HLC expired edge Put was rejected")
+		}
+		if _, _, ok := c.GetEdgeDetail("tail", "head"); ok {
+			t.Fatal("zero-HLC expired edge Put did not remove the old bucket")
+		}
+		if vertices, edges := c.CausalBarrierCounts(); vertices != 0 || edges != 0 {
+			t.Fatalf("barriers after zero-HLC expired edge Put = %d/%d, want 0/0", vertices, edges)
+		}
+	})
+}
+
 func TestAcceptedExpiredEdgeBarrierSurvivesNewerAdd(t *testing.T) {
 	barrierTS := hlc.Timestamp{WallNs: 20, NodeID: hlc.NodeID{0x20}}
 	addTS := hlc.Timestamp{WallNs: 30, NodeID: hlc.NodeID{0x30}}

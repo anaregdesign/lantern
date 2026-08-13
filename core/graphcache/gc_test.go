@@ -83,6 +83,33 @@ func TestGraphCache_GCFlushMaintainsIndexesWatermarksAndDanglingEdges(t *testing
 	}
 }
 
+func TestGraphCache_GCDoesNotPromoteZeroHLCToCausalBarrier(t *testing.T) {
+	c := NewGraphCache[string, string](time.Hour)
+	now := time.Now()
+	c.applicationClock = func() time.Time { return now.Add(-2 * time.Hour) }
+	expiration := now.Add(-time.Hour)
+	if !c.PutVertexWithExpirationHLC("v", "restored", expiration, hlc.Timestamp{}) {
+		t.Fatal("zero-HLC live vertex Put was rejected")
+	}
+	if !c.PutEdgeWithExpirationHLC("tail", "head", 1, expiration, hlc.Timestamp{}) {
+		t.Fatal("zero-HLC live edge Put was rejected")
+	}
+	c.flushVertices()
+	c.flush()
+	if got := c.VertexHLCCount(); got != 0 {
+		t.Fatalf("zero-HLC live watermark count after GC = %d, want 0", got)
+	}
+	if vertices, edges := c.CausalBarrierCounts(); vertices != 0 || edges != 0 {
+		t.Fatalf("barriers after zero-HLC TTL GC = %d/%d, want 0/0", vertices, edges)
+	}
+	if _, ok := c.GetVertex("v"); ok {
+		t.Fatal("expired zero-HLC vertex survived GC")
+	}
+	if _, _, ok := c.GetEdgeDetail("tail", "head"); ok {
+		t.Fatal("expired zero-HLC edge survived GC")
+	}
+}
+
 func TestGraphCache_VertexFlushAndReplicationSnapshotRetainOneCausalRepresentation(t *testing.T) {
 	newer := hlc.Timestamp{WallNs: 20}
 	older := hlc.Timestamp{WallNs: 10}
