@@ -79,19 +79,27 @@ type LeakGateReplica struct {
 // fan-outs).
 type PerfGate struct {
 	Thresholds struct {
-		MinSteadyRpsTotal *float64 `json:"min_steady_rps_total"`
-		MaxP99Ms          *float64 `json:"max_p99_ms"`
-		MaxNonOKRatio     *float64 `json:"max_non_ok_ratio"`
+		MinSteadyRpsTotal         *float64 `json:"min_steady_rps_total"`
+		MaxP99Ms                  *float64 `json:"max_p99_ms"`
+		MaxNonOKRatio             *float64 `json:"max_non_ok_ratio"`
+		MaxExpectedLifecycleRatio *float64 `json:"max_expected_lifecycle_ratio"`
 	} `json:"thresholds"`
 	Observed struct {
-		Producers      int     `json:"producers"`
-		SteadyRpsTotal float64 `json:"steady_rps_total"`
-		P99WorstMs     float64 `json:"p99_worst_ms"`
-		CountTotal     int64   `json:"count_total"`
-		NonOKTotal     int64   `json:"non_ok_total"`
-		NonOKRatio     float64 `json:"non_ok_ratio"`
+		Producers                      int     `json:"producers"`
+		SteadyRpsTotal                 float64 `json:"steady_rps_total"`
+		P99WorstMs                     float64 `json:"p99_worst_ms"`
+		CountTotal                     int64   `json:"count_total"`
+		RawNonOKTotal                  int64   `json:"raw_non_ok_total"`
+		ExpectedLifecycleTotal         int64   `json:"expected_lifecycle_total"`
+		ExpectedLifecycleEligibleTotal int64   `json:"expected_lifecycle_eligible_total"`
+		UnexpectedNonOKTotal           int64   `json:"unexpected_non_ok_total"`
+		NonOKTotal                     int64   `json:"non_ok_total"`
+		NonOKRatio                     float64 `json:"non_ok_ratio"`
+		ExpectedLifecycleRatio         float64 `json:"expected_lifecycle_ratio"`
 	} `json:"observed"`
+	LifecycleReason string               `json:"lifecycle_reason"`
 	ProducerResults []PerfProducerResult `json:"producer_results"`
+	Failures        []string             `json:"failures"`
 	Verdict         string               `json:"verdict"`
 }
 
@@ -101,18 +109,26 @@ type PerfGate struct {
 type PerfProducerResult struct {
 	Name       string `json:"name"`
 	Thresholds struct {
-		MinSteadyRps  *float64 `json:"min_steady_rps"`
-		MaxP99Ms      *float64 `json:"max_p99_ms"`
-		MaxNonOKRatio *float64 `json:"max_non_ok_ratio"`
+		MinSteadyRps              *float64 `json:"min_steady_rps"`
+		MaxP99Ms                  *float64 `json:"max_p99_ms"`
+		MaxNonOKRatio             *float64 `json:"max_non_ok_ratio"`
+		MaxExpectedLifecycleRatio *float64 `json:"max_expected_lifecycle_ratio"`
 	} `json:"thresholds"`
 	Observed struct {
-		SteadyRps  float64 `json:"steady_rps"`
-		P99Ms      float64 `json:"p99_ms"`
-		Count      int64   `json:"count"`
-		NonOK      int64   `json:"non_ok"`
-		NonOKRatio float64 `json:"non_ok_ratio"`
+		SteadyRps              float64        `json:"steady_rps"`
+		P99Ms                  float64        `json:"p99_ms"`
+		Count                  int64          `json:"count"`
+		RawNonOK               int64          `json:"raw_non_ok"`
+		ExpectedLifecycle      int64          `json:"expected_lifecycle"`
+		UnexpectedNonOK        int64          `json:"unexpected_non_ok"`
+		NonOK                  int64          `json:"non_ok"`
+		NonOKRatio             float64        `json:"non_ok_ratio"`
+		ExpectedLifecycleRatio float64        `json:"expected_lifecycle_ratio"`
+		StatusCodeDistribution map[string]int `json:"status_code_distribution"`
 	} `json:"observed"`
-	Verdict string `json:"verdict"`
+	LifecycleReason string   `json:"lifecycle_reason"`
+	Failures        []string `json:"failures"`
+	Verdict         string   `json:"verdict"`
 }
 
 // MetricGate mirrors metricgate's generic pre/post gauge report.
@@ -398,27 +414,69 @@ func RenderReport(w io.Writer, in Input) error {
 		bw.printf("_not configured_\n\n")
 	} else {
 		pg := in.PerfGate
-		bw.printf("Aggregation over %d steady producer(s): rps = sum, p99 = worst producer, non-OK ratio = Σnon-OK / Σcount. `—` = metric not gated for this scenario.\n\n", pg.Observed.Producers)
+		if pg.LifecycleReason == "" {
+			bw.printf("Aggregation over %d steady producer(s): rps = sum, p99 = worst producer, non-OK ratio = Σnon-OK / Σcount. `—` = metric not gated for this scenario.\n\n", pg.Observed.Producers)
+		} else {
+			bw.printf("Aggregation over %d steady producer(s): rps = sum and p99 = worst producer. `%s` is classified only from the exact steady-window bounded reason-counter delta after it is cross-checked against the matching ghz status count. Every remaining non-OK response stays in the unexpected-error budget. `—` = metric not gated.\n\n", pg.Observed.Producers, pg.LifecycleReason)
+		}
 		bw.printf("| metric | threshold | observed |\n")
 		bw.printf("| --- | ---: | ---: |\n")
 		bw.printf("| steady rps (total, floor) | %s | %.1f |\n",
 			perfThreshold(pg.Thresholds.MinSteadyRpsTotal, "%.1f"), pg.Observed.SteadyRpsTotal)
 		bw.printf("| p99 ms (worst, ceiling) | %s | %.2f |\n",
 			perfThreshold(pg.Thresholds.MaxP99Ms, "%.2f"), pg.Observed.P99WorstMs)
-		bw.printf("| non-OK ratio (ceiling) | %s | %.5f |\n",
-			perfThreshold(pg.Thresholds.MaxNonOKRatio, "%.5f"), pg.Observed.NonOKRatio)
+		if pg.LifecycleReason == "" {
+			bw.printf("| non-OK ratio (ceiling) | %s | %.5f |\n",
+				perfThreshold(pg.Thresholds.MaxNonOKRatio, "%.5f"), pg.Observed.NonOKRatio)
+		} else {
+			bw.printf("| unexpected non-OK ratio (ceiling) | %s | %.5f |\n",
+				perfThreshold(pg.Thresholds.MaxNonOKRatio, "%.5f"), pg.Observed.NonOKRatio)
+			bw.printf("| `%s` ratio (ceiling) | %s | %.5f |\n",
+				pg.LifecycleReason,
+				perfThreshold(pg.Thresholds.MaxExpectedLifecycleRatio, "%.5f"),
+				pg.Observed.ExpectedLifecycleRatio)
+			bw.printf("| raw / expected lifecycle / unexpected non-OK counts | — | %d / %d / %d |\n",
+				pg.Observed.RawNonOKTotal, pg.Observed.ExpectedLifecycleTotal, pg.Observed.UnexpectedNonOKTotal)
+		}
 		bw.printf("\n")
 		if len(pg.ProducerResults) > 0 {
 			bw.printf("Named producer gates are conjunctive with the aggregate gate: every row must pass.\n\n")
-			bw.printf("| producer | verdict | rps (floor) | p99 ms (ceiling) | non-OK ratio (ceiling) |\n")
-			bw.printf("| --- | --- | ---: | ---: | ---: |\n")
-			for _, producer := range pg.ProducerResults {
-				bw.printf("| `%s` | `%s` | %.1f (%s) | %.2f (%s) | %.5f (%s) |\n",
-					producer.Name, producer.Verdict,
-					producer.Observed.SteadyRps, perfThreshold(producer.Thresholds.MinSteadyRps, "%.1f"),
-					producer.Observed.P99Ms, perfThreshold(producer.Thresholds.MaxP99Ms, "%.2f"),
-					producer.Observed.NonOKRatio, perfThreshold(producer.Thresholds.MaxNonOKRatio, "%.5f"))
+			if pg.LifecycleReason == "" {
+				bw.printf("| producer | verdict | rps (floor) | p99 ms (ceiling) | non-OK ratio (ceiling) |\n")
+				bw.printf("| --- | --- | ---: | ---: | ---: |\n")
+				for _, producer := range pg.ProducerResults {
+					bw.printf("| `%s` | `%s` | %.1f (%s) | %.2f (%s) | %.5f (%s) |\n",
+						producer.Name, producer.Verdict,
+						producer.Observed.SteadyRps, perfThreshold(producer.Thresholds.MinSteadyRps, "%.1f"),
+						producer.Observed.P99Ms, perfThreshold(producer.Thresholds.MaxP99Ms, "%.2f"),
+						producer.Observed.NonOKRatio, perfThreshold(producer.Thresholds.MaxNonOKRatio, "%.5f"))
+				}
+			} else {
+				bw.printf("| producer | verdict | rps (floor) | p99 ms (ceiling) | unexpected count / ratio (ceiling) | `%s` count / ratio (ceiling) |\n", pg.LifecycleReason)
+				bw.printf("| --- | --- | ---: | ---: | ---: | ---: |\n")
+				for _, producer := range pg.ProducerResults {
+					bw.printf("| `%s` | `%s` | %.1f (%s) | %.2f (%s) | %d / %.5f (%s) | %d / %.5f (%s) |\n",
+						producer.Name, producer.Verdict,
+						producer.Observed.SteadyRps, perfThreshold(producer.Thresholds.MinSteadyRps, "%.1f"),
+						producer.Observed.P99Ms, perfThreshold(producer.Thresholds.MaxP99Ms, "%.2f"),
+						producer.Observed.UnexpectedNonOK, producer.Observed.NonOKRatio, perfThreshold(producer.Thresholds.MaxNonOKRatio, "%.5f"),
+						producer.Observed.ExpectedLifecycle, producer.Observed.ExpectedLifecycleRatio, perfThreshold(producer.Thresholds.MaxExpectedLifecycleRatio, "%.5f"))
+				}
 			}
+			bw.printf("\n")
+		}
+		sawClassificationFailure := false
+		for _, failure := range pg.Failures {
+			sawClassificationFailure = true
+			bw.printf("> perf classification failure: `%s`\n", failure)
+		}
+		for _, producer := range pg.ProducerResults {
+			for _, failure := range producer.Failures {
+				sawClassificationFailure = true
+				bw.printf("> `%s` classification failure: `%s`\n", producer.Name, failure)
+			}
+		}
+		if sawClassificationFailure {
 			bw.printf("\n")
 		}
 	}

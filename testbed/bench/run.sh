@@ -196,6 +196,12 @@ SCENARIO_FILE="$SCENARIO_RESOLVED"
 
 # Re-parse fields that depend on endpoints after substitution.
 endpoints=( $(yq -r '.target.endpoints[]' "$SCENARIO_FILE") )
+lifecycle_reason="$(yq -r '.lifecycle_gate.reason // ""' "$SCENARIO_FILE")"
+lifecycle_metrics_endpoints=""
+for port in "${REPLICA_METRICS_PORTS[@]}"; do
+  if [[ -n "$lifecycle_metrics_endpoints" ]]; then lifecycle_metrics_endpoints+=","; fi
+  lifecycle_metrics_endpoints+="http://localhost:${port}/metrics"
+done
 
 # A generic metric_gate may name another unlabeled gauge. Add it once while
 # retaining the fixed built-in search catalogue above.
@@ -373,8 +379,18 @@ run_ghz() {
     --format json \
     -o "$jsonout" \
     "$ep" \
-    >/dev/null
+    >/dev/null || return 1
   echo "$jsonout"
+}
+
+snapshot_search_lifecycle() {
+  local out="$1"
+  (
+    cd "$REPO_ROOT"
+    go run ./testbed/bench/perfgate snapshot \
+      -endpoints "$lifecycle_metrics_endpoints" \
+      -out "$out"
+  )
 }
 
 # ----- WARMUP ----------------------------------------------------------------
@@ -397,6 +413,14 @@ fi
 snapshot_runtime "$OUTDIR/runtime_pre.json"
 if [[ "${LEAK_GATE_ONLY:-0}" != "1" ]]; then
   "$CAPTURE_DIR/pprof.sh" "$OUTDIR/pprof" pre || log "pprof pre snapshot reported warnings"
+fi
+lifecycle_capture_failed=0
+if [[ -n "$lifecycle_reason" ]]; then
+  log "lifecycle gate: capture typed Search counters before steady load"
+  if ! snapshot_search_lifecycle "$OUTDIR/lifecycle_pre.json"; then
+    lifecycle_capture_failed=1
+    log "lifecycle gate: pre snapshot failed"
+  fi
 fi
 
 # ----- STEADY ----------------------------------------------------------------
@@ -459,14 +483,12 @@ fi
 # at floor(rps / N); otherwise run a single ghz against the primary endpoint.
 calls_len="$(yq -r '.target.calls | length // 0' "$SCENARIO_FILE")"
 prod_pids=()
-prod_files=()
-prod_names=()
+producer_failed=0
 if [[ "$calls_len" != "0" && "$calls_len" != "null" ]]; then
   per_rps=$(( steady_rps / calls_len ))
   for i in $(seq 0 $(( calls_len - 1 ))); do
     call="$(yq -r ".target.calls[$i].call" "$SCENARIO_FILE")"
     data="$(yq -r ".target.calls[$i].data_template" "$SCENARIO_FILE")"
-    name="$(yq -r ".target.calls[$i].name // \"producer-$i\"" "$SCENARIO_FILE")"
     producer_rps="$(yq -r ".target.calls[$i].rps // 0" "$SCENARIO_FILE")"
     if [[ "$producer_rps" == "0" || "$producer_rps" == "null" ]]; then
       producer_rps="$per_rps"
@@ -478,17 +500,36 @@ if [[ "$calls_len" != "0" && "$calls_len" != "null" ]]; then
       --call "$call" -c "$steady_conc" --rps "$producer_rps" -z "$steady_duration" \
       -d "$data" --format json -o "$f" "$ep" >/dev/null 2>&1 &
     prod_pids+=( "$!" )
-    prod_files+=( "$f" )
-    prod_names+=( "$name" )
   done
-  wait "${prod_pids[@]}"
+  # `wait pid...` returns only one aggregate status and, under `set -e`, can
+  # either hide an earlier producer failure or abort before lifecycle/report
+  # diagnostics are captured. Reap every producer independently and carry a
+  # sticky failure bit through the normal post-steady evidence path.
+  for i in "${!prod_pids[@]}"; do
+    if wait "${prod_pids[$i]}"; then
+      continue
+    else
+      producer_status=$?
+      producer_failed=1
+      log "steady producer[$i] exited non-zero (status=$producer_status)"
+    fi
+  done
 else
   call="$(yq -r '.target.call' "$SCENARIO_FILE")"
   data="$(yq -r '.target.data_template' "$SCENARIO_FILE")"
   ep="${endpoints[0]}"
-  f="$(run_ghz steady "$ep" "$call" "$data" "$steady_conc" "$steady_rps" "$steady_duration")"
-  prod_files+=( "$f" )
-  prod_names+=( "primary" )
+  if ! run_ghz steady "$ep" "$call" "$data" "$steady_conc" "$steady_rps" "$steady_duration" >/dev/null; then
+    producer_failed=1
+    log "steady primary producer exited non-zero"
+  fi
+fi
+
+if [[ -n "$lifecycle_reason" ]]; then
+  log "lifecycle gate: capture typed Search counters after steady load"
+  if ! snapshot_search_lifecycle "$OUTDIR/lifecycle_post.json"; then
+    lifecycle_capture_failed=1
+    log "lifecycle gate: post snapshot failed"
+  fi
 fi
 
 # Reap background helpers (subscribers run for steady_duration; they exit on
@@ -622,90 +663,46 @@ log "metric gate verdict: $metric_verdict"
 # the exit code — the blocking nightly (bench-nightly.yml) thereby enforces it
 # while the release-time bench stays advisory (continue-on-error, #256/#394).
 #
-# Aggregation matches the release summary table (testbed/bench/release):
-# rps = SUM over steady producers, p99 = worst producer (MAX), non-OK ratio =
-# Σnon-OK / Σcount. Every key is individually optional — gate only the metrics
-# that are stable for the scenario (deliberately saturated fan-outs have
-# queue-depth p99, i.e. noise; see testbed/bench/README.md). Floors are
-# "ratchet floors" sized from nightly baselines with ≥2x headroom: they catch
-# step-change regressions (accidental O(n²), lock convoy, a dropped fan-out),
-# not single-digit-% drift, which shared runners cannot resolve.
-perf_min_rps="$(yq -r '.perf_gate.min_steady_rps_total // ""' "$SCENARIO_FILE")"
-perf_max_p99="$(yq -r '.perf_gate.max_p99_ms // ""' "$SCENARIO_FILE")"
-perf_max_non_ok="$(yq -r '.perf_gate.max_non_ok_ratio // ""' "$SCENARIO_FILE")"
-perf_producer_gates="$(yq -o=json '.perf_gate.producers // {}' "$SCENARIO_FILE")"
+# Aggregation matches the release summary table (testbed/bench/release): rps is
+# the producer sum and p99 is the producer maximum. Ordinarily non-OK is the
+# raw ghz total. A scenario may additionally declare a typed lifecycle gate;
+# then only the exact server-side bounded reason-counter delta that fits inside
+# the matching ghz status count is classified as expected. The existing
+# max_non_ok_ratio continues to gate every remaining (unexpected) response,
+# while max lifecycle frequency is a separate conjunctive ceiling.
+perf_gate_count="$(yq -r '.perf_gate // {} | length' "$SCENARIO_FILE")"
+lifecycle_gate_count="$(yq -r '.lifecycle_gate // {} | length' "$SCENARIO_FILE")"
 perf_verdict="skipped"
-if [[ -n "${perf_min_rps}${perf_max_p99}${perf_max_non_ok}" || "$perf_producer_gates" != "{}" ]]; then
-  producer_observations=()
-  for i in "${!prod_files[@]}"; do
-    producer_observations+=( "$(jq -n \
-      --arg name "${prod_names[$i]}" \
-      --slurpfile run "${prod_files[$i]}" '
-        $run[0] as $r |
-        {
-          name: $name,
-          observed: {
-            steady_rps: $r.rps,
-            p99_ms: (((($r.latencyDistribution // []) | map(select(.percentage == 99)) | .[0].latency) // 0) / 1e6),
-            count: $r.count,
-            non_ok: (($r.statusCodeDistribution // {}) | to_entries | map(select(.key != "OK") | .value) | add // 0)
-          }
-        }')" )
-  done
-  producer_json="$(printf '%s\n' "${producer_observations[@]}" | jq -s '.')"
-  perf_json="$(jq -n \
-    --arg min_rps "$perf_min_rps" \
-    --arg max_p99 "$perf_max_p99" \
-    --arg max_non_ok "$perf_max_non_ok" \
-    --argjson producer_gates "$perf_producer_gates" \
-    --argjson producer_observations "$producer_json" '
-    def optionalNumber($value): if $value == "" then null else ($value | tonumber) end;
-    def verdict($thresholds; $observed):
-      if   ($thresholds.min_steady_rps != null and $observed.steady_rps < $thresholds.min_steady_rps) then "fail"
-      elif ($thresholds.max_p99_ms != null and $observed.p99_ms > $thresholds.max_p99_ms) then "fail"
-      elif ($thresholds.max_non_ok_ratio != null and $observed.non_ok_ratio > $thresholds.max_non_ok_ratio) then "fail"
-      else "pass" end;
-    [ $producer_observations[] |
-      . as $producer |
-      ($producer_gates[$producer.name] // {}) as $raw |
-      {
-        name: $producer.name,
-        thresholds: {
-          min_steady_rps: ($raw.min_steady_rps // null),
-          max_p99_ms: ($raw.max_p99_ms // null),
-          max_non_ok_ratio: ($raw.max_non_ok_ratio // null)
-        },
-        observed: ($producer.observed + {
-          non_ok_ratio: (if $producer.observed.count > 0 then ($producer.observed.non_ok / $producer.observed.count) else 0 end)
-        })
-      } |
-      . + {verdict: verdict(.thresholds; .observed)}
-    ] as $producers |
-    {
-      producers: ($producers | length),
-      steady_rps_total: ($producers | map(.observed.steady_rps) | add),
-      p99_worst_ms: ($producers | map(.observed.p99_ms) | max),
-      count_total: ($producers | map(.observed.count) | add),
-      non_ok_total: ($producers | map(.observed.non_ok) | add)
-    } as $aggregateRaw |
-    ($aggregateRaw + {non_ok_ratio: (if $aggregateRaw.count_total > 0 then ($aggregateRaw.non_ok_total / $aggregateRaw.count_total) else 0 end)}) as $obs |
-    {
-      thresholds: {
-        min_steady_rps_total: optionalNumber($min_rps),
-        max_p99_ms: optionalNumber($max_p99),
-        max_non_ok_ratio: optionalNumber($max_non_ok)
-      },
-      observed: $obs,
-      producer_results: $producers
-    } |
-    . + {verdict: (
-      if   (.thresholds.min_steady_rps_total != null and $obs.steady_rps_total < .thresholds.min_steady_rps_total) then "fail"
-      elif (.thresholds.max_p99_ms != null and $obs.p99_worst_ms > .thresholds.max_p99_ms) then "fail"
-      elif (.thresholds.max_non_ok_ratio != null and $obs.non_ok_ratio > .thresholds.max_non_ok_ratio) then "fail"
-      elif any(.producer_results[]; .verdict == "fail") then "fail"
-      else "pass" end)}')"
-  printf '%s\n' "$perf_json" > "$OUTDIR/perf_gate.json"
-  perf_verdict="$(jq -r '.verdict' "$OUTDIR/perf_gate.json")"
+if [[ "$perf_gate_count" != "0" || "$lifecycle_gate_count" != "0" ]]; then
+  perf_args=(
+    evaluate
+    -scenario "$SCENARIO_FILE"
+    -run-dir "$OUTDIR"
+    -out "$OUTDIR/perf_gate.json"
+  )
+  if [[ -n "$lifecycle_reason" ]]; then
+    perf_args+=(
+      -lifecycle-pre "$OUTDIR/lifecycle_pre.json"
+      -lifecycle-post "$OUTDIR/lifecycle_post.json"
+    )
+  fi
+  if (( producer_failed != 0 )); then
+    perf_args+=( -producer-failed )
+  fi
+  if (( lifecycle_capture_failed != 0 )); then
+    perf_verdict="fail"
+    (
+      cd "$REPO_ROOT"
+      go run ./testbed/bench/perfgate "${perf_args[@]}"
+    ) || true
+  elif (
+    cd "$REPO_ROOT"
+    go run ./testbed/bench/perfgate "${perf_args[@]}"
+  ); then
+    perf_verdict="pass"
+  else
+    perf_verdict="fail"
+  fi
 fi
 log "perf gate verdict: $perf_verdict"
 
@@ -715,4 +712,4 @@ render_report
 # ----- Teardown --------------------------------------------------------------
 cleanup
 
-if [[ "$verdict" == "pass" && "$metric_verdict" != "fail" && "$semantic_verdict" != "fail" && "$perf_verdict" != "fail" ]]; then exit 0; else exit 1; fi
+if [[ "$verdict" == "pass" && "$metric_verdict" != "fail" && "$semantic_verdict" != "fail" && "$perf_verdict" != "fail" && "$producer_failed" == "0" ]]; then exit 0; else exit 1; fi
