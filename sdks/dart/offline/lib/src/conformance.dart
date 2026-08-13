@@ -10,12 +10,24 @@ import 'types.dart';
 /// Creates one empty store instance for the reusable adapter conformance suite.
 typedef OfflineStoreFactory = FutureOr<OfflineStore> Function();
 
+/// Closes and reopens [store] through the adapter's real durable boundary.
+///
+/// The returned store must use the same configured limits and contain exactly
+/// the state committed by [store]. The reference adapter implements this with
+/// its canonical snapshot; a production adapter must close and reopen its own
+/// database.
+typedef OfflineStoreReopener =
+    FutureOr<OfflineStore> Function(OfflineStore store);
+
 /// Runs the storage-neutral transaction, ordering, lease, and wipe contract.
 ///
 /// Adapter packages should invoke this function from their own test runner. It
 /// throws [StateError] with a content-free contract label on any mismatch.
-Future<void> runStoreConformanceSuite(OfflineStoreFactory factory) async {
-  final store = await factory();
+Future<void> runStoreConformanceSuite(
+  OfflineStoreFactory factory, {
+  required OfflineStoreReopener reopen,
+}) async {
+  var store = await factory();
   final now = DateTime.utc(2026, 1, 1);
   const partitionId = 'conformance';
   const operationId = 'operation';
@@ -60,6 +72,165 @@ Future<void> runStoreConformanceSuite(OfflineStoreFactory factory) async {
   } on OfflineTransactionClosedException {
     // Required: an escaped transaction cannot mutate or observe later state.
   }
+
+  await _requireInvalidCommit(
+    store,
+    partitionId,
+    (transaction) => transaction.enqueue(
+      _record(
+        recordId: 'bare-record',
+        operationId: 'bare-operation',
+        itemIndex: 0,
+        key: 'bare',
+        now: now,
+      ),
+    ),
+    'bare_enqueue_graph',
+    (transaction) => transaction.getOutbox(partitionId, 'bare-record') == null,
+  );
+
+  await _requireInvalidCommit(
+    store,
+    partitionId,
+    (transaction) => transaction.putCache(
+      partitionId,
+      OfflineCacheRecord.value(
+        partitionId: partitionId,
+        generation: 0,
+        key: const OfflineEntityKey.vertex('expected'),
+        entity: Vertex(
+          key: 'different',
+          value: VertexValue.nil(),
+          expiration: null,
+        ),
+        validatedAt: now,
+        lastAccessAt: now,
+      ),
+    ),
+    'cache_vertex_identity_graph',
+    (transaction) =>
+        transaction.getCache(
+          partitionId,
+          const OfflineEntityKey.vertex('expected'),
+        ) ==
+        null,
+  );
+  await _requireInvalidCommit(
+    store,
+    partitionId,
+    (transaction) => transaction.putCache(
+      partitionId,
+      OfflineCacheRecord.value(
+        partitionId: partitionId,
+        generation: 0,
+        key: const OfflineEntityKey.edge('tail', 'head'),
+        entity: Edge(
+          tail: 'tail',
+          head: 'different',
+          weight: 1,
+          expiration: null,
+        ),
+        validatedAt: now,
+        lastAccessAt: now,
+      ),
+    ),
+    'cache_edge_identity_graph',
+    (transaction) =>
+        transaction.getCache(
+          partitionId,
+          const OfflineEntityKey.edge('tail', 'head'),
+        ) ==
+        null,
+  );
+  await _requireInvalidCommit(
+    store,
+    partitionId,
+    (transaction) => transaction.putCache(
+      partitionId,
+      OfflineCacheRecord.missing(
+        partitionId: partitionId,
+        generation: 0,
+        key: const OfflineEntityKey.vertex('missing-order'),
+        validatedAt: now,
+        lastAccessAt: now,
+        missingUntil: now.subtract(const Duration(microseconds: 1)),
+      ),
+    ),
+    'cache_missing_order_graph',
+    (transaction) =>
+        transaction.getCache(
+          partitionId,
+          const OfflineEntityKey.vertex('missing-order'),
+        ) ==
+        null,
+  );
+
+  Future<void> requireInvalidExpiredAggregate({
+    required String suffix,
+    required int statusAttemptCount,
+    String? recordDiagnostic,
+    String? statusDiagnostic,
+    required DateTime updatedAt,
+  }) async {
+    final recordId = 'expired-$suffix-record';
+    final expiredOperationId = 'expired-$suffix-operation';
+    await _requireInvalidCommit(
+      store,
+      partitionId,
+      (transaction) {
+        final assigned = transaction.enqueue(
+          _expiredRecord(
+            recordId: recordId,
+            operationId: expiredOperationId,
+            now: now,
+            attemptCount: 2,
+            diagnosticCode: recordDiagnostic,
+          ),
+        );
+        transaction.putOperation(
+          OfflineOperationRecord(
+            partitionId: partitionId,
+            generation: 0,
+            operationId: expiredOperationId,
+            items: <OfflineWriteStatus>[
+              OfflineWriteStatus(
+                recordId: assigned.recordId,
+                operationId: assigned.operationId,
+                itemIndex: assigned.itemIndex,
+                state: OfflineWriteState.expired,
+                attemptCount: statusAttemptCount,
+                diagnosticCode: statusDiagnostic,
+              ),
+            ],
+            updatedAt: updatedAt,
+            terminalAt: updatedAt,
+          ),
+        );
+      },
+      'expired_${suffix}_graph',
+      (transaction) =>
+          transaction.getOutbox(partitionId, recordId) == null &&
+          transaction.getOperation(partitionId, expiredOperationId) == null,
+    );
+  }
+
+  await requireInvalidExpiredAggregate(
+    suffix: 'attempt_mismatch',
+    statusAttemptCount: 1,
+    updatedAt: now,
+  );
+  await requireInvalidExpiredAggregate(
+    suffix: 'diagnostic_mismatch',
+    statusAttemptCount: 2,
+    recordDiagnostic: 'expired_input',
+    statusDiagnostic: 'different',
+    updatedAt: now,
+  );
+  await requireInvalidExpiredAggregate(
+    suffix: 'updated_before_enqueue',
+    statusAttemptCount: 2,
+    updatedAt: now.subtract(const Duration(microseconds: 1)),
+  );
 
   final assigned = await store.transaction((transaction) {
     final records = transaction.enqueueAll(<OfflineOutboxRecord>[
@@ -251,6 +422,29 @@ Future<void> runStoreConformanceSuite(OfflineStoreFactory factory) async {
     return value.value.first == 1;
   });
   _require(ownsBytes, 'defensive_byte_ownership');
+  final touchAt = now.add(const Duration(microseconds: 1));
+  final touchChanges = <OfflineStoreChange>[];
+  final touchSubscription = store.changes(partitionId).listen(touchChanges.add);
+  try {
+    await store.transaction<void>(
+      (transaction) => transaction.touchCache(
+        partitionId,
+        const OfflineEntityKey.vertex('bytes'),
+        touchAt,
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+    final touched = await store.transaction(
+      (transaction) =>
+          transaction
+              .getCache(partitionId, const OfflineEntityKey.vertex('bytes'))!
+              .lastAccessAt ==
+          touchAt,
+    );
+    _require(touched && touchChanges.isEmpty, 'durable_touch_without_change');
+  } finally {
+    await touchSubscription.cancel();
+  }
   _requireClosed(
     () => committed!.deleteOutbox(partitionId, assigned.first.recordId),
     'sealed_commit_mutation',
@@ -390,6 +584,109 @@ Future<void> runStoreConformanceSuite(OfflineStoreFactory factory) async {
   _require(incompleteRolledBack, 'incomplete_operation_rollback');
 
   try {
+    await store.transaction<void>((transaction) {
+      final current = transaction.getOutbox(
+        partitionId,
+        assigned.first.recordId,
+      )!;
+      transaction.updateOutbox(
+        current.copyWith(
+          state: OfflineOutboxState.sending,
+          leaseOwner: 'mismatched-owner',
+          leaseUntil: now.add(const Duration(seconds: 1)),
+        ),
+      );
+    });
+    _require(false, 'outbox_status_mismatch_graph');
+  } on OfflineDurableGraphException {
+    // Required: the outbox lifecycle and operation item are one graph.
+  }
+  final mismatchRolledBack = await store.transaction((transaction) {
+    final record = transaction.getOutbox(partitionId, assigned.first.recordId)!;
+    final operation = transaction.getOperation(partitionId, operationId)!;
+    return record.state == OfflineOutboxState.enqueued &&
+        operation.items.first.state == OfflineWriteState.locallyCommitted;
+  });
+  _require(mismatchRolledBack, 'outbox_status_mismatch_rollback');
+
+  await _requireInvalidCommit(
+    store,
+    partitionId,
+    (transaction) {
+      final current = transaction.getOutbox(
+        partitionId,
+        assigned.first.recordId,
+      )!;
+      transaction.updateOutbox(
+        current.copyWith(diagnosticCode: 'unauthenticated'),
+      );
+      final operation = transaction.getOperation(partitionId, operationId)!;
+      final items = operation.items.toList(growable: false);
+      items[current.itemIndex] = OfflineWriteStatus(
+        recordId: current.recordId,
+        operationId: current.operationId,
+        itemIndex: current.itemIndex,
+        state: OfflineWriteState.pausedForAuth,
+        attemptCount: current.attemptCount,
+        diagnosticCode: 'unauthenticated',
+      );
+      transaction.putOperation(
+        OfflineOperationRecord(
+          partitionId: operation.partitionId,
+          generation: operation.generation,
+          operationId: operation.operationId,
+          items: items,
+          updatedAt: now,
+        ),
+      );
+    },
+    'auth_marker_without_pause_graph',
+    (transaction) {
+      final record = transaction.getOutbox(
+        partitionId,
+        assigned.first.recordId,
+      )!;
+      final operation = transaction.getOperation(partitionId, operationId)!;
+      return !transaction.replayPausedForAuth(partitionId) &&
+          record.diagnosticCode == null &&
+          operation.items.first.state == OfflineWriteState.locallyCommitted;
+    },
+  );
+
+  await _requireInvalidCommit(
+    store,
+    partitionId,
+    (transaction) {
+      final operation = transaction.getOperation(partitionId, operationId)!;
+      final items = operation.items.toList(growable: false);
+      final current = items.first;
+      items[0] = OfflineWriteStatus(
+        recordId: current.recordId,
+        operationId: current.operationId,
+        itemIndex: current.itemIndex,
+        state: OfflineWriteState.pausedForAuth,
+        attemptCount: current.attemptCount,
+      );
+      transaction.putOperation(
+        OfflineOperationRecord(
+          partitionId: operation.partitionId,
+          generation: operation.generation,
+          operationId: operation.operationId,
+          items: items,
+          updatedAt: now,
+        ),
+      );
+    },
+    'auth_state_without_pause_graph',
+    (transaction) {
+      final operation = transaction.getOperation(partitionId, operationId)!;
+      return !transaction.replayPausedForAuth(partitionId) &&
+          operation.items.first.state == OfflineWriteState.locallyCommitted &&
+          operation.items.first.diagnosticCode == null;
+    },
+  );
+
+  try {
     await store.transaction<void>(
       (transaction) => transaction.deleteOperation(partitionId, operationId),
     );
@@ -433,16 +730,108 @@ Future<void> runStoreConformanceSuite(OfflineStoreFactory factory) async {
     );
   });
 
-  final claimed = await store.transaction(
-    (transaction) => transaction.claim(
+  await store.transaction<void>((transaction) {
+    final retry = _enqueueOperation(
+      transaction,
+      _record(
+        recordId: 'retry-record',
+        operationId: 'retry-operation',
+        itemIndex: 0,
+        key: 'retry',
+        now: now,
+      ),
+      now,
+    );
+    transaction.updateOutbox(
+      retry.copyWith(
+        attemptCount: 1,
+        nextAttemptAt: now.add(const Duration(milliseconds: 250)),
+        diagnosticCode: 'unavailable',
+      ),
+    );
+    _putMatchingStatus(
+      transaction,
+      retry,
+      OfflineWriteState.retryScheduled,
+      attemptCount: 1,
+      diagnosticCode: 'unavailable',
+      now: now,
+    );
+
+    final deadLetter = _enqueueOperation(
+      transaction,
+      _record(
+        recordId: 'dead-letter-record',
+        operationId: 'dead-letter-operation',
+        itemIndex: 0,
+        key: 'dead-letter',
+        now: now,
+      ),
+      now,
+    );
+    final terminalAt = now.add(const Duration(microseconds: 1));
+    transaction.updateOutbox(
+      deadLetter.copyWith(
+        state: OfflineOutboxState.deadLetter,
+        deadLetteredAt: terminalAt,
+        diagnosticCode: 'permanent',
+      ),
+    );
+    _putMatchingStatus(
+      transaction,
+      deadLetter,
+      OfflineWriteState.deadLetter,
+      attemptCount: 0,
+      diagnosticCode: 'permanent',
+      now: terminalAt,
+    );
+
+    for (final transition in <({String id, OfflineWriteState state})>[
+      (id: 'confirmed', state: OfflineWriteState.confirmed),
+      (id: 'expired', state: OfflineWriteState.expired),
+    ]) {
+      final record = _enqueueOperation(
+        transaction,
+        _record(
+          recordId: '${transition.id}-record',
+          operationId: '${transition.id}-operation',
+          itemIndex: 0,
+          key: transition.id,
+          now: now,
+        ),
+        now,
+      );
+      _putMatchingStatus(
+        transaction,
+        record,
+        transition.state,
+        attemptCount: 1,
+        now: terminalAt,
+      );
+      transaction.deleteOutbox(partitionId, record.recordId);
+    }
+  });
+
+  final claimed = await store.transaction((transaction) {
+    final records = transaction.claim(
       partitionId,
       owner: 'owner',
       now: now,
       maxAge: const Duration(days: 1),
       leaseDuration: const Duration(seconds: 1),
       limit: 3,
-    ),
-  );
+    );
+    for (final record in records) {
+      _putMatchingStatus(
+        transaction,
+        record,
+        OfflineWriteState.sending,
+        attemptCount: record.attemptCount,
+        now: now,
+      );
+    }
+    return records;
+  });
   _require(claimed.length == 2, 'independent_key_claim');
   final renewed = await store.transaction(
     (transaction) => transaction.renewLease(
@@ -455,6 +844,68 @@ Future<void> runStoreConformanceSuite(OfflineStoreFactory factory) async {
     ),
   );
   _require(renewed, 'lease_cas');
+
+  final recoveryAt = now.add(const Duration(seconds: 2));
+  final recovered = await store.transaction((transaction) {
+    final expiredLeases = transaction
+        .outbox(partitionId)
+        .where(
+          (record) =>
+              record.state == OfflineOutboxState.sending &&
+              record.leaseUntil != null &&
+              !recoveryAt.isBefore(record.leaseUntil!),
+        )
+        .toList(growable: false);
+    for (final record in expiredLeases) {
+      _putMatchingStatus(
+        transaction,
+        record,
+        OfflineWriteState.locallyCommitted,
+        attemptCount: record.attemptCount,
+        now: recoveryAt,
+      );
+    }
+    final reclaimed = transaction.claim(
+      partitionId,
+      owner: 'recovered-owner',
+      now: recoveryAt,
+      maxAge: const Duration(days: 1),
+      leaseDuration: const Duration(seconds: 1),
+      limit: 4,
+    );
+    for (final record in reclaimed) {
+      _putMatchingStatus(
+        transaction,
+        record,
+        OfflineWriteState.sending,
+        attemptCount: record.attemptCount,
+        now: recoveryAt,
+      );
+    }
+    return (expired: expiredLeases, reclaimed: reclaimed);
+  });
+  _require(
+    recovered.expired.length == 2 && recovered.reclaimed.length == 3,
+    'expired_lease_recovery_and_retry_reclaim',
+  );
+
+  store = await reopen(store);
+  final restartSafe = await store.transaction((transaction) {
+    final cache = transaction.getCache(
+      partitionId,
+      const OfflineEntityKey.vertex('bytes'),
+    );
+    final operation = transaction.getOperation(partitionId, operationId);
+    return cache != null &&
+        cache.lastAccessAt == touchAt &&
+        operation != null &&
+        transaction.getOutbox(partitionId, 'dead-letter-record')?.state ==
+            OfflineOutboxState.deadLetter &&
+        transaction.getOutbox(partitionId, 'confirmed-record') == null &&
+        transaction.getOutbox(partitionId, 'expired-record') == null &&
+        transaction.outbox(partitionId).length == 5;
+  });
+  _require(restartSafe, 'successful_commits_reopen_same_limits');
 
   await store.transaction<void>(
     (transaction) => transaction.setReplayPausedForAuth(partitionId, true),
@@ -512,6 +963,96 @@ OfflineOutboxRecord _record({
   generation: 0,
 );
 
+OfflineOutboxRecord _expiredRecord({
+  required String recordId,
+  required String operationId,
+  required DateTime now,
+  required int attemptCount,
+  String? diagnosticCode,
+}) => OfflineOutboxRecord(
+  recordId: recordId,
+  operationId: operationId,
+  itemIndex: 0,
+  partitionId: 'conformance',
+  intent: OfflinePutVertexIntent(
+    Vertex(key: recordId, value: VertexValue.nil(), expiration: now),
+  ),
+  enqueuedAt: now,
+  ordinal: 0,
+  state: OfflineOutboxState.expired,
+  attemptCount: attemptCount,
+  generation: 0,
+  diagnosticCode: diagnosticCode,
+);
+
+OfflineOutboxRecord _enqueueOperation(
+  OfflineStoreTransaction transaction,
+  OfflineOutboxRecord record,
+  DateTime now,
+) {
+  final assigned = transaction.enqueue(record);
+  transaction.putOperation(
+    OfflineOperationRecord(
+      partitionId: assigned.partitionId,
+      generation: assigned.generation,
+      operationId: assigned.operationId,
+      items: <OfflineWriteStatus>[
+        OfflineWriteStatus(
+          recordId: assigned.recordId,
+          operationId: assigned.operationId,
+          itemIndex: assigned.itemIndex,
+          state: OfflineWriteState.locallyCommitted,
+          attemptCount: assigned.attemptCount,
+        ),
+      ],
+      updatedAt: now,
+    ),
+  );
+  return assigned;
+}
+
+void _putMatchingStatus(
+  OfflineStoreTransaction transaction,
+  OfflineOutboxRecord outbox,
+  OfflineWriteState state, {
+  required int attemptCount,
+  required DateTime now,
+  String? diagnosticCode,
+}) {
+  final operation = transaction.getOperation(
+    outbox.partitionId,
+    outbox.operationId,
+  )!;
+  final items = operation.items.toList(growable: false);
+  items[outbox.itemIndex] = OfflineWriteStatus(
+    recordId: outbox.recordId,
+    operationId: outbox.operationId,
+    itemIndex: outbox.itemIndex,
+    state: state,
+    attemptCount: attemptCount,
+    diagnosticCode: diagnosticCode,
+  );
+  final status = OfflineOperationStatus(
+    operationId: operation.operationId,
+    items: items,
+  );
+  final updatedAt = <DateTime>[
+    operation.updatedAt,
+    outbox.enqueuedAt,
+    now,
+  ].reduce((latest, value) => value.isAfter(latest) ? value : latest);
+  transaction.putOperation(
+    OfflineOperationRecord(
+      partitionId: operation.partitionId,
+      generation: operation.generation,
+      operationId: operation.operationId,
+      items: items,
+      updatedAt: updatedAt,
+      terminalAt: status.isTerminal ? operation.terminalAt ?? updatedAt : null,
+    ),
+  );
+}
+
 void _require(bool condition, String label) {
   if (!condition) throw StateError('offline_store_conformance:$label');
 }
@@ -527,4 +1068,41 @@ void _requireClosed(void Function() action, String label) {
 
 final class _ConformanceRollback implements Exception {
   const _ConformanceRollback();
+}
+
+Future<void> _requireInvalidCommit(
+  OfflineStore store,
+  String partitionId,
+  void Function(OfflineStoreTransaction transaction) mutate,
+  String label,
+  bool Function(OfflineStoreTransaction transaction) unchanged,
+) async {
+  final before = await store.transaction(
+    (transaction) => (
+      generation: transaction.generation(partitionId),
+      outboxCount: transaction.outbox(partitionId).length,
+      operationCount: transaction.operations(partitionId).length,
+    ),
+  );
+  final changes = <OfflineStoreChange>[];
+  final subscription = store.changes(partitionId).listen(changes.add);
+  try {
+    try {
+      await store.transaction<void>(mutate);
+      _require(false, label);
+    } on OfflineDurableGraphException {
+      // Required.
+    }
+    await Future<void>.delayed(Duration.zero);
+    final preserved = await store.transaction(
+      (transaction) =>
+          unchanged(transaction) &&
+          transaction.generation(partitionId) == before.generation &&
+          transaction.outbox(partitionId).length == before.outboxCount &&
+          transaction.operations(partitionId).length == before.operationCount,
+    );
+    _require(preserved && changes.isEmpty, '${label}_atomic');
+  } finally {
+    await subscription.cancel();
+  }
 }

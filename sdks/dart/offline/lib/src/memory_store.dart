@@ -105,6 +105,17 @@ final class InMemoryOfflineStore implements OfflineStore {
       } finally {
         transaction._seal();
       }
+      for (final partitionId in <String>{
+        ...transaction._changedPartitions,
+        ...transaction._mutatedPartitions,
+      }) {
+        final partition = state.partition(partitionId);
+        _validateCommittedPartition(
+          partitionId,
+          partition,
+          transaction._enqueuedOperations[partitionId] ?? const {},
+        );
+      }
       for (final partitionId in transaction._changedPartitions) {
         final partition = state.partition(partitionId);
         partition.version = _checkedIncrement(partition.version);
@@ -143,6 +154,9 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
   final _MemoryState _state;
   final OfflineStoreLimits _limits;
   final Set<String> _changedPartitions = <String>{};
+  final Set<String> _mutatedPartitions = <String>{};
+  final Map<String, Map<String, List<OfflineOutboxRecord>>>
+  _enqueuedOperations = <String, Map<String, List<OfflineOutboxRecord>>>{};
   var _sealed = false;
 
   void _seal() => _sealed = true;
@@ -227,6 +241,7 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
     final record = partition.cache[key.canonical];
     if (record != null) {
       partition.cache[key.canonical] = record.accessedAt(accessedAt);
+      _mutatedPartitions.add(partitionId);
     }
   }
 
@@ -400,9 +415,15 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
     final operationId = records.first.operationId;
     _validatePartition(partitionId);
     final partition = _state.partition(partitionId);
+    final pendingOperations = _enqueuedOperations[partitionId];
+    final pendingRecordIds = pendingOperations?.values
+        .expand((records) => records)
+        .map((record) => record.recordId)
+        .toSet();
     final recordIds = <String>{};
     if (partition.operations.containsKey(operationId) ||
-        (partition.outboxByOperation[operationId]?.isNotEmpty ?? false)) {
+        (partition.outboxByOperation[operationId]?.isNotEmpty ?? false) ||
+        (pendingOperations?.containsKey(operationId) ?? false)) {
       throw const OfflineIdentityConflictException(
         OfflineIdentityKind.operation,
       );
@@ -413,6 +434,7 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
         throw const OfflineUnsupportedOperationException();
       }
       if (_recordIdExists(partition, record.recordId) ||
+          (pendingRecordIds?.contains(record.recordId) ?? false) ||
           !recordIds.add(record.recordId)) {
         throw const OfflineIdentityConflictException(
           OfflineIdentityKind.record,
@@ -469,6 +491,10 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
     for (final record in retained) {
       partition.putOutbox(record);
     }
+    (_enqueuedOperations[partitionId] ??=
+        <String, List<OfflineOutboxRecord>>{})[operationId] = assigned
+        .map(_copyOutboxRecord)
+        .toList(growable: false);
     _changedPartitions.add(partitionId);
     return assigned.map(_copyOutboxRecord).toList(growable: false);
   }
@@ -656,6 +682,8 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
   T _atomicMutation<T>(T Function() action) {
     final previousState = _state.copy();
     final previousChanges = Set<String>.of(_changedPartitions);
+    final previousMutations = Set<String>.of(_mutatedPartitions);
+    final previousEnqueues = _copyEnqueuedOperations(_enqueuedOperations);
     try {
       return action();
     } catch (_) {
@@ -665,6 +693,12 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
       _changedPartitions
         ..clear()
         ..addAll(previousChanges);
+      _mutatedPartitions
+        ..clear()
+        ..addAll(previousMutations);
+      _enqueuedOperations
+        ..clear()
+        ..addAll(previousEnqueues);
       rethrow;
     }
   }
@@ -701,7 +735,6 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
       throw const OfflineArgumentException();
     }
     final leaseUntil = _durableDeadline(now, leaseDuration);
-    if (leaseUntil == null) return const <OfflineOutboxRecord>[];
     _validateLeaseOwnerCapacity(owner, _limits);
     final partition = _state.partition(partitionId);
     if (partition.replayPausedForAuth) {
@@ -717,9 +750,14 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
           state: OfflineOutboxState.enqueued,
           clearLeaseOwner: true,
           clearLeaseUntil: true,
+          clearDiagnosticCode: true,
         );
         changed = true;
       }
+    }
+    if (leaseUntil == null) {
+      if (changed) _changedPartitions.add(partitionId);
+      return const <OfflineOutboxRecord>[];
     }
     final live = partition.outbox.values.toList()..sort(_compareOutbox);
     final blockedKeys = <String>{};
@@ -750,6 +788,7 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
         clearNextAttemptAt: true,
         leaseOwner: owner,
         leaseUntil: leaseUntil,
+        clearDiagnosticCode: true,
       );
       _validateOutboxLifecycleCapacity(claimedRecord, _limits);
       partition.outbox[record.recordId] = claimedRecord;
@@ -814,6 +853,7 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
         _MemoryPartition(generation: _checkedIncrement(previous.generation))
           ..version = previous.version
           ..nextOrdinal = previous.nextOrdinal;
+    _enqueuedOperations.remove(partitionId);
     _changedPartitions.add(partitionId);
   }
 
@@ -1729,7 +1769,10 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
       var largestOrdinal = 0;
       for (final item in outbox) {
         final decodedRecord = OfflineCodec.decodeOutboxRecord(item);
-        if (schema >= 4 && decodedRecord.intent is OfflineAddEdgeIntent) {
+        if (decodedRecord.intent is OfflineAddEdgeIntent &&
+            (schema == 4 ||
+                (schema == InMemoryOfflineStore.snapshotSchemaVersion &&
+                    !_isQuarantinedLegacyAdd(decodedRecord)))) {
           throw const OfflineCodecException();
         }
         final record = schema < 4
@@ -1781,6 +1824,8 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
       if (schema < InMemoryOfflineStore.snapshotSchemaVersion) {
         _migrateReplayAuthPause(partition);
       }
+      _validateCacheGraph(partitionId, partition);
+      _validateCurrentPartitionIdentity(partitionId, partition);
       _validatePartitionGraph(partition, legacySnapshot: schema < 4);
       if (schema == InMemoryOfflineStore.snapshotSchemaVersion &&
           !partition.replayPausedForAuth &&
@@ -1899,6 +1944,137 @@ void _validatePartitionGraph(
   }
 }
 
+void _validateCommittedPartition(
+  String partitionId,
+  _MemoryPartition partition,
+  Map<String, List<OfflineOutboxRecord>> enqueuedOperations,
+) {
+  try {
+    _validateCacheGraph(partitionId, partition);
+    _validateCurrentPartitionIdentity(partitionId, partition);
+    _validatePartitionGraph(partition, legacySnapshot: false);
+    _validateEnqueuedTopologies(partition, enqueuedOperations);
+    if (!partition.replayPausedForAuth &&
+        _hasReplayAuthPauseMarker(partition)) {
+      throw const OfflineCodecException();
+    }
+  } on OfflineDurableGraphException {
+    rethrow;
+  } catch (_) {
+    throw const OfflineDurableGraphException();
+  }
+}
+
+void _validateEnqueuedTopologies(
+  _MemoryPartition partition,
+  Map<String, List<OfflineOutboxRecord>> enqueuedOperations,
+) {
+  for (final entry in enqueuedOperations.entries) {
+    final operation = partition.operations[entry.key];
+    final records = entry.value;
+    if (operation == null || operation.items.length != records.length) {
+      throw const OfflineCodecException();
+    }
+    for (var index = 0; index < records.length; index++) {
+      final record = records[index];
+      final item = operation.items[index];
+      if (record.itemIndex != index ||
+          item.recordId != record.recordId ||
+          item.operationId != record.operationId ||
+          item.itemIndex != index ||
+          operation.updatedAt.isBefore(record.enqueuedAt) ||
+          (operation.terminalAt?.isBefore(record.enqueuedAt) ?? false) ||
+          (record.state == OfflineOutboxState.expired &&
+              (item.state != OfflineWriteState.expired ||
+                  item.attemptCount != record.attemptCount ||
+                  item.diagnosticCode != record.diagnosticCode))) {
+        throw const OfflineCodecException();
+      }
+    }
+  }
+}
+
+Map<String, Map<String, List<OfflineOutboxRecord>>> _copyEnqueuedOperations(
+  Map<String, Map<String, List<OfflineOutboxRecord>>> source,
+) => source.map(
+  (partitionId, operations) => MapEntry(
+    partitionId,
+    operations.map(
+      (operationId, records) => MapEntry(
+        operationId,
+        records.map(_copyOutboxRecord).toList(growable: false),
+      ),
+    ),
+  ),
+);
+
+void _validateCacheGraph(String partitionId, _MemoryPartition partition) {
+  for (final entry in partition.cache.entries) {
+    final record = entry.value;
+    if (entry.key != record.key.canonical ||
+        record.partitionId != partitionId ||
+        record.generation != partition.generation) {
+      throw const OfflineCodecException();
+    }
+    final vertex = record.vertex;
+    final edge = record.edge;
+    if (record.isMissing) {
+      if (vertex != null ||
+          edge != null ||
+          record.missingUntil!.isBefore(record.validatedAt)) {
+        throw const OfflineCodecException();
+      }
+      continue;
+    }
+    final identityMatches = switch (record.key.kind) {
+      OfflineEntityKind.vertex =>
+        vertex != null && edge == null && record.key.vertexKey == vertex.key,
+      OfflineEntityKind.edge =>
+        edge != null &&
+            vertex == null &&
+            record.key.tail == edge.tail &&
+            record.key.head == edge.head,
+    };
+    if (!identityMatches) throw const OfflineCodecException();
+  }
+}
+
+void _validateCurrentPartitionIdentity(
+  String partitionId,
+  _MemoryPartition partition,
+) {
+  for (final entry in partition.outbox.entries) {
+    final record = entry.value;
+    if (entry.key != record.recordId ||
+        record.partitionId != partitionId ||
+        record.generation != partition.generation ||
+        record.ordinal > partition.nextOrdinal) {
+      throw const OfflineCodecException();
+    }
+    if (record.intent is OfflineAddEdgeIntent &&
+        !_isQuarantinedLegacyAdd(record)) {
+      throw const OfflineCodecException();
+    }
+  }
+  for (final entry in partition.operations.entries) {
+    final operation = entry.value;
+    if (entry.key != operation.operationId ||
+        operation.partitionId != partitionId ||
+        operation.generation != partition.generation) {
+      throw const OfflineCodecException();
+    }
+  }
+}
+
+bool _isQuarantinedLegacyAdd(OfflineOutboxRecord record) =>
+    record.intent is OfflineAddEdgeIntent &&
+    record.state == OfflineOutboxState.deadLetter &&
+    record.nextAttemptAt == null &&
+    record.leaseOwner == null &&
+    record.leaseUntil == null &&
+    record.deadLetteredAt != null &&
+    record.diagnosticCode == 'unsupported_add';
+
 bool _terminalWriteState(OfflineWriteState state) =>
     state == OfflineWriteState.confirmed ||
     state == OfflineWriteState.deadLetter ||
@@ -1922,7 +2098,8 @@ bool _outboxStatusMatches(
               (record.nextAttemptAt != null) &&
           (status.state == OfflineWriteState.locallyCommitted ||
               status.state == OfflineWriteState.retryScheduled ||
-              status.state == OfflineWriteState.pausedForAuth),
+              (status.state == OfflineWriteState.pausedForAuth &&
+                  record.diagnosticCode == 'unauthenticated')),
     OfflineOutboxState.sending => status.state == OfflineWriteState.sending,
     OfflineOutboxState.deadLetter =>
       status.state == OfflineWriteState.deadLetter,
@@ -1963,8 +2140,7 @@ bool _hasReplayAuthPauseMarker(_MemoryPartition partition) {
     }
     final status = operation.items[record.itemIndex];
     if (record.diagnosticCode == 'unauthenticated' ||
-        (status.state == OfflineWriteState.pausedForAuth &&
-            status.diagnosticCode == 'unauthenticated')) {
+        status.state == OfflineWriteState.pausedForAuth) {
       return true;
     }
   }

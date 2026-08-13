@@ -133,6 +133,10 @@ final class OfflineEntityKey {
 }
 
 /// A cache record holding either an exact entity or a bounded negative marker.
+///
+/// Constructors validate field shape and durable timestamp representation.
+/// Entity identity and negative-marker ordering are durable graph invariants:
+/// an [OfflineStore] must validate them atomically at commit.
 final class OfflineCacheRecord {
   /// Creates an exact confirmed cache record.
   OfflineCacheRecord.value({
