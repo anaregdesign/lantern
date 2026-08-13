@@ -219,7 +219,7 @@ void main() {
     },
   );
 
-  test('offline attempt count equals actual wire sends', () async {
+  test('each offline attempt permits at most one wire send', () async {
     var sends = 0;
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     addTearDown(() => server.close(force: true));
@@ -265,6 +265,46 @@ void main() {
     expect(sends, 2);
     expect((await repository.listDeadLetters('p')).single.attemptCount, 2);
   });
+
+  test(
+    'pre-wire credential failure consumes an adapter attempt only',
+    () async {
+      var sends = 0;
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => server.close(force: true));
+      server.listen((request) async {
+        sends += 1;
+        request.response
+          ..statusCode = HttpStatus.ok
+          ..headers.contentType = ContentType.json
+          ..write('{}');
+        await request.response.close();
+      });
+      final client = LanternClient.connect(
+        Uri.parse('http://${server.address.host}:${server.port}'),
+        allowInsecure: true,
+        tokenProvider: () => throw StateError('credential provider failed'),
+        defaultTimeout: null,
+      );
+      addTearDown(client.close);
+      final repository = OfflineLanternRepository(
+        store: InMemoryOfflineStore(),
+        remote: LanternClientOfflineRemote(client),
+        config: OfflineConfig(maxAttempts: 1),
+      );
+      addTearDown(repository.dispose);
+      await repository.putVertex(
+        partitionId: 'pre-wire',
+        input: VertexInput(key: 'key', value: VertexValue.nil()),
+      );
+
+      expect(await repository.drain('pre-wire'), 0);
+      expect(sends, 0);
+      final deadLetter = (await repository.listDeadLetters('pre-wire')).single;
+      expect(deadLetter.attemptCount, 1);
+      expect(deadLetter.diagnosticCode, 'unknown');
+    },
+  );
 
   test(
     'real server commit plus response loss replays PutVertex and PutEdge',

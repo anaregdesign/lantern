@@ -450,7 +450,7 @@ final class OfflineOutboxRecord {
   /// Current outbox lifecycle state.
   final OfflineOutboxState state;
 
-  /// Number of network attempts already sent.
+  /// Completed durable adapter attempts, each permitting at most one RPC.
   final int attemptCount;
 
   /// Partition generation that owns this record.
@@ -651,7 +651,7 @@ final class OfflineWriteStatus {
   /// Current lifecycle state.
   final OfflineWriteState state;
 
-  /// Completed network attempt count.
+  /// Completed durable adapter attempt count.
   final int attemptCount;
 
   /// Content-free bounded diagnostic code.
@@ -834,7 +834,7 @@ final class DeadLetterSummary {
   /// Age at inspection time.
   final Duration age;
 
-  /// Completed network attempts.
+  /// Completed durable adapter attempts.
   final int attemptCount;
 
   /// Content-free failure code.
@@ -869,7 +869,7 @@ final class PendingSummary {
   /// Age at inspection time.
   final Duration age;
 
-  /// Completed network attempts.
+  /// Completed durable adapter attempts.
   final int attemptCount;
 
   /// Content-free retry or pause code.

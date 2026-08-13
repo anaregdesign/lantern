@@ -345,9 +345,10 @@ without application-owned OS background task or push infrastructure.
 
 Every replay entry point joins one per-partition serialized lifecycle and one
 repository-wide/per-partition send limiter. Durable sends suppress the online
-client's retry policy; each singular adapter send therefore attempts at most one
-RPC, and every `attemptCount` increment maps to one RPC rather than hidden nested
-attempts. An
+client's retry policy. Each `attemptCount` increment records one completed
+durable adapter attempt that permits at most one singular RPC. A credential
+provider or cancellation may fail before a wire send, but hidden nested
+transport attempts cannot occur. An
 Unauthenticated outcome atomically sets partition-level durable pause metadata;
 the partition auth epoch cancels same-batch sibling token acquisition before
 another send starts. Ordinary drain/start/probe paths cannot clear the pause or
