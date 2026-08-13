@@ -1782,6 +1782,11 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
         _migrateReplayAuthPause(partition);
       }
       _validatePartitionGraph(partition, legacySnapshot: schema < 4);
+      if (schema == InMemoryOfflineStore.snapshotSchemaVersion &&
+          !partition.replayPausedForAuth &&
+          _hasReplayAuthPauseMarker(partition)) {
+        throw const OfflineCodecException();
+      }
       partition.rebuildIndexes();
       state.partitions[partitionId] = partition;
     }
@@ -1947,6 +1952,23 @@ void _migrateReplayAuthPause(_MemoryPartition partition) {
     }
   }
   partition.replayPausedForAuth = paused;
+}
+
+bool _hasReplayAuthPauseMarker(_MemoryPartition partition) {
+  for (final record in partition.outbox.values) {
+    if (record.state != OfflineOutboxState.enqueued) continue;
+    final operation = partition.operations[record.operationId];
+    if (operation == null || record.itemIndex >= operation.items.length) {
+      continue;
+    }
+    final status = operation.items[record.itemIndex];
+    if (record.diagnosticCode == 'unauthenticated' ||
+        (status.state == OfflineWriteState.pausedForAuth &&
+            status.diagnosticCode == 'unauthenticated')) {
+      return true;
+    }
+  }
+  return false;
 }
 
 OfflineOutboxRecord _quarantineLegacyAdd(OfflineOutboxRecord record) {

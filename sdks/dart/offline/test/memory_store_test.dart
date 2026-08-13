@@ -1689,7 +1689,7 @@ void main() {
     },
   );
 
-  test('schema v1-v4 restore recovers durable auth pause', () async {
+  test('legacy restore recovers auth pause and v5 rejects drift', () async {
     final store = InMemoryOfflineStore();
     await store.transaction<void>((transaction) {
       final assigned = transaction.enqueue(
@@ -1760,6 +1760,18 @@ void main() {
         OfflineWriteState.pausedForAuth,
       );
     }
+
+    final contradictory =
+        jsonDecode(jsonEncode(canonical)) as Map<String, Object?>;
+    final contradictoryPartition =
+        (contradictory['partitions']! as List<Object?>).single!
+            as Map<String, Object?>;
+    contradictoryPartition['replayPausedForAuth'] = false;
+    expect(
+      () => InMemoryOfflineStore.fromSnapshot(jsonEncode(contradictory)),
+      throwsA(isA<OfflineCodecException>()),
+      reason: 'canonical auth metadata cannot contradict the partition flag',
+    );
   });
 
   test(
