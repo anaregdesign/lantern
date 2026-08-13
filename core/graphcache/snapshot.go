@@ -32,8 +32,10 @@ type SnapshotContribution struct {
 
 // SnapshotEdge is one entry of GraphCache.SnapshotEdges. HLC carries the
 // bucket's last LWW position (zero when no LWW write has happened); the
-// receiver uses it as the causal floor when replaying each contribution
-// via AddEdgeWithExpirationContribHLC.
+// receiver uses it as the causal floor when replaying the bucket. A zero-ID
+// contribution is the LWW Put row and is restored through
+// PutEdgeWithExpirationHLC; non-zero-ID additive rows use
+// AddEdgeWithExpirationContribHLC so ContribID dedup remains effective.
 type SnapshotEdge[S comparable] struct {
 	Tail          S
 	Head          S

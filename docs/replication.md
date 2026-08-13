@@ -501,11 +501,12 @@ Framing contract:
   when the same identity also has a newer live value.
 - The snapshot deliberately preserves **per-contribution decomposition**:
   each `SnapshotEdge` carries its full list of live `SnapshotEdgeContribution`
-  rows rather than a pre-summed weight. The consumer replays each
-  contribution via `AddEdgeWithExpirationContribHLC`, and the receiver's
-  `ContribID` dedup makes the snapshot-then-Subscribe-tail handoff
-  idempotent: any contribution that also appears in the replayed tail is
-  detected and dropped at apply time.
+  rows rather than a pre-summed weight. A zero-`ContribID` row represents the
+  LWW Put value and is restored through `PutEdgeWithExpirationHLC`; non-zero
+  rows are restored through `AddEdgeWithExpirationContribHLC`. The latter's
+  `ContribID` dedup makes the snapshot-then-Subscribe-tail handoff idempotent:
+  any additive contribution that also appears in the replayed tail is detected
+  and dropped at apply time.
 - A live additive edge may coexist with a retained Put barrier. Because the
   current contribution rows do not carry individual HLCs, the source stamps
   `SnapshotEdge.hlc` with `max(bucket.lastPutHLC, retainedBarrierHLC)`.
