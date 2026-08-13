@@ -14,6 +14,8 @@ export 'src/client.dart'
         BatchException,
         BoolValue,
         BytesValue,
+        CausalMetadataKindStatus,
+        CausalMetadataStatus,
         DecayOptions,
         DegreeDirection,
         DegreeEntry,

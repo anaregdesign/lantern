@@ -15,7 +15,7 @@ import (
 )
 
 // fakeService satisfies the backup Service: BackupSnapshot emits a fixed
-// frame list; PutVertices / PutEdges record what restore replayed.
+// frame list; RestoreVertices / RestoreEdges record what restore replayed.
 type fakeService struct {
 	frames                []*pb.BackupSnapshotResponse
 	putV                  []*pb.Vertex
@@ -48,7 +48,7 @@ func (f *fakeService) RestoreVertices(_ context.Context, req *pb.PutVerticesRequ
 	return &pb.PutVerticesResponse{Outcomes: outcomes}, nil
 }
 
-func (f *fakeService) PutEdges(_ context.Context, req *pb.PutEdgesRequest) (*pb.PutEdgesResponse, error) {
+func (f *fakeService) RestoreEdges(_ context.Context, req *pb.PutEdgesRequest) (*pb.PutEdgesResponse, error) {
 	f.putE = append(f.putE, req.GetEdges()...)
 	outcomes := make([]pb.PutOutcome, len(req.GetEdges()))
 	for i := range outcomes {

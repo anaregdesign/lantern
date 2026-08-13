@@ -906,6 +906,38 @@ message SearchIndexStats {
   uint64 generation = 17;
 }
 
+// CausalMetadataKindStatus is the per-identity-kind share of the HA causal
+// metadata budget. A live HLC floor, an accepted-expired Put barrier, and a
+// Delete tombstone are alternate representations of one retained identity and
+// therefore consume one entry in this accounting surface.
+message CausalMetadataKindStatus {
+  // Locally-originated admission ceiling. 0 means unlimited. Replication
+  // apply may exceed a non-zero limit because rejecting already-committed
+  // remote state would break convergence.
+  uint64 limit = 1;
+  uint64 entries = 2;
+  // Stable logical estimate, including identity payload bytes and retained
+  // deadline-index entries. This is an allocator-independent capacity unit,
+  // not a process-heap measurement.
+  uint64 estimated_bytes = 3;
+  uint64 entries_high_water = 4;
+  uint64 estimated_bytes_high_water = 5;
+  // Cumulative locally-originated batches rejected by this kind's budget.
+  uint64 rejected_total = 6;
+  // True when replication apply has taken current entries above limit.
+  bool over_limit = 7;
+  // Oldest retained Delete-tombstone expiration. Unset when no tombstone for
+  // this kind is retained; live HLC floors and Put barriers have no deadline.
+  google.protobuf.Timestamp oldest_retention_deadline = 8;
+}
+
+// CausalMetadataStatus is one lock-consistent snapshot of the vertex and edge
+// causal-identity budgets.
+message CausalMetadataStatus {
+  CausalMetadataKindStatus vertices = 1;
+  CausalMetadataKindStatus edges = 2;
+}
+
 message GetServerStatusResponse {
   // Build/version stamp. Falls back to "dev" when the binary was built
   // without VCS info or without LANTERN_VERSION set.
@@ -958,6 +990,11 @@ message GetServerStatusResponse {
   // Full-text-search capability snapshot. Clients can use this to disable
   // controls that the selected server cannot satisfy before sending a query.
   SearchCapabilities search = 14;
+
+  // HA causal-metadata capacity and retention snapshot. Present on every
+  // current server. Unlimited deployments report limit=0 while current usage
+  // and high-water values still reflect retained HLC metadata.
+  CausalMetadataStatus causal_metadata = 15;
 }
 
 // ReplicationPeer is one row of the GetReplicationStatus snapshot.

@@ -19,6 +19,28 @@ const sampleServer: ServerStatus = {
   replicationEnabled: true,
   vertexCount: 42,
   edgeCount: 17,
+  causalMetadata: {
+    vertices: {
+      limit: 100,
+      entries: 12,
+      estimatedBytes: 1200,
+      entriesHighWater: 18,
+      estimatedBytesHighWater: 1800,
+      rejectedTotal: 3,
+      overLimit: false,
+      oldestRetentionDeadlineMs: 0,
+    },
+    edges: {
+      limit: 200,
+      entries: 23,
+      estimatedBytes: 4600,
+      entriesHighWater: 29,
+      estimatedBytesHighWater: 5800,
+      rejectedTotal: 4,
+      overLimit: false,
+      oldestRetentionDeadlineMs: 0,
+    },
+  },
   search: {
     enabled: true,
     positionsEnabled: true,

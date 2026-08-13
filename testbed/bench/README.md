@@ -89,7 +89,7 @@ written under `testbed/bench/out/<scenario>/<UTC-timestamp>/`.
 | `addedge_contention.yaml` | repeated `AddEdge` on the same (tail, head) — block/mutex hotspot probe |
 | `illuminate.yaml`  | graph traversal under moderate RPS |
 | `scan_prefix.yaml` | paginated prefix scans |
-| `ttl_churn.yaml`   | short TTLs + steady writes (expirer + timer wheel) |
+| `ttl_churn.yaml`   | bounded born-expired Put/Delete churn over a 4096-key ring; proves causal-floor retention, slot reuse, and heap stability under the explicit causal-metadata budget (#1204) |
 | `replication_soak.yaml`   | producer on r0, `Subscribe` consumers on r1/r2 for 10m |
 | `chaos_kill_replica.yaml` | mid-load `docker kill` + restart of one replica |
 | `many_subscribers.yaml`   | N concurrent `Subscribe` streams across replicas (#240 pubsub probe) |

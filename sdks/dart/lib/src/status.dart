@@ -239,6 +239,7 @@ final class ServerStatus {
     required this.vertexCount,
     required this.edgeCount,
     required this.search,
+    required this.causalMetadata,
   });
 
   /// Server build/version stamp.
@@ -282,6 +283,66 @@ final class ServerStatus {
 
   /// Full-text-search capability snapshot and HA configuration fingerprint.
   final SearchCapabilities search;
+
+  /// HA causal-identity capacity and retention snapshot.
+  ///
+  /// `null` means this status surface is unsupported by the connected server:
+  /// the data is unavailable and a server upgrade is required before
+  /// causal-metadata capacity can be observed. A present snapshot whose
+  /// counters are all zero is supported and remains non-null.
+  final CausalMetadataStatus? causalMetadata;
+}
+
+/// Per-kind HA causal-identity capacity and retention snapshot.
+final class CausalMetadataKindStatus {
+  /// Creates one immutable per-kind snapshot.
+  const CausalMetadataKindStatus({
+    required this.limit,
+    required this.entries,
+    required this.estimatedBytes,
+    required this.entriesHighWater,
+    required this.estimatedBytesHighWater,
+    required this.rejectedTotal,
+    required this.overLimit,
+    required this.oldestRetentionDeadline,
+  });
+
+  /// Local-origin admission ceiling; zero means unlimited.
+  final BigInt limit;
+
+  /// Current retained causal identities.
+  final BigInt entries;
+
+  /// Stable logical estimate of causal records, budget ledger, and deadline
+  /// index; this is not a process-heap measurement.
+  final BigInt estimatedBytes;
+
+  /// All-time maximum retained identity count.
+  final BigInt entriesHighWater;
+
+  /// All-time maximum of the stable retained-byte estimate.
+  final BigInt estimatedBytesHighWater;
+
+  /// Cumulative locally-originated batches rejected by this budget.
+  final BigInt rejectedTotal;
+
+  /// Whether replicated state has exceeded the local-origin limit.
+  final bool overLimit;
+
+  /// Oldest retained Delete-tombstone deadline, when one exists.
+  final DateTime? oldestRetentionDeadline;
+}
+
+/// Vertex and edge shares of the retained HA causal-identity budget.
+final class CausalMetadataStatus {
+  /// Creates one immutable vertex-and-edge snapshot.
+  const CausalMetadataStatus({required this.vertices, required this.edges});
+
+  /// Vertex causal-identity budget.
+  final CausalMetadataKindStatus vertices;
+
+  /// Edge causal-identity budget.
+  final CausalMetadataKindStatus edges;
 }
 
 /// Replication peer lifecycle state.
@@ -436,6 +497,20 @@ extension LanternStatus on LanternClient {
       replicationEnabled: response.replicationEnabled,
       vertexCount: _uint64ToBigInt(response.vertexCount),
       edgeCount: _uint64ToBigInt(response.edgeCount),
+      causalMetadata: response.hasCausalMetadata()
+          ? CausalMetadataStatus(
+              vertices: _causalMetadataKind(
+                response.causalMetadata.hasVertices()
+                    ? response.causalMetadata.vertices
+                    : null,
+              ),
+              edges: _causalMetadataKind(
+                response.causalMetadata.hasEdges()
+                    ? response.causalMetadata.edges
+                    : null,
+              ),
+            )
+          : null,
       search: SearchCapabilities._(
         enabled: response.search.enabled,
         positionsEnabled: response.search.positionsEnabled,
@@ -571,6 +646,23 @@ extension LanternStatus on LanternClient {
     );
   }
 }
+
+CausalMetadataKindStatus _causalMetadataKind(
+  $graph.CausalMetadataKindStatus? status,
+) => CausalMetadataKindStatus(
+  limit: _uint64ToBigInt(status?.limit ?? Int64.ZERO),
+  entries: _uint64ToBigInt(status?.entries ?? Int64.ZERO),
+  estimatedBytes: _uint64ToBigInt(status?.estimatedBytes ?? Int64.ZERO),
+  entriesHighWater: _uint64ToBigInt(status?.entriesHighWater ?? Int64.ZERO),
+  estimatedBytesHighWater: _uint64ToBigInt(
+    status?.estimatedBytesHighWater ?? Int64.ZERO,
+  ),
+  rejectedTotal: _uint64ToBigInt(status?.rejectedTotal ?? Int64.ZERO),
+  overLimit: status?.overLimit ?? false,
+  oldestRetentionDeadline: status?.hasOldestRetentionDeadline() ?? false
+      ? _timestampFromProto(status!.oldestRetentionDeadline)
+      : null,
+);
 
 $graph.TopVerticesByDegreeRequest_Direction _degreeDirectionToProto(
   DegreeDirection direction,

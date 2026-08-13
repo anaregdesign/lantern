@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
@@ -17,6 +18,215 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+// TestApplyMutation_CausalMetadataCapacityConvergesAcrossReplicas pins the
+// #1204 admission split: local-origin writes are bounded, but replication
+// apply must never reject state another replica already committed. Two peers
+// independently fill the same per-kind limit, exchange those commits, and
+// therefore each retain more identities than its local limit. Once over the
+// limit a genuinely new local identity fails atomically, while replacing an
+// identity already represented in the causal ledger remains admissible and
+// continues to converge.
+func TestApplyMutation_CausalMetadataCapacityConvergesAcrossReplicas(t *testing.T) {
+	ctx := context.Background()
+	latestMutation := func(t *testing.T, log *mutationlog.Log) *pb.Mutation {
+		t.Helper()
+		seq, ok := log.LastSeq()
+		if !ok {
+			t.Fatal("mutation log is empty")
+		}
+		ch, cancel, err := log.Subscribe(seq)
+		if err != nil {
+			t.Fatalf("Subscribe(%d): %v", seq, err)
+		}
+		defer cancel()
+		select {
+		case entry := <-ch:
+			if entry.Seq != seq {
+				t.Fatalf("latest log entry seq = %d, want %d", entry.Seq, seq)
+			}
+			mutation, ok := entry.Op.(*pb.Mutation)
+			if !ok {
+				t.Fatalf("latest log entry type = %T, want *pb.Mutation", entry.Op)
+			}
+			return proto.Clone(mutation).(*pb.Mutation)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out reading mutation %d", seq)
+			return nil
+		}
+	}
+	newPeer := func(t *testing.T, node byte, limits graphcache.CausalMetadataLimits) (*graphcache.GraphCache[string, *pb.Vertex], *mutationlog.Log, *LanternService) {
+		t.Helper()
+		cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+		cache.SetCausalMetadataLimits(limits)
+		log := mutationlog.New(mutationlog.Options{Capacity: 32, SubscriberBuffer: 32})
+		t.Cleanup(func() { _ = log.Close() })
+		clock := hlc.New(hlc.NodeID{node}, hlc.Options{})
+		return cache, log, NewLanternService(cache).WithReplication(log, clock, nil)
+	}
+
+	t.Run("vertices", func(t *testing.T) {
+		cacheA, logA, svcA := newPeer(t, 0xA1, graphcache.CausalMetadataLimits{MaxVertexEntries: 1})
+		cacheB, logB, svcB := newPeer(t, 0xB1, graphcache.CausalMetadataLimits{MaxVertexEntries: 1})
+
+		put := func(t *testing.T, svc *LanternService, key, value string) error {
+			t.Helper()
+			_, err := svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{
+				Key: key, Value: &pb.Vertex_String_{String_: value},
+			}})
+			return err
+		}
+		if err := put(t, svcA, "vertex-a", "a1"); err != nil {
+			t.Fatalf("peer A local Put: %v", err)
+		}
+		mutationA := latestMutation(t, logA)
+		if err := put(t, svcB, "vertex-b", "b1"); err != nil {
+			t.Fatalf("peer B local Put: %v", err)
+		}
+		mutationB := latestMutation(t, logB)
+
+		if err := svcA.ApplyMutation(ctx, mutationB); err != nil {
+			t.Fatalf("peer A apply B: %v", err)
+		}
+		if err := svcB.ApplyMutation(ctx, mutationA); err != nil {
+			t.Fatalf("peer B apply A: %v", err)
+		}
+		for name, cache := range map[string]*graphcache.GraphCache[string, *pb.Vertex]{"A": cacheA, "B": cacheB} {
+			stats := cache.CausalMetadataStats()
+			if stats.VertexEntries != 2 || !stats.VertexOverLimit {
+				t.Fatalf("peer %s causal stats after convergence = %+v, want 2 entries over limit 1", name, stats)
+			}
+			for _, key := range []string{"vertex-a", "vertex-b"} {
+				if _, ok := cache.GetVertex(key); !ok {
+					t.Fatalf("peer %s missing remotely converged %q", name, key)
+				}
+			}
+		}
+
+		beforeA, _ := logA.LastSeq()
+		beforeB, _ := logB.LastSeq()
+		if err := put(t, svcA, "vertex-c", "c"); connect.CodeOf(err) != connect.CodeResourceExhausted {
+			t.Fatalf("peer A new identity error = %v (%v), want ResourceExhausted", err, connect.CodeOf(err))
+		}
+		if err := put(t, svcB, "vertex-c", "c"); connect.CodeOf(err) != connect.CodeResourceExhausted {
+			t.Fatalf("peer B new identity error = %v (%v), want ResourceExhausted", err, connect.CodeOf(err))
+		}
+		if after, _ := logA.LastSeq(); after != beforeA {
+			t.Fatalf("peer A rejected write appended log seq %d -> %d", beforeA, after)
+		}
+		if after, _ := logB.LastSeq(); after != beforeB {
+			t.Fatalf("peer B rejected write appended log seq %d -> %d", beforeB, after)
+		}
+		if _, ok := cacheA.GetVertex("vertex-c"); ok {
+			t.Fatal("peer A retained rejected new identity")
+		}
+		if _, ok := cacheB.GetVertex("vertex-c"); ok {
+			t.Fatal("peer B retained rejected new identity")
+		}
+
+		if err := put(t, svcA, "vertex-a", "a2"); err != nil {
+			t.Fatalf("peer A same-identity replacement while over limit: %v", err)
+		}
+		replacementA := latestMutation(t, logA)
+		if err := put(t, svcB, "vertex-b", "b2"); err != nil {
+			t.Fatalf("peer B same-identity replacement while over limit: %v", err)
+		}
+		replacementB := latestMutation(t, logB)
+		if err := svcA.ApplyMutation(ctx, replacementB); err != nil {
+			t.Fatalf("peer A apply B replacement: %v", err)
+		}
+		if err := svcB.ApplyMutation(ctx, replacementA); err != nil {
+			t.Fatalf("peer B apply A replacement: %v", err)
+		}
+		for _, key := range []string{"vertex-a", "vertex-b"} {
+			gotA, okA := cacheA.GetVertex(key)
+			gotB, okB := cacheB.GetVertex(key)
+			if !okA || !okB || !proto.Equal(gotA, gotB) {
+				t.Fatalf("replacement for %q did not converge: A=(%v,%v) B=(%v,%v)", key, gotA, okA, gotB, okB)
+			}
+		}
+	})
+
+	t.Run("edges", func(t *testing.T) {
+		cacheA, logA, svcA := newPeer(t, 0xA2, graphcache.CausalMetadataLimits{MaxEdgeEntries: 1})
+		cacheB, logB, svcB := newPeer(t, 0xB2, graphcache.CausalMetadataLimits{MaxEdgeEntries: 1})
+
+		put := func(t *testing.T, svc *LanternService, tail, head string, weight float32) error {
+			t.Helper()
+			_, err := svc.PutEdge(ctx, &pb.PutEdgeRequest{Edge: &pb.Edge{Tail: tail, Head: head, Weight: weight}})
+			return err
+		}
+		if err := put(t, svcA, "tail-a", "head-a", 1); err != nil {
+			t.Fatalf("peer A local Put: %v", err)
+		}
+		mutationA := latestMutation(t, logA)
+		if err := put(t, svcB, "tail-b", "head-b", 1); err != nil {
+			t.Fatalf("peer B local Put: %v", err)
+		}
+		mutationB := latestMutation(t, logB)
+
+		if err := svcA.ApplyMutation(ctx, mutationB); err != nil {
+			t.Fatalf("peer A apply B: %v", err)
+		}
+		if err := svcB.ApplyMutation(ctx, mutationA); err != nil {
+			t.Fatalf("peer B apply A: %v", err)
+		}
+		for name, cache := range map[string]*graphcache.GraphCache[string, *pb.Vertex]{"A": cacheA, "B": cacheB} {
+			stats := cache.CausalMetadataStats()
+			if stats.EdgeEntries != 2 || !stats.EdgeOverLimit {
+				t.Fatalf("peer %s causal stats after convergence = %+v, want 2 entries over limit 1", name, stats)
+			}
+			for _, edge := range [][2]string{{"tail-a", "head-a"}, {"tail-b", "head-b"}} {
+				if _, ok := cache.GetWeight(edge[0], edge[1]); !ok {
+					t.Fatalf("peer %s missing remotely converged edge %q -> %q", name, edge[0], edge[1])
+				}
+			}
+		}
+
+		beforeA, _ := logA.LastSeq()
+		beforeB, _ := logB.LastSeq()
+		if err := put(t, svcA, "tail-c", "head-c", 3); connect.CodeOf(err) != connect.CodeResourceExhausted {
+			t.Fatalf("peer A new edge error = %v (%v), want ResourceExhausted", err, connect.CodeOf(err))
+		}
+		if err := put(t, svcB, "tail-c", "head-c", 3); connect.CodeOf(err) != connect.CodeResourceExhausted {
+			t.Fatalf("peer B new edge error = %v (%v), want ResourceExhausted", err, connect.CodeOf(err))
+		}
+		if after, _ := logA.LastSeq(); after != beforeA {
+			t.Fatalf("peer A rejected edge appended log seq %d -> %d", beforeA, after)
+		}
+		if after, _ := logB.LastSeq(); after != beforeB {
+			t.Fatalf("peer B rejected edge appended log seq %d -> %d", beforeB, after)
+		}
+		if _, ok := cacheA.GetWeight("tail-c", "head-c"); ok {
+			t.Fatal("peer A retained rejected new edge identity")
+		}
+		if _, ok := cacheB.GetWeight("tail-c", "head-c"); ok {
+			t.Fatal("peer B retained rejected new edge identity")
+		}
+
+		if err := put(t, svcA, "tail-a", "head-a", 2); err != nil {
+			t.Fatalf("peer A same-edge replacement while over limit: %v", err)
+		}
+		replacementA := latestMutation(t, logA)
+		if err := put(t, svcB, "tail-b", "head-b", 2); err != nil {
+			t.Fatalf("peer B same-edge replacement while over limit: %v", err)
+		}
+		replacementB := latestMutation(t, logB)
+		if err := svcA.ApplyMutation(ctx, replacementB); err != nil {
+			t.Fatalf("peer A apply B replacement: %v", err)
+		}
+		if err := svcB.ApplyMutation(ctx, replacementA); err != nil {
+			t.Fatalf("peer B apply A replacement: %v", err)
+		}
+		for _, edge := range [][2]string{{"tail-a", "head-a"}, {"tail-b", "head-b"}} {
+			weightA, okA := cacheA.GetWeight(edge[0], edge[1])
+			weightB, okB := cacheB.GetWeight(edge[0], edge[1])
+			if !okA || !okB || weightA != weightB {
+				t.Fatalf("replacement for %q -> %q did not converge: A=(%v,%v) B=(%v,%v)", edge[0], edge[1], weightA, okA, weightB, okB)
+			}
+		}
+	})
+}
 
 func TestApplyMutation_ReplicatedPutEntriesPreserveOrderAndAuthoritativeOutcome(t *testing.T) {
 	origin := bytes16("ordered-origin")

@@ -112,9 +112,7 @@ func (c *GraphCache[S, T]) ApplyVertexCausalBarrierHLC(key S, ts hlc.Timestamp) 
 func (c *GraphCache[S, T]) applyVertexCausalBarrierLocked(key S, ts hlc.Timestamp) {
 	c.vertices.Delete(key)
 	c.recordVertexCausalBarrierLocked(key, ts)
-	if c.vertexHLC != nil {
-		delete(c.vertexHLC, key)
-	}
+	c.clearVertexHLCLocked(key)
 }
 
 // PutEdgeWithExpirationHLC is the LWW-aware sibling of PutEdgeWithExpiration
@@ -164,8 +162,8 @@ func (c *GraphCache[S, T]) ApplyEdgeCausalBarrierHLC(tail, head S, ts hlc.Timest
 }
 
 func (c *GraphCache[S, T]) applyEdgeCausalBarrierLocked(tail, head S, ts hlc.Timestamp) {
-	c.deleteEdgeLocked(tail, head)
 	c.recordEdgeCausalBarrierLocked(tail, head, ts)
+	c.deleteEdgeLocked(tail, head)
 }
 
 func (c *GraphCache[S, T]) vertexWriteAllowedLocked(key S, ts hlc.Timestamp) bool {
@@ -182,10 +180,22 @@ func (c *GraphCache[S, T]) vertexWriteAllowedLocked(key S, ts hlc.Timestamp) boo
 }
 
 func (c *GraphCache[S, T]) recordVertexHLCLocked(key S, ts hlc.Timestamp) {
+	if ts == (hlc.Timestamp{}) {
+		c.clearVertexHLCLocked(key)
+		return
+	}
 	if c.vertexHLC == nil {
 		c.vertexHLC = make(map[S]hlc.Timestamp)
 	}
 	c.vertexHLC[key] = ts
+	c.reconcileVertexCausalUsageLocked(key)
+}
+
+func (c *GraphCache[S, T]) clearVertexHLCLocked(key S) {
+	if c.vertexHLC != nil {
+		delete(c.vertexHLC, key)
+	}
+	c.reconcileVertexCausalUsageLocked(key)
 }
 
 // recordVertexCausalBarrierLocked retains the greatest accepted dead-on-arrival
@@ -203,6 +213,7 @@ func (c *GraphCache[S, T]) recordVertexCausalBarrierLocked(key S, ts hlc.Timesta
 		return
 	}
 	c.vertexCausalBarriers[key] = ts
+	c.ensureVertexCausalUsageLocked(key)
 }
 
 func (c *GraphCache[S, T]) clearVertexCausalBarrierLocked(key S) {
@@ -212,12 +223,16 @@ func (c *GraphCache[S, T]) clearVertexCausalBarrierLocked(key S) {
 			c.vertexCausalBarriers = nil
 		}
 	}
+	c.reconcileVertexCausalUsageLocked(key)
 }
 
 func (c *GraphCache[S, T]) clearVertexTombstoneLocked(key S) {
 	if c.vertexTombstones != nil {
 		delete(c.vertexTombstones, key)
 	}
+	c.compactVertexTombstoneDeadlinesLocked()
+	c.refreshOldestVertexTombstoneDeadlineLocked()
+	c.reconcileVertexCausalUsageLocked(key)
 }
 
 func (c *GraphCache[S, T]) edgeWriteAllowedLocked(tail, head S, ts hlc.Timestamp) bool {
@@ -256,6 +271,7 @@ func (c *GraphCache[S, T]) recordEdgeCausalBarrierLocked(tail, head S, ts hlc.Ti
 		return
 	}
 	c.edgeCausalBarriers[key] = ts
+	c.ensureEdgeCausalUsageLocked(key)
 }
 
 func (c *GraphCache[S, T]) clearEdgeCausalBarrierLocked(tail, head S) {
@@ -265,10 +281,15 @@ func (c *GraphCache[S, T]) clearEdgeCausalBarrierLocked(tail, head S) {
 			c.edgeCausalBarriers = nil
 		}
 	}
+	c.reconcileEdgeCausalUsageLocked(EdgeKey[S]{Tail: tail, Head: head})
 }
 
 func (c *GraphCache[S, T]) clearEdgeTombstoneLocked(tail, head S) {
+	key := EdgeKey[S]{Tail: tail, Head: head}
 	if c.edgeTombstones != nil {
-		delete(c.edgeTombstones, EdgeKey[S]{Tail: tail, Head: head})
+		delete(c.edgeTombstones, key)
 	}
+	c.compactEdgeTombstoneDeadlinesLocked()
+	c.refreshOldestEdgeTombstoneDeadlineLocked()
+	c.reconcileEdgeCausalUsageLocked(key)
 }

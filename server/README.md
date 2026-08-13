@@ -119,7 +119,8 @@ failure (#847). The most common knobs:
 | `LANTERN_MAX_KEY_LEN` / `LANTERN_MAX_BATCH_SIZE` | `1024` / `10000` | Validation limits. |
 | `LANTERN_ILLUMINATE_MAX_STEP` / `LANTERN_ILLUMINATE_MAX_K` | `16` / `1024` | Validation limits. |
 | `LANTERN_TRAVERSAL_TIMEOUT_MS` | `0` | Server-side wall-clock budget for `Illuminate` (#842); `0` = client-owned deadline. |
-| `LANTERN_MAX_VERTICES` / `LANTERN_MAX_EDGES` | `0` / `0` | Aggregate capacity soft caps (#848); at capacity local writes fail with `RESOURCE_EXHAUSTED` (replication apply / restore exempt). |
+| `LANTERN_MAX_VERTICES` / `LANTERN_MAX_EDGES` | `0` / `0` | Conservative graph-admission soft caps (#848) over live entries plus retained Put barriers. A coexisting live additive edge and Put barrier may count twice; this keeps born-expired Put charged. Replication apply / restore remain exempt. |
+| `LANTERN_MAX_VERTEX_CAUSAL_ENTRIES` / `LANTERN_MAX_EDGE_CAUSAL_ENTRIES` | `0` / `0` | Separate atomic local-origin budgets over the exact retained causal-identity union (live HLC floor, Put barrier, or Delete tombstone); `0` = unlimited. Replication apply remains exempt for convergence and may take a node over-limit. |
 | `LANTERN_AUTH_TOKENS` / `LANTERN_AUTH_EXEMPT_REFLECTION` | _(unset)_ / `true` | Opt-in bearer-token auth for the data plane (#850); health checks always exempt. |
 | `LANTERN_LLM_*` | `PROVIDER=disabled` | LLM engine wiring (#828): provider, model, key/base-URL, and the injectable auth modes. |
 | `LANTERN_TOMBSTONE_TTL` | `8760h` (1 year) | Tombstone retention + clamp on caller-supplied `Expiration`; set to `0` to disable (see HA RFC). |
@@ -138,6 +139,15 @@ runtime, process, and `grpc_server_*` collectors):
 | --- | --- | --- | --- |
 | `lantern_vertices` | gauge | — | Live vertex count. |
 | `lantern_edges` | gauge | — | Live edge count. |
+| `lantern_causal_metadata_entries` | gauge | `kind` | Current retained causal identities. Each live HLC floor, Put barrier, or Delete tombstone consumes one slot. |
+| `lantern_causal_metadata_estimated_bytes` | gauge | `kind` | Stable logical estimate of causal records, budget ledger, and deadline index; not a process-heap measurement. |
+| `lantern_causal_metadata_entries_high_water` | gauge | `kind` | All-time retained identity high-water. |
+| `lantern_causal_metadata_estimated_bytes_high_water` | gauge | `kind` | All-time stable retained-byte high-water. |
+| `lantern_causal_metadata_rejected_total` | counter | `kind` | Locally-originated mutation batches atomically rejected by the causal budget. |
+| `lantern_causal_metadata_oldest_retention_deadline_seconds` | gauge | `kind` | Oldest retained Delete-tombstone deadline as Unix seconds; `0` when absent. |
+| `lantern_causal_metadata_limit` | gauge | `kind` | Configured local-origin causal identity limit; `0` = unlimited. |
+| `lantern_causal_metadata_over_limit` | gauge | `kind` | 1 when converged replicated state exceeds the configured local-origin limit. |
+| `lantern_vertex_causal_metadata_entries` / `_entries_high_water` / `_estimated_bytes` / `_over_limit` | gauge | — | Unlabelled vertex aliases consumed by the scalar-only release-sweep metric gate. |
 | `lantern_ttl_expirations_total` | counter | `kind` | Reaped per GC tick (`vertex`, `edge`, `dangling_edge`). |
 | `lantern_gc_duration_seconds` | histogram | — | GC tick wall-clock. |
 | `lantern_build_info` | gauge | `version`, `commit`, `go_version` | Always 1. |

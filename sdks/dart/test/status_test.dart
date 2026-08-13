@@ -95,6 +95,28 @@ void main() {
               replicationEnabled: false,
               vertexCount: Int64(7),
               edgeCount: Int64(8),
+              causalMetadata: graph.CausalMetadataStatus(
+                vertices: graph.CausalMetadataKindStatus(
+                  limit: Int64(100),
+                  entries: Int64(7),
+                  estimatedBytes: Int64(700),
+                  entriesHighWater: Int64(9),
+                  estimatedBytesHighWater: Int64(900),
+                  rejectedTotal: Int64(3),
+                  oldestRetentionDeadline: Timestamp.fromDateTime(
+                    DateTime.parse('2027-02-03T04:05:06Z'),
+                  ),
+                ),
+                edges: graph.CausalMetadataKindStatus(
+                  limit: Int64(200),
+                  entries: Int64(201),
+                  estimatedBytes: Int64(40200),
+                  entriesHighWater: Int64(201),
+                  estimatedBytesHighWater: Int64(40200),
+                  rejectedTotal: Int64(4),
+                  overLimit: true,
+                ),
+              ),
               search: graph.SearchCapabilities(
                 enabled: true,
                 positionsEnabled: false,
@@ -145,6 +167,20 @@ void main() {
       expect(status.tlsEnabled, isTrue);
       expect(status.vertexCount, BigInt.from(7));
       expect(status.edgeCount, BigInt.from(8));
+      expect(status.causalMetadata, isNotNull);
+      final causalMetadata = status.causalMetadata!;
+      expect(causalMetadata.vertices.limit, BigInt.from(100));
+      expect(causalMetadata.vertices.entries, BigInt.from(7));
+      expect(causalMetadata.vertices.estimatedBytes, BigInt.from(700));
+      expect(causalMetadata.vertices.entriesHighWater, BigInt.from(9));
+      expect(causalMetadata.vertices.rejectedTotal, BigInt.from(3));
+      expect(
+        causalMetadata.vertices.oldestRetentionDeadline,
+        DateTime.parse('2027-02-03T04:05:06Z'),
+      );
+      expect(causalMetadata.edges.entries, BigInt.from(201));
+      expect(causalMetadata.edges.overLimit, isTrue);
+      expect(causalMetadata.edges.oldestRetentionDeadline, isNull);
       expect(status.search.enabled, isTrue);
       expect(status.search.positionsEnabled, isFalse);
       expect(status.search.defaultMatchMode, SearchMatchMode.minShouldMatch);
@@ -167,6 +203,37 @@ void main() {
       );
       expect(status.search.indexStats.estimatedRetainedBytes, BigInt.from(120));
       expect(status.search.indexStats.rebuildCount, BigInt.from(2));
+    },
+  );
+
+  test(
+    'server status distinguishes unsupported causal metadata from zero usage',
+    () async {
+      final unsupportedTransport = FakeTransportBuilder()
+          .unary<graph.GetServerStatusRequest, graph.GetServerStatusResponse>(
+            LanternService.getServerStatus,
+            (request, context) => graph.GetServerStatusResponse(),
+          )
+          .build();
+      final unsupported = await _client(unsupportedTransport).getServerStatus();
+
+      expect(unsupported.causalMetadata, isNull);
+
+      final zeroTransport = FakeTransportBuilder()
+          .unary<graph.GetServerStatusRequest, graph.GetServerStatusResponse>(
+            LanternService.getServerStatus,
+            (request, context) => graph.GetServerStatusResponse(
+              causalMetadata: graph.CausalMetadataStatus(),
+            ),
+          )
+          .build();
+      final zero = await _client(zeroTransport).getServerStatus();
+
+      expect(zero.causalMetadata, isNotNull);
+      expect(zero.causalMetadata!.vertices.entries, BigInt.zero);
+      expect(zero.causalMetadata!.vertices.limit, BigInt.zero);
+      expect(zero.causalMetadata!.edges.entries, BigInt.zero);
+      expect(zero.causalMetadata!.edges.limit, BigInt.zero);
     },
   );
 

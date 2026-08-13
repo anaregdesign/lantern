@@ -6,13 +6,42 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/search"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
+type statusBackend struct {
+	*fakeBackend
+	causalStats graphcache.CausalMetadataStats
+}
+
+func (b *statusBackend) CausalMetadataStats() graphcache.CausalMetadataStats {
+	return b.causalStats
+}
+
 func TestLanternService_GetServerStatus(t *testing.T) {
 	t.Run("EchoesConfigAndLiveCounts", func(t *testing.T) {
-		fb := newFakeBackend()
+		deadline := time.Date(2027, 2, 3, 4, 5, 6, 0, time.UTC)
+		fb := &statusBackend{
+			fakeBackend: newFakeBackend(),
+			causalStats: graphcache.CausalMetadataStats{
+				MaxVertexEntries:              100,
+				MaxEdgeEntries:                200,
+				VertexEntries:                 12,
+				EdgeEntries:                   23,
+				VertexEstimatedBytes:          1200,
+				EdgeEstimatedBytes:            4600,
+				VertexEntriesHighWater:        18,
+				EdgeEntriesHighWater:          29,
+				VertexEstimatedBytesHighWater: 1800,
+				EdgeEstimatedBytesHighWater:   5800,
+				VertexRejected:                3,
+				EdgeRejected:                  4,
+				VertexOverLimit:               true,
+				OldestVertexRetentionDeadline: deadline,
+			},
+		}
 		fb.vertices["a"] = &pb.Vertex{Key: "a"}
 		fb.vertices["b"] = &pb.Vertex{Key: "b"}
 		fb.edges["a"] = map[string]float32{"b": 1, "c": 2}
@@ -73,6 +102,28 @@ func TestLanternService_GetServerStatus(t *testing.T) {
 		if got, want := resp.GetEdgeCount(), uint64(2); got != want {
 			t.Errorf("EdgeCount: got %d want %d", got, want)
 		}
+		causal := resp.GetCausalMetadata()
+		if causal == nil || causal.GetVertices() == nil || causal.GetEdges() == nil {
+			t.Fatalf("CausalMetadata: got %+v, want typed vertex and edge snapshots", causal)
+		}
+		vertices := causal.GetVertices()
+		if vertices.GetLimit() != 100 || vertices.GetEntries() != 12 || vertices.GetEstimatedBytes() != 1200 ||
+			vertices.GetEntriesHighWater() != 18 || vertices.GetEstimatedBytesHighWater() != 1800 ||
+			vertices.GetRejectedTotal() != 3 || !vertices.GetOverLimit() {
+			t.Errorf("vertex causal metadata mapping incomplete: %+v", vertices)
+		}
+		if got := vertices.GetOldestRetentionDeadline(); got == nil || !got.AsTime().Equal(deadline) {
+			t.Errorf("vertex oldest retention deadline = %v, want %v", got, deadline)
+		}
+		edges := causal.GetEdges()
+		if edges.GetLimit() != 200 || edges.GetEntries() != 23 || edges.GetEstimatedBytes() != 4600 ||
+			edges.GetEntriesHighWater() != 29 || edges.GetEstimatedBytesHighWater() != 5800 ||
+			edges.GetRejectedTotal() != 4 || edges.GetOverLimit() {
+			t.Errorf("edge causal metadata mapping incomplete: %+v", edges)
+		}
+		if edges.GetOldestRetentionDeadline() != nil {
+			t.Errorf("edge oldest retention deadline = %v, want absent", edges.GetOldestRetentionDeadline())
+		}
 	})
 
 	t.Run("DefaultsWhenStatusInfoNotWired", func(t *testing.T) {
@@ -100,6 +151,16 @@ func TestLanternService_GetServerStatus(t *testing.T) {
 		}
 		if resp.GetSearch() == nil || resp.GetSearch().GetConfigFingerprint() == "" {
 			t.Errorf("Search: got %+v, want a discoverable capability snapshot", resp.GetSearch())
+		}
+		causal := resp.GetCausalMetadata()
+		if causal == nil || causal.GetVertices() == nil || causal.GetEdges() == nil {
+			t.Fatalf("CausalMetadata: got %+v, want present zero snapshot", causal)
+		}
+		if got := causal.GetVertices(); got.GetLimit() != 0 || got.GetEntries() != 0 || got.GetOldestRetentionDeadline() != nil {
+			t.Errorf("default vertex causal metadata = %+v, want zero/unlimited", got)
+		}
+		if got := causal.GetEdges(); got.GetLimit() != 0 || got.GetEntries() != 0 || got.GetOldestRetentionDeadline() != nil {
+			t.Errorf("default edge causal metadata = %+v, want zero/unlimited", got)
 		}
 	})
 

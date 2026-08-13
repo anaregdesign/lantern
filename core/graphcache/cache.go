@@ -118,8 +118,14 @@ type GraphCache[S comparable, T any] struct {
 	// resurrecting freshly-deleted data. Tombstones are reaped on the
 	// regular GC tick (sweepExpiredTombstonesLocked); steady-state cost
 	// for non-replicated workloads is one nil check per write.
-	vertexTombstones map[S]tombstoneEntry
-	edgeTombstones   map[EdgeKey[S]]tombstoneEntry
+	vertexTombstones              map[S]tombstoneEntry
+	edgeTombstones                map[EdgeKey[S]]tombstoneEntry
+	vertexTombstoneDeadlines      causalDeadlineHeap[S]
+	edgeTombstoneDeadlines        causalDeadlineHeap[EdgeKey[S]]
+	vertexTombstoneDeadlineBytes  uint64
+	edgeTombstoneDeadlineBytes    uint64
+	oldestVertexTombstoneDeadline time.Time
+	oldestEdgeTombstoneDeadline   time.Time
 
 	// vertexCausalBarriers / edgeCausalBarriers retain the HLC of an
 	// accepted Put whose absolute expiration was already dead at the final
@@ -135,6 +141,28 @@ type GraphCache[S comparable, T any] struct {
 	// Replication snapshots export them separately from the live graph.
 	vertexCausalBarriers map[S]hlc.Timestamp
 	edgeCausalBarriers   map[EdgeKey[S]]hlc.Timestamp
+
+	// causalLimits and the usage ledgers implement the separate HA metadata
+	// budget (#1204). A ledger entry represents one causal identity regardless
+	// of whether its current floor is carried by a live HLC watermark, an
+	// accepted-expired Put barrier, or a Delete tombstone. Keeping transitions
+	// in one slot prevents TTL GC and barrier→tombstone replacement from
+	// bypassing the configured limit. Replication apply deliberately bypasses
+	// admission but still updates these ledgers so operators can observe an
+	// over-limit converged replica.
+	causalLimits               CausalMetadataLimits
+	vertexCausalUsage          map[S]uint64
+	edgeCausalUsage            map[EdgeKey[S]]uint64
+	vertexCausalUsageBytes     uint64
+	edgeCausalUsageBytes       uint64
+	vertexCausalUsagePeak      int
+	edgeCausalUsagePeak        int
+	vertexCausalHighWater      int
+	edgeCausalHighWater        int
+	vertexCausalBytesHighWater uint64
+	edgeCausalBytesHighWater   uint64
+	vertexCausalRejected       uint64
+	edgeCausalRejected         uint64
 
 	// gcEdgeBudget bounds the incremental GC edge sweep (#744). When it is
 	// <= 0 (the default) flush() performs a full O(E) sweep every tick — the
@@ -473,9 +501,7 @@ func (c *GraphCache[S, T]) DeleteVertex(key S) bool {
 
 	deleted := c.vertices.Delete(key)
 	c.clearVertexCausalBarrierLocked(key)
-	if c.vertexHLC != nil {
-		delete(c.vertexHLC, key)
-	}
+	c.clearVertexHLCLocked(key)
 	c.rebuildIncompleteSearchLocked()
 	return deleted
 }

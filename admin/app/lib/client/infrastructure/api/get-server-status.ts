@@ -28,7 +28,30 @@ export interface ServerStatus {
   replicationEnabled: boolean;
   vertexCount: number;
   edgeCount: number;
+  /**
+   * null when this status surface is unsupported by the connected server, so
+   * the data is unavailable until that server is upgraded. A present all-zero
+   * snapshot is supported and remains non-null.
+   */
+  causalMetadata: CausalMetadataStatus | null;
   search: SearchCapabilities;
+}
+
+export interface CausalMetadataKindStatus {
+  limit: number;
+  entries: number;
+  estimatedBytes: number;
+  entriesHighWater: number;
+  estimatedBytesHighWater: number;
+  rejectedTotal: number;
+  overLimit: boolean;
+  /** epoch milliseconds; 0 when no Delete tombstone is retained. */
+  oldestRetentionDeadlineMs: number;
+}
+
+export interface CausalMetadataStatus {
+  vertices: CausalMetadataKindStatus;
+  edges: CausalMetadataKindStatus;
 }
 
 export interface SearchCapabilities {
@@ -97,6 +120,17 @@ export async function getServerStatus(
 ): Promise<ServerStatus> {
   try {
     const resp = await client.getServerStatus(init?.signal);
+    // Keep this additive field optional at the adapter boundary so Admin can
+    // inspect an older server during rolling upgrades. Preserve absence: it
+    // means observability is unavailable, not that usage is zero/unlimited.
+    const causalMetadata = (
+      resp as typeof resp & {
+        causalMetadata?: {
+          vertices?: Parameters<typeof causalMetadataKind>[0];
+          edges?: Parameters<typeof causalMetadataKind>[0];
+        };
+      }
+    ).causalMetadata;
     return {
       version: resp.version,
       goVersion: resp.goVersion,
@@ -117,6 +151,12 @@ export async function getServerStatus(
       // realistic cache size).
       vertexCount: Number(resp.vertexCount),
       edgeCount: Number(resp.edgeCount),
+      causalMetadata: causalMetadata
+        ? {
+            vertices: causalMetadataKind(causalMetadata.vertices),
+            edges: causalMetadataKind(causalMetadata.edges),
+          }
+        : null,
       search: {
         enabled: resp.search?.enabled ?? false,
         positionsEnabled: resp.search?.positionsEnabled ?? false,
@@ -199,6 +239,35 @@ export async function getServerStatus(
   } catch (err) {
     throw LanternApiError.fromUnknown("GetServerStatus", err);
   }
+}
+
+function causalMetadataKind(
+  value:
+    | {
+        limit: bigint;
+        entries: bigint;
+        estimatedBytes: bigint;
+        entriesHighWater: bigint;
+        estimatedBytesHighWater: bigint;
+        rejectedTotal: bigint;
+        overLimit: boolean;
+        oldestRetentionDeadline?: { seconds: bigint; nanos: number };
+      }
+    | undefined,
+): CausalMetadataKindStatus {
+  const deadline = value?.oldestRetentionDeadline;
+  return {
+    limit: Number(value?.limit ?? 0n),
+    entries: Number(value?.entries ?? 0n),
+    estimatedBytes: Number(value?.estimatedBytes ?? 0n),
+    entriesHighWater: Number(value?.entriesHighWater ?? 0n),
+    estimatedBytesHighWater: Number(value?.estimatedBytesHighWater ?? 0n),
+    rejectedTotal: Number(value?.rejectedTotal ?? 0n),
+    overLimit: value?.overLimit ?? false,
+    oldestRetentionDeadlineMs: deadline
+      ? Number(deadline.seconds) * 1000 + Math.floor(deadline.nanos / 1_000_000)
+      : 0,
+  };
 }
 
 function durationSeconds(

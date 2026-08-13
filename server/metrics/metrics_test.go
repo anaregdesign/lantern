@@ -15,6 +15,91 @@ import (
 	dto "github.com/prometheus/client_model/go"
 )
 
+func TestDomainMetrics_CausalMetadataBudget(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := New(reg, Options{SampleInterval: time.Hour})
+	initial, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("initial gather: %v", err)
+	}
+	initialNames := make(map[string]bool, len(initial))
+	for _, family := range initial {
+		initialNames[family.GetName()] = true
+	}
+	for _, name := range []string{
+		"lantern_causal_metadata_entries",
+		"lantern_causal_metadata_estimated_bytes",
+		"lantern_causal_metadata_entries_high_water",
+		"lantern_causal_metadata_estimated_bytes_high_water",
+		"lantern_causal_metadata_rejected_total",
+		"lantern_causal_metadata_oldest_retention_deadline_seconds",
+		"lantern_causal_metadata_limit",
+		"lantern_causal_metadata_over_limit",
+		"lantern_vertex_causal_metadata_entries",
+		"lantern_vertex_causal_metadata_entries_high_water",
+		"lantern_vertex_causal_metadata_estimated_bytes",
+		"lantern_vertex_causal_metadata_over_limit",
+	} {
+		if !initialNames[name] {
+			t.Errorf("metric family %q not registered from process start", name)
+		}
+	}
+	deadline := time.Unix(1_800_000_000, 250_000_000)
+	sample := CausalMetadataSample{
+		VertexLimit: 10, EdgeLimit: 20,
+		VertexEntries: 7, EdgeEntries: 23,
+		VertexEstimatedBytes: 700, EdgeEstimatedBytes: 4600,
+		VertexEntriesHighWater: 9, EdgeEntriesHighWater: 25,
+		VertexEstimatedBytesHighWater: 900, EdgeEstimatedBytesHighWater: 5000,
+		VertexRejected: 3, EdgeRejected: 4,
+		EdgeOverLimit:                 true,
+		OldestVertexRetentionDeadline: deadline,
+	}
+	m.BindCausalMetadataSampler(func() CausalMetadataSample { return sample })
+	m.tick()
+
+	for _, check := range []struct {
+		collector prometheus.Collector
+		want      float64
+		name      string
+	}{
+		{m.causalMetadataLimit.WithLabelValues("vertex"), 10, "vertex limit"},
+		{m.causalMetadataLimit.WithLabelValues("edge"), 20, "edge limit"},
+		{m.causalMetadataEntries.WithLabelValues("vertex"), 7, "vertex entries"},
+		{m.causalMetadataEntries.WithLabelValues("edge"), 23, "edge entries"},
+		{m.causalMetadataEstimatedBytes.WithLabelValues("vertex"), 700, "vertex estimated bytes"},
+		{m.causalMetadataEntriesHighWater.WithLabelValues("edge"), 25, "edge entries high water"},
+		{m.causalMetadataEstimatedBytesHighWater.WithLabelValues("edge"), 5000, "edge byte high water"},
+		{m.causalMetadataRejected.WithLabelValues("vertex"), 3, "vertex rejected"},
+		{m.causalMetadataRejected.WithLabelValues("edge"), 4, "edge rejected"},
+		{m.causalMetadataOverLimit.WithLabelValues("vertex"), 0, "vertex over limit"},
+		{m.causalMetadataOverLimit.WithLabelValues("edge"), 1, "edge over limit"},
+		{m.causalMetadataOldestRetentionDeadline.WithLabelValues("vertex"), float64(deadline.Unix()) + float64(deadline.Nanosecond())/float64(time.Second), "vertex oldest deadline"},
+		{m.causalMetadataOldestRetentionDeadline.WithLabelValues("edge"), 0, "edge oldest deadline"},
+		{m.vertexCausalMetadataEntries, 7, "vertex entries alias"},
+		{m.vertexCausalMetadataEntriesHighWater, 9, "vertex entries high-water alias"},
+		{m.vertexCausalMetadataEstimatedBytes, 700, "vertex bytes alias"},
+		{m.vertexCausalMetadataOverLimit, 0, "vertex over-limit alias"},
+	} {
+		if got := testutil.ToFloat64(check.collector); got != check.want {
+			t.Errorf("%s = %v, want %v", check.name, got, check.want)
+		}
+	}
+
+	// Cumulative sources advance counters by delta; a lower sample is treated
+	// as a sampler reset and added from zero without counter rollback.
+	sample.VertexRejected = 8
+	m.tick()
+	if got := testutil.ToFloat64(m.causalMetadataRejected.WithLabelValues("vertex")); got != 8 {
+		t.Errorf("vertex rejected after cumulative increase = %v, want 8", got)
+	}
+	sample.VertexRejected = 2
+	m.tick()
+	if got := testutil.ToFloat64(m.causalMetadataRejected.WithLabelValues("vertex")); got != 10 {
+		t.Errorf("vertex rejected after sampler reset = %v, want monotonic 10", got)
+	}
+}
+
 func TestDomainMetrics_ExposesLanternFamilies(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := New(reg, Options{Version: "v0.7.0", Commit: "deadbeef", SampleInterval: time.Hour})

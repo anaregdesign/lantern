@@ -105,22 +105,28 @@ type ObservabilityConfig struct {
 //   - LANTERN_GC_INTERVAL_SECONDS        (default 60) — GraphCache.Watch tick
 //   - LANTERN_MAX_VERTICES               (default 0 = unlimited)
 //   - LANTERN_MAX_EDGES                  (default 0 = unlimited)
+//   - LANTERN_MAX_VERTEX_CAUSAL_ENTRIES  (default 0 = unlimited)
+//   - LANTERN_MAX_EDGE_CAUSAL_ENTRIES    (default 0 = unlimited)
 //
-// The caps are SOFT, enforced at the local write-RPC boundary only: when a
-// batch would push the live count past the cap the RPC fails fast with
-// RESOURCE_EXHAUSTED instead of growing until the kernel OOM-kills the
-// process (which loses ALL data, not just the misbehaving writer's).
-// Replication apply and backup restore bypass the caps — rejecting writes
-// peers already committed would break convergence — so the caps bound
-// locally-originated growth; in HA every node applies its own cap at its
-// own RPC boundary. Deletes and TTL decay free capacity naturally; there
-// is deliberately no eviction policy. Pair with GOMEMLIMIT as the second
-// line of defense.
+// The legacy caps are SOFT, enforced at the local write-RPC boundary over the
+// conservative live-plus-Put-barrier footprint. A live additive edge that also
+// has a barrier can count twice; charging born-expired Put barriers is
+// intentional so they cannot bypass the legacy caps. The causal caps are
+// separate atomic budgets over the exact causal-identity union (one slot for a
+// live HLC floor, Put barrier, or Delete tombstone). Replication apply and
+// backup restore bypass both cap families — rejecting writes peers already
+// committed would break convergence — so in HA a node may report causal
+// over-limit after convergence. TTL decay frees legacy capacity only where no
+// Put barrier remains; causal capacity is freed only when the identity has no
+// retained floor. There is deliberately no eviction policy. Pair with
+// GOMEMLIMIT as the second line of defense.
 type CacheConfig struct {
-	TTL         time.Duration
-	GCInterval  time.Duration
-	MaxVertices int
-	MaxEdges    int
+	TTL                    time.Duration
+	GCInterval             time.Duration
+	MaxVertices            int
+	MaxEdges               int
+	MaxVertexCausalEntries int
+	MaxEdgeCausalEntries   int
 }
 
 // ShutdownConfig is the graceful-shutdown timing.
@@ -279,7 +285,9 @@ type Config struct {
 // load (#847): set-but-malformed values and unknown LANTERN_* names are
 // logged as warnings, and — when LANTERN_STRICT_CONFIG=true — turned into a
 // boot failure so a typo is caught in staging instead of silently running on
-// defaults. The returned error is non-nil only in strict mode.
+// defaults. Strict mode turns those parser findings into a boot failure;
+// semantic validation failures such as negative capacity budgets are rejected
+// in every mode.
 func NewConfig() (*Config, error) {
 	rps := envconfig.Float("LANTERN_RATE_LIMIT_RPS", 0)
 	burst := envconfig.Int("LANTERN_RATE_LIMIT_BURST", int(2*rps))
@@ -316,10 +324,12 @@ func NewConfig() (*Config, error) {
 			BlockProfileRate:     envconfig.Int("LANTERN_BLOCK_PROFILE_RATE", 0),
 		},
 		Cache: CacheConfig{
-			TTL:         time.Duration(envconfig.Int("LANTERN_DEFAULT_TTL_SECONDS", 60)) * time.Second,
-			GCInterval:  time.Duration(envconfig.Int("LANTERN_GC_INTERVAL_SECONDS", 60)) * time.Second,
-			MaxVertices: envconfig.Int("LANTERN_MAX_VERTICES", 0),
-			MaxEdges:    envconfig.Int("LANTERN_MAX_EDGES", 0),
+			TTL:                    time.Duration(envconfig.Int("LANTERN_DEFAULT_TTL_SECONDS", 60)) * time.Second,
+			GCInterval:             time.Duration(envconfig.Int("LANTERN_GC_INTERVAL_SECONDS", 60)) * time.Second,
+			MaxVertices:            envconfig.Int("LANTERN_MAX_VERTICES", 0),
+			MaxEdges:               envconfig.Int("LANTERN_MAX_EDGES", 0),
+			MaxVertexCausalEntries: envconfig.Int("LANTERN_MAX_VERTEX_CAUSAL_ENTRIES", 0),
+			MaxEdgeCausalEntries:   envconfig.Int("LANTERN_MAX_EDGE_CAUSAL_ENTRIES", 0),
 		},
 		Shutdown: ShutdownConfig{
 			Timeout:    time.Duration(envconfig.Int("LANTERN_SHUTDOWN_TIMEOUT_SECONDS", 30)) * time.Second,
@@ -396,6 +406,12 @@ func NewConfig() (*Config, error) {
 	// must learn about it at startup, not from confusing search results (#911).
 	if err := service.ValidateMatchMode(cfg.Search.DefaultMode); err != nil {
 		return nil, err
+	}
+	if cfg.Cache.MaxVertexCausalEntries < 0 {
+		return nil, fmt.Errorf("LANTERN_MAX_VERTEX_CAUSAL_ENTRIES must be zero (unlimited) or positive")
+	}
+	if cfg.Cache.MaxEdgeCausalEntries < 0 {
+		return nil, fmt.Errorf("LANTERN_MAX_EDGE_CAUSAL_ENTRIES must be zero (unlimited) or positive")
 	}
 	if err := validateSearchConfig(cfg.Search); err != nil {
 		return nil, err
@@ -575,6 +591,10 @@ func newLogger(o ObservabilityConfig, w io.Writer) *slog.Logger {
 
 func NewGraphCache(c CacheConfig, sc SearchConfig) *graphcache.GraphCache[string, *v1.Vertex] {
 	gc := graphcache.NewGraphCache[string, *v1.Vertex](c.TTL)
+	gc.SetCausalMetadataLimits(graphcache.CausalMetadataLimits{
+		MaxVertexEntries: c.MaxVertexCausalEntries,
+		MaxEdgeEntries:   c.MaxEdgeCausalEntries,
+	})
 	// Identity projection: vertex keys are themselves the indexed string.
 	// Enabling the prefix index up-front (before any insert) is required
 	// by the cache contract — EnablePrefixIndex panics on a non-empty
@@ -598,11 +618,10 @@ func NewGraphCache(c CacheConfig, sc SearchConfig) *graphcache.GraphCache[string
 }
 
 // NewDomainMetrics registers the Lantern-specific `lantern_*` collectors on
-// the shared Prometheus registry and binds the gauge sampler that reads
-// cache.VertexCount / EdgeCount on each DomainMetrics.Run tick. The GC
-// hooks themselves are installed separately by WireCacheGCHooks so the
-// metrics adapter can be multiplexed with the structured per-tick log
-// (#223).
+// the shared Prometheus registry and binds lock-consistent cache, causal,
+// search, and replication samplers for each DomainMetrics.Run tick. The GC
+// hooks themselves are installed separately by WireCacheGCHooks so the metrics
+// adapter can be multiplexed with the structured per-tick log (#223).
 func NewDomainMetrics(
 	reg *prometheus.Registry,
 	o ObservabilityConfig,
@@ -626,6 +645,27 @@ func NewDomainMetrics(
 	})
 	m.BindCausalBarrierSampler(func() (int, int) {
 		return cache.CausalBarrierCounts()
+	})
+	m.BindCausalMetadataSampler(func() domainmetrics.CausalMetadataSample {
+		stats := cache.CausalMetadataStats()
+		return domainmetrics.CausalMetadataSample{
+			VertexLimit:                   stats.MaxVertexEntries,
+			EdgeLimit:                     stats.MaxEdgeEntries,
+			VertexEntries:                 stats.VertexEntries,
+			EdgeEntries:                   stats.EdgeEntries,
+			VertexEstimatedBytes:          stats.VertexEstimatedBytes,
+			EdgeEstimatedBytes:            stats.EdgeEstimatedBytes,
+			VertexEntriesHighWater:        stats.VertexEntriesHighWater,
+			EdgeEntriesHighWater:          stats.EdgeEntriesHighWater,
+			VertexEstimatedBytesHighWater: stats.VertexEstimatedBytesHighWater,
+			EdgeEstimatedBytesHighWater:   stats.EdgeEstimatedBytesHighWater,
+			VertexRejected:                stats.VertexRejected,
+			EdgeRejected:                  stats.EdgeRejected,
+			VertexOverLimit:               stats.VertexOverLimit,
+			EdgeOverLimit:                 stats.EdgeOverLimit,
+			OldestVertexRetentionDeadline: stats.OldestVertexRetentionDeadline,
+			OldestEdgeRetentionDeadline:   stats.OldestEdgeRetentionDeadline,
+		}
 	})
 	return m
 }

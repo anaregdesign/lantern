@@ -110,9 +110,10 @@ signal that answers it primarily; corroborating signals are noted in §5.
 **P4 — Capacity / cost owner**
 
 - As a cost owner, I want **graph-size and throughput trends** to plan memory. →
-  `lantern_vertices` / `lantern_edges`, the matching
-  `lantern_*_causal_barrier_entries`, `process_resident_memory_bytes`, and
-  `grpc_server_started_total` rate.
+  `lantern_vertices` / `lantern_edges`,
+  `lantern_causal_metadata_{entries,estimated_bytes}{kind}`, the
+  representation-specific `lantern_*_causal_barrier_entries`,
+  `process_resident_memory_bytes`, and `grpc_server_started_total` rate.
 - As a cost owner, I want to know **what the telemetry itself costs** (series
   count) so I can prune. → cardinality of the scrape (see §10).
 
@@ -198,16 +199,24 @@ gap (§8).
 ### 5.3 Graph state & TTL decay — "what's in memory, and what's leaving?"
 
 *Persona P3, P4 · role: capacity + RCA.* `lantern_vertices`, `lantern_edges`
-(live counts — the headline gauges, but not the admission-cap footprint),
+(live counts),
 `lantern_vertex_causal_barrier_entries` /
-`lantern_edge_causal_barrier_entries` (retained Put floors),
+`lantern_edge_causal_barrier_entries` (representation-specific retained Put
+floors), and the canonical
+`lantern_causal_metadata_{entries,estimated_bytes,entries_high_water,estimated_bytes_high_water,rejected_total,oldest_retention_deadline_seconds,limit,over_limit}{kind="vertex"|"edge"}`
+families (the complete retained causal-identity budget),
 `lantern_ttl_expirations_total{kind=vertex|edge|dangling_edge}`
 (the decay rate — a sudden spike means a TTL cliff), and
 `lantern_gc_duration_seconds` (the cost of reaping). Together they answer "is
-the working set growing, decaying, or churning, and is GC keeping up?". For
-capacity alerting, sum each live gauge and its matching barrier gauge; equal
-cardinalities across pods are a drift clue, not proof that identities/values
-match.
+the working set growing, decaying, or churning, and is GC keeping up?". The
+legacy soft-cap footprint is conservatively the matching live gauge plus Put-
+barrier gauge; a live additive edge coexisting with a barrier counts twice.
+This intentional charge prevents born-expired Put from bypassing the old cap.
+Causal capacity is the distinct `causal_metadata_entries / limit` ratio only
+when `limit > 0` (zero means unlimited and must be excluded from ratio alerts);
+its exact union counts each identity once whether represented by a live HLC
+floor, Put barrier, or Delete tombstone. Equal cardinalities across pods are a
+drift clue, not proof that identities/values match.
 
 ### 5.4 Replication & HA — the heart of a leaderless cluster
 
@@ -279,14 +288,23 @@ sustained rate flags clock skew or causally-late frames). The first separates
 *client bug* from *server saturation*; the last is a subtle correctness signal
 unique to the HLC model.
 
-For `reason="capacity"`, compare `lantern_capacity_limit{kind}` with live plus
-matching causal-barrier gauges. The cap excludes Delete tombstones and is
-enforced only at local write admission; replication and restore can exceed it.
-An equal/newer exact Delete moves a barrier floor into a D4-bounded tombstone
-and frees the admission slot, while prefix Delete cannot see a barrier-only
-identity. Tombstones still consume heap, and no separate hard causal-metadata
-count/byte budget exists yet; that follow-up is
-[#1204](https://github.com/anaregdesign/lantern/issues/1204).
+For `reason="capacity"`, first compare `lantern_capacity_limit{kind}` with the
+sum of the matching live and causal-barrier gauges for the conservative legacy
+soft cap. This is an approximate sampled ratio; a coexisting live additive edge
+and Put barrier intentionally count twice. Then
+inspect `lantern_causal_metadata_entries{kind}` against
+`lantern_causal_metadata_limit{kind}` and the dedicated reject counter. A local
+batch that needs a new causal identity is rejected atomically when the causal
+limit would be crossed. A live HLC floor, Put barrier, and Delete tombstone are
+alternate representations of one slot, so transitions between them do not
+double-count; the slot is freed only after no causal floor remains. Non-zero-
+HLC replication bypasses local admission to preserve convergence and
+can set `over_limit=1`; zero-HLC backup restore also bypasses admission but
+does not create causal entries. Stop local writes, raise the homogeneous budget
+or wait for bounded tombstones to expire before resuming growth.
+Estimated-byte gauges include causal records, the budget ledger, and the
+retained deadline index as stable logical units for trend comparisons, not
+process-heap measurements.
 
 ### 5.7 Query subsystems — illuminate / scan / search
 
@@ -369,16 +387,16 @@ gauges `lantern_vertex_hlc_entries` and `lantern_vertex_hlc_entries_high_water`
 fingerprint), alongside the standard `go_*` (goroutines, heap, GC) and
 `process_*` (RSS, CPU, FDs) collectors. These rarely page, but they are the
 first place a maintainer looks when "it gets slower / fatter over days".
-The causal-barrier gauges separately track retained Put floors, including live
-Put metadata migrated when its payload becomes expired, zero-weight, or
-dangling. They are not expected to fall merely because a GC tick ran: each
-floor remains until an equal/newer live Put supersedes it or an equal/newer
-explicit Delete transitions it into a D4-bounded tombstone. Prefix Delete
-cannot make that transition for a barrier-only identity. Sustained growth is a
-workload-retention signal rather than a TTL-GC failure (see replication RFC
-§4/§8). Tombstones are excluded from these gauges and the admission-cap
-footprint, but still consume heap; trend RSS/heap until #1204 supplies an
-independent hard metadata budget and matching visibility.
+The causal-barrier gauges separately expose the Put-floor representation,
+including metadata migrated when its payload becomes expired, zero-weight, or
+dangling. They are not expected to fall merely because a GC tick ran. Use the
+complete causal-metadata families for capacity: they count the identity through
+live-floor, barrier, and D4-bounded tombstone transitions, publish stable bytes,
+high-water, rejects, and the oldest tombstone deadline. This exact identity
+union is distinct from the conservative legacy live-plus-barrier cap even
+though both intentionally charge Put barriers. Sustained growth is a workload-
+retention signal rather than a TTL-GC failure (see replication RFC §4/§8);
+RSS/heap remains the final allocator-level backstop.
 
 ---
 
@@ -521,10 +539,10 @@ The catalogue is large by design; consumption should be tiered. Three views:
 - **RCA / dashboards (reach for these during triage).** Everything in §5.4–§5.8
   plus the per-channel logs (§6) and, when enabled, traces (§7).
 - **Capacity / cost (trend these).** `lantern_vertices` / `lantern_edges`, the
-  matching causal-barrier gauges, RPC rate,
-  `process_resident_memory_bytes`, and the leak gauges (§5.9). Because
-  tombstones have no dedicated hard budget/gauge yet, RSS/heap remains the
-  backstop for total causal metadata.
+  causal-metadata current/estimated-byte/high-water/limit families, RPC rate,
+  `process_resident_memory_bytes`, and the leak gauges (§5.9). The causal
+  estimates are stable logical units; RSS/heap remains the allocator-level
+  backstop.
 
 **The cost lens.** Counter-intuitively, the generic `go_*` / `process_*` /
 `promhttp_*` collectors are *not* the bulk of the scrape. Measured on an idle

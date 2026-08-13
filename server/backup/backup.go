@@ -10,7 +10,7 @@
 // LanternService.BackupSnapshot RPC verbatim through a file-backed Sender,
 // so files are byte-identical to `lantern-cli dump --format proto` and
 // interchange with the CLI. Restore replays frames through the in-process
-// RestoreVertices / PutEdges. Vertex restore preserves graph convergence even
+// RestoreVertices / RestoreEdges. Restore preserves graph convergence even
 // when local search-index limits differ, while the born-expired delete-like
 // application (#698) prevents an entry whose TTL elapsed since the dump from
 // resurrecting and removes any older live local state.
@@ -85,7 +85,7 @@ type Config struct {
 type Service interface {
 	BackupSnapshot(ctx context.Context, req *pb.BackupSnapshotRequest, stream service.Sender[pb.BackupSnapshotResponse]) error
 	RestoreVertices(ctx context.Context, req *pb.PutVerticesRequest) (*pb.PutVerticesResponse, error)
-	PutEdges(ctx context.Context, req *pb.PutEdgesRequest) (*pb.PutEdgesResponse, error)
+	RestoreEdges(ctx context.Context, req *pb.PutEdgesRequest) (*pb.PutEdgesResponse, error)
 	BeginSearchIndexRecovery()
 	CompleteSearchIndexRecovery() error
 }
@@ -117,7 +117,7 @@ func New(svc Service, cfg Config, reg prometheus.Registerer, logger *slog.Logger
 }
 
 // RestoreOnStartup loads the newest valid dump from the backup directory and
-// replays it through RestoreVertices / PutEdges. It is a no-op (zero, nil) when
+// replays it through RestoreVertices / RestoreEdges. It is a no-op (zero, nil) when
 // restore is disabled or the directory is empty/absent — a fresh start is
 // not an error. A directory that contains only corrupt files returns an
 // error so RestoreRequired callers can fail boot.
@@ -278,13 +278,13 @@ func (b *Backupper) apply(ctx context.Context, vertices []*pb.Vertex, edges []*p
 	}
 	for i := 0; i < len(edges); i += restoreChunkSize {
 		end := min(i+restoreChunkSize, len(edges))
-		resp, err := b.svc.PutEdges(ctx, &pb.PutEdgesRequest{Edges: edges[i:end]})
+		resp, err := b.svc.RestoreEdges(ctx, &pb.PutEdgesRequest{Edges: edges[i:end]})
 		if err != nil {
-			return stats, fmt.Errorf("backup: restore PutEdges: %w", err)
+			return stats, fmt.Errorf("backup: restore edges: %w", err)
 		}
 		live, err := countLivePutOutcomes(resp.GetOutcomes(), end-i)
 		if err != nil {
-			return stats, fmt.Errorf("backup: restore PutEdges outcomes: %w", err)
+			return stats, fmt.Errorf("backup: restore edge outcomes: %w", err)
 		}
 		stats.Edges += live
 	}

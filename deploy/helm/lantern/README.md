@@ -114,11 +114,12 @@ short-lived diagnosis or a self-managed Prometheus.
 
 The July 2026 two-pod production sample exposed 14,604 total series. At a
 60-second interval that is an upper bound of 630,892,800 samples per 30-day
-month. The default allowlist retained 425 series on the busier pod, reducing
-the two-pod upper bound to approximately 36.7 million samples per month (about
-94% fewer). Histogram billing can be lower because GMP counts only populated
-buckets, so treat these figures as conservative planning bounds. Re-measure
-after adding labels or metric families.
+month. That sample's default allowlist retained 425 series on the busier pod;
+the current profile adds the 16 pre-warmed, bounded causal-metadata budget
+series, for approximately 441 series and a two-pod upper bound of 38.1 million
+samples per month (about 94% fewer). Histogram billing can be lower because
+GMP counts only populated buckets, so treat these figures as conservative
+planning bounds. Re-measure after adding labels or metric families.
 
 To ingest the full surface deliberately, override the list:
 

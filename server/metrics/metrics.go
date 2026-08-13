@@ -46,6 +46,32 @@ type VertexHLCSampler func() int
 // identity kind. A nil sampler leaves both gauges at zero.
 type CausalBarrierSampler func() (vertices int, edges int)
 
+// CausalMetadataSample is the cache-independent shape sampled for the HA
+// causal-identity budget. Oldest*RetentionDeadline is zero when no retained
+// Delete tombstone exists for that kind.
+type CausalMetadataSample struct {
+	VertexLimit                   int
+	EdgeLimit                     int
+	VertexEntries                 int
+	EdgeEntries                   int
+	VertexEstimatedBytes          uint64
+	EdgeEstimatedBytes            uint64
+	VertexEntriesHighWater        int
+	EdgeEntriesHighWater          int
+	VertexEstimatedBytesHighWater uint64
+	EdgeEstimatedBytesHighWater   uint64
+	VertexRejected                uint64
+	EdgeRejected                  uint64
+	VertexOverLimit               bool
+	EdgeOverLimit                 bool
+	OldestVertexRetentionDeadline time.Time
+	OldestEdgeRetentionDeadline   time.Time
+}
+
+// CausalMetadataSampler reports one lock-consistent causal-metadata snapshot.
+// A nil sampler leaves the pre-warmed per-kind series at zero.
+type CausalMetadataSampler func() CausalMetadataSample
+
 // DomainMetrics owns the Lantern-specific collectors. Construct with New and
 // pass the returned callbacks to GraphCache.SetGCHooks plus Start to begin
 // gauge sampling.
@@ -182,9 +208,23 @@ type DomainMetrics struct {
 	// (which reads low right after a drain); this records the peak that sizes
 	// the map's retained bucket array, which Go never shrinks after delete. The
 	// pairing confirms the born-expired ttl_churn heap retention (#700/#719).
-	vertexHLCHighWater   prometheus.Gauge
-	vertexCausalBarriers prometheus.Gauge
-	edgeCausalBarriers   prometheus.Gauge
+	vertexHLCHighWater                    prometheus.Gauge
+	vertexCausalBarriers                  prometheus.Gauge
+	edgeCausalBarriers                    prometheus.Gauge
+	causalMetadataEntries                 *prometheus.GaugeVec
+	causalMetadataEstimatedBytes          *prometheus.GaugeVec
+	causalMetadataEntriesHighWater        *prometheus.GaugeVec
+	causalMetadataEstimatedBytesHighWater *prometheus.GaugeVec
+	causalMetadataRejected                *prometheus.CounterVec
+	causalMetadataOldestRetentionDeadline *prometheus.GaugeVec
+	causalMetadataLimit                   *prometheus.GaugeVec
+	causalMetadataOverLimit               *prometheus.GaugeVec
+	// Unlabelled vertex aliases keep the release-sweep metric gate scalar-only
+	// while the canonical operator surface remains the bounded {kind} family.
+	vertexCausalMetadataEntries          prometheus.Gauge
+	vertexCausalMetadataEntriesHighWater prometheus.Gauge
+	vertexCausalMetadataEstimatedBytes   prometheus.Gauge
+	vertexCausalMetadataOverLimit        prometheus.Gauge
 
 	sampleInterval           time.Duration
 	sample                   Sampler
@@ -194,7 +234,10 @@ type DomainMetrics struct {
 	vertexHLCSample          VertexHLCSampler
 	vertexHLCHighWaterSample VertexHLCSampler
 	causalBarrierSample      CausalBarrierSampler
+	causalMetadataSample     CausalMetadataSampler
 	lastEvicted              uint64 // last observed cumulative eviction count
+	lastVertexCausalRejected uint64
+	lastEdgeCausalRejected   uint64
 }
 
 // Hot-path label values. Exposed so the service layer can reference the
@@ -364,9 +407,9 @@ type Options struct {
 	SampleInterval time.Duration
 }
 
-// New registers the five `lantern_*` collectors on the supplied registerer and
-// emits `lantern_build_info` immediately. Returns the DomainMetrics handle
-// callers wire into the cache.
+// New registers the Lantern domain collectors on the supplied registerer and
+// emits `lantern_build_info` immediately. It returns the DomainMetrics handle
+// callers bind to cache/log/search samplers.
 func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 	if opts.SampleInterval <= 0 {
 		opts.SampleInterval = 15 * time.Second
@@ -577,6 +620,54 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 			Name: "lantern_edge_causal_barrier_entries",
 			Help: "Retained edge LWW floors from accepted-expired Put outcomes. These entries have no TTL and remain until superseded by an equal/newer Put; sustained growth is an intentional memory-retention signal.",
 		}),
+		causalMetadataEntries: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "lantern_causal_metadata_entries",
+			Help: "Current retained HA causal identities, partitioned by kind (vertex, edge). One live HLC floor, Put barrier, or Delete tombstone consumes one entry.",
+		}, []string{"kind"}),
+		causalMetadataEstimatedBytes: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "lantern_causal_metadata_estimated_bytes",
+			Help: "Stable logical estimate of retained HA causal records, budget-ledger, and deadline-index bytes, partitioned by kind. This is allocator-independent and is not a process-heap measurement.",
+		}, []string{"kind"}),
+		causalMetadataEntriesHighWater: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "lantern_causal_metadata_entries_high_water",
+			Help: "All-time high-water count of retained HA causal identities, partitioned by kind.",
+		}, []string{"kind"}),
+		causalMetadataEstimatedBytesHighWater: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "lantern_causal_metadata_estimated_bytes_high_water",
+			Help: "All-time high-water stable byte estimate for retained HA causal metadata, partitioned by kind.",
+		}, []string{"kind"}),
+		causalMetadataRejected: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "lantern_causal_metadata_rejected_total",
+			Help: "Locally-originated mutation batches atomically rejected by the causal-metadata budget, partitioned by kind.",
+		}, []string{"kind"}),
+		causalMetadataOldestRetentionDeadline: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "lantern_causal_metadata_oldest_retention_deadline_seconds",
+			Help: "Unix timestamp of the oldest retained Delete-tombstone deadline, partitioned by kind; 0 when no tombstone is retained.",
+		}, []string{"kind"}),
+		causalMetadataLimit: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "lantern_causal_metadata_limit",
+			Help: "Configured local-origin causal-identity admission ceiling, partitioned by kind; 0 means unlimited. Replication apply is exempt.",
+		}, []string{"kind"}),
+		causalMetadataOverLimit: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "lantern_causal_metadata_over_limit",
+			Help: "1 when converged replicated causal identities exceed the configured local-origin limit, partitioned by kind; otherwise 0.",
+		}, []string{"kind"}),
+		vertexCausalMetadataEntries: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "lantern_vertex_causal_metadata_entries",
+			Help: "Unlabelled release-gate alias of lantern_causal_metadata_entries{kind=\"vertex\"}.",
+		}),
+		vertexCausalMetadataEntriesHighWater: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "lantern_vertex_causal_metadata_entries_high_water",
+			Help: "Unlabelled release-gate alias of lantern_causal_metadata_entries_high_water{kind=\"vertex\"}.",
+		}),
+		vertexCausalMetadataEstimatedBytes: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "lantern_vertex_causal_metadata_estimated_bytes",
+			Help: "Unlabelled release-gate alias of lantern_causal_metadata_estimated_bytes{kind=\"vertex\"}.",
+		}),
+		vertexCausalMetadataOverLimit: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "lantern_vertex_causal_metadata_over_limit",
+			Help: "Unlabelled release-gate alias of lantern_causal_metadata_over_limit{kind=\"vertex\"}.",
+		}),
 		peerConnected: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "lantern_peer_connected",
 			Help: "1 when the local replication pump currently holds an open Subscribe (or Subscribe+Snapshot) session to the named peer; 0 otherwise. Updated on every pump connect/disconnect lifecycle event.",
@@ -622,7 +713,7 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		}, []string{"reason"}),
 		capacityLimit: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "lantern_capacity_limit",
-			Help: "Configured soft capacity cap per kind (vertex, edge) from LANTERN_MAX_VERTICES / LANTERN_MAX_EDGES (#848). 0 = unlimited. Divide lantern_vertices / lantern_edges by this for a fill ratio; alert above 0.8.",
+			Help: "Configured conservative live-plus-Put-barrier soft cap per kind (vertex, edge) from LANTERN_MAX_VERTICES / LANTERN_MAX_EDGES (#848). 0 = unlimited. For an approximate fill ratio, sum the matching live and causal-barrier gauges before dividing by this limit; alert above 0.8.",
 		}, []string{"kind"}),
 		authRejected: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "lantern_auth_rejected_total",
@@ -658,6 +749,12 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		m.searchIndexRetainedTerms, m.searchIndexRetainedOrdinals, m.searchIndexPostings, m.searchIndexPositions,
 		m.searchIndexLiveBytes, m.searchIndexRetainedBytes, m.searchIndexRetainedRatio, m.searchIndexRebuilds, m.searchIndexRebuildDuration, m.searchIndexHealthy, m.searchIndexState,
 		m.vertexHLCEntries, m.vertexHLCHighWater, m.vertexCausalBarriers, m.edgeCausalBarriers,
+		m.causalMetadataEntries, m.causalMetadataEstimatedBytes,
+		m.causalMetadataEntriesHighWater, m.causalMetadataEstimatedBytesHighWater,
+		m.causalMetadataRejected, m.causalMetadataOldestRetentionDeadline,
+		m.causalMetadataLimit, m.causalMetadataOverLimit,
+		m.vertexCausalMetadataEntries, m.vertexCausalMetadataEntriesHighWater,
+		m.vertexCausalMetadataEstimatedBytes, m.vertexCausalMetadataOverLimit,
 		m.peerConnected, m.replicationApplyTotal, m.snapshotReplayedTotal,
 		m.snapshotVertices, m.snapshotEdges, m.snapshotDuration,
 		m.mutationLogFillRatio, m.mutationLogEvicted, m.originStatesCount,
@@ -756,6 +853,16 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		m.validationRejected.WithLabelValues(r)
 	}
 	m.validationRejected.WithLabelValues("unknown")
+	for _, kind := range []string{"vertex", "edge"} {
+		m.causalMetadataEntries.WithLabelValues(kind).Set(0)
+		m.causalMetadataEstimatedBytes.WithLabelValues(kind).Set(0)
+		m.causalMetadataEntriesHighWater.WithLabelValues(kind).Set(0)
+		m.causalMetadataEstimatedBytesHighWater.WithLabelValues(kind).Set(0)
+		m.causalMetadataRejected.WithLabelValues(kind)
+		m.causalMetadataOldestRetentionDeadline.WithLabelValues(kind).Set(0)
+		m.causalMetadataLimit.WithLabelValues(kind).Set(0)
+		m.causalMetadataOverLimit.WithLabelValues(kind).Set(0)
+	}
 
 	// Pre-warm the single known mutation-log drop cause so dashboards
 	// render the series at 0 from process start (#260).
@@ -1251,13 +1358,20 @@ func (m *DomainMetrics) BindCausalBarrierSampler(s CausalBarrierSampler) {
 	m.causalBarrierSample = s
 }
 
+// BindCausalMetadataSampler installs the complete causal-identity capacity
+// sampler. Must be called before Run; safe to call exactly once during wiring.
+func (m *DomainMetrics) BindCausalMetadataSampler(s CausalMetadataSampler) {
+	m.causalMetadataSample = s
+}
+
 // Run drives the gauge sampler on the configured cadence until ctx is done.
 // Safe to launch as a goroutine. A nil sampler is treated as a no-op so
 // tests can construct the collectors without wiring a cache.
 func (m *DomainMetrics) Run(ctx context.Context) {
 	if m.sample == nil && m.mlogSample == nil && m.originSample == nil &&
 		m.searchIndexSample == nil && m.vertexHLCSample == nil &&
-		m.vertexHLCHighWaterSample == nil && m.causalBarrierSample == nil {
+		m.vertexHLCHighWaterSample == nil && m.causalBarrierSample == nil &&
+		m.causalMetadataSample == nil {
 		<-ctx.Done()
 		return
 	}
@@ -1351,6 +1465,84 @@ func (m *DomainMetrics) tick() {
 		m.vertexCausalBarriers.Set(float64(vertices))
 		m.edgeCausalBarriers.Set(float64(edges))
 	}
+	if m.causalMetadataSample != nil {
+		m.sampleCausalMetadata(m.causalMetadataSample())
+	}
+}
+
+func (m *DomainMetrics) sampleCausalMetadata(sample CausalMetadataSample) {
+	type kindSample struct {
+		kind                    string
+		limit                   int
+		entries                 int
+		estimatedBytes          uint64
+		entriesHighWater        int
+		estimatedBytesHighWater uint64
+		rejected                uint64
+		overLimit               bool
+		oldestDeadline          time.Time
+		lastRejected            *uint64
+	}
+	for _, current := range []kindSample{
+		{
+			kind: "vertex", limit: sample.VertexLimit, entries: sample.VertexEntries,
+			estimatedBytes: sample.VertexEstimatedBytes, entriesHighWater: sample.VertexEntriesHighWater,
+			estimatedBytesHighWater: sample.VertexEstimatedBytesHighWater, rejected: sample.VertexRejected,
+			overLimit: sample.VertexOverLimit, oldestDeadline: sample.OldestVertexRetentionDeadline,
+			lastRejected: &m.lastVertexCausalRejected,
+		},
+		{
+			kind: "edge", limit: sample.EdgeLimit, entries: sample.EdgeEntries,
+			estimatedBytes: sample.EdgeEstimatedBytes, entriesHighWater: sample.EdgeEntriesHighWater,
+			estimatedBytesHighWater: sample.EdgeEstimatedBytesHighWater, rejected: sample.EdgeRejected,
+			overLimit: sample.EdgeOverLimit, oldestDeadline: sample.OldestEdgeRetentionDeadline,
+			lastRejected: &m.lastEdgeCausalRejected,
+		},
+	} {
+		m.causalMetadataLimit.WithLabelValues(current.kind).Set(nonNegativeFloat(current.limit))
+		m.causalMetadataEntries.WithLabelValues(current.kind).Set(nonNegativeFloat(current.entries))
+		m.causalMetadataEstimatedBytes.WithLabelValues(current.kind).Set(float64(current.estimatedBytes))
+		m.causalMetadataEntriesHighWater.WithLabelValues(current.kind).Set(nonNegativeFloat(current.entriesHighWater))
+		m.causalMetadataEstimatedBytesHighWater.WithLabelValues(current.kind).Set(float64(current.estimatedBytesHighWater))
+		m.causalMetadataOverLimit.WithLabelValues(current.kind).Set(boolFloat(current.overLimit))
+		deadline := 0.0
+		if !current.oldestDeadline.IsZero() {
+			deadline = float64(current.oldestDeadline.Unix()) +
+				float64(current.oldestDeadline.Nanosecond())/float64(time.Second)
+		}
+		m.causalMetadataOldestRetentionDeadline.WithLabelValues(current.kind).Set(deadline)
+
+		// The cache exposes an all-time cumulative count while Prometheus Counter
+		// has no Set. Delta-apply it and treat a lower sample as a sampler reset:
+		// adding the new value preserves monotonicity without unsigned underflow.
+		delta := current.rejected - *current.lastRejected
+		if current.rejected < *current.lastRejected {
+			delta = current.rejected
+		}
+		if delta > 0 {
+			m.causalMetadataRejected.WithLabelValues(current.kind).Add(float64(delta))
+		}
+		*current.lastRejected = current.rejected
+	}
+
+	m.vertexCausalMetadataEntries.Set(nonNegativeFloat(sample.VertexEntries))
+	m.vertexCausalMetadataEntriesHighWater.Set(nonNegativeFloat(sample.VertexEntriesHighWater))
+	m.vertexCausalMetadataEstimatedBytes.Set(float64(sample.VertexEstimatedBytes))
+	m.vertexCausalMetadataOverLimit.Set(boolFloat(sample.VertexOverLimit))
+}
+
+func nonNegativeFloat(value int) float64 {
+	if value <= 0 {
+		return 0
+	}
+	return float64(value)
+}
+
+func boolFloat(value bool) float64 {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 // readBuildInfo extracts the module version and vcs.revision from the binary's

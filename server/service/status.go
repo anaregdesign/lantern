@@ -9,6 +9,7 @@ import (
 	"runtime/debug"
 	"time"
 
+	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/search"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"google.golang.org/protobuf/types/known/durationpb"
@@ -90,12 +91,70 @@ func (s *LanternService) GetServerStatus(ctx context.Context, _ *pb.GetServerSta
 		VertexCount:        uint64(s.cache.VertexCount()),
 		EdgeCount:          uint64(s.cache.EdgeCount()),
 		Search:             s.searchCapabilities(),
+		CausalMetadata:     causalMetadataStatus(s.cache.CausalMetadataStats()),
 	}
 	if !s.startedAt.IsZero() {
 		resp.StartedAt = timestamppb.New(s.startedAt)
 		resp.Uptime = durationpb.New(now.Sub(s.startedAt))
 	}
 	return resp, nil
+}
+
+func causalMetadataStatus(stats graphcache.CausalMetadataStats) *pb.CausalMetadataStatus {
+	return &pb.CausalMetadataStatus{
+		Vertices: causalMetadataKindStatus(
+			stats.MaxVertexEntries,
+			stats.VertexEntries,
+			stats.VertexEstimatedBytes,
+			stats.VertexEntriesHighWater,
+			stats.VertexEstimatedBytesHighWater,
+			stats.VertexRejected,
+			stats.VertexOverLimit,
+			stats.OldestVertexRetentionDeadline,
+		),
+		Edges: causalMetadataKindStatus(
+			stats.MaxEdgeEntries,
+			stats.EdgeEntries,
+			stats.EdgeEstimatedBytes,
+			stats.EdgeEntriesHighWater,
+			stats.EdgeEstimatedBytesHighWater,
+			stats.EdgeRejected,
+			stats.EdgeOverLimit,
+			stats.OldestEdgeRetentionDeadline,
+		),
+	}
+}
+
+func causalMetadataKindStatus(
+	limit int,
+	entries int,
+	estimatedBytes uint64,
+	entriesHighWater int,
+	estimatedBytesHighWater uint64,
+	rejected uint64,
+	overLimit bool,
+	oldestRetentionDeadline time.Time,
+) *pb.CausalMetadataKindStatus {
+	status := &pb.CausalMetadataKindStatus{
+		Limit:                   nonNegativeUint64(limit),
+		Entries:                 nonNegativeUint64(entries),
+		EstimatedBytes:          estimatedBytes,
+		EntriesHighWater:        nonNegativeUint64(entriesHighWater),
+		EstimatedBytesHighWater: estimatedBytesHighWater,
+		RejectedTotal:           rejected,
+		OverLimit:               overLimit,
+	}
+	if !oldestRetentionDeadline.IsZero() {
+		status.OldestRetentionDeadline = timestamppb.New(oldestRetentionDeadline)
+	}
+	return status
+}
+
+func nonNegativeUint64(value int) uint64 {
+	if value <= 0 {
+		return 0
+	}
+	return uint64(value)
 }
 
 func (s *LanternService) searchCapabilities() *pb.SearchCapabilities {

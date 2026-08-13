@@ -86,6 +86,7 @@ type Backend interface {
 	PutVerticesWithExpirationHLCOutcomesChecked(items []graphcache.VertexItem[string, *pb.Vertex], ts hlc.Timestamp) ([]graphcache.PutOutcome, error)
 	PutEdgesWithExpirationHLC(items []graphcache.EdgeItem[string], ts hlc.Timestamp) int
 	PutEdgesWithExpirationHLCOutcomes(items []graphcache.EdgeItem[string], ts hlc.Timestamp) []graphcache.PutOutcome
+	PutEdgesWithExpirationHLCOutcomesChecked(items []graphcache.EdgeItem[string], ts hlc.Timestamp) ([]graphcache.PutOutcome, error)
 	AddEdgesWithExpirationContribHLC(items []graphcache.EdgeItem[string], ts hlc.Timestamp) (effective []float32, deduped int)
 	ApplyVertexCausalBarrierHLC(key string, ts hlc.Timestamp) bool
 	ApplyEdgeCausalBarrierHLC(tail, head string, ts hlc.Timestamp) bool
@@ -101,10 +102,16 @@ type Backend interface {
 	AddEdgeWithExpirationContribHLC(tail, head string, w float32, expiration time.Time, contribID graphcache.ContribID, ts hlc.Timestamp) bool
 	DeleteVertexHLC(key string, ts hlc.Timestamp, expiration time.Time) bool
 	DeleteVerticesHLC(keys []string, ts hlc.Timestamp, expiration time.Time) int
+	DeleteVerticesHLCChecked(keys []string, ts hlc.Timestamp, expiration time.Time) (int, error)
 	DeleteEdgeHLC(tail, head string, ts hlc.Timestamp, expiration time.Time) bool
 	DeleteEdgesHLC(keys []graphcache.EdgeKey[string], ts hlc.Timestamp, expiration time.Time) int
+	DeleteEdgesHLCChecked(keys []graphcache.EdgeKey[string], ts hlc.Timestamp, expiration time.Time) (int, error)
 	DeleteByPrefixHLC(ctx context.Context, prefix string, limit uint32, ts hlc.Timestamp, expiration time.Time) (int, error)
+	DeleteByPrefixHLCChecked(ctx context.Context, prefix string, limit uint32, ts hlc.Timestamp, expiration time.Time) (int, error)
+	DeleteByPrefixHLCCheckedKeys(ctx context.Context, prefix string, limit uint32, ts hlc.Timestamp, expiration time.Time) ([]string, error)
 	DeleteEdgesByPrefixHLC(ctx context.Context, tailPrefix, headPrefix string, limit int, ts hlc.Timestamp, expiration time.Time) (int, error)
+	DeleteEdgesByPrefixHLCChecked(ctx context.Context, tailPrefix, headPrefix string, limit int, ts hlc.Timestamp, expiration time.Time) (int, error)
+	DeleteEdgesByPrefixHLCCheckedKeys(ctx context.Context, tailPrefix, headPrefix string, limit int, ts hlc.Timestamp, expiration time.Time) ([]graphcache.EdgeKey[string], error)
 
 	// neighborhood traversal. selectSmallest steers the per-hop top-k
 	// pruning: the k smallest-weight edges are kept when true, the k
@@ -182,6 +189,7 @@ type Backend interface {
 	ScanByPrefixPage(ctx context.Context, prefix, after string, limit int, desc bool, fn func(projected string, key string, value *pb.Vertex) bool) (more, ok bool)
 	CountByPrefix(prefix string) int
 	DeleteByPrefix(ctx context.Context, prefix string, limit int) int
+	DeleteByPrefixKeys(ctx context.Context, prefix string, limit int) []string
 
 	// TopVerticesByDegree ranks the live vertices whose key starts with
 	// prefix by their degree in dir and returns the top k in descending
@@ -217,6 +225,7 @@ type Backend interface {
 	// is enforced by the handler, not here.
 	ScanEdgesByPrefixPage(ctx context.Context, tailPrefix, headPrefix, afterTail, afterHead string, limit int, fn func(tailProjected string, tail string, headProjected string, head string, weight float32, expiration time.Time) bool) (more, ok bool)
 	DeleteEdgesByPrefix(ctx context.Context, tailPrefix, headPrefix string, limit int) int
+	DeleteEdgesByPrefixKeys(ctx context.Context, tailPrefix, headPrefix string, limit int) []graphcache.EdgeKey[string]
 
 	// background GC loop driven by LanternServer.
 	Watch(ctx context.Context, interval time.Duration)
@@ -244,5 +253,6 @@ type Backend interface {
 	VertexCount() int
 	EdgeCount() int
 	CapacityFootprint() (vertices, edges int)
+	CausalMetadataStats() graphcache.CausalMetadataStats
 	SearchIndexMemoryStats() search.IndexMemoryStats
 }

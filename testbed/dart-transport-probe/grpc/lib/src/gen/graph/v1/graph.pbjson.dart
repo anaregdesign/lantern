@@ -1687,6 +1687,79 @@ final $typed_data.Uint8List searchIndexStatsDescriptor = $convert.base64Decode(
     'YXRpb25SG2xhc3RFeHBpcmF0aW9uUHVyZ2VEdXJhdGlvbhIeCgpnZW5lcmF0aW9uGBEgASgEUg'
     'pnZW5lcmF0aW9u');
 
+@$core.Deprecated('Use causalMetadataKindStatusDescriptor instead')
+const CausalMetadataKindStatus$json = {
+  '1': 'CausalMetadataKindStatus',
+  '2': [
+    {'1': 'limit', '3': 1, '4': 1, '5': 4, '10': 'limit'},
+    {'1': 'entries', '3': 2, '4': 1, '5': 4, '10': 'entries'},
+    {'1': 'estimated_bytes', '3': 3, '4': 1, '5': 4, '10': 'estimatedBytes'},
+    {
+      '1': 'entries_high_water',
+      '3': 4,
+      '4': 1,
+      '5': 4,
+      '10': 'entriesHighWater'
+    },
+    {
+      '1': 'estimated_bytes_high_water',
+      '3': 5,
+      '4': 1,
+      '5': 4,
+      '10': 'estimatedBytesHighWater'
+    },
+    {'1': 'rejected_total', '3': 6, '4': 1, '5': 4, '10': 'rejectedTotal'},
+    {'1': 'over_limit', '3': 7, '4': 1, '5': 8, '10': 'overLimit'},
+    {
+      '1': 'oldest_retention_deadline',
+      '3': 8,
+      '4': 1,
+      '5': 11,
+      '6': '.google.protobuf.Timestamp',
+      '10': 'oldestRetentionDeadline'
+    },
+  ],
+};
+
+/// Descriptor for `CausalMetadataKindStatus`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List causalMetadataKindStatusDescriptor = $convert.base64Decode(
+    'ChhDYXVzYWxNZXRhZGF0YUtpbmRTdGF0dXMSFAoFbGltaXQYASABKARSBWxpbWl0EhgKB2VudH'
+    'JpZXMYAiABKARSB2VudHJpZXMSJwoPZXN0aW1hdGVkX2J5dGVzGAMgASgEUg5lc3RpbWF0ZWRC'
+    'eXRlcxIsChJlbnRyaWVzX2hpZ2hfd2F0ZXIYBCABKARSEGVudHJpZXNIaWdoV2F0ZXISOwoaZX'
+    'N0aW1hdGVkX2J5dGVzX2hpZ2hfd2F0ZXIYBSABKARSF2VzdGltYXRlZEJ5dGVzSGlnaFdhdGVy'
+    'EiUKDnJlamVjdGVkX3RvdGFsGAYgASgEUg1yZWplY3RlZFRvdGFsEh0KCm92ZXJfbGltaXQYBy'
+    'ABKAhSCW92ZXJMaW1pdBJWChlvbGRlc3RfcmV0ZW50aW9uX2RlYWRsaW5lGAggASgLMhouZ29v'
+    'Z2xlLnByb3RvYnVmLlRpbWVzdGFtcFIXb2xkZXN0UmV0ZW50aW9uRGVhZGxpbmU=');
+
+@$core.Deprecated('Use causalMetadataStatusDescriptor instead')
+const CausalMetadataStatus$json = {
+  '1': 'CausalMetadataStatus',
+  '2': [
+    {
+      '1': 'vertices',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.CausalMetadataKindStatus',
+      '10': 'vertices'
+    },
+    {
+      '1': 'edges',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.CausalMetadataKindStatus',
+      '10': 'edges'
+    },
+  ],
+};
+
+/// Descriptor for `CausalMetadataStatus`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List causalMetadataStatusDescriptor = $convert.base64Decode(
+    'ChRDYXVzYWxNZXRhZGF0YVN0YXR1cxI+Cgh2ZXJ0aWNlcxgBIAEoCzIiLmdyYXBoLnYxLkNhdX'
+    'NhbE1ldGFkYXRhS2luZFN0YXR1c1IIdmVydGljZXMSOAoFZWRnZXMYAiABKAsyIi5ncmFwaC52'
+    'MS5DYXVzYWxNZXRhZGF0YUtpbmRTdGF0dXNSBWVkZ2Vz');
+
 @$core.Deprecated('Use getServerStatusResponseDescriptor instead')
 const GetServerStatusResponse$json = {
   '1': 'GetServerStatusResponse',
@@ -1745,6 +1818,14 @@ const GetServerStatusResponse$json = {
       '6': '.graph.v1.SearchCapabilities',
       '10': 'search'
     },
+    {
+      '1': 'causal_metadata',
+      '3': 15,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.CausalMetadataStatus',
+      '10': 'causalMetadata'
+    },
   ],
 };
 
@@ -1761,7 +1842,8 @@ final $typed_data.Uint8List getServerStatusResponseDescriptor = $convert.base64D
     'LwoTcmVwbGljYXRpb25fZW5hYmxlZBgLIAEoCFIScmVwbGljYXRpb25FbmFibGVkEiEKDHZlcn'
     'RleF9jb3VudBgMIAEoBFILdmVydGV4Q291bnQSHQoKZWRnZV9jb3VudBgNIAEoBFIJZWRnZUNv'
     'dW50EjQKBnNlYXJjaBgOIAEoCzIcLmdyYXBoLnYxLlNlYXJjaENhcGFiaWxpdGllc1IGc2Vhcm'
-    'No');
+    'NoEkcKD2NhdXNhbF9tZXRhZGF0YRgPIAEoCzIeLmdyYXBoLnYxLkNhdXNhbE1ldGFkYXRhU3Rh'
+    'dHVzUg5jYXVzYWxNZXRhZGF0YQ==');
 
 @$core.Deprecated('Use replicationPeerDescriptor instead')
 const ReplicationPeer$json = {
