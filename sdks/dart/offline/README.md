@@ -60,8 +60,10 @@ Snapshots written by the earlier experimental Add implementation remain
 readable for migration only. Opening snapshot schema v1, v2, or v3 converts
 every legacy Add item to an inspectable terminal dead letter with diagnostic
 `unsupported_add`, without incrementing its attempt count, overlaying it on
-reads, or invoking the remote. Schema v4 and later fail closed if they contain
-Add. `retryDeadLetter` rejects a migrated item with
+reads, or invoking the remote. Schema v4 fails closed on Add. Schema v5 accepts
+only the exact terminal `unsupported_add` shape produced by that migration;
+every live or noncanonical Add still fails closed. `retryDeadLetter`
+rejects a migrated item with
 `OfflineUnsupportedOperationException`; applications may inspect it through
 their authorization callback and then retain or delete it. Durable Add can be
 considered again only after #1115 supplies server-authoritative operation
@@ -136,13 +138,28 @@ to admit a new write.
 `InMemoryOfflineStore` is useful for deterministic tests and examples only; it
 does not survive process termination. Production adapters must preserve the
 `OfflineStore` transaction, generation, byte-accounting, lease, and canonical
-codec contracts. Adapter packages can invoke `runStoreConformanceSuite` from
-their own tests. `exportSnapshot` and `InMemoryOfflineStore.fromSnapshot` exist
+codec contracts. Every changed partition—and every durably mutated partition
+such as an LRU-only `touchCache`—must form a complete cache/outbox/operation
+graph before commit. Invalid graphs fail atomically with
+`OfflineDurableGraphException`, publish no state or change notification, and
+must not strand capacity. Cache keys must match their embedded Vertex or Edge,
+negative markers must not end before validation, and every retained outbox item
+must have a request-index-aligned aggregate status whose lifecycle matches.
+Claim/recovery and aggregate status transitions therefore commit together;
+`wipePartition` is the explicit barrier that cancels earlier enqueue
+obligations in the same transaction.
+
+Adapter packages must invoke `runStoreConformanceSuite` from their own tests and
+provide its required `reopen` callback. That callback crosses the adapter's real
+close/reopen persistence boundary under identical limits; every accepted
+commit must survive it. `exportSnapshot` and
+`InMemoryOfflineStore.fromSnapshot` exist
 only for deterministic fresh-process conformance tests; snapshot schema v5
 persists operation aggregates, exact dead-letter transition time, and durable
 auth pause. Restore transactionally reconstructs active v1 metadata, recovers
 auth pause from v1-v4 durable metadata, quarantines legacy Add records only
-from v1-v3, migrates v1-v3 outbox retention metadata conservatively, and fails
+from v1-v3, reopens only that exact terminal quarantine in v5, migrates v1-v3
+outbox retention metadata conservatively, and fails
 closed when cache, outbox, operation, ordinal, generation, lease, or state
 relationships contradict each other. Transaction objects are sealed after both
 commit and rollback. The reference snapshot is not a persistence adapter. The

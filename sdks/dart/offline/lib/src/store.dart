@@ -6,12 +6,19 @@ import 'types.dart';
 /// Storage-neutral transaction port used by [OfflineLanternRepository].
 ///
 /// Implementations must serialize transactions and expose their effects only
-/// after the callback completes successfully. A transaction must provide
-/// defensive ownership for mutable bytes. Partition identifiers are local
-/// persistence namespaces; adapters must never treat them as server-side auth
-/// or tenant boundaries.
+/// after the callback completes successfully. Before publishing any changed
+/// partition, implementations must validate its complete cache/outbox/operation
+/// graph and reject an inconsistent commit atomically with
+/// [OfflineDurableGraphException]. A transaction must provide defensive
+/// ownership for mutable bytes. Partition identifiers are local persistence
+/// namespaces; adapters must never treat them as server-side auth or tenant
+/// boundaries.
 abstract interface class OfflineStore {
   /// Runs [action] against one serializable transaction.
+  ///
+  /// A callback that returns successfully can still fail at commit with
+  /// [OfflineDurableGraphException]. In that case no state or change event may
+  /// escape the transaction.
   Future<T> transaction<T>(
     FutureOr<T> Function(OfflineStoreTransaction transaction) action,
   );
@@ -152,6 +159,9 @@ abstract interface class OfflineStoreTransaction {
 
   /// Claims FIFO-ready records on independent ordering keys with bounded leases.
   /// The public [owner] is subject to the adapter's explicit UTF-8 byte bound.
+  /// The same transaction must advance each claimed aggregate item to
+  /// [OfflineWriteState.sending], and must advance any expired lease recovered
+  /// by the call back to a matching non-terminal status before commit.
   List<OfflineOutboxRecord> claim(
     String partitionId, {
     required String owner,
@@ -173,6 +183,8 @@ abstract interface class OfflineStoreTransaction {
   });
 
   /// Transactionally deletes every partition record and increments generation.
+  /// This is an explicit barrier that cancels enqueue-topology obligations
+  /// created earlier in the same transaction.
   void wipePartition(String partitionId);
 }
 

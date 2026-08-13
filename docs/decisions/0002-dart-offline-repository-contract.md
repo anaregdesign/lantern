@@ -64,11 +64,33 @@ confirmed. Replay is foreground-only through explicit `drain`, `start`, or
 production adapters must preserve its serializable transaction, defensive-byte,
 partition-generation, durable FIFO ordinal, capacity, renewable lease,
 operation/dead-letter retention, and codec semantics. They can execute
-`runStoreConformanceSuite` in their own test runner against an empty adapter.
+`runStoreConformanceSuite` in their own test runner against an empty adapter,
+with the required `reopen` callback exercising the adapter's real close/reopen
+boundary under the same limits.
 The reusable contract also requires globally unique retained operation/record
 identities, sealed transaction objects after either commit or rollback,
 defensive byte ownership, bounded notification resources, and indexed bounded
 deadline queries used by lazy expiration.
+
+Every successful `OfflineStore.transaction` validates the complete durable
+graph for each changed partition and for durable-only mutations such as
+`touchCache`. Commit validation precedes version advancement, state publication,
+and change notification. A contradiction rolls back the whole transaction as
+`OfflineDurableGraphException` with no change event. Snapshot decode continues
+to report persisted corruption as `OfflineCodecException`; this distinction is
+intentional.
+
+The graph requires cache partition/generation ownership, exact
+`OfflineEntityKey` ↔ embedded Vertex/Edge identity, and a negative-marker
+`missingUntil` at or after `validatedAt`. Each enqueue operation—including
+born-expired items omitted from the retained outbox—must have one exact
+request-index-aligned aggregate. Retained outbox lifecycle, attempts, and
+diagnostics match its aggregate item, and record IDs have exactly one operation
+owner. Claim, expired-lease recovery, retry, dead-letter, confirmation, and
+expiration update both sides in one transaction. `wipePartition` is an explicit
+generation barrier that cancels earlier enqueue obligations within that same
+transaction. The conformance suite proves invalid commits are typed and atomic,
+then requires every accepted state to reopen under identical limits.
 
 The package has no storage key API and makes no encryption claim. Applications
 must provide at-rest encryption and key lifecycle policy in their store adapter.
@@ -78,8 +100,10 @@ malformed record bytes or v1/v2/v3/v4/v5 reference snapshots must fail closed as
 snapshot schema v5 persists the exact dead-letter transition time, operation
 aggregates, and durable auth pause. Opening schema v1, v2, or v3 quarantines
 legacy Add as an inspectable terminal `unsupported_add` dead letter and applies
-a conservative dead-letter transition-time fallback; schema v4 and later fail
-closed on Add. Opening schema v1-v4 recovers auth pause from durable operation
+a conservative dead-letter transition-time fallback. Schema v4 fails closed on
+Add; schema v5 accepts only the exact terminal `unsupported_add` shape produced
+by that migration, while every live or noncanonical Add fails closed.
+Opening schema v1-v4 recovers auth pause from durable operation
 metadata. Schema v1 also reconstructs active operation metadata and marks
 outcomes no longer present in the legacy outbox as `outcomeUnknown`. Cache and
 outbox capacity failures use

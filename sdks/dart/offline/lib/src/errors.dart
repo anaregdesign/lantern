@@ -71,6 +71,15 @@ final class OfflineTransactionClosedException extends OfflineException {
   const OfflineTransactionClosedException() : super('transaction_closed');
 }
 
+/// A successful transaction callback produced an inconsistent durable graph.
+///
+/// Stores must reject the entire commit without publishing state or change
+/// notifications when this failure is raised.
+final class OfflineDurableGraphException extends OfflineException {
+  /// Creates a fail-closed durable-graph failure.
+  const OfflineDurableGraphException() : super('durable_graph');
+}
+
 /// A caller is not authorized to inspect a sensitive dead-letter intent.
 final class OfflineAuthorizationException extends OfflineException {
   /// Creates an authorization failure.
