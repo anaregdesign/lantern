@@ -87,6 +87,54 @@ void main() {
       );
     });
 
+    test('bounds durable intent expirations to the canonical time range', () {
+      for (final invalid in <DateTime>[DateTime.utc(0), DateTime.utc(10000)]) {
+        expect(
+          () => OfflinePutVertexIntent(
+            Vertex(key: 'v', value: VertexValue.nil(), expiration: invalid),
+          ),
+          throwsA(isA<OfflineArgumentException>()),
+        );
+        expect(
+          () => OfflinePutEdgeIntent(
+            Edge(tail: 'a', head: 'b', weight: 1, expiration: invalid),
+          ),
+          throwsA(isA<OfflineArgumentException>()),
+        );
+        expect(
+          () => OfflineAddEdgeIntent(
+            Edge(tail: 'a', head: 'b', weight: 1, expiration: invalid),
+            Uint8List.fromList(List<int>.filled(24, 1)),
+          ),
+          throwsA(isA<OfflineArgumentException>()),
+        );
+      }
+
+      for (final boundary in <DateTime>[
+        DateTime.utc(1),
+        DateTime.utc(9999, 12, 31, 23, 59, 59, 999, 999),
+      ]) {
+        final record = OfflineOutboxRecord(
+          recordId: 'record-${boundary.year}',
+          operationId: 'operation-${boundary.year}',
+          itemIndex: 0,
+          partitionId: 'p',
+          intent: OfflinePutVertexIntent(
+            Vertex(key: 'v', value: VertexValue.nil(), expiration: boundary),
+          ),
+          enqueuedAt: time,
+          ordinal: 1,
+          state: OfflineOutboxState.enqueued,
+          attemptCount: 0,
+          generation: 0,
+        );
+        final decoded = OfflineCodec.decodeOutboxRecord(
+          OfflineCodec.encodeOutboxRecord(record),
+        );
+        expect(decoded.absoluteExpiration, boundary);
+      }
+    });
+
     test('fails closed on unknown schema, kind, and noncanonical bytes', () {
       expect(
         () => OfflineCodec.decodeCacheRecord(
@@ -149,28 +197,20 @@ void main() {
         leaseUntil: leaseUntil,
       );
       expect(
-        () => OfflineCodec.decodeOutboxRecord(
-          OfflineCodec.encodeOutboxRecord(
-            leaseRecord(state: OfflineOutboxState.sending),
-          ),
-        ),
-        throwsA(isA<OfflineCodecException>()),
+        () => leaseRecord(state: OfflineOutboxState.sending),
+        throwsA(isA<OfflineArgumentException>()),
       );
       expect(
-        () => OfflineCodec.decodeOutboxRecord(
-          OfflineCodec.encodeOutboxRecord(
-            leaseRecord(
-              state: OfflineOutboxState.enqueued,
-              leaseOwner: 'owner',
-              leaseUntil: time.add(const Duration(seconds: 1)),
-            ),
-          ),
+        () => leaseRecord(
+          state: OfflineOutboxState.enqueued,
+          leaseOwner: 'owner',
+          leaseUntil: time.add(const Duration(seconds: 1)),
         ),
-        throwsA(isA<OfflineCodecException>()),
+        throwsA(isA<OfflineArgumentException>()),
       );
     });
 
-    test('matches cache and legacy Add v1 fixtures byte-for-byte', () {
+    test('matches cache fixture and migrates legacy Add v1 canonically', () {
       for (final path in <String>[
         'test/fixtures/v1_cache_vertex.json',
         'test/fixtures/v1_outbox_add.json',
@@ -183,8 +223,32 @@ void main() {
             : OfflineCodec.encodeOutboxRecord(
                 OfflineCodec.decodeOutboxRecord(fixture),
               );
-        expect(encoded, fixture);
+        if (path.contains('cache')) {
+          expect(encoded, fixture);
+        } else {
+          expect(
+            OfflineCodec.encodeOutboxRecord(
+              OfflineCodec.decodeOutboxRecord(encoded),
+            ),
+            encoded,
+          );
+          expect(encoded, contains('"schema":2'));
+          expect(encoded, contains('"deadLetteredAt":null'));
+        }
       }
+    });
+
+    test('matches the canonical outbox v2 transition fixture', () {
+      final fixture = File(
+        'test/fixtures/v2_outbox_dead_letter.json',
+      ).readAsStringSync().trim();
+      final decoded = OfflineCodec.decodeOutboxRecord(fixture);
+
+      expect(OfflineCodec.encodeOutboxRecord(decoded), fixture);
+      expect(
+        decoded.deadLetteredAt,
+        DateTime.fromMicrosecondsSinceEpoch(1000000, isUtc: true),
+      );
     });
 
     test('round trips content-free durable operation aggregates', () {
@@ -192,7 +256,7 @@ void main() {
         partitionId: 'partition',
         generation: 2,
         operationId: 'operation',
-        items: const <OfflineWriteStatus>[
+        items: <OfflineWriteStatus>[
           OfflineWriteStatus(
             recordId: 'record-0',
             operationId: 'operation',

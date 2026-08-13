@@ -67,6 +67,35 @@ void main() {
     },
   );
 
+  test('negative-cache deadline saturates inside durable time range', () async {
+    final nearMaximum = DateTime.utc(9999, 12, 31, 23, 59, 59, 999, 998);
+    final maximum = DateTime.utc(9999, 12, 31, 23, 59, 59, 999, 999);
+    final clock = MutableClock(nearMaximum);
+    final store = InMemoryOfflineStore();
+    final repository = OfflineLanternRepository(
+      store: store,
+      remote: FakeOfflineRemote(),
+      config: OfflineConfig(
+        clock: clock.call,
+        idGenerator: testConfig(clock).idGenerator,
+        jitter: (_) => Duration.zero,
+      ),
+    );
+    addTearDown(repository.dispose);
+
+    expect(
+      (await repository.readVertex('p', 'missing')).state,
+      OfflineReadState.missing,
+    );
+    final cached = await store.transaction(
+      (transaction) =>
+          transaction.getCache('p', const OfflineEntityKey.vertex('missing')),
+    );
+    expect(cached!.missingUntil, maximum);
+    final snapshot = await store.exportSnapshot();
+    expect(() => InMemoryOfflineStore.fromSnapshot(snapshot), returnsNormally);
+  });
+
   test(
     'stale values require explicit stale allowance and watch is key scoped',
     () async {
@@ -105,6 +134,48 @@ void main() {
         allowStale: true,
       );
       expect(stale.state, OfflineReadState.stale);
+    },
+  );
+
+  test(
+    'cache read sweeps max-age work before constructing its overlay',
+    () async {
+      final clock = MutableClock(initial);
+      final repository = OfflineLanternRepository(
+        store: InMemoryOfflineStore(),
+        remote: FakeOfflineRemote(),
+        config: OfflineConfig(
+          clock: clock.call,
+          idGenerator: testConfig(clock).idGenerator,
+          jitter: (_) => Duration.zero,
+          maxAge: const Duration(seconds: 1),
+        ),
+      );
+      addTearDown(repository.dispose);
+      final write = await repository.putVertex(
+        partitionId: 'p',
+        input: VertexInput(
+          key: 'max-age-overlay',
+          value: VertexValue.string('pending'),
+          expiresIn: const Duration(hours: 1),
+        ),
+      );
+      clock.advance(const Duration(seconds: 1));
+
+      final snapshot = await repository.readVertex(
+        'p',
+        'max-age-overlay',
+        policy: OfflineReadPolicy.cacheOnly,
+      );
+      expect(snapshot.value, isNull);
+      expect(snapshot.hasPendingWrites, isFalse);
+      expect(
+        (await repository.getWriteStatus(
+          'p',
+          write.operationId,
+        ))!.items.single.state,
+        OfflineWriteState.deadLetter,
+      );
     },
   );
 
@@ -900,6 +971,7 @@ final class _GapInjectingStore implements OfflineStore {
   final Vertex injected;
   var _armed = false;
   var _injected = false;
+  var _callsAfterArm = 0;
 
   void arm() => _armed = true;
 
@@ -911,22 +983,26 @@ final class _GapInjectingStore implements OfflineStore {
   Future<T> transaction<T>(
     FutureOr<T> Function(OfflineStoreTransaction transaction) action,
   ) async {
+    final wasArmed = _armed;
     final result = await _delegate.transaction(action);
-    if (_armed && !_injected) {
+    if (wasArmed) _callsAfterArm += 1;
+    if (wasArmed && _callsAfterArm == 2 && !_injected) {
       _injected = true;
-      await _delegate.transaction((transaction) {
-        transaction.putCache(
-          'p',
-          OfflineCacheRecord.value(
-            partitionId: 'p',
-            generation: 0,
-            key: OfflineEntityKey.vertex(injected.key),
-            entity: injected,
-            validatedAt: injectedAt,
-            lastAccessAt: injectedAt,
-          ),
-        );
-      });
+      unawaited(
+        _delegate.transaction((transaction) {
+          transaction.putCache(
+            'p',
+            OfflineCacheRecord.value(
+              partitionId: 'p',
+              generation: 0,
+              key: OfflineEntityKey.vertex(injected.key),
+              entity: injected,
+              validatedAt: injectedAt,
+              lastAccessAt: injectedAt,
+            ),
+          );
+        }),
+      );
     }
     return result;
   }

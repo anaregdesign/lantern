@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_client_offline/lantern_client_offline.dart';
@@ -93,3 +94,51 @@ OfflineIdGenerator _ids() {
 
 OfflineRemoteFailure failure(OfflineRemoteErrorKind kind) =>
     OfflineRemoteFailure(kind, StateError(kind.name));
+
+InMemoryOfflineStore restoreLegacySnapshot({
+  required int schema,
+  required List<OfflineOutboxRecord> outbox,
+  List<OfflineOperationRecord> operations = const <OfflineOperationRecord>[],
+}) {
+  return InMemoryOfflineStore.fromSnapshot(
+    encodeLegacySnapshot(
+      schema: schema,
+      outbox: outbox,
+      operations: operations,
+    ),
+  );
+}
+
+String encodeLegacySnapshot({
+  required int schema,
+  required List<OfflineOutboxRecord> outbox,
+  List<OfflineOperationRecord> operations = const <OfflineOperationRecord>[],
+}) {
+  if (schema < 1 || schema >= InMemoryOfflineStore.snapshotSchemaVersion) {
+    throw ArgumentError.value(schema, 'schema');
+  }
+  if (outbox.isEmpty) throw ArgumentError.value(outbox, 'outbox');
+  final partitionId = outbox.first.partitionId;
+  final generation = outbox.first.generation;
+  final nextOrdinal = outbox
+      .map((record) => record.ordinal)
+      .reduce((left, right) => left > right ? left : right);
+  final partition = <String, Object?>{
+    'partitionId': partitionId,
+    'generation': generation,
+    'version': 0,
+    'nextOrdinal': nextOrdinal,
+    'cache': const <String>[],
+    'outbox': outbox
+        .map(OfflineCodec.encodeOutboxRecord)
+        .toList(growable: false),
+    if (schema > 1)
+      'operations': operations
+          .map(OfflineCodec.encodeOperationRecord)
+          .toList(growable: false),
+  };
+  return jsonEncode(<String, Object?>{
+    'schema': schema,
+    'partitions': <Object?>[partition],
+  });
+}

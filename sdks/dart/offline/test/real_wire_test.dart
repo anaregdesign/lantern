@@ -2,13 +2,14 @@
 library;
 
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_client_offline/lantern_client_offline.dart';
 import 'package:test/test.dart';
+
+import 'helpers.dart';
 
 void main() {
   test('online adapter preserves typed transport cancellation', () async {
@@ -216,51 +217,50 @@ void main() {
       );
       final enqueuedAt = DateTime.now().toUtc();
       final expiration = enqueuedAt.add(const Duration(minutes: 5));
-      final legacyStore = InMemoryOfflineStore();
-      await legacyStore.transaction((transaction) {
-        final assigned = transaction.enqueue(
-          OfflineOutboxRecord(
-            recordId: '${prefix}record',
-            operationId: '${prefix}operation',
-            itemIndex: 0,
-            partitionId: 'legacy-wire',
-            intent: OfflineAddEdgeIntent(
-              Edge(
-                tail: edgeRef.tail,
-                head: edgeRef.head,
-                weight: Float32Value(0.5).value,
-                expiration: expiration,
-              ),
-              contributionId,
-            ),
-            enqueuedAt: enqueuedAt,
-            ordinal: 0,
-            state: OfflineOutboxState.enqueued,
-            attemptCount: 1,
-            generation: 0,
-            nextAttemptAt: enqueuedAt.add(const Duration(seconds: 1)),
-            diagnosticCode: 'unavailable',
+      final legacyRecord = OfflineOutboxRecord(
+        recordId: '${prefix}record',
+        operationId: '${prefix}operation',
+        itemIndex: 0,
+        partitionId: 'legacy-wire',
+        intent: OfflineAddEdgeIntent(
+          Edge(
+            tail: edgeRef.tail,
+            head: edgeRef.head,
+            weight: Float32Value(0.5).value,
+            expiration: expiration,
           ),
-        );
-        transaction.putOperation(
+          contributionId,
+        ),
+        enqueuedAt: enqueuedAt,
+        ordinal: 1,
+        state: OfflineOutboxState.enqueued,
+        attemptCount: 1,
+        generation: 0,
+        nextAttemptAt: enqueuedAt.add(const Duration(seconds: 1)),
+        diagnosticCode: 'unavailable',
+      );
+      final legacyStore = restoreLegacySnapshot(
+        schema: 2,
+        outbox: <OfflineOutboxRecord>[legacyRecord],
+        operations: <OfflineOperationRecord>[
           OfflineOperationRecord(
-            partitionId: assigned.partitionId,
-            generation: assigned.generation,
-            operationId: assigned.operationId,
+            partitionId: legacyRecord.partitionId,
+            generation: legacyRecord.generation,
+            operationId: legacyRecord.operationId,
             items: <OfflineWriteStatus>[
               OfflineWriteStatus(
-                recordId: assigned.recordId,
-                operationId: assigned.operationId,
-                itemIndex: assigned.itemIndex,
+                recordId: legacyRecord.recordId,
+                operationId: legacyRecord.operationId,
+                itemIndex: legacyRecord.itemIndex,
                 state: OfflineWriteState.retryScheduled,
-                attemptCount: assigned.attemptCount,
-                diagnosticCode: assigned.diagnosticCode,
+                attemptCount: legacyRecord.attemptCount,
+                diagnosticCode: legacyRecord.diagnosticCode,
               ),
             ],
             updatedAt: enqueuedAt,
           ),
-        );
-      });
+        ],
+      );
 
       // The direct-online commit succeeds, but the retained retry record above
       // models the old adapter losing that response before local confirmation.
@@ -282,15 +282,11 @@ void main() {
         throwsA(isA<LanternNotFoundException>()),
       );
 
-      final legacySnapshot =
-          jsonDecode(await legacyStore.exportSnapshot())
-              as Map<String, Object?>;
-      legacySnapshot['schema'] = 2;
       final recording = _ResponseDroppingRemote(
         LanternClientOfflineRemote(client),
       );
       final restarted = OfflineLanternRepository(
-        store: InMemoryOfflineStore.fromSnapshot(jsonEncode(legacySnapshot)),
+        store: legacyStore,
         remote: recording,
         config: OfflineConfig(
           clock: () => enqueuedAt.add(const Duration(seconds: 2)),
