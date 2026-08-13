@@ -165,6 +165,34 @@ func waitForEdge(t *testing.T, cache *graphcache.GraphCache[string, *pb.Vertex],
 	return w, ok
 }
 
+// waitForWireEdge is the real Connect/h2c sibling used by gap-recovery tests
+// whose contract is externally observable through GetEdge. NotFound is the
+// expected convergence state; any other RPC error is terminal.
+func waitForWireEdge(t *testing.T, ctx context.Context, raw graphv1connect.LanternServiceClient, tail, head string, want float32, timeout time.Duration) (float32, bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		response, err := raw.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{Tail: tail, Head: head}))
+		if err == nil {
+			weight := response.Msg.GetEdge().GetWeight()
+			if weight == want {
+				return weight, true
+			}
+		} else if connect.CodeOf(err) != connect.CodeNotFound {
+			t.Fatalf("GetEdge %s->%s: %v", tail, head, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	response, err := raw.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{Tail: tail, Head: head}))
+	if err != nil {
+		if connect.CodeOf(err) != connect.CodeNotFound {
+			t.Fatalf("GetEdge %s->%s: %v", tail, head, err)
+		}
+		return 0, false
+	}
+	return response.Msg.GetEdge().GetWeight(), true
+}
+
 // TestPeerPump_E2E_ThreeNodeConvergence wires three peers in a full
 // mesh (A↔B↔C) and asserts that a write to any one node is observed
 // on every other node within a short polling window. This exercises
@@ -494,4 +522,177 @@ func TestPeerPump_GapRecoverySnapshot(t *testing.T) {
 	if got := waitForSearchConvergence(t, ctx, "snapshot barrier", exactAll, primary.raw, follower.raw); len(got) != 0 {
 		t.Fatalf("causal barrier identities became searchable: %+v", got)
 	}
+}
+
+// TestPeerPump_OutcomeAwarePutEdgesGapRecovery is the #1206 regression for
+// the real broad_mutate failure: outcome-aware edge Puts filled a tiny log,
+// a third node attached through a relay after the retained window had moved,
+// and Snapshot had to restore endpoint vertices that edge writes had created
+// implicitly. Those endpoints are represented internally by nil *pb.Vertex
+// values, but the replication wire must carry canonical nil-valued Vertex
+// messages rather than a nil SnapshotVertex payload.
+func TestPeerPump_OutcomeAwarePutEdgesGapRecovery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping three-node gap-recovery test in short mode")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	const logCapacity = 8
+	a := newPumpNodeWithSearch(t, hlc.NodeID{0xC1}, logCapacity, true)
+	b := newPumpNodeWithSearch(t, hlc.NodeID{0xC2}, logCapacity, true)
+	c := newPumpNodeWithSearch(t, hlc.NodeID{0xC3}, logCapacity, true)
+
+	// A and B replicate directly while C is partitioned. B therefore becomes
+	// a relay whose tiny local log contains mutations from both origins.
+	a.startPump(ctx, t, []string{b.url})
+	b.startPump(ctx, t, []string{a.url})
+	time.Sleep(150 * time.Millisecond)
+
+	type expectedEdge struct {
+		tail, head string
+		weight     float32
+	}
+	var expected []expectedEdge
+	writeSet := func(name string, node *pumpNode, baseWeight float32) {
+		t.Helper()
+		for i := 0; i < 4; i++ {
+			tail := fmt.Sprintf("gap/%s/singular/%d", name, i)
+			weight := baseWeight + float32(i)
+			outcome, err := node.sdk.PutEdge(ctx, tail, "gap/head", weight, time.Hour)
+			if err != nil {
+				t.Fatalf("%s PutEdge[%d]: %v", name, i, err)
+			}
+			if outcome != client.PutOutcomeAppliedAndLive {
+				t.Fatalf("%s PutEdge[%d] outcome = %s, want APPLIED_AND_LIVE", name, i, outcome)
+			}
+			expected = append(expected, expectedEdge{tail: tail, head: "gap/head", weight: weight})
+		}
+		for batch := 0; batch < 4; batch++ {
+			inputs := make([]client.EdgeInput, 0, 2)
+			for item := 0; item < 2; item++ {
+				tail := fmt.Sprintf("gap/%s/plural/%d/%d", name, batch, item)
+				weight := baseWeight + 10 + float32(2*batch+item)
+				inputs = append(inputs, client.EdgeInput{
+					Tail: tail, Head: "gap/head", Weight: weight,
+					Expiration: time.Now().Add(time.Hour),
+				})
+				expected = append(expected, expectedEdge{tail: tail, head: "gap/head", weight: weight})
+			}
+			results, err := node.sdk.PutEdges(ctx, inputs)
+			if err != nil {
+				t.Fatalf("%s PutEdges[%d]: %v", name, batch, err)
+			}
+			for i, result := range results {
+				if result.Outcome != client.PutOutcomeAppliedAndLive {
+					t.Fatalf("%s PutEdges[%d][%d] outcome = %s, want APPLIED_AND_LIVE", name, batch, i, result.Outcome)
+				}
+			}
+		}
+	}
+	writeSet("a", a, 100)
+	writeSet("b", b, 200)
+
+	// An accepted-expired Put is absent from the live graph but must survive
+	// gap recovery as a causal floor. This stays Put-only: mixed Put/Add on one
+	// identity belongs to the reset-aware contribution contract in #1203.
+	expiredOutcome, err := a.sdk.PutEdgeAt(
+		ctx, "gap/expired", "gap/head", 999, time.Now().Add(-time.Second),
+	)
+	if err != nil {
+		t.Fatalf("a born-expired PutEdgeAt: %v", err)
+	}
+	if expiredOutcome != client.PutOutcomeExpired {
+		t.Fatalf("a born-expired PutEdgeAt outcome = %s, want EXPIRED", expiredOutcome)
+	}
+
+	for _, edge := range expected {
+		for _, node := range []*pumpNode{a, b} {
+			if got, ok := waitForEdge(t, node.cache, edge.tail, edge.head, edge.weight, 5*time.Second); !ok || got != edge.weight {
+				t.Fatalf("pre-gap %x edge %s->%s = (%v,%v), want (%v,true)", node.nodeID[0], edge.tail, edge.head, got, ok, edge.weight)
+			}
+		}
+	}
+	barrierDeadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(barrierDeadline) {
+		_, edgeBarriers := b.cache.CausalBarrierCounts()
+		if edgeBarriers == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, edgeBarriers := b.cache.CausalBarrierCounts(); edgeBarriers != 1 {
+		t.Fatalf("relay edge causal barriers = %d, want 1 before gap recovery", edgeBarriers)
+	}
+
+	// More cluster mutations than B's ring capacity make a local-seq=1
+	// Subscribe deterministically gapped. This is the same real Connect/h2c
+	// surface the pump uses, asserted explicitly before C starts recovery.
+	relayReplication := newReplicationRawClient(t, b.url)
+	gapStream, err := relayReplication.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{FromLocalSeq: 1}))
+	if err == nil {
+		if gapStream.Receive() {
+			t.Fatal("gapped direct Subscribe unexpectedly delivered a mutation")
+		}
+		err = gapStream.Err()
+		_ = gapStream.Close()
+	}
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("direct Subscribe gap error = %v (code %v), want FailedPrecondition", err, connect.CodeOf(err))
+	}
+
+	metrics := &observedSearchConfigMetrics{
+		gate: readiness.NewGate(100, true, nil), observations: make(chan bool, 1),
+	}
+	c.startPumpWithMetrics(ctx, t, []string{b.url}, metrics)
+	for _, edge := range expected {
+		if got, ok := waitForWireEdge(t, ctx, c.raw, edge.tail, edge.head, edge.weight, 8*time.Second); !ok || got != edge.weight {
+			t.Fatalf("snapshot relay edge %s->%s = (%v,%v), want (%v,true)", edge.tail, edge.head, got, ok, edge.weight)
+		}
+	}
+	snapshotDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(snapshotDeadline) && metrics.snapshots.Load() == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := metrics.snapshots.Load(); got != 1 {
+		t.Fatalf("completed snapshot count = %d, want exactly 1", got)
+	}
+	if _, edgeBarriers := c.cache.CausalBarrierCounts(); edgeBarriers != 1 {
+		t.Fatalf("snapshot edge causal barriers = %d, want 1", edgeBarriers)
+	}
+	if c.cache.PutEdgeWithExpirationHLC(
+		"gap/expired", "gap/head", 1, time.Now().Add(time.Hour),
+		hlc.Timestamp{WallNs: 1, NodeID: hlc.NodeID{0x01}},
+	) {
+		t.Fatal("snapshot lost born-expired edge causal floor")
+	}
+
+	// Prove the Snapshot cutoff stitched to the live Subscribe tail on the
+	// same relay, for both singular and plural outcome-aware Put forms.
+	postSingular := expectedEdge{tail: "gap/post/singular", head: "gap/head", weight: 301}
+	if outcome, err := a.sdk.PutEdge(ctx, postSingular.tail, postSingular.head, postSingular.weight, time.Hour); err != nil || outcome != client.PutOutcomeAppliedAndLive {
+		t.Fatalf("post-snapshot PutEdge = (%s,%v), want (APPLIED_AND_LIVE,nil)", outcome, err)
+	}
+	postPlural := []expectedEdge{
+		{tail: "gap/post/plural/0", head: "gap/head", weight: 302},
+		{tail: "gap/post/plural/1", head: "gap/head", weight: 303},
+	}
+	results, err := b.sdk.PutEdges(ctx, []client.EdgeInput{
+		{Tail: postPlural[0].tail, Head: postPlural[0].head, Weight: postPlural[0].weight, Expiration: time.Now().Add(time.Hour)},
+		{Tail: postPlural[1].tail, Head: postPlural[1].head, Weight: postPlural[1].weight, Expiration: time.Now().Add(time.Hour)},
+	})
+	if err != nil || len(results) != 2 || results[0].Outcome != client.PutOutcomeAppliedAndLive || results[1].Outcome != client.PutOutcomeAppliedAndLive {
+		t.Fatalf("post-snapshot PutEdges = (%+v,%v), want two APPLIED_AND_LIVE outcomes", results, err)
+	}
+	expected = append(expected, postSingular)
+	expected = append(expected, postPlural...)
+
+	for _, edge := range expected {
+		for _, node := range []*pumpNode{a, b, c} {
+			if got, ok := waitForWireEdge(t, ctx, node.raw, edge.tail, edge.head, edge.weight, 5*time.Second); !ok || got != edge.weight {
+				t.Errorf("final %x edge %s->%s = (%v,%v), want (%v,true)", node.nodeID[0], edge.tail, edge.head, got, ok, edge.weight)
+			}
+		}
+	}
+	waitForSearchConvergence(t, ctx, "gap", nil, a.raw, b.raw, c.raw)
 }

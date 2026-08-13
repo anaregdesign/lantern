@@ -683,6 +683,14 @@ increments; the server replies `FailedPrecondition` (reason
 transition` line with `transition="snapshot_start" reason="gapped"`,
 then re-snapshots on its own. No manual action needed.
 
+An edge-only working set is valid Snapshot input: endpoint vertices created
+implicitly by `PutEdge*` / `AddEdge*` are carried as concrete nil-valued
+Vertex frames. A peer repeatedly logging `snapshot_failed` with
+`snapshot: nil vertex payload` is therefore not normal gap pressure; it means
+the responder is an incompatible pre-fix build or the stream is corrupt.
+Finish the rolling upgrade (or remove the incompatible responder) before
+increasing the log capacity.
+
 If overflow is **chronic**, write rate has outgrown
 `mutation_log_capacity`. Bump
 `LANTERN_MUTATION_LOG_CAPACITY` or add cluster capacity.
