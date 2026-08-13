@@ -111,7 +111,12 @@ void main() {
                 'second chunk unavailable',
               );
             }
-            return graph.PutVerticesResponse(written: request.vertices.length);
+            return graph.PutVerticesResponse(
+              outcomes: List<graph.PutOutcome>.filled(
+                request.vertices.length,
+                graph.PutOutcome.PUT_OUTCOME_APPLIED_AND_LIVE,
+              ),
+            );
           },
         )
         .build();
