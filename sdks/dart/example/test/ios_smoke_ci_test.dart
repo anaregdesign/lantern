@@ -151,6 +151,8 @@ echo 'bounded process snapshot'
       environment: {
         ...Platform.environment,
         'IOS_SMOKE_XCRUN_BIN': fakeXcrun.path,
+        'GITHUB_RUN_ID': 'local',
+        'GITHUB_RUN_ATTEMPT': '1',
       },
     );
 
