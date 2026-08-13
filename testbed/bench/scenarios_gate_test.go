@@ -187,12 +187,20 @@ func TestSearchChurnScenarioGateContract(t *testing.T) {
 			Metrics map[string]map[string]float64 `yaml:"metrics"`
 		} `yaml:"metric_gate"`
 		PerfGate struct {
+			MaxNonOK  *float64 `yaml:"max_non_ok_ratio"`
 			Producers map[string]struct {
 				MinSteadyRPS *float64 `yaml:"min_steady_rps"`
 				MaxP99MS     *float64 `yaml:"max_p99_ms"`
 				MaxNonOK     *float64 `yaml:"max_non_ok_ratio"`
 			} `yaml:"producers"`
 		} `yaml:"perf_gate"`
+		LifecycleGate struct {
+			Reason    string   `yaml:"reason"`
+			MaxRatio  *float64 `yaml:"max_ratio"`
+			Producers map[string]struct {
+				MetricLabels map[string]string `yaml:"metric_labels"`
+			} `yaml:"producers"`
+		} `yaml:"lifecycle_gate"`
 	}
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
 		t.Fatalf("parse search_churn: %v", err)
@@ -220,6 +228,19 @@ func TestSearchChurnScenarioGateContract(t *testing.T) {
 	}
 	if _, ok := doc.MetricGate.Metrics["lantern_search_index_retained_ratio"]; ok {
 		t.Error("retained ratio must not be gated while the live denominator decays")
+	}
+	for metric, wantMaxPost := range map[string]float64{
+		"lantern_search_index_estimated_retained_bytes": 262144,
+		"lantern_search_index_retained_ordinals":        4096,
+		"lantern_search_index_retained_term_slots":      8192,
+	} {
+		thresholds := doc.MetricGate.Metrics[metric]
+		if got := thresholds["max_post"]; got != wantMaxPost {
+			t.Errorf("metric %s max_post = %v, want %v", metric, got, wantMaxPost)
+		}
+		if _, ok := thresholds["max_ratio"]; ok {
+			t.Errorf("metric %s must not use a GC-phase-sensitive pre/post ratio", metric)
+		}
 	}
 
 	calls := make(map[string]string, len(doc.Target.Calls))
@@ -283,12 +304,73 @@ func TestSearchChurnScenarioGateContract(t *testing.T) {
 			}
 		}
 	}
+	if doc.PerfGate.MaxNonOK == nil || *doc.PerfGate.MaxNonOK != 0.02 {
+		t.Errorf("generic unexpected non-OK ceiling = %v, want unchanged 0.02", doc.PerfGate.MaxNonOK)
+	}
+	if doc.LifecycleGate.Reason != "SEARCH_INDEX_INCOMPLETE" || doc.LifecycleGate.MaxRatio == nil || *doc.LifecycleGate.MaxRatio != 0.10 {
+		t.Errorf("typed lifecycle gate = reason %q max %v, want SEARCH_INDEX_INCOMPLETE/0.10", doc.LifecycleGate.Reason, doc.LifecycleGate.MaxRatio)
+	}
+	expectedLifecycleLabels := map[string]map[string]string{
+		"broad_posting":             {"mode": "server", "phrase": "no", "fuzziness": "0", "prefix_terms": "no", "prefix_present": "no"},
+		"prefix_scoped":             {"mode": "server", "phrase": "no", "fuzziness": "0", "prefix_terms": "no", "prefix_present": "yes"},
+		"fuzzy_1":                   {"mode": "server", "phrase": "no", "fuzziness": "1", "prefix_terms": "no", "prefix_present": "no"},
+		"fuzzy_2":                   {"mode": "server", "phrase": "no", "fuzziness": "2", "prefix_terms": "no", "prefix_present": "no"},
+		"prefix_terms":              {"mode": "server", "phrase": "no", "fuzziness": "0", "prefix_terms": "yes", "prefix_present": "no"},
+		"prefix_fuzzy_cap_overflow": {"mode": "server", "phrase": "no", "fuzziness": "2", "prefix_terms": "yes", "prefix_present": "no"},
+		"match_all":                 {"mode": "all", "phrase": "no", "fuzziness": "0", "prefix_terms": "no", "prefix_present": "no"},
+		"min_should":                {"mode": "min_should", "phrase": "no", "fuzziness": "0", "prefix_terms": "no", "prefix_present": "no"},
+		"broad_phrase":              {"mode": "server", "phrase": "yes", "fuzziness": "0", "prefix_terms": "no", "prefix_present": "no"},
+	}
+	if _, ok := doc.LifecycleGate.Producers["writer"]; ok {
+		t.Error("writer must remain in the generic non-OK budget; only Search reason counters are classified")
+	}
+	seenSelectors := map[string]string{}
+	for name, expected := range expectedLifecycleLabels {
+		selector, ok := doc.LifecycleGate.Producers[name]
+		if !ok {
+			t.Errorf("Search producer %q lacks typed lifecycle selector", name)
+			continue
+		}
+		if len(selector.MetricLabels) != len(expected) {
+			t.Errorf("producer %q labels = %v, want %v", name, selector.MetricLabels, expected)
+		}
+		var key strings.Builder
+		for _, label := range []string{"mode", "phrase", "fuzziness", "prefix_terms", "prefix_present"} {
+			got := selector.MetricLabels[label]
+			if got != expected[label] {
+				t.Errorf("producer %q label %s = %q, want %q", name, label, got, expected[label])
+			}
+			fmt.Fprintf(&key, "%s=%s;", label, got)
+		}
+		if previous := seenSelectors[key.String()]; previous != "" {
+			t.Errorf("lifecycle selectors collide: %s and %s", previous, name)
+		}
+		seenSelectors[key.String()] = name
+	}
+	if len(doc.LifecycleGate.Producers) != len(expectedLifecycleLabels) {
+		t.Errorf("lifecycle producers = %d, want %d exact Search producers", len(doc.LifecycleGate.Producers), len(expectedLifecycleLabels))
+	}
 	runScript, err := os.ReadFile("run.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(runScript), `any(.producer_results[]; .verdict == "fail")`) {
-		t.Error("perf gate does not conjunctively fold named producer failures")
+	if !strings.Contains(string(runScript), `go run ./testbed/bench/perfgate "${perf_args[@]}"`) {
+		t.Error("run.sh does not delegate typed/unexpected classification to the tested perf evaluator")
+	}
+	run := string(runScript)
+	if strings.Contains(run, `wait "${prod_pids[@]}"`) {
+		t.Error("run.sh waits for producers as one aggregate and can hide an earlier failure")
+	}
+	for _, fragment := range []string{
+		`for i in "${!prod_pids[@]}"; do`,
+		`if wait "${prod_pids[$i]}"; then`,
+		`producer_failed=1`,
+		`perf_args+=( -producer-failed )`,
+		`"$producer_failed" == "0"`,
+	} {
+		if !strings.Contains(run, fragment) {
+			t.Errorf("steady producer failure path missing %q", fragment)
+		}
 	}
 	for _, fragment := range []string{
 		`if ! run_search_probe verify pre; then`,

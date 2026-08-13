@@ -33,6 +33,40 @@ func TestEvaluateMetricGate(t *testing.T) {
 		}
 	})
 
+	t.Run("absolute retained ceiling is stable from a tiny baseline", func(t *testing.T) {
+		pre := []snapshotReplica{{Endpoint: "r0", Metrics: map[string]*float64{"retained": ptr(13)}}}
+		post := []snapshotReplica{{Endpoint: "r0", Metrics: map[string]*float64{"retained": ptr(801)}}}
+		rep := evaluate(map[string]threshold{
+			"retained": {MaxIncrease: ptr(100000), MaxPost: ptr(4096)},
+		}, pre, post)
+		if rep.Verdict != "pass" {
+			t.Fatalf("verdict = %s, results = %+v", rep.Verdict, rep.Results)
+		}
+	})
+
+	for _, tc := range []struct {
+		name    string
+		ceiling float64
+	}{
+		{name: "retained bytes", ceiling: 262144},
+		{name: "retained ordinals", ceiling: 4096},
+		{name: "retained term slots", ceiling: 8192},
+	} {
+		t.Run(tc.name+" exceeds absolute ceiling", func(t *testing.T) {
+			pre := []snapshotReplica{{Endpoint: "r0", Metrics: map[string]*float64{"retained": ptr(0)}}}
+			post := []snapshotReplica{{Endpoint: "r0", Metrics: map[string]*float64{"retained": ptr(tc.ceiling + 1)}}}
+			rep := evaluate(map[string]threshold{
+				"retained": {MaxIncrease: ptr(tc.ceiling * 100), MaxPost: ptr(tc.ceiling)},
+			}, pre, post)
+			if rep.Verdict != "fail" || len(rep.Results) != 1 {
+				t.Fatalf("verdict = %s, results = %+v", rep.Verdict, rep.Results)
+			}
+			if failures := strings.Join(rep.Results[0].Failures, " "); !strings.Contains(failures, "post") || !strings.Contains(failures, "exceeds") {
+				t.Fatalf("failures = %q", failures)
+			}
+		})
+	}
+
 	t.Run("missing sample fails closed", func(t *testing.T) {
 		pre := []snapshotReplica{{Endpoint: "r0", Metrics: map[string]*float64{"docs": nil}}}
 		post := []snapshotReplica{{Endpoint: "r0", Metrics: map[string]*float64{"docs": ptr(0)}}}

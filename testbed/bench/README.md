@@ -172,6 +172,43 @@ perf_gate:
 All named producer gates are conjunctive with the aggregate gate and appear
 as separate rows in `perf_gate.json` and the rendered report.
 
+#### Typed recovery lifecycle (`lifecycle_gate:` block)
+
+A scenario that intentionally drives a bounded fail-closed recovery may split
+one typed Search lifecycle reason from the generic error budget without
+weakening `max_non_ok_ratio`. `search_churn` uses this for derived-index gap
+recovery:
+
+```yaml
+lifecycle_gate:
+  reason: SEARCH_INDEX_INCOMPLETE
+  max_ratio: 0.10
+  producers:
+    broad_posting:
+      metric_labels:
+        mode: server
+        phrase: "no"
+        fuzziness: "0"
+        prefix_terms: "no"
+        prefix_present: "no"
+```
+
+The harness snapshots the bounded `lantern_search_calls_total` counter
+immediately before and after steady load. For each configured producer, its
+request-option labels and assigned replica select the
+`outcome="failed_precondition",reason="index_incomplete"` delta. That typed
+count is accepted only when it fits inside the producer's ghz
+`FailedPrecondition` count; missing snapshots, decreasing counters, invalid
+selectors, or an overlarge join fail closed. No human-readable error message is
+parsed.
+
+The verified typed count is checked against `max_ratio` both per producer and
+in aggregate over lifecycle-eligible producers. It does not consume
+`max_non_ok_ratio`; every unmatched `FailedPrecondition`, every other status,
+and end-of-run transport error remains in that unchanged unexpected-error
+budget. `perf_gate.json` and `report.md` retain raw, expected-lifecycle, and
+unexpected counts so a green verdict remains diagnosable.
+
 ### Lifecycle metric gate (`metric_gate:` block)
 
 `metric_gate.metrics` compares each replica's unlabeled gauge in the pre/post

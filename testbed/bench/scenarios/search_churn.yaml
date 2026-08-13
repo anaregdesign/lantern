@@ -132,11 +132,17 @@ metric_gate:
     lantern_search_index_expired_documents: { max_increase: 64, max_ratio: 2 }
     lantern_search_index_expiration_queue_entries: { max_increase: 256, max_ratio: 1.25 }
     lantern_search_index_expiration_purged: { min_increase: 1 }
-    lantern_search_index_retained_term_slots: { max_increase: 100000, max_ratio: 2 }
-    lantern_search_index_retained_ordinals: { max_increase: 100000, max_ratio: 2 }
+    # Retained structures are allocator high-water state. A pre snapshot taken
+    # immediately after cleanup can be close to zero, so a pre/post ratio turns
+    # a small, healthy absolute post into an arbitrarily large multiplier. Gate
+    # the actual retained footprint instead. These post ceilings retain >2x
+    # headroom over the largest 2026-08-13 hosted sample while still blocking a
+    # material retained-capacity regression.
+    lantern_search_index_retained_term_slots: { max_increase: 100000, max_post: 8192 }
+    lantern_search_index_retained_ordinals: { max_increase: 100000, max_post: 4096 }
     lantern_search_index_postings: { max_increase: 2048, max_ratio: 1.5 }
     lantern_search_index_position_entries: { max_increase: 4096, max_ratio: 1.5 }
-    lantern_search_index_estimated_retained_bytes: { max_increase: 67108864, max_ratio: 2 }
+    lantern_search_index_estimated_retained_bytes: { max_increase: 67108864, max_post: 262144 }
     lantern_search_index_healthy: { min_post: 1, max_post: 1 }
 # The producer mix changed for #1049, so these are deliberately loose first-
 # night ratchets with ample headroom. Tighten from several green nightly runs;
@@ -161,3 +167,34 @@ perf_gate:
     match_all: { min_steady_rps: 20, max_p99_ms: 4000, max_non_ok_ratio: 0.02 }
     min_should: { min_steady_rps: 20, max_p99_ms: 4000, max_non_ok_ratio: 0.02 }
     broad_phrase: { min_steady_rps: 20, max_p99_ms: 4000, max_non_ok_ratio: 0.02 }
+# A mutation-log gap deliberately exercises bounded derived-index recovery.
+# Search fails closed with the typed SEARCH_INDEX_INCOMPLETE reason while that
+# rebuild is in progress. The harness joins the exact steady-window delta of
+# lantern_search_calls_total to each producer's matching FailedPrecondition
+# status count. Only that verified typed subset leaves the generic 2% budget;
+# every other non-OK response, including an unclassified FailedPrecondition,
+# remains unexpected. The independent 10% ceiling makes recovery frequency a
+# blocking lifecycle contract (roughly 2x the largest recent hosted sample),
+# rather than turning recovery into an unlimited exception.
+lifecycle_gate:
+  reason: SEARCH_INDEX_INCOMPLETE
+  max_ratio: 0.10
+  producers:
+    broad_posting:
+      metric_labels: { mode: server, phrase: "no", fuzziness: "0", prefix_terms: "no", prefix_present: "no" }
+    prefix_scoped:
+      metric_labels: { mode: server, phrase: "no", fuzziness: "0", prefix_terms: "no", prefix_present: "yes" }
+    fuzzy_1:
+      metric_labels: { mode: server, phrase: "no", fuzziness: "1", prefix_terms: "no", prefix_present: "no" }
+    fuzzy_2:
+      metric_labels: { mode: server, phrase: "no", fuzziness: "2", prefix_terms: "no", prefix_present: "no" }
+    prefix_terms:
+      metric_labels: { mode: server, phrase: "no", fuzziness: "0", prefix_terms: "yes", prefix_present: "no" }
+    prefix_fuzzy_cap_overflow:
+      metric_labels: { mode: server, phrase: "no", fuzziness: "2", prefix_terms: "yes", prefix_present: "no" }
+    match_all:
+      metric_labels: { mode: all, phrase: "no", fuzziness: "0", prefix_terms: "no", prefix_present: "no" }
+    min_should:
+      metric_labels: { mode: min_should, phrase: "no", fuzziness: "0", prefix_terms: "no", prefix_present: "no" }
+    broad_phrase:
+      metric_labels: { mode: server, phrase: "yes", fuzziness: "0", prefix_terms: "no", prefix_present: "no" }

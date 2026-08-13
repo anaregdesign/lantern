@@ -175,6 +175,49 @@ func TestRenderReport_ShowsIndependentProducerGates(t *testing.T) {
 	}
 }
 
+func TestRenderReport_ShowsTypedLifecycleClassification(t *testing.T) {
+	maxUnexpected, maxLifecycle := 0.02, 0.10
+	pg := &PerfGate{Verdict: "pass", LifecycleReason: "SEARCH_INDEX_INCOMPLETE"}
+	pg.Thresholds.MaxNonOKRatio = &maxUnexpected
+	pg.Thresholds.MaxExpectedLifecycleRatio = &maxLifecycle
+	pg.Observed.Producers = 1
+	pg.Observed.CountTotal = 1000
+	pg.Observed.RawNonOKTotal = 55
+	pg.Observed.ExpectedLifecycleTotal = 50
+	pg.Observed.UnexpectedNonOKTotal = 5
+	pg.Observed.NonOKTotal = 5
+	pg.Observed.NonOKRatio = 0.005
+	pg.Observed.ExpectedLifecycleRatio = 0.05
+	pg.ProducerResults = []PerfProducerResult{{Name: "broad_posting", Verdict: "pass", LifecycleReason: "SEARCH_INDEX_INCOMPLETE"}}
+	producer := &pg.ProducerResults[0]
+	producer.Thresholds.MaxNonOKRatio = &maxUnexpected
+	producer.Thresholds.MaxExpectedLifecycleRatio = &maxLifecycle
+	producer.Observed.Count = 1000
+	producer.Observed.RawNonOK = 55
+	producer.Observed.ExpectedLifecycle = 50
+	producer.Observed.UnexpectedNonOK = 5
+	producer.Observed.NonOK = 5
+	producer.Observed.NonOKRatio = 0.005
+	producer.Observed.ExpectedLifecycleRatio = 0.05
+
+	var buf bytes.Buffer
+	if err := RenderReport(&buf, Input{Scenario: "search_churn", Timestamp: "t", PerfGate: pg}); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"exact steady-window bounded reason-counter delta",
+		"| unexpected non-OK ratio (ceiling) | 0.02000 | 0.00500 |",
+		"| `SEARCH_INDEX_INCOMPLETE` ratio (ceiling) | 0.10000 | 0.05000 |",
+		"| raw / expected lifecycle / unexpected non-OK counts | — | 55 / 50 / 5 |",
+		"| `broad_posting` | `pass` | 0.0 (—) | 0.00 (—) | 5 / 0.00500 (0.02000) | 50 / 0.05000 (0.10000) |",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in report:\n%s", want, out)
+		}
+	}
+}
+
 func TestRenderReport_ShowsMetricAndSemanticGates(t *testing.T) {
 	pre, post, delta, ratio := 100.0, 105.0, 5.0, 1.05
 	mg := &MetricGate{Verdict: "pass", Results: []MetricGateResult{{
