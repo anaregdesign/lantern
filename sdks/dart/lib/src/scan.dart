@@ -308,6 +308,7 @@ Stream<Page<T>> _scanPageStream<T>({
     timeout: options?.timeout,
     deadline: options?.deadline,
     cancellation: streamCancellation,
+    retry: options?.retry ?? true,
   );
   var canceled = false;
   var paused = false;

@@ -70,6 +70,55 @@ void main() {
     expect(calls, 3);
   });
 
+  test('per-call suppression performs exactly one wire attempt', () async {
+    var calls = 0;
+    final transport = FakeTransportBuilder()
+        .unary<graph.GetVerticesRequest, graph.GetVerticesResponse>(
+          LanternService.getVertices,
+          (request, context) {
+            calls++;
+            throw connect.ConnectException(connect.Code.unavailable, 'down');
+          },
+        )
+        .build();
+    final client = _client(
+      transport,
+      retryPolicy: _fastRetry,
+      defaultTimeout: null,
+    );
+
+    await expectLater(
+      client.getVertex('key', options: LanternCallOptions(retry: false)),
+      throwsA(isA<LanternUnavailableException>()),
+    );
+    expect(calls, 1);
+  });
+
+  test('scan stream preserves per-call retry suppression', () async {
+    var calls = 0;
+    final transport = FakeTransportBuilder()
+        .unary<graph.ScanVertexKeysRequest, graph.ScanVertexKeysResponse>(
+          LanternService.scanVertexKeys,
+          (request, context) {
+            calls++;
+            throw connect.ConnectException(connect.Code.unavailable, 'down');
+          },
+        )
+        .build();
+    final client = _client(transport, retryPolicy: _fastRetry);
+
+    await expectLater(
+      client
+          .scanVertexKeysAll(
+            prefix: 'key:',
+            options: LanternCallOptions(retry: false),
+          )
+          .toList(),
+      throwsA(isA<LanternUnavailableException>()),
+    );
+    expect(calls, 1);
+  });
+
   test('Add retries only with IDs and reuses bytes across attempts', () async {
     var unsafeCalls = 0;
     final unsafeTransport = FakeTransportBuilder()
@@ -313,10 +362,12 @@ LanternClient _client(
   RetryPolicy? retryPolicy,
   bool idempotentAdds = false,
   LanternClock? clock,
+  Duration? defaultTimeout = const Duration(seconds: 10),
 }) => LanternClient.connect(
   Uri.parse('https://example.test'),
   transport: transport,
   retryPolicy: retryPolicy,
   idempotentAdds: idempotentAdds,
   clock: clock,
+  defaultTimeout: defaultTimeout,
 );

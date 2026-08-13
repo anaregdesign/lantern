@@ -7,7 +7,9 @@ import 'types.dart';
 ///
 /// Implementations must serialize transactions and expose their effects only
 /// after the callback completes successfully. A transaction must provide
-/// defensive ownership for mutable bytes.
+/// defensive ownership for mutable bytes. Partition identifiers are local
+/// persistence namespaces; adapters must never treat them as server-side auth
+/// or tenant boundaries.
 abstract interface class OfflineStore {
   /// Runs [action] against one serializable transaction.
   Future<T> transaction<T>(
@@ -28,6 +30,12 @@ abstract interface class OfflineStore {
 abstract interface class OfflineStoreTransaction {
   /// Returns the current partition generation, creating it at zero if needed.
   int generation(String partitionId);
+
+  /// Whether replay is durably paused until explicit credential rotation.
+  bool replayPausedForAuth(String partitionId);
+
+  /// Sets the durable partition replay pause atomically with write state.
+  void setReplayPausedForAuth(String partitionId, bool paused);
 
   /// Reads one confirmed cache record.
   OfflineCacheRecord? getCache(String partitionId, OfflineEntityKey key);

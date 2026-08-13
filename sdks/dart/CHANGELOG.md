@@ -5,6 +5,9 @@
 - Expose detachable, fan-out-safe `LanternCancellationToken.listen` lifecycle
   notifications so companion packages can isolate shared work from individual
   callers without polling.
+- Add the per-call `LanternCallOptions.retry` override so a higher-level durable
+  coordinator can suppress the client's retry policy and own one exact wire
+  attempt budget.
 
 ## 0.1.3
 

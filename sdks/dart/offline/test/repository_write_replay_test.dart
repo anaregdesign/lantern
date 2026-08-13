@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:lantern_client/lantern_client.dart';
@@ -233,6 +234,295 @@ void main() {
       expect(intent, isA<OfflinePutVertexIntent>());
     },
   );
+
+  test(
+    'auth pause is partition durable and only explicit resume clears it',
+    () async {
+      final clock = MutableClock(initial);
+      final store = InMemoryOfflineStore();
+      final remote = FakeOfflineRemote();
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: remote,
+        config: OfflineConfig(
+          clock: clock.call,
+          idGenerator: testConfig(clock).idGenerator,
+          jitter: (_) => Duration.zero,
+          maxConcurrency: 1,
+          maxConcurrencyPerPartition: 1,
+        ),
+      );
+      await repository.putVertices(
+        partitionId: 'p',
+        inputs: <VertexInput>[
+          VertexInput(key: 'a', value: VertexValue.string('a')),
+          VertexInput(key: 'b', value: VertexValue.string('b')),
+        ],
+      );
+      remote.vertexPutFailures.add(
+        failure(OfflineRemoteErrorKind.unauthenticated),
+      );
+
+      expect(await repository.drain('p'), 0);
+      expect(remote.vertexPutCalls, 1);
+      expect(await repository.isReplayPausedForAuth('p'), isTrue);
+      for (final entryPoint in <Future<int> Function()>[
+        () => repository.drain('p'),
+        () => repository.start('p'),
+        () => repository.probeAndDrain('p'),
+      ]) {
+        await expectLater(
+          entryPoint(),
+          throwsA(isA<OfflineAuthPausedException>()),
+        );
+      }
+      expect(remote.vertexPutCalls, 1);
+      expect(remote.probeCalls, 0);
+      expect(
+        (await store.transaction(
+          (transaction) => transaction.outbox('p'),
+        )).map((record) => record.attemptCount),
+        everyElement(0),
+      );
+
+      final restored = OfflineLanternRepository(
+        store: InMemoryOfflineStore.fromSnapshot(await store.exportSnapshot()),
+        remote: remote,
+        config: testConfig(clock),
+      );
+      expect(await restored.isReplayPausedForAuth('p'), isTrue);
+      expect(await restored.resume('p'), 2);
+      expect(remote.vertexPutCalls, 3);
+      expect(await restored.isReplayPausedForAuth('p'), isFalse);
+    },
+  );
+
+  test('schema v3 operation auth pause requires explicit resume', () async {
+    final store = InMemoryOfflineStore.fromSnapshot(
+      File(
+        'test/fixtures/v3_snapshot_auth_pause.json',
+      ).readAsStringSync().trim(),
+    );
+    final remote = FakeOfflineRemote();
+    final repository = OfflineLanternRepository(
+      store: store,
+      remote: remote,
+      config: OfflineConfig(
+        clock: () => DateTime.fromMicrosecondsSinceEpoch(1, isUtc: true),
+        idGenerator: testConfig(MutableClock(initial)).idGenerator,
+        jitter: (_) => Duration.zero,
+      ),
+    );
+
+    expect(await repository.isReplayPausedForAuth('legacy-user'), isTrue);
+    await expectLater(
+      repository.drain('legacy-user'),
+      throwsA(isA<OfflineAuthPausedException>()),
+    );
+    expect(remote.vertexPutCalls, 0);
+    final migrated = await store.transaction(
+      (transaction) => transaction.outbox('legacy-user').single,
+    );
+    expect(migrated.diagnosticCode, 'unauthenticated');
+    expect(await repository.resume('legacy-user'), 1);
+    expect(remote.vertexPutCalls, 1);
+    expect(await repository.isReplayPausedForAuth('legacy-user'), isFalse);
+  });
+
+  test('replay send bounds apply across partitions and entry points', () async {
+    final clock = MutableClock(initial);
+    final remote = _ConcurrentRemote();
+    final repository = OfflineLanternRepository(
+      store: InMemoryOfflineStore(),
+      remote: remote,
+      config: OfflineConfig(
+        clock: clock.call,
+        idGenerator: testConfig(clock).idGenerator,
+        jitter: (_) => Duration.zero,
+        maxConcurrency: 2,
+        maxConcurrencyPerPartition: 1,
+        maxQueuedReplaySends: 2,
+        maxQueuedReplaySendsPerPartition: 1,
+        maxQueuedReplaysPerPartition: 1,
+      ),
+    );
+    for (final partition in <String>['a', 'b']) {
+      await repository.putVertices(
+        partitionId: partition,
+        inputs: <VertexInput>[
+          VertexInput(key: '$partition-1', value: VertexValue.nil()),
+          VertexInput(key: '$partition-2', value: VertexValue.nil()),
+        ],
+      );
+    }
+    final first = repository.start('a');
+    final second = repository.probeAndDrain('b');
+    await remote.twoStarted.future;
+    final queued = repository.drain('a');
+    await expectLater(
+      repository.resume('a'),
+      throwsA(isA<OfflineCapacityException>()),
+    );
+    expect(remote.maxActive, 2);
+    expect(remote.maxActiveByPartition.values, everyElement(1));
+    remote.release();
+    expect(await first + await second + await queued, 4);
+    expect(remote.maxActive, 2);
+    expect(remote.maxActiveByPartition.values, everyElement(1));
+  });
+
+  test('canceled queued replay cannot overtake its predecessor', () async {
+    final clock = MutableClock(initial);
+    final remote = _AuthGateRemote();
+    final repository = OfflineLanternRepository(
+      store: InMemoryOfflineStore(),
+      remote: remote,
+      config: OfflineConfig(
+        clock: clock.call,
+        idGenerator: testConfig(clock).idGenerator,
+        jitter: (_) => Duration.zero,
+        maxConcurrency: 1,
+        maxConcurrencyPerPartition: 1,
+        maxQueuedReplaysPerPartition: 1,
+      ),
+    );
+    await repository.putVertices(
+      partitionId: 'p',
+      inputs: <VertexInput>[
+        VertexInput(key: 'a', value: VertexValue.nil()),
+        VertexInput(key: 'c', value: VertexValue.nil()),
+      ],
+    );
+    final first = repository.drain('p');
+    await remote.started.future;
+    final queuedCancellation = LanternCancellationToken();
+    final canceled = repository.drain('p', cancellation: queuedCancellation);
+    queuedCancellation.cancel();
+    await expectLater(canceled, throwsA(isA<OfflineCanceledException>()));
+
+    final third = repository.drain('p');
+    await Future<void>.delayed(Duration.zero);
+    expect(remote.vertexPutCalls, 1);
+    remote.releaseUnauthenticated();
+    expect(await first, 0);
+    await expectLater(third, throwsA(isA<OfflineAuthPausedException>()));
+    expect(remote.vertexPutCalls, 1);
+  });
+
+  test(
+    'old partition work never sends with credentials rotated after wipe',
+    () async {
+      final clock = MutableClock(initial);
+      var credential = 'old-token';
+      final remote = _CredentialRecordingRemote(() => credential);
+      final repository = OfflineLanternRepository(
+        store: InMemoryOfflineStore(),
+        remote: remote,
+        config: OfflineConfig(
+          clock: clock.call,
+          idGenerator: testConfig(clock).idGenerator,
+          jitter: (_) => Duration.zero,
+          maxConcurrency: 1,
+          maxConcurrencyPerPartition: 1,
+        ),
+      );
+      await repository.putVertices(
+        partitionId: 'old-user',
+        inputs: <VertexInput>[
+          VertexInput(key: 'old-a', value: VertexValue.nil()),
+          VertexInput(key: 'old-b', value: VertexValue.nil()),
+        ],
+      );
+      final draining = repository.drain('old-user');
+      final canceledDrain = expectLater(
+        draining,
+        throwsA(isA<OfflineCanceledException>()),
+      );
+      await remote.started.future;
+      await repository.wipePartition('old-user');
+      await canceledDrain;
+
+      credential = 'new-token';
+      remote.release();
+      await repository.putVertex(
+        partitionId: 'new-user',
+        input: VertexInput(key: 'new-a', value: VertexValue.nil()),
+      );
+      expect(await repository.drain('new-user'), 1);
+      expect(remote.credentialsForOldKeys, everyElement('old-token'));
+      expect(remote.credentialsByKey['old-b'], isNull);
+      expect(remote.credentialsByKey['new-a'], 'new-token');
+    },
+  );
+
+  test('repeated wipe and dispose leave the lifecycle quiesced', () async {
+    final clock = MutableClock(initial);
+    final remote = _DelayedRemote(Completer<void>());
+    final repository = OfflineLanternRepository(
+      store: InMemoryOfflineStore(),
+      remote: remote,
+      config: testConfig(clock),
+    );
+    await repository.putVertex(
+      partitionId: 'p',
+      input: VertexInput(key: 'key', value: VertexValue.nil()),
+    );
+    final draining = repository.drain('p');
+    final canceledDrain = expectLater(
+      draining,
+      throwsA(isA<OfflineCanceledException>()),
+    );
+    await remote.started.future;
+    await Future.wait<void>(<Future<void>>[
+      repository.wipePartition('p'),
+      repository.wipePartition('p'),
+    ]);
+    await canceledDrain;
+    await repository.wipePartition('p');
+    await Future.wait<void>(<Future<void>>[
+      repository.dispose(),
+      repository.dispose(),
+    ]);
+    expect(
+      () => repository.drain('p'),
+      throwsA(isA<OfflineDisposedException>()),
+    );
+  });
+
+  test('failed store wipe keeps the partition closed until retry', () async {
+    final clock = MutableClock(initial);
+    final store = _FailNextTransactionStore();
+    final repository = OfflineLanternRepository(
+      store: store,
+      remote: FakeOfflineRemote(),
+      config: testConfig(clock),
+    );
+    await repository.putVertex(
+      partitionId: 'p',
+      input: VertexInput(key: 'secret', value: VertexValue.string('secret')),
+    );
+    store.failNext();
+
+    await expectLater(repository.wipePartition('p'), throwsStateError);
+    expect(
+      () => repository.readVertex(
+        'p',
+        'secret',
+        policy: OfflineReadPolicy.cacheOnly,
+      ),
+      throwsA(isA<OfflineCanceledException>()),
+    );
+
+    await repository.wipePartition('p');
+    expect(
+      (await repository.readVertex(
+        'p',
+        'secret',
+        policy: OfflineReadPolicy.cacheOnly,
+      )).state,
+      OfflineReadState.unknown,
+    );
+  });
 
   test(
     'operation retention preserves retryable dead-letter metadata',
@@ -1131,10 +1421,14 @@ void main() {
         input: VertexInput(key: 'late', value: VertexValue.string('late')),
       );
       final draining = repository.drain('p');
-      await Future<void>.delayed(Duration.zero);
+      final canceledDrain = expectLater(
+        draining,
+        throwsA(isA<OfflineCanceledException>()),
+      );
+      await remote.started.future;
       await repository.wipePartition('p');
+      await canceledDrain;
       completer.complete();
-      expect(await draining, 0);
       expect(
         await repository.readVertex(
           'p',
@@ -1191,6 +1485,45 @@ void main() {
     );
     expect(record.diagnosticCode, 'canceled');
     expect(operation.items.single.diagnosticCode, 'canceled');
+  });
+
+  test('transport cancellation releases a consistent durable claim', () async {
+    final clock = MutableClock(initial);
+    final store = InMemoryOfflineStore();
+    final remote = _DelayedRemote(Completer<void>());
+    final repository = OfflineLanternRepository(
+      store: store,
+      remote: remote,
+      config: testConfig(clock),
+    );
+    final operation = await repository.putVertex(
+      partitionId: 'p',
+      input: VertexInput(key: 'cancel', value: VertexValue.nil()),
+    );
+    final cancellation = LanternCancellationToken();
+    final draining = repository.drain('p', cancellation: cancellation);
+    await remote.started.future;
+    cancellation.cancel();
+
+    await expectLater(draining, throwsA(isA<OfflineCanceledException>()));
+    final durable = await store.transaction((transaction) {
+      return (
+        outbox: transaction.outbox('p').single,
+        operation: transaction.getOperation('p', operation.operationId)!,
+      );
+    });
+    expect(durable.outbox.state, OfflineOutboxState.enqueued);
+    expect(durable.outbox.leaseOwner, isNull);
+    expect(durable.outbox.leaseUntil, isNull);
+    expect(durable.outbox.attemptCount, 0);
+    expect(durable.outbox.diagnosticCode, 'canceled');
+    expect(
+      durable.operation.items.single.state,
+      OfflineWriteState.locallyCommitted,
+    );
+    expect(durable.operation.items.single.attemptCount, 0);
+    expect(durable.operation.items.single.diagnosticCode, 'canceled');
+    await repository.dispose();
   });
 
   test(
@@ -1834,6 +2167,137 @@ final class _ThrowingDiagnostics implements OfflineDiagnostics {
   }
 }
 
+final class _ConcurrentRemote extends FakeOfflineRemote {
+  final Completer<void> twoStarted = Completer<void>();
+  final Completer<void> _release = Completer<void>();
+  final Map<String, int> _activeByPartition = <String, int>{};
+  final Map<String, int> maxActiveByPartition = <String, int>{};
+  var active = 0;
+  var maxActive = 0;
+
+  void release() {
+    if (!_release.isCompleted) _release.complete();
+  }
+
+  @override
+  Future<void> putVertex(
+    Vertex vertex, {
+    LanternCancellationToken? cancellation,
+  }) async {
+    vertexPutCalls++;
+    final partition = vertex.key.split('-').first;
+    active += 1;
+    _activeByPartition[partition] = (_activeByPartition[partition] ?? 0) + 1;
+    maxActive = active > maxActive ? active : maxActive;
+    final partitionActive = _activeByPartition[partition]!;
+    final previous = maxActiveByPartition[partition] ?? 0;
+    if (partitionActive > previous) {
+      maxActiveByPartition[partition] = partitionActive;
+    }
+    if (active == 2 && !twoStarted.isCompleted) twoStarted.complete();
+    final canceled = Completer<void>();
+    final removeCancellation = cancellation?.listen((_) {
+      if (!canceled.isCompleted) {
+        canceled.completeError(failure(OfflineRemoteErrorKind.canceled));
+      }
+    });
+    try {
+      await Future.any<void>(<Future<void>>[_release.future, canceled.future]);
+      vertices[vertex.key] = vertex;
+    } finally {
+      removeCancellation?.call();
+      active -= 1;
+      _activeByPartition[partition] = partitionActive - 1;
+    }
+  }
+}
+
+final class _CredentialRecordingRemote extends FakeOfflineRemote {
+  _CredentialRecordingRemote(this.credentialProvider);
+
+  final String Function() credentialProvider;
+  final Completer<void> started = Completer<void>();
+  final Completer<void> _release = Completer<void>();
+  final Map<String, String> credentialsByKey = <String, String>{};
+
+  Iterable<String> get credentialsForOldKeys => credentialsByKey.entries
+      .where((entry) => entry.key.startsWith('old-'))
+      .map((entry) => entry.value);
+
+  void release() {
+    if (!_release.isCompleted) _release.complete();
+  }
+
+  @override
+  Future<void> putVertex(
+    Vertex vertex, {
+    LanternCancellationToken? cancellation,
+  }) async {
+    vertexPutCalls++;
+    credentialsByKey[vertex.key] = credentialProvider();
+    if (!started.isCompleted) started.complete();
+    if (vertex.key.startsWith('old-')) {
+      final canceled = Completer<void>();
+      final removeCancellation = cancellation?.listen((_) {
+        if (!canceled.isCompleted) {
+          canceled.completeError(failure(OfflineRemoteErrorKind.canceled));
+        }
+      });
+      try {
+        await Future.any<void>(<Future<void>>[
+          _release.future,
+          canceled.future,
+        ]);
+      } finally {
+        removeCancellation?.call();
+      }
+    }
+    vertices[vertex.key] = vertex;
+  }
+}
+
+final class _AuthGateRemote extends FakeOfflineRemote {
+  final Completer<void> started = Completer<void>();
+  final Completer<void> _release = Completer<void>();
+
+  void releaseUnauthenticated() {
+    if (!_release.isCompleted) _release.complete();
+  }
+
+  @override
+  Future<void> putVertex(
+    Vertex vertex, {
+    LanternCancellationToken? cancellation,
+  }) async {
+    vertexPutCalls += 1;
+    if (!started.isCompleted) started.complete();
+    await _release.future;
+    throw failure(OfflineRemoteErrorKind.unauthenticated);
+  }
+}
+
+final class _FailNextTransactionStore implements OfflineStore {
+  final InMemoryOfflineStore _delegate = InMemoryOfflineStore();
+  var _failNext = false;
+
+  void failNext() => _failNext = true;
+
+  @override
+  Stream<OfflineStoreChange> changes(String partitionId) =>
+      _delegate.changes(partitionId);
+
+  @override
+  Future<T> transaction<T>(
+    FutureOr<T> Function(OfflineStoreTransaction transaction) action,
+  ) {
+    if (_failNext) {
+      _failNext = false;
+      return Future<T>.error(StateError('wipe failed'));
+    }
+    return _delegate.transaction(action);
+  }
+}
+
 final class _DelayedRemote extends FakeOfflineRemote {
   _DelayedRemote(this.completer);
 
@@ -1844,10 +2308,20 @@ final class _DelayedRemote extends FakeOfflineRemote {
   Future<void> putVertex(
     Vertex vertex, {
     LanternCancellationToken? cancellation,
-  }) {
+  }) async {
     vertexPutCalls++;
     if (!started.isCompleted) started.complete();
-    return completer.future;
+    final canceled = Completer<void>();
+    final removeCancellation = cancellation?.listen((_) {
+      if (!canceled.isCompleted) {
+        canceled.completeError(failure(OfflineRemoteErrorKind.canceled));
+      }
+    });
+    try {
+      await Future.any<void>(<Future<void>>[completer.future, canceled.future]);
+    } finally {
+      removeCancellation?.call();
+    }
   }
 }
 
@@ -2034,6 +2508,14 @@ final class _InspectingTransaction implements OfflineStoreTransaction {
 
   @override
   int generation(String partitionId) => inner.generation(partitionId);
+
+  @override
+  bool replayPausedForAuth(String partitionId) =>
+      inner.replayPausedForAuth(partitionId);
+
+  @override
+  void setReplayPausedForAuth(String partitionId, bool paused) =>
+      inner.setReplayPausedForAuth(partitionId, paused);
 
   @override
   bool hasOutboxForOperation(String partitionId, String operationId) =>

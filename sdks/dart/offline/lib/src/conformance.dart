@@ -457,10 +457,29 @@ Future<void> runStoreConformanceSuite(OfflineStoreFactory factory) async {
   _require(renewed, 'lease_cas');
 
   await store.transaction<void>(
+    (transaction) => transaction.setReplayPausedForAuth(partitionId, true),
+  );
+  final authPaused = await store.transaction((transaction) {
+    return transaction.replayPausedForAuth(partitionId) &&
+        transaction
+            .claim(
+              partitionId,
+              owner: 'paused-owner',
+              now: now.add(const Duration(seconds: 2)),
+              maxAge: const Duration(days: 1),
+              leaseDuration: const Duration(seconds: 1),
+              limit: 2,
+            )
+            .isEmpty;
+  });
+  _require(authPaused, 'durable_auth_pause');
+
+  await store.transaction<void>(
     (transaction) => transaction.wipePartition(partitionId),
   );
   final wiped = await store.transaction((transaction) {
     return transaction.generation(partitionId) == 1 &&
+        !transaction.replayPausedForAuth(partitionId) &&
         transaction.outbox(partitionId).isEmpty &&
         transaction.operations(partitionId).isEmpty &&
         transaction.getCache(

@@ -71,6 +71,11 @@ always win. Put-if-absent, Delete, capped prefix Delete, streams, and unknown
 operations are never replayed because a committed response loss would change
 their observable result.
 
+Set `LanternCallOptions(retry: false)` when a higher-level durable coordinator
+owns retry accounting. The call then performs exactly one transport attempt
+while retaining the client's deadline, cancellation, token-provider, and typed
+failure behavior.
+
 Automatic IDs do not turn two application calls into one operation and do not
 survive process restart. This package does not implement an offline queue. A
 contribution ID deduplicates only while the server retains that contribution.

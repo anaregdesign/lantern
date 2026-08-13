@@ -73,15 +73,16 @@ deadline queries used by lazy expiration.
 The package has no storage key API and makes no encryption claim. Applications
 must provide at-rest encryption and key lifecycle policy in their store adapter.
 Schema open/migration failures must fail closed as `OfflineSchemaException`;
-malformed record bytes or v1/v2/v3/v4 reference snapshots must fail closed as
+malformed record bytes or v1/v2/v3/v4/v5 reference snapshots must fail closed as
 `OfflineCodecException` and must never be sent to `OfflineRemote`. Reference
-snapshot schema v4 persists the exact dead-letter transition time, preserves
-operation aggregates, and quarantines every legacy Add as an inspectable
-terminal `unsupported_add` dead letter. Opening schema v1, v2, or v3 performs
-that migration transactionally with a conservative transition-time fallback;
-v1 also reconstructs active
-operation metadata and marks outcomes no longer present in the legacy outbox as
-`outcomeUnknown`. Cache and outbox capacity failures use
+snapshot schema v5 persists the exact dead-letter transition time, operation
+aggregates, and durable auth pause. Opening schema v1, v2, or v3 quarantines
+legacy Add as an inspectable terminal `unsupported_add` dead letter and applies
+a conservative dead-letter transition-time fallback; schema v4 and later fail
+closed on Add. Opening schema v1-v4 recovers auth pause from durable operation
+metadata. Schema v1 also reconstructs active operation metadata and marks
+outcomes no longer present in the legacy outbox as `outcomeUnknown`. Cache and
+outbox capacity failures use
 `OfflineCapacityException`; adapters may evict only confirmed cache records,
 never live unconfirmed outbox records.
 Restore validates the complete record/operation/ordinal/generation/lease/state
@@ -272,9 +273,11 @@ local confirmation.
 
 Distinct remote reads have repository-wide and per-partition active and queued
 caps. Snapshot watchers have repository-wide, per-partition, and active
-partition caps. These bounds apply only to remote legs and active subscriptions;
-cache-only reads remain local, and queued cancellation cannot start a remote
-request.
+partition caps. A separate active partition-runtime cap bounds concurrent
+unique-partition work before its process-local lifecycle map grows; runtimes
+are evicted when they have no active or queued work. Remote and watcher bounds
+apply only to remote legs and active subscriptions; cache-only reads remain
+local, and queued cancellation cannot start a remote request.
 
 The offline package exposes a control surface that lets the application make
 unsafe and failed work inspectable without exposing payloads through logs.
@@ -339,6 +342,24 @@ successful Lantern probe. A network-type plugin may reduce futile attempts but
 is never proof of server reachability. iOS suspension and Android Doze make any
 background replay best-effort; there is no “delivered after kill” guarantee
 without application-owned OS background task or push infrastructure.
+
+Every replay entry point joins one per-partition serialized lifecycle and one
+repository-wide/per-partition send limiter. Durable sends suppress the online
+client's retry policy, so one offline attempt is one wire attempt. An
+Unauthenticated outcome atomically sets partition-level durable pause metadata;
+ordinary drain/start/probe paths cannot clear it or acquire another token.
+After credentials rotate, only explicit `resume` clears the pause.
+Offline backoff is a durable `nextAttemptAt` eligibility boundary, not a live
+per-record Timer; canceling foreground work therefore leaves no sleeping worker.
+
+`partitionId` is exclusively a local persistence namespace and never crosses
+the Lantern wire; it is not a server tenant, identity, or authorization
+boundary. Logout first marks the partition runtime closing, then cancels and
+awaits its token acquisition, reads, sends, probes, lease renewal, and watchers,
+and only then wipes local state and advances generation. Credentials may rotate
+after that Future completes. A server-accepted mutation cannot be recalled, so
+the guarantee is local isolation and no further send—not remote rollback.
+Repository disposal follows the same quiescence rule for every partition.
 
 ## Security and observability threat model
 
